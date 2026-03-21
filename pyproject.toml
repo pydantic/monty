@@ -104,8 +104,6 @@ exclude = [
     "examples/web_scraper/example_code.py",
 ]
 venv = ".venv"
-# TODO remove
-reportDeprecated = false
 
 # we include tests cases in type checking then switch off all rules that break
 # so the files don't show as errors in the IDE

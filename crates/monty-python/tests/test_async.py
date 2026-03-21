@@ -5,7 +5,6 @@ from dirty_equals import IsList
 from inline_snapshot import snapshot
 
 import pydantic_monty
-from pydantic_monty import run_monty_async, run_repl_async
 
 
 def test_async():
@@ -80,7 +79,7 @@ async def test_run_monty_async_sync_function():
     def get_value():
         return 42
 
-    result = await run_monty_async(m, external_functions={'get_value': get_value})
+    result = await m.run_async(external_functions={'get_value': get_value})
     assert result == snapshot(42)
 
 
@@ -92,7 +91,7 @@ async def test_run_monty_async_async_function():
         await asyncio.sleep(0.001)
         return 'async result'
 
-    result = await run_monty_async(m, external_functions={'fetch_data': fetch_data})
+    result = await m.run_async(external_functions={'fetch_data': fetch_data})
     assert result == snapshot('async result')
 
 
@@ -101,7 +100,7 @@ async def test_run_monty_async_function_not_found():
     m = pydantic_monty.Monty('missing_func()')
 
     with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
-        await run_monty_async(m, external_functions={})
+        await m.run_async(external_functions={})
     inner = exc_info.value.exception()
     assert isinstance(inner, NameError)
     assert inner.args[0] == snapshot("name 'missing_func' is not defined")
@@ -115,7 +114,7 @@ async def test_run_monty_async_sync_exception():
         raise ValueError('sync error')
 
     with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
-        await run_monty_async(m, external_functions={'fail': fail})
+        await m.run_async(external_functions={'fail': fail})
     inner = exc_info.value.exception()
     assert isinstance(inner, ValueError)
     assert inner.args[0] == snapshot('sync error')
@@ -130,7 +129,7 @@ async def test_run_monty_async_async_exception():
         raise RuntimeError('async error')
 
     with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
-        await run_monty_async(m, external_functions={'async_fail': async_fail})
+        await m.run_async(external_functions={'async_fail': async_fail})
     inner = exc_info.value.exception()
     assert isinstance(inner, RuntimeError)
     assert inner.args[0] == snapshot('async error')
@@ -150,7 +149,7 @@ caught
     def fail():
         raise ValueError('caught error')
 
-    result = await run_monty_async(m, external_functions={'fail': fail})
+    result = await m.run_async(external_functions={'fail': fail})
     assert result == snapshot(True)
 
 
@@ -170,7 +169,7 @@ await asyncio.gather(fetch_a(), fetch_b())
         await asyncio.sleep(0.005)
         return 'b'
 
-    result = await run_monty_async(m, external_functions={'fetch_a': fetch_a, 'fetch_b': fetch_b})
+    result = await m.run_async(external_functions={'fetch_a': fetch_a, 'fetch_b': fetch_b})
     assert result == snapshot(['a', 'b'])
 
 
@@ -190,7 +189,7 @@ sync_val + async_val
         await asyncio.sleep(0.001)
         return 5
 
-    result = await run_monty_async(m, external_functions={'sync_func': sync_func, 'async_func': async_func})
+    result = await m.run_async(external_functions={'sync_func': sync_func, 'async_func': async_func})
     assert result == snapshot(15)
 
 
@@ -201,7 +200,7 @@ async def test_run_monty_async_with_inputs():
     def process(a: int, b: int) -> int:
         return a * b
 
-    result = await run_monty_async(m, inputs={'x': 6, 'y': 7}, external_functions={'process': process})
+    result = await m.run_async(inputs={'x': 6, 'y': 7}, external_functions={'process': process})
     assert result == snapshot(42)
 
 
@@ -213,7 +212,7 @@ async def test_run_monty_async_with_print_callback():
         output.append((stream, text))
 
     m = pydantic_monty.Monty('print("hello from async")')
-    result = await run_monty_async(m, print_callback=callback)
+    result = await m.run_async(print_callback=callback)
     assert result is None
     assert output == snapshot([('stdout', 'hello from async'), ('stdout', '\n')])
 
@@ -225,14 +224,14 @@ async def test_run_monty_async_function_returning_none():
     def do_nothing():
         return None
 
-    result = await run_monty_async(m, external_functions={'do_nothing': do_nothing})
+    result = await m.run_async(external_functions={'do_nothing': do_nothing})
     assert result is None
 
 
 async def test_run_monty_async_no_external_calls():
     """Test run_monty_async when code has no external calls."""
     m = pydantic_monty.Monty('1 + 2 + 3')
-    result = await run_monty_async(m)
+    result = await m.run_async()
     assert result == snapshot(6)
 
 
@@ -252,7 +251,7 @@ Path('/test.txt').read_text()
         """,
     )
 
-    result = await run_monty_async(m, os=fs)
+    result = await m.run_async(os=fs)
     assert result == snapshot('hello world')
 
 
@@ -273,8 +272,7 @@ await process(content)
         """,
     )
 
-    result = await run_monty_async(
-        m,
+    result = await m.run_async(
         external_functions={'process': process},
         os=fs,
     )
@@ -295,7 +293,7 @@ Path('/missing.txt').read_text()
     )
 
     with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
-        await run_monty_async(m, os=fs)
+        await m.run_async(os=fs)
     assert str(exc_info.value) == snapshot("FileNotFoundError: [Errno 2] No such file or directory: '/missing.txt'")
 
 
@@ -309,7 +307,7 @@ Path('/test.txt').exists()
     )
 
     with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
-        await run_monty_async(m)
+        await m.run_async()
     inner = exc_info.value.exception()
     assert isinstance(inner, RuntimeError)
     assert 'OS function' in inner.args[0]
@@ -373,8 +371,7 @@ await main()
     async def get_weather_description(lat: float, lng: float):
         return city_descs[(lat, lng)]
 
-    result = await run_monty_async(
-        m,
+    result = await m.run_async(
         external_functions={
             'get_lat_lng': get_lat_lng,
             'get_temp': get_temp,
@@ -405,7 +402,7 @@ p.read_text()
         """,
     )
 
-    result = await run_monty_async(m, os=fs)
+    result = await m.run_async(os=fs)
     assert result == snapshot('updated')
 
 
@@ -474,7 +471,7 @@ async def test_run_repl_async_sync_function():
     def get_value():
         return 42
 
-    result = await run_repl_async(repl, 'get_value()', external_functions={'get_value': get_value})
+    result = await repl.run_async('get_value()', external_functions={'get_value': get_value})
     assert result == snapshot(42)
 
 
@@ -486,7 +483,7 @@ async def test_run_repl_async_async_function():
         await asyncio.sleep(0.001)
         return 'async result'
 
-    result = await run_repl_async(repl, 'await fetch_data()', external_functions={'fetch_data': fetch_data})
+    result = await repl.run_async('await fetch_data()', external_functions={'fetch_data': fetch_data})
     assert result == snapshot('async result')
 
 
@@ -498,9 +495,9 @@ async def test_run_repl_async_state_persists():
         return x * 2
 
     ext = {'double': double}
-    await run_repl_async(repl, 'x = 10', external_functions=ext)
-    await run_repl_async(repl, 'y = double(x)', external_functions=ext)
-    result = await run_repl_async(repl, 'y', external_functions=ext)
+    await repl.run_async('x = 10', external_functions=ext)
+    await repl.run_async('y = double(x)', external_functions=ext)
+    result = await repl.run_async('y', external_functions=ext)
     assert result == snapshot(20)
 
 
@@ -512,9 +509,9 @@ async def test_run_repl_async_async_state_persists():
         return f'value_{key}'
 
     ext = {'fetch': fetch}
-    await run_repl_async(repl, "a = await fetch('one')", external_functions=ext)
-    await run_repl_async(repl, "b = await fetch('two')", external_functions=ext)
-    result = await run_repl_async(repl, 'a + b', external_functions=ext)
+    await repl.run_async("a = await fetch('one')", external_functions=ext)
+    await repl.run_async("b = await fetch('two')", external_functions=ext)
+    result = await repl.run_async('a + b', external_functions=ext)
     assert result == snapshot('value_onevalue_two')
 
 
@@ -534,7 +531,7 @@ async def test_run_repl_async_gather():
 import asyncio
 await asyncio.gather(fetch_a(), fetch_b())
 """
-    result = await run_repl_async(repl, code, external_functions={'fetch_a': fetch_a, 'fetch_b': fetch_b})
+    result = await repl.run_async(code, external_functions={'fetch_a': fetch_a, 'fetch_b': fetch_b})
     assert result == snapshot(['a', 'b'])
 
 
@@ -543,7 +540,7 @@ async def test_run_repl_async_function_not_found():
     repl = pydantic_monty.MontyRepl()
 
     with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
-        await run_repl_async(repl, 'missing_func()', external_functions={})
+        await repl.run_async('missing_func()', external_functions={})
     inner = exc_info.value.exception()
     assert isinstance(inner, NameError)
     assert inner.args[0] == snapshot("name 'missing_func' is not defined")
@@ -552,15 +549,15 @@ async def test_run_repl_async_function_not_found():
 async def test_run_repl_async_error_preserves_state():
     """REPL state is preserved after an error in run_repl_async."""
     repl = pydantic_monty.MontyRepl()
-    await run_repl_async(repl, 'x = 42')
+    await repl.run_async('x = 42')
 
     def fail():
         raise ValueError('oops')
 
     with pytest.raises(pydantic_monty.MontyRuntimeError):
-        await run_repl_async(repl, 'fail()', external_functions={'fail': fail})
+        await repl.run_async('fail()', external_functions={'fail': fail})
 
-    result = await run_repl_async(repl, 'x')
+    result = await repl.run_async('x')
     assert result == snapshot(42)
 
 
@@ -571,7 +568,7 @@ async def test_run_repl_async_with_inputs():
     def add(a: int, b: int) -> int:
         return a + b
 
-    result = await run_repl_async(repl, 'add(x, y)', inputs={'x': 3, 'y': 4}, external_functions={'add': add})
+    result = await repl.run_async('add(x, y)', inputs={'x': 3, 'y': 4}, external_functions={'add': add})
     assert result == snapshot(7)
 
 
@@ -583,7 +580,7 @@ async def test_run_repl_async_with_print_callback():
     def callback(stream: str, text: str) -> None:
         output.append(text)
 
-    await run_repl_async(repl, 'print("hello from repl")', print_callback=callback)
+    await repl.run_async('print("hello from repl")', print_callback=callback)
     assert output == snapshot(['hello from repl', '\n'])
 
 
@@ -598,7 +595,7 @@ async def test_run_repl_async_with_os():
 from pathlib import Path
 Path('/test.txt').read_text()
 """
-    result = await run_repl_async(repl, code, os=fs)
+    result = await repl.run_async(code, os=fs)
     assert result == snapshot('repl content')
 
 
@@ -618,14 +615,14 @@ sync_val = sync_func()
 async_val = await async_func()
 sync_val + async_val
 """
-    result = await run_repl_async(repl, code, external_functions={'sync_func': sync_func, 'async_func': async_func})
+    result = await repl.run_async(code, external_functions={'sync_func': sync_func, 'async_func': async_func})
     assert result == snapshot(15)
 
 
 async def test_run_repl_async_no_external_calls():
     """run_repl_async works when code has no external calls."""
     repl = pydantic_monty.MontyRepl()
-    result = await run_repl_async(repl, '1 + 2 + 3')
+    result = await repl.run_async('1 + 2 + 3')
     assert result == snapshot(6)
 
 
@@ -648,11 +645,10 @@ async def test_repl_llm_iterative_data_collection():
     ext = {'fetch_users': fetch_users}
 
     # Snippet 1: LLM sets up accumulator
-    await run_repl_async(repl, 'all_users = []', external_functions=ext)
+    await repl.run_async('all_users = []', external_functions=ext)
 
     # Snippet 2: LLM fetches first batch
-    await run_repl_async(
-        repl,
+    await repl.run_async(
         """\
 batch = await fetch_users(0, 2)
 all_users = all_users + batch
@@ -662,8 +658,7 @@ len(batch)
     )
 
     # Snippet 3: LLM fetches next batch using state
-    await run_repl_async(
-        repl,
+    await repl.run_async(
         """\
 batch = await fetch_users(len(all_users), 2)
 all_users = all_users + batch
@@ -673,8 +668,7 @@ len(batch)
     )
 
     # Snippet 4: LLM fetches again, gets empty — realizes done
-    await run_repl_async(
-        repl,
+    await repl.run_async(
         """\
 batch = await fetch_users(len(all_users), 2)
 all_users = all_users + batch
@@ -684,7 +678,7 @@ len(batch)
     )
 
     # Snippet 5: LLM extracts final result
-    result = await run_repl_async(repl, '[u["name"] for u in all_users]', external_functions=ext)
+    result = await repl.run_async('[u["name"] for u in all_users]', external_functions=ext)
     assert result == snapshot(['Alice', 'Bob', 'Charlie'])
 
 
@@ -704,11 +698,10 @@ async def test_repl_llm_error_recovery_retry():
 
     # Snippet 1: LLM tries, gets error
     with pytest.raises(pydantic_monty.MontyRuntimeError):
-        await run_repl_async(repl, "data = await flaky_api('test')", external_functions=ext)
+        await repl.run_async("data = await flaky_api('test')", external_functions=ext)
 
     # Snippet 2: LLM wraps in try/except and retries
-    result = await run_repl_async(
-        repl,
+    result = await repl.run_async(
         """\
 try:
     data = await flaky_api('test')
@@ -731,8 +724,7 @@ async def test_repl_llm_redefine_helper_function():
     ext = {'fetch': fetch}
 
     # Snippet 1: LLM defines initial parser
-    await run_repl_async(
-        repl,
+    await repl.run_async(
         """\
 def parse_title(html):
     return html
@@ -741,8 +733,7 @@ def parse_title(html):
     )
 
     # Snippet 2: LLM uses it, gets raw html back
-    result = await run_repl_async(
-        repl,
+    result = await repl.run_async(
         """\
 html = await fetch('example.com')
 parse_title(html)
@@ -752,8 +743,7 @@ parse_title(html)
     assert result == snapshot('<html>example.com</html>')
 
     # Snippet 3: LLM redefines parser with better logic
-    await run_repl_async(
-        repl,
+    await repl.run_async(
         """\
 def parse_title(html):
     start = html.find('>') + 1
@@ -764,7 +754,7 @@ def parse_title(html):
     )
 
     # Snippet 4: uses improved parser on previously fetched data
-    result = await run_repl_async(repl, 'parse_title(html)', external_functions=ext)
+    result = await repl.run_async('parse_title(html)', external_functions=ext)
     assert result == snapshot('example.com')
 
 
@@ -794,7 +784,7 @@ for r in results:
     record(s)
 summaries
 """
-    result = await run_repl_async(repl, code, external_functions=ext)
+    result = await repl.run_async(code, external_functions=ext)
     assert result == snapshot(['summary(python async_result_1)', 'summary(python async_result_2)'])
     assert records == snapshot(['summary(python async_result_1)', 'summary(python async_result_2)'])
 
@@ -816,7 +806,7 @@ items = ['apple', 'banana', 'cherry', 'date', 'elderberry']
 prices = await asyncio.gather(*(fetch_price(item) for item in items))
 dict(zip(items, prices))
 """
-    result = await run_repl_async(repl, code, external_functions=ext)
+    result = await repl.run_async(code, external_functions=ext)
     assert result == snapshot({'apple': 1.5, 'banana': 0.75, 'cherry': 3.0, 'date': 5.0, 'elderberry': 8.0})
 
 
@@ -840,7 +830,7 @@ for key in ['good', 'bad', 'also_good']:
         results[key] = 'missing'
 results
 """
-    result = await run_repl_async(repl, code, external_functions=ext)
+    result = await repl.run_async(code, external_functions=ext)
     assert result == snapshot({'good': 'data_good', 'bad': 'missing', 'also_good': 'data_also_good'})
 
 
@@ -857,7 +847,7 @@ async def test_repl_llm_conditional_external_call():
     ext = {'expensive_lookup': expensive_lookup}
 
     # Snippet 1: set up a cache
-    await run_repl_async(repl, "cache = {'x': 'cached_x'}", external_functions=ext)
+    await repl.run_async("cache = {'x': 'cached_x'}", external_functions=ext)
 
     # Snippet 2: LLM checks cache before calling
     code = """\
@@ -871,7 +861,7 @@ for key in ['x', 'y', 'x']:
         results.append(val)
 results
 """
-    result = await run_repl_async(repl, code, external_functions=ext)
+    result = await repl.run_async(code, external_functions=ext)
     assert result == snapshot(['cached_x', 'looked up y', 'cached_x'])
     assert call_count == 1  # only 'y' triggered a call
 
@@ -898,7 +888,7 @@ for m in models:
     record_model(m['name'], m['params'], 0.01)
 len(models)
 """
-    result = await run_repl_async(repl, code, external_functions=ext)
+    result = await repl.run_async(code, external_functions=ext)
     assert result == snapshot(2)
     assert recorded == snapshot(
         [{'name': 'gpt-4', 'params': '1.7T', 'price': 0.01}, {'name': 'claude-3', 'params': '???', 'price': 0.01}]
@@ -920,8 +910,7 @@ async def test_repl_llm_helper_wrapping_externals_with_retry():
     ext = {'unreliable_fetch': unreliable_fetch}
 
     # Snippet 1: LLM defines retry helper
-    await run_repl_async(
-        repl,
+    await repl.run_async(
         """\
 def fetch_with_retry(url, max_retries=3):
     for i in range(max_retries):
@@ -936,7 +925,7 @@ def fetch_with_retry(url, max_retries=3):
     )
 
     # Snippet 2: LLM uses the retry helper
-    result = await run_repl_async(repl, "fetch_with_retry('example.com')", external_functions=ext)
+    result = await repl.run_async("fetch_with_retry('example.com')", external_functions=ext)
     assert result == snapshot('content of example.com')
     assert attempt_counts == snapshot({'example.com': 2})
 
@@ -969,7 +958,7 @@ results = await asyncio.gather(
 )
 results
 """
-    result = await run_repl_async(repl, code, external_functions=ext)
+    result = await repl.run_async(code, external_functions=ext)
     assert result == snapshot(
         [
             {'id': 1, 'name': 'user_1', 'posts': ['post_1_1', 'post_1_2']},
@@ -998,11 +987,10 @@ async def test_repl_llm_external_returns_complex_nested_structure():
     ext = {'get_api_response': get_api_response}
 
     # Snippet 1: fetch and store
-    await run_repl_async(repl, 'response = await get_api_response()', external_functions=ext)
+    await repl.run_async('response = await get_api_response()', external_functions=ext)
 
     # Snippet 2: LLM navigates nested structure
-    result = await run_repl_async(
-        repl,
+    result = await repl.run_async(
         """\
 users = response['data']['users']
 averages = {}
@@ -1030,7 +1018,7 @@ page1 = await search('test', limit=2, offset=0)
 page2 = await search('test', limit=2, offset=2)
 page1['results'] + page2['results']
 """
-    result = await run_repl_async(repl, code, external_functions=ext)
+    result = await repl.run_async(code, external_functions=ext)
     assert result == snapshot(['test_0', 'test_1', 'test_0', 'test_1'])
 
 
@@ -1048,8 +1036,7 @@ async def test_repl_llm_os_read_then_process_with_external():
     ext = {'analyze': analyze}
 
     # Snippet 1: read file
-    await run_repl_async(
-        repl,
+    await repl.run_async(
         """\
 from pathlib import Path
 raw = Path('/data.csv').read_text()
@@ -1059,7 +1046,7 @@ raw = Path('/data.csv').read_text()
     )
 
     # Snippet 2: process with external
-    result = await run_repl_async(repl, 'await analyze(raw)', external_functions=ext, os=fs)
+    result = await repl.run_async('await analyze(raw)', external_functions=ext, os=fs)
     assert result == snapshot({'alice': 95, 'bob': 87, 'charlie': 92})
 
 
@@ -1086,19 +1073,17 @@ async def test_repl_llm_long_multi_step_session():
     ext = {'query_db': query_db}
 
     # Step 1: LLM explores what's available
-    result = await run_repl_async(repl, 'await query_db("products")', external_functions=ext)
+    result = await repl.run_async('await query_db("products")', external_functions=ext)
     assert len(result) == 4
 
     # Step 2: LLM filters by category
-    await run_repl_async(
-        repl,
+    await repl.run_async(
         "tools = await query_db('products', filters={'category': 'tools'})",
         external_functions=ext,
     )
 
     # Step 3: LLM computes stats
-    result = await run_repl_async(
-        repl,
+    result = await repl.run_async(
         """\
 total = sum(p['price'] for p in tools)
 avg = total / len(tools)
@@ -1109,15 +1094,13 @@ avg = total / len(tools)
     assert result == snapshot({'count': 2, 'total': 14.98, 'average': 7.49})
 
     # Step 4: LLM also checks electronics
-    await run_repl_async(
-        repl,
+    await repl.run_async(
         "electronics = await query_db('products', filters={'category': 'electronics'})",
         external_functions=ext,
     )
 
     # Step 5: LLM builds final summary from accumulated state
-    result = await run_repl_async(
-        repl,
+    result = await repl.run_async(
         """\
 summary = {}
 for cat, items in [('tools', tools), ('electronics', electronics)]:
@@ -1147,11 +1130,10 @@ async def test_repl_llm_string_manipulation_of_external_result():
 
     ext = {'fetch_page': fetch_page}
 
-    await run_repl_async(repl, "html = await fetch_page('example.com')", external_functions=ext)
+    await repl.run_async("html = await fetch_page('example.com')", external_functions=ext)
 
     # LLM extracts title
-    result = await run_repl_async(
-        repl,
+    result = await repl.run_async(
         """\
 start = html.find('<title>') + len('<title>')
 end = html.find('</title>')
@@ -1163,8 +1145,7 @@ title
     assert result == snapshot('Test Page')
 
     # LLM extracts paragraphs
-    result = await run_repl_async(
-        repl,
+    result = await repl.run_async(
         """\
 paragraphs = []
 remaining = html
@@ -1190,12 +1171,12 @@ async def test_repl_llm_syntax_error_then_fix():
     ext = {'add': add}
 
     # Snippet 1: set up state
-    await run_repl_async(repl, 'x = 10', external_functions=ext)
+    await repl.run_async('x = 10', external_functions=ext)
 
     # Snippet 2: syntax error
     with pytest.raises(pydantic_monty.MontySyntaxError):
-        await run_repl_async(repl, 'y = add(x,', external_functions=ext)
+        await repl.run_async('y = add(x,', external_functions=ext)
 
     # Snippet 3: state preserved, LLM fixes the code
-    result = await run_repl_async(repl, 'y = add(x, 5)\ny', external_functions=ext)
+    result = await repl.run_async('y = add(x, 5)\ny', external_functions=ext)
     assert result == snapshot(15)

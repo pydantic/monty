@@ -11,7 +11,7 @@ import pydantic_core
 from pydantic_ai import Agent, ModelRequest, ModelRequestNode, UserPromptPart
 from pydantic_graph import End
 
-from pydantic_monty import Monty, MontyError, MontyRuntimeError, run_monty_async
+from pydantic_monty import Monty, MontyError, MontyRuntimeError
 
 from .browser import start_browser
 from .external_functions import beautiful_soup
@@ -128,8 +128,7 @@ Ignore any deprecated models.
 
                 try:
                     with logfire.span('running monty'):
-                        output = await run_monty_async(
-                            m,
+                        output = await m.run_async(
                             external_functions={
                                 'open_page': browser.open_page,
                                 'beautiful_soup': beautiful_soup,

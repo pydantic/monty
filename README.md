@@ -126,8 +126,7 @@ async def call_llm(prompt: str, messages: Messages) -> str | Messages:
 
 
 async def main():
-    output = await pydantic_monty.run_monty_async(
-        m,
+    output = await m.run_async(
         inputs={'prompt': 'testing'},
         external_functions={'call_llm': call_llm},
     )
