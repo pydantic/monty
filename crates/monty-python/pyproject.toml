@@ -29,6 +29,9 @@ classifiers = [
     "Topic :: Internet",
     "Programming Language :: Python :: Implementation",
 ]
+dependencies = [
+    "typing_extensions>=4.5",
+]
 dynamic = ["license", "version"]
 
 [project.urls]

@@ -4,7 +4,7 @@
 //! External functions are registered by name and called when Monty execution
 //! reaches a call to that function.
 
-use ::monty::{ExtFunctionResult, MontyException, MontyObject};
+use ::monty::{ExtFunctionResult, MontyObject};
 use pyo3::{
     exceptions::PyRuntimeError,
     prelude::*,
@@ -320,12 +320,12 @@ pub fn py_err_to_ext_result(py: Python<'_>, err: &PyErr) -> ExtFunctionResult {
 /// Converts a Python object from an async external function result into an `ExtFunctionResult`.
 ///
 /// Used by the async dispatch loop when a spawned coroutine completes successfully.
-pub fn py_obj_to_ext_result(_py: Python<'_>, obj: &Bound<'_, PyAny>, dc_registry: &DcRegistry) -> ExtFunctionResult {
+/// Uses `exc_py_to_monty` for conversion errors, matching the sync path in
+/// `result_to_call_result` so that the same bad return value produces the same
+/// exception shape regardless of whether the external function was sync or async.
+pub fn py_obj_to_ext_result(py: Python<'_>, obj: &Bound<'_, PyAny>, dc_registry: &DcRegistry) -> ExtFunctionResult {
     match py_to_monty(obj, dc_registry) {
         Ok(monty_obj) => ExtFunctionResult::Return(monty_obj),
-        Err(err) => ExtFunctionResult::Error(MontyException::new(
-            monty::ExcType::TypeError,
-            Some(format!("Failed to convert async result: {err}")),
-        )),
+        Err(err) => ExtFunctionResult::Error(exc_py_to_monty(py, &err)),
     }
 }
