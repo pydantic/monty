@@ -5,20 +5,20 @@
 //! async external function calls by spawning them as tokio tasks and awaiting
 //! their results.
 //!
-//! VM resume calls are offloaded to `tokio::task::spawn_blocking()` to avoid
+//! VM resume calls are offloaded to `spawn_blocking()` to avoid
 //! blocking the Python event loop.
 
-use ::monty::{
-    ExtFunctionResult, MontyException, MontyObject, NameLookupResult, OsFunction, PrintWriter, ReplProgress,
-    ResourceTracker, RunProgress,
+use monty::{
+    ExcType, ExtFunctionResult, FunctionCall, MontyException, MontyObject, NameLookup, NameLookupResult, OsCall,
+    OsFunction, PrintWriter, ReplFunctionCall, ReplNameLookup, ReplOsCall, ReplProgress, ReplResolveFutures,
+    ReplStartError, ResolveFutures, ResourceTracker, RunProgress,
 };
-use monty::ExcType;
 use pyo3::{
     exceptions::PyRuntimeError,
     prelude::*,
     types::{PyDict, PyTuple},
 };
-use tokio::task::JoinSet;
+use tokio::task::{JoinError, JoinSet, spawn_blocking};
 
 use crate::{
     convert::{get_docstring, monty_to_py, py_to_monty},
@@ -43,13 +43,12 @@ use crate::{
 ///
 /// VM resume calls run in `spawn_blocking` to avoid blocking the event loop.
 pub(crate) async fn dispatch_loop_run<T: ResourceTracker + Send + 'static>(
-    progress: RunProgress<T>,
+    mut progress: RunProgress<T>,
     external_functions: Option<Py<PyDict>>,
     os: Option<Py<PyAny>>,
     dc_registry: DcRegistry,
     print_callback: Option<Py<PyAny>>,
 ) -> PyResult<Py<PyAny>> {
-    let mut progress = progress;
     let mut join_set: JoinSet<(u32, ExtFunctionResult)> = JoinSet::new();
 
     loop {
@@ -113,7 +112,7 @@ pub(crate) async fn dispatch_loop_run<T: ResourceTracker + Send + 'static>(
 /// Same as `dispatch_loop_run` but works with `ReplProgress` and restores the
 /// REPL session when execution completes or on error.
 pub(crate) async fn dispatch_loop_repl<T: ResourceTracker + Send + 'static>(
-    progress: ReplProgress<T>,
+    mut progress: ReplProgress<T>,
     repl_owner: Py<PyMontyRepl>,
     external_functions: Option<Py<PyDict>>,
     os: Option<Py<PyAny>>,
@@ -123,7 +122,6 @@ pub(crate) async fn dispatch_loop_repl<T: ResourceTracker + Send + 'static>(
 where
     EitherRepl: FromCoreRepl<T>,
 {
-    let mut progress = progress;
     let mut join_set: JoinSet<(u32, ExtFunctionResult)> = JoinSet::new();
 
     loop {
@@ -194,11 +192,11 @@ where
 
 /// Resumes a `FunctionCall` in a blocking thread with an `ExtFunctionResult`.
 async fn spawn_resume_fn<T: ResourceTracker + Send + 'static>(
-    call: ::monty::FunctionCall<T>,
+    call: FunctionCall<T>,
     result: impl Into<ExtFunctionResult> + Send + 'static,
     print_callback: Option<Py<PyAny>>,
 ) -> PyResult<RunProgress<T>> {
-    tokio::task::spawn_blocking(move || with_print_writer(print_callback, |writer| call.resume(result, writer)))
+    spawn_blocking(move || with_print_writer(print_callback, |writer| call.resume(result, writer)))
         .await
         .map_err(join_error_to_py)?
         .map_err(|e| Python::attach(|py| MontyError::new_err(py, e)))
@@ -206,11 +204,11 @@ async fn spawn_resume_fn<T: ResourceTracker + Send + 'static>(
 
 /// Resumes an `OsCall` in a blocking thread.
 async fn spawn_resume_os<T: ResourceTracker + Send + 'static>(
-    call: ::monty::OsCall<T>,
+    call: OsCall<T>,
     result: impl Into<ExtFunctionResult> + Send + 'static,
     print_callback: Option<Py<PyAny>>,
 ) -> PyResult<RunProgress<T>> {
-    tokio::task::spawn_blocking(move || with_print_writer(print_callback, |writer| call.resume(result, writer)))
+    spawn_blocking(move || with_print_writer(print_callback, |writer| call.resume(result, writer)))
         .await
         .map_err(join_error_to_py)?
         .map_err(|e| Python::attach(|py| MontyError::new_err(py, e)))
@@ -218,11 +216,11 @@ async fn spawn_resume_os<T: ResourceTracker + Send + 'static>(
 
 /// Resumes a `NameLookup` in a blocking thread.
 async fn spawn_resume_lookup<T: ResourceTracker + Send + 'static>(
-    lookup: ::monty::NameLookup<T>,
+    lookup: NameLookup<T>,
     result: NameLookupResult,
     print_callback: Option<Py<PyAny>>,
 ) -> PyResult<RunProgress<T>> {
-    tokio::task::spawn_blocking(move || with_print_writer(print_callback, |writer| lookup.resume(result, writer)))
+    spawn_blocking(move || with_print_writer(print_callback, |writer| lookup.resume(result, writer)))
         .await
         .map_err(join_error_to_py)?
         .map_err(|e| Python::attach(|py| MontyError::new_err(py, e)))
@@ -230,11 +228,11 @@ async fn spawn_resume_lookup<T: ResourceTracker + Send + 'static>(
 
 /// Resumes a `ResolveFutures` in a blocking thread with completed task results.
 async fn spawn_resume_futures<T: ResourceTracker + Send + 'static>(
-    state: ::monty::ResolveFutures<T>,
+    state: ResolveFutures<T>,
     results: Vec<(u32, ExtFunctionResult)>,
     print_callback: Option<Py<PyAny>>,
 ) -> PyResult<RunProgress<T>> {
-    tokio::task::spawn_blocking(move || with_print_writer(print_callback, |writer| state.resume(results, writer)))
+    spawn_blocking(move || with_print_writer(print_callback, |writer| state.resume(results, writer)))
         .await
         .map_err(join_error_to_py)?
         .map_err(|e| Python::attach(|py| MontyError::new_err(py, e)))
@@ -246,7 +244,7 @@ async fn spawn_resume_futures<T: ResourceTracker + Send + 'static>(
 
 /// Resumes a `ReplFunctionCall` in a blocking thread.
 async fn spawn_resume_repl_fn<T: ResourceTracker + Send + 'static>(
-    call: ::monty::ReplFunctionCall<T>,
+    call: ReplFunctionCall<T>,
     result: impl Into<ExtFunctionResult> + Send + 'static,
     print_callback: Option<Py<PyAny>>,
     repl_owner: &Py<PyMontyRepl>,
@@ -254,7 +252,7 @@ async fn spawn_resume_repl_fn<T: ResourceTracker + Send + 'static>(
 where
     EitherRepl: FromCoreRepl<T>,
 {
-    tokio::task::spawn_blocking(move || with_print_writer(print_callback, |writer| call.resume(result, writer)))
+    spawn_blocking(move || with_print_writer(print_callback, |writer| call.resume(result, writer)))
         .await
         .map_err(join_error_to_py)?
         .map_err(|e| restore_repl_from_error(repl_owner, *e))
@@ -262,7 +260,7 @@ where
 
 /// Resumes a `ReplOsCall` in a blocking thread.
 async fn spawn_resume_repl_os<T: ResourceTracker + Send + 'static>(
-    call: ::monty::ReplOsCall<T>,
+    call: ReplOsCall<T>,
     result: impl Into<ExtFunctionResult> + Send + 'static,
     print_callback: Option<Py<PyAny>>,
     repl_owner: &Py<PyMontyRepl>,
@@ -270,7 +268,7 @@ async fn spawn_resume_repl_os<T: ResourceTracker + Send + 'static>(
 where
     EitherRepl: FromCoreRepl<T>,
 {
-    tokio::task::spawn_blocking(move || with_print_writer(print_callback, |writer| call.resume(result, writer)))
+    spawn_blocking(move || with_print_writer(print_callback, |writer| call.resume(result, writer)))
         .await
         .map_err(join_error_to_py)?
         .map_err(|e| restore_repl_from_error(repl_owner, *e))
@@ -278,7 +276,7 @@ where
 
 /// Resumes a `ReplNameLookup` in a blocking thread.
 async fn spawn_resume_repl_lookup<T: ResourceTracker + Send + 'static>(
-    lookup: ::monty::ReplNameLookup<T>,
+    lookup: ReplNameLookup<T>,
     result: NameLookupResult,
     print_callback: Option<Py<PyAny>>,
     repl_owner: &Py<PyMontyRepl>,
@@ -286,7 +284,7 @@ async fn spawn_resume_repl_lookup<T: ResourceTracker + Send + 'static>(
 where
     EitherRepl: FromCoreRepl<T>,
 {
-    tokio::task::spawn_blocking(move || with_print_writer(print_callback, |writer| lookup.resume(result, writer)))
+    spawn_blocking(move || with_print_writer(print_callback, |writer| lookup.resume(result, writer)))
         .await
         .map_err(join_error_to_py)?
         .map_err(|e| restore_repl_from_error(repl_owner, *e))
@@ -294,7 +292,7 @@ where
 
 /// Resumes a `ReplResolveFutures` in a blocking thread.
 async fn spawn_resume_repl_futures<T: ResourceTracker + Send + 'static>(
-    state: ::monty::ReplResolveFutures<T>,
+    state: ReplResolveFutures<T>,
     results: Vec<(u32, ExtFunctionResult)>,
     print_callback: Option<Py<PyAny>>,
     repl_owner: &Py<PyMontyRepl>,
@@ -302,7 +300,7 @@ async fn spawn_resume_repl_futures<T: ResourceTracker + Send + 'static>(
 where
     EitherRepl: FromCoreRepl<T>,
 {
-    tokio::task::spawn_blocking(move || with_print_writer(print_callback, |writer| state.resume(results, writer)))
+    spawn_blocking(move || with_print_writer(print_callback, |writer| state.resume(results, writer)))
         .await
         .map_err(join_error_to_py)?
         .map_err(|e| restore_repl_from_error(repl_owner, *e))
@@ -462,7 +460,7 @@ async fn wait_for_futures(
 
 /// Converts a `tokio::task::JoinError` to a `PyErr`.
 #[expect(clippy::needless_pass_by_value)]
-fn join_error_to_py(err: tokio::task::JoinError) -> PyErr {
+fn join_error_to_py(err: JoinError) -> PyErr {
     PyRuntimeError::new_err(format!("Async task failed: {err}"))
 }
 
@@ -472,7 +470,7 @@ fn clone_py_opt(opt: Option<&Py<PyAny>>) -> Option<Py<PyAny>> {
 }
 
 /// Restores the REPL session from a `ReplStartError` and returns a `PyErr`.
-fn restore_repl_from_error<T: ResourceTracker>(repl_owner: &Py<PyMontyRepl>, err: ::monty::ReplStartError<T>) -> PyErr
+fn restore_repl_from_error<T: ResourceTracker>(repl_owner: &Py<PyMontyRepl>, err: ReplStartError<T>) -> PyErr
 where
     EitherRepl: FromCoreRepl<T>,
 {
