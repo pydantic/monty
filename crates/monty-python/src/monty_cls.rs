@@ -217,6 +217,63 @@ impl PyMonty {
         )
     }
 
+    /// Runs the code asynchronously, supporting async external functions.
+    ///
+    /// Returns a Python awaitable that drives the async dispatch loop.
+    /// Unlike `run()`, this handles external functions that return coroutines
+    /// by awaiting them on the Python event loop. VM resume calls are offloaded
+    /// to a thread pool via `spawn_blocking` to avoid blocking the event loop.
+    ///
+    /// # Returns
+    /// A Python coroutine that resolves to the result of the last expression.
+    ///
+    /// # Raises
+    /// Various Python exceptions matching what the code would raise.
+    #[pyo3(signature = (*, inputs=None, limits=None, external_functions=None, print_callback=None, os=None))]
+    fn run_async<'py>(
+        &self,
+        py: Python<'py>,
+        inputs: Option<&Bound<'_, PyDict>>,
+        limits: Option<&Bound<'_, PyDict>>,
+        external_functions: Option<&Bound<'_, PyDict>>,
+        print_callback: Option<Py<PyAny>>,
+        os: Option<Py<PyAny>>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let input_values = self.extract_input_values(inputs, &self.dc_registry)?;
+        let dc_registry = self.dc_registry.clone_ref(py);
+        let ext_fns = external_functions.map(|d| d.clone().unbind());
+        let runner = self.runner.clone();
+
+        // Build print writer for the initial start() call (runs synchronously with GIL released)
+        let mut print_cb_obj;
+        let print_writer = match &print_callback {
+            Some(cb) => {
+                print_cb_obj = CallbackStringPrint::from_py(cb.clone_ref(py));
+                PrintWriter::Callback(&mut print_cb_obj)
+            }
+            None => PrintWriter::Stdout,
+        };
+        let print_writer = SendWrapper::new(print_writer);
+
+        if let Some(limits) = limits {
+            let tracker = PySignalTracker::new(LimitedTracker::new(extract_limits(limits)?));
+            let progress = py
+                .detach(|| runner.start(input_values, tracker, print_writer.take()))
+                .map_err(|e| MontyError::new_err(py, e))?;
+            pyo3_async_runtimes::tokio::future_into_py(py, async move {
+                crate::async_dispatch::dispatch_loop_run(progress, ext_fns, os, dc_registry, print_callback).await
+            })
+        } else {
+            let tracker = PySignalTracker::new(NoLimitTracker);
+            let progress = py
+                .detach(|| runner.start(input_values, tracker, print_writer.take()))
+                .map_err(|e| MontyError::new_err(py, e))?;
+            pyo3_async_runtimes::tokio::future_into_py(py, async move {
+                crate::async_dispatch::dispatch_loop_run(progress, ext_fns, os, dc_registry, print_callback).await
+            })
+        }
+    }
+
     /// Serializes the Monty instance to a binary format.
     ///
     /// The serialized data can be stored and later restored with `Monty.load()`.

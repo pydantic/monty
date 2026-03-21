@@ -103,8 +103,8 @@ async def test_run_monty_async_function_not_found():
     with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
         await run_monty_async(m, external_functions={})
     inner = exc_info.value.exception()
-    assert isinstance(inner, LookupError)
-    assert inner.args[0] == snapshot("Unable to find 'missing_func' in external functions dict")
+    assert isinstance(inner, NameError)
+    assert inner.args[0] == snapshot("name 'missing_func' is not defined")
 
 
 async def test_run_monty_async_sync_exception():
@@ -313,7 +313,7 @@ Path('/test.txt').exists()
     inner = exc_info.value.exception()
     assert isinstance(inner, RuntimeError)
     assert 'OS function' in inner.args[0]
-    assert 'no os handler provided' in inner.args[0]
+    assert 'not implemented' in inner.args[0]
 
 
 async def test_run_monty_async_nested_gather_with_external_functions():
@@ -545,8 +545,8 @@ async def test_run_repl_async_function_not_found():
     with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
         await run_repl_async(repl, 'missing_func()', external_functions={})
     inner = exc_info.value.exception()
-    assert isinstance(inner, LookupError)
-    assert inner.args[0] == snapshot("Unable to find 'missing_func' in external functions dict")
+    assert isinstance(inner, NameError)
+    assert inner.args[0] == snapshot("name 'missing_func' is not defined")
 
 
 async def test_run_repl_async_error_preserves_state():

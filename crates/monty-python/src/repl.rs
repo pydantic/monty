@@ -194,6 +194,84 @@ impl PyMontyRepl {
         }
     }
 
+    /// Feeds and executes a snippet asynchronously, supporting async external functions.
+    ///
+    /// Returns a Python awaitable that drives the async dispatch loop.
+    /// Unlike `feed_run()`, this handles external functions that return coroutines
+    /// by awaiting them on the Python event loop. VM resume calls are offloaded
+    /// to a thread pool via `spawn_blocking` to avoid blocking the event loop.
+    ///
+    /// # Returns
+    /// A Python coroutine that resolves to the result of the snippet.
+    ///
+    /// # Raises
+    /// Various Python exceptions matching what the code would raise.
+    #[pyo3(signature = (code, *, inputs=None, external_functions=None, print_callback=None, os=None))]
+    fn run_async<'py>(
+        slf: &Bound<'py, Self>,
+        py: Python<'py>,
+        code: &str,
+        inputs: Option<&Bound<'_, PyDict>>,
+        external_functions: Option<&Bound<'_, PyDict>>,
+        print_callback: Option<Py<PyAny>>,
+        os: Option<Py<PyAny>>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let this = slf.get();
+        let input_values = extract_repl_inputs(inputs, &this.dc_registry)?;
+        let dc_registry = this.dc_registry.clone_ref(py);
+        let ext_fns = external_functions.map(|d| d.clone().unbind());
+        let repl_owner: Py<Self> = slf.clone().unbind();
+
+        let repl = this.take_repl()?;
+
+        // Build print writer for the initial feed_start() call
+        let mut print_cb_obj;
+        let print_writer = match &print_callback {
+            Some(cb) => {
+                print_cb_obj = CallbackStringPrint::from_py(cb.clone_ref(py));
+                PrintWriter::Callback(&mut print_cb_obj)
+            }
+            None => PrintWriter::Stdout,
+        };
+        let mut print_output = SendWrapper::new(print_writer);
+        let code_owned = code.to_owned();
+
+        match repl {
+            EitherRepl::NoLimit(repl) => {
+                let progress = py
+                    .detach(|| repl.feed_start(&code_owned, input_values, print_output.reborrow()))
+                    .map_err(|e| this.restore_repl_from_start_error(py, *e))?;
+                pyo3_async_runtimes::tokio::future_into_py(py, async move {
+                    crate::async_dispatch::dispatch_loop_repl(
+                        progress,
+                        repl_owner,
+                        ext_fns,
+                        os,
+                        dc_registry,
+                        print_callback,
+                    )
+                    .await
+                })
+            }
+            EitherRepl::Limited(repl) => {
+                let progress = py
+                    .detach(|| repl.feed_start(&code_owned, input_values, print_output.reborrow()))
+                    .map_err(|e| this.restore_repl_from_start_error(py, *e))?;
+                pyo3_async_runtimes::tokio::future_into_py(py, async move {
+                    crate::async_dispatch::dispatch_loop_repl(
+                        progress,
+                        repl_owner,
+                        ext_fns,
+                        os,
+                        dc_registry,
+                        print_callback,
+                    )
+                    .await
+                })
+            }
+        }
+    }
+
     /// Serializes this REPL session to bytes.
     fn dump<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
         #[derive(serde::Serialize)]

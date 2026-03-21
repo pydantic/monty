@@ -4,6 +4,7 @@
 //! sandboxed Python code with configurable resource limits and external
 //! function callbacks.
 
+mod async_dispatch;
 mod convert;
 mod dataclass;
 mod exceptions;

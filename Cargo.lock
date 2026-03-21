@@ -2137,10 +2137,12 @@ dependencies = [
  "num-bigint",
  "postcard",
  "pyo3",
+ "pyo3-async-runtimes",
  "pyo3-build-config",
  "send_wrapper",
  "serde",
  "sha2",
+ "tokio",
 ]
 
 [[package]]
@@ -2158,6 +2160,20 @@ dependencies = [
  "pyo3-build-config",
  "pyo3-ffi",
  "pyo3-macros",
+]
+
+[[package]]
+name = "pyo3-async-runtimes"
+version = "0.28.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9e7364a95bf00e8377bbf9b0f09d7ff9715a29d8fcf93b47d1a967363b973178"
+dependencies = [
+ "futures-channel",
+ "futures-util",
+ "once_cell",
+ "pin-project-lite",
+ "pyo3",
+ "tokio",
 ]
 
 [[package]]
@@ -3131,6 +3147,15 @@ name = "tinyvec_macros"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1f3ccbac311fea05f86f61904b462b55fb3df8837a366dfc601a0161d0532f20"
+
+[[package]]
+name = "tokio"
+version = "1.50.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "27ad5e34374e03cfffefc301becb44e9dc3c17584f414349ebe29ed26661822d"
+dependencies = [
+ "pin-project-lite",
+]
 
 [[package]]
 name = "tracing"
