@@ -1180,3 +1180,99 @@ async def test_repl_llm_syntax_error_then_fix():
     # Snippet 3: state preserved, LLM fixes the code
     result = await repl.feed_run_async('y = add(x, 5)\ny', external_functions=ext)
     assert result == snapshot(15)
+
+
+# === Tests for run_async with resource limits ===
+
+
+async def test_run_monty_async_with_limits():
+    """run_async works with resource limits."""
+    m = pydantic_monty.Monty('x + 1', inputs=['x'])
+    result = await m.run_async(inputs={'x': 41}, limits={'max_duration_secs': 5.0})
+    assert result == snapshot(42)
+
+
+async def test_run_monty_async_limits_exceeded():
+    """run_async propagates resource limit errors through spawn_blocking."""
+    code = """\
+result = []
+for i in range(10000):
+    result.append([i])
+len(result)
+"""
+    m = pydantic_monty.Monty(code)
+
+    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
+        await m.run_async(limits={'max_allocations': 5})
+    assert isinstance(exc_info.value.exception(), MemoryError)
+
+
+# === Tests for concurrent REPL access ===
+
+
+async def test_run_repl_async_concurrent_raises():
+    """Two concurrent feed_run_async on the same REPL raises an error."""
+    repl = pydantic_monty.MontyRepl()
+
+    async def slow_func():
+        await asyncio.sleep(0.1)
+        return 42
+
+    ext = {'slow_func': slow_func}
+
+    # Wrap in a coroutine so asyncio.create_task works with the pyo3 Future
+    async def run_first():
+        return await repl.feed_run_async('await slow_func()', external_functions=ext)
+
+    # Start first call (don't await yet)
+    task1 = asyncio.create_task(run_first())
+
+    # Give task1 a moment to start and take the REPL
+    await asyncio.sleep(0.01)
+
+    # Second call should fail because REPL is taken
+    with pytest.raises(RuntimeError, match='currently executing'):
+        await repl.feed_run_async('1 + 1')
+
+    # First call should complete successfully
+    result = await task1
+    assert result == snapshot(42)
+
+
+# === Tests for async error + REPL restoration ===
+
+
+async def test_run_repl_async_error_restores_repl_on_async_failure():
+    """REPL state is preserved when an async coroutine raises an exception."""
+    repl = pydantic_monty.MontyRepl()
+    await repl.feed_run_async('x = 100')
+
+    async def failing_async():
+        await asyncio.sleep(0.001)
+        raise RuntimeError('async kaboom')
+
+    with pytest.raises(pydantic_monty.MontyRuntimeError):
+        await repl.feed_run_async('await failing_async()', external_functions={'failing_async': failing_async})
+
+    # REPL should still be usable and state should be preserved
+    result = await repl.feed_run_async('x')
+    assert result == snapshot(100)
+
+
+# === Tests for os callable validation ===
+
+
+async def test_run_monty_async_os_not_callable():
+    """run_async raises TypeError when os is not callable."""
+    m = pydantic_monty.Monty('1 + 1')
+
+    with pytest.raises(TypeError, match='not callable'):
+        await m.run_async(os='not a callable')  # pyright: ignore[reportArgumentType]
+
+
+async def test_run_repl_async_os_not_callable():
+    """feed_run_async raises TypeError when os is not callable."""
+    repl = pydantic_monty.MontyRepl()
+
+    with pytest.raises(TypeError, match='not callable'):
+        await repl.feed_run_async('1 + 1', os=42)  # pyright: ignore[reportArgumentType]

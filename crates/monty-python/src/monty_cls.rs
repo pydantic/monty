@@ -239,6 +239,16 @@ impl PyMonty {
         print_callback: Option<Py<PyAny>>,
         os: Option<Py<PyAny>>,
     ) -> PyResult<Bound<'py, PyAny>> {
+        if let Some(ref os_cb) = os
+            && !os_cb.bind(py).is_callable()
+        {
+            let msg = format!(
+                "TypeError: '{}' object is not callable",
+                os_cb.bind(py).get_type().name()?
+            );
+            return Err(PyTypeError::new_err(msg));
+        }
+
         let input_values = self.extract_input_values(inputs, &self.dc_registry)?;
         let dc_registry = self.dc_registry.clone_ref(py);
         let ext_fns = external_functions.map(|d| d.clone().unbind());

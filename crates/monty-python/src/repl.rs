@@ -7,7 +7,7 @@ use ::monty::{
 };
 use monty::ExcType;
 use pyo3::{
-    exceptions::{PyRuntimeError, PyValueError},
+    exceptions::{PyRuntimeError, PyTypeError, PyValueError},
     prelude::*,
     types::{PyBytes, PyDict, PyList, PyTuple},
 };
@@ -216,6 +216,14 @@ impl PyMontyRepl {
         print_callback: Option<Py<PyAny>>,
         os: Option<Py<PyAny>>,
     ) -> PyResult<Bound<'py, PyAny>> {
+        if let Some(ref os_cb) = os
+            && !os_cb.bind(py).is_callable()
+        {
+            let t = os_cb.bind(py).get_type().name()?;
+            let msg = format!("TypeError: '{t}' object is not callable");
+            return Err(PyTypeError::new_err(msg));
+        }
+
         let this = slf.get();
         let input_values = extract_repl_inputs(inputs, &this.dc_registry)?;
         let dc_registry = this.dc_registry.clone_ref(py);

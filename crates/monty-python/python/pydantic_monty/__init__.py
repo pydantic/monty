@@ -75,7 +75,7 @@ async def run_monty_async(
     )
 
 
-@deprecated('Use MontyRepl.run_async() instead')
+@deprecated('Use MontyRepl.feed_run_async() instead')
 async def run_repl_async(
     repl: MontyRepl,
     code: str,

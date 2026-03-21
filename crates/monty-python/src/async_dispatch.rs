@@ -9,9 +9,8 @@
 //! blocking the Python event loop.
 
 use monty::{
-    ExcType, ExtFunctionResult, FunctionCall, MontyException, MontyObject, NameLookup, NameLookupResult, OsCall,
-    OsFunction, PrintWriter, ReplFunctionCall, ReplNameLookup, ReplOsCall, ReplProgress, ReplResolveFutures,
-    ReplStartError, ResolveFutures, ResourceTracker, RunProgress,
+    ExcType, ExtFunctionResult, MontyException, MontyObject, MontyRepl, NameLookupResult, OsFunction, PrintWriter,
+    ReplProgress, ReplStartError, ResourceTracker, RunProgress,
 };
 use pyo3::{
     exceptions::PyRuntimeError,
@@ -31,6 +30,20 @@ use crate::{
     monty_cls::CallbackStringPrint,
     repl::{EitherRepl, FromCoreRepl, PyMontyRepl},
 };
+
+/// Resumes a snapshot in a blocking thread via `spawn_blocking`.
+///
+/// Moves the snapshot and its resume input into a blocking task, creates
+/// a `PrintWriter` from the optional callback, and calls `resume()`.
+/// Returns the raw result — callers handle error mapping (which differs
+/// between Run and REPL paths).
+macro_rules! spawn_resume {
+    ($snapshot:expr, $input:expr, $print_cb:expr) => {
+        spawn_blocking(move || with_print_writer($print_cb, |writer| $snapshot.resume($input, writer)))
+            .await
+            .map_err(join_error_to_py)?
+    };
+}
 
 /// Drives the async dispatch loop for a non-REPL `Monty.run_async()` call.
 ///
@@ -57,60 +70,59 @@ pub(crate) async fn dispatch_loop_run<T: ResourceTracker + Send + 'static>(
                 return Python::attach(|py| monty_to_py(py, &result, &dc_registry));
             }
             RunProgress::FunctionCall(call) => {
-                let call_result = Python::attach(|py| {
-                    if call.method_call {
-                        dispatch_method_call_or_coroutine(
-                            py,
-                            &call.function_name,
-                            &call.args,
-                            &call.kwargs,
-                            &dc_registry,
-                        )
-                    } else if let Some(ref ext_fns) = external_functions {
-                        let ext_fns = ext_fns.bind(py);
-                        let registry = ExternalFunctionRegistry::new(py, ext_fns, &dc_registry);
-                        registry.call_or_coroutine(&call.function_name, &call.args, &call.kwargs)
-                    } else {
-                        CallResult::Sync(ExtFunctionResult::NotFound(call.function_name.clone()))
-                    }
-                });
+                let call_result = dispatch_function_call(
+                    &call.function_name,
+                    call.method_call,
+                    &call.args,
+                    &call.kwargs,
+                    external_functions.as_ref(),
+                    &dc_registry,
+                );
 
                 match call_result {
                     CallResult::Sync(result) => {
                         let print_cb = clone_py_opt(print_callback.as_ref());
-                        progress = spawn_resume_fn(call, result, print_cb).await?;
+                        progress = spawn_resume!(call, result, print_cb)
+                            .map_err(|e| Python::attach(|py| MontyError::new_err(py, e)))?;
                     }
                     CallResult::Coroutine(coro) => {
                         let call_id = call.call_id;
                         spawn_coroutine_task(&mut join_set, call_id, coro, &dc_registry)?;
                         let print_cb = clone_py_opt(print_callback.as_ref());
-                        progress = spawn_resume_fn(call, ExtFunctionResult::Future(call_id), print_cb).await?;
+                        progress = spawn_resume!(call, ExtFunctionResult::Future(call_id), print_cb)
+                            .map_err(|e| Python::attach(|py| MontyError::new_err(py, e)))?;
                     }
                 }
             }
             RunProgress::OsCall(call) => {
                 let result = dispatch_os_call_py(call.function, &call.args, &call.kwargs, os.as_ref(), &dc_registry);
                 let print_cb = clone_py_opt(print_callback.as_ref());
-                progress = spawn_resume_os(call, result, print_cb).await?;
+                progress = spawn_resume!(call, result, print_cb)
+                    .map_err(|e| Python::attach(|py| MontyError::new_err(py, e)))?;
             }
             RunProgress::NameLookup(lookup) => {
                 let result = resolve_name_lookup(&lookup.name, external_functions.as_ref());
                 let print_cb = clone_py_opt(print_callback.as_ref());
-                progress = spawn_resume_lookup(lookup, result, print_cb).await?;
+                progress = spawn_resume!(lookup, result, print_cb)
+                    .map_err(|e| Python::attach(|py| MontyError::new_err(py, e)))?;
             }
             RunProgress::ResolveFutures(state) => {
                 let results = wait_for_futures(&mut join_set, state.pending_call_ids()).await?;
                 let print_cb = clone_py_opt(print_callback.as_ref());
-                progress = spawn_resume_futures(state, results, print_cb).await?;
+                progress = spawn_resume!(state, results, print_cb)
+                    .map_err(|e| Python::attach(|py| MontyError::new_err(py, e)))?;
             }
         }
     }
 }
 
-/// Drives the async dispatch loop for a REPL `MontyRepl.run_async()` call.
+/// Drives the async dispatch loop for a REPL `MontyRepl.feed_run_async()` call.
 ///
 /// Same as `dispatch_loop_run` but works with `ReplProgress` and restores the
 /// REPL session when execution completes or on error.
+///
+/// All error paths must restore the REPL via `restore_repl` or `restore_repl_from_error`
+/// before returning, otherwise the REPL session is permanently lost.
 pub(crate) async fn dispatch_loop_repl<T: ResourceTracker + Send + 'static>(
     mut progress: ReplProgress<T>,
     repl_owner: Py<PyMontyRepl>,
@@ -127,183 +139,66 @@ where
     loop {
         match progress {
             ReplProgress::Complete { repl, value } => {
-                Python::attach(|py| {
+                return Python::attach(|py| {
                     let owner = repl_owner.bind(py).get();
                     owner.put_repl(EitherRepl::from_core(repl));
+                    monty_to_py(py, &value, &dc_registry)
                 });
-                return Python::attach(|py| monty_to_py(py, &value, &dc_registry));
             }
             ReplProgress::FunctionCall(call) => {
-                let call_result = Python::attach(|py| {
-                    if call.method_call {
-                        dispatch_method_call_or_coroutine(
-                            py,
-                            &call.function_name,
-                            &call.args,
-                            &call.kwargs,
-                            &dc_registry,
-                        )
-                    } else if let Some(ref ext_fns) = external_functions {
-                        let ext_fns = ext_fns.bind(py);
-                        let registry = ExternalFunctionRegistry::new(py, ext_fns, &dc_registry);
-                        registry.call_or_coroutine(&call.function_name, &call.args, &call.kwargs)
-                    } else {
-                        CallResult::Sync(ExtFunctionResult::NotFound(call.function_name.clone()))
-                    }
-                });
+                let call_result = dispatch_function_call(
+                    &call.function_name,
+                    call.method_call,
+                    &call.args,
+                    &call.kwargs,
+                    external_functions.as_ref(),
+                    &dc_registry,
+                );
 
                 match call_result {
                     CallResult::Sync(result) => {
                         let print_cb = clone_py_opt(print_callback.as_ref());
-                        progress = spawn_resume_repl_fn(call, result, print_cb, &repl_owner).await?;
+                        progress = spawn_resume!(call, result, print_cb)
+                            .map_err(|e| restore_repl_from_error(&repl_owner, *e))?;
                     }
                     CallResult::Coroutine(coro) => {
                         let call_id = call.call_id;
-                        spawn_coroutine_task(&mut join_set, call_id, coro, &dc_registry)?;
+                        if let Err(e) = spawn_coroutine_task(&mut join_set, call_id, coro, &dc_registry) {
+                            restore_repl(&repl_owner, call.into_repl());
+                            return Err(e);
+                        }
                         let print_cb = clone_py_opt(print_callback.as_ref());
-                        progress =
-                            spawn_resume_repl_fn(call, ExtFunctionResult::Future(call_id), print_cb, &repl_owner)
-                                .await?;
+                        progress = spawn_resume!(call, ExtFunctionResult::Future(call_id), print_cb)
+                            .map_err(|e| restore_repl_from_error(&repl_owner, *e))?;
                     }
                 }
             }
             ReplProgress::OsCall(call) => {
                 let result = dispatch_os_call_py(call.function, &call.args, &call.kwargs, os.as_ref(), &dc_registry);
                 let print_cb = clone_py_opt(print_callback.as_ref());
-                progress = spawn_resume_repl_os(call, result, print_cb, &repl_owner).await?;
+                progress =
+                    spawn_resume!(call, result, print_cb).map_err(|e| restore_repl_from_error(&repl_owner, *e))?;
             }
             ReplProgress::NameLookup(lookup) => {
                 let result = resolve_name_lookup(&lookup.name, external_functions.as_ref());
                 let print_cb = clone_py_opt(print_callback.as_ref());
-                progress = spawn_resume_repl_lookup(lookup, result, print_cb, &repl_owner).await?;
+                progress =
+                    spawn_resume!(lookup, result, print_cb).map_err(|e| restore_repl_from_error(&repl_owner, *e))?;
             }
             ReplProgress::ResolveFutures(state) => {
-                let results = wait_for_futures(&mut join_set, state.pending_call_ids()).await?;
+                let results = match wait_for_futures(&mut join_set, state.pending_call_ids()).await {
+                    Ok(r) => r,
+                    Err(e) => {
+                        restore_repl(&repl_owner, state.into_repl());
+                        return Err(e);
+                    }
+                };
                 let print_cb = clone_py_opt(print_callback.as_ref());
-                progress = spawn_resume_repl_futures(state, results, print_cb, &repl_owner).await?;
+                progress =
+                    spawn_resume!(state, results, print_cb).map_err(|e| restore_repl_from_error(&repl_owner, *e))?;
             }
         }
     }
-}
-
-// ---------------------------------------------------------------------------
-// spawn_blocking helpers for non-REPL RunProgress
-// ---------------------------------------------------------------------------
-
-/// Resumes a `FunctionCall` in a blocking thread with an `ExtFunctionResult`.
-async fn spawn_resume_fn<T: ResourceTracker + Send + 'static>(
-    call: FunctionCall<T>,
-    result: impl Into<ExtFunctionResult> + Send + 'static,
-    print_callback: Option<Py<PyAny>>,
-) -> PyResult<RunProgress<T>> {
-    spawn_blocking(move || with_print_writer(print_callback, |writer| call.resume(result, writer)))
-        .await
-        .map_err(join_error_to_py)?
-        .map_err(|e| Python::attach(|py| MontyError::new_err(py, e)))
-}
-
-/// Resumes an `OsCall` in a blocking thread.
-async fn spawn_resume_os<T: ResourceTracker + Send + 'static>(
-    call: OsCall<T>,
-    result: impl Into<ExtFunctionResult> + Send + 'static,
-    print_callback: Option<Py<PyAny>>,
-) -> PyResult<RunProgress<T>> {
-    spawn_blocking(move || with_print_writer(print_callback, |writer| call.resume(result, writer)))
-        .await
-        .map_err(join_error_to_py)?
-        .map_err(|e| Python::attach(|py| MontyError::new_err(py, e)))
-}
-
-/// Resumes a `NameLookup` in a blocking thread.
-async fn spawn_resume_lookup<T: ResourceTracker + Send + 'static>(
-    lookup: NameLookup<T>,
-    result: NameLookupResult,
-    print_callback: Option<Py<PyAny>>,
-) -> PyResult<RunProgress<T>> {
-    spawn_blocking(move || with_print_writer(print_callback, |writer| lookup.resume(result, writer)))
-        .await
-        .map_err(join_error_to_py)?
-        .map_err(|e| Python::attach(|py| MontyError::new_err(py, e)))
-}
-
-/// Resumes a `ResolveFutures` in a blocking thread with completed task results.
-async fn spawn_resume_futures<T: ResourceTracker + Send + 'static>(
-    state: ResolveFutures<T>,
-    results: Vec<(u32, ExtFunctionResult)>,
-    print_callback: Option<Py<PyAny>>,
-) -> PyResult<RunProgress<T>> {
-    spawn_blocking(move || with_print_writer(print_callback, |writer| state.resume(results, writer)))
-        .await
-        .map_err(join_error_to_py)?
-        .map_err(|e| Python::attach(|py| MontyError::new_err(py, e)))
-}
-
-// ---------------------------------------------------------------------------
-// spawn_blocking helpers for REPL ReplProgress
-// ---------------------------------------------------------------------------
-
-/// Resumes a `ReplFunctionCall` in a blocking thread.
-async fn spawn_resume_repl_fn<T: ResourceTracker + Send + 'static>(
-    call: ReplFunctionCall<T>,
-    result: impl Into<ExtFunctionResult> + Send + 'static,
-    print_callback: Option<Py<PyAny>>,
-    repl_owner: &Py<PyMontyRepl>,
-) -> PyResult<ReplProgress<T>>
-where
-    EitherRepl: FromCoreRepl<T>,
-{
-    spawn_blocking(move || with_print_writer(print_callback, |writer| call.resume(result, writer)))
-        .await
-        .map_err(join_error_to_py)?
-        .map_err(|e| restore_repl_from_error(repl_owner, *e))
-}
-
-/// Resumes a `ReplOsCall` in a blocking thread.
-async fn spawn_resume_repl_os<T: ResourceTracker + Send + 'static>(
-    call: ReplOsCall<T>,
-    result: impl Into<ExtFunctionResult> + Send + 'static,
-    print_callback: Option<Py<PyAny>>,
-    repl_owner: &Py<PyMontyRepl>,
-) -> PyResult<ReplProgress<T>>
-where
-    EitherRepl: FromCoreRepl<T>,
-{
-    spawn_blocking(move || with_print_writer(print_callback, |writer| call.resume(result, writer)))
-        .await
-        .map_err(join_error_to_py)?
-        .map_err(|e| restore_repl_from_error(repl_owner, *e))
-}
-
-/// Resumes a `ReplNameLookup` in a blocking thread.
-async fn spawn_resume_repl_lookup<T: ResourceTracker + Send + 'static>(
-    lookup: ReplNameLookup<T>,
-    result: NameLookupResult,
-    print_callback: Option<Py<PyAny>>,
-    repl_owner: &Py<PyMontyRepl>,
-) -> PyResult<ReplProgress<T>>
-where
-    EitherRepl: FromCoreRepl<T>,
-{
-    spawn_blocking(move || with_print_writer(print_callback, |writer| lookup.resume(result, writer)))
-        .await
-        .map_err(join_error_to_py)?
-        .map_err(|e| restore_repl_from_error(repl_owner, *e))
-}
-
-/// Resumes a `ReplResolveFutures` in a blocking thread.
-async fn spawn_resume_repl_futures<T: ResourceTracker + Send + 'static>(
-    state: ReplResolveFutures<T>,
-    results: Vec<(u32, ExtFunctionResult)>,
-    print_callback: Option<Py<PyAny>>,
-    repl_owner: &Py<PyMontyRepl>,
-) -> PyResult<ReplProgress<T>>
-where
-    EitherRepl: FromCoreRepl<T>,
-{
-    spawn_blocking(move || with_print_writer(print_callback, |writer| state.resume(results, writer)))
-        .await
-        .map_err(join_error_to_py)?
-        .map_err(|e| restore_repl_from_error(repl_owner, *e))
 }
 
 // ---------------------------------------------------------------------------
@@ -326,6 +221,32 @@ fn with_print_writer<R>(print_callback: Option<Py<PyAny>>, f: impl FnOnce(PrintW
         }
         None => f(PrintWriter::Stdout),
     }
+}
+
+/// Dispatches a function call to either a dataclass method or an external function,
+/// detecting coroutines for async dispatch.
+///
+/// Acquires the GIL to call the Python function. If the result is a coroutine,
+/// returns `CallResult::Coroutine` so the caller can spawn it as a tokio task.
+fn dispatch_function_call(
+    function_name: &str,
+    method_call: bool,
+    args: &[MontyObject],
+    kwargs: &[(MontyObject, MontyObject)],
+    external_functions: Option<&Py<PyDict>>,
+    dc_registry: &DcRegistry,
+) -> CallResult {
+    Python::attach(|py| {
+        if method_call {
+            dispatch_method_call_or_coroutine(py, function_name, args, kwargs, dc_registry)
+        } else if let Some(ext_fns) = external_functions {
+            let ext_fns = ext_fns.bind(py);
+            let registry = ExternalFunctionRegistry::new(py, ext_fns, dc_registry);
+            registry.call_or_coroutine(function_name, args, kwargs)
+        } else {
+            CallResult::Sync(ExtFunctionResult::NotFound(function_name.to_owned()))
+        }
+    })
 }
 
 /// Dispatches an OS function call to the Python OS handler.
@@ -469,7 +390,25 @@ fn clone_py_opt(opt: Option<&Py<PyAny>>) -> Option<Py<PyAny>> {
     opt.map(|v| Python::attach(|py| v.clone_ref(py)))
 }
 
+/// Restores a REPL session into the owner, discarding in-flight execution state.
+///
+/// Used when an error occurs outside the VM resume path (e.g., coroutine spawn
+/// failure, empty JoinSet) where the error is a plain `PyErr` rather than a
+/// `ReplStartError` that already contains the REPL.
+fn restore_repl<T: ResourceTracker>(repl_owner: &Py<PyMontyRepl>, repl: MontyRepl<T>)
+where
+    EitherRepl: FromCoreRepl<T>,
+{
+    Python::attach(|py| {
+        let owner = repl_owner.bind(py).get();
+        owner.put_repl(EitherRepl::from_core(repl));
+    });
+}
+
 /// Restores the REPL session from a `ReplStartError` and returns a `PyErr`.
+///
+/// Used when a VM resume call fails — the `ReplStartError` bundles both
+/// the REPL session (for restoration) and the error (for propagation).
 fn restore_repl_from_error<T: ResourceTracker>(repl_owner: &Py<PyMontyRepl>, err: ReplStartError<T>) -> PyErr
 where
     EitherRepl: FromCoreRepl<T>,
