@@ -85,7 +85,7 @@ async def run_repl_async(
     print_callback: Callable[[Literal['stdout'], str], None] | None = None,
     os: AbstractOS | None = None,
 ) -> Any:
-    return await repl.run_async(
+    return await repl.feed_run_async(
         code,
         inputs=inputs,
         external_functions=external_functions,

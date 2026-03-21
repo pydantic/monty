@@ -207,7 +207,7 @@ impl PyMontyRepl {
     /// # Raises
     /// Various Python exceptions matching what the code would raise.
     #[pyo3(signature = (code, *, inputs=None, external_functions=None, print_callback=None, os=None))]
-    fn run_async<'py>(
+    fn feed_run_async<'py>(
         slf: &Bound<'py, Self>,
         py: Python<'py>,
         code: &str,

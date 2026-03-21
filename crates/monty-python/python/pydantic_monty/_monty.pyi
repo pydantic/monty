@@ -150,12 +150,10 @@ class Monty:
         os: AbstractOS | None = None,
     ) -> Coroutine[Any, Any, Any]:
         """
-        Execute the code asynchronously, supporting async external functions.
+        Execute the code with support for async external functions.
 
-        Returns a Python coroutine that drives the dispatch loop in Rust.
-        VM resume calls are offloaded to a thread pool to avoid blocking
-        the event loop. External functions that return coroutines are awaited
-        on the Python event loop.
+        VM resume calls are offloaded to a new thread to avoid blocking the event loop.
+        External functions that return coroutines are awaited on the Python event loop.
 
         Arguments:
             inputs: Dict of input variable values (must match names from __init__)
@@ -274,6 +272,35 @@ class MontyRepl:
         behavior of `Monty.run(external_functions=...)`.
         """
 
+    def feed_run_async(
+        self,
+        code: str,
+        *,
+        inputs: dict[str, Any] | None = None,
+        external_functions: dict[str, Callable[..., Any]] | None = None,
+        print_callback: Callable[[Literal['stdout'], str], None] | None = None,
+        os: AbstractOS | None = None,
+    ) -> Coroutine[Any, Any, Any]:
+        """
+        Execute one incremental snippet and return its output with support for async external functions.
+
+        VM resume calls are offloaded to a new thread to avoid blocking the event loop.
+        External functions that return coroutines are awaited on the Python event loop.
+
+        Arguments:
+            code: The Python code snippet to execute
+            inputs: Dict of input values to inject into the REPL namespace
+            external_functions: Dict of external function callbacks (sync or async)
+            print_callback: Optional callback for print output
+            os: Optional OS access handler for filesystem operations
+
+        Returns:
+            A coroutine that resolves to the output of the snippet
+
+        Raises:
+            MontyRuntimeError: If the code raises an exception during execution
+        """
+
     def feed_start(
         self,
         code: str,
@@ -294,37 +321,6 @@ class MontyRepl:
         including support for async external functions via `FutureSnapshot`.
 
         On completion or error, the REPL state is automatically restored.
-        """
-
-    def run_async(
-        self,
-        code: str,
-        *,
-        inputs: dict[str, Any] | None = None,
-        external_functions: dict[str, Callable[..., Any]] | None = None,
-        print_callback: Callable[[Literal['stdout'], str], None] | None = None,
-        os: AbstractOS | None = None,
-    ) -> Coroutine[Any, Any, Any]:
-        """
-        Feed and execute a snippet asynchronously, supporting async external functions.
-
-        Returns a Python coroutine that drives the dispatch loop in Rust.
-        VM resume calls are offloaded to a thread pool to avoid blocking
-        the event loop. External functions that return coroutines are awaited
-        on the Python event loop.
-
-        Arguments:
-            code: The Python code snippet to execute
-            inputs: Dict of input values to inject into the REPL namespace
-            external_functions: Dict of external function callbacks (sync or async)
-            print_callback: Optional callback for print output
-            os: Optional OS access handler for filesystem operations
-
-        Returns:
-            A coroutine that resolves to the output of the snippet
-
-        Raises:
-            MontyRuntimeError: If the code raises an exception during execution
         """
 
     def dump(self) -> bytes:
