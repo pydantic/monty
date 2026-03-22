@@ -76,6 +76,22 @@ impl<T: ResourceTracker> MontyRepl<T> {
         }
     }
 
+    /// Returns the resource tracker that will be used for the next snippet.
+    ///
+    /// This is primarily intended for host integrations that need to attach
+    /// per-execution state, such as cancellation markers, to an existing REPL.
+    pub fn tracker(&self) -> &T {
+        self.heap.tracker()
+    }
+
+    /// Returns mutable access to the resource tracker for the next snippet.
+    ///
+    /// REPL hosts use this to install ephemeral execution controls, such as
+    /// async cancellation flags, before calling `feed_start()`.
+    pub fn tracker_mut(&mut self) -> &mut T {
+        self.heap.tracker_mut()
+    }
+
     /// Starts executing a new snippet and returns suspendable REPL progress.
     ///
     /// This is the REPL equivalent of `MontyRun::start`: execution may complete,

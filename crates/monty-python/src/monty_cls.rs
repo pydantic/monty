@@ -1,7 +1,7 @@
 use std::{
     borrow::Cow,
     fmt::Write,
-    sync::{Mutex, PoisonError},
+    sync::{Arc, Mutex, PoisonError, atomic::AtomicBool},
 };
 
 // Use `::monty` to refer to the external crate (not the pymodule)
@@ -26,7 +26,7 @@ use crate::{
     dataclass::DcRegistry,
     exceptions::{MontyError, MontyTypingError, exc_py_to_monty},
     external::{ExternalFunctionRegistry, dispatch_method_call},
-    limits::{PySignalTracker, extract_limits},
+    limits::{FutureCancellationGuard, PySignalTracker, extract_limits},
     repl::{EitherRepl, FromCoreRepl, PyMontyRepl},
 };
 
@@ -250,37 +250,32 @@ impl PyMonty {
         }
 
         let input_values = self.extract_input_values(inputs, &self.dc_registry)?;
+        let limits = limits.map(extract_limits).transpose()?;
         let dc_registry = self.dc_registry.clone_ref(py);
         let ext_fns = external_functions.map(|d| d.clone().unbind());
         let runner = self.runner.clone();
-
-        // Build print writer for the initial start() call (runs synchronously with GIL released)
-        let mut print_cb_obj;
-        let print_writer = match &print_callback {
-            Some(cb) => {
-                print_cb_obj = CallbackStringPrint::from_py(cb.clone_ref(py));
-                PrintWriter::Callback(&mut print_cb_obj)
-            }
-            None => PrintWriter::Stdout,
-        };
-        let print_writer = SendWrapper::new(print_writer);
-
         if let Some(limits) = limits {
-            let tracker = PySignalTracker::new(LimitedTracker::new(extract_limits(limits)?));
-            let progress = py
-                .detach(|| runner.start(input_values, tracker, print_writer.take()))
-                .map_err(|e| MontyError::new_err(py, e))?;
-            pyo3_async_runtimes::tokio::future_into_py(py, async move {
-                crate::async_dispatch::dispatch_loop_run(progress, ext_fns, os, dc_registry, print_callback).await
-            })
+            Self::run_async_with_tracker(
+                py,
+                runner,
+                input_values,
+                ext_fns,
+                os,
+                dc_registry,
+                print_callback,
+                move |cancel_flag| PySignalTracker::new_with_cancellation(LimitedTracker::new(limits), cancel_flag),
+            )
         } else {
-            let tracker = PySignalTracker::new(NoLimitTracker);
-            let progress = py
-                .detach(|| runner.start(input_values, tracker, print_writer.take()))
-                .map_err(|e| MontyError::new_err(py, e))?;
-            pyo3_async_runtimes::tokio::future_into_py(py, async move {
-                crate::async_dispatch::dispatch_loop_run(progress, ext_fns, os, dc_registry, print_callback).await
-            })
+            Self::run_async_with_tracker(
+                py,
+                runner,
+                input_values,
+                ext_fns,
+                os,
+                dc_registry,
+                print_callback,
+                move |cancel_flag| PySignalTracker::new_with_cancellation(NoLimitTracker, cancel_flag),
+            )
         }
     }
 
@@ -347,6 +342,50 @@ impl PyMonty {
         }
         s.push(')');
         s
+    }
+}
+
+impl PyMonty {
+    /// Creates the Python awaitable for `run_async()` using a concrete tracker type.
+    ///
+    /// The tracker builder receives a per-await cancellation flag that is flipped
+    /// when the Python task drops the underlying Rust future. The resulting tracker
+    /// observes that flag via `check_time()` and aborts active VM execution.
+    #[expect(clippy::too_many_arguments)]
+    fn run_async_with_tracker<T, F>(
+        py: Python<'_>,
+        runner: MontyRun,
+        input_values: Vec<MontyObject>,
+        external_functions: Option<Py<PyDict>>,
+        os: Option<Py<PyAny>>,
+        dc_registry: DcRegistry,
+        print_callback: Option<Py<PyAny>>,
+        tracker_builder: F,
+    ) -> PyResult<Bound<'_, PyAny>>
+    where
+        T: ResourceTracker + Send + 'static,
+        F: FnOnce(crate::limits::CancellationFlag) -> PySignalTracker<T> + Send + 'static,
+    {
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            let cancellation_flag = Arc::new(AtomicBool::new(false));
+            let mut cancellation_guard = FutureCancellationGuard::new(cancellation_flag.clone());
+            let start_print_callback = print_callback.as_ref().map(|cb| Python::attach(|py| cb.clone_ref(py)));
+            let tracker = tracker_builder(cancellation_flag);
+
+            let progress = crate::async_dispatch::await_run_transition(move || {
+                crate::async_dispatch::with_print_writer(start_print_callback, |writer| {
+                    runner.start(input_values, tracker, writer)
+                })
+            })
+            .await?
+            .map_err(|e| Python::attach(|py| MontyError::new_err(py, e)))?;
+
+            let result =
+                crate::async_dispatch::dispatch_loop_run(progress, external_functions, os, dc_registry, print_callback)
+                    .await;
+            cancellation_guard.disarm();
+            result
+        })
     }
 }
 

@@ -1207,6 +1207,25 @@ len(result)
     assert isinstance(exc_info.value.exception(), MemoryError)
 
 
+async def test_run_monty_async_cancel_stops_vm_execution():
+    """Cancelling run_async stops active Monty execution rather than waiting for a timeout."""
+    code = """\
+while True:
+    pass
+"""
+    m = pydantic_monty.Monty(code)
+
+    async def run_code():
+        await m.run_async(limits={'max_duration_secs': 0.5})
+
+    task = asyncio.create_task(run_code())
+    await asyncio.sleep(0.01)
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(task, 1.0)
+
+
 # === Tests for concurrent REPL access ===
 
 
@@ -1256,7 +1275,7 @@ async def test_run_repl_async_discarded_awaitable_does_not_take_repl():
 
 async def test_run_repl_async_cancel_restores_repl():
     """Cancelling an in-flight async REPL call restores the REPL state."""
-    repl = pydantic_monty.MontyRepl()
+    repl = pydantic_monty.MontyRepl(limits={'max_duration_secs': 0.5})
     await repl.feed_run_async('x = 100')
 
     started = asyncio.Event()
@@ -1273,6 +1292,30 @@ async def test_run_repl_async_cancel_restores_repl():
 
     with pytest.raises(asyncio.CancelledError):
         await task
+
+    result = await repl.feed_run_async('x')
+    assert result == snapshot(100)
+
+
+async def test_run_repl_async_cancel_stops_vm_execution():
+    """Cancelling a CPU-bound REPL snippet stops execution and restores the REPL."""
+    repl = pydantic_monty.MontyRepl(limits={'max_duration_secs': 0.5})
+    await repl.feed_run_async('x = 100')
+
+    async def run_code():
+        await repl.feed_run_async(
+            """\
+while True:
+    pass
+"""
+        )
+
+    task = asyncio.create_task(run_code())
+    await asyncio.sleep(0.01)
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(task, 1.0)
 
     result = await repl.feed_run_async('x')
     assert result == snapshot(100)

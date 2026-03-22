@@ -4,14 +4,20 @@
 //! including time limits, memory limits, and recursion depth.
 
 use std::{
-    sync::atomic::{AtomicU16, Ordering},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicU16, Ordering},
+    },
     time::Duration,
 };
 
-use monty::{DEFAULT_MAX_RECURSION_DEPTH, ResourceError, ResourceTracker};
+use monty::{DEFAULT_MAX_RECURSION_DEPTH, ExcType, MontyException, ResourceError, ResourceTracker};
 use pyo3::{prelude::*, types::PyDict};
 
 use crate::exceptions::exc_py_to_monty;
+
+/// Shared flag used to interrupt async Monty execution after Python task cancellation.
+pub(crate) type CancellationFlag = Arc<AtomicBool>;
 
 /// Extracts resource limits from a Python dict.
 ///
@@ -52,6 +58,38 @@ pub fn extract_limits(dict: &Bound<'_, PyDict>) -> PyResult<monty::ResourceLimit
     Ok(limits)
 }
 
+/// Arms a cancellation flag for the lifetime of an async Rust future.
+///
+/// The guard is dropped when the Rust future created by `future_into_py()` is
+/// dropped due to Python task cancellation. That drop flips the shared flag so
+/// any in-flight blocking Monty execution notices cancellation at its next
+/// periodic tracker check.
+#[derive(Debug)]
+pub(crate) struct FutureCancellationGuard {
+    flag: CancellationFlag,
+    armed: bool,
+}
+
+impl FutureCancellationGuard {
+    /// Creates a new armed cancellation guard for the given flag.
+    pub fn new(flag: CancellationFlag) -> Self {
+        Self { flag, armed: true }
+    }
+
+    /// Disables cancellation signalling after normal completion.
+    pub fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for FutureCancellationGuard {
+    fn drop(&mut self) {
+        if self.armed {
+            self.flag.store(true, Ordering::Relaxed);
+        }
+    }
+}
+
 /// Extracts an optional usize from a dict, raising `TypeError` if the value has the wrong type.
 fn extract_optional_usize(dict: &Bound<'_, PyDict>, key: &str) -> PyResult<Option<usize>> {
     match dict.get_item(key)? {
@@ -90,6 +128,12 @@ pub struct PySignalTracker<T: ResourceTracker> {
     /// Uses `AtomicU16` for interior mutability so `check_time` can take `&self`
     /// (required by the `ResourceTracker` trait) while remaining `Sync` for PyO3.
     check_counter: AtomicU16,
+    /// Async cancellation flag shared with the Python awaitable, if any.
+    ///
+    /// This is skipped during serialization because cancellation state is tied
+    /// to the current host future, not to persisted Monty snapshots.
+    #[serde(skip, default)]
+    cancel_flag: Option<CancellationFlag>,
 }
 
 impl<T: ResourceTracker> PySignalTracker<T> {
@@ -98,7 +142,46 @@ impl<T: ResourceTracker> PySignalTracker<T> {
         Self {
             inner,
             check_counter: AtomicU16::new(0),
+            cancel_flag: None,
         }
+    }
+
+    /// Creates a new tracker that also watches a host-provided cancellation flag.
+    pub fn new_with_cancellation(inner: T, cancel_flag: CancellationFlag) -> Self {
+        Self {
+            inner,
+            check_counter: AtomicU16::new(0),
+            cancel_flag: Some(cancel_flag),
+        }
+    }
+
+    /// Replaces the cancellation flag used for async host-driven interruption.
+    ///
+    /// REPL sessions reuse the same tracker across snippets, so the host installs
+    /// a fresh flag for each async execution and clears it again when the snippet
+    /// completes or is restored after cancellation.
+    pub fn set_cancellation_flag(&mut self, cancel_flag: Option<CancellationFlag>) {
+        self.cancel_flag = cancel_flag;
+    }
+
+    /// Checks whether the host cancelled the owning async awaitable.
+    ///
+    /// This uses `KeyboardInterrupt` as the internal stop signal because it is a
+    /// `BaseException`-style interruption that should never be swallowed by untrusted
+    /// Monty code. In normal cancellation flow the Python task still surfaces
+    /// `CancelledError`; this exception is primarily for unwinding the VM safely.
+    fn check_cancellation(&self) -> Result<(), ResourceError> {
+        if self
+            .cancel_flag
+            .as_ref()
+            .is_some_and(|flag| flag.load(Ordering::Relaxed))
+        {
+            return Err(ResourceError::Exception(MontyException::new(
+                ExcType::KeyboardInterrupt,
+                Some("Monty execution cancelled".to_string()),
+            )));
+        }
+        Ok(())
     }
 
     fn check_python_signals(&self) -> Result<(), ResourceError> {
@@ -106,6 +189,7 @@ impl<T: ResourceTracker> PySignalTracker<T> {
         let count = self.check_counter.fetch_add(1, Ordering::Relaxed).wrapping_add(1);
 
         if count.is_multiple_of(SIGNAL_CHECK_INTERVAL) {
+            self.check_cancellation()?;
             Python::attach(|py| {
                 py.check_signals()
                     .map_err(|e| ResourceError::Exception(exc_py_to_monty(py, &e)))

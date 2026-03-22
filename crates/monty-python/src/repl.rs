@@ -1,4 +1,4 @@
-use std::sync::{Mutex, PoisonError};
+use std::sync::{Arc, Mutex, PoisonError, atomic::AtomicBool};
 
 // Use `::monty` to refer to the external crate (not the pymodule)
 use ::monty::{
@@ -19,7 +19,7 @@ use crate::{
     dataclass::DcRegistry,
     exceptions::{MontyError, exc_py_to_monty},
     external::{ExternalFunctionRegistry, dispatch_method_call},
-    limits::{PySignalTracker, extract_limits},
+    limits::{CancellationFlag, FutureCancellationGuard, PySignalTracker, extract_limits},
     monty_cls::CallbackStringPrint,
 };
 
@@ -31,6 +31,16 @@ use crate::{
 pub(crate) enum EitherRepl {
     NoLimit(CoreMontyRepl<PySignalTracker<NoLimitTracker>>),
     Limited(CoreMontyRepl<PySignalTracker<LimitedTracker>>),
+}
+
+impl EitherRepl {
+    /// Installs or clears the async cancellation flag on the underlying tracker.
+    fn set_cancellation_flag(&mut self, cancel_flag: Option<CancellationFlag>) {
+        match self {
+            Self::NoLimit(repl) => repl.tracker_mut().set_cancellation_flag(cancel_flag),
+            Self::Limited(repl) => repl.tracker_mut().set_cancellation_flag(cancel_flag),
+        }
+    }
 }
 
 /// Stateful no-replay REPL session.
@@ -339,9 +349,12 @@ impl ReplAsyncStart {
 
         let start_print_callback = print_callback.as_ref().map(|cb| cb.clone_ref(py));
         let future = pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let repl = Python::attach(|py| repl_owner.bind(py).get().take_repl())?;
+            let cancellation_flag = Arc::new(AtomicBool::new(false));
+            let mut cancellation_guard = FutureCancellationGuard::new(cancellation_flag.clone());
+            let mut repl = Python::attach(|py| repl_owner.bind(py).get().take_repl())?;
+            repl.set_cancellation_flag(Some(cancellation_flag));
 
-            match repl {
+            let result = match repl {
                 EitherRepl::NoLimit(repl) => {
                     let progress = crate::async_dispatch::await_repl_transition(
                         &repl_owner,
@@ -384,7 +397,9 @@ impl ReplAsyncStart {
                     )
                     .await
                 }
-            }
+            };
+            cancellation_guard.disarm();
+            result
         })?;
         Ok(future.unbind())
     }
@@ -619,6 +634,8 @@ impl PyMontyRepl {
 
     /// Restores a REPL into the mutex after `feed_start` completes successfully.
     pub(crate) fn put_repl(&self, repl: EitherRepl) {
+        let mut repl = repl;
+        repl.set_cancellation_flag(None);
         let mut guard = self.repl.lock().unwrap_or_else(PoisonError::into_inner);
         *guard = Some(repl);
     }

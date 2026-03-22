@@ -48,6 +48,20 @@ macro_rules! spawn_resume {
     };
 }
 
+/// Runs a non-REPL blocking transition in a worker thread.
+///
+/// The caller is responsible for arranging any cancellation marker that the
+/// transition should observe through its resource tracker. If the surrounding
+/// Python future is dropped, the blocking worker continues until the tracker
+/// notices cancellation or the transition completes naturally.
+pub(crate) async fn await_run_transition<R, F>(transition: F) -> PyResult<R>
+where
+    R: Send + 'static,
+    F: FnOnce() -> R + Send + 'static,
+{
+    spawn_blocking(transition).await.map_err(join_error_to_py)
+}
+
 /// Drives the async dispatch loop for a non-REPL `Monty.run_async()` call.
 ///
 /// Processes `RunProgress` snapshots in a loop, handling:
