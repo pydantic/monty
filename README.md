@@ -12,6 +12,9 @@
   <a href="https://github.com/pydantic/monty"><img src="https://img.shields.io/pypi/pyversions/pydantic-monty.svg" alt="versions"></a>
   <a href="https://github.com/pydantic/monty/blob/main/LICENSE"><img src="https://img.shields.io/github/license/pydantic/monty.svg?v=2" alt="license"></a>
   <a href="https://logfire.pydantic.dev/docs/join-slack/"><img src="https://img.shields.io/badge/Slack-Join%20Slack-4A154B?logo=slack" alt="Join Slack" /></a>
+  <a href="https://gitcgr.com/pydantic/monty">
+    <img src="https://gitcgr.com/badge/pydantic/monty.svg" alt="gitcgr" />
+  </a>
 </div>
 
 ---
