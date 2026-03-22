@@ -1,4 +1,7 @@
-use std::sync::{Arc, Mutex, PoisonError, atomic::AtomicBool};
+use std::{
+    ffi::CString,
+    sync::{Arc, Mutex, PoisonError, atomic::AtomicBool},
+};
 
 // Use `::monty` to refer to the external crate (not the pymodule)
 use ::monty::{
@@ -10,11 +13,13 @@ use pyo3::{
     IntoPyObjectExt,
     exceptions::{PyRuntimeError, PyTypeError, PyValueError},
     prelude::*,
-    types::{PyBytes, PyDict, PyList, PyTuple},
+    sync::PyOnceLock,
+    types::{PyBytes, PyDict, PyList, PyModule, PyTuple},
 };
 use send_wrapper::SendWrapper;
 
 use crate::{
+    async_dispatch::ReplCleanupNotifier,
     convert::{get_docstring, monty_to_py, py_to_monty},
     dataclass::DcRegistry,
     exceptions::{MontyError, exc_py_to_monty},
@@ -321,6 +326,7 @@ impl PyMontyRepl {
 struct PyReplAsyncAwaitable {
     start: Mutex<Option<ReplAsyncStart>>,
     future: Mutex<Option<Py<PyAny>>>,
+    cleanup_waiter: Mutex<Option<Py<PyAny>>>,
 }
 
 /// Captures everything needed to lazily start an async REPL snippet.
@@ -334,9 +340,43 @@ struct ReplAsyncStart {
     print_callback: Option<Py<PyAny>>,
 }
 
+/// Signals the per-await cleanup future unless normal REPL restoration takes over.
+///
+/// If the Python task is cancelled before the async snippet successfully takes
+/// REPL ownership, no restore path runs and the cancellation wrapper would hang
+/// forever waiting for cleanup. This guard resolves that wait future on drop
+/// for those early-exit paths only.
+struct CleanupStartGuard {
+    cleanup_notifier: ReplCleanupNotifier,
+    armed: bool,
+}
+
+impl CleanupStartGuard {
+    /// Creates a new armed cleanup guard.
+    fn new(cleanup_notifier: ReplCleanupNotifier) -> Self {
+        Self {
+            cleanup_notifier,
+            armed: true,
+        }
+    }
+
+    /// Disables drop-time signalling once the REPL has been taken.
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for CleanupStartGuard {
+    fn drop(&mut self) {
+        if self.armed {
+            self.cleanup_notifier.finish();
+        }
+    }
+}
+
 impl ReplAsyncStart {
     /// Builds the real Python future for this REPL snippet the first time it is awaited.
-    fn into_future(self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+    fn into_future(self, py: Python<'_>) -> PyResult<(Py<PyAny>, Py<PyAny>)> {
         let Self {
             repl_owner,
             code,
@@ -347,17 +387,23 @@ impl ReplAsyncStart {
             print_callback,
         } = self;
 
+        let (event_loop, cleanup_waiter) = create_cleanup_waiter(py)?;
+        let cleanup_notifier = ReplCleanupNotifier::new(event_loop, cleanup_waiter.clone_ref(py));
+        let start_guard = CleanupStartGuard::new(cleanup_notifier.clone());
         let start_print_callback = print_callback.as_ref().map(|cb| cb.clone_ref(py));
         let future = pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            let mut start_guard = start_guard;
             let cancellation_flag = Arc::new(AtomicBool::new(false));
             let mut cancellation_guard = FutureCancellationGuard::new(cancellation_flag.clone());
             let mut repl = Python::attach(|py| repl_owner.bind(py).get().take_repl())?;
+            start_guard.disarm();
             repl.set_cancellation_flag(Some(cancellation_flag));
 
             let result = match repl {
                 EitherRepl::NoLimit(repl) => {
                     let progress = crate::async_dispatch::await_repl_transition(
                         &repl_owner,
+                        cleanup_notifier.clone(),
                         start_print_callback,
                         move |print_callback| {
                             crate::async_dispatch::with_print_writer(print_callback, |writer| {
@@ -369,6 +415,7 @@ impl ReplAsyncStart {
                     crate::async_dispatch::dispatch_loop_repl(
                         progress,
                         repl_owner,
+                        cleanup_notifier,
                         external_functions,
                         os,
                         dc_registry,
@@ -379,6 +426,7 @@ impl ReplAsyncStart {
                 EitherRepl::Limited(repl) => {
                     let progress = crate::async_dispatch::await_repl_transition(
                         &repl_owner,
+                        cleanup_notifier.clone(),
                         start_print_callback,
                         move |print_callback| {
                             crate::async_dispatch::with_print_writer(print_callback, |writer| {
@@ -390,6 +438,7 @@ impl ReplAsyncStart {
                     crate::async_dispatch::dispatch_loop_repl(
                         progress,
                         repl_owner,
+                        cleanup_notifier,
                         external_functions,
                         os,
                         dc_registry,
@@ -401,7 +450,7 @@ impl ReplAsyncStart {
             cancellation_guard.disarm();
             result
         })?;
-        Ok(future.unbind())
+        Ok((future.unbind(), cleanup_waiter))
     }
 }
 
@@ -411,12 +460,13 @@ impl PyReplAsyncAwaitable {
         let slf = Self {
             start: Mutex::new(Some(start)),
             future: Mutex::new(None),
+            cleanup_waiter: Mutex::new(None),
         };
         slf.into_bound_py_any(py)
     }
 
-    /// Returns the inner Python future, creating it on first use.
-    fn get_or_start_future(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+    /// Returns the inner Python future and its cleanup waiter, creating them on first use.
+    fn get_or_start_future(&self, py: Python<'_>) -> PyResult<(Py<PyAny>, Py<PyAny>)> {
         if let Some(future) = self
             .future
             .lock()
@@ -424,7 +474,14 @@ impl PyReplAsyncAwaitable {
             .as_ref()
             .map(|future| future.clone_ref(py))
         {
-            return Ok(future);
+            let cleanup_waiter = self
+                .cleanup_waiter
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .as_ref()
+                .map(|cleanup_waiter| cleanup_waiter.clone_ref(py))
+                .ok_or_else(|| PyRuntimeError::new_err("Awaitable cleanup waiter is missing"))?;
+            return Ok((future, cleanup_waiter));
         }
 
         let start = {
@@ -439,16 +496,32 @@ impl PyReplAsyncAwaitable {
                 .unwrap_or_else(PoisonError::into_inner)
                 .as_ref()
                 .map(|future| future.clone_ref(py))
+                .zip(
+                    self.cleanup_waiter
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .as_ref()
+                        .map(|cleanup_waiter| cleanup_waiter.clone_ref(py)),
+                )
                 .ok_or_else(|| PyRuntimeError::new_err("Awaitable is currently starting"));
         };
 
-        let future = start.into_future(py)?;
+        let (future, cleanup_waiter) = start.into_future(py)?;
         let mut future_guard = self.future.lock().unwrap_or_else(PoisonError::into_inner);
         if let Some(existing) = future_guard.as_ref() {
-            Ok(existing.clone_ref(py))
+            let cleanup_waiter = self
+                .cleanup_waiter
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .as_ref()
+                .map(|cleanup_waiter| cleanup_waiter.clone_ref(py))
+                .ok_or_else(|| PyRuntimeError::new_err("Awaitable cleanup waiter is missing"))?;
+            Ok((existing.clone_ref(py), cleanup_waiter))
         } else {
             *future_guard = Some(future.clone_ref(py));
-            Ok(future)
+            let mut cleanup_guard = self.cleanup_waiter.lock().unwrap_or_else(PoisonError::into_inner);
+            *cleanup_guard = Some(cleanup_waiter.clone_ref(py));
+            Ok((future, cleanup_waiter))
         }
     }
 }
@@ -457,9 +530,49 @@ impl PyReplAsyncAwaitable {
 impl PyReplAsyncAwaitable {
     /// Returns the iterator used by Python's await protocol.
     fn __await__<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-        let future = self.get_or_start_future(py)?;
-        future.bind(py).call_method0("__await__")
+        let (future, cleanup_waiter) = self.get_or_start_future(py)?;
+        let wrapped = wrap_future_with_cleanup(py, future, cleanup_waiter)?;
+        wrapped.bind(py).call_method0("__await__")
     }
+}
+
+/// Creates an event-loop future that becomes ready once REPL cleanup finishes.
+fn create_cleanup_waiter(py: Python<'_>) -> PyResult<(Py<PyAny>, Py<PyAny>)> {
+    let event_loop = py.import("asyncio")?.call_method0("get_running_loop")?;
+    let cleanup_waiter = event_loop.call_method0("create_future")?.unbind();
+    Ok((event_loop.unbind(), cleanup_waiter))
+}
+
+/// Wraps the inner Rust future so Python cancellation waits for REPL restoration.
+fn wrap_future_with_cleanup(py: Python<'_>, future: Py<PyAny>, cleanup_waiter: Py<PyAny>) -> PyResult<Py<PyAny>> {
+    get_repl_cancel_wrapper(py)?
+        .call1((future, cleanup_waiter))
+        .map(Bound::unbind)
+}
+
+/// Returns the cached Python helper used to await REPL cleanup on cancellation.
+fn get_repl_cancel_wrapper(py: Python<'_>) -> PyResult<&Bound<'_, PyAny>> {
+    static REPL_CANCEL_WRAPPER: PyOnceLock<Py<PyAny>> = PyOnceLock::new();
+
+    REPL_CANCEL_WRAPPER
+        .get_or_try_init(py, || {
+            let code = CString::new(
+                r"import asyncio
+
+async def await_repl_with_cleanup(future, cleanup_waiter):
+    try:
+        return await future
+    except asyncio.CancelledError:
+        future.cancel()
+        await asyncio.shield(cleanup_waiter)
+        raise
+",
+            )
+            .expect("helper module source must not contain NUL bytes");
+            let module = PyModule::from_code(py, code.as_c_str(), c"monty_repl_async.py", c"monty_repl_async")?;
+            Ok(module.getattr("await_repl_with_cleanup")?.unbind())
+        })
+        .map(|wrapper| wrapper.bind(py))
 }
 
 impl PyMontyRepl {
