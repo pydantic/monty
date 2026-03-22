@@ -17,7 +17,10 @@ use pyo3::{
     prelude::*,
     types::{PyDict, PyTuple},
 };
-use tokio::task::{JoinError, JoinSet, spawn_blocking};
+use tokio::{
+    sync::oneshot,
+    task::{JoinError, JoinSet, spawn_blocking},
+};
 
 use crate::{
     convert::{get_docstring, monty_to_py, py_to_monty},
@@ -119,12 +122,15 @@ pub(crate) async fn dispatch_loop_run<T: ResourceTracker + Send + 'static>(
 /// Drives the async dispatch loop for a REPL `MontyRepl.feed_run_async()` call.
 ///
 /// Same as `dispatch_loop_run` but works with `ReplProgress` and restores the
-/// REPL session when execution completes or on error.
+/// REPL session when execution completes, errors, or the returned Python awaitable
+/// is cancelled or discarded after starting.
 ///
-/// All error paths must restore the REPL via `restore_repl` or `restore_repl_from_error`
-/// before returning, otherwise the REPL session is permanently lost.
+/// VM resume calls still run in `spawn_blocking`, but the hand-off to the blocking
+/// worker is cancellation-aware: if the outer awaitable disappears before the worker
+/// can hand back the next `ReplProgress`, the worker restores the REPL from the
+/// finished state instead of leaking it.
 pub(crate) async fn dispatch_loop_repl<T: ResourceTracker + Send + 'static>(
-    mut progress: ReplProgress<T>,
+    progress: ReplProgress<T>,
     repl_owner: Py<PyMontyRepl>,
     external_functions: Option<Py<PyDict>>,
     os: Option<Py<PyAny>>,
@@ -135,10 +141,12 @@ where
     EitherRepl: FromCoreRepl<T>,
 {
     let mut join_set: JoinSet<(u32, ExtFunctionResult)> = JoinSet::new();
+    let mut progress_guard = ReplProgressGuard::new(clone_repl_owner(&repl_owner), progress);
 
     loop {
-        match progress {
+        match progress_guard.take() {
             ReplProgress::Complete { repl, value } => {
+                progress_guard.disarm();
                 return Python::attach(|py| {
                     let owner = repl_owner.bind(py).get();
                     owner.put_repl(EitherRepl::from_core(repl));
@@ -158,8 +166,11 @@ where
                 match call_result {
                     CallResult::Sync(result) => {
                         let print_cb = clone_py_opt(print_callback.as_ref());
-                        progress = spawn_resume!(call, result, print_cb)
-                            .map_err(|e| restore_repl_from_error(&repl_owner, *e))?;
+                        let next_progress = await_repl_transition(&repl_owner, print_cb, move |print_cb| {
+                            with_print_writer(print_cb, |writer| call.resume(result, writer))
+                        })
+                        .await?;
+                        progress_guard.store(next_progress);
                     }
                     CallResult::Coroutine(coro) => {
                         let call_id = call.call_id;
@@ -168,34 +179,47 @@ where
                             return Err(e);
                         }
                         let print_cb = clone_py_opt(print_callback.as_ref());
-                        progress = spawn_resume!(call, ExtFunctionResult::Future(call_id), print_cb)
-                            .map_err(|e| restore_repl_from_error(&repl_owner, *e))?;
+                        let next_progress = await_repl_transition(&repl_owner, print_cb, move |print_cb| {
+                            with_print_writer(print_cb, |writer| {
+                                call.resume(ExtFunctionResult::Future(call_id), writer)
+                            })
+                        })
+                        .await?;
+                        progress_guard.store(next_progress);
                     }
                 }
             }
             ReplProgress::OsCall(call) => {
                 let result = dispatch_os_call_py(call.function, &call.args, &call.kwargs, os.as_ref(), &dc_registry);
                 let print_cb = clone_py_opt(print_callback.as_ref());
-                progress =
-                    spawn_resume!(call, result, print_cb).map_err(|e| restore_repl_from_error(&repl_owner, *e))?;
+                let next_progress = await_repl_transition(&repl_owner, print_cb, move |print_cb| {
+                    with_print_writer(print_cb, |writer| call.resume(result, writer))
+                })
+                .await?;
+                progress_guard.store(next_progress);
             }
             ReplProgress::NameLookup(lookup) => {
                 let result = resolve_name_lookup(&lookup.name, external_functions.as_ref());
                 let print_cb = clone_py_opt(print_callback.as_ref());
-                progress =
-                    spawn_resume!(lookup, result, print_cb).map_err(|e| restore_repl_from_error(&repl_owner, *e))?;
+                let next_progress = await_repl_transition(&repl_owner, print_cb, move |print_cb| {
+                    with_print_writer(print_cb, |writer| lookup.resume(result, writer))
+                })
+                .await?;
+                progress_guard.store(next_progress);
             }
             ReplProgress::ResolveFutures(state) => {
-                let results = match wait_for_futures(&mut join_set, state.pending_call_ids()).await {
-                    Ok(r) => r,
-                    Err(e) => {
-                        restore_repl(&repl_owner, state.into_repl());
-                        return Err(e);
-                    }
+                let pending_call_ids = state.pending_call_ids().to_vec();
+                progress_guard.store(ReplProgress::ResolveFutures(state));
+                let results = wait_for_futures(&mut join_set, &pending_call_ids).await?;
+                let ReplProgress::ResolveFutures(state) = progress_guard.take() else {
+                    unreachable!("ResolveFutures guard state changed unexpectedly");
                 };
                 let print_cb = clone_py_opt(print_callback.as_ref());
-                progress =
-                    spawn_resume!(state, results, print_cb).map_err(|e| restore_repl_from_error(&repl_owner, *e))?;
+                let next_progress = await_repl_transition(&repl_owner, print_cb, move |print_cb| {
+                    with_print_writer(print_cb, |writer| state.resume(results, writer))
+                })
+                .await?;
+                progress_guard.store(next_progress);
             }
         }
     }
@@ -213,7 +237,7 @@ where
 ///
 /// Uses a closure pattern because `PrintWriter::Callback` borrows the
 /// `CallbackStringPrint`, so the writer can't outlive this function.
-fn with_print_writer<R>(print_callback: Option<Py<PyAny>>, f: impl FnOnce(PrintWriter<'_>) -> R) -> R {
+pub(crate) fn with_print_writer<R>(print_callback: Option<Py<PyAny>>, f: impl FnOnce(PrintWriter<'_>) -> R) -> R {
     match print_callback {
         Some(cb) => {
             let mut print_cb = CallbackStringPrint::from_py(cb);
@@ -390,6 +414,102 @@ fn clone_py_opt(opt: Option<&Py<PyAny>>) -> Option<Py<PyAny>> {
     opt.map(|v| Python::attach(|py| v.clone_ref(py)))
 }
 
+/// Clones a REPL owner handle while holding the GIL.
+fn clone_repl_owner(repl_owner: &Py<PyMontyRepl>) -> Py<PyMontyRepl> {
+    Python::attach(|py| repl_owner.clone_ref(py))
+}
+
+/// Runs a blocking REPL state transition and restores the REPL if the awaiting
+/// Python future disappears before the transition result can be delivered.
+///
+/// The closure receives the optional print callback so it can build a
+/// `PrintWriter` inside the blocking worker. If the result cannot be sent back
+/// because the receiver was dropped, the finished REPL state is restored from
+/// the completed result or error, preventing REPL loss on cancellation.
+pub(crate) async fn await_repl_transition<T, F>(
+    repl_owner: &Py<PyMontyRepl>,
+    print_callback: Option<Py<PyAny>>,
+    transition: F,
+) -> PyResult<ReplProgress<T>>
+where
+    T: ResourceTracker + Send + 'static,
+    F: FnOnce(Option<Py<PyAny>>) -> Result<ReplProgress<T>, Box<ReplStartError<T>>> + Send + 'static,
+    EitherRepl: FromCoreRepl<T>,
+{
+    let (sender, receiver) = oneshot::channel();
+    let sender_owner = clone_repl_owner(repl_owner);
+    let receiver_owner = clone_repl_owner(repl_owner);
+
+    std::mem::drop(spawn_blocking(move || {
+        let result = transition(print_callback);
+        if let Err(result) = sender.send(result) {
+            restore_repl_from_transition_result(&sender_owner, result);
+        }
+    }));
+
+    match receiver.await {
+        Ok(result) => result.map_err(|e| restore_repl_from_error(&receiver_owner, *e)),
+        Err(_) => Err(PyRuntimeError::new_err(
+            "Async REPL transition was cancelled before completion",
+        )),
+    }
+}
+
+/// Holds the current `ReplProgress` while the async REPL future is idle between
+/// blocking VM transitions.
+///
+/// If the Python awaitable is cancelled while the guard still owns a progress
+/// value, `Drop` restores the REPL from that snapshot so subsequent REPL calls
+/// can continue from the last safe suspension point.
+struct ReplProgressGuard<T: ResourceTracker>
+where
+    EitherRepl: FromCoreRepl<T>,
+{
+    repl_owner: Py<PyMontyRepl>,
+    progress: Option<ReplProgress<T>>,
+}
+
+impl<T: ResourceTracker> ReplProgressGuard<T>
+where
+    EitherRepl: FromCoreRepl<T>,
+{
+    /// Creates a new guard that owns the current REPL progress.
+    fn new(repl_owner: Py<PyMontyRepl>, progress: ReplProgress<T>) -> Self {
+        Self {
+            repl_owner,
+            progress: Some(progress),
+        }
+    }
+
+    /// Stores the latest REPL progress for drop-time restoration.
+    fn store(&mut self, progress: ReplProgress<T>) {
+        self.progress = Some(progress);
+    }
+
+    /// Takes the guarded progress for active processing.
+    fn take(&mut self) -> ReplProgress<T> {
+        self.progress
+            .take()
+            .expect("ReplProgressGuard must always contain progress while active")
+    }
+
+    /// Disables drop-time restoration after the REPL has already been restored.
+    fn disarm(&mut self) {
+        self.progress = None;
+    }
+}
+
+impl<T: ResourceTracker> Drop for ReplProgressGuard<T>
+where
+    EitherRepl: FromCoreRepl<T>,
+{
+    fn drop(&mut self) {
+        if let Some(progress) = self.progress.take() {
+            restore_repl_from_progress(&self.repl_owner, progress);
+        }
+    }
+}
+
 /// Restores a REPL session into the owner, discarding in-flight execution state.
 ///
 /// Used when an error occurs outside the VM resume path (e.g., coroutine spawn
@@ -405,6 +525,14 @@ where
     });
 }
 
+/// Restores the REPL session from any `ReplProgress` variant.
+fn restore_repl_from_progress<T: ResourceTracker>(repl_owner: &Py<PyMontyRepl>, progress: ReplProgress<T>)
+where
+    EitherRepl: FromCoreRepl<T>,
+{
+    restore_repl(repl_owner, progress.into_repl());
+}
+
 /// Restores the REPL session from a `ReplStartError` and returns a `PyErr`.
 ///
 /// Used when a VM resume call fails — the `ReplStartError` bundles both
@@ -418,4 +546,21 @@ where
         owner.put_repl(EitherRepl::from_core(err.repl));
         MontyError::new_err(py, err.error)
     })
+}
+
+/// Restores the REPL after a blocking transition finished but its result could
+/// not be delivered because the outer awaitable was dropped.
+fn restore_repl_from_transition_result<T>(
+    repl_owner: &Py<PyMontyRepl>,
+    result: Result<ReplProgress<T>, Box<ReplStartError<T>>>,
+) where
+    T: ResourceTracker,
+    EitherRepl: FromCoreRepl<T>,
+{
+    match result {
+        Ok(progress) => restore_repl_from_progress(repl_owner, progress),
+        Err(err) => {
+            let _ = restore_repl_from_error(repl_owner, *err);
+        }
+    }
 }

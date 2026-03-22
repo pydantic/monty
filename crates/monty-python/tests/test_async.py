@@ -1239,6 +1239,45 @@ async def test_run_repl_async_concurrent_raises():
     assert result == snapshot(42)
 
 
+async def test_run_repl_async_discarded_awaitable_does_not_take_repl():
+    """A returned awaitable does not steal REPL ownership until it is actually awaited."""
+    repl = pydantic_monty.MontyRepl()
+
+    async def slow_func():
+        await asyncio.sleep(0.1)
+        return 42
+
+    pending = repl.feed_run_async('await slow_func()', external_functions={'slow_func': slow_func})
+
+    result = await repl.feed_run_async('1 + 1')
+    assert result == snapshot(2)
+    del pending
+
+
+async def test_run_repl_async_cancel_restores_repl():
+    """Cancelling an in-flight async REPL call restores the REPL state."""
+    repl = pydantic_monty.MontyRepl()
+    await repl.feed_run_async('x = 100')
+
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def slow_func():
+        started.set()
+        await release.wait()
+        return 42
+
+    task = asyncio.ensure_future(repl.feed_run_async('await slow_func()', external_functions={'slow_func': slow_func}))
+    await started.wait()
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    result = await repl.feed_run_async('x')
+    assert result == snapshot(100)
+
+
 # === Tests for async error + REPL restoration ===
 
 

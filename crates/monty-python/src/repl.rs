@@ -7,6 +7,7 @@ use ::monty::{
 };
 use monty::ExcType;
 use pyo3::{
+    IntoPyObjectExt,
     exceptions::{PyRuntimeError, PyTypeError, PyValueError},
     prelude::*,
     types::{PyBytes, PyDict, PyList, PyTuple},
@@ -201,6 +202,10 @@ impl PyMontyRepl {
     /// by awaiting them on the Python event loop. VM resume calls are offloaded
     /// to a thread pool via `spawn_blocking` to avoid blocking the event loop.
     ///
+    /// The REPL is taken lazily when the returned awaitable first starts running,
+    /// not when the awaitable is created. This prevents abandoned awaitables from
+    /// stealing REPL state before any async work begins.
+    ///
     /// # Returns
     /// A Python coroutine that resolves to the result of the snippet.
     ///
@@ -229,55 +234,20 @@ impl PyMontyRepl {
         let dc_registry = this.dc_registry.clone_ref(py);
         let ext_fns = external_functions.map(|d| d.clone().unbind());
         let repl_owner: Py<Self> = slf.clone().unbind();
-
-        let repl = this.take_repl()?;
-
-        // Build print writer for the initial feed_start() call
-        let mut print_cb_obj;
-        let print_writer = match &print_callback {
-            Some(cb) => {
-                print_cb_obj = CallbackStringPrint::from_py(cb.clone_ref(py));
-                PrintWriter::Callback(&mut print_cb_obj)
-            }
-            None => PrintWriter::Stdout,
-        };
-        let mut print_output = SendWrapper::new(print_writer);
         let code_owned = code.to_owned();
 
-        match repl {
-            EitherRepl::NoLimit(repl) => {
-                let progress = py
-                    .detach(|| repl.feed_start(&code_owned, input_values, print_output.reborrow()))
-                    .map_err(|e| this.restore_repl_from_start_error(py, *e))?;
-                pyo3_async_runtimes::tokio::future_into_py(py, async move {
-                    crate::async_dispatch::dispatch_loop_repl(
-                        progress,
-                        repl_owner,
-                        ext_fns,
-                        os,
-                        dc_registry,
-                        print_callback,
-                    )
-                    .await
-                })
-            }
-            EitherRepl::Limited(repl) => {
-                let progress = py
-                    .detach(|| repl.feed_start(&code_owned, input_values, print_output.reborrow()))
-                    .map_err(|e| this.restore_repl_from_start_error(py, *e))?;
-                pyo3_async_runtimes::tokio::future_into_py(py, async move {
-                    crate::async_dispatch::dispatch_loop_repl(
-                        progress,
-                        repl_owner,
-                        ext_fns,
-                        os,
-                        dc_registry,
-                        print_callback,
-                    )
-                    .await
-                })
-            }
-        }
+        PyReplAsyncAwaitable::new_py_any(
+            py,
+            ReplAsyncStart {
+                repl_owner,
+                code: code_owned,
+                input_values,
+                external_functions: ext_fns,
+                os,
+                dc_registry,
+                print_callback,
+            },
+        )
     }
 
     /// Serializes this REPL session to bytes.
@@ -327,6 +297,153 @@ impl PyMontyRepl {
 
     fn __repr__(&self) -> String {
         format!("MontyRepl(script_name='{}')", self.script_name)
+    }
+}
+
+/// Internal awaitable wrapper for `MontyRepl.feed_run_async()`.
+///
+/// `future_into_py()` eagerly schedules the Rust future it wraps. For REPL
+/// execution that is too early because simply creating the awaitable would take
+/// ownership of the REPL. This wrapper defers future creation until Python
+/// actually awaits the object, preventing discarded awaitables from stealing
+/// REPL state.
+#[pyclass(name = "MontyReplAsyncAwaitable", module = "pydantic_monty")]
+struct PyReplAsyncAwaitable {
+    start: Mutex<Option<ReplAsyncStart>>,
+    future: Mutex<Option<Py<PyAny>>>,
+}
+
+/// Captures everything needed to lazily start an async REPL snippet.
+struct ReplAsyncStart {
+    repl_owner: Py<PyMontyRepl>,
+    code: String,
+    input_values: Vec<(String, MontyObject)>,
+    external_functions: Option<Py<PyDict>>,
+    os: Option<Py<PyAny>>,
+    dc_registry: DcRegistry,
+    print_callback: Option<Py<PyAny>>,
+}
+
+impl ReplAsyncStart {
+    /// Builds the real Python future for this REPL snippet the first time it is awaited.
+    fn into_future(self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        let Self {
+            repl_owner,
+            code,
+            input_values,
+            external_functions,
+            os,
+            dc_registry,
+            print_callback,
+        } = self;
+
+        let start_print_callback = print_callback.as_ref().map(|cb| cb.clone_ref(py));
+        let future = pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            let repl = Python::attach(|py| repl_owner.bind(py).get().take_repl())?;
+
+            match repl {
+                EitherRepl::NoLimit(repl) => {
+                    let progress = crate::async_dispatch::await_repl_transition(
+                        &repl_owner,
+                        start_print_callback,
+                        move |print_callback| {
+                            crate::async_dispatch::with_print_writer(print_callback, |writer| {
+                                repl.feed_start(&code, input_values, writer)
+                            })
+                        },
+                    )
+                    .await?;
+                    crate::async_dispatch::dispatch_loop_repl(
+                        progress,
+                        repl_owner,
+                        external_functions,
+                        os,
+                        dc_registry,
+                        print_callback,
+                    )
+                    .await
+                }
+                EitherRepl::Limited(repl) => {
+                    let progress = crate::async_dispatch::await_repl_transition(
+                        &repl_owner,
+                        start_print_callback,
+                        move |print_callback| {
+                            crate::async_dispatch::with_print_writer(print_callback, |writer| {
+                                repl.feed_start(&code, input_values, writer)
+                            })
+                        },
+                    )
+                    .await?;
+                    crate::async_dispatch::dispatch_loop_repl(
+                        progress,
+                        repl_owner,
+                        external_functions,
+                        os,
+                        dc_registry,
+                        print_callback,
+                    )
+                    .await
+                }
+            }
+        })?;
+        Ok(future.unbind())
+    }
+}
+
+impl PyReplAsyncAwaitable {
+    /// Creates a lazy awaitable for a pending REPL async snippet.
+    fn new_py_any(py: Python<'_>, start: ReplAsyncStart) -> PyResult<Bound<'_, PyAny>> {
+        let slf = Self {
+            start: Mutex::new(Some(start)),
+            future: Mutex::new(None),
+        };
+        slf.into_bound_py_any(py)
+    }
+
+    /// Returns the inner Python future, creating it on first use.
+    fn get_or_start_future(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        if let Some(future) = self
+            .future
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_ref()
+            .map(|future| future.clone_ref(py))
+        {
+            return Ok(future);
+        }
+
+        let start = {
+            let mut start_guard = self.start.lock().unwrap_or_else(PoisonError::into_inner);
+            start_guard.take()
+        };
+
+        let Some(start) = start else {
+            return self
+                .future
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .as_ref()
+                .map(|future| future.clone_ref(py))
+                .ok_or_else(|| PyRuntimeError::new_err("Awaitable is currently starting"));
+        };
+
+        let future = start.into_future(py)?;
+        let mut future_guard = self.future.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(existing) = future_guard.as_ref() {
+            Ok(existing.clone_ref(py))
+        } else {
+            *future_guard = Some(future.clone_ref(py));
+            Ok(future)
+        }
+    }
+}
+
+#[pymethods]
+impl PyReplAsyncAwaitable {
+    /// Returns the iterator used by Python's await protocol.
+    fn __await__<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let future = self.get_or_start_future(py)?;
+        future.bind(py).call_method0("__await__")
     }
 }
 

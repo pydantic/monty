@@ -614,10 +614,17 @@ pub struct ReplResolveFutures<T: ResourceTracker> {
 }
 
 impl<T: ResourceTracker> ReplResolveFutures<T> {
-    /// Extracts the REPL session, discarding the in-flight execution state.
+    /// Extracts the REPL session, restoring globals from the suspended VM state.
+    ///
+    /// As with the other REPL snapshot types, globals live inside the VM
+    /// snapshot while execution is suspended. Recovering the REPL for a
+    /// cancelled or abandoned async snippet must put those globals back so
+    /// previously defined REPL bindings remain available.
     #[must_use]
     pub fn into_repl(self) -> MontyRepl<T> {
-        self.repl
+        let Self { mut repl, vm_state, .. } = self;
+        repl.globals = vm_state.globals;
+        repl
     }
 
     /// Returns unresolved call IDs for this suspended state.
