@@ -474,7 +474,8 @@ pub enum Node<F> {
     OpAssign {
         target: Identifier,
         op: Operator,
-        object: ExprLoc,
+        /// The right-hand side value of the augmented assignment (e.g., `1` in `x += 1`).
+        value: ExprLoc,
     },
     /// Augmented subscript assignment (e.g., `totals[key] += value` or `a[0][1] += 1`).
     ///
@@ -488,7 +489,8 @@ pub enum Node<F> {
         target: ExprLoc,
         index: ExprLoc,
         op: Operator,
-        object: ExprLoc,
+        /// The right-hand side value of the augmented assignment (e.g., `1` in `a[0] += 1`).
+        value: ExprLoc,
         /// Position of the subscript expression (e.g., `totals[key]`) for traceback carets.
         target_position: CodeRange,
     },

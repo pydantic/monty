@@ -305,7 +305,7 @@ impl<'a> Parser<'a> {
                         target: self.parse_expression(*object)?,
                         index: self.parse_expression(*slice)?,
                         op,
-                        object: value,
+                        value,
                         target_position: self.convert_range(range),
                     }),
                     AstExpr::Attribute(ast::ExprAttribute {
@@ -323,7 +323,7 @@ impl<'a> Parser<'a> {
                     other => Ok(Node::OpAssign {
                         target: self.parse_identifier(other)?,
                         op,
-                        object: value,
+                        value,
                     }),
                 }
             }

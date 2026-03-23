@@ -513,3 +513,41 @@ assert d['a']['y'] == 42, 'nested dict subscript assign'
 d = {'a': {'x': 1}}
 d['a']['x'] += 10
 assert d['a']['x'] == 11, 'nested dict augmented assign'
+
+# === Eval-once semantics for augmented subscript assignment ===
+# CPython evaluates the container and index expressions exactly once,
+# in left-to-right order. Verify Monty matches this behavior.
+_eval_log = []
+
+
+def _tracking_obj():
+    _eval_log.append('obj')
+    return [10, 20, 30]
+
+
+def _tracking_index():
+    _eval_log.append('idx')
+    return 1
+
+
+_tracking_obj()[_tracking_index()] += 100
+assert _eval_log == ['obj', 'idx'], f'eval-once order: {_eval_log}'
+
+# Also verify the assignment itself is correct (even though the list is temporary)
+_result_list = [10, 20, 30]
+_eval_log.clear()
+
+
+def _tracking_obj2():
+    _eval_log.append('obj')
+    return _result_list
+
+
+def _tracking_index2():
+    _eval_log.append('idx')
+    return 2
+
+
+_tracking_obj2()[_tracking_index2()] += 7
+assert _eval_log == ['obj', 'idx'], f'eval-once order with persistent list: {_eval_log}'
+assert _result_list == [10, 20, 37], f'augmented assign via function: {_result_list}'
