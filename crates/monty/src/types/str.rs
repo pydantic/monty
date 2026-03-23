@@ -17,7 +17,7 @@ use crate::{
     heap::{DropWithHeap, Heap, HeapData, HeapGuard, HeapId, HeapItem},
     intern::{StaticStrings, StringId},
     resource::{ResourceError, ResourceTracker, check_repeat_size, check_replace_size},
-    types::{Type, long_int::check_value_str_digits},
+    types::Type,
     value::{EitherStr, Value},
 };
 
@@ -51,7 +51,6 @@ impl Str {
             None => Ok(Value::InternString(StaticStrings::EmptyString.into())),
             Some(v) => {
                 defer_drop!(v, vm);
-                check_value_str_digits(v, vm.heap, vm.interns)?;
                 let s = v.py_str(vm)?.into_owned();
                 allocate_string(s, vm.heap)
             }

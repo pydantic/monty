@@ -8,7 +8,7 @@ use crate::{
     heap::{Heap, HeapData},
     intern::Interns,
     resource::ResourceTracker,
-    types::{PyTrait, long_int::check_value_str_digits},
+    types::PyTrait,
     value::Value,
 };
 
@@ -38,7 +38,6 @@ pub fn builtin_print(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues)
         } else {
             vm.print_writer.stdout_push(' ')?;
         }
-        check_value_str_digits(value, vm.heap, vm.interns)?;
         vm.print_writer.stdout_write(value.py_str(vm)?)?;
     }
 

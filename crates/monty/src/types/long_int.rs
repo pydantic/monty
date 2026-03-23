@@ -21,7 +21,6 @@ use num_traits::{Signed, ToPrimitive, Zero};
 use crate::{
     exception_private::{ExcType, RunResult},
     heap::{Heap, HeapData},
-    intern::Interns,
     resource::{ResourceError, ResourceTracker},
     value::Value,
 };
@@ -191,29 +190,6 @@ impl LongInt {
             return Err(ExcType::value_error_int_str_too_large(digit_count));
         }
         Ok(())
-    }
-}
-
-/// Checks whether a value that is about to be converted to a decimal string
-/// exceeds the `INT_MAX_STR_DIGITS` limit.
-///
-/// Only `LongInt` values (heap-allocated or interned) need checking — `Value::Int(i64)`
-/// has at most 20 decimal digits, well within the 4300 limit. Returns `Ok(())` for
-/// non-integer values since they don't trigger this limit.
-pub fn check_value_str_digits(value: &Value, heap: &Heap<impl ResourceTracker>, interns: &Interns) -> RunResult<()> {
-    match value {
-        Value::Ref(id) => {
-            if let HeapData::LongInt(li) = heap.get(*id) {
-                li.check_str_digits_limit()
-            } else {
-                Ok(())
-            }
-        }
-        Value::InternLongInt(long_int_id) => {
-            let bi = interns.get_long_int(*long_int_id);
-            check_bits_str_digits_limit(bi.bits())
-        }
-        _ => Ok(()),
     }
 }
 
