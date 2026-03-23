@@ -334,6 +334,32 @@ impl<'a> Compiler<'a> {
                 self.code.set_location(*target_position, None);
                 self.code.emit(Opcode::StoreSubscr);
             }
+            Node::AttrOpAssign {
+                object,
+                attr,
+                op,
+                value,
+                target_position,
+            } => {
+                let Some(opcode) = operator_to_inplace_opcode(op) else {
+                    return Err(CompileError::new(
+                        "matrix multiplication augmented assignment (@=) is not yet supported",
+                        *target_position,
+                    ));
+                };
+                let name_id = attr.string_id().expect("LoadAttr requires interned attr name");
+                let name_idx = u16::try_from(name_id.index()).expect("name index exceeds u16");
+                // Stack: compile object, dup for later store, load attr, apply op, rotate, store
+                self.compile_expr(object)?; // [obj]
+                self.code.emit(Opcode::Dup); // [obj, obj]
+                self.code.set_location(*target_position, None);
+                self.code.emit_u16(Opcode::LoadAttr, name_idx); // [obj, attr_val]
+                self.compile_expr(value)?; // [obj, attr_val, rhs]
+                self.code.emit(opcode); // [obj, result]
+                self.code.emit(Opcode::Rot2); // [result, obj]
+                self.code.set_location(*target_position, None);
+                self.code.emit_u16(Opcode::StoreAttr, name_idx); // []
+            }
             Node::AttrAssign {
                 object,
                 attr,

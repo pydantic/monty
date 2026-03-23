@@ -308,6 +308,18 @@ impl<'a> Parser<'a> {
                         object: value,
                         target_position: self.convert_range(range),
                     }),
+                    AstExpr::Attribute(ast::ExprAttribute {
+                        value: object,
+                        attr,
+                        range,
+                        ..
+                    }) => Ok(Node::AttrOpAssign {
+                        object: self.parse_expression(*object)?,
+                        attr: EitherStr::Interned(self.interner.intern(attr.id())),
+                        op,
+                        value,
+                        target_position: self.convert_range(range),
+                    }),
                     other => Ok(Node::OpAssign {
                         target: self.parse_identifier(other)?,
                         op,

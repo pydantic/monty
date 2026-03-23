@@ -414,6 +414,23 @@ impl<'i> Prepare<'i> {
                         target_position,
                     });
                 }
+                Node::AttrOpAssign {
+                    object,
+                    attr,
+                    op,
+                    value,
+                    target_position,
+                } => {
+                    let object = self.prepare_expression(object)?;
+                    let value = self.prepare_expression(value)?;
+                    new_nodes.push(Node::AttrOpAssign {
+                        object,
+                        attr,
+                        op,
+                        value,
+                        target_position,
+                    });
+                }
                 Node::AttrAssign {
                     object,
                     attr,
@@ -1978,6 +1995,10 @@ fn collect_scope_info_from_node(
             collect_assigned_names_from_expr(index, assigned_names, interner);
             collect_assigned_names_from_expr(value, assigned_names, interner);
         }
+        Node::AttrOpAssign { object, value, .. } => {
+            collect_assigned_names_from_expr(object, assigned_names, interner);
+            collect_assigned_names_from_expr(value, assigned_names, interner);
+        }
         Node::AttrAssign { object, value, .. } => {
             // Attribute assignment doesn't create a new name, it modifies existing object
             // But scan expressions for walrus operators
@@ -2387,6 +2408,10 @@ fn collect_cell_vars_from_node(
             collect_cell_vars_from_expr(index, our_locals, cell_vars, interner);
             collect_cell_vars_from_expr(value, our_locals, cell_vars, interner);
         }
+        Node::AttrOpAssign { object, value, .. } => {
+            collect_cell_vars_from_expr(object, our_locals, cell_vars, interner);
+            collect_cell_vars_from_expr(value, our_locals, cell_vars, interner);
+        }
         Node::AttrAssign { object, value, .. } => {
             collect_cell_vars_from_expr(object, our_locals, cell_vars, interner);
             collect_cell_vars_from_expr(value, our_locals, cell_vars, interner);
@@ -2654,6 +2679,10 @@ fn collect_referenced_names_from_node(node: &ParseNode, referenced: &mut AHashSe
         } => {
             collect_referenced_names_from_expr(target, referenced, interner);
             collect_referenced_names_from_expr(index, referenced, interner);
+            collect_referenced_names_from_expr(value, referenced, interner);
+        }
+        Node::AttrOpAssign { object, value, .. } => {
+            collect_referenced_names_from_expr(object, referenced, interner);
             collect_referenced_names_from_expr(value, referenced, interner);
         }
         Node::AttrAssign { object, value, .. } => {

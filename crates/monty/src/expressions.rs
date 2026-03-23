@@ -503,6 +503,20 @@ pub enum Node<F> {
         /// Position of the subscript expression (e.g., `lst[10]`) for traceback carets.
         target_position: CodeRange,
     },
+    /// Augmented attribute assignment (e.g., `point.x += 1` or `a.b.c -= 5`).
+    ///
+    /// Evaluates the object expression once, loads the attribute, performs the
+    /// inplace operation with the right-hand side, then stores the result back.
+    /// The `object` is an arbitrary expression — it can be a name, a subscript,
+    /// or a chained attribute access.
+    AttrOpAssign {
+        object: ExprLoc,
+        attr: EitherStr,
+        op: Operator,
+        value: ExprLoc,
+        /// Position of the attribute expression (e.g., `point.x`) for traceback carets.
+        target_position: CodeRange,
+    },
     /// Attribute assignment (e.g., `point.x = 5` or `a.b.c = 5`).
     ///
     /// Assigns a value to an attribute on an object. For mutable dataclasses,
