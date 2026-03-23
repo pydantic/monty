@@ -363,18 +363,6 @@ impl SetStorage {
 pub(crate) struct Set(SetStorage);
 
 impl Set {
-    /// Writes the repr format for a bare `Set` (not behind `HeapRead`).
-    ///
-    /// Outputs `{elem1, elem2, ...}` or `set()` for empty sets.
-    pub(crate) fn repr_fmt(
-        &self,
-        f: &mut impl Write,
-        vm: &VM<'_, '_, impl ResourceTracker>,
-        heap_ids: &mut AHashSet<HeapId>,
-    ) -> std::fmt::Result {
-        self.0.repr_fmt(f, vm, heap_ids, "set")
-    }
-
     /// Creates a new empty set.
     #[must_use]
     pub fn new() -> Self {
@@ -1109,18 +1097,6 @@ impl HeapItem for Set {
 pub(crate) struct FrozenSet(SetStorage);
 
 impl FrozenSet {
-    /// Writes the repr format for a bare `FrozenSet` (not behind `HeapRead`).
-    ///
-    /// Outputs `frozenset({elem1, elem2, ...})` or `frozenset()` for empty frozensets.
-    pub(crate) fn repr_fmt(
-        &self,
-        f: &mut impl Write,
-        vm: &VM<'_, '_, impl ResourceTracker>,
-        heap_ids: &mut AHashSet<HeapId>,
-    ) -> std::fmt::Result {
-        self.0.repr_fmt(f, vm, heap_ids, "frozenset")
-    }
-
     /// Creates a new empty frozenset.
     #[must_use]
     pub fn new() -> Self {

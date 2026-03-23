@@ -119,45 +119,6 @@ impl Dataclass {
     pub fn is_frozen(&self) -> bool {
         self.frozen
     }
-
-    /// Writes the repr format for a bare `Dataclass` (not behind `HeapRead`).
-    ///
-    /// Format: `ClassName(field1=value1, field2=value2, ...)`
-    /// Only declared fields are shown, not dynamically added attributes.
-    pub(crate) fn py_repr_fmt(
-        &self,
-        f: &mut impl Write,
-        vm: &VM<'_, '_, impl ResourceTracker>,
-        heap_ids: &mut AHashSet<HeapId>,
-    ) -> std::fmt::Result {
-        let heap = &*vm.heap;
-        let Some(token) = heap.incr_recursion_depth_for_repr() else {
-            return f.write_str("...");
-        };
-        crate::defer_drop_immutable_heap!(token, heap);
-
-        f.write_str(self.name(vm.interns))?;
-        f.write_char('(')?;
-
-        let mut first = true;
-        for field_name in &self.field_names {
-            if !first {
-                f.write_str(", ")?;
-            }
-            first = false;
-
-            f.write_str(field_name)?;
-            f.write_char('=')?;
-
-            if let Some(value) = self.attrs.get_by_str(field_name, heap, vm.interns) {
-                value.py_repr_fmt(f, vm, heap_ids)?;
-            } else {
-                f.write_str("<?>")?;
-            }
-        }
-
-        f.write_char(')')
-    }
 }
 
 impl<'h> HeapRead<'h, Dataclass> {

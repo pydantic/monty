@@ -13,8 +13,7 @@ use crate::{
     types::{
         Bytes, Dataclass, Dict, DictItemsView, DictKeysView, DictValuesView, FrozenSet, List, LongInt, Module,
         MontyIter, NamedTuple, Path, PyTrait, Range, ReMatch, RePattern, Set, Slice, Str, Tuple, Type,
-        bytes::bytes_repr_fmt, dict_view::DictView, list::repr_sequence_fmt, str::string_repr_fmt,
-        tuple::tuple_repr_fmt,
+        dict_view::DictView,
     },
     value::{EitherStr, Value},
 };
@@ -385,73 +384,6 @@ impl HeapData {
             _ => None,
         }
     }
-
-    pub fn py_repr_fmt(
-        &self,
-        f: &mut impl Write,
-        vm: &VM<'_, '_, impl ResourceTracker>,
-        heap_ids: &mut AHashSet<HeapId>,
-    ) -> std::fmt::Result {
-        match self {
-            Self::Str(s) => string_repr_fmt(s.as_str(), f),
-            Self::Bytes(b) => bytes_repr_fmt(b.as_slice(), f),
-            Self::List(l) => repr_sequence_fmt('[', ']', l.as_slice(), f, vm, heap_ids),
-            Self::Tuple(t) => tuple_repr_fmt(t.as_slice(), f, vm, heap_ids),
-            Self::NamedTuple(nt) => nt.py_repr_fmt(f, vm, heap_ids),
-            Self::Dict(d) => d.py_repr_fmt(f, vm, heap_ids),
-            Self::DictKeysView(view) => view.py_repr_fmt(f, vm, heap_ids),
-            Self::DictItemsView(view) => view.py_repr_fmt(f, vm, heap_ids),
-            Self::DictValuesView(view) => view.py_repr_fmt(f, vm, heap_ids),
-            Self::Set(s) => s.repr_fmt(f, vm, heap_ids),
-            Self::FrozenSet(fs) => fs.repr_fmt(f, vm, heap_ids),
-            Self::Closure(closure) => vm.interns.get_function(closure.func_id).py_repr_fmt(f, vm.interns, 0),
-            Self::FunctionDefaults(fd) => vm.interns.get_function(fd.func_id).py_repr_fmt(f, vm.interns, 0),
-            Self::Cell(cell) => write!(f, "<cell: {} object>", cell.0.py_type(vm.heap)),
-            Self::Range(r) => r.py_repr_fmt(f, vm, heap_ids),
-            Self::Slice(s) => s.py_repr_fmt(f, vm, heap_ids),
-            Self::Exception(e) => e.py_repr_fmt(f),
-            Self::Dataclass(dc) => dc.py_repr_fmt(f, vm, heap_ids),
-            Self::Iter(_) => write!(f, "<iterator>"),
-            Self::LongInt(li) => write!(f, "{li}"),
-            Self::Module(m) => write!(f, "<module '{}'>", vm.interns.get_str(m.name())),
-            Self::Coroutine(coro) => {
-                let func = vm.interns.get_function(coro.func_id);
-                let name = vm.interns.get_str(func.name.name_id);
-                write!(f, "<coroutine object {name}>")
-            }
-            Self::GatherFuture(gather) => write!(f, "<gather({})>", gather.item_count()),
-            Self::Path(p) => p.py_repr_fmt(f, vm, heap_ids),
-            Self::ReMatch(m) => m.py_repr_fmt(f, vm, heap_ids),
-            Self::RePattern(p) => p.py_repr_fmt(f, vm, heap_ids),
-            Self::ExtFunction(name) => write!(f, "<function '{name}' external>"),
-        }
-    }
-
-    /// Returns the Python `repr()` string for this value.
-    ///
-    /// Convenience wrapper around `py_repr_fmt` that returns an owned string.
-    fn py_repr(&self, vm: &VM<'_, '_, impl ResourceTracker>) -> Cow<'static, str> {
-        let mut s = String::new();
-        let mut heap_ids = AHashSet::new();
-        // Unwrap is safe: writing to String never fails
-        self.py_repr_fmt(&mut s, vm, &mut heap_ids).unwrap();
-        Cow::Owned(s)
-    }
-
-    pub fn py_str(&self, vm: &VM<'_, '_, impl ResourceTracker>) -> Cow<'static, str> {
-        match self {
-            // Strings return their value directly without quotes
-            Self::Str(s) => Cow::Owned(s.as_str().to_owned()),
-            // LongInt returns its string representation
-            Self::LongInt(li) => Cow::Owned(li.to_string()),
-            // Exceptions return just the message (or empty string if no message)
-            Self::Exception(e) => Cow::Owned(e.py_str()),
-            // Paths return the path string without the PosixPath() wrapper
-            Self::Path(p) => Cow::Owned(p.as_str().to_owned()),
-            // All other types use repr
-            _ => self.py_repr(vm),
-        }
-    }
 }
 
 impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
@@ -535,7 +467,60 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
         vm: &VM<'h, '_, impl ResourceTracker>,
         heap_ids: &mut AHashSet<HeapId>,
     ) -> std::fmt::Result {
-        todo!()
+        match self {
+            Self::Str(s) => s.py_repr_fmt(f, vm, heap_ids),
+            Self::Bytes(b) => b.py_repr_fmt(f, vm, heap_ids),
+            Self::List(l) => l.py_repr_fmt(f, vm, heap_ids),
+            Self::Tuple(t) => t.py_repr_fmt(f, vm, heap_ids),
+            Self::NamedTuple(nt) => nt.py_repr_fmt(f, vm, heap_ids),
+            Self::Dict(d) => d.py_repr_fmt(f, vm, heap_ids),
+            Self::DictKeysView(view) => view.py_repr_fmt(f, vm, heap_ids),
+            Self::DictItemsView(view) => view.py_repr_fmt(f, vm, heap_ids),
+            Self::DictValuesView(view) => view.py_repr_fmt(f, vm, heap_ids),
+            Self::Set(s) => s.py_repr_fmt(f, vm, heap_ids),
+            Self::FrozenSet(fs) => fs.py_repr_fmt(f, vm, heap_ids),
+            Self::Closure(closure) => vm
+                .interns
+                .get_function(closure.get(vm.heap).func_id)
+                .py_repr_fmt(f, vm.interns, 0),
+            Self::FunctionDefaults(fd) => vm
+                .interns
+                .get_function(fd.get(vm.heap).func_id)
+                .py_repr_fmt(f, vm.interns, 0),
+            Self::Cell(cell) => write!(f, "<cell: {} object>", cell.get(vm.heap).0.py_type(vm.heap)),
+            Self::Range(r) => r.py_repr_fmt(f, vm, heap_ids),
+            Self::Slice(s) => s.py_repr_fmt(f, vm, heap_ids),
+            Self::Exception(e) => e.get(vm.heap).py_repr_fmt(f),
+            Self::Dataclass(dc) => dc.py_repr_fmt(f, vm, heap_ids),
+            Self::Iter(_) => write!(f, "<iterator>"),
+            Self::LongInt(li) => write!(f, "{}", li.get(vm.heap)),
+            Self::Module(m) => write!(f, "<module '{}'>", vm.interns.get_str(m.get(vm.heap).name())),
+            Self::Coroutine(coro) => {
+                let func = vm.interns.get_function(coro.get(vm.heap).func_id);
+                let name = vm.interns.get_str(func.name.name_id);
+                write!(f, "<coroutine object {name}>")
+            }
+            Self::GatherFuture(gather) => write!(f, "<gather({})>", gather.get(vm.heap).item_count()),
+            Self::Path(p) => p.py_repr_fmt(f, vm, heap_ids),
+            Self::ReMatch(m) => m.py_repr_fmt(f, vm, heap_ids),
+            Self::RePattern(p) => p.py_repr_fmt(f, vm, heap_ids),
+            Self::ExtFunction(name) => write!(f, "<function '{}' external>", name.get(vm.heap)),
+        }
+    }
+
+    fn py_str(&self, vm: &VM<'h, '_, impl ResourceTracker>) -> Cow<'static, str> {
+        match self {
+            // Strings return their value directly without quotes
+            Self::Str(s) => Cow::Owned(s.get(vm.heap).as_str().to_owned()),
+            // LongInt returns its string representation
+            Self::LongInt(li) => Cow::Owned(li.get(vm.heap).to_string()),
+            // Exceptions return just the message (or empty string if no message)
+            Self::Exception(e) => Cow::Owned(e.get(vm.heap).py_str()),
+            // Paths return the path string without the PosixPath() wrapper
+            Self::Path(p) => Cow::Owned(p.get(vm.heap).as_str().to_owned()),
+            // All other types use repr
+            _ => self.py_repr(vm),
+        }
     }
 }
 

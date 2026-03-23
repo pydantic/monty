@@ -525,7 +525,7 @@ impl<'h> HeapRead<'h, Dict> {
         for i in 0..len {
             vm.heap.check_time()?;
             // Clone key from self to use as lookup key in other
-            let key = self.clone_key_at(i, vm);
+            let key = self.get(vm.heap).key_at(i).expect("index valid").clone_with_heap(vm);
             defer_drop!(key, vm);
             // Swallow RunErrors from get_cloned (e.g. unhashable key) and treat as not-equal,
             // matching the pattern used in the original Dict::py_eq.
@@ -654,18 +654,14 @@ impl<'h> HeapRead<'h, Dict> {
             let src_id = *id;
             if let HeapReadOutput::Dict(src) = vm.heap.read(src_id) {
                 let len = src.get(vm.heap).entries.len();
-                let mut pairs = Vec::with_capacity(len);
                 for i in 0..len {
-                    let key = src.clone_key_at(i, vm);
-                    let value = src.clone_value_at(i, vm);
-                    pairs.push((key, value));
-                }
-
-                // Apply cloned pairs into self
-                for (key, value) in pairs {
+                    let entry = &src.get(vm.heap).entries[i];
+                    let key = entry.key.clone_with_heap(vm);
+                    let value = entry.value.clone_with_heap(vm);
                     let old_value = self.set(key, value, vm)?;
                     old_value.drop_with_heap(vm);
                 }
+
                 // guard drops other_value here
                 return Ok(());
             }

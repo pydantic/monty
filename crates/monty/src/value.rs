@@ -502,7 +502,7 @@ impl PyTrait<'_> for Value {
                     }
                 } else {
                     heap_ids.insert(*id);
-                    let result = vm.heap.get(*id).py_repr_fmt(f, vm, heap_ids);
+                    let result = vm.heap.read(*id).py_repr_fmt(f, vm, heap_ids);
                     heap_ids.remove(id);
                     result
                 }
@@ -515,7 +515,7 @@ impl PyTrait<'_> for Value {
     fn py_str(&self, vm: &VM<'_, '_, impl ResourceTracker>) -> Cow<'static, str> {
         match self {
             Self::InternString(string_id) => vm.interns.get_str(*string_id).to_owned().into(),
-            Self::Ref(id) => vm.heap.get(*id).py_str(vm),
+            Self::Ref(id) => vm.heap.read(*id).py_str(vm),
             _ => self.py_repr(vm),
         }
     }

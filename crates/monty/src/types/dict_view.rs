@@ -142,22 +142,6 @@ impl DictKeysView {
     }
 }
 
-impl DictKeysView {
-    /// Writes the repr format for a bare `DictKeysView` (not behind `HeapRead`).
-    ///
-    /// Delegates to the same helpers used by the `PyTrait` impl on `HeapRead<DictKeysView>`.
-    pub(crate) fn py_repr_fmt(
-        self,
-        f: &mut impl Write,
-        vm: &VM<'_, '_, impl ResourceTracker>,
-        heap_ids: &mut AHashSet<HeapId>,
-    ) -> std::fmt::Result {
-        f.write_str("dict_keys([")?;
-        write_dict_keys_contents(f, self.dict(vm.heap), vm, heap_ids)?;
-        f.write_str("])")
-    }
-}
-
 impl DictView for DictKeysView {
     fn dict_id(&self) -> HeapId {
         self.dict_id
@@ -330,22 +314,6 @@ impl DictItemsView {
     }
 }
 
-impl DictItemsView {
-    /// Writes the repr format for a bare `DictItemsView` (not behind `HeapRead`).
-    ///
-    /// Delegates to the same helpers used by the `PyTrait` impl on `HeapRead<DictItemsView>`.
-    pub(crate) fn py_repr_fmt(
-        self,
-        f: &mut impl Write,
-        vm: &VM<'_, '_, impl ResourceTracker>,
-        heap_ids: &mut AHashSet<HeapId>,
-    ) -> std::fmt::Result {
-        f.write_str("dict_items([")?;
-        write_dict_items_contents(f, self.dict(vm.heap), vm, heap_ids)?;
-        f.write_str("])")
-    }
-}
-
 impl DictView for DictItemsView {
     fn dict_id(&self) -> HeapId {
         self.dict_id
@@ -434,22 +402,6 @@ impl DictValuesView {
     #[must_use]
     pub fn dict_id(self) -> HeapId {
         self.dict_id
-    }
-}
-
-impl DictValuesView {
-    /// Writes the repr format for a bare `DictValuesView` (not behind `HeapRead`).
-    ///
-    /// Delegates to the same helpers used by the `PyTrait` impl on `HeapRead<DictValuesView>`.
-    pub(crate) fn py_repr_fmt(
-        self,
-        f: &mut impl Write,
-        vm: &VM<'_, '_, impl ResourceTracker>,
-        heap_ids: &mut AHashSet<HeapId>,
-    ) -> std::fmt::Result {
-        f.write_str("dict_values([")?;
-        write_dict_values_contents(f, self.dict(vm.heap), vm, heap_ids)?;
-        f.write_str("])")
     }
 }
 

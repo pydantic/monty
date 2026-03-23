@@ -128,7 +128,7 @@ impl<T: ResourceTracker> HeapReader<'_, T> {
 
 impl<'a, T: ResourceTracker> HeapReader<'a, T> {
     /// Indexes into the heap
-    pub fn read(&mut self, id: HeapId) -> HeapReadOutput<'a> {
+    pub fn read(&self, id: HeapId) -> HeapReadOutput<'a> {
         /// Computes a `HeapRead` from the raw `UnsafeCell` pointer and a shared reference
         /// to the variant field. The `&T` is only used to compute the field's byte offset
         /// within the `HeapData` enum; the returned `NonNull` is derived from the original
@@ -174,7 +174,7 @@ impl<'a, T: ResourceTracker> HeapReader<'a, T> {
             }
         }
 
-        let heap = self.heap.heap_mut();
+        let heap = self.heap.heap();
         let entry = heap.entries.get(id.index());
 
         // Increment the reader count for this entry. The corresponding decrement
