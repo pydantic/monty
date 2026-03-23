@@ -370,6 +370,7 @@ fn value_error_could_not_convert_string_to_float(value: &str) -> RunError {
 /// Handles whitespace stripping and removing `_` separators. Returns `Value::Int` if the value
 /// fits in i64, otherwise allocates a `LongInt` on the heap. Returns `ValueError` on failure.
 fn parse_int_from_str(value: &str, heap: &Heap<impl ResourceTracker>) -> RunResult<Value> {
+    let invalid = || ExcType::value_error_invalid_literal_for_int(value);
     // Try parsing as i64 first (fast path)
     if let Ok(int) = value.parse::<i64>() {
         return Ok(Value::Int(int));
@@ -380,31 +381,50 @@ fn parse_int_from_str(value: &str, heap: &Heap<impl ResourceTracker>) -> RunResu
         return Ok(Value::Int(int));
     }
 
-    // Try with underscores removed
+    // Validate underscore placement before stripping.
+    // CPython rejects: leading _, trailing _, consecutive __, _ right after sign.
+    if !is_valid_int_underscores(trimmed) {
+        return Err(invalid());
+    }
+
+    // Strip underscores after validation
     let normalized = trimmed.replace('_', "");
     if let Ok(int) = normalized.parse::<i64>() {
         Ok(Value::Int(int))
     } else if normalized.len() > INT_MAX_STR_DIGITS {
-        // Short strings can't exceed the digit limit — go straight to BigInt parse.
-        // Only do the more expensive validation when the string is long enough to matter.
+        // Only do detailed validation when the string is long enough to possibly
+        // exceed the digit limit — avoids the O(n) scan on short strings.
         let digit_count = normalized.bytes().filter(u8::is_ascii_digit).count();
         let has_sign = normalized.starts_with(['+', '-']);
-        let expected_len = digit_count + usize::from(has_sign);
 
-        // If the string has non-digit/non-sign chars it's invalid.
-        // Check this BEFORE the digit limit so "invalid literal" takes precedence.
-        if expected_len == normalized.len() {
-            // Syntactically valid but too many digits for the O(n^2) decimal parse
+        if digit_count + usize::from(has_sign) != normalized.len() || digit_count == 0 {
+            // Non-digit chars present → "invalid literal" takes precedence
+            Err(invalid())
+        } else if digit_count > INT_MAX_STR_DIGITS {
             Err(ExcType::value_error_int_str_too_large(digit_count))
         } else {
-            Err(ExcType::value_error_invalid_literal_for_int(StringRepr(value)))
+            // Sign pushed length over limit but digit count is within it — parse is safe
+            let bi = normalized.parse::<BigInt>().map_err(|_| invalid())?;
+            Ok(LongInt::new(bi).into_value(heap)?)
         }
     } else if let Ok(bi) = normalized.parse::<BigInt>() {
-        // Within the digit limit — try BigInt parse
         Ok(LongInt::new(bi).into_value(heap)?)
     } else {
-        Err(ExcType::value_error_invalid_literal_for_int(StringRepr(value)))
+        Err(invalid())
     }
+}
+
+/// Validates underscore placement in an integer literal string.
+///
+/// Returns `false` for: leading `_`, trailing `_`, consecutive `__`,
+/// or `_` immediately after a sign character. Matches CPython's rules.
+fn is_valid_int_underscores(s: &str) -> bool {
+    if !s.contains('_') {
+        return true;
+    }
+    let digits = s.strip_prefix(['+', '-']).unwrap_or(s);
+    // No leading or trailing underscores, no consecutive underscores
+    !digits.starts_with('_') && !digits.ends_with('_') && !digits.contains("__")
 }
 
 /// Dispatches a classmethod call on a type object.
