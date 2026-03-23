@@ -302,7 +302,7 @@ impl<'a> Parser<'a> {
                         range,
                         ..
                     }) => Ok(Node::SubscriptOpAssign {
-                        target: self.parse_identifier(*object)?,
+                        target: self.parse_expression(*object)?,
                         index: self.parse_expression(*slice)?,
                         op,
                         object: value,
@@ -532,7 +532,7 @@ impl<'a> Parser<'a> {
             AstExpr::Subscript(ast::ExprSubscript {
                 value, slice, range, ..
             }) => Ok(Node::SubscriptAssign {
-                target: self.parse_identifier(*value)?,
+                target: self.parse_expression(*value)?,
                 index: self.parse_expression(*slice)?,
                 value: self.parse_expression(rhs)?,
                 target_position: self.convert_range(range),

@@ -309,7 +309,7 @@ impl<'a> Compiler<'a> {
                         *target_position,
                     ));
                 };
-                self.compile_name(target);
+                self.compile_expr(target)?;
                 self.compile_expr(index)?;
                 self.code.emit(Opcode::Dup2);
                 self.code.set_location(*target_position, None);
@@ -328,7 +328,7 @@ impl<'a> Compiler<'a> {
             } => {
                 // Stack order for StoreSubscr: value, obj, index
                 self.compile_expr(value)?;
-                self.compile_name(target);
+                self.compile_expr(target)?;
                 self.compile_expr(index)?;
                 // Set location to the target (e.g., `lst[10]`) for proper caret in tracebacks
                 self.code.set_location(*target_position, None);

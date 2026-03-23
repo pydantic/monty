@@ -471,3 +471,45 @@ try:
     assert False, 'expected TypeError for non-iterable heap closure in list unpack'
 except TypeError:
     pass
+
+# === Nested subscript assignment ===
+a = [[1, 2, 3], [4, 5, 6]]
+a[0][2] = 99
+assert a[0][2] == 99, 'nested list subscript assign'
+assert a == [[1, 2, 99], [4, 5, 6]], 'nested assign preserves other sublists'
+
+# === Nested subscript augmented assignment ===
+a = [[1, 2, 3]]
+a[0][2] += 1
+assert a == [[1, 2, 4]], 'nested list augmented assign +='
+
+a = [[10, 20], [30, 40]]
+a[1][0] -= 5
+assert a == [[10, 20], [25, 40]], 'nested list augmented assign -='
+
+# === Triple nesting ===
+a = [[[0]]]
+a[0][0][0] = 7
+assert a[0][0][0] == 7, 'triple nested assign'
+
+a = [[[10]]]
+a[0][0][0] += 1
+assert a[0][0][0] == 11, 'triple nested augmented assign'
+
+# === Mixed dict-list nesting ===
+d = {'k': [1, 2, 3]}
+d['k'][0] = 100
+assert d['k'] == [100, 2, 3], 'dict-list nested assign'
+
+d = {'k': [1, 2, 3]}
+d['k'][0] += 100
+assert d['k'] == [101, 2, 3], 'dict-list nested augmented assign'
+
+# === Nested dict assignment ===
+d = {'a': {'x': 1, 'y': 2}}
+d['a']['y'] = 42
+assert d['a']['y'] == 42, 'nested dict subscript assign'
+
+d = {'a': {'x': 1}}
+d['a']['x'] += 10
+assert d['a']['x'] == 11, 'nested dict augmented assign'
