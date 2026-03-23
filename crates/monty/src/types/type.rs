@@ -386,6 +386,9 @@ fn parse_int_from_str(value: &str, heap: &Heap<impl ResourceTracker>) -> RunResu
         return Ok(Value::Int(int));
     }
 
+    // Check digit limit before the expensive O(n^2) BigInt parse
+    LongInt::check_parse_digits_limit(&normalized)?;
+
     // Try parsing as BigInt for values too large for i64
     if let Ok(bi) = normalized.parse::<BigInt>() {
         return Ok(LongInt::new(bi).into_value(heap)?);

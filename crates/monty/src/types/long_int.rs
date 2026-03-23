@@ -19,10 +19,22 @@ use num_bigint::BigInt;
 use num_traits::{Signed, ToPrimitive, Zero};
 
 use crate::{
+    exception_private::{ExcType, RunResult},
     heap::{Heap, HeapData},
+    intern::Interns,
     resource::{ResourceError, ResourceTracker},
     value::Value,
 };
+
+/// Maximum number of decimal digits allowed for integer-string conversion.
+///
+/// Matches CPython 3.11+'s `sys.int_max_str_digits` default (4300).
+/// This limit prevents O(n^2) DoS attacks when converting very large integers
+/// to/from decimal strings. The limit only applies to base-10 conversions;
+/// bin/hex/oct use O(n) algorithms and are unrestricted.
+///
+/// This is a hardcoded safety limit, not configurable from Python code.
+pub(crate) const INT_MAX_STR_DIGITS: u64 = 4300;
 
 /// Wrapper around `num_bigint::BigInt` for arbitrary precision integers.
 ///
@@ -156,6 +168,65 @@ impl LongInt {
     pub fn bits(&self) -> u64 {
         self.0.bits()
     }
+
+    /// Checks whether converting this LongInt to a decimal string would exceed
+    /// the `INT_MAX_STR_DIGITS` limit.
+    ///
+    /// Uses a fast bit-count estimate: `estimated_digits = bits * 30103 / 100000 + 1`.
+    /// Since `log10(2) ≈ 0.30103`, this gives an upper bound on the actual decimal digit
+    /// count without performing the expensive O(n^2) conversion.
+    pub fn check_str_digits_limit(&self) -> RunResult<()> {
+        check_bits_str_digits_limit(self.bits())
+    }
+
+    /// Checks whether a decimal string has too many digits for `int()` conversion.
+    ///
+    /// Counts ASCII digit characters in the string (after normalization). The sign
+    /// character and underscores should already be removed by the caller.
+    /// Should be called BEFORE `BigInt::parse()` to prevent the O(n^2) parsing
+    /// from running on oversized inputs.
+    pub fn check_parse_digits_limit(normalized: &str) -> RunResult<()> {
+        let digit_count = normalized.bytes().filter(u8::is_ascii_digit).count();
+        if digit_count as u64 > INT_MAX_STR_DIGITS {
+            return Err(ExcType::value_error_int_str_too_large(digit_count));
+        }
+        Ok(())
+    }
+}
+
+/// Checks whether a value that is about to be converted to a decimal string
+/// exceeds the `INT_MAX_STR_DIGITS` limit.
+///
+/// Only `LongInt` values (heap-allocated or interned) need checking — `Value::Int(i64)`
+/// has at most 20 decimal digits, well within the 4300 limit. Returns `Ok(())` for
+/// non-integer values since they don't trigger this limit.
+pub fn check_value_str_digits(value: &Value, heap: &Heap<impl ResourceTracker>, interns: &Interns) -> RunResult<()> {
+    match value {
+        Value::Ref(id) => {
+            if let HeapData::LongInt(li) = heap.get(*id) {
+                li.check_str_digits_limit()
+            } else {
+                Ok(())
+            }
+        }
+        Value::InternLongInt(long_int_id) => {
+            let bi = interns.get_long_int(*long_int_id);
+            check_bits_str_digits_limit(bi.bits())
+        }
+        _ => Ok(()),
+    }
+}
+
+/// Checks whether an integer with the given bit count would exceed the decimal
+/// digit limit when converted to a string.
+fn check_bits_str_digits_limit(bits: u64) -> RunResult<()> {
+    // log10(2) ≈ 0.30103 = 30103/100000
+    // estimated_digits is an upper bound on the actual decimal digit count.
+    let estimated_digits = bits.saturating_mul(30103) / 100_000 + 1;
+    if estimated_digits > INT_MAX_STR_DIGITS {
+        return Err(ExcType::value_error_int_too_large_for_str());
+    }
+    Ok(())
 }
 
 // === Trait Implementations ===

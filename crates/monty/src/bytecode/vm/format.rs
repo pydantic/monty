@@ -6,7 +6,7 @@ use crate::{
     exception_private::{ExcType, RunError, SimpleException},
     fstring::{ParsedFormatSpec, ascii_escape, decode_format_spec, format_string, format_with_spec},
     resource::{ResourceTracker, check_repeat_size},
-    types::{PyTrait, str::allocate_string},
+    types::{PyTrait, long_int::check_value_str_digits, str::allocate_string},
     value::Value,
 };
 
@@ -54,6 +54,9 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
 
         let value = this.pop();
         defer_drop!(value, this);
+
+        // Guard against O(n^2) decimal conversion of huge integers
+        check_value_str_digits(value, this.heap, this.interns)?;
 
         // Format with spec applied to original value type, or convert and format as string
         let formatted = if let Some(spec_value) = format_spec {

@@ -19,6 +19,7 @@ use crate::{
     resource::ResourceTracker,
     types::{
         PyTrait, Str, Type, allocate_tuple,
+        long_int::INT_MAX_STR_DIGITS,
         str::{StringRepr, string_repr_fmt},
     },
     value::{EitherStr, Value},
@@ -920,6 +921,31 @@ impl ExcType {
             frame: None,
             hide_caret: true,
         })
+    }
+
+    /// Creates a ValueError when an integer is too large to convert to a decimal string.
+    ///
+    /// Matches CPython 3.11+'s `sys.int_max_str_digits` behavior but omits the
+    /// `sys.set_int_max_str_digits()` advice since Monty does not expose that API.
+    #[must_use]
+    pub(crate) fn value_error_int_too_large_for_str() -> RunError {
+        SimpleException::new_msg(
+            Self::ValueError,
+            format!("Exceeds the limit ({INT_MAX_STR_DIGITS} digits) for integer string conversion"),
+        )
+        .into()
+    }
+
+    /// Creates a ValueError when a decimal string has too many digits for `int()` conversion.
+    ///
+    /// Includes the actual digit count to help users diagnose the issue.
+    #[must_use]
+    pub(crate) fn value_error_int_str_too_large(digit_count: usize) -> RunError {
+        SimpleException::new_msg(
+            Self::ValueError,
+            format!("Exceeds the limit ({INT_MAX_STR_DIGITS} digits) for integer string conversion: value has {digit_count} digits"),
+        )
+        .into()
     }
 
     /// Creates a ValueError for negative shift count in bitwise shift operations.
