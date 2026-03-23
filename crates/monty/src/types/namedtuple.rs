@@ -24,7 +24,7 @@ use crate::{
     bytecode::VM,
     defer_drop,
     exception_private::{ExcType, RunResult},
-    heap::{Heap, HeapId, HeapItem, HeapRead},
+    heap::{HeapId, HeapItem, HeapRead},
     intern::{Interns, StringId},
     resource::{ResourceError, ResourceTracker},
     types::Type,
@@ -214,7 +214,7 @@ impl<'h> HeapRead<'h, NamedTuple> {
 /// (py_type, py_len, py_bool, py_repr_fmt). All mutable-VM operations (py_eq, py_getitem)
 /// are on `HeapRead<NamedTuple>` below.
 impl PyTrait<'_> for NamedTuple {
-    fn py_type(&self, _vm: &VM<'h, '_, impl ResourceTracker>) -> Type {
+    fn py_type(&self, _vm: &VM<'_, '_, impl ResourceTracker>) -> Type {
         Type::NamedTuple
     }
 

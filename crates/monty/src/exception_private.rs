@@ -1208,7 +1208,7 @@ impl SimpleException {
 
 impl<'h> HeapRead<'h, SimpleException> {
     pub(crate) fn py_type(&self, vm: &VM<'h, '_, impl ResourceTracker>) -> Type {
-        Type::Exception(self.exc_type)
+        Type::Exception(self.get(vm.heap).exc_type)
     }
 }
 

@@ -8,10 +8,10 @@ use crate::{
     bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{ExcType, RunError, RunResult},
-    heap::{DropWithHeap, Heap, HeapData, HeapId, HeapItem, HeapRead, HeapReadOutput},
+    heap::{DropWithHeap, Heap, HeapData, HeapGuard, HeapId, HeapItem, HeapRead, HeapReadOutput},
     intern::StaticStrings,
     resource::{ResourceError, ResourceTracker},
-    types::{Dict, FrozenSet, MontyIter, PyTrait, Set, Type, allocate_tuple, iter::advance_on_heap},
+    types::{Dict, FrozenSet, MontyIter, PyTrait, Set, Type, allocate_tuple},
     value::Value,
 };
 
@@ -602,23 +602,22 @@ pub(crate) fn collect_iterable_to_set(
     value: Value,
     vm: &mut VM<'_, '_, impl ResourceTracker>,
 ) -> Result<Set, RunError> {
-    let is_existing_iterator =
-        matches!(&value, Value::Ref(heap_id) if matches!(vm.heap.get(*heap_id), HeapData::Iter(_)));
+    let mut value_guard = HeapGuard::new(value, vm);
+    let (value, vm) = value_guard.as_parts_mut();
 
-    if is_existing_iterator {
-        let mut iterable_guard = crate::heap::HeapGuard::new(value, vm);
-        let (iterable, vm) = iterable_guard.as_parts_mut();
-        let Value::Ref(iter_id) = iterable else {
-            unreachable!("existing iterator check should guarantee a heap iterator");
-        };
-        let mut set_guard = crate::heap::HeapGuard::new(Set::new(), vm);
+    // Fast path existing iterators
+    if let Value::Ref(heap_id) = value
+        && let HeapReadOutput::Iter(mut iter) = vm.heap.read(*heap_id)
+    {
+        let mut set_guard = HeapGuard::new(Set::new(), vm);
         let (set, vm) = set_guard.as_parts_mut();
-        while let Some(item) = advance_on_heap(vm, *iter_id)? {
+        while let Some(item) = iter.advance(vm)? {
             set.add(item, vm)?;
         }
         return Ok(set_guard.into_inner());
     }
 
+    let (value, vm) = value_guard.into_parts();
     let iter = MontyIter::new(value, vm)?;
     crate::defer_drop_mut!(iter, vm);
     let mut set_guard = crate::heap::HeapGuard::new(Set::with_capacity(iter.size_hint(vm.heap)), vm);

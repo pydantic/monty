@@ -20,7 +20,7 @@ use crate::{
     args::ArgValues,
     bytecode::{CallResult, VM},
     exception_private::{ExcType, RunResult, SimpleException},
-    heap::{DropWithHeap, Heap, HeapId},
+    heap::{DropWithHeap, HeapId},
     resource::ResourceTracker,
     value::{EitherStr, Value},
 };

@@ -1335,7 +1335,7 @@ impl PyTrait<'_> for Value {
                             let heap_id = vm.heap.allocate(HeapData::Str(Str::from(result_str)))?;
                             return Ok(Self::Ref(heap_id));
                         }
-                        let index = key.as_index(vm.heap, Type::Str)?;
+                        let index = key.as_index(vm, Type::Str)?;
                         let c =
                             get_char_at_index(s.get(vm.heap).as_str(), index).ok_or_else(ExcType::str_index_error)?;
                         Ok(allocate_char(c, vm.heap)?)
@@ -1353,7 +1353,7 @@ impl PyTrait<'_> for Value {
                             let heap_id = vm.heap.allocate(HeapData::Bytes(crate::types::Bytes::new(sliced)))?;
                             return Ok(Self::Ref(heap_id));
                         }
-                        let index = key.as_index(vm.heap, Type::Bytes)?;
+                        let index = key.as_index(vm, Type::Bytes)?;
                         let byte = get_byte_at_index(b.get(vm.heap).as_slice(), index)
                             .ok_or_else(ExcType::bytes_index_error)?;
                         Ok(Self::Int(i64::from(byte)))
@@ -1371,7 +1371,7 @@ impl PyTrait<'_> for Value {
                             let items = collect_tuple_slice_items(&tuple, start, stop, step, vm)?;
                             return Ok(crate::types::allocate_tuple(items.into(), vm.heap)?);
                         }
-                        let index = key.as_index(vm.heap, Type::Tuple)?;
+                        let index = key.as_index(vm, Type::Tuple)?;
                         let len = tuple.get(vm.heap).as_slice().len();
                         let len_i64 = i64::try_from(len).expect("tuple length exceeds i64::MAX");
                         let normalized = if index < 0 { index + len_i64 } else { index };
@@ -1420,7 +1420,7 @@ impl PyTrait<'_> for Value {
                             // Borrow released. Delegate to the slice computation.
                             return range_getitem_slice(r_start, r_step, r_len, &slice_obj, vm.heap);
                         }
-                        let index = key.as_index(vm.heap, Type::Range)?;
+                        let index = key.as_index(vm, Type::Range)?;
                         let r = range.get(vm.heap);
                         let len = i64::try_from(r.len()).expect("range length exceeds i64::MAX");
                         let r_start = r.start;
@@ -1916,7 +1916,6 @@ impl Value {
         let attr_name = vm.interns.get_str(name_id);
 
         if let Self::Ref(heap_id) = self {
-            #[expect(clippy::single_match_else, reason = "expect this to grow in future")]
             match vm.heap.read(*heap_id) {
                 HeapReadOutput::Dataclass(mut dc) => {
                     let old_value = dc.set_attr(Self::InternString(name_id), value, vm)?;
@@ -3056,7 +3055,7 @@ mod tests {
     use num_bigint::BigInt;
 
     use super::*;
-    use crate::resource::NoLimitTracker;
+    use crate::{PrintWriter, heap::HeapReader, intern::InternerBuilder, resource::NoLimitTracker};
 
     /// Creates a heap and directly allocates a LongInt with the given BigInt value.
     ///
@@ -3069,6 +3068,12 @@ mod tests {
         (heap, heap_id)
     }
 
+    /// Creates a minimal Interns for testing.
+    fn create_test_interns() -> Interns {
+        let interner = InternerBuilder::new("");
+        Interns::new(interner, vec![])
+    }
+
     /// Tests that `as_index()` correctly handles a LongInt containing an i64-fitting value.
     ///
     /// This tests a defensive code path that's normally unreachable because
@@ -3079,7 +3084,11 @@ mod tests {
         let (mut heap, heap_id) = create_heap_with_longint(BigInt::from(42));
         let value = Value::Ref(heap_id);
 
-        let result = value.as_index(&heap, Type::List);
+        let result = HeapReader::with(&mut heap, |heap| {
+            let interns = create_test_interns();
+            let vm = VM::new(Vec::new(), heap, &interns, PrintWriter::Disabled);
+            value.as_index(&vm, Type::List)
+        });
         assert_eq!(result.unwrap(), 42);
         value.drop_with_heap(&mut heap);
     }
@@ -3090,7 +3099,11 @@ mod tests {
         let (mut heap, heap_id) = create_heap_with_longint(BigInt::from(-100));
         let value = Value::Ref(heap_id);
 
-        let result = value.as_index(&heap, Type::List);
+        let result = HeapReader::with(&mut heap, |heap| {
+            let interns = create_test_interns();
+            let vm = VM::new(Vec::new(), heap, &interns, PrintWriter::Disabled);
+            value.as_index(&vm, Type::List)
+        });
         assert_eq!(result.unwrap(), -100);
         value.drop_with_heap(&mut heap);
     }
@@ -3103,7 +3116,11 @@ mod tests {
         let (mut heap, heap_id) = create_heap_with_longint(big_value);
         let value = Value::Ref(heap_id);
 
-        let result = value.as_index(&heap, Type::List);
+        let result = HeapReader::with(&mut heap, |heap| {
+            let interns = create_test_interns();
+            let vm = VM::new(Vec::new(), heap, &interns, PrintWriter::Disabled);
+            value.as_index(&vm, Type::List)
+        });
         assert!(result.is_err());
         value.drop_with_heap(&mut heap);
     }
@@ -3116,7 +3133,11 @@ mod tests {
         let (mut heap, heap_id) = create_heap_with_longint(BigInt::from(12345));
         let value = Value::Ref(heap_id);
 
-        let result = value.as_int(&heap);
+        let result = HeapReader::with(&mut heap, |heap| {
+            let interns = create_test_interns();
+            let vm = VM::new(Vec::new(), heap, &interns, PrintWriter::Disabled);
+            value.as_int(&vm)
+        });
         assert_eq!(result.unwrap(), 12345);
         value.drop_with_heap(&mut heap);
     }
@@ -3128,7 +3149,11 @@ mod tests {
         let (mut heap, heap_id) = create_heap_with_longint(big_value);
         let value = Value::Ref(heap_id);
 
-        let result = value.as_int(&heap);
+        let result = HeapReader::with(&mut heap, |heap| {
+            let interns = create_test_interns();
+            let vm = VM::new(Vec::new(), heap, &interns, PrintWriter::Disabled);
+            value.as_int(&vm)
+        });
         assert!(result.is_err());
         value.drop_with_heap(&mut heap);
     }
@@ -3139,7 +3164,11 @@ mod tests {
         let (mut heap, heap_id) = create_heap_with_longint(BigInt::from(i64::MAX));
         let value = Value::Ref(heap_id);
 
-        let result = value.as_index(&heap, Type::List);
+        let result = HeapReader::with(&mut heap, |heap| {
+            let interns = create_test_interns();
+            let vm = VM::new(Vec::new(), heap, &interns, PrintWriter::Disabled);
+            value.as_index(&vm, Type::List)
+        });
         assert_eq!(result.unwrap(), i64::MAX);
         value.drop_with_heap(&mut heap);
     }
@@ -3150,7 +3179,11 @@ mod tests {
         let (mut heap, heap_id) = create_heap_with_longint(BigInt::from(i64::MIN));
         let value = Value::Ref(heap_id);
 
-        let result = value.as_index(&heap, Type::List);
+        let result = HeapReader::with(&mut heap, |heap| {
+            let interns = create_test_interns();
+            let vm = VM::new(Vec::new(), heap, &interns, PrintWriter::Disabled);
+            value.as_index(&vm, Type::List)
+        });
         assert_eq!(result.unwrap(), i64::MIN);
         value.drop_with_heap(&mut heap);
     }
@@ -3162,7 +3195,11 @@ mod tests {
         let (mut heap, heap_id) = create_heap_with_longint(big_value);
         let value = Value::Ref(heap_id);
 
-        let result = value.as_index(&heap, Type::List);
+        let result = HeapReader::with(&mut heap, |heap| {
+            let interns = create_test_interns();
+            let vm = VM::new(Vec::new(), heap, &interns, PrintWriter::Disabled);
+            value.as_index(&vm, Type::List)
+        });
         assert!(result.is_err());
         value.drop_with_heap(&mut heap);
     }
@@ -3174,7 +3211,11 @@ mod tests {
         let (mut heap, heap_id) = create_heap_with_longint(big_value);
         let value = Value::Ref(heap_id);
 
-        let result = value.as_index(&heap, Type::List);
+        let result = HeapReader::with(&mut heap, |heap| {
+            let interns = create_test_interns();
+            let vm = VM::new(Vec::new(), heap, &interns, PrintWriter::Disabled);
+            value.as_index(&vm, Type::List)
+        });
         assert!(result.is_err());
         value.drop_with_heap(&mut heap);
     }

@@ -29,8 +29,8 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
                 Ok(())
             }
             Ok(None) => {
-                let lhs_type = lhs.py_type(this.heap);
-                let rhs_type = rhs.py_type(this.heap);
+                let lhs_type = lhs.py_type(this);
+                let rhs_type = rhs.py_type(this);
                 Err(ExcType::binary_type_error("+", lhs_type, rhs_type))
             }
             Err(e) => Err(e.into()),
@@ -67,8 +67,8 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
                 Ok(())
             }
             Ok(None) => {
-                let lhs_type = lhs.py_type(this.heap);
-                let rhs_type = rhs.py_type(this.heap);
+                let lhs_type = lhs.py_type(this);
+                let rhs_type = rhs.py_type(this);
                 Err(ExcType::binary_type_error("-", lhs_type, rhs_type))
             }
             Err(e) => Err(e.into()),
@@ -92,8 +92,8 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
                 Ok(())
             }
             Ok(None) => {
-                let lhs_type = lhs.py_type(this.heap);
-                let rhs_type = rhs.py_type(this.heap);
+                let lhs_type = lhs.py_type(this);
+                let rhs_type = rhs.py_type(this);
                 Err(ExcType::binary_type_error("*", lhs_type, rhs_type))
             }
             Err(e) => Err(e),
@@ -117,8 +117,8 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
                 Ok(())
             }
             Ok(None) => {
-                let lhs_type = lhs.py_type(this.heap);
-                let rhs_type = rhs.py_type(this.heap);
+                let lhs_type = lhs.py_type(this);
+                let rhs_type = rhs.py_type(this);
                 Err(ExcType::binary_type_error("/", lhs_type, rhs_type))
             }
             Err(e) => Err(e),
@@ -142,8 +142,8 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
                 Ok(())
             }
             Ok(None) => {
-                let lhs_type = lhs.py_type(this.heap);
-                let rhs_type = rhs.py_type(this.heap);
+                let lhs_type = lhs.py_type(this);
+                let rhs_type = rhs.py_type(this);
                 Err(ExcType::binary_type_error("//", lhs_type, rhs_type))
             }
             Err(e) => Err(e),
@@ -167,8 +167,8 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
                 Ok(())
             }
             Ok(None) => {
-                let lhs_type = lhs.py_type(this.heap);
-                let rhs_type = rhs.py_type(this.heap);
+                let lhs_type = lhs.py_type(this);
+                let rhs_type = rhs.py_type(this);
                 Err(ExcType::binary_type_error("%", lhs_type, rhs_type))
             }
             Err(e) => Err(e),
@@ -193,8 +193,8 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
                 Ok(())
             }
             Ok(None) => {
-                let lhs_type = lhs.py_type(this.heap);
-                let rhs_type = rhs.py_type(this.heap);
+                let lhs_type = lhs.py_type(this);
+                let rhs_type = rhs.py_type(this);
                 Err(ExcType::binary_type_error("** or pow()", lhs_type, rhs_type))
             }
             Err(e) => Err(e),
@@ -230,7 +230,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
             return Ok(());
         }
 
-        let result = lhs.py_bitwise(rhs, op, this.heap)?;
+        let result = lhs.py_bitwise(rhs, op, this)?;
         this.push(result);
         Ok(())
     }
@@ -258,7 +258,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
             return Ok(());
         }
 
-        let result = lhs.py_bitwise(rhs, BitwiseOp::And, this.heap)?;
+        let result = lhs.py_bitwise(rhs, BitwiseOp::And, this)?;
         this.push(result);
         Ok(())
     }
@@ -282,7 +282,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
             return Ok(());
         }
 
-        let result = lhs.py_bitwise(rhs, BitwiseOp::Or, this.heap)?;
+        let result = lhs.py_bitwise(rhs, BitwiseOp::Or, this)?;
         this.push(result);
         Ok(())
     }
@@ -306,7 +306,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
             return Ok(());
         }
 
-        let result = lhs.py_bitwise(rhs, BitwiseOp::Xor, this.heap)?;
+        let result = lhs.py_bitwise(rhs, BitwiseOp::Xor, this)?;
         this.push(result);
         Ok(())
     }
@@ -343,8 +343,8 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
             return Ok(());
         }
 
-        let lhs_type = lhs.py_type(this.heap);
-        let rhs_type = rhs.py_type(this.heap);
+        let lhs_type = lhs.py_type(this);
+        let rhs_type = rhs.py_type(this);
         Err(ExcType::binary_type_error("+=", lhs_type, rhs_type))
     }
 

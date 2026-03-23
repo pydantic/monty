@@ -20,13 +20,6 @@ use std::fmt::Write;
 use ahash::AHashSet;
 use smallvec::SmallVec;
 
-/// Inline capacity for small tuples. Tuples with 2 or fewer elements avoid
-/// heap allocation for the items storage.
-const TUPLE_INLINE_CAPACITY: usize = 3;
-
-/// Storage type for tuple items. Uses SmallVec to inline small tuples.
-pub(crate) type TupleVec = SmallVec<[Value; TUPLE_INLINE_CAPACITY]>;
-
 use super::{MontyIter, PyTrait};
 use crate::{
     args::ArgValues,
@@ -39,6 +32,13 @@ use crate::{
     types::Type,
     value::{EitherStr, Value},
 };
+
+/// Inline capacity for small tuples. Tuples with 2 or fewer elements avoid
+/// heap allocation for the items storage.
+const TUPLE_INLINE_CAPACITY: usize = 3;
+
+/// Storage type for tuple items. Uses SmallVec to inline small tuples.
+pub(crate) type TupleVec = SmallVec<[Value; TUPLE_INLINE_CAPACITY]>;
 
 /// Python tuple value stored on the heap.
 ///
@@ -251,7 +251,7 @@ impl<'h> HeapRead<'h, Tuple> {
 /// (py_type, py_len, py_bool, py_repr_fmt). All mutable-VM operations (py_eq, py_cmp,
 /// py_add, py_getitem, py_call_attr) are on `HeapRead<Tuple>` below.
 impl PyTrait<'_> for Tuple {
-    fn py_type(&self, _vm: &VM<'h, '_, impl ResourceTracker>) -> Type {
+    fn py_type(&self, _vm: &VM<'_, '_, impl ResourceTracker>) -> Type {
         Type::Tuple
     }
 
@@ -379,7 +379,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Tuple> {
         }
 
         // Extract integer index, accepting Int, Bool (True=1, False=0), and LongInt
-        let index = key.as_index(vm.heap, Type::Tuple)?;
+        let index = key.as_index(vm, Type::Tuple)?;
         let len = self.get(vm.heap).as_slice().len();
         let len_i64 = i64::try_from(len).expect("tuple length exceeds i64::MAX");
         let normalized = if index < 0 { index + len_i64 } else { index };
@@ -426,12 +426,12 @@ impl<'h> HeapRead<'h, Tuple> {
             [] => return Err(ExcType::type_error_at_least("tuple.index", 1, 0)),
             [value] => (value, 0, len),
             [value, start_arg] => {
-                let start = normalize_tuple_index(start_arg.as_int(vm.heap)?, len);
+                let start = normalize_tuple_index(start_arg.as_int(vm)?, len);
                 (value, start, len)
             }
             [value, start_arg, end_arg] => {
-                let start = normalize_tuple_index(start_arg.as_int(vm.heap)?, len);
-                let end = normalize_tuple_index(end_arg.as_int(vm.heap)?, len).max(start);
+                let start = normalize_tuple_index(start_arg.as_int(vm)?, len);
+                let end = normalize_tuple_index(end_arg.as_int(vm)?, len).max(start);
                 (value, start, end)
             }
             other => return Err(ExcType::type_error_at_most("tuple.index", 3, other.len())),

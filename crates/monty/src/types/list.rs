@@ -10,7 +10,7 @@ use crate::{
     bytecode::{CallResult, VM},
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, RunError, RunResult},
-    heap::{DropWithHeap, Heap, HeapData, HeapGuard, HeapId, HeapItem, HeapRead, HeapReadOutput},
+    heap::{DropWithHeap, HeapData, HeapGuard, HeapId, HeapItem, HeapRead, HeapReadOutput},
     intern::StaticStrings,
     resource::{ResourceError, ResourceTracker},
     sorting::{apply_permutation, sort_indices},
@@ -236,7 +236,7 @@ impl<'h> HeapRead<'h, List> {
         let (index_obj, item) = args.get_two_args("insert", vm.heap)?;
         defer_drop!(index_obj, vm);
 
-        let index_i64 = index_obj.as_int(vm.heap)?;
+        let index_i64 = index_obj.as_int(vm)?;
         let len = self.get(vm.heap).items.len();
         let len_i64 = i64::try_from(len).expect("list length exceeds i64::MAX");
         let index = if index_i64 < 0 {
@@ -261,7 +261,7 @@ impl<'h> HeapRead<'h, List> {
         let index_arg = args.get_zero_one_arg("list.pop", vm.heap)?;
 
         let index_i64 = if let Some(v) = index_arg {
-            let result = v.as_int(vm.heap);
+            let result = v.as_int(vm);
             v.drop_with_heap(vm);
             result?
         } else {
@@ -350,12 +350,12 @@ impl<'h> HeapRead<'h, List> {
             [] => return Err(ExcType::type_error_at_least("list.index", 1, 0)),
             [value] => (value, 0, len),
             [value, start_arg] => {
-                let start = normalize_list_index(start_arg.as_int(vm.heap)?, len);
+                let start = normalize_list_index(start_arg.as_int(vm)?, len);
                 (value, start, len)
             }
             [value, start_arg, end_arg] => {
-                let start = normalize_list_index(start_arg.as_int(vm.heap)?, len);
-                let end = normalize_list_index(end_arg.as_int(vm.heap)?, len).max(start);
+                let start = normalize_list_index(start_arg.as_int(vm)?, len);
+                let end = normalize_list_index(end_arg.as_int(vm)?, len).max(start);
                 (value, start, end)
             }
             other => return Err(ExcType::type_error_at_most("list.index", 3, other.len())),
@@ -575,7 +575,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, List> {
             return Ok(Value::Ref(heap_id));
         }
 
-        let index = key.as_index(vm.heap, Type::List)?;
+        let index = key.as_index(vm, Type::List)?;
         let len = i64::try_from(self.get(vm.heap).len()).expect("list length exceeds i64::MAX");
         let normalized = if index < 0 { index + len } else { index };
 
@@ -775,7 +775,7 @@ mod tests {
     use super::*;
     use crate::{
         PrintWriter,
-        heap::HeapReader,
+        heap::{Heap, HeapReader},
         intern::{InternerBuilder, Interns},
         resource::NoLimitTracker,
         types::LongInt,

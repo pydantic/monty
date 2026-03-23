@@ -252,32 +252,30 @@ impl Type {
 
             // Primitive types - inline implementation
             Self::Int => {
-                let heap = &mut *vm.heap;
                 let interns = vm.interns;
-                let Some(v) = args.get_zero_one_arg("int", heap)? else {
+                let Some(v) = args.get_zero_one_arg("int", vm.heap)? else {
                     return Ok(Value::Int(0));
                 };
-                defer_drop!(v, heap);
+                defer_drop!(v, vm);
                 match v {
                     Value::Int(i) => Ok(Value::Int(*i)),
                     Value::Float(f) => Ok(Value::Int(f64_to_i64_truncate(*f))),
                     Value::Bool(b) => Ok(Value::Int(i64::from(*b))),
-                    Value::InternString(string_id) => parse_int_from_str(interns.get_str(*string_id), heap),
-                    Value::Ref(heap_id) => match heap.get(*heap_id) {
-                        HeapData::Str(s) => parse_int_from_str(s.as_str(), heap),
-                        HeapData::LongInt(_) => Ok(v.clone_with_heap(heap)),
-                        _ => Err(ExcType::type_error_int_conversion(v.py_type(heap))),
+                    Value::InternString(string_id) => parse_int_from_str(interns.get_str(*string_id), vm.heap),
+                    Value::Ref(heap_id) => match vm.heap.get(*heap_id) {
+                        HeapData::Str(s) => parse_int_from_str(s.as_str(), vm.heap),
+                        HeapData::LongInt(_) => Ok(v.clone_with_heap(vm.heap)),
+                        _ => Err(ExcType::type_error_int_conversion(v.py_type(vm))),
                     },
-                    _ => Err(ExcType::type_error_int_conversion(v.py_type(heap))),
+                    _ => Err(ExcType::type_error_int_conversion(v.py_type(vm))),
                 }
             }
             Self::Float => {
-                let heap = &mut *vm.heap;
                 let interns = vm.interns;
-                let Some(v) = args.get_zero_one_arg("float", heap)? else {
+                let Some(v) = args.get_zero_one_arg("float", vm.heap)? else {
                     return Ok(Value::Float(0.0));
                 };
-                defer_drop!(v, heap);
+                defer_drop!(v, vm);
                 match v {
                     Value::Float(f) => Ok(Value::Float(*f)),
                     Value::Int(i) => Ok(Value::Float(*i as f64)),
@@ -285,11 +283,11 @@ impl Type {
                     Value::InternString(string_id) => {
                         Ok(Value::Float(parse_f64_from_str(interns.get_str(*string_id))?))
                     }
-                    Value::Ref(heap_id) => match heap.get(*heap_id) {
+                    Value::Ref(heap_id) => match vm.heap.get(*heap_id) {
                         HeapData::Str(s) => Ok(Value::Float(parse_f64_from_str(s.as_str())?)),
-                        _ => Err(ExcType::type_error_float_conversion(v.py_type(heap))),
+                        _ => Err(ExcType::type_error_float_conversion(v.py_type(vm))),
                     },
-                    _ => Err(ExcType::type_error_float_conversion(v.py_type(heap))),
+                    _ => Err(ExcType::type_error_float_conversion(v.py_type(vm))),
                 }
             }
             Self::Bool => {

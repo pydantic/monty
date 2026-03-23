@@ -32,7 +32,7 @@ use crate::{
     os::OsFunction,
     parse::CodeRange,
     resource::ResourceTracker,
-    types::{LongInt, MontyIter, PyTrait, iter::advance_on_heap},
+    types::{LongInt, MontyIter, PyTrait},
     value::{BitwiseOp, EitherStr, Value},
 };
 
@@ -964,13 +964,13 @@ impl<'h, 'a, T: ResourceTracker> VM<'h, 'a, T> {
                                     Err(e) => catch_sync!(self, cached_frame, RunError::from(e)),
                                 }
                             } else {
-                                let value_type = value.py_type(self.heap);
+                                let value_type = value.py_type(self);
                                 value.drop_with_heap(self);
                                 catch_sync!(self, cached_frame, ExcType::unary_type_error("-", value_type));
                             }
                         }
                         _ => {
-                            let value_type = value.py_type(self.heap);
+                            let value_type = value.py_type(self);
                             value.drop_with_heap(self);
                             catch_sync!(self, cached_frame, ExcType::unary_type_error("-", value_type));
                         }
@@ -987,13 +987,13 @@ impl<'h, 'a, T: ResourceTracker> VM<'h, 'a, T> {
                                 // LongInt - return as-is (value already has correct refcount)
                                 self.push(value);
                             } else {
-                                let value_type = value.py_type(self.heap);
+                                let value_type = value.py_type(self);
                                 value.drop_with_heap(self);
                                 catch_sync!(self, cached_frame, ExcType::unary_type_error("+", value_type));
                             }
                         }
                         _ => {
-                            let value_type = value.py_type(self.heap);
+                            let value_type = value.py_type(self);
                             value.drop_with_heap(self);
                             catch_sync!(self, cached_frame, ExcType::unary_type_error("+", value_type));
                         }
@@ -1015,13 +1015,13 @@ impl<'h, 'a, T: ResourceTracker> VM<'h, 'a, T> {
                                     Err(e) => catch_sync!(self, cached_frame, RunError::from(e)),
                                 }
                             } else {
-                                let value_type = value.py_type(self.heap);
+                                let value_type = value.py_type(self);
                                 value.drop_with_heap(self);
                                 catch_sync!(self, cached_frame, ExcType::unary_type_error("~", value_type));
                             }
                         }
                         _ => {
-                            let value_type = value.py_type(self.heap);
+                            let value_type = value.py_type(self);
                             value.drop_with_heap(self);
                             catch_sync!(self, cached_frame, ExcType::unary_type_error("~", value_type));
                         }
@@ -1206,10 +1206,11 @@ impl<'h, 'a, T: ResourceTracker> VM<'h, 'a, T> {
                     let Value::Ref(heap_id) = *self.peek() else {
                         return Err(RunError::internal("ForIter: expected iterator ref on stack"));
                     };
+                    let HeapReadOutput::Iter(mut iter) = self.heap.read(heap_id) else {
+                        panic!("ForIter: expected iterator ref on stack");
+                    };
 
-                    // Use advance_iterator which avoids std::mem::replace overhead
-                    // by using a two-phase approach: read state, get value, update index
-                    match advance_on_heap(self, heap_id) {
+                    match iter.advance(self) {
                         Ok(Some(value)) => self.push(value),
                         Ok(None) => {
                             // Iterator exhausted - pop it and jump to end

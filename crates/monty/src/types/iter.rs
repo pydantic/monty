@@ -10,22 +10,6 @@
 //! For constructors like `list()` and `tuple()`, use `MontyIter::new()` followed
 //! by `collect()` to materialize all items into a Vec.
 //!
-//! ## Efficient Iteration with `IterState`
-//!
-//! For the VM's `ForIter` opcode, `advance_on_heap()` uses two strategies:
-//!
-//! **Fast path** for simple iterators (Range, InternBytes, ASCII IterStr):
-//! - Single `get_mut()` call to compute value and advance index
-//! - No additional heap access needed during iteration
-//!
-//! **Multi-phase approach** for complex iterators (IterStr, HeapRef):
-//! 1. `iter_state()` - reads current state without mutation, returns `Option<IterState>`
-//! 2. Get the value (may access other heap objects like strings or containers)
-//! 3. `advance()` - updates the index after the caller has done its work
-//!
-//! This allows `advance_on_heap()` to coordinate access without extracting
-//! the iterator from the heap (avoiding `std::mem::replace` overhead).
-//!
 //! ## Builtin Support
 //!
 //! The `iterator_next()` helper implements the `next()` builtin.
@@ -34,8 +18,8 @@ use crate::{
     args::ArgValues,
     bytecode::VM,
     exception_private::{ExcType, RunResult},
-    heap::{ContainsHeap, DropWithHeap, Heap, HeapData, HeapGuard, HeapId, HeapItem, HeapReadOutput},
-    intern::{BytesId, Interns, StringId},
+    heap::{ContainsHeap, DropWithHeap, Heap, HeapData, HeapGuard, HeapId, HeapItem, HeapRead, HeapReadOutput},
+    intern::{BytesId, Interns},
     resource::ResourceTracker,
     types::{PyTrait, Range, dict_view::DictView, str::allocate_char},
     value::Value,
@@ -141,129 +125,6 @@ impl MontyIter {
         &self.value
     }
 
-    /// Returns the current iterator state without mutation.
-    ///
-    /// This is used by the multi-phase approach in `advance_on_heap()` for complex
-    /// iterator types (IterStr, HeapRef). Simple types (Range, InternBytes, ASCII
-    /// IterStr) are handled by the fast path and should not call this method.
-    ///
-    /// Returns `None` if the iterator is exhausted.
-    fn iter_state(&self) -> Option<IterState> {
-        match &self.iter_value {
-            // Range, InternBytes, and ASCII IterStr are handled by try_advance_simple() fast path
-            IterValue::Range { .. } | IterValue::InternBytes { .. } => {
-                unreachable!("Range and InternBytes use fast path, not iter_state")
-            }
-            IterValue::IterStr {
-                string,
-                byte_offset,
-                len,
-                ..
-            } => {
-                if self.index >= *len {
-                    None
-                } else {
-                    // Get the next character at current byte offset
-                    let c = string[*byte_offset..]
-                        .chars()
-                        .next()
-                        .expect("index < len implies char exists");
-                    Some(IterState::IterStr {
-                        char: c,
-                        char_len: c.len_utf8(),
-                    })
-                }
-            }
-            IterValue::HeapRef {
-                heap_id,
-                len,
-                checks_mutation,
-            } => {
-                // For types with captured len, check exhaustion here.
-                // For List (len=None), exhaustion is checked in advance_on_heap().
-                if let Some(l) = len
-                    && self.index >= *l
-                {
-                    return None;
-                }
-                Some(IterState::HeapIndex {
-                    heap_id: *heap_id,
-                    index: self.index,
-                    expected_len: if *checks_mutation { *len } else { None },
-                })
-            }
-        }
-    }
-
-    /// Advances the iterator by one step.
-    ///
-    /// This is phase 2 of the two-phase iteration approach. Call this after
-    /// successfully retrieving the value using the data from `iter_state()`.
-    ///
-    /// For string iterators, `string_char_len` must be provided (the UTF-8 byte
-    /// length of the character that was just yielded) to update the byte offset.
-    /// For other iterator types, pass `None`.
-    #[inline]
-    pub fn advance(&mut self, string_char_len: Option<usize>) {
-        self.index += 1;
-        if let Some(char_len) = string_char_len
-            && let IterValue::IterStr { byte_offset, .. } = &mut self.iter_value
-        {
-            *byte_offset += char_len;
-        }
-    }
-
-    /// Attempts to advance simple iterator types that don't need additional heap access.
-    ///
-    /// Returns `Some(result)` if handled (Range, InternBytes, ASCII IterStr),
-    /// `None` if caller should use the multi-phase approach (non-ASCII IterStr, HeapRef).
-    ///
-    /// This optimization avoids two heap lookups for iterator types that can compute
-    /// their next value without accessing other heap objects.
-    #[inline]
-    fn try_advance_simple(&mut self, interns: &Interns) -> Option<RunResult<Option<Value>>> {
-        match &mut self.iter_value {
-            IterValue::Range { next, step, len } => {
-                if self.index >= *len {
-                    Some(Ok(None))
-                } else {
-                    let value = *next;
-                    *next += *step;
-                    self.index += 1;
-                    Some(Ok(Some(Value::Int(value))))
-                }
-            }
-            IterValue::IterStr {
-                string,
-                byte_offset,
-                len,
-                is_ascii,
-            } => {
-                if !*is_ascii {
-                    None
-                } else if self.index >= *len {
-                    Some(Ok(None))
-                } else {
-                    let byte = string.as_bytes()[*byte_offset];
-                    *byte_offset += 1;
-                    self.index += 1;
-                    Some(Ok(Some(Value::InternString(StringId::from_ascii(byte)))))
-                }
-            }
-            IterValue::InternBytes { bytes_id, len } => {
-                if self.index >= *len {
-                    Some(Ok(None))
-                } else {
-                    let i = self.index;
-                    self.index += 1;
-                    let bytes = interns.get_bytes(*bytes_id);
-                    Some(Ok(Some(Value::Int(i64::from(bytes[i])))))
-                }
-            }
-            IterValue::HeapRef { .. } => None,
-        }
-    }
-
     /// Returns the next item from the iterator, advancing the internal index.
     ///
     /// Returns `Ok(None)` when the iterator is exhausted.
@@ -289,15 +150,9 @@ impl MontyIter {
                 string,
                 byte_offset,
                 len,
-                is_ascii,
             } => {
                 if self.index >= *len {
                     Ok(None)
-                } else if *is_ascii {
-                    let byte = string.as_bytes()[*byte_offset];
-                    *byte_offset += 1;
-                    self.index += 1;
-                    Ok(Some(Value::InternString(StringId::from_ascii(byte))))
                 } else {
                     // Get next char at current byte offset
                     let c = string[*byte_offset..]
@@ -391,62 +246,77 @@ impl<T: ResourceTracker> Iterator for HeapedMontyIter<'_, '_, '_, T> {
     }
 }
 
-/// Advances an iterator stored on the heap and returns the next value.
-///
-/// Uses a fast path for simple iterators (Range, InternBytes, ASCII IterStr) that don't need
-/// additional heap access - these are handled with a single mutable borrow.
-///
-/// For complex iterators (IterStr, HeapRef), uses a multi-phase approach:
-/// 1. Read iterator state (immutable borrow ends)
-/// 2. Based on state, get the value (may access other heap objects)
-/// 3. Update iterator index (mutable borrow)
-///
-/// This is more efficient than `std::mem::replace` with a placeholder because
-/// it avoids creating and moving placeholder objects on every iteration.
-///
-/// Returns `Ok(None)` when the iterator is exhausted.
-/// Returns `Err` for dict/set size changes or allocation failures.
-pub(crate) fn advance_on_heap(vm: &mut VM<'_, '_, impl ResourceTracker>, iter_id: HeapId) -> RunResult<Option<Value>> {
-    let HeapReadOutput::Iter(mut iter) = vm.heap.read(iter_id) else {
-        panic!("advance_on_heap: expected Iterator on heap");
-    };
+impl<'h> HeapRead<'h, MontyIter> {
+    /// Advances an iterator and returns the next value.
+    ///
+    /// Returns `Ok(None)` when the iterator is exhausted.
+    /// Returns `Err` for dict/set size changes or allocation failures.
+    pub(crate) fn advance(&mut self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<Option<Value>> {
+        let this = self.get_mut(vm.heap);
+        match &mut this.iter_value {
+            IterValue::Range { next, step, len } => {
+                if this.index >= *len {
+                    Ok(None)
+                } else {
+                    let value = *next;
+                    *next += *step;
+                    this.index += 1;
+                    Ok(Some(Value::Int(value)))
+                }
+            }
+            IterValue::IterStr {
+                string,
+                byte_offset,
+                len,
+            } => {
+                if this.index >= *len {
+                    Ok(None)
+                } else {
+                    // Get the next character at current byte offset
+                    let c = string[*byte_offset..]
+                        .chars()
+                        .next()
+                        .expect("index < len implies char exists");
+                    this.index += 1;
+                    *byte_offset += c.len_utf8();
+                    Ok(Some(allocate_char(c, vm.heap)?))
+                }
+            }
+            IterValue::InternBytes { bytes_id, len } => {
+                if this.index >= *len {
+                    Ok(None)
+                } else {
+                    let i = this.index;
+                    this.index += 1;
+                    let bytes = vm.interns.get_bytes(*bytes_id);
+                    Ok(Some(Value::Int(i64::from(bytes[i]))))
+                }
+            }
+            IterValue::HeapRef {
+                heap_id,
+                len,
+                checks_mutation,
+            } => {
+                if let Some(l) = len
+                    && this.index >= *l
+                {
+                    return Ok(None);
+                }
 
-    // Fast path: Range and InternBytes don't need additional heap access,
-    // so we can handle them with a single mutable borrow.
-    if let Some(result) = iter.get_mut(vm.heap).try_advance_simple(vm.interns) {
-        return result;
+                let heap_id = *heap_id;
+                let expected_len = if *checks_mutation { *len } else { None };
+                let index = this.index;
+                let item = get_heap_item(vm, heap_id, index, expected_len)?;
+
+                // Check for list exhaustion (list can shrink during iteration)
+                let Some(item) = item else {
+                    return Ok(None);
+                };
+                self.get_mut(vm.heap).index += 1;
+                Ok(Some(item))
+            }
+        }
     }
-
-    // Multi-phase approach for IterStr and HeapRef (need heap access during value retrieval)
-    // Phase 1: Get iterator state
-    let Some(state) = iter.get(vm.heap).iter_state() else {
-        return Ok(None); // Iterator exhausted
-    };
-
-    // Phase 2: Based on state, get the value and determine char_len for strings
-    let (value, string_char_len) = match state {
-        IterState::IterStr { char, char_len } => {
-            let value = allocate_char(char, vm.heap)?;
-            (value, Some(char_len))
-        }
-        IterState::HeapIndex {
-            heap_id,
-            index,
-            expected_len,
-        } => {
-            let item = get_heap_item(vm, heap_id, index, expected_len)?;
-            // Check for list exhaustion (list can shrink during iteration)
-            let Some(item) = item else {
-                return Ok(None);
-            };
-            (item, None)
-        }
-    };
-
-    // Phase 3: Advance the iterator
-    iter.get_mut(vm.heap).advance(string_char_len);
-
-    Ok(Some(value))
 }
 
 /// Gets an item from a heap-allocated container at the given index.
@@ -454,7 +324,7 @@ pub(crate) fn advance_on_heap(vm: &mut VM<'_, '_, impl ResourceTracker>, iter_id
 /// Returns `Ok(None)` if the index is out of bounds (for lists that shrunk during iteration).
 /// Returns `Err` if a dict/set changed size during iteration (RuntimeError).
 fn get_heap_item(
-    vm: &mut VM<'_, '_, impl ResourceTracker>,
+    vm: &VM<'_, '_, impl ResourceTracker>,
     heap_id: HeapId,
     index: usize,
     expected_len: Option<usize>,
@@ -562,63 +432,32 @@ pub fn iterator_next(
     default: Option<Value>,
     vm: &mut VM<'_, '_, impl ResourceTracker>,
 ) -> RunResult<Value> {
+    let mut default_guard = HeapGuard::new(default, vm);
+    let vm = default_guard.heap();
+
     let Value::Ref(iter_id) = iter_value else {
-        // Not a heap value - can't be an iterator
-        if let Some(d) = default {
-            d.drop_with_heap(vm);
-        }
         return Err(ExcType::type_error_not_iterable(iter_value.py_type(vm)));
     };
 
-    // Check that it's actually an iterator
-    if !matches!(vm.heap.get(*iter_id), HeapData::Iter(_)) {
-        if let Some(d) = default {
-            d.drop_with_heap(vm);
+    let result = match vm.heap.read(*iter_id) {
+        HeapReadOutput::Iter(mut iter) => iter.advance(vm)?,
+        other => {
+            let data_type = other.py_type(vm);
+            return Err(ExcType::type_error(format!("'{data_type}' object is not an iterator")));
         }
-        let data_type = vm.heap.get(*iter_id).py_type(vm);
-        return Err(ExcType::type_error(format!("'{data_type}' object is not an iterator")));
-    }
+    };
 
     // Get next item using the MontyIter::advance_on_heap method
-    match advance_on_heap(vm, *iter_id)? {
-        Some(item) => {
-            // Drop default if provided since we don't need it
-            if let Some(d) = default {
-                d.drop_with_heap(vm);
-            }
-            Ok(item)
-        }
+    match result {
+        Some(item) => Ok(item),
         None => {
             // Iterator exhausted
-            match default {
+            match default_guard.into_inner() {
                 Some(d) => Ok(d),
                 None => Err(ExcType::stop_iteration()),
             }
         }
     }
-}
-
-/// Snapshot of iterator state needed to produce the next value.
-///
-/// This enum captures state for complex iterator types (IterStr, HeapRef) that
-/// require the multi-phase approach in `advance_on_heap()`. Simple types (Range,
-/// InternBytes, ASCII IterStr) are handled by the fast path and don't use this enum.
-///
-/// The multi-phase approach avoids borrow conflicts:
-/// 1. Read `Option<IterState>` from iterator (immutable borrow ends, `None` means exhausted)
-/// 2. Use the state to get the value (may access other heap objects)
-/// 3. Call `advance()` to update the iterator index
-#[derive(Debug, Clone, Copy)]
-enum IterState {
-    /// String iterator yields this character; char_len is UTF-8 byte length for advance().
-    IterStr { char: char, char_len: usize },
-    /// Heap-based iterator (List, Tuple, NamedTuple, Dict, Bytes, Set, FrozenSet).
-    /// The expected_len is Some for types that check for mutation (Dict, Set).
-    HeapIndex {
-        heap_id: HeapId,
-        index: usize,
-        expected_len: Option<usize>,
-    },
 }
 
 /// Type-specific iteration data for different Python iterable types.
@@ -649,8 +488,6 @@ enum IterValue {
         byte_offset: usize,
         /// Total number of characters in the string.
         len: usize,
-        /// Whether the string is ASCII (enables fast-path iteration).
-        is_ascii: bool,
     },
     /// Iterating over interned bytes, yields `Value::Int` for each byte.
     InternBytes { bytes_id: BytesId, len: usize },
@@ -690,13 +527,11 @@ impl IterValue {
     ///
     /// Copies the string content and counts characters for the length field.
     fn from_str(s: &str) -> Self {
-        let is_ascii = s.is_ascii();
-        let len = if is_ascii { s.len() } else { s.chars().count() };
+        let len = s.chars().count();
         Self::IterStr {
             string: s.to_owned(),
             byte_offset: 0,
             len,
-            is_ascii,
         }
     }
 

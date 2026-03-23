@@ -54,11 +54,11 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
                         let (awaitable, this) = awaitable_guard.into_parts();
                         this.await_gather_future(heap_id, awaitable)
                     }
-                    None => Err(ExcType::object_not_awaitable(awaitable.py_type(this.heap))),
+                    None => Err(ExcType::object_not_awaitable(awaitable.py_type(this))),
                 }
             }
             &Value::ExternalFuture(call_id) => this.await_external_future(call_id),
-            _ => Err(ExcType::object_not_awaitable(awaitable.py_type(this.heap))),
+            _ => Err(ExcType::object_not_awaitable(awaitable.py_type(this))),
         }
     }
 

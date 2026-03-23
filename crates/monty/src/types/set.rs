@@ -10,7 +10,7 @@ use crate::{
     bytecode::{CallResult, VM},
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, RunResult},
-    heap::{ContainsHeap, DropWithHeap, Heap, HeapData, HeapGuard, HeapId, HeapItem, HeapRead},
+    heap::{ContainsHeap, DropWithHeap, HeapData, HeapGuard, HeapId, HeapItem, HeapRead},
     intern::StaticStrings,
     resource::{ResourceError, ResourceTracker},
     types::Type,

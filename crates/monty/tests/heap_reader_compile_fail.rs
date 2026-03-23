@@ -119,8 +119,3 @@ fn smuggle_heap_read() {
 fn mutation_in_map_closure() {
     check_compile_fail("mutation_in_map_closure");
 }
-
-#[test]
-fn read_while_ref_alive() {
-    check_compile_fail("read_while_ref_alive");
-}

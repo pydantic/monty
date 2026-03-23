@@ -5,8 +5,7 @@ use crate::{
     bytecode::VM,
     defer_drop,
     exception_private::{ExcType, RunError, RunResult, SimpleException},
-    heap::{Heap, HeapData},
-    intern::Interns,
+    heap::HeapData,
     resource::ResourceTracker,
     types::PyTrait,
     value::Value,
@@ -26,7 +25,7 @@ pub fn builtin_print(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues)
     defer_drop!(positional, vm);
 
     // Extract kwargs first
-    let (sep, end) = extract_print_kwargs(kwargs, vm.heap, vm.interns)?;
+    let (sep, end) = extract_print_kwargs(kwargs, vm)?;
 
     // Print positional args with separator, dropping each value after use
     let mut first = true;
@@ -54,11 +53,10 @@ pub fn builtin_print(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues)
 /// Extracts sep and end kwargs from print() arguments.
 ///
 /// Consumes the kwargs, dropping all values after extraction.
-/// Returns (sep, end, error) where error is Some if a kwarg error occurred.
+/// Returns (sep, end) where each is Some if provided.
 fn extract_print_kwargs(
     kwargs: KwargsValues,
-    heap: &mut Heap<impl ResourceTracker>,
-    interns: &Interns,
+    vm: &mut VM<'_, '_, impl ResourceTracker>,
 ) -> RunResult<(Option<String>, Option<String>)> {
     let mut sep: Option<String> = None;
     let mut end: Option<String> = None;
@@ -67,26 +65,26 @@ fn extract_print_kwargs(
     for (key, value) in kwargs {
         // defer_drop! ensures key and value are cleaned up on every path through
         // the loop body — including continue, early return, and normal iteration
-        defer_drop!(key, heap);
-        defer_drop!(value, heap);
+        defer_drop!(key, vm);
+        defer_drop!(value, vm);
 
         // If we already hit an error, just drop remaining values
         if error.is_some() {
             continue;
         }
 
-        let Some(keyword_name) = key.as_either_str(heap) else {
+        let Some(keyword_name) = key.as_either_str(vm.heap) else {
             error = Some(SimpleException::new_msg(ExcType::TypeError, "keywords must be strings").into());
             continue;
         };
 
-        let key_str = keyword_name.as_str(interns);
+        let key_str = keyword_name.as_str(vm.interns);
         match key_str {
-            "sep" => match extract_string_kwarg(value, "sep", heap, interns) {
+            "sep" => match extract_string_kwarg(value, "sep", vm) {
                 Ok(custom_sep) => sep = custom_sep,
                 Err(e) => error = Some(e),
             },
-            "end" => match extract_string_kwarg(value, "end", heap, interns) {
+            "end" => match extract_string_kwarg(value, "end", vm) {
                 Ok(custom_end) => end = custom_end,
                 Err(e) => error = Some(e),
             },
@@ -111,30 +109,25 @@ fn extract_print_kwargs(
 
 /// Extracts a string value from a print() kwarg.
 ///
-/// The kwarg can be None (returns empty string) or a string.
+/// The kwarg can be None (returns None) or a string (returns Some).
 /// Raises TypeError for other types.
-fn extract_string_kwarg(
-    value: &Value,
-    name: &str,
-    heap: &Heap<impl ResourceTracker>,
-    interns: &Interns,
-) -> RunResult<Option<String>> {
+fn extract_string_kwarg(value: &Value, name: &str, vm: &VM<'_, '_, impl ResourceTracker>) -> RunResult<Option<String>> {
     match value {
         Value::None => Ok(None),
-        Value::InternString(string_id) => Ok(Some(interns.get_str(*string_id).to_owned())),
+        Value::InternString(string_id) => Ok(Some(vm.interns.get_str(*string_id).to_owned())),
         Value::Ref(id) => {
-            if let HeapData::Str(s) = heap.get(*id) {
+            if let HeapData::Str(s) = vm.heap.get(*id) {
                 return Ok(Some(s.as_str().to_owned()));
             }
             Err(SimpleException::new_msg(
                 ExcType::TypeError,
-                format!("{} must be None or a string, not {}", name, value.py_type(heap)),
+                format!("{} must be None or a string, not {}", name, value.py_type(vm)),
             )
             .into())
         }
         _ => Err(SimpleException::new_msg(
             ExcType::TypeError,
-            format!("{} must be None or a string, not {}", name, value.py_type(heap)),
+            format!("{} must be None or a string, not {}", name, value.py_type(vm)),
         )
         .into()),
     }

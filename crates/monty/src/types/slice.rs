@@ -12,7 +12,7 @@ use crate::{
     bytecode::VM,
     defer_drop,
     exception_private::{ExcType, RunResult},
-    heap::{Heap, HeapData, HeapId, HeapItem, HeapRead},
+    heap::{HeapData, HeapId, HeapItem, HeapRead},
     resource::{ResourceError, ResourceTracker},
     types::{PyTrait, Type},
     value::Value,

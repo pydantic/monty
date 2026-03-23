@@ -217,7 +217,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Str> {
         }
 
         // Extract integer index, accepting Int, Bool (True=1, False=0), and LongInt
-        let index = key.as_index(vm.heap, Type::Str)?;
+        let index = key.as_index(vm, Type::Str)?;
 
         // Use single-pass indexing to avoid Vec<char> allocation
         let s = self.get(vm.heap);

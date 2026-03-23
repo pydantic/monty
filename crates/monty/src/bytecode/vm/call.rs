@@ -287,7 +287,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
             }
             _ => {
                 // Non-heap values without method support
-                let type_name = obj.py_type(this.heap);
+                let type_name = obj.py_type(this);
                 args.drop_with_heap(this);
                 Err(ExcType::attribute_error(type_name, this.interns.get_str(name_id)))
             }
@@ -373,7 +373,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
             }
             _ => {
                 args.drop_with_heap(self);
-                let ty = callable.py_type(self.heap);
+                let ty = callable.py_type(self);
                 Err(ExcType::type_error(format!("'{ty}' object is not callable")))
             }
         }

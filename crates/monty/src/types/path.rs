@@ -262,10 +262,8 @@ impl Path {
     /// - `Path('a', 'b', 'c')` returns `Path('a/b/c')`
     /// - If an absolute path appears, it replaces everything before it.
     pub fn init(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
-        let heap = &mut *vm.heap;
-        let interns = vm.interns;
-        let pos_args = args.into_pos_only("Path", heap)?;
-        defer_drop!(pos_args, heap);
+        let pos_args = args.into_pos_only("Path", vm.heap)?;
+        defer_drop!(pos_args, vm);
 
         let path = match pos_args.as_slice() {
             [] => {
@@ -274,48 +272,39 @@ impl Path {
             }
             [single] => {
                 // Single argument, just convert to Path
-                Self::new(extract_path_string(single, heap, interns)?.to_owned())
+                Self::new(extract_path_string(single, vm)?.to_owned())
             }
             [first_arg, rest @ ..] => {
-                let base = Self::new(extract_path_string(first_arg, heap, interns)?.to_owned());
-                fold_joinpath(base, rest, heap, interns)?
+                let base = Self::new(extract_path_string(first_arg, vm)?.to_owned());
+                fold_joinpath(base, rest, vm)?
             }
         };
-        Ok(Value::Ref(heap.allocate(HeapData::Path(path))?))
+        Ok(Value::Ref(vm.heap.allocate(HeapData::Path(path))?))
     }
 }
 
 /// Extracts a string from a Value for use as a path.
-fn extract_path_string<'a>(
-    val: &Value,
-    heap: &'a Heap<impl ResourceTracker>,
-    interns: &'a Interns,
-) -> RunResult<&'a str> {
+fn extract_path_string<'a>(val: &Value, vm: &'a VM<'_, '_, impl ResourceTracker>) -> RunResult<&'a str> {
     match val {
-        Value::InternString(string_id) => Ok(interns.get_str(*string_id)),
-        Value::Ref(heap_id) => match heap.get(*heap_id) {
+        Value::InternString(string_id) => Ok(vm.interns.get_str(*string_id)),
+        Value::Ref(heap_id) => match vm.heap.get(*heap_id) {
             HeapData::Str(s) => Ok(s.as_str()),
             HeapData::Path(p) => Ok(p.as_str()),
             _ => Err(ExcType::type_error(format!(
                 "expected str or Path, got {}",
-                val.py_type(heap)
+                val.py_type(vm)
             ))),
         },
         _ => Err(ExcType::type_error(format!(
             "expected str or Path, got {}",
-            val.py_type(heap)
+            val.py_type(vm)
         ))),
     }
 }
 
-fn fold_joinpath(
-    mut path: Path,
-    parts: &[Value],
-    heap: &Heap<impl ResourceTracker>,
-    interns: &Interns,
-) -> RunResult<Path> {
+fn fold_joinpath(mut path: Path, parts: &[Value], vm: &VM<'_, '_, impl ResourceTracker>) -> RunResult<Path> {
     for part in parts {
-        path = Path::new(path.joinpath(extract_path_string(part, heap, interns)?));
+        path = Path::new(path.joinpath(extract_path_string(part, vm)?));
     }
     Ok(path)
 }
@@ -518,12 +507,10 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Path> {
 
         // Clone path data so we can release the heap borrow
         let path = self.get(vm.heap).clone();
-        let heap = &mut *vm.heap;
-        let interns = vm.interns;
 
         // Check if this is an OS method that requires host system access
         if let Ok(os_fn) = OsFunction::try_from(method) {
-            let path_arg = Value::Ref(heap.allocate(HeapData::Path(path))?);
+            let path_arg = Value::Ref(vm.heap.allocate(HeapData::Path(path))?);
             let os_args = prepend_path_arg(path_arg, args);
             return Ok(CallResult::OsCall(os_fn, os_args));
         }
@@ -531,51 +518,51 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Path> {
         // Pure methods (no I/O)
         let value = match method {
             StaticStrings::IsAbsolute => {
-                args.check_zero_args("is_absolute", heap)?;
+                args.check_zero_args("is_absolute", vm.heap)?;
                 Ok(Value::Bool(path.is_absolute()))
             }
             StaticStrings::Joinpath => {
-                let pos_args = args.into_pos_only("joinpath", heap)?;
-                defer_drop!(pos_args, heap);
-                let result = fold_joinpath(path, pos_args.as_slice(), heap, interns)?;
-                Ok(Value::Ref(heap.allocate(HeapData::Path(result))?))
+                let pos_args = args.into_pos_only("joinpath", vm.heap)?;
+                defer_drop!(pos_args, vm);
+                let result = fold_joinpath(path, pos_args.as_slice(), vm)?;
+                Ok(Value::Ref(vm.heap.allocate(HeapData::Path(result))?))
             }
             StaticStrings::WithName => {
-                let name_val = args.get_one_arg("with_name", heap)?;
-                defer_drop!(name_val, heap);
-                let name = extract_path_string(name_val, heap, interns)?;
+                let name_val = args.get_one_arg("with_name", vm.heap)?;
+                defer_drop!(name_val, vm);
+                let name = extract_path_string(name_val, vm)?.to_owned();
                 let result = path
-                    .with_name(name)
+                    .with_name(&name)
                     .map_err(|e| crate::exception_private::SimpleException::new_msg(ExcType::ValueError, &e))?;
-                Ok(Value::Ref(heap.allocate(HeapData::Path(Path::new(result)))?))
+                Ok(Value::Ref(vm.heap.allocate(HeapData::Path(Path::new(result)))?))
             }
             StaticStrings::WithStem => {
-                let stem_val = args.get_one_arg("with_stem", heap)?;
-                defer_drop!(stem_val, heap);
-                let stem = extract_path_string(stem_val, heap, interns)?;
+                let stem_val = args.get_one_arg("with_stem", vm.heap)?;
+                defer_drop!(stem_val, vm);
+                let stem = extract_path_string(stem_val, vm)?.to_owned();
                 let result = path
-                    .with_stem(stem)
+                    .with_stem(&stem)
                     .map_err(|e| crate::exception_private::SimpleException::new_msg(ExcType::ValueError, &e))?;
-                Ok(Value::Ref(heap.allocate(HeapData::Path(Path::new(result)))?))
+                Ok(Value::Ref(vm.heap.allocate(HeapData::Path(Path::new(result)))?))
             }
             StaticStrings::WithSuffix => {
-                let suffix_val = args.get_one_arg("with_suffix", heap)?;
-                defer_drop!(suffix_val, heap);
-                let suffix = extract_path_string(suffix_val, heap, interns)?;
+                let suffix_val = args.get_one_arg("with_suffix", vm.heap)?;
+                defer_drop!(suffix_val, vm);
+                let suffix = extract_path_string(suffix_val, vm)?.to_owned();
                 let result = path
-                    .with_suffix(suffix)
+                    .with_suffix(&suffix)
                     .map_err(|e| crate::exception_private::SimpleException::new_msg(ExcType::ValueError, &e))?;
-                Ok(Value::Ref(heap.allocate(HeapData::Path(Path::new(result)))?))
+                Ok(Value::Ref(vm.heap.allocate(HeapData::Path(Path::new(result)))?))
             }
             StaticStrings::AsPosix | StaticStrings::Fspath => {
-                args.check_zero_args(method.into(), heap)?;
+                args.check_zero_args(method.into(), vm.heap)?;
                 Ok(Value::Ref(
-                    heap.allocate(HeapData::Str(Str::new(path.as_posix().to_owned())))?,
+                    vm.heap.allocate(HeapData::Str(Str::new(path.as_posix().to_owned())))?,
                 ))
             }
             _ => {
-                args.drop_with_heap(heap);
-                return Err(ExcType::attribute_error(Type::Path, attr.as_str(interns)));
+                args.drop_with_heap(vm);
+                return Err(ExcType::attribute_error(Type::Path, attr.as_str(vm.interns)));
             }
         };
         value.map(CallResult::Value)

@@ -264,7 +264,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
     /// Validates that `exc_type` is a valid exception type (ExcType or tuple of ExcTypes).
     /// Returns `Ok(true)` if exception matches, `Ok(false)` if not, or `Err` if exc_type is invalid.
     pub(super) fn check_exc_match(&self, exception: &Value, exc_type: &Value) -> Result<bool, RunError> {
-        let exc_type_enum = exception.py_type(self.heap);
+        let exc_type_enum = exception.py_type(self);
         self.check_exc_match_inner(exc_type_enum, exc_type)
     }
 

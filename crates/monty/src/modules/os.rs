@@ -12,7 +12,7 @@ use crate::{
     args::ArgValues,
     bytecode::{CallResult, VM},
     exception_private::{ExcType, RunResult},
-    heap::{Heap, HeapData, HeapId},
+    heap::{HeapData, HeapId},
     intern::StaticStrings,
     modules::ModuleFunctions,
     os::OsFunction,
@@ -66,12 +66,12 @@ pub fn create_module(vm: &mut VM<'_, '_, impl ResourceTracker>) -> Result<HeapId
 /// Returns `CallResult::OsCall` for functions that need host involvement,
 /// or `CallResult::Value` for functions that can be computed immediately.
 pub(super) fn call(
-    heap: &mut Heap<impl ResourceTracker>,
+    vm: &mut VM<'_, '_, impl ResourceTracker>,
     functions: OsFunctions,
     args: ArgValues,
 ) -> RunResult<CallResult> {
     match functions {
-        OsFunctions::Getenv => getenv(heap, args),
+        OsFunctions::Getenv => getenv(vm, args),
     }
 }
 
@@ -93,12 +93,12 @@ pub(super) fn call(
 /// - No arguments are provided
 /// - More than 2 arguments are provided
 /// - `key` is not a string
-fn getenv(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> RunResult<CallResult> {
+fn getenv(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<CallResult> {
     // getenv(key, default=None) - accepts 1 or 2 positional arguments
-    let (key, default) = args.get_one_two_args("os.getenv", heap)?;
+    let (key, default) = args.get_one_two_args("os.getenv", vm.heap)?;
 
     // Validate key is a string
-    if key.is_str(heap) {
+    if key.is_str(vm.heap) {
         // Build args to pass to host: (key, default)
         // The default is Value::None if not provided
         let final_default = default.unwrap_or(Value::None);
@@ -106,10 +106,10 @@ fn getenv(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> RunResult<C
 
         Ok(CallResult::OsCall(OsFunction::Getenv, args))
     } else {
-        let type_name = key.py_type(heap);
-        key.drop_with_heap(heap);
+        let type_name = key.py_type(vm);
+        key.drop_with_heap(vm);
         if let Some(d) = default {
-            d.drop_with_heap(heap);
+            d.drop_with_heap(vm);
         }
         Err(ExcType::type_error(format!("str expected, not {type_name}")))
     }

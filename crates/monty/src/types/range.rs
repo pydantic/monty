@@ -117,25 +117,24 @@ impl Range {
     /// - `range(start, stop)` - range from start to stop
     /// - `range(start, stop, step)` - range with custom step
     pub fn init(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
-        let heap = &mut *vm.heap;
-        let pos_args = args.into_pos_only("range", heap)?;
-        defer_drop!(pos_args, heap);
+        let pos_args = args.into_pos_only("range", vm.heap)?;
+        defer_drop!(pos_args, vm);
 
         let range = match pos_args.as_slice() {
             [] => return Err(ExcType::type_error_at_least("range", 1, 0)),
             [first_arg] => {
-                let stop = first_arg.as_int(heap)?;
+                let stop = first_arg.as_int(vm)?;
                 Self::from_stop(stop)
             }
             [first_arg, second_arg] => {
-                let start = first_arg.as_int(heap)?;
-                let stop = second_arg.as_int(heap)?;
+                let start = first_arg.as_int(vm)?;
+                let stop = second_arg.as_int(vm)?;
                 Self::from_start_stop(start, stop)
             }
             [first_arg, second_arg, third_arg] => {
-                let start = first_arg.as_int(heap)?;
-                let stop = second_arg.as_int(heap)?;
-                let step = third_arg.as_int(heap)?;
+                let start = first_arg.as_int(vm)?;
+                let stop = second_arg.as_int(vm)?;
+                let step = third_arg.as_int(vm)?;
                 if step == 0 {
                     return Err(ExcType::value_error_range_step_zero());
                 }
@@ -144,7 +143,7 @@ impl Range {
             _ => return Err(ExcType::type_error_at_most("range", 3, pos_args.len())),
         };
 
-        Ok(Value::Ref(heap.allocate(HeapData::Range(range))?))
+        Ok(Value::Ref(vm.heap.allocate(HeapData::Range(range))?))
     }
 
     /// Handles slice-based indexing for ranges.
@@ -253,7 +252,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Range> {
         let range = *self.get(vm.heap);
 
         // Extract integer index, accepting Int, Bool (True=1, False=0), and LongInt
-        let index = key.as_index(vm.heap, Type::Range)?;
+        let index = key.as_index(vm, Type::Range)?;
 
         // Get range length for normalization
         let len = i64::try_from(range.len()).expect("range length exceeds i64::MAX");

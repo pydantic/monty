@@ -117,7 +117,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
                 let spec_str = spec_value.py_str(self);
                 spec_str.parse::<ParsedFormatSpec>().map_err(|invalid| {
                     // Only fetch type in error path
-                    let value_type = value_for_error.py_type(self.heap);
+                    let value_type = value_for_error.py_type(self);
                     RunError::Exc(
                         SimpleException::new_msg(
                             ExcType::ValueError,

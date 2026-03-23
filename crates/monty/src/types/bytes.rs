@@ -78,7 +78,7 @@ use crate::{
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, RunResult, SimpleException},
     heap::{DropWithHeap, Heap, HeapData, HeapGuard, HeapId, HeapItem, HeapRead, heap_read_ref_as_field},
-    intern::{Interns, StaticStrings, StringId},
+    intern::{StaticStrings, StringId},
     resource::{ResourceError, ResourceTracker, check_repeat_size, check_replace_size},
     types::List,
     value::{EitherStr, Value},
@@ -187,10 +187,8 @@ impl Bytes {
     ///
     /// Note: Full Python semantics for bytes() are more complex (encoding, errors params).
     pub fn init(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
-        let heap = &mut *vm.heap;
-        let interns = vm.interns;
-        let value = args.get_zero_one_arg("bytes", heap)?;
-        defer_drop!(value, heap);
+        let value = args.get_zero_one_arg("bytes", vm.heap)?;
+        defer_drop!(value, vm);
         let new_data = match value {
             None => Vec::new(),
             Some(Value::Int(n)) => {
@@ -201,21 +199,21 @@ impl Bytes {
                 vec![0u8; size]
             }
             Some(Value::InternString(string_id)) => {
-                let s = interns.get_str(*string_id);
+                let s = vm.interns.get_str(*string_id);
                 s.as_bytes().to_vec()
             }
             Some(Value::InternBytes(bytes_id)) => {
-                let b = interns.get_bytes(*bytes_id);
+                let b = vm.interns.get_bytes(*bytes_id);
                 b.to_vec()
             }
-            Some(v @ Value::Ref(id)) => match heap.get(*id) {
+            Some(v @ Value::Ref(id)) => match vm.heap.get(*id) {
                 HeapData::Str(s) => s.as_str().as_bytes().to_vec(),
                 HeapData::Bytes(b) => b.as_slice().to_vec(),
                 _ => return Err(ExcType::type_error_bytes_init(v.py_type(vm))),
             },
             Some(v) => return Err(ExcType::type_error_bytes_init(v.py_type(vm))),
         };
-        let heap_id = heap.allocate(HeapData::Bytes(Self::new(new_data)))?;
+        let heap_id = vm.heap.allocate(HeapData::Bytes(Self::new(new_data)))?;
         Ok(Value::Ref(heap_id))
     }
 }
@@ -273,7 +271,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Bytes> {
         }
 
         // Extract integer index, accepting Int, Bool (True=1, False=0), and LongInt
-        let index = key.as_index(vm.heap, Type::Bytes)?;
+        let index = key.as_index(vm, Type::Bytes)?;
 
         // Use helper for byte indexing
         let b = self.get(vm.heap);
@@ -519,7 +517,7 @@ fn bytes_decode<'h>(
 
     // Check encoding (default UTF-8)
     let encoding = if let Some(enc) = encoding {
-        get_encoding_str(enc, vm.heap, vm.interns)?.to_ascii_lowercase()
+        get_encoding_str(enc, vm)?.to_ascii_lowercase()
     } else {
         "utf-8".to_owned()
     };
@@ -538,14 +536,10 @@ fn bytes_decode<'h>(
 }
 
 /// Helper function to extract encoding string from a value.
-fn get_encoding_str<'a>(
-    encoding: &Value,
-    heap: &'a Heap<impl ResourceTracker>,
-    interns: &'a Interns,
-) -> RunResult<&'a str> {
+fn get_encoding_str<'a>(encoding: &Value, vm: &'a VM<'_, '_, impl ResourceTracker>) -> RunResult<&'a str> {
     match encoding {
-        Value::InternString(id) => Ok(interns.get_str(*id)),
-        Value::Ref(id) => match heap.get(*id) {
+        Value::InternString(id) => Ok(vm.interns.get_str(*id)),
+        Value::Ref(id) => match vm.heap.get(*id) {
             HeapData::Str(s) => Ok(s.as_str()),
             _ => Err(ExcType::type_error(
                 "decode() argument 'encoding' must be str, not bytes",
@@ -565,7 +559,7 @@ fn bytes_count<'h>(
     vm: &mut VM<'h, '_, impl ResourceTracker>,
 ) -> RunResult<Value> {
     let len = bytes.get(vm.heap).len();
-    let (sub, start, end) = parse_bytes_sub_args("bytes.count", len, args, vm.heap, vm.interns)?;
+    let (sub, start, end) = parse_bytes_sub_args("bytes.count", len, args, vm)?;
 
     let slice = &bytes.get(vm.heap)[start..end];
     let count = if sub.is_empty() {
@@ -603,7 +597,7 @@ fn bytes_find<'h>(
     vm: &mut VM<'h, '_, impl ResourceTracker>,
 ) -> RunResult<Value> {
     let len = bytes.get(vm.heap).len();
-    let (sub, start, end) = parse_bytes_sub_args("bytes.find", len, args, vm.heap, vm.interns)?;
+    let (sub, start, end) = parse_bytes_sub_args("bytes.find", len, args, vm)?;
 
     let slice = &bytes.get(vm.heap)[start..end];
     let result = if sub.is_empty() {
@@ -634,7 +628,7 @@ fn bytes_index<'h>(
     vm: &mut VM<'h, '_, impl ResourceTracker>,
 ) -> RunResult<Value> {
     let len = bytes.get(vm.heap).len();
-    let (sub, start, end) = parse_bytes_sub_args("bytes.index", len, args, vm.heap, vm.interns)?;
+    let (sub, start, end) = parse_bytes_sub_args("bytes.index", len, args, vm)?;
 
     let slice = &bytes.get(vm.heap)[start..end];
     let result = if sub.is_empty() {
@@ -664,7 +658,7 @@ fn bytes_startswith<'h>(
     vm: &mut VM<'h, '_, impl ResourceTracker>,
 ) -> RunResult<Value> {
     let len = bytes.get(vm.heap).len();
-    let (prefix_arg, start, end) = parse_bytes_prefix_suffix_args("bytes.startswith", len, args, vm.heap, vm.interns)?;
+    let (prefix_arg, start, end) = parse_bytes_prefix_suffix_args("bytes.startswith", len, args, vm)?;
 
     let slice = &bytes.get(vm.heap)[start..end];
     let result = match prefix_arg {
@@ -685,7 +679,7 @@ fn bytes_endswith<'h>(
     vm: &mut VM<'h, '_, impl ResourceTracker>,
 ) -> RunResult<Value> {
     let len = bytes.get(vm.heap).len();
-    let (suffix_arg, start, end) = parse_bytes_prefix_suffix_args("bytes.endswith", len, args, vm.heap, vm.interns)?;
+    let (suffix_arg, start, end) = parse_bytes_prefix_suffix_args("bytes.endswith", len, args, vm)?;
 
     let slice = &bytes.get(vm.heap)[start..end];
     let result = match suffix_arg {
@@ -715,26 +709,25 @@ fn parse_bytes_prefix_suffix_args(
     method: &str,
     len: usize,
     args: ArgValues,
-    heap: &mut Heap<impl ResourceTracker>,
-    interns: &Interns,
+    vm: &mut VM<'_, '_, impl ResourceTracker>,
 ) -> RunResult<(PrefixSuffixArg, usize, usize)> {
-    let pos = args.into_pos_only(method, heap)?;
-    defer_drop!(pos, heap);
+    let pos = args.into_pos_only(method, vm.heap)?;
+    defer_drop!(pos, vm);
 
     let (prefix, start, end) = match pos.as_slice() {
         [prefix_value] => {
-            let prefix = extract_bytes_for_prefix_suffix(prefix_value, method, heap, interns)?;
+            let prefix = extract_bytes_for_prefix_suffix(prefix_value, method, vm)?;
             (prefix, 0, len)
         }
         [prefix_value, start_value] => {
-            let prefix = extract_bytes_for_prefix_suffix(prefix_value, method, heap, interns)?;
-            let start = normalize_bytes_index(start_value.as_int(heap)?, len);
+            let prefix = extract_bytes_for_prefix_suffix(prefix_value, method, vm)?;
+            let start = normalize_bytes_index(start_value.as_int(vm)?, len);
             (prefix, start, len)
         }
         [prefix_value, start_value, end_value] => {
-            let prefix = extract_bytes_for_prefix_suffix(prefix_value, method, heap, interns)?;
-            let start = normalize_bytes_index(start_value.as_int(heap)?, len);
-            let end = normalize_bytes_index(end_value.as_int(heap)?, len);
+            let prefix = extract_bytes_for_prefix_suffix(prefix_value, method, vm)?;
+            let start = normalize_bytes_index(start_value.as_int(vm)?, len);
+            let end = normalize_bytes_index(end_value.as_int(vm)?, len);
             (prefix, start, end)
         }
         [] => return Err(ExcType::type_error_at_least(method, 1, 0)),
@@ -752,18 +745,17 @@ fn parse_bytes_prefix_suffix_args(
 fn extract_bytes_for_prefix_suffix(
     value: &Value,
     method: &str,
-    heap: &Heap<impl ResourceTracker>,
-    interns: &Interns,
+    vm: &VM<'_, '_, impl ResourceTracker>,
 ) -> RunResult<PrefixSuffixArg> {
     // Extract the method name (e.g., "startswith" from "bytes.startswith")
     let method_name = method.strip_prefix("bytes.").unwrap_or(method);
 
     match value {
-        Value::InternBytes(id) => Ok(PrefixSuffixArg::Single(interns.get_bytes(*id).to_vec())),
+        Value::InternBytes(id) => Ok(PrefixSuffixArg::Single(vm.interns.get_bytes(*id).to_vec())),
         Value::InternString(_) => Err(ExcType::type_error(format!(
             "{method_name} first arg must be bytes or a tuple of bytes, not str"
         ))),
-        Value::Ref(id) => match heap.get(*id) {
+        Value::Ref(id) => match vm.heap.get(*id) {
             HeapData::Bytes(b) => Ok(PrefixSuffixArg::Single(b.as_slice().to_vec())),
             HeapData::Str(_) => Err(ExcType::type_error(format!(
                 "{method_name} first arg must be bytes or a tuple of bytes, not str"
@@ -773,10 +765,10 @@ fn extract_bytes_for_prefix_suffix(
                 let items = tuple.as_slice();
                 let mut prefixes = Vec::with_capacity(items.len());
                 for (i, item) in items.iter().enumerate() {
-                    if let Ok(b) = extract_single_bytes_for_prefix_suffix(item, heap, interns) {
+                    if let Ok(b) = extract_single_bytes_for_prefix_suffix(item, vm) {
                         prefixes.push(b);
                     } else {
-                        let item_type = item.py_type(heap);
+                        let item_type = item.py_type(vm);
                         return Err(ExcType::type_error(format!(
                             "{method_name} first arg must be bytes or a tuple of bytes, \
                              not tuple containing {item_type} at index {i}"
@@ -787,26 +779,22 @@ fn extract_bytes_for_prefix_suffix(
             }
             _ => Err(ExcType::type_error(format!(
                 "{method_name} first arg must be bytes or a tuple of bytes, not {}",
-                value.py_type(heap)
+                value.py_type(vm)
             ))),
         },
         _ => Err(ExcType::type_error(format!(
             "{method_name} first arg must be bytes or a tuple of bytes, not {}",
-            value.py_type(heap)
+            value.py_type(vm)
         ))),
     }
 }
 
 /// Extracts a single bytes value for tuple element in startswith/endswith.
-fn extract_single_bytes_for_prefix_suffix(
-    value: &Value,
-    heap: &Heap<impl ResourceTracker>,
-    interns: &Interns,
-) -> RunResult<Vec<u8>> {
+fn extract_single_bytes_for_prefix_suffix(value: &Value, vm: &VM<'_, '_, impl ResourceTracker>) -> RunResult<Vec<u8>> {
     match value {
-        Value::InternBytes(id) => Ok(interns.get_bytes(*id).to_vec()),
+        Value::InternBytes(id) => Ok(vm.interns.get_bytes(*id).to_vec()),
         Value::InternString(_) => Err(ExcType::type_error("expected bytes, not str")),
-        Value::Ref(id) => match heap.get(*id) {
+        Value::Ref(id) => match vm.heap.get(*id) {
             HeapData::Bytes(b) => Ok(b.as_slice().to_vec()),
             _ => Err(ExcType::type_error("expected bytes")),
         },
@@ -818,15 +806,11 @@ fn extract_single_bytes_for_prefix_suffix(
 ///
 /// CPython raises `TypeError: a bytes-like object is required, not 'str'` when
 /// a str is passed to bytes methods like find, count, index, startswith, endswith.
-fn extract_bytes_only<'a>(
-    value: &Value,
-    heap: &'a Heap<impl ResourceTracker>,
-    interns: &'a Interns,
-) -> RunResult<&'a [u8]> {
+fn extract_bytes_only<'a>(value: &Value, vm: &'a VM<'_, '_, impl ResourceTracker>) -> RunResult<&'a [u8]> {
     match value {
-        Value::InternBytes(id) => Ok(interns.get_bytes(*id)),
+        Value::InternBytes(id) => Ok(vm.interns.get_bytes(*id)),
         Value::InternString(_) => Err(ExcType::type_error("a bytes-like object is required, not 'str'")),
-        Value::Ref(id) => match heap.get(*id) {
+        Value::Ref(id) => match vm.heap.get(*id) {
             HeapData::Bytes(b) => Ok(b.as_slice()),
             HeapData::Str(_) => Err(ExcType::type_error("a bytes-like object is required, not 'str'")),
             _ => Err(ExcType::type_error("a bytes-like object is required")),
@@ -843,26 +827,25 @@ fn parse_bytes_sub_args(
     method: &str,
     len: usize,
     args: ArgValues,
-    heap: &mut Heap<impl ResourceTracker>,
-    interns: &Interns,
+    vm: &mut VM<'_, '_, impl ResourceTracker>,
 ) -> RunResult<(Vec<u8>, usize, usize)> {
-    let pos = args.into_pos_only(method, heap)?;
-    defer_drop!(pos, heap);
+    let pos = args.into_pos_only(method, vm.heap)?;
+    defer_drop!(pos, vm);
 
     let (sub, start, end) = match pos.as_slice() {
         [sub_value] => {
-            let sub = extract_bytes_only(sub_value, heap, interns)?;
+            let sub = extract_bytes_only(sub_value, vm)?;
             (sub, 0, len)
         }
         [sub_value, start_value] => {
-            let sub = extract_bytes_only(sub_value, heap, interns)?;
-            let start = normalize_bytes_index(start_value.as_int(heap)?, len);
+            let sub = extract_bytes_only(sub_value, vm)?;
+            let start = normalize_bytes_index(start_value.as_int(vm)?, len);
             (sub, start, len)
         }
         [sub_value, start_value, end_value] => {
-            let sub = extract_bytes_only(sub_value, heap, interns)?;
-            let start = normalize_bytes_index(start_value.as_int(heap)?, len);
-            let end = normalize_bytes_index(end_value.as_int(heap)?, len);
+            let sub = extract_bytes_only(sub_value, vm)?;
+            let start = normalize_bytes_index(start_value.as_int(vm)?, len);
+            let end = normalize_bytes_index(end_value.as_int(vm)?, len);
             (sub, start, end)
         }
         [] => return Err(ExcType::type_error_at_least(method, 1, 0)),
@@ -1071,7 +1054,7 @@ fn bytes_rfind<'h>(
     vm: &mut VM<'h, '_, impl ResourceTracker>,
 ) -> RunResult<Value> {
     let len = bytes.get(vm.heap).len();
-    let (sub, start, end) = parse_bytes_sub_args("bytes.rfind", len, args, vm.heap, vm.interns)?;
+    let (sub, start, end) = parse_bytes_sub_args("bytes.rfind", len, args, vm)?;
 
     let slice = &bytes.get(vm.heap)[start..end];
     let result = if sub.is_empty() {
@@ -1105,7 +1088,7 @@ fn bytes_rindex<'h>(
     vm: &mut VM<'h, '_, impl ResourceTracker>,
 ) -> RunResult<Value> {
     let len = bytes.get(vm.heap).len();
-    let (sub, start, end) = parse_bytes_sub_args("bytes.rindex", len, args, vm.heap, vm.interns)?;
+    let (sub, start, end) = parse_bytes_sub_args("bytes.rindex", len, args, vm)?;
 
     let slice = &bytes.get(vm.heap)[start..end];
     let result = if sub.is_empty() {
@@ -1140,7 +1123,7 @@ fn bytes_strip<'h>(
     defer_drop!(value, vm);
     let result = match value {
         None | Some(Value::None) => bytes_strip_whitespace_both(bytes.get(vm.heap)).to_vec(),
-        Some(v) => bytes_strip_both(bytes.get(vm.heap), extract_bytes_only(v, vm.heap, vm.interns)?).to_vec(),
+        Some(v) => bytes_strip_both(bytes.get(vm.heap), extract_bytes_only(v, vm)?).to_vec(),
     };
     allocate_bytes(result, vm.heap)
 }
@@ -1157,7 +1140,7 @@ fn bytes_lstrip<'h>(
     defer_drop!(value, vm);
     let result = match value {
         None | Some(Value::None) => bytes_strip_whitespace_start(bytes.get(vm.heap)).to_vec(),
-        Some(v) => bytes_strip_start(bytes.get(vm.heap), extract_bytes_only(v, vm.heap, vm.interns)?).to_vec(),
+        Some(v) => bytes_strip_start(bytes.get(vm.heap), extract_bytes_only(v, vm)?).to_vec(),
     };
     allocate_bytes(result, vm.heap)
 }
@@ -1174,7 +1157,7 @@ fn bytes_rstrip<'h>(
     defer_drop!(value, vm);
     let result = match value {
         None | Some(Value::None) => bytes_strip_whitespace_end(bytes.get(vm.heap)).to_vec(),
-        Some(v) => bytes_strip_end(bytes.get(vm.heap), extract_bytes_only(v, vm.heap, vm.interns)?).to_vec(),
+        Some(v) => bytes_strip_end(bytes.get(vm.heap), extract_bytes_only(v, vm)?).to_vec(),
     };
     allocate_bytes(result, vm.heap)
 }
@@ -1237,7 +1220,7 @@ fn bytes_removeprefix<'h>(
 ) -> RunResult<Value> {
     let prefix_value = args.get_one_arg("bytes.removeprefix", vm.heap)?;
     defer_drop!(prefix_value, vm);
-    let prefix = extract_bytes_only(prefix_value, vm.heap, vm.interns)?;
+    let prefix = extract_bytes_only(prefix_value, vm)?;
 
     let data = bytes.get(vm.heap);
     let result = if data.starts_with(prefix) {
@@ -1259,7 +1242,7 @@ fn bytes_removesuffix<'h>(
 ) -> RunResult<Value> {
     let suffix_value = args.get_one_arg("bytes.removesuffix", vm.heap)?;
     defer_drop!(suffix_value, vm);
-    let suffix = extract_bytes_only(suffix_value, vm.heap, vm.interns)?;
+    let suffix = extract_bytes_only(suffix_value, vm)?;
 
     let data = bytes.get(vm.heap);
     let result = if data.ends_with(suffix) && !suffix.is_empty() {
@@ -1282,7 +1265,7 @@ fn bytes_split<'h>(
     args: ArgValues,
     vm: &mut VM<'h, '_, impl ResourceTracker>,
 ) -> RunResult<Value> {
-    let (sep, maxsplit) = parse_bytes_split_args("bytes.split", args, vm.heap, vm.interns)?;
+    let (sep, maxsplit) = parse_bytes_split_args("bytes.split", args, vm)?;
 
     // Collect split parts into owned Vecs so the immutable heap borrow from
     // `bytes.get()` ends before we allocate.
@@ -1331,7 +1314,7 @@ fn bytes_rsplit<'h>(
     args: ArgValues,
     vm: &mut VM<'h, '_, impl ResourceTracker>,
 ) -> RunResult<Value> {
-    let (sep, maxsplit) = parse_bytes_split_args("bytes.rsplit", args, vm.heap, vm.interns)?;
+    let (sep, maxsplit) = parse_bytes_split_args("bytes.rsplit", args, vm)?;
 
     // Collect split parts into owned Vecs so the immutable heap borrow from
     // `bytes.get()` ends before we allocate.
@@ -1376,18 +1359,17 @@ fn bytes_rsplit<'h>(
 fn parse_bytes_split_args(
     method: &str,
     args: ArgValues,
-    heap: &mut Heap<impl ResourceTracker>,
-    interns: &Interns,
+    vm: &mut VM<'_, '_, impl ResourceTracker>,
 ) -> RunResult<(Option<Vec<u8>>, i64)> {
     let (pos_iter, kwargs) = args.into_parts();
-    defer_drop_mut!(pos_iter, heap);
+    defer_drop_mut!(pos_iter, vm);
     let kwargs_iter = kwargs.into_iter();
-    defer_drop_mut!(kwargs_iter, heap);
+    defer_drop_mut!(kwargs_iter, vm);
 
     let sep_value = pos_iter.next();
-    defer_drop_mut!(sep_value, heap);
+    defer_drop_mut!(sep_value, vm);
     let maxsplit_value = pos_iter.next();
-    defer_drop_mut!(maxsplit_value, heap);
+    defer_drop_mut!(maxsplit_value, vm);
 
     // Check no extra positional arguments
     if pos_iter.len() != 0 {
@@ -1396,18 +1378,18 @@ fn parse_bytes_split_args(
 
     // Process keyword arguments
     for (key, value) in kwargs_iter {
-        defer_drop!(key, heap);
-        let mut value_guard = HeapGuard::new(value, heap);
+        defer_drop!(key, vm);
+        let mut value_guard = HeapGuard::new(value, vm);
 
-        let Some(keyword_name) = key.as_either_str(value_guard.heap()) else {
+        let Some(keyword_name) = key.as_either_str(value_guard.heap().heap) else {
             return Err(ExcType::type_error("keywords must be strings"));
         };
 
-        let key_str = keyword_name.as_str(interns);
+        let key_str = keyword_name.as_str(value_guard.heap().interns);
         match key_str {
             "sep" => {
                 if let Some(previous_value) = sep_value.replace(value_guard.into_inner()) {
-                    previous_value.drop_with_heap(heap);
+                    previous_value.drop_with_heap(vm);
                     return Err(ExcType::type_error(format!(
                         "{method}() got multiple values for argument 'sep'"
                     )));
@@ -1415,7 +1397,7 @@ fn parse_bytes_split_args(
             }
             "maxsplit" => {
                 if let Some(previous_value) = maxsplit_value.replace(value_guard.into_inner()) {
-                    previous_value.drop_with_heap(heap);
+                    previous_value.drop_with_heap(vm);
                     return Err(ExcType::type_error(format!(
                         "{method}() got multiple values for argument 'maxsplit'"
                     )));
@@ -1434,7 +1416,7 @@ fn parse_bytes_split_args(
         if matches!(v, Value::None) {
             None
         } else {
-            Some(extract_bytes_only(v, heap, interns)?.to_owned())
+            Some(extract_bytes_only(v, vm)?.to_owned())
         }
     } else {
         None
@@ -1442,7 +1424,7 @@ fn parse_bytes_split_args(
 
     // Extract maxsplit (default -1)
     let maxsplit = if let Some(v) = maxsplit_value {
-        v.as_int(heap)?
+        v.as_int(vm)?
     } else {
         -1
     };
@@ -1708,7 +1690,7 @@ fn bytes_partition<'h>(
 ) -> RunResult<Value> {
     let sep_value = args.get_one_arg("bytes.partition", vm.heap)?;
     defer_drop!(sep_value, vm);
-    let sep = extract_bytes_only(sep_value, vm.heap, vm.interns)?;
+    let sep = extract_bytes_only(sep_value, vm)?;
 
     if sep.is_empty() {
         return Err(ExcType::value_error_empty_separator());
@@ -1740,7 +1722,7 @@ fn bytes_rpartition<'h>(
 ) -> RunResult<Value> {
     let sep_value = args.get_one_arg("bytes.rpartition", vm.heap)?;
     defer_drop!(sep_value, vm);
-    let sep = extract_bytes_only(sep_value, vm.heap, vm.interns)?;
+    let sep = extract_bytes_only(sep_value, vm)?;
 
     if sep.is_empty() {
         return Err(ExcType::value_error_empty_separator());
@@ -1774,7 +1756,7 @@ fn bytes_replace<'h>(
     args: ArgValues,
     vm: &mut VM<'h, '_, impl ResourceTracker>,
 ) -> RunResult<Value> {
-    let (old, new, count) = parse_bytes_replace_args("bytes.replace", args, vm.heap, vm.interns)?;
+    let (old, new, count) = parse_bytes_replace_args("bytes.replace", args, vm)?;
 
     // Copy bytes upfront because replace helpers interleave reads with check_time.
     let data = bytes.get(vm.heap).to_vec();
@@ -1795,26 +1777,25 @@ fn bytes_replace<'h>(
 fn parse_bytes_replace_args(
     method: &str,
     args: ArgValues,
-    heap: &mut Heap<impl ResourceTracker>,
-    interns: &Interns,
+    vm: &mut VM<'_, '_, impl ResourceTracker>,
 ) -> RunResult<(Vec<u8>, Vec<u8>, i64)> {
     let (pos_iter, kwargs) = args.into_parts();
-    defer_drop_mut!(pos_iter, heap);
+    defer_drop_mut!(pos_iter, vm);
     let kwargs_iter = kwargs.into_iter();
-    defer_drop_mut!(kwargs_iter, heap);
+    defer_drop_mut!(kwargs_iter, vm);
 
     let Some(old_value) = pos_iter.next() else {
         return Err(ExcType::type_error_at_least(method, 2, 0));
     };
-    defer_drop!(old_value, heap);
+    defer_drop!(old_value, vm);
 
     let Some(new_value) = pos_iter.next() else {
         return Err(ExcType::type_error_at_least(method, 2, 1));
     };
-    defer_drop!(new_value, heap);
+    defer_drop!(new_value, vm);
 
     let count_value = pos_iter.next();
-    defer_drop_mut!(count_value, heap);
+    defer_drop_mut!(count_value, vm);
 
     // Check no extra positional arguments
     if pos_iter.len() != 0 {
@@ -1823,18 +1804,18 @@ fn parse_bytes_replace_args(
 
     // Process keyword arguments
     for (key, value) in kwargs_iter {
-        defer_drop!(key, heap);
-        let mut value_guard = HeapGuard::new(value, heap);
+        defer_drop!(key, vm);
+        let mut value_guard = HeapGuard::new(value, vm);
 
-        let Some(keyword_name) = key.as_either_str(value_guard.heap()) else {
+        let Some(keyword_name) = key.as_either_str(value_guard.heap().heap) else {
             return Err(ExcType::type_error("keywords must be strings"));
         };
 
-        let key_str = keyword_name.as_str(interns);
+        let key_str = keyword_name.as_str(value_guard.heap().interns);
         match key_str {
             "count" => {
                 if let Some(previous_value) = count_value.replace(value_guard.into_inner()) {
-                    previous_value.drop_with_heap(heap);
+                    previous_value.drop_with_heap(vm);
                     return Err(ExcType::type_error(format!(
                         "{method}() got multiple values for argument 'count'"
                     )));
@@ -1849,13 +1830,13 @@ fn parse_bytes_replace_args(
     }
 
     // Extract old bytes
-    let old = extract_bytes_only(old_value, heap, interns)?.to_owned();
+    let old = extract_bytes_only(old_value, vm)?.to_owned();
 
     // Extract new bytes
-    let new = extract_bytes_only(new_value, heap, interns)?.to_owned();
+    let new = extract_bytes_only(new_value, vm)?.to_owned();
 
     // Extract count (default -1)
-    let count = if let Some(v) = count_value { v.as_int(heap)? } else { -1 };
+    let count = if let Some(v) = count_value { v.as_int(vm)? } else { -1 };
 
     Ok((old, new, count))
 }
@@ -1949,7 +1930,7 @@ fn bytes_center<'h>(
     args: ArgValues,
     vm: &mut VM<'h, '_, impl ResourceTracker>,
 ) -> RunResult<Value> {
-    let (width, fillbyte) = parse_bytes_justify_args("bytes.center", args, vm.heap, vm.interns)?;
+    let (width, fillbyte) = parse_bytes_justify_args("bytes.center", args, vm)?;
 
     let data = bytes.get(vm.heap);
     let len = data.len();
@@ -1983,7 +1964,7 @@ fn bytes_ljust<'h>(
     args: ArgValues,
     vm: &mut VM<'h, '_, impl ResourceTracker>,
 ) -> RunResult<Value> {
-    let (width, fillbyte) = parse_bytes_justify_args("bytes.ljust", args, vm.heap, vm.interns)?;
+    let (width, fillbyte) = parse_bytes_justify_args("bytes.ljust", args, vm)?;
 
     let data = bytes.get(vm.heap);
     let len = data.len();
@@ -2012,7 +1993,7 @@ fn bytes_rjust<'h>(
     args: ArgValues,
     vm: &mut VM<'h, '_, impl ResourceTracker>,
 ) -> RunResult<Value> {
-    let (width, fillbyte) = parse_bytes_justify_args("bytes.rjust", args, vm.heap, vm.interns)?;
+    let (width, fillbyte) = parse_bytes_justify_args("bytes.rjust", args, vm)?;
 
     let data = bytes.get(vm.heap);
     let len = data.len();
@@ -2037,14 +2018,13 @@ fn bytes_rjust<'h>(
 fn parse_bytes_justify_args(
     method: &str,
     args: ArgValues,
-    heap: &mut Heap<impl ResourceTracker>,
-    interns: &Interns,
+    vm: &mut VM<'_, '_, impl ResourceTracker>,
 ) -> RunResult<(usize, u8)> {
-    let pos = args.into_pos_only(method, heap)?;
-    defer_drop!(pos, heap);
+    let pos = args.into_pos_only(method, vm.heap)?;
+    defer_drop!(pos, vm);
 
     let extract_width = |v: &Value| -> RunResult<usize> {
-        let w = v.as_int(heap)?;
+        let w = v.as_int(vm)?;
         Ok(if w < 0 {
             0
         } else {
@@ -2053,7 +2033,7 @@ fn parse_bytes_justify_args(
     };
 
     let extract_fill = |v: &Value| -> RunResult<u8> {
-        let fill_bytes = extract_bytes_only(v, heap, interns)?;
+        let fill_bytes = extract_bytes_only(v, vm)?;
         if fill_bytes.len() != 1 {
             return Err(ExcType::type_error(format!(
                 "{method}() argument 2 must be a byte string of length 1, not bytes of length {}",
@@ -2081,7 +2061,7 @@ fn bytes_zfill<'h>(
 ) -> RunResult<Value> {
     let width_value = args.get_one_arg("bytes.zfill", vm.heap)?;
     defer_drop!(width_value, vm);
-    let width_i64 = width_value.as_int(vm.heap)?;
+    let width_i64 = width_value.as_int(vm)?;
 
     let width = if width_i64 < 0 {
         0
@@ -2181,7 +2161,7 @@ fn bytes_hex<'h>(
     args: ArgValues,
     vm: &mut VM<'h, '_, impl ResourceTracker>,
 ) -> RunResult<Value> {
-    let (sep, bytes_per_sep) = parse_bytes_hex_args(args, vm.heap, vm.interns)?;
+    let (sep, bytes_per_sep) = parse_bytes_hex_args(args, vm)?;
 
     let data = bytes.get(vm.heap);
     let hex_chars: Vec<char> = data
@@ -2245,13 +2225,9 @@ fn bytes_hex<'h>(
 }
 
 /// Parses arguments for bytes.hex method.
-fn parse_bytes_hex_args(
-    args: ArgValues,
-    heap: &mut Heap<impl ResourceTracker>,
-    interns: &Interns,
-) -> RunResult<(Option<char>, i64)> {
-    let pos = args.into_pos_only("bytes.hex", heap)?;
-    defer_drop!(pos, heap);
+fn parse_bytes_hex_args(args: ArgValues, vm: &mut VM<'_, '_, impl ResourceTracker>) -> RunResult<(Option<char>, i64)> {
+    let pos = args.into_pos_only("bytes.hex", vm.heap)?;
+    defer_drop!(pos, vm);
 
     let (sep_value, bps_value) = match pos.as_slice() {
         [] => return Ok((None, 1)),
@@ -2261,9 +2237,9 @@ fn parse_bytes_hex_args(
     };
 
     let sep_bytes = match sep_value {
-        Value::InternString(id) => interns.get_str(*id).as_bytes(),
-        Value::InternBytes(id) => interns.get_bytes(*id),
-        Value::Ref(heap_id) => match heap.get(*heap_id) {
+        Value::InternString(id) => vm.interns.get_str(*id).as_bytes(),
+        Value::InternBytes(id) => vm.interns.get_bytes(*id),
+        Value::Ref(heap_id) => match vm.heap.get(*heap_id) {
             HeapData::Str(s) => s.as_bytes(),
             HeapData::Bytes(b) => b.as_slice(),
             _ => return Err(ExcType::type_error("sep must be str or bytes")),
@@ -2277,7 +2253,7 @@ fn parse_bytes_hex_args(
     };
 
     let bytes_per_sep = if let Some(bps_value) = bps_value {
-        bps_value.as_int(heap)?
+        bps_value.as_int(vm)?
     } else {
         1
     };

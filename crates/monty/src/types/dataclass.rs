@@ -9,7 +9,7 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, RunResult},
     heap::{
-        BorrowedHeapRead, BorrowedHeapReadMut, Heap, HeapId, HeapItem, HeapRead, heap_read_ref_as_field,
+        BorrowedHeapRead, BorrowedHeapReadMut, HeapId, HeapItem, HeapRead, heap_read_ref_as_field,
         heap_read_ref_as_field_mut,
     },
     intern::Interns,

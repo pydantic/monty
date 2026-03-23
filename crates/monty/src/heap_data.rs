@@ -8,7 +8,7 @@ use crate::{
     asyncio::{Coroutine, GatherFuture, GatherItem},
     bytecode::{CallResult, VM},
     exception_private::{RunError, SimpleException},
-    heap::{DropWithHeap, Heap, HeapId, HeapItem, HeapReadOutput},
+    heap::{DropWithHeap, HeapId, HeapItem, HeapReadOutput},
     intern::FunctionId,
     types::{
         Bytes, Dataclass, Dict, DictItemsView, DictKeysView, DictValuesView, FrozenSet, List, LongInt, Module,
@@ -394,7 +394,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             // Types without methods — return AttributeError
             _ => {
                 args.drop_with_heap(vm);
-                let type_name = vm.heap.get(self_id).py_type(vm);
+                let type_name = vm.heap.read(self_id).py_type(vm);
                 Err(ExcType::attribute_error(type_name, attr.as_str(vm.interns)))
             }
         }
@@ -483,17 +483,17 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
                 }
             }
             // Container types: use HeapRead-specific comparison methods
-            (HeapReadOutput::List(a), HeapReadOutput::List(b)) => a.py_eq(&b, vm),
-            (HeapReadOutput::Tuple(a), HeapReadOutput::Tuple(b)) => a.eq(&b, vm),
+            (HeapReadOutput::List(a), HeapReadOutput::List(b)) => a.py_eq(b, vm),
+            (HeapReadOutput::Tuple(a), HeapReadOutput::Tuple(b)) => a.eq(b, vm),
             // Container types with HeapRead eq methods
-            (HeapReadOutput::Dict(a), HeapReadOutput::Dict(b)) => a.eq(&b, vm),
-            (HeapReadOutput::Set(a), HeapReadOutput::Set(b)) => a.eq(&b, vm),
-            (HeapReadOutput::FrozenSet(a), HeapReadOutput::FrozenSet(b)) => a.eq(&b, vm),
+            (HeapReadOutput::Dict(a), HeapReadOutput::Dict(b)) => a.eq(b, vm),
+            (HeapReadOutput::Set(a), HeapReadOutput::Set(b)) => a.eq(b, vm),
+            (HeapReadOutput::FrozenSet(a), HeapReadOutput::FrozenSet(b)) => a.eq(b, vm),
             // NamedTuple: element-wise comparison via HeapRead clone_item
-            (HeapReadOutput::NamedTuple(a), HeapReadOutput::NamedTuple(b)) => a.eq(&b, vm),
+            (HeapReadOutput::NamedTuple(a), HeapReadOutput::NamedTuple(b)) => a.eq(b, vm),
             // NamedTuple/Tuple cross-type comparison
             (HeapReadOutput::NamedTuple(nt), HeapReadOutput::Tuple(t))
-            | (HeapReadOutput::Tuple(t), HeapReadOutput::NamedTuple(nt)) => nt.eq_tuple(&t, vm),
+            | (HeapReadOutput::Tuple(t), HeapReadOutput::NamedTuple(nt)) => nt.eq_tuple(t, vm),
             // DictKeysView comparisons — copy view to local, pass HeapRead directly
             (HeapReadOutput::DictKeysView(a), HeapReadOutput::DictKeysView(b)) => {
                 let a_view = DictKeysView::new(a.get(vm.heap).dict_id());
@@ -502,19 +502,19 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             }
             (HeapReadOutput::DictKeysView(a), HeapReadOutput::Set(b)) => {
                 let view = DictKeysView::new(a.get(vm.heap).dict_id());
-                view.eq_set(&b, vm)
+                view.eq_set(b, vm)
             }
             (HeapReadOutput::Set(b), HeapReadOutput::DictKeysView(a)) => {
                 let view = DictKeysView::new(a.get(vm.heap).dict_id());
-                view.eq_set(&b, vm)
+                view.eq_set(b, vm)
             }
             (HeapReadOutput::DictKeysView(a), HeapReadOutput::FrozenSet(b)) => {
                 let view = DictKeysView::new(a.get(vm.heap).dict_id());
-                view.eq_frozenset(&b, vm)
+                view.eq_frozenset(b, vm)
             }
             (HeapReadOutput::FrozenSet(b), HeapReadOutput::DictKeysView(a)) => {
                 let view = DictKeysView::new(a.get(vm.heap).dict_id());
-                view.eq_frozenset(&b, vm)
+                view.eq_frozenset(b, vm)
             }
             // DictItemsView comparisons
             (HeapReadOutput::DictItemsView(a), HeapReadOutput::DictItemsView(b)) => {
@@ -524,19 +524,19 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             }
             (HeapReadOutput::DictItemsView(a), HeapReadOutput::Set(b)) => {
                 let view = DictItemsView::new(a.get(vm.heap).dict_id());
-                view.eq_set(&b, vm)
+                view.eq_set(b, vm)
             }
             (HeapReadOutput::Set(b), HeapReadOutput::DictItemsView(a)) => {
                 let view = DictItemsView::new(a.get(vm.heap).dict_id());
-                view.eq_set(&b, vm)
+                view.eq_set(b, vm)
             }
             (HeapReadOutput::DictItemsView(a), HeapReadOutput::FrozenSet(b)) => {
                 let view = DictItemsView::new(a.get(vm.heap).dict_id());
-                view.eq_frozenset(&b, vm)
+                view.eq_frozenset(b, vm)
             }
             (HeapReadOutput::FrozenSet(b), HeapReadOutput::DictItemsView(a)) => {
                 let view = DictItemsView::new(a.get(vm.heap).dict_id());
-                view.eq_frozenset(&b, vm)
+                view.eq_frozenset(b, vm)
             }
             (HeapReadOutput::Dataclass(a), HeapReadOutput::Dataclass(b)) => {
                 if a.name(vm) != b.name(vm) {

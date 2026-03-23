@@ -108,7 +108,7 @@ impl ModuleFunctions {
         match self {
             Self::Asyncio(functions) => asyncio::call(vm.heap, functions, args),
             Self::Math(functions) => math::call(vm, functions, args).map(CallResult::Value),
-            Self::Os(functions) => os::call(vm.heap, functions, args),
+            Self::Os(functions) => os::call(vm, functions, args),
             Self::Re(functions) => re::call(vm, functions, args),
         }
     }

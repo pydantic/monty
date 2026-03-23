@@ -10,34 +10,4 @@ error[E0500]: closure requires unique access to `*heap` but it is already borrow
     |              first borrow later used by call
 113 |                 heap.heap_mut().dec_ref(other_id);
     |                 ---- second borrow occurs due to use of `*heap` in closure
-   --> crates/monty/src/heap_data.rs:520:23
-    |
-520 |     fn py_type(&self, heap: &Heap<impl ResourceTracker>) -> Type {
-    |                       ^^^^ help: if this is intentional, prefix it with an underscore: `_heap`
-    |
-    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
-   --> crates/monty/src/heap_data.rs:524:22
-    |
-524 |     fn py_len(&self, vm: &VM<'h, '_, impl ResourceTracker>) -> Option<usize> {
-    |                      ^^ help: if this is intentional, prefix it with an underscore: `_vm`
-   --> crates/monty/src/heap_data.rs:528:21
-    |
-528 |     fn py_eq(&self, other: &Self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> Result<bool, crate::ResourceError> {
-    |                     ^^^^^ help: if this is intentional, prefix it with an underscore: `_other`
-   --> crates/monty/src/heap_data.rs:528:35
-    |
-528 |     fn py_eq(&self, other: &Self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> Result<bool, crate::ResourceError> {
-    |                                   ^^ help: if this is intentional, prefix it with an underscore: `_vm`
-   --> crates/monty/src/heap_data.rs:534:9
-    |
-534 |         f: &mut impl Write,
-    |         ^ help: if this is intentional, prefix it with an underscore: `_f`
-   --> crates/monty/src/heap_data.rs:535:9
-    |
-535 |         vm: &VM<'h, '_, impl ResourceTracker>,
-    |         ^^ help: if this is intentional, prefix it with an underscore: `_vm`
-   --> crates/monty/src/heap_data.rs:536:9
-    |
-536 |         heap_ids: &mut AHashSet<HeapId>,
-    |         ^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_heap_ids`
 For more information about this error, try `rustc --explain E0500`.
