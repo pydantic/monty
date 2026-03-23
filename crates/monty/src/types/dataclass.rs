@@ -165,7 +165,7 @@ impl<'h> HeapRead<'h, Dataclass> {
 }
 
 impl<'h> PyTrait<'h> for HeapRead<'h, Dataclass> {
-    fn py_type(&self, _heap: &Heap<impl ResourceTracker>) -> Type {
+    fn py_type(&self, _vm: &VM<'h, '_, impl ResourceTracker>) -> Type {
         Type::Dataclass
     }
 
@@ -272,7 +272,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Dataclass> {
 
         // If the attribute exists in attrs, it's a data value (not callable)
         if let Some(value) = self.get(vm.heap).attrs.get_by_str(method_name, vm.heap, vm.interns) {
-            let type_name = value.py_type(vm.heap);
+            let type_name = value.py_type(vm);
             Err(ExcType::type_error_not_callable_object(type_name))
         } else {
             // Use the class name (e.g., "Point") not "Dataclass"

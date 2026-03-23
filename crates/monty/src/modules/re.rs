@@ -338,7 +338,7 @@ fn call_sub(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunRe
             return Ok(Value::Ref(vm.heap.allocate(HeapData::Str(s))?));
         }
         Some(other) => {
-            let t = other.py_type(vm.heap);
+            let t = other.py_type(vm);
             other.drop_with_heap(vm);
             return Err(ExcType::type_error(format!(
                 "'{t}' object cannot be interpreted as an integer for 'count' argument"

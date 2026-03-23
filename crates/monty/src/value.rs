@@ -118,7 +118,7 @@ impl From<bool> for Value {
 }
 
 impl PyTrait<'_> for Value {
-    fn py_type(&self, heap: &Heap<impl ResourceTracker>) -> Type {
+    fn py_type(&self, vm: &VM<'_, '_, impl ResourceTracker>) -> Type {
         match self {
             Self::Undefined => panic!("Cannot get type of undefined value"),
             Self::Ellipsis => Type::Ellipsis,
@@ -134,7 +134,7 @@ impl PyTrait<'_> for Value {
             Self::Marker(m) => m.py_type(),
             Self::Property(_) => Type::Property,
             Self::ExternalFuture(_) => Type::Coroutine,
-            Self::Ref(id) => heap.get(*id).py_type(heap),
+            Self::Ref(id) => vm.heap.read(*id).py_type(vm),
             #[cfg(feature = "ref-count-panic")]
             Self::Dereferenced => panic!("Cannot access Dereferenced object"),
         }
@@ -145,7 +145,7 @@ impl PyTrait<'_> for Value {
             // Count Unicode characters, not bytes, to match Python semantics
             Self::InternString(string_id) => Some(vm.interns.get_str(*string_id).chars().count()),
             Self::InternBytes(bytes_id) => Some(vm.interns.get_bytes(*bytes_id).len()),
-            Self::Ref(id) => vm.heap.get(*id).py_len(vm),
+            Self::Ref(id) => vm.heap.read(*id).py_len(vm),
             _ => None,
         }
     }
@@ -1384,7 +1384,7 @@ impl PyTrait<'_> for Value {
                     HeapReadOutput::NamedTuple(nt) => {
                         let index = match key {
                             Self::Int(i) => *i,
-                            _ => return Err(ExcType::type_error_indices(Type::NamedTuple, key.py_type(vm.heap))),
+                            _ => return Err(ExcType::type_error_indices(Type::NamedTuple, key.py_type(vm))),
                         };
                         let len = nt.get(vm.heap).items_len();
                         let len_i64 = i64::try_from(len).expect("namedtuple length exceeds i64::MAX");
@@ -1475,7 +1475,7 @@ impl PyTrait<'_> for Value {
                         // Extract group data using short-lived borrow, then allocate
                         rematch_get_group(&m, group_n, vm)
                     }
-                    _ => Err(ExcType::type_error_not_sub(self.py_type(vm.heap))),
+                    _ => Err(ExcType::type_error_not_sub(self.py_type(vm))),
                 }
             }
             Self::InternString(string_id) => {
@@ -1497,7 +1497,7 @@ impl PyTrait<'_> for Value {
                 let index = match key {
                     Self::Int(i) => *i,
                     Self::Bool(b) => i64::from(*b),
-                    _ => return Err(ExcType::type_error_indices(Type::Str, key.py_type(vm.heap))),
+                    _ => return Err(ExcType::type_error_indices(Type::Str, key.py_type(vm))),
                 };
 
                 let s = interns.get_str(*string_id);
@@ -1524,14 +1524,14 @@ impl PyTrait<'_> for Value {
                 let index = match key {
                     Self::Int(i) => *i,
                     Self::Bool(b) => i64::from(*b),
-                    _ => return Err(ExcType::type_error_indices(Type::Bytes, key.py_type(vm.heap))),
+                    _ => return Err(ExcType::type_error_indices(Type::Bytes, key.py_type(vm))),
                 };
 
                 let bytes = interns.get_bytes(*bytes_id);
                 let byte = get_byte_at_index(bytes, index).ok_or_else(ExcType::bytes_index_error)?;
                 Ok(Self::Int(i64::from(byte)))
             }
-            _ => Err(ExcType::type_error_not_sub(self.py_type(vm.heap))),
+            _ => Err(ExcType::type_error_not_sub(self.py_type(vm))),
         }
     }
 
@@ -1547,14 +1547,14 @@ impl PyTrait<'_> for Value {
                         value.drop_with_heap(vm);
                         Err(ExcType::type_error(format!(
                             "'{}' object does not support item assignment",
-                            self.py_type(vm.heap)
+                            self.py_type(vm)
                         )))
                     }
                 }
             }
             _ => Err(ExcType::type_error(format!(
                 "'{}' object does not support item assignment",
-                self.py_type(vm.heap)
+                self.py_type(vm)
             ))),
         }
     }
@@ -1837,7 +1837,7 @@ impl Value {
                         Ok(range.contains(n))
                     }
                     _ => {
-                        let type_name = self.py_type(vm.heap);
+                        let type_name = self.py_type(vm);
                         Err(ExcType::type_error(format!(
                             "argument of type '{type_name}' is not iterable"
                         )))
@@ -1849,7 +1849,7 @@ impl Value {
                 str_contains(container_str, item, vm.heap, vm.interns)
             }
             _ => {
-                let type_name = self.py_type(vm.heap);
+                let type_name = self.py_type(vm);
                 Err(ExcType::type_error(format!(
                     "argument of type '{type_name}' is not iterable"
                 )))
@@ -1896,7 +1896,7 @@ impl Value {
             }
             _ => {}
         }
-        let type_name = self.py_type(vm.heap);
+        let type_name = self.py_type(vm);
         Err(ExcType::attribute_error(type_name, attr.as_str(vm.interns)))
     }
 
@@ -1923,15 +1923,14 @@ impl Value {
                     old_value.drop_with_heap(vm);
                     Ok(())
                 }
-                _ => {
-                    // TODO: add `py_type` on `HeapReadOutput` to avoid double lookup
-                    let type_name = vm.heap.get(*heap_id).py_type(vm.heap);
+                other => {
+                    let type_name = other.py_type(vm);
                     value.drop_with_heap(vm);
                     Err(ExcType::attribute_error_no_setattr(type_name, attr_name))
                 }
             }
         } else {
-            let type_name = self.py_type(vm.heap);
+            let type_name = self.py_type(vm);
             value.drop_with_heap(vm);
             Err(ExcType::attribute_error_no_setattr(type_name, attr_name))
         }
@@ -1946,19 +1945,19 @@ impl Value {
     /// heap-allocated `LongInt` values always exceed i64 range because `LongInt::into_value()`
     /// automatically demotes i64-fitting values to `Value::Int`. However, this path could be
     /// reached via deserialization of crafted snapshot data.
-    pub fn as_int(&self, heap: &Heap<impl ResourceTracker>) -> RunResult<i64> {
+    pub fn as_int(&self, vm: &VM<'_, '_, impl ResourceTracker>) -> RunResult<i64> {
         match self {
             Self::Int(i) => Ok(*i),
             Self::Ref(heap_id) => {
-                if let HeapData::LongInt(li) = heap.get(*heap_id) {
+                if let HeapData::LongInt(li) = vm.heap.get(*heap_id) {
                     li.to_i64().ok_or_else(ExcType::overflow_shift_count)
                 } else {
-                    let msg = format!("'{}' object cannot be interpreted as an integer", self.py_type(heap));
+                    let msg = format!("'{}' object cannot be interpreted as an integer", self.py_type(vm));
                     Err(SimpleException::new_msg(ExcType::TypeError, msg).into())
                 }
             }
             _ => {
-                let msg = format!("'{}' object cannot be interpreted as an integer", self.py_type(heap));
+                let msg = format!("'{}' object cannot be interpreted as an integer", self.py_type(vm));
                 Err(SimpleException::new_msg(ExcType::TypeError, msg).into())
             }
         }
@@ -1974,18 +1973,18 @@ impl Value {
     /// heap-allocated `LongInt` values always exceed i64 range because `LongInt::into_value()`
     /// automatically demotes i64-fitting values to `Value::Int`. However, this path could be
     /// reached via deserialization of crafted snapshot data.
-    pub fn as_index(&self, heap: &Heap<impl ResourceTracker>, container_type: Type) -> RunResult<i64> {
+    pub fn as_index(&self, vm: &VM<'_, '_, impl ResourceTracker>, container_type: Type) -> RunResult<i64> {
         match self {
             Self::Int(i) => Ok(*i),
             Self::Bool(b) => Ok(i64::from(*b)),
             Self::Ref(heap_id) => {
-                if let HeapData::LongInt(li) = heap.get(*heap_id) {
+                if let HeapData::LongInt(li) = vm.heap.get(*heap_id) {
                     li.to_i64().ok_or_else(ExcType::index_error_int_too_large)
                 } else {
-                    Err(ExcType::type_error_indices(container_type, self.py_type(heap)))
+                    Err(ExcType::type_error_indices(container_type, self.py_type(vm)))
                 }
             }
-            _ => Err(ExcType::type_error_indices(container_type, self.py_type(heap))),
+            _ => Err(ExcType::type_error_indices(container_type, self.py_type(vm))),
         }
     }
 
@@ -2002,15 +2001,15 @@ impl Value {
         &self,
         other: &Self,
         op: BitwiseOp,
-        heap: &mut Heap<impl ResourceTracker>,
+        vm: &mut VM<'_, '_, impl ResourceTracker>,
     ) -> Result<Self, RunError> {
         // Capture types for error messages
-        let lhs_type = self.py_type(heap);
-        let rhs_type = other.py_type(heap);
+        let lhs_type = self.py_type(vm);
+        let rhs_type = other.py_type(vm);
 
         // Extract BigInt from all numeric types
-        let lhs_bigint = extract_bigint(self, heap);
-        let rhs_bigint = extract_bigint(other, heap);
+        let lhs_bigint = extract_bigint(self, vm.heap);
+        let rhs_bigint = extract_bigint(other, vm.heap);
 
         if let (Some(l), Some(r)) = (lhs_bigint, rhs_bigint) {
             let result = match op {
@@ -2029,7 +2028,7 @@ impl Value {
                         #[expect(clippy::cast_sign_loss)]
                         let shift_u64 = shift as u64;
                         // Check size before computing to prevent DoS
-                        check_lshift_size(l.bits(), shift_u64, heap.tracker())?;
+                        check_lshift_size(l.bits(), shift_u64, vm.heap.tracker())?;
                         l << shift_u64
                     } else if r.sign() == num_bigint::Sign::Minus {
                         return Err(ExcType::value_error_negative_shift_count());
@@ -2062,7 +2061,7 @@ impl Value {
                 }
             };
             // Convert result back to Value, demoting to i64 if it fits
-            LongInt::new(result).into_value(heap).map_err(Into::into)
+            LongInt::new(result).into_value(vm.heap).map_err(Into::into)
         } else {
             Err(ExcType::binary_type_error(op.as_str(), lhs_type, rhs_type))
         }

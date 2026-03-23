@@ -350,7 +350,7 @@ impl Dict {
     ) -> RunResult<(Option<usize>, u64)> {
         let hash = key
             .py_hash(vm.heap, vm.interns)?
-            .ok_or_else(|| ExcType::type_error_unhashable_dict_key(key.py_type(vm.heap)))?;
+            .ok_or_else(|| ExcType::type_error_unhashable_dict_key(key.py_type(vm)))?;
 
         // Dict keys are typically shallow (strings, ints, tuples of primitives),
         // so recursion errors are unlikely. If one occurs, treat it as "not equal" -
@@ -453,7 +453,7 @@ impl<'h> HeapRead<'h, Dict> {
     ) -> RunResult<(Option<usize>, u64)> {
         let hash = key
             .py_hash(vm.heap, vm.interns)?
-            .ok_or_else(|| ExcType::type_error_unhashable_dict_key(key.py_type(vm.heap)))?;
+            .ok_or_else(|| ExcType::type_error_unhashable_dict_key(key.py_type(vm)))?;
 
         // Dict keys are typically shallow (strings, ints, tuples of primitives),
         // so recursion errors are unlikely. If one occurs, treat it as "not equal" -
@@ -821,7 +821,7 @@ impl IntoIterator for Dict {
 /// `self.get(vm.heap)`, and mutation methods use `self.get_mut(vm.heap)`. This avoids
 /// taking the dict out of the heap, enabling self-referential operations like `d.update(d)`.
 impl<'h> PyTrait<'h> for HeapRead<'h, Dict> {
-    fn py_type(&self, _heap: &Heap<impl ResourceTracker>) -> Type {
+    fn py_type(&self, _vm: &VM<'h, '_, impl ResourceTracker>) -> Type {
         Type::Dict
     }
 

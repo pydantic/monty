@@ -262,7 +262,7 @@ pub fn format_with_spec(
     spec: &ParsedFormatSpec,
     vm: &VM<'_, '_, impl ResourceTracker>,
 ) -> Result<String, RunError> {
-    let value_type = value.py_type(vm.heap);
+    let value_type = value.py_type(vm);
 
     match (value, spec.type_char) {
         // Integer formatting

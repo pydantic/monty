@@ -27,7 +27,7 @@ pub fn builtin_sum(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -
     let accumulator = match start.take() {
         Some(v) => {
             // Reject string start values - Python explicitly forbids this
-            if matches!(v.py_type(vm.heap), Type::Str) {
+            if matches!(v.py_type(vm), Type::Str) {
                 v.drop_with_heap(vm);
                 return Err(SimpleException::new_msg(
                     ExcType::TypeError,
@@ -56,8 +56,8 @@ pub fn builtin_sum(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -
             old.drop_with_heap(vm);
         } else {
             // Types don't support addition
-            let acc_type = accumulator.py_type(vm.heap);
-            let item_type = item.py_type(vm.heap);
+            let acc_type = accumulator.py_type(vm);
+            let item_type = item.py_type(vm);
             return Err(ExcType::binary_type_error("+", acc_type, item_type));
         }
     }

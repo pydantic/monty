@@ -214,7 +214,7 @@ impl<'h> HeapRead<'h, NamedTuple> {
 /// (py_type, py_len, py_bool, py_repr_fmt). All mutable-VM operations (py_eq, py_getitem)
 /// are on `HeapRead<NamedTuple>` below.
 impl PyTrait<'_> for NamedTuple {
-    fn py_type(&self, _heap: &Heap<impl ResourceTracker>) -> Type {
+    fn py_type(&self, _vm: &VM<'h, '_, impl ResourceTracker>) -> Type {
         Type::NamedTuple
     }
 
@@ -243,7 +243,7 @@ impl PyTrait<'_> for NamedTuple {
 /// `PyTrait` implementation for `HeapRead<NamedTuple>`, providing all Python operations
 /// on heap-allocated named tuples via short-lived borrow patterns.
 impl<'h> PyTrait<'h> for HeapRead<'h, NamedTuple> {
-    fn py_type(&self, _heap: &Heap<impl ResourceTracker>) -> Type {
+    fn py_type(&self, _vm: &VM<'h, '_, impl ResourceTracker>) -> Type {
         Type::NamedTuple
     }
 
@@ -294,7 +294,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, NamedTuple> {
     fn py_getitem(&self, key: &Value, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<Value> {
         let index = match key {
             Value::Int(i) => *i,
-            _ => return Err(ExcType::type_error_indices(Type::NamedTuple, key.py_type(vm.heap))),
+            _ => return Err(ExcType::type_error_indices(Type::NamedTuple, key.py_type(vm))),
         };
 
         let len = self.get(vm.heap).items_len();

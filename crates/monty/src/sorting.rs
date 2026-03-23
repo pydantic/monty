@@ -53,8 +53,8 @@ pub fn sort_indices(
             Ok(None) => {
                 sort_error = Some(ExcType::type_error(format!(
                     "'<' not supported between instances of '{}' and '{}'",
-                    values[a].py_type(vm.heap),
-                    values[b].py_type(vm.heap)
+                    values[a].py_type(vm),
+                    values[b].py_type(vm)
                 )));
                 Ordering::Equal
             }

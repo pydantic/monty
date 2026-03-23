@@ -251,7 +251,7 @@ impl<'h> HeapRead<'h, Tuple> {
 /// (py_type, py_len, py_bool, py_repr_fmt). All mutable-VM operations (py_eq, py_cmp,
 /// py_add, py_getitem, py_call_attr) are on `HeapRead<Tuple>` below.
 impl PyTrait<'_> for Tuple {
-    fn py_type(&self, _heap: &Heap<impl ResourceTracker>) -> Type {
+    fn py_type(&self, _vm: &VM<'h, '_, impl ResourceTracker>) -> Type {
         Type::Tuple
     }
 
@@ -276,7 +276,7 @@ impl PyTrait<'_> for Tuple {
 /// `PyTrait` implementation for `HeapRead<Tuple>`, providing all Python operations
 /// on heap-allocated tuples via short-lived borrow patterns.
 impl<'h> PyTrait<'h> for HeapRead<'h, Tuple> {
-    fn py_type(&self, _heap: &Heap<impl ResourceTracker>) -> Type {
+    fn py_type(&self, _vm: &VM<'h, '_, impl ResourceTracker>) -> Type {
         Type::Tuple
     }
 

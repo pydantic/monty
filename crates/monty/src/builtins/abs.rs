@@ -41,14 +41,14 @@ pub fn builtin_abs(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -
             } else {
                 Err(SimpleException::new_msg(
                     ExcType::TypeError,
-                    format!("bad operand type for abs(): '{}'", value.py_type(vm.heap)),
+                    format!("bad operand type for abs(): '{}'", value.py_type(vm)),
                 )
                 .into())
             }
         }
         _ => Err(SimpleException::new_msg(
             ExcType::TypeError,
-            format!("bad operand type for abs(): '{}'", value.py_type(vm.heap)),
+            format!("bad operand type for abs(): '{}'", value.py_type(vm)),
         )
         .into()),
     }

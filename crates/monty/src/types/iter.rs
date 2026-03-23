@@ -109,7 +109,7 @@ impl MontyIter {
                 value,
             })
         } else {
-            let err = ExcType::type_error_not_iterable(value.py_type(vm.heap));
+            let err = ExcType::type_error_not_iterable(value.py_type(vm));
             value.drop_with_heap(vm);
             Err(err)
         }
@@ -567,7 +567,7 @@ pub fn iterator_next(
         if let Some(d) = default {
             d.drop_with_heap(vm);
         }
-        return Err(ExcType::type_error_not_iterable(iter_value.py_type(vm.heap)));
+        return Err(ExcType::type_error_not_iterable(iter_value.py_type(vm)));
     };
 
     // Check that it's actually an iterator
@@ -575,7 +575,7 @@ pub fn iterator_next(
         if let Some(d) = default {
             d.drop_with_heap(vm);
         }
-        let data_type = vm.heap.get(*iter_id).py_type(vm.heap);
+        let data_type = vm.heap.get(*iter_id).py_type(vm);
         return Err(ExcType::type_error(format!("'{data_type}' object is not an iterator")));
     }
 

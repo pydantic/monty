@@ -231,7 +231,7 @@ impl Range {
 }
 
 impl<'h> PyTrait<'h> for HeapRead<'h, Range> {
-    fn py_type(&self, _heap: &Heap<impl ResourceTracker>) -> Type {
+    fn py_type(&self, _vm: &VM<'h, '_, impl ResourceTracker>) -> Type {
         Type::Range
     }
 

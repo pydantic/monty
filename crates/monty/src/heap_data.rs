@@ -337,55 +337,6 @@ impl HeapItem for GatherFuture {
     }
 }
 
-impl HeapData {
-    pub fn py_type(&self, _heap: &Heap<impl ResourceTracker>) -> Type {
-        match self {
-            Self::Str(_) => Type::Str,
-            Self::Bytes(_) => Type::Bytes,
-            Self::List(_) => Type::List,
-            Self::Tuple(_) => Type::Tuple,
-            Self::NamedTuple(_) => Type::NamedTuple,
-            Self::Dict(_) => Type::Dict,
-            Self::DictKeysView(_) => Type::DictKeys,
-            Self::DictItemsView(_) => Type::DictItems,
-            Self::DictValuesView(_) => Type::DictValues,
-            Self::Set(_) => Type::Set,
-            Self::FrozenSet(_) => Type::FrozenSet,
-            Self::Closure(_) | Self::FunctionDefaults(_) | Self::ExtFunction(_) => Type::Function,
-            Self::Cell(_) => Type::Cell,
-            Self::Range(_) => Type::Range,
-            Self::Slice(_) => Type::Slice,
-            Self::Exception(e) => e.py_type(),
-            Self::Dataclass(_) => Type::Dataclass,
-            Self::Iter(_) => Type::Iterator,
-            Self::LongInt(_) => Type::Int,
-            Self::Module(_) => Type::Module,
-            Self::Coroutine(_) | Self::GatherFuture(_) => Type::Coroutine,
-            Self::Path(_) => Type::Path,
-            Self::ReMatch(_) => Type::ReMatch,
-            Self::RePattern(_) => Type::RePattern,
-        }
-    }
-
-    pub fn py_len(&self, vm: &VM<'_, '_, impl ResourceTracker>) -> Option<usize> {
-        match self {
-            Self::Str(s) => Some(s.as_str().chars().count()),
-            Self::Bytes(b) => Some(b.len()),
-            Self::List(l) => Some(l.len()),
-            Self::Tuple(t) => Some(t.as_slice().len()),
-            Self::NamedTuple(nt) => Some(nt.items_len()),
-            Self::Dict(d) => Some(d.len()),
-            Self::DictKeysView(view) => Some(view.dict(&*vm.heap).len()),
-            Self::DictItemsView(view) => Some(view.dict(&*vm.heap).len()),
-            Self::DictValuesView(view) => Some(view.dict(&*vm.heap).len()),
-            Self::Set(s) => Some(s.len()),
-            Self::FrozenSet(fs) => Some(fs.len()),
-            Self::Range(r) => Some(r.len()),
-            _ => None,
-        }
-    }
-}
-
 impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
     fn py_bool(&self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> bool {
         match self {
@@ -443,18 +394,62 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             // Types without methods — return AttributeError
             _ => {
                 args.drop_with_heap(vm);
-                let type_name = vm.heap.get(self_id).py_type(vm.heap);
+                let type_name = vm.heap.get(self_id).py_type(vm);
                 Err(ExcType::attribute_error(type_name, attr.as_str(vm.interns)))
             }
         }
     }
 
-    fn py_type(&self, heap: &Heap<impl ResourceTracker>) -> Type {
-        todo!()
+    fn py_type(&self, vm: &VM<'h, '_, impl ResourceTracker>) -> Type {
+        match self {
+            Self::Str(s) => s.py_type(vm),
+            Self::Bytes(b) => b.py_type(vm),
+            Self::List(l) => l.py_type(vm),
+            Self::Tuple(t) => t.py_type(vm),
+            Self::NamedTuple(nt) => nt.py_type(vm),
+            Self::Dict(d) => d.py_type(vm),
+            Self::DictKeysView(v) => v.py_type(vm),
+            Self::DictItemsView(v) => v.py_type(vm),
+            Self::DictValuesView(v) => v.py_type(vm),
+            Self::Set(s) => s.py_type(vm),
+            Self::FrozenSet(fs) => fs.py_type(vm),
+            Self::Closure(_) | Self::FunctionDefaults(_) | Self::ExtFunction(_) => Type::Function,
+            Self::Cell(_) => Type::Cell,
+            Self::Range(r) => r.py_type(vm),
+            Self::Slice(s) => s.py_type(vm),
+            Self::Exception(e) => e.py_type(vm),
+            Self::Dataclass(dc) => dc.py_type(vm),
+            Self::Iter(_) => Type::Iterator,
+            Self::LongInt(_) => Type::Int,
+            Self::Module(_) => Type::Module,
+            Self::Coroutine(_) | Self::GatherFuture(_) => Type::Coroutine,
+            Self::Path(p) => p.py_type(vm),
+            Self::ReMatch(re) => re.py_type(vm),
+            Self::RePattern(p) => p.py_type(vm),
+        }
     }
 
     fn py_len(&self, vm: &VM<'h, '_, impl ResourceTracker>) -> Option<usize> {
-        todo!()
+        match self {
+            Self::Str(s) => s.py_len(vm),
+            Self::Bytes(b) => b.py_len(vm),
+            Self::List(l) => l.py_len(vm),
+            Self::Tuple(t) => t.py_len(vm),
+            Self::NamedTuple(nt) => nt.py_len(vm),
+            Self::Dict(d) => d.py_len(vm),
+            Self::DictKeysView(view) => view.py_len(vm),
+            Self::DictItemsView(view) => view.py_len(vm),
+            Self::DictValuesView(view) => view.py_len(vm),
+            Self::Set(s) => s.py_len(vm),
+            Self::FrozenSet(fs) => fs.py_len(vm),
+            Self::Range(r) => r.py_len(vm),
+            Self::Slice(s) => s.py_len(vm),
+            Self::Dataclass(dc) => dc.py_len(vm),
+            Self::ReMatch(m) => m.py_len(vm),
+            Self::RePattern(p) => p.py_len(vm),
+            // Types without length — return None
+            _ => None,
+        }
     }
 
     fn py_eq(&self, other: &Self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> Result<bool, crate::ResourceError> {
@@ -597,7 +592,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
                 .interns
                 .get_function(fd.get(vm.heap).func_id)
                 .py_repr_fmt(f, vm.interns, 0),
-            Self::Cell(cell) => write!(f, "<cell: {} object>", cell.get(vm.heap).0.py_type(vm.heap)),
+            Self::Cell(cell) => write!(f, "<cell: {} object>", cell.get(vm.heap).0.py_type(vm)),
             Self::Range(r) => r.py_repr_fmt(f, vm, heap_ids),
             Self::Slice(s) => s.py_repr_fmt(f, vm, heap_ids),
             Self::Exception(e) => e.get(vm.heap).py_repr_fmt(f),

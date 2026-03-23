@@ -189,7 +189,7 @@ impl std::ops::Deref for Str {
 }
 
 impl<'h> PyTrait<'h> for HeapRead<'h, Str> {
-    fn py_type(&self, _heap: &Heap<impl ResourceTracker>) -> Type {
+    fn py_type(&self, _vm: &VM<'h, '_, impl ResourceTracker>) -> Type {
         Type::Str
     }
 
@@ -488,12 +488,12 @@ fn str_join(separator: &str, iterable: Value, vm: &mut VM<'_, '_, impl ResourceT
                 if let HeapData::Str(s) = vm.heap.get(*heap_id) {
                     result.push_str(s.as_str());
                 } else {
-                    let t = item.py_type(vm.heap);
+                    let t = item.py_type(vm);
                     return Err(ExcType::type_error_join_item(index, t));
                 }
             }
             _ => {
-                let t = item.py_type(vm.heap);
+                let t = item.py_type(vm);
                 return Err(ExcType::type_error_join_item(index, t));
             }
         }

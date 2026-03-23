@@ -39,7 +39,7 @@ pub fn builtin_getattr(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValue
     };
 
     let Some(attr) = name.as_either_str(vm.heap) else {
-        let ty = name.py_type(vm.heap);
+        let ty = name.py_type(vm);
         return Err(
             SimpleException::new_msg(ExcType::TypeError, format!("attribute name must be string, not '{ty}'")).into(),
         );

@@ -466,7 +466,7 @@ impl From<List> for Vec<Value> {
 /// heap read handles. Mutable methods (setitem, iadd, call_attr) operate through
 /// the HeapRead's `get_mut` to modify the list in-place on the heap.
 impl<'h> PyTrait<'h> for HeapRead<'h, List> {
-    fn py_type(&self, _heap: &Heap<impl ResourceTracker>) -> Type {
+    fn py_type(&self, _vm: &VM<'h, '_, impl ResourceTracker>) -> Type {
         Type::List
     }
 
@@ -606,12 +606,12 @@ impl<'h> PyTrait<'h> for HeapRead<'h, List> {
                         return Err(ExcType::index_error_int_too_large());
                     }
                 } else {
-                    let key_type = key.py_type(vm.heap);
+                    let key_type = key.py_type(vm);
                     return Err(ExcType::type_error_list_assignment_indices(key_type));
                 }
             }
             _ => {
-                let key_type = key.py_type(vm.heap);
+                let key_type = key.py_type(vm);
                 return Err(ExcType::type_error_list_assignment_indices(key_type));
             }
         };

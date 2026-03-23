@@ -46,7 +46,7 @@ pub trait PyTrait<'h> {
     ///
     /// Used for error messages and the `type()` builtin.
     /// Takes heap reference for cases where nested Value lookups are needed.
-    fn py_type(&self, heap: &Heap<impl ResourceTracker>) -> Type;
+    fn py_type(&self, vm: &VM<'h, '_, impl ResourceTracker>) -> Type;
 
     /// Returns the number of elements in this container.
     ///
@@ -250,7 +250,7 @@ pub trait PyTrait<'h> {
         // reporting `AttributeError`, otherwise method calls on unsupported types leak
         // references on the error path (caught by `ref-count-panic`).
         args.drop_with_heap(vm);
-        Err(ExcType::attribute_error(self.py_type(vm.heap), attr.as_str(vm.interns)))
+        Err(ExcType::attribute_error(self.py_type(vm), attr.as_str(vm.interns)))
     }
 
     /// Python subscript get operation (`__getitem__`), e.g., `d[key]`.
@@ -263,7 +263,7 @@ pub trait PyTrait<'h> {
     ///
     /// Default implementation returns TypeError.
     fn py_getitem(&self, _key: &Value, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<Value> {
-        Err(ExcType::type_error_not_sub(self.py_type(vm.heap)))
+        Err(ExcType::type_error_not_sub(self.py_type(vm)))
     }
 
     /// Python subscript set operation (`__setitem__`), e.g., `d[key] = value`.
@@ -277,7 +277,7 @@ pub trait PyTrait<'h> {
         value.drop_with_heap(vm);
         Err(SimpleException::new_msg(
             ExcType::TypeError,
-            format!("'{}' object does not support item assignment", self.py_type(vm.heap)),
+            format!("'{}' object does not support item assignment", self.py_type(vm)),
         )
         .into())
     }

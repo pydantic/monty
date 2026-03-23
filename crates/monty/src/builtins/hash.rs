@@ -23,6 +23,6 @@ pub fn builtin_hash(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) 
             let hash_i64 = i64::from_ne_bytes(hash.to_ne_bytes());
             Ok(Value::Int(hash_i64))
         }
-        None => Err(ExcType::type_error_unhashable(value.py_type(vm.heap))),
+        None => Err(ExcType::type_error_unhashable(value.py_type(vm))),
     }
 }

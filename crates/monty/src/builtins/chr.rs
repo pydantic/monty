@@ -35,7 +35,7 @@ pub fn builtin_chr(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -
             Ok(allocate_char(c, vm.heap)?)
         }
         _ => {
-            let type_name = value.py_type(vm.heap);
+            let type_name = value.py_type(vm);
             Err(SimpleException::new_msg(
                 ExcType::TypeError,
                 format!("an integer is required (got type {type_name})"),

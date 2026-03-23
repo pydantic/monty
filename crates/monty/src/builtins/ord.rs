@@ -47,7 +47,7 @@ pub fn builtin_ord(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -
                     .into())
                 }
             } else {
-                let type_name = value.py_type(vm.heap);
+                let type_name = value.py_type(vm);
                 Err(SimpleException::new_msg(
                     ExcType::TypeError,
                     format!("ord() expected string of length 1, but {type_name} found"),
@@ -56,7 +56,7 @@ pub fn builtin_ord(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -
             }
         }
         _ => {
-            let type_name = value.py_type(vm.heap);
+            let type_name = value.py_type(vm);
             Err(SimpleException::new_msg(
                 ExcType::TypeError,
                 format!("ord() expected string of length 1, but {type_name} found"),

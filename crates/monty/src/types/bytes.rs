@@ -211,9 +211,9 @@ impl Bytes {
             Some(v @ Value::Ref(id)) => match heap.get(*id) {
                 HeapData::Str(s) => s.as_str().as_bytes().to_vec(),
                 HeapData::Bytes(b) => b.as_slice().to_vec(),
-                _ => return Err(ExcType::type_error_bytes_init(v.py_type(heap))),
+                _ => return Err(ExcType::type_error_bytes_init(v.py_type(vm))),
             },
-            Some(v) => return Err(ExcType::type_error_bytes_init(v.py_type(heap))),
+            Some(v) => return Err(ExcType::type_error_bytes_init(v.py_type(vm))),
         };
         let heap_id = heap.allocate(HeapData::Bytes(Self::new(new_data)))?;
         Ok(Value::Ref(heap_id))
@@ -247,7 +247,7 @@ impl std::ops::Deref for Bytes {
 }
 
 impl<'h> PyTrait<'h> for HeapRead<'h, Bytes> {
-    fn py_type(&self, _heap: &Heap<impl ResourceTracker>) -> Type {
+    fn py_type(&self, _vm: &VM<'h, '_, impl ResourceTracker>) -> Type {
         Type::Bytes
     }
 
@@ -2150,14 +2150,14 @@ fn bytes_join<'h>(
                 if let HeapData::Bytes(b) = vm.heap.get(*heap_id) {
                     result.extend_from_slice(b.as_slice());
                 } else {
-                    let t = item.py_type(vm.heap);
+                    let t = item.py_type(vm);
                     return Err(ExcType::type_error(format!(
                         "sequence item {index}: expected a bytes-like object, {t} found"
                     )));
                 }
             }
             _ => {
-                let t = item.py_type(vm.heap);
+                let t = item.py_type(vm);
                 return Err(ExcType::type_error(format!(
                     "sequence item {index}: expected a bytes-like object, {t} found"
                 )));
@@ -2307,7 +2307,7 @@ pub fn bytes_fromhex(args: ArgValues, vm: &mut VM<'_, '_, impl ResourceTracker>)
             }
         }
         _ => {
-            let t = hex_value.py_type(vm.heap);
+            let t = hex_value.py_type(vm);
             return Err(ExcType::type_error(format!("fromhex() argument must be str, not {t}")));
         }
     };

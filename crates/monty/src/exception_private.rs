@@ -12,7 +12,7 @@ use crate::{
     defer_drop,
     exception_public::{MontyException, StackFrame},
     fstring::FormatError,
-    heap::HeapData,
+    heap::{HeapData, HeapRead},
     intern::{Interns, StringId},
     parse::CodeRange,
     resource::ResourceTracker,
@@ -1204,11 +1204,15 @@ impl SimpleException {
             (_, None) => String::new(),
         }
     }
+}
 
-    pub(crate) fn py_type(&self) -> Type {
+impl<'h> HeapRead<'h, SimpleException> {
+    pub(crate) fn py_type(&self, vm: &VM<'h, '_, impl ResourceTracker>) -> Type {
         Type::Exception(self.exc_type)
     }
+}
 
+impl SimpleException {
     /// Returns the exception formatted as Python would repr it.
     pub fn py_repr_fmt(&self, f: &mut impl Write) -> std::fmt::Result {
         let type_str: &'static str = self.exc_type.into();

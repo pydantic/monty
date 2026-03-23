@@ -114,7 +114,7 @@ impl SetStorage {
         let hash = match value.py_hash(vm.heap, vm.interns) {
             Ok(Some(h)) => h,
             Ok(None) => {
-                let err = ExcType::type_error_unhashable_set_element(value.py_type(vm.heap));
+                let err = ExcType::type_error_unhashable_set_element(value.py_type(vm));
                 value.drop_with_heap(vm);
                 return Err(err);
             }
@@ -161,7 +161,7 @@ impl SetStorage {
     pub fn contains(&self, value: &Value, vm: &mut VM<'_, '_, impl ResourceTracker>) -> RunResult<bool> {
         let hash = value
             .py_hash(vm.heap, vm.interns)?
-            .ok_or_else(|| ExcType::type_error_unhashable_set_element(value.py_type(vm.heap)))?;
+            .ok_or_else(|| ExcType::type_error_unhashable_set_element(value.py_type(vm)))?;
 
         // Set values are typically shallow (strings, ints, tuples of primitives),
         // so recursion errors are unlikely. If one occurs, treat it as "not equal".
@@ -481,7 +481,7 @@ impl<'h> HeapRead<'h, Set> {
         let hash = match value.py_hash(vm.heap, vm.interns) {
             Ok(Some(h)) => h,
             Ok(None) => {
-                let err = ExcType::type_error_unhashable_set_element(value.py_type(vm.heap));
+                let err = ExcType::type_error_unhashable_set_element(value.py_type(vm));
                 value.drop_with_heap(vm);
                 return Err(err);
             }
@@ -526,7 +526,7 @@ impl<'h> HeapRead<'h, Set> {
     pub(crate) fn contains(&self, value: &Value, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<bool> {
         let hash = value
             .py_hash(vm.heap, vm.interns)?
-            .ok_or_else(|| ExcType::type_error_unhashable_set_element(value.py_type(vm.heap)))?;
+            .ok_or_else(|| ExcType::type_error_unhashable_set_element(value.py_type(vm)))?;
 
         // Collect candidate indices (hash match only) via shared borrow
         let mut candidates: SmallVec<[usize; 2]> = SmallVec::new();
@@ -586,7 +586,7 @@ impl<'h> HeapRead<'h, Set> {
     fn hr_remove(&mut self, value: &Value, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<bool> {
         let hash = value
             .py_hash(vm.heap, vm.interns)?
-            .ok_or_else(|| ExcType::type_error_unhashable_set_element(value.py_type(vm.heap)))?;
+            .ok_or_else(|| ExcType::type_error_unhashable_set_element(value.py_type(vm)))?;
 
         // Collect candidates by hash
         let mut candidates: SmallVec<[usize; 2]> = SmallVec::new();
@@ -799,7 +799,7 @@ impl<'h> HeapRead<'h, FrozenSet> {
     pub(crate) fn contains(&self, value: &Value, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<bool> {
         let hash = value
             .py_hash(vm.heap, vm.interns)?
-            .ok_or_else(|| ExcType::type_error_unhashable_set_element(value.py_type(vm.heap)))?;
+            .ok_or_else(|| ExcType::type_error_unhashable_set_element(value.py_type(vm)))?;
 
         // Collect candidate indices (hash match only) via shared borrow
         let mut candidates: SmallVec<[usize; 2]> = SmallVec::new();
@@ -918,7 +918,7 @@ impl DropWithHeap for SetEntry {
 }
 
 impl<'h> PyTrait<'h> for HeapRead<'h, Set> {
-    fn py_type(&self, _heap: &Heap<impl ResourceTracker>) -> Type {
+    fn py_type(&self, _vm: &VM<'h, '_, impl ResourceTracker>) -> Type {
         Type::Set
     }
 
@@ -1153,7 +1153,7 @@ impl FrozenSet {
 }
 
 impl<'h> PyTrait<'h> for HeapRead<'h, FrozenSet> {
-    fn py_type(&self, _heap: &Heap<impl ResourceTracker>) -> Type {
+    fn py_type(&self, _vm: &VM<'h, '_, impl ResourceTracker>) -> Type {
         Type::FrozenSet
     }
 
