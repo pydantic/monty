@@ -261,6 +261,53 @@ info: rule `unsupported-operator` is enabled by default
 """)
 
 
+def test_type_check_with_inputs():
+    """Type checking recognizes declared input variables."""
+    # The exact repro from the issue: inputs should not cause unresolved-reference
+    m = pydantic_monty.Monty('x + y', inputs=['x', 'y'], type_check=True)
+    assert m is not None
+
+
+def test_type_check_with_single_input():
+    """Type checking works with a single input variable."""
+    m = pydantic_monty.Monty('x + 1', inputs=['x'], type_check=True)
+    assert m is not None
+
+
+def test_type_check_with_inputs_and_stubs():
+    """Type checking works when inputs and stubs are both provided."""
+    m = pydantic_monty.Monty(
+        'x + y',
+        inputs=['x'],
+        type_check=True,
+        type_check_stubs='y: int = 0',
+    )
+    assert m is not None
+
+
+def test_type_check_method_with_inputs():
+    """The type_check() method also recognizes input variables."""
+    m = pydantic_monty.Monty('x + 1', inputs=['x'])
+    assert m.type_check() is None
+
+
+def test_type_check_with_inputs_still_catches_errors():
+    """Inputs don't suppress real type errors in the code."""
+    with pytest.raises(pydantic_monty.MontyTypingError):
+        pydantic_monty.Monty('"hello" + 1', inputs=['x'], type_check=True)
+
+
+def test_type_check_input_not_confused_by_substring_in_stubs():
+    """Input 'x' should not be matched by 'max_value' in stubs."""
+    m = pydantic_monty.Monty(
+        'x + 1',
+        inputs=['x'],
+        type_check=True,
+        type_check_stubs='max_value: int = 0',
+    )
+    assert m is not None
+
+
 def test_inject_stubs_offset():
     type_definitions = """\
 from typing import Any

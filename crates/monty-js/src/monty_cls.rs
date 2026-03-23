@@ -50,7 +50,7 @@ use monty::{
     MontyRun, NameLookup, NameLookupResult, NoLimitTracker, OsCall, PrintWriter, PrintWriterCallback, ResourceTracker,
     RunProgress,
 };
-use monty_type_checking::{type_check, SourceFile};
+use monty_type_checking::{build_input_stubs, type_check, SourceFile};
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 
@@ -143,7 +143,9 @@ impl Monty {
 
         // Perform type checking if requested
         if do_type_check {
-            if let Some(error) = run_type_check_result(&code, &script_name, type_check_prefix_code.as_deref())? {
+            if let Some(error) =
+                run_type_check_result(&code, &script_name, type_check_prefix_code.as_deref(), &input_names)?
+            {
                 return Ok(Either3::C(error));
             }
         }
@@ -169,7 +171,12 @@ impl Monty {
     /// @returns null on success, or MontyTypingError on failure
     #[napi]
     pub fn type_check(&self, prefix_code: Option<String>) -> Result<Option<MontyTypingError>> {
-        run_type_check_result(self.runner.code(), &self.script_name, prefix_code.as_deref())
+        run_type_check_result(
+            self.runner.code(),
+            &self.script_name,
+            prefix_code.as_deref(),
+            &self.input_names,
+        )
     }
 
     /// Executes the code and returns the result, or an exception object if execution fails.
@@ -421,12 +428,17 @@ impl Monty {
     }
 }
 
-/// Performs type checking on the code and returns the error object if there are type errors.
-///
-/// Returns `None` if type checking passes, or `Some(MontyTypingError)` if there are errors.
-fn run_type_check_result(code: &str, script_name: &str, prefix_code: Option<&str>) -> Result<Option<MontyTypingError>> {
-    let source_code: Cow<str> = if let Some(prefix_code) = prefix_code {
-        format!("{prefix_code}\n{code}").into()
+/// Runs type checking and returns the result, generating `Any`-typed stubs for
+/// input names not already declared in `prefix_code`.
+fn run_type_check_result(
+    code: &str,
+    script_name: &str,
+    prefix_code: Option<&str>,
+    input_names: &[String],
+) -> Result<Option<MontyTypingError>> {
+    let combined_prefix = build_input_stubs(prefix_code, input_names);
+    let source_code: Cow<str> = if let Some(prefix) = &combined_prefix {
+        format!("{prefix}\n{code}").into()
     } else {
         code.into()
     };

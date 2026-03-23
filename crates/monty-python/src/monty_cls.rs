@@ -11,7 +11,7 @@ use ::monty::{
     ReplProgress, ReplResolveFutures, ReplStartError, ResolveFutures, ResourceTracker, RunProgress,
 };
 use monty::{ExcType, NameLookup};
-use monty_type_checking::{SourceFile, type_check};
+use monty_type_checking::{SourceFile, build_input_stubs, type_check};
 use pyo3::{
     IntoPyObjectExt,
     exceptions::{PyKeyError, PyRuntimeError, PyTypeError, PyValueError},
@@ -75,7 +75,7 @@ impl PyMonty {
         let input_names = list_str(inputs, "inputs")?;
 
         if type_check {
-            py_type_check(py, &code, script_name, type_check_stubs)?;
+            py_type_check(py, &code, script_name, type_check_stubs, &input_names)?;
         }
 
         // Create the snapshot (parses the code)
@@ -117,7 +117,13 @@ impl PyMonty {
     /// * `MontyTypingError` if type errors are found
     #[pyo3(signature = (prefix_code=None))]
     fn type_check(&self, py: Python<'_>, prefix_code: Option<&str>) -> PyResult<()> {
-        py_type_check(py, self.runner.code(), &self.script_name, prefix_code)
+        py_type_check(
+            py,
+            self.runner.code(),
+            &self.script_name,
+            prefix_code,
+            &self.input_names,
+        )
     }
 
     /// Executes the code and returns the result.
@@ -283,8 +289,15 @@ impl PyMonty {
     }
 }
 
-fn py_type_check(py: Python<'_>, code: &str, script_name: &str, type_stubs: Option<&str>) -> PyResult<()> {
-    let type_stubs = type_stubs.map(|type_stubs| SourceFile::new(type_stubs, "type_stubs.pyi"));
+fn py_type_check(
+    py: Python<'_>,
+    code: &str,
+    script_name: &str,
+    type_stubs: Option<&str>,
+    input_names: &[String],
+) -> PyResult<()> {
+    let combined_stubs = build_input_stubs(type_stubs, input_names);
+    let type_stubs = combined_stubs.as_deref().map(|s| SourceFile::new(s, "type_stubs.pyi"));
 
     let opt_diagnostics =
         type_check(&SourceFile::new(code, script_name), type_stubs.as_ref()).map_err(PyRuntimeError::new_err)?;
