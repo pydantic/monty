@@ -1,6 +1,7 @@
 use std::{borrow::Cow, fmt};
 
 use num_bigint::BigInt;
+use num_traits::Num;
 use ruff_python_ast::{
     self as ast, BoolOp, CmpOp, ConversionFlag as RuffConversionFlag, ElifElseClause, Expr as AstExpr,
     InterpolatedStringElement, Keyword, Number, Operator as AstOperator, ParameterWithDefault, Stmt, UnaryOp,
@@ -925,11 +926,7 @@ impl<'a> Parser<'a> {
                         } else {
                             // Integer too large for i64, parse string representation as BigInt.
                             // Handles radix prefixes (0x, 0o, 0b) and underscores.
-                            // The digit check in parse_int_literal rejects overlarge decimal
-                            // literals before the O(n^2) BigInt::parse runs.
-                            let s = i.to_string();
-                            let bi = parse_int_literal(&s)
-                                .ok_or_else(|| ParseError::syntax(format!("invalid integer literal: {s}"), position))?;
+                            let bi = parse_int_literal(&i.to_string(), position)?;
                             let long_int_id = self.interner.intern_long_int(bi);
                             Literal::LongInt(long_int_id)
                         }
@@ -1711,8 +1708,11 @@ impl ParseError {
 /// - Octal: `0o777`, `0O777`
 /// - Binary: `0b1010`, `0B1010`
 ///
-/// Returns `None` if the string cannot be parsed.
-fn parse_int_literal(s: &str) -> Option<BigInt> {
+/// Check digit limit before the expensive O(n^2) decimal BigInt parse.
+/// Only decimal is limited — hex/octal/binary use O(n) algorithms and are handled above.
+///
+/// Returns `ParseError` if the string cannot be parsed.
+fn parse_int_literal(s: &str, position: CodeRange) -> Result<BigInt, ParseError> {
     // Remove underscores (Python allows them as digit separators)
     let cleaned: String = s.chars().filter(|c| *c != '_').collect();
     let cleaned = cleaned.as_str();
@@ -1721,21 +1721,27 @@ fn parse_int_literal(s: &str) -> Option<BigInt> {
     if cleaned.len() >= 2 {
         let prefix = &cleaned[..2];
         let digits = &cleaned[2..];
+
+        let from_radix = |radix: u32| -> Result<BigInt, ParseError> {
+            BigInt::from_str_radix(digits, radix)
+                .map_err(|e| ParseError::syntax(format!("invalid integer literal: {s:?}, error: {e}"), position))
+        };
+
         match prefix.to_ascii_lowercase().as_str() {
-            "0x" => return BigInt::parse_bytes(digits.as_bytes(), 16),
-            "0o" => return BigInt::parse_bytes(digits.as_bytes(), 8),
-            "0b" => return BigInt::parse_bytes(digits.as_bytes(), 2),
+            "0x" => return from_radix(16),
+            "0o" => return from_radix(8),
+            "0b" => return from_radix(2),
             _ => {}
         }
     }
 
-    // Check digit limit before the expensive O(n^2) decimal BigInt parse.
-    // Only decimal is limited — hex/octal/binary use O(n) algorithms and are handled above.
+    // Default to decimal
     let digit_count = cleaned.bytes().filter(u8::is_ascii_digit).count();
     if digit_count as u64 > INT_MAX_STR_DIGITS {
-        return None;
+        Err(ParseError::syntax("integer literal too large for str", position))
+    } else {
+        cleaned
+            .parse::<BigInt>()
+            .map_err(|e| ParseError::syntax(format!("invalid integer literal {s:?}, error: {e}"), position))
     }
-
-    // Default to decimal
-    cleaned.parse::<BigInt>().ok()
 }

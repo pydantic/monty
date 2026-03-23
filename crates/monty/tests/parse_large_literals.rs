@@ -4,7 +4,7 @@
 //! at parse time to prevent the O(n^2) `BigInt::parse` from running. Non-decimal
 //! literals (hex, binary) and floats are unaffected.
 
-use monty::{ExcType, MontyRun};
+use monty::{ExcType, MontyObject, MontyRun};
 
 #[test]
 fn large_decimal_literal_rejected() {
@@ -13,10 +13,9 @@ fn large_decimal_literal_rejected() {
     let code = format!("x = {literal}");
     let err = MontyRun::new(code, "test.py", vec![]).expect_err("should reject overlarge decimal literal");
     assert_eq!(err.exc_type(), ExcType::SyntaxError);
-    let msg = err.message().expect("should have a message");
-    assert!(
-        msg.contains("invalid integer literal"),
-        "expected 'invalid integer literal', got: {msg}"
+    assert_eq!(
+        err.message().expect("should have a message"),
+        "integer literal too large for str"
     );
 }
 
@@ -27,10 +26,9 @@ fn large_negative_decimal_literal_rejected() {
     let code = format!("x = -{literal}");
     let err = MontyRun::new(code, "test.py", vec![]).expect_err("should reject overlarge negative decimal literal");
     assert_eq!(err.exc_type(), ExcType::SyntaxError);
-    let msg = err.message().expect("should have a message");
-    assert!(
-        msg.contains("invalid integer literal"),
-        "expected 'invalid integer literal', got: {msg}"
+    assert_eq!(
+        err.message().expect("should have a message"),
+        "integer literal too large for str"
     );
 }
 
@@ -87,16 +85,68 @@ fn very_large_float_literal_accepted() {
 #[test]
 fn container_repr_with_huge_int_raises_value_error() {
     // repr() on a list containing a huge int should raise ValueError, not panic.
-    // The list's py_repr_fmt calls the element's py_repr_fmt which returns fmt::Error,
-    // and this surfaces as a ValueError via the repr() builtin guard or as a truncated
-    // string via py_repr's fallback.
+    // The list's py_repr_fmt calls the element's py_repr_fmt which propagates the
+    // ValueError through the container's repr up to the builtin_repr caller.
     let code = "x = [10**5000]\nrepr(x)".to_string();
     let run = MontyRun::new(code, "test.py", vec![]).expect("should parse");
     let err = run.run_no_limits(vec![]).expect_err("repr([huge_int]) should fail");
     assert_eq!(err.exc_type(), ExcType::ValueError);
-    let msg = err.message().expect("should have a message");
-    assert!(
-        msg.starts_with("Exceeds the limit (4300 digits) for integer string conversion"),
-        "wrong message: {msg}"
+    assert_eq!(
+        err.message().expect("should have a message"),
+        "Exceeds the limit (4300 digits) for integer string conversion"
+    );
+}
+
+#[test]
+fn monty_object_repr_or_error_success() {
+    // Returning a range produces MontyObject::Repr with the correct repr string.
+    // This exercises the repr_or_error success path in MontyObject::from_value.
+    let code = "range(0, 10, 2)".to_string();
+    let run = MontyRun::new(code, "test.py", vec![]).expect("should parse");
+    let result = run.run_no_limits(vec![]).expect("should run");
+    let MontyObject::Repr(s) = result else {
+        panic!("expected MontyObject::Repr, got: {result:?}");
+    };
+    assert_eq!(s, "range(0, 10, 2)");
+}
+
+#[test]
+fn monty_object_repr_or_error_slice() {
+    // Returning a slice produces MontyObject::Repr with the correct repr string.
+    let code = "slice(1, 10, 2)".to_string();
+    let run = MontyRun::new(code, "test.py", vec![]).expect("should parse");
+    let result = run.run_no_limits(vec![]).expect("should run");
+    let MontyObject::Repr(s) = result else {
+        panic!("expected MontyObject::Repr, got: {result:?}");
+    };
+    assert_eq!(s, "slice(1, 10, 2)");
+}
+
+#[test]
+fn monty_object_repr_or_error_dict_keys() {
+    // Returning a dict_keys view produces MontyObject::Repr.
+    let code = "{1: 'a', 2: 'b'}.keys()".to_string();
+    let run = MontyRun::new(code, "test.py", vec![]).expect("should parse");
+    let result = run.run_no_limits(vec![]).expect("should run");
+    let MontyObject::Repr(s) = result else {
+        panic!("expected MontyObject::Repr, got: {result:?}");
+    };
+    assert_eq!(s, "dict_keys([1, 2])");
+}
+
+#[test]
+fn monty_object_repr_or_error_with_huge_int() {
+    // Returning a dict_keys view containing a huge int triggers the error fallback
+    // in repr_or_error. The MontyObject::Repr should contain the error message
+    // instead of panicking or returning an empty string.
+    let code = "d = {10**5000: 'v'}\nd.keys()".to_string();
+    let run = MontyRun::new(code, "test.py", vec![]).expect("should parse");
+    let result = run.run_no_limits(vec![]).expect("should run, not raise");
+    let MontyObject::Repr(s) = result else {
+        panic!("expected MontyObject::Repr, got: {result:?}");
+    };
+    assert_eq!(
+        s,
+        "<dict_keys object, error on repr(): ValueError('Exceeds the limit (4300 digits) for integer string conversion')>"
     );
 }

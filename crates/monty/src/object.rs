@@ -12,7 +12,7 @@ use num_traits::Zero;
 use crate::{
     builtins::{Builtins, BuiltinsFunctions},
     bytecode::VM,
-    exception_private::{ExcType, SimpleException},
+    exception_private::{ExcType, RunError, SimpleException},
     heap::{HeapData, HeapId},
     resource::{ResourceError, ResourceTracker},
     types::{
@@ -413,15 +413,8 @@ impl MontyObject {
                         // Show the cell's contents
                         Self::from_value_inner(&cell.0, vm, visited)
                     }
-                    HeapData::Closure(..) | HeapData::FunctionDefaults(..) => {
-                        Self::Repr(object.py_repr(vm).unwrap_or_default().into_owned())
-                    }
-                    HeapData::Range(range) => {
-                        // Represent Range as a repr string since MontyObject doesn't have a Range variant
-                        let mut s = String::new();
-                        let _ = range.py_repr_fmt(&mut s, vm, visited);
-                        Self::Repr(s)
-                    }
+                    HeapData::Closure(..) | HeapData::FunctionDefaults(..) => repr_or_error(object, vm),
+                    HeapData::Range(_) => repr_or_error(object, vm),
                     HeapData::Exception(exc) => Self::Exception {
                         exc_type: exc.exc_type(),
                         arg: exc.arg().map(ToString::to_string),
@@ -452,19 +445,14 @@ impl MontyObject {
                         Self::Repr("<iterator>".to_owned())
                     }
                     HeapData::DictKeysView(_) | HeapData::DictItemsView(_) | HeapData::DictValuesView(_) => {
-                        Self::Repr(object.py_repr(vm).unwrap_or_default().into_owned())
+                        repr_or_error(object, vm)
                     }
                     HeapData::LongInt(li) => Self::BigInt(li.inner().clone()),
                     HeapData::Module(m) => {
                         // Modules are represented as a repr string
                         Self::Repr(format!("<module '{}'>", vm.interns.get_str(m.name())))
                     }
-                    HeapData::Slice(slice) => {
-                        // Represent Slice as a repr string since MontyObject doesn't have a Slice variant
-                        let mut s = String::new();
-                        let _ = slice.py_repr_fmt(&mut s, vm, visited);
-                        Self::Repr(s)
-                    }
+                    HeapData::Slice(_) => repr_or_error(object, vm),
                     HeapData::Coroutine(coro) => {
                         // Coroutines are represented as a repr string
                         let func = vm.interns.get_function(coro.func_id);
@@ -476,9 +464,7 @@ impl MontyObject {
                         Self::Repr(format!("<gather({})>", gather.item_count()))
                     }
                     HeapData::Path(path) => Self::Path(path.as_str().to_owned()),
-                    HeapData::RePattern(_) | HeapData::ReMatch(_) => {
-                        Self::Repr(object.py_repr(vm).unwrap_or_default().into_owned())
-                    }
+                    HeapData::RePattern(_) | HeapData::ReMatch(_) => repr_or_error(object, vm),
                     HeapData::ExtFunction(name) => Self::Function {
                         name: name.clone(),
                         docstring: None,
@@ -494,10 +480,28 @@ impl MontyObject {
             Value::Builtin(Builtins::Function(f)) => Self::BuiltinFunction(*f),
             #[cfg(feature = "ref-count-panic")]
             Value::Dereferenced => panic!("Dereferenced found while converting to MontyObject"),
-            _ => Self::Repr(object.py_repr(vm).unwrap_or_default().into_owned()),
+            _ => repr_or_error(object, vm),
         }
     }
+}
 
+/// Converts a value to its repr string for `MontyObject`, falling back to a
+/// descriptive error message if `py_repr` fails (e.g. INT_MAX_STR_DIGITS).
+fn repr_or_error(value: &Value, vm: &VM<'_, '_, impl ResourceTracker>) -> MontyObject {
+    match value.py_repr(vm) {
+        Ok(s) => MontyObject::Repr(s.into_owned()),
+        Err(e) => {
+            let ty = value.py_type(vm.heap);
+            let msg = match &e {
+                RunError::Internal(s) => s.to_string(),
+                RunError::Exc(exc) | RunError::UncatchableExc(exc) => exc.exc.to_string(),
+            };
+            MontyObject::Repr(format!("<{ty} object, error on repr(): {msg}>"))
+        }
+    }
+}
+
+impl MontyObject {
     /// Returns the Python `repr()` string for this value.
     ///
     /// # Panics

@@ -196,9 +196,9 @@ impl LongInt {
 /// Checks whether an integer with the given bit count would exceed the decimal
 /// digit limit when converted to a string.
 pub fn check_bits_str_digits_limit(bits: u64) -> RunResult<()> {
-    // log10(2) ≈ 0.30103 = 30103/100000
+    // log10(2) ≈ 0.30103 = 30_103/100_000
     // estimated_digits is an upper bound on the actual decimal digit count.
-    let estimated_digits = bits.saturating_mul(30103) / 100_000 + 1;
+    let estimated_digits = bits.saturating_mul(30_103) / 100_000 + 1;
     if estimated_digits > INT_MAX_STR_DIGITS {
         return Err(ExcType::value_error_int_too_large_for_str());
     }
