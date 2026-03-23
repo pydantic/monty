@@ -99,7 +99,7 @@ impl From<Str> for String {
 ///
 /// This avoids heap allocation for common cases like results from `strip()`,
 /// `split()`, string iteration, etc.
-pub fn allocate_string(s: String, heap: &mut Heap<impl ResourceTracker>) -> RunResult<Value> {
+pub fn allocate_string(s: String, heap: &Heap<impl ResourceTracker>) -> RunResult<Value> {
     match s.len() {
         0 => Ok(Value::InternString(StaticStrings::EmptyString.into())),
         1 => {

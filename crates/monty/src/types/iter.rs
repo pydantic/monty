@@ -467,7 +467,7 @@ pub(crate) fn advance_on_heap(
 /// Returns `Ok(None)` if the index is out of bounds (for lists that shrunk during iteration).
 /// Returns `Err` if a dict/set changed size during iteration (RuntimeError).
 fn get_heap_item(
-    heap: &mut Heap<impl ResourceTracker>,
+    heap: &Heap<impl ResourceTracker>,
     heap_id: HeapId,
     index: usize,
     expected_len: Option<usize>,

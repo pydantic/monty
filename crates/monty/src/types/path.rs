@@ -311,7 +311,7 @@ fn extract_path_string<'a>(
 fn fold_joinpath(
     mut path: Path,
     parts: &[Value],
-    heap: &mut Heap<impl ResourceTracker>,
+    heap: &Heap<impl ResourceTracker>,
     interns: &Interns,
 ) -> RunResult<Path> {
     for part in parts {
@@ -326,7 +326,7 @@ fn fold_joinpath(
 pub(crate) fn path_div(
     path_id: HeapId,
     other: &Value,
-    heap: &mut Heap<impl ResourceTracker>,
+    heap: &Heap<impl ResourceTracker>,
     interns: &Interns,
 ) -> RunResult<Option<Value>> {
     // Extract the right-hand side as a string
@@ -400,7 +400,7 @@ impl Path {
     /// `stem`, `suffix`, `suffixes`, `parts`), or `Ok(None)` if the variant doesn't
     /// correspond to a Path attribute. Used by `py_getattr` to share logic between
     /// the interned fast path and the heap string slow path.
-    fn getattr_by_static(&self, ss: StaticStrings, heap: &mut Heap<impl ResourceTracker>) -> RunResult<Option<Value>> {
+    fn getattr_by_static(&self, ss: StaticStrings, heap: &Heap<impl ResourceTracker>) -> RunResult<Option<Value>> {
         let v = match ss {
             StaticStrings::Name => {
                 let name = self.name();

@@ -790,7 +790,7 @@ fn dict_setdefault(dict: &mut Dict, args: ArgValues, vm: &mut VM<'_, '_, impl Re
 ///
 /// Removes and returns the last inserted key-value pair as a tuple.
 /// Raises KeyError if the dict is empty.
-fn dict_popitem(dict: &mut Dict, heap: &mut Heap<impl ResourceTracker>) -> RunResult<Value> {
+fn dict_popitem(dict: &mut Dict, heap: &Heap<impl ResourceTracker>) -> RunResult<Value> {
     if dict.is_empty() {
         return Err(ExcType::key_error_popitem_empty_dict());
     }

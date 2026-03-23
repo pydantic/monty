@@ -88,7 +88,7 @@ impl RePattern {
     /// `pattern.search(string)` — find first match anywhere in the string.
     ///
     /// Returns a `ReMatch` heap object on success, or `Value::None` if no match.
-    pub fn search(&self, text: &str, heap: &mut Heap<impl ResourceTracker>) -> RunResult<Value> {
+    pub fn search(&self, text: &str, heap: &Heap<impl ResourceTracker>) -> RunResult<Value> {
         match self.compiled.captures(text) {
             Ok(Some(caps)) => {
                 let m = ReMatch::from_captures(&caps, text, &self.pattern, &self.compiled);
@@ -106,7 +106,7 @@ impl RePattern {
     /// anchor forces the engine to try all alternatives at position 0.
     ///
     /// Returns a `ReMatch` heap object on success, or `Value::None` if no match.
-    pub fn match_start(&self, text: &str, heap: &mut Heap<impl ResourceTracker>) -> RunResult<Value> {
+    pub fn match_start(&self, text: &str, heap: &Heap<impl ResourceTracker>) -> RunResult<Value> {
         match self.compiled_match.captures(text) {
             Ok(Some(caps)) => {
                 let match_obj = ReMatch::from_captures(&caps, text, &self.pattern, &self.compiled);
@@ -124,7 +124,7 @@ impl RePattern {
     /// anchors force the engine to try all alternatives for a full-string match.
     ///
     /// Returns a `ReMatch` heap object on success, or `Value::None` if no match.
-    pub fn fullmatch(&self, text: &str, heap: &mut Heap<impl ResourceTracker>) -> RunResult<Value> {
+    pub fn fullmatch(&self, text: &str, heap: &Heap<impl ResourceTracker>) -> RunResult<Value> {
         match self.compiled_fullmatch.captures(text) {
             Ok(Some(caps)) => {
                 let match_obj = ReMatch::from_captures(&caps, text, &self.pattern, &self.compiled);
@@ -141,7 +141,7 @@ impl RePattern {
     /// - No capture groups: returns a list of matched strings
     /// - One capture group: returns a list of the group's matched strings
     /// - Multiple capture groups: returns a list of tuples of matched strings
-    pub fn findall(&self, text: &str, heap: &mut Heap<impl ResourceTracker>) -> RunResult<Value> {
+    pub fn findall(&self, text: &str, heap: &Heap<impl ResourceTracker>) -> RunResult<Value> {
         let cap_count = self.compiled.captures_len();
         let mut results = Vec::new();
 
@@ -192,7 +192,7 @@ impl RePattern {
     /// after each match, bailing out immediately if the budget is exceeded. This
     /// avoids both false rejections from conservative pre-estimates and untracked
     /// Rust heap allocations from delegating to `fancy_regex::replace_all()`.
-    pub fn sub(&self, repl: &str, text: &str, count: usize, heap: &mut Heap<impl ResourceTracker>) -> RunResult<Value> {
+    pub fn sub(&self, repl: &str, text: &str, count: usize, heap: &Heap<impl ResourceTracker>) -> RunResult<Value> {
         // Translate Python-style backreferences (\1, \2) to regex crate style ($1, $2)
         let rust_repl = translate_replacement(repl);
         let effective_count = if count == 0 { usize::MAX } else { count };
@@ -219,7 +219,7 @@ impl RePattern {
     ///
     /// Returns a list of strings. If `maxsplit` is non-zero, at most `maxsplit`
     /// splits occur and the remainder of the string is returned as the final element.
-    pub fn split(&self, text: &str, maxsplit: usize, heap: &mut Heap<impl ResourceTracker>) -> RunResult<Value> {
+    pub fn split(&self, text: &str, maxsplit: usize, heap: &Heap<impl ResourceTracker>) -> RunResult<Value> {
         let pieces: Vec<&str> = if maxsplit == 0 {
             self.compiled
                 .split(text)
@@ -247,7 +247,7 @@ impl RePattern {
     /// Eagerly collects all match objects into a list. This differs from CPython's
     /// lazy iterator but produces the same results when iterated. The VM's `GetIter`
     /// opcode handles iteration over the returned list.
-    pub fn finditer(&self, text: &str, heap: &mut Heap<impl ResourceTracker>) -> RunResult<Value> {
+    pub fn finditer(&self, text: &str, heap: &Heap<impl ResourceTracker>) -> RunResult<Value> {
         let mut results = Vec::new();
         for caps in self.compiled.captures_iter(text) {
             let caps = caps.map_err(ExcType::re_pattern_error)?;

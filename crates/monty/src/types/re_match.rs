@@ -130,7 +130,7 @@ impl ReMatch {
     /// Group 0 is the full match, groups 1..N are capture groups.
     /// Returns `Value::None` for unmatched optional groups.
     /// Raises `IndexError` for invalid group numbers.
-    fn get_group(&self, n: i64, heap: &mut Heap<impl ResourceTracker>) -> RunResult<Value> {
+    fn get_group(&self, n: i64, heap: &Heap<impl ResourceTracker>) -> RunResult<Value> {
         match n.cmp(&0) {
             Ordering::Equal => {
                 let s = Str::new(self.full_match.clone());
@@ -157,7 +157,7 @@ impl ReMatch {
     ///
     /// Looks up the group name in `named_groups` and delegates to `get_group`.
     /// Raises `IndexError` if the name is not found.
-    fn get_group_by_name(&self, name: &str, heap: &mut Heap<impl ResourceTracker>) -> RunResult<Value> {
+    fn get_group_by_name(&self, name: &str, heap: &Heap<impl ResourceTracker>) -> RunResult<Value> {
         for (group_name, idx) in &self.named_groups {
             if group_name == name {
                 #[expect(clippy::cast_possible_wrap, reason = "group indices are always small")]
@@ -220,7 +220,7 @@ impl ReMatch {
     /// Returns a tuple of all capture group strings.
     ///
     /// Unmatched optional groups appear as `None`.
-    fn get_groups(&self, heap: &mut Heap<impl ResourceTracker>) -> RunResult<Value> {
+    fn get_groups(&self, heap: &Heap<impl ResourceTracker>) -> RunResult<Value> {
         let mut elements = smallvec![];
         for group in &self.groups {
             match group {
@@ -280,7 +280,7 @@ impl ReMatch {
     ///
     /// Group 0 is the full match. Returns `(-1, -1)` for unmatched optional groups
     #[expect(clippy::cast_possible_wrap, reason = "positions are always small enough for i64")]
-    fn get_span(&self, n: i64, heap: &mut Heap<impl ResourceTracker>) -> RunResult<Value> {
+    fn get_span(&self, n: i64, heap: &Heap<impl ResourceTracker>) -> RunResult<Value> {
         match n.cmp(&0) {
             Ordering::Equal => Ok(allocate_tuple(
                 smallvec![Value::Int(self.start as i64), Value::Int(self.end as i64)],
@@ -455,7 +455,7 @@ fn call_group(
 fn resolve_group_arg(
     m: &ReMatch,
     val: &Value,
-    heap: &mut Heap<impl ResourceTracker>,
+    heap: &Heap<impl ResourceTracker>,
     interns: &Interns,
 ) -> RunResult<Value> {
     match val {

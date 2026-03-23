@@ -238,7 +238,7 @@ impl Type {
                     Value::InternString(string_id) => parse_int_from_str(interns.get_str(*string_id), heap),
                     Value::Ref(heap_id) => match heap.get(*heap_id) {
                         HeapData::Str(s) => parse_int_from_str(s.as_str(), heap),
-                        HeapData::LongInt(li) => li.clone().into_value(heap).map_err(Into::into),
+                        HeapData::LongInt(_) => Ok(v.clone_with_heap(heap)),
                         _ => Err(ExcType::type_error_int_conversion(v.py_type(heap))),
                     },
                     _ => Err(ExcType::type_error_int_conversion(v.py_type(heap))),

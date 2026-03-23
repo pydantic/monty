@@ -1,7 +1,6 @@
 use std::{
     cell::Cell,
     fmt,
-    sync::atomic::{AtomicU16, Ordering},
     time::{Duration, Instant},
 };
 
@@ -419,30 +418,24 @@ const TIME_CHECK_INTERVAL: u16 = 10;
 /// errors when limits are exceeded. Also schedules garbage collection
 /// at configurable intervals.
 ///
-/// Uses `Cell` for `allocation_count` and `current_memory` to allow
-/// `on_allocate` and `on_free` to take `&self` (enabling `&self` on
-/// `Heap::allocate`). This follows the same interior mutability pattern
-/// as `check_counter` (which uses `AtomicU16`).
+/// Uses `Cell` for interior mutability to allow many methods which take
+/// `&self` (enabling `&self` on critical methods such as `Heap::allocate`).
 ///
 /// When serialized/deserialized, the `start_time` is reset to `Instant::now()`.
 /// This means time limits restart from zero after deserialization.
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct LimitedTracker {
     limits: ResourceLimits,
     /// When execution started (for time limit checking).
     /// Reset to `Instant::now()` on deserialization.
+    #[serde(skip, default = "Instant::now")]
     start_time: Instant,
-    /// Total number of allocations made. Uses `Cell` for interior mutability
-    /// so that `on_allocate(&self)` can increment without `&mut self`.
+    /// Total number of allocations made.
     allocation_count: Cell<usize>,
-    /// Current approximate memory usage in bytes. Uses `Cell` for interior
-    /// mutability so that `on_allocate`/`on_free` can update without `&mut self`.
+    /// Current approximate memory usage in bytes.
     current_memory: Cell<usize>,
     /// Counter for rate-limiting `Instant::elapsed()` calls in `check_time`.
-    ///
-    /// Uses `AtomicU16` for interior mutability since `check_time` takes `&self`
-    /// and `LimitedTracker` must be `Sync` (it ends up inside PyO3 pyclass types).
-    check_counter: AtomicU16,
+    check_counter: Cell<u16>,
 }
 
 impl LimitedTracker {
@@ -457,7 +450,7 @@ impl LimitedTracker {
             start_time: Instant::now(),
             allocation_count: Cell::new(0),
             current_memory: Cell::new(0),
-            check_counter: AtomicU16::new(0),
+            check_counter: Cell::new(0),
         }
     }
 
@@ -530,7 +523,7 @@ impl ResourceTracker for LimitedTracker {
 
     fn check_time(&self) -> Result<(), ResourceError> {
         if let Some(max) = self.limits.max_duration {
-            let count = self.check_counter.fetch_add(1, Ordering::Relaxed).wrapping_add(1);
+            let count = self.check_counter.get().wrapping_add(1);
             if count.is_multiple_of(TIME_CHECK_INTERVAL) {
                 // Only call Instant::elapsed() every TIME_CHECK_INTERVAL calls
                 let elapsed = self.start_time.elapsed();
@@ -539,8 +532,7 @@ impl ResourceTracker for LimitedTracker {
                     // an elapsed check. This is important because some callers
                     // (e.g. repr_sequence_fmt) catch the error and return normally,
                     // and we need the VM loop's next check_time to re-detect timeout.
-                    self.check_counter
-                        .store(TIME_CHECK_INTERVAL.wrapping_sub(1), Ordering::Relaxed);
+                    self.check_counter.set(TIME_CHECK_INTERVAL.wrapping_sub(1));
                     return Err(ResourceError::Time { limit: max, elapsed });
                 }
             }
@@ -573,35 +565,5 @@ impl ResourceTracker for LimitedTracker {
             }
         }
         Ok(())
-    }
-}
-
-impl serde::Serialize for LimitedTracker {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        use serde::ser::SerializeStruct;
-        let mut state = serializer.serialize_struct("LimitedTracker", 3)?;
-        state.serialize_field("limits", &self.limits)?;
-        state.serialize_field("allocation_count", &self.allocation_count.get())?;
-        state.serialize_field("current_memory", &self.current_memory.get())?;
-        state.end()
-    }
-}
-
-impl<'de> serde::Deserialize<'de> for LimitedTracker {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        #[derive(serde::Deserialize)]
-        struct Fields {
-            limits: ResourceLimits,
-            allocation_count: usize,
-            current_memory: usize,
-        }
-        let fields = Fields::deserialize(deserializer)?;
-        Ok(Self {
-            limits: fields.limits,
-            start_time: Instant::now(),
-            allocation_count: Cell::new(fields.allocation_count),
-            current_memory: Cell::new(fields.current_memory),
-            check_counter: AtomicU16::new(0),
-        })
     }
 }

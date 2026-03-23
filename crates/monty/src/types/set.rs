@@ -519,7 +519,7 @@ impl Set {
 
     /// Returns a shallow copy of the set.
     #[must_use]
-    pub fn copy(&self, heap: &mut Heap<impl ResourceTracker>) -> Self {
+    pub fn copy(&self, heap: &Heap<impl ResourceTracker>) -> Self {
         Self(self.0.clone_with_heap(heap))
     }
 
@@ -988,7 +988,7 @@ impl FrozenSet {
 
     /// Returns a shallow copy of the frozenset.
     #[must_use]
-    pub fn copy(&self, heap: &mut Heap<impl ResourceTracker>) -> Self {
+    pub fn copy(&self, heap: &Heap<impl ResourceTracker>) -> Self {
         Self(self.0.clone_with_heap(heap))
     }
 

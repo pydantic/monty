@@ -2232,7 +2232,7 @@ fn hex_char_to_value(c: char) -> Option<u8> {
 // =============================================================================
 
 /// Allocates bytes on the heap.
-fn allocate_bytes(bytes: Vec<u8>, heap: &mut Heap<impl ResourceTracker>) -> RunResult<Value> {
+fn allocate_bytes(bytes: Vec<u8>, heap: &Heap<impl ResourceTracker>) -> RunResult<Value> {
     let heap_id = heap.allocate(HeapData::Bytes(Bytes::new(bytes)))?;
     Ok(Value::Ref(heap_id))
 }

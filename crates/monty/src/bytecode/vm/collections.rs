@@ -1,7 +1,5 @@
 //! Collection building and unpacking helpers for the VM.
 
-use smallvec::SmallVec;
-
 use super::VM;
 use crate::{
     defer_drop, defer_drop_mut,
@@ -179,8 +177,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
         let HeapData::List(list) = this.heap.get(*id) else {
             return Err(RunError::internal("ListToTuple: expected list"));
         };
-        // allocate_tuple takes &Heap, so we can hold the read borrow across allocation
-        let items: SmallVec<_> = list.as_slice().iter().map(|v| v.clone_with_heap(this.heap)).collect();
+        let items = list.as_slice().iter().map(|v| v.clone_with_heap(this.heap)).collect();
         let value = allocate_tuple(items, this.heap)?;
         this.push(value);
         Ok(())

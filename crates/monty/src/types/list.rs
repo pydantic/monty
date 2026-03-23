@@ -125,7 +125,7 @@ impl List {
     /// was already incremented (e.g., via `clone_with_heap` or `evaluate_use`).
     ///
     /// Returns `Value::None`, matching Python's behavior where `list.append()` returns None.
-    pub fn append(&mut self, heap: &mut Heap<impl ResourceTracker>, item: Value) {
+    pub fn append(&mut self, heap: &Heap<impl ResourceTracker>, item: Value) {
         // Track if we're adding a reference and mark potential cycle
         if matches!(item, Value::Ref(_)) {
             self.contains_refs = true;
@@ -146,7 +146,7 @@ impl List {
     ///   the item is appended to the end (matching Python semantics).
     ///
     /// Returns `Value::None`, matching Python's behavior where `list.insert()` returns None.
-    pub fn insert(&mut self, heap: &mut Heap<impl ResourceTracker>, index: usize, item: Value) {
+    pub fn insert(&mut self, heap: &Heap<impl ResourceTracker>, index: usize, item: Value) {
         // Track if we're adding a reference and mark potential cycle
         if matches!(item, Value::Ref(_)) {
             self.contains_refs = true;
@@ -574,7 +574,7 @@ fn list_clear(list: &mut List, heap: &mut Heap<impl ResourceTracker>) {
 /// Implements Python's `list.copy()` method.
 ///
 /// Returns a shallow copy of the list.
-fn list_copy(list: &List, heap: &mut Heap<impl ResourceTracker>) -> Result<Value, ResourceError> {
+fn list_copy(list: &List, heap: &Heap<impl ResourceTracker>) -> Result<Value, ResourceError> {
     let items: Vec<Value> = list.items.iter().map(|v| v.clone_with_heap(heap)).collect();
     let heap_id = heap.allocate(HeapData::List(List::new(items)))?;
     Ok(Value::Ref(heap_id))
