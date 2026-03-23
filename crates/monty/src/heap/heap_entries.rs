@@ -14,7 +14,8 @@ const PAGE_SIZE: usize = 256;
 /// A single page of heap entries. Each page is a fixed-size boxed slice of
 /// `MaybeUninit` slots — only slots at indices below `HeapEntries::len` are
 /// initialized.
-type Page = Box<[MaybeUninit<Option<HeapValue>>]>;
+type Page = Box<[Slot; PAGE_SIZE]>;
+type Slot = MaybeUninit<Option<HeapValue>>;
 
 /// Paged storage for heap entries that guarantees address stability.
 ///
@@ -60,7 +61,6 @@ pub(crate) struct HeapEntries {
     free_list: UnsafeCell<Vec<HeapId>>,
 }
 
-#[expect(clippy::missing_fields_in_debug)]
 impl std::fmt::Debug for HeapEntries {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_list()
@@ -76,29 +76,13 @@ impl HeapEntries {
         let num_pages = capacity.div_ceil(PAGE_SIZE);
         let mut pages = Vec::with_capacity(num_pages);
         for _ in 0..num_pages {
-            pages.push(Box::new_uninit_slice(PAGE_SIZE));
+            pages.push(create_page());
         }
         Self {
             pages: UnsafeCell::new(pages),
             len: Cell::new(0),
             free_list: UnsafeCell::new(Vec::new()),
         }
-    }
-
-    /// Returns a shared reference to the pages vec.
-    ///
-    /// # Safety
-    ///
-    /// Safe to call anytime — we only need exclusive access when mutating
-    /// through `pages_mut`, and the borrow checker on `&self`/`&mut self`
-    /// methods prevents those from overlapping.
-    #[inline]
-    unsafe fn pages(&self) -> &Vec<Page> {
-        // SAFETY: no &mut reference to pages exists. Callers that mutate
-        // (allocate, push, get_mut, iter_mut, free) either take &mut self
-        // (preventing any concurrent &self call) or are allocate(&self)
-        // which never holds a reference across the mutation point.
-        unsafe { &*self.pages.get() }
     }
 
     /// Returns an exclusive reference to the pages vec.
@@ -113,21 +97,31 @@ impl HeapEntries {
         self.len.get()
     }
 
-    /// Returns a shared reference to the entry at `index`, or `None` if the slot is freed.
+    /// Returns a shared reference to the entry at `index`.
     ///
     /// # Panics
-    /// Panics if `index >= len`.
+    /// Panics if `index >= len`, or if the slot is freed.
     #[inline]
-    pub fn get(&self, index: usize) -> Option<&HeapValue> {
-        self.get_inner(index).as_ref()
+    #[track_caller]
+    pub fn get(&self, index: usize) -> &HeapValue {
+        // SAFETY: (DH) this call does not expose free slots which could be invalidated
+        // by calls to `.allocate()`.
+        unsafe { self.get_inner(index) }.expect("HeapEntries::get - data already freed")
     }
 
-    fn get_inner(&self, index: usize) -> &Option<HeapValue> {
+    /// Returns a shared reference to the entry at `index`, or `None` if empty
+    ///
+    /// # Safety
+    ///
+    /// Callers must not alias borrows from this method to calls to `allocate()`, as `None`
+    /// slots can be invalidated by reuse from the freelist.
+    #[track_caller]
+    unsafe fn get_inner(&self, index: usize) -> Option<&HeapValue> {
         let len = self.len.get();
         assert!(index < len, "HeapEntries::get: index {index} out of bounds (len={len})",);
         // SAFETY: (DH) all slots at indices < self.len have been initialized via `allocate`.
         // The slot cannot be mutably borrowed because `get_mut` requires `&mut self`.
-        unsafe { self.pages()[index / PAGE_SIZE][index % PAGE_SIZE].assume_init_ref() }
+        unsafe { (&*self.pages.get())[index / PAGE_SIZE][index % PAGE_SIZE].assume_init_ref() }.as_ref()
     }
 
     /// Returns a mutable reference to the `Option<HeapValue>` at `index`.
@@ -149,14 +143,13 @@ impl HeapEntries {
     pub fn retain(&mut self, mut predicate: impl FnMut(usize, &mut HeapValue) -> bool) {
         let len = self.len.get();
         for i in 0..len {
-            // SAFETY: all slots at indices < self.len have been initialized via `push`
-            // or `allocate`.
+            // SAFETY: (DH) all slots at indices < self.len have been initialized via `allocate`.
             let slot = unsafe { self.pages_mut()[i / PAGE_SIZE][i % PAGE_SIZE].assume_init_mut() };
-            if let Some(value) = slot.as_mut() {
-                if !predicate(i, value) {
-                    *slot = None; // Free the slot by setting it to None
-                    self.free(HeapId::from_index(i)); // Add the slot ID to the free list
-                }
+            if let Some(value) = slot.as_mut()
+                && !predicate(i, value)
+            {
+                *slot = None; // Free the slot by setting it to None
+                self.free(HeapId::from_index(i)); // Add the slot ID to the free list
             }
         }
     }
@@ -189,9 +182,9 @@ impl HeapEntries {
             // Reuse a freed slot — the slot was .take()n during dec_ref,
             // so no active borrows can exist on it.
             let index = id.index();
-            // SAFETY: no &mut reference to pages exists (same argument as free_list above).
+            // SAFETY: (DH) no &mut reference to pages exists (same argument as free_list above).
             // index < len (it was a valid slot before being freed) so the slot is initialized.
-            // No active borrows exist on this slot since it was freed (.take()n in dec_ref).
+            // No active borrows exist on this slot since it was freed.
             let pages = unsafe { &mut *self.pages.get() };
             // SAFETY: see above — freed slot is initialized and has no active borrows.
             unsafe {
@@ -204,10 +197,10 @@ impl HeapEntries {
             let page_idx = index / PAGE_SIZE;
             let slot_idx = index % PAGE_SIZE;
 
-            // SAFETY: no &mut reference to pages exists (same argument as free_list above).
+            // SAFETY: (DH) no &mut reference to pages exists (same argument as free_list above).
             let pages = unsafe { &mut *self.pages.get() };
             if page_idx >= pages.len() {
-                pages.push(Box::new_uninit_slice(PAGE_SIZE));
+                pages.push(create_page());
             }
 
             // Write to the new slot. This slot has never been initialized and
@@ -224,7 +217,7 @@ impl HeapEntries {
         // SAFETY: (DH) iterating only the live entries ensures that caller
         // can never observe `None` entries which could be invalidated by
         // calls to `allocate()`
-        unsafe { HeapEntriesIter::new(self) }.filter_map(|(_idx, slot)| slot.as_ref())
+        unsafe { HeapEntriesIter::new(self) }.filter_map(|(_idx, slot)| slot)
     }
 
     /// Returns a freed slot to the free list for reuse.
@@ -232,8 +225,21 @@ impl HeapEntries {
     /// Takes `&mut self` because freeing happens during `dec_ref` and GC,
     /// which genuinely need exclusive access.
     pub fn free(&mut self, id: HeapId) {
-        self.free_list.get_mut().push(id)
+        self.free_list.get_mut().push(id);
     }
+
+    /// Tests whether the value at index i is allocated. Panics if `i >= self.len()`
+    #[cfg(test)]
+    fn is_allocated(&self, index: usize) -> bool {
+        // SAFETY: (DH) - call does not expose borrowed data outside of this call
+        unsafe { self.get_inner(index) }.is_some()
+    }
+}
+
+fn create_page() -> Box<[Slot; PAGE_SIZE]> {
+    let raw = Box::into_raw(Box::<[Slot]>::new_uninit_slice(PAGE_SIZE));
+    // SAFETY: (DH) - allocation is known to be exactly PAGE_SIZE slots
+    unsafe { Box::from_raw(raw.cast()) }
 }
 
 /// Serializes as a struct with two fields: `entries` (flat vec of all initialized
@@ -255,7 +261,8 @@ impl<'de> serde::Deserialize<'de> for HeapEntries {
         *this.free_list.get_mut() = entries
             .iter()
             .enumerate()
-            .filter_map(|(idx, entry)| entry.is_none().then(|| HeapId::from_index(idx)))
+            .filter(|(_, entry)| entry.is_none())
+            .map(|(idx, _)| HeapId::from_index(idx))
             .collect();
 
         // Set the initialized region
@@ -278,17 +285,16 @@ impl Drop for HeapEntries {
         let pages = self.pages_mut();
         for i in 0..len {
             let slot = &mut pages[i / PAGE_SIZE][i % PAGE_SIZE];
-            // SAFETY: all slots at indices < self.len have been initialized via `push`
-            // or `allocate`.
+            // SAFETY: (DH) all slots at indices < self.len have been initialized via `allocate`.
             unsafe {
                 // Mark all contained Objects as Dereferenced before dropping.
                 // We use py_dec_ref_ids for this since it handles the marking
                 // (we ignore the collected IDs since we're dropping everything anyway).
                 #[cfg(feature = "ref-count-panic")]
-                if let Some(value) = slot.assume_init_mut() {
-                    if let Some(data) = &mut value.data {
-                        data.py_dec_ref_ids(&mut Vec::new())
-                    }
+                if let Some(value) = slot.assume_init_mut()
+                    && let Some(data) = &mut value.data
+                {
+                    data.py_dec_ref_ids(&mut Vec::new());
                 }
                 slot.assume_init_drop();
             }
@@ -298,7 +304,7 @@ impl Drop for HeapEntries {
 
 /// Place iterator inside a submodule to create a safety boundary on `new` constructor
 mod iter {
-    use super::*;
+    use super::{HeapEntries, HeapValue};
 
     pub(super) struct HeapEntriesIter<'a> {
         entries: &'a HeapEntries,
@@ -318,7 +324,7 @@ mod iter {
     }
 
     impl<'a> Iterator for HeapEntriesIter<'a> {
-        type Item = (usize, &'a Option<HeapValue>);
+        type Item = (usize, Option<&'a HeapValue>);
 
         fn next(&mut self) -> Option<Self::Item> {
             let current_index = self.index;
@@ -326,7 +332,9 @@ mod iter {
                 return None;
             }
             self.index += 1;
-            Some((current_index, self.entries.get_inner(current_index)))
+            // SAFETY: (DH) - caller guaranteed no aliasing when calling `HeapEntriesIter::new`
+            let slot = unsafe { self.entries.get_inner(current_index) };
+            Some((current_index, slot))
         }
 
         fn size_hint(&self) -> (usize, Option<usize>) {
@@ -337,4 +345,220 @@ mod iter {
 }
 
 #[cfg(test)]
-mod tests {}
+mod tests {
+    use super::*;
+    use crate::heap::{HashState, HeapData};
+
+    fn dummy(label: &str) -> HeapValue {
+        use crate::types::Str;
+        HeapValue {
+            refcount: Cell::new(1),
+            data: Some(HeapData::Str(Str::new(label.to_owned()))),
+            hash_state: HashState::Unknown,
+        }
+    }
+
+    #[test]
+    fn allocate_while_reference_alive() {
+        // Allocate a value, hold a shared reference to it, then allocate
+        // another value. The first reference must remain valid.
+        let entries = HeapEntries::with_capacity(16);
+        let id_a = entries.allocate(dummy("a"));
+        let ref_a = entries.get(id_a.index());
+
+        // Allocate while ref_a is live
+        let id_b = entries.allocate(dummy("b"));
+
+        // Both references must be readable
+        assert!(format!("{ref_a:?}").contains("Str"));
+        assert!(matches!(
+            ref_a,
+            HeapValue {
+                data: Some(HeapData::Str(_)),
+                ..
+            }
+        ));
+        assert!(matches!(
+            entries.get(id_b.index()),
+            HeapValue {
+                data: Some(HeapData::Str(_)),
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn allocate_triggers_new_page_while_reference_alive() {
+        // Fill the first page, hold a reference into it, then allocate into a
+        // second page. The reference must survive the Vec<Page>::push.
+        let entries = HeapEntries::with_capacity(PAGE_SIZE);
+
+        // Fill the first page.
+        for i in 0..PAGE_SIZE {
+            entries.allocate(dummy(&format!("fill-{i}")));
+        }
+        assert_eq!(entries.len(), PAGE_SIZE);
+
+        // Hold a reference into the first page.
+        let first_ref = entries.get(0);
+
+        // This allocation creates a second page — the pages Vec reallocates
+        // its pointer buffer, but Box<Page> contents must not move.
+        let overflow_id = entries.allocate(dummy("overflow"));
+
+        // The reference into the first page must still be valid.
+        assert!(format!("{first_ref:?}").contains("Str"));
+        assert!(matches!(
+            first_ref,
+            HeapValue {
+                data: Some(HeapData::Str(_)),
+                ..
+            }
+        ));
+        assert!(matches!(
+            entries.get(overflow_id.index()),
+            HeapValue {
+                data: Some(HeapData::Str(_)),
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn free_list_reuse_while_reference_alive() {
+        // Allocate three values, free the middle one, then reallocate while
+        // holding a reference to a different live slot.
+        let mut entries = HeapEntries::with_capacity(16);
+        let id_a = entries.allocate(dummy("a"));
+        let id_b = entries.allocate(dummy("b"));
+        let _id_c = entries.allocate(dummy("c"));
+
+        // Free slot b (simulates dec_ref taking the value and calling free).
+        *entries.get_mut(id_b.index()) = None;
+        entries.free(id_b);
+
+        // Hold a reference to slot a.
+        let ref_a = entries.get(id_a.index());
+
+        // Reallocate into the freed slot while ref_a is live.
+        let id_reused = entries.allocate(dummy("reused"));
+        assert_eq!(id_reused, id_b); // should reuse the freed slot
+
+        // ref_a must still be valid.
+        assert!(format!("{ref_a:?}").contains("Str"));
+        // Reused slot has new data.
+        assert!(format!("{:?}", entries.get(id_reused.index())).contains("reused"));
+    }
+
+    #[test]
+    fn multiple_live_references_during_allocation() {
+        // Hold references to multiple slots across different pages, then
+        // allocate. All references must survive.
+        let entries = HeapEntries::with_capacity(PAGE_SIZE * 2);
+
+        // Fill two pages.
+        for i in 0..PAGE_SIZE * 2 {
+            entries.allocate(dummy(&format!("v-{i}")));
+        }
+
+        // Hold references in both pages.
+        let ref_first_page = entries.get(0);
+        let ref_second_page = entries.get(PAGE_SIZE);
+
+        // Allocate a third page.
+        let new_id = entries.allocate(dummy("new"));
+
+        // All references must be readable.
+        assert!(format!("{ref_first_page:?}").contains("Str"));
+        assert!(format!("{ref_second_page:?}").contains("Str"));
+        assert!(matches!(
+            ref_first_page,
+            HeapValue {
+                data: Some(HeapData::Str(_)),
+                ..
+            }
+        ));
+        assert!(matches!(
+            ref_second_page,
+            HeapValue {
+                data: Some(HeapData::Str(_)),
+                ..
+            }
+        ));
+        assert!(matches!(
+            entries.get(new_id.index()),
+            HeapValue {
+                data: Some(HeapData::Str(_)),
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn allocate_into_freed_slot_does_not_alias_other_slots() {
+        // Free several slots, then reallocate into them one by one while
+        // reading other live slots. Tests that free-list reuse doesn't
+        // accidentally alias.
+        let mut entries = HeapEntries::with_capacity(16);
+
+        let ids: Vec<_> = (0..8).map(|i| entries.allocate(dummy(&format!("v-{i}")))).collect();
+
+        // Free even-indexed slots.
+        for &id in ids.iter().step_by(2) {
+            *entries.get_mut(id.index()) = None;
+            entries.free(id);
+        }
+
+        // Hold references to odd-indexed (live) slots.
+        let live_refs: Vec<_> = ids
+            .iter()
+            .skip(1)
+            .step_by(2)
+            .map(|id| entries.get(id.index()))
+            .collect();
+
+        // Reallocate into freed slots.
+        for i in 0..4 {
+            entries.allocate(dummy(&format!("realloc-{i}")));
+        }
+
+        // All live references must still be valid and unchanged.
+        for r in &live_refs {
+            assert!(format!("{r:?}").contains("Str"));
+        }
+    }
+
+    #[test]
+    fn retain_then_allocate_reuses_freed_slots() {
+        // Use retain to free slots, then allocate into the freed slots.
+        let mut entries = HeapEntries::with_capacity(16);
+
+        for i in 0..6 {
+            entries.allocate(dummy(&format!("v-{i}")));
+        }
+
+        // Retain only even-indexed entries.
+        entries.retain(|i, _| i % 2 == 0);
+
+        // Odd slots should now be None.
+        for i in [1, 3, 5] {
+            assert!(!entries.is_allocated(i));
+        }
+
+        // Allocate should reuse freed slots.
+        let r1 = entries.allocate(dummy("new-1"));
+        let r2 = entries.allocate(dummy("new-2"));
+        let r3 = entries.allocate(dummy("new-3"));
+
+        // The reused IDs should be the ones that were freed.
+        let reused: std::collections::HashSet<usize> = [r1, r2, r3].iter().map(|id| id.index()).collect();
+        assert!(reused.contains(&1) || reused.contains(&3) || reused.contains(&5));
+        assert_eq!(reused.len(), 3);
+
+        // All slots should now be occupied.
+        for i in 0..6 {
+            // SAFETY: (DH) - borrow only held for `is_none()` check, no overlap with allocation
+            assert!(entries.is_allocated(i), "slot {i} should be occupied");
+        }
+    }
+}

@@ -408,10 +408,7 @@ impl<T: ResourceTracker> Heap<T> {
     /// # Panics
     /// Panics if the value ID is invalid or the value has already been freed.
     pub fn inc_ref(&self, id: HeapId) {
-        let value = self
-            .entries
-            .get(id.index())
-            .expect("Heap::inc_ref: object already freed");
+        let value = self.entries.get(id.index());
         value.refcount.update(|r| r + 1);
     }
 
@@ -463,7 +460,6 @@ impl<T: ResourceTracker> Heap<T> {
     pub fn get(&self, id: HeapId) -> &HeapData {
         self.entries
             .get(id.index())
-            .expect("Heap::get: object already freed")
             .data
             .as_ref()
             .expect("Heap::get: data currently borrowed")
@@ -631,11 +627,7 @@ impl<T: ResourceTracker> Heap<T> {
     #[must_use]
     #[cfg(feature = "ref-count-return")]
     pub fn get_refcount(&self, id: HeapId) -> usize {
-        self.entries
-            .get(id.index())
-            .expect("Heap::get_refcount: object already freed")
-            .refcount
-            .get()
+        self.entries.get(id.index()).refcount.get()
     }
 
     /// Returns the number of live (non-freed) values on the heap.
@@ -808,9 +800,7 @@ impl<T: ResourceTracker> Heap<T> {
             reachable[idx] = true;
 
             // Add children to work list
-            if let Some(entry) = self.entries.get(idx)
-                && let Some(ref data) = entry.data
-            {
+            if let Some(data) = &self.entries.get(idx).data {
                 collect_child_ids(data, &mut work_list);
             }
         }
@@ -833,7 +823,7 @@ impl<T: ResourceTracker> Heap<T> {
                 data.py_dec_ref_ids(&mut Vec::new());
             }
 
-            return false;
+            false
         });
 
         // Reset cycle flag after GC - cycles have been collected
