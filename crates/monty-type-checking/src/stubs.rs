@@ -82,4 +82,10 @@ mod tests {
         let result = build_input_stubs(Some("y: int = 0"), &["x".to_string(), "y".to_string()]);
         assert_eq!(result, Some("y: int = 0\nfrom typing import Any\nx: Any\n".to_string()));
     }
+
+    #[test]
+    fn test_stubs_ending_with_newline() {
+        let result = build_input_stubs(Some("y: int = 0\n"), &["x".to_string()]);
+        assert_eq!(result, Some("y: int = 0\nfrom typing import Any\nx: Any\n".to_string()));
+    }
 }
