@@ -324,6 +324,8 @@ impl ExcType {
     /// Creates a KeyError for a missing dict key.
     ///
     /// For string keys, uses the raw string value without extra quoting.
+    /// Large integers are safely formatted using scientific notation via
+    /// `LongInt::fmt_safe` (called from `py_str`), avoiding the O(n^2) conversion.
     #[must_use]
     pub(crate) fn key_error(key: &Value, vm: &VM<'_, '_, impl ResourceTracker>) -> RunError {
         let key_str = key.py_str(vm).into_owned();

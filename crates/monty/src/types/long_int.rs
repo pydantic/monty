@@ -10,7 +10,7 @@
 
 use std::{
     collections::hash_map::DefaultHasher,
-    fmt::{self, Display},
+    fmt::{self, Display, Write},
     hash::{Hash, Hasher},
     ops::{Add, Mul, Neg, Sub},
 };
@@ -192,6 +192,17 @@ impl LongInt {
         }
         Ok(())
     }
+
+    /// Writes this LongInt to a formatter, using scientific notation if it
+    /// exceeds the `INT_MAX_STR_DIGITS` limit.
+    ///
+    /// This is the defense-in-depth fallback for formatting paths that cannot
+    /// propagate a `ValueError` (e.g. container repr, exception messages).
+    /// Direct conversions like `str()` and `repr()` check the limit earlier
+    /// and raise `ValueError` before reaching this point.
+    pub fn fmt_safe(&self, f: &mut impl Write) -> fmt::Result {
+        fmt_bigint_safe(&self.0, f)
+    }
 }
 
 /// Checks whether a value that is about to be converted to a decimal string
@@ -227,6 +238,50 @@ fn check_bits_str_digits_limit(bits: u64) -> RunResult<()> {
         return Err(ExcType::value_error_int_too_large_for_str());
     }
     Ok(())
+}
+
+/// Returns `true` if the given bit count would exceed the `INT_MAX_STR_DIGITS` limit.
+fn exceeds_str_digits_limit(bits: u64) -> bool {
+    bits.saturating_mul(30103) / 100_000 + 1 > INT_MAX_STR_DIGITS
+}
+
+/// Writes a `BigInt` to a formatter, using scientific notation if it exceeds
+/// the `INT_MAX_STR_DIGITS` limit.
+///
+/// Standalone version of [`LongInt::fmt_safe`] for contexts that hold a raw
+/// `&BigInt` (e.g. interned long ints looked up from [`Interns`]).
+pub fn fmt_bigint_safe(bi: &BigInt, f: &mut impl Write) -> fmt::Result {
+    let bits = bi.bits();
+    if exceeds_str_digits_limit(bits) {
+        fmt_bigint_scientific(bi, bits, f)
+    } else {
+        write!(f, "{bi}")
+    }
+}
+
+/// Formats a BigInt in scientific notation (e.g. `1.2e500`).
+///
+/// Extracts the top ~53 significant bits to compute an approximate mantissa
+/// without performing the expensive full decimal conversion.
+fn fmt_bigint_scientific(bi: &BigInt, bits: u64, f: &mut impl Write) -> fmt::Result {
+    let is_negative = bi.is_negative();
+    // Right-shift to get top ~53 bits, then convert to f64
+    let shift = bits.saturating_sub(53);
+    let top = bi.abs() >> shift;
+    let mantissa = top.to_f64().unwrap_or(1.0);
+
+    // Estimate the decimal exponent using integer arithmetic to avoid float→int casts.
+    // exponent = floor(bits * log10(2)) = floor(bits * 30103 / 100000)
+    // This is accurate for the exponent; the mantissa uses float math.
+    let exponent = bits.saturating_mul(30103) / 100_000;
+    // coefficient ≈ value / 10^exponent, computed via float approximation
+    let log10_value = mantissa.log10() + (shift as f64) * std::f64::consts::LOG10_2;
+    let coefficient = 10.0_f64.powf(log10_value - exponent as f64);
+
+    if is_negative {
+        f.write_char('-')?;
+    }
+    write!(f, "{coefficient:.1}e{exponent}")
 }
 
 // === Trait Implementations ===

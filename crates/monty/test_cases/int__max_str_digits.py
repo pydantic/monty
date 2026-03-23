@@ -63,3 +63,11 @@ big = 2**20000
 assert bin(big) is not None, 'bin() should not be limited'
 assert hex(big) is not None, 'hex() should not be limited'
 assert oct(big) is not None, 'oct() should not be limited'
+
+# === KeyError with huge int key raises KeyError, not ValueError ===
+d = {}
+try:
+    d[10**5000]
+    assert False, 'should raise KeyError'
+except KeyError:
+    pass

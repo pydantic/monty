@@ -784,7 +784,7 @@ macro_rules! impl_py_trait_dispatch {
                     Self::Exception(e) => e.py_repr_fmt(f),
                     Self::Dataclass(dc) => dc.py_repr_fmt(f, vm, heap_ids),
                     Self::Iter(_) => write!(f, "<iterator>"),
-                    Self::LongInt(li) => write!(f, "{li}"),
+                    Self::LongInt(li) => li.fmt_safe(f),
                     Self::Module(m) => write!(f, "<module '{}'>", vm.interns.get_str(m.name())),
                     Self::Coroutine(coro) => {
                         let func = vm.interns.get_function(coro.func_id);
@@ -803,8 +803,14 @@ macro_rules! impl_py_trait_dispatch {
                 match self {
                     // Strings return their value directly without quotes
                     Self::Str(s) => s.py_str(vm),
-                    // LongInt returns its string representation
-                    Self::LongInt(li) => Cow::Owned(li.to_string()),
+                    // LongInt returns its string representation, using scientific
+                    // notation as a fallback if it exceeds INT_MAX_STR_DIGITS
+                    Self::LongInt(li) => {
+                        let mut s = String::new();
+                        // fmt_safe cannot fail on a String writer
+                        let _ = li.fmt_safe(&mut s);
+                        Cow::Owned(s)
+                    }
                     // Exceptions return just the message (or empty string if no message)
                     Self::Exception(e) => Cow::Owned(e.py_str()),
                     // Paths return the path string without the PosixPath() wrapper

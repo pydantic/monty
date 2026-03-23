@@ -20,6 +20,7 @@ use crate::{
     },
     fstring::{ConversionFlag, FStringPart, FormatSpec},
     intern::{InternerBuilder, StringId},
+    types::long_int::INT_MAX_STR_DIGITS,
     value::EitherStr,
 };
 
@@ -922,10 +923,13 @@ impl<'a> Parser<'a> {
                         if let Some(i) = i.as_i64() {
                             Literal::Int(i)
                         } else {
-                            // Integer too large for i64, parse string representation as BigInt
-                            // Handles radix prefixes (0x, 0o, 0b) and underscores
-                            let bi = parse_int_literal(&i.to_string())
-                                .ok_or_else(|| ParseError::syntax(format!("invalid integer literal: {i}"), position))?;
+                            // Integer too large for i64, parse string representation as BigInt.
+                            // Handles radix prefixes (0x, 0o, 0b) and underscores.
+                            // The digit check in parse_int_literal rejects overlarge decimal
+                            // literals before the O(n^2) BigInt::parse runs.
+                            let s = i.to_string();
+                            let bi = parse_int_literal(&s)
+                                .ok_or_else(|| ParseError::syntax(format!("invalid integer literal: {s}"), position))?;
                             let long_int_id = self.interner.intern_long_int(bi);
                             Literal::LongInt(long_int_id)
                         }
@@ -1723,6 +1727,13 @@ fn parse_int_literal(s: &str) -> Option<BigInt> {
             "0b" => return BigInt::parse_bytes(digits.as_bytes(), 2),
             _ => {}
         }
+    }
+
+    // Check digit limit before the expensive O(n^2) decimal BigInt parse.
+    // Only decimal is limited — hex/octal/binary use O(n) algorithms and are handled above.
+    let digit_count = cleaned.bytes().filter(u8::is_ascii_digit).count();
+    if digit_count as u64 > INT_MAX_STR_DIGITS {
+        return None;
     }
 
     // Default to decimal

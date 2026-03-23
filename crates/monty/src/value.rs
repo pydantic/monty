@@ -26,6 +26,7 @@ use crate::{
     types::{
         LongInt, Property, PyTrait, Str, Type,
         bytes::{bytes_repr_fmt, get_byte_at_index, get_bytes_slice},
+        long_int::fmt_bigint_safe,
         path,
         str::{allocate_char, get_char_at_index, get_str_slice, string_repr_fmt},
     },
@@ -349,7 +350,7 @@ impl PyTrait for Value {
             Self::Bool(true) => f.write_str("True"),
             Self::Bool(false) => f.write_str("False"),
             Self::Int(v) => write!(f, "{v}"),
-            Self::InternLongInt(long_int_id) => write!(f, "{}", interns.get_long_int(*long_int_id)),
+            Self::InternLongInt(long_int_id) => fmt_bigint_safe(interns.get_long_int(*long_int_id), f),
             Self::Float(v) => {
                 let s = v.to_string();
                 if s.contains('.') {
