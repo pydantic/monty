@@ -3,7 +3,9 @@ use std::{
     mem::MaybeUninit,
 };
 
-use crate::heap::{HeapId, HeapValue};
+use crate::heap::{HeapId, HeapValue, heap_entries::iter::HeapEntriesIter};
+#[cfg(feature = "ref-count-panic")]
+use crate::heap_traits::HeapItem;
 
 /// Number of entries per page. Chosen to balance between wasted memory (from
 /// partially-filled last pages) and the frequency of page allocations.
@@ -60,13 +62,10 @@ pub(crate) struct HeapEntries {
 
 #[expect(clippy::missing_fields_in_debug)]
 impl std::fmt::Debug for HeapEntries {
-    /// Shows summary info (counts) rather than full page/free-list contents,
-    /// which would be extremely verbose for any non-trivial heap.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("HeapEntries")
-            .field("len", &self.len.get())
-            .field("pages", &self.pages().len())
-            .field("free_list_len", &self.free_list().len())
+        f.debug_list()
+            // SAFETY: (DH) debug formatting never calls `.allocate()`
+            .entries(unsafe { HeapEntriesIter::new(self) })
             .finish()
     }
 }
@@ -88,12 +87,13 @@ impl HeapEntries {
 
     /// Returns a shared reference to the pages vec.
     ///
-    /// # Safety contract
+    /// # Safety
+    ///
     /// Safe to call anytime — we only need exclusive access when mutating
     /// through `pages_mut`, and the borrow checker on `&self`/`&mut self`
     /// methods prevents those from overlapping.
     #[inline]
-    fn pages(&self) -> &Vec<Page> {
+    unsafe fn pages(&self) -> &Vec<Page> {
         // SAFETY: no &mut reference to pages exists. Callers that mutate
         // (allocate, push, get_mut, iter_mut, free) either take &mut self
         // (preventing any concurrent &self call) or are allocate(&self)
@@ -105,19 +105,6 @@ impl HeapEntries {
     #[inline]
     fn pages_mut(&mut self) -> &mut Vec<Page> {
         self.pages.get_mut()
-    }
-
-    /// Returns a shared reference to the free list.
-    #[inline]
-    fn free_list(&self) -> &Vec<HeapId> {
-        // SAFETY: same argument as pages() — no &mut reference exists.
-        unsafe { &*self.free_list.get() }
-    }
-
-    /// Returns an exclusive reference to the free list.
-    #[inline]
-    fn free_list_mut(&mut self) -> &mut Vec<HeapId> {
-        self.free_list.get_mut()
     }
 
     /// Returns the total number of initialized slots (including freed ones).
@@ -132,11 +119,15 @@ impl HeapEntries {
     /// Panics if `index >= len`.
     #[inline]
     pub fn get(&self, index: usize) -> Option<&HeapValue> {
+        self.get_inner(index).as_ref()
+    }
+
+    fn get_inner(&self, index: usize) -> &Option<HeapValue> {
         let len = self.len.get();
         assert!(index < len, "HeapEntries::get: index {index} out of bounds (len={len})",);
-        // SAFETY: all slots at indices < self.len have been initialized via `push`
-        // or `allocate`. The pages vec is not mutated by this call.
-        unsafe { self.pages()[index / PAGE_SIZE][index % PAGE_SIZE].assume_init_ref() }.as_ref()
+        // SAFETY: (DH) all slots at indices < self.len have been initialized via `allocate`.
+        // The slot cannot be mutably borrowed because `get_mut` requires `&mut self`.
+        unsafe { self.pages()[index / PAGE_SIZE][index % PAGE_SIZE].assume_init_ref() }
     }
 
     /// Returns a mutable reference to the `Option<HeapValue>` at `index`.
@@ -150,53 +141,24 @@ impl HeapEntries {
             index < len,
             "HeapEntries::get_mut: index {index} out of bounds (len={len})",
         );
-        // SAFETY: all slots at indices < self.len have been initialized via `push`
-        // or `allocate`.
+        // SAFETY: (DH) all slots at indices < self.len have been initialized via `allocate`.
         unsafe { self.pages_mut()[index / PAGE_SIZE][index % PAGE_SIZE].assume_init_mut() }
     }
 
-    /// Appends a new entry via `&mut self` and returns its index.
-    ///
-    /// Allocates a new page if the current one is full.
-    fn push(&mut self, value: Option<HeapValue>) -> usize {
-        let index = self.len.get();
-        let page_idx = index / PAGE_SIZE;
-        let slot_idx = index % PAGE_SIZE;
-
-        let pages = self.pages_mut();
-        if page_idx >= pages.len() {
-            // Allocate a new page WITHOUT initializing — only slots written via
-            // `push` will be initialized, avoiding the cost of zeroing the whole page.
-            pages.push(Box::new_uninit_slice(PAGE_SIZE));
+    /// Retain only values satisfying the predicate, freeing the rest.
+    pub fn retain(&mut self, mut predicate: impl FnMut(usize, &mut HeapValue) -> bool) {
+        let len = self.len.get();
+        for i in 0..len {
+            // SAFETY: all slots at indices < self.len have been initialized via `push`
+            // or `allocate`.
+            let slot = unsafe { self.pages_mut()[i / PAGE_SIZE][i % PAGE_SIZE].assume_init_mut() };
+            if let Some(value) = slot.as_mut() {
+                if !predicate(i, value) {
+                    *slot = None; // Free the slot by setting it to None
+                    self.free(HeapId::from_index(i)); // Add the slot ID to the free list
+                }
+            }
         }
-
-        pages[page_idx][slot_idx].write(value);
-        self.len.set(index + 1);
-        index
-    }
-
-    /// Iterates over all initialized entries as shared references.
-    pub fn iter(&self) -> impl Iterator<Item = &Option<HeapValue>> {
-        let len = self.len.get();
-        self.pages()
-            .iter()
-            .flat_map(|page| page.iter())
-            .take(len)
-            // SAFETY: all slots at indices < self.len have been initialized via `push`
-            // or `allocate`.
-            .map(|slot| unsafe { slot.assume_init_ref() })
-    }
-
-    /// Iterates over all initialized entries as mutable references.
-    pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut Option<HeapValue>> {
-        let len = self.len.get();
-        self.pages_mut()
-            .iter_mut()
-            .flat_map(|page| page.iter_mut())
-            .take(len)
-            // SAFETY: all slots at indices < self.len have been initialized via `push`
-            // or `allocate`.
-            .map(|slot| unsafe { slot.assume_init_mut() })
     }
 
     /// Allocates a slot — reusing from the free list or appending — and returns its ID.
@@ -219,10 +181,11 @@ impl HeapEntries {
     ///   not the page contents. Any existing `&HeapValue` reference points into a
     ///   `Box`'s heap allocation, not into the `Vec`'s buffer.
     pub fn allocate(&self, value: HeapValue) -> HeapId {
-        // SAFETY: no &mut reference to free_list exists (this method takes &self,
-        // and free() takes &mut self — the borrow checker prevents overlap).
-        let free_list = unsafe { &mut *self.free_list.get() };
-        if let Some(id) = free_list.pop() {
+        // SAFETY: (DH) only `&mut` methods will touch the free list, except for this one
+        // call site. `HeapEntries` is also not thread-safe, so calls to allocate cannot race.
+        // This guarantees this `.pop()` cannot overlap with other operations on the free list.
+        let free_id = unsafe { &mut *self.free_list.get() }.pop();
+        if let Some(id) = free_id {
             // Reuse a freed slot — the slot was .take()n during dec_ref,
             // so no active borrows can exist on it.
             let index = id.index();
@@ -255,29 +218,57 @@ impl HeapEntries {
         }
     }
 
+    /// Iterates the live values
+    #[cfg(feature = "ref-count-return")]
+    pub fn iter(&self) -> impl Iterator<Item = &HeapValue> {
+        // SAFETY: (DH) iterating only the live entries ensures that caller
+        // can never observe `None` entries which could be invalidated by
+        // calls to `allocate()`
+        unsafe { HeapEntriesIter::new(self) }.filter_map(|(_idx, slot)| slot.as_ref())
+    }
+
     /// Returns a freed slot to the free list for reuse.
     ///
     /// Takes `&mut self` because freeing happens during `dec_ref` and GC,
     /// which genuinely need exclusive access.
     pub fn free(&mut self, id: HeapId) {
-        self.free_list_mut().push(id);
+        self.free_list.get_mut().push(id)
     }
+}
 
-    /// Reconstructs `HeapEntries` from flat vectors (used during deserialization).
-    ///
-    /// Each entry from the vec is pushed into paged storage, preserving indices.
-    pub fn from_vecs(entries: Vec<Option<HeapValue>>, free_list: Vec<HeapId>) -> Self {
+/// Serializes as a struct with two fields: `entries` (flat vec of all initialized
+/// slots) and `free_list` (vec of freed slot IDs). This avoids exposing the
+/// internal paged layout in the wire format.
+impl serde::Serialize for HeapEntries {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        // SAFETY: (DH) serializing the data does not cause allocation
+        serializer.collect_seq(unsafe { HeapEntriesIter::new(self) }.map(|(_idx, slot)| slot))
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for HeapEntries {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let entries: Vec<Option<HeapValue>> = Vec::deserialize(deserializer)?;
         let mut this = Self::with_capacity(entries.len());
-        for entry in entries {
-            this.push(entry);
-        }
-        *this.free_list_mut() = free_list;
-        this
-    }
 
-    /// Returns a slice of the free list for serialization.
-    pub fn free_list_slice(&self) -> &[HeapId] {
-        self.free_list()
+        // Re-initialize the freelist from none entries
+        *this.free_list.get_mut() = entries
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, entry)| entry.is_none().then(|| HeapId::from_index(idx)))
+            .collect();
+
+        // Set the initialized region
+        this.len.set(entries.len());
+
+        // Write all pages from the entries vec
+        let pages = this.pages_mut();
+        for (index, entry) in entries.into_iter().enumerate() {
+            let page_idx = index / PAGE_SIZE;
+            let slot_idx = index % PAGE_SIZE;
+            pages[page_idx][slot_idx].write(entry);
+        }
+        Ok(this)
     }
 }
 
@@ -286,11 +277,64 @@ impl Drop for HeapEntries {
         let len = self.len.get();
         let pages = self.pages_mut();
         for i in 0..len {
+            let slot = &mut pages[i / PAGE_SIZE][i % PAGE_SIZE];
             // SAFETY: all slots at indices < self.len have been initialized via `push`
             // or `allocate`.
             unsafe {
-                pages[i / PAGE_SIZE][i % PAGE_SIZE].assume_init_drop();
+                // Mark all contained Objects as Dereferenced before dropping.
+                // We use py_dec_ref_ids for this since it handles the marking
+                // (we ignore the collected IDs since we're dropping everything anyway).
+                #[cfg(feature = "ref-count-panic")]
+                if let Some(value) = slot.assume_init_mut() {
+                    if let Some(data) = &mut value.data {
+                        data.py_dec_ref_ids(&mut Vec::new())
+                    }
+                }
+                slot.assume_init_drop();
             }
         }
     }
 }
+
+/// Place iterator inside a submodule to create a safety boundary on `new` constructor
+mod iter {
+    use super::*;
+
+    pub(super) struct HeapEntriesIter<'a> {
+        entries: &'a HeapEntries,
+        index: usize,
+    }
+
+    impl<'a> HeapEntriesIter<'a> {
+        /// Safety: (DH) - the caller must ensure that `HeapEntries::allocate()`
+        /// is never called for the lifetime `'a` for which this iterator and its
+        /// yielded elements exist.
+        ///
+        /// Allocation may write to `None` entries, which would cause unsafe
+        /// aliasing.
+        pub unsafe fn new(entries: &'a HeapEntries) -> Self {
+            Self { entries, index: 0 }
+        }
+    }
+
+    impl<'a> Iterator for HeapEntriesIter<'a> {
+        type Item = (usize, &'a Option<HeapValue>);
+
+        fn next(&mut self) -> Option<Self::Item> {
+            let current_index = self.index;
+            if current_index >= self.entries.len() {
+                return None;
+            }
+            self.index += 1;
+            Some((current_index, self.entries.get_inner(current_index)))
+        }
+
+        fn size_hint(&self) -> (usize, Option<usize>) {
+            let remaining = self.entries.len().saturating_sub(self.index);
+            (remaining, Some(remaining))
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {}

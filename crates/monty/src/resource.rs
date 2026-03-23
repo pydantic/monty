@@ -523,8 +523,8 @@ impl ResourceTracker for LimitedTracker {
 
     fn check_time(&self) -> Result<(), ResourceError> {
         if let Some(max) = self.limits.max_duration {
-            let count = self.check_counter.get().wrapping_add(1);
-            if count.is_multiple_of(TIME_CHECK_INTERVAL) {
+            self.check_counter.update(|c| c.wrapping_add(1));
+            if self.check_counter.get().is_multiple_of(TIME_CHECK_INTERVAL) {
                 // Only call Instant::elapsed() every TIME_CHECK_INTERVAL calls
                 let elapsed = self.start_time.elapsed();
                 if elapsed > max {

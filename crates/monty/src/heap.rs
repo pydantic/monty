@@ -18,12 +18,14 @@ use crate::{
     bytecode::{CallResult, VM},
     exception_private::{ExcType, RunResult},
     heap_data::HeapDataMut,
-    heap_entries::HeapEntries,
     intern::Interns,
     resource::{ResourceError, ResourceTracker, check_mult_size, check_repeat_size},
     types::{List, LongInt, PyTrait, Tuple, allocate_tuple},
     value::{EitherStr, Value},
 };
+
+mod heap_entries;
+use heap_entries::HeapEntries;
 
 /// Unique identifier for values stored inside the heap arena.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
@@ -170,13 +172,8 @@ pub(crate) struct Heap<T: ResourceTracker> {
 impl<T: ResourceTracker + serde::Serialize> serde::Serialize for Heap<T> {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         use serde::ser::SerializeStruct;
-        let mut state = serializer.serialize_struct("Heap", 6)?;
-        // Serialize entries as a flat sequence for wire format compatibility.
-        // HeapEntries doesn't implement Serialize directly, so we collect into
-        // a Vec to use the standard Vec serialization.
-        let entries_vec: Vec<&Option<HeapValue>> = self.entries.iter().collect();
-        state.serialize_field("entries", &entries_vec)?;
-        state.serialize_field("free_list", self.entries.free_list_slice())?;
+        let mut state = serializer.serialize_struct("Heap", 4)?;
+        state.serialize_field("entries", &self.entries)?;
         state.serialize_field("tracker", &self.tracker)?;
         state.serialize_field("may_have_cycles", &self.may_have_cycles.get())?;
         state.serialize_field("allocations_since_gc", &self.allocations_since_gc.get())?;
@@ -188,15 +185,14 @@ impl<'de, T: ResourceTracker + serde::Deserialize<'de>> serde::Deserialize<'de> 
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         #[derive(serde::Deserialize)]
         struct HeapFields<T> {
-            entries: Vec<Option<HeapValue>>,
-            free_list: Vec<HeapId>,
+            entries: HeapEntries,
             tracker: T,
             may_have_cycles: bool,
             allocations_since_gc: u32,
         }
         let fields = HeapFields::<T>::deserialize(deserializer)?;
         Ok(Self {
-            entries: HeapEntries::from_vecs(fields.entries, fields.free_list),
+            entries: fields.entries,
             tracker: fields.tracker,
             may_have_cycles: Cell::new(fields.may_have_cycles),
             allocations_since_gc: Cell::new(fields.allocations_since_gc),
@@ -653,7 +649,7 @@ impl<T: ResourceTracker> Heap<T> {
     #[cfg(feature = "ref-count-return")]
     pub fn entry_count(&self) -> usize {
         // Skip index 0 which is the empty tuple singleton
-        self.entries.iter().skip(1).filter(|o| o.is_some()).count()
+        self.entries.iter().skip(1).count()
     }
 
     /// Helper for List in-place add: extends the destination vec with items from a heap list.
@@ -820,33 +816,25 @@ impl<T: ResourceTracker> Heap<T> {
         }
 
         // Sweep phase: free unreachable values
-        // Collect freed IDs separately to avoid borrowing entries mutably twice
-        // (iter_mut borrows entries, and free also needs mutable access).
-        let mut freed_ids = Vec::new();
-        for (id, value) in self.entries.iter_mut().enumerate() {
+        self.entries.retain(|id, value| {
             if reachable[id] {
-                continue;
+                return true;
             }
 
             // This entry is unreachable - free it
-            if let Some(value) = value.take() {
-                // Notify tracker of freed memory
-                if let Some(ref data) = value.data {
-                    self.tracker.on_free(|| data.py_estimate_size());
-                }
-
-                freed_ids.push(HeapId::from_index(id));
-
-                // Mark Values as Dereferenced when ref-count-panic is enabled
-                #[cfg(feature = "ref-count-panic")]
-                if let Some(mut data) = value.data {
-                    data.py_dec_ref_ids(&mut Vec::new());
-                }
+            // Notify tracker of freed memory
+            if let Some(ref data) = value.data {
+                self.tracker.on_free(|| data.py_estimate_size());
             }
-        }
-        for id in freed_ids {
-            self.entries.free(id);
-        }
+
+            // Mark Values as Dereferenced when ref-count-panic is enabled
+            #[cfg(feature = "ref-count-panic")]
+            if let Some(data) = &mut value.data {
+                data.py_dec_ref_ids(&mut Vec::new());
+            }
+
+            return false;
+        });
 
         // Reset cycle flag after GC - cycles have been collected
         self.may_have_cycles.set(false);
@@ -1046,22 +1034,5 @@ fn collect_child_ids(data: &HeapData, work_list: &mut Vec<HeapId>) {
         }
         // Leaf types with no heap references
         _ => {}
-    }
-}
-
-/// Drop implementation for Heap that marks all contained Objects as Dereferenced
-/// before dropping to prevent panics when the `ref-count-panic` feature is enabled.
-#[cfg(feature = "ref-count-panic")]
-impl<T: ResourceTracker> Drop for Heap<T> {
-    fn drop(&mut self) {
-        // Mark all contained Objects as Dereferenced before dropping.
-        // We use py_dec_ref_ids for this since it handles the marking
-        // (we ignore the collected IDs since we're dropping everything anyway).
-        let mut dummy_stack = Vec::new();
-        for entry in self.entries.iter_mut().flatten() {
-            if let Some(data) = &mut entry.data {
-                data.py_dec_ref_ids(&mut dummy_stack);
-            }
-        }
     }
 }

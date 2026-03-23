@@ -13,7 +13,6 @@ mod fstring;
 mod function;
 mod heap;
 mod heap_data;
-mod heap_entries;
 mod intern;
 mod io;
 mod modules;
