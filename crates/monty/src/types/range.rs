@@ -220,11 +220,11 @@ impl Range {
         f: &mut impl Write,
         _vm: &VM<'_, '_, impl ResourceTracker>,
         _heap_ids: &mut AHashSet<HeapId>,
-    ) -> std::fmt::Result {
+    ) -> RunResult<()> {
         if self.step == 1 {
-            write!(f, "range({}, {})", self.start, self.stop)
+            Ok(write!(f, "range({}, {})", self.start, self.stop)?)
         } else {
-            write!(f, "range({}, {}, {})", self.start, self.stop, self.step)
+            Ok(write!(f, "range({}, {}, {})", self.start, self.stop, self.step)?)
         }
     }
 }
@@ -298,7 +298,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Range> {
         f: &mut impl Write,
         vm: &VM<'h, '_, impl ResourceTracker>,
         heap_ids: &mut AHashSet<HeapId>,
-    ) -> std::fmt::Result {
+    ) -> RunResult<()> {
         self.get(vm.heap).py_repr_fmt(f, vm, heap_ids)
     }
 }

@@ -18,6 +18,7 @@ use crate::{
     resource::ResourceTracker,
     types::{
         PyTrait, Type,
+        long_int::INT_MAX_STR_DIGITS,
         str::{StringRepr, string_repr_fmt},
     },
     value::Value,
@@ -310,9 +311,14 @@ impl ExcType {
     /// Creates a KeyError for a missing dict key.
     ///
     /// For string keys, uses the raw string value without extra quoting.
-    #[must_use]
+    /// If the key's string conversion fails (e.g. huge LongInt exceeding
+    /// `INT_MAX_STR_DIGITS`), falls back to the type name so that a
+    /// `KeyError` is always raised rather than a spurious `ValueError`.
     pub(crate) fn key_error(key: &Value, vm: &VM<'_, '_, impl ResourceTracker>) -> RunError {
-        let key_str = key.py_str(vm).into_owned();
+        let key_str = match key.py_str(vm) {
+            Ok(s) => s.into_owned(),
+            Err(_) => format!("<{}>", key.py_type(vm)),
+        };
         SimpleException::new_msg(Self::KeyError, key_str).into()
     }
 
@@ -909,6 +915,44 @@ impl ExcType {
         })
     }
 
+    /// Creates a ValueError when an integer is too large to convert to a decimal string.
+    ///
+    /// Matches CPython 3.11+'s `sys.int_max_str_digits` behavior but omits the
+    /// `sys.set_int_max_str_digits()` advice since Monty does not expose that API.
+    #[must_use]
+    pub(crate) fn value_error_int_too_large_for_str() -> RunError {
+        SimpleException::new_msg(
+            Self::ValueError,
+            format!("Exceeds the limit ({INT_MAX_STR_DIGITS} digits) for integer string conversion"),
+        )
+        .into()
+    }
+
+    /// Creates a ValueError when a decimal string has too many digits for `int()` conversion.
+    ///
+    /// Includes the actual digit count to help users diagnose the issue.
+    #[must_use]
+    pub(crate) fn value_error_int_str_too_large(digit_count: usize) -> RunError {
+        SimpleException::new_msg(
+            Self::ValueError,
+            format!("Exceeds the limit ({INT_MAX_STR_DIGITS} digits) for integer string conversion: value has {digit_count} digits"),
+        )
+        .into()
+    }
+
+    /// Creates a ValueError for `int()` when a string cannot be parsed as an integer.
+    ///
+    /// Matches CPython's format: `invalid literal for int() with base 10: '...'`.
+    /// The caller provides the value pre-formatted (e.g. via `StringRepr`).
+    #[must_use]
+    pub(crate) fn value_error_invalid_literal_for_int(value: impl fmt::Display) -> RunError {
+        SimpleException::new_msg(
+            Self::ValueError,
+            format!("invalid literal for int() with base 10: {value}"),
+        )
+        .into()
+    }
+
     /// Creates a ValueError for negative shift count in bitwise shift operations.
     ///
     /// Matches CPython's format: `ValueError: negative shift count`
@@ -1435,6 +1479,18 @@ impl From<FormatError> for RunError {
             FormatError::InvalidAlignment(_) | FormatError::ValueError(_) => ExcType::ValueError,
         };
         Self::Exc(SimpleException::new_msg(exc_type, err).into())
+    }
+}
+
+impl From<fmt::Error> for RunError {
+    /// Converts a `fmt::Error` into a `RunError`.
+    ///
+    /// In practice, writing to a `String` buffer never fails, so `fmt::Error` only
+    /// arises from our explicit error returns (e.g. INT_MAX_STR_DIGITS checks in
+    /// `py_repr_fmt`). This impl exists so `write!()?` in `py_repr_fmt` auto-converts
+    /// when the method returns `RunResult<()>`.
+    fn from(err: fmt::Error) -> Self {
+        Self::internal(format!("unexpected formatting error: {err}"))
     }
 }
 

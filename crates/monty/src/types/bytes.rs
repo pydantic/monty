@@ -300,8 +300,8 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Bytes> {
         f: &mut impl Write,
         vm: &VM<'h, '_, impl ResourceTracker>,
         _heap_ids: &mut AHashSet<HeapId>,
-    ) -> std::fmt::Result {
-        bytes_repr_fmt(&self.get(vm.heap).0, f)
+    ) -> RunResult<()> {
+        Ok(bytes_repr_fmt(&self.get(vm.heap).0, f)?)
     }
 
     fn py_call_attr(

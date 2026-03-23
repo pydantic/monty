@@ -10,3 +10,4 @@ coverage:
 
 comment:
   layout: 'header, diff, flags, files, footer'
+  hide_project_coverage: false

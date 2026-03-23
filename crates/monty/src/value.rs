@@ -25,6 +25,7 @@ use crate::{
     types::{
         LongInt, Property, PyTrait, Str, Type,
         bytes::{bytes_repr_fmt, get_byte_at_index, get_bytes_slice},
+        long_int::check_bits_str_digits_limit,
         path,
         str::{allocate_char, get_char_at_index, get_str_slice, string_repr_fmt},
     },
@@ -347,44 +348,46 @@ impl PyTrait<'_> for Value {
         f: &mut impl Write,
         vm: &VM<'_, '_, impl ResourceTracker>,
         heap_ids: &mut AHashSet<HeapId>,
-    ) -> std::fmt::Result {
+    ) -> RunResult<()> {
         let interns = vm.interns;
         match self {
-            Self::Undefined => f.write_str("Undefined"),
-            Self::Ellipsis => f.write_str("Ellipsis"),
-            Self::None => f.write_str("None"),
-            Self::Bool(true) => f.write_str("True"),
-            Self::Bool(false) => f.write_str("False"),
-            Self::Int(v) => write!(f, "{v}"),
-            Self::InternLongInt(long_int_id) => write!(f, "{}", interns.get_long_int(*long_int_id)),
+            Self::Undefined => Ok(f.write_str("Undefined")?),
+            Self::Ellipsis => Ok(f.write_str("Ellipsis")?),
+            Self::None => Ok(f.write_str("None")?),
+            Self::Bool(true) => Ok(f.write_str("True")?),
+            Self::Bool(false) => Ok(f.write_str("False")?),
+            Self::Int(v) => Ok(write!(f, "{v}")?),
+            Self::InternLongInt(long_int_id) => {
+                let bi = interns.get_long_int(*long_int_id);
+                check_bits_str_digits_limit(bi.bits())?;
+                Ok(write!(f, "{bi}")?)
+            }
             Self::Float(v) => {
                 let s = v.to_string();
                 if s.contains('.') {
-                    f.write_str(&s)
+                    Ok(f.write_str(&s)?)
                 } else {
-                    write!(f, "{s}.0")
+                    Ok(write!(f, "{s}.0")?)
                 }
             }
-            Self::Builtin(b) => b.py_repr_fmt(f),
-            Self::ModuleFunction(mf) => mf.py_repr_fmt(f, self.id()),
-            Self::DefFunction(f_id) => interns.get_function(*f_id).py_repr_fmt(f, interns, self.id()),
-            Self::ExtFunction(name_id) => {
-                write!(f, "<function '{}' external>", interns.get_str(*name_id))
-            }
-            Self::InternString(string_id) => string_repr_fmt(interns.get_str(*string_id), f),
-            Self::InternBytes(bytes_id) => bytes_repr_fmt(interns.get_bytes(*bytes_id), f),
-            Self::Marker(m) => m.py_repr_fmt(f),
-            Self::Property(p) => write!(f, "<property {p:?}>"),
-            Self::ExternalFuture(call_id) => write!(f, "<coroutine external_future({})>", call_id.raw()),
+            Self::Builtin(b) => Ok(b.py_repr_fmt(f)?),
+            Self::ModuleFunction(mf) => Ok(mf.py_repr_fmt(f, self.id())?),
+            Self::DefFunction(f_id) => Ok(interns.get_function(*f_id).py_repr_fmt(f, interns, self.id())?),
+            Self::ExtFunction(name_id) => Ok(write!(f, "<function '{}' external>", interns.get_str(*name_id))?),
+            Self::InternString(string_id) => Ok(string_repr_fmt(interns.get_str(*string_id), f)?),
+            Self::InternBytes(bytes_id) => Ok(bytes_repr_fmt(interns.get_bytes(*bytes_id), f)?),
+            Self::Marker(m) => Ok(m.py_repr_fmt(f)?),
+            Self::Property(p) => Ok(write!(f, "<property {p:?}>")?),
+            Self::ExternalFuture(call_id) => Ok(write!(f, "<coroutine external_future({})>", call_id.raw())?),
             Self::Ref(id) => {
                 if heap_ids.contains(id) {
                     // Cycle detected - write type-specific placeholder following Python semantics
                     match vm.heap.get(*id) {
-                        HeapData::List(_) => f.write_str("[...]"),
-                        HeapData::Tuple(_) => f.write_str("(...)"),
-                        HeapData::Dict(_) => f.write_str("{...}"),
+                        HeapData::List(_) => Ok(f.write_str("[...]")?),
+                        HeapData::Tuple(_) => Ok(f.write_str("(...)")?),
+                        HeapData::Dict(_) => Ok(f.write_str("{...}")?),
                         // Other types don't typically have cycles, but handle gracefully
-                        _ => f.write_str("..."),
+                        _ => Ok(f.write_str("...")?),
                     }
                 } else {
                     heap_ids.insert(*id);
@@ -398,9 +401,9 @@ impl PyTrait<'_> for Value {
         }
     }
 
-    fn py_str(&self, vm: &VM<'_, '_, impl ResourceTracker>) -> Cow<'static, str> {
+    fn py_str(&self, vm: &VM<'_, '_, impl ResourceTracker>) -> RunResult<Cow<'static, str>> {
         match self {
-            Self::InternString(string_id) => vm.interns.get_str(*string_id).to_owned().into(),
+            Self::InternString(string_id) => Ok(vm.interns.get_str(*string_id).to_owned().into()),
             Self::Ref(id) => vm.heap.read(*id).py_str(vm),
             _ => self.py_repr(vm),
         }

@@ -372,15 +372,15 @@ impl Dict {
         f: &mut impl Write,
         vm: &VM<'_, '_, impl ResourceTracker>,
         heap_ids: &mut AHashSet<HeapId>,
-    ) -> std::fmt::Result {
+    ) -> RunResult<()> {
         if self.is_empty() {
-            return f.write_str("{}");
+            return Ok(f.write_str("{}")?);
         }
 
         let heap = &*vm.heap;
         // Check depth limit before recursing
         let Some(token) = heap.incr_recursion_depth_for_repr() else {
-            return f.write_str("{...}");
+            return Ok(f.write_str("{...}")?);
         };
         crate::defer_drop_immutable_heap!(token, heap);
 
@@ -842,7 +842,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Dict> {
         f: &mut impl Write,
         vm: &VM<'h, '_, impl ResourceTracker>,
         heap_ids: &mut AHashSet<HeapId>,
-    ) -> std::fmt::Result {
+    ) -> RunResult<()> {
         self.get(vm.heap).py_repr_fmt(f, vm, heap_ids)
     }
 

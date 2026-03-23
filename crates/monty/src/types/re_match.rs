@@ -313,10 +313,10 @@ impl ReMatch {
         f: &mut impl Write,
         _vm: &VM<'_, '_, impl ResourceTracker>,
         _heap_ids: &mut AHashSet<HeapId>,
-    ) -> std::fmt::Result {
+    ) -> RunResult<()> {
         write!(f, "<re.Match object; span=({}, {}), match=", self.start, self.end)?;
         string_repr_fmt(&self.full_match, f)?;
-        f.write_char('>')
+        Ok(f.write_char('>')?)
     }
 }
 
@@ -344,7 +344,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, ReMatch> {
         f: &mut impl Write,
         vm: &VM<'h, '_, impl ResourceTracker>,
         heap_ids: &mut AHashSet<HeapId>,
-    ) -> std::fmt::Result {
+    ) -> RunResult<()> {
         self.get(vm.heap).py_repr_fmt(f, vm, heap_ids)
     }
 

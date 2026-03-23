@@ -51,7 +51,7 @@ impl Str {
             None => Ok(Value::InternString(StaticStrings::EmptyString.into())),
             Some(v) => {
                 defer_drop!(v, vm);
-                let s = v.py_str(vm).into_owned();
+                let s = v.py_str(vm)?.into_owned();
                 allocate_string(s, vm.heap)
             }
         }
@@ -246,12 +246,12 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Str> {
         f: &mut impl Write,
         vm: &VM<'h, '_, impl ResourceTracker>,
         _heap_ids: &mut AHashSet<HeapId>,
-    ) -> fmt::Result {
-        string_repr_fmt(&self.get(vm.heap).0, f)
+    ) -> RunResult<()> {
+        Ok(string_repr_fmt(&self.get(vm.heap).0, f)?)
     }
 
-    fn py_str(&self, vm: &VM<'h, '_, impl ResourceTracker>) -> Cow<'static, str> {
-        self.get(vm.heap).0.clone().into_string().into()
+    fn py_str(&self, vm: &VM<'h, '_, impl ResourceTracker>) -> RunResult<Cow<'static, str>> {
+        Ok(self.get(vm.heap).0.clone().into_string().into())
     }
 
     fn py_add(

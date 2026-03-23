@@ -474,27 +474,49 @@ pub enum Node<F> {
     OpAssign {
         target: Identifier,
         op: Operator,
-        object: ExprLoc,
+        /// The right-hand side value of the augmented assignment (e.g., `1` in `x += 1`).
+        value: ExprLoc,
     },
-    /// Augmented subscript assignment (e.g., `totals[key] += value`).
+    /// Augmented subscript assignment (e.g., `totals[key] += value` or `a[0][1] += 1`).
     ///
-    /// This evaluates the container and index exactly once, then performs the
+    /// This evaluates the container expression and index exactly once, then performs the
     /// inplace operation on the current item before storing the result back.
     /// Limiting duplicate evaluation is important because index expressions may
     /// have side effects and CPython only evaluates them once.
+    /// The `target` is an arbitrary expression evaluating to the container — it can be
+    /// a simple name, a nested subscript (`a[0]`), or an attribute access (`obj.field`).
     SubscriptOpAssign {
-        target: Identifier,
+        target: ExprLoc,
         index: ExprLoc,
         op: Operator,
-        object: ExprLoc,
+        /// The right-hand side value of the augmented assignment (e.g., `1` in `a[0] += 1`).
+        value: ExprLoc,
         /// Position of the subscript expression (e.g., `totals[key]`) for traceback carets.
         target_position: CodeRange,
     },
+    /// Subscript assignment (e.g., `lst[0] = value` or `a[0][1] = value`).
+    ///
+    /// The `target` is an arbitrary expression evaluating to the container — it can be
+    /// a simple name, a nested subscript (`a[0]`), or an attribute access (`obj.field`).
     SubscriptAssign {
-        target: Identifier,
+        target: ExprLoc,
         index: ExprLoc,
         value: ExprLoc,
         /// Position of the subscript expression (e.g., `lst[10]`) for traceback carets.
+        target_position: CodeRange,
+    },
+    /// Augmented attribute assignment (e.g., `point.x += 1` or `a.b.c -= 5`).
+    ///
+    /// Evaluates the object expression once, loads the attribute, performs the
+    /// inplace operation with the right-hand side, then stores the result back.
+    /// The `object` is an arbitrary expression — it can be a name, a subscript,
+    /// or a chained attribute access.
+    AttrOpAssign {
+        object: ExprLoc,
+        attr: EitherStr,
+        op: Operator,
+        value: ExprLoc,
+        /// Position of the attribute expression (e.g., `point.x`) for traceback carets.
         target_position: CodeRange,
     },
     /// Attribute assignment (e.g., `point.x = 5` or `a.b.c = 5`).

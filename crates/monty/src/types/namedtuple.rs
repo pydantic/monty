@@ -235,7 +235,7 @@ impl PyTrait<'_> for NamedTuple {
         f: &mut impl Write,
         vm: &VM<'_, '_, impl ResourceTracker>,
         heap_ids: &mut AHashSet<HeapId>,
-    ) -> std::fmt::Result {
+    ) -> RunResult<()> {
         namedtuple_repr_fmt(&self.name, &self.field_names, &self.items, f, vm, heap_ids)
     }
 }
@@ -260,7 +260,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, NamedTuple> {
         f: &mut impl Write,
         vm: &VM<'h, '_, impl ResourceTracker>,
         heap_ids: &mut AHashSet<HeapId>,
-    ) -> std::fmt::Result {
+    ) -> RunResult<()> {
         let nt = self.get(vm.heap);
         namedtuple_repr_fmt(&nt.name, &nt.field_names, &nt.items, f, vm, heap_ids)
     }
@@ -319,11 +319,11 @@ pub(crate) fn namedtuple_repr_fmt(
     f: &mut impl Write,
     vm: &VM<'_, '_, impl ResourceTracker>,
     heap_ids: &mut AHashSet<HeapId>,
-) -> std::fmt::Result {
+) -> RunResult<()> {
     // Check depth limit before recursing
     let heap = &*vm.heap;
     let Some(token) = heap.incr_recursion_depth_for_repr() else {
-        return f.write_str("...");
+        return Ok(f.write_str("...")?);
     };
     crate::defer_drop_immutable_heap!(token, heap);
 

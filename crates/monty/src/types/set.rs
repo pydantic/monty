@@ -304,14 +304,14 @@ impl SetStorage {
         vm: &VM<'_, '_, impl ResourceTracker>,
         heap_ids: &mut AHashSet<HeapId>,
         type_name: &str,
-    ) -> std::fmt::Result {
+    ) -> RunResult<()> {
         if self.is_empty() {
-            return write!(f, "{type_name}()");
+            return Ok(write!(f, "{type_name}()")?);
         }
 
         // Check depth limit before recursing
         let Some(token) = vm.heap.incr_recursion_depth_for_repr() else {
-            return f.write_str("{...}");
+            return Ok(f.write_str("{...}")?);
         };
         crate::defer_drop_immutable_heap!(token, vm);
 
@@ -952,7 +952,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Set> {
         f: &mut impl Write,
         vm: &VM<'h, '_, impl ResourceTracker>,
         heap_ids: &mut AHashSet<HeapId>,
-    ) -> std::fmt::Result {
+    ) -> RunResult<()> {
         self.get(vm.heap).0.repr_fmt(f, vm, heap_ids, "set")
     }
 
@@ -1187,7 +1187,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, FrozenSet> {
         f: &mut impl Write,
         vm: &VM<'h, '_, impl ResourceTracker>,
         heap_ids: &mut AHashSet<HeapId>,
-    ) -> std::fmt::Result {
+    ) -> RunResult<()> {
         self.get(vm.heap).0.repr_fmt(f, vm, heap_ids, "frozenset")
     }
 

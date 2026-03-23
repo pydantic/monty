@@ -268,7 +268,7 @@ impl PyTrait<'_> for Tuple {
         f: &mut impl Write,
         vm: &VM<'_, '_, impl ResourceTracker>,
         heap_ids: &mut AHashSet<HeapId>,
-    ) -> std::fmt::Result {
+    ) -> RunResult<()> {
         tuple_repr_fmt(&self.items, f, vm, heap_ids)
     }
 }
@@ -289,7 +289,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Tuple> {
         f: &mut impl Write,
         vm: &VM<'h, '_, impl ResourceTracker>,
         heap_ids: &mut AHashSet<HeapId>,
-    ) -> std::fmt::Result {
+    ) -> RunResult<()> {
         tuple_repr_fmt(&self.get(vm.heap).items, f, vm, heap_ids)
     }
 
@@ -319,7 +319,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Tuple> {
     ///
     /// Compares element-by-element left-to-right. The first non-equal pair
     /// determines the result. If all compared elements are equal, the shorter
-    /// tuple is less — matching Python semantics.
+    /// tuple is less -- matching Python semantics.
     fn py_cmp(
         &self,
         other: &Self,
@@ -346,7 +346,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Tuple> {
                 Some(Ordering::Equal) => {}
                 Some(ord) => return Ok(Some(ord)),
                 None => {
-                    // py_cmp returned None — check if elements are equal
+                    // py_cmp returned None -- check if elements are equal
                     // (CPython checks __eq__ first for None==None case)
                     if !eq_fallback.unwrap()? {
                         return Ok(None);
@@ -502,11 +502,11 @@ pub(crate) fn tuple_repr_fmt(
     f: &mut impl Write,
     vm: &VM<'_, '_, impl ResourceTracker>,
     heap_ids: &mut AHashSet<HeapId>,
-) -> std::fmt::Result {
+) -> RunResult<()> {
     // Check depth limit before recursing
     let heap = &*vm.heap;
     let Some(token) = heap.incr_recursion_depth_for_repr() else {
-        return f.write_str("...");
+        return Ok(f.write_str("...")?);
     };
     crate::defer_drop_immutable_heap!(token, heap);
 

@@ -187,14 +187,14 @@ impl Slice {
         f: &mut impl Write,
         _vm: &VM<'_, '_, impl ResourceTracker>,
         _heap_ids: &mut AHashSet<HeapId>,
-    ) -> std::fmt::Result {
+    ) -> RunResult<()> {
         f.write_str("slice(")?;
         format_option_i64(f, self.start)?;
         f.write_str(", ")?;
         format_option_i64(f, self.stop)?;
         f.write_str(", ")?;
         format_option_i64(f, self.step)?;
-        f.write_char(')')
+        Ok(f.write_char(')')?)
     }
 }
 
@@ -224,7 +224,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Slice> {
         f: &mut impl Write,
         vm: &VM<'h, '_, impl ResourceTracker>,
         heap_ids: &mut AHashSet<HeapId>,
-    ) -> std::fmt::Result {
+    ) -> RunResult<()> {
         self.get(vm.heap).py_repr_fmt(f, vm, heap_ids)
     }
 }

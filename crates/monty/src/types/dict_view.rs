@@ -173,11 +173,11 @@ impl<'h> PyTrait<'h> for HeapRead<'h, DictKeysView> {
         f: &mut impl Write,
         vm: &VM<'h, '_, impl ResourceTracker>,
         heap_ids: &mut AHashSet<HeapId>,
-    ) -> std::fmt::Result {
+    ) -> RunResult<()> {
         let view = *self.get(vm.heap);
         f.write_str("dict_keys([")?;
         write_dict_keys_contents(f, view.dict(vm.heap), vm, heap_ids)?;
-        f.write_str("])")
+        Ok(f.write_str("])")?)
     }
 
     fn py_call_attr(
@@ -345,11 +345,11 @@ impl<'h> PyTrait<'h> for HeapRead<'h, DictItemsView> {
         f: &mut impl Write,
         vm: &VM<'h, '_, impl ResourceTracker>,
         heap_ids: &mut AHashSet<HeapId>,
-    ) -> std::fmt::Result {
+    ) -> RunResult<()> {
         let view = *self.get(vm.heap);
         f.write_str("dict_items([")?;
         write_dict_items_contents(f, view.dict(vm.heap), vm, heap_ids)?;
-        f.write_str("])")
+        Ok(f.write_str("])")?)
     }
 
     fn py_call_attr(
@@ -434,11 +434,11 @@ impl<'h> PyTrait<'h> for HeapRead<'h, DictValuesView> {
         f: &mut impl Write,
         vm: &VM<'h, '_, impl ResourceTracker>,
         heap_ids: &mut AHashSet<HeapId>,
-    ) -> std::fmt::Result {
+    ) -> RunResult<()> {
         let view = *self.get(vm.heap);
         f.write_str("dict_values([")?;
         write_dict_values_contents(f, view.dict(vm.heap), vm, heap_ids)?;
-        f.write_str("])")
+        Ok(f.write_str("])")?)
     }
 
     fn py_call_attr(
@@ -541,7 +541,7 @@ fn write_dict_keys_contents(
     dict: &Dict,
     vm: &VM<'_, '_, impl ResourceTracker>,
     heap_ids: &mut AHashSet<HeapId>,
-) -> std::fmt::Result {
+) -> RunResult<()> {
     let mut first = true;
     for (key, _) in dict {
         if !first {
@@ -559,7 +559,7 @@ fn write_dict_items_contents(
     dict: &Dict,
     vm: &VM<'_, '_, impl ResourceTracker>,
     heap_ids: &mut AHashSet<HeapId>,
-) -> std::fmt::Result {
+) -> RunResult<()> {
     let mut first = true;
     for (key, value) in dict {
         if !first {
@@ -581,7 +581,7 @@ fn write_dict_values_contents(
     dict: &Dict,
     vm: &VM<'_, '_, impl ResourceTracker>,
     heap_ids: &mut AHashSet<HeapId>,
-) -> std::fmt::Result {
+) -> RunResult<()> {
     let mut first = true;
     for (_, value) in dict {
         if !first {

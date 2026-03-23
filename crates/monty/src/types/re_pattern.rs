@@ -288,7 +288,7 @@ impl RePattern {
         f: &mut impl Write,
         _vm: &VM<'_, '_, impl ResourceTracker>,
         _heap_ids: &mut AHashSet<HeapId>,
-    ) -> std::fmt::Result {
+    ) -> RunResult<()> {
         write!(f, "re.compile(")?;
         string_repr_fmt(&self.pattern, f)?;
         if self.flags != 0 {
@@ -307,7 +307,7 @@ impl RePattern {
             }
             write!(f, ", {}", flag_parts.join("|"))?;
         }
-        write!(f, ")")
+        Ok(write!(f, ")")?)
     }
 }
 
@@ -334,7 +334,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, RePattern> {
         f: &mut impl Write,
         vm: &VM<'h, '_, impl ResourceTracker>,
         heap_ids: &mut AHashSet<HeapId>,
-    ) -> std::fmt::Result {
+    ) -> RunResult<()> {
         self.get(vm.heap).py_repr_fmt(f, vm, heap_ids)
     }
 
