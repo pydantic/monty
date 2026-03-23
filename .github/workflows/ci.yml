@@ -153,6 +153,24 @@ jobs:
 
       - run: make dev-bench
 
+  miri:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: miri
+
+      - uses: Swatinem/rust-cache@v2
+
+      # don't use .venv python in CI
+      - run: rm .cargo/config.toml
+
+      - name: Run miri tests
+        run: make miri
+
   fuzz:
     name: fuzz ${{ matrix.target }}
     runs-on: ubuntu-latest
