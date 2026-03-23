@@ -1213,12 +1213,16 @@ impl<'h, 'a, T: ResourceTracker> VM<'h, 'a, T> {
                     match iter.advance(self) {
                         Ok(Some(value)) => self.push(value),
                         Ok(None) => {
+                            // Drop the HeapRead before dec_ref to release the reader count
+                            drop(iter);
                             // Iterator exhausted - pop it and jump to end
                             let iter = self.pop();
                             iter.drop_with_heap(self);
                             jump_relative!(cached_frame.ip, offset);
                         }
                         Err(e) => {
+                            // Drop the HeapRead before dec_ref to release the reader count
+                            drop(iter);
                             // Error during iteration (e.g., dict size changed)
                             let iter = self.pop();
                             iter.drop_with_heap(self);
