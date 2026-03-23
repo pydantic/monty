@@ -118,7 +118,7 @@ impl HeapEntries {
     #[track_caller]
     unsafe fn get_inner(&self, index: usize) -> Option<&HeapValue> {
         let len = self.len.get();
-        assert!(index < len, "HeapEntries::get: index {index} out of bounds (len={len})",);
+        assert!(index < len, "HeapEntries::get: index {index} out of bounds (len={len})");
         // SAFETY: (DH) all slots at indices < self.len have been initialized via `allocate`.
         // The slot cannot be mutably borrowed because `get_mut` requires `&mut self`.
         unsafe { (&*self.pages.get())[index / PAGE_SIZE][index % PAGE_SIZE].assume_init_ref() }.as_ref()
