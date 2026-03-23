@@ -370,7 +370,7 @@ fn value_error_could_not_convert_string_to_float(value: &str) -> RunError {
 /// Handles whitespace stripping and removing `_` separators. Returns `Value::Int` if the value
 /// fits in i64, otherwise allocates a `LongInt` on the heap. Returns `ValueError` on failure.
 fn parse_int_from_str(value: &str, heap: &Heap<impl ResourceTracker>) -> RunResult<Value> {
-    let invalid = || ExcType::value_error_invalid_literal_for_int(value);
+    let invalid = || ExcType::value_error_invalid_literal_for_int(StringRepr(value));
     // Try parsing as i64 first (fast path)
     if let Ok(int) = value.parse::<i64>() {
         return Ok(Value::Int(int));
