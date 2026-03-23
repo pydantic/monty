@@ -65,14 +65,13 @@ assert hex(big) is not None, 'hex() should not be limited'
 assert oct(big) is not None, 'oct() should not be limited'
 
 # === KeyError with huge int key ===
-# CPython raises KeyError (stores the key object, ValueError only on display).
-# Monty eagerly converts the key to a string, so it raises ValueError instead.
-# We accept either behavior here.
+# CPython raises KeyError (stores the key object). Monty falls back to the
+# type name when the key is too large to stringify, but still raises KeyError.
 d = {}
 try:
     d[10**5000]
-    assert False, 'should raise KeyError or ValueError'
-except (KeyError, ValueError):
+    assert False, 'should raise KeyError'
+except KeyError:
     pass
 
 # === f-string with !s conversion ===
@@ -103,3 +102,10 @@ try:
     assert False, 'print([huge]) should raise ValueError'
 except ValueError as e:
     assert str(e).startswith('Exceeds the limit (4300 digits) for integer string conversion'), f'wrong message: {e}'
+
+# === int() with invalid large string gives "invalid literal", not digit-limit error ===
+try:
+    int('1' * 4301 + 'x')
+    assert False, 'int() with invalid large string should raise ValueError'
+except ValueError as e:
+    assert str(e).startswith('invalid literal for int() with base 10'), f'wrong error: {e}'

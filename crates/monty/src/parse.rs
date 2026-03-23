@@ -1737,8 +1737,14 @@ fn parse_int_literal(s: &str, position: CodeRange) -> Result<BigInt, ParseError>
 
     // Default to decimal
     let digit_count = cleaned.bytes().filter(u8::is_ascii_digit).count();
-    if digit_count as u64 > INT_MAX_STR_DIGITS {
-        Err(ParseError::syntax("integer literal too large for str", position))
+    if digit_count > INT_MAX_STR_DIGITS {
+        Err(ParseError::syntax(
+            format!(
+                "Exceeds the limit ({INT_MAX_STR_DIGITS} digits) for integer string conversion: \
+                 value has {digit_count} digits; consider hexadecimal for large integer literals"
+            ),
+            position,
+        ))
     } else {
         cleaned
             .parse::<BigInt>()

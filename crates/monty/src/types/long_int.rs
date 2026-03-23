@@ -33,7 +33,7 @@ use crate::{
 /// bin/hex/oct use O(n) algorithms and are unrestricted.
 ///
 /// This is a hardcoded safety limit, not configurable from Python code.
-pub(crate) const INT_MAX_STR_DIGITS: u64 = 4300;
+pub(crate) const INT_MAX_STR_DIGITS: usize = 4300;
 
 /// Wrapper around `num_bigint::BigInt` for arbitrary precision integers.
 ///
@@ -177,20 +177,6 @@ impl LongInt {
     pub fn check_str_digits_limit(&self) -> RunResult<()> {
         check_bits_str_digits_limit(self.bits())
     }
-
-    /// Checks whether a decimal string has too many digits for `int()` conversion.
-    ///
-    /// Counts ASCII digit characters in the string (after normalization). The sign
-    /// character and underscores should already be removed by the caller.
-    /// Should be called BEFORE `BigInt::parse()` to prevent the O(n^2) parsing
-    /// from running on oversized inputs.
-    pub fn check_parse_digits_limit(normalized: &str) -> RunResult<()> {
-        let digit_count = normalized.bytes().filter(u8::is_ascii_digit).count();
-        if digit_count as u64 > INT_MAX_STR_DIGITS {
-            return Err(ExcType::value_error_int_str_too_large(digit_count));
-        }
-        Ok(())
-    }
 }
 
 /// Checks whether an integer with the given bit count would exceed the decimal
@@ -199,7 +185,7 @@ pub fn check_bits_str_digits_limit(bits: u64) -> RunResult<()> {
     // log10(2) ≈ 0.30103 = 30_103/100_000
     // estimated_digits is an upper bound on the actual decimal digit count.
     let estimated_digits = bits.saturating_mul(30_103) / 100_000 + 1;
-    if estimated_digits > INT_MAX_STR_DIGITS {
+    if estimated_digits > INT_MAX_STR_DIGITS as u64 {
         return Err(ExcType::value_error_int_too_large_for_str());
     }
     Ok(())

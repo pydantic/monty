@@ -13,18 +13,18 @@ use crate::{
 impl<T: ResourceTracker> VM<'_, '_, T> {
     /// Builds an f-string by concatenating n string parts from the stack.
     pub(super) fn build_fstring(&mut self, count: usize) -> Result<(), RunError> {
-        let parts = self.pop_n(count);
+        let this = self;
+        let parts = this.pop_n(count);
+        defer_drop!(parts, this);
         let mut result = String::new();
 
-        for part in parts {
-            // Each part should be a string (interned or heap-allocated)
-            let part_str = part.py_str(self)?;
+        for part in parts.as_slice() {
+            let part_str = part.py_str(this)?;
             result.push_str(&part_str);
-            part.drop_with_heap(self);
         }
 
-        let value = allocate_string(result, self.heap)?;
-        self.push(value);
+        let value = allocate_string(result, this.heap)?;
+        this.push(value);
         Ok(())
     }
 

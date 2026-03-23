@@ -325,13 +325,14 @@ impl ExcType {
     ///
     /// For string keys, uses the raw string value without extra quoting.
     /// If the key's string conversion fails (e.g. huge LongInt exceeding
-    /// `INT_MAX_STR_DIGITS`), the conversion error is returned instead,
-    /// matching CPython's behavior.
+    /// `INT_MAX_STR_DIGITS`), falls back to the type name so that a
+    /// `KeyError` is always raised rather than a spurious `ValueError`.
     pub(crate) fn key_error(key: &Value, vm: &VM<'_, '_, impl ResourceTracker>) -> RunError {
-        match key.py_str(vm) {
-            Ok(key_str) => SimpleException::new_msg(Self::KeyError, key_str.into_owned()).into(),
-            Err(e) => e,
-        }
+        let key_str = match key.py_str(vm) {
+            Ok(s) => s.into_owned(),
+            Err(_) => format!("<{}>", key.py_type(vm.heap)),
+        };
+        SimpleException::new_msg(Self::KeyError, key_str).into()
     }
 
     /// Creates a KeyError for popping from an empty set.
@@ -948,6 +949,19 @@ impl ExcType {
         SimpleException::new_msg(
             Self::ValueError,
             format!("Exceeds the limit ({INT_MAX_STR_DIGITS} digits) for integer string conversion: value has {digit_count} digits"),
+        )
+        .into()
+    }
+
+    /// Creates a ValueError for `int()` when a string cannot be parsed as an integer.
+    ///
+    /// Matches CPython's format: `invalid literal for int() with base 10: '...'`.
+    /// The caller provides the value pre-formatted (e.g. via `StringRepr`).
+    #[must_use]
+    pub(crate) fn value_error_invalid_literal_for_int(value: impl fmt::Display) -> RunError {
+        SimpleException::new_msg(
+            Self::ValueError,
+            format!("invalid literal for int() with base 10: {value}"),
         )
         .into()
     }

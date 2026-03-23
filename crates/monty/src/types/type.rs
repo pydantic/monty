@@ -12,7 +12,7 @@ use crate::{
     resource::ResourceTracker,
     types::{
         Bytes, Dict, FrozenSet, List, LongInt, MontyIter, Path, PyTrait, Range, Set, Slice, Str, Tuple,
-        bytes::bytes_fromhex, dict::dict_fromkeys, str::StringRepr,
+        bytes::bytes_fromhex, dict::dict_fromkeys, long_int::INT_MAX_STR_DIGITS, str::StringRepr,
     },
     value::Value,
 };
@@ -383,29 +383,28 @@ fn parse_int_from_str(value: &str, heap: &Heap<impl ResourceTracker>) -> RunResu
     // Try with underscores removed
     let normalized = trimmed.replace('_', "");
     if let Ok(int) = normalized.parse::<i64>() {
-        return Ok(Value::Int(int));
+        Ok(Value::Int(int))
+    } else if normalized.len() > INT_MAX_STR_DIGITS {
+        // Short strings can't exceed the digit limit — go straight to BigInt parse.
+        // Only do the more expensive validation when the string is long enough to matter.
+        let digit_count = normalized.bytes().filter(u8::is_ascii_digit).count();
+        let has_sign = normalized.starts_with(['+', '-']);
+        let expected_len = digit_count + usize::from(has_sign);
+
+        // If the string has non-digit/non-sign chars it's invalid.
+        // Check this BEFORE the digit limit so "invalid literal" takes precedence.
+        if expected_len == normalized.len() {
+            // Syntactically valid but too many digits for the O(n^2) decimal parse
+            Err(ExcType::value_error_int_str_too_large(digit_count))
+        } else {
+            Err(ExcType::value_error_invalid_literal_for_int(StringRepr(value)))
+        }
+    } else if let Ok(bi) = normalized.parse::<BigInt>() {
+        // Within the digit limit — try BigInt parse
+        Ok(LongInt::new(bi).into_value(heap)?)
+    } else {
+        Err(ExcType::value_error_invalid_literal_for_int(StringRepr(value)))
     }
-
-    // Check digit limit before the expensive O(n^2) BigInt parse
-    LongInt::check_parse_digits_limit(&normalized)?;
-
-    // Try parsing as BigInt for values too large for i64
-    if let Ok(bi) = normalized.parse::<BigInt>() {
-        return Ok(LongInt::new(bi).into_value(heap)?);
-    }
-
-    Err(value_error_invalid_literal_for_int(value))
-}
-
-/// Creates the `ValueError` raised by `int()` when a string cannot be parsed.
-///
-/// Matches CPython's message format: `invalid literal for int() with base 10: '...'`.
-fn value_error_invalid_literal_for_int(value: &str) -> RunError {
-    SimpleException::new_msg(
-        ExcType::ValueError,
-        format!("invalid literal for int() with base 10: {}", StringRepr(value)),
-    )
-    .into()
 }
 
 /// Dispatches a classmethod call on a type object.

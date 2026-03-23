@@ -15,7 +15,8 @@ fn large_decimal_literal_rejected() {
     assert_eq!(err.exc_type(), ExcType::SyntaxError);
     assert_eq!(
         err.message().expect("should have a message"),
-        "integer literal too large for str"
+        "Exceeds the limit (4300 digits) for integer string conversion: \
+         value has 4301 digits; consider hexadecimal for large integer literals"
     );
 }
 
@@ -28,7 +29,8 @@ fn large_negative_decimal_literal_rejected() {
     assert_eq!(err.exc_type(), ExcType::SyntaxError);
     assert_eq!(
         err.message().expect("should have a message"),
-        "integer literal too large for str"
+        "Exceeds the limit (4300 digits) for integer string conversion: \
+         value has 4301 digits; consider hexadecimal for large integer literals"
     );
 }
 
