@@ -458,7 +458,117 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
     }
 
     fn py_eq(&self, other: &Self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> Result<bool, crate::ResourceError> {
-        todo!()
+        match (self, other) {
+            // Simple types: compare with shared borrows (no &mut VM needed)
+            (HeapReadOutput::Str(a), HeapReadOutput::Str(b)) => Ok(a.get(vm.heap).as_str() == b.get(vm.heap).as_str()),
+            (HeapReadOutput::Bytes(a), HeapReadOutput::Bytes(b)) => {
+                Ok(a.get(vm.heap).as_slice() == b.get(vm.heap).as_slice())
+            }
+            (HeapReadOutput::LongInt(a), HeapReadOutput::LongInt(b)) => Ok(a.get(vm.heap) == b.get(vm.heap)),
+            (HeapReadOutput::Closure(a), HeapReadOutput::Closure(b)) => {
+                let a = a.get(vm.heap);
+                let b = b.get(vm.heap);
+                Ok(a.func_id == b.func_id && a.cells == b.cells)
+            }
+            (HeapReadOutput::FunctionDefaults(a), HeapReadOutput::FunctionDefaults(b)) => {
+                Ok(a.get(vm.heap).func_id == b.get(vm.heap).func_id)
+            }
+            (HeapReadOutput::Range(a), HeapReadOutput::Range(b)) => {
+                // Range::py_eq is pure data comparison — inline to avoid
+                // borrow conflict with the &mut VM signature
+                let a = a.get(vm.heap);
+                let b = b.get(vm.heap);
+                let len_a = a.len();
+                if len_a != b.len() {
+                    Ok(false)
+                } else if len_a == 0 {
+                    Ok(true)
+                } else {
+                    Ok(a.start == b.start && a.step == b.step)
+                }
+            }
+            // Container types: use HeapRead-specific comparison methods
+            (HeapReadOutput::List(a), HeapReadOutput::List(b)) => a.py_eq(&b, vm),
+            (HeapReadOutput::Tuple(a), HeapReadOutput::Tuple(b)) => a.eq(&b, vm),
+            // Container types with HeapRead eq methods
+            (HeapReadOutput::Dict(a), HeapReadOutput::Dict(b)) => a.eq(&b, vm),
+            (HeapReadOutput::Set(a), HeapReadOutput::Set(b)) => a.eq(&b, vm),
+            (HeapReadOutput::FrozenSet(a), HeapReadOutput::FrozenSet(b)) => a.eq(&b, vm),
+            // NamedTuple: element-wise comparison via HeapRead clone_item
+            (HeapReadOutput::NamedTuple(a), HeapReadOutput::NamedTuple(b)) => a.eq(&b, vm),
+            // NamedTuple/Tuple cross-type comparison
+            (HeapReadOutput::NamedTuple(nt), HeapReadOutput::Tuple(t))
+            | (HeapReadOutput::Tuple(t), HeapReadOutput::NamedTuple(nt)) => nt.eq_tuple(&t, vm),
+            // DictKeysView comparisons — copy view to local, pass HeapRead directly
+            (HeapReadOutput::DictKeysView(a), HeapReadOutput::DictKeysView(b)) => {
+                let a_view = DictKeysView::new(a.get(vm.heap).dict_id());
+                let b_view = DictKeysView::new(b.get(vm.heap).dict_id());
+                a_view.eq_view(b_view, vm)
+            }
+            (HeapReadOutput::DictKeysView(a), HeapReadOutput::Set(b)) => {
+                let view = DictKeysView::new(a.get(vm.heap).dict_id());
+                view.eq_set(&b, vm)
+            }
+            (HeapReadOutput::Set(b), HeapReadOutput::DictKeysView(a)) => {
+                let view = DictKeysView::new(a.get(vm.heap).dict_id());
+                view.eq_set(&b, vm)
+            }
+            (HeapReadOutput::DictKeysView(a), HeapReadOutput::FrozenSet(b)) => {
+                let view = DictKeysView::new(a.get(vm.heap).dict_id());
+                view.eq_frozenset(&b, vm)
+            }
+            (HeapReadOutput::FrozenSet(b), HeapReadOutput::DictKeysView(a)) => {
+                let view = DictKeysView::new(a.get(vm.heap).dict_id());
+                view.eq_frozenset(&b, vm)
+            }
+            // DictItemsView comparisons
+            (HeapReadOutput::DictItemsView(a), HeapReadOutput::DictItemsView(b)) => {
+                let a_view = DictItemsView::new(a.get(vm.heap).dict_id());
+                let b_view = DictItemsView::new(b.get(vm.heap).dict_id());
+                a_view.eq_view(b_view, vm)
+            }
+            (HeapReadOutput::DictItemsView(a), HeapReadOutput::Set(b)) => {
+                let view = DictItemsView::new(a.get(vm.heap).dict_id());
+                view.eq_set(&b, vm)
+            }
+            (HeapReadOutput::Set(b), HeapReadOutput::DictItemsView(a)) => {
+                let view = DictItemsView::new(a.get(vm.heap).dict_id());
+                view.eq_set(&b, vm)
+            }
+            (HeapReadOutput::DictItemsView(a), HeapReadOutput::FrozenSet(b)) => {
+                let view = DictItemsView::new(a.get(vm.heap).dict_id());
+                view.eq_frozenset(&b, vm)
+            }
+            (HeapReadOutput::FrozenSet(b), HeapReadOutput::DictItemsView(a)) => {
+                let view = DictItemsView::new(a.get(vm.heap).dict_id());
+                view.eq_frozenset(&b, vm)
+            }
+            (HeapReadOutput::Dataclass(a), HeapReadOutput::Dataclass(b)) => {
+                if a.name(vm) != b.name(vm) {
+                    return Ok(false);
+                }
+                a.attrs().eq(&b.attrs(), vm)
+            }
+            // Pure data comparisons (no VM needed)
+            (HeapReadOutput::Slice(a), HeapReadOutput::Slice(b)) => {
+                let a = a.get(vm.heap);
+                let b = b.get(vm.heap);
+                Ok(a.start == b.start && a.stop == b.stop && a.step == b.step)
+            }
+            (HeapReadOutput::Path(a), HeapReadOutput::Path(b)) => Ok(a.get(vm.heap) == b.get(vm.heap)),
+            (HeapReadOutput::RePattern(a), HeapReadOutput::RePattern(b)) => Ok(a.get(vm.heap) == b.get(vm.heap)),
+            // Identity-only types (handled by HeapId comparison above)
+            (HeapReadOutput::ReMatch(_), HeapReadOutput::ReMatch(_))
+            | (HeapReadOutput::Cell(_), HeapReadOutput::Cell(_))
+            | (HeapReadOutput::Exception(_), HeapReadOutput::Exception(_))
+            | (HeapReadOutput::Iter(_), HeapReadOutput::Iter(_))
+            | (HeapReadOutput::Module(_), HeapReadOutput::Module(_))
+            | (HeapReadOutput::Coroutine(_), HeapReadOutput::Coroutine(_))
+            | (HeapReadOutput::GatherFuture(_), HeapReadOutput::GatherFuture(_))
+            | (HeapReadOutput::DictValuesView(_), HeapReadOutput::DictValuesView(_)) => Ok(false),
+            // Different types are never equal
+            _ => Ok(false),
+        }
     }
 
     fn py_repr_fmt(
