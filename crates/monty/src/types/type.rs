@@ -109,6 +109,33 @@ impl fmt::Display for Type {
 }
 
 impl Type {
+    /// Returns the Python source-level name for builtin types that can be called directly.
+    ///
+    /// This differs from `Display` for internal representation-only names such as
+    /// `Type::Iterator`, which displays as `iterator` for repr/type output but is
+    /// exposed as the builtin constructor `iter` in Python source.
+    #[must_use]
+    pub const fn builtin_name(self) -> Option<&'static str> {
+        match self {
+            Self::Bool => Some("bool"),
+            Self::Int => Some("int"),
+            Self::Float => Some("float"),
+            Self::Str => Some("str"),
+            Self::Bytes => Some("bytes"),
+            Self::List => Some("list"),
+            Self::Tuple => Some("tuple"),
+            Self::Dict => Some("dict"),
+            Self::Set => Some("set"),
+            Self::FrozenSet => Some("frozenset"),
+            Self::Range => Some("range"),
+            Self::Slice => Some("slice"),
+            Self::Iterator => Some("iter"),
+            Self::Type => Some("type"),
+            Self::Property => Some("property"),
+            _ => None,
+        }
+    }
+
     /// Resolves a bare Python name to a builtin type, if it is one.
     ///
     /// Only matches names that are true Python builtins — accessible without any import.
@@ -236,17 +263,11 @@ impl Type {
                     Value::Float(f) => Ok(Value::Int(f64_to_i64_truncate(*f))),
                     Value::Bool(b) => Ok(Value::Int(i64::from(*b))),
                     Value::InternString(string_id) => parse_int_from_str(interns.get_str(*string_id), heap),
-                    Value::Ref(heap_id) => {
-                        // Clone data to release the borrow on heap before mutation
-                        match heap.get(*heap_id) {
-                            HeapData::Str(s) => {
-                                let s = s.to_string();
-                                parse_int_from_str(&s, heap)
-                            }
-                            HeapData::LongInt(li) => li.clone().into_value(heap).map_err(Into::into),
-                            _ => Err(ExcType::type_error_int_conversion(v.py_type(heap))),
-                        }
-                    }
+                    Value::Ref(heap_id) => match heap.get(*heap_id) {
+                        HeapData::Str(s) => parse_int_from_str(s.as_str(), heap),
+                        HeapData::LongInt(_) => Ok(v.clone_with_heap(heap)),
+                        _ => Err(ExcType::type_error_int_conversion(v.py_type(heap))),
+                    },
                     _ => Err(ExcType::type_error_int_conversion(v.py_type(heap))),
                 }
             }
@@ -348,7 +369,7 @@ fn value_error_could_not_convert_string_to_float(value: &str) -> RunError {
 ///
 /// Handles whitespace stripping and removing `_` separators. Returns `Value::Int` if the value
 /// fits in i64, otherwise allocates a `LongInt` on the heap. Returns `ValueError` on failure.
-fn parse_int_from_str(value: &str, heap: &mut Heap<impl ResourceTracker>) -> RunResult<Value> {
+fn parse_int_from_str(value: &str, heap: &Heap<impl ResourceTracker>) -> RunResult<Value> {
     // Try parsing as i64 first (fast path)
     if let Ok(int) = value.parse::<i64>() {
         return Ok(Value::Int(int));

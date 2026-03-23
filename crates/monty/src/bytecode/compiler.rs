@@ -1392,10 +1392,7 @@ impl<'a> Compiler<'a> {
             ArgExprs::GeneralizedCall { args, kwargs } => {
                 // PEP 448: generalized unpacking — multiple *args or **kwargs.
                 // Callable was already pushed above this match; delegate to the helper.
-                let func_name_id = match callable {
-                    Callable::Name(ident) => u16::try_from(ident.name_id.index()).expect("name index exceeds u16"),
-                    Callable::Builtin(_) => 0xFFFF,
-                };
+                let func_name_id = self.get_callable_name_id(callable);
                 self.compile_generalized_call_body(args, kwargs, func_name_id, call_pos)?;
             }
         }
@@ -1642,11 +1639,9 @@ impl<'a> Compiler<'a> {
         var_kwargs: Option<&ExprLoc>,
         call_pos: CodeRange,
     ) -> Result<(), CompileError> {
-        // Get function name for error messages (0xFFFF for builtins)
-        let func_name_id = match callable {
-            Callable::Name(ident) => u16::try_from(ident.name_id.index()).expect("name index exceeds u16"),
-            Callable::Builtin(_) => 0xFFFF,
-        };
+        // Get function name for error messages. Builtins use their real interned name
+        // so duplicate-kwargs errors from **unpacking match CPython.
+        let func_name_id = self.get_callable_name_id(callable);
 
         // 1. Build args tuple
         // Push regular positional args and build list
@@ -1701,6 +1696,41 @@ impl<'a> Compiler<'a> {
         let flags = u8::from(has_kwargs);
         self.code.emit_u8(Opcode::CallFunctionExtended, flags);
         Ok(())
+    }
+
+    /// Returns the best available function name id for call-site error messages.
+    ///
+    /// This is primarily used by `DictMerge` during `**kwargs` unpacking so
+    /// duplicate-key and non-mapping errors can mention the actual callee name.
+    /// When the callable is not a named local/global, we still try to resolve
+    /// builtin functions, builtin exception constructors, and builtin types to
+    /// their interned public names.
+    fn get_callable_name_id(&self, callable: &Callable) -> u16 {
+        match callable {
+            Callable::Name(ident) => u16::try_from(ident.name_id.index()).expect("name index exceeds u16"),
+            Callable::Builtin(builtin) => self.get_builtin_name_id(*builtin).unwrap_or(0xFFFF),
+        }
+    }
+
+    /// Resolves a builtin callable to its interned public name, if available.
+    ///
+    /// Returning `None` falls back to `<unknown>` in the VM, which is still
+    /// correct but less helpful. In practice these names should already be
+    /// interned during preparation because builtin names are resolved from source.
+    fn get_builtin_name_id(&self, builtin: Builtins) -> Option<u16> {
+        let name_id = match builtin {
+            Builtins::Function(function) => {
+                let name: &'static str = function.into();
+                self.interns.get_string_id_by_name(name)?
+            }
+            Builtins::ExcType(exc_type) => self.interns.get_string_id_by_name(&exc_type.to_string())?,
+            Builtins::Type(type_) => {
+                let name = type_.builtin_name()?;
+                self.interns.get_string_id_by_name(name)?
+            }
+        };
+
+        u16::try_from(name_id.index()).ok()
     }
 
     /// Compiles an attribute call on an object.

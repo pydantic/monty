@@ -403,7 +403,7 @@ impl<'h> HeapRead<'h, List> {
     /// during sorting (accessing `list` during a sort key function sees `[]`).
     fn hr_sort(&mut self, args: ArgValues, vm: &mut VM<'h, '_, impl ResourceTracker>) -> Result<(), RunError> {
         let (key_arg, reverse_arg) =
-            args.extract_two_kwargs_only("list.sort", "key", "reverse", vm.heap, vm.interns)?;
+            args.extract_keyword_only_pair("list.sort", "key", "reverse", vm.heap, vm.interns)?;
 
         let reverse = if let Some(v) = reverse_arg {
             let result = v.py_bool(vm);
@@ -794,7 +794,7 @@ mod tests {
         list_items: Vec<Value>,
         index_value: BigInt,
     ) -> (Heap<NoLimitTracker>, HeapId, HeapId) {
-        let mut heap = Heap::new(16, NoLimitTracker);
+        let heap = Heap::new(16, NoLimitTracker);
         let list = List::new(list_items);
         let list_id = heap.allocate(HeapData::List(list)).unwrap();
         let long_int = LongInt::new(index_value);

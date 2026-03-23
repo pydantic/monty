@@ -116,11 +116,11 @@ impl<T: ResourceTracker> PySignalTracker<T> {
 }
 
 impl<T: ResourceTracker> ResourceTracker for PySignalTracker<T> {
-    fn on_allocate(&mut self, get_size: impl FnOnce() -> usize) -> Result<(), ResourceError> {
+    fn on_allocate(&self, get_size: impl FnOnce() -> usize) -> Result<(), ResourceError> {
         self.inner.on_allocate(get_size)
     }
 
-    fn on_free(&mut self, get_size: impl FnOnce() -> usize) {
+    fn on_free(&self, get_size: impl FnOnce() -> usize) {
         self.inner.on_free(get_size);
     }
 

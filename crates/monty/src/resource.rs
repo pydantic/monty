@@ -1,6 +1,6 @@
 use std::{
+    cell::Cell,
     fmt,
-    sync::atomic::{AtomicU16, Ordering},
     time::{Duration, Instant},
 };
 
@@ -243,13 +243,13 @@ pub trait ResourceTracker: fmt::Debug {
     ///
     /// # Arguments
     /// * `size` - Approximate size in bytes of the allocation
-    fn on_allocate(&mut self, get_size: impl FnOnce() -> usize) -> Result<(), ResourceError>;
+    fn on_allocate(&self, get_size: impl FnOnce() -> usize) -> Result<(), ResourceError>;
 
     /// Called when memory is freed (during dec_ref or garbage collection).
     ///
     /// # Arguments
     /// * `size` - Size in bytes of the freed allocation
-    fn on_free(&mut self, get_size: impl FnOnce() -> usize);
+    fn on_free(&self, get_size: impl FnOnce() -> usize);
 
     /// Called periodically (at statement boundaries) to check time limits.
     ///
@@ -292,12 +292,12 @@ pub struct NoLimitTracker;
 
 impl ResourceTracker for NoLimitTracker {
     #[inline]
-    fn on_allocate(&mut self, _: impl FnOnce() -> usize) -> Result<(), ResourceError> {
+    fn on_allocate(&self, _: impl FnOnce() -> usize) -> Result<(), ResourceError> {
         Ok(())
     }
 
     #[inline]
-    fn on_free(&mut self, _: impl FnOnce() -> usize) {}
+    fn on_free(&self, _: impl FnOnce() -> usize) {}
 
     #[inline]
     fn check_time(&self) -> Result<(), ResourceError> {
@@ -412,6 +412,17 @@ const TIME_CHECK_INTERVAL: u16 = 10;
 ///
 /// When serialized/deserialized, the `start_time` is reset to `Instant::now()`.
 /// This means time limits restart from zero after deserialization.
+/// A resource tracker that enforces configurable limits.
+///
+/// Tracks allocation count, memory usage, and execution time, returning
+/// errors when limits are exceeded. Also schedules garbage collection
+/// at configurable intervals.
+///
+/// Uses `Cell` for interior mutability to allow many methods which take
+/// `&self` (enabling `&self` on critical methods such as `Heap::allocate`).
+///
+/// When serialized/deserialized, the `start_time` is reset to `Instant::now()`.
+/// This means time limits restart from zero after deserialization.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct LimitedTracker {
     limits: ResourceLimits,
@@ -420,14 +431,11 @@ pub struct LimitedTracker {
     #[serde(skip, default = "Instant::now")]
     start_time: Instant,
     /// Total number of allocations made.
-    allocation_count: usize,
+    allocation_count: Cell<usize>,
     /// Current approximate memory usage in bytes.
-    current_memory: usize,
+    current_memory: Cell<usize>,
     /// Counter for rate-limiting `Instant::elapsed()` calls in `check_time`.
-    ///
-    /// Uses `AtomicU16` for interior mutability since `check_time` takes `&self`
-    /// and `LimitedTracker` must be `Sync` (it ends up inside PyO3 pyclass types).
-    check_counter: AtomicU16,
+    check_counter: Cell<u16>,
 }
 
 impl LimitedTracker {
@@ -440,22 +448,22 @@ impl LimitedTracker {
         Self {
             limits,
             start_time: Instant::now(),
-            allocation_count: 0,
-            current_memory: 0,
-            check_counter: AtomicU16::new(0),
+            allocation_count: Cell::new(0),
+            current_memory: Cell::new(0),
+            check_counter: Cell::new(0),
         }
     }
 
     /// Returns the current allocation count.
     #[must_use]
     pub fn allocation_count(&self) -> usize {
-        self.allocation_count
+        self.allocation_count.get()
     }
 
     /// Returns the current approximate memory usage.
     #[must_use]
     pub fn current_memory(&self) -> usize {
-        self.current_memory
+        self.current_memory.get()
     }
 
     /// Returns the elapsed time since tracker creation.
@@ -476,21 +484,23 @@ impl LimitedTracker {
 }
 
 impl ResourceTracker for LimitedTracker {
-    fn on_allocate(&mut self, get_size: impl FnOnce() -> usize) -> Result<(), ResourceError> {
+    fn on_allocate(&self, get_size: impl FnOnce() -> usize) -> Result<(), ResourceError> {
+        let count = self.allocation_count.get();
         // Check allocation count limit
         if let Some(max) = self.limits.max_allocations
-            && self.allocation_count >= max
+            && count >= max
         {
             return Err(ResourceError::Allocation {
                 limit: max,
-                count: self.allocation_count + 1,
+                count: count + 1,
             });
         }
 
         let size = get_size();
         // Check memory limit
+        let current_mem = self.current_memory.get();
         if let Some(max) = self.limits.max_memory {
-            let new_memory = self.current_memory + size;
+            let new_memory = current_mem + size;
             if new_memory > max {
                 return Err(ResourceError::Memory {
                     limit: max,
@@ -500,20 +510,21 @@ impl ResourceTracker for LimitedTracker {
         }
 
         // Update tracking state
-        self.allocation_count += 1;
-        self.current_memory += size;
+        self.allocation_count.set(count + 1);
+        self.current_memory.set(current_mem + size);
 
         Ok(())
     }
 
-    fn on_free(&mut self, get_size: impl FnOnce() -> usize) {
-        self.current_memory = self.current_memory.saturating_sub(get_size());
+    fn on_free(&self, get_size: impl FnOnce() -> usize) {
+        let current = self.current_memory.get();
+        self.current_memory.set(current.saturating_sub(get_size()));
     }
 
     fn check_time(&self) -> Result<(), ResourceError> {
         if let Some(max) = self.limits.max_duration {
-            let count = self.check_counter.fetch_add(1, Ordering::Relaxed).wrapping_add(1);
-            if count.is_multiple_of(TIME_CHECK_INTERVAL) {
+            self.check_counter.update(|c| c.wrapping_add(1));
+            if self.check_counter.get().is_multiple_of(TIME_CHECK_INTERVAL) {
                 // Only call Instant::elapsed() every TIME_CHECK_INTERVAL calls
                 let elapsed = self.start_time.elapsed();
                 if elapsed > max {
@@ -521,8 +532,7 @@ impl ResourceTracker for LimitedTracker {
                     // an elapsed check. This is important because some callers
                     // (e.g. repr_sequence_fmt) catch the error and return normally,
                     // and we need the VM loop's next check_time to re-detect timeout.
-                    self.check_counter
-                        .store(TIME_CHECK_INTERVAL.wrapping_sub(1), Ordering::Relaxed);
+                    self.check_counter.set(TIME_CHECK_INTERVAL.wrapping_sub(1));
                     return Err(ResourceError::Time { limit: max, elapsed });
                 }
             }
@@ -546,7 +556,7 @@ impl ResourceTracker for LimitedTracker {
     fn check_large_result(&self, estimated_bytes: usize) -> Result<(), ResourceError> {
         // Check if this would exceed memory limit
         if let Some(max) = self.limits.max_memory {
-            let new_memory = self.current_memory.saturating_add(estimated_bytes);
+            let new_memory = self.current_memory.get().saturating_add(estimated_bytes);
             if new_memory > max {
                 return Err(ResourceError::Memory {
                     limit: max,

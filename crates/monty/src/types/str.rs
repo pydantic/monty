@@ -85,7 +85,7 @@ impl From<Str> for String {
 ///
 /// This avoids heap allocation for common cases like results from `strip()`,
 /// `split()`, string iteration, etc.
-pub fn allocate_string(s: String, heap: &mut Heap<impl ResourceTracker>) -> RunResult<Value> {
+pub fn allocate_string(s: String, heap: &Heap<impl ResourceTracker>) -> RunResult<Value> {
     match s.len() {
         0 => Ok(Value::InternString(StaticStrings::EmptyString.into())),
         1 => {
@@ -106,7 +106,7 @@ pub fn allocate_string(s: String, heap: &mut Heap<impl ResourceTracker>) -> RunR
 /// Non-ASCII characters are allocated on the heap.
 ///
 /// This is used by string iteration and `chr()` builtin.
-pub fn allocate_char(c: char, heap: &mut Heap<impl ResourceTracker>) -> Result<Value, ResourceError> {
+pub fn allocate_char(c: char, heap: &Heap<impl ResourceTracker>) -> Result<Value, ResourceError> {
     if c.is_ascii() {
         Ok(Value::InternString(StringId::from_ascii(c as u8)))
     } else {

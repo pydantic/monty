@@ -5,7 +5,7 @@ use itertools::Itertools;
 use crate::{
     args::ArgValues,
     bytecode::VM,
-    defer_drop, defer_drop_mut,
+    defer_drop,
     exception_private::{ExcType, RunResult, SimpleException},
     heap::{DropWithHeap, HeapData, HeapGuard},
     resource::ResourceTracker,
@@ -73,12 +73,11 @@ fn parse_sorted_args(
     vm: &mut VM<'_, '_, impl ResourceTracker>,
 ) -> RunResult<(Value, Option<Value>, bool)> {
     let (mut positional, kwargs) = args.into_parts();
-    let kwargs = kwargs.into_iter();
-    defer_drop_mut!(kwargs, vm);
 
     // Extract the single required positional argument
     let positional_len = positional.len();
     let Some(iterable) = positional.next() else {
+        kwargs.drop_with_heap(vm);
         positional.drop_with_heap(vm);
         return Err(SimpleException::new_msg(
             ExcType::TypeError,
@@ -90,6 +89,7 @@ fn parse_sorted_args(
     // Reject extra positional arguments
     if positional.len() > 0 {
         let total = positional_len;
+        kwargs.drop_with_heap(vm);
         iterable.drop_with_heap(vm);
         positional.drop_with_heap(vm);
         return Err(
@@ -100,37 +100,21 @@ fn parse_sorted_args(
     // Parse keyword arguments: key and reverse
     let mut iterable_guard = HeapGuard::new(iterable, vm);
     let vm = iterable_guard.heap();
-    let mut key_guard = HeapGuard::new(None::<Value>, vm);
-    let (key_val, vm) = key_guard.as_parts_mut();
-    let mut reverse_guard = HeapGuard::new(None::<Value>, vm);
-    let (reverse_val, vm) = reverse_guard.as_parts_mut();
-
-    for (kw_key, value) in kwargs {
-        defer_drop!(kw_key, vm);
-        let mut value = HeapGuard::new(value, vm);
-
-        let Some(keyword_name) = kw_key.as_either_str(value.heap().heap) else {
-            return Err(ExcType::type_error("keywords must be strings"));
-        };
-
-        let key_str = keyword_name.as_str(value.heap().interns);
-        let old = if key_str == "key" {
-            key_val.replace(value.into_inner())
-        } else if key_str == "reverse" {
-            reverse_val.replace(value.into_inner())
-        } else {
-            return Err(ExcType::type_error(format!(
-                "'{key_str}' is an invalid keyword argument for sorted()"
-            )));
-        };
-
-        old.drop_with_heap(vm);
-    }
+    let (key_arg, reverse_arg) = kwargs.parse_named_kwargs_pair(
+        "sorted",
+        "key",
+        "reverse",
+        vm.heap,
+        vm.interns,
+        |_func_name, key_str| {
+            // CPython currently reuses the list.sort()-style wording here rather than
+            // saying "sorted() got ...", so match that exact user-visible message.
+            ExcType::type_error_unexpected_keyword("sort", key_str)
+        },
+    )?;
 
     // Convert reverse to bool (default false)
-    let reverse_val = reverse_guard.into_inner();
-    let vm = key_guard.heap();
-    let reverse = if let Some(v) = reverse_val {
+    let reverse = if let Some(v) = reverse_arg {
         let result = v.py_bool(vm);
         v.drop_with_heap(vm);
         result
@@ -139,7 +123,7 @@ fn parse_sorted_args(
     };
 
     // Handle key function (None means no key function)
-    let key_fn = match key_guard.into_inner() {
+    let key_fn = match key_arg {
         Some(v) if matches!(v, Value::None) => {
             v.drop_with_heap(iterable_guard.heap());
             None

@@ -1,7 +1,5 @@
 //! Collection building and unpacking helpers for the VM.
 
-use smallvec::SmallVec;
-
 use super::VM;
 use crate::{
     defer_drop, defer_drop_mut,
@@ -174,18 +172,14 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
         let list_ref = this.pop();
         defer_drop!(list_ref, this);
 
-        let copied_items: SmallVec<_> = if let Value::Ref(id) = list_ref {
-            if let HeapData::List(list) = this.heap.get(*id) {
-                list.as_slice().iter().map(|v| v.clone_with_heap(this)).collect()
-            } else {
-                return Err(RunError::internal("ListToTuple: expected list"));
-            }
-        } else {
+        let Value::Ref(id) = list_ref else {
             return Err(RunError::internal("ListToTuple: expected list ref"));
         };
-
-        // list_ref is dropped by the guard at scope exit; allocate the tuple
-        let value = allocate_tuple(copied_items, this.heap)?;
+        let HeapData::List(list) = this.heap.get(*id) else {
+            return Err(RunError::internal("ListToTuple: expected list"));
+        };
+        let items = list.as_slice().iter().map(|v| v.clone_with_heap(this.heap)).collect();
+        let value = allocate_tuple(items, this.heap)?;
         this.push(value);
         Ok(())
     }

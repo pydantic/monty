@@ -3,7 +3,7 @@ use std::{
     collections::hash_map::DefaultHasher,
     hash::{Hash, Hasher},
     marker::PhantomData,
-    mem::{ManuallyDrop, MaybeUninit, discriminant, size_of},
+    mem::{ManuallyDrop, discriminant, size_of},
     ops::{Deref, DerefMut},
     ptr::NonNull,
     vec,
@@ -29,11 +29,20 @@ use crate::{
     value::Value,
 };
 
+mod heap_entries;
+use heap_entries::HeapEntries;
+
 /// Unique identifier for values stored inside the heap arena.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct HeapId(usize);
 
 impl HeapId {
+    /// Creates a `HeapId` from a raw index.
+    #[inline]
+    pub(crate) fn from_index(index: usize) -> Self {
+        Self(index)
+    }
+
     /// Returns the raw index value.
     #[inline]
     pub fn index(self) -> usize {
@@ -166,10 +175,7 @@ impl<'a, T: ResourceTracker> HeapReader<'a, T> {
         }
 
         let heap = self.heap.heap_mut();
-        let entry = heap
-            .entries
-            .get(id.index())
-            .expect("HeapReader::read: object already freed");
+        let entry = heap.entries.get(id.index());
 
         // Increment the reader count for this entry. The corresponding decrement
         // happens in `HeapRead::drop`.
@@ -320,8 +326,7 @@ impl<'a, T: ?Sized> HeapRead<'a, T> {
         //  - The HeapReader has an invariant lifetime 'a which guarantees that this HeapRead
         //    came from the heap borrowed by this HeapReader.
         //  - The address of the `HeapValue` never changes because entries are stored in
-        //    paged storage (`PagedEntries`) where each page is a `Box<[Option<HeapValue>]>`
-        //    that is never reallocated or moved.
+        //    paged storage (`HeapEntries`) where each page is never reallocated or moved.
         //  - The HeapRead holds a strong reader reference (via the `readers` counter in
         //    `HeapValue`) which guarantees the entry will never be freed by `dec_ref`
         //    while this `HeapRead` exists.
@@ -542,8 +547,16 @@ pub struct HeapValue {
 ///   - When a mutable borrow of a heap value exists, no other heap value may be
 ///     borrowed. (See `Heap::get_mut` and `HeapRead::get`, which both require a `&mut`
 ///     borrow on the heap.)
-#[derive(Debug)]
 struct UnsafeHeapData(UnsafeCell<HeapData>);
+
+impl std::fmt::Debug for UnsafeHeapData {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // SAFETY: (DH) Debug formatting is read-only and never called concurrently
+        // with mutation. This matches the safety invariants of the HeapReader API.
+        let data = unsafe { &*self.0.get() };
+        f.debug_tuple("UnsafeHeapData").field(data).finish()
+    }
+}
 
 impl serde::Serialize for UnsafeHeapData {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
@@ -562,173 +575,6 @@ impl<'de> serde::Deserialize<'de> for UnsafeHeapData {
         D: serde::Deserializer<'de>,
     {
         Ok(Self(UnsafeCell::new(HeapData::deserialize(deserializer)?)))
-    }
-}
-
-/// Number of entries per page in the paged heap storage.
-///
-/// Each page is a `Box<[Option<HeapValue>]>` that is never moved once allocated.
-/// This guarantees that pointers into entries (used by `HeapRead`) remain valid
-/// even as the heap grows and new pages are appended.
-const PAGE_SIZE: usize = 256;
-
-/// Paged storage for heap entries that guarantees address stability.
-///
-/// Entries are stored in fixed-size pages of `MaybeUninit<Option<HeapValue>>`.
-/// Only slots that have been `push`ed are initialized — new pages are allocated
-/// without touching the memory, avoiding the cost of writing `None` to every slot.
-///
-/// Once a page is allocated, it is never reallocated or moved in memory.
-/// This is the key invariant that makes `HeapRead` pointers safe: a `NonNull<T>`
-/// derived from an entry's data will remain valid for the entry's entire lifetime.
-///
-/// Index `i` maps to `pages[i / PAGE_SIZE][i % PAGE_SIZE]`.
-struct PagedEntries {
-    pages: Vec<Box<[MaybeUninit<Option<HeapValue>>]>>,
-    /// Total number of initialized slots (including freed ones).
-    len: usize,
-}
-
-impl std::fmt::Debug for PagedEntries {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("PagedEntries")
-            .field("len", &self.len)
-            .field("pages", &self.pages.len())
-            .finish()
-    }
-}
-
-impl PagedEntries {
-    /// Creates a new paged storage with no pre-allocated pages.
-    fn new(capacity: usize) -> Self {
-        let page_count = capacity.div_ceil(PAGE_SIZE);
-        let mut pages = Vec::with_capacity(page_count);
-        for _ in 0..page_count {
-            // SAFETY: We will only read/write to initialized slots (up to `len`), and
-            // the MaybeUninit wrapper allows us to avoid initializing the whole page.
-            pages.push(Box::new_uninit_slice(PAGE_SIZE));
-        }
-        Self { pages, len: 0 }
-    }
-
-    /// Returns the total number of slots (including freed/None ones).
-    #[inline]
-    fn len(&self) -> usize {
-        self.len
-    }
-
-    /// Returns a shared reference to the entry at `index`.
-    ///
-    /// # Panics
-    /// Panics if `index >= len`.
-    #[inline]
-    fn get(&self, index: usize) -> Option<&HeapValue> {
-        assert!(
-            index < self.len,
-            "PagedEntries::get: index {index} out of bounds (len={})",
-            self.len
-        );
-        // SAFETY: (DH) all slots at indices < self.len have been initialized via `push`.
-        unsafe { self.pages[index / PAGE_SIZE][index % PAGE_SIZE].assume_init_ref() }.as_ref()
-    }
-
-    /// Returns a mutable reference to the entry at `index`.
-    ///
-    /// # Panics
-    /// Panics if `index >= len`.
-    #[inline]
-    fn get_mut(&mut self, index: usize) -> &mut Option<HeapValue> {
-        assert!(
-            index < self.len,
-            "PagedEntries::get_mut: index {index} out of bounds (len={})",
-            self.len
-        );
-        // SAFETY: (DH) all slots at indices < self.len have been initialized via `push`.
-        unsafe { self.pages[index / PAGE_SIZE][index % PAGE_SIZE].assume_init_mut() }
-    }
-
-    /// Appends a new entry and returns its index.
-    fn push(&mut self, value: Option<HeapValue>) -> usize {
-        let index = self.len;
-        let page_idx = index / PAGE_SIZE;
-        let slot_idx = index % PAGE_SIZE;
-
-        if page_idx >= self.pages.len() {
-            // Allocate a new page WITHOUT initializing — only slots written via
-            // `push` will be initialized, avoiding the cost of zeroing the whole page.
-            self.pages.push(Box::new_uninit_slice(PAGE_SIZE));
-        }
-
-        self.pages[page_idx][slot_idx].write(value);
-        self.len += 1;
-        index
-    }
-
-    /// Returns a mutable reference to the entry at `index`, or `None` if out of bounds.
-    #[inline]
-    fn try_get_mut(&mut self, index: usize) -> Option<&mut Option<HeapValue>> {
-        if index < self.len {
-            // SAFETY: (DH) all slots at indices < self.len have been initialized via `push`.
-            Some(unsafe { self.pages[index / PAGE_SIZE][index % PAGE_SIZE].assume_init_mut() })
-        } else {
-            None
-        }
-    }
-
-    /// Iterates over all initialized entries as shared references.
-    fn iter(&self) -> impl Iterator<Item = &Option<HeapValue>> {
-        self.pages
-            .iter()
-            .flat_map(|page| page.iter())
-            .take(self.len)
-            // SAFETY: (DH) all slots at indices < self.len have been initialized via `push`.
-            .map(|slot| unsafe { slot.assume_init_ref() })
-    }
-
-    /// Iterates over all initialized entries as mutable references.
-    fn iter_mut(&mut self) -> impl Iterator<Item = &mut Option<HeapValue>> {
-        let len = self.len;
-        self.pages
-            .iter_mut()
-            .flat_map(|page| page.iter_mut())
-            .take(len)
-            // SAFETY: (DH) all slots at indices < self.len have been initialized via `push`.
-            .map(|slot| unsafe { slot.assume_init_mut() })
-    }
-}
-
-impl Drop for PagedEntries {
-    fn drop(&mut self) {
-        for i in 0..self.len {
-            // SAFETY: (DH) all slots at indices < self.len have been initialized via `push`.
-            unsafe {
-                self.pages[i / PAGE_SIZE][i % PAGE_SIZE].assume_init_drop();
-            }
-        }
-    }
-}
-
-impl serde::Serialize for PagedEntries {
-    /// Serializes as a flat `Vec<Option<HeapValue>>` for compatibility.
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        use serde::ser::SerializeSeq;
-        let mut seq = serializer.serialize_seq(Some(self.len))?;
-        for entry in self.iter() {
-            seq.serialize_element(entry)?;
-        }
-        seq.end()
-    }
-}
-
-impl<'de> serde::Deserialize<'de> for PagedEntries {
-    /// Deserializes from a flat `Vec<Option<HeapValue>>` and repacks into pages.
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let flat: Vec<Option<HeapValue>> = Vec::deserialize(deserializer)?;
-        let mut paged = Self::new(flat.len());
-        for entry in flat {
-            paged.push(entry);
-        }
-        Ok(paged)
     }
 }
 
@@ -766,16 +612,17 @@ impl DropWithHeap for RecursionToken {
 /// handles the Drop constraint by using `std::mem::take` during serialization.
 #[derive(Debug)]
 pub(crate) struct Heap<T: ResourceTracker> {
-    entries: PagedEntries,
-    /// IDs of freed slots available for reuse. Populated by `dec_ref`, consumed by `allocate`.
-    free_list: Vec<HeapId>,
+    /// Paged storage for heap entries with integrated free list.
+    entries: HeapEntries,
     /// Resource tracker for enforcing limits and scheduling GC.
     tracker: T,
     /// True if reference cycles may exist. Set when a container stores a Ref,
     /// cleared after GC completes. When false, GC can skip mark-sweep entirely.
-    may_have_cycles: bool,
+    /// Uses `Cell` for interior mutability so that `allocate(&self)` can set this flag.
+    may_have_cycles: Cell<bool>,
     /// Number of GC applicable allocations since the last GC.
-    allocations_since_gc: u32,
+    /// Uses `Cell` for interior mutability so that `allocate(&self)` can increment.
+    allocations_since_gc: Cell<u32>,
     /// Current recursion depth — incremented on function calls and data structure traversals.
     ///
     /// Uses `Cell` for interior mutability so that methods with only `&Heap`
@@ -786,12 +633,11 @@ pub(crate) struct Heap<T: ResourceTracker> {
 impl<T: ResourceTracker + serde::Serialize> serde::Serialize for Heap<T> {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         use serde::ser::SerializeStruct;
-        let mut state = serializer.serialize_struct("Heap", 6)?;
+        let mut state = serializer.serialize_struct("Heap", 4)?;
         state.serialize_field("entries", &self.entries)?;
-        state.serialize_field("free_list", &self.free_list)?;
         state.serialize_field("tracker", &self.tracker)?;
-        state.serialize_field("may_have_cycles", &self.may_have_cycles)?;
-        state.serialize_field("allocations_since_gc", &self.allocations_since_gc)?;
+        state.serialize_field("may_have_cycles", &self.may_have_cycles.get())?;
+        state.serialize_field("allocations_since_gc", &self.allocations_since_gc.get())?;
         state.end()
     }
 }
@@ -800,8 +646,7 @@ impl<'de, T: ResourceTracker + serde::Deserialize<'de>> serde::Deserialize<'de> 
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         #[derive(serde::Deserialize)]
         struct HeapFields<T> {
-            entries: PagedEntries,
-            free_list: Vec<HeapId>,
+            entries: HeapEntries,
             tracker: T,
             may_have_cycles: bool,
             allocations_since_gc: u32,
@@ -809,10 +654,9 @@ impl<'de, T: ResourceTracker + serde::Deserialize<'de>> serde::Deserialize<'de> 
         let fields = HeapFields::<T>::deserialize(deserializer)?;
         Ok(Self {
             entries: fields.entries,
-            free_list: fields.free_list,
             tracker: fields.tracker,
-            may_have_cycles: fields.may_have_cycles,
-            allocations_since_gc: fields.allocations_since_gc,
+            may_have_cycles: Cell::new(fields.may_have_cycles),
+            allocations_since_gc: Cell::new(fields.allocations_since_gc),
             recursion_depth: Cell::new(0),
         })
     }
@@ -829,12 +673,11 @@ impl<T: ResourceTracker> Heap<T> {
     ///
     /// Use this to create heaps with custom resource limits or GC scheduling.
     pub fn new(capacity: usize, tracker: T) -> Self {
-        let mut this = Self {
-            entries: PagedEntries::new(capacity),
-            free_list: Vec::new(),
+        let this = Self {
+            entries: HeapEntries::with_capacity(capacity),
             tracker,
-            may_have_cycles: false,
-            allocations_since_gc: 0,
+            may_have_cycles: Cell::new(false),
+            allocations_since_gc: Cell::new(0),
             recursion_depth: Cell::new(0),
         };
         // TBC: should the empty tuple contribute to the resource limits?
@@ -924,7 +767,7 @@ impl<T: ResourceTracker> Heap<T> {
         self.recursion_depth.set(depth);
     }
 
-    /// Number of entries in the heap
+    /// Number of entries in the heap (including freed slots).
     pub fn size(&self) -> usize {
         self.entries.len()
     }
@@ -935,8 +778,8 @@ impl<T: ResourceTracker> Heap<T> {
     /// to another heap object. This enables the GC to skip mark-sweep entirely
     /// when no cycles are possible.
     #[inline]
-    pub fn mark_potential_cycle(&mut self) {
-        self.may_have_cycles = true;
+    pub fn mark_potential_cycle(&self) {
+        self.may_have_cycles.set(true);
     }
 
     /// Returns the number of GC-tracked allocations since the last garbage collection.
@@ -945,7 +788,7 @@ impl<T: ResourceTracker> Heap<T> {
     /// and resets to 0 when `collect_garbage` runs. Useful for testing GC behavior.
     #[cfg(feature = "ref-count-return")]
     pub fn get_allocations_since_gc(&self) -> u32 {
-        self.allocations_since_gc
+        self.allocations_since_gc.get()
     }
 
     /// Allocates a new heap entry.
@@ -958,15 +801,16 @@ impl<T: ResourceTracker> Heap<T> {
     ///
     /// When allocating a container that contains heap references, marks potential
     /// cycles to enable garbage collection.
-    pub fn allocate(&mut self, data: HeapData) -> Result<HeapId, ResourceError> {
+    pub fn allocate(&self, data: HeapData) -> Result<HeapId, ResourceError> {
         self.tracker.on_allocate(|| data.py_estimate_size())?;
         if data.is_gc_tracked() {
-            self.allocations_since_gc = self.allocations_since_gc.wrapping_add(1);
+            self.allocations_since_gc
+                .set(self.allocations_since_gc.get().wrapping_add(1));
             // Mark potential cycles if this container has heap references.
             // This is essential for types like Dict where setitem doesn't call
             // mark_potential_cycle() - the allocation is the only place to detect refs.
             if data.has_refs() {
-                self.may_have_cycles = true;
+                self.may_have_cycles.set(true);
             }
         }
 
@@ -978,15 +822,7 @@ impl<T: ResourceTracker> Heap<T> {
             hash_state,
         };
 
-        let id = if let Some(id) = self.free_list.pop() {
-            // Reuse a freed slot
-            *self.entries.get_mut(id.index()) = Some(new_entry);
-            id
-        } else {
-            // No free slots, append new entry
-            HeapId(self.entries.push(Some(new_entry)))
-        };
-
+        let id = self.entries.allocate(new_entry);
         Ok(id)
     }
 
@@ -998,7 +834,7 @@ impl<T: ResourceTracker> Heap<T> {
     ///
     /// The returned `Value` has its reference count incremented, so the caller
     /// owns a reference and must call `dec_ref` when done.
-    pub fn get_empty_tuple(&mut self) -> Value {
+    pub fn get_empty_tuple(&self) -> Value {
         // Return existing singleton with incremented refcount
         self.inc_ref(EMPTY_TUPLE_ID);
         Value::Ref(EMPTY_TUPLE_ID)
@@ -1009,10 +845,7 @@ impl<T: ResourceTracker> Heap<T> {
     /// # Panics
     /// Panics if the value ID is invalid or the value has already been freed.
     pub fn inc_ref(&self, id: HeapId) {
-        let value = self
-            .entries
-            .get(id.index())
-            .expect("Heap::inc_ref: object already freed");
+        let value = self.entries.get(id.index());
         value.refcount.update(|r| r + 1);
     }
 
@@ -1041,8 +874,8 @@ impl<T: ResourceTracker> Heap<T> {
                     entry.readers.get(),
                 );
                 if let Some(mut value) = slot.take() {
-                    // refcount == 1 and no readers, free the value and add slot to free list
-                    self.free_list.push(current_id);
+                    // refcount == 1, free the value and add slot to free list for reuse
+                    self.entries.free(current_id);
 
                     // Notify tracker of freed memory
                     self.tracker.on_free(|| value.data.0.get_mut().py_estimate_size());
@@ -1066,11 +899,7 @@ impl<T: ResourceTracker> Heap<T> {
     /// or the data is currently borrowed via `with_entry_mut`/`call_attr`.
     #[must_use]
     pub fn get(&self, id: HeapId) -> &HeapData {
-        let data = &self
-            .entries
-            .get(id.index())
-            .expect("Heap::get: object already freed")
-            .data;
+        let data = &self.entries.get(id.index()).data;
         // SAFETY: (DH) no mutable references into `HeapData` is possible while the heap is borrowed
         unsafe { &*data.0.get() }
     }
@@ -1133,11 +962,7 @@ impl<T: ResourceTracker> Heap<T> {
     #[must_use]
     #[cfg(feature = "ref-count-return")]
     pub fn get_refcount(&self, id: HeapId) -> usize {
-        self.entries
-            .get(id.index())
-            .expect("Heap::get_refcount: object already freed")
-            .refcount
-            .get()
+        self.entries.get(id.index()).refcount.get()
     }
 
     /// Returns the number of live (non-freed) values on the heap.
@@ -1151,7 +976,7 @@ impl<T: ResourceTracker> Heap<T> {
     #[cfg(feature = "ref-count-return")]
     pub fn entry_count(&self) -> usize {
         // Skip index 0 which is the empty tuple singleton
-        self.entries.iter().skip(1).filter(|o| o.is_some()).count()
+        self.entries.iter().skip(1).count()
     }
 
     /// Multiplies a heap-allocated value by an `i64`.
@@ -1259,7 +1084,7 @@ impl<T: ResourceTracker> Heap<T> {
     /// and the number of allocations since the last GC exceeds the interval.
     #[inline]
     pub fn should_gc(&self) -> bool {
-        self.may_have_cycles && self.allocations_since_gc >= GC_INTERVAL
+        self.may_have_cycles.get() && self.allocations_since_gc.get() >= GC_INTERVAL
     }
 
     /// Runs mark-sweep garbage collection to free unreachable cycles.
@@ -1292,33 +1117,31 @@ impl<T: ResourceTracker> Heap<T> {
             reachable[idx] = true;
 
             // Add children to work list
-            if let Some(Some(entry)) = self.entries.try_get_mut(idx) {
+            if let Some(entry) = self.entries.get_mut(idx) {
                 collect_child_ids(entry.data.0.get_mut(), &mut work_list);
             }
         }
 
         // Sweep phase: free unreachable values
-        for (id, value) in self.entries.iter_mut().enumerate() {
+        self.entries.retain(|id, value| {
             if reachable[id] {
-                continue;
+                return true;
             }
 
             // This entry is unreachable - free it
-            if let Some(mut value) = value.take() {
-                // Notify tracker of freed memory
-                self.tracker.on_free(|| value.data.0.get_mut().py_estimate_size());
+            // Notify tracker of freed memory
+            self.tracker.on_free(|| value.data.0.get_mut().py_estimate_size());
 
-                self.free_list.push(HeapId(id));
+            // Mark Values as Dereferenced when ref-count-panic is enabled
+            #[cfg(feature = "ref-count-panic")]
+            py_dec_ref_ids_for_data(value.data.0.get_mut(), &mut Vec::new());
 
-                // Mark Values as Dereferenced when ref-count-panic is enabled
-                #[cfg(feature = "ref-count-panic")]
-                py_dec_ref_ids_for_data(value.data.0.get_mut(), &mut Vec::new());
-            }
-        }
+            false
+        });
 
         // Reset cycle flag after GC - cycles have been collected
-        self.may_have_cycles = false;
-        self.allocations_since_gc = 0;
+        self.may_have_cycles.set(false);
+        self.allocations_since_gc.set(0);
     }
 }
 
@@ -1717,21 +1540,6 @@ fn collect_child_ids(data: &HeapData, work_list: &mut Vec<HeapId>) {
         }
         // Leaf types with no heap references
         _ => {}
-    }
-}
-
-/// Drop implementation for Heap that marks all contained Objects as Dereferenced
-/// before dropping to prevent panics when the `ref-count-panic` feature is enabled.
-#[cfg(feature = "ref-count-panic")]
-impl<T: ResourceTracker> Drop for Heap<T> {
-    fn drop(&mut self) {
-        // Mark all contained Objects as Dereferenced before dropping.
-        // We use py_dec_ref_ids for this since it handles the marking
-        // (we ignore the collected IDs since we're dropped everything anyway).
-        let mut dummy_stack = Vec::new();
-        for value in self.entries.iter_mut().filter_map(|o| o.as_mut()) {
-            py_dec_ref_ids_for_data(value.data.0.get_mut(), &mut dummy_stack);
-        }
     }
 }
 

@@ -109,6 +109,8 @@ assert int(-3.7) == -3, 'int(negative float) truncates toward zero'
 assert int(3.0) == 3, 'int(whole float)'
 assert int(True) == 1, 'int(True)'
 assert int(False) == 0, 'int(False)'
+x = 12345678901234567890
+assert int(x) is x, 'int constructor on int is identity'
 
 # int() with extreme float values (should clamp to i64 range in Monty)
 # Note: Python uses arbitrary precision; Monty clamps to i64
