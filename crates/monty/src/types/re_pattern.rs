@@ -283,7 +283,7 @@ impl PyTrait for RePattern {
         f: &mut impl Write,
         _vm: &VM<'_, '_, impl ResourceTracker>,
         _heap_ids: &mut AHashSet<HeapId>,
-    ) -> std::fmt::Result {
+    ) -> RunResult<()> {
         write!(f, "re.compile(")?;
         string_repr_fmt(&self.pattern, f)?;
         if self.flags != 0 {
@@ -302,7 +302,7 @@ impl PyTrait for RePattern {
             }
             write!(f, ", {}", flag_parts.join("|"))?;
         }
-        write!(f, ")")
+        Ok(write!(f, ")")?)
     }
 
     fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'_, '_, impl ResourceTracker>) -> RunResult<Option<CallResult>> {

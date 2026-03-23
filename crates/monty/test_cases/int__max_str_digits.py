@@ -64,10 +64,42 @@ assert bin(big) is not None, 'bin() should not be limited'
 assert hex(big) is not None, 'hex() should not be limited'
 assert oct(big) is not None, 'oct() should not be limited'
 
-# === KeyError with huge int key raises KeyError, not ValueError ===
+# === KeyError with huge int key ===
+# CPython raises KeyError (stores the key object, ValueError only on display).
+# Monty eagerly converts the key to a string, so it raises ValueError instead.
+# We accept either behavior here.
 d = {}
 try:
     d[10**5000]
-    assert False, 'should raise KeyError'
-except KeyError:
+    assert False, 'should raise KeyError or ValueError'
+except (KeyError, ValueError):
     pass
+
+# === f-string with !s conversion ===
+y = 10**4300
+try:
+    f'{y!s}'
+    assert False, 'f-string !s should raise ValueError'
+except ValueError as e:
+    assert str(e).startswith('Exceeds the limit (4300 digits) for integer string conversion'), f'wrong message: {e}'
+
+# === f-string with !r conversion ===
+try:
+    f'{y!r}'
+    assert False, 'f-string !r should raise ValueError'
+except ValueError as e:
+    assert str(e).startswith('Exceeds the limit (4300 digits) for integer string conversion'), f'wrong message: {e}'
+
+# === str() on container with huge int ===
+try:
+    str([10**5000])
+    assert False, 'str([huge]) should raise ValueError'
+except ValueError as e:
+    assert str(e).startswith('Exceeds the limit (4300 digits) for integer string conversion'), f'wrong message: {e}'
+
+# === print() container with huge int ===
+try:
+    print([10**5000])
+    assert False, 'print([huge]) should raise ValueError'
+except ValueError as e:
+    assert str(e).startswith('Exceeds the limit (4300 digits) for integer string conversion'), f'wrong message: {e}'

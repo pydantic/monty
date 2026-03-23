@@ -324,12 +324,14 @@ impl ExcType {
     /// Creates a KeyError for a missing dict key.
     ///
     /// For string keys, uses the raw string value without extra quoting.
-    /// Large integers are safely formatted using scientific notation via
-    /// `LongInt::fmt_safe` (called from `py_str`), avoiding the O(n^2) conversion.
-    #[must_use]
+    /// If the key's string conversion fails (e.g. huge LongInt exceeding
+    /// `INT_MAX_STR_DIGITS`), the conversion error is returned instead,
+    /// matching CPython's behavior.
     pub(crate) fn key_error(key: &Value, vm: &VM<'_, '_, impl ResourceTracker>) -> RunError {
-        let key_str = key.py_str(vm).into_owned();
-        SimpleException::new_msg(Self::KeyError, key_str).into()
+        match key.py_str(vm) {
+            Ok(key_str) => SimpleException::new_msg(Self::KeyError, key_str.into_owned()).into(),
+            Err(e) => e,
+        }
     }
 
     /// Creates a KeyError for popping from an empty set.
@@ -1501,6 +1503,18 @@ impl From<FormatError> for RunError {
             FormatError::InvalidAlignment(_) | FormatError::ValueError(_) => ExcType::ValueError,
         };
         Self::Exc(SimpleException::new_msg(exc_type, err).into())
+    }
+}
+
+impl From<fmt::Error> for RunError {
+    /// Converts a `fmt::Error` into a `RunError`.
+    ///
+    /// In practice, writing to a `String` buffer never fails, so `fmt::Error` only
+    /// arises from our explicit error returns (e.g. INT_MAX_STR_DIGITS checks in
+    /// `py_repr_fmt`). This impl exists so `write!()?` in `py_repr_fmt` auto-converts
+    /// when the method returns `RunResult<()>`.
+    fn from(err: fmt::Error) -> Self {
+        Self::internal(format!("unexpected formatting error: {err}"))
     }
 }
 

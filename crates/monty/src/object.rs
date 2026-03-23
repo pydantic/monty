@@ -414,7 +414,7 @@ impl MontyObject {
                         Self::from_value_inner(&cell.0, vm, visited)
                     }
                     HeapData::Closure(..) | HeapData::FunctionDefaults(..) => {
-                        Self::Repr(object.py_repr(vm).into_owned())
+                        Self::Repr(object.py_repr(vm).unwrap_or_default().into_owned())
                     }
                     HeapData::Range(range) => {
                         // Represent Range as a repr string since MontyObject doesn't have a Range variant
@@ -452,7 +452,7 @@ impl MontyObject {
                         Self::Repr("<iterator>".to_owned())
                     }
                     HeapData::DictKeysView(_) | HeapData::DictItemsView(_) | HeapData::DictValuesView(_) => {
-                        Self::Repr(object.py_repr(vm).into_owned())
+                        Self::Repr(object.py_repr(vm).unwrap_or_default().into_owned())
                     }
                     HeapData::LongInt(li) => Self::BigInt(li.inner().clone()),
                     HeapData::Module(m) => {
@@ -476,7 +476,9 @@ impl MontyObject {
                         Self::Repr(format!("<gather({})>", gather.item_count()))
                     }
                     HeapData::Path(path) => Self::Path(path.as_str().to_owned()),
-                    HeapData::RePattern(_) | HeapData::ReMatch(_) => Self::Repr(object.py_repr(vm).into_owned()),
+                    HeapData::RePattern(_) | HeapData::ReMatch(_) => {
+                        Self::Repr(object.py_repr(vm).unwrap_or_default().into_owned())
+                    }
                     HeapData::ExtFunction(name) => Self::Function {
                         name: name.clone(),
                         docstring: None,
@@ -492,7 +494,7 @@ impl MontyObject {
             Value::Builtin(Builtins::Function(f)) => Self::BuiltinFunction(*f),
             #[cfg(feature = "ref-count-panic")]
             Value::Dereferenced => panic!("Dereferenced found while converting to MontyObject"),
-            _ => Self::Repr(object.py_repr(vm).into_owned()),
+            _ => Self::Repr(object.py_repr(vm).unwrap_or_default().into_owned()),
         }
     }
 

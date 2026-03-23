@@ -285,7 +285,7 @@ impl PyTrait for Tuple {
         f: &mut impl Write,
         vm: &VM<'_, '_, impl ResourceTracker>,
         heap_ids: &mut AHashSet<HeapId>,
-    ) -> std::fmt::Result {
+    ) -> RunResult<()> {
         repr_sequence_fmt('(', ')', &self.items, f, vm, heap_ids)
     }
 }

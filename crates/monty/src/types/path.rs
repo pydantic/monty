@@ -474,9 +474,9 @@ impl PyTrait for Path {
         f: &mut impl Write,
         _vm: &VM<'_, '_, impl ResourceTracker>,
         _heap_ids: &mut AHashSet<HeapId>,
-    ) -> std::fmt::Result {
+    ) -> RunResult<()> {
         // Format like: PosixPath('/usr/bin')
-        write!(f, "PosixPath('{}')", self.path)
+        Ok(write!(f, "PosixPath('{}')", self.path)?)
     }
 
     /// Handles attribute calls on Path objects, including both pure methods (no I/O)

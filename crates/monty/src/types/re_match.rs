@@ -326,10 +326,10 @@ impl PyTrait for ReMatch {
         f: &mut impl Write,
         _vm: &VM<'_, '_, impl ResourceTracker>,
         _heap_ids: &mut AHashSet<HeapId>,
-    ) -> std::fmt::Result {
+    ) -> RunResult<()> {
         write!(f, "<re.Match object; span=({}, {}), match=", self.start, self.end)?;
         string_repr_fmt(&self.full_match, f)?;
-        f.write_char('>')
+        Ok(f.write_char('>')?)
     }
 
     fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'_, '_, impl ResourceTracker>) -> RunResult<Option<CallResult>> {

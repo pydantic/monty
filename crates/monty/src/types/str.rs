@@ -52,7 +52,7 @@ impl Str {
             Some(v) => {
                 defer_drop!(v, vm);
                 check_value_str_digits(v, vm.heap, vm.interns)?;
-                let s = v.py_str(vm).into_owned();
+                let s = v.py_str(vm)?.into_owned();
                 allocate_string(s, vm.heap)
             }
         }
@@ -251,12 +251,12 @@ impl PyTrait for Str {
         f: &mut impl Write,
         _vm: &VM<'_, '_, impl ResourceTracker>,
         _heap_ids: &mut AHashSet<HeapId>,
-    ) -> fmt::Result {
-        string_repr_fmt(&self.0, f)
+    ) -> RunResult<()> {
+        Ok(string_repr_fmt(&self.0, f)?)
     }
 
-    fn py_str(&self, _vm: &VM<'_, '_, impl ResourceTracker>) -> Cow<'static, str> {
-        self.0.clone().into_string().into()
+    fn py_str(&self, _vm: &VM<'_, '_, impl ResourceTracker>) -> RunResult<Cow<'static, str>> {
+        Ok(self.0.clone().into_string().into())
     }
 
     fn py_add(

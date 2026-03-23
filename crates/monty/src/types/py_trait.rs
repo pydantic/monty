@@ -101,23 +101,20 @@ pub trait PyTrait {
         f: &mut impl Write,
         vm: &VM<'_, '_, impl ResourceTracker>,
         heap_ids: &mut AHashSet<HeapId>,
-    ) -> std::fmt::Result;
+    ) -> RunResult<()>;
 
     /// Returns the Python `repr()` string for this value.
     ///
     /// Convenience wrapper around `py_repr_fmt` that returns an owned string.
-    fn py_repr(&self, vm: &VM<'_, '_, impl ResourceTracker>) -> Cow<'static, str> {
+    fn py_repr(&self, vm: &VM<'_, '_, impl ResourceTracker>) -> RunResult<Cow<'static, str>> {
         let mut s = String::new();
         let mut heap_ids = AHashSet::new();
-        // Unwrap is safe: writing to String never fails
-        self.py_repr_fmt(&mut s, vm, &mut heap_ids).unwrap();
-        Cow::Owned(s)
+        self.py_repr_fmt(&mut s, vm, &mut heap_ids)?;
+        Ok(Cow::Owned(s))
     }
 
     /// Returns the Python `str()` string for this value.
-    ///
-    /// Recursion depth is tracked via the heap's recursion depth counter.
-    fn py_str(&self, vm: &VM<'_, '_, impl ResourceTracker>) -> Cow<'static, str> {
+    fn py_str(&self, vm: &VM<'_, '_, impl ResourceTracker>) -> RunResult<Cow<'static, str>> {
         self.py_repr(vm)
     }
 

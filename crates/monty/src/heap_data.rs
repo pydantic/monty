@@ -759,7 +759,7 @@ macro_rules! impl_py_trait_dispatch {
                 f: &mut impl Write,
                 vm: &VM<'_, '_, impl ResourceTracker>,
                 heap_ids: &mut AHashSet<HeapId>,
-            ) -> std::fmt::Result {
+            ) -> RunResult<()> {
                 match self {
                     Self::Str(s) => s.py_repr_fmt(f, vm, heap_ids),
                     Self::Bytes(b) => b.py_repr_fmt(f, vm, heap_ids),
@@ -772,49 +772,53 @@ macro_rules! impl_py_trait_dispatch {
                     Self::DictValuesView(view) => view.py_repr_fmt(f, vm, heap_ids),
                     Self::Set(s) => s.py_repr_fmt(f, vm, heap_ids),
                     Self::FrozenSet(fs) => fs.py_repr_fmt(f, vm, heap_ids),
-                    Self::Closure(closure) => vm
+                    Self::Closure(closure) => Ok(vm
                         .interns
                         .get_function(closure.func_id)
-                        .py_repr_fmt(f, vm.interns, 0),
-                    Self::FunctionDefaults(fd) => vm.interns.get_function(fd.func_id).py_repr_fmt(f, vm.interns, 0),
+                        .py_repr_fmt(f, vm.interns, 0)?),
+                    Self::FunctionDefaults(fd) => Ok(vm
+                        .interns
+                        .get_function(fd.func_id)
+                        .py_repr_fmt(f, vm.interns, 0)?),
                     // Cell repr shows the contained value's type
-                    Self::Cell(cell) => write!(f, "<cell: {} object>", cell.0.py_type(vm.heap)),
+                    Self::Cell(cell) => Ok(write!(f, "<cell: {} object>", cell.0.py_type(vm.heap))?),
                     Self::Range(r) => r.py_repr_fmt(f, vm, heap_ids),
                     Self::Slice(s) => s.py_repr_fmt(f, vm, heap_ids),
-                    Self::Exception(e) => e.py_repr_fmt(f),
+                    Self::Exception(e) => Ok(e.py_repr_fmt(f)?),
                     Self::Dataclass(dc) => dc.py_repr_fmt(f, vm, heap_ids),
-                    Self::Iter(_) => write!(f, "<iterator>"),
-                    Self::LongInt(li) => li.fmt_safe(f),
-                    Self::Module(m) => write!(f, "<module '{}'>", vm.interns.get_str(m.name())),
+                    Self::Iter(_) => Ok(write!(f, "<iterator>")?),
+                    Self::LongInt(li) => {
+                        li.check_str_digits_limit()?;
+                        Ok(write!(f, "{li}")?)
+                    }
+                    Self::Module(m) => Ok(write!(f, "<module '{}'>", vm.interns.get_str(m.name()))?),
                     Self::Coroutine(coro) => {
                         let func = vm.interns.get_function(coro.func_id);
                         let name = vm.interns.get_str(func.name.name_id);
-                        write!(f, "<coroutine object {name}>")
+                        Ok(write!(f, "<coroutine object {name}>")?)
                     }
-                    Self::GatherFuture(gather) => write!(f, "<gather({})>", gather.item_count()),
+                    Self::GatherFuture(gather) => Ok(write!(f, "<gather({})>", gather.item_count())?),
                     Self::Path(p) => p.py_repr_fmt(f, vm, heap_ids),
                     Self::ReMatch(m) => m.py_repr_fmt(f, vm, heap_ids),
                     Self::RePattern(p) => p.py_repr_fmt(f, vm, heap_ids),
-                    Self::ExtFunction(name) => write!(f, "<function '{name}' external>"),
+                    Self::ExtFunction(name) => Ok(write!(f, "<function '{name}' external>")?),
                 }
             }
 
-            fn py_str(&self, vm: &VM<'_, '_, impl ResourceTracker>) -> Cow<'static, str> {
+            fn py_str(&self, vm: &VM<'_, '_, impl ResourceTracker>) -> RunResult<Cow<'static, str>> {
                 match self {
                     // Strings return their value directly without quotes
                     Self::Str(s) => s.py_str(vm),
-                    // LongInt returns its string representation, using scientific
-                    // notation as a fallback if it exceeds INT_MAX_STR_DIGITS
+                    // Check INT_MAX_STR_DIGITS before performing the expensive O(n^2)
+                    // decimal conversion.
                     Self::LongInt(li) => {
-                        let mut s = String::new();
-                        // fmt_safe cannot fail on a String writer
-                        let _ = li.fmt_safe(&mut s);
-                        Cow::Owned(s)
+                        li.check_str_digits_limit()?;
+                        Ok(Cow::Owned(li.to_string()))
                     }
                     // Exceptions return just the message (or empty string if no message)
-                    Self::Exception(e) => Cow::Owned(e.py_str()),
+                    Self::Exception(e) => Ok(Cow::Owned(e.py_str())),
                     // Paths return the path string without the PosixPath() wrapper
-                    Self::Path(p) => Cow::Owned(p.as_str().to_owned()),
+                    Self::Path(p) => Ok(Cow::Owned(p.as_str().to_owned())),
                     // All other types use repr
                     _ => self.py_repr(vm),
                 }

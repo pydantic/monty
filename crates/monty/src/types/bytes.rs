@@ -299,8 +299,8 @@ impl PyTrait for Bytes {
         f: &mut impl Write,
         _vm: &VM<'_, '_, impl ResourceTracker>,
         _heap_ids: &mut AHashSet<HeapId>,
-    ) -> std::fmt::Result {
-        bytes_repr_fmt(&self.0, f)
+    ) -> RunResult<()> {
+        Ok(bytes_repr_fmt(&self.0, f)?)
     }
 
     fn py_call_attr(

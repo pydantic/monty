@@ -39,7 +39,7 @@ pub fn builtin_print(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues)
             vm.print_writer.stdout_push(' ')?;
         }
         check_value_str_digits(value, vm.heap, vm.interns)?;
-        vm.print_writer.stdout_write(value.py_str(vm))?;
+        vm.print_writer.stdout_write(value.py_str(vm)?)?;
     }
 
     // Append end string

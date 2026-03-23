@@ -27,6 +27,11 @@ fn large_negative_decimal_literal_rejected() {
     let code = format!("x = -{literal}");
     let err = MontyRun::new(code, "test.py", vec![]).expect_err("should reject overlarge negative decimal literal");
     assert_eq!(err.exc_type(), ExcType::SyntaxError);
+    let msg = err.message().expect("should have a message");
+    assert!(
+        msg.contains("invalid integer literal"),
+        "expected 'invalid integer literal', got: {msg}"
+    );
 }
 
 #[test]
@@ -77,4 +82,21 @@ fn very_large_float_literal_accepted() {
     let run = MontyRun::new(code, "test.py", vec![]).expect("float with many digits should parse");
     let result = run.run_no_limits(vec![]);
     assert!(result.is_ok(), "float with many digits should run: {result:?}");
+}
+
+#[test]
+fn container_repr_with_huge_int_raises_value_error() {
+    // repr() on a list containing a huge int should raise ValueError, not panic.
+    // The list's py_repr_fmt calls the element's py_repr_fmt which returns fmt::Error,
+    // and this surfaces as a ValueError via the repr() builtin guard or as a truncated
+    // string via py_repr's fallback.
+    let code = "x = [10**5000]\nrepr(x)".to_string();
+    let run = MontyRun::new(code, "test.py", vec![]).expect("should parse");
+    let err = run.run_no_limits(vec![]).expect_err("repr([huge_int]) should fail");
+    assert_eq!(err.exc_type(), ExcType::ValueError);
+    let msg = err.message().expect("should have a message");
+    assert!(
+        msg.starts_with("Exceeds the limit (4300 digits) for integer string conversion"),
+        "wrong message: {msg}"
+    );
 }

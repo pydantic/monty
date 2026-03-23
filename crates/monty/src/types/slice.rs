@@ -202,14 +202,14 @@ impl PyTrait for Slice {
         f: &mut impl Write,
         _vm: &VM<'_, '_, impl ResourceTracker>,
         _heap_ids: &mut AHashSet<HeapId>,
-    ) -> std::fmt::Result {
+    ) -> RunResult<()> {
         f.write_str("slice(")?;
         format_option_i64(f, self.start)?;
         f.write_str(", ")?;
         format_option_i64(f, self.stop)?;
         f.write_str(", ")?;
         format_option_i64(f, self.step)?;
-        f.write_char(')')
+        Ok(f.write_char(')')?)
     }
 
     fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'_, '_, impl ResourceTracker>) -> RunResult<Option<CallResult>> {

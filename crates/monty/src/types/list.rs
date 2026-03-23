@@ -315,7 +315,7 @@ impl PyTrait for List {
         f: &mut impl Write,
         vm: &VM<'_, '_, impl ResourceTracker>,
         heap_ids: &mut AHashSet<HeapId>,
-    ) -> std::fmt::Result {
+    ) -> RunResult<()> {
         repr_sequence_fmt('[', ']', &self.items, f, vm, heap_ids)
     }
 
@@ -737,11 +737,11 @@ pub(crate) fn repr_sequence_fmt(
     f: &mut impl Write,
     vm: &VM<'_, '_, impl ResourceTracker>,
     heap_ids: &mut AHashSet<HeapId>,
-) -> std::fmt::Result {
+) -> RunResult<()> {
     // Check depth limit before recursing
     let heap = &*vm.heap;
     let Some(token) = heap.incr_recursion_depth_for_repr() else {
-        return f.write_str("...");
+        return Ok(f.write_str("...")?);
     };
     crate::defer_drop_immutable_heap!(token, heap);
 
