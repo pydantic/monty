@@ -1,4 +1,7 @@
-use std::fmt::Write;
+use std::{
+    fmt::Write,
+    hash::{DefaultHasher, Hash, Hasher},
+};
 
 use ahash::AHashSet;
 
@@ -9,7 +12,7 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, RunResult},
     heap::{
-        BorrowedHeapRead, BorrowedHeapReadMut, HeapId, HeapItem, HeapRead, heap_read_ref_as_field,
+        BorrowedHeapRead, BorrowedHeapReadMut, Heap, HeapId, HeapItem, HeapRead, heap_read_ref_as_field,
         heap_read_ref_as_field_mut,
     },
     intern::Interns,
@@ -147,6 +150,55 @@ impl<'h> HeapRead<'h, Dataclass> {
             return Err(ExcType::frozen_instance_error(&attr_name));
         }
         self.attrs_mut().set(name, value, vm)
+    }
+
+    /// Computes the hash for this dataclass if it's frozen.
+    ///
+    /// Returns `Ok(Some(hash))` for frozen (immutable) dataclasses, `Ok(None)` for mutable ones.
+    /// Returns `Err(ResourceError::Recursion)` if the recursion limit is exceeded.
+    /// The hash is computed from the class name and declared field values only.
+    pub fn compute_hash(&self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> Result<Option<u64>, ResourceError> {
+        let is_frozen = self.get(vm.heap).is_frozen();
+        if !is_frozen {
+            return Ok(None);
+        }
+        let token = vm.heap.incr_recursion_depth()?;
+        crate::defer_drop!(token, vm);
+        let mut hasher = DefaultHasher::new();
+        // Clone field names so we can iterate without holding the borrow
+        let field_names: Vec<String> = self.get(vm.heap).field_names().to_vec();
+        // Hash the class name (via accessor, hashing the string content)
+        self.get(vm.heap).name(vm.interns).hash(&mut hasher);
+        // Hash each declared field (name, value) pair in order
+        for field_name in &field_names {
+            field_name.hash(&mut hasher);
+            // get_by_str only needs &Heap (immutable), compatible with HeapRead borrow
+            let ref_id = {
+                match self.get(vm.heap).attrs().get_by_str(field_name, vm.heap, vm.interns) {
+                    Some(Value::Ref(id)) => Some(Some(*id)),
+                    Some(_) => Some(None),
+                    None => None,
+                }
+            };
+            if let Some(value_info) = ref_id {
+                let h = if let Some(id) = value_info {
+                    Heap::get_or_compute_hash(vm, id)?
+                } else {
+                    let v = self
+                        .get(vm.heap)
+                        .attrs()
+                        .get_by_str(field_name, vm.heap, vm.interns)
+                        .unwrap()
+                        .clone_immediate();
+                    v.py_hash(vm)?
+                };
+                match h {
+                    Some(h) => h.hash(&mut hasher),
+                    None => return Ok(None),
+                }
+            }
+        }
+        Ok(Some(hasher.finish()))
     }
 
     pub fn attrs(&self) -> BorrowedHeapRead<'_, 'h, Dict> {

@@ -111,7 +111,7 @@ impl SetStorage {
     /// The caller transfers ownership of `value`. If the value is already in
     /// the set, it will be dropped.
     fn add(&mut self, value: Value, vm: &mut VM<'_, '_, impl ResourceTracker>) -> RunResult<bool> {
-        let hash = match value.py_hash(vm.heap, vm.interns) {
+        let hash = match value.py_hash(vm) {
             Ok(Some(h)) => h,
             Ok(None) => {
                 let err = ExcType::type_error_unhashable_set_element(value.py_type(vm));
@@ -160,7 +160,7 @@ impl SetStorage {
     /// Checks if the set contains a value.
     pub fn contains(&self, value: &Value, vm: &mut VM<'_, '_, impl ResourceTracker>) -> RunResult<bool> {
         let hash = value
-            .py_hash(vm.heap, vm.interns)?
+            .py_hash(vm)?
             .ok_or_else(|| ExcType::type_error_unhashable_set_element(value.py_type(vm)))?;
 
         // Set values are typically shallow (strings, ints, tuples of primitives),
@@ -478,7 +478,7 @@ impl<'h> HeapRead<'h, Set> {
     /// Uses a two-phase lookup (collect candidates, then compare) to avoid
     /// holding a borrow on the set storage during `py_eq` calls.
     pub fn add(&mut self, value: Value, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<bool> {
-        let hash = match value.py_hash(vm.heap, vm.interns) {
+        let hash = match value.py_hash(vm) {
             Ok(Some(h)) => h,
             Ok(None) => {
                 let err = ExcType::type_error_unhashable_set_element(value.py_type(vm));
@@ -525,7 +525,7 @@ impl<'h> HeapRead<'h, Set> {
     /// to avoid holding a borrow on the set storage during `py_eq` calls.
     pub(crate) fn contains(&self, value: &Value, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<bool> {
         let hash = value
-            .py_hash(vm.heap, vm.interns)?
+            .py_hash(vm)?
             .ok_or_else(|| ExcType::type_error_unhashable_set_element(value.py_type(vm)))?;
 
         // Collect candidate indices (hash match only) via shared borrow
@@ -585,7 +585,7 @@ impl<'h> HeapRead<'h, Set> {
     /// short-lived borrow, then clones each candidate for `py_eq` comparison.
     fn hr_remove(&mut self, value: &Value, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<bool> {
         let hash = value
-            .py_hash(vm.heap, vm.interns)?
+            .py_hash(vm)?
             .ok_or_else(|| ExcType::type_error_unhashable_set_element(value.py_type(vm)))?;
 
         // Collect candidates by hash
@@ -798,7 +798,7 @@ impl<'h> HeapRead<'h, FrozenSet> {
     /// to avoid holding a borrow on the storage during `py_eq` calls.
     pub(crate) fn contains(&self, value: &Value, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<bool> {
         let hash = value
-            .py_hash(vm.heap, vm.interns)?
+            .py_hash(vm)?
             .ok_or_else(|| ExcType::type_error_unhashable_set_element(value.py_type(vm)))?;
 
         // Collect candidate indices (hash match only) via shared borrow

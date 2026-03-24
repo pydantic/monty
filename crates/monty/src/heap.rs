@@ -18,9 +18,9 @@ pub(crate) use crate::heap_data::HeapData;
 pub(crate) use crate::heap_traits::{ContainsHeap, DropWithHeap, HeapGuard, HeapItem, ImmutableHeapGuard};
 use crate::{
     asyncio::{Coroutine, GatherFuture, GatherItem},
+    bytecode::VM,
     exception_private::{ExcType, RunResult, SimpleException},
     heap_data::{CellValue, Closure, FunctionDefaults},
-    intern::Interns,
     resource::{ResourceError, ResourceTracker, check_mult_size, check_repeat_size},
     types::{
         Bytes, Dataclass, Dict, DictItemsView, DictKeysView, DictValuesView, FrozenSet, List, LongInt, Module,
@@ -912,8 +912,9 @@ impl<T: ResourceTracker> Heap<T> {
     ///
     /// # Panics
     /// Panics if the value ID is invalid or the value has already been freed.
-    pub fn get_or_compute_hash(&mut self, id: HeapId, interns: &Interns) -> Result<Option<u64>, ResourceError> {
-        let entry = self
+    pub fn get_or_compute_hash(vm: &mut VM<'_, '_, T>, id: HeapId) -> Result<Option<u64>, ResourceError> {
+        let entry = vm
+            .heap
             .entries
             .get_mut(id.index())
             .as_mut()
@@ -934,14 +935,11 @@ impl<T: ResourceTracker> Heap<T> {
             return Ok(Some(hash));
         }
 
-        // Compute hash via HeapRead — data stays in the heap, no take-and-restore needed.
-        let hash = HeapReader::with(self, |reader| {
-            let output = reader.read(id);
-            compute_hash_from_read(output, id, reader, interns)
-        })?;
+        let hash = compute_hash_from_read(vm.heap.read(id), id, vm)?;
 
         // Cache the result
-        let entry = self
+        let entry = vm
+            .heap
             .entries
             .get_mut(id.index())
             .as_mut()
@@ -1192,11 +1190,10 @@ fn longint_to_repeat_count(li: &LongInt) -> RunResult<usize> {
 ///
 /// Returns `Ok(Some(hash))` for hashable types, `Ok(None)` for unhashable types,
 /// or `Err(ResourceError::Recursion)` if the recursion limit is exceeded.
-fn compute_hash_from_read<'a, T: ResourceTracker>(
-    output: HeapReadOutput<'a>,
+fn compute_hash_from_read<'h>(
+    output: HeapReadOutput<'h>,
     id: HeapId,
-    reader: &mut HeapReader<'a, T>,
-    interns: &Interns,
+    vm: &mut VM<'h, '_, impl ResourceTracker>,
 ) -> Result<Option<u64>, ResourceError> {
     /// Helper to get the `HeapData` discriminant for mixing into hashes.
     /// Uses a short-lived borrow on the reader.
@@ -1208,23 +1205,23 @@ fn compute_hash_from_read<'a, T: ResourceTracker>(
         // Str/Bytes: hash just the content (consistent with InternString/InternBytes)
         HeapReadOutput::Str(s) => {
             let mut hasher = DefaultHasher::new();
-            s.get(&*reader).as_str().hash(&mut hasher);
+            s.get(vm.heap).as_str().hash(&mut hasher);
             Ok(Some(hasher.finish()))
         }
         HeapReadOutput::Bytes(b) => {
             let mut hasher = DefaultHasher::new();
-            b.get(&*reader).as_slice().hash(&mut hasher);
+            b.get(vm.heap).as_slice().hash(&mut hasher);
             Ok(Some(hasher.finish()))
         }
         // Tuple: hashable only if all elements are hashable
         HeapReadOutput::Tuple(tuple) => {
-            let token = reader.incr_recursion_depth()?;
-            crate::defer_drop!(token, reader);
-            let len = tuple.get(&*reader).as_slice().len();
+            let token = vm.heap.incr_recursion_depth()?;
+            crate::defer_drop!(token, vm);
+            let len = tuple.get(vm.heap).as_slice().len();
             let mut hasher = DefaultHasher::new();
-            heap_disc(&*reader, id).hash(&mut hasher);
+            heap_disc(vm.heap, id).hash(&mut hasher);
             for i in 0..len {
-                let h = hash_element_at(|r| &tuple.get(r).as_slice()[i], reader, interns)?;
+                let h = hash_element_at(|r| &tuple.get(r).as_slice()[i], vm)?;
                 match h {
                     Some(h) => h.hash(&mut hasher),
                     None => return Ok(None),
@@ -1234,13 +1231,13 @@ fn compute_hash_from_read<'a, T: ResourceTracker>(
         }
         // NamedTuple: hash by elements only (not type_name) to match equality semantics
         HeapReadOutput::NamedTuple(nt) => {
-            let token = reader.incr_recursion_depth()?;
-            crate::defer_drop!(token, reader);
-            let len = nt.get(&*reader).as_vec().len();
+            let token = vm.heap.incr_recursion_depth()?;
+            crate::defer_drop!(token, vm);
+            let len = nt.get(vm.heap).as_vec().len();
             let mut hasher = DefaultHasher::new();
-            heap_disc(&*reader, id).hash(&mut hasher);
+            heap_disc(vm.heap, id).hash(&mut hasher);
             for i in 0..len {
-                let h = hash_element_at(|r| &nt.get(r).as_vec()[i], reader, interns)?;
+                let h = hash_element_at(|r| &nt.get(r).as_vec()[i], vm)?;
                 match h {
                     Some(h) => h.hash(&mut hasher),
                     None => return Ok(None),
@@ -1250,12 +1247,12 @@ fn compute_hash_from_read<'a, T: ResourceTracker>(
         }
         // FrozenSet: XOR of all element hashes (order-independent).
         HeapReadOutput::FrozenSet(fs) => {
-            let token = reader.incr_recursion_depth()?;
-            crate::defer_drop!(token, reader);
-            let len = fs.get(&*reader).storage().entry_count();
+            let token = vm.heap.incr_recursion_depth()?;
+            crate::defer_drop!(token, vm);
+            let len = fs.get(vm.heap).storage().entry_count();
             let mut hash: u64 = 0;
             for i in 0..len {
-                let h = hash_element_at(|r| fs.get(r).storage().entry_value(i), reader, interns)?;
+                let h = hash_element_at(|r| fs.get(r).storage().entry_value(i), vm)?;
                 match h {
                     Some(h) => hash ^= h,
                     None => return Ok(None),
@@ -1264,69 +1261,27 @@ fn compute_hash_from_read<'a, T: ResourceTracker>(
             Ok(Some(hash))
         }
         // Dataclass: hash frozen instances by class name + declared field values
-        HeapReadOutput::Dataclass(dc) => {
-            let is_frozen = dc.get(&*reader).is_frozen();
-            if !is_frozen {
-                return Ok(None);
-            }
-            let token = reader.incr_recursion_depth()?;
-            crate::defer_drop!(token, reader);
-            let mut hasher = DefaultHasher::new();
-            // Clone field names so we can iterate without holding the borrow
-            let field_names: Vec<String> = dc.get(&*reader).field_names().to_vec();
-            // Hash the class name (via accessor, hashing the string content)
-            dc.get(&*reader).name(interns).hash(&mut hasher);
-            // Hash each declared field (name, value) pair in order
-            for field_name in &field_names {
-                field_name.hash(&mut hasher);
-                // get_by_str only needs &Heap (immutable), compatible with HeapRead borrow
-                let ref_id = {
-                    match dc.get(&*reader).attrs().get_by_str(field_name, &*reader, interns) {
-                        Some(Value::Ref(id)) => Some(Some(*id)),
-                        Some(_) => Some(None),
-                        None => None,
-                    }
-                };
-                if let Some(value_info) = ref_id {
-                    let h = if let Some(id) = value_info {
-                        reader.get_or_compute_hash(id, interns)?
-                    } else {
-                        let v = dc
-                            .get(&*reader)
-                            .attrs()
-                            .get_by_str(field_name, &*reader, interns)
-                            .unwrap()
-                            .clone_immediate();
-                        v.py_hash(&mut **reader, interns)?
-                    };
-                    match h {
-                        Some(h) => h.hash(&mut hasher),
-                        None => return Ok(None),
-                    }
-                }
-            }
-            Ok(Some(hasher.finish()))
-        }
+        HeapReadOutput::Dataclass(dc) => dc.compute_hash(vm),
         // Closure/FunctionDefaults: hash by function ID
         HeapReadOutput::Closure(closure) => {
-            let func_id = closure.get(&*reader).func_id;
+            let func_id = closure.get(vm.heap).func_id;
             let mut hasher = DefaultHasher::new();
-            heap_disc(&*reader, id).hash(&mut hasher);
+            heap_disc(vm.heap, id).hash(&mut hasher);
             func_id.hash(&mut hasher);
             Ok(Some(hasher.finish()))
         }
         HeapReadOutput::FunctionDefaults(fd) => {
-            let func_id = fd.get(&*reader).func_id;
+            let func_id = fd.get(vm.heap).func_id;
             let mut hasher = DefaultHasher::new();
-            heap_disc(&*reader, id).hash(&mut hasher);
+            heap_disc(vm.heap, id).hash(&mut hasher);
             func_id.hash(&mut hasher);
             Ok(Some(hasher.finish()))
         }
         // Range: hash start, stop, step
         HeapReadOutput::Range(range) => {
-            let r = range.get(&*reader);
+            let r = range.get(vm.heap);
             let mut hasher = DefaultHasher::new();
-            heap_disc(&*reader, id).hash(&mut hasher);
+            heap_disc(vm.heap, id).hash(&mut hasher);
             r.start.hash(&mut hasher);
             r.stop.hash(&mut hasher);
             r.step.hash(&mut hasher);
@@ -1334,9 +1289,9 @@ fn compute_hash_from_read<'a, T: ResourceTracker>(
         }
         // Slice: hash start, stop, step
         HeapReadOutput::Slice(slice) => {
-            let s = slice.get(&*reader);
+            let s = slice.get(vm.heap);
             let mut hasher = DefaultHasher::new();
-            heap_disc(&*reader, id).hash(&mut hasher);
+            heap_disc(vm.heap, id).hash(&mut hasher);
             s.start.hash(&mut hasher);
             s.stop.hash(&mut hasher);
             s.step.hash(&mut hasher);
@@ -1345,17 +1300,17 @@ fn compute_hash_from_read<'a, T: ResourceTracker>(
         // Path: hash the path string
         HeapReadOutput::Path(path) => {
             let mut hasher = DefaultHasher::new();
-            heap_disc(&*reader, id).hash(&mut hasher);
-            path.get(&*reader).as_str().hash(&mut hasher);
+            heap_disc(vm.heap, id).hash(&mut hasher);
+            path.get(vm.heap).as_str().hash(&mut hasher);
             Ok(Some(hasher.finish()))
         }
         // LongInt: uses its own hash method
-        HeapReadOutput::LongInt(li) => Ok(Some(li.get(&*reader).hash())),
+        HeapReadOutput::LongInt(li) => Ok(Some(li.get(vm.heap).hash())),
         // ExtFunction: hash by name
         HeapReadOutput::ExtFunction(name) => {
             let mut hasher = DefaultHasher::new();
-            heap_disc(&*reader, id).hash(&mut hasher);
-            name.get(&*reader).hash(&mut hasher);
+            heap_disc(vm.heap, id).hash(&mut hasher);
+            name.get(vm.heap).hash(&mut hasher);
             Ok(Some(hasher.finish()))
         }
         // All other types are unhashable
@@ -1369,20 +1324,19 @@ fn compute_hash_from_read<'a, T: ResourceTracker>(
 /// reader. If the element is `Ref(id)`, the borrow is released and `get_or_compute_hash`
 /// is called recursively. For non-Ref values, the element is cloned via `clone_immediate()`
 /// and hashed directly (non-Ref values never need heap access for hashing).
-fn hash_element_at<'a, T: ResourceTracker>(
-    read_element: impl for<'r> Fn(&'r HeapReader<'a, T>) -> &'r Value,
-    reader: &mut HeapReader<'a, T>,
-    interns: &Interns,
+fn hash_element_at<'h, T: ResourceTracker>(
+    read_element: impl for<'r> Fn(&'r HeapReader<'h, T>) -> &'r Value,
+    vm: &mut VM<'h, '_, T>,
 ) -> Result<Option<u64>, ResourceError> {
-    let ref_id = match read_element(&*reader) {
+    let ref_id = match read_element(vm.heap) {
         Value::Ref(id) => Some(*id),
         _ => None,
     };
     if let Some(id) = ref_id {
-        reader.get_or_compute_hash(id, interns)
+        Heap::get_or_compute_hash(vm, id)
     } else {
-        let value = read_element(&*reader).clone_immediate();
-        value.py_hash(&mut **reader, interns)
+        let value = read_element(vm.heap).clone_immediate();
+        value.py_hash(vm)
     }
 }
 

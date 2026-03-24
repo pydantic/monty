@@ -349,7 +349,7 @@ impl Dict {
         vm: &mut VM<'_, '_, impl ResourceTracker>,
     ) -> RunResult<(Option<usize>, u64)> {
         let hash = key
-            .py_hash(vm.heap, vm.interns)?
+            .py_hash(vm)?
             .ok_or_else(|| ExcType::type_error_unhashable_dict_key(key.py_type(vm)))?;
 
         // Dict keys are typically shallow (strings, ints, tuples of primitives),
@@ -452,7 +452,7 @@ impl<'h> HeapRead<'h, Dict> {
         vm: &mut VM<'h, '_, impl ResourceTracker>,
     ) -> RunResult<(Option<usize>, u64)> {
         let hash = key
-            .py_hash(vm.heap, vm.interns)?
+            .py_hash(vm)?
             .ok_or_else(|| ExcType::type_error_unhashable_dict_key(key.py_type(vm)))?;
 
         // Dict keys are typically shallow (strings, ints, tuples of primitives),

@@ -1654,28 +1654,24 @@ impl Value {
     ///
     /// The `interns` parameter is needed for InternString/InternBytes to look up
     /// their actual content and hash it consistently with equivalent heap Str/Bytes.
-    pub fn py_hash(
-        &self,
-        heap: &mut Heap<impl ResourceTracker>,
-        interns: &Interns,
-    ) -> Result<Option<u64>, ResourceError> {
+    pub fn py_hash(&self, vm: &mut VM<'_, '_, impl ResourceTracker>) -> Result<Option<u64>, ResourceError> {
         // strings bytes bigints and heap allocated values have their own hashing logic
         match self {
             // Hash just the actual string or bytes content for consistency with heap Str/Bytes
             // hence we don't include the discriminant
             Self::InternString(string_id) => {
                 let mut hasher = DefaultHasher::new();
-                interns.get_str(*string_id).hash(&mut hasher);
+                vm.interns.get_str(*string_id).hash(&mut hasher);
                 return Ok(Some(hasher.finish()));
             }
             Self::InternBytes(bytes_id) => {
                 let mut hasher = DefaultHasher::new();
-                interns.get_bytes(*bytes_id).hash(&mut hasher);
+                vm.interns.get_bytes(*bytes_id).hash(&mut hasher);
                 return Ok(Some(hasher.finish()));
             }
             // Hash BigInt consistently with LongInt (using sign and bytes for large values)
             Self::InternLongInt(long_int_id) => {
-                let bi = interns.get_long_int(*long_int_id);
+                let bi = vm.interns.get_long_int(*long_int_id);
                 let mut hasher = DefaultHasher::new();
                 let (sign, bytes) = bi.to_bytes_le();
                 sign.hash(&mut hasher);
@@ -1683,7 +1679,7 @@ impl Value {
                 return Ok(Some(hasher.finish()));
             }
             // For heap-allocated values (includes Range and Exception), compute hash lazily and cache it
-            Self::Ref(id) => return heap.get_or_compute_hash(*id, interns),
+            Self::Ref(id) => return Heap::get_or_compute_hash(vm, *id),
             _ => {}
         }
 
