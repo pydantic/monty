@@ -485,7 +485,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             }
             // Container types: use HeapRead-specific comparison methods
             (HeapReadOutput::List(a), HeapReadOutput::List(b)) => a.py_eq(b, vm),
-            (HeapReadOutput::Tuple(a), HeapReadOutput::Tuple(b)) => a.eq(b, vm),
+            (HeapReadOutput::Tuple(a), HeapReadOutput::Tuple(b)) => a.py_eq(b, vm),
             // Container types with HeapRead eq methods
             (HeapReadOutput::Dict(a), HeapReadOutput::Dict(b)) => a.py_eq(b, vm),
             (HeapReadOutput::Set(a), HeapReadOutput::Set(b)) => a.py_eq(b, vm),
@@ -656,7 +656,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
                 Ok(Some(Value::Ref(vm.heap.allocate(HeapData::Bytes(result.into()))?)))
             }
             (HeapReadOutput::List(a), HeapReadOutput::List(b)) => a.py_add(b, vm),
-            (HeapReadOutput::Tuple(a), HeapReadOutput::Tuple(b)) => a.add(b, vm),
+            (HeapReadOutput::Tuple(a), HeapReadOutput::Tuple(b)) => a.py_add(b, vm),
             (HeapReadOutput::LongInt(a), HeapReadOutput::LongInt(b)) => {
                 let bi = a.get(vm.heap).inner() + b.get(vm.heap).inner();
                 Ok(LongInt::new(bi).into_value(vm.heap).map(Some)?)

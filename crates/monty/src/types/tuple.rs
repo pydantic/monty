@@ -29,7 +29,10 @@ use crate::{
     heap::{DropWithHeap, Heap, HeapData, HeapId, HeapItem, HeapRead},
     intern::StaticStrings,
     resource::{ResourceError, ResourceTracker},
-    types::Type,
+    types::{
+        Type,
+        list::{get_slice_items, repr_sequence_fmt},
+    },
     value::{EitherStr, Value},
 };
 
@@ -154,20 +157,8 @@ pub fn allocate_tuple(
 
 impl<'h> HeapRead<'h, Tuple> {
     /// Clones the item at the given index with proper refcount management.
-    ///
-    /// Uses the short-lived borrow pattern: reads the value discriminant through
-    /// a shared heap borrow, releases it, then increments refcount if needed.
     pub(crate) fn clone_item(&self, index: usize, vm: &mut VM<'h, '_, impl ResourceTracker>) -> Value {
-        let ref_id = match &self.get(vm.heap).items[index] {
-            Value::Ref(id) => Some(*id),
-            _ => None,
-        };
-        if let Some(id) = ref_id {
-            vm.heap.inc_ref(id);
-            Value::Ref(id)
-        } else {
-            self.get(vm.heap).items[index].clone_immediate()
-        }
+        self.get(vm.heap).items[index].clone_with_heap(vm)
     }
 
     /// Clones all items from this tuple with proper refcount management.
@@ -179,93 +170,8 @@ impl<'h> HeapRead<'h, Tuple> {
         }
         result
     }
-
-    /// Delegates to `py_eq` for backward compatibility with `value.rs` call sites.
-    pub(crate) fn eq(&self, other: &Self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> Result<bool, ResourceError> {
-        self.py_eq(other, vm)
-    }
-
-    /// Delegates to `py_add` for backward compatibility with `value.rs` call sites.
-    pub(crate) fn add(
-        &self,
-        other: &Self,
-        vm: &mut VM<'h, '_, impl ResourceTracker>,
-    ) -> Result<Option<Value>, ResourceError> {
-        self.py_add(other, vm)
-    }
-
-    /// Collects sliced items using the two-phase clone pattern.
-    ///
-    /// Uses short-lived borrows through HeapRead to avoid holding the heap borrow
-    /// across clone_with_heap calls. Handles both positive and negative step values.
-    fn getitem_slice_items(
-        &self,
-        start: usize,
-        stop: usize,
-        step: i64,
-        vm: &mut VM<'h, '_, impl ResourceTracker>,
-    ) -> RunResult<Vec<Value>> {
-        let items_len = self.get(vm.heap).as_slice().len();
-        let mut result = Vec::new();
-
-        if let Ok(step_usize) = usize::try_from(step) {
-            let mut i = start;
-            while i < stop && i < items_len {
-                vm.heap.check_time()?;
-                result.push(self.clone_item(i, vm));
-                i += step_usize;
-            }
-        } else {
-            let step_abs = usize::try_from(-step).expect("step is negative so -step is positive");
-            let step_abs_i64 = i64::try_from(step_abs).expect("step magnitude fits in i64");
-            let mut i = i64::try_from(start).expect("start index fits in i64");
-            let stop_i64 = if stop > items_len {
-                -1
-            } else {
-                i64::try_from(stop).expect("stop bounded by items.len() fits in i64")
-            };
-            while i > stop_i64 {
-                vm.heap.check_time()?;
-                let idx = usize::try_from(i).expect("i is non-negative");
-                if idx < items_len {
-                    result.push(self.clone_item(idx, vm));
-                }
-                i -= step_abs_i64;
-            }
-        }
-
-        Ok(result)
-    }
 }
 
-/// Minimal `PyTrait` implementation for bare `Tuple`, used only by `HeapData` dispatches
-/// (py_type, py_len, py_bool, py_repr_fmt). All mutable-VM operations (py_eq, py_cmp,
-/// py_add, py_getitem, py_call_attr) are on `HeapRead<Tuple>` below.
-impl PyTrait<'_> for Tuple {
-    fn py_type(&self, _vm: &VM<'_, '_, impl ResourceTracker>) -> Type {
-        Type::Tuple
-    }
-
-    fn py_len(&self, _vm: &VM<'_, '_, impl ResourceTracker>) -> Option<usize> {
-        Some(self.items.len())
-    }
-
-    fn py_eq(&self, _other: &Self, _vm: &mut VM<'_, '_, impl ResourceTracker>) -> Result<bool, ResourceError> {
-        unreachable!("Tuple py_eq must be called through HeapRead")
-    }
-
-    fn py_repr_fmt(
-        &self,
-        f: &mut impl Write,
-        vm: &VM<'_, '_, impl ResourceTracker>,
-        heap_ids: &mut AHashSet<HeapId>,
-    ) -> RunResult<()> {
-        tuple_repr_fmt(&self.items, f, vm, heap_ids)
-    }
-}
-
-/// `PyTrait` implementation for `HeapRead<Tuple>`, providing all Python operations
-/// on heap-allocated tuples via short-lived borrow patterns.
 impl<'h> PyTrait<'h> for HeapRead<'h, Tuple> {
     fn py_type(&self, _vm: &VM<'h, '_, impl ResourceTracker>) -> Type {
         Type::Tuple
@@ -281,7 +187,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Tuple> {
         vm: &VM<'h, '_, impl ResourceTracker>,
         heap_ids: &mut AHashSet<HeapId>,
     ) -> RunResult<()> {
-        tuple_repr_fmt(&self.get(vm.heap).items, f, vm, heap_ids)
+        repr_sequence_fmt('(', ')', &self.get(vm.heap).items, f, vm, heap_ids)
     }
 
     /// Element-wise equality using the short-lived borrow pattern.
@@ -306,11 +212,14 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Tuple> {
         Ok(true)
     }
 
-    /// Lexicographic comparison using the short-lived borrow pattern.
+    /// Lexicographic comparison for tuples.
     ///
     /// Compares element-by-element left-to-right. The first non-equal pair
     /// determines the result. If all compared elements are equal, the shorter
-    /// tuple is less -- matching Python semantics.
+    /// tuple is considered less than the longer one — matching Python semantics:
+    /// `(1, 2) < (1, 2, 3)` is `True`.
+    ///
+    /// Returns `None` if any element pair is incomparable (e.g. `int` vs `str`).
     fn py_cmp(
         &self,
         other: &Self,
@@ -323,23 +232,19 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Tuple> {
         defer_drop!(token, vm);
         for i in 0..min_len {
             vm.heap.check_time()?;
-            let a_val = self.clone_item(i, vm);
-            let b_val = other.clone_item(i, vm);
-            let cmp_result = a_val.py_cmp(&b_val, vm);
-            let eq_fallback = if matches!(cmp_result, Ok(None)) {
-                Some(a_val.py_eq(&b_val, vm))
-            } else {
-                None
-            };
-            a_val.drop_with_heap(vm);
-            b_val.drop_with_heap(vm);
-            match cmp_result? {
+            let av = self.clone_item(i, vm);
+            let bv = other.clone_item(i, vm);
+            defer_drop!(av, vm);
+            defer_drop!(bv, vm);
+            match av.py_cmp(bv, vm)? {
                 Some(Ordering::Equal) => {}
                 Some(ord) => return Ok(Some(ord)),
                 None => {
-                    // py_cmp returned None -- check if elements are equal
-                    // (CPython checks __eq__ first for None==None case)
-                    if !eq_fallback.unwrap()? {
+                    // py_cmp returned None — the elements don't support ordering.
+                    // CPython checks __eq__ first and only calls __lt__ for non-equal
+                    // pairs, so equal-but-unorderable elements (e.g. None == None)
+                    // should be treated as equal and not block comparison.
+                    if !av.py_eq(bv, vm)? {
                         return Ok(None);
                     }
                 }
@@ -355,17 +260,15 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Tuple> {
         Ok(Some(allocate_tuple(items, vm.heap)?))
     }
 
-    /// Subscript access via HeapRead. Handles both integer indices and slices.
     fn py_getitem(&self, key: &Value, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<Value> {
         // Check for slice first (Value::Ref pointing to HeapData::Slice)
         if let Value::Ref(key_id) = key
             && let HeapData::Slice(slice_obj) = vm.heap.get(*key_id)
         {
-            let len = self.get(vm.heap).as_slice().len();
             let (start, stop, step) = slice_obj
-                .indices(len)
+                .indices(self.get(vm.heap).items.len())
                 .map_err(|()| ExcType::value_error_slice_step_zero())?;
-            let items = self.getitem_slice_items(start, stop, step, vm)?;
+            let items = get_slice_items(&self.get(vm.heap).items, start, stop, step, vm.heap)?;
             return Ok(allocate_tuple(items.into(), vm.heap)?);
         }
 
@@ -396,69 +299,13 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Tuple> {
         args: ArgValues,
     ) -> RunResult<CallResult> {
         match attr.static_string() {
-            Some(StaticStrings::Index) => self.hr_index(args, vm).map(CallResult::Value),
-            Some(StaticStrings::Count) => self.hr_count(args, vm).map(CallResult::Value),
+            Some(StaticStrings::Index) => tuple_index(self, args, vm).map(CallResult::Value),
+            Some(StaticStrings::Count) => tuple_count(self, args, vm).map(CallResult::Value),
             _ => {
                 args.drop_with_heap(vm);
                 Err(ExcType::attribute_error(Type::Tuple, attr.as_str(vm.interns)))
             }
         }
-    }
-}
-
-impl<'h> HeapRead<'h, Tuple> {
-    /// `tuple.index(value[, start[, end]])` via HeapRead.
-    fn hr_index(&self, args: ArgValues, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<Value> {
-        let pos_args = args.into_pos_only("tuple.index", vm.heap)?;
-        defer_drop!(pos_args, vm);
-
-        let len = self.get(vm.heap).as_slice().len();
-        let (value, start, end) = match pos_args.as_slice() {
-            [] => return Err(ExcType::type_error_at_least("tuple.index", 1, 0)),
-            [value] => (value, 0, len),
-            [value, start_arg] => {
-                let start = normalize_tuple_index(start_arg.as_int(vm)?, len);
-                (value, start, len)
-            }
-            [value, start_arg, end_arg] => {
-                let start = normalize_tuple_index(start_arg.as_int(vm)?, len);
-                let end = normalize_tuple_index(end_arg.as_int(vm)?, len).max(start);
-                (value, start, end)
-            }
-            other => return Err(ExcType::type_error_at_most("tuple.index", 3, other.len())),
-        };
-
-        for i in start..end {
-            let item = self.clone_item(i, vm);
-            let is_eq = value.py_eq(&item, vm)?;
-            item.drop_with_heap(vm);
-            if is_eq {
-                let idx = i64::try_from(i).expect("index exceeds i64::MAX");
-                return Ok(Value::Int(idx));
-            }
-        }
-
-        Err(ExcType::value_error_not_in_tuple())
-    }
-
-    /// `tuple.count(value)` via HeapRead.
-    fn hr_count(&self, args: ArgValues, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<Value> {
-        let value = args.get_one_arg("tuple.count", vm.heap)?;
-        defer_drop!(value, vm);
-
-        let len = self.get(vm.heap).as_slice().len();
-        let mut count = 0usize;
-        for i in 0..len {
-            let item = self.clone_item(i, vm);
-            let is_eq = value.py_eq(&item, vm)?;
-            item.drop_with_heap(vm);
-            if is_eq {
-                count += 1;
-            }
-        }
-
-        let count_i64 = i64::try_from(count).expect("count exceeds i64::MAX");
-        Ok(Value::Int(count_i64))
     }
 }
 
@@ -486,41 +333,69 @@ impl HeapItem for Tuple {
     }
 }
 
-/// Writes the repr of a tuple to a formatter, handling the trailing comma
-/// for single-element tuples (Python requires `(x,)` not `(x)`).
-pub(crate) fn tuple_repr_fmt(
-    items: &[Value],
-    f: &mut impl Write,
-    vm: &VM<'_, '_, impl ResourceTracker>,
-    heap_ids: &mut AHashSet<HeapId>,
-) -> RunResult<()> {
-    // Check depth limit before recursing
-    let heap = &*vm.heap;
-    let Some(token) = heap.incr_recursion_depth_for_repr() else {
-        return Ok(f.write_str("...")?);
-    };
-    crate::defer_drop_immutable_heap!(token, heap);
+/// Implements Python's `tuple.index(value[, start[, end]])` method.
+///
+/// Returns the index of the first occurrence of value.
+/// Raises ValueError if the value is not found.
+fn tuple_index<'h>(
+    tuple: &HeapRead<'h, Tuple>,
+    args: ArgValues,
+    vm: &mut VM<'h, '_, impl ResourceTracker>,
+) -> RunResult<Value> {
+    let pos_args = args.into_pos_only("tuple.index", vm.heap)?;
+    defer_drop!(pos_args, vm);
 
-    f.write_char('(')?;
-    let mut iter = items.iter();
-    if let Some(first) = iter.next() {
-        first.py_repr_fmt(f, vm, heap_ids)?;
-        for item in iter {
-            if heap.check_time().is_err() {
-                f.write_str(", ...[timeout]")?;
-                break;
-            }
-            f.write_str(", ")?;
-            item.py_repr_fmt(f, vm, heap_ids)?;
+    let len = tuple.get(vm.heap).as_slice().len();
+    let (value, start, end) = match pos_args.as_slice() {
+        [] => return Err(ExcType::type_error_at_least("tuple.index", 1, 0)),
+        [value] => (value, 0, len),
+        [value, start_arg] => {
+            let start = normalize_tuple_index(start_arg.as_int(vm)?, len);
+            (value, start, len)
         }
-        // Single-element tuples need trailing comma: (x,)
-        if items.len() == 1 {
-            f.write_char(',')?;
+        [value, start_arg, end_arg] => {
+            let start = normalize_tuple_index(start_arg.as_int(vm)?, len);
+            let end = normalize_tuple_index(end_arg.as_int(vm)?, len).max(start);
+            (value, start, end)
+        }
+        other => return Err(ExcType::type_error_at_most("tuple.index", 3, other.len())),
+    };
+
+    for i in start..end {
+        let item = tuple.clone_item(i, vm);
+        defer_drop!(item, vm);
+        if value.py_eq(item, vm)? {
+            let idx = i64::try_from(i).expect("index exceeds i64::MAX");
+            return Ok(Value::Int(idx));
         }
     }
-    f.write_char(')')?;
 
-    Ok(())
+    Err(ExcType::value_error_not_in_tuple())
+}
+
+/// Implements Python's `tuple.count(value)` method.
+///
+/// Returns the number of occurrences of value in the tuple.
+fn tuple_count<'h>(
+    tuple: &HeapRead<'h, Tuple>,
+    args: ArgValues,
+    vm: &mut VM<'h, '_, impl ResourceTracker>,
+) -> RunResult<Value> {
+    let value = args.get_one_arg("tuple.count", vm.heap)?;
+    defer_drop!(value, vm);
+
+    let len = tuple.get(vm.heap).as_slice().len();
+    let mut count = 0usize;
+    for i in 0..len {
+        let item = tuple.clone_item(i, vm);
+        defer_drop!(item, vm);
+        if value.py_eq(item, vm)? {
+            count += 1;
+        }
+    }
+
+    let count_i64 = i64::try_from(count).expect("count exceeds i64::MAX");
+    Ok(Value::Int(count_i64))
 }
 
 /// Normalizes a Python-style tuple index to a valid index in range [0, len].
