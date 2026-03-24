@@ -539,7 +539,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
                 view.eq_frozenset(b, vm)
             }
             (HeapReadOutput::Dataclass(a), HeapReadOutput::Dataclass(b)) => {
-                if a.name(vm) != b.name(vm) {
+                if a.get(vm.heap).name(vm.interns) != b.get(vm.heap).name(vm.interns) {
                     return Ok(false);
                 }
                 a.attrs().eq(&b.attrs(), vm)

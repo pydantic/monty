@@ -122,12 +122,6 @@ impl Dataclass {
 }
 
 impl<'h> HeapRead<'h, Dataclass> {
-    /// Returns the class name.
-    #[must_use]
-    pub fn name<'a>(&'a self, vm: &'a VM<'h, '_, impl ResourceTracker>) -> &'a str {
-        self.get(vm.heap).name.as_str(vm.interns)
-    }
-
     /// Sets an attribute value.
     ///
     /// The caller transfers ownership of both `name` and `value`. Returns the

@@ -258,8 +258,6 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Bytes> {
         if let Value::Ref(id) = key
             && let HeapData::Slice(slice) = vm.heap.get(*id)
         {
-            // Clone the slice to release the borrow on heap before accessing self
-            let slice = slice.clone();
             let b = self.get(vm.heap);
             let (start, stop, step) = slice
                 .indices(b.0.len())
@@ -527,12 +525,14 @@ fn bytes_decode<'h>(
         return Err(ExcType::lookup_error_unknown_encoding(&encoding));
     }
 
-    // Decode as UTF-8 — copy into owned String before releasing the heap borrow
-    let s = std::str::from_utf8(bytes.get(vm.heap))
-        .map(str::to_owned)
-        .map_err(|_| ExcType::unicode_decode_error_invalid_utf8())?;
-    let heap_id = vm.heap.allocate(HeapData::Str(Str::from(s)))?;
-    Ok(Value::Ref(heap_id))
+    // Decode as UTF-8
+    match std::str::from_utf8(bytes.get(vm.heap)) {
+        Ok(s) => {
+            let heap_id = vm.heap.allocate(HeapData::Str(Str::from(s.to_owned())))?;
+            Ok(Value::Ref(heap_id))
+        }
+        Err(_) => Err(ExcType::unicode_decode_error_invalid_utf8()),
+    }
 }
 
 /// Helper function to extract encoding string from a value.
@@ -891,9 +891,9 @@ fn bytes_upper<'h>(bytes: &HeapRead<'h, [u8]>, vm: &mut VM<'h, '_, impl Resource
 /// Returns a copy of the bytes with the first byte capitalized (if ASCII) and
 /// the rest lowercased.
 fn bytes_capitalize<'h>(bytes: &HeapRead<'h, [u8]>, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<Value> {
-    let data = bytes.get(vm.heap);
-    let mut result = Vec::with_capacity(data.len());
-    if let Some((&first, rest)) = data.split_first() {
+    let bytes = bytes.get(vm.heap);
+    let mut result = Vec::with_capacity(bytes.len());
+    if let Some((&first, rest)) = bytes.split_first() {
         result.push(first.to_ascii_uppercase());
         for &b in rest {
             result.push(b.to_ascii_lowercase());
@@ -907,11 +907,11 @@ fn bytes_capitalize<'h>(bytes: &HeapRead<'h, [u8]>, vm: &mut VM<'h, '_, impl Res
 /// Returns a titlecased version of the bytes where words start with an uppercase
 /// ASCII character and the remaining characters are lowercase.
 fn bytes_title<'h>(bytes: &HeapRead<'h, [u8]>, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<Value> {
-    let data = bytes.get(vm.heap);
-    let mut result = Vec::with_capacity(data.len());
+    let bytes = bytes.get(vm.heap);
+    let mut result = Vec::with_capacity(bytes.len());
     let mut prev_is_cased = false;
 
-    for &b in data {
+    for &b in bytes {
         if prev_is_cased {
             result.push(b.to_ascii_lowercase());
         } else {
@@ -1122,10 +1122,10 @@ fn bytes_strip<'h>(
     let value = args.get_zero_one_arg("bytes.strip", vm.heap)?;
     defer_drop!(value, vm);
     let result = match value {
-        None | Some(Value::None) => bytes_strip_whitespace_both(bytes.get(vm.heap)).to_vec(),
-        Some(v) => bytes_strip_both(bytes.get(vm.heap), extract_bytes_only(v, vm)?).to_vec(),
+        None | Some(Value::None) => bytes_strip_whitespace_both(bytes.get(vm.heap)),
+        Some(v) => bytes_strip_both(bytes.get(vm.heap), extract_bytes_only(v, vm)?),
     };
-    allocate_bytes(result, vm.heap)
+    allocate_bytes(result.to_vec(), vm.heap)
 }
 
 /// Implements Python's `bytes.lstrip([chars])` method.
@@ -1139,10 +1139,10 @@ fn bytes_lstrip<'h>(
     let value = args.get_zero_one_arg("bytes.lstrip", vm.heap)?;
     defer_drop!(value, vm);
     let result = match value {
-        None | Some(Value::None) => bytes_strip_whitespace_start(bytes.get(vm.heap)).to_vec(),
-        Some(v) => bytes_strip_start(bytes.get(vm.heap), extract_bytes_only(v, vm)?).to_vec(),
+        None | Some(Value::None) => bytes_strip_whitespace_start(bytes.get(vm.heap)),
+        Some(v) => bytes_strip_start(bytes.get(vm.heap), extract_bytes_only(v, vm)?),
     };
-    allocate_bytes(result, vm.heap)
+    allocate_bytes(result.to_vec(), vm.heap)
 }
 
 /// Implements Python's `bytes.rstrip([chars])` method.
@@ -1156,10 +1156,10 @@ fn bytes_rstrip<'h>(
     let value = args.get_zero_one_arg("bytes.rstrip", vm.heap)?;
     defer_drop!(value, vm);
     let result = match value {
-        None | Some(Value::None) => bytes_strip_whitespace_end(bytes.get(vm.heap)).to_vec(),
-        Some(v) => bytes_strip_end(bytes.get(vm.heap), extract_bytes_only(v, vm)?).to_vec(),
+        None | Some(Value::None) => bytes_strip_whitespace_end(bytes.get(vm.heap)),
+        Some(v) => bytes_strip_end(bytes.get(vm.heap), extract_bytes_only(v, vm)?),
     };
-    allocate_bytes(result, vm.heap)
+    allocate_bytes(result.to_vec(), vm.heap)
 }
 
 /// Strips bytes in `chars` from both ends of the byte slice.
@@ -1222,11 +1222,11 @@ fn bytes_removeprefix<'h>(
     defer_drop!(prefix_value, vm);
     let prefix = extract_bytes_only(prefix_value, vm)?;
 
-    let data = bytes.get(vm.heap);
-    let result = if data.starts_with(prefix) {
-        data[prefix.len()..].to_vec()
+    let bytes = bytes.get(vm.heap);
+    let result = if bytes.starts_with(prefix) {
+        bytes[prefix.len()..].to_vec()
     } else {
-        data.to_vec()
+        bytes.to_vec()
     };
     allocate_bytes(result, vm.heap)
 }
@@ -1244,11 +1244,11 @@ fn bytes_removesuffix<'h>(
     defer_drop!(suffix_value, vm);
     let suffix = extract_bytes_only(suffix_value, vm)?;
 
-    let data = bytes.get(vm.heap);
-    let result = if data.ends_with(suffix) && !suffix.is_empty() {
-        data[..data.len() - suffix.len()].to_vec()
+    let bytes = bytes.get(vm.heap);
+    let result = if bytes.ends_with(suffix) && !suffix.is_empty() {
+        bytes[..bytes.len() - suffix.len()].to_vec()
     } else {
-        data.to_vec()
+        bytes.to_vec()
     };
     allocate_bytes(result, vm.heap)
 }
@@ -1267,38 +1267,33 @@ fn bytes_split<'h>(
 ) -> RunResult<Value> {
     let (sep, maxsplit) = parse_bytes_split_args("bytes.split", args, vm)?;
 
-    // Collect split parts into owned Vecs so the immutable heap borrow from
-    // `bytes.get()` ends before we allocate.
-    let parts: Vec<Vec<u8>> = {
-        let data = bytes.get(vm.heap);
-        let slices: Vec<&[u8]> = match &sep {
-            Some(sep) => {
-                if sep.is_empty() {
-                    return Err(ExcType::value_error_empty_separator());
-                }
-                if maxsplit < 0 {
-                    bytes_split_by_seq(data, sep)
-                } else {
-                    let max = usize::try_from(maxsplit).unwrap_or(usize::MAX);
-                    bytes_splitn_by_seq(data, sep, max + 1)
-                }
+    let bytes = bytes.get(vm.heap);
+    let parts: Vec<&[u8]> = match &sep {
+        Some(sep) => {
+            if sep.is_empty() {
+                return Err(ExcType::value_error_empty_separator());
             }
-            None => {
-                if maxsplit < 0 {
-                    bytes_split_whitespace(data)
-                } else {
-                    let max = usize::try_from(maxsplit).unwrap_or(usize::MAX);
-                    bytes_splitn_whitespace(data, max)
-                }
+            if maxsplit < 0 {
+                bytes_split_by_seq(bytes, sep)
+            } else {
+                let max = usize::try_from(maxsplit).unwrap_or(usize::MAX);
+                bytes_splitn_by_seq(bytes, sep, max + 1)
             }
-        };
-        slices.into_iter().map(<[u8]>::to_vec).collect()
+        }
+        None => {
+            if maxsplit < 0 {
+                bytes_split_whitespace(bytes)
+            } else {
+                let max = usize::try_from(maxsplit).unwrap_or(usize::MAX);
+                bytes_splitn_whitespace(bytes, max)
+            }
+        }
     };
 
     let mut list_items = Vec::with_capacity(parts.len());
     for part in parts {
         vm.heap.check_time()?;
-        list_items.push(allocate_bytes(part, vm.heap)?);
+        list_items.push(allocate_bytes(part.to_vec(), vm.heap)?);
     }
 
     let list = List::new(list_items);
@@ -1316,38 +1311,33 @@ fn bytes_rsplit<'h>(
 ) -> RunResult<Value> {
     let (sep, maxsplit) = parse_bytes_split_args("bytes.rsplit", args, vm)?;
 
-    // Collect split parts into owned Vecs so the immutable heap borrow from
-    // `bytes.get()` ends before we allocate.
-    let parts: Vec<Vec<u8>> = {
-        let data = bytes.get(vm.heap);
-        let slices: Vec<&[u8]> = match &sep {
-            Some(sep) => {
-                if sep.is_empty() {
-                    return Err(ExcType::value_error_empty_separator());
-                }
-                if maxsplit < 0 {
-                    bytes_split_by_seq(data, sep)
-                } else {
-                    let max = usize::try_from(maxsplit).unwrap_or(usize::MAX);
-                    bytes_rsplitn_by_seq(data, sep, max + 1)
-                }
+    let bytes = bytes.get(vm.heap);
+    let parts: Vec<&[u8]> = match &sep {
+        Some(sep) => {
+            if sep.is_empty() {
+                return Err(ExcType::value_error_empty_separator());
             }
-            None => {
-                if maxsplit < 0 {
-                    bytes_split_whitespace(data)
-                } else {
-                    let max = usize::try_from(maxsplit).unwrap_or(usize::MAX);
-                    bytes_rsplitn_whitespace(data, max)
-                }
+            if maxsplit < 0 {
+                bytes_split_by_seq(bytes, sep)
+            } else {
+                let max = usize::try_from(maxsplit).unwrap_or(usize::MAX);
+                bytes_rsplitn_by_seq(bytes, sep, max + 1)
             }
-        };
-        slices.into_iter().map(<[u8]>::to_vec).collect()
+        }
+        None => {
+            if maxsplit < 0 {
+                bytes_split_whitespace(bytes)
+            } else {
+                let max = usize::try_from(maxsplit).unwrap_or(usize::MAX);
+                bytes_rsplitn_whitespace(bytes, max)
+            }
+        }
     };
 
     let mut list_items = Vec::with_capacity(parts.len());
     for part in parts {
         vm.heap.check_time()?;
-        list_items.push(allocate_bytes(part, vm.heap)?);
+        list_items.push(allocate_bytes(part.to_vec(), vm.heap)?);
     }
 
     let list = List::new(list_items);
@@ -1581,13 +1571,10 @@ fn bytes_splitlines<'h>(
 ) -> RunResult<Value> {
     let keepends = parse_bytes_splitlines_args(args, vm)?;
 
-    // Copy bytes data upfront so we can interleave reads with mutable heap operations
-    // (check_time, allocate) in the loop below.
-    let data = bytes.get(vm.heap).to_vec();
-    let len = data.len();
-
     let mut lines = Vec::new();
     let mut start = 0;
+    let bytes = bytes.get(vm.heap);
+    let len = bytes.len();
 
     while start < len {
         vm.heap.check_time()?;
@@ -1596,7 +1583,7 @@ fn bytes_splitlines<'h>(
         let mut line_end = start;
 
         while end < len {
-            match data[end] {
+            match bytes[end] {
                 b'\n' => {
                     line_end = end;
                     end += 1;
@@ -1605,7 +1592,7 @@ fn bytes_splitlines<'h>(
                 b'\r' => {
                     line_end = end;
                     end += 1;
-                    if end < len && data[end] == b'\n' {
+                    if end < len && bytes[end] == b'\n' {
                         end += 1;
                     }
                     break;
@@ -1618,9 +1605,9 @@ fn bytes_splitlines<'h>(
         }
 
         let line = if keepends {
-            &data[start..end]
+            &bytes[start..end]
         } else {
-            &data[start..line_end]
+            &bytes[start..line_end]
         };
         lines.push(allocate_bytes(line.to_vec(), vm.heap)?);
         start = end;
@@ -1696,10 +1683,10 @@ fn bytes_partition<'h>(
         return Err(ExcType::value_error_empty_separator());
     }
 
-    let data = bytes.get(vm.heap);
-    let (before, sep_found, after) = match find_subsequence(data, sep) {
-        Some(pos) => (data[..pos].to_vec(), sep.to_vec(), data[pos + sep.len()..].to_vec()),
-        None => (data.to_vec(), Vec::new(), Vec::new()),
+    let bytes = bytes.get(vm.heap);
+    let (before, sep_found, after) = match find_subsequence(bytes, sep) {
+        Some(pos) => (bytes[..pos].to_vec(), sep.to_vec(), bytes[pos + sep.len()..].to_vec()),
+        None => (bytes.to_vec(), Vec::new(), Vec::new()),
     };
 
     let before_val = allocate_bytes(before, vm.heap)?;
@@ -1728,10 +1715,10 @@ fn bytes_rpartition<'h>(
         return Err(ExcType::value_error_empty_separator());
     }
 
-    let data = bytes.get(vm.heap);
-    let (before, sep_found, after) = match rfind_subsequence(data, sep) {
-        Some(pos) => (data[..pos].to_vec(), sep.to_vec(), data[pos + sep.len()..].to_vec()),
-        None => (Vec::new(), Vec::new(), data.to_vec()),
+    let bytes = bytes.get(vm.heap);
+    let (before, sep_found, after) = match rfind_subsequence(bytes, sep) {
+        Some(pos) => (bytes[..pos].to_vec(), sep.to_vec(), bytes[pos + sep.len()..].to_vec()),
+        None => (Vec::new(), Vec::new(), bytes.to_vec()),
     };
 
     let before_val = allocate_bytes(before, vm.heap)?;
@@ -1758,16 +1745,15 @@ fn bytes_replace<'h>(
 ) -> RunResult<Value> {
     let (old, new, count) = parse_bytes_replace_args("bytes.replace", args, vm)?;
 
-    // Copy bytes upfront because replace helpers interleave reads with check_time.
-    let data = bytes.get(vm.heap).to_vec();
+    let bytes = bytes.get(vm.heap);
 
-    check_replace_size(data.len(), old.len(), new.len(), count, vm.heap.tracker())?;
+    check_replace_size(bytes.len(), old.len(), new.len(), count, vm.heap.tracker())?;
 
     let result = if count < 0 {
-        bytes_replace_all(&data, &old, &new, vm.heap)?
+        bytes_replace_all(bytes, &old, &new, vm.heap)?
     } else {
         let n = usize::try_from(count).unwrap_or(usize::MAX);
-        bytes_replace_n(&data, &old, &new, n, vm.heap)?
+        bytes_replace_n(bytes, &old, &new, n, vm.heap)?
     };
 
     allocate_bytes(result, vm.heap)
@@ -1849,7 +1835,7 @@ fn bytes_replace_all(
     bytes: &[u8],
     old: &[u8],
     new: &[u8],
-    heap: &mut Heap<impl ResourceTracker>,
+    heap: &Heap<impl ResourceTracker>,
 ) -> Result<Vec<u8>, ResourceError> {
     if old.is_empty() {
         // Empty pattern: insert new before each byte and at the end
@@ -1884,7 +1870,7 @@ fn bytes_replace_n(
     old: &[u8],
     new: &[u8],
     n: usize,
-    heap: &mut Heap<impl ResourceTracker>,
+    heap: &Heap<impl ResourceTracker>,
 ) -> Result<Vec<u8>, ResourceError> {
     if old.is_empty() {
         // Empty pattern: insert new before each byte (up to n times)
@@ -1932,11 +1918,11 @@ fn bytes_center<'h>(
 ) -> RunResult<Value> {
     let (width, fillbyte) = parse_bytes_justify_args("bytes.center", args, vm)?;
 
-    let data = bytes.get(vm.heap);
-    let len = data.len();
+    let bytes = bytes.get(vm.heap);
+    let len = bytes.len();
 
     let result = if width <= len {
-        data.to_vec()
+        bytes.to_vec()
     } else {
         check_repeat_size(width, 1, vm.heap.tracker())?;
         let total_pad = width - len;
@@ -1946,7 +1932,7 @@ fn bytes_center<'h>(
         for _ in 0..left_pad {
             result.push(fillbyte);
         }
-        result.extend_from_slice(data);
+        result.extend_from_slice(bytes);
         for _ in 0..right_pad {
             result.push(fillbyte);
         }
@@ -1966,16 +1952,16 @@ fn bytes_ljust<'h>(
 ) -> RunResult<Value> {
     let (width, fillbyte) = parse_bytes_justify_args("bytes.ljust", args, vm)?;
 
-    let data = bytes.get(vm.heap);
-    let len = data.len();
+    let bytes = bytes.get(vm.heap);
+    let len = bytes.len();
 
     let result = if width <= len {
-        data.to_vec()
+        bytes.to_vec()
     } else {
         check_repeat_size(width, 1, vm.heap.tracker())?;
         let pad = width - len;
         let mut result = Vec::with_capacity(width);
-        result.extend_from_slice(data);
+        result.extend_from_slice(bytes);
         for _ in 0..pad {
             result.push(fillbyte);
         }
@@ -1995,11 +1981,11 @@ fn bytes_rjust<'h>(
 ) -> RunResult<Value> {
     let (width, fillbyte) = parse_bytes_justify_args("bytes.rjust", args, vm)?;
 
-    let data = bytes.get(vm.heap);
-    let len = data.len();
+    let bytes = bytes.get(vm.heap);
+    let len = bytes.len();
 
     let result = if width <= len {
-        data.to_vec()
+        bytes.to_vec()
     } else {
         check_repeat_size(width, 1, vm.heap.tracker())?;
         let pad = width - len;
@@ -2007,7 +1993,7 @@ fn bytes_rjust<'h>(
         for _ in 0..pad {
             result.push(fillbyte);
         }
-        result.extend_from_slice(data);
+        result.extend_from_slice(bytes);
         result
     };
 
@@ -2069,24 +2055,24 @@ fn bytes_zfill<'h>(
         usize::try_from(width_i64).unwrap_or(usize::MAX)
     };
 
-    let data = bytes.get(vm.heap);
-    let len = data.len();
+    let bytes = bytes.get(vm.heap);
+    let len = bytes.len();
 
     let result = if width <= len {
-        data.to_vec()
+        bytes.to_vec()
     } else {
         check_repeat_size(width, 1, vm.heap.tracker())?;
         let pad = width - len;
         let mut result = Vec::with_capacity(width);
 
         // Handle sign prefix
-        if !data.is_empty() && (data[0] == b'+' || data[0] == b'-') {
-            result.push(data[0]);
+        if !bytes.is_empty() && (bytes[0] == b'+' || bytes[0] == b'-') {
+            result.push(bytes[0]);
             result.resize(pad + 1, b'0');
-            result.extend_from_slice(&data[1..]);
+            result.extend_from_slice(&bytes[1..]);
         } else {
             result.resize(pad, b'0');
-            result.extend_from_slice(data);
+            result.extend_from_slice(bytes);
         }
         result
     };
@@ -2163,8 +2149,8 @@ fn bytes_hex<'h>(
 ) -> RunResult<Value> {
     let (sep, bytes_per_sep) = parse_bytes_hex_args(args, vm)?;
 
-    let data = bytes.get(vm.heap);
-    let hex_chars: Vec<char> = data
+    let bytes = bytes.get(vm.heap);
+    let hex_chars: Vec<char> = bytes
         .iter()
         .flat_map(|b| {
             let hi = (b >> 4) & 0xf;
@@ -2184,7 +2170,7 @@ fn bytes_hex<'h>(
         .collect();
 
     let result = if let Some(sep) = sep {
-        if bytes_per_sep == 0 || data.is_empty() {
+        if bytes_per_sep == 0 || bytes.is_empty() {
             hex_chars.iter().collect()
         } else {
             // Insert separator every `bytes_per_sep` bytes (2*bytes_per_sep hex chars)
