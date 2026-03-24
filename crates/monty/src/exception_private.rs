@@ -537,7 +537,7 @@ impl ExcType {
     pub(crate) fn type_error_multiple_values(name: &str, key: &str) -> RunError {
         SimpleException::new_msg(
             Self::TypeError,
-            format!("{name}() got multiple values for argument '{key}'"),
+            format!("{name}() got multiple values for keyword argument '{key}'"),
         )
         .into()
     }

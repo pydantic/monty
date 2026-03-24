@@ -158,7 +158,7 @@ impl ArgValues {
             if keyword_name.matches(kwarg_name, interns) {
                 if has_positional {
                     result.drop_with_heap(value_guard.heap());
-                    return Err(ExcType::type_error_multiple_values(
+                    return Err(ExcType::type_error_duplicate_arg(
                         method_name,
                         keyword_name.as_str(interns),
                     ));
