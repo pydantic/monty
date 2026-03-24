@@ -124,7 +124,7 @@ impl List {
     /// is NOT incremented here - the caller is responsible for ensuring the refcount
     /// was already incremented (e.g., via `clone_with_heap` or `evaluate_use`).
     ///
-    /// Returns `Value::None`, matching Python's behavior where `list.append()` returns None.
+    /// Returns `Err(ResourceError::Memory)` if the growth would exceed the memory limit.
     pub fn append(&mut self, heap: &Heap<impl ResourceTracker>, item: Value) -> Result<(), ResourceError> {
         // Check memory limit before growing the internal Vec
         heap.track_growth(VALUE_SIZE)?;
@@ -148,7 +148,7 @@ impl List {
     /// * `index` - The position to insert at (0-based). If index >= len(),
     ///   the item is appended to the end (matching Python semantics).
     ///
-    /// Returns `Value::None`, matching Python's behavior where `list.insert()` returns None.
+    /// Returns `Err(ResourceError::Memory)` if the growth would exceed the memory limit.
     pub fn insert(
         &mut self,
         heap: &Heap<impl ResourceTracker>,
@@ -369,15 +369,16 @@ impl PyTrait for List {
             }
             self.items.extend(items);
         } else {
-            // Get items from other list using iadd_extend_from_heap helper
-            // This handles the borrow checker limitations with lifetime propagation
+            // Pre-check memory limit before extending from the other list.
+            // We query the source list length first so the check happens before mutation.
+            let source_len = match heap.get(*other_id) {
+                HeapData::List(list) => list.len(),
+                _ => return Ok(false),
+            };
+            heap.track_growth(source_len * VALUE_SIZE)?;
+            // Now perform the actual extend
             let prev_len = self.items.len();
-            if !heap.iadd_extend_list(*other_id, &mut self.items) {
-                return Ok(false);
-            }
-            // Track memory growth for the items that were added
-            let added = self.items.len() - prev_len;
-            heap.track_growth(added * VALUE_SIZE)?;
+            heap.iadd_extend_list(*other_id, &mut self.items);
             // Check if we added any refs and mark potential cycle
             if self.contains_refs {
                 // Already had refs, but adding more may create cycles
@@ -603,10 +604,14 @@ fn list_extend(list: &mut List, args: ArgValues, vm: &mut VM<'_, '_, impl Resour
     let iterable = args.get_one_arg("list.extend", vm.heap)?;
     let items: SmallVec<[_; 2]> = MontyIter::new(iterable, vm)?.collect(vm)?;
 
-    // Add each item to the list
-    for item in items {
-        list.append(vm.heap, item)?;
+    // Batch memory check for all items at once, then extend
+    vm.heap.track_growth(items.len() * VALUE_SIZE)?;
+    let has_refs = items.iter().any(|v| matches!(v, Value::Ref(_)));
+    if has_refs {
+        list.set_contains_refs();
+        vm.heap.mark_potential_cycle();
     }
+    list.as_vec_mut().extend(items);
 
     Ok(Value::None)
 }

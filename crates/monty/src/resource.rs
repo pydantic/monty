@@ -538,17 +538,19 @@ impl ResourceTracker for LimitedTracker {
     }
 
     fn on_grow(&self, additional_bytes: usize) -> Result<(), ResourceError> {
-        if let Some(max) = self.limits.max_memory {
-            let current_mem = self.current_memory.get();
-            let new_memory = current_mem.saturating_add(additional_bytes);
-            if new_memory > max {
-                return Err(ResourceError::Memory {
-                    limit: max,
-                    used: new_memory,
-                });
-            }
-            self.current_memory.set(new_memory);
+        let current_mem = self.current_memory.get();
+        let new_memory = current_mem.saturating_add(additional_bytes);
+        if let Some(max) = self.limits.max_memory
+            && new_memory > max
+        {
+            return Err(ResourceError::Memory {
+                limit: max,
+                used: new_memory,
+            });
         }
+        // Always update current_memory, matching on_allocate's behavior,
+        // so current_memory() remains accurate even without a memory limit.
+        self.current_memory.set(new_memory);
         Ok(())
     }
 
