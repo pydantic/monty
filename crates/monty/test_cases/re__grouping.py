@@ -239,3 +239,9 @@ m = re.search(r'(?P<first>\w+)?@(?P<second>\w+)', '@host')
 assert m is not None, 'optional named group search for groupdict'
 d = m.groupdict()
 assert d == {'first': None, 'second': 'host'}, 'groupdict includes unmatched named groups as None'
+
+# groupdict with default keyword argument
+m = re.search(r'(?P<first>\w+)?@(?P<second>\w+)', '@host')
+assert m is not None, 'groupdict default kwarg search'
+d = m.groupdict(default='N/A')
+assert d == {'first': 'N/A', 'second': 'host'}, 'groupdict default kwarg replaces None'

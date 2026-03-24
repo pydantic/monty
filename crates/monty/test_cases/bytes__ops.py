@@ -88,3 +88,7 @@ assert b'\xfe' < b'\xff', '0xfe < 0xff'
 # Sorting
 assert sorted([b'c', b'a', b'b']) == [b'a', b'b', b'c'], 'sorted bytes list'
 assert sorted([b'bb', b'a', b'ba']) == [b'a', b'ba', b'bb'], 'sorted different length bytes'
+
+# === bytes() constructor with keyword argument ===
+assert bytes(source=b'hello') == b'hello', 'bytes source kwarg bytes'
+assert bytes(source=3) == b'\x00\x00\x00', 'bytes source kwarg int'
