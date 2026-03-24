@@ -356,3 +356,6 @@ assert '\thello'.expandtabs(-1) == 'hello', 'expandtabs negative tabsize'
 assert 'a\tb\nc\td'.expandtabs(4) == 'a   b\nc   d', 'expandtabs newline resets column'
 assert '\t\n\t'.expandtabs(4) == '    \n    ', 'expandtabs tab newline tab'
 assert 'a\tb\rc\td'.expandtabs(4) == 'a   b\rc   d', 'expandtabs carriage return resets column'
+
+# expandtabs() with keyword argument
+assert '\thello'.expandtabs(tabsize=4) == '    hello', 'expandtabs tabsize kwarg'

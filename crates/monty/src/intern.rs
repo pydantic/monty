@@ -69,7 +69,7 @@ static ASCII_STRS: LazyLock<[&'static str; 128]> = LazyLock::new(|| {
 });
 
 /// Static string values which are known at compile time and don't need to be interned.
-#[repr(u8)]
+#[repr(u16)]
 #[derive(
     Debug, Clone, Copy, FromRepr, EnumString, IntoStaticStr, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
 )]
@@ -171,6 +171,11 @@ pub enum StaticStrings {
     Rjust,
     Zfill,
     Expandtabs,
+    // Keyword argument names for string/bytes methods and constructors
+    Tabsize,
+    Keepends,
+    Object,
+    Source,
     // Additional string methods
     Encode,
     Isidentifier,
@@ -518,7 +523,7 @@ impl StaticStrings {
     /// (e.g., it's an ASCII char or a dynamically interned string).
     pub fn from_string_id(id: StringId) -> Option<Self> {
         let enum_id = id.0.checked_sub(STATIC_STRING_ID_OFFSET)?;
-        u8::try_from(enum_id).ok().and_then(Self::from_repr)
+        u16::try_from(enum_id).ok().and_then(Self::from_repr)
     }
 }
 

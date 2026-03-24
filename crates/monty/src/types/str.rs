@@ -46,7 +46,7 @@ impl Str {
     /// - `str()` with no args returns an empty string
     /// - `str(x)` converts x to its string representation using `py_str`
     pub fn init(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
-        let value = args.get_zero_one_arg("str", vm.heap)?;
+        let value = args.get_zero_one_named_arg("str", StaticStrings::Object.into(), vm.heap, vm.interns)?;
         match value {
             None => Ok(Value::InternString(StaticStrings::EmptyString.into())),
             Some(v) => {
@@ -1642,52 +1642,14 @@ fn str_splitlines<'h>(
 ///
 /// Supports both positional and keyword arguments for keepends.
 fn parse_splitlines_args(args: ArgValues, vm: &mut VM<'_, '_, impl ResourceTracker>) -> RunResult<bool> {
-    let (pos, kwargs) = args.into_parts();
-    let kwargs_iter = kwargs.into_iter();
-    defer_drop_mut!(kwargs_iter, vm);
-
-    let mut pos_iter = pos;
-    let keepends_value = pos_iter.next();
-    defer_drop_mut!(keepends_value, vm);
-
-    // Check no extra positional arguments
-    if pos_iter.len() != 0 {
-        return Err(ExcType::type_error_at_most("str.splitlines", 1, 2));
-    }
-
-    // Extract positional keepends (default false)
-    let mut has_pos_keepends = keepends_value.is_some();
-    let mut keepends = if let Some(v) = keepends_value.as_ref() {
-        value_is_truthy(v)
+    let val = args.get_zero_one_named_arg("str.splitlines", StaticStrings::Keepends.into(), vm.heap, vm.interns)?;
+    let keepends = if let Some(v) = val {
+        let result = value_is_truthy(&v);
+        v.drop_with_heap(vm.heap);
+        result
     } else {
         false
     };
-
-    // Process kwargs
-    for (key, value) in kwargs_iter {
-        defer_drop!(key, vm);
-        defer_drop!(value, vm);
-
-        let Some(keyword_name) = key.as_either_str(vm.heap) else {
-            return Err(ExcType::type_error("keywords must be strings"));
-        };
-
-        let key_str = keyword_name.as_str(vm.interns);
-        if key_str == "keepends" {
-            if has_pos_keepends {
-                return Err(ExcType::type_error(
-                    "str.splitlines() got multiple values for argument 'keepends'",
-                ));
-            }
-            keepends = value_is_truthy(value);
-            has_pos_keepends = true;
-        } else {
-            return Err(ExcType::type_error(format!(
-                "'{key_str}' is an invalid keyword argument for str.splitlines()"
-            )));
-        }
-    }
-
     Ok(keepends)
 }
 
@@ -2053,8 +2015,8 @@ fn str_expandtabs<'h>(
     args: ArgValues,
     vm: &mut VM<'h, '_, impl ResourceTracker>,
 ) -> RunResult<Value> {
-    // Check args
-    let tabsize_val = args.get_zero_one_arg("str.expandtabs", vm.heap)?;
+    let tabsize_val =
+        args.get_zero_one_named_arg("str.expandtabs", StaticStrings::Tabsize.into(), vm.heap, vm.interns)?;
 
     let tabsize = match tabsize_val {
         None => 8,

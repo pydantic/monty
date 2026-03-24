@@ -187,7 +187,7 @@ impl Bytes {
     ///
     /// Note: Full Python semantics for bytes() are more complex (encoding, errors params).
     pub fn init(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
-        let value = args.get_zero_one_arg("bytes", vm.heap)?;
+        let value = args.get_zero_one_named_arg("bytes", StaticStrings::Source.into(), vm.heap, vm.interns)?;
         defer_drop!(value, vm);
         let new_data = match value {
             None => Vec::new(),
@@ -1620,50 +1620,14 @@ fn bytes_splitlines<'h>(
 
 /// Parses arguments for bytes.splitlines method.
 fn parse_bytes_splitlines_args(args: ArgValues, vm: &mut VM<'_, '_, impl ResourceTracker>) -> RunResult<bool> {
-    let (pos_iter, kwargs) = args.into_parts();
-    defer_drop_mut!(pos_iter, vm);
-    let kwargs = kwargs.into_iter();
-    defer_drop_mut!(kwargs, vm);
-
-    let keepends_value = pos_iter.next();
-    defer_drop_mut!(keepends_value, vm);
-
-    // Check no extra positional arguments
-    if pos_iter.len() != 0 {
-        return Err(ExcType::type_error_at_most("bytes.splitlines", 1, 2));
-    }
-
-    // Process kwargs
-    for (key, value) in kwargs {
-        defer_drop!(key, vm);
-        let mut value_guard = HeapGuard::new(value, vm);
-
-        let Some(keyword_name) = key.as_either_str(value_guard.heap().heap) else {
-            return Err(ExcType::type_error("keywords must be strings"));
-        };
-
-        let key_str = keyword_name.as_str(value_guard.heap().interns);
-        if key_str == "keepends" {
-            if let Some(previous_value) = keepends_value.replace(value_guard.into_inner()) {
-                previous_value.drop_with_heap(vm);
-                return Err(ExcType::type_error(
-                    "bytes.splitlines() got multiple values for argument 'keepends'",
-                ));
-            }
-        } else {
-            return Err(ExcType::type_error(format!(
-                "'{key_str}' is an invalid keyword argument for bytes.splitlines()"
-            )));
-        }
-    }
-
-    // Extract keepends (default false)
-    let keepends = if let Some(v) = keepends_value {
-        v.py_bool(vm)
+    let val = args.get_zero_one_named_arg("bytes.splitlines", StaticStrings::Keepends.into(), vm.heap, vm.interns)?;
+    let keepends = if let Some(v) = val {
+        let result = v.py_bool(vm);
+        v.drop_with_heap(vm.heap);
+        result
     } else {
         false
     };
-
     Ok(keepends)
 }
 
