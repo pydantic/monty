@@ -181,16 +181,32 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Tuple> {
         Some(self.get(vm.heap).items.len())
     }
 
-    fn py_repr_fmt(
-        &self,
-        f: &mut impl Write,
-        vm: &VM<'h, '_, impl ResourceTracker>,
-        heap_ids: &mut AHashSet<HeapId>,
-    ) -> RunResult<()> {
-        repr_sequence_fmt('(', ')', &self.get(vm.heap).items, f, vm, heap_ids)
+    fn py_getitem(&self, key: &Value, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<Value> {
+        // Check for slice first (Value::Ref pointing to HeapData::Slice)
+        if let Value::Ref(key_id) = key
+            && let HeapData::Slice(slice_obj) = vm.heap.get(*key_id)
+        {
+            let (start, stop, step) = slice_obj
+                .indices(self.get(vm.heap).items.len())
+                .map_err(|()| ExcType::value_error_slice_step_zero())?;
+            let items = get_slice_items(&self.get(vm.heap).items, start, stop, step, vm.heap)?;
+            return Ok(allocate_tuple(items.into(), vm.heap)?);
+        }
+
+        // Extract integer index, accepting Int, Bool (True=1, False=0), and LongInt
+        let index = key.as_index(vm, Type::Tuple)?;
+        let len = self.get(vm.heap).as_slice().len();
+        let len_i64 = i64::try_from(len).expect("tuple length exceeds i64::MAX");
+        let normalized = if index < 0 { index + len_i64 } else { index };
+
+        if normalized < 0 || normalized >= len_i64 {
+            return Err(ExcType::tuple_index_error());
+        }
+
+        let idx = usize::try_from(normalized).expect("tuple index validated non-negative");
+        Ok(self.clone_item(idx, vm))
     }
 
-    /// Element-wise equality using the short-lived borrow pattern.
     fn py_eq(&self, other: &Self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> Result<bool, ResourceError> {
         let a_len = self.get(vm.heap).items.len();
         if a_len != other.get(vm.heap).items.len() {
@@ -260,32 +276,6 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Tuple> {
         Ok(Some(allocate_tuple(items, vm.heap)?))
     }
 
-    fn py_getitem(&self, key: &Value, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<Value> {
-        // Check for slice first (Value::Ref pointing to HeapData::Slice)
-        if let Value::Ref(key_id) = key
-            && let HeapData::Slice(slice_obj) = vm.heap.get(*key_id)
-        {
-            let (start, stop, step) = slice_obj
-                .indices(self.get(vm.heap).items.len())
-                .map_err(|()| ExcType::value_error_slice_step_zero())?;
-            let items = get_slice_items(&self.get(vm.heap).items, start, stop, step, vm.heap)?;
-            return Ok(allocate_tuple(items.into(), vm.heap)?);
-        }
-
-        // Extract integer index, accepting Int, Bool (True=1, False=0), and LongInt
-        let index = key.as_index(vm, Type::Tuple)?;
-        let len = self.get(vm.heap).as_slice().len();
-        let len_i64 = i64::try_from(len).expect("tuple length exceeds i64::MAX");
-        let normalized = if index < 0 { index + len_i64 } else { index };
-
-        if normalized < 0 || normalized >= len_i64 {
-            return Err(ExcType::tuple_index_error());
-        }
-
-        let idx = usize::try_from(normalized).expect("tuple index validated non-negative");
-        Ok(self.clone_item(idx, vm))
-    }
-
     /// Dispatches a method call on a heap-allocated tuple.
     ///
     /// Tuple methods (`index`, `count`) iterate items and compare with `py_eq`, which
@@ -306,6 +296,19 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Tuple> {
                 Err(ExcType::attribute_error(Type::Tuple, attr.as_str(vm.interns)))
             }
         }
+    }
+
+    fn py_bool(&self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> bool {
+        !self.get(vm.heap).items.is_empty()
+    }
+
+    fn py_repr_fmt(
+        &self,
+        f: &mut impl Write,
+        vm: &VM<'h, '_, impl ResourceTracker>,
+        heap_ids: &mut AHashSet<HeapId>,
+    ) -> RunResult<()> {
+        repr_sequence_fmt('(', ')', &self.get(vm.heap).items, f, vm, heap_ids)
     }
 }
 
