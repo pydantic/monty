@@ -269,18 +269,12 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Tuple> {
         Ok(Some(a_len.cmp(&b_len)))
     }
 
-    /// Concatenates two tuples, producing a new heap-allocated tuple.
     fn py_add(&self, other: &Self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> Result<Option<Value>, ResourceError> {
         let mut items = self.clone_all_items(vm);
         items.extend(other.clone_all_items(vm));
         Ok(Some(allocate_tuple(items, vm.heap)?))
     }
 
-    /// Dispatches a method call on a heap-allocated tuple.
-    ///
-    /// Tuple methods (`index`, `count`) iterate items and compare with `py_eq`, which
-    /// needs `&mut VM`. Uses short-lived borrows to read item data from the heap,
-    /// then clone for comparison.
     fn py_call_attr(
         &mut self,
         _self_id: HeapId,
