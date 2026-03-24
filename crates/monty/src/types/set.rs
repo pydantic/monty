@@ -681,6 +681,10 @@ impl<'h> HeapRead<'h, Set> {
             }
         }
 
+        // Track memory growth before adding the new entry.
+        // Growth unit matches SetStorage::estimate_size which uses size_of::<SetEntry>().
+        vm.heap.track_growth(std::mem::size_of::<SetEntry>())?;
+
         // Add new entry
         let storage = &mut self.get_mut(vm.heap).0;
         let index = storage.entries.len();

@@ -723,7 +723,11 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
         match self {
             Self::List(l) => l.py_setitem(key, value, vm),
             Self::Dict(d) => d.py_setitem(key, value, vm),
-            _ => Err(ExcType::type_error_not_sub_assignment(self.py_type(vm))),
+            _ => {
+                key.drop_with_heap(vm);
+                value.drop_with_heap(vm);
+                Err(ExcType::type_error_not_sub_assignment(self.py_type(vm)))
+            }
         }
     }
 
