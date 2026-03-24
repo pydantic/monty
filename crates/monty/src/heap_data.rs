@@ -635,6 +635,31 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             _ => self.py_repr(vm),
         }
     }
+
+    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<Option<CallResult>> {
+        match self {
+            Self::Str(s) => s.py_getattr(attr, vm),
+            Self::Bytes(b) => b.py_getattr(attr, vm),
+            Self::List(l) => l.py_getattr(attr, vm),
+            Self::Tuple(t) => t.py_getattr(attr, vm),
+            Self::NamedTuple(nt) => nt.py_getattr(attr, vm),
+            Self::Dict(d) => d.py_getattr(attr, vm),
+            Self::DictKeysView(view) => view.py_getattr(attr, vm),
+            Self::DictItemsView(view) => view.py_getattr(attr, vm),
+            Self::DictValuesView(view) => view.py_getattr(attr, vm),
+            Self::Set(s) => s.py_getattr(attr, vm),
+            Self::FrozenSet(fs) => fs.py_getattr(attr, vm),
+            Self::Range(r) => r.py_getattr(attr, vm),
+            Self::Slice(s) => s.py_getattr(attr, vm),
+            Self::Dataclass(dc) => dc.py_getattr(attr, vm),
+            Self::ReMatch(m) => m.py_getattr(attr, vm),
+            Self::RePattern(p) => p.py_getattr(attr, vm),
+            Self::Module(m) => Ok(m.py_getattr(attr, vm)),
+            Self::Exception(e) => e.py_getattr(attr, vm),
+            Self::Path(p) => p.py_getattr(attr, vm),
+            _ => Ok(None),
+        }
+    }
 }
 
 impl HeapData {

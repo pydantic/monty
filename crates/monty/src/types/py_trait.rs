@@ -279,7 +279,27 @@ pub trait PyTrait<'h> {
         .into())
     }
 
-    // NOTE: py_getattr dispatch was moved to HeapReadOutput in value.rs.
-    // Individual type implementations (Dataclass, NamedTuple, etc.) retain their
-    // py_getattr methods but they are called from helper functions, not through this trait.
+    /// Python attribute get operation (`__getattr__`), e.g., `obj.attr`.
+    ///
+    /// Returns the value associated with the attribute (owned), or `Ok(None)` if the type
+    /// doesn't support attribute access at all. Types that support attributes should return
+    /// `Err(AttributeError)` when an attribute is not found, not `Ok(None)`.
+    ///
+    /// The returned `Value` is always owned:
+    /// - For stored values (Dataclass, Module, NamedTuple fields): clone with `clone_with_heap`
+    /// - For computed values (Exception.args, Slice.start, Path.name): return newly created value
+    ///
+    /// Takes `&mut VM` to allow:
+    /// - Cloning stored values with proper reference counting
+    /// - Allocating computed values that need heap storage
+    ///
+    /// Default implementation returns `Ok(None)`, indicating the type doesn't support
+    /// attribute access and a generic `AttributeError` should be raised by the caller.
+    fn py_getattr(
+        &self,
+        _attr: &EitherStr,
+        _vm: &mut VM<'h, '_, impl ResourceTracker>,
+    ) -> RunResult<Option<CallResult>> {
+        Ok(None)
+    }
 }

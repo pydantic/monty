@@ -4,24 +4,25 @@ use std::{
 };
 
 use serde::{Deserialize, Serialize};
+use smallvec::smallvec;
 use strum::{Display, EnumString, IntoStaticStr};
 
 use crate::{
     args::ArgValues,
-    bytecode::VM,
+    bytecode::{CallResult, VM},
     defer_drop,
     exception_public::{MontyException, StackFrame},
     fstring::FormatError,
     heap::{HeapData, HeapRead},
-    intern::{Interns, StringId},
+    intern::{Interns, StaticStrings, StringId},
     parse::CodeRange,
     resource::ResourceTracker,
     types::{
-        PyTrait, Type,
+        PyTrait, Str, Type, allocate_tuple,
         long_int::INT_MAX_STR_DIGITS,
         str::{StringRepr, string_repr_fmt},
     },
-    value::Value,
+    value::{EitherStr, Value},
 };
 
 /// Result type alias for operations that can produce a runtime error.
@@ -1253,6 +1254,34 @@ impl SimpleException {
 impl<'h> HeapRead<'h, SimpleException> {
     pub(crate) fn py_type(&self, vm: &VM<'h, '_, impl ResourceTracker>) -> Type {
         Type::Exception(self.get(vm.heap).exc_type)
+    }
+
+    /// Gets an attribute from this exception.
+    ///
+    /// Handles the `.args` attribute by allocating a tuple containing the message.
+    /// Returns `Err(AttributeError)` for all other attributes.
+    pub fn py_getattr(
+        &self,
+        attr: &EitherStr,
+        vm: &mut VM<'h, '_, impl ResourceTracker>,
+    ) -> RunResult<Option<CallResult>> {
+        // Fast path: interned strings can be matched by ID
+        let is_args = attr
+            .static_string()
+            .map_or_else(|| attr.as_str(vm.interns) == "args", |ss| ss == StaticStrings::Args);
+
+        if is_args {
+            // Construct tuple with 0 or 1 elements based on whether arg exists
+            let elements = if let Some(arg_str) = &self.get(vm.heap).arg {
+                let str_id = vm.heap.allocate(HeapData::Str(Str::from(arg_str.clone())))?;
+                smallvec![Value::Ref(str_id)]
+            } else {
+                smallvec![]
+            };
+            Ok(Some(CallResult::Value(allocate_tuple(elements, vm.heap)?)))
+        } else {
+            Ok(None)
+        }
     }
 }
 

@@ -75,6 +75,25 @@ impl Module {
 }
 
 impl<'h> HeapRead<'h, Module> {
+    /// Gets an attribute by string ID for the `py_getattr` trait method.
+    ///
+    /// Returns the attribute value if found, or `None` if the attribute doesn't exist.
+    /// For `Property` values, invokes the property getter rather than returning
+    /// the Property itself - this implements Python's descriptor protocol.
+    pub fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h, '_, impl ResourceTracker>) -> Option<CallResult> {
+        let value = self
+            .get(vm.heap)
+            .attrs
+            .get_by_str(attr.as_str(vm.interns), vm.heap, vm.interns)?;
+
+        // If the value is a Property, invoke its getter to compute the actual value
+        if let Value::Property(prop) = *value {
+            Some(prop.get())
+        } else {
+            Some(CallResult::Value(value.clone_with_heap(vm)))
+        }
+    }
+
     /// Dispatches a method call on a heap-allocated module via the `HeapRead` pattern.
     ///
     /// Uses `get_by_str` (which only needs `&Heap`) for the attribute lookup, then

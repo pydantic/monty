@@ -143,12 +143,6 @@ impl ReMatch {
         &self.groups
     }
 
-    /// Returns the original input string that was matched against.
-    #[must_use]
-    pub(crate) fn input_string(&self) -> &str {
-        &self.input_string
-    }
-
     /// Returns the match for a given group number.
     ///
     /// Group 0 is the full match, groups 1..N are capture groups.
@@ -346,6 +340,17 @@ impl<'h> PyTrait<'h> for HeapRead<'h, ReMatch> {
         heap_ids: &mut AHashSet<HeapId>,
     ) -> RunResult<()> {
         self.get(vm.heap).py_repr_fmt(f, vm, heap_ids)
+    }
+
+    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<Option<CallResult>> {
+        match attr.static_string() {
+            Some(StaticStrings::StringAttr) => {
+                let s = Str::new(self.get(vm.heap).input_string.clone());
+                let v = Value::Ref(vm.heap.allocate(HeapData::Str(s))?);
+                Ok(Some(CallResult::Value(v)))
+            }
+            _ => Err(ExcType::attribute_error(Type::ReMatch, attr.as_str(vm.interns))),
+        }
     }
 
     /// Handles attribute calls on ReMatch objects (group, groups, groupdict, etc.).

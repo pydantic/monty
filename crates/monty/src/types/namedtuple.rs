@@ -21,7 +21,7 @@ use ahash::AHashSet;
 
 use super::PyTrait;
 use crate::{
-    bytecode::VM,
+    bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{ExcType, RunResult},
     heap::{HeapId, HeapItem, HeapRead},
@@ -210,36 +210,6 @@ impl<'h> HeapRead<'h, NamedTuple> {
     }
 }
 
-/// Minimal `PyTrait` implementation for bare `NamedTuple`, used only by `HeapData` dispatches
-/// (py_type, py_len, py_bool, py_repr_fmt). All mutable-VM operations (py_eq, py_getitem)
-/// are on `HeapRead<NamedTuple>` below.
-impl PyTrait<'_> for NamedTuple {
-    fn py_type(&self, _vm: &VM<'_, '_, impl ResourceTracker>) -> Type {
-        Type::NamedTuple
-    }
-
-    fn py_len(&self, _vm: &VM<'_, '_, impl ResourceTracker>) -> Option<usize> {
-        Some(self.items.len())
-    }
-
-    fn py_eq(&self, _other: &Self, _vm: &mut VM<'_, '_, impl ResourceTracker>) -> Result<bool, ResourceError> {
-        unreachable!("NamedTuple py_eq must be called through HeapRead")
-    }
-
-    fn py_bool(&self, _vm: &mut VM<'_, '_, impl ResourceTracker>) -> bool {
-        !self.items.is_empty()
-    }
-
-    fn py_repr_fmt(
-        &self,
-        f: &mut impl Write,
-        vm: &VM<'_, '_, impl ResourceTracker>,
-        heap_ids: &mut AHashSet<HeapId>,
-    ) -> RunResult<()> {
-        namedtuple_repr_fmt(&self.name, &self.field_names, &self.items, f, vm, heap_ids)
-    }
-}
-
 /// `PyTrait` implementation for `HeapRead<NamedTuple>`, providing all Python operations
 /// on heap-allocated named tuples via short-lived borrow patterns.
 impl<'h> PyTrait<'h> for HeapRead<'h, NamedTuple> {
@@ -306,6 +276,16 @@ impl<'h> PyTrait<'h> for HeapRead<'h, NamedTuple> {
 
         let idx = usize::try_from(normalized).expect("namedtuple index validated non-negative");
         Ok(self.clone_item(idx, vm))
+    }
+
+    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<Option<CallResult>> {
+        let attr_name = attr.as_str(vm.interns);
+        if let Some(value) = self.get(vm.heap).get_by_name(attr_name, vm.interns) {
+            Ok(Some(CallResult::Value(value.clone_with_heap(vm.heap))))
+        } else {
+            // we use name here, not `self.py_type(heap)` hence returning a Ok(None)
+            Err(ExcType::attribute_error(self.get(vm.heap).name(vm.interns), attr_name))
+        }
     }
 }
 

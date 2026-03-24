@@ -91,18 +91,6 @@ impl RePattern {
         })
     }
 
-    /// Returns the original pattern string.
-    #[must_use]
-    pub(crate) fn pattern(&self) -> &str {
-        &self.pattern
-    }
-
-    /// Returns the Python regex flags bitmask.
-    #[must_use]
-    pub(crate) fn flags(&self) -> u16 {
-        self.flags
-    }
-
     /// `pattern.search(string)` — find first match anywhere in the string.
     ///
     /// Returns a `ReMatch` heap object on success, or `Value::None` if no match.
@@ -336,6 +324,18 @@ impl<'h> PyTrait<'h> for HeapRead<'h, RePattern> {
         heap_ids: &mut AHashSet<HeapId>,
     ) -> RunResult<()> {
         self.get(vm.heap).py_repr_fmt(f, vm, heap_ids)
+    }
+
+    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<Option<CallResult>> {
+        match attr.static_string() {
+            Some(StaticStrings::PatternAttr) => {
+                let s = Str::new(self.get(vm.heap).pattern.clone());
+                let v = Value::Ref(vm.heap.allocate(HeapData::Str(s))?);
+                Ok(Some(CallResult::Value(v)))
+            }
+            Some(StaticStrings::Flags) => Ok(Some(CallResult::Value(Value::Int(i64::from(self.get(vm.heap).flags))))),
+            _ => Err(ExcType::attribute_error(Type::RePattern, attr.as_str(vm.interns))),
+        }
     }
 
     /// Handles attribute calls on RePattern objects (search, match, findall, sub, etc.).

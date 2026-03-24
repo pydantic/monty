@@ -392,7 +392,7 @@ impl Path {
     pub(crate) fn getattr_by_static(
         &self,
         ss: StaticStrings,
-        heap: &mut Heap<impl ResourceTracker>,
+        heap: &Heap<impl ResourceTracker>,
     ) -> RunResult<Option<Value>> {
         let v = match ss {
             StaticStrings::Name => {
@@ -566,6 +566,32 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Path> {
             }
         };
         value.map(CallResult::Value)
+    }
+
+    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<Option<CallResult>> {
+        // Fast path: interned strings can be matched by ID without string comparison
+        if let Some(ss) = attr.static_string() {
+            if let Some(v) = self.get(vm.heap).getattr_by_static(ss, vm.heap)? {
+                return Ok(Some(CallResult::Value(v)));
+            }
+            return Err(ExcType::attribute_error(Type::Path, attr.as_str(vm.interns)));
+        }
+        // Slow path: heap-allocated strings need string comparison
+        let attr_str = attr.as_str(vm.interns);
+        let ss = match attr_str {
+            "name" => StaticStrings::Name,
+            "parent" => StaticStrings::Parent,
+            "stem" => StaticStrings::Stem,
+            "suffix" => StaticStrings::Suffix,
+            "suffixes" => StaticStrings::Suffixes,
+            "parts" => StaticStrings::Parts,
+            _ => return Err(ExcType::attribute_error(Type::Path, attr_str)),
+        };
+        let v = self
+            .get(vm.heap)
+            .getattr_by_static(ss, vm.heap)?
+            .expect("matched attribute must produce a value");
+        Ok(Some(CallResult::Value(v)))
     }
 }
 
