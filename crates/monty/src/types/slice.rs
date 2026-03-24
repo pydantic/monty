@@ -178,27 +178,6 @@ fn normalize_index(index: i64, length: i64, lower: i64, upper: i64) -> i64 {
     normalized.clamp(lower, upper)
 }
 
-impl Slice {
-    /// Formats this slice for `repr()` output.
-    ///
-    /// Kept as an inherent method so `HeapData` can call it without going
-    /// through a `HeapRead` handle.
-    pub fn py_repr_fmt(
-        &self,
-        f: &mut impl Write,
-        _vm: &VM<'_, '_, impl ResourceTracker>,
-        _heap_ids: &mut AHashSet<HeapId>,
-    ) -> RunResult<()> {
-        f.write_str("slice(")?;
-        format_option_i64(f, self.start)?;
-        f.write_str(", ")?;
-        format_option_i64(f, self.stop)?;
-        f.write_str(", ")?;
-        format_option_i64(f, self.step)?;
-        Ok(f.write_char(')')?)
-    }
-}
-
 impl<'h> PyTrait<'h> for HeapRead<'h, Slice> {
     fn py_type(&self, _vm: &VM<'h, '_, impl ResourceTracker>) -> Type {
         Type::Slice
@@ -224,9 +203,15 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Slice> {
         &self,
         f: &mut impl Write,
         vm: &VM<'h, '_, impl ResourceTracker>,
-        heap_ids: &mut AHashSet<HeapId>,
+        _heap_ids: &mut AHashSet<HeapId>,
     ) -> RunResult<()> {
-        self.get(vm.heap).py_repr_fmt(f, vm, heap_ids)
+        f.write_str("slice(")?;
+        format_option_i64(f, self.get(vm.heap).start)?;
+        f.write_str(", ")?;
+        format_option_i64(f, self.get(vm.heap).stop)?;
+        f.write_str(", ")?;
+        format_option_i64(f, self.get(vm.heap).step)?;
+        Ok(f.write_char(')')?)
     }
 
     fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<Option<CallResult>> {

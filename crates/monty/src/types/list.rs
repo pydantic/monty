@@ -182,6 +182,19 @@ impl List {
 }
 
 impl<'h> HeapRead<'h, List> {
+    /// Handles slice-based indexing for lists.
+    ///
+    /// Returns a new list containing the selected elements.
+    fn getitem_slice(&self, slice: &crate::types::Slice, vm: &VM<'h, '_, impl ResourceTracker>) -> RunResult<Value> {
+        let (start, stop, step) = slice
+            .indices(self.get(vm.heap).items.len())
+            .map_err(|()| ExcType::value_error_slice_step_zero())?;
+
+        let items = get_slice_items(&self.get(vm.heap).items, start, stop, step, vm.heap)?;
+        let heap_id = vm.heap.allocate(HeapData::List(List::new(items)))?;
+        Ok(Value::Ref(heap_id))
+    }
+
     /// Clones the item at the given index with proper refcount management.
     ///
     /// Uses the short-lived borrow pattern: reads the value discriminant through
@@ -214,11 +227,6 @@ impl<'h> HeapRead<'h, List> {
     }
 }
 
-/// `PyTrait` implementation for `HeapRead<'h, List>`.
-///
-/// This provides the standard Python operations for list values accessed through
-/// heap read handles. Mutable methods (setitem, iadd, call_attr) operate through
-/// the HeapRead's `get_mut` to modify the list in-place on the heap.
 impl<'h> PyTrait<'h> for HeapRead<'h, List> {
     fn py_type(&self, _vm: &VM<'h, '_, impl ResourceTracker>) -> Type {
         Type::List
@@ -233,26 +241,22 @@ impl<'h> PyTrait<'h> for HeapRead<'h, List> {
         if let Value::Ref(id) = key
             && let HeapData::Slice(slice) = vm.heap.get(*id)
         {
-            let slice = slice.clone();
-            let len = self.get(vm.heap).len();
-            let (start, stop, step) = slice
-                .indices(len)
-                .map_err(|()| ExcType::value_error_slice_step_zero())?;
-            let items = get_slice_items(&self.get(vm.heap).items, start, stop, step, vm.heap)?;
-            let heap_id = vm.heap.allocate(HeapData::List(List::new(items)))?;
-            return Ok(Value::Ref(heap_id));
+            return self.getitem_slice(slice, vm);
         }
 
+        // Extract integer index, accepting Int, Bool (True=1, False=0), and LongInt
         let index = key.as_index(vm, Type::List)?;
-        let len = i64::try_from(self.get(vm.heap).len()).expect("list length exceeds i64::MAX");
-        let normalized = if index < 0 { index + len } else { index };
 
-        if normalized < 0 || normalized >= len {
+        // Convert to usize, handling negative indices (Python-style: -1 = last element)
+        let len = i64::try_from(self.get(vm.heap).len()).expect("list length exceeds i64::MAX");
+        let normalized_index = if index < 0 { index + len } else { index };
+
+        if normalized_index < 0 || normalized_index >= len {
             return Err(ExcType::list_index_error());
         }
 
-        let idx = usize::try_from(normalized).expect("list index validated non-negative");
-        Ok(self.clone_item(idx, vm))
+        let idx = usize::try_from(normalized_index).expect("list index validated non-negative");
+        Ok(self.get(vm.heap).items[idx].clone_with_heap(vm))
     }
 
     fn py_setitem(&mut self, key: Value, value: Value, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<()> {
@@ -280,15 +284,19 @@ impl<'h> PyTrait<'h> for HeapRead<'h, List> {
             }
         };
 
+        // Normalize negative indices (Python-style: -1 = last element)
         let len = i64::try_from(self.get(vm.heap).len()).expect("list length exceeds i64::MAX");
-        let normalized = if index < 0 { index + len } else { index };
+        let normalized_index = if index < 0 { index + len } else { index };
 
-        if normalized < 0 || normalized >= len {
+        // Bounds check
+        if normalized_index < 0 || normalized_index >= len {
             return Err(ExcType::list_assignment_index_error());
         }
 
-        let idx = usize::try_from(normalized).expect("index validated non-negative");
+        let idx = usize::try_from(normalized_index).expect("index validated non-negative");
 
+        // Update contains_refs if storing a Ref (must check before swap,
+        // since after swap `value` holds the old item)
         if matches!(*value, Value::Ref(_)) {
             self.get_mut(vm.heap).contains_refs = true;
             vm.heap.mark_potential_cycle();
