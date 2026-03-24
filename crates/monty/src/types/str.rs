@@ -46,7 +46,7 @@ impl Str {
     /// - `str()` with no args returns an empty string
     /// - `str(x)` converts x to its string representation using `py_str`
     pub fn init(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
-        let value = args.get_zero_one_named_arg("str", StaticStrings::Object.into(), vm.heap, vm.interns)?;
+        let value = args.get_zero_one_named_arg("str", StaticStrings::Object, vm.heap, vm.interns)?;
         match value {
             None => Ok(Value::InternString(StaticStrings::EmptyString.into())),
             Some(v) => {
@@ -1642,7 +1642,7 @@ fn str_splitlines<'h>(
 ///
 /// Supports both positional and keyword arguments for keepends.
 fn parse_splitlines_args(args: ArgValues, vm: &mut VM<'_, '_, impl ResourceTracker>) -> RunResult<bool> {
-    let val = args.get_zero_one_named_arg("str.splitlines", StaticStrings::Keepends.into(), vm.heap, vm.interns)?;
+    let val = args.get_zero_one_named_arg("str.splitlines", StaticStrings::Keepends, vm.heap, vm.interns)?;
     let keepends = if let Some(v) = val {
         let result = value_is_truthy(&v);
         v.drop_with_heap(vm.heap);
@@ -2016,7 +2016,7 @@ fn str_expandtabs<'h>(
     vm: &mut VM<'h, '_, impl ResourceTracker>,
 ) -> RunResult<Value> {
     let tabsize_val =
-        args.get_zero_one_named_arg("str.expandtabs", StaticStrings::Tabsize.into(), vm.heap, vm.interns)?;
+        args.get_zero_one_named_arg("str.expandtabs", StaticStrings::Tabsize, vm.heap, vm.interns)?;
 
     let tabsize = match tabsize_val {
         None => 8,

@@ -187,7 +187,7 @@ impl Bytes {
     ///
     /// Note: Full Python semantics for bytes() are more complex (encoding, errors params).
     pub fn init(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
-        let value = args.get_zero_one_named_arg("bytes", StaticStrings::Source.into(), vm.heap, vm.interns)?;
+        let value = args.get_zero_one_named_arg("bytes", StaticStrings::Source, vm.heap, vm.interns)?;
         defer_drop!(value, vm);
         let new_data = match value {
             None => Vec::new(),
@@ -1620,7 +1620,7 @@ fn bytes_splitlines<'h>(
 
 /// Parses arguments for bytes.splitlines method.
 fn parse_bytes_splitlines_args(args: ArgValues, vm: &mut VM<'_, '_, impl ResourceTracker>) -> RunResult<bool> {
-    let val = args.get_zero_one_named_arg("bytes.splitlines", StaticStrings::Keepends.into(), vm.heap, vm.interns)?;
+    let val = args.get_zero_one_named_arg("bytes.splitlines", StaticStrings::Keepends, vm.heap, vm.interns)?;
     let keepends = if let Some(v) = val {
         let result = v.py_bool(vm);
         v.drop_with_heap(vm.heap);

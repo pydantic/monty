@@ -355,12 +355,8 @@ impl<'h> PyTrait<'h> for HeapRead<'h, ReMatch> {
                 self.get(vm.heap).get_groups(vm.heap)?
             }
             Some(StaticStrings::Groupdict) => {
-                let default = args.get_zero_one_named_arg(
-                    "re.Match.groupdict",
-                    StaticStrings::Default.into(),
-                    vm.heap,
-                    vm.interns,
-                )?;
+                let default =
+                    args.get_zero_one_named_arg("re.Match.groupdict", StaticStrings::Default, vm.heap, vm.interns)?;
                 let default = default.unwrap_or(Value::None);
                 let result = self.get_groupdict(&default, vm)?;
                 default.drop_with_heap(vm);

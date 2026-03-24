@@ -121,7 +121,7 @@ impl ArgValues {
     pub fn get_zero_one_named_arg(
         self,
         method_name: &str,
-        kwarg_name: StringId,
+        kwarg_name: impl Into<StringId>,
         heap: &mut Heap<impl ResourceTracker>,
         interns: &Interns,
     ) -> RunResult<Option<Value>> {
@@ -143,6 +143,8 @@ impl ArgValues {
 
         let mut result = positional;
         let has_positional = result.is_some();
+
+        let kwarg_name = kwarg_name.into();
 
         for (key, value) in kwargs_iter {
             defer_drop!(key, heap);
