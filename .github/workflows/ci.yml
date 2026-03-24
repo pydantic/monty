@@ -109,7 +109,7 @@ jobs:
           files: codecov.json
           token: ${{ secrets.CODECOV_TOKEN }}
 
-      - uses: getsentry/codecov-action@v1
+      - uses: getsentry/codecov-action@main
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           files: codecov.json
