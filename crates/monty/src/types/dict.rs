@@ -18,7 +18,7 @@ use crate::{
     intern::{Interns, StaticStrings},
     resource::{ResourceError, ResourceTracker},
     types::Type,
-    value::{EitherStr, Value},
+    value::{EitherStr, VALUE_SIZE, Value},
 };
 
 /// Python dict type preserving insertion order.
@@ -238,7 +238,9 @@ impl<'h> HeapRead<'h, Dict> {
             // Transfer ownership of the old value to caller (no clone needed)
             Ok(Some(old_entry.value))
         } else {
-            // Key doesn't exist, add new pair to indices and entries
+            // Key doesn't exist — track memory growth before adding the new entry.
+            // Growth unit is 2 * size_of::<Value>() to match Dict::py_estimate_size.
+            vm.heap.track_growth(2 * VALUE_SIZE)?;
             let this = self.get_mut(vm.heap);
             let index = this.entries.len();
             this.entries.push(entry);
@@ -720,7 +722,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Dict> {
 impl HeapItem for Dict {
     fn py_estimate_size(&self) -> usize {
         // Dict size: struct overhead + entries (2 Values per entry for key+value)
-        std::mem::size_of::<Self>() + self.len() * 2 * std::mem::size_of::<Value>()
+        std::mem::size_of::<Self>() + self.len() * 2 * VALUE_SIZE
     }
 
     fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {

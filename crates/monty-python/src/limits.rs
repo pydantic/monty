@@ -139,4 +139,8 @@ impl<T: ResourceTracker> ResourceTracker for PySignalTracker<T> {
     fn check_large_result(&self, estimated_bytes: usize) -> Result<(), ResourceError> {
         self.inner.check_large_result(estimated_bytes)
     }
+
+    fn on_grow(&self, additional_bytes: usize) -> Result<(), ResourceError> {
+        self.inner.on_grow(additional_bytes)
+    }
 }

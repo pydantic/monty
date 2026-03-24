@@ -282,6 +282,17 @@ pub trait ResourceTracker: fmt::Debug {
     ///
     /// Returns `Ok(())` to allow the operation, or `Err(ResourceError)` to reject.
     fn check_large_result(&self, estimated_bytes: usize) -> Result<(), ResourceError>;
+
+    /// Called when an existing heap object grows in place (e.g., `list.append`, `dict[k] = v`).
+    ///
+    /// Updates tracked memory and checks limits. Unlike `on_allocate`, this does not
+    /// increment the allocation count — it only tracks memory growth of an already-allocated
+    /// object. The growth is automatically balanced on free because `on_free` reads
+    /// `py_estimate_size()` which includes all grown elements.
+    ///
+    /// # Arguments
+    /// * `additional_bytes` - Approximate additional memory consumed by the growth
+    fn on_grow(&self, additional_bytes: usize) -> Result<(), ResourceError>;
 }
 
 /// A resource tracker that imposes no limits except default recursion limit.
@@ -301,6 +312,11 @@ impl ResourceTracker for NoLimitTracker {
 
     #[inline]
     fn check_time(&self) -> Result<(), ResourceError> {
+        Ok(())
+    }
+
+    #[inline]
+    fn on_grow(&self, _: usize) -> Result<(), ResourceError> {
         Ok(())
     }
 
@@ -519,6 +535,23 @@ impl ResourceTracker for LimitedTracker {
     fn on_free(&self, get_size: impl FnOnce() -> usize) {
         let current = self.current_memory.get();
         self.current_memory.set(current.saturating_sub(get_size()));
+    }
+
+    fn on_grow(&self, additional_bytes: usize) -> Result<(), ResourceError> {
+        let current_mem = self.current_memory.get();
+        let new_memory = current_mem.saturating_add(additional_bytes);
+        if let Some(max) = self.limits.max_memory
+            && new_memory > max
+        {
+            return Err(ResourceError::Memory {
+                limit: max,
+                used: new_memory,
+            });
+        }
+        // Always update current_memory, matching on_allocate's behavior,
+        // so current_memory() remains accurate even without a memory limit.
+        self.current_memory.set(new_memory);
+        Ok(())
     }
 
     fn check_time(&self) -> Result<(), ResourceError> {

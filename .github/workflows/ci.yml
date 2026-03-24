@@ -64,6 +64,10 @@ jobs:
 
   test-rust:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: write
 
     steps:
       - uses: actions/checkout@v6
@@ -104,6 +108,14 @@ jobs:
         with:
           files: codecov.json
           token: ${{ secrets.CODECOV_TOKEN }}
+
+      - uses: getsentry/codecov-action@main
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          files: codecov.json
+          coverage-format: codecov
+          post-pr-comment: true
+          name: rust-coverage
 
   test-python:
     name: test python ${{ matrix.python-version }}

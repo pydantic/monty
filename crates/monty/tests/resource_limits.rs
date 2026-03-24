@@ -1824,3 +1824,161 @@ re.sub('a', 'b' * 100, 'a' * 1000, count=5) == 'b' * 500 + 'a' * 995
     assert!(result.is_ok(), "re.sub with small count should succeed");
     assert_eq!(result.unwrap(), MontyObject::Bool(true));
 }
+
+// === Container growth memory tracking tests ===
+// These tests verify that mutable container operations (append, insert, extend, iadd,
+// dict setitem, set add) correctly track memory growth against configured limits.
+
+/// `list.append()` in a loop must respect memory limits.
+#[test]
+fn list_append_respects_memory_limit() {
+    let code = r"
+x = []
+for i in range(1000000):
+    x.append(i)
+";
+    let ex = MontyRun::new(code.to_owned(), "test.py", vec![]).unwrap();
+
+    let limits = ResourceLimits::new().max_memory(10_000);
+    let result = ex.run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout);
+
+    assert!(result.is_err(), "should exceed memory limit via list.append");
+    let exc = result.unwrap_err();
+    assert_eq!(exc.exc_type(), ExcType::MemoryError);
+}
+
+/// `list.insert()` in a loop must respect memory limits.
+#[test]
+fn list_insert_respects_memory_limit() {
+    let code = r"
+x = []
+for i in range(1000000):
+    x.insert(0, i)
+";
+    let ex = MontyRun::new(code.to_owned(), "test.py", vec![]).unwrap();
+
+    let limits = ResourceLimits::new().max_memory(10_000);
+    let result = ex.run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout);
+
+    assert!(result.is_err(), "should exceed memory limit via list.insert");
+    let exc = result.unwrap_err();
+    assert_eq!(exc.exc_type(), ExcType::MemoryError);
+}
+
+/// `list.extend()` must respect memory limits.
+#[test]
+fn list_extend_respects_memory_limit() {
+    let code = r"
+x = []
+x.extend(range(1000000))
+";
+    let ex = MontyRun::new(code.to_owned(), "test.py", vec![]).unwrap();
+
+    let limits = ResourceLimits::new().max_memory(10_000);
+    let result = ex.run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout);
+
+    assert!(result.is_err(), "should exceed memory limit via list.extend");
+    let exc = result.unwrap_err();
+    assert_eq!(exc.exc_type(), ExcType::MemoryError);
+}
+
+/// `list += list` (iadd with self-doubling) must respect memory limits.
+#[test]
+fn list_iadd_respects_memory_limit() {
+    let code = r"
+x = list(range(100))
+for i in range(20):
+    x += x
+";
+    let ex = MontyRun::new(code.to_owned(), "test.py", vec![]).unwrap();
+
+    let limits = ResourceLimits::new().max_memory(100_000);
+    let result = ex.run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout);
+
+    assert!(result.is_err(), "should exceed memory limit via list iadd");
+    let exc = result.unwrap_err();
+    assert_eq!(exc.exc_type(), ExcType::MemoryError);
+}
+
+/// `dict[k] = v` in a loop must respect memory limits.
+#[test]
+fn dict_setitem_respects_memory_limit() {
+    let code = r"
+x = {}
+for i in range(1000000):
+    x[i] = i
+";
+    let ex = MontyRun::new(code.to_owned(), "test.py", vec![]).unwrap();
+
+    let limits = ResourceLimits::new().max_memory(10_000);
+    let result = ex.run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout);
+
+    assert!(result.is_err(), "should exceed memory limit via dict setitem");
+    let exc = result.unwrap_err();
+    assert_eq!(exc.exc_type(), ExcType::MemoryError);
+}
+
+/// `set.add()` in a loop must respect memory limits.
+#[test]
+fn set_add_respects_memory_limit() {
+    let code = r"
+x = set()
+for i in range(1000000):
+    x.add(i)
+";
+    let ex = MontyRun::new(code.to_owned(), "test.py", vec![]).unwrap();
+
+    let limits = ResourceLimits::new().max_memory(10_000);
+    let result = ex.run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout);
+
+    assert!(result.is_err(), "should exceed memory limit via set.add");
+    let exc = result.unwrap_err();
+    assert_eq!(exc.exc_type(), ExcType::MemoryError);
+}
+
+/// List comprehension must respect memory limits.
+#[test]
+fn list_comprehension_respects_memory_limit() {
+    let code = r"
+x = [i for i in range(1000000)]
+";
+    let ex = MontyRun::new(code.to_owned(), "test.py", vec![]).unwrap();
+
+    let limits = ResourceLimits::new().max_memory(10_000);
+    let result = ex.run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout);
+
+    assert!(result.is_err(), "should exceed memory limit via list comprehension");
+    let exc = result.unwrap_err();
+    assert_eq!(exc.exc_type(), ExcType::MemoryError);
+}
+
+/// Moderate container operations within generous limits should still succeed.
+#[test]
+fn moderate_container_growth_within_limits() {
+    let code = r"
+x = []
+for i in range(100):
+    x.append(i)
+
+d = {}
+for i in range(100):
+    d[i] = i
+
+s = set()
+for i in range(100):
+    s.add(i)
+
+len(x) + len(d) + len(s)
+";
+    let ex = MontyRun::new(code.to_owned(), "test.py", vec![]).unwrap();
+
+    // 1MB limit — plenty of room for 300 total elements
+    let limits = ResourceLimits::new().max_memory(1_000_000);
+    let result = ex.run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout);
+
+    assert!(
+        result.is_ok(),
+        "moderate operations should succeed within generous limit"
+    );
+    assert_eq!(result.unwrap(), MontyObject::Int(300));
+}

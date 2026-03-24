@@ -170,6 +170,7 @@ pub enum StaticStrings {
     Ljust,
     Rjust,
     Zfill,
+    Expandtabs,
     // Additional string methods
     Encode,
     Isidentifier,
