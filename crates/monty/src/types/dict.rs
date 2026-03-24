@@ -486,60 +486,6 @@ impl<'h> HeapRead<'h, Dict> {
     }
 }
 
-/// Implements Python's `dict.clear()` method.
-///
-/// Removes all items from the dict.
-fn dict_clear<'h>(dict: &mut HeapRead<'h, Dict>, vm: &mut VM<'h, '_, impl ResourceTracker>) {
-    dict.get_mut(vm.heap).indices.clear();
-    std::mem::take(&mut dict.get_mut(vm.heap).entries).drop_with_heap(vm.heap);
-    // Note: contains_refs stays true even if all refs removed, per conservative GC strategy
-}
-
-/// Implements Python's `dict.copy()` method.
-///
-/// Returns a shallow copy of the dict.
-fn dict_copy<'h>(dict: &mut HeapRead<'h, Dict>, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<Value> {
-    // Copy all key-value pairs (incrementing refcounts)
-    let pairs: Vec<(Value, Value)> = dict
-        .get(vm.heap)
-        .iter()
-        .map(|(k, v)| (k.clone_with_heap(vm), v.clone_with_heap(vm)))
-        .collect();
-
-    let new_dict = Dict::from_pairs(pairs, vm)?;
-    let heap_id = vm.heap.allocate(HeapData::Dict(new_dict))?;
-    Ok(Value::Ref(heap_id))
-}
-
-/// Implements Python's `dict.update([other], **kwargs)` method.
-///
-/// Updates the dict with key-value pairs from `other` and/or `kwargs`.
-/// If `other` is a dict, copies its key-value pairs.
-/// If `other` is an iterable, expects pairs of (key, value).
-/// Keyword arguments are also added to the dict.
-fn dict_update<'h>(
-    dict: &mut HeapRead<'h, Dict>,
-    args: ArgValues,
-    vm: &mut VM<'h, '_, impl ResourceTracker>,
-) -> RunResult<Value> {
-    let (pos_iter, kwargs) = args.into_parts();
-    defer_drop_mut!(pos_iter, vm);
-    let mut kwargs_guard = HeapGuard::new(kwargs, vm);
-
-    if let Some(other_value) = pos_iter.next() {
-        let other_value_guard = HeapGuard::new(other_value, kwargs_guard.heap());
-        if pos_iter.len() != 0 {
-            return Err(ExcType::type_error_at_most("dict.update", 1, pos_iter.len() + 1));
-        }
-        let other_value = other_value_guard.into_inner();
-        dict.merge_from_value(other_value, kwargs_guard.heap())?;
-    }
-
-    let kwargs = kwargs_guard.into_inner();
-    dict.merge_from_kwargs(kwargs, vm)?;
-    Ok(Value::None)
-}
-
 /// Iterator over borrowed (key, value) pairs in a dict.
 pub(crate) struct DictIter<'a>(std::slice::Iter<'a, DictEntry>);
 
@@ -808,6 +754,60 @@ impl DropWithHeap for DictEntry {
         self.key.drop_with_heap(heap);
         self.value.drop_with_heap(heap);
     }
+}
+
+/// Implements Python's `dict.clear()` method.
+///
+/// Removes all items from the dict.
+fn dict_clear<'h>(dict: &mut HeapRead<'h, Dict>, vm: &mut VM<'h, '_, impl ResourceTracker>) {
+    dict.get_mut(vm.heap).indices.clear();
+    std::mem::take(&mut dict.get_mut(vm.heap).entries).drop_with_heap(vm.heap);
+    // Note: contains_refs stays true even if all refs removed, per conservative GC strategy
+}
+
+/// Implements Python's `dict.copy()` method.
+///
+/// Returns a shallow copy of the dict.
+fn dict_copy<'h>(dict: &mut HeapRead<'h, Dict>, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<Value> {
+    // Copy all key-value pairs (incrementing refcounts)
+    let pairs: Vec<(Value, Value)> = dict
+        .get(vm.heap)
+        .iter()
+        .map(|(k, v)| (k.clone_with_heap(vm), v.clone_with_heap(vm)))
+        .collect();
+
+    let new_dict = Dict::from_pairs(pairs, vm)?;
+    let heap_id = vm.heap.allocate(HeapData::Dict(new_dict))?;
+    Ok(Value::Ref(heap_id))
+}
+
+/// Implements Python's `dict.update([other], **kwargs)` method.
+///
+/// Updates the dict with key-value pairs from `other` and/or `kwargs`.
+/// If `other` is a dict, copies its key-value pairs.
+/// If `other` is an iterable, expects pairs of (key, value).
+/// Keyword arguments are also added to the dict.
+fn dict_update<'h>(
+    dict: &mut HeapRead<'h, Dict>,
+    args: ArgValues,
+    vm: &mut VM<'h, '_, impl ResourceTracker>,
+) -> RunResult<Value> {
+    let (pos_iter, kwargs) = args.into_parts();
+    defer_drop_mut!(pos_iter, vm);
+    let mut kwargs_guard = HeapGuard::new(kwargs, vm);
+
+    if let Some(other_value) = pos_iter.next() {
+        let other_value_guard = HeapGuard::new(other_value, kwargs_guard.heap());
+        if pos_iter.len() != 0 {
+            return Err(ExcType::type_error_at_most("dict.update", 1, pos_iter.len() + 1));
+        }
+        let other_value = other_value_guard.into_inner();
+        dict.merge_from_value(other_value, kwargs_guard.heap())?;
+    }
+
+    let kwargs = kwargs_guard.into_inner();
+    dict.merge_from_kwargs(kwargs, vm)?;
+    Ok(Value::None)
 }
 
 /// Merges key-value pairs from either a dict or an iterable of 2-item pairs.

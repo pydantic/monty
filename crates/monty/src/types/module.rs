@@ -94,28 +94,15 @@ impl<'h> HeapRead<'h, Module> {
         }
     }
 
-    /// Dispatches a method call on a heap-allocated module via the `HeapRead` pattern.
+    /// Calls an attribute as a function on this module.
     ///
-    /// Uses `get_by_str` (which only needs `&Heap`) for the attribute lookup, then
-    /// clones the found value via a short-lived borrow before calling the function.
-    /// Alias for `call_attr` to match the `PyTrait` naming convention used by
-    /// `heap_read_call_attr` in `heap_data.rs`.
-    pub(crate) fn py_call_attr(
+    /// Modules don't have methods - they have callable attributes. This looks up
+    /// the attribute and calls it if it's a `ModuleFunction`.
+    ///
+    /// Returns `CallResult` because module functions may need OS operations
+    /// (e.g., `os.getenv()`) that require host involvement.
+    pub fn py_call_attr(
         &mut self,
-        self_id: HeapId,
-        vm: &mut VM<'h, '_, impl ResourceTracker>,
-        attr: &EitherStr,
-        args: ArgValues,
-    ) -> RunResult<CallResult> {
-        self.call_attr(self_id, vm, attr, args)
-    }
-
-    /// Dispatches a method call on a heap-allocated module via the `HeapRead` pattern.
-    ///
-    /// Uses `get_by_str` (which only needs `&Heap`) for the attribute lookup, then
-    /// clones the found value via a short-lived borrow before calling the function.
-    pub(crate) fn call_attr(
-        &self,
         _self_id: HeapId,
         vm: &mut VM<'h, '_, impl ResourceTracker>,
         attr: &EitherStr,
@@ -124,49 +111,25 @@ impl<'h> HeapRead<'h, Module> {
         let mut args_guard = HeapGuard::new(args, vm);
         let vm = args_guard.heap();
 
-        // Module name is Copy (just a StringId)
-        let module_name = self.get(vm.heap).name();
-
         let attr_str = match attr {
             EitherStr::Interned(id) => vm.interns.get_str(*id),
             EitherStr::Heap(s) => {
-                return Err(ExcType::attribute_error_module(vm.interns.get_str(module_name), s));
+                return Err(ExcType::attribute_error_module(
+                    vm.interns.get_str(self.get(vm.heap).name),
+                    s,
+                ));
             }
         };
 
-        // Look up via get_by_str — only needs &Heap (immutable), so compatible with
-        // the HeapRead borrow. Clone the value using short-lived borrow pattern.
-        let ref_id = {
-            match self.get(vm.heap).attrs().get_by_str(attr_str, vm.heap, vm.interns) {
-                Some(Value::Ref(id)) => Some(Some(*id)),
-                Some(_) => Some(None),
-                None => None,
-            }
-        };
-
-        match ref_id {
-            Some(Some(id)) => {
-                // Ref value — inc_ref outside the borrow, then call
-                vm.heap.inc_ref(id);
-                let value = Value::Ref(id);
-                let (args, vm) = args_guard.into_parts();
-                defer_drop!(value, vm);
-                vm.call_function(value, args)
-            }
-            Some(None) => {
-                // Non-ref value (e.g., Int, Bool) — clone without heap access
-                let value = self
-                    .get(vm.heap)
-                    .attrs()
-                    .get_by_str(attr_str, vm.heap, vm.interns)
-                    .unwrap()
-                    .clone_immediate();
+        match self.get(vm.heap).attrs().get_by_str(attr_str, vm.heap, vm.interns) {
+            Some(value) => {
+                let value = value.clone_with_heap(vm);
                 let (args, vm) = args_guard.into_parts();
                 defer_drop!(value, vm);
                 vm.call_function(value, args)
             }
             None => Err(ExcType::attribute_error_module(
-                vm.interns.get_str(module_name),
+                vm.interns.get_str(self.get(vm.heap).name),
                 attr.as_str(vm.interns),
             )),
         }

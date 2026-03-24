@@ -212,50 +212,6 @@ impl<'h> HeapRead<'h, List> {
         }
         result
     }
-
-    /// Collects sliced items using the two-phase clone pattern.
-    ///
-    /// Unlike `get_slice_items` which takes `&[Value]` + `&mut Heap`, this method
-    /// uses short-lived borrows through HeapRead to avoid holding the heap borrow
-    /// across clone_with_heap calls.
-    fn getitem_slice_items(
-        &self,
-        start: usize,
-        stop: usize,
-        step: i64,
-        vm: &mut VM<'h, '_, impl ResourceTracker>,
-    ) -> RunResult<Vec<Value>> {
-        let items_len = self.get(vm.heap).len();
-        let mut result = Vec::new();
-
-        if let Ok(step_usize) = usize::try_from(step) {
-            let mut i = start;
-            while i < stop && i < items_len {
-                vm.heap.check_time()?;
-                result.push(self.clone_item(i, vm));
-                i += step_usize;
-            }
-        } else {
-            let step_abs = usize::try_from(-step).expect("step is negative so -step is positive");
-            let step_abs_i64 = i64::try_from(step_abs).expect("step magnitude fits in i64");
-            let mut i = i64::try_from(start).expect("start index fits in i64");
-            let stop_i64 = if stop > items_len {
-                -1
-            } else {
-                i64::try_from(stop).expect("stop bounded by items.len() fits in i64")
-            };
-            while i > stop_i64 {
-                vm.heap.check_time()?;
-                let idx = usize::try_from(i).expect("i is non-negative");
-                if idx < items_len {
-                    result.push(self.clone_item(idx, vm));
-                }
-                i -= step_abs_i64;
-            }
-        }
-
-        Ok(result)
-    }
 }
 
 /// `PyTrait` implementation for `HeapRead<'h, List>`.
@@ -272,17 +228,76 @@ impl<'h> PyTrait<'h> for HeapRead<'h, List> {
         Some(self.get(vm.heap).items.len())
     }
 
-    fn py_bool(&self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> bool {
-        !self.get(vm.heap).items.is_empty()
+    fn py_getitem(&self, key: &Value, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<Value> {
+        // Check for slice first (Value::Ref pointing to HeapData::Slice)
+        if let Value::Ref(id) = key
+            && let HeapData::Slice(slice) = vm.heap.get(*id)
+        {
+            let slice = slice.clone();
+            let len = self.get(vm.heap).len();
+            let (start, stop, step) = slice
+                .indices(len)
+                .map_err(|()| ExcType::value_error_slice_step_zero())?;
+            let items = get_slice_items(&self.get(vm.heap).items, start, stop, step, vm.heap)?;
+            let heap_id = vm.heap.allocate(HeapData::List(List::new(items)))?;
+            return Ok(Value::Ref(heap_id));
+        }
+
+        let index = key.as_index(vm, Type::List)?;
+        let len = i64::try_from(self.get(vm.heap).len()).expect("list length exceeds i64::MAX");
+        let normalized = if index < 0 { index + len } else { index };
+
+        if normalized < 0 || normalized >= len {
+            return Err(ExcType::list_index_error());
+        }
+
+        let idx = usize::try_from(normalized).expect("list index validated non-negative");
+        Ok(self.clone_item(idx, vm))
     }
 
-    fn py_repr_fmt(
-        &self,
-        f: &mut impl Write,
-        vm: &VM<'h, '_, impl ResourceTracker>,
-        heap_ids: &mut AHashSet<HeapId>,
-    ) -> RunResult<()> {
-        repr_sequence_fmt('[', ']', &self.get(vm.heap).items, f, vm, heap_ids)
+    fn py_setitem(&mut self, key: Value, value: Value, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<()> {
+        defer_drop!(key, vm);
+        defer_drop_mut!(value, vm);
+
+        let index = match *key {
+            Value::Int(i) => i,
+            Value::Bool(b) => i64::from(b),
+            Value::Ref(heap_id) => {
+                if let HeapData::LongInt(li) = vm.heap.get(heap_id) {
+                    if let Some(i) = li.to_i64() {
+                        i
+                    } else {
+                        return Err(ExcType::index_error_int_too_large());
+                    }
+                } else {
+                    let key_type = key.py_type(vm);
+                    return Err(ExcType::type_error_list_assignment_indices(key_type));
+                }
+            }
+            _ => {
+                let key_type = key.py_type(vm);
+                return Err(ExcType::type_error_list_assignment_indices(key_type));
+            }
+        };
+
+        let len = i64::try_from(self.get(vm.heap).len()).expect("list length exceeds i64::MAX");
+        let normalized = if index < 0 { index + len } else { index };
+
+        if normalized < 0 || normalized >= len {
+            return Err(ExcType::list_assignment_index_error());
+        }
+
+        let idx = usize::try_from(normalized).expect("index validated non-negative");
+
+        if matches!(*value, Value::Ref(_)) {
+            self.get_mut(vm.heap).contains_refs = true;
+            vm.heap.mark_potential_cycle();
+        }
+
+        // Replace value (old one dropped by defer_drop_mut guard)
+        std::mem::swap(&mut self.get_mut(vm.heap).items[idx], value);
+
+        Ok(())
     }
 
     fn py_eq(&self, other: &Self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> Result<bool, ResourceError> {
@@ -304,6 +319,19 @@ impl<'h> PyTrait<'h> for HeapRead<'h, List> {
             }
         }
         Ok(true)
+    }
+
+    fn py_bool(&self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> bool {
+        !self.get(vm.heap).items.is_empty()
+    }
+
+    fn py_repr_fmt(
+        &self,
+        f: &mut impl Write,
+        vm: &VM<'h, '_, impl ResourceTracker>,
+        heap_ids: &mut AHashSet<HeapId>,
+    ) -> RunResult<()> {
+        repr_sequence_fmt('[', ']', &self.get(vm.heap).items, f, vm, heap_ids)
     }
 
     fn py_add(&self, other: &Self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> Result<Option<Value>, ResourceError> {
@@ -351,94 +379,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, List> {
         Ok(true)
     }
 
-    /// Subscript access via HeapRead. Handles both integer indices and slices.
-    ///
-    /// For integer indices: normalizes negative indices, bounds checks, and returns
-    /// a cloned item. For slices: computes indices and returns a new list with
-    /// cloned elements.
-    fn py_getitem(&self, key: &Value, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<Value> {
-        // Check for slice first
-        if let Value::Ref(id) = key
-            && let HeapData::Slice(slice) = vm.heap.get(*id)
-        {
-            let slice = slice.clone();
-            let len = self.get(vm.heap).len();
-            let (start, stop, step) = slice
-                .indices(len)
-                .map_err(|()| ExcType::value_error_slice_step_zero())?;
-            // Collect cloned items using short-lived borrows to avoid
-            // holding a borrow across allocation
-            let items = self.getitem_slice_items(start, stop, step, vm)?;
-            let heap_id = vm.heap.allocate(HeapData::List(List::new(items)))?;
-            return Ok(Value::Ref(heap_id));
-        }
-
-        let index = key.as_index(vm, Type::List)?;
-        let len = i64::try_from(self.get(vm.heap).len()).expect("list length exceeds i64::MAX");
-        let normalized = if index < 0 { index + len } else { index };
-
-        if normalized < 0 || normalized >= len {
-            return Err(ExcType::list_index_error());
-        }
-
-        let idx = usize::try_from(normalized).expect("list index validated non-negative");
-        Ok(self.clone_item(idx, vm))
-    }
-
-    /// Subscript assignment via HeapRead. Takes ownership of key and value.
-    ///
-    /// Normalizes negative indices, bounds checks, swaps in the new value,
-    /// and drops the old value. Updates `contains_refs` flag for GC tracking.
-    fn py_setitem(&mut self, key: Value, value: Value, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<()> {
-        defer_drop!(key, vm);
-        defer_drop_mut!(value, vm);
-
-        let index = match *key {
-            Value::Int(i) => i,
-            Value::Bool(b) => i64::from(b),
-            Value::Ref(heap_id) => {
-                if let HeapData::LongInt(li) = vm.heap.get(heap_id) {
-                    if let Some(i) = li.to_i64() {
-                        i
-                    } else {
-                        return Err(ExcType::index_error_int_too_large());
-                    }
-                } else {
-                    let key_type = key.py_type(vm);
-                    return Err(ExcType::type_error_list_assignment_indices(key_type));
-                }
-            }
-            _ => {
-                let key_type = key.py_type(vm);
-                return Err(ExcType::type_error_list_assignment_indices(key_type));
-            }
-        };
-
-        let len = i64::try_from(self.get(vm.heap).len()).expect("list length exceeds i64::MAX");
-        let normalized = if index < 0 { index + len } else { index };
-
-        if normalized < 0 || normalized >= len {
-            return Err(ExcType::list_assignment_index_error());
-        }
-
-        let idx = usize::try_from(normalized).expect("index validated non-negative");
-
-        if matches!(*value, Value::Ref(_)) {
-            self.get_mut(vm.heap).contains_refs = true;
-            vm.heap.mark_potential_cycle();
-        }
-
-        // Replace value (old one dropped by defer_drop_mut guard)
-        std::mem::swap(&mut self.get_mut(vm.heap).items[idx], value);
-
-        Ok(())
-    }
-
-    /// Dispatches a method call on a list accessed through `HeapRead`.
-    ///
-    /// Because the list data stays in the heap, self-referential operations like
-    /// `x.extend(x)` work correctly — the source list remains accessible through
-    /// the heap during iteration.
+    /// Delegates methods to `call_list_method`.
     fn py_call_attr(
         &mut self,
         _self_id: HeapId,
@@ -705,7 +646,7 @@ fn list_index<'h>(
         let item = list.get(vm.heap).items[i].clone_with_heap(vm);
         defer_drop!(item, vm);
         if value.py_eq(item, vm)? {
-            let idx = i64::try_from(start + i).expect("index exceeds i64::MAX");
+            let idx = i64::try_from(i).expect("index exceeds i64::MAX");
             return Ok(Value::Int(idx));
         }
     }
@@ -853,6 +794,59 @@ pub(crate) fn repr_sequence_fmt(
     f.write_char(end)?;
 
     Ok(())
+}
+
+/// Helper to extract items from a slice for list/tuple slicing.
+///
+/// Handles both positive and negative step values. For negative step,
+/// iterates backward from start down to (but not including) stop.
+///
+/// Returns a new Vec of cloned values with proper refcount increments.
+/// Checks the time limit on each iteration to enforce timeouts during slicing.
+///
+/// Note: step must be non-zero (callers should validate this via `slice.indices()`).
+pub(crate) fn get_slice_items(
+    items: &[Value],
+    start: usize,
+    stop: usize,
+    step: i64,
+    heap: &Heap<impl ResourceTracker>,
+) -> RunResult<Vec<Value>> {
+    let mut result = Vec::new();
+
+    // try_from succeeds for non-negative step; step==0 rejected upstream by slice.indices()
+    if let Ok(step_usize) = usize::try_from(step) {
+        // Positive step: iterate forward
+        let mut i = start;
+        while i < stop && i < items.len() {
+            heap.check_time()?;
+            result.push(items[i].clone_with_heap(heap));
+            i += step_usize;
+        }
+    } else {
+        // Negative step: iterate backward
+        // start is the highest index, stop is the sentinel
+        // stop > items.len() means "go to the beginning"
+        let step_abs = usize::try_from(-step).expect("step is negative so -step is positive");
+        let step_abs_i64 = i64::try_from(step_abs).expect("step magnitude fits in i64");
+        let mut i = i64::try_from(start).expect("start index fits in i64");
+        let stop_i64 = if stop > items.len() {
+            -1
+        } else {
+            i64::try_from(stop).expect("stop bounded by items.len() fits in i64")
+        };
+
+        while let Ok(i_usize) = usize::try_from(i) {
+            if i_usize >= items.len() || i <= stop_i64 {
+                break;
+            }
+            heap.check_time()?;
+            result.push(items[i_usize].clone_with_heap(heap));
+            i -= step_abs_i64;
+        }
+    }
+
+    Ok(result)
 }
 
 #[cfg(test)]
