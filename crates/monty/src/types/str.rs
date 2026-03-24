@@ -1932,18 +1932,14 @@ fn str_zfill(s: &str, args: ArgValues, vm: &mut VM<'_, '_, impl ResourceTracker>
 ///
 /// Returns a copy of the string where all tab characters are replaced by one or
 /// more spaces, depending on the current column and the given tab size.
-fn str_expandtabs(
-    s: &str,
-    args: ArgValues,
-    vm: &mut VM<'_, '_, impl ResourceTracker>,
-) -> RunResult<Value> {
+fn str_expandtabs(s: &str, args: ArgValues, vm: &mut VM<'_, '_, impl ResourceTracker>) -> RunResult<Value> {
     // Check args
     let tabsize_val = args.get_zero_one_arg("str.expandtabs", vm.heap)?;
 
     let tabsize = match tabsize_val {
         None => 8,
         Some(val) => {
-            let result_int = extract_int_arg(&val, vm.heap)?;
+            let result_int = extract_int_arg(&val, vm)?;
             val.drop_with_heap(vm.heap);
             if result_int < 0 {
                 0
@@ -2099,4 +2095,3 @@ fn str_istitle(s: &str) -> bool {
 
     has_cased
 }
-
