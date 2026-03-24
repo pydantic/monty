@@ -9,7 +9,7 @@ use crate::{
     intern::StringId,
     resource::ResourceTracker,
     types::{Dict, List, PyTrait, Set, Slice, Type, allocate_tuple, slice::value_to_option_i64, str::allocate_char},
-    value::Value,
+    value::{VALUE_SIZE, Value},
 };
 
 impl<T: ResourceTracker> VM<'_, '_, T> {
@@ -139,6 +139,11 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
 
         // Check if any copied items are refs (for updating contains_refs)
         let has_refs = copied_items.iter().any(|v| matches!(v, Value::Ref(_)));
+
+        // Check memory limit before growing the list
+        if let Value::Ref(_) = list_ref {
+            this.heap.track_growth(copied_items.len() * VALUE_SIZE)?;
+        }
 
         // Extend the list
         if let Value::Ref(id) = list_ref
@@ -440,7 +445,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
         // Append to the list using with_entry_mut to handle proper contains_refs tracking
         Heap::with_entry_mut(self, list_id, |this, data| {
             if let HeapDataMut::List(list) = data {
-                list.append(this.heap, value);
+                list.append(this.heap, value)?;
                 Ok(())
             } else {
                 value.drop_with_heap(this);

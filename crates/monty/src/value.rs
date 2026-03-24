@@ -101,6 +101,12 @@ pub(crate) enum Value {
     Dereferenced,
 }
 
+/// Size of a single `Value` slot in bytes.
+///
+/// Used for memory tracking when containers grow (e.g., `list.append`, `list.extend`).
+/// Must match the per-element unit used by `py_estimate_size` implementations.
+pub(crate) const VALUE_SIZE: usize = std::mem::size_of::<Value>();
+
 /// Drop implementation that panics if a `Ref` variant is dropped without calling `drop_with_heap`.
 /// This helps catch reference counting bugs during development/testing.
 /// Only enabled when the `ref-count-panic` feature is active.

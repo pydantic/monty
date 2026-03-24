@@ -277,6 +277,18 @@ impl<T: ResourceTracker> Heap<T> {
         self.tracker.check_time()
     }
 
+    /// Tracks in-place memory growth of an existing heap object.
+    ///
+    /// Call this before performing mutations that grow containers (append, insert,
+    /// extend, dict set, set add). Returns `Err(ResourceError::Memory)` if the
+    /// growth would exceed configured memory limits.
+    ///
+    /// Does not increment the allocation count since no new heap object is created.
+    #[inline]
+    pub fn track_growth(&self, additional_bytes: usize) -> Result<(), ResourceError> {
+        self.tracker.on_grow(additional_bytes)
+    }
+
     /// Increments the recursion depth and checks the limit via the `ResourceTracker`.
     ///
     /// Returns `Ok(RecursionToken)` if within limits. The caller must ensure the

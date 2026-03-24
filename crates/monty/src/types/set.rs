@@ -123,7 +123,9 @@ impl SetStorage {
             value.drop_with_heap(vm.heap);
             Ok(false)
         } else {
-            // Add new entry
+            // Track memory growth before adding the new entry.
+            // Growth unit matches SetStorage::estimate_size which uses size_of::<SetEntry>().
+            vm.heap.track_growth(std::mem::size_of::<SetEntry>())?;
             let index = self.entries.len();
             self.entries.push(SetEntry { value, hash });
             self.indices.insert_unique(hash, index, |&idx| self.entries[idx].hash);
