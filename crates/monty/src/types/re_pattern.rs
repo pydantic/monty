@@ -266,39 +266,6 @@ impl RePattern {
     }
 }
 
-impl RePattern {
-    /// Formats this pattern for `repr()` output.
-    ///
-    /// Kept as an inherent method so `HeapData` can call it without going
-    /// through a `HeapRead` handle.
-    pub fn py_repr_fmt(
-        &self,
-        f: &mut impl Write,
-        _vm: &VM<'_, '_, impl ResourceTracker>,
-        _heap_ids: &mut AHashSet<HeapId>,
-    ) -> RunResult<()> {
-        write!(f, "re.compile(")?;
-        string_repr_fmt(&self.pattern, f)?;
-        if self.flags != 0 {
-            let mut flag_parts = smallvec::SmallVec::<[&'static str; 4]>::new();
-            if self.flags & IGNORECASE != 0 {
-                flag_parts.push("re.IGNORECASE");
-            }
-            if self.flags & MULTILINE != 0 {
-                flag_parts.push("re.MULTILINE");
-            }
-            if self.flags & DOTALL != 0 {
-                flag_parts.push("re.DOTALL");
-            }
-            if self.flags & ASCII != 0 {
-                flag_parts.push("re.ASCII");
-            }
-            write!(f, ", {}", flag_parts.join("|"))?;
-        }
-        Ok(write!(f, ")")?)
-    }
-}
-
 impl<'h> PyTrait<'h> for HeapRead<'h, RePattern> {
     fn py_type(&self, _vm: &VM<'h, '_, impl ResourceTracker>) -> Type {
         Type::RePattern
@@ -313,7 +280,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, RePattern> {
     }
 
     fn py_bool(&self, _vm: &mut VM<'h, '_, impl ResourceTracker>) -> bool {
-        // Pattern always truthy
+        // Pattern objects are always truthy (matching CPython).
         true
     }
 
@@ -321,9 +288,28 @@ impl<'h> PyTrait<'h> for HeapRead<'h, RePattern> {
         &self,
         f: &mut impl Write,
         vm: &VM<'h, '_, impl ResourceTracker>,
-        heap_ids: &mut AHashSet<HeapId>,
+        _heap_ids: &mut AHashSet<HeapId>,
     ) -> RunResult<()> {
-        self.get(vm.heap).py_repr_fmt(f, vm, heap_ids)
+        let this = self.get(vm.heap);
+        write!(f, "re.compile(")?;
+        string_repr_fmt(&this.pattern, f)?;
+        if this.flags != 0 {
+            let mut flag_parts = smallvec::SmallVec::<[&'static str; 4]>::new();
+            if this.flags & IGNORECASE != 0 {
+                flag_parts.push("re.IGNORECASE");
+            }
+            if this.flags & MULTILINE != 0 {
+                flag_parts.push("re.MULTILINE");
+            }
+            if this.flags & DOTALL != 0 {
+                flag_parts.push("re.DOTALL");
+            }
+            if this.flags & ASCII != 0 {
+                flag_parts.push("re.ASCII");
+            }
+            write!(f, ", {}", flag_parts.join("|"))?;
+        }
+        Ok(write!(f, ")")?)
     }
 
     fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<Option<CallResult>> {
@@ -338,11 +324,6 @@ impl<'h> PyTrait<'h> for HeapRead<'h, RePattern> {
         }
     }
 
-    /// Handles attribute calls on RePattern objects (search, match, findall, sub, etc.).
-    ///
-    /// Clones the pattern data to release the heap borrow, then dispatches to the
-    /// appropriate method. The compiled `Regex` objects are cheaply cloneable
-    /// (internally reference-counted).
     fn py_call_attr(
         &mut self,
         _self_id: HeapId,
@@ -350,39 +331,38 @@ impl<'h> PyTrait<'h> for HeapRead<'h, RePattern> {
         attr: &EitherStr,
         args: ArgValues,
     ) -> RunResult<CallResult> {
-        let re_pattern = self.get(vm.heap).clone();
         let result = match attr.static_string() {
             Some(StaticStrings::Search) => {
                 let arg = args.get_one_arg("Pattern.search", vm.heap)?;
                 defer_drop!(arg, vm);
                 let text = value_to_str(arg, vm)?.into_owned();
-                re_pattern.search(&text, vm.heap)
+                self.get(vm.heap).search(&text, vm.heap)
             }
             Some(StaticStrings::Match) => {
                 let arg = args.get_one_arg("Pattern.match", vm.heap)?;
                 defer_drop!(arg, vm);
                 let text = value_to_str(arg, vm)?.into_owned();
-                re_pattern.match_start(&text, vm.heap)
+                self.get(vm.heap).match_start(&text, vm.heap)
             }
             Some(StaticStrings::Fullmatch) => {
                 let arg = args.get_one_arg("Pattern.fullmatch", vm.heap)?;
                 defer_drop!(arg, vm);
                 let text = value_to_str(arg, vm)?.into_owned();
-                re_pattern.fullmatch(&text, vm.heap)
+                self.get(vm.heap).fullmatch(&text, vm.heap)
             }
             Some(StaticStrings::Findall) => {
                 let arg = args.get_one_arg("Pattern.findall", vm.heap)?;
                 defer_drop!(arg, vm);
                 let text = value_to_str(arg, vm)?.into_owned();
-                re_pattern.findall(&text, vm.heap)
+                self.get(vm.heap).findall(&text, vm.heap)
             }
-            Some(StaticStrings::Sub) => call_pattern_sub(&re_pattern, args, vm),
-            Some(StaticStrings::Split) => call_pattern_split(&re_pattern, args, vm),
+            Some(StaticStrings::Sub) => call_pattern_sub(self, args, vm),
+            Some(StaticStrings::Split) => call_pattern_split(self, args, vm),
             Some(StaticStrings::Finditer) => {
                 let arg = args.get_one_arg("Pattern.finditer", vm.heap)?;
                 defer_drop!(arg, vm);
                 let text = value_to_str(arg, vm)?.into_owned();
-                re_pattern.finditer(&text, vm.heap)
+                self.get(vm.heap).finditer(&text, vm.heap)
             }
             _ => return Err(ExcType::attribute_error(Type::RePattern, attr.as_str(vm.interns))),
         }?;
@@ -405,10 +385,10 @@ impl HeapItem for RePattern {
 /// Separated from the main `py_call_attr` match to keep the borrow checker happy —
 /// extracting multiple string arguments requires careful ordering of borrows.
 /// Supports `count` as either positional or keyword argument.
-fn call_pattern_sub(
-    pattern: &RePattern,
+fn call_pattern_sub<'h>(
+    pattern: &HeapRead<'h, RePattern>,
     args: ArgValues,
-    vm: &mut VM<'_, '_, impl ResourceTracker>,
+    vm: &mut VM<'h, '_, impl ResourceTracker>,
 ) -> RunResult<Value> {
     let (pos, kwargs) = args.into_parts();
     defer_drop_mut!(pos, vm);
@@ -490,16 +470,16 @@ fn call_pattern_sub(
     }
     let repl = value_to_str(repl_val, vm)?.into_owned();
     let text = value_to_str(string_val, vm)?.into_owned();
-    pattern.sub(&repl, &text, count, vm.heap)
+    pattern.get(vm.heap).sub(&repl, &text, count, vm.heap)
 }
 
 /// Handles `pattern.split(string, maxsplit=0)` argument extraction and dispatch.
 ///
 /// Supports `maxsplit` as either positional or keyword argument.
-fn call_pattern_split(
-    pattern: &RePattern,
+fn call_pattern_split<'h>(
+    pattern: &HeapRead<'h, RePattern>,
     args: ArgValues,
-    vm: &mut VM<'_, '_, impl ResourceTracker>,
+    vm: &mut VM<'h, '_, impl ResourceTracker>,
 ) -> RunResult<Value> {
     let (pos, kwargs) = args.into_parts();
     defer_drop_mut!(pos, vm);
@@ -548,7 +528,7 @@ fn call_pattern_split(
 
     let maxsplit = extract_maxsplit(pos_maxsplit.or(kw_maxsplit), vm)?;
     let text = value_to_str(string_val, vm)?.into_owned();
-    pattern.split(&text, maxsplit, vm.heap)
+    pattern.get(vm.heap).split(&text, maxsplit, vm.heap)
 }
 
 /// Extracts a `maxsplit` value from an optional `Value`.

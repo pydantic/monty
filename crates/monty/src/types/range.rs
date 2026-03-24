@@ -202,33 +202,6 @@ impl Default for Range {
     }
 }
 
-impl Range {
-    /// Returns whether this range is truthy (non-empty).
-    ///
-    /// Kept as an inherent method so `HeapData` can call it without going
-    /// through a `HeapRead` handle.
-    pub fn py_bool(&self, _vm: &VM<'_, '_, impl ResourceTracker>) -> bool {
-        !self.is_empty()
-    }
-
-    /// Formats this range for `repr()` output.
-    ///
-    /// Kept as an inherent method so `HeapData` can call it without going
-    /// through a `HeapRead` handle.
-    pub fn py_repr_fmt(
-        &self,
-        f: &mut impl Write,
-        _vm: &VM<'_, '_, impl ResourceTracker>,
-        _heap_ids: &mut AHashSet<HeapId>,
-    ) -> RunResult<()> {
-        if self.step == 1 {
-            Ok(write!(f, "range({}, {})", self.start, self.stop)?)
-        } else {
-            Ok(write!(f, "range({}, {}, {})", self.start, self.stop, self.step)?)
-        }
-    }
-}
-
 impl<'h> PyTrait<'h> for HeapRead<'h, Range> {
     fn py_type(&self, _vm: &VM<'h, '_, impl ResourceTracker>) -> Type {
         Type::Range
@@ -243,10 +216,8 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Range> {
         if let Value::Ref(id) = key
             && let HeapData::Slice(slice) = vm.heap.get(*id)
         {
-            // Clone the slice to release the borrow on heap before calling getitem_slice
-            let slice = slice.clone();
             let range = *self.get(vm.heap);
-            return range.getitem_slice(&slice, vm.heap);
+            return range.getitem_slice(slice, vm.heap);
         }
 
         let range = *self.get(vm.heap);
@@ -290,16 +261,21 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Range> {
     }
 
     fn py_bool(&self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> bool {
-        self.get(vm.heap).py_bool(vm)
+        !self.get(vm.heap).is_empty()
     }
 
     fn py_repr_fmt(
         &self,
         f: &mut impl Write,
         vm: &VM<'h, '_, impl ResourceTracker>,
-        heap_ids: &mut AHashSet<HeapId>,
+        _heap_ids: &mut AHashSet<HeapId>,
     ) -> RunResult<()> {
-        self.get(vm.heap).py_repr_fmt(f, vm, heap_ids)
+        let this = self.get(vm.heap);
+        if this.step == 1 {
+            Ok(write!(f, "range({}, {})", this.start, this.stop)?)
+        } else {
+            Ok(write!(f, "range({}, {}, {})", this.start, this.stop, this.step)?)
+        }
     }
 }
 

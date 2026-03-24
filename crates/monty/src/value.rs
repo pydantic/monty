@@ -1389,24 +1389,14 @@ impl PyTrait<'_> for Value {
                             Self::Int(i) => *i,
                             _ => return Err(ExcType::type_error_indices(Type::NamedTuple, key.py_type(vm))),
                         };
-                        let len = nt.get(vm.heap).items_len();
+                        let len = nt.get(vm.heap).len();
                         let len_i64 = i64::try_from(len).expect("namedtuple length exceeds i64::MAX");
                         let normalized = if index < 0 { index + len_i64 } else { index };
                         if normalized < 0 || normalized >= len_i64 {
                             return Err(ExcType::tuple_index_error());
                         }
                         let idx = usize::try_from(normalized).expect("namedtuple index validated non-negative");
-                        // Two-phase clone: read discriminant, release borrow, then clone
-                        let ref_id = match nt.get(vm.heap).item_ref(idx) {
-                            Self::Ref(id) => Some(*id),
-                            _ => None,
-                        };
-                        if let Some(id) = ref_id {
-                            vm.heap.inc_ref(id);
-                            Ok(Self::Ref(id))
-                        } else {
-                            Ok(nt.get(vm.heap).item_ref(idx).clone_immediate())
-                        }
+                        Ok(nt.clone_item(idx, vm))
                     }
                     HeapReadOutput::Dict(dict) => dict.py_getitem(key, vm),
                     HeapReadOutput::Range(range) => {
@@ -1439,45 +1429,7 @@ impl PyTrait<'_> for Value {
                             .expect("range element calculation overflowed");
                         Ok(Self::Int(offset))
                     }
-                    HeapReadOutput::ReMatch(m) => {
-                        // Resolve group index from key
-                        let group_n: i64 = match key {
-                            Self::Int(n) => *n,
-                            Self::Bool(b) => i64::from(*b),
-                            Self::InternString(id) => {
-                                let name = interns.get_str(*id);
-                                let idx = m
-                                    .get(vm.heap)
-                                    .named_groups()
-                                    .iter()
-                                    .find_map(|(gn, idx)| if gn == name { Some(*idx) } else { None });
-                                match idx {
-                                    #[expect(clippy::cast_possible_wrap)]
-                                    Some(idx) => idx as i64,
-                                    None => return Err(ExcType::re_match_group_index_error()),
-                                }
-                            }
-                            Self::Ref(heap_id) => {
-                                let name = match vm.heap.get(*heap_id) {
-                                    HeapData::Str(s) => s.as_str().to_owned(),
-                                    _ => return Err(ExcType::re_match_group_index_error()),
-                                };
-                                let idx = m
-                                    .get(vm.heap)
-                                    .named_groups()
-                                    .iter()
-                                    .find_map(|(gn, idx)| if gn == &name { Some(*idx) } else { None });
-                                match idx {
-                                    #[expect(clippy::cast_possible_wrap)]
-                                    Some(idx) => idx as i64,
-                                    None => return Err(ExcType::re_match_group_index_error()),
-                                }
-                            }
-                            _ => return Err(ExcType::re_match_group_index_error()),
-                        };
-                        // Extract group data using short-lived borrow, then allocate
-                        rematch_get_group(&m, group_n, vm)
-                    }
+                    HeapReadOutput::ReMatch(m) => m.py_getitem(key, vm),
                     _ => Err(ExcType::type_error_not_sub(self.py_type(vm))),
                 }
             }
@@ -2665,39 +2617,6 @@ fn range_getitem_slice(
 
     let new_range = Range::new(new_start, new_stop, new_step);
     Ok(Value::Ref(heap.allocate(HeapData::Range(new_range))?))
-}
-
-/// Extracts a group value from a `ReMatch` via `HeapRead`, using a short-lived borrow
-/// to read the group data and then allocating after the borrow is released.
-fn rematch_get_group<'h>(
-    m: &crate::heap::HeapRead<'h, crate::types::ReMatch>,
-    n: i64,
-    vm: &mut crate::bytecode::VM<'h, '_, impl ResourceTracker>,
-) -> RunResult<Value> {
-    match n.cmp(&0) {
-        Ordering::Equal => {
-            let s = m.get(vm.heap).full_match().to_owned();
-            let s = Str::new(s);
-            Ok(Value::Ref(vm.heap.allocate(HeapData::Str(s))?))
-        }
-        Ordering::Less => Err(ExcType::re_match_group_index_error()),
-        Ordering::Greater => {
-            #[expect(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
-            let idx = (n - 1) as usize;
-            let groups_len = m.get(vm.heap).groups().len();
-            if idx >= groups_len {
-                return Err(ExcType::re_match_group_index_error());
-            }
-            let group_data = m.get(vm.heap).groups()[idx].clone();
-            match group_data {
-                Some(s) => {
-                    let s = Str::new(s);
-                    Ok(Value::Ref(vm.heap.allocate(HeapData::Str(s))?))
-                }
-                None => Ok(Value::None),
-            }
-        }
-    }
 }
 
 /// Collects slice items from a Tuple via HeapRead, using `clone_item` to avoid

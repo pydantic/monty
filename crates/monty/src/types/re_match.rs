@@ -16,9 +16,10 @@ use smallvec::smallvec;
 use crate::{
     args::ArgValues,
     bytecode::{CallResult, VM},
+    defer_drop_mut,
     exception_private::{ExcType, RunResult},
     heap::{Heap, HeapData, HeapId, HeapItem, HeapRead},
-    intern::{Interns, StaticStrings},
+    intern::StaticStrings,
     resource::{ResourceError, ResourceTracker},
     types::{Dict, PyTrait, Str, Type, allocate_tuple, str::string_repr_fmt},
     value::{EitherStr, Value},
@@ -125,24 +126,6 @@ impl ReMatch {
         }
     }
 
-    /// Returns a reference to the named groups mapping (name, 1-based index).
-    #[must_use]
-    pub(crate) fn named_groups(&self) -> &[(String, usize)] {
-        &self.named_groups
-    }
-
-    /// Returns the full matched text (equivalent to `group(0)`).
-    #[must_use]
-    pub(crate) fn full_match(&self) -> &str {
-        &self.full_match
-    }
-
-    /// Returns a reference to the captured group strings.
-    #[must_use]
-    pub(crate) fn groups(&self) -> &[Option<String>] {
-        &self.groups
-    }
-
     /// Returns the match for a given group number.
     ///
     /// Group 0 is the full match, groups 1..N are capture groups.
@@ -184,19 +167,22 @@ impl ReMatch {
         }
         Err(ExcType::re_match_group_index_error())
     }
+}
 
+impl<'h> HeapRead<'h, ReMatch> {
     /// Returns a dict mapping named group names to their matched strings.
     ///
     /// Groups that didn't participate in the match have the `default` value
     /// (typically `None`).
-    fn get_groupdict(&self, default: &Value, vm: &mut VM<'_, '_, impl ResourceTracker>) -> RunResult<Value> {
-        let mut pairs = Vec::with_capacity(self.named_groups.len());
-        for (name, idx) in &self.named_groups {
+    fn get_groupdict(&self, default: &Value, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<Value> {
+        let this = self.get(vm.heap);
+        let mut pairs = Vec::with_capacity(this.named_groups.len());
+        for (name, idx) in &this.named_groups {
             let key_str = Str::new(name.clone());
             let key = Value::Ref(vm.heap.allocate(HeapData::Str(key_str))?);
             // idx is 1-based, groups vec is 0-based (index 0 = group 1)
-            let value = if *idx > 0 && (*idx - 1) < self.groups.len() {
-                match &self.groups[*idx - 1] {
+            let value = if *idx > 0 && (*idx - 1) < this.groups.len() {
+                match &this.groups[*idx - 1] {
                     Some(s) => {
                         let s = Str::new(s.clone());
                         Value::Ref(vm.heap.allocate(HeapData::Str(s))?)
@@ -211,7 +197,9 @@ impl ReMatch {
         let dict = Dict::from_pairs(pairs, vm)?;
         Ok(Value::Ref(vm.heap.allocate(HeapData::Dict(dict))?))
     }
+}
 
+impl ReMatch {
     /// Returns a tuple of all capture group strings.
     ///
     /// Unmatched optional groups appear as `None`.
@@ -329,7 +317,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, ReMatch> {
     }
 
     fn py_bool(&self, _vm: &mut VM<'h, '_, impl ResourceTracker>) -> bool {
-        // Match always truthy
+        // Match objects are always truthy
         true
     }
 
@@ -353,11 +341,6 @@ impl<'h> PyTrait<'h> for HeapRead<'h, ReMatch> {
         }
     }
 
-    /// Handles attribute calls on ReMatch objects (group, groups, groupdict, etc.).
-    ///
-    /// Clones the match data to release the heap borrow, then dispatches to the
-    /// appropriate method. ReMatch contains no heap references (all owned
-    /// strings/integers), so cloning is safe and straightforward.
     fn py_call_attr(
         &mut self,
         _self_id: HeapId,
@@ -365,35 +348,53 @@ impl<'h> PyTrait<'h> for HeapRead<'h, ReMatch> {
         attr: &EitherStr,
         args: ArgValues,
     ) -> RunResult<CallResult> {
-        let re_match = self.get(vm.heap).clone();
         let result = match attr.static_string() {
-            Some(StaticStrings::Group) => call_group(&re_match, args, vm.heap, vm.interns)?,
+            Some(StaticStrings::Group) => call_group(self, args, vm)?,
             Some(StaticStrings::Groups) => {
                 args.check_zero_args("re.Match.groups", vm.heap)?;
-                re_match.get_groups(vm.heap)?
+                self.get(vm.heap).get_groups(vm.heap)?
             }
             Some(StaticStrings::Groupdict) => {
                 let default = args.get_zero_one_arg("re.Match.groupdict", vm.heap)?;
                 let default = default.unwrap_or(Value::None);
-                let result = re_match.get_groupdict(&default, vm)?;
+                let result = self.get_groupdict(&default, vm)?;
                 default.drop_with_heap(vm);
                 result
             }
             Some(StaticStrings::Start) => {
                 let n = extract_optional_group_arg(args, "re.Match.start", 0, vm.heap)?;
-                re_match.get_start(n)?
+                self.get(vm.heap).get_start(n)?
             }
             Some(StaticStrings::End) => {
                 let n = extract_optional_group_arg(args, "re.Match.end", 0, vm.heap)?;
-                re_match.get_end(n)?
+                self.get(vm.heap).get_end(n)?
             }
             Some(StaticStrings::Span) => {
                 let n = extract_optional_group_arg(args, "re.Match.span", 0, vm.heap)?;
-                re_match.get_span(n, vm.heap)?
+                self.get(vm.heap).get_span(n, vm.heap)?
             }
             _ => return Err(ExcType::attribute_error(Type::ReMatch, attr.as_str(vm.interns))),
         };
         Ok(CallResult::Value(result))
+    }
+
+    fn py_getitem(&self, key: &Value, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<Value> {
+        match key {
+            Value::Int(n) => self.get(vm.heap).get_group(*n, vm.heap),
+            Value::Bool(b) => self.get(vm.heap).get_group(i64::from(*b), vm.heap),
+            Value::InternString(id) => {
+                let name = vm.interns.get_str(*id);
+                self.get(vm.heap).get_group_by_name(name, vm.heap)
+            }
+            Value::Ref(heap_id) => match vm.heap.get(*heap_id) {
+                HeapData::Str(s) => {
+                    let name = s.as_str().to_owned();
+                    self.get(vm.heap).get_group_by_name(&name, vm.heap)
+                }
+                _ => Err(ExcType::re_match_group_index_error()),
+            },
+            _ => Err(ExcType::re_match_group_index_error()),
+        }
     }
 }
 
@@ -425,66 +426,51 @@ impl HeapItem for ReMatch {
 /// - `m.group()` → equivalent to `m.group(0)`, returns full match string
 /// - `m.group(n)` → returns the nth group (integer or named string)
 /// - `m.group(n1, n2, ...)` → returns a tuple of groups
-fn call_group(
-    m: &ReMatch,
+fn call_group<'h>(
+    m: &HeapRead<'h, ReMatch>,
     args: ArgValues,
-    heap: &mut Heap<impl ResourceTracker>,
-    interns: &Interns,
+    vm: &mut VM<'h, '_, impl ResourceTracker>,
 ) -> RunResult<Value> {
     match args {
-        ArgValues::Empty => m.get_group(0, heap),
+        ArgValues::Empty => m.get(vm.heap).get_group(0, vm.heap),
         ArgValues::One(v) => {
-            let result = resolve_group_arg(m, &v, heap, interns);
-            v.drop_with_heap(heap);
+            let result = resolve_group_arg(m.get(vm.heap), &v, vm);
+            v.drop_with_heap(vm);
             result
         }
         other => {
-            let pos = other.into_pos_only("re.Match.group", heap)?;
-            let mut pos_guard = smallvec::SmallVec::<[Value; 4]>::new();
-            for val in pos {
-                pos_guard.push(val);
-            }
+            let pos = other.into_pos_only("re.Match.group", vm.heap)?;
+            defer_drop_mut!(pos, vm);
             let mut elements = smallvec::smallvec![];
-            for val in &pos_guard {
-                let result = resolve_group_arg(m, val, heap, interns);
+            for val in pos.as_slice() {
+                let result = resolve_group_arg(m.get(vm.heap), val, vm);
                 if result.is_err() {
                     // Drop already-allocated elements
                     for elem in elements {
-                        Value::drop_with_heap(elem, heap);
-                    }
-                    for val in pos_guard {
-                        val.drop_with_heap(heap);
+                        Value::drop_with_heap(elem, vm);
                     }
                     return result;
                 }
                 elements.push(result?);
             }
-            for val in pos_guard {
-                val.drop_with_heap(heap);
-            }
-            Ok(allocate_tuple(elements, heap)?)
+            Ok(allocate_tuple(elements, vm.heap)?)
         }
     }
 }
 
 /// Resolves a single group argument — integer, bool, or string (named group).
-fn resolve_group_arg(
-    m: &ReMatch,
-    val: &Value,
-    heap: &Heap<impl ResourceTracker>,
-    interns: &Interns,
-) -> RunResult<Value> {
+fn resolve_group_arg(m: &ReMatch, val: &Value, vm: &VM<'_, '_, impl ResourceTracker>) -> RunResult<Value> {
     match val {
-        Value::Int(n) => m.get_group(*n, heap),
-        Value::Bool(b) => m.get_group(i64::from(*b), heap),
+        Value::Int(n) => m.get_group(*n, vm.heap),
+        Value::Bool(b) => m.get_group(i64::from(*b), vm.heap),
         Value::InternString(id) => {
-            let name = interns.get_str(*id);
-            m.get_group_by_name(name, heap)
+            let name = vm.interns.get_str(*id);
+            m.get_group_by_name(name, vm.heap)
         }
-        Value::Ref(heap_id) => match heap.get(*heap_id) {
+        Value::Ref(heap_id) => match vm.heap.get(*heap_id) {
             HeapData::Str(s) => {
                 let name = s.as_str().to_owned();
-                m.get_group_by_name(&name, heap)
+                m.get_group_by_name(&name, vm.heap)
             }
             _ => Err(ExcType::re_match_group_index_error()),
         },

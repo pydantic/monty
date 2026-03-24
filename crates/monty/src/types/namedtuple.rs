@@ -120,26 +120,6 @@ impl NamedTuple {
         self.contains_refs
     }
 
-    /// Returns the number of items in the tuple.
-    ///
-    /// Alias for `len()` used by `HeapReader` for direct item access.
-    #[must_use]
-    pub(crate) fn items_len(&self) -> usize {
-        self.items.len()
-    }
-
-    /// Returns a reference to the item at the given index.
-    ///
-    /// Used by `HeapReader` for direct item access without cloning.
-    ///
-    /// # Panics
-    ///
-    /// Panics if `idx >= self.items.len()`.
-    #[must_use]
-    pub(crate) fn item_ref(&self, idx: usize) -> &Value {
-        &self.items[idx]
-    }
-
     /// Gets a field value by name.
     ///
     /// Compares field names by actual string content, not just variant type.
@@ -157,27 +137,21 @@ impl NamedTuple {
 }
 
 impl<'h> HeapRead<'h, NamedTuple> {
-    /// Clones a single item using the two-phase borrow pattern.
-    ///
-    /// For `Value::Ref`, copies the `HeapId` via a short-lived shared borrow, then
-    /// increments the refcount via a separate mutable operation. For immediate values,
-    /// reads via a short-lived borrow and clones without touching the heap.
-    pub(crate) fn clone_item(&self, index: usize, vm: &mut VM<'h, '_, impl ResourceTracker>) -> Value {
-        let ref_id = match self.get(vm.heap).item_ref(index) {
-            Value::Ref(id) => Some(*id),
-            _ => None,
-        };
-        if let Some(id) = ref_id {
-            vm.heap.inc_ref(id);
-            Value::Ref(id)
-        } else {
-            self.get(vm.heap).item_ref(index).clone_immediate()
+    /// Returns `Some(value)` if the index is in bounds, `None` otherwise.
+    /// Uses `index + len` instead of `-index` to avoid overflow on `i64::MIN`.
+    #[must_use]
+    pub fn get_by_index<'a>(&'a self, vm: &'a VM<'h, '_, impl ResourceTracker>, index: i64) -> Option<&'a Value> {
+        let len = i64::try_from(self.get(vm.heap).items.len()).ok()?;
+        let normalized = if index < 0 { index + len } else { index };
+        if normalized < 0 || normalized >= len {
+            return None;
         }
+        self.get(vm.heap).items.get(usize::try_from(normalized).ok()?)
     }
 
-    /// Delegates to `py_eq` for backward compatibility with `value.rs` call sites.
-    pub(crate) fn eq(&self, other: &Self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> Result<bool, ResourceError> {
-        self.py_eq(other, vm)
+    /// Clones a single item.
+    pub(crate) fn clone_item(&self, index: usize, vm: &mut VM<'h, '_, impl ResourceTracker>) -> Value {
+        self.get(vm.heap).items[index].clone_with_heap(vm)
     }
 
     /// Cross-type equality between NamedTuple and Tuple via HeapRead.
@@ -221,24 +195,20 @@ impl<'h> PyTrait<'h> for HeapRead<'h, NamedTuple> {
         Some(self.get(vm.heap).len())
     }
 
-    fn py_bool(&self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> bool {
-        self.get(vm.heap).len() > 0
+    fn py_getitem(&self, key: &Value, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<Value> {
+        // Extract integer index from key, returning TypeError if not an int
+        let index = match key {
+            Value::Int(i) => *i,
+            _ => return Err(ExcType::type_error_indices(Type::NamedTuple, key.py_type(vm))),
+        };
+
+        // Get by index with bounds checking
+        match self.get_by_index(vm, index) {
+            Some(value) => Ok(value.clone_with_heap(vm.heap)),
+            None => Err(ExcType::tuple_index_error()),
+        }
     }
 
-    fn py_repr_fmt(
-        &self,
-        f: &mut impl Write,
-        vm: &VM<'h, '_, impl ResourceTracker>,
-        heap_ids: &mut AHashSet<HeapId>,
-    ) -> RunResult<()> {
-        let nt = self.get(vm.heap);
-        namedtuple_repr_fmt(&nt.name, &nt.field_names, &nt.items, f, vm, heap_ids)
-    }
-
-    /// Element-wise equality using the short-lived borrow pattern.
-    ///
-    /// Compares only by items (not type name) to match tuple semantics,
-    /// allowing `sys.version_info == (3, 14, 0, 'final', 0)` to work.
     fn py_eq(&self, other: &Self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> Result<bool, ResourceError> {
         let a_len = self.get(vm.heap).len();
         if a_len != other.get(vm.heap).len() {
@@ -260,22 +230,38 @@ impl<'h> PyTrait<'h> for HeapRead<'h, NamedTuple> {
         Ok(true)
     }
 
-    /// Subscript access via HeapRead. Handles integer indices with negative indexing.
-    fn py_getitem(&self, key: &Value, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<Value> {
-        let index = match key {
-            Value::Int(i) => *i,
-            _ => return Err(ExcType::type_error_indices(Type::NamedTuple, key.py_type(vm))),
-        };
+    fn py_bool(&self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> bool {
+        self.get(vm.heap).len() > 0
+    }
 
-        let len = self.get(vm.heap).items_len();
-        let len_i64 = i64::try_from(len).expect("namedtuple length exceeds i64::MAX");
-        let normalized = if index < 0 { index + len_i64 } else { index };
-        if normalized < 0 || normalized >= len_i64 {
-            return Err(ExcType::tuple_index_error());
+    fn py_repr_fmt(
+        &self,
+        f: &mut impl Write,
+        vm: &VM<'h, '_, impl ResourceTracker>,
+        heap_ids: &mut AHashSet<HeapId>,
+    ) -> RunResult<()> {
+        // Check depth limit before recursing
+        let heap = &*vm.heap;
+        let Some(token) = heap.incr_recursion_depth_for_repr() else {
+            return Ok(f.write_str("...")?);
+        };
+        crate::defer_drop_immutable_heap!(token, heap);
+
+        write!(f, "{}(", self.get(vm.heap).name.as_str(vm.interns))?;
+
+        let mut first = true;
+        for (field_name, value) in self.get(vm.heap).field_names.iter().zip(&self.get(vm.heap).items) {
+            if !first {
+                f.write_str(", ")?;
+            }
+            first = false;
+            f.write_str(field_name.as_str(vm.interns))?;
+            f.write_char('=')?;
+            value.py_repr_fmt(f, vm, heap_ids)?;
         }
 
-        let idx = usize::try_from(normalized).expect("namedtuple index validated non-negative");
-        Ok(self.clone_item(idx, vm))
+        f.write_char(')')?;
+        Ok(())
     }
 
     fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<Option<CallResult>> {
@@ -287,41 +273,6 @@ impl<'h> PyTrait<'h> for HeapRead<'h, NamedTuple> {
             Err(ExcType::attribute_error(self.get(vm.heap).name(vm.interns), attr_name))
         }
     }
-}
-
-/// Writes the repr of a named tuple to a formatter.
-///
-/// Format: `type_name(field1=value1, field2=value2, ...)`
-pub(crate) fn namedtuple_repr_fmt(
-    name: &EitherStr,
-    field_names: &[EitherStr],
-    items: &[Value],
-    f: &mut impl Write,
-    vm: &VM<'_, '_, impl ResourceTracker>,
-    heap_ids: &mut AHashSet<HeapId>,
-) -> RunResult<()> {
-    // Check depth limit before recursing
-    let heap = &*vm.heap;
-    let Some(token) = heap.incr_recursion_depth_for_repr() else {
-        return Ok(f.write_str("...")?);
-    };
-    crate::defer_drop_immutable_heap!(token, heap);
-
-    write!(f, "{}(", name.as_str(vm.interns))?;
-
-    let mut first = true;
-    for (field_name, value) in field_names.iter().zip(items) {
-        if !first {
-            f.write_str(", ")?;
-        }
-        first = false;
-        f.write_str(field_name.as_str(vm.interns))?;
-        f.write_char('=')?;
-        value.py_repr_fmt(f, vm, heap_ids)?;
-    }
-
-    f.write_char(')')?;
-    Ok(())
 }
 
 impl HeapItem for NamedTuple {

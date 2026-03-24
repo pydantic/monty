@@ -490,7 +490,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             (HeapReadOutput::Set(a), HeapReadOutput::Set(b)) => a.eq(b, vm),
             (HeapReadOutput::FrozenSet(a), HeapReadOutput::FrozenSet(b)) => a.eq(b, vm),
             // NamedTuple: element-wise comparison via HeapRead clone_item
-            (HeapReadOutput::NamedTuple(a), HeapReadOutput::NamedTuple(b)) => a.eq(b, vm),
+            (HeapReadOutput::NamedTuple(a), HeapReadOutput::NamedTuple(b)) => a.py_eq(b, vm),
             // NamedTuple/Tuple cross-type comparison
             (HeapReadOutput::NamedTuple(nt), HeapReadOutput::Tuple(t))
             | (HeapReadOutput::Tuple(t), HeapReadOutput::NamedTuple(nt)) => nt.eq_tuple(t, vm),
