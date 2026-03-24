@@ -92,3 +92,23 @@ assert sorted([b'bb', b'a', b'ba']) == [b'a', b'ba', b'bb'], 'sorted different l
 # === bytes() constructor with keyword argument ===
 assert bytes(source=b'hello') == b'hello', 'bytes source kwarg bytes'
 assert bytes(source=3) == b'\x00\x00\x00', 'bytes source kwarg int'
+
+# bytes() constructor error cases
+import sys
+
+_monty = 'Monty' in sys.version
+
+try:
+    bytes(wrong=3)
+    assert False, 'bytes wrong kwarg should raise'
+except TypeError as e:
+    assert str(e) == "bytes() got an unexpected keyword argument 'wrong'", f'wrong: {e}'
+
+try:
+    bytes(3, source=3)
+    assert False, 'bytes pos + kwarg should raise'
+except TypeError as e:
+    if _monty:
+        assert str(e) == "bytes() got multiple values for argument 'source'", f'dup: {e}'
+    else:
+        assert str(e) == "argument for bytes() given by name ('source') and position (1)", f'dup: {e}'

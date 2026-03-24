@@ -359,3 +359,54 @@ assert 'a\tb\rc\td'.expandtabs(4) == 'a   b\rc   d', 'expandtabs carriage return
 
 # expandtabs() with keyword argument
 assert '\thello'.expandtabs(tabsize=4) == '    hello', 'expandtabs tabsize kwarg'
+
+# expandtabs() error cases
+import sys
+
+_monty = 'Monty' in sys.version
+
+try:
+    'hello'.expandtabs(wrong=4)
+    assert False, 'expandtabs wrong kwarg should raise'
+except TypeError as e:
+    if _monty:
+        assert str(e) == "str.expandtabs() got an unexpected keyword argument 'wrong'", f'wrong: {e}'
+    else:
+        assert str(e) == "expandtabs() got an unexpected keyword argument 'wrong'", f'wrong: {e}'
+
+try:
+    'hello'.expandtabs(4, tabsize=8)
+    assert False, 'expandtabs pos + kwarg should raise'
+except TypeError as e:
+    if _monty:
+        assert str(e) == "str.expandtabs() got multiple values for argument 'tabsize'", f'dup: {e}'
+    else:
+        assert str(e) == 'expandtabs() takes at most 1 argument (2 given)', f'dup: {e}'
+
+try:
+    'hello'.expandtabs(4, 5)
+    assert False, 'expandtabs too many args should raise'
+except TypeError as e:
+    if _monty:
+        assert str(e) == 'str.expandtabs expected at most 1 arguments, got 2', f'toomany: {e}'
+    else:
+        assert str(e) == 'expandtabs() takes at most 1 argument (2 given)', f'toomany: {e}'
+
+# splitlines() error cases
+try:
+    'hello'.splitlines(wrong=True)
+    assert False, 'splitlines wrong kwarg should raise'
+except TypeError as e:
+    if _monty:
+        assert str(e) == "str.splitlines() got an unexpected keyword argument 'wrong'", f'wrong: {e}'
+    else:
+        assert str(e) == "splitlines() got an unexpected keyword argument 'wrong'", f'wrong: {e}'
+
+try:
+    'hello'.splitlines(True, keepends=False)
+    assert False, 'splitlines pos + kwarg should raise'
+except TypeError as e:
+    if _monty:
+        assert str(e) == "str.splitlines() got multiple values for argument 'keepends'", f'dup: {e}'
+    else:
+        assert str(e) == 'splitlines() takes at most 1 argument (2 given)', f'dup: {e}'

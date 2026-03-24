@@ -166,10 +166,10 @@ impl ArgValues {
                 result = Some(value_guard.into_inner());
             } else {
                 result.drop_with_heap(value_guard.heap());
-                return Err(ExcType::type_error(format!(
-                    "'{}' is an invalid keyword argument for {method_name}()",
+                return Err(ExcType::type_error_unexpected_keyword(
+                    method_name,
                     keyword_name.as_str(interns),
-                )));
+                ));
             }
         }
 
