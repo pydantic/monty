@@ -1,6 +1,7 @@
 use std::{borrow::Cow, fmt::Write};
 
 use ahash::AHashSet;
+use num_integer::Integer;
 
 use crate::{
     ExcType, ResourceTracker,
@@ -487,8 +488,8 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             (HeapReadOutput::Tuple(a), HeapReadOutput::Tuple(b)) => a.eq(b, vm),
             // Container types with HeapRead eq methods
             (HeapReadOutput::Dict(a), HeapReadOutput::Dict(b)) => a.py_eq(b, vm),
-            (HeapReadOutput::Set(a), HeapReadOutput::Set(b)) => a.eq(b, vm),
-            (HeapReadOutput::FrozenSet(a), HeapReadOutput::FrozenSet(b)) => a.eq(b, vm),
+            (HeapReadOutput::Set(a), HeapReadOutput::Set(b)) => a.py_eq(b, vm),
+            (HeapReadOutput::FrozenSet(a), HeapReadOutput::FrozenSet(b)) => a.py_eq(b, vm),
             // NamedTuple: element-wise comparison via HeapRead clone_item
             (HeapReadOutput::NamedTuple(a), HeapReadOutput::NamedTuple(b)) => a.py_eq(b, vm),
             // NamedTuple/Tuple cross-type comparison
@@ -633,6 +634,96 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             Self::Path(p) => Ok(Cow::Owned(p.get(vm.heap).as_str().to_owned())),
             // All other types use repr
             _ => self.py_repr(vm),
+        }
+    }
+
+    fn py_add(
+        &self,
+        other: &Self,
+        vm: &mut VM<'h, '_, impl ResourceTracker>,
+    ) -> Result<Option<Value>, crate::ResourceError> {
+        match (self, other) {
+            (HeapReadOutput::Str(a), HeapReadOutput::Str(b)) => {
+                let concat = format!("{}{}", a.get(vm.heap).as_str(), b.get(vm.heap).as_str());
+                Ok(Some(Value::Ref(vm.heap.allocate(HeapData::Str(concat.into()))?)))
+            }
+            (HeapReadOutput::Bytes(a), HeapReadOutput::Bytes(b)) => {
+                let a_bytes = a.get(vm.heap).as_slice();
+                let b_bytes = b.get(vm.heap).as_slice();
+                let mut result = Vec::with_capacity(a_bytes.len() + b_bytes.len());
+                result.extend_from_slice(a_bytes);
+                result.extend_from_slice(b_bytes);
+                Ok(Some(Value::Ref(vm.heap.allocate(HeapData::Bytes(result.into()))?)))
+            }
+            (HeapReadOutput::List(a), HeapReadOutput::List(b)) => a.py_add(b, vm),
+            (HeapReadOutput::Tuple(a), HeapReadOutput::Tuple(b)) => a.add(b, vm),
+            (HeapReadOutput::LongInt(a), HeapReadOutput::LongInt(b)) => {
+                let bi = a.get(vm.heap).inner() + b.get(vm.heap).inner();
+                Ok(LongInt::new(bi).into_value(vm.heap).map(Some)?)
+            }
+            _ => Ok(None),
+        }
+    }
+
+    fn py_sub(
+        &self,
+        other: &Self,
+        vm: &mut VM<'h, '_, impl ResourceTracker>,
+    ) -> Result<Option<Value>, crate::ResourceError> {
+        match (self, other) {
+            (HeapReadOutput::LongInt(a), HeapReadOutput::LongInt(b)) => {
+                let bi = a.get(vm.heap).inner() - b.get(vm.heap).inner();
+                Ok(LongInt::new(bi).into_value(vm.heap).map(Some)?)
+            }
+            _ => Ok(None),
+        }
+    }
+
+    fn py_mod(&self, other: &Self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<Option<Value>> {
+        match (self, other) {
+            (HeapReadOutput::LongInt(a), HeapReadOutput::LongInt(b)) => {
+                if b.get(vm.heap).is_zero() {
+                    Err(ExcType::zero_division().into())
+                } else {
+                    let bi = a.get(vm.heap).inner().mod_floor(b.get(vm.heap).inner());
+                    Ok(LongInt::new(bi).into_value(vm.heap).map(Some)?)
+                }
+            }
+            _ => Ok(None),
+        }
+    }
+
+    fn py_iadd(
+        &mut self,
+        other: &Value,
+        vm: &mut VM<'h, '_, impl ResourceTracker>,
+        self_id: Option<HeapId>,
+    ) -> Result<bool, crate::ResourceError> {
+        match self {
+            HeapReadOutput::List(list) => list.py_iadd(other, vm, self_id),
+            _ => Ok(false),
+        }
+    }
+
+    fn py_getitem(&self, key: &Value, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<Value> {
+        match self {
+            Self::Str(s) => s.py_getitem(key, vm),
+            Self::Bytes(b) => b.py_getitem(key, vm),
+            Self::List(l) => l.py_getitem(key, vm),
+            Self::Tuple(t) => t.py_getitem(key, vm),
+            Self::NamedTuple(nt) => nt.py_getitem(key, vm),
+            Self::Dict(d) => d.py_getitem(key, vm),
+            Self::Range(r) => r.py_getitem(key, vm),
+            Self::ReMatch(m) => m.py_getitem(key, vm),
+            _ => Err(ExcType::type_error_not_sub(self.py_type(vm))),
+        }
+    }
+
+    fn py_setitem(&mut self, key: Value, value: Value, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<()> {
+        match self {
+            Self::List(l) => l.py_setitem(key, value, vm),
+            Self::Dict(d) => d.py_setitem(key, value, vm),
+            _ => Err(ExcType::type_error_not_sub_assignment(self.py_type(vm))),
         }
     }
 

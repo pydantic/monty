@@ -275,6 +275,18 @@ impl ExcType {
         SimpleException::new_msg(Self::TypeError, format!("'{type_}' object can't be awaited")).into()
     }
 
+    /// Creates a TypeError for item assignment on types that don't support it.
+    ///
+    /// Matches CPython's format: `TypeError: '{type}' object does not support item assignment`
+    #[must_use]
+    pub(crate) fn type_error_not_sub_assignment(type_: Type) -> RunError {
+        SimpleException::new_msg(
+            Self::TypeError,
+            format!("'{type_}' object does not support item assignment"),
+        )
+        .into()
+    }
+
     /// Creates a TypeError for unhashable types when calling `hash()`.
     ///
     /// This matches Python 3.14's error message: `TypeError: unhashable type: 'list'`
@@ -1255,34 +1267,6 @@ impl<'h> HeapRead<'h, SimpleException> {
     pub(crate) fn py_type(&self, vm: &VM<'h, '_, impl ResourceTracker>) -> Type {
         Type::Exception(self.get(vm.heap).exc_type)
     }
-
-    /// Gets an attribute from this exception.
-    ///
-    /// Handles the `.args` attribute by allocating a tuple containing the message.
-    /// Returns `Err(AttributeError)` for all other attributes.
-    pub fn py_getattr(
-        &self,
-        attr: &EitherStr,
-        vm: &mut VM<'h, '_, impl ResourceTracker>,
-    ) -> RunResult<Option<CallResult>> {
-        // Fast path: interned strings can be matched by ID
-        let is_args = attr
-            .static_string()
-            .map_or_else(|| attr.as_str(vm.interns) == "args", |ss| ss == StaticStrings::Args);
-
-        if is_args {
-            // Construct tuple with 0 or 1 elements based on whether arg exists
-            let elements = if let Some(arg_str) = &self.get(vm.heap).arg {
-                let str_id = vm.heap.allocate(HeapData::Str(Str::from(arg_str.clone())))?;
-                smallvec![Value::Ref(str_id)]
-            } else {
-                smallvec![]
-            };
-            Ok(Some(CallResult::Value(allocate_tuple(elements, vm.heap)?)))
-        } else {
-            Ok(None)
-        }
-    }
 }
 
 impl SimpleException {
@@ -1311,6 +1295,36 @@ impl SimpleException {
             exc: self,
             frame: Some(RawStackFrame::from_position(position)),
             hide_caret: false,
+        }
+    }
+}
+
+impl<'h> HeapRead<'h, SimpleException> {
+    /// Gets an attribute from this exception.
+    ///
+    /// Handles the `.args` attribute by allocating a tuple containing the message.
+    /// Returns `Err(AttributeError)` for all other attributes.
+    pub fn py_getattr(
+        &self,
+        attr: &EitherStr,
+        vm: &mut VM<'h, '_, impl ResourceTracker>,
+    ) -> RunResult<Option<CallResult>> {
+        // Fast path: interned strings can be matched by ID
+        let is_args = attr
+            .static_string()
+            .map_or_else(|| attr.as_str(vm.interns) == "args", |ss| ss == StaticStrings::Args);
+
+        if is_args {
+            // Construct tuple with 0 or 1 elements based on whether arg exists
+            let elements = if let Some(arg_str) = &self.get(vm.heap).arg {
+                let str_id = vm.heap.allocate(HeapData::Str(Str::from(arg_str.clone())))?;
+                smallvec![Value::Ref(str_id)]
+            } else {
+                smallvec![]
+            };
+            Ok(Some(CallResult::Value(allocate_tuple(elements, vm.heap)?)))
+        } else {
+            Ok(None)
         }
     }
 }

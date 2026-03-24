@@ -185,15 +185,6 @@ impl<'h> HeapRead<'h, Tuple> {
         self.py_eq(other, vm)
     }
 
-    /// Delegates to `py_cmp` for backward compatibility with `value.rs` call sites.
-    pub(crate) fn cmp(
-        &self,
-        other: &Self,
-        vm: &mut VM<'h, '_, impl ResourceTracker>,
-    ) -> Result<Option<Ordering>, ResourceError> {
-        self.py_cmp(other, vm)
-    }
-
     /// Delegates to `py_add` for backward compatibility with `value.rs` call sites.
     pub(crate) fn add(
         &self,

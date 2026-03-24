@@ -280,18 +280,14 @@ impl PyTrait<'_> for Value {
                 }
             }
             // Ref vs Ref comparison: handles LongInt, Str, and Tuple
-            (Self::Ref(id1), Self::Ref(id2)) => match (vm.heap.get(*id1), vm.heap.get(*id2)) {
-                (HeapData::LongInt(a), HeapData::LongInt(b)) => Ok(a.inner().partial_cmp(b.inner())),
-                (HeapData::Str(a), HeapData::Str(b)) => Ok(a.as_str().partial_cmp(b.as_str())),
-                (HeapData::Tuple(_), HeapData::Tuple(_)) => {
-                    let HeapReadOutput::Tuple(a) = vm.heap.read(*id1) else {
-                        unreachable!()
-                    };
-                    let HeapReadOutput::Tuple(b) = vm.heap.read(*id2) else {
-                        unreachable!()
-                    };
-                    a.cmp(&b, vm)
+            (Self::Ref(id1), Self::Ref(id2)) => match (vm.heap.read(*id1), vm.heap.read(*id2)) {
+                (HeapReadOutput::LongInt(a), HeapReadOutput::LongInt(b)) => {
+                    Ok(a.get(vm.heap).inner().partial_cmp(b.get(vm.heap).inner()))
                 }
+                (HeapReadOutput::Str(a), HeapReadOutput::Str(b)) => {
+                    Ok(a.get(vm.heap).as_str().partial_cmp(b.get(vm.heap).as_str()))
+                }
+                (HeapReadOutput::Tuple(a), HeapReadOutput::Tuple(b)) => a.py_cmp(&b, vm),
                 _ => Ok(None),
             },
             // Interned string comparisons
@@ -442,27 +438,7 @@ impl PyTrait<'_> for Value {
             (Self::Ref(id1), Self::Ref(id2)) => {
                 let left = vm.heap.read(*id1);
                 let right = vm.heap.read(*id2);
-                match (&left, &right) {
-                    (HeapReadOutput::Str(a), HeapReadOutput::Str(b)) => {
-                        let concat = format!("{}{}", a.get(vm.heap).as_str(), b.get(vm.heap).as_str());
-                        Ok(Some(Self::Ref(vm.heap.allocate(HeapData::Str(concat.into()))?)))
-                    }
-                    (HeapReadOutput::Bytes(a), HeapReadOutput::Bytes(b)) => {
-                        let a_bytes = a.get(vm.heap).as_slice();
-                        let b_bytes = b.get(vm.heap).as_slice();
-                        let mut result = Vec::with_capacity(a_bytes.len() + b_bytes.len());
-                        result.extend_from_slice(a_bytes);
-                        result.extend_from_slice(b_bytes);
-                        Ok(Some(Self::Ref(vm.heap.allocate(HeapData::Bytes(result.into()))?)))
-                    }
-                    (HeapReadOutput::List(a), HeapReadOutput::List(b)) => a.py_add(b, vm),
-                    (HeapReadOutput::Tuple(a), HeapReadOutput::Tuple(b)) => a.add(b, vm),
-                    (HeapReadOutput::LongInt(a), HeapReadOutput::LongInt(b)) => {
-                        let bi = a.get(vm.heap).inner() + b.get(vm.heap).inner();
-                        Ok(LongInt::new(bi).into_value(vm.heap).map(Some)?)
-                    }
-                    _ => Ok(None),
-                }
+                left.py_add(&right, vm)
             }
             (Self::InternString(s1), Self::InternString(s2)) => {
                 let concat = format!("{}{}", interns.get_str(*s1), interns.get_str(*s2));
@@ -554,17 +530,11 @@ impl PyTrait<'_> for Value {
                     Ok(None)
                 }
             }
-            // LongInt - LongInt (other Ref-Ref pairs don't support subtraction)
+            // LongInt - LongInt
             (Self::Ref(id1), Self::Ref(id2)) => {
                 let left = vm.heap.read(*id1);
                 let right = vm.heap.read(*id2);
-                match (&left, &right) {
-                    (HeapReadOutput::LongInt(a), HeapReadOutput::LongInt(b)) => {
-                        let bi = a.get(vm.heap).inner() - b.get(vm.heap).inner();
-                        Ok(LongInt::new(bi).into_value(vm.heap).map(Some)?)
-                    }
-                    _ => Ok(None),
-                }
+                left.py_sub(&right, vm)
             }
             // Float - Float
             (Self::Float(a), Self::Float(b)) => Ok(Some(Self::Float(a - b))),
@@ -617,21 +587,11 @@ impl PyTrait<'_> for Value {
                 let bi = a_clone.mod_floor(&BigInt::from(*b));
                 Ok(Some(LongInt::new(bi).into_value(vm.heap)?))
             }
-            // LongInt % LongInt (other Ref-Ref pairs don't support modulo)
+            // LongInt % LongInt
             (Self::Ref(id1), Self::Ref(id2)) => {
                 let left = vm.heap.read(*id1);
                 let right = vm.heap.read(*id2);
-                match (&left, &right) {
-                    (HeapReadOutput::LongInt(a), HeapReadOutput::LongInt(b)) => {
-                        if b.get(vm.heap).is_zero() {
-                            Err(ExcType::zero_division().into())
-                        } else {
-                            let bi = a.get(vm.heap).inner().mod_floor(b.get(vm.heap).inner());
-                            Ok(LongInt::new(bi).into_value(vm.heap).map(Some)?)
-                        }
-                    }
-                    _ => Ok(None),
-                }
+                left.py_mod(&right, vm)
             }
             (Self::Float(v1), Self::Float(v2)) => {
                 if *v2 == 0.0 {
@@ -737,13 +697,7 @@ impl PyTrait<'_> for Value {
                 };
                 Ok(result)
             }
-            (Self::Ref(id), Self::Ref(_)) => {
-                let output = vm.heap.read(*id);
-                match output {
-                    HeapReadOutput::List(mut list) => list.py_iadd(other, vm, Some(*id)),
-                    _ => Ok(false),
-                }
-            }
+            (Self::Ref(id), Self::Ref(_)) => vm.heap.read(*id).py_iadd(other, vm, Some(*id)),
             _ => Ok(false),
         }
     }
@@ -1321,118 +1275,7 @@ impl PyTrait<'_> for Value {
     fn py_getitem(&self, key: &Self, vm: &mut VM<'_, '_, impl ResourceTracker>) -> RunResult<Self> {
         let interns = vm.interns;
         match self {
-            Self::Ref(id) => {
-                let output = vm.heap.read(*id);
-                match output {
-                    HeapReadOutput::Str(s) => {
-                        // Check for slice first
-                        if let Self::Ref(key_id) = key
-                            && let HeapData::Slice(slice_obj) = vm.heap.get(*key_id)
-                        {
-                            let slice_obj = slice_obj.clone();
-                            let char_count = s.get(vm.heap).as_str().chars().count();
-                            let (start, stop, step) = slice_obj
-                                .indices(char_count)
-                                .map_err(|()| ExcType::value_error_slice_step_zero())?;
-                            let result_str = get_str_slice(s.get(vm.heap).as_str(), start, stop, step);
-                            let heap_id = vm.heap.allocate(HeapData::Str(Str::from(result_str)))?;
-                            return Ok(Self::Ref(heap_id));
-                        }
-                        let index = key.as_index(vm, Type::Str)?;
-                        let c =
-                            get_char_at_index(s.get(vm.heap).as_str(), index).ok_or_else(ExcType::str_index_error)?;
-                        Ok(allocate_char(c, vm.heap)?)
-                    }
-                    HeapReadOutput::Bytes(b) => {
-                        // Check for slice first
-                        if let Self::Ref(key_id) = key
-                            && let HeapData::Slice(slice_obj) = vm.heap.get(*key_id)
-                        {
-                            let len = b.get(vm.heap).as_slice().len();
-                            let (start, stop, step) = slice_obj
-                                .indices(len)
-                                .map_err(|()| ExcType::value_error_slice_step_zero())?;
-                            let sliced = get_bytes_slice(b.get(vm.heap).as_slice(), start, stop, step);
-                            let heap_id = vm.heap.allocate(HeapData::Bytes(crate::types::Bytes::new(sliced)))?;
-                            return Ok(Self::Ref(heap_id));
-                        }
-                        let index = key.as_index(vm, Type::Bytes)?;
-                        let byte = get_byte_at_index(b.get(vm.heap).as_slice(), index)
-                            .ok_or_else(ExcType::bytes_index_error)?;
-                        Ok(Self::Int(i64::from(byte)))
-                    }
-                    HeapReadOutput::List(list) => list.py_getitem(key, vm),
-                    HeapReadOutput::Tuple(tuple) => {
-                        // Check for slice first
-                        if let Self::Ref(key_id) = key
-                            && let HeapData::Slice(slice_obj) = vm.heap.get(*key_id)
-                        {
-                            let len = tuple.get(vm.heap).as_slice().len();
-                            let (start, stop, step) = slice_obj
-                                .indices(len)
-                                .map_err(|()| ExcType::value_error_slice_step_zero())?;
-                            let items = collect_tuple_slice_items(&tuple, start, stop, step, vm)?;
-                            return Ok(crate::types::allocate_tuple(items.into(), vm.heap)?);
-                        }
-                        let index = key.as_index(vm, Type::Tuple)?;
-                        let len = tuple.get(vm.heap).as_slice().len();
-                        let len_i64 = i64::try_from(len).expect("tuple length exceeds i64::MAX");
-                        let normalized = if index < 0 { index + len_i64 } else { index };
-                        if normalized < 0 || normalized >= len_i64 {
-                            return Err(ExcType::tuple_index_error());
-                        }
-                        let idx = usize::try_from(normalized).expect("tuple index validated non-negative");
-                        Ok(tuple.clone_item(idx, vm))
-                    }
-                    HeapReadOutput::NamedTuple(nt) => {
-                        let index = match key {
-                            Self::Int(i) => *i,
-                            _ => return Err(ExcType::type_error_indices(Type::NamedTuple, key.py_type(vm))),
-                        };
-                        let len = nt.get(vm.heap).len();
-                        let len_i64 = i64::try_from(len).expect("namedtuple length exceeds i64::MAX");
-                        let normalized = if index < 0 { index + len_i64 } else { index };
-                        if normalized < 0 || normalized >= len_i64 {
-                            return Err(ExcType::tuple_index_error());
-                        }
-                        let idx = usize::try_from(normalized).expect("namedtuple index validated non-negative");
-                        Ok(nt.clone_item(idx, vm))
-                    }
-                    HeapReadOutput::Dict(dict) => dict.py_getitem(key, vm),
-                    HeapReadOutput::Range(range) => {
-                        // Check for slice first
-                        if let Self::Ref(key_id) = key
-                            && let HeapData::Slice(slice_obj) = vm.heap.get(*key_id)
-                        {
-                            let slice_obj = slice_obj.clone();
-                            // Copy Range fields (all i64/usize, Copy)
-                            let r = range.get(vm.heap);
-                            let r_start = r.start;
-                            let r_step = r.step;
-                            let r_len = r.len();
-                            // Borrow released. Delegate to the slice computation.
-                            return range_getitem_slice(r_start, r_step, r_len, &slice_obj, vm.heap);
-                        }
-                        let index = key.as_index(vm, Type::Range)?;
-                        let r = range.get(vm.heap);
-                        let len = i64::try_from(r.len()).expect("range length exceeds i64::MAX");
-                        let r_start = r.start;
-                        let r_step = r.step;
-                        // Borrow released after copying fields
-                        let normalized = if index < 0 { index + len } else { index };
-                        if normalized < 0 || normalized >= len {
-                            return Err(ExcType::range_index_error());
-                        }
-                        let offset = normalized
-                            .checked_mul(r_step)
-                            .and_then(|v| r_start.checked_add(v))
-                            .expect("range element calculation overflowed");
-                        Ok(Self::Int(offset))
-                    }
-                    HeapReadOutput::ReMatch(m) => m.py_getitem(key, vm),
-                    _ => Err(ExcType::type_error_not_sub(self.py_type(vm))),
-                }
-            }
+            Self::Ref(id) => vm.heap.read(*id).py_getitem(key, vm),
             Self::InternString(string_id) => {
                 // Check for slice first
                 if let Self::Ref(key_id) = key
@@ -1492,21 +1335,7 @@ impl PyTrait<'_> for Value {
 
     fn py_setitem(&mut self, key: Self, value: Self, vm: &mut VM<'_, '_, impl ResourceTracker>) -> RunResult<()> {
         match self {
-            Self::Ref(id) => {
-                let output = vm.heap.read(*id);
-                match output {
-                    HeapReadOutput::List(mut list) => list.py_setitem(key, value, vm),
-                    HeapReadOutput::Dict(mut dict) => dict.py_setitem(key, value, vm),
-                    _ => {
-                        key.drop_with_heap(vm);
-                        value.drop_with_heap(vm);
-                        Err(ExcType::type_error(format!(
-                            "'{}' object does not support item assignment",
-                            self.py_type(vm)
-                        )))
-                    }
-                }
-            }
+            Self::Ref(id) => vm.heap.read(*id).py_setitem(key, value, vm),
             _ => Err(ExcType::type_error(format!(
                 "'{}' object does not support item assignment",
                 self.py_type(vm)
@@ -2568,91 +2397,6 @@ fn str_contains(
         }
         _ => Err(ExcType::type_error("'in <str>' requires string as left operand")),
     }
-}
-
-/// Computes a range slice from pre-extracted range parameters.
-///
-/// This exists to avoid holding a `HeapRead` borrow on the Range while allocating.
-/// The caller copies `start`, `step`, and `len` from the Range, releases the borrow,
-/// then calls this function with the owned Slice and `&mut Heap`.
-fn range_getitem_slice(
-    r_start: i64,
-    r_step: i64,
-    r_len: usize,
-    slice: &crate::types::Slice,
-    heap: &mut Heap<impl ResourceTracker>,
-) -> RunResult<Value> {
-    use crate::types::Range;
-
-    let (start, stop, step) = slice
-        .indices(r_len)
-        .map_err(|()| ExcType::value_error_slice_step_zero())?;
-
-    let new_step = r_step.saturating_mul(step);
-    let start_i64 = i64::try_from(start).expect("start index fits in i64");
-    let new_start = r_start.saturating_add(start_i64.saturating_mul(r_step));
-
-    let num_elements = if let Ok(step_usize) = usize::try_from(step) {
-        if start >= stop {
-            0
-        } else {
-            ((stop - start - 1) / step_usize) + 1
-        }
-    } else {
-        let step_abs = usize::try_from(-step).expect("step is negative so -step is positive");
-        if stop > r_len {
-            (start / step_abs) + 1
-        } else if start <= stop {
-            0
-        } else {
-            ((start - stop - 1) / step_abs) + 1
-        }
-    };
-
-    let num_elements_i64 = i64::try_from(num_elements).expect("num_elements fits in i64");
-    let new_stop = new_start.saturating_add(num_elements_i64.saturating_mul(new_step));
-
-    let new_range = Range::new(new_start, new_stop, new_step);
-    Ok(Value::Ref(heap.allocate(HeapData::Range(new_range))?))
-}
-
-/// Collects slice items from a Tuple via HeapRead, using `clone_item` to avoid
-/// holding a borrow on the items while cloning (which requires `&mut Heap`).
-fn collect_tuple_slice_items<'h>(
-    tuple: &crate::heap::HeapRead<'h, crate::types::Tuple>,
-    start: usize,
-    stop: usize,
-    step: i64,
-    vm: &mut crate::bytecode::VM<'h, '_, impl ResourceTracker>,
-) -> RunResult<Vec<Value>> {
-    let len = tuple.get(vm.heap).as_slice().len();
-    let mut result = Vec::new();
-    if let Ok(step_usize) = usize::try_from(step) {
-        let mut i = start;
-        while i < stop && i < len {
-            vm.heap.check_time()?;
-            result.push(tuple.clone_item(i, vm));
-            i += step_usize;
-        }
-    } else {
-        let step_abs = usize::try_from(-step).expect("step is negative so -step is positive");
-        let step_abs_i64 = i64::try_from(step_abs).expect("step magnitude fits in i64");
-        let mut i = i64::try_from(start).expect("start index fits in i64");
-        let stop_i64 = if stop > len {
-            -1
-        } else {
-            i64::try_from(stop).expect("stop bounded by items.len() fits in i64")
-        };
-        while i > stop_i64 {
-            vm.heap.check_time()?;
-            let idx = usize::try_from(i).expect("i is non-negative");
-            if idx < len {
-                result.push(tuple.clone_item(idx, vm));
-            }
-            i -= step_abs_i64;
-        }
-    }
-    Ok(result)
 }
 
 /// Computes the number of significant bits in an i64.

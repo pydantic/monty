@@ -433,6 +433,19 @@ impl<'a, T> HeapRead<'a, Vec<T>> {
     }
 }
 
+impl<'a, T: ?Sized> HeapRead<'a, Box<T>> {
+    pub fn as_box_value(&self, reader: &HeapReader<'a, impl ResourceTracker>) -> BorrowedHeapRead<'_, 'a, T> {
+        BorrowedHeapRead {
+            inner: ManuallyDrop::new(HeapRead {
+                value: NonNull::from(self.get(reader).as_ref()),
+                readers: NonNull::dangling(),
+                borrow: PhantomData,
+            }),
+            original: PhantomData,
+        }
+    }
+}
+
 /// Represents the reborrow of a `HeapRead` as a reference to a field of the original type.
 pub struct BorrowedHeapRead<'original, 'a, U: ?Sized> {
     // inner is a projected HeapRead which will never be dropped
@@ -507,7 +520,7 @@ pub(crate) unsafe fn cast_as_member_ref_mut_type_hinted<'r, 'a, T, U>(
 }
 
 macro_rules! heap_read_ref_as_field_mut {
-    ($heap_read:ident, $ty:ty, $field:ident) => {{
+    ($heap_read:ident, $ty:ty, $field:tt) => {{
         let offset = std::mem::offset_of!($ty, $field);
         #[expect(unreachable_code)]
         let type_hint = |read: &$crate::heap::HeapRead<'_, $ty>| {
