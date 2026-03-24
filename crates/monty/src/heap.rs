@@ -238,6 +238,18 @@ impl<'a, T: ResourceTracker> HeapReader<'a, T> {
             original: PhantomData,
         }
     }
+
+    #[expect(clippy::unused_self, reason = "'a lifetime is used to create the safety guarantees")]
+    pub fn protect_mut<'t, U: ?Sized>(&mut self, value: &'t mut U) -> BorrowedHeapReadMut<'t, 'a, U> {
+        BorrowedHeapReadMut {
+            inner: ManuallyDrop::new(HeapRead {
+                value: NonNull::from(value),
+                readers: NonNull::dangling(),
+                borrow: PhantomData,
+            }),
+            original: PhantomData,
+        }
+    }
 }
 
 impl<T: ResourceTracker> ContainsHeap for HeapReader<'_, T> {
@@ -464,13 +476,13 @@ macro_rules! heap_read_ref_as_field {
 pub(crate) use heap_read_ref_as_field;
 
 /// Represents the reborrow of a `HeapRead` as a reference to a field of the original type.
-pub struct BorrowedHeapReadMut<'original, 'a, U> {
+pub struct BorrowedHeapReadMut<'original, 'a, U: ?Sized> {
     // inner is a projected HeapRead which will never be dropped
     inner: ManuallyDrop<HeapRead<'a, U>>,
     original: PhantomData<&'original mut U>,
 }
 
-impl<'a, U> Deref for BorrowedHeapReadMut<'_, 'a, U> {
+impl<'a, U: ?Sized> Deref for BorrowedHeapReadMut<'_, 'a, U> {
     type Target = HeapRead<'a, U>;
 
     fn deref(&self) -> &Self::Target {
@@ -478,7 +490,7 @@ impl<'a, U> Deref for BorrowedHeapReadMut<'_, 'a, U> {
     }
 }
 
-impl<U> DerefMut for BorrowedHeapReadMut<'_, '_, U> {
+impl<U: ?Sized> DerefMut for BorrowedHeapReadMut<'_, '_, U> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.inner
     }

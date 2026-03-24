@@ -486,7 +486,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             (HeapReadOutput::List(a), HeapReadOutput::List(b)) => a.py_eq(b, vm),
             (HeapReadOutput::Tuple(a), HeapReadOutput::Tuple(b)) => a.eq(b, vm),
             // Container types with HeapRead eq methods
-            (HeapReadOutput::Dict(a), HeapReadOutput::Dict(b)) => a.eq(b, vm),
+            (HeapReadOutput::Dict(a), HeapReadOutput::Dict(b)) => a.py_eq(b, vm),
             (HeapReadOutput::Set(a), HeapReadOutput::Set(b)) => a.eq(b, vm),
             (HeapReadOutput::FrozenSet(a), HeapReadOutput::FrozenSet(b)) => a.eq(b, vm),
             // NamedTuple: element-wise comparison via HeapRead clone_item
@@ -542,7 +542,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
                 if a.get(vm.heap).name(vm.interns) != b.get(vm.heap).name(vm.interns) {
                     return Ok(false);
                 }
-                a.attrs().eq(&b.attrs(), vm)
+                a.attrs().py_eq(&b.attrs(), vm)
             }
             // Pure data comparisons (no VM needed)
             (HeapReadOutput::Slice(a), HeapReadOutput::Slice(b)) => {

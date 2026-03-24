@@ -426,7 +426,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
             value.drop_with_heap(self);
             return Err(RunError::internal("ListAppend: expected list on heap"));
         };
-        list.append(value, self);
+        list.append(self, value);
         Ok(())
     }
 

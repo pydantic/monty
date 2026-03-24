@@ -126,7 +126,28 @@ impl Dict {
         }
         Ok(dict_guard.into_inner())
     }
+}
 
+impl<'h> HeapRead<'h, Dict> {
+    /// Gets a value from the dict by key.
+    ///
+    /// Returns Ok(Some(value)) if key exists, Ok(None) if key doesn't exist.
+    /// Returns Err if key is unhashable.
+    pub(crate) fn dict_get<'a>(
+        &'a self,
+        key: &Value,
+        vm: &'a mut VM<'h, '_, impl ResourceTracker>,
+    ) -> RunResult<Option<Value>> {
+        let (opt_index, _hash) = self.find_index_hash(key, vm)?;
+        if let Some(index) = opt_index {
+            Ok(Some(self.get(vm.heap).entries[index].value.clone_with_heap(vm.heap)))
+        } else {
+            Ok(None)
+        }
+    }
+}
+
+impl Dict {
     /// Gets a value from the dict by string key name (immutable lookup).
     ///
     /// This is an O(1) lookup that doesn't require mutable heap access.
@@ -171,39 +192,7 @@ impl Dict {
         value: Value,
         vm: &mut VM<'_, '_, impl ResourceTracker>,
     ) -> RunResult<Option<Value>> {
-        // Track if we're adding a reference for GC optimization
-        if matches!(key, Value::Ref(_)) || matches!(value, Value::Ref(_)) {
-            self.contains_refs = true;
-        }
-
-        // Handle hash computation errors explicitly so we can drop key/value properly
-        let (opt_index, hash) = match self.find_index_hash(&key, vm) {
-            Ok(result) => result,
-            Err(e) => {
-                // Drop the key and value before returning the error
-                key.drop_with_heap(vm);
-                value.drop_with_heap(vm);
-                return Err(e);
-            }
-        };
-
-        let entry = DictEntry { key, value, hash };
-        if let Some(index) = opt_index {
-            // Key exists, replace in place to preserve insertion order
-            let old_entry = std::mem::replace(&mut self.entries[index], entry);
-
-            // Decrement refcount for old key (we're discarding it)
-            old_entry.key.drop_with_heap(vm);
-            // Transfer ownership of the old value to caller (no clone needed)
-            Ok(Some(old_entry.value))
-        } else {
-            // Key doesn't exist, add new pair to indices and entries
-            let index = self.entries.len();
-            self.entries.push(entry);
-            self.indices
-                .insert_unique(hash, index, |index| self.entries[*index].hash);
-            Ok(None)
-        }
+        vm.heap.protect_mut(self).set(key, value, vm)
     }
 }
 
@@ -255,6 +244,32 @@ impl<'h> HeapRead<'h, Dict> {
             this.entries.push(entry);
             this.indices
                 .insert_unique(hash, index, |index| this.entries[*index].hash);
+            Ok(None)
+        }
+    }
+
+    /// Removes and returns a key-value pair from the dict.
+    ///
+    /// Returns Ok(Some((key, value))) if key exists, Ok(None) if key doesn't exist.
+    /// Returns Err if key is unhashable.
+    ///
+    /// Reference counting: does not decrement refcounts for removed key and value;
+    /// caller assumes ownership and is responsible for managing their refcounts.
+    pub fn pop(&mut self, key: &Value, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<Option<(Value, Value)>> {
+        // Find the key using the candidate-based lookup
+        let (opt_index, _hash) = self.find_index_hash(key, vm)?;
+
+        if let Some(index) = opt_index {
+            // Remove the entry
+            let entry = self.get_mut(vm.heap).entries.remove(index);
+            // Remove from index table and rebuild (same as dict_popitem)
+            let this = self.get_mut(vm.heap);
+            this.indices.clear();
+            for (idx, e) in this.entries.iter().enumerate() {
+                this.indices.insert_unique(e.hash, idx, |&i| this.entries[i].hash);
+            }
+            Ok(Some((entry.key, entry.value)))
+        } else {
             Ok(None)
         }
     }
@@ -342,110 +357,9 @@ impl Dict {
         let heap_id = vm.heap.allocate(HeapData::Dict(dict))?;
         Ok(Value::Ref(heap_id))
     }
-
-    fn find_index_hash(
-        &self,
-        key: &Value,
-        vm: &mut VM<'_, '_, impl ResourceTracker>,
-    ) -> RunResult<(Option<usize>, u64)> {
-        let hash = key
-            .py_hash(vm)?
-            .ok_or_else(|| ExcType::type_error_unhashable_dict_key(key.py_type(vm)))?;
-
-        // Dict keys are typically shallow (strings, ints, tuples of primitives),
-        // so recursion errors are unlikely. If one occurs, treat it as "not equal" -
-        // the key lookup fails but doesn't crash.
-        let opt_index = self
-            .indices
-            .find(hash, |v| key.py_eq(&self.entries[*v].key, vm).unwrap_or(false))
-            .copied();
-        Ok((opt_index, hash))
-    }
-
-    /// Writes the Python `repr()` for this dict value.
-    ///
-    /// This is an inherent method so `HeapData` can call it on a bare `Dict`
-    /// without requiring a `HeapRead` wrapper. Iterates entries in insertion order,
-    /// producing `{key: value, ...}` output with recursion-depth and timeout checks.
-    pub fn py_repr_fmt(
-        &self,
-        f: &mut impl Write,
-        vm: &VM<'_, '_, impl ResourceTracker>,
-        heap_ids: &mut AHashSet<HeapId>,
-    ) -> RunResult<()> {
-        if self.is_empty() {
-            return Ok(f.write_str("{}")?);
-        }
-
-        let heap = &*vm.heap;
-        // Check depth limit before recursing
-        let Some(token) = heap.incr_recursion_depth_for_repr() else {
-            return Ok(f.write_str("{...}")?);
-        };
-        crate::defer_drop_immutable_heap!(token, heap);
-
-        f.write_char('{')?;
-        let mut first = true;
-        for entry in &self.entries {
-            if !first {
-                if heap.check_time().is_err() {
-                    f.write_str(", ...[timeout]")?;
-                    break;
-                }
-                f.write_str(", ")?;
-            }
-            first = false;
-            entry.key.py_repr_fmt(f, vm, heap_ids)?;
-            f.write_str(": ")?;
-            entry.value.py_repr_fmt(f, vm, heap_ids)?;
-        }
-        f.write_char('}')?;
-
-        Ok(())
-    }
 }
 
 impl<'h> HeapRead<'h, Dict> {
-    /// Checks whether the dict contains a given key.
-    ///
-    /// Uses `find_index_hash` internally so it handles the short-lived borrow
-    /// pattern correctly — the dict is only accessed through temporary borrows,
-    /// allowing `py_eq` calls on keys in between.
-    pub(crate) fn contains_key(&self, key: &Value, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<bool> {
-        let (opt_index, _hash) = self.find_index_hash(key, vm)?;
-        Ok(opt_index.is_some())
-    }
-
-    /// Looks up a key and returns a clone of the associated value.
-    ///
-    /// Returns `Ok(Some(value))` if the key exists (value is cloned with refcount
-    /// increment), `Ok(None)` if the key is not found, or `Err` if the key is
-    /// unhashable. The caller owns the returned value.
-    pub(crate) fn get_cloned(
-        &self,
-        key: &Value,
-        vm: &mut VM<'h, '_, impl ResourceTracker>,
-    ) -> RunResult<Option<Value>> {
-        let (opt_index, _hash) = self.find_index_hash(key, vm)?;
-        if let Some(index) = opt_index {
-            // Clone the value using the two-phase pattern:
-            // 1. Read the value discriminant (shared borrow)
-            // 2. Increment refcount if Ref (mutable borrow)
-            let ref_id = match &self.get(vm.heap).entries[index].value {
-                Value::Ref(id) => Some(*id),
-                _ => None,
-            };
-            if let Some(id) = ref_id {
-                vm.heap.inc_ref(id);
-                Ok(Some(Value::Ref(id)))
-            } else {
-                Ok(Some(self.get(vm.heap).entries[index].value.clone_immediate()))
-            }
-        } else {
-            Ok(None)
-        }
-    }
-
     fn find_index_hash(
         &self,
         key: &Value,
@@ -480,174 +394,17 @@ impl<'h> HeapRead<'h, Dict> {
         Ok((None, hash))
     }
 
-    /// Two-phase clone of the key at a given entry index.
-    fn clone_key_at(&self, index: usize, vm: &mut VM<'h, '_, impl ResourceTracker>) -> Value {
-        let ref_id = match self.get(vm.heap).key_at(index) {
-            Some(Value::Ref(id)) => Some(*id),
-            _ => None,
-        };
-        if let Some(id) = ref_id {
-            vm.heap.inc_ref(id);
-            Value::Ref(id)
-        } else {
-            self.get(vm.heap).key_at(index).expect("index valid").clone_immediate()
-        }
-    }
-
-    /// Two-phase clone of the value at a given entry index.
-    fn clone_value_at(&self, index: usize, vm: &mut VM<'h, '_, impl ResourceTracker>) -> Value {
-        let ref_id = match self.get(vm.heap).value_at(index) {
-            Some(Value::Ref(id)) => Some(*id),
-            _ => None,
-        };
-        if let Some(id) = ref_id {
-            vm.heap.inc_ref(id);
-            Value::Ref(id)
-        } else {
-            self.get(vm.heap)
-                .value_at(index)
-                .expect("index valid")
-                .clone_immediate()
-        }
-    }
-
-    /// Element-wise equality comparison using the short-lived borrow pattern.
-    ///
-    /// For each entry in self, looks up the key in other and compares values.
-    /// Both keys and values are cloned temporarily for comparison.
-    pub(crate) fn eq(&self, other: &Self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> Result<bool, ResourceError> {
-        if self.get(vm.heap).len() != other.get(vm.heap).len() {
-            return Ok(false);
-        }
-        let token = vm.heap.incr_recursion_depth()?;
-        defer_drop!(token, vm);
-        let len = self.get(vm.heap).len();
-        for i in 0..len {
-            vm.heap.check_time()?;
-            // Clone key from self to use as lookup key in other
-            let key = self.get(vm.heap).key_at(i).expect("index valid").clone_with_heap(vm);
-            defer_drop!(key, vm);
-            // Swallow RunErrors from get_cloned (e.g. unhashable key) and treat as not-equal,
-            // matching the pattern used in the original Dict::py_eq.
-            if let Ok(Some(other_value)) = other.get_cloned(key, vm) {
-                let self_value = self.clone_value_at(i, vm);
-                let eq = self_value.py_eq(&other_value, vm);
-                self_value.drop_with_heap(vm);
-                other_value.drop_with_heap(vm);
-                if !eq? {
-                    return Ok(false);
-                }
-            } else {
-                return Ok(false);
-            }
-        }
-        Ok(true)
-    }
-
-    /// Subscript access via HeapRead, returning a cloned value or KeyError.
-    pub(crate) fn getitem(&self, key: &Value, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<Value> {
-        match self.get_cloned(key, vm)? {
-            Some(value) => Ok(value),
-            None => Err(ExcType::key_error(key, vm)),
-        }
-    }
-
-    /// Subscript assignment via HeapRead. Drops old value if key already exists.
-    pub(crate) fn setitem(
-        &mut self,
-        key: Value,
-        value: Value,
-        vm: &mut VM<'h, '_, impl ResourceTracker>,
-    ) -> RunResult<()> {
-        if let Some(old_value) = self.set(key, value, vm)? {
-            old_value.drop_with_heap(vm);
-        }
-        Ok(())
-    }
-}
-
-impl<'h> HeapRead<'h, Dict> {
-    /// `dict.pop(key[, default])` via HeapRead.
-    fn hr_pop(&mut self, args: ArgValues, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<Value> {
-        let (key, default) = args.get_one_two_args("pop", vm.heap)?;
-        defer_drop!(key, vm);
-        let mut default_guard = HeapGuard::new(default, vm);
-
-        // Find the key using the candidate-based lookup
-        let (opt_index, _hash) = self.find_index_hash(key, default_guard.heap())?;
-
-        if let Some(index) = opt_index {
-            let vm = default_guard.heap();
-            // Remove the entry
-            let entry = self.get_mut(vm.heap).entries.remove(index);
-            // Remove from index table and rebuild (same as dict_popitem)
-            let this = self.get_mut(vm.heap);
-            this.indices.clear();
-            for (idx, e) in this.entries.iter().enumerate() {
-                this.indices.insert_unique(e.hash, idx, |&i| this.entries[i].hash);
-            }
-            // Drop the old key, return the value
-            entry.key.drop_with_heap(vm);
-            Ok(entry.value)
-        } else {
-            let (default, vm) = default_guard.into_parts();
-            if let Some(d) = default {
-                Ok(d)
-            } else {
-                Err(ExcType::key_error(key, vm))
-            }
-        }
-    }
-
-    /// `dict.clear()` via HeapRead.
-    fn hr_clear(&mut self, vm: &mut VM<'h, '_, impl ResourceTracker>) {
-        let entries: Vec<DictEntry> = self.get_mut(vm.heap).entries.drain(..).collect();
-        self.get_mut(vm.heap).indices.clear();
-        entries.drop_with_heap(vm);
-    }
-
-    /// `dict.copy()` via HeapRead — returns a shallow copy.
-    fn hr_copy(&self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<Value> {
-        let len = self.get(vm.heap).entries.len();
-        let mut pairs = Vec::with_capacity(len);
-        for i in 0..len {
-            let key = self.clone_key_at(i, vm);
-            let value = self.clone_value_at(i, vm);
-            pairs.push((key, value));
-        }
-        let new_dict = Dict::from_pairs(pairs, vm)?;
-        let heap_id = vm.heap.allocate(HeapData::Dict(new_dict))?;
-        Ok(Value::Ref(heap_id))
-    }
-
-    /// `dict.update([other], **kwargs)` via HeapRead.
-    ///
-    /// Because data stays in the heap, `d.update(d)` works correctly — the source
-    /// dict is accessible through the heap while we iterate and copy its pairs.
-    fn hr_update(&mut self, args: ArgValues, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<Value> {
-        let (pos_iter, kwargs) = args.into_parts();
-        defer_drop_mut!(pos_iter, vm);
-        let mut kwargs_guard = HeapGuard::new(kwargs, vm);
-
-        if let Some(other_value) = pos_iter.next() {
-            let other_value_guard = HeapGuard::new(other_value, kwargs_guard.heap());
-            if pos_iter.len() != 0 {
-                return Err(ExcType::type_error_at_most("dict.update", 1, pos_iter.len() + 1));
-            }
-            let other_value = other_value_guard.into_inner();
-            self.hr_merge_from_value(other_value, kwargs_guard.heap())?;
-        }
-
-        let kwargs = kwargs_guard.into_inner();
-        self.hr_merge_from_kwargs(kwargs, vm)?;
-        Ok(Value::None)
+    /// Checks whether the dict contains a given key.
+    pub(crate) fn contains_key(&self, key: &Value, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<bool> {
+        let (opt_index, _hash) = self.find_index_hash(key, vm)?;
+        Ok(opt_index.is_some())
     }
 
     /// Merges key-value pairs from a dict or iterable-of-pairs into self via HeapRead.
     ///
     /// For dict sources, uses HeapReader::read() to access the source dict through
     /// the heap, enabling self-referential updates like `d.update(d)`.
-    fn hr_merge_from_value(&mut self, other_value: Value, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<()> {
+    fn merge_from_value(&mut self, other_value: Value, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<()> {
         let mut guard = HeapGuard::new(other_value, vm);
         let (other_value, vm) = guard.as_parts_mut();
         if let Value::Ref(id) = other_value {
@@ -669,11 +426,11 @@ impl<'h> HeapRead<'h, Dict> {
 
         // Non-dict values are interpreted as iterable-of-pairs
         let (other_value, vm) = guard.into_parts();
-        self.hr_merge_from_iterable_pairs(other_value, vm)
+        self.merge_from_iterable_pairs(other_value, vm)
     }
 
     /// Merges key-value pairs from an iterable of 2-item pairs.
-    fn hr_merge_from_iterable_pairs(
+    fn merge_from_iterable_pairs(
         &mut self,
         iterable: Value,
         vm: &mut VM<'h, '_, impl ResourceTracker>,
@@ -718,11 +475,7 @@ impl<'h> HeapRead<'h, Dict> {
     }
 
     /// Merges kwargs into self.
-    fn hr_merge_from_kwargs(
-        &mut self,
-        kwargs: KwargsValues,
-        vm: &mut VM<'h, '_, impl ResourceTracker>,
-    ) -> RunResult<()> {
+    fn merge_from_kwargs(&mut self, kwargs: KwargsValues, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<()> {
         let kwargs_iter = kwargs.into_iter();
         defer_drop_mut!(kwargs_iter, vm);
         for (key, value) in kwargs_iter {
@@ -731,45 +484,60 @@ impl<'h> HeapRead<'h, Dict> {
         }
         Ok(())
     }
+}
 
-    /// `dict.setdefault(key[, default])` via HeapRead.
-    fn hr_setdefault(&mut self, args: ArgValues, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<Value> {
-        let (key, default) = args.get_one_two_args("setdefault", vm.heap)?;
-        let default = default.unwrap_or(Value::None);
-        defer_drop!(key, vm);
+/// Implements Python's `dict.clear()` method.
+///
+/// Removes all items from the dict.
+fn dict_clear<'h>(dict: &mut HeapRead<'h, Dict>, vm: &mut VM<'h, '_, impl ResourceTracker>) {
+    dict.get_mut(vm.heap).indices.clear();
+    std::mem::take(&mut dict.get_mut(vm.heap).entries).drop_with_heap(vm.heap);
+    // Note: contains_refs stays true even if all refs removed, per conservative GC strategy
+}
 
-        // Check if key exists
-        if let Some(existing) = self.get_cloned(key, vm)? {
-            default.drop_with_heap(vm);
-            Ok(existing)
-        } else {
-            // Key doesn't exist - insert default and return a clone
-            let return_value = default.clone_with_heap(vm);
-            let key_clone = key.clone_with_heap(vm);
-            if let Some(old_value) = self.set(key_clone, default, vm)? {
-                old_value.drop_with_heap(vm);
-            }
-            Ok(return_value)
+/// Implements Python's `dict.copy()` method.
+///
+/// Returns a shallow copy of the dict.
+fn dict_copy<'h>(dict: &mut HeapRead<'h, Dict>, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<Value> {
+    // Copy all key-value pairs (incrementing refcounts)
+    let pairs: Vec<(Value, Value)> = dict
+        .get(vm.heap)
+        .iter()
+        .map(|(k, v)| (k.clone_with_heap(vm), v.clone_with_heap(vm)))
+        .collect();
+
+    let new_dict = Dict::from_pairs(pairs, vm)?;
+    let heap_id = vm.heap.allocate(HeapData::Dict(new_dict))?;
+    Ok(Value::Ref(heap_id))
+}
+
+/// Implements Python's `dict.update([other], **kwargs)` method.
+///
+/// Updates the dict with key-value pairs from `other` and/or `kwargs`.
+/// If `other` is a dict, copies its key-value pairs.
+/// If `other` is an iterable, expects pairs of (key, value).
+/// Keyword arguments are also added to the dict.
+fn dict_update<'h>(
+    dict: &mut HeapRead<'h, Dict>,
+    args: ArgValues,
+    vm: &mut VM<'h, '_, impl ResourceTracker>,
+) -> RunResult<Value> {
+    let (pos_iter, kwargs) = args.into_parts();
+    defer_drop_mut!(pos_iter, vm);
+    let mut kwargs_guard = HeapGuard::new(kwargs, vm);
+
+    if let Some(other_value) = pos_iter.next() {
+        let other_value_guard = HeapGuard::new(other_value, kwargs_guard.heap());
+        if pos_iter.len() != 0 {
+            return Err(ExcType::type_error_at_most("dict.update", 1, pos_iter.len() + 1));
         }
+        let other_value = other_value_guard.into_inner();
+        dict.merge_from_value(other_value, kwargs_guard.heap())?;
     }
 
-    /// `dict.popitem()` via HeapRead.
-    fn hr_popitem(&mut self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<Value> {
-        if self.get(vm.heap).is_empty() {
-            return Err(ExcType::key_error_popitem_empty_dict());
-        }
-
-        let entry = self.get_mut(vm.heap).entries.pop().expect("dict is not empty");
-
-        // Rebuild indices
-        let this = self.get_mut(vm.heap);
-        this.indices.clear();
-        for (idx, e) in this.entries.iter().enumerate() {
-            this.indices.insert_unique(e.hash, idx, |&i| this.entries[i].hash);
-        }
-
-        Ok(allocate_tuple(smallvec![entry.key, entry.value], vm.heap)?)
-    }
+    let kwargs = kwargs_guard.into_inner();
+    dict.merge_from_kwargs(kwargs, vm)?;
+    Ok(Value::None)
 }
 
 /// Iterator over borrowed (key, value) pairs in a dict.
@@ -830,7 +598,29 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Dict> {
     }
 
     fn py_eq(&self, other: &Self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> Result<bool, ResourceError> {
-        self.eq(other, vm)
+        if self.get(vm.heap).len() != other.get(vm.heap).len() {
+            return Ok(false);
+        }
+        let token = vm.heap.incr_recursion_depth()?;
+        defer_drop!(token, vm);
+        let len = self.get(vm.heap).len();
+        for i in 0..len {
+            vm.heap.check_time()?;
+            let key = self.get(vm.heap).key_at(i).expect("index valid").clone_with_heap(vm);
+            defer_drop!(key, vm);
+            if let Ok(Some(other_value)) = other.dict_get(key, vm) {
+                let self_value = self.get(vm.heap).value_at(i).expect("index valid").clone_with_heap(vm);
+                let eq = self_value.py_eq(&other_value, vm);
+                self_value.drop_with_heap(vm);
+                other_value.drop_with_heap(vm);
+                if !eq? {
+                    return Ok(false);
+                }
+            } else {
+                return Ok(false);
+            }
+        }
+        Ok(true)
     }
 
     fn py_bool(&self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> bool {
@@ -843,15 +633,50 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Dict> {
         vm: &VM<'h, '_, impl ResourceTracker>,
         heap_ids: &mut AHashSet<HeapId>,
     ) -> RunResult<()> {
-        self.get(vm.heap).py_repr_fmt(f, vm, heap_ids)
+        if self.get(vm.heap).is_empty() {
+            return Ok(f.write_str("{}")?);
+        }
+
+        let heap = &*vm.heap;
+        // Check depth limit before recursing
+        let Some(token) = heap.incr_recursion_depth_for_repr() else {
+            return Ok(f.write_str("{...}")?);
+        };
+        crate::defer_drop_immutable_heap!(token, heap);
+
+        f.write_char('{')?;
+        let mut first = true;
+        for entry in &self.get(heap).entries {
+            if !first {
+                if heap.check_time().is_err() {
+                    f.write_str(", ...[timeout]")?;
+                    break;
+                }
+                f.write_str(", ")?;
+            }
+            first = false;
+            entry.key.py_repr_fmt(f, vm, heap_ids)?;
+            f.write_str(": ")?;
+            entry.value.py_repr_fmt(f, vm, heap_ids)?;
+        }
+        f.write_char('}')?;
+
+        Ok(())
     }
 
     fn py_getitem(&self, key: &Value, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<Value> {
-        self.getitem(key, vm)
+        match self.dict_get(key, vm)? {
+            Some(value) => Ok(value),
+            None => Err(ExcType::key_error(key, vm)),
+        }
     }
 
     fn py_setitem(&mut self, key: Value, value: Value, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<()> {
-        self.setitem(key, value, vm)
+        // Drop the old value if one was replaced
+        if let Some(old_value) = self.set(key, value, vm)? {
+            old_value.drop_with_heap(vm);
+        }
+        Ok(())
     }
 
     fn py_call_attr(
@@ -868,12 +693,14 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Dict> {
 
         let value = match method {
             StaticStrings::Get => {
+                // dict.get() accepts 1 or 2 arguments
                 let (key, default) = args.get_one_two_args("get", vm.heap)?;
                 defer_drop!(key, vm);
                 let default = default.unwrap_or(Value::None);
                 let mut default_guard = HeapGuard::new(default, vm);
                 let vm = default_guard.heap();
-                match self.get_cloned(key, vm)? {
+                // Handle the lookup - may fail for unhashable keys
+                match self.dict_get(key, vm)? {
                     Some(v) => Ok(v),
                     None => Ok(default_guard.into_inner()),
                 }
@@ -898,22 +725,42 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Dict> {
                 vm.heap.inc_ref(self_id);
                 Ok(Value::Ref(view_id))
             }
-            StaticStrings::Pop => self.hr_pop(args, vm),
+            StaticStrings::Pop => {
+                // dict.pop() accepts 1 or 2 arguments (key, optional default)
+                let (key, default) = args.get_one_two_args("pop", vm.heap)?;
+                defer_drop!(key, vm);
+                let mut default_guard = HeapGuard::new(default, vm);
+                let vm = default_guard.heap();
+                if let Some((old_key, value)) = self.pop(key, vm)? {
+                    // Drop the old key - we don't need it
+                    old_key.drop_with_heap(vm);
+                    Ok(value)
+                } else {
+                    let (default, vm) = default_guard.into_parts();
+                    // No matching key - return default if provided, else KeyError
+                    if let Some(d) = default {
+                        Ok(d)
+                    } else {
+                        Err(ExcType::key_error(key, vm))
+                    }
+                }
+            }
             StaticStrings::Clear => {
                 args.check_zero_args("dict.clear", vm.heap)?;
-                self.hr_clear(vm);
+                dict_clear(self, vm);
                 Ok(Value::None)
             }
             StaticStrings::Copy => {
                 args.check_zero_args("dict.copy", vm.heap)?;
-                self.hr_copy(vm)
+                dict_copy(self, vm)
             }
-            StaticStrings::Update => self.hr_update(args, vm),
-            StaticStrings::Setdefault => self.hr_setdefault(args, vm),
+            StaticStrings::Update => dict_update(self, args, vm),
+            StaticStrings::Setdefault => dict_setdefault(self, args, vm),
             StaticStrings::Popitem => {
                 args.check_zero_args("dict.popitem", vm.heap)?;
-                self.hr_popitem(vm)
+                dict_popitem(self, vm)
             }
+            // fromkeys is a classmethod but also accessible on instances
             StaticStrings::Fromkeys => dict_fromkeys(args, vm),
             _ => {
                 args.drop_with_heap(vm);
@@ -1063,6 +910,62 @@ fn dict_merge_from_kwargs(
         old_value.drop_with_heap(vm);
     }
     Ok(())
+}
+
+/// Implements Python's `dict.setdefault(key[, default])` method.
+///
+/// If key is in the dict, return its value.
+/// If not, insert key with a value of default (or None) and return default.
+fn dict_setdefault<'h>(
+    dict: &mut HeapRead<'h, Dict>,
+    args: ArgValues,
+    vm: &mut VM<'h, '_, impl ResourceTracker>,
+) -> RunResult<Value> {
+    let (key, default) = args.get_one_two_args("setdefault", vm.heap)?;
+    let default = default.unwrap_or(Value::None);
+    let mut key_guard = HeapGuard::new(key, vm);
+    let (key, vm) = key_guard.as_parts();
+
+    if let Some(existing) = dict.dict_get(key, vm)? {
+        default.drop_with_heap(vm);
+        Ok(existing)
+    } else {
+        // Key doesn't exist - insert default and return it (cloned before insertion)
+        let return_value = default.clone_with_heap(vm);
+        let (key, vm) = key_guard.into_parts();
+        if let Some(old_value) = dict.set(key, default, vm)? {
+            // This shouldn't happen since we checked, but handle it anyway
+            old_value.drop_with_heap(vm);
+        }
+        Ok(return_value)
+    }
+}
+
+/// Implements Python's `dict.popitem()` method.
+///
+/// Removes and returns the last inserted key-value pair as a tuple.
+/// Raises KeyError if the dict is empty.
+fn dict_popitem<'h>(dict: &mut HeapRead<'h, Dict>, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<Value> {
+    let this = dict.get_mut(vm.heap);
+    if this.is_empty() {
+        return Err(ExcType::key_error_popitem_empty_dict());
+    }
+
+    // Remove the last entry (LIFO order)
+    let entry = this.entries.pop().expect("dict is not empty");
+
+    // Remove from indices - need to find the entry with this index
+    // Since we removed the last entry, we need to clear and rebuild indices
+    // (This is simpler than trying to find and remove the specific hash entry)
+    // TODO: This O(n) rebuild could be optimized by finding and removing the
+    // specific hash entry directly from the hashbrown table.
+    this.indices.clear();
+    for (idx, e) in this.entries.iter().enumerate() {
+        this.indices.insert_unique(e.hash, idx, |&i| this.entries[i].hash);
+    }
+
+    // Create tuple (key, value)
+    Ok(allocate_tuple(smallvec![entry.key, entry.value], vm.heap)?)
 }
 
 // Custom serde implementation for Dict.

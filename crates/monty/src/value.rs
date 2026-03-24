@@ -1408,7 +1408,7 @@ impl PyTrait<'_> for Value {
                             Ok(nt.get(vm.heap).item_ref(idx).clone_immediate())
                         }
                     }
-                    HeapReadOutput::Dict(dict) => dict.getitem(key, vm),
+                    HeapReadOutput::Dict(dict) => dict.py_getitem(key, vm),
                     HeapReadOutput::Range(range) => {
                         // Check for slice first
                         if let Self::Ref(key_id) = key
@@ -1544,7 +1544,7 @@ impl PyTrait<'_> for Value {
                 let output = vm.heap.read(*id);
                 match output {
                     HeapReadOutput::List(mut list) => list.py_setitem(key, value, vm),
-                    HeapReadOutput::Dict(mut dict) => dict.setitem(key, value, vm),
+                    HeapReadOutput::Dict(mut dict) => dict.py_setitem(key, value, vm),
                     _ => {
                         key.drop_with_heap(vm);
                         value.drop_with_heap(vm);
@@ -1770,7 +1770,7 @@ impl Value {
                         let HeapReadOutput::Dict(dict) = vm.heap.read(dict_id) else {
                             panic!("dict_items view must reference a dict");
                         };
-                        match dict.get_cloned(key, vm) {
+                        match dict.dict_get(key, vm) {
                             Ok(Some(existing_value)) => {
                                 let result = value.py_eq(&existing_value, vm);
                                 existing_value.drop_with_heap(vm);
