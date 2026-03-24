@@ -448,7 +448,7 @@ fn apply_dict_view_binary_op(
         DictViewBinaryOp::And => {
             let (smaller, larger) = if lhs.len() <= rhs.len() { (lhs, rhs) } else { (rhs, lhs) };
             for value in smaller.iter() {
-                if larger.contains(value, vm)? {
+                if vm.heap.protect(larger).contains(value, vm)? {
                     result.add(value.clone_with_heap(vm), vm)?;
                 }
             }
@@ -463,19 +463,19 @@ fn apply_dict_view_binary_op(
         }
         DictViewBinaryOp::Xor => {
             for value in lhs.iter() {
-                if !rhs.contains(value, vm)? {
+                if !vm.heap.protect(rhs).contains(value, vm)? {
                     result.add(value.clone_with_heap(vm), vm)?;
                 }
             }
             for value in rhs.iter() {
-                if !lhs.contains(value, vm)? {
+                if !vm.heap.protect(lhs).contains(value, vm)? {
                     result.add(value.clone_with_heap(vm), vm)?;
                 }
             }
         }
         DictViewBinaryOp::Sub => {
             for value in lhs.iter() {
-                if !rhs.contains(value, vm)? {
+                if !vm.heap.protect(rhs).contains(value, vm)? {
                     result.add(value.clone_with_heap(vm), vm)?;
                 }
             }

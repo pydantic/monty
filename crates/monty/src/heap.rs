@@ -357,24 +357,24 @@ impl<'a, T: ?Sized> HeapRead<'a, T> {
 
     /// Cast this reader around some type T which is a transparent wrapper around U
     /// to its inner type. Name peel comes from `TransparentWrapper::peel` method.
-    ///
-    /// Transfers ownership of the reader count from `self` to the returned `HeapRead`
-    /// (no net increment/decrement).
-    #[expect(dead_code)]
-    pub fn peel<U>(self) -> HeapRead<'a, U>
+    pub fn peel_ref<U>(&self) -> &HeapRead<'a, U>
     where
         T: TransparentWrapper<U>,
     {
-        // Wrap in `ManuallyDrop` to avoid dropping `self` - transferring ownerhship of `readers`
-        let this = ManuallyDrop::new(self);
-        HeapRead {
-            // NB this pointer casting is safe because `T` is a transparent wrapper around `U`,
-            // this means all the safety protections listed in `.get` about accessing `T` also
-            // apply to `U`.
-            value: NonNull::cast(this.value),
-            readers: this.readers,
-            borrow: PhantomData,
-        }
+        // SAFETY: (DH) all `HeapRead` have the same layout, T and U pointers are
+        // equivalent due to the `#[repr(transparent)] struct T(U)`
+        unsafe { NonNull::from(self).cast().as_ref() }
+    }
+
+    /// Cast this reader around some type T which is a transparent wrapper around U
+    /// to its inner type. Name peel comes from `TransparentWrapper::peel` method.
+    pub fn peel_mut<U>(&mut self) -> &mut HeapRead<'a, U>
+    where
+        T: TransparentWrapper<U>,
+    {
+        // SAFETY: (DH) all `HeapRead` have the same layout, T and U pointers are
+        // equivalent due to the `#[repr(transparent)] struct T(U)`
+        unsafe { NonNull::from(self).cast().as_mut() }
     }
 
     /// Casts this reader to a field of type `U` at some `offset` within the struct.
@@ -1258,20 +1258,7 @@ fn compute_hash_from_read<'h>(
             Ok(Some(hasher.finish()))
         }
         // FrozenSet: XOR of all element hashes (order-independent).
-        HeapReadOutput::FrozenSet(fs) => {
-            let token = vm.heap.incr_recursion_depth()?;
-            crate::defer_drop!(token, vm);
-            let len = fs.get(vm.heap).storage().entry_count();
-            let mut hash: u64 = 0;
-            for i in 0..len {
-                let h = hash_element_at(|r| fs.get(r).storage().entry_value(i), vm)?;
-                match h {
-                    Some(h) => hash ^= h,
-                    None => return Ok(None),
-                }
-            }
-            Ok(Some(hash))
-        }
+        HeapReadOutput::FrozenSet(fs) => fs.compute_hash(vm),
         // Dataclass: hash frozen instances by class name + declared field values
         HeapReadOutput::Dataclass(dc) => dc.compute_hash(vm),
         // Closure/FunctionDefaults: hash by function ID

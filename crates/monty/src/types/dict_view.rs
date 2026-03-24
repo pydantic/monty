@@ -609,7 +609,7 @@ fn sets_are_disjoint(left: &Set, right: &Set, vm: &mut VM<'_, '_, impl ResourceT
     };
 
     for value in smaller.iter() {
-        if larger.contains(value, vm)? {
+        if vm.heap.protect(larger).contains(value, vm)? {
             return Ok(false);
         }
     }

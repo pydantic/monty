@@ -1603,9 +1603,6 @@ impl Value {
     ///
     /// For heap-allocated values (Ref variant), this computes the hash lazily
     /// on first use and caches it for subsequent calls.
-    ///
-    /// The `interns` parameter is needed for InternString/InternBytes to look up
-    /// their actual content and hash it consistently with equivalent heap Str/Bytes.
     pub fn py_hash(&self, vm: &mut VM<'_, '_, impl ResourceTracker>) -> Result<Option<u64>, ResourceError> {
         // strings bytes bigints and heap allocated values have their own hashing logic
         match self {
