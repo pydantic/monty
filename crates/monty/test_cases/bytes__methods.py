@@ -216,6 +216,8 @@ assert b'a\r\nb\rc'.splitlines() == [b'a', b'b', b'c'], 'splitlines mixed'
 assert b'a\nb\n'.splitlines() == [b'a', b'b'], 'splitlines trailing'
 assert b'a\nb'.splitlines(True) == [b'a\n', b'b'], 'splitlines keepends'
 assert b''.splitlines() == [], 'splitlines empty'
+assert b'a\nb'.splitlines(keepends=True) == [b'a\n', b'b'], 'splitlines keepends kwarg'
+assert b'a\nb'.splitlines(keepends=False) == [b'a', b'b'], 'splitlines keepends=False kwarg'
 
 # === bytes.partition() ===
 assert b'hello world'.partition(b' ') == (b'hello', b' ', b'world'), 'partition found'
