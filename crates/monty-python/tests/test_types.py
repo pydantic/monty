@@ -1,3 +1,5 @@
+import datetime
+
 import pytest
 from inline_snapshot import snapshot
 
@@ -137,6 +139,52 @@ def test_tuple_output():
 def test_set_output():
     m = pydantic_monty.Monty('{1, 2, 3}')
     assert m.run() == snapshot({1, 2, 3})
+
+
+def test_date_input_roundtrip():
+    m = pydantic_monty.Monty('x', inputs=['x'])
+    result = m.run(inputs={'x': datetime.date(2024, 1, 15)})
+    assert (type(result).__name__, repr(result)) == snapshot(('date', 'datetime.date(2024, 1, 15)'))
+
+
+def test_datetime_input_roundtrip():
+    m = pydantic_monty.Monty('x', inputs=['x'])
+    result = m.run(inputs={'x': datetime.datetime(2024, 1, 15, 10, 30, 5, 123456)})
+    assert (type(result).__name__, repr(result)) == snapshot(
+        ('datetime', 'datetime.datetime(2024, 1, 15, 10, 30, 5, 123456)')
+    )
+
+
+def test_aware_datetime_input_roundtrip():
+    m = pydantic_monty.Monty('x', inputs=['x'])
+    result = m.run(inputs={'x': datetime.datetime(2024, 1, 15, 10, 30, 5, 123456, tzinfo=datetime.timezone.utc)})
+    assert (type(result).__name__, repr(result)) == snapshot(
+        ('datetime', 'datetime.datetime(2024, 1, 15, 10, 30, 5, 123456, tzinfo=datetime.timezone.utc)')
+    )
+
+
+def test_timedelta_input_roundtrip():
+    m = pydantic_monty.Monty('x', inputs=['x'])
+    result = m.run(inputs={'x': datetime.timedelta(days=-1, seconds=3661, microseconds=42)})
+    assert (type(result).__name__, repr(result)) == snapshot(
+        ('timedelta', 'datetime.timedelta(days=-1, seconds=3661, microseconds=42)')
+    )
+
+
+def test_timezone_input_roundtrip():
+    m = pydantic_monty.Monty('x', inputs=['x'])
+    result = m.run(inputs={'x': datetime.timezone(datetime.timedelta(hours=2))})
+    assert (type(result).__name__, repr(result)) == snapshot(
+        ('timezone', 'datetime.timezone(datetime.timedelta(seconds=7200))')
+    )
+
+
+def test_named_timezone_input_roundtrip():
+    m = pydantic_monty.Monty('x', inputs=['x'])
+    result = m.run(inputs={'x': datetime.timezone(datetime.timedelta(hours=2), 'PLUS2')})
+    assert (type(result).__name__, repr(result)) == snapshot(
+        ('timezone', "datetime.timezone(datetime.timedelta(seconds=7200), 'PLUS2')")
+    )
 
 
 # === Exception types ===
