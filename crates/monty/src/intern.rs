@@ -438,6 +438,26 @@ pub enum StaticStrings {
     #[strum(serialize = "nan")]
     MathNan,
 
+    // ==========================
+    // datetime module strings
+    Datetime,
+    #[strum(serialize = "date")]
+    Date,
+    #[strum(serialize = "timedelta")]
+    Timedelta,
+    #[strum(serialize = "timezone")]
+    Timezone,
+    #[strum(serialize = "today")]
+    Today,
+    #[strum(serialize = "now")]
+    Now,
+    #[strum(serialize = "utc")]
+    Utc,
+    #[strum(serialize = "total_seconds")]
+    TotalSeconds,
+    #[strum(serialize = "tzinfo")]
+    Tzinfo,
+
     // re module strings
     /// Module name for `import re`.
     Re,

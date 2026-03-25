@@ -24,7 +24,8 @@ use crate::{
     resource::{ResourceError, ResourceTracker, check_mult_size, check_repeat_size},
     types::{
         Bytes, Dataclass, Dict, DictItemsView, DictKeysView, DictValuesView, FrozenSet, List, LongInt, Module,
-        MontyIter, NamedTuple, Path, Range, ReMatch, RePattern, Set, Slice, Str, Tuple, allocate_tuple,
+        MontyIter, NamedTuple, Path, Range, ReMatch, RePattern, Set, Slice, Str, Tuple, allocate_tuple, date,
+        datetime, timedelta, timezone,
     },
     value::Value,
 };
@@ -83,7 +84,11 @@ impl HashState {
             | HeapData::FunctionDefaults(_)
             | HeapData::Range(_)
             | HeapData::Slice(_)
-            | HeapData::LongInt(_) => Self::Unknown,
+            | HeapData::LongInt(_)
+            | HeapData::Date(_)
+            | HeapData::DateTime(_)
+            | HeapData::TimeDelta(_)
+            | HeapData::TimeZone(_) => Self::Unknown,
             // Dataclass hashability depends on the mutable flag
             HeapData::Dataclass(dc) => {
                 if dc.is_frozen() {
@@ -224,6 +229,10 @@ impl<'a, T: ResourceTracker> HeapReader<'a, T> {
             HeapData::Path(path) => HeapReadOutput::Path(heap_read(base, path, readers)),
             HeapData::RePattern(re_pattern) => HeapReadOutput::RePattern(heap_read_boxed(re_pattern, readers)),
             HeapData::ReMatch(re_match) => HeapReadOutput::ReMatch(heap_read(base, re_match, readers)),
+            HeapData::Date(d) => HeapReadOutput::Date(heap_read(base, d, readers)),
+            HeapData::DateTime(d) => HeapReadOutput::DateTime(heap_read(base, d, readers)),
+            HeapData::TimeDelta(d) => HeapReadOutput::TimeDelta(heap_read(base, d, readers)),
+            HeapData::TimeZone(d) => HeapReadOutput::TimeZone(heap_read(base, d, readers)),
         }
     }
 
@@ -305,6 +314,10 @@ pub enum HeapReadOutput<'a> {
     Path(HeapRead<'a, Path>),
     RePattern(HeapRead<'a, RePattern>),
     ReMatch(HeapRead<'a, ReMatch>),
+    Date(HeapRead<'a, date::Date>),
+    DateTime(HeapRead<'a, datetime::DateTime>),
+    TimeDelta(HeapRead<'a, timedelta::TimeDelta>),
+    TimeZone(HeapRead<'a, timezone::TimeZone>),
 }
 
 pub struct HeapRead<'a, T: ?Sized> {
@@ -653,16 +666,22 @@ pub(crate) struct Heap<T: ResourceTracker> {
     /// Uses `Cell` for interior mutability so that methods with only `&Heap`
     /// (like `py_repr_fmt`) can still increment/decrement the depth counter.
     recursion_depth: Cell<usize>,
+    /// Cached HeapId for the `datetime.timezone.utc` singleton.
+    ///
+    /// Lazily allocated on first access to `timezone.utc`. Once created, the refcount
+    /// is incremented on each access so the caller can drop their reference normally.
+    timezone_utc: Option<HeapId>,
 }
 
 impl<T: ResourceTracker + serde::Serialize> serde::Serialize for Heap<T> {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         use serde::ser::SerializeStruct;
-        let mut state = serializer.serialize_struct("Heap", 4)?;
+        let mut state = serializer.serialize_struct("Heap", 5)?;
         state.serialize_field("entries", &self.entries)?;
         state.serialize_field("tracker", &self.tracker)?;
         state.serialize_field("may_have_cycles", &self.may_have_cycles.get())?;
         state.serialize_field("allocations_since_gc", &self.allocations_since_gc.get())?;
+        state.serialize_field("timezone_utc", &self.timezone_utc)?;
         state.end()
     }
 }
@@ -675,6 +694,8 @@ impl<'de, T: ResourceTracker + serde::Deserialize<'de>> serde::Deserialize<'de> 
             tracker: T,
             may_have_cycles: bool,
             allocations_since_gc: u32,
+            #[serde(default)]
+            timezone_utc: Option<HeapId>,
         }
         let fields = HeapFields::<T>::deserialize(deserializer)?;
         Ok(Self {
@@ -683,6 +704,7 @@ impl<'de, T: ResourceTracker + serde::Deserialize<'de>> serde::Deserialize<'de> 
             may_have_cycles: Cell::new(fields.may_have_cycles),
             allocations_since_gc: Cell::new(fields.allocations_since_gc),
             recursion_depth: Cell::new(0),
+            timezone_utc: fields.timezone_utc,
         })
     }
 }
@@ -704,6 +726,7 @@ impl<T: ResourceTracker> Heap<T> {
             may_have_cycles: Cell::new(false),
             allocations_since_gc: Cell::new(0),
             recursion_depth: Cell::new(0),
+            timezone_utc: None,
         };
         // TBC: should the empty tuple contribute to the resource limits?
         // If not, can just place it in `entries` directly without going through `allocate()`.
@@ -875,6 +898,24 @@ impl<T: ResourceTracker> Heap<T> {
         // Return existing singleton with incremented refcount
         self.inc_ref(EMPTY_TUPLE_ID);
         Value::Ref(EMPTY_TUPLE_ID)
+    }
+
+    /// Returns the cached `datetime.timezone.utc` singleton, lazily creating it on first access.
+    ///
+    /// The returned `Value::Ref` has its refcount incremented so the caller can drop
+    /// it normally. The singleton itself is kept alive by the `timezone_utc` field.
+    pub fn get_timezone_utc(&mut self) -> Result<Value, ResourceError> {
+        if let Some(id) = self.timezone_utc {
+            self.inc_ref(id);
+            Ok(Value::Ref(id))
+        } else {
+            let tz = crate::types::TimeZone::utc();
+            let id = self.allocate(HeapData::TimeZone(tz))?;
+            // Keep an extra refcount for the singleton cache
+            self.inc_ref(id);
+            self.timezone_utc = Some(id);
+            Ok(Value::Ref(id))
+        }
     }
 
     /// Increments the reference count for an existing heap entry.
@@ -1142,6 +1183,10 @@ impl<T: ResourceTracker> Heap<T> {
         // Use Vec<bool> instead of HashSet for O(1) operations without hashing overhead
         let mut reachable: Vec<bool> = vec![false; self.entries.len()];
         let mut work_list: Vec<HeapId> = root;
+        // Add the timezone UTC singleton as a GC root if it exists
+        if let Some(utc_id) = self.timezone_utc {
+            work_list.push(utc_id);
+        }
 
         while let Some(id) = work_list.pop() {
             let idx = id.index();
@@ -1335,6 +1380,31 @@ fn compute_hash_from_read<'h>(
             let mut hasher = DefaultHasher::new();
             heap_disc(vm.heap, id).hash(&mut hasher);
             name.get(vm.heap).hash(&mut hasher);
+            Ok(Some(hasher.finish()))
+        }
+        // Datetime types: hash by discriminant + value
+        HeapReadOutput::Date(d) => {
+            let mut hasher = DefaultHasher::new();
+            heap_disc(vm.heap, id).hash(&mut hasher);
+            d.get(vm.heap).hash(&mut hasher);
+            Ok(Some(hasher.finish()))
+        }
+        HeapReadOutput::DateTime(d) => {
+            let mut hasher = DefaultHasher::new();
+            heap_disc(vm.heap, id).hash(&mut hasher);
+            d.get(vm.heap).hash(&mut hasher);
+            Ok(Some(hasher.finish()))
+        }
+        HeapReadOutput::TimeDelta(d) => {
+            let mut hasher = DefaultHasher::new();
+            heap_disc(vm.heap, id).hash(&mut hasher);
+            d.get(vm.heap).hash(&mut hasher);
+            Ok(Some(hasher.finish()))
+        }
+        HeapReadOutput::TimeZone(d) => {
+            let mut hasher = DefaultHasher::new();
+            heap_disc(vm.heap, id).hash(&mut hasher);
+            d.get(vm.heap).hash(&mut hasher);
             Ok(Some(hasher.finish()))
         }
         // All other types are unhashable

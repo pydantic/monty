@@ -81,6 +81,9 @@ pub enum OsFunction {
     /// Get the entire environment as a dictionary
     #[strum(serialize = "os.environ")]
     GetEnviron,
+    /// Get the current date/time from the host system
+    #[strum(serialize = "datetime.now")]
+    DateTimeNow,
 }
 
 impl TryFrom<StaticStrings> for OsFunction {

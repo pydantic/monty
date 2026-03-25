@@ -780,6 +780,11 @@ fn dispatch_os_call(
     args: &[MontyObject],
     kwargs: &[(MontyObject, MontyObject)],
 ) -> ExtFunctionResult {
+    // Handle DateTimeNow — return deterministic fixture (UTC+02:00)
+    if function == OsFunction::DateTimeNow {
+        return MontyObject::Tuple(vec![MontyObject::Float(VFS_MTIME), MontyObject::Int(7_200)]).into();
+    }
+
     // Handle GetEnviron first as it takes no path argument
     if function == OsFunction::GetEnviron {
         // Return the virtual environment as a dict
@@ -808,7 +813,7 @@ fn dispatch_os_call(
     };
 
     match function {
-        OsFunction::GetEnviron => unreachable!("handled above"),
+        OsFunction::GetEnviron | OsFunction::DateTimeNow => unreachable!("handled above"),
         OsFunction::Exists => {
             let exists = get_virtual_file(&path).is_some() || is_virtual_dir(&path);
             MontyObject::Bool(exists).into()

@@ -21,9 +21,50 @@ use crate::{
     bytecode::{CallResult, VM},
     exception_private::{ExcType, RunResult, SimpleException},
     heap::{DropWithHeap, HeapId},
+    intern::StringId,
+    os::OsFunction,
     resource::ResourceTracker,
     value::{EitherStr, Value},
 };
+
+/// Return type for attribute method calls on heap-allocated types.
+///
+/// Similar to `CallResult` but without the `FramePushed` variant, since attribute
+/// methods never push new frames directly. Used by `py_call_attr` implementations
+/// to signal the VM about what action to take after the call completes.
+///
+/// When needed for features like `list.sort(key=func)`, we can add:
+/// ```ignore
+/// CallFunction(Value, ArgValues)  // Call a callable, result becomes attr result
+/// ```
+#[derive(Debug)]
+pub enum AttrCallResult {
+    /// Call completed synchronously with a value to return.
+    Value(Value),
+
+    /// The method needs an OS operation. VM should yield `FrameExit::OsCall` to host.
+    ///
+    /// The host executes the OS operation and resumes the VM with the result.
+    /// Used by `Path` filesystem methods like `exists()`, `read_text()`, etc.
+    OsCall(OsFunction, ArgValues),
+
+    /// The method needs to call an external function. VM should yield `FrameExit::ExternalCall`.
+    ///
+    /// Used when attribute methods delegate to registered external functions.
+    /// Currently unused - will be used when types need to call external functions from attribute methods.
+    #[expect(dead_code)]
+    ExternalCall(StringId, ArgValues),
+}
+
+impl From<AttrCallResult> for CallResult {
+    fn from(result: AttrCallResult) -> Self {
+        match result {
+            AttrCallResult::Value(v) => Self::Value(v),
+            AttrCallResult::OsCall(func, args) => Self::OsCall(func, args),
+            AttrCallResult::ExternalCall(ext_id, args) => Self::External(EitherStr::Interned(ext_id), args),
+        }
+    }
+}
 
 /// Common operations for heap-allocated Python values.
 ///

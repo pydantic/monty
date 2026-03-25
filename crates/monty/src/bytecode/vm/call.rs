@@ -17,7 +17,7 @@ use crate::{
     intern::{FunctionId, StringId},
     os::OsFunction,
     resource::ResourceTracker,
-    types::{Dict, PyTrait, Type, bytes::call_bytes_method, str::call_str_method, r#type::call_type_method},
+    types::{Dict, PyTrait, Type, bytes::call_bytes_method, str::call_str_method},
     value::{EitherStr, Value},
 };
 
@@ -283,7 +283,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
             }
             Value::Builtin(Builtins::Type(t)) => {
                 // Handle classmethods on type objects like dict.fromkeys()
-                call_type_method(t, name_id, args, this).map(CallResult::Value)
+                t.call_class_method(name_id, args, this).map(Into::into)
             }
             _ => {
                 // Non-heap values without method support

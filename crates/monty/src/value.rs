@@ -294,6 +294,17 @@ impl PyTrait<'_> for Value {
                     Ok(a.get(vm.heap).as_str().partial_cmp(b.get(vm.heap).as_str()))
                 }
                 (HeapReadOutput::Tuple(a), HeapReadOutput::Tuple(b)) => a.py_cmp(&b, vm),
+                (HeapReadOutput::Date(a), HeapReadOutput::Date(b)) => {
+                    Ok(a.get(vm.heap).partial_cmp(b.get(vm.heap)))
+                }
+                (HeapReadOutput::DateTime(a), HeapReadOutput::DateTime(b)) => {
+                    let a = a.get(vm.heap).clone();
+                    let b = b.get(vm.heap).clone();
+                    PyTrait::py_cmp(&a, &b, vm)
+                }
+                (HeapReadOutput::TimeDelta(a), HeapReadOutput::TimeDelta(b)) => {
+                    Ok(a.get(vm.heap).partial_cmp(b.get(vm.heap)))
+                }
                 _ => Ok(None),
             },
             // Interned string comparisons
@@ -1663,6 +1674,9 @@ impl Value {
                     let name_str = t.to_string();
                     let str_id = vm.heap.allocate(HeapData::Str(Str::from(name_str)))?;
                     return Ok(CallResult::Value(Self::Ref(str_id)));
+                }
+                if *t == Type::TimeZone && attr.as_str(vm.interns) == "utc" {
+                    return Ok(CallResult::Value(vm.heap.get_timezone_utc()?));
                 }
             }
             _ => {}

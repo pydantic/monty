@@ -19,6 +19,7 @@ use crate::{
     os::OsFunction,
     resource::ResourceTracker,
     run::Executor,
+    types::datetime_os_bridge::{OsCallMetadata, convert_os_call_result},
     value::Value,
 };
 
@@ -261,7 +262,15 @@ impl<T: ResourceTracker> OsCall<T> {
         result: impl Into<ExtFunctionResult>,
         print: PrintWriter<'_>,
     ) -> Result<RunProgress<T>, MontyException> {
-        self.snapshot.run(result, print)
+        let Self {
+            function,
+            args,
+            kwargs,
+            snapshot,
+            ..
+        } = self;
+        let result = convert_os_resume_result(function, args, kwargs, result)?;
+        snapshot.run(result, print)
     }
 }
 
@@ -622,6 +631,28 @@ impl From<MontyObject> for ExtFunctionResult {
 impl From<MontyException> for ExtFunctionResult {
     fn from(exception: MontyException) -> Self {
         Self::Error(exception)
+    }
+}
+
+/// Applies OS-call-specific host payload conversion before resuming the VM.
+///
+/// Most OS calls resume with their payload unchanged. `datetime.now` is special:
+/// the host returns a transport tuple, and hidden internal args determine whether
+/// that tuple becomes a `date`, naive `datetime`, or aware fixed-offset
+/// `datetime`.
+pub(crate) fn convert_os_resume_result(
+    function: OsFunction,
+    args: Vec<MontyObject>,
+    kwargs: Vec<(MontyObject, MontyObject)>,
+    result: impl Into<ExtFunctionResult>,
+) -> Result<ExtFunctionResult, MontyException> {
+    match result.into() {
+        ExtFunctionResult::Return(payload) => {
+            let metadata = OsCallMetadata { function, args, kwargs };
+            let converted = convert_os_call_result(&metadata, payload)?;
+            Ok(ExtFunctionResult::Return(converted))
+        }
+        other => Ok(other),
     }
 }
 

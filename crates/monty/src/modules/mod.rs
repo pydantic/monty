@@ -17,6 +17,7 @@ use crate::{
 };
 
 pub(crate) mod asyncio;
+pub(crate) mod datetime;
 pub(crate) mod math;
 pub(crate) mod os;
 pub(crate) mod pathlib;
@@ -42,6 +43,8 @@ pub(crate) enum BuiltinModule {
     Math,
     /// The `re` module providing regular expression matching.
     Re,
+    /// The `datetime` module providing date and time types.
+    Datetime,
 }
 
 impl BuiltinModule {
@@ -55,6 +58,7 @@ impl BuiltinModule {
             StaticStrings::Os => Some(Self::Os),
             StaticStrings::Math => Some(Self::Math),
             StaticStrings::Re => Some(Self::Re),
+            StaticStrings::Datetime => Some(Self::Datetime),
             _ => None,
         }
     }
@@ -75,6 +79,7 @@ impl BuiltinModule {
             Self::Os => os::create_module(vm),
             Self::Math => math::create_module(vm),
             Self::Re => re::create_module(vm),
+            Self::Datetime => datetime::create_module(vm),
         }
     }
 }
