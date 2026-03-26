@@ -260,13 +260,6 @@ pub fn import_builtins(py: Python<'_>) -> PyResult<&Py<PyModule>> {
     BUILTINS.get_or_try_init(py, || py.import("builtins").map(Bound::unbind))
 }
 
-/// Cached import of Python's `datetime` module.
-fn import_datetime(py: Python<'_>) -> PyResult<&Py<PyModule>> {
-    static DATETIME: PyOnceLock<Py<PyModule>> = PyOnceLock::new();
-
-    DATETIME.get_or_try_init(py, || py.import("datetime").map(Bound::unbind))
-}
-
 /// Converts a Monty date payload to a native Python `datetime.date`.
 fn monty_date_to_py(py: Python<'_>, date: &MontyDate) -> PyResult<Py<PyAny>> {
     PyDate::new(py, date.year, date.month, date.day)
@@ -310,10 +303,7 @@ fn monty_timezone_to_py(py: Python<'_>, timezone: &MontyTimeZone) -> PyResult<Py
         None => PyTzInfo::fixed_offset(py, offset)
             .map(Bound::into_any)
             .map(Bound::unbind),
-        Some(name) => {
-            let timezone_type = import_datetime(py)?.getattr(py, intern!(py, "timezone"))?;
-            timezone_type.call1(py, (offset, name))
-        }
+        Some(name) => get_datetime_timezone_type(py)?.call1((offset, name)).map(Bound::unbind),
     }
 }
 
@@ -449,8 +439,9 @@ fn get_datetime_timezone_utc(py: Python<'_>) -> PyResult<&Py<PyAny>> {
     static TIMEZONE_UTC: PyOnceLock<Py<PyAny>> = PyOnceLock::new();
 
     TIMEZONE_UTC.get_or_try_init(py, || {
-        let timezone_type = import_datetime(py)?.getattr(py, intern!(py, "timezone"))?;
-        timezone_type.bind(py).getattr(intern!(py, "utc")).map(Bound::unbind)
+        get_datetime_timezone_type(py)?
+            .getattr(intern!(py, "utc"))
+            .map(Bound::unbind)
     })
 }
 
