@@ -608,11 +608,27 @@ fn call_where(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> Run
     Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(new_arr))?))
 }
 
-/// Extracts data from a value that is either an ndarray or a scalar (broadcast to `len`).
+/// Extracts data from a value that is either an ndarray (must match `len`) or a scalar
+/// (broadcast to `len`).
+///
+/// When the value is an ndarray, its length is validated against `len` so that the
+/// caller never builds an output with mismatched shape/data — matching NumPy's
+/// broadcasting error on incompatible shapes.
 fn extract_array_or_scalar(val: &Value, len: usize, vm: &VM<'_, '_, impl ResourceTracker>) -> RunResult<Vec<f64>> {
     match val {
         Value::Ref(heap_id) => {
             if let HeapData::NdArray(arr) = vm.heap.get(*heap_id) {
+                if arr.data().len() != len {
+                    return Err(SimpleException::new_msg(
+                        ExcType::ValueError,
+                        format!(
+                            "operands could not be broadcast together with shapes ({},) ({},)",
+                            len,
+                            arr.data().len()
+                        ),
+                    )
+                    .into());
+                }
                 Ok(arr.data().to_vec())
             } else {
                 Err(ExcType::type_error(

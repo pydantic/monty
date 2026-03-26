@@ -407,14 +407,33 @@ impl NdArray {
         Ok(Value::Ref(heap.allocate(HeapData::NdArray(arr))?))
     }
 
-    /// Unary bitwise invert (logical NOT for boolean arrays).
+    /// Unary bitwise invert (`~`).
     ///
-    /// For boolean arrays, flips True/False. For numeric arrays, behaves
-    /// like element-wise logical NOT (truthy becomes 0, falsy becomes 1).
+    /// - **Bool arrays**: flips True↔False (returns Bool dtype).
+    /// - **Int arrays**: bitwise NOT on each element cast to `i64` (returns Int64 dtype).
+    /// - **Float arrays**: raises `TypeError`, matching NumPy's behavior.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "f64→i64 truncation is intentional for int-typed ndarray elements"
+    )]
     pub fn invert(&self, heap: &Heap<impl ResourceTracker>) -> RunResult<Value> {
-        let data: Vec<f64> = self.data.iter().map(|&a| if a == 0.0 { 1.0 } else { 0.0 }).collect();
-        let arr = Self::new(data, self.shape.clone(), NdArrayDtype::Bool);
-        Ok(Value::Ref(heap.allocate(HeapData::NdArray(arr))?))
+        match self.dtype {
+            NdArrayDtype::Bool => {
+                let data: Vec<f64> = self.data.iter().map(|&a| if a == 0.0 { 1.0 } else { 0.0 }).collect();
+                let arr = Self::new(data, self.shape.clone(), NdArrayDtype::Bool);
+                Ok(Value::Ref(heap.allocate(HeapData::NdArray(arr))?))
+            }
+            NdArrayDtype::Int64 => {
+                let data: Vec<f64> = self.data.iter().map(|&a| !(a as i64) as f64).collect();
+                let arr = Self::new(data, self.shape.clone(), NdArrayDtype::Int64);
+                Ok(Value::Ref(heap.allocate(HeapData::NdArray(arr))?))
+            }
+            NdArrayDtype::Float64 => Err(SimpleException::new_msg(
+                ExcType::TypeError,
+                "ufunc 'invert' not supported for the input types",
+            )
+            .into()),
+        }
     }
 
     /// Element-wise greater-than comparison.
@@ -1160,11 +1179,27 @@ pub(crate) fn ndarray_from_list(value: &Value, heap: &Heap<impl ResourceTracker>
     let mut data = Vec::new();
     let mut shape = Vec::new();
     let mut has_float = false;
-    collect_from_value(value, heap, &mut data, &mut shape, 0, &mut has_float)?;
+    let mut has_int = false;
+    let mut has_bool = false;
+    collect_from_value(
+        value,
+        heap,
+        &mut data,
+        &mut shape,
+        0,
+        &mut has_float,
+        &mut has_int,
+        &mut has_bool,
+    )?;
 
     let dtype = if has_float {
         NdArrayDtype::Float64
+    } else if has_int {
+        NdArrayDtype::Int64
+    } else if has_bool {
+        NdArrayDtype::Bool
     } else {
+        // Empty array or all-int default
         NdArrayDtype::Int64
     };
 
@@ -1172,6 +1207,11 @@ pub(crate) fn ndarray_from_list(value: &Value, heap: &Heap<impl ResourceTracker>
 }
 
 /// Recursively collects numeric data from a nested list/value structure.
+///
+/// Tracks which scalar types are present (`has_float`, `has_int`, `has_bool`) so the
+/// caller can determine the correct dtype: float > int > bool, matching NumPy's
+/// type promotion rules.
+#[expect(clippy::too_many_arguments)]
 fn collect_from_value(
     value: &Value,
     heap: &Heap<impl ResourceTracker>,
@@ -1179,9 +1219,12 @@ fn collect_from_value(
     shape: &mut Vec<usize>,
     depth: usize,
     has_float: &mut bool,
+    has_int: &mut bool,
+    has_bool: &mut bool,
 ) -> RunResult<()> {
     match value {
         Value::Int(n) => {
+            *has_int = true;
             data.push(*n as f64);
             Ok(())
         }
@@ -1191,6 +1234,7 @@ fn collect_from_value(
             Ok(())
         }
         Value::Bool(b) => {
+            *has_bool = true;
             data.push(if *b { 1.0 } else { 0.0 });
             Ok(())
         }
@@ -1210,7 +1254,7 @@ fn collect_from_value(
                 }
 
                 for item in items {
-                    collect_from_value(item, heap, data, shape, depth + 1, has_float)?;
+                    collect_from_value(item, heap, data, shape, depth + 1, has_float, has_int, has_bool)?;
                 }
                 Ok(())
             }

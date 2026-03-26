@@ -700,6 +700,27 @@ assert a.tolist() == [1, 2, 3], 'double neg'
 a = -np.array([0, 0, 0])
 assert a.tolist() == [0, 0, 0], 'neg zeros'
 
+# === bitwise invert (~) ===
+# int invert: ~n = -(n+1)
+a = ~np.array([0, 1, 2, -1])
+assert a.tolist() == [-1, -2, -3, 0], 'invert int'
+assert a.dtype == 'int64', 'invert int preserves dtype'
+
+# bool invert: flips True/False
+b = ~np.array([True, False, True])
+assert b.tolist() == [False, True, False], 'invert bool'
+assert b.dtype == 'bool', 'invert bool preserves dtype'
+
+# === np.where shape validation ===
+# matching shapes should work
+cond = np.array([True, False, True])
+x = np.array([10, 20, 30])
+y = np.array([0, 0, 0])
+assert np.where(cond, x, y).tolist() == [10, 0, 30], 'where matching shapes'
+
+# scalar x/y should broadcast
+assert np.where(cond, 1, 0).tolist() == [1, 0, 1], 'where scalar broadcast'
+
 
 # ============================================================
 # 10. REPR FORMAT
