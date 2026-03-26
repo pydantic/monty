@@ -9,7 +9,6 @@ pub mod bytes;
 pub mod dataclass;
 pub mod date;
 pub mod datetime;
-pub mod datetime_os_bridge;
 pub mod dict;
 pub mod dict_view;
 pub mod iter;

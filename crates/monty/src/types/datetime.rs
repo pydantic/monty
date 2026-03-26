@@ -6,14 +6,10 @@
 use std::{borrow::Cow, fmt::Write};
 
 use ahash::AHashSet;
-use chrono::{
-    DateTime as ChronoDateTime, Datelike, FixedOffset, NaiveDateTime, NaiveTime, TimeDelta as ChronoTimeDelta,
-    Timelike, Utc,
-};
-use num_traits::ToPrimitive;
+use chrono::{Datelike, FixedOffset, NaiveDateTime, NaiveTime, TimeDelta as ChronoTimeDelta, Timelike};
 
 use crate::{
-    args::{ArgValues, KwargsValues},
+    args::ArgValues,
     bytecode::{CallResult, VM},
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, RunResult, SimpleException},
@@ -22,16 +18,12 @@ use crate::{
     os::OsFunction,
     resource::{ResourceError, ResourceTracker},
     types::{
-        AttrCallResult, PyTrait, Str, TimeDelta, TimeZone, Type, date,
-        datetime_os_bridge::{DATETIME_NOW_FIXED_OFFSET_INTERNAL_MODE, DATETIME_NOW_NAIVE_INTERNAL_MODE},
-        str::StringRepr,
-        timedelta, timezone, value_to_i32,
+        AttrCallResult, PyTrait, TimeDelta, TimeZone, Type, date, str::StringRepr, timedelta, timezone, value_to_i32,
     },
     value::Value,
 };
 
 /// Number of microseconds in a single second.
-const MICROS_PER_SECOND: i64 = 1_000_000;
 const DATE_OUT_OF_RANGE: &str = "date value out of range";
 
 /// `datetime.datetime` storage backed by `chrono::NaiveDateTime` plus optional fixed offset.
@@ -138,37 +130,6 @@ pub(crate) fn from_components(
 
     attach_or_allocate_tzinfo_ref(&mut datetime, tzinfo_ref, heap)?;
     Ok(datetime)
-}
-
-/// Creates a datetime from callback payload.
-pub(crate) fn from_now_payload(
-    timestamp_utc: f64,
-    local_offset_seconds: i32,
-    tzinfo: Option<TimeZone>,
-) -> RunResult<DateTime> {
-    if !timestamp_utc.is_finite() {
-        return Err(
-            SimpleException::new_msg(ExcType::TypeError, "datetime.now payload timestamp must be finite").into(),
-        );
-    }
-    let micros_f = timestamp_utc * (MICROS_PER_SECOND as f64);
-    if micros_f < i64::MIN as f64 || micros_f > i64::MAX as f64 {
-        return Err(SimpleException::new_msg(ExcType::OverflowError, "timestamp out of range").into());
-    }
-    let utc_micros = rounded_f64_to_i64(micros_f.round());
-
-    if let Some(tz) = tzinfo {
-        return from_utc_micros_with_timezone(utc_micros, tz)
-            .ok_or_else(|| SimpleException::new_msg(ExcType::OverflowError, DATE_OUT_OF_RANGE).into());
-    }
-
-    let local_offset_micros = checked_offset_micros(local_offset_seconds)
-        .ok_or_else(|| SimpleException::new_msg(ExcType::OverflowError, DATE_OUT_OF_RANGE))?;
-    let local_micros = utc_micros
-        .checked_add(local_offset_micros)
-        .ok_or_else(|| SimpleException::new_msg(ExcType::OverflowError, DATE_OUT_OF_RANGE))?;
-    from_local_unix_micros(local_micros)
-        .ok_or_else(|| SimpleException::new_msg(ExcType::OverflowError, DATE_OUT_OF_RANGE).into())
 }
 
 /// Returns true when this is an aware datetime.
@@ -374,6 +335,10 @@ pub(crate) fn init(heap: &mut Heap<impl ResourceTracker>, args: ArgValues, inter
 }
 
 /// Classmethod implementation for `datetime.now(tz=None)`.
+///
+/// Issues a `DateTimeNow` OS call with one argument: the timezone value
+/// (`Value::None` for naive, `Value::Ref` to a `TimeZone` for aware).
+/// The host should return `MontyObject::DateTime` directly.
 pub(crate) fn class_now(
     heap: &mut Heap<impl ResourceTracker>,
     args: ArgValues,
@@ -384,60 +349,54 @@ pub(crate) fn class_now(
     let kwargs = kwargs.into_iter();
     defer_drop_mut!(kwargs, heap);
 
-    let mut tzinfo: Option<TimeZone> = None;
+    let mut tz_value = Value::None;
     let mut seen_tz = false;
 
     for (index, arg) in pos.by_ref().enumerate() {
-        defer_drop!(arg, heap);
-        match index {
-            0 => {
-                let (value_tzinfo, _) = tzinfo_from_value(arg, heap)?;
-                tzinfo = value_tzinfo;
-                seen_tz = true;
+        if index == 0 {
+            if let Err(e) = validate_tz_arg(&arg, heap) {
+                arg.drop_with_heap(heap);
+                return Err(e);
             }
-            _ => return Err(ExcType::type_error_at_most("datetime.now", 1, index + 1)),
+            tz_value = arg;
+            seen_tz = true;
+        } else {
+            arg.drop_with_heap(heap);
+            return Err(ExcType::type_error_at_most("datetime.now", 1, index + 1));
         }
     }
 
     for (key, value) in kwargs {
-        defer_drop!(key, heap);
-        defer_drop!(value, heap);
-        let Some(key_name) = key.as_either_str(heap) else {
+        let key_name = key.as_either_str(heap);
+        key.drop_with_heap(heap);
+
+        let Some(key_name) = key_name else {
+            value.drop_with_heap(heap);
             return Err(ExcType::type_error_kwargs_nonstring_key());
         };
         if key_name.string_id() != Some(StaticStrings::Tz.into()) {
+            value.drop_with_heap(heap);
             return Err(ExcType::type_error_unexpected_keyword(
                 "datetime.now",
                 key_name.as_str(interns),
             ));
         }
         if seen_tz {
+            value.drop_with_heap(heap);
             return Err(ExcType::type_error_multiple_values("datetime.now", "tz"));
         }
-        let (value_tzinfo, _) = tzinfo_from_value(value, heap)?;
-        tzinfo = value_tzinfo;
+        if let Err(e) = validate_tz_arg(&value, heap) {
+            value.drop_with_heap(heap);
+            return Err(e);
+        }
+        tz_value = value;
         seen_tz = true;
     }
 
-    // Internal-only mode encoding:
-    // 1 => datetime.now(tz=None), 2 => datetime.now(tz=<fixed offset>[, explicit name])
-    let os_args = match tzinfo {
-        Some(tz) => {
-            let mode = Value::Int(DATETIME_NOW_FIXED_OFFSET_INTERNAL_MODE);
-            let offset = Value::Int(i64::from(tz.offset_seconds));
-            if let Some(name) = tz.name {
-                let name = Value::Ref(heap.allocate(HeapData::Str(Str::new(name)))?);
-                ArgValues::ArgsKargs {
-                    args: vec![mode, offset, name],
-                    kwargs: KwargsValues::Empty,
-                }
-            } else {
-                ArgValues::Two(mode, offset)
-            }
-        }
-        None => ArgValues::One(Value::Int(DATETIME_NOW_NAIVE_INTERNAL_MODE)),
-    };
-    Ok(AttrCallResult::OsCall(OsFunction::DateTimeNow, os_args))
+    Ok(AttrCallResult::OsCall(
+        OsFunction::DateTimeNow,
+        ArgValues::One(tz_value),
+    ))
 }
 
 /// `datetime + timedelta`
@@ -548,6 +507,26 @@ fn tzinfo_from_value(
     }
 }
 
+/// Validates that a value is a valid timezone argument (`None` or `TimeZone`).
+///
+/// Used by `class_now` to validate the `tz` argument before passing it through
+/// to the OS call. Unlike `tzinfo_from_value`, this does not extract the timezone
+/// data — it only checks the type.
+fn validate_tz_arg(value: &Value, heap: &Heap<impl ResourceTracker>) -> RunResult<()> {
+    match value {
+        Value::None => Ok(()),
+        Value::Ref(id) => match heap.get(*id) {
+            HeapData::TimeZone(_) => Ok(()),
+            _ => Err(ExcType::type_error(
+                "tzinfo argument must be datetime.timezone or None".to_owned(),
+            )),
+        },
+        _ => Err(ExcType::type_error(
+            "tzinfo argument must be datetime.timezone or None".to_owned(),
+        )),
+    }
+}
+
 /// Updates a temporary retained tzinfo value used during datetime construction.
 ///
 /// This keeps the timezone object alive while constructor argument values are
@@ -637,16 +616,6 @@ pub(crate) fn utc_micros(datetime: &DateTime) -> Option<i64> {
     }
 }
 
-fn from_local_unix_micros(local_unix_micros: i64) -> Option<DateTime> {
-    let datetime = ChronoDateTime::<Utc>::from_timestamp_micros(local_unix_micros)?;
-    from_local_naive(datetime.naive_utc())
-}
-
-fn from_utc_micros_with_timezone(utc_micros: i64, tzinfo: TimeZone) -> Option<DateTime> {
-    let datetime = ChronoDateTime::<Utc>::from_timestamp_micros(utc_micros)?;
-    from_utc_naive_with_timezone(datetime.naive_utc(), tzinfo)
-}
-
 fn from_local_naive(naive: NaiveDateTime) -> Option<DateTime> {
     if !year_in_python_range(naive.date().year()) {
         return None;
@@ -661,10 +630,6 @@ fn from_local_naive(naive: NaiveDateTime) -> Option<DateTime> {
 
 fn from_utc_naive_with_offset(utc_naive: NaiveDateTime, offset_seconds: i32) -> Option<DateTime> {
     from_utc_naive_with_timezone_parts(utc_naive, offset_seconds, None)
-}
-
-fn from_utc_naive_with_timezone(utc_naive: NaiveDateTime, tzinfo: TimeZone) -> Option<DateTime> {
-    from_utc_naive_with_timezone_parts(utc_naive, tzinfo.offset_seconds, tzinfo.name)
 }
 
 fn from_utc_naive_with_timezone_parts(
@@ -690,16 +655,6 @@ fn to_utc_naive(datetime: &DateTime) -> Option<NaiveDateTime> {
     let offset_seconds = datetime.offset_seconds?;
     let offset_delta = ChronoTimeDelta::try_seconds(i64::from(offset_seconds))?;
     datetime.naive.checked_sub_signed(offset_delta)
-}
-
-fn checked_offset_micros(offset_seconds: i32) -> Option<i64> {
-    i64::from(offset_seconds).checked_mul(MICROS_PER_SECOND)
-}
-
-fn rounded_f64_to_i64(value: f64) -> i64 {
-    value
-        .to_i64()
-        .expect("rounded timestamp should always fit i64 after explicit range check")
 }
 
 #[must_use]

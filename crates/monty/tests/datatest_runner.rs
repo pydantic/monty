@@ -15,9 +15,10 @@ use std::{
 };
 
 use ahash::AHashMap;
+use chrono::{Datelike, Timelike};
 use monty::{
-    ExcType, ExtFunctionResult, LimitedTracker, MontyException, MontyObject, MontyRun, NameLookupResult, OsFunction,
-    PrintWriter, ResourceLimits, RunProgress, dir_stat, file_stat,
+    ExcType, ExtFunctionResult, LimitedTracker, MontyDate, MontyDateTime, MontyException, MontyObject, MontyRun,
+    NameLookupResult, OsFunction, PrintWriter, ResourceLimits, RunProgress, dir_stat, file_stat,
 };
 use pyo3::{prelude::*, types::PyDict};
 use similar::TextDiff;
@@ -780,9 +781,22 @@ fn dispatch_os_call(
     args: &[MontyObject],
     kwargs: &[(MontyObject, MontyObject)],
 ) -> ExtFunctionResult {
-    // Handle DateTimeNow — return deterministic fixture (UTC+02:00)
+    // Handle DateToday — return deterministic fixture date (local date at UTC+02:00).
+    // Deterministic timestamp: 1_700_000_000 UTC = 2023-11-14 22:13:20 UTC.
+    // With local offset +7200 (UTC+02:00), local date is 2023-11-15.
+    if function == OsFunction::DateToday {
+        return MontyObject::Date(MontyDate {
+            year: 2023,
+            month: 11,
+            day: 15,
+        })
+        .into();
+    }
+
+    // Handle DateTimeNow — return deterministic fixture datetime.
+    // The `tz` arg (args[0]) determines naive vs aware.
     if function == OsFunction::DateTimeNow {
-        return MontyObject::Tuple(vec![MontyObject::Float(VFS_MTIME), MontyObject::Int(7_200)]).into();
+        return dispatch_datetime_now(args).into();
     }
 
     // Handle GetEnviron first as it takes no path argument
@@ -813,7 +827,7 @@ fn dispatch_os_call(
     };
 
     match function {
-        OsFunction::GetEnviron | OsFunction::DateTimeNow => unreachable!("handled above"),
+        OsFunction::GetEnviron | OsFunction::DateToday | OsFunction::DateTimeNow => unreachable!("handled above"),
         OsFunction::Exists => {
             let exists = get_virtual_file(&path).is_some() || is_virtual_dir(&path);
             MontyObject::Bool(exists).into()
@@ -1045,6 +1059,53 @@ fn dispatch_os_call(
                 .into()
             }
         }
+    }
+}
+
+/// Deterministic UTC timestamp for datetime test fixtures (2023-11-14 22:13:20 UTC).
+const DATETIME_FIXTURE_TIMESTAMP: i64 = 1_700_000_000;
+
+/// Dispatches a `DateTimeNow` OS call, returning a deterministic `MontyDateTime`.
+///
+/// The `tz` argument (args[0]) determines whether a naive or aware datetime is
+/// returned. The deterministic timestamp is 1_700_000_000 UTC (2023-11-14 22:13:20 UTC).
+/// For naive datetimes the virtual local offset is UTC+02:00.
+fn dispatch_datetime_now(args: &[MontyObject]) -> MontyObject {
+    let tz = args.first().expect("DateTimeNow requires a tz argument");
+    match tz {
+        MontyObject::None => {
+            // Naive datetime: apply local offset to get local wall-clock time
+            // 1_700_000_000 UTC + 7200 = 2023-11-15 00:13:20 local
+            MontyObject::DateTime(MontyDateTime {
+                year: 2023,
+                month: 11,
+                day: 15,
+                hour: 0,
+                minute: 13,
+                second: 20,
+                microsecond: 0,
+                offset_seconds: None,
+                timezone_name: None,
+            })
+        }
+        MontyObject::TimeZone(tz) => {
+            // Aware datetime: convert UTC timestamp to the requested timezone
+            let offset_delta = chrono::TimeDelta::try_seconds(i64::from(tz.offset_seconds)).expect("valid offset");
+            let utc = chrono::DateTime::from_timestamp(DATETIME_FIXTURE_TIMESTAMP, 0).expect("valid timestamp");
+            let local = (utc + offset_delta).naive_utc();
+            MontyObject::DateTime(MontyDateTime {
+                year: local.year(),
+                month: u8::try_from(local.month()).expect("month fits u8"),
+                day: u8::try_from(local.day()).expect("day fits u8"),
+                hour: u8::try_from(local.hour()).expect("hour fits u8"),
+                minute: u8::try_from(local.minute()).expect("minute fits u8"),
+                second: u8::try_from(local.second()).expect("second fits u8"),
+                microsecond: 0,
+                offset_seconds: Some(tz.offset_seconds),
+                timezone_name: tz.name.clone(),
+            })
+        }
+        _ => panic!("DateTimeNow: tz argument must be None or TimeZone, got {tz:?}"),
     }
 }
 

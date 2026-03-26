@@ -17,9 +17,7 @@ use crate::{
     intern::{Interns, StaticStrings},
     os::OsFunction,
     resource::{ResourceError, ResourceTracker},
-    types::{
-        AttrCallResult, PyTrait, TimeDelta, Type, datetime_os_bridge::DATE_TODAY_INTERNAL_MODE, timedelta, value_to_i32,
-    },
+    types::{AttrCallResult, PyTrait, TimeDelta, Type, timedelta, value_to_i32},
     value::{EitherStr, Value},
 };
 
@@ -180,14 +178,11 @@ pub(crate) fn init(heap: &mut Heap<impl ResourceTracker>, args: ArgValues, inter
 
 /// Classmethod implementation for `date.today()`.
 ///
-/// This issues the shared `datetime.now` OS callback. The VM resume path uses the
-/// encoded internal mode argument to convert the callback payload into a `date`.
+/// Issues a `DateToday` OS call with no arguments. The host should return
+/// `MontyObject::Date` directly.
 pub(crate) fn class_today(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> RunResult<AttrCallResult> {
     args.check_zero_args("date.today", heap)?;
-    Ok(AttrCallResult::OsCall(
-        OsFunction::DateTimeNow,
-        ArgValues::One(Value::Int(DATE_TODAY_INTERNAL_MODE)),
-    ))
+    Ok(AttrCallResult::OsCall(OsFunction::DateToday, ArgValues::Empty))
 }
 
 impl HeapItem for Date {

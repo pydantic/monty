@@ -24,7 +24,7 @@ use crate::{
     parse::parse_with_interner,
     prepare::prepare_with_existing_names,
     resource::ResourceTracker,
-    run_progress::{ConvertedExit, ExtFunctionResult, NameLookupResult, convert_frame_exit, convert_os_resume_result},
+    run_progress::{ConvertedExit, ExtFunctionResult, NameLookupResult, convert_frame_exit},
     value::Value,
 };
 
@@ -487,23 +487,7 @@ impl<T: ResourceTracker> ReplOsCall<T> {
         result: impl Into<ExtFunctionResult>,
         print: PrintWriter<'_>,
     ) -> Result<ReplProgress<T>, Box<ReplStartError<T>>> {
-        let Self {
-            function,
-            args,
-            kwargs,
-            snapshot,
-            ..
-        } = self;
-        let result = match convert_os_resume_result(function, args, kwargs, result) {
-            Ok(result) => result,
-            Err(error) => {
-                return Err(Box::new(ReplStartError {
-                    repl: snapshot.into_repl(),
-                    error,
-                }));
-            }
-        };
-        snapshot.run(result, print)
+        self.snapshot.run(result.into(), print)
     }
 }
 
