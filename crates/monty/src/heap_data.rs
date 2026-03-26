@@ -694,7 +694,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             | (HeapReadOutput::TimeDelta(td), HeapReadOutput::Date(d)) => {
                 let d = *d.get(vm.heap);
                 let td = *td.get(vm.heap);
-                date::py_add(&d, &td, vm.heap, vm.interns)
+                date::py_add(d, td, vm.heap)
             }
             (HeapReadOutput::DateTime(dt), HeapReadOutput::TimeDelta(td))
             | (HeapReadOutput::TimeDelta(td), HeapReadOutput::DateTime(dt)) => {
@@ -729,7 +729,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             (HeapReadOutput::Date(a), HeapReadOutput::Date(b)) => {
                 let a = *a.get(vm.heap);
                 let b = *b.get(vm.heap);
-                date::py_sub_date(&a, &b, vm.heap)
+                date::py_sub_date(a, b, vm.heap)
             }
             (HeapReadOutput::DateTime(a), HeapReadOutput::DateTime(b)) => {
                 let a = a.get(vm.heap).clone();
@@ -749,7 +749,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             (HeapReadOutput::Date(d), HeapReadOutput::TimeDelta(td)) => {
                 let d = *d.get(vm.heap);
                 let td = *td.get(vm.heap);
-                date::py_sub_timedelta(&d, &td, vm.heap)
+                date::py_sub_timedelta(d, td, vm.heap)
             }
             (HeapReadOutput::DateTime(dt), HeapReadOutput::TimeDelta(td)) => {
                 let dt = dt.get(vm.heap).clone();

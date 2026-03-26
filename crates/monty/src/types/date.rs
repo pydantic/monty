@@ -220,35 +220,26 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Date> {
 }
 
 /// `date - date` returns a timedelta with the difference in days.
-#[expect(
-    clippy::trivially_copy_pass_by_ref,
-    reason = "shared heap dispatch passes borrowed enum payloads for both immutable and mutable views"
-)]
 pub(crate) fn py_sub_date(
-    a: &Date,
-    b: &Date,
+    a: Date,
+    b: Date,
     heap: &mut Heap<impl ResourceTracker>,
 ) -> Result<Option<Value>, ResourceError> {
-    let diff_days = i64::from(to_ordinal(*a)) - i64::from(to_ordinal(*b));
+    let diff_days = i64::from(to_ordinal(a)) - i64::from(to_ordinal(b));
     let Ok(delta) = timedelta::from_total_microseconds(i128::from(diff_days) * MICROSECONDS_PER_DAY) else {
         return Ok(None);
     };
     Ok(Some(Value::Ref(heap.allocate(HeapData::TimeDelta(delta))?)))
 }
 
-/// `date + timedelta` helper with the correct operand type.
-#[expect(
-    clippy::trivially_copy_pass_by_ref,
-    reason = "shared heap dispatch passes borrowed enum payloads for both immutable and mutable views"
-)]
+/// `date + timedelta` helper.
 pub(crate) fn py_add(
-    date: &Date,
-    delta: &TimeDelta,
+    date: Date,
+    delta: TimeDelta,
     heap: &mut Heap<impl ResourceTracker>,
-    _interns: &Interns,
 ) -> Result<Option<Value>, ResourceError> {
-    let (days, _, _) = timedelta::components(delta);
-    let new_ordinal = i64::from(to_ordinal(*date)).checked_add(i64::from(days));
+    let (days, _, _) = timedelta::components(&delta);
+    let new_ordinal = i64::from(to_ordinal(date)).checked_add(i64::from(days));
     let Some(new_ordinal) = new_ordinal else {
         return Ok(None);
     };
@@ -262,17 +253,13 @@ pub(crate) fn py_add(
 }
 
 /// `date - timedelta` helper.
-#[expect(
-    clippy::trivially_copy_pass_by_ref,
-    reason = "shared heap dispatch passes borrowed enum payloads for both immutable and mutable views"
-)]
 pub(crate) fn py_sub_timedelta(
-    date: &Date,
-    delta: &TimeDelta,
+    date: Date,
+    delta: TimeDelta,
     heap: &mut Heap<impl ResourceTracker>,
 ) -> Result<Option<Value>, ResourceError> {
-    let (days, _, _) = timedelta::components(delta);
-    let new_ordinal = i64::from(to_ordinal(*date)).checked_sub(i64::from(days));
+    let (days, _, _) = timedelta::components(&delta);
+    let new_ordinal = i64::from(to_ordinal(date)).checked_sub(i64::from(days));
     let Some(new_ordinal) = new_ordinal else {
         return Ok(None);
     };
