@@ -26,7 +26,7 @@ use crate::{
     heap::{HeapData, HeapId},
     intern::StaticStrings,
     modules::ModuleFunctions,
-    resource::{ResourceError, ResourceTracker},
+    resource::{ResourceError, ResourceTracker, check_array_alloc_size},
     types::{
         Module, NdArray, PyTrait,
         ndarray::{NdArrayDtype, promote_dtype},
@@ -205,6 +205,7 @@ fn call_array(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> Run
 fn call_zeros(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     let arg = args.get_one_arg("numpy.zeros", vm.heap)?;
     let n = extract_size(arg, "numpy.zeros", vm)?;
+    check_array_alloc_size(n, vm.heap.tracker())?;
     let arr = NdArray::from_vec_f64(vec![0.0; n]);
     Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(arr))?))
 }
@@ -213,6 +214,7 @@ fn call_zeros(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> Run
 fn call_ones(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     let arg = args.get_one_arg("numpy.ones", vm.heap)?;
     let n = extract_size(arg, "numpy.ones", vm)?;
+    check_array_alloc_size(n, vm.heap.tracker())?;
     let arr = NdArray::from_vec_f64(vec![1.0; n]);
     Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(arr))?))
 }
@@ -246,6 +248,25 @@ fn call_arange(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> Ru
 
     first.drop_with_heap(vm);
 
+    if step == 0.0 {
+        return Err(SimpleException::new_msg(ExcType::ValueError, "step must not be zero").into());
+    }
+
+    // Pre-check allocation size before building the Vec.
+    // Estimate element count the same way NumPy does: ceil((stop - start) / step).
+    let estimated_len = ((stop - start) / step).ceil().max(0.0);
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "estimated_len is non-negative and capped by usize::MAX"
+    )]
+    let estimated_count = if estimated_len.is_finite() {
+        (estimated_len as u64).min(usize::MAX as u64) as usize
+    } else {
+        0
+    };
+    check_array_alloc_size(estimated_count, vm.heap.tracker())?;
+
     let mut data = Vec::new();
     let mut val = start;
     if step > 0.0 {
@@ -253,13 +274,11 @@ fn call_arange(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> Ru
             data.push(val);
             val += step;
         }
-    } else if step < 0.0 {
+    } else {
         while val > stop {
             data.push(val);
             val += step;
         }
-    } else {
-        return Err(SimpleException::new_msg(ExcType::ValueError, "step must not be zero").into());
     }
 
     let has_float = start.fract() != 0.0 || stop.fract() != 0.0 || step.fract() != 0.0;
@@ -311,6 +330,8 @@ fn call_linspace(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> 
     start_val.drop_with_heap(vm);
     stop_val.drop_with_heap(vm);
     num_val.drop_with_heap(vm);
+
+    check_array_alloc_size(num, vm.heap.tracker())?;
 
     let data = if num == 0 {
         Vec::new()
@@ -410,6 +431,9 @@ fn list_to_ndarray(list: &crate::types::List, name: &str) -> RunResult<NdArray> 
 // ===========================
 
 /// Helper for element-wise unary functions like `numpy.abs(a)`, `numpy.sqrt(a)`, etc.
+///
+/// Accepts both ndarray and plain list arguments — lists are auto-converted to
+/// a temporary NdArray, matching real NumPy's behavior of `np.abs([1, -2, 3])`.
 fn call_elementwise(
     vm: &mut VM<'_, '_, impl ResourceTracker>,
     args: ArgValues,
@@ -420,14 +444,30 @@ fn call_elementwise(
     let arg = args.get_one_arg(name, vm.heap)?;
     defer_drop!(arg, vm);
     let Value::Ref(heap_id) = arg else {
-        return Err(ExcType::type_error(format!("{name}() requires an ndarray argument")));
+        return Err(ExcType::type_error(format!(
+            "{name}() requires an array or list argument"
+        )));
     };
-    let HeapData::NdArray(arr) = vm.heap.get(*heap_id) else {
-        return Err(ExcType::type_error(format!("{name}() requires an ndarray argument")));
+    let (data, shape, source_dtype) = match vm.heap.get(*heap_id) {
+        HeapData::NdArray(arr) => (
+            arr.data().iter().map(|&v| f(v)).collect::<Vec<f64>>(),
+            arr.shape().to_vec(),
+            arr.dtype(),
+        ),
+        HeapData::List(list) => {
+            let tmp = list_to_ndarray(list, name)?;
+            let data = tmp.data().iter().map(|&v| f(v)).collect::<Vec<f64>>();
+            let shape = tmp.shape().to_vec();
+            let dtype = tmp.dtype();
+            (data, shape, dtype)
+        }
+        _ => {
+            return Err(ExcType::type_error(format!(
+                "{name}() requires an array or list argument"
+            )));
+        }
     };
-    let dtype = result_dtype.unwrap_or(arr.dtype());
-    let data: Vec<f64> = arr.data().iter().map(|&v| f(v)).collect();
-    let shape = arr.shape().to_vec();
+    let dtype = result_dtype.unwrap_or(source_dtype);
     let new_arr = NdArray::new(data, shape, dtype);
     Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(new_arr))?))
 }

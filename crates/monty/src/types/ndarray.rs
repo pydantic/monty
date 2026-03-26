@@ -572,9 +572,19 @@ impl NdArray {
     pub fn reshape(&self, new_shape: Vec<usize>, heap: &Heap<impl ResourceTracker>) -> RunResult<Value> {
         let new_size: usize = new_shape.iter().product();
         if new_size != self.len() {
-            return Err(
-                SimpleException::new_msg(ExcType::ValueError, "cannot reshape array of size into shape").into(),
-            );
+            return Err(SimpleException::new_msg(
+                ExcType::ValueError,
+                format!(
+                    "cannot reshape array of size {} into shape ({})",
+                    self.len(),
+                    new_shape
+                        .iter()
+                        .map(std::string::ToString::to_string)
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+            )
+            .into());
         }
         let arr = Self::new(self.data.clone(), new_shape, self.dtype);
         Ok(Value::Ref(heap.allocate(HeapData::NdArray(arr))?))

@@ -1,6 +1,7 @@
 use std::{
     cell::Cell,
     fmt,
+    mem::size_of,
     time::{Duration, Instant},
 };
 
@@ -111,6 +112,15 @@ pub fn check_replace_size(
     let estimated = input_len.saturating_sub(removed).saturating_add(added);
 
     check_estimated_size(estimated, tracker)
+}
+
+/// Pre-checks that creating an ndarray with `num_elements` f64 values won't exceed resource limits.
+///
+/// NdArray data is stored as a `Vec<f64>`, so the allocation size is `num_elements * 8` bytes.
+/// This must be called **before** allocating the `Vec` so that user-controlled sizes
+/// (e.g. `np.zeros(10**9)`) are rejected before the Rust heap allocation happens.
+pub fn check_array_alloc_size(num_elements: usize, tracker: &impl ResourceTracker) -> Result<(), ResourceError> {
+    check_estimated_size(num_elements.saturating_mul(size_of::<f64>()), tracker)
 }
 
 /// Checks an estimated result size against the resource tracker.
