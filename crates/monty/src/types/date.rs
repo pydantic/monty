@@ -160,9 +160,7 @@ fn value_to_i32(value: &Value, _heap: &Heap<impl ResourceTracker>) -> RunResult<
         Value::Bool(b) => i64::from(*b),
         Value::Int(i) => *i,
         _ => {
-            return Err(
-                SimpleException::new_msg(ExcType::TypeError, "an integer is required (got type float)").into(),
-            );
+            return Err(SimpleException::new_msg(ExcType::TypeError, "an integer is required (got type float)").into());
         }
     };
     i32::try_from(int_value)

@@ -242,13 +242,9 @@ fn extract_name(name_arg: &Value, heap: &Heap<impl ResourceTracker>, interns: &I
         Value::InternString(id) => Ok(Some(interns.get_str(*id).to_owned())),
         Value::Ref(id) => match heap.get(*id) {
             HeapData::Str(s) => Ok(Some(s.as_str().to_owned())),
-            _ => Err(ExcType::type_error(
-                "timezone() argument 2 must be str".to_owned(),
-            )),
+            _ => Err(ExcType::type_error("timezone() argument 2 must be str".to_owned())),
         },
-        _ => Err(ExcType::type_error(
-            "timezone() argument 2 must be str".to_owned(),
-        )),
+        _ => Err(ExcType::type_error("timezone() argument 2 must be str".to_owned())),
     }
 }
 

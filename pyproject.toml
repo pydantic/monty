@@ -150,7 +150,7 @@ reportUnnecessaryIsInstance = false
 
 [tool.codespell]
 # Ref: https://github.com/codespell-project/codespell#using-a-config-file
-ignore-words-list = 'crate,NotIn,ser'
+ignore-words-list = 'crate,NotIn,ser,IST'
 skip = [
     "Cargo.lock",
     "crates/monty-js/package-lock.json",

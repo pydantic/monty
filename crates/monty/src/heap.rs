@@ -24,8 +24,8 @@ use crate::{
     resource::{ResourceError, ResourceTracker, check_mult_size, check_repeat_size},
     types::{
         Bytes, Dataclass, Dict, DictItemsView, DictKeysView, DictValuesView, FrozenSet, List, LongInt, Module,
-        MontyIter, NamedTuple, Path, Range, ReMatch, RePattern, Set, Slice, Str, Tuple, allocate_tuple, date,
-        datetime, timedelta, timezone,
+        MontyIter, NamedTuple, Path, Range, ReMatch, RePattern, Set, Slice, Str, Tuple, allocate_tuple, date, datetime,
+        timedelta, timezone,
     },
     value::Value,
 };

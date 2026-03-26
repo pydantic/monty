@@ -241,9 +241,7 @@ fn value_to_i128(value: &Value, _heap: &Heap<impl ResourceTracker>) -> RunResult
     match value {
         Value::Bool(b) => Ok(i128::from(i64::from(*b))),
         Value::Int(i) => Ok(i128::from(*i)),
-        _ => Err(
-            SimpleException::new_msg(ExcType::TypeError, "an integer is required (got type float)").into(),
-        ),
+        _ => Err(SimpleException::new_msg(ExcType::TypeError, "an integer is required (got type float)").into()),
     }
 }
 

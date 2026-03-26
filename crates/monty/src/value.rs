@@ -294,9 +294,7 @@ impl PyTrait<'_> for Value {
                     Ok(a.get(vm.heap).as_str().partial_cmp(b.get(vm.heap).as_str()))
                 }
                 (HeapReadOutput::Tuple(a), HeapReadOutput::Tuple(b)) => a.py_cmp(&b, vm),
-                (HeapReadOutput::Date(a), HeapReadOutput::Date(b)) => {
-                    Ok(a.get(vm.heap).partial_cmp(b.get(vm.heap)))
-                }
+                (HeapReadOutput::Date(a), HeapReadOutput::Date(b)) => Ok(a.get(vm.heap).partial_cmp(b.get(vm.heap))),
                 (HeapReadOutput::DateTime(a), HeapReadOutput::DateTime(b)) => {
                     let a = a.get(vm.heap).clone();
                     let b = b.get(vm.heap).clone();
