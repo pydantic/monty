@@ -406,8 +406,8 @@ pub(crate) fn class_now(
 /// Classmethod `datetime.strptime(date_string, format)`.
 ///
 /// Parses a date/time string using the given format. Delegates to chrono's
-/// `NaiveDateTime::parse_from_str` after translating Python's `%f` (microseconds,
-/// 6-digit zero-padded) to chrono's `%6f`.
+/// `NaiveDateTime::parse_from_str`, expanding Python `%f` directives into the
+/// chrono widths needed to accept 1 through 6 fractional digits.
 pub(crate) fn class_strptime(
     heap: &mut Heap<impl ResourceTracker>,
     args: ArgValues,
@@ -422,16 +422,10 @@ pub(crate) fn class_strptime(
     let date_string = date_string?;
     let fmt = fmt?;
 
-    // Translate Python's %f (microseconds) to chrono's %6f
-    let chrono_fmt = fmt.replace("%f", "%6f");
-
-    // Try parsing as datetime first; if the format has no time components,
-    // fall back to parsing as a date and default time to midnight.
-    let naive = if let Ok(ndt) = NaiveDateTime::parse_from_str(&date_string, &chrono_fmt) {
-        ndt
-    } else if let Ok(naive_date) = chrono::NaiveDate::parse_from_str(&date_string, &chrono_fmt) {
-        naive_date.and_hms_opt(0, 0, 0).expect("midnight is always valid")
-    } else {
+    // Python's `%f` accepts 1..=6 digits and right-pads with zeros, while chrono
+    // requires an explicit width. Try all valid `%f` widths before reporting a
+    // mismatch so `datetime.strptime(..., '%f')` matches CPython.
+    let Some(naive) = parse_strptime_naive(&date_string, &fmt) else {
         return Err(SimpleException::new_msg(
             ExcType::ValueError,
             format!("time data '{date_string}' does not match format '{fmt}'"),
@@ -522,6 +516,68 @@ fn parse_iso_datetime(s: &str, heap: &mut Heap<impl ResourceTracker>) -> Option<
         )
         .ok()
     }
+}
+
+/// Parses a `datetime.strptime()` input using chrono format strings expanded for
+/// Python's variable-width `%f` semantics.
+fn parse_strptime_naive(date_string: &str, fmt: &str) -> Option<NaiveDateTime> {
+    for chrono_fmt in chrono_strptime_formats(fmt) {
+        if let Ok(ndt) = NaiveDateTime::parse_from_str(date_string, &chrono_fmt) {
+            return Some(ndt);
+        }
+        if let Ok(naive_date) = chrono::NaiveDate::parse_from_str(date_string, &chrono_fmt) {
+            return naive_date.and_hms_opt(0, 0, 0);
+        }
+    }
+    None
+}
+
+/// Rewrites Python `%f` directives into chrono-compatible formats.
+///
+/// Python `%f` accepts 1 through 6 microsecond digits. Chrono only has two
+/// useful parsing forms for Monty here:
+/// - `%.f` for variable-width fractions that include the leading dot
+/// - `%6f` for fixed-width fractions without the leading dot
+fn chrono_strptime_formats(fmt: &str) -> Vec<String> {
+    let mut chrono_fmt = String::with_capacity(fmt.len());
+    let mut chars = fmt.chars();
+
+    while let Some(ch) = chars.next() {
+        if ch != '%' {
+            chrono_fmt.push(ch);
+            continue;
+        }
+
+        let Some(next) = chars.next() else {
+            chrono_fmt.push('%');
+            break;
+        };
+
+        if next == '%' {
+            chrono_fmt.push('%');
+            chrono_fmt.push('%');
+            continue;
+        }
+
+        if next == 'f' {
+            if chrono_fmt.ends_with('.') {
+                chrono_fmt.pop();
+                chrono_fmt.push('%');
+                chrono_fmt.push('.');
+                chrono_fmt.push('f');
+            } else {
+                chrono_fmt.push('%');
+                chrono_fmt.push('6');
+                chrono_fmt.push('f');
+            }
+            continue;
+        }
+
+        chrono_fmt.push('%');
+        chrono_fmt.push(next);
+    }
+
+    vec![chrono_fmt]
 }
 
 /// `datetime + timedelta`
@@ -829,6 +885,8 @@ fn extract_datetime_replace_kwargs(
     defer_drop_mut!(pos, heap);
     let kwargs = kwargs.into_iter();
     defer_drop_mut!(kwargs, heap);
+    let retained_tzinfo = Value::None;
+    defer_drop_mut!(retained_tzinfo, heap);
 
     let mut year = dt.naive.date().year();
     let mut month = i32::try_from(dt.naive.date().month()).expect("month in 1..12");
@@ -837,8 +895,8 @@ fn extract_datetime_replace_kwargs(
     let mut minute = i32::try_from(dt.naive.time().minute()).expect("minute in 0..59");
     let mut second = i32::try_from(dt.naive.time().second()).expect("second in 0..59");
     let mut microsecond = i32::try_from(dt.naive.and_utc().timestamp_subsec_micros()).expect("micros in 0..999999");
-    let tzinfo = timezone_info(dt);
-    let tzinfo_ref = dt.tzinfo_ref;
+    let mut tzinfo = timezone_info(dt);
+    let mut tzinfo_ref = dt.tzinfo_ref;
 
     // replace() takes no positional args
     if let Some(arg) = pos.next() {
@@ -863,7 +921,10 @@ fn extract_datetime_replace_kwargs(
             Some(id) if id == StaticStrings::Second => second = value_to_i32(value)?,
             Some(id) if id == StaticStrings::Microsecond => microsecond = value_to_i32(value)?,
             Some(id) if id == StaticStrings::Tzinfo => {
-                // tzinfo replacement not yet supported — ignore for now
+                let (value_tzinfo, value_tzinfo_ref) = tzinfo_from_value(value, heap)?;
+                update_retained_tzinfo(retained_tzinfo, value_tzinfo_ref, heap);
+                tzinfo = value_tzinfo;
+                tzinfo_ref = value_tzinfo_ref;
             }
             _ => {
                 return Err(ExcType::type_error_unexpected_keyword(

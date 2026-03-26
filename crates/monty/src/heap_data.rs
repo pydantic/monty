@@ -645,10 +645,10 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             (HeapReadOutput::Path(a), HeapReadOutput::Path(b)) => Ok(a.get(vm.heap) == b.get(vm.heap)),
             (HeapReadOutput::RePattern(a), HeapReadOutput::RePattern(b)) => Ok(a.get(vm.heap) == b.get(vm.heap)),
             // Datetime types
-            (HeapReadOutput::Date(a), HeapReadOutput::Date(b)) => Ok(a.get(vm.heap) == b.get(vm.heap)),
-            (HeapReadOutput::DateTime(a), HeapReadOutput::DateTime(b)) => Ok(a.get(vm.heap) == b.get(vm.heap)),
-            (HeapReadOutput::TimeDelta(a), HeapReadOutput::TimeDelta(b)) => Ok(a.get(vm.heap) == b.get(vm.heap)),
-            (HeapReadOutput::TimeZone(a), HeapReadOutput::TimeZone(b)) => Ok(a.get(vm.heap) == b.get(vm.heap)),
+            (HeapReadOutput::Date(a), HeapReadOutput::Date(b)) => a.py_eq(b, vm),
+            (HeapReadOutput::DateTime(a), HeapReadOutput::DateTime(b)) => a.py_eq(b, vm),
+            (HeapReadOutput::TimeDelta(a), HeapReadOutput::TimeDelta(b)) => a.py_eq(b, vm),
+            (HeapReadOutput::TimeZone(a), HeapReadOutput::TimeZone(b)) => a.py_eq(b, vm),
             // Identity-only types (handled by HeapId comparison above)
             (HeapReadOutput::ReMatch(_), HeapReadOutput::ReMatch(_))
             | (HeapReadOutput::Cell(_), HeapReadOutput::Cell(_))

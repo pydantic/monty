@@ -5,6 +5,7 @@ use std::{
 };
 
 use ahash::AHashSet;
+use chrono::{NaiveDate, NaiveDateTime, NaiveTime, TimeDelta as ChronoTimeDelta};
 use indexmap::IndexMap;
 use num_bigint::BigInt;
 use num_traits::Zero;
@@ -43,8 +44,9 @@ use crate::{
 ///
 /// # Hashability
 ///
-/// Only immutable variants (`None`, `Ellipsis`, `Bool`, `Int`, `Float`, `String`, `Bytes`)
-/// implement `Hash`. Attempting to hash mutable variants (`List`, `Dict`) will panic.
+/// Only immutable variants implement `Hash`, including the datetime family
+/// (`Date`, `DateTime`, `TimeDelta`, `TimeZone`). Attempting to hash mutable
+/// variants (`List`, `Dict`) will panic.
 ///
 /// # JSON Serialization
 ///
@@ -58,6 +60,10 @@ use crate::{
 /// - `String` ↔ JSON string
 /// - `List` ↔ JSON array
 /// - `Dict` ↔ JSON object (keys must be interns)
+/// - `Date` ↔ `{"year": ..., "month": ..., "day": ...}`
+/// - `DateTime` ↔ object with date/time fields and optional timezone metadata
+/// - `TimeDelta` ↔ object with normalized `days/seconds/microseconds`
+/// - `TimeZone` ↔ object with fixed `offset_seconds` and optional `name`
 ///
 /// **Output-only (serialize only, cannot deserialize from JSON):**
 /// - `Ellipsis` → `{"$ellipsis": true}`
@@ -82,7 +88,7 @@ pub struct MontyDate {
 }
 
 /// A Python `datetime.datetime` value with date, time, and optional timezone components.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct MontyDateTime {
     /// Gregorian year in range 1..=9999.
     pub year: i32,
@@ -118,12 +124,110 @@ pub struct MontyTimeDelta {
 }
 
 /// A Python `datetime.timezone` fixed-offset timezone.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct MontyTimeZone {
     /// Fixed UTC offset in seconds.
     pub offset_seconds: i32,
     /// Optional display name.
     pub name: Option<String>,
+}
+
+impl PartialEq for MontyDateTime {
+    fn eq(&self, other: &Self) -> bool {
+        let self_aware = self.offset_seconds.is_some();
+        let other_aware = other.offset_seconds.is_some();
+        if self_aware != other_aware {
+            return false;
+        }
+
+        if self_aware {
+            return monty_datetime_utc_micros(self)
+                .zip(monty_datetime_utc_micros(other))
+                .is_some_and(|(lhs, rhs)| lhs == rhs)
+                || monty_datetime_raw_eq(self, other);
+        }
+
+        monty_datetime_local_micros(self)
+            .zip(monty_datetime_local_micros(other))
+            .is_some_and(|(lhs, rhs)| lhs == rhs)
+            || monty_datetime_raw_eq(self, other)
+    }
+}
+
+impl Eq for MontyDateTime {}
+
+impl Hash for MontyDateTime {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        if self.offset_seconds.is_some()
+            && let Some(utc_micros) = monty_datetime_utc_micros(self)
+        {
+            utc_micros.hash(state);
+            return;
+        }
+        if let Some(local_micros) = monty_datetime_local_micros(self) {
+            local_micros.hash(state);
+            return;
+        }
+
+        // Invalid carrier values should still hash deterministically instead of panicking.
+        self.year.hash(state);
+        self.month.hash(state);
+        self.day.hash(state);
+        self.hour.hash(state);
+        self.minute.hash(state);
+        self.second.hash(state);
+        self.microsecond.hash(state);
+        self.offset_seconds.hash(state);
+        self.timezone_name.hash(state);
+    }
+}
+
+impl PartialEq for MontyTimeZone {
+    fn eq(&self, other: &Self) -> bool {
+        self.offset_seconds == other.offset_seconds
+    }
+}
+
+impl Eq for MontyTimeZone {}
+
+impl Hash for MontyTimeZone {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.offset_seconds.hash(state);
+    }
+}
+
+fn monty_datetime_local_micros(datetime: &MontyDateTime) -> Option<i64> {
+    monty_datetime_naive(datetime).map(|naive| naive.and_utc().timestamp_micros())
+}
+
+fn monty_datetime_raw_eq(a: &MontyDateTime, b: &MontyDateTime) -> bool {
+    a.year == b.year
+        && a.month == b.month
+        && a.day == b.day
+        && a.hour == b.hour
+        && a.minute == b.minute
+        && a.second == b.second
+        && a.microsecond == b.microsecond
+        && a.offset_seconds == b.offset_seconds
+        && a.timezone_name == b.timezone_name
+}
+
+fn monty_datetime_utc_micros(datetime: &MontyDateTime) -> Option<i64> {
+    let offset_seconds = datetime.offset_seconds?;
+    let offset_delta = ChronoTimeDelta::try_seconds(i64::from(offset_seconds))?;
+    let utc = monty_datetime_naive(datetime)?.checked_sub_signed(offset_delta)?;
+    Some(utc.and_utc().timestamp_micros())
+}
+
+fn monty_datetime_naive(datetime: &MontyDateTime) -> Option<NaiveDateTime> {
+    let date = NaiveDate::from_ymd_opt(datetime.year, u32::from(datetime.month), u32::from(datetime.day))?;
+    let time = NaiveTime::from_hms_micro_opt(
+        u32::from(datetime.hour),
+        u32::from(datetime.minute),
+        u32::from(datetime.second),
+        datetime.microsecond,
+    )?;
+    Some(date.and_time(time))
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]

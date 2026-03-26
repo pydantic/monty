@@ -107,6 +107,35 @@ pub(crate) fn chrono_delta(delta: &TimeDelta) -> ChronoTimeDelta {
     delta.0
 }
 
+/// Divides a timedelta by an integer divisor using CPython's rounding rule.
+///
+/// CPython rounds to the nearest microsecond with ties going to the even result,
+/// rather than truncating toward zero.
+#[must_use]
+pub(crate) fn div_microseconds_round_ties_even(total_microseconds: i128, divisor: i128) -> i128 {
+    debug_assert_ne!(divisor, 0);
+
+    let negative = total_microseconds.is_negative() ^ divisor.is_negative();
+    let numerator = total_microseconds.abs();
+    let denominator = divisor.abs();
+    let quotient = numerator / denominator;
+    let remainder = numerator % denominator;
+
+    let rounded = match (remainder * 2).cmp(&denominator) {
+        std::cmp::Ordering::Less => quotient,
+        std::cmp::Ordering::Greater => quotient + 1,
+        std::cmp::Ordering::Equal => {
+            if quotient % 2 == 0 {
+                quotient
+            } else {
+                quotient + 1
+            }
+        }
+    };
+
+    if negative { -rounded } else { rounded }
+}
+
 /// Converts a chrono duration to Monty's bounded timedelta.
 pub(crate) fn from_chrono(delta: ChronoTimeDelta) -> RunResult<TimeDelta> {
     from_total_microseconds(

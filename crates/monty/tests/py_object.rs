@@ -580,6 +580,33 @@ fn hash_datetime() {
 }
 
 #[test]
+fn hash_datetime_aware_uses_utc_instant() {
+    let utc = MontyObject::DateTime(MontyDateTime {
+        year: 2024,
+        month: 1,
+        day: 1,
+        hour: 12,
+        minute: 0,
+        second: 0,
+        microsecond: 0,
+        offset_seconds: Some(0),
+        timezone_name: None,
+    });
+    let plus_one = MontyObject::DateTime(MontyDateTime {
+        year: 2024,
+        month: 1,
+        day: 1,
+        hour: 13,
+        minute: 0,
+        second: 0,
+        microsecond: 0,
+        offset_seconds: Some(3600),
+        timezone_name: Some("PLUS1".to_string()),
+    });
+    assert_eq!(hash_of(&utc), hash_of(&plus_one));
+}
+
+#[test]
 fn hash_timedelta() {
     let a = MontyObject::TimeDelta(MontyTimeDelta {
         days: 1,
@@ -596,7 +623,10 @@ fn hash_timezone() {
         offset_seconds: 3600,
         name: Some("CET".to_string()),
     });
-    let b = a.clone();
+    let b = MontyObject::TimeZone(MontyTimeZone {
+        offset_seconds: 3600,
+        name: Some("BST".to_string()),
+    });
     assert_eq!(hash_of(&a), hash_of(&b));
 }
 
@@ -636,6 +666,33 @@ fn eq_datetime() {
 }
 
 #[test]
+fn eq_datetime_aware_uses_utc_instant() {
+    let utc = MontyObject::DateTime(MontyDateTime {
+        year: 2024,
+        month: 1,
+        day: 1,
+        hour: 12,
+        minute: 0,
+        second: 0,
+        microsecond: 0,
+        offset_seconds: Some(0),
+        timezone_name: None,
+    });
+    let plus_one = MontyObject::DateTime(MontyDateTime {
+        year: 2024,
+        month: 1,
+        day: 1,
+        hour: 13,
+        minute: 0,
+        second: 0,
+        microsecond: 0,
+        offset_seconds: Some(3600),
+        timezone_name: Some("PLUS1".to_string()),
+    });
+    assert_eq!(utc, plus_one);
+}
+
+#[test]
 fn eq_timedelta() {
     let a = MontyObject::TimeDelta(MontyTimeDelta {
         days: 5,
@@ -652,7 +709,10 @@ fn eq_timezone() {
         offset_seconds: -3600,
         name: Some("EST".to_string()),
     });
-    let b = a.clone();
+    let b = MontyObject::TimeZone(MontyTimeZone {
+        offset_seconds: -3600,
+        name: Some("UTC-1".to_string()),
+    });
     assert_eq!(a, b);
 }
 

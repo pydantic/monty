@@ -123,6 +123,9 @@ naive = datetime.datetime(2024, 1, 1, 12, 0, 0)
 
 assert (aware == naive) is False, 'aware == naive should be False, not an exception'
 assert (aware != naive) is True, 'aware != naive should be True, not an exception'
+assert datetime.datetime(2024, 1, 1, 12, 0, tzinfo=datetime.timezone.utc) == datetime.datetime(
+    2024, 1, 1, 13, 0, tzinfo=datetime.timezone(datetime.timedelta(hours=1))
+), 'aware datetime equality should compare UTC instants, not local fields'
 
 # TODO(datetime): restore once compare/subtract error semantics are finalized without VM-specific branching.
 # try:
@@ -383,6 +386,9 @@ assert utc_iso.isoformat() == '2024-01-15T10:30:00+00:00', 'aware UTC datetime.i
 assert datetime.datetime(2024, 6, 15, 10, 30, 45).strftime('%Y-%m-%d') == '2024-06-15', 'datetime.strftime date format'
 assert datetime.datetime(2024, 6, 15, 10, 30, 45).strftime('%H:%M:%S') == '10:30:45', 'datetime.strftime time format'
 assert datetime.date(2024, 6, 15).strftime('%Y/%m/%d') == '2024/06/15', 'date.strftime'
+assert datetime.datetime.strptime('2024-06-15 10:30:45.1', '%Y-%m-%d %H:%M:%S.%f') == datetime.datetime(
+    2024, 6, 15, 10, 30, 45, 100000
+), 'strptime %f should accept 1 digit and right-pad to microseconds'
 
 # === replace ===
 
@@ -391,6 +397,9 @@ assert datetime.date(2024, 6, 15).replace(year=2025, day=1) == datetime.date(202
 assert datetime.datetime(2024, 6, 15, 10, 30).replace(hour=0, minute=0) == datetime.datetime(2024, 6, 15, 0, 0), (
     'datetime.replace(hour, minute)'
 )
+assert datetime.datetime(2024, 6, 15, 10, 30).replace(tzinfo=datetime.timezone.utc) == datetime.datetime(
+    2024, 6, 15, 10, 30, tzinfo=datetime.timezone.utc
+), 'datetime.replace(tzinfo=...) should replace the timezone'
 
 # === weekday / isoweekday ===
 
@@ -426,6 +435,9 @@ assert abs(datetime.timedelta(days=5)) == datetime.timedelta(days=5), 'abs(posit
 
 assert datetime.timedelta(days=1) // 2 == datetime.timedelta(hours=12), 'timedelta // int'
 assert datetime.timedelta(days=1) / 2 == datetime.timedelta(hours=12), 'timedelta / int'
+assert datetime.timedelta(microseconds=3) / 2 == datetime.timedelta(microseconds=2), (
+    'timedelta / int should round to nearest microsecond with ties-to-even'
+)
 
 # === date.fromisoformat ===
 

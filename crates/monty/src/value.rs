@@ -849,9 +849,8 @@ impl PyTrait<'_> for Value {
                     if *b == 0 {
                         Err(ExcType::zero_division().into())
                     } else {
-                        // CPython timedelta / int truncates toward zero
                         let total = timedelta::total_microseconds(td);
-                        let result = total / i128::from(*b);
+                        let result = timedelta::div_microseconds_round_ties_even(total, i128::from(*b));
                         let delta = timedelta::from_total_microseconds(result)?;
                         Ok(Some(Self::Ref(vm.heap.allocate(HeapData::TimeDelta(delta))?)))
                     }
