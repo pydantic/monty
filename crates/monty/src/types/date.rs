@@ -185,6 +185,50 @@ pub(crate) fn class_today(heap: &mut Heap<impl ResourceTracker>, args: ArgValues
     Ok(AttrCallResult::OsCall(OsFunction::DateToday, ArgValues::Empty))
 }
 
+/// Classmethod `date.fromisoformat(date_string)`.
+///
+/// Parses ISO 8601 date strings in the formats `YYYY-MM-DD` and `YYYYMMDD`,
+/// matching CPython 3.11+ behavior.
+pub(crate) fn class_fromisoformat(
+    heap: &mut Heap<impl ResourceTracker>,
+    args: ArgValues,
+    interns: &Interns,
+) -> RunResult<Value> {
+    let value = args.get_one_arg("date.fromisoformat", heap)?;
+    let s = extract_str_arg(&value, "fromisoformat", heap, interns);
+    value.drop_with_heap(heap);
+    let s = s?;
+
+    let date = parse_iso_date(&s)
+        .ok_or_else(|| SimpleException::new_msg(ExcType::ValueError, format!("Invalid isoformat string: '{s}'")))?;
+    Ok(Value::Ref(heap.allocate(HeapData::Date(date))?))
+}
+
+/// Parses an ISO 8601 date string into a `Date`.
+///
+/// Uses speedate for Python-compatible ISO 8601 parsing.
+fn parse_iso_date(s: &str) -> Option<Date> {
+    let parsed = speedate::Date::parse_bytes(s.as_bytes()).ok()?;
+    from_ymd(i32::from(parsed.year), i32::from(parsed.month), i32::from(parsed.day)).ok()
+}
+
+/// Extracts a string from a `Value` for use by classmethods.
+pub(crate) fn extract_str_arg(
+    value: &Value,
+    method_name: &str,
+    heap: &Heap<impl ResourceTracker>,
+    interns: &Interns,
+) -> RunResult<String> {
+    match value {
+        Value::InternString(string_id) => Ok(interns.get_str(*string_id).to_owned()),
+        Value::Ref(heap_id) => match heap.get(*heap_id) {
+            HeapData::Str(s) => Ok(s.as_str().to_owned()),
+            _ => Err(ExcType::type_error(format!("{method_name}: argument must be str"))),
+        },
+        _ => Err(ExcType::type_error(format!("{method_name}: argument must be str"))),
+    }
+}
+
 impl HeapItem for Date {
     fn py_estimate_size(&self) -> usize {
         std::mem::size_of::<Self>()

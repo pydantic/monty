@@ -257,7 +257,16 @@ impl Type {
             (Self::Dict, m) if m == StaticStrings::Fromkeys => dict_fromkeys(args, vm).map(AttrCallResult::Value),
             (Self::Bytes, m) if m == StaticStrings::Fromhex => bytes_fromhex(args, vm).map(AttrCallResult::Value),
             (Self::Date, m) if m == StaticStrings::Today => date::class_today(vm.heap, args),
+            (Self::Date, m) if m == StaticStrings::Fromisoformat => {
+                date::class_fromisoformat(vm.heap, args, vm.interns).map(AttrCallResult::Value)
+            }
             (Self::DateTime, m) if m == StaticStrings::Now => datetime::class_now(vm.heap, args, vm.interns),
+            (Self::DateTime, m) if m == StaticStrings::Strptime => {
+                datetime::class_strptime(vm.heap, args, vm.interns).map(AttrCallResult::Value)
+            }
+            (Self::DateTime, m) if m == StaticStrings::Fromisoformat => {
+                datetime::class_fromisoformat(vm.heap, args, vm.interns).map(AttrCallResult::Value)
+            }
             _ => {
                 let method_name = vm.interns.get_str(method_id);
                 args.drop_with_heap(vm.heap);

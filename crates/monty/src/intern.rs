@@ -475,6 +475,8 @@ pub enum StaticStrings {
     Weekday,
     Isoweekday,
     Timestamp,
+    Strptime,
+    Fromisoformat,
 
     // re module strings
     /// Module name for `import re`.

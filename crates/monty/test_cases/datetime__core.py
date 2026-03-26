@@ -438,3 +438,54 @@ assert abs(datetime.timedelta(days=5)) == datetime.timedelta(days=5), 'abs(posit
 
 assert datetime.timedelta(days=1) // 2 == datetime.timedelta(hours=12), 'timedelta // int'
 assert datetime.timedelta(days=1) / 2 == datetime.timedelta(hours=12), 'timedelta / int'
+
+# === date.fromisoformat ===
+
+assert datetime.date.fromisoformat('2024-06-15') == datetime.date(2024, 6, 15), 'date.fromisoformat YYYY-MM-DD'
+
+try:
+    datetime.date.fromisoformat('not-a-date')
+    assert False, 'date.fromisoformat should reject invalid strings'
+except ValueError as e:
+    assert str(e) == "Invalid isoformat string: 'not-a-date'", f'date.fromisoformat error message: {e}'
+
+# === datetime.fromisoformat ===
+
+assert datetime.datetime.fromisoformat('2024-06-15') == datetime.datetime(2024, 6, 15, 0, 0), (
+    'datetime.fromisoformat date only'
+)
+assert datetime.datetime.fromisoformat('2024-06-15T10:30:00') == datetime.datetime(2024, 6, 15, 10, 30), (
+    'datetime.fromisoformat with T separator'
+)
+assert datetime.datetime.fromisoformat('2024-06-15 10:30:00') == datetime.datetime(2024, 6, 15, 10, 30), (
+    'datetime.fromisoformat with space separator'
+)
+assert datetime.datetime.fromisoformat('2024-06-15T10:30') == datetime.datetime(2024, 6, 15, 10, 30), (
+    'datetime.fromisoformat without seconds'
+)
+assert datetime.datetime.fromisoformat('2024-06-15T10:30:00.123456') == datetime.datetime(
+    2024, 6, 15, 10, 30, 0, 123456
+), 'datetime.fromisoformat with microseconds'
+
+iso_utc = datetime.datetime.fromisoformat('2024-06-15T10:30:00+00:00')
+assert iso_utc == datetime.datetime(2024, 6, 15, 10, 30, tzinfo=datetime.timezone.utc), (
+    'datetime.fromisoformat with UTC offset'
+)
+
+# === datetime.strptime ===
+
+assert datetime.datetime.strptime('2024-06-15', '%Y-%m-%d') == datetime.datetime(2024, 6, 15, 0, 0), (
+    'strptime date-only format'
+)
+assert datetime.datetime.strptime('2024-06-15 10:30:45', '%Y-%m-%d %H:%M:%S') == datetime.datetime(
+    2024, 6, 15, 10, 30, 45
+), 'strptime datetime format'
+assert datetime.datetime.strptime('15/06/2024', '%d/%m/%Y') == datetime.datetime(2024, 6, 15, 0, 0), (
+    'strptime custom date format'
+)
+
+try:
+    datetime.datetime.strptime('2024-06-15', '%d/%m/%Y')
+    assert False, 'strptime should reject mismatched format'
+except ValueError as e:
+    assert str(e) == "time data '2024-06-15' does not match format '%d/%m/%Y'", f'strptime error message: {e}'

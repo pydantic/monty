@@ -400,6 +400,127 @@ pub(crate) fn class_now(
     ))
 }
 
+/// Classmethod `datetime.strptime(date_string, format)`.
+///
+/// Parses a date/time string using the given format. Delegates to chrono's
+/// `NaiveDateTime::parse_from_str` after translating Python's `%f` (microseconds,
+/// 6-digit zero-padded) to chrono's `%6f`.
+pub(crate) fn class_strptime(
+    heap: &mut Heap<impl ResourceTracker>,
+    args: ArgValues,
+    interns: &Interns,
+) -> RunResult<Value> {
+    let (date_string_val, format_val) = args.get_two_args("datetime.strptime", heap)?;
+
+    let date_string = date::extract_str_arg(&date_string_val, "strptime", heap, interns);
+    let fmt = date::extract_str_arg(&format_val, "strptime", heap, interns);
+    date_string_val.drop_with_heap(heap);
+    format_val.drop_with_heap(heap);
+    let date_string = date_string?;
+    let fmt = fmt?;
+
+    // Translate Python's %f (microseconds) to chrono's %6f
+    let chrono_fmt = fmt.replace("%f", "%6f");
+
+    // Try parsing as datetime first; if the format has no time components,
+    // fall back to parsing as a date and default time to midnight.
+    let naive = if let Ok(ndt) = NaiveDateTime::parse_from_str(&date_string, &chrono_fmt) {
+        ndt
+    } else if let Ok(naive_date) = chrono::NaiveDate::parse_from_str(&date_string, &chrono_fmt) {
+        naive_date.and_hms_opt(0, 0, 0).expect("midnight is always valid")
+    } else {
+        return Err(SimpleException::new_msg(
+            ExcType::ValueError,
+            format!("time data '{date_string}' does not match format '{fmt}'"),
+        )
+        .into());
+    };
+
+    if !year_in_python_range(naive.date().year()) {
+        return Err(SimpleException::new_msg(ExcType::ValueError, "year is out of range").into());
+    }
+
+    let dt = DateTime {
+        naive,
+        offset_seconds: None,
+        timezone_name: None,
+        tzinfo_ref: None,
+    };
+    Ok(Value::Ref(heap.allocate(HeapData::DateTime(dt))?))
+}
+
+/// Classmethod `datetime.fromisoformat(date_string)`.
+///
+/// Parses ISO 8601 datetime strings. Supports the following formats:
+/// - `YYYY-MM-DD` (date only, time defaults to midnight)
+/// - `YYYY-MM-DDTHH:MM` or `YYYY-MM-DD HH:MM`
+/// - `YYYY-MM-DDTHH:MM:SS` or `YYYY-MM-DD HH:MM:SS`
+/// - `YYYY-MM-DDTHH:MM:SS.ffffff`
+/// - Any of the above with `+HH:MM` or `+HH:MM:SS` timezone suffix
+pub(crate) fn class_fromisoformat(
+    heap: &mut Heap<impl ResourceTracker>,
+    args: ArgValues,
+    interns: &Interns,
+) -> RunResult<Value> {
+    let value = args.get_one_arg("datetime.fromisoformat", heap)?;
+    let s = date::extract_str_arg(&value, "fromisoformat", heap, interns);
+    value.drop_with_heap(heap);
+    let s = s?;
+
+    let dt = parse_iso_datetime(&s, heap)
+        .ok_or_else(|| SimpleException::new_msg(ExcType::ValueError, format!("Invalid isoformat string: '{s}'")))?;
+
+    Ok(Value::Ref(heap.allocate(HeapData::DateTime(dt))?))
+}
+
+/// Parses an ISO 8601 datetime string into a `DateTime`.
+///
+/// Uses speedate's RFC 3339 parser for Python-compatible ISO 8601 parsing (the
+/// same parser used by pydantic). Falls back to date-only parsing for bare
+/// `YYYY-MM-DD` inputs.
+fn parse_iso_datetime(s: &str, heap: &mut Heap<impl ResourceTracker>) -> Option<DateTime> {
+    let bytes = s.as_bytes();
+
+    // Try full datetime first, then fall back to date-only (defaults to midnight)
+    if let Ok(parsed) = speedate::DateTime::parse_bytes_rfc3339(bytes) {
+        let d = &parsed.date;
+        let t = &parsed.time;
+        let tz = t.tz_offset.map(|offset_seconds| TimeZone {
+            offset_seconds,
+            name: None,
+        });
+        from_components(
+            i32::from(d.year),
+            i32::from(d.month),
+            i32::from(d.day),
+            i32::from(t.hour),
+            i32::from(t.minute),
+            i32::from(t.second),
+            i32::try_from(t.microsecond).unwrap_or(0),
+            tz,
+            None,
+            heap,
+        )
+        .ok()
+    } else {
+        // Date-only input: parse as date, default time to midnight
+        let d = speedate::Date::parse_bytes(bytes).ok()?;
+        from_components(
+            i32::from(d.year),
+            i32::from(d.month),
+            i32::from(d.day),
+            0,
+            0,
+            0,
+            0,
+            None,
+            None,
+            heap,
+        )
+        .ok()
+    }
+}
+
 /// `datetime + timedelta`
 pub(crate) fn py_add(
     datetime: &DateTime,
