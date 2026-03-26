@@ -25,7 +25,7 @@ use crate::{
         AttrCallResult, PyTrait, Str, TimeDelta, TimeZone, Type, date,
         datetime_os_bridge::{DATETIME_NOW_FIXED_OFFSET_INTERNAL_MODE, DATETIME_NOW_NAIVE_INTERNAL_MODE},
         str::StringRepr,
-        timedelta, timezone,
+        timedelta, timezone, value_to_i32,
     },
     value::Value,
 };
@@ -79,16 +79,24 @@ pub(crate) fn from_components(
     heap: &mut Heap<impl ResourceTracker>,
 ) -> RunResult<DateTime> {
     if !(0..=23).contains(&hour) {
-        return Err(SimpleException::new_msg(ExcType::ValueError, "hour must be in 0..23").into());
+        return Err(SimpleException::new_msg(ExcType::ValueError, format!("hour must be in 0..23, not {hour}")).into());
     }
     if !(0..=59).contains(&minute) {
-        return Err(SimpleException::new_msg(ExcType::ValueError, "minute must be in 0..59").into());
+        return Err(
+            SimpleException::new_msg(ExcType::ValueError, format!("minute must be in 0..59, not {minute}")).into(),
+        );
     }
     if !(0..=59).contains(&second) {
-        return Err(SimpleException::new_msg(ExcType::ValueError, "second must be in 0..59").into());
+        return Err(
+            SimpleException::new_msg(ExcType::ValueError, format!("second must be in 0..59, not {second}")).into(),
+        );
     }
     if !(0..=999_999).contains(&microsecond) {
-        return Err(SimpleException::new_msg(ExcType::ValueError, "microsecond must be in 0..999999").into());
+        return Err(SimpleException::new_msg(
+            ExcType::ValueError,
+            format!("microsecond must be in 0..999999, not {microsecond}"),
+        )
+        .into());
     }
 
     // Delegate all date-component validation to `date::from_ymd` so date and datetime
@@ -232,23 +240,23 @@ pub(crate) fn init(heap: &mut Heap<impl ResourceTracker>, args: ArgValues, inter
     for (index, arg) in pos.by_ref().enumerate() {
         defer_drop!(arg, heap);
         match index {
-            0 => year = Some(value_to_i32(arg, heap)?),
-            1 => month = Some(value_to_i32(arg, heap)?),
-            2 => day = Some(value_to_i32(arg, heap)?),
+            0 => year = Some(value_to_i32(arg)?),
+            1 => month = Some(value_to_i32(arg)?),
+            2 => day = Some(value_to_i32(arg)?),
             3 => {
-                hour = value_to_i32(arg, heap)?;
+                hour = value_to_i32(arg)?;
                 seen_hour = true;
             }
             4 => {
-                minute = value_to_i32(arg, heap)?;
+                minute = value_to_i32(arg)?;
                 seen_minute = true;
             }
             5 => {
-                second = value_to_i32(arg, heap)?;
+                second = value_to_i32(arg)?;
                 seen_second = true;
             }
             6 => {
-                microsecond = value_to_i32(arg, heap)?;
+                microsecond = value_to_i32(arg)?;
                 seen_microsecond = true;
             }
             7 => {
@@ -274,46 +282,46 @@ pub(crate) fn init(heap: &mut Heap<impl ResourceTracker>, args: ArgValues, inter
                 if year.is_some() {
                     return Err(ExcType::type_error_multiple_values("datetime", "year"));
                 }
-                year = Some(value_to_i32(value, heap)?);
+                year = Some(value_to_i32(value)?);
             }
             "month" => {
                 if month.is_some() {
                     return Err(ExcType::type_error_multiple_values("datetime", "month"));
                 }
-                month = Some(value_to_i32(value, heap)?);
+                month = Some(value_to_i32(value)?);
             }
             "day" => {
                 if day.is_some() {
                     return Err(ExcType::type_error_multiple_values("datetime", "day"));
                 }
-                day = Some(value_to_i32(value, heap)?);
+                day = Some(value_to_i32(value)?);
             }
             "hour" => {
                 if seen_hour {
                     return Err(ExcType::type_error_multiple_values("datetime", "hour"));
                 }
-                hour = value_to_i32(value, heap)?;
+                hour = value_to_i32(value)?;
                 seen_hour = true;
             }
             "minute" => {
                 if seen_minute {
                     return Err(ExcType::type_error_multiple_values("datetime", "minute"));
                 }
-                minute = value_to_i32(value, heap)?;
+                minute = value_to_i32(value)?;
                 seen_minute = true;
             }
             "second" => {
                 if seen_second {
                     return Err(ExcType::type_error_multiple_values("datetime", "second"));
                 }
-                second = value_to_i32(value, heap)?;
+                second = value_to_i32(value)?;
                 seen_second = true;
             }
             "microsecond" => {
                 if seen_microsecond {
                     return Err(ExcType::type_error_multiple_values("datetime", "microsecond"));
                 }
-                microsecond = value_to_i32(value, heap)?;
+                microsecond = value_to_i32(value)?;
                 seen_microsecond = true;
             }
             "tzinfo" => {
@@ -431,7 +439,6 @@ pub(crate) fn py_add(
     datetime: &DateTime,
     delta: &TimeDelta,
     heap: &mut Heap<impl ResourceTracker>,
-    _interns: &Interns,
 ) -> Result<Option<Value>, ResourceError> {
     let chrono_delta = timedelta::chrono_delta(delta);
 
@@ -487,16 +494,34 @@ pub(crate) fn py_sub_timedelta(
     Ok(Some(Value::Ref(heap.allocate(HeapData::DateTime(next))?)))
 }
 
-fn value_to_i32(value: &Value, _heap: &Heap<impl ResourceTracker>) -> RunResult<i32> {
-    let int_value = match value {
-        Value::Bool(b) => i64::from(*b),
-        Value::Int(i) => *i,
-        _ => {
-            return Err(SimpleException::new_msg(ExcType::TypeError, "an integer is required (got type float)").into());
-        }
+/// `datetime - datetime` returns a timedelta with the difference.
+///
+/// Both datetimes must be either aware or naive; mixing returns `Ok(None)`.
+pub(crate) fn py_sub_datetime(
+    a: &DateTime,
+    b: &DateTime,
+    heap: &mut Heap<impl ResourceTracker>,
+) -> Result<Option<Value>, ResourceError> {
+    if is_aware(a) != is_aware(b) {
+        return Ok(None);
+    }
+
+    let diff = if is_aware(a) {
+        let Some(lhs_utc) = to_utc_naive(a) else {
+            return Ok(None);
+        };
+        let Some(rhs_utc) = to_utc_naive(b) else {
+            return Ok(None);
+        };
+        lhs_utc.signed_duration_since(rhs_utc)
+    } else {
+        a.naive.signed_duration_since(b.naive)
     };
-    i32::try_from(int_value)
-        .map_err(|_| SimpleException::new_msg(ExcType::OverflowError, "signed integer is greater than maximum").into())
+
+    let Ok(delta) = timedelta::from_chrono(diff) else {
+        return Ok(None);
+    };
+    Ok(Some(Value::Ref(heap.allocate(HeapData::TimeDelta(delta))?)))
 }
 
 fn tzinfo_from_value(
@@ -676,143 +701,6 @@ fn year_in_python_range(year: i32) -> bool {
     (1..=9999).contains(&year)
 }
 
-impl<'h> PyTrait<'h> for DateTime {
-    fn py_type(&self, _vm: &VM<'h, '_, impl ResourceTracker>) -> Type {
-        Type::DateTime
-    }
-
-    fn py_len(&self, _vm: &VM<'h, '_, impl ResourceTracker>) -> Option<usize> {
-        None
-    }
-
-    fn py_eq(&self, other: &Self, _vm: &mut VM<'h, '_, impl ResourceTracker>) -> Result<bool, ResourceError> {
-        if is_aware(self) != is_aware(other) {
-            return Ok(false);
-        }
-        if is_aware(self) {
-            return Ok(utc_micros(self) == utc_micros(other));
-        }
-        Ok(local_micros(self) == local_micros(other))
-    }
-
-    fn py_cmp(
-        &self,
-        other: &Self,
-        _vm: &mut VM<'h, '_, impl ResourceTracker>,
-    ) -> Result<Option<std::cmp::Ordering>, ResourceError> {
-        if is_aware(self) != is_aware(other) {
-            return Ok(None);
-        }
-        if is_aware(self) {
-            return Ok(utc_micros(self).partial_cmp(&utc_micros(other)));
-        }
-        Ok(local_micros(self).partial_cmp(&local_micros(other)))
-    }
-
-    fn py_bool(&self, _vm: &mut VM<'h, '_, impl ResourceTracker>) -> bool {
-        true
-    }
-
-    fn py_repr_fmt(
-        &self,
-        f: &mut impl Write,
-        _vm: &VM<'h, '_, impl ResourceTracker>,
-        _heap_ids: &mut AHashSet<HeapId>,
-    ) -> RunResult<()> {
-        let Some((year, month, day, hour, minute, second, microsecond)) = to_components(self) else {
-            f.write_str("datetime.datetime(<out of range>)")?;
-            return Ok(());
-        };
-
-        write!(f, "datetime.datetime({year}, {month}, {day}, {hour}, {minute}")?;
-        if second != 0 || microsecond != 0 {
-            write!(f, ", {second}")?;
-        }
-        if microsecond != 0 {
-            write!(f, ", {microsecond}")?;
-        }
-        if let Some(tzinfo) = timezone_info(self) {
-            if tzinfo.offset_seconds == 0 && tzinfo.name.is_none() {
-                f.write_str(", tzinfo=datetime.timezone.utc")?;
-            } else {
-                let timedelta_repr = timezone::format_offset_timedelta_repr(tzinfo.offset_seconds);
-                write!(f, ", tzinfo=datetime.timezone({timedelta_repr}")?;
-                if let Some(name) = &tzinfo.name {
-                    write!(f, ", {}", StringRepr(name))?;
-                }
-                f.write_char(')')?;
-            }
-        }
-        f.write_char(')')?;
-        Ok(())
-    }
-
-    fn py_str(&self, _vm: &VM<'h, '_, impl ResourceTracker>) -> RunResult<Cow<'static, str>> {
-        let Some((year, month, day, hour, minute, second, microsecond)) = to_components(self) else {
-            return Ok(Cow::Borrowed("<out of range>"));
-        };
-        let mut s = format!("{year:04}-{month:02}-{day:02} {hour:02}:{minute:02}:{second:02}");
-        if microsecond != 0 {
-            write!(s, ".{microsecond:06}").expect("writing to String cannot fail");
-        }
-        if let Some(offset) = offset_seconds(self) {
-            s.push_str(&timezone::format_offset_hms(offset));
-        }
-        Ok(Cow::Owned(s))
-    }
-
-    fn py_add(&self, other: &Self, _vm: &mut VM<'h, '_, impl ResourceTracker>) -> Result<Option<Value>, ResourceError> {
-        let _ = other;
-        Ok(None)
-    }
-
-    fn py_sub(&self, other: &Self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> Result<Option<Value>, ResourceError> {
-        if is_aware(self) != is_aware(other) {
-            return Ok(None);
-        }
-
-        let diff = if is_aware(self) {
-            let Some(lhs_utc) = to_utc_naive(self) else {
-                return Ok(None);
-            };
-            let Some(rhs_utc) = to_utc_naive(other) else {
-                return Ok(None);
-            };
-            lhs_utc.signed_duration_since(rhs_utc)
-        } else {
-            self.naive.signed_duration_since(other.naive)
-        };
-
-        let Ok(delta) = timedelta::from_chrono(diff) else {
-            return Ok(None);
-        };
-        Ok(Some(Value::Ref(vm.heap.allocate(HeapData::TimeDelta(delta))?)))
-    }
-
-    fn py_getattr(
-        &self,
-        attr: &crate::value::EitherStr,
-        vm: &mut VM<'h, '_, impl ResourceTracker>,
-    ) -> RunResult<Option<CallResult>> {
-        if attr.as_str(vm.interns) == "tzinfo" {
-            if let Some(tzinfo_ref) = self.tzinfo_ref {
-                vm.heap.inc_ref(tzinfo_ref);
-                return Ok(Some(CallResult::Value(Value::Ref(tzinfo_ref))));
-            }
-            if let Some(tz) = timezone_info(self) {
-                if tz.offset_seconds == 0 && tz.name.is_none() {
-                    return Ok(Some(CallResult::Value(vm.heap.get_timezone_utc()?)));
-                }
-                return Ok(Some(CallResult::Value(Value::Ref(
-                    vm.heap.allocate(HeapData::TimeZone(tz))?,
-                ))));
-            }
-            return Ok(Some(CallResult::Value(Value::None)));
-        }
-        Ok(None)
-    }
-}
-
 impl HeapItem for DateTime {
     fn py_estimate_size(&self) -> usize {
         std::mem::size_of::<Self>() + self.timezone_name.as_ref().map_or(0, String::len)
@@ -837,20 +725,85 @@ impl<'h> PyTrait<'h> for HeapRead<'h, DateTime> {
     }
 
     fn py_eq(&self, other: &Self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> Result<bool, ResourceError> {
-        Ok(self.get(vm.heap) == other.get(vm.heap))
+        let a = self.get(vm.heap);
+        let b = other.get(vm.heap);
+        if is_aware(a) != is_aware(b) {
+            return Ok(false);
+        }
+        if is_aware(a) {
+            return Ok(utc_micros(a) == utc_micros(b));
+        }
+        Ok(local_micros(a) == local_micros(b))
+    }
+
+    fn py_cmp(
+        &self,
+        other: &Self,
+        vm: &mut VM<'h, '_, impl ResourceTracker>,
+    ) -> Result<Option<std::cmp::Ordering>, ResourceError> {
+        let a = self.get(vm.heap);
+        let b = other.get(vm.heap);
+        if is_aware(a) != is_aware(b) {
+            return Ok(None);
+        }
+        if is_aware(a) {
+            return Ok(utc_micros(a).partial_cmp(&utc_micros(b)));
+        }
+        Ok(local_micros(a).partial_cmp(&local_micros(b)))
+    }
+
+    fn py_bool(&self, _vm: &mut VM<'h, '_, impl ResourceTracker>) -> bool {
+        true
     }
 
     fn py_repr_fmt(
         &self,
         f: &mut impl Write,
         vm: &VM<'h, '_, impl ResourceTracker>,
-        heap_ids: &mut AHashSet<HeapId>,
+        _heap_ids: &mut AHashSet<HeapId>,
     ) -> RunResult<()> {
-        self.get(vm.heap).py_repr_fmt(f, vm, heap_ids)
+        let dt = self.get(vm.heap);
+        let Some((year, month, day, hour, minute, second, microsecond)) = to_components(dt) else {
+            f.write_str("datetime.datetime(<out of range>)")?;
+            return Ok(());
+        };
+
+        write!(f, "datetime.datetime({year}, {month}, {day}, {hour}, {minute}")?;
+        if second != 0 || microsecond != 0 {
+            write!(f, ", {second}")?;
+        }
+        if microsecond != 0 {
+            write!(f, ", {microsecond}")?;
+        }
+        if let Some(tzinfo) = timezone_info(dt) {
+            if tzinfo.offset_seconds == 0 && tzinfo.name.is_none() {
+                f.write_str(", tzinfo=datetime.timezone.utc")?;
+            } else {
+                let timedelta_repr = timezone::format_offset_timedelta_repr(tzinfo.offset_seconds);
+                write!(f, ", tzinfo=datetime.timezone({timedelta_repr}")?;
+                if let Some(name) = &tzinfo.name {
+                    write!(f, ", {}", StringRepr(name))?;
+                }
+                f.write_char(')')?;
+            }
+        }
+        f.write_char(')')?;
+        Ok(())
     }
 
     fn py_str(&self, vm: &VM<'h, '_, impl ResourceTracker>) -> RunResult<Cow<'static, str>> {
-        self.get(vm.heap).py_str(vm)
+        let dt = self.get(vm.heap);
+        let Some((year, month, day, hour, minute, second, microsecond)) = to_components(dt) else {
+            return Ok(Cow::Borrowed("<out of range>"));
+        };
+        let mut s = format!("{year:04}-{month:02}-{day:02} {hour:02}:{minute:02}:{second:02}");
+        if microsecond != 0 {
+            write!(s, ".{microsecond:06}").expect("writing to String cannot fail");
+        }
+        if let Some(offset) = offset_seconds(dt) {
+            s.push_str(&timezone::format_offset_hms(offset));
+        }
+        Ok(Cow::Owned(s))
     }
 
     fn py_getattr(
@@ -858,8 +811,35 @@ impl<'h> PyTrait<'h> for HeapRead<'h, DateTime> {
         attr: &crate::value::EitherStr,
         vm: &mut VM<'h, '_, impl ResourceTracker>,
     ) -> RunResult<Option<CallResult>> {
-        // Clone to release the HeapRead borrow before passing &mut VM
+        // Clone to release the HeapRead borrow before accessing attributes
+        // that may need to allocate (e.g. tzinfo).
         let dt = self.get(vm.heap).clone();
-        dt.py_getattr(attr, vm)
+        match attr.as_str(vm.interns) {
+            "year" => Ok(Some(CallResult::Value(Value::Int(i64::from(dt.naive.date().year()))))),
+            "month" => Ok(Some(CallResult::Value(Value::Int(i64::from(dt.naive.date().month()))))),
+            "day" => Ok(Some(CallResult::Value(Value::Int(i64::from(dt.naive.date().day()))))),
+            "hour" => Ok(Some(CallResult::Value(Value::Int(i64::from(dt.naive.time().hour()))))),
+            "minute" => Ok(Some(CallResult::Value(Value::Int(i64::from(dt.naive.time().minute()))))),
+            "second" => Ok(Some(CallResult::Value(Value::Int(i64::from(dt.naive.time().second()))))),
+            "microsecond" => Ok(Some(CallResult::Value(Value::Int(i64::from(
+                dt.naive.and_utc().timestamp_subsec_micros(),
+            ))))),
+            "tzinfo" => {
+                if let Some(tzinfo_ref) = dt.tzinfo_ref {
+                    vm.heap.inc_ref(tzinfo_ref);
+                    return Ok(Some(CallResult::Value(Value::Ref(tzinfo_ref))));
+                }
+                if let Some(tz) = timezone_info(&dt) {
+                    if tz.offset_seconds == 0 && tz.name.is_none() {
+                        return Ok(Some(CallResult::Value(vm.heap.get_timezone_utc()?)));
+                    }
+                    return Ok(Some(CallResult::Value(Value::Ref(
+                        vm.heap.allocate(HeapData::TimeZone(tz))?,
+                    ))));
+                }
+                Ok(Some(CallResult::Value(Value::None)))
+            }
+            _ => Ok(None),
+        }
     }
 }

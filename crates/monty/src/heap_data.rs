@@ -700,7 +700,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             | (HeapReadOutput::TimeDelta(td), HeapReadOutput::DateTime(dt)) => {
                 let dt = dt.get(vm.heap).clone();
                 let td = *td.get(vm.heap);
-                datetime::py_add(&dt, &td, vm.heap, vm.interns)
+                datetime::py_add(&dt, &td, vm.heap)
             }
             (HeapReadOutput::TimeDelta(a), HeapReadOutput::TimeDelta(b)) => {
                 let total = timedelta::total_microseconds(a.get(vm.heap))
@@ -734,7 +734,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             (HeapReadOutput::DateTime(a), HeapReadOutput::DateTime(b)) => {
                 let a = a.get(vm.heap).clone();
                 let b = b.get(vm.heap).clone();
-                PyTrait::py_sub(&a, &b, vm)
+                datetime::py_sub_datetime(&a, &b, vm.heap)
             }
             (HeapReadOutput::TimeDelta(a), HeapReadOutput::TimeDelta(b)) => {
                 let total = timedelta::total_microseconds(a.get(vm.heap))
@@ -833,7 +833,9 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             Self::Module(m) => Ok(m.py_getattr(attr, vm)),
             Self::Exception(e) => e.py_getattr(attr, vm),
             Self::Path(p) => p.py_getattr(attr, vm),
+            Self::Date(d) => d.py_getattr(attr, vm),
             Self::DateTime(dt) => dt.py_getattr(attr, vm),
+            Self::TimeDelta(td) => td.py_getattr(attr, vm),
             _ => Ok(None),
         }
     }

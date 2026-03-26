@@ -108,10 +108,11 @@ assert datetime.timedelta(days=1, seconds=10) + datetime.timedelta(seconds=5) ==
 assert datetime.timedelta(days=1, seconds=10) - datetime.timedelta(seconds=5) == datetime.timedelta(
     days=1, seconds=5
 ), 'timedelta - timedelta should subtract'
-# TODO(datetime): restore once UnaryNeg handles timedelta values without VM-specific branching.
-# assert -datetime.timedelta(days=1, seconds=30) == datetime.timedelta(days=-2, seconds=86370), (
-#     'unary -timedelta should normalize like CPython'
-# )
+assert -datetime.timedelta(days=1, seconds=30) == datetime.timedelta(days=-2, seconds=86370), (
+    'unary -timedelta should normalize like CPython'
+)
+assert -datetime.timedelta(0) == datetime.timedelta(0), 'negation of zero timedelta'
+assert -datetime.timedelta(days=-1) == datetime.timedelta(days=1), 'double negation of timedelta'
 assert datetime.timedelta(hours=1, minutes=30).total_seconds() == 5400.0, (
     'timedelta.total_seconds() should match CPython'
 )
@@ -242,3 +243,126 @@ except TypeError as e:
 #     assert str(e) == 'days=1000000000; must have magnitude <= 999999999', (
 #         'timedelta overflow should report the overflowing days value'
 #     )
+
+# === attribute access ===
+
+d = datetime.date(2024, 2, 29)
+assert d.year == 2024, 'date.year should return year'
+assert d.month == 2, 'date.month should return month'
+assert d.day == 29, 'date.day should return day'
+
+d_boundary = datetime.date(1, 1, 1)
+assert d_boundary.year == 1, 'date.year at minimum boundary'
+assert d_boundary.month == 1, 'date.month at minimum boundary'
+assert d_boundary.day == 1, 'date.day at minimum boundary'
+
+d_max = datetime.date(9999, 12, 31)
+assert d_max.year == 9999, 'date.year at maximum boundary'
+assert d_max.month == 12, 'date.month at maximum boundary'
+assert d_max.day == 31, 'date.day at maximum boundary'
+
+dt = datetime.datetime(2024, 6, 15, 14, 30, 45, 123456)
+assert dt.year == 2024, 'datetime.year should return year'
+assert dt.month == 6, 'datetime.month should return month'
+assert dt.day == 15, 'datetime.day should return day'
+assert dt.hour == 14, 'datetime.hour should return hour'
+assert dt.minute == 30, 'datetime.minute should return minute'
+assert dt.second == 45, 'datetime.second should return second'
+assert dt.microsecond == 123456, 'datetime.microsecond should return microsecond'
+
+dt_zero = datetime.datetime(2024, 1, 1, 0, 0, 0, 0)
+assert dt_zero.hour == 0, 'datetime.hour should return 0 for midnight'
+assert dt_zero.microsecond == 0, 'datetime.microsecond should return 0'
+
+td = datetime.timedelta(days=5, seconds=3600, microseconds=500)
+assert td.days == 5, 'timedelta.days should return days'
+assert td.seconds == 3600, 'timedelta.seconds should return seconds'
+assert td.microseconds == 500, 'timedelta.microseconds should return microseconds'
+
+td_zero = datetime.timedelta(0)
+assert td_zero.days == 0, 'zero timedelta.days'
+assert td_zero.seconds == 0, 'zero timedelta.seconds'
+assert td_zero.microseconds == 0, 'zero timedelta.microseconds'
+
+td_neg = datetime.timedelta(days=-1)
+assert td_neg.days == -1, 'negative timedelta.days'
+assert td_neg.seconds == 0, 'negative timedelta.seconds'
+assert td_neg.microseconds == 0, 'negative timedelta.microseconds'
+
+td_mixed_neg = datetime.timedelta(seconds=-1)
+assert td_mixed_neg.days == -1, 'timedelta(-1s).days should be -1 (normalized)'
+assert td_mixed_neg.seconds == 86399, 'timedelta(-1s).seconds should be 86399 (normalized)'
+assert td_mixed_neg.microseconds == 0, 'timedelta(-1s).microseconds should be 0'
+
+# === edge cases: repr and str ===
+
+assert repr(datetime.timedelta(0)) == 'datetime.timedelta(0)', 'zero timedelta repr'
+assert str(datetime.timedelta(0)) == '0:00:00', 'zero timedelta str'
+assert str(datetime.timedelta(days=-1)) == '-1 day, 0:00:00', 'negative day timedelta str'
+assert str(datetime.timedelta(days=1)) == '1 day, 0:00:00', 'singular day timedelta str'
+assert str(datetime.timedelta(days=2)) == '2 days, 0:00:00', 'plural days timedelta str'
+assert repr(datetime.date(2024, 2, 29)) == 'datetime.date(2024, 2, 29)', 'leap year date repr'
+assert str(datetime.date(1, 1, 1)) == '0001-01-01', 'minimum date str'
+assert str(datetime.date(9999, 12, 31)) == '9999-12-31', 'maximum date str'
+
+# === error messages should match CPython 3.14 ===
+
+try:
+    datetime.date(10000, 1, 1)
+    assert False, 'year OOB should raise ValueError'
+except ValueError as e:
+    assert str(e) == 'year must be in 1..9999, not 10000', f'year OOB message: {e}'
+
+try:
+    datetime.date(0, 1, 1)
+    assert False, 'year 0 should raise ValueError'
+except ValueError as e:
+    assert str(e) == 'year must be in 1..9999, not 0', f'year 0 message: {e}'
+
+try:
+    datetime.date(2024, 13, 1)
+    assert False, 'month OOB should raise ValueError'
+except ValueError as e:
+    assert str(e) == 'month must be in 1..12, not 13', f'month OOB message: {e}'
+
+try:
+    datetime.date(2024, 0, 1)
+    assert False, 'month 0 should raise ValueError'
+except ValueError as e:
+    assert str(e) == 'month must be in 1..12, not 0', f'month 0 message: {e}'
+
+try:
+    datetime.date(2024, 2, 30)
+    assert False, 'day OOB should raise ValueError'
+except ValueError as e:
+    assert str(e) == 'day 30 must be in range 1..29 for month 2 in year 2024', f'day OOB message: {e}'
+
+try:
+    datetime.date(2024, 1, 0)
+    assert False, 'day 0 should raise ValueError'
+except ValueError as e:
+    assert str(e) == 'day 0 must be in range 1..31 for month 1 in year 2024', f'day 0 message: {e}'
+
+try:
+    datetime.datetime(2024, 1, 1, 25)
+    assert False, 'hour OOB should raise ValueError'
+except ValueError as e:
+    assert str(e) == 'hour must be in 0..23, not 25', f'hour OOB message: {e}'
+
+try:
+    datetime.datetime(2024, 1, 1, 0, 60)
+    assert False, 'minute OOB should raise ValueError'
+except ValueError as e:
+    assert str(e) == 'minute must be in 0..59, not 60', f'minute OOB message: {e}'
+
+try:
+    datetime.datetime(2024, 1, 1, 0, 0, 60)
+    assert False, 'second OOB should raise ValueError'
+except ValueError as e:
+    assert str(e) == 'second must be in 0..59, not 60', f'second OOB message: {e}'
+
+try:
+    datetime.datetime(2024, 1, 1, 0, 0, 0, 1000000)
+    assert False, 'microsecond OOB should raise ValueError'
+except ValueError as e:
+    assert str(e) == 'microsecond must be in 0..999999, not 1000000', f'microsecond OOB message: {e}'

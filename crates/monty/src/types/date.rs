@@ -10,15 +10,17 @@ use chrono::{Datelike, NaiveDate};
 
 use crate::{
     args::ArgValues,
-    bytecode::VM,
+    bytecode::{CallResult, VM},
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, RunResult, SimpleException},
     heap::{Heap, HeapData, HeapId, HeapItem, HeapRead},
     intern::Interns,
     os::OsFunction,
     resource::{ResourceError, ResourceTracker},
-    types::{AttrCallResult, PyTrait, TimeDelta, Type, datetime_os_bridge::DATE_TODAY_INTERNAL_MODE, timedelta},
-    value::Value,
+    types::{
+        AttrCallResult, PyTrait, TimeDelta, Type, datetime_os_bridge::DATE_TODAY_INTERNAL_MODE, timedelta, value_to_i32,
+    },
+    value::{EitherStr, Value},
 };
 
 const MICROSECONDS_PER_DAY: i128 = 86_400_000_000;
@@ -28,24 +30,58 @@ const MICROSECONDS_PER_DAY: i128 = 86_400_000_000;
 pub(crate) struct Date(pub(crate) NaiveDate);
 
 /// Creates a date from validated civil components.
+///
+/// Error messages match CPython 3.14 format exactly.
 pub(crate) fn from_ymd(year: i32, month: i32, day: i32) -> RunResult<Date> {
     if !(1..=9999).contains(&year) {
-        return Err(SimpleException::new_msg(ExcType::ValueError, format!("year {year} is out of range")).into());
+        return Err(
+            SimpleException::new_msg(ExcType::ValueError, format!("year must be in 1..9999, not {year}")).into(),
+        );
     }
     if !(1..=12).contains(&month) {
-        return Err(SimpleException::new_msg(ExcType::ValueError, "month must be in 1..12").into());
+        return Err(
+            SimpleException::new_msg(ExcType::ValueError, format!("month must be in 1..12, not {month}")).into(),
+        );
     }
-    let Ok(month) = u32::try_from(month) else {
-        return Err(SimpleException::new_msg(ExcType::ValueError, "month must be in 1..12").into());
+    let Ok(month_u32) = u32::try_from(month) else {
+        return Err(
+            SimpleException::new_msg(ExcType::ValueError, format!("month must be in 1..12, not {month}")).into(),
+        );
     };
-    let Ok(day) = u32::try_from(day) else {
-        return Err(SimpleException::new_msg(ExcType::ValueError, "day is out of range for month").into());
+    let Ok(day_u32) = u32::try_from(day) else {
+        return Err(day_out_of_range_error(day, month, year));
     };
 
-    let Some(date) = NaiveDate::from_ymd_opt(year, month, day) else {
-        return Err(SimpleException::new_msg(ExcType::ValueError, "day is out of range for month").into());
+    let Some(date) = NaiveDate::from_ymd_opt(year, month_u32, day_u32) else {
+        return Err(day_out_of_range_error(day, month, year));
     };
     Ok(Date(date))
+}
+
+/// Produces a CPython-compatible error for an invalid day value.
+///
+/// Format: `"day {day} must be in range 1..{max_day} for month {month} in year {year}"`
+fn day_out_of_range_error(day: i32, month: i32, year: i32) -> crate::exception_private::RunError {
+    let max_day = max_day_for_month(year, month);
+    SimpleException::new_msg(
+        ExcType::ValueError,
+        format!("day {day} must be in range 1..{max_day} for month {month} in year {year}"),
+    )
+    .into()
+}
+
+/// Returns the maximum valid day for a given month and year.
+fn max_day_for_month(year: i32, month: i32) -> u32 {
+    // Try the last possible day (31) and work backwards to find the actual max
+    let Ok(month_u32) = u32::try_from(month) else {
+        return 31;
+    };
+    for d in (28..=31).rev() {
+        if NaiveDate::from_ymd_opt(year, month_u32, d).is_some() {
+            return d;
+        }
+    }
+    31
 }
 
 /// Creates a date from a proleptic Gregorian ordinal value.
@@ -85,9 +121,9 @@ pub(crate) fn init(heap: &mut Heap<impl ResourceTracker>, args: ArgValues, inter
     for (index, arg) in pos.by_ref().enumerate() {
         defer_drop!(arg, heap);
         match index {
-            0 => year = Some(value_to_i32(arg, heap)?),
-            1 => month = Some(value_to_i32(arg, heap)?),
-            2 => day = Some(value_to_i32(arg, heap)?),
+            0 => year = Some(value_to_i32(arg)?),
+            1 => month = Some(value_to_i32(arg)?),
+            2 => day = Some(value_to_i32(arg)?),
             _ => return Err(ExcType::type_error_at_most("date", 3, index + 1)),
         }
     }
@@ -105,19 +141,19 @@ pub(crate) fn init(heap: &mut Heap<impl ResourceTracker>, args: ArgValues, inter
                 if year.is_some() {
                     return Err(ExcType::type_error_multiple_values("date", "year"));
                 }
-                year = Some(value_to_i32(value, heap)?);
+                year = Some(value_to_i32(value)?);
             }
             "month" => {
                 if month.is_some() {
                     return Err(ExcType::type_error_multiple_values("date", "month"));
                 }
-                month = Some(value_to_i32(value, heap)?);
+                month = Some(value_to_i32(value)?);
             }
             "day" => {
                 if day.is_some() {
                     return Err(ExcType::type_error_multiple_values("date", "day"));
                 }
-                day = Some(value_to_i32(value, heap)?);
+                day = Some(value_to_i32(value)?);
             }
             _ => return Err(ExcType::type_error_unexpected_keyword("date", key_name)),
         }
@@ -153,18 +189,6 @@ pub(crate) fn class_today(heap: &mut Heap<impl ResourceTracker>, args: ArgValues
         OsFunction::DateTimeNow,
         ArgValues::One(Value::Int(DATE_TODAY_INTERNAL_MODE)),
     ))
-}
-
-fn value_to_i32(value: &Value, _heap: &Heap<impl ResourceTracker>) -> RunResult<i32> {
-    let int_value = match value {
-        Value::Bool(b) => i64::from(*b),
-        Value::Int(i) => *i,
-        _ => {
-            return Err(SimpleException::new_msg(ExcType::TypeError, "an integer is required (got type float)").into());
-        }
-    };
-    i32::try_from(int_value)
-        .map_err(|_| SimpleException::new_msg(ExcType::OverflowError, "signed integer is greater than maximum").into())
 }
 
 impl HeapItem for Date {
@@ -216,6 +240,16 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Date> {
     fn py_str(&self, vm: &VM<'h, '_, impl ResourceTracker>) -> RunResult<std::borrow::Cow<'static, str>> {
         let (year, month, day) = to_ymd(*self.get(vm.heap));
         Ok(std::borrow::Cow::Owned(format!("{year:04}-{month:02}-{day:02}")))
+    }
+
+    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<Option<CallResult>> {
+        let (year, month, day) = to_ymd(*self.get(vm.heap));
+        match attr.as_str(vm.interns) {
+            "year" => Ok(Some(CallResult::Value(Value::Int(i64::from(year))))),
+            "month" => Ok(Some(CallResult::Value(Value::Int(i64::from(month))))),
+            "day" => Ok(Some(CallResult::Value(Value::Int(i64::from(day))))),
+            _ => Ok(None),
+        }
     }
 }
 

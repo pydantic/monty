@@ -32,7 +32,7 @@ use crate::{
     os::OsFunction,
     parse::CodeRange,
     resource::ResourceTracker,
-    types::{LongInt, MontyIter, PyTrait},
+    types::{LongInt, MontyIter, PyTrait, timedelta},
     value::{BitwiseOp, EitherStr, Value},
 };
 
@@ -955,20 +955,32 @@ impl<'h, 'a, T: ResourceTracker> VM<'h, 'a, T> {
                         }
                         Value::Float(f) => self.push(Value::Float(-f)),
                         Value::Bool(b) => self.push(Value::Int(if b { -1 } else { 0 })),
-                        Value::Ref(id) => {
-                            if let HeapData::LongInt(li) = self.heap.get(id) {
+                        Value::Ref(id) => match self.heap.get(id) {
+                            HeapData::LongInt(li) => {
                                 let negated = -LongInt::new(li.inner().clone());
                                 value.drop_with_heap(self);
                                 match negated.into_value(self.heap) {
                                     Ok(v) => self.push(v),
                                     Err(e) => catch_sync!(self, cached_frame, RunError::from(e)),
                                 }
-                            } else {
+                            }
+                            HeapData::TimeDelta(td) => {
+                                let negated = timedelta::from_total_microseconds(-timedelta::total_microseconds(td));
+                                value.drop_with_heap(self);
+                                match negated {
+                                    Ok(delta) => match self.heap.allocate(HeapData::TimeDelta(delta)) {
+                                        Ok(id) => self.push(Value::Ref(id)),
+                                        Err(e) => catch_sync!(self, cached_frame, RunError::from(e)),
+                                    },
+                                    Err(e) => catch_sync!(self, cached_frame, e),
+                                }
+                            }
+                            _ => {
                                 let value_type = value.py_type(self);
                                 value.drop_with_heap(self);
                                 catch_sync!(self, cached_frame, ExcType::unary_type_error("-", value_type));
                             }
-                        }
+                        },
                         _ => {
                             let value_type = value.py_type(self);
                             value.drop_with_heap(self);

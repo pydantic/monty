@@ -14,7 +14,12 @@ use crate::{
     heap::{Heap, HeapData, HeapId, HeapItem, HeapRead},
     intern::Interns,
     resource::{ResourceError, ResourceTracker},
-    types::{PyTrait, TimeDelta, Type, str::StringRepr, timedelta},
+    types::{
+        PyTrait, Type,
+        str::StringRepr,
+        timedelta,
+        timedelta::{MICROSECONDS_PER_SECOND, SECONDS_PER_HOUR, SECONDS_PER_MINUTE},
+    },
     value::Value,
 };
 
@@ -168,7 +173,7 @@ fn extract_offset_seconds(offset_arg: &Value, heap: &Heap<impl ResourceTracker>)
     };
 
     if !(i128::from(MIN_TIMEZONE_OFFSET_SECONDS)..=i128::from(MAX_TIMEZONE_OFFSET_SECONDS)).contains(&total_seconds) {
-        let timedelta_repr = format_timedelta_repr(delta);
+        let timedelta_repr = timedelta::format_repr(delta);
         return Err(SimpleException::new_msg(
             ExcType::ValueError,
             format!(
@@ -181,39 +186,6 @@ fn extract_offset_seconds(offset_arg: &Value, heap: &Heap<impl ResourceTracker>)
     i32::try_from(total_seconds)
         .map_err(|_| SimpleException::new_msg(ExcType::ValueError, "timezone offset out of range").into())
 }
-
-fn format_timedelta_repr(delta: &TimeDelta) -> String {
-    let (days, seconds, microseconds) = timedelta::components(delta);
-    if days == 0 && seconds == 0 && microseconds == 0 {
-        return "datetime.timedelta(0)".to_owned();
-    }
-
-    let mut repr = String::from("datetime.timedelta(");
-    let mut first = true;
-    if days != 0 {
-        write!(repr, "days={days}").expect("writing to String cannot fail");
-        first = false;
-    }
-    if seconds != 0 {
-        if !first {
-            repr.push_str(", ");
-        }
-        write!(repr, "seconds={seconds}").expect("writing to String cannot fail");
-        first = false;
-    }
-    if microseconds != 0 {
-        if !first {
-            repr.push_str(", ");
-        }
-        write!(repr, "microseconds={microseconds}").expect("writing to String cannot fail");
-    }
-    repr.push(')');
-    repr
-}
-
-const SECONDS_PER_HOUR: i32 = 3_600;
-const SECONDS_PER_MINUTE: i32 = 60;
-const MICROSECONDS_PER_SECOND: i128 = 1_000_000;
 
 /// Formats a generic offset as `+HH:MM` or `+HH:MM:SS`.
 #[must_use]
@@ -234,7 +206,7 @@ pub(crate) fn format_offset_hms(offset_seconds: i32) -> String {
 pub(crate) fn format_offset_timedelta_repr(offset_seconds: i32) -> String {
     let delta = timedelta::from_total_microseconds(i128::from(offset_seconds) * MICROSECONDS_PER_SECOND)
         .expect("timezone offset range is always representable as timedelta");
-    format_timedelta_repr(&delta)
+    timedelta::format_repr(&delta)
 }
 
 fn extract_name(name_arg: &Value, heap: &Heap<impl ResourceTracker>, interns: &Interns) -> RunResult<Option<String>> {

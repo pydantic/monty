@@ -27,9 +27,9 @@ pub(crate) const MIN_TIMEDELTA_DAYS: i32 = -999_999_999;
 pub(crate) const MAX_TIMEDELTA_DAYS: i32 = 999_999_999;
 
 const DAY_SECONDS: i32 = 86_400;
-const SECONDS_PER_HOUR: i32 = 3_600;
-const SECONDS_PER_MINUTE: i32 = 60;
-const MICROSECONDS_PER_SECOND: i128 = 1_000_000;
+pub(crate) const SECONDS_PER_HOUR: i32 = 3_600;
+pub(crate) const SECONDS_PER_MINUTE: i32 = 60;
+pub(crate) const MICROSECONDS_PER_SECOND: i128 = 1_000_000;
 const MILLISECONDS_PER_SECOND: i128 = 1_000;
 const DAY_MICROSECONDS: i128 = (DAY_SECONDS as i128) * MICROSECONDS_PER_SECOND;
 const HOUR_MICROSECONDS: i128 = (SECONDS_PER_HOUR as i128) * MICROSECONDS_PER_SECOND;
@@ -245,6 +245,39 @@ fn value_to_i128(value: &Value, _heap: &Heap<impl ResourceTracker>) -> RunResult
     }
 }
 
+/// Formats a `TimeDelta` as its Python `repr()` string, e.g. `"datetime.timedelta(days=1, seconds=3600)"`.
+///
+/// Shared by `TimeDelta::py_repr_fmt` and `timezone.rs` for formatting offsets.
+#[must_use]
+pub(crate) fn format_repr(delta: &TimeDelta) -> String {
+    let (days, seconds, microseconds) = components(delta);
+    if days == 0 && seconds == 0 && microseconds == 0 {
+        return "datetime.timedelta(0)".to_owned();
+    }
+
+    let mut repr = String::from("datetime.timedelta(");
+    let mut first = true;
+    if days != 0 {
+        write!(repr, "days={days}").expect("writing to String cannot fail");
+        first = false;
+    }
+    if seconds != 0 {
+        if !first {
+            repr.push_str(", ");
+        }
+        write!(repr, "seconds={seconds}").expect("writing to String cannot fail");
+        first = false;
+    }
+    if microseconds != 0 {
+        if !first {
+            repr.push_str(", ");
+        }
+        write!(repr, "microseconds={microseconds}").expect("writing to String cannot fail");
+    }
+    repr.push(')');
+    repr
+}
+
 impl HeapItem for TimeDelta {
     fn py_estimate_size(&self) -> usize {
         std::mem::size_of::<Self>()
@@ -286,31 +319,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, TimeDelta> {
         vm: &VM<'h, '_, impl ResourceTracker>,
         _heap_ids: &mut AHashSet<HeapId>,
     ) -> RunResult<()> {
-        let (days, seconds, microseconds) = components(self.get(vm.heap));
-        if days == 0 && seconds == 0 && microseconds == 0 {
-            f.write_str("datetime.timedelta(0)")?;
-            return Ok(());
-        }
-        f.write_str("datetime.timedelta(")?;
-        let mut first = true;
-        if days != 0 {
-            write!(f, "days={days}")?;
-            first = false;
-        }
-        if seconds != 0 {
-            if !first {
-                f.write_str(", ")?;
-            }
-            write!(f, "seconds={seconds}")?;
-            first = false;
-        }
-        if microseconds != 0 {
-            if !first {
-                f.write_str(", ")?;
-            }
-            write!(f, "microseconds={microseconds}")?;
-        }
-        f.write_char(')')?;
+        f.write_str(&format_repr(self.get(vm.heap)))?;
         Ok(())
     }
 
@@ -348,5 +357,15 @@ impl<'h> PyTrait<'h> for HeapRead<'h, TimeDelta> {
             return Ok(CallResult::Value(Value::Float(total_seconds(&td))));
         }
         Err(ExcType::attribute_error(Type::TimeDelta, attr.as_str(interns)))
+    }
+
+    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<Option<CallResult>> {
+        let (days, seconds, microseconds) = components(self.get(vm.heap));
+        match attr.as_str(vm.interns) {
+            "days" => Ok(Some(CallResult::Value(Value::Int(i64::from(days))))),
+            "seconds" => Ok(Some(CallResult::Value(Value::Int(i64::from(seconds))))),
+            "microseconds" => Ok(Some(CallResult::Value(Value::Int(i64::from(microseconds))))),
+            _ => Ok(None),
+        }
     }
 }
