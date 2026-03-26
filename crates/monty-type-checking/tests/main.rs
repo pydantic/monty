@@ -1,4 +1,4 @@
-use std::fs;
+use std::{env, fs};
 
 use monty_type_checking::{SourceFile, type_check};
 use pretty_assertions::assert_eq;
@@ -144,7 +144,7 @@ fn check_file_content(file_name: &str, mut actual: &str) {
     let expected = if fs::exists(&expected_path).unwrap() {
         fs::read_to_string(&expected_path).unwrap()
     } else {
-        std::fs::write(&expected_path, actual).unwrap();
+        fs::write(&expected_path, actual).unwrap();
         panic!("{file_name} did not exist, file created.")
     };
 
@@ -156,8 +156,8 @@ fn check_file_content(file_name: &str, mut actual: &str) {
         return;
     }
 
-    let status = if std::env::var("UPDATE_EXPECT").is_ok() {
-        std::fs::write(&expected_path, actual).unwrap();
+    let status = if env::var("UPDATE_EXPECT").is_ok() {
+        fs::write(&expected_path, actual).unwrap();
         "FILE UPDATE"
     } else {
         "file not updated, run with UPDATE_EXPECT=1 to update"
@@ -175,9 +175,7 @@ fn type_bad_types() {
     let result = type_check(&SourceFile::new(code, "bad_types.py"), None).unwrap();
 
     let failure = result.expect("Expected type errors in bad_types.py");
-    let actual = failure
-        .format(ruff_db::diagnostic::DiagnosticFormat::Concise)
-        .to_string();
+    let actual = failure.format(DiagnosticFormat::Concise).to_string();
 
     check_file_content("bad_types_output.txt", &actual);
 }
@@ -188,9 +186,7 @@ fn test_reveal_types() {
     let result = type_check(&SourceFile::new(code, "reveal_types.py"), None).unwrap();
 
     let failure = result.expect("Expected type errors in reveal_types.py");
-    let actual = failure
-        .format(ruff_db::diagnostic::DiagnosticFormat::Concise)
-        .to_string();
+    let actual = failure.format(DiagnosticFormat::Concise).to_string();
 
     check_file_content("reveal_types_output.txt", &actual);
 }

@@ -1,4 +1,7 @@
-use std::fmt::{self, Write};
+use std::{
+    error,
+    fmt::{self, Write},
+};
 
 use crate::{
     exception_private::{ExcType, RawStackFrame},
@@ -69,7 +72,7 @@ impl fmt::Display for MontyException {
     }
 }
 
-impl std::error::Error for MontyException {}
+impl error::Error for MontyException {}
 
 impl MontyException {
     /// Create a new MontyException with the given exception type and message.

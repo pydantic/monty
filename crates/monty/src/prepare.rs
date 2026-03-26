@@ -2555,7 +2555,7 @@ fn collect_cell_vars_from_expr(
         }
         Expr::FString(parts) => {
             for part in parts {
-                if let crate::fstring::FStringPart::Interpolation { expr, .. } = part {
+                if let FStringPart::Interpolation { expr, .. } = part {
                     collect_cell_vars_from_expr(expr, our_locals, cell_vars, interner);
                 }
             }
@@ -2758,11 +2758,7 @@ fn collect_referenced_names_from_node(node: &ParseNode, referenced: &mut AHashSe
 }
 
 /// Collects all names referenced in an expression.
-fn collect_referenced_names_from_expr(
-    expr: &crate::expressions::ExprLoc,
-    referenced: &mut AHashSet<String>,
-    interner: &InternerBuilder,
-) {
+fn collect_referenced_names_from_expr(expr: &ExprLoc, referenced: &mut AHashSet<String>, interner: &InternerBuilder) {
     use crate::expressions::Expr;
     match &expr.expr {
         Expr::Name(ident) => {

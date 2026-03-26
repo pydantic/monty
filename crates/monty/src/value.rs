@@ -4,7 +4,7 @@ use std::{
     collections::hash_map::DefaultHasher,
     fmt::{self, Write},
     hash::{Hash, Hasher},
-    mem::discriminant,
+    mem::{self, discriminant},
     str::FromStr,
 };
 
@@ -23,7 +23,7 @@ use crate::{
     modules::ModuleFunctions,
     resource::{ResourceError, ResourceTracker, check_div_size, check_lshift_size, check_pow_size, check_repeat_size},
     types::{
-        LongInt, Property, PyTrait, Str, Type,
+        Bytes, LongInt, Property, PyTrait, Str, Type,
         bytes::{bytes_repr_fmt, get_byte_at_index, get_bytes_slice},
         long_int::check_bits_str_digits_limit,
         path,
@@ -105,7 +105,7 @@ pub(crate) enum Value {
 ///
 /// Used for memory tracking when containers grow (e.g., `list.append`, `list.extend`).
 /// Must match the per-element unit used by `py_estimate_size` implementations.
-pub(crate) const VALUE_SIZE: usize = std::mem::size_of::<Value>();
+pub(crate) const VALUE_SIZE: usize = mem::size_of::<Value>();
 
 /// Drop implementation that panics if a `Ref` variant is dropped without calling `drop_with_heap`.
 /// This helps catch reference counting bugs during development/testing.
@@ -417,11 +417,7 @@ impl PyTrait<'_> for Value {
         }
     }
 
-    fn py_add(
-        &self,
-        other: &Self,
-        vm: &mut VM<'_, '_, impl ResourceTracker>,
-    ) -> Result<Option<Value>, crate::resource::ResourceError> {
+    fn py_add(&self, other: &Self, vm: &mut VM<'_, '_, impl ResourceTracker>) -> Result<Option<Value>, ResourceError> {
         let interns = vm.interns;
         match (self, other) {
             // Int + Int with overflow detection
@@ -508,11 +504,7 @@ impl PyTrait<'_> for Value {
         }
     }
 
-    fn py_sub(
-        &self,
-        other: &Self,
-        vm: &mut VM<'_, '_, impl ResourceTracker>,
-    ) -> Result<Option<Self>, crate::resource::ResourceError> {
+    fn py_sub(&self, other: &Self, vm: &mut VM<'_, '_, impl ResourceTracker>) -> Result<Option<Self>, ResourceError> {
         match (self, other) {
             // Int - Int with overflow detection
             (Self::Int(a), Self::Int(b)) => {
@@ -654,7 +646,7 @@ impl PyTrait<'_> for Value {
         other: &Self,
         vm: &mut VM<'_, '_, impl ResourceTracker>,
         _self_id: Option<HeapId>,
-    ) -> Result<bool, crate::resource::ResourceError> {
+    ) -> Result<bool, ResourceError> {
         let interns = vm.interns;
         match (&self, other) {
             (Self::Int(v1), Self::Int(v2)) => {
@@ -1342,9 +1334,7 @@ impl PyTrait<'_> for Value {
                         .indices(bytes.len())
                         .map_err(|()| ExcType::value_error_slice_step_zero())?;
                     let result_bytes = get_bytes_slice(bytes, start, stop, step);
-                    let heap_id = vm
-                        .heap
-                        .allocate(HeapData::Bytes(crate::types::Bytes::new(result_bytes)))?;
+                    let heap_id = vm.heap.allocate(HeapData::Bytes(Bytes::new(result_bytes)))?;
                     return Ok(Self::Ref(heap_id));
                 }
 
@@ -1942,10 +1932,10 @@ impl Value {
     /// are left unchanged since they don't trigger the Drop panic.
     #[cfg(feature = "ref-count-panic")]
     pub fn drop_with_heap(mut self, heap: &mut impl ContainsHeap) {
-        let old = std::mem::replace(&mut self, Self::Dereferenced);
+        let old = mem::replace(&mut self, Self::Dereferenced);
         if let Self::Ref(id) = &old {
             heap.heap_mut().dec_ref(*id);
-            std::mem::forget(old);
+            mem::forget(old);
         }
     }
 
@@ -1982,8 +1972,8 @@ impl Value {
     /// This should be called from `py_dec_ref_ids` methods only
     #[cfg(feature = "ref-count-panic")]
     pub fn dec_ref_forget(&mut self) {
-        let old = std::mem::replace(self, Self::Dereferenced);
-        std::mem::forget(old);
+        let old = mem::replace(self, Self::Dereferenced);
+        mem::forget(old);
     }
 
     /// Pushes any contained `HeapId` onto the stack for reference counting.

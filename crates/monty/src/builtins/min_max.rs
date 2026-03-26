@@ -1,6 +1,6 @@
 //! Implementation of the min() and max() builtin functions.
 
-use std::cmp::Ordering;
+use std::{cmp::Ordering, mem};
 
 use crate::{
     args::{ArgValues, KwargsValues},
@@ -95,8 +95,8 @@ fn builtin_min_max(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues, i
                         defer_drop_mut!(item_key, vm);
 
                         if candidate_wins(result_key, item_key, is_min, vm)? {
-                            std::mem::swap(result, item);
-                            std::mem::swap(result_key, item_key);
+                            mem::swap(result, item);
+                            mem::swap(result_key, item_key);
                         }
                     }
                 }
@@ -113,7 +113,7 @@ fn builtin_min_max(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues, i
                 defer_drop_mut!(item, vm);
 
                 if candidate_wins(result, item, is_min, vm)? {
-                    std::mem::swap(result, item);
+                    mem::swap(result, item);
                 }
             }
 
@@ -141,8 +141,8 @@ fn builtin_min_max(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues, i
                         defer_drop_mut!(item_key, vm);
 
                         if candidate_wins(result_key, item_key, is_min, vm)? {
-                            std::mem::swap(result, item);
-                            std::mem::swap(result_key, item_key);
+                            mem::swap(result, item);
+                            mem::swap(result_key, item_key);
                         }
                     }
                 }
@@ -159,7 +159,7 @@ fn builtin_min_max(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues, i
                 defer_drop_mut!(item, vm);
 
                 if candidate_wins(result, item, is_min, vm)? {
-                    std::mem::swap(result, item);
+                    mem::swap(result, item);
                 }
             }
 

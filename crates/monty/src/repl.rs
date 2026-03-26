@@ -9,6 +9,7 @@ use std::mem;
 use ahash::AHashMap;
 use ruff_python_ast::token::TokenKind;
 use ruff_python_parser::{InterpolatedStringErrorType, LexicalErrorType, ParseErrorType, parse_module};
+use serde::de::DeserializeOwned;
 
 use crate::{
     ExcType, MontyException,
@@ -34,7 +35,7 @@ use crate::{
 /// Each `feed()` compiles and executes only the new snippet against the current
 /// state, avoiding the cost and semantic risks of replaying prior code.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
-#[serde(bound(serialize = "T: serde::Serialize", deserialize = "T: serde::de::DeserializeOwned"))]
+#[serde(bound(serialize = "T: serde::Serialize", deserialize = "T: DeserializeOwned"))]
 pub struct MontyRepl<T: ResourceTracker> {
     /// Script name used for runtime error messages and REPL identification.
     ///
@@ -263,7 +264,7 @@ impl<T: ResourceTracker + serde::Serialize> MontyRepl<T> {
     }
 }
 
-impl<T: ResourceTracker + serde::de::DeserializeOwned> MontyRepl<T> {
+impl<T: ResourceTracker + DeserializeOwned> MontyRepl<T> {
     /// Restores a REPL session from bytes produced by `MontyRepl::dump`.
     ///
     /// # Errors
@@ -290,7 +291,7 @@ impl<T: ResourceTracker> Drop for MontyRepl<T> {
 /// Each variant (except `Complete`) wraps a dedicated struct with only the relevant
 /// resume methods.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
-#[serde(bound(serialize = "T: serde::Serialize", deserialize = "T: serde::de::DeserializeOwned"))]
+#[serde(bound(serialize = "T: serde::Serialize", deserialize = "T: DeserializeOwned"))]
 pub enum ReplProgress<T: ResourceTracker> {
     /// Execution paused at an external function call or dataclass method call.
     FunctionCall(ReplFunctionCall<T>),
@@ -389,7 +390,7 @@ impl<T: ResourceTracker + serde::Serialize> ReplProgress<T> {
     }
 }
 
-impl<T: ResourceTracker + serde::de::DeserializeOwned> ReplProgress<T> {
+impl<T: ResourceTracker + DeserializeOwned> ReplProgress<T> {
     /// Deserializes REPL execution progress from a binary format.
     ///
     /// # Errors
@@ -408,7 +409,7 @@ impl<T: ResourceTracker + serde::de::DeserializeOwned> ReplProgress<T> {
 /// Resume with `resume(result, print)` to provide the return value and continue,
 /// or `resume_pending(print)` to push an `ExternalFuture` for async resolution.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
-#[serde(bound(serialize = "T: serde::Serialize", deserialize = "T: serde::de::DeserializeOwned"))]
+#[serde(bound(serialize = "T: serde::Serialize", deserialize = "T: DeserializeOwned"))]
 pub struct ReplFunctionCall<T: ResourceTracker> {
     /// The name of the function or method being called.
     pub function_name: String,
@@ -458,7 +459,7 @@ impl<T: ResourceTracker> ReplFunctionCall<T> {
 ///
 /// Resume with `resume(result, print)` to provide the OS call result and continue.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
-#[serde(bound(serialize = "T: serde::Serialize", deserialize = "T: serde::de::DeserializeOwned"))]
+#[serde(bound(serialize = "T: serde::Serialize", deserialize = "T: DeserializeOwned"))]
 pub struct ReplOsCall<T: ResourceTracker> {
     /// The OS function to execute.
     pub function: OsFunction,
@@ -501,7 +502,7 @@ impl<T: ResourceTracker> ReplOsCall<T> {
 /// value. Call `resume(result, print)` with the appropriate `NameLookupResult`.
 /// The namespace slot and scope are managed internally.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
-#[serde(bound(serialize = "T: serde::Serialize", deserialize = "T: serde::de::DeserializeOwned"))]
+#[serde(bound(serialize = "T: serde::Serialize", deserialize = "T: DeserializeOwned"))]
 pub struct ReplNameLookup<T: ResourceTracker> {
     /// The name being looked up.
     pub name: String,
@@ -615,7 +616,7 @@ impl<T: ResourceTracker> ReplNameLookup<T> {
 ///
 /// This is the REPL-aware counterpart to `ResolveFutures`.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
-#[serde(bound(serialize = "T: serde::Serialize", deserialize = "T: serde::de::DeserializeOwned"))]
+#[serde(bound(serialize = "T: serde::Serialize", deserialize = "T: DeserializeOwned"))]
 pub struct ReplResolveFutures<T: ResourceTracker> {
     /// Persistent REPL session state while this snippet is suspended.
     repl: MontyRepl<T>,
@@ -892,7 +893,7 @@ impl ReplExecutor {
 /// This is the REPL-aware counterpart to `Snapshot`. It is `pub(crate)` —
 /// callers interact with the per-variant structs (`ReplFunctionCall`, etc.).
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
-#[serde(bound(serialize = "T: serde::Serialize", deserialize = "T: serde::de::DeserializeOwned"))]
+#[serde(bound(serialize = "T: serde::Serialize", deserialize = "T: DeserializeOwned"))]
 pub(crate) struct ReplSnapshot<T: ResourceTracker> {
     /// Persistent REPL session state while this snippet is suspended.
     repl: MontyRepl<T>,

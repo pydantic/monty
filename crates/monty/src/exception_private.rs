@@ -1372,7 +1372,7 @@ impl<'h> HeapRead<'h, SimpleException> {
 
 impl SimpleException {
     /// Returns the exception formatted as Python would repr it.
-    pub fn py_repr_fmt(&self, f: &mut impl Write) -> std::fmt::Result {
+    pub fn py_repr_fmt(&self, f: &mut impl Write) -> fmt::Result {
         let type_str: &'static str = self.exc_type.into();
         write!(f, "{type_str}(")?;
 

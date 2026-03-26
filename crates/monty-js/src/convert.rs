@@ -29,10 +29,10 @@
 //! - `MontyObject::Repr` → plain `string`
 //! - `MontyObject::Cycle` → placeholder `string`
 
-use std::collections::HashMap;
+use std::{collections::HashMap, ptr};
 
 use monty::{DictPairs, ExcType, MontyDate, MontyDateTime, MontyObject, MontyTimeDelta, MontyTimeZone};
-use napi::bindgen_prelude::*;
+use napi::{bindgen_prelude::*, sys::Status};
 use num_bigint::BigInt as NumBigInt;
 
 /// JavaScript safe integer range: -(2^53) to 2^53.
@@ -110,11 +110,11 @@ pub fn monty_to_js<'e>(obj: &MontyObject, env: &'e Env) -> Result<JsMontyObject<
 /// Creates a JS null value.
 fn create_js_null(env: &Env) -> Result<Unknown<'_>> {
     // Use raw napi to create null
-    let mut result = std::ptr::null_mut();
+    let mut result = ptr::null_mut();
     // SAFETY: [DH] - all arguments are valid and result is valid on success
     unsafe {
         let status = sys::napi_get_null(env.raw(), &raw mut result);
-        if status != sys::Status::napi_ok {
+        if status != Status::napi_ok {
             return Err(Error::from_reason("Failed to create null"));
         }
         Ok(Unknown::from_raw_unchecked(env.raw(), result))
@@ -123,11 +123,11 @@ fn create_js_null(env: &Env) -> Result<Unknown<'_>> {
 
 /// Creates a JS boolean value.
 fn create_js_bool(b: bool, env: &Env) -> Result<Unknown<'_>> {
-    let mut result = std::ptr::null_mut();
+    let mut result = ptr::null_mut();
     // SAFETY: [DH] - all arguments are valid and result is valid on success
     unsafe {
         let status = sys::napi_get_boolean(env.raw(), b, &raw mut result);
-        if status != sys::Status::napi_ok {
+        if status != Status::napi_ok {
             return Err(Error::from_reason("Failed to create boolean"));
         }
         Ok(Unknown::from_raw_unchecked(env.raw(), result))
@@ -220,11 +220,11 @@ fn call_method_2_args(
     arg2: sys::napi_value,
 ) -> Result<()> {
     let args = [arg1, arg2];
-    let mut result = std::ptr::null_mut();
+    let mut result = ptr::null_mut();
     // SAFETY: [DH] - all arguments are valid and result is valid on success
     unsafe {
         let status = sys::napi_call_function(env, this, method, 2, args.as_ptr(), &raw mut result);
-        if status != sys::Status::napi_ok {
+        if status != Status::napi_ok {
             return Err(Error::from_reason("Failed to call method"));
         }
     }

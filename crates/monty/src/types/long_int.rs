@@ -12,6 +12,7 @@ use std::{
     collections::hash_map::DefaultHasher,
     fmt::{self, Display},
     hash::{Hash, Hasher},
+    mem,
     ops::{Add, Mul, Neg, Sub},
 };
 
@@ -78,7 +79,7 @@ impl LongInt {
         if let Some(i) = self.0.to_i64() {
             let mut hasher = DefaultHasher::new();
             // Hash the i64 discriminant and value to match Value::Int hashing
-            std::mem::discriminant(&Value::Int(0)).hash(&mut hasher);
+            mem::discriminant(&Value::Int(0)).hash(&mut hasher);
             i.hash(&mut hasher);
             hasher.finish()
         } else {
@@ -104,7 +105,7 @@ impl LongInt {
         // Convert bits to bytes (round up), add overhead for Vec and sign
         // On 32-bit platforms, truncate to usize::MAX if bits is too large
         let bit_bytes = usize::try_from(bits).unwrap_or(usize::MAX).saturating_add(7) / 8;
-        bit_bytes + std::mem::size_of::<BigInt>()
+        bit_bytes + mem::size_of::<BigInt>()
     }
 
     /// Returns a reference to the inner `BigInt`.

@@ -65,8 +65,7 @@
 /// - `expandtabs(tabsize=8)` - Tab expansion
 /// - `translate(table[, delete])` - Character translation
 /// - `maketrans(frm, to)` - Create translation table (staticmethod)
-use std::cmp::Ordering;
-use std::fmt::Write;
+use std::{cmp::Ordering, fmt, fmt::Write, mem, ops, str};
 
 use ahash::AHashSet;
 use smallvec::smallvec;
@@ -236,7 +235,7 @@ impl From<Bytes> for Vec<u8> {
     }
 }
 
-impl std::ops::Deref for Bytes {
+impl ops::Deref for Bytes {
     type Target = Vec<u8>;
 
     fn deref(&self) -> &Self::Target {
@@ -322,7 +321,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Bytes> {
 
 impl HeapItem for Bytes {
     fn py_estimate_size(&self) -> usize {
-        std::mem::size_of::<Self>() + self.0.len()
+        mem::size_of::<Self>() + self.0.len()
     }
 
     fn py_dec_ref_ids(&mut self, _stack: &mut Vec<HeapId>) {
@@ -463,7 +462,7 @@ fn call_bytes_method_impl<'h>(
 /// - Uses single quotes by default
 /// - Switches to double quotes if bytes contain `'` but not `"`
 /// - Escapes: `\\`, `\t`, `\n`, `\r`, `\xNN` for non-printable bytes
-pub fn bytes_repr_fmt(bytes: &[u8], f: &mut impl Write) -> std::fmt::Result {
+pub fn bytes_repr_fmt(bytes: &[u8], f: &mut impl Write) -> fmt::Result {
     // Determine quote character: use double quotes if single quote present but not double
     let has_single = bytes.contains(&b'\'');
     let has_double = bytes.contains(&b'"');
@@ -526,7 +525,7 @@ fn bytes_decode<'h>(
     }
 
     // Decode as UTF-8
-    match std::str::from_utf8(bytes.get(vm.heap)) {
+    match str::from_utf8(bytes.get(vm.heap)) {
         Ok(s) => {
             let heap_id = vm.heap.allocate(HeapData::Str(Str::from(s.to_owned())))?;
             Ok(Value::Ref(heap_id))
@@ -1657,7 +1656,7 @@ fn bytes_partition<'h>(
     let sep_val = allocate_bytes(sep_found, vm.heap)?;
     let after_val = allocate_bytes(after, vm.heap)?;
 
-    Ok(crate::types::allocate_tuple(
+    Ok(super::allocate_tuple(
         smallvec![before_val, sep_val, after_val],
         vm.heap,
     )?)
@@ -1689,7 +1688,7 @@ fn bytes_rpartition<'h>(
     let sep_val = allocate_bytes(sep_found, vm.heap)?;
     let after_val = allocate_bytes(after, vm.heap)?;
 
-    Ok(crate::types::allocate_tuple(
+    Ok(super::allocate_tuple(
         smallvec![before_val, sep_val, after_val],
         vm.heap,
     )?)
@@ -2171,7 +2170,7 @@ fn bytes_hex<'h>(
         hex_chars.iter().collect()
     };
 
-    crate::types::str::allocate_string(result, vm.heap)
+    super::str::allocate_string(result, vm.heap)
 }
 
 /// Parses arguments for bytes.hex method.

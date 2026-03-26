@@ -8,7 +8,7 @@
 //! its body is compiled to bytecode and a `Function` struct is created. All compiled
 //! functions are collected and returned along with the module code.
 
-use std::borrow::Cow;
+use std::{borrow::Cow, mem};
 
 use super::{
     builder::{CodeBuilder, JumpLabel},
@@ -436,7 +436,7 @@ impl<'a> Compiler<'a> {
 
         // 1. Compile the function body recursively
         // Take ownership of functions for the recursive compile, then restore
-        let functions = std::mem::take(&mut self.functions);
+        let functions = mem::take(&mut self.functions);
         let namespace_size = u16::try_from(func_def.namespace_size).expect("function namespace size exceeds u16");
         let (body_code, mut functions) =
             Self::compile_function_body(&func_def.body, self.interns, functions, namespace_size)?;
@@ -515,7 +515,7 @@ impl<'a> Compiler<'a> {
         }
 
         // 1. Compile the function body recursively
-        let functions = std::mem::take(&mut self.functions);
+        let functions = mem::take(&mut self.functions);
         let namespace_size = u16::try_from(func_def.namespace_size).expect("function namespace size exceeds u16");
         let (body_code, mut functions) =
             Self::compile_function_body(&func_def.body, self.interns, functions, namespace_size)?;

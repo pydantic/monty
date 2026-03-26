@@ -1,7 +1,10 @@
 use std::{
     borrow::Cow,
+    error::Error,
     fmt::{self, Write},
     hash::{Hash, Hasher},
+    mem, slice,
+    vec::IntoIter,
 };
 
 use ahash::AHashSet;
@@ -1076,9 +1079,9 @@ impl Hash for MontyObject {
         match self {
             Self::Int(_) | Self::BigInt(_) => {
                 // Use Int discriminant for both to maintain hash consistency
-                std::mem::discriminant(&Self::Int(0)).hash(state);
+                mem::discriminant(&Self::Int(0)).hash(state);
             }
-            _ => std::mem::discriminant(self).hash(state),
+            _ => mem::discriminant(self).hash(state),
         }
 
         match self {
@@ -1233,7 +1236,7 @@ impl fmt::Display for ConversionError {
     }
 }
 
-impl std::error::Error for ConversionError {}
+impl Error for ConversionError {}
 
 /// Error returned when a `MontyObject` cannot be used as an input to code execution.
 ///
@@ -1266,10 +1269,10 @@ impl fmt::Display for InvalidInputError {
     }
 }
 
-impl std::error::Error for InvalidInputError {}
+impl Error for InvalidInputError {}
 
-impl From<crate::resource::ResourceError> for InvalidInputError {
-    fn from(err: crate::resource::ResourceError) -> Self {
+impl From<ResourceError> for InvalidInputError {
+    fn from(err: ResourceError) -> Self {
         Self::Resource(err)
     }
 }
@@ -1357,7 +1360,7 @@ impl From<DictPairs> for IndexMap<MontyObject, MontyObject> {
 
 impl IntoIterator for DictPairs {
     type Item = (MontyObject, MontyObject);
-    type IntoIter = std::vec::IntoIter<Self::Item>;
+    type IntoIter = IntoIter<Self::Item>;
 
     fn into_iter(self) -> Self::IntoIter {
         self.0.into_iter()
@@ -1365,7 +1368,7 @@ impl IntoIterator for DictPairs {
 }
 impl<'a> IntoIterator for &'a DictPairs {
     type Item = &'a (MontyObject, MontyObject);
-    type IntoIter = std::slice::Iter<'a, (MontyObject, MontyObject)>;
+    type IntoIter = slice::Iter<'a, (MontyObject, MontyObject)>;
 
     fn into_iter(self) -> Self::IntoIter {
         self.0.iter()

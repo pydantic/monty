@@ -4,7 +4,7 @@
 //! (require `OsAccess` implementation). Pure methods are handled directly by the VM,
 //! while filesystem methods yield external function calls for the host to resolve.
 
-use std::fmt::Write;
+use std::{fmt::Write, mem};
 
 use ahash::AHashSet;
 use smallvec::SmallVec;
@@ -13,7 +13,7 @@ use crate::{
     args::{ArgValues, KwargsValues},
     bytecode::{CallResult, VM},
     defer_drop,
-    exception_private::{ExcType, RunResult},
+    exception_private::{ExcType, RunResult, SimpleException},
     heap::{DropWithHeap, Heap, HeapData, HeapId, HeapItem, HeapRead},
     intern::{Interns, StaticStrings},
     os::OsFunction,
@@ -517,7 +517,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Path> {
                 let result = self
                     .get(vm.heap)
                     .with_name(&name)
-                    .map_err(|e| crate::exception_private::SimpleException::new_msg(ExcType::ValueError, &e))?;
+                    .map_err(|e| SimpleException::new_msg(ExcType::ValueError, &e))?;
                 Ok(Value::Ref(vm.heap.allocate(HeapData::Path(Path::new(result)))?))
             }
             StaticStrings::WithStem => {
@@ -527,7 +527,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Path> {
                 let result = self
                     .get(vm.heap)
                     .with_stem(&stem)
-                    .map_err(|e| crate::exception_private::SimpleException::new_msg(ExcType::ValueError, &e))?;
+                    .map_err(|e| SimpleException::new_msg(ExcType::ValueError, &e))?;
                 Ok(Value::Ref(vm.heap.allocate(HeapData::Path(Path::new(result)))?))
             }
             StaticStrings::WithSuffix => {
@@ -537,7 +537,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Path> {
                 let result = self
                     .get(vm.heap)
                     .with_suffix(&suffix)
-                    .map_err(|e| crate::exception_private::SimpleException::new_msg(ExcType::ValueError, &e))?;
+                    .map_err(|e| SimpleException::new_msg(ExcType::ValueError, &e))?;
                 Ok(Value::Ref(vm.heap.allocate(HeapData::Path(Path::new(result)))?))
             }
             StaticStrings::AsPosix | StaticStrings::Fspath => {
@@ -583,7 +583,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Path> {
 
 impl HeapItem for Path {
     fn py_estimate_size(&self) -> usize {
-        std::mem::size_of::<Self>() + self.path.capacity()
+        mem::size_of::<Self>() + self.path.capacity()
     }
 
     fn py_dec_ref_ids(&mut self, _stack: &mut Vec<HeapId>) {

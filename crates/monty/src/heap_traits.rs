@@ -1,4 +1,8 @@
-use std::{mem::ManuallyDrop, ptr::addr_of};
+use std::{
+    mem::ManuallyDrop,
+    ptr::addr_of,
+    vec::{Drain, IntoIter},
+};
 
 use crate::{
     ResourceTracker,
@@ -108,7 +112,7 @@ impl<U: DropWithHeap> DropWithHeap for Vec<U> {
     }
 }
 
-impl<U: DropWithHeap> DropWithHeap for std::vec::IntoIter<U> {
+impl<U: DropWithHeap> DropWithHeap for IntoIter<U> {
     fn drop_with_heap<H: ContainsHeap>(self, heap: &mut H) {
         for value in self {
             value.drop_with_heap(heap);
@@ -116,7 +120,7 @@ impl<U: DropWithHeap> DropWithHeap for std::vec::IntoIter<U> {
     }
 }
 
-impl<U: DropWithHeap> DropWithHeap for std::vec::Drain<'_, U> {
+impl<U: DropWithHeap> DropWithHeap for Drain<'_, U> {
     fn drop_with_heap<H: ContainsHeap>(self, heap: &mut H) {
         for value in self {
             value.drop_with_heap(heap);

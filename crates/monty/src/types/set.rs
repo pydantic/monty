@@ -1,4 +1,4 @@
-use std::fmt::Write;
+use std::{fmt::Write, mem};
 
 use ahash::AHashSet;
 use bytemuck::TransparentWrapper;
@@ -127,7 +127,7 @@ impl SetStorage {
         } else {
             // Track memory growth before adding the new entry.
             // Growth unit matches SetStorage::estimate_size which uses size_of::<SetEntry>().
-            vm.heap.track_growth(std::mem::size_of::<SetEntry>())?;
+            vm.heap.track_growth(mem::size_of::<SetEntry>())?;
             let index = self.entries.len();
             self.entries.push(SetEntry { value, hash });
             self.indices.insert_unique(hash, index, |&idx| self.entries[idx].hash);
@@ -487,7 +487,7 @@ impl SetStorage {
 
     /// Estimates the memory size of this storage.
     fn estimate_size(&self) -> usize {
-        std::mem::size_of::<Self>() + self.len() * std::mem::size_of::<SetEntry>()
+        mem::size_of::<Self>() + self.len() * mem::size_of::<SetEntry>()
     }
 }
 
@@ -683,7 +683,7 @@ impl<'h> HeapRead<'h, Set> {
 
         // Track memory growth before adding the new entry.
         // Growth unit matches SetStorage::estimate_size which uses size_of::<SetEntry>().
-        vm.heap.track_growth(std::mem::size_of::<SetEntry>())?;
+        vm.heap.track_growth(mem::size_of::<SetEntry>())?;
 
         // Add new entry
         let storage = &mut self.get_mut(vm.heap).0;

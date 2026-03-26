@@ -12,7 +12,7 @@
 //! * 1000 to count(StaticStrings) - strings StaticStrings
 //! * 10_000+ - strings interned per executor
 
-use std::{str::FromStr, sync::LazyLock};
+use std::{array, str::FromStr, sync::LazyLock};
 
 use ahash::AHashMap;
 use num_bigint::BigInt;
@@ -59,7 +59,7 @@ const INTERN_STRING_ID_OFFSET: usize = 10_000;
 /// Uses `LazyLock` to build the array at runtime (once), leaking the strings to get
 /// `'static` lifetime. The leak is intentional and bounded (128 single-byte strings).
 static ASCII_STRS: LazyLock<[&'static str; 128]> = LazyLock::new(|| {
-    std::array::from_fn(|i| {
+    array::from_fn(|i| {
         // Safe: i is always 0-127 for a 128-element array
         let s = char::from(u8::try_from(i).expect("index out of u8 range")).to_string();
         // Leak to get 'static lifetime - this is intentional and bounded (128 bytes total)

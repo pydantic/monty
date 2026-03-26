@@ -1071,7 +1071,7 @@ fn assert_timeout_in_builtin(code: &str, label: &str) {
     let ex = MontyRun::new(code.to_owned(), "test.py", vec![]).unwrap();
 
     let limits = ResourceLimits::new().max_duration(Duration::from_millis(100));
-    let start = std::time::Instant::now();
+    let start = Instant::now();
     let result = ex.run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout);
     let elapsed = start.elapsed();
 

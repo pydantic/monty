@@ -14,8 +14,7 @@
 /// - `count(value)` - Count occurrences
 ///
 /// All tuple methods from Python's builtins are implemented.
-use std::cmp::Ordering;
-use std::fmt::Write;
+use std::{cmp::Ordering, fmt::Write, mem};
 
 use ahash::AHashSet;
 use smallvec::SmallVec;
@@ -145,7 +144,7 @@ impl From<Tuple> for TupleVec {
 pub fn allocate_tuple(
     items: SmallVec<[Value; TUPLE_INLINE_CAPACITY]>,
     heap: &Heap<impl ResourceTracker>,
-) -> Result<Value, crate::resource::ResourceError> {
+) -> Result<Value, ResourceError> {
     if items.is_empty() {
         Ok(heap.get_empty_tuple())
     } else {
@@ -308,7 +307,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Tuple> {
 
 impl HeapItem for Tuple {
     fn py_estimate_size(&self) -> usize {
-        std::mem::size_of::<Self>() + self.items.len() * std::mem::size_of::<Value>()
+        mem::size_of::<Self>() + self.items.len() * mem::size_of::<Value>()
     }
 
     /// Pushes all heap IDs contained in this tuple onto the stack.

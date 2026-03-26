@@ -3,7 +3,7 @@
 //! Provides a range object that supports iteration over a sequence of integers
 //! with configurable start, stop, and step values.
 
-use std::fmt::Write;
+use std::{fmt::Write, mem};
 
 use ahash::AHashSet;
 
@@ -150,7 +150,7 @@ impl Range {
     ///
     /// Returns a new range object representing the sliced view.
     /// The new range has computed start, stop, and step values.
-    fn getitem_slice(&self, slice: &crate::types::Slice, heap: &Heap<impl ResourceTracker>) -> RunResult<Value> {
+    fn getitem_slice(&self, slice: &super::Slice, heap: &Heap<impl ResourceTracker>) -> RunResult<Value> {
         let range_len = self.len();
         let (start, stop, step) = slice
             .indices(range_len)
@@ -281,7 +281,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Range> {
 
 impl HeapItem for Range {
     fn py_estimate_size(&self) -> usize {
-        std::mem::size_of::<Self>()
+        mem::size_of::<Self>()
     }
 
     fn py_dec_ref_ids(&mut self, _stack: &mut Vec<HeapId>) {

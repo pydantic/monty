@@ -1,4 +1,4 @@
-use std::{borrow::Cow, fmt::Write};
+use std::{borrow::Cow, fmt::Write, mem, ops::Deref};
 
 use ahash::AHashSet;
 use num_integer::Integer;
@@ -6,7 +6,7 @@ use num_integer::Integer;
 use crate::{
     ExcType, ResourceTracker,
     args::ArgValues,
-    asyncio::{Coroutine, GatherFuture, GatherItem},
+    asyncio::{CallId, Coroutine, GatherFuture, GatherItem},
     bytecode::{CallResult, VM},
     exception_private::{RunError, RunResult, SimpleException},
     heap::{DropWithHeap, HeapId, HeapItem, HeapReadOutput},
@@ -288,7 +288,7 @@ impl HeapData {
 #[repr(transparent)]
 pub(crate) struct CellValue(pub(crate) Value);
 
-impl std::ops::Deref for CellValue {
+impl Deref for CellValue {
     type Target = Value;
 
     fn deref(&self) -> &Self::Target {
@@ -327,7 +327,7 @@ pub(crate) struct FunctionDefaults {
 
 impl HeapItem for CellValue {
     fn py_estimate_size(&self) -> usize {
-        std::mem::size_of::<Value>()
+        mem::size_of::<Value>()
     }
 
     fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
@@ -337,9 +337,9 @@ impl HeapItem for CellValue {
 
 impl HeapItem for Closure {
     fn py_estimate_size(&self) -> usize {
-        std::mem::size_of::<Self>()
-            + self.cells.len() * std::mem::size_of::<HeapId>()
-            + self.defaults.len() * std::mem::size_of::<Value>()
+        mem::size_of::<Self>()
+            + self.cells.len() * mem::size_of::<HeapId>()
+            + self.defaults.len() * mem::size_of::<Value>()
     }
 
     fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
@@ -354,7 +354,7 @@ impl HeapItem for Closure {
 
 impl HeapItem for FunctionDefaults {
     fn py_estimate_size(&self) -> usize {
-        std::mem::size_of::<Self>() + self.defaults.len() * std::mem::size_of::<Value>()
+        mem::size_of::<Self>() + self.defaults.len() * mem::size_of::<Value>()
     }
 
     fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
@@ -367,7 +367,7 @@ impl HeapItem for FunctionDefaults {
 
 impl HeapItem for SimpleException {
     fn py_estimate_size(&self) -> usize {
-        std::mem::size_of::<Self>() + self.arg().map_or(0, String::len)
+        mem::size_of::<Self>() + self.arg().map_or(0, String::len)
     }
 
     fn py_dec_ref_ids(&mut self, _stack: &mut Vec<HeapId>) {
@@ -387,7 +387,7 @@ impl HeapItem for LongInt {
 
 impl HeapItem for Coroutine {
     fn py_estimate_size(&self) -> usize {
-        std::mem::size_of::<Self>() + self.namespace.len() * std::mem::size_of::<Value>()
+        mem::size_of::<Self>() + self.namespace.len() * mem::size_of::<Value>()
     }
 
     fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
@@ -400,10 +400,10 @@ impl HeapItem for Coroutine {
 
 impl HeapItem for GatherFuture {
     fn py_estimate_size(&self) -> usize {
-        std::mem::size_of::<Self>()
-            + self.items.len() * std::mem::size_of::<GatherItem>()
-            + self.results.len() * std::mem::size_of::<Option<Value>>()
-            + self.pending_calls.len() * std::mem::size_of::<crate::asyncio::CallId>()
+        mem::size_of::<Self>()
+            + self.items.len() * mem::size_of::<GatherItem>()
+            + self.results.len() * mem::size_of::<Option<Value>>()
+            + self.pending_calls.len() * mem::size_of::<CallId>()
     }
 
     fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {

@@ -119,7 +119,7 @@ impl ModuleFunctions {
     }
 
     /// Writes the Python repr() string for this function to a formatter.
-    pub fn py_repr_fmt<W: Write>(self, f: &mut W, py_id: usize) -> std::fmt::Result {
+    pub fn py_repr_fmt<W: Write>(self, f: &mut W, py_id: usize) -> fmt::Result {
         write!(f, "<function {self} at 0x{py_id:x}>")
     }
 }

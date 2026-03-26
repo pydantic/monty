@@ -4,6 +4,8 @@
 //! functions for executing function calls. The main entry points are the `exec_*`
 //! methods which are called from the VM's main dispatch loop.
 
+use std::mem;
+
 use super::{CallFrame, VM};
 use crate::{
     args::{ArgValues, KwargsValues},
@@ -702,7 +704,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
         let locals_count = u16::try_from(namespace_size).expect("function namespace size exceeds u16");
 
         // Track memory for this frame's locals
-        let size = namespace_size * std::mem::size_of::<Value>();
+        let size = namespace_size * mem::size_of::<Value>();
         self.heap.tracker_mut().on_allocate(|| size)?;
 
         // 1. Create namespace for the frame in a temporary vec, will extend to stack later

@@ -22,14 +22,16 @@
 //!
 //! `pi`, `e`, `tau`, `inf`, `nan`
 
+use std::f64::consts;
+
 use num_bigint::BigInt;
 use smallvec::smallvec;
 
 use crate::{
-    args::ArgValues,
+    args::{ArgValues, KwargsValues},
     bytecode::VM,
     defer_drop, defer_drop_mut,
-    exception_private::{ExcType, RunResult, SimpleException},
+    exception_private::{ExcType, RunError, RunResult, SimpleException},
     heap::{Heap, HeapData, HeapId},
     intern::StaticStrings,
     modules::ModuleFunctions,
@@ -43,12 +45,12 @@ use crate::{
 // ==========================
 
 /// Returns a `ValueError` with the standard CPython "math domain error" message.
-fn math_domain_error() -> crate::exception_private::RunError {
+fn math_domain_error() -> RunError {
     SimpleException::new_msg(ExcType::ValueError, "math domain error").into()
 }
 
 /// Returns an `OverflowError` with the standard CPython "math range error" message.
-fn math_range_error() -> crate::exception_private::RunError {
+fn math_range_error() -> RunError {
     SimpleException::new_msg(ExcType::OverflowError, "math range error").into()
 }
 
@@ -188,9 +190,9 @@ pub fn create_module(vm: &mut VM<'_, '_, impl ResourceTracker>) -> Result<HeapId
     }
 
     // Constants
-    module.set_attr(StaticStrings::Pi, Value::Float(std::f64::consts::PI), vm);
-    module.set_attr(StaticStrings::MathE, Value::Float(std::f64::consts::E), vm);
-    module.set_attr(StaticStrings::Tau, Value::Float(std::f64::consts::TAU), vm);
+    module.set_attr(StaticStrings::Pi, Value::Float(consts::PI), vm);
+    module.set_attr(StaticStrings::MathE, Value::Float(consts::E), vm);
+    module.set_attr(StaticStrings::Tau, Value::Float(consts::TAU), vm);
     module.set_attr(StaticStrings::MathInf, Value::Float(f64::INFINITY), vm);
     module.set_attr(StaticStrings::MathNan, Value::Float(f64::NAN), vm);
 
@@ -727,10 +729,7 @@ fn math_isclose(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> R
 /// Extracts `rel_tol` and `abs_tol` keyword arguments for `math.isclose`.
 ///
 /// Returns `(rel_tol, abs_tol)` with defaults of `(1e-9, 0.0)`.
-fn extract_isclose_kwargs(
-    kwargs: crate::args::KwargsValues,
-    vm: &mut VM<'_, '_, impl ResourceTracker>,
-) -> RunResult<(f64, f64)> {
+fn extract_isclose_kwargs(kwargs: KwargsValues, vm: &mut VM<'_, '_, impl ResourceTracker>) -> RunResult<(f64, f64)> {
     let mut rel_tol: f64 = 1e-9;
     let mut abs_tol: f64 = 0.0;
 

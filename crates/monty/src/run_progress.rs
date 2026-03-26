@@ -8,6 +8,8 @@
 
 use std::mem;
 
+use serde::de::DeserializeOwned;
+
 use crate::{
     ExcType, MontyException,
     asyncio::CallId,
@@ -107,7 +109,7 @@ impl<T: ResourceTracker + serde::Serialize> RunProgress<T> {
     }
 }
 
-impl<T: ResourceTracker + serde::de::DeserializeOwned> RunProgress<T> {
+impl<T: ResourceTracker + DeserializeOwned> RunProgress<T> {
     /// Deserializes execution state from binary format.
     ///
     /// # Errors

@@ -15,7 +15,7 @@
 ///
 /// This type is used for `sys.version_info` and similar structured tuples where
 /// named access improves usability and readability.
-use std::fmt::Write;
+use std::{fmt::Write, mem};
 
 use ahash::AHashSet;
 
@@ -277,10 +277,10 @@ impl<'h> PyTrait<'h> for HeapRead<'h, NamedTuple> {
 
 impl HeapItem for NamedTuple {
     fn py_estimate_size(&self) -> usize {
-        std::mem::size_of::<Self>()
+        mem::size_of::<Self>()
             + self.name.py_estimate_size()
-            + self.field_names.len() * std::mem::size_of::<StringId>()
-            + self.items.len() * std::mem::size_of::<Value>()
+            + self.field_names.len() * mem::size_of::<StringId>()
+            + self.items.len() * mem::size_of::<Value>()
     }
 
     /// Pushes all heap IDs contained in this named tuple onto the stack.

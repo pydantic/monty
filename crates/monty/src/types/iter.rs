@@ -14,6 +14,8 @@
 //!
 //! The `iterator_next()` helper implements the `next()` builtin.
 
+use std::mem;
+
 use crate::{
     args::ArgValues,
     bytecode::VM,
@@ -369,7 +371,7 @@ fn get_heap_item(
                 return Err(ExcType::runtime_error_dict_changed_size());
             }
             let (key, value) = dict.item_at(index).expect("index should be valid");
-            Ok(Some(crate::types::allocate_tuple(
+            Ok(Some(super::allocate_tuple(
                 smallvec::smallvec![key.clone_with_heap(vm), value.clone_with_heap(vm)],
                 vm.heap,
             )?))
@@ -619,7 +621,7 @@ impl DropWithHeap for MontyIter {
 
 impl HeapItem for MontyIter {
     fn py_estimate_size(&self) -> usize {
-        std::mem::size_of::<Self>()
+        mem::size_of::<Self>()
     }
 
     fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {

@@ -1,4 +1,4 @@
-use std::vec::IntoIter;
+use std::{mem, slice, vec::IntoIter};
 
 use crate::{
     MontyObject, ResourceTracker,
@@ -380,7 +380,7 @@ impl ArgPosIter {
     pub fn as_slice(&self) -> &[Value] {
         match self {
             Self::Empty => &[],
-            Self::One(v) => std::slice::from_ref(v),
+            Self::One(v) => slice::from_ref(v),
             Self::Two(array) => array.as_slice(),
             Self::Vec(iter) => iter.as_slice(),
         }
@@ -395,13 +395,13 @@ impl Iterator for ArgPosIter {
         match self {
             Self::Empty => None,
             Self::One(_) => {
-                let Self::One(v) = std::mem::replace(self, Self::Empty) else {
+                let Self::One(v) = mem::replace(self, Self::Empty) else {
                     unreachable!()
                 };
                 Some(v)
             }
             Self::Two(_) => {
-                let Self::Two([v1, v2]) = std::mem::replace(self, Self::Empty) else {
+                let Self::Two([v1, v2]) = mem::replace(self, Self::Empty) else {
                     unreachable!()
                 };
                 *self = Self::One(v2);
@@ -757,7 +757,7 @@ impl ArgExprs {
         mut f: impl FnMut(ExprLoc) -> Result<ExprLoc, ParseError>,
     ) -> Result<(), ParseError> {
         // Swap self with Empty to take ownership, then rebuild
-        let taken = std::mem::replace(self, Self::Empty);
+        let taken = mem::replace(self, Self::Empty);
         *self = match taken {
             Self::Empty => Self::Empty,
             Self::One(arg) => Self::One(f(arg)?),

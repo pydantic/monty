@@ -7,7 +7,7 @@ use crate::{
     heap::{HeapData, HeapGuard, HeapReadOutput},
     resource::ResourceTracker,
     types::{PyTrait, Set, dict_view::collect_iterable_to_set, set::SetBinaryOp},
-    value::BitwiseOp,
+    value::{BitwiseOp, Value},
 };
 
 impl<T: ResourceTracker> VM<'_, '_, T> {
@@ -366,12 +366,12 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
     /// caller should continue with ordinary numeric or pure-set dispatch.
     fn binary_dict_view_op(
         &mut self,
-        lhs: &crate::value::Value,
-        rhs: &crate::value::Value,
+        lhs: &Value,
+        rhs: &Value,
         op: DictViewBinaryOp,
-    ) -> Result<Option<crate::value::Value>, RunError> {
+    ) -> Result<Option<Value>, RunError> {
         let this = self;
-        let crate::value::Value::Ref(lhs_id) = lhs else {
+        let Value::Ref(lhs_id) = lhs else {
             return Ok(None);
         };
 
@@ -388,21 +388,16 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
         let result = apply_dict_view_binary_op(lhs_set, rhs_set, op, this)?;
 
         let result_id = this.heap.allocate(HeapData::Set(result))?;
-        Ok(Some(crate::value::Value::Ref(result_id)))
+        Ok(Some(Value::Ref(result_id)))
     }
 
     /// Implements pure set/frozenset binary operators with strict operand checks.
     ///
     /// Method forms accept arbitrary iterables, but the operator forms handled here
     /// must reject non-set operands so Monty matches CPython's `TypeError` behavior.
-    fn binary_set_op(
-        &mut self,
-        lhs: &crate::value::Value,
-        rhs: &crate::value::Value,
-        op: SetBinaryOp,
-    ) -> Result<Option<crate::value::Value>, RunError> {
+    fn binary_set_op(&mut self, lhs: &Value, rhs: &Value, op: SetBinaryOp) -> Result<Option<Value>, RunError> {
         let this = self;
-        let crate::value::Value::Ref(lhs_id) = lhs else {
+        let Value::Ref(lhs_id) = lhs else {
             return Ok(None);
         };
 
@@ -417,7 +412,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
             return Ok(None);
         };
         let result_id = this.heap.allocate(result)?;
-        Ok(Some(crate::value::Value::Ref(result_id)))
+        Ok(Some(Value::Ref(result_id)))
     }
 }
 

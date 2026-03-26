@@ -1,4 +1,4 @@
-use std::fmt::Write;
+use std::{fmt::Write, mem};
 
 use ahash::AHashSet;
 use smallvec::SmallVec;
@@ -191,7 +191,7 @@ impl<'h> HeapRead<'h, List> {
     /// Handles slice-based indexing for lists.
     ///
     /// Returns a new list containing the selected elements.
-    fn getitem_slice(&self, slice: &crate::types::Slice, vm: &VM<'h, '_, impl ResourceTracker>) -> RunResult<Value> {
+    fn getitem_slice(&self, slice: &super::Slice, vm: &VM<'h, '_, impl ResourceTracker>) -> RunResult<Value> {
         let (start, stop, step) = slice
             .indices(self.get(vm.heap).items.len())
             .map_err(|()| ExcType::value_error_slice_step_zero())?;
@@ -301,7 +301,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, List> {
         }
 
         // Replace value (old one dropped by defer_drop_mut guard)
-        std::mem::swap(&mut self.get_mut(vm.heap).items[idx], value);
+        mem::swap(&mut self.get_mut(vm.heap).items[idx], value);
 
         Ok(())
     }
@@ -414,7 +414,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, List> {
 
 impl HeapItem for List {
     fn py_estimate_size(&self) -> usize {
-        std::mem::size_of::<Self>() + self.items.len() * VALUE_SIZE
+        mem::size_of::<Self>() + self.items.len() * VALUE_SIZE
     }
 
     fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
@@ -591,7 +591,7 @@ fn list_remove<'h>(
 ///
 /// Removes all items from the list.
 fn list_clear<'h>(list: &mut HeapRead<'h, List>, vm: &mut VM<'h, '_, impl ResourceTracker>) {
-    std::mem::take(&mut list.get_mut(vm.heap).items).drop_with_heap(vm);
+    mem::take(&mut list.get_mut(vm.heap).items).drop_with_heap(vm);
     // Note: contains_refs stays true even if all refs removed, per conservative GC strategy
 }
 

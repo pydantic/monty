@@ -3,7 +3,7 @@
 //! Provides a slice object representing start:stop:step indices for sequence slicing.
 //! Each field is optional (None in Python), where None means "use the default for that field".
 
-use std::fmt::Write;
+use std::{fmt, fmt::Write, mem};
 
 use ahash::AHashSet;
 
@@ -237,7 +237,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Slice> {
 
 impl HeapItem for Slice {
     fn py_estimate_size(&self) -> usize {
-        std::mem::size_of::<Self>()
+        mem::size_of::<Self>()
     }
 
     fn py_dec_ref_ids(&mut self, _stack: &mut Vec<HeapId>) {
@@ -254,7 +254,7 @@ pub(crate) fn option_i64_to_value(opt: Option<i64>) -> Value {
 }
 
 /// Formats an Option<i64> for repr output (None or the integer).
-fn format_option_i64(f: &mut impl Write, value: Option<i64>) -> std::fmt::Result {
+fn format_option_i64(f: &mut impl Write, value: Option<i64>) -> fmt::Result {
     match value {
         Some(i) => write!(f, "{i}"),
         None => f.write_str("None"),

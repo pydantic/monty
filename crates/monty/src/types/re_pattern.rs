@@ -9,11 +9,11 @@
 //! Custom serde serializes only the pattern string and flags, recompiling the regex
 //! on deserialization. This supports Monty's snapshot/restore feature.
 
-use std::{borrow::Cow, fmt::Write};
+use std::{borrow::Cow, fmt::Write, iter, mem, str};
 
 use ahash::AHashSet;
 use fancy_regex::Regex;
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 use smallvec::SmallVec;
 
 use crate::{
@@ -372,7 +372,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, RePattern> {
 
 impl HeapItem for RePattern {
     fn py_estimate_size(&self) -> usize {
-        std::mem::size_of::<Self>() + self.pattern.len()
+        mem::size_of::<Self>() + self.pattern.len()
     }
 
     fn py_dec_ref_ids(&mut self, _stack: &mut Vec<HeapId>) {
@@ -661,7 +661,7 @@ fn translate_replacement(repl: &str) -> Cow<'_, str> {
 /// Called after `\g` has been consumed. Reads `<name_or_number>` from the iterator
 /// and writes `${name_or_number}` to the result. If the syntax is malformed
 /// (missing `<` or `>`), the literal characters are written through unchanged.
-fn translate_g_backref(chars: &mut std::iter::Peekable<std::str::Chars<'_>>, result: &mut String) {
+fn translate_g_backref(chars: &mut iter::Peekable<str::Chars<'_>>, result: &mut String) {
     if chars.peek() != Some(&'<') {
         // Not \g<...>, just literal \g
         result.push('\\');
@@ -718,6 +718,6 @@ impl Serialize for RePattern {
 impl<'de> Deserialize<'de> for RePattern {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let (pattern, flags): (String, u16) = Deserialize::deserialize(deserializer)?;
-        Self::compile(pattern, flags).map_err(|e| serde::de::Error::custom(format!("{e:?}")))
+        Self::compile(pattern, flags).map_err(|e| de::Error::custom(format!("{e:?}")))
     }
 }

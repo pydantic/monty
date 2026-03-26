@@ -3,9 +3,10 @@ use std::{
     collections::{HashMap, HashSet},
     error::Error,
     ffi::CString,
-    fs,
+    fmt, fs,
     panic::{self, AssertUnwindSafe},
     path::Path,
+    str,
     sync::{
         OnceLock,
         mpsc::{self, RecvTimeoutError},
@@ -846,7 +847,7 @@ fn dispatch_os_call(
         }
         OsFunction::ReadText => {
             if let Some(file) = get_virtual_file(&path) {
-                match std::str::from_utf8(&file.content) {
+                match str::from_utf8(&file.content) {
                     Ok(text) => MontyObject::String(text.to_owned()).into(),
                     Err(_) => MontyException::new(
                         ExcType::UnicodeDecodeError,
@@ -967,7 +968,7 @@ fn dispatch_os_call(
             }
 
             // Check parent directory
-            let parent = std::path::Path::new(&path)
+            let parent = Path::new(&path)
                 .parent()
                 .map(|p| p.to_string_lossy().to_string())
                 .unwrap_or_default();
@@ -1115,7 +1116,7 @@ fn create_parent_dirs(path: &str) {
         return;
     }
     // Create parent first
-    if let Some(parent) = std::path::Path::new(path).parent() {
+    if let Some(parent) = Path::new(path).parent() {
         let parent_str = parent.to_string_lossy().to_string();
         if !parent_str.is_empty() {
             create_parent_dirs(&parent_str);
@@ -1137,8 +1138,8 @@ struct TestFailure {
     actual: String,
 }
 
-impl std::fmt::Display for TestFailure {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Display for TestFailure {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         writeln!(
             f,
             "[{}] {} mismatch\ngot {:?}\ndiff:",

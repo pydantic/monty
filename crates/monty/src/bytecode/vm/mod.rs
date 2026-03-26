@@ -13,7 +13,7 @@ mod exceptions;
 mod format;
 mod scheduler;
 
-use std::cmp::Ordering;
+use std::{cmp::Ordering, mem};
 
 pub(crate) use call::CallResult;
 use scheduler::Scheduler;
@@ -22,7 +22,10 @@ use crate::{
     MontyObject,
     args::ArgValues,
     asyncio::{CallId, TaskId},
-    bytecode::{code::Code, op::Opcode},
+    bytecode::{
+        code::{Code, LocationEntry},
+        op::Opcode,
+    },
     exception_private::{ExcType, RunError, RunResult, SimpleException},
     heap::{ContainsHeap, DropWithHeap, Heap, HeapData, HeapGuard, HeapId, HeapReadOutput, HeapReader},
     heap_data::{Closure, FunctionDefaults},
@@ -724,7 +727,7 @@ impl<'h, 'a, T: ResourceTracker> VM<'h, 'a, T> {
     /// Used by the REPL to reclaim globals after VM execution completes,
     /// before calling `cleanup()` (which would destroy them in ref-count-panic mode).
     pub fn take_globals(&mut self) -> Vec<Value> {
-        std::mem::take(&mut self.globals)
+        mem::take(&mut self.globals)
     }
 
     /// Allocates a new `CallId` for an external function call.
@@ -1684,7 +1687,7 @@ impl<'h, 'a, T: ResourceTracker> VM<'h, 'a, T> {
 
         // Track freed memory for locals
         if frame.locals_count > 0 {
-            let size = frame.locals_count as usize * std::mem::size_of::<Value>();
+            let size = frame.locals_count as usize * mem::size_of::<Value>();
             self.heap.tracker_mut().on_free(|| size);
         }
     }
@@ -1725,7 +1728,7 @@ impl<'h, 'a, T: ResourceTracker> VM<'h, 'a, T> {
         frame
             .code
             .location_for_offset(self.instruction_ip)
-            .map(crate::bytecode::code::LocationEntry::range)
+            .map(LocationEntry::range)
             .unwrap_or_default()
     }
 
@@ -1821,14 +1824,14 @@ impl<'h, 'a, T: ResourceTracker> VM<'h, 'a, T> {
     fn store_local(&mut self, cached_frame: &CachedFrame<'a>, slot: u16) {
         let value = self.pop();
         let target = &mut self.stack[cached_frame.stack_base + slot as usize];
-        let old_value = std::mem::replace(target, value);
+        let old_value = mem::replace(target, value);
         old_value.drop_with_heap(self);
     }
 
     /// Deletes a local variable (sets it to Undefined).
     fn delete_local(&mut self, cached_frame: &CachedFrame<'a>, slot: u16) {
         let target = &mut self.stack[cached_frame.stack_base + slot as usize];
-        let old_value = std::mem::replace(target, Value::Undefined);
+        let old_value = mem::replace(target, Value::Undefined);
         old_value.drop_with_heap(self);
     }
 
@@ -1869,13 +1872,13 @@ impl<'h, 'a, T: ResourceTracker> VM<'h, 'a, T> {
     /// Pops the top of stack and stores it in a global variable.
     fn store_global(&mut self, slot: u16) {
         let value = self.pop();
-        let old_value = std::mem::replace(&mut self.globals[slot as usize], value);
+        let old_value = mem::replace(&mut self.globals[slot as usize], value);
         old_value.drop_with_heap(self);
     }
 
     /// Deletes a global variable (sets it to Undefined).
     fn delete_global(&mut self, slot: u16) {
-        let old_value = std::mem::replace(&mut self.globals[slot as usize], Value::Undefined);
+        let old_value = mem::replace(&mut self.globals[slot as usize], Value::Undefined);
         old_value.drop_with_heap(self);
     }
 
@@ -1934,7 +1937,7 @@ impl<'h, 'a, T: ResourceTracker> VM<'h, 'a, T> {
         let HeapReadOutput::Cell(mut cell) = this.heap.read(cell_id) else {
             panic!("StoreCell: entry is not a Cell")
         };
-        std::mem::swap(&mut cell.get_mut(this.heap).0, value);
+        mem::swap(&mut cell.get_mut(this.heap).0, value);
     }
 }
 

@@ -2,8 +2,7 @@
 ///
 /// This type provides Python string semantics. Currently supports basic
 /// operations like length and equality comparison.
-use std::{borrow::Cow, fmt};
-use std::{cmp::Ordering, fmt::Write};
+use std::{borrow::Cow, cmp::Ordering, fmt, fmt::Write, mem, ops};
 
 use ahash::AHashSet;
 use smallvec::smallvec;
@@ -60,7 +59,7 @@ impl Str {
     /// Handles slice-based indexing for strings.
     ///
     /// Returns a new string containing the selected characters (Unicode-aware).
-    fn getitem_slice(&self, slice: &crate::types::Slice, heap: &Heap<impl ResourceTracker>) -> RunResult<Value> {
+    fn getitem_slice(&self, slice: &super::Slice, heap: &Heap<impl ResourceTracker>) -> RunResult<Value> {
         let char_count = self.0.chars().count();
         let (start, stop, step) = slice
             .indices(char_count)
@@ -194,7 +193,7 @@ pub(crate) fn get_str_slice(s: &str, start: usize, stop: usize, step: i64) -> St
     result
 }
 
-impl std::ops::Deref for Str {
+impl ops::Deref for Str {
     type Target = str;
 
     fn deref(&self) -> &Self::Target {
@@ -258,11 +257,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Str> {
         Ok(self.get(vm.heap).0.clone().into_string().into())
     }
 
-    fn py_add(
-        &self,
-        other: &Self,
-        vm: &mut VM<'h, '_, impl ResourceTracker>,
-    ) -> Result<Option<Value>, crate::resource::ResourceError> {
+    fn py_add(&self, other: &Self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> Result<Option<Value>, ResourceError> {
         let self_str = self.get(vm.heap).0.clone();
         let other_str = other.get(vm.heap).0.clone();
         let result = format!("{self_str}{other_str}");
@@ -290,7 +285,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Str> {
 
 impl HeapItem for Str {
     fn py_estimate_size(&self) -> usize {
-        std::mem::size_of::<Self>() + self.0.len()
+        mem::size_of::<Self>() + self.0.len()
     }
 
     fn py_dec_ref_ids(&mut self, _stack: &mut Vec<HeapId>) {
@@ -1388,7 +1383,7 @@ fn str_split<'h>(
         list_items.push(allocate_string(part.to_owned(), vm.heap)?);
     }
 
-    let list = crate::types::List::new(list_items);
+    let list = super::List::new(list_items);
     let heap_id = vm.heap.allocate(HeapData::List(list))?;
     Ok(Value::Ref(heap_id))
 }
@@ -1440,7 +1435,7 @@ fn str_rsplit<'h>(
         list_items.push(allocate_string(part.to_owned(), vm.heap)?);
     }
 
-    let list = crate::types::List::new(list_items);
+    let list = super::List::new(list_items);
     let heap_id = vm.heap.allocate(HeapData::List(list))?;
     Ok(Value::Ref(heap_id))
 }
@@ -1633,7 +1628,7 @@ fn str_splitlines<'h>(
         start = end;
     }
 
-    let list = crate::types::List::new(lines);
+    let list = super::List::new(lines);
     let heap_id = vm.heap.allocate(HeapData::List(list))?;
     Ok(Value::Ref(heap_id))
 }
@@ -1690,7 +1685,7 @@ fn str_partition<'h>(
     let sep_val = allocate_string(sep_found.to_owned(), vm.heap)?;
     let after_val = allocate_string(after.to_owned(), vm.heap)?;
 
-    Ok(crate::types::allocate_tuple(
+    Ok(super::allocate_tuple(
         smallvec![before_val, sep_val, after_val],
         vm.heap,
     )?)
@@ -1723,7 +1718,7 @@ fn str_rpartition<'h>(
     let sep_val = allocate_string(sep_found.to_owned(), vm.heap)?;
     let after_val = allocate_string(after.to_owned(), vm.heap)?;
 
-    Ok(crate::types::allocate_tuple(
+    Ok(super::allocate_tuple(
         smallvec![before_val, sep_val, after_val],
         vm.heap,
     )?)

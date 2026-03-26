@@ -1,5 +1,7 @@
 //! Python module type for representing imported modules.
 
+use std::mem;
+
 use crate::{
     args::ArgValues,
     bytecode::{CallResult, VM},
@@ -138,7 +140,7 @@ impl<'h> HeapRead<'h, Module> {
 
 impl HeapItem for Module {
     fn py_estimate_size(&self) -> usize {
-        std::mem::size_of::<Self>() + self.attrs.py_estimate_size()
+        mem::size_of::<Self>() + self.attrs.py_estimate_size()
     }
 
     fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {

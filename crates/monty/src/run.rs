@@ -173,6 +173,7 @@ pub(crate) struct Executor {
     pub(crate) namespace_size: usize,
     /// Maps variable names to their indices in the namespace. Used for ref-count testing.
     #[cfg(feature = "ref-count-return")]
+    #[expect(clippy::absolute_paths)]
     name_map: ahash::AHashMap<String, crate::namespace::NamespaceId>,
     /// Compiled bytecode for the module.
     pub(crate) module_code: Code,

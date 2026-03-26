@@ -1,11 +1,12 @@
 use std::{
     cell::{Cell, UnsafeCell},
     collections::hash_map::DefaultHasher,
+    fmt,
     hash::{Hash, Hasher},
     marker::PhantomData,
-    mem::{ManuallyDrop, discriminant, size_of},
+    mem::{self, ManuallyDrop, discriminant, size_of},
     ops::{Deref, DerefMut},
-    ptr::NonNull,
+    ptr::{self, NonNull},
     vec,
 };
 
@@ -142,7 +143,7 @@ impl<'a, T: ResourceTracker> HeapReader<'a, T> {
         #[inline]
         fn heap_read<'a, T>(base: *mut HeapData, field: &T, readers: NonNull<Cell<usize>>) -> HeapRead<'a, T> {
             let base_addr = base as usize;
-            let field_addr = std::ptr::from_ref(field) as usize;
+            let field_addr = ptr::from_ref(field) as usize;
             let offset = field_addr - base_addr;
             HeapRead {
                 // SAFETY: The pointer is derived from the UnsafeCell's `*mut` via byte
@@ -173,7 +174,7 @@ impl<'a, T: ResourceTracker> HeapReader<'a, T> {
                 // won't be deallocated. We cast away the shared reference to get a mutable
                 // pointer — this is sound because all mutation goes through `get_mut` which
                 // requires `&mut HeapReader`, ensuring exclusive access.
-                value: unsafe { NonNull::new_unchecked(std::ptr::from_ref(boxed.as_ref()).cast_mut()) },
+                value: unsafe { NonNull::new_unchecked(ptr::from_ref(boxed.as_ref()).cast_mut()) },
                 readers,
                 borrow: PhantomData,
             }
@@ -272,7 +273,7 @@ impl<T: ResourceTracker> ContainsHeap for HeapReader<'_, T> {
     }
 }
 
-impl<T: ResourceTracker> std::ops::Deref for HeapReader<'_, T> {
+impl<T: ResourceTracker> Deref for HeapReader<'_, T> {
     type Target = Heap<T>;
 
     fn deref(&self) -> &Self::Target {
@@ -280,7 +281,7 @@ impl<T: ResourceTracker> std::ops::Deref for HeapReader<'_, T> {
     }
 }
 
-impl<T: ResourceTracker> std::ops::DerefMut for HeapReader<'_, T> {
+impl<T: ResourceTracker> DerefMut for HeapReader<'_, T> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         self.heap
     }
@@ -587,8 +588,8 @@ pub struct HeapValue {
 ///     borrow on the heap.)
 struct UnsafeHeapData(UnsafeCell<HeapData>);
 
-impl std::fmt::Debug for UnsafeHeapData {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Debug for UnsafeHeapData {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         // SAFETY: (DH) Debug formatting is read-only and never called concurrently
         // with mutation. This matches the safety invariants of the HeapReader API.
         let data = unsafe { &*self.0.get() };
@@ -1291,7 +1292,7 @@ fn compute_hash_from_read<'h>(
 ) -> Result<Option<u64>, ResourceError> {
     /// Helper to get the `HeapData` discriminant for mixing into hashes.
     /// Uses a short-lived borrow on the reader.
-    fn heap_disc<T: ResourceTracker>(reader: &HeapReader<'_, T>, id: HeapId) -> std::mem::Discriminant<HeapData> {
+    fn heap_disc<T: ResourceTracker>(reader: &HeapReader<'_, T>, id: HeapId) -> mem::Discriminant<HeapData> {
         discriminant(reader.get(id))
     }
 

@@ -1,5 +1,6 @@
 use std::{
     cell::Cell,
+    error::Error,
     fmt,
     time::{Duration, Instant},
 };
@@ -175,7 +176,7 @@ impl fmt::Display for ResourceError {
     }
 }
 
-impl std::error::Error for ResourceError {}
+impl Error for ResourceError {}
 
 impl ResourceError {
     /// Converts this resource error to a Python exception with optional stack frame.

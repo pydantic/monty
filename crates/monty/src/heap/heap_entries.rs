@@ -1,5 +1,6 @@
 use std::{
     cell::{Cell, UnsafeCell},
+    fmt,
     mem::MaybeUninit,
 };
 
@@ -61,8 +62,8 @@ pub(crate) struct HeapEntries {
     free_list: UnsafeCell<Vec<HeapId>>,
 }
 
-impl std::fmt::Debug for HeapEntries {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Debug for HeapEntries {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_list()
             // SAFETY: (DH) debug formatting never calls `.allocate()`
             .entries(unsafe { HeapEntriesIter::new(self) })
@@ -344,6 +345,8 @@ mod iter {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashSet;
+
     use super::*;
     use crate::heap::{HashState, HeapData, UnsafeHeapData};
 
@@ -505,7 +508,7 @@ mod tests {
         let r3 = entries.allocate(dummy("new-3"));
 
         // The reused IDs should be the ones that were freed.
-        let reused: std::collections::HashSet<usize> = [r1, r2, r3].iter().map(|id| id.index()).collect();
+        let reused: HashSet<usize> = [r1, r2, r3].iter().map(|id| id.index()).collect();
         assert!(reused.contains(&1) || reused.contains(&3) || reused.contains(&5));
         assert_eq!(reused.len(), 3);
 

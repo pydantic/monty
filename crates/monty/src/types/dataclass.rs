@@ -1,6 +1,7 @@
 use std::{
     fmt::Write,
     hash::{DefaultHasher, Hash, Hasher},
+    mem,
 };
 
 use ahash::AHashSet;
@@ -316,7 +317,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Dataclass> {
 
 impl HeapItem for Dataclass {
     fn py_estimate_size(&self) -> usize {
-        std::mem::size_of::<Self>()
+        mem::size_of::<Self>()
             + self.name.py_estimate_size()
             + self.field_names.iter().map(String::len).sum::<usize>()
             + self.attrs.py_estimate_size()
