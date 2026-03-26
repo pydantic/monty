@@ -537,7 +537,13 @@ impl NdArray {
         self.data
             .iter()
             .enumerate()
-            .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(Ordering::Equal))
+            .reduce(|(i_max, v_max), (i, v)| {
+                if v.partial_cmp(v_max).unwrap_or(Ordering::Equal) == Ordering::Greater {
+                    (i, v)
+                } else {
+                    (i_max, v_max)
+                }
+            })
             .map(|(i, _)| i)
             .ok_or_else(|| {
                 SimpleException::new_msg(ExcType::ValueError, "attempt to get argmax of an empty sequence").into()
@@ -760,7 +766,8 @@ impl NdArray {
                     NdArrayDtype::Int64 => write!(f, "{}", val as i64)?,
                     NdArrayDtype::Float64 => {
                         if val.fract() == 0.0 && val.is_finite() {
-                            write!(f, "{val:.1}")?;
+                            // NumPy displays whole floats as "1." not "1.0"
+                            write!(f, "{val:.0}.")?;
                         } else {
                             write!(f, "{val}")?;
                         }
@@ -799,7 +806,9 @@ impl<'h> PyTrait<'h> for HeapRead<'h, NdArray> {
     }
 
     fn py_len(&self, vm: &VM<'h, '_, impl ResourceTracker>) -> Option<usize> {
-        Some(self.get(vm.heap).len())
+        // NumPy's len() returns the size of the first dimension, not total elements.
+        let arr = self.get(vm.heap);
+        Some(arr.shape().first().copied().unwrap_or(0))
     }
 
     fn py_eq(&self, other: &Self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> Result<bool, ResourceError> {
@@ -860,7 +869,15 @@ impl<'h> PyTrait<'h> for HeapRead<'h, NdArray> {
             #[expect(clippy::cast_possible_wrap, reason = "ndim is always small")]
             Some(StaticStrings::NpNdim) => Value::Int(arr.ndim() as i64),
             Some(StaticStrings::NpT) => arr.transpose(vm.heap)?,
-            _ => return Err(ExcType::attribute_error(Type::NdArray, attr.as_str(vm.interns))),
+            _ => {
+                // "T" is a single ASCII character so it is interned as an ASCII StringId,
+                // not as a StaticStrings variant — handle it in the fallback arm.
+                if attr.as_str(vm.interns) == "T" {
+                    arr.transpose(vm.heap)?
+                } else {
+                    return Err(ExcType::attribute_error(Type::NdArray, attr.as_str(vm.interns)));
+                }
+            }
         };
         Ok(Some(CallResult::Value(result)))
     }
