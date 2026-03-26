@@ -1,4 +1,5 @@
 import asyncio
+import datetime
 import os
 import re
 import sys
@@ -473,3 +474,114 @@ assert_type(s7, str)
 # Pattern.findall returns list of Any
 fa2 = p_re2.findall('hello world')
 assert_type(fa2, list[Any])
+
+
+# === datetime module ===
+
+# date construction
+dt_date = datetime.date(2024, 1, 15)
+assert_type(dt_date, datetime.date)
+
+# date properties
+check_int(dt_date.year)
+check_int(dt_date.month)
+check_int(dt_date.day)
+
+# date methods
+check_str(dt_date.isoformat())
+check_str(dt_date.strftime('%Y-%m-%d'))
+check_int(dt_date.weekday())
+check_int(dt_date.isoweekday())
+check_int(dt_date.toordinal())
+check_str(dt_date.ctime())
+
+# date classmethods (return Unknown due to type checker limitations)
+datetime.date.today()
+datetime.date.fromisoformat('2024-01-15')
+datetime.date.fromordinal(738900)
+
+# date replace
+dt_replaced = dt_date.replace(year=2025)
+assert_type(dt_replaced, datetime.date)
+
+# date arithmetic
+dt_delta = datetime.timedelta(days=1)
+dt_date2 = dt_date + dt_delta
+assert_type(dt_date2, datetime.date)
+dt_diff = dt_date - dt_date
+assert_type(dt_diff, datetime.timedelta)
+
+# time construction
+dt_time = datetime.time(12, 30, 45)
+assert_type(dt_time, datetime.time)
+
+# time properties
+check_int(dt_time.hour)
+check_int(dt_time.minute)
+check_int(dt_time.second)
+check_int(dt_time.microsecond)
+
+# time methods
+check_str(dt_time.isoformat())
+check_str(dt_time.strftime('%H:%M:%S'))
+
+# time replace
+dt_time2 = dt_time.replace(hour=14)
+assert_type(dt_time2, datetime.time)
+
+# timedelta construction
+td = datetime.timedelta(days=5, hours=3, minutes=30)
+assert_type(td, datetime.timedelta)
+
+# timedelta properties
+check_int(td.days)
+check_int(td.seconds)
+check_int(td.microseconds)
+
+# timedelta methods
+check_float(td.total_seconds())
+
+# timedelta arithmetic
+td2 = td + td
+assert_type(td2, datetime.timedelta)
+td3 = td - td
+assert_type(td3, datetime.timedelta)
+td4 = td * 2
+assert_type(td4, datetime.timedelta)
+
+# datetime construction
+dt = datetime.datetime(2024, 1, 15, 12, 30, 45)
+assert_type(dt, datetime.datetime)
+
+# datetime properties
+check_int(dt.year)
+check_int(dt.month)
+check_int(dt.day)
+check_int(dt.hour)
+check_int(dt.minute)
+check_int(dt.second)
+check_int(dt.microsecond)
+
+# datetime methods
+check_str(dt.isoformat())
+check_str(dt.strftime('%Y-%m-%d %H:%M:%S'))
+check_float(dt.timestamp())
+dt_d = dt.date()
+assert_type(dt_d, datetime.date)
+dt_t = dt.time()
+assert_type(dt_t, datetime.time)
+
+# datetime classmethods (return Unknown due to type checker limitations)
+datetime.datetime.now()
+datetime.datetime.strptime('2024-01-15', '%Y-%m-%d')
+datetime.datetime.fromtimestamp(1000000.0)
+
+# datetime replace
+dt_rep = dt.replace(year=2025)
+assert_type(dt_rep, datetime.datetime)
+
+# timezone
+utc = datetime.timezone.utc
+assert_type(utc, datetime.timezone)
+tz = datetime.timezone(datetime.timedelta(hours=5))
+assert_type(tz, datetime.timezone)

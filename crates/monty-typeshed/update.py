@@ -120,8 +120,8 @@ COPY_FILES = [
     'pathlib/__init__.pyi',
     'pathlib/types.pyi',
     # ==============================
-    # math module
     'math.pyi',
+    'datetime.pyi',
 ]
 # content for typeshed's `VERSIONS` file
 VERSIONS = """\
@@ -136,6 +136,7 @@ asyncio: 3.4-
 builtins: 3.0-
 collections: 3.0-
 dataclasses: 3.7-
+datetime: 3.0-
 math: 3.0-
 os: 3.0-
 pathlib: 3.4-
@@ -155,35 +156,49 @@ CUSTOM_DIR = CRATE_DIR / 'custom'
 TYPESHED_REPO_DIR = CRATE_DIR / 'typeshed-repo'
 
 TYPESHED_REPO_URL = 'git@github.com:python/typeshed.git'
+COMMIT = '0e16ea31d2e188fdc126cb31e7c4fcc6b5a8da96'
 
 
-def clone_or_update_typeshed() -> str:
-    """Clone or update the typeshed repository and return the path and HEAD commit hash.
+def clone_or_update_typeshed() -> None:
+    """Clone or update the typeshed repository to be at COMMIT.
 
-    If the repository already exists at TYPESHED_REPO_DIR, performs a git pull.
-    Otherwise, clones the repository to that location.
-
-    Returns:
-        commit_hash
+    If the repository already exists at TYPESHED_REPO_DIR, fetches the target
+    commit. Otherwise, clones the repository. In both cases, checks out COMMIT.
     """
     if TYPESHED_REPO_DIR.exists():
-        print(f'{TYPESHED_REPO_DIR} exists, not pulling')
+        # Check if already at the right commit
+        result = subprocess.run(
+            ['git', 'rev-parse', 'HEAD'],
+            cwd=TYPESHED_REPO_DIR,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        if result.stdout.strip() == COMMIT:
+            print(f'{TYPESHED_REPO_DIR} already at {COMMIT}')
+            return
+        print(f'{TYPESHED_REPO_DIR} exists, fetching {COMMIT}...')
+        subprocess.run(
+            ['git', 'fetch', 'origin', COMMIT],
+            cwd=TYPESHED_REPO_DIR,
+            check=True,
+            capture_output=True,
+        )
     else:
         print(f'Cloning typeshed to {TYPESHED_REPO_DIR}...')
         subprocess.run(
-            ['git', 'clone', '--depth=1', TYPESHED_REPO_URL, str(TYPESHED_REPO_DIR)],
+            ['git', 'clone', TYPESHED_REPO_URL, str(TYPESHED_REPO_DIR)],
             check=True,
             capture_output=True,
         )
 
-    result = subprocess.run(
-        ['git', 'rev-parse', 'HEAD'],
+    print(f'Checking out {COMMIT}...')
+    subprocess.run(
+        ['git', 'checkout', COMMIT],
         cwd=TYPESHED_REPO_DIR,
         check=True,
         capture_output=True,
-        text=True,
     )
-    return result.stdout.strip()
 
 
 def filter_statements(nodes: list[ast.stmt]) -> list[ast.stmt]:
@@ -274,8 +289,8 @@ def main() -> int:
         shutil.rmtree(VENDOR_DIR)
 
     # Clone or update typeshed
-    commit = clone_or_update_typeshed()
-    print(f'At python/typeshed commit {commit}')
+    clone_or_update_typeshed()
+    print(f'At python/typeshed commit {COMMIT}')
 
     # Read source file
     src_stdlib = TYPESHED_REPO_DIR / 'stdlib'
@@ -294,7 +309,7 @@ def main() -> int:
     (STDLIB_DIR / 'VERSIONS').write_text(VERSIONS)
     print(f'Wrote {(STDLIB_DIR / "VERSIONS").relative_to(REPO_ROOT)}')
 
-    (VENDOR_DIR / 'source_commit.txt').write_text(commit + '\n')
+    (VENDOR_DIR / 'source_commit.txt').write_text(f'{COMMIT}\n')
     print(f'Wrote {(VENDOR_DIR / "source_commit.txt").relative_to(REPO_ROOT)}')
 
     for file_path in COPY_FILES:

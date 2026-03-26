@@ -122,20 +122,11 @@ result = add(1, '2')
 }
 
 #[test]
-fn missing_stdlib_datetime() {
+fn stdlib_datetime_resolves() {
     let code = "import datetime\nprint(datetime.datetime.now())";
 
     let result = type_check(&SourceFile::new(code, "main.py"), None).unwrap();
-    assert!(result.is_some());
-
-    let failure = result.unwrap().format(DiagnosticFormat::Concise);
-    let error_diagnostics = failure.to_string();
-    assert_eq!(
-        error_diagnostics,
-        "main.py:1:8: error[unresolved-import] Cannot resolve imported module `datetime`\n"
-    );
-    let dbg = format!("{failure:?}");
-    assert!(dbg.starts_with("TypeCheckingDiagnostics:"), "got: {dbg}");
+    assert!(result.is_none(), "Expected no type errors, got: {result:#?}");
 }
 
 /// Test that good_types.py type-checks without errors.
