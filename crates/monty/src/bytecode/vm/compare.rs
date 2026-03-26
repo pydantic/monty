@@ -3,9 +3,10 @@
 use super::VM;
 use crate::{
     defer_drop,
-    exception_private::{ExcType, RunError},
+    exception_private::{ExcType, RunError, RunResult},
+    heap::HeapData,
     resource::ResourceTracker,
-    types::{LongInt, PyTrait},
+    types::{LongInt, NdArray, PyTrait},
     value::Value,
 };
 
@@ -18,6 +19,12 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
         defer_drop!(rhs, this);
         let lhs = this.pop();
         defer_drop!(lhs, this);
+
+        // NdArray fast path: element-wise comparison returning boolean array
+        if let Some(result) = try_ndarray_cmp(lhs, rhs, NdArrayCmpOp::Eq, this)? {
+            this.push(result);
+            return Ok(());
+        }
 
         let result = lhs.py_eq(rhs, this)?;
         this.push(Value::Bool(result));
@@ -33,6 +40,12 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
         let lhs = this.pop();
         defer_drop!(lhs, this);
 
+        // NdArray fast path: element-wise comparison returning boolean array
+        if let Some(result) = try_ndarray_cmp(lhs, rhs, NdArrayCmpOp::Ne, this)? {
+            this.push(result);
+            return Ok(());
+        }
+
         let result = !lhs.py_eq(rhs, this)?;
         this.push(Value::Bool(result));
         Ok(())
@@ -41,7 +54,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
     /// Ordering comparison with a predicate.
     pub(super) fn compare_ord<F>(&mut self, check: F) -> Result<(), RunError>
     where
-        F: FnOnce(std::cmp::Ordering) -> bool,
+        F: Fn(std::cmp::Ordering) -> bool,
     {
         let this = self;
 
@@ -49,6 +62,15 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
         defer_drop!(rhs, this);
         let lhs = this.pop();
         defer_drop!(lhs, this);
+
+        // NdArray fast path: detect ordering comparisons involving ndarrays.
+        // We need to determine the specific comparison from the check predicate by testing it.
+        if let Some(ndarray_op) = ndarray_cmp_from_ord_check(&check)
+            && let Some(result) = try_ndarray_cmp(lhs, rhs, ndarray_op, this)?
+        {
+            this.push(result);
+            return Ok(());
+        }
 
         let result = lhs.py_cmp(rhs, this)?.is_some_and(check);
         this.push(Value::Bool(result));
@@ -144,4 +166,131 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
             }
         }
     }
+}
+
+/// Supported ndarray element-wise comparison operations.
+#[derive(Debug, Clone, Copy)]
+enum NdArrayCmpOp {
+    Eq,
+    Ne,
+    Gt,
+    Lt,
+    Gte,
+    Lte,
+}
+
+/// Extracts a scalar f64 from a `Value`, if it is a numeric type.
+fn value_to_f64(v: &Value) -> Option<f64> {
+    match v {
+        Value::Int(i) => Some(*i as f64),
+        Value::Float(f) => Some(*f),
+        Value::Bool(b) => Some(if *b { 1.0 } else { 0.0 }),
+        _ => None,
+    }
+}
+
+/// Determines the ndarray comparison op from a `compare_ord` predicate.
+///
+/// Tests the predicate with `Less`, `Equal`, and `Greater` to infer which
+/// comparison is being performed (e.g., `<`, `<=`, `>`, `>=`).
+fn ndarray_cmp_from_ord_check(check: &impl Fn(std::cmp::Ordering) -> bool) -> Option<NdArrayCmpOp> {
+    let lt = check(std::cmp::Ordering::Less);
+    let eq = check(std::cmp::Ordering::Equal);
+    let gt = check(std::cmp::Ordering::Greater);
+    match (lt, eq, gt) {
+        (true, false, false) => Some(NdArrayCmpOp::Lt),
+        (true, true, false) => Some(NdArrayCmpOp::Lte),
+        (false, false, true) => Some(NdArrayCmpOp::Gt),
+        (false, true, true) => Some(NdArrayCmpOp::Gte),
+        _ => None,
+    }
+}
+
+/// Dispatches an ndarray comparison between an ndarray and a scalar.
+fn ndarray_scalar_cmp(
+    arr: &NdArray,
+    scalar: f64,
+    op: NdArrayCmpOp,
+    heap: &crate::heap::Heap<impl ResourceTracker>,
+) -> RunResult<Value> {
+    match op {
+        NdArrayCmpOp::Gt => arr.gt_scalar(scalar, heap),
+        NdArrayCmpOp::Lt => arr.lt_scalar(scalar, heap),
+        NdArrayCmpOp::Eq => arr.eq_scalar(scalar, heap),
+        NdArrayCmpOp::Gte => arr.gte_scalar(scalar, heap),
+        NdArrayCmpOp::Lte => arr.lte_scalar(scalar, heap),
+        NdArrayCmpOp::Ne => arr.ne_scalar(scalar, heap),
+    }
+}
+
+/// Dispatches an ndarray comparison between two ndarrays.
+fn ndarray_array_cmp(
+    lhs: &NdArray,
+    rhs: &NdArray,
+    op: NdArrayCmpOp,
+    heap: &crate::heap::Heap<impl ResourceTracker>,
+) -> RunResult<Value> {
+    match op {
+        NdArrayCmpOp::Gt => lhs.gt(rhs, heap),
+        NdArrayCmpOp::Lt => lhs.lt(rhs, heap),
+        NdArrayCmpOp::Eq => lhs.eq_array(rhs, heap),
+        NdArrayCmpOp::Gte => lhs.gte(rhs, heap),
+        NdArrayCmpOp::Lte => lhs.lte(rhs, heap),
+        NdArrayCmpOp::Ne => lhs.ne_array(rhs, heap),
+    }
+}
+
+/// Tries to dispatch an ndarray comparison operation.
+///
+/// Returns `Ok(Some(value))` if either operand is an ndarray, `Ok(None)` if neither is.
+fn try_ndarray_cmp(
+    lhs: &Value,
+    rhs: &Value,
+    op: NdArrayCmpOp,
+    vm: &mut VM<'_, '_, impl ResourceTracker>,
+) -> RunResult<Option<Value>> {
+    let lhs_id = if let Value::Ref(id) = lhs { Some(*id) } else { None };
+    let rhs_id = if let Value::Ref(id) = rhs { Some(*id) } else { None };
+
+    // Case 1: NdArray cmp NdArray
+    if let (Some(lid), Some(rid)) = (lhs_id, rhs_id) {
+        let lhs_is_ndarray = matches!(vm.heap.get(lid), HeapData::NdArray(_));
+        let rhs_is_ndarray = matches!(vm.heap.get(rid), HeapData::NdArray(_));
+        if lhs_is_ndarray && rhs_is_ndarray {
+            let HeapData::NdArray(l) = vm.heap.get(lid) else {
+                unreachable!()
+            };
+            let HeapData::NdArray(r) = vm.heap.get(rid) else {
+                unreachable!()
+            };
+            return ndarray_array_cmp(l, r, op, vm.heap).map(Some);
+        }
+    }
+
+    // Case 2: NdArray cmp scalar
+    if let Some(lid) = lhs_id
+        && let HeapData::NdArray(arr) = vm.heap.get(lid)
+        && let Some(scalar) = value_to_f64(rhs)
+    {
+        return ndarray_scalar_cmp(arr, scalar, op, vm.heap).map(Some);
+    }
+
+    // Case 3: scalar cmp NdArray (reverse the comparison)
+    if let Some(rid) = rhs_id
+        && let HeapData::NdArray(arr) = vm.heap.get(rid)
+        && let Some(scalar) = value_to_f64(lhs)
+    {
+        // Reverse: `5 > arr` becomes `arr < 5`
+        let reversed_op = match op {
+            NdArrayCmpOp::Gt => NdArrayCmpOp::Lt,
+            NdArrayCmpOp::Lt => NdArrayCmpOp::Gt,
+            NdArrayCmpOp::Gte => NdArrayCmpOp::Lte,
+            NdArrayCmpOp::Lte => NdArrayCmpOp::Gte,
+            NdArrayCmpOp::Eq => NdArrayCmpOp::Eq,
+            NdArrayCmpOp::Ne => NdArrayCmpOp::Ne,
+        };
+        return ndarray_scalar_cmp(arr, scalar, reversed_op, vm.heap).map(Some);
+    }
+
+    Ok(None)
 }

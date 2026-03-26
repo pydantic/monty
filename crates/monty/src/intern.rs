@@ -363,6 +363,7 @@ pub enum StaticStrings {
     // math module strings
     Math,
     // Rounding
+    Round,
     Floor,
     Ceil,
     Trunc,
@@ -514,6 +515,102 @@ pub enum StaticStrings {
     Finditer,
     /// `match.groupdict()` method
     Groupdict,
+
+    // ==========================
+    // numpy module strings
+    /// Module name for `import numpy`.
+    Numpy,
+    /// `numpy.array()` function
+    #[strum(serialize = "array")]
+    NpArray,
+    /// `numpy.zeros()` function
+    #[strum(serialize = "zeros")]
+    NpZeros,
+    /// `numpy.ones()` function
+    #[strum(serialize = "ones")]
+    NpOnes,
+    /// `numpy.arange()` function
+    #[strum(serialize = "arange")]
+    NpArange,
+    /// `numpy.linspace()` function
+    #[strum(serialize = "linspace")]
+    NpLinspace,
+    /// `numpy.where()` function
+    #[strum(serialize = "where")]
+    NpWhere,
+    /// `numpy.maximum()` function
+    Maximum,
+    /// `numpy.minimum()` function
+    Minimum,
+    /// `numpy.unique()` function
+    Unique,
+    /// `numpy.concatenate()` function
+    Concatenate,
+    /// Shared: `mean()` method/function
+    Mean,
+    /// Shared: `std()` method/function
+    Std,
+    /// Shared: `abs()` method/function — also used by math module
+    Abs,
+    /// `ndarray.flatten()` method
+    Flatten,
+    /// `ndarray.tolist()` method
+    Tolist,
+    /// `ndarray.reshape()` method
+    Reshape,
+    /// `ndarray.argmin()` method
+    Argmin,
+    /// `ndarray.argmax()` method
+    Argmax,
+    /// `ndarray.all()` method
+    #[strum(serialize = "all")]
+    NpAll,
+    /// `ndarray.any()` method
+    #[strum(serialize = "any")]
+    NpAny,
+    /// `ndarray.argsort()` method
+    #[strum(serialize = "argsort")]
+    NpArgsort,
+    /// `ndarray.astype()` method
+    #[strum(serialize = "astype")]
+    NpAstype,
+    /// `ndarray.transpose()` method
+    #[strum(serialize = "transpose")]
+    NpTranspose,
+    /// `ndarray.size` attribute
+    #[strum(serialize = "size")]
+    NpSize,
+    /// `ndarray.ndim` attribute
+    #[strum(serialize = "ndim")]
+    NpNdim,
+    /// `ndarray.T` attribute (transpose)
+    #[strum(serialize = "T")]
+    NpT,
+    /// `ndarray.dtype` attribute
+    Dtype,
+    /// `ndarray.shape` attribute / also used by pathlib `parts`
+    #[strum(serialize = "shape")]
+    NpShape,
+    /// `ndarray.min()` / `numpy.min()` — shared with builtins
+    #[strum(serialize = "min")]
+    NpMin,
+    /// `ndarray.max()` / `numpy.max()` — shared with builtins
+    #[strum(serialize = "max")]
+    NpMax,
+    /// `ndarray.sum()` / `numpy.sum()` — shared with builtins
+    #[strum(serialize = "sum")]
+    NpSum,
+    /// `numpy.dot()` function / `ndarray.dot()` method
+    #[strum(serialize = "dot")]
+    Dot,
+    /// `numpy.cumsum()` function / `ndarray.cumsum()` method
+    #[strum(serialize = "cumsum")]
+    Cumsum,
+    /// `numpy.clip()` function / `ndarray.clip()` method
+    #[strum(serialize = "clip")]
+    Clip,
+    // Note: numpy.min/max/sum/sort reuse existing StaticStrings variants
+    // (NpMin, NpMax, NpSum, Sort) which are already defined above.
 }
 
 impl StaticStrings {

@@ -3,11 +3,11 @@
 use super::VM;
 use crate::{
     defer_drop,
-    exception_private::{ExcType, RunError},
+    exception_private::{ExcType, RunError, RunResult},
     heap::{HeapData, HeapGuard, HeapReadOutput},
     resource::ResourceTracker,
-    types::{PyTrait, Set, dict_view::collect_iterable_to_set, set::SetBinaryOp},
-    value::BitwiseOp,
+    types::{NdArray, PyTrait, Set, dict_view::collect_iterable_to_set, set::SetBinaryOp},
+    value::{BitwiseOp, Value},
 };
 
 impl<T: ResourceTracker> VM<'_, '_, T> {
@@ -22,6 +22,12 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
         defer_drop!(rhs, this);
         let lhs = this.pop();
         defer_drop!(lhs, this);
+
+        // NdArray fast path: intercept before general dispatch
+        if let Some(result) = try_ndarray_binary(lhs, rhs, NdArrayBinaryOp::Add, this)? {
+            this.push(result);
+            return Ok(());
+        }
 
         match lhs.py_add(rhs, this) {
             Ok(Some(v)) => {
@@ -50,6 +56,12 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
         defer_drop!(rhs, this);
         let lhs = this.pop();
         defer_drop!(lhs, this);
+
+        // NdArray fast path
+        if let Some(result) = try_ndarray_binary(lhs, rhs, NdArrayBinaryOp::Sub, this)? {
+            this.push(result);
+            return Ok(());
+        }
 
         if let Some(result) = this.binary_dict_view_op(lhs, rhs, DictViewBinaryOp::Sub)? {
             this.push(result);
@@ -86,6 +98,12 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
         let lhs = this.pop();
         defer_drop!(lhs, this);
 
+        // NdArray fast path
+        if let Some(result) = try_ndarray_binary(lhs, rhs, NdArrayBinaryOp::Mul, this)? {
+            this.push(result);
+            return Ok(());
+        }
+
         match lhs.py_mult(rhs, this) {
             Ok(Some(v)) => {
                 this.push(v);
@@ -110,6 +128,12 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
         defer_drop!(rhs, this);
         let lhs = this.pop();
         defer_drop!(lhs, this);
+
+        // NdArray fast path
+        if let Some(result) = try_ndarray_binary(lhs, rhs, NdArrayBinaryOp::Div, this)? {
+            this.push(result);
+            return Ok(());
+        }
 
         match lhs.py_div(rhs, this) {
             Ok(Some(v)) => {
@@ -136,6 +160,12 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
         let lhs = this.pop();
         defer_drop!(lhs, this);
 
+        // NdArray fast path
+        if let Some(result) = try_ndarray_binary(lhs, rhs, NdArrayBinaryOp::FloorDiv, this)? {
+            this.push(result);
+            return Ok(());
+        }
+
         match lhs.py_floordiv(rhs, this) {
             Ok(Some(v)) => {
                 this.push(v);
@@ -160,6 +190,12 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
         defer_drop!(rhs, this);
         let lhs = this.pop();
         defer_drop!(lhs, this);
+
+        // NdArray fast path
+        if let Some(result) = try_ndarray_binary(lhs, rhs, NdArrayBinaryOp::Mod, this)? {
+            this.push(result);
+            return Ok(());
+        }
 
         match lhs.py_mod(rhs, this) {
             Ok(Some(v)) => {
@@ -186,6 +222,12 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
         defer_drop!(rhs, this);
         let lhs = this.pop();
         defer_drop!(lhs, this);
+
+        // NdArray fast path
+        if let Some(result) = try_ndarray_binary(lhs, rhs, NdArrayBinaryOp::Pow, this)? {
+            this.push(result);
+            return Ok(());
+        }
 
         match lhs.py_pow(rhs, this) {
             Ok(Some(v)) => {
@@ -483,4 +525,120 @@ fn apply_dict_view_binary_op(
     }
 
     Ok(result)
+}
+
+/// Supported ndarray element-wise binary operations.
+#[derive(Debug, Clone, Copy)]
+enum NdArrayBinaryOp {
+    Add,
+    Sub,
+    Mul,
+    Div,
+    FloorDiv,
+    Mod,
+    Pow,
+}
+
+/// Extracts a scalar f64 from a `Value`, if it is a numeric type.
+fn value_to_f64(v: &Value) -> Option<f64> {
+    match v {
+        Value::Int(i) => Some(*i as f64),
+        Value::Float(f) => Some(*f),
+        Value::Bool(b) => Some(if *b { 1.0 } else { 0.0 }),
+        _ => None,
+    }
+}
+
+/// Dispatches an element-wise binary operation between an `NdArray` and a scalar.
+fn ndarray_scalar_op(
+    arr: &NdArray,
+    scalar: f64,
+    op: NdArrayBinaryOp,
+    scalar_on_left: bool,
+    heap: &crate::heap::Heap<impl ResourceTracker>,
+) -> RunResult<Value> {
+    match (op, scalar_on_left) {
+        // Commutative operations — direction doesn't matter
+        (NdArrayBinaryOp::Add, _) => arr.add_scalar(scalar, heap),
+        (NdArrayBinaryOp::Mul, _) => arr.mul_scalar(scalar, heap),
+        // Non-commutative: scalar on right (arr op scalar)
+        (NdArrayBinaryOp::Sub, false) => arr.sub_scalar(scalar, heap),
+        (NdArrayBinaryOp::Div, false) => arr.div_scalar(scalar, heap),
+        (NdArrayBinaryOp::FloorDiv, false) => arr.floordiv_scalar(scalar, heap),
+        (NdArrayBinaryOp::Mod, false) => arr.modulo_scalar(scalar, heap),
+        (NdArrayBinaryOp::Pow, false) => arr.pow_scalar(scalar, heap),
+        // Non-commutative: scalar on left (scalar op arr)
+        (NdArrayBinaryOp::Sub, true) => arr.rsub_scalar(scalar, heap),
+        (NdArrayBinaryOp::Div, true) => arr.rdiv_scalar(scalar, heap),
+        (NdArrayBinaryOp::FloorDiv, true) => arr.rfloordiv_scalar(scalar, heap),
+        (NdArrayBinaryOp::Mod, true) => arr.rmod_scalar(scalar, heap),
+        (NdArrayBinaryOp::Pow, true) => arr.rpow_scalar(scalar, heap),
+    }
+}
+
+/// Dispatches an element-wise binary operation between two `NdArray`s.
+fn ndarray_array_op(
+    lhs: &NdArray,
+    rhs: &NdArray,
+    op: NdArrayBinaryOp,
+    heap: &crate::heap::Heap<impl ResourceTracker>,
+) -> RunResult<Value> {
+    match op {
+        NdArrayBinaryOp::Add => lhs.add(rhs, heap),
+        NdArrayBinaryOp::Sub => lhs.sub(rhs, heap),
+        NdArrayBinaryOp::Mul => lhs.mul(rhs, heap),
+        NdArrayBinaryOp::Div => lhs.div(rhs, heap),
+        NdArrayBinaryOp::FloorDiv => lhs.floordiv(rhs, heap),
+        NdArrayBinaryOp::Mod => lhs.modulo(rhs, heap),
+        NdArrayBinaryOp::Pow => lhs.pow(rhs, heap),
+    }
+}
+
+/// Tries to dispatch an ndarray binary operation.
+///
+/// Returns `Ok(Some(value))` if either operand is an ndarray and the operation succeeded,
+/// `Ok(None)` if neither operand is an ndarray (caller should fall through to normal dispatch),
+/// or `Err` if the operation failed (e.g., shape mismatch).
+fn try_ndarray_binary(
+    lhs: &Value,
+    rhs: &Value,
+    op: NdArrayBinaryOp,
+    vm: &mut VM<'_, '_, impl ResourceTracker>,
+) -> RunResult<Option<Value>> {
+    // Both operands must involve at least one ndarray
+    let lhs_id = if let Value::Ref(id) = lhs { Some(*id) } else { None };
+    let rhs_id = if let Value::Ref(id) = rhs { Some(*id) } else { None };
+
+    // Case 1: NdArray op NdArray
+    if let (Some(lid), Some(rid)) = (lhs_id, rhs_id) {
+        let lhs_is_ndarray = matches!(vm.heap.get(lid), HeapData::NdArray(_));
+        let rhs_is_ndarray = matches!(vm.heap.get(rid), HeapData::NdArray(_));
+        if lhs_is_ndarray && rhs_is_ndarray {
+            let HeapData::NdArray(l) = vm.heap.get(lid) else {
+                unreachable!()
+            };
+            let HeapData::NdArray(r) = vm.heap.get(rid) else {
+                unreachable!()
+            };
+            return ndarray_array_op(l, r, op, vm.heap).map(Some);
+        }
+    }
+
+    // Case 2: NdArray op scalar
+    if let Some(lid) = lhs_id
+        && let HeapData::NdArray(arr) = vm.heap.get(lid)
+        && let Some(scalar) = value_to_f64(rhs)
+    {
+        return ndarray_scalar_op(arr, scalar, op, false, vm.heap).map(Some);
+    }
+
+    // Case 3: scalar op NdArray
+    if let Some(rid) = rhs_id
+        && let HeapData::NdArray(arr) = vm.heap.get(rid)
+        && let Some(scalar) = value_to_f64(lhs)
+    {
+        return ndarray_scalar_op(arr, scalar, op, true, vm.heap).map(Some);
+    }
+
+    Ok(None)
 }

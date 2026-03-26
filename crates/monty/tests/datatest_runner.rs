@@ -53,6 +53,9 @@ struct TestConfig {
     /// When true, wrap code in async context for CPython execution.
     /// Used for tests with top-level await which Monty supports but CPython doesn't.
     async_mode: bool,
+    /// When true, skip running this test on CPython.
+    /// Used for tests that require packages not available in the pyo3 environment (e.g. numpy).
+    skip_cpython: bool,
 }
 
 /// Represents the expected outcome of a test fixture
@@ -126,6 +129,7 @@ fn parse_fixture(content: &str) -> (String, Expectation, TestConfig) {
     let mut config = TestConfig {
         iter_mode: comment_lines.iter().any(|line| line.starts_with("call-external")),
         async_mode: comment_lines.iter().any(|line| line.starts_with("run-async")),
+        skip_cpython: comment_lines.iter().any(|line| line.starts_with("skip-cpython")),
         ..Default::default()
     };
     // Check for "xfail=" directive
@@ -2008,6 +2012,10 @@ fn run_test_cases_cpython(path: &Path) -> Result<(), Box<dyn Error>> {
     let content = fs::read_to_string(path)?;
     let (code, expectation, config) = parse_fixture(&content);
     let test_name = path.strip_prefix("test_cases/").unwrap_or(path).display().to_string();
+
+    if config.skip_cpython {
+        return Ok(());
+    }
 
     let result = try_run_cpython_test(path, &code, &expectation, config.iter_mode, config.async_mode);
 

@@ -66,6 +66,8 @@ pub enum Type {
     RePattern,
     /// A regex match result from `re.match()` / `re.search()` etc. - displays as "re.Match"
     ReMatch,
+    /// A numpy ndarray - displays as "numpy.ndarray"
+    NdArray,
 }
 
 impl fmt::Display for Type {
@@ -104,6 +106,7 @@ impl fmt::Display for Type {
             Self::Property => f.write_str("property"),
             Self::RePattern => f.write_str("re.Pattern"),
             Self::ReMatch => f.write_str("re.Match"),
+            Self::NdArray => f.write_str("ndarray"),
         }
     }
 }

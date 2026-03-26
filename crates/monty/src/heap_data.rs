@@ -13,7 +13,7 @@ use crate::{
     intern::FunctionId,
     types::{
         Bytes, Dataclass, Dict, DictItemsView, DictKeysView, DictValuesView, FrozenSet, List, LongInt, Module,
-        MontyIter, NamedTuple, Path, PyTrait, Range, ReMatch, RePattern, Set, Slice, Str, Tuple, Type,
+        MontyIter, NamedTuple, NdArray, Path, PyTrait, Range, ReMatch, RePattern, Set, Slice, Str, Tuple, Type,
         dict_view::DictView,
     },
     value::{EitherStr, Value},
@@ -108,6 +108,10 @@ pub(crate) enum HeapData {
     /// Contains the matched text, capture groups, positions, and input string.
     /// Leaf type: no heap references, not GC-tracked.
     ReMatch(ReMatch),
+    /// A numpy ndarray (multi-dimensional array of f64 values).
+    ///
+    /// Leaf type: stores only f64 data, no heap references, not GC-tracked.
+    NdArray(NdArray),
     /// Reference to an external function whose name was not found in the intern table.
     ///
     /// Created when the host resolves a `NameLookup` to a callable whose name does not
@@ -366,6 +370,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             Self::Path(p) => p.py_bool(vm),
             Self::ReMatch(m) => m.py_bool(vm),
             Self::RePattern(p) => p.py_bool(vm),
+            Self::NdArray(a) => a.py_bool(vm),
         }
     }
 
@@ -392,6 +397,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             HeapReadOutput::Module(m) => Ok(m.py_call_attr(self_id, vm, attr, args)?),
             HeapReadOutput::ReMatch(m) => Ok(m.py_call_attr(self_id, vm, attr, args)?),
             HeapReadOutput::RePattern(p) => Ok(p.py_call_attr(self_id, vm, attr, args)?),
+            HeapReadOutput::NdArray(a) => Ok(a.py_call_attr(self_id, vm, attr, args)?),
             // Types without methods — return AttributeError
             _ => {
                 args.drop_with_heap(vm);
@@ -427,6 +433,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             Self::Path(p) => p.py_type(vm),
             Self::ReMatch(re) => re.py_type(vm),
             Self::RePattern(p) => p.py_type(vm),
+            Self::NdArray(a) => a.py_type(vm),
         }
     }
 
@@ -448,6 +455,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             Self::Dataclass(dc) => dc.py_len(vm),
             Self::ReMatch(m) => m.py_len(vm),
             Self::RePattern(p) => p.py_len(vm),
+            Self::NdArray(a) => a.py_len(vm),
             // Types without length — return None
             _ => None,
         }
@@ -554,7 +562,8 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             (HeapReadOutput::Path(a), HeapReadOutput::Path(b)) => Ok(a.get(vm.heap) == b.get(vm.heap)),
             (HeapReadOutput::RePattern(a), HeapReadOutput::RePattern(b)) => Ok(a.get(vm.heap) == b.get(vm.heap)),
             // Identity-only types (handled by HeapId comparison above)
-            (HeapReadOutput::ReMatch(_), HeapReadOutput::ReMatch(_))
+            (HeapReadOutput::NdArray(_), HeapReadOutput::NdArray(_))
+            | (HeapReadOutput::ReMatch(_), HeapReadOutput::ReMatch(_))
             | (HeapReadOutput::Cell(_), HeapReadOutput::Cell(_))
             | (HeapReadOutput::Exception(_), HeapReadOutput::Exception(_))
             | (HeapReadOutput::Iter(_), HeapReadOutput::Iter(_))
@@ -614,6 +623,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             Self::Path(p) => p.py_repr_fmt(f, vm, heap_ids),
             Self::ReMatch(m) => m.py_repr_fmt(f, vm, heap_ids),
             Self::RePattern(p) => p.py_repr_fmt(f, vm, heap_ids),
+            Self::NdArray(a) => a.py_repr_fmt(f, vm, heap_ids),
             Self::ExtFunction(name) => Ok(write!(f, "<function '{}' external>", name.get(vm.heap))?),
         }
     }
@@ -715,6 +725,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             Self::Dict(d) => d.py_getitem(key, vm),
             Self::Range(r) => r.py_getitem(key, vm),
             Self::ReMatch(m) => m.py_getitem(key, vm),
+            Self::NdArray(a) => a.py_getitem(key, vm),
             _ => Err(ExcType::type_error_not_sub(self.py_type(vm))),
         }
     }
@@ -723,6 +734,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
         match self {
             Self::List(l) => l.py_setitem(key, value, vm),
             Self::Dict(d) => d.py_setitem(key, value, vm),
+            Self::NdArray(a) => a.py_setitem(key, value, vm),
             _ => {
                 key.drop_with_heap(vm);
                 value.drop_with_heap(vm);
@@ -749,6 +761,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             Self::Dataclass(dc) => dc.py_getattr(attr, vm),
             Self::ReMatch(m) => m.py_getattr(attr, vm),
             Self::RePattern(p) => p.py_getattr(attr, vm),
+            Self::NdArray(a) => a.py_getattr(attr, vm),
             Self::Module(m) => Ok(m.py_getattr(attr, vm)),
             Self::Exception(e) => e.py_getattr(attr, vm),
             Self::Path(p) => p.py_getattr(attr, vm),
@@ -786,6 +799,7 @@ impl HeapData {
             Self::Path(p) => p.py_estimate_size(),
             Self::ReMatch(m) => m.py_estimate_size(),
             Self::RePattern(p) => p.py_estimate_size(),
+            Self::NdArray(a) => a.py_estimate_size(),
             Self::ExtFunction(s) => std::mem::size_of::<String>() + s.len(),
         }
     }

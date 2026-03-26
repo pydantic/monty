@@ -464,7 +464,7 @@ impl MontyObject {
                         Self::Repr(format!("<gather({})>", gather.item_count()))
                     }
                     HeapData::Path(path) => Self::Path(path.as_str().to_owned()),
-                    HeapData::RePattern(_) | HeapData::ReMatch(_) => repr_or_error(object, vm),
+                    HeapData::RePattern(_) | HeapData::ReMatch(_) | HeapData::NdArray(_) => repr_or_error(object, vm),
                     HeapData::ExtFunction(name) => Self::Function {
                         name: name.clone(),
                         docstring: None,

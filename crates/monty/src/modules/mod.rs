@@ -18,6 +18,7 @@ use crate::{
 
 pub(crate) mod asyncio;
 pub(crate) mod math;
+pub(crate) mod numpy;
 pub(crate) mod os;
 pub(crate) mod pathlib;
 pub(crate) mod re;
@@ -42,6 +43,8 @@ pub(crate) enum BuiltinModule {
     Math,
     /// The `re` module providing regular expression matching.
     Re,
+    /// The `numpy` module providing ndarray operations.
+    Numpy,
 }
 
 impl BuiltinModule {
@@ -55,6 +58,7 @@ impl BuiltinModule {
             StaticStrings::Os => Some(Self::Os),
             StaticStrings::Math => Some(Self::Math),
             StaticStrings::Re => Some(Self::Re),
+            StaticStrings::Numpy => Some(Self::Numpy),
             _ => None,
         }
     }
@@ -75,6 +79,7 @@ impl BuiltinModule {
             Self::Os => os::create_module(vm),
             Self::Math => math::create_module(vm),
             Self::Re => re::create_module(vm),
+            Self::Numpy => numpy::create_module(vm),
         }
     }
 }
@@ -84,6 +89,7 @@ impl BuiltinModule {
 pub(crate) enum ModuleFunctions {
     Asyncio(asyncio::AsyncioFunctions),
     Math(math::MathFunctions),
+    Numpy(numpy::NumpyFunctions),
     Os(os::OsFunctions),
     Re(re::ReFunctions),
 }
@@ -93,6 +99,7 @@ impl fmt::Display for ModuleFunctions {
         match self {
             Self::Asyncio(func) => write!(f, "{func}"),
             Self::Math(func) => write!(f, "{func}"),
+            Self::Numpy(func) => write!(f, "{func}"),
             Self::Os(func) => write!(f, "{func}"),
             Self::Re(func) => write!(f, "{func}"),
         }
@@ -108,6 +115,7 @@ impl ModuleFunctions {
         match self {
             Self::Asyncio(functions) => asyncio::call(vm.heap, functions, args),
             Self::Math(functions) => math::call(vm, functions, args).map(CallResult::Value),
+            Self::Numpy(functions) => numpy::call(vm, functions, args),
             Self::Os(functions) => os::call(vm, functions, args),
             Self::Re(functions) => re::call(vm, functions, args),
         }

@@ -24,7 +24,7 @@ use crate::{
     resource::{ResourceError, ResourceTracker, check_mult_size, check_repeat_size},
     types::{
         Bytes, Dataclass, Dict, DictItemsView, DictKeysView, DictValuesView, FrozenSet, List, LongInt, Module,
-        MontyIter, NamedTuple, Path, Range, ReMatch, RePattern, Set, Slice, Str, Tuple, allocate_tuple,
+        MontyIter, NamedTuple, NdArray, Path, Range, ReMatch, RePattern, Set, Slice, Str, Tuple, allocate_tuple,
     },
     value::Value,
 };
@@ -224,6 +224,7 @@ impl<'a, T: ResourceTracker> HeapReader<'a, T> {
             HeapData::Path(path) => HeapReadOutput::Path(heap_read(base, path, readers)),
             HeapData::RePattern(re_pattern) => HeapReadOutput::RePattern(heap_read_boxed(re_pattern, readers)),
             HeapData::ReMatch(re_match) => HeapReadOutput::ReMatch(heap_read(base, re_match, readers)),
+            HeapData::NdArray(ndarray) => HeapReadOutput::NdArray(heap_read(base, ndarray, readers)),
         }
     }
 
@@ -305,6 +306,7 @@ pub enum HeapReadOutput<'a> {
     Path(HeapRead<'a, Path>),
     RePattern(HeapRead<'a, RePattern>),
     ReMatch(HeapRead<'a, ReMatch>),
+    NdArray(HeapRead<'a, NdArray>),
 }
 
 pub struct HeapRead<'a, T: ?Sized> {

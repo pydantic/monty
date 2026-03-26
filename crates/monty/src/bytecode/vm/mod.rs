@@ -955,20 +955,31 @@ impl<'h, 'a, T: ResourceTracker> VM<'h, 'a, T> {
                         }
                         Value::Float(f) => self.push(Value::Float(-f)),
                         Value::Bool(b) => self.push(Value::Int(if b { -1 } else { 0 })),
-                        Value::Ref(id) => {
-                            if let HeapData::LongInt(li) = self.heap.get(id) {
+                        Value::Ref(id) => match self.heap.get(id) {
+                            HeapData::LongInt(li) => {
                                 let negated = -LongInt::new(li.inner().clone());
                                 value.drop_with_heap(self);
                                 match negated.into_value(self.heap) {
                                     Ok(v) => self.push(v),
                                     Err(e) => catch_sync!(self, cached_frame, RunError::from(e)),
                                 }
-                            } else {
+                            }
+                            HeapData::NdArray(arr) => match arr.neg(self.heap) {
+                                Ok(v) => {
+                                    value.drop_with_heap(self);
+                                    self.push(v);
+                                }
+                                Err(e) => {
+                                    value.drop_with_heap(self);
+                                    catch_sync!(self, cached_frame, e);
+                                }
+                            },
+                            _ => {
                                 let value_type = value.py_type(self);
                                 value.drop_with_heap(self);
                                 catch_sync!(self, cached_frame, ExcType::unary_type_error("-", value_type));
                             }
-                        }
+                        },
                         _ => {
                             let value_type = value.py_type(self);
                             value.drop_with_heap(self);
@@ -1006,18 +1017,31 @@ impl<'h, 'a, T: ResourceTracker> VM<'h, 'a, T> {
                         Value::Int(n) => self.push(Value::Int(!n)),
                         Value::Bool(b) => self.push(Value::Int(!i64::from(b))),
                         Value::Ref(id) => {
-                            if let HeapData::LongInt(li) = self.heap.get(id) {
-                                // LongInt bitwise NOT: ~x = -(x + 1)
-                                let inverted = -(li.inner() + 1i32);
-                                value.drop_with_heap(self);
-                                match LongInt::new(inverted).into_value(self.heap) {
-                                    Ok(v) => self.push(v),
-                                    Err(e) => catch_sync!(self, cached_frame, RunError::from(e)),
+                            match self.heap.get(id) {
+                                HeapData::LongInt(li) => {
+                                    // LongInt bitwise NOT: ~x = -(x + 1)
+                                    let inverted = -(li.inner() + 1i32);
+                                    value.drop_with_heap(self);
+                                    match LongInt::new(inverted).into_value(self.heap) {
+                                        Ok(v) => self.push(v),
+                                        Err(e) => catch_sync!(self, cached_frame, RunError::from(e)),
+                                    }
                                 }
-                            } else {
-                                let value_type = value.py_type(self);
-                                value.drop_with_heap(self);
-                                catch_sync!(self, cached_frame, ExcType::unary_type_error("~", value_type));
+                                HeapData::NdArray(arr) => match arr.invert(self.heap) {
+                                    Ok(v) => {
+                                        value.drop_with_heap(self);
+                                        self.push(v);
+                                    }
+                                    Err(e) => {
+                                        value.drop_with_heap(self);
+                                        catch_sync!(self, cached_frame, e);
+                                    }
+                                },
+                                _ => {
+                                    let value_type = value.py_type(self);
+                                    value.drop_with_heap(self);
+                                    catch_sync!(self, cached_frame, ExcType::unary_type_error("~", value_type));
+                                }
                             }
                         }
                         _ => {
