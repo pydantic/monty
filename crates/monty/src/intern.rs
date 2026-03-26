@@ -441,58 +441,40 @@ pub enum StaticStrings {
     // ==========================
     // datetime module strings
     Datetime,
-    #[strum(serialize = "date")]
     Date,
-    #[strum(serialize = "timedelta")]
     Timedelta,
-    #[strum(serialize = "timezone")]
     Timezone,
-    #[strum(serialize = "today")]
     Today,
-    #[strum(serialize = "now")]
     Now,
-    #[strum(serialize = "utc")]
     Utc,
-    #[strum(serialize = "total_seconds")]
     TotalSeconds,
-    #[strum(serialize = "tzinfo")]
     Tzinfo,
     // date/datetime field attributes
-    #[strum(serialize = "year")]
     Year,
-    #[strum(serialize = "month")]
-    MonthAttr,
-    #[strum(serialize = "day")]
-    DayAttr,
-    #[strum(serialize = "hour")]
+    Month,
+    Day,
     Hour,
-    #[strum(serialize = "minute")]
-    MinuteAttr,
-    #[strum(serialize = "second")]
-    SecondAttr,
-    #[strum(serialize = "microsecond")]
-    MicrosecondAttr,
+    Minute,
+    Second,
+    Microsecond,
     // timedelta constructor/attribute names
-    #[strum(serialize = "days")]
     Days,
-    #[strum(serialize = "seconds")]
-    SecondsAttr,
-    #[strum(serialize = "microseconds")]
-    MicrosecondsAttr,
-    #[strum(serialize = "milliseconds")]
+    Seconds,
+    Microseconds,
     Milliseconds,
-    #[strum(serialize = "minutes")]
-    MinutesAttr,
-    #[strum(serialize = "hours")]
-    HoursAttr,
-    #[strum(serialize = "weeks")]
-    WeeksAttr,
+    Minutes,
+    Hours,
+    Weeks,
     // timezone constructor kwargs
-    #[strum(serialize = "offset")]
-    OffsetAttr,
+    Offset,
     // datetime.now() kwarg
-    #[strum(serialize = "tz")]
     Tz,
+    // date/datetime methods
+    Isoformat,
+    Strftime,
+    Weekday,
+    Isoweekday,
+    Timestamp,
 
     // re module strings
     /// Module name for `import re`.

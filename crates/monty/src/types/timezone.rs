@@ -96,7 +96,7 @@ impl TimeZone {
                 return Err(ExcType::type_error_kwargs_nonstring_key());
             };
             match key_name.string_id() {
-                Some(id) if id == StaticStrings::OffsetAttr => {
+                Some(id) if id == StaticStrings::Offset => {
                     if seen_offset {
                         return Err(ExcType::type_error_multiple_values("timezone", "offset"));
                     }

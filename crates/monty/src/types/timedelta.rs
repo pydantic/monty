@@ -196,14 +196,14 @@ pub(crate) fn init(heap: &mut Heap<impl ResourceTracker>, args: ArgValues, inter
                 days = parsed;
                 seen_days = true;
             }
-            Some(id) if id == StaticStrings::SecondsAttr => {
+            Some(id) if id == StaticStrings::Seconds => {
                 if seen_seconds {
                     return Err(ExcType::type_error_multiple_values("timedelta", "seconds"));
                 }
                 seconds = parsed;
                 seen_seconds = true;
             }
-            Some(id) if id == StaticStrings::MicrosecondsAttr => {
+            Some(id) if id == StaticStrings::Microseconds => {
                 if seen_microseconds {
                     return Err(ExcType::type_error_multiple_values("timedelta", "microseconds"));
                 }
@@ -211,9 +211,9 @@ pub(crate) fn init(heap: &mut Heap<impl ResourceTracker>, args: ArgValues, inter
                 seen_microseconds = true;
             }
             Some(id) if id == StaticStrings::Milliseconds => milliseconds = parsed,
-            Some(id) if id == StaticStrings::MinutesAttr => minutes = parsed,
-            Some(id) if id == StaticStrings::HoursAttr => hours = parsed,
-            Some(id) if id == StaticStrings::WeeksAttr => weeks = parsed,
+            Some(id) if id == StaticStrings::Minutes => minutes = parsed,
+            Some(id) if id == StaticStrings::Hours => hours = parsed,
+            Some(id) if id == StaticStrings::Weeks => weeks = parsed,
             _ => {
                 return Err(ExcType::type_error_unexpected_keyword(
                     "timedelta",
@@ -366,8 +366,8 @@ impl<'h> PyTrait<'h> for HeapRead<'h, TimeDelta> {
         let (days, seconds, microseconds) = components(self.get(vm.heap));
         match attr.string_id() {
             Some(id) if id == StaticStrings::Days => Ok(Some(CallResult::Value(Value::Int(i64::from(days))))),
-            Some(id) if id == StaticStrings::SecondsAttr => Ok(Some(CallResult::Value(Value::Int(i64::from(seconds))))),
-            Some(id) if id == StaticStrings::MicrosecondsAttr => {
+            Some(id) if id == StaticStrings::Seconds => Ok(Some(CallResult::Value(Value::Int(i64::from(seconds))))),
+            Some(id) if id == StaticStrings::Microseconds => {
                 Ok(Some(CallResult::Value(Value::Int(i64::from(microseconds)))))
             }
             _ => Ok(None),

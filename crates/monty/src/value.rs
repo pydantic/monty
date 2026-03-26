@@ -28,6 +28,7 @@ use crate::{
         long_int::check_bits_str_digits_limit,
         path,
         str::{allocate_char, get_char_at_index, get_str_slice, string_repr_fmt},
+        timedelta,
     },
 };
 
@@ -832,9 +833,9 @@ impl PyTrait<'_> for Value {
                     Ok(None)
                 }
             }
-            // LongInt / Int
-            (Self::Ref(id), Self::Int(b)) => {
-                if let HeapData::LongInt(li) = vm.heap.get(*id) {
+            // LongInt / Int or TimeDelta / Int
+            (Self::Ref(id), Self::Int(b)) => match vm.heap.get(*id) {
+                HeapData::LongInt(li) => {
                     if *b == 0 {
                         Err(ExcType::zero_division().into())
                     } else {
@@ -843,10 +844,20 @@ impl PyTrait<'_> for Value {
                         let b_f64 = *b as f64;
                         Ok(Some(Self::Float(a_f64 / b_f64)))
                     }
-                } else {
-                    Ok(None)
                 }
-            }
+                HeapData::TimeDelta(td) => {
+                    if *b == 0 {
+                        Err(ExcType::zero_division().into())
+                    } else {
+                        // CPython timedelta / int truncates toward zero
+                        let total = timedelta::total_microseconds(td);
+                        let result = total / i128::from(*b);
+                        let delta = timedelta::from_total_microseconds(result)?;
+                        Ok(Some(Self::Ref(vm.heap.allocate(HeapData::TimeDelta(delta))?)))
+                    }
+                }
+                _ => Ok(None),
+            },
             // LongInt / LongInt
             (Self::Ref(id1), Self::Ref(id2)) => match (vm.heap.get(*id1), vm.heap.get(*id2)) {
                 (HeapData::LongInt(li1), HeapData::LongInt(li2)) => {
@@ -983,19 +994,28 @@ impl PyTrait<'_> for Value {
                     Ok(None)
                 }
             }
-            // LongInt // Int
-            (Self::Ref(id), Self::Int(b)) => {
-                if let HeapData::LongInt(li) = vm.heap.get(*id) {
+            // LongInt // Int or TimeDelta // Int
+            (Self::Ref(id), Self::Int(b)) => match vm.heap.get(*id) {
+                HeapData::LongInt(li) => {
                     if *b == 0 {
                         Err(ExcType::zero_division().into())
                     } else {
                         let bi = li.inner().div_floor(&BigInt::from(*b));
                         Ok(Some(LongInt::new(bi).into_value(vm.heap)?))
                     }
-                } else {
-                    Ok(None)
                 }
-            }
+                HeapData::TimeDelta(td) => {
+                    if *b == 0 {
+                        Err(ExcType::zero_division().into())
+                    } else {
+                        let total = timedelta::total_microseconds(td);
+                        let result = total.div_euclid(i128::from(*b));
+                        let delta = timedelta::from_total_microseconds(result)?;
+                        Ok(Some(Self::Ref(vm.heap.allocate(HeapData::TimeDelta(delta))?)))
+                    }
+                }
+                _ => Ok(None),
+            },
             // LongInt // LongInt
             (Self::Ref(id1), Self::Ref(id2)) => match (vm.heap.get(*id1), vm.heap.get(*id2)) {
                 (HeapData::LongInt(li1), HeapData::LongInt(li2)) => {

@@ -179,12 +179,16 @@ impl Type {
     ///
     /// This handles Python's subtype relationships:
     /// - `bool` is a subtype of `int` (so `isinstance(True, int)` returns True)
+    /// - `datetime` is a subtype of `date` (so `isinstance(datetime_obj, date)` returns True)
     #[must_use]
     pub fn is_instance_of(self, other: Self) -> bool {
         if self == other {
             true
         } else if self == Self::Bool && other == Self::Int {
             // bool is a subtype of int in Python
+            true
+        } else if self == Self::DateTime && other == Self::Date {
+            // datetime is a subtype of date in Python
             true
         } else {
             false

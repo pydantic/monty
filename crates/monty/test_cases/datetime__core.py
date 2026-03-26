@@ -366,3 +366,75 @@ try:
     assert False, 'microsecond OOB should raise ValueError'
 except ValueError as e:
     assert str(e) == 'microsecond must be in 0..999999, not 1000000', f'microsecond OOB message: {e}'
+
+# === timedelta truthiness ===
+
+assert not datetime.timedelta(0), 'timedelta(0) should be falsy'
+assert datetime.timedelta(seconds=1), 'non-zero timedelta should be truthy'
+assert datetime.timedelta(days=-1), 'negative timedelta should be truthy'
+
+# === isinstance subclass: datetime is a subclass of date ===
+
+assert isinstance(datetime.datetime(2024, 1, 1, 0, 0), datetime.date), (
+    'datetime should be instance of date (datetime is subclass of date)'
+)
+assert not isinstance(datetime.date(2024, 1, 1), datetime.datetime), 'date should NOT be instance of datetime'
+
+# === isoformat ===
+
+assert datetime.date(2024, 1, 15).isoformat() == '2024-01-15', 'date.isoformat()'
+assert datetime.datetime(2024, 1, 15, 10, 30).isoformat() == '2024-01-15T10:30:00', 'naive datetime.isoformat()'
+assert datetime.datetime(2024, 1, 15, 10, 30, 0, 123456).isoformat() == '2024-01-15T10:30:00.123456', (
+    'datetime.isoformat() with microseconds'
+)
+utc_iso = datetime.datetime(2024, 1, 15, 10, 30, tzinfo=datetime.timezone.utc)
+assert utc_iso.isoformat() == '2024-01-15T10:30:00+00:00', 'aware UTC datetime.isoformat()'
+
+# === strftime ===
+
+assert datetime.datetime(2024, 6, 15, 10, 30, 45).strftime('%Y-%m-%d') == '2024-06-15', 'datetime.strftime date format'
+assert datetime.datetime(2024, 6, 15, 10, 30, 45).strftime('%H:%M:%S') == '10:30:45', 'datetime.strftime time format'
+assert datetime.date(2024, 6, 15).strftime('%Y/%m/%d') == '2024/06/15', 'date.strftime'
+
+# === replace ===
+
+assert datetime.date(2024, 6, 15).replace(month=1) == datetime.date(2024, 1, 15), 'date.replace(month=1)'
+assert datetime.date(2024, 6, 15).replace(year=2025, day=1) == datetime.date(2025, 6, 1), 'date.replace(year, day)'
+assert datetime.datetime(2024, 6, 15, 10, 30).replace(hour=0, minute=0) == datetime.datetime(2024, 6, 15, 0, 0), (
+    'datetime.replace(hour, minute)'
+)
+
+# === weekday / isoweekday ===
+
+assert datetime.date(2024, 6, 15).weekday() == 5, 'Saturday weekday() should be 5'
+assert datetime.date(2024, 6, 15).isoweekday() == 6, 'Saturday isoweekday() should be 6'
+assert datetime.date(2024, 6, 10).weekday() == 0, 'Monday weekday() should be 0'
+assert datetime.date(2024, 6, 10).isoweekday() == 1, 'Monday isoweekday() should be 1'
+assert datetime.datetime(2024, 6, 15, 12, 0).weekday() == 5, 'datetime.weekday()'
+
+# === datetime.date() method ===
+
+assert datetime.datetime(2024, 6, 15, 10, 30).date() == datetime.date(2024, 6, 15), 'datetime.date() extracts date'
+
+# === datetime.timestamp() ===
+
+assert datetime.datetime(2024, 6, 15, 10, 30, 0, tzinfo=datetime.timezone.utc).timestamp() == 1718447400.0, (
+    'aware UTC datetime.timestamp()'
+)
+
+# === timedelta * int ===
+
+assert datetime.timedelta(days=1) * 7 == datetime.timedelta(days=7), 'timedelta * int'
+assert 3 * datetime.timedelta(days=1) == datetime.timedelta(days=3), 'int * timedelta'
+assert datetime.timedelta(hours=2) * 0 == datetime.timedelta(0), 'timedelta * 0'
+
+# === abs(timedelta) ===
+
+assert abs(datetime.timedelta(days=-3)) == datetime.timedelta(days=3), 'abs(negative timedelta)'
+assert abs(datetime.timedelta(0)) == datetime.timedelta(0), 'abs(zero timedelta)'
+assert abs(datetime.timedelta(days=5)) == datetime.timedelta(days=5), 'abs(positive timedelta)'
+
+# === timedelta // int and timedelta / int ===
+
+assert datetime.timedelta(days=1) // 2 == datetime.timedelta(hours=12), 'timedelta // int'
+assert datetime.timedelta(days=1) / 2 == datetime.timedelta(hours=12), 'timedelta / int'

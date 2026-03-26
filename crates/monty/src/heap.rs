@@ -1063,13 +1063,25 @@ impl<T: ResourceTracker> Heap<T> {
     ///
     /// Returns `Ok(None)` if the heap entry is neither a LongInt nor a sequence type.
     pub fn mult_ref_by_i64(&mut self, id: HeapId, int_val: i64) -> RunResult<Option<Value>> {
-        if let HeapData::LongInt(li) = self.get(id) {
-            check_mult_size(li.bits(), i64_bits(int_val), &self.tracker)?;
-            let result = LongInt::new(li.inner().clone()) * LongInt::from(int_val);
-            Ok(Some(result.into_value(self)?))
-        } else {
-            let count = i64_to_repeat_count(int_val)?;
-            self.mult_sequence(id, count)
+        match self.get(id) {
+            HeapData::LongInt(li) => {
+                check_mult_size(li.bits(), i64_bits(int_val), &self.tracker)?;
+                let result = LongInt::new(li.inner().clone()) * LongInt::from(int_val);
+                Ok(Some(result.into_value(self)?))
+            }
+            HeapData::TimeDelta(td) => {
+                let total = timedelta::total_microseconds(td)
+                    .checked_mul(i128::from(int_val))
+                    .ok_or_else(|| {
+                        SimpleException::new_msg(ExcType::OverflowError, "timedelta multiplication overflow")
+                    })?;
+                let delta = timedelta::from_total_microseconds(total)?;
+                Ok(Some(Value::Ref(self.allocate(HeapData::TimeDelta(delta))?)))
+            }
+            _ => {
+                let count = i64_to_repeat_count(int_val)?;
+                self.mult_sequence(id, count)
+            }
         }
     }
 

@@ -374,7 +374,8 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             Self::Path(p) => p.py_bool(vm),
             Self::ReMatch(m) => m.py_bool(vm),
             Self::RePattern(p) => p.py_bool(vm),
-            Self::Date(_) | Self::DateTime(_) | Self::TimeDelta(_) | Self::TimeZone(_) => true,
+            Self::TimeDelta(td) => td.py_bool(vm),
+            Self::Date(_) | Self::DateTime(_) | Self::TimeZone(_) => true,
         }
     }
 
@@ -402,6 +403,8 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             HeapReadOutput::ReMatch(m) => Ok(m.py_call_attr(self_id, vm, attr, args)?),
             HeapReadOutput::RePattern(p) => Ok(p.py_call_attr(self_id, vm, attr, args)?),
             HeapReadOutput::TimeDelta(td) => Ok(td.py_call_attr(self_id, vm, attr, args)?),
+            HeapReadOutput::Date(d) => Ok(d.py_call_attr(self_id, vm, attr, args)?),
+            HeapReadOutput::DateTime(dt) => Ok(dt.py_call_attr(self_id, vm, attr, args)?),
             // Types without methods — return AttributeError
             _ => {
                 args.drop_with_heap(vm);

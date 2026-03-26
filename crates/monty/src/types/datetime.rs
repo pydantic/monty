@@ -18,7 +18,8 @@ use crate::{
     os::OsFunction,
     resource::{ResourceError, ResourceTracker},
     types::{
-        AttrCallResult, PyTrait, TimeDelta, TimeZone, Type, date, str::StringRepr, timedelta, timezone, value_to_i32,
+        AttrCallResult, PyTrait, TimeDelta, TimeZone, Type, date, str, str::StringRepr, timedelta, timezone,
+        value_to_i32,
     },
     value::Value,
 };
@@ -244,13 +245,13 @@ pub(crate) fn init(heap: &mut Heap<impl ResourceTracker>, args: ArgValues, inter
                 }
                 year = Some(value_to_i32(value)?);
             }
-            Some(id) if id == StaticStrings::MonthAttr => {
+            Some(id) if id == StaticStrings::Month => {
                 if month.is_some() {
                     return Err(ExcType::type_error_multiple_values("datetime", "month"));
                 }
                 month = Some(value_to_i32(value)?);
             }
-            Some(id) if id == StaticStrings::DayAttr => {
+            Some(id) if id == StaticStrings::Day => {
                 if day.is_some() {
                     return Err(ExcType::type_error_multiple_values("datetime", "day"));
                 }
@@ -263,21 +264,21 @@ pub(crate) fn init(heap: &mut Heap<impl ResourceTracker>, args: ArgValues, inter
                 hour = value_to_i32(value)?;
                 seen_hour = true;
             }
-            Some(id) if id == StaticStrings::MinuteAttr => {
+            Some(id) if id == StaticStrings::Minute => {
                 if seen_minute {
                     return Err(ExcType::type_error_multiple_values("datetime", "minute"));
                 }
                 minute = value_to_i32(value)?;
                 seen_minute = true;
             }
-            Some(id) if id == StaticStrings::SecondAttr => {
+            Some(id) if id == StaticStrings::Second => {
                 if seen_second {
                     return Err(ExcType::type_error_multiple_values("datetime", "second"));
                 }
                 second = value_to_i32(value)?;
                 seen_second = true;
             }
-            Some(id) if id == StaticStrings::MicrosecondAttr => {
+            Some(id) if id == StaticStrings::Microsecond => {
                 if seen_microsecond {
                     return Err(ExcType::type_error_multiple_values("datetime", "microsecond"));
                 }
@@ -662,6 +663,116 @@ fn year_in_python_range(year: i32) -> bool {
     (1..=9999).contains(&year)
 }
 
+/// Formats a datetime as an ISO 8601 string with the given separator.
+///
+/// Matches CPython's `datetime.isoformat(sep='T')`.
+fn format_isoformat(dt: &DateTime, sep: char) -> String {
+    let Some((year, month, day, hour, minute, second, microsecond)) = to_components(dt) else {
+        return "<out of range>".to_owned();
+    };
+    let mut s = format!("{year:04}-{month:02}-{day:02}{sep}{hour:02}:{minute:02}:{second:02}");
+    if microsecond != 0 {
+        write!(s, ".{microsecond:06}").expect("writing to String cannot fail");
+    }
+    if let Some(offset) = offset_seconds(dt) {
+        s.push_str(&timezone::format_offset_hms(offset));
+    }
+    s
+}
+
+/// Computes the POSIX timestamp for a datetime.
+///
+/// For naive datetimes, treats them as local time and computes the UTC epoch
+/// assuming the local wall clock matches UTC (CPython's `datetime.timestamp()`
+/// for naive datetimes actually uses the system timezone, but since Monty runs
+/// in a sandbox with no timezone database, treating naive as UTC is the best
+/// approximation).
+///
+/// For aware datetimes, converts to UTC first via the stored offset.
+fn compute_timestamp(dt: &DateTime) -> f64 {
+    let utc_naive = if dt.offset_seconds.is_some() {
+        to_utc_naive(dt).unwrap_or(dt.naive)
+    } else {
+        dt.naive
+    };
+    let secs = utc_naive.and_utc().timestamp();
+    let micros = utc_naive.and_utc().timestamp_subsec_micros();
+    secs as f64 + f64::from(micros) / 1_000_000.0
+}
+
+/// Parses keyword arguments for `datetime.replace()`.
+///
+/// Returns a new datetime value with replaced components.
+fn extract_datetime_replace_kwargs(
+    args: ArgValues,
+    dt: &DateTime,
+    heap: &mut Heap<impl ResourceTracker>,
+    interns: &Interns,
+) -> RunResult<Value> {
+    let (pos, kwargs) = args.into_parts();
+    defer_drop_mut!(pos, heap);
+    let kwargs = kwargs.into_iter();
+    defer_drop_mut!(kwargs, heap);
+
+    let mut year = dt.naive.date().year();
+    let mut month = i32::try_from(dt.naive.date().month()).expect("month in 1..12");
+    let mut day = i32::try_from(dt.naive.date().day()).expect("day in 1..31");
+    let mut hour = i32::try_from(dt.naive.time().hour()).expect("hour in 0..23");
+    let mut minute = i32::try_from(dt.naive.time().minute()).expect("minute in 0..59");
+    let mut second = i32::try_from(dt.naive.time().second()).expect("second in 0..59");
+    let mut microsecond = i32::try_from(dt.naive.and_utc().timestamp_subsec_micros()).expect("micros in 0..999999");
+    let tzinfo = timezone_info(dt);
+    let tzinfo_ref = dt.tzinfo_ref;
+
+    // replace() takes no positional args
+    if let Some(arg) = pos.next() {
+        arg.drop_with_heap(heap);
+        return Err(ExcType::type_error(
+            "datetime.replace() takes 0 positional arguments".to_owned(),
+        ));
+    }
+
+    for (key, value) in kwargs {
+        defer_drop!(key, heap);
+        defer_drop!(value, heap);
+        let Some(key_name) = key.as_either_str(heap) else {
+            return Err(ExcType::type_error_kwargs_nonstring_key());
+        };
+        match key_name.string_id() {
+            Some(id) if id == StaticStrings::Year => year = value_to_i32(value)?,
+            Some(id) if id == StaticStrings::Month => month = value_to_i32(value)?,
+            Some(id) if id == StaticStrings::Day => day = value_to_i32(value)?,
+            Some(id) if id == StaticStrings::Hour => hour = value_to_i32(value)?,
+            Some(id) if id == StaticStrings::Minute => minute = value_to_i32(value)?,
+            Some(id) if id == StaticStrings::Second => second = value_to_i32(value)?,
+            Some(id) if id == StaticStrings::Microsecond => microsecond = value_to_i32(value)?,
+            Some(id) if id == StaticStrings::Tzinfo => {
+                // tzinfo replacement not yet supported — ignore for now
+            }
+            _ => {
+                return Err(ExcType::type_error_unexpected_keyword(
+                    "datetime.replace",
+                    key_name.as_str(interns),
+                ));
+            }
+        }
+    }
+
+    let new_dt = from_components(
+        year,
+        month,
+        day,
+        hour,
+        minute,
+        second,
+        microsecond,
+        tzinfo,
+        tzinfo_ref,
+        heap,
+    )?;
+    Ok(Value::Ref(heap.allocate(HeapData::DateTime(new_dt))?))
+}
+
 impl HeapItem for DateTime {
     fn py_estimate_size(&self) -> usize {
         std::mem::size_of::<Self>() + self.timezone_name.as_ref().map_or(0, String::len)
@@ -767,6 +878,63 @@ impl<'h> PyTrait<'h> for HeapRead<'h, DateTime> {
         Ok(Cow::Owned(s))
     }
 
+    fn py_call_attr(
+        &mut self,
+        _self_id: HeapId,
+        vm: &mut VM<'h, '_, impl ResourceTracker>,
+        attr: &crate::value::EitherStr,
+        args: ArgValues,
+    ) -> RunResult<CallResult> {
+        let dt = self.get(vm.heap).clone();
+        match attr.string_id() {
+            Some(id) if id == StaticStrings::Isoformat => {
+                args.check_zero_args("datetime.isoformat", vm.heap)?;
+                let s = format_isoformat(&dt, 'T');
+                Ok(CallResult::Value(Value::Ref(
+                    vm.heap.allocate(HeapData::Str(str::Str::new(s)))?,
+                )))
+            }
+            Some(id) if id == StaticStrings::Strftime => {
+                let fmt = date::extract_strftime_arg(args, "datetime.strftime", vm.heap, vm.interns)?;
+                let formatted = dt.naive.format(&fmt).to_string();
+                Ok(CallResult::Value(Value::Ref(
+                    vm.heap.allocate(HeapData::Str(str::Str::new(formatted)))?,
+                )))
+            }
+            Some(id) if id == StaticStrings::Replace => {
+                let result = extract_datetime_replace_kwargs(args, &dt, vm.heap, vm.interns)?;
+                Ok(CallResult::Value(result))
+            }
+            Some(id) if id == StaticStrings::Weekday => {
+                args.check_zero_args("datetime.weekday", vm.heap)?;
+                Ok(CallResult::Value(Value::Int(i64::from(
+                    dt.naive.date().weekday().num_days_from_monday(),
+                ))))
+            }
+            Some(id) if id == StaticStrings::Isoweekday => {
+                args.check_zero_args("datetime.isoweekday", vm.heap)?;
+                Ok(CallResult::Value(Value::Int(i64::from(
+                    dt.naive.date().weekday().number_from_monday(),
+                ))))
+            }
+            Some(id) if id == StaticStrings::Date => {
+                args.check_zero_args("datetime.date", vm.heap)?;
+                let d = date::from_ymd(
+                    dt.naive.date().year(),
+                    i32::try_from(dt.naive.date().month()).expect("month in 1..12"),
+                    i32::try_from(dt.naive.date().day()).expect("day in 1..31"),
+                )?;
+                Ok(CallResult::Value(Value::Ref(vm.heap.allocate(HeapData::Date(d))?)))
+            }
+            Some(id) if id == StaticStrings::Timestamp => {
+                args.check_zero_args("datetime.timestamp", vm.heap)?;
+                let ts = compute_timestamp(&dt);
+                Ok(CallResult::Value(Value::Float(ts)))
+            }
+            _ => Err(ExcType::attribute_error(Type::DateTime, attr.as_str(vm.interns))),
+        }
+    }
+
     fn py_getattr(
         &self,
         attr: &crate::value::EitherStr,
@@ -779,22 +947,22 @@ impl<'h> PyTrait<'h> for HeapRead<'h, DateTime> {
             Some(id) if id == StaticStrings::Year => {
                 Ok(Some(CallResult::Value(Value::Int(i64::from(dt.naive.date().year())))))
             }
-            Some(id) if id == StaticStrings::MonthAttr => {
+            Some(id) if id == StaticStrings::Month => {
                 Ok(Some(CallResult::Value(Value::Int(i64::from(dt.naive.date().month())))))
             }
-            Some(id) if id == StaticStrings::DayAttr => {
+            Some(id) if id == StaticStrings::Day => {
                 Ok(Some(CallResult::Value(Value::Int(i64::from(dt.naive.date().day())))))
             }
             Some(id) if id == StaticStrings::Hour => {
                 Ok(Some(CallResult::Value(Value::Int(i64::from(dt.naive.time().hour())))))
             }
-            Some(id) if id == StaticStrings::MinuteAttr => {
+            Some(id) if id == StaticStrings::Minute => {
                 Ok(Some(CallResult::Value(Value::Int(i64::from(dt.naive.time().minute())))))
             }
-            Some(id) if id == StaticStrings::SecondAttr => {
+            Some(id) if id == StaticStrings::Second => {
                 Ok(Some(CallResult::Value(Value::Int(i64::from(dt.naive.time().second())))))
             }
-            Some(id) if id == StaticStrings::MicrosecondAttr => Ok(Some(CallResult::Value(Value::Int(i64::from(
+            Some(id) if id == StaticStrings::Microsecond => Ok(Some(CallResult::Value(Value::Int(i64::from(
                 dt.naive.and_utc().timestamp_subsec_micros(),
             ))))),
             Some(id) if id == StaticStrings::Tzinfo => {

@@ -17,7 +17,7 @@ use crate::{
     intern::{Interns, StaticStrings},
     os::OsFunction,
     resource::{ResourceError, ResourceTracker},
-    types::{AttrCallResult, PyTrait, TimeDelta, Type, timedelta, value_to_i32},
+    types::{AttrCallResult, PyTrait, TimeDelta, Type, str::Str, timedelta, value_to_i32},
     value::{EitherStr, Value},
 };
 
@@ -140,13 +140,13 @@ pub(crate) fn init(heap: &mut Heap<impl ResourceTracker>, args: ArgValues, inter
                 }
                 year = Some(value_to_i32(value)?);
             }
-            Some(id) if id == StaticStrings::MonthAttr => {
+            Some(id) if id == StaticStrings::Month => {
                 if month.is_some() {
                     return Err(ExcType::type_error_multiple_values("date", "month"));
                 }
                 month = Some(value_to_i32(value)?);
             }
-            Some(id) if id == StaticStrings::DayAttr => {
+            Some(id) if id == StaticStrings::Day => {
                 if day.is_some() {
                     return Err(ExcType::type_error_multiple_values("date", "day"));
                 }
@@ -236,12 +236,60 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Date> {
         Ok(std::borrow::Cow::Owned(format!("{year:04}-{month:02}-{day:02}")))
     }
 
+    fn py_call_attr(
+        &mut self,
+        _self_id: HeapId,
+        vm: &mut VM<'h, '_, impl ResourceTracker>,
+        attr: &EitherStr,
+        args: ArgValues,
+    ) -> RunResult<CallResult> {
+        let date = *self.get(vm.heap);
+        match attr.string_id() {
+            Some(id) if id == StaticStrings::Isoformat => {
+                args.check_zero_args("date.isoformat", vm.heap)?;
+                let (year, month, day) = to_ymd(date);
+                Ok(CallResult::Value(Value::Ref(vm.heap.allocate(HeapData::Str(
+                    Str::new(format!("{year:04}-{month:02}-{day:02}")),
+                ))?)))
+            }
+            Some(id) if id == StaticStrings::Strftime => {
+                let fmt = extract_strftime_arg(args, "date.strftime", vm.heap, vm.interns)?;
+                let formatted = date.0.format(&fmt).to_string();
+                Ok(CallResult::Value(Value::Ref(
+                    vm.heap.allocate(HeapData::Str(Str::new(formatted)))?,
+                )))
+            }
+            Some(id) if id == StaticStrings::Replace => {
+                let (year, month, day) = to_ymd(date);
+                let (new_year, new_month, new_day) =
+                    extract_date_replace_kwargs(args, year, month, day, vm.heap, vm.interns)?;
+                let new_date = from_ymd(new_year, new_month, new_day)?;
+                Ok(CallResult::Value(Value::Ref(
+                    vm.heap.allocate(HeapData::Date(new_date))?,
+                )))
+            }
+            Some(id) if id == StaticStrings::Weekday => {
+                args.check_zero_args("date.weekday", vm.heap)?;
+                Ok(CallResult::Value(Value::Int(i64::from(
+                    date.0.weekday().num_days_from_monday(),
+                ))))
+            }
+            Some(id) if id == StaticStrings::Isoweekday => {
+                args.check_zero_args("date.isoweekday", vm.heap)?;
+                Ok(CallResult::Value(Value::Int(i64::from(
+                    date.0.weekday().number_from_monday(),
+                ))))
+            }
+            _ => Err(ExcType::attribute_error(Type::Date, attr.as_str(vm.interns))),
+        }
+    }
+
     fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<Option<CallResult>> {
         let (year, month, day) = to_ymd(*self.get(vm.heap));
         match attr.string_id() {
             Some(id) if id == StaticStrings::Year => Ok(Some(CallResult::Value(Value::Int(i64::from(year))))),
-            Some(id) if id == StaticStrings::MonthAttr => Ok(Some(CallResult::Value(Value::Int(i64::from(month))))),
-            Some(id) if id == StaticStrings::DayAttr => Ok(Some(CallResult::Value(Value::Int(i64::from(day))))),
+            Some(id) if id == StaticStrings::Month => Ok(Some(CallResult::Value(Value::Int(i64::from(month))))),
+            Some(id) if id == StaticStrings::Day => Ok(Some(CallResult::Value(Value::Int(i64::from(day))))),
             _ => Ok(None),
         }
     }
@@ -298,4 +346,80 @@ pub(crate) fn py_sub_timedelta(
         Ok(value) => Ok(Some(Value::Ref(heap.allocate(HeapData::Date(value))?))),
         Err(_) => Ok(None),
     }
+}
+
+/// Extracts the format string argument for `strftime()`.
+///
+/// Accepts exactly one positional string argument.
+pub(crate) fn extract_strftime_arg(
+    args: ArgValues,
+    method_name: &str,
+    heap: &mut Heap<impl ResourceTracker>,
+    interns: &Interns,
+) -> RunResult<String> {
+    let value = args.get_one_arg(method_name, heap)?;
+    let result = match &value {
+        Value::InternString(string_id) => Ok(interns.get_str(*string_id).to_owned()),
+        Value::Ref(heap_id) => match heap.get(*heap_id) {
+            HeapData::Str(s) => Ok(s.as_str().to_owned()),
+            _ => Err(ExcType::type_error(
+                "descriptor 'strftime' requires a 'str' object but received a non-str type".to_owned(),
+            )),
+        },
+        _ => Err(ExcType::type_error(
+            "descriptor 'strftime' requires a 'str' object but received a non-str type".to_owned(),
+        )),
+    };
+    value.drop_with_heap(heap);
+    result
+}
+
+/// Parses keyword arguments for `date.replace()`.
+///
+/// Returns `(year, month, day)` with original values as defaults.
+fn extract_date_replace_kwargs(
+    args: ArgValues,
+    year: i32,
+    month: u32,
+    day: u32,
+    heap: &mut Heap<impl ResourceTracker>,
+    interns: &Interns,
+) -> RunResult<(i32, i32, i32)> {
+    let (pos, kwargs) = args.into_parts();
+    defer_drop_mut!(pos, heap);
+    let kwargs = kwargs.into_iter();
+    defer_drop_mut!(kwargs, heap);
+
+    let mut new_year = year;
+    let mut new_month = i32::try_from(month).expect("month is always in 1..=12");
+    let mut new_day = i32::try_from(day).expect("day is always in 1..=31");
+
+    // replace() takes no positional args
+    if let Some(arg) = pos.next() {
+        arg.drop_with_heap(heap);
+        return Err(ExcType::type_error(
+            "date.replace() takes 0 positional arguments".to_owned(),
+        ));
+    }
+
+    for (key, value) in kwargs {
+        defer_drop!(key, heap);
+        defer_drop!(value, heap);
+        let Some(key_name) = key.as_either_str(heap) else {
+            return Err(ExcType::type_error_kwargs_nonstring_key());
+        };
+        match key_name.string_id() {
+            Some(id) if id == StaticStrings::Year => new_year = value_to_i32(value)?,
+            Some(id) if id == StaticStrings::Month => new_month = value_to_i32(value)?,
+            Some(id) if id == StaticStrings::Day => new_day = value_to_i32(value)?,
+            _ => {
+                return Err(ExcType::type_error_unexpected_keyword(
+                    "date.replace",
+                    key_name.as_str(interns),
+                ));
+            }
+        }
+    }
+
+    Ok((new_year, new_month, new_day))
 }
