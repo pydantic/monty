@@ -120,10 +120,7 @@ impl TimeZone {
         }
 
         let Some(offset_seconds) = offset_seconds else {
-            return Err(ExcType::type_error_missing_positional_with_names(
-                "timezone",
-                &["offset"],
-            ));
+            return Err(ExcType::type_error_c_missing_required_named("timezone", "offset", 1));
         };
         let name = name.unwrap_or(None);
         if offset_seconds == 0 && name.is_none() {

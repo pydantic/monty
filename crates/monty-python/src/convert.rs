@@ -109,7 +109,11 @@ pub fn py_to_monty(obj: &Bound<'_, PyAny>, dc_registry: &DcRegistry) -> PyResult
     } else if let Ok(datetime) = obj.cast::<PyDateTime>() {
         py_datetime_to_monty(datetime)
     } else if let Ok(date) = obj.cast::<PyDate>() {
-        Ok(py_date_to_monty(date))
+        Ok(MontyObject::Date(MontyDate {
+            year: date.get_year(),
+            month: date.get_month(),
+            day: date.get_day(),
+        }))
     } else if let Ok(delta) = obj.cast::<PyDelta>() {
         Ok(MontyObject::TimeDelta(py_timedelta_to_monty(delta)))
     } else if obj.is_instance(get_datetime_timezone_type(obj.py())?)? {
@@ -224,9 +228,13 @@ pub fn monty_to_py(py: Python<'_>, obj: &MontyObject, dc_registry: &DcRegistry) 
             let exc = exc_monty_to_py(py, MontyException::new(*exc_type, arg.clone()));
             Ok(exc.into_value(py).into_any())
         }
-        MontyObject::Date(date) => monty_date_to_py(py, date),
+        MontyObject::Date(date) => PyDate::new(py, date.year, date.month, date.day)
+            .map(Bound::into_any)
+            .map(Bound::unbind),
         MontyObject::DateTime(datetime) => monty_datetime_to_py(py, datetime),
-        MontyObject::TimeDelta(delta) => monty_timedelta_to_py(py, delta),
+        MontyObject::TimeDelta(delta) => PyDelta::new(py, delta.days, delta.seconds, delta.microseconds, true)
+            .map(Bound::into_any)
+            .map(Bound::unbind),
         MontyObject::TimeZone(timezone) => monty_timezone_to_py(py, timezone),
         // Return Python's built-in type object
         MontyObject::Type(t) => import_builtins(py)?.getattr(py, t.to_string()),
@@ -258,29 +266,6 @@ pub fn import_builtins(py: Python<'_>) -> PyResult<&Py<PyModule>> {
     static BUILTINS: PyOnceLock<Py<PyModule>> = PyOnceLock::new();
 
     BUILTINS.get_or_try_init(py, || py.import("builtins").map(Bound::unbind))
-}
-
-/// Converts a Monty date payload to a native Python `datetime.date`.
-fn monty_date_to_py(py: Python<'_>, date: &MontyDate) -> PyResult<Py<PyAny>> {
-    PyDate::new(py, date.year, date.month, date.day)
-        .map(Bound::into_any)
-        .map(Bound::unbind)
-}
-
-/// Converts a native Python `datetime.date` to Monty's carrier representation.
-fn py_date_to_monty(date: &Bound<'_, PyDate>) -> MontyObject {
-    MontyObject::Date(MontyDate {
-        year: date.get_year(),
-        month: date.get_month(),
-        day: date.get_day(),
-    })
-}
-
-/// Converts a Monty timedelta payload to a native Python `datetime.timedelta`.
-fn monty_timedelta_to_py(py: Python<'_>, delta: &MontyTimeDelta) -> PyResult<Py<PyAny>> {
-    PyDelta::new(py, delta.days, delta.seconds, delta.microseconds, true)
-        .map(Bound::into_any)
-        .map(Bound::unbind)
 }
 
 /// Converts a native Python `datetime.timedelta` to Monty's carrier representation.

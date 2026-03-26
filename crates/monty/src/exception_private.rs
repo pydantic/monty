@@ -554,6 +554,59 @@ impl ExcType {
         .into()
     }
 
+    /// Creates a TypeError for unexpected keyword argument in C-implemented types.
+    ///
+    /// Matches CPython's `PyArg_ParseTupleAndKeywords` format:
+    /// `this function got an unexpected keyword argument '{key}'`
+    #[must_use]
+    pub(crate) fn type_error_c_unexpected_keyword(key: &str) -> RunError {
+        SimpleException::new_msg(
+            Self::TypeError,
+            format!("this function got an unexpected keyword argument '{key}'"),
+        )
+        .into()
+    }
+
+    /// Creates a TypeError for too many arguments to a C-implemented type.
+    ///
+    /// Matches CPython's `PyArg_ParseTupleAndKeywords` format:
+    /// `function takes at most {max} arguments ({actual} given)`
+    #[must_use]
+    pub(crate) fn type_error_c_at_most(max: usize, actual: usize) -> RunError {
+        SimpleException::new_msg(
+            Self::TypeError,
+            format!("function takes at most {max} arguments ({actual} given)"),
+        )
+        .into()
+    }
+
+    /// Creates a TypeError for a missing required argument in a C-implemented type.
+    ///
+    /// Matches CPython's `PyArg_ParseTupleAndKeywords` format:
+    /// `function missing required argument '{arg_name}' (pos {pos})`
+    #[must_use]
+    pub(crate) fn type_error_c_missing_required(arg_name: &str, pos: usize) -> RunError {
+        SimpleException::new_msg(
+            Self::TypeError,
+            format!("function missing required argument '{arg_name}' (pos {pos})"),
+        )
+        .into()
+    }
+
+    /// Creates a TypeError for a missing required argument in a C-implemented type,
+    /// with a function name prefix.
+    ///
+    /// Matches CPython's format for types like `timezone`:
+    /// `{name}() missing required argument '{arg_name}' (pos {pos})`
+    #[must_use]
+    pub(crate) fn type_error_c_missing_required_named(name: &str, arg_name: &str, pos: usize) -> RunError {
+        SimpleException::new_msg(
+            Self::TypeError,
+            format!("{name}() missing required argument '{arg_name}' (pos {pos})"),
+        )
+        .into()
+    }
+
     /// Creates a TypeError for **kwargs argument that is not a mapping.
     ///
     /// Matches CPython's format: `{name}() argument after ** must be a mapping, not {type_name}`

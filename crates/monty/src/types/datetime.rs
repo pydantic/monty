@@ -296,28 +296,19 @@ pub(crate) fn init(heap: &mut Heap<impl ResourceTracker>, args: ArgValues, inter
                 seen_tzinfo = true;
             }
             _ => {
-                return Err(ExcType::type_error_unexpected_keyword(
-                    "datetime",
-                    key_name.as_str(interns),
-                ));
+                return Err(ExcType::type_error_c_unexpected_keyword(key_name.as_str(interns)));
             }
         }
     }
 
     let Some(year) = year else {
-        return Err(ExcType::type_error_missing_positional_with_names(
-            "datetime",
-            &["year", "month", "day"],
-        ));
+        return Err(ExcType::type_error_c_missing_required("year", 1));
     };
     let Some(month) = month else {
-        return Err(ExcType::type_error_missing_positional_with_names(
-            "datetime",
-            &["month", "day"],
-        ));
+        return Err(ExcType::type_error_c_missing_required("month", 2));
     };
     let Some(day) = day else {
-        return Err(ExcType::type_error_missing_positional_with_names("datetime", &["day"]));
+        return Err(ExcType::type_error_c_missing_required("day", 3));
     };
 
     let dt = from_components(

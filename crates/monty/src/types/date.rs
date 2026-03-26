@@ -108,9 +108,16 @@ pub(crate) fn to_ymd(date: Date) -> (i32, u32, u32) {
 /// Constructor for `date(year, month, day)`.
 pub(crate) fn init(heap: &mut Heap<impl ResourceTracker>, args: ArgValues, interns: &Interns) -> RunResult<Value> {
     let (pos, kwargs) = args.into_parts();
+    // CPython's date() is C-implemented and counts total args (pos + kwargs).
+    // Any total > 3 is rejected before checking individual args.
+    let total_args = pos.len() + kwargs.len();
     defer_drop_mut!(pos, heap);
     let kwargs = kwargs.into_iter();
     defer_drop_mut!(kwargs, heap);
+
+    if total_args > 3 {
+        return Err(ExcType::type_error_c_at_most(3, total_args));
+    }
 
     let mut year: Option<i32> = None;
     let mut month: Option<i32> = None;
@@ -122,7 +129,7 @@ pub(crate) fn init(heap: &mut Heap<impl ResourceTracker>, args: ArgValues, inter
             0 => year = Some(value_to_i32(arg)?),
             1 => month = Some(value_to_i32(arg)?),
             2 => day = Some(value_to_i32(arg)?),
-            _ => return Err(ExcType::type_error_at_most("date", 3, index + 1)),
+            _ => unreachable!("total_args check above prevents this"),
         }
     }
 
@@ -157,19 +164,13 @@ pub(crate) fn init(heap: &mut Heap<impl ResourceTracker>, args: ArgValues, inter
     }
 
     let Some(year) = year else {
-        return Err(ExcType::type_error_missing_positional_with_names(
-            "date",
-            &["year", "month", "day"],
-        ));
+        return Err(ExcType::type_error_c_missing_required("year", 1));
     };
     let Some(month) = month else {
-        return Err(ExcType::type_error_missing_positional_with_names(
-            "date",
-            &["month", "day"],
-        ));
+        return Err(ExcType::type_error_c_missing_required("month", 2));
     };
     let Some(day) = day else {
-        return Err(ExcType::type_error_missing_positional_with_names("date", &["day"]));
+        return Err(ExcType::type_error_c_missing_required("day", 3));
     };
 
     let date = from_ymd(year, month, day)?;

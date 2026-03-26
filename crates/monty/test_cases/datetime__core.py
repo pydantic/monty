@@ -489,3 +489,282 @@ try:
     assert False, 'strptime should reject mismatched format'
 except ValueError as e:
     assert str(e) == "time data '2024-06-15' does not match format '%d/%m/%Y'", f'strptime error message: {e}'
+
+# === keyword-only construction for date ===
+
+assert datetime.date(year=2024, month=6, day=15) == datetime.date(2024, 6, 15), 'date keyword construction'
+assert datetime.date(2024, month=6, day=15) == datetime.date(2024, 6, 15), 'date mixed positional/keyword construction'
+
+try:
+    datetime.date(2024, 1, 1, 1)
+    assert False, 'date should reject too many positional args'
+except TypeError as e:
+    assert str(e) == 'function takes at most 3 arguments (4 given)', f'date too many args message: {e}'
+
+try:
+    datetime.date(2024, 1, 1, foo=1)
+    assert False, 'date should reject unknown keyword arg'
+except TypeError as e:
+    assert str(e) == 'function takes at most 3 arguments (4 given)', f'date unknown kwarg message: {e}'
+
+# === missing positional arguments for date ===
+
+try:
+    datetime.date()
+    assert False, 'date() with no args should raise TypeError'
+except TypeError as e:
+    assert str(e) == "function missing required argument 'year' (pos 1)", f'date() no args message: {e}'
+
+try:
+    datetime.date(2024)
+    assert False, 'date() with 1 arg should raise TypeError'
+except TypeError as e:
+    assert str(e) == "function missing required argument 'month' (pos 2)", f'date(year) message: {e}'
+
+try:
+    datetime.date(2024, 1)
+    assert False, 'date() with 2 args should raise TypeError'
+except TypeError as e:
+    assert str(e) == "function missing required argument 'day' (pos 3)", f'date(year, month) message: {e}'
+
+# === keyword-only construction for datetime ===
+
+assert datetime.datetime(year=2024, month=1, day=1, hour=12) == datetime.datetime(2024, 1, 1, 12), (
+    'datetime keyword construction'
+)
+
+try:
+    datetime.datetime(2024, 1, 1, foo=1)
+    assert False, 'datetime should reject unknown keyword arg'
+except TypeError as e:
+    assert str(e) == "this function got an unexpected keyword argument 'foo'", f'datetime unknown kwarg message: {e}'
+
+# === missing positional arguments for datetime ===
+
+try:
+    datetime.datetime()
+    assert False, 'datetime() with no args should raise TypeError'
+except TypeError as e:
+    assert str(e) == "function missing required argument 'year' (pos 1)", f'datetime() no args message: {e}'
+
+try:
+    datetime.datetime(2024)
+    assert False, 'datetime() with 1 arg should raise TypeError'
+except TypeError as e:
+    assert str(e) == "function missing required argument 'month' (pos 2)", f'datetime(year) message: {e}'
+
+try:
+    datetime.datetime(2024, 1)
+    assert False, 'datetime() with 2 args should raise TypeError'
+except TypeError as e:
+    assert str(e) == "function missing required argument 'day' (pos 3)", f'datetime(year, month) message: {e}'
+
+# === aware datetime arithmetic ===
+
+utc = datetime.timezone.utc
+aware_base = datetime.datetime(2024, 6, 15, 12, 0, 0, tzinfo=utc)
+td_2h = datetime.timedelta(hours=2)
+
+# aware datetime + timedelta
+aware_add = aware_base + td_2h
+assert aware_add == datetime.datetime(2024, 6, 15, 14, 0, 0, tzinfo=utc), 'aware datetime + timedelta'
+assert aware_add.tzinfo is utc, 'aware datetime + timedelta preserves tzinfo'
+
+# aware datetime - timedelta
+aware_sub = aware_base - td_2h
+assert aware_sub == datetime.datetime(2024, 6, 15, 10, 0, 0, tzinfo=utc), 'aware datetime - timedelta'
+assert aware_sub.tzinfo is utc, 'aware datetime - timedelta preserves tzinfo'
+
+# aware datetime - aware datetime
+aware_diff = aware_base - datetime.datetime(2024, 6, 15, 10, 0, 0, tzinfo=utc)
+assert aware_diff == datetime.timedelta(hours=2), 'aware datetime - aware datetime'
+
+# aware datetime subtraction with different offsets
+plus5 = datetime.timezone(datetime.timedelta(hours=5))
+aware_plus5 = datetime.datetime(2024, 6, 15, 17, 0, 0, tzinfo=plus5)
+diff_tz = aware_base - aware_plus5
+assert diff_tz == datetime.timedelta(0), 'aware datetimes at same UTC instant should have zero diff'
+
+# === aware datetime comparison ===
+
+aware_a = datetime.datetime(2024, 1, 1, 12, 0, 0, tzinfo=utc)
+aware_b = datetime.datetime(2024, 1, 1, 14, 0, 0, tzinfo=utc)
+assert aware_a < aware_b, 'aware datetime < comparison'
+assert aware_b > aware_a, 'aware datetime > comparison'
+assert aware_a <= aware_a, 'aware datetime <= equal'
+assert aware_a >= aware_a, 'aware datetime >= equal'
+assert not (aware_a > aware_b), 'aware datetime not >'
+
+# === naive datetime comparison ===
+
+naive_a = datetime.datetime(2024, 1, 1, 10, 0, 0)
+naive_b = datetime.datetime(2024, 1, 1, 12, 0, 0)
+assert naive_a < naive_b, 'naive datetime < comparison'
+assert naive_b > naive_a, 'naive datetime > comparison'
+assert naive_a == naive_a, 'naive datetime equality'
+assert not (naive_a == naive_b), 'naive datetime inequality'
+
+# === timedelta comparison ===
+
+td_a = datetime.timedelta(days=1)
+td_b = datetime.timedelta(days=2)
+assert td_a < td_b, 'timedelta < comparison'
+assert td_b > td_a, 'timedelta > comparison'
+assert td_a <= td_a, 'timedelta <= equal'
+assert td_a >= td_a, 'timedelta >= equal'
+assert td_a == td_a, 'timedelta equality'
+assert not (td_a == td_b), 'timedelta inequality'
+
+# === timedelta repr with microseconds ===
+
+assert repr(datetime.timedelta(microseconds=500)) == 'datetime.timedelta(microseconds=500)', (
+    'timedelta repr with microseconds only'
+)
+assert repr(datetime.timedelta(seconds=1, microseconds=500)) == ('datetime.timedelta(seconds=1, microseconds=500)'), (
+    'timedelta repr with seconds and microseconds'
+)
+
+# === datetime repr with seconds and microseconds ===
+
+assert repr(datetime.datetime(2024, 1, 1, 0, 0, 30)) == 'datetime.datetime(2024, 1, 1, 0, 0, 30)', (
+    'datetime repr with seconds'
+)
+assert repr(datetime.datetime(2024, 1, 1, 0, 0, 0, 123456)) == 'datetime.datetime(2024, 1, 1, 0, 0, 0, 123456)', (
+    'datetime repr with microseconds'
+)
+assert repr(datetime.datetime(2024, 1, 1, 0, 0, 30, 123456)) == ('datetime.datetime(2024, 1, 1, 0, 0, 30, 123456)'), (
+    'datetime repr with seconds and microseconds'
+)
+
+# === datetime str with microseconds ===
+
+assert str(datetime.datetime(2024, 1, 1, 10, 30, 0, 123456)) == '2024-01-01 10:30:00.123456', (
+    'datetime str with microseconds'
+)
+
+# === datetime repr with UTC timezone ===
+
+assert repr(datetime.datetime(2024, 1, 1, 0, 0, tzinfo=datetime.timezone.utc)) == (
+    'datetime.datetime(2024, 1, 1, 0, 0, tzinfo=datetime.timezone.utc)'
+), 'datetime repr with UTC timezone'
+
+# === datetime.replace with second/microsecond ===
+
+dt_rep = datetime.datetime(2024, 6, 15, 10, 30, 45, 123456)
+assert dt_rep.replace(second=0) == datetime.datetime(2024, 6, 15, 10, 30, 0, 123456), 'datetime.replace(second=0)'
+assert dt_rep.replace(microsecond=0) == datetime.datetime(2024, 6, 15, 10, 30, 45, 0), 'datetime.replace(microsecond=0)'
+assert dt_rep.replace(year=2025, month=1, day=1, hour=0, minute=0, second=0, microsecond=0) == (
+    datetime.datetime(2025, 1, 1, 0, 0)
+), 'datetime.replace all fields'
+
+# === date.replace ===
+
+d_rep = datetime.date(2024, 6, 15)
+assert d_rep.replace(year=2025) == datetime.date(2025, 6, 15), 'date.replace(year)'
+assert d_rep.replace(month=1) == datetime.date(2024, 1, 15), 'date.replace(month)'
+assert d_rep.replace(day=1) == datetime.date(2024, 6, 1), 'date.replace(day)'
+
+# === date.isoformat ===
+
+assert datetime.date(1, 1, 1).isoformat() == '0001-01-01', 'isoformat with minimum date'
+assert datetime.date(9999, 12, 31).isoformat() == '9999-12-31', 'isoformat with maximum date'
+
+# === datetime.isoformat with timezone ===
+
+plus1 = datetime.timezone(datetime.timedelta(hours=1))
+assert datetime.datetime(2024, 1, 15, 10, 30, tzinfo=plus1).isoformat() == '2024-01-15T10:30:00+01:00', (
+    'aware datetime.isoformat with +01:00'
+)
+
+minus5 = datetime.timezone(datetime.timedelta(hours=-5))
+assert datetime.datetime(2024, 1, 15, 10, 30, tzinfo=minus5).isoformat() == '2024-01-15T10:30:00-05:00', (
+    'aware datetime.isoformat with -05:00'
+)
+
+# === datetime.isoformat with seconds and microseconds ===
+
+assert datetime.datetime(2024, 1, 15, 10, 30, 45).isoformat() == '2024-01-15T10:30:45', (
+    'datetime.isoformat with seconds'
+)
+
+# === date arithmetic ===
+
+assert datetime.date(2024, 3, 1) - datetime.date(2024, 2, 1) == datetime.timedelta(days=29), (
+    'date subtraction across leap year February'
+)
+
+# === date comparison ===
+
+d_a = datetime.date(2024, 1, 1)
+d_b = datetime.date(2024, 12, 31)
+assert d_a < d_b, 'date < comparison'
+assert d_b > d_a, 'date > comparison'
+assert d_a <= d_a, 'date <= equal'
+assert d_a >= d_a, 'date >= equal'
+
+# === date attribute access ===
+
+d_attr = datetime.date(2024, 6, 15)
+assert d_attr.year == 2024, 'date.year attribute'
+assert d_attr.month == 6, 'date.month attribute'
+assert d_attr.day == 15, 'date.day attribute'
+
+# === timedelta with milliseconds, minutes, hours, weeks ===
+
+assert datetime.timedelta(milliseconds=1500) == datetime.timedelta(seconds=1, microseconds=500000), (
+    'timedelta with milliseconds'
+)
+assert datetime.timedelta(minutes=90) == datetime.timedelta(seconds=5400), 'timedelta with minutes'
+assert datetime.timedelta(hours=2) == datetime.timedelta(seconds=7200), 'timedelta with hours'
+assert datetime.timedelta(weeks=1) == datetime.timedelta(days=7), 'timedelta with weeks'
+
+# === timedelta attributes ===
+
+td_attrs = datetime.timedelta(days=3, seconds=7200, microseconds=500)
+assert td_attrs.days == 3, 'timedelta.days attribute'
+assert td_attrs.seconds == 7200, 'timedelta.seconds attribute'
+assert td_attrs.microseconds == 500, 'timedelta.microseconds attribute'
+
+# === timezone constructor edge cases ===
+
+try:
+    datetime.timezone(datetime.timedelta(hours=-24))
+    assert False, 'timezone offset at -24 hours should raise ValueError'
+except ValueError as e:
+    assert str(e) == (
+        'offset must be a timedelta strictly between -timedelta(hours=24) and timedelta(hours=24), '
+        'not datetime.timedelta(days=-1)'
+    ), f'timezone -24h range validation: {e}'
+
+try:
+    datetime.timezone()
+    assert False, 'timezone() with no args should raise TypeError'
+except TypeError as e:
+    assert str(e) == "timezone() missing required argument 'offset' (pos 1)", f'timezone() no args message: {e}'
+
+# === timezone repr and str ===
+
+assert str(datetime.timezone.utc) == 'UTC', 'timezone.utc str should be UTC'
+assert str(datetime.timezone(datetime.timedelta(hours=5))) == 'UTC+05:00', 'positive offset timezone str'
+assert str(datetime.timezone(datetime.timedelta(hours=-5))) == 'UTC-05:00', 'negative offset timezone str'
+assert str(datetime.timezone(datetime.timedelta(hours=5, minutes=30))) == 'UTC+05:30', 'offset with minutes'
+assert str(datetime.timezone(datetime.timedelta(hours=0), 'MyTZ')) == 'MyTZ', 'named timezone str uses name'
+
+# === datetime.now with tz keyword arg ===
+
+now_kw = datetime.datetime.now(tz=datetime.timezone.utc)
+assert now_kw.tzinfo is not None, 'datetime.now(tz=...) should return aware datetime'
+
+# === hash ===
+
+assert hash(datetime.date(2024, 1, 1)) == hash(datetime.date(2024, 1, 1)), 'date hash consistency'
+assert hash(datetime.datetime(2024, 1, 1, 12, 0)) == hash(datetime.datetime(2024, 1, 1, 12, 0)), (
+    'datetime hash consistency'
+)
+assert hash(datetime.timedelta(days=1)) == hash(datetime.timedelta(days=1)), 'timedelta hash consistency'
+
+# === datetime.timestamp() for naive datetime ===
+
+# naive datetimes use local time for timestamp, just check it returns a float
+ts_naive = datetime.datetime(2024, 6, 15, 12, 0, 0).timestamp()
+assert isinstance(ts_naive, float), 'naive datetime.timestamp() should return float'
