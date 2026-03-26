@@ -12,7 +12,7 @@ use crate::{
     args::ArgValues,
     bytecode::{CallResult, VM},
     defer_drop, defer_drop_mut,
-    exception_private::{ExcType, RunResult, SimpleException},
+    exception_private::{ExcType, RunError, RunResult, SimpleException},
     heap::{Heap, HeapData, HeapId, HeapItem, HeapRead},
     intern::{Interns, StaticStrings},
     os::OsFunction,
@@ -228,7 +228,13 @@ pub(crate) fn init(heap: &mut Heap<impl ResourceTracker>, args: ArgValues, inter
                 tzinfo_ref = value_tzinfo_ref;
                 seen_tzinfo = true;
             }
-            _ => return Err(ExcType::type_error_at_most("datetime", 8, index + 1)),
+            _ => {
+                return Err(SimpleException::new_msg(
+                    ExcType::TypeError,
+                    format!("function takes at most 8 positional arguments ({} given)", index + 1),
+                )
+                .into());
+            }
         }
     }
 
@@ -241,53 +247,57 @@ pub(crate) fn init(heap: &mut Heap<impl ResourceTracker>, args: ArgValues, inter
         match key_name.string_id() {
             Some(id) if id == StaticStrings::Year => {
                 if year.is_some() {
-                    return Err(ExcType::type_error_multiple_values("datetime", "year"));
+                    return Err(ExcType::type_error_positional_keyword_conflict("function", "year", 1));
                 }
                 year = Some(value_to_i32(value)?);
             }
             Some(id) if id == StaticStrings::Month => {
                 if month.is_some() {
-                    return Err(ExcType::type_error_multiple_values("datetime", "month"));
+                    return Err(ExcType::type_error_positional_keyword_conflict("function", "month", 2));
                 }
                 month = Some(value_to_i32(value)?);
             }
             Some(id) if id == StaticStrings::Day => {
                 if day.is_some() {
-                    return Err(ExcType::type_error_multiple_values("datetime", "day"));
+                    return Err(ExcType::type_error_positional_keyword_conflict("function", "day", 3));
                 }
                 day = Some(value_to_i32(value)?);
             }
             Some(id) if id == StaticStrings::Hour => {
                 if seen_hour {
-                    return Err(ExcType::type_error_multiple_values("datetime", "hour"));
+                    return Err(ExcType::type_error_positional_keyword_conflict("function", "hour", 4));
                 }
                 hour = value_to_i32(value)?;
                 seen_hour = true;
             }
             Some(id) if id == StaticStrings::Minute => {
                 if seen_minute {
-                    return Err(ExcType::type_error_multiple_values("datetime", "minute"));
+                    return Err(ExcType::type_error_positional_keyword_conflict("function", "minute", 5));
                 }
                 minute = value_to_i32(value)?;
                 seen_minute = true;
             }
             Some(id) if id == StaticStrings::Second => {
                 if seen_second {
-                    return Err(ExcType::type_error_multiple_values("datetime", "second"));
+                    return Err(ExcType::type_error_positional_keyword_conflict("function", "second", 6));
                 }
                 second = value_to_i32(value)?;
                 seen_second = true;
             }
             Some(id) if id == StaticStrings::Microsecond => {
                 if seen_microsecond {
-                    return Err(ExcType::type_error_multiple_values("datetime", "microsecond"));
+                    return Err(ExcType::type_error_positional_keyword_conflict(
+                        "function",
+                        "microsecond",
+                        7,
+                    ));
                 }
                 microsecond = value_to_i32(value)?;
                 seen_microsecond = true;
             }
             Some(id) if id == StaticStrings::Tzinfo => {
                 if seen_tzinfo {
-                    return Err(ExcType::type_error_multiple_values("datetime", "tzinfo"));
+                    return Err(ExcType::type_error_positional_keyword_conflict("function", "tzinfo", 8));
                 }
                 let (value_tzinfo, value_tzinfo_ref) = tzinfo_from_value(value, heap)?;
                 update_retained_tzinfo(retained_tzinfo, value_tzinfo_ref, heap);
@@ -354,7 +364,8 @@ pub(crate) fn class_now(
             seen_tz = true;
         } else {
             arg.drop_with_heap(heap);
-            return Err(ExcType::type_error_at_most("datetime.now", 1, index + 1));
+            tz_value.drop_with_heap(heap);
+            return Err(ExcType::type_error_method_at_most("now", 1, index + 1));
         }
     }
 
@@ -364,21 +375,22 @@ pub(crate) fn class_now(
 
         let Some(key_name) = key_name else {
             value.drop_with_heap(heap);
+            tz_value.drop_with_heap(heap);
             return Err(ExcType::type_error_kwargs_nonstring_key());
         };
         if key_name.string_id() != Some(StaticStrings::Tz.into()) {
             value.drop_with_heap(heap);
-            return Err(ExcType::type_error_unexpected_keyword(
-                "datetime.now",
-                key_name.as_str(interns),
-            ));
+            tz_value.drop_with_heap(heap);
+            return Err(ExcType::type_error_unexpected_keyword("now", key_name.as_str(interns)));
         }
         if seen_tz {
             value.drop_with_heap(heap);
-            return Err(ExcType::type_error_multiple_values("datetime.now", "tz"));
+            tz_value.drop_with_heap(heap);
+            return Err(ExcType::type_error_method_at_most("now", 1, 2));
         }
         if let Err(e) = validate_tz_arg(&value, heap) {
             value.drop_with_heap(heap);
+            tz_value.drop_with_heap(heap);
             return Err(e);
         }
         tz_value = value;
@@ -610,13 +622,9 @@ fn tzinfo_from_value(
         Value::None => Ok((None, None)),
         Value::Ref(id) => match heap.get(*id) {
             HeapData::TimeZone(tz) => Ok((Some(tz.clone()), Some(*id))),
-            _other => Err(ExcType::type_error(
-                "tzinfo argument must be datetime.timezone or None".to_owned(),
-            )),
+            other => Err(tzinfo_type_error(other.py_type_name())),
         },
-        _ => Err(ExcType::type_error(
-            "tzinfo argument must be datetime.timezone or None".to_owned(),
-        )),
+        _ => Err(tzinfo_type_error(value.py_type_name())),
     }
 }
 
@@ -630,14 +638,19 @@ fn validate_tz_arg(value: &Value, heap: &Heap<impl ResourceTracker>) -> RunResul
         Value::None => Ok(()),
         Value::Ref(id) => match heap.get(*id) {
             HeapData::TimeZone(_) => Ok(()),
-            _ => Err(ExcType::type_error(
-                "tzinfo argument must be datetime.timezone or None".to_owned(),
-            )),
+            other => Err(tzinfo_type_error(other.py_type_name())),
         },
-        _ => Err(ExcType::type_error(
-            "tzinfo argument must be datetime.timezone or None".to_owned(),
-        )),
+        _ => Err(tzinfo_type_error(value.py_type_name())),
     }
+}
+
+/// Creates the TypeError for an invalid tzinfo argument.
+///
+/// Matches CPython: `tzinfo argument must be None or of a tzinfo subclass, not type 'int'`
+fn tzinfo_type_error(type_name: &str) -> RunError {
+    ExcType::type_error(format!(
+        "tzinfo argument must be None or of a tzinfo subclass, not type '{type_name}'"
+    ))
 }
 
 /// Updates a temporary retained tzinfo value used during datetime construction.
@@ -863,7 +876,7 @@ fn extract_datetime_replace_kwargs(
             }
             _ => {
                 return Err(ExcType::type_error_unexpected_keyword(
-                    "datetime.replace",
+                    "replace",
                     key_name.as_str(interns),
                 ));
             }

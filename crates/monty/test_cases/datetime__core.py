@@ -185,43 +185,31 @@ try:
     datetime.datetime(2024, 1, 1, 1, hour=2)
     assert False, 'datetime constructor should reject positional+keyword duplicate hour'
 except TypeError as e:
-    assert str(e) in {
-        "datetime() got multiple values for argument 'hour'",
-        "datetime() got multiple values for keyword argument 'hour'",
-        "argument for function given by name ('hour') and position (4)",
-    }, 'datetime duplicate hour should raise CPython-style duplicate-binding TypeError'
+    assert str(e) == "argument for function given by name ('hour') and position (4)", (
+        'datetime duplicate hour should raise CPython-style duplicate-binding TypeError'
+    )
 
 try:
     datetime.datetime(2024, 1, 1, 0, 0, 0, 0, datetime.timezone.utc, tzinfo=datetime.timezone.utc)
     assert False, 'datetime constructor should reject positional+keyword duplicate tzinfo'
 except TypeError as e:
-    assert str(e) in {
-        "datetime() got multiple values for argument 'tzinfo'",
-        "datetime() got multiple values for keyword argument 'tzinfo'",
-        "argument for function given by name ('tzinfo') and position (8)",
-    }, 'datetime duplicate tzinfo should raise CPython-style duplicate-binding TypeError'
+    assert str(e) == "argument for function given by name ('tzinfo') and position (8)", (
+        'datetime duplicate tzinfo should raise CPython-style duplicate-binding TypeError'
+    )
 
 try:
     datetime.timezone(datetime.timedelta(hours=1), offset=datetime.timedelta(hours=1))
     assert False, 'timezone constructor should reject positional+keyword duplicate offset'
 except TypeError as e:
-    assert str(e) in {
-        "timezone() got multiple values for argument 'offset'",
-        "timezone() got multiple values for keyword argument 'offset'",
-        "argument for timezone() given by name ('offset') and position (1)",
-    }, 'timezone duplicate offset should raise duplicate-binding TypeError'
+    assert str(e) == "argument for timezone() given by name ('offset') and position (1)", (
+        'timezone duplicate offset should raise duplicate-binding TypeError'
+    )
 
 try:
     datetime.timezone(datetime.timedelta(hours=1), 'A', name='B')
     assert False, 'timezone constructor should reject 3 arguments even when name is also provided by keyword'
 except TypeError as e:
-    assert str(e) in {
-        'timezone expected at most 2 arguments, got 3',
-        'timezone() takes at most 2 arguments (3 given)',
-        "timezone() got multiple values for argument 'name'",
-        "timezone() got multiple values for keyword argument 'name'",
-        "argument for timezone() given by name ('name') and position (2)",
-    }, 'timezone constructor should reject positional+keyword duplicate name or 3-argument over-binding'
+    assert str(e) == 'timezone() takes at most 2 arguments (3 given)', f'timezone 3-arg error: {e}'
 
 # TODO(datetime): restore once overflow paths are finalized without VM-specific binary fallback branches.
 # try:
@@ -768,3 +756,237 @@ assert hash(datetime.timedelta(days=1)) == hash(datetime.timedelta(days=1)), 'ti
 # naive datetimes use local time for timestamp, just check it returns a float
 ts_naive = datetime.datetime(2024, 6, 15, 12, 0, 0).timestamp()
 assert isinstance(ts_naive, float), 'naive datetime.timestamp() should return float'
+
+# === aware datetime timestamp ===
+
+ts_aware = datetime.datetime(1970, 1, 1, 0, 0, 0, tzinfo=datetime.timezone.utc).timestamp()
+assert ts_aware == 0.0, f'epoch aware timestamp should be 0.0, got {ts_aware}'
+
+# === datetime constructor error: too many positional args (line 231) ===
+
+try:
+    datetime.datetime(2024, 1, 1, 0, 0, 0, 0, datetime.timezone.utc, 'extra')
+    assert False, 'datetime with 9 positional args should raise TypeError'
+except TypeError as e:
+    assert str(e) == 'function takes at most 8 positional arguments (9 given)', f'datetime too many args: {e}'
+
+# === datetime constructor error: duplicate keyword args (lines 244-286) ===
+
+try:
+    datetime.datetime(2024, 1, 1, year=2024)
+    assert False, 'positional+keyword year should raise TypeError'
+except TypeError as e:
+    assert str(e) == "argument for function given by name ('year') and position (1)", f'dup year: {e}'
+
+try:
+    datetime.datetime(2024, 1, 1, day=1)
+    assert False, 'positional+keyword day should raise TypeError'
+except TypeError as e:
+    assert str(e) == "argument for function given by name ('day') and position (3)", f'dup day: {e}'
+
+try:
+    datetime.datetime(2024, 1, 1, 0, 30, minute=30)
+    assert False, 'positional+keyword minute should raise TypeError'
+except TypeError as e:
+    assert str(e) == "argument for function given by name ('minute') and position (5)", f'dup minute: {e}'
+
+try:
+    datetime.datetime(2024, 1, 1, 0, 0, 30, second=30)
+    assert False, 'positional+keyword second should raise TypeError'
+except TypeError as e:
+    assert str(e) == "argument for function given by name ('second') and position (6)", f'dup second: {e}'
+
+try:
+    datetime.datetime(2024, 1, 1, 0, 0, 0, 500, microsecond=500)
+    assert False, 'positional+keyword microsecond should raise TypeError'
+except TypeError as e:
+    assert str(e) == "argument for function given by name ('microsecond') and position (7)", f'dup microsecond: {e}'
+
+try:
+    datetime.datetime(2024, 1, 1, 0, 0, 0, 0, datetime.timezone.utc, tzinfo=datetime.timezone.utc)
+    assert False, 'positional+keyword tzinfo should raise TypeError'
+except TypeError as e:
+    assert str(e) == "argument for function given by name ('tzinfo') and position (8)", f'dup tzinfo: {e}'
+
+# === datetime.now() error: too many positional args (lines 350-357) ===
+
+try:
+    datetime.datetime.now(datetime.timezone.utc, datetime.timezone.utc)
+    assert False, 'datetime.now() with 2 args should raise TypeError'
+except TypeError as e:
+    assert str(e) == 'now() takes at most 1 argument (2 given)', f'datetime.now too many args: {e}'
+
+# === datetime.now() error: bad keyword argument (lines 370-374) ===
+
+try:
+    datetime.datetime.now(badkw=1)
+    assert False, 'datetime.now(badkw=1) should raise TypeError'
+except TypeError as e:
+    assert str(e) == "now() got an unexpected keyword argument 'badkw'", f'datetime.now bad kwarg: {e}'
+
+# === datetime.now() error: bad tz type (lines 380-382) ===
+
+try:
+    datetime.datetime.now(tz=123)
+    assert False, 'datetime.now(tz=123) should raise TypeError'
+except TypeError as e:
+    assert str(e) == "tzinfo argument must be None or of a tzinfo subclass, not type 'int'", f'now bad tz: {e}'
+
+# === datetime.now() error: duplicate tz (lines 376-378) ===
+
+try:
+    datetime.datetime.now(datetime.timezone.utc, tz=datetime.timezone.utc)
+    assert False, 'datetime.now(utc, tz=utc) should raise TypeError for duplicate tz'
+except TypeError as e:
+    assert str(e) == 'now() takes at most 1 argument (2 given)', f'datetime.now dup tz message: {e}'
+
+# === datetime.now() with tz=None ===
+
+now_tz_none = datetime.datetime.now(tz=None)
+assert now_tz_none.tzinfo is None, 'now(tz=None) should be naive'
+
+# === aware datetime arithmetic: add timedelta (lines 523-542) ===
+
+utc = datetime.timezone.utc
+aware_dt = datetime.datetime(2024, 6, 15, 12, 0, tzinfo=utc)
+td = datetime.timedelta(hours=5)
+result_add = aware_dt + td
+assert repr(result_add) == 'datetime.datetime(2024, 6, 15, 17, 0, tzinfo=datetime.timezone.utc)', (
+    f'aware datetime + timedelta: {result_add!r}'
+)
+
+# === aware datetime arithmetic: sub timedelta (lines 553-572) ===
+
+result_sub = aware_dt - td
+assert repr(result_sub) == 'datetime.datetime(2024, 6, 15, 7, 0, tzinfo=datetime.timezone.utc)', (
+    f'aware datetime - timedelta: {result_sub!r}'
+)
+
+# === aware datetime - aware datetime (lines 583-602) ===
+
+aware_a = datetime.datetime(2024, 6, 15, 12, 0, tzinfo=utc)
+aware_b = datetime.datetime(2024, 6, 14, 10, 0, tzinfo=utc)
+diff_aware = aware_a - aware_b
+assert repr(diff_aware) == 'datetime.timedelta(days=1, seconds=7200)', f'aware sub: {diff_aware!r}'
+
+# === naive datetime - naive datetime ===
+
+naive_a = datetime.datetime(2024, 6, 15, 12, 0)
+naive_b = datetime.datetime(2024, 6, 14, 10, 0)
+diff_naive = naive_a - naive_b
+assert repr(diff_naive) == 'datetime.timedelta(days=1, seconds=7200)', f'naive sub: {diff_naive!r}'
+
+# === aware vs naive equality returns False (lines 911-921) ===
+
+naive_dt = datetime.datetime(2024, 1, 1, 12, 0)
+aware_dt2 = datetime.datetime(2024, 1, 1, 12, 0, tzinfo=utc)
+assert not (naive_dt == aware_dt2), 'naive != aware should be False'
+assert not (aware_dt2 == naive_dt), 'aware != naive should be False'
+
+# === aware datetime comparison (lines 923-936) ===
+
+aware_early = datetime.datetime(2024, 1, 1, 10, 0, tzinfo=utc)
+aware_late = datetime.datetime(2024, 1, 1, 14, 0, tzinfo=utc)
+assert aware_early < aware_late, 'earlier aware < later aware'
+assert aware_late > aware_early, 'later aware > earlier aware'
+assert aware_early <= aware_late, 'earlier aware <= later aware'
+assert aware_late >= aware_early, 'later aware >= earlier aware'
+assert aware_early <= aware_early, 'aware <= self'
+assert aware_early >= aware_early, 'aware >= self'
+
+# === aware datetime hash consistency (line 52) ===
+
+hash_a = hash(datetime.datetime(2024, 1, 1, 12, 0, tzinfo=utc))
+hash_b = hash(datetime.datetime(2024, 1, 1, 12, 0, tzinfo=utc))
+assert hash_a == hash_b, 'aware datetime hash should be consistent'
+
+# === datetime.isoweekday (lines 1027-1030) ===
+
+monday_dt = datetime.datetime(2024, 1, 1, 12, 0)  # 2024-01-01 is a Monday
+assert monday_dt.isoweekday() == 1, f'Monday isoweekday should be 1, got {monday_dt.isoweekday()}'
+
+saturday_dt = datetime.datetime(2024, 1, 6, 12, 0)  # 2024-01-06 is a Saturday
+assert saturday_dt.isoweekday() == 6, f'Saturday isoweekday should be 6, got {saturday_dt.isoweekday()}'
+
+sunday_dt = datetime.datetime(2024, 1, 7, 12, 0)  # 2024-01-07 is a Sunday
+assert sunday_dt.isoweekday() == 7, f'Sunday isoweekday should be 7, got {sunday_dt.isoweekday()}'
+
+# === datetime.date() method (line 1038) ===
+
+dt_with_time = datetime.datetime(2024, 6, 15, 12, 30, 45, 123456)
+d = dt_with_time.date()
+assert repr(d) == 'datetime.date(2024, 6, 15)', f'datetime.date() method: {d!r}'
+assert isinstance(d, datetime.date), 'datetime.date() should return a date instance'
+
+# === datetime unknown attribute (line 1046) ===
+
+try:
+    datetime.datetime(2024, 1, 1).nosuchattr
+    assert False, 'accessing unknown attribute should raise AttributeError'
+except AttributeError as e:
+    assert str(e) == "'datetime.datetime' object has no attribute 'nosuchattr'", f'datetime attr error: {e}'
+
+# === datetime.replace with keyword args (lines 841-885) ===
+
+dt_rep = datetime.datetime(2024, 6, 15, 12, 30, 45, 123456)
+r_all = dt_rep.replace(year=2025, month=3, day=20, hour=8, minute=15, second=30, microsecond=999)
+assert repr(r_all) == 'datetime.datetime(2025, 3, 20, 8, 15, 30, 999)', f'replace all fields: {r_all!r}'
+
+# === datetime.replace error: unexpected keyword (lines 865-868) ===
+
+try:
+    dt_rep.replace(badkw=1)
+    assert False, 'datetime.replace(badkw=1) should raise TypeError'
+except TypeError as e:
+    assert str(e) == "replace() got an unexpected keyword argument 'badkw'", f'datetime.replace bad kwarg: {e}'
+
+# === datetime.strptime date-only format (line 431) ===
+
+dt_strptime_date = datetime.datetime.strptime('2024-01-15', '%Y-%m-%d')
+assert repr(dt_strptime_date) == 'datetime.datetime(2024, 1, 15, 0, 0)', f'strptime date-only: {dt_strptime_date!r}'
+
+# === datetime.strptime with microseconds ===
+
+dt_strptime_micro = datetime.datetime.strptime('2024-01-15 10:30:45.123456', '%Y-%m-%d %H:%M:%S.%f')
+assert repr(dt_strptime_micro) == 'datetime.datetime(2024, 1, 15, 10, 30, 45, 123456)', (
+    f'strptime with microseconds: {dt_strptime_micro!r}'
+)
+
+# === datetime.strptime error: bad format ===
+
+try:
+    datetime.datetime.strptime('not-a-date', '%Y-%m-%d')
+    assert False, 'strptime with non-matching format should raise ValueError'
+except ValueError as e:
+    assert str(e) == "time data 'not-a-date' does not match format '%Y-%m-%d'", f'strptime bad format: {e}'
+
+# === datetime bool is always True (lines 939-941) ===
+
+assert bool(datetime.datetime(2024, 1, 1)), 'datetime bool should always be True'
+assert bool(datetime.datetime(1, 1, 1, 0, 0, 0, 0)), 'min datetime bool should be True'
+
+# === datetime isoformat (line 783, 1002-1007) ===
+
+iso_plain = datetime.datetime(2024, 1, 1, 12, 30, 45, 123456).isoformat()
+assert iso_plain == '2024-01-01T12:30:45.123456', f'isoformat plain: {iso_plain}'
+
+iso_no_micro = datetime.datetime(2024, 1, 1, 12, 30, 45).isoformat()
+assert iso_no_micro == '2024-01-01T12:30:45', f'isoformat no micro: {iso_no_micro}'
+
+iso_aware = datetime.datetime(2024, 1, 1, 12, 0, tzinfo=utc).isoformat()
+assert iso_aware == '2024-01-01T12:00:00+00:00', f'isoformat aware: {iso_aware}'
+
+# === datetime strftime (lines 1009-1014) ===
+
+dt_fmt = datetime.datetime(2024, 6, 15, 12, 30)
+formatted = dt_fmt.strftime('%Y/%m/%d %H:%M')
+assert formatted == '2024/06/15 12:30', f'strftime: {formatted}'
+
+# === aware datetime replace preserves tzinfo (line 884) ===
+
+aware_rep = datetime.datetime(2024, 6, 15, 12, 30, tzinfo=utc)
+aware_rep_result = aware_rep.replace(year=2025)
+assert aware_rep_result.tzinfo is not None, 'replace on aware should preserve tzinfo'
+assert repr(aware_rep_result) == 'datetime.datetime(2025, 6, 15, 12, 30, tzinfo=datetime.timezone.utc)', (
+    f'aware replace: {aware_rep_result!r}'
+)

@@ -1376,6 +1376,32 @@ impl PyTrait<'_> for Value {
 }
 
 impl Value {
+    /// Returns the Python type name for this value without requiring VM access.
+    ///
+    /// For `Value::Ref` variants, this returns a generic `"object"` — use the `HeapData`
+    /// variant directly when you need a precise name for heap objects.
+    #[must_use]
+    pub(crate) fn py_type_name(&self) -> &'static str {
+        match self {
+            Self::Undefined => "NoneType",
+            Self::Ellipsis => "ellipsis",
+            Self::None => "NoneType",
+            Self::Bool(_) => "bool",
+            Self::Int(_) | Self::InternLongInt(_) => "int",
+            Self::Float(_) => "float",
+            Self::InternString(_) => "str",
+            Self::InternBytes(_) => "bytes",
+            Self::Builtin(_) => "builtin",
+            Self::ModuleFunction(_) | Self::DefFunction(_) | Self::ExtFunction(_) => "function",
+            Self::Marker(_) => "marker",
+            Self::Property(_) => "property",
+            Self::ExternalFuture(_) => "coroutine",
+            Self::Ref(_) => "object",
+            #[cfg(feature = "ref-count-panic")]
+            Self::Dereferenced => "NoneType",
+        }
+    }
+
     /// Returns a stable, unique identifier for this value.
     ///
     /// Should match Python's `id()` function conceptually.

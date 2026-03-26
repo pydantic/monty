@@ -422,6 +422,24 @@ impl ExcType {
         .into()
     }
 
+    /// Creates a TypeError for too many arguments to a method or named function.
+    ///
+    /// Matches CPython's format for method-style calls:
+    /// `{name}() takes at most {max} argument ({actual} given)` (singular when max=1)
+    /// `{name}() takes at most {max} arguments ({actual} given)` (plural otherwise)
+    ///
+    /// Use this instead of `type_error_at_most` for methods and type constructors that
+    /// CPython formats with parentheses, e.g. `now()`, `timezone()`, `expandtabs()`.
+    #[must_use]
+    pub(crate) fn type_error_method_at_most(name: &str, max: usize, actual: usize) -> RunError {
+        let plural = if max == 1 { "" } else { "s" };
+        SimpleException::new_msg(
+            Self::TypeError,
+            format!("{name}() takes at most {max} argument{plural} ({actual} given)"),
+        )
+        .into()
+    }
+
     /// Creates a TypeError for missing positional arguments.
     ///
     /// Matches CPython's format: `{name}() missing {count} required positional argument(s): 'a' and 'b'`
@@ -538,6 +556,24 @@ impl ExcType {
         SimpleException::new_msg(
             Self::TypeError,
             format!("{name}() got multiple values for keyword argument '{key}'"),
+        )
+        .into()
+    }
+
+    /// Creates a TypeError for when a positional argument conflicts with a keyword argument
+    /// of the same name in a C-implemented type constructor.
+    ///
+    /// Matches CPython's `PyArg_ParseTupleAndKeywords` format:
+    /// `argument for function given by name ('{key}') and position ({pos})`
+    ///
+    /// The position is 1-indexed, matching CPython's convention. The `func_descriptor` is
+    /// typically `"function"` for most C types (like `datetime`), matching CPython's generic
+    /// wording for `PyArg_ParseTupleAndKeywords`.
+    #[must_use]
+    pub(crate) fn type_error_positional_keyword_conflict(func_descriptor: &str, key: &str, pos: usize) -> RunError {
+        SimpleException::new_msg(
+            Self::TypeError,
+            format!("argument for {func_descriptor} given by name ('{key}') and position ({pos})"),
         )
         .into()
     }

@@ -204,6 +204,79 @@ impl HeapData {
     pub fn is_coroutine(&self) -> bool {
         matches!(self, Self::Coroutine(_))
     }
+
+    /// Returns the Python type name for this heap data (e.g., `"str"`, `"list"`, `"int"`).
+    ///
+    /// Used in error messages where the full `PyTrait::py_type` dispatch is not available
+    /// (e.g., when only a `&Heap` is held, not a `&VM`).
+    #[must_use]
+    pub(crate) fn py_type_name(&self) -> &'static str {
+        match self {
+            Self::Str(_) => "str",
+            Self::Bytes(_) => "bytes",
+            Self::List(_) => "list",
+            Self::Tuple(_) | Self::NamedTuple(_) => "tuple",
+            Self::Dict(_) => "dict",
+            Self::DictKeysView(_) => "dict_keys",
+            Self::DictItemsView(_) => "dict_items",
+            Self::DictValuesView(_) => "dict_values",
+            Self::Set(_) => "set",
+            Self::FrozenSet(_) => "frozenset",
+            Self::Closure(_) | Self::FunctionDefaults(_) | Self::ExtFunction(_) => "function",
+            Self::Cell(_) => "cell",
+            Self::Range(_) => "range",
+            Self::Slice(_) => "slice",
+            Self::Exception(_) => "Exception",
+            Self::Dataclass(_) => "object",
+            Self::Iter(_) => "iterator",
+            Self::LongInt(_) => "int",
+            Self::Module(_) => "module",
+            Self::Coroutine(_) | Self::GatherFuture(_) => "coroutine",
+            Self::Path(_) => "PosixPath",
+            Self::RePattern(_) => "re.Pattern",
+            Self::ReMatch(_) => "re.Match",
+            Self::Date(_) => "datetime.date",
+            Self::DateTime(_) => "datetime.datetime",
+            Self::TimeDelta(_) => "datetime.timedelta",
+            Self::TimeZone(_) => "datetime.timezone",
+        }
+    }
+
+    pub fn py_estimate_size(&self) -> usize {
+        match self {
+            Self::Str(s) => s.py_estimate_size(),
+            Self::Bytes(b) => b.py_estimate_size(),
+            Self::List(l) => l.py_estimate_size(),
+            Self::Tuple(t) => t.py_estimate_size(),
+            Self::NamedTuple(nt) => nt.py_estimate_size(),
+            Self::Dict(d) => d.py_estimate_size(),
+            Self::DictKeysView(view) => view.py_estimate_size(),
+            Self::DictItemsView(view) => view.py_estimate_size(),
+            Self::DictValuesView(view) => view.py_estimate_size(),
+            Self::Set(s) => s.py_estimate_size(),
+            Self::FrozenSet(fs) => fs.py_estimate_size(),
+            Self::Closure(closure) => closure.py_estimate_size(),
+            Self::FunctionDefaults(fd) => fd.py_estimate_size(),
+            Self::Cell(cell) => cell.py_estimate_size(),
+            Self::Range(r) => r.py_estimate_size(),
+            Self::Slice(s) => s.py_estimate_size(),
+            Self::Exception(e) => e.py_estimate_size(),
+            Self::Dataclass(dc) => dc.py_estimate_size(),
+            Self::Iter(iter) => iter.py_estimate_size(),
+            Self::LongInt(li) => li.py_estimate_size(),
+            Self::Module(m) => m.py_estimate_size(),
+            Self::Coroutine(coro) => coro.py_estimate_size(),
+            Self::GatherFuture(gather) => gather.py_estimate_size(),
+            Self::Path(p) => p.py_estimate_size(),
+            Self::ReMatch(m) => m.py_estimate_size(),
+            Self::RePattern(p) => p.py_estimate_size(),
+            Self::ExtFunction(s) => std::mem::size_of::<String>() + s.len(),
+            Self::Date(d) => d.py_estimate_size(),
+            Self::DateTime(d) => d.py_estimate_size(),
+            Self::TimeDelta(d) => d.py_estimate_size(),
+            Self::TimeZone(d) => d.py_estimate_size(),
+        }
+    }
 }
 
 /// Thin wrapper around `Value` which is used in the `Cell` variant above.
@@ -840,44 +913,6 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             Self::DateTime(dt) => dt.py_getattr(attr, vm),
             Self::TimeDelta(td) => td.py_getattr(attr, vm),
             _ => Ok(None),
-        }
-    }
-}
-
-impl HeapData {
-    pub fn py_estimate_size(&self) -> usize {
-        match self {
-            Self::Str(s) => s.py_estimate_size(),
-            Self::Bytes(b) => b.py_estimate_size(),
-            Self::List(l) => l.py_estimate_size(),
-            Self::Tuple(t) => t.py_estimate_size(),
-            Self::NamedTuple(nt) => nt.py_estimate_size(),
-            Self::Dict(d) => d.py_estimate_size(),
-            Self::DictKeysView(view) => view.py_estimate_size(),
-            Self::DictItemsView(view) => view.py_estimate_size(),
-            Self::DictValuesView(view) => view.py_estimate_size(),
-            Self::Set(s) => s.py_estimate_size(),
-            Self::FrozenSet(fs) => fs.py_estimate_size(),
-            Self::Closure(closure) => closure.py_estimate_size(),
-            Self::FunctionDefaults(fd) => fd.py_estimate_size(),
-            Self::Cell(cell) => cell.py_estimate_size(),
-            Self::Range(r) => r.py_estimate_size(),
-            Self::Slice(s) => s.py_estimate_size(),
-            Self::Exception(e) => e.py_estimate_size(),
-            Self::Dataclass(dc) => dc.py_estimate_size(),
-            Self::Iter(iter) => iter.py_estimate_size(),
-            Self::LongInt(li) => li.py_estimate_size(),
-            Self::Module(m) => m.py_estimate_size(),
-            Self::Coroutine(coro) => coro.py_estimate_size(),
-            Self::GatherFuture(gather) => gather.py_estimate_size(),
-            Self::Path(p) => p.py_estimate_size(),
-            Self::ReMatch(m) => m.py_estimate_size(),
-            Self::RePattern(p) => p.py_estimate_size(),
-            Self::ExtFunction(s) => std::mem::size_of::<String>() + s.len(),
-            Self::Date(d) => d.py_estimate_size(),
-            Self::DateTime(d) => d.py_estimate_size(),
-            Self::TimeDelta(d) => d.py_estimate_size(),
-            Self::TimeZone(d) => d.py_estimate_size(),
         }
     }
 }

@@ -85,7 +85,7 @@ impl fmt::Display for Type {
             Self::Range => f.write_str("range"),
             Self::Slice => f.write_str("slice"),
             Self::Date => f.write_str("date"),
-            Self::DateTime => f.write_str("datetime"),
+            Self::DateTime => f.write_str("datetime.datetime"),
             Self::TimeDelta => f.write_str("timedelta"),
             Self::TimeZone => f.write_str("timezone"),
             Self::Str => f.write_str("str"),

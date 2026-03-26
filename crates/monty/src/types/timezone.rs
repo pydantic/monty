@@ -64,9 +64,16 @@ impl TimeZone {
     /// Parses timezone constructor arguments.
     pub fn init(heap: &mut Heap<impl ResourceTracker>, args: ArgValues, interns: &Interns) -> RunResult<Value> {
         let (pos, kwargs) = args.into_parts();
+        // CPython's timezone() is C-implemented and counts total args (pos + kwargs).
+        // Any total > 2 is rejected before checking individual args.
+        let total_args = pos.len() + kwargs.len();
         defer_drop_mut!(pos, heap);
         let kwargs = kwargs.into_iter();
         defer_drop_mut!(kwargs, heap);
+
+        if total_args > 2 {
+            return Err(ExcType::type_error_method_at_most("timezone", 2, total_args));
+        }
 
         let mut offset_seconds: Option<i32> = None;
         let mut name: Option<Option<String>> = None;
@@ -84,7 +91,7 @@ impl TimeZone {
                     name = Some(extract_name(arg, heap, interns)?);
                     seen_name = true;
                 }
-                _ => return Err(ExcType::type_error_at_most("timezone", 2, index + 1)),
+                _ => return Err(ExcType::type_error_method_at_most("timezone", 2, index + 1)),
             }
         }
 
@@ -98,14 +105,18 @@ impl TimeZone {
             match key_name.string_id() {
                 Some(id) if id == StaticStrings::Offset => {
                     if seen_offset {
-                        return Err(ExcType::type_error_multiple_values("timezone", "offset"));
+                        return Err(ExcType::type_error_positional_keyword_conflict(
+                            "timezone()",
+                            "offset",
+                            1,
+                        ));
                     }
                     offset_seconds = Some(extract_offset_seconds(value, heap)?);
                     seen_offset = true;
                 }
                 Some(id) if id == StaticStrings::Name => {
                     if seen_name {
-                        return Err(ExcType::type_error_multiple_values("timezone", "name"));
+                        return Err(ExcType::type_error_positional_keyword_conflict("timezone()", "name", 2));
                     }
                     name = Some(extract_name(value, heap, interns)?);
                     seen_name = true;
