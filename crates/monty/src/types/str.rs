@@ -2015,8 +2015,7 @@ fn str_expandtabs<'h>(
     args: ArgValues,
     vm: &mut VM<'h, '_, impl ResourceTracker>,
 ) -> RunResult<Value> {
-    let tabsize_val =
-        args.get_zero_one_named_arg("str.expandtabs", StaticStrings::Tabsize, vm.heap, vm.interns)?;
+    let tabsize_val = args.get_zero_one_named_arg("str.expandtabs", StaticStrings::Tabsize, vm.heap, vm.interns)?;
 
     let tabsize = match tabsize_val {
         None => 8,
