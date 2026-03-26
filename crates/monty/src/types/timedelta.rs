@@ -245,7 +245,17 @@ fn value_to_i128(value: &Value, _heap: &Heap<impl ResourceTracker>) -> RunResult
     }
 }
 
-impl<'h> PyTrait<'h> for TimeDelta {
+impl HeapItem for TimeDelta {
+    fn py_estimate_size(&self) -> usize {
+        std::mem::size_of::<Self>()
+    }
+
+    fn py_dec_ref_ids(&mut self, _stack: &mut Vec<HeapId>) {}
+}
+
+/// `HeapRead`-based dispatch for `TimeDelta`, enabling the `HeapReadOutput` enum to
+/// delegate `PyTrait` calls to heap-resident timedeltas.
+impl<'h> PyTrait<'h> for HeapRead<'h, TimeDelta> {
     fn py_type(&self, _vm: &VM<'h, '_, impl ResourceTracker>) -> Type {
         Type::TimeDelta
     }
@@ -254,29 +264,29 @@ impl<'h> PyTrait<'h> for TimeDelta {
         None
     }
 
-    fn py_eq(&self, other: &Self, _vm: &mut VM<'h, '_, impl ResourceTracker>) -> Result<bool, ResourceError> {
-        Ok(total_microseconds(self) == total_microseconds(other))
+    fn py_eq(&self, other: &Self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> Result<bool, ResourceError> {
+        Ok(total_microseconds(self.get(vm.heap)) == total_microseconds(other.get(vm.heap)))
     }
 
     fn py_cmp(
         &self,
         other: &Self,
-        _vm: &mut VM<'h, '_, impl ResourceTracker>,
+        vm: &mut VM<'h, '_, impl ResourceTracker>,
     ) -> Result<Option<std::cmp::Ordering>, ResourceError> {
-        Ok(total_microseconds(self).partial_cmp(&total_microseconds(other)))
+        Ok(total_microseconds(self.get(vm.heap)).partial_cmp(&total_microseconds(other.get(vm.heap))))
     }
 
-    fn py_bool(&self, _vm: &mut VM<'h, '_, impl ResourceTracker>) -> bool {
-        total_microseconds(self) != 0
+    fn py_bool(&self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> bool {
+        total_microseconds(self.get(vm.heap)) != 0
     }
 
     fn py_repr_fmt(
         &self,
         f: &mut impl Write,
-        _vm: &VM<'h, '_, impl ResourceTracker>,
+        vm: &VM<'h, '_, impl ResourceTracker>,
         _heap_ids: &mut AHashSet<HeapId>,
     ) -> RunResult<()> {
-        let (days, seconds, microseconds) = components(self);
+        let (days, seconds, microseconds) = components(self.get(vm.heap));
         if days == 0 && seconds == 0 && microseconds == 0 {
             f.write_str("datetime.timedelta(0)")?;
             return Ok(());
@@ -304,8 +314,8 @@ impl<'h> PyTrait<'h> for TimeDelta {
         Ok(())
     }
 
-    fn py_str(&self, _vm: &VM<'h, '_, impl ResourceTracker>) -> RunResult<std::borrow::Cow<'static, str>> {
-        let (days, seconds, microseconds) = components(self);
+    fn py_str(&self, vm: &VM<'h, '_, impl ResourceTracker>) -> RunResult<std::borrow::Cow<'static, str>> {
+        let (days, seconds, microseconds) = components(self.get(vm.heap));
         let hours = seconds / SECONDS_PER_HOUR;
         let minutes = (seconds % SECONDS_PER_HOUR) / SECONDS_PER_MINUTE;
         let second = seconds % SECONDS_PER_MINUTE;
@@ -323,26 +333,6 @@ impl<'h> PyTrait<'h> for TimeDelta {
         Ok(std::borrow::Cow::Owned(format!("{days} {day_word}, {time}")))
     }
 
-    fn py_add(&self, other: &Self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> Result<Option<Value>, ResourceError> {
-        let Some(total) = total_microseconds(self).checked_add(total_microseconds(other)) else {
-            return Ok(None);
-        };
-        let Ok(result) = from_total_microseconds(total) else {
-            return Ok(None);
-        };
-        Ok(Some(Value::Ref(vm.heap.allocate(HeapData::TimeDelta(result))?)))
-    }
-
-    fn py_sub(&self, other: &Self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> Result<Option<Value>, ResourceError> {
-        let Some(total) = total_microseconds(self).checked_sub(total_microseconds(other)) else {
-            return Ok(None);
-        };
-        let Ok(result) = from_total_microseconds(total) else {
-            return Ok(None);
-        };
-        Ok(Some(Value::Ref(vm.heap.allocate(HeapData::TimeDelta(result))?)))
-    }
-
     fn py_call_attr(
         &mut self,
         _self_id: HeapId,
@@ -350,61 +340,13 @@ impl<'h> PyTrait<'h> for TimeDelta {
         attr: &EitherStr,
         args: ArgValues,
     ) -> RunResult<CallResult> {
-        let heap = &mut *vm.heap;
         let interns = vm.interns;
         if attr.as_str(interns) == "total_seconds" {
-            args.check_zero_args("timedelta.total_seconds", heap)?;
-            return Ok(CallResult::Value(Value::Float(total_seconds(self))));
+            // Copy the TimeDelta to release the HeapRead borrow before checking args
+            let td = *self.get(vm.heap);
+            args.check_zero_args("timedelta.total_seconds", vm.heap)?;
+            return Ok(CallResult::Value(Value::Float(total_seconds(&td))));
         }
-        Err(ExcType::attribute_error(self.py_type(vm), attr.as_str(interns)))
-    }
-}
-
-impl HeapItem for TimeDelta {
-    fn py_estimate_size(&self) -> usize {
-        std::mem::size_of::<Self>()
-    }
-
-    fn py_dec_ref_ids(&mut self, _stack: &mut Vec<HeapId>) {}
-}
-
-/// `HeapRead`-based dispatch for `TimeDelta`, enabling the `HeapReadOutput` enum to
-/// delegate `PyTrait` calls to heap-resident timedeltas.
-impl<'h> PyTrait<'h> for HeapRead<'h, TimeDelta> {
-    fn py_type(&self, _vm: &VM<'h, '_, impl ResourceTracker>) -> Type {
-        Type::TimeDelta
-    }
-
-    fn py_len(&self, _vm: &VM<'h, '_, impl ResourceTracker>) -> Option<usize> {
-        None
-    }
-
-    fn py_eq(&self, other: &Self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> Result<bool, ResourceError> {
-        Ok(*self.get(vm.heap) == *other.get(vm.heap))
-    }
-
-    fn py_repr_fmt(
-        &self,
-        f: &mut impl Write,
-        vm: &VM<'h, '_, impl ResourceTracker>,
-        heap_ids: &mut AHashSet<HeapId>,
-    ) -> RunResult<()> {
-        self.get(vm.heap).py_repr_fmt(f, vm, heap_ids)
-    }
-
-    fn py_str(&self, vm: &VM<'h, '_, impl ResourceTracker>) -> RunResult<std::borrow::Cow<'static, str>> {
-        self.get(vm.heap).py_str(vm)
-    }
-
-    fn py_call_attr(
-        &mut self,
-        self_id: HeapId,
-        vm: &mut VM<'h, '_, impl ResourceTracker>,
-        attr: &EitherStr,
-        args: ArgValues,
-    ) -> RunResult<CallResult> {
-        // TimeDelta is Copy, so copy to release the HeapRead borrow before passing &mut VM
-        let mut td = *self.get(vm.heap);
-        td.py_call_attr(self_id, vm, attr, args)
+        Err(ExcType::attribute_error(Type::TimeDelta, attr.as_str(interns)))
     }
 }

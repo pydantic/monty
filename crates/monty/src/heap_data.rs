@@ -729,7 +729,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             (HeapReadOutput::Date(a), HeapReadOutput::Date(b)) => {
                 let a = *a.get(vm.heap);
                 let b = *b.get(vm.heap);
-                PyTrait::py_sub(&a, &b, vm)
+                date::py_sub_date(&a, &b, vm.heap)
             }
             (HeapReadOutput::DateTime(a), HeapReadOutput::DateTime(b)) => {
                 let a = a.get(vm.heap).clone();

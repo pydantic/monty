@@ -248,54 +248,6 @@ fn extract_name(name_arg: &Value, heap: &Heap<impl ResourceTracker>, interns: &I
     }
 }
 
-impl<'h> PyTrait<'h> for TimeZone {
-    fn py_type(&self, _vm: &VM<'h, '_, impl ResourceTracker>) -> Type {
-        Type::TimeZone
-    }
-
-    fn py_len(&self, _vm: &VM<'h, '_, impl ResourceTracker>) -> Option<usize> {
-        None
-    }
-
-    fn py_eq(&self, other: &Self, _vm: &mut VM<'h, '_, impl ResourceTracker>) -> Result<bool, ResourceError> {
-        Ok(self.offset_seconds == other.offset_seconds)
-    }
-
-    fn py_bool(&self, _vm: &mut VM<'h, '_, impl ResourceTracker>) -> bool {
-        true
-    }
-
-    fn py_repr_fmt(
-        &self,
-        f: &mut impl Write,
-        _vm: &VM<'h, '_, impl ResourceTracker>,
-        _heap_ids: &mut AHashSet<HeapId>,
-    ) -> RunResult<()> {
-        if self.offset_seconds == 0 && self.name.is_none() {
-            f.write_str("datetime.timezone.utc")?;
-            return Ok(());
-        }
-
-        let timedelta_repr = format_offset_timedelta_repr(self.offset_seconds);
-        write!(f, "datetime.timezone({timedelta_repr}")?;
-        if let Some(name) = &self.name {
-            write!(f, ", {}", StringRepr(name))?;
-        }
-        f.write_char(')')?;
-        Ok(())
-    }
-
-    fn py_str(&self, _vm: &VM<'h, '_, impl ResourceTracker>) -> RunResult<Cow<'static, str>> {
-        if let Some(name) = &self.name {
-            return Ok(Cow::Owned(name.clone()));
-        }
-        if self.offset_seconds == 0 {
-            return Ok(Cow::Borrowed("UTC"));
-        }
-        Ok(Cow::Owned(format!("UTC{}", self.format_utc_offset())))
-    }
-}
-
 impl HeapItem for TimeZone {
     fn py_estimate_size(&self) -> usize {
         std::mem::size_of::<Self>() + self.name.as_ref().map_or(0, String::len)
@@ -316,19 +268,42 @@ impl<'h> PyTrait<'h> for HeapRead<'h, TimeZone> {
     }
 
     fn py_eq(&self, other: &Self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> Result<bool, ResourceError> {
-        Ok(self.get(vm.heap) == other.get(vm.heap))
+        Ok(self.get(vm.heap).offset_seconds == other.get(vm.heap).offset_seconds)
+    }
+
+    fn py_bool(&self, _vm: &mut VM<'h, '_, impl ResourceTracker>) -> bool {
+        true
     }
 
     fn py_repr_fmt(
         &self,
         f: &mut impl Write,
         vm: &VM<'h, '_, impl ResourceTracker>,
-        heap_ids: &mut AHashSet<HeapId>,
+        _heap_ids: &mut AHashSet<HeapId>,
     ) -> RunResult<()> {
-        self.get(vm.heap).py_repr_fmt(f, vm, heap_ids)
+        let tz = self.get(vm.heap);
+        if tz.offset_seconds == 0 && tz.name.is_none() {
+            f.write_str("datetime.timezone.utc")?;
+            return Ok(());
+        }
+
+        let timedelta_repr = format_offset_timedelta_repr(tz.offset_seconds);
+        write!(f, "datetime.timezone({timedelta_repr}")?;
+        if let Some(name) = &tz.name {
+            write!(f, ", {}", StringRepr(name))?;
+        }
+        f.write_char(')')?;
+        Ok(())
     }
 
     fn py_str(&self, vm: &VM<'h, '_, impl ResourceTracker>) -> RunResult<Cow<'static, str>> {
-        self.get(vm.heap).py_str(vm)
+        let tz = self.get(vm.heap);
+        if let Some(name) = &tz.name {
+            return Ok(Cow::Owned(name.clone()));
+        }
+        if tz.offset_seconds == 0 {
+            return Ok(Cow::Borrowed("UTC"));
+        }
+        Ok(Cow::Owned(format!("UTC{}", tz.format_utc_offset())))
     }
 }

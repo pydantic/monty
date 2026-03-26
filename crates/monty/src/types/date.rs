@@ -167,62 +167,6 @@ fn value_to_i32(value: &Value, _heap: &Heap<impl ResourceTracker>) -> RunResult<
         .map_err(|_| SimpleException::new_msg(ExcType::OverflowError, "signed integer is greater than maximum").into())
 }
 
-impl<'h> PyTrait<'h> for Date {
-    fn py_type(&self, _vm: &VM<'h, '_, impl ResourceTracker>) -> Type {
-        Type::Date
-    }
-
-    fn py_len(&self, _vm: &VM<'h, '_, impl ResourceTracker>) -> Option<usize> {
-        None
-    }
-
-    fn py_eq(&self, other: &Self, _vm: &mut VM<'h, '_, impl ResourceTracker>) -> Result<bool, ResourceError> {
-        Ok(self == other)
-    }
-
-    fn py_cmp(
-        &self,
-        other: &Self,
-        _vm: &mut VM<'h, '_, impl ResourceTracker>,
-    ) -> Result<Option<std::cmp::Ordering>, ResourceError> {
-        Ok(self.partial_cmp(other))
-    }
-
-    fn py_bool(&self, _vm: &mut VM<'h, '_, impl ResourceTracker>) -> bool {
-        true
-    }
-
-    fn py_repr_fmt(
-        &self,
-        f: &mut impl Write,
-        _vm: &VM<'h, '_, impl ResourceTracker>,
-        _heap_ids: &mut AHashSet<HeapId>,
-    ) -> RunResult<()> {
-        let (year, month, day) = to_ymd(*self);
-        write!(f, "datetime.date({year}, {month}, {day})")?;
-        Ok(())
-    }
-
-    fn py_str(&self, _vm: &VM<'h, '_, impl ResourceTracker>) -> RunResult<std::borrow::Cow<'static, str>> {
-        let (year, month, day) = to_ymd(*self);
-        Ok(std::borrow::Cow::Owned(format!("{year:04}-{month:02}-{day:02}")))
-    }
-
-    fn py_add(&self, other: &Self, _vm: &mut VM<'h, '_, impl ResourceTracker>) -> Result<Option<Value>, ResourceError> {
-        let _ = other;
-        Ok(None)
-    }
-
-    fn py_sub(&self, other: &Self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> Result<Option<Value>, ResourceError> {
-        // `date - date` returns timedelta days difference.
-        let diff_days = i64::from(to_ordinal(*self)) - i64::from(to_ordinal(*other));
-        let Ok(delta) = timedelta::from_total_microseconds(i128::from(diff_days) * MICROSECONDS_PER_DAY) else {
-            return Ok(None);
-        };
-        Ok(Some(Value::Ref(vm.heap.allocate(HeapData::TimeDelta(delta))?)))
-    }
-}
-
 impl HeapItem for Date {
     fn py_estimate_size(&self) -> usize {
         std::mem::size_of::<Self>()
@@ -246,18 +190,50 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Date> {
         Ok(*self.get(vm.heap) == *other.get(vm.heap))
     }
 
+    fn py_cmp(
+        &self,
+        other: &Self,
+        vm: &mut VM<'h, '_, impl ResourceTracker>,
+    ) -> Result<Option<std::cmp::Ordering>, ResourceError> {
+        Ok(self.get(vm.heap).partial_cmp(other.get(vm.heap)))
+    }
+
+    fn py_bool(&self, _vm: &mut VM<'h, '_, impl ResourceTracker>) -> bool {
+        true
+    }
+
     fn py_repr_fmt(
         &self,
         f: &mut impl Write,
         vm: &VM<'h, '_, impl ResourceTracker>,
-        heap_ids: &mut AHashSet<HeapId>,
+        _heap_ids: &mut AHashSet<HeapId>,
     ) -> RunResult<()> {
-        self.get(vm.heap).py_repr_fmt(f, vm, heap_ids)
+        let (year, month, day) = to_ymd(*self.get(vm.heap));
+        write!(f, "datetime.date({year}, {month}, {day})")?;
+        Ok(())
     }
 
     fn py_str(&self, vm: &VM<'h, '_, impl ResourceTracker>) -> RunResult<std::borrow::Cow<'static, str>> {
-        self.get(vm.heap).py_str(vm)
+        let (year, month, day) = to_ymd(*self.get(vm.heap));
+        Ok(std::borrow::Cow::Owned(format!("{year:04}-{month:02}-{day:02}")))
     }
+}
+
+/// `date - date` returns a timedelta with the difference in days.
+#[expect(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "shared heap dispatch passes borrowed enum payloads for both immutable and mutable views"
+)]
+pub(crate) fn py_sub_date(
+    a: &Date,
+    b: &Date,
+    heap: &mut Heap<impl ResourceTracker>,
+) -> Result<Option<Value>, ResourceError> {
+    let diff_days = i64::from(to_ordinal(*a)) - i64::from(to_ordinal(*b));
+    let Ok(delta) = timedelta::from_total_microseconds(i128::from(diff_days) * MICROSECONDS_PER_DAY) else {
+        return Ok(None);
+    };
+    Ok(Some(Value::Ref(heap.allocate(HeapData::TimeDelta(delta))?)))
 }
 
 /// `date + timedelta` helper with the correct operand type.
