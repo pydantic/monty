@@ -12,7 +12,7 @@ use crate::{
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, RunResult, SimpleException},
     heap::{Heap, HeapData, HeapId, HeapItem, HeapRead},
-    intern::Interns,
+    intern::{Interns, StaticStrings},
     resource::{ResourceError, ResourceTracker},
     types::{
         PyTrait, Type,
@@ -95,23 +95,27 @@ impl TimeZone {
             let Some(key_name) = key.as_either_str(heap) else {
                 return Err(ExcType::type_error_kwargs_nonstring_key());
             };
-            let key_name = key_name.as_str(interns);
-            match key_name {
-                "offset" => {
+            match key_name.string_id() {
+                Some(id) if id == StaticStrings::OffsetAttr => {
                     if seen_offset {
                         return Err(ExcType::type_error_multiple_values("timezone", "offset"));
                     }
                     offset_seconds = Some(extract_offset_seconds(value, heap)?);
                     seen_offset = true;
                 }
-                "name" => {
+                Some(id) if id == StaticStrings::Name => {
                     if seen_name {
                         return Err(ExcType::type_error_multiple_values("timezone", "name"));
                     }
                     name = Some(extract_name(value, heap, interns)?);
                     seen_name = true;
                 }
-                _ => return Err(ExcType::type_error_unexpected_keyword("timezone", key_name)),
+                _ => {
+                    return Err(ExcType::type_error_unexpected_keyword(
+                        "timezone",
+                        key_name.as_str(interns),
+                    ));
+                }
             }
         }
 

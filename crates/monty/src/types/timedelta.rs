@@ -15,7 +15,7 @@ use crate::{
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, RunResult, SimpleException},
     heap::{Heap, HeapData, HeapId, HeapItem, HeapRead},
-    intern::Interns,
+    intern::{Interns, StaticStrings},
     resource::{ResourceError, ResourceTracker},
     types::{PyTrait, Type},
     value::{EitherStr, Value},
@@ -186,36 +186,40 @@ pub(crate) fn init(heap: &mut Heap<impl ResourceTracker>, args: ArgValues, inter
         let Some(key_name) = key.as_either_str(heap) else {
             return Err(ExcType::type_error_kwargs_nonstring_key());
         };
-        let key_name = key_name.as_str(interns);
         let parsed = value_to_i128(value, heap)?;
 
-        match key_name {
-            "days" => {
+        match key_name.string_id() {
+            Some(id) if id == StaticStrings::Days => {
                 if seen_days {
                     return Err(ExcType::type_error_multiple_values("timedelta", "days"));
                 }
                 days = parsed;
                 seen_days = true;
             }
-            "seconds" => {
+            Some(id) if id == StaticStrings::SecondsAttr => {
                 if seen_seconds {
                     return Err(ExcType::type_error_multiple_values("timedelta", "seconds"));
                 }
                 seconds = parsed;
                 seen_seconds = true;
             }
-            "microseconds" => {
+            Some(id) if id == StaticStrings::MicrosecondsAttr => {
                 if seen_microseconds {
                     return Err(ExcType::type_error_multiple_values("timedelta", "microseconds"));
                 }
                 microseconds = parsed;
                 seen_microseconds = true;
             }
-            "milliseconds" => milliseconds = parsed,
-            "minutes" => minutes = parsed,
-            "hours" => hours = parsed,
-            "weeks" => weeks = parsed,
-            _ => return Err(ExcType::type_error_unexpected_keyword("timedelta", key_name)),
+            Some(id) if id == StaticStrings::Milliseconds => milliseconds = parsed,
+            Some(id) if id == StaticStrings::MinutesAttr => minutes = parsed,
+            Some(id) if id == StaticStrings::HoursAttr => hours = parsed,
+            Some(id) if id == StaticStrings::WeeksAttr => weeks = parsed,
+            _ => {
+                return Err(ExcType::type_error_unexpected_keyword(
+                    "timedelta",
+                    key_name.as_str(interns),
+                ));
+            }
         }
     }
 
@@ -349,22 +353,23 @@ impl<'h> PyTrait<'h> for HeapRead<'h, TimeDelta> {
         attr: &EitherStr,
         args: ArgValues,
     ) -> RunResult<CallResult> {
-        let interns = vm.interns;
-        if attr.as_str(interns) == "total_seconds" {
+        if attr.string_id() == Some(StaticStrings::TotalSeconds.into()) {
             // Copy the TimeDelta to release the HeapRead borrow before checking args
             let td = *self.get(vm.heap);
             args.check_zero_args("timedelta.total_seconds", vm.heap)?;
             return Ok(CallResult::Value(Value::Float(total_seconds(&td))));
         }
-        Err(ExcType::attribute_error(Type::TimeDelta, attr.as_str(interns)))
+        Err(ExcType::attribute_error(Type::TimeDelta, attr.as_str(vm.interns)))
     }
 
     fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<Option<CallResult>> {
         let (days, seconds, microseconds) = components(self.get(vm.heap));
-        match attr.as_str(vm.interns) {
-            "days" => Ok(Some(CallResult::Value(Value::Int(i64::from(days))))),
-            "seconds" => Ok(Some(CallResult::Value(Value::Int(i64::from(seconds))))),
-            "microseconds" => Ok(Some(CallResult::Value(Value::Int(i64::from(microseconds))))),
+        match attr.string_id() {
+            Some(id) if id == StaticStrings::Days => Ok(Some(CallResult::Value(Value::Int(i64::from(days))))),
+            Some(id) if id == StaticStrings::SecondsAttr => Ok(Some(CallResult::Value(Value::Int(i64::from(seconds))))),
+            Some(id) if id == StaticStrings::MicrosecondsAttr => {
+                Ok(Some(CallResult::Value(Value::Int(i64::from(microseconds)))))
+            }
             _ => Ok(None),
         }
     }

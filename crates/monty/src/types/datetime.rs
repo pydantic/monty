@@ -18,7 +18,7 @@ use crate::{
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, RunResult, SimpleException},
     heap::{Heap, HeapData, HeapId, HeapItem, HeapRead},
-    intern::Interns,
+    intern::{Interns, StaticStrings},
     os::OsFunction,
     resource::{ResourceError, ResourceTracker},
     types::{
@@ -276,55 +276,54 @@ pub(crate) fn init(heap: &mut Heap<impl ResourceTracker>, args: ArgValues, inter
         let Some(key_name) = key.as_either_str(heap) else {
             return Err(ExcType::type_error_kwargs_nonstring_key());
         };
-        let key_name = key_name.as_str(interns);
-        match key_name {
-            "year" => {
+        match key_name.string_id() {
+            Some(id) if id == StaticStrings::Year => {
                 if year.is_some() {
                     return Err(ExcType::type_error_multiple_values("datetime", "year"));
                 }
                 year = Some(value_to_i32(value)?);
             }
-            "month" => {
+            Some(id) if id == StaticStrings::MonthAttr => {
                 if month.is_some() {
                     return Err(ExcType::type_error_multiple_values("datetime", "month"));
                 }
                 month = Some(value_to_i32(value)?);
             }
-            "day" => {
+            Some(id) if id == StaticStrings::DayAttr => {
                 if day.is_some() {
                     return Err(ExcType::type_error_multiple_values("datetime", "day"));
                 }
                 day = Some(value_to_i32(value)?);
             }
-            "hour" => {
+            Some(id) if id == StaticStrings::Hour => {
                 if seen_hour {
                     return Err(ExcType::type_error_multiple_values("datetime", "hour"));
                 }
                 hour = value_to_i32(value)?;
                 seen_hour = true;
             }
-            "minute" => {
+            Some(id) if id == StaticStrings::MinuteAttr => {
                 if seen_minute {
                     return Err(ExcType::type_error_multiple_values("datetime", "minute"));
                 }
                 minute = value_to_i32(value)?;
                 seen_minute = true;
             }
-            "second" => {
+            Some(id) if id == StaticStrings::SecondAttr => {
                 if seen_second {
                     return Err(ExcType::type_error_multiple_values("datetime", "second"));
                 }
                 second = value_to_i32(value)?;
                 seen_second = true;
             }
-            "microsecond" => {
+            Some(id) if id == StaticStrings::MicrosecondAttr => {
                 if seen_microsecond {
                     return Err(ExcType::type_error_multiple_values("datetime", "microsecond"));
                 }
                 microsecond = value_to_i32(value)?;
                 seen_microsecond = true;
             }
-            "tzinfo" => {
+            Some(id) if id == StaticStrings::Tzinfo => {
                 if seen_tzinfo {
                     return Err(ExcType::type_error_multiple_values("datetime", "tzinfo"));
                 }
@@ -334,7 +333,12 @@ pub(crate) fn init(heap: &mut Heap<impl ResourceTracker>, args: ArgValues, inter
                 tzinfo_ref = value_tzinfo_ref;
                 seen_tzinfo = true;
             }
-            _ => return Err(ExcType::type_error_unexpected_keyword("datetime", key_name)),
+            _ => {
+                return Err(ExcType::type_error_unexpected_keyword(
+                    "datetime",
+                    key_name.as_str(interns),
+                ));
+            }
         }
     }
 
@@ -401,9 +405,11 @@ pub(crate) fn class_now(
         let Some(key_name) = key.as_either_str(heap) else {
             return Err(ExcType::type_error_kwargs_nonstring_key());
         };
-        let key_name = key_name.as_str(interns);
-        if key_name != "tz" {
-            return Err(ExcType::type_error_unexpected_keyword("datetime.now", key_name));
+        if key_name.string_id() != Some(StaticStrings::Tz.into()) {
+            return Err(ExcType::type_error_unexpected_keyword(
+                "datetime.now",
+                key_name.as_str(interns),
+            ));
         }
         if seen_tz {
             return Err(ExcType::type_error_multiple_values("datetime.now", "tz"));
@@ -814,17 +820,29 @@ impl<'h> PyTrait<'h> for HeapRead<'h, DateTime> {
         // Clone to release the HeapRead borrow before accessing attributes
         // that may need to allocate (e.g. tzinfo).
         let dt = self.get(vm.heap).clone();
-        match attr.as_str(vm.interns) {
-            "year" => Ok(Some(CallResult::Value(Value::Int(i64::from(dt.naive.date().year()))))),
-            "month" => Ok(Some(CallResult::Value(Value::Int(i64::from(dt.naive.date().month()))))),
-            "day" => Ok(Some(CallResult::Value(Value::Int(i64::from(dt.naive.date().day()))))),
-            "hour" => Ok(Some(CallResult::Value(Value::Int(i64::from(dt.naive.time().hour()))))),
-            "minute" => Ok(Some(CallResult::Value(Value::Int(i64::from(dt.naive.time().minute()))))),
-            "second" => Ok(Some(CallResult::Value(Value::Int(i64::from(dt.naive.time().second()))))),
-            "microsecond" => Ok(Some(CallResult::Value(Value::Int(i64::from(
+        match attr.string_id() {
+            Some(id) if id == StaticStrings::Year => {
+                Ok(Some(CallResult::Value(Value::Int(i64::from(dt.naive.date().year())))))
+            }
+            Some(id) if id == StaticStrings::MonthAttr => {
+                Ok(Some(CallResult::Value(Value::Int(i64::from(dt.naive.date().month())))))
+            }
+            Some(id) if id == StaticStrings::DayAttr => {
+                Ok(Some(CallResult::Value(Value::Int(i64::from(dt.naive.date().day())))))
+            }
+            Some(id) if id == StaticStrings::Hour => {
+                Ok(Some(CallResult::Value(Value::Int(i64::from(dt.naive.time().hour())))))
+            }
+            Some(id) if id == StaticStrings::MinuteAttr => {
+                Ok(Some(CallResult::Value(Value::Int(i64::from(dt.naive.time().minute())))))
+            }
+            Some(id) if id == StaticStrings::SecondAttr => {
+                Ok(Some(CallResult::Value(Value::Int(i64::from(dt.naive.time().second())))))
+            }
+            Some(id) if id == StaticStrings::MicrosecondAttr => Ok(Some(CallResult::Value(Value::Int(i64::from(
                 dt.naive.and_utc().timestamp_subsec_micros(),
             ))))),
-            "tzinfo" => {
+            Some(id) if id == StaticStrings::Tzinfo => {
                 if let Some(tzinfo_ref) = dt.tzinfo_ref {
                     vm.heap.inc_ref(tzinfo_ref);
                     return Ok(Some(CallResult::Value(Value::Ref(tzinfo_ref))));

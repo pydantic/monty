@@ -14,7 +14,7 @@ use crate::{
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, RunResult, SimpleException},
     heap::{Heap, HeapData, HeapId, HeapItem, HeapRead},
-    intern::Interns,
+    intern::{Interns, StaticStrings},
     os::OsFunction,
     resource::{ResourceError, ResourceTracker},
     types::{
@@ -135,27 +135,26 @@ pub(crate) fn init(heap: &mut Heap<impl ResourceTracker>, args: ArgValues, inter
         let Some(key_name) = key.as_either_str(heap) else {
             return Err(ExcType::type_error_kwargs_nonstring_key());
         };
-        let key_name = key_name.as_str(interns);
-        match key_name {
-            "year" => {
+        match key_name.string_id() {
+            Some(id) if id == StaticStrings::Year => {
                 if year.is_some() {
                     return Err(ExcType::type_error_multiple_values("date", "year"));
                 }
                 year = Some(value_to_i32(value)?);
             }
-            "month" => {
+            Some(id) if id == StaticStrings::MonthAttr => {
                 if month.is_some() {
                     return Err(ExcType::type_error_multiple_values("date", "month"));
                 }
                 month = Some(value_to_i32(value)?);
             }
-            "day" => {
+            Some(id) if id == StaticStrings::DayAttr => {
                 if day.is_some() {
                     return Err(ExcType::type_error_multiple_values("date", "day"));
                 }
                 day = Some(value_to_i32(value)?);
             }
-            _ => return Err(ExcType::type_error_unexpected_keyword("date", key_name)),
+            _ => return Err(ExcType::type_error_unexpected_keyword("date", key_name.as_str(interns))),
         }
     }
 
@@ -244,10 +243,10 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Date> {
 
     fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<Option<CallResult>> {
         let (year, month, day) = to_ymd(*self.get(vm.heap));
-        match attr.as_str(vm.interns) {
-            "year" => Ok(Some(CallResult::Value(Value::Int(i64::from(year))))),
-            "month" => Ok(Some(CallResult::Value(Value::Int(i64::from(month))))),
-            "day" => Ok(Some(CallResult::Value(Value::Int(i64::from(day))))),
+        match attr.string_id() {
+            Some(id) if id == StaticStrings::Year => Ok(Some(CallResult::Value(Value::Int(i64::from(year))))),
+            Some(id) if id == StaticStrings::MonthAttr => Ok(Some(CallResult::Value(Value::Int(i64::from(month))))),
+            Some(id) if id == StaticStrings::DayAttr => Ok(Some(CallResult::Value(Value::Int(i64::from(day))))),
             _ => Ok(None),
         }
     }

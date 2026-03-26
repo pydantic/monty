@@ -457,6 +457,42 @@ pub enum StaticStrings {
     TotalSeconds,
     #[strum(serialize = "tzinfo")]
     Tzinfo,
+    // date/datetime field attributes
+    #[strum(serialize = "year")]
+    Year,
+    #[strum(serialize = "month")]
+    MonthAttr,
+    #[strum(serialize = "day")]
+    DayAttr,
+    #[strum(serialize = "hour")]
+    Hour,
+    #[strum(serialize = "minute")]
+    MinuteAttr,
+    #[strum(serialize = "second")]
+    SecondAttr,
+    #[strum(serialize = "microsecond")]
+    MicrosecondAttr,
+    // timedelta constructor/attribute names
+    #[strum(serialize = "days")]
+    Days,
+    #[strum(serialize = "seconds")]
+    SecondsAttr,
+    #[strum(serialize = "microseconds")]
+    MicrosecondsAttr,
+    #[strum(serialize = "milliseconds")]
+    Milliseconds,
+    #[strum(serialize = "minutes")]
+    MinutesAttr,
+    #[strum(serialize = "hours")]
+    HoursAttr,
+    #[strum(serialize = "weeks")]
+    WeeksAttr,
+    // timezone constructor kwargs
+    #[strum(serialize = "offset")]
+    OffsetAttr,
+    // datetime.now() kwarg
+    #[strum(serialize = "tz")]
+    Tz,
 
     // re module strings
     /// Module name for `import re`.
