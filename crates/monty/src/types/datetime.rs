@@ -12,7 +12,7 @@ use crate::{
     args::ArgValues,
     bytecode::{CallResult, VM},
     defer_drop, defer_drop_mut,
-    exception_private::{ExcType, RunError, RunResult, SimpleException},
+    exception_private::{ExcType, RunResult, SimpleException},
     heap::{Heap, HeapData, HeapId, HeapItem, HeapRead},
     intern::{Interns, StaticStrings},
     os::OsFunction,
@@ -622,9 +622,9 @@ fn tzinfo_from_value(
         Value::None => Ok((None, None)),
         Value::Ref(id) => match heap.get(*id) {
             HeapData::TimeZone(tz) => Ok((Some(tz.clone()), Some(*id))),
-            other => Err(tzinfo_type_error(other.py_type_name())),
+            other => Err(ExcType::type_error_tzinfo(other.py_type())),
         },
-        _ => Err(tzinfo_type_error(value.py_type_name())),
+        _ => Err(ExcType::type_error_tzinfo(value.py_type_shallow())),
     }
 }
 
@@ -638,19 +638,10 @@ fn validate_tz_arg(value: &Value, heap: &Heap<impl ResourceTracker>) -> RunResul
         Value::None => Ok(()),
         Value::Ref(id) => match heap.get(*id) {
             HeapData::TimeZone(_) => Ok(()),
-            other => Err(tzinfo_type_error(other.py_type_name())),
+            other => Err(ExcType::type_error_tzinfo(other.py_type())),
         },
-        _ => Err(tzinfo_type_error(value.py_type_name())),
+        _ => Err(ExcType::type_error_tzinfo(value.py_type_shallow())),
     }
-}
-
-/// Creates the TypeError for an invalid tzinfo argument.
-///
-/// Matches CPython: `tzinfo argument must be None or of a tzinfo subclass, not type 'int'`
-fn tzinfo_type_error(type_name: &str) -> RunError {
-    ExcType::type_error(format!(
-        "tzinfo argument must be None or of a tzinfo subclass, not type '{type_name}'"
-    ))
 }
 
 /// Updates a temporary retained tzinfo value used during datetime construction.

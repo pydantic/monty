@@ -205,40 +205,41 @@ impl HeapData {
         matches!(self, Self::Coroutine(_))
     }
 
-    /// Returns the Python type name for this heap data (e.g., `"str"`, `"list"`, `"int"`).
+    /// Returns the Python `Type` for this heap data without requiring VM access.
     ///
-    /// Used in error messages where the full `PyTrait::py_type` dispatch is not available
-    /// (e.g., when only a `&Heap` is held, not a `&VM`).
+    /// This is a lightweight alternative to the `PyTrait::py_type` dispatch on
+    /// `HeapReadOutput`, useful in error messages and diagnostics where only a
+    /// `&Heap` is available (not a full `&VM`).
     #[must_use]
-    pub(crate) fn py_type_name(&self) -> &'static str {
+    pub(crate) fn py_type(&self) -> Type {
         match self {
-            Self::Str(_) => "str",
-            Self::Bytes(_) => "bytes",
-            Self::List(_) => "list",
-            Self::Tuple(_) | Self::NamedTuple(_) => "tuple",
-            Self::Dict(_) => "dict",
-            Self::DictKeysView(_) => "dict_keys",
-            Self::DictItemsView(_) => "dict_items",
-            Self::DictValuesView(_) => "dict_values",
-            Self::Set(_) => "set",
-            Self::FrozenSet(_) => "frozenset",
-            Self::Closure(_) | Self::FunctionDefaults(_) | Self::ExtFunction(_) => "function",
-            Self::Cell(_) => "cell",
-            Self::Range(_) => "range",
-            Self::Slice(_) => "slice",
-            Self::Exception(_) => "Exception",
-            Self::Dataclass(_) => "object",
-            Self::Iter(_) => "iterator",
-            Self::LongInt(_) => "int",
-            Self::Module(_) => "module",
-            Self::Coroutine(_) | Self::GatherFuture(_) => "coroutine",
-            Self::Path(_) => "PosixPath",
-            Self::RePattern(_) => "re.Pattern",
-            Self::ReMatch(_) => "re.Match",
-            Self::Date(_) => "datetime.date",
-            Self::DateTime(_) => "datetime.datetime",
-            Self::TimeDelta(_) => "datetime.timedelta",
-            Self::TimeZone(_) => "datetime.timezone",
+            Self::Str(_) => Type::Str,
+            Self::Bytes(_) => Type::Bytes,
+            Self::List(_) => Type::List,
+            Self::Tuple(_) | Self::NamedTuple(_) => Type::Tuple,
+            Self::Dict(_) => Type::Dict,
+            Self::DictKeysView(_) => Type::DictKeys,
+            Self::DictItemsView(_) => Type::DictItems,
+            Self::DictValuesView(_) => Type::DictValues,
+            Self::Set(_) => Type::Set,
+            Self::FrozenSet(_) => Type::FrozenSet,
+            Self::Closure(_) | Self::FunctionDefaults(_) | Self::ExtFunction(_) => Type::Function,
+            Self::Cell(_) => Type::Cell,
+            Self::Range(_) => Type::Range,
+            Self::Slice(_) => Type::Slice,
+            Self::Exception(e) => Type::Exception(e.exc_type()),
+            Self::Dataclass(_) => Type::Dataclass,
+            Self::Iter(_) => Type::Iterator,
+            Self::LongInt(_) => Type::Int,
+            Self::Module(_) => Type::Module,
+            Self::Coroutine(_) | Self::GatherFuture(_) => Type::Coroutine,
+            Self::Path(_) => Type::Path,
+            Self::RePattern(_) => Type::RePattern,
+            Self::ReMatch(_) => Type::ReMatch,
+            Self::Date(_) => Type::Date,
+            Self::DateTime(_) => Type::DateTime,
+            Self::TimeDelta(_) => Type::TimeDelta,
+            Self::TimeZone(_) => Type::TimeZone,
         }
     }
 

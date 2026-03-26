@@ -674,6 +674,18 @@ impl ExcType {
         SimpleException::new_msg(Self::TypeError, "keywords must be strings").into()
     }
 
+    /// Creates a TypeError for an invalid `tzinfo` argument.
+    ///
+    /// Matches CPython: `tzinfo argument must be None or of a tzinfo subclass, not type 'int'`
+    #[must_use]
+    pub(crate) fn type_error_tzinfo(ty: Type) -> RunError {
+        SimpleException::new_msg(
+            Self::TypeError,
+            format!("tzinfo argument must be None or of a tzinfo subclass, not type '{ty}'"),
+        )
+        .into()
+    }
+
     /// Creates a simple TypeError with a custom message.
     #[must_use]
     pub(crate) fn type_error(msg: impl fmt::Display) -> RunError {

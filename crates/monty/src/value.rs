@@ -1376,29 +1376,29 @@ impl PyTrait<'_> for Value {
 }
 
 impl Value {
-    /// Returns the Python type name for this value without requiring VM access.
+    /// Returns the Python `Type` for immediate (non-heap) values without VM access.
     ///
-    /// For `Value::Ref` variants, this returns a generic `"object"` — use the `HeapData`
-    /// variant directly when you need a precise name for heap objects.
+    /// For `Value::Ref` variants this cannot determine the concrete type (that requires
+    /// reading from the heap), so it falls back to `Type::NoneType` as a sentinel.
+    /// Callers handling `Ref` should use `HeapData::py_type()` on the resolved data instead.
     #[must_use]
-    pub(crate) fn py_type_name(&self) -> &'static str {
+    pub(crate) fn py_type_shallow(&self) -> Type {
         match self {
-            Self::Undefined => "NoneType",
-            Self::Ellipsis => "ellipsis",
-            Self::None => "NoneType",
-            Self::Bool(_) => "bool",
-            Self::Int(_) | Self::InternLongInt(_) => "int",
-            Self::Float(_) => "float",
-            Self::InternString(_) => "str",
-            Self::InternBytes(_) => "bytes",
-            Self::Builtin(_) => "builtin",
-            Self::ModuleFunction(_) | Self::DefFunction(_) | Self::ExtFunction(_) => "function",
-            Self::Marker(_) => "marker",
-            Self::Property(_) => "property",
-            Self::ExternalFuture(_) => "coroutine",
-            Self::Ref(_) => "object",
+            Self::Undefined | Self::None => Type::NoneType,
+            Self::Ellipsis => Type::Ellipsis,
+            Self::Bool(_) => Type::Bool,
+            Self::Int(_) | Self::InternLongInt(_) => Type::Int,
+            Self::Float(_) => Type::Float,
+            Self::InternString(_) => Type::Str,
+            Self::InternBytes(_) => Type::Bytes,
+            Self::Builtin(_) => Type::BuiltinFunction,
+            Self::ModuleFunction(_) | Self::DefFunction(_) | Self::ExtFunction(_) => Type::Function,
+            Self::Marker(_) => Type::SpecialForm,
+            Self::Property(_) => Type::Property,
+            Self::ExternalFuture(_) => Type::Coroutine,
+            Self::Ref(_) => Type::NoneType, // callers should resolve Ref via HeapData::py_type()
             #[cfg(feature = "ref-count-panic")]
-            Self::Dereferenced => "NoneType",
+            Self::Dereferenced => Type::NoneType,
         }
     }
 
