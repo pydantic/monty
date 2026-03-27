@@ -58,6 +58,7 @@ use crate::{
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, RunResult, SimpleException},
     heap::{HeapData, HeapId},
+    heap_traits::DropWithHeap,
     intern::StaticStrings,
     modules::ModuleFunctions,
     resource::{ResourceError, ResourceTracker, check_array_alloc_size},
@@ -199,6 +200,218 @@ pub(crate) enum NumpyFunctions {
     Repeat,
     /// `numpy.split(a, indices_or_sections)` — split array into sub-arrays.
     Split,
+
+    // --- Phase 3: Inverse trig, hyperbolic, remaining math ---
+    /// `numpy.arcsin(a)` — element-wise inverse sine.
+    Arcsin,
+    /// `numpy.arccos(a)` — element-wise inverse cosine.
+    Arccos,
+    /// `numpy.arctan(a)` — element-wise inverse tangent.
+    Arctan,
+    /// `numpy.arctan2(y, x)` — element-wise two-argument arctangent.
+    Arctan2,
+    /// `numpy.sinh(a)` — element-wise hyperbolic sine.
+    Sinh,
+    /// `numpy.cosh(a)` — element-wise hyperbolic cosine.
+    Cosh,
+    /// `numpy.tanh(a)` — element-wise hyperbolic tangent.
+    Tanh,
+    /// `numpy.arcsinh(a)` — element-wise inverse hyperbolic sine.
+    Arcsinh,
+    /// `numpy.arccosh(a)` — element-wise inverse hyperbolic cosine.
+    Arccosh,
+    /// `numpy.arctanh(a)` — element-wise inverse hyperbolic tangent.
+    Arctanh,
+    /// `numpy.sign(a)` — element-wise sign (-1, 0, or 1).
+    Sign,
+    /// `numpy.square(a)` — element-wise square.
+    Square,
+    /// `numpy.cbrt(a)` — element-wise cube root.
+    Cbrt,
+    /// `numpy.reciprocal(a)` — element-wise 1/x.
+    Reciprocal,
+    /// `numpy.log1p(a)` — element-wise log(1 + x).
+    Log1p,
+    /// `numpy.exp2(a)` — element-wise 2^x.
+    Exp2,
+    /// `numpy.expm1(a)` — element-wise exp(x) - 1.
+    Expm1,
+    /// `numpy.deg2rad(a)` — convert degrees to radians.
+    Deg2rad,
+    /// `numpy.rad2deg(a)` — convert radians to degrees.
+    Rad2deg,
+    /// `numpy.hypot(a, b)` — element-wise hypotenuse.
+    Hypot,
+    /// `numpy.nan_to_num(a)` — replace NaN with 0 and Inf with large finite.
+    NanToNum,
+    /// `numpy.fmin(a, b)` — element-wise minimum ignoring NaN.
+    Fmin,
+    /// `numpy.fmax(a, b)` — element-wise maximum ignoring NaN.
+    Fmax,
+    /// `numpy.fmod(a, b)` — element-wise C-style modulo.
+    Fmod,
+    /// `numpy.rint(a)` — round to nearest integer.
+    Rint,
+    /// `numpy.fabs(a)` — element-wise absolute value (float result).
+    Fabs,
+    /// `numpy.positive(a)` — element-wise unary +.
+    Positive,
+    /// `numpy.negative(a)` — element-wise unary -.
+    Negative,
+
+    // --- Phase 4: NaN-aware aggregations and statistics ---
+    /// `numpy.nansum(a)` — sum ignoring NaN.
+    Nansum,
+    /// `numpy.nanmean(a)` — mean ignoring NaN.
+    Nanmean,
+    /// `numpy.nanmin(a)` — min ignoring NaN.
+    Nanmin,
+    /// `numpy.nanmax(a)` — max ignoring NaN.
+    Nanmax,
+    /// `numpy.nanstd(a)` — std ignoring NaN.
+    Nanstd,
+    /// `numpy.nanvar(a)` — var ignoring NaN.
+    Nanvar,
+    /// `numpy.nanprod(a)` — product ignoring NaN.
+    Nanprod,
+    /// `numpy.nanmedian(a)` — median ignoring NaN.
+    Nanmedian,
+    /// `numpy.nanargmin(a)` — argmin ignoring NaN.
+    Nanargmin,
+    /// `numpy.nanargmax(a)` — argmax ignoring NaN.
+    Nanargmax,
+    /// `numpy.average(a)` — weighted average (simple mean without weights).
+    Average,
+    /// `numpy.percentile(a, q)` — q-th percentile.
+    Percentile,
+    /// `numpy.quantile(a, q)` — q-th quantile (q in [0,1]).
+    Quantile,
+    /// `numpy.ptp(a)` — peak-to-peak (max - min).
+    Ptp,
+    /// `numpy.cumprod(a)` — cumulative product.
+    Cumprod,
+    /// `numpy.nancumsum(a)` — cumulative sum ignoring NaN.
+    Nancumsum,
+    /// `numpy.nancumprod(a)` — cumulative product ignoring NaN.
+    Nancumprod,
+
+    // --- Phase 5: Logical and testing functions ---
+    /// `numpy.logical_and(a, b)` — element-wise logical AND.
+    LogicalAnd,
+    /// `numpy.logical_or(a, b)` — element-wise logical OR.
+    LogicalOr,
+    /// `numpy.logical_not(a)` — element-wise logical NOT.
+    LogicalNot,
+    /// `numpy.logical_xor(a, b)` — element-wise logical XOR.
+    LogicalXor,
+    /// `numpy.allclose(a, b)` — true if all elements are close.
+    Allclose,
+    /// `numpy.isclose(a, b)` — element-wise closeness test.
+    Isclose,
+    /// `numpy.isin(element, test_elements)` — element membership test.
+    Isin,
+
+    // --- Phase 6: Manipulation and shape ---
+    /// `numpy.flip(a)` — reverse array elements.
+    Flip,
+    /// `numpy.fliplr(a)` — flip left-right (2D).
+    Fliplr,
+    /// `numpy.flipud(a)` — flip up-down (2D).
+    Flipud,
+    /// `numpy.roll(a, shift)` — roll elements along axis.
+    Roll,
+    /// `numpy.expand_dims(a, axis)` — add axis.
+    ExpandDims,
+    /// `numpy.squeeze(a)` — remove length-1 axes.
+    Squeeze,
+    /// `numpy.ravel(a)` — flatten to 1D (module-level).
+    Ravel,
+    /// `numpy.delete(arr, indices)` — delete elements.
+    Delete,
+    /// `numpy.insert(arr, index, values)` — insert values.
+    Insert,
+    /// `numpy.diag(v)` — extract diagonal or create diagonal matrix.
+    Diag,
+    /// `numpy.diagonal(a)` — return diagonal of array.
+    Diagonal,
+    /// `numpy.trace(a)` — sum of diagonal elements.
+    Trace,
+    /// `numpy.flatnonzero(a)` — non-zero indices in flattened array.
+    Flatnonzero,
+    /// `numpy.asarray(a)` — convert to array without copy if possible.
+    Asarray,
+    /// `numpy.column_stack(arrays)` — stack 1D arrays as columns.
+    ColumnStack,
+    /// `numpy.row_stack(arrays)` — alias for vstack.
+    RowStack,
+    /// `numpy.hsplit(a, n)` — horizontal split.
+    Hsplit,
+    /// `numpy.vsplit(a, n)` — vertical split.
+    Vsplit,
+    /// `numpy.array_split(a, n)` — split into possibly unequal parts.
+    ArraySplit,
+    /// `numpy.full_like(a, fill_value)` — array of same shape filled with value.
+    FullLike,
+    /// `numpy.empty_like(a)` — uninitialized array of same shape.
+    EmptyLike,
+
+    // --- Phase 7: Sorting, searching, set operations ---
+    /// `numpy.argsort(a)` — module-level argsort.
+    ArgsortMod,
+    /// `numpy.searchsorted(a, v)` — find insertion points.
+    Searchsorted,
+    /// `numpy.extract(condition, arr)` — extract elements by condition.
+    Extract,
+    /// `numpy.intersect1d(a, b)` — sorted unique intersection.
+    Intersect1d,
+    /// `numpy.union1d(a, b)` — sorted unique union.
+    Union1d,
+    /// `numpy.setdiff1d(a, b)` — elements in a not in b.
+    Setdiff1d,
+    /// `numpy.setxor1d(a, b)` — elements in either but not both.
+    Setxor1d,
+    /// `numpy.bincount(a)` — count occurrences of each non-negative int.
+    Bincount,
+    /// `numpy.digitize(x, bins)` — indices of bins.
+    Digitize,
+
+    // --- Phase 8: Linear algebra ---
+    /// `numpy.matmul(a, b)` — matrix multiplication.
+    Matmul,
+    /// `numpy.inner(a, b)` — inner product.
+    Inner,
+    /// `numpy.outer(a, b)` — outer product.
+    Outer,
+    /// `numpy.vdot(a, b)` — vector dot product (flattens first).
+    Vdot,
+    /// `numpy.cross(a, b)` — cross product (3-element vectors).
+    Cross,
+
+    // --- Phase 10: Additional creation functions ---
+    /// `numpy.logspace(start, stop, num)` — log-spaced values.
+    Logspace,
+    /// `numpy.geomspace(start, stop, num)` — geometrically spaced values.
+    Geomspace,
+    /// `numpy.tri(N)` — triangular array.
+    Tri,
+    /// `numpy.tril(m)` — lower triangle.
+    Tril,
+    /// `numpy.triu(m)` — upper triangle.
+    Triu,
+    /// `numpy.identity(n)` — identity matrix (alias for eye).
+    Identity,
+    /// `numpy.meshgrid(*xi)` — coordinate matrices from vectors.
+    Meshgrid,
+    /// `numpy.gradient(f)` — numerical gradient.
+    Gradient,
+    /// `numpy.convolve(a, v)` — discrete linear convolution.
+    Convolve,
+    /// `numpy.correlate(a, v)` — cross-correlation.
+    Correlate,
+    /// `numpy.interp(x, xp, fp)` — 1D linear interpolation.
+    Interp,
+    /// `numpy.select(condlist, choicelist)` — conditional selection.
+    Select,
 }
 
 /// Creates the `numpy` module and allocates it on the heap.
@@ -210,6 +423,41 @@ pub fn create_module(vm: &mut VM<'_, '_, impl ResourceTracker>) -> Result<HeapId
     for (name, func) in NUMPY_FUNCTIONS {
         module.set_attr(*name, Value::ModuleFunction(ModuleFunctions::Numpy(*func)), vm);
     }
+
+    // Module-level constants
+    module.set_attr(StaticStrings::Pi, Value::Float(std::f64::consts::PI), vm);
+    module.set_attr(StaticStrings::MathE, Value::Float(std::f64::consts::E), vm);
+    module.set_attr(StaticStrings::MathInf, Value::Float(f64::INFINITY), vm);
+    module.set_attr(StaticStrings::MathNan, Value::Float(f64::NAN), vm);
+    module.set_attr(StaticStrings::Newaxis, Value::None, vm);
+
+    // Dtype type objects — stored as interned strings that astype() recognizes.
+    // These allow `arr.astype(np.float64)` to work alongside `arr.astype('float64')`.
+    module.set_attr(
+        StaticStrings::NpFloat64,
+        Value::InternString(StaticStrings::NpFloat64.into()),
+        vm,
+    );
+    module.set_attr(
+        StaticStrings::NpInt64,
+        Value::InternString(StaticStrings::NpInt64.into()),
+        vm,
+    );
+    module.set_attr(
+        StaticStrings::NpBool_,
+        Value::InternString(StaticStrings::NpBool_.into()),
+        vm,
+    );
+    module.set_attr(
+        StaticStrings::NpFloat32,
+        Value::InternString(StaticStrings::NpFloat32.into()),
+        vm,
+    );
+    module.set_attr(
+        StaticStrings::NpInt32,
+        Value::InternString(StaticStrings::NpInt32.into()),
+        vm,
+    );
 
     vm.heap.allocate(HeapData::Module(module))
 }
@@ -279,6 +527,114 @@ const NUMPY_FUNCTIONS: &[(StaticStrings, NumpyFunctions)] = &[
     (StaticStrings::NpTile, NumpyFunctions::Tile),
     (StaticStrings::NpRepeat, NumpyFunctions::Repeat),
     (StaticStrings::Split, NumpyFunctions::Split),
+    // Phase 3: Inverse trig, hyperbolic, remaining math
+    (StaticStrings::NpArcsin, NumpyFunctions::Arcsin),
+    (StaticStrings::NpArccos, NumpyFunctions::Arccos),
+    (StaticStrings::NpArctan, NumpyFunctions::Arctan),
+    (StaticStrings::NpArctan2, NumpyFunctions::Arctan2),
+    (StaticStrings::Sinh, NumpyFunctions::Sinh),
+    (StaticStrings::Cosh, NumpyFunctions::Cosh),
+    (StaticStrings::Tanh, NumpyFunctions::Tanh),
+    (StaticStrings::NpArcsinh, NumpyFunctions::Arcsinh),
+    (StaticStrings::NpArccosh, NumpyFunctions::Arccosh),
+    (StaticStrings::NpArctanh, NumpyFunctions::Arctanh),
+    (StaticStrings::NpSign, NumpyFunctions::Sign),
+    (StaticStrings::NpSquare, NumpyFunctions::Square),
+    (StaticStrings::Cbrt, NumpyFunctions::Cbrt),
+    (StaticStrings::NpReciprocal, NumpyFunctions::Reciprocal),
+    (StaticStrings::Log1p, NumpyFunctions::Log1p),
+    (StaticStrings::Exp2, NumpyFunctions::Exp2),
+    (StaticStrings::Expm1, NumpyFunctions::Expm1),
+    (StaticStrings::NpDeg2rad, NumpyFunctions::Deg2rad),
+    (StaticStrings::NpRad2deg, NumpyFunctions::Rad2deg),
+    (StaticStrings::Degrees, NumpyFunctions::Rad2deg), // alias
+    (StaticStrings::Radians, NumpyFunctions::Deg2rad), // alias
+    (StaticStrings::NpHypot, NumpyFunctions::Hypot),
+    (StaticStrings::NpNanToNum, NumpyFunctions::NanToNum),
+    (StaticStrings::NpFmin, NumpyFunctions::Fmin),
+    (StaticStrings::NpFmax, NumpyFunctions::Fmax),
+    (StaticStrings::Fmod, NumpyFunctions::Fmod),
+    (StaticStrings::NpRint, NumpyFunctions::Rint),
+    (StaticStrings::Fabs, NumpyFunctions::Fabs),
+    (StaticStrings::NpPositive, NumpyFunctions::Positive),
+    (StaticStrings::NpNegative, NumpyFunctions::Negative),
+    // Phase 4: NaN-aware aggregations and statistics
+    (StaticStrings::NpNansum, NumpyFunctions::Nansum),
+    (StaticStrings::NpNanmean, NumpyFunctions::Nanmean),
+    (StaticStrings::NpNanmin, NumpyFunctions::Nanmin),
+    (StaticStrings::NpNanmax, NumpyFunctions::Nanmax),
+    (StaticStrings::NpNanstd, NumpyFunctions::Nanstd),
+    (StaticStrings::NpNanvar, NumpyFunctions::Nanvar),
+    (StaticStrings::NpNanprod, NumpyFunctions::Nanprod),
+    (StaticStrings::NpNanmedian, NumpyFunctions::Nanmedian),
+    (StaticStrings::NpNanargmin, NumpyFunctions::Nanargmin),
+    (StaticStrings::NpNanargmax, NumpyFunctions::Nanargmax),
+    (StaticStrings::NpAverage, NumpyFunctions::Average),
+    (StaticStrings::NpPercentile, NumpyFunctions::Percentile),
+    (StaticStrings::NpQuantile, NumpyFunctions::Quantile),
+    (StaticStrings::NpPtp, NumpyFunctions::Ptp),
+    (StaticStrings::NpCumprod, NumpyFunctions::Cumprod),
+    (StaticStrings::NpNancumsum, NumpyFunctions::Nancumsum),
+    (StaticStrings::NpNancumprod, NumpyFunctions::Nancumprod),
+    // Phase 5: Logical and testing
+    (StaticStrings::NpLogicalAnd, NumpyFunctions::LogicalAnd),
+    (StaticStrings::NpLogicalOr, NumpyFunctions::LogicalOr),
+    (StaticStrings::NpLogicalNot, NumpyFunctions::LogicalNot),
+    (StaticStrings::NpLogicalXor, NumpyFunctions::LogicalXor),
+    (StaticStrings::NpAllclose, NumpyFunctions::Allclose),
+    (StaticStrings::Isclose, NumpyFunctions::Isclose),
+    (StaticStrings::NpIsin, NumpyFunctions::Isin),
+    // Phase 6: Manipulation and shape
+    (StaticStrings::NpFlip, NumpyFunctions::Flip),
+    (StaticStrings::NpFliplr, NumpyFunctions::Fliplr),
+    (StaticStrings::NpFlipud, NumpyFunctions::Flipud),
+    (StaticStrings::NpRoll, NumpyFunctions::Roll),
+    (StaticStrings::NpExpandDims, NumpyFunctions::ExpandDims),
+    (StaticStrings::NpSqueeze, NumpyFunctions::Squeeze),
+    (StaticStrings::NpRavel, NumpyFunctions::Ravel),
+    (StaticStrings::NpDelete, NumpyFunctions::Delete),
+    (StaticStrings::Insert, NumpyFunctions::Insert),
+    (StaticStrings::NpDiag, NumpyFunctions::Diag),
+    (StaticStrings::NpDiagonal, NumpyFunctions::Diagonal),
+    (StaticStrings::NpTrace, NumpyFunctions::Trace),
+    (StaticStrings::NpFlatnonzero, NumpyFunctions::Flatnonzero),
+    (StaticStrings::NpAsarray, NumpyFunctions::Asarray),
+    (StaticStrings::NpColumnStack, NumpyFunctions::ColumnStack),
+    (StaticStrings::NpRowStack, NumpyFunctions::RowStack),
+    (StaticStrings::NpHsplit, NumpyFunctions::Hsplit),
+    (StaticStrings::NpVsplit, NumpyFunctions::Vsplit),
+    (StaticStrings::NpArraySplit, NumpyFunctions::ArraySplit),
+    (StaticStrings::NpFullLike, NumpyFunctions::FullLike),
+    (StaticStrings::NpEmptyLike, NumpyFunctions::EmptyLike),
+    // Phase 7: Sorting, searching, set ops
+    (StaticStrings::NpArgsort, NumpyFunctions::ArgsortMod),
+    (StaticStrings::NpSearchsorted, NumpyFunctions::Searchsorted),
+    (StaticStrings::NpExtract, NumpyFunctions::Extract),
+    (StaticStrings::NpIntersect1d, NumpyFunctions::Intersect1d),
+    (StaticStrings::NpUnion1d, NumpyFunctions::Union1d),
+    (StaticStrings::NpSetdiff1d, NumpyFunctions::Setdiff1d),
+    (StaticStrings::NpSetxor1d, NumpyFunctions::Setxor1d),
+    (StaticStrings::NpBincount, NumpyFunctions::Bincount),
+    (StaticStrings::NpDigitize, NumpyFunctions::Digitize),
+    // Phase 8: Linear algebra
+    (StaticStrings::NpMatmul, NumpyFunctions::Matmul),
+    (StaticStrings::NpInner, NumpyFunctions::Inner),
+    (StaticStrings::NpOuter, NumpyFunctions::Outer),
+    (StaticStrings::NpVdot, NumpyFunctions::Vdot),
+    (StaticStrings::NpCross, NumpyFunctions::Cross),
+    // Phase 10: Additional creation and numerical
+    (StaticStrings::NpLogspace, NumpyFunctions::Logspace),
+    (StaticStrings::NpGeomspace, NumpyFunctions::Geomspace),
+    (StaticStrings::NpTri, NumpyFunctions::Tri),
+    (StaticStrings::NpTril, NumpyFunctions::Tril),
+    (StaticStrings::NpTriu, NumpyFunctions::Triu),
+    (StaticStrings::NpIdentity, NumpyFunctions::Identity),
+    (StaticStrings::NpMeshgrid, NumpyFunctions::Meshgrid),
+    (StaticStrings::NpGradient, NumpyFunctions::Gradient),
+    (StaticStrings::NpConvolve, NumpyFunctions::Convolve),
+    (StaticStrings::NpCorrelate, NumpyFunctions::Correlate),
+    (StaticStrings::NpInterp, NumpyFunctions::Interp),
+    (StaticStrings::NpSelect, NumpyFunctions::Select),
 ];
 
 /// Dispatches a call to a `numpy` module function.
@@ -374,6 +730,202 @@ pub(super) fn call(
         NumpyFunctions::Tile => call_tile(vm, args).map(CallResult::Value),
         NumpyFunctions::Repeat => call_repeat(vm, args).map(CallResult::Value),
         NumpyFunctions::Split => call_split(vm, args).map(CallResult::Value),
+        // Phase 3: Inverse trig, hyperbolic, remaining math
+        NumpyFunctions::Arcsin => {
+            call_elementwise(vm, args, f64::asin, "numpy.arcsin", Some(NdArrayDtype::Float64)).map(CallResult::Value)
+        }
+        NumpyFunctions::Arccos => {
+            call_elementwise(vm, args, f64::acos, "numpy.arccos", Some(NdArrayDtype::Float64)).map(CallResult::Value)
+        }
+        NumpyFunctions::Arctan => {
+            call_elementwise(vm, args, f64::atan, "numpy.arctan", Some(NdArrayDtype::Float64)).map(CallResult::Value)
+        }
+        NumpyFunctions::Arctan2 => call_pairwise(vm, args, f64::atan2, "numpy.arctan2").map(CallResult::Value),
+        NumpyFunctions::Sinh => {
+            call_elementwise(vm, args, f64::sinh, "numpy.sinh", Some(NdArrayDtype::Float64)).map(CallResult::Value)
+        }
+        NumpyFunctions::Cosh => {
+            call_elementwise(vm, args, f64::cosh, "numpy.cosh", Some(NdArrayDtype::Float64)).map(CallResult::Value)
+        }
+        NumpyFunctions::Tanh => {
+            call_elementwise(vm, args, f64::tanh, "numpy.tanh", Some(NdArrayDtype::Float64)).map(CallResult::Value)
+        }
+        NumpyFunctions::Arcsinh => {
+            call_elementwise(vm, args, f64::asinh, "numpy.arcsinh", Some(NdArrayDtype::Float64)).map(CallResult::Value)
+        }
+        NumpyFunctions::Arccosh => {
+            call_elementwise(vm, args, f64::acosh, "numpy.arccosh", Some(NdArrayDtype::Float64)).map(CallResult::Value)
+        }
+        NumpyFunctions::Arctanh => {
+            call_elementwise(vm, args, f64::atanh, "numpy.arctanh", Some(NdArrayDtype::Float64)).map(CallResult::Value)
+        }
+        NumpyFunctions::Sign => {
+            // numpy.sign returns 0.0 for 0.0, unlike Rust's signum which returns 1.0
+            call_elementwise(
+                vm,
+                args,
+                |x| if x == 0.0 { 0.0 } else { x.signum() },
+                "numpy.sign",
+                None,
+            )
+            .map(CallResult::Value)
+        }
+        NumpyFunctions::Square => call_elementwise(vm, args, |x| x * x, "numpy.square", None).map(CallResult::Value),
+        NumpyFunctions::Cbrt => {
+            call_elementwise(vm, args, f64::cbrt, "numpy.cbrt", Some(NdArrayDtype::Float64)).map(CallResult::Value)
+        }
+        NumpyFunctions::Reciprocal => {
+            call_elementwise(vm, args, |x| 1.0 / x, "numpy.reciprocal", Some(NdArrayDtype::Float64))
+                .map(CallResult::Value)
+        }
+        NumpyFunctions::Log1p => {
+            call_elementwise(vm, args, f64::ln_1p, "numpy.log1p", Some(NdArrayDtype::Float64)).map(CallResult::Value)
+        }
+        NumpyFunctions::Exp2 => {
+            call_elementwise(vm, args, f64::exp2, "numpy.exp2", Some(NdArrayDtype::Float64)).map(CallResult::Value)
+        }
+        NumpyFunctions::Expm1 => {
+            call_elementwise(vm, args, f64::exp_m1, "numpy.expm1", Some(NdArrayDtype::Float64)).map(CallResult::Value)
+        }
+        NumpyFunctions::Deg2rad => {
+            call_elementwise(vm, args, f64::to_radians, "numpy.deg2rad", Some(NdArrayDtype::Float64))
+                .map(CallResult::Value)
+        }
+        NumpyFunctions::Rad2deg => {
+            call_elementwise(vm, args, f64::to_degrees, "numpy.rad2deg", Some(NdArrayDtype::Float64))
+                .map(CallResult::Value)
+        }
+        NumpyFunctions::Hypot => call_pairwise(vm, args, f64::hypot, "numpy.hypot").map(CallResult::Value),
+        NumpyFunctions::NanToNum => call_nan_to_num(vm, args).map(CallResult::Value),
+        NumpyFunctions::Fmin => call_pairwise(
+            vm,
+            args,
+            |a, b| {
+                if a.is_nan() {
+                    b
+                } else if b.is_nan() {
+                    a
+                } else {
+                    a.min(b)
+                }
+            },
+            "numpy.fmin",
+        )
+        .map(CallResult::Value),
+        NumpyFunctions::Fmax => call_pairwise(
+            vm,
+            args,
+            |a, b| {
+                if a.is_nan() {
+                    b
+                } else if b.is_nan() {
+                    a
+                } else {
+                    a.max(b)
+                }
+            },
+            "numpy.fmax",
+        )
+        .map(CallResult::Value),
+        NumpyFunctions::Fmod => call_pairwise(vm, args, |a, b| a % b, "numpy.fmod").map(CallResult::Value),
+        NumpyFunctions::Rint => call_elementwise(
+            vm,
+            args,
+            f64::round_ties_even,
+            "numpy.rint",
+            Some(NdArrayDtype::Float64),
+        )
+        .map(CallResult::Value),
+        NumpyFunctions::Fabs => {
+            call_elementwise(vm, args, f64::abs, "numpy.fabs", Some(NdArrayDtype::Float64)).map(CallResult::Value)
+        }
+        NumpyFunctions::Positive => call_elementwise(vm, args, |x| x, "numpy.positive", None).map(CallResult::Value),
+        NumpyFunctions::Negative => call_elementwise(vm, args, |x| -x, "numpy.negative", None).map(CallResult::Value),
+        // Phase 4: NaN-aware aggregations and statistics
+        NumpyFunctions::Nansum => call_nan_aggregate(vm, args, nan_sum, "numpy.nansum").map(CallResult::Value),
+        NumpyFunctions::Nanmean => call_nan_aggregate(vm, args, nan_mean, "numpy.nanmean").map(CallResult::Value),
+        NumpyFunctions::Nanmin => call_nan_aggregate(vm, args, nan_min, "numpy.nanmin").map(CallResult::Value),
+        NumpyFunctions::Nanmax => call_nan_aggregate(vm, args, nan_max, "numpy.nanmax").map(CallResult::Value),
+        NumpyFunctions::Nanstd => call_nan_aggregate(vm, args, nan_std, "numpy.nanstd").map(CallResult::Value),
+        NumpyFunctions::Nanvar => call_nan_aggregate(vm, args, nan_var, "numpy.nanvar").map(CallResult::Value),
+        NumpyFunctions::Nanprod => call_nan_aggregate(vm, args, nan_prod, "numpy.nanprod").map(CallResult::Value),
+        NumpyFunctions::Nanmedian => call_nan_aggregate(vm, args, nan_median, "numpy.nanmedian").map(CallResult::Value),
+        NumpyFunctions::Nanargmin => call_nan_argmin(vm, args).map(CallResult::Value),
+        NumpyFunctions::Nanargmax => call_nan_argmax(vm, args).map(CallResult::Value),
+        NumpyFunctions::Average => call_aggregate(vm, args, NdArray::mean, "numpy.average").map(CallResult::Value),
+        NumpyFunctions::Percentile => call_percentile(vm, args).map(CallResult::Value),
+        NumpyFunctions::Quantile => call_quantile(vm, args).map(CallResult::Value),
+        NumpyFunctions::Ptp => call_ptp(vm, args).map(CallResult::Value),
+        NumpyFunctions::Cumprod => call_cumprod(vm, args).map(CallResult::Value),
+        NumpyFunctions::Nancumsum => call_nancumop(vm, args, true, "numpy.nancumsum").map(CallResult::Value),
+        NumpyFunctions::Nancumprod => call_nancumop(vm, args, false, "numpy.nancumprod").map(CallResult::Value),
+        // Phase 5: Logical and testing
+        NumpyFunctions::LogicalAnd => {
+            call_logical_binop(vm, args, |a, b| a && b, "numpy.logical_and").map(CallResult::Value)
+        }
+        NumpyFunctions::LogicalOr => {
+            call_logical_binop(vm, args, |a, b| a || b, "numpy.logical_or").map(CallResult::Value)
+        }
+        NumpyFunctions::LogicalNot => call_logical_not(vm, args).map(CallResult::Value),
+        NumpyFunctions::LogicalXor => {
+            call_logical_binop(vm, args, |a, b| a ^ b, "numpy.logical_xor").map(CallResult::Value)
+        }
+        NumpyFunctions::Allclose => call_allclose(vm, args).map(CallResult::Value),
+        NumpyFunctions::Isclose => call_isclose(vm, args).map(CallResult::Value),
+        NumpyFunctions::Isin => call_isin(vm, args).map(CallResult::Value),
+        // Phase 6: Manipulation and shape
+        NumpyFunctions::Flip => call_flip(vm, args).map(CallResult::Value),
+        NumpyFunctions::Fliplr => call_fliplr(vm, args).map(CallResult::Value),
+        NumpyFunctions::Flipud => call_flipud(vm, args).map(CallResult::Value),
+        NumpyFunctions::Roll => call_roll(vm, args).map(CallResult::Value),
+        NumpyFunctions::ExpandDims => call_expand_dims(vm, args).map(CallResult::Value),
+        NumpyFunctions::Squeeze => call_squeeze(vm, args).map(CallResult::Value),
+        NumpyFunctions::Ravel => call_ravel_mod(vm, args).map(CallResult::Value),
+        NumpyFunctions::Delete => call_delete(vm, args).map(CallResult::Value),
+        NumpyFunctions::Insert => call_insert(vm, args).map(CallResult::Value),
+        NumpyFunctions::Diag => call_diag(vm, args).map(CallResult::Value),
+        NumpyFunctions::Diagonal => call_diagonal(vm, args).map(CallResult::Value),
+        NumpyFunctions::Trace => call_trace(vm, args).map(CallResult::Value),
+        NumpyFunctions::Flatnonzero => call_flatnonzero(vm, args).map(CallResult::Value),
+        NumpyFunctions::Asarray => call_asarray(vm, args).map(CallResult::Value),
+        NumpyFunctions::ColumnStack => call_column_stack(vm, args).map(CallResult::Value),
+        NumpyFunctions::RowStack => call_vstack(vm, args).map(CallResult::Value), // alias
+        NumpyFunctions::Hsplit => call_hsplit(vm, args).map(CallResult::Value),
+        NumpyFunctions::Vsplit => call_vsplit(vm, args).map(CallResult::Value),
+        NumpyFunctions::ArraySplit => call_array_split(vm, args).map(CallResult::Value),
+        NumpyFunctions::FullLike => call_full_like(vm, args).map(CallResult::Value),
+        NumpyFunctions::EmptyLike => call_like(vm, args, 0.0, "numpy.empty_like").map(CallResult::Value),
+        // Phase 7: Sorting, searching, set ops
+        NumpyFunctions::ArgsortMod => call_argsort_mod(vm, args).map(CallResult::Value),
+        NumpyFunctions::Searchsorted => call_searchsorted(vm, args).map(CallResult::Value),
+        NumpyFunctions::Extract => call_extract(vm, args).map(CallResult::Value),
+        NumpyFunctions::Intersect1d => {
+            call_set_op(vm, args, SetOp::Intersect, "numpy.intersect1d").map(CallResult::Value)
+        }
+        NumpyFunctions::Union1d => call_set_op(vm, args, SetOp::Union, "numpy.union1d").map(CallResult::Value),
+        NumpyFunctions::Setdiff1d => call_set_op(vm, args, SetOp::Diff, "numpy.setdiff1d").map(CallResult::Value),
+        NumpyFunctions::Setxor1d => call_set_op(vm, args, SetOp::Xor, "numpy.setxor1d").map(CallResult::Value),
+        NumpyFunctions::Bincount => call_bincount(vm, args).map(CallResult::Value),
+        NumpyFunctions::Digitize => call_digitize(vm, args).map(CallResult::Value),
+        // Phase 8: Linear algebra
+        NumpyFunctions::Matmul => call_dot(vm, args).map(CallResult::Value), // For 1D, matmul = dot. TODO: proper 2D matmul
+        NumpyFunctions::Inner => call_dot(vm, args).map(CallResult::Value),  // For 1D, inner = dot
+        NumpyFunctions::Outer => call_outer(vm, args).map(CallResult::Value),
+        NumpyFunctions::Vdot => call_dot(vm, args).map(CallResult::Value), // vdot flattens first, same as dot for 1D
+        NumpyFunctions::Cross => call_cross(vm, args).map(CallResult::Value),
+        // Phase 10: Additional creation and numerical
+        NumpyFunctions::Logspace => call_logspace(vm, args).map(CallResult::Value),
+        NumpyFunctions::Geomspace => call_geomspace(vm, args).map(CallResult::Value),
+        NumpyFunctions::Tri => call_tri(vm, args).map(CallResult::Value),
+        NumpyFunctions::Tril => call_tril(vm, args).map(CallResult::Value),
+        NumpyFunctions::Triu => call_triu(vm, args).map(CallResult::Value),
+        NumpyFunctions::Identity => call_eye(vm, args).map(CallResult::Value), // alias
+        NumpyFunctions::Meshgrid => call_meshgrid(vm, args).map(CallResult::Value),
+        NumpyFunctions::Gradient => call_gradient(vm, args).map(CallResult::Value),
+        NumpyFunctions::Convolve => call_convolve(vm, args).map(CallResult::Value),
+        NumpyFunctions::Correlate => call_correlate(vm, args).map(CallResult::Value),
+        NumpyFunctions::Interp => call_interp(vm, args).map(CallResult::Value),
+        NumpyFunctions::Select => call_select(vm, args).map(CallResult::Value),
     }
 }
 
@@ -426,6 +978,7 @@ fn call_arange(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> Ru
     let first = pos
         .next()
         .ok_or_else(|| ExcType::type_error("numpy.arange() requires at least 1 argument"))?;
+    defer_drop!(first, vm);
     let second = pos.next();
     let third = pos.next();
 
@@ -433,14 +986,15 @@ fn call_arange(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> Ru
         extra.drop_with_heap(vm);
     }
 
-    let (start, stop, step) = match (second, third) {
-        (None, None) => (0.0, to_f64(&first, vm)?, 1.0),
-        (Some(stop_val), None) => (to_f64(&first, vm)?, to_f64(&stop_val, vm)?, 1.0),
-        (Some(stop_val), Some(step_val)) => (to_f64(&first, vm)?, to_f64(&stop_val, vm)?, to_f64(&step_val, vm)?),
+    let (start, stop, step) = match (&second, &third) {
+        (None, None) => (0.0, to_f64(first, vm)?, 1.0),
+        (Some(stop_val), None) => (to_f64(first, vm)?, to_f64(stop_val, vm)?, 1.0),
+        (Some(stop_val), Some(step_val)) => (to_f64(first, vm)?, to_f64(stop_val, vm)?, to_f64(step_val, vm)?),
         (None, Some(_)) => unreachable!("third arg without second"),
     };
 
-    first.drop_with_heap(vm);
+    second.drop_with_heap(vm);
+    third.drop_with_heap(vm);
 
     if step == 0.0 {
         return Err(SimpleException::new_msg(ExcType::ValueError, "step must not be zero").into());
@@ -496,20 +1050,23 @@ fn call_linspace(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> 
     let start_val = pos
         .next()
         .ok_or_else(|| ExcType::type_error("numpy.linspace() requires 3 arguments"))?;
+    defer_drop!(start_val, vm);
     let stop_val = pos
         .next()
         .ok_or_else(|| ExcType::type_error("numpy.linspace() requires 3 arguments"))?;
+    defer_drop!(stop_val, vm);
     let num_val = pos
         .next()
         .ok_or_else(|| ExcType::type_error("numpy.linspace() requires 3 arguments"))?;
+    defer_drop!(num_val, vm);
 
     for extra in pos {
         extra.drop_with_heap(vm);
     }
 
-    let start = to_f64(&start_val, vm)?;
-    let stop = to_f64(&stop_val, vm)?;
-    let num = match &num_val {
+    let start = to_f64(start_val, vm)?;
+    let stop = to_f64(stop_val, vm)?;
+    let num = match num_val {
         #[expect(
             clippy::cast_sign_loss,
             clippy::cast_possible_truncation,
@@ -529,10 +1086,6 @@ fn call_linspace(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> 
             return Err(ExcType::type_error("num must be an integer"));
         }
     };
-
-    start_val.drop_with_heap(vm);
-    stop_val.drop_with_heap(vm);
-    num_val.drop_with_heap(vm);
 
     check_array_alloc_size(num, vm.heap.tracker())?;
 
@@ -711,31 +1264,29 @@ fn call_clip(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunR
     let arr_val = pos
         .next()
         .ok_or_else(|| ExcType::type_error("numpy.clip() requires 3 arguments"))?;
+    defer_drop!(arr_val, vm);
     let min_val = pos
         .next()
         .ok_or_else(|| ExcType::type_error("numpy.clip() requires 3 arguments"))?;
+    defer_drop!(min_val, vm);
     let max_val = pos
         .next()
         .ok_or_else(|| ExcType::type_error("numpy.clip() requires 3 arguments"))?;
+    defer_drop!(max_val, vm);
 
     for extra in pos {
         extra.drop_with_heap(vm);
     }
 
-    let a_min = to_f64(&min_val, vm)?;
-    let a_max = to_f64(&max_val, vm)?;
-    min_val.drop_with_heap(vm);
-    max_val.drop_with_heap(vm);
+    let a_min = to_f64(min_val, vm)?;
+    let a_max = to_f64(max_val, vm)?;
 
-    let Value::Ref(heap_id) = &arr_val else {
-        arr_val.drop_with_heap(vm);
+    let Value::Ref(heap_id) = arr_val else {
         return Err(ExcType::type_error(
             "numpy.clip() requires an ndarray as the first argument",
         ));
     };
-    let heap_id = *heap_id;
-    let HeapData::NdArray(arr) = vm.heap.get(heap_id) else {
-        arr_val.drop_with_heap(vm);
+    let HeapData::NdArray(arr) = vm.heap.get(*heap_id) else {
         return Err(ExcType::type_error(
             "numpy.clip() requires an ndarray as the first argument",
         ));
@@ -744,7 +1295,6 @@ fn call_clip(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunR
     let data: Vec<f64> = arr.data().iter().map(|&v| v.clamp(a_min, a_max)).collect();
     let dtype = arr.dtype();
     let shape = arr.shape().to_vec();
-    arr_val.drop_with_heap(vm);
 
     let new_arr = NdArray::new(data, shape, dtype);
     Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(new_arr))?))
@@ -758,28 +1308,24 @@ fn call_where(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> Run
     let cond_val = pos
         .next()
         .ok_or_else(|| ExcType::type_error("numpy.where() requires 3 arguments"))?;
+    defer_drop!(cond_val, vm);
     let x_val = pos
         .next()
         .ok_or_else(|| ExcType::type_error("numpy.where() requires 3 arguments"))?;
+    defer_drop!(x_val, vm);
     let y_val = pos
         .next()
         .ok_or_else(|| ExcType::type_error("numpy.where() requires 3 arguments"))?;
+    defer_drop!(y_val, vm);
 
     for extra in pos {
         extra.drop_with_heap(vm);
     }
 
-    let Value::Ref(cond_id) = &cond_val else {
-        cond_val.drop_with_heap(vm);
-        x_val.drop_with_heap(vm);
-        y_val.drop_with_heap(vm);
+    let Value::Ref(cond_id) = cond_val else {
         return Err(ExcType::type_error("numpy.where() condition must be an ndarray"));
     };
-    let cond_id = *cond_id;
-    let HeapData::NdArray(cond_arr) = vm.heap.get(cond_id) else {
-        cond_val.drop_with_heap(vm);
-        x_val.drop_with_heap(vm);
-        y_val.drop_with_heap(vm);
+    let HeapData::NdArray(cond_arr) = vm.heap.get(*cond_id) else {
         return Err(ExcType::type_error("numpy.where() condition must be an ndarray"));
     };
 
@@ -787,12 +1333,8 @@ fn call_where(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> Run
     let cond_shape = cond_arr.shape().to_vec();
     let len = cond_data.len();
 
-    let x_data = extract_array_or_scalar(&x_val, len, vm)?;
-    let y_data = extract_array_or_scalar(&y_val, len, vm)?;
-
-    cond_val.drop_with_heap(vm);
-    x_val.drop_with_heap(vm);
-    y_val.drop_with_heap(vm);
+    let x_data = extract_array_or_scalar(x_val, len, vm)?;
+    let y_data = extract_array_or_scalar(y_val, len, vm)?;
 
     let data: Vec<f64> = cond_data
         .iter()
@@ -1318,21 +1860,20 @@ fn call_reshape_mod(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) 
     let arr_val = pos
         .next()
         .ok_or_else(|| ExcType::type_error("numpy.reshape() requires 2 arguments"))?;
+    defer_drop!(arr_val, vm);
     let shape_val = pos
         .next()
         .ok_or_else(|| ExcType::type_error("numpy.reshape() requires 2 arguments"))?;
+    defer_drop!(shape_val, vm);
 
     for extra in pos {
         extra.drop_with_heap(vm);
     }
 
-    let shape = extract_shape_from_value(&shape_val, "numpy.reshape", vm)?;
-    shape_val.drop_with_heap(vm);
+    let shape = extract_shape_from_value(shape_val, "numpy.reshape", vm)?;
 
-    let arr = ndarray_from_value(&arr_val, "numpy.reshape", vm)?;
-    let result = arr.reshape(shape, vm.heap);
-    arr_val.drop_with_heap(vm);
-    result
+    let arr = ndarray_from_value(arr_val, "numpy.reshape", vm)?;
+    arr.reshape(shape, vm.heap)
 }
 
 /// `numpy.transpose(a)` — transpose an array (module-level wrapper).
@@ -1777,4 +2318,1397 @@ fn to_f64(value: &Value, vm: &VM<'_, '_, impl ResourceTracker>) -> RunResult<f64
             value.py_type(vm)
         ))),
     }
+}
+
+// ===========================
+// Phase 3+: Additional math, aggregation, logical, manipulation,
+// sorting, set, linalg, and creation functions
+// ===========================
+
+/// `numpy.nan_to_num(a)` — replace NaN with 0, inf with large finite, -inf with -large finite.
+fn call_nan_to_num(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let arg = args.get_one_arg("numpy.nan_to_num", vm.heap)?;
+    defer_drop!(arg, vm);
+    let arr = ndarray_from_value(arg, "numpy.nan_to_num", vm)?;
+    let big = f64::MAX;
+    let data: Vec<f64> = arr
+        .data()
+        .iter()
+        .map(|&v| {
+            if v.is_nan() {
+                0.0
+            } else if v == f64::INFINITY {
+                big
+            } else if v == f64::NEG_INFINITY {
+                -big
+            } else {
+                v
+            }
+        })
+        .collect();
+    let len = data.len();
+    let result = NdArray::new(data, vec![len], NdArrayDtype::Float64);
+    Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(result))?))
+}
+
+// --- NaN-aware aggregation helpers ---
+
+/// Filter NaN values from a slice, returning only finite values.
+fn filter_nan(data: &[f64]) -> Vec<f64> {
+    data.iter().copied().filter(|v| !v.is_nan()).collect()
+}
+
+fn nan_sum(data: &[f64]) -> f64 {
+    filter_nan(data).iter().sum()
+}
+fn nan_prod(data: &[f64]) -> f64 {
+    filter_nan(data).iter().fold(1.0, |a, &v| a * v)
+}
+fn nan_mean(data: &[f64]) -> f64 {
+    let clean = filter_nan(data);
+    if clean.is_empty() {
+        f64::NAN
+    } else {
+        clean.iter().sum::<f64>() / clean.len() as f64
+    }
+}
+fn nan_min(data: &[f64]) -> f64 {
+    filter_nan(data).iter().copied().fold(f64::INFINITY, f64::min)
+}
+fn nan_max(data: &[f64]) -> f64 {
+    filter_nan(data).iter().copied().fold(f64::NEG_INFINITY, f64::max)
+}
+fn nan_var(data: &[f64]) -> f64 {
+    let clean = filter_nan(data);
+    if clean.is_empty() {
+        return f64::NAN;
+    }
+    let mean = clean.iter().sum::<f64>() / clean.len() as f64;
+    clean.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / clean.len() as f64
+}
+fn nan_std(data: &[f64]) -> f64 {
+    nan_var(data).sqrt()
+}
+fn nan_median(data: &[f64]) -> f64 {
+    let mut clean = filter_nan(data);
+    if clean.is_empty() {
+        return f64::NAN;
+    }
+    clean.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let n = clean.len();
+    if n % 2 == 1 {
+        clean[n / 2]
+    } else {
+        f64::midpoint(clean[n / 2 - 1], clean[n / 2])
+    }
+}
+
+/// Generic NaN-aware aggregation: extract array, filter NaN, apply function, return float.
+fn call_nan_aggregate(
+    vm: &mut VM<'_, '_, impl ResourceTracker>,
+    args: ArgValues,
+    f: fn(&[f64]) -> f64,
+    name: &str,
+) -> RunResult<Value> {
+    let arg = args.get_one_arg(name, vm.heap)?;
+    defer_drop!(arg, vm);
+    let arr = ndarray_from_value(arg, name, vm)?;
+    Ok(Value::Float(f(arr.data())))
+}
+
+/// `numpy.nanargmin(a)` — index of minimum, ignoring NaN.
+#[expect(
+    clippy::cast_possible_wrap,
+    reason = "array indices are small enough that these casts are safe"
+)]
+fn call_nan_argmin(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let arg = args.get_one_arg("numpy.nanargmin", vm.heap)?;
+    defer_drop!(arg, vm);
+    let arr = ndarray_from_value(arg, "numpy.nanargmin", vm)?;
+    let mut best_idx = 0usize;
+    let mut best_val = f64::INFINITY;
+    for (i, &v) in arr.data().iter().enumerate() {
+        if !v.is_nan() && v < best_val {
+            best_val = v;
+            best_idx = i;
+        }
+    }
+    Ok(Value::Int(best_idx as i64))
+}
+
+/// `numpy.nanargmax(a)` — index of maximum, ignoring NaN.
+#[expect(
+    clippy::cast_possible_wrap,
+    reason = "array indices are small enough that these casts are safe"
+)]
+fn call_nan_argmax(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let arg = args.get_one_arg("numpy.nanargmax", vm.heap)?;
+    defer_drop!(arg, vm);
+    let arr = ndarray_from_value(arg, "numpy.nanargmax", vm)?;
+    let mut best_idx = 0usize;
+    let mut best_val = f64::NEG_INFINITY;
+    for (i, &v) in arr.data().iter().enumerate() {
+        if !v.is_nan() && v > best_val {
+            best_val = v;
+            best_idx = i;
+        }
+    }
+    Ok(Value::Int(best_idx as i64))
+}
+
+/// `numpy.percentile(a, q)` — q-th percentile (q in 0..100).
+fn call_percentile(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let (arr_val, q_val) = args.get_two_args("numpy.percentile", vm.heap)?;
+    defer_drop!(arr_val, vm);
+    let arr = ndarray_from_value(arr_val, "numpy.percentile", vm)?;
+    let q = to_f64(&q_val, vm)?;
+    q_val.drop_with_heap(vm);
+    Ok(Value::Float(percentile_impl(arr.data(), q / 100.0)))
+}
+
+/// `numpy.quantile(a, q)` — q-th quantile (q in 0..1).
+fn call_quantile(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let (arr_val, q_val) = args.get_two_args("numpy.quantile", vm.heap)?;
+    defer_drop!(arr_val, vm);
+    let arr = ndarray_from_value(arr_val, "numpy.quantile", vm)?;
+    let q = to_f64(&q_val, vm)?;
+    q_val.drop_with_heap(vm);
+    Ok(Value::Float(percentile_impl(arr.data(), q)))
+}
+
+/// Compute the q-th quantile (q in [0, 1]) using linear interpolation.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "quantile index is always within array bounds"
+)]
+fn percentile_impl(data: &[f64], q: f64) -> f64 {
+    if data.is_empty() {
+        return f64::NAN;
+    }
+    let mut sorted: Vec<f64> = data.to_vec();
+    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let n = sorted.len();
+    if n == 1 {
+        return sorted[0];
+    }
+    let idx = q * (n - 1) as f64;
+    let lo = idx.floor() as usize;
+    let hi = idx.ceil() as usize;
+    if lo == hi {
+        sorted[lo]
+    } else {
+        sorted[lo] + (sorted[hi] - sorted[lo]) * (idx - lo as f64)
+    }
+}
+
+/// `numpy.ptp(a)` — peak-to-peak: max(a) - min(a).
+fn call_ptp(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let arg = args.get_one_arg("numpy.ptp", vm.heap)?;
+    defer_drop!(arg, vm);
+    let arr = ndarray_from_value(arg, "numpy.ptp", vm)?;
+    let (min, max) = arr
+        .data()
+        .iter()
+        .fold((f64::INFINITY, f64::NEG_INFINITY), |(mn, mx), &v| {
+            (mn.min(v), mx.max(v))
+        });
+    Ok(Value::Float(max - min))
+}
+
+/// `numpy.cumprod(a)` — cumulative product.
+fn call_cumprod(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let arg = args.get_one_arg("numpy.cumprod", vm.heap)?;
+    defer_drop!(arg, vm);
+    let arr = ndarray_from_value(arg, "numpy.cumprod", vm)?;
+    let mut acc = 1.0;
+    let data: Vec<f64> = arr
+        .data()
+        .iter()
+        .map(|&v| {
+            acc *= v;
+            acc
+        })
+        .collect();
+    let len = data.len();
+    let result = NdArray::new(data, vec![len], arr.dtype());
+    Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(result))?))
+}
+
+/// `numpy.nancumsum` / `numpy.nancumprod` — cumulative ops treating NaN as identity.
+fn call_nancumop(
+    vm: &mut VM<'_, '_, impl ResourceTracker>,
+    args: ArgValues,
+    is_sum: bool,
+    name: &str,
+) -> RunResult<Value> {
+    let arg = args.get_one_arg(name, vm.heap)?;
+    defer_drop!(arg, vm);
+    let arr = ndarray_from_value(arg, name, vm)?;
+    let identity = if is_sum { 0.0 } else { 1.0 };
+    let mut acc = identity;
+    let data: Vec<f64> = arr
+        .data()
+        .iter()
+        .map(|&v| {
+            let clean = if v.is_nan() { identity } else { v };
+            if is_sum {
+                acc += clean;
+            } else {
+                acc *= clean;
+            }
+            acc
+        })
+        .collect();
+    let len = data.len();
+    let result = NdArray::new(data, vec![len], NdArrayDtype::Float64);
+    Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(result))?))
+}
+
+// --- Phase 5: Logical and testing ---
+
+/// Generic logical binary operation on two arrays → Bool result.
+fn call_logical_binop(
+    vm: &mut VM<'_, '_, impl ResourceTracker>,
+    args: ArgValues,
+    op: fn(bool, bool) -> bool,
+    name: &str,
+) -> RunResult<Value> {
+    let (a_val, b_val) = args.get_two_args(name, vm.heap)?;
+    defer_drop!(a_val, vm);
+    defer_drop!(b_val, vm);
+    let a = ndarray_from_value(a_val, name, vm)?;
+    let b = ndarray_from_value(b_val, name, vm)?;
+    let data: Vec<f64> = a
+        .data()
+        .iter()
+        .zip(b.data().iter())
+        .map(|(&x, &y)| if op(x != 0.0, y != 0.0) { 1.0 } else { 0.0 })
+        .collect();
+    let len = data.len();
+    let result = NdArray::new(data, vec![len], NdArrayDtype::Bool);
+    Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(result))?))
+}
+
+/// `numpy.logical_not(a)` — element-wise logical NOT.
+fn call_logical_not(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let arg = args.get_one_arg("numpy.logical_not", vm.heap)?;
+    defer_drop!(arg, vm);
+    let arr = ndarray_from_value(arg, "numpy.logical_not", vm)?;
+    let data: Vec<f64> = arr.data().iter().map(|&v| if v == 0.0 { 1.0 } else { 0.0 }).collect();
+    let len = data.len();
+    let result = NdArray::new(data, vec![len], NdArrayDtype::Bool);
+    Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(result))?))
+}
+
+/// `numpy.allclose(a, b, rtol=1e-5, atol=1e-8)` — true if all elements are close.
+fn call_allclose(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let pos = args.into_pos_only("numpy.allclose", vm.heap)?;
+    defer_drop_mut!(pos, vm);
+    let a_val = pos
+        .next()
+        .ok_or_else(|| ExcType::type_error("numpy.allclose() requires at least 2 arguments"))?;
+    defer_drop!(a_val, vm);
+    let b_val = pos
+        .next()
+        .ok_or_else(|| ExcType::type_error("numpy.allclose() requires at least 2 arguments"))?;
+    defer_drop!(b_val, vm);
+    let rtol = pos
+        .next()
+        .map(|v| {
+            let result = to_f64(&v, vm);
+            v.drop_with_heap(vm);
+            result
+        })
+        .transpose()?
+        .unwrap_or(1e-5);
+    let atol = pos
+        .next()
+        .map(|v| {
+            let result = to_f64(&v, vm);
+            v.drop_with_heap(vm);
+            result
+        })
+        .transpose()?
+        .unwrap_or(1e-8);
+    for extra in pos {
+        extra.drop_with_heap(vm);
+    }
+    let a = ndarray_from_value(a_val, "numpy.allclose", vm)?;
+    let b = ndarray_from_value(b_val, "numpy.allclose", vm)?;
+    let close = a
+        .data()
+        .iter()
+        .zip(b.data().iter())
+        .all(|(&x, &y)| (x - y).abs() <= atol + rtol * y.abs());
+    Ok(Value::Bool(close))
+}
+
+/// `numpy.isclose(a, b, rtol=1e-5, atol=1e-8)` — element-wise closeness test.
+fn call_isclose(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let pos = args.into_pos_only("numpy.isclose", vm.heap)?;
+    defer_drop_mut!(pos, vm);
+    let a_val = pos
+        .next()
+        .ok_or_else(|| ExcType::type_error("numpy.isclose() requires at least 2 arguments"))?;
+    defer_drop!(a_val, vm);
+    let b_val = pos
+        .next()
+        .ok_or_else(|| ExcType::type_error("numpy.isclose() requires at least 2 arguments"))?;
+    defer_drop!(b_val, vm);
+    let rtol = pos
+        .next()
+        .map(|v| {
+            let result = to_f64(&v, vm);
+            v.drop_with_heap(vm);
+            result
+        })
+        .transpose()?
+        .unwrap_or(1e-5);
+    let atol = pos
+        .next()
+        .map(|v| {
+            let result = to_f64(&v, vm);
+            v.drop_with_heap(vm);
+            result
+        })
+        .transpose()?
+        .unwrap_or(1e-8);
+    for extra in pos {
+        extra.drop_with_heap(vm);
+    }
+    let a = ndarray_from_value(a_val, "numpy.isclose", vm)?;
+    let b = ndarray_from_value(b_val, "numpy.isclose", vm)?;
+    let data: Vec<f64> = a
+        .data()
+        .iter()
+        .zip(b.data().iter())
+        .map(|(&x, &y)| {
+            if (x - y).abs() <= atol + rtol * y.abs() {
+                1.0
+            } else {
+                0.0
+            }
+        })
+        .collect();
+    let len = data.len();
+    let result = NdArray::new(data, vec![len], NdArrayDtype::Bool);
+    Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(result))?))
+}
+
+/// `numpy.isin(element, test_elements)` — test membership.
+fn call_isin(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let (elem_val, test_val) = args.get_two_args("numpy.isin", vm.heap)?;
+    defer_drop!(elem_val, vm);
+    defer_drop!(test_val, vm);
+    let elems = ndarray_from_value(elem_val, "numpy.isin", vm)?;
+    let tests = ndarray_from_value(test_val, "numpy.isin", vm)?;
+    let test_set: Vec<f64> = tests.data().to_vec();
+    let data: Vec<f64> = elems
+        .data()
+        .iter()
+        .map(|&v| if test_set.contains(&v) { 1.0 } else { 0.0 })
+        .collect();
+    let len = data.len();
+    let result = NdArray::new(data, vec![len], NdArrayDtype::Bool);
+    Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(result))?))
+}
+
+// --- Phase 6: Manipulation and shape ---
+
+/// `numpy.flip(a)` — reverse array elements.
+fn call_flip(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let arg = args.get_one_arg("numpy.flip", vm.heap)?;
+    defer_drop!(arg, vm);
+    let arr = ndarray_from_value(arg, "numpy.flip", vm)?;
+    let mut data = arr.data().to_vec();
+    data.reverse();
+    let result = NdArray::new(data, arr.shape().to_vec(), arr.dtype());
+    Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(result))?))
+}
+
+/// `numpy.fliplr(a)` — flip left-right. For 2D: reverse each row.
+fn call_fliplr(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let arg = args.get_one_arg("numpy.fliplr", vm.heap)?;
+    defer_drop!(arg, vm);
+    let arr = ndarray_from_value(arg, "numpy.fliplr", vm)?;
+    if arr.shape().len() < 2 {
+        return Err(SimpleException::new_msg(ExcType::ValueError, "Input must be >= 2-d.").into());
+    }
+    let cols = arr.shape()[1];
+    let mut data = arr.data().to_vec();
+    for row in data.chunks_mut(cols) {
+        row.reverse();
+    }
+    let result = NdArray::new(data, arr.shape().to_vec(), arr.dtype());
+    Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(result))?))
+}
+
+/// `numpy.flipud(a)` — flip up-down. For 2D: reverse row order.
+fn call_flipud(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let arg = args.get_one_arg("numpy.flipud", vm.heap)?;
+    defer_drop!(arg, vm);
+    let arr = ndarray_from_value(arg, "numpy.flipud", vm)?;
+    if arr.shape().len() < 2 {
+        // For 1D, flipud is just reverse
+        let mut data = arr.data().to_vec();
+        data.reverse();
+        let result = NdArray::new(data, arr.shape().to_vec(), arr.dtype());
+        return Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(result))?));
+    }
+    let cols = arr.shape()[1];
+    let mut rows: Vec<&[f64]> = arr.data().chunks(cols).collect();
+    rows.reverse();
+    let data: Vec<f64> = rows.into_iter().flatten().copied().collect();
+    let result = NdArray::new(data, arr.shape().to_vec(), arr.dtype());
+    Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(result))?))
+}
+
+/// `numpy.roll(a, shift)` — roll elements by `shift` positions.
+#[expect(
+    clippy::cast_possible_wrap,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "array indices are small enough that these casts are safe"
+)]
+fn call_roll(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let (arr_val, shift_val) = args.get_two_args("numpy.roll", vm.heap)?;
+    defer_drop!(arr_val, vm);
+    let arr = ndarray_from_value(arr_val, "numpy.roll", vm)?;
+    let Value::Int(shift) = &shift_val else {
+        shift_val.drop_with_heap(vm);
+        return Err(ExcType::type_error("shift must be integer"));
+    };
+    let shift = *shift;
+    shift_val.drop_with_heap(vm);
+    let data = arr.data();
+    let n = data.len();
+    if n == 0 {
+        let result = NdArray::new(Vec::new(), vec![0], arr.dtype());
+        return Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(result))?));
+    }
+    let shift = ((shift % n as i64) + n as i64) as usize % n;
+    let mut new_data = Vec::with_capacity(n);
+    new_data.extend_from_slice(&data[n - shift..]);
+    new_data.extend_from_slice(&data[..n - shift]);
+    let result = NdArray::new(new_data, arr.shape().to_vec(), arr.dtype());
+    Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(result))?))
+}
+
+/// `numpy.expand_dims(a, axis)` — insert a new axis at `axis`.
+#[expect(
+    clippy::cast_possible_wrap,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "array indices are small enough that these casts are safe"
+)]
+fn call_expand_dims(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let (arr_val, axis_val) = args.get_two_args("numpy.expand_dims", vm.heap)?;
+    defer_drop!(arr_val, vm);
+    let arr = ndarray_from_value(arr_val, "numpy.expand_dims", vm)?;
+    let Value::Int(axis) = &axis_val else {
+        axis_val.drop_with_heap(vm);
+        return Err(ExcType::type_error("axis must be integer"));
+    };
+    let axis = *axis;
+    axis_val.drop_with_heap(vm);
+    let mut shape = arr.shape().to_vec();
+    let ndim = shape.len() as i64 + 1;
+    let axis = if axis < 0 {
+        (axis + ndim).max(0) as usize
+    } else {
+        axis.min(ndim - 1) as usize
+    };
+    shape.insert(axis, 1);
+    let result = NdArray::new(arr.data().to_vec(), shape, arr.dtype());
+    Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(result))?))
+}
+
+/// `numpy.squeeze(a)` — remove length-1 axes.
+fn call_squeeze(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let arg = args.get_one_arg("numpy.squeeze", vm.heap)?;
+    defer_drop!(arg, vm);
+    let arr = ndarray_from_value(arg, "numpy.squeeze", vm)?;
+    let shape: Vec<usize> = arr.shape().iter().copied().filter(|&s| s != 1).collect();
+    let shape = if shape.is_empty() { vec![1] } else { shape };
+    let result = NdArray::new(arr.data().to_vec(), shape, arr.dtype());
+    Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(result))?))
+}
+
+/// `numpy.ravel(a)` — module-level flatten.
+fn call_ravel_mod(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let arg = args.get_one_arg("numpy.ravel", vm.heap)?;
+    defer_drop!(arg, vm);
+    let arr = ndarray_from_value(arg, "numpy.ravel", vm)?;
+    let len = arr.data().len();
+    let result = NdArray::new(arr.data().to_vec(), vec![len], arr.dtype());
+    Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(result))?))
+}
+
+/// `numpy.delete(arr, indices)` — delete elements at given indices.
+#[expect(
+    clippy::cast_possible_wrap,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "array indices are small enough that these casts are safe"
+)]
+fn call_delete(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let (arr_val, idx_val) = args.get_two_args("numpy.delete", vm.heap)?;
+    defer_drop!(arr_val, vm);
+    defer_drop!(idx_val, vm);
+    let arr = ndarray_from_value(arr_val, "numpy.delete", vm)?;
+    let n = arr.data().len();
+    // Build set of indices to delete
+    let del_indices: Vec<usize> = if let Value::Int(i) = idx_val {
+        let i = if *i < 0 { (*i + n as i64) as usize } else { *i as usize };
+        vec![i]
+    } else {
+        let idx_arr = ndarray_from_value(idx_val, "numpy.delete", vm)?;
+        idx_arr
+            .data()
+            .iter()
+            .map(|&v| if v < 0.0 { (v + n as f64) as usize } else { v as usize })
+            .collect()
+    };
+    let data: Vec<f64> = arr
+        .data()
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| !del_indices.contains(i))
+        .map(|(_, &v)| v)
+        .collect();
+    let len = data.len();
+    let result = NdArray::new(data, vec![len], arr.dtype());
+    Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(result))?))
+}
+
+/// `numpy.insert(arr, index, values)` — insert values before the given index.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "array indices are small enough that these casts are safe"
+)]
+fn call_insert(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let pos = args.into_pos_only("numpy.insert", vm.heap)?;
+    defer_drop_mut!(pos, vm);
+    let arr_val = pos
+        .next()
+        .ok_or_else(|| ExcType::type_error("numpy.insert() requires 3 arguments"))?;
+    defer_drop!(arr_val, vm);
+    let idx_val = pos
+        .next()
+        .ok_or_else(|| ExcType::type_error("numpy.insert() requires 3 arguments"))?;
+    defer_drop!(idx_val, vm);
+    let vals_val = pos
+        .next()
+        .ok_or_else(|| ExcType::type_error("numpy.insert() requires 3 arguments"))?;
+    defer_drop!(vals_val, vm);
+    for extra in pos {
+        extra.drop_with_heap(vm);
+    }
+    let arr = ndarray_from_value(arr_val, "numpy.insert", vm)?;
+    let Value::Int(idx) = idx_val else {
+        return Err(ExcType::type_error("index must be integer"));
+    };
+    let idx = *idx as usize;
+    // vals_val can be a scalar or an array
+    let (vals_data, vals_dtype) = match vals_val {
+        Value::Float(f) => (vec![*f], NdArrayDtype::Float64),
+        Value::Int(n) => (vec![*n as f64], NdArrayDtype::Int64),
+        _ => {
+            let v = ndarray_from_value(vals_val, "numpy.insert", vm)?;
+            (v.data().to_vec(), v.dtype())
+        }
+    };
+    let mut data = arr.data().to_vec();
+    let insert_at = idx.min(data.len());
+    for (i, &v) in vals_data.iter().enumerate() {
+        data.insert(insert_at + i, v);
+    }
+    let len = data.len();
+    let dtype = promote_dtype(arr.dtype(), vals_dtype);
+    let result = NdArray::new(data, vec![len], dtype);
+    Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(result))?))
+}
+
+/// `numpy.diag(v)` — for 1D input: create diagonal matrix. For 2D input: extract diagonal.
+fn call_diag(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let arg = args.get_one_arg("numpy.diag", vm.heap)?;
+    defer_drop!(arg, vm);
+    let arr = ndarray_from_value(arg, "numpy.diag", vm)?;
+    if arr.shape().len() == 1 {
+        // Create diagonal matrix
+        let n = arr.data().len();
+        check_array_alloc_size(n * n, vm.heap.tracker())?;
+        let mut data = vec![0.0; n * n];
+        for (i, &v) in arr.data().iter().enumerate() {
+            data[i * n + i] = v;
+        }
+        let result = NdArray::new(data, vec![n, n], arr.dtype());
+        Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(result))?))
+    } else {
+        // Extract diagonal from 2D
+        let rows = arr.shape()[0];
+        let cols = arr.shape()[1];
+        let n = rows.min(cols);
+        let data: Vec<f64> = (0..n).map(|i| arr.data()[i * cols + i]).collect();
+        let result = NdArray::new(data, vec![n], arr.dtype());
+        Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(result))?))
+    }
+}
+
+/// `numpy.diagonal(a)` — extract diagonal of 2D array.
+fn call_diagonal(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    // For our purposes, same as diag on 2D
+    call_diag(vm, args)
+}
+
+/// `numpy.trace(a)` — sum of diagonal elements.
+fn call_trace(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let arg = args.get_one_arg("numpy.trace", vm.heap)?;
+    defer_drop!(arg, vm);
+    let arr = ndarray_from_value(arg, "numpy.trace", vm)?;
+    if arr.shape().len() < 2 {
+        return Err(SimpleException::new_msg(ExcType::ValueError, "trace requires 2-d array").into());
+    }
+    let cols = arr.shape()[1];
+    let n = arr.shape()[0].min(cols);
+    let sum: f64 = (0..n).map(|i| arr.data()[i * cols + i]).sum();
+    Ok(Value::Float(sum))
+}
+
+/// `numpy.flatnonzero(a)` — indices of non-zero elements in flattened array.
+fn call_flatnonzero(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let arg = args.get_one_arg("numpy.flatnonzero", vm.heap)?;
+    defer_drop!(arg, vm);
+    let arr = ndarray_from_value(arg, "numpy.flatnonzero", vm)?;
+    let data: Vec<f64> = arr
+        .data()
+        .iter()
+        .enumerate()
+        .filter(|&(_, v)| *v != 0.0)
+        .map(|(i, _)| i as f64)
+        .collect();
+    let len = data.len();
+    let result = NdArray::new(data, vec![len], NdArrayDtype::Int64);
+    Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(result))?))
+}
+
+/// `numpy.asarray(a)` — convert to array. If already ndarray, return as-is (copy for now).
+fn call_asarray(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    // Same as np.array for our purposes
+    call_array(vm, args)
+}
+
+/// `numpy.column_stack(arrays)` — stack 1D arrays as columns into 2D.
+fn call_column_stack(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let list_val = args.get_one_arg("numpy.column_stack", vm.heap)?;
+    defer_drop!(list_val, vm);
+    let list_items = match list_val {
+        Value::Ref(id) => match vm.heap.get(*id) {
+            HeapData::List(list) => list
+                .as_slice()
+                .iter()
+                .map(|v| v.clone_with_heap(vm))
+                .collect::<Vec<_>>(),
+            _ => return Err(ExcType::type_error("numpy.column_stack() requires a list")),
+        },
+        _ => return Err(ExcType::type_error("numpy.column_stack() requires a list")),
+    };
+    if list_items.is_empty() {
+        return Err(SimpleException::new_msg(ExcType::ValueError, "need at least one array to stack").into());
+    }
+    // Extract all arrays
+    let mut arrays: Vec<NdArray> = Vec::new();
+    for item in &list_items {
+        arrays.push(ndarray_from_value(item, "numpy.column_stack", vm)?);
+    }
+    for item in list_items {
+        item.drop_with_heap(vm);
+    }
+    let rows = arrays[0].data().len();
+    let cols = arrays.len();
+    check_array_alloc_size(rows * cols, vm.heap.tracker())?;
+    let mut data = vec![0.0; rows * cols];
+    for (c, arr) in arrays.iter().enumerate() {
+        for (r, &v) in arr.data().iter().enumerate() {
+            data[r * cols + c] = v;
+        }
+    }
+    let dtype = arrays
+        .iter()
+        .fold(NdArrayDtype::Int64, |d, a| promote_dtype(d, a.dtype()));
+    let result = NdArray::new(data, vec![rows, cols], dtype);
+    Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(result))?))
+}
+
+/// `numpy.hsplit(a, n)` — split horizontally (for 1D: split into n parts).
+fn call_hsplit(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    // For 1D, hsplit is same as split
+    call_split(vm, args)
+}
+
+/// `numpy.vsplit(a, n)` — split vertically.
+fn call_vsplit(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    call_split(vm, args)
+}
+
+/// `numpy.array_split(a, n)` — split into possibly unequal parts.
+fn call_array_split(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let (arr_val, n_val) = args.get_two_args("numpy.array_split", vm.heap)?;
+    defer_drop!(arr_val, vm);
+    let arr = ndarray_from_value(arr_val, "numpy.array_split", vm)?;
+    let Value::Int(n) = &n_val else {
+        n_val.drop_with_heap(vm);
+        return Err(ExcType::type_error("sections must be integer"));
+    };
+    #[expect(
+        clippy::cast_sign_loss,
+        clippy::cast_possible_truncation,
+        reason = "sections from user"
+    )]
+    let n = *n as usize;
+    n_val.drop_with_heap(vm);
+    if n == 0 {
+        return Err(SimpleException::new_msg(ExcType::ValueError, "number sections must be larger than 0").into());
+    }
+    let data = arr.data();
+    let dtype = arr.dtype();
+    let total = data.len();
+    let base_size = total / n;
+    let remainder = total % n;
+    let mut parts = Vec::new();
+    let mut offset = 0;
+    for i in 0..n {
+        let size = base_size + usize::from(i < remainder);
+        let chunk = data[offset..offset + size].to_vec();
+        let len = chunk.len();
+        parts.push(Value::Ref(vm.heap.allocate(HeapData::NdArray(NdArray::new(
+            chunk,
+            vec![len],
+            dtype,
+        )))?));
+        offset += size;
+    }
+    let list = crate::types::List::new(parts);
+    Ok(Value::Ref(vm.heap.allocate(HeapData::List(list))?))
+}
+
+/// `numpy.full_like(a, fill_value)` — array of same shape filled with value.
+fn call_full_like(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let (arr_val, fill_val) = args.get_two_args("numpy.full_like", vm.heap)?;
+    defer_drop!(arr_val, vm);
+    let arr = ndarray_from_value(arr_val, "numpy.full_like", vm)?;
+    let (fill, dtype) = match &fill_val {
+        Value::Int(n) => (*n as f64, NdArrayDtype::Int64),
+        Value::Float(f) => (*f, NdArrayDtype::Float64),
+        Value::Bool(b) => (if *b { 1.0 } else { 0.0 }, NdArrayDtype::Bool),
+        _ => {
+            fill_val.drop_with_heap(vm);
+            return Err(ExcType::type_error("fill_value must be a number"));
+        }
+    };
+    fill_val.drop_with_heap(vm);
+    let size = arr.data().len();
+    let result = NdArray::new(vec![fill; size], arr.shape().to_vec(), dtype);
+    Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(result))?))
+}
+
+// --- Phase 7: Sorting, searching, set ops ---
+
+/// `numpy.argsort(a)` — module-level argsort.
+fn call_argsort_mod(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let arg = args.get_one_arg("numpy.argsort", vm.heap)?;
+    defer_drop!(arg, vm);
+    let arr = ndarray_from_value(arg, "numpy.argsort", vm)?;
+    let data = arr.data();
+    let mut indices: Vec<usize> = (0..data.len()).collect();
+    indices.sort_by(|&a, &b| {
+        let va = data[a];
+        let vb = data[b];
+        va.partial_cmp(&vb).unwrap_or_else(|| {
+            if va.is_nan() && vb.is_nan() {
+                std::cmp::Ordering::Equal
+            } else if va.is_nan() {
+                std::cmp::Ordering::Greater
+            } else {
+                std::cmp::Ordering::Less
+            }
+        })
+    });
+    let result_data: Vec<f64> = indices.iter().map(|&i| i as f64).collect();
+    let len = result_data.len();
+    let result = NdArray::new(result_data, vec![len], NdArrayDtype::Int64);
+    Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(result))?))
+}
+
+/// `numpy.searchsorted(a, v)` — find insertion points for `v` in sorted array `a`.
+#[expect(
+    clippy::cast_possible_wrap,
+    reason = "array indices are small enough that these casts are safe"
+)]
+fn call_searchsorted(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let (a_val, v_val) = args.get_two_args("numpy.searchsorted", vm.heap)?;
+    defer_drop!(a_val, vm);
+    defer_drop!(v_val, vm);
+    let a = ndarray_from_value(a_val, "numpy.searchsorted", vm)?;
+    let sorted = a.data();
+    // v can be scalar or array
+    match v_val {
+        Value::Int(n) => {
+            let v = *n as f64;
+            let idx = sorted.partition_point(|&x| x < v);
+            Ok(Value::Int(idx as i64))
+        }
+        Value::Float(f) => {
+            let idx = sorted.partition_point(|&x| x < *f);
+            Ok(Value::Int(idx as i64))
+        }
+        _ => {
+            let v_arr = ndarray_from_value(v_val, "numpy.searchsorted", vm)?;
+            let data: Vec<f64> = v_arr
+                .data()
+                .iter()
+                .map(|&v| sorted.partition_point(|&x| x < v) as f64)
+                .collect();
+            let len = data.len();
+            let result = NdArray::new(data, vec![len], NdArrayDtype::Int64);
+            Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(result))?))
+        }
+    }
+}
+
+/// `numpy.extract(condition, arr)` — extract elements where condition is True.
+fn call_extract(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let (cond_val, arr_val) = args.get_two_args("numpy.extract", vm.heap)?;
+    defer_drop!(cond_val, vm);
+    defer_drop!(arr_val, vm);
+    let cond = ndarray_from_value(cond_val, "numpy.extract", vm)?;
+    let arr = ndarray_from_value(arr_val, "numpy.extract", vm)?;
+    let data: Vec<f64> = cond
+        .data()
+        .iter()
+        .zip(arr.data().iter())
+        .filter(|(c, _)| **c != 0.0)
+        .map(|(_, v)| *v)
+        .collect();
+    let len = data.len();
+    let result = NdArray::new(data, vec![len], arr.dtype());
+    Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(result))?))
+}
+
+/// Set operation type.
+#[derive(Clone, Copy)]
+enum SetOp {
+    Intersect,
+    Union,
+    Diff,
+    Xor,
+}
+
+/// Generic set operation on two sorted-unique arrays.
+fn call_set_op(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues, op: SetOp, name: &str) -> RunResult<Value> {
+    let (a_val, b_val) = args.get_two_args(name, vm.heap)?;
+    defer_drop!(a_val, vm);
+    defer_drop!(b_val, vm);
+    let a_arr = ndarray_from_value(a_val, name, vm)?;
+    let b_arr = ndarray_from_value(b_val, name, vm)?;
+    let mut a: Vec<f64> = a_arr.data().to_vec();
+    let mut b: Vec<f64> = b_arr.data().to_vec();
+    a.sort_by(|x, y| x.partial_cmp(y).unwrap_or(std::cmp::Ordering::Equal));
+    a.dedup();
+    b.sort_by(|x, y| x.partial_cmp(y).unwrap_or(std::cmp::Ordering::Equal));
+    b.dedup();
+    let data: Vec<f64> = match op {
+        SetOp::Intersect => a.iter().filter(|v| b.contains(v)).copied().collect(),
+        SetOp::Union => {
+            let mut u = a.clone();
+            for v in &b {
+                if !u.contains(v) {
+                    u.push(*v);
+                }
+            }
+            u.sort_by(|x, y| x.partial_cmp(y).unwrap_or(std::cmp::Ordering::Equal));
+            u
+        }
+        SetOp::Diff => a.iter().filter(|v| !b.contains(v)).copied().collect(),
+        SetOp::Xor => {
+            let mut r: Vec<f64> = a.iter().filter(|v| !b.contains(v)).copied().collect();
+            r.extend(b.iter().filter(|v| !a.contains(v)));
+            r.sort_by(|x, y| x.partial_cmp(y).unwrap_or(std::cmp::Ordering::Equal));
+            r
+        }
+    };
+    let len = data.len();
+    let dtype = promote_dtype(a_arr.dtype(), b_arr.dtype());
+    let result = NdArray::new(data, vec![len], dtype);
+    Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(result))?))
+}
+
+/// `numpy.bincount(a)` — count occurrences of each non-negative integer value.
+fn call_bincount(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let arg = args.get_one_arg("numpy.bincount", vm.heap)?;
+    defer_drop!(arg, vm);
+    let arr = ndarray_from_value(arg, "numpy.bincount", vm)?;
+    #[expect(
+        clippy::cast_sign_loss,
+        clippy::cast_possible_truncation,
+        reason = "index from user data"
+    )]
+    let max_val = arr.data().iter().fold(0usize, |m, &v| m.max(v as usize));
+    let mut counts = vec![0.0; max_val + 1];
+    #[expect(
+        clippy::cast_sign_loss,
+        clippy::cast_possible_truncation,
+        reason = "index from user data"
+    )]
+    for &v in arr.data() {
+        counts[v as usize] += 1.0;
+    }
+    let len = counts.len();
+    let result = NdArray::new(counts, vec![len], NdArrayDtype::Int64);
+    Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(result))?))
+}
+
+/// `numpy.digitize(x, bins)` — indices of bins to which each value belongs.
+fn call_digitize(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let (x_val, bins_val) = args.get_two_args("numpy.digitize", vm.heap)?;
+    defer_drop!(x_val, vm);
+    defer_drop!(bins_val, vm);
+    let x = ndarray_from_value(x_val, "numpy.digitize", vm)?;
+    let bins = ndarray_from_value(bins_val, "numpy.digitize", vm)?;
+    let bins_data = bins.data();
+    let data: Vec<f64> = x
+        .data()
+        .iter()
+        .map(|&v| bins_data.partition_point(|&b| b <= v) as f64)
+        .collect();
+    let len = data.len();
+    let result = NdArray::new(data, vec![len], NdArrayDtype::Int64);
+    Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(result))?))
+}
+
+// --- Phase 8: Linear algebra ---
+
+/// `numpy.outer(a, b)` — outer product of two vectors.
+fn call_outer(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let (a_val, b_val) = args.get_two_args("numpy.outer", vm.heap)?;
+    defer_drop!(a_val, vm);
+    defer_drop!(b_val, vm);
+    let a = ndarray_from_value(a_val, "numpy.outer", vm)?;
+    let b = ndarray_from_value(b_val, "numpy.outer", vm)?;
+    let m = a.data().len();
+    let n = b.data().len();
+    check_array_alloc_size(m * n, vm.heap.tracker())?;
+    let mut data = Vec::with_capacity(m * n);
+    for &ai in a.data() {
+        for &bj in b.data() {
+            data.push(ai * bj);
+        }
+    }
+    let dtype = promote_dtype(a.dtype(), b.dtype());
+    let result = NdArray::new(data, vec![m, n], dtype);
+    Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(result))?))
+}
+
+/// `numpy.cross(a, b)` — cross product of 3-element vectors.
+fn call_cross(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let (a_val, b_val) = args.get_two_args("numpy.cross", vm.heap)?;
+    defer_drop!(a_val, vm);
+    defer_drop!(b_val, vm);
+    let a = ndarray_from_value(a_val, "numpy.cross", vm)?;
+    let b = ndarray_from_value(b_val, "numpy.cross", vm)?;
+    if a.data().len() != 3 || b.data().len() != 3 {
+        return Err(SimpleException::new_msg(ExcType::ValueError, "cross product requires 3-element vectors").into());
+    }
+    let (a0, a1, a2) = (a.data()[0], a.data()[1], a.data()[2]);
+    let (b0, b1, b2) = (b.data()[0], b.data()[1], b.data()[2]);
+    let data = vec![a1 * b2 - a2 * b1, a2 * b0 - a0 * b2, a0 * b1 - a1 * b0];
+    let dtype = promote_dtype(a.dtype(), b.dtype());
+    let result = NdArray::new(data, vec![3], dtype);
+    Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(result))?))
+}
+
+// --- Phase 10: Additional creation and numerical ---
+
+/// `numpy.logspace(start, stop, num)` — log-spaced values.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "array indices are small enough that these casts are safe"
+)]
+fn call_logspace(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let pos = args.into_pos_only("numpy.logspace", vm.heap)?;
+    defer_drop_mut!(pos, vm);
+    let start_val = pos
+        .next()
+        .ok_or_else(|| ExcType::type_error("numpy.logspace() requires 3 arguments"))?;
+    defer_drop!(start_val, vm);
+    let stop_val = pos
+        .next()
+        .ok_or_else(|| ExcType::type_error("numpy.logspace() requires 3 arguments"))?;
+    defer_drop!(stop_val, vm);
+    let num_val = pos
+        .next()
+        .ok_or_else(|| ExcType::type_error("numpy.logspace() requires 3 arguments"))?;
+    defer_drop!(num_val, vm);
+    for extra in pos {
+        extra.drop_with_heap(vm);
+    }
+    let start = to_f64(start_val, vm)?;
+    let stop = to_f64(stop_val, vm)?;
+    let Value::Int(num) = num_val else {
+        return Err(ExcType::type_error("num must be integer"));
+    };
+    let num = *num as usize;
+    check_array_alloc_size(num, vm.heap.tracker())?;
+    // logspace: 10^linspace(start, stop, num)
+    let data: Vec<f64> = if num == 0 {
+        Vec::new()
+    } else if num == 1 {
+        vec![10.0f64.powf(start)]
+    } else {
+        let step = (stop - start) / (num - 1) as f64;
+        (0..num).map(|i| 10.0f64.powf(start + step * i as f64)).collect()
+    };
+    let len = data.len();
+    let result = NdArray::new(data, vec![len], NdArrayDtype::Float64);
+    Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(result))?))
+}
+
+/// `numpy.geomspace(start, stop, num)` — geometrically spaced values.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "array indices are small enough that these casts are safe"
+)]
+fn call_geomspace(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let pos = args.into_pos_only("numpy.geomspace", vm.heap)?;
+    defer_drop_mut!(pos, vm);
+    let start_val = pos
+        .next()
+        .ok_or_else(|| ExcType::type_error("numpy.geomspace() requires 3 arguments"))?;
+    defer_drop!(start_val, vm);
+    let stop_val = pos
+        .next()
+        .ok_or_else(|| ExcType::type_error("numpy.geomspace() requires 3 arguments"))?;
+    defer_drop!(stop_val, vm);
+    let num_val = pos
+        .next()
+        .ok_or_else(|| ExcType::type_error("numpy.geomspace() requires 3 arguments"))?;
+    defer_drop!(num_val, vm);
+    for extra in pos {
+        extra.drop_with_heap(vm);
+    }
+    let start = to_f64(start_val, vm)?;
+    let stop = to_f64(stop_val, vm)?;
+    let Value::Int(num) = num_val else {
+        return Err(ExcType::type_error("num must be integer"));
+    };
+    let num = *num as usize;
+    check_array_alloc_size(num, vm.heap.tracker())?;
+    let data: Vec<f64> = if num == 0 {
+        Vec::new()
+    } else if num == 1 {
+        vec![start]
+    } else {
+        let log_start = start.ln();
+        let log_stop = stop.ln();
+        let step = (log_stop - log_start) / (num - 1) as f64;
+        (0..num).map(|i| (log_start + step * i as f64).exp()).collect()
+    };
+    let len = data.len();
+    let result = NdArray::new(data, vec![len], NdArrayDtype::Float64);
+    Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(result))?))
+}
+
+/// `numpy.tri(N)` — NxN array with ones at and below diagonal.
+fn call_tri(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let arg = args.get_one_arg("numpy.tri", vm.heap)?;
+    let n = extract_size(arg, "numpy.tri", vm)?;
+    check_array_alloc_size(n * n, vm.heap.tracker())?;
+    let mut data = vec![0.0; n * n];
+    for i in 0..n {
+        for j in 0..=i {
+            data[i * n + j] = 1.0;
+        }
+    }
+    let result = NdArray::new(data, vec![n, n], NdArrayDtype::Float64);
+    Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(result))?))
+}
+
+/// `numpy.tril(m)` — lower triangle of array.
+fn call_tril(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let arg = args.get_one_arg("numpy.tril", vm.heap)?;
+    defer_drop!(arg, vm);
+    let arr = ndarray_from_value(arg, "numpy.tril", vm)?;
+    if arr.shape().len() < 2 {
+        return Err(SimpleException::new_msg(ExcType::ValueError, "tril requires 2-d array").into());
+    }
+    let rows = arr.shape()[0];
+    let cols = arr.shape()[1];
+    let mut data = arr.data().to_vec();
+    for i in 0..rows {
+        for j in (i + 1)..cols {
+            data[i * cols + j] = 0.0;
+        }
+    }
+    let result = NdArray::new(data, arr.shape().to_vec(), arr.dtype());
+    Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(result))?))
+}
+
+/// `numpy.triu(m)` — upper triangle of array.
+fn call_triu(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let arg = args.get_one_arg("numpy.triu", vm.heap)?;
+    defer_drop!(arg, vm);
+    let arr = ndarray_from_value(arg, "numpy.triu", vm)?;
+    if arr.shape().len() < 2 {
+        return Err(SimpleException::new_msg(ExcType::ValueError, "triu requires 2-d array").into());
+    }
+    let rows = arr.shape()[0];
+    let cols = arr.shape()[1];
+    let mut data = arr.data().to_vec();
+    for i in 0..rows {
+        for j in 0..i.min(cols) {
+            data[i * cols + j] = 0.0;
+        }
+    }
+    let result = NdArray::new(data, arr.shape().to_vec(), arr.dtype());
+    Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(result))?))
+}
+
+/// `numpy.meshgrid(*xi)` — coordinate matrices from coordinate vectors.
+fn call_meshgrid(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let pos = args.into_pos_only("numpy.meshgrid", vm.heap)?;
+    defer_drop_mut!(pos, vm);
+    let mut arrays: Vec<NdArray> = Vec::new();
+    for val in pos {
+        let arr = ndarray_from_value(&val, "numpy.meshgrid", vm)?;
+        val.drop_with_heap(vm);
+        arrays.push(arr);
+    }
+    if arrays.len() != 2 {
+        return Err(
+            SimpleException::new_msg(ExcType::ValueError, "meshgrid currently supports exactly 2 arrays").into(),
+        );
+    }
+    let x = &arrays[0];
+    let y = &arrays[1];
+    let nx = x.data().len();
+    let ny = y.data().len();
+    check_array_alloc_size(nx * ny * 2, vm.heap.tracker())?;
+    // XX: repeat x for each row
+    let mut xx_data = Vec::with_capacity(ny * nx);
+    for _ in 0..ny {
+        xx_data.extend_from_slice(x.data());
+    }
+    // YY: repeat each y value nx times
+    let mut yy_data = Vec::with_capacity(ny * nx);
+    for &yv in y.data() {
+        for _ in 0..nx {
+            yy_data.push(yv);
+        }
+    }
+    let dtype = promote_dtype(x.dtype(), y.dtype());
+    let xx = NdArray::new(xx_data, vec![ny, nx], dtype);
+    let yy = NdArray::new(yy_data, vec![ny, nx], dtype);
+    let xx_val = Value::Ref(vm.heap.allocate(HeapData::NdArray(xx))?);
+    let yy_val = Value::Ref(vm.heap.allocate(HeapData::NdArray(yy))?);
+    let values: SmallVec<[Value; 3]> = smallvec::smallvec![xx_val, yy_val];
+    allocate_tuple(values, vm.heap).map_err(Into::into)
+}
+
+/// `numpy.gradient(f)` — numerical gradient using central differences.
+fn call_gradient(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let arg = args.get_one_arg("numpy.gradient", vm.heap)?;
+    defer_drop!(arg, vm);
+    let arr = ndarray_from_value(arg, "numpy.gradient", vm)?;
+    let data = arr.data();
+    let n = data.len();
+    if n < 2 {
+        let result = NdArray::new(vec![0.0; n], vec![n], NdArrayDtype::Float64);
+        return Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(result))?));
+    }
+    let mut grad = Vec::with_capacity(n);
+    // Forward difference for first element
+    grad.push(data[1] - data[0]);
+    // Central differences for interior
+    for i in 1..n - 1 {
+        grad.push((data[i + 1] - data[i - 1]) / 2.0);
+    }
+    // Backward difference for last element
+    grad.push(data[n - 1] - data[n - 2]);
+    let result = NdArray::new(grad, vec![n], NdArrayDtype::Float64);
+    Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(result))?))
+}
+
+/// `numpy.convolve(a, v)` — discrete linear convolution (mode='full').
+fn call_convolve(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let (a_val, v_val) = args.get_two_args("numpy.convolve", vm.heap)?;
+    defer_drop!(a_val, vm);
+    defer_drop!(v_val, vm);
+    let a = ndarray_from_value(a_val, "numpy.convolve", vm)?;
+    let v = ndarray_from_value(v_val, "numpy.convolve", vm)?;
+    let na = a.data().len();
+    let nv = v.data().len();
+    let out_len = na + nv - 1;
+    check_array_alloc_size(out_len, vm.heap.tracker())?;
+    let mut result_data = vec![0.0; out_len];
+    for i in 0..na {
+        for j in 0..nv {
+            result_data[i + j] += a.data()[i] * v.data()[j];
+        }
+    }
+    let result = NdArray::new(result_data, vec![out_len], NdArrayDtype::Float64);
+    Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(result))?))
+}
+
+/// `numpy.correlate(a, v)` — cross-correlation (mode='valid').
+fn call_correlate(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let (a_val, v_val) = args.get_two_args("numpy.correlate", vm.heap)?;
+    defer_drop!(a_val, vm);
+    defer_drop!(v_val, vm);
+    let a = ndarray_from_value(a_val, "numpy.correlate", vm)?;
+    let v = ndarray_from_value(v_val, "numpy.correlate", vm)?;
+    let na = a.data().len();
+    let nv = v.data().len();
+    if na < nv {
+        return Err(SimpleException::new_msg(ExcType::ValueError, "a must be at least as long as v").into());
+    }
+    let out_len = na - nv + 1;
+    let mut result_data = Vec::with_capacity(out_len);
+    for i in 0..out_len {
+        let sum: f64 = (0..nv).map(|j| a.data()[i + j] * v.data()[j]).sum();
+        result_data.push(sum);
+    }
+    let result = NdArray::new(result_data, vec![out_len], NdArrayDtype::Float64);
+    Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(result))?))
+}
+
+/// `numpy.interp(x, xp, fp)` — 1D linear interpolation.
+fn call_interp(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let pos = args.into_pos_only("numpy.interp", vm.heap)?;
+    defer_drop_mut!(pos, vm);
+    let x_val = pos
+        .next()
+        .ok_or_else(|| ExcType::type_error("numpy.interp() requires 3 arguments"))?;
+    defer_drop!(x_val, vm);
+    let xp_val = pos
+        .next()
+        .ok_or_else(|| ExcType::type_error("numpy.interp() requires 3 arguments"))?;
+    defer_drop!(xp_val, vm);
+    let fp_val = pos
+        .next()
+        .ok_or_else(|| ExcType::type_error("numpy.interp() requires 3 arguments"))?;
+    defer_drop!(fp_val, vm);
+    for extra in pos {
+        extra.drop_with_heap(vm);
+    }
+    let x = ndarray_from_value(x_val, "numpy.interp", vm)?;
+    let xp = ndarray_from_value(xp_val, "numpy.interp", vm)?;
+    let fp = ndarray_from_value(fp_val, "numpy.interp", vm)?;
+    let xp_data = xp.data();
+    let fp_data = fp.data();
+    let data: Vec<f64> = x
+        .data()
+        .iter()
+        .map(|&xi| {
+            if xi <= xp_data[0] {
+                return fp_data[0];
+            }
+            if xi >= xp_data[xp_data.len() - 1] {
+                return fp_data[fp_data.len() - 1];
+            }
+            let idx = xp_data.partition_point(|&xv| xv < xi);
+            if idx == 0 {
+                return fp_data[0];
+            }
+            let x0 = xp_data[idx - 1];
+            let x1 = xp_data[idx];
+            let f0 = fp_data[idx - 1];
+            let f1 = fp_data[idx];
+            f0 + (f1 - f0) * (xi - x0) / (x1 - x0)
+        })
+        .collect();
+    let len = data.len();
+    let result = NdArray::new(data, vec![len], NdArrayDtype::Float64);
+    Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(result))?))
+}
+
+/// `numpy.select(condlist, choicelist, default=0)` — conditional selection.
+fn call_select(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let pos = args.into_pos_only("numpy.select", vm.heap)?;
+    defer_drop_mut!(pos, vm);
+    let condlist_val = pos
+        .next()
+        .ok_or_else(|| ExcType::type_error("numpy.select() requires 2-3 arguments"))?;
+    defer_drop!(condlist_val, vm);
+    let choicelist_val = pos
+        .next()
+        .ok_or_else(|| ExcType::type_error("numpy.select() requires 2-3 arguments"))?;
+    defer_drop!(choicelist_val, vm);
+    let default_val = pos
+        .next()
+        .map(|v| {
+            let result = to_f64(&v, vm);
+            v.drop_with_heap(vm);
+            result
+        })
+        .transpose()?
+        .unwrap_or(0.0);
+    for extra in pos {
+        extra.drop_with_heap(vm);
+    }
+    // Extract conditions and choices from lists
+    let conds: Vec<NdArray> = match condlist_val {
+        Value::Ref(id) => match vm.heap.get(*id) {
+            HeapData::List(list) => {
+                let items: Vec<Value> = list.as_slice().iter().map(|v| v.clone_with_heap(vm)).collect();
+                let result: Vec<NdArray> = items
+                    .iter()
+                    .map(|v| ndarray_from_value(v, "numpy.select", vm))
+                    .collect::<RunResult<Vec<_>>>()?;
+                for item in items {
+                    item.drop_with_heap(vm);
+                }
+                result
+            }
+            _ => return Err(ExcType::type_error("condlist must be a list")),
+        },
+        _ => return Err(ExcType::type_error("condlist must be a list")),
+    };
+    let choices: Vec<NdArray> = match choicelist_val {
+        Value::Ref(id) => match vm.heap.get(*id) {
+            HeapData::List(list) => {
+                let items: Vec<Value> = list.as_slice().iter().map(|v| v.clone_with_heap(vm)).collect();
+                let result: Vec<NdArray> = items
+                    .iter()
+                    .map(|v| ndarray_from_value(v, "numpy.select", vm))
+                    .collect::<RunResult<Vec<_>>>()?;
+                for item in items {
+                    item.drop_with_heap(vm);
+                }
+                result
+            }
+            _ => return Err(ExcType::type_error("choicelist must be a list")),
+        },
+        _ => return Err(ExcType::type_error("choicelist must be a list")),
+    };
+    if conds.is_empty() || conds.len() != choices.len() {
+        return Err(
+            SimpleException::new_msg(ExcType::ValueError, "condlist and choicelist must have same length").into(),
+        );
+    }
+    let n = conds[0].data().len();
+    let mut data = vec![default_val; n];
+    // Process in reverse order so first matching condition wins
+    for (cond, choice) in conds.iter().zip(choices.iter()).rev() {
+        for (i, (&c, &v)) in cond.data().iter().zip(choice.data().iter()).enumerate() {
+            if c != 0.0 {
+                data[i] = v;
+            }
+        }
+    }
+    let result = NdArray::new(data, vec![n], NdArrayDtype::Float64);
+    Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(result))?))
 }

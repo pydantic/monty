@@ -1427,3 +1427,481 @@ idx = np.nonzero(np.array([1, 0, 0, 1, 1]))
 assert idx[0].tolist() == [0, 3, 4], 'nonzero more'
 assert np.argwhere(np.array([0, 0, 0])).shape == (0, 1), 'argwhere all zero'
 assert np.argwhere(np.array([1, 1, 1])).flatten().tolist() == [0, 1, 2], 'argwhere all nonzero'
+
+# ============================================================
+# 28. CONSTANTS AND TYPE OBJECTS
+# ============================================================
+
+# === np.pi ===
+assert abs(np.pi - 3.141592653589793) < 1e-15, 'np.pi value'
+assert np.pi == math.pi, 'np.pi matches math.pi'
+
+# === np.e ===
+assert abs(np.e - 2.718281828459045) < 1e-15, 'np.e value'
+assert np.e == math.e, 'np.e matches math.e'
+
+# === np.inf ===
+assert np.inf == math.inf, 'np.inf matches math.inf'
+assert np.inf > 1e308, 'np.inf is large'
+assert math.isinf(np.inf), 'np.inf is inf'
+
+# === np.nan ===
+assert np.nan != np.nan, 'np.nan is NaN (not equal to self)'
+assert math.isnan(np.nan), 'np.nan is nan'
+
+# === np.newaxis ===
+assert np.newaxis is None, 'np.newaxis is None'
+
+# ============================================================
+# 29. INVERSE TRIGONOMETRIC FUNCTIONS
+# ============================================================
+
+# === np.arcsin ===
+a = np.array([0.0, 0.5, 1.0])
+r = np.arcsin(a)
+assert abs(r.tolist()[0] - 0.0) < 1e-10, 'arcsin 0'
+assert abs(r.tolist()[1] - 0.5235987755982988) < 1e-10, 'arcsin 0.5'
+assert abs(r.tolist()[2] - 1.5707963267948966) < 1e-10, 'arcsin 1'
+
+# === np.arccos ===
+r = np.arccos(a)
+assert abs(r.tolist()[0] - 1.5707963267948966) < 1e-10, 'arccos 0'
+assert abs(r.tolist()[2] - 0.0) < 1e-10, 'arccos 1'
+
+# === np.arctan ===
+r = np.arctan(a)
+assert abs(r.tolist()[0] - 0.0) < 1e-10, 'arctan 0'
+assert abs(r.tolist()[2] - 0.7853981633974483) < 1e-10, 'arctan 1'
+
+# === np.arctan2 ===
+r = np.arctan2(np.array([1.0, 0.0]), np.array([1.0, 1.0]))
+assert abs(r.tolist()[0] - 0.7853981633974483) < 1e-10, 'arctan2(1,1)'
+assert abs(r.tolist()[1] - 0.0) < 1e-10, 'arctan2(0,1)'
+
+# ============================================================
+# 30. HYPERBOLIC FUNCTIONS
+# ============================================================
+
+# === np.sinh ===
+r = np.sinh(np.array([0.0, 1.0]))
+assert abs(r.tolist()[0] - 0.0) < 1e-10, 'sinh 0'
+assert abs(r.tolist()[1] - 1.1752011936438014) < 1e-10, 'sinh 1'
+
+# === np.cosh ===
+r = np.cosh(np.array([0.0, 1.0]))
+assert abs(r.tolist()[0] - 1.0) < 1e-10, 'cosh 0'
+assert abs(r.tolist()[1] - 1.5430806348152437) < 1e-10, 'cosh 1'
+
+# === np.tanh ===
+r = np.tanh(np.array([0.0, 1.0]))
+assert abs(r.tolist()[0] - 0.0) < 1e-10, 'tanh 0'
+assert abs(r.tolist()[1] - 0.7615941559557649) < 1e-10, 'tanh 1'
+
+# === np.arcsinh ===
+r = np.arcsinh(np.array([0.0, 1.0]))
+assert abs(r.tolist()[0] - 0.0) < 1e-10, 'arcsinh 0'
+assert abs(r.tolist()[1] - 0.881373587019543) < 1e-10, 'arcsinh 1'
+
+# === np.arccosh ===
+r = np.arccosh(np.array([1.0, 2.0]))
+assert abs(r.tolist()[0] - 0.0) < 1e-10, 'arccosh 1'
+assert abs(r.tolist()[1] - 1.3169578969248166) < 1e-10, 'arccosh 2'
+
+# === np.arctanh ===
+r = np.arctanh(np.array([0.0, 0.5]))
+assert abs(r.tolist()[0] - 0.0) < 1e-10, 'arctanh 0'
+assert abs(r.tolist()[1] - 0.5493061443340549) < 1e-10, 'arctanh 0.5'
+
+# ============================================================
+# 31. REMAINING ELEMENT-WISE MATH
+# ============================================================
+
+# === np.sign ===
+assert np.sign(np.array([-3.0, 0.0, 5.0])).tolist() == [-1.0, 0.0, 1.0], 'sign'
+assert np.sign(np.array([-1, 0, 1])).tolist() == [-1, 0, 1], 'sign int'
+
+# === np.square ===
+assert np.square(np.array([2.0, 3.0, 4.0])).tolist() == [4.0, 9.0, 16.0], 'square'
+assert np.square(np.array([0.0, -2.0])).tolist() == [0.0, 4.0], 'square neg'
+
+# === np.cbrt ===
+assert np.cbrt(np.array([8.0, 27.0])).tolist() == [2.0, 3.0], 'cbrt'
+assert abs(np.cbrt(np.array([1.0])).tolist()[0] - 1.0) < 1e-10, 'cbrt 1'
+
+# === np.reciprocal ===
+assert np.reciprocal(np.array([2.0, 4.0, 5.0])).tolist() == [0.5, 0.25, 0.2], 'reciprocal'
+
+# === np.log1p ===
+r = np.log1p(np.array([0.0, 1.0]))
+assert abs(r.tolist()[0] - 0.0) < 1e-10, 'log1p 0'
+assert abs(r.tolist()[1] - 0.6931471805599453) < 1e-10, 'log1p 1'
+
+# === np.exp2 ===
+assert np.exp2(np.array([0.0, 1.0, 3.0])).tolist() == [1.0, 2.0, 8.0], 'exp2'
+
+# === np.expm1 ===
+r = np.expm1(np.array([0.0, 1.0]))
+assert abs(r.tolist()[0] - 0.0) < 1e-10, 'expm1 0'
+assert abs(r.tolist()[1] - 1.7182818284590453) < 1e-10, 'expm1 1'
+
+# === np.deg2rad ===
+r = np.deg2rad(np.array([0.0, 90.0, 180.0]))
+assert abs(r.tolist()[0] - 0.0) < 1e-10, 'deg2rad 0'
+assert abs(r.tolist()[1] - 1.5707963267948966) < 1e-10, 'deg2rad 90'
+assert abs(r.tolist()[2] - 3.141592653589793) < 1e-10, 'deg2rad 180'
+
+# === np.rad2deg ===
+r = np.rad2deg(np.array([0.0, np.pi / 2, np.pi]))
+assert abs(r.tolist()[0] - 0.0) < 1e-10, 'rad2deg 0'
+assert abs(r.tolist()[1] - 90.0) < 1e-10, 'rad2deg pi/2'
+assert abs(r.tolist()[2] - 180.0) < 1e-10, 'rad2deg pi'
+
+# === np.degrees (alias for rad2deg) ===
+r = np.degrees(np.array([0.0, np.pi]))
+assert abs(r.tolist()[0] - 0.0) < 1e-10, 'degrees 0'
+assert abs(r.tolist()[1] - 180.0) < 1e-10, 'degrees pi'
+
+# === np.radians (alias for deg2rad) ===
+r = np.radians(np.array([0.0, 180.0]))
+assert abs(r.tolist()[0] - 0.0) < 1e-10, 'radians 0'
+assert abs(r.tolist()[1] - 3.141592653589793) < 1e-10, 'radians 180'
+
+# === np.hypot ===
+assert np.hypot(np.array([3.0]), np.array([4.0])).tolist() == [5.0], 'hypot 3-4-5'
+assert np.hypot(np.array([0.0]), np.array([5.0])).tolist() == [5.0], 'hypot 0-5'
+
+# === np.nan_to_num ===
+a = np.array([1.0, float('nan'), float('inf'), float('-inf')])
+r = np.nan_to_num(a)
+assert r.tolist()[0] == 1.0, 'nan_to_num keeps normal'
+assert r.tolist()[1] == 0.0, 'nan_to_num replaces nan'
+
+# === np.fmin / np.fmax ===
+assert np.fmin(np.array([1.0, 3.0]), np.array([2.0, 1.0])).tolist() == [1.0, 1.0], 'fmin basic'
+assert np.fmax(np.array([1.0, 3.0]), np.array([2.0, 1.0])).tolist() == [2.0, 3.0], 'fmax basic'
+# fmin/fmax ignore NaN
+a = np.array([1.0, float('nan')])
+b = np.array([2.0, 3.0])
+assert np.fmin(a, b).tolist()[0] == 1.0, 'fmin nan ignore 1'
+assert np.fmin(a, b).tolist()[1] == 3.0, 'fmin nan ignore 2'
+assert np.fmax(a, b).tolist()[0] == 2.0, 'fmax nan ignore 1'
+assert np.fmax(a, b).tolist()[1] == 3.0, 'fmax nan ignore 2'
+
+# === np.fmod ===
+assert np.fmod(np.array([5.0, 7.0]), np.array([3.0, 2.0])).tolist() == [2.0, 1.0], 'fmod'
+
+# === np.rint ===
+assert np.rint(np.array([1.5, 2.5, 3.5])).tolist() == [2.0, 2.0, 4.0], 'rint banker'
+assert np.rint(np.array([0.5, 1.5])).tolist() == [0.0, 2.0], 'rint half even'
+
+# === np.fabs ===
+assert np.fabs(np.array([-1.0, 2.0, -3.0])).tolist() == [1.0, 2.0, 3.0], 'fabs'
+
+# === np.positive / np.negative ===
+assert np.positive(np.array([-1.0, 2.0])).tolist() == [-1.0, 2.0], 'positive'
+assert np.negative(np.array([-1.0, 2.0])).tolist() == [1.0, -2.0], 'negative'
+
+# ============================================================
+# 32. NAN-AWARE AGGREGATIONS
+# ============================================================
+
+a_nan = np.array([1.0, float('nan'), 3.0, float('nan'), 5.0])
+
+# === np.nansum ===
+assert np.nansum(a_nan) == 9.0, 'nansum'
+assert np.nansum(np.array([1.0, 2.0, 3.0])) == 6.0, 'nansum no nan'
+
+# === np.nanmean ===
+assert np.nanmean(a_nan) == 3.0, 'nanmean'
+
+# === np.nanmin ===
+assert np.nanmin(a_nan) == 1.0, 'nanmin'
+
+# === np.nanmax ===
+assert np.nanmax(a_nan) == 5.0, 'nanmax'
+
+# === np.nanstd ===
+assert abs(np.nanstd(a_nan) - 1.632993161855452) < 1e-10, 'nanstd'
+
+# === np.nanvar ===
+assert abs(np.nanvar(a_nan) - 2.6666666666666665) < 1e-10, 'nanvar'
+
+# === np.nanprod ===
+assert np.nanprod(a_nan) == 15.0, 'nanprod'
+
+# === np.nanmedian ===
+assert np.nanmedian(a_nan) == 3.0, 'nanmedian'
+
+# === np.nanargmin ===
+assert np.nanargmin(a_nan) == 0, 'nanargmin'
+
+# === np.nanargmax ===
+assert np.nanargmax(a_nan) == 4, 'nanargmax'
+
+# === np.nancumsum ===
+assert np.nancumsum(a_nan).tolist() == [1.0, 1.0, 4.0, 4.0, 9.0], 'nancumsum'
+
+# === np.nancumprod ===
+assert np.nancumprod(a_nan).tolist() == [1.0, 1.0, 3.0, 3.0, 15.0], 'nancumprod'
+
+# ============================================================
+# 33. ADDITIONAL STATISTICS
+# ============================================================
+
+# === np.ptp ===
+assert np.ptp(np.array([3.0, 1.0, 5.0, 2.0])) == 4.0, 'ptp'
+assert np.ptp(np.array([7.0])) == 0.0, 'ptp single'
+
+# === np.cumprod ===
+assert np.cumprod(np.array([1.0, 2.0, 3.0, 4.0])).tolist() == [1.0, 2.0, 6.0, 24.0], 'cumprod'
+assert np.cumprod(np.array([5.0])).tolist() == [5.0], 'cumprod single'
+
+# === np.percentile ===
+assert np.percentile(np.array([1.0, 2.0, 3.0, 4.0]), 50) == 2.5, 'percentile 50'
+assert np.percentile(np.array([1.0, 2.0, 3.0, 4.0]), 0) == 1.0, 'percentile 0'
+assert np.percentile(np.array([1.0, 2.0, 3.0, 4.0]), 100) == 4.0, 'percentile 100'
+
+# === np.quantile ===
+assert np.quantile(np.array([1.0, 2.0, 3.0, 4.0]), 0.5) == 2.5, 'quantile 0.5'
+assert np.quantile(np.array([1.0, 2.0, 3.0, 4.0]), 0.0) == 1.0, 'quantile 0'
+assert np.quantile(np.array([1.0, 2.0, 3.0, 4.0]), 1.0) == 4.0, 'quantile 1'
+
+# === np.average ===
+assert np.average(np.array([1.0, 2.0, 3.0])) == 2.0, 'average'
+
+# ============================================================
+# 34. LOGICAL AND TESTING FUNCTIONS
+# ============================================================
+
+# === np.logical_and ===
+assert np.logical_and(np.array([1, 1, 0]), np.array([1, 0, 0])).tolist() == [True, False, False], 'logical_and'
+
+# === np.logical_or ===
+assert np.logical_or(np.array([1, 1, 0]), np.array([1, 0, 0])).tolist() == [True, True, False], 'logical_or'
+
+# === np.logical_not ===
+assert np.logical_not(np.array([1, 0, 1])).tolist() == [False, True, False], 'logical_not'
+
+# === np.logical_xor ===
+assert np.logical_xor(np.array([1, 1, 0]), np.array([1, 0, 0])).tolist() == [False, True, False], 'logical_xor'
+
+# === np.allclose ===
+assert np.allclose(np.array([1.0, 2.0]), np.array([1.0, 2.0])) == True, 'allclose exact'
+assert np.allclose(np.array([1.0, 2.0]), np.array([1.0, 2.1])) == False, 'allclose not close'
+assert np.allclose(np.array([1.0]), np.array([1.0 + 1e-9])) == True, 'allclose within tol'
+
+# === np.isclose ===
+r = np.isclose(np.array([1.0, 2.0]), np.array([1.0, 2.1]))
+assert r.tolist() == [True, False], 'isclose basic'
+
+# === np.isin ===
+r = np.isin(np.array([1.0, 2.0, 3.0, 4.0]), np.array([2.0, 4.0]))
+assert r.tolist() == [False, True, False, True], 'isin'
+
+# ============================================================
+# 35. ARRAY MANIPULATION
+# ============================================================
+
+# === np.flip ===
+assert np.flip(np.array([1.0, 2.0, 3.0])).tolist() == [3.0, 2.0, 1.0], 'flip 1d'
+assert np.flip(np.array([1, 2, 3])).tolist() == [3, 2, 1], 'flip 1d int'
+
+# === np.fliplr ===
+a2d = np.array([[1.0, 2.0], [3.0, 4.0]])
+assert np.fliplr(a2d).tolist() == [[2.0, 1.0], [4.0, 3.0]], 'fliplr'
+
+# === np.flipud ===
+assert np.flipud(a2d).tolist() == [[3.0, 4.0], [1.0, 2.0]], 'flipud'
+
+# === np.roll ===
+assert np.roll(np.array([1.0, 2.0, 3.0, 4.0]), 2).tolist() == [3.0, 4.0, 1.0, 2.0], 'roll +2'
+assert np.roll(np.array([1.0, 2.0, 3.0, 4.0]), -1).tolist() == [2.0, 3.0, 4.0, 1.0], 'roll -1'
+assert np.roll(np.array([1.0, 2.0, 3.0]), 0).tolist() == [1.0, 2.0, 3.0], 'roll 0'
+
+# === np.expand_dims ===
+a = np.array([1.0, 2.0, 3.0])
+assert np.expand_dims(a, 0).shape == (1, 3), 'expand_dims axis=0'
+assert np.expand_dims(a, 1).shape == (3, 1), 'expand_dims axis=1'
+
+# === np.squeeze ===
+a = np.array([[[1.0], [2.0]]])
+assert np.squeeze(a).shape == (2,), 'squeeze removes 1-dims'
+a2 = np.array([[1.0, 2.0], [3.0, 4.0]])
+assert np.squeeze(a2).shape == (2, 2), 'squeeze no effect'
+
+# === np.ravel (module-level) ===
+assert np.ravel(np.array([[1.0, 2.0], [3.0, 4.0]])).tolist() == [1.0, 2.0, 3.0, 4.0], 'ravel 2d'
+
+# === np.delete ===
+assert np.delete(np.array([1.0, 2.0, 3.0, 4.0]), 1).tolist() == [1.0, 3.0, 4.0], 'delete idx 1'
+assert np.delete(np.array([1.0, 2.0, 3.0]), 0).tolist() == [2.0, 3.0], 'delete idx 0'
+assert np.delete(np.array([1.0, 2.0, 3.0]), 2).tolist() == [1.0, 2.0], 'delete last'
+
+# === np.insert ===
+assert np.insert(np.array([1.0, 2.0, 4.0]), 2, 3.0).tolist() == [1.0, 2.0, 3.0, 4.0], 'insert middle'
+assert np.insert(np.array([2.0, 3.0]), 0, 1.0).tolist() == [1.0, 2.0, 3.0], 'insert front'
+
+# === np.diag ===
+# 1D → 2D diagonal matrix
+assert np.diag(np.array([1.0, 2.0, 3.0])).tolist() == [[1.0, 0.0, 0.0], [0.0, 2.0, 0.0], [0.0, 0.0, 3.0]], 'diag 1d->2d'
+# 2D → 1D diagonal extraction
+assert np.diag(np.array([[1.0, 2.0], [3.0, 4.0]])).tolist() == [1.0, 4.0], 'diag 2d->1d'
+
+# === np.diagonal ===
+assert np.diagonal(np.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])).tolist() == [1.0, 5.0], 'diagonal rect'
+assert np.diagonal(np.array([[1.0, 2.0], [3.0, 4.0]])).tolist() == [1.0, 4.0], 'diagonal square'
+
+# === np.trace ===
+assert np.trace(np.array([[1.0, 2.0], [3.0, 4.0]])) == 5.0, 'trace 2x2'
+assert np.trace(np.array([[1.0, 0.0, 0.0], [0.0, 2.0, 0.0], [0.0, 0.0, 3.0]])) == 6.0, 'trace 3x3'
+
+# === np.flatnonzero ===
+assert np.flatnonzero(np.array([0.0, 1.0, 0.0, 3.0])).tolist() == [1, 3], 'flatnonzero'
+assert np.flatnonzero(np.array([0.0, 0.0])).tolist() == [], 'flatnonzero all zero'
+assert np.flatnonzero(np.array([1.0, 2.0])).tolist() == [0, 1], 'flatnonzero all nonzero'
+
+# === np.asarray ===
+r = np.asarray([1.0, 2.0, 3.0])
+assert r.tolist() == [1.0, 2.0, 3.0], 'asarray from list'
+
+# === np.column_stack ===
+a = np.array([1.0, 2.0])
+b = np.array([3.0, 4.0])
+r = np.column_stack([a, b])
+assert r.tolist() == [[1.0, 3.0], [2.0, 4.0]], 'column_stack'
+
+# === np.array_split ===
+parts = np.array_split(np.array([1.0, 2.0, 3.0, 4.0, 5.0]), 3)
+assert parts[0].tolist() == [1.0, 2.0], 'array_split part 0'
+assert parts[1].tolist() == [3.0, 4.0], 'array_split part 1'
+assert parts[2].tolist() == [5.0], 'array_split part 2'
+
+# === np.full_like ===
+a = np.array([1.0, 2.0, 3.0])
+assert np.full_like(a, 7.0).tolist() == [7.0, 7.0, 7.0], 'full_like'
+assert np.full_like(a, 7.0).shape == (3,), 'full_like shape'
+
+# ============================================================
+# 36. SORTING, SEARCHING, SET OPERATIONS
+# ============================================================
+
+# === np.argsort (module-level) ===
+assert np.argsort(np.array([3.0, 1.0, 2.0])).tolist() == [1, 2, 0], 'argsort mod'
+
+# === np.searchsorted ===
+assert np.searchsorted(np.array([1.0, 3.0, 5.0, 7.0]), 4.0) == 2, 'searchsorted'
+assert np.searchsorted(np.array([1.0, 3.0, 5.0]), 0.0) == 0, 'searchsorted left'
+assert np.searchsorted(np.array([1.0, 3.0, 5.0]), 6.0) == 3, 'searchsorted right'
+
+# === np.extract ===
+cond = np.array([1, 0, 1, 0])
+arr = np.array([10.0, 20.0, 30.0, 40.0])
+assert np.extract(cond, arr).tolist() == [10.0, 30.0], 'extract'
+assert np.extract(np.array([0, 0]), np.array([1.0, 2.0])).tolist() == [], 'extract none'
+
+# === np.intersect1d ===
+assert np.intersect1d(np.array([1.0, 2.0, 3.0]), np.array([2.0, 3.0, 4.0])).tolist() == [2.0, 3.0], 'intersect1d'
+
+# === np.union1d ===
+assert np.union1d(np.array([1.0, 2.0]), np.array([2.0, 3.0])).tolist() == [1.0, 2.0, 3.0], 'union1d'
+
+# === np.setdiff1d ===
+assert np.setdiff1d(np.array([1.0, 2.0, 3.0]), np.array([2.0])).tolist() == [1.0, 3.0], 'setdiff1d'
+
+# === np.setxor1d ===
+assert np.setxor1d(np.array([1.0, 2.0, 3.0]), np.array([2.0, 3.0, 4.0])).tolist() == [1.0, 4.0], 'setxor1d'
+
+# === np.bincount ===
+assert np.bincount(np.array([0, 1, 1, 2, 2, 2])).tolist() == [1, 2, 3], 'bincount'
+assert np.bincount(np.array([3])).tolist() == [0, 0, 0, 1], 'bincount sparse'
+
+# === np.digitize ===
+assert np.digitize(np.array([0.5, 1.5, 2.5, 3.5]), np.array([1.0, 2.0, 3.0])).tolist() == [0, 1, 2, 3], 'digitize'
+
+# ============================================================
+# 37. LINEAR ALGEBRA BASICS
+# ============================================================
+
+# === np.outer ===
+assert np.outer(np.array([1.0, 2.0]), np.array([3.0, 4.0])).tolist() == [[3.0, 4.0], [6.0, 8.0]], 'outer product'
+assert np.outer(np.array([1.0]), np.array([2.0, 3.0])).tolist() == [[2.0, 3.0]], 'outer 1x2'
+
+# === np.cross ===
+assert np.cross(np.array([1.0, 0.0, 0.0]), np.array([0.0, 1.0, 0.0])).tolist() == [0.0, 0.0, 1.0], 'cross i x j'
+assert np.cross(np.array([0.0, 1.0, 0.0]), np.array([0.0, 0.0, 1.0])).tolist() == [1.0, 0.0, 0.0], 'cross j x k'
+
+# ============================================================
+# 38. CREATION FUNCTIONS (ADVANCED)
+# ============================================================
+
+# === np.logspace ===
+r = np.logspace(0, 2, 3)
+assert abs(r.tolist()[0] - 1.0) < 1e-10, 'logspace start'
+assert abs(r.tolist()[1] - 10.0) < 1e-10, 'logspace mid'
+assert abs(r.tolist()[2] - 100.0) < 1e-10, 'logspace end'
+
+# === np.geomspace ===
+r = np.geomspace(1, 100, 3)
+assert abs(r.tolist()[0] - 1.0) < 1e-10, 'geomspace start'
+assert abs(r.tolist()[1] - 10.0) < 1e-10, 'geomspace mid'
+assert abs(r.tolist()[2] - 100.0) < 1e-10, 'geomspace end'
+
+# === np.tri ===
+assert np.tri(3).tolist() == [[1.0, 0.0, 0.0], [1.0, 1.0, 0.0], [1.0, 1.0, 1.0]], 'tri 3x3'
+
+# === np.tril ===
+m = np.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [7.0, 8.0, 9.0]])
+assert np.tril(m).tolist() == [[1.0, 0.0, 0.0], [4.0, 5.0, 0.0], [7.0, 8.0, 9.0]], 'tril'
+
+# === np.triu ===
+assert np.triu(m).tolist() == [[1.0, 2.0, 3.0], [0.0, 5.0, 6.0], [0.0, 0.0, 9.0]], 'triu'
+
+# === np.identity ===
+assert np.identity(3).tolist() == [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]], 'identity 3'
+assert np.identity(1).tolist() == [[1.0]], 'identity 1'
+
+# === np.meshgrid ===
+x, y = np.meshgrid(np.array([1.0, 2.0, 3.0]), np.array([4.0, 5.0]))
+assert x.tolist() == [[1.0, 2.0, 3.0], [1.0, 2.0, 3.0]], 'meshgrid x'
+assert y.tolist() == [[4.0, 4.0, 4.0], [5.0, 5.0, 5.0]], 'meshgrid y'
+
+# === np.gradient ===
+r = np.gradient(np.array([1.0, 3.0, 6.0, 10.0]))
+assert r.tolist() == [2.0, 2.5, 3.5, 4.0], 'gradient'
+r2 = np.gradient(np.array([1.0, 4.0]))
+assert r2.tolist() == [3.0, 3.0], 'gradient 2-elem'
+
+# === np.convolve ===
+r = np.convolve(np.array([1.0, 2.0, 3.0]), np.array([0.0, 1.0, 0.5]))
+assert r.tolist() == [0.0, 1.0, 2.5, 4.0, 1.5], 'convolve full'
+
+# === np.interp ===
+xp = np.array([1.0, 2.0, 3.0])
+fp = np.array([10.0, 20.0, 30.0])
+assert np.interp(np.array([1.5, 2.5]), xp, fp).tolist() == [15.0, 25.0], 'interp'
+assert np.interp(np.array([0.0]), xp, fp).tolist() == [10.0], 'interp left clamp'
+assert np.interp(np.array([4.0]), xp, fp).tolist() == [30.0], 'interp right clamp'
+
+# === np.select ===
+c1 = np.array([1, 0, 0])
+c2 = np.array([0, 1, 0])
+ch1 = np.array([10.0, 20.0, 30.0])
+ch2 = np.array([40.0, 50.0, 60.0])
+r = np.select([c1, c2], [ch1, ch2], 0.0)
+assert r.tolist() == [10.0, 50.0, 0.0], 'select'
+
+# ============================================================
+# 39. EMPTY-LIKE / CORRELATE
+# ============================================================
+
+# === np.empty_like ===
+a = np.array([1.0, 2.0, 3.0])
+r = np.empty_like(a)
+assert r.shape == (3,), 'empty_like shape'
+assert r.dtype == a.dtype, 'empty_like dtype'
+
+# === np.correlate ===
+a = np.array([1.0, 2.0, 3.0])
+v = np.array([0.0, 1.0, 0.5])
+r = np.correlate(a, v)
+assert len(r.tolist()) > 0, 'correlate produces output'

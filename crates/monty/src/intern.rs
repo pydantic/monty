@@ -674,6 +674,305 @@ pub enum StaticStrings {
     NpRavel,
     // Note: numpy.min/max/sum/sort reuse existing StaticStrings variants
     // (NpMin, NpMax, NpSum, Sort) which are already defined above.
+
+    // --- Phase 2+ numpy functions ---
+    /// `numpy.newaxis` constant (alias for None)
+    #[strum(serialize = "newaxis")]
+    Newaxis,
+    /// `numpy.float64` dtype type object
+    #[strum(serialize = "float64")]
+    NpFloat64,
+    /// `numpy.int64` dtype type object
+    #[strum(serialize = "int64")]
+    NpInt64,
+    /// `numpy.bool_` dtype type object
+    #[strum(serialize = "bool_")]
+    NpBool_,
+    /// `numpy.float32` dtype alias (maps to float64 internally)
+    #[strum(serialize = "float32")]
+    NpFloat32,
+    /// `numpy.int32` dtype alias (maps to int64 internally)
+    #[strum(serialize = "int32")]
+    NpInt32,
+    /// `numpy.arcsin()` / `numpy.asin()` function
+    #[strum(serialize = "arcsin")]
+    NpArcsin,
+    /// `numpy.arccos()` / `numpy.acos()` function
+    #[strum(serialize = "arccos")]
+    NpArccos,
+    /// `numpy.arctan()` / `numpy.atan()` function
+    #[strum(serialize = "arctan")]
+    NpArctan,
+    /// `numpy.arctan2()` function — two-argument arctangent
+    #[strum(serialize = "arctan2")]
+    NpArctan2,
+    /// `numpy.arcsinh()` function
+    #[strum(serialize = "arcsinh")]
+    NpArcsinh,
+    /// `numpy.arccosh()` function
+    #[strum(serialize = "arccosh")]
+    NpArccosh,
+    /// `numpy.arctanh()` function
+    #[strum(serialize = "arctanh")]
+    NpArctanh,
+    /// `numpy.sign()` function
+    #[strum(serialize = "sign")]
+    NpSign,
+    /// `numpy.square()` function
+    #[strum(serialize = "square")]
+    NpSquare,
+    /// `numpy.reciprocal()` function
+    #[strum(serialize = "reciprocal")]
+    NpReciprocal,
+    /// `numpy.deg2rad()` function
+    #[strum(serialize = "deg2rad")]
+    NpDeg2rad,
+    /// `numpy.rad2deg()` function
+    #[strum(serialize = "rad2deg")]
+    NpRad2deg,
+    /// `numpy.hypot()` function — hypotenuse
+    #[strum(serialize = "hypot")]
+    NpHypot,
+    /// `numpy.nan_to_num()` function
+    #[strum(serialize = "nan_to_num")]
+    NpNanToNum,
+    /// `numpy.fmin()` function — NaN-ignoring minimum
+    #[strum(serialize = "fmin")]
+    NpFmin,
+    /// `numpy.fmax()` function — NaN-ignoring maximum
+    #[strum(serialize = "fmax")]
+    NpFmax,
+    /// `numpy.rint()` function — round to nearest integer
+    #[strum(serialize = "rint")]
+    NpRint,
+    /// `numpy.positive()` function — unary +
+    #[strum(serialize = "positive")]
+    NpPositive,
+    /// `numpy.negative()` function — unary -
+    #[strum(serialize = "negative")]
+    NpNegative,
+    /// `numpy.nansum()` function
+    #[strum(serialize = "nansum")]
+    NpNansum,
+    /// `numpy.nanmean()` function
+    #[strum(serialize = "nanmean")]
+    NpNanmean,
+    /// `numpy.nanmin()` function
+    #[strum(serialize = "nanmin")]
+    NpNanmin,
+    /// `numpy.nanmax()` function
+    #[strum(serialize = "nanmax")]
+    NpNanmax,
+    /// `numpy.nanstd()` function
+    #[strum(serialize = "nanstd")]
+    NpNanstd,
+    /// `numpy.nanvar()` function
+    #[strum(serialize = "nanvar")]
+    NpNanvar,
+    /// `numpy.nanprod()` function
+    #[strum(serialize = "nanprod")]
+    NpNanprod,
+    /// `numpy.nanmedian()` function
+    #[strum(serialize = "nanmedian")]
+    NpNanmedian,
+    /// `numpy.nanargmin()` function
+    #[strum(serialize = "nanargmin")]
+    NpNanargmin,
+    /// `numpy.nanargmax()` function
+    #[strum(serialize = "nanargmax")]
+    NpNanargmax,
+    /// `numpy.average()` function
+    #[strum(serialize = "average")]
+    NpAverage,
+    /// `numpy.percentile()` function
+    #[strum(serialize = "percentile")]
+    NpPercentile,
+    /// `numpy.quantile()` function
+    #[strum(serialize = "quantile")]
+    NpQuantile,
+    /// `numpy.ptp()` function — peak to peak
+    #[strum(serialize = "ptp")]
+    NpPtp,
+    /// `numpy.cumprod()` function
+    #[strum(serialize = "cumprod")]
+    NpCumprod,
+    /// `numpy.logical_and()` function
+    #[strum(serialize = "logical_and")]
+    NpLogicalAnd,
+    /// `numpy.logical_or()` function
+    #[strum(serialize = "logical_or")]
+    NpLogicalOr,
+    /// `numpy.logical_not()` function
+    #[strum(serialize = "logical_not")]
+    NpLogicalNot,
+    /// `numpy.logical_xor()` function
+    #[strum(serialize = "logical_xor")]
+    NpLogicalXor,
+    /// `numpy.allclose()` function
+    #[strum(serialize = "allclose")]
+    NpAllclose,
+    /// `numpy.isin()` function
+    #[strum(serialize = "isin")]
+    NpIsin,
+    /// `numpy.flip()` function
+    #[strum(serialize = "flip")]
+    NpFlip,
+    /// `numpy.fliplr()` function
+    #[strum(serialize = "fliplr")]
+    NpFliplr,
+    /// `numpy.flipud()` function
+    #[strum(serialize = "flipud")]
+    NpFlipud,
+    /// `numpy.roll()` function
+    #[strum(serialize = "roll")]
+    NpRoll,
+    /// `numpy.expand_dims()` function
+    #[strum(serialize = "expand_dims")]
+    NpExpandDims,
+    /// `numpy.squeeze()` function
+    #[strum(serialize = "squeeze")]
+    NpSqueeze,
+    /// `numpy.delete()` function
+    #[strum(serialize = "delete")]
+    NpDelete,
+    /// `numpy.diag()` function
+    #[strum(serialize = "diag")]
+    NpDiag,
+    /// `numpy.diagonal()` function
+    #[strum(serialize = "diagonal")]
+    NpDiagonal,
+    /// `numpy.trace()` function
+    #[strum(serialize = "trace")]
+    NpTrace,
+    /// `numpy.flatnonzero()` function
+    #[strum(serialize = "flatnonzero")]
+    NpFlatnonzero,
+    /// `numpy.asarray()` function
+    #[strum(serialize = "asarray")]
+    NpAsarray,
+    /// `numpy.column_stack()` function
+    #[strum(serialize = "column_stack")]
+    NpColumnStack,
+    /// `numpy.row_stack()` function — alias for vstack
+    #[strum(serialize = "row_stack")]
+    NpRowStack,
+    /// `numpy.hsplit()` function
+    #[strum(serialize = "hsplit")]
+    NpHsplit,
+    /// `numpy.vsplit()` function
+    #[strum(serialize = "vsplit")]
+    NpVsplit,
+    /// `numpy.array_split()` function
+    #[strum(serialize = "array_split")]
+    NpArraySplit,
+    /// `numpy.searchsorted()` function
+    #[strum(serialize = "searchsorted")]
+    NpSearchsorted,
+    /// `numpy.extract()` function
+    #[strum(serialize = "extract")]
+    NpExtract,
+    /// `numpy.intersect1d()` function
+    #[strum(serialize = "intersect1d")]
+    NpIntersect1d,
+    /// `numpy.union1d()` function
+    #[strum(serialize = "union1d")]
+    NpUnion1d,
+    /// `numpy.setdiff1d()` function
+    #[strum(serialize = "setdiff1d")]
+    NpSetdiff1d,
+    /// `numpy.setxor1d()` function
+    #[strum(serialize = "setxor1d")]
+    NpSetxor1d,
+    /// `numpy.bincount()` function
+    #[strum(serialize = "bincount")]
+    NpBincount,
+    /// `numpy.digitize()` function
+    #[strum(serialize = "digitize")]
+    NpDigitize,
+    /// `numpy.matmul()` function
+    #[strum(serialize = "matmul")]
+    NpMatmul,
+    /// `numpy.inner()` function
+    #[strum(serialize = "inner")]
+    NpInner,
+    /// `numpy.outer()` function
+    #[strum(serialize = "outer")]
+    NpOuter,
+    /// `numpy.vdot()` function
+    #[strum(serialize = "vdot")]
+    NpVdot,
+    /// `numpy.cross()` function
+    #[strum(serialize = "cross")]
+    NpCross,
+    /// `numpy.logspace()` function
+    #[strum(serialize = "logspace")]
+    NpLogspace,
+    /// `numpy.geomspace()` function
+    #[strum(serialize = "geomspace")]
+    NpGeomspace,
+    /// `numpy.tri()` function
+    #[strum(serialize = "tri")]
+    NpTri,
+    /// `numpy.tril()` function
+    #[strum(serialize = "tril")]
+    NpTril,
+    /// `numpy.triu()` function
+    #[strum(serialize = "triu")]
+    NpTriu,
+    /// `numpy.identity()` function — alias for eye
+    #[strum(serialize = "identity")]
+    NpIdentity,
+    /// `numpy.meshgrid()` function
+    #[strum(serialize = "meshgrid")]
+    NpMeshgrid,
+    /// `numpy.full_like()` function
+    #[strum(serialize = "full_like")]
+    NpFullLike,
+    /// `numpy.empty_like()` function
+    #[strum(serialize = "empty_like")]
+    NpEmptyLike,
+    /// `numpy.gradient()` function
+    #[strum(serialize = "gradient")]
+    NpGradient,
+    /// `numpy.convolve()` function
+    #[strum(serialize = "convolve")]
+    NpConvolve,
+    /// `numpy.correlate()` function
+    #[strum(serialize = "correlate")]
+    NpCorrelate,
+    /// `numpy.interp()` function — 1D interpolation
+    #[strum(serialize = "interp")]
+    NpInterp,
+    /// `numpy.select()` function
+    #[strum(serialize = "select")]
+    NpSelect,
+    /// `ndarray.item()` method — extract scalar from single-element array
+    #[strum(serialize = "item")]
+    NpItem,
+    /// `ndarray.take()` method — take elements at indices
+    #[strum(serialize = "take")]
+    NpTake,
+    /// `ndarray.fill()` method — fill array with value
+    #[strum(serialize = "fill")]
+    NpFill,
+    /// `ndarray.compress()` method — select elements by boolean condition
+    #[strum(serialize = "compress")]
+    NpCompress,
+    /// `ndarray.swapaxes()` method
+    #[strum(serialize = "swapaxes")]
+    NpSwapaxes,
+    /// `ndarray.nbytes` attribute
+    #[strum(serialize = "nbytes")]
+    NpNbytes,
+    /// `ndarray.itemsize` attribute
+    #[strum(serialize = "itemsize")]
+    NpItemsize,
+    /// `numpy.nancumsum()` function
+    #[strum(serialize = "nancumsum")]
+    NpNancumsum,
+    /// `numpy.nancumprod()` function
+    #[strum(serialize = "nancumprod")]
+    NpNancumprod,
 }
 
 impl StaticStrings {
