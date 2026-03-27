@@ -469,6 +469,30 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
         self.binary_div()
     }
 
+    /// In-place floor division for ndarray. Falls back to binary floor division for other types.
+    pub(super) fn inplace_floordiv(&mut self) -> Result<(), RunError> {
+        if try_ndarray_inplace(self, NdArrayInplaceOp::FloorDiv) {
+            return Ok(());
+        }
+        self.binary_floordiv()
+    }
+
+    /// In-place modulo for ndarray. Falls back to binary modulo for other types.
+    pub(super) fn inplace_mod(&mut self) -> Result<(), RunError> {
+        if try_ndarray_inplace(self, NdArrayInplaceOp::Mod) {
+            return Ok(());
+        }
+        self.binary_mod()
+    }
+
+    /// In-place power for ndarray. Falls back to binary power for other types.
+    pub(super) fn inplace_pow(&mut self) -> Result<(), RunError> {
+        if try_ndarray_inplace(self, NdArrayInplaceOp::Pow) {
+            return Ok(());
+        }
+        self.binary_pow()
+    }
+
     /// Implements dict-view set-like operators before falling back to other dispatch.
     ///
     /// Returning `Ok(None)` means the left operand was not a set-like dict view, so the
@@ -804,6 +828,9 @@ enum NdArrayInplaceOp {
     Sub,
     Mul,
     Div,
+    FloorDiv,
+    Mod,
+    Pow,
 }
 
 /// Tries to perform an in-place ndarray operation by peeking at the stack.
@@ -913,6 +940,21 @@ fn apply_inplace_scalar(arr: &mut NdArray, scalar: f64, op: NdArrayInplaceOp) {
                 *v /= scalar;
             }
         }
+        NdArrayInplaceOp::FloorDiv => {
+            for v in &mut arr.data {
+                *v = (*v / scalar).floor();
+            }
+        }
+        NdArrayInplaceOp::Mod => {
+            for v in &mut arr.data {
+                *v %= scalar;
+            }
+        }
+        NdArrayInplaceOp::Pow => {
+            for v in &mut arr.data {
+                *v = v.powf(scalar);
+            }
+        }
     }
 }
 
@@ -938,6 +980,21 @@ fn apply_inplace_array(arr: &mut NdArray, rhs_data: &[f64], op: NdArrayInplaceOp
             arr.dtype = crate::types::ndarray::NdArrayDtype::Float64;
             for (v, rv) in arr.data.iter_mut().zip(rhs_data.iter()) {
                 *v /= rv;
+            }
+        }
+        NdArrayInplaceOp::FloorDiv => {
+            for (v, rv) in arr.data.iter_mut().zip(rhs_data.iter()) {
+                *v = (*v / rv).floor();
+            }
+        }
+        NdArrayInplaceOp::Mod => {
+            for (v, rv) in arr.data.iter_mut().zip(rhs_data.iter()) {
+                *v %= rv;
+            }
+        }
+        NdArrayInplaceOp::Pow => {
+            for (v, rv) in arr.data.iter_mut().zip(rhs_data.iter()) {
+                *v = v.powf(*rv);
             }
         }
     }

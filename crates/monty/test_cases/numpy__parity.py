@@ -2695,3 +2695,39 @@ assert (-a).tolist() == [-1, 2, -3], 'unary neg'
 # Bitwise invert
 b = np.array([0, 1, 0, 1])
 assert (~b).tolist() == [-1, -2, -1, -2], 'bitwise invert int'
+
+# === Section 44: In-place floor divide, modulo, power ===
+a = np.array([10, 7, 15])
+a //= 3
+assert a.tolist() == [3, 2, 5], 'ifloordiv scalar'
+a = np.array([10, 7, 15])
+a %= 3
+assert a.tolist() == [1, 1, 0], 'imod scalar'
+a = np.array([2.0, 3.0, 4.0])
+a **= 2
+assert a.tolist() == [4.0, 9.0, 16.0], 'ipow scalar'
+# Array rhs
+a = np.array([10, 20, 30])
+a //= np.array([3, 7, 4])
+assert a.tolist() == [3, 2, 7], 'ifloordiv array'
+a = np.array([10, 20, 30])
+a %= np.array([3, 7, 4])
+assert a.tolist() == [1, 6, 2], 'imod array'
+a = np.array([2.0, 3.0, 4.0])
+a **= np.array([3.0, 2.0, 0.5])
+assert a.tolist() == [8.0, 9.0, 2.0], 'ipow array'
+
+# === Section 45: .flat attribute ===
+a = np.array([[1, 2], [3, 4]])
+f = a.flat
+assert f.tolist() == [1, 2, 3, 4], 'flat tolist'
+assert f.shape == (4,), 'flat shape'
+assert f[2] == 3, 'flat indexing'
+
+# === Section 46: ndarray .repeat() and .nonzero() methods ===
+a = np.array([1, 2, 3])
+assert a.repeat(2).tolist() == [1, 1, 2, 2, 3, 3], 'repeat method 2x'
+assert a.repeat(1).tolist() == [1, 2, 3], 'repeat method 1x'
+a = np.array([0, 1, 0, 3, 5])
+nz = a.nonzero()
+assert nz[0].tolist() == [1, 3, 4], 'nonzero method 1d'

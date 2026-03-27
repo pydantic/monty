@@ -31,7 +31,7 @@ use std::{
 };
 
 use ahash::AHashSet;
-use smallvec::SmallVec;
+use smallvec::{SmallVec, smallvec};
 
 use crate::{
     args::ArgValues,
@@ -1169,6 +1169,64 @@ impl NdArray {
         }
     }
 
+    /// `repeat(n)` — repeat each element `n` times, returning a 1D array.
+    pub fn repeat_array(&self, n: usize, heap: &Heap<impl ResourceTracker>) -> RunResult<Value> {
+        let mut data = Vec::with_capacity(self.data.len() * n);
+        for &v in &self.data {
+            for _ in 0..n {
+                data.push(v);
+            }
+        }
+        crate::resource::check_array_alloc_size(data.len(), heap.tracker())?;
+        let len = data.len();
+        let arr = Self::new(data, vec![len], self.dtype);
+        Ok(Value::Ref(heap.allocate(HeapData::NdArray(arr))?))
+    }
+
+    /// `nonzero()` — returns a tuple of arrays, one per dimension, containing non-zero indices.
+    ///
+    /// For 1D arrays, returns a 1-element tuple of an index array.
+    /// For 2D arrays, returns a 2-element tuple of row and column index arrays.
+    pub fn nonzero_method(&self, heap: &Heap<impl ResourceTracker>) -> RunResult<Value> {
+        if self.ndim() <= 1 {
+            let indices: Vec<f64> = self
+                .data
+                .iter()
+                .enumerate()
+                .filter(|(_, v)| **v != 0.0)
+                .map(|(i, _)| i as f64)
+                .collect();
+            let len = indices.len();
+            let arr = Self::new(indices, vec![len], NdArrayDtype::Int64);
+            let arr_val = Value::Ref(heap.allocate(HeapData::NdArray(arr))?);
+            let tup = crate::types::tuple::allocate_tuple(smallvec![arr_val], heap)?;
+            Ok(tup)
+        } else if self.ndim() == 2 {
+            let rows = self.shape[0];
+            let cols = self.shape[1];
+            let mut row_indices = Vec::new();
+            let mut col_indices = Vec::new();
+            for r in 0..rows {
+                for c in 0..cols {
+                    if self.data[r * cols + c] != 0.0 {
+                        row_indices.push(r as f64);
+                        col_indices.push(c as f64);
+                    }
+                }
+            }
+            let rlen = row_indices.len();
+            let clen = col_indices.len();
+            let row_arr = Self::new(row_indices, vec![rlen], NdArrayDtype::Int64);
+            let col_arr = Self::new(col_indices, vec![clen], NdArrayDtype::Int64);
+            let row_val = Value::Ref(heap.allocate(HeapData::NdArray(row_arr))?);
+            let col_val = Value::Ref(heap.allocate(HeapData::NdArray(col_arr))?);
+            let tup = crate::types::tuple::allocate_tuple(smallvec![row_val, col_val], heap)?;
+            Ok(tup)
+        } else {
+            Err(ExcType::type_error("nonzero() not supported for arrays with ndim > 2"))
+        }
+    }
+
     /// `round(decimals)` — returns a new array with each element rounded.
     pub fn round_array(&self, decimals: i32, heap: &Heap<impl ResourceTracker>) -> RunResult<Value> {
         let factor = 10f64.powi(decimals);
@@ -1584,6 +1642,10 @@ impl<'h> PyTrait<'h> for HeapRead<'h, NdArray> {
             #[expect(clippy::cast_possible_wrap, reason = "nbytes won't exceed i64::MAX")]
             Some(StaticStrings::NpNbytes) => Value::Int((arr.len() * 8) as i64),
             Some(StaticStrings::NpItemsize) => Value::Int(8),
+            Some(StaticStrings::NpFlat) => {
+                let flat = NdArray::new(arr.data.clone(), vec![arr.data.len()], arr.dtype);
+                Value::Ref(vm.heap.allocate(HeapData::NdArray(flat))?)
+            }
             Some(StaticStrings::NpT) => arr.transpose(vm.heap)?,
             _ => {
                 // "T" is a single ASCII character so it is interned as an ASCII StringId,
@@ -1807,6 +1869,21 @@ impl<'h> PyTrait<'h> for HeapRead<'h, NdArray> {
                 };
                 cond_val.drop_with_heap(vm);
                 result
+            }
+            Some(StaticStrings::NpRepeat) => {
+                let arg = args.get_one_arg("ndarray.repeat", vm.heap)?;
+                #[expect(
+                    clippy::cast_possible_truncation,
+                    clippy::cast_sign_loss,
+                    reason = "repeat count from user"
+                )]
+                let n = extract_f64(&arg) as usize;
+                arg.drop_with_heap(vm);
+                self.get(vm.heap).repeat_array(n, vm.heap)
+            }
+            Some(StaticStrings::NpNonzero) => {
+                args.check_zero_args("ndarray.nonzero", vm.heap)?;
+                self.get(vm.heap).nonzero_method(vm.heap)
             }
             Some(StaticStrings::NpSwapaxes) => {
                 let pos = args.into_pos_only("ndarray.swapaxes", vm.heap)?;

@@ -1057,9 +1057,9 @@ impl<'h, 'a, T: ResourceTracker> VM<'h, 'a, T> {
                 Opcode::InplaceSub => try_catch_sync!(self, cached_frame, self.inplace_sub()),
                 Opcode::InplaceMul => try_catch_sync!(self, cached_frame, self.inplace_mul()),
                 Opcode::InplaceDiv => try_catch_sync!(self, cached_frame, self.inplace_div()),
-                Opcode::InplaceFloorDiv => try_catch_sync!(self, cached_frame, self.binary_floordiv()),
-                Opcode::InplaceMod => try_catch_sync!(self, cached_frame, self.binary_mod()),
-                Opcode::InplacePow => try_catch_sync!(self, cached_frame, self.binary_pow()),
+                Opcode::InplaceFloorDiv => try_catch_sync!(self, cached_frame, self.inplace_floordiv()),
+                Opcode::InplaceMod => try_catch_sync!(self, cached_frame, self.inplace_mod()),
+                Opcode::InplacePow => try_catch_sync!(self, cached_frame, self.inplace_pow()),
                 Opcode::InplaceAnd => {
                     try_catch_sync!(self, cached_frame, self.binary_bitwise(BitwiseOp::And));
                 }

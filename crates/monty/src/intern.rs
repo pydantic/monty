@@ -552,6 +552,9 @@ pub enum StaticStrings {
     Std,
     /// Shared: `abs()` method/function — also used by math module
     Abs,
+    /// `ndarray.flat` attribute — returns flattened 1D view of the array.
+    #[strum(serialize = "flat")]
+    NpFlat,
     /// `ndarray.flatten()` method
     Flatten,
     /// `ndarray.tolist()` method
