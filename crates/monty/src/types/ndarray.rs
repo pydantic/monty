@@ -81,11 +81,11 @@ impl fmt::Display for NdArrayDtype {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) struct NdArray {
     /// Flat storage of all elements in row-major order.
-    data: Vec<f64>,
+    pub(crate) data: Vec<f64>,
     /// Dimensions of the array (e.g., `[3]` for 1D, `[2, 3]` for 2D).
-    shape: Vec<usize>,
+    pub(crate) shape: Vec<usize>,
     /// Element type, controlling display format and type promotion.
-    dtype: NdArrayDtype,
+    pub(crate) dtype: NdArrayDtype,
 }
 
 // ===========================
@@ -501,6 +501,248 @@ impl NdArray {
     ) -> RunResult<Value> {
         let dtype = promote_dtype_with_scalar(self.dtype, scalar_is_float);
         self.scalar_op_left(scalar, f64::powf, dtype, heap)
+    }
+
+    /// Element-wise bitwise AND between two arrays.
+    ///
+    /// - **Bool arrays**: element-wise logical AND.
+    /// - **Int arrays**: bitwise AND on each pair of elements cast to `i64`.
+    /// - **Float arrays**: raises `TypeError`, matching NumPy's behavior.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "f64→i64 truncation is intentional for int-typed ndarray elements"
+    )]
+    pub fn bitand(&self, other: &Self, heap: &Heap<impl ResourceTracker>) -> RunResult<Value> {
+        check_bitwise_dtype(self.dtype, "&")?;
+        check_bitwise_dtype(other.dtype, "&")?;
+        if self.shape != other.shape {
+            return Err(
+                SimpleException::new_msg(ExcType::ValueError, "operands could not be broadcast together").into(),
+            );
+        }
+        let result_dtype = if self.dtype == NdArrayDtype::Bool && other.dtype == NdArrayDtype::Bool {
+            NdArrayDtype::Bool
+        } else {
+            NdArrayDtype::Int64
+        };
+        let data: Vec<f64> = self
+            .data
+            .iter()
+            .zip(other.data.iter())
+            .map(|(&a, &b)| (a as i64 & b as i64) as f64)
+            .collect();
+        let arr = Self::new(data, self.shape.clone(), result_dtype);
+        Ok(Value::Ref(heap.allocate(HeapData::NdArray(arr))?))
+    }
+
+    /// Bitwise AND with a scalar value.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "f64→i64 truncation is intentional for int-typed ndarray elements"
+    )]
+    pub fn bitand_scalar(&self, scalar: i64, heap: &Heap<impl ResourceTracker>) -> RunResult<Value> {
+        check_bitwise_dtype(self.dtype, "&")?;
+        let result_dtype = if self.dtype == NdArrayDtype::Bool {
+            NdArrayDtype::Bool
+        } else {
+            NdArrayDtype::Int64
+        };
+        let data: Vec<f64> = self.data.iter().map(|&a| (a as i64 & scalar) as f64).collect();
+        let arr = Self::new(data, self.shape.clone(), result_dtype);
+        Ok(Value::Ref(heap.allocate(HeapData::NdArray(arr))?))
+    }
+
+    /// Element-wise bitwise OR between two arrays.
+    ///
+    /// - **Bool arrays**: element-wise logical OR.
+    /// - **Int arrays**: bitwise OR on each pair of elements cast to `i64`.
+    /// - **Float arrays**: raises `TypeError`, matching NumPy's behavior.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "f64→i64 truncation is intentional for int-typed ndarray elements"
+    )]
+    pub fn bitor(&self, other: &Self, heap: &Heap<impl ResourceTracker>) -> RunResult<Value> {
+        check_bitwise_dtype(self.dtype, "|")?;
+        check_bitwise_dtype(other.dtype, "|")?;
+        if self.shape != other.shape {
+            return Err(
+                SimpleException::new_msg(ExcType::ValueError, "operands could not be broadcast together").into(),
+            );
+        }
+        let result_dtype = if self.dtype == NdArrayDtype::Bool && other.dtype == NdArrayDtype::Bool {
+            NdArrayDtype::Bool
+        } else {
+            NdArrayDtype::Int64
+        };
+        let data: Vec<f64> = self
+            .data
+            .iter()
+            .zip(other.data.iter())
+            .map(|(&a, &b)| (a as i64 | b as i64) as f64)
+            .collect();
+        let arr = Self::new(data, self.shape.clone(), result_dtype);
+        Ok(Value::Ref(heap.allocate(HeapData::NdArray(arr))?))
+    }
+
+    /// Bitwise OR with a scalar value.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "f64→i64 truncation is intentional for int-typed ndarray elements"
+    )]
+    pub fn bitor_scalar(&self, scalar: i64, heap: &Heap<impl ResourceTracker>) -> RunResult<Value> {
+        check_bitwise_dtype(self.dtype, "|")?;
+        let result_dtype = if self.dtype == NdArrayDtype::Bool {
+            NdArrayDtype::Bool
+        } else {
+            NdArrayDtype::Int64
+        };
+        let data: Vec<f64> = self.data.iter().map(|&a| (a as i64 | scalar) as f64).collect();
+        let arr = Self::new(data, self.shape.clone(), result_dtype);
+        Ok(Value::Ref(heap.allocate(HeapData::NdArray(arr))?))
+    }
+
+    /// Element-wise bitwise XOR between two arrays.
+    ///
+    /// - **Bool arrays**: element-wise logical XOR.
+    /// - **Int arrays**: bitwise XOR on each pair of elements cast to `i64`.
+    /// - **Float arrays**: raises `TypeError`, matching NumPy's behavior.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "f64→i64 truncation is intentional for int-typed ndarray elements"
+    )]
+    pub fn bitxor(&self, other: &Self, heap: &Heap<impl ResourceTracker>) -> RunResult<Value> {
+        check_bitwise_dtype(self.dtype, "^")?;
+        check_bitwise_dtype(other.dtype, "^")?;
+        if self.shape != other.shape {
+            return Err(
+                SimpleException::new_msg(ExcType::ValueError, "operands could not be broadcast together").into(),
+            );
+        }
+        let result_dtype = if self.dtype == NdArrayDtype::Bool && other.dtype == NdArrayDtype::Bool {
+            NdArrayDtype::Bool
+        } else {
+            NdArrayDtype::Int64
+        };
+        let data: Vec<f64> = self
+            .data
+            .iter()
+            .zip(other.data.iter())
+            .map(|(&a, &b)| (a as i64 ^ b as i64) as f64)
+            .collect();
+        let arr = Self::new(data, self.shape.clone(), result_dtype);
+        Ok(Value::Ref(heap.allocate(HeapData::NdArray(arr))?))
+    }
+
+    /// Bitwise XOR with a scalar value.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "f64→i64 truncation is intentional for int-typed ndarray elements"
+    )]
+    pub fn bitxor_scalar(&self, scalar: i64, heap: &Heap<impl ResourceTracker>) -> RunResult<Value> {
+        check_bitwise_dtype(self.dtype, "^")?;
+        let result_dtype = if self.dtype == NdArrayDtype::Bool {
+            NdArrayDtype::Bool
+        } else {
+            NdArrayDtype::Int64
+        };
+        let data: Vec<f64> = self.data.iter().map(|&a| (a as i64 ^ scalar) as f64).collect();
+        let arr = Self::new(data, self.shape.clone(), result_dtype);
+        Ok(Value::Ref(heap.allocate(HeapData::NdArray(arr))?))
+    }
+
+    /// Matrix multiplication (the `@` operator).
+    ///
+    /// - **1D @ 1D**: dot product, returns a scalar.
+    /// - **2D @ 2D**: standard matrix multiplication, returns a 2D array.
+    /// - **2D @ 1D**: matrix-vector product, returns a 1D array.
+    /// - **1D @ 2D**: vector-matrix product, returns a 1D array.
+    pub fn matmul(&self, other: &Self, heap: &Heap<impl ResourceTracker>) -> RunResult<Value> {
+        let result_dtype = promote_dtype(self.dtype, other.dtype);
+        match (self.ndim(), other.ndim()) {
+            (1, 1) => {
+                // Dot product
+                if self.data.len() != other.data.len() {
+                    return Err(SimpleException::new_msg(
+                        ExcType::ValueError,
+                        "matmul: Input operand 1 does not have enough dimensions",
+                    )
+                    .into());
+                }
+                let result: f64 = self.data.iter().zip(other.data.iter()).map(|(&a, &b)| a * b).sum();
+                if result_dtype == NdArrayDtype::Int64 {
+                    #[expect(clippy::cast_possible_truncation, reason = "intended int truncation")]
+                    return Ok(Value::Int(result as i64));
+                }
+                Ok(Value::Float(result))
+            }
+            (2, 2) => {
+                // Matrix multiplication
+                let (m, k1) = (self.shape[0], self.shape[1]);
+                let (k2, n) = (other.shape[0], other.shape[1]);
+                if k1 != k2 {
+                    return Err(SimpleException::new_msg(
+                        ExcType::ValueError,
+                        format!("matmul: Input operand 1 has a mismatch in its core dimension 0, (size {k1} is different from {k2})"),
+                    )
+                    .into());
+                }
+                let mut data = Vec::with_capacity(m * n);
+                for i in 0..m {
+                    for j in 0..n {
+                        let mut sum = 0.0;
+                        for p in 0..k1 {
+                            sum += self.data[i * k1 + p] * other.data[p * n + j];
+                        }
+                        data.push(sum);
+                    }
+                }
+                let arr = Self::new(data, vec![m, n], result_dtype);
+                Ok(Value::Ref(heap.allocate(HeapData::NdArray(arr))?))
+            }
+            (2, 1) => {
+                // Matrix-vector product
+                let (m, k1) = (self.shape[0], self.shape[1]);
+                if k1 != other.data.len() {
+                    return Err(SimpleException::new_msg(
+                        ExcType::ValueError,
+                        "matmul: Input operand 1 has a mismatch in its core dimension 0",
+                    )
+                    .into());
+                }
+                let mut data = Vec::with_capacity(m);
+                for i in 0..m {
+                    let mut sum = 0.0;
+                    for p in 0..k1 {
+                        sum += self.data[i * k1 + p] * other.data[p];
+                    }
+                    data.push(sum);
+                }
+                let arr = Self::new(data, vec![m], result_dtype);
+                Ok(Value::Ref(heap.allocate(HeapData::NdArray(arr))?))
+            }
+            (1, 2) => {
+                // Vector-matrix product
+                let (k2, n) = (other.shape[0], other.shape[1]);
+                if self.data.len() != k2 {
+                    return Err(SimpleException::new_msg(
+                        ExcType::ValueError,
+                        "matmul: Input operand 1 has a mismatch in its core dimension 0",
+                    )
+                    .into());
+                }
+                let mut data = Vec::with_capacity(n);
+                for j in 0..n {
+                    let mut sum = 0.0;
+                    for p in 0..k2 {
+                        sum += self.data[p] * other.data[p * n + j];
+                    }
+                    data.push(sum);
+                }
+                let arr = Self::new(data, vec![n], result_dtype);
+                Ok(Value::Ref(heap.allocate(HeapData::NdArray(arr))?))
+            }
+            _ => Err(ExcType::type_error("matmul not supported for these array dimensions")),
+        }
     }
 
     /// Unary negation.
@@ -1073,6 +1315,105 @@ impl<'h> PyTrait<'h> for HeapRead<'h, NdArray> {
         }
     }
 
+    fn py_setitem(&mut self, key: Value, value: Value, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<()> {
+        use crate::defer_drop;
+
+        defer_drop!(key, vm);
+        defer_drop!(value, vm);
+
+        match *key {
+            // arr[int] = val — set a single element by integer index
+            Value::Int(idx) => {
+                let scalar = extract_f64(value);
+                let arr = self.get_mut(vm.heap);
+                if arr.ndim() != 1 {
+                    return Err(ExcType::type_error("only 1D array integer assignment is supported"));
+                }
+                let resolved = resolve_index(idx, arr.shape[0])?;
+                arr.data[resolved] = scalar;
+                Ok(())
+            }
+            Value::Bool(b) => {
+                let scalar = extract_f64(value);
+                let arr = self.get_mut(vm.heap);
+                if arr.ndim() != 1 {
+                    return Err(ExcType::type_error("only 1D array integer assignment is supported"));
+                }
+                let resolved = resolve_index(i64::from(b), arr.shape[0])?;
+                arr.data[resolved] = scalar;
+                Ok(())
+            }
+            Value::Ref(key_id) => {
+                match vm.heap.get(key_id) {
+                    // arr[bool_mask] = val — set elements where mask is True
+                    HeapData::NdArray(mask) if mask.dtype() == NdArrayDtype::Bool => {
+                        let mask_data: Vec<bool> = mask.data().iter().map(|&v| v != 0.0).collect();
+                        let scalar = extract_f64(value);
+                        let arr = self.get_mut(vm.heap);
+                        if mask_data.len() != arr.data.len() {
+                            return Err(SimpleException::new_msg(
+                                ExcType::IndexError,
+                                "boolean index did not match indexed array",
+                            )
+                            .into());
+                        }
+                        for (i, &m) in mask_data.iter().enumerate() {
+                            if m {
+                                arr.data[i] = scalar;
+                            }
+                        }
+                        Ok(())
+                    }
+                    // arr[slice] = val — set slice of elements
+                    HeapData::Slice(slice) => {
+                        let scalar = extract_f64(value);
+                        let len = self.get(vm.heap).data.len();
+                        let (start, stop, step) = slice
+                            .indices(len)
+                            .map_err(|()| SimpleException::new_msg(ExcType::ValueError, "slice step cannot be zero"))?;
+                        let arr = self.get_mut(vm.heap);
+                        if step > 0 {
+                            let mut i = start;
+                            #[expect(
+                                clippy::cast_sign_loss,
+                                clippy::cast_possible_truncation,
+                                reason = "step is positive"
+                            )]
+                            let step_usize = step as usize;
+                            while i < stop {
+                                arr.data[i] = scalar;
+                                i += step_usize;
+                            }
+                        } else {
+                            #[expect(clippy::cast_possible_wrap, reason = "index fits in i64")]
+                            let mut i = start as i64;
+                            #[expect(clippy::cast_possible_wrap, reason = "stop fits in i64")]
+                            let stop_i = if stop > len { -1_i64 } else { stop as i64 };
+                            while i > stop_i {
+                                #[expect(
+                                    clippy::cast_sign_loss,
+                                    clippy::cast_possible_truncation,
+                                    reason = "i is non-negative"
+                                )]
+                                {
+                                    arr.data[i as usize] = scalar;
+                                }
+                                i += step;
+                            }
+                        }
+                        Ok(())
+                    }
+                    _ => Err(ExcType::type_error(
+                        "ndarray indices must be integers, slices, or boolean arrays",
+                    )),
+                }
+            }
+            _ => Err(ExcType::type_error(
+                "ndarray indices must be integers, slices, or boolean arrays",
+            )),
+        }
+    }
+
     fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<Option<CallResult>> {
         let arr = self.get(vm.heap);
         let result = match attr.static_string() {
@@ -1514,6 +1855,20 @@ pub(crate) fn promote_dtype_with_scalar(arr_dtype: NdArrayDtype, scalar_is_float
     } else {
         arr_dtype
     }
+}
+
+/// Validates that the dtype supports bitwise operations.
+///
+/// NumPy raises `TypeError` for bitwise ops on float arrays. Bool and Int64 are supported.
+fn check_bitwise_dtype(dtype: NdArrayDtype, op_symbol: &str) -> RunResult<()> {
+    if dtype == NdArrayDtype::Float64 {
+        return Err(SimpleException::new_msg(
+            ExcType::TypeError,
+            format!("ufunc 'bitwise_{op_symbol}' not supported for the input types"),
+        )
+        .into());
+    }
+    Ok(())
 }
 
 /// Python-compatible modulo: result has the same sign as the divisor.

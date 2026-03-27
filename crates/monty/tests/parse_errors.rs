@@ -410,8 +410,8 @@ fn run_and_get_exc_type(code: &str) -> ExcType {
 
 #[test]
 fn matrix_multiplication_returns_not_implemented_error() {
-    // The @ operator (matrix multiplication) is not supported at runtime
-    assert_eq!(run_and_get_exc_type("1 @ 2"), ExcType::NotImplementedError);
+    // The @ operator (matrix multiplication) is implemented for ndarray but not for int/float
+    assert_eq!(run_and_get_exc_type("1 @ 2"), ExcType::TypeError);
 }
 
 #[test]

@@ -1593,6 +1593,19 @@ impl Value {
                     }
                     HeapReadOutput::Set(set) => set.contains(item, vm),
                     HeapReadOutput::FrozenSet(fset) => fset.contains(item, vm),
+                    HeapReadOutput::NdArray(arr) => {
+                        // Element-wise containment check: convert item to f64 and search
+                        let needle = match item {
+                            Self::Int(i) => Some(*i as f64),
+                            Self::Float(f) => Some(*f),
+                            Self::Bool(b) => Some(if *b { 1.0 } else { 0.0 }),
+                            _ => None,
+                        };
+                        match needle {
+                            Some(n) => Ok(arr.get(vm.heap).data().contains(&n)),
+                            None => Ok(false),
+                        }
+                    }
                     HeapReadOutput::Str(s) => {
                         let s_str = s.get(vm.heap).as_str();
                         str_contains(s_str, item, vm.heap, vm.interns)

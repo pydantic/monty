@@ -1905,3 +1905,202 @@ a = np.array([1.0, 2.0, 3.0])
 v = np.array([0.0, 1.0, 0.5])
 r = np.correlate(a, v)
 assert len(r.tolist()) > 0, 'correlate produces output'
+
+# ============================================================
+# PHASE 2: CRITICAL MISSING OPERATORS
+# ============================================================
+
+# === 2.1 Bitwise operators: &, |, ^ on ndarray ===
+
+# Bool arrays — element-wise logical AND/OR/XOR
+a = np.array([1, 0, 1, 0])
+b = np.array([1, 1, 0, 0])
+ba = a.astype('bool')
+bb = b.astype('bool')
+
+r = ba & bb
+assert r.tolist() == [True, False, False, False], 'bool array & (AND)'
+assert r.dtype == 'bool', 'bool & dtype'
+
+r = ba | bb
+assert r.tolist() == [True, True, True, False], 'bool array | (OR)'
+assert r.dtype == 'bool', 'bool | dtype'
+
+r = ba ^ bb
+assert r.tolist() == [False, True, True, False], 'bool array ^ (XOR)'
+assert r.dtype == 'bool', 'bool ^ dtype'
+
+# Int arrays — bitwise AND/OR/XOR
+a = np.array([5, 3, 12, 10])
+b = np.array([3, 6, 10, 15])
+
+r = a & b
+assert r.tolist() == [1, 2, 8, 10], 'int array & (AND)'
+assert r.dtype == 'int64', 'int & dtype'
+
+r = a | b
+assert r.tolist() == [7, 7, 14, 15], 'int array | (OR)'
+assert r.dtype == 'int64', 'int | dtype'
+
+r = a ^ b
+assert r.tolist() == [6, 5, 6, 5], 'int array ^ (XOR)'
+assert r.dtype == 'int64', 'int ^ dtype'
+
+# Scalar bitwise operations
+a = np.array([5, 3, 12])
+r = a & 3
+assert r.tolist() == [1, 3, 0], 'int array & scalar'
+
+r = a | 2
+assert r.tolist() == [7, 3, 14], 'int array | scalar'
+
+r = a ^ 6
+assert r.tolist() == [3, 5, 10], 'int array ^ scalar'
+
+# Scalar on left
+r = 3 & np.array([5, 3, 12])
+assert r.tolist() == [1, 3, 0], 'scalar & int array'
+
+# === 2.2 __setitem__ — arr[i] = val, arr[mask] = val, arr[slice] = val ===
+
+# arr[i] = val — set single element by int index
+a = np.array([1, 2, 3, 4, 5])
+a[0] = 10
+assert a.tolist() == [10, 2, 3, 4, 5], 'setitem int index 0'
+
+a[4] = 50
+assert a.tolist() == [10, 2, 3, 4, 50], 'setitem int index 4'
+
+a[-1] = 99
+assert a.tolist() == [10, 2, 3, 4, 99], 'setitem negative index'
+
+# arr[mask] = val — set elements where bool mask is True
+a = np.array([1, 2, 3, 4, 5])
+mask = np.array([1, 0, 1, 0, 1]).astype('bool')
+a[mask] = 0
+assert a.tolist() == [0, 2, 0, 4, 0], 'setitem bool mask'
+
+# arr[slice] = val — set slice of elements
+a = np.array([1, 2, 3, 4, 5])
+a[1:4] = 99
+assert a.tolist() == [1, 99, 99, 99, 5], 'setitem slice'
+
+a = np.array([1, 2, 3, 4, 5])
+a[::2] = 0
+assert a.tolist() == [0, 2, 0, 4, 0], 'setitem slice step 2'
+
+# === 2.3 __iter__ — for x in arr ===
+
+# 1D array yields scalars
+a = np.array([10, 20, 30])
+items = []
+for x in a:
+    items.append(x)
+assert items == [10, 20, 30], 'iter 1D yields scalars'
+
+# Float array
+a = np.array([1.5, 2.5, 3.5])
+items = []
+for x in a:
+    items.append(x)
+assert items == [1.5, 2.5, 3.5], 'iter 1D float yields scalars'
+
+# list() conversion via iter
+a = np.array([1, 2, 3])
+assert list(a) == [1, 2, 3], 'list(ndarray) via iter'
+
+# === 2.4 __contains__ — val in arr ===
+
+a = np.array([1, 2, 3, 4, 5])
+assert 3 in a, 'int in array'
+assert 6 not in a, 'int not in array'
+assert 1.0 in np.array([1.0, 2.0, 3.0]), 'float in array'
+
+# Bool check
+a = np.array([0, 1, 0])
+assert 1 in a, '1 in array with zeros'
+assert 2 not in a, '2 not in array'
+
+# === 2.5 In-place operators: +=, -=, *=, /= ===
+
+# += scalar
+a = np.array([1, 2, 3])
+a += 10
+assert a.tolist() == [11, 12, 13], 'iadd scalar'
+
+# += array
+a = np.array([1, 2, 3])
+b = np.array([10, 20, 30])
+a += b
+assert a.tolist() == [11, 22, 33], 'iadd array'
+
+# -= scalar
+a = np.array([10, 20, 30])
+a -= 5
+assert a.tolist() == [5, 15, 25], 'isub scalar'
+
+# -= array
+a = np.array([10, 20, 30])
+b = np.array([1, 2, 3])
+a -= b
+assert a.tolist() == [9, 18, 27], 'isub array'
+
+# *= scalar
+a = np.array([1, 2, 3])
+a *= 5
+assert a.tolist() == [5, 10, 15], 'imul scalar'
+
+# *= array
+a = np.array([2, 3, 4])
+b = np.array([10, 20, 30])
+a *= b
+assert a.tolist() == [20, 60, 120], 'imul array'
+
+# /= scalar
+a = np.array([10.0, 20.0, 30.0])
+a /= 2
+assert a.tolist() == [5.0, 10.0, 15.0], 'idiv scalar'
+
+# /= array
+a = np.array([10.0, 20.0, 30.0])
+b = np.array([2.0, 4.0, 5.0])
+a /= b
+assert a.tolist() == [5.0, 5.0, 6.0], 'idiv array'
+
+# === 2.6 @ operator (matmul) and np.matmul ===
+
+# 1D @ 1D — dot product
+a = np.array([1, 2, 3])
+b = np.array([4, 5, 6])
+r = a @ b
+assert r == 32, '1D @ 1D dot product'
+
+# 2D @ 2D — matrix multiplication
+a = np.array([[1, 2], [3, 4]])
+b = np.array([[5, 6], [7, 8]])
+r = a @ b
+assert r.tolist() == [[19, 22], [43, 50]], '2D @ 2D matmul'
+
+# 2D @ 1D — matrix-vector
+a = np.array([[1, 2], [3, 4]])
+b = np.array([5, 6])
+r = a @ b
+assert r.tolist() == [17, 39], '2D @ 1D matvec'
+
+# 1D @ 2D — vector-matrix
+a = np.array([1, 2])
+b = np.array([[3, 4], [5, 6]])
+r = a @ b
+assert r.tolist() == [13, 16], '1D @ 2D vecmat'
+
+# np.matmul function
+a = np.array([1, 2, 3])
+b = np.array([4, 5, 6])
+r = np.matmul(a, b)
+assert r == 32, 'np.matmul 1D dot product'
+
+# np.matmul 2D
+a = np.array([[1, 0], [0, 1]])
+b = np.array([[5, 6], [7, 8]])
+r = np.matmul(a, b)
+assert r.tolist() == [[5, 6], [7, 8]], 'np.matmul identity 2D'

@@ -290,6 +290,12 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
         let lhs = this.pop();
         defer_drop!(lhs, this);
 
+        // NdArray fast path
+        if let Some(result) = try_ndarray_bitwise(lhs, rhs, NdArrayBitwiseOp::And, this)? {
+            this.push(result);
+            return Ok(());
+        }
+
         if let Some(result) = this.binary_dict_view_op(lhs, rhs, DictViewBinaryOp::And)? {
             this.push(result);
             return Ok(());
@@ -313,6 +319,12 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
         defer_drop!(rhs, this);
         let lhs = this.pop();
         defer_drop!(lhs, this);
+
+        // NdArray fast path
+        if let Some(result) = try_ndarray_bitwise(lhs, rhs, NdArrayBitwiseOp::Or, this)? {
+            this.push(result);
+            return Ok(());
+        }
 
         if let Some(result) = this.binary_dict_view_op(lhs, rhs, DictViewBinaryOp::Or)? {
             this.push(result);
@@ -338,6 +350,12 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
         let lhs = this.pop();
         defer_drop!(lhs, this);
 
+        // NdArray fast path
+        if let Some(result) = try_ndarray_bitwise(lhs, rhs, NdArrayBitwiseOp::Xor, this)? {
+            this.push(result);
+            return Ok(());
+        }
+
         if let Some(result) = this.binary_dict_view_op(lhs, rhs, DictViewBinaryOp::Xor)? {
             this.push(result);
             return Ok(());
@@ -356,6 +374,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
     /// In-place addition (uses py_iadd for mutable containers, falls back to py_add).
     ///
     /// For mutable types like lists, `py_iadd` mutates in place and returns true.
+    /// For ndarray, modifies data in place and returns the same array reference.
     /// For immutable types, we fall back to regular addition.
     ///
     /// Uses lazy type capture: only calls `py_type()` in error paths.
@@ -363,6 +382,11 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
     /// Note: Cannot use `defer_drop!` for `lhs` here because on successful in-place
     /// operation, we need to push `lhs` back onto the stack rather than drop it.
     pub(super) fn inplace_add(&mut self) -> Result<(), RunError> {
+        // NdArray in-place fast path — try before popping so we can fall through
+        if try_ndarray_inplace(self, NdArrayInplaceOp::Add) {
+            return Ok(());
+        }
+
         let this = self;
 
         let rhs = this.pop();
@@ -392,14 +416,57 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
 
     /// Binary matrix multiplication (`@` operator).
     ///
-    /// Currently not implemented - returns a `NotImplementedError`.
-    /// Matrix multiplication requires numpy-like array types which Monty doesn't support.
+    /// Dispatches to `NdArray::matmul` for ndarray operands:
+    /// - **1D @ 1D**: dot product (scalar result)
+    /// - **2D @ 2D**: matrix multiplication
+    /// - **2D @ 1D** / **1D @ 2D**: matrix-vector / vector-matrix product
     pub(super) fn binary_matmul(&mut self) -> Result<(), RunError> {
-        let rhs = self.pop();
-        let lhs = self.pop();
-        lhs.drop_with_heap(self);
-        rhs.drop_with_heap(self);
-        Err(ExcType::not_implemented("matrix multiplication (@) is not supported").into())
+        let this = self;
+
+        let rhs = this.pop();
+        defer_drop!(rhs, this);
+        let lhs = this.pop();
+        defer_drop!(lhs, this);
+
+        // Both operands must be NdArray
+        let (Some(Value::Ref(lid)), Some(Value::Ref(rid))) = (Some(lhs), Some(rhs)) else {
+            return Err(ExcType::type_error("matmul requires ndarray operands"));
+        };
+
+        let HeapData::NdArray(l) = this.heap.get(*lid) else {
+            return Err(ExcType::type_error("matmul requires ndarray operands"));
+        };
+        let HeapData::NdArray(r) = this.heap.get(*rid) else {
+            return Err(ExcType::type_error("matmul requires ndarray operands"));
+        };
+
+        let result = l.matmul(r, this.heap)?;
+        this.push(result);
+        Ok(())
+    }
+
+    /// In-place subtraction for ndarray. Falls back to binary subtraction for other types.
+    pub(super) fn inplace_sub(&mut self) -> Result<(), RunError> {
+        if try_ndarray_inplace(self, NdArrayInplaceOp::Sub) {
+            return Ok(());
+        }
+        self.binary_sub()
+    }
+
+    /// In-place multiplication for ndarray. Falls back to binary multiplication for other types.
+    pub(super) fn inplace_mul(&mut self) -> Result<(), RunError> {
+        if try_ndarray_inplace(self, NdArrayInplaceOp::Mul) {
+            return Ok(());
+        }
+        self.binary_mult()
+    }
+
+    /// In-place division for ndarray. Falls back to binary division for other types.
+    pub(super) fn inplace_div(&mut self) -> Result<(), RunError> {
+        if try_ndarray_inplace(self, NdArrayInplaceOp::Div) {
+            return Ok(());
+        }
+        self.binary_div()
     }
 
     /// Implements dict-view set-like operators before falling back to other dispatch.
@@ -646,4 +713,232 @@ fn try_ndarray_binary(
     }
 
     Ok(None)
+}
+
+/// Supported ndarray element-wise bitwise operations.
+#[derive(Debug, Clone, Copy)]
+enum NdArrayBitwiseOp {
+    And,
+    Or,
+    Xor,
+}
+
+/// Extracts an integer value from a `Value` for bitwise ndarray operations.
+///
+/// Returns `Some(i64)` for `Int`, `Bool` (True=1, False=0). Returns `None` for non-integer types.
+fn value_to_i64(v: &Value) -> Option<i64> {
+    match v {
+        Value::Int(i) => Some(*i),
+        Value::Bool(b) => Some(i64::from(*b)),
+        _ => None,
+    }
+}
+
+/// Tries to dispatch an ndarray bitwise operation.
+///
+/// Returns `Ok(Some(value))` if either operand is an ndarray and the operation succeeded,
+/// `Ok(None)` if neither operand is an ndarray (caller should fall through to normal dispatch),
+/// or `Err` if the operation failed (e.g., float dtype, shape mismatch).
+fn try_ndarray_bitwise(
+    lhs: &Value,
+    rhs: &Value,
+    op: NdArrayBitwiseOp,
+    vm: &mut VM<'_, '_, impl ResourceTracker>,
+) -> RunResult<Option<Value>> {
+    let lhs_id = if let Value::Ref(id) = lhs { Some(*id) } else { None };
+    let rhs_id = if let Value::Ref(id) = rhs { Some(*id) } else { None };
+
+    // Case 1: NdArray op NdArray
+    if let (Some(lid), Some(rid)) = (lhs_id, rhs_id) {
+        let lhs_is_ndarray = matches!(vm.heap.get(lid), HeapData::NdArray(_));
+        let rhs_is_ndarray = matches!(vm.heap.get(rid), HeapData::NdArray(_));
+        if lhs_is_ndarray && rhs_is_ndarray {
+            let HeapData::NdArray(l) = vm.heap.get(lid) else {
+                unreachable!()
+            };
+            let HeapData::NdArray(r) = vm.heap.get(rid) else {
+                unreachable!()
+            };
+            let result = match op {
+                NdArrayBitwiseOp::And => l.bitand(r, vm.heap),
+                NdArrayBitwiseOp::Or => l.bitor(r, vm.heap),
+                NdArrayBitwiseOp::Xor => l.bitxor(r, vm.heap),
+            };
+            return result.map(Some);
+        }
+    }
+
+    // Case 2: NdArray op scalar
+    if let Some(lid) = lhs_id
+        && let HeapData::NdArray(arr) = vm.heap.get(lid)
+        && let Some(scalar) = value_to_i64(rhs)
+    {
+        let result = match op {
+            NdArrayBitwiseOp::And => arr.bitand_scalar(scalar, vm.heap),
+            NdArrayBitwiseOp::Or => arr.bitor_scalar(scalar, vm.heap),
+            NdArrayBitwiseOp::Xor => arr.bitxor_scalar(scalar, vm.heap),
+        };
+        return result.map(Some);
+    }
+
+    // Case 3: scalar op NdArray (commutative)
+    if let Some(rid) = rhs_id
+        && let HeapData::NdArray(arr) = vm.heap.get(rid)
+        && let Some(scalar) = value_to_i64(lhs)
+    {
+        let result = match op {
+            NdArrayBitwiseOp::And => arr.bitand_scalar(scalar, vm.heap),
+            NdArrayBitwiseOp::Or => arr.bitor_scalar(scalar, vm.heap),
+            NdArrayBitwiseOp::Xor => arr.bitxor_scalar(scalar, vm.heap),
+        };
+        return result.map(Some);
+    }
+
+    Ok(None)
+}
+
+/// Supported ndarray in-place operations.
+#[derive(Debug, Clone, Copy)]
+enum NdArrayInplaceOp {
+    Add,
+    Sub,
+    Mul,
+    Div,
+}
+
+/// Tries to perform an in-place ndarray operation by peeking at the stack.
+///
+/// If the second-from-top value is an ndarray and the top value is a compatible
+/// operand (scalar or same-shape ndarray), modifies the array data in-place,
+/// drops the rhs, and leaves the lhs on the stack. Returns `Ok(true)` on success.
+///
+/// Returns `Ok(false)` if neither operand is an ndarray, leaving the stack unchanged
+/// so the caller can fall through to the normal binary operation.
+fn try_ndarray_inplace(vm: &mut VM<'_, '_, impl ResourceTracker>, op: NdArrayInplaceOp) -> bool {
+    // Peek at the two top-of-stack values without popping
+    let lhs_ref = vm.peek_at(1);
+
+    // Only proceed if lhs is an NdArray
+    let Value::Ref(lid) = lhs_ref else {
+        return false;
+    };
+    if !matches!(vm.heap.get(*lid), HeapData::NdArray(_)) {
+        return false;
+    }
+
+    let lid = *lid;
+
+    // Pop rhs into a HeapGuard so we can reclaim it on the fallback path.
+    let mut rhs_guard = HeapGuard::new(vm.pop(), vm);
+    let (rhs, vm_ref) = rhs_guard.as_parts_mut();
+
+    // Try scalar rhs
+    if let Some((scalar, _is_float)) = value_to_f64(rhs) {
+        // Consume the guard — scalar types (Int/Float/Bool) don't need heap cleanup
+        let (rhs, vm) = rhs_guard.into_parts();
+        rhs.drop_with_heap(vm);
+        let lhs = vm.pop();
+        // Use HeapRead API for mutation
+        let HeapReadOutput::NdArray(mut arr_read) = vm.heap.read(lid) else {
+            unreachable!()
+        };
+        apply_inplace_scalar(arr_read.get_mut(vm.heap), scalar, op);
+        drop(arr_read);
+        vm.push(lhs);
+        return true;
+    }
+
+    // Try ndarray rhs
+    if let Value::Ref(rid) = rhs {
+        let rid = *rid;
+        let len_matches = {
+            let HeapData::NdArray(r) = vm_ref.heap.get(rid) else {
+                // rhs is a Ref but not an NdArray — put it back
+                let (rhs, vm) = rhs_guard.into_parts();
+                vm.push(rhs);
+                return false;
+            };
+            let HeapData::NdArray(l) = vm_ref.heap.get(lid) else {
+                unreachable!()
+            };
+            r.data().len() == l.data().len()
+        };
+        if len_matches {
+            let rhs_data: Vec<f64> = {
+                let HeapData::NdArray(r) = vm_ref.heap.get(rid) else {
+                    unreachable!()
+                };
+                r.data().to_vec()
+            };
+            let (rhs, vm) = rhs_guard.into_parts();
+            rhs.drop_with_heap(vm);
+            let lhs = vm.pop();
+            let HeapReadOutput::NdArray(mut arr_read) = vm.heap.read(lid) else {
+                unreachable!()
+            };
+            apply_inplace_array(arr_read.get_mut(vm.heap), &rhs_data, op);
+            drop(arr_read);
+            vm.push(lhs);
+            return true;
+        }
+    }
+
+    // Not a compatible ndarray operation — put rhs back on the stack
+    let (rhs, vm) = rhs_guard.into_parts();
+    vm.push(rhs);
+    false
+}
+
+/// Applies an in-place scalar operation to an ndarray's data.
+fn apply_inplace_scalar(arr: &mut NdArray, scalar: f64, op: NdArrayInplaceOp) {
+    match op {
+        NdArrayInplaceOp::Add => {
+            for v in &mut arr.data {
+                *v += scalar;
+            }
+        }
+        NdArrayInplaceOp::Sub => {
+            for v in &mut arr.data {
+                *v -= scalar;
+            }
+        }
+        NdArrayInplaceOp::Mul => {
+            for v in &mut arr.data {
+                *v *= scalar;
+            }
+        }
+        NdArrayInplaceOp::Div => {
+            arr.dtype = crate::types::ndarray::NdArrayDtype::Float64;
+            for v in &mut arr.data {
+                *v /= scalar;
+            }
+        }
+    }
+}
+
+/// Applies an in-place array-to-array operation to an ndarray's data.
+fn apply_inplace_array(arr: &mut NdArray, rhs_data: &[f64], op: NdArrayInplaceOp) {
+    match op {
+        NdArrayInplaceOp::Add => {
+            for (v, rv) in arr.data.iter_mut().zip(rhs_data.iter()) {
+                *v += rv;
+            }
+        }
+        NdArrayInplaceOp::Sub => {
+            for (v, rv) in arr.data.iter_mut().zip(rhs_data.iter()) {
+                *v -= rv;
+            }
+        }
+        NdArrayInplaceOp::Mul => {
+            for (v, rv) in arr.data.iter_mut().zip(rhs_data.iter()) {
+                *v *= rv;
+            }
+        }
+        NdArrayInplaceOp::Div => {
+            arr.dtype = crate::types::ndarray::NdArrayDtype::Float64;
+            for (v, rv) in arr.data.iter_mut().zip(rhs_data.iter()) {
+                *v /= rv;
+            }
+        }
+    }
 }

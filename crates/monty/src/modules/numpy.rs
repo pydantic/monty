@@ -908,8 +908,8 @@ pub(super) fn call(
         NumpyFunctions::Bincount => call_bincount(vm, args).map(CallResult::Value),
         NumpyFunctions::Digitize => call_digitize(vm, args).map(CallResult::Value),
         // Phase 8: Linear algebra
-        NumpyFunctions::Matmul => call_dot(vm, args).map(CallResult::Value), // For 1D, matmul = dot. TODO: proper 2D matmul
-        NumpyFunctions::Inner => call_dot(vm, args).map(CallResult::Value),  // For 1D, inner = dot
+        NumpyFunctions::Matmul => call_matmul(vm, args).map(CallResult::Value),
+        NumpyFunctions::Inner => call_dot(vm, args).map(CallResult::Value), // For 1D, inner = dot
         NumpyFunctions::Outer => call_outer(vm, args).map(CallResult::Value),
         NumpyFunctions::Vdot => call_dot(vm, args).map(CallResult::Value), // vdot flattens first, same as dot for 1D
         NumpyFunctions::Cross => call_cross(vm, args).map(CallResult::Value),
@@ -1601,6 +1601,37 @@ fn call_dot(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunRe
         Value::Float(result)
     };
     Ok(value)
+}
+
+/// `numpy.matmul(a, b)` — matrix multiplication (like `a @ b`).
+///
+/// Supports 1D-1D (dot product), 2D-2D (matrix multiply), 2D-1D and 1D-2D products.
+fn call_matmul(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let (a_val, b_val) = args.get_two_args("numpy.matmul", vm.heap)?;
+    defer_drop!(a_val, vm);
+
+    let Value::Ref(a_id) = a_val else {
+        b_val.drop_with_heap(vm);
+        return Err(ExcType::type_error("numpy.matmul() requires ndarray arguments"));
+    };
+    let Value::Ref(b_id) = &b_val else {
+        b_val.drop_with_heap(vm);
+        return Err(ExcType::type_error("numpy.matmul() requires ndarray arguments"));
+    };
+    let b_id = *b_id;
+
+    let HeapData::NdArray(a_arr) = vm.heap.get(*a_id) else {
+        b_val.drop_with_heap(vm);
+        return Err(ExcType::type_error("numpy.matmul() requires ndarray arguments"));
+    };
+    let HeapData::NdArray(b_arr) = vm.heap.get(b_id) else {
+        b_val.drop_with_heap(vm);
+        return Err(ExcType::type_error("numpy.matmul() requires ndarray arguments"));
+    };
+
+    let result = a_arr.matmul(b_arr, vm.heap);
+    b_val.drop_with_heap(vm);
+    result
 }
 
 // ===========================

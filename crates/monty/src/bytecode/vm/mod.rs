@@ -1053,10 +1053,10 @@ impl<'h, 'a, T: ResourceTracker> VM<'h, 'a, T> {
                 }
                 // In-place Operations - route through exception handling
                 Opcode::InplaceAdd => try_catch_sync!(self, cached_frame, self.inplace_add()),
-                // Other in-place ops use the same logic as binary ops for now
-                Opcode::InplaceSub => try_catch_sync!(self, cached_frame, self.binary_sub()),
-                Opcode::InplaceMul => try_catch_sync!(self, cached_frame, self.binary_mult()),
-                Opcode::InplaceDiv => try_catch_sync!(self, cached_frame, self.binary_div()),
+                // In-place ops: ndarray modifies in-place, other types fall through to binary
+                Opcode::InplaceSub => try_catch_sync!(self, cached_frame, self.inplace_sub()),
+                Opcode::InplaceMul => try_catch_sync!(self, cached_frame, self.inplace_mul()),
+                Opcode::InplaceDiv => try_catch_sync!(self, cached_frame, self.inplace_div()),
                 Opcode::InplaceFloorDiv => try_catch_sync!(self, cached_frame, self.binary_floordiv()),
                 Opcode::InplaceMod => try_catch_sync!(self, cached_frame, self.binary_mod()),
                 Opcode::InplacePow => try_catch_sync!(self, cached_frame, self.binary_pow()),
@@ -1618,6 +1618,17 @@ impl<'h, 'a, T: ResourceTracker> VM<'h, 'a, T> {
     #[inline]
     pub(super) fn peek(&self) -> &Value {
         self.stack.last().expect("stack underflow")
+    }
+
+    /// Peeks at a value `offset` positions from the top of the stack.
+    ///
+    /// `peek_at(0)` is equivalent to `peek()` (top of stack).
+    /// `peek_at(1)` returns the second-from-top value.
+    #[inline]
+    pub(super) fn peek_at(&self, offset: usize) -> &Value {
+        let len = self.stack.len();
+        assert!(offset < len, "stack underflow: peek_at({offset}) with stack size {len}");
+        &self.stack[len - 1 - offset]
     }
 
     /// Pops n values from the stack in reverse order (first popped is last in vec).

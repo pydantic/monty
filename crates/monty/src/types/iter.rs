@@ -407,6 +407,11 @@ fn get_heap_item(
                 .expect("index should be valid")
                 .clone_with_heap(vm),
         )),
+        HeapData::NdArray(arr) => {
+            // For 1D arrays, yield scalars; for nD arrays, yield sub-arrays (rows).
+            #[expect(clippy::cast_possible_wrap, reason = "index won't exceed i64::MAX")]
+            Ok(Some(arr.getitem_int(index as i64, vm.heap)?))
+        }
         _ => panic!("get_heap_item: unexpected heap data type"),
     }
 }
@@ -599,6 +604,12 @@ impl IterValue {
                 heap_id,
                 len: Some(set.len()),
                 checks_mutation: true,
+            }),
+            // NdArray: iterate over first dimension (scalars for 1D, sub-arrays for nD)
+            HeapData::NdArray(arr) => Some(Self::HeapRef {
+                heap_id,
+                len: Some(arr.shape().first().copied().unwrap_or(0)),
+                checks_mutation: false,
             }),
             // String: copy content for iteration
             HeapData::Str(s) => Some(Self::from_str(s.as_str())),
