@@ -439,6 +439,18 @@ pub enum StaticStrings {
     MathNan,
 
     // ==========================
+    // json module strings
+    /// Module name for `import json`.
+    Json,
+    /// `json.loads()` function.
+    Loads,
+    /// `json.dumps()` function.
+    Dumps,
+    /// `json.JSONDecodeError` exception.
+    #[strum(serialize = "JSONDecodeError")]
+    JsonDecodeError,
+
+    // ==========================
     // datetime module strings
     Datetime,
     Date,

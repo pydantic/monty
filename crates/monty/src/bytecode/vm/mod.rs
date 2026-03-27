@@ -31,7 +31,7 @@ use crate::{
     heap_data::{Closure, FunctionDefaults},
     intern::{FunctionId, Interns, StringId},
     io::PrintWriter,
-    modules::BuiltinModule,
+    modules::StandardLib,
     os::OsFunction,
     parse::CodeRange,
     resource::ResourceTracker,
@@ -1547,7 +1547,7 @@ impl<'h, 'a, T: ResourceTracker> VM<'h, 'a, T> {
 
     /// Loads a built-in module and pushes it onto the stack.
     fn load_module(&mut self, module_id: u8) -> RunResult<()> {
-        let module = BuiltinModule::from_repr(module_id).expect("unknown module id");
+        let module = StandardLib::from_repr(module_id).expect("unknown module id");
 
         // Create the module on the heap using pre-interned strings
         let heap_id = module.create(self)?;

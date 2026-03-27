@@ -18,6 +18,7 @@ use crate::{
 
 pub(crate) mod asyncio;
 pub(crate) mod datetime;
+pub(crate) mod json;
 pub(crate) mod math;
 pub(crate) mod os;
 pub(crate) mod pathlib;
@@ -28,7 +29,7 @@ pub(crate) mod typing;
 /// Built-in modules that can be imported.
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, FromRepr)]
-pub(crate) enum BuiltinModule {
+pub(crate) enum StandardLib {
     /// The `sys` module providing system-specific parameters and functions.
     Sys,
     /// The `typing` module providing type hints support.
@@ -41,13 +42,15 @@ pub(crate) enum BuiltinModule {
     Os,
     /// The `math` module providing mathematical functions and constants.
     Math,
+    /// The `json` module providing JSON parsing and serialization.
+    Json,
     /// The `re` module providing regular expression matching.
     Re,
     /// The `datetime` module providing date and time types.
     Datetime,
 }
 
-impl BuiltinModule {
+impl StandardLib {
     /// Get the module from a string ID.
     pub fn from_string_id(string_id: StringId) -> Option<Self> {
         match StaticStrings::from_string_id(string_id)? {
@@ -57,6 +60,7 @@ impl BuiltinModule {
             StaticStrings::Pathlib => Some(Self::Pathlib),
             StaticStrings::Os => Some(Self::Os),
             StaticStrings::Math => Some(Self::Math),
+            StaticStrings::Json => Some(Self::Json),
             StaticStrings::Re => Some(Self::Re),
             StaticStrings::Datetime => Some(Self::Datetime),
             _ => None,
@@ -78,6 +82,7 @@ impl BuiltinModule {
             Self::Pathlib => pathlib::create_module(vm),
             Self::Os => os::create_module(vm),
             Self::Math => math::create_module(vm),
+            Self::Json => json::create_module(vm),
             Self::Re => re::create_module(vm),
             Self::Datetime => datetime::create_module(vm),
         }
@@ -88,6 +93,7 @@ impl BuiltinModule {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub(crate) enum ModuleFunctions {
     Asyncio(asyncio::AsyncioFunctions),
+    Json(json::JsonFunctions),
     Math(math::MathFunctions),
     Os(os::OsFunctions),
     Re(re::ReFunctions),
@@ -97,6 +103,7 @@ impl fmt::Display for ModuleFunctions {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Asyncio(func) => write!(f, "{func}"),
+            Self::Json(func) => write!(f, "{func}"),
             Self::Math(func) => write!(f, "{func}"),
             Self::Os(func) => write!(f, "{func}"),
             Self::Re(func) => write!(f, "{func}"),
@@ -112,6 +119,7 @@ impl ModuleFunctions {
     pub fn call(self, vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<CallResult> {
         match self {
             Self::Asyncio(functions) => asyncio::call(vm.heap, functions, args),
+            Self::Json(functions) => json::call(vm, functions, args).map(CallResult::Value),
             Self::Math(functions) => math::call(vm, functions, args).map(CallResult::Value),
             Self::Os(functions) => os::call(vm, functions, args),
             Self::Re(functions) => re::call(vm, functions, args),
