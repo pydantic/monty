@@ -1052,8 +1052,7 @@ impl ExcType {
         SimpleException::new_msg(
             Self::ValueError,
             format!(
-                "Exceeds the limit ({INT_MAX_STR_DIGITS} digits) for integer string conversion: \
-                 value has {digit_count} digits"
+                "Exceeds the limit ({INT_MAX_STR_DIGITS} digits) for integer string conversion: value has {digit_count} digits"
             ),
         )
         .into()

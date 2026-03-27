@@ -94,3 +94,24 @@ try:
     assert False, 'unsupported dict key type should raise TypeError'
 except TypeError as exc:
     assert str(exc) == 'keys must be str, int, float, bool or None, not tuple', 'invalid key type error message'
+
+try:
+    json.dumps({1})
+    assert False, 'set should not be JSON serializable'
+except TypeError as exc:
+    assert str(exc) == 'Object of type set is not JSON serializable', 'set serialization error message'
+
+try:
+    json.loads(1)
+    assert False, 'loads(int) should raise TypeError'
+except TypeError as exc:
+    assert str(exc) == 'the JSON object must be str, bytes or bytearray, not int', 'loads type error message'
+
+# === circular reference detection ===
+circular = []
+circular.append(circular)
+try:
+    json.dumps(circular)
+    assert False, 'circular reference should raise ValueError'
+except ValueError as exc:
+    assert str(exc) == 'Circular reference detected', 'circular reference error message'
