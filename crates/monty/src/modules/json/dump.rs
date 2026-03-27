@@ -239,7 +239,8 @@ pub(super) fn call_dumps(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgVal
 /// Parses the `indent=` value for `json.dumps()`.
 ///
 /// `None` keeps compact mode, integers switch to pretty mode using that many
-/// spaces per nesting level (with negative values behaving like zero), and
+/// spaces per nesting level (with zero and negative values enabling newline-
+/// only pretty printing), and
 /// strings are repeated once per depth level exactly like CPython.
 fn parse_indent_value(value: Value, vm: &mut VM<'_, '_, impl ResourceTracker>) -> RunResult<Option<String>> {
     let mut value_guard = HeapGuard::new(value, vm);
@@ -266,11 +267,11 @@ fn parse_indent_value(value: Value, vm: &mut VM<'_, '_, impl ResourceTracker>) -
 
 /// Converts an integer indent width into the repeated-space string used per level.
 ///
-/// Negative values behave like zero, which matches CPython's newline-only pretty
-/// printer behavior for `indent=0` and `indent<0`.
+/// Zero and negative values return an empty indent string, which keeps pretty
+/// printing enabled while omitting leading spaces on each line like CPython.
 fn spaces_from_indent_count(count: i64) -> RunResult<Option<String>> {
     if count <= 0 {
-        Ok(None)
+        Ok(Some(String::new()))
     } else {
         match usize::try_from(count) {
             Ok(count) => Ok(Some(" ".repeat(count))),
@@ -623,9 +624,9 @@ fn write_json_display_key(value: impl Display, out: &mut String) {
 
 /// Serializes a float using JSON's number and NaN rules.
 ///
-/// Finite floats use the same formatting as Monty's Python `repr(float)`, which
-/// already matches the `json` module requirement that whole-valued floats keep a
-/// decimal point such as `1.0`.
+/// Finite floats use CPython-compatible `json` float formatting, including the
+/// switch to exponent notation for very small or very large magnitudes while
+/// still preserving a decimal point for whole-valued non-exponent outputs.
 fn serialize_float(value: f64, out: &mut String, config: &JsonDumpsConfig) -> RunResult<()> {
     if value.is_nan() {
         if config.allow_nan() {
@@ -654,19 +655,96 @@ fn serialize_float(value: f64, out: &mut String, config: &JsonDumpsConfig) -> Ru
     }
 }
 
-/// Writes a finite float using Monty's CPython-compatible float repr rules.
+/// Writes a finite float using CPython-compatible JSON float repr rules.
 ///
 /// This avoids allocating a temporary `String` when the caller already owns the
 /// destination buffer.
 fn write_json_float_text(value: f64, out: &mut String) {
+    let prefers_exponent = float_prefers_exponent(value);
     let start = out.len();
     write!(out, "{value}").expect("writing to String cannot fail");
-    let wrote_decimal_or_exponent = out.as_bytes()[start..]
-        .iter()
-        .any(|byte| matches!(byte, b'.' | b'e' | b'E'));
-    if !wrote_decimal_or_exponent {
+    let wrote = &out[start..];
+
+    if prefers_exponent {
+        if !wrote.contains(['e', 'E']) {
+            let exponent_repr = fixed_float_to_exponent_repr(wrote);
+            out.truncate(start);
+            out.push_str(&exponent_repr);
+        }
+    } else if !wrote.contains(['.', 'e', 'E']) {
         out.push_str(".0");
     }
+}
+
+/// Returns whether CPython would prefer exponent notation for this finite float.
+///
+/// Python's float repr switches to scientific notation for exponents below `-4`
+/// or at least `16`, while values in between stay in fixed notation.
+fn float_prefers_exponent(value: f64) -> bool {
+    if value == 0.0 {
+        false
+    } else {
+        let exponent = value.abs().log10().floor();
+        !(-4.0..16.0).contains(&exponent)
+    }
+}
+
+/// Rewrites a fixed-point float repr into CPython-style exponent notation.
+///
+/// The input must be a Rust float representation without an exponent. Trailing
+/// zeros are stripped from the mantissa while the exponent keeps the original
+/// magnitude, matching Python's shortest scientific float repr.
+fn fixed_float_to_exponent_repr(value: &str) -> String {
+    let (sign, digits) = if let Some(rest) = value.strip_prefix('-') {
+        ("-", rest)
+    } else {
+        ("", value)
+    };
+
+    let (mut significand, exponent) = if let Some((integer, fraction)) = digits.split_once('.') {
+        if integer == "0" {
+            let first_digit = fraction
+                .find(|ch| ch != '0')
+                .expect("finite non-zero float must contain a non-zero digit");
+            (
+                fraction[first_digit..].to_owned(),
+                -(i32::try_from(first_digit).unwrap_or(i32::MAX) + 1),
+            )
+        } else {
+            let mut digits = integer.to_owned();
+            digits.push_str(fraction);
+            (
+                digits,
+                i32::try_from(integer.len()).unwrap_or(i32::MAX).saturating_sub(1),
+            )
+        }
+    } else {
+        (
+            digits.to_owned(),
+            i32::try_from(digits.len()).unwrap_or(i32::MAX).saturating_sub(1),
+        )
+    };
+
+    while significand.ends_with('0') {
+        significand.pop();
+    }
+
+    let exponent_prefix = if exponent >= 0 { '+' } else { '-' };
+    let exponent_abs = exponent.unsigned_abs();
+    let mut result = String::with_capacity(sign.len() + significand.len() + 8);
+    result.push_str(sign);
+    result.push(
+        significand
+            .chars()
+            .next()
+            .expect("finite non-zero float repr must contain a digit"),
+    );
+    if significand.len() > 1 {
+        result.push('.');
+        result.push_str(&significand[1..]);
+    }
+    write!(result, "e{exponent_prefix}{exponent_abs:02}").expect("writing to String cannot fail");
+    result
 }
 
 /// Writes indentation for pretty-printed JSON output.
