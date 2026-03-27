@@ -2188,3 +2188,510 @@ assert np.inner(a, b) == 32, 'inner product'
 a = np.array([1, 2, 3])
 b = np.array([4, 5, 6])
 assert np.vdot(a, b) == 32, 'vdot product'
+
+# ============================================================
+# 42. COMPREHENSIVE EDGE CASES AND ADDITIONAL COVERAGE
+# ============================================================
+
+# === Operator edge cases ===
+# Bitwise on single-element arrays
+a1 = np.array([True])
+b1 = np.array([False])
+assert (a1 & b1).tolist() == [False], 'bitwise and single'
+assert (a1 | b1).tolist() == [True], 'bitwise or single'
+assert (a1 ^ b1).tolist() == [True], 'bitwise xor single'
+
+# Bitwise int operations
+ia = np.array([15, 255, 0])
+ib = np.array([240, 15, 255])
+assert (ia & ib).tolist() == [0, 15, 0], 'int bitwise and'
+assert (ia | ib).tolist() == [255, 255, 255], 'int bitwise or'
+assert (ia ^ ib).tolist() == [255, 240, 255], 'int bitwise xor'
+
+# Matmul 2D
+m1 = np.array([[1, 0], [0, 1]])  # identity matrix
+m2 = np.array([[5, 6], [7, 8]])
+assert (m1 @ m2).tolist() == [[5, 6], [7, 8]], 'matmul identity'
+assert np.matmul(m1, m2).tolist() == [[5, 6], [7, 8]], 'np.matmul identity'
+
+# In-place compound
+a = np.array([10.0, 20.0, 30.0])
+a += 5
+assert a.tolist() == [15.0, 25.0, 35.0], 'iadd then check'
+a -= 5
+assert a.tolist() == [10.0, 20.0, 30.0], 'isub restore'
+a *= 2
+assert a.tolist() == [20.0, 40.0, 60.0], 'imul double'
+a /= 4
+assert a.tolist() == [5.0, 10.0, 15.0], 'idiv quarter'
+
+# === Setitem edge cases ===
+a = np.array([1, 2, 3, 4, 5])
+a[0] = 99
+assert a[0] == 99, 'setitem first'
+a[4] = 88
+assert a[4] == 88, 'setitem last'
+a[-1] = 77
+assert a[-1] == 77, 'setitem negative'
+
+# Setitem with bool mask
+b = np.array([10, 20, 30, 40, 50])
+mask = np.array([1, 0, 1, 0, 1])
+b[mask > 0] = 0
+assert b.tolist() == [0, 20, 0, 40, 0], 'setitem mask'
+
+# Setitem with slice
+c = np.array([1, 2, 3, 4, 5])
+c[1:4] = np.array([20, 30, 40])
+assert c.tolist() == [1, 20, 30, 40, 5], 'setitem slice'
+
+# === Contains edge cases ===
+a = np.array([1.0, 2.0, 3.0])
+assert 1.0 in a, 'contains float True'
+assert 4.0 not in a, 'contains float False'
+assert 2 in np.array([1, 2, 3]), 'contains int True'
+
+# === Iter edge cases ===
+a = np.array([10, 20, 30])
+collected = []
+for x in a:
+    collected.append(x)
+assert collected == [10, 20, 30], 'iter collect'
+assert sum(np.array([1, 2, 3, 4])) == 10, 'sum via iter'
+
+# === Additional trig/math coverage ===
+# arcsin edge
+r = np.arcsin(np.array([-1.0, 0.0, 1.0]))
+assert abs(r.tolist()[0] + 1.5707963267948966) < 1e-10, 'arcsin -1'
+assert abs(r.tolist()[1]) < 1e-10, 'arcsin 0'
+assert abs(r.tolist()[2] - 1.5707963267948966) < 1e-10, 'arcsin 1'
+
+# arccos edge
+r = np.arccos(np.array([-1.0, 0.0, 1.0]))
+assert abs(r.tolist()[0] - 3.141592653589793) < 1e-10, 'arccos -1'
+assert abs(r.tolist()[1] - 1.5707963267948966) < 1e-10, 'arccos 0'
+assert abs(r.tolist()[2]) < 1e-10, 'arccos 1'
+
+# deg2rad/rad2deg roundtrip
+angles = np.array([0.0, 45.0, 90.0, 180.0, 360.0])
+r = np.rad2deg(np.deg2rad(angles))
+assert abs(r.tolist()[0]) < 1e-10, 'roundtrip 0'
+assert abs(r.tolist()[1] - 45.0) < 1e-10, 'roundtrip 45'
+assert abs(r.tolist()[2] - 90.0) < 1e-10, 'roundtrip 90'
+assert abs(r.tolist()[3] - 180.0) < 1e-10, 'roundtrip 180'
+assert abs(r.tolist()[4] - 360.0) < 1e-10, 'roundtrip 360'
+
+# sign on integers
+assert np.sign(np.array([-5, -1, 0, 1, 5])).tolist() == [-1, -1, 0, 1, 1], 'sign int values'
+
+# square on integers
+assert np.square(np.array([0, 1, 2, 3])).tolist() == [0, 1, 4, 9], 'square int'
+
+# reciprocal edge
+assert np.reciprocal(np.array([1.0, 0.5, 0.25])).tolist() == [1.0, 2.0, 4.0], 'reciprocal inverse'
+
+# fmod edge
+assert np.fmod(np.array([10.0, -10.0, 10.0]), np.array([3.0, 3.0, -3.0])).tolist()[0] == 1.0, 'fmod pos'
+
+# rint edge cases
+assert np.rint(np.array([0.0, 1.0, -1.0])).tolist() == [0.0, 1.0, -1.0], 'rint integers'
+assert np.rint(np.array([0.1, 0.9, -0.9])).tolist() == [0.0, 1.0, -1.0], 'rint near-integers'
+
+# === NaN-aware edge cases ===
+# nansum on all-nan
+assert np.nansum(np.array([float('nan'), float('nan')])) == 0.0, 'nansum all nan'
+
+# nanprod on no-nan
+assert np.nanprod(np.array([2.0, 3.0, 4.0])) == 24.0, 'nanprod no nan'
+
+# nancumsum on no-nan
+assert np.nancumsum(np.array([1.0, 2.0, 3.0])).tolist() == [1.0, 3.0, 6.0], 'nancumsum no nan'
+
+# nancumprod on no-nan
+assert np.nancumprod(np.array([1.0, 2.0, 3.0])).tolist() == [1.0, 2.0, 6.0], 'nancumprod no nan'
+
+# nan_to_num with custom behavior
+a = np.array([1.0, float('nan'), 3.0])
+r = np.nan_to_num(a)
+assert r.tolist() == [1.0, 0.0, 3.0], 'nan_to_num simple'
+
+# === Logical function edge cases ===
+# logical_and with float arrays (nonzero = True)
+assert np.logical_and(np.array([1.0, 0.0, 3.0]), np.array([1.0, 1.0, 0.0])).tolist() == [True, False, False], (
+    'logical_and float'
+)
+assert np.logical_or(np.array([0.0, 0.0, 1.0]), np.array([0.0, 1.0, 0.0])).tolist() == [False, True, True], (
+    'logical_or float'
+)
+assert np.logical_not(np.array([0, 1, 0, 1])).tolist() == [True, False, True, False], 'logical_not int'
+assert np.logical_xor(np.array([0, 0, 1, 1]), np.array([0, 1, 0, 1])).tolist() == [False, True, True, False], (
+    'logical_xor int'
+)
+
+# allclose with different tolerances
+assert np.allclose(np.array([1.0, 2.0, 3.0]), np.array([1.0, 2.0, 3.0])) == True, 'allclose identical'
+assert np.allclose(np.array([1.0]), np.array([1.1])) == False, 'allclose diff 0.1'
+
+# isclose more cases
+r = np.isclose(np.array([1.0, 2.0, 3.0]), np.array([1.0, 2.0, 3.0]))
+assert r.tolist() == [True, True, True], 'isclose all same'
+
+# isin more cases
+r = np.isin(np.array([1, 2, 3, 4, 5]), np.array([1, 3, 5]))
+assert r.tolist() == [True, False, True, False, True], 'isin odd numbers'
+
+# === Manipulation edge cases ===
+# flip empty
+assert np.flip(np.array([])).tolist() == [], 'flip empty'
+assert np.flip(np.array([42.0])).tolist() == [42.0], 'flip single'
+
+# roll edge cases
+assert np.roll(np.array([1, 2, 3]), 3).tolist() == [1, 2, 3], 'roll full cycle'
+assert np.roll(np.array([1, 2, 3]), 6).tolist() == [1, 2, 3], 'roll double cycle'
+
+# delete edge
+assert np.delete(np.array([1, 2, 3, 4, 5]), 0).tolist() == [2, 3, 4, 5], 'delete first'
+assert np.delete(np.array([1, 2, 3, 4, 5]), 4).tolist() == [1, 2, 3, 4], 'delete last'
+
+# insert at boundaries
+assert np.insert(np.array([2, 3, 4]), 0, 1).tolist() == [1, 2, 3, 4], 'insert at 0'
+assert np.insert(np.array([1, 2, 3]), 3, 4).tolist() == [1, 2, 3, 4], 'insert at end'
+
+# diag of identity
+assert np.diag(np.eye(3)).tolist() == [1.0, 1.0, 1.0], 'diag of eye'
+
+# trace of identity
+assert np.trace(np.eye(4)) == 4.0, 'trace of eye 4'
+assert np.trace(np.eye(1)) == 1.0, 'trace of eye 1'
+
+# flatnonzero edge cases
+assert np.flatnonzero(np.array([1, 2, 3])).tolist() == [0, 1, 2], 'flatnonzero all'
+assert np.flatnonzero(np.array([0])).tolist() == [], 'flatnonzero single zero'
+
+# === Set operation edge cases ===
+# intersect1d with no overlap
+assert np.intersect1d(np.array([1, 2]), np.array([3, 4])).tolist() == [], 'intersect1d empty'
+
+# union1d with overlap
+assert np.union1d(np.array([1, 2, 3]), np.array([2, 3, 4])).tolist() == [1.0, 2.0, 3.0, 4.0], 'union1d overlap'
+
+# setdiff1d with no diff
+assert np.setdiff1d(np.array([1, 2]), np.array([1, 2])).tolist() == [], 'setdiff1d empty'
+
+# setxor1d with no overlap
+assert np.setxor1d(np.array([1, 2]), np.array([3, 4])).tolist() == [1.0, 2.0, 3.0, 4.0], 'setxor1d disjoint'
+
+# === Creation function edge cases ===
+# logspace single element
+r = np.logspace(0, 0, 1)
+assert abs(r.tolist()[0] - 1.0) < 1e-10, 'logspace single'
+
+# geomspace single element
+r = np.geomspace(5, 5, 1)
+assert abs(r.tolist()[0] - 5.0) < 1e-10, 'geomspace single'
+
+# tri 1x1
+assert np.tri(1).tolist() == [[1.0]], 'tri 1x1'
+
+# identity edge
+assert np.identity(2).tolist() == [[1.0, 0.0], [0.0, 1.0]], 'identity 2'
+
+# gradient 3 elements
+r = np.gradient(np.array([0.0, 1.0, 4.0]))
+assert r.tolist() == [1.0, 2.0, 3.0], 'gradient quadratic'
+
+# interp at boundaries
+xp = np.array([0.0, 1.0])
+fp = np.array([0.0, 10.0])
+assert np.interp(np.array([0.5]), xp, fp).tolist() == [5.0], 'interp midpoint'
+assert np.interp(np.array([-1.0]), xp, fp).tolist() == [0.0], 'interp below'
+assert np.interp(np.array([2.0]), xp, fp).tolist() == [10.0], 'interp above'
+
+# === Method edge cases ===
+# item on single element
+assert np.array([42]).item() == 42, 'item int'
+assert np.array([3.14]).item() == 3.14, 'item float'
+
+# cumprod
+assert np.array([1, 2, 3, 4, 5]).cumprod().tolist() == [1, 2, 6, 24, 120], 'cumprod method'
+assert np.array([2.0]).cumprod().tolist() == [2.0], 'cumprod single'
+
+# squeeze on array without 1-dims
+a = np.array([1, 2, 3])
+assert a.squeeze().tolist() == [1, 2, 3], 'squeeze no effect 1d'
+
+# take
+a = np.array([10, 20, 30, 40, 50])
+assert a.take(np.array([0, 2, 4])).tolist() == [10, 30, 50], 'take indices'
+assert a.take(np.array([4, 3, 2, 1, 0])).tolist() == [50, 40, 30, 20, 10], 'take reversed'
+
+# diagonal on identity
+assert np.eye(3).diagonal().tolist() == [1.0, 1.0, 1.0], 'diagonal eye'
+
+# trace on identity
+assert np.eye(5).trace() == 5.0, 'trace eye 5'
+
+# fill
+a = np.array([1, 2, 3])
+a.fill(0)
+assert a.tolist() == [0, 0, 0], 'fill zeros'
+a.fill(99)
+assert a.tolist() == [99, 99, 99], 'fill 99'
+
+# compress
+a = np.array([10, 20, 30, 40, 50])
+cond = np.array([1, 0, 1, 0, 1])
+assert a.compress(cond).tolist() == [10, 30, 50], 'compress method'
+assert a.compress(np.array([0, 0, 0, 0, 0])).tolist() == [], 'compress all false'
+
+# swapaxes on 1D (no-op)
+a = np.array([1, 2, 3])
+assert a.swapaxes(0, 0).tolist() == [1, 2, 3], 'swapaxes 1d noop'
+
+# nbytes / itemsize
+a = np.array([1.0, 2.0, 3.0])
+assert a.nbytes == 24, 'nbytes 3 floats'
+assert a.itemsize == 8, 'itemsize float'
+a5 = np.array([1.0, 2.0, 3.0, 4.0, 5.0])
+assert a5.nbytes == 40, 'nbytes 5 floats'
+
+# === Additional array creation and attribute coverage ===
+# zeros shape
+assert np.zeros(0).tolist() == [], 'zeros 0'
+assert np.zeros(1).tolist() == [0.0], 'zeros 1'
+assert np.zeros(5).shape == (5,), 'zeros 5 shape'
+
+# ones shape
+assert np.ones(0).tolist() == [], 'ones 0'
+assert np.ones(1).tolist() == [1.0], 'ones 1'
+
+# full edge
+assert np.full(3, 0.0).tolist() == [0.0, 0.0, 0.0], 'full 3 zeros'
+assert np.full(1, 42.0).tolist() == [42.0], 'full 1'
+assert np.full(0, 1.0).tolist() == [], 'full 0'
+
+# arange edge
+assert np.arange(0).tolist() == [], 'arange 0'
+assert np.arange(1).tolist() == [0], 'arange 1'
+assert np.arange(1, 1).tolist() == [], 'arange empty range'
+assert np.arange(5, 0, -1).tolist() == [5, 4, 3, 2, 1], 'arange reverse'
+
+# linspace edge
+assert np.linspace(0, 1, 2).tolist() == [0.0, 1.0], 'linspace 2'
+assert np.linspace(0, 1, 1).tolist() == [0.0], 'linspace 1'
+assert np.linspace(5, 5, 3).tolist() == [5.0, 5.0, 5.0], 'linspace same'
+
+# === Additional aggregation coverage ===
+# sum/mean/min/max on various sizes
+assert np.sum(np.array([1])) == 1, 'sum single'
+assert np.mean(np.array([5.0])) == 5.0, 'mean single'
+assert np.min(np.array([42])) == 42, 'min single'
+assert np.max(np.array([42])) == 42, 'max single'
+
+# std/var on uniform
+assert np.std(np.array([5.0, 5.0, 5.0])) == 0.0, 'std uniform'
+assert np.var(np.array([5.0, 5.0, 5.0])) == 0.0, 'var uniform'
+
+# prod
+assert np.array([1, 2, 3, 4]).prod() == 24, 'prod method'
+assert np.array([0, 1, 2]).prod() == 0, 'prod with zero'
+
+# median
+assert np.median(np.array([1.0])) == 1.0, 'median single'
+assert np.median(np.array([1.0, 3.0])) == 2.0, 'median two'
+assert np.median(np.array([3.0, 1.0, 2.0])) == 2.0, 'median unsorted'
+
+# cumsum edge
+assert np.cumsum(np.array([1])).tolist() == [1], 'cumsum single'
+
+# === Additional comparison coverage ===
+a = np.array([1.0, 2.0, 3.0, 4.0, 5.0])
+assert (a > 3).tolist() == [False, False, False, True, True], 'gt 3'
+assert (a >= 3).tolist() == [False, False, True, True, True], 'ge 3'
+assert (a < 3).tolist() == [True, True, False, False, False], 'lt 3'
+assert (a <= 3).tolist() == [True, True, True, False, False], 'le 3'
+assert (a == 3).tolist() == [False, False, True, False, False], 'eq 3'
+assert (a != 3).tolist() == [True, True, False, True, True], 'ne 3'
+
+# === Chained operations coverage ===
+# Sort then cumsum
+a = np.sort(np.array([3, 1, 4, 1, 5]))
+assert np.cumsum(a).tolist() == [1, 2, 5, 9, 14], 'sort then cumsum'
+
+# Where then sum
+a = np.array([1, 2, 3, 4, 5])
+b = np.where(a > 2, a, np.zeros(5))
+assert np.sum(b) == 12.0, 'where then sum'
+
+# Unique then sort (already sorted by unique)
+u = np.unique(np.array([5, 3, 1, 3, 5, 1]))
+assert u.tolist() == [1.0, 3.0, 5.0], 'unique sorted'
+assert len(u.tolist()) == 3, 'unique count'
+
+# Concatenate then reshape
+c = np.concatenate([np.array([1, 2, 3]), np.array([4, 5, 6])])
+r = np.reshape(c, [2, 3])
+assert r.tolist() == [[1, 2, 3], [4, 5, 6]], 'concat then reshape'
+
+# === 2D coverage ===
+m = np.array([[1, 2, 3], [4, 5, 6], [7, 8, 9]])
+assert m.shape == (3, 3), '3x3 shape'
+assert m.ndim == 2, '3x3 ndim'
+assert m.size == 9, '3x3 size'
+assert m.T.tolist() == [[1, 4, 7], [2, 5, 8], [3, 6, 9]], '3x3 transpose'
+assert m.flatten().tolist() == [1, 2, 3, 4, 5, 6, 7, 8, 9], '3x3 flatten'
+assert m.ravel().tolist() == [1, 2, 3, 4, 5, 6, 7, 8, 9], '3x3 ravel'
+
+# 2D sum, mean
+assert m.sum() == 45, '3x3 sum'
+assert m.mean() == 5.0, '3x3 mean'
+assert m.min() == 1, '3x3 min'
+assert m.max() == 9, '3x3 max'
+
+# 2D operations
+m2 = np.array([[1, 2], [3, 4]])
+assert (m2 + m2).tolist() == [[2, 4], [6, 8]], '2d add'
+assert (m2 * 2).tolist() == [[2, 4], [6, 8]], '2d scalar mul'
+assert (m2 > 2).tolist() == [[False, False], [True, True]], '2d compare'
+
+# eye
+e3 = np.eye(3)
+assert e3.tolist() == [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]], 'eye 3'
+assert e3.shape == (3, 3), 'eye 3 shape'
+assert e3.dtype == 'float64', 'eye 3 dtype'
+
+# Matmul with identity
+m = np.array([[1, 2], [3, 4]])
+e = np.eye(2)
+r = m @ e
+assert r.tolist() == [[1.0, 2.0], [3.0, 4.0]], 'matmul with identity preserves'
+
+# === String repr edge cases ===
+assert repr(np.array([])) == 'array([], dtype=float64)', 'repr empty'
+assert repr(np.array([1.0])) == 'array([1.])', 'repr single float'
+assert repr(np.array([1, 2])) == 'array([1, 2])', 'repr int pair'
+
+# ============================================================
+# 43. ADDITIONAL COVERAGE TO REACH 1000+ ASSERTIONS
+# ============================================================
+
+# === astype coverage ===
+a = np.array([1.5, 2.7, 3.1])
+assert a.astype('int64').tolist() == [1, 2, 3], 'astype float->int truncate'
+assert a.astype('int64').dtype == 'int64', 'astype float->int dtype'
+assert np.array([1, 0, 1]).astype('bool').tolist() == [True, False, True], 'astype int->bool'
+assert np.array([1, 0, 1]).astype('bool').dtype == 'bool', 'astype int->bool dtype'
+assert np.array([0.0, 1.5, 0.0]).astype('bool').tolist() == [False, True, False], 'astype float->bool'
+assert np.array([True, False]).astype('float64').tolist() == [1.0, 0.0], 'astype bool->float'
+assert np.array([True, False]).astype('int64').tolist() == [1, 0], 'astype bool->int'
+
+# === copy method ===
+a = np.array([1, 2, 3])
+b = a.copy()
+assert b.tolist() == [1, 2, 3], 'copy values'
+b[0] = 99
+assert a[0] == 1, 'copy is independent'
+
+# === sort method edge cases ===
+a = np.array([5, 3, 1, 4, 2])
+a.sort()
+assert a.tolist() == [1, 2, 3, 4, 5], 'sort in-place'
+
+a = np.array([1.0])
+a.sort()
+assert a.tolist() == [1.0], 'sort single'
+
+# === Module-level sort ===
+assert np.sort(np.array([3, 1, 2])).tolist() == [1, 2, 3], 'np.sort int'
+assert np.sort(np.array([3.0, 1.0, 2.0])).tolist() == [1.0, 2.0, 3.0], 'np.sort float'
+
+# === argsort method ===
+a = np.array([30, 10, 20])
+assert a.argsort().tolist() == [1, 2, 0], 'argsort method'
+
+# === argmin/argmax method ===
+a = np.array([3, 1, 4, 1, 5])
+assert a.argmin() == 1, 'argmin method'
+assert a.argmax() == 4, 'argmax method'
+
+# === all/any method ===
+assert np.array([1, 1, 1]).all() == True, 'all true'
+assert np.array([1, 0, 1]).all() == False, 'all false'
+assert np.array([0, 0, 1]).any() == True, 'any true'
+assert np.array([0, 0, 0]).any() == False, 'any false'
+
+# === dot method ===
+a = np.array([1, 2, 3])
+b = np.array([4, 5, 6])
+assert a.dot(b) == 32, 'dot method'
+
+# === clip method ===
+a = np.array([1, 5, 10, 15, 20])
+assert a.clip(5, 15).tolist() == [5, 5, 10, 15, 15], 'clip method'
+
+# === round method ===
+a = np.array([1.234, 5.678, 9.012])
+r = a.round()
+assert r.tolist() == [1.0, 6.0, 9.0], 'round method'
+
+# === .T on 1D is identity ===
+a = np.array([1, 2, 3])
+assert a.T.tolist() == [1, 2, 3], 'T on 1D is identity'
+
+# === np.copy ===
+a = np.array([1, 2, 3])
+b = np.copy(a)
+assert b.tolist() == [1, 2, 3], 'np.copy'
+
+# === np.count_nonzero edge cases ===
+assert np.count_nonzero(np.array([0, 0, 0])) == 0, 'count_nonzero all zero'
+assert np.count_nonzero(np.array([1, 2, 3])) == 3, 'count_nonzero all nonzero'
+assert np.count_nonzero(np.array([])) == 0, 'count_nonzero empty'
+
+# === np.diff edge cases ===
+assert np.diff(np.array([1, 4, 9, 16])).tolist() == [3, 5, 7], 'diff squares'
+assert np.diff(np.array([1, 1, 1, 1])).tolist() == [0, 0, 0], 'diff constant'
+assert np.diff(np.array([5, 3])).tolist() == [-2], 'diff two elem'
+
+# === np.where with 3 args ===
+a = np.array([1, 2, 3, 4, 5])
+r = np.where(a > 3, a, np.array([0, 0, 0, 0, 0]))
+assert r.tolist() == [0, 0, 0, 4, 5], 'where 3-arg'
+
+# === np.maximum / np.minimum edge cases ===
+assert np.maximum(np.array([1, 5, 3]), np.array([4, 2, 6])).tolist() == [4, 5, 6], 'maximum pairwise'
+assert np.minimum(np.array([1, 5, 3]), np.array([4, 2, 6])).tolist() == [1, 2, 3], 'minimum pairwise'
+
+# === np.concatenate more cases ===
+r = np.concatenate([np.array([1]), np.array([2]), np.array([3])])
+assert r.tolist() == [1, 2, 3], 'concat three'
+r = np.concatenate([np.array([1, 2, 3])])
+assert r.tolist() == [1, 2, 3], 'concat single'
+
+# === np.stack more cases ===
+a = np.array([1, 2])
+b = np.array([3, 4])
+r = np.stack([a, b])
+assert r.tolist() == [[1, 2], [3, 4]], 'stack 2 arrays'
+
+# === np.vstack / np.hstack ===
+assert np.vstack([np.array([1, 2]), np.array([3, 4])]).tolist() == [[1, 2], [3, 4]], 'vstack pair'
+assert np.hstack([np.array([1, 2]), np.array([3, 4])]).tolist() == [1, 2, 3, 4], 'hstack pair'
+
+# === np.array_equal more cases ===
+assert np.array_equal(np.array([1, 2, 3]), np.array([1, 2, 3])) == True, 'array_equal same'
+assert np.array_equal(np.array([1, 2, 3]), np.array([1, 2, 4])) == False, 'array_equal diff'
+assert np.array_equal(np.array([1, 2]), np.array([1, 2, 3])) == False, 'array_equal diff size'
+
+# === np.zeros_like / np.ones_like ===
+a = np.array([5, 10, 15])
+assert np.zeros_like(a).tolist() == [0, 0, 0], 'zeros_like int'
+assert np.ones_like(a).tolist() == [1, 1, 1], 'ones_like int'
+assert np.zeros_like(a).shape == (3,), 'zeros_like shape'
+
+# === Unary minus/plus on arrays ===
+a = np.array([1, -2, 3])
+assert (-a).tolist() == [-1, 2, -3], 'unary neg'
+# Bitwise invert
+b = np.array([0, 1, 0, 1])
+assert (~b).tolist() == [-1, -2, -1, -2], 'bitwise invert int'

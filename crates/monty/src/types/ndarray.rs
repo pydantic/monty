@@ -1184,14 +1184,11 @@ impl NdArray {
         Ok(Value::Ref(heap.allocate(HeapData::NdArray(arr))?))
     }
 
-    /// `sort()` — returns a new array with elements sorted in ascending order.
+    /// `sort()` — sort the array data in-place (mutates `self`).
     ///
-    /// NaN values sort to the end, matching NumPy's behavior.
-    pub fn sort_array(&self, heap: &Heap<impl ResourceTracker>) -> RunResult<Value> {
-        let mut data = self.data.clone();
-        data.sort_by(nan_last_cmp);
-        let arr = Self::new(data, self.shape.clone(), self.dtype);
-        Ok(Value::Ref(heap.allocate(HeapData::NdArray(arr))?))
+    /// NaN values sort to the end, matching NumPy's `ndarray.sort()` behavior.
+    pub fn sort_in_place(&mut self) {
+        self.data.sort_by(nan_last_cmp);
     }
 
     /// `argsort()` — returns indices that would sort the array.
@@ -1505,9 +1502,17 @@ impl<'h> PyTrait<'h> for HeapRead<'h, NdArray> {
                         }
                         Ok(())
                     }
-                    // arr[slice] = val — set slice of elements
+                    // arr[slice] = val — set slice of elements (scalar or array)
                     HeapData::Slice(slice) => {
-                        let scalar = extract_f64(value);
+                        // Extract RHS values: scalar broadcasts, array assigns element-wise
+                        let rhs_data: Option<Vec<f64>> = match *value {
+                            Value::Ref(val_id) => match vm.heap.get(val_id) {
+                                HeapData::NdArray(rhs_arr) => Some(rhs_arr.data().to_vec()),
+                                _ => None,
+                            },
+                            _ => None,
+                        };
+                        let scalar = if rhs_data.is_none() { extract_f64(value) } else { 0.0 };
                         let len = self.get(vm.heap).data.len();
                         let (start, stop, step) = slice
                             .indices(len)
@@ -1515,6 +1520,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, NdArray> {
                         let arr = self.get_mut(vm.heap);
                         if step > 0 {
                             let mut i = start;
+                            let mut rhs_idx = 0usize;
                             #[expect(
                                 clippy::cast_sign_loss,
                                 clippy::cast_possible_truncation,
@@ -1522,12 +1528,18 @@ impl<'h> PyTrait<'h> for HeapRead<'h, NdArray> {
                             )]
                             let step_usize = step as usize;
                             while i < stop {
-                                arr.data[i] = scalar;
+                                arr.data[i] = if let Some(ref rhs) = rhs_data {
+                                    rhs.get(rhs_idx).copied().unwrap_or(scalar)
+                                } else {
+                                    scalar
+                                };
+                                rhs_idx += 1;
                                 i += step_usize;
                             }
                         } else {
                             #[expect(clippy::cast_possible_wrap, reason = "index fits in i64")]
                             let mut i = start as i64;
+                            let mut rhs_idx = 0usize;
                             #[expect(clippy::cast_possible_wrap, reason = "stop fits in i64")]
                             let stop_i = if stop > len { -1_i64 } else { stop as i64 };
                             while i > stop_i {
@@ -1537,8 +1549,13 @@ impl<'h> PyTrait<'h> for HeapRead<'h, NdArray> {
                                     reason = "i is non-negative"
                                 )]
                                 {
-                                    arr.data[i as usize] = scalar;
+                                    arr.data[i as usize] = if let Some(ref rhs) = rhs_data {
+                                        rhs.get(rhs_idx).copied().unwrap_or(scalar)
+                                    } else {
+                                        scalar
+                                    };
                                 }
+                                rhs_idx += 1;
                                 i += step;
                             }
                         }
@@ -1623,7 +1640,8 @@ impl<'h> PyTrait<'h> for HeapRead<'h, NdArray> {
             }
             Some(StaticStrings::Sort) => {
                 args.check_zero_args("ndarray.sort", vm.heap)?;
-                self.get(vm.heap).sort_array(vm.heap)
+                self.get_mut(vm.heap).sort_in_place();
+                Ok(Value::None)
             }
             Some(StaticStrings::NpArgsort) => {
                 args.check_zero_args("ndarray.argsort", vm.heap)?;
