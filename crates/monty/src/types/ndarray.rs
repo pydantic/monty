@@ -18,9 +18,12 @@
 //! - Integer indexing: `arr[0]`, `arr[1][2]` for 2D
 //! - Aggregation: `sum()`, `mean()`, `min()`, `max()`, `std()`
 //! - Shape manipulation: `reshape()`, `flatten()`
-//! - Element-wise transforms: `cumsum()`, `abs()`, `round()`, `clip()`, `sort()`
+//! - Element-wise transforms: `cumsum()`, `cumprod()`, `abs()`, `round()`, `clip()`, `sort()`
+//! - Selection: `take()`, `compress()`, `diagonal()`, `item()`, `squeeze()`
+//! - In-place: `fill()`
+//! - Linear algebra: `trace()`, `swapaxes()`
 //! - Conversion: `tolist()`
-//! - Attributes: `.shape`, `.dtype`, `.size`, `.ndim`, `.T`
+//! - Attributes: `.shape`, `.dtype`, `.size`, `.ndim`, `.T`, `.nbytes`, `.itemsize`
 
 use std::{
     cmp::Ordering,
@@ -1028,6 +1031,144 @@ impl NdArray {
         Ok(Value::Ref(heap.allocate(HeapData::NdArray(arr))?))
     }
 
+    /// `cumprod()` — returns a 1D array of cumulative products.
+    ///
+    /// Each element is the product of all preceding elements (inclusive).
+    /// The result is always 1D, matching NumPy's behavior when no axis is specified.
+    pub fn cumprod(&self, heap: &Heap<impl ResourceTracker>) -> RunResult<Value> {
+        let mut acc = 1.0;
+        let data: Vec<f64> = self
+            .data
+            .iter()
+            .map(|&v| {
+                acc *= v;
+                acc
+            })
+            .collect();
+        let arr = Self::new(data, vec![self.len()], self.dtype);
+        Ok(Value::Ref(heap.allocate(HeapData::NdArray(arr))?))
+    }
+
+    /// `item()` — return the single element of a size-1 array as a Python scalar.
+    ///
+    /// Raises `ValueError` if the array has more than one element, matching NumPy.
+    pub fn item(&self) -> RunResult<Value> {
+        if self.data.len() != 1 {
+            return Err(SimpleException::new_msg(
+                ExcType::ValueError,
+                "can only convert an array of size 1 to a Python scalar",
+            )
+            .into());
+        }
+        Ok(self.element_to_value(self.data[0]))
+    }
+
+    /// `squeeze()` — remove axes of length 1, returning a new array.
+    ///
+    /// If all axes have length 1, the result is a 1-element array with shape `(1,)`.
+    pub fn squeeze(&self, heap: &Heap<impl ResourceTracker>) -> RunResult<Value> {
+        let shape: Vec<usize> = self.shape.iter().copied().filter(|&s| s != 1).collect();
+        let shape = if shape.is_empty() { vec![1] } else { shape };
+        let arr = Self::new(self.data.clone(), shape, self.dtype);
+        Ok(Value::Ref(heap.allocate(HeapData::NdArray(arr))?))
+    }
+
+    /// `take(indices)` — gather elements at the given integer indices.
+    ///
+    /// The indices array is flattened and used to index into the flattened source array.
+    /// Negative indices are supported.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "index from f64 is intentional for int-typed ndarray elements"
+    )]
+    pub fn take_indices(&self, indices: &Self, heap: &Heap<impl ResourceTracker>) -> RunResult<Value> {
+        let mut data = Vec::with_capacity(indices.len());
+        for &idx_f in indices.data() {
+            let idx = idx_f as i64;
+            let resolved = resolve_index(idx, self.data.len())?;
+            data.push(self.data[resolved]);
+        }
+        let len = data.len();
+        let arr = Self::new(data, vec![len], self.dtype);
+        Ok(Value::Ref(heap.allocate(HeapData::NdArray(arr))?))
+    }
+
+    /// `diagonal()` — return the diagonal of a 2D array.
+    ///
+    /// Raises `ValueError` for arrays with fewer than 2 dimensions.
+    pub fn diagonal(&self, heap: &Heap<impl ResourceTracker>) -> RunResult<Value> {
+        if self.shape.len() < 2 {
+            return Err(SimpleException::new_msg(ExcType::ValueError, "diagonal requires 2-d array").into());
+        }
+        let rows = self.shape[0];
+        let cols = self.shape[1];
+        let n = rows.min(cols);
+        let data: Vec<f64> = (0..n).map(|i| self.data[i * cols + i]).collect();
+        let arr = Self::new(data, vec![n], self.dtype);
+        Ok(Value::Ref(heap.allocate(HeapData::NdArray(arr))?))
+    }
+
+    /// `trace()` — return the sum of the diagonal elements of a 2D array.
+    ///
+    /// Returns an int for int arrays and a float for float arrays, matching NumPy.
+    /// Raises `ValueError` for arrays with fewer than 2 dimensions.
+    pub fn trace(&self) -> RunResult<Value> {
+        if self.shape.len() < 2 {
+            return Err(SimpleException::new_msg(ExcType::ValueError, "trace requires 2-d array").into());
+        }
+        let cols = self.shape[1];
+        let n = self.shape[0].min(cols);
+        let sum: f64 = (0..n).map(|i| self.data[i * cols + i]).sum();
+        Ok(self.element_to_value(sum))
+    }
+
+    /// `fill(value)` — fill the array in-place with the given scalar value.
+    pub fn fill(&mut self, value: f64) {
+        self.data.fill(value);
+    }
+
+    /// `compress(condition)` — return elements where the boolean condition array is true.
+    ///
+    /// Operates on the flattened array. The condition array's truthy elements select
+    /// corresponding elements from the source.
+    pub fn compress(&self, condition: &Self, heap: &Heap<impl ResourceTracker>) -> RunResult<Value> {
+        let data: Vec<f64> = self
+            .data
+            .iter()
+            .zip(condition.data.iter())
+            .filter(|pair| *pair.1 != 0.0)
+            .map(|pair| *pair.0)
+            .collect();
+        let len = data.len();
+        let arr = Self::new(data, vec![len], self.dtype);
+        Ok(Value::Ref(heap.allocate(HeapData::NdArray(arr))?))
+    }
+
+    /// `swapaxes(a, b)` — swap two axes of the array.
+    ///
+    /// For 2D arrays with axes 0 and 1, this is equivalent to a transpose.
+    /// For 1D arrays (or swapping an axis with itself), returns a copy.
+    pub fn swapaxes(&self, axis_a: usize, axis_b: usize, heap: &Heap<impl ResourceTracker>) -> RunResult<Value> {
+        if axis_a >= self.ndim() || axis_b >= self.ndim() {
+            return Err(SimpleException::new_msg(
+                ExcType::ValueError,
+                format!("bad axis for array with {} dimensions", self.ndim()),
+            )
+            .into());
+        }
+        if axis_a == axis_b || self.ndim() <= 1 {
+            // No-op: return a copy
+            let arr = Self::new(self.data.clone(), self.shape.clone(), self.dtype);
+            return Ok(Value::Ref(heap.allocate(HeapData::NdArray(arr))?));
+        }
+        // For 2D with axes (0, 1), this is a transpose
+        if self.ndim() == 2 {
+            self.transpose(heap)
+        } else {
+            Err(ExcType::type_error("swapaxes not supported for arrays with ndim > 2"))
+        }
+    }
+
     /// `round(decimals)` — returns a new array with each element rounded.
     pub fn round_array(&self, decimals: i32, heap: &Heap<impl ResourceTracker>) -> RunResult<Value> {
         let factor = 10f64.powi(decimals);
@@ -1423,6 +1564,9 @@ impl<'h> PyTrait<'h> for HeapRead<'h, NdArray> {
             Some(StaticStrings::NpSize) => Value::Int(arr.len() as i64),
             #[expect(clippy::cast_possible_wrap, reason = "ndim is always small")]
             Some(StaticStrings::NpNdim) => Value::Int(arr.ndim() as i64),
+            #[expect(clippy::cast_possible_wrap, reason = "nbytes won't exceed i64::MAX")]
+            Some(StaticStrings::NpNbytes) => Value::Int((arr.len() * 8) as i64),
+            Some(StaticStrings::NpItemsize) => Value::Int(8),
             Some(StaticStrings::NpT) => arr.transpose(vm.heap)?,
             _ => {
                 // "T" is a single ASCII character so it is interned as an ASCII StringId,
@@ -1588,6 +1732,76 @@ impl<'h> PyTrait<'h> for HeapRead<'h, NdArray> {
             Some(StaticStrings::NpRavel) => {
                 args.check_zero_args("ndarray.ravel", vm.heap)?;
                 self.get(vm.heap).flatten(vm.heap)
+            }
+            Some(StaticStrings::NpItem) => {
+                args.check_zero_args("ndarray.item", vm.heap)?;
+                self.get(vm.heap).item()
+            }
+            Some(StaticStrings::NpCumprod) => {
+                args.check_zero_args("ndarray.cumprod", vm.heap)?;
+                self.get(vm.heap).cumprod(vm.heap)
+            }
+            Some(StaticStrings::NpSqueeze) => {
+                args.check_zero_args("ndarray.squeeze", vm.heap)?;
+                self.get(vm.heap).squeeze(vm.heap)
+            }
+            Some(StaticStrings::NpTake) => {
+                let idx_val = args.get_one_arg("ndarray.take", vm.heap)?;
+                let result = match &idx_val {
+                    Value::Ref(other_id) => {
+                        if let HeapData::NdArray(other) = vm.heap.get(*other_id) {
+                            self.get(vm.heap).take_indices(other, vm.heap)
+                        } else {
+                            Err(ExcType::type_error("take() requires an ndarray of indices"))
+                        }
+                    }
+                    _ => Err(ExcType::type_error("take() requires an ndarray of indices")),
+                };
+                idx_val.drop_with_heap(vm);
+                result
+            }
+            Some(StaticStrings::NpDiagonal) => {
+                args.check_zero_args("ndarray.diagonal", vm.heap)?;
+                self.get(vm.heap).diagonal(vm.heap)
+            }
+            Some(StaticStrings::NpTrace) => {
+                args.check_zero_args("ndarray.trace", vm.heap)?;
+                self.get(vm.heap).trace()
+            }
+            Some(StaticStrings::NpFill) => {
+                let arg = args.get_one_arg("ndarray.fill", vm.heap)?;
+                let val = extract_f64(&arg);
+                arg.drop_with_heap(vm);
+                self.get_mut(vm.heap).fill(val);
+                Ok(Value::None)
+            }
+            Some(StaticStrings::NpCompress) => {
+                let cond_val = args.get_one_arg("ndarray.compress", vm.heap)?;
+                let result = match &cond_val {
+                    Value::Ref(other_id) => {
+                        if let HeapData::NdArray(cond) = vm.heap.get(*other_id) {
+                            self.get(vm.heap).compress(cond, vm.heap)
+                        } else {
+                            Err(ExcType::type_error("compress() requires a boolean ndarray condition"))
+                        }
+                    }
+                    _ => Err(ExcType::type_error("compress() requires a boolean ndarray condition")),
+                };
+                cond_val.drop_with_heap(vm);
+                result
+            }
+            Some(StaticStrings::NpSwapaxes) => {
+                let pos = args.into_pos_only("ndarray.swapaxes", vm.heap)?;
+                let result = if pos.as_slice().len() >= 2 {
+                    let a = extract_f64(&pos.as_slice()[0]);
+                    let b = extract_f64(&pos.as_slice()[1]);
+                    #[expect(clippy::cast_possible_truncation, clippy::cast_sign_loss, reason = "axis from user")]
+                    self.get(vm.heap).swapaxes(a as usize, b as usize, vm.heap)
+                } else {
+                    Err(ExcType::type_error("swapaxes() requires two arguments"))
+                };
+                pos.drop_with_heap(vm);
+                result
             }
             _ => {
                 args.drop_with_heap(vm);

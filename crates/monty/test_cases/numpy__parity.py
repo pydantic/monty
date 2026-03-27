@@ -2104,3 +2104,87 @@ a = np.array([[1, 0], [0, 1]])
 b = np.array([[5, 6], [7, 8]])
 r = np.matmul(a, b)
 assert r.tolist() == [[5, 6], [7, 8]], 'np.matmul identity 2D'
+
+# === ndarray.item() ===
+a = np.array([42])
+assert a.item() == 42, 'item int scalar'
+a = np.array([3.14])
+assert a.item() == 3.14, 'item float scalar'
+
+# === ndarray.cumprod() ===
+a = np.array([1, 2, 3, 4])
+assert a.cumprod().tolist() == [1, 2, 6, 24], 'cumprod int'
+a = np.array([1.0, 2.0, 3.0])
+assert a.cumprod().tolist() == [1.0, 2.0, 6.0], 'cumprod float'
+
+# === ndarray.squeeze() ===
+a = np.array([[1, 2, 3]])
+assert a.squeeze().tolist() == [1, 2, 3], 'squeeze removes unit dim'
+assert a.squeeze().shape == (3,), 'squeeze shape'
+
+# === ndarray.take() ===
+a = np.array([10, 20, 30, 40, 50])
+idx = np.array([0, 2, 4])
+assert a.take(idx).tolist() == [10, 30, 50], 'take indices'
+
+# === ndarray.diagonal() ===
+a = np.array([[1, 2, 3], [4, 5, 6], [7, 8, 9]])
+assert a.diagonal().tolist() == [1, 5, 9], 'diagonal 3x3'
+a = np.array([[1, 2], [3, 4]])
+assert a.diagonal().tolist() == [1, 4], 'diagonal 2x2'
+
+# === ndarray.trace() ===
+a = np.array([[1, 2], [3, 4]])
+assert a.trace() == 5, 'trace int 2x2'
+a = np.array([[1.0, 2.0], [3.0, 4.0]])
+assert a.trace() == 5.0, 'trace float 2x2'
+
+# === ndarray.fill() ===
+a = np.array([1.0, 2.0, 3.0])
+a.fill(7.0)
+assert a.tolist() == [7.0, 7.0, 7.0], 'fill float'
+
+# === ndarray.compress() ===
+a = np.array([10, 20, 30, 40])
+c = np.array([1, 0, 1, 0])
+assert a.compress(c).tolist() == [10, 30], 'compress bool-like'
+
+# === ndarray.swapaxes() ===
+a = np.array([[1, 2], [3, 4]])
+assert a.swapaxes(0, 1).tolist() == [[1, 3], [2, 4]], 'swapaxes 2D transpose'
+
+# === ndarray.nbytes ===
+a = np.array([1.0, 2.0, 3.0])
+assert a.nbytes == 24, 'nbytes 3 floats'
+
+# === ndarray.itemsize ===
+a = np.array([1.0, 2.0, 3.0])
+assert a.itemsize == 8, 'itemsize float64'
+
+# === np.row_stack (alias for vstack) ===
+a = np.array([1, 2])
+b = np.array([3, 4])
+assert np.row_stack([a, b]).tolist() == [[1, 2], [3, 4]], 'row_stack'
+
+# === np.hsplit ===
+a = np.array([1, 2, 3, 4, 5, 6])
+parts = np.hsplit(a, 3)
+assert parts[0].tolist() == [1, 2], 'hsplit part 0'
+assert parts[1].tolist() == [3, 4], 'hsplit part 1'
+assert parts[2].tolist() == [5, 6], 'hsplit part 2'
+
+# === np.vsplit ===
+a = np.array([1, 2, 3, 4])
+parts = np.vsplit(a, 2)
+assert parts[0].tolist() == [1, 2], 'vsplit part 0'
+assert parts[1].tolist() == [3, 4], 'vsplit part 1'
+
+# === np.inner ===
+a = np.array([1, 2, 3])
+b = np.array([4, 5, 6])
+assert np.inner(a, b) == 32, 'inner product'
+
+# === np.vdot ===
+a = np.array([1, 2, 3])
+b = np.array([4, 5, 6])
+assert np.vdot(a, b) == 32, 'vdot product'
