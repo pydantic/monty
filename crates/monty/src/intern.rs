@@ -449,6 +449,26 @@ pub enum StaticStrings {
     /// `json.JSONDecodeError` exception.
     #[strum(serialize = "JSONDecodeError")]
     JsonDecodeError,
+    /// `json.dumps(indent=...)` keyword.
+    Indent,
+    /// `json.dumps(sort_keys=...)` keyword.
+    #[strum(serialize = "sort_keys")]
+    SortKeys,
+    /// `json.dumps(ensure_ascii=...)` keyword.
+    #[strum(serialize = "ensure_ascii")]
+    EnsureAscii,
+    /// `json.dumps(allow_nan=...)` keyword.
+    #[strum(serialize = "allow_nan")]
+    AllowNan,
+    /// `json.dumps(separators=...)` keyword.
+    Separators,
+    /// `json.dumps(skipkeys=...)` keyword.
+    Skipkeys,
+    /// `json.dumps(cls=...)` keyword.
+    Cls,
+    /// `json.dumps(check_circular=...)` keyword.
+    #[strum(serialize = "check_circular")]
+    CheckCircular,
 
     // ==========================
     // datetime module strings

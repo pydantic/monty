@@ -11,6 +11,7 @@ use crate::{
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, RunResult},
     heap::{DropWithHeap, HeapData, HeapGuard, HeapId, HeapReadOutput},
+    intern::StaticStrings,
     resource::ResourceTracker,
     sorting::sort_indices,
     types::{PyTrait, long_int::check_bits_str_digits_limit, str::allocate_string},
@@ -20,9 +21,8 @@ use crate::{
 /// Serializer configuration derived from `json.dumps()` keyword arguments.
 ///
 /// The struct stores only the subset of encoder configuration that this module
-/// actually uses while serializing. Unsupported-but-accepted kwargs such as
-/// `default` and `cls` are intentionally omitted since they are parsed and
-/// ignored during argument extraction.
+/// actually uses while serializing. Unsupported or not-yet-implemented kwargs
+/// still raise during parsing so call sites do not silently lose behavior.
 struct JsonDumpsConfig {
     indent: Option<String>,
     item_separator: String,
@@ -61,19 +61,9 @@ impl JsonDumpsConfig {
         self.flags & Self::SORT_KEYS != 0
     }
 
-    /// Enables or disables `sort_keys=True`.
-    fn set_sort_keys(&mut self, enabled: bool) {
-        self.set_flag(Self::SORT_KEYS, enabled);
-    }
-
     /// Returns whether non-ASCII characters must be escaped.
     fn ensure_ascii(&self) -> bool {
         self.flags & Self::ENSURE_ASCII != 0
-    }
-
-    /// Enables or disables ASCII escaping.
-    fn set_ensure_ascii(&mut self, enabled: bool) {
-        self.set_flag(Self::ENSURE_ASCII, enabled);
     }
 
     /// Returns whether NaN and infinity may be emitted as JSON tokens.
@@ -81,37 +71,138 @@ impl JsonDumpsConfig {
         self.flags & Self::ALLOW_NAN != 0
     }
 
-    /// Enables or disables `NaN`/`Infinity` output.
-    fn set_allow_nan(&mut self, enabled: bool) {
-        self.set_flag(Self::ALLOW_NAN, enabled);
-    }
-
     /// Returns whether unsupported dict keys should be skipped.
     fn skipkeys(&self) -> bool {
         self.flags & Self::SKIPKEYS != 0
     }
 
-    /// Enables or disables invalid-key skipping.
-    fn set_skipkeys(&mut self, enabled: bool) {
-        self.set_flag(Self::SKIPKEYS, enabled);
-    }
+    /// Parses `json.dumps()` keyword arguments into serializer configuration.
+    ///
+    /// Unsupported keyword names and not-yet-implemented CPython kwargs raise
+    /// immediately so typos or dropped behavior do not go unnoticed.
+    fn parse_kwargs(kwargs: KwargsValues, vm: &mut VM<'_, '_, impl ResourceTracker>) -> RunResult<Self> {
+        let kwargs_iter = kwargs.into_iter();
+        defer_drop_mut!(kwargs_iter, vm);
 
-    /// Sets or clears a single configuration bit.
-    fn set_flag(&mut self, flag: u8, enabled: bool) {
-        if enabled {
-            self.flags |= flag;
-        } else {
-            self.flags &= !flag;
+        let mut config = Self::default();
+        let mut seen_indent = false;
+        let mut seen_sort_keys = false;
+        let mut seen_ensure_ascii = false;
+        let mut seen_allow_nan = false;
+        let mut seen_separators = false;
+        let mut seen_skipkeys = false;
+
+        for (key, value) in kwargs_iter {
+            defer_drop!(key, vm);
+            let Some(keyword_name) = key.as_either_str(vm.heap) else {
+                value.drop_with_heap(vm);
+                return Err(ExcType::type_error_kwargs_nonstring_key());
+            };
+            let Some(keyword_static) = keyword_name.static_string() else {
+                value.drop_with_heap(vm);
+                return Err(ExcType::type_error_unexpected_keyword(
+                    "dumps",
+                    keyword_name.as_str(vm.interns),
+                ));
+            };
+
+            match keyword_static {
+                StaticStrings::Indent => {
+                    if seen_indent {
+                        value.drop_with_heap(vm);
+                        return Err(ExcType::type_error_duplicate_arg("dumps", "indent"));
+                    }
+                    seen_indent = true;
+                    config.indent = parse_indent_value(value, vm)?;
+                }
+                StaticStrings::SortKeys => {
+                    if seen_sort_keys {
+                        value.drop_with_heap(vm);
+                        return Err(ExcType::type_error_duplicate_arg("dumps", "sort_keys"));
+                    }
+                    seen_sort_keys = true;
+                    if value.py_bool(vm) {
+                        config.flags |= Self::SORT_KEYS;
+                    } else {
+                        config.flags &= !Self::SORT_KEYS;
+                    }
+                    value.drop_with_heap(vm);
+                }
+                StaticStrings::EnsureAscii => {
+                    if seen_ensure_ascii {
+                        value.drop_with_heap(vm);
+                        return Err(ExcType::type_error_duplicate_arg("dumps", "ensure_ascii"));
+                    }
+                    seen_ensure_ascii = true;
+                    if value.py_bool(vm) {
+                        config.flags |= Self::ENSURE_ASCII;
+                    } else {
+                        config.flags &= !Self::ENSURE_ASCII;
+                    }
+                    value.drop_with_heap(vm);
+                }
+                StaticStrings::AllowNan => {
+                    if seen_allow_nan {
+                        value.drop_with_heap(vm);
+                        return Err(ExcType::type_error_duplicate_arg("dumps", "allow_nan"));
+                    }
+                    seen_allow_nan = true;
+                    if value.py_bool(vm) {
+                        config.flags |= Self::ALLOW_NAN;
+                    } else {
+                        config.flags &= !Self::ALLOW_NAN;
+                    }
+                    value.drop_with_heap(vm);
+                }
+                StaticStrings::Separators => {
+                    if seen_separators {
+                        value.drop_with_heap(vm);
+                        return Err(ExcType::type_error_duplicate_arg("dumps", "separators"));
+                    }
+                    seen_separators = true;
+                    if let Some((item, key)) = parse_separators_value(value, vm)? {
+                        config.item_separator = item;
+                        config.key_separator = key;
+                    }
+                }
+                StaticStrings::Skipkeys => {
+                    if seen_skipkeys {
+                        value.drop_with_heap(vm);
+                        return Err(ExcType::type_error_duplicate_arg("dumps", "skipkeys"));
+                    }
+                    seen_skipkeys = true;
+                    if value.py_bool(vm) {
+                        config.flags |= Self::SKIPKEYS;
+                    } else {
+                        config.flags &= !Self::SKIPKEYS;
+                    }
+                    value.drop_with_heap(vm);
+                }
+                _ => {
+                    value.drop_with_heap(vm);
+                    return Err(ExcType::type_error_unexpected_keyword(
+                        "dumps",
+                        vm.interns.get_str(keyword_static.into()),
+                    ));
+                }
+            }
         }
+
+        if config.indent.is_some() && !seen_separators {
+            ",".clone_into(&mut config.item_separator);
+            ": ".clone_into(&mut config.key_separator);
+        }
+
+        Ok(config)
     }
 }
 
 /// Implements `json.dumps(obj, **kwargs)`.
 ///
 /// Only the first argument may be positional. Supported keyword arguments mirror
-/// the high-value subset of CPython's encoder configuration, while
-/// `default`, `cls`, and `check_circular` are accepted but ignored so common
-/// call sites continue to work.
+/// the high-value subset of CPython's encoder configuration. Unknown keywords
+/// and not-yet-implemented options such as `cls`, `default`, and
+/// `check_circular` raise immediately.
 pub(super) fn call_dumps(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     let (mut pos, kwargs) = args.into_parts();
 
@@ -128,7 +219,7 @@ pub(super) fn call_dumps(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgVal
     }
 
     let mut obj_guard = HeapGuard::new(obj, vm);
-    let config = parse_dumps_kwargs(kwargs, obj_guard.heap())?;
+    let config = JsonDumpsConfig::parse_kwargs(kwargs, obj_guard.heap())?;
 
     let mut output = String::new();
     let mut active_containers = Vec::new();
@@ -140,128 +231,6 @@ pub(super) fn call_dumps(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgVal
     let (obj, vm) = obj_guard.into_parts();
     obj.drop_with_heap(vm);
     allocate_string(output, vm.heap)
-}
-
-/// Parses `json.dumps()` keyword arguments into serializer configuration.
-///
-/// Unsupported keyword names still raise immediately so typos do not silently
-/// change output. Supported-but-ignored keywords are accepted and discarded.
-fn parse_dumps_kwargs(kwargs: KwargsValues, vm: &mut VM<'_, '_, impl ResourceTracker>) -> RunResult<JsonDumpsConfig> {
-    let kwargs_iter = kwargs.into_iter();
-    defer_drop_mut!(kwargs_iter, vm);
-
-    let mut config = JsonDumpsConfig::default();
-    let mut seen_indent = false;
-    let mut seen_sort_keys = false;
-    let mut seen_ensure_ascii = false;
-    let mut seen_allow_nan = false;
-    let mut seen_separators = false;
-    let mut seen_skipkeys = false;
-    let mut seen_default = false;
-    let mut seen_cls = false;
-    let mut seen_check_circular = false;
-
-    for (key, value) in kwargs_iter {
-        defer_drop!(key, vm);
-        let Some(keyword_name) = key.as_either_str(vm.heap) else {
-            value.drop_with_heap(vm);
-            return Err(ExcType::type_error_kwargs_nonstring_key());
-        };
-        let key_str = keyword_name.as_str(vm.interns);
-
-        match key_str {
-            "indent" => {
-                if seen_indent {
-                    value.drop_with_heap(vm);
-                    return Err(ExcType::type_error_duplicate_arg("dumps", "indent"));
-                }
-                seen_indent = true;
-                config.indent = parse_indent_value(value, vm)?;
-            }
-            "sort_keys" => {
-                if seen_sort_keys {
-                    value.drop_with_heap(vm);
-                    return Err(ExcType::type_error_duplicate_arg("dumps", "sort_keys"));
-                }
-                seen_sort_keys = true;
-                config.set_sort_keys(value.py_bool(vm));
-                value.drop_with_heap(vm);
-            }
-            "ensure_ascii" => {
-                if seen_ensure_ascii {
-                    value.drop_with_heap(vm);
-                    return Err(ExcType::type_error_duplicate_arg("dumps", "ensure_ascii"));
-                }
-                seen_ensure_ascii = true;
-                config.set_ensure_ascii(value.py_bool(vm));
-                value.drop_with_heap(vm);
-            }
-            "allow_nan" => {
-                if seen_allow_nan {
-                    value.drop_with_heap(vm);
-                    return Err(ExcType::type_error_duplicate_arg("dumps", "allow_nan"));
-                }
-                seen_allow_nan = true;
-                config.set_allow_nan(value.py_bool(vm));
-                value.drop_with_heap(vm);
-            }
-            "separators" => {
-                if seen_separators {
-                    value.drop_with_heap(vm);
-                    return Err(ExcType::type_error_duplicate_arg("dumps", "separators"));
-                }
-                seen_separators = true;
-                if let Some((item, key)) = parse_separators_value(value, vm)? {
-                    config.item_separator = item;
-                    config.key_separator = key;
-                }
-            }
-            "skipkeys" => {
-                if seen_skipkeys {
-                    value.drop_with_heap(vm);
-                    return Err(ExcType::type_error_duplicate_arg("dumps", "skipkeys"));
-                }
-                seen_skipkeys = true;
-                config.set_skipkeys(value.py_bool(vm));
-                value.drop_with_heap(vm);
-            }
-            "default" => {
-                if seen_default {
-                    value.drop_with_heap(vm);
-                    return Err(ExcType::type_error_duplicate_arg("dumps", "default"));
-                }
-                seen_default = true;
-                value.drop_with_heap(vm);
-            }
-            "cls" => {
-                if seen_cls {
-                    value.drop_with_heap(vm);
-                    return Err(ExcType::type_error_duplicate_arg("dumps", "cls"));
-                }
-                seen_cls = true;
-                value.drop_with_heap(vm);
-            }
-            "check_circular" => {
-                if seen_check_circular {
-                    value.drop_with_heap(vm);
-                    return Err(ExcType::type_error_duplicate_arg("dumps", "check_circular"));
-                }
-                seen_check_circular = true;
-                value.drop_with_heap(vm);
-            }
-            _ => {
-                value.drop_with_heap(vm);
-                return Err(ExcType::type_error_unexpected_keyword("dumps", key_str));
-            }
-        }
-    }
-
-    if config.indent.is_some() && !seen_separators {
-        ",".clone_into(&mut config.item_separator);
-        ": ".clone_into(&mut config.key_separator);
-    }
-
-    Ok(config)
 }
 
 /// Parses the `indent=` value for `json.dumps()`.
@@ -276,17 +245,16 @@ fn parse_indent_value(value: Value, vm: &mut VM<'_, '_, impl ResourceTracker>) -
     match value {
         Value::None => Ok(None),
         Value::Bool(flag) => Ok(Some(" ".repeat(usize::from(*flag)))),
-        Value::Int(count) => Ok(Some(spaces_from_indent_count(*count))),
+        Value::Int(count) => spaces_from_indent_count(*count),
         Value::InternString(string_id) => Ok(Some(vm.interns.get_str(*string_id).to_owned())),
         Value::Ref(heap_id) => match vm.heap.read(*heap_id) {
             HeapReadOutput::Str(string) => Ok(Some(string.get(vm.heap).as_str().to_owned())),
-            HeapReadOutput::LongInt(long_int) => {
-                let count = long_int
+            HeapReadOutput::LongInt(long_int) => spaces_from_indent_count(
+                long_int
                     .get(vm.heap)
                     .to_i64()
-                    .ok_or_else(ExcType::overflow_shift_count)?;
-                Ok(Some(spaces_from_indent_count(count)))
-            }
+                    .ok_or_else(ExcType::overflow_shift_count)?,
+            ),
             _ => Err(ExcType::type_error("indent must be None, an integer or a string")),
         },
         _ => Err(ExcType::type_error("indent must be None, an integer or a string")),
@@ -297,11 +265,14 @@ fn parse_indent_value(value: Value, vm: &mut VM<'_, '_, impl ResourceTracker>) -
 ///
 /// Negative values behave like zero, which matches CPython's newline-only pretty
 /// printer behavior for `indent=0` and `indent<0`.
-fn spaces_from_indent_count(count: i64) -> String {
+fn spaces_from_indent_count(count: i64) -> RunResult<Option<String>> {
     if count <= 0 {
-        String::new()
+        Ok(None)
     } else {
-        " ".repeat(usize::try_from(count).expect("positive indent count fits in usize"))
+        match usize::try_from(count) {
+            Ok(count) => Ok(Some(" ".repeat(count))),
+            Err(_) => Err(ExcType::overflow_shift_count()),
+        }
     }
 }
 
