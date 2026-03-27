@@ -4,6 +4,7 @@
 //! formatting, and recursive serialization of Monty values.
 
 use std::{
+    cmp::Ordering,
     fmt::{Display, Write},
     mem,
 };
@@ -104,7 +105,7 @@ impl JsonDumpsConfig {
             let Some(keyword_static) = keyword_name.static_string() else {
                 value.drop_with_heap(vm);
                 return Err(ExcType::type_error_unexpected_keyword(
-                    "dumps",
+                    "JSONEncoder.__init__",
                     keyword_name.as_str(vm.interns),
                 ));
             };
@@ -184,7 +185,7 @@ impl JsonDumpsConfig {
                 _ => {
                     value.drop_with_heap(vm);
                     return Err(ExcType::type_error_unexpected_keyword(
-                        "dumps",
+                        "JSONEncoder.__init__",
                         vm.interns.get_str(keyword_static.into()),
                     ));
                 }
@@ -299,48 +300,73 @@ fn parse_separators_value(
         Value::Ref(heap_id) => match vm.heap.read(*heap_id) {
             HeapReadOutput::Tuple(tuple) => {
                 let items = tuple.get(vm.heap).as_slice();
-                if items.len() != 2 {
-                    return Err(ExcType::type_error("separators must be a sequence of length 2"));
-                }
+                check_separators_length(items.len())?;
                 (
-                    json_string_value_to_owned(&items[0], vm)?,
-                    json_string_value_to_owned(&items[1], vm)?,
+                    json_separator_to_string(&items[0], "item_separator", vm)?,
+                    json_separator_to_string(&items[1], "key_separator", vm)?,
                 )
             }
             HeapReadOutput::List(list) => {
                 let items = list.get(vm.heap).as_slice();
-                if items.len() != 2 {
-                    return Err(ExcType::type_error("separators must be a sequence of length 2"));
-                }
+                check_separators_length(items.len())?;
                 (
-                    json_string_value_to_owned(&items[0], vm)?,
-                    json_string_value_to_owned(&items[1], vm)?,
+                    json_separator_to_string(&items[0], "item_separator", vm)?,
+                    json_separator_to_string(&items[1], "key_separator", vm)?,
                 )
             }
-            _ => return Err(ExcType::type_error("separators must be a sequence of length 2")),
+            _ => {
+                return Err(ExcType::type_error(format!(
+                    "cannot unpack non-iterable {} object",
+                    value.py_type(vm)
+                )));
+            }
         },
-        _ => return Err(ExcType::type_error("separators must be a sequence of length 2")),
+        _ => {
+            return Err(ExcType::type_error(format!(
+                "cannot unpack non-iterable {} object",
+                value.py_type(vm)
+            )));
+        }
     };
 
     Ok(Some(pair))
 }
 
-/// Converts a Monty string value into an owned Rust `String`.
+/// Validates that the separators sequence has exactly two elements.
 ///
-/// This helper accepts only Python strings because JSON separator configuration
-/// is string-based in CPython as well.
-fn json_string_value_to_owned(value: &Value, vm: &VM<'_, '_, impl ResourceTracker>) -> RunResult<String> {
+/// Raises `ValueError` with the same unpacking-style message as CPython when
+/// the length does not match the expected two elements.
+fn check_separators_length(len: usize) -> RunResult<()> {
+    match len.cmp(&2) {
+        Ordering::Greater => Err(ExcType::value_error(format!(
+            "too many values to unpack (expected 2, got {len})"
+        ))),
+        Ordering::Less => Err(ExcType::value_error(format!(
+            "not enough values to unpack (expected 2, got {len})"
+        ))),
+        Ordering::Equal => Ok(()),
+    }
+}
+
+/// Converts a Monty value to a string for use as a JSON separator.
+///
+/// CPython's C encoder validates separators as strings and refers to them by
+/// their positional argument index in `make_encoder()`. The `role` parameter
+/// selects the matching CPython argument number (6 for `item_separator`,
+/// 5 for `key_separator`) so the error message matches CPython exactly.
+fn json_separator_to_string(value: &Value, role: &str, vm: &VM<'_, '_, impl ResourceTracker>) -> RunResult<String> {
+    let arg_num = if role == "item_separator" { 6 } else { 5 };
     match value {
         Value::InternString(string_id) => Ok(vm.interns.get_str(*string_id).to_owned()),
         Value::Ref(heap_id) => match vm.heap.get(*heap_id) {
             HeapData::Str(string) => Ok(string.as_str().to_owned()),
             _ => Err(ExcType::type_error(format!(
-                "expected string separator, not {}",
+                "make_encoder() argument {arg_num} must be str, not {}",
                 value.py_type(vm)
             ))),
         },
         _ => Err(ExcType::type_error(format!(
-            "expected string separator, not {}",
+            "make_encoder() argument {arg_num} must be str, not {}",
             value.py_type(vm)
         ))),
     }

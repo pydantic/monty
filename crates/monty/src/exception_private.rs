@@ -695,6 +695,11 @@ impl ExcType {
         SimpleException::new_msg(Self::TypeError, msg).into()
     }
 
+    /// Creates a generic `ValueError` with a custom message.
+    pub(crate) fn value_error(msg: impl fmt::Display) -> RunError {
+        SimpleException::new_msg(Self::ValueError, msg).into()
+    }
+
     /// Creates a TypeError for bytes() constructor with invalid type.
     ///
     /// Matches CPython's format: `TypeError: cannot convert '{type}' object to bytes`

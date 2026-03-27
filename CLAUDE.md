@@ -353,7 +353,7 @@ Do NOT use `# Return=` when you could use `assert` instead
 
 ### Traceback Tests (Preferred for Errors)
 
-For tests that expect exceptions, **prefer traceback tests over `# Raise=`** because they verify:
+For tests that expect exceptions, **prefer traceback tests over `# Raise=` or `try` / `except`** because they verify:
 - The full traceback with all stack frames
 - Correct line numbers for each frame
 - Function names in the traceback
@@ -383,7 +383,23 @@ Key points:
 - The `<module>` frame name is used for top-level code
 - Tests run against both Monty and CPython, so the traceback must match both
 
-Only use `# Raise=` when you only care about the exception type/message and not the traceback.
+If you don't care about the traceback or it intentionally differs from cpython (e.g. for `json`) and you want to test
+multiple cases in the same file, use this style
+
+```py
+try:
+    ...
+    assert False, 'expected <task> to fail'
+except <ErrorType> as exc:
+    assert str(exc) = '<expected exception message>'
+```
+
+IMPORTANT: don't just check that an exception is raised, you should always check the exception message.
+
+IMPORTANT: DON'T BE LAZY. If the exception differs between cpython and Monty, either fix the exception message, or
+stop and report the problem!
+
+Only use `# Raise=` when you only care about the exception type/message and not the traceback and you can't use a try/except block.
 
 ### Python fixture markers
 

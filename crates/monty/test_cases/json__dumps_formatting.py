@@ -13,6 +13,9 @@ assert json.dumps((), indent=2) == '[]', 'empty tuple with indent stays compact'
 assert json.dumps({'a': 1}, separators=(',', ':')) == '{"a":1}', 'tuple separators work'
 assert json.dumps([1, 2], separators=(' , ', ' : ')) == '[1 , 2]', 'custom separators with spaces'
 
+# === separators as list ===
+assert json.dumps({'a': 1}, separators=[',', ':']) == '{"a":1}', 'list separators work'
+
 # === indent with explicit separators ===
 assert json.dumps({'a': 1}, indent=2, separators=(',', ': ')) == '{\n  "a": 1\n}', (
     'indent with explicit separators does not override to defaults'
@@ -52,6 +55,11 @@ shared = [1, 2]
 assert json.dumps([shared, shared]) == '[[1, 2], [1, 2]]', (
     'multiple references to same list are not flagged as circular'
 )
+
+# === long integers beyond i64 range ===
+big = 2**63 + 1
+assert json.dumps(big) == '9223372036854775809', 'long int above i64::MAX serializes'
+assert json.dumps(-big) == '-9223372036854775809', 'negative long int below i64::MIN serializes'
 
 # === string escaping ===
 assert json.dumps('a\\b') == '"a\\\\b"', 'backslash is escaped'
