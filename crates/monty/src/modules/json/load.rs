@@ -158,7 +158,10 @@ fn parse_json_value_from_peek(
         Peek::Array => parse_json_array(jiter, depth, vm),
         Peek::Object => parse_json_object(jiter, depth, vm),
         _ if peek.is_num() => parse_json_number(peek, jiter, vm),
-        _ => unreachable!("jiter.peek() returned unsupported token"),
+        _ => Err(JsonLoadError::Parse(JiterError {
+            error_type: JiterErrorType::JsonError(JsonErrorType::ExpectedSomeValue),
+            index: jiter.current_index(),
+        })),
     }
 }
 
@@ -291,32 +294,65 @@ fn check_json_recursion_limit(jiter: &Jiter<'_>, depth: usize) -> ParseResult<()
 /// `jiter` exposes the error byte index plus a helper for computing line and
 /// column, which is enough to reproduce CPython's message suffix exactly.
 fn json_error_to_run_error(error: &JiterError, jiter: &Jiter<'_>, bytes: &[u8]) -> RunError {
-    let (message, index) = match &error.error_type {
+    let (message, index, column_offset) = match &error.error_type {
         JiterErrorType::JsonError(JsonErrorType::KeyMustBeAString) => (
             "Expecting property name enclosed in double quotes".to_owned(),
             error.index,
+            0,
         ),
         JiterErrorType::JsonError(JsonErrorType::TrailingComma) => {
-            let message = match bytes.get(error.index) {
+            let comma_index = find_trailing_comma_index(bytes, error.index).unwrap_or(error.index);
+            let message = match bytes
+                .get(comma_index.saturating_add(1)..)
+                .and_then(|rest| rest.iter().copied().find(|byte| !byte.is_ascii_whitespace()))
+            {
                 Some(b'}') => "Illegal trailing comma before end of object",
                 Some(b']') => "Illegal trailing comma before end of array",
                 _ => "trailing comma",
             };
-            (message.to_owned(), error.index.saturating_sub(1))
+            (message.to_owned(), comma_index, 0)
         }
         JiterErrorType::JsonError(JsonErrorType::EofWhileParsingString) => (
             "Unterminated string starting at".to_owned(),
             find_unterminated_string_start(bytes, error.index).unwrap_or(error.index),
+            0,
         ),
-        JiterErrorType::JsonError(JsonErrorType::EofWhileParsingValue) => ("Expecting value".to_owned(), error.index),
-        JiterErrorType::JsonError(JsonErrorType::TrailingCharacters) => ("Extra data".to_owned(), error.index),
-        JiterErrorType::JsonError(error_type) => (error_type.to_string(), error.index),
-        JiterErrorType::WrongType { .. } => (error.error_type.to_string(), error.index),
+        JiterErrorType::JsonError(JsonErrorType::EofWhileParsingValue | JsonErrorType::ExpectedSomeValue) => {
+            ("Expecting value".to_owned(), error.index, 0)
+        }
+        JiterErrorType::JsonError(JsonErrorType::ExpectedColon) => {
+            ("Expecting ':' delimiter".to_owned(), error.index, 0)
+        }
+        JiterErrorType::JsonError(
+            JsonErrorType::ExpectedListCommaOrEnd
+            | JsonErrorType::ExpectedObjectCommaOrEnd
+            | JsonErrorType::EofWhileParsingList
+            | JsonErrorType::EofWhileParsingObject,
+        ) => ("Expecting ',' delimiter".to_owned(), error.index, 1),
+        JiterErrorType::JsonError(JsonErrorType::InvalidEscape) => {
+            let escape_index = find_string_escape_start(bytes, error.index).unwrap_or(error.index);
+            let is_unicode_escape = bytes.get(escape_index.saturating_add(1)) == Some(&b'u');
+            let message = if is_unicode_escape {
+                "Invalid \\uXXXX escape"
+            } else {
+                "Invalid \\escape"
+            };
+            let index = if is_unicode_escape {
+                escape_index.saturating_add(1)
+            } else {
+                escape_index
+            };
+            (message.to_owned(), index, 0)
+        }
+        JiterErrorType::JsonError(JsonErrorType::TrailingCharacters) => ("Extra data".to_owned(), error.index, 0),
+        JiterErrorType::JsonError(error_type) => (error_type.to_string(), error.index, 0),
+        JiterErrorType::WrongType { .. } => (error.error_type.to_string(), error.index, 0),
     };
     let mut position = jiter.error_position(index);
     if position.column == 0 {
         position.column = 1;
     }
+    position.column += column_offset;
     ExcType::json_decode_error(&message, position.line, position.column, index)
 }
 
@@ -354,4 +390,30 @@ fn find_unterminated_string_start(bytes: &[u8], end_index: usize) -> Option<usiz
     }
 
     if in_string { string_start } else { None }
+}
+
+/// Finds the comma that triggered a trailing-comma error.
+///
+/// `jiter` reports the error at the closing delimiter after any intervening
+/// whitespace, while CPython points at the comma itself.
+fn find_trailing_comma_index(bytes: &[u8], end_index: usize) -> Option<usize> {
+    bytes
+        .get(..end_index)?
+        .iter()
+        .rposition(|byte| !byte.is_ascii_whitespace())
+        .filter(|&index| bytes[index] == b',')
+}
+
+/// Finds the start of the current JSON escape sequence.
+///
+/// CPython reports invalid escape errors at the `\` for generic escapes and at
+/// the `u` for malformed `\uXXXX` escapes.
+fn find_string_escape_start(bytes: &[u8], end_index: usize) -> Option<usize> {
+    find_unterminated_string_start(bytes, end_index).and_then(|string_start| {
+        bytes
+            .get(string_start.saturating_add(1)..end_index)?
+            .iter()
+            .rposition(|byte| *byte == b'\\')
+            .map(|relative_index| string_start + 1 + relative_index)
+    })
 }
