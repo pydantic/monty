@@ -3,7 +3,13 @@
 //! Monty stores datetimes with chrono primitives and layers CPython-compatible
 //! constructor rules, aware/naive comparison semantics, and arithmetic on top.
 
-use std::{borrow::Cow, fmt::Write};
+use std::{
+    borrow::Cow,
+    cmp::Ordering,
+    fmt::Write,
+    hash::{Hash, Hasher},
+    mem,
+};
 
 use ahash::AHashSet;
 use chrono::{Datelike, FixedOffset, NaiveDateTime, NaiveTime, TimeDelta as ChronoTimeDelta, Timelike};
@@ -21,7 +27,7 @@ use crate::{
         AttrCallResult, PyTrait, TimeDelta, TimeZone, Type, date, str, str::StringRepr, timedelta, timezone,
         value_to_i32,
     },
-    value::Value,
+    value::{EitherStr, Value},
 };
 
 /// Number of microseconds in a single second.
@@ -43,8 +49,8 @@ pub(crate) struct DateTime {
     tzinfo_ref: Option<HeapId>,
 }
 
-impl std::hash::Hash for DateTime {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+impl Hash for DateTime {
+    fn hash<H: Hasher>(&self, state: &mut H) {
         // Hash must be consistent with equality (py_eq).
         if is_aware(self) {
             // Aware datetimes compare equal if they represent the same UTC instant,
@@ -710,7 +716,7 @@ fn update_retained_tzinfo(
     tzinfo_ref: Option<HeapId>,
     heap: &mut Heap<impl ResourceTracker>,
 ) {
-    let old = std::mem::replace(retained_tzinfo, Value::None);
+    let old = mem::replace(retained_tzinfo, Value::None);
     old.drop_with_heap(heap);
     *retained_tzinfo = if let Some(tzinfo_ref) = tzinfo_ref {
         heap.inc_ref(tzinfo_ref);
@@ -952,7 +958,7 @@ fn extract_datetime_replace_kwargs(
 
 impl HeapItem for DateTime {
     fn py_estimate_size(&self) -> usize {
-        std::mem::size_of::<Self>() + self.timezone_name.as_ref().map_or(0, String::len)
+        mem::size_of::<Self>() + self.timezone_name.as_ref().map_or(0, String::len)
     }
 
     fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
@@ -989,7 +995,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, DateTime> {
         &self,
         other: &Self,
         vm: &mut VM<'h, '_, impl ResourceTracker>,
-    ) -> Result<Option<std::cmp::Ordering>, ResourceError> {
+    ) -> Result<Option<Ordering>, ResourceError> {
         let a = self.get(vm.heap);
         let b = other.get(vm.heap);
         if is_aware(a) != is_aware(b) {
@@ -1059,7 +1065,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, DateTime> {
         &mut self,
         _self_id: HeapId,
         vm: &mut VM<'h, '_, impl ResourceTracker>,
-        attr: &crate::value::EitherStr,
+        attr: &EitherStr,
         args: ArgValues,
     ) -> RunResult<CallResult> {
         let dt = self.get(vm.heap).clone();
@@ -1112,11 +1118,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, DateTime> {
         }
     }
 
-    fn py_getattr(
-        &self,
-        attr: &crate::value::EitherStr,
-        vm: &mut VM<'h, '_, impl ResourceTracker>,
-    ) -> RunResult<Option<CallResult>> {
+    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<Option<CallResult>> {
         // Clone to release the HeapRead borrow before accessing attributes
         // that may need to allocate (e.g. tzinfo).
         let dt = self.get(vm.heap).clone();

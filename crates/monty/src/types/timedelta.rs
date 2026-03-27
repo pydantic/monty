@@ -4,7 +4,7 @@
 //! normalized `(days, seconds, microseconds)` semantics for constructors, arithmetic,
 //! and formatting.
 
-use std::fmt::Write;
+use std::{borrow::Cow, cmp::Ordering, fmt::Write, mem};
 
 use ahash::AHashSet;
 use chrono::TimeDelta as ChronoTimeDelta;
@@ -122,9 +122,9 @@ pub(crate) fn div_microseconds_round_ties_even(total_microseconds: i128, divisor
     let remainder = numerator % denominator;
 
     let rounded = match (remainder * 2).cmp(&denominator) {
-        std::cmp::Ordering::Less => quotient,
-        std::cmp::Ordering::Greater => quotient + 1,
-        std::cmp::Ordering::Equal => {
+        Ordering::Less => quotient,
+        Ordering::Greater => quotient + 1,
+        Ordering::Equal => {
             if quotient % 2 == 0 {
                 quotient
             } else {
@@ -313,7 +313,7 @@ pub(crate) fn format_repr(delta: &TimeDelta) -> String {
 
 impl HeapItem for TimeDelta {
     fn py_estimate_size(&self) -> usize {
-        std::mem::size_of::<Self>()
+        mem::size_of::<Self>()
     }
 
     fn py_dec_ref_ids(&mut self, _stack: &mut Vec<HeapId>) {}
@@ -338,7 +338,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, TimeDelta> {
         &self,
         other: &Self,
         vm: &mut VM<'h, '_, impl ResourceTracker>,
-    ) -> Result<Option<std::cmp::Ordering>, ResourceError> {
+    ) -> Result<Option<Ordering>, ResourceError> {
         Ok(total_microseconds(self.get(vm.heap)).partial_cmp(&total_microseconds(other.get(vm.heap))))
     }
 
@@ -356,7 +356,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, TimeDelta> {
         Ok(())
     }
 
-    fn py_str(&self, vm: &VM<'h, '_, impl ResourceTracker>) -> RunResult<std::borrow::Cow<'static, str>> {
+    fn py_str(&self, vm: &VM<'h, '_, impl ResourceTracker>) -> RunResult<Cow<'static, str>> {
         let (days, seconds, microseconds) = components(self.get(vm.heap));
         let hours = seconds / SECONDS_PER_HOUR;
         let minutes = (seconds % SECONDS_PER_HOUR) / SECONDS_PER_MINUTE;
@@ -368,11 +368,11 @@ impl<'h> PyTrait<'h> for HeapRead<'h, TimeDelta> {
         };
 
         if days == 0 {
-            return Ok(std::borrow::Cow::Owned(time));
+            return Ok(Cow::Owned(time));
         }
 
         let day_word = if days.abs() == 1 { "day" } else { "days" };
-        Ok(std::borrow::Cow::Owned(format!("{days} {day_word}, {time}")))
+        Ok(Cow::Owned(format!("{days} {day_word}, {time}")))
     }
 
     fn py_call_attr(

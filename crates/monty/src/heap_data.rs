@@ -271,7 +271,7 @@ impl HeapData {
             Self::Path(p) => p.py_estimate_size(),
             Self::ReMatch(m) => m.py_estimate_size(),
             Self::RePattern(p) => p.py_estimate_size(),
-            Self::ExtFunction(s) => std::mem::size_of::<String>() + s.len(),
+            Self::ExtFunction(s) => mem::size_of::<String>() + s.len(),
             Self::Date(d) => d.py_estimate_size(),
             Self::DateTime(d) => d.py_estimate_size(),
             Self::TimeDelta(d) => d.py_estimate_size(),

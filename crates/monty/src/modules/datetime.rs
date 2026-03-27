@@ -12,7 +12,7 @@
 use crate::{
     builtins::Builtins,
     bytecode::VM,
-    heap::HeapId,
+    heap::{HeapData, HeapId},
     intern::StaticStrings,
     resource::{ResourceError, ResourceTracker},
     types::{Module, Type},
@@ -46,5 +46,5 @@ pub fn create_module(vm: &mut VM<'_, '_, impl ResourceTracker>) -> Result<HeapId
         vm,
     );
 
-    vm.heap.allocate(crate::heap::HeapData::Module(module))
+    vm.heap.allocate(HeapData::Module(module))
 }

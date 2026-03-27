@@ -25,8 +25,8 @@ use crate::{
     resource::{ResourceError, ResourceTracker, check_mult_size, check_repeat_size},
     types::{
         Bytes, Dataclass, Dict, DictItemsView, DictKeysView, DictValuesView, FrozenSet, List, LongInt, Module,
-        MontyIter, NamedTuple, Path, Range, ReMatch, RePattern, Set, Slice, Str, Tuple, allocate_tuple, date, datetime,
-        timedelta, timezone,
+        MontyIter, NamedTuple, Path, Range, ReMatch, RePattern, Set, Slice, Str, TimeZone, Tuple, allocate_tuple, date,
+        datetime, timedelta, timezone,
     },
     value::Value,
 };
@@ -910,7 +910,7 @@ impl<T: ResourceTracker> Heap<T> {
             self.inc_ref(id);
             Ok(Value::Ref(id))
         } else {
-            let tz = crate::types::TimeZone::utc();
+            let tz = TimeZone::utc();
             let id = self.allocate(HeapData::TimeZone(tz))?;
             // Keep an extra refcount for the singleton cache
             self.inc_ref(id);

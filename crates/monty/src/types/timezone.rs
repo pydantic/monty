@@ -2,7 +2,12 @@
 //!
 //! Phase 1 intentionally supports only fixed offsets (no DST or IANA database).
 
-use std::{borrow::Cow, fmt::Write, hash::Hash};
+use std::{
+    borrow::Cow,
+    fmt::Write,
+    hash::{Hash, Hasher},
+    mem,
+};
 
 use ahash::AHashSet;
 
@@ -158,7 +163,7 @@ impl PartialEq for TimeZone {
 impl Eq for TimeZone {}
 
 impl Hash for TimeZone {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+    fn hash<H: Hasher>(&self, state: &mut H) {
         // CPython timezone equality/hash are offset-based.
         self.offset_seconds.hash(state);
     }
@@ -234,7 +239,7 @@ fn extract_name(name_arg: &Value, heap: &Heap<impl ResourceTracker>, interns: &I
 
 impl HeapItem for TimeZone {
     fn py_estimate_size(&self) -> usize {
-        std::mem::size_of::<Self>() + self.name.as_ref().map_or(0, String::len)
+        mem::size_of::<Self>() + self.name.as_ref().map_or(0, String::len)
     }
 
     fn py_dec_ref_ids(&mut self, _stack: &mut Vec<HeapId>) {}

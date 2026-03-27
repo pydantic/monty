@@ -3,7 +3,7 @@
 //! Monty stores dates with `chrono::NaiveDate` and keeps CPython-compatible
 //! constructor validation and arithmetic behavior.
 
-use std::fmt::Write;
+use std::{borrow::Cow, cmp::Ordering, fmt::Write, mem};
 
 use ahash::AHashSet;
 use chrono::{Datelike, NaiveDate};
@@ -12,7 +12,7 @@ use crate::{
     args::ArgValues,
     bytecode::{CallResult, VM},
     defer_drop, defer_drop_mut,
-    exception_private::{ExcType, RunResult, SimpleException},
+    exception_private::{ExcType, RunError, RunResult, SimpleException},
     heap::{Heap, HeapData, HeapId, HeapItem, HeapRead},
     intern::{Interns, StaticStrings},
     os::OsFunction,
@@ -59,7 +59,7 @@ pub(crate) fn from_ymd(year: i32, month: i32, day: i32) -> RunResult<Date> {
 /// Produces a CPython-compatible error for an invalid day value.
 ///
 /// Format: `"day {day} must be in range 1..{max_day} for month {month} in year {year}"`
-fn day_out_of_range_error(day: i32, month: i32, year: i32) -> crate::exception_private::RunError {
+fn day_out_of_range_error(day: i32, month: i32, year: i32) -> RunError {
     let max_day = max_day_for_month(year, month);
     SimpleException::new_msg(
         ExcType::ValueError,
@@ -232,7 +232,7 @@ pub(crate) fn extract_str_arg(
 
 impl HeapItem for Date {
     fn py_estimate_size(&self) -> usize {
-        std::mem::size_of::<Self>()
+        mem::size_of::<Self>()
     }
 
     fn py_dec_ref_ids(&mut self, _stack: &mut Vec<HeapId>) {}
@@ -257,7 +257,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Date> {
         &self,
         other: &Self,
         vm: &mut VM<'h, '_, impl ResourceTracker>,
-    ) -> Result<Option<std::cmp::Ordering>, ResourceError> {
+    ) -> Result<Option<Ordering>, ResourceError> {
         Ok(self.get(vm.heap).partial_cmp(other.get(vm.heap)))
     }
 
@@ -276,9 +276,9 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Date> {
         Ok(())
     }
 
-    fn py_str(&self, vm: &VM<'h, '_, impl ResourceTracker>) -> RunResult<std::borrow::Cow<'static, str>> {
+    fn py_str(&self, vm: &VM<'h, '_, impl ResourceTracker>) -> RunResult<Cow<'static, str>> {
         let (year, month, day) = to_ymd(*self.get(vm.heap));
-        Ok(std::borrow::Cow::Owned(format!("{year:04}-{month:02}-{day:02}")))
+        Ok(Cow::Owned(format!("{year:04}-{month:02}-{day:02}")))
     }
 
     fn py_call_attr(
