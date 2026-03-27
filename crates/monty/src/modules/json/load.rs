@@ -5,7 +5,7 @@
 
 use std::borrow::Cow;
 
-use jiter::{JsonErrorType, JsonValue};
+use jiter::{Jiter, JiterError, JiterErrorType, JsonErrorType, NumberAny, NumberInt, Peek};
 
 use crate::{
     args::ArgValues,
@@ -13,10 +13,47 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, RunError, RunResult},
     heap::{DropWithHeap, HeapData, HeapGuard},
-    resource::ResourceTracker,
+    resource::{ResourceError, ResourceTracker},
     types::{Dict, List, LongInt, PyTrait, str::allocate_string},
     value::Value,
 };
+
+/// Internal error used while building Monty values from streamed JSON.
+///
+/// JSON syntax failures remain as raw `JiterError` values until
+/// `parse_json_bytes()`, while ordinary VM/runtime failures still propagate
+/// immediately without being misreported as `JSONDecodeError`.
+enum JsonLoadError {
+    Parse(JiterError),
+    Run(RunError),
+}
+
+impl From<JiterError> for JsonLoadError {
+    fn from(error: JiterError) -> Self {
+        Self::Parse(error)
+    }
+}
+
+impl From<RunError> for JsonLoadError {
+    fn from(error: RunError) -> Self {
+        Self::Run(error)
+    }
+}
+
+impl From<ResourceError> for JsonLoadError {
+    fn from(error: ResourceError) -> Self {
+        Self::Run(error.into())
+    }
+}
+
+/// Result type used internally while streaming JSON from `jiter`.
+type ParseResult<T> = Result<T, JsonLoadError>;
+
+/// Maximum JSON nesting depth accepted by `json.loads()`.
+///
+/// This mirrors the default recursion limit used by `jiter`'s `JsonValue`
+/// parser so the lower-level iterator path preserves the same safety boundary.
+const JSON_RECURSION_LIMIT: usize = 200;
 
 /// Implements `json.loads(s)`.
 ///
@@ -55,8 +92,9 @@ pub(super) fn call_loads(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgVal
 
 /// Parses a `json.loads()` input value and converts it into a Monty value.
 ///
-/// The parser works directly on the underlying byte slice so borrowed strings
-/// from `jiter` remain valid throughout conversion.
+/// The parser works directly on the underlying byte slice. Decoded strings from
+/// `jiter` are copied into Monty's heap immediately before any further parser
+/// movement so borrowed tape-backed data never escapes.
 fn parse_json_input(value: &Value, vm: &mut VM<'_, '_, impl ResourceTracker>) -> RunResult<Value> {
     let bytes: Cow<'_, [u8]> = match value {
         Value::InternString(string_id) => Cow::Borrowed(vm.interns.get_str(*string_id).as_bytes()),
@@ -76,64 +114,244 @@ fn parse_json_input(value: &Value, vm: &mut VM<'_, '_, impl ResourceTracker>) ->
 /// Syntax errors are wrapped in `json.JSONDecodeError` using the same
 /// line/column/character suffix as CPython.
 fn parse_json_bytes(bytes: &[u8], vm: &mut VM<'_, '_, impl ResourceTracker>) -> RunResult<Value> {
-    let parsed = JsonValue::parse(bytes, false).map_err(|error| json_error_to_run_error(&error, bytes))?;
-    convert_json_value(parsed, vm)
+    let mut jiter = Jiter::new(bytes);
+    let value = parse_json_value(&mut jiter, 0, vm).map_err(|error| match error {
+        JsonLoadError::Parse(error) => json_error_to_run_error(&error, &jiter, bytes),
+        JsonLoadError::Run(error) => error,
+    })?;
+    jiter
+        .finish()
+        .map_err(|error| json_error_to_run_error(&error, &jiter, bytes))?;
+    Ok(value)
 }
 
-/// Converts a `jiter::JsonValue` tree into Monty runtime values.
+/// Parses the next JSON value from a `Jiter` and converts it into a Monty value.
 ///
-/// Strings, arrays, and objects are allocated recursively. Integer values that
-/// exceed `i64` become heap-allocated `LongInt`s so numeric round-tripping
-/// preserves precision.
-fn convert_json_value(value: JsonValue<'_>, vm: &mut VM<'_, '_, impl ResourceTracker>) -> RunResult<Value> {
-    match value {
-        JsonValue::Null => Ok(Value::None),
-        JsonValue::Bool(value) => Ok(Value::Bool(value)),
-        JsonValue::Int(value) => Ok(Value::Int(value)),
-        JsonValue::BigInt(value) => LongInt::from(value).into_value(vm.heap).map_err(Into::into),
-        JsonValue::Float(value) => Ok(Value::Float(value)),
-        JsonValue::Str(value) => allocate_string(value.into_owned(), vm.heap),
-        JsonValue::Array(items) => {
-            let values = Vec::with_capacity(items.len());
-            let mut values_guard = HeapGuard::new(values, vm);
-            {
-                let (values, vm) = values_guard.as_parts_mut();
-                for item in items.as_ref().iter().cloned() {
-                    values.push(convert_json_value(item, vm)?);
-                }
-            }
-            let values = values_guard.into_inner();
-            let list_id = vm.heap.allocate(HeapData::List(List::new(values)))?;
-            Ok(Value::Ref(list_id))
+/// Strings are allocated immediately because `jiter` may reuse its internal
+/// tape buffer on the next parser step.
+fn parse_json_value(
+    jiter: &mut Jiter<'_>,
+    depth: usize,
+    vm: &mut VM<'_, '_, impl ResourceTracker>,
+) -> ParseResult<Value> {
+    let peek = jiter.peek()?;
+    parse_json_value_from_peek(peek, jiter, depth, vm)
+}
+
+/// Converts a peeked JSON token into a Monty value.
+///
+/// The caller provides the `Peek` so container iteration can avoid reparsing
+/// the next token after `array_step()`.
+fn parse_json_value_from_peek(
+    peek: Peek,
+    jiter: &mut Jiter<'_>,
+    depth: usize,
+    vm: &mut VM<'_, '_, impl ResourceTracker>,
+) -> ParseResult<Value> {
+    match peek {
+        Peek::Null => {
+            jiter.known_null()?;
+            Ok(Value::None)
         }
-        JsonValue::Object(items) => {
-            let pairs = Vec::with_capacity(items.len());
-            let mut pairs_guard = HeapGuard::new(pairs, vm);
-            {
-                let (pairs, vm) = pairs_guard.as_parts_mut();
-                for (key, value) in items.as_ref().iter().cloned() {
-                    let key = allocate_string(key.into_owned(), vm.heap)?;
-                    let value = convert_json_value(value, vm)?;
-                    pairs.push((key, value));
-                }
-            }
-            let pairs = pairs_guard.into_inner();
-            let dict = Dict::from_pairs(pairs, vm)?;
-            let dict_id = vm.heap.allocate(HeapData::Dict(dict))?;
-            Ok(Value::Ref(dict_id))
+        Peek::True | Peek::False => jiter.known_bool(peek).map(Value::Bool).map_err(Into::into),
+        Peek::String => Ok(allocate_string(parse_json_string(jiter)?, vm.heap)?),
+        Peek::Array => parse_json_array(jiter, depth, vm),
+        Peek::Object => parse_json_object(jiter, depth, vm),
+        _ if peek.is_num() => parse_json_number(peek, jiter, vm),
+        _ => unreachable!("jiter.peek() returned unsupported token"),
+    }
+}
+
+/// Parses a JSON number into the corresponding Monty numeric value.
+///
+/// Big integers remain precise by mapping `jiter::NumberInt::BigInt` into
+/// Monty's heap-allocated `LongInt`.
+fn parse_json_number(
+    peek: Peek,
+    jiter: &mut Jiter<'_>,
+    vm: &mut VM<'_, '_, impl ResourceTracker>,
+) -> ParseResult<Value> {
+    match jiter.known_number(peek)? {
+        NumberAny::Int(NumberInt::Int(value)) => Ok(Value::Int(value)),
+        NumberAny::Int(NumberInt::BigInt(value)) => Ok(LongInt::from(value).into_value(vm.heap)?),
+        NumberAny::Float(value) => Ok(Value::Float(value)),
+    }
+}
+
+/// Parses a JSON array and allocates the resulting Monty list directly.
+///
+/// Elements are converted one by one as the iterator advances, avoiding any
+/// intermediate `JsonValue` tree.
+fn parse_json_array(
+    jiter: &mut Jiter<'_>,
+    depth: usize,
+    vm: &mut VM<'_, '_, impl ResourceTracker>,
+) -> ParseResult<Value> {
+    check_json_recursion_limit(jiter, depth)?;
+
+    let Some(mut next) = jiter.known_array()? else {
+        let list_id = vm.heap.allocate(HeapData::List(List::new(Vec::new())))?;
+        return Ok(Value::Ref(list_id));
+    };
+
+    let values = Vec::new();
+    let mut values_guard = HeapGuard::new(values, vm);
+    {
+        let (values, vm) = values_guard.as_parts_mut();
+        loop {
+            values.push(parse_json_value_from_peek(next, jiter, depth + 1, vm)?);
+            let Some(array_peek) = jiter.array_step()? else {
+                break;
+            };
+            next = array_peek;
         }
     }
+
+    let values = values_guard.into_inner();
+    let list_id = vm.heap.allocate(HeapData::List(List::new(values)))?;
+    Ok(Value::Ref(list_id))
+}
+
+/// Parses a JSON string and immediately copies it into an owned `String`.
+///
+/// `Jiter` may reuse its internal tape for the next decoded string, so callers
+/// must not hold onto the borrowed `&str` beyond the current parser step.
+fn parse_json_string(jiter: &mut Jiter<'_>) -> ParseResult<String> {
+    Ok(jiter.known_str().map(ToOwned::to_owned)?)
+}
+
+/// Parses a JSON object and allocates the resulting Monty dict directly.
+///
+/// Keys are allocated before parsing their values because `jiter` may reuse its
+/// temporary string storage on the next parser step.
+fn parse_json_object(
+    jiter: &mut Jiter<'_>,
+    depth: usize,
+    vm: &mut VM<'_, '_, impl ResourceTracker>,
+) -> ParseResult<Value> {
+    check_json_recursion_limit(jiter, depth)?;
+
+    let Some(mut key) = parse_first_object_key(jiter)? else {
+        let dict_id = vm.heap.allocate(HeapData::Dict(Dict::new()))?;
+        return Ok(Value::Ref(dict_id));
+    };
+
+    let pairs = Vec::new();
+    let mut pairs_guard = HeapGuard::new(pairs, vm);
+    {
+        let (pairs, vm) = pairs_guard.as_parts_mut();
+        loop {
+            let key_value = allocate_string(key, vm.heap)?;
+            let value = parse_json_value(jiter, depth + 1, vm)?;
+            pairs.push((key_value, value));
+
+            let Some(next_key) = parse_next_object_key(jiter)? else {
+                break;
+            };
+            key = next_key;
+        }
+    }
+
+    let pairs = pairs_guard.into_inner();
+    let dict = Dict::from_pairs(pairs, vm)?;
+    let dict_id = vm.heap.allocate(HeapData::Dict(dict))?;
+    Ok(Value::Ref(dict_id))
+}
+
+/// Parses the first key of a JSON object and copies it into owned storage.
+///
+/// Returning `None` indicates an empty object.
+fn parse_first_object_key(jiter: &mut Jiter<'_>) -> ParseResult<Option<String>> {
+    Ok(jiter.known_object().map(|key| key.map(ToOwned::to_owned))?)
+}
+
+/// Parses the next key of a JSON object and copies it into owned storage.
+///
+/// Returning `None` indicates that the object has no more items.
+fn parse_next_object_key(jiter: &mut Jiter<'_>) -> ParseResult<Option<String>> {
+    Ok(jiter.next_key().map(|key| key.map(ToOwned::to_owned))?)
+}
+
+/// Rejects JSON that nests arrays/objects more deeply than Monty supports.
+///
+/// The limit matches `jiter`'s `JsonValue` parser so this lower-level iterator
+/// implementation preserves the same stack-safety boundary.
+fn check_json_recursion_limit(jiter: &Jiter<'_>, depth: usize) -> ParseResult<()> {
+    if depth >= JSON_RECURSION_LIMIT {
+        return Err(JsonLoadError::Parse(JiterError {
+            error_type: JiterErrorType::JsonError(JsonErrorType::RecursionLimitExceeded),
+            index: jiter.current_index(),
+        }));
+    }
+    Ok(())
 }
 
 /// Converts a `jiter` parse error into `json.JSONDecodeError`.
 ///
 /// `jiter` exposes the error byte index plus a helper for computing line and
 /// column, which is enough to reproduce CPython's message suffix exactly.
-fn json_error_to_run_error(error: &jiter::JsonError, bytes: &[u8]) -> RunError {
-    let position = error.get_position(bytes);
-    let message = match &error.error_type {
-        JsonErrorType::KeyMustBeAString => "Expecting property name enclosed in double quotes".to_owned(),
-        _ => error.description(bytes),
+fn json_error_to_run_error(error: &JiterError, jiter: &Jiter<'_>, bytes: &[u8]) -> RunError {
+    let (message, index) = match &error.error_type {
+        JiterErrorType::JsonError(JsonErrorType::KeyMustBeAString) => (
+            "Expecting property name enclosed in double quotes".to_owned(),
+            error.index,
+        ),
+        JiterErrorType::JsonError(JsonErrorType::TrailingComma) => {
+            let message = match bytes.get(error.index) {
+                Some(b'}') => "Illegal trailing comma before end of object",
+                Some(b']') => "Illegal trailing comma before end of array",
+                _ => "trailing comma",
+            };
+            (message.to_owned(), error.index.saturating_sub(1))
+        }
+        JiterErrorType::JsonError(JsonErrorType::EofWhileParsingString) => (
+            "Unterminated string starting at".to_owned(),
+            find_unterminated_string_start(bytes, error.index).unwrap_or(error.index),
+        ),
+        JiterErrorType::JsonError(JsonErrorType::EofWhileParsingValue) => ("Expecting value".to_owned(), error.index),
+        JiterErrorType::JsonError(JsonErrorType::TrailingCharacters) => ("Extra data".to_owned(), error.index),
+        JiterErrorType::JsonError(error_type) => (error_type.to_string(), error.index),
+        JiterErrorType::WrongType { .. } => (error.error_type.to_string(), error.index),
     };
-    ExcType::json_decode_error(&message, position.line, position.column, error.index)
+    let mut position = jiter.error_position(index);
+    if position.column == 0 {
+        position.column = 1;
+    }
+    ExcType::json_decode_error(&message, position.line, position.column, index)
+}
+
+/// Finds the opening quote for an unterminated JSON string.
+///
+/// `jiter` reports the error at the EOF position, but CPython formats this
+/// specific error using the location of the starting quote instead.
+fn find_unterminated_string_start(bytes: &[u8], end_index: usize) -> Option<usize> {
+    let mut in_string = false;
+    let mut escaped = false;
+    let mut string_start = None;
+
+    for (index, byte) in bytes.iter().copied().enumerate().take(end_index) {
+        if !in_string {
+            if byte == b'"' {
+                in_string = true;
+                string_start = Some(index);
+            }
+            continue;
+        }
+
+        if escaped {
+            escaped = false;
+            continue;
+        }
+
+        match byte {
+            b'\\' => escaped = true,
+            b'"' => {
+                in_string = false;
+                string_start = None;
+            }
+            _ => {}
+        }
+    }
+
+    if in_string { string_start } else { None }
 }
