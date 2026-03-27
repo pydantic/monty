@@ -540,11 +540,15 @@ enum NdArrayBinaryOp {
 }
 
 /// Extracts a scalar f64 from a `Value`, if it is a numeric type.
-fn value_to_f64(v: &Value) -> Option<f64> {
+///
+/// Returns `(f64_value, is_float)` — the `is_float` flag indicates whether the Python
+/// value was a `float` (as opposed to `int` or `bool`), which is needed for correct
+/// dtype promotion in ndarray operations.
+fn value_to_f64(v: &Value) -> Option<(f64, bool)> {
     match v {
-        Value::Int(i) => Some(*i as f64),
-        Value::Float(f) => Some(*f),
-        Value::Bool(b) => Some(if *b { 1.0 } else { 0.0 }),
+        Value::Int(i) => Some((*i as f64, false)),
+        Value::Float(f) => Some((*f, true)),
+        Value::Bool(b) => Some((if *b { 1.0 } else { 0.0 }, false)),
         _ => None,
     }
 }
@@ -553,26 +557,27 @@ fn value_to_f64(v: &Value) -> Option<f64> {
 fn ndarray_scalar_op(
     arr: &NdArray,
     scalar: f64,
+    scalar_is_float: bool,
     op: NdArrayBinaryOp,
     scalar_on_left: bool,
     heap: &crate::heap::Heap<impl ResourceTracker>,
 ) -> RunResult<Value> {
     match (op, scalar_on_left) {
         // Commutative operations — direction doesn't matter
-        (NdArrayBinaryOp::Add, _) => arr.add_scalar(scalar, heap),
-        (NdArrayBinaryOp::Mul, _) => arr.mul_scalar(scalar, heap),
+        (NdArrayBinaryOp::Add, _) => arr.add_scalar(scalar, scalar_is_float, heap),
+        (NdArrayBinaryOp::Mul, _) => arr.mul_scalar(scalar, scalar_is_float, heap),
         // Non-commutative: scalar on right (arr op scalar)
-        (NdArrayBinaryOp::Sub, false) => arr.sub_scalar(scalar, heap),
+        (NdArrayBinaryOp::Sub, false) => arr.sub_scalar(scalar, scalar_is_float, heap),
         (NdArrayBinaryOp::Div, false) => arr.div_scalar(scalar, heap),
-        (NdArrayBinaryOp::FloorDiv, false) => arr.floordiv_scalar(scalar, heap),
-        (NdArrayBinaryOp::Mod, false) => arr.modulo_scalar(scalar, heap),
-        (NdArrayBinaryOp::Pow, false) => arr.pow_scalar(scalar, heap),
+        (NdArrayBinaryOp::FloorDiv, false) => arr.floordiv_scalar(scalar, scalar_is_float, heap),
+        (NdArrayBinaryOp::Mod, false) => arr.modulo_scalar(scalar, scalar_is_float, heap),
+        (NdArrayBinaryOp::Pow, false) => arr.pow_scalar(scalar, scalar_is_float, heap),
         // Non-commutative: scalar on left (scalar op arr)
-        (NdArrayBinaryOp::Sub, true) => arr.rsub_scalar(scalar, heap),
+        (NdArrayBinaryOp::Sub, true) => arr.rsub_scalar(scalar, scalar_is_float, heap),
         (NdArrayBinaryOp::Div, true) => arr.rdiv_scalar(scalar, heap),
-        (NdArrayBinaryOp::FloorDiv, true) => arr.rfloordiv_scalar(scalar, heap),
-        (NdArrayBinaryOp::Mod, true) => arr.rmod_scalar(scalar, heap),
-        (NdArrayBinaryOp::Pow, true) => arr.rpow_scalar(scalar, heap),
+        (NdArrayBinaryOp::FloorDiv, true) => arr.rfloordiv_scalar(scalar, scalar_is_float, heap),
+        (NdArrayBinaryOp::Mod, true) => arr.rmod_scalar(scalar, scalar_is_float, heap),
+        (NdArrayBinaryOp::Pow, true) => arr.rpow_scalar(scalar, scalar_is_float, heap),
     }
 }
 
@@ -627,17 +632,17 @@ fn try_ndarray_binary(
     // Case 2: NdArray op scalar
     if let Some(lid) = lhs_id
         && let HeapData::NdArray(arr) = vm.heap.get(lid)
-        && let Some(scalar) = value_to_f64(rhs)
+        && let Some((scalar, is_float)) = value_to_f64(rhs)
     {
-        return ndarray_scalar_op(arr, scalar, op, false, vm.heap).map(Some);
+        return ndarray_scalar_op(arr, scalar, is_float, op, false, vm.heap).map(Some);
     }
 
     // Case 3: scalar op NdArray
     if let Some(rid) = rhs_id
         && let HeapData::NdArray(arr) = vm.heap.get(rid)
-        && let Some(scalar) = value_to_f64(lhs)
+        && let Some((scalar, is_float)) = value_to_f64(lhs)
     {
-        return ndarray_scalar_op(arr, scalar, op, true, vm.heap).map(Some);
+        return ndarray_scalar_op(arr, scalar, is_float, op, true, vm.heap).map(Some);
     }
 
     Ok(None)

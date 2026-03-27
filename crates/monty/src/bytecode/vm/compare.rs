@@ -180,11 +180,14 @@ enum NdArrayCmpOp {
 }
 
 /// Extracts a scalar f64 from a `Value`, if it is a numeric type.
-fn value_to_f64(v: &Value) -> Option<f64> {
+///
+/// Comparisons always return `Bool` dtype so the float flag is unused, but we match
+/// the return type from `binary.rs` for consistency.
+fn value_to_f64(v: &Value) -> Option<(f64, bool)> {
     match v {
-        Value::Int(i) => Some(*i as f64),
-        Value::Float(f) => Some(*f),
-        Value::Bool(b) => Some(if *b { 1.0 } else { 0.0 }),
+        Value::Int(i) => Some((*i as f64, false)),
+        Value::Float(f) => Some((*f, true)),
+        Value::Bool(b) => Some((if *b { 1.0 } else { 0.0 }, false)),
         _ => None,
     }
 }
@@ -270,7 +273,7 @@ fn try_ndarray_cmp(
     // Case 2: NdArray cmp scalar
     if let Some(lid) = lhs_id
         && let HeapData::NdArray(arr) = vm.heap.get(lid)
-        && let Some(scalar) = value_to_f64(rhs)
+        && let Some((scalar, _)) = value_to_f64(rhs)
     {
         return ndarray_scalar_cmp(arr, scalar, op, vm.heap).map(Some);
     }
@@ -278,7 +281,7 @@ fn try_ndarray_cmp(
     // Case 3: scalar cmp NdArray (reverse the comparison)
     if let Some(rid) = rhs_id
         && let HeapData::NdArray(arr) = vm.heap.get(rid)
-        && let Some(scalar) = value_to_f64(lhs)
+        && let Some((scalar, _)) = value_to_f64(lhs)
     {
         // Reverse: `5 > arr` becomes `arr < 5`
         let reversed_op = match op {

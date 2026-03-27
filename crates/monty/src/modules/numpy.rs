@@ -709,7 +709,7 @@ fn call_sort(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunR
     let mut data = arr.data().to_vec();
     let dtype = arr.dtype();
     let shape = arr.shape().to_vec();
-    data.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    data.sort_by(crate::types::ndarray::nan_last_cmp);
     let new_arr = NdArray::new(data, shape, dtype);
     Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(new_arr))?))
 }
@@ -727,7 +727,7 @@ fn call_unique(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> Ru
 
     let mut data = arr.data().to_vec();
     let dtype = arr.dtype();
-    data.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    data.sort_by(crate::types::ndarray::nan_last_cmp);
     data.dedup();
     let len = data.len();
     let new_arr = NdArray::new(data, vec![len], dtype);
@@ -758,7 +758,7 @@ fn call_concatenate(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) 
         ids
     };
 
-    let mut combined_data = Vec::new();
+    let mut total_len: usize = 0;
     let mut result_dtype = NdArrayDtype::Int64;
 
     for arr_id in &arr_ids {
@@ -767,8 +767,18 @@ fn call_concatenate(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) 
                 "numpy.concatenate() requires all elements to be ndarrays",
             ));
         };
-        combined_data.extend_from_slice(arr.data());
+        total_len = total_len.saturating_add(arr.data().len());
         result_dtype = promote_dtype(result_dtype, arr.dtype());
+    }
+
+    check_array_alloc_size(total_len, vm.heap.tracker())?;
+
+    let mut combined_data = Vec::with_capacity(total_len);
+    for arr_id in &arr_ids {
+        let HeapData::NdArray(arr) = vm.heap.get(*arr_id) else {
+            unreachable!("already validated above");
+        };
+        combined_data.extend_from_slice(arr.data());
     }
 
     let len = combined_data.len();

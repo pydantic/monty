@@ -849,3 +849,154 @@ assert a.sum() == 0, 'mixed sum zero'
 assert a.mean() == 0.0, 'mixed mean zero'
 assert a.min() == -2, 'mixed min'
 assert a.max() == 2, 'mixed max'
+
+
+# ============================================================
+# 15. NaN AND INF EDGE CASES
+# ============================================================
+import math
+
+# === Division by zero ===
+a = np.array([1.0, 2.0, 3.0]) / 0
+assert math.isinf(a[0]) and a[0] > 0, 'float / 0 = inf'
+assert math.isinf(a[1]) and a[1] > 0, 'float / 0 = inf (2)'
+
+b = np.array([0.0]) / 0
+assert math.isnan(b[0]), '0.0 / 0 = nan'
+
+# === NaN propagation in aggregation ===
+nan_arr = np.array([1.0, float('nan'), 3.0])
+assert math.isnan(nan_arr.sum()), 'sum propagates nan'
+assert math.isnan(nan_arr.mean()), 'mean propagates nan'
+assert math.isnan(nan_arr.min()), 'min propagates nan'
+assert math.isnan(nan_arr.max()), 'max propagates nan'
+assert math.isnan(nan_arr.std()), 'std propagates nan'
+
+# argmin/argmax with NaN — NumPy returns index of first NaN
+assert np.array([float('nan')]).argmin() == 0, 'argmin single nan'
+assert np.array([float('nan')]).argmax() == 0, 'argmax single nan'
+assert np.array([float('nan'), 1.0, 2.0]).argmin() == 0, 'argmin nan first'
+
+# === Inf operations ===
+inf_arr = np.array([float('inf')])
+assert (inf_arr + 1)[0] == float('inf'), 'inf + 1 = inf'
+assert (inf_arr * -1)[0] == float('-inf'), 'inf * -1 = -inf'
+assert math.isnan((inf_arr - inf_arr)[0]), 'inf - inf = nan'
+assert inf_arr.sum() == float('inf'), 'sum(inf) = inf'
+
+# === NaN/Inf repr ===
+assert repr(np.array([float('nan')])) == 'array([nan])', 'nan repr lowercase'
+assert repr(np.array([float('inf')])) == 'array([inf])', 'inf repr'
+assert repr(np.array([float('-inf')])) == 'array([-inf])', '-inf repr'
+
+# === NaN comparisons ===
+r = np.array([float('nan')]) == np.array([float('nan')])
+assert r[0] == False, 'nan != nan'
+r2 = np.array([float('nan')]) > 0
+assert r2[0] == False, 'nan > 0 is False'
+
+# === NaN in sort ===
+s = np.sort(np.array([float('nan'), 1.0, 2.0]))
+assert s[0] == 1.0, 'sort nan: first elem'
+assert s[1] == 2.0, 'sort nan: second elem'
+assert math.isnan(s[2]), 'sort nan: nan last'
+
+s2 = np.sort(np.array([3.0, float('nan'), 1.0]))
+assert s2[0] == 1.0, 'sort nan mid: first'
+assert s2[1] == 3.0, 'sort nan mid: second'
+assert math.isnan(s2[2]), 'sort nan mid: nan last'
+
+
+# ============================================================
+# 16. EMPTY ARRAY EDGE CASES
+# ============================================================
+
+# === Empty array creation and attributes ===
+empty = np.array([])
+assert empty.shape == (0,), 'empty shape'
+assert empty.dtype == 'float64', 'empty dtype'
+assert len(empty) == 0, 'empty len'
+assert empty.size == 0, 'empty size'
+assert empty.ndim == 1, 'empty ndim'
+
+# === Empty array operations ===
+assert empty.tolist() == [], 'empty tolist'
+assert empty.flatten().tolist() == [], 'empty flatten'
+assert empty.cumsum().tolist() == [], 'empty cumsum'
+assert empty.sum() == 0.0, 'empty sum'
+
+# mean of empty is nan (0/0)
+assert math.isnan(empty.mean()), 'empty mean is nan'
+
+# std of empty is nan
+assert math.isnan(empty.std()), 'empty std is nan'
+
+# sort/unique of empty
+assert np.sort(empty).tolist() == [], 'empty sort'
+assert np.unique(empty).tolist() == [], 'empty unique'
+
+# concatenate with empty
+assert np.concatenate([empty, np.array([1.0, 2.0])]).tolist() == [1.0, 2.0], 'concat empty'
+
+# zeros/ones with 0
+assert np.zeros(0).tolist() == [], 'zeros(0)'
+assert np.ones(0).tolist() == [], 'ones(0)'
+
+
+# ============================================================
+# 17. DTYPE CORRECTNESS
+# ============================================================
+
+# === Division always produces float64 ===
+a = np.array([4, 6, 8])
+b = np.array([2, 3, 4])
+assert (a / b).dtype == 'float64', 'int / int -> float64'
+assert (a / b).tolist() == [2.0, 2.0, 2.0], 'int / int values'
+assert (a / 2).dtype == 'float64', 'int / scalar -> float64'
+assert (a // b).dtype == 'int64', 'int // int -> int64'
+
+# === Arithmetic dtype promotion ===
+assert (a + b).dtype == 'int64', 'int + int -> int64'
+assert (a * 2).dtype == 'int64', 'int * int_scalar -> int64'
+assert (a * 1.0).dtype == 'float64', 'int * float_scalar -> float64'
+assert (a + np.array([1.0, 2.0, 3.0])).dtype == 'float64', 'int + float -> float64'
+
+# === Comparison always produces bool ===
+assert (a > 5).dtype == 'bool', 'int > scalar -> bool'
+assert (a == b).dtype == 'bool', 'int == int -> bool'
+
+
+# ============================================================
+# 18. 2D ARRAY OPERATIONS
+# ============================================================
+
+# === 2D binary operations ===
+m1 = np.array([[1, 2], [3, 4]])
+m2 = np.array([[10, 20], [30, 40]])
+assert (m1 + m2).tolist() == [[11, 22], [33, 44]], '2d add'
+assert (m1 * 2).tolist() == [[2, 4], [6, 8]], '2d scalar mul'
+assert (2 * m1).tolist() == [[2, 4], [6, 8]], '2d scalar mul left'
+
+# === 2D comparisons ===
+assert (m1 > 2).tolist() == [[False, False], [True, True]], '2d > scalar'
+
+# === 2D methods ===
+assert m1.sum() == 10, '2d sum'
+assert m1.mean() == 2.5, '2d mean'
+assert m1.flatten().tolist() == [1, 2, 3, 4], '2d flatten'
+
+# === 2D tolist preserves nesting ===
+assert m1.tolist() == [[1, 2], [3, 4]], '2d tolist nested'
+r = np.array([[1, 2, 3], [4, 5, 6]])
+assert r.tolist() == [[1, 2, 3], [4, 5, 6]], '2x3 tolist'
+
+# === Transpose ===
+assert r.T.shape == (3, 2), 'transpose shape'
+assert r.T.tolist() == [[1, 4], [2, 5], [3, 6]], 'transpose values'
+
+# === 2D indexing ===
+assert r[0].tolist() == [1, 2, 3], '2d row 0'
+assert r[1].tolist() == [4, 5, 6], '2d row 1'
+assert r[-1].tolist() == [4, 5, 6], '2d row -1'
+assert r[0][2] == 3, '2d chained index'
+assert r[1][0] == 4, '2d chained index 2'

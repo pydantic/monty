@@ -299,8 +299,13 @@ impl NdArray {
     }
 
     /// Addition with a scalar value.
-    pub fn add_scalar(&self, scalar: f64, heap: &Heap<impl ResourceTracker>) -> RunResult<Value> {
-        let dtype = promote_dtype_with_scalar(self.dtype, scalar);
+    pub fn add_scalar(
+        &self,
+        scalar: f64,
+        scalar_is_float: bool,
+        heap: &Heap<impl ResourceTracker>,
+    ) -> RunResult<Value> {
+        let dtype = promote_dtype_with_scalar(self.dtype, scalar_is_float);
         self.scalar_op_right(scalar, |a, b| a + b, dtype, heap)
     }
 
@@ -310,8 +315,13 @@ impl NdArray {
     }
 
     /// Subtraction with a scalar value.
-    pub fn sub_scalar(&self, scalar: f64, heap: &Heap<impl ResourceTracker>) -> RunResult<Value> {
-        let dtype = promote_dtype_with_scalar(self.dtype, scalar);
+    pub fn sub_scalar(
+        &self,
+        scalar: f64,
+        scalar_is_float: bool,
+        heap: &Heap<impl ResourceTracker>,
+    ) -> RunResult<Value> {
+        let dtype = promote_dtype_with_scalar(self.dtype, scalar_is_float);
         self.scalar_op_right(scalar, |a, b| a - b, dtype, heap)
     }
 
@@ -321,8 +331,13 @@ impl NdArray {
     }
 
     /// Multiplication with a scalar value.
-    pub fn mul_scalar(&self, scalar: f64, heap: &Heap<impl ResourceTracker>) -> RunResult<Value> {
-        let dtype = promote_dtype_with_scalar(self.dtype, scalar);
+    pub fn mul_scalar(
+        &self,
+        scalar: f64,
+        scalar_is_float: bool,
+        heap: &Heap<impl ResourceTracker>,
+    ) -> RunResult<Value> {
+        let dtype = promote_dtype_with_scalar(self.dtype, scalar_is_float);
         self.scalar_op_right(scalar, |a, b| a * b, dtype, heap)
     }
 
@@ -344,8 +359,13 @@ impl NdArray {
     }
 
     /// Floor division with a scalar value.
-    pub fn floordiv_scalar(&self, scalar: f64, heap: &Heap<impl ResourceTracker>) -> RunResult<Value> {
-        let dtype = promote_dtype_with_scalar(self.dtype, scalar);
+    pub fn floordiv_scalar(
+        &self,
+        scalar: f64,
+        scalar_is_float: bool,
+        heap: &Heap<impl ResourceTracker>,
+    ) -> RunResult<Value> {
+        let dtype = promote_dtype_with_scalar(self.dtype, scalar_is_float);
         self.scalar_op_right(scalar, |a, b| (a / b).floor(), dtype, heap)
     }
 
@@ -355,8 +375,13 @@ impl NdArray {
     }
 
     /// Modulo with a scalar value.
-    pub fn modulo_scalar(&self, scalar: f64, heap: &Heap<impl ResourceTracker>) -> RunResult<Value> {
-        let dtype = promote_dtype_with_scalar(self.dtype, scalar);
+    pub fn modulo_scalar(
+        &self,
+        scalar: f64,
+        scalar_is_float: bool,
+        heap: &Heap<impl ResourceTracker>,
+    ) -> RunResult<Value> {
+        let dtype = promote_dtype_with_scalar(self.dtype, scalar_is_float);
         self.scalar_op_right(scalar, py_mod, dtype, heap)
     }
 
@@ -366,14 +391,24 @@ impl NdArray {
     }
 
     /// Power with a scalar exponent.
-    pub fn pow_scalar(&self, scalar: f64, heap: &Heap<impl ResourceTracker>) -> RunResult<Value> {
-        let dtype = promote_dtype_with_scalar(self.dtype, scalar);
+    pub fn pow_scalar(
+        &self,
+        scalar: f64,
+        scalar_is_float: bool,
+        heap: &Heap<impl ResourceTracker>,
+    ) -> RunResult<Value> {
+        let dtype = promote_dtype_with_scalar(self.dtype, scalar_is_float);
         self.scalar_op_right(scalar, f64::powf, dtype, heap)
     }
 
     /// Reverse subtraction with scalar: `scalar - array`.
-    pub fn rsub_scalar(&self, scalar: f64, heap: &Heap<impl ResourceTracker>) -> RunResult<Value> {
-        let dtype = promote_dtype_with_scalar(self.dtype, scalar);
+    pub fn rsub_scalar(
+        &self,
+        scalar: f64,
+        scalar_is_float: bool,
+        heap: &Heap<impl ResourceTracker>,
+    ) -> RunResult<Value> {
+        let dtype = promote_dtype_with_scalar(self.dtype, scalar_is_float);
         self.scalar_op_left(scalar, |a, b| a - b, dtype, heap)
     }
 
@@ -383,20 +418,35 @@ impl NdArray {
     }
 
     /// Reverse floor division with scalar: `scalar // array`.
-    pub fn rfloordiv_scalar(&self, scalar: f64, heap: &Heap<impl ResourceTracker>) -> RunResult<Value> {
-        let dtype = promote_dtype_with_scalar(self.dtype, scalar);
+    pub fn rfloordiv_scalar(
+        &self,
+        scalar: f64,
+        scalar_is_float: bool,
+        heap: &Heap<impl ResourceTracker>,
+    ) -> RunResult<Value> {
+        let dtype = promote_dtype_with_scalar(self.dtype, scalar_is_float);
         self.scalar_op_left(scalar, |a, b| (a / b).floor(), dtype, heap)
     }
 
     /// Reverse modulo with scalar: `scalar % array`.
-    pub fn rmod_scalar(&self, scalar: f64, heap: &Heap<impl ResourceTracker>) -> RunResult<Value> {
-        let dtype = promote_dtype_with_scalar(self.dtype, scalar);
+    pub fn rmod_scalar(
+        &self,
+        scalar: f64,
+        scalar_is_float: bool,
+        heap: &Heap<impl ResourceTracker>,
+    ) -> RunResult<Value> {
+        let dtype = promote_dtype_with_scalar(self.dtype, scalar_is_float);
         self.scalar_op_left(scalar, py_mod, dtype, heap)
     }
 
     /// Reverse power with scalar: `scalar ** array`.
-    pub fn rpow_scalar(&self, scalar: f64, heap: &Heap<impl ResourceTracker>) -> RunResult<Value> {
-        let dtype = promote_dtype_with_scalar(self.dtype, scalar);
+    pub fn rpow_scalar(
+        &self,
+        scalar: f64,
+        scalar_is_float: bool,
+        heap: &Heap<impl ResourceTracker>,
+    ) -> RunResult<Value> {
+        let dtype = promote_dtype_with_scalar(self.dtype, scalar_is_float);
         self.scalar_op_left(scalar, f64::powf, dtype, heap)
     }
 
@@ -515,20 +565,37 @@ impl NdArray {
     }
 
     /// Returns the minimum element.
+    ///
+    /// If any element is NaN, returns NaN — matching NumPy's propagation semantics.
+    /// Uses a NaN-propagating reduction: once a NaN is seen, the result is NaN.
     pub fn min_val(&self) -> RunResult<f64> {
         self.data
             .iter()
             .copied()
-            .min_by(|a, b| a.partial_cmp(b).unwrap_or(Ordering::Equal))
+            .reduce(|acc, v| {
+                if acc.is_nan() || v.is_nan() {
+                    f64::NAN
+                } else {
+                    acc.min(v)
+                }
+            })
             .ok_or_else(|| SimpleException::new_msg(ExcType::ValueError, "zero-size array has no minimum").into())
     }
 
     /// Returns the maximum element.
+    ///
+    /// If any element is NaN, returns NaN — matching NumPy's propagation semantics.
     pub fn max_val(&self) -> RunResult<f64> {
         self.data
             .iter()
             .copied()
-            .max_by(|a, b| a.partial_cmp(b).unwrap_or(Ordering::Equal))
+            .reduce(|acc, v| {
+                if acc.is_nan() || v.is_nan() {
+                    f64::NAN
+                } else {
+                    acc.max(v)
+                }
+            })
             .ok_or_else(|| SimpleException::new_msg(ExcType::ValueError, "zero-size array has no maximum").into())
     }
 
@@ -589,7 +656,10 @@ impl NdArray {
     ///
     /// The total number of elements must remain the same.
     pub fn reshape(&self, new_shape: Vec<usize>, heap: &Heap<impl ResourceTracker>) -> RunResult<Value> {
-        let new_size: usize = new_shape.iter().product();
+        let new_size: usize = new_shape
+            .iter()
+            .try_fold(1usize, |acc, &d| acc.checked_mul(d))
+            .ok_or_else(|| SimpleException::new_msg(ExcType::ValueError, "reshape dimensions overflow"))?;
         if new_size != self.len() {
             return Err(SimpleException::new_msg(
                 ExcType::ValueError,
@@ -668,17 +738,21 @@ impl NdArray {
     }
 
     /// `sort()` — returns a new array with elements sorted in ascending order.
+    ///
+    /// NaN values sort to the end, matching NumPy's behavior.
     pub fn sort_array(&self, heap: &Heap<impl ResourceTracker>) -> RunResult<Value> {
         let mut data = self.data.clone();
-        data.sort_by(|a, b| a.partial_cmp(b).unwrap_or(Ordering::Equal));
+        data.sort_by(nan_last_cmp);
         let arr = Self::new(data, self.shape.clone(), self.dtype);
         Ok(Value::Ref(heap.allocate(HeapData::NdArray(arr))?))
     }
 
     /// `argsort()` — returns indices that would sort the array.
+    ///
+    /// NaN values sort to the end, matching NumPy's behavior.
     pub fn argsort(&self, heap: &Heap<impl ResourceTracker>) -> RunResult<Value> {
         let mut indices: Vec<usize> = (0..self.data.len()).collect();
-        indices.sort_by(|&a, &b| self.data[a].partial_cmp(&self.data[b]).unwrap_or(Ordering::Equal));
+        indices.sort_by(|&a, &b| nan_last_cmp(&self.data[a], &self.data[b]));
         let data: Vec<f64> = indices.iter().map(|&i| i as f64).collect();
         let arr = Self::new(data, vec![self.data.len()], NdArrayDtype::Int64);
         Ok(Value::Ref(heap.allocate(HeapData::NdArray(arr))?))
@@ -735,11 +809,37 @@ impl NdArray {
         Ok(Value::Ref(heap.allocate(HeapData::NdArray(arr))?))
     }
 
-    /// Converts the array to a Python list.
+    /// Converts the array to a (possibly nested) Python list.
+    ///
+    /// For 1D arrays, returns a flat list. For 2D+ arrays, returns nested lists
+    /// matching the shape, e.g. shape `(2, 3)` → `[[1, 2, 3], [4, 5, 6]]`.
     pub fn tolist(&self, heap: &Heap<impl ResourceTracker>) -> RunResult<Value> {
-        let values: Vec<Value> = self.data.iter().map(|&v| self.element_to_value(v)).collect();
-        let list = List::new(values);
-        Ok(Value::Ref(heap.allocate(HeapData::List(list))?))
+        self.tolist_recursive(&self.shape, 0, heap)
+    }
+
+    /// Recursively builds nested lists for `tolist()`.
+    fn tolist_recursive(
+        &self,
+        remaining_shape: &[usize],
+        offset: usize,
+        heap: &Heap<impl ResourceTracker>,
+    ) -> RunResult<Value> {
+        if remaining_shape.len() == 1 {
+            // Leaf dimension: flat list of scalars
+            let len = remaining_shape[0];
+            let values: Vec<Value> = (0..len).map(|i| self.element_to_value(self.data[offset + i])).collect();
+            let list = List::new(values);
+            Ok(Value::Ref(heap.allocate(HeapData::List(list))?))
+        } else {
+            // Build nested list: each element is a sub-list
+            let sub_size: usize = remaining_shape[1..].iter().product();
+            let mut values = Vec::with_capacity(remaining_shape[0]);
+            for i in 0..remaining_shape[0] {
+                values.push(self.tolist_recursive(&remaining_shape[1..], offset + i * sub_size, heap)?);
+            }
+            let list = List::new(values);
+            Ok(Value::Ref(heap.allocate(HeapData::List(list))?))
+        }
     }
 }
 
@@ -794,7 +894,15 @@ impl NdArray {
                     )]
                     NdArrayDtype::Int64 => write!(f, "{}", val as i64)?,
                     NdArrayDtype::Float64 => {
-                        if val.fract() == 0.0 && val.is_finite() {
+                        if val.is_nan() {
+                            f.write_str("nan")?;
+                        } else if val.is_infinite() {
+                            if val.is_sign_negative() {
+                                f.write_str("-inf")?;
+                            } else {
+                                f.write_str("inf")?;
+                            }
+                        } else if val.fract() == 0.0 {
                             // NumPy displays whole floats as "1." not "1.0"
                             write!(f, "{val:.0}.")?;
                         } else {
@@ -1140,6 +1248,25 @@ fn extract_f64(value: &Value) -> f64 {
     }
 }
 
+/// Comparison function that sorts NaN values to the end, matching NumPy's sort behavior.
+///
+/// Non-NaN values are compared normally. NaN is treated as greater than any non-NaN value,
+/// and two NaN values are considered equal.
+///
+/// Takes `&f64` so it can be passed directly to `[f64]::sort_by`.
+#[expect(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "signature required by sort_by(Fn(&T, &T) -> Ordering)"
+)]
+pub(crate) fn nan_last_cmp(a: &f64, b: &f64) -> Ordering {
+    match (a.is_nan(), b.is_nan()) {
+        (true, true) => Ordering::Equal,
+        (true, false) => Ordering::Greater,
+        (false, true) => Ordering::Less,
+        (false, false) => a.partial_cmp(b).unwrap_or(Ordering::Equal),
+    }
+}
+
 /// Converts a potentially negative index to a positive one, or returns an error.
 ///
 /// Supports Python-style negative indexing: `-1` is the last element, etc.
@@ -1199,8 +1326,8 @@ pub(crate) fn ndarray_from_list(value: &Value, heap: &Heap<impl ResourceTracker>
     } else if has_bool {
         NdArrayDtype::Bool
     } else {
-        // Empty array or all-int default
-        NdArrayDtype::Int64
+        // Empty array defaults to float64, matching NumPy's behavior
+        NdArrayDtype::Float64
     };
 
     Ok(NdArray::new(data, shape, dtype))
@@ -1275,8 +1402,12 @@ pub(crate) fn promote_dtype(a: NdArrayDtype, b: NdArrayDtype) -> NdArrayDtype {
 }
 
 /// Determines result dtype when combining an array dtype with a scalar.
-fn promote_dtype_with_scalar(arr_dtype: NdArrayDtype, scalar: f64) -> NdArrayDtype {
-    if arr_dtype == NdArrayDtype::Float64 || scalar.fract() != 0.0 {
+///
+/// `scalar_is_float` indicates whether the Python value was a `float` (as opposed to `int`).
+/// This is necessary because `1.0` and `1` are both `f64` internally, but NumPy promotes
+/// `int_arr * 1.0` to float64 while `int_arr * 1` stays int64.
+pub(crate) fn promote_dtype_with_scalar(arr_dtype: NdArrayDtype, scalar_is_float: bool) -> NdArrayDtype {
+    if arr_dtype == NdArrayDtype::Float64 || scalar_is_float {
         NdArrayDtype::Float64
     } else {
         arr_dtype
