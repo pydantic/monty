@@ -590,7 +590,7 @@ fn write_json_key(
         Value::Int(value) => write_json_display_key(value, out),
         Value::Float(value) => {
             out.push('"');
-            write_json_float_text(*value, out);
+            write_json_float_key(*value, out);
             out.push('"');
         }
         Value::InternString(string_id) => write_json_string(vm.interns.get_str(*string_id), out, ensure_ascii),
@@ -627,6 +627,23 @@ fn write_json_display_key(value: impl Display, out: &mut String) {
     out.push('"');
     write!(out, "{value}").expect("writing to String cannot fail");
     out.push('"');
+}
+
+/// Writes a float value as a quoted JSON object key.
+///
+/// Non-finite values (NaN, +/-Infinity) are emitted as their Python repr
+/// (`NaN`, `Infinity`, `-Infinity`) matching CPython's key coercion behavior.
+/// Finite values delegate to `write_json_float_text` for standard formatting.
+fn write_json_float_key(value: f64, out: &mut String) {
+    if value.is_nan() {
+        out.push_str("NaN");
+    } else if value == f64::INFINITY {
+        out.push_str("Infinity");
+    } else if value == f64::NEG_INFINITY {
+        out.push_str("-Infinity");
+    } else {
+        write_json_float_text(value, out);
+    }
 }
 
 /// Serializes a float using JSON's number and NaN rules.
@@ -749,7 +766,7 @@ fn write_json_string(value: &str, out: &mut String, ensure_ascii: bool) {
             ch if ch <= '\u{1F}' => {
                 write!(out, "\\u{:04x}", ch as u32).expect("writing to String cannot fail");
             }
-            ch if ensure_ascii && !ch.is_ascii() => write_json_escape_for_non_ascii(ch, out),
+            ch if ensure_ascii && (ch as u32) > 0x7E => write_json_escape_for_non_ascii(ch, out),
             ch => out.push(ch),
         }
     }
