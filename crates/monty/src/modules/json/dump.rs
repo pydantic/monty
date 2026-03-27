@@ -3,7 +3,10 @@
 //! This module owns encoder keyword parsing, CPython-compatible string/float
 //! formatting, and recursive serialization of Monty values.
 
-use std::{fmt::Write, mem};
+use std::{
+    fmt::{Display, Write},
+    mem,
+};
 
 use crate::{
     args::{ArgValues, KwargsValues},
@@ -571,31 +574,51 @@ fn write_json_key(
     config: &JsonDumpsConfig,
     vm: &VM<'_, '_, impl ResourceTracker>,
 ) -> RunResult<()> {
+    let ensure_ascii = config.ensure_ascii();
     match key {
-        Value::None => write_json_string("null", out, config.ensure_ascii()),
-        Value::Bool(true) => write_json_string("true", out, config.ensure_ascii()),
-        Value::Bool(false) => write_json_string("false", out, config.ensure_ascii()),
-        Value::Int(value) => {
-            let value = value.to_string();
-            write_json_string(&value, out, config.ensure_ascii());
-        }
+        Value::None => write_json_ascii_key("null", out),
+        Value::Bool(true) => write_json_ascii_key("true", out),
+        Value::Bool(false) => write_json_ascii_key("false", out),
+        Value::Int(value) => write_json_display_key(value, out),
         Value::Float(value) => {
-            let value = json_float_repr(*value);
-            write_json_string(&value, out, config.ensure_ascii());
+            out.push('"');
+            write_json_float_text(*value, out);
+            out.push('"');
         }
-        Value::InternString(string_id) => write_json_string(vm.interns.get_str(*string_id), out, config.ensure_ascii()),
+        Value::InternString(string_id) => write_json_string(vm.interns.get_str(*string_id), out, ensure_ascii),
         Value::Ref(heap_id) => match vm.heap.get(*heap_id) {
-            HeapData::Str(string) => write_json_string(string.as_str(), out, config.ensure_ascii()),
+            HeapData::Str(string) => write_json_string(string.as_str(), out, ensure_ascii),
             HeapData::LongInt(long_int) => {
                 long_int.check_str_digits_limit()?;
-                let value = long_int.inner().to_string();
-                write_json_string(&value, out, config.ensure_ascii());
+                write_json_display_key(long_int.inner(), out);
             }
             _ => return Err(ExcType::json_invalid_key_error(key.py_type(vm))),
         },
         _ => return Err(ExcType::json_invalid_key_error(key.py_type(vm))),
     }
     Ok(())
+}
+
+/// Writes an already-ASCII JSON object key without going through the string
+/// escaper.
+///
+/// Coerced keys such as `None`, booleans, and numeric reprs are always ASCII
+/// and require no escaping, so this avoids building intermediate `String`
+/// values on the dict-key hot path.
+fn write_json_ascii_key(value: &str, out: &mut String) {
+    out.push('"');
+    out.push_str(value);
+    out.push('"');
+}
+
+/// Writes a displayable value as a quoted JSON object key.
+///
+/// The caller is responsible for ensuring the formatted output is ASCII-safe
+/// and does not require JSON string escaping.
+fn write_json_display_key(value: impl Display, out: &mut String) {
+    out.push('"');
+    write!(out, "{value}").expect("writing to String cannot fail");
+    out.push('"');
 }
 
 /// Serializes a float using JSON's number and NaN rules.
@@ -607,39 +630,42 @@ fn serialize_float(value: f64, out: &mut String, config: &JsonDumpsConfig) -> Ru
     if value.is_nan() {
         if config.allow_nan() {
             out.push_str("NaN");
-            return Ok(());
+            Ok(())
+        } else {
+            Err(ExcType::json_nan_error("nan"))
         }
-        return Err(ExcType::json_nan_error("nan"));
-    }
-    if value == f64::INFINITY {
+    } else if value == f64::INFINITY {
         if config.allow_nan() {
             out.push_str("Infinity");
-            return Ok(());
+            Ok(())
+        } else {
+            Err(ExcType::json_nan_error("inf"))
         }
-        return Err(ExcType::json_nan_error("inf"));
-    }
-    if value == f64::NEG_INFINITY {
+    } else if value == f64::NEG_INFINITY {
         if config.allow_nan() {
             out.push_str("-Infinity");
-            return Ok(());
+            Ok(())
+        } else {
+            Err(ExcType::json_nan_error("-inf"))
         }
-        return Err(ExcType::json_nan_error("-inf"));
+    } else {
+        write_json_float_text(value, out);
+        Ok(())
     }
-
-    out.push_str(&json_float_repr(value));
-    Ok(())
 }
 
-/// Formats a finite float using Monty's CPython-compatible float repr rules.
+/// Writes a finite float using Monty's CPython-compatible float repr rules.
 ///
-/// This helper is used for both ordinary JSON float values and the stringified
-/// representation of float dict keys.
-fn json_float_repr(value: f64) -> String {
-    let string = value.to_string();
-    if string.contains('.') || string.contains('e') || string.contains('E') {
-        string
-    } else {
-        format!("{string}.0")
+/// This avoids allocating a temporary `String` when the caller already owns the
+/// destination buffer.
+fn write_json_float_text(value: f64, out: &mut String) {
+    let start = out.len();
+    write!(out, "{value}").expect("writing to String cannot fail");
+    let wrote_decimal_or_exponent = out.as_bytes()[start..]
+        .iter()
+        .any(|byte| matches!(byte, b'.' | b'e' | b'E'));
+    if !wrote_decimal_or_exponent {
+        out.push_str(".0");
     }
 }
 
