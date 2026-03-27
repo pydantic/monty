@@ -1002,3 +1002,181 @@ assert aware_rep_result.tzinfo is not None, 'replace on aware should preserve tz
 assert repr(aware_rep_result) == 'datetime.datetime(2025, 6, 15, 12, 30, tzinfo=datetime.timezone.utc)', (
     f'aware replace: {aware_rep_result!r}'
 )
+
+# === date bool is always True (date.rs py_bool) ===
+
+assert bool(datetime.date(2024, 1, 1)), 'date bool should always be True'
+assert bool(datetime.date(1, 1, 1)), 'min date bool should be True'
+
+# === date ordering comparisons (date.rs py_cmp) ===
+
+assert datetime.date(2024, 1, 1) < datetime.date(2024, 1, 2), 'date < should work'
+assert datetime.date(2024, 1, 2) > datetime.date(2024, 1, 1), 'date > should work'
+assert datetime.date(2024, 1, 1) <= datetime.date(2024, 1, 1), 'date <= equal should work'
+assert datetime.date(2024, 1, 1) >= datetime.date(2024, 1, 1), 'date >= equal should work'
+assert datetime.date(2024, 1, 1) <= datetime.date(2024, 1, 2), 'date <= less should work'
+assert datetime.date(2024, 6, 15) >= datetime.date(2024, 6, 14), 'date >= greater should work'
+
+# === date constructor: negative day (date.rs from_ymd) ===
+
+try:
+    datetime.date(2024, 1, -1)
+    assert False, 'date(day=-1) should raise ValueError'
+except ValueError as e:
+    assert str(e) == 'day -1 must be in range 1..31 for month 1 in year 2024', f'date neg day: {e}'
+
+# === date constructor: too many args (date.rs init) ===
+
+try:
+    datetime.date(2024, 1, 1, foo=1)
+    assert False, 'date with extra kwarg should raise TypeError'
+except TypeError as e:
+    assert str(e) == 'function takes at most 3 arguments (4 given)', f'date too many args: {e}'
+
+# === date constructor: duplicate year kwarg (date.rs init) ===
+
+try:
+    datetime.date(2024, year=2024)
+    assert False, 'date with duplicate year should raise TypeError'
+except TypeError:
+    pass  # message differs between CPython and Monty
+
+# === date constructor: duplicate month kwarg (date.rs init) ===
+
+try:
+    datetime.date(2024, 1, month=1)
+    assert False, 'date with duplicate month should raise TypeError'
+except TypeError:
+    pass  # message differs between CPython and Monty
+
+# === date.replace() unexpected keyword (date.rs extract_date_replace_kwargs) ===
+
+try:
+    datetime.date(2024, 1, 1).replace(foo=1)
+    assert False, 'date.replace(foo=1) should raise TypeError'
+except TypeError as e:
+    assert str(e) == "replace() got an unexpected keyword argument 'foo'", f'date.replace bad kwarg: {e}'
+
+# === timedelta overflow (timedelta.rs new) ===
+
+try:
+    datetime.timedelta(days=1000000000)
+    assert False, 'timedelta with 1e9 days should raise OverflowError'
+except OverflowError as e:
+    assert str(e) == 'days=1000000000; must have magnitude <= 999999999', f'td overflow: {e}'
+
+try:
+    datetime.timedelta(days=-1000000000)
+    assert False, 'timedelta with -1e9 days should raise OverflowError'
+except OverflowError as e:
+    assert str(e) == 'days=-1000000000; must have magnitude <= 999999999', f'td neg overflow: {e}'
+
+# === timedelta constructor: duplicate kwargs (timedelta.rs init) ===
+
+try:
+    datetime.timedelta(1, days=1)
+    assert False, 'timedelta with duplicate days should raise TypeError'
+except TypeError:
+    pass  # message differs between CPython and Monty
+
+try:
+    datetime.timedelta(1, 2, seconds=2)
+    assert False, 'timedelta with duplicate seconds should raise TypeError'
+except TypeError:
+    pass  # message differs between CPython and Monty
+
+try:
+    datetime.timedelta(1, 2, 3, microseconds=3)
+    assert False, 'timedelta with duplicate microseconds should raise TypeError'
+except TypeError:
+    pass  # message differs between CPython and Monty
+
+# === timedelta constructor: unexpected keyword (timedelta.rs init) ===
+
+try:
+    datetime.timedelta(foo=1)
+    assert False, 'timedelta with unexpected kwarg should raise TypeError'
+except TypeError:
+    pass  # message differs between CPython and Monty
+
+# === timedelta str with microseconds (timedelta.rs py_str) ===
+
+assert str(datetime.timedelta(seconds=1, microseconds=500)) == '0:00:01.000500', (
+    'timedelta str should include 6-digit microsecond padding'
+)
+assert str(datetime.timedelta(microseconds=1)) == '0:00:00.000001', 'timedelta str should show single microsecond'
+assert str(datetime.timedelta(days=1, microseconds=123456)) == '1 day, 0:00:00.123456', (
+    'timedelta str with days and microseconds'
+)
+
+# === timedelta ordering comparisons (timedelta.rs py_cmp) ===
+
+assert datetime.timedelta(days=1) < datetime.timedelta(days=2), 'timedelta < should work'
+assert datetime.timedelta(days=2) > datetime.timedelta(days=1), 'timedelta > should work'
+assert datetime.timedelta(days=1) <= datetime.timedelta(days=1), 'timedelta <= equal should work'
+assert datetime.timedelta(days=1) >= datetime.timedelta(days=1), 'timedelta >= equal should work'
+assert datetime.timedelta(seconds=30) < datetime.timedelta(seconds=60), 'timedelta < seconds'
+assert datetime.timedelta(days=1) >= datetime.timedelta(seconds=86399), 'timedelta >= cross-unit'
+
+# === timezone constructor: too many args (timezone.rs init) ===
+
+try:
+    datetime.timezone(datetime.timedelta(0), 'UTC', 'extra')
+    assert False, 'timezone with 3 args should raise TypeError'
+except TypeError as e:
+    assert str(e) == 'timezone() takes at most 2 arguments (3 given)', f'tz too many: {e}'
+
+# === timezone constructor: unexpected keyword (timezone.rs init) ===
+
+try:
+    datetime.timezone(datetime.timedelta(0), foo='bar')
+    assert False, 'timezone with unexpected kwarg should raise TypeError'
+except TypeError as e:
+    assert str(e) == "timezone() got an unexpected keyword argument 'foo'", f'tz bad kwarg: {e}'
+
+# === timezone constructor: non-timedelta offset (timezone.rs extract_offset_seconds) ===
+
+try:
+    datetime.timezone(3600)
+    assert False, 'timezone(int) should raise TypeError'
+except TypeError:
+    pass  # message differs between CPython and Monty
+
+# === timezone constructor: non-string name (timezone.rs extract_name) ===
+
+try:
+    datetime.timezone(datetime.timedelta(0), 123)
+    assert False, 'timezone(td, int) should raise TypeError'
+except TypeError:
+    pass  # message differs between CPython and Monty
+
+# === timezone constructor: offset out of range (timezone.rs extract_offset_seconds) ===
+
+try:
+    datetime.timezone(datetime.timedelta(hours=25))
+    assert False, 'timezone with 25h offset should raise ValueError'
+except ValueError as e:
+    assert 'strictly between' in str(e), f'tz out of range: {e}'
+
+try:
+    datetime.timezone(datetime.timedelta(hours=-25))
+    assert False, 'timezone with -25h offset should raise ValueError'
+except ValueError as e:
+    assert 'strictly between' in str(e), f'tz neg out of range: {e}'
+
+# === timezone equality (timezone.rs PartialEq) ===
+
+tz_five = datetime.timezone(datetime.timedelta(hours=5))
+tz_five_b = datetime.timezone(datetime.timedelta(hours=5))
+tz_six = datetime.timezone(datetime.timedelta(hours=6))
+assert tz_five == tz_five_b, 'same offset timezones should be equal'
+assert tz_five != tz_six, 'different offset timezones should not be equal'
+assert not (tz_five != tz_five_b), 'same offset timezones should not be not-equal'
+
+# === datetime constructor: duplicate month (datetime.rs init) ===
+
+try:
+    datetime.datetime(2024, 1, 1, month=1)
+    assert False, 'datetime with duplicate month should raise TypeError'
+except TypeError as e:
+    assert str(e) == "argument for function given by name ('month') and position (2)", f'dt dup month: {e}'

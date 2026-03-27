@@ -442,9 +442,7 @@ fn extract_date_replace_kwargs(
     // replace() takes no positional args
     if let Some(arg) = pos.next() {
         arg.drop_with_heap(heap);
-        return Err(ExcType::type_error(
-            "date.replace() takes 0 positional arguments".to_owned(),
-        ));
+        return Err(ExcType::type_error("replace() takes 0 positional arguments".to_owned()));
     }
 
     for (key, value) in kwargs {
@@ -459,7 +457,7 @@ fn extract_date_replace_kwargs(
             Some(id) if id == StaticStrings::Day => new_day = value_to_i32(value)?,
             _ => {
                 return Err(ExcType::type_error_unexpected_keyword(
-                    "date.replace",
+                    "replace",
                     key_name.as_str(interns),
                 ));
             }
