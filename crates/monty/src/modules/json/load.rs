@@ -14,7 +14,11 @@ use crate::{
     exception_private::{ExcType, RunError, RunResult},
     heap::{DropWithHeap, HeapData, HeapGuard},
     resource::{ResourceError, ResourceTracker},
-    types::{Dict, List, LongInt, PyTrait, str::allocate_string},
+    types::{
+        Dict, List, LongInt, PyTrait,
+        long_int::{check_decimal_digit_count, decimal_digit_count_ascii},
+        str::allocate_string,
+    },
     value::Value,
 };
 
@@ -116,7 +120,8 @@ fn parse_json_input(value: &Value, vm: &mut VM<'_, '_, impl ResourceTracker>) ->
 fn parse_json_bytes(bytes: &[u8], vm: &mut VM<'_, '_, impl ResourceTracker>) -> RunResult<Value> {
     let mut jiter = Jiter::new(bytes);
     let value = parse_json_value(&mut jiter, 0, vm).map_err(|error| match error {
-        JsonLoadError::Parse(error) => json_error_to_run_error(&error, &jiter, bytes),
+        JsonLoadError::Parse(error) => json_number_out_of_range_to_run_error(&error, bytes)
+            .unwrap_or_else(|| json_error_to_run_error(&error, &jiter, bytes)),
         JsonLoadError::Run(error) => error,
     })?;
     jiter
@@ -167,17 +172,24 @@ fn parse_json_value_from_peek(
 
 /// Parses a JSON number into the corresponding Monty numeric value.
 ///
-/// Big integers remain precise by mapping `jiter::NumberInt::BigInt` into
-/// Monty's heap-allocated `LongInt`.
+/// Integer tokens are counted directly from the source bytes so
+/// `INT_MAX_STR_DIGITS` errors report the same digit count as CPython without
+/// first allocating an oversized decimal string.
 fn parse_json_number(
     peek: Peek,
     jiter: &mut Jiter<'_>,
     vm: &mut VM<'_, '_, impl ResourceTracker>,
 ) -> ParseResult<Value> {
-    match jiter.known_number(peek)? {
-        NumberAny::Int(NumberInt::Int(value)) => Ok(Value::Int(value)),
-        NumberAny::Int(NumberInt::BigInt(value)) => Ok(LongInt::from(value).into_value(vm.heap)?),
-        NumberAny::Float(value) => Ok(Value::Float(value)),
+    let start = jiter.current_index();
+    match jiter.known_number(peek) {
+        Ok(NumberAny::Int(NumberInt::Int(value))) => Ok(Value::Int(value)),
+        Ok(NumberAny::Int(NumberInt::BigInt(value))) => {
+            let digit_count = decimal_digit_count_ascii(jiter.slice_to_current(start));
+            check_decimal_digit_count(digit_count).map_err(JsonLoadError::Run)?;
+            Ok(LongInt::new(value).into_value(vm.heap)?)
+        }
+        Ok(NumberAny::Float(value)) => Ok(Value::Float(value)),
+        Err(error) => Err(error.into()),
     }
 }
 
@@ -287,6 +299,52 @@ fn check_json_recursion_limit(jiter: &Jiter<'_>, depth: usize) -> ParseResult<()
         }));
     }
     Ok(())
+}
+
+/// Converts `jiter`'s oversized-integer parse error into CPython's digit-limit
+/// `ValueError` when the offending token is a decimal integer literal.
+fn json_number_out_of_range_to_run_error(error: &JiterError, bytes: &[u8]) -> Option<RunError> {
+    if error.error_type != JiterErrorType::JsonError(JsonErrorType::NumberOutOfRange) {
+        return None;
+    }
+
+    let token = slice_json_number_around(bytes, error.index);
+    if !is_json_integer_token(token) {
+        return None;
+    }
+
+    let digit_count = decimal_digit_count_ascii(token);
+    check_decimal_digit_count(digit_count).err()
+}
+
+/// Returns whether a raw JSON number token is an integer literal rather than a
+/// float or exponent form.
+fn is_json_integer_token(token: &[u8]) -> bool {
+    !token.is_empty() && !token.contains(&b'.') && !token.contains(&b'e') && !token.contains(&b'E')
+}
+
+/// Returns the JSON number token that surrounds `index`.
+///
+/// `jiter` reports `NumberOutOfRange` at or just after the failing position, so
+/// this scans outward to recover the original token for CPython-compatible
+/// integer digit-limit handling.
+fn slice_json_number_around(bytes: &[u8], index: usize) -> &[u8] {
+    let mut start = index.min(bytes.len());
+    while start > 0 && is_json_number_byte(bytes[start - 1]) {
+        start -= 1;
+    }
+
+    let mut end = index.min(bytes.len());
+    while end < bytes.len() && is_json_number_byte(bytes[end]) {
+        end += 1;
+    }
+
+    &bytes[start..end]
+}
+
+/// Returns whether `byte` can appear in a JSON number token.
+fn is_json_number_byte(byte: u8) -> bool {
+    matches!(byte, b'0'..=b'9' | b'+' | b'-' | b'.' | b'e' | b'E')
 }
 
 /// Converts a `jiter` parse error into `json.JSONDecodeError`.

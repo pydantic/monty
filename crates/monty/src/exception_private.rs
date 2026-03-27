@@ -1034,13 +1034,15 @@ impl ExcType {
 
     /// Creates a ValueError when an integer is too large to convert to a decimal string.
     ///
-    /// Matches CPython 3.11+'s `sys.int_max_str_digits` behavior but omits the
-    /// `sys.set_int_max_str_digits()` advice since Monty does not expose that API.
+    /// Matches CPython 3.11+'s `sys.int_max_str_digits` error message.
     #[must_use]
     pub(crate) fn value_error_int_too_large_for_str() -> RunError {
         SimpleException::new_msg(
             Self::ValueError,
-            format!("Exceeds the limit ({INT_MAX_STR_DIGITS} digits) for integer string conversion"),
+            format!(
+                "Exceeds the limit ({INT_MAX_STR_DIGITS} digits) for integer string conversion; \
+                 use sys.set_int_max_str_digits() to increase the limit"
+            ),
         )
         .into()
     }
@@ -1052,7 +1054,10 @@ impl ExcType {
     pub(crate) fn value_error_int_str_too_large(digit_count: usize) -> RunError {
         SimpleException::new_msg(
             Self::ValueError,
-            format!("Exceeds the limit ({INT_MAX_STR_DIGITS} digits) for integer string conversion: value has {digit_count} digits"),
+            format!(
+                "Exceeds the limit ({INT_MAX_STR_DIGITS} digits) for integer string conversion: \
+                 value has {digit_count} digits; use sys.set_int_max_str_digits() to increase the limit"
+            ),
         )
         .into()
     }

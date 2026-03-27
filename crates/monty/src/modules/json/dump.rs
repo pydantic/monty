@@ -17,7 +17,7 @@ use crate::{
     intern::StaticStrings,
     resource::ResourceTracker,
     sorting::sort_indices,
-    types::{PyTrait, long_int::check_bits_str_digits_limit, str::allocate_string},
+    types::{PyTrait, long_int::check_bigint_str_digits_limit, str::allocate_string},
     value::Value,
 };
 
@@ -382,7 +382,7 @@ fn serialize_value(
         }
         Value::InternLongInt(long_int_id) => {
             let value = vm.interns.get_long_int(*long_int_id);
-            check_bits_str_digits_limit(value.bits())?;
+            check_bigint_str_digits_limit(value)?;
             write!(out, "{value}").expect("writing to String cannot fail");
             Ok(())
         }
