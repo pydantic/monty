@@ -286,14 +286,12 @@ See more test commands above.
 
 Read `Makefile` for other useful commands.
 
-DO NOT run `cargo run --`, it will fail because of issues with Python bindings.
-
 You can use the `./playground` directory (excluded from git, create with `mkdir -p playground`) to write files
 when you want to experiment by running a file with cpython or monty, e.g.:
 * `python3 playground/test.py` to run the file with cpython
 * `cargo run -- playground/test.py` to run the file with monty
 
-DO NOT use `/tmp` or pipe code to the interpreter as it requires extra permissions and can slow you down!
+DO NOT use `/tmp` or pipe code to the interpreter, or use `python3 -c ...` as it requires extra permissions and can slow you down!
 
 More details in the "python-playground" skill.
 

@@ -52,3 +52,12 @@ assert json.loads(str(big)) == big, 'loads large integers without losing precisi
 assert json.loads('1e20') == 1e20, 'loads large exponent floats'
 assert json.loads('1e-6') == 1e-6, 'loads small exponent floats'
 assert json.loads('-0.0') == -0.0, 'loads negative zero as a float'
+
+# === loads NaN and Infinity (CPython accepts these by default) ===
+import math
+
+nan_result = json.loads('NaN')
+assert math.isnan(nan_result), 'loads NaN as float nan'
+assert json.loads('Infinity') == float('inf'), 'loads Infinity as float inf'
+assert json.loads('-Infinity') == float('-inf'), 'loads -Infinity as float -inf'
+assert json.loads('[NaN, Infinity, -Infinity]')[1] == float('inf'), 'loads NaN/Infinity in arrays'

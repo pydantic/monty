@@ -163,10 +163,10 @@ impl JsonDumpsConfig {
                         value.drop_with_heap(vm);
                         return Err(ExcType::type_error_duplicate_arg("dumps", "separators"));
                     }
-                    seen_separators = true;
                     if let Some((item, key)) = parse_separators_value(value, vm)? {
                         config.item_separator = item;
                         config.key_separator = key;
+                        seen_separators = true;
                     }
                 }
                 StaticStrings::Skipkeys => {
@@ -204,9 +204,11 @@ impl JsonDumpsConfig {
 /// Implements `json.dumps(obj, **kwargs)`.
 ///
 /// Only the first argument may be positional. Supported keyword arguments mirror
-/// the high-value subset of CPython's encoder configuration. Unknown keywords
-/// and not-yet-implemented options such as `cls`, `default`, and
-/// `check_circular` raise immediately.
+/// the high-value subset of CPython's encoder configuration: `indent`,
+/// `sort_keys`, `ensure_ascii`, `allow_nan`, `separators`, and `skipkeys`.
+///
+/// CPython kwargs `cls`, `default`, and `check_circular` are intentionally
+/// unsupported and will raise `TypeError` if passed.
 pub(super) fn call_dumps(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     let (mut pos, kwargs) = args.into_parts();
 
@@ -615,9 +617,7 @@ fn write_json_key(
         Value::Bool(false) => write_json_ascii_key("false", out),
         Value::Int(value) => write_json_display_key(value, out),
         Value::Float(value) => {
-            out.push('"');
-            write_json_float_key(*value, out);
-            out.push('"');
+            serialize_float_key(*value, out, config)?;
         }
         Value::InternString(string_id) => write_json_string(vm.interns.get_str(*string_id), out, ensure_ascii),
         Value::Ref(heap_id) => match vm.heap.get(*heap_id) {
@@ -655,21 +655,34 @@ fn write_json_display_key(value: impl Display, out: &mut String) {
     out.push('"');
 }
 
-/// Writes a float value as a quoted JSON object key.
+/// Serializes a float value as a quoted JSON object key, respecting `allow_nan`.
 ///
 /// Non-finite values (NaN, +/-Infinity) are emitted as their Python repr
-/// (`NaN`, `Infinity`, `-Infinity`) matching CPython's key coercion behavior.
-/// Finite values delegate to `write_json_float_text` for standard formatting.
-fn write_json_float_key(value: f64, out: &mut String) {
+/// (`NaN`, `Infinity`, `-Infinity`) when `allow_nan` is enabled. When disabled,
+/// the same `ValueError` raised for non-finite float *values* applies to keys
+/// too, matching CPython's behavior.
+fn serialize_float_key(value: f64, out: &mut String, config: &JsonDumpsConfig) -> RunResult<()> {
+    out.push('"');
     if value.is_nan() {
+        if !config.allow_nan() {
+            return Err(ExcType::json_nan_error("nan"));
+        }
         out.push_str("NaN");
     } else if value == f64::INFINITY {
+        if !config.allow_nan() {
+            return Err(ExcType::json_nan_error("inf"));
+        }
         out.push_str("Infinity");
     } else if value == f64::NEG_INFINITY {
+        if !config.allow_nan() {
+            return Err(ExcType::json_nan_error("-inf"));
+        }
         out.push_str("-Infinity");
     } else {
         write_json_float_text(value, out);
     }
+    out.push('"');
+    Ok(())
 }
 
 /// Serializes a float using JSON's number and NaN rules.

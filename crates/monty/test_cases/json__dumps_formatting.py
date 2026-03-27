@@ -9,6 +9,11 @@ assert json.dumps([], indent=2) == '[]', 'empty list with indent stays compact'
 assert json.dumps({}, indent=2) == '{}', 'empty dict with indent stays compact'
 assert json.dumps((), indent=2) == '[]', 'empty tuple with indent stays compact'
 
+# === separators=None preserves indent-aware defaults ===
+assert json.dumps({'a': [1, 2]}, indent=2, separators=None) == json.dumps({'a': [1, 2]}, indent=2), (
+    'separators=None with indent uses same defaults as omitting separators'
+)
+
 # === separators as tuple ===
 assert json.dumps({'a': 1}, separators=(',', ':')) == '{"a":1}', 'tuple separators work'
 assert json.dumps([1, 2], separators=(' , ', ' : ')) == '[1 , 2]', 'custom separators with spaces'

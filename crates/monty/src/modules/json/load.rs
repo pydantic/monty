@@ -61,9 +61,14 @@ const JSON_RECURSION_LIMIT: usize = 200;
 
 /// Implements `json.loads(s)`.
 ///
-/// The function accepts exactly one positional argument and rejects keyword
-/// arguments. Input may be `str` or `bytes`; parsed JSON values are converted
-/// recursively into Monty `Value`s.
+/// The function accepts exactly one positional argument. Input may be `str` or
+/// `bytes`; parsed JSON values are converted recursively into Monty `Value`s.
+/// Unlike CPython, `NaN`, `Infinity`, and `-Infinity` are always accepted
+/// (there is no `parse_constant` parameter).
+///
+/// CPython kwargs `cls`, `object_hook`, `parse_float`, `parse_int`,
+/// `parse_constant`, and `object_pairs_hook` are intentionally unsupported
+/// and will raise `TypeError` if passed.
 pub(super) fn call_loads(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     let (mut pos, kwargs) = args.into_parts();
     if let Some((key, value)) = kwargs.into_iter().next() {
@@ -118,7 +123,7 @@ fn parse_json_input(value: &Value, vm: &mut VM<'_, '_, impl ResourceTracker>) ->
 /// Syntax errors are wrapped in `json.JSONDecodeError` using the same
 /// line/column/character suffix as CPython.
 fn parse_json_bytes(bytes: &[u8], vm: &mut VM<'_, '_, impl ResourceTracker>) -> RunResult<Value> {
-    let mut jiter = Jiter::new(bytes);
+    let mut jiter = Jiter::new(bytes).with_allow_inf_nan();
     let value = parse_json_value(&mut jiter, 0, vm).map_err(|error| match error {
         JsonLoadError::Parse(error) => json_number_out_of_range_to_run_error(&error, bytes)
             .unwrap_or_else(|| json_error_to_run_error(&error, &jiter, bytes)),

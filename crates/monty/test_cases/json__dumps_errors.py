@@ -100,3 +100,22 @@ try:
     assert False, 'circular dict in list should raise ValueError'
 except ValueError as exc:
     assert str(exc) == 'Circular reference detected', 'circular dict-in-list error'
+
+# === allow_nan=False with float dict keys ===
+try:
+    json.dumps({float('nan'): 1}, allow_nan=False)
+    assert False, 'should raise ValueError for NaN key'
+except ValueError as exc:
+    assert str(exc) == 'Out of range float values are not JSON compliant: nan', 'NaN key error message'
+
+try:
+    json.dumps({float('inf'): 1}, allow_nan=False)
+    assert False, 'should raise ValueError for inf key'
+except ValueError as exc:
+    assert str(exc) == 'Out of range float values are not JSON compliant: inf', 'inf key error message'
+
+try:
+    json.dumps({float('-inf'): 1}, allow_nan=False)
+    assert False, 'should raise ValueError for -inf key'
+except ValueError as exc:
+    assert str(exc) == 'Out of range float values are not JSON compliant: -inf', '-inf key error message'

@@ -464,11 +464,6 @@ pub enum StaticStrings {
     Separators,
     /// `json.dumps(skipkeys=...)` keyword.
     Skipkeys,
-    /// `json.dumps(cls=...)` keyword.
-    Cls,
-    /// `json.dumps(check_circular=...)` keyword.
-    #[strum(serialize = "check_circular")]
-    CheckCircular,
 
     // ==========================
     // datetime module strings
