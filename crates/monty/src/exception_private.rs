@@ -1039,10 +1039,7 @@ impl ExcType {
     pub(crate) fn value_error_int_too_large_for_str() -> RunError {
         SimpleException::new_msg(
             Self::ValueError,
-            format!(
-                "Exceeds the limit ({INT_MAX_STR_DIGITS} digits) for integer string conversion; \
-                 use sys.set_int_max_str_digits() to increase the limit"
-            ),
+            format!("Exceeds the limit ({INT_MAX_STR_DIGITS} digits) for integer string conversion"),
         )
         .into()
     }
@@ -1056,7 +1053,7 @@ impl ExcType {
             Self::ValueError,
             format!(
                 "Exceeds the limit ({INT_MAX_STR_DIGITS} digits) for integer string conversion: \
-                 value has {digit_count} digits; use sys.set_int_max_str_digits() to increase the limit"
+                 value has {digit_count} digits"
             ),
         )
         .into()

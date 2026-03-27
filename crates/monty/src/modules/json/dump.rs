@@ -493,7 +493,18 @@ fn serialize_dict(
     vm: &mut VM<'_, '_, impl ResourceTracker>,
 ) -> RunResult<()> {
     if config.skipkeys() {
-        entries.retain(|(key, _)| is_json_key_allowed(key, vm));
+        // Cannot use `retain` here because removed `Value::Ref` entries need
+        // `drop_with_heap` to decrement reference counts properly.
+        let mut i = 0;
+        while i < entries.len() {
+            if is_json_key_allowed(&entries[i].0, vm) {
+                i += 1;
+            } else {
+                let (key, value) = entries.remove(i);
+                key.drop_with_heap(vm);
+                value.drop_with_heap(vm);
+            }
+        }
     } else if let Some((key, _)) = entries.iter().find(|(key, _)| !is_json_key_allowed(key, vm)) {
         return Err(ExcType::json_invalid_key_error(key.py_type(vm)));
     }
@@ -503,10 +514,6 @@ fn serialize_dict(
     }
 
     out.push('{');
-    if entries.is_empty() {
-        out.push('}');
-        return Ok(());
-    }
 
     let pretty = config.indent.is_some();
     for (index, (key, value)) in entries.iter().enumerate() {
@@ -521,7 +528,7 @@ fn serialize_dict(
         out.push_str(&config.key_separator);
         serialize_value(value, out, config, depth + 1, active_containers, vm)?;
     }
-    if pretty {
+    if pretty && !entries.is_empty() {
         out.push('\n');
         write_indent(out, config, depth);
     }

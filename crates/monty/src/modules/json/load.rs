@@ -124,9 +124,12 @@ fn parse_json_bytes(bytes: &[u8], vm: &mut VM<'_, '_, impl ResourceTracker>) -> 
             .unwrap_or_else(|| json_error_to_run_error(&error, &jiter, bytes)),
         JsonLoadError::Run(error) => error,
     })?;
-    jiter
-        .finish()
-        .map_err(|error| json_error_to_run_error(&error, &jiter, bytes))?;
+    // The successfully parsed `value` must be dropped via `drop_with_heap` if
+    // `finish()` detects trailing data — a plain `?` would leak its refcount.
+    if let Err(error) = jiter.finish() {
+        value.drop_with_heap(vm);
+        return Err(json_error_to_run_error(&error, &jiter, bytes));
+    }
     Ok(value)
 }
 
