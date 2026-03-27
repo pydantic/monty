@@ -32,6 +32,14 @@ assert json.dumps({big: 1}) == '{"1234567890123456789012345678901234567890": 1}'
 assert json.dumps(1e20) == '1e+20', 'large finite floats keep exponent notation'
 assert json.dumps(1e-6) == '1e-06', 'small finite floats keep exponent notation'
 assert json.dumps(-0.0) == '-0.0', 'negative zero preserves its sign when dumped'
+assert json.dumps(9999999999999998.0) == '9999999999999998.0', (
+    'float just below 1e16 stays in fixed notation despite log10 rounding'
+)
+assert json.dumps(1.0000000000000002e16) == '1.0000000000000002e+16', 'float just above 1e16 uses exponent notation'
+assert json.dumps(0.0001) == '0.0001', 'float at 1e-4 boundary stays in fixed notation'
+assert json.dumps(9.999999999999999e-05) == '9.999999999999999e-05', 'float just below 1e-4 uses exponent notation'
+assert json.dumps(5e-324) == '5e-324', 'smallest subnormal float uses exponent notation'
+assert json.dumps(1e300) == '1e+300', 'very large float uses exponent notation'
 
 # === loads unicode literals ===
 assert json.loads('"☃😀"') == '☃😀', 'loads raw non-ASCII JSON strings'

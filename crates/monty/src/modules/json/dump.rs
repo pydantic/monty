@@ -657,94 +657,37 @@ fn serialize_float(value: f64, out: &mut String, config: &JsonDumpsConfig) -> Ru
 
 /// Writes a finite float using CPython-compatible JSON float repr rules.
 ///
-/// This avoids allocating a temporary `String` when the caller already owns the
-/// destination buffer.
+/// Python switches to scientific notation when the magnitude is `>= 1e16` or
+/// `< 1e-4` (and non-zero). We decide notation by comparing the absolute value
+/// directly against these thresholds rather than using `log10().floor()`, which
+/// has precision errors at boundary values (e.g. `9999999999999998.0` whose
+/// `log10` rounds up to `16.0`). Direct comparison is exact because `1e16` is
+/// exactly representable as f64 and `1e-4` as an f64 constant aligns with
+/// Python's notation boundary.
+///
+/// Each path formats the float exactly once: the scientific path writes via
+/// `{:e}` and post-processes the exponent to Python style (`e+XX` / `e-XX`),
+/// while the fixed path uses `Display` with a `.0` suffix for whole numbers.
 fn write_json_float_text(value: f64, out: &mut String) {
-    let prefers_exponent = float_prefers_exponent(value);
-    let start = out.len();
-    write!(out, "{value}").expect("writing to String cannot fail");
-    let wrote = &out[start..];
-
-    if prefers_exponent {
-        if !wrote.contains(['e', 'E']) {
-            let exponent_repr = fixed_float_to_exponent_repr(wrote);
-            out.truncate(start);
-            out.push_str(&exponent_repr);
+    let abs = value.abs();
+    if abs != 0.0 && !(1e-4..1e16).contains(&abs) {
+        // Python-style scientific notation: format via `{:e}`, then rewrite the
+        // exponent from Rust's bare `e<N>` to Python's `e+XX` / `e-XX`.
+        let start = out.len();
+        write!(out, "{value:e}").expect("writing to String cannot fail");
+        let e_pos = out[start..].find('e').expect("scientific format must contain 'e'") + start;
+        let exponent: i32 = out[e_pos + 1..].parse().expect("exponent must be a valid integer");
+        out.truncate(e_pos);
+        let exp_sign = if exponent >= 0 { '+' } else { '-' };
+        write!(out, "e{exp_sign}{:02}", exponent.unsigned_abs()).expect("writing to String cannot fail");
+    } else {
+        // Fixed notation: single `Display` write, appending `.0` for whole numbers.
+        let start = out.len();
+        write!(out, "{value}").expect("writing to String cannot fail");
+        if !out[start..].contains('.') {
+            out.push_str(".0");
         }
-    } else if !wrote.contains(['.', 'e', 'E']) {
-        out.push_str(".0");
     }
-}
-
-/// Returns whether CPython would prefer exponent notation for this finite float.
-///
-/// Python's float repr switches to scientific notation for exponents below `-4`
-/// or at least `16`, while values in between stay in fixed notation.
-fn float_prefers_exponent(value: f64) -> bool {
-    if value == 0.0 {
-        false
-    } else {
-        let exponent = value.abs().log10().floor();
-        !(-4.0..16.0).contains(&exponent)
-    }
-}
-
-/// Rewrites a fixed-point float repr into CPython-style exponent notation.
-///
-/// The input must be a Rust float representation without an exponent. Trailing
-/// zeros are stripped from the mantissa while the exponent keeps the original
-/// magnitude, matching Python's shortest scientific float repr.
-fn fixed_float_to_exponent_repr(value: &str) -> String {
-    let (sign, digits) = if let Some(rest) = value.strip_prefix('-') {
-        ("-", rest)
-    } else {
-        ("", value)
-    };
-
-    let (mut significand, exponent) = if let Some((integer, fraction)) = digits.split_once('.') {
-        if integer == "0" {
-            let first_digit = fraction
-                .find(|ch| ch != '0')
-                .expect("finite non-zero float must contain a non-zero digit");
-            (
-                fraction[first_digit..].to_owned(),
-                -(i32::try_from(first_digit).unwrap_or(i32::MAX) + 1),
-            )
-        } else {
-            let mut digits = integer.to_owned();
-            digits.push_str(fraction);
-            (
-                digits,
-                i32::try_from(integer.len()).unwrap_or(i32::MAX).saturating_sub(1),
-            )
-        }
-    } else {
-        (
-            digits.to_owned(),
-            i32::try_from(digits.len()).unwrap_or(i32::MAX).saturating_sub(1),
-        )
-    };
-
-    while significand.ends_with('0') {
-        significand.pop();
-    }
-
-    let exponent_prefix = if exponent >= 0 { '+' } else { '-' };
-    let exponent_abs = exponent.unsigned_abs();
-    let mut result = String::with_capacity(sign.len() + significand.len() + 8);
-    result.push_str(sign);
-    result.push(
-        significand
-            .chars()
-            .next()
-            .expect("finite non-zero float repr must contain a digit"),
-    );
-    if significand.len() > 1 {
-        result.push('.');
-        result.push_str(&significand[1..]);
-    }
-    write!(result, "e{exponent_prefix}{exponent_abs:02}").expect("writing to String cannot fail");
-    result
 }
 
 /// Writes indentation for pretty-printed JSON output.
