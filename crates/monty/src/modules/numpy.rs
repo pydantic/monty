@@ -6,17 +6,49 @@
 //!
 //! # Supported functions
 //!
+//! ## Array creation
 //! - `numpy.array(data)` — create an ndarray from a list
-//! - `numpy.zeros(n)` — create an array of zeros
-//! - `numpy.ones(n)` — create an array of ones
+//! - `numpy.zeros(n)` / `numpy.zeros((m, n))` — array of zeros
+//! - `numpy.ones(n)` / `numpy.ones((m, n))` — array of ones
 //! - `numpy.arange([start,] stop[, step])` — evenly spaced values within a range
 //! - `numpy.linspace(start, stop, num)` — evenly spaced values over an interval
-//! - `numpy.sum(a)`, `numpy.mean(a)`, `numpy.min(a)`, `numpy.max(a)`, `numpy.std(a)`
-//! - `numpy.abs(a)`, `numpy.sqrt(a)`, `numpy.log(a)`, `numpy.exp(a)`, etc.
+//! - `numpy.full(shape, fill_value)` — array filled with a constant
+//! - `numpy.eye(n)` — n×n identity matrix
+//! - `numpy.empty(n)` — uninitialized array (returns zeros in Monty)
+//! - `numpy.copy(a)` — copy an array
+//! - `numpy.zeros_like(a)` / `numpy.ones_like(a)` — array of same shape/dtype
+//!
+//! ## Element-wise math
+//! - `numpy.abs(a)`, `numpy.sqrt(a)`, `numpy.log(a)`, `numpy.exp(a)`
+//! - `numpy.sin(a)`, `numpy.cos(a)`, `numpy.tan(a)`, `numpy.log2(a)`, `numpy.log10(a)`
+//! - `numpy.ceil(a)`, `numpy.floor(a)`
+//! - `numpy.power(base, exp)` — element-wise power
+//! - `numpy.diff(a)` — discrete differences
 //! - `numpy.round(a, decimals)`, `numpy.clip(a, a_min, a_max)`
+//!
+//! ## Aggregation
+//! - `numpy.sum(a)`, `numpy.mean(a)`, `numpy.min(a)`, `numpy.max(a)`, `numpy.std(a)`
+//! - `numpy.prod(a)`, `numpy.var(a)`, `numpy.median(a)`
+//! - `numpy.argmin(a)`, `numpy.argmax(a)`
+//! - `numpy.count_nonzero(a)`
+//!
+//! ## Testing & inspection
+//! - `numpy.isnan(a)`, `numpy.isinf(a)`, `numpy.isfinite(a)`
+//! - `numpy.array_equal(a, b)`
+//! - `numpy.all(a)`, `numpy.any(a)`
+//!
+//! ## Selection & sorting
 //! - `numpy.where(condition, x, y)`, `numpy.maximum(a, b)`, `numpy.minimum(a, b)`
-//! - `numpy.sort(a)`, `numpy.unique(a)`, `numpy.concatenate(arrays)`
-//! - `numpy.cumsum(a)`, `numpy.dot(a, b)`
+//! - `numpy.sort(a)`, `numpy.unique(a)`
+//!
+//! ## Manipulation
+//! - `numpy.reshape(a, shape)`, `numpy.transpose(a)`, `numpy.concatenate(arrays)`
+//! - `numpy.append(a, values)`, `numpy.vstack(arrays)`, `numpy.hstack(arrays)`
+//! - `numpy.stack(arrays)`, `numpy.tile(a, reps)`, `numpy.repeat(a, repeats)`
+//! - `numpy.split(a, sections_or_indices)`, `numpy.cumsum(a)`, `numpy.dot(a, b)`
+//!
+//! ## Search & index
+//! - `numpy.nonzero(a)`, `numpy.argwhere(a)`
 
 use smallvec::SmallVec;
 
@@ -333,7 +365,10 @@ pub(super) fn call(
         NumpyFunctions::Append => call_append(vm, args).map(CallResult::Value),
         NumpyFunctions::Vstack => call_vstack(vm, args).map(CallResult::Value),
         NumpyFunctions::Hstack => call_hstack(vm, args).map(CallResult::Value),
-        NumpyFunctions::Stack => call_vstack(vm, args).map(CallResult::Value), // stack defaults to axis=0 = vstack
+        // Note: np.stack with axis=0 is equivalent to np.vstack for 1D inputs.
+        // For 2D+ inputs, np.stack creates a new axis, which differs from vstack.
+        // We only support the 1D case which is the LLM-common pattern.
+        NumpyFunctions::Stack => call_vstack(vm, args).map(CallResult::Value),
         NumpyFunctions::Nonzero => call_nonzero(vm, args).map(CallResult::Value),
         NumpyFunctions::Argwhere => call_argwhere(vm, args).map(CallResult::Value),
         NumpyFunctions::Tile => call_tile(vm, args).map(CallResult::Value),
@@ -476,11 +511,20 @@ fn call_linspace(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> 
     let stop = to_f64(&stop_val, vm)?;
     let num = match &num_val {
         #[expect(
-            clippy::cast_possible_truncation,
             clippy::cast_sign_loss,
-            reason = "num from user, validated non-negative"
+            clippy::cast_possible_truncation,
+            reason = "num is checked non-negative above"
         )]
-        Value::Int(n) => *n as usize,
+        Value::Int(n) => {
+            if *n < 0 {
+                return Err(SimpleException::new_msg(
+                    ExcType::ValueError,
+                    "Number of samples, num, must be non-negative.",
+                )
+                .into());
+            }
+            *n as usize
+        }
         _ => {
             return Err(ExcType::type_error("num must be an integer"));
         }
@@ -1018,7 +1062,8 @@ fn call_dot(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunRe
 }
 
 // ===========================
-// New functions: math, creation, testing, aggregation, manipulation
+// Element-wise math, array creation, testing, aggregation, manipulation,
+// search, and utility functions
 // ===========================
 
 /// `numpy.power(a, b)` — element-wise power (like `a ** b`).
@@ -1172,6 +1217,8 @@ fn call_bool_test(
 }
 
 /// `numpy.array_equal(a, b)` — true if two arrays have same shape and elements.
+///
+/// Uses direct f64 equality, so `NaN != NaN` — matching NumPy's behavior.
 fn call_array_equal(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     let (a_val, b_val) = args.get_two_args("numpy.array_equal", vm.heap)?;
     defer_drop!(a_val, vm);
@@ -1375,9 +1422,12 @@ fn call_vstack(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> Ru
     Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(arr))?))
 }
 
-/// `numpy.hstack(arrays)` — concatenate arrays horizontally (for 1D: simple concat).
+/// `numpy.hstack(arrays)` — concatenate arrays horizontally.
+///
+/// For 1D arrays, hstack is equivalent to concatenate (the LLM-common case).
+/// For 2D+ arrays, hstack should concatenate along axis=1 — this is not yet
+/// implemented and will incorrectly concatenate along axis=0 instead.
 fn call_hstack(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
-    // For 1D arrays, hstack is the same as concatenate
     call_concatenate(vm, args)
 }
 
@@ -1400,6 +1450,8 @@ fn call_nonzero(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> R
     let idx_val = Value::Ref(vm.heap.allocate(HeapData::NdArray(idx_arr))?);
 
     // NumPy returns a tuple with one array per dimension. For 1D input, it's a 1-tuple.
+    // Note: if allocate_tuple fails (resource limit), idx_val may be leaked. This is
+    // acceptable per project convention — resource exhaustion is a terminal error.
     let values: SmallVec<[Value; 3]> = smallvec::smallvec![idx_val];
     allocate_tuple(values, vm.heap).map_err(Into::into)
 }
@@ -1430,14 +1482,20 @@ fn call_tile(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunR
     defer_drop!(arr_val, vm);
 
     let arr = ndarray_from_value(arr_val, "numpy.tile", vm)?;
-    #[expect(clippy::cast_sign_loss, clippy::cast_possible_truncation, reason = "reps from user")]
-    let reps = if let Value::Int(n) = &reps_val {
+    defer_drop!(reps_val, vm);
+    #[expect(
+        clippy::cast_sign_loss,
+        clippy::cast_possible_truncation,
+        reason = "reps checked non-negative"
+    )]
+    let reps = if let Value::Int(n) = reps_val {
+        if *n < 0 {
+            return Err(SimpleException::new_msg(ExcType::ValueError, "negative number of repetitions").into());
+        }
         *n as usize
     } else {
-        reps_val.drop_with_heap(vm);
         return Err(ExcType::type_error("numpy.tile() reps must be an integer"));
     };
-    reps_val.drop_with_heap(vm);
 
     if reps == 0 || arr.len() == 0 {
         let result = NdArray::new(Vec::new(), vec![0], arr.dtype());
@@ -1457,18 +1515,20 @@ fn call_repeat(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> Ru
     defer_drop!(arr_val, vm);
 
     let arr = ndarray_from_value(arr_val, "numpy.repeat", vm)?;
+    defer_drop!(reps_val, vm);
     #[expect(
         clippy::cast_sign_loss,
         clippy::cast_possible_truncation,
-        reason = "repeats from user"
+        reason = "repeats checked non-negative"
     )]
-    let reps = if let Value::Int(n) = &reps_val {
+    let reps = if let Value::Int(n) = reps_val {
+        if *n < 0 {
+            return Err(SimpleException::new_msg(ExcType::ValueError, "negative number of repetitions").into());
+        }
         *n as usize
     } else {
-        reps_val.drop_with_heap(vm);
         return Err(ExcType::type_error("numpy.repeat() repeats must be an integer"));
     };
-    reps_val.drop_with_heap(vm);
 
     if arr.len() == 0 {
         let result = NdArray::new(Vec::new(), vec![0], arr.dtype());
@@ -1504,11 +1564,17 @@ fn call_split(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> Run
         #[expect(
             clippy::cast_sign_loss,
             clippy::cast_possible_truncation,
-            reason = "sections from user"
+            reason = "sections checked > 0"
         )]
         Value::Int(n) => {
+            if *n <= 0 {
+                idx_val.drop_with_heap(vm);
+                return Err(
+                    SimpleException::new_msg(ExcType::ValueError, "number sections must be larger than 0").into(),
+                );
+            }
             let sections = *n as usize;
-            if sections == 0 || (data.len() % sections != 0) {
+            if data.len() % sections != 0 {
                 idx_val.drop_with_heap(vm);
                 return Err(SimpleException::new_msg(
                     ExcType::ValueError,
@@ -1546,7 +1612,9 @@ fn call_split(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> Run
     };
     idx_val.drop_with_heap(vm);
 
-    // Build sub-arrays
+    // Build sub-arrays. Note: if allocation fails partway through, previously allocated
+    // sub-arrays in `parts` are leaked. This is acceptable — allocation failure is a
+    // terminal resource-limit error (see CLAUDE.md reference counting docs).
     let mut parts = Vec::new();
     let mut prev = 0;
     for &idx in &split_indices {
