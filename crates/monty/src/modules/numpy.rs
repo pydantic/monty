@@ -18,6 +18,8 @@
 //! - `numpy.sort(a)`, `numpy.unique(a)`, `numpy.concatenate(arrays)`
 //! - `numpy.cumsum(a)`, `numpy.dot(a, b)`
 
+use smallvec::SmallVec;
+
 use crate::{
     args::ArgValues,
     bytecode::{CallResult, VM},
@@ -28,7 +30,7 @@ use crate::{
     modules::ModuleFunctions,
     resource::{ResourceError, ResourceTracker, check_array_alloc_size},
     types::{
-        Module, NdArray, PyTrait,
+        Module, NdArray, PyTrait, allocate_tuple,
         ndarray::{NdArrayDtype, promote_dtype},
     },
     value::Value,
@@ -94,6 +96,77 @@ pub(crate) enum NumpyFunctions {
     Log10,
     /// `numpy.std(a)` — standard deviation of array elements.
     Std,
+    /// `numpy.sin(a)` — element-wise sine.
+    Sin,
+    /// `numpy.cos(a)` — element-wise cosine.
+    Cos,
+    /// `numpy.tan(a)` — element-wise tangent.
+    Tan,
+    /// `numpy.log2(a)` — element-wise base-2 logarithm.
+    Log2,
+    /// `numpy.power(a, b)` — element-wise power.
+    Power,
+    /// `numpy.diff(a)` — n-th discrete difference.
+    Diff,
+    /// `numpy.full(shape, fill_value)` — array filled with a constant.
+    Full,
+    /// `numpy.eye(n)` — identity matrix.
+    Eye,
+    /// `numpy.copy(a)` — copy of an array.
+    NpCopy,
+    /// `numpy.empty(n)` — uninitialized array (returns zeros in Monty).
+    Empty,
+    /// `numpy.zeros_like(a)` — array of zeros with same shape/dtype.
+    ZerosLike,
+    /// `numpy.ones_like(a)` — array of ones with same shape/dtype.
+    OnesLike,
+    /// `numpy.isnan(a)` — element-wise NaN test.
+    Isnan,
+    /// `numpy.isinf(a)` — element-wise infinity test.
+    Isinf,
+    /// `numpy.isfinite(a)` — element-wise finiteness test.
+    Isfinite,
+    /// `numpy.array_equal(a, b)` — true if arrays are element-wise equal.
+    ArrayEqual,
+    /// `numpy.count_nonzero(a)` — count of non-zero elements.
+    CountNonzero,
+    /// `numpy.all(a)` — true if all elements are truthy.
+    All,
+    /// `numpy.any(a)` — true if any element is truthy.
+    Any,
+    /// `numpy.prod(a)` — product of array elements.
+    Prod,
+    /// `numpy.var(a)` — variance of array elements.
+    Var,
+    /// `numpy.median(a)` — median of array elements.
+    Median,
+    /// `numpy.argmin(a)` — index of minimum element.
+    Argmin,
+    /// `numpy.argmax(a)` — index of maximum element.
+    Argmax,
+    /// `numpy.reshape(a, shape)` — reshape an array.
+    Reshape,
+    // Note: np.flatten doesn't exist in real NumPy — use arr.flatten() method instead
+    /// `numpy.transpose(a)` — transpose an array.
+    Transpose,
+    /// `numpy.append(a, values)` — append values to end of array.
+    Append,
+    /// `numpy.vstack(arrays)` — stack arrays vertically.
+    Vstack,
+    /// `numpy.hstack(arrays)` — stack arrays horizontally.
+    Hstack,
+    /// `numpy.stack(arrays)` — stack arrays along new axis.
+    Stack,
+    /// `numpy.nonzero(a)` — indices of non-zero elements.
+    Nonzero,
+    /// `numpy.argwhere(a)` — indices where elements are non-zero.
+    Argwhere,
+    /// `numpy.tile(a, reps)` — construct by repeating array.
+    Tile,
+    /// `numpy.repeat(a, repeats)` — repeat elements of array.
+    Repeat,
+    /// `numpy.split(a, indices_or_sections)` — split array into sub-arrays.
+    Split,
 }
 
 /// Creates the `numpy` module and allocates it on the heap.
@@ -138,6 +211,42 @@ const NUMPY_FUNCTIONS: &[(StaticStrings, NumpyFunctions)] = &[
     (StaticStrings::Floor, NumpyFunctions::Floor),
     (StaticStrings::Log10, NumpyFunctions::Log10),
     (StaticStrings::Std, NumpyFunctions::Std),
+    (StaticStrings::Sin, NumpyFunctions::Sin),
+    (StaticStrings::Cos, NumpyFunctions::Cos),
+    (StaticStrings::Tan, NumpyFunctions::Tan),
+    (StaticStrings::Log2, NumpyFunctions::Log2),
+    (StaticStrings::NpPower, NumpyFunctions::Power),
+    (StaticStrings::NpDiff, NumpyFunctions::Diff),
+    (StaticStrings::NpFull, NumpyFunctions::Full),
+    (StaticStrings::NpEye, NumpyFunctions::Eye),
+    (StaticStrings::Copy, NumpyFunctions::NpCopy),
+    (StaticStrings::NpEmpty, NumpyFunctions::Empty),
+    (StaticStrings::NpZerosLike, NumpyFunctions::ZerosLike),
+    (StaticStrings::NpOnesLike, NumpyFunctions::OnesLike),
+    (StaticStrings::Isnan, NumpyFunctions::Isnan),
+    (StaticStrings::Isinf, NumpyFunctions::Isinf),
+    (StaticStrings::Isfinite, NumpyFunctions::Isfinite),
+    (StaticStrings::NpArrayEqual, NumpyFunctions::ArrayEqual),
+    (StaticStrings::NpCountNonzero, NumpyFunctions::CountNonzero),
+    (StaticStrings::NpAll, NumpyFunctions::All),
+    (StaticStrings::NpAny, NumpyFunctions::Any),
+    (StaticStrings::NpProd, NumpyFunctions::Prod),
+    (StaticStrings::NpVar, NumpyFunctions::Var),
+    (StaticStrings::NpMedian, NumpyFunctions::Median),
+    (StaticStrings::Argmin, NumpyFunctions::Argmin),
+    (StaticStrings::Argmax, NumpyFunctions::Argmax),
+    (StaticStrings::Reshape, NumpyFunctions::Reshape),
+    // np.flatten doesn't exist in real NumPy
+    (StaticStrings::NpTranspose, NumpyFunctions::Transpose),
+    (StaticStrings::Append, NumpyFunctions::Append),
+    (StaticStrings::NpVstack, NumpyFunctions::Vstack),
+    (StaticStrings::NpHstack, NumpyFunctions::Hstack),
+    (StaticStrings::NpStack, NumpyFunctions::Stack),
+    (StaticStrings::NpNonzero, NumpyFunctions::Nonzero),
+    (StaticStrings::NpArgwhere, NumpyFunctions::Argwhere),
+    (StaticStrings::NpTile, NumpyFunctions::Tile),
+    (StaticStrings::NpRepeat, NumpyFunctions::Repeat),
+    (StaticStrings::Split, NumpyFunctions::Split),
 ];
 
 /// Dispatches a call to a `numpy` module function.
@@ -186,6 +295,50 @@ pub(super) fn call(
         NumpyFunctions::Cumsum => call_cumsum(vm, args).map(CallResult::Value),
         NumpyFunctions::Dot => call_dot(vm, args).map(CallResult::Value),
         NumpyFunctions::Std => call_aggregate(vm, args, NdArray::std_dev, "numpy.std").map(CallResult::Value),
+        NumpyFunctions::Sin => {
+            call_elementwise(vm, args, f64::sin, "numpy.sin", Some(NdArrayDtype::Float64)).map(CallResult::Value)
+        }
+        NumpyFunctions::Cos => {
+            call_elementwise(vm, args, f64::cos, "numpy.cos", Some(NdArrayDtype::Float64)).map(CallResult::Value)
+        }
+        NumpyFunctions::Tan => {
+            call_elementwise(vm, args, f64::tan, "numpy.tan", Some(NdArrayDtype::Float64)).map(CallResult::Value)
+        }
+        NumpyFunctions::Log2 => {
+            call_elementwise(vm, args, f64::log2, "numpy.log2", Some(NdArrayDtype::Float64)).map(CallResult::Value)
+        }
+        NumpyFunctions::Power => call_power(vm, args).map(CallResult::Value),
+        NumpyFunctions::Diff => call_diff(vm, args).map(CallResult::Value),
+        NumpyFunctions::Full => call_full(vm, args).map(CallResult::Value),
+        NumpyFunctions::Eye => call_eye(vm, args).map(CallResult::Value),
+        NumpyFunctions::NpCopy => call_copy(vm, args).map(CallResult::Value),
+        NumpyFunctions::Empty => call_empty(vm, args).map(CallResult::Value),
+        NumpyFunctions::ZerosLike => call_like(vm, args, 0.0, "numpy.zeros_like").map(CallResult::Value),
+        NumpyFunctions::OnesLike => call_like(vm, args, 1.0, "numpy.ones_like").map(CallResult::Value),
+        NumpyFunctions::Isnan => call_bool_test(vm, args, f64::is_nan, "numpy.isnan").map(CallResult::Value),
+        NumpyFunctions::Isinf => call_bool_test(vm, args, f64::is_infinite, "numpy.isinf").map(CallResult::Value),
+        NumpyFunctions::Isfinite => call_bool_test(vm, args, f64::is_finite, "numpy.isfinite").map(CallResult::Value),
+        NumpyFunctions::ArrayEqual => call_array_equal(vm, args).map(CallResult::Value),
+        NumpyFunctions::CountNonzero => call_count_nonzero(vm, args).map(CallResult::Value),
+        NumpyFunctions::All => call_all(vm, args).map(CallResult::Value),
+        NumpyFunctions::Any => call_any(vm, args).map(CallResult::Value),
+        NumpyFunctions::Prod => call_prod(vm, args).map(CallResult::Value),
+        NumpyFunctions::Var => call_aggregate(vm, args, NdArray::var, "numpy.var").map(CallResult::Value),
+        NumpyFunctions::Median => call_median(vm, args).map(CallResult::Value),
+        NumpyFunctions::Argmin => call_argmin_mod(vm, args).map(CallResult::Value),
+        NumpyFunctions::Argmax => call_argmax_mod(vm, args).map(CallResult::Value),
+        NumpyFunctions::Reshape => call_reshape_mod(vm, args).map(CallResult::Value),
+        // np.flatten doesn't exist in real NumPy
+        NumpyFunctions::Transpose => call_transpose_mod(vm, args).map(CallResult::Value),
+        NumpyFunctions::Append => call_append(vm, args).map(CallResult::Value),
+        NumpyFunctions::Vstack => call_vstack(vm, args).map(CallResult::Value),
+        NumpyFunctions::Hstack => call_hstack(vm, args).map(CallResult::Value),
+        NumpyFunctions::Stack => call_vstack(vm, args).map(CallResult::Value), // stack defaults to axis=0 = vstack
+        NumpyFunctions::Nonzero => call_nonzero(vm, args).map(CallResult::Value),
+        NumpyFunctions::Argwhere => call_argwhere(vm, args).map(CallResult::Value),
+        NumpyFunctions::Tile => call_tile(vm, args).map(CallResult::Value),
+        NumpyFunctions::Repeat => call_repeat(vm, args).map(CallResult::Value),
+        NumpyFunctions::Split => call_split(vm, args).map(CallResult::Value),
     }
 }
 
@@ -201,21 +354,27 @@ fn call_array(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> Run
     Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(arr))?))
 }
 
-/// `numpy.zeros(n)` — create an array of zeros with the given length.
+/// `numpy.zeros(shape)` — create an array of zeros with the given shape.
+///
+/// Accepts an integer for 1D or a tuple/list for multi-dimensional shapes.
 fn call_zeros(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     let arg = args.get_one_arg("numpy.zeros", vm.heap)?;
-    let n = extract_size(arg, "numpy.zeros", vm)?;
-    check_array_alloc_size(n, vm.heap.tracker())?;
-    let arr = NdArray::from_vec_f64(vec![0.0; n]);
+    let shape = extract_shape(arg, "numpy.zeros", vm)?;
+    let total: usize = shape.iter().product();
+    check_array_alloc_size(total, vm.heap.tracker())?;
+    let arr = NdArray::new(vec![0.0; total], shape, NdArrayDtype::Float64);
     Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(arr))?))
 }
 
-/// `numpy.ones(n)` — create an array of ones with the given length.
+/// `numpy.ones(shape)` — create an array of ones with the given shape.
+///
+/// Accepts an integer for 1D or a tuple/list for multi-dimensional shapes.
 fn call_ones(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     let arg = args.get_one_arg("numpy.ones", vm.heap)?;
-    let n = extract_size(arg, "numpy.ones", vm)?;
-    check_array_alloc_size(n, vm.heap.tracker())?;
-    let arr = NdArray::from_vec_f64(vec![1.0; n]);
+    let shape = extract_shape(arg, "numpy.ones", vm)?;
+    let total: usize = shape.iter().product();
+    check_array_alloc_size(total, vm.heap.tracker())?;
+    let arr = NdArray::new(vec![1.0; total], shape, NdArrayDtype::Float64);
     Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(arr))?))
 }
 
@@ -859,8 +1018,662 @@ fn call_dot(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunRe
 }
 
 // ===========================
+// New functions: math, creation, testing, aggregation, manipulation
+// ===========================
+
+/// `numpy.power(a, b)` — element-wise power (like `a ** b`).
+///
+/// Supports array-array, array-scalar, and scalar-array combinations.
+fn call_power(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let (a_val, b_val) = args.get_two_args("numpy.power", vm.heap)?;
+    defer_drop!(a_val, vm);
+    defer_drop!(b_val, vm);
+
+    let a_info = extract_ndarray_info(a_val, "numpy.power", vm);
+    let b_info = extract_ndarray_info(b_val, "numpy.power", vm);
+
+    match (a_info, b_info) {
+        // Both arrays
+        (Ok((a_data, a_shape, a_dtype)), Ok((b_data, b_shape, b_dtype))) => {
+            if a_shape != b_shape {
+                return Err(
+                    SimpleException::new_msg(ExcType::ValueError, "operands could not be broadcast together").into(),
+                );
+            }
+            let data: Vec<f64> = a_data.iter().zip(b_data.iter()).map(|(&a, &b)| a.powf(b)).collect();
+            let result_dtype = promote_dtype(a_dtype, b_dtype);
+            let arr = NdArray::new(data, a_shape, result_dtype);
+            Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(arr))?))
+        }
+        // First is array, second is scalar
+        (Ok((a_data, a_shape, a_dtype)), Err(_)) => {
+            let scalar = to_f64(b_val, vm)?;
+            let is_float = matches!(b_val, Value::Float(_));
+            let data: Vec<f64> = a_data.iter().map(|&a| a.powf(scalar)).collect();
+            let dtype = crate::types::ndarray::promote_dtype_with_scalar(a_dtype, is_float);
+            let arr = NdArray::new(data, a_shape, dtype);
+            Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(arr))?))
+        }
+        // First is scalar, second is array
+        (Err(_), Ok((b_data, b_shape, b_dtype))) => {
+            let scalar = to_f64(a_val, vm)?;
+            let is_float = matches!(a_val, Value::Float(_));
+            let data: Vec<f64> = b_data.iter().map(|&b| scalar.powf(b)).collect();
+            let dtype = crate::types::ndarray::promote_dtype_with_scalar(b_dtype, is_float);
+            let arr = NdArray::new(data, b_shape, dtype);
+            Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(arr))?))
+        }
+        // Neither is array
+        (Err(e), _) => Err(e),
+    }
+}
+
+/// `numpy.diff(a)` — first-order discrete difference: `a[1:] - a[:-1]`.
+fn call_diff(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let arg = args.get_one_arg("numpy.diff", vm.heap)?;
+    defer_drop!(arg, vm);
+    let arr = ndarray_from_value(arg, "numpy.diff", vm)?;
+    if arr.len() <= 1 {
+        let result = NdArray::new(Vec::new(), vec![0], arr.dtype());
+        return Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(result))?));
+    }
+    let data: Vec<f64> = arr.data().windows(2).map(|w| w[1] - w[0]).collect();
+    let len = data.len();
+    let arr = NdArray::new(data, vec![len], arr.dtype());
+    Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(arr))?))
+}
+
+/// `numpy.full(shape, fill_value)` — create an array filled with a constant.
+fn call_full(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let (shape_val, fill_val) = args.get_two_args("numpy.full", vm.heap)?;
+    defer_drop!(shape_val, vm);
+    let shape = extract_shape(shape_val.clone_immediate(), "numpy.full", vm)?;
+    let (fill, dtype) = match fill_val {
+        Value::Int(n) => (n as f64, NdArrayDtype::Int64),
+        Value::Float(f) => (f, NdArrayDtype::Float64),
+        Value::Bool(b) => (if b { 1.0 } else { 0.0 }, NdArrayDtype::Bool),
+        other => {
+            other.drop_with_heap(vm);
+            return Err(ExcType::type_error("numpy.full() fill_value must be numeric"));
+        }
+    };
+    let total: usize = shape.iter().product();
+    check_array_alloc_size(total, vm.heap.tracker())?;
+    let arr = NdArray::new(vec![fill; total], shape, dtype);
+    Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(arr))?))
+}
+
+/// `numpy.eye(n)` — create an n×n identity matrix (Float64).
+fn call_eye(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let arg = args.get_one_arg("numpy.eye", vm.heap)?;
+    let n = extract_size(arg, "numpy.eye", vm)?;
+    check_array_alloc_size(n * n, vm.heap.tracker())?;
+    let mut data = vec![0.0; n * n];
+    for i in 0..n {
+        data[i * n + i] = 1.0;
+    }
+    let arr = NdArray::new(data, vec![n, n], NdArrayDtype::Float64);
+    Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(arr))?))
+}
+
+/// `numpy.copy(a)` — return a copy of the array, also accepts plain lists.
+fn call_copy(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let arg = args.get_one_arg("numpy.copy", vm.heap)?;
+    defer_drop!(arg, vm);
+    let Value::Ref(heap_id) = arg else {
+        return Err(ExcType::type_error("numpy.copy() requires an array or list"));
+    };
+    let result = match vm.heap.get(*heap_id) {
+        HeapData::NdArray(arr) => NdArray::new(arr.data().to_vec(), arr.shape().to_vec(), arr.dtype()),
+        HeapData::List(_) => {
+            // Use ndarray_from_list which handles proper dtype tracking
+            crate::types::ndarray::ndarray_from_list(arg, vm.heap)?
+        }
+        _ => return Err(ExcType::type_error("numpy.copy() requires an array or list")),
+    };
+    Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(result))?))
+}
+
+/// `numpy.empty(shape)` — create an uninitialized array (returns zeros in Monty).
+fn call_empty(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let arg = args.get_one_arg("numpy.empty", vm.heap)?;
+    let shape = extract_shape(arg, "numpy.empty", vm)?;
+    let total: usize = shape.iter().product();
+    check_array_alloc_size(total, vm.heap.tracker())?;
+    let arr = NdArray::new(vec![0.0; total], shape, NdArrayDtype::Float64);
+    Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(arr))?))
+}
+
+/// Helper for `numpy.zeros_like(a)` and `numpy.ones_like(a)`.
+fn call_like(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues, fill: f64, name: &str) -> RunResult<Value> {
+    let arg = args.get_one_arg(name, vm.heap)?;
+    defer_drop!(arg, vm);
+    let arr = ndarray_from_value(arg, name, vm)?;
+    let total = arr.len();
+    let result = NdArray::new(vec![fill; total], arr.shape().to_vec(), arr.dtype());
+    Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(result))?))
+}
+
+/// Helper for element-wise boolean test functions like `numpy.isnan`, `numpy.isinf`, etc.
+///
+/// Applies the predicate to each element and returns a Bool dtype array.
+fn call_bool_test(
+    vm: &mut VM<'_, '_, impl ResourceTracker>,
+    args: ArgValues,
+    pred: fn(f64) -> bool,
+    name: &str,
+) -> RunResult<Value> {
+    let arg = args.get_one_arg(name, vm.heap)?;
+    defer_drop!(arg, vm);
+    let arr = ndarray_from_value(arg, name, vm)?;
+    let data: Vec<f64> = arr.data().iter().map(|&v| if pred(v) { 1.0 } else { 0.0 }).collect();
+    let result = NdArray::new(data, arr.shape().to_vec(), NdArrayDtype::Bool);
+    Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(result))?))
+}
+
+/// `numpy.array_equal(a, b)` — true if two arrays have same shape and elements.
+fn call_array_equal(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let (a_val, b_val) = args.get_two_args("numpy.array_equal", vm.heap)?;
+    defer_drop!(a_val, vm);
+    defer_drop!(b_val, vm);
+
+    let a_arr = ndarray_from_value(a_val, "numpy.array_equal", vm)?;
+    let b_arr = ndarray_from_value(b_val, "numpy.array_equal", vm)?;
+
+    let equal = a_arr.shape() == b_arr.shape() && a_arr.data() == b_arr.data();
+    Ok(Value::Bool(equal))
+}
+
+/// `numpy.count_nonzero(a)` — count non-zero elements.
+fn call_count_nonzero(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let arg = args.get_one_arg("numpy.count_nonzero", vm.heap)?;
+    defer_drop!(arg, vm);
+    let arr = ndarray_from_value(arg, "numpy.count_nonzero", vm)?;
+    #[expect(clippy::cast_possible_wrap, reason = "count won't exceed i64::MAX")]
+    let count = arr.data().iter().filter(|&&v| v != 0.0).count() as i64;
+    Ok(Value::Int(count))
+}
+
+/// `numpy.all(a)` — true if all elements are truthy (module-level wrapper).
+fn call_all(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let arg = args.get_one_arg("numpy.all", vm.heap)?;
+    defer_drop!(arg, vm);
+    let arr = ndarray_from_value(arg, "numpy.all", vm)?;
+    Ok(Value::Bool(arr.all()))
+}
+
+/// `numpy.any(a)` — true if any element is truthy (module-level wrapper).
+fn call_any(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let arg = args.get_one_arg("numpy.any", vm.heap)?;
+    defer_drop!(arg, vm);
+    let arr = ndarray_from_value(arg, "numpy.any", vm)?;
+    Ok(Value::Bool(arr.any()))
+}
+
+/// `numpy.prod(a)` — product of array elements.
+fn call_prod(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let arg = args.get_one_arg("numpy.prod", vm.heap)?;
+    defer_drop!(arg, vm);
+    let arr = ndarray_from_value(arg, "numpy.prod", vm)?;
+    let product = arr.prod();
+    match arr.dtype() {
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "f64 to i64 truncation is intended for int prod"
+        )]
+        NdArrayDtype::Int64 => Ok(Value::Int(product as i64)),
+        NdArrayDtype::Float64 | NdArrayDtype::Bool => Ok(Value::Float(product)),
+    }
+}
+
+/// `numpy.median(a)` — median of array elements.
+fn call_median(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let arg = args.get_one_arg("numpy.median", vm.heap)?;
+    defer_drop!(arg, vm);
+    let arr = ndarray_from_value(arg, "numpy.median", vm)?;
+    if arr.len() == 0 {
+        return Err(SimpleException::new_msg(ExcType::ValueError, "zero-size array has no median").into());
+    }
+    let mut sorted = arr.data().to_vec();
+    sorted.sort_by(crate::types::ndarray::nan_last_cmp);
+    let mid = sorted.len() / 2;
+    let median = if sorted.len() % 2 == 0 {
+        f64::midpoint(sorted[mid - 1], sorted[mid])
+    } else {
+        sorted[mid]
+    };
+    Ok(Value::Float(median))
+}
+
+/// `numpy.argmin(a)` — index of minimum element (module-level wrapper).
+fn call_argmin_mod(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let arg = args.get_one_arg("numpy.argmin", vm.heap)?;
+    defer_drop!(arg, vm);
+    let arr = ndarray_from_value(arg, "numpy.argmin", vm)?;
+    #[expect(clippy::cast_possible_wrap, reason = "array index won't exceed i64::MAX")]
+    Ok(Value::Int(arr.argmin()? as i64))
+}
+
+/// `numpy.argmax(a)` — index of maximum element (module-level wrapper).
+fn call_argmax_mod(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let arg = args.get_one_arg("numpy.argmax", vm.heap)?;
+    defer_drop!(arg, vm);
+    let arr = ndarray_from_value(arg, "numpy.argmax", vm)?;
+    #[expect(clippy::cast_possible_wrap, reason = "array index won't exceed i64::MAX")]
+    Ok(Value::Int(arr.argmax()? as i64))
+}
+
+/// `numpy.reshape(a, shape)` — reshape an array (module-level wrapper).
+fn call_reshape_mod(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let pos = args.into_pos_only("numpy.reshape", vm.heap)?;
+    defer_drop_mut!(pos, vm);
+
+    let arr_val = pos
+        .next()
+        .ok_or_else(|| ExcType::type_error("numpy.reshape() requires 2 arguments"))?;
+    let shape_val = pos
+        .next()
+        .ok_or_else(|| ExcType::type_error("numpy.reshape() requires 2 arguments"))?;
+
+    for extra in pos {
+        extra.drop_with_heap(vm);
+    }
+
+    let shape = extract_shape_from_value(&shape_val, "numpy.reshape", vm)?;
+    shape_val.drop_with_heap(vm);
+
+    let arr = ndarray_from_value(&arr_val, "numpy.reshape", vm)?;
+    let result = arr.reshape(shape, vm.heap);
+    arr_val.drop_with_heap(vm);
+    result
+}
+
+/// `numpy.transpose(a)` — transpose an array (module-level wrapper).
+fn call_transpose_mod(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let arg = args.get_one_arg("numpy.transpose", vm.heap)?;
+    defer_drop!(arg, vm);
+    let arr = ndarray_from_value(arg, "numpy.transpose", vm)?;
+    arr.transpose(vm.heap)
+}
+
+/// `numpy.append(a, values)` — append values to end of array (flattened).
+fn call_append(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let (a_val, b_val) = args.get_two_args("numpy.append", vm.heap)?;
+    defer_drop!(a_val, vm);
+    defer_drop!(b_val, vm);
+
+    let a_arr = ndarray_from_value(a_val, "numpy.append", vm)?;
+    let b_arr = ndarray_from_value(b_val, "numpy.append", vm)?;
+
+    let mut combined = a_arr.data().to_vec();
+    combined.extend_from_slice(b_arr.data());
+    let len = combined.len();
+    check_array_alloc_size(len, vm.heap.tracker())?;
+    let result_dtype = promote_dtype(a_arr.dtype(), b_arr.dtype());
+    let arr = NdArray::new(combined, vec![len], result_dtype);
+    Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(arr))?))
+}
+
+/// `numpy.vstack(arrays)` / `numpy.stack(arrays)` — stack 1D arrays as rows of a 2D array.
+fn call_vstack(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let arg = args.get_one_arg("numpy.vstack", vm.heap)?;
+    defer_drop!(arg, vm);
+
+    let Value::Ref(list_id) = arg else {
+        return Err(ExcType::type_error("numpy.vstack() requires a list of arrays"));
+    };
+    let arr_ids: Vec<HeapId> = {
+        let HeapData::List(list) = vm.heap.get(*list_id) else {
+            return Err(ExcType::type_error("numpy.vstack() requires a list of arrays"));
+        };
+        list.as_slice()
+            .iter()
+            .map(|v| match v {
+                Value::Ref(id) => Ok(*id),
+                _ => Err(ExcType::type_error(
+                    "numpy.vstack() requires all elements to be ndarrays",
+                )),
+            })
+            .collect::<RunResult<Vec<_>>>()?
+    };
+
+    if arr_ids.is_empty() {
+        return Err(SimpleException::new_msg(ExcType::ValueError, "need at least one array to stack").into());
+    }
+
+    // Get the column count from the first array.
+    let HeapData::NdArray(first) = vm.heap.get(arr_ids[0]) else {
+        return Err(ExcType::type_error("numpy.vstack() requires ndarrays"));
+    };
+    let cols = if first.ndim() == 1 {
+        first.len()
+    } else {
+        first.shape()[1]
+    };
+    let mut result_dtype = first.dtype();
+
+    let mut combined = Vec::new();
+    for &arr_id in &arr_ids {
+        let HeapData::NdArray(arr) = vm.heap.get(arr_id) else {
+            return Err(ExcType::type_error("numpy.vstack() requires ndarrays"));
+        };
+        let arr_cols = if arr.ndim() == 1 { arr.len() } else { arr.shape()[1] };
+        if arr_cols != cols {
+            return Err(SimpleException::new_msg(
+                ExcType::ValueError,
+                "all input arrays must have the same number of columns",
+            )
+            .into());
+        }
+        combined.extend_from_slice(arr.data());
+        result_dtype = promote_dtype(result_dtype, arr.dtype());
+    }
+
+    let rows = combined.len() / cols;
+    check_array_alloc_size(combined.len(), vm.heap.tracker())?;
+    let arr = NdArray::new(combined, vec![rows, cols], result_dtype);
+    Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(arr))?))
+}
+
+/// `numpy.hstack(arrays)` — concatenate arrays horizontally (for 1D: simple concat).
+fn call_hstack(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    // For 1D arrays, hstack is the same as concatenate
+    call_concatenate(vm, args)
+}
+
+/// `numpy.nonzero(a)` — indices of non-zero elements, returned as a tuple of arrays.
+fn call_nonzero(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let arg = args.get_one_arg("numpy.nonzero", vm.heap)?;
+    defer_drop!(arg, vm);
+    let arr = ndarray_from_value(arg, "numpy.nonzero", vm)?;
+
+    let indices: Vec<f64> = arr
+        .data()
+        .iter()
+        .enumerate()
+        .filter(|&(_, v)| *v != 0.0)
+        .map(|(i, _)| i as f64)
+        .collect();
+
+    let len = indices.len();
+    let idx_arr = NdArray::new(indices, vec![len], NdArrayDtype::Int64);
+    let idx_val = Value::Ref(vm.heap.allocate(HeapData::NdArray(idx_arr))?);
+
+    // NumPy returns a tuple with one array per dimension. For 1D input, it's a 1-tuple.
+    let values: SmallVec<[Value; 3]> = smallvec::smallvec![idx_val];
+    allocate_tuple(values, vm.heap).map_err(Into::into)
+}
+
+/// `numpy.argwhere(a)` — indices where elements are non-zero, as 2D array.
+fn call_argwhere(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let arg = args.get_one_arg("numpy.argwhere", vm.heap)?;
+    defer_drop!(arg, vm);
+    let arr = ndarray_from_value(arg, "numpy.argwhere", vm)?;
+
+    let indices: Vec<f64> = arr
+        .data()
+        .iter()
+        .enumerate()
+        .filter(|&(_, v)| *v != 0.0)
+        .map(|(i, _)| i as f64)
+        .collect();
+
+    let rows = indices.len();
+    // For 1D input, argwhere returns shape (n_nonzero, 1)
+    let result = NdArray::new(indices, vec![rows, 1], NdArrayDtype::Int64);
+    Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(result))?))
+}
+
+/// `numpy.tile(a, reps)` — construct array by repeating `a` `reps` times.
+fn call_tile(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let (arr_val, reps_val) = args.get_two_args("numpy.tile", vm.heap)?;
+    defer_drop!(arr_val, vm);
+
+    let arr = ndarray_from_value(arr_val, "numpy.tile", vm)?;
+    #[expect(clippy::cast_sign_loss, clippy::cast_possible_truncation, reason = "reps from user")]
+    let reps = if let Value::Int(n) = &reps_val {
+        *n as usize
+    } else {
+        reps_val.drop_with_heap(vm);
+        return Err(ExcType::type_error("numpy.tile() reps must be an integer"));
+    };
+    reps_val.drop_with_heap(vm);
+
+    if reps == 0 || arr.len() == 0 {
+        let result = NdArray::new(Vec::new(), vec![0], arr.dtype());
+        return Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(result))?));
+    }
+
+    let total = arr.len() * reps;
+    check_array_alloc_size(total, vm.heap.tracker())?;
+    let data: Vec<f64> = arr.data().iter().copied().cycle().take(total).collect();
+    let result = NdArray::new(data, vec![total], arr.dtype());
+    Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(result))?))
+}
+
+/// `numpy.repeat(a, repeats)` — repeat each element `repeats` times.
+fn call_repeat(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let (arr_val, reps_val) = args.get_two_args("numpy.repeat", vm.heap)?;
+    defer_drop!(arr_val, vm);
+
+    let arr = ndarray_from_value(arr_val, "numpy.repeat", vm)?;
+    #[expect(
+        clippy::cast_sign_loss,
+        clippy::cast_possible_truncation,
+        reason = "repeats from user"
+    )]
+    let reps = if let Value::Int(n) = &reps_val {
+        *n as usize
+    } else {
+        reps_val.drop_with_heap(vm);
+        return Err(ExcType::type_error("numpy.repeat() repeats must be an integer"));
+    };
+    reps_val.drop_with_heap(vm);
+
+    if arr.len() == 0 {
+        let result = NdArray::new(Vec::new(), vec![0], arr.dtype());
+        return Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(result))?));
+    }
+
+    let total = arr.len() * reps;
+    check_array_alloc_size(total, vm.heap.tracker())?;
+    let mut data = Vec::with_capacity(total);
+    for &v in arr.data() {
+        for _ in 0..reps {
+            data.push(v);
+        }
+    }
+    let result = NdArray::new(data, vec![total], arr.dtype());
+    Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(result))?))
+}
+
+/// `numpy.split(a, indices_or_sections)` — split array into sub-arrays.
+///
+/// If the second argument is an integer, splits into that many equal parts.
+/// If it's a list/array, splits at the given indices.
+fn call_split(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let (arr_val, idx_val) = args.get_two_args("numpy.split", vm.heap)?;
+    defer_drop!(arr_val, vm);
+
+    let arr = ndarray_from_value(arr_val, "numpy.split", vm)?;
+    let data = arr.data();
+    let dtype = arr.dtype();
+
+    // Determine split points
+    let split_indices: Vec<usize> = match &idx_val {
+        #[expect(
+            clippy::cast_sign_loss,
+            clippy::cast_possible_truncation,
+            reason = "sections from user"
+        )]
+        Value::Int(n) => {
+            let sections = *n as usize;
+            if sections == 0 || (data.len() % sections != 0) {
+                idx_val.drop_with_heap(vm);
+                return Err(SimpleException::new_msg(
+                    ExcType::ValueError,
+                    "array split does not result in an equal division",
+                )
+                .into());
+            }
+            let chunk_size = data.len() / sections;
+            (1..sections).map(|i| i * chunk_size).collect()
+        }
+        Value::Ref(id) => match vm.heap.get(*id) {
+            HeapData::List(list) => list
+                .as_slice()
+                .iter()
+                .map(|v| match v {
+                    #[expect(clippy::cast_sign_loss, clippy::cast_possible_truncation, reason = "index from user")]
+                    Value::Int(n) => Ok(*n as usize),
+                    _ => Err(ExcType::type_error("split indices must be integers")),
+                })
+                .collect::<RunResult<Vec<_>>>()?,
+            HeapData::NdArray(idx_arr) =>
+            {
+                #[expect(clippy::cast_sign_loss, clippy::cast_possible_truncation, reason = "index from user")]
+                idx_arr.data().iter().map(|&v| v as usize).collect()
+            }
+            _ => {
+                idx_val.drop_with_heap(vm);
+                return Err(ExcType::type_error("numpy.split() second arg must be int or list"));
+            }
+        },
+        _ => {
+            idx_val.drop_with_heap(vm);
+            return Err(ExcType::type_error("numpy.split() second arg must be int or list"));
+        }
+    };
+    idx_val.drop_with_heap(vm);
+
+    // Build sub-arrays
+    let mut parts = Vec::new();
+    let mut prev = 0;
+    for &idx in &split_indices {
+        let end = idx.min(data.len());
+        let chunk = data[prev..end].to_vec();
+        let len = chunk.len();
+        parts.push(Value::Ref(vm.heap.allocate(HeapData::NdArray(NdArray::new(
+            chunk,
+            vec![len],
+            dtype,
+        )))?));
+        prev = end;
+    }
+    // Last chunk
+    let chunk = data[prev..].to_vec();
+    let len = chunk.len();
+    parts.push(Value::Ref(vm.heap.allocate(HeapData::NdArray(NdArray::new(
+        chunk,
+        vec![len],
+        dtype,
+    )))?));
+
+    let list = crate::types::List::new(parts);
+    Ok(Value::Ref(vm.heap.allocate(HeapData::List(list))?))
+}
+
+// ===========================
 // Utility helpers
 // ===========================
+
+/// Extracts ndarray data from a Value, auto-converting lists.
+///
+/// Returns (data, shape, dtype) tuple — copies data out to avoid lifetime issues.
+/// Uses `ndarray_from_list` for lists so dtype tracking (int vs float vs bool) is correct.
+fn extract_ndarray_info(
+    value: &Value,
+    name: &str,
+    vm: &VM<'_, '_, impl ResourceTracker>,
+) -> RunResult<(Vec<f64>, Vec<usize>, NdArrayDtype)> {
+    match value {
+        Value::Ref(heap_id) => match vm.heap.get(*heap_id) {
+            HeapData::NdArray(arr) => Ok((arr.data().to_vec(), arr.shape().to_vec(), arr.dtype())),
+            HeapData::List(_) => {
+                let tmp = crate::types::ndarray::ndarray_from_list(value, vm.heap)?;
+                Ok((tmp.data().to_vec(), tmp.shape().to_vec(), tmp.dtype()))
+            }
+            _ => Err(ExcType::type_error(format!(
+                "{name}() requires an array or list argument"
+            ))),
+        },
+        _ => Err(ExcType::type_error(format!(
+            "{name}() requires an array or list argument"
+        ))),
+    }
+}
+
+/// Convenience wrapper that returns an NdArray (owned).
+fn ndarray_from_value(value: &Value, name: &str, vm: &VM<'_, '_, impl ResourceTracker>) -> RunResult<NdArray> {
+    let (data, shape, dtype) = extract_ndarray_info(value, name, vm)?;
+    Ok(NdArray::new(data, shape, dtype))
+}
+
+/// Extracts a shape from a Value — supports int (1D), list, or tuple.
+fn extract_shape(value: Value, func_name: &str, vm: &mut VM<'_, '_, impl ResourceTracker>) -> RunResult<Vec<usize>> {
+    match &value {
+        Value::Int(_) => {
+            let n = extract_size(value, func_name, vm)?;
+            Ok(vec![n])
+        }
+        Value::Ref(heap_id) => {
+            let shape = match vm.heap.get(*heap_id) {
+                HeapData::List(list) => extract_shape_from_items(list.as_slice(), func_name)?,
+                HeapData::Tuple(tuple) => extract_shape_from_items(tuple.as_slice(), func_name)?,
+                _ => {
+                    value.drop_with_heap(vm);
+                    return Err(ExcType::type_error(format!(
+                        "{func_name}() requires an integer or tuple of integers"
+                    )));
+                }
+            };
+            value.drop_with_heap(vm);
+            Ok(shape)
+        }
+        _ => {
+            value.drop_with_heap(vm);
+            Err(ExcType::type_error(format!(
+                "{func_name}() requires an integer or tuple of integers"
+            )))
+        }
+    }
+}
+
+/// Extracts shape from a Value without consuming it (for reshape where we borrow).
+fn extract_shape_from_value(
+    value: &Value,
+    func_name: &str,
+    vm: &VM<'_, '_, impl ResourceTracker>,
+) -> RunResult<Vec<usize>> {
+    match value {
+        #[expect(clippy::cast_sign_loss, clippy::cast_possible_truncation, reason = "shape from user")]
+        Value::Int(n) if *n >= 0 => Ok(vec![*n as usize]),
+        Value::Ref(heap_id) => match vm.heap.get(*heap_id) {
+            HeapData::List(list) => extract_shape_from_items(list.as_slice(), func_name),
+            HeapData::Tuple(tuple) => extract_shape_from_items(tuple.as_slice(), func_name),
+            _ => Err(ExcType::type_error(format!(
+                "{func_name}() requires an integer or tuple of integers"
+            ))),
+        },
+        _ => Err(ExcType::type_error(format!(
+            "{func_name}() requires an integer or tuple of integers"
+        ))),
+    }
+}
+
+/// Extracts a shape vector from a slice of Values (list or tuple items).
+fn extract_shape_from_items(items: &[Value], func_name: &str) -> RunResult<Vec<usize>> {
+    items
+        .iter()
+        .map(|v| match v {
+            #[expect(clippy::cast_sign_loss, clippy::cast_possible_truncation, reason = "shape from user")]
+            Value::Int(n) if *n >= 0 => Ok(*n as usize),
+            _ => Err(ExcType::type_error(format!(
+                "{func_name}() shape must contain non-negative integers"
+            ))),
+        })
+        .collect()
+}
 
 /// Extracts an integer size from a Value for array creation functions.
 fn extract_size(value: Value, func_name: &str, vm: &mut VM<'_, '_, impl ResourceTracker>) -> RunResult<usize> {

@@ -105,16 +105,6 @@ impl NdArray {
         Self { data, shape, dtype }
     }
 
-    /// Creates a 1D array from a flat vector of f64 values.
-    pub fn from_vec_f64(data: Vec<f64>) -> Self {
-        let len = data.len();
-        Self {
-            data,
-            shape: vec![len],
-            dtype: NdArrayDtype::Float64,
-        }
-    }
-
     /// Returns the total number of elements in the array.
     pub fn len(&self) -> usize {
         self.data.len()
@@ -182,6 +172,69 @@ impl NdArray {
             .collect();
         let len = filtered.len();
         let result = Self::new(filtered, vec![len], self.dtype);
+        Ok(Value::Ref(heap.allocate(HeapData::NdArray(result))?))
+    }
+
+    /// Indexes by an integer ndarray (fancy indexing), gathering elements at the specified indices.
+    pub fn getitem_int_array(&self, idx_arr: &Self, heap: &Heap<impl ResourceTracker>) -> RunResult<Value> {
+        let mut data = Vec::with_capacity(idx_arr.len());
+        for &idx_f in idx_arr.data() {
+            #[expect(clippy::cast_possible_truncation, reason = "index from f64")]
+            let idx = idx_f as i64;
+            let resolved = resolve_index(idx, self.data.len())?;
+            data.push(self.data[resolved]);
+        }
+        let len = data.len();
+        let result = Self::new(data, vec![len], self.dtype);
+        Ok(Value::Ref(heap.allocate(HeapData::NdArray(result))?))
+    }
+
+    /// Indexes by a Python slice object (e.g. `arr[1:3]`, `arr[::2]`, `arr[::-1]`).
+    pub fn getitem_slice(&self, slice: &crate::types::Slice, heap: &Heap<impl ResourceTracker>) -> RunResult<Value> {
+        let len = self.data.len();
+        let (start, stop, step) = slice
+            .indices(len)
+            .map_err(|()| SimpleException::new_msg(ExcType::ValueError, "slice step cannot be zero"))?;
+
+        let mut data = Vec::new();
+        if step > 0 {
+            let mut i = start;
+            #[expect(
+                clippy::cast_sign_loss,
+                clippy::cast_possible_truncation,
+                reason = "step is positive"
+            )]
+            let step_usize = step as usize;
+            while i < stop {
+                data.push(self.data[i]);
+                i += step_usize;
+            }
+        } else {
+            // For negative step: start is a usize index, stop might be len+1 sentinel
+            #[expect(clippy::cast_possible_wrap, reason = "index fits in i64")]
+            let mut i = start as i64;
+            #[expect(clippy::cast_possible_wrap, reason = "stop fits in i64")]
+            let stop_i = if stop > len {
+                // Sentinel value meaning "go to before index 0"
+                -1_i64
+            } else {
+                stop as i64
+            };
+            while i > stop_i {
+                #[expect(
+                    clippy::cast_sign_loss,
+                    clippy::cast_possible_truncation,
+                    reason = "i is non-negative"
+                )]
+                {
+                    data.push(self.data[i as usize]);
+                }
+                i += step;
+            }
+        }
+
+        let result_len = data.len();
+        let result = Self::new(data, vec![result_len], self.dtype);
         Ok(Value::Ref(heap.allocate(HeapData::NdArray(result))?))
     }
 
@@ -645,6 +698,17 @@ impl NdArray {
     pub fn any(&self) -> bool {
         self.data.iter().any(|&x| x != 0.0)
     }
+
+    /// Returns the product of all elements.
+    pub fn prod(&self) -> f64 {
+        self.data.iter().copied().fold(1.0, |acc, v| acc * v)
+    }
+
+    /// Returns the population variance (ddof=0).
+    pub fn var(&self) -> f64 {
+        let mean = self.mean();
+        self.data.iter().map(|&x| (x - mean).powi(2)).sum::<f64>() / self.len() as f64
+    }
 }
 
 // ===========================
@@ -759,10 +823,12 @@ impl NdArray {
     }
 
     /// `astype(dtype_str)` — cast array to a new dtype.
+    ///
+    /// Accepts aliases: "int32" → Int64, "float32" → Float64 (Monty only has 64-bit types).
     pub fn astype(&self, dtype_str: &str, heap: &Heap<impl ResourceTracker>) -> RunResult<Value> {
         let new_dtype = match dtype_str {
-            "int64" | "int" => NdArrayDtype::Int64,
-            "float64" | "float" => NdArrayDtype::Float64,
+            "int64" | "int" | "int32" => NdArrayDtype::Int64,
+            "float64" | "float" | "float32" => NdArrayDtype::Float64,
             "bool" => NdArrayDtype::Bool,
             _ => {
                 return Err(
@@ -874,6 +940,10 @@ impl NdArray {
     pub fn py_repr_fmt_inner(&self, f: &mut impl Write) -> fmt::Result {
         f.write_str("array(")?;
         self.write_recursive(f, &self.shape, 0)?;
+        // NumPy includes dtype suffix for empty arrays since element format can't convey it
+        if self.data.is_empty() {
+            write!(f, ", dtype={}", self.dtype)?;
+        }
         f.write_char(')')
     }
 
@@ -981,17 +1051,24 @@ impl<'h> PyTrait<'h> for HeapRead<'h, NdArray> {
         match key {
             Value::Int(n) => arr.getitem_int(*n, vm.heap),
             Value::Bool(b) => arr.getitem_int(i64::from(*b), vm.heap),
-            Value::Ref(mask_id) => {
-                if let HeapData::NdArray(mask) = vm.heap.get(*mask_id) {
-                    arr.getitem_bool_mask(mask, vm.heap)
-                } else {
-                    Err(ExcType::type_error(
-                        "ndarray indices must be integers or boolean arrays",
-                    ))
+            Value::Ref(key_id) => {
+                match vm.heap.get(*key_id) {
+                    HeapData::NdArray(mask_or_idx) => {
+                        if mask_or_idx.dtype() == NdArrayDtype::Bool {
+                            arr.getitem_bool_mask(mask_or_idx, vm.heap)
+                        } else {
+                            // Integer array indexing (fancy indexing)
+                            arr.getitem_int_array(mask_or_idx, vm.heap)
+                        }
+                    }
+                    HeapData::Slice(slice) => arr.getitem_slice(slice, vm.heap),
+                    _ => Err(ExcType::type_error(
+                        "ndarray indices must be integers, slices, or boolean/integer arrays",
+                    )),
                 }
             }
             _ => Err(ExcType::type_error(
-                "ndarray indices must be integers or boolean arrays",
+                "ndarray indices must be integers, slices, or boolean/integer arrays",
             )),
         }
     }
@@ -1159,6 +1236,18 @@ impl<'h> PyTrait<'h> for HeapRead<'h, NdArray> {
                 args.check_zero_args("ndarray.transpose", vm.heap)?;
                 self.get(vm.heap).transpose(vm.heap)
             }
+            Some(StaticStrings::NpProd) => {
+                args.check_zero_args("ndarray.prod", vm.heap)?;
+                Ok(call_prod_method(self.get(vm.heap)))
+            }
+            Some(StaticStrings::NpVar) => {
+                args.check_zero_args("ndarray.var", vm.heap)?;
+                Ok(Value::Float(self.get(vm.heap).var()))
+            }
+            Some(StaticStrings::NpRavel) => {
+                args.check_zero_args("ndarray.ravel", vm.heap)?;
+                self.get(vm.heap).flatten(vm.heap)
+            }
             _ => {
                 args.drop_with_heap(vm);
                 return Err(ExcType::attribute_error(Type::NdArray, attr.as_str(vm.interns)));
@@ -1198,6 +1287,19 @@ fn call_sum(arr: &NdArray) -> Value {
         )]
         NdArrayDtype::Int64 => Value::Int(s as i64),
         NdArrayDtype::Float64 | NdArrayDtype::Bool => Value::Float(s),
+    }
+}
+
+/// Returns `prod()` with dtype-appropriate return type.
+fn call_prod_method(arr: &NdArray) -> Value {
+    let p = arr.prod();
+    match arr.dtype() {
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "f64 to i64 truncation is intended for int prod"
+        )]
+        NdArrayDtype::Int64 => Value::Int(p as i64),
+        NdArrayDtype::Float64 | NdArrayDtype::Bool => Value::Float(p),
     }
 }
 

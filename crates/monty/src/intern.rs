@@ -609,6 +609,69 @@ pub enum StaticStrings {
     /// `numpy.clip()` function / `ndarray.clip()` method
     #[strum(serialize = "clip")]
     Clip,
+    /// `numpy.prod()` function / `ndarray.prod()` method
+    #[strum(serialize = "prod")]
+    NpProd,
+    /// `numpy.var()` function / `ndarray.var()` method
+    #[strum(serialize = "var")]
+    NpVar,
+    /// `numpy.full()` function
+    #[strum(serialize = "full")]
+    NpFull,
+    /// `numpy.eye()` function
+    #[strum(serialize = "eye")]
+    NpEye,
+    /// `numpy.empty()` function
+    #[strum(serialize = "empty")]
+    NpEmpty,
+    /// `numpy.zeros_like()` function
+    #[strum(serialize = "zeros_like")]
+    NpZerosLike,
+    /// `numpy.ones_like()` function
+    #[strum(serialize = "ones_like")]
+    NpOnesLike,
+    // Note: numpy.isnan/isinf/isfinite reuse math module's Isnan/Isinf/Isfinite
+    /// `numpy.array_equal()` function
+    #[strum(serialize = "array_equal")]
+    NpArrayEqual,
+    /// `numpy.count_nonzero()` function
+    #[strum(serialize = "count_nonzero")]
+    NpCountNonzero,
+    /// `numpy.median()` function
+    #[strum(serialize = "median")]
+    NpMedian,
+    /// `numpy.power()` function
+    #[strum(serialize = "power")]
+    NpPower,
+    /// `numpy.diff()` function
+    #[strum(serialize = "diff")]
+    NpDiff,
+    // Note: numpy.append reuses list's Append variant
+    /// `numpy.vstack()` function
+    #[strum(serialize = "vstack")]
+    NpVstack,
+    /// `numpy.hstack()` function
+    #[strum(serialize = "hstack")]
+    NpHstack,
+    /// `numpy.stack()` function
+    #[strum(serialize = "stack")]
+    NpStack,
+    /// `numpy.tile()` function
+    #[strum(serialize = "tile")]
+    NpTile,
+    /// `numpy.repeat()` function
+    #[strum(serialize = "repeat")]
+    NpRepeat,
+    // Note: numpy.split reuses string's Split variant
+    /// `numpy.nonzero()` function
+    #[strum(serialize = "nonzero")]
+    NpNonzero,
+    /// `numpy.argwhere()` function
+    #[strum(serialize = "argwhere")]
+    NpArgwhere,
+    /// `ndarray.ravel()` method
+    #[strum(serialize = "ravel")]
+    NpRavel,
     // Note: numpy.min/max/sum/sort reuse existing StaticStrings variants
     // (NpMin, NpMax, NpSum, Sort) which are already defined above.
 }
