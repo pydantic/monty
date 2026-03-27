@@ -14,7 +14,14 @@ assert json.loads('{"a": 1, "b": [true, null]}') == {
 }, 'loads nested object'
 
 # === loads bytes and unicode ===
-assert json.loads(b'{"a":[1,true,null]}') == {'a': [1, True, None]}, 'loads bytes input'
+assert json.loads(b'{"a":[1,true,null]}') == {'a': [1, True, None]}, 'loads bytes object input'
+assert json.loads(b'123') == 123, 'loads bytes integer'
+assert json.loads(b'1.5') == 1.5, 'loads bytes float'
+assert json.loads(b'"hello"') == 'hello', 'loads bytes string'
+assert json.loads(b'[1, 2, 3]') == [1, 2, 3], 'loads bytes array'
+assert json.loads(b'true') is True, 'loads bytes true'
+assert json.loads(b'false') is False, 'loads bytes false'
+assert json.loads(b'null') is None, 'loads bytes null'
 assert json.loads('"\\u2603"') == '☃', 'loads unicode escape'
 
 # === loads big integers ===

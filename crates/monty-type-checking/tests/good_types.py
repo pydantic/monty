@@ -1,5 +1,6 @@
 import asyncio
 import datetime
+import json
 import os
 import re
 import sys
@@ -585,3 +586,6 @@ utc = datetime.timezone.utc
 assert_type(utc, datetime.timezone)
 tz = datetime.timezone(datetime.timedelta(hours=5))
 assert_type(tz, datetime.timezone)
+
+assert_type(json.loads('null'), Any)
+assert_type(json.dumps(None), str)

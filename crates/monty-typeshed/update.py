@@ -120,6 +120,11 @@ COPY_FILES = [
     'pathlib/__init__.pyi',
     'pathlib/types.pyi',
     # ==============================
+    # JSON files
+    'json/__init__.pyi',
+    'json/encoder.pyi',
+    'json/decoder.pyi',
+    # ==============================
     'math.pyi',
     'datetime.pyi',
 ]
@@ -137,6 +142,7 @@ builtins: 3.0-
 collections: 3.0-
 dataclasses: 3.7-
 datetime: 3.0-
+json: 3.0-
 math: 3.0-
 os: 3.0-
 pathlib: 3.4-
