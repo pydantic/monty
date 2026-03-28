@@ -71,6 +71,8 @@ known-first-party = ["pydantic_monty"]
     "F401", # Intentionally imports unknown typing constructs to test silent ignore behavior
     "F403", # star import test intentionally uses `from sys import *`
     "E402", # Typing test file has multiple import sections to test different import patterns
+    "E401", # Multiple imports on one line - needed for testing `import a, b` syntax
+    "I001", # Import block unsorted - needed for testing `import a, b` syntax
 ]
 
 "crates/monty-typeshed/vendor/typeshed/stdlib/**/*.pyi" = [
@@ -135,6 +137,7 @@ reportAttributeAccessIssue = false
 # unused variables and imports are fine in test cases
 reportUnusedVariable = false
 reportUnusedImport = false
+reportDuplicateImport = false
 reportAssignmentType = false
 reportFunctionMemberAccess = false
 # ~bool is deprecated in Python 3.16 but valid in 3.14

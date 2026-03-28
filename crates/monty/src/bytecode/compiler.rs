@@ -396,7 +396,11 @@ impl<'a> Compiler<'a> {
             }
             Node::FunctionDef(func_def) => self.compile_function_def(func_def)?,
             Node::Try(try_block) => self.compile_try(try_block)?,
-            Node::Import { module_name, binding } => self.compile_import(*module_name, binding),
+            Node::Import { names } => {
+                for import_name in names {
+                    self.compile_import(import_name.module_name, &import_name.binding);
+                }
+            }
             Node::ImportFrom {
                 module_name,
                 names,

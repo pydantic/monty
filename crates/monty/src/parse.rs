@@ -16,7 +16,7 @@ use crate::{
     exception_private::ExcType,
     exception_public::{CodeLoc, MontyException},
     expressions::{
-        Callable, CmpOperator, Comprehension, DictItem, Expr, ExprLoc, Identifier, Literal, Node, Operator,
+        Callable, CmpOperator, Comprehension, DictItem, Expr, ExprLoc, Identifier, ImportName, Literal, Node, Operator,
         SequenceItem, UnpackTarget,
     },
     fstring::{ConversionFlag, FStringPart, FormatSpec},
@@ -192,12 +192,7 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_statements(&mut self, statements: Vec<Stmt>) -> Result<Vec<ParseNode>, ParseError> {
-        let mut nodes = Vec::new();
-        for stmt in statements {
-            // parse_statement may return multiple nodes (e.g., `import a, b` expands to two imports)
-            nodes.extend(self.parse_statement(stmt)?);
-        }
-        Ok(nodes)
+        statements.into_iter().map(|f| self.parse_statement(f)).collect()
     }
 
     fn parse_elif_else_clauses(&mut self, clauses: Vec<ElifElseClause>) -> Result<Vec<ParseNode>, ParseError> {
@@ -236,14 +231,14 @@ impl<'a> Parser<'a> {
         Ok(ExceptHandler { exc_type, name, body })
     }
 
-    fn parse_statement(&mut self, statement: Stmt) -> Result<Vec<ParseNode>, ParseError> {
+    fn parse_statement(&mut self, statement: Stmt) -> Result<ParseNode, ParseError> {
         self.decr_depth_remaining(|| statement.range())?;
         let result = self.parse_statement_impl(statement);
         self.depth_remaining += 1;
         result
     }
 
-    fn parse_statement_impl(&mut self, statement: Stmt) -> Result<Vec<ParseNode>, ParseError> {
+    fn parse_statement_impl(&mut self, statement: Stmt) -> Result<ParseNode, ParseError> {
         match statement {
             Stmt::FunctionDef(function) => {
                 let params = &function.parameters;
@@ -276,20 +271,20 @@ impl<'a> Parser<'a> {
                 let body = self.parse_statements(function.body)?;
                 let is_async = function.is_async;
 
-                Ok(vec![Node::FunctionDef(RawFunctionDef {
+                Ok(Node::FunctionDef(RawFunctionDef {
                     name,
                     signature,
                     body,
                     is_async,
-                })])
+                }))
             }
             Stmt::ClassDef(c) => Err(ParseError::not_implemented(
                 "class definitions",
                 self.convert_range(c.range),
             )),
             Stmt::Return(ast::StmtReturn { value, .. }) => match value {
-                Some(value) => Ok(vec![Node::Return(self.parse_expression(*value)?)]),
-                None => Ok(vec![Node::ReturnNone]),
+                Some(value) => Ok(Node::Return(self.parse_expression(*value)?)),
+                None => Ok(Node::ReturnNone),
             },
             Stmt::Delete(d) => Err(ParseError::not_implemented(
                 "the 'del' statement",
@@ -298,9 +293,7 @@ impl<'a> Parser<'a> {
             Stmt::TypeAlias(t) => Err(ParseError::not_implemented("type aliases", self.convert_range(t.range))),
             Stmt::Assign(ast::StmtAssign {
                 targets, value, range, ..
-            }) => self
-                .parse_assignment(first(targets, self.convert_range(range))?, *value)
-                .map(|n| vec![n]),
+            }) => self.parse_assignment(first(targets, self.convert_range(range))?, *value),
             Stmt::AugAssign(ast::StmtAugAssign { target, op, value, .. }) => {
                 let op = convert_op(op);
                 let value = self.parse_expression(*value)?;
@@ -310,35 +303,35 @@ impl<'a> Parser<'a> {
                         slice,
                         range,
                         ..
-                    }) => Ok(vec![Node::SubscriptOpAssign {
+                    }) => Ok(Node::SubscriptOpAssign {
                         target: self.parse_expression(*object)?,
                         index: self.parse_expression(*slice)?,
                         op,
                         value,
                         target_position: self.convert_range(range),
-                    }]),
+                    }),
                     AstExpr::Attribute(ast::ExprAttribute {
                         value: object,
                         attr,
                         range,
                         ..
-                    }) => Ok(vec![Node::AttrOpAssign {
+                    }) => Ok(Node::AttrOpAssign {
                         object: self.parse_expression(*object)?,
                         attr: EitherStr::Interned(self.interner.intern(attr.id())),
                         op,
                         value,
                         target_position: self.convert_range(range),
-                    }]),
-                    other => Ok(vec![Node::OpAssign {
+                    }),
+                    other => Ok(Node::OpAssign {
                         target: self.parse_identifier(other)?,
                         op,
                         value,
-                    }]),
+                    }),
                 }
             }
             Stmt::AnnAssign(ast::StmtAnnAssign { target, value, .. }) => match value {
-                Some(value) => self.parse_assignment(*target, *value).map(|n| vec![n]),
-                None => Ok(vec![Node::Pass]),
+                Some(value) => self.parse_assignment(*target, *value),
+                None => Ok(Node::Pass),
             },
             Stmt::For(ast::StmtFor {
                 is_async,
@@ -355,18 +348,18 @@ impl<'a> Parser<'a> {
                         self.convert_range(range),
                     ));
                 }
-                Ok(vec![Node::For {
+                Ok(Node::For {
                     target: self.parse_unpack_target(*target)?,
                     iter: self.parse_expression(*iter)?,
                     body: self.parse_statements(body)?,
                     or_else: self.parse_statements(orelse)?,
-                }])
+                })
             }
-            Stmt::While(ast::StmtWhile { test, body, orelse, .. }) => Ok(vec![Node::While {
+            Stmt::While(ast::StmtWhile { test, body, orelse, .. }) => Ok(Node::While {
                 test: self.parse_expression(*test)?,
                 body: self.parse_statements(body)?,
                 or_else: self.parse_statements(orelse)?,
-            }]),
+            }),
             Stmt::If(ast::StmtIf {
                 test,
                 body,
@@ -376,7 +369,7 @@ impl<'a> Parser<'a> {
                 let test = self.parse_expression(*test)?;
                 let body = self.parse_statements(body)?;
                 let or_else = self.parse_elif_else_clauses(elif_else_clauses)?;
-                Ok(vec![Node::If { test, body, or_else }])
+                Ok(Node::If { test, body, or_else })
             }
             Stmt::With(ast::StmtWith { is_async, range, .. }) => {
                 if is_async {
@@ -401,7 +394,7 @@ impl<'a> Parser<'a> {
                     Some(expr) => Some(self.parse_expression(*expr)?),
                     None => None,
                 };
-                Ok(vec![Node::Raise(expr)])
+                Ok(Node::Raise(expr))
             }
             Stmt::Try(ast::StmtTry {
                 body,
@@ -425,12 +418,12 @@ impl<'a> Parser<'a> {
                         .collect::<Result<Vec<_>, _>>()?;
                     let or_else = self.parse_statements(orelse)?;
                     let finally = self.parse_statements(finalbody)?;
-                    Ok(vec![Node::Try(Try {
+                    Ok(Node::Try(Try {
                         body,
                         handlers,
                         or_else,
                         finally,
-                    })])
+                    }))
                 }
             }
             Stmt::Assert(ast::StmtAssert { test, msg, .. }) => {
@@ -439,23 +432,24 @@ impl<'a> Parser<'a> {
                     Some(m) => Some(self.parse_expression(*m)?),
                     None => None,
                 };
-                Ok(vec![Node::Assert { test, msg }])
+                Ok(Node::Assert { test, msg })
             }
             Stmt::Import(ast::StmtImport { names, range, .. }) => {
-                // Each name in `import a, b, c` becomes a separate Import node
                 let position = self.convert_range(range);
-                let mut nodes = Vec::with_capacity(names.len());
-                for alias_node in &names {
-                    let module_name = self.interner.intern(&alias_node.name);
-                    // The binding name is the alias if present, otherwise the module name
-                    let binding_name = alias_node
-                        .asname
-                        .as_ref()
-                        .map_or(module_name, |n| self.interner.intern(&n.id));
-                    let binding = Identifier::new(binding_name, position);
-                    nodes.push(Node::Import { module_name, binding });
-                }
-                Ok(nodes)
+                let import_names = names
+                    .iter()
+                    .map(|alias_node| {
+                        let module_name = self.interner.intern(&alias_node.name);
+                        // The binding name is the alias if present, otherwise the module name
+                        let binding_name = alias_node
+                            .asname
+                            .as_ref()
+                            .map_or(module_name, |n| self.interner.intern(&n.id));
+                        let binding = Identifier::new(binding_name, position);
+                        ImportName { module_name, binding }
+                    })
+                    .collect();
+                Ok(Node::Import { names: import_names })
             }
             Stmt::ImportFrom(ast::StmtImportFrom {
                 module,
@@ -501,40 +495,40 @@ impl<'a> Parser<'a> {
                         Ok((name, binding))
                     })
                     .collect::<Result<Vec<_>, _>>()?;
-                Ok(vec![Node::ImportFrom {
+                Ok(Node::ImportFrom {
                     module_name,
                     names,
                     position,
-                }])
+                })
             }
             Stmt::Global(ast::StmtGlobal { names, range, .. }) => {
                 let names = names
                     .iter()
                     .map(|id| self.interner.intern(&self.code[id.range]))
                     .collect();
-                Ok(vec![Node::Global {
+                Ok(Node::Global {
                     position: self.convert_range(range),
                     names,
-                }])
+                })
             }
             Stmt::Nonlocal(ast::StmtNonlocal { names, range, .. }) => {
                 let names = names
                     .iter()
                     .map(|id| self.interner.intern(&self.code[id.range]))
                     .collect();
-                Ok(vec![Node::Nonlocal {
+                Ok(Node::Nonlocal {
                     position: self.convert_range(range),
                     names,
-                }])
+                })
             }
-            Stmt::Expr(ast::StmtExpr { value, .. }) => self.parse_expression(*value).map(|e| vec![Node::Expr(e)]),
-            Stmt::Pass(_) => Ok(vec![Node::Pass]),
-            Stmt::Break(b) => Ok(vec![Node::Break {
+            Stmt::Expr(ast::StmtExpr { value, .. }) => self.parse_expression(*value).map(Node::Expr),
+            Stmt::Pass(_) => Ok(Node::Pass),
+            Stmt::Break(b) => Ok(Node::Break {
                 position: self.convert_range(b.range),
-            }]),
-            Stmt::Continue(c) => Ok(vec![Node::Continue {
+            }),
+            Stmt::Continue(c) => Ok(Node::Continue {
                 position: self.convert_range(c.range),
-            }]),
+            }),
             Stmt::IpyEscapeCommand(i) => Err(ParseError::not_implemented(
                 "IPython escape commands",
                 self.convert_range(i.range),

@@ -83,6 +83,19 @@ impl Identifier {
     }
 }
 
+/// A single module in an `import` statement (e.g., `sys` in `import sys` or `sys as s`).
+///
+/// Each entry in `import a, b as c` becomes one `ImportName` with its own
+/// module name and binding target.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ImportName {
+    /// The module name to import (e.g., "sys", "typing").
+    pub module_name: StringId,
+    /// The binding target — the alias if provided, otherwise the module name.
+    /// After the prepare phase, this includes the resolved namespace slot.
+    pub binding: Identifier,
+}
+
 /// Target of a function call expression.
 ///
 /// Represents a callable that can be either:
@@ -587,15 +600,14 @@ pub enum Node<F> {
     /// Executes body, catches matching exceptions with handlers, runs else if no exception,
     /// and always runs finally.
     Try(Try<Self>),
-    /// Import statement (e.g., `import sys`, `import sys as s`).
+    /// Import statement (e.g., `import sys`, `import sys, os`, `import sys as s`).
     ///
-    /// Loads a module and binds it to a name in the current namespace.
+    /// Loads one or more modules and binds them to names in the current namespace.
+    /// Multi-module imports like `import sys, os` are represented as a single node
+    /// with multiple entries in the vector.
     Import {
-        /// The module name to import (e.g., "sys", "typing").
-        module_name: StringId,
-        /// The binding target - contains the name (or alias), position, and namespace slot.
-        /// After prepare phase, this includes the resolved namespace slot for storing the module.
-        binding: Identifier,
+        /// The modules to import, each with a module name and binding target.
+        names: Vec<ImportName>,
     },
     /// From-import statement (e.g., `from typing import TYPE_CHECKING`).
     ///

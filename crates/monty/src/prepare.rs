@@ -6,8 +6,8 @@ use crate::{
     args::{ArgExprs, CallArg, CallKwarg},
     builtins::Builtins,
     expressions::{
-        Callable, CmpOperator, Comprehension, DictItem, Expr, ExprLoc, Identifier, Literal, NameScope, Node, Operator,
-        PreparedFunctionDef, PreparedNode, SequenceItem, UnpackTarget,
+        Callable, CmpOperator, Comprehension, DictItem, Expr, ExprLoc, Identifier, ImportName, Literal, NameScope,
+        Node, Operator, PreparedFunctionDef, PreparedNode, SequenceItem, UnpackTarget,
     },
     fstring::{FStringPart, FormatSpec},
     intern::{InternerBuilder, StringId},
@@ -580,13 +580,19 @@ impl<'i> Prepare<'i> {
                         finally,
                     }));
                 }
-                Node::Import { module_name, binding } => {
-                    // Resolve the binding identifier to get the namespace slot
-                    let (resolved_binding, _) = self.get_id(binding);
-                    new_nodes.push(Node::Import {
-                        module_name,
-                        binding: resolved_binding,
-                    });
+                Node::Import { names } => {
+                    // Resolve each binding identifier to get the namespace slot
+                    let resolved_names = names
+                        .into_iter()
+                        .map(|import_name| {
+                            let (resolved_binding, _) = self.get_id(import_name.binding);
+                            ImportName {
+                                module_name: import_name.module_name,
+                                binding: resolved_binding,
+                            }
+                        })
+                        .collect();
+                    new_nodes.push(Node::Import { names: resolved_names });
                 }
                 Node::ImportFrom {
                     module_name,
@@ -2076,9 +2082,11 @@ fn collect_scope_info_from_node(
                 collect_scope_info_from_node(n, global_names, nonlocal_names, assigned_names, interner);
             }
         }
-        // Import creates a binding for the module name (or alias)
-        Node::Import { binding, .. } => {
-            assigned_names.insert(interner.get_str(binding.name_id).to_string());
+        // Import creates bindings for each module name (or alias)
+        Node::Import { names, .. } => {
+            for import_name in names {
+                assigned_names.insert(interner.get_str(import_name.binding.name_id).to_string());
+            }
         }
         // ImportFrom creates bindings for each imported name (or alias)
         Node::ImportFrom { names, .. } => {
