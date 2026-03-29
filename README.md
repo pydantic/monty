@@ -327,6 +327,10 @@ if __name__ == '__main__':
     asyncio.run(main())
 ```
 
+## Community Bindings
+
+- **Go**: [gomonty](https://github.com/ewhauser/gomonty/) - Go bindings for the Monty interpreter
+
 # Alternatives
 
 There are generally two responses when you show people Monty:
