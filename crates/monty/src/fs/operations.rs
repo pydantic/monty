@@ -17,7 +17,7 @@ use std::{
 use super::{
     error::MountError,
     mount_mode::{MountMode, OverlayEntry, OverlayFile, OverlayState},
-    path_security::{normalize_virtual_path, resolve_path, strip_mount_prefix},
+    path_security::{normalize_virtual_path, resolve_path, resolve_path_mkdir_parents, strip_mount_prefix},
 };
 use crate::{MontyObject, dir_stat, file_stat, os::OsFunction, symlink_stat};
 
@@ -122,15 +122,9 @@ fn resolve_host_path(
         }
     } else if matches!(function, OsFunction::Mkdir) && extract_mkdir_kwargs(kwargs).0 {
         // `mkdir -p` can't use resolve_path because intermediate parents may not exist.
-        // Build the host path directly from the (already-canonical) mount root.
-        let normalized = normalize_virtual_path(vpath);
-        let relative = strip_mount_prefix(&normalized, ctx.mount_virtual)
-            .ok_or_else(|| MountError::NoMountPoint(vpath.to_owned()))?;
-        Ok(if relative.is_empty() {
-            ctx.mount_host.to_path_buf()
-        } else {
-            ctx.mount_host.join(relative)
-        })
+        // Use resolve_path_mkdir_parents which walks existing ancestors, canonicalizing
+        // each to detect symlinks that escape the mount boundary.
+        Ok(resolve_path_mkdir_parents(vpath, ctx.mount_virtual, ctx.mount_host)?.host_path)
     } else {
         let for_creation =
             function.is_write() && !matches!(function, OsFunction::Unlink | OsFunction::Rmdir | OsFunction::Rename);

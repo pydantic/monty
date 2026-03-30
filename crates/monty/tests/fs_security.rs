@@ -41,6 +41,24 @@ fn call(mt: &mut MountTable, func: OsFunction, path: &str) -> Option<Result<Mont
     mt.handle_os_call(func, &[MontyObject::Path(path.to_owned())], &[])
 }
 
+/// Shorthand: call handle_os_call with kwargs.
+fn call_with_kwargs(
+    mt: &mut MountTable,
+    func: OsFunction,
+    path: &str,
+    kwargs: &[(MontyObject, MontyObject)],
+) -> Option<Result<MontyObject, MountError>> {
+    mt.handle_os_call(func, &[MontyObject::Path(path.to_owned())], kwargs)
+}
+
+/// Returns kwargs for `mkdir(parents=True, exist_ok=True)`.
+fn mkdir_parents_kwargs() -> Vec<(MontyObject, MontyObject)> {
+    vec![
+        (MontyObject::String("parents".to_owned()), MontyObject::Bool(true)),
+        (MontyObject::String("exist_ok".to_owned()), MontyObject::Bool(true)),
+    ]
+}
+
 /// Asserts that the operation returns an error (PathEscape, NoMountPoint, or Io).
 fn assert_blocked(mt: &mut MountTable, func: OsFunction, path: &str) {
     let result = call(mt, func, path);
@@ -422,6 +440,109 @@ mod symlink_tests {
 
         let mut mt = mount_at_mnt(&dir, MountMode::ReadWrite);
         assert_blocked(&mut mt, OsFunction::ReadText, "/mnt/link2/secret.txt");
+    }
+
+    #[test]
+    fn mkdir_parents_through_symlink_escape_blocked_readwrite() {
+        // Regression test: mkdir(parents=True) through a symlinked ancestor must
+        // not create directories outside the mount boundary in ReadWrite mode.
+        let dir = create_test_dir();
+        let outside = TempDir::new().unwrap();
+
+        // Create a symlink inside the mount that points outside.
+        symlink_dir(outside.path(), dir.path().join("escape"));
+
+        let kwargs = mkdir_parents_kwargs();
+        let mut mt = mount_at_mnt(&dir, MountMode::ReadWrite);
+
+        let result = call_with_kwargs(&mut mt, OsFunction::Mkdir, "/mnt/escape/pwned", &kwargs);
+        match result {
+            Some(Err(MountError::PathEscape { .. } | MountError::Io(_, _))) => {}
+            Some(Ok(_)) => panic!("mkdir through symlink escape should be blocked"),
+            other => panic!("unexpected result: {other:?}"),
+        }
+
+        // Verify nothing was created outside the mount.
+        assert!(
+            !outside.path().join("pwned").exists(),
+            "directory was created outside the mount!"
+        );
+    }
+
+    #[test]
+    fn mkdir_parents_through_symlink_escape_blocked_readonly() {
+        // ReadOnly mode should also block mkdir through symlink escape.
+        let dir = create_test_dir();
+        let outside = TempDir::new().unwrap();
+        symlink_dir(outside.path(), dir.path().join("escape"));
+
+        let kwargs = mkdir_parents_kwargs();
+        let mut mt = mount_at_mnt(&dir, MountMode::ReadOnly);
+
+        let result = call_with_kwargs(&mut mt, OsFunction::Mkdir, "/mnt/escape/pwned", &kwargs);
+        match result {
+            Some(Err(MountError::PathEscape { .. } | MountError::Io(_, _) | MountError::ReadOnly(_))) => {}
+            Some(Ok(_)) => panic!("mkdir through symlink escape should be blocked"),
+            other => panic!("unexpected result: {other:?}"),
+        }
+
+        assert!(
+            !outside.path().join("pwned").exists(),
+            "directory was created outside the mount!"
+        );
+    }
+
+    #[test]
+    fn mkdir_parents_through_nested_symlink_escape_blocked() {
+        // mkdir(parents=True) through a symlinked directory deeper in the tree.
+        let dir = create_test_dir();
+        let outside = TempDir::new().unwrap();
+
+        // subdir/link -> outside
+        symlink_dir(outside.path(), dir.path().join("subdir").join("link"));
+
+        let kwargs = mkdir_parents_kwargs();
+        let mut mt = mount_at_mnt(&dir, MountMode::ReadWrite);
+
+        let result = call_with_kwargs(&mut mt, OsFunction::Mkdir, "/mnt/subdir/link/deep/dir", &kwargs);
+        match result {
+            Some(Err(MountError::PathEscape { .. } | MountError::Io(_, _))) => {}
+            Some(Ok(_)) => panic!("mkdir through nested symlink escape should be blocked"),
+            other => panic!("unexpected result: {other:?}"),
+        }
+
+        assert!(
+            !outside.path().join("deep").exists(),
+            "directory was created outside the mount!"
+        );
+    }
+
+    #[test]
+    fn mkdir_parents_within_mount_allowed() {
+        // mkdir(parents=True) for paths entirely within the mount should succeed.
+        let dir = create_test_dir();
+        let kwargs = mkdir_parents_kwargs();
+        let mut mt = mount_at_mnt(&dir, MountMode::ReadWrite);
+
+        let result = call_with_kwargs(&mut mt, OsFunction::Mkdir, "/mnt/new/nested/dir", &kwargs);
+        assert!(result.unwrap().is_ok(), "mkdir within mount should succeed");
+        assert!(dir.path().join("new/nested/dir").exists());
+    }
+
+    #[test]
+    fn mkdir_parents_through_internal_symlink_allowed() {
+        // mkdir(parents=True) through a symlink that stays within the mount is fine.
+        let dir = create_test_dir();
+
+        // Create a symlink within mount pointing to another dir within mount.
+        symlink_dir(dir.path().join("subdir"), dir.path().join("internal_link"));
+
+        let kwargs = mkdir_parents_kwargs();
+        let mut mt = mount_at_mnt(&dir, MountMode::ReadWrite);
+
+        let result = call_with_kwargs(&mut mt, OsFunction::Mkdir, "/mnt/internal_link/new_child", &kwargs);
+        assert!(result.unwrap().is_ok(), "mkdir through internal symlink should succeed");
+        assert!(dir.path().join("subdir/new_child").exists());
     }
 }
 

@@ -192,6 +192,72 @@ fn resolve_for_creation(candidate: &Path, mount_host_path: &Path, virtual_path: 
     Ok(canonical_parent.join(file_name))
 }
 
+/// Resolves a path for `mkdir -p` where intermediate directories may not exist.
+///
+/// Walks from the mount root downward through existing path components,
+/// canonicalizing at each step to detect symlinks that escape the mount.
+/// Once a non-existent component is found, the remaining components are
+/// appended lexically (they will be created by `create_dir_all`).
+///
+/// This prevents a symlinked intermediate directory from redirecting
+/// `create_dir_all` outside the mount boundary.
+pub(super) fn resolve_path_mkdir_parents(
+    virtual_path: &str,
+    mount_virtual_path: &str,
+    mount_host_path: &Path,
+) -> Result<ResolvedPath, MountError> {
+    if virtual_path.contains('\0') {
+        return Err(MountError::PathEscape {
+            virtual_path: virtual_path.to_owned(),
+        });
+    }
+
+    let normalized = normalize_virtual_path(virtual_path);
+    let relative = strip_mount_prefix(&normalized, mount_virtual_path)
+        .ok_or_else(|| MountError::NoMountPoint(virtual_path.to_owned()))?;
+
+    if relative.is_empty() {
+        // Creating the mount root itself — just canonicalize it.
+        let canonical = fs::canonicalize(mount_host_path).map_err(|e| MountError::Io(e, virtual_path.to_owned()))?;
+        check_boundary(&canonical, mount_host_path, &normalized)?;
+        return Ok(ResolvedPath { host_path: canonical });
+    }
+
+    // Walk through each component, canonicalizing each existing ancestor
+    // to ensure symlinks don't escape the mount.
+    let components: Vec<&str> = relative.split('/').filter(|s| !s.is_empty()).collect();
+    let mut current = mount_host_path.to_path_buf();
+
+    for (i, component) in components.iter().enumerate() {
+        // Defense in depth: reject traversal components even though
+        // normalize_virtual_path should have removed them.
+        if *component == ".." || *component == "." {
+            return Err(MountError::PathEscape {
+                virtual_path: normalized,
+            });
+        }
+
+        let next = current.join(component);
+        if next.exists() {
+            // Canonicalize to resolve symlinks and check boundary.
+            let canonical = fs::canonicalize(&next).map_err(|e| MountError::Io(e, virtual_path.to_owned()))?;
+            check_boundary(&canonical, mount_host_path, &normalized)?;
+            current = canonical;
+        } else {
+            // This component doesn't exist yet — append all remaining
+            // components lexically and return. They'll be created by
+            // create_dir_all.
+            for remaining in &components[i..] {
+                current = current.join(remaining);
+            }
+            return Ok(ResolvedPath { host_path: current });
+        }
+    }
+
+    // All components exist and passed boundary checks.
+    Ok(ResolvedPath { host_path: current })
+}
+
 /// Verifies that a canonical path is within the mount boundary.
 fn check_boundary(canonical: &Path, mount_host_path: &Path, virtual_path: &str) -> Result<(), MountError> {
     if canonical.starts_with(mount_host_path) {
