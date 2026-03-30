@@ -94,6 +94,32 @@ pub enum OsFunction {
     DateTimeNow,
 }
 
+impl OsFunction {
+    /// Returns `true` if this is a filesystem operation that can be handled by a
+    /// [`MountTable`](crate::fs::MountTable).
+    ///
+    /// Non-filesystem operations (`Getenv`, `GetEnviron`, `DateToday`, `DateTimeNow`)
+    /// return `false` and should be passed through to the host callback.
+    #[must_use]
+    pub fn is_filesystem(&self) -> bool {
+        !matches!(
+            self,
+            Self::Getenv | Self::GetEnviron | Self::DateToday | Self::DateTimeNow
+        )
+    }
+
+    /// Returns `true` if this is a write operation that modifies the filesystem.
+    ///
+    /// Write operations are blocked in read-only mounts and redirected in overlay mounts.
+    #[must_use]
+    pub fn is_write(&self) -> bool {
+        matches!(
+            self,
+            Self::WriteText | Self::WriteBytes | Self::Mkdir | Self::Unlink | Self::Rmdir | Self::Rename
+        )
+    }
+}
+
 impl TryFrom<StaticStrings> for OsFunction {
     type Error = ();
 
@@ -137,7 +163,7 @@ const STAT_RESULT_FIELDS: &[&str] = &[
     "st_mode", "st_ino", "st_dev", "st_nlink", "st_uid", "st_gid", "st_size", "st_atime", "st_mtime", "st_ctime",
 ];
 
-/// Creates a stat_result for a regular file.
+/// Creates a `stat_result` for a regular file.
 ///
 /// The file type bits (`0o100_000`) are automatically added if not present.
 ///
@@ -156,7 +182,7 @@ pub fn file_stat(mode: i64, size: i64, mtime: f64) -> MontyObject {
     stat_result(mode, 0, 0, 1, 0, 0, size, mtime, mtime, mtime)
 }
 
-/// Creates a stat_result for a directory.
+/// Creates a `stat_result` for a directory.
 ///
 /// The directory type bits (`0o040_000`) are automatically added if not present.
 ///
@@ -173,7 +199,7 @@ pub fn dir_stat(mode: i64, mtime: f64) -> MontyObject {
     stat_result(mode, 0, 0, 2, 0, 0, 4096, mtime, mtime, mtime)
 }
 
-/// Creates a stat_result for a symbolic link.
+/// Creates a `stat_result` for a symbolic link.
 ///
 /// The symlink type bits (`0o120_000`) are automatically added if not present.
 ///
@@ -189,7 +215,7 @@ pub fn symlink_stat(mode: i64, mtime: f64) -> MontyObject {
     stat_result(mode, 0, 0, 1, 0, 0, 0, mtime, mtime, mtime)
 }
 
-/// Creates a full stat_result with all 10 fields specified.
+/// Creates a full `stat_result` with all 10 fields specified.
 ///
 /// This is the low-level builder; prefer `file_stat()`, `dir_stat()`, or `symlink_stat()`
 /// for common cases.
