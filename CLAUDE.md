@@ -41,6 +41,63 @@ Possible security risks to consider:
 
 Monty is implemented as a bytecode VM, same as CPython.
 
+### HeapReader API — Safe Heap Access
+
+All heap-allocated Python objects (lists, dicts, strings, etc.) are stored in a paged arena (`Heap`). The `HeapReader` API provides **compile-time safe** access to heap data. This is the primary mechanism for reading and mutating heap objects throughout the codebase.
+
+**`heap.rs` is a critical safety boundary.** It contains `unsafe` code that underpins the soundness of the entire `HeapReader`/`HeapRead` system (pointer arithmetic, `UnsafeCell` access, reader-count invariants). Do NOT modify `heap.rs` without explicit user approval. Changes to this file require careful review of the safety invariants documented in the code comments.
+
+#### Core concepts
+
+- **`HeapReader<'a, T>`** — A scoped borrow of the heap that produces `HeapRead` handles. Created exclusively via `HeapReader::with(heap, |heap| { ... })`. The `for<'a>` closure bound makes the lifetime `'a` universally quantified, so `HeapRead` pointers cannot escape the closure.
+- **`HeapRead<'a, T>`** — A typed handle to a specific heap entry. Created by `heap.read(id)` which returns a `HeapReadOutput<'a>` enum that you match on. Tracks a reader count that prevents the entry from being freed while the handle exists.
+- **`HeapReadOutput<'a>`** — Enum over all `HeapRead<'a, T>` variants (one per `HeapData` variant). Pattern match to get the typed handle.
+
+#### Reading and mutating heap data
+
+```rust
+// Scoped heap access
+HeapReader::with(heap, |heap| {
+    let output = heap.read(some_id);  // returns HeapReadOutput<'a>
+    match output {
+        HeapReadOutput::List(list) => {
+            let items = list.get(heap);           // &List, borrows heap immutably
+            let items_mut = list.get_mut(heap);   // &mut List, borrows heap mutably
+        }
+        _ => { /* ... */ }
+    }
+})
+```
+
+Key borrowing rules:
+- `get(&self, &HeapReader)` → `&T` — immutable access, prevents heap mutation while reference lives
+- `get_mut(&mut self, &mut HeapReader)` → `&mut T` — mutable access, exclusive
+- Multiple `HeapRead` handles can coexist, but only one can be accessed via `get_mut` at a time
+- `dec_ref()` panics if any reader is active — prevents use-after-free
+
+#### Implementing type methods with HeapRead
+
+Type methods are implemented as `impl<'h> HeapRead<'h, T>` blocks. The `PyTrait<'h>` trait provides the common interface:
+
+```rust
+// Methods on a heap type
+impl<'h> HeapRead<'h, List> {
+    pub fn append(&mut self, vm: &mut VM<'h, '_, impl ResourceTracker>, item: Value) -> RunResult<()> {
+        self.get_mut(vm.heap).items.push(item);
+        Ok(())
+    }
+}
+
+// PyTrait implementation
+impl<'h> PyTrait<'h> for HeapRead<'h, List> {
+    fn py_type(&self, vm: &VM<'h, '_, impl ResourceTracker>) -> Type { Type::List }
+    fn py_len(&self, vm: &VM<'h, '_, impl ResourceTracker>) -> Option<usize> {
+        Some(self.get(vm.heap).items.len())
+    }
+    // ...
+}
+```
+
 ### Reference Count Safety
 
 All types that implement `DropWithHeap` hold heap references and **must** be cleaned up correctly on every code path — not just the happy path, but also early returns via `?`, `continue`, conditional branches, etc. A missed `drop_with_heap` on any branch leaks reference counts. There are three mechanisms for ensuring this, listed in order of preference:
@@ -65,7 +122,7 @@ defer_drop_mut!(iter, vm);
 while let Some(item) = iter.for_next(vm)? { ... }
 ```
 
-**Limitation:** because the macro rebinds the heap, it cannot be used inside `&mut self` methods where `self` owns the heap — first assign `let this = self;` and pass `this` instead.
+**Limitation:** because the macro rebinds the heap, it cannot be used inside `&mut self` methods on the VM where `self` owns the heap — first assign `let this = self;` and pass `this` instead.
 
 #### 2. `HeapGuard` (when you need control over the value's fate)
 
@@ -91,7 +148,7 @@ For very simple cases with a single linear code path and no branching between ac
 
 ```rust
 let iter = self.pop();
-iter.drop_with_heap(&mut self.heap); // single path, no branching
+iter.drop_with_heap(self); // single path, no branching
 ```
 
 Avoid manual `drop_with_heap` whenever there are multiple code paths (branching, `?`, `continue`, early returns) between acquiring and releasing the value — that is exactly where `defer_drop!` or `HeapGuard` prevent leaks by guaranteeing cleanup on every path.
@@ -229,14 +286,12 @@ See more test commands above.
 
 Read `Makefile` for other useful commands.
 
-DO NOT run `cargo run --`, it will fail because of issues with Python bindings.
-
 You can use the `./playground` directory (excluded from git, create with `mkdir -p playground`) to write files
 when you want to experiment by running a file with cpython or monty, e.g.:
 * `python3 playground/test.py` to run the file with cpython
 * `cargo run -- playground/test.py` to run the file with monty
 
-DO NOT use `/tmp` or pipe code to the interpreter as it requires extra permissions and can slow you down!
+DO NOT use `/tmp` or pipe code to the interpreter, or use `python3 -c ...` as it requires extra permissions and can slow you down!
 
 More details in the "python-playground" skill.
 
@@ -296,7 +351,7 @@ Do NOT use `# Return=` when you could use `assert` instead
 
 ### Traceback Tests (Preferred for Errors)
 
-For tests that expect exceptions, **prefer traceback tests over `# Raise=`** because they verify:
+For tests that expect exceptions, **prefer traceback tests over `# Raise=` or `try` / `except`** because they verify:
 - The full traceback with all stack frames
 - Correct line numbers for each frame
 - Function names in the traceback
@@ -326,7 +381,23 @@ Key points:
 - The `<module>` frame name is used for top-level code
 - Tests run against both Monty and CPython, so the traceback must match both
 
-Only use `# Raise=` when you only care about the exception type/message and not the traceback.
+If you don't care about the traceback or it intentionally differs from cpython (e.g. for `json`) and you want to test
+multiple cases in the same file, use this style
+
+```py
+try:
+    ...
+    assert False, 'expected <task> to fail'
+except <ErrorType> as exc:
+    assert str(exc) = '<expected exception message>'
+```
+
+IMPORTANT: don't just check that an exception is raised, you should always check the exception message.
+
+IMPORTANT: DON'T BE LAZY. If the exception differs between cpython and Monty, either fix the exception message, or
+stop and report the problem!
+
+Only use `# Raise=` when you only care about the exception type/message and not the traceback and you can't use a try/except block.
 
 ### Python fixture markers
 

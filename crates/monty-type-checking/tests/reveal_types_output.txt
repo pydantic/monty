@@ -39,3 +39,8 @@ reveal_types.py:53:13: info[revealed-type] Revealed type: `TimeoutError`
 reveal_types.py:54:13: info[revealed-type] Revealed type: `TypeError`
 reveal_types.py:55:13: info[revealed-type] Revealed type: `ValueError`
 reveal_types.py:56:13: info[revealed-type] Revealed type: `StopIteration`
+reveal_types.py:63:13: info[revealed-type] Revealed type: `date`
+reveal_types.py:64:13: info[revealed-type] Revealed type: `time`
+reveal_types.py:65:13: info[revealed-type] Revealed type: `datetime`
+reveal_types.py:66:13: info[revealed-type] Revealed type: `timedelta`
+reveal_types.py:67:13: info[revealed-type] Revealed type: `timezone`

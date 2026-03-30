@@ -1,0 +1,10 @@
+error[E0499]: cannot borrow `*heap` as mutable more than once at a time
+  --> crates/monty/src/../tests/heap_reader_compile_fail_cases/cases.rs:51:31
+   |
+50 |         let ref_a = a.get_mut(heap);
+   |                               ---- first mutable borrow occurs here
+51 |         let ref_b = b.get_mut(heap);
+   |                               ^^^^ second mutable borrow occurs here
+52 |         let _ = (ref_a, ref_b);
+   |                  ----- first borrow later used here
+For more information about this error, try `rustc --explain E0499`.

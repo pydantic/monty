@@ -83,6 +83,19 @@ impl Identifier {
     }
 }
 
+/// A single module in an `import` statement (e.g., `sys` in `import sys` or `sys as s`).
+///
+/// Each entry in `import a, b as c` becomes one `ImportName` with its own
+/// module name and binding target.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ImportName {
+    /// The module name to import (e.g., "sys", "typing").
+    pub module_name: StringId,
+    /// The binding target — the alias if provided, otherwise the module name.
+    /// After the prepare phase, this includes the resolved namespace slot.
+    pub binding: Identifier,
+}
+
 /// Target of a function call expression.
 ///
 /// Represents a callable that can be either:
@@ -474,27 +487,49 @@ pub enum Node<F> {
     OpAssign {
         target: Identifier,
         op: Operator,
-        object: ExprLoc,
+        /// The right-hand side value of the augmented assignment (e.g., `1` in `x += 1`).
+        value: ExprLoc,
     },
-    /// Augmented subscript assignment (e.g., `totals[key] += value`).
+    /// Augmented subscript assignment (e.g., `totals[key] += value` or `a[0][1] += 1`).
     ///
-    /// This evaluates the container and index exactly once, then performs the
+    /// This evaluates the container expression and index exactly once, then performs the
     /// inplace operation on the current item before storing the result back.
     /// Limiting duplicate evaluation is important because index expressions may
     /// have side effects and CPython only evaluates them once.
+    /// The `target` is an arbitrary expression evaluating to the container — it can be
+    /// a simple name, a nested subscript (`a[0]`), or an attribute access (`obj.field`).
     SubscriptOpAssign {
-        target: Identifier,
+        target: ExprLoc,
         index: ExprLoc,
         op: Operator,
-        object: ExprLoc,
+        /// The right-hand side value of the augmented assignment (e.g., `1` in `a[0] += 1`).
+        value: ExprLoc,
         /// Position of the subscript expression (e.g., `totals[key]`) for traceback carets.
         target_position: CodeRange,
     },
+    /// Subscript assignment (e.g., `lst[0] = value` or `a[0][1] = value`).
+    ///
+    /// The `target` is an arbitrary expression evaluating to the container — it can be
+    /// a simple name, a nested subscript (`a[0]`), or an attribute access (`obj.field`).
     SubscriptAssign {
-        target: Identifier,
+        target: ExprLoc,
         index: ExprLoc,
         value: ExprLoc,
         /// Position of the subscript expression (e.g., `lst[10]`) for traceback carets.
+        target_position: CodeRange,
+    },
+    /// Augmented attribute assignment (e.g., `point.x += 1` or `a.b.c -= 5`).
+    ///
+    /// Evaluates the object expression once, loads the attribute, performs the
+    /// inplace operation with the right-hand side, then stores the result back.
+    /// The `object` is an arbitrary expression — it can be a name, a subscript,
+    /// or a chained attribute access.
+    AttrOpAssign {
+        object: ExprLoc,
+        attr: EitherStr,
+        op: Operator,
+        value: ExprLoc,
+        /// Position of the attribute expression (e.g., `point.x`) for traceback carets.
         target_position: CodeRange,
     },
     /// Attribute assignment (e.g., `point.x = 5` or `a.b.c = 5`).
@@ -565,15 +600,14 @@ pub enum Node<F> {
     /// Executes body, catches matching exceptions with handlers, runs else if no exception,
     /// and always runs finally.
     Try(Try<Self>),
-    /// Import statement (e.g., `import sys`, `import sys as s`).
+    /// Import statement (e.g., `import sys`, `import sys, os`, `import sys as s`).
     ///
-    /// Loads a module and binds it to a name in the current namespace.
+    /// Loads one or more modules and binds them to names in the current namespace.
+    /// Multi-module imports like `import sys, os` are represented as a single node
+    /// with multiple entries in the vector.
     Import {
-        /// The module name to import (e.g., "sys", "typing").
-        module_name: StringId,
-        /// The binding target - contains the name (or alias), position, and namespace slot.
-        /// After prepare phase, this includes the resolved namespace slot for storing the module.
-        binding: Identifier,
+        /// The modules to import, each with a module name and binding target.
+        names: Vec<ImportName>,
     },
     /// From-import statement (e.g., `from typing import TYPE_CHECKING`).
     ///

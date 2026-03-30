@@ -4,6 +4,8 @@
 //! functions for executing function calls. The main entry points are the `exec_*`
 //! methods which are called from the VM's main dispatch loop.
 
+use std::mem;
+
 use super::{CallFrame, VM};
 use crate::{
     args::{ArgValues, KwargsValues},
@@ -12,12 +14,12 @@ use crate::{
     bytecode::FrameExit,
     defer_drop,
     exception_private::{ExcType, RunError},
-    heap::{DropWithHeap, Heap, HeapData, HeapGuard, HeapId},
+    heap::{DropWithHeap, HeapData, HeapGuard, HeapId},
     heap_data::CellValue,
     intern::{FunctionId, StringId},
     os::OsFunction,
     resource::ResourceTracker,
-    types::{Dict, PyTrait, Type, bytes::call_bytes_method, str::call_str_method, r#type::call_type_method},
+    types::{Dict, PyTrait, Type, bytes::call_bytes_method, str::call_str_method},
     value::{EitherStr, Value},
 };
 
@@ -256,7 +258,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
     /// Calls an attribute on an object.
     ///
     /// For heap-allocated objects (`Value::Ref`), dispatches to the type's
-    /// attribute call implementation via `Heap::call_attr()`, which may return
+    /// attribute call implementation via `py_call_attr`, which may return
     /// `CallResult::OsCall`, `CallResult::External`, or
     /// `CallResult::MethodCall` for operations that require host involvement.
     ///
@@ -269,7 +271,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
         match obj {
             Value::Ref(heap_id) => {
                 defer_drop!(obj, this);
-                Heap::call_attr(this, heap_id, &attr, args)
+                this.heap.read(heap_id).py_call_attr(heap_id, this, &attr, args)
             }
             Value::InternString(string_id) => {
                 // Call string method on interned string literal using the unified dispatcher
@@ -283,11 +285,11 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
             }
             Value::Builtin(Builtins::Type(t)) => {
                 // Handle classmethods on type objects like dict.fromkeys()
-                call_type_method(t, name_id, args, this).map(CallResult::Value)
+                t.call_class_method(name_id, args, this).map(Into::into)
             }
             _ => {
                 // Non-heap values without method support
-                let type_name = obj.py_type(this.heap);
+                let type_name = obj.py_type(this);
                 args.drop_with_heap(this);
                 Err(ExcType::attribute_error(type_name, this.interns.get_str(name_id)))
             }
@@ -373,7 +375,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
             }
             _ => {
                 args.drop_with_heap(self);
-                let ty = callable.py_type(self.heap);
+                let ty = callable.py_type(self);
                 Err(ExcType::type_error(format!("'{ty}' object is not callable")))
             }
         }
@@ -571,7 +573,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
         };
         let copied_kwargs: Vec<(Value, Value)> = dict
             .iter()
-            .map(|(k, v)| (k.clone_with_heap(this.heap), v.clone_with_heap(this.heap)))
+            .map(|(k, v)| (k.clone_with_heap(this), v.clone_with_heap(this)))
             .collect();
 
         let kwargs_values = if copied_kwargs.is_empty() {
@@ -649,7 +651,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
             for (i, maybe_param_idx) in func.cell_param_indices.iter().enumerate() {
                 let cell_slot = param_count + i;
                 let cell_value = if let Some(param_idx) = maybe_param_idx {
-                    namespace[*param_idx].clone_with_heap(this.heap)
+                    namespace[*param_idx].clone_with_heap(this)
                 } else {
                     Value::Undefined
                 };
@@ -702,7 +704,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
         let locals_count = u16::try_from(namespace_size).expect("function namespace size exceeds u16");
 
         // Track memory for this frame's locals
-        let size = namespace_size * std::mem::size_of::<Value>();
+        let size = namespace_size * mem::size_of::<Value>();
         self.heap.tracker_mut().on_allocate(|| size)?;
 
         // 1. Create namespace for the frame in a temporary vec, will extend to stack later
@@ -726,7 +728,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
             for (i, maybe_param_idx) in func.cell_param_indices.iter().enumerate() {
                 let cell_slot = param_count + i;
                 let cell_value = if let Some(param_idx) = maybe_param_idx {
-                    namespace[*param_idx].clone_with_heap(this.heap)
+                    namespace[*param_idx].clone_with_heap(this)
                 } else {
                     Value::Undefined
                 };

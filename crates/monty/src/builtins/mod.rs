@@ -32,7 +32,7 @@ mod sum;
 mod type_;
 mod zip;
 
-use std::{fmt::Write, str::FromStr};
+use std::{fmt, fmt::Write, str::FromStr};
 
 use strum::{Display, EnumString, FromRepr, IntoStaticStr};
 
@@ -70,7 +70,7 @@ impl Builtins {
     }
 
     /// Writes the Python repr() string for this callable to a formatter.
-    pub fn py_repr_fmt<W: Write>(self, f: &mut W) -> std::fmt::Result {
+    pub fn py_repr_fmt<W: Write>(self, f: &mut W) -> fmt::Result {
         match self {
             Self::Function(b) => write!(f, "<built-in function {b}>"),
             Self::ExcType(e) => write!(f, "<class '{e}'>"),

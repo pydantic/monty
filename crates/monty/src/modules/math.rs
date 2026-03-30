@@ -22,16 +22,18 @@
 //!
 //! `pi`, `e`, `tau`, `inf`, `nan`
 
+use std::f64::consts;
+
 use num_bigint::BigInt;
 use smallvec::smallvec;
 
 use crate::{
-    args::ArgValues,
+    args::{ArgValues, KwargsValues},
     bytecode::VM,
     defer_drop, defer_drop_mut,
-    exception_private::{ExcType, RunResult, SimpleException},
+    exception_private::{ExcType, RunError, RunResult, SimpleException},
     heap::{Heap, HeapData, HeapId},
-    intern::{Interns, StaticStrings},
+    intern::StaticStrings,
     modules::ModuleFunctions,
     resource::{ResourceError, ResourceTracker},
     types::{LongInt, Module, PyTrait, allocate_tuple},
@@ -43,12 +45,12 @@ use crate::{
 // ==========================
 
 /// Returns a `ValueError` with the standard CPython "math domain error" message.
-fn math_domain_error() -> crate::exception_private::RunError {
+fn math_domain_error() -> RunError {
     SimpleException::new_msg(ExcType::ValueError, "math domain error").into()
 }
 
 /// Returns an `OverflowError` with the standard CPython "math range error" message.
-fn math_range_error() -> crate::exception_private::RunError {
+fn math_range_error() -> RunError {
     SimpleException::new_msg(ExcType::OverflowError, "math range error").into()
 }
 
@@ -188,9 +190,9 @@ pub fn create_module(vm: &mut VM<'_, '_, impl ResourceTracker>) -> Result<HeapId
     }
 
     // Constants
-    module.set_attr(StaticStrings::Pi, Value::Float(std::f64::consts::PI), vm);
-    module.set_attr(StaticStrings::MathE, Value::Float(std::f64::consts::E), vm);
-    module.set_attr(StaticStrings::Tau, Value::Float(std::f64::consts::TAU), vm);
+    module.set_attr(StaticStrings::Pi, Value::Float(consts::PI), vm);
+    module.set_attr(StaticStrings::MathE, Value::Float(consts::E), vm);
+    module.set_attr(StaticStrings::Tau, Value::Float(consts::TAU), vm);
     module.set_attr(StaticStrings::MathInf, Value::Float(f64::INFINITY), vm);
     module.set_attr(StaticStrings::MathNan, Value::Float(f64::NAN), vm);
 
@@ -272,66 +274,66 @@ pub(super) fn call(
 ) -> RunResult<Value> {
     match function {
         // Rounding
-        MathFunctions::Floor => math_floor(vm.heap, args),
-        MathFunctions::Ceil => math_ceil(vm.heap, args),
-        MathFunctions::Trunc => math_trunc(vm.heap, args),
+        MathFunctions::Floor => math_floor(vm, args),
+        MathFunctions::Ceil => math_ceil(vm, args),
+        MathFunctions::Trunc => math_trunc(vm, args),
         // Roots & powers
-        MathFunctions::Sqrt => math_sqrt(vm.heap, args),
-        MathFunctions::Isqrt => math_isqrt(vm.heap, args),
-        MathFunctions::Cbrt => math_cbrt(vm.heap, args),
-        MathFunctions::Pow => math_pow(vm.heap, args),
-        MathFunctions::Exp => math_exp(vm.heap, args),
-        MathFunctions::Exp2 => math_exp2(vm.heap, args),
-        MathFunctions::Expm1 => math_expm1(vm.heap, args),
+        MathFunctions::Sqrt => math_sqrt(vm, args),
+        MathFunctions::Isqrt => math_isqrt(vm, args),
+        MathFunctions::Cbrt => math_cbrt(vm, args),
+        MathFunctions::Pow => math_pow(vm, args),
+        MathFunctions::Exp => math_exp(vm, args),
+        MathFunctions::Exp2 => math_exp2(vm, args),
+        MathFunctions::Expm1 => math_expm1(vm, args),
         // Logarithms
-        MathFunctions::Log => math_log(vm.heap, args),
-        MathFunctions::Log1p => math_log1p(vm.heap, args),
-        MathFunctions::Log2 => math_log2(vm.heap, args),
-        MathFunctions::Log10 => math_log10(vm.heap, args),
+        MathFunctions::Log => math_log(vm, args),
+        MathFunctions::Log1p => math_log1p(vm, args),
+        MathFunctions::Log2 => math_log2(vm, args),
+        MathFunctions::Log10 => math_log10(vm, args),
         // Float properties
-        MathFunctions::Fabs => math_fabs(vm.heap, args),
-        MathFunctions::Isnan => math_isnan(vm.heap, args),
-        MathFunctions::Isinf => math_isinf(vm.heap, args),
-        MathFunctions::Isfinite => math_isfinite(vm.heap, args),
-        MathFunctions::Copysign => math_copysign(vm.heap, args),
-        MathFunctions::Isclose => math_isclose(vm.heap, args, vm.interns),
-        MathFunctions::Nextafter => math_nextafter(vm.heap, args),
-        MathFunctions::Ulp => math_ulp(vm.heap, args),
+        MathFunctions::Fabs => math_fabs(vm, args),
+        MathFunctions::Isnan => math_isnan(vm, args),
+        MathFunctions::Isinf => math_isinf(vm, args),
+        MathFunctions::Isfinite => math_isfinite(vm, args),
+        MathFunctions::Copysign => math_copysign(vm, args),
+        MathFunctions::Isclose => math_isclose(vm, args),
+        MathFunctions::Nextafter => math_nextafter(vm, args),
+        MathFunctions::Ulp => math_ulp(vm, args),
         // Trigonometric
-        MathFunctions::Sin => math_sin(vm.heap, args),
-        MathFunctions::Cos => math_cos(vm.heap, args),
-        MathFunctions::Tan => math_tan(vm.heap, args),
-        MathFunctions::Asin => math_asin(vm.heap, args),
-        MathFunctions::Acos => math_acos(vm.heap, args),
-        MathFunctions::Atan => math_atan(vm.heap, args),
-        MathFunctions::Atan2 => math_atan2(vm.heap, args),
+        MathFunctions::Sin => math_sin(vm, args),
+        MathFunctions::Cos => math_cos(vm, args),
+        MathFunctions::Tan => math_tan(vm, args),
+        MathFunctions::Asin => math_asin(vm, args),
+        MathFunctions::Acos => math_acos(vm, args),
+        MathFunctions::Atan => math_atan(vm, args),
+        MathFunctions::Atan2 => math_atan2(vm, args),
         // Hyperbolic
-        MathFunctions::Sinh => math_sinh(vm.heap, args),
-        MathFunctions::Cosh => math_cosh(vm.heap, args),
-        MathFunctions::Tanh => math_tanh(vm.heap, args),
-        MathFunctions::Asinh => math_asinh(vm.heap, args),
-        MathFunctions::Acosh => math_acosh(vm.heap, args),
-        MathFunctions::Atanh => math_atanh(vm.heap, args),
+        MathFunctions::Sinh => math_sinh(vm, args),
+        MathFunctions::Cosh => math_cosh(vm, args),
+        MathFunctions::Tanh => math_tanh(vm, args),
+        MathFunctions::Asinh => math_asinh(vm, args),
+        MathFunctions::Acosh => math_acosh(vm, args),
+        MathFunctions::Atanh => math_atanh(vm, args),
         // Angular conversion
-        MathFunctions::Degrees => math_degrees(vm.heap, args),
-        MathFunctions::Radians => math_radians(vm.heap, args),
+        MathFunctions::Degrees => math_degrees(vm, args),
+        MathFunctions::Radians => math_radians(vm, args),
         // Integer math
-        MathFunctions::Factorial => math_factorial(vm.heap, args),
-        MathFunctions::Gcd => math_gcd(vm.heap, args),
-        MathFunctions::Lcm => math_lcm(vm.heap, args),
-        MathFunctions::Comb => math_comb(vm.heap, args),
-        MathFunctions::Perm => math_perm(vm.heap, args),
+        MathFunctions::Factorial => math_factorial(vm, args),
+        MathFunctions::Gcd => math_gcd(vm, args),
+        MathFunctions::Lcm => math_lcm(vm, args),
+        MathFunctions::Comb => math_comb(vm, args),
+        MathFunctions::Perm => math_perm(vm, args),
         // Modular / decomposition
-        MathFunctions::Fmod => math_fmod(vm.heap, args),
-        MathFunctions::Remainder => math_remainder(vm.heap, args),
-        MathFunctions::Modf => math_modf(vm.heap, args),
-        MathFunctions::Frexp => math_frexp(vm.heap, args),
-        MathFunctions::Ldexp => math_ldexp(vm.heap, args),
+        MathFunctions::Fmod => math_fmod(vm, args),
+        MathFunctions::Remainder => math_remainder(vm, args),
+        MathFunctions::Modf => math_modf(vm, args),
+        MathFunctions::Frexp => math_frexp(vm, args),
+        MathFunctions::Ldexp => math_ldexp(vm, args),
         // Special functions
-        MathFunctions::Gamma => math_gamma(vm.heap, args),
-        MathFunctions::Lgamma => math_lgamma(vm.heap, args),
-        MathFunctions::Erf => math_erf(vm.heap, args),
-        MathFunctions::Erfc => math_erfc(vm.heap, args),
+        MathFunctions::Gamma => math_gamma(vm, args),
+        MathFunctions::Lgamma => math_lgamma(vm, args),
+        MathFunctions::Erf => math_erf(vm, args),
+        MathFunctions::Erfc => math_erfc(vm, args),
     }
 }
 
@@ -343,17 +345,17 @@ pub(super) fn call(
 ///
 /// Accepts int, float, or bool. Returns int.
 /// Raises `OverflowError` for infinity, `ValueError` for NaN.
-fn math_floor(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
-    let value = args.get_one_arg("math.floor", heap)?;
-    defer_drop!(value, heap);
+fn math_floor(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let value = args.get_one_arg("math.floor", vm.heap)?;
+    defer_drop!(value, vm);
 
     match value {
-        Value::Float(f) => float_to_int_checked(f.floor(), *f, heap),
+        Value::Float(f) => float_to_int_checked(f.floor(), *f, vm.heap),
         Value::Int(n) => Ok(Value::Int(*n)),
         Value::Bool(b) => Ok(Value::Int(i64::from(*b))),
         _ => Err(ExcType::type_error(format!(
             "must be real number, not {}",
-            value.py_type(heap)
+            value.py_type(vm)
         ))),
     }
 }
@@ -362,17 +364,17 @@ fn math_floor(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> RunResu
 ///
 /// Accepts int, float, or bool. Returns int.
 /// Raises `OverflowError` for infinity, `ValueError` for NaN.
-fn math_ceil(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
-    let value = args.get_one_arg("math.ceil", heap)?;
-    defer_drop!(value, heap);
+fn math_ceil(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let value = args.get_one_arg("math.ceil", vm.heap)?;
+    defer_drop!(value, vm);
 
     match value {
-        Value::Float(f) => float_to_int_checked(f.ceil(), *f, heap),
+        Value::Float(f) => float_to_int_checked(f.ceil(), *f, vm.heap),
         Value::Int(n) => Ok(Value::Int(*n)),
         Value::Bool(b) => Ok(Value::Int(i64::from(*b))),
         _ => Err(ExcType::type_error(format!(
             "must be real number, not {}",
-            value.py_type(heap)
+            value.py_type(vm)
         ))),
     }
 }
@@ -380,17 +382,17 @@ fn math_ceil(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> RunResul
 /// `math.trunc(x)` — truncates x to the nearest integer toward zero.
 ///
 /// Accepts int, float, or bool. Returns int.
-fn math_trunc(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
-    let value = args.get_one_arg("math.trunc", heap)?;
-    defer_drop!(value, heap);
+fn math_trunc(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let value = args.get_one_arg("math.trunc", vm.heap)?;
+    defer_drop!(value, vm);
 
     match value {
-        Value::Float(f) => float_to_int_checked(f.trunc(), *f, heap),
+        Value::Float(f) => float_to_int_checked(f.trunc(), *f, vm.heap),
         Value::Int(n) => Ok(Value::Int(*n)),
         Value::Bool(b) => Ok(Value::Int(i64::from(*b))),
         _ => Err(ExcType::type_error(format!(
             "type {} doesn't define __trunc__ method",
-            value.py_type(heap)
+            value.py_type(vm)
         ))),
     }
 }
@@ -403,11 +405,11 @@ fn math_trunc(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> RunResu
 ///
 /// Always returns a float. Raises `ValueError` for negative inputs with a
 /// descriptive message matching CPython 3.14: "expected a nonnegative input, got <x>".
-fn math_sqrt(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
-    let value = args.get_one_arg("math.sqrt", heap)?;
-    defer_drop!(value, heap);
+fn math_sqrt(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let value = args.get_one_arg("math.sqrt", vm.heap)?;
+    defer_drop!(value, vm);
 
-    let f = value_to_float(value, heap)?;
+    let f = value_to_float(value, vm)?;
     if f < 0.0 {
         Err(SimpleException::new_msg(ExcType::ValueError, format!("expected a nonnegative input, got {f:?}")).into())
     } else {
@@ -419,11 +421,11 @@ fn math_sqrt(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> RunResul
 ///
 /// Returns the largest integer `r` such that `r * r <= n`.
 /// Only accepts non-negative integers (and bools).
-fn math_isqrt(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
-    let value = args.get_one_arg("math.isqrt", heap)?;
-    defer_drop!(value, heap);
+fn math_isqrt(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let value = args.get_one_arg("math.isqrt", vm.heap)?;
+    defer_drop!(value, vm);
 
-    let n = value_to_int(value, heap)?;
+    let n = value_to_int(value, vm)?;
     if n < 0 {
         return Err(SimpleException::new_msg(ExcType::ValueError, "isqrt() argument must be nonnegative").into());
     }
@@ -455,11 +457,11 @@ fn math_isqrt(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> RunResu
 /// `math.cbrt(x)` — returns the cube root of x.
 ///
 /// Always returns a float. Unlike `sqrt`, works for negative inputs.
-fn math_cbrt(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
-    let value = args.get_one_arg("math.cbrt", heap)?;
-    defer_drop!(value, heap);
+fn math_cbrt(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let value = args.get_one_arg("math.cbrt", vm.heap)?;
+    defer_drop!(value, vm);
 
-    let f = value_to_float(value, heap)?;
+    let f = value_to_float(value, vm)?;
     Ok(Value::Float(f.cbrt()))
 }
 
@@ -468,13 +470,13 @@ fn math_cbrt(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> RunResul
 /// Always returns a float. Unlike the builtin `pow()`, does not support
 /// three-argument modular exponentiation. Raises `ValueError` for
 /// negative base with non-integer exponent.
-fn math_pow(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
-    let (x_val, y_val) = args.get_two_args("math.pow", heap)?;
-    defer_drop!(x_val, heap);
-    defer_drop!(y_val, heap);
+fn math_pow(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let (x_val, y_val) = args.get_two_args("math.pow", vm.heap)?;
+    defer_drop!(x_val, vm);
+    defer_drop!(y_val, vm);
 
-    let x = value_to_float(x_val, heap)?;
-    let y = value_to_float(y_val, heap)?;
+    let x = value_to_float(x_val, vm)?;
+    let y = value_to_float(y_val, vm)?;
     let result = x.powf(y);
     // CPython raises ValueError for domain errors: 0**negative, negative**non-integer
     if result.is_nan() && !x.is_nan() && !y.is_nan() {
@@ -491,22 +493,22 @@ fn math_pow(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> RunResult
 }
 
 /// `math.exp(x)` — returns e raised to the power x.
-fn math_exp(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
-    let value = args.get_one_arg("math.exp", heap)?;
-    defer_drop!(value, heap);
+fn math_exp(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let value = args.get_one_arg("math.exp", vm.heap)?;
+    defer_drop!(value, vm);
 
-    let f = value_to_float(value, heap)?;
+    let f = value_to_float(value, vm)?;
     let result = f.exp();
     check_range_error(result, f)?;
     Ok(Value::Float(result))
 }
 
 /// `math.exp2(x)` — returns 2 raised to the power x.
-fn math_exp2(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
-    let value = args.get_one_arg("math.exp2", heap)?;
-    defer_drop!(value, heap);
+fn math_exp2(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let value = args.get_one_arg("math.exp2", vm.heap)?;
+    defer_drop!(value, vm);
 
-    let f = value_to_float(value, heap)?;
+    let f = value_to_float(value, vm)?;
     let result = f.exp2();
     check_range_error(result, f)?;
     Ok(Value::Float(result))
@@ -515,11 +517,11 @@ fn math_exp2(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> RunResul
 /// `math.expm1(x)` — returns e**x - 1.
 ///
 /// More accurate than `exp(x) - 1` for small values of x.
-fn math_expm1(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
-    let value = args.get_one_arg("math.expm1", heap)?;
-    defer_drop!(value, heap);
+fn math_expm1(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let value = args.get_one_arg("math.expm1", vm.heap)?;
+    defer_drop!(value, vm);
 
-    let f = value_to_float(value, heap)?;
+    let f = value_to_float(value, vm)?;
     let result = f.exp_m1();
     check_range_error(result, f)?;
     Ok(Value::Float(result))
@@ -534,19 +536,19 @@ fn math_expm1(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> RunResu
 /// With one argument, returns the natural logarithm (base e).
 /// With two arguments, returns `log(x) / log(base)`.
 /// Raises `ValueError` for non-positive inputs (CPython 3.14: "expected a positive input").
-fn math_log(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
-    let (x_val, base_val) = args.get_one_two_args("math.log", heap)?;
-    defer_drop!(x_val, heap);
-    defer_drop!(base_val, heap);
+fn math_log(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let (x_val, base_val) = args.get_one_two_args("math.log", vm.heap)?;
+    defer_drop!(x_val, vm);
+    defer_drop!(base_val, vm);
 
-    let x = value_to_float(x_val, heap)?;
+    let x = value_to_float(x_val, vm)?;
     if x <= 0.0 {
         return Err(SimpleException::new_msg(ExcType::ValueError, "expected a positive input").into());
     }
 
     match base_val {
         Some(base_v) => {
-            let base = value_to_float(base_v, heap)?;
+            let base = value_to_float(base_v, vm)?;
             // base == 1.0 causes division by zero in log(x)/log(base), matching
             // CPython which raises ZeroDivisionError for this case.
             #[expect(
@@ -569,11 +571,11 @@ fn math_log(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> RunResult
 ///
 /// More accurate than `log(1 + x)` for small values of x.
 /// CPython 3.14 raises ValueError with "expected argument value > -1, got <x>".
-fn math_log1p(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
-    let value = args.get_one_arg("math.log1p", heap)?;
-    defer_drop!(value, heap);
+fn math_log1p(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let value = args.get_one_arg("math.log1p", vm.heap)?;
+    defer_drop!(value, vm);
 
-    let f = value_to_float(value, heap)?;
+    let f = value_to_float(value, vm)?;
     if f <= -1.0 {
         return Err(
             SimpleException::new_msg(ExcType::ValueError, format!("expected argument value > -1, got {f:?}")).into(),
@@ -586,11 +588,11 @@ fn math_log1p(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> RunResu
 ///
 /// Returns `inf` for positive infinity, `nan` for NaN.
 /// Raises `ValueError` for non-positive finite inputs.
-fn math_log2(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
-    let value = args.get_one_arg("math.log2", heap)?;
-    defer_drop!(value, heap);
+fn math_log2(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let value = args.get_one_arg("math.log2", vm.heap)?;
+    defer_drop!(value, vm);
 
-    let f = value_to_float(value, heap)?;
+    let f = value_to_float(value, vm)?;
     if f <= 0.0 {
         Err(SimpleException::new_msg(ExcType::ValueError, "expected a positive input").into())
     } else {
@@ -602,11 +604,11 @@ fn math_log2(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> RunResul
 ///
 /// Returns `inf` for positive infinity, `nan` for NaN.
 /// Raises `ValueError` for non-positive finite inputs.
-fn math_log10(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
-    let value = args.get_one_arg("math.log10", heap)?;
-    defer_drop!(value, heap);
+fn math_log10(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let value = args.get_one_arg("math.log10", vm.heap)?;
+    defer_drop!(value, vm);
 
-    let f = value_to_float(value, heap)?;
+    let f = value_to_float(value, vm)?;
     if f <= 0.0 {
         Err(SimpleException::new_msg(ExcType::ValueError, "expected a positive input").into())
     } else {
@@ -621,51 +623,51 @@ fn math_log10(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> RunResu
 /// `math.fabs(x)` — returns the absolute value as a float.
 ///
 /// Unlike the builtin `abs()`, always returns a float.
-fn math_fabs(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
-    let value = args.get_one_arg("math.fabs", heap)?;
-    defer_drop!(value, heap);
+fn math_fabs(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let value = args.get_one_arg("math.fabs", vm.heap)?;
+    defer_drop!(value, vm);
 
-    let f = value_to_float(value, heap)?;
+    let f = value_to_float(value, vm)?;
     Ok(Value::Float(f.abs()))
 }
 
 /// `math.isnan(x)` — returns True if x is NaN.
-fn math_isnan(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
-    let value = args.get_one_arg("math.isnan", heap)?;
-    defer_drop!(value, heap);
+fn math_isnan(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let value = args.get_one_arg("math.isnan", vm.heap)?;
+    defer_drop!(value, vm);
 
-    let f = value_to_float(value, heap)?;
+    let f = value_to_float(value, vm)?;
     Ok(Value::Bool(f.is_nan()))
 }
 
 /// `math.isinf(x)` — returns True if x is positive or negative infinity.
-fn math_isinf(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
-    let value = args.get_one_arg("math.isinf", heap)?;
-    defer_drop!(value, heap);
+fn math_isinf(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let value = args.get_one_arg("math.isinf", vm.heap)?;
+    defer_drop!(value, vm);
 
-    let f = value_to_float(value, heap)?;
+    let f = value_to_float(value, vm)?;
     Ok(Value::Bool(f.is_infinite()))
 }
 
 /// `math.isfinite(x)` — returns True if x is neither infinity nor NaN.
-fn math_isfinite(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
-    let value = args.get_one_arg("math.isfinite", heap)?;
-    defer_drop!(value, heap);
+fn math_isfinite(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let value = args.get_one_arg("math.isfinite", vm.heap)?;
+    defer_drop!(value, vm);
 
-    let f = value_to_float(value, heap)?;
+    let f = value_to_float(value, vm)?;
     Ok(Value::Bool(f.is_finite()))
 }
 
 /// `math.copysign(x, y)` — returns x with the sign of y.
 ///
 /// Always returns a float.
-fn math_copysign(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
-    let (x_val, y_val) = args.get_two_args("math.copysign", heap)?;
-    defer_drop!(x_val, heap);
-    defer_drop!(y_val, heap);
+fn math_copysign(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let (x_val, y_val) = args.get_two_args("math.copysign", vm.heap)?;
+    defer_drop!(x_val, vm);
+    defer_drop!(y_val, vm);
 
-    let x = value_to_float(x_val, heap)?;
-    let y = value_to_float(y_val, heap)?;
+    let x = value_to_float(x_val, vm)?;
+    let y = value_to_float(y_val, vm)?;
     Ok(Value::Float(x.copysign(y)))
 }
 
@@ -673,28 +675,28 @@ fn math_copysign(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> RunR
 ///
 /// Supports keyword-only `rel_tol` and `abs_tol` parameters matching CPython.
 /// Raises `ValueError` if either tolerance is negative.
-fn math_isclose(heap: &mut Heap<impl ResourceTracker>, args: ArgValues, interns: &Interns) -> RunResult<Value> {
+fn math_isclose(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     let (positional, kwargs) = args.into_parts();
-    defer_drop_mut!(positional, heap);
+    defer_drop_mut!(positional, vm);
 
     // Extract exactly two positional args
     let Some(a_val) = positional.next() else {
         return Err(ExcType::type_error_at_least("math.isclose", 2, 0));
     };
-    defer_drop!(a_val, heap);
+    defer_drop!(a_val, vm);
     let Some(b_val) = positional.next() else {
         return Err(ExcType::type_error_at_least("math.isclose", 2, 1));
     };
-    defer_drop!(b_val, heap);
+    defer_drop!(b_val, vm);
     if positional.len() > 0 {
         return Err(ExcType::type_error_at_most("math.isclose", 2, 2 + positional.len()));
     }
 
-    let a = value_to_float(a_val, heap)?;
-    let b = value_to_float(b_val, heap)?;
+    let a = value_to_float(a_val, vm)?;
+    let b = value_to_float(b_val, vm)?;
 
     // Parse optional keyword arguments rel_tol and abs_tol
-    let (rel_tol, abs_tol) = extract_isclose_kwargs(kwargs, heap, interns)?;
+    let (rel_tol, abs_tol) = extract_isclose_kwargs(kwargs, vm)?;
 
     if rel_tol < 0.0 {
         return Err(SimpleException::new_msg(ExcType::ValueError, "tolerances must be non-negative").into());
@@ -727,11 +729,7 @@ fn math_isclose(heap: &mut Heap<impl ResourceTracker>, args: ArgValues, interns:
 /// Extracts `rel_tol` and `abs_tol` keyword arguments for `math.isclose`.
 ///
 /// Returns `(rel_tol, abs_tol)` with defaults of `(1e-9, 0.0)`.
-fn extract_isclose_kwargs(
-    kwargs: crate::args::KwargsValues,
-    heap: &mut Heap<impl ResourceTracker>,
-    interns: &Interns,
-) -> RunResult<(f64, f64)> {
+fn extract_isclose_kwargs(kwargs: KwargsValues, vm: &mut VM<'_, '_, impl ResourceTracker>) -> RunResult<(f64, f64)> {
     let mut rel_tol: f64 = 1e-9;
     let mut abs_tol: f64 = 0.0;
 
@@ -740,20 +738,20 @@ fn extract_isclose_kwargs(
     }
 
     for (key, value) in kwargs {
-        defer_drop!(key, heap);
-        defer_drop!(value, heap);
+        defer_drop!(key, vm);
+        defer_drop!(value, vm);
 
-        let Some(keyword_name) = key.as_either_str(heap) else {
+        let Some(keyword_name) = key.as_either_str(vm.heap) else {
             return Err(ExcType::type_error("keywords must be strings"));
         };
 
-        let key_str = keyword_name.as_str(interns);
+        let key_str = keyword_name.as_str(vm.interns);
         match key_str {
             "rel_tol" => {
-                rel_tol = value_to_float(value, heap)?;
+                rel_tol = value_to_float(value, vm)?;
             }
             "abs_tol" => {
-                abs_tol = value_to_float(value, heap)?;
+                abs_tol = value_to_float(value, vm)?;
             }
             other => {
                 return Err(ExcType::type_error(format!(
@@ -767,13 +765,13 @@ fn extract_isclose_kwargs(
 }
 
 /// `math.nextafter(x, y)` — returns the next float after x towards y.
-fn math_nextafter(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
-    let (x_val, y_val) = args.get_two_args("math.nextafter", heap)?;
-    defer_drop!(x_val, heap);
-    defer_drop!(y_val, heap);
+fn math_nextafter(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let (x_val, y_val) = args.get_two_args("math.nextafter", vm.heap)?;
+    defer_drop!(x_val, vm);
+    defer_drop!(y_val, vm);
 
-    let x = value_to_float(x_val, heap)?;
-    let y = value_to_float(y_val, heap)?;
+    let x = value_to_float(x_val, vm)?;
+    let y = value_to_float(y_val, vm)?;
 
     Ok(Value::Float(libm::nextafter(x, y)))
 }
@@ -782,11 +780,11 @@ fn math_nextafter(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> Run
 ///
 /// For finite non-zero x, returns the smallest float `u` such that `x + u != x`.
 /// Special cases: `ulp(nan)` returns nan, `ulp(inf)` returns inf.
-fn math_ulp(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
-    let value = args.get_one_arg("math.ulp", heap)?;
-    defer_drop!(value, heap);
+fn math_ulp(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let value = args.get_one_arg("math.ulp", vm.heap)?;
+    defer_drop!(value, vm);
 
-    let f = value_to_float(value, heap)?;
+    let f = value_to_float(value, vm)?;
     if f.is_nan() {
         return Ok(Value::Float(f64::NAN));
     }
@@ -810,31 +808,31 @@ fn math_ulp(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> RunResult
 /// `math.sin(x)` — returns the sine of x (in radians).
 ///
 /// CPython 3.14 raises ValueError for infinity: "expected a finite input, got inf".
-fn math_sin(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
-    let value = args.get_one_arg("math.sin", heap)?;
-    defer_drop!(value, heap);
+fn math_sin(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let value = args.get_one_arg("math.sin", vm.heap)?;
+    defer_drop!(value, vm);
 
-    let f = value_to_float(value, heap)?;
+    let f = value_to_float(value, vm)?;
     require_finite(f)?;
     Ok(Value::Float(f.sin()))
 }
 
 /// `math.cos(x)` — returns the cosine of x (in radians).
-fn math_cos(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
-    let value = args.get_one_arg("math.cos", heap)?;
-    defer_drop!(value, heap);
+fn math_cos(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let value = args.get_one_arg("math.cos", vm.heap)?;
+    defer_drop!(value, vm);
 
-    let f = value_to_float(value, heap)?;
+    let f = value_to_float(value, vm)?;
     require_finite(f)?;
     Ok(Value::Float(f.cos()))
 }
 
 /// `math.tan(x)` — returns the tangent of x (in radians).
-fn math_tan(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
-    let value = args.get_one_arg("math.tan", heap)?;
-    defer_drop!(value, heap);
+fn math_tan(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let value = args.get_one_arg("math.tan", vm.heap)?;
+    defer_drop!(value, vm);
 
-    let f = value_to_float(value, heap)?;
+    let f = value_to_float(value, vm)?;
     require_finite(f)?;
     Ok(Value::Float(f.tan()))
 }
@@ -842,11 +840,11 @@ fn math_tan(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> RunResult
 /// `math.asin(x)` — returns the arc sine of x (in radians).
 ///
 /// CPython 3.14: "expected a number in range from -1 up to 1, got <x>".
-fn math_asin(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
-    let value = args.get_one_arg("math.asin", heap)?;
-    defer_drop!(value, heap);
+fn math_asin(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let value = args.get_one_arg("math.asin", vm.heap)?;
+    defer_drop!(value, vm);
 
-    let f = value_to_float(value, heap)?;
+    let f = value_to_float(value, vm)?;
     require_unit_range(f)?;
     Ok(Value::Float(f.asin()))
 }
@@ -854,33 +852,33 @@ fn math_asin(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> RunResul
 /// `math.acos(x)` — returns the arc cosine of x (in radians).
 ///
 /// CPython 3.14: "expected a number in range from -1 up to 1, got <x>".
-fn math_acos(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
-    let value = args.get_one_arg("math.acos", heap)?;
-    defer_drop!(value, heap);
+fn math_acos(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let value = args.get_one_arg("math.acos", vm.heap)?;
+    defer_drop!(value, vm);
 
-    let f = value_to_float(value, heap)?;
+    let f = value_to_float(value, vm)?;
     require_unit_range(f)?;
     Ok(Value::Float(f.acos()))
 }
 
 /// `math.atan(x)` — returns the arc tangent of x (in radians).
-fn math_atan(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
-    let value = args.get_one_arg("math.atan", heap)?;
-    defer_drop!(value, heap);
+fn math_atan(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let value = args.get_one_arg("math.atan", vm.heap)?;
+    defer_drop!(value, vm);
 
-    let f = value_to_float(value, heap)?;
+    let f = value_to_float(value, vm)?;
     Ok(Value::Float(f.atan()))
 }
 
 /// `math.atan2(y, x)` — returns atan(y/x) in radians, using the signs of both
 /// to determine the correct quadrant.
-fn math_atan2(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
-    let (y_val, x_val) = args.get_two_args("math.atan2", heap)?;
-    defer_drop!(y_val, heap);
-    defer_drop!(x_val, heap);
+fn math_atan2(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let (y_val, x_val) = args.get_two_args("math.atan2", vm.heap)?;
+    defer_drop!(y_val, vm);
+    defer_drop!(x_val, vm);
 
-    let y = value_to_float(y_val, heap)?;
-    let x = value_to_float(x_val, heap)?;
+    let y = value_to_float(y_val, vm)?;
+    let x = value_to_float(x_val, vm)?;
     Ok(Value::Float(y.atan2(x)))
 }
 
@@ -889,53 +887,53 @@ fn math_atan2(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> RunResu
 // ==========================
 
 /// `math.sinh(x)` — returns the hyperbolic sine of x.
-fn math_sinh(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
-    let value = args.get_one_arg("math.sinh", heap)?;
-    defer_drop!(value, heap);
+fn math_sinh(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let value = args.get_one_arg("math.sinh", vm.heap)?;
+    defer_drop!(value, vm);
 
-    let f = value_to_float(value, heap)?;
+    let f = value_to_float(value, vm)?;
     let result = f.sinh();
     check_range_error(result, f)?;
     Ok(Value::Float(result))
 }
 
 /// `math.cosh(x)` — returns the hyperbolic cosine of x.
-fn math_cosh(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
-    let value = args.get_one_arg("math.cosh", heap)?;
-    defer_drop!(value, heap);
+fn math_cosh(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let value = args.get_one_arg("math.cosh", vm.heap)?;
+    defer_drop!(value, vm);
 
-    let f = value_to_float(value, heap)?;
+    let f = value_to_float(value, vm)?;
     let result = f.cosh();
     check_range_error(result, f)?;
     Ok(Value::Float(result))
 }
 
 /// `math.tanh(x)` — returns the hyperbolic tangent of x.
-fn math_tanh(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
-    let value = args.get_one_arg("math.tanh", heap)?;
-    defer_drop!(value, heap);
+fn math_tanh(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let value = args.get_one_arg("math.tanh", vm.heap)?;
+    defer_drop!(value, vm);
 
-    let f = value_to_float(value, heap)?;
+    let f = value_to_float(value, vm)?;
     Ok(Value::Float(f.tanh()))
 }
 
 /// `math.asinh(x)` — returns the inverse hyperbolic sine of x.
-fn math_asinh(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
-    let value = args.get_one_arg("math.asinh", heap)?;
-    defer_drop!(value, heap);
+fn math_asinh(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let value = args.get_one_arg("math.asinh", vm.heap)?;
+    defer_drop!(value, vm);
 
-    let f = value_to_float(value, heap)?;
+    let f = value_to_float(value, vm)?;
     Ok(Value::Float(f.asinh()))
 }
 
 /// `math.acosh(x)` — returns the inverse hyperbolic cosine of x.
 ///
 /// CPython 3.14: "expected argument value not less than 1, got <x>".
-fn math_acosh(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
-    let value = args.get_one_arg("math.acosh", heap)?;
-    defer_drop!(value, heap);
+fn math_acosh(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let value = args.get_one_arg("math.acosh", vm.heap)?;
+    defer_drop!(value, vm);
 
-    let f = value_to_float(value, heap)?;
+    let f = value_to_float(value, vm)?;
     if f < 1.0 {
         return Err(SimpleException::new_msg(
             ExcType::ValueError,
@@ -949,11 +947,11 @@ fn math_acosh(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> RunResu
 /// `math.atanh(x)` — returns the inverse hyperbolic tangent of x.
 ///
 /// CPython 3.14: "expected a number between -1 and 1, got <x>".
-fn math_atanh(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
-    let value = args.get_one_arg("math.atanh", heap)?;
-    defer_drop!(value, heap);
+fn math_atanh(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let value = args.get_one_arg("math.atanh", vm.heap)?;
+    defer_drop!(value, vm);
 
-    let f = value_to_float(value, heap)?;
+    let f = value_to_float(value, vm)?;
     if f <= -1.0 || f >= 1.0 {
         return Err(SimpleException::new_msg(
             ExcType::ValueError,
@@ -969,20 +967,20 @@ fn math_atanh(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> RunResu
 // ==========================
 
 /// `math.degrees(x)` — converts angle x from radians to degrees.
-fn math_degrees(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
-    let value = args.get_one_arg("math.degrees", heap)?;
-    defer_drop!(value, heap);
+fn math_degrees(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let value = args.get_one_arg("math.degrees", vm.heap)?;
+    defer_drop!(value, vm);
 
-    let f = value_to_float(value, heap)?;
+    let f = value_to_float(value, vm)?;
     Ok(Value::Float(f.to_degrees()))
 }
 
 /// `math.radians(x)` — converts angle x from degrees to radians.
-fn math_radians(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
-    let value = args.get_one_arg("math.radians", heap)?;
-    defer_drop!(value, heap);
+fn math_radians(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let value = args.get_one_arg("math.radians", vm.heap)?;
+    defer_drop!(value, vm);
 
-    let f = value_to_float(value, heap)?;
+    let f = value_to_float(value, vm)?;
     Ok(Value::Float(f.to_radians()))
 }
 
@@ -994,9 +992,9 @@ fn math_radians(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> RunRe
 ///
 /// Only accepts non-negative integers (and bools). Raises `ValueError` for
 /// negative values, `TypeError` for non-integer types.
-fn math_factorial(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
-    let value = args.get_one_arg("math.factorial", heap)?;
-    defer_drop!(value, heap);
+fn math_factorial(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let value = args.get_one_arg("math.factorial", vm.heap)?;
+    defer_drop!(value, vm);
 
     let n = match value {
         Value::Int(n) => *n,
@@ -1004,7 +1002,7 @@ fn math_factorial(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> Run
         _ => {
             return Err(ExcType::type_error(format!(
                 "'{}' object cannot be interpreted as an integer",
-                value.py_type(heap)
+                value.py_type(vm)
             )));
         }
     };
@@ -1037,17 +1035,17 @@ fn math_factorial(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> Run
 /// Supports 0 or more arguments, matching CPython 3.9+. `gcd()` returns 0,
 /// `gcd(n)` returns `abs(n)`, and for multiple args reduces pairwise.
 /// The result is always non-negative.
-fn math_gcd(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
-    let positional = args.into_pos_only("math.gcd", heap)?;
-    defer_drop_mut!(positional, heap);
+fn math_gcd(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let positional = args.into_pos_only("math.gcd", vm.heap)?;
+    defer_drop_mut!(positional, vm);
 
     let mut result: u64 = 0;
     for arg in positional.by_ref() {
-        defer_drop!(arg, heap);
-        let n = value_to_int(arg, heap)?;
+        defer_drop!(arg, vm);
+        let n = value_to_int(arg, vm)?;
         result = gcd(result, n.unsigned_abs());
     }
-    u64_to_value(result, heap)
+    u64_to_value(result, vm.heap)
 }
 
 /// `math.lcm(*integers)` — returns the least common multiple of the arguments.
@@ -1055,14 +1053,14 @@ fn math_gcd(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> RunResult
 /// Supports 0 or more arguments, matching CPython 3.9+. `lcm()` returns 1,
 /// `lcm(n)` returns `abs(n)`, and for multiple args reduces pairwise.
 /// The result is always non-negative. Returns 0 if any argument is 0.
-fn math_lcm(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
-    let positional = args.into_pos_only("math.lcm", heap)?;
-    defer_drop_mut!(positional, heap);
+fn math_lcm(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let positional = args.into_pos_only("math.lcm", vm.heap)?;
+    defer_drop_mut!(positional, vm);
 
     let mut result: u64 = 1;
     for arg in positional.by_ref() {
-        defer_drop!(arg, heap);
-        let n = value_to_int(arg, heap)?;
+        defer_drop!(arg, vm);
+        let n = value_to_int(arg, vm)?;
         let abs_n = n.unsigned_abs();
         if abs_n == 0 {
             return Ok(Value::Int(0));
@@ -1073,19 +1071,19 @@ fn math_lcm(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> RunResult
             .checked_mul(abs_n)
             .ok_or_else(|| SimpleException::new_msg(ExcType::OverflowError, "integer overflow in lcm"))?;
     }
-    u64_to_value(result, heap)
+    u64_to_value(result, vm.heap)
 }
 
 /// `math.comb(n, k)` — returns the number of ways to choose k items from n.
 ///
 /// Both arguments must be non-negative integers.
-fn math_comb(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
-    let (n_val, k_val) = args.get_two_args("math.comb", heap)?;
-    defer_drop!(n_val, heap);
-    defer_drop!(k_val, heap);
+fn math_comb(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let (n_val, k_val) = args.get_two_args("math.comb", vm.heap)?;
+    defer_drop!(n_val, vm);
+    defer_drop!(k_val, vm);
 
-    let n = value_to_int(n_val, heap)?;
-    let k = value_to_int(k_val, heap)?;
+    let n = value_to_int(n_val, vm)?;
+    let k = value_to_int(k_val, vm)?;
 
     if n < 0 {
         return Err(SimpleException::new_msg(ExcType::ValueError, "n must be a non-negative integer").into());
@@ -1131,16 +1129,16 @@ fn math_comb(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> RunResul
 ///
 /// Both arguments must be non-negative integers. When `k` is omitted, defaults to `n`
 /// (i.e., `perm(n)` returns `n!`), matching CPython behavior.
-fn math_perm(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
-    let (n_val, k_val) = args.get_one_two_args("math.perm", heap)?;
-    defer_drop!(n_val, heap);
+fn math_perm(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let (n_val, k_val) = args.get_one_two_args("math.perm", vm.heap)?;
+    defer_drop!(n_val, vm);
 
-    let n = value_to_int(n_val, heap)?;
+    let n = value_to_int(n_val, vm)?;
     let k_explicit = k_val.is_some();
     let k = match k_val {
         Some(kv) => {
-            defer_drop!(kv, heap);
-            value_to_int(kv, heap)?
+            defer_drop!(kv, vm);
+            value_to_int(kv, vm)?
         }
         None => n,
     };
@@ -1181,13 +1179,13 @@ fn math_perm(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> RunResul
 ///
 /// Unlike `x % y`, the result has the same sign as x. Raises `ValueError`
 /// when y is zero (CPython: "math domain error").
-fn math_fmod(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
-    let (x_val, y_val) = args.get_two_args("math.fmod", heap)?;
-    defer_drop!(x_val, heap);
-    defer_drop!(y_val, heap);
+fn math_fmod(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let (x_val, y_val) = args.get_two_args("math.fmod", vm.heap)?;
+    defer_drop!(x_val, vm);
+    defer_drop!(y_val, vm);
 
-    let x = value_to_float(x_val, heap)?;
-    let y = value_to_float(y_val, heap)?;
+    let x = value_to_float(x_val, vm)?;
+    let y = value_to_float(y_val, vm)?;
 
     if y == 0.0 || x.is_infinite() {
         // CPython raises for both fmod(x, 0) and fmod(inf, y)
@@ -1202,13 +1200,13 @@ fn math_fmod(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> RunResul
 /// `math.remainder(x, y)` — IEEE 754 remainder of x with respect to y.
 ///
 /// The result is `x - n*y` where n is the closest integer to `x/y`.
-fn math_remainder(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
-    let (x_val, y_val) = args.get_two_args("math.remainder", heap)?;
-    defer_drop!(x_val, heap);
-    defer_drop!(y_val, heap);
+fn math_remainder(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let (x_val, y_val) = args.get_two_args("math.remainder", vm.heap)?;
+    defer_drop!(x_val, vm);
+    defer_drop!(y_val, vm);
 
-    let x = value_to_float(x_val, heap)?;
-    let y = value_to_float(y_val, heap)?;
+    let x = value_to_float(x_val, vm)?;
+    let y = value_to_float(y_val, vm)?;
 
     // NaN propagates
     if x.is_nan() || y.is_nan() {
@@ -1230,13 +1228,13 @@ fn math_remainder(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> Run
 /// `math.modf(x)` — returns the fractional and integer parts of x as a tuple.
 ///
 /// Both values carry the sign of x. Returns `(fractional, integer)`.
-fn math_modf(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
-    let value = args.get_one_arg("math.modf", heap)?;
-    defer_drop!(value, heap);
+fn math_modf(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let value = args.get_one_arg("math.modf", vm.heap)?;
+    defer_drop!(value, vm);
 
-    let f = value_to_float(value, heap)?;
+    let f = value_to_float(value, vm)?;
     let (fractional, integer) = libm::modf(f);
-    let tuple = allocate_tuple(smallvec![Value::Float(fractional), Value::Float(integer)], heap)?;
+    let tuple = allocate_tuple(smallvec![Value::Float(fractional), Value::Float(integer)], vm.heap)?;
     Ok(tuple)
 }
 
@@ -1244,13 +1242,13 @@ fn math_modf(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> RunResul
 ///
 /// The mantissa is always in the range [0.5, 1.0) or zero.
 /// Returns a tuple `(float, int)`.
-fn math_frexp(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
-    let value = args.get_one_arg("math.frexp", heap)?;
-    defer_drop!(value, heap);
+fn math_frexp(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let value = args.get_one_arg("math.frexp", vm.heap)?;
+    defer_drop!(value, vm);
 
-    let f = value_to_float(value, heap)?;
+    let f = value_to_float(value, vm)?;
     let (m, exp) = libm::frexp(f);
-    let tuple = allocate_tuple(smallvec![Value::Float(m), Value::Int(i64::from(exp))], heap)?;
+    let tuple = allocate_tuple(smallvec![Value::Float(m), Value::Int(i64::from(exp))], vm.heap)?;
     Ok(tuple)
 }
 
@@ -1259,13 +1257,13 @@ fn math_frexp(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> RunResu
 /// Clamps the exponent to `i32` range before calling `libm::ldexp`, which is safe
 /// because IEEE 754 double exponents only span -1074 to +1023 — any `i64` outside
 /// `i32` range would trivially overflow or underflow anyway.
-fn math_ldexp(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
-    let (x_val, i_val) = args.get_two_args("math.ldexp", heap)?;
-    defer_drop!(x_val, heap);
-    defer_drop!(i_val, heap);
+fn math_ldexp(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let (x_val, i_val) = args.get_two_args("math.ldexp", vm.heap)?;
+    defer_drop!(x_val, vm);
+    defer_drop!(i_val, vm);
 
-    let x = value_to_float(x_val, heap)?;
-    let i = value_to_int(i_val, heap)?;
+    let x = value_to_float(x_val, vm)?;
+    let i = value_to_int(i_val, vm)?;
 
     // Special cases: inf/nan/zero pass through regardless of exponent
     if x.is_nan() || x.is_infinite() || x == 0.0 {
@@ -1293,11 +1291,11 @@ fn math_ldexp(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> RunResu
 ///
 /// CPython 3.14 raises ValueError for non-positive integers:
 /// "expected a noninteger or positive integer, got <x>".
-fn math_gamma(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
-    let value = args.get_one_arg("math.gamma", heap)?;
-    defer_drop!(value, heap);
+fn math_gamma(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let value = args.get_one_arg("math.gamma", vm.heap)?;
+    defer_drop!(value, vm);
 
-    let f = value_to_float(value, heap)?;
+    let f = value_to_float(value, vm)?;
     // CPython also rejects -inf for gamma (but not lgamma, where lgamma(-inf) = inf)
     if f == f64::NEG_INFINITY {
         return Err(SimpleException::new_msg(
@@ -1314,11 +1312,11 @@ fn math_gamma(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> RunResu
 }
 
 /// `math.lgamma(x)` — returns the natural log of the absolute value of Gamma(x).
-fn math_lgamma(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
-    let value = args.get_one_arg("math.lgamma", heap)?;
-    defer_drop!(value, heap);
+fn math_lgamma(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let value = args.get_one_arg("math.lgamma", vm.heap)?;
+    defer_drop!(value, vm);
 
-    let f = value_to_float(value, heap)?;
+    let f = value_to_float(value, vm)?;
     check_gamma_pole(f)?;
 
     let result = libm::lgamma(f);
@@ -1327,22 +1325,22 @@ fn math_lgamma(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> RunRes
 }
 
 /// `math.erf(x)` — returns the error function at x.
-fn math_erf(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
-    let value = args.get_one_arg("math.erf", heap)?;
-    defer_drop!(value, heap);
+fn math_erf(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let value = args.get_one_arg("math.erf", vm.heap)?;
+    defer_drop!(value, vm);
 
-    let f = value_to_float(value, heap)?;
+    let f = value_to_float(value, vm)?;
     Ok(Value::Float(libm::erf(f)))
 }
 
 /// `math.erfc(x)` — returns the complementary error function at x (1 - erf(x)).
 ///
 /// More accurate than `1 - erf(x)` for large x.
-fn math_erfc(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
-    let value = args.get_one_arg("math.erfc", heap)?;
-    defer_drop!(value, heap);
+fn math_erfc(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let value = args.get_one_arg("math.erfc", vm.heap)?;
+    defer_drop!(value, vm);
 
-    let f = value_to_float(value, heap)?;
+    let f = value_to_float(value, vm)?;
     Ok(Value::Float(libm::erfc(f)))
 }
 
@@ -1392,14 +1390,14 @@ fn float_to_int_checked(rounded: f64, original: f64, heap: &mut Heap<impl Resour
     clippy::cast_precision_loss,
     reason = "i64-to-f64 can lose precision for large integers (beyond 2^53), but this matches CPython's conversion semantics"
 )]
-fn value_to_float(value: &Value, heap: &Heap<impl ResourceTracker>) -> RunResult<f64> {
+fn value_to_float(value: &Value, vm: &VM<'_, '_, impl ResourceTracker>) -> RunResult<f64> {
     match value {
         Value::Float(f) => Ok(*f),
         Value::Int(n) => Ok(*n as f64),
         Value::Bool(b) => Ok(if *b { 1.0 } else { 0.0 }),
         _ => Err(ExcType::type_error(format!(
             "must be real number, not {}",
-            value.py_type(heap)
+            value.py_type(vm)
         ))),
     }
 }
@@ -1408,13 +1406,13 @@ fn value_to_float(value: &Value, heap: &Heap<impl ResourceTracker>) -> RunResult
 ///
 /// Accepts `Int` and `Bool` values. For other types, raises a `TypeError`
 /// with a message matching CPython's format.
-fn value_to_int(value: &Value, heap: &Heap<impl ResourceTracker>) -> RunResult<i64> {
+fn value_to_int(value: &Value, vm: &VM<'_, '_, impl ResourceTracker>) -> RunResult<i64> {
     match value {
         Value::Int(n) => Ok(*n),
         Value::Bool(b) => Ok(i64::from(*b)),
         _ => Err(ExcType::type_error(format!(
             "'{}' object cannot be interpreted as an integer",
-            value.py_type(heap)
+            value.py_type(vm)
         ))),
     }
 }

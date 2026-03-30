@@ -19,7 +19,7 @@ pub fn builtin_len(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -
     if let Some(len) = value.py_len(vm) {
         Ok(Value::Int(i64::try_from(len).expect("len exceeds i64::MAX")))
     } else {
-        let type_name = value.py_type(vm.heap);
+        let type_name = value.py_type(vm);
         Err(SimpleException::new_msg(ExcType::TypeError, format!("object of type '{type_name}' has no len()")).into())
     }
 }

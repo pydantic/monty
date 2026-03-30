@@ -6,17 +6,18 @@
 //! - Spawned tasks (1+) store their own execution context in the Task struct
 //! - When switching tasks, the scheduler swaps contexts with the VM
 
-use std::collections::VecDeque;
+use std::{collections::VecDeque, mem};
 
 use ahash::{AHashMap, AHashSet};
 
 use crate::{
     args::ArgValues,
-    asyncio::{CallId, TaskId},
-    exception_private::RunError,
-    heap::{DropWithHeap, HeapId},
-    heap_data::HeapDataMut,
+    asyncio::{CallId, GatherItem, TaskId},
+    exception_private::{ExcType, RunError, SimpleException},
+    heap::{DropWithHeap, Heap, HeapData, HeapId, HeapReadOutput, HeapReader},
+    intern::FunctionId,
     parse::CodeRange,
+    resource::ResourceTracker,
     value::Value,
 };
 
@@ -85,7 +86,7 @@ pub(crate) struct Task {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) struct SerializedTaskFrame {
     /// Which function's code this frame executes (None = module-level).
-    pub function_id: Option<crate::intern::FunctionId>,
+    pub function_id: Option<FunctionId>,
     /// Instruction pointer within this frame's bytecode.
     pub ip: usize,
     /// Base index into the VM stack for this frame's locals region.
@@ -445,15 +446,11 @@ impl Scheduler {
     /// # Arguments
     /// * `task_id` - ID of the task to cancel
     /// * `heap` - Heap for dropping values and cell cleanup
-    pub fn cancel_task(
-        &mut self,
-        task_id: TaskId,
-        heap: &mut crate::heap::Heap<impl crate::resource::ResourceTracker>,
-    ) {
+    pub fn cancel_task(&mut self, task_id: TaskId, heap: &mut HeapReader<'_, impl ResourceTracker>) {
         // If task already finished, clean up its result value and return
         if self.get_task(task_id).is_finished() {
             let task = self.get_task_mut(task_id);
-            if let TaskState::Completed(value) = std::mem::replace(&mut task.state, TaskState::Ready) {
+            if let TaskState::Completed(value) = mem::replace(&mut task.state, TaskState::Ready) {
                 value.drop_with_heap(heap);
             }
             // Note: Failed tasks don't have values to clean up (RunError doesn't contain Values)
@@ -468,7 +465,7 @@ impl Scheduler {
             let task = self.get_task(task_id);
             if let TaskState::BlockedOnGather(gather_id) = task.state {
                 // Get inner gather's task IDs from heap
-                if let crate::heap::HeapData::GatherFuture(gather) = heap.get(gather_id) {
+                if let HeapData::GatherFuture(gather) = heap.get(gather_id) {
                     Some((gather_id, gather.task_ids.clone()))
                 } else {
                     None
@@ -484,16 +481,17 @@ impl Scheduler {
                 self.cancel_task(inner_task_id, heap);
             }
 
-            // Cleanup the inner GatherFuture - extract data first to avoid borrow conflict
-            let (items, results) = if let HeapDataMut::GatherFuture(gather) = heap.get_mut(inner_gather_id) {
-                (std::mem::take(&mut gather.items), std::mem::take(&mut gather.results))
-            } else {
-                (vec![], vec![])
+            // Cleanup the inner GatherFuture
+            let HeapReadOutput::GatherFuture(mut gather) = heap.read(inner_gather_id) else {
+                panic!("inner_gather_id doesn't point to a GatherFuture")
             };
+            let gather_mut = gather.get_mut(heap);
+            let items = mem::take(&mut gather_mut.items);
+            let results = mem::take(&mut gather_mut.results);
 
             // Now cleanup the extracted data with mutable heap access
             for item in items {
-                if let crate::asyncio::GatherItem::Coroutine(coro_id) = item {
+                if let GatherItem::Coroutine(coro_id) = item {
                     heap.dec_ref(coro_id);
                 }
             }
@@ -502,6 +500,7 @@ impl Scheduler {
             }
 
             // Dec_ref the gather itself
+            drop(gather);
             heap.dec_ref(inner_gather_id);
         }
 
@@ -509,12 +508,12 @@ impl Scheduler {
         let task = self.get_task_mut(task_id);
 
         // Clean up stack values
-        for value in std::mem::take(&mut task.stack) {
+        for value in mem::take(&mut task.stack) {
             value.drop_with_heap(heap);
         }
 
         // Clean up exception stack values
-        for value in std::mem::take(&mut task.exception_stack) {
+        for value in mem::take(&mut task.exception_stack) {
             value.drop_with_heap(heap);
         }
 
@@ -526,13 +525,7 @@ impl Scheduler {
         task.frames.clear();
 
         // Mark as failed with a cancellation error
-        task.state = TaskState::Failed(
-            crate::exception_private::SimpleException::new_msg(
-                crate::exception_private::ExcType::RuntimeError,
-                "task was cancelled",
-            )
-            .into(),
-        );
+        task.state = TaskState::Failed(SimpleException::new_msg(ExcType::RuntimeError, "task was cancelled").into());
     }
 
     /// Fails the task blocked on a specific CallId with an error.
@@ -571,24 +564,24 @@ impl Scheduler {
     /// Each task's `recursion_depth` is restored to the global counter before
     /// dropping cells, because `save_task_context` subtracted the recursion depth
     /// and cleanup needs the correct depth to avoid underflow.
-    pub fn cleanup(&mut self, heap: &mut crate::heap::Heap<impl crate::resource::ResourceTracker>) {
+    pub fn cleanup(&mut self, heap: &mut Heap<impl ResourceTracker>) {
         // Drop pending call arguments
-        for (_, data) in std::mem::take(&mut self.pending_calls) {
+        for (_, data) in mem::take(&mut self.pending_calls) {
             data.args.drop_with_heap(heap);
         }
         // Drop resolved values
-        for (_, value) in std::mem::take(&mut self.resolved) {
+        for (_, value) in mem::take(&mut self.resolved) {
             value.drop_with_heap(heap);
         }
         // Drop task stack/exception values and completed results
         for task in &mut self.tasks {
-            for value in std::mem::take(&mut task.stack) {
+            for value in mem::take(&mut task.stack) {
                 value.drop_with_heap(heap);
             }
-            for value in std::mem::take(&mut task.exception_stack) {
+            for value in mem::take(&mut task.exception_stack) {
                 value.drop_with_heap(heap);
             }
-            if let TaskState::Completed(value) = std::mem::replace(&mut task.state, TaskState::Ready) {
+            if let TaskState::Completed(value) = mem::replace(&mut task.state, TaskState::Ready) {
                 value.drop_with_heap(heap);
             }
             // Restore recursion depth and clear frames

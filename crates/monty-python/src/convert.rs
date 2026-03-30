@@ -4,7 +4,7 @@
 //! - `py_to_monty`: Convert Python objects to Monty's `MontyObject` for input
 //! - `monty_to_py`: Convert Monty's `MontyObject` back to Python objects for output
 
-use ::monty::MontyObject;
+use ::monty::{MontyDate, MontyDateTime, MontyObject, MontyTimeDelta, MontyTimeZone};
 use monty::MontyException;
 use num_bigint::BigInt;
 use pyo3::{
@@ -12,7 +12,10 @@ use pyo3::{
     intern,
     prelude::*,
     sync::PyOnceLock,
-    types::{PyBool, PyBytes, PyDict, PyFloat, PyFrozenSet, PyInt, PyList, PySet, PyString, PyTuple},
+    types::{
+        PyBool, PyBytes, PyDate, PyDateAccess, PyDateTime, PyDelta, PyDeltaAccess, PyDict, PyFloat, PyFrozenSet, PyInt,
+        PyList, PyModule, PySet, PyString, PyTimeAccess, PyTuple, PyTzInfo, PyTzInfoAccess,
+    },
 };
 
 use crate::{
@@ -103,6 +106,18 @@ pub fn py_to_monty(obj: &Bound<'_, PyAny>, dc_registry: &DcRegistry) -> PyResult
         Ok(MontyObject::FrozenSet(items?))
     } else if obj.is(obj.py().Ellipsis()) {
         Ok(MontyObject::Ellipsis)
+    } else if let Ok(datetime) = obj.cast::<PyDateTime>() {
+        py_datetime_to_monty(datetime)
+    } else if let Ok(date) = obj.cast::<PyDate>() {
+        Ok(MontyObject::Date(MontyDate {
+            year: date.get_year(),
+            month: date.get_month(),
+            day: date.get_day(),
+        }))
+    } else if let Ok(delta) = obj.cast::<PyDelta>() {
+        Ok(MontyObject::TimeDelta(py_timedelta_to_monty(delta)))
+    } else if obj.is_instance(get_datetime_timezone_type(obj.py())?)? {
+        py_timezone_to_monty(obj).map(MontyObject::TimeZone)
     } else if let Ok(exc) = obj.cast::<PyBaseException>() {
         Ok(exc_to_monty_object(exc))
     } else if is_dataclass(obj) {
@@ -213,6 +228,14 @@ pub fn monty_to_py(py: Python<'_>, obj: &MontyObject, dc_registry: &DcRegistry) 
             let exc = exc_monty_to_py(py, MontyException::new(*exc_type, arg.clone()));
             Ok(exc.into_value(py).into_any())
         }
+        MontyObject::Date(date) => PyDate::new(py, date.year, date.month, date.day)
+            .map(Bound::into_any)
+            .map(Bound::unbind),
+        MontyObject::DateTime(datetime) => monty_datetime_to_py(py, datetime),
+        MontyObject::TimeDelta(delta) => PyDelta::new(py, delta.days, delta.seconds, delta.microseconds, true)
+            .map(Bound::into_any)
+            .map(Bound::unbind),
+        MontyObject::TimeZone(timezone) => monty_timezone_to_py(py, timezone),
         // Return Python's built-in type object
         MontyObject::Type(t) => import_builtins(py)?.getattr(py, t.to_string()),
         MontyObject::BuiltinFunction(f) => import_builtins(py)?.getattr(py, f.to_string()),
@@ -243,6 +266,187 @@ pub fn import_builtins(py: Python<'_>) -> PyResult<&Py<PyModule>> {
     static BUILTINS: PyOnceLock<Py<PyModule>> = PyOnceLock::new();
 
     BUILTINS.get_or_try_init(py, || py.import("builtins").map(Bound::unbind))
+}
+
+/// Converts a native Python `datetime.timedelta` to Monty's carrier representation.
+fn py_timedelta_to_monty(delta: &Bound<'_, PyDelta>) -> MontyTimeDelta {
+    MontyTimeDelta {
+        days: delta.get_days(),
+        seconds: delta.get_seconds(),
+        microseconds: delta.get_microseconds(),
+    }
+}
+
+/// Converts a Monty timezone payload to a native Python `datetime.timezone`.
+fn monty_timezone_to_py(py: Python<'_>, timezone: &MontyTimeZone) -> PyResult<Py<PyAny>> {
+    if timezone.offset_seconds == 0 && timezone.name.is_none() {
+        return Ok(PyTzInfo::utc(py)?.to_owned().into_any().unbind());
+    }
+
+    let offset = PyDelta::new(py, 0, timezone.offset_seconds, 0, true)?;
+    match timezone.name.as_deref() {
+        None => PyTzInfo::fixed_offset(py, offset)
+            .map(Bound::into_any)
+            .map(Bound::unbind),
+        Some(name) => get_datetime_timezone_type(py)?.call1((offset, name)).map(Bound::unbind),
+    }
+}
+
+/// Converts a native Python `datetime.timezone` to Monty's carrier representation.
+///
+/// `timezone.__getinitargs__()` preserves whether the original Python object was
+/// created with just an offset or with an explicit custom name, which is
+/// important for Monty's repr/equality behavior.
+fn py_timezone_to_monty(obj: &Bound<'_, PyAny>) -> PyResult<MontyTimeZone> {
+    if obj.is(get_datetime_timezone_utc(obj.py())?) {
+        return Ok(MontyTimeZone {
+            offset_seconds: 0,
+            name: None,
+        });
+    }
+
+    let init_args = obj.call_method0(intern!(obj.py(), "__getinitargs__"))?;
+    let init_args = init_args.cast::<PyTuple>()?;
+
+    Ok(MontyTimeZone {
+        offset_seconds: timezone_offset_seconds(&py_timedelta_to_monty(
+            &init_args.get_item(0)?.cast_into::<PyDelta>()?,
+        ))?,
+        name: init_args.get_item(1).and_then(|n| n.extract::<String>()).ok(),
+    })
+}
+
+/// Converts a Monty datetime payload to a native Python `datetime.datetime`.
+fn monty_datetime_to_py(py: Python<'_>, datetime: &MontyDateTime) -> PyResult<Py<PyAny>> {
+    match (datetime.offset_seconds, &datetime.timezone_name) {
+        (None, None) => PyDateTime::new(
+            py,
+            datetime.year,
+            datetime.month,
+            datetime.day,
+            datetime.hour,
+            datetime.minute,
+            datetime.second,
+            datetime.microsecond,
+            None,
+        )
+        .map(Bound::into_any)
+        .map(Bound::unbind),
+        (Some(offset_seconds), timezone_name) => {
+            let tzinfo_obj = monty_timezone_to_py(
+                py,
+                &MontyTimeZone {
+                    offset_seconds,
+                    name: timezone_name.clone(),
+                },
+            )?;
+            let tzinfo = tzinfo_obj.bind(py).cast::<PyTzInfo>()?;
+            PyDateTime::new(
+                py,
+                datetime.year,
+                datetime.month,
+                datetime.day,
+                datetime.hour,
+                datetime.minute,
+                datetime.second,
+                datetime.microsecond,
+                Some(tzinfo),
+            )
+            .map(Bound::into_any)
+            .map(Bound::unbind)
+        }
+        (None, Some(_)) => Err(PyTypeError::new_err(
+            "invalid Monty datetime: timezone name without offset",
+        )),
+    }
+}
+
+/// Converts a native Python `datetime.datetime` to Monty's carrier representation.
+///
+/// For `datetime.timezone` tzinfo objects, uses `__getinitargs__()` to preserve
+/// the explicit-vs-auto-generated name distinction. For other tzinfo types
+/// (e.g. `zoneinfo.ZoneInfo`), falls back to the standard `utcoffset()`/`tzname()`
+/// protocol on the datetime itself.
+fn py_datetime_to_monty(datetime: &Bound<'_, PyDateTime>) -> PyResult<MontyObject> {
+    let (offset_seconds, timezone_name) = if let Some(tzinfo) = datetime.get_tzinfo() {
+        if tzinfo.is_instance(get_datetime_timezone_type(tzinfo.py())?)? {
+            // datetime.timezone — use __getinitargs__ for round-trip fidelity
+            let timezone = py_timezone_to_monty(&tzinfo)?;
+            (Some(timezone.offset_seconds), timezone.name)
+        } else {
+            // Other tzinfo (e.g. zoneinfo.ZoneInfo) — use standard protocol
+            py_tzinfo_via_utcoffset(datetime, &tzinfo)?
+        }
+    } else {
+        (None, None)
+    };
+
+    Ok(MontyObject::DateTime(MontyDateTime {
+        year: datetime.get_year(),
+        month: datetime.get_month(),
+        day: datetime.get_day(),
+        hour: datetime.get_hour(),
+        minute: datetime.get_minute(),
+        second: datetime.get_second(),
+        microsecond: datetime.get_microsecond(),
+        offset_seconds,
+        timezone_name,
+    }))
+}
+
+/// Extracts timezone offset and name from a non-`datetime.timezone` tzinfo
+/// (e.g. `zoneinfo.ZoneInfo`) using the standard `utcoffset()`/`tzname()` protocol.
+///
+/// Unlike `__getinitargs__()`, this always produces a name (since IANA timezones
+/// always have one), so the name is stored as `Some(...)`.
+fn py_tzinfo_via_utcoffset(
+    datetime: &Bound<'_, PyDateTime>,
+    tzinfo: &Bound<'_, PyAny>,
+) -> PyResult<(Option<i32>, Option<String>)> {
+    let py = tzinfo.py();
+    let utcoffset = tzinfo
+        .call_method1(intern!(py, "utcoffset"), (datetime,))?
+        .cast_into::<PyDelta>()?;
+    let offset = py_timedelta_to_monty(&utcoffset);
+    let offset_seconds = timezone_offset_seconds(&offset)?;
+
+    let name = tzinfo
+        .call_method1(intern!(py, "tzname"), (datetime,))?
+        .extract::<Option<String>>()?;
+
+    Ok((Some(offset_seconds), name))
+}
+
+/// Converts a MontyTimeDelta to exact whole seconds for timezone offsets.
+fn timezone_offset_seconds(delta: &MontyTimeDelta) -> PyResult<i32> {
+    if delta.microseconds != 0 {
+        return Err(PyTypeError::new_err(
+            "datetime.timezone offset must be an exact number of whole seconds",
+        ));
+    }
+    let total_seconds = i64::from(delta.days)
+        .checked_mul(86_400)
+        .and_then(|days| days.checked_add(i64::from(delta.seconds)))
+        .ok_or_else(|| PyTypeError::new_err("datetime.timezone offset is out of range"))?;
+    i32::try_from(total_seconds).map_err(|_| PyTypeError::new_err("datetime.timezone offset is out of range"))
+}
+
+/// Returns the Python `datetime.timezone` type object.
+fn get_datetime_timezone_type(py: Python<'_>) -> PyResult<&Bound<'_, PyAny>> {
+    static TIMEZONE: PyOnceLock<Py<PyAny>> = PyOnceLock::new();
+
+    TIMEZONE.import(py, "datetime", "timezone")
+}
+
+/// Returns Python's `datetime.timezone.utc` singleton.
+fn get_datetime_timezone_utc(py: Python<'_>) -> PyResult<&Py<PyAny>> {
+    static TIMEZONE_UTC: PyOnceLock<Py<PyAny>> = PyOnceLock::new();
+
+    TIMEZONE_UTC.get_or_try_init(py, || {
+        get_datetime_timezone_type(py)?
+            .getattr(intern!(py, "utc"))
+            .map(Bound::unbind)
+    })
 }
 
 /// Cached import of `collections.namedtuple` function.

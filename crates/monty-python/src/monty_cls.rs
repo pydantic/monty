@@ -1,6 +1,7 @@
 use std::{
     borrow::Cow,
     fmt::Write,
+    mem,
     sync::{Arc, Mutex, PoisonError, atomic::AtomicBool},
 };
 
@@ -19,15 +20,18 @@ use pyo3::{
     prelude::*,
     types::{PyBytes, PyDict, PyList, PyTuple, PyType},
 };
+use pyo3_async_runtimes::tokio::future_into_py;
 use send_wrapper::SendWrapper;
 
 use crate::{
+    async_dispatch::{await_run_transition, dispatch_loop_run, with_print_writer},
     convert::{get_docstring, monty_to_py, py_to_monty},
     dataclass::DcRegistry,
     exceptions::{MontyError, MontyTypingError, exc_py_to_monty},
     external::{ExternalFunctionRegistry, dispatch_method_call},
-    limits::{FutureCancellationGuard, PySignalTracker, extract_limits},
+    limits::{CancellationFlag, FutureCancellationGuard, PySignalTracker, extract_limits},
     repl::{EitherRepl, FromCoreRepl, PyMontyRepl},
+    serialization,
 };
 
 /// A sandboxed Python interpreter instance.
@@ -364,25 +368,23 @@ impl PyMonty {
     ) -> PyResult<Bound<'_, PyAny>>
     where
         T: ResourceTracker + Send + 'static,
-        F: FnOnce(crate::limits::CancellationFlag) -> PySignalTracker<T> + Send + 'static,
+        F: FnOnce(CancellationFlag) -> PySignalTracker<T> + Send + 'static,
     {
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+        future_into_py(py, async move {
             let cancellation_flag = Arc::new(AtomicBool::new(false));
             let mut cancellation_guard = FutureCancellationGuard::new(cancellation_flag.clone());
             let start_print_callback = print_callback.as_ref().map(|cb| Python::attach(|py| cb.clone_ref(py)));
             let tracker = tracker_builder(cancellation_flag);
 
-            let progress = crate::async_dispatch::await_run_transition(move || {
-                crate::async_dispatch::with_print_writer(start_print_callback, |writer| {
+            let progress = await_run_transition(move || {
+                with_print_writer(start_print_callback, |writer| {
                     runner.start(input_values, tracker, writer)
                 })
             })
             .await?
             .map_err(|e| Python::attach(|py| MontyError::new_err(py, e)))?;
 
-            let result =
-                crate::async_dispatch::dispatch_loop_run(progress, external_functions, os, dc_registry, print_callback)
-                    .await;
+            let result = dispatch_loop_run(progress, external_functions, os, dc_registry, print_callback).await;
             cancellation_guard.disarm();
             result
         })
@@ -1012,7 +1014,7 @@ impl PyFunctionSnapshot {
             .lock()
             .map_err(|_| PyRuntimeError::new_err("Snapshot is currently being resumed by another thread"))?;
 
-        let snapshot = std::mem::replace(&mut *snapshot, EitherFunctionSnapshot::Done);
+        let snapshot = mem::replace(&mut *snapshot, EitherFunctionSnapshot::Done);
         let Some(kwargs) = kwargs else {
             return Err(PyTypeError::new_err(ARGS_ERROR));
         };
@@ -1098,7 +1100,7 @@ impl PyFunctionSnapshot {
     /// `ValueError` if serialization fails.
     /// `RuntimeError` if the progress has already been resumed.
     fn dump<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
-        let bytes = crate::serialization::dump_function_snapshot(
+        let bytes = serialization::dump_function_snapshot(
             py,
             &self.snapshot,
             &self.script_name,
@@ -1273,7 +1275,7 @@ impl PyNameLookupSnapshot {
             .lock()
             .map_err(|_| PyRuntimeError::new_err("Snapshot is currently being resumed by another thread"))?;
 
-        let snapshot = std::mem::replace(&mut *snapshot, EitherLookupSnapshot::Done);
+        let snapshot = mem::replace(&mut *snapshot, EitherLookupSnapshot::Done);
         let lookup_result = if let Some(kwargs) = kwargs
             && let Some(value) = kwargs.get_item(intern!(py, "value"))?
         {
@@ -1341,7 +1343,7 @@ impl PyNameLookupSnapshot {
     /// `ValueError` if serialization fails.
     /// `RuntimeError` if the progress has already been resumed.
     fn dump<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
-        let bytes = crate::serialization::dump_lookup_snapshot(&self.snapshot, &self.script_name, &self.variable_name)?;
+        let bytes = serialization::dump_lookup_snapshot(&self.snapshot, &self.script_name, &self.variable_name)?;
         Ok(PyBytes::new(py, &bytes))
     }
 
@@ -1499,7 +1501,7 @@ impl PyFutureSnapshot {
             .lock()
             .map_err(|_| PyRuntimeError::new_err("Snapshot is currently being resumed by another thread"))?;
 
-        let snapshot = std::mem::replace(&mut *snapshot, EitherFutureSnapshot::Done);
+        let snapshot = mem::replace(&mut *snapshot, EitherFutureSnapshot::Done);
 
         let external_results = results
             .iter()
@@ -1586,7 +1588,7 @@ impl PyFutureSnapshot {
     /// `ValueError` if serialization fails.
     /// `RuntimeError` if the progress has already been resumed.
     fn dump<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
-        let bytes = crate::serialization::dump_future_snapshot(&self.snapshot, &self.script_name)?;
+        let bytes = serialization::dump_future_snapshot(&self.snapshot, &self.script_name)?;
         Ok(PyBytes::new(py, &bytes))
     }
 

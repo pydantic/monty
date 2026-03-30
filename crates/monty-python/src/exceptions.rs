@@ -402,6 +402,15 @@ pub fn exc_monty_to_py(py: Python<'_>, exc: MontyException) -> PyErr {
         ExcType::TypeError => exceptions::PyTypeError::new_err(msg),
         ExcType::ValueError => exceptions::PyValueError::new_err(msg),
         ExcType::UnicodeDecodeError => exceptions::PyUnicodeDecodeError::new_err(msg),
+        ExcType::JsonDecodeError => {
+            if let Ok(json_decode_error) = get_json_decode_error(py)
+                && let Ok(exc_instance) = json_decode_error.call1((PyString::new(py, &msg),))
+            {
+                PyErr::from_value(exc_instance)
+            } else {
+                exceptions::PyValueError::new_err(msg)
+            }
+        }
         ExcType::ImportError => exceptions::PyImportError::new_err(msg),
         ExcType::ModuleNotFoundError => exceptions::PyModuleNotFoundError::new_err(msg),
         ExcType::OSError => exceptions::PyOSError::new_err(msg),
@@ -452,7 +461,9 @@ fn py_err_to_exc_type(exc: &Bound<'_, exceptions::PyBaseException>) -> ExcType {
             ExcType::TypeError
         // ValueError hierarchy (check UnicodeDecodeError first as it's a subclass)
         } else if exceptions::PyValueError::type_check(exc) {
-            if exceptions::PyUnicodeDecodeError::type_check(exc) {
+            if is_json_decode_error(exc) {
+                ExcType::JsonDecodeError
+            } else if exceptions::PyUnicodeDecodeError::type_check(exc) {
                 ExcType::UnicodeDecodeError
             } else {
                 ExcType::ValueError
@@ -546,6 +557,18 @@ fn is_frozen_instance_error(exc: &Bound<'_, exceptions::PyBaseException>) -> boo
     }
 }
 
+/// Checks if an exception is an instance of `json.JSONDecodeError`.
+///
+/// The concrete class lives in Python's standard library rather than PyO3's
+/// built-in exception wrappers, so we look it up lazily and cache the type.
+fn is_json_decode_error(exc: &Bound<'_, exceptions::PyBaseException>) -> bool {
+    if let Ok(json_decode_error_cls) = get_json_decode_error(exc.py()) {
+        exc.is_instance(json_decode_error_cls).unwrap_or(false)
+    } else {
+        false
+    }
+}
+
 fn get_re_pattern_error(py: Python<'_>) -> PyResult<&Bound<'_, PyAny>> {
     static RE_PATTERN_ERROR: PyOnceLock<Py<PyAny>> = PyOnceLock::new();
 
@@ -554,4 +577,13 @@ fn get_re_pattern_error(py: Python<'_>) -> PyResult<&Bound<'_, PyAny>> {
     } else {
         RE_PATTERN_ERROR.import(py, "re", "error")
     }
+}
+
+/// Returns the cached `json.JSONDecodeError` class.
+///
+/// This avoids repeated imports while still using the stdlib-defined subclass
+/// of `ValueError` rather than fabricating a plain `ValueError`.
+fn get_json_decode_error(py: Python<'_>) -> PyResult<&Bound<'_, PyAny>> {
+    static JSON_DECODE_ERROR: PyOnceLock<Py<PyAny>> = PyOnceLock::new();
+    JSON_DECODE_ERROR.import(py, "json", "JSONDecodeError")
 }

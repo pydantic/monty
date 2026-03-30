@@ -160,3 +160,30 @@ assert sorted('cba') == ['a', 'b', 'c'], 'sorted string'
 assert sorted(['b', 'c', 'a']) == ['a', 'b', 'c'], 'sorted list of strings'
 assert sorted(['café', 'cafë', 'cafa']) == ['cafa', 'café', 'cafë'], 'sorted non-ascii strings'
 assert sorted(['bb', 'a', 'ba']) == ['a', 'ba', 'bb'], 'sorted different length strings'
+
+# === str() constructor with keyword argument ===
+assert str(object=42) == '42', 'str object kwarg int'
+assert str(object='hello') == 'hello', 'str object kwarg str'
+assert str(object=True) == 'True', 'str object kwarg bool'
+assert str(object=[1, 2]) == '[1, 2]', 'str object kwarg list'
+assert str(object=None) == 'None', 'str object kwarg None'
+
+# str() constructor error cases
+import sys
+
+_monty = 'Monty' in sys.version
+
+try:
+    str(wrong=42)
+    assert False, 'str wrong kwarg should raise'
+except TypeError as e:
+    assert str(e) == "str() got an unexpected keyword argument 'wrong'", f'wrong: {e}'
+
+try:
+    str(42, object=42)
+    assert False, 'str pos + kwarg should raise'
+except TypeError as e:
+    if _monty:
+        assert str(e) == "str() got multiple values for argument 'object'", f'dup: {e}'
+    else:
+        assert str(e) == "argument for str() given by name ('object') and position (1)", f'dup: {e}'

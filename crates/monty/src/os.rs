@@ -81,6 +81,17 @@ pub enum OsFunction {
     /// Get the entire environment as a dictionary
     #[strum(serialize = "os.environ")]
     GetEnviron,
+    /// Get today's date from the host system (for `date.today()`).
+    ///
+    /// Takes no arguments. The host should return `MontyObject::Date`.
+    #[strum(serialize = "date.today")]
+    DateToday,
+    /// Get the current date/time from the host system (for `datetime.now(tz=...)`).
+    ///
+    /// Takes one argument: the timezone (`MontyObject::TimeZone` or `MontyObject::None`).
+    /// The host should return `MontyObject::DateTime`.
+    #[strum(serialize = "datetime.now")]
+    DateTimeNow,
 }
 
 impl TryFrom<StaticStrings> for OsFunction {

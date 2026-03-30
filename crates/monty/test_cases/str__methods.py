@@ -325,3 +325,88 @@ assert '½'.isnumeric() == True, 'isnumeric fraction'
 assert '²'.isnumeric() == True, 'isnumeric superscript'
 assert '٠١٢٣٤٥٦٧٨٩'.isnumeric() == True, 'isnumeric Arabic-Indic'
 assert '0123456789'.isnumeric() == True, 'isnumeric ASCII'
+
+# === Phase 11: expandtabs ===
+
+# expandtabs() default tabsize=8
+assert '\thello'.expandtabs() == '        hello', 'expandtabs default'
+assert ''.expandtabs() == '', 'expandtabs empty'
+assert 'no tabs here'.expandtabs() == 'no tabs here', 'expandtabs no tabs'
+
+# expandtabs() with explicit tabsize
+assert '\thello'.expandtabs(4) == '    hello', 'expandtabs tabsize=4'
+assert '\thello'.expandtabs(8) == '        hello', 'expandtabs tabsize=8 explicit'
+assert '\thello'.expandtabs(1) == ' hello', 'expandtabs tabsize=1'
+
+# expandtabs() column tracking (tabs align to next tabstop)
+assert 'a\tb'.expandtabs() == 'a       b', 'expandtabs column align'
+assert 'ab\tcd'.expandtabs() == 'ab      cd', 'expandtabs 2 chars then tab'
+assert 'abcdefg\th'.expandtabs() == 'abcdefg h', 'expandtabs 7 chars then tab'
+assert 'abcdefgh\ti'.expandtabs() == 'abcdefgh        i', 'expandtabs 8 chars then tab'
+assert 'a\tb\tc'.expandtabs(4) == 'a   b   c', 'expandtabs multiple tabs tabsize=4'
+
+# expandtabs() with tabsize=0 (tabs become nothing)
+assert '\thello'.expandtabs(0) == 'hello', 'expandtabs tabsize=0'
+assert 'a\tb\tc'.expandtabs(0) == 'abc', 'expandtabs tabsize=0 multiple'
+
+# expandtabs() with negative tabsize (treated as 0)
+assert '\thello'.expandtabs(-1) == 'hello', 'expandtabs negative tabsize'
+
+# expandtabs() with newlines resetting column
+assert 'a\tb\nc\td'.expandtabs(4) == 'a   b\nc   d', 'expandtabs newline resets column'
+assert '\t\n\t'.expandtabs(4) == '    \n    ', 'expandtabs tab newline tab'
+assert 'a\tb\rc\td'.expandtabs(4) == 'a   b\rc   d', 'expandtabs carriage return resets column'
+
+# expandtabs() with keyword argument
+assert '\thello'.expandtabs(tabsize=4) == '    hello', 'expandtabs tabsize kwarg'
+
+# expandtabs() error cases
+import sys
+
+_monty = 'Monty' in sys.version
+
+try:
+    'hello'.expandtabs(wrong=4)
+    assert False, 'expandtabs wrong kwarg should raise'
+except TypeError as e:
+    if _monty:
+        assert str(e) == "str.expandtabs() got an unexpected keyword argument 'wrong'", f'wrong: {e}'
+    else:
+        assert str(e) == "expandtabs() got an unexpected keyword argument 'wrong'", f'wrong: {e}'
+
+try:
+    'hello'.expandtabs(4, tabsize=8)
+    assert False, 'expandtabs pos + kwarg should raise'
+except TypeError as e:
+    if _monty:
+        assert str(e) == "str.expandtabs() got multiple values for argument 'tabsize'", f'dup: {e}'
+    else:
+        assert str(e) == 'expandtabs() takes at most 1 argument (2 given)', f'dup: {e}'
+
+try:
+    'hello'.expandtabs(4, 5)
+    assert False, 'expandtabs too many args should raise'
+except TypeError as e:
+    if _monty:
+        assert str(e) == 'str.expandtabs expected at most 1 arguments, got 2', f'toomany: {e}'
+    else:
+        assert str(e) == 'expandtabs() takes at most 1 argument (2 given)', f'toomany: {e}'
+
+# splitlines() error cases
+try:
+    'hello'.splitlines(wrong=True)
+    assert False, 'splitlines wrong kwarg should raise'
+except TypeError as e:
+    if _monty:
+        assert str(e) == "str.splitlines() got an unexpected keyword argument 'wrong'", f'wrong: {e}'
+    else:
+        assert str(e) == "splitlines() got an unexpected keyword argument 'wrong'", f'wrong: {e}'
+
+try:
+    'hello'.splitlines(True, keepends=False)
+    assert False, 'splitlines pos + kwarg should raise'
+except TypeError as e:
+    if _monty:
+        assert str(e) == "str.splitlines() got multiple values for argument 'keepends'", f'dup: {e}'
+    else:
+        assert str(e) == 'splitlines() takes at most 1 argument (2 given)', f'dup: {e}'

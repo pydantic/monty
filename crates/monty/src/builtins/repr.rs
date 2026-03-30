@@ -11,6 +11,7 @@ use crate::{
 pub fn builtin_repr(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     let value = args.get_one_arg("repr", vm.heap)?;
     defer_drop!(value, vm);
-    let heap_id = vm.heap.allocate(HeapData::Str(value.py_repr(vm).into_owned().into()))?;
+    let s = value.py_repr(vm)?.into_owned();
+    let heap_id = vm.heap.allocate(HeapData::Str(s.into()))?;
     Ok(Value::Ref(heap_id))
 }

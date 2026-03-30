@@ -14,18 +14,19 @@ use pyo3::{
     exceptions::{PyRuntimeError, PyTypeError, PyValueError},
     prelude::*,
     sync::PyOnceLock,
-    types::{PyBytes, PyDict, PyList, PyModule, PyTuple},
+    types::{PyBytes, PyDict, PyList, PyModule, PyTuple, PyType},
 };
+use pyo3_async_runtimes::tokio::future_into_py;
 use send_wrapper::SendWrapper;
 
 use crate::{
-    async_dispatch::ReplCleanupNotifier,
+    async_dispatch::{ReplCleanupNotifier, await_repl_transition, dispatch_loop_repl, with_print_writer},
     convert::{get_docstring, monty_to_py, py_to_monty},
     dataclass::DcRegistry,
     exceptions::{MontyError, exc_py_to_monty},
     external::{ExternalFunctionRegistry, dispatch_method_call},
     limits::{CancellationFlag, FutureCancellationGuard, PySignalTracker, extract_limits},
-    monty_cls::CallbackStringPrint,
+    monty_cls::{CallbackStringPrint, EitherProgress},
 };
 
 /// Runtime REPL session holder for pyclass interoperability.
@@ -100,7 +101,7 @@ impl PyMontyRepl {
     }
 
     /// Registers a dataclass type for proper isinstance() support on output.
-    fn register_dataclass(&self, cls: &Bound<'_, pyo3::types::PyType>) -> PyResult<()> {
+    fn register_dataclass(&self, cls: &Bound<'_, PyType>) -> PyResult<()> {
         self.dc_registry.insert(cls)
     }
 
@@ -197,14 +198,14 @@ impl PyMontyRepl {
                 let progress = py
                     .detach(|| repl.feed_start(&code_owned, inputs_owned, print_output.reborrow()))
                     .map_err(|e| this.restore_repl_from_start_error(py, *e))?;
-                let either = crate::monty_cls::EitherProgress::ReplNoLimit(progress, repl_owner);
+                let either = EitherProgress::ReplNoLimit(progress, repl_owner);
                 either.progress_or_complete(py, script_name, print_callback, dc_registry)
             }
             EitherRepl::Limited(repl) => {
                 let progress = py
                     .detach(|| repl.feed_start(&code_owned, inputs_owned, print_output.reborrow()))
                     .map_err(|e| this.restore_repl_from_start_error(py, *e))?;
-                let either = crate::monty_cls::EitherProgress::ReplLimited(progress, repl_owner);
+                let either = EitherProgress::ReplLimited(progress, repl_owner);
                 either.progress_or_complete(py, script_name, print_callback, dc_registry)
             }
         }
@@ -391,7 +392,7 @@ impl ReplAsyncStart {
         let cleanup_notifier = ReplCleanupNotifier::new(event_loop, cleanup_waiter.clone_ref(py));
         let start_guard = CleanupStartGuard::new(cleanup_notifier.clone());
         let start_print_callback = print_callback.as_ref().map(|cb| cb.clone_ref(py));
-        let future = pyo3_async_runtimes::tokio::future_into_py(py, async move {
+        let future = future_into_py(py, async move {
             let mut start_guard = start_guard;
             let cancellation_flag = Arc::new(AtomicBool::new(false));
             let mut cancellation_guard = FutureCancellationGuard::new(cancellation_flag.clone());
@@ -401,18 +402,16 @@ impl ReplAsyncStart {
 
             let result = match repl {
                 EitherRepl::NoLimit(repl) => {
-                    let progress = crate::async_dispatch::await_repl_transition(
+                    let progress = await_repl_transition(
                         &repl_owner,
                         cleanup_notifier.clone(),
                         start_print_callback,
                         move |print_callback| {
-                            crate::async_dispatch::with_print_writer(print_callback, |writer| {
-                                repl.feed_start(&code, input_values, writer)
-                            })
+                            with_print_writer(print_callback, |writer| repl.feed_start(&code, input_values, writer))
                         },
                     )
                     .await?;
-                    crate::async_dispatch::dispatch_loop_repl(
+                    dispatch_loop_repl(
                         progress,
                         repl_owner,
                         cleanup_notifier,
@@ -424,18 +423,16 @@ impl ReplAsyncStart {
                     .await
                 }
                 EitherRepl::Limited(repl) => {
-                    let progress = crate::async_dispatch::await_repl_transition(
+                    let progress = await_repl_transition(
                         &repl_owner,
                         cleanup_notifier.clone(),
                         start_print_callback,
                         move |print_callback| {
-                            crate::async_dispatch::with_print_writer(print_callback, |writer| {
-                                repl.feed_start(&code, input_values, writer)
-                            })
+                            with_print_writer(print_callback, |writer| repl.feed_start(&code, input_values, writer))
                         },
                     )
                     .await?;
-                    crate::async_dispatch::dispatch_loop_repl(
+                    dispatch_loop_repl(
                         progress,
                         repl_owner,
                         cleanup_notifier,

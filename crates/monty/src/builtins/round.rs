@@ -35,7 +35,7 @@ pub fn builtin_round(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues)
         Some(Value::Int(n)) => Some(*n),
         Some(Value::Bool(b)) => Some(i64::from(*b)),
         Some(v) => {
-            let type_name = v.py_type(vm.heap);
+            let type_name = v.py_type(vm);
             return Err(SimpleException::new_msg(
                 ExcType::TypeError,
                 format!("'{type_name}' object cannot be interpreted as an integer"),
@@ -84,7 +84,7 @@ pub fn builtin_round(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues)
             }
         }
         _ => {
-            let type_name = number.py_type(vm.heap);
+            let type_name = number.py_type(vm);
             Err(SimpleException::new_msg(
                 ExcType::TypeError,
                 format!("type {type_name} doesn't define __round__ method"),

@@ -239,3 +239,32 @@ m = re.search(r'(?P<first>\w+)?@(?P<second>\w+)', '@host')
 assert m is not None, 'optional named group search for groupdict'
 d = m.groupdict()
 assert d == {'first': None, 'second': 'host'}, 'groupdict includes unmatched named groups as None'
+
+# groupdict with default keyword argument
+m = re.search(r'(?P<first>\w+)?@(?P<second>\w+)', '@host')
+assert m is not None, 'groupdict default kwarg search'
+d = m.groupdict(default='N/A')
+assert d == {'first': 'N/A', 'second': 'host'}, 'groupdict default kwarg replaces None'
+
+# groupdict error cases
+import sys
+
+_monty = 'Monty' in sys.version
+
+try:
+    m.groupdict(wrong='N/A')
+    assert False, 'groupdict wrong kwarg should raise'
+except TypeError as e:
+    if _monty:
+        assert str(e) == "re.Match.groupdict() got an unexpected keyword argument 'wrong'", f'wrong: {e}'
+    else:
+        assert str(e) == "groupdict() got an unexpected keyword argument 'wrong'", f'wrong: {e}'
+
+try:
+    m.groupdict('N/A', default='N/A')
+    assert False, 'groupdict pos + kwarg should raise'
+except TypeError as e:
+    if _monty:
+        assert str(e) == "re.Match.groupdict() got multiple values for argument 'default'", f'dup: {e}'
+    else:
+        assert str(e) == 'groupdict() takes at most 1 argument (2 given)', f'dup: {e}'

@@ -6,7 +6,12 @@
 //! in `crates/ty_vendored/vendor/typeshed` change.
 #![expect(clippy::unnecessary_debug_formatting)]
 
-use std::{fs::File, io::Write, path::Path};
+use std::{
+    env,
+    fs::File,
+    io::{Write, copy},
+    path::Path,
+};
 
 use path_slash::PathExt;
 use zip::{
@@ -61,7 +66,7 @@ fn write_zipped_typeshed_to(writer: File) -> ZipResult<File> {
             println!("adding file {absolute_path:?} as {normalized_relative_path:?} ...");
             zip.start_file(&*normalized_relative_path, options)?;
             let mut f = File::open(absolute_path)?;
-            std::io::copy(&mut f, &mut zip).unwrap();
+            copy(&mut f, &mut zip).unwrap();
 
             // Patch the VERSIONS file to make `ty_extensions` available
             if normalized_relative_path == "stdlib/VERSIONS" {
@@ -75,18 +80,12 @@ fn write_zipped_typeshed_to(writer: File) -> ZipResult<File> {
         }
     }
 
-    // // Patch typeshed and add the stubs for the `ty_extensions` module
-    // println!("adding file {TY_EXTENSIONS_STUBS} as stdlib/ty_extensions.pyi ...");
-    // zip.start_file("stdlib/ty_extensions.pyi", options)?;
-    // let mut f = File::open(TY_EXTENSIONS_STUBS)?;
-    // std::io::copy(&mut f, &mut zip).unwrap();
-
     zip.finish()
 }
 
 fn main() {
     assert!(Path::new(TYPESHED_SOURCE_DIR).is_dir(), "Where is typeshed?");
-    let out_dir = std::env::var("OUT_DIR").unwrap();
+    let out_dir = env::var("OUT_DIR").unwrap();
 
     // N.B. Deliberately using `format!()` instead of `Path::join()` here,
     // so that we use `/` as a path separator on all platforms.

@@ -160,7 +160,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
                 }
 
                 // Push exception value onto stack (handler expects it)
-                let exc_for_stack = exc_value.clone_with_heap(this.heap);
+                let exc_for_stack = exc_value.clone_with_heap(this);
                 this.push(exc_for_stack);
 
                 // Reclaim exc_value from guard - it's being pushed onto exception_stack
@@ -264,7 +264,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
     /// Validates that `exc_type` is a valid exception type (ExcType or tuple of ExcTypes).
     /// Returns `Ok(true)` if exception matches, `Ok(false)` if not, or `Err` if exc_type is invalid.
     pub(super) fn check_exc_match(&self, exception: &Value, exc_type: &Value) -> Result<bool, RunError> {
-        let exc_type_enum = exception.py_type(self.heap);
+        let exc_type_enum = exception.py_type(self);
         self.check_exc_match_inner(exc_type_enum, exc_type)
     }
 

@@ -4,10 +4,10 @@ use super::VM;
 use crate::{
     defer_drop,
     exception_private::{ExcType, RunError},
-    heap::{Heap, HeapData, HeapGuard},
+    heap::{HeapData, HeapGuard, HeapReadOutput},
     resource::ResourceTracker,
     types::{PyTrait, Set, dict_view::collect_iterable_to_set, set::SetBinaryOp},
-    value::BitwiseOp,
+    value::{BitwiseOp, Value},
 };
 
 impl<T: ResourceTracker> VM<'_, '_, T> {
@@ -29,8 +29,8 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
                 Ok(())
             }
             Ok(None) => {
-                let lhs_type = lhs.py_type(this.heap);
-                let rhs_type = rhs.py_type(this.heap);
+                let lhs_type = lhs.py_type(this);
+                let rhs_type = rhs.py_type(this);
                 Err(ExcType::binary_type_error("+", lhs_type, rhs_type))
             }
             Err(e) => Err(e.into()),
@@ -67,8 +67,8 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
                 Ok(())
             }
             Ok(None) => {
-                let lhs_type = lhs.py_type(this.heap);
-                let rhs_type = rhs.py_type(this.heap);
+                let lhs_type = lhs.py_type(this);
+                let rhs_type = rhs.py_type(this);
                 Err(ExcType::binary_type_error("-", lhs_type, rhs_type))
             }
             Err(e) => Err(e.into()),
@@ -92,8 +92,8 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
                 Ok(())
             }
             Ok(None) => {
-                let lhs_type = lhs.py_type(this.heap);
-                let rhs_type = rhs.py_type(this.heap);
+                let lhs_type = lhs.py_type(this);
+                let rhs_type = rhs.py_type(this);
                 Err(ExcType::binary_type_error("*", lhs_type, rhs_type))
             }
             Err(e) => Err(e),
@@ -117,8 +117,8 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
                 Ok(())
             }
             Ok(None) => {
-                let lhs_type = lhs.py_type(this.heap);
-                let rhs_type = rhs.py_type(this.heap);
+                let lhs_type = lhs.py_type(this);
+                let rhs_type = rhs.py_type(this);
                 Err(ExcType::binary_type_error("/", lhs_type, rhs_type))
             }
             Err(e) => Err(e),
@@ -142,8 +142,8 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
                 Ok(())
             }
             Ok(None) => {
-                let lhs_type = lhs.py_type(this.heap);
-                let rhs_type = rhs.py_type(this.heap);
+                let lhs_type = lhs.py_type(this);
+                let rhs_type = rhs.py_type(this);
                 Err(ExcType::binary_type_error("//", lhs_type, rhs_type))
             }
             Err(e) => Err(e),
@@ -167,8 +167,8 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
                 Ok(())
             }
             Ok(None) => {
-                let lhs_type = lhs.py_type(this.heap);
-                let rhs_type = rhs.py_type(this.heap);
+                let lhs_type = lhs.py_type(this);
+                let rhs_type = rhs.py_type(this);
                 Err(ExcType::binary_type_error("%", lhs_type, rhs_type))
             }
             Err(e) => Err(e),
@@ -193,8 +193,8 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
                 Ok(())
             }
             Ok(None) => {
-                let lhs_type = lhs.py_type(this.heap);
-                let rhs_type = rhs.py_type(this.heap);
+                let lhs_type = lhs.py_type(this);
+                let rhs_type = rhs.py_type(this);
                 Err(ExcType::binary_type_error("** or pow()", lhs_type, rhs_type))
             }
             Err(e) => Err(e),
@@ -230,7 +230,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
             return Ok(());
         }
 
-        let result = lhs.py_bitwise(rhs, op, this.heap)?;
+        let result = lhs.py_bitwise(rhs, op, this)?;
         this.push(result);
         Ok(())
     }
@@ -258,7 +258,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
             return Ok(());
         }
 
-        let result = lhs.py_bitwise(rhs, BitwiseOp::And, this.heap)?;
+        let result = lhs.py_bitwise(rhs, BitwiseOp::And, this)?;
         this.push(result);
         Ok(())
     }
@@ -282,7 +282,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
             return Ok(());
         }
 
-        let result = lhs.py_bitwise(rhs, BitwiseOp::Or, this.heap)?;
+        let result = lhs.py_bitwise(rhs, BitwiseOp::Or, this)?;
         this.push(result);
         Ok(())
     }
@@ -306,7 +306,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
             return Ok(());
         }
 
-        let result = lhs.py_bitwise(rhs, BitwiseOp::Xor, this.heap)?;
+        let result = lhs.py_bitwise(rhs, BitwiseOp::Xor, this)?;
         this.push(result);
         Ok(())
     }
@@ -343,8 +343,8 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
             return Ok(());
         }
 
-        let lhs_type = lhs.py_type(this.heap);
-        let rhs_type = rhs.py_type(this.heap);
+        let lhs_type = lhs.py_type(this);
+        let rhs_type = rhs.py_type(this);
         Err(ExcType::binary_type_error("+=", lhs_type, rhs_type))
     }
 
@@ -366,12 +366,12 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
     /// caller should continue with ordinary numeric or pure-set dispatch.
     fn binary_dict_view_op(
         &mut self,
-        lhs: &crate::value::Value,
-        rhs: &crate::value::Value,
+        lhs: &Value,
+        rhs: &Value,
         op: DictViewBinaryOp,
-    ) -> Result<Option<crate::value::Value>, RunError> {
+    ) -> Result<Option<Value>, RunError> {
         let this = self;
-        let crate::value::Value::Ref(lhs_id) = lhs else {
+        let Value::Ref(lhs_id) = lhs else {
             return Ok(None);
         };
 
@@ -388,37 +388,31 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
         let result = apply_dict_view_binary_op(lhs_set, rhs_set, op, this)?;
 
         let result_id = this.heap.allocate(HeapData::Set(result))?;
-        Ok(Some(crate::value::Value::Ref(result_id)))
+        Ok(Some(Value::Ref(result_id)))
     }
 
     /// Implements pure set/frozenset binary operators with strict operand checks.
     ///
     /// Method forms accept arbitrary iterables, but the operator forms handled here
     /// must reject non-set operands so Monty matches CPython's `TypeError` behavior.
-    fn binary_set_op(
-        &mut self,
-        lhs: &crate::value::Value,
-        rhs: &crate::value::Value,
-        op: SetBinaryOp,
-    ) -> Result<Option<crate::value::Value>, RunError> {
+    fn binary_set_op(&mut self, lhs: &Value, rhs: &Value, op: SetBinaryOp) -> Result<Option<Value>, RunError> {
         let this = self;
-        let crate::value::Value::Ref(lhs_id) = lhs else {
+        let Value::Ref(lhs_id) = lhs else {
             return Ok(None);
         };
 
-        let result = Heap::with_entry_mut(this, *lhs_id, |this, data| match data {
-            crate::heap_data::HeapDataMut::Set(set) => set.binary_op_value(rhs, op, this).map(|v| v.map(HeapData::Set)),
-            crate::heap_data::HeapDataMut::FrozenSet(set) => {
-                set.binary_op_value(rhs, op, this).map(|v| v.map(HeapData::FrozenSet))
-            }
-            _ => Ok(None),
-        })?;
+        let output = this.heap.read(*lhs_id);
+        let result = match output {
+            HeapReadOutput::Set(set) => set.binary_op_value(rhs, op, this)?.map(HeapData::Set),
+            HeapReadOutput::FrozenSet(fset) => fset.binary_op_value(rhs, op, this)?.map(HeapData::FrozenSet),
+            _ => None,
+        };
 
         let Some(result) = result else {
             return Ok(None);
         };
         let result_id = this.heap.allocate(result)?;
-        Ok(Some(crate::value::Value::Ref(result_id)))
+        Ok(Some(Value::Ref(result_id)))
     }
 }
 
@@ -449,7 +443,7 @@ fn apply_dict_view_binary_op(
         DictViewBinaryOp::And => {
             let (smaller, larger) = if lhs.len() <= rhs.len() { (lhs, rhs) } else { (rhs, lhs) };
             for value in smaller.iter() {
-                if larger.contains(value, vm)? {
+                if vm.heap.protect(larger).contains(value, vm)? {
                     result.add(value.clone_with_heap(vm), vm)?;
                 }
             }
@@ -464,19 +458,19 @@ fn apply_dict_view_binary_op(
         }
         DictViewBinaryOp::Xor => {
             for value in lhs.iter() {
-                if !rhs.contains(value, vm)? {
+                if !vm.heap.protect(rhs).contains(value, vm)? {
                     result.add(value.clone_with_heap(vm), vm)?;
                 }
             }
             for value in rhs.iter() {
-                if !lhs.contains(value, vm)? {
+                if !vm.heap.protect(lhs).contains(value, vm)? {
                     result.add(value.clone_with_heap(vm), vm)?;
                 }
             }
         }
         DictViewBinaryOp::Sub => {
             for value in lhs.iter() {
-                if !rhs.contains(value, vm)? {
+                if !vm.heap.protect(rhs).contains(value, vm)? {
                     result.add(value.clone_with_heap(vm), vm)?;
                 }
             }

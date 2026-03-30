@@ -8,7 +8,7 @@
 //! its body is compiled to bytecode and a `Function` struct is created. All compiled
 //! functions are collected and returned along with the module code.
 
-use std::borrow::Cow;
+use std::{borrow::Cow, mem};
 
 use super::{
     builder::{CodeBuilder, JumpLabel},
@@ -27,7 +27,7 @@ use crate::{
     fstring::{ConversionFlag, FStringPart, FormatSpec, ParsedFormatSpec, encode_format_spec},
     function::Function,
     intern::{Interns, StringId},
-    modules::BuiltinModule,
+    modules::StandardLib,
     parse::{CodeRange, ExceptHandler, Try},
     value::{EitherStr, Value},
 };
@@ -284,7 +284,7 @@ impl<'a> Compiler<'a> {
                     self.compile_unpack_target(target);
                 }
             }
-            Node::OpAssign { target, op, object } => {
+            Node::OpAssign { target, op, value } => {
                 let Some(opcode) = operator_to_inplace_opcode(op) else {
                     return Err(CompileError::new(
                         "matrix multiplication augmented assignment (@=) is not yet supported",
@@ -292,7 +292,7 @@ impl<'a> Compiler<'a> {
                     ));
                 };
                 self.compile_name(target);
-                self.compile_expr(object)?;
+                self.compile_expr(value)?;
                 self.code.emit(opcode);
                 self.compile_store(target);
             }
@@ -300,7 +300,7 @@ impl<'a> Compiler<'a> {
                 target,
                 index,
                 op,
-                object,
+                value,
                 target_position,
             } => {
                 let Some(opcode) = operator_to_inplace_opcode(op) else {
@@ -309,12 +309,12 @@ impl<'a> Compiler<'a> {
                         *target_position,
                     ));
                 };
-                self.compile_name(target);
+                self.compile_expr(target)?;
                 self.compile_expr(index)?;
                 self.code.emit(Opcode::Dup2);
                 self.code.set_location(*target_position, None);
                 self.code.emit(Opcode::BinarySubscr);
-                self.compile_expr(object)?;
+                self.compile_expr(value)?;
                 self.code.emit(opcode);
                 self.code.emit(Opcode::Rot3);
                 self.code.set_location(*target_position, None);
@@ -328,11 +328,37 @@ impl<'a> Compiler<'a> {
             } => {
                 // Stack order for StoreSubscr: value, obj, index
                 self.compile_expr(value)?;
-                self.compile_name(target);
+                self.compile_expr(target)?;
                 self.compile_expr(index)?;
                 // Set location to the target (e.g., `lst[10]`) for proper caret in tracebacks
                 self.code.set_location(*target_position, None);
                 self.code.emit(Opcode::StoreSubscr);
+            }
+            Node::AttrOpAssign {
+                object,
+                attr,
+                op,
+                value,
+                target_position,
+            } => {
+                let Some(opcode) = operator_to_inplace_opcode(op) else {
+                    return Err(CompileError::new(
+                        "matrix multiplication augmented assignment (@=) is not yet supported",
+                        *target_position,
+                    ));
+                };
+                let name_id = attr.string_id().expect("LoadAttr requires interned attr name");
+                let name_idx = u16::try_from(name_id.index()).expect("name index exceeds u16");
+                // Stack: compile object, dup for later store, load attr, apply op, rotate, store
+                self.compile_expr(object)?; // [obj]
+                self.code.emit(Opcode::Dup); // [obj, obj]
+                self.code.set_location(*target_position, None);
+                self.code.emit_u16(Opcode::LoadAttr, name_idx); // [obj, attr_val]
+                self.compile_expr(value)?; // [obj, attr_val, rhs]
+                self.code.emit(opcode); // [obj, result]
+                self.code.emit(Opcode::Rot2); // [result, obj]
+                self.code.set_location(*target_position, None);
+                self.code.emit_u16(Opcode::StoreAttr, name_idx); // []
             }
             Node::AttrAssign {
                 object,
@@ -370,7 +396,11 @@ impl<'a> Compiler<'a> {
             }
             Node::FunctionDef(func_def) => self.compile_function_def(func_def)?,
             Node::Try(try_block) => self.compile_try(try_block)?,
-            Node::Import { module_name, binding } => self.compile_import(*module_name, binding),
+            Node::Import { names } => {
+                for import_name in names {
+                    self.compile_import(import_name.module_name, &import_name.binding);
+                }
+            }
             Node::ImportFrom {
                 module_name,
                 names,
@@ -410,7 +440,7 @@ impl<'a> Compiler<'a> {
 
         // 1. Compile the function body recursively
         // Take ownership of functions for the recursive compile, then restore
-        let functions = std::mem::take(&mut self.functions);
+        let functions = mem::take(&mut self.functions);
         let namespace_size = u16::try_from(func_def.namespace_size).expect("function namespace size exceeds u16");
         let (body_code, mut functions) =
             Self::compile_function_body(&func_def.body, self.interns, functions, namespace_size)?;
@@ -489,7 +519,7 @@ impl<'a> Compiler<'a> {
         }
 
         // 1. Compile the function body recursively
-        let functions = std::mem::take(&mut self.functions);
+        let functions = mem::take(&mut self.functions);
         let namespace_size = u16::try_from(func_def.namespace_size).expect("function namespace size exceeds u16");
         let (body_code, mut functions) =
             Self::compile_function_body(&func_def.body, self.interns, functions, namespace_size)?;
@@ -553,7 +583,7 @@ impl<'a> Compiler<'a> {
         self.code.set_location(position, None);
 
         // Look up the module by name
-        if let Some(builtin_module) = BuiltinModule::from_string_id(module_name) {
+        if let Some(builtin_module) = StandardLib::from_string_id(module_name) {
             // Known module - emit LoadModule
             self.code.emit_u8(Opcode::LoadModule, builtin_module as u8);
             // Store to the binding (respects Local/Global/Cell scope)
@@ -576,7 +606,7 @@ impl<'a> Compiler<'a> {
         self.code.set_location(position, None);
 
         // Look up the module
-        if let Some(builtin_module) = BuiltinModule::from_string_id(module_name) {
+        if let Some(builtin_module) = StandardLib::from_string_id(module_name) {
             // Known module - emit LoadModule
             self.code.emit_u8(Opcode::LoadModule, builtin_module as u8);
 

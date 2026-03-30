@@ -1,13 +1,13 @@
 //! Implementation of the min() and max() builtin functions.
 
-use std::cmp::Ordering;
+use std::{cmp::Ordering, mem};
 
 use crate::{
     args::{ArgValues, KwargsValues},
     bytecode::VM,
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, RunError, RunResult, SimpleException},
-    heap::{Heap, HeapGuard},
+    heap::HeapGuard,
     heap_traits::DropWithHeap,
     resource::ResourceTracker,
     types::{MontyIter, PyTrait},
@@ -95,8 +95,8 @@ fn builtin_min_max(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues, i
                         defer_drop_mut!(item_key, vm);
 
                         if candidate_wins(result_key, item_key, is_min, vm)? {
-                            std::mem::swap(result, item);
-                            std::mem::swap(result_key, item_key);
+                            mem::swap(result, item);
+                            mem::swap(result_key, item_key);
                         }
                     }
                 }
@@ -113,7 +113,7 @@ fn builtin_min_max(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues, i
                 defer_drop_mut!(item, vm);
 
                 if candidate_wins(result, item, is_min, vm)? {
-                    std::mem::swap(result, item);
+                    mem::swap(result, item);
                 }
             }
 
@@ -141,8 +141,8 @@ fn builtin_min_max(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues, i
                         defer_drop_mut!(item_key, vm);
 
                         if candidate_wins(result_key, item_key, is_min, vm)? {
-                            std::mem::swap(result, item);
-                            std::mem::swap(result_key, item_key);
+                            mem::swap(result, item);
+                            mem::swap(result_key, item_key);
                         }
                     }
                 }
@@ -159,7 +159,7 @@ fn builtin_min_max(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues, i
                 defer_drop_mut!(item, vm);
 
                 if candidate_wins(result, item, is_min, vm)? {
-                    std::mem::swap(result, item);
+                    mem::swap(result, item);
                 }
             }
 
@@ -223,7 +223,7 @@ fn candidate_wins(
     vm: &mut VM<'_, '_, impl ResourceTracker>,
 ) -> RunResult<bool> {
     let Some(ordering) = candidate.py_cmp(current, vm)? else {
-        return Err(ord_not_supported(candidate, current, is_min, vm.heap));
+        return Err(ord_not_supported(candidate, current, is_min, vm));
     };
 
     Ok((is_min && ordering == Ordering::Less) || (!is_min && ordering == Ordering::Greater))
@@ -240,9 +240,9 @@ fn default_with_multiple_args(func_name: &str) -> RunError {
 }
 
 #[cold]
-fn ord_not_supported(left: &Value, right: &Value, is_min: bool, heap: &Heap<impl ResourceTracker>) -> RunError {
-    let left_type = left.py_type(heap);
-    let right_type = right.py_type(heap);
+fn ord_not_supported(left: &Value, right: &Value, is_min: bool, vm: &VM<'_, '_, impl ResourceTracker>) -> RunError {
+    let left_type = left.py_type(vm);
+    let right_type = right.py_type(vm);
     let operator = if is_min { '<' } else { '>' };
     ExcType::type_error(format!(
         "'{operator}' not supported between instances of '{left_type}' and '{right_type}'"

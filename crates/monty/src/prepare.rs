@@ -6,8 +6,8 @@ use crate::{
     args::{ArgExprs, CallArg, CallKwarg},
     builtins::Builtins,
     expressions::{
-        Callable, CmpOperator, Comprehension, DictItem, Expr, ExprLoc, Identifier, Literal, NameScope, Node, Operator,
-        PreparedFunctionDef, PreparedNode, SequenceItem, UnpackTarget,
+        Callable, CmpOperator, Comprehension, DictItem, Expr, ExprLoc, Identifier, ImportName, Literal, NameScope,
+        Node, Operator, PreparedFunctionDef, PreparedNode, SequenceItem, UnpackTarget,
     },
     fstring::{FStringPart, FormatSpec},
     intern::{InternerBuilder, StringId},
@@ -371,29 +371,29 @@ impl<'i> Prepare<'i> {
                         object,
                     });
                 }
-                Node::OpAssign { target, op, object } => {
+                Node::OpAssign { target, op, value } => {
                     // Track that this name was assigned
                     self.names_assigned_in_order
                         .insert(self.interner.get_str(target.name_id).to_string());
                     let target = self.get_id(target).0;
-                    let object = self.prepare_expression(object)?;
-                    new_nodes.push(Node::OpAssign { target, op, object });
+                    let value = self.prepare_expression(value)?;
+                    new_nodes.push(Node::OpAssign { target, op, value });
                 }
                 Node::SubscriptOpAssign {
                     target,
                     index,
                     op,
-                    object,
+                    value,
                     target_position,
                 } => {
-                    let target = self.get_id(target).0;
+                    let target = self.prepare_expression(target)?;
                     let index = self.prepare_expression(index)?;
-                    let object = self.prepare_expression(object)?;
+                    let value = self.prepare_expression(value)?;
                     new_nodes.push(Node::SubscriptOpAssign {
                         target,
                         index,
                         op,
-                        object,
+                        value,
                         target_position,
                     });
                 }
@@ -404,12 +404,29 @@ impl<'i> Prepare<'i> {
                     target_position,
                 } => {
                     // SubscriptAssign doesn't assign to the target itself, just modifies it
-                    let target = self.get_id(target).0;
+                    let target = self.prepare_expression(target)?;
                     let index = self.prepare_expression(index)?;
                     let value = self.prepare_expression(value)?;
                     new_nodes.push(Node::SubscriptAssign {
                         target,
                         index,
+                        value,
+                        target_position,
+                    });
+                }
+                Node::AttrOpAssign {
+                    object,
+                    attr,
+                    op,
+                    value,
+                    target_position,
+                } => {
+                    let object = self.prepare_expression(object)?;
+                    let value = self.prepare_expression(value)?;
+                    new_nodes.push(Node::AttrOpAssign {
+                        object,
+                        attr,
+                        op,
                         value,
                         target_position,
                     });
@@ -563,13 +580,19 @@ impl<'i> Prepare<'i> {
                         finally,
                     }));
                 }
-                Node::Import { module_name, binding } => {
-                    // Resolve the binding identifier to get the namespace slot
-                    let (resolved_binding, _) = self.get_id(binding);
-                    new_nodes.push(Node::Import {
-                        module_name,
-                        binding: resolved_binding,
-                    });
+                Node::Import { names } => {
+                    // Resolve each binding identifier to get the namespace slot
+                    let resolved_names = names
+                        .into_iter()
+                        .map(|import_name| {
+                            let (resolved_binding, _) = self.get_id(import_name.binding);
+                            ImportName {
+                                module_name: import_name.module_name,
+                                binding: resolved_binding,
+                            }
+                        })
+                        .collect();
+                    new_nodes.push(Node::Import { names: resolved_names });
                 }
                 Node::ImportFrom {
                     module_name,
@@ -1957,19 +1980,29 @@ fn collect_scope_info_from_node(
             // Scan value expression for walrus operators
             collect_assigned_names_from_expr(object, assigned_names, interner);
         }
-        Node::OpAssign { target, object, .. } => {
+        Node::OpAssign { target, value, .. } => {
             assigned_names.insert(interner.get_str(target.name_id).to_string());
             // Scan value expression for walrus operators
-            collect_assigned_names_from_expr(object, assigned_names, interner);
+            collect_assigned_names_from_expr(value, assigned_names, interner);
         }
-        Node::SubscriptOpAssign { index, object, .. } => {
+        Node::SubscriptOpAssign {
+            target, index, value, ..
+        } => {
+            collect_assigned_names_from_expr(target, assigned_names, interner);
             collect_assigned_names_from_expr(index, assigned_names, interner);
-            collect_assigned_names_from_expr(object, assigned_names, interner);
+            collect_assigned_names_from_expr(value, assigned_names, interner);
         }
-        Node::SubscriptAssign { index, value, .. } => {
+        Node::SubscriptAssign {
+            target, index, value, ..
+        } => {
             // Subscript assignment doesn't create a new name, it modifies existing container
             // But scan expressions for walrus operators
+            collect_assigned_names_from_expr(target, assigned_names, interner);
             collect_assigned_names_from_expr(index, assigned_names, interner);
+            collect_assigned_names_from_expr(value, assigned_names, interner);
+        }
+        Node::AttrOpAssign { object, value, .. } => {
+            collect_assigned_names_from_expr(object, assigned_names, interner);
             collect_assigned_names_from_expr(value, assigned_names, interner);
         }
         Node::AttrAssign { object, value, .. } => {
@@ -2049,9 +2082,11 @@ fn collect_scope_info_from_node(
                 collect_scope_info_from_node(n, global_names, nonlocal_names, assigned_names, interner);
             }
         }
-        // Import creates a binding for the module name (or alias)
-        Node::Import { binding, .. } => {
-            assigned_names.insert(interner.get_str(binding.name_id).to_string());
+        // Import creates bindings for each module name (or alias)
+        Node::Import { names, .. } => {
+            for import_name in names {
+                assigned_names.insert(interner.get_str(import_name.binding.name_id).to_string());
+            }
         }
         // ImportFrom creates bindings for each imported name (or alias)
         Node::ImportFrom { names, .. } => {
@@ -2364,15 +2399,25 @@ fn collect_cell_vars_from_node(
         Node::Assign { object, .. } | Node::UnpackAssign { object, .. } => {
             collect_cell_vars_from_expr(object, our_locals, cell_vars, interner);
         }
-        Node::OpAssign { object, .. } => {
-            collect_cell_vars_from_expr(object, our_locals, cell_vars, interner);
+        Node::OpAssign { value, .. } => {
+            collect_cell_vars_from_expr(value, our_locals, cell_vars, interner);
         }
-        Node::SubscriptOpAssign { index, object, .. } => {
+        Node::SubscriptOpAssign {
+            target, index, value, ..
+        } => {
+            collect_cell_vars_from_expr(target, our_locals, cell_vars, interner);
             collect_cell_vars_from_expr(index, our_locals, cell_vars, interner);
-            collect_cell_vars_from_expr(object, our_locals, cell_vars, interner);
+            collect_cell_vars_from_expr(value, our_locals, cell_vars, interner);
         }
-        Node::SubscriptAssign { index, value, .. } => {
+        Node::SubscriptAssign {
+            target, index, value, ..
+        } => {
+            collect_cell_vars_from_expr(target, our_locals, cell_vars, interner);
             collect_cell_vars_from_expr(index, our_locals, cell_vars, interner);
+            collect_cell_vars_from_expr(value, our_locals, cell_vars, interner);
+        }
+        Node::AttrOpAssign { object, value, .. } => {
+            collect_cell_vars_from_expr(object, our_locals, cell_vars, interner);
             collect_cell_vars_from_expr(value, our_locals, cell_vars, interner);
         }
         Node::AttrAssign { object, value, .. } => {
@@ -2518,7 +2563,7 @@ fn collect_cell_vars_from_expr(
         }
         Expr::FString(parts) => {
             for part in parts {
-                if let crate::fstring::FStringPart::Interpolation { expr, .. } = part {
+                if let FStringPart::Interpolation { expr, .. } = part {
                     collect_cell_vars_from_expr(expr, our_locals, cell_vars, interner);
                 }
             }
@@ -2625,23 +2670,27 @@ fn collect_referenced_names_from_node(node: &ParseNode, referenced: &mut AHashSe
         Node::UnpackAssign { object, .. } => {
             collect_referenced_names_from_expr(object, referenced, interner);
         }
-        Node::OpAssign { target, object, .. } => {
+        Node::OpAssign { target, value, .. } => {
             // OpAssign reads the target before writing
             referenced.insert(interner.get_str(target.name_id).to_string());
-            collect_referenced_names_from_expr(object, referenced, interner);
+            collect_referenced_names_from_expr(value, referenced, interner);
         }
         Node::SubscriptOpAssign {
-            target, index, object, ..
+            target, index, value, ..
         } => {
-            referenced.insert(interner.get_str(target.name_id).to_string());
+            collect_referenced_names_from_expr(target, referenced, interner);
             collect_referenced_names_from_expr(index, referenced, interner);
-            collect_referenced_names_from_expr(object, referenced, interner);
+            collect_referenced_names_from_expr(value, referenced, interner);
         }
         Node::SubscriptAssign {
             target, index, value, ..
         } => {
-            referenced.insert(interner.get_str(target.name_id).to_string());
+            collect_referenced_names_from_expr(target, referenced, interner);
             collect_referenced_names_from_expr(index, referenced, interner);
+            collect_referenced_names_from_expr(value, referenced, interner);
+        }
+        Node::AttrOpAssign { object, value, .. } => {
+            collect_referenced_names_from_expr(object, referenced, interner);
             collect_referenced_names_from_expr(value, referenced, interner);
         }
         Node::AttrAssign { object, value, .. } => {
@@ -2717,11 +2766,7 @@ fn collect_referenced_names_from_node(node: &ParseNode, referenced: &mut AHashSe
 }
 
 /// Collects all names referenced in an expression.
-fn collect_referenced_names_from_expr(
-    expr: &crate::expressions::ExprLoc,
-    referenced: &mut AHashSet<String>,
-    interner: &InternerBuilder,
-) {
+fn collect_referenced_names_from_expr(expr: &ExprLoc, referenced: &mut AHashSet<String>, interner: &InternerBuilder) {
     use crate::expressions::Expr;
     match &expr.expr {
         Expr::Name(ident) => {

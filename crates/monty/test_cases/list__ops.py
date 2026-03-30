@@ -471,3 +471,83 @@ try:
     assert False, 'expected TypeError for non-iterable heap closure in list unpack'
 except TypeError:
     pass
+
+# === Nested subscript assignment ===
+a = [[1, 2, 3], [4, 5, 6]]
+a[0][2] = 99
+assert a[0][2] == 99, 'nested list subscript assign'
+assert a == [[1, 2, 99], [4, 5, 6]], 'nested assign preserves other sublists'
+
+# === Nested subscript augmented assignment ===
+a = [[1, 2, 3]]
+a[0][2] += 1
+assert a == [[1, 2, 4]], 'nested list augmented assign +='
+
+a = [[10, 20], [30, 40]]
+a[1][0] -= 5
+assert a == [[10, 20], [25, 40]], 'nested list augmented assign -='
+
+# === Triple nesting ===
+a = [[[0]]]
+a[0][0][0] = 7
+assert a[0][0][0] == 7, 'triple nested assign'
+
+a = [[[10]]]
+a[0][0][0] += 1
+assert a[0][0][0] == 11, 'triple nested augmented assign'
+
+# === Mixed dict-list nesting ===
+d = {'k': [1, 2, 3]}
+d['k'][0] = 100
+assert d['k'] == [100, 2, 3], 'dict-list nested assign'
+
+d = {'k': [1, 2, 3]}
+d['k'][0] += 100
+assert d['k'] == [101, 2, 3], 'dict-list nested augmented assign'
+
+# === Nested dict assignment ===
+d = {'a': {'x': 1, 'y': 2}}
+d['a']['y'] = 42
+assert d['a']['y'] == 42, 'nested dict subscript assign'
+
+d = {'a': {'x': 1}}
+d['a']['x'] += 10
+assert d['a']['x'] == 11, 'nested dict augmented assign'
+
+# === Eval-once semantics for augmented subscript assignment ===
+# CPython evaluates the container and index expressions exactly once,
+# in left-to-right order. Verify Monty matches this behavior.
+_eval_log = []
+
+
+def _tracking_obj():
+    _eval_log.append('obj')
+    return [10, 20, 30]
+
+
+def _tracking_index():
+    _eval_log.append('idx')
+    return 1
+
+
+_tracking_obj()[_tracking_index()] += 100
+assert _eval_log == ['obj', 'idx'], f'eval-once order: {_eval_log}'
+
+# Also verify the assignment itself is correct (even though the list is temporary)
+_result_list = [10, 20, 30]
+_eval_log.clear()
+
+
+def _tracking_obj2():
+    _eval_log.append('obj')
+    return _result_list
+
+
+def _tracking_index2():
+    _eval_log.append('idx')
+    return 2
+
+
+_tracking_obj2()[_tracking_index2()] += 7
+assert _eval_log == ['obj', 'idx'], f'eval-once order with persistent list: {_eval_log}'
+assert _result_list == [10, 20, 37], f'augmented assign via function: {_result_list}'

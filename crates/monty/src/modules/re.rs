@@ -32,7 +32,7 @@ use crate::{
     bytecode::{CallResult, VM},
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, RunResult},
-    heap::{DropWithHeap, Heap, HeapData, HeapId},
+    heap::{DropWithHeap, HeapData, HeapId},
     intern::StaticStrings,
     modules::ModuleFunctions,
     resource::{ResourceError, ResourceTracker},
@@ -332,13 +332,13 @@ fn call_sub(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunRe
         Some(Value::Bool(b)) => usize::from(b),
         Some(Value::Int(_)) => {
             // Negative count — return original string unchanged
-            let _flags = extract_flags(flags_val, vm.heap)?;
-            let text = value_to_str(string_val, vm.heap, vm.interns)?.into_owned();
+            let _flags = extract_flags(flags_val, vm)?;
+            let text = value_to_str(string_val, vm)?.into_owned();
             let s = Str::new(text);
             return Ok(Value::Ref(vm.heap.allocate(HeapData::Str(s))?));
         }
         Some(other) => {
-            let t = other.py_type(vm.heap);
+            let t = other.py_type(vm);
             other.drop_with_heap(vm);
             return Err(ExcType::type_error(format!(
                 "'{t}' object cannot be interpreted as an integer for 'count' argument"
@@ -347,9 +347,9 @@ fn call_sub(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunRe
         None => 0,
     };
 
-    let flags = extract_flags(flags_val, vm.heap)?;
+    let flags = extract_flags(flags_val, vm)?;
 
-    let pattern = value_to_str(pattern_val, vm.heap, vm.interns)?.into_owned();
+    let pattern = value_to_str(pattern_val, vm)?.into_owned();
 
     // Check that repl is a string — callable replacement is not supported
     if !repl_val.is_str(vm.heap) {
@@ -357,8 +357,8 @@ fn call_sub(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunRe
             "callable replacement is not yet supported in re.sub()",
         ));
     }
-    let repl = value_to_str(repl_val, vm.heap, vm.interns)?.into_owned();
-    let text = value_to_str(string_val, vm.heap, vm.interns)?.into_owned();
+    let repl = value_to_str(repl_val, vm)?.into_owned();
+    let text = value_to_str(string_val, vm)?.into_owned();
 
     let compiled = RePattern::compile(pattern, flags)?;
     compiled.sub(&repl, &text, count, vm.heap)
@@ -429,11 +429,11 @@ fn call_split(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> Run
         }
     }
 
-    let maxsplit = extract_maxsplit(pos_maxsplit.or(kw_maxsplit), vm.heap)?;
-    let flags = extract_flags(pos_flags.or(kw_flags), vm.heap)?;
+    let maxsplit = extract_maxsplit(pos_maxsplit.or(kw_maxsplit), vm)?;
+    let flags = extract_flags(pos_flags.or(kw_flags), vm)?;
 
-    let pattern = value_to_str(pattern_val, vm.heap, vm.interns)?.into_owned();
-    let text = value_to_str(string_val, vm.heap, vm.interns)?.into_owned();
+    let pattern = value_to_str(pattern_val, vm)?.into_owned();
+    let text = value_to_str(string_val, vm)?.into_owned();
 
     let compiled = RePattern::compile(pattern, flags)?;
     compiled.split(&text, maxsplit, vm.heap)
@@ -460,7 +460,7 @@ fn call_finditer(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> 
 fn call_escape(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     let arg = args.get_one_arg("re.escape", vm.heap)?;
     defer_drop!(arg, vm);
-    let text = value_to_str(arg, vm.heap, vm.interns)?.into_owned();
+    let text = value_to_str(arg, vm)?.into_owned();
 
     let mut result = String::with_capacity(text.len() * 2);
     for c in text.chars() {
@@ -509,7 +509,7 @@ fn should_escape(c: char) -> bool {
 /// Extracts a `maxsplit` value from an optional `Value`.
 ///
 /// Returns 0 if not provided. Negative values are treated as 0 (split all).
-fn extract_maxsplit(val: Option<Value>, heap: &mut Heap<impl ResourceTracker>) -> RunResult<usize> {
+fn extract_maxsplit(val: Option<Value>, vm: &mut VM<'_, '_, impl ResourceTracker>) -> RunResult<usize> {
     match val {
         None => Ok(0),
         Some(Value::Int(n)) if n <= 0 => Ok(0),
@@ -521,8 +521,8 @@ fn extract_maxsplit(val: Option<Value>, heap: &mut Heap<impl ResourceTracker>) -
         Some(Value::Int(n)) => Ok(n as usize),
         Some(Value::Bool(b)) => Ok(usize::from(b)),
         Some(other) => {
-            let t = other.py_type(heap);
-            other.drop_with_heap(heap);
+            let t = other.py_type(vm);
+            other.drop_with_heap(vm);
             Err(ExcType::type_error(format!("expected int for maxsplit, not {t}")))
         }
     }
@@ -540,15 +540,15 @@ fn extract_pattern_and_flags(
     let (pattern_val, flags_val) = args.get_one_two_args(func_name, vm.heap)?;
     defer_drop!(pattern_val, vm);
 
-    let pattern = value_to_str(pattern_val, vm.heap, vm.interns)?.into_owned();
-    let flags = extract_flags(flags_val, vm.heap)?;
+    let pattern = value_to_str(pattern_val, vm)?.into_owned();
+    let flags = extract_flags(flags_val, vm)?;
 
     Ok((pattern, flags))
 }
 
 /// Extracts a flags value from an optional `Value`, validating it is a non-negative integer
 /// that fits in a `u16`.
-fn extract_flags(flags_val: Option<Value>, heap: &mut Heap<impl ResourceTracker>) -> RunResult<u16> {
+fn extract_flags(flags_val: Option<Value>, vm: &mut VM<'_, '_, impl ResourceTracker>) -> RunResult<u16> {
     match flags_val {
         Some(Value::Int(n)) => {
             u16::try_from(n).map_err(|_| ExcType::type_error("flags must be a non-negative integer"))
@@ -556,8 +556,8 @@ fn extract_flags(flags_val: Option<Value>, heap: &mut Heap<impl ResourceTracker>
         // CPython treats bool as int subclass: True=1, False=0.
         Some(Value::Bool(b)) => Ok(u16::from(b)),
         Some(other) => {
-            let t = other.py_type(heap);
-            other.drop_with_heap(heap);
+            let t = other.py_type(vm);
+            other.drop_with_heap(vm);
             Err(ExcType::type_error(format!("expected int for flags, not {t}")))
         }
         None => Ok(0),
@@ -590,7 +590,7 @@ fn extract_pattern_string_flags(
     };
     defer_drop!(string_val, vm);
 
-    let flags = extract_flags(pos.next(), vm.heap)?;
+    let flags = extract_flags(pos.next(), vm)?;
 
     if let Some(extra) = pos.next() {
         extra.drop_with_heap(vm);
@@ -599,8 +599,8 @@ fn extract_pattern_string_flags(
         )));
     }
 
-    let pattern = value_to_str(pattern_val, vm.heap, vm.interns)?.into_owned();
-    let text = value_to_str(string_val, vm.heap, vm.interns)?.into_owned();
+    let pattern = value_to_str(pattern_val, vm)?.into_owned();
+    let text = value_to_str(string_val, vm)?.into_owned();
 
     Ok((pattern, Cow::Owned(text), flags))
 }

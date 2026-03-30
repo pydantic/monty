@@ -39,7 +39,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
             Ok(result) => Ok(result),
             Err(RunError::Exc(exc)) if exc.exc.exc_type() == ExcType::AttributeError => {
                 // Only compute module_name when we need it for the error message
-                let module_name = obj.module_name(this.heap, this.interns);
+                let module_name = obj.module_name(this);
                 let name_str = this.interns.get_str(name_id);
                 Err(ExcType::cannot_import_name(name_str, &module_name))
             }

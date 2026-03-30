@@ -12,7 +12,7 @@
 //! * 1000 to count(StaticStrings) - strings StaticStrings
 //! * 10_000+ - strings interned per executor
 
-use std::{str::FromStr, sync::LazyLock};
+use std::{array, str::FromStr, sync::LazyLock};
 
 use ahash::AHashMap;
 use num_bigint::BigInt;
@@ -59,7 +59,7 @@ const INTERN_STRING_ID_OFFSET: usize = 10_000;
 /// Uses `LazyLock` to build the array at runtime (once), leaking the strings to get
 /// `'static` lifetime. The leak is intentional and bounded (128 single-byte strings).
 static ASCII_STRS: LazyLock<[&'static str; 128]> = LazyLock::new(|| {
-    std::array::from_fn(|i| {
+    array::from_fn(|i| {
         // Safe: i is always 0-127 for a 128-element array
         let s = char::from(u8::try_from(i).expect("index out of u8 range")).to_string();
         // Leak to get 'static lifetime - this is intentional and bounded (128 bytes total)
@@ -69,7 +69,7 @@ static ASCII_STRS: LazyLock<[&'static str; 128]> = LazyLock::new(|| {
 });
 
 /// Static string values which are known at compile time and don't need to be interned.
-#[repr(u8)]
+#[repr(u16)]
 #[derive(
     Debug, Clone, Copy, FromRepr, EnumString, IntoStaticStr, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
 )]
@@ -170,6 +170,12 @@ pub enum StaticStrings {
     Ljust,
     Rjust,
     Zfill,
+    Expandtabs,
+    // Keyword argument names for string/bytes methods and constructors
+    Tabsize,
+    Keepends,
+    Object,
+    Source,
     // Additional string methods
     Encode,
     Isidentifier,
@@ -432,6 +438,73 @@ pub enum StaticStrings {
     #[strum(serialize = "nan")]
     MathNan,
 
+    // ==========================
+    // json module strings
+    /// Module name for `import json`.
+    Json,
+    /// `json.loads()` function.
+    Loads,
+    /// `json.dumps()` function.
+    Dumps,
+    /// `json.JSONDecodeError` exception.
+    #[strum(serialize = "JSONDecodeError")]
+    JsonDecodeError,
+    /// `json.dumps(indent=...)` keyword.
+    Indent,
+    /// `json.dumps(sort_keys=...)` keyword.
+    #[strum(serialize = "sort_keys")]
+    SortKeys,
+    /// `json.dumps(ensure_ascii=...)` keyword.
+    #[strum(serialize = "ensure_ascii")]
+    EnsureAscii,
+    /// `json.dumps(allow_nan=...)` keyword.
+    #[strum(serialize = "allow_nan")]
+    AllowNan,
+    /// `json.dumps(separators=...)` keyword.
+    Separators,
+    /// `json.dumps(skipkeys=...)` keyword.
+    Skipkeys,
+
+    // ==========================
+    // datetime module strings
+    Datetime,
+    Date,
+    Timedelta,
+    Timezone,
+    Today,
+    Now,
+    Utc,
+    TotalSeconds,
+    Tzinfo,
+    // date/datetime field attributes
+    Year,
+    Month,
+    Day,
+    Hour,
+    Minute,
+    Second,
+    Microsecond,
+    // timedelta constructor/attribute names
+    Days,
+    Seconds,
+    Microseconds,
+    Milliseconds,
+    Minutes,
+    Hours,
+    Weeks,
+    // timezone constructor kwargs
+    Offset,
+    // datetime.now() kwarg
+    Tz,
+    // date/datetime methods
+    Isoformat,
+    Strftime,
+    Weekday,
+    Isoweekday,
+    Timestamp,
+    Strptime,
+    Fromisoformat,
+
     // re module strings
     /// Module name for `import re`.
     Re,
@@ -517,7 +590,7 @@ impl StaticStrings {
     /// (e.g., it's an ASCII char or a dynamically interned string).
     pub fn from_string_id(id: StringId) -> Option<Self> {
         let enum_id = id.0.checked_sub(STATIC_STRING_ID_OFFSET)?;
-        u8::try_from(enum_id).ok().and_then(Self::from_repr)
+        u16::try_from(enum_id).ok().and_then(Self::from_repr)
     }
 }
 

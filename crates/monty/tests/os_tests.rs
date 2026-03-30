@@ -4,7 +4,9 @@
 //! `RunProgress::OsCall` with the correct `OsFunction` variant and arguments,
 //! and that return values are correctly used by Python code.
 
-use monty::{MontyObject, MontyRun, NoLimitTracker, OsFunction, PrintWriter, RunProgress, file_stat};
+use monty::{
+    MontyDate, MontyDateTime, MontyObject, MontyRun, NoLimitTracker, OsFunction, PrintWriter, RunProgress, file_stat,
+};
 
 /// Helper to run code and extract the OsCall progress.
 ///
@@ -36,6 +38,22 @@ fn run_to_oscall(code: &str) -> (OsFunction, Vec<MontyObject>) {
                 | OsFunction::Rename => MontyObject::None,
                 OsFunction::Getenv => MontyObject::String("mock_env_value".to_owned()),
                 OsFunction::GetEnviron => MontyObject::Dict(vec![].into()),
+                OsFunction::DateToday => MontyObject::Date(MontyDate {
+                    year: 2023,
+                    month: 11,
+                    day: 14,
+                }),
+                OsFunction::DateTimeNow => MontyObject::DateTime(MontyDateTime {
+                    year: 2023,
+                    month: 11,
+                    day: 14,
+                    hour: 22,
+                    minute: 13,
+                    second: 20,
+                    microsecond: 0,
+                    offset_seconds: None,
+                    timezone_name: None,
+                }),
             };
             let function = call.function;
             let args = call.args.clone();

@@ -12,17 +12,36 @@ use std::{
     collections::hash_map::DefaultHasher,
     fmt::{self, Display},
     hash::{Hash, Hasher},
+    mem,
     ops::{Add, Mul, Neg, Sub},
+    sync::OnceLock,
 };
 
 use num_bigint::BigInt;
 use num_traits::{Signed, ToPrimitive, Zero};
 
 use crate::{
+    exception_private::{ExcType, RunResult},
     heap::{Heap, HeapData},
     resource::{ResourceError, ResourceTracker},
     value::Value,
 };
+
+/// Maximum number of decimal digits allowed for integer-string conversion.
+///
+/// Matches CPython 3.11+'s `sys.int_max_str_digits` default (4300).
+/// This limit prevents O(n^2) DoS attacks when converting very large integers
+/// to/from decimal strings. The limit only applies to base-10 conversions;
+/// bin/hex/oct use O(n) algorithms and are unrestricted.
+///
+/// This is a hardcoded safety limit, not configurable from Python code.
+pub(crate) const INT_MAX_STR_DIGITS: usize = 4300;
+
+/// Cached decimal threshold used for `INT_MAX_STR_DIGITS` comparisons.
+///
+/// Any integer with absolute value greater than or equal to `10**4300` has more
+/// than 4300 decimal digits and must raise before string conversion.
+static INT_MAX_STR_DIGITS_THRESHOLD: OnceLock<BigInt> = OnceLock::new();
 
 /// Wrapper around `num_bigint::BigInt` for arbitrary precision integers.
 ///
@@ -47,7 +66,7 @@ impl LongInt {
     /// For performance, we want to keep values as `Value::Int(i64)` whenever possible.
     /// This method checks if the value fits in an i64 and returns `Value::Int` if so,
     /// otherwise allocates a `HeapData::LongInt` on the heap.
-    pub fn into_value(self, heap: &mut Heap<impl ResourceTracker>) -> Result<Value, ResourceError> {
+    pub fn into_value(self, heap: &Heap<impl ResourceTracker>) -> Result<Value, ResourceError> {
         // Try to demote back to i64 for performance
         if let Some(i) = self.0.to_i64() {
             Ok(Value::Int(i))
@@ -67,7 +86,7 @@ impl LongInt {
         if let Some(i) = self.0.to_i64() {
             let mut hasher = DefaultHasher::new();
             // Hash the i64 discriminant and value to match Value::Int hashing
-            std::mem::discriminant(&Value::Int(0)).hash(&mut hasher);
+            mem::discriminant(&Value::Int(0)).hash(&mut hasher);
             i.hash(&mut hasher);
             hasher.finish()
         } else {
@@ -93,7 +112,7 @@ impl LongInt {
         // Convert bits to bytes (round up), add overhead for Vec and sign
         // On 32-bit platforms, truncate to usize::MAX if bits is too large
         let bit_bytes = usize::try_from(bits).unwrap_or(usize::MAX).saturating_add(7) / 8;
-        bit_bytes + std::mem::size_of::<BigInt>()
+        bit_bytes + mem::size_of::<BigInt>()
     }
 
     /// Returns a reference to the inner `BigInt`.
@@ -156,6 +175,72 @@ impl LongInt {
     pub fn bits(&self) -> u64 {
         self.0.bits()
     }
+
+    /// Checks whether converting this LongInt to a decimal string would exceed
+    /// the `INT_MAX_STR_DIGITS` limit.
+    ///
+    /// This compares the absolute value against the cached `10**4300`
+    /// threshold so values with exactly 4300 digits still stringify while
+    /// 4301-digit values reliably raise the same error as CPython.
+    pub fn check_str_digits_limit(&self) -> RunResult<()> {
+        check_bigint_str_digits_limit(&self.0)
+    }
+}
+
+/// Checks whether a decimal digit count exceeds `INT_MAX_STR_DIGITS`.
+///
+/// This is used by parsing code paths that can count decimal digits directly
+/// from the original source text before constructing a `BigInt`.
+pub fn check_decimal_digit_count(digit_count: usize) -> RunResult<()> {
+    if digit_count > INT_MAX_STR_DIGITS {
+        return Err(ExcType::value_error_int_str_too_large(digit_count));
+    }
+    Ok(())
+}
+
+/// Counts the decimal digits in an ASCII integer representation.
+///
+/// Leading `+` or `-` signs are ignored so the return value matches CPython's
+/// `value has N digits` wording.
+pub fn decimal_digit_count_ascii(value: &[u8]) -> usize {
+    value.iter().filter(|byte| byte.is_ascii_digit()).count()
+}
+
+/// Checks whether a `BigInt` would exceed the decimal digit limit when
+/// converted to a string.
+///
+/// Values are compared against `10**4300` rather than using an upper-bound bit
+/// estimate so boundary values like `10**4300 - 1` remain allowed.
+pub fn check_bigint_str_digits_limit(value: &BigInt) -> RunResult<()> {
+    let threshold = int_max_str_digits_threshold();
+    let abs_value = value.abs();
+    if abs_value.bits() > threshold.bits() || (abs_value.bits() == threshold.bits() && abs_value >= *threshold) {
+        return Err(ExcType::value_error_int_too_large_for_str());
+    }
+    Ok(())
+}
+
+/// Checks whether an integer with the given bit count might exceed the decimal
+/// digit limit when converted to a string.
+///
+/// This remains as a cheap preflight helper for code that only needs a fast
+/// upper-bound check and does not require the exact boundary behavior.
+pub fn check_bits_str_digits_limit(bits: u64) -> RunResult<()> {
+    // log10(2) ≈ 0.30103 = 30_103/100_000
+    // estimated_digits is an upper bound on the actual decimal digit count.
+    let estimated_digits = bits.saturating_mul(30_103) / 100_000 + 1;
+    if estimated_digits > INT_MAX_STR_DIGITS as u64 {
+        return Err(ExcType::value_error_int_too_large_for_str());
+    }
+    Ok(())
+}
+
+/// Returns the cached `10**INT_MAX_STR_DIGITS` threshold used by decimal
+/// string-conversion guards.
+fn int_max_str_digits_threshold() -> &'static BigInt {
+    INT_MAX_STR_DIGITS_THRESHOLD.get_or_init(|| {
+        BigInt::from(10u8).pow(u32::try_from(INT_MAX_STR_DIGITS).expect("INT_MAX_STR_DIGITS should fit in u32"))
+    })
 }
 
 // === Trait Implementations ===

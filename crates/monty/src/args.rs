@@ -1,4 +1,4 @@
-use std::vec::IntoIter;
+use std::{mem, slice, vec::IntoIter};
 
 use crate::{
     MontyObject, ResourceTracker,
@@ -106,6 +106,74 @@ impl ArgValues {
                 Err(ExcType::type_error_at_most(name, 1, count))
             }
         }
+    }
+
+    /// Extracts an optional argument that can be passed positionally or as a named keyword.
+    ///
+    /// Accepts `method()`, `method(value)`, or `method(name=value)`, but raises
+    /// `TypeError` if both a positional and keyword argument are provided. This covers
+    /// the common Python pattern of methods with a single optional argument like
+    /// `str.expandtabs(tabsize=8)` or `str.splitlines(keepends=False)`.
+    ///
+    /// Uses `EitherStr::matches()` for fast O(1) comparison when the kwarg key is interned.
+    ///
+    /// On error, properly drops all contained values to maintain reference counts.
+    pub fn get_zero_one_named_arg(
+        self,
+        method_name: &str,
+        kwarg_name: impl Into<StringId>,
+        heap: &mut Heap<impl ResourceTracker>,
+        interns: &Interns,
+    ) -> RunResult<Option<Value>> {
+        let (mut pos, kwargs) = self.into_parts();
+
+        let positional = pos.next();
+
+        // Reject extra positional arguments
+        if pos.len() != 0 {
+            let count = 1 + pos.len();
+            positional.drop_with_heap(heap);
+            pos.drop_with_heap(heap);
+            kwargs.drop_with_heap(heap);
+            return Err(ExcType::type_error_at_most(method_name, 1, count));
+        }
+
+        let kwargs_iter = kwargs.into_iter();
+        defer_drop_mut!(kwargs_iter, heap);
+
+        let mut result = positional;
+        let has_positional = result.is_some();
+
+        let kwarg_name = kwarg_name.into();
+
+        for (key, value) in kwargs_iter {
+            defer_drop!(key, heap);
+            let mut value_guard = HeapGuard::new(value, heap);
+
+            let Some(keyword_name) = key.as_either_str(value_guard.heap()) else {
+                result.drop_with_heap(value_guard.heap());
+                return Err(ExcType::type_error_kwargs_nonstring_key());
+            };
+
+            if keyword_name.matches(kwarg_name, interns) {
+                if has_positional {
+                    result.drop_with_heap(value_guard.heap());
+                    return Err(ExcType::type_error_duplicate_arg(
+                        method_name,
+                        keyword_name.as_str(interns),
+                    ));
+                }
+                result = Some(value_guard.into_inner());
+            } else {
+                result.drop_with_heap(value_guard.heap());
+                return Err(ExcType::type_error_unexpected_keyword(
+                    method_name,
+                    keyword_name.as_str(interns),
+                ));
+            }
+        }
+
+        Ok(result)
     }
 
     /// Checks that zero, one, or two arguments were passed.
@@ -312,7 +380,7 @@ impl ArgPosIter {
     pub fn as_slice(&self) -> &[Value] {
         match self {
             Self::Empty => &[],
-            Self::One(v) => std::slice::from_ref(v),
+            Self::One(v) => slice::from_ref(v),
             Self::Two(array) => array.as_slice(),
             Self::Vec(iter) => iter.as_slice(),
         }
@@ -327,13 +395,13 @@ impl Iterator for ArgPosIter {
         match self {
             Self::Empty => None,
             Self::One(_) => {
-                let Self::One(v) = std::mem::replace(self, Self::Empty) else {
+                let Self::One(v) = mem::replace(self, Self::Empty) else {
                     unreachable!()
                 };
                 Some(v)
             }
             Self::Two(_) => {
-                let Self::Two([v1, v2]) = std::mem::replace(self, Self::Empty) else {
+                let Self::Two([v1, v2]) = mem::replace(self, Self::Empty) else {
                     unreachable!()
                 };
                 *self = Self::One(v2);
@@ -689,7 +757,7 @@ impl ArgExprs {
         mut f: impl FnMut(ExprLoc) -> Result<ExprLoc, ParseError>,
     ) -> Result<(), ParseError> {
         // Swap self with Empty to take ownership, then rebuild
-        let taken = std::mem::replace(self, Self::Empty);
+        let taken = mem::replace(self, Self::Empty);
         *self = match taken {
             Self::Empty => Self::Empty,
             Self::One(arg) => Self::One(f(arg)?),

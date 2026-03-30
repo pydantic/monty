@@ -1,3 +1,8 @@
+import datetime
+import pathlib
+import re
+import zoneinfo
+
 import pytest
 from inline_snapshot import snapshot
 
@@ -137,6 +142,52 @@ def test_tuple_output():
 def test_set_output():
     m = pydantic_monty.Monty('{1, 2, 3}')
     assert m.run() == snapshot({1, 2, 3})
+
+
+def test_date_input_roundtrip():
+    m = pydantic_monty.Monty('x', inputs=['x'])
+    result = m.run(inputs={'x': datetime.date(2024, 1, 15)})
+    assert (type(result).__name__, repr(result)) == snapshot(('date', 'datetime.date(2024, 1, 15)'))
+
+
+def test_datetime_input_roundtrip():
+    m = pydantic_monty.Monty('x', inputs=['x'])
+    result = m.run(inputs={'x': datetime.datetime(2024, 1, 15, 10, 30, 5, 123456)})
+    assert (type(result).__name__, repr(result)) == snapshot(
+        ('datetime', 'datetime.datetime(2024, 1, 15, 10, 30, 5, 123456)')
+    )
+
+
+def test_aware_datetime_input_roundtrip():
+    m = pydantic_monty.Monty('x', inputs=['x'])
+    result = m.run(inputs={'x': datetime.datetime(2024, 1, 15, 10, 30, 5, 123456, tzinfo=datetime.timezone.utc)})
+    assert (type(result).__name__, repr(result)) == snapshot(
+        ('datetime', 'datetime.datetime(2024, 1, 15, 10, 30, 5, 123456, tzinfo=datetime.timezone.utc)')
+    )
+
+
+def test_timedelta_input_roundtrip():
+    m = pydantic_monty.Monty('x', inputs=['x'])
+    result = m.run(inputs={'x': datetime.timedelta(days=-1, seconds=3661, microseconds=42)})
+    assert (type(result).__name__, repr(result)) == snapshot(
+        ('timedelta', 'datetime.timedelta(days=-1, seconds=3661, microseconds=42)')
+    )
+
+
+def test_timezone_input_roundtrip():
+    m = pydantic_monty.Monty('x', inputs=['x'])
+    result = m.run(inputs={'x': datetime.timezone(datetime.timedelta(hours=2))})
+    assert (type(result).__name__, repr(result)) == snapshot(
+        ('timezone', 'datetime.timezone(datetime.timedelta(seconds=7200))')
+    )
+
+
+def test_named_timezone_input_roundtrip():
+    m = pydantic_monty.Monty('x', inputs=['x'])
+    result = m.run(inputs={'x': datetime.timezone(datetime.timedelta(hours=2), 'PLUS2')})
+    assert (type(result).__name__, repr(result)) == snapshot(
+        ('timezone', "datetime.timezone(datetime.timedelta(seconds=7200), 'PLUS2')")
+    )
 
 
 # === Exception types ===
@@ -551,3 +602,213 @@ def test_namedtuple_custom_missing_attr_error():
         m.run(inputs={'s': Simple(value=42)})
     # Monty uses the full qualified name (module.ClassName) for the type
     assert "AttributeError: 'test_types.Simple' object has no attribute 'nonexistent'" in str(exc_info.value)
+
+
+# === Unsupported type conversion ===
+
+
+def test_unsupported_type_raises_type_error():
+    """Passing an unsupported type raises TypeError during conversion."""
+    m = pydantic_monty.Monty('x', inputs=['x'])
+    with pytest.raises(TypeError, match='Cannot convert'):
+        m.run(inputs={'x': re.compile('foo')})
+
+
+# === Callable/function input ===
+
+
+def test_callable_input():
+    """Functions passed as input are converted to MontyObject::Function with name."""
+    m = pydantic_monty.Monty('x', inputs=['x'])
+    result = m.run(inputs={'x': len})
+    # Function objects are output as their name string
+    assert result == snapshot('len')
+
+
+def test_lambda_input():
+    """Lambda functions are converted with name '<lambda>'."""
+    m = pydantic_monty.Monty('x', inputs=['x'])
+    result = m.run(inputs={'x': lambda: None})
+    assert result == snapshot('<lambda>')
+
+
+# === Timezone edge cases ===
+
+
+def test_utc_timezone_input_roundtrip():
+    """datetime.timezone.utc singleton roundtrips correctly."""
+    m = pydantic_monty.Monty('x', inputs=['x'])
+    result = m.run(inputs={'x': datetime.timezone.utc})
+    assert result == datetime.timezone.utc
+    assert repr(result) == snapshot('datetime.timezone.utc')
+
+
+def test_negative_timezone_offset():
+    """Negative timezone offsets roundtrip correctly."""
+    m = pydantic_monty.Monty('x', inputs=['x'])
+    tz = datetime.timezone(datetime.timedelta(hours=-5))
+    result = m.run(inputs={'x': tz})
+    assert repr(result) == snapshot('datetime.timezone(datetime.timedelta(days=-1, seconds=68400))')
+
+
+def test_aware_datetime_fixed_offset_roundtrip():
+    """Datetime with non-UTC fixed offset roundtrips correctly."""
+    m = pydantic_monty.Monty('x', inputs=['x'])
+    tz = datetime.timezone(datetime.timedelta(hours=5, minutes=30))
+    dt = datetime.datetime(2024, 6, 15, 14, 30, 0, tzinfo=tz)
+    result = m.run(inputs={'x': dt})
+    assert (type(result).__name__, repr(result)) == snapshot(
+        (
+            'datetime',
+            'datetime.datetime(2024, 6, 15, 14, 30, tzinfo=datetime.timezone(datetime.timedelta(seconds=19800)))',
+        )
+    )
+
+
+def test_aware_datetime_named_timezone_roundtrip():
+    """Datetime with a named timezone roundtrips correctly."""
+    m = pydantic_monty.Monty('x', inputs=['x'])
+    tz = datetime.timezone(datetime.timedelta(hours=-5), 'EST')
+    dt = datetime.datetime(2024, 12, 25, 8, 0, 0, tzinfo=tz)
+    result = m.run(inputs={'x': dt})
+    assert (type(result).__name__, repr(result)) == snapshot(
+        (
+            'datetime',
+            "datetime.datetime(2024, 12, 25, 8, 0, tzinfo=datetime.timezone(datetime.timedelta(days=-1, seconds=68400), 'EST'))",
+        )
+    )
+
+
+# === zoneinfo timezone conversion ===
+
+
+def test_zoneinfo_datetime_summer():
+    """Datetime with zoneinfo.ZoneInfo tzinfo converts with DST offset."""
+    m = pydantic_monty.Monty('x', inputs=['x'])
+    tz = zoneinfo.ZoneInfo('America/New_York')
+    dt = datetime.datetime(2024, 6, 15, 12, 0, 0, tzinfo=tz)
+    result = m.run(inputs={'x': dt})
+    # Summer: EDT = UTC-4
+    assert result.utcoffset() == snapshot(datetime.timedelta(days=-1, seconds=72000))
+    assert result.tzname() == snapshot('EDT')
+
+
+def test_zoneinfo_datetime_winter():
+    """Datetime with zoneinfo.ZoneInfo tzinfo converts with standard offset."""
+    m = pydantic_monty.Monty('x', inputs=['x'])
+    tz = zoneinfo.ZoneInfo('America/New_York')
+    dt = datetime.datetime(2024, 1, 15, 12, 0, 0, tzinfo=tz)
+    result = m.run(inputs={'x': dt})
+    # Winter: EST = UTC-5
+    assert result.utcoffset() == snapshot(datetime.timedelta(days=-1, seconds=68400))
+    assert result.tzname() == snapshot('EST')
+
+
+def test_zoneinfo_datetime_utc():
+    """Datetime with zoneinfo UTC converts correctly."""
+    m = pydantic_monty.Monty('x', inputs=['x'])
+    tz = zoneinfo.ZoneInfo('UTC')
+    dt = datetime.datetime(2024, 6, 15, 12, 0, 0, tzinfo=tz)
+    result = m.run(inputs={'x': dt})
+    assert result.utcoffset() == snapshot(datetime.timedelta(0))
+    assert result.tzname() == snapshot('UTC')
+
+
+def test_zoneinfo_datetime_positive_offset():
+    """Datetime with a positive-offset zoneinfo timezone."""
+    m = pydantic_monty.Monty('x', inputs=['x'])
+    tz = zoneinfo.ZoneInfo('Asia/Kolkata')
+    dt = datetime.datetime(2024, 6, 15, 12, 0, 0, tzinfo=tz)
+    result = m.run(inputs={'x': dt})
+    # IST = UTC+5:30
+    assert result.utcoffset() == snapshot(datetime.timedelta(seconds=19800))
+    assert result.tzname() == snapshot('IST')
+
+
+def test_zoneinfo_datetime_preserves_fields():
+    """All datetime fields are preserved when converting with zoneinfo tzinfo."""
+    m = pydantic_monty.Monty('x', inputs=['x'])
+    tz = zoneinfo.ZoneInfo('Europe/London')
+    dt = datetime.datetime(2024, 7, 20, 15, 45, 30, 123456, tzinfo=tz)
+    result = m.run(inputs={'x': dt})
+    assert (result.year, result.month, result.day) == snapshot((2024, 7, 20))
+    assert (result.hour, result.minute, result.second) == snapshot((15, 45, 30))
+    assert result.microsecond == snapshot(123456)
+
+
+def test_zoneinfo_standalone_raises_type_error():
+    """Standalone ZoneInfo objects (without a datetime) are not convertible."""
+    m = pydantic_monty.Monty('x', inputs=['x'])
+    tz = zoneinfo.ZoneInfo('America/New_York')
+    with pytest.raises(TypeError, match='Cannot convert'):
+        m.run(inputs={'x': tz})
+
+
+# === Timedelta edge cases ===
+
+
+def test_timedelta_zero():
+    """Zero timedelta roundtrips correctly."""
+    m = pydantic_monty.Monty('x', inputs=['x'])
+    result = m.run(inputs={'x': datetime.timedelta(0)})
+    assert (type(result).__name__, repr(result)) == snapshot(('timedelta', 'datetime.timedelta(0)'))
+
+
+def test_timedelta_days_only():
+    """Timedelta with only days component."""
+    m = pydantic_monty.Monty('x', inputs=['x'])
+    result = m.run(inputs={'x': datetime.timedelta(days=30)})
+    assert (type(result).__name__, repr(result)) == snapshot(('timedelta', 'datetime.timedelta(days=30)'))
+
+
+# === Path conversion ===
+
+
+def test_path_input_roundtrip():
+    """pathlib.PurePosixPath input roundtrips correctly."""
+    m = pydantic_monty.Monty('x', inputs=['x'])
+    result = m.run(inputs={'x': pathlib.PurePosixPath('/usr/local/bin')})
+    assert type(result).__name__ == snapshot('PurePosixPath')
+    assert str(result) == snapshot('/usr/local/bin')
+
+
+def test_posix_path_input():
+    """pathlib.PosixPath (subclass of PurePosixPath) is accepted."""
+    m = pydantic_monty.Monty('x', inputs=['x'])
+    result = m.run(inputs={'x': pathlib.PosixPath('/tmp')})
+    # PosixPath is converted via PurePosixPath
+    assert type(result).__name__ == snapshot('PurePosixPath')
+    assert str(result) == snapshot('/tmp')
+
+
+# === Additional subclass coercion ===
+
+
+def test_float_subclass_input():
+    class MyFloat(float):
+        pass
+
+    m = pydantic_monty.Monty('x', inputs=['x'])
+    result = m.run(inputs={'x': MyFloat(3.14)})
+    assert type(result) is float
+    assert result == snapshot(3.14)
+
+
+def test_bytes_subclass_input():
+    class MyBytes(bytes):
+        pass
+
+    m = pydantic_monty.Monty('x', inputs=['x'])
+    result = m.run(inputs={'x': MyBytes(b'hello')})
+    assert type(result) is bytes
+    assert result == snapshot(b'hello')
+
+
+def test_frozenset_subclass_input():
+    class MyFrozenSet(frozenset[int]):
+        pass
+
+    m = pydantic_monty.Monty('x', inputs=['x'])
+    result = m.run(inputs={'x': MyFrozenSet([1, 2, 3])})
+    assert type(result) is frozenset
+    assert result == snapshot(frozenset({1, 2, 3}))

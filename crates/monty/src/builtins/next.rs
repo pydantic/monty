@@ -17,5 +17,5 @@ use crate::{
 pub fn builtin_next(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     let (iterator, default) = args.get_one_two_args("next", vm.heap)?;
     defer_drop!(iterator, vm);
-    iterator_next(iterator, default, vm.heap, vm.interns)
+    iterator_next(iterator, default, vm)
 }

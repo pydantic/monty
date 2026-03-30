@@ -8,6 +8,8 @@
 //! VM resume calls are offloaded to `spawn_blocking()` to avoid
 //! blocking the Python event loop.
 
+use std::mem::drop;
+
 use monty::{
     ExcType, ExtFunctionResult, MontyException, MontyObject, MontyRepl, NameLookupResult, OsFunction, PrintWriter,
     ReplProgress, ReplStartError, ResourceTracker, RunProgress,
@@ -17,6 +19,7 @@ use pyo3::{
     prelude::*,
     types::{PyDict, PyTuple},
 };
+use pyo3_async_runtimes::tokio::into_future;
 use tokio::{
     sync::oneshot,
     task::{JoinError, JoinSet, spawn_blocking},
@@ -433,7 +436,7 @@ fn spawn_coroutine_task(
     dc_registry: &DcRegistry,
 ) -> PyResult<()> {
     let dc_registry = Python::attach(|py| dc_registry.clone_ref(py));
-    let future = Python::attach(|py| pyo3_async_runtimes::tokio::into_future(coro.into_bound(py)))?;
+    let future = Python::attach(|py| into_future(coro.into_bound(py)))?;
 
     join_set.spawn(async move {
         match future.await {
@@ -514,7 +517,7 @@ where
     let receiver_owner = clone_repl_owner(repl_owner);
     let receiver_cleanup = cleanup_notifier.clone();
 
-    std::mem::drop(spawn_blocking(move || {
+    drop(spawn_blocking(move || {
         let result = transition(print_callback);
         if let Err(result) = sender.send(result) {
             restore_repl_from_transition_result(&sender_owner, &sender_cleanup, result);

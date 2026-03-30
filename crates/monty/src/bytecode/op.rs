@@ -10,6 +10,8 @@
 //! - `W` suffix, 2 bytes (u16/i16): `LoadLocalW`, `Jump`, `LoadConst`
 //! - Compound (multiple operands): `CallFunctionKw` (u8 + u8), `MakeClosure` (u16 + u8)
 
+use std::{error, fmt};
+
 use strum::FromRepr;
 
 /// Opcode discriminant - just identifies the instruction type.
@@ -566,16 +568,18 @@ impl Opcode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct InvalidOpcodeError(pub u8);
 
-impl std::fmt::Display for InvalidOpcodeError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Display for InvalidOpcodeError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "invalid opcode byte: {}", self.0)
     }
 }
 
-impl std::error::Error for InvalidOpcodeError {}
+impl error::Error for InvalidOpcodeError {}
 
 #[cfg(test)]
 mod tests {
+    use std::mem;
+
     use super::*;
 
     #[test]
@@ -612,6 +616,6 @@ mod tests {
     #[test]
     fn test_opcode_size() {
         // Verify opcode is 1 byte
-        assert_eq!(std::mem::size_of::<Opcode>(), 1);
+        assert_eq!(mem::size_of::<Opcode>(), 1);
     }
 }

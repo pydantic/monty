@@ -36,7 +36,7 @@ What Monty **can** do:
 - Control resource usage - Monty can track memory usage, allocations, stack depth, and execution time and cancel execution if it exceeds preset limits
 - Collect stdout and stderr and return it to the caller
 - Run async or sync code on the host via async or sync code on the host
-- Use a small subset of the standard library: `sys`, `os`, `typing`, `asyncio`, `re`, `datetime` (soon), `dataclasses` (soon), `json` (soon)
+- Use a small subset of the standard library: `sys`, `os`, `typing`, `asyncio`, `re`, `datetime`, `json`, `dataclasses` (soon)
 
 What Monty **cannot** do:
 
@@ -325,6 +325,10 @@ async def main():
 if __name__ == '__main__':
     asyncio.run(main())
 ```
+
+## Community Bindings
+
+- **Go**: [gomonty](https://github.com/ewhauser/gomonty/) - Go bindings for the Monty interpreter
 
 # Alternatives
 
