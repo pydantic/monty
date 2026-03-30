@@ -1,18 +1,11 @@
 //! Filesystem operation handlers for each mount mode.
 //!
-//! Each [`OsFunction`] filesystem variant is dispatched here based on the
-//! [`MountMode`]. Operations follow a consistent pattern:
+//! Each [`OsFunction`] filesystem variant is dispatched here based on the [`MountMode`]:
 //!
 //! - **`ReadWrite`**: direct pass-through to [`std::fs`] on the resolved host path
 //! - **`ReadOnly`**: read ops pass through; write ops return [`MountError::ReadOnly`]
 //! - **`OverlayMemory`**: reads check overlay first then fall through; writes go to overlay
 //! - **`OverlayDirectory`**: reads check upper dir first then lower; writes go to upper dir
-//!
-//! # Security
-//!
-//! All path resolution goes through [`super::path_security::resolve_path`].
-//! The monty runtime MUST NEVER read, write, or obtain any information about
-//! any file or directory outside the specific directory that is mounted.
 
 use std::{
     collections::HashSet,
@@ -25,13 +18,11 @@ use std::{
 use super::{
     error::MountError,
     mount_mode::{MountMode, OverlayEntry, OverlayFile, OverlayState},
-    path_security::{normalize_virtual_path, resolve_path, strip_mount_prefix_public},
+    path_security::{normalize_virtual_path, resolve_path, strip_mount_prefix},
 };
 use crate::{MontyObject, dir_stat, file_stat, os::OsFunction, symlink_stat};
 
-/// Bundles the mount-specific context needed to execute a filesystem operation.
-///
-/// This avoids passing many individual parameters through the call chain.
+/// Mount-specific context passed through the operation call chain.
 pub(super) struct MountContext<'a> {
     /// The virtual path prefix of the mount (e.g., `/data`).
     pub mount_virtual: &'a str,
@@ -131,7 +122,7 @@ fn execute_overlay_memory(
     state: &mut OverlayState,
 ) -> Result<MontyObject, MountError> {
     let normalized = normalize_virtual_path(vpath);
-    let relative = strip_mount_prefix_public(&normalized, ctx.mount_virtual)
+    let relative = strip_mount_prefix(&normalized, ctx.mount_virtual)
         .ok_or_else(|| MountError::NoMountPoint(vpath.to_owned()))?
         .to_owned();
 
@@ -535,10 +526,10 @@ fn ovl_rename(
     let src_norm = normalize_virtual_path(src_vpath);
     let dst_norm = normalize_virtual_path(dst_vpath);
 
-    let src_rel = strip_mount_prefix_public(&src_norm, ctx.mount_virtual)
+    let src_rel = strip_mount_prefix(&src_norm, ctx.mount_virtual)
         .ok_or_else(|| MountError::NoMountPoint(src_vpath.to_owned()))?
         .to_owned();
-    let dst_rel = strip_mount_prefix_public(&dst_norm, ctx.mount_virtual)
+    let dst_rel = strip_mount_prefix(&dst_norm, ctx.mount_virtual)
         .ok_or_else(|| MountError::CrossMountRename {
             src: src_vpath.to_owned(),
             dst: dst_vpath.to_owned(),
@@ -592,8 +583,8 @@ fn execute_overlay_directory(
     upper_dir: &Path,
 ) -> Result<MontyObject, MountError> {
     let normalized = normalize_virtual_path(vpath);
-    let relative = strip_mount_prefix_public(&normalized, ctx.mount_virtual)
-        .ok_or_else(|| MountError::NoMountPoint(vpath.to_owned()))?;
+    let relative =
+        strip_mount_prefix(&normalized, ctx.mount_virtual).ok_or_else(|| MountError::NoMountPoint(vpath.to_owned()))?;
 
     let upper_path = if relative.is_empty() {
         upper_dir.to_path_buf()
@@ -692,12 +683,11 @@ fn execute_overlay_directory(
         OsFunction::Rename => {
             let target_vpath = extract_path_arg(extra_args, "rename")?;
             let target_norm = normalize_virtual_path(&target_vpath);
-            let target_rel = strip_mount_prefix_public(&target_norm, ctx.mount_virtual).ok_or_else(|| {
-                MountError::CrossMountRename {
+            let target_rel =
+                strip_mount_prefix(&target_norm, ctx.mount_virtual).ok_or_else(|| MountError::CrossMountRename {
                     src: vpath.to_owned(),
                     dst: target_vpath.clone(),
-                }
-            })?;
+                })?;
             let target_upper = if target_rel.is_empty() {
                 upper_dir.to_path_buf()
             } else {
