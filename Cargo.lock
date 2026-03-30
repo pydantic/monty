@@ -1762,6 +1762,7 @@ dependencies = [
  "smallvec",
  "speedate",
  "strum",
+ "tempfile",
 ]
 
 [[package]]

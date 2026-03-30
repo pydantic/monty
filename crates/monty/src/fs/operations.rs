@@ -72,39 +72,73 @@ fn execute_direct(
     kwargs: &[(MontyObject, MontyObject)],
     ctx: &MountContext<'_>,
 ) -> Result<MontyObject, MountError> {
-    let for_creation =
-        function.is_write() && !matches!(function, OsFunction::Unlink | OsFunction::Rmdir | OsFunction::Rename);
-    let resolved = resolve_path(vpath, ctx.mount_virtual, ctx.mount_host, for_creation)?;
+    // Resolve/Absolute are pure virtual-path operations — no host I/O needed.
+    if matches!(function, OsFunction::Resolve | OsFunction::Absolute) {
+        return Ok(MontyObject::Path(normalize_virtual_path(vpath)));
+    }
+
+    let host = resolve_host_path(function, vpath, kwargs, ctx)?;
 
     match function {
-        OsFunction::Exists => Ok(MontyObject::Bool(resolved.host_path.exists())),
-        OsFunction::IsFile => Ok(MontyObject::Bool(resolved.host_path.is_file())),
-        OsFunction::IsDir => Ok(MontyObject::Bool(resolved.host_path.is_dir())),
-        OsFunction::IsSymlink => Ok(MontyObject::Bool(resolved.host_path.is_symlink())),
-        OsFunction::ReadText => read_text_fs(&resolved.host_path, vpath),
-        OsFunction::ReadBytes => read_bytes_fs(&resolved.host_path, vpath),
-        OsFunction::WriteText => {
-            let content = extract_string_arg(extra_args, "write_text")?;
-            write_text_fs(&resolved.host_path, content, vpath)
-        }
-        OsFunction::WriteBytes => {
-            let content = extract_bytes_arg(extra_args, "write_bytes")?;
-            write_bytes_fs(&resolved.host_path, content, vpath)
-        }
+        OsFunction::Exists => Ok(MontyObject::Bool(host.exists())),
+        OsFunction::IsFile => Ok(MontyObject::Bool(host.is_file())),
+        OsFunction::IsDir => Ok(MontyObject::Bool(host.is_dir())),
+        OsFunction::IsSymlink => Ok(MontyObject::Bool(host.is_symlink())),
+        OsFunction::ReadText => read_text_fs(&host, vpath),
+        OsFunction::ReadBytes => read_bytes_fs(&host, vpath),
+        OsFunction::WriteText => write_text_fs(&host, extract_string_arg(extra_args, "write_text")?, vpath),
+        OsFunction::WriteBytes => write_bytes_fs(&host, extract_bytes_arg(extra_args, "write_bytes")?, vpath),
         OsFunction::Mkdir => {
             let (parents, exist_ok) = extract_mkdir_kwargs(kwargs);
-            mkdir_fs(&resolved.host_path, parents, exist_ok, vpath)
+            mkdir_fs(&host, parents, exist_ok, vpath)
         }
-        OsFunction::Unlink => unlink_fs(&resolved.host_path, vpath),
-        OsFunction::Rmdir => rmdir_fs(&resolved.host_path, vpath),
-        OsFunction::Stat => stat_fs(&resolved.host_path, vpath),
-        OsFunction::Iterdir => iterdir_fs(&resolved.host_path, vpath, ctx.mount_host),
-        OsFunction::Rename => {
-            let target = extract_path_arg(extra_args, "rename")?;
-            rename_fs(vpath, &target, ctx)
-        }
-        OsFunction::Resolve | OsFunction::Absolute => Ok(MontyObject::Path(normalize_virtual_path(vpath))),
+        OsFunction::Unlink => unlink_fs(&host, vpath),
+        OsFunction::Rmdir => rmdir_fs(&host, vpath),
+        OsFunction::Stat => stat_fs(&host, vpath),
+        OsFunction::Iterdir => iterdir_fs(&host, vpath, ctx.mount_host),
+        OsFunction::Rename => rename_fs(vpath, &extract_path_arg(extra_args, "rename")?, ctx),
         _ => Err(MountError::NoMountPoint(vpath.to_owned())),
+    }
+}
+
+/// Resolves a virtual path to a validated host path, handling per-operation quirks.
+///
+/// Three categories of operations need different resolution strategies:
+/// - **Existence checks** (`exists`, `is_file`, etc.): return a sentinel path on
+///   `NotFound` so the caller gets `false` instead of an error, matching CPython.
+/// - **`mkdir` with `parents`**: intermediate directories may not exist yet, so we
+///   construct the path from the mount root without canonicalizing ancestors.
+/// - **Everything else**: standard `resolve_path` with `for_creation` for writes.
+fn resolve_host_path(
+    function: OsFunction,
+    vpath: &str,
+    kwargs: &[(MontyObject, MontyObject)],
+    ctx: &MountContext<'_>,
+) -> Result<PathBuf, MountError> {
+    // Existence checks return false for nonexistent paths rather than erroring.
+    if function.is_existence_check() {
+        match resolve_path(vpath, ctx.mount_virtual, ctx.mount_host, false) {
+            Ok(r) => Ok(r.host_path),
+            // Path doesn't exist on the host — return a non-existent path so the
+            // caller's `.exists()` / `.is_file()` / etc. naturally returns false.
+            Err(MountError::Io(_, _)) => Ok(PathBuf::from("/nonexistent")),
+            Err(e) => Err(e),
+        }
+    } else if matches!(function, OsFunction::Mkdir) && extract_mkdir_kwargs(kwargs).0 {
+        // `mkdir -p` can't use resolve_path because intermediate parents may not exist.
+        // Build the host path directly from the (already-canonical) mount root.
+        let normalized = normalize_virtual_path(vpath);
+        let relative = strip_mount_prefix(&normalized, ctx.mount_virtual)
+            .ok_or_else(|| MountError::NoMountPoint(vpath.to_owned()))?;
+        Ok(if relative.is_empty() {
+            ctx.mount_host.to_path_buf()
+        } else {
+            ctx.mount_host.join(relative)
+        })
+    } else {
+        let for_creation =
+            function.is_write() && !matches!(function, OsFunction::Unlink | OsFunction::Rmdir | OsFunction::Rename);
+        Ok(resolve_path(vpath, ctx.mount_virtual, ctx.mount_host, for_creation)?.host_path)
     }
 }
 
@@ -353,6 +387,23 @@ fn ovl_mkdir(
             }
         }
     } else {
+        // Without parents, the parent directory must exist (in overlay or real FS).
+        if let Some(slash_pos) = relative.rfind('/') {
+            let parent_rel = &relative[..slash_pos];
+            let parent_exists = match state.get(parent_rel) {
+                Some(OverlayEntry::Directory { .. }) => true,
+                Some(OverlayEntry::File(_) | OverlayEntry::Deleted) => false,
+                None => {
+                    // Check real FS.
+                    let parent_vpath = format!("{}/{parent_rel}", ctx.mount_virtual);
+                    resolve_path(&parent_vpath, ctx.mount_virtual, ctx.mount_host, false)
+                        .is_ok_and(|r| r.host_path.is_dir())
+                }
+            };
+            if !parent_exists {
+                return Err(not_found(vpath));
+            }
+        }
         state.insert(
             relative.to_owned(),
             OverlayEntry::Directory {
@@ -420,6 +471,26 @@ fn ovl_rmdir(
         None => {
             let r = resolve_path(vpath, ctx.mount_virtual, ctx.mount_host, false)?;
             if r.host_path.is_dir() {
+                // Check that the real directory is empty (no real children that
+                // aren't tombstoned in the overlay).
+                if let Ok(entries) = fs::read_dir(&r.host_path) {
+                    let prefix = if relative.is_empty() {
+                        String::new()
+                    } else {
+                        format!("{relative}/")
+                    };
+                    for entry in entries.flatten() {
+                        let name = entry.file_name().to_string_lossy().to_string();
+                        let child_rel = if prefix.is_empty() {
+                            name
+                        } else {
+                            format!("{prefix}{name}")
+                        };
+                        if !matches!(state.get(&child_rel), Some(OverlayEntry::Deleted)) {
+                            return Err(io_err(ErrorKind::Other, "Directory not empty", vpath));
+                        }
+                    }
+                }
                 state.insert(relative.to_owned(), OverlayEntry::Deleted);
                 Ok(MontyObject::None)
             } else {

@@ -118,6 +118,15 @@ impl OsFunction {
             Self::WriteText | Self::WriteBytes | Self::Mkdir | Self::Unlink | Self::Rmdir | Self::Rename
         )
     }
+
+    /// Returns `true` for operations that check path existence without reading content.
+    ///
+    /// These operations return `false` for nonexistent paths instead of raising
+    /// `FileNotFoundError`, matching CPython's `pathlib.Path` behavior.
+    #[must_use]
+    pub fn is_existence_check(&self) -> bool {
+        matches!(self, Self::Exists | Self::IsFile | Self::IsDir | Self::IsSymlink)
+    }
 }
 
 impl TryFrom<StaticStrings> for OsFunction {
