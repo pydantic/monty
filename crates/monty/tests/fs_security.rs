@@ -6,6 +6,8 @@
 
 use std::fs;
 #[cfg(unix)]
+use std::fs::hard_link;
+#[cfg(unix)]
 use std::os::unix::fs::symlink;
 
 use monty::{
@@ -355,6 +357,127 @@ mod symlink_tests {
             .unwrap()
             .unwrap();
         assert_eq!(result, MontyObject::String("hello world\n".to_owned()));
+    }
+
+    #[test]
+    fn symlink_to_directory_within_mount_allowed() {
+        // Symlink to a subdirectory within the mount should work for all operations.
+        let dir = create_test_dir();
+        symlink(dir.path().join("subdir"), dir.path().join("dir_link")).unwrap();
+
+        let mut mt = mount_at_mnt(&dir, MountMode::ReadWrite);
+
+        // Reading a file through the symlinked directory should work.
+        let result = call(&mut mt, OsFunction::ReadText, "/mnt/dir_link/nested.txt")
+            .unwrap()
+            .unwrap();
+        assert_eq!(result, MontyObject::String("nested content".to_owned()));
+
+        // Listing the symlinked directory should work.
+        let result = call(&mut mt, OsFunction::Iterdir, "/mnt/dir_link");
+        assert!(result.unwrap().is_ok());
+
+        // Checking existence through the symlink should work.
+        let result = call(&mut mt, OsFunction::Exists, "/mnt/dir_link/deep/file.txt")
+            .unwrap()
+            .unwrap();
+        assert_eq!(result, MontyObject::Bool(true));
+    }
+
+    #[test]
+    fn chained_symlinks_within_mount_allowed() {
+        // A symlink pointing to another symlink, both within the mount, should work.
+        let dir = create_test_dir();
+        symlink(dir.path().join("hello.txt"), dir.path().join("link1")).unwrap();
+        symlink(dir.path().join("link1"), dir.path().join("link2")).unwrap();
+
+        let mut mt = mount_at_mnt(&dir, MountMode::ReadWrite);
+        let result = call(&mut mt, OsFunction::ReadText, "/mnt/link2").unwrap().unwrap();
+        assert_eq!(result, MontyObject::String("hello world\n".to_owned()));
+    }
+
+    #[test]
+    fn chained_symlinks_escape_blocked() {
+        // A symlink within mount pointing to another symlink that escapes should be blocked.
+        let dir = create_test_dir();
+        let outside = TempDir::new().unwrap();
+        fs::write(outside.path().join("secret.txt"), "secret").unwrap();
+
+        // link1 -> outside (escapes), link2 -> link1 (chain escapes)
+        symlink(outside.path(), dir.path().join("link1")).unwrap();
+        symlink(dir.path().join("link1"), dir.path().join("link2")).unwrap();
+
+        let mut mt = mount_at_mnt(&dir, MountMode::ReadWrite);
+        assert_blocked(&mut mt, OsFunction::ReadText, "/mnt/link2/secret.txt");
+    }
+}
+
+// =============================================================================
+// Hard link tests (`ln` without `-s`)
+// =============================================================================
+//
+// Hard links are fundamentally different from symbolic links: a hard link is
+// just another directory entry for the same inode, not a pointer to a path.
+// `fs::canonicalize()` returns the path as-given (within the mount), so hard
+// links always pass the boundary check regardless of where the original file
+// lives.
+//
+// This is acceptable because sandboxed code cannot create hard links (no
+// `os.link` is exposed), so hard links can only be placed in the mount by
+// the host — an explicit choice to expose that content.
+
+#[cfg(unix)]
+mod hard_link_tests {
+    use super::*;
+
+    #[test]
+    fn hard_link_within_mount_allowed() {
+        // A hard link to a file within the mount should work normally.
+        let dir = create_test_dir();
+        hard_link(dir.path().join("hello.txt"), dir.path().join("hardlink.txt")).unwrap();
+
+        let mut mt = mount_at_mnt(&dir, MountMode::ReadWrite);
+        let result = call(&mut mt, OsFunction::ReadText, "/mnt/hardlink.txt")
+            .unwrap()
+            .unwrap();
+        assert_eq!(result, MontyObject::String("hello world\n".to_owned()));
+    }
+
+    #[test]
+    fn hard_link_from_outside_accessible() {
+        // A hard link to a file outside the mount is indistinguishable from a
+        // regular file at the path level — canonicalize returns the in-mount
+        // path, so the boundary check passes. This is by design: only the host
+        // can create hard links in the mounted directory, so this represents an
+        // explicit choice to expose the content.
+        let dir = create_test_dir();
+        let outside = TempDir::new().unwrap();
+        let outside_file = outside.path().join("external.txt");
+        fs::write(&outside_file, "external content").unwrap();
+
+        hard_link(&outside_file, dir.path().join("hardlink_ext.txt")).unwrap();
+
+        let mut mt = mount_at_mnt(&dir, MountMode::ReadWrite);
+        let result = call(&mut mt, OsFunction::ReadText, "/mnt/hardlink_ext.txt")
+            .unwrap()
+            .unwrap();
+        assert_eq!(result, MontyObject::String("external content".to_owned()));
+    }
+
+    #[test]
+    fn hard_link_is_not_detected_as_symlink() {
+        // Hard links should report as regular files, not symlinks.
+        let dir = create_test_dir();
+        hard_link(dir.path().join("hello.txt"), dir.path().join("hardlink.txt")).unwrap();
+
+        let mut mt = mount_at_mnt(&dir, MountMode::ReadWrite);
+        let result = call(&mut mt, OsFunction::IsFile, "/mnt/hardlink.txt").unwrap().unwrap();
+        assert_eq!(result, MontyObject::Bool(true));
+
+        let result = call(&mut mt, OsFunction::IsSymlink, "/mnt/hardlink.txt")
+            .unwrap()
+            .unwrap();
+        assert_eq!(result, MontyObject::Bool(false));
     }
 }
 

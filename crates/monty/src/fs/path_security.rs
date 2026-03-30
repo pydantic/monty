@@ -11,8 +11,28 @@
 //!
 //! Changes to this module require careful security review.
 //!
+//! ## Symlink handling
+//!
+//! Symbolic links are followed and then validated: [`fs::canonicalize`] resolves
+//! all symlinks to their final target, and [`check_boundary`] verifies the
+//! canonical path remains within the mount. Symlinks that resolve outside the
+//! mount are rejected with [`MountError::PathEscape`].
+//!
+//! Hard links (created with `ln` rather than `ln -s`) are transparent to this
+//! check — a hard link is just another directory entry for the same inode, so
+//! `canonicalize` returns the path within the mount as-is. This is acceptable
+//! because sandboxed code cannot create hard links (no `os.link` is exposed),
+//! so hard links can only exist if the host placed them in the mounted
+//! directory, which is an explicit choice to expose that content.
+//!
+//! ## TOCTOU considerations
+//!
 //! There is an inherent TOCTOU race between canonicalization and the subsequent
-//! operation; a future enhancement could use `openat2(RESOLVE_BENEATH)` on Linux.
+//! file operation. This is not a practical concern because:
+//! - Sandboxed code cannot create symlinks (`os.symlink` is not exposed)
+//! - Sandboxed code cannot spawn host processes to modify the filesystem
+//! - Only the host can modify the mounted directory concurrently, and the host
+//!   is trusted
 
 use std::{
     fs,
@@ -130,6 +150,11 @@ pub(super) fn strip_mount_prefix<'a>(normalized_path: &'a str, mount_virtual_pat
 // =============================================================================
 
 /// Canonicalizes an existing path and checks the mount boundary.
+///
+/// `fs::canonicalize` resolves all symbolic links to their final target,
+/// so any symlink that ultimately points outside the mount will be caught
+/// by `check_boundary`. Hard links are not affected by canonicalization
+/// (they are indistinguishable from regular files at the path level).
 fn resolve_existing(candidate: &Path, mount_host_path: &Path, virtual_path: &str) -> Result<PathBuf, MountError> {
     let canonical = fs::canonicalize(candidate).map_err(|e| MountError::Io(e, virtual_path.to_owned()))?;
     check_boundary(&canonical, mount_host_path, virtual_path)?;
