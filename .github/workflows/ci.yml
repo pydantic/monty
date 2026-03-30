@@ -146,6 +146,39 @@ jobs:
         # test uv run exercise script
       - run: uv run crates/monty-python/exercise.py
 
+  test-rust-os:
+    name: test rust on ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+          - os: windows-latest
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
+
+      # don't use .venv python in CI
+      - name: Remove cargo config (Unix)
+        if: runner.os != 'Windows'
+        run: rm .cargo/config.toml
+      - name: Remove cargo config (Windows)
+        if: runner.os == 'Windows'
+        run: Remove-Item .cargo/config.toml
+
+      - run: cargo test -p monty --features ref-count-panic
+
   bench-test:
     runs-on: ubuntu-latest
 
@@ -225,6 +258,7 @@ jobs:
     needs:
       - lint
       - test-rust
+      - test-rust-os
       - test-python
       - bench-test
       - fuzz

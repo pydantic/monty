@@ -12,7 +12,22 @@ Project goals:
 - **Performance**: Fast execution through compile-time optimizations and efficient memory layout
 - **Simplicity**: Clean, understandable implementation focused on a Python subset
 - **Snapshotting and iteration**: Plan is to allow code to be iteratively executed and snapshotted at each function call
+- **Cross-platform**: Runs on Linux, macOS, and Windows (and any other OS that can run Rust)
 - Targets the latest stable version of Python, currently Python 3.14
+
+## Cross-Platform Requirements
+
+Monty must work identically on Linux, macOS, and Windows. Within the Monty sandbox,
+paths always use POSIX/Linux-style forward slashes (`/`) regardless of the host OS.
+The `MountTable` handles translating between virtual POSIX paths and host-native paths.
+
+Key rules:
+- **Virtual paths** are always POSIX-style (`/mnt/data/file.txt`), never Windows-style
+- **Host paths** use `std::path::Path`/`PathBuf` which handles OS differences automatically
+- Avoid `#[cfg(unix)]`-only code in the main crate — all features must work on all platforms
+- Tests in `crates/monty/tests/` should be cross-platform; use helper functions for
+  OS-specific APIs like symlink creation (see `symlink_file`/`symlink_dir` in `fs_security.rs`)
+- CI runs `cargo test -p monty --features ref-count-panic` on Linux, macOS, and Windows
 
 ## Important Security Notice
 

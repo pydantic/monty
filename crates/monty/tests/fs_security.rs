@@ -4,11 +4,7 @@
 //! via path traversal, null bytes, symlinks, or any other technique.
 //! Tests cover all mount modes to ensure the security invariant holds everywhere.
 
-use std::fs;
-#[cfg(unix)]
-use std::fs::hard_link;
-#[cfg(unix)]
-use std::os::unix::fs::symlink;
+use std::{fs, path::Path};
 
 use monty::{
     MontyObject, OsFunction,
@@ -81,6 +77,40 @@ fn all_modes() -> Vec<(&'static str, MountMode)> {
         ("ReadOnly", MountMode::ReadOnly),
         ("OverlayMemory", MountMode::OverlayMemory(OverlayState::new())),
     ]
+}
+
+/// Cross-platform symlink to a file.
+///
+/// On Unix uses `std::os::unix::fs::symlink`, on Windows uses
+/// `std::os::windows::fs::symlink_file`.
+fn symlink_file(original: impl AsRef<Path>, link: impl AsRef<Path>) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::symlink;
+        symlink(original.as_ref(), link.as_ref()).unwrap();
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::symlink_file as win_symlink_file;
+        win_symlink_file(original.as_ref(), link.as_ref()).unwrap();
+    }
+}
+
+/// Cross-platform symlink to a directory.
+///
+/// On Unix uses `std::os::unix::fs::symlink`, on Windows uses
+/// `std::os::windows::fs::symlink_dir`.
+fn symlink_dir(original: impl AsRef<Path>, link: impl AsRef<Path>) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::symlink;
+        symlink(original.as_ref(), link.as_ref()).unwrap();
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::symlink_dir as win_symlink_dir;
+        win_symlink_dir(original.as_ref(), link.as_ref()).unwrap();
+    }
 }
 
 // =============================================================================
@@ -242,7 +272,6 @@ fn null_byte_overlay_memory() {
 // Symlink escape
 // =============================================================================
 
-#[cfg(unix)]
 mod symlink_tests {
     use super::*;
 
@@ -253,7 +282,7 @@ mod symlink_tests {
         fs::write(outside.path().join("secret.txt"), "secret data").unwrap();
 
         // Create symlink inside mount pointing outside.
-        symlink(outside.path(), dir.path().join("escape_link")).unwrap();
+        symlink_dir(outside.path(), dir.path().join("escape_link"));
 
         let mut mt = mount_at_mnt(&dir, MountMode::ReadWrite);
         assert_blocked(&mut mt, OsFunction::ReadText, "/mnt/escape_link/secret.txt");
@@ -267,7 +296,7 @@ mod symlink_tests {
         let outside = TempDir::new().unwrap();
         fs::write(outside.path().join("secret.txt"), "secret").unwrap();
 
-        symlink(outside.path().join("secret.txt"), dir.path().join("link_to_file")).unwrap();
+        symlink_file(outside.path().join("secret.txt"), dir.path().join("link_to_file"));
 
         let mut mt = mount_at_mnt(&dir, MountMode::ReadWrite);
         assert_blocked(&mut mt, OsFunction::ReadText, "/mnt/link_to_file");
@@ -278,18 +307,19 @@ mod symlink_tests {
         let dir = create_test_dir();
         let parent = dir.path().parent().unwrap();
 
-        symlink(parent, dir.path().join("parent_link")).unwrap();
+        symlink_dir(parent, dir.path().join("parent_link"));
 
         let mut mt = mount_at_mnt(&dir, MountMode::ReadWrite);
         assert_blocked(&mut mt, OsFunction::Iterdir, "/mnt/parent_link");
     }
 
     #[test]
+    #[cfg(unix)] // Relative symlink targets are not supported on Windows
     fn relative_symlink_escape() {
         let dir = create_test_dir();
 
         // Create symlink that uses relative path to escape.
-        symlink("../../", dir.path().join("rel_escape")).unwrap();
+        symlink_dir("../../", dir.path().join("rel_escape"));
 
         let mut mt = mount_at_mnt(&dir, MountMode::ReadWrite);
         assert_blocked(&mut mt, OsFunction::Iterdir, "/mnt/rel_escape");
@@ -300,7 +330,7 @@ mod symlink_tests {
         // Error messages should only contain virtual path, not host path.
         let dir = create_test_dir();
         let outside = TempDir::new().unwrap();
-        symlink(outside.path(), dir.path().join("escape")).unwrap();
+        symlink_dir(outside.path(), dir.path().join("escape"));
 
         let mut mt = mount_at_mnt(&dir, MountMode::ReadWrite);
         let result = call(&mut mt, OsFunction::ReadText, "/mnt/escape/secret");
@@ -322,7 +352,7 @@ mod symlink_tests {
         let dir = create_test_dir();
         let outside = TempDir::new().unwrap();
         fs::write(outside.path().join("secret.txt"), "secret").unwrap();
-        symlink(outside.path(), dir.path().join("escape")).unwrap();
+        symlink_dir(outside.path(), dir.path().join("escape"));
 
         let mut mt = mount_at_mnt(&dir, MountMode::OverlayMemory(OverlayState::new()));
         assert_blocked(&mut mt, OsFunction::ReadText, "/mnt/escape/secret.txt");
@@ -335,7 +365,7 @@ mod symlink_tests {
         let upper = TempDir::new().unwrap();
         let outside = TempDir::new().unwrap();
         fs::write(outside.path().join("secret.txt"), "secret").unwrap();
-        symlink(outside.path(), dir.path().join("escape")).unwrap();
+        symlink_dir(outside.path(), dir.path().join("escape"));
 
         let mut mt = mount_at_mnt(
             &dir,
@@ -350,7 +380,7 @@ mod symlink_tests {
     fn symlink_within_mount_allowed() {
         // Symlinks that stay within the mount boundary should work.
         let dir = create_test_dir();
-        symlink(dir.path().join("hello.txt"), dir.path().join("internal_link")).unwrap();
+        symlink_file(dir.path().join("hello.txt"), dir.path().join("internal_link"));
 
         let mut mt = mount_at_mnt(&dir, MountMode::ReadWrite);
         let result = call(&mut mt, OsFunction::ReadText, "/mnt/internal_link")
@@ -363,7 +393,7 @@ mod symlink_tests {
     fn symlink_to_directory_within_mount_allowed() {
         // Symlink to a subdirectory within the mount should work for all operations.
         let dir = create_test_dir();
-        symlink(dir.path().join("subdir"), dir.path().join("dir_link")).unwrap();
+        symlink_dir(dir.path().join("subdir"), dir.path().join("dir_link"));
 
         let mut mt = mount_at_mnt(&dir, MountMode::ReadWrite);
 
@@ -388,8 +418,8 @@ mod symlink_tests {
     fn chained_symlinks_within_mount_allowed() {
         // A symlink pointing to another symlink, both within the mount, should work.
         let dir = create_test_dir();
-        symlink(dir.path().join("hello.txt"), dir.path().join("link1")).unwrap();
-        symlink(dir.path().join("link1"), dir.path().join("link2")).unwrap();
+        symlink_file(dir.path().join("hello.txt"), dir.path().join("link1"));
+        symlink_file(dir.path().join("link1"), dir.path().join("link2"));
 
         let mut mt = mount_at_mnt(&dir, MountMode::ReadWrite);
         let result = call(&mut mt, OsFunction::ReadText, "/mnt/link2").unwrap().unwrap();
@@ -404,8 +434,8 @@ mod symlink_tests {
         fs::write(outside.path().join("secret.txt"), "secret").unwrap();
 
         // link1 -> outside (escapes), link2 -> link1 (chain escapes)
-        symlink(outside.path(), dir.path().join("link1")).unwrap();
-        symlink(dir.path().join("link1"), dir.path().join("link2")).unwrap();
+        symlink_dir(outside.path(), dir.path().join("link1"));
+        symlink_dir(dir.path().join("link1"), dir.path().join("link2"));
 
         let mut mt = mount_at_mnt(&dir, MountMode::ReadWrite);
         assert_blocked(&mut mt, OsFunction::ReadText, "/mnt/link2/secret.txt");
@@ -426,7 +456,6 @@ mod symlink_tests {
 // `os.link` is exposed), so hard links can only be placed in the mount by
 // the host — an explicit choice to expose that content.
 
-#[cfg(unix)]
 mod hard_link_tests {
     use super::*;
 
@@ -434,7 +463,7 @@ mod hard_link_tests {
     fn hard_link_within_mount_allowed() {
         // A hard link to a file within the mount should work normally.
         let dir = create_test_dir();
-        hard_link(dir.path().join("hello.txt"), dir.path().join("hardlink.txt")).unwrap();
+        fs::hard_link(dir.path().join("hello.txt"), dir.path().join("hardlink.txt")).unwrap();
 
         let mut mt = mount_at_mnt(&dir, MountMode::ReadWrite);
         let result = call(&mut mt, OsFunction::ReadText, "/mnt/hardlink.txt")
@@ -455,7 +484,7 @@ mod hard_link_tests {
         let outside_file = outside.path().join("external.txt");
         fs::write(&outside_file, "external content").unwrap();
 
-        hard_link(&outside_file, dir.path().join("hardlink_ext.txt")).unwrap();
+        fs::hard_link(&outside_file, dir.path().join("hardlink_ext.txt")).unwrap();
 
         let mut mt = mount_at_mnt(&dir, MountMode::ReadWrite);
         let result = call(&mut mt, OsFunction::ReadText, "/mnt/hardlink_ext.txt")
@@ -468,7 +497,7 @@ mod hard_link_tests {
     fn hard_link_is_not_detected_as_symlink() {
         // Hard links should report as regular files, not symlinks.
         let dir = create_test_dir();
-        hard_link(dir.path().join("hello.txt"), dir.path().join("hardlink.txt")).unwrap();
+        fs::hard_link(dir.path().join("hello.txt"), dir.path().join("hardlink.txt")).unwrap();
 
         let mut mt = mount_at_mnt(&dir, MountMode::ReadWrite);
         let result = call(&mut mt, OsFunction::IsFile, "/mnt/hardlink.txt").unwrap().unwrap();
