@@ -56,8 +56,9 @@ struct Cli {
 
     /// Mount a host directory into the sandbox.
     ///
-    /// Format: `/host/path:/virtual/path[:mode]`
+    /// Format: `/host/path::/virtual/path[::mode]`
     ///
+    /// Uses `::` as separator to avoid ambiguity with Windows drive letters.
     /// Modes: `ro` (read-only, default), `rw` (read-write), `overlay` (in-memory overlay).
     #[arg(short = 'm', long = "mount")]
     mounts: Vec<String>,
@@ -616,21 +617,24 @@ fn build_mount_table(mount_args: &[String]) -> Result<Option<MountTable>, String
 
 /// Parses a single mount specification string.
 ///
-/// Format: `host_path:virtual_path[:mode]`
+/// Format: `host_path::virtual_path[::mode]`
+///
+/// Uses `::` as the separator to avoid ambiguity with Windows drive letters
+/// (e.g., `C:\data::/mnt::rw`).
 ///
 /// Mode defaults to `ro` (read-only) when omitted. Valid modes:
 /// - `ro` — read-only
 /// - `rw` — read-write
 /// - `overlay` — in-memory copy-on-write overlay
 fn parse_mount(spec: &str) -> Result<(String, String, MountMode), String> {
-    let parts: Vec<&str> = spec.split(':').collect();
+    let parts: Vec<&str> = spec.split("::").collect();
 
     let (host_path, virtual_path, mode_str) = match parts.len() {
         2 => (parts[0], parts[1], "ro"),
         3 => (parts[0], parts[1], parts[2]),
         _ => {
             return Err(format!(
-                "invalid mount spec '{spec}': expected host_path:virtual_path[:mode]"
+                "invalid mount spec '{spec}': expected host_path::virtual_path[::mode]"
             ));
         }
     };

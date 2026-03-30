@@ -823,6 +823,151 @@ fn ovl_mem_resolve() {
     );
 }
 
+#[test]
+fn ovl_mem_rename_directory() {
+    // Renaming a directory must also move its descendants.
+    let dir = create_test_dir();
+    let mut mt = mount_at_mnt(&dir, MountMode::OverlayMemory(OverlayState::new()));
+
+    // Rename subdir -> renamed_dir
+    call_rename(&mut mt, "/mnt/subdir", "/mnt/renamed_dir")
+        .unwrap()
+        .unwrap();
+
+    // Old path should be gone.
+    assert_eq!(
+        call_ok(&mut mt, OsFunction::Exists, "/mnt/subdir"),
+        MontyObject::Bool(false)
+    );
+    assert_eq!(
+        call_ok(&mut mt, OsFunction::Exists, "/mnt/subdir/nested.txt"),
+        MontyObject::Bool(false)
+    );
+    assert_eq!(
+        call_ok(&mut mt, OsFunction::Exists, "/mnt/subdir/deep/file.txt"),
+        MontyObject::Bool(false)
+    );
+
+    // New path should have all descendants.
+    assert_eq!(
+        call_ok(&mut mt, OsFunction::Exists, "/mnt/renamed_dir"),
+        MontyObject::Bool(true)
+    );
+    assert_eq!(
+        call_ok(&mut mt, OsFunction::ReadText, "/mnt/renamed_dir/nested.txt"),
+        MontyObject::String("nested content".to_owned())
+    );
+    assert_eq!(
+        call_ok(&mut mt, OsFunction::ReadText, "/mnt/renamed_dir/deep/file.txt"),
+        MontyObject::String("deep file".to_owned())
+    );
+
+    // Host unchanged.
+    assert!(dir.path().join("subdir/nested.txt").exists());
+}
+
+#[test]
+fn ovl_mem_rename_directory_with_overlay_children() {
+    // Directory rename must also move overlay-only children.
+    let dir = create_test_dir();
+    let mut mt = mount_at_mnt(&dir, MountMode::OverlayMemory(OverlayState::new()));
+
+    // Add a new file in the overlay under subdir.
+    call_write(
+        &mut mt,
+        OsFunction::WriteText,
+        "/mnt/subdir/overlay_file.txt",
+        MontyObject::String("overlay content".to_owned()),
+    )
+    .unwrap()
+    .unwrap();
+
+    call_rename(&mut mt, "/mnt/subdir", "/mnt/moved").unwrap().unwrap();
+
+    // Overlay-written file should appear under the new name.
+    assert_eq!(
+        call_ok(&mut mt, OsFunction::ReadText, "/mnt/moved/overlay_file.txt"),
+        MontyObject::String("overlay content".to_owned())
+    );
+    // Real-FS file should also appear.
+    assert_eq!(
+        call_ok(&mut mt, OsFunction::ReadText, "/mnt/moved/nested.txt"),
+        MontyObject::String("nested content".to_owned())
+    );
+}
+
+#[test]
+fn ovl_mem_write_missing_parent() {
+    // write_text/write_bytes to a path with missing parent should fail,
+    // matching CPython's FileNotFoundError behavior.
+    let dir = create_test_dir();
+    let mut mt = mount_at_mnt(&dir, MountMode::OverlayMemory(OverlayState::new()));
+
+    let err = call_write(
+        &mut mt,
+        OsFunction::WriteText,
+        "/mnt/nonexistent/child.txt",
+        MontyObject::String("x".to_owned()),
+    )
+    .unwrap()
+    .unwrap_err();
+    assert!(matches!(err, MountError::Io(_, _)));
+
+    let err = call_write(
+        &mut mt,
+        OsFunction::WriteBytes,
+        "/mnt/nonexistent/child.bin",
+        MontyObject::Bytes(vec![0]),
+    )
+    .unwrap()
+    .unwrap_err();
+    assert!(matches!(err, MountError::Io(_, _)));
+}
+
+#[test]
+fn ovl_mem_write_existing_parent() {
+    // Writing to a path whose parent exists in the real FS should still work.
+    let dir = create_test_dir();
+    let mut mt = mount_at_mnt(&dir, MountMode::OverlayMemory(OverlayState::new()));
+
+    call_write(
+        &mut mt,
+        OsFunction::WriteText,
+        "/mnt/subdir/new_file.txt",
+        MontyObject::String("new content".to_owned()),
+    )
+    .unwrap()
+    .unwrap();
+
+    assert_eq!(
+        call_ok(&mut mt, OsFunction::ReadText, "/mnt/subdir/new_file.txt"),
+        MontyObject::String("new content".to_owned())
+    );
+}
+
+#[test]
+fn ovl_mem_write_after_mkdir() {
+    // Writing to a path whose parent was created via mkdir should work.
+    let dir = create_test_dir();
+    let mut mt = mount_at_mnt(&dir, MountMode::OverlayMemory(OverlayState::new()));
+
+    call_mkdir(&mut mt, "/mnt/newdir", false, false).unwrap().unwrap();
+
+    call_write(
+        &mut mt,
+        OsFunction::WriteText,
+        "/mnt/newdir/file.txt",
+        MontyObject::String("content".to_owned()),
+    )
+    .unwrap()
+    .unwrap();
+
+    assert_eq!(
+        call_ok(&mut mt, OsFunction::ReadText, "/mnt/newdir/file.txt"),
+        MontyObject::String("content".to_owned())
+    );
+}
+
 // =============================================================================
 // Cross-cutting tests
 // =============================================================================
