@@ -14,17 +14,16 @@ use serde::de::DeserializeOwned;
 use crate::{
     ExcType, MontyException,
     asyncio::CallId,
-    bytecode::{Code, Compiler, FrameExit, VM, VMSnapshot},
-    exception_private::{RunError, RunResult},
+    bytecode::{VM, VMSnapshot},
+    exception_private::RunError,
     heap::{DropWithHeap, Heap, HeapReader},
     intern::{InternerBuilder, Interns},
     io::PrintWriter,
     namespace::NamespaceId,
     object::MontyObject,
     os::OsFunction,
-    parse::parse_with_interner,
-    prepare::prepare_with_existing_names,
     resource::ResourceTracker,
+    run::Executor,
     run_progress::{ConvertedExit, ExtFunctionResult, NameLookupResult, convert_frame_exit},
     value::Value,
 };
@@ -127,7 +126,7 @@ impl<T: ResourceTracker> MontyRepl<T> {
         let (input_names, input_values): (Vec<_>, Vec<_>) = inputs.into_iter().unzip();
 
         let input_script_name = this.next_input_script_name();
-        let executor = match ReplExecutor::new_repl_snippet(
+        let executor = match Executor::new_repl_snippet(
             code.to_owned(),
             &input_script_name,
             this.global_name_map.clone(),
@@ -191,7 +190,7 @@ impl<T: ResourceTracker> MontyRepl<T> {
         let (input_names, input_values): (Vec<_>, Vec<_>) = inputs.into_iter().unzip();
 
         let input_script_name = self.next_input_script_name();
-        let executor = ReplExecutor::new_repl_snippet(
+        let executor = Executor::new_repl_snippet(
             code.to_owned(),
             &input_script_name,
             self.global_name_map.clone(),
@@ -210,19 +209,7 @@ impl<T: ResourceTracker> MontyRepl<T> {
                 return Err(e);
             }
 
-            let mut frame_exit_result = vm.run_module(&executor.module_code);
-
-            // Handle NameLookup exits by raising NameError through the VM so that
-            // traceback information is properly captured. In the non-iterative REPL path,
-            // there's no host to resolve names, so all NameLookup exits become NameErrors.
-            while let Ok(FrameExit::NameLookup { name_id, .. }) = &frame_exit_result {
-                let name = executor.interns.get_str(*name_id);
-                let err = ExcType::name_error(name);
-                frame_exit_result = vm.resume_with_exception(err.into());
-            }
-
-            // Convert output while VM alive
-            let result = frame_exit_to_object(frame_exit_result, &mut vm);
+            let result = executor.run_to_completion(&mut vm);
 
             // Reclaim globals before cleanup.
             self.globals = vm.take_globals();
@@ -233,7 +220,7 @@ impl<T: ResourceTracker> MontyRepl<T> {
         // Commit compiler metadata even on runtime errors.
         // Snippets can mutate globals before raising, and those values may contain
         // FunctionId/StringId values that must be interpreted with the updated tables.
-        let ReplExecutor {
+        let Executor {
             name_map,
             interns,
             code,
@@ -637,7 +624,7 @@ pub struct ReplResolveFutures<T: ResourceTracker> {
     /// Persistent REPL session state while this snippet is suspended.
     repl: MontyRepl<T>,
     /// Compiled snippet and intern/function tables for this execution.
-    executor: ReplExecutor,
+    executor: Executor,
     /// VM stack/frame state at suspension.
     vm_state: VMSnapshot,
     /// Pending call IDs expected by this snapshot.
@@ -826,88 +813,6 @@ pub fn detect_repl_continuation_mode(source: &str) -> ReplContinuationMode {
 }
 
 // ---------------------------------------------------------------------------
-// ReplExecutor — internal compilation helper
-// ---------------------------------------------------------------------------
-
-/// Compiled snippet representation used only by REPL execution.
-///
-/// This intentionally mirrors the data shape needed by VM execution in
-/// `run.rs` but lives in the REPL module so REPL evolution does not require
-/// changing `run.rs`.
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-struct ReplExecutor {
-    /// Number of slots needed in the global namespace.
-    namespace_size: usize,
-    /// Maps variable names to their indices in the namespace.
-    ///
-    /// Stable slot assignment is required across snippets so previously created
-    /// objects continue to resolve names correctly.
-    name_map: AHashMap<String, NamespaceId>,
-    /// Compiled bytecode for the snippet.
-    module_code: Code,
-    /// Interned strings and compiled functions for this snippet.
-    interns: Interns,
-    /// Source code used for traceback/error rendering.
-    code: String,
-    /// Input variable names that were injected for this snippet.
-    ///
-    /// Stored so that `inject_inputs` can look up their namespace slots
-    /// after compilation assigns them.
-    input_names: Vec<String>,
-}
-
-impl ReplExecutor {
-    /// Compiles one REPL snippet against existing session metadata.
-    ///
-    /// This differs from normal compilation in three ways required for true
-    /// no-replay execution:
-    /// - Seeds parsing from `existing_interns` so old `StringId` values stay stable.
-    /// - Seeds compilation with existing functions so old `FunctionId` values remain valid.
-    /// - Reuses `existing_name_map` and appends new global names only.
-    ///
-    /// `input_names` are pre-registered in the name map before preparation so they
-    /// receive stable namespace slots that `inject_inputs` can use to store values.
-    fn new_repl_snippet(
-        code: String,
-        script_name: &str,
-        mut existing_name_map: AHashMap<String, NamespaceId>,
-        existing_interns: &Interns,
-        input_names: Vec<String>,
-    ) -> Result<Self, MontyException> {
-        // Pre-register input names so they get stable slots before preparation.
-        for name in &input_names {
-            let next_slot = existing_name_map.len();
-            existing_name_map
-                .entry(name.clone())
-                .or_insert_with(|| NamespaceId::new(next_slot));
-        }
-
-        let seeded_interner = InternerBuilder::from_interns(existing_interns, &code);
-        let parse_result = parse_with_interner(&code, script_name, seeded_interner)
-            .map_err(|e| e.into_python_exc(script_name, &code))?;
-        let prepared = prepare_with_existing_names(parse_result, existing_name_map)
-            .map_err(|e| e.into_python_exc(script_name, &code))?;
-
-        let existing_functions = existing_interns.functions_clone();
-        let mut interns = Interns::new(prepared.interner, Vec::new());
-        let namespace_size_u16 = u16::try_from(prepared.namespace_size).expect("module namespace size exceeds u16");
-        let compile_result =
-            Compiler::compile_module_with_functions(&prepared.nodes, &interns, namespace_size_u16, existing_functions)
-                .map_err(|e| e.into_python_exc(script_name, &code))?;
-        interns.set_functions(compile_result.functions);
-
-        Ok(Self {
-            namespace_size: prepared.namespace_size,
-            name_map: prepared.name_map,
-            module_code: compile_result.code,
-            interns,
-            code,
-            input_names,
-        })
-    }
-}
-
-// ---------------------------------------------------------------------------
 // ReplSnapshot — internal execution state for suspend/resume
 // ---------------------------------------------------------------------------
 
@@ -921,7 +826,7 @@ pub(crate) struct ReplSnapshot<T: ResourceTracker> {
     /// Persistent REPL session state while this snippet is suspended.
     repl: MontyRepl<T>,
     /// Compiled snippet and intern/function tables for this execution.
-    executor: ReplExecutor,
+    executor: Executor,
     /// VM stack/frame state at suspension.
     vm_state: VMSnapshot,
 }
@@ -999,7 +904,7 @@ impl<T: ResourceTracker> ReplSnapshot<T> {
 /// Converts each `MontyObject` to a `Value` while the VM is alive, then stores
 /// it in the global slot that the compiler assigned for the corresponding input name.
 fn inject_inputs_into_vm(
-    executor: &ReplExecutor,
+    executor: &Executor,
     input_values: Vec<MontyObject>,
     vm: &mut VM<'_, '_, impl ResourceTracker>,
 ) -> Result<(), MontyException> {
@@ -1018,51 +923,6 @@ fn inject_inputs_into_vm(
     Ok(())
 }
 
-/// Converts module/frame exit results into plain `MontyObject` outputs.
-///
-/// Used by the non-iterative `feed_run` path where suspendable outcomes (external calls,
-/// name lookups) are not supported and should produce errors.
-fn frame_exit_to_object(
-    frame_exit_result: RunResult<FrameExit>,
-    vm: &mut VM<'_, '_, impl ResourceTracker>,
-) -> RunResult<MontyObject> {
-    match frame_exit_result? {
-        FrameExit::Return(return_value) => Ok(MontyObject::new(return_value, vm)),
-        FrameExit::ExternalCall {
-            function_name, args, ..
-        } => {
-            args.drop_with_heap(vm);
-            let function_name = function_name.as_str(vm.interns);
-            Err(ExcType::not_implemented(format!(
-                "External function '{function_name}' not implemented with standard execution"
-            ))
-            .into())
-        }
-        FrameExit::OsCall { function, args, .. } => {
-            args.drop_with_heap(vm);
-            Err(ExcType::not_implemented(format!(
-                "OS function '{function}' not implemented with standard execution"
-            ))
-            .into())
-        }
-        FrameExit::MethodCall { method_name, args, .. } => {
-            args.drop_with_heap(vm);
-            let name = method_name.as_str(vm.interns);
-            Err(
-                ExcType::not_implemented(format!("Method call '{name}' not implemented with standard execution"))
-                    .into(),
-            )
-        }
-        FrameExit::ResolveFutures(_) => {
-            Err(ExcType::not_implemented("async futures not supported by standard execution.").into())
-        }
-        FrameExit::NameLookup { name_id, .. } => {
-            let name = vm.interns.get_str(name_id);
-            Err(ExcType::name_error(name).into())
-        }
-    }
-}
-
 /// Assembles a `ReplProgress` from already-converted data.
 ///
 /// This is the REPL equivalent of `build_run_progress`. On completion/error,
@@ -1071,7 +931,7 @@ fn frame_exit_to_object(
 fn build_repl_progress<T: ResourceTracker>(
     converted: ConvertedExit,
     vm_state: Option<VMSnapshot>,
-    executor: ReplExecutor,
+    executor: Executor,
     mut repl: MontyRepl<T>,
 ) -> Result<ReplProgress<T>, Box<ReplStartError<T>>> {
     macro_rules! new_repl_snapshot {
@@ -1086,7 +946,7 @@ fn build_repl_progress<T: ResourceTracker>(
 
     match converted {
         ConvertedExit::Complete(obj) => {
-            let ReplExecutor { name_map, interns, .. } = executor;
+            let Executor { name_map, interns, .. } = executor;
             repl.global_name_map = name_map;
             repl.interns = interns;
             Ok(ReplProgress::Complete { repl, value: obj })
@@ -1138,7 +998,7 @@ fn build_repl_progress<T: ResourceTracker>(
             // Commit compiler metadata even on runtime errors, matching feed() behavior.
             // Snippets can create new variables or functions before raising, and those
             // values may reference FunctionId/StringId values from the new tables.
-            let ReplExecutor { name_map, interns, .. } = executor;
+            let Executor { name_map, interns, .. } = executor;
             repl.global_name_map = name_map;
             repl.interns = interns;
             Err(Box::new(ReplStartError { repl, error }))
