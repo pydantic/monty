@@ -219,7 +219,9 @@ impl MountTable {
         let normalized = normalize_virtual_path(virtual_path);
         let extra_args = if args.len() > 1 { &args[1..] } else { &[] };
 
-        let mount = self.find_mount_mut(&normalized)?;
+        let Some(mount) = self.find_mount_mut(&normalized) else {
+            return Some(Err(MountError::NoMountPoint(virtual_path.to_owned())));
+        };
         let ctx = MountContext {
             mount_virtual: &mount.virtual_path.clone(),
             mount_host: &mount.host_path.clone(),

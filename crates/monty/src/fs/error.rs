@@ -15,7 +15,8 @@ use crate::{ExcType, MontyException};
 #[derive(Debug)]
 pub enum MountError {
     /// The virtual path does not fall under any configured mount point.
-    /// Maps to `FileNotFoundError` in Python.
+    /// Maps to `PermissionError` in Python — accessing paths outside any mount
+    /// is a sandbox violation.
     NoMountPoint(String),
 
     /// Path traversal or symlink escape detected — the resolved path falls outside
@@ -60,8 +61,8 @@ impl MountError {
     pub fn into_exception(self) -> MontyException {
         match self {
             Self::NoMountPoint(path) => MontyException::new(
-                ExcType::FileNotFoundError,
-                Some(format!("[Errno 2] No such file or directory: '{path}'")),
+                ExcType::PermissionError,
+                Some(format!("[Errno 13] Permission denied: '{path}'")),
             ),
             Self::PathEscape { virtual_path } => MontyException::new(
                 ExcType::PermissionError,
