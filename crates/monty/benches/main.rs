@@ -7,7 +7,7 @@ use codspeed_criterion_compat::{Bencher, Criterion, black_box, criterion_group, 
 #[cfg(not(codspeed))]
 use criterion::{Bencher, Criterion, black_box, criterion_group, criterion_main};
 use monty::MontyRun;
-#[cfg(not(codspeed))]
+#[cfg(all(not(codspeed), unix))]
 use pprof::criterion::{Output, PProfProfiler};
 // CPython benchmarks are only run locally, not on CodSpeed CI (requires Python + pyo3 setup)
 #[cfg(not(codspeed))]
@@ -232,16 +232,16 @@ fn criterion_benchmark(c: &mut Criterion) {
     c.bench_function("pair_tuples__cpython", |b| run_cpython(b, PAIR_TUPLES, 100_000));
 }
 
-// Use pprof flamegraph profiler when running locally (not on CodSpeed)
-#[cfg(not(codspeed))]
+// Use pprof flamegraph profiler when running locally on Unix (not on CodSpeed or Windows)
+#[cfg(all(not(codspeed), unix))]
 criterion_group!(
     name = benches;
     config = Criterion::default().with_profiler(PProfProfiler::new(100, Output::Flamegraph(None)));
     targets = criterion_benchmark
 );
 
-// Use default config when running on CodSpeed (pprof's Profiler trait is incompatible)
-#[cfg(codspeed)]
+// Use default config on CodSpeed or Windows (pprof is Unix-only)
+#[cfg(any(codspeed, not(unix)))]
 criterion_group!(benches, criterion_benchmark);
 
 criterion_main!(benches);

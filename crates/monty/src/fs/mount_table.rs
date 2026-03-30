@@ -4,6 +4,7 @@
 //! virtual path to a real host directory with a specific access mode.
 
 use std::{
+    cmp::Reverse,
     fs,
     path::{Path, PathBuf},
 };
@@ -102,8 +103,7 @@ impl MountTable {
         });
 
         // Re-sort: longest prefix first for correct matching.
-        self.mounts
-            .sort_by(|a, b| b.virtual_path.len().cmp(&a.virtual_path.len()));
+        self.mounts.sort_by_key(|m| Reverse(m.virtual_path.len()));
 
         Ok(())
     }

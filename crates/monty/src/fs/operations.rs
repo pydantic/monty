@@ -900,8 +900,7 @@ fn stat_fs(path: &Path, vpath: &str) -> Result<MontyObject, MountError> {
         .modified()
         .unwrap_or(SystemTime::UNIX_EPOCH)
         .duration_since(SystemTime::UNIX_EPOCH)
-        .map(|d| d.as_secs_f64())
-        .unwrap_or(0.0);
+        .map_or(0.0, |d| d.as_secs_f64());
     let size = i64::try_from(metadata.len()).unwrap_or(i64::MAX);
 
     if metadata.is_dir() {
@@ -996,8 +995,7 @@ fn extract_mkdir_kwargs(kwargs: &[(MontyObject, MontyObject)]) -> (bool, bool) {
 fn current_timestamp() -> f64 {
     SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
-        .map(|d| d.as_secs_f64())
-        .unwrap_or(0.0)
+        .map_or(0.0, |d| d.as_secs_f64())
 }
 
 /// Constructs a child virtual path from a parent and child name.
