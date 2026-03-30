@@ -18,7 +18,6 @@
 //! - [`MountMode::ReadWrite`] — full read/write access to the host directory
 //! - [`MountMode::ReadOnly`] — reads work, writes raise `PermissionError`
 //! - [`MountMode::OverlayMemory`] — reads fall through to host; writes stored in memory
-//! - [`MountMode::OverlayDirectory`] — reads fall through; writes go to a separate directory
 
 pub use error::MountError;
 pub use mount_mode::{MountMode, OverlayState};

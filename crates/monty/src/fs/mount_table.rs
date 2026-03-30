@@ -52,8 +52,7 @@ impl MountTable {
     /// # Errors
     ///
     /// Returns [`MountError::InvalidMount`] if the virtual path is not absolute,
-    /// the host path doesn't exist or isn't a directory, or (for `OverlayDirectory`)
-    /// the upper directory doesn't exist.
+    /// or the host path doesn't exist or isn't a directory.
     pub fn mount(
         &mut self,
         virtual_path: &str,
@@ -79,21 +78,6 @@ impl MountTable {
                 "host path is not a directory: '{}'",
                 host_path.display()
             )));
-        }
-
-        if let MountMode::OverlayDirectory { ref upper_dir } = mode {
-            let canonical_upper = fs::canonicalize(upper_dir).map_err(|e| {
-                MountError::InvalidMount(format!(
-                    "cannot canonicalize upper directory '{}': {e}",
-                    upper_dir.display()
-                ))
-            })?;
-            if !canonical_upper.is_dir() {
-                return Err(MountError::InvalidMount(format!(
-                    "upper directory is not a directory: '{}'",
-                    upper_dir.display()
-                )));
-            }
         }
 
         self.mounts.push(Mount {

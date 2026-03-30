@@ -5,7 +5,6 @@
 //! - **`ReadWrite`**: direct pass-through to [`std::fs`] on the resolved host path
 //! - **`ReadOnly`**: read ops pass through; write ops return [`MountError::ReadOnly`]
 //! - **`OverlayMemory`**: reads check overlay first then fall through; writes go to overlay
-//! - **`OverlayDirectory`**: reads check upper dir first then lower; writes go to upper dir
 
 use std::{
     collections::HashSet,
@@ -53,9 +52,6 @@ pub fn execute(
         MountMode::ReadWrite | MountMode::ReadOnly => execute_direct(function, virtual_path, extra_args, kwargs, ctx),
         MountMode::OverlayMemory(state) => {
             execute_overlay_memory(function, virtual_path, extra_args, kwargs, ctx, state)
-        }
-        MountMode::OverlayDirectory { upper_dir } => {
-            execute_overlay_directory(function, virtual_path, extra_args, kwargs, ctx, upper_dir)
         }
     }
 }
@@ -641,205 +637,6 @@ fn ovl_rename(
 }
 
 // =============================================================================
-// Overlay directory operations
-// =============================================================================
-
-/// Executes a filesystem operation with directory-backed overlay semantics.
-fn execute_overlay_directory(
-    function: OsFunction,
-    vpath: &str,
-    extra_args: &[MontyObject],
-    kwargs: &[(MontyObject, MontyObject)],
-    ctx: &MountContext<'_>,
-    upper_dir: &Path,
-) -> Result<MontyObject, MountError> {
-    let normalized = normalize_virtual_path(vpath);
-    let relative =
-        strip_mount_prefix(&normalized, ctx.mount_virtual).ok_or_else(|| MountError::NoMountPoint(vpath.to_owned()))?;
-
-    let upper_path = if relative.is_empty() {
-        upper_dir.to_path_buf()
-    } else {
-        upper_dir.join(relative)
-    };
-
-    let is_whited_out = whiteout_path_for(&upper_path).is_some_and(|p| p.exists());
-
-    match function {
-        OsFunction::Exists => {
-            if is_whited_out {
-                return Ok(MontyObject::Bool(false));
-            }
-            if upper_path.exists() {
-                return Ok(MontyObject::Bool(true));
-            }
-            Ok(MontyObject::Bool(
-                resolve_path(vpath, ctx.mount_virtual, ctx.mount_host, false).is_ok_and(|r| r.host_path.exists()),
-            ))
-        }
-        OsFunction::IsFile => ovl_dir_check(&upper_path, is_whited_out, Path::is_file, ctx, vpath),
-        OsFunction::IsDir => ovl_dir_check(&upper_path, is_whited_out, Path::is_dir, ctx, vpath),
-        OsFunction::IsSymlink => ovl_dir_check(&upper_path, is_whited_out, Path::is_symlink, ctx, vpath),
-        OsFunction::ReadText => {
-            if is_whited_out {
-                return Err(not_found(vpath));
-            }
-            if upper_path.is_file() {
-                return read_text_fs(&upper_path, vpath);
-            }
-            let r = resolve_path(vpath, ctx.mount_virtual, ctx.mount_host, false)?;
-            read_text_fs(&r.host_path, vpath)
-        }
-        OsFunction::ReadBytes => {
-            if is_whited_out {
-                return Err(not_found(vpath));
-            }
-            if upper_path.is_file() {
-                return read_bytes_fs(&upper_path, vpath);
-            }
-            let r = resolve_path(vpath, ctx.mount_virtual, ctx.mount_host, false)?;
-            read_bytes_fs(&r.host_path, vpath)
-        }
-        OsFunction::Stat => {
-            if is_whited_out {
-                return Err(not_found(vpath));
-            }
-            if upper_path.exists() {
-                return stat_fs(&upper_path, vpath);
-            }
-            let r = resolve_path(vpath, ctx.mount_virtual, ctx.mount_host, false)?;
-            stat_fs(&r.host_path, vpath)
-        }
-        OsFunction::Iterdir => iterdir_overlay_dir(&upper_path, ctx, vpath),
-
-        // --- Write operations: go to upper dir ---
-        OsFunction::WriteText => {
-            let content = extract_string_arg(extra_args, "write_text")?;
-            remove_whiteout(&upper_path);
-            ensure_parent(&upper_path, vpath)?;
-            write_text_fs(&upper_path, content, vpath)
-        }
-        OsFunction::WriteBytes => {
-            let content = extract_bytes_arg(extra_args, "write_bytes")?;
-            remove_whiteout(&upper_path);
-            ensure_parent(&upper_path, vpath)?;
-            write_bytes_fs(&upper_path, content, vpath)
-        }
-        OsFunction::Mkdir => {
-            let (parents, exist_ok) = extract_mkdir_kwargs(kwargs);
-            remove_whiteout(&upper_path);
-            if parents {
-                fs::create_dir_all(&upper_path).map_err(|e| MountError::Io(e, vpath.to_owned()))?;
-            } else if exist_ok && upper_path.is_dir() {
-                // Already exists.
-            } else {
-                fs::create_dir(&upper_path).map_err(|e| MountError::Io(e, vpath.to_owned()))?;
-            }
-            Ok(MontyObject::None)
-        }
-        OsFunction::Unlink => {
-            if upper_path.is_file() {
-                fs::remove_file(&upper_path).map_err(|e| MountError::Io(e, vpath.to_owned()))?;
-            }
-            create_whiteout(&upper_path, vpath)?;
-            Ok(MontyObject::None)
-        }
-        OsFunction::Rmdir => {
-            if upper_path.is_dir() {
-                fs::remove_dir(&upper_path).map_err(|e| MountError::Io(e, vpath.to_owned()))?;
-            }
-            create_whiteout(&upper_path, vpath)?;
-            Ok(MontyObject::None)
-        }
-        OsFunction::Rename => {
-            let target_vpath = extract_path_arg(extra_args, "rename")?;
-            let target_norm = normalize_virtual_path(&target_vpath);
-            let target_rel =
-                strip_mount_prefix(&target_norm, ctx.mount_virtual).ok_or_else(|| MountError::CrossMountRename {
-                    src: vpath.to_owned(),
-                    dst: target_vpath.clone(),
-                })?;
-            let target_upper = if target_rel.is_empty() {
-                upper_dir.to_path_buf()
-            } else {
-                upper_dir.join(target_rel)
-            };
-
-            if upper_path.exists() {
-                ensure_parent(&target_upper, vpath)?;
-                fs::rename(&upper_path, &target_upper).map_err(|e| MountError::Io(e, vpath.to_owned()))?;
-            } else {
-                let r = resolve_path(vpath, ctx.mount_virtual, ctx.mount_host, false)?;
-                ensure_parent(&target_upper, vpath)?;
-                fs::copy(&r.host_path, &target_upper).map_err(|e| MountError::Io(e, vpath.to_owned()))?;
-            }
-            create_whiteout(&upper_path, vpath)?;
-            remove_whiteout(&target_upper);
-            Ok(MontyObject::None)
-        }
-
-        OsFunction::Resolve | OsFunction::Absolute => Ok(MontyObject::Path(normalize_virtual_path(vpath))),
-        _ => Err(MountError::NoMountPoint(vpath.to_owned())),
-    }
-}
-
-/// Shared logic for `is_file`, `is_dir`, `is_symlink` in overlay directory mode.
-fn ovl_dir_check(
-    upper_path: &Path,
-    is_whited_out: bool,
-    check_fn: fn(&Path) -> bool,
-    ctx: &MountContext<'_>,
-    vpath: &str,
-) -> Result<MontyObject, MountError> {
-    if is_whited_out {
-        return Ok(MontyObject::Bool(false));
-    }
-    if upper_path.exists() {
-        return Ok(MontyObject::Bool(check_fn(upper_path)));
-    }
-    match resolve_path(vpath, ctx.mount_virtual, ctx.mount_host, false) {
-        Ok(r) => Ok(MontyObject::Bool(check_fn(&r.host_path))),
-        Err(MountError::Io(_, _)) => Ok(MontyObject::Bool(false)),
-        Err(e) => Err(e),
-    }
-}
-
-/// Lists directory contents for overlay-directory mode, merging upper and lower.
-#[expect(clippy::unnecessary_wraps)]
-fn iterdir_overlay_dir(upper_path: &Path, ctx: &MountContext<'_>, vpath: &str) -> Result<MontyObject, MountError> {
-    let mut seen: HashSet<String> = HashSet::new();
-    let mut entries: Vec<MontyObject> = Vec::new();
-    let mut whiteouts: HashSet<String> = HashSet::new();
-
-    if upper_path.is_dir()
-        && let Ok(read_dir) = fs::read_dir(upper_path)
-    {
-        for entry in read_dir.flatten() {
-            let name = entry.file_name().to_string_lossy().to_string();
-            if let Some(original) = name.strip_prefix(".wh.") {
-                whiteouts.insert(original.to_owned());
-            } else {
-                seen.insert(name.clone());
-                entries.push(MontyObject::Path(format_child_path(vpath, &name)));
-            }
-        }
-    }
-
-    if let Ok(r) = resolve_path(vpath, ctx.mount_virtual, ctx.mount_host, false)
-        && let Ok(read_dir) = fs::read_dir(&r.host_path)
-    {
-        for entry in read_dir.flatten() {
-            let name = entry.file_name().to_string_lossy().to_string();
-            if !seen.contains(&name) && !whiteouts.contains(&name) {
-                entries.push(MontyObject::Path(format_child_path(vpath, &name)));
-            }
-        }
-    }
-
-    Ok(MontyObject::List(entries))
-}
-
-// =============================================================================
 // Shared filesystem primitives
 // =============================================================================
 
@@ -1015,35 +812,4 @@ fn io_err(kind: ErrorKind, msg: &str, vpath: &str) -> MountError {
 /// Shorthand for a "not found" error.
 fn not_found(vpath: &str) -> MountError {
     io_err(ErrorKind::NotFound, "No such file or directory", vpath)
-}
-
-/// Ensures the parent directory of a path exists.
-fn ensure_parent(path: &Path, vpath: &str) -> Result<(), MountError> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|e| MountError::Io(e, vpath.to_owned()))?;
-    }
-    Ok(())
-}
-
-/// Constructs the whiteout file path for a given path (overlay directory mode).
-fn whiteout_path_for(path: &Path) -> Option<PathBuf> {
-    let file_name = path.file_name()?.to_str()?;
-    let parent = path.parent()?;
-    Some(parent.join(format!(".wh.{file_name}")))
-}
-
-/// Creates a whiteout file for a path (overlay directory mode).
-fn create_whiteout(path: &Path, vpath: &str) -> Result<(), MountError> {
-    if let Some(whiteout) = whiteout_path_for(path) {
-        ensure_parent(&whiteout, vpath)?;
-        fs::write(&whiteout, b"").map_err(|e| MountError::Io(e, vpath.to_owned()))?;
-    }
-    Ok(())
-}
-
-/// Removes a whiteout file if it exists (overlay directory mode).
-fn remove_whiteout(path: &Path) {
-    if let Some(whiteout) = whiteout_path_for(path) {
-        let _ = fs::remove_file(whiteout);
-    }
 }

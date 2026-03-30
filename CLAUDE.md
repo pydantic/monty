@@ -55,7 +55,7 @@ Possible security risks to consider:
 ## Filesystem Mounts (`crates/monty/src/fs/`)
 
 The `MountTable` allows mounting real host directories into the sandbox at virtual paths,
-with configurable access modes (ReadWrite, ReadOnly, OverlayMemory, OverlayDirectory).
+with configurable access modes (ReadWrite, ReadOnly, OverlayMemory).
 
 **CRITICAL SECURITY INVARIANT:** The monty runtime MUST NEVER read, write, or
 obtain any information about any file or directory outside the specific directory

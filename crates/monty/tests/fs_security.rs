@@ -360,23 +360,6 @@ mod symlink_tests {
     }
 
     #[test]
-    fn symlink_escape_overlay_directory() {
-        let dir = create_test_dir();
-        let upper = TempDir::new().unwrap();
-        let outside = TempDir::new().unwrap();
-        fs::write(outside.path().join("secret.txt"), "secret").unwrap();
-        symlink_dir(outside.path(), dir.path().join("escape"));
-
-        let mut mt = mount_at_mnt(
-            &dir,
-            MountMode::OverlayDirectory {
-                upper_dir: upper.path().to_path_buf(),
-            },
-        );
-        assert_blocked(&mut mt, OsFunction::ReadText, "/mnt/escape/secret.txt");
-    }
-
-    #[test]
     fn symlink_within_mount_allowed() {
         // Symlinks that stay within the mount boundary should work.
         let dir = create_test_dir();
@@ -589,22 +572,6 @@ fn mount_file_as_host_path() {
 
     let mut mt = MountTable::new();
     let err = mt.mount("/mnt", &file_path, MountMode::ReadWrite).unwrap_err();
-    assert!(matches!(err, MountError::InvalidMount(_)));
-}
-
-#[test]
-fn mount_overlay_dir_nonexistent_upper() {
-    let dir = TempDir::new().unwrap();
-    let mut mt = MountTable::new();
-    let err = mt
-        .mount(
-            "/mnt",
-            dir.path(),
-            MountMode::OverlayDirectory {
-                upper_dir: "/nonexistent/upper/dir".into(),
-            },
-        )
-        .unwrap_err();
     assert!(matches!(err, MountError::InvalidMount(_)));
 }
 

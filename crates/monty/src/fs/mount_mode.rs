@@ -1,7 +1,5 @@
 //! Mount mode definitions and overlay state management.
 
-use std::path::PathBuf;
-
 use ahash::AHashMap;
 
 /// Access policy for a mount point.
@@ -27,16 +25,6 @@ pub enum MountMode {
     /// tombstones that hide real files from subsequent reads. Directory listings
     /// merge real and overlay entries, with overlay taking precedence.
     OverlayMemory(OverlayState),
-
-    /// Copy-on-write overlay backed by a separate host directory.
-    ///
-    /// Reads fall through to the mounted host directory. Writes go to `upper_dir`,
-    /// mirroring the path structure. Deletions are tracked via whiteout files
-    /// (`.wh.<name>`) in the upper directory, following Linux overlayfs conventions.
-    OverlayDirectory {
-        /// The host directory where writes are stored. Must exist and be writable.
-        upper_dir: PathBuf,
-    },
 }
 
 /// In-memory overlay state for [`MountMode::OverlayMemory`].
