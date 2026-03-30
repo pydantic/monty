@@ -189,8 +189,11 @@ fn parse_fixture(content: &str) -> (String, Expectation, TestConfig) {
 /// The traceback string should contain the full expected output including the
 /// "Traceback (most recent call last):" header and the exception line.
 fn parse_traceback_expectation(content: &str) -> Option<(String, String)> {
-    // Format: """\nTRACEBACK:\n...\n"""
     const MARKER: &str = "\"\"\"\nTRACEBACK:\n";
+
+    // Normalize \r\n to \n so this works on Windows where git may check out
+    // files with CRLF line endings.
+    let content = content.replace("\r\n", "\n");
 
     // Find the TRACEBACK marker
     let marker_pos = content.find(MARKER)?;
