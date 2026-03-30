@@ -1,3 +1,4 @@
+# skip-cpython-windows — pathlib uses POSIX paths in Monty's sandbox, Windows CPython resolves differently
 # === Path constructor ===
 from pathlib import Path
 

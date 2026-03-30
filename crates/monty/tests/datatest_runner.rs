@@ -43,6 +43,11 @@ const TEST_RECURSION_LIMIT: usize = 50;
 /// ## Xfail Semantics (Strict)
 /// - `xfail=monty` - Test is expected to fail on Monty; if it passes, that's an error
 /// - `xfail=cpython` - Test is expected to fail on CPython; if it passes, that's an error
+///
+/// ## Platform-Specific Skips
+/// - `skip-cpython-windows` - Skip CPython test on Windows (Monty test still runs).
+///   Used for tests that rely on POSIX path semantics which Monty's sandbox always
+///   provides but Windows CPython does not.
 /// - `xfail=monty,cpython` - Expected to fail on both interpreters
 #[derive(Debug, Clone, Default)]
 #[expect(clippy::struct_excessive_bools)]
@@ -60,6 +65,10 @@ struct TestConfig {
     /// For Monty: mounted at `/mnt` with `OverlayMemory` mode.
     /// For CPython: passed as real path. `root` variable injected into both.
     mount_fs: bool,
+    /// When true, skip CPython test on Windows. Used for tests that rely on POSIX
+    /// path semantics (e.g. pathlib tests using `/` paths) which are correct for
+    /// Monty's always-POSIX sandbox but behave differently on Windows CPython.
+    skip_cpython_windows: bool,
 }
 
 /// Represents the expected outcome of a test fixture
@@ -135,6 +144,9 @@ fn parse_fixture(content: &str) -> (String, Expectation, TestConfig) {
         iter_mode: comment_lines.iter().any(|line| line.starts_with("call-external")) || mount_fs,
         async_mode: comment_lines.iter().any(|line| line.starts_with("run-async")),
         mount_fs,
+        skip_cpython_windows: comment_lines
+            .iter()
+            .any(|line| line.starts_with("skip-cpython-windows")),
         ..Default::default()
     };
     // Check for "xfail=" directive
@@ -2254,6 +2266,11 @@ fn run_test_cases_cpython(path: &Path) -> Result<(), Box<dyn Error>> {
     let content = fs::read_to_string(path)?;
     let (code, expectation, config) = parse_fixture(&content);
     let test_name = path.strip_prefix("test_cases/").unwrap_or(path).display().to_string();
+
+    // Skip CPython tests that rely on POSIX path semantics when running on Windows
+    if cfg!(windows) && config.skip_cpython_windows {
+        return Ok(());
+    }
 
     let result = try_run_cpython_test(
         path,
