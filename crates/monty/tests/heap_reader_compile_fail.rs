@@ -1,8 +1,12 @@
 //! Integration tests that verify unsound `HeapReader` usage patterns are rejected at compile time.
 //!
-//! Each test invokes `cargo check` with specific `cfg` flags that enable known-bad code
+//! Each test invokes `cargo rustc` with specific `cfg` flags that enable known-bad code
 //! inside `crates/monty/tests/heap_reader_compile_fail_cases/cases.rs`, then asserts that
 //! compilation fails with the expected borrow-checker error stored in a `.stderr` file.
+//!
+//! Using `cargo rustc -p monty` instead of `cargo check` with `RUSTFLAGS` ensures the cfg
+//! flags are only passed to the monty crate itself, not to its dependencies. This avoids
+//! unnecessary recompilation of the dependency tree between test runs.
 //!
 //! This approach is necessary because the `HeapReader` types are `pub(crate)`, so standard
 //! compile-fail test frameworks (like `trybuild`) cannot access them from integration tests.
@@ -49,9 +53,13 @@ fn normalize_stderr(stderr: &str) -> String {
         .join("\n")
 }
 
-/// Runs `cargo check -p monty` with the given cfg flag and asserts that:
+/// Runs `cargo rustc -p monty` with the given cfg flag and asserts that:
 /// 1. Compilation fails (non-zero exit code)
 /// 2. The normalized error output matches the corresponding `.stderr` file
+///
+/// Using `cargo rustc --profile=check` instead of `cargo check` with `RUSTFLAGS` passes
+/// the cfg flags only to the monty crate, so dependencies are compiled once and cached
+/// across test runs.
 ///
 /// When `UPDATE_EXPECT=1` is set, overwrites the `.stderr` file instead of asserting.
 fn check_compile_fail(test_name: &str) {
@@ -59,14 +67,19 @@ fn check_compile_fail(test_name: &str) {
     let stderr_path = cases_dir().join(format!("{test_name}.stderr"));
 
     let output = Command::new(env!("CARGO"))
-        .args(["check", "-p", "monty"])
-        .env(
-            "RUSTFLAGS",
-            format!("--cfg heap_reader_compile_fail_tests --cfg {test_cfg} --diagnostic-width=140"),
-        )
+        .args([
+            "rustc",
+            "--package=monty",
+            "--profile=check",
+            "--",
+            "--cfg=heap_reader_compile_fail_tests",
+            "--cfg",
+            &test_cfg,
+            "--diagnostic-width=140",
+        ])
         .env("CARGO_TERM_COLOR", "never")
         .output()
-        .expect("failed to run cargo check");
+        .expect("failed to run cargo rustc");
 
     assert!(
         !output.status.success(),
