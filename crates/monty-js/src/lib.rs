@@ -32,6 +32,7 @@ mod convert;
 mod exceptions;
 mod limits;
 mod monty_cls;
+mod mount;
 
 pub use exceptions::{ExceptionInfo, Frame, JsMontyException, MontyTypingError};
 pub use limits::JsResourceLimits;
@@ -39,3 +40,4 @@ pub use monty_cls::{
     ExceptionInput, Monty, MontyComplete, MontyNameLookup, MontyOptions, MontyRepl, MontySnapshot,
     NameLookupLoadOptions, NameLookupResumeOptions, ResumeOptions, RunOptions, SnapshotLoadOptions, StartOptions,
 };
+pub use mount::{MountDirectory, MountDirectoryOptions};

@@ -6,18 +6,20 @@ import type {
   ExceptionInput,
   Frame,
   JsMontyObject,
+  MountDirectoryOptions,
   MontyOptions,
   NameLookupLoadOptions,
   NameLookupResumeOptions,
   ResourceLimits,
   ResumeOptions,
-  RunOptions,
+  RunOptions as NativeRunOptions,
   SnapshotLoadOptions,
-  StartOptions,
+  StartOptions as NativeStartOptions,
 } from './index.js'
 
 import {
   Monty as NativeMonty,
+  MountDirectory,
   MontyRepl as NativeMontyRepl,
   MontySnapshot as NativeMontySnapshot,
   MontyNameLookup as NativeMontyNameLookup,
@@ -28,11 +30,10 @@ import {
 
 export type {
   MontyOptions,
-  RunOptions,
+  MountDirectoryOptions,
   ResourceLimits,
   Frame,
   ExceptionInfo,
-  StartOptions,
   ResumeOptions,
   ExceptionInput,
   SnapshotLoadOptions,
@@ -40,6 +41,20 @@ export type {
   NameLookupLoadOptions,
   JsMontyObject,
 }
+
+/** Options for running code. */
+export interface RunOptions extends Omit<NativeRunOptions, 'mount'> {
+  /** Filesystem mount(s) for the sandbox. */
+  mount?: MountDirectory | MountDirectory[]
+}
+
+/** Options for starting execution. */
+export interface StartOptions extends Omit<NativeStartOptions, 'mount'> {
+  /** Filesystem mount(s) for the sandbox. */
+  mount?: MountDirectory | MountDirectory[]
+}
+
+export { MountDirectory }
 
 /**
  * Alias for ResourceLimits (deprecated name).
@@ -601,6 +616,8 @@ export interface RunMontyAsyncOptions {
   limits?: ResourceLimits
   /** Callback invoked on each print() call. The first argument is the stream name (always "stdout"), the second is the printed text. */
   printCallback?: (stream: string, text: string) => void
+  /** Filesystem mount(s) for the sandbox. */
+  mount?: MountDirectory | MountDirectory[]
 }
 
 /**
@@ -632,12 +649,13 @@ export interface RunMontyAsyncOptions {
  * });
  */
 export async function runMontyAsync(montyRunner: Monty, options: RunMontyAsyncOptions = {}): Promise<JsMontyObject> {
-  const { inputs, externalFunctions = {}, limits, printCallback } = options
+  const { inputs, externalFunctions = {}, limits, printCallback, mount } = options
 
   let progress: MontySnapshot | MontyNameLookup | MontyComplete = montyRunner.start({
     inputs,
     limits,
     printCallback,
+    mount,
   })
 
   while (!(progress instanceof MontyComplete)) {
