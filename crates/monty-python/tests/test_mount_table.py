@@ -49,6 +49,14 @@ def test_mount_directory_attributes(test_dir: Path):
     assert md.mode == 'read-only'
 
 
+def test_mount_directory_accepts_path_object(test_dir: Path):
+    """MountDirectory should accept both str and Path for host_path."""
+    md_str = MountDirectory('/data', str(test_dir), mode='read-only')
+    md_path = MountDirectory('/data', test_dir, mode='read-only')
+    assert md_path.virtual_path == '/data'
+    assert md_path.host_path == md_str.host_path
+
+
 def test_nonexistent_host_path():
     with pytest.raises(TypeError) as exc_info:
         MountDirectory('/data', '/nonexistent/path/that/does/not/exist')

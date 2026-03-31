@@ -609,6 +609,116 @@ mod hard_link_tests {
             .unwrap();
         assert_eq!(result, MontyObject::Bool(false));
     }
+
+    /// A broken symlink (target doesn't exist) inside the mount that points
+    /// outside must not allow `write_text` / `write_bytes` to follow it.
+    #[test]
+    #[cfg(unix)]
+    fn broken_symlink_write_escape_blocked() {
+        use std::os::unix::fs::symlink;
+
+        let dir = create_test_dir();
+        let outside = TempDir::new().unwrap();
+        let escape_target = outside.path().join("pwned.txt");
+
+        // Create symlink inside mount -> outside file that doesn't exist yet.
+        symlink(&escape_target, dir.path().join("broken_link.txt")).unwrap();
+
+        // Sanity: it's a broken symlink.
+        assert!(!dir.path().join("broken_link.txt").exists());
+        assert!(dir.path().join("broken_link.txt").symlink_metadata().is_ok());
+
+        let mut mt = mount_at_mnt(&dir, MountMode::ReadWrite);
+        assert_write_blocked(&mut mt, OsFunction::WriteText, "/mnt/broken_link.txt");
+        assert_write_blocked(&mut mt, OsFunction::WriteBytes, "/mnt/broken_link.txt");
+
+        // The target file must NOT have been created.
+        assert!(
+            !escape_target.exists(),
+            "broken symlink write escape: file was created outside the mount!"
+        );
+    }
+
+    /// Overlay mode writes to in-memory storage, never the real filesystem,
+    /// so a broken outbound symlink on the real FS is harmless — the overlay
+    /// simply stores the content in memory under the virtual path.
+    #[test]
+    #[cfg(unix)]
+    fn broken_symlink_overlay_writes_to_memory_not_real_fs() {
+        use std::os::unix::fs::symlink;
+
+        let dir = create_test_dir();
+        let outside = TempDir::new().unwrap();
+        let escape_target = outside.path().join("pwned.txt");
+
+        symlink(&escape_target, dir.path().join("broken_link.txt")).unwrap();
+
+        let mut mt = mount_at_mnt(&dir, MountMode::OverlayMemory(OverlayState::new()));
+
+        // Write succeeds (goes to overlay memory).
+        let result = mt
+            .handle_os_call(
+                OsFunction::WriteText,
+                &[
+                    MontyObject::Path("/mnt/broken_link.txt".to_owned()),
+                    MontyObject::String("safe".to_owned()),
+                ],
+                &[],
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(result, MontyObject::Int(4));
+
+        // Real FS target was NOT created.
+        assert!(!escape_target.exists());
+    }
+
+    /// Iterdir must filter out symlinks pointing outside the mount (including
+    /// broken ones) while keeping regular files and inbound symlinks.
+    #[test]
+    #[cfg(unix)]
+    fn iterdir_filters_outbound_symlinks_but_keeps_regular_and_inbound() {
+        use std::os::unix::fs::symlink;
+
+        let dir = create_test_dir();
+        let outside = TempDir::new().unwrap();
+        fs::write(outside.path().join("external.txt"), "external").unwrap();
+
+        // Outbound symlink (points outside mount) — should be filtered.
+        symlink(outside.path().join("external.txt"), dir.path().join("escape_link")).unwrap();
+        // Inbound symlink (points inside mount) — should be kept.
+        symlink(dir.path().join("hello.txt"), dir.path().join("internal_link")).unwrap();
+
+        let mut mt = mount_at_mnt(&dir, MountMode::ReadWrite);
+        let result = call(&mut mt, OsFunction::Iterdir, "/mnt").unwrap().unwrap();
+
+        if let MontyObject::List(entries) = &result {
+            let names: Vec<String> = entries
+                .iter()
+                .filter_map(|e| {
+                    if let MontyObject::Path(p) = e {
+                        p.rsplit('/').next().map(ToOwned::to_owned)
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            assert!(
+                !names.contains(&"escape_link".to_owned()),
+                "outbound symlink should be filtered from iterdir"
+            );
+            assert!(
+                names.contains(&"internal_link".to_owned()),
+                "inbound symlink should be kept in iterdir"
+            );
+            assert!(
+                names.contains(&"hello.txt".to_owned()),
+                "regular files should be present"
+            );
+        } else {
+            panic!("expected List from iterdir, got {result:?}");
+        }
+    }
 }
 
 // =============================================================================

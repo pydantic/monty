@@ -96,12 +96,16 @@ fn execute_direct(
         OsFunction::WriteText => {
             let content = extract_string_arg(extra_args, "write_text")?;
             check_write_limit(content.len(), ctx)?;
-            write_text_fs(&host, content, vpath)
+            let result = write_text_fs(&host, content, vpath)?;
+            commit_write_bytes(content.len(), ctx);
+            Ok(result)
         }
         OsFunction::WriteBytes => {
             let content = extract_bytes_arg(extra_args, "write_bytes")?;
             check_write_limit(content.len(), ctx)?;
-            write_bytes_fs(&host, content, vpath)
+            let result = write_bytes_fs(&host, content, vpath)?;
+            commit_write_bytes(content.len(), ctx);
+            Ok(result)
         }
         OsFunction::Mkdir => {
             let (parents, exist_ok) = extract_mkdir_kwargs(kwargs);
@@ -154,9 +158,17 @@ fn resolve_host_path(
         // Use resolve_path_mkdir_parents which walks existing ancestors, canonicalizing
         // each to detect symlinks that escape the mount boundary.
         Ok(resolve_path_mkdir_parents(vpath, ctx.mount_virtual, ctx.mount_host)?.host_path)
+    } else if matches!(function, OsFunction::Unlink) {
+        // Unlink should remove the symlink entry itself, not follow the
+        // symlink to its target. Use lstat-style resolution (canonicalize
+        // parent only, preserve final component).
+        match resolve_path_for_lstat(vpath, ctx.mount_virtual, ctx.mount_host) {
+            Ok(r) => Ok(r.host_path),
+            Err(MountError::Io(_, _)) => Ok(PathBuf::from("/nonexistent")),
+            Err(e) => Err(e),
+        }
     } else {
-        let for_creation =
-            function.is_write() && !matches!(function, OsFunction::Unlink | OsFunction::Rmdir | OsFunction::Rename);
+        let for_creation = function.is_write() && !matches!(function, OsFunction::Rmdir | OsFunction::Rename);
         Ok(resolve_path(vpath, ctx.mount_virtual, ctx.mount_host, for_creation)?.host_path)
     }
 }
@@ -189,12 +201,16 @@ fn execute_overlay_memory(
         OsFunction::WriteText => {
             let content = extract_string_arg(extra_args, "write_text")?;
             check_write_limit(content.len(), ctx)?;
-            overlay_write_text(state, relative, content, ctx, vpath)
+            let result = overlay_write_text(state, relative, content, ctx, vpath)?;
+            commit_write_bytes(content.len(), ctx);
+            Ok(result)
         }
         OsFunction::WriteBytes => {
             let content = extract_bytes_arg(extra_args, "write_bytes")?;
             check_write_limit(content.len(), ctx)?;
-            overlay_write_bytes(state, relative, content, ctx, vpath)
+            let result = overlay_write_bytes(state, relative, content, ctx, vpath)?;
+            commit_write_bytes(content.len(), ctx);
+            Ok(result)
         }
         OsFunction::Mkdir => {
             let (parents, exist_ok) = extract_mkdir_kwargs(kwargs);
@@ -932,6 +948,11 @@ fn stat_fs(path: &Path, vpath: &str) -> Result<MontyObject, MountError> {
 }
 
 /// Lists directory contents directly from the host filesystem.
+///
+/// Only symlinks are canonicalized for boundary checking — regular files and
+/// directories are guaranteed to be within the mount because the parent
+/// directory was already validated. This avoids an expensive `canonicalize()`
+/// syscall per entry for large directories.
 fn iterdir_fs(host_path: &Path, vpath: &str, mount_host_path: &Path) -> Result<MontyObject, MountError> {
     let read_dir = fs::read_dir(host_path).map_err(|e| MountError::Io(e, vpath.to_owned()))?;
     let mut result = Vec::new();
@@ -940,11 +961,17 @@ fn iterdir_fs(host_path: &Path, vpath: &str, mount_host_path: &Path) -> Result<M
         let entry = entry.map_err(|e| MountError::Io(e, vpath.to_owned()))?;
         let name = entry.file_name().to_string_lossy().to_string();
 
-        // Verify each entry is within mount boundary (defense in depth).
-        if let Ok(canonical) = fs::canonicalize(entry.path())
-            && !canonical.starts_with(mount_host_path)
-        {
-            continue;
+        // Only canonicalize symlinks for mount boundary checking (defense in
+        // depth). Regular files/dirs in a validated parent are always in-mount.
+        let ft = entry.file_type().map_err(|e| MountError::Io(e, vpath.to_owned()))?;
+        if ft.is_symlink() {
+            match fs::canonicalize(entry.path()) {
+                Ok(canonical) if !canonical.starts_with(mount_host_path) => continue,
+                // Broken symlink — target doesn't exist, can't verify it stays
+                // within the mount boundary, so skip it.
+                Err(_) => continue,
+                _ => {}
+            }
         }
 
         result.push(MontyObject::Path(format_child_path(vpath, &name)));
@@ -954,8 +981,12 @@ fn iterdir_fs(host_path: &Path, vpath: &str, mount_host_path: &Path) -> Result<M
 }
 
 /// Renames a file or directory on the real filesystem.
+///
+/// The source uses lstat-style resolution so that renaming a symlink moves the
+/// symlink entry itself rather than following it to the target (matching POSIX
+/// `rename(2)` semantics).
 fn rename_fs(src_vpath: &str, dst_vpath: &str, ctx: &MountContext<'_>) -> Result<MontyObject, MountError> {
-    let src = resolve_path(src_vpath, ctx.mount_virtual, ctx.mount_host, false)?;
+    let src = resolve_path_for_lstat(src_vpath, ctx.mount_virtual, ctx.mount_host)?;
     let dst = resolve_path(dst_vpath, ctx.mount_virtual, ctx.mount_host, true)?;
     fs::rename(&src.host_path, &dst.host_path).map_err(|e| MountError::Io(e, src_vpath.to_owned()))?;
     Ok(MontyObject::None)
@@ -1022,19 +1053,28 @@ fn extract_mkdir_kwargs(kwargs: &[(MontyObject, MontyObject)]) -> (bool, bool) {
 // Write limit check
 // =============================================================================
 
-/// Checks whether writing `bytes` would exceed the configured limit, and if
-/// not, increments the cumulative counter in the mount context.
+/// Checks whether writing `bytes` would exceed the configured limit.
 ///
-/// Returns `Ok(())` when no limit is set or the write fits within the limit.
-fn check_write_limit(bytes: usize, ctx: &mut MountContext<'_>) -> Result<(), MountError> {
+/// This only validates — it does **not** increment the counter. Call
+/// [`commit_write_bytes`] after the write succeeds so that failed writes
+/// don't permanently consume quota.
+fn check_write_limit(bytes: usize, ctx: &MountContext<'_>) -> Result<(), MountError> {
     if let Some(limit) = ctx.write_bytes_limit {
         let bytes = bytes as u64;
         if *ctx.write_bytes_used + bytes > limit {
             return Err(MountError::WriteLimitExceeded(limit));
         }
-        *ctx.write_bytes_used += bytes;
     }
     Ok(())
+}
+
+/// Records a successful write against the cumulative byte counter.
+///
+/// Must be called only after the write operation has actually succeeded.
+fn commit_write_bytes(bytes: usize, ctx: &mut MountContext<'_>) {
+    if ctx.write_bytes_limit.is_some() {
+        *ctx.write_bytes_used += bytes as u64;
+    }
 }
 
 // =============================================================================

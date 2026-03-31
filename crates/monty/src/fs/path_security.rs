@@ -189,7 +189,43 @@ fn resolve_for_creation(candidate: &Path, mount_host_path: &Path, virtual_path: 
 
     let canonical_parent = fs::canonicalize(parent).map_err(|e| MountError::Io(e, virtual_path.to_owned()))?;
     check_boundary(&canonical_parent, mount_host_path, virtual_path)?;
-    Ok(canonical_parent.join(file_name))
+
+    let result = canonical_parent.join(file_name);
+
+    // If the final component is a symlink (including broken symlinks whose
+    // target doesn't exist), read where it points and boundary-check the
+    // target. This prevents sandbox escape via `fs::write()` following a
+    // dangling outbound symlink.
+    if result.symlink_metadata().is_ok_and(|m| m.file_type().is_symlink()) {
+        let link_target = fs::read_link(&result).map_err(|e| MountError::Io(e, virtual_path.to_owned()))?;
+        let resolved = if link_target.is_absolute() {
+            link_target
+        } else {
+            canonical_parent.join(&link_target)
+        };
+        // Canonicalize as much of the target as possible. For broken symlinks
+        // the full path won't exist, so canonicalize the target's parent and
+        // append the final component.
+        let canonical_target = if let Ok(c) = fs::canonicalize(&resolved) {
+            c
+        } else if let Some(tp) = resolved.parent() {
+            match fs::canonicalize(tp) {
+                Ok(cp) => cp.join(resolved.file_name().unwrap_or_default()),
+                Err(_) => {
+                    return Err(MountError::PathEscape {
+                        virtual_path: virtual_path.to_owned(),
+                    });
+                }
+            }
+        } else {
+            return Err(MountError::PathEscape {
+                virtual_path: virtual_path.to_owned(),
+            });
+        };
+        check_boundary(&canonical_target, mount_host_path, virtual_path)?;
+    }
+
+    Ok(result)
 }
 
 /// Resolves a path for `is_symlink()` checks without following the final symlink.

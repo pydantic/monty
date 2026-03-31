@@ -13,7 +13,10 @@
 //! with no locking overhead. When the run finishes, each mount is **put back**.
 //! This gives us shared ownership for Python while keeping the hot path lock-free.
 
-use std::sync::{Arc, Mutex};
+use std::{
+    path::PathBuf,
+    sync::{Arc, Mutex},
+};
 
 use monty::fs::{Mount, MountMode, MountTable};
 use pyo3::{
@@ -61,15 +64,16 @@ impl PyMountDirectory {
     /// is not absolute, or the host path doesn't exist or isn't a directory.
     #[new]
     #[pyo3(signature = (virtual_path, host_path, *, mode = "overlay", write_bytes_limit = None))]
+    #[expect(clippy::needless_pass_by_value)] // PyO3 requires owned PathBuf for conversion from Python str/Path
     fn new(
         py: Python<'_>,
         virtual_path: &str,
-        host_path: &str,
+        host_path: PathBuf,
         mode: &str,
         write_bytes_limit: Option<u64>,
     ) -> PyResult<Self> {
         let mount_mode = MountMode::from_mode_str(mode).map_err(PyValueError::new_err)?;
-        let mount = Mount::new(virtual_path, host_path, mount_mode, write_bytes_limit)
+        let mount = Mount::new(virtual_path, &host_path, mount_mode, write_bytes_limit)
             .map_err(|e| exc_monty_to_py(py, e.into_exception()))?;
         Ok(Self {
             shared: Arc::new(Mutex::new(Some(mount))),

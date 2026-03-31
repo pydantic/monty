@@ -1765,3 +1765,144 @@ fn no_limit_allows_large_writes() {
     .unwrap()
     .unwrap();
 }
+
+// =============================================================================
+// Unlink and rename operate on symlink entries, not targets (Issue #3)
+// =============================================================================
+
+/// `unlink()` on a symlink should remove the symlink entry, not the target.
+#[test]
+#[cfg(unix)]
+fn rw_unlink_symlink_removes_link_not_target() {
+    let dir = create_test_dir();
+    symlink_file(dir.path().join("hello.txt"), dir.path().join("link.txt"));
+
+    let mut mt = mount_at_mnt(&dir, MountMode::ReadWrite);
+    call_ok(&mut mt, OsFunction::Unlink, "/mnt/link.txt");
+
+    // The symlink should be gone.
+    assert!(!dir.path().join("link.txt").exists());
+    assert!(dir.path().join("link.txt").symlink_metadata().is_err());
+    // The target should still exist.
+    assert!(dir.path().join("hello.txt").exists());
+    assert_eq!(
+        fs::read_to_string(dir.path().join("hello.txt")).unwrap(),
+        "hello world\n"
+    );
+}
+
+/// `rename()` on a symlink should move the symlink entry, not the target.
+#[test]
+#[cfg(unix)]
+fn rw_rename_symlink_renames_link_not_target() {
+    let dir = create_test_dir();
+    symlink_file(dir.path().join("hello.txt"), dir.path().join("link.txt"));
+
+    let mut mt = mount_at_mnt(&dir, MountMode::ReadWrite);
+    call_rename(&mut mt, "/mnt/link.txt", "/mnt/moved_link.txt")
+        .unwrap()
+        .unwrap();
+
+    // The old symlink should be gone, the new one should exist as a symlink.
+    assert!(dir.path().join("link.txt").symlink_metadata().is_err());
+    assert!(
+        dir.path()
+            .join("moved_link.txt")
+            .symlink_metadata()
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+    // The original target should still exist and be unchanged.
+    assert!(dir.path().join("hello.txt").exists());
+    assert_eq!(
+        fs::read_to_string(dir.path().join("hello.txt")).unwrap(),
+        "hello world\n"
+    );
+}
+
+// =============================================================================
+// Failed writes should not consume write quota (Issue #4)
+// =============================================================================
+
+/// A failed write (e.g. parent doesn't exist) must not burn quota.
+#[test]
+fn rw_failed_write_does_not_consume_quota() {
+    let dir = create_test_dir();
+    let mut mt = mount_at_mnt_with_limit(&dir, MountMode::ReadWrite, 10);
+
+    // Write to a nonexistent parent — this should fail.
+    let result = call_write(
+        &mut mt,
+        OsFunction::WriteText,
+        "/mnt/no_such_dir/file.txt",
+        MontyObject::String("12345".to_owned()),
+    );
+    assert!(result.unwrap().is_err());
+
+    // Now write exactly at the limit — should succeed since the failed write
+    // didn't consume any quota.
+    call_write(
+        &mut mt,
+        OsFunction::WriteText,
+        "/mnt/quota_ok.txt",
+        MontyObject::String("0123456789".to_owned()),
+    )
+    .unwrap()
+    .unwrap();
+}
+
+/// Same quota-preservation test for overlay mode.
+#[test]
+fn ovl_failed_write_does_not_consume_quota() {
+    let dir = create_test_dir();
+    let mut mt = mount_at_mnt_with_limit(&dir, MountMode::OverlayMemory(OverlayState::new()), 10);
+
+    // Write to a path whose parent doesn't exist — should fail.
+    let result = call_write(
+        &mut mt,
+        OsFunction::WriteText,
+        "/mnt/no_such_dir/file.txt",
+        MontyObject::String("12345".to_owned()),
+    );
+    assert!(result.unwrap().is_err());
+
+    // Valid write of exactly 10 bytes should succeed.
+    call_write(
+        &mut mt,
+        OsFunction::WriteText,
+        "/mnt/quota_ok.txt",
+        MontyObject::String("0123456789".to_owned()),
+    )
+    .unwrap()
+    .unwrap();
+}
+
+// =============================================================================
+// Overlay rename preserves access to descendants (Issue #7)
+// =============================================================================
+
+/// Renaming a directory in overlay mode must make all descendants accessible
+/// under the new prefix.
+#[test]
+fn ovl_rename_directory_preserves_descendants() {
+    let dir = create_test_dir();
+    // test_dir has subdir/nested.txt and subdir/deep/file.txt
+
+    let mut mt = mount_at_mnt(&dir, MountMode::OverlayMemory(OverlayState::new()));
+
+    call_rename(&mut mt, "/mnt/subdir", "/mnt/renamed_dir")
+        .unwrap()
+        .unwrap();
+
+    // Descendants should be accessible under the new prefix.
+    let result = call_ok(&mut mt, OsFunction::ReadText, "/mnt/renamed_dir/nested.txt");
+    assert_eq!(result, MontyObject::String("nested content".to_owned()));
+
+    let result = call_ok(&mut mt, OsFunction::ReadText, "/mnt/renamed_dir/deep/file.txt");
+    assert_eq!(result, MontyObject::String("deep file".to_owned()));
+
+    // Old paths should not exist.
+    let result = call_ok(&mut mt, OsFunction::Exists, "/mnt/subdir/nested.txt");
+    assert_eq!(result, MontyObject::Bool(false));
+}
