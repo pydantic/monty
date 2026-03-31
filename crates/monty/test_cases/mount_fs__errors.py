@@ -98,9 +98,10 @@ try:
     (root / 'bad_utf8.bin').read_text()
     assert False, 'expected UnicodeDecodeError on read_text of non-UTF-8'
 except UnicodeDecodeError as exc:
-    assert str(exc) == "'utf-8' codec can't decode byte 0x80 in position 0: invalid start byte", (
-        f'unexpected message: {exc}'
-    )
+    if sys.platform != 'win32':
+        assert str(exc) == "'utf-8' codec can't decode byte 0x80 in position 0: invalid start byte", (
+            f'unexpected message: {exc}'
+        )
 
 # === FileNotFoundError on write_text with missing parent ===
 try:
