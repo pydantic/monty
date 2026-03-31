@@ -60,11 +60,17 @@ impl PyMountDirectory {
     /// `ValueError` if `mode` is not one of the allowed values, the virtual path
     /// is not absolute, or the host path doesn't exist or isn't a directory.
     #[new]
-    #[pyo3(signature = (virtual_path, host_path, mode = "overlay"))]
-    fn new(py: Python<'_>, virtual_path: &str, host_path: &str, mode: &str) -> PyResult<Self> {
+    #[pyo3(signature = (virtual_path, host_path, *, mode = "overlay", write_bytes_limit = None))]
+    fn new(
+        py: Python<'_>,
+        virtual_path: &str,
+        host_path: &str,
+        mode: &str,
+        write_bytes_limit: Option<u64>,
+    ) -> PyResult<Self> {
         let mount_mode = parse_mode(mode)?;
-        let mount =
-            Mount::new(virtual_path, host_path, mount_mode).map_err(|e| exc_monty_to_py(py, e.into_exception()))?;
+        let mount = Mount::new(virtual_path, host_path, mount_mode, write_bytes_limit)
+            .map_err(|e| exc_monty_to_py(py, e.into_exception()))?;
         Ok(Self {
             shared: Arc::new(Mutex::new(Some(mount))),
         })
@@ -86,6 +92,12 @@ impl PyMountDirectory {
     #[getter]
     fn mode(&self) -> PyResult<String> {
         self.with_mount(|m| m.mode().as_str().to_owned())
+    }
+
+    /// The optional write bytes limit, or `None` if unlimited.
+    #[getter]
+    fn write_bytes_limit(&self) -> PyResult<Option<u64>> {
+        self.with_mount(Mount::write_bytes_limit)
     }
 
     fn __repr__(&self) -> String {

@@ -609,7 +609,7 @@ fn build_mount_table(mount_args: &[String]) -> Result<Option<MountTable>, String
     for arg in mount_args {
         let (host_path, virtual_path, mode) = parse_mount(arg)?;
         table
-            .mount(&virtual_path, &host_path, mode)
+            .mount(&virtual_path, &host_path, mode, None)
             .map_err(|e| format!("mount {arg}: {e}"))?;
     }
     Ok(Some(table))

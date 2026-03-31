@@ -34,12 +34,15 @@ class MountDirectory:
     virtual_path: str
     host_path: str
     mode: Literal['read-only', 'read-write', 'overlay']
+    write_bytes_limit: int | None
 
     def __new__(
         cls,
         virtual_path: str,
         host_path: str | Path,
+        *,
         mode: Literal['read-only', 'read-write', 'overlay'] = 'overlay',
+        write_bytes_limit: int | None = None,
     ) -> MountDirectory: ...
 
 @final

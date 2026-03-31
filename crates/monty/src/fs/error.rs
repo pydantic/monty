@@ -45,6 +45,10 @@ pub enum MountError {
 
     /// Invalid mount configuration (e.g., host path doesn't exist or isn't a directory).
     InvalidMount(String),
+
+    /// Cumulative write bytes exceeded the configured per-mount limit.
+    /// The configured byte limit that was exceeded.
+    WriteLimitExceeded(u64),
 }
 
 impl MountError {
@@ -106,6 +110,10 @@ impl MountError {
                 )),
             ),
             Self::InvalidMount(msg) => MontyException::new(ExcType::TypeError, Some(msg)),
+            Self::WriteLimitExceeded(limit) => MontyException::new(
+                ExcType::OSError,
+                Some(format!("disk write limit of {} exceeded", format_bytes_pretty(limit))),
+            ),
         }
     }
 
@@ -132,6 +140,9 @@ impl fmt::Display for MountError {
                 write!(f, "invalid UTF-8 byte 0x{invalid_byte:02x} at position {position}")
             }
             Self::InvalidMount(msg) => write!(f, "invalid mount: {msg}"),
+            Self::WriteLimitExceeded(limit) => {
+                write!(f, "disk write limit of {} exceeded", format_bytes_pretty(*limit))
+            }
         }
     }
 }
@@ -142,5 +153,40 @@ impl Error for MountError {
             Self::Io(err, _) => Some(err),
             _ => None,
         }
+    }
+}
+
+/// Formats a byte count as a human-readable string using decimal SI units.
+///
+/// Uses KB (1,000), MB (1,000,000), GB (1,000,000,000) to match common disk
+/// size conventions. Values below 1 KB are displayed as whole bytes. Larger
+/// values use one decimal place (e.g. `"1.5 MB"`), dropping the decimal when
+/// it would be `.0`.
+fn format_bytes_pretty(bytes: u64) -> String {
+    const KB: u64 = 1_000;
+    const MB: u64 = 1_000_000;
+    const GB: u64 = 1_000_000_000;
+    const TB: u64 = 1_000_000_000_000;
+
+    if bytes < KB {
+        return format!("{bytes} bytes");
+    }
+
+    let (value, unit) = if bytes < MB {
+        (bytes as f64 / KB as f64, "KB")
+    } else if bytes < GB {
+        (bytes as f64 / MB as f64, "MB")
+    } else if bytes < TB {
+        (bytes as f64 / GB as f64, "GB")
+    } else {
+        (bytes as f64 / TB as f64, "TB")
+    };
+
+    // Drop the decimal place when it rounds to `.0` for cleaner display.
+    let tenths = (value * 10.0).round() % 10.0;
+    if tenths < f64::EPSILON {
+        format!("{value:.0} {unit}")
+    } else {
+        format!("{value:.1} {unit}")
     }
 }

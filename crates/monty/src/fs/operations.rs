@@ -22,11 +22,19 @@ use super::{
 use crate::{MontyObject, dir_stat, file_stat, os::OsFunction, symlink_stat};
 
 /// Mount-specific context passed through the operation call chain.
+///
+/// Carries immutable mount identity (paths) and mutable write-tracking
+/// state so that write operations can enforce byte limits without needing
+/// extra function parameters at every call site.
 pub(super) struct MountContext<'a> {
     /// The virtual path prefix of the mount (e.g., `/data`).
     pub mount_virtual: &'a str,
     /// The canonical host directory backing the mount.
     pub mount_host: &'a Path,
+    /// Cumulative bytes written through this mount (monotonically increasing).
+    pub write_bytes_used: &'a mut u64,
+    /// Optional cap on total bytes written. Writes exceeding this raise `OSError`.
+    pub write_bytes_limit: Option<u64>,
 }
 
 /// Executes a filesystem operation against a mount.
@@ -40,7 +48,7 @@ pub fn execute(
     virtual_path: &str,
     extra_args: &[MontyObject],
     kwargs: &[(MontyObject, MontyObject)],
-    ctx: &MountContext<'_>,
+    ctx: &mut MountContext<'_>,
     mode: &mut MountMode,
 ) -> Result<MontyObject, MountError> {
     // For write operations, check if the mode allows writes.
@@ -66,7 +74,7 @@ fn execute_direct(
     vpath: &str,
     extra_args: &[MontyObject],
     kwargs: &[(MontyObject, MontyObject)],
-    ctx: &MountContext<'_>,
+    ctx: &mut MountContext<'_>,
 ) -> Result<MontyObject, MountError> {
     // Resolve/Absolute are pure virtual-path operations — no host I/O needed.
     if matches!(function, OsFunction::Resolve | OsFunction::Absolute) {
@@ -82,8 +90,16 @@ fn execute_direct(
         OsFunction::IsSymlink => Ok(MontyObject::Bool(host.is_symlink())),
         OsFunction::ReadText => read_text_fs(&host, vpath),
         OsFunction::ReadBytes => read_bytes_fs(&host, vpath),
-        OsFunction::WriteText => write_text_fs(&host, extract_string_arg(extra_args, "write_text")?, vpath),
-        OsFunction::WriteBytes => write_bytes_fs(&host, extract_bytes_arg(extra_args, "write_bytes")?, vpath),
+        OsFunction::WriteText => {
+            let content = extract_string_arg(extra_args, "write_text")?;
+            check_write_limit(content.len(), ctx)?;
+            write_text_fs(&host, content, vpath)
+        }
+        OsFunction::WriteBytes => {
+            let content = extract_bytes_arg(extra_args, "write_bytes")?;
+            check_write_limit(content.len(), ctx)?;
+            write_bytes_fs(&host, content, vpath)
+        }
         OsFunction::Mkdir => {
             let (parents, exist_ok) = extract_mkdir_kwargs(kwargs);
             mkdir_fs(&host, parents, exist_ok, vpath)
@@ -142,7 +158,7 @@ fn execute_overlay_memory(
     vpath: &str,
     extra_args: &[MontyObject],
     kwargs: &[(MontyObject, MontyObject)],
-    ctx: &MountContext<'_>,
+    ctx: &mut MountContext<'_>,
     state: &mut OverlayState,
 ) -> Result<MontyObject, MountError> {
     let normalized = normalize_virtual_path(vpath);
@@ -159,10 +175,12 @@ fn execute_overlay_memory(
         OsFunction::ReadBytes => overlay_read_bytes(state, &relative, ctx, vpath),
         OsFunction::WriteText => {
             let content = extract_string_arg(extra_args, "write_text")?;
+            check_write_limit(content.len(), ctx)?;
             overlay_write_text(state, relative, content, ctx, vpath)
         }
         OsFunction::WriteBytes => {
             let content = extract_bytes_arg(extra_args, "write_bytes")?;
+            check_write_limit(content.len(), ctx)?;
             overlay_write_bytes(state, relative, content, ctx, vpath)
         }
         OsFunction::Mkdir => {
@@ -942,6 +960,25 @@ fn extract_mkdir_kwargs(kwargs: &[(MontyObject, MontyObject)]) -> (bool, bool) {
         }
     }
     (parents, exist_ok)
+}
+
+// =============================================================================
+// Write limit check
+// =============================================================================
+
+/// Checks whether writing `bytes` would exceed the configured limit, and if
+/// not, increments the cumulative counter in the mount context.
+///
+/// Returns `Ok(())` when no limit is set or the write fits within the limit.
+fn check_write_limit(bytes: usize, ctx: &mut MountContext<'_>) -> Result<(), MountError> {
+    if let Some(limit) = ctx.write_bytes_limit {
+        let bytes = bytes as u64;
+        if *ctx.write_bytes_used + bytes > limit {
+            return Err(MountError::WriteLimitExceeded(limit));
+        }
+        *ctx.write_bytes_used += bytes;
+    }
+    Ok(())
 }
 
 // =============================================================================

@@ -1540,7 +1540,12 @@ fn try_run_mount_fs_test(path: &Path, code: &str, expectation: &Expectation) -> 
     let tmpdir = create_mount_fs_tempdir();
     let mut mount_table = MountTable::new();
     mount_table
-        .mount("/mnt", tmpdir.path(), MountMode::OverlayMemory(OverlayState::new()))
+        .mount(
+            "/mnt",
+            tmpdir.path(),
+            MountMode::OverlayMemory(OverlayState::new()),
+            None,
+        )
         .expect("failed to mount temp dir for mount-fs test");
 
     let exec = match MontyRun::new(code.to_owned(), &test_name, vec![]) {

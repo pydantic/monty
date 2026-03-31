@@ -47,7 +47,7 @@ fn create_test_dir() -> TempDir {
 /// Creates a `MountTable` with a single mount at `/mnt`.
 fn mount_at_mnt(tmpdir: &TempDir, mode: MountMode) -> MountTable {
     let mut mt = MountTable::new();
-    mt.mount("/mnt", tmpdir.path(), mode).unwrap();
+    mt.mount("/mnt", tmpdir.path(), mode, None).unwrap();
     mt
 }
 
@@ -1350,8 +1350,8 @@ fn rename_cross_mount_error() {
     let dir1 = create_test_dir();
     let dir2 = create_test_dir();
     let mut mt = MountTable::new();
-    mt.mount("/mnt1", dir1.path(), MountMode::ReadWrite).unwrap();
-    mt.mount("/mnt2", dir2.path(), MountMode::ReadWrite).unwrap();
+    mt.mount("/mnt1", dir1.path(), MountMode::ReadWrite, None).unwrap();
+    mt.mount("/mnt2", dir2.path(), MountMode::ReadWrite, None).unwrap();
 
     let err = call_rename(&mut mt, "/mnt1/hello.txt", "/mnt2/hello.txt")
         .unwrap()
@@ -1384,8 +1384,8 @@ fn empty_mount_table() {
 fn mount_table_len() {
     let dir = create_test_dir();
     let mut mt = MountTable::new();
-    mt.mount("/a", dir.path(), MountMode::ReadWrite).unwrap();
-    mt.mount("/b", dir.path(), MountMode::ReadOnly).unwrap();
+    mt.mount("/a", dir.path(), MountMode::ReadWrite, None).unwrap();
+    mt.mount("/b", dir.path(), MountMode::ReadOnly, None).unwrap();
     assert_eq!(mt.len(), 2);
     assert!(!mt.is_empty());
 }
@@ -1397,8 +1397,9 @@ fn mount_sorting_specific_wins() {
     fs::write(subdir.path().join("specific.txt"), "from specific mount").unwrap();
 
     let mut mt = MountTable::new();
-    mt.mount("/data", dir.path(), MountMode::ReadWrite).unwrap();
-    mt.mount("/data/sub", subdir.path(), MountMode::ReadWrite).unwrap();
+    mt.mount("/data", dir.path(), MountMode::ReadWrite, None).unwrap();
+    mt.mount("/data/sub", subdir.path(), MountMode::ReadWrite, None)
+        .unwrap();
 
     // /data/sub/specific.txt should come from the more specific mount.
     assert_eq!(
@@ -1424,7 +1425,7 @@ fn non_filesystem_ops_return_none() {
 fn mount_prefix_no_partial_match() {
     let dir = create_test_dir();
     let mut mt = MountTable::new();
-    mt.mount("/data", dir.path(), MountMode::ReadWrite).unwrap();
+    mt.mount("/data", dir.path(), MountMode::ReadWrite, None).unwrap();
 
     // /data2/file should NOT match /data mount.
     let result = call(&mut mt, OsFunction::Exists, "/data2/file.txt");
@@ -1436,7 +1437,7 @@ fn path_with_spaces() {
     let dir = TempDir::new().unwrap();
     fs::write(dir.path().join("hello world.txt"), "spaces").unwrap();
     let mut mt = MountTable::new();
-    mt.mount("/mnt", dir.path(), MountMode::ReadWrite).unwrap();
+    mt.mount("/mnt", dir.path(), MountMode::ReadWrite, None).unwrap();
 
     assert_eq!(
         call_ok(&mut mt, OsFunction::ReadText, "/mnt/hello world.txt"),
@@ -1449,10 +1450,260 @@ fn path_with_unicode() {
     let dir = TempDir::new().unwrap();
     fs::write(dir.path().join("文件.txt"), "unicode").unwrap();
     let mut mt = MountTable::new();
-    mt.mount("/mnt", dir.path(), MountMode::ReadWrite).unwrap();
+    mt.mount("/mnt", dir.path(), MountMode::ReadWrite, None).unwrap();
 
     assert_eq!(
         call_ok(&mut mt, OsFunction::ReadText, "/mnt/文件.txt"),
         MontyObject::String("unicode".to_owned())
     );
+}
+
+// =============================================================================
+// Write bytes limit
+// =============================================================================
+
+/// Helper: creates a mount table with a write bytes limit.
+fn mount_at_mnt_with_limit(tmpdir: &TempDir, mode: MountMode, limit: u64) -> MountTable {
+    let mut mt = MountTable::new();
+    mt.mount("/mnt", tmpdir.path(), mode, Some(limit)).unwrap();
+    mt
+}
+
+#[test]
+fn rw_write_text_within_limit() {
+    let dir = create_test_dir();
+    let mut mt = mount_at_mnt_with_limit(&dir, MountMode::ReadWrite, 100);
+
+    // "hello" is 5 bytes, well within the 100-byte limit.
+    call_write(
+        &mut mt,
+        OsFunction::WriteText,
+        "/mnt/a.txt",
+        MontyObject::String("hello".to_owned()),
+    )
+    .unwrap()
+    .unwrap();
+
+    assert_eq!(
+        call_ok(&mut mt, OsFunction::ReadText, "/mnt/a.txt"),
+        MontyObject::String("hello".to_owned())
+    );
+}
+
+#[test]
+fn rw_write_text_exceeds_limit() {
+    let dir = create_test_dir();
+    let mut mt = mount_at_mnt_with_limit(&dir, MountMode::ReadWrite, 10);
+
+    // 20 bytes exceeds the 10-byte limit.
+    let exc = call_write(
+        &mut mt,
+        OsFunction::WriteText,
+        "/mnt/a.txt",
+        MontyObject::String("a]".repeat(10)),
+    )
+    .unwrap()
+    .expect_err("expected write limit error")
+    .into_exception();
+
+    assert_exc(&exc, ExcType::OSError, "disk write limit of 10 bytes exceeded");
+}
+
+#[test]
+fn rw_write_bytes_exceeds_limit() {
+    let dir = create_test_dir();
+    let mut mt = mount_at_mnt_with_limit(&dir, MountMode::ReadWrite, 5);
+
+    let exc = call_write(
+        &mut mt,
+        OsFunction::WriteBytes,
+        "/mnt/a.bin",
+        MontyObject::Bytes(vec![0u8; 10]),
+    )
+    .unwrap()
+    .expect_err("expected write limit error")
+    .into_exception();
+
+    assert_exc(&exc, ExcType::OSError, "disk write limit of 5 bytes exceeded");
+}
+
+#[test]
+fn rw_cumulative_writes_exceed_limit() {
+    let dir = create_test_dir();
+    let mut mt = mount_at_mnt_with_limit(&dir, MountMode::ReadWrite, 15);
+
+    // First write: 10 bytes, within limit.
+    call_write(
+        &mut mt,
+        OsFunction::WriteText,
+        "/mnt/a.txt",
+        MontyObject::String("0123456789".to_owned()),
+    )
+    .unwrap()
+    .unwrap();
+
+    // Second write: 10 more bytes, cumulative 20 > 15 limit.
+    let exc = call_write(
+        &mut mt,
+        OsFunction::WriteText,
+        "/mnt/b.txt",
+        MontyObject::String("0123456789".to_owned()),
+    )
+    .unwrap()
+    .expect_err("expected write limit error")
+    .into_exception();
+
+    assert_exc(&exc, ExcType::OSError, "disk write limit of 15 bytes exceeded");
+}
+
+#[test]
+fn ovl_write_text_exceeds_limit() {
+    let dir = create_test_dir();
+    let mut mt = mount_at_mnt_with_limit(&dir, MountMode::OverlayMemory(OverlayState::new()), 10);
+
+    let exc = call_write(
+        &mut mt,
+        OsFunction::WriteText,
+        "/mnt/a.txt",
+        MontyObject::String("a]".repeat(10)),
+    )
+    .unwrap()
+    .expect_err("expected write limit error")
+    .into_exception();
+
+    assert_exc(&exc, ExcType::OSError, "disk write limit of 10 bytes exceeded");
+}
+
+#[test]
+fn ovl_write_bytes_exceeds_limit() {
+    let dir = create_test_dir();
+    let mut mt = mount_at_mnt_with_limit(&dir, MountMode::OverlayMemory(OverlayState::new()), 5);
+
+    let exc = call_write(
+        &mut mt,
+        OsFunction::WriteBytes,
+        "/mnt/a.bin",
+        MontyObject::Bytes(vec![0u8; 10]),
+    )
+    .unwrap()
+    .expect_err("expected write limit error")
+    .into_exception();
+
+    assert_exc(&exc, ExcType::OSError, "disk write limit of 5 bytes exceeded");
+}
+
+#[test]
+fn ovl_cumulative_writes_exceed_limit() {
+    let dir = create_test_dir();
+    let mut mt = mount_at_mnt_with_limit(&dir, MountMode::OverlayMemory(OverlayState::new()), 15);
+
+    // First write: 10 bytes, within limit.
+    call_write(
+        &mut mt,
+        OsFunction::WriteText,
+        "/mnt/a.txt",
+        MontyObject::String("0123456789".to_owned()),
+    )
+    .unwrap()
+    .unwrap();
+
+    // Second write: 10 more bytes, cumulative 20 > 15 limit.
+    let exc = call_write(
+        &mut mt,
+        OsFunction::WriteText,
+        "/mnt/b.txt",
+        MontyObject::String("0123456789".to_owned()),
+    )
+    .unwrap()
+    .expect_err("expected write limit error")
+    .into_exception();
+
+    assert_exc(&exc, ExcType::OSError, "disk write limit of 15 bytes exceeded");
+}
+
+#[test]
+fn write_limit_pretty_format_kb() {
+    let dir = create_test_dir();
+    let mut mt = mount_at_mnt_with_limit(&dir, MountMode::ReadWrite, 5_000);
+
+    let exc = call_write(
+        &mut mt,
+        OsFunction::WriteText,
+        "/mnt/a.txt",
+        MontyObject::String("x".repeat(5_001)),
+    )
+    .unwrap()
+    .expect_err("expected write limit error")
+    .into_exception();
+
+    assert_exc(&exc, ExcType::OSError, "disk write limit of 5 KB exceeded");
+}
+
+#[test]
+fn write_limit_pretty_format_mb() {
+    let dir = create_test_dir();
+    let mut mt = mount_at_mnt_with_limit(&dir, MountMode::OverlayMemory(OverlayState::new()), 1_500_000);
+
+    let exc = call_write(
+        &mut mt,
+        OsFunction::WriteText,
+        "/mnt/a.txt",
+        MontyObject::String("x".repeat(1_500_001)),
+    )
+    .unwrap()
+    .expect_err("expected write limit error")
+    .into_exception();
+
+    assert_exc(&exc, ExcType::OSError, "disk write limit of 1.5 MB exceeded");
+}
+
+#[test]
+fn write_exactly_at_limit_succeeds() {
+    let dir = create_test_dir();
+    let mut mt = mount_at_mnt_with_limit(&dir, MountMode::ReadWrite, 10);
+
+    // Exactly 10 bytes with a 10-byte limit should succeed.
+    call_write(
+        &mut mt,
+        OsFunction::WriteText,
+        "/mnt/a.txt",
+        MontyObject::String("0123456789".to_owned()),
+    )
+    .unwrap()
+    .unwrap();
+}
+
+#[test]
+fn write_one_over_limit_fails() {
+    let dir = create_test_dir();
+    let mut mt = mount_at_mnt_with_limit(&dir, MountMode::ReadWrite, 10);
+
+    // 11 bytes with a 10-byte limit should fail.
+    let exc = call_write(
+        &mut mt,
+        OsFunction::WriteText,
+        "/mnt/a.txt",
+        MontyObject::String("01234567890".to_owned()),
+    )
+    .unwrap()
+    .expect_err("expected write limit error")
+    .into_exception();
+
+    assert_exc(&exc, ExcType::OSError, "disk write limit of 10 bytes exceeded");
+}
+
+#[test]
+fn no_limit_allows_large_writes() {
+    let dir = create_test_dir();
+    let mut mt = mount_at_mnt(&dir, MountMode::ReadWrite);
+
+    // Without a limit, large writes should succeed.
+    call_write(
+        &mut mt,
+        OsFunction::WriteText,
+        "/mnt/big.txt",
+        MontyObject::String("x".repeat(100_000)),
+    )
+    .unwrap()
+    .unwrap();
 }

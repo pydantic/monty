@@ -28,8 +28,8 @@ use crate::{MontyObject, os::OsFunction};
 /// use monty::fs::{MountTable, MountMode};
 ///
 /// let mut mounts = MountTable::new();
-/// mounts.mount("/data", "/real/host/data", MountMode::ReadOnly).unwrap();
-/// mounts.mount("/tmp", "/real/host/tmp", MountMode::ReadWrite).unwrap();
+/// mounts.mount("/data", "/real/host/data", MountMode::ReadOnly, None).unwrap();
+/// mounts.mount("/tmp", "/real/host/tmp", MountMode::ReadWrite, Some(10_000_000)).unwrap();
 /// ```
 #[derive(Debug, Default)]
 pub struct MountTable {
@@ -62,8 +62,9 @@ impl MountTable {
         virtual_path: &str,
         host_path: impl AsRef<Path>,
         mode: MountMode,
+        write_bytes_limit: Option<u64>,
     ) -> Result<(), MountError> {
-        let mount = Mount::new(virtual_path, host_path, mode)?;
+        let mount = Mount::new(virtual_path, host_path, mode, write_bytes_limit)?;
         self.push_mount(mount);
         Ok(())
     }
@@ -197,6 +198,10 @@ pub struct Mount {
     host_path: PathBuf,
     /// Access mode (also owns overlay state for [`MountMode::OverlayMemory`]).
     mode: MountMode,
+    /// Cumulative bytes written through this mount (monotonically increasing).
+    write_bytes_used: u64,
+    /// Optional cap on cumulative bytes written. When exceeded, writes raise `OSError`.
+    write_bytes_limit: Option<u64>,
 }
 
 impl Mount {
@@ -206,7 +211,12 @@ impl Mount {
     ///
     /// Returns [`MountError::InvalidMount`] if the virtual path is not absolute,
     /// or the host path doesn't exist or isn't a directory.
-    pub fn new(virtual_path: &str, host_path: impl AsRef<Path>, mode: MountMode) -> Result<Self, MountError> {
+    pub fn new(
+        virtual_path: &str,
+        host_path: impl AsRef<Path>,
+        mode: MountMode,
+        write_bytes_limit: Option<u64>,
+    ) -> Result<Self, MountError> {
         let host_path = host_path.as_ref();
 
         if !virtual_path.starts_with('/') {
@@ -232,6 +242,8 @@ impl Mount {
             virtual_path: normalized_virtual,
             host_path: canonical_host,
             mode,
+            write_bytes_used: 0,
+            write_bytes_limit,
         })
     }
 
@@ -253,6 +265,18 @@ impl Mount {
         &self.mode
     }
 
+    /// Returns the optional write bytes limit for this mount.
+    #[must_use]
+    pub fn write_bytes_limit(&self) -> Option<u64> {
+        self.write_bytes_limit
+    }
+
+    /// Returns the cumulative number of bytes written through this mount.
+    #[must_use]
+    pub fn write_bytes_used(&self) -> u64 {
+        self.write_bytes_used
+    }
+
     /// Executes a filesystem operation against this mount.
     ///
     /// Builds a [`MountContext`] by borrowing `virtual_path` and `host_path`
@@ -264,11 +288,13 @@ impl Mount {
         extra_args: &[MontyObject],
         kwargs: &[(MontyObject, MontyObject)],
     ) -> Result<MontyObject, MountError> {
-        let ctx = MountContext {
+        let mut ctx = MountContext {
             mount_virtual: &self.virtual_path,
             mount_host: &self.host_path,
+            write_bytes_used: &mut self.write_bytes_used,
+            write_bytes_limit: self.write_bytes_limit,
         };
-        operations::execute(function, virtual_path, extra_args, kwargs, &ctx, &mut self.mode)
+        operations::execute(function, virtual_path, extra_args, kwargs, &mut ctx, &mut self.mode)
     }
 }
 

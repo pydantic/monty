@@ -32,7 +32,7 @@ fn create_test_dir() -> TempDir {
 /// Creates a mount table with mount at `/mnt` in the given mode.
 fn mount_at_mnt(tmpdir: &TempDir, mode: MountMode) -> MountTable {
     let mut mt = MountTable::new();
-    mt.mount("/mnt", tmpdir.path(), mode).unwrap();
+    mt.mount("/mnt", tmpdir.path(), mode, None).unwrap();
     mt
 }
 
@@ -669,7 +669,9 @@ fn triple_dots_literal_name() {
 fn mount_relative_virtual_path_rejected() {
     let dir = TempDir::new().unwrap();
     let mut mt = MountTable::new();
-    let err = mt.mount("relative/path", dir.path(), MountMode::ReadWrite).unwrap_err();
+    let err = mt
+        .mount("relative/path", dir.path(), MountMode::ReadWrite, None)
+        .unwrap_err();
     assert!(matches!(err, MountError::InvalidMount(_)));
 }
 
@@ -677,7 +679,12 @@ fn mount_relative_virtual_path_rejected() {
 fn mount_nonexistent_host_path() {
     let mut mt = MountTable::new();
     let err = mt
-        .mount("/mnt", "/nonexistent/path/that/does/not/exist", MountMode::ReadWrite)
+        .mount(
+            "/mnt",
+            "/nonexistent/path/that/does/not/exist",
+            MountMode::ReadWrite,
+            None,
+        )
         .unwrap_err();
     assert!(matches!(err, MountError::InvalidMount(_)));
 }
@@ -689,7 +696,7 @@ fn mount_file_as_host_path() {
     fs::write(&file_path, "content").unwrap();
 
     let mut mt = MountTable::new();
-    let err = mt.mount("/mnt", &file_path, MountMode::ReadWrite).unwrap_err();
+    let err = mt.mount("/mnt", &file_path, MountMode::ReadWrite, None).unwrap_err();
     assert!(matches!(err, MountError::InvalidMount(_)));
 }
 
