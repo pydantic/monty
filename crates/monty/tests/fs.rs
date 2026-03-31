@@ -1365,16 +1365,12 @@ fn rename_cross_mount_error() {
 }
 
 #[test]
-fn no_mount_point_error() {
+fn no_mount_point_returns_none() {
     let dir = create_test_dir();
     let mut mt = mount_at_mnt(&dir, MountMode::ReadWrite);
 
-    let err = call_err(&mut mt, OsFunction::Exists, "/unmounted/file.txt");
-    assert_exc(
-        &err,
-        ExcType::PermissionError,
-        "[Errno 13] Permission denied: '/unmounted/file.txt'",
-    );
+    let result = call(&mut mt, OsFunction::Exists, "/unmounted/file.txt");
+    assert!(result.is_none(), "expected None for path outside all mounts");
 }
 
 #[test]
@@ -1431,12 +1427,8 @@ fn mount_prefix_no_partial_match() {
     mt.mount("/data", dir.path(), MountMode::ReadWrite).unwrap();
 
     // /data2/file should NOT match /data mount.
-    let err = call_err(&mut mt, OsFunction::Exists, "/data2/file.txt");
-    assert_exc(
-        &err,
-        ExcType::PermissionError,
-        "[Errno 13] Permission denied: '/data2/file.txt'",
-    );
+    let result = call(&mut mt, OsFunction::Exists, "/data2/file.txt");
+    assert!(result.is_none(), "expected None for path not matching any mount prefix");
 }
 
 #[test]

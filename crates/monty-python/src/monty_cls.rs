@@ -11,10 +11,7 @@ use ::monty::{
     NoLimitTracker, OsCall, PrintWriter, PrintWriterCallback, ReplFunctionCall, ReplNameLookup, ReplOsCall,
     ReplProgress, ReplResolveFutures, ReplStartError, ResolveFutures, ResourceTracker, RunProgress,
 };
-use monty::{
-    NameLookup,
-    fs::{MountError, MountTable},
-};
+use monty::{NameLookup, fs::MountTable};
 use monty_type_checking::{SourceFile, type_check};
 use pyo3::{
     IntoPyObjectExt,
@@ -1772,12 +1769,10 @@ where
 /// Handles an OS call via a Rust [`MountTable`], falling through to the
 /// `fallback` callable for unhandled operations.
 ///
-/// The fallback is tried when:
-/// - The operation is not a filesystem op (e.g. `os.getenv`)
-/// - The path doesn't match any mount and a fallback is available
-///
-/// Without a fallback, unmatched filesystem ops return `PermissionError`
-/// and unhandled non-filesystem ops return `RuntimeError`.
+/// The mount table returns `None` for non-filesystem ops and for paths that
+/// don't match any mount. In both cases we try the fallback, or fall back to
+/// [`OsFunction::on_no_handler`] which returns `PermissionError` for filesystem
+/// ops and `RuntimeError` for non-filesystem ops.
 fn handle_mount_os_call<T: ResourceTracker>(
     py: Python<'_>,
     call: &OsCall<T>,
@@ -1787,13 +1782,8 @@ fn handle_mount_os_call<T: ResourceTracker>(
 ) -> PyResult<ExtFunctionResult> {
     match table.handle_os_call(call.function, &call.args, &call.kwargs) {
         Some(Ok(obj)) => Ok(obj.into()),
-        Some(Err(ref err)) if matches!(err, MountError::NoMountPoint(_)) && fallback.is_some() => {
-            // No matching mount but we have a fallback — let it handle the call.
-            call_os_callback(py, call, fallback.unwrap().bind(py), dc_registry)
-        }
         Some(Err(mount_err)) => Ok(mount_err.into_exception().into()),
         None => {
-            // Non-filesystem op — try fallback callable, otherwise error.
             if let Some(fb) = fallback {
                 call_os_callback(py, call, fb.bind(py), dc_registry)
             } else {

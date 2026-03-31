@@ -32,7 +32,9 @@ try:
     (root / 'nonexistent.txt').unlink()
     assert False, 'expected FileNotFoundError on unlink'
 except FileNotFoundError as exc:
-    assert str(exc).startswith("[Errno 2] No such file or directory: '"), f'exc message: {exc}'
+    if sys.platform != 'win32':
+        assert str(exc).startswith("[Errno 2] No such file or directory: '"), f'exc message: {exc}'
+
     if is_monty:
         assert str(exc) == "[Errno 2] No such file or directory: '/mnt/nonexistent.txt'", f'unexpected message: {exc}'
 
@@ -116,3 +118,28 @@ except FileNotFoundError as exc:
         assert str(exc) == "[Errno 2] No such file or directory: '/mnt/no_such_parent/child.bin'", (
             f'unexpected message: {exc}'
         )
+
+# === TypeError on write_text with wrong argument type ===
+try:
+    (root / 'hello.txt').write_text(123)
+    assert False, 'expected TypeError on write_text with int'
+except TypeError as exc:
+    assert str(exc) == 'data must be str, not int', f'unexpected message: {exc}'
+
+try:
+    (root / 'hello.txt').write_text()
+    assert False, 'expected TypeError on write_text with int'
+except TypeError as exc:
+    assert str(exc) == "Path.write_text() missing 1 required positional argument: 'data'", f'unexpected message: {exc}'
+
+try:
+    (root / 'hello.txt').write_bytes(123)
+    assert False, 'expected TypeError on write_bytes with int'
+except TypeError as exc:
+    assert str(exc) == "memoryview: a bytes-like object is required, not 'int'", f'unexpected message: {exc}'
+
+try:
+    (root / 'hello.txt').write_bytes()
+    assert False, 'expected TypeError on write_bytes with int'
+except TypeError as exc:
+    assert str(exc) == "Path.write_bytes() missing 1 required positional argument: 'data'", f'unexpected message: {exc}'

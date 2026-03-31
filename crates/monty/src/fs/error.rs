@@ -105,7 +105,7 @@ impl MountError {
                     "'utf-8' codec can't decode byte 0x{invalid_byte:02x} in position {position}: invalid start byte"
                 )),
             ),
-            Self::InvalidMount(msg) => MontyException::new(ExcType::ValueError, Some(msg)),
+            Self::InvalidMount(msg) => MontyException::new(ExcType::TypeError, Some(msg)),
         }
     }
 

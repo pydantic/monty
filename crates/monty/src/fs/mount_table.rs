@@ -86,12 +86,10 @@ impl MountTable {
 
     /// Handles an OS call using the mount table.
     ///
-    /// Filesystem operations are dispatched to the matching mount point.
-    /// Returns `None` for non-filesystem operations (e.g. `os.getenv`) so
-    /// the caller can try a fallback callback.
-    ///
-    /// Filesystem ops with no matching mount return [`MountError::NoMountPoint`]
-    /// which maps to `PermissionError`.
+    /// Returns `Some(Ok(result))` if handled, `Some(Err(..))` on error, or
+    /// `None` if the operation was not handled (non-filesystem op, or no
+    /// matching mount for the path). The caller should fall through to a
+    /// callback or use [`OsFunction::on_no_handler`] for unhandled calls.
     pub fn handle_os_call(
         &mut self,
         function: OsFunction,
@@ -120,12 +118,11 @@ impl MountTable {
         }
 
         let normalized = normalize_virtual_path(virtual_path);
-        let extra_args = if args.len() > 1 { &args[1..] } else { &[] };
 
-        let Some(mount) = self.find_mount_mut(&normalized) else {
-            return Some(Err(MountError::NoMountPoint(virtual_path.to_owned())));
-        };
-        Some(mount.execute(function, virtual_path, extra_args, kwargs))
+        self.mounts
+            .iter_mut()
+            .find(|m| path_matches_mount(&normalized, &m.virtual_path))
+            .map(|mount| mount.execute(function, virtual_path, &args[1..], kwargs))
     }
 
     /// Returns `true` if no mount points are configured.
@@ -138,13 +135,6 @@ impl MountTable {
     #[must_use]
     pub fn len(&self) -> usize {
         self.mounts.len()
-    }
-
-    /// Finds the mount whose virtual path is the longest prefix of `normalized_path`.
-    fn find_mount_mut(&mut self, normalized_path: &str) -> Option<&mut Mount> {
-        self.mounts
-            .iter_mut()
-            .find(|m| path_matches_mount(normalized_path, &m.virtual_path))
     }
 
     /// Handles rename, validating both paths are in the same mount.

@@ -59,15 +59,13 @@ fn mkdir_parents_kwargs() -> Vec<(MontyObject, MontyObject)> {
     ]
 }
 
-/// Asserts that the operation returns an error (PathEscape, NoMountPoint, or Io).
+/// Asserts that the operation is blocked: either an error (PathEscape, NoMountPoint, Io)
+/// or `None` (no matching mount for the normalized path).
 fn assert_blocked(mt: &mut MountTable, func: OsFunction, path: &str) {
     let result = call(mt, func, path);
     match result {
-        Some(Err(MountError::PathEscape { .. } | MountError::NoMountPoint(_))) => {}
-        // I/O errors (NotFound, etc.) are also acceptable — the operation didn't succeed.
-        Some(Err(MountError::Io(_, _))) => {}
+        Some(Err(MountError::PathEscape { .. } | MountError::NoMountPoint(_) | MountError::Io(_, _))) | None => {}
         Some(Ok(val)) => panic!("expected blocked, got Ok({val:?}) for path: {path}"),
-        None => panic!("expected Some result for filesystem op on path: {path}"),
         Some(Err(other)) => panic!("unexpected error variant for {path}: {other}"),
     }
 }
@@ -81,9 +79,8 @@ fn assert_write_blocked(mt: &mut MountTable, func: OsFunction, path: &str) {
     };
     let result = mt.handle_os_call(func, &[MontyObject::Path(path.to_owned()), content], &[]);
     match result {
-        Some(Err(MountError::PathEscape { .. } | MountError::NoMountPoint(_) | MountError::Io(_, _))) => {}
+        Some(Err(MountError::PathEscape { .. } | MountError::NoMountPoint(_) | MountError::Io(_, _))) | None => {}
         Some(Ok(val)) => panic!("expected write blocked, got Ok({val:?}) for path: {path}"),
-        None => panic!("expected Some result for filesystem write op on path: {path}"),
         Some(Err(other)) => panic!("unexpected error variant for write to {path}: {other}"),
     }
 }
@@ -722,17 +719,15 @@ fn path_escape_error_only_contains_virtual_path() {
 }
 
 #[test]
-fn no_mount_point_error_only_contains_virtual_path() {
+fn no_mount_point_returns_none() {
     let dir = create_test_dir();
     let mut mt = mount_at_mnt(&dir, MountMode::ReadWrite);
 
     let result = call(&mut mt, OsFunction::ReadText, "/outside/secret.txt");
-    match result {
-        Some(Err(MountError::NoMountPoint(path))) => {
-            assert_eq!(path, "/outside/secret.txt");
-        }
-        other => panic!("expected NoMountPoint, got {other:?}"),
-    }
+    assert!(
+        result.is_none(),
+        "expected None for path outside all mounts, got {result:?}"
+    );
 }
 
 #[test]
@@ -753,7 +748,7 @@ fn error_into_exception_preserves_virtual_path() {
 // =============================================================================
 
 #[test]
-fn empty_table_all_ops_error() {
+fn empty_table_all_ops_unhandled() {
     let mut mt = MountTable::new();
 
     for func in [
@@ -766,8 +761,8 @@ fn empty_table_all_ops_error() {
     ] {
         let result = call(&mut mt, func, "/any/path");
         assert!(
-            matches!(result, Some(Err(MountError::NoMountPoint(_)))),
-            "empty table should return NoMountPoint for {func:?}"
+            result.is_none(),
+            "empty table should return None for {func:?}, got {result:?}"
         );
     }
 }

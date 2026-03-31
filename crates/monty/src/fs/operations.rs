@@ -895,7 +895,13 @@ fn rename_fs(src_vpath: &str, dst_vpath: &str, ctx: &MountContext<'_>) -> Result
 fn extract_string_arg<'a>(extra_args: &'a [MontyObject], op_name: &str) -> Result<&'a str, MountError> {
     match extra_args.first() {
         Some(MontyObject::String(s)) => Ok(s.as_str()),
-        _ => Err(MountError::InvalidMount(format!("{op_name}: expected string argument"))),
+        Some(a) => Err(MountError::InvalidMount(format!(
+            "data must be str, not {}",
+            a.type_name()
+        ))),
+        None => Err(MountError::InvalidMount(format!(
+            "Path.{op_name}() missing 1 required positional argument: 'data'"
+        ))),
     }
 }
 
@@ -903,7 +909,13 @@ fn extract_string_arg<'a>(extra_args: &'a [MontyObject], op_name: &str) -> Resul
 fn extract_bytes_arg<'a>(extra_args: &'a [MontyObject], op_name: &str) -> Result<&'a [u8], MountError> {
     match extra_args.first() {
         Some(MontyObject::Bytes(b)) => Ok(b.as_slice()),
-        _ => Err(MountError::InvalidMount(format!("{op_name}: expected bytes argument"))),
+        Some(a) => Err(MountError::InvalidMount(format!(
+            "memoryview: a bytes-like object is required, not '{}'",
+            a.type_name()
+        ))),
+        None => Err(MountError::InvalidMount(format!(
+            "Path.{op_name}() missing 1 required positional argument: 'data'"
+        ))),
     }
 }
 
