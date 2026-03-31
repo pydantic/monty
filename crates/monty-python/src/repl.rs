@@ -5,10 +5,10 @@ use std::{
 
 // Use `::monty` to refer to the external crate (not the pymodule)
 use ::monty::{
-    ExtFunctionResult, LimitedTracker, MontyException, MontyObject, MontyRepl as CoreMontyRepl, NameLookupResult,
-    NoLimitTracker, PrintWriter, ReplProgress, ReplStartError, ResourceTracker,
+    ExtFunctionResult, LimitedTracker, MontyObject, MontyRepl as CoreMontyRepl, NameLookupResult, NoLimitTracker,
+    PrintWriter, ReplProgress, ReplStartError, ResourceTracker,
 };
-use monty::ExcType;
+use monty::fs::MountTable;
 use pyo3::{
     IntoPyObjectExt,
     exceptions::{PyRuntimeError, PyTypeError, PyValueError},
@@ -27,6 +27,7 @@ use crate::{
     external::{ExternalFunctionRegistry, dispatch_method_call},
     limits::{CancellationFlag, FutureCancellationGuard, PySignalTracker, extract_limits},
     monty_cls::{CallbackStringPrint, EitherProgress},
+    mount::OsHandler,
 };
 
 /// Runtime REPL session holder for pyclass interoperability.
@@ -113,7 +114,8 @@ impl PyMontyRepl {
     /// When `external_functions` is provided, external function calls and name
     /// lookups are dispatched to the provided callables — matching the behavior
     /// of `Monty.run(external_functions=...)`.
-    #[pyo3(signature = (code, *, inputs=None, external_functions=None, print_callback=None, os=None))]
+    #[expect(clippy::too_many_arguments)]
+    #[pyo3(signature = (code, *, inputs=None, external_functions=None, print_callback=None, mount=None, os=None))]
     fn feed_run<'py>(
         &self,
         py: Python<'py>,
@@ -121,6 +123,7 @@ impl PyMontyRepl {
         inputs: Option<&Bound<'_, PyDict>>,
         external_functions: Option<&Bound<'_, PyDict>>,
         print_callback: Option<Py<PyAny>>,
+        mount: Option<&Bound<'_, PyAny>>,
         os: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let input_values = extract_repl_inputs(inputs, &self.dc_registry)?;
@@ -134,8 +137,17 @@ impl PyMontyRepl {
             None => PrintWriter::Stdout,
         };
 
-        if external_functions.is_some() || os.is_some() {
-            return self.feed_run_with_externals(py, code, input_values, external_functions, os, print_writer);
+        let os_handler = OsHandler::from_run_args(py, mount, os)?;
+
+        if external_functions.is_some() || os_handler.is_some() {
+            return self.feed_run_with_externals(
+                py,
+                code,
+                input_values,
+                external_functions,
+                os_handler.as_ref(),
+                print_writer,
+            );
         }
 
         let mut guard = self
@@ -586,7 +598,7 @@ impl PyMontyRepl {
         code: &str,
         input_values: Vec<(String, MontyObject)>,
         external_functions: Option<&Bound<'_, PyDict>>,
-        os: Option<&Bound<'_, PyAny>>,
+        os_handler: Option<&OsHandler>,
         mut print_writer: PrintWriter<'_>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let mut print_output = SendWrapper::new(&mut print_writer);
@@ -594,12 +606,24 @@ impl PyMontyRepl {
         let repl = self.take_repl()?;
 
         let result = match repl {
-            EitherRepl::NoLimit(repl) => {
-                self.feed_start_loop(py, repl, code, input_values, external_functions, os, &mut print_output)
-            }
-            EitherRepl::Limited(repl) => {
-                self.feed_start_loop(py, repl, code, input_values, external_functions, os, &mut print_output)
-            }
+            EitherRepl::NoLimit(repl) => self.feed_start_loop(
+                py,
+                repl,
+                code,
+                input_values,
+                external_functions,
+                os_handler,
+                &mut print_output,
+            ),
+            EitherRepl::Limited(repl) => self.feed_start_loop(
+                py,
+                repl,
+                code,
+                input_values,
+                external_functions,
+                os_handler,
+                &mut print_output,
+            ),
         };
 
         // On error, the REPL is already restored inside `restore_repl_from_start_error`.
@@ -614,6 +638,9 @@ impl PyMontyRepl {
 
     /// Runs the feed_start / resume loop for a specific resource tracker type.
     ///
+    /// Handles filesystem mounts via the [`OsHandler`] take/put_back lifecycle:
+    /// mounts are taken at the start and put back on all exit paths.
+    ///
     /// Returns the output value and the restored REPL enum variant, or a Python error.
     #[expect(clippy::too_many_arguments)]
     fn feed_start_loop<T: ResourceTracker + Send>(
@@ -623,20 +650,36 @@ impl PyMontyRepl {
         code: &str,
         input_values: Vec<(String, MontyObject)>,
         external_functions: Option<&Bound<'_, PyDict>>,
-        os: Option<&Bound<'_, PyAny>>,
+        os_handler: Option<&OsHandler>,
         print_output: &mut SendWrapper<&mut PrintWriter<'_>>,
     ) -> PyResult<(MontyObject, EitherRepl)>
     where
         EitherRepl: FromCoreRepl<T>,
     {
+        // Take mounts out of shared slots for zero-overhead execution.
+        let mut mount_table: Option<MountTable> = os_handler.map(OsHandler::take).transpose()?;
+        let fallback = os_handler.and_then(|h| h.fallback.as_ref());
+
+        // Helper: put mounts back into shared slots.
+        let put_back = |table: Option<MountTable>| {
+            if let (Some(h), Some(table)) = (os_handler, table) {
+                h.put_back(table);
+            }
+        };
+
         let code_owned = code.to_owned();
-        let mut progress = py
-            .detach(|| repl.feed_start(&code_owned, input_values, print_output.reborrow()))
-            .map_err(|e| self.restore_repl_from_start_error(py, *e))?;
+        let mut progress = match py.detach(|| repl.feed_start(&code_owned, input_values, print_output.reborrow())) {
+            Ok(p) => p,
+            Err(e) => {
+                put_back(mount_table);
+                return Err(self.restore_repl_from_start_error(py, *e));
+            }
+        };
 
         loop {
             match progress {
                 ReplProgress::Complete { repl, value } => {
+                    put_back(mount_table);
                     return Ok((value, EitherRepl::from_core(repl)));
                 }
                 ReplProgress::FunctionCall(call) => {
@@ -651,12 +694,17 @@ impl PyMontyRepl {
                             call.function_name
                         );
                         self.put_repl(EitherRepl::from_core(call.into_repl()));
+                        put_back(mount_table);
                         return Err(PyRuntimeError::new_err(msg));
                     };
 
-                    progress = py
-                        .detach(|| call.resume(return_value, print_output.reborrow()))
-                        .map_err(|e| self.restore_repl_from_start_error(py, *e))?;
+                    progress = match py.detach(|| call.resume(return_value, print_output.reborrow())) {
+                        Ok(p) => p,
+                        Err(e) => {
+                            put_back(mount_table);
+                            return Err(self.restore_repl_from_start_error(py, *e));
+                        }
+                    };
                 }
                 ReplProgress::NameLookup(lookup) => {
                     let result = if let Some(ext_fns) = external_functions
@@ -670,45 +718,29 @@ impl PyMontyRepl {
                         NameLookupResult::Undefined
                     };
 
-                    progress = py
-                        .detach(|| lookup.resume(result, print_output.reborrow()))
-                        .map_err(|e| self.restore_repl_from_start_error(py, *e))?;
+                    progress = match py.detach(|| lookup.resume(result, print_output.reborrow())) {
+                        Ok(p) => p,
+                        Err(e) => {
+                            put_back(mount_table);
+                            return Err(self.restore_repl_from_start_error(py, *e));
+                        }
+                    };
                 }
                 ReplProgress::OsCall(call) => {
-                    let result: ExtFunctionResult = if let Some(os_callback) = os {
-                        let py_args: Vec<Py<PyAny>> = call
-                            .args
-                            .iter()
-                            .map(|arg| monty_to_py(py, arg, &self.dc_registry))
-                            .collect::<PyResult<_>>()?;
-                        let py_args_tuple = PyTuple::new(py, py_args)?;
+                    let result: ExtFunctionResult =
+                        handle_repl_os_call(py, &call, &mut mount_table, fallback, &self.dc_registry)?;
 
-                        let py_kwargs = PyDict::new(py);
-                        for (k, v) in &call.kwargs {
-                            py_kwargs.set_item(
-                                monty_to_py(py, k, &self.dc_registry)?,
-                                monty_to_py(py, v, &self.dc_registry)?,
-                            )?;
+                    progress = match py.detach(|| call.resume(result, print_output.reborrow())) {
+                        Ok(p) => p,
+                        Err(e) => {
+                            put_back(mount_table);
+                            return Err(self.restore_repl_from_start_error(py, *e));
                         }
-
-                        match os_callback.call1((call.function.to_string(), py_args_tuple, py_kwargs)) {
-                            Ok(result) => py_to_monty(&result, &self.dc_registry)?.into(),
-                            Err(err) => exc_py_to_monty(py, &err).into(),
-                        }
-                    } else {
-                        MontyException::new(
-                            ExcType::NotImplementedError,
-                            Some(format!("OS function '{}' not implemented", call.function)),
-                        )
-                        .into()
                     };
-
-                    progress = py
-                        .detach(|| call.resume(result, print_output.reborrow()))
-                        .map_err(|e| self.restore_repl_from_start_error(py, *e))?;
                 }
                 ReplProgress::ResolveFutures(state) => {
                     self.put_repl(EitherRepl::from_core(state.into_repl()));
+                    put_back(mount_table);
                     return Err(PyRuntimeError::new_err(
                         "async futures not supported with `MontyRepl.feed_run`",
                     ));
@@ -778,6 +810,48 @@ fn extract_repl_inputs(
             Ok((name, obj))
         })
         .collect::<PyResult<_>>()
+}
+
+/// Handles an OS call from the REPL, dispatching to the mount table if available,
+/// then to the fallback callback, and finally to [`OsFunction::on_no_handler`].
+fn handle_repl_os_call<T: ResourceTracker>(
+    py: Python<'_>,
+    call: &monty::ReplOsCall<T>,
+    mount_table: &mut Option<MountTable>,
+    fallback: Option<&Py<PyAny>>,
+    dc_registry: &DcRegistry,
+) -> PyResult<ExtFunctionResult> {
+    if let Some(table) = mount_table.as_mut() {
+        match table.handle_os_call(call.function, &call.args, &call.kwargs) {
+            Some(Ok(obj)) => return Ok(obj.into()),
+            Some(Err(mount_err)) => return Ok(mount_err.into_exception().into()),
+            None => {} // Mount didn't handle it, try fallback
+        }
+    }
+
+    if let Some(fb) = fallback {
+        // Construct a temporary OsCall-like struct for call_os_callback.
+        // call_os_callback expects an OsCall<T> but we have ReplOsCall<T>.
+        // Inline the callback logic instead.
+        let py_args: Vec<Py<PyAny>> = call
+            .args
+            .iter()
+            .map(|arg| monty_to_py(py, arg, dc_registry))
+            .collect::<PyResult<_>>()?;
+        let py_args_tuple = PyTuple::new(py, py_args)?;
+
+        let py_kwargs = PyDict::new(py);
+        for (k, v) in &call.kwargs {
+            py_kwargs.set_item(monty_to_py(py, k, dc_registry)?, monty_to_py(py, v, dc_registry)?)?;
+        }
+
+        return match fb.bind(py).call1((call.function.to_string(), py_args_tuple, py_kwargs)) {
+            Ok(result) => Ok(py_to_monty(&result, dc_registry)?.into()),
+            Err(err) => Ok(exc_py_to_monty(py, &err).into()),
+        };
+    }
+
+    Ok(call.function.on_no_handler(&call.args).into())
 }
 
 /// Helper trait to convert a typed `CoreMontyRepl<T>` back into the

@@ -48,7 +48,7 @@ use std::{borrow::Cow, mem, ptr, result};
 use monty::{
     fs::MountTable, ExcType, ExtFunctionResult, FunctionCall, LimitedTracker, MontyException, MontyObject,
     MontyRepl as CoreMontyRepl, MontyRun, NameLookup, NameLookupResult, NoLimitTracker, OsCall, PrintWriter,
-    PrintWriterCallback, ResourceTracker, RunProgress,
+    PrintWriterCallback, ReplProgress, ResourceTracker, RunProgress,
 };
 use monty_type_checking::{type_check, SourceFile};
 use napi::{bindgen_prelude::*, sys::Status};
@@ -520,13 +520,22 @@ pub struct MontyReplOptions {
     pub limits: Option<JsResourceLimits>,
 }
 
+/// Options for `MontyRepl.feed()`.
+#[napi(object)]
+#[derive(Default)]
+pub struct FeedOptions<'env> {
+    /// Filesystem mount(s) for the sandbox.
+    /// A single `MountDirectory` or an array of `MountDirectory`.
+    pub mount: Option<Object<'env>>,
+}
+
 /// Stateful no-replay REPL session.
 ///
 /// Create with `new MontyRepl()` then call `feed()` to execute snippets
 /// incrementally against persistent heap and namespace state.
 #[napi]
 pub struct MontyRepl {
-    repl: EitherRepl,
+    repl: Option<EitherRepl>,
     script_name: String,
 }
 
@@ -551,7 +560,10 @@ impl MontyRepl {
             EitherRepl::NoLimit(CoreMontyRepl::new(&script_name, NoLimitTracker))
         };
 
-        Self { repl, script_name }
+        Self {
+            repl: Some(repl),
+            script_name,
+        }
     }
 
     /// Returns the script name for this REPL session.
@@ -562,13 +574,33 @@ impl MontyRepl {
     }
 
     /// Executes one incremental snippet against persistent REPL state.
+    ///
+    /// @param code - Python code to execute
+    /// @param options - Optional feed options (mount)
     #[napi]
     pub fn feed<'env>(
         &mut self,
         env: &'env Env,
         code: String,
+        options: Option<FeedOptions<'env>>,
     ) -> Result<Either<JsMontyObject<'env>, JsMontyException>> {
-        let output = match &mut self.repl {
+        let options = options.unwrap_or_default();
+        let os_handler = match options.mount.as_ref() {
+            Some(obj) => OsHandler::from_extracted(extract_mounts(obj)?),
+            None => None,
+        };
+
+        // If mounts are provided, use feed_start/resume loop to handle OsCall
+        if os_handler.is_some() {
+            return self.feed_with_mounts(env, code, os_handler);
+        }
+
+        let repl = self
+            .repl
+            .as_mut()
+            .ok_or_else(|| Error::from_reason("REPL session is currently in use"))?;
+
+        let output = match repl {
             EitherRepl::NoLimit(repl) => repl.feed_run(&code, vec![], PrintWriter::Stdout),
             EitherRepl::Limited(repl) => repl.feed_run(&code, vec![], PrintWriter::Stdout),
         };
@@ -582,8 +614,12 @@ impl MontyRepl {
     /// Serializes this REPL session to bytes.
     #[napi]
     pub fn dump(&self) -> Result<Buffer> {
+        let repl = self
+            .repl
+            .as_ref()
+            .ok_or_else(|| Error::from_reason("REPL session is currently in use"))?;
         let serialized = SerializedRepl {
-            repl: &self.repl,
+            repl,
             script_name: &self.script_name,
         };
         let bytes =
@@ -597,7 +633,7 @@ impl MontyRepl {
         let serialized: SerializedReplOwned =
             postcard::from_bytes(&data).map_err(|e| Error::from_reason(format!("Deserialization failed: {e}")))?;
         Ok(Self {
-            repl: serialized.repl,
+            repl: Some(serialized.repl),
             script_name: serialized.script_name,
         })
     }
@@ -607,6 +643,139 @@ impl MontyRepl {
     #[must_use]
     pub fn repr(&self) -> String {
         format!("MontyRepl(scriptName='{}')", self.script_name)
+    }
+}
+
+impl MontyRepl {
+    /// Executes a REPL snippet with mount support using the feed_start/resume loop.
+    ///
+    /// Takes the REPL out of `self.repl` for the duration of the loop (since
+    /// `feed_start` consumes the REPL) and restores it when complete.
+    fn feed_with_mounts<'env>(
+        &mut self,
+        env: &'env Env,
+        code: String,
+        os_handler: Option<OsHandler>,
+    ) -> Result<Either<JsMontyObject<'env>, JsMontyException>> {
+        // Take mounts out of shared slots
+        let mut mount_table: Option<MountTable> = os_handler.as_ref().map(OsHandler::take).transpose()?;
+
+        let put_back = |table: Option<MountTable>| {
+            if let (Some(h), Some(table)) = (&os_handler, table) {
+                h.put_back(table);
+            }
+        };
+
+        // Take the REPL out (feed_start consumes it)
+        let repl = self
+            .repl
+            .take()
+            .ok_or_else(|| Error::from_reason("REPL session is currently in use"))?;
+
+        macro_rules! feed_loop {
+            ($repl:expr) => {{
+                let progress = match $repl.feed_start(&code, vec![], PrintWriter::Stdout) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        // Restore REPL from error
+                        self.repl = Some(EitherRepl::from_core(e.repl));
+                        put_back(mount_table);
+                        return Ok(Either::B(JsMontyException::new(e.error)));
+                    }
+                };
+
+                let mut progress = progress;
+                loop {
+                    match progress {
+                        ReplProgress::Complete { repl, value } => {
+                            self.repl = Some(EitherRepl::from_core(repl));
+                            put_back(mount_table);
+                            return Ok(Either::A(monty_to_js(&value, env)?));
+                        }
+                        ReplProgress::OsCall(call) => {
+                            let os_result = if let Some(ref mut table) = mount_table {
+                                handle_os_call_with_table_repl(&call, table)
+                            } else {
+                                call.function.on_no_handler(&call.args).into()
+                            };
+                            progress = match call.resume(os_result, PrintWriter::Stdout) {
+                                Ok(p) => p,
+                                Err(e) => {
+                                    self.repl = Some(EitherRepl::from_core(e.repl));
+                                    put_back(mount_table);
+                                    return Ok(Either::B(JsMontyException::new(e.error)));
+                                }
+                            };
+                        }
+                        ReplProgress::FunctionCall(call) => {
+                            // No external function support in feed — return error
+                            let func_name = call.function_name.clone();
+                            self.repl = Some(EitherRepl::from_core(call.into_repl()));
+                            put_back(mount_table);
+                            return Ok(Either::B(JsMontyException::new(MontyException::new(
+                                ExcType::RuntimeError,
+                                Some(format!(
+                                    "External function '{func_name}' called but REPL feed() does not support external functions",
+                                )),
+                            ))));
+                        }
+                        ReplProgress::NameLookup(lookup) => {
+                            // No name lookup support — let it raise NameError
+                            progress = match lookup.resume(NameLookupResult::Undefined, PrintWriter::Stdout) {
+                                Ok(p) => p,
+                                Err(e) => {
+                                    self.repl = Some(EitherRepl::from_core(e.repl));
+                                    put_back(mount_table);
+                                    return Ok(Either::B(JsMontyException::new(e.error)));
+                                }
+                            };
+                        }
+                        ReplProgress::ResolveFutures(state) => {
+                            self.repl = Some(EitherRepl::from_core(state.into_repl()));
+                            put_back(mount_table);
+                            return Err(Error::from_reason(
+                                "Async futures are not supported in REPL feed()",
+                            ));
+                        }
+                    }
+                }
+            }};
+        }
+
+        match repl {
+            EitherRepl::NoLimit(repl) => feed_loop!(repl),
+            EitherRepl::Limited(repl) => feed_loop!(repl),
+        }
+    }
+}
+
+/// Handles an OS call from the REPL using a mount table.
+fn handle_os_call_with_table_repl<T: ResourceTracker>(
+    call: &monty::ReplOsCall<T>,
+    table: &mut MountTable,
+) -> ExtFunctionResult {
+    match table.handle_os_call(call.function, &call.args, &call.kwargs) {
+        Some(Ok(obj)) => obj.into(),
+        Some(Err(mount_err)) => mount_err.into_exception().into(),
+        None => call.function.on_no_handler(&call.args).into(),
+    }
+}
+
+/// Trait to convert a typed `CoreMontyRepl<T>` back into `EitherRepl`.
+trait FromCoreRepl<T: ResourceTracker> {
+    /// Wraps a core REPL into the appropriate `EitherRepl` variant.
+    fn from_core(repl: CoreMontyRepl<T>) -> Self;
+}
+
+impl FromCoreRepl<NoLimitTracker> for EitherRepl {
+    fn from_core(repl: CoreMontyRepl<NoLimitTracker>) -> Self {
+        Self::NoLimit(repl)
+    }
+}
+
+impl FromCoreRepl<LimitedTracker> for EitherRepl {
+    fn from_core(repl: CoreMontyRepl<LimitedTracker>) -> Self {
+        Self::Limited(repl)
     }
 }
 

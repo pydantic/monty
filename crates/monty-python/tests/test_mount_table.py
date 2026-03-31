@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 from inline_snapshot import snapshot
 
-from pydantic_monty import Monty, MontyRuntimeError, MountDirectory
+from pydantic_monty import Monty, MontyRepl, MontyRuntimeError, MountDirectory
 
 
 @pytest.fixture
@@ -295,3 +295,109 @@ b = Path('/rw/file2.txt').read_text()
 """
         result = Monty(code).run(mount=mounts)
         assert result == snapshot(('hello world', 'from mount2'))
+
+
+# =============================================================================
+# REPL mount support
+# =============================================================================
+
+
+def test_repl_feed_run_with_mount(test_dir: Path):
+    md = MountDirectory('/data', str(test_dir), mode='read-only')
+    repl = MontyRepl()
+    repl.feed_run('from pathlib import Path', mount=md)
+    result = repl.feed_run("Path('/data/hello.txt').read_text()", mount=md)
+    assert result == snapshot('hello world')
+
+
+def test_repl_overlay_write_persists_across_feeds(test_dir: Path):
+    """Overlay writes in one feed() call are visible in subsequent feed() calls."""
+    md = MountDirectory('/data', str(test_dir), mode='overlay')
+    repl = MontyRepl()
+    repl.feed_run('from pathlib import Path', mount=md)
+    repl.feed_run("Path('/data/new.txt').write_text('from repl')", mount=md)
+    result = repl.feed_run("Path('/data/new.txt').read_text()", mount=md)
+    assert result == snapshot('from repl')
+    # Host not modified
+    assert not (test_dir / 'new.txt').exists()
+
+
+def test_repl_overlay_overwrite_persists(test_dir: Path):
+    """Overwriting an overlay file across feeds preserves the latest content."""
+    md = MountDirectory('/data', str(test_dir), mode='overlay')
+    repl = MontyRepl()
+    repl.feed_run('from pathlib import Path', mount=md)
+    repl.feed_run("Path('/data/hello.txt').write_text('version1')", mount=md)
+    repl.feed_run("Path('/data/hello.txt').write_text('version2')", mount=md)
+    result = repl.feed_run("Path('/data/hello.txt').read_text()", mount=md)
+    assert result == snapshot('version2')
+    # Original host file unchanged
+    assert (test_dir / 'hello.txt').read_text() == 'hello world'
+
+
+def test_repl_overlay_delete_persists(test_dir: Path):
+    """Deleting a file in overlay mode persists across feeds."""
+    md = MountDirectory('/data', str(test_dir), mode='overlay')
+    repl = MontyRepl()
+    repl.feed_run('from pathlib import Path', mount=md)
+    repl.feed_run("Path('/data/hello.txt').unlink()", mount=md)
+    result = repl.feed_run("Path('/data/hello.txt').exists()", mount=md)
+    assert result is False
+    # Host file still exists
+    assert (test_dir / 'hello.txt').exists()
+
+
+def test_repl_overlay_mkdir_persists(test_dir: Path):
+    """Directories created in overlay mode persist across feeds."""
+    md = MountDirectory('/data', str(test_dir), mode='overlay')
+    repl = MontyRepl()
+    repl.feed_run('from pathlib import Path', mount=md)
+    repl.feed_run("Path('/data/mydir').mkdir()", mount=md)
+    repl.feed_run("Path('/data/mydir/file.txt').write_text('nested')", mount=md)
+    result = repl.feed_run("Path('/data/mydir/file.txt').read_text()", mount=md)
+    assert result == snapshot('nested')
+    assert not (test_dir / 'mydir').exists()
+
+
+def test_repl_overlay_iterdir_sees_overlay_files(test_dir: Path):
+    """iterdir() reflects both host and overlay files."""
+    md = MountDirectory('/data', str(test_dir), mode='overlay')
+    repl = MontyRepl()
+    repl.feed_run('from pathlib import Path', mount=md)
+    repl.feed_run("Path('/data/extra.txt').write_text('extra')", mount=md)
+    result = repl.feed_run("sorted([p.name for p in Path('/data').iterdir()])", mount=md)
+    assert result == snapshot(['data.bin', 'extra.txt', 'hello.txt', 'subdir'])
+
+
+def test_repl_overlay_shared_between_repl_and_monty(test_dir: Path):
+    """The same MountDirectory overlay state is shared between REPL and Monty.run()."""
+    md = MountDirectory('/data', str(test_dir), mode='overlay')
+    # Write via REPL
+    repl = MontyRepl()
+    repl.feed_run('from pathlib import Path', mount=md)
+    repl.feed_run("Path('/data/shared.txt').write_text('from repl')", mount=md)
+    # Read via Monty.run()
+    result = Monty("from pathlib import Path; Path('/data/shared.txt').read_text()").run(mount=md)
+    assert result == snapshot('from repl')
+
+
+def test_repl_read_write_mount(test_dir: Path):
+    """Read-write mounts in the REPL write to the host filesystem."""
+    md = MountDirectory('/data', str(test_dir), mode='read-write')
+    repl = MontyRepl()
+    repl.feed_run('from pathlib import Path', mount=md)
+    repl.feed_run("Path('/data/rw_file.txt').write_text('written')", mount=md)
+    result = repl.feed_run("Path('/data/rw_file.txt').read_text()", mount=md)
+    assert result == snapshot('written')
+    # Host was actually modified
+    assert (test_dir / 'rw_file.txt').read_text() == 'written'
+
+
+def test_repl_read_only_mount_blocks_write(test_dir: Path):
+    """Read-only mounts in the REPL reject write operations."""
+    md = MountDirectory('/data', str(test_dir), mode='read-only')
+    repl = MontyRepl()
+    repl.feed_run('from pathlib import Path', mount=md)
+    with pytest.raises(MontyRuntimeError) as exc_info:
+        repl.feed_run("Path('/data/nope.txt').write_text('x')", mount=md)
+    assert 'Read-only file system' in str(exc_info.value)

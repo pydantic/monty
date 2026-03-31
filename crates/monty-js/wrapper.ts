@@ -4,6 +4,7 @@
 import type {
   ExceptionInfo,
   ExceptionInput,
+  FeedOptions as NativeFeedOptions,
   Frame,
   JsMontyObject,
   MountDirectoryOptions,
@@ -50,6 +51,12 @@ export interface RunOptions extends Omit<NativeRunOptions, 'mount'> {
 
 /** Options for starting execution. */
 export interface StartOptions extends Omit<NativeStartOptions, 'mount'> {
+  /** Filesystem mount(s) for the sandbox. */
+  mount?: MountDirectory | MountDirectory[]
+}
+
+/** Options for REPL feed(). */
+export interface FeedOptions extends Omit<NativeFeedOptions, 'mount'> {
   /** Filesystem mount(s) for the sandbox. */
   mount?: MountDirectory | MountDirectory[]
 }
@@ -402,11 +409,12 @@ export class MontyRepl {
    * Executes one incremental snippet.
    *
    * @param code - Snippet code to execute
+   * @param options - Optional feed options (mount)
    * @returns Snippet output
    * @throws {MontyRuntimeError} If execution raises an exception
    */
-  feed(code: string): JsMontyObject {
-    const result = this._native.feed(code)
+  feed(code: string, options?: FeedOptions): JsMontyObject {
+    const result = this._native.feed(code, options)
     if (result instanceof NativeMontyException) {
       throw new MontyRuntimeError(result)
     }

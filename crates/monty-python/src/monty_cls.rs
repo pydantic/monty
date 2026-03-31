@@ -1773,7 +1773,7 @@ where
 /// don't match any mount. In both cases we try the fallback, or fall back to
 /// [`OsFunction::on_no_handler`] which returns `PermissionError` for filesystem
 /// ops and `RuntimeError` for non-filesystem ops.
-fn handle_mount_os_call<T: ResourceTracker>(
+pub(crate) fn handle_mount_os_call<T: ResourceTracker>(
     py: Python<'_>,
     call: &OsCall<T>,
     table: &mut MountTable,
@@ -1794,7 +1794,7 @@ fn handle_mount_os_call<T: ResourceTracker>(
 }
 
 /// Calls a Python OS callback with the given OS call's function name, args, and kwargs.
-fn call_os_callback<T: ResourceTracker>(
+pub(crate) fn call_os_callback<T: ResourceTracker>(
     py: Python<'_>,
     call: &OsCall<T>,
     callback: &Bound<'_, PyAny>,

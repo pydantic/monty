@@ -3,7 +3,7 @@ import * as fs from 'fs'
 import * as os from 'os'
 import * as path from 'path'
 
-import { Monty, MountDirectory, MontyRuntimeError, MontySnapshot, MontyComplete } from '../wrapper'
+import { Monty, MontyRepl, MountDirectory, MontyRuntimeError, MontySnapshot, MontyComplete } from '../wrapper'
 
 // =============================================================================
 // Helper: create a temporary directory with test files
@@ -445,6 +445,149 @@ result + content
     const complete = snapshot.resume({ returnValue: 'PREFIX: ' })
     t.true(complete instanceof MontyComplete)
     t.is((complete as MontyComplete).output, 'PREFIX: hello world')
+  } finally {
+    cleanup()
+  }
+})
+
+// =============================================================================
+// REPL mount support
+// =============================================================================
+
+test('REPL feed with mount read', (t) => {
+  const { dir, cleanup } = createTestDir()
+  try {
+    const md = new MountDirectory('/data', dir, { mode: 'read-only' })
+    const repl = new MontyRepl()
+    repl.feed('from pathlib import Path', { mount: md })
+    const result = repl.feed("Path('/data/hello.txt').read_text()", { mount: md })
+    t.is(result, 'hello world')
+  } finally {
+    cleanup()
+  }
+})
+
+test('REPL overlay write persists across feeds', (t) => {
+  const { dir, cleanup } = createTestDir()
+  try {
+    const md = new MountDirectory('/data', dir, { mode: 'overlay' })
+    const repl = new MontyRepl()
+    repl.feed('from pathlib import Path', { mount: md })
+    repl.feed("Path('/data/new.txt').write_text('from repl')", { mount: md })
+    const result = repl.feed("Path('/data/new.txt').read_text()", { mount: md })
+    t.is(result, 'from repl')
+    // Host not modified
+    t.false(fs.existsSync(path.join(dir, 'new.txt')))
+  } finally {
+    cleanup()
+  }
+})
+
+test('REPL overlay overwrite persists', (t) => {
+  const { dir, cleanup } = createTestDir()
+  try {
+    const md = new MountDirectory('/data', dir, { mode: 'overlay' })
+    const repl = new MontyRepl()
+    repl.feed('from pathlib import Path', { mount: md })
+    repl.feed("Path('/data/hello.txt').write_text('version1')", { mount: md })
+    repl.feed("Path('/data/hello.txt').write_text('version2')", { mount: md })
+    const result = repl.feed("Path('/data/hello.txt').read_text()", { mount: md })
+    t.is(result, 'version2')
+    // Original host file unchanged
+    t.is(fs.readFileSync(path.join(dir, 'hello.txt'), 'utf-8'), 'hello world')
+  } finally {
+    cleanup()
+  }
+})
+
+test('REPL overlay delete persists across feeds', (t) => {
+  const { dir, cleanup } = createTestDir()
+  try {
+    const md = new MountDirectory('/data', dir, { mode: 'overlay' })
+    const repl = new MontyRepl()
+    repl.feed('from pathlib import Path', { mount: md })
+    repl.feed("Path('/data/hello.txt').unlink()", { mount: md })
+    const result = repl.feed("Path('/data/hello.txt').exists()", { mount: md })
+    t.is(result, false)
+    // Host file still exists
+    t.true(fs.existsSync(path.join(dir, 'hello.txt')))
+  } finally {
+    cleanup()
+  }
+})
+
+test('REPL overlay mkdir and nested write persist', (t) => {
+  const { dir, cleanup } = createTestDir()
+  try {
+    const md = new MountDirectory('/data', dir, { mode: 'overlay' })
+    const repl = new MontyRepl()
+    repl.feed('from pathlib import Path', { mount: md })
+    repl.feed("Path('/data/mydir').mkdir()", { mount: md })
+    repl.feed("Path('/data/mydir/file.txt').write_text('nested')", { mount: md })
+    const result = repl.feed("Path('/data/mydir/file.txt').read_text()", { mount: md })
+    t.is(result, 'nested')
+    t.false(fs.existsSync(path.join(dir, 'mydir')))
+  } finally {
+    cleanup()
+  }
+})
+
+test('REPL overlay iterdir sees overlay files', (t) => {
+  const { dir, cleanup } = createTestDir()
+  try {
+    const md = new MountDirectory('/data', dir, { mode: 'overlay' })
+    const repl = new MontyRepl()
+    repl.feed('from pathlib import Path', { mount: md })
+    repl.feed("Path('/data/extra.txt').write_text('extra')", { mount: md })
+    const result = repl.feed("sorted([p.name for p in Path('/data').iterdir()])", { mount: md })
+    t.deepEqual(result, ['data.bin', 'extra.txt', 'hello.txt', 'subdir'])
+  } finally {
+    cleanup()
+  }
+})
+
+test('REPL overlay shared between REPL and Monty.run()', (t) => {
+  const { dir, cleanup } = createTestDir()
+  try {
+    const md = new MountDirectory('/data', dir, { mode: 'overlay' })
+    // Write via REPL
+    const repl = new MontyRepl()
+    repl.feed('from pathlib import Path', { mount: md })
+    repl.feed("Path('/data/shared.txt').write_text('from repl')", { mount: md })
+    // Read via Monty.run()
+    const result = new Monty("from pathlib import Path; Path('/data/shared.txt').read_text()").run({ mount: md })
+    t.is(result, 'from repl')
+  } finally {
+    cleanup()
+  }
+})
+
+test('REPL read-write mount writes to host', (t) => {
+  const { dir, cleanup } = createTestDir()
+  try {
+    const md = new MountDirectory('/data', dir, { mode: 'read-write' })
+    const repl = new MontyRepl()
+    repl.feed('from pathlib import Path', { mount: md })
+    repl.feed("Path('/data/rw_file.txt').write_text('written')", { mount: md })
+    const result = repl.feed("Path('/data/rw_file.txt').read_text()", { mount: md })
+    t.is(result, 'written')
+    // Host was actually modified
+    t.is(fs.readFileSync(path.join(dir, 'rw_file.txt'), 'utf-8'), 'written')
+  } finally {
+    cleanup()
+  }
+})
+
+test('REPL read-only mount blocks write', (t) => {
+  const { dir, cleanup } = createTestDir()
+  try {
+    const md = new MountDirectory('/data', dir, { mode: 'read-only' })
+    const repl = new MontyRepl()
+    repl.feed('from pathlib import Path', { mount: md })
+    const error = t.throws(() => repl.feed("Path('/data/nope.txt').write_text('x')", { mount: md }), {
+      instanceOf: MontyRuntimeError,
+    })
+    t.true(error.message.includes('Read-only file system'))
   } finally {
     cleanup()
   }
