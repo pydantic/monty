@@ -264,12 +264,11 @@ fn ovl_read_text(
 ) -> Result<MontyObject, MountError> {
     match state.get(relative) {
         Some(OverlayEntry::File(f)) => {
-            let text = String::from_utf8(f.content.clone())
-                .map_err(|_| MountError::Io(io::Error::other("invalid UTF-8"), vpath.to_owned()))?;
+            let text = String::from_utf8(f.content.clone()).map_err(|_| MountError::InvalidUtf8(vpath.to_owned()))?;
             Ok(MontyObject::String(text))
         }
-        Some(OverlayEntry::Directory { .. }) => Err(io_err(ErrorKind::Other, "Is a directory", vpath)),
-        Some(OverlayEntry::Deleted) => Err(not_found(vpath)),
+        Some(OverlayEntry::Directory { .. }) => Err(MountError::io_err(ErrorKind::Other, "Is a directory", vpath)),
+        Some(OverlayEntry::Deleted) => Err(MountError::not_found(vpath)),
         None => {
             let r = resolve_path(vpath, ctx.mount_virtual, ctx.mount_host, false)?;
             read_text_fs(&r.host_path, vpath)
@@ -286,8 +285,8 @@ fn ovl_read_bytes(
 ) -> Result<MontyObject, MountError> {
     match state.get(relative) {
         Some(OverlayEntry::File(f)) => Ok(MontyObject::Bytes(f.content.clone())),
-        Some(OverlayEntry::Directory { .. }) => Err(io_err(ErrorKind::Other, "Is a directory", vpath)),
-        Some(OverlayEntry::Deleted) => Err(not_found(vpath)),
+        Some(OverlayEntry::Directory { .. }) => Err(MountError::io_err(ErrorKind::Other, "Is a directory", vpath)),
+        Some(OverlayEntry::Deleted) => Err(MountError::not_found(vpath)),
         None => {
             let r = resolve_path(vpath, ctx.mount_virtual, ctx.mount_host, false)?;
             read_bytes_fs(&r.host_path, vpath)
@@ -357,7 +356,7 @@ fn ovl_check_parent_exists(
             }
         };
         if !parent_exists {
-            return Err(not_found(vpath));
+            return Err(MountError::not_found(vpath));
         }
     }
     Ok(())
@@ -377,11 +376,11 @@ fn ovl_mkdir(
             return if exist_ok {
                 Ok(MontyObject::None)
             } else {
-                Err(io_err(ErrorKind::AlreadyExists, "File exists", vpath))
+                Err(MountError::io_err(ErrorKind::AlreadyExists, "File exists", vpath))
             };
         }
         Some(OverlayEntry::File(_)) => {
-            return Err(io_err(ErrorKind::AlreadyExists, "File exists", vpath));
+            return Err(MountError::io_err(ErrorKind::AlreadyExists, "File exists", vpath));
         }
         Some(OverlayEntry::Deleted) => { /* path was deleted, we can re-create */ }
         None => {
@@ -392,7 +391,7 @@ fn ovl_mkdir(
                 return if exist_ok {
                     Ok(MontyObject::None)
                 } else {
-                    Err(io_err(ErrorKind::AlreadyExists, "File exists", vpath))
+                    Err(MountError::io_err(ErrorKind::AlreadyExists, "File exists", vpath))
                 };
             }
         }
@@ -429,7 +428,7 @@ fn ovl_mkdir(
                 }
             };
             if !parent_exists {
-                return Err(not_found(vpath));
+                return Err(MountError::not_found(vpath));
             }
         }
         state.insert(
@@ -455,17 +454,17 @@ fn ovl_unlink(
             state.insert(relative.to_owned(), OverlayEntry::Deleted);
             Ok(MontyObject::None)
         }
-        Some(OverlayEntry::Directory { .. }) => Err(io_err(ErrorKind::Other, "Is a directory", vpath)),
-        Some(OverlayEntry::Deleted) => Err(not_found(vpath)),
+        Some(OverlayEntry::Directory { .. }) => Err(MountError::io_err(ErrorKind::Other, "Is a directory", vpath)),
+        Some(OverlayEntry::Deleted) => Err(MountError::not_found(vpath)),
         None => {
             let r = resolve_path(vpath, ctx.mount_virtual, ctx.mount_host, false)?;
             if r.host_path.is_file() {
                 state.insert(relative.to_owned(), OverlayEntry::Deleted);
                 Ok(MontyObject::None)
             } else if r.host_path.is_dir() {
-                Err(io_err(ErrorKind::Other, "Is a directory", vpath))
+                Err(MountError::io_err(ErrorKind::Other, "Is a directory", vpath))
             } else {
-                Err(not_found(vpath))
+                Err(MountError::not_found(vpath))
             }
         }
     }
@@ -489,13 +488,13 @@ fn ovl_rmdir(
                 .iter()
                 .any(|(k, v)| k.starts_with(&prefix) && k != relative && !matches!(v, OverlayEntry::Deleted));
             if has_children {
-                return Err(io_err(ErrorKind::Other, "Directory not empty", vpath));
+                return Err(MountError::io_err(ErrorKind::Other, "Directory not empty", vpath));
             }
             state.insert(relative.to_owned(), OverlayEntry::Deleted);
             Ok(MontyObject::None)
         }
-        Some(OverlayEntry::File(_)) => Err(io_err(ErrorKind::Other, "Not a directory", vpath)),
-        Some(OverlayEntry::Deleted) => Err(not_found(vpath)),
+        Some(OverlayEntry::File(_)) => Err(MountError::io_err(ErrorKind::Other, "Not a directory", vpath)),
+        Some(OverlayEntry::Deleted) => Err(MountError::not_found(vpath)),
         None => {
             let r = resolve_path(vpath, ctx.mount_virtual, ctx.mount_host, false)?;
             if r.host_path.is_dir() {
@@ -515,14 +514,14 @@ fn ovl_rmdir(
                             format!("{prefix}{name}")
                         };
                         if !matches!(state.get(&child_rel), Some(OverlayEntry::Deleted)) {
-                            return Err(io_err(ErrorKind::Other, "Directory not empty", vpath));
+                            return Err(MountError::io_err(ErrorKind::Other, "Directory not empty", vpath));
                         }
                     }
                 }
                 state.insert(relative.to_owned(), OverlayEntry::Deleted);
                 Ok(MontyObject::None)
             } else {
-                Err(not_found(vpath))
+                Err(MountError::not_found(vpath))
             }
         }
     }
@@ -541,7 +540,7 @@ fn ovl_stat(
             Ok(file_stat(0o644, size, f.mtime))
         }
         Some(OverlayEntry::Directory { mtime }) => Ok(dir_stat(0o755, *mtime)),
-        Some(OverlayEntry::Deleted) => Err(not_found(vpath)),
+        Some(OverlayEntry::Deleted) => Err(MountError::not_found(vpath)),
         None => {
             let r = resolve_path(vpath, ctx.mount_virtual, ctx.mount_host, false)?;
             stat_fs(&r.host_path, vpath)
@@ -559,7 +558,7 @@ fn ovl_iterdir(
     // Check if the directory itself is tombstoned or doesn't exist.
     let real_dir_exists = match state.get(relative) {
         Some(OverlayEntry::Directory { .. }) => true,
-        Some(OverlayEntry::File(_)) => return Err(io_err(ErrorKind::Other, "Not a directory", vpath)),
+        Some(OverlayEntry::File(_)) => return Err(MountError::io_err(ErrorKind::Other, "Not a directory", vpath)),
         Some(OverlayEntry::Deleted) => false,
         None => match resolve_path(vpath, ctx.mount_virtual, ctx.mount_host, false) {
             Ok(r) => r.host_path.is_dir(),
@@ -644,7 +643,7 @@ fn ovl_rename(
         Some(OverlayEntry::Directory { .. }) => OverlayEntry::Directory {
             mtime: current_timestamp(),
         },
-        Some(OverlayEntry::Deleted) => return Err(not_found(src_vpath)),
+        Some(OverlayEntry::Deleted) => return Err(MountError::not_found(src_vpath)),
         None => {
             let r = resolve_path(src_vpath, ctx.mount_virtual, ctx.mount_host, false)?;
             if r.host_path.is_file() {
@@ -658,7 +657,7 @@ fn ovl_rename(
                     mtime: current_timestamp(),
                 }
             } else {
-                return Err(not_found(src_vpath));
+                return Err(MountError::not_found(src_vpath));
             }
         }
     };
@@ -783,8 +782,13 @@ fn collect_real_descendants(
 // =============================================================================
 
 /// Reads a file as UTF-8 text.
+///
+/// Uses [`fs::read`] followed by [`String::from_utf8`] so that invalid-UTF-8
+/// errors produce [`MountError::InvalidUtf8`] (→ `UnicodeDecodeError`) rather
+/// than a generic `OSError`.
 fn read_text_fs(path: &Path, vpath: &str) -> Result<MontyObject, MountError> {
-    let content = fs::read_to_string(path).map_err(|e| MountError::Io(e, vpath.to_owned()))?;
+    let bytes = fs::read(path).map_err(|e| MountError::Io(e, vpath.to_owned()))?;
+    let content = String::from_utf8(bytes).map_err(|_| MountError::InvalidUtf8(vpath.to_owned()))?;
     Ok(MontyObject::String(content))
 }
 
@@ -944,14 +948,4 @@ fn format_child_path(parent: &str, child: &str) -> String {
     } else {
         format!("{parent}/{child}")
     }
-}
-
-/// Creates a `MountError::Io` with a constructed `io::Error`.
-fn io_err(kind: ErrorKind, msg: &str, vpath: &str) -> MountError {
-    MountError::Io(io::Error::new(kind, msg), vpath.to_owned())
-}
-
-/// Shorthand for a "not found" error.
-fn not_found(vpath: &str) -> MountError {
-    io_err(ErrorKind::NotFound, "No such file or directory", vpath)
 }

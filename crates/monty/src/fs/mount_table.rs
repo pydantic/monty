@@ -129,18 +129,7 @@ impl MountTable {
         let Some(mount) = self.find_mount_mut(&normalized) else {
             return Some(Err(MountError::NoMountPoint(virtual_path.to_owned())));
         };
-        let ctx = MountContext {
-            mount_virtual: &mount.virtual_path.clone(),
-            mount_host: &mount.host_path.clone(),
-        };
-        Some(operations::execute(
-            function,
-            virtual_path,
-            extra_args,
-            kwargs,
-            &ctx,
-            &mut mount.mode,
-        ))
+        Some(mount.execute(function, virtual_path, extra_args, kwargs))
     }
 
     /// Returns `true` if no mount points are configured.
@@ -198,19 +187,7 @@ impl MountTable {
 
         match (src_mount_idx, dst_mount_idx) {
             (Some(s), Some(d)) if s == d => {
-                let mount = &mut self.mounts[s];
-                let ctx = MountContext {
-                    mount_virtual: &mount.virtual_path.clone(),
-                    mount_host: &mount.host_path.clone(),
-                };
-                Some(operations::execute(
-                    OsFunction::Rename,
-                    src_virtual,
-                    extra_args,
-                    kwargs,
-                    &ctx,
-                    &mut mount.mode,
-                ))
+                Some(self.mounts[s].execute(OsFunction::Rename, src_virtual, extra_args, kwargs))
             }
             (Some(_), Some(_)) => Some(Err(MountError::CrossMountRename {
                 src: src_virtual.to_owned(),
@@ -234,6 +211,26 @@ struct Mount {
     host_path: PathBuf,
     /// Access mode (also owns overlay state for [`MountMode::OverlayMemory`]).
     mode: MountMode,
+}
+
+impl Mount {
+    /// Executes a filesystem operation against this mount.
+    ///
+    /// Builds a [`MountContext`] by borrowing `virtual_path` and `host_path`
+    /// while passing `mode` as `&mut`, avoiding unnecessary clones.
+    fn execute(
+        &mut self,
+        function: OsFunction,
+        virtual_path: &str,
+        extra_args: &[MontyObject],
+        kwargs: &[(MontyObject, MontyObject)],
+    ) -> Result<MontyObject, MountError> {
+        let ctx = MountContext {
+            mount_virtual: &self.virtual_path,
+            mount_host: &self.host_path,
+        };
+        operations::execute(function, virtual_path, extra_args, kwargs, &ctx, &mut self.mode)
+    }
 }
 
 /// Checks whether `normalized_path` falls under `mount_virtual_path`.
