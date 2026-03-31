@@ -5,8 +5,9 @@
 
 use std::{
     cmp::Reverse,
-    fs,
+    error, fmt, fs,
     path::{Path, PathBuf},
+    sync::{Arc, Mutex},
 };
 
 use super::{
@@ -53,10 +54,6 @@ impl MountTable {
     ///
     /// Returns [`MountError::InvalidMount`] if the virtual path is not absolute,
     /// or the host path doesn't exist or isn't a directory.
-    /// Adds a mount point mapping a virtual path to a host directory.
-    ///
-    /// The host path is canonicalized at mount time so that all subsequent
-    /// boundary checks compare canonical-to-canonical.
     pub fn mount(
         &mut self,
         virtual_path: &str,
@@ -79,10 +76,47 @@ impl MountTable {
         self.mounts.sort_by_key(|m| Reverse(m.virtual_path.len()));
     }
 
-    /// Get and returns all mounts.
+    /// Consumes this table and returns all mounts.
     #[must_use]
-    pub fn get_mounts(self) -> Vec<Mount> {
+    pub fn into_mounts(self) -> Vec<Mount> {
         self.mounts
+    }
+
+    /// Takes all mounts out of shared slots and assembles a [`MountTable`].
+    ///
+    /// Each slot is `Arc<Mutex<Option<Mount>>>`. The mount is taken via
+    /// `Option::take` so the slot becomes `None` during execution. Use
+    /// [`put_back_shared_mounts`] to restore them after the run completes.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error message if any mutex is poisoned or any mount is
+    /// already taken (concurrent use).
+    pub fn take_shared_mounts(slots: &[Arc<Mutex<Option<Mount>>>]) -> Result<Self, SharedMountError> {
+        let mut table = Self::new();
+        for (i, shared) in slots.iter().enumerate() {
+            let mut guard = shared
+                .lock()
+                .map_err(|_| SharedMountError(format!("mount {i} lock is poisoned")))?;
+            let mount = guard
+                .take()
+                .ok_or_else(|| SharedMountError(format!("mount {i} is already in use by another run")))?;
+            table.push_mount(mount);
+        }
+        Ok(table)
+    }
+
+    /// Puts all mounts back into their shared slots after execution completes.
+    ///
+    /// Must be called after every [`take_shared_mounts`](Self::take_shared_mounts),
+    /// even on error paths, to avoid permanently losing the mounts.
+    pub fn put_back_shared_mounts(self, slots: &[Arc<Mutex<Option<Mount>>>]) {
+        for (shared, mount) in slots.iter().zip(self.into_mounts()) {
+            if let Ok(mut slot) = shared.lock() {
+                debug_assert!(slot.is_none(), "mount slot should be empty during put_back");
+                *slot = Some(mount);
+            }
+        }
     }
 
     /// Handles an OS call using the mount table.
@@ -298,10 +332,28 @@ impl Mount {
     }
 }
 
+/// Error returned when taking or putting back shared mounts fails.
+///
+/// Contains a human-readable message describing which mount slot failed and why
+/// (poisoned lock or already-taken mount). Binding crates convert this into
+/// their framework-specific error type.
+#[derive(Debug)]
+pub struct SharedMountError(String);
+
+impl fmt::Display for SharedMountError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl error::Error for SharedMountError {}
+
 /// Checks whether `normalized_path` falls under `mount_virtual_path`.
 fn path_matches_mount(normalized_path: &str, mount_virtual_path: &str) -> bool {
     if mount_virtual_path == "/" {
         return true;
     }
-    normalized_path == mount_virtual_path || normalized_path.starts_with(&format!("{mount_virtual_path}/"))
+    normalized_path == mount_virtual_path
+        || (normalized_path.starts_with(mount_virtual_path)
+            && normalized_path.as_bytes().get(mount_virtual_path.len()) == Some(&b'/'))
 }

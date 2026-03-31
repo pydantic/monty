@@ -192,6 +192,69 @@ fn resolve_for_creation(candidate: &Path, mount_host_path: &Path, virtual_path: 
     Ok(canonical_parent.join(file_name))
 }
 
+/// Resolves a path for `is_symlink()` checks without following the final symlink.
+///
+/// Canonicalizes and boundary-checks the **parent** directory, then appends the
+/// final component without canonicalization. This preserves symlink identity so
+/// that `Path::is_symlink()` on the returned path reports correctly.
+///
+/// # Security
+///
+/// The parent is fully canonicalized and boundary-checked, so we know the
+/// directory is within the mount. We only inspect the metadata of a direct
+/// child of a validated directory. Even if the symlink points outside the mount,
+/// `is_symlink()` only reveals that the entry is a symlink, not its target.
+pub(super) fn resolve_path_for_lstat(
+    virtual_path: &str,
+    mount_virtual_path: &str,
+    mount_host_path: &Path,
+) -> Result<ResolvedPath, MountError> {
+    if virtual_path.contains('\0') {
+        return Err(MountError::PathEscape {
+            virtual_path: virtual_path.to_owned(),
+        });
+    }
+
+    let normalized = normalize_virtual_path(virtual_path);
+    let relative = strip_mount_prefix(&normalized, mount_virtual_path)
+        .ok_or_else(|| MountError::NoMountPoint(virtual_path.to_owned()))?;
+
+    // Mount root itself is a directory, never a symlink.
+    if relative.is_empty() {
+        let canonical = fs::canonicalize(mount_host_path).map_err(|e| MountError::Io(e, virtual_path.to_owned()))?;
+        check_boundary(&canonical, mount_host_path, &normalized)?;
+        return Ok(ResolvedPath { host_path: canonical });
+    }
+
+    let candidate = mount_host_path.join(relative);
+
+    // Defense in depth: reject `..` in the joined host path.
+    for component in candidate.components() {
+        if matches!(component, Component::ParentDir) {
+            return Err(MountError::PathEscape {
+                virtual_path: normalized,
+            });
+        }
+    }
+
+    let parent = candidate.parent().ok_or_else(|| MountError::PathEscape {
+        virtual_path: virtual_path.to_owned(),
+    })?;
+
+    let file_name = candidate.file_name().ok_or_else(|| MountError::PathEscape {
+        virtual_path: virtual_path.to_owned(),
+    })?;
+
+    // Canonicalize the parent to resolve any symlinks in ancestor directories,
+    // then boundary-check it. The final component is NOT canonicalized.
+    let canonical_parent = fs::canonicalize(parent).map_err(|e| MountError::Io(e, virtual_path.to_owned()))?;
+    check_boundary(&canonical_parent, mount_host_path, &normalized)?;
+
+    Ok(ResolvedPath {
+        host_path: canonical_parent.join(file_name),
+    })
+}
+
 /// Resolves a path for `mkdir -p` where intermediate directories may not exist.
 ///
 /// Walks from the mount root downward through existing path components,

@@ -34,6 +34,21 @@ pub enum MountMode {
 }
 
 impl MountMode {
+    /// Parses a mode string into a [`MountMode`].
+    ///
+    /// Accepted values: `"read-only"`, `"read-write"`, `"overlay"`.
+    /// Returns a descriptive error string on invalid input.
+    pub fn from_mode_str(mode: &str) -> Result<Self, String> {
+        match mode {
+            "read-only" => Ok(Self::ReadOnly),
+            "read-write" => Ok(Self::ReadWrite),
+            "overlay" => Ok(Self::OverlayMemory(OverlayState::new())),
+            other => Err(format!(
+                "Invalid mode '{other}', expected 'read-only', 'read-write', or 'overlay'"
+            )),
+        }
+    }
+
     /// Returns a short string label for this mode (`"read-write"`, `"read-only"`,
     /// or `"overlay"`).
     #[must_use]
@@ -91,17 +106,22 @@ impl OverlayState {
     pub(super) fn prefix_iter(&self, prefix: &str) -> impl Iterator<Item = (&str, &OverlayEntry)> {
         debug_assert!(prefix.is_empty() || prefix.ends_with('/'));
 
-        let (lo, hi) = if prefix.is_empty() {
+        // Declare storage outside the `if` so it outlives the iterator.
+        let upper_storage;
+        let (lo, hi): (Bound<&str>, Bound<&str>) = if prefix.is_empty() {
             (Bound::Unbounded, Bound::Unbounded)
         } else {
             // Increment last byte: '/' (0x2F) → '0' (0x30) to form exclusive upper bound.
-            let mut upper = prefix.to_owned();
-            upper.pop();
-            upper.push('0');
-            (Bound::Included(prefix.to_owned()), Bound::Excluded(upper))
+            upper_storage = {
+                let mut s = prefix.to_owned();
+                s.pop();
+                s.push('0');
+                s
+            };
+            (Bound::Included(prefix), Bound::Excluded(upper_storage.as_str()))
         };
 
-        self.entries.range::<String, _>((lo, hi)).map(|(k, v)| (k.as_str(), v))
+        self.entries.range::<str, _>((lo, hi)).map(|(k, v)| (k.as_str(), v))
     }
 }
 

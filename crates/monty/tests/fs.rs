@@ -4,7 +4,7 @@
 //! ReadOnly, OverlayMemory) and all supported filesystem
 //! operations. Uses real temporary directories to verify correct behavior.
 
-use std::fs;
+use std::{fs, path::Path};
 
 use monty::{
     ExcType, MontyException, MontyObject, OsFunction,
@@ -67,6 +67,24 @@ fn call_err(mt: &mut MountTable, func: OsFunction, path: &str) -> MontyException
         .expect("expected Some")
         .expect_err("expected Err")
         .into_exception()
+}
+
+/// Creates a file symlink, handling platform differences.
+///
+/// On Unix, uses `std::os::unix::fs::symlink`. On Windows, uses
+/// `std::os::windows::fs::symlink_file`.
+fn symlink_file(original: impl AsRef<Path>, link: impl AsRef<Path>) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::symlink as unix_symlink;
+        unix_symlink(original.as_ref(), link.as_ref()).unwrap();
+    }
+
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::symlink_file as win_symlink_file;
+        win_symlink_file(original.as_ref(), link.as_ref()).unwrap();
+    }
 }
 
 /// Asserts an exception has the expected type and message.
@@ -196,6 +214,45 @@ fn rw_is_symlink() {
     let dir = create_test_dir();
     let mut mt = mount_at_mnt(&dir, MountMode::ReadWrite);
 
+    assert_eq!(
+        call_ok(&mut mt, OsFunction::IsSymlink, "/mnt/hello.txt"),
+        MontyObject::Bool(false)
+    );
+}
+
+#[test]
+fn rw_is_symlink_true_for_symlink() {
+    let dir = create_test_dir();
+    symlink_file(dir.path().join("hello.txt"), dir.path().join("link.txt"));
+    let mut mt = mount_at_mnt(&dir, MountMode::ReadWrite);
+
+    // Symlink should be detected as a symlink
+    assert_eq!(
+        call_ok(&mut mt, OsFunction::IsSymlink, "/mnt/link.txt"),
+        MontyObject::Bool(true)
+    );
+    // Target file should NOT be detected as a symlink
+    assert_eq!(
+        call_ok(&mut mt, OsFunction::IsSymlink, "/mnt/hello.txt"),
+        MontyObject::Bool(false)
+    );
+    // Nonexistent path should return false
+    assert_eq!(
+        call_ok(&mut mt, OsFunction::IsSymlink, "/mnt/nope.txt"),
+        MontyObject::Bool(false)
+    );
+}
+
+#[test]
+fn overlay_is_symlink_true_for_symlink() {
+    let dir = create_test_dir();
+    symlink_file(dir.path().join("hello.txt"), dir.path().join("link.txt"));
+    let mut mt = mount_at_mnt(&dir, MountMode::OverlayMemory(OverlayState::new()));
+
+    assert_eq!(
+        call_ok(&mut mt, OsFunction::IsSymlink, "/mnt/link.txt"),
+        MontyObject::Bool(true)
+    );
     assert_eq!(
         call_ok(&mut mt, OsFunction::IsSymlink, "/mnt/hello.txt"),
         MontyObject::Bool(false)

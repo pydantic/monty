@@ -392,7 +392,7 @@ impl Monty {
                     return Ok(Either4::D(JsMontyException::new(exc)));
                 }
             };
-            progress_to_result_with_mounts(progress, print_callback_ref, self.script_name(), mount_state)
+            progress_to_result_with_mounts(env, progress, print_callback_ref, self.script_name(), mount_state)
         } else {
             let tracker = NoLimitTracker;
             let progress = match runner.start(input_values, tracker, print_writer) {
@@ -402,7 +402,7 @@ impl Monty {
                     return Ok(Either4::D(JsMontyException::new(exc)));
                 }
             };
-            progress_to_result_with_mounts(progress, print_callback_ref, self.script_name(), mount_state)
+            progress_to_result_with_mounts(env, progress, print_callback_ref, self.script_name(), mount_state)
         }
     }
 
@@ -1017,7 +1017,7 @@ impl MontySnapshot {
                         return Ok(Either4::D(JsMontyException::new(exc)));
                     }
                 };
-                progress_to_result_with_mounts(progress, print_callback, self.script_name.clone(), mount_state)
+                progress_to_result_with_mounts(env, progress, print_callback, self.script_name.clone(), mount_state)
             }
             EitherSnapshot::Limited(call) => {
                 let progress = match call.resume(external_result, print_writer) {
@@ -1027,7 +1027,7 @@ impl MontySnapshot {
                         return Ok(Either4::D(JsMontyException::new(exc)));
                     }
                 };
-                progress_to_result_with_mounts(progress, print_callback, self.script_name.clone(), mount_state)
+                progress_to_result_with_mounts(env, progress, print_callback, self.script_name.clone(), mount_state)
             }
             EitherSnapshot::Done => Err(Error::from_reason("Snapshot has already been resumed")),
         }
@@ -1260,7 +1260,7 @@ impl MontyNameLookup {
                         return Ok(Either4::D(JsMontyException::new(exc)));
                     }
                 };
-                progress_to_result_with_mounts(progress, print_callback, self.script_name.clone(), mount_state)
+                progress_to_result_with_mounts(env, progress, print_callback, self.script_name.clone(), mount_state)
             }
             EitherLookupSnapshot::Limited(lookup) => {
                 let progress = match lookup.resume(lookup_result, print_writer) {
@@ -1270,7 +1270,7 @@ impl MontyNameLookup {
                         return Ok(Either4::D(JsMontyException::new(exc)));
                     }
                 };
-                progress_to_result_with_mounts(progress, print_callback, self.script_name.clone(), mount_state)
+                progress_to_result_with_mounts(env, progress, print_callback, self.script_name.clone(), mount_state)
             }
             EitherLookupSnapshot::Done => Err(Error::from_reason("Name lookup has already been resumed")),
         }
@@ -1383,6 +1383,7 @@ impl PrintWriterCallback for CallbackStringPrint<'_> {
 /// Mount state is carried forward into snapshots so it persists across
 /// `resume()` calls.
 fn progress_to_result_with_mounts<T>(
+    env: &Env,
     mut progress: RunProgress<T>,
     print_callback: Option<JsPrintCallbackRef>,
     script_name: String,
@@ -1393,6 +1394,13 @@ where
     EitherSnapshot: FromSnapshot<T>,
     EitherLookupSnapshot: FromLookupSnapshot<T>,
 {
+    // Build a reusable print callback so OsCall resumes use the JS callback
+    // instead of falling back to stdout.
+    let mut print_cb = match &print_callback {
+        Some(func) => Some(CallbackStringPrint::new_js_ref(env, func)?),
+        None => None,
+    };
+
     // Loop to handle OsCall events via the mount table before yielding to JS.
     loop {
         match progress {
@@ -1432,26 +1440,23 @@ where
                 ))));
             }
             RunProgress::OsCall(call) => {
-                if let Some((_, ref mut table)) = mount_state {
-                    let os_result = handle_os_call_with_table(&call, table);
-                    progress = match call.resume(os_result, PrintWriter::Stdout) {
-                        Ok(p) => p,
-                        Err(exc) => {
-                            put_back_mount_state(mount_state);
-                            return Ok(Either4::D(JsMontyException::new(exc)));
-                        }
-                    };
+                let os_result = if let Some((_, ref mut table)) = mount_state {
+                    handle_os_call_with_table(&call, table)
                 } else {
                     // No mounts configured — use on_no_handler for appropriate error
-                    let os_result: ExtFunctionResult = call.function.on_no_handler(&call.args).into();
-                    progress = match call.resume(os_result, PrintWriter::Stdout) {
-                        Ok(p) => p,
-                        Err(exc) => {
-                            put_back_mount_state(mount_state);
-                            return Ok(Either4::D(JsMontyException::new(exc)));
-                        }
-                    };
-                }
+                    call.function.on_no_handler(&call.args).into()
+                };
+                let print_writer = match &mut print_cb {
+                    Some(cb) => PrintWriter::Callback(cb),
+                    None => PrintWriter::Stdout,
+                };
+                progress = match call.resume(os_result, print_writer) {
+                    Ok(p) => p,
+                    Err(exc) => {
+                        put_back_mount_state(mount_state);
+                        return Ok(Either4::D(JsMontyException::new(exc)));
+                    }
+                };
             }
         }
     }

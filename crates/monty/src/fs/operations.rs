@@ -18,7 +18,9 @@ use ahash::AHashSet;
 use super::{
     error::MountError,
     mount_mode::{MountMode, OverlayEntry, OverlayFile, OverlayFileRef, OverlayState},
-    path_security::{normalize_virtual_path, resolve_path, resolve_path_mkdir_parents, strip_mount_prefix},
+    path_security::{
+        normalize_virtual_path, resolve_path, resolve_path_for_lstat, resolve_path_mkdir_parents, strip_mount_prefix,
+    },
 };
 use crate::{MontyObject, dir_stat, file_stat, os::OsFunction};
 
@@ -110,7 +112,7 @@ fn execute_direct(
         OsFunction::Stat => stat_fs(&host, vpath),
         OsFunction::Iterdir => iterdir_fs(&host, vpath, ctx.mount_host),
         OsFunction::Rename => rename_fs(vpath, &extract_path_arg(extra_args, "rename")?, ctx),
-        _ => Err(MountError::NoMountPoint(vpath.to_owned())),
+        _ => unreachable!("all filesystem operations are handled above"),
     }
 }
 
@@ -128,6 +130,16 @@ fn resolve_host_path(
     kwargs: &[(MontyObject, MontyObject)],
     ctx: &MountContext<'_>,
 ) -> Result<PathBuf, MountError> {
+    // is_symlink needs special resolution: canonicalize the parent but NOT the
+    // final component, so symlink identity is preserved for the metadata check.
+    if matches!(function, OsFunction::IsSymlink) {
+        match resolve_path_for_lstat(vpath, ctx.mount_virtual, ctx.mount_host) {
+            Ok(r) => return Ok(r.host_path),
+            Err(MountError::Io(_, _)) => return Ok(PathBuf::from("/nonexistent")),
+            Err(e) => return Err(e),
+        }
+    }
+
     // Existence checks return false for nonexistent paths rather than erroring.
     if function.is_existence_check() {
         match resolve_path(vpath, ctx.mount_virtual, ctx.mount_host, false) {
@@ -197,7 +209,7 @@ fn execute_overlay_memory(
             overlay_rename(state, vpath, &target, ctx)
         }
         OsFunction::Resolve | OsFunction::Absolute => Ok(MontyObject::Path(normalize_virtual_path(vpath))),
-        _ => Err(MountError::NoMountPoint(vpath.to_owned())),
+        _ => unreachable!("all filesystem operations are handled above"),
     }
 }
 
@@ -270,7 +282,7 @@ fn overlay_is_symlink(
 ) -> Result<MontyObject, MountError> {
     match state.get(relative) {
         Some(_) => Ok(MontyObject::Bool(false)),
-        None => match resolve_path(vpath, ctx.mount_virtual, ctx.mount_host, false) {
+        None => match resolve_path_for_lstat(vpath, ctx.mount_virtual, ctx.mount_host) {
             Ok(r) => Ok(MontyObject::Bool(r.host_path.is_symlink())),
             Err(MountError::Io(_, _)) => Ok(MontyObject::Bool(false)),
             Err(e) => Err(e),
@@ -622,6 +634,8 @@ fn overlay_iterdir(
     vpath: &str,
 ) -> Result<MontyObject, MountError> {
     // Check if the directory itself is tombstoned or doesn't exist.
+    // Cache the resolved host path to avoid resolving twice.
+    let mut resolved_host: Option<PathBuf> = None;
     let real_dir_exists = match state.get(relative) {
         Some(OverlayEntry::Directory { .. }) => true,
         Some(OverlayEntry::File(_) | OverlayEntry::RealFileRef(_)) => {
@@ -629,7 +643,11 @@ fn overlay_iterdir(
         }
         Some(OverlayEntry::Deleted) => false,
         None => match resolve_path(vpath, ctx.mount_virtual, ctx.mount_host, false) {
-            Ok(r) => r.host_path.is_dir(),
+            Ok(r) => {
+                let is_dir = r.host_path.is_dir();
+                resolved_host = Some(r.host_path);
+                is_dir
+            }
             Err(MountError::Io(_, _)) => false,
             Err(e) => return Err(e),
         },
@@ -660,8 +678,8 @@ fn overlay_iterdir(
 
     // Merge real entries if directory exists and isn't tombstoned.
     if real_dir_exists
-        && let Ok(r) = resolve_path(vpath, ctx.mount_virtual, ctx.mount_host, false)
-        && let Ok(read_dir) = fs::read_dir(&r.host_path)
+        && let Some(ref host_path) = resolved_host
+        && let Ok(read_dir) = fs::read_dir(host_path)
     {
         for entry in read_dir.flatten() {
             let name = entry.file_name().to_string_lossy().to_string();

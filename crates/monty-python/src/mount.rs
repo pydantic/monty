@@ -15,7 +15,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use monty::fs::{Mount, MountMode, MountTable, OverlayState};
+use monty::fs::{Mount, MountMode, MountTable};
 use pyo3::{
     exceptions::{PyTypeError, PyValueError},
     prelude::*,
@@ -68,7 +68,7 @@ impl PyMountDirectory {
         mode: &str,
         write_bytes_limit: Option<u64>,
     ) -> PyResult<Self> {
-        let mount_mode = parse_mode(mode)?;
+        let mount_mode = MountMode::from_mode_str(mode).map_err(PyValueError::new_err)?;
         let mount = Mount::new(virtual_path, host_path, mount_mode, write_bytes_limit)
             .map_err(|e| exc_monty_to_py(py, e.into_exception()))?;
         Ok(Self {
@@ -181,36 +181,14 @@ impl OsHandler {
         Ok(Some(Self { mounts, fallback }))
     }
 
-    /// Takes all mounts out of their shared slots and assembles a [`MountTable`]
-    /// ready for execution.
-    ///
-    /// Returns `Err` if any mount is already taken (concurrent use) or if a
-    /// lock is poisoned.
+    /// Takes all mounts out of their shared slots and assembles a [`MountTable`].
     pub(crate) fn take(&self) -> PyResult<MountTable> {
-        let mut table = MountTable::new();
-        for (i, shared) in self.mounts.iter().enumerate() {
-            let mut guard = shared
-                .lock()
-                .map_err(|_| PyValueError::new_err(format!("mount {i} lock is poisoned")))?;
-            let mount = guard
-                .take()
-                .ok_or_else(|| PyValueError::new_err(format!("mount {i} is already in use by another run")))?;
-            table.push_mount(mount);
-        }
-        Ok(table)
+        MountTable::take_shared_mounts(&self.mounts).map_err(|e| PyValueError::new_err(e.to_string()))
     }
 
     /// Puts all mounts back into their shared slots after execution completes.
-    ///
-    /// Must be called after every [`take`](Self::take), even on error paths.
     pub(crate) fn put_back(&self, table: MountTable) {
-        let mounts = table.get_mounts();
-        for (shared, mount) in self.mounts.iter().zip(mounts) {
-            if let Ok(mut slot) = shared.lock() {
-                debug_assert!(slot.is_none(), "mount slot should be empty during put_back");
-                *slot = Some(mount);
-            }
-        }
+        table.put_back_shared_mounts(&self.mounts);
     }
 }
 
@@ -245,17 +223,5 @@ fn extract_mounts(arg: &Bound<'_, PyAny>) -> PyResult<Vec<SharedMount>> {
         Err(PyTypeError::new_err(
             "mount must be a MountDirectory or list[MountDirectory]",
         ))
-    }
-}
-
-/// Converts a mode string to a [`MountMode`] enum variant.
-fn parse_mode(mode: &str) -> PyResult<MountMode> {
-    match mode {
-        "read-only" => Ok(MountMode::ReadOnly),
-        "read-write" => Ok(MountMode::ReadWrite),
-        "overlay" => Ok(MountMode::OverlayMemory(OverlayState::new())),
-        other => Err(PyValueError::new_err(format!(
-            "Invalid mode '{other}', expected 'read-only', 'read-write', or 'overlay'"
-        ))),
     }
 }

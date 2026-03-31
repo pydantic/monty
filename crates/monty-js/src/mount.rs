@@ -15,7 +15,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use monty::fs::{Mount, MountMode, MountTable, OverlayState};
+use monty::fs::{Mount, MountMode, MountTable};
 use napi::{bindgen_prelude::*, JsValue};
 use napi_derive::napi;
 
@@ -70,9 +70,15 @@ impl MountDirectory {
     pub fn new(virtual_path: String, host_path: String, options: Option<MountDirectoryOptions>) -> Result<Self> {
         let options = options.unwrap_or_default();
         let mode_str = options.mode.as_deref().unwrap_or("overlay");
-        let mount_mode = parse_mode(mode_str)?;
-        #[expect(clippy::cast_sign_loss)]
-        let write_bytes_limit = options.write_bytes_limit.map(|v| v as u64);
+        let mount_mode = MountMode::from_mode_str(mode_str).map_err(|e| Error::new(Status::InvalidArg, e))?;
+        let write_bytes_limit = match options.write_bytes_limit {
+            Some(v) if v < 0 => {
+                return Err(Error::new(Status::InvalidArg, "write_bytes_limit must be non-negative"));
+            }
+            #[expect(clippy::cast_sign_loss)]
+            Some(v) => Some(v as u64),
+            None => None,
+        };
 
         let mount = Mount::new(&virtual_path, &host_path, mount_mode, write_bytes_limit)
             .map_err(|e| Error::new(Status::InvalidArg, e.into_exception().to_string()))?;
@@ -166,39 +172,14 @@ impl OsHandler {
         Some(Self { mounts: mounts.0 })
     }
 
-    /// Takes all mounts out of their shared slots and assembles a [`MountTable`]
-    /// ready for execution.
-    ///
-    /// Returns `Err` if any mount is already taken (concurrent use) or if a
-    /// lock is poisoned.
+    /// Takes all mounts out of their shared slots and assembles a [`MountTable`].
     pub(crate) fn take(&self) -> Result<MountTable> {
-        let mut table = MountTable::new();
-        for (i, shared) in self.mounts.iter().enumerate() {
-            let mut guard = shared
-                .lock()
-                .map_err(|_| Error::new(Status::GenericFailure, format!("mount {i} lock is poisoned")))?;
-            let mount = guard.take().ok_or_else(|| {
-                Error::new(
-                    Status::GenericFailure,
-                    format!("mount {i} is already in use by another run"),
-                )
-            })?;
-            table.push_mount(mount);
-        }
-        Ok(table)
+        MountTable::take_shared_mounts(&self.mounts).map_err(|e| Error::new(Status::GenericFailure, e.to_string()))
     }
 
     /// Puts all mounts back into their shared slots after execution completes.
-    ///
-    /// Must be called after every [`take`](Self::take), even on error paths.
     pub(crate) fn put_back(&self, table: MountTable) {
-        let mounts = table.get_mounts();
-        for (shared, mount) in self.mounts.iter().zip(mounts) {
-            if let Ok(mut slot) = shared.lock() {
-                debug_assert!(slot.is_none(), "mount slot should be empty during put_back");
-                *slot = Some(mount);
-            }
-        }
+        table.put_back_shared_mounts(&self.mounts);
     }
 }
 
@@ -233,17 +214,4 @@ pub(crate) fn extract_mounts(arg: &Object<'_>) -> Result<ExtractedMounts> {
     let md: &MountDirectory = unsafe { MountDirectory::from_napi_ref(env_raw, arg.raw()) }
         .map_err(|_| Error::new(Status::InvalidArg, "mount must be a MountDirectory or MountDirectory[]"))?;
     Ok(ExtractedMounts(vec![Arc::clone(&md.shared)]))
-}
-
-/// Converts a mode string to a [`MountMode`] enum variant.
-fn parse_mode(mode: &str) -> Result<MountMode> {
-    match mode {
-        "read-only" => Ok(MountMode::ReadOnly),
-        "read-write" => Ok(MountMode::ReadWrite),
-        "overlay" => Ok(MountMode::OverlayMemory(OverlayState::new())),
-        other => Err(Error::new(
-            Status::InvalidArg,
-            format!("Invalid mode '{other}', expected 'read-only', 'read-write', or 'overlay'"),
-        )),
-    }
 }

@@ -97,7 +97,7 @@ impl MountError {
                 ErrorKind::DirectoryNotEmpty => {
                     let code = err.raw_os_error().unwrap_or(39);
                     MontyException::new(
-                        ExcType::FileExistsError,
+                        ExcType::OSError,
                         Some(format!("[Errno {code}] Directory not empty: '{path}'")),
                     )
                 }
