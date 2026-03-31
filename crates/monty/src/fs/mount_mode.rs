@@ -1,6 +1,6 @@
 //! Mount mode definitions and overlay state management.
 
-use ahash::AHashMap;
+use std::{collections::BTreeMap, ops::Bound};
 
 /// Access policy for a mount point.
 ///
@@ -29,14 +29,17 @@ pub enum MountMode {
 
 /// In-memory overlay state for [`MountMode::OverlayMemory`].
 ///
-/// A single [`AHashMap`] maps relative paths (within the mount) to
+/// A single [`BTreeMap`] maps relative paths (within the mount) to
 /// [`OverlayEntry`] variants describing the current overlay state.
 /// Paths not in the map fall through to the real filesystem.
 #[derive(Debug, Default)]
 pub struct OverlayState {
     /// Entries keyed by forward-slash-separated relative path (e.g., `"subdir/file.txt"`).
     /// The mount root is `""`.
-    entries: AHashMap<String, OverlayEntry>,
+    ///
+    /// Uses `BTreeMap` instead of a hash map so that prefix lookups (e.g. finding all
+    /// entries under a directory) are O(log n + k) via range queries, rather than O(n) scans.
+    entries: BTreeMap<String, OverlayEntry>,
 }
 
 impl OverlayState {
@@ -57,9 +60,24 @@ impl OverlayState {
         self.entries.insert(relative_path, entry);
     }
 
-    /// Iterates over all overlay entries (for directory listing merges).
-    pub(super) fn iter(&self) -> impl Iterator<Item = (&str, &OverlayEntry)> {
-        self.entries.iter().map(|(k, v)| (k.as_str(), v))
+    /// Iterates over overlay entries whose keys start with `prefix`.
+    ///
+    /// `prefix` must be either `""` (iterate everything) or end with `'/'`.
+    /// Uses [`BTreeMap::range`] for O(log n + k) lookup instead of scanning all entries.
+    pub(super) fn prefix_iter(&self, prefix: &str) -> impl Iterator<Item = (&str, &OverlayEntry)> {
+        debug_assert!(prefix.is_empty() || prefix.ends_with('/'));
+
+        let (lo, hi) = if prefix.is_empty() {
+            (Bound::Unbounded, Bound::Unbounded)
+        } else {
+            // Increment last byte: '/' (0x2F) → '0' (0x30) to form exclusive upper bound.
+            let mut upper = prefix.to_owned();
+            upper.pop();
+            upper.push('0');
+            (Bound::Included(prefix.to_owned()), Bound::Excluded(upper))
+        };
+
+        self.entries.range::<String, _>((lo, hi)).map(|(k, v)| (k.as_str(), v))
     }
 }
 

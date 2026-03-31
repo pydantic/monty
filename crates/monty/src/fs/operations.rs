@@ -151,31 +151,31 @@ fn execute_overlay_memory(
         .to_owned();
 
     match function {
-        OsFunction::Exists => ovl_exists(state, &relative, ctx, vpath),
-        OsFunction::IsFile => ovl_is_file(state, &relative, ctx, vpath),
-        OsFunction::IsDir => ovl_is_dir(state, &relative, ctx, vpath),
-        OsFunction::IsSymlink => ovl_is_symlink(state, &relative, ctx, vpath),
-        OsFunction::ReadText => ovl_read_text(state, &relative, ctx, vpath),
-        OsFunction::ReadBytes => ovl_read_bytes(state, &relative, ctx, vpath),
+        OsFunction::Exists => overlay_exists(state, &relative, ctx, vpath),
+        OsFunction::IsFile => overlay_is_file(state, &relative, ctx, vpath),
+        OsFunction::IsDir => overlay_is_dir(state, &relative, ctx, vpath),
+        OsFunction::IsSymlink => overlay_is_symlink(state, &relative, ctx, vpath),
+        OsFunction::ReadText => overlay_read_text(state, &relative, ctx, vpath),
+        OsFunction::ReadBytes => overlay_read_bytes(state, &relative, ctx, vpath),
         OsFunction::WriteText => {
             let content = extract_string_arg(extra_args, "write_text")?;
-            ovl_write_text(state, relative, content, ctx, vpath)
+            overlay_write_text(state, relative, content, ctx, vpath)
         }
         OsFunction::WriteBytes => {
             let content = extract_bytes_arg(extra_args, "write_bytes")?;
-            ovl_write_bytes(state, relative, content, ctx, vpath)
+            overlay_write_bytes(state, relative, content, ctx, vpath)
         }
         OsFunction::Mkdir => {
             let (parents, exist_ok) = extract_mkdir_kwargs(kwargs);
-            ovl_mkdir(state, &relative, parents, exist_ok, ctx, vpath)
+            overlay_mkdir(state, &relative, parents, exist_ok, ctx, vpath)
         }
-        OsFunction::Unlink => ovl_unlink(state, &relative, ctx, vpath),
-        OsFunction::Rmdir => ovl_rmdir(state, &relative, ctx, vpath),
-        OsFunction::Stat => ovl_stat(state, &relative, ctx, vpath),
-        OsFunction::Iterdir => ovl_iterdir(state, &relative, ctx, vpath),
+        OsFunction::Unlink => overlay_unlink(state, &relative, ctx, vpath),
+        OsFunction::Rmdir => overlay_rmdir(state, &relative, ctx, vpath),
+        OsFunction::Stat => overlay_stat(state, &relative, ctx, vpath),
+        OsFunction::Iterdir => overlay_iterdir(state, &relative, ctx, vpath),
         OsFunction::Rename => {
             let target = extract_path_arg(extra_args, "rename")?;
-            ovl_rename(state, vpath, &target, ctx)
+            overlay_rename(state, vpath, &target, ctx)
         }
         OsFunction::Resolve | OsFunction::Absolute => Ok(MontyObject::Path(normalize_virtual_path(vpath))),
         _ => Err(MountError::NoMountPoint(vpath.to_owned())),
@@ -185,7 +185,7 @@ fn execute_overlay_memory(
 // --- Overlay read operations ---
 
 /// Checks whether a path exists in the overlay or real filesystem.
-fn ovl_exists(
+fn overlay_exists(
     state: &OverlayState,
     relative: &str,
     ctx: &MountContext<'_>,
@@ -203,7 +203,7 @@ fn ovl_exists(
 }
 
 /// Checks whether a path is a file in the overlay or real filesystem.
-fn ovl_is_file(
+fn overlay_is_file(
     state: &OverlayState,
     relative: &str,
     ctx: &MountContext<'_>,
@@ -221,7 +221,7 @@ fn ovl_is_file(
 }
 
 /// Checks whether a path is a directory in the overlay or real filesystem.
-fn ovl_is_dir(
+fn overlay_is_dir(
     state: &OverlayState,
     relative: &str,
     ctx: &MountContext<'_>,
@@ -239,7 +239,7 @@ fn ovl_is_dir(
 }
 
 /// Checks whether a path is a symlink. Overlay entries are never symlinks.
-fn ovl_is_symlink(
+fn overlay_is_symlink(
     state: &OverlayState,
     relative: &str,
     ctx: &MountContext<'_>,
@@ -256,7 +256,7 @@ fn ovl_is_symlink(
 }
 
 /// Reads a file as text from the overlay or real filesystem.
-fn ovl_read_text(
+fn overlay_read_text(
     state: &OverlayState,
     relative: &str,
     ctx: &MountContext<'_>,
@@ -277,7 +277,7 @@ fn ovl_read_text(
 }
 
 /// Reads a file as bytes from the overlay or real filesystem.
-fn ovl_read_bytes(
+fn overlay_read_bytes(
     state: &OverlayState,
     relative: &str,
     ctx: &MountContext<'_>,
@@ -297,14 +297,14 @@ fn ovl_read_bytes(
 // --- Overlay write operations ---
 
 /// Writes text content to the overlay.
-fn ovl_write_text(
+fn overlay_write_text(
     state: &mut OverlayState,
     relative: String,
     content: &str,
     ctx: &MountContext<'_>,
     vpath: &str,
 ) -> Result<MontyObject, MountError> {
-    ovl_check_parent_exists(state, &relative, ctx, vpath)?;
+    overlay_check_parent_exists(state, &relative, ctx, vpath)?;
     let len = i64::try_from(content.len()).unwrap_or(i64::MAX);
     state.insert(
         relative,
@@ -317,14 +317,14 @@ fn ovl_write_text(
 }
 
 /// Writes bytes content to the overlay.
-fn ovl_write_bytes(
+fn overlay_write_bytes(
     state: &mut OverlayState,
     relative: String,
     content: &[u8],
     ctx: &MountContext<'_>,
     vpath: &str,
 ) -> Result<MontyObject, MountError> {
-    ovl_check_parent_exists(state, &relative, ctx, vpath)?;
+    overlay_check_parent_exists(state, &relative, ctx, vpath)?;
     let len = i64::try_from(content.len()).unwrap_or(i64::MAX);
     state.insert(
         relative,
@@ -338,7 +338,7 @@ fn ovl_write_bytes(
 
 /// Checks that the parent directory of `relative` exists in the overlay or
 /// real filesystem, matching CPython's `FileNotFoundError` behavior.
-fn ovl_check_parent_exists(
+fn overlay_check_parent_exists(
     state: &OverlayState,
     relative: &str,
     ctx: &MountContext<'_>,
@@ -363,7 +363,7 @@ fn ovl_check_parent_exists(
 }
 
 /// Creates a directory in the overlay.
-fn ovl_mkdir(
+fn overlay_mkdir(
     state: &mut OverlayState,
     relative: &str,
     parents: bool,
@@ -443,7 +443,7 @@ fn ovl_mkdir(
 }
 
 /// Deletes a file in the overlay (adds a tombstone).
-fn ovl_unlink(
+fn overlay_unlink(
     state: &mut OverlayState,
     relative: &str,
     ctx: &MountContext<'_>,
@@ -471,7 +471,7 @@ fn ovl_unlink(
 }
 
 /// Removes a directory in the overlay (adds a tombstone).
-fn ovl_rmdir(
+fn overlay_rmdir(
     state: &mut OverlayState,
     relative: &str,
     ctx: &MountContext<'_>,
@@ -485,8 +485,8 @@ fn ovl_rmdir(
                 format!("{relative}/")
             };
             let has_children = state
-                .iter()
-                .any(|(k, v)| k.starts_with(&prefix) && k != relative && !matches!(v, OverlayEntry::Deleted));
+                .prefix_iter(&prefix)
+                .any(|(k, v)| k != relative && !matches!(v, OverlayEntry::Deleted));
             if has_children {
                 return Err(MountError::io_err(
                     ErrorKind::DirectoryNotEmpty,
@@ -536,7 +536,7 @@ fn ovl_rmdir(
 }
 
 /// Gets file status from the overlay or real filesystem.
-fn ovl_stat(
+fn overlay_stat(
     state: &OverlayState,
     relative: &str,
     ctx: &MountContext<'_>,
@@ -557,7 +557,7 @@ fn ovl_stat(
 }
 
 /// Lists directory contents, merging overlay entries with real filesystem entries.
-fn ovl_iterdir(
+fn overlay_iterdir(
     state: &OverlayState,
     relative: &str,
     ctx: &MountContext<'_>,
@@ -585,20 +585,12 @@ fn ovl_iterdir(
     let mut seen_names: HashSet<String> = HashSet::new();
     let mut entries: Vec<MontyObject> = Vec::new();
 
-    for (path, entry) in state.iter() {
-        let child_name = if prefix.is_empty() {
-            if path.contains('/') || path.is_empty() {
-                continue;
-            }
-            path.to_owned()
-        } else if let Some(rest) = path.strip_prefix(&prefix) {
-            if rest.contains('/') || rest.is_empty() {
-                continue;
-            }
-            rest.to_owned()
-        } else {
+    for (path, entry) in state.prefix_iter(&prefix) {
+        let rest = &path[prefix.len()..];
+        if rest.contains('/') || rest.is_empty() {
             continue;
-        };
+        }
+        let child_name = rest.to_owned();
 
         seen_names.insert(child_name.clone());
         if !matches!(entry, OverlayEntry::Deleted) {
@@ -623,7 +615,7 @@ fn ovl_iterdir(
 }
 
 /// Renames a file or directory within the overlay.
-fn ovl_rename(
+fn overlay_rename(
     state: &mut OverlayState,
     src_vpath: &str,
     dst_vpath: &str,
@@ -641,6 +633,9 @@ fn ovl_rename(
             dst: dst_vpath.to_owned(),
         })?
         .to_owned();
+
+    // Verify the destination's parent directory exists (matches POSIX rename semantics).
+    overlay_check_parent_exists(state, &dst_rel, ctx, dst_vpath)?;
 
     // Read the source content.
     let entry = match state.get(&src_rel) {
@@ -681,32 +676,31 @@ fn ovl_rename(
         let dst_prefix = format!("{dst_rel}/");
 
         // Move overlay descendants to the new prefix.
-        for (key, child) in state.iter() {
-            if let Some(suffix) = key.strip_prefix(&src_prefix) {
-                match child {
-                    OverlayEntry::File(f) => {
-                        descendants.push((
-                            format!("{dst_prefix}{suffix}"),
-                            OverlayEntry::File(OverlayFile {
-                                content: f.content.clone(),
-                                mtime: current_timestamp(),
-                            }),
-                        ));
-                    }
-                    OverlayEntry::Directory { .. } => {
-                        descendants.push((
-                            format!("{dst_prefix}{suffix}"),
-                            OverlayEntry::Directory {
-                                mtime: current_timestamp(),
-                            },
-                        ));
-                    }
-                    OverlayEntry::Deleted => {
-                        descendants.push((format!("{dst_prefix}{suffix}"), OverlayEntry::Deleted));
-                    }
+        for (key, child) in state.prefix_iter(&src_prefix) {
+            let suffix = &key[src_prefix.len()..];
+            match child {
+                OverlayEntry::File(f) => {
+                    descendants.push((
+                        format!("{dst_prefix}{suffix}"),
+                        OverlayEntry::File(OverlayFile {
+                            content: f.content.clone(),
+                            mtime: current_timestamp(),
+                        }),
+                    ));
                 }
-                tombstones.push(key.to_owned());
+                OverlayEntry::Directory { .. } => {
+                    descendants.push((
+                        format!("{dst_prefix}{suffix}"),
+                        OverlayEntry::Directory {
+                            mtime: current_timestamp(),
+                        },
+                    ));
+                }
+                OverlayEntry::Deleted => {
+                    descendants.push((format!("{dst_prefix}{suffix}"), OverlayEntry::Deleted));
+                }
             }
+            tombstones.push(key.to_owned());
         }
 
         // Tombstone real-FS children that aren't already in the overlay so they
@@ -738,7 +732,7 @@ fn ovl_rename(
 /// Recursively collects real-FS children of a directory that aren't already
 /// in the overlay, returning `(relative_key, OverlayEntry)` pairs.
 ///
-/// Used by `ovl_rename` to copy real-FS descendants into the overlay at the
+/// Used by `overlay_rename` to copy real-FS descendants into the overlay at the
 /// new path so they appear under the renamed directory.
 fn collect_real_descendants(
     host_dir: &Path,

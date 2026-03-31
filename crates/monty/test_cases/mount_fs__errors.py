@@ -69,7 +69,7 @@ except FileExistsError as exc:
 try:
     (root / 'subdir').rmdir()
     assert False, 'expected error on rmdir non-empty'
-except FileExistsError as exc:
+except OSError as exc:
     assert str(exc).startswith(("[Errno 66] Directory not empty: '", "[Errno 39] Directory not empty: '")), (
         f'exc message: {exc}'
     )

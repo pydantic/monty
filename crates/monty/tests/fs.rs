@@ -7,7 +7,7 @@
 use std::fs;
 
 use monty::{
-    MontyObject, OsFunction,
+    ExcType, MontyException, MontyObject, OsFunction,
     fs::{MountError, MountMode, MountTable, OverlayState},
 };
 use tempfile::TempDir;
@@ -61,9 +61,19 @@ fn call_ok(mt: &mut MountTable, func: OsFunction, path: &str) -> MontyObject {
     call(mt, func, path).expect("expected Some").expect("expected Ok")
 }
 
-/// Shorthand: call and unwrap Option, expect Err.
-fn call_err(mt: &mut MountTable, func: OsFunction, path: &str) -> MountError {
-    call(mt, func, path).expect("expected Some").expect_err("expected Err")
+/// Shorthand: call and unwrap Option, expect Err, convert to exception.
+fn call_err(mt: &mut MountTable, func: OsFunction, path: &str) -> MontyException {
+    call(mt, func, path)
+        .expect("expected Some")
+        .expect_err("expected Err")
+        .into_exception()
+}
+
+/// Asserts an exception has the expected type and message.
+#[track_caller]
+fn assert_exc(exc: &MontyException, expected_type: ExcType, expected_msg: &str) {
+    assert_eq!(exc.exc_type(), expected_type, "wrong exception type");
+    assert_eq!(exc.message().unwrap_or(""), expected_msg, "wrong exception message");
 }
 
 /// Shorthand for write operations that take path + content args.
@@ -221,7 +231,11 @@ fn rw_read_text_not_found() {
     let mut mt = mount_at_mnt(&dir, MountMode::ReadWrite);
 
     let err = call_err(&mut mt, OsFunction::ReadText, "/mnt/nonexistent.txt");
-    assert!(matches!(err, MountError::Io(_, _)));
+    assert_exc(
+        &err,
+        ExcType::FileNotFoundError,
+        "[Errno 2] No such file or directory: '/mnt/nonexistent.txt'",
+    );
 }
 
 #[test]
@@ -399,8 +413,11 @@ fn rw_mkdir_already_exists_error() {
     let dir = create_test_dir();
     let mut mt = mount_at_mnt(&dir, MountMode::ReadWrite);
 
-    let err = call_mkdir(&mut mt, "/mnt/subdir", false, false).unwrap().unwrap_err();
-    assert!(matches!(err, MountError::Io(_, _)));
+    let err = call_mkdir(&mut mt, "/mnt/subdir", false, false)
+        .unwrap()
+        .unwrap_err()
+        .into_exception();
+    assert_exc(&err, ExcType::FileExistsError, "[Errno 17] File exists: '/mnt/subdir'");
 }
 
 #[test]
@@ -426,7 +443,11 @@ fn rw_unlink_not_found() {
     let mut mt = mount_at_mnt(&dir, MountMode::ReadWrite);
 
     let err = call_err(&mut mt, OsFunction::Unlink, "/mnt/nonexistent.txt");
-    assert!(matches!(err, MountError::Io(_, _)));
+    assert_exc(
+        &err,
+        ExcType::FileNotFoundError,
+        "[Errno 2] No such file or directory: '/mnt/nonexistent.txt'",
+    );
 }
 
 #[test]
@@ -529,8 +550,13 @@ fn ro_write_text_blocked() {
         MontyObject::String("blocked".to_owned()),
     )
     .unwrap()
-    .unwrap_err();
-    assert!(matches!(err, MountError::ReadOnly(_)));
+    .unwrap_err()
+    .into_exception();
+    assert_exc(
+        &err,
+        ExcType::PermissionError,
+        "[Errno 30] Read-only file system: '/mnt/new.txt'",
+    );
 }
 
 #[test]
@@ -545,8 +571,13 @@ fn ro_write_bytes_blocked() {
         MontyObject::Bytes(vec![0x00]),
     )
     .unwrap()
-    .unwrap_err();
-    assert!(matches!(err, MountError::ReadOnly(_)));
+    .unwrap_err()
+    .into_exception();
+    assert_exc(
+        &err,
+        ExcType::PermissionError,
+        "[Errno 30] Read-only file system: '/mnt/new.bin'",
+    );
 }
 
 #[test]
@@ -554,8 +585,15 @@ fn ro_mkdir_blocked() {
     let dir = create_test_dir();
     let mut mt = mount_at_mnt(&dir, MountMode::ReadOnly);
 
-    let err = call_mkdir(&mut mt, "/mnt/newdir", false, false).unwrap().unwrap_err();
-    assert!(matches!(err, MountError::ReadOnly(_)));
+    let err = call_mkdir(&mut mt, "/mnt/newdir", false, false)
+        .unwrap()
+        .unwrap_err()
+        .into_exception();
+    assert_exc(
+        &err,
+        ExcType::PermissionError,
+        "[Errno 30] Read-only file system: '/mnt/newdir'",
+    );
 }
 
 #[test]
@@ -564,7 +602,11 @@ fn ro_unlink_blocked() {
     let mut mt = mount_at_mnt(&dir, MountMode::ReadOnly);
 
     let err = call_err(&mut mt, OsFunction::Unlink, "/mnt/hello.txt");
-    assert!(matches!(err, MountError::ReadOnly(_)));
+    assert_exc(
+        &err,
+        ExcType::PermissionError,
+        "[Errno 30] Read-only file system: '/mnt/hello.txt'",
+    );
 }
 
 #[test]
@@ -573,7 +615,11 @@ fn ro_rmdir_blocked() {
     let mut mt = mount_at_mnt(&dir, MountMode::ReadOnly);
 
     let err = call_err(&mut mt, OsFunction::Rmdir, "/mnt/subdir");
-    assert!(matches!(err, MountError::ReadOnly(_)));
+    assert_exc(
+        &err,
+        ExcType::PermissionError,
+        "[Errno 30] Read-only file system: '/mnt/subdir'",
+    );
 }
 
 #[test]
@@ -583,8 +629,13 @@ fn ro_rename_blocked() {
 
     let err = call_rename(&mut mt, "/mnt/hello.txt", "/mnt/renamed.txt")
         .unwrap()
-        .unwrap_err();
-    assert!(matches!(err, MountError::ReadOnly(_)));
+        .unwrap_err()
+        .into_exception();
+    assert_exc(
+        &err,
+        ExcType::PermissionError,
+        "[Errno 30] Read-only file system: '/mnt/hello.txt'",
+    );
 }
 
 // =============================================================================
@@ -910,8 +961,13 @@ fn ovl_mem_write_missing_parent() {
         MontyObject::String("x".to_owned()),
     )
     .unwrap()
-    .unwrap_err();
-    assert!(matches!(err, MountError::Io(_, _)));
+    .unwrap_err()
+    .into_exception();
+    assert_exc(
+        &err,
+        ExcType::FileNotFoundError,
+        "[Errno 2] No such file or directory: '/mnt/nonexistent/child.txt'",
+    );
 
     let err = call_write(
         &mut mt,
@@ -920,8 +976,13 @@ fn ovl_mem_write_missing_parent() {
         MontyObject::Bytes(vec![0]),
     )
     .unwrap()
-    .unwrap_err();
-    assert!(matches!(err, MountError::Io(_, _)));
+    .unwrap_err()
+    .into_exception();
+    assert_exc(
+        &err,
+        ExcType::FileNotFoundError,
+        "[Errno 2] No such file or directory: '/mnt/nonexistent/child.bin'",
+    );
 }
 
 #[test]
@@ -969,6 +1030,318 @@ fn ovl_mem_write_after_mkdir() {
 }
 
 // =============================================================================
+// Overlay rename — exhaustive tests
+// =============================================================================
+
+#[test]
+fn ovl_mem_rename_file_overwrites_existing_file() {
+    // Renaming a file onto an existing file should overwrite the destination,
+    // matching POSIX rename semantics.
+    let dir = create_test_dir();
+    let mut mt = mount_at_mnt(&dir, MountMode::OverlayMemory(OverlayState::new()));
+
+    // Both are real FS files.
+    call_rename(&mut mt, "/mnt/hello.txt", "/mnt/empty.txt")
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        call_ok(&mut mt, OsFunction::Exists, "/mnt/hello.txt"),
+        MontyObject::Bool(false)
+    );
+    assert_eq!(
+        call_ok(&mut mt, OsFunction::ReadText, "/mnt/empty.txt"),
+        MontyObject::String("hello world\n".to_owned())
+    );
+}
+
+#[test]
+fn ovl_mem_rename_overlay_file_overwrites_overlay_file() {
+    // Overwrite between two overlay-only files.
+    let dir = create_test_dir();
+    let mut mt = mount_at_mnt(&dir, MountMode::OverlayMemory(OverlayState::new()));
+
+    call_write(
+        &mut mt,
+        OsFunction::WriteText,
+        "/mnt/a.txt",
+        MontyObject::String("aaa".to_owned()),
+    )
+    .unwrap()
+    .unwrap();
+    call_write(
+        &mut mt,
+        OsFunction::WriteText,
+        "/mnt/b.txt",
+        MontyObject::String("bbb".to_owned()),
+    )
+    .unwrap()
+    .unwrap();
+
+    call_rename(&mut mt, "/mnt/a.txt", "/mnt/b.txt").unwrap().unwrap();
+    assert_eq!(
+        call_ok(&mut mt, OsFunction::Exists, "/mnt/a.txt"),
+        MontyObject::Bool(false)
+    );
+    assert_eq!(
+        call_ok(&mut mt, OsFunction::ReadText, "/mnt/b.txt"),
+        MontyObject::String("aaa".to_owned())
+    );
+}
+
+#[test]
+fn ovl_mem_rename_to_same_path() {
+    // Renaming a file to itself should be a no-op.
+    let dir = create_test_dir();
+    let mut mt = mount_at_mnt(&dir, MountMode::OverlayMemory(OverlayState::new()));
+
+    call_rename(&mut mt, "/mnt/hello.txt", "/mnt/hello.txt")
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        call_ok(&mut mt, OsFunction::Exists, "/mnt/hello.txt"),
+        MontyObject::Bool(true)
+    );
+    assert_eq!(
+        call_ok(&mut mt, OsFunction::ReadText, "/mnt/hello.txt"),
+        MontyObject::String("hello world\n".to_owned())
+    );
+}
+
+#[test]
+fn ovl_mem_rename_deleted_file_fails() {
+    // Renaming a tombstoned file should fail with not-found.
+    let dir = create_test_dir();
+    let mut mt = mount_at_mnt(&dir, MountMode::OverlayMemory(OverlayState::new()));
+
+    call(&mut mt, OsFunction::Unlink, "/mnt/hello.txt").unwrap().unwrap();
+    let err = call_rename(&mut mt, "/mnt/hello.txt", "/mnt/other.txt")
+        .unwrap()
+        .unwrap_err()
+        .into_exception();
+    assert_exc(
+        &err,
+        ExcType::FileNotFoundError,
+        "[Errno 2] No such file or directory: '/mnt/hello.txt'",
+    );
+}
+
+#[test]
+fn ovl_mem_rename_nonexistent_file_fails() {
+    // Renaming a file that never existed should fail.
+    let dir = create_test_dir();
+    let mut mt = mount_at_mnt(&dir, MountMode::OverlayMemory(OverlayState::new()));
+
+    let err = call_rename(&mut mt, "/mnt/no_such_file.txt", "/mnt/other.txt")
+        .unwrap()
+        .unwrap_err()
+        .into_exception();
+    assert_exc(
+        &err,
+        ExcType::FileNotFoundError,
+        "[Errno 2] No such file or directory: '/mnt/no_such_file.txt'",
+    );
+}
+
+#[test]
+fn ovl_mem_rename_into_nonexistent_parent_fails() {
+    // Renaming into a path whose parent directory doesn't exist should fail.
+    let dir = create_test_dir();
+    let mut mt = mount_at_mnt(&dir, MountMode::OverlayMemory(OverlayState::new()));
+
+    let err = call_rename(&mut mt, "/mnt/hello.txt", "/mnt/no_such_dir/file.txt")
+        .unwrap()
+        .unwrap_err()
+        .into_exception();
+    assert_exc(
+        &err,
+        ExcType::FileNotFoundError,
+        "[Errno 2] No such file or directory: '/mnt/no_such_dir/file.txt'",
+    );
+}
+
+#[test]
+fn ovl_mem_rename_dir_with_tombstoned_entries() {
+    // Renaming a directory that contains tombstoned entries should carry tombstones.
+    let dir = create_test_dir();
+    let mut mt = mount_at_mnt(&dir, MountMode::OverlayMemory(OverlayState::new()));
+
+    // Delete a file inside subdir.
+    call(&mut mt, OsFunction::Unlink, "/mnt/subdir/nested.txt")
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        call_ok(&mut mt, OsFunction::Exists, "/mnt/subdir/nested.txt"),
+        MontyObject::Bool(false)
+    );
+
+    // Rename the directory.
+    call_rename(&mut mt, "/mnt/subdir", "/mnt/moved").unwrap().unwrap();
+
+    // The tombstoned file should still be invisible under the new name.
+    assert_eq!(
+        call_ok(&mut mt, OsFunction::Exists, "/mnt/moved/nested.txt"),
+        MontyObject::Bool(false)
+    );
+    // Other descendants should still be present.
+    assert_eq!(
+        call_ok(&mut mt, OsFunction::ReadText, "/mnt/moved/deep/file.txt"),
+        MontyObject::String("deep file".to_owned())
+    );
+}
+
+#[test]
+fn ovl_mem_rename_deeply_nested_overlay_dirs() {
+    // Renaming a directory with multiple levels of overlay-only subdirectories.
+    let dir = create_test_dir();
+    let mut mt = mount_at_mnt(&dir, MountMode::OverlayMemory(OverlayState::new()));
+
+    call_mkdir(&mut mt, "/mnt/a", false, false).unwrap().unwrap();
+    call_mkdir(&mut mt, "/mnt/a/b", false, false).unwrap().unwrap();
+    call_mkdir(&mut mt, "/mnt/a/b/c", false, false).unwrap().unwrap();
+    call_write(
+        &mut mt,
+        OsFunction::WriteText,
+        "/mnt/a/b/c/leaf.txt",
+        MontyObject::String("leaf".to_owned()),
+    )
+    .unwrap()
+    .unwrap();
+
+    call_rename(&mut mt, "/mnt/a", "/mnt/x").unwrap().unwrap();
+
+    // Old paths gone.
+    assert_eq!(call_ok(&mut mt, OsFunction::Exists, "/mnt/a"), MontyObject::Bool(false));
+    assert_eq!(
+        call_ok(&mut mt, OsFunction::Exists, "/mnt/a/b/c/leaf.txt"),
+        MontyObject::Bool(false)
+    );
+
+    // New paths present.
+    assert_eq!(
+        call_ok(&mut mt, OsFunction::Exists, "/mnt/x/b/c"),
+        MontyObject::Bool(true)
+    );
+    assert_eq!(
+        call_ok(&mut mt, OsFunction::ReadText, "/mnt/x/b/c/leaf.txt"),
+        MontyObject::String("leaf".to_owned())
+    );
+}
+
+#[test]
+fn ovl_mem_rename_then_rename_again() {
+    // A file renamed once, then renamed again — both renames should work.
+    let dir = create_test_dir();
+    let mut mt = mount_at_mnt(&dir, MountMode::OverlayMemory(OverlayState::new()));
+
+    call_rename(&mut mt, "/mnt/hello.txt", "/mnt/step1.txt")
+        .unwrap()
+        .unwrap();
+    call_rename(&mut mt, "/mnt/step1.txt", "/mnt/step2.txt")
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(
+        call_ok(&mut mt, OsFunction::Exists, "/mnt/hello.txt"),
+        MontyObject::Bool(false)
+    );
+    assert_eq!(
+        call_ok(&mut mt, OsFunction::Exists, "/mnt/step1.txt"),
+        MontyObject::Bool(false)
+    );
+    assert_eq!(
+        call_ok(&mut mt, OsFunction::ReadText, "/mnt/step2.txt"),
+        MontyObject::String("hello world\n".to_owned())
+    );
+}
+
+#[test]
+fn ovl_mem_rename_overlay_written_file() {
+    // Rename a file that was created entirely in the overlay (never on real FS).
+    let dir = create_test_dir();
+    let mut mt = mount_at_mnt(&dir, MountMode::OverlayMemory(OverlayState::new()));
+
+    call_write(
+        &mut mt,
+        OsFunction::WriteText,
+        "/mnt/new_file.txt",
+        MontyObject::String("overlay only".to_owned()),
+    )
+    .unwrap()
+    .unwrap();
+
+    call_rename(&mut mt, "/mnt/new_file.txt", "/mnt/renamed_new.txt")
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(
+        call_ok(&mut mt, OsFunction::Exists, "/mnt/new_file.txt"),
+        MontyObject::Bool(false)
+    );
+    assert_eq!(
+        call_ok(&mut mt, OsFunction::ReadText, "/mnt/renamed_new.txt"),
+        MontyObject::String("overlay only".to_owned())
+    );
+}
+
+#[test]
+fn ovl_mem_rename_dir_iterdir_consistent() {
+    // After renaming a directory, iterdir on both old and new parent should be correct.
+    let dir = create_test_dir();
+    let mut mt = mount_at_mnt(&dir, MountMode::OverlayMemory(OverlayState::new()));
+
+    call_rename(&mut mt, "/mnt/subdir", "/mnt/newdir").unwrap().unwrap();
+
+    // Old name should not appear in root listing.
+    let root_listing = call_ok(&mut mt, OsFunction::Iterdir, "/mnt");
+    let root_names = sorted_names(&root_listing);
+    assert!(!root_names.contains(&"subdir".to_owned()), "old name still in listing");
+    assert!(
+        root_names.contains(&"newdir".to_owned()),
+        "new name missing from listing"
+    );
+
+    // New directory listing should contain the descendants.
+    let new_listing = call_ok(&mut mt, OsFunction::Iterdir, "/mnt/newdir");
+    let new_names = sorted_names(&new_listing);
+    assert!(new_names.contains(&"nested.txt".to_owned()));
+    assert!(new_names.contains(&"deep".to_owned()));
+}
+
+#[test]
+fn ovl_mem_rename_dir_over_empty_overlay_dir() {
+    // Renaming a directory onto an existing empty overlay directory should succeed.
+    let dir = create_test_dir();
+    let mut mt = mount_at_mnt(&dir, MountMode::OverlayMemory(OverlayState::new()));
+
+    call_mkdir(&mut mt, "/mnt/target_dir", false, false).unwrap().unwrap();
+
+    // Write a file into subdir overlay so we can verify it moves.
+    call_write(
+        &mut mt,
+        OsFunction::WriteText,
+        "/mnt/subdir/extra.txt",
+        MontyObject::String("extra".to_owned()),
+    )
+    .unwrap()
+    .unwrap();
+
+    call_rename(&mut mt, "/mnt/subdir", "/mnt/target_dir").unwrap().unwrap();
+
+    assert_eq!(
+        call_ok(&mut mt, OsFunction::Exists, "/mnt/subdir"),
+        MontyObject::Bool(false)
+    );
+    assert_eq!(
+        call_ok(&mut mt, OsFunction::ReadText, "/mnt/target_dir/extra.txt"),
+        MontyObject::String("extra".to_owned())
+    );
+    assert_eq!(
+        call_ok(&mut mt, OsFunction::ReadText, "/mnt/target_dir/nested.txt"),
+        MontyObject::String("nested content".to_owned())
+    );
+}
+
+// =============================================================================
 // Cross-cutting tests
 // =============================================================================
 
@@ -982,8 +1355,13 @@ fn rename_cross_mount_error() {
 
     let err = call_rename(&mut mt, "/mnt1/hello.txt", "/mnt2/hello.txt")
         .unwrap()
-        .unwrap_err();
-    assert!(matches!(err, MountError::CrossMountRename { .. }));
+        .unwrap_err()
+        .into_exception();
+    assert_exc(
+        &err,
+        ExcType::OSError,
+        "[Errno 18] Invalid cross-device link: '/mnt1/hello.txt' -> '/mnt2/hello.txt'",
+    );
 }
 
 #[test]
@@ -992,7 +1370,11 @@ fn no_mount_point_error() {
     let mut mt = mount_at_mnt(&dir, MountMode::ReadWrite);
 
     let err = call_err(&mut mt, OsFunction::Exists, "/unmounted/file.txt");
-    assert!(matches!(err, MountError::NoMountPoint(_)));
+    assert_exc(
+        &err,
+        ExcType::PermissionError,
+        "[Errno 13] Permission denied: '/unmounted/file.txt'",
+    );
 }
 
 #[test]
@@ -1050,7 +1432,11 @@ fn mount_prefix_no_partial_match() {
 
     // /data2/file should NOT match /data mount.
     let err = call_err(&mut mt, OsFunction::Exists, "/data2/file.txt");
-    assert!(matches!(err, MountError::NoMountPoint(_)));
+    assert_exc(
+        &err,
+        ExcType::PermissionError,
+        "[Errno 13] Permission denied: '/data2/file.txt'",
+    );
 }
 
 #[test]
