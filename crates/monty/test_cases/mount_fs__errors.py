@@ -49,30 +49,37 @@ try:
     (root / 'missing_parent' / 'child').mkdir()
     assert False, 'expected error on mkdir without parents'
 except FileNotFoundError as exc:
+    assert str(exc).startswith("[Errno 2] No such file or directory: '"), f'exc message: {exc}'
     if is_monty:
-        assert str(exc) == "No such file or directory: '/mnt/missing_parent/child'", f'unexpected message: {exc}'
+        assert str(exc) == "[Errno 2] No such file or directory: '/mnt/missing_parent/child'", (
+            f'unexpected message: {exc}'
+        )
 
 # === FileExistsError on mkdir of existing dir without exist_ok ===
 try:
     (root / 'subdir').mkdir()
     assert False, 'expected FileExistsError on mkdir existing'
 except FileExistsError as exc:
+    assert str(exc).startswith("[Errno 17] File exists: '"), f'exc message: {exc}'
     if is_monty:
-        assert str(exc) == "File exists: '/mnt/subdir'", f'unexpected message: {exc}'
+        assert str(exc) == "[Errno 17] File exists: '/mnt/subdir'", f'unexpected message: {exc}'
 
 # === Error on rmdir of non-empty directory ===
 try:
     (root / 'subdir').rmdir()
     assert False, 'expected error on rmdir non-empty'
 except OSError as exc:
+    # assert type(exc) == FileExistsError
+    assert str(exc).startswith("[Errno 66] Directory not empty: '"), f'exc message: {exc}'
     if is_monty:
-        assert str(exc) == "Directory not empty: '/mnt/subdir'", f'unexpected message: {exc}'
+        assert str(exc) == "[Errno 66] Directory not empty: '/mnt/subdir'", f'unexpected message: {exc}'
 
 # === FileNotFoundError on rmdir of nonexistent ===
 try:
     (root / 'nonexistent_dir').rmdir()
     assert False, 'expected FileNotFoundError on rmdir nonexistent'
 except FileNotFoundError as exc:
+    assert str(exc).startswith("[Errno 2] No such file or directory: '"), f'exc message: {exc}'
     if is_monty:
         assert str(exc) == "[Errno 2] No such file or directory: '/mnt/nonexistent_dir'", f'unexpected message: {exc}'
 
@@ -92,13 +99,19 @@ try:
     (root / 'no_such_parent' / 'child.txt').write_text('should fail')
     assert False, 'expected FileNotFoundError on write_text with missing parent'
 except FileNotFoundError as exc:
+    assert str(exc).startswith("[Errno 2] No such file or directory: '"), f'exc message: {exc}'
     if is_monty:
-        assert str(exc) == "No such file or directory: '/mnt/no_such_parent/child.txt'", f'unexpected message: {exc}'
+        assert str(exc) == "[Errno 2] No such file or directory: '/mnt/no_such_parent/child.txt'", (
+            f'unexpected message: {exc}'
+        )
 
 # === FileNotFoundError on write_bytes with missing parent ===
 try:
     (root / 'no_such_parent' / 'child.bin').write_bytes(b'should fail')
     assert False, 'expected FileNotFoundError on write_bytes with missing parent'
 except FileNotFoundError as exc:
+    assert str(exc).startswith("[Errno 2] No such file or directory: '"), f'exc message: {exc}'
     if is_monty:
-        assert str(exc) == "No such file or directory: '/mnt/no_such_parent/child.bin'", f'unexpected message: {exc}'
+        assert str(exc) == "[Errno 2] No such file or directory: '/mnt/no_such_parent/child.bin'", (
+            f'unexpected message: {exc}'
+        )

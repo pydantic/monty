@@ -488,7 +488,11 @@ fn ovl_rmdir(
                 .iter()
                 .any(|(k, v)| k.starts_with(&prefix) && k != relative && !matches!(v, OverlayEntry::Deleted));
             if has_children {
-                return Err(MountError::io_err(ErrorKind::Other, "Directory not empty", vpath));
+                return Err(MountError::io_err(
+                    ErrorKind::DirectoryNotEmpty,
+                    "Directory not empty",
+                    vpath,
+                ));
             }
             state.insert(relative.to_owned(), OverlayEntry::Deleted);
             Ok(MontyObject::None)
@@ -514,7 +518,11 @@ fn ovl_rmdir(
                             format!("{prefix}{name}")
                         };
                         if !matches!(state.get(&child_rel), Some(OverlayEntry::Deleted)) {
-                            return Err(MountError::io_err(ErrorKind::Other, "Directory not empty", vpath));
+                            return Err(MountError::io_err(
+                                ErrorKind::DirectoryNotEmpty,
+                                "Directory not empty",
+                                vpath,
+                            ));
                         }
                     }
                 }

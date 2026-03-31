@@ -1,7 +1,6 @@
 //! Error types for filesystem mount operations.
 
 use std::{
-    borrow::Cow,
     error::Error,
     fmt,
     io::{self, ErrorKind},
@@ -64,20 +63,37 @@ impl MountError {
                 ExcType::OSError,
                 Some(format!("[Errno 18] Invalid cross-device link: '{src}' -> '{dst}'")),
             ),
-            Self::Io(err, path) => {
-                let exc_type = match err.kind() {
-                    ErrorKind::NotFound => ExcType::FileNotFoundError,
-                    ErrorKind::AlreadyExists => ExcType::FileExistsError,
-                    ErrorKind::PermissionDenied => ExcType::PermissionError,
-                    _ => ExcType::OSError,
-                };
-                let raw_msg = err.to_string();
-                let msg: Cow<str> = match raw_msg.as_str() {
-                    "No such file or directory (os error 2)" => "[Errno 2] No such file or directory".into(),
-                    _ => raw_msg.into(),
-                };
-                MontyException::new(exc_type, Some(format!("{msg}: '{path}'")))
-            }
+            Self::Io(err, path) => match err.kind() {
+                ErrorKind::NotFound => {
+                    let code = err.raw_os_error().unwrap_or(2);
+                    MontyException::new(
+                        ExcType::FileNotFoundError,
+                        Some(format!("[Errno {code}] No such file or directory: '{path}'")),
+                    )
+                }
+                ErrorKind::AlreadyExists => {
+                    let code = err.raw_os_error().unwrap_or(17);
+                    MontyException::new(
+                        ExcType::FileExistsError,
+                        Some(format!("[Errno {code}] File exists: '{path}'")),
+                    )
+                }
+                ErrorKind::PermissionDenied => {
+                    let code = err.raw_os_error().unwrap_or(30);
+                    MontyException::new(
+                        ExcType::PermissionError,
+                        Some(format!("[Errno {code}] Permission denied: '{path}'")),
+                    )
+                }
+                ErrorKind::DirectoryNotEmpty => {
+                    let code = err.raw_os_error().unwrap_or(66);
+                    MontyException::new(
+                        ExcType::FileExistsError,
+                        Some(format!("[Errno {code}] Directory not empty: '{path}'")),
+                    )
+                }
+                _ => MontyException::new(ExcType::OSError, Some(format!("{err}: '{path}' ({err:?})"))),
+            },
             Self::InvalidUtf8(path) => MontyException::new(
                 ExcType::UnicodeDecodeError,
                 Some(format!(
