@@ -1,6 +1,12 @@
 //! Mount mode definitions and overlay state management.
 
-use std::{collections::BTreeMap, ops::Bound};
+use std::{
+    collections::BTreeMap,
+    fs,
+    ops::Bound,
+    path::{Path, PathBuf},
+    time::SystemTime,
+};
 
 /// Access policy for a mount point.
 ///
@@ -68,6 +74,11 @@ impl OverlayState {
         self.entries.get(relative_path)
     }
 
+    /// Removes and returns the entry for a relative path, if present.
+    pub(super) fn remove(&mut self, relative_path: &str) -> Option<OverlayEntry> {
+        self.entries.remove(relative_path)
+    }
+
     /// Inserts or replaces an entry for a relative path.
     pub(super) fn insert(&mut self, relative_path: String, entry: OverlayEntry) {
         self.entries.insert(relative_path, entry);
@@ -100,6 +111,14 @@ pub(super) enum OverlayEntry {
     /// A file written by sandbox code, stored in memory.
     File(OverlayFile),
 
+    /// A lazy reference to a real filesystem file that has been moved/renamed
+    /// within the overlay. The file content is NOT loaded into memory — reads
+    /// are deferred until the file is actually accessed.
+    ///
+    /// This avoids the cost of reading potentially large files during rename
+    /// operations.
+    RealFileRef(OverlayFileRef),
+
     /// A directory created by sandbox code.
     Directory {
         /// Modification time as Unix timestamp.
@@ -117,4 +136,39 @@ pub(super) struct OverlayFile {
     pub content: Vec<u8>,
     /// Modification time as Unix timestamp.
     pub mtime: f64,
+}
+
+/// A lazy reference to a file on the real filesystem, created during rename
+/// operations to avoid reading file content into memory eagerly.
+///
+/// The host path is the *original* canonical location of the file before the
+/// rename. Reads are served by reading from this path on demand.
+#[derive(Debug)]
+pub(super) struct OverlayFileRef {
+    /// The canonical host filesystem path of the original file.
+    pub host_path: PathBuf,
+    /// Modification time as Unix timestamp (preserved from the original file).
+    pub mtime: f64,
+    /// File size in bytes.
+    pub size: i64,
+}
+
+impl OverlayFileRef {
+    /// Creates a new `OverlayFileRef` by reading metadata from the given host path.
+    ///
+    /// Returns `None` if the path does not exist or metadata cannot be read.
+    pub fn from_host_path(path: &Path) -> Option<Self> {
+        let metadata = fs::metadata(path).ok()?;
+        let mtime = metadata
+            .modified()
+            .unwrap_or(SystemTime::UNIX_EPOCH)
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .map_or(0.0, |d| d.as_secs_f64());
+        let size = i64::try_from(metadata.len()).unwrap_or(i64::MAX);
+        Some(Self {
+            host_path: path.to_path_buf(),
+            mtime,
+            size,
+        })
+    }
 }

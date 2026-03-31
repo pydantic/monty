@@ -7,16 +7,17 @@
 //! - **`OverlayMemory`**: reads check overlay first then fall through; writes go to overlay
 
 use std::{
-    collections::HashSet,
     fs,
     io::{self, ErrorKind},
     path::{Path, PathBuf},
     time::SystemTime,
 };
 
+use ahash::AHashSet;
+
 use super::{
     error::MountError,
-    mount_mode::{MountMode, OverlayEntry, OverlayFile, OverlayState},
+    mount_mode::{MountMode, OverlayEntry, OverlayFile, OverlayFileRef, OverlayState},
     path_security::{normalize_virtual_path, resolve_path, resolve_path_mkdir_parents, strip_mount_prefix},
 };
 use crate::{MontyObject, dir_stat, file_stat, os::OsFunction, symlink_stat};
@@ -210,7 +211,9 @@ fn overlay_exists(
     vpath: &str,
 ) -> Result<MontyObject, MountError> {
     match state.get(relative) {
-        Some(OverlayEntry::File(_) | OverlayEntry::Directory { .. }) => Ok(MontyObject::Bool(true)),
+        Some(OverlayEntry::File(_) | OverlayEntry::RealFileRef(_) | OverlayEntry::Directory { .. }) => {
+            Ok(MontyObject::Bool(true))
+        }
         Some(OverlayEntry::Deleted) => Ok(MontyObject::Bool(false)),
         None => match resolve_path(vpath, ctx.mount_virtual, ctx.mount_host, false) {
             Ok(r) => Ok(MontyObject::Bool(r.host_path.exists())),
@@ -228,7 +231,7 @@ fn overlay_is_file(
     vpath: &str,
 ) -> Result<MontyObject, MountError> {
     match state.get(relative) {
-        Some(OverlayEntry::File(_)) => Ok(MontyObject::Bool(true)),
+        Some(OverlayEntry::File(_) | OverlayEntry::RealFileRef(_)) => Ok(MontyObject::Bool(true)),
         Some(OverlayEntry::Directory { .. } | OverlayEntry::Deleted) => Ok(MontyObject::Bool(false)),
         None => match resolve_path(vpath, ctx.mount_virtual, ctx.mount_host, false) {
             Ok(r) => Ok(MontyObject::Bool(r.host_path.is_file())),
@@ -247,7 +250,9 @@ fn overlay_is_dir(
 ) -> Result<MontyObject, MountError> {
     match state.get(relative) {
         Some(OverlayEntry::Directory { .. }) => Ok(MontyObject::Bool(true)),
-        Some(OverlayEntry::File(_) | OverlayEntry::Deleted) => Ok(MontyObject::Bool(false)),
+        Some(OverlayEntry::File(_) | OverlayEntry::RealFileRef(_) | OverlayEntry::Deleted) => {
+            Ok(MontyObject::Bool(false))
+        }
         None => match resolve_path(vpath, ctx.mount_virtual, ctx.mount_host, false) {
             Ok(r) => Ok(MontyObject::Bool(r.host_path.is_dir())),
             Err(MountError::Io(_, _)) => Ok(MontyObject::Bool(false)),
@@ -285,6 +290,7 @@ fn overlay_read_text(
             let text = bytes_to_utf8(f.content.clone())?;
             Ok(MontyObject::String(text))
         }
+        Some(OverlayEntry::RealFileRef(r)) => read_text_fs(&r.host_path, vpath),
         Some(OverlayEntry::Directory { .. }) => Err(MountError::io_err(ErrorKind::Other, "Is a directory", vpath)),
         Some(OverlayEntry::Deleted) => Err(MountError::not_found(vpath)),
         None => {
@@ -303,6 +309,7 @@ fn overlay_read_bytes(
 ) -> Result<MontyObject, MountError> {
     match state.get(relative) {
         Some(OverlayEntry::File(f)) => Ok(MontyObject::Bytes(f.content.clone())),
+        Some(OverlayEntry::RealFileRef(r)) => read_bytes_fs(&r.host_path, vpath),
         Some(OverlayEntry::Directory { .. }) => Err(MountError::io_err(ErrorKind::Other, "Is a directory", vpath)),
         Some(OverlayEntry::Deleted) => Err(MountError::not_found(vpath)),
         None => {
@@ -366,7 +373,7 @@ fn overlay_check_parent_exists(
         let parent_rel = &relative[..slash_pos];
         let parent_exists = match state.get(parent_rel) {
             Some(OverlayEntry::Directory { .. }) => true,
-            Some(OverlayEntry::File(_) | OverlayEntry::Deleted) => false,
+            Some(OverlayEntry::File(_) | OverlayEntry::RealFileRef(_) | OverlayEntry::Deleted) => false,
             None => {
                 let parent_vpath = format!("{}/{parent_rel}", ctx.mount_virtual);
                 resolve_path(&parent_vpath, ctx.mount_virtual, ctx.mount_host, false)
@@ -397,7 +404,7 @@ fn overlay_mkdir(
                 Err(MountError::io_err(ErrorKind::AlreadyExists, "File exists", vpath))
             };
         }
-        Some(OverlayEntry::File(_)) => {
+        Some(OverlayEntry::File(_) | OverlayEntry::RealFileRef(_)) => {
             return Err(MountError::io_err(ErrorKind::AlreadyExists, "File exists", vpath));
         }
         Some(OverlayEntry::Deleted) => { /* path was deleted, we can re-create */ }
@@ -437,7 +444,7 @@ fn overlay_mkdir(
             let parent_rel = &relative[..slash_pos];
             let parent_exists = match state.get(parent_rel) {
                 Some(OverlayEntry::Directory { .. }) => true,
-                Some(OverlayEntry::File(_) | OverlayEntry::Deleted) => false,
+                Some(OverlayEntry::File(_) | OverlayEntry::RealFileRef(_) | OverlayEntry::Deleted) => false,
                 None => {
                     // Check real FS.
                     let parent_vpath = format!("{}/{parent_rel}", ctx.mount_virtual);
@@ -468,7 +475,7 @@ fn overlay_unlink(
     vpath: &str,
 ) -> Result<MontyObject, MountError> {
     match state.get(relative) {
-        Some(OverlayEntry::File(_)) => {
+        Some(OverlayEntry::File(_) | OverlayEntry::RealFileRef(_)) => {
             state.insert(relative.to_owned(), OverlayEntry::Deleted);
             Ok(MontyObject::None)
         }
@@ -515,7 +522,9 @@ fn overlay_rmdir(
             state.insert(relative.to_owned(), OverlayEntry::Deleted);
             Ok(MontyObject::None)
         }
-        Some(OverlayEntry::File(_)) => Err(MountError::io_err(ErrorKind::Other, "Not a directory", vpath)),
+        Some(OverlayEntry::File(_) | OverlayEntry::RealFileRef(_)) => {
+            Err(MountError::io_err(ErrorKind::Other, "Not a directory", vpath))
+        }
         Some(OverlayEntry::Deleted) => Err(MountError::not_found(vpath)),
         None => {
             let r = resolve_path(vpath, ctx.mount_virtual, ctx.mount_host, false)?;
@@ -565,6 +574,7 @@ fn overlay_stat(
             let size = i64::try_from(f.content.len()).unwrap_or(i64::MAX);
             Ok(file_stat(0o644, size, f.mtime))
         }
+        Some(OverlayEntry::RealFileRef(r)) => Ok(file_stat(0o644, r.size, r.mtime)),
         Some(OverlayEntry::Directory { mtime }) => Ok(dir_stat(0o755, *mtime)),
         Some(OverlayEntry::Deleted) => Err(MountError::not_found(vpath)),
         None => {
@@ -584,7 +594,9 @@ fn overlay_iterdir(
     // Check if the directory itself is tombstoned or doesn't exist.
     let real_dir_exists = match state.get(relative) {
         Some(OverlayEntry::Directory { .. }) => true,
-        Some(OverlayEntry::File(_)) => return Err(MountError::io_err(ErrorKind::Other, "Not a directory", vpath)),
+        Some(OverlayEntry::File(_) | OverlayEntry::RealFileRef(_)) => {
+            return Err(MountError::io_err(ErrorKind::Other, "Not a directory", vpath));
+        }
         Some(OverlayEntry::Deleted) => false,
         None => match resolve_path(vpath, ctx.mount_virtual, ctx.mount_host, false) {
             Ok(r) => r.host_path.is_dir(),
@@ -600,7 +612,7 @@ fn overlay_iterdir(
     };
 
     // Collect overlay children.
-    let mut seen_names: HashSet<String> = HashSet::new();
+    let mut seen_names: AHashSet<String> = AHashSet::new();
     let mut entries: Vec<MontyObject> = Vec::new();
 
     for (path, entry) in state.prefix_iter(&prefix) {
@@ -633,6 +645,11 @@ fn overlay_iterdir(
 }
 
 /// Renames a file or directory within the overlay.
+///
+/// For real-FS files, creates [`OverlayEntry::RealFileRef`] entries that store
+/// only the host path rather than reading file content into memory. This avoids
+/// unbounded memory consumption when renaming directories containing large files.
+/// Original file timestamps are preserved rather than being replaced with "now".
 fn overlay_rename(
     state: &mut OverlayState,
     src_vpath: &str,
@@ -655,93 +672,81 @@ fn overlay_rename(
     // Verify the destination's parent directory exists (matches POSIX rename semantics).
     overlay_check_parent_exists(state, &dst_rel, ctx, dst_vpath)?;
 
-    // Read the source content.
-    let entry = match state.get(&src_rel) {
-        Some(OverlayEntry::File(f)) => OverlayEntry::File(OverlayFile {
-            content: f.content.clone(),
-            mtime: current_timestamp(),
-        }),
-        Some(OverlayEntry::Directory { .. }) => OverlayEntry::Directory {
-            mtime: current_timestamp(),
-        },
-        Some(OverlayEntry::Deleted) => return Err(MountError::not_found(src_vpath)),
-        None => {
-            let r = resolve_path(src_vpath, ctx.mount_virtual, ctx.mount_host, false)?;
-            if r.host_path.is_file() {
-                let content = fs::read(&r.host_path).map_err(|e| MountError::Io(e, src_vpath.to_owned()))?;
-                OverlayEntry::File(OverlayFile {
-                    content,
-                    mtime: current_timestamp(),
-                })
-            } else if r.host_path.is_dir() {
-                OverlayEntry::Directory {
-                    mtime: current_timestamp(),
-                }
-            } else {
-                return Err(MountError::not_found(src_vpath));
-            }
+    // Check for tombstone before removing — a deleted source is an error.
+    if matches!(state.get(&src_rel), Some(OverlayEntry::Deleted)) {
+        return Err(MountError::not_found(src_vpath));
+    }
+
+    // Move the source entry: remove from old key, insert at new key.
+    // For entries already in the overlay, this is a zero-copy move.
+    // For real-FS entries (None), create a lazy RealFileRef.
+    let entry = if let Some(entry) = state.remove(&src_rel) {
+        entry
+    } else {
+        // Source is on the real FS — create a lazy reference.
+        let r = resolve_path(src_vpath, ctx.mount_virtual, ctx.mount_host, false)?;
+        if r.host_path.is_file() {
+            OverlayFileRef::from_host_path(&r.host_path)
+                .map(OverlayEntry::RealFileRef)
+                .ok_or_else(|| MountError::not_found(src_vpath))?
+        } else if r.host_path.is_dir() {
+            let mtime = dir_mtime(&r.host_path);
+            OverlayEntry::Directory { mtime }
+        } else {
+            return Err(MountError::not_found(src_vpath));
         }
     };
 
-    // Collect descendant entries to move along with the directory.
-    // For a directory, all overlay entries under `src_rel/` must be re-keyed
-    // to `dst_rel/`, and real-FS children must be tombstoned at the old path.
+    // For directories, collect and re-key all descendant entries.
     let mut descendants: Vec<(String, OverlayEntry)> = Vec::new();
-    let mut tombstones: Vec<String> = Vec::new();
+    let mut tombstone_keys: Vec<String> = Vec::new();
 
     if matches!(entry, OverlayEntry::Directory { .. }) {
         let src_prefix = format!("{src_rel}/");
         let dst_prefix = format!("{dst_rel}/");
 
-        // Move overlay descendants to the new prefix.
-        for (key, child) in state.prefix_iter(&src_prefix) {
+        // Collect overlay descendant keys first (can't mutate while iterating).
+        let child_keys: Vec<String> = state.prefix_iter(&src_prefix).map(|(k, _)| k.to_owned()).collect();
+
+        // Track keys that were already in the overlay so collect_real_descendants
+        // skips them (they've been removed from state but shouldn't be re-created).
+        let handled_keys: AHashSet<String> = child_keys.iter().cloned().collect();
+
+        // Remove each child and re-key it — zero-copy move of owned entries.
+        for key in child_keys {
             let suffix = &key[src_prefix.len()..];
-            match child {
-                OverlayEntry::File(f) => {
-                    descendants.push((
-                        format!("{dst_prefix}{suffix}"),
-                        OverlayEntry::File(OverlayFile {
-                            content: f.content.clone(),
-                            mtime: current_timestamp(),
-                        }),
-                    ));
-                }
-                OverlayEntry::Directory { .. } => {
-                    descendants.push((
-                        format!("{dst_prefix}{suffix}"),
-                        OverlayEntry::Directory {
-                            mtime: current_timestamp(),
-                        },
-                    ));
-                }
-                OverlayEntry::Deleted => {
-                    descendants.push((format!("{dst_prefix}{suffix}"), OverlayEntry::Deleted));
-                }
+            if let Some(child) = state.remove(&key) {
+                descendants.push((format!("{dst_prefix}{suffix}"), child));
+                // Tombstone the old key so real FS entries don't show through.
+                tombstone_keys.push(key);
             }
-            tombstones.push(key.to_owned());
         }
 
-        // Tombstone real-FS children that aren't already in the overlay so they
-        // don't "show through" at the old path after the rename.
+        // Create lazy references for real-FS children that aren't already in
+        // the overlay, so they appear under the renamed directory without
+        // reading file content into memory.
         if let Ok(r) = resolve_path(src_vpath, ctx.mount_virtual, ctx.mount_host, false)
-            && let Ok(iter) = collect_real_descendants(&r.host_path, &src_prefix, state)
+            && let Ok(real_children) = collect_real_descendants(&r.host_path, &src_prefix, state, &handled_keys)
         {
-            for (old_rel, child_entry) in iter {
+            for (old_rel, child_entry) in real_children {
                 let suffix = old_rel.strip_prefix(&src_prefix).unwrap_or(&old_rel);
                 descendants.push((format!("{dst_prefix}{suffix}"), child_entry));
-                tombstones.push(old_rel);
+                tombstone_keys.push(old_rel);
             }
         }
     }
 
+    // Tombstone the source so real FS entries don't show through at the old path.
+    // For overlay-only entries that were removed above, we still need the tombstone
+    // in case a real FS entry exists at the same path.
     state.insert(src_rel, OverlayEntry::Deleted);
     state.insert(dst_rel, entry);
 
-    for key in tombstones {
+    for key in tombstone_keys {
         state.insert(key, OverlayEntry::Deleted);
     }
-    for (key, entry) in descendants {
-        state.insert(key, entry);
+    for (key, child) in descendants {
+        state.insert(key, child);
     }
 
     Ok(MontyObject::None)
@@ -750,12 +755,18 @@ fn overlay_rename(
 /// Recursively collects real-FS children of a directory that aren't already
 /// in the overlay, returning `(relative_key, OverlayEntry)` pairs.
 ///
-/// Used by `overlay_rename` to copy real-FS descendants into the overlay at the
-/// new path so they appear under the renamed directory.
+/// Creates [`OverlayEntry::RealFileRef`] entries for files (lazy — no content
+/// read) and [`OverlayEntry::Directory`] entries for subdirectories, preserving
+/// the original filesystem timestamps.
+///
+/// `already_handled` contains keys that were previously in the overlay (and have
+/// since been removed for re-keying). These are skipped to avoid re-creating
+/// entries that the caller is already moving to a new path.
 fn collect_real_descendants(
     host_dir: &Path,
     prefix: &str,
     state: &OverlayState,
+    already_handled: &AHashSet<String>,
 ) -> io::Result<Vec<(String, OverlayEntry)>> {
     let mut result = Vec::new();
     let mut dirs = vec![(host_dir.to_path_buf(), prefix.to_owned())];
@@ -767,28 +778,19 @@ fn collect_real_descendants(
             let name_str = name.to_string_lossy();
             let rel_key = format!("{rel_prefix}{name_str}");
 
-            // Skip entries already in the overlay — they were handled above.
-            if state.get(&rel_key).is_some() {
+            // Skip entries already in the overlay or already handled by the caller.
+            if state.get(&rel_key).is_some() || already_handled.contains(&rel_key) {
                 continue;
             }
 
             let ft = entry.file_type()?;
             if ft.is_file() {
-                let content = fs::read(entry.path())?;
-                result.push((
-                    rel_key,
-                    OverlayEntry::File(OverlayFile {
-                        content,
-                        mtime: current_timestamp(),
-                    }),
-                ));
+                if let Some(file_ref) = OverlayFileRef::from_host_path(&entry.path()) {
+                    result.push((rel_key, OverlayEntry::RealFileRef(file_ref)));
+                }
             } else if ft.is_dir() {
-                result.push((
-                    rel_key.clone(),
-                    OverlayEntry::Directory {
-                        mtime: current_timestamp(),
-                    },
-                ));
+                let mtime = dir_mtime(&entry.path());
+                result.push((rel_key.clone(), OverlayEntry::Directory { mtime }));
                 dirs.push((entry.path(), format!("{rel_key}/")));
             }
         }
@@ -998,6 +1000,16 @@ fn bytes_to_utf8(bytes: Vec<u8>) -> Result<String, MountError> {
 /// Returns the current Unix timestamp as seconds since epoch.
 fn current_timestamp() -> f64 {
     SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map_or(0.0, |d| d.as_secs_f64())
+}
+
+/// Reads the modification time of a directory from the host filesystem,
+/// falling back to the current time if metadata is unavailable.
+fn dir_mtime(path: &Path) -> f64 {
+    fs::metadata(path)
+        .and_then(|m| m.modified())
+        .unwrap_or_else(|_| SystemTime::now())
         .duration_since(SystemTime::UNIX_EPOCH)
         .map_or(0.0, |d| d.as_secs_f64())
 }
