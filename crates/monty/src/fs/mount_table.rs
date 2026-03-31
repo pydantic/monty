@@ -4,7 +4,6 @@
 //! virtual path to a real host directory with a specific access mode.
 
 use std::{
-    cmp::Reverse,
     error, fmt, fs,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
@@ -71,9 +70,12 @@ impl MountTable {
     /// Use this when a `Mount` was constructed elsewhere (e.g. owned by a Python
     /// `MountDirectory` and temporarily taken for the duration of a run).
     pub fn push_mount(&mut self, mount: Mount) {
-        self.mounts.push(mount);
-        // Re-sort: longest prefix first for correct matching.
-        self.mounts.sort_by_key(|m| Reverse(m.virtual_path.len()));
+        // Keep mounts sorted longest-prefix-first so dispatch can stop at the
+        // first match without re-sorting the whole table on every insertion.
+        let insert_at = self
+            .mounts
+            .partition_point(|existing| existing.virtual_path.len() > mount.virtual_path.len());
+        self.mounts.insert(insert_at, mount);
     }
 
     /// Consumes this table and returns all mounts.
@@ -97,10 +99,10 @@ impl MountTable {
         for (i, shared) in slots.iter().enumerate() {
             let mut guard = shared
                 .lock()
-                .map_err(|_| SharedMountError(format!("mount {i} lock is poisoned")))?;
+                .map_err(|_| SharedMountError::from(format!("mount {i} lock is poisoned")))?;
             let mount = guard
                 .take()
-                .ok_or_else(|| SharedMountError(format!("mount {i} is already in use by another run")))?;
+                .ok_or_else(|| SharedMountError::from(format!("mount {i} is already in use by another run")))?;
             table.push_mount(mount);
         }
         Ok(table)
@@ -339,6 +341,12 @@ impl Mount {
 /// their framework-specific error type.
 #[derive(Debug)]
 pub struct SharedMountError(String);
+
+impl From<String> for SharedMountError {
+    fn from(value: String) -> Self {
+        Self(value)
+    }
+}
 
 impl fmt::Display for SharedMountError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

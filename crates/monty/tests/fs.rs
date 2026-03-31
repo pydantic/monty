@@ -832,6 +832,50 @@ fn ovl_mem_iterdir_respects_tombstones() {
 }
 
 #[test]
+fn ovl_mem_iterdir_missing_directory_errors() {
+    let dir = create_test_dir();
+    let mut mt = mount_at_mnt(&dir, MountMode::OverlayMemory(OverlayState::new()));
+
+    let err = call_err(&mut mt, OsFunction::Iterdir, "/mnt/no_such_dir");
+    assert_eq!(err.exc_type(), ExcType::FileNotFoundError);
+}
+
+#[test]
+fn ovl_mem_iterdir_file_errors() {
+    let dir = create_test_dir();
+    let mut mt = mount_at_mnt(&dir, MountMode::OverlayMemory(OverlayState::new()));
+
+    let err = call_err(&mut mt, OsFunction::Iterdir, "/mnt/hello.txt");
+    assert_eq!(err.exc_type(), ExcType::OSError);
+}
+
+#[test]
+fn ovl_mem_recreated_directory_shadows_old_real_children() {
+    let dir = create_test_dir();
+    let mut mt = mount_at_mnt(&dir, MountMode::OverlayMemory(OverlayState::new()));
+
+    // Tombstone every visible child under the real directory so it can be removed.
+    call(&mut mt, OsFunction::Unlink, "/mnt/subdir/nested.txt")
+        .unwrap()
+        .unwrap();
+    call(&mut mt, OsFunction::Unlink, "/mnt/subdir/deep/file.txt")
+        .unwrap()
+        .unwrap();
+    call(&mut mt, OsFunction::Rmdir, "/mnt/subdir/deep").unwrap().unwrap();
+    call(&mut mt, OsFunction::Rmdir, "/mnt/subdir").unwrap().unwrap();
+
+    // Recreate the directory in the overlay. The old real children must stay hidden.
+    call_mkdir(&mut mt, "/mnt/subdir", false, false).unwrap().unwrap();
+
+    let result = call_ok(&mut mt, OsFunction::Iterdir, "/mnt/subdir");
+    let names = sorted_names(&result);
+    assert!(
+        names.is_empty(),
+        "recreated overlay dir should shadow old real children"
+    );
+}
+
+#[test]
 fn ovl_mem_mkdir() {
     let dir = create_test_dir();
     let mut mt = mount_at_mnt(&dir, MountMode::OverlayMemory(OverlayState::new()));

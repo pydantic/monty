@@ -1773,6 +1773,7 @@ dependencies = [
  "monty",
  "monty_type_checking",
  "rustyline",
+ "tempfile",
 ]
 
 [[package]]

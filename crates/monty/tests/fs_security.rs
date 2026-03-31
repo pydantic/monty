@@ -719,6 +719,54 @@ mod hard_link_tests {
             panic!("expected List from iterdir, got {result:?}");
         }
     }
+
+    /// Overlay mode should expose the same visible real entries as direct mode:
+    /// inbound symlinks stay visible, outbound and broken symlinks are filtered.
+    #[test]
+    #[cfg(unix)]
+    fn overlay_iterdir_filters_symlinks_like_direct_mode() {
+        use std::os::unix::fs::symlink;
+
+        let dir = create_test_dir();
+        let outside = TempDir::new().unwrap();
+        fs::write(outside.path().join("external.txt"), "external").unwrap();
+
+        symlink(outside.path().join("external.txt"), dir.path().join("escape_link")).unwrap();
+        symlink(outside.path().join("missing.txt"), dir.path().join("broken_link")).unwrap();
+        symlink(dir.path().join("hello.txt"), dir.path().join("internal_link")).unwrap();
+
+        let mut direct = mount_at_mnt(&dir, MountMode::ReadWrite);
+        let direct_result = call(&mut direct, OsFunction::Iterdir, "/mnt").unwrap().unwrap();
+
+        let mut overlay = mount_at_mnt(&dir, MountMode::OverlayMemory(OverlayState::new()));
+        let overlay_result = call(&mut overlay, OsFunction::Iterdir, "/mnt").unwrap().unwrap();
+
+        let direct_names = sorted_names_from_list(&direct_result);
+        let overlay_names = sorted_names_from_list(&overlay_result);
+
+        assert_eq!(overlay_names, direct_names);
+        assert!(overlay_names.contains(&"internal_link".to_owned()));
+        assert!(!overlay_names.contains(&"escape_link".to_owned()));
+        assert!(!overlay_names.contains(&"broken_link".to_owned()));
+    }
+}
+
+/// Extracts sorted entry basenames from an `iterdir()` result list.
+fn sorted_names_from_list(obj: &MontyObject) -> Vec<String> {
+    match obj {
+        MontyObject::List(entries) => {
+            let mut names: Vec<String> = entries
+                .iter()
+                .filter_map(|entry| match entry {
+                    MontyObject::Path(path) => path.rsplit('/').next().map(ToOwned::to_owned),
+                    _ => None,
+                })
+                .collect();
+            names.sort();
+            names
+        }
+        other => panic!("expected List from iterdir result, got {other:?}"),
+    }
 }
 
 // =============================================================================

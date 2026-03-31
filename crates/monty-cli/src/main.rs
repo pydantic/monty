@@ -35,7 +35,7 @@ const ARROW: &str = "❯";
 /// - `monty -c <cmd>` executes `<cmd>` as a Python program
 /// - `monty -i` starts an empty interactive REPL
 /// - `monty -i <file>` seeds the REPL with file contents
-/// - `monty -m host:virtual[:mode]` mounts a directory into the sandbox
+/// - `monty -m host::virtual[::mode[::write_limit_bytes]]` mounts a directory into the sandbox
 #[derive(Parser)]
 #[command(version)]
 struct Cli {
@@ -56,10 +56,11 @@ struct Cli {
 
     /// Mount a host directory into the sandbox.
     ///
-    /// Format: `/host/path::/virtual/path[::mode]`
+    /// Format: `/host/path::/virtual/path[::mode[::write_limit_bytes]]`
     ///
     /// Uses `::` as separator to avoid ambiguity with Windows drive letters.
     /// Modes: `ro` (read-only, default), `rw` (read-write), `overlay` (in-memory overlay).
+    /// `write_limit_bytes` is optional and applies to all write modes.
     #[arg(short = 'm', long = "mount")]
     mounts: Vec<String>,
 
@@ -552,20 +553,10 @@ fn handle_os_call(
         match mounts.handle_os_call(function, args, kwargs) {
             Some(Ok(obj)) => obj.into(),
             Some(Err(err)) => err.into_exception().into(),
-            None => monty::MontyException::new(
-                monty::ExcType::NotImplementedError,
-                Some(format!("OS function '{function}' not supported in CLI")),
-            )
-            .into(),
+            None => function.on_no_handler(args).into(),
         }
     } else {
-        monty::MontyException::new(
-            monty::ExcType::NotImplementedError,
-            Some(format!(
-                "OS function '{function}' requires --mount (-m) to be configured"
-            )),
-        )
-        .into()
+        function.on_no_handler(args).into()
     }
 }
 
@@ -607,9 +598,9 @@ fn build_mount_table(mount_args: &[String]) -> Result<Option<MountTable>, String
 
     let mut table = MountTable::new();
     for arg in mount_args {
-        let (host_path, virtual_path, mode) = parse_mount(arg)?;
+        let (host_path, virtual_path, mode, write_bytes_limit) = parse_mount(arg)?;
         table
-            .mount(&virtual_path, &host_path, mode, None)
+            .mount(&virtual_path, &host_path, mode, write_bytes_limit)
             .map_err(|e| format!("mount {arg}: {e}"))?;
     }
     Ok(Some(table))
@@ -617,24 +608,25 @@ fn build_mount_table(mount_args: &[String]) -> Result<Option<MountTable>, String
 
 /// Parses a single mount specification string.
 ///
-/// Format: `host_path::virtual_path[::mode]`
+/// Format: `host_path::virtual_path[::mode[::write_limit_bytes]]`
 ///
 /// Uses `::` as the separator to avoid ambiguity with Windows drive letters
-/// (e.g., `C:\data::/mnt::rw`).
+/// (e.g., `C:\data::/mnt::rw::1000000`).
 ///
 /// Mode defaults to `ro` (read-only) when omitted. Valid modes:
 /// - `ro` — read-only
 /// - `rw` — read-write
 /// - `overlay` — in-memory copy-on-write overlay
-fn parse_mount(spec: &str) -> Result<(String, String, MountMode), String> {
+fn parse_mount(spec: &str) -> Result<(String, String, MountMode, Option<u64>), String> {
     let parts: Vec<&str> = spec.split("::").collect();
 
-    let (host_path, virtual_path, mode_str) = match parts.len() {
-        2 => (parts[0], parts[1], "ro"),
-        3 => (parts[0], parts[1], parts[2]),
+    let (host_path, virtual_path, mode_str, limit_str) = match parts.len() {
+        2 => (parts[0], parts[1], "ro", None),
+        3 => (parts[0], parts[1], parts[2], None),
+        4 => (parts[0], parts[1], parts[2], Some(parts[3])),
         _ => {
             return Err(format!(
-                "invalid mount spec '{spec}': expected host_path::virtual_path[::mode]"
+                "invalid mount spec '{spec}': expected host_path::virtual_path[::mode[::write_limit_bytes]]"
             ));
         }
     };
@@ -656,7 +648,19 @@ fn parse_mount(spec: &str) -> Result<(String, String, MountMode), String> {
         }
     };
 
-    Ok((host_path.to_owned(), virtual_path.to_owned(), mode))
+    let write_bytes_limit = match limit_str {
+        Some("") => {
+            return Err(format!("invalid write limit in '{spec}': value must not be empty"));
+        }
+        Some(limit) => Some(
+            limit
+                .parse::<u64>()
+                .map_err(|_| format!("invalid write limit '{limit}' in '{spec}': expected a non-negative integer"))?,
+        ),
+        None => None,
+    };
+
+    Ok((host_path.to_owned(), virtual_path.to_owned(), mode, write_bytes_limit))
 }
 
 // =============================================================================

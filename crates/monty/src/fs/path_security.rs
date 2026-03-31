@@ -107,6 +107,10 @@ pub(super) fn resolve_path(
 /// Always returns an absolute path. `..` at the root is silently ignored.
 #[must_use]
 pub(super) fn normalize_virtual_path(path: &str) -> String {
+    if is_already_normalized_absolute_path(path) {
+        return path.to_owned();
+    }
+
     let mut components: Vec<&str> = Vec::new();
 
     for part in path.split('/') {
@@ -148,6 +152,28 @@ pub(super) fn strip_mount_prefix<'a>(normalized_path: &'a str, mount_virtual_pat
 // =============================================================================
 // Private helpers
 // =============================================================================
+
+/// Returns `true` when `path` is already an absolute normalized virtual path.
+///
+/// This fast path avoids the temporary `Vec` + `join` work in
+/// [`normalize_virtual_path`] for the common case where the path is already in
+/// canonical sandbox form such as `"/mnt/data/file.txt"`.
+fn is_already_normalized_absolute_path(path: &str) -> bool {
+    if path == "/" {
+        return true;
+    }
+    if !path.starts_with('/') || path.ends_with('/') {
+        return false;
+    }
+
+    for part in path[1..].split('/') {
+        if part.is_empty() || part == "." || part == ".." {
+            return false;
+        }
+    }
+
+    true
+}
 
 /// Canonicalizes an existing path and checks the mount boundary.
 ///

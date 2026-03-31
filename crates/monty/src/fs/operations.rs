@@ -116,7 +116,12 @@ fn execute_direct(
         OsFunction::Stat => stat_fs(&host, vpath),
         OsFunction::Iterdir => iterdir_fs(&host, vpath, ctx.mount_host),
         OsFunction::Rename => rename_fs(vpath, &extract_path_arg(extra_args, "rename")?, ctx),
-        _ => unreachable!("all filesystem operations are handled above"),
+        OsFunction::Resolve
+        | OsFunction::Absolute
+        | OsFunction::Getenv
+        | OsFunction::GetEnviron
+        | OsFunction::DateToday
+        | OsFunction::DateTimeNow => unreachable!("non-dispatched OS function reached filesystem handler"),
     }
 }
 
@@ -225,7 +230,9 @@ fn execute_overlay_memory(
             overlay_rename(state, vpath, &target, ctx)
         }
         OsFunction::Resolve | OsFunction::Absolute => Ok(MontyObject::Path(normalize_virtual_path(vpath))),
-        _ => unreachable!("all filesystem operations are handled above"),
+        OsFunction::Getenv | OsFunction::GetEnviron | OsFunction::DateToday | OsFunction::DateTimeNow => {
+            unreachable!("non-dispatched OS function reached filesystem handler")
+        }
     }
 }
 
@@ -649,22 +656,21 @@ fn overlay_iterdir(
     ctx: &MountContext<'_>,
     vpath: &str,
 ) -> Result<MontyObject, MountError> {
-    // Check if the directory itself is tombstoned or doesn't exist.
-    // Cache the resolved host path to avoid resolving twice.
-    let mut resolved_host: Option<PathBuf> = None;
-    let real_dir_exists = match state.get(relative) {
-        Some(OverlayEntry::Directory { .. }) => true,
+    // Overlay-created directories intentionally shadow any real directory at the
+    // same path (for example, after tombstoning and recreating the path).
+    // Only directories that fall through to the real filesystem merge host entries.
+    let host_dir_to_merge = match state.get(relative) {
+        Some(OverlayEntry::Directory { .. }) => None,
         Some(OverlayEntry::File(_) | OverlayEntry::RealFileRef(_)) => {
             return Err(MountError::io_err(ErrorKind::Other, "Not a directory", vpath));
         }
-        Some(OverlayEntry::Deleted) => false,
+        Some(OverlayEntry::Deleted) => return Err(MountError::not_found(vpath)),
         None => match resolve_path(vpath, ctx.mount_virtual, ctx.mount_host, false) {
-            Ok(r) => {
-                let is_dir = r.host_path.is_dir();
-                resolved_host = Some(r.host_path);
-                is_dir
+            Ok(r) if r.host_path.is_dir() => Some(r.host_path),
+            Ok(_) => return Err(MountError::io_err(ErrorKind::Other, "Not a directory", vpath)),
+            Err(MountError::Io(err, _)) if err.kind() == ErrorKind::NotFound => {
+                return Err(MountError::not_found(vpath));
             }
-            Err(MountError::Io(_, _)) => false,
             Err(e) => return Err(e),
         },
     };
@@ -692,13 +698,11 @@ fn overlay_iterdir(
         }
     }
 
-    // Merge real entries if directory exists and isn't tombstoned.
-    if real_dir_exists
-        && let Some(ref host_path) = resolved_host
-        && let Ok(read_dir) = fs::read_dir(host_path)
+    // Merge visible real entries for fallthrough directories only.
+    if let Some(ref host_path) = host_dir_to_merge
+        && let Ok(names) = list_visible_real_dir_entry_names(host_path, ctx.mount_host, vpath)
     {
-        for entry in read_dir.flatten() {
-            let name = entry.file_name().to_string_lossy().to_string();
+        for name in names {
             if !seen_names.contains(&name) {
                 entries.push(MontyObject::Path(format_child_path(vpath, &name)));
             }
@@ -954,26 +958,8 @@ fn stat_fs(path: &Path, vpath: &str) -> Result<MontyObject, MountError> {
 /// directory was already validated. This avoids an expensive `canonicalize()`
 /// syscall per entry for large directories.
 fn iterdir_fs(host_path: &Path, vpath: &str, mount_host_path: &Path) -> Result<MontyObject, MountError> {
-    let read_dir = fs::read_dir(host_path).map_err(|e| MountError::Io(e, vpath.to_owned()))?;
     let mut result = Vec::new();
-
-    for entry in read_dir {
-        let entry = entry.map_err(|e| MountError::Io(e, vpath.to_owned()))?;
-        let name = entry.file_name().to_string_lossy().to_string();
-
-        // Only canonicalize symlinks for mount boundary checking (defense in
-        // depth). Regular files/dirs in a validated parent are always in-mount.
-        let ft = entry.file_type().map_err(|e| MountError::Io(e, vpath.to_owned()))?;
-        if ft.is_symlink() {
-            match fs::canonicalize(entry.path()) {
-                Ok(canonical) if !canonical.starts_with(mount_host_path) => continue,
-                // Broken symlink — target doesn't exist, can't verify it stays
-                // within the mount boundary, so skip it.
-                Err(_) => continue,
-                _ => {}
-            }
-        }
-
+    for name in list_visible_real_dir_entry_names(host_path, mount_host_path, vpath)? {
         result.push(MontyObject::Path(format_child_path(vpath, &name)));
     }
 
@@ -1060,7 +1046,7 @@ fn extract_mkdir_kwargs(kwargs: &[(MontyObject, MontyObject)]) -> (bool, bool) {
 /// don't permanently consume quota.
 fn check_write_limit(bytes: usize, ctx: &MountContext<'_>) -> Result<(), MountError> {
     if let Some(limit) = ctx.write_bytes_limit {
-        let bytes = bytes as u64;
+        let bytes = u64::try_from(bytes).unwrap_or(u64::MAX);
         if *ctx.write_bytes_used + bytes > limit {
             return Err(MountError::WriteLimitExceeded(limit));
         }
@@ -1073,8 +1059,39 @@ fn check_write_limit(bytes: usize, ctx: &MountContext<'_>) -> Result<(), MountEr
 /// Must be called only after the write operation has actually succeeded.
 fn commit_write_bytes(bytes: usize, ctx: &mut MountContext<'_>) {
     if ctx.write_bytes_limit.is_some() {
-        *ctx.write_bytes_used += bytes as u64;
+        *ctx.write_bytes_used += u64::try_from(bytes).unwrap_or(u64::MAX);
     }
+}
+
+/// Returns the visible real directory entry names for `iterdir()`.
+///
+/// Regular files and directories are always visible once the parent directory
+/// has been validated. Symlinks are only visible when their canonical target
+/// stays within the mount boundary; outbound or broken symlinks are skipped.
+fn list_visible_real_dir_entry_names(
+    host_path: &Path,
+    mount_host_path: &Path,
+    vpath: &str,
+) -> Result<Vec<String>, MountError> {
+    let read_dir = fs::read_dir(host_path).map_err(|e| MountError::Io(e, vpath.to_owned()))?;
+    let mut names = Vec::new();
+
+    for entry in read_dir {
+        let entry = entry.map_err(|e| MountError::Io(e, vpath.to_owned()))?;
+
+        let ft = entry.file_type().map_err(|e| MountError::Io(e, vpath.to_owned()))?;
+        if ft.is_symlink() {
+            match fs::canonicalize(entry.path()) {
+                Ok(canonical) if !canonical.starts_with(mount_host_path) => continue,
+                Err(_) => continue,
+                _ => {}
+            }
+        }
+
+        names.push(entry.file_name().to_string_lossy().to_string());
+    }
+
+    Ok(names)
 }
 
 // =============================================================================
