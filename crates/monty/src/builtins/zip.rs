@@ -70,17 +70,15 @@ pub fn builtin_zip(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -
                     // i == 0: first iterator exhausted — verify every remaining
                     // iterator is also exhausted. If any still yields a value,
                     // that argument is "longer" than all preceding exhausted ones.
-                    // Track how many have been confirmed exhausted so far for the
-                    // error message (CPython says "arguments 1-N" when N > 1).
-                    let mut num_exhausted: usize = 1; // arg 1 already exhausted
+                    // j is the 0-based index; iterators 0..j are all exhausted,
+                    // so j gives the count for the error message.
                     for (j, remaining) in iterators.iter_mut().enumerate().skip(1) {
                         if let Some(extra) = remaining.for_next(vm)? {
                             extra.drop_with_heap(vm);
                             cleanup_result(&mut result, vm);
                             cleanup_iterators(iterators, vm);
-                            return Err(strict_length_error(j + 1, num_exhausted, "longer"));
+                            return Err(strict_length_error(j + 1, j, "longer"));
                         }
-                        num_exhausted += 1;
                     }
                 }
 
