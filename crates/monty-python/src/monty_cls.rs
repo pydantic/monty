@@ -1784,10 +1784,7 @@ pub(crate) fn handle_mount_os_call<T: ResourceTracker>(
         Some(Ok(obj)) => Ok(obj.into()),
         Some(Err(mount_err)) => Ok(mount_err.into_exception().into()),
         None => {
-            // Mount table returned `None` — the path doesn't match any mount,
-            // or the operation is not a filesystem op. This is by design:
-            // `mount` provides an allowlist for specific paths; everything else
-            // intentionally falls through to the `os` callback (if provided).
+            // Intentional: unmounted paths fall through to `os=`.
             if let Some(fb) = fallback {
                 call_os_callback(py, call, fb.bind(py), dc_registry)
             } else {

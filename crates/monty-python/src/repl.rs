@@ -825,7 +825,7 @@ fn handle_repl_os_call<T: ResourceTracker>(
         match table.handle_os_call(call.function, &call.args, &call.kwargs) {
             Some(Ok(obj)) => return Ok(obj.into()),
             Some(Err(mount_err)) => return Ok(mount_err.into_exception().into()),
-            None => {} // Mount didn't handle it, try fallback
+            None => {} // Intentional: unmounted paths fall through to `os=`.
         }
     }
 
