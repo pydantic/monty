@@ -20,7 +20,7 @@ use super::{
     mount_mode::{MountMode, OverlayEntry, OverlayFile, OverlayFileRef, OverlayState},
     path_security::{normalize_virtual_path, resolve_path, resolve_path_mkdir_parents, strip_mount_prefix},
 };
-use crate::{MontyObject, dir_stat, file_stat, os::OsFunction, symlink_stat};
+use crate::{MontyObject, dir_stat, file_stat, os::OsFunction};
 
 /// Mount-specific context passed through the operation call chain.
 ///
@@ -321,7 +321,7 @@ fn overlay_read_bytes(
 
 // --- Overlay write operations ---
 
-/// Writes text content to the overlay.
+/// Writes text content to the overlay, returning character count (not byte length).
 fn overlay_write_text(
     state: &mut OverlayState,
     relative: String,
@@ -330,7 +330,7 @@ fn overlay_write_text(
     vpath: &str,
 ) -> Result<MontyObject, MountError> {
     overlay_check_parent_exists(state, &relative, ctx, vpath)?;
-    let len = i64::try_from(content.len()).unwrap_or(i64::MAX);
+    let len = i64::try_from(content.chars().count()).unwrap_or(i64::MAX);
     state.insert(
         relative,
         OverlayEntry::File(OverlayFile {
@@ -429,13 +429,43 @@ fn overlay_mkdir(
                 current.push('/');
             }
             current.push_str(part);
-            if state.get(&current).is_none() {
-                state.insert(
-                    current.clone(),
-                    OverlayEntry::Directory {
-                        mtime: current_timestamp(),
-                    },
-                );
+            match state.get(&current) {
+                Some(OverlayEntry::Directory { .. }) => {
+                    // Already a directory, nothing to do.
+                }
+                Some(OverlayEntry::File(_) | OverlayEntry::RealFileRef(_)) => {
+                    // A file blocks directory creation — NotADirectoryError.
+                    let current_vpath = format!("{}/{current}", ctx.mount_virtual);
+                    return Err(MountError::io_err(ErrorKind::Other, "Not a directory", &current_vpath));
+                }
+                Some(OverlayEntry::Deleted) => {
+                    // Tombstoned — re-create as a directory (matches POSIX mkdir -p).
+                    state.insert(
+                        current.clone(),
+                        OverlayEntry::Directory {
+                            mtime: current_timestamp(),
+                        },
+                    );
+                }
+                None => {
+                    // Check real FS — a real file blocks creation.
+                    let check_vpath = format!("{}/{current}", ctx.mount_virtual);
+                    if let Ok(r) = resolve_path(&check_vpath, ctx.mount_virtual, ctx.mount_host, false) {
+                        if r.host_path.is_file() {
+                            return Err(MountError::io_err(ErrorKind::Other, "Not a directory", &check_vpath));
+                        }
+                        if r.host_path.is_dir() {
+                            // Real dir exists, no need to insert overlay entry.
+                            continue;
+                        }
+                    }
+                    state.insert(
+                        current.clone(),
+                        OverlayEntry::Directory {
+                            mtime: current_timestamp(),
+                        },
+                    );
+                }
             }
         }
     } else {
@@ -821,9 +851,15 @@ fn read_bytes_fs(path: &Path, vpath: &str) -> Result<MontyObject, MountError> {
 }
 
 /// Writes text to a file, returning the number of characters written.
+///
+/// Returns the character count (not byte length) to match CPython's
+/// `Path.write_text()` behavior. For ASCII text these are identical,
+/// but they differ for multi-byte UTF-8 characters.
 fn write_text_fs(path: &Path, content: &str, vpath: &str) -> Result<MontyObject, MountError> {
     fs::write(path, content).map_err(|e| MountError::Io(e, vpath.to_owned()))?;
-    Ok(MontyObject::Int(i64::try_from(content.len()).unwrap_or(i64::MAX)))
+    Ok(MontyObject::Int(
+        i64::try_from(content.chars().count()).unwrap_or(i64::MAX),
+    ))
 }
 
 /// Writes bytes to a file, returning the number of bytes written.
@@ -868,10 +904,10 @@ fn stat_fs(path: &Path, vpath: &str) -> Result<MontyObject, MountError> {
         .map_or(0.0, |d| d.as_secs_f64());
     let size = i64::try_from(metadata.len()).unwrap_or(i64::MAX);
 
+    // `fs::metadata` follows symlinks, so `is_symlink()` is always false here.
+    // Symlink detection is handled separately via `OsFunction::IsSymlink`.
     if metadata.is_dir() {
         Ok(dir_stat(0o755, mtime))
-    } else if metadata.is_symlink() {
-        Ok(symlink_stat(0o777, mtime))
     } else {
         Ok(file_stat(0o644, size, mtime))
     }

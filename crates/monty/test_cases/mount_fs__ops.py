@@ -96,6 +96,33 @@ assert (root / 'empty_dir').exists() == False, 'dir after rmdir'
 assert (root / 'old_name.txt').exists() == False, 'old name gone after rename'
 assert (root / 'new_name.txt').read_text() == 'rename test', 'new name readable'
 
+# === write_text() return value is character count, not byte count ===
+n = (root / 'unicode.txt').write_text('hello')
+assert n == 5, f'write_text ASCII returns char count: {n}'
+n = (root / 'unicode.txt').write_text('\U0001f600')  # single emoji = 1 char, 4 UTF-8 bytes
+assert n == 1, f'write_text emoji returns char count not byte count: {n}'
+n = (root / 'unicode.txt').write_text('\u00e9')  # é = 1 char, 2 UTF-8 bytes
+assert n == 1, f'write_text accented char returns char count: {n}'
+n = (root / 'unicode.txt').write_text('\u4e16\u754c')  # 世界 = 2 chars, 6 UTF-8 bytes
+assert n == 2, f'write_text CJK returns char count: {n}'
+
+# === mkdir(parents=True) over deleted parent ===
+(root / 'mkp_test').mkdir()
+(root / 'mkp_test' / 'child.txt').write_text('data')
+(root / 'mkp_test' / 'child.txt').unlink()
+(root / 'mkp_test').rmdir()
+assert not (root / 'mkp_test').exists(), 'deleted dir should not exist'
+# Re-create with parents=True over the tombstoned path
+(root / 'mkp_test' / 'sub' / 'deep').mkdir(parents=True)
+assert (root / 'mkp_test' / 'sub' / 'deep').is_dir(), 'mkdir parents recreates over tombstone'
+
+# === mkdir(parents=True) blocked by real file ===
+try:
+    (root / 'hello.txt' / 'sub').mkdir(parents=True)
+    assert False, 'expected error when mkdir parents through a file'
+except (OSError, NotADirectoryError):
+    pass  # correct — a file blocks mkdir -p
+
 # === resolve() and absolute() ===
 p = (root / 'hello.txt').resolve()
 assert p.name == 'hello.txt', 'resolve preserves name'

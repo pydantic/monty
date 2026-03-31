@@ -80,7 +80,7 @@ except OSError as exc:
             f'exc message: {exc}'
         )
     if is_monty:
-        assert str(exc) == "[Errno 66] Directory not empty: '/mnt/subdir'", f'unexpected message: {exc}'
+        assert str(exc) == "[Errno 39] Directory not empty: '/mnt/subdir'", f'unexpected message: {exc}'
 
 # === FileNotFoundError on rmdir of nonexistent ===
 try:
