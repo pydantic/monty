@@ -154,11 +154,7 @@ fn cleanup_result(result: &mut Vec<Value>, vm: &mut VM<'_, '_, impl ResourceTrac
 /// Matches CPython's error format:
 /// - `"zip() argument 2 is shorter than argument 1"` (singular)
 /// - `"zip() argument 4 is shorter than arguments 1-3"` (plural)
-fn strict_length_error(
-    exhausted_arg: usize,
-    num_longer_args: usize,
-    relation: &str,
-) -> RunError {
+fn strict_length_error(exhausted_arg: usize, num_longer_args: usize, relation: &str) -> RunError {
     let others = if num_longer_args == 1 {
         "argument 1".to_owned()
     } else {
