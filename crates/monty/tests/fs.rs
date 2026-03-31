@@ -409,6 +409,7 @@ fn rw_mkdir_exist_ok() {
 }
 
 #[test]
+#[cfg(not(target_os = "windows"))]
 fn rw_mkdir_already_exists_error() {
     let dir = create_test_dir();
     let mut mt = mount_at_mnt(&dir, MountMode::ReadWrite);
