@@ -22,7 +22,8 @@ try:
     (root / 'nonexistent.bin').read_bytes()
     assert False, 'expected FileNotFoundError on read_bytes'
 except FileNotFoundError as exc:
-    assert str(exc).startswith("[Errno 2] No such file or directory: '"), f'exc message: {exc}'
+    if sys.platform != 'win32':
+        assert str(exc).startswith("[Errno 2] No such file or directory: '"), f'exc message: {exc}'
     if is_monty:
         assert str(exc) == "[Errno 2] No such file or directory: '/mnt/nonexistent.bin'", f'unexpected message: {exc!r}'
 
@@ -68,9 +69,10 @@ except FileExistsError as exc:
 try:
     (root / 'subdir').rmdir()
     assert False, 'expected error on rmdir non-empty'
-except OSError as exc:
-    # assert type(exc) == FileExistsError
-    assert str(exc).startswith("[Errno 66] Directory not empty: '"), f'exc message: {exc}'
+except FileExistsError as exc:
+    assert str(exc).startswith(("[Errno 66] Directory not empty: '", "[Errno 39] Directory not empty: '")), (
+        f'exc message: {exc}'
+    )
     if is_monty:
         assert str(exc) == "[Errno 66] Directory not empty: '/mnt/subdir'", f'unexpected message: {exc}'
 
