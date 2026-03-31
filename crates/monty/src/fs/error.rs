@@ -36,7 +36,12 @@ pub enum MountError {
     Io(io::Error, String),
 
     /// A file contained bytes that could not be decoded as UTF-8.
-    InvalidUtf8(String),
+    InvalidUtf8 {
+        /// Byte offset of the first invalid byte.
+        position: usize,
+        /// The invalid byte value.
+        invalid_byte: u8,
+    },
 
     /// Invalid mount configuration (e.g., host path doesn't exist or isn't a directory).
     InvalidMount(String),
@@ -94,10 +99,10 @@ impl MountError {
                 }
                 _ => MontyException::new(ExcType::OSError, Some(format!("{err}: '{path}' ({err:?})"))),
             },
-            Self::InvalidUtf8(path) => MontyException::new(
+            Self::InvalidUtf8 { position, invalid_byte } => MontyException::new(
                 ExcType::UnicodeDecodeError,
                 Some(format!(
-                    "'utf-8' codec can't decode bytes in '{path}': invalid utf-8 sequence"
+                    "'utf-8' codec can't decode byte 0x{invalid_byte:02x} in position {position}: invalid start byte"
                 )),
             ),
             Self::InvalidMount(msg) => MontyException::new(ExcType::ValueError, Some(msg)),
@@ -123,7 +128,9 @@ impl fmt::Display for MountError {
             Self::ReadOnly(path) => write!(f, "read-only mount: {path}"),
             Self::CrossMountRename { src, dst } => write!(f, "cross-mount rename: {src} -> {dst}"),
             Self::Io(err, path) => write!(f, "I/O error on {path}: {err}"),
-            Self::InvalidUtf8(path) => write!(f, "invalid UTF-8 in {path}"),
+            Self::InvalidUtf8 { position, invalid_byte } => {
+                write!(f, "invalid UTF-8 byte 0x{invalid_byte:02x} at position {position}")
+            }
             Self::InvalidMount(msg) => write!(f, "invalid mount: {msg}"),
         }
     }

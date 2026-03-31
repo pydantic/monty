@@ -89,10 +89,9 @@ try:
     (root / 'bad_utf8.bin').read_text()
     assert False, 'expected UnicodeDecodeError on read_text of non-UTF-8'
 except UnicodeDecodeError as exc:
-    if is_monty:
-        assert str(exc) == "'utf-8' codec can't decode bytes in '/mnt/bad_utf8.bin': invalid utf-8 sequence", (
-            f'unexpected message: {exc}'
-        )
+    assert str(exc) == "'utf-8' codec can't decode byte 0x80 in position 0: invalid start byte", (
+        f'unexpected message: {exc}'
+    )
 
 # === FileNotFoundError on write_text with missing parent ===
 try:

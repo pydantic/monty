@@ -264,7 +264,7 @@ fn ovl_read_text(
 ) -> Result<MontyObject, MountError> {
     match state.get(relative) {
         Some(OverlayEntry::File(f)) => {
-            let text = String::from_utf8(f.content.clone()).map_err(|_| MountError::InvalidUtf8(vpath.to_owned()))?;
+            let text = bytes_to_utf8(f.content.clone())?;
             Ok(MontyObject::String(text))
         }
         Some(OverlayEntry::Directory { .. }) => Err(MountError::io_err(ErrorKind::Other, "Is a directory", vpath)),
@@ -796,7 +796,7 @@ fn collect_real_descendants(
 /// than a generic `OSError`.
 fn read_text_fs(path: &Path, vpath: &str) -> Result<MontyObject, MountError> {
     let bytes = fs::read(path).map_err(|e| MountError::Io(e, vpath.to_owned()))?;
-    let content = String::from_utf8(bytes).map_err(|_| MountError::InvalidUtf8(vpath.to_owned()))?;
+    let content = bytes_to_utf8(bytes)?;
     Ok(MontyObject::String(content))
 }
 
@@ -941,6 +941,16 @@ fn extract_mkdir_kwargs(kwargs: &[(MontyObject, MontyObject)]) -> (bool, bool) {
 // =============================================================================
 // Utility functions
 // =============================================================================
+
+/// Converts raw bytes to a UTF-8 string, producing a [`MountError::InvalidUtf8`]
+/// with the position and value of the first invalid byte on failure.
+fn bytes_to_utf8(bytes: Vec<u8>) -> Result<String, MountError> {
+    String::from_utf8(bytes).map_err(|e| {
+        let position = e.utf8_error().valid_up_to();
+        let invalid_byte = e.into_bytes()[position];
+        MountError::InvalidUtf8 { position, invalid_byte }
+    })
+}
 
 /// Returns the current Unix timestamp as seconds since epoch.
 fn current_timestamp() -> f64 {
