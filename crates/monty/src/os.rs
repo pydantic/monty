@@ -10,7 +10,7 @@
 //! I/O, filesystem, or network operations. Instead, the host decides whether to
 //! permit and execute such operations.
 
-use crate::{MontyObject, intern::StaticStrings};
+use crate::{ExcType, MontyException, MontyObject, intern::StaticStrings};
 
 /// OS operations that require host system access.
 ///
@@ -126,6 +126,28 @@ impl OsFunction {
     #[must_use]
     pub fn is_existence_check(&self) -> bool {
         matches!(self, Self::Exists | Self::IsFile | Self::IsDir | Self::IsSymlink)
+    }
+
+    /// Returns an appropriate exception for when no handler is available for this operation.
+    ///
+    /// Filesystem operations return `PermissionError` with the path from `args`.
+    /// Non-filesystem operations return `RuntimeError` indicating the function
+    /// isn't supported.
+    #[must_use]
+    pub fn on_no_handler(&self, args: &[MontyObject]) -> MontyException {
+        if self.is_filesystem() {
+            let path = args.first().map_or("<unknown>", |a| match a {
+                MontyObject::Path(p) => p.as_str(),
+                MontyObject::String(s) => s.as_str(),
+                _ => "<unknown>",
+            });
+            MontyException::new(ExcType::PermissionError, Some(format!("Permission denied: '{path}'")))
+        } else {
+            MontyException::new(
+                ExcType::RuntimeError,
+                Some(format!("'{self}' is not supported in this environment")),
+            )
+        }
     }
 }
 

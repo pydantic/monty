@@ -53,49 +53,45 @@ impl MountTable {
     ///
     /// Returns [`MountError::InvalidMount`] if the virtual path is not absolute,
     /// or the host path doesn't exist or isn't a directory.
+    /// Adds a mount point mapping a virtual path to a host directory.
+    ///
+    /// The host path is canonicalized at mount time so that all subsequent
+    /// boundary checks compare canonical-to-canonical.
     pub fn mount(
         &mut self,
         virtual_path: &str,
         host_path: impl AsRef<Path>,
         mode: MountMode,
     ) -> Result<(), MountError> {
-        let host_path = host_path.as_ref();
-
-        if !virtual_path.starts_with('/') {
-            return Err(MountError::InvalidMount(format!(
-                "virtual path must be absolute, got: '{virtual_path}'"
-            )));
-        }
-
-        let normalized_virtual = normalize_virtual_path(virtual_path);
-
-        let canonical_host = fs::canonicalize(host_path).map_err(|e| {
-            MountError::InvalidMount(format!("cannot canonicalize host path '{}': {e}", host_path.display()))
-        })?;
-
-        if !canonical_host.is_dir() {
-            return Err(MountError::InvalidMount(format!(
-                "host path is not a directory: '{}'",
-                host_path.display()
-            )));
-        }
-
-        self.mounts.push(Mount {
-            virtual_path: normalized_virtual,
-            host_path: canonical_host,
-            mode,
-        });
-
-        // Re-sort: longest prefix first for correct matching.
-        self.mounts.sort_by_key(|m| Reverse(m.virtual_path.len()));
-
+        let mount = Mount::new(virtual_path, host_path, mode)?;
+        self.push_mount(mount);
         Ok(())
     }
 
-    /// Attempts to handle a filesystem `OsCall` using the mount table.
+    /// Adds a pre-built [`Mount`] to the table.
     ///
-    /// Returns `Some(Ok(result))` if handled, `Some(Err(..))` on error, or
-    /// `None` if not a filesystem operation (pass through to host callback).
+    /// Use this when a `Mount` was constructed elsewhere (e.g. owned by a Python
+    /// `MountDirectory` and temporarily taken for the duration of a run).
+    pub fn push_mount(&mut self, mount: Mount) {
+        self.mounts.push(mount);
+        // Re-sort: longest prefix first for correct matching.
+        self.mounts.sort_by_key(|m| Reverse(m.virtual_path.len()));
+    }
+
+    /// Get and returns all mounts.
+    #[must_use]
+    pub fn get_mounts(self) -> Vec<Mount> {
+        self.mounts
+    }
+
+    /// Handles an OS call using the mount table.
+    ///
+    /// Filesystem operations are dispatched to the matching mount point.
+    /// Returns `None` for non-filesystem operations (e.g. `os.getenv`) so
+    /// the caller can try a fallback callback.
+    ///
+    /// Filesystem ops with no matching mount return [`MountError::NoMountPoint`]
+    /// which maps to `PermissionError`.
     pub fn handle_os_call(
         &mut self,
         function: OsFunction,
@@ -143,13 +139,7 @@ impl MountTable {
     pub fn len(&self) -> usize {
         self.mounts.len()
     }
-}
 
-// =============================================================================
-// Private helpers
-// =============================================================================
-
-impl MountTable {
     /// Finds the mount whose virtual path is the longest prefix of `normalized_path`.
     fn find_mount_mut(&mut self, normalized_path: &str) -> Option<&mut Mount> {
         self.mounts
@@ -199,26 +189,85 @@ impl MountTable {
 }
 
 // =============================================================================
-// Internal types
+// Mount — a single mount point
 // =============================================================================
 
 /// A single mount point mapping a virtual path to a host directory.
+///
+/// Owns the [`MountMode`] which includes overlay state for
+/// [`MountMode::OverlayMemory`] mounts. Can be stored externally (e.g. in a
+/// Python `MountDirectory`) and temporarily moved into a [`MountTable`] for
+/// the duration of execution via [`MountTable::push_mount`] /
+/// [`MountTable::take_mounts`].
 #[derive(Debug)]
-struct Mount {
+pub struct Mount {
     /// Virtual path prefix (absolute, normalized).
     virtual_path: String,
-    /// Canonical host directory path (resolved at mount time).
+    /// Canonical host directory path (resolved at construction time).
     host_path: PathBuf,
     /// Access mode (also owns overlay state for [`MountMode::OverlayMemory`]).
     mode: MountMode,
 }
 
 impl Mount {
+    /// Creates a new mount point, canonicalizing the host path.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MountError::InvalidMount`] if the virtual path is not absolute,
+    /// or the host path doesn't exist or isn't a directory.
+    pub fn new(virtual_path: &str, host_path: impl AsRef<Path>, mode: MountMode) -> Result<Self, MountError> {
+        let host_path = host_path.as_ref();
+
+        if !virtual_path.starts_with('/') {
+            return Err(MountError::InvalidMount(format!(
+                "virtual path must be absolute, got: '{virtual_path}'"
+            )));
+        }
+
+        let normalized_virtual = normalize_virtual_path(virtual_path);
+
+        let canonical_host = fs::canonicalize(host_path).map_err(|e| {
+            MountError::InvalidMount(format!("cannot canonicalize host path '{}': {e}", host_path.display()))
+        })?;
+
+        if !canonical_host.is_dir() {
+            return Err(MountError::InvalidMount(format!(
+                "host path is not a directory: '{}'",
+                host_path.display()
+            )));
+        }
+
+        Ok(Self {
+            virtual_path: normalized_virtual,
+            host_path: canonical_host,
+            mode,
+        })
+    }
+
+    /// Returns the normalized virtual path prefix for this mount.
+    #[must_use]
+    pub fn virtual_path(&self) -> &str {
+        &self.virtual_path
+    }
+
+    /// Returns the canonical host directory path.
+    #[must_use]
+    pub fn host_path(&self) -> &Path {
+        &self.host_path
+    }
+
+    /// Returns the access mode for this mount.
+    #[must_use]
+    pub fn mode(&self) -> &MountMode {
+        &self.mode
+    }
+
     /// Executes a filesystem operation against this mount.
     ///
     /// Builds a [`MountContext`] by borrowing `virtual_path` and `host_path`
     /// while passing `mode` as `&mut`, avoiding unnecessary clones.
-    fn execute(
+    pub fn execute(
         &mut self,
         function: OsFunction,
         virtual_path: &str,

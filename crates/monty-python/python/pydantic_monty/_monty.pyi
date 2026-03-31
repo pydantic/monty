@@ -1,4 +1,5 @@
 from collections.abc import Coroutine
+from pathlib import Path
 from types import EllipsisType
 from typing import Any, Callable, Literal, final, overload
 
@@ -19,11 +20,27 @@ __all__ = [
     'MontySyntaxError',
     'MontyRuntimeError',
     'MontyTypingError',
+    'MountDirectory',
     'Frame',
     'load_snapshot',
     'load_repl_snapshot',
 ]
 __version__: str
+
+@final
+class MountDirectory:
+    """A single mount point configuration mapping a virtual path to a host directory."""
+
+    virtual_path: str
+    host_path: str
+    mode: Literal['read-only', 'read-write', 'overlay']
+
+    def __new__(
+        cls,
+        virtual_path: str,
+        host_path: str | Path,
+        mode: Literal['read-only', 'read-write', 'overlay'] = 'overlay',
+    ) -> MountDirectory: ...
 
 @final
 class Monty:
@@ -87,7 +104,8 @@ class Monty:
         limits: ResourceLimits | None = None,
         external_functions: dict[str, Callable[..., Any]] | None = None,
         print_callback: Callable[[Literal['stdout'], str], None] | None = None,
-        os: Callable[[OsFunction, tuple[Any, ...]], Any] | None = None,
+        mount: MountDirectory | list[MountDirectory] | None = None,
+        os: Callable[[OsFunction, tuple[Any, ...], dict[str, Any]], Any] | None = None,
     ) -> Any:
         """
         Execute the code and return the result.

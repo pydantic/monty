@@ -21,7 +21,7 @@
 
 pub use error::MountError;
 pub use mount_mode::{MountMode, OverlayState};
-pub use mount_table::MountTable;
+pub use mount_table::{Mount, MountTable};
 
 mod error;
 mod mount_mode;

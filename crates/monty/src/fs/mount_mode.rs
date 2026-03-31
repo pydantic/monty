@@ -27,6 +27,19 @@ pub enum MountMode {
     OverlayMemory(OverlayState),
 }
 
+impl MountMode {
+    /// Returns a short string label for this mode (`"read-write"`, `"read-only"`,
+    /// or `"overlay"`).
+    #[must_use]
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::ReadWrite => "read-write",
+            Self::ReadOnly => "read-only",
+            Self::OverlayMemory(_) => "overlay",
+        }
+    }
+}
+
 /// In-memory overlay state for [`MountMode::OverlayMemory`].
 ///
 /// A single [`BTreeMap`] maps relative paths (within the mount) to
