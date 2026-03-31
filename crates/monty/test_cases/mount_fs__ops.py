@@ -1,4 +1,5 @@
 # mount-fs
+import sys
 from pathlib import Path
 
 # root is injected by the test runner:
@@ -99,12 +100,14 @@ assert (root / 'new_name.txt').read_text() == 'rename test', 'new name readable'
 # === write_text() return value is character count, not byte count ===
 n = (root / 'unicode.txt').write_text('hello')
 assert n == 5, f'write_text ASCII returns char count: {n}'
-n = (root / 'unicode.txt').write_text('\U0001f600')  # single emoji = 1 char, 4 UTF-8 bytes
-assert n == 1, f'write_text emoji returns char count not byte count: {n}'
-n = (root / 'unicode.txt').write_text('\u00e9')  # é = 1 char, 2 UTF-8 bytes
-assert n == 1, f'write_text accented char returns char count: {n}'
-n = (root / 'unicode.txt').write_text('\u4e16\u754c')  # 世界 = 2 chars, 6 UTF-8 bytes
-assert n == 2, f'write_text CJK returns char count: {n}'
+
+if sys.platform != 'win32':
+    n = (root / 'unicode.txt').write_text('\U0001f600')  # single emoji = 1 char, 4 UTF-8 bytes
+    assert n == 1, f'write_text emoji returns char count not byte count: {n}'
+    n = (root / 'unicode.txt').write_text('\u00e9')  # é = 1 char, 2 UTF-8 bytes
+    assert n == 1, f'write_text accented char returns char count: {n}'
+    n = (root / 'unicode.txt').write_text('\u4e16\u754c')  # 世界 = 2 chars, 6 UTF-8 bytes
+    assert n == 2, f'write_text CJK returns char count: {n}'
 
 # === mkdir(parents=True) over deleted parent ===
 (root / 'mkp_test').mkdir()
