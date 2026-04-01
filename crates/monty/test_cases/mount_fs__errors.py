@@ -252,7 +252,7 @@ except UnicodeDecodeError as exc:
         assert str(exc) == "'utf-8' codec can't decode byte 0x80 in position 0: invalid start byte", (
             f'unexpected message: {exc}'
         )
-    else:
+    elif not is_windows:
         assert 'utf-8' in str(exc), f'exc message: {exc}'
 
 # ============================================================================

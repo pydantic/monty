@@ -25,20 +25,32 @@ pub(super) struct MountContext<'a> {
 }
 
 /// Reads a file as UTF-8 text, preserving `UnicodeDecodeError` semantics.
+///
+/// On Windows, `fs::read()` on a directory returns `PermissionDenied` instead of
+/// `IsADirectory`, so we check explicitly before reading.
 pub(super) fn read_text_fs(path: &Path, vpath: &str) -> Result<MontyObject, MountError> {
+    reject_directory(path, vpath)?;
     let bytes = fs::read(path).map_err(|err| MountError::Io(err, vpath.to_owned()))?;
     let content = bytes_to_utf8(bytes)?;
     Ok(MontyObject::String(content))
 }
 
 /// Reads a file as raw bytes.
+///
+/// On Windows, `fs::read()` on a directory returns `PermissionDenied` instead of
+/// `IsADirectory`, so we check explicitly before reading.
 pub(super) fn read_bytes_fs(path: &Path, vpath: &str) -> Result<MontyObject, MountError> {
+    reject_directory(path, vpath)?;
     let content = fs::read(path).map_err(|err| MountError::Io(err, vpath.to_owned()))?;
     Ok(MontyObject::Bytes(content))
 }
 
 /// Writes text to a file and returns the number of characters written.
+///
+/// On Windows, `fs::write()` on a directory returns `PermissionDenied` instead of
+/// `IsADirectory`, so we check explicitly before writing.
 pub(super) fn write_text_fs(path: &Path, content: &str, vpath: &str) -> Result<MontyObject, MountError> {
+    reject_directory(path, vpath)?;
     fs::write(path, content).map_err(|err| MountError::Io(err, vpath.to_owned()))?;
     Ok(MontyObject::Int(
         i64::try_from(content.chars().count()).unwrap_or(i64::MAX),
@@ -46,7 +58,11 @@ pub(super) fn write_text_fs(path: &Path, content: &str, vpath: &str) -> Result<M
 }
 
 /// Writes bytes to a file and returns the number of bytes written.
+///
+/// On Windows, `fs::write()` on a directory returns `PermissionDenied` instead of
+/// `IsADirectory`, so we check explicitly before writing.
 pub(super) fn write_bytes_fs(path: &Path, content: &[u8], vpath: &str) -> Result<MontyObject, MountError> {
+    reject_directory(path, vpath)?;
     fs::write(path, content).map_err(|err| MountError::Io(err, vpath.to_owned()))?;
     Ok(MontyObject::Int(i64::try_from(content.len()).unwrap_or(i64::MAX)))
 }
@@ -176,6 +192,19 @@ pub(super) fn dir_mtime(path: &Path) -> f64 {
         .unwrap_or_else(|_| SystemTime::now())
         .duration_since(SystemTime::UNIX_EPOCH)
         .map_or(0.0, |duration| duration.as_secs_f64())
+}
+
+/// Returns an `IsADirectory` error if `path` is a directory.
+///
+/// On Windows, many `std::fs` operations on directories return
+/// `ErrorKind::PermissionDenied` instead of `ErrorKind::IsADirectory`.
+/// This helper normalises the behaviour across platforms so callers get
+/// the correct Python exception regardless of host OS.
+fn reject_directory(path: &Path, vpath: &str) -> Result<(), MountError> {
+    if path.is_dir() {
+        return Err(MountError::io_err(ErrorKind::IsADirectory, "Is a directory", vpath));
+    }
+    Ok(())
 }
 
 /// Formats a child virtual path without introducing duplicate separators.
