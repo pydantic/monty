@@ -20,8 +20,10 @@ try:
 except FileNotFoundError as exc:
     if not is_windows:
         assert str(exc).startswith("[Errno 2] No such file or directory: '"), f'exc message: {exc}'
-    if is_monty:
-        assert str(exc) == "[Errno 2] No such file or directory: '/mnt/nonexistent.txt'", f'unexpected message: {exc!r}'
+        if is_monty:
+            assert str(exc) == "[Errno 2] No such file or directory: '/mnt/nonexistent.txt'", (
+                f'unexpected message: {exc!r}'
+            )
 
 # === FileNotFoundError on read_bytes of nonexistent ===
 try:
@@ -30,8 +32,10 @@ try:
 except FileNotFoundError as exc:
     if not is_windows:
         assert str(exc).startswith("[Errno 2] No such file or directory: '"), f'exc message: {exc}'
-    if is_monty:
-        assert str(exc) == "[Errno 2] No such file or directory: '/mnt/nonexistent.bin'", f'unexpected message: {exc!r}'
+        if is_monty:
+            assert str(exc) == "[Errno 2] No such file or directory: '/mnt/nonexistent.bin'", (
+                f'unexpected message: {exc!r}'
+            )
 
 # === FileNotFoundError on unlink of nonexistent ===
 try:
@@ -40,8 +44,10 @@ try:
 except FileNotFoundError as exc:
     if not is_windows:
         assert str(exc).startswith("[Errno 2] No such file or directory: '"), f'exc message: {exc}'
-    if is_monty:
-        assert str(exc) == "[Errno 2] No such file or directory: '/mnt/nonexistent.txt'", f'unexpected message: {exc}'
+        if is_monty:
+            assert str(exc) == "[Errno 2] No such file or directory: '/mnt/nonexistent.txt'", (
+                f'unexpected message: {exc}'
+            )
 
 # === FileNotFoundError on stat of nonexistent ===
 try:
@@ -50,8 +56,10 @@ try:
 except FileNotFoundError as exc:
     if not is_windows:
         assert str(exc).startswith("[Errno 2] No such file or directory: '"), f'exc message: {exc}'
-    if is_monty:
-        assert str(exc) == "[Errno 2] No such file or directory: '/mnt/nonexistent.txt'", f'unexpected message: {exc}'
+        if is_monty:
+            assert str(exc) == "[Errno 2] No such file or directory: '/mnt/nonexistent.txt'", (
+                f'unexpected message: {exc}'
+            )
 
 # === FileNotFoundError on stat of deeply nonexistent ===
 try:
