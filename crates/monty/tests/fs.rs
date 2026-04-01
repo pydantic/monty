@@ -850,6 +850,65 @@ fn ovl_mem_iterdir_file_errors() {
 }
 
 #[test]
+fn ovl_mem_path_component_too_long() {
+    let dir = create_test_dir();
+    let mut mt = mount_at_mnt(&dir, MountMode::OverlayMemory(OverlayState::new()));
+
+    // 256-byte component exceeds NAME_MAX (255)
+    let long_name = "a".repeat(256);
+    let path = format!("/mnt/{long_name}");
+
+    let err = call_err(&mut mt, OsFunction::Exists, &path);
+    assert_exc(
+        &err,
+        ExcType::OSError,
+        &format!("[Errno 36] File name too long: '{path}'"),
+    );
+
+    // 255-byte component is fine
+    let ok_name = "b".repeat(255);
+    let ok_path = format!("/mnt/{ok_name}");
+    call(&mut mt, OsFunction::Exists, &ok_path)
+        .expect("expected Some")
+        .expect("expected Ok");
+}
+
+#[test]
+fn ovl_mem_path_total_too_long() {
+    let dir = create_test_dir();
+    let mut mt = mount_at_mnt(&dir, MountMode::OverlayMemory(OverlayState::new()));
+
+    // Path exceeding 4096 bytes total
+    let segment = "x".repeat(200);
+    let segments: Vec<&str> = (0..21).map(|_| segment.as_str()).collect();
+    let path = format!("/mnt/{}", segments.join("/"));
+    assert!(path.len() > 4096);
+
+    let err = call_err(&mut mt, OsFunction::Exists, &path);
+    assert_exc(
+        &err,
+        ExcType::OSError,
+        &format!("[Errno 36] File name too long: '{path}'"),
+    );
+}
+
+#[test]
+fn rw_path_component_too_long() {
+    let dir = create_test_dir();
+    let mut mt = mount_at_mnt(&dir, MountMode::ReadWrite);
+
+    let long_name = "a".repeat(256);
+    let path = format!("/mnt/{long_name}");
+
+    let err = call_err(&mut mt, OsFunction::Stat, &path);
+    assert_exc(
+        &err,
+        ExcType::OSError,
+        &format!("[Errno 36] File name too long: '{path}'"),
+    );
+}
+
+#[test]
 fn ovl_mem_recreated_directory_shadows_old_real_children() {
     let dir = create_test_dir();
     let mut mt = mount_at_mnt(&dir, MountMode::OverlayMemory(OverlayState::new()));

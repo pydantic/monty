@@ -251,6 +251,61 @@ except UnicodeDecodeError as exc:
         )
 
 # ============================================================================
+# OSError — path length limits
+# ============================================================================
+
+# === OSError on path component too long (> 255 bytes) ===
+long_name = 'a' * 256
+long_component_path = Path(str(root) + '/' + long_name)
+try:
+    long_component_path.write_text('test')
+    assert False, 'expected OSError on long component'
+except OSError as exc:
+    if not is_windows:
+        assert 'File name too long' in str(exc), f'exc message: {exc}'
+    if is_monty:
+        assert str(exc) == "[Errno 36] File name too long: '/mnt/" + long_name + "'", f'unexpected message: {exc}'
+
+# === Component at exactly 255 bytes is accepted ===
+ok_name = 'b' * 255
+assert Path(str(root) + '/' + ok_name).exists() == False, '255-byte component should be accepted'
+
+# === OSError on total path too long (> 4096 bytes) ===
+long_path_str = str(root) + '/' + '/'.join(['x' * 200] * 21)
+try:
+    Path(long_path_str).write_text('test')
+    assert False, 'expected OSError on long total path'
+except OSError as exc:
+    if not is_windows:
+        assert 'File name too long' in str(exc), f'exc message: {exc}'
+    if is_monty:
+        assert str(exc).startswith("[Errno 36] File name too long: '"), f'unexpected message: {exc}'
+
+# === OSError on long component in read operations too ===
+try:
+    long_component_path.read_text()
+    assert False, 'expected OSError on read_text with long component'
+except OSError as exc:
+    if not is_windows:
+        assert 'File name too long' in str(exc), f'exc message: {exc}'
+
+# === OSError on long component in stat ===
+try:
+    long_component_path.stat()
+    assert False, 'expected OSError on stat with long component'
+except OSError as exc:
+    if not is_windows:
+        assert 'File name too long' in str(exc), f'exc message: {exc}'
+
+# === OSError on long component in mkdir ===
+try:
+    long_component_path.mkdir()
+    assert False, 'expected OSError on mkdir with long component'
+except OSError as exc:
+    if not is_windows:
+        assert 'File name too long' in str(exc), f'exc message: {exc}'
+
+# ============================================================================
 # TypeError — wrong argument types
 # ============================================================================
 

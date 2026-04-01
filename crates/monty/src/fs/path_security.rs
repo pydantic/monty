@@ -11,10 +11,17 @@
 
 use std::{
     fs,
+    io::ErrorKind,
     path::{Component, Path, PathBuf},
 };
 
 use super::error::MountError;
+
+/// Maximum total path length in bytes (Linux `PATH_MAX`).
+const PATH_MAX: usize = 4096;
+
+/// Maximum single path component length in bytes (universal `NAME_MAX`).
+const NAME_MAX: usize = 255;
 
 /// Host path returned after successful security validation.
 #[derive(Debug)]
@@ -119,6 +126,7 @@ impl ResolutionRequest {
         reject_null_bytes(virtual_path)?;
 
         let normalized_virtual = normalize_virtual_path(virtual_path);
+        reject_overlong_path(&normalized_virtual, virtual_path)?;
         let relative = strip_mount_prefix(&normalized_virtual, mount_virtual_path)
             .ok_or_else(|| MountError::NoMountPoint(virtual_path.to_owned()))?
             .to_owned();
@@ -264,6 +272,31 @@ fn reject_null_bytes(virtual_path: &str) -> Result<(), MountError> {
         return Err(MountError::PathEscape {
             virtual_path: virtual_path.to_owned(),
         });
+    }
+    Ok(())
+}
+
+/// Rejects paths that exceed Linux filesystem length limits.
+///
+/// Enforces `PATH_MAX` (4096) for the total normalized path and `NAME_MAX`
+/// (255) for each individual component. These match Linux defaults and are
+/// applied regardless of the host OS so the sandbox behaves consistently.
+pub(super) fn reject_overlong_path(normalized: &str, original: &str) -> Result<(), MountError> {
+    if normalized.len() > PATH_MAX {
+        return Err(MountError::io_err(
+            ErrorKind::InvalidFilename,
+            "File name too long",
+            original,
+        ));
+    }
+    for component in normalized.split('/') {
+        if component.len() > NAME_MAX {
+            return Err(MountError::io_err(
+                ErrorKind::InvalidFilename,
+                "File name too long",
+                original,
+            ));
+        }
     }
     Ok(())
 }

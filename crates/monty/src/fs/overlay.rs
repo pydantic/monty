@@ -20,13 +20,14 @@ use super::{
     dispatch::FsRequest,
     error::MountError,
     overlay_state::{OverlayEntry, OverlayFile, OverlayFileRef, OverlayState},
-    path_security::{ResolveMode, normalize_virtual_path, resolve_path, strip_mount_prefix},
+    path_security::{ResolveMode, normalize_virtual_path, reject_overlong_path, resolve_path, strip_mount_prefix},
 };
 use crate::{MontyObject, dir_stat, file_stat};
 
 /// Resolves a virtual path to the mount-relative overlay key.
 fn relative_path(path: &str, ctx: &MountContext<'_>) -> Result<String, MountError> {
     let normalized = normalize_virtual_path(path);
+    reject_overlong_path(&normalized, path)?;
     strip_mount_prefix(&normalized, ctx.mount_virtual)
         .map(str::to_owned)
         .ok_or_else(|| MountError::NoMountPoint(path.to_owned()))

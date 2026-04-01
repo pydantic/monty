@@ -122,6 +122,13 @@ impl MountError {
                         Some(format!("[Errno {code}] Directory not empty: {}", StringRepr(&path))),
                     )
                 }
+                ErrorKind::InvalidFilename => {
+                    let code = err.raw_os_error().unwrap_or(36);
+                    MontyException::new(
+                        ExcType::OSError,
+                        Some(format!("[Errno {code}] File name too long: {}", StringRepr(&path))),
+                    )
+                }
                 _ => MontyException::new(ExcType::OSError, Some(format!("{err}: {}", StringRepr(&path)))),
             },
             Self::InvalidUtf8 { position, invalid_byte } => MontyException::new(
