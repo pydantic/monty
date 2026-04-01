@@ -373,6 +373,41 @@ fn is_already_normalized_absolute_path(path: &str) -> bool {
     true
 }
 
+/// Checks whether a symlink's target escapes the mount boundary.
+///
+/// If `host_path` is a symlink, this resolves its target (relative to the
+/// symlink's parent directory) and verifies the result stays within
+/// `mount_host_path`. Returns `Err(PathEscape)` if the target escapes.
+///
+/// This prevents attacks where a symlink pointing outside the mount is
+/// renamed within the overlay, creating a `RealFileRef` that later bypasses
+/// boundary checks when the path is read.
+pub(super) fn reject_escaping_symlink(
+    host_path: &Path,
+    mount_host_path: &Path,
+    virtual_path: &str,
+) -> Result<(), MountError> {
+    let target = fs::read_link(host_path).map_err(|e| MountError::Io(e, virtual_path.to_owned()))?;
+
+    // Resolve relative targets against the symlink's parent directory.
+    let resolved = if target.is_relative() {
+        let parent = host_path.parent().ok_or_else(|| MountError::PathEscape {
+            virtual_path: virtual_path.to_owned(),
+        })?;
+        parent.join(&target)
+    } else {
+        target
+    };
+
+    // Canonicalize the resolved target and check the boundary.
+    let canonical = fs::canonicalize(&resolved).map_err(|_| MountError::PathEscape {
+        virtual_path: virtual_path.to_owned(),
+    })?;
+    let canonical_mount = fs::canonicalize(mount_host_path).map_err(|e| MountError::Io(e, virtual_path.to_owned()))?;
+
+    check_boundary(&canonical, &canonical_mount, virtual_path)
+}
+
 /// Ensures a canonical host path stays within the canonical mount boundary.
 fn check_boundary(canonical_path: &Path, mount_host_path: &Path, virtual_path: &str) -> Result<(), MountError> {
     if canonical_path.starts_with(mount_host_path) {

@@ -20,7 +20,10 @@ use super::{
     dispatch::FsRequest,
     error::MountError,
     overlay_state::{OverlayEntry, OverlayFile, OverlayFileRef, OverlayState},
-    path_security::{ResolveMode, normalize_virtual_path, reject_overlong_path, resolve_path, strip_mount_prefix},
+    path_security::{
+        ResolveMode, normalize_virtual_path, reject_escaping_symlink, reject_overlong_path, resolve_path,
+        strip_mount_prefix,
+    },
 };
 use crate::{MontyObject, dir_stat, file_stat};
 
@@ -595,6 +598,10 @@ fn rename(
         // matching the direct-mode rename behavior.
         let resolved = resolve_path(src_vpath, ctx.mount_virtual, ctx.mount_host, ResolveMode::Lstat)?;
         if resolved.host_path.is_symlink() {
+            // Block symlinks whose target escapes the mount boundary — allowing
+            // them into the overlay as a `RealFileRef` would let subsequent
+            // reads bypass boundary checks and leak host files.
+            reject_escaping_symlink(&resolved.host_path, ctx.mount_host, src_vpath)?;
             // Preserve the symlink entry itself rather than its target.
             OverlayFileRef::from_lstat(&resolved.host_path)
                 .map(OverlayEntry::RealFileRef)

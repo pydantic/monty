@@ -982,3 +982,110 @@ fn rename_traversal_dst() {
         other => panic!("expected rename dst traversal blocked, got {other:?}"),
     }
 }
+
+// =============================================================================
+// Sandbox escape via rename of symlink pointing outside mount
+// =============================================================================
+
+/// Regression test for a critical vulnerability: renaming a symlink that points
+/// outside the mount boundary, then reading the renamed path, must NOT leak
+/// the contents of the symlink target.
+///
+/// Attack flow:
+/// 1. Host dir contains a symlink `escape_link -> <outside_file>`
+/// 2. Sandbox renames `/mnt/escape_link` to `/mnt/renamed`
+/// 3. Sandbox reads `/mnt/renamed` — overlay serves the `RealFileRef` whose
+///    `host_path` is the original symlink; `fs::read` follows it and returns
+///    the outside file's contents, completely bypassing boundary checks.
+#[test]
+fn rename_symlink_escape_overlay_read_text() {
+    // Create the mount directory and a file *outside* it.
+    let mount_dir = TempDir::new().unwrap();
+    let outside_dir = TempDir::new().unwrap();
+    let secret = "TOP SECRET CONTENT";
+    fs::write(outside_dir.path().join("secret.txt"), secret).unwrap();
+
+    // Place a symlink inside the mount that points outside the boundary.
+    symlink_file(
+        outside_dir.path().join("secret.txt"),
+        mount_dir.path().join("escape_link"),
+    );
+
+    let mut mt = mount_at_mnt(&mount_dir, MountMode::OverlayMemory(OverlayState::new()));
+
+    // Step 1: Rename the symlink within the mount.
+    let rename_result = mt.handle_os_call(
+        OsFunction::Rename,
+        &[
+            MontyObject::Path("/mnt/escape_link".to_owned()),
+            MontyObject::Path("/mnt/renamed".to_owned()),
+        ],
+        &[],
+    );
+    // The rename itself may succeed or may be blocked — either is acceptable.
+    // The critical invariant is that reading the renamed path must NEVER
+    // return the outside file's contents.
+
+    if matches!(rename_result, Some(Ok(_))) {
+        // Rename succeeded — now try to read the renamed path.
+        let read_result = call(&mut mt, OsFunction::ReadText, "/mnt/renamed");
+        match read_result {
+            Some(Ok(MontyObject::String(content))) => {
+                assert_ne!(
+                    content, secret,
+                    "SECURITY: overlay read_text leaked file contents from outside the mount boundary \
+                     via a renamed symlink"
+                );
+            }
+            Some(Err(_)) => {
+                // An error (e.g. PathEscape, NotFound) is a valid safe outcome.
+            }
+            None => {
+                // No mount matched — also safe.
+            }
+            other => panic!("unexpected read result: {other:?}"),
+        }
+    }
+}
+
+/// Same as above but for `read_bytes`.
+#[test]
+fn rename_symlink_escape_overlay_read_bytes() {
+    let mount_dir = TempDir::new().unwrap();
+    let outside_dir = TempDir::new().unwrap();
+    let secret = b"TOP SECRET BYTES";
+    fs::write(outside_dir.path().join("secret.bin"), secret.as_slice()).unwrap();
+
+    symlink_file(
+        outside_dir.path().join("secret.bin"),
+        mount_dir.path().join("escape_link"),
+    );
+
+    let mut mt = mount_at_mnt(&mount_dir, MountMode::OverlayMemory(OverlayState::new()));
+
+    let rename_result = mt.handle_os_call(
+        OsFunction::Rename,
+        &[
+            MontyObject::Path("/mnt/escape_link".to_owned()),
+            MontyObject::Path("/mnt/renamed".to_owned()),
+        ],
+        &[],
+    );
+
+    if matches!(rename_result, Some(Ok(_))) {
+        let read_result = call(&mut mt, OsFunction::ReadBytes, "/mnt/renamed");
+        match read_result {
+            Some(Ok(MontyObject::Bytes(content))) => {
+                assert_ne!(
+                    content,
+                    secret.as_slice(),
+                    "SECURITY: overlay read_bytes leaked file contents from outside the mount boundary \
+                     via a renamed symlink"
+                );
+            }
+            Some(Err(_)) => {}
+            None => {}
+            other => panic!("unexpected read result: {other:?}"),
+        }
+    }
+}
