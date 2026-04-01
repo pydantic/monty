@@ -187,7 +187,7 @@ impl OsHandler {
 
     /// Takes all mounts out of their shared slots and assembles a [`MountTable`].
     pub(crate) fn take(&self) -> PyResult<MountTable> {
-        MountTable::take_shared_mounts(&self.mounts).map_err(|e| PyValueError::new_err(e.to_string()))
+        MountTable::take_shared_mounts(&self.mounts).map_err(PyValueError::new_err)
     }
 
     /// Puts all mounts back into their shared slots after execution completes.

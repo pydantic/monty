@@ -20,11 +20,16 @@
 //! - [`MountMode::OverlayMemory`] — reads fall through to host; writes stored in memory
 
 pub use error::MountError;
-pub use mount_mode::{MountMode, OverlayState};
-pub use mount_table::{Mount, MountTable, SharedMountError};
+pub use mount_mode::MountMode;
+pub use mount_table::{Mount, MountTable};
+pub use overlay_state::OverlayState;
 
+mod common;
+mod direct;
+mod dispatch;
 mod error;
 mod mount_mode;
 mod mount_table;
-mod operations;
+mod overlay;
+mod overlay_state;
 pub(super) mod path_security;

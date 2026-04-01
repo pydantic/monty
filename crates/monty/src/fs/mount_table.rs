@@ -4,15 +4,16 @@
 //! virtual path to a real host directory with a specific access mode.
 
 use std::{
-    error, fmt, fs,
+    fs,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
 };
 
 use super::{
+    common::MountContext,
+    dispatch::{self, FsRequest},
     error::MountError,
     mount_mode::MountMode,
-    operations::{self, MountContext},
     path_security::normalize_virtual_path,
 };
 use crate::{MontyObject, os::OsFunction};
@@ -21,16 +22,6 @@ use crate::{MontyObject, os::OsFunction};
 ///
 /// Mounts are checked in longest-prefix-first order so that more specific
 /// mounts take precedence.
-///
-/// # Example
-///
-/// ```no_run
-/// use monty::fs::{MountTable, MountMode};
-///
-/// let mut mounts = MountTable::new();
-/// mounts.mount("/data", "/real/host/data", MountMode::ReadOnly, None).unwrap();
-/// mounts.mount("/tmp", "/real/host/tmp", MountMode::ReadWrite, Some(10_000_000)).unwrap();
-/// ```
 #[derive(Debug, Default)]
 pub struct MountTable {
     /// Sorted by `virtual_path` length descending (longest first).
@@ -94,15 +85,13 @@ impl MountTable {
     ///
     /// Returns an error message if any mutex is poisoned or any mount is
     /// already taken (concurrent use).
-    pub fn take_shared_mounts(slots: &[Arc<Mutex<Option<Mount>>>]) -> Result<Self, SharedMountError> {
+    pub fn take_shared_mounts(slots: &[Arc<Mutex<Option<Mount>>>]) -> Result<Self, String> {
         let mut table = Self::new();
         for (i, shared) in slots.iter().enumerate() {
-            let mut guard = shared
-                .lock()
-                .map_err(|_| SharedMountError::from(format!("mount {i} lock is poisoned")))?;
+            let mut guard = shared.lock().map_err(|_| format!("mount {i} lock is poisoned"))?;
             let mount = guard
                 .take()
-                .ok_or_else(|| SharedMountError::from(format!("mount {i} is already in use by another run")))?;
+                .ok_or_else(|| format!("mount {i} is already in use by another run"))?;
             table.push_mount(mount);
         }
         Ok(table)
@@ -137,29 +126,16 @@ impl MountTable {
             return None;
         }
 
-        let virtual_path = match args.first() {
-            Some(MontyObject::Path(p)) => p.as_str(),
-            Some(MontyObject::String(s)) => s.as_str(),
-            _ => {
-                return Some(Err(MountError::InvalidMount(
-                    "filesystem operation missing path argument".to_owned(),
-                )));
-            }
+        let request = match dispatch::parse_fs_request(function, args, kwargs) {
+            Ok(request) => request,
+            Err(err) => return Some(Err(err)),
         };
 
-        // Rename needs special handling: both paths must be in the same mount.
-        if matches!(function, OsFunction::Rename)
-            && let Some(result) = self.handle_rename(virtual_path, &args[1..], kwargs)
-        {
-            return Some(result);
+        match self.route_request(request) {
+            Some(Ok(index)) => Some(self.mounts[index].execute(request)),
+            Some(Err(err)) => Some(Err(err)),
+            None => None,
         }
-
-        let normalized = normalize_virtual_path(virtual_path);
-
-        self.mounts
-            .iter_mut()
-            .find(|m| path_matches_mount(&normalized, &m.virtual_path))
-            .map(|mount| mount.execute(function, virtual_path, &args[1..], kwargs))
     }
 
     /// Returns `true` if no mount points are configured.
@@ -174,50 +150,34 @@ impl MountTable {
         self.mounts.len()
     }
 
-    /// Handles rename, validating both paths are in the same mount.
+    /// Selects the mount that should handle `request`.
     ///
-    /// Returns `None` to let normal dispatch handle same-mount renames that
-    /// weren't resolved here (e.g., missing dst path argument).
-    fn handle_rename(
-        &mut self,
-        src_virtual: &str,
-        extra_args: &[MontyObject],
-        kwargs: &[(MontyObject, MontyObject)],
-    ) -> Option<Result<MontyObject, MountError>> {
-        let dst_virtual = match extra_args.first() {
-            Some(MontyObject::Path(p)) => p.as_str(),
-            Some(MontyObject::String(s)) => s.as_str(),
-            _ => return None,
-        };
+    /// Rename requests require both source and destination to resolve to the
+    /// same longest-prefix mount. Other requests only route on the primary path.
+    fn route_request(&self, request: FsRequest<'_>) -> Option<Result<usize, MountError>> {
+        let src_mount_index = self.find_mount_index(request.primary_path())?;
 
-        let src_normalized = normalize_virtual_path(src_virtual);
-        let dst_normalized = normalize_virtual_path(dst_virtual);
-
-        let src_mount_idx = self
-            .mounts
-            .iter()
-            .position(|m| path_matches_mount(&src_normalized, &m.virtual_path));
-        let dst_mount_idx = self
-            .mounts
-            .iter()
-            .position(|m| path_matches_mount(&dst_normalized, &m.virtual_path));
-
-        match (src_mount_idx, dst_mount_idx) {
-            (Some(s), Some(d)) if s == d => {
-                Some(self.mounts[s].execute(OsFunction::Rename, src_virtual, extra_args, kwargs))
+        if let Some(dst_path) = request.rename_destination() {
+            let dst_mount_index = self.find_mount_index(dst_path)?;
+            if src_mount_index != dst_mount_index {
+                return Some(Err(MountError::CrossMountRename {
+                    src: request.primary_path().to_owned(),
+                    dst: dst_path.to_owned(),
+                }));
             }
-            (Some(_), Some(_)) => Some(Err(MountError::CrossMountRename {
-                src: src_virtual.to_owned(),
-                dst: dst_virtual.to_owned(),
-            })),
-            _ => None,
         }
+
+        Some(Ok(src_mount_index))
+    }
+
+    /// Finds the longest-prefix mount index for `virtual_path`.
+    fn find_mount_index(&self, virtual_path: &str) -> Option<usize> {
+        let normalized = normalize_virtual_path(virtual_path);
+        self.mounts
+            .iter()
+            .position(|mount| path_matches_mount(&normalized, &mount.virtual_path))
     }
 }
-
-// =============================================================================
-// Mount — a single mount point
-// =============================================================================
 
 /// A single mount point mapping a virtual path to a host directory.
 ///
@@ -225,7 +185,7 @@ impl MountTable {
 /// [`MountMode::OverlayMemory`] mounts. Can be stored externally (e.g. in a
 /// Python `MountDirectory`) and temporarily moved into a [`MountTable`] for
 /// the duration of execution via [`MountTable::push_mount`] /
-/// [`MountTable::take_mounts`].
+/// [`MountTable::take_shared_mounts`].
 #[derive(Debug)]
 pub struct Mount {
     /// Virtual path prefix (absolute, normalized).
@@ -313,55 +273,24 @@ impl Mount {
         self.write_bytes_used
     }
 
-    /// Executes a filesystem operation against this mount.
-    ///
-    /// Builds a [`MountContext`] by borrowing `virtual_path` and `host_path`
-    /// while passing `mode` as `&mut`, avoiding unnecessary clones.
-    pub fn execute(
-        &mut self,
-        function: OsFunction,
-        virtual_path: &str,
-        extra_args: &[MontyObject],
-        kwargs: &[(MontyObject, MontyObject)],
-    ) -> Result<MontyObject, MountError> {
+    /// Executes a parsed filesystem request against this mount.
+    fn execute(&mut self, request: FsRequest<'_>) -> Result<MontyObject, MountError> {
         let mut ctx = MountContext {
             mount_virtual: &self.virtual_path,
             mount_host: &self.host_path,
             write_bytes_used: &mut self.write_bytes_used,
             write_bytes_limit: self.write_bytes_limit,
         };
-        operations::execute(function, virtual_path, extra_args, kwargs, &mut ctx, &mut self.mode)
+        dispatch::execute(request, &mut ctx, &mut self.mode)
     }
 }
-
-/// Error returned when taking or putting back shared mounts fails.
-///
-/// Contains a human-readable message describing which mount slot failed and why
-/// (poisoned lock or already-taken mount). Binding crates convert this into
-/// their framework-specific error type.
-#[derive(Debug)]
-pub struct SharedMountError(String);
-
-impl From<String> for SharedMountError {
-    fn from(value: String) -> Self {
-        Self(value)
-    }
-}
-
-impl fmt::Display for SharedMountError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.0)
-    }
-}
-
-impl error::Error for SharedMountError {}
 
 /// Checks whether `normalized_path` falls under `mount_virtual_path`.
 fn path_matches_mount(normalized_path: &str, mount_virtual_path: &str) -> bool {
-    if mount_virtual_path == "/" {
-        return true;
+    if mount_virtual_path == "/" || normalized_path == mount_virtual_path {
+        true
+    } else {
+        normalized_path.starts_with(mount_virtual_path)
+            && normalized_path.as_bytes().get(mount_virtual_path.len()) == Some(&b'/')
     }
-    normalized_path == mount_virtual_path
-        || (normalized_path.starts_with(mount_virtual_path)
-            && normalized_path.as_bytes().get(mount_virtual_path.len()) == Some(&b'/'))
 }

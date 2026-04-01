@@ -1560,6 +1560,47 @@ fn path_with_unicode() {
     );
 }
 
+#[test]
+fn windows_style_paths_do_not_match_mounts() {
+    let dir = create_test_dir();
+    let mut mt = mount_at_mnt(&dir, MountMode::ReadWrite);
+
+    // Sandbox virtual paths are always POSIX-style, even on Windows hosts.
+    assert!(
+        call(&mut mt, OsFunction::Exists, r"\mnt\hello.txt").is_none(),
+        "backslash-only paths should not match a mount"
+    );
+    assert!(
+        call(&mut mt, OsFunction::ReadText, r"C:\mnt\hello.txt").is_none(),
+        "drive-letter paths should not match a mount"
+    );
+    assert!(
+        call(&mut mt, OsFunction::Resolve, r"/mnt\hello.txt").is_none(),
+        "mixed slash and backslash paths should not match a mount"
+    );
+}
+
+#[test]
+fn windows_style_write_paths_do_not_touch_host_mount() {
+    let dir = create_test_dir();
+    let mut mt = mount_at_mnt(&dir, MountMode::ReadWrite);
+
+    let result = call_write(
+        &mut mt,
+        OsFunction::WriteText,
+        r"\mnt\created.txt",
+        MontyObject::String("should not be written".to_owned()),
+    );
+    assert!(
+        result.is_none(),
+        "windows-style write paths should be left unhandled by the mount table"
+    );
+    assert!(
+        !dir.path().join("created.txt").exists(),
+        "the host mount should not be modified for an unhandled windows-style path"
+    );
+}
+
 // =============================================================================
 // Write bytes limit
 // =============================================================================
