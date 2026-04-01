@@ -446,6 +446,16 @@ fn rmdir(
                     vpath,
                 ));
             }
+            // Also check for overlay-only children that were written into this
+            // real directory. Without this check, rmdir would succeed and orphan
+            // the overlay entries.
+            if overlay_directory_has_children(state, relative) {
+                return Err(MountError::io_err(
+                    ErrorKind::DirectoryNotEmpty,
+                    "Directory not empty",
+                    vpath,
+                ));
+            }
             state.insert(relative.to_owned(), OverlayEntry::Deleted);
             Ok(MontyObject::None)
         }
@@ -653,6 +663,14 @@ fn collect_real_descendants(
             }
 
             let file_type = entry.file_type()?;
+            // Defense-in-depth: explicitly skip symlinks so that a symlink
+            // pointing outside the mount boundary cannot be captured as an
+            // OverlayFileRef during a directory rename. On Unix,
+            // DirEntry::file_type() already distinguishes symlinks from files
+            // and dirs, but Windows behavior may differ.
+            if file_type.is_symlink() {
+                continue;
+            }
             if file_type.is_file() {
                 if let Some(file_ref) = OverlayFileRef::from_host_path(&entry.path()) {
                     result.push((rel_key, OverlayEntry::RealFileRef(file_ref)));
