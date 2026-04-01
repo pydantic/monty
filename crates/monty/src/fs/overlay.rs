@@ -144,7 +144,9 @@ fn read_text(
     match state.get(relative) {
         Some(OverlayEntry::File(file)) => Ok(MontyObject::String(bytes_to_utf8(file.content.clone())?)),
         Some(OverlayEntry::RealFileRef(file_ref)) => read_text_fs(&file_ref.host_path, vpath),
-        Some(OverlayEntry::Directory { .. }) => Err(MountError::io_err(ErrorKind::Other, "Is a directory", vpath)),
+        Some(OverlayEntry::Directory { .. }) => {
+            Err(MountError::io_err(ErrorKind::IsADirectory, "Is a directory", vpath))
+        }
         Some(OverlayEntry::Deleted) => Err(MountError::not_found(vpath)),
         None => {
             let resolved = resolve_path(vpath, ctx.mount_virtual, ctx.mount_host, ResolveMode::Existing)?;
@@ -163,7 +165,9 @@ fn read_bytes(
     match state.get(relative) {
         Some(OverlayEntry::File(file)) => Ok(MontyObject::Bytes(file.content.clone())),
         Some(OverlayEntry::RealFileRef(file_ref)) => read_bytes_fs(&file_ref.host_path, vpath),
-        Some(OverlayEntry::Directory { .. }) => Err(MountError::io_err(ErrorKind::Other, "Is a directory", vpath)),
+        Some(OverlayEntry::Directory { .. }) => {
+            Err(MountError::io_err(ErrorKind::IsADirectory, "Is a directory", vpath))
+        }
         Some(OverlayEntry::Deleted) => Err(MountError::not_found(vpath)),
         None => {
             let resolved = resolve_path(vpath, ctx.mount_virtual, ctx.mount_host, ResolveMode::Existing)?;
@@ -182,6 +186,7 @@ fn write_text(
     check_write_limit(data.len(), ctx)?;
     let relative = relative_path(vpath, ctx)?;
     ensure_parent_exists(state, &relative, ctx, vpath)?;
+    reject_directory_target(state, &relative, ctx, vpath)?;
 
     state.insert(
         relative,
@@ -207,6 +212,7 @@ fn write_bytes(
     check_write_limit(data.len(), ctx)?;
     let relative = relative_path(vpath, ctx)?;
     ensure_parent_exists(state, &relative, ctx, vpath)?;
+    reject_directory_target(state, &relative, ctx, vpath)?;
 
     state.insert(
         relative,
@@ -218,6 +224,23 @@ fn write_bytes(
 
     commit_write_bytes(data.len(), ctx);
     Ok(MontyObject::Int(i64::try_from(data.len()).unwrap_or(i64::MAX)))
+}
+
+/// Rejects writes when the target path is an existing directory.
+///
+/// On real filesystems, writing to a directory path returns `EISDIR`.
+/// The overlay must enforce the same invariant to prevent silently
+/// overwriting a directory entry with a file.
+fn reject_directory_target(
+    state: &OverlayState,
+    relative: &str,
+    ctx: &MountContext<'_>,
+    vpath: &str,
+) -> Result<(), MountError> {
+    if relative_dir_exists(state, relative, ctx) {
+        return Err(MountError::io_err(ErrorKind::IsADirectory, "Is a directory", vpath));
+    }
+    Ok(())
 }
 
 /// Ensures the parent directory of `relative` exists in overlay or real storage.
@@ -313,7 +336,11 @@ fn create_overlay_parents(state: &mut OverlayState, relative: &str, ctx: &MountC
             Some(OverlayEntry::Directory { .. }) => {}
             Some(OverlayEntry::File(_) | OverlayEntry::RealFileRef(_)) => {
                 let current_vpath = format!("{}/{current}", ctx.mount_virtual);
-                return Err(MountError::io_err(ErrorKind::Other, "Not a directory", &current_vpath));
+                return Err(MountError::io_err(
+                    ErrorKind::NotADirectory,
+                    "Not a directory",
+                    &current_vpath,
+                ));
             }
             Some(OverlayEntry::Deleted) => {
                 state.insert(
@@ -329,7 +356,11 @@ fn create_overlay_parents(state: &mut OverlayState, relative: &str, ctx: &MountC
                     resolve_path(&current_vpath, ctx.mount_virtual, ctx.mount_host, ResolveMode::Existing)
                 {
                     if resolved.host_path.is_file() {
-                        return Err(MountError::io_err(ErrorKind::Other, "Not a directory", &current_vpath));
+                        return Err(MountError::io_err(
+                            ErrorKind::NotADirectory,
+                            "Not a directory",
+                            &current_vpath,
+                        ));
                     }
                     if resolved.host_path.is_dir() {
                         continue;
@@ -361,7 +392,9 @@ fn unlink(
             state.insert(relative.to_owned(), OverlayEntry::Deleted);
             Ok(MontyObject::None)
         }
-        Some(OverlayEntry::Directory { .. }) => Err(MountError::io_err(ErrorKind::Other, "Is a directory", vpath)),
+        Some(OverlayEntry::Directory { .. }) => {
+            Err(MountError::io_err(ErrorKind::IsADirectory, "Is a directory", vpath))
+        }
         Some(OverlayEntry::Deleted) => Err(MountError::not_found(vpath)),
         None => {
             let resolved = resolve_path(vpath, ctx.mount_virtual, ctx.mount_host, ResolveMode::Existing)?;
@@ -369,7 +402,7 @@ fn unlink(
                 state.insert(relative.to_owned(), OverlayEntry::Deleted);
                 Ok(MontyObject::None)
             } else if resolved.host_path.is_dir() {
-                Err(MountError::io_err(ErrorKind::Other, "Is a directory", vpath))
+                Err(MountError::io_err(ErrorKind::IsADirectory, "Is a directory", vpath))
             } else {
                 Err(MountError::not_found(vpath))
             }
@@ -397,13 +430,13 @@ fn rmdir(
             Ok(MontyObject::None)
         }
         Some(OverlayEntry::File(_) | OverlayEntry::RealFileRef(_)) => {
-            Err(MountError::io_err(ErrorKind::Other, "Not a directory", vpath))
+            Err(MountError::io_err(ErrorKind::NotADirectory, "Not a directory", vpath))
         }
         Some(OverlayEntry::Deleted) => Err(MountError::not_found(vpath)),
         None => {
             let resolved = resolve_path(vpath, ctx.mount_virtual, ctx.mount_host, ResolveMode::Existing)?;
             if !resolved.host_path.is_dir() {
-                return Err(MountError::not_found(vpath));
+                return Err(MountError::io_err(ErrorKind::NotADirectory, "Not a directory", vpath));
             }
             if real_directory_has_visible_children(state, relative, &resolved.host_path, vpath)? {
                 return Err(MountError::io_err(
@@ -479,12 +512,12 @@ fn iterdir(
     let host_dir_to_merge = match state.get(relative) {
         Some(OverlayEntry::Directory { .. }) => None,
         Some(OverlayEntry::File(_) | OverlayEntry::RealFileRef(_)) => {
-            return Err(MountError::io_err(ErrorKind::Other, "Not a directory", vpath));
+            return Err(MountError::io_err(ErrorKind::NotADirectory, "Not a directory", vpath));
         }
         Some(OverlayEntry::Deleted) => return Err(MountError::not_found(vpath)),
         None => match resolve_path(vpath, ctx.mount_virtual, ctx.mount_host, ResolveMode::Existing) {
             Ok(resolved) if resolved.host_path.is_dir() => Some(resolved.host_path),
-            Ok(_) => return Err(MountError::io_err(ErrorKind::Other, "Not a directory", vpath)),
+            Ok(_) => return Err(MountError::io_err(ErrorKind::NotADirectory, "Not a directory", vpath)),
             Err(MountError::Io(err, _)) if err.kind() == ErrorKind::NotFound => {
                 return Err(MountError::not_found(vpath));
             }

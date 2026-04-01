@@ -6,7 +6,7 @@ use std::{
     io::{self, ErrorKind},
 };
 
-use crate::{ExcType, MontyException};
+use crate::{ExcType, MontyException, types::str::StringRepr};
 
 /// Errors from mount configuration or filesystem operations.
 #[derive(Debug)]
@@ -58,50 +58,71 @@ impl MountError {
         match self {
             Self::NoMountPoint(path) => MontyException::new(
                 ExcType::PermissionError,
-                Some(format!("[Errno 13] Permission denied: '{path}'")),
+                Some(format!("[Errno 13] Permission denied: {}", StringRepr(&path))),
             ),
             Self::PathEscape { virtual_path } => MontyException::new(
                 ExcType::PermissionError,
-                Some(format!("[Errno 13] Permission denied: '{virtual_path}'")),
+                Some(format!("[Errno 13] Permission denied: {}", StringRepr(&virtual_path))),
             ),
             Self::ReadOnly(path) => MontyException::new(
                 ExcType::PermissionError,
-                Some(format!("[Errno 30] Read-only file system: '{path}'")),
+                Some(format!("[Errno 30] Read-only file system: {}", StringRepr(&path))),
             ),
             Self::CrossMountRename { src, dst } => MontyException::new(
                 ExcType::OSError,
-                Some(format!("[Errno 18] Invalid cross-device link: '{src}' -> '{dst}'")),
+                Some(format!(
+                    "[Errno 18] Invalid cross-device link: {} -> {}",
+                    StringRepr(&src),
+                    StringRepr(&dst)
+                )),
             ),
             Self::Io(err, path) => match err.kind() {
                 ErrorKind::NotFound => {
                     let code = err.raw_os_error().unwrap_or(2);
                     MontyException::new(
                         ExcType::FileNotFoundError,
-                        Some(format!("[Errno {code}] No such file or directory: '{path}'")),
+                        Some(format!(
+                            "[Errno {code}] No such file or directory: {}",
+                            StringRepr(&path)
+                        )),
                     )
                 }
                 ErrorKind::AlreadyExists => {
                     let code = err.raw_os_error().unwrap_or(17);
                     MontyException::new(
                         ExcType::FileExistsError,
-                        Some(format!("[Errno {code}] File exists: '{path}'")),
+                        Some(format!("[Errno {code}] File exists: {}", StringRepr(&path))),
                     )
                 }
                 ErrorKind::PermissionDenied => {
                     let code = err.raw_os_error().unwrap_or(30);
                     MontyException::new(
                         ExcType::PermissionError,
-                        Some(format!("[Errno {code}] Permission denied: '{path}'")),
+                        Some(format!("[Errno {code}] Permission denied: {}", StringRepr(&path))),
+                    )
+                }
+                ErrorKind::IsADirectory => {
+                    let code = err.raw_os_error().unwrap_or(21);
+                    MontyException::new(
+                        ExcType::IsADirectoryError,
+                        Some(format!("[Errno {code}] Is a directory: {}", StringRepr(&path))),
+                    )
+                }
+                ErrorKind::NotADirectory => {
+                    let code = err.raw_os_error().unwrap_or(20);
+                    MontyException::new(
+                        ExcType::NotADirectoryError,
+                        Some(format!("[Errno {code}] Not a directory: {}", StringRepr(&path))),
                     )
                 }
                 ErrorKind::DirectoryNotEmpty => {
                     let code = err.raw_os_error().unwrap_or(39);
                     MontyException::new(
                         ExcType::OSError,
-                        Some(format!("[Errno {code}] Directory not empty: '{path}'")),
+                        Some(format!("[Errno {code}] Directory not empty: {}", StringRepr(&path))),
                     )
                 }
-                _ => MontyException::new(ExcType::OSError, Some(format!("{err}: '{path}' ({err:?})"))),
+                _ => MontyException::new(ExcType::OSError, Some(format!("{err}: {}", StringRepr(&path)))),
             },
             Self::InvalidUtf8 { position, invalid_byte } => MontyException::new(
                 ExcType::UnicodeDecodeError,

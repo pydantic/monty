@@ -846,7 +846,7 @@ fn ovl_mem_iterdir_file_errors() {
     let mut mt = mount_at_mnt(&dir, MountMode::OverlayMemory(OverlayState::new()));
 
     let err = call_err(&mut mt, OsFunction::Iterdir, "/mnt/hello.txt");
-    assert_eq!(err.exc_type(), ExcType::OSError);
+    assert_eq!(err.exc_type(), ExcType::NotADirectoryError);
 }
 
 #[test]

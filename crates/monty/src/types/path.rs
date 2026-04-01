@@ -340,23 +340,53 @@ pub(crate) fn path_div(
     Ok(Some(Value::Ref(heap.allocate(HeapData::Path(Path::new(result)))?)))
 }
 
-/// Normalizes a path string to POSIX format.
+/// Normalizes a path string to POSIX format, matching CPython's `pathlib.PurePosixPath`.
 ///
 /// - Converts backslashes to forward slashes
+/// - Removes `.` components (e.g. `/a/./b` → `/a/b`)
+/// - Collapses consecutive slashes (e.g. `//a///b` → `/a/b`)
 /// - Removes trailing slashes (except for root "/")
-/// - Does NOT resolve `.` or `..` components (that requires I/O for symlinks)
+/// - Does NOT resolve `..` components (that requires I/O for symlinks)
 fn normalize_path(mut path: String) -> String {
     // Convert backslashes to forward slashes
     if path.contains('\\') {
         path = path.replace('\\', "/");
     }
 
-    // Remove trailing slashes, but keep root "/"
-    while path.len() > 1 && path.ends_with('/') {
-        path.pop();
+    // Fast path: no `.` component and no consecutive or trailing slashes
+    if !path.contains("/.") && !path.contains("//") && !path.starts_with("./") {
+        // Still strip trailing slashes
+        while path.len() > 1 && path.ends_with('/') {
+            path.pop();
+        }
+        return path;
     }
 
-    path
+    let is_absolute = path.starts_with('/');
+    let mut components: Vec<&str> = Vec::new();
+
+    for part in path.split('/') {
+        match part {
+            "" | "." => {} // skip empty segments (from consecutive/trailing slashes) and "."
+            other => components.push(other),
+        }
+    }
+
+    if components.is_empty() {
+        return if is_absolute { "/".to_owned() } else { ".".to_owned() };
+    }
+
+    let mut result = String::with_capacity(path.len());
+    if is_absolute {
+        result.push('/');
+    }
+    for (i, comp) in components.iter().enumerate() {
+        if i > 0 {
+            result.push('/');
+        }
+        result.push_str(comp);
+    }
+    result
 }
 
 /// Prepends the path string argument to existing arguments for OS calls.
