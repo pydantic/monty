@@ -10,7 +10,7 @@
 //! I/O, filesystem, or network operations. Instead, the host decides whether to
 //! permit and execute such operations.
 
-use crate::{ExcType, MontyException, MontyObject, intern::StaticStrings};
+use crate::{ExcType, MontyException, MontyObject, intern::StaticStrings, types::str::StringRepr};
 
 /// OS operations that require host system access.
 ///
@@ -141,7 +141,10 @@ impl OsFunction {
                 MontyObject::String(s) => s.as_str(),
                 _ => "<unknown>",
             });
-            MontyException::new(ExcType::PermissionError, Some(format!("Permission denied: '{path}'")))
+            MontyException::new(
+                ExcType::PermissionError,
+                Some(format!("Permission denied: {}", StringRepr(path))),
+            )
         } else {
             MontyException::new(
                 ExcType::RuntimeError,

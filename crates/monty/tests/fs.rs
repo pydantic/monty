@@ -2050,3 +2050,157 @@ fn ovl_rename_directory_preserves_descendants() {
     let result = call_ok(&mut mt, OsFunction::Exists, "/mnt/subdir/nested.txt");
     assert_eq!(result, MontyObject::Bool(false));
 }
+
+// =============================================================================
+// Overlay rename: destination type validation
+// =============================================================================
+
+/// Renaming a file onto an existing directory should raise IsADirectoryError.
+#[test]
+fn ovl_mem_rename_file_onto_directory() {
+    let dir = create_test_dir();
+    let mut mt = mount_at_mnt(&dir, MountMode::OverlayMemory(OverlayState::new()));
+
+    let result = call_rename(&mut mt, "/mnt/hello.txt", "/mnt/subdir");
+    let exc = result.unwrap().unwrap_err().into_exception();
+    assert_eq!(exc.exc_type(), ExcType::IsADirectoryError);
+}
+
+/// Renaming a directory onto an existing file should raise NotADirectoryError.
+#[test]
+fn ovl_mem_rename_directory_onto_file() {
+    let dir = create_test_dir();
+    let mut mt = mount_at_mnt(&dir, MountMode::OverlayMemory(OverlayState::new()));
+
+    let result = call_rename(&mut mt, "/mnt/subdir", "/mnt/hello.txt");
+    let exc = result.unwrap().unwrap_err().into_exception();
+    assert_eq!(exc.exc_type(), ExcType::NotADirectoryError);
+}
+
+/// Renaming a directory into its own descendant should raise OSError.
+#[test]
+fn ovl_mem_rename_directory_into_own_subdir() {
+    let dir = create_test_dir();
+    let mut mt = mount_at_mnt(&dir, MountMode::OverlayMemory(OverlayState::new()));
+
+    let result = call_rename(&mut mt, "/mnt/subdir", "/mnt/subdir/deep/moved");
+    let exc = result.unwrap().unwrap_err().into_exception();
+    assert_eq!(exc.exc_type(), ExcType::OSError);
+    assert!(
+        exc.message().unwrap_or("").contains("Invalid argument"),
+        "expected 'Invalid argument', got: {:?}",
+        exc.message()
+    );
+}
+
+/// Renaming an overlay file onto an overlay directory should raise IsADirectoryError.
+#[test]
+fn ovl_mem_rename_overlay_file_onto_overlay_dir() {
+    let dir = create_test_dir();
+    let mut mt = mount_at_mnt(&dir, MountMode::OverlayMemory(OverlayState::new()));
+
+    // Create an overlay file and directory
+    call_write(
+        &mut mt,
+        OsFunction::WriteText,
+        "/mnt/src.txt",
+        MontyObject::String("content".to_owned()),
+    )
+    .unwrap()
+    .unwrap();
+    call_mkdir(&mut mt, "/mnt/dst_dir", false, false).unwrap().unwrap();
+
+    let result = call_rename(&mut mt, "/mnt/src.txt", "/mnt/dst_dir");
+    let exc = result.unwrap().unwrap_err().into_exception();
+    assert_eq!(exc.exc_type(), ExcType::IsADirectoryError);
+}
+
+// =============================================================================
+// Overlay rename: symlink preservation
+// =============================================================================
+
+/// Renaming a real symlink in overlay mode should preserve its symlink identity.
+#[test]
+#[cfg(unix)]
+fn ovl_mem_rename_symlink_preserves_symlink() {
+    let dir = create_test_dir();
+    symlink_file(dir.path().join("hello.txt"), dir.path().join("link.txt"));
+
+    let mut mt = mount_at_mnt(&dir, MountMode::OverlayMemory(OverlayState::new()));
+
+    // Before rename: link should be a symlink
+    let result = call_ok(&mut mt, OsFunction::IsSymlink, "/mnt/link.txt");
+    assert_eq!(result, MontyObject::Bool(true));
+
+    // Rename the symlink
+    call_rename(&mut mt, "/mnt/link.txt", "/mnt/moved_link.txt")
+        .unwrap()
+        .unwrap();
+
+    // After rename: the moved path should still be readable (via the stored host ref)
+    let result = call_ok(&mut mt, OsFunction::ReadText, "/mnt/moved_link.txt");
+    assert_eq!(result, MontyObject::String("hello world\n".to_owned()));
+
+    // Original symlink path should be gone
+    let result = call_ok(&mut mt, OsFunction::Exists, "/mnt/link.txt");
+    assert_eq!(result, MontyObject::Bool(false));
+
+    // Original target should still exist
+    let result = call_ok(&mut mt, OsFunction::Exists, "/mnt/hello.txt");
+    assert_eq!(result, MontyObject::Bool(true));
+}
+
+// =============================================================================
+// Overlay rmdir: must check overlay children on real directories
+// =============================================================================
+
+/// rmdir on a real directory must fail if it has overlay-only children.
+#[test]
+fn ovl_mem_rmdir_real_dir_with_overlay_children() {
+    let dir = create_test_dir();
+    let mut mt = mount_at_mnt(&dir, MountMode::OverlayMemory(OverlayState::new()));
+
+    // Delete the real child via tombstone
+    call(&mut mt, OsFunction::Unlink, "/mnt/subdir/nested.txt")
+        .unwrap()
+        .unwrap();
+    call(&mut mt, OsFunction::Unlink, "/mnt/subdir/deep/file.txt")
+        .unwrap()
+        .unwrap();
+    call(&mut mt, OsFunction::Rmdir, "/mnt/subdir/deep").unwrap().unwrap();
+
+    // Add an overlay-only child
+    call_write(
+        &mut mt,
+        OsFunction::WriteText,
+        "/mnt/subdir/overlay_only.txt",
+        MontyObject::String("overlay".to_owned()),
+    )
+    .unwrap()
+    .unwrap();
+
+    // rmdir should fail because of the overlay child
+    let exc = call_err(&mut mt, OsFunction::Rmdir, "/mnt/subdir");
+    assert_eq!(exc.exc_type(), ExcType::OSError);
+    assert!(
+        exc.message().unwrap_or("").contains("Directory not empty"),
+        "expected 'Directory not empty', got: {:?}",
+        exc.message()
+    );
+
+    // The overlay child should still be accessible
+    let result = call_ok(&mut mt, OsFunction::ReadText, "/mnt/subdir/overlay_only.txt");
+    assert_eq!(result, MontyObject::String("overlay".to_owned()));
+}
+
+// =============================================================================
+// on_no_handler error message format
+// =============================================================================
+
+/// `on_no_handler` for filesystem ops should not include `Errno` prefix.
+#[test]
+fn on_no_handler_includes_errno() {
+    let exc = OsFunction::Exists.on_no_handler(&[MontyObject::Path("/outside".to_owned())]);
+    assert_eq!(exc.exc_type(), ExcType::PermissionError);
+    assert_eq!(exc.message().unwrap_or(""), "Permission denied: '/outside'");
+}

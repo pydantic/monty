@@ -568,6 +568,11 @@ fn iterdir(
 }
 
 /// Renames a path within the overlay, lazily referencing real files when needed.
+///
+/// Validates destination type compatibility to match real filesystem semantics:
+/// - file → existing directory raises `IsADirectoryError`
+/// - directory → existing file raises `NotADirectoryError`
+/// - directory → its own descendant raises `OSError` (invalid argument)
 fn rename(
     state: &mut OverlayState,
     src_vpath: &str,
@@ -586,8 +591,15 @@ fn rename(
     let entry = if let Some(entry) = state.remove(&src_rel) {
         entry
     } else {
-        let resolved = resolve_path(src_vpath, ctx.mount_virtual, ctx.mount_host, ResolveMode::Existing)?;
-        if resolved.host_path.is_file() {
+        // Use Lstat so symlinks are detected without following them,
+        // matching the direct-mode rename behavior.
+        let resolved = resolve_path(src_vpath, ctx.mount_virtual, ctx.mount_host, ResolveMode::Lstat)?;
+        if resolved.host_path.is_symlink() {
+            // Preserve the symlink entry itself rather than its target.
+            OverlayFileRef::from_lstat(&resolved.host_path)
+                .map(OverlayEntry::RealFileRef)
+                .ok_or_else(|| MountError::not_found(src_vpath))?
+        } else if resolved.host_path.is_file() {
             OverlayFileRef::from_host_path(&resolved.host_path)
                 .map(OverlayEntry::RealFileRef)
                 .ok_or_else(|| MountError::not_found(src_vpath))?
@@ -600,10 +612,25 @@ fn rename(
         }
     };
 
+    let src_is_dir = matches!(entry, OverlayEntry::Directory { .. });
+    reject_rename_type_mismatch(state, &dst_rel, src_is_dir, ctx, dst_vpath)?;
+
+    // Reject renaming a directory into its own descendant.
+    if src_is_dir {
+        let src_prefix = format!("{src_rel}/");
+        if dst_rel.starts_with(&src_prefix) {
+            return Err(MountError::io_err(
+                ErrorKind::InvalidInput,
+                "Invalid argument",
+                src_vpath,
+            ));
+        }
+    }
+
     let mut descendants: Vec<(String, OverlayEntry)> = Vec::new();
     let mut tombstone_keys: Vec<String> = Vec::new();
 
-    if matches!(entry, OverlayEntry::Directory { .. }) {
+    if src_is_dir {
         let src_prefix = format!("{src_rel}/");
         let dst_prefix = format!("{dst_rel}/");
         let child_keys: Vec<String> = state.prefix_iter(&src_prefix).map(|(key, _)| key.to_owned()).collect();
@@ -639,6 +666,41 @@ fn rename(
     }
 
     Ok(MontyObject::None)
+}
+
+/// Rejects rename when the source and destination types are incompatible.
+///
+/// Matches real filesystem semantics:
+/// - renaming a non-directory onto an existing directory → `IsADirectoryError`
+/// - renaming a directory onto an existing non-directory → `NotADirectoryError`
+fn reject_rename_type_mismatch(
+    state: &OverlayState,
+    dst_rel: &str,
+    src_is_dir: bool,
+    ctx: &MountContext<'_>,
+    dst_vpath: &str,
+) -> Result<(), MountError> {
+    let dst_is_dir = match state.get(dst_rel) {
+        Some(OverlayEntry::Directory { .. }) => Some(true),
+        Some(OverlayEntry::File(_) | OverlayEntry::RealFileRef(_)) => Some(false),
+        Some(OverlayEntry::Deleted) | None => {
+            match resolve_path(dst_vpath, ctx.mount_virtual, ctx.mount_host, ResolveMode::Existing) {
+                Ok(resolved) if resolved.host_path.is_dir() => Some(true),
+                Ok(resolved) if resolved.host_path.exists() => Some(false),
+                _ => None,
+            }
+        }
+    };
+
+    match dst_is_dir {
+        Some(true) if !src_is_dir => Err(MountError::io_err(ErrorKind::IsADirectory, "Is a directory", dst_vpath)),
+        Some(false) if src_is_dir => Err(MountError::io_err(
+            ErrorKind::NotADirectory,
+            "Not a directory",
+            dst_vpath,
+        )),
+        _ => Ok(()),
+    }
 }
 
 /// Recursively collects real descendants that should follow an overlay rename.

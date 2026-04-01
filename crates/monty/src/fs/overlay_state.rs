@@ -118,9 +118,34 @@ pub(super) struct OverlayFileRef {
 
 impl OverlayFileRef {
     /// Builds a lazy file reference from a host path if metadata can be read.
+    ///
+    /// Uses `fs::metadata` which follows symlinks, so the size and mtime
+    /// reflect the target file. Use [`from_lstat`](Self::from_lstat) when
+    /// the path itself is a symlink that should be preserved as-is.
     #[must_use]
     pub fn from_host_path(path: &Path) -> Option<Self> {
         let metadata = fs::metadata(path).ok()?;
+        let mtime = metadata
+            .modified()
+            .unwrap_or(SystemTime::UNIX_EPOCH)
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .map_or(0.0, |duration| duration.as_secs_f64());
+        let size = i64::try_from(metadata.len()).unwrap_or(i64::MAX);
+        Some(Self {
+            host_path: path.to_path_buf(),
+            mtime,
+            size,
+        })
+    }
+
+    /// Builds a lazy file reference using `symlink_metadata` (lstat).
+    ///
+    /// Unlike [`from_host_path`](Self::from_host_path), this does not follow
+    /// symlinks. The stored `host_path` is the symlink itself, preserving
+    /// symlink identity across overlay renames.
+    #[must_use]
+    pub fn from_lstat(path: &Path) -> Option<Self> {
+        let metadata = fs::symlink_metadata(path).ok()?;
         let mtime = metadata
             .modified()
             .unwrap_or(SystemTime::UNIX_EPOCH)
