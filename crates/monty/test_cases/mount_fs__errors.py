@@ -60,10 +60,10 @@ try:
 except FileNotFoundError as exc:
     if not is_windows:
         assert str(exc).startswith("[Errno 2] No such file or directory: '"), f'exc message: {exc}'
-    if is_monty:
-        assert str(exc) == "[Errno 2] No such file or directory: '/mnt/nonexistent/child.txt'", (
-            f'unexpected message: {exc}'
-        )
+        if is_monty:
+            assert str(exc) == "[Errno 2] No such file or directory: '/mnt/nonexistent/child.txt'", (
+                f'unexpected message: {exc}'
+            )
 
 # === FileNotFoundError on rmdir of nonexistent ===
 try:
@@ -72,8 +72,10 @@ try:
 except FileNotFoundError as exc:
     if not is_windows:
         assert str(exc).startswith("[Errno 2] No such file or directory: '"), f'exc message: {exc}'
-    if is_monty:
-        assert str(exc) == "[Errno 2] No such file or directory: '/mnt/nonexistent_dir'", f'unexpected message: {exc}'
+        if is_monty:
+            assert str(exc) == "[Errno 2] No such file or directory: '/mnt/nonexistent_dir'", (
+                f'unexpected message: {exc}'
+            )
 
 # === FileNotFoundError on rename nonexistent ===
 try:
@@ -90,10 +92,10 @@ try:
 except FileNotFoundError as exc:
     if not is_windows:
         assert str(exc).startswith("[Errno 2] No such file or directory: '"), f'exc message: {exc}'
-    if is_monty:
-        assert str(exc) == "[Errno 2] No such file or directory: '/mnt/missing_parent/child'", (
-            f'unexpected message: {exc}'
-        )
+        if is_monty:
+            assert str(exc) == "[Errno 2] No such file or directory: '/mnt/missing_parent/child'", (
+                f'unexpected message: {exc}'
+            )
 
 # === FileNotFoundError on write_text with missing parent ===
 try:
@@ -102,10 +104,10 @@ try:
 except FileNotFoundError as exc:
     if not is_windows:
         assert str(exc).startswith("[Errno 2] No such file or directory: '"), f'exc message: {exc}'
-    if is_monty:
-        assert str(exc) == "[Errno 2] No such file or directory: '/mnt/no_such_parent/child.txt'", (
-            f'unexpected message: {exc}'
-        )
+        if is_monty:
+            assert str(exc) == "[Errno 2] No such file or directory: '/mnt/no_such_parent/child.txt'", (
+                f'unexpected message: {exc}'
+            )
 
 # === FileNotFoundError on write_bytes with missing parent ===
 try:
@@ -114,10 +116,10 @@ try:
 except FileNotFoundError as exc:
     if not is_windows:
         assert str(exc).startswith("[Errno 2] No such file or directory: '"), f'exc message: {exc}'
-    if is_monty:
-        assert str(exc) == "[Errno 2] No such file or directory: '/mnt/no_such_parent/child.bin'", (
-            f'unexpected message: {exc}'
-        )
+        if is_monty:
+            assert str(exc) == "[Errno 2] No such file or directory: '/mnt/no_such_parent/child.bin'", (
+                f'unexpected message: {exc}'
+            )
 
 # === FileNotFoundError on iterdir of nonexistent ===
 try:
@@ -126,8 +128,8 @@ try:
 except FileNotFoundError as exc:
     if not is_windows:
         assert str(exc).startswith("[Errno 2] No such file or directory: '"), f'exc message: {exc}'
-    if is_monty:
-        assert str(exc) == "[Errno 2] No such file or directory: '/mnt/nonexistent'", f'unexpected message: {exc}'
+        if is_monty:
+            assert str(exc) == "[Errno 2] No such file or directory: '/mnt/nonexistent'", f'unexpected message: {exc}'
 
 # ============================================================================
 # FileExistsError — mkdir on existing
@@ -140,8 +142,8 @@ try:
 except FileExistsError as exc:
     if not is_windows:
         assert str(exc).startswith("[Errno 17] File exists: '"), f'exc message: {exc}'
-    if is_monty:
-        assert str(exc) == "[Errno 17] File exists: '/mnt/subdir'", f'unexpected message: {exc}'
+        if is_monty:
+            assert str(exc) == "[Errno 17] File exists: '/mnt/subdir'", f'unexpected message: {exc}'
 
 # ============================================================================
 # IsADirectoryError — read/write/unlink on directories
@@ -154,8 +156,8 @@ try:
 except IsADirectoryError as exc:
     if not is_windows:
         assert str(exc).startswith("[Errno 21] Is a directory: '"), f'exc message: {exc}'
-    if is_monty:
-        assert str(exc) == "[Errno 21] Is a directory: '/mnt/subdir'", f'unexpected message: {exc}'
+        if is_monty:
+            assert str(exc) == "[Errno 21] Is a directory: '/mnt/subdir'", f'unexpected message: {exc}'
 
 # === IsADirectoryError on read_bytes of directory ===
 try:
@@ -164,8 +166,8 @@ try:
 except IsADirectoryError as exc:
     if not is_windows:
         assert str(exc).startswith("[Errno 21] Is a directory: '"), f'exc message: {exc}'
-    if is_monty:
-        assert str(exc) == "[Errno 21] Is a directory: '/mnt/subdir'", f'unexpected message: {exc}'
+        if is_monty:
+            assert str(exc) == "[Errno 21] Is a directory: '/mnt/subdir'", f'unexpected message: {exc}'
 
 # === IsADirectoryError on write_text to directory ===
 try:
@@ -174,8 +176,8 @@ try:
 except IsADirectoryError as exc:
     if not is_windows:
         assert str(exc).startswith("[Errno 21] Is a directory: '"), f'exc message: {exc}'
-    if is_monty:
-        assert str(exc) == "[Errno 21] Is a directory: '/mnt/subdir'", f'unexpected message: {exc}'
+        if is_monty:
+            assert str(exc) == "[Errno 21] Is a directory: '/mnt/subdir'", f'unexpected message: {exc}'
 
 # === IsADirectoryError on write_bytes to directory ===
 try:
@@ -184,8 +186,8 @@ try:
 except IsADirectoryError as exc:
     if not is_windows:
         assert str(exc).startswith("[Errno 21] Is a directory: '"), f'exc message: {exc}'
-    if is_monty:
-        assert str(exc) == "[Errno 21] Is a directory: '/mnt/subdir'", f'unexpected message: {exc}'
+        if is_monty:
+            assert str(exc) == "[Errno 21] Is a directory: '/mnt/subdir'", f'unexpected message: {exc}'
 
 # === IsADirectoryError/PermissionError on unlink of directory ===
 # macOS returns PermissionError (EPERM), Linux returns IsADirectoryError (EISDIR)
@@ -206,8 +208,8 @@ try:
 except NotADirectoryError as exc:
     if not is_windows:
         assert str(exc).startswith("[Errno 20] Not a directory: '"), f'exc message: {exc}'
-    if is_monty:
-        assert str(exc) == "[Errno 20] Not a directory: '/mnt/hello.txt'", f'unexpected message: {exc}'
+        if is_monty:
+            assert str(exc) == "[Errno 20] Not a directory: '/mnt/hello.txt'", f'unexpected message: {exc}'
 
 # === NotADirectoryError on rmdir of file ===
 try:
@@ -216,8 +218,8 @@ try:
 except NotADirectoryError as exc:
     if not is_windows:
         assert str(exc).startswith("[Errno 20] Not a directory: '"), f'exc message: {exc}'
-    if is_monty:
-        assert str(exc) == "[Errno 20] Not a directory: '/mnt/hello.txt'", f'unexpected message: {exc}'
+        if is_monty:
+            assert str(exc) == "[Errno 20] Not a directory: '/mnt/hello.txt'", f'unexpected message: {exc}'
 
 # ============================================================================
 # DirectoryNotEmpty — rmdir of non-empty directory
@@ -233,8 +235,8 @@ except OSError as exc:
         assert str(exc).startswith(("[Errno 66] Directory not empty: '", "[Errno 39] Directory not empty: '")), (
             f'exc message: {exc}'
         )
-    if is_monty:
-        assert str(exc) == "[Errno 39] Directory not empty: '/mnt/subdir'", f'unexpected message: {exc}'
+        if is_monty:
+            assert str(exc) == "[Errno 39] Directory not empty: '/mnt/subdir'", f'unexpected message: {exc}'
 
 # ============================================================================
 # UnicodeDecodeError — read_text of non-UTF-8 file
@@ -263,8 +265,8 @@ try:
 except OSError as exc:
     if not is_windows:
         assert 'File name too long' in str(exc), f'exc message: {exc}'
-    if is_monty:
-        assert str(exc) == "[Errno 36] File name too long: '/mnt/" + long_name + "'", f'unexpected message: {exc}'
+        if is_monty:
+            assert str(exc) == "[Errno 36] File name too long: '/mnt/" + long_name + "'", f'unexpected message: {exc}'
 
 # === Component at exactly 255 bytes is accepted ===
 ok_name = 'b' * 255
@@ -278,8 +280,8 @@ try:
 except OSError as exc:
     if not is_windows:
         assert 'File name too long' in str(exc), f'exc message: {exc}'
-    if is_monty:
-        assert str(exc).startswith("[Errno 36] File name too long: '"), f'unexpected message: {exc}'
+        if is_monty:
+            assert str(exc).startswith("[Errno 36] File name too long: '"), f'unexpected message: {exc}'
 
 # === OSError on long component in read operations too ===
 try:
