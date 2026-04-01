@@ -41,6 +41,7 @@ runs:
 
     - name: generate pgo data
       run: |
+        pip install typing_extensions
         pip install pydantic-monty --no-index --no-deps --find-links pgo-wheel --force-reinstall
         python exercise.py
         rustup run ${{ inputs.rust-toolchain }} bash -c 'echo LLVM_PROFDATA=$RUSTUP_HOME/toolchains/$RUSTUP_TOOLCHAIN/lib/rustlib/$RUST_HOST/bin/llvm-profdata >> "$GITHUB_ENV"'

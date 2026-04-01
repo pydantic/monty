@@ -396,6 +396,7 @@ jobs:
             ls -lh /dist/
             python3 -m venv venv
             source venv/bin/activate
+            python3 -m pip install typing_extensions
             python3 -m pip install pydantic-monty --no-index --no-deps --find-links /dist --force-reinstall
             python3 -c "import pydantic_monty; print(pydantic_monty.Monty('1 + 2').run())"
 
