@@ -76,59 +76,39 @@ impl MountError {
                     StringRepr(&dst)
                 )),
             ),
+            // Use hardcoded POSIX errno values rather than `raw_os_error()` so
+            // sandboxed code sees consistent error codes regardless of host OS.
+            // Windows uses different native codes (e.g. 3 for ERROR_PATH_NOT_FOUND
+            // vs POSIX 2 for ENOENT).
             Self::Io(err, path) => match err.kind() {
-                ErrorKind::NotFound => {
-                    let code = err.raw_os_error().unwrap_or(2);
-                    MontyException::new(
-                        ExcType::FileNotFoundError,
-                        Some(format!(
-                            "[Errno {code}] No such file or directory: {}",
-                            StringRepr(&path)
-                        )),
-                    )
-                }
-                ErrorKind::AlreadyExists => {
-                    let code = err.raw_os_error().unwrap_or(17);
-                    MontyException::new(
-                        ExcType::FileExistsError,
-                        Some(format!("[Errno {code}] File exists: {}", StringRepr(&path))),
-                    )
-                }
-                ErrorKind::PermissionDenied => {
-                    let code = err.raw_os_error().unwrap_or(30);
-                    MontyException::new(
-                        ExcType::PermissionError,
-                        Some(format!("[Errno {code}] Permission denied: {}", StringRepr(&path))),
-                    )
-                }
-                ErrorKind::IsADirectory => {
-                    let code = err.raw_os_error().unwrap_or(21);
-                    MontyException::new(
-                        ExcType::IsADirectoryError,
-                        Some(format!("[Errno {code}] Is a directory: {}", StringRepr(&path))),
-                    )
-                }
-                ErrorKind::NotADirectory => {
-                    let code = err.raw_os_error().unwrap_or(20);
-                    MontyException::new(
-                        ExcType::NotADirectoryError,
-                        Some(format!("[Errno {code}] Not a directory: {}", StringRepr(&path))),
-                    )
-                }
-                ErrorKind::DirectoryNotEmpty => {
-                    let code = err.raw_os_error().unwrap_or(39);
-                    MontyException::new(
-                        ExcType::OSError,
-                        Some(format!("[Errno {code}] Directory not empty: {}", StringRepr(&path))),
-                    )
-                }
-                ErrorKind::InvalidFilename => {
-                    let code = err.raw_os_error().unwrap_or(36);
-                    MontyException::new(
-                        ExcType::OSError,
-                        Some(format!("[Errno {code}] File name too long: {}", StringRepr(&path))),
-                    )
-                }
+                ErrorKind::NotFound => MontyException::new(
+                    ExcType::FileNotFoundError,
+                    Some(format!("[Errno 2] No such file or directory: {}", StringRepr(&path))),
+                ),
+                ErrorKind::AlreadyExists => MontyException::new(
+                    ExcType::FileExistsError,
+                    Some(format!("[Errno 17] File exists: {}", StringRepr(&path))),
+                ),
+                ErrorKind::PermissionDenied => MontyException::new(
+                    ExcType::PermissionError,
+                    Some(format!("[Errno 13] Permission denied: {}", StringRepr(&path))),
+                ),
+                ErrorKind::IsADirectory => MontyException::new(
+                    ExcType::IsADirectoryError,
+                    Some(format!("[Errno 21] Is a directory: {}", StringRepr(&path))),
+                ),
+                ErrorKind::NotADirectory => MontyException::new(
+                    ExcType::NotADirectoryError,
+                    Some(format!("[Errno 20] Not a directory: {}", StringRepr(&path))),
+                ),
+                ErrorKind::DirectoryNotEmpty => MontyException::new(
+                    ExcType::OSError,
+                    Some(format!("[Errno 39] Directory not empty: {}", StringRepr(&path))),
+                ),
+                ErrorKind::InvalidFilename => MontyException::new(
+                    ExcType::OSError,
+                    Some(format!("[Errno 36] File name too long: {}", StringRepr(&path))),
+                ),
                 _ => MontyException::new(ExcType::OSError, Some(format!("{err}: {}", StringRepr(&path)))),
             },
             Self::InvalidUtf8 { position, invalid_byte } => MontyException::new(
