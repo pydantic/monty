@@ -76,8 +76,24 @@ assert (root / 'new_dir').is_dir() == True, 'mkdir creates dir'
 (root / 'a' / 'b' / 'c').mkdir(parents=True)
 assert (root / 'a' / 'b' / 'c').is_dir() == True, 'mkdir parents'
 
-# mkdir with exist_ok
+# mkdir with exist_ok on existing directory
 (root / 'new_dir').mkdir(exist_ok=True)
+
+# mkdir(parents=True) on fresh nested path
+(root / 'd' / 'e' / 'f').mkdir(parents=True)
+assert (root / 'd' / 'e' / 'f').is_dir() == True, 'mkdir parents=True creates nested dirs'
+
+# mkdir(parents=True, exist_ok=True) on existing directory
+(root / 'new_dir').mkdir(parents=True, exist_ok=True)
+assert (root / 'new_dir').is_dir() == True, 'mkdir parents=True exist_ok=True on existing dir'
+
+# mkdir(parents=True, exist_ok=True) on existing nested directory
+(root / 'a' / 'b' / 'c').mkdir(parents=True, exist_ok=True)
+assert (root / 'a' / 'b' / 'c').is_dir() == True, 'mkdir parents=True exist_ok=True on existing nested'
+
+# mkdir(parents=True) where some parents already exist
+(root / 'a' / 'b' / 'new_child').mkdir(parents=True)
+assert (root / 'a' / 'b' / 'new_child').is_dir() == True, 'mkdir parents=True with partial existing parents'
 
 # === unlink() ===
 (root / 'to_delete.txt').write_text('delete me')

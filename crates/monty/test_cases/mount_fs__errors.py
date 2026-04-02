@@ -145,6 +145,26 @@ except FileExistsError as exc:
     elif not is_windows:
         assert str(exc).startswith("[Errno 17] File exists: '"), f'exc message: {exc}'
 
+# === FileExistsError on mkdir(parents=True, exist_ok=False) of existing dir ===
+try:
+    (root / 'subdir').mkdir(parents=True, exist_ok=False)
+    assert False, 'expected FileExistsError on mkdir parents=True exist_ok=False'
+except FileExistsError as exc:
+    if is_monty:
+        assert str(exc) == "[Errno 17] File exists: '/mnt/subdir'", f'unexpected message: {exc}'
+    elif not is_windows:
+        assert str(exc).startswith("[Errno 17] File exists: '"), f'exc message: {exc}'
+
+# === FileExistsError on mkdir(exist_ok=True) when path is a file ===
+try:
+    (root / 'hello.txt').mkdir(exist_ok=True)
+    assert False, 'expected FileExistsError on mkdir exist_ok=True on a file'
+except FileExistsError as exc:
+    if is_monty:
+        assert str(exc) == "[Errno 17] File exists: '/mnt/hello.txt'", f'unexpected message: {exc}'
+    elif not is_windows:
+        assert str(exc).startswith("[Errno 17] File exists: '"), f'exc message: {exc}'
+
 # ============================================================================
 # IsADirectoryError — read/write/unlink on directories
 # ============================================================================

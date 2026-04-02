@@ -298,11 +298,12 @@ fn mkdir(
         Some(OverlayEntry::Deleted) => {}
         None => {
             if let Ok(resolved) = resolve_path(vpath, ctx.mount_virtual, ctx.mount_host, ResolveMode::Existing)
-                && resolved.host_path.exists()
+                && let Ok(meta) = resolved.host_path.symlink_metadata()
             {
-                return if exist_ok {
+                return if meta.is_dir() && exist_ok {
                     Ok(MontyObject::None)
                 } else {
+                    // Either it's a file (always an error) or a dir with exist_ok=false.
                     Err(MountError::io_err(ErrorKind::AlreadyExists, "File exists", vpath))
                 };
             }

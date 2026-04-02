@@ -67,9 +67,30 @@ pub(super) fn write_bytes_fs(path: &Path, content: &[u8], vpath: &str) -> Result
     Ok(MontyObject::Int(i64::try_from(content.len()).unwrap_or(i64::MAX)))
 }
 
-/// Creates a directory, handling `exist_ok=True` the same way as `pathlib`.
+/// Creates a directory, matching CPython `pathlib.Path.mkdir()` semantics:
+///
+/// - `exist_ok=False`: always raises `FileExistsError` if the path already exists
+///   (whether file or directory), even with `parents=True`.
+/// - `exist_ok=True`: silently succeeds only if the path is an existing **directory**.
+///   If the path is an existing **file**, raises `FileExistsError` regardless.
 pub(super) fn mkdir_fs(path: &Path, parents: bool, exist_ok: bool, vpath: &str) -> Result<MontyObject, MountError> {
     let result = if parents {
+        // `create_dir_all` silently returns `Ok(())` when the directory already exists,
+        // so we must check for pre-existing paths ourselves.
+        match path.symlink_metadata() {
+            Ok(meta) if meta.is_dir() => {
+                return if exist_ok {
+                    Ok(MontyObject::None)
+                } else {
+                    Err(MountError::io_err(ErrorKind::AlreadyExists, "File exists", vpath))
+                };
+            }
+            Ok(_) => {
+                // Path exists but is a file — always an error.
+                return Err(MountError::io_err(ErrorKind::AlreadyExists, "File exists", vpath));
+            }
+            Err(_) => {} // Path doesn't exist, proceed with creation.
+        }
         fs::create_dir_all(path)
     } else {
         fs::create_dir(path)
@@ -77,7 +98,7 @@ pub(super) fn mkdir_fs(path: &Path, parents: bool, exist_ok: bool, vpath: &str) 
 
     match result {
         Ok(()) => Ok(MontyObject::None),
-        Err(err) if err.kind() == ErrorKind::AlreadyExists && exist_ok => Ok(MontyObject::None),
+        Err(err) if err.kind() == ErrorKind::AlreadyExists && exist_ok && path.is_dir() => Ok(MontyObject::None),
         Err(err) => Err(MountError::Io(err, vpath.to_owned())),
     }
 }
