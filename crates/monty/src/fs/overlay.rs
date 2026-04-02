@@ -599,8 +599,7 @@ fn rename(
         Some(OverlayEntry::File(_) | OverlayEntry::RealFileRef(_)) => false,
         Some(OverlayEntry::Deleted) => return Err(MountError::not_found(src_vpath)),
         None => resolve_path(src_vpath, ctx.mount_virtual, ctx.mount_host, ResolveMode::Lstat)
-            .map(|r| r.host_path.is_dir())
-            .unwrap_or(false),
+            .is_ok_and(|r| r.host_path.is_dir()),
     };
 
     reject_rename_type_mismatch(state, &dst_rel, src_is_dir, ctx, dst_vpath)?;
