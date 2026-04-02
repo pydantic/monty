@@ -13,7 +13,7 @@ mod exceptions;
 mod format;
 mod scheduler;
 
-use std::{cmp::Ordering, mem};
+use std::{cmp::Ordering, collections::HashSet, mem};
 
 pub(crate) use call::CallResult;
 use scheduler::Scheduler;
@@ -507,6 +507,12 @@ pub struct VMSnapshot {
     ///
     /// Contains call ID counter, task state, pending calls, and resolved futures.
     scheduler: Scheduler,
+
+    /// Global slots that have been explicitly deleted via `del`.
+    ///
+    /// Preserved across snapshots so that resumed execution raises `NameError`
+    /// (not `UnboundLocalError`) for previously deleted globals.
+    deleted_globals: HashSet<u16>,
 }
 
 // ============================================================================
@@ -583,6 +589,14 @@ pub struct VM<'h, 'a, T: ResourceTracker> {
     /// back to a `NameError`, so the traceback points to the name reference rather than
     /// the call expression.
     ext_function_load_ip: Option<usize>,
+
+    /// Global slots that have been explicitly deleted via `del`.
+    ///
+    /// Used by `load_global` to distinguish "deleted by `del`" (→ `NameError`) from
+    /// "unbound comprehension variable" (→ `UnboundLocalError`). Both appear as
+    /// `Value::Undefined` with `is_assigned_local` set, but CPython raises different
+    /// exception types for each case.
+    deleted_globals: HashSet<u16>,
 }
 
 impl<'h, 'a, T: ResourceTracker> VM<'h, 'a, T> {
@@ -605,6 +619,7 @@ impl<'h, 'a, T: ResourceTracker> VM<'h, 'a, T> {
             scheduler: Scheduler::new(),
             ext_function_load_ip: None, // Set by LoadGlobalCallable/LoadLocalCallable
             module_code: None,
+            deleted_globals: HashSet::new(),
         }
     }
 
@@ -666,6 +681,7 @@ impl<'h, 'a, T: ResourceTracker> VM<'h, 'a, T> {
             scheduler: snapshot.scheduler,
             module_code: Some(module_code),
             ext_function_load_ip: None,
+            deleted_globals: snapshot.deleted_globals,
         }
     }
     /// Consumes the VM and creates a snapshot for pause/resume.
@@ -686,6 +702,7 @@ impl<'h, 'a, T: ResourceTracker> VM<'h, 'a, T> {
             exception_stack: self.exception_stack,
             instruction_ip: self.instruction_ip,
             scheduler: self.scheduler,
+            deleted_globals: self.deleted_globals,
         }
     }
 
@@ -1876,12 +1893,16 @@ impl<'h, 'a, T: ResourceTracker> VM<'h, 'a, T> {
         if matches!(value, Value::Undefined) {
             let name = self.current_frame().code.local_name(slot);
 
-            // If the name is registered as an assigned local (e.g. a module-level
-            // variable or comprehension loop variable), raise NameError immediately
-            // rather than yielding NameLookup — we know the name existed in this
-            // scope so there's no point asking the host to resolve it.
+            // If the name was explicitly deleted via `del`, raise NameError
+            // (CPython never raises UnboundLocalError for globals).
+            // Otherwise, if the name is registered as an assigned local (e.g.
+            // a comprehension loop variable), raise UnboundLocalError.
             if self.current_frame().code.is_assigned_local(slot) {
-                return Err(self.name_error(slot, name));
+                return Err(if self.deleted_globals.contains(&slot) {
+                    self.name_error(slot, name)
+                } else {
+                    self.unbound_local_error(slot, name)
+                });
             }
 
             let Some(name_id) = name else {
@@ -1900,13 +1921,22 @@ impl<'h, 'a, T: ResourceTracker> VM<'h, 'a, T> {
     }
 
     /// Pops the top of stack and stores it in a global variable.
+    ///
+    /// Re-assigning a previously deleted global clears the deleted marker so that
+    /// a subsequent load raises `UnboundLocalError` (not `NameError`) if the slot
+    /// becomes undefined again through a different path.
     fn store_global(&mut self, slot: u16) {
         let value = self.pop();
         let old_value = mem::replace(&mut self.globals[slot as usize], value);
         old_value.drop_with_heap(self);
+        self.deleted_globals.remove(&slot);
     }
 
     /// Deletes a global variable, raising `NameError` if the binding does not exist.
+    ///
+    /// Marks the slot as explicitly deleted so that `load_global` raises `NameError`
+    /// (not `UnboundLocalError`) on subsequent access — matching CPython's behaviour
+    /// for module-level `del`.
     fn delete_global(&mut self, slot: u16) -> RunResult<()> {
         let name = self.current_frame().code.local_name(slot);
         let slot_index = slot as usize;
@@ -1916,6 +1946,7 @@ impl<'h, 'a, T: ResourceTracker> VM<'h, 'a, T> {
 
         let old_value = mem::replace(&mut self.globals[slot_index], Value::Undefined);
         old_value.drop_with_heap(self);
+        self.deleted_globals.insert(slot);
         Ok(())
     }
 
