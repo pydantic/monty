@@ -181,11 +181,13 @@ except OSError as exc:
             f'exc message: {exc}'
         )
 
-# Rename onto empty directory should succeed
-(root / 'rename_dst_empty').mkdir()
-(root / 'rename_src_dir').rename(root / 'rename_dst_empty')
-assert (root / 'rename_dst_empty' / 'moved.txt').read_text() == 'moved', 'rename dir onto empty dir succeeds'
-assert not (root / 'rename_src_dir').exists(), 'source dir gone after rename'
+# Rename onto empty directory should succeed (POSIX only — Windows rejects
+# any rename where the destination already exists, even an empty directory).
+if not is_windows:
+    (root / 'rename_dst_empty').mkdir()
+    (root / 'rename_src_dir').rename(root / 'rename_dst_empty')
+    assert (root / 'rename_dst_empty' / 'moved.txt').read_text() == 'moved', 'rename dir onto empty dir succeeds'
+    assert not (root / 'rename_src_dir').exists(), 'source dir gone after rename'
 
 # ============================================================================
 # IsADirectoryError — read/write/unlink on directories
