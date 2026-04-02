@@ -480,6 +480,10 @@ impl CallFrame<'_> {
 /// Note: This struct does not implement `Clone` because `Value` uses manual
 /// reference counting. Snapshots transfer ownership - they are not copied.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[expect(
+    clippy::box_collection,
+    reason = "Option<Box<HashSet>> keeps struct small (8B vs 48B) — del is rare"
+)]
 pub struct VMSnapshot {
     /// Operand stack — locals and operands interleaved per frame.
     ///
@@ -512,7 +516,7 @@ pub struct VMSnapshot {
     ///
     /// Preserved across snapshots so that resumed execution raises `NameError`
     /// (not `UnboundLocalError`) for previously deleted globals.
-    deleted_globals: HashSet<u16>,
+    deleted_globals: Option<Box<HashSet<u16>>>,
 }
 
 // ============================================================================
@@ -528,6 +532,10 @@ pub struct VMSnapshot {
 /// # Lifetimes
 /// * `'a` - Lifetime of the heap, namespaces, and interns
 /// * `'p` - Lifetime of the print writer's internal references
+#[expect(
+    clippy::box_collection,
+    reason = "Option<Box<HashSet>> keeps struct small (8B vs 48B) — del is rare"
+)]
 pub struct VM<'h, 'a, T: ResourceTracker> {
     /// Operand stack — locals and operands interleaved per frame.
     ///
@@ -596,7 +604,10 @@ pub struct VM<'h, 'a, T: ResourceTracker> {
     /// "unbound comprehension variable" (→ `UnboundLocalError`). Both appear as
     /// `Value::Undefined` with `is_assigned_local` set, but CPython raises different
     /// exception types for each case.
-    deleted_globals: HashSet<u16>,
+    ///
+    /// Boxed and wrapped in `Option` to keep the VM struct small (8 bytes vs 48)
+    /// since `del` on globals is rare and the VM is accessed on every instruction.
+    deleted_globals: Option<Box<HashSet<u16>>>,
 }
 
 impl<'h, 'a, T: ResourceTracker> VM<'h, 'a, T> {
@@ -619,7 +630,7 @@ impl<'h, 'a, T: ResourceTracker> VM<'h, 'a, T> {
             scheduler: Scheduler::new(),
             ext_function_load_ip: None, // Set by LoadGlobalCallable/LoadLocalCallable
             module_code: None,
-            deleted_globals: HashSet::new(),
+            deleted_globals: None,
         }
     }
 
@@ -1898,7 +1909,8 @@ impl<'h, 'a, T: ResourceTracker> VM<'h, 'a, T> {
             // Otherwise, if the name is registered as an assigned local (e.g.
             // a comprehension loop variable), raise UnboundLocalError.
             if self.current_frame().code.is_assigned_local(slot) {
-                return Err(if self.deleted_globals.contains(&slot) {
+                let was_deleted = self.deleted_globals.as_ref().is_some_and(|set| set.contains(&slot));
+                return Err(if was_deleted {
                     self.name_error(slot, name)
                 } else {
                     self.unbound_local_error(slot, name)
@@ -1929,7 +1941,9 @@ impl<'h, 'a, T: ResourceTracker> VM<'h, 'a, T> {
         let value = self.pop();
         let old_value = mem::replace(&mut self.globals[slot as usize], value);
         old_value.drop_with_heap(self);
-        self.deleted_globals.remove(&slot);
+        if let Some(set) = &mut self.deleted_globals {
+            set.remove(&slot);
+        }
     }
 
     /// Deletes a global variable, raising `NameError` if the binding does not exist.
@@ -1946,7 +1960,9 @@ impl<'h, 'a, T: ResourceTracker> VM<'h, 'a, T> {
 
         let old_value = mem::replace(&mut self.globals[slot_index], Value::Undefined);
         old_value.drop_with_heap(self);
-        self.deleted_globals.insert(slot);
+        self.deleted_globals
+            .get_or_insert_with(|| Box::new(HashSet::new()))
+            .insert(slot);
         Ok(())
     }
 
