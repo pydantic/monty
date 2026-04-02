@@ -24,6 +24,20 @@ fn generate_many_locals(count: usize) -> String {
     code
 }
 
+/// Generates Python code that deletes the highest-index local variable.
+///
+/// Creates: `def f(): v0=0; ...; v{n-1}={n-1}; del v{n-1}; return v{n-2}\nf()`
+fn generate_many_locals_with_delete(count: usize) -> String {
+    let mut code = String::from("def f():\n");
+    for i in 0..count {
+        writeln!(code, "    v{i} = {i}").unwrap();
+    }
+    writeln!(code, "    del v{}", count - 1).unwrap();
+    writeln!(code, "    return v{}", count - 2).unwrap();
+    code.push_str("f()");
+    code
+}
+
 /// Generates Python code calling a function with N positional arguments.
 ///
 /// Creates: `def f(*args): return len(args)\nf(0, 1, 2, ..., n-1)`
@@ -96,6 +110,8 @@ fn assert_syntax_error(result: Result<MontyRun, monty::MontyException>, expected
 }
 
 mod local_variable_limits {
+    use monty::MontyObject;
+
     use super::*;
 
     #[test]
@@ -147,6 +163,14 @@ mod local_variable_limits {
         let run = result.unwrap();
         let result = run.run_no_limits(vec![]);
         assert!(result.is_ok(), "300 locals should run successfully");
+    }
+
+    #[test]
+    fn delete_local_above_u8_limit_uses_wide_instruction() {
+        let code = generate_many_locals_with_delete(300);
+        let run = MontyRun::new(code, "test.py", vec![]).expect("300 locals with delete should compile");
+        let result = run.run_no_limits(vec![]).expect("wide delete should run successfully");
+        assert_eq!(result.as_ref(), &MontyObject::Int(298));
     }
 }
 

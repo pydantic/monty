@@ -859,6 +859,10 @@ impl<'h, 'a, T: ResourceTracker> VM<'h, 'a, T> {
                     let slot = u16::from(fetch_u8!(cached_frame));
                     try_catch_sync!(self, cached_frame, self.delete_local(&cached_frame, slot));
                 }
+                Opcode::DeleteLocalW => {
+                    let slot = fetch_u16!(cached_frame);
+                    try_catch_sync!(self, cached_frame, self.delete_local(&cached_frame, slot));
+                }
                 Opcode::DeleteGlobal => {
                     let slot = fetch_u16!(cached_frame);
                     try_catch_sync!(self, cached_frame, self.delete_global(slot));
@@ -896,6 +900,10 @@ impl<'h, 'a, T: ResourceTracker> VM<'h, 'a, T> {
                 Opcode::StoreCell => {
                     let slot = fetch_u16!(cached_frame);
                     self.store_cell(&cached_frame, slot);
+                }
+                Opcode::DeleteCell => {
+                    let slot = fetch_u16!(cached_frame);
+                    try_catch_sync!(self, cached_frame, self.delete_cell(&cached_frame, slot));
                 }
                 // Binary Operations - route through exception handling for tracebacks
                 Opcode::BinaryAdd => try_catch_sync!(self, cached_frame, self.binary_add()),
@@ -1915,7 +1923,9 @@ impl<'h, 'a, T: ResourceTracker> VM<'h, 'a, T> {
     ///
     /// The cell `HeapId` is read from the frame's local variable slot on the stack
     /// (cells are stored as `Value::Ref(cell_id)` at known positions in the locals region).
-    /// Returns a `NameError` if the cell value is undefined (free variable not bound).
+    /// Returns `UnboundLocalError` for the current function's own deleted/uninitialized
+    /// cell variables, and the free-variable `NameError` for captured cells from an
+    /// enclosing scope.
     fn load_cell(&mut self, cached_frame: &CachedFrame<'a>, slot: u16) -> RunResult<()> {
         let cell_id = self.cell_id_from_local(cached_frame, slot);
         let value = match self.heap.get(cell_id) {
@@ -1923,11 +1933,15 @@ impl<'h, 'a, T: ResourceTracker> VM<'h, 'a, T> {
             _ => panic!("LoadCell: entry is not a Cell"),
         };
 
-        // Check for undefined value - raise NameError for unbound free variable
+        // Check for undefined value and distinguish owned cell vars from free vars
         if matches!(value, Value::Undefined) {
             value.drop_with_heap(self);
             let name = cached_frame.code.local_name(slot);
-            return Err(self.free_var_error(name));
+            return Err(if self.is_owned_cell_slot(slot) {
+                self.unbound_local_error(slot, name)
+            } else {
+                self.free_var_error(name)
+            });
         }
 
         self.push(value);
@@ -1953,6 +1967,20 @@ impl<'h, 'a, T: ResourceTracker> VM<'h, 'a, T> {
         ExcType::name_error_free_variable(&name_str).into()
     }
 
+    /// Returns whether a cell slot belongs to the current function rather than an
+    /// enclosing scope captured as a free variable.
+    ///
+    /// Slot layout: `[params][cell_vars][free_vars]`. Slots below
+    /// `total_slots() + cell_var_count` are owned by this function.
+    fn is_owned_cell_slot(&self, slot: u16) -> bool {
+        let Some(function_id) = self.current_frame().function_id else {
+            return false;
+        };
+        let function = self.interns.get_function(function_id);
+        let first_free_var_slot = function.signature.total_slots() + function.cell_var_count;
+        usize::from(slot) < first_free_var_slot
+    }
+
     /// Pops the top of stack and stores it in a closure cell.
     ///
     /// The cell `HeapId` is read from the frame's local variable slot on the stack.
@@ -1967,6 +1995,31 @@ impl<'h, 'a, T: ResourceTracker> VM<'h, 'a, T> {
             panic!("StoreCell: entry is not a Cell")
         };
         mem::swap(&mut cell.get_mut(this.heap).0, value);
+    }
+
+    /// Deletes the value stored in a closure cell.
+    ///
+    /// Cell variables owned by the current function raise `UnboundLocalError` when
+    /// already unbound; captured free variables raise the free-variable `NameError`.
+    fn delete_cell(&mut self, cached_frame: &CachedFrame<'_>, slot: u16) -> RunResult<()> {
+        let is_owned_cell = self.is_owned_cell_slot(slot);
+        let name = cached_frame.code.local_name(slot);
+        let cell_id = self.cell_id_from_local(cached_frame, slot);
+        let HeapReadOutput::Cell(mut cell) = self.heap.read(cell_id) else {
+            panic!("DeleteCell: entry is not a Cell")
+        };
+
+        if matches!(&cell.get(self.heap).0, Value::Undefined) {
+            return Err(if is_owned_cell {
+                self.unbound_local_error(slot, name)
+            } else {
+                self.free_var_error(name)
+            });
+        }
+
+        let old_value = mem::replace(&mut cell.get_mut(self.heap).0, Value::Undefined);
+        old_value.drop_with_heap(self);
+        Ok(())
     }
 }
 

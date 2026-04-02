@@ -3113,12 +3113,7 @@ impl<'a> Compiler<'a> {
                     if matches!(target.scope, NameScope::Local) {
                         self.code.register_assigned_local(slot);
                     }
-                    if let Ok(s) = u8::try_from(slot) {
-                        self.code.emit_u8(Opcode::DeleteLocal, s);
-                    } else {
-                        // Wide variant not implemented yet
-                        todo!("DeleteLocalW for slot > 255");
-                    }
+                    self.code.emit_delete_local(slot);
                 }
             }
             NameScope::Global => {
@@ -3126,10 +3121,8 @@ impl<'a> Compiler<'a> {
                 self.code.emit_u16(Opcode::DeleteGlobal, slot);
             }
             NameScope::Cell => {
-                // Delete cell not commonly needed
-                // For now, just store None
-                self.code.emit(Opcode::LoadNone);
-                self.compile_store(target);
+                self.code.register_local_name(slot, target.name_id);
+                self.code.emit_u16(Opcode::DeleteCell, slot);
             }
         }
     }

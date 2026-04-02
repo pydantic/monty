@@ -66,6 +66,86 @@ try:
 except NameError as exc:
     assert str(exc) == "name 'dup' is not defined", f'wrong msg: {exc}'
 
+
+# === del unbound local raises UnboundLocalError ===
+def delete_unbound_local():
+    try:
+        del local_name
+        assert False, 'expected UnboundLocalError for local delete'
+    except UnboundLocalError as exc:
+        return str(exc)
+
+    local_name = 1
+
+
+assert delete_unbound_local() == (
+    "cannot access local variable 'local_name' where it is not associated with a value"
+), 'wrong unbound-local delete message'
+
+
+# === del captured local keeps cell unbound ===
+def delete_captured_local():
+    x = 1
+
+    def inner():
+        return x
+
+    del x
+
+    try:
+        x
+        assert False, 'expected UnboundLocalError after deleting captured local'
+    except UnboundLocalError as exc:
+        outer_msg = str(exc)
+
+    try:
+        inner()
+        assert False, 'expected NameError from closure after delete'
+    except NameError as exc:
+        inner_msg = str(exc)
+
+    return outer_msg, inner_msg
+
+
+assert delete_captured_local() == (
+    "cannot access local variable 'x' where it is not associated with a value",
+    "cannot access free variable 'x' where it is not associated with a value in enclosing scope",
+), 'wrong messages after deleting captured local'
+
+
+# === del nonlocal keeps outer cell unbound ===
+def delete_nonlocal_binding():
+    x = 1
+
+    def delete_x():
+        nonlocal x
+        del x
+
+    def read_x():
+        return x
+
+    delete_x()
+
+    try:
+        x
+        assert False, 'expected UnboundLocalError in outer scope after nonlocal del'
+    except UnboundLocalError as exc:
+        outer_msg = str(exc)
+
+    try:
+        read_x()
+        assert False, 'expected NameError in sibling closure after nonlocal del'
+    except NameError as exc:
+        inner_msg = str(exc)
+
+    return outer_msg, inner_msg
+
+
+assert delete_nonlocal_binding() == (
+    "cannot access local variable 'x' where it is not associated with a value",
+    "cannot access free variable 'x' where it is not associated with a value in enclosing scope",
+), 'wrong messages after deleting nonlocal binding'
+
 # === del and re-assign ===
 val = 'hello'
 del val

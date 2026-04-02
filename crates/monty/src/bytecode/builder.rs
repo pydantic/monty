@@ -439,6 +439,15 @@ impl CodeBuilder {
         }
     }
 
+    /// Emits `DeleteLocal`, using the wide variant for slots above 255.
+    pub fn emit_delete_local(&mut self, slot: u16) {
+        if let Ok(s) = u8::try_from(slot) {
+            self.emit_u8(Opcode::DeleteLocal, s);
+        } else {
+            self.emit_u16(Opcode::DeleteLocalW, slot);
+        }
+    }
+
     /// Adds a constant to the pool, returning its index.
     ///
     /// # Panics

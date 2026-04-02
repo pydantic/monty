@@ -445,6 +445,13 @@ pub enum Opcode {
     /// Pops index (TOS) then container, calls `__delitem__` on the container.
     /// Raises `TypeError` if the type doesn't support item deletion.
     DeleteSubscr,
+    /// Delete local variable (wide, slot > 255). Operand: u16 slot.
+    DeleteLocalW,
+    /// Delete closure cell contents. Operand: u16 slot.
+    ///
+    /// The slot contains `Value::Ref(cell_id)` in the frame's local namespace.
+    /// Deleting the cell marks it unbound by storing `Value::Undefined`.
+    DeleteCell,
 }
 
 impl TryFrom<u8> for Opcode {
@@ -482,7 +489,7 @@ impl Opcode {
             LoadLocal | LoadLocalW | LoadLocalCallable | LoadLocalCallableW | LoadGlobal | LoadGlobalCallable
             | LoadCell => 1,
             StoreLocal | StoreLocalW | StoreGlobal | StoreCell => -1,
-            DeleteLocal | DeleteGlobal => 0, // doesn't affect stack
+            DeleteLocal | DeleteLocalW | DeleteCell | DeleteGlobal => 0, // doesn't affect stack
 
             // Binary operations: pop 2, push 1 = -1
             BinaryAdd | BinarySub | BinaryMul | BinaryDiv | BinaryFloorDiv | BinaryMod | BinaryPow | BinaryAnd
@@ -591,8 +598,8 @@ mod tests {
 
     #[test]
     fn test_opcode_roundtrip() {
-        // Verify that all opcodes from 0 to DeleteSubscr (last opcode) can be converted to u8 and back.
-        for byte in 0..=Opcode::DeleteSubscr as u8 {
+        // Verify that all opcodes from 0 to DeleteCell (last opcode) can be converted to u8 and back.
+        for byte in 0..=Opcode::DeleteCell as u8 {
             let opcode = Opcode::try_from(byte).unwrap();
             assert_eq!(opcode as u8, byte, "opcode {opcode:?} has wrong discriminant");
         }
@@ -609,12 +616,14 @@ mod tests {
         assert_eq!(Opcode::DictUpdate as u8, 113);
         assert_eq!(Opcode::SetExtend as u8, 114);
         assert_eq!(Opcode::DeleteSubscr as u8, 115);
+        assert_eq!(Opcode::DeleteLocalW as u8, 116);
+        assert_eq!(Opcode::DeleteCell as u8, 117);
     }
 
     #[test]
     fn test_invalid_opcode() {
         // Byte just after the last valid opcode should fail
-        let result = Opcode::try_from(Opcode::DeleteSubscr as u8 + 1);
+        let result = Opcode::try_from(Opcode::DeleteCell as u8 + 1);
         assert!(result.is_err());
         // 255 should also fail
         let result = Opcode::try_from(255u8);
