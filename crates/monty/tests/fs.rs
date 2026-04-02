@@ -4,11 +4,15 @@
 //! ReadOnly, OverlayMemory) and all supported filesystem
 //! operations. Uses real temporary directories to verify correct behavior.
 
-use std::{fs, path::Path};
+use std::{
+    fs,
+    path::Path,
+    sync::{Arc, Mutex},
+};
 
 use monty::{
     ExcType, MontyException, MontyObject, OsFunction,
-    fs::{MountError, MountMode, MountTable, OverlayState},
+    fs::{Mount, MountError, MountMode, MountTable, OverlayState},
 };
 use tempfile::TempDir;
 
@@ -2203,4 +2207,87 @@ fn on_no_handler_includes_errno() {
     let exc = OsFunction::Exists.on_no_handler(&[MontyObject::Path("/outside".to_owned())]);
     assert_eq!(exc.exc_type(), ExcType::PermissionError);
     assert_eq!(exc.message().unwrap_or(""), "Permission denied: '/outside'");
+}
+
+// =============================================================================
+// take_shared_mounts rollback
+// =============================================================================
+
+/// Helper: wraps a mount in a shared slot.
+fn shared_slot(tmpdir: &TempDir, vpath: &str) -> Arc<Mutex<Option<Mount>>> {
+    let mount = Mount::new(vpath, tmpdir.path(), MountMode::ReadOnly, None).unwrap();
+    Arc::new(Mutex::new(Some(mount)))
+}
+
+/// Happy path: take and put back two mounts.
+#[test]
+fn take_shared_mounts_success() {
+    let dir1 = create_test_dir();
+    let dir2 = create_test_dir();
+    let slot1 = shared_slot(&dir1, "/a");
+    let slot2 = shared_slot(&dir2, "/b");
+    let slots = [Arc::clone(&slot1), Arc::clone(&slot2)];
+
+    let table = MountTable::take_shared_mounts(&slots).unwrap();
+    assert_eq!(table.len(), 2);
+    // Slots should be empty while table holds the mounts.
+    assert!(slot1.lock().unwrap().is_none());
+    assert!(slot2.lock().unwrap().is_none());
+
+    table.put_back_shared_mounts(&slots);
+    assert!(slot1.lock().unwrap().is_some());
+    assert!(slot2.lock().unwrap().is_some());
+}
+
+/// When a slot is already `None`, earlier successfully-taken mounts are restored.
+#[test]
+fn take_shared_mounts_rollback_on_none() {
+    let dir1 = create_test_dir();
+    let slot1 = shared_slot(&dir1, "/a");
+    let slot2: Arc<Mutex<Option<Mount>>> = Arc::new(Mutex::new(None)); // already empty
+    let slots = [Arc::clone(&slot1), Arc::clone(&slot2)];
+
+    let err = MountTable::take_shared_mounts(&slots).unwrap_err();
+    assert_eq!(err, "mount 1 is already in use by another run");
+
+    // Slot 1 should be restored, not lost.
+    assert!(
+        slot1.lock().unwrap().is_some(),
+        "slot 1 must be restored after rollback"
+    );
+}
+
+/// Passing the same slot twice: second take sees `None` and rolls back the first.
+#[test]
+fn take_shared_mounts_duplicate_slot_rollback() {
+    let dir = create_test_dir();
+    let slot = shared_slot(&dir, "/mnt");
+    let slots = [Arc::clone(&slot), Arc::clone(&slot)];
+
+    let err = MountTable::take_shared_mounts(&slots).unwrap_err();
+    assert_eq!(err, "mount 1 is already in use by another run");
+
+    // The mount should be back in the slot, not permanently lost.
+    assert!(
+        slot.lock().unwrap().is_some(),
+        "mount must be restored after duplicate-slot failure"
+    );
+}
+
+/// Rollback with three slots where the third fails.
+#[test]
+fn take_shared_mounts_rollback_restores_all_prior() {
+    let dir1 = create_test_dir();
+    let dir2 = create_test_dir();
+    let slot1 = shared_slot(&dir1, "/a");
+    let slot2 = shared_slot(&dir2, "/b");
+    let slot3: Arc<Mutex<Option<Mount>>> = Arc::new(Mutex::new(None));
+    let slots = [Arc::clone(&slot1), Arc::clone(&slot2), Arc::clone(&slot3)];
+
+    let err = MountTable::take_shared_mounts(&slots).unwrap_err();
+    assert_eq!(err, "mount 2 is already in use by another run");
+
+    // Both prior slots should be restored.
+    assert!(slot1.lock().unwrap().is_some(), "slot 1 must be restored");
+    assert!(slot2.lock().unwrap().is_some(), "slot 2 must be restored");
 }
