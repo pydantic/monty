@@ -21,8 +21,8 @@ use crate::{
     exception_private::ExcType,
     exception_public::{MontyException, StackFrame},
     expressions::{
-        Callable, CmpOperator, Comprehension, DictItem, Expr, ExprLoc, Identifier, Literal, NameScope, Node, Operator,
-        PreparedFunctionDef, PreparedNode, SequenceItem, UnpackTarget,
+        Callable, CmpOperator, Comprehension, DeleteTarget, DictItem, Expr, ExprLoc, Identifier, Literal, NameScope,
+        Node, Operator, PreparedFunctionDef, PreparedNode, SequenceItem, UnpackTarget,
     },
     fstring::{ConversionFlag, FStringPart, FormatSpec, ParsedFormatSpec, encode_format_spec},
     function::Function,
@@ -408,6 +408,21 @@ impl<'a> Compiler<'a> {
             } => self.compile_import_from(*module_name, names, *position),
             Node::Break { position } => self.compile_break(*position)?,
             Node::Continue { position } => self.compile_continue(*position)?,
+            Node::Delete(targets) => {
+                for target in targets {
+                    match target {
+                        DeleteTarget::Name(ident) => {
+                            self.compile_delete(ident);
+                        }
+                        DeleteTarget::Subscript(sub) => {
+                            self.compile_expr(&sub.target)?;
+                            self.compile_expr(&sub.index)?;
+                            self.code.set_location(sub.position, None);
+                            self.code.emit(Opcode::DeleteSubscr);
+                        }
+                    }
+                }
+            }
             // These are handled during the prepare phase and produce no bytecode
             Node::Pass | Node::Global { .. } | Node::Nonlocal { .. } => {}
         }

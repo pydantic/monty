@@ -1362,6 +1362,15 @@ impl PyTrait<'_> for Value {
             ))),
         }
     }
+
+    fn py_delitem(&mut self, key: Self, vm: &mut VM<'_, '_, impl ResourceTracker>) -> RunResult<()> {
+        if let Self::Ref(id) = self {
+            vm.heap.read(*id).py_delitem(key, vm)
+        } else {
+            key.drop_with_heap(vm);
+            Err(ExcType::type_error_not_sub_deletion(self.py_type(vm)))
+        }
+    }
 }
 
 impl Value {

@@ -1147,6 +1147,15 @@ impl<'h, 'a, T: ResourceTracker> VM<'h, 'a, T> {
                         catch_sync!(self, cached_frame, e);
                     }
                 }
+                Opcode::DeleteSubscr => {
+                    let index = self.pop();
+                    let mut obj = self.pop();
+                    let result = obj.py_delitem(index, self);
+                    obj.drop_with_heap(self);
+                    if let Err(e) = result {
+                        catch_sync!(self, cached_frame, e);
+                    }
+                }
                 Opcode::LoadAttr => {
                     let name_idx = fetch_u16!(cached_frame);
                     let name_id = StringId::from_index(name_idx);

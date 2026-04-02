@@ -889,6 +889,17 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
         }
     }
 
+    fn py_delitem(&mut self, key: Value, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<()> {
+        match self {
+            Self::List(l) => l.py_delitem(key, vm),
+            Self::Dict(d) => d.py_delitem(key, vm),
+            _ => {
+                key.drop_with_heap(vm);
+                Err(ExcType::type_error_not_sub_deletion(self.py_type(vm)))
+            }
+        }
+    }
+
     fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<Option<CallResult>> {
         match self {
             Self::Str(s) => s.py_getattr(attr, vm),

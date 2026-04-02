@@ -320,6 +320,17 @@ pub trait PyTrait<'h> {
         .into())
     }
 
+    /// Python subscript delete operation (`__delitem__`), e.g., `del d[key]`.
+    ///
+    /// Removes the item associated with the key, or returns an error if the key
+    /// doesn't exist or the type doesn't support item deletion.
+    ///
+    /// Default implementation returns TypeError.
+    fn py_delitem(&mut self, key: Value, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<()> {
+        key.drop_with_heap(vm);
+        Err(ExcType::type_error_not_sub_deletion(self.py_type(vm)))
+    }
+
     /// Python attribute get operation (`__getattr__`), e.g., `obj.attr`.
     ///
     /// Returns the value associated with the attribute (owned), or `Ok(None)` if the type

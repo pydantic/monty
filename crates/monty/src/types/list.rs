@@ -306,6 +306,22 @@ impl<'h> PyTrait<'h> for HeapRead<'h, List> {
         Ok(())
     }
 
+    fn py_delitem(&mut self, key: Value, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<()> {
+        defer_drop!(key, vm);
+        let index = key.as_index(vm, Type::List)?;
+        let len = i64::try_from(self.get(vm.heap).len()).expect("list length exceeds i64::MAX");
+        let normalized = if index < 0 { index + len } else { index };
+
+        if normalized < 0 || normalized >= len {
+            return Err(ExcType::list_index_error());
+        }
+
+        let idx = usize::try_from(normalized).expect("list index validated non-negative");
+        let removed = self.get_mut(vm.heap).items.remove(idx);
+        removed.drop_with_heap(vm);
+        Ok(())
+    }
+
     fn py_eq(&self, other: &Self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> Result<bool, ResourceError> {
         let a_len = self.get(vm.heap).items.len();
         if a_len != other.get(vm.heap).items.len() {

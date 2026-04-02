@@ -297,6 +297,18 @@ impl ExcType {
         .into()
     }
 
+    /// Creates a TypeError for item deletion on types that don't support it.
+    ///
+    /// Matches CPython's format: `TypeError: '{type}' object does not support item deletion`
+    #[must_use]
+    pub(crate) fn type_error_not_sub_deletion(type_: Type) -> RunError {
+        SimpleException::new_msg(
+            Self::TypeError,
+            format!("'{type_}' object does not support item deletion"),
+        )
+        .into()
+    }
+
     /// Creates a TypeError for unhashable types when calling `hash()`.
     ///
     /// This matches Python 3.14's error message: `TypeError: unhashable type: 'list'`

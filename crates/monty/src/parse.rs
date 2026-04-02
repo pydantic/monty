@@ -16,8 +16,8 @@ use crate::{
     exception_private::ExcType,
     exception_public::{CodeLoc, MontyException},
     expressions::{
-        Callable, CmpOperator, Comprehension, DictItem, Expr, ExprLoc, Identifier, ImportName, Literal, Node, Operator,
-        SequenceItem, UnpackTarget,
+        Callable, CmpOperator, Comprehension, DeleteSubscriptTarget, DeleteTarget, DictItem, Expr, ExprLoc, Identifier,
+        ImportName, Literal, Node, Operator, SequenceItem, UnpackTarget,
     },
     fstring::{ConversionFlag, FStringPart, FormatSpec},
     intern::{InternerBuilder, StringId},
@@ -286,10 +286,14 @@ impl<'a> Parser<'a> {
                 Some(value) => Ok(Node::Return(self.parse_expression(*value)?)),
                 None => Ok(Node::ReturnNone),
             },
-            Stmt::Delete(d) => Err(ParseError::not_implemented(
-                "the 'del' statement",
-                self.convert_range(d.range),
-            )),
+            Stmt::Delete(d) => {
+                let targets = d
+                    .targets
+                    .into_iter()
+                    .map(|t| self.parse_delete_target(t))
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(Node::Delete(targets))
+            }
             Stmt::TypeAlias(t) => Err(ParseError::not_implemented("type aliases", self.convert_range(t.range))),
             Stmt::Assign(ast::StmtAssign {
                 targets, value, range, ..
@@ -588,6 +592,28 @@ impl<'a> Parser<'a> {
                 target: self.parse_identifier(lhs)?,
                 object: self.parse_expression(rhs)?,
             }),
+        }
+    }
+
+    /// Parses a single target of a `del` statement.
+    ///
+    /// Supports variable names (`del x`) and subscripts (`del d['key']`).
+    /// Attribute deletion (`del obj.attr`) is not yet supported since Monty
+    /// does not have user-defined classes.
+    fn parse_delete_target(&mut self, target: AstExpr) -> Result<DeleteTarget, ParseError> {
+        match target {
+            AstExpr::Name(ast::ExprName { id, range, .. }) => Ok(DeleteTarget::Name(self.identifier(&id, range))),
+            AstExpr::Subscript(ast::ExprSubscript {
+                value, slice, range, ..
+            }) => Ok(DeleteTarget::Subscript(Box::new(DeleteSubscriptTarget {
+                target: self.parse_expression(*value)?,
+                index: self.parse_expression(*slice)?,
+                position: self.convert_range(range),
+            }))),
+            other => Err(ParseError::not_implemented(
+                "del with attribute targets",
+                self.convert_range(other.range()),
+            )),
         }
     }
 

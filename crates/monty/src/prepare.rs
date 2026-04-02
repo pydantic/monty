@@ -6,8 +6,8 @@ use crate::{
     args::{ArgExprs, CallArg, CallKwarg},
     builtins::Builtins,
     expressions::{
-        Callable, CmpOperator, Comprehension, DictItem, Expr, ExprLoc, Identifier, ImportName, Literal, NameScope,
-        Node, Operator, PreparedFunctionDef, PreparedNode, SequenceItem, UnpackTarget,
+        Callable, CmpOperator, Comprehension, DeleteSubscriptTarget, DeleteTarget, DictItem, Expr, ExprLoc, Identifier,
+        ImportName, Literal, NameScope, Node, Operator, PreparedFunctionDef, PreparedNode, SequenceItem, UnpackTarget,
     },
     fstring::{FStringPart, FormatSpec},
     intern::{InternerBuilder, StringId},
@@ -612,6 +612,25 @@ impl<'i> Prepare<'i> {
                         names: resolved_names,
                         position,
                     });
+                }
+                Node::Delete(targets) => {
+                    let resolved = targets
+                        .into_iter()
+                        .map(|t| match t {
+                            DeleteTarget::Name(ident) => {
+                                let (resolved, _) = self.get_id(ident);
+                                Ok(DeleteTarget::Name(resolved))
+                            }
+                            DeleteTarget::Subscript(sub) => {
+                                Ok(DeleteTarget::Subscript(Box::new(DeleteSubscriptTarget {
+                                    target: self.prepare_expression(sub.target)?,
+                                    index: self.prepare_expression(sub.index)?,
+                                    position: sub.position,
+                                })))
+                            }
+                        })
+                        .collect::<Result<Vec<_>, _>>()?;
+                    new_nodes.push(Node::Delete(resolved));
                 }
             }
         }
@@ -2107,6 +2126,20 @@ fn collect_scope_info_from_node(
                 collect_assigned_names_from_expr(m, assigned_names, interner);
             }
         }
+        // del marks variable names as assigned (same as CPython scoping)
+        Node::Delete(targets) => {
+            for target in targets {
+                match target {
+                    DeleteTarget::Name(ident) => {
+                        assigned_names.insert(interner.get_str(ident.name_id).to_string());
+                    }
+                    DeleteTarget::Subscript(sub) => {
+                        collect_assigned_names_from_expr(&sub.target, assigned_names, interner);
+                        collect_assigned_names_from_expr(&sub.index, assigned_names, interner);
+                    }
+                }
+            }
+        }
         // These don't create new names
         Node::Pass | Node::ReturnNone | Node::Raise(None) | Node::Break { .. } | Node::Continue { .. } => {}
     }
@@ -2423,6 +2456,14 @@ fn collect_cell_vars_from_node(
         Node::AttrAssign { object, value, .. } => {
             collect_cell_vars_from_expr(object, our_locals, cell_vars, interner);
             collect_cell_vars_from_expr(value, our_locals, cell_vars, interner);
+        }
+        Node::Delete(targets) => {
+            for target in targets {
+                if let DeleteTarget::Subscript(sub) = target {
+                    collect_cell_vars_from_expr(&sub.target, our_locals, cell_vars, interner);
+                    collect_cell_vars_from_expr(&sub.index, our_locals, cell_vars, interner);
+                }
+            }
         }
         // Other nodes don't contain nested function definitions or lambdas
         _ => {}
@@ -2752,6 +2793,14 @@ fn collect_referenced_names_from_node(node: &ParseNode, referenced: &mut AHashSe
             }
             for n in finally {
                 collect_referenced_names_from_node(n, referenced, interner);
+            }
+        }
+        Node::Delete(targets) => {
+            for target in targets {
+                if let DeleteTarget::Subscript(sub) = target {
+                    collect_referenced_names_from_expr(&sub.target, referenced, interner);
+                    collect_referenced_names_from_expr(&sub.index, referenced, interner);
+                }
             }
         }
         // Imports create bindings but don't reference names

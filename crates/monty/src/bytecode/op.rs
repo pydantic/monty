@@ -440,6 +440,11 @@ pub enum Opcode {
     /// Pops iterable (TOS), adds each item to set at stack position `len - 2 - depth`.
     /// Raises `TypeError` if iterable is not iterable.
     SetExtend,
+    /// Delete a subscript item (e.g., `del d['key']`, `del lst[0]`).
+    ///
+    /// Pops index (TOS) then container, calls `__delitem__` on the container.
+    /// Raises `TypeError` if the type doesn't support item deletion.
+    DeleteSubscr,
 }
 
 impl TryFrom<u8> for Opcode {
@@ -553,6 +558,8 @@ impl Opcode {
             DictUpdate => -1,
             // SetExtend: pop iterable, add all items to set below = -1
             SetExtend => -1,
+            // DeleteSubscr: pop index + container, push nothing = -2
+            DeleteSubscr => -2,
 
             // Special
             Nop => 0,
@@ -584,8 +591,8 @@ mod tests {
 
     #[test]
     fn test_opcode_roundtrip() {
-        // Verify that all opcodes from 0 to DeleteGlobal (last opcode) can be converted to u8 and back.
-        for byte in 0..=Opcode::DeleteGlobal as u8 {
+        // Verify that all opcodes from 0 to DeleteSubscr (last opcode) can be converted to u8 and back.
+        for byte in 0..=Opcode::DeleteSubscr as u8 {
             let opcode = Opcode::try_from(byte).unwrap();
             assert_eq!(opcode as u8, byte, "opcode {opcode:?} has wrong discriminant");
         }
@@ -601,12 +608,13 @@ mod tests {
         assert_eq!(Opcode::DeleteGlobal as u8, 112);
         assert_eq!(Opcode::DictUpdate as u8, 113);
         assert_eq!(Opcode::SetExtend as u8, 114);
+        assert_eq!(Opcode::DeleteSubscr as u8, 115);
     }
 
     #[test]
     fn test_invalid_opcode() {
         // Byte just after the last valid opcode should fail
-        let result = Opcode::try_from(Opcode::SetExtend as u8 + 1);
+        let result = Opcode::try_from(Opcode::DeleteSubscr as u8 + 1);
         assert!(result.is_err());
         // 255 should also fail
         let result = Opcode::try_from(255u8);

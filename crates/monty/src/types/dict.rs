@@ -628,6 +628,18 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Dict> {
         Ok(())
     }
 
+    fn py_delitem(&mut self, key: Value, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<()> {
+        defer_drop!(key, vm);
+        match self.pop(key, vm)? {
+            Some((k, v)) => {
+                k.drop_with_heap(vm);
+                v.drop_with_heap(vm);
+                Ok(())
+            }
+            None => Err(ExcType::key_error(key, vm)),
+        }
+    }
+
     fn py_call_attr(
         &mut self,
         self_id: HeapId,

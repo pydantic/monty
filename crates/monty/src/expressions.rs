@@ -369,6 +369,32 @@ pub enum UnpackTarget {
     Starred(Identifier),
 }
 
+/// Target for the `del` statement.
+///
+/// Each target specifies what to delete: a variable binding, a subscript item,
+/// or (in the future) an attribute. `del x, d['key']` produces two targets.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub enum DeleteTarget {
+    /// Delete a variable binding: `del x`
+    Name(Identifier),
+    /// Delete a subscript item: `del d['key']` or `del lst[0]`
+    Subscript(Box<DeleteSubscriptTarget>),
+}
+
+/// Data for a subscript deletion target (`del d['key']`).
+///
+/// Boxed inside `DeleteTarget::Subscript` to avoid a large enum variant size
+/// difference (Identifier is 36 bytes vs ~276 bytes for two `ExprLoc`s + `CodeRange`).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct DeleteSubscriptTarget {
+    /// The container expression (e.g., `d` in `del d['key']`)
+    pub target: ExprLoc,
+    /// The index/key expression (e.g., `'key'` in `del d['key']`)
+    pub index: ExprLoc,
+    /// Source position of the full subscript expression for traceback carets
+    pub position: CodeRange,
+}
+
 /// A generator clause in a comprehension: `for target in iter [if cond1] [if cond2]...`
 ///
 /// Represents one `for` clause with zero or more `if` filters. Multiple generators
@@ -622,6 +648,11 @@ pub enum Node<F> {
         /// Source position for error reporting.
         position: CodeRange,
     },
+    /// Delete statement (e.g., `del x`, `del d['key']`, `del x, y`).
+    ///
+    /// Removes variable bindings or container items. Multiple targets in
+    /// `del a, b` are stored as separate entries and executed left-to-right.
+    Delete(Vec<DeleteTarget>),
 }
 
 /// A prepared function definition with resolved names and scope information.
