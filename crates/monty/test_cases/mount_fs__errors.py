@@ -165,6 +165,28 @@ except FileExistsError as exc:
     elif not is_windows:
         assert str(exc).startswith("[Errno 17] File exists: '"), f'exc message: {exc}'
 
+# === OSError on rename directory onto non-empty directory ===
+(root / 'rename_src_dir').mkdir()
+(root / 'rename_src_dir' / 'moved.txt').write_text('moved')
+(root / 'rename_dst_dir').mkdir()
+(root / 'rename_dst_dir' / 'existing.txt').write_text('existing')
+try:
+    (root / 'rename_src_dir').rename(root / 'rename_dst_dir')
+    assert False, 'expected OSError on rename dir onto non-empty dir'
+except OSError as exc:
+    if is_monty:
+        assert str(exc) == "[Errno 39] Directory not empty: '/mnt/rename_dst_dir'", f'unexpected message: {exc}'
+    elif not is_windows:
+        assert str(exc).startswith(('[Errno 66] Directory not empty:', '[Errno 39] Directory not empty:')), (
+            f'exc message: {exc}'
+        )
+
+# Rename onto empty directory should succeed
+(root / 'rename_dst_empty').mkdir()
+(root / 'rename_src_dir').rename(root / 'rename_dst_empty')
+assert (root / 'rename_dst_empty' / 'moved.txt').read_text() == 'moved', 'rename dir onto empty dir succeeds'
+assert not (root / 'rename_src_dir').exists(), 'source dir gone after rename'
+
 # ============================================================================
 # IsADirectoryError — read/write/unlink on directories
 # ============================================================================

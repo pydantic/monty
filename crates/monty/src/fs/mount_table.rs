@@ -86,12 +86,21 @@ impl MountTable {
     /// Returns an error message if any mutex is poisoned or any mount is
     /// already taken (concurrent use).
     pub fn take_shared_mounts(slots: &[Arc<Mutex<Option<Mount>>>]) -> Result<Self, String> {
-        let mut table = Self::new();
+        let mut taken: Vec<Mount> = Vec::with_capacity(slots.len());
         for (i, shared) in slots.iter().enumerate() {
-            let mut guard = shared.lock().map_err(|_| format!("mount {i} lock is poisoned"))?;
-            let mount = guard
-                .take()
-                .ok_or_else(|| format!("mount {i} is already in use by another run"))?;
+            let Ok(mut guard) = shared.lock() else {
+                rollback_taken_mounts(taken, &slots[..i]);
+                return Err(format!("mount {i} lock is poisoned"));
+            };
+            let Some(mount) = guard.take() else {
+                drop(guard); // release this lock before restoring earlier slots
+                rollback_taken_mounts(taken, &slots[..i]);
+                return Err(format!("mount {i} is already in use by another run"));
+            };
+            taken.push(mount);
+        }
+        let mut table = Self::new();
+        for mount in taken {
             table.push_mount(mount);
         }
         Ok(table)
@@ -176,6 +185,18 @@ impl MountTable {
         self.mounts
             .iter()
             .position(|mount| path_matches_mount(&normalized, &mount.virtual_path))
+    }
+}
+
+/// Restores already-taken mounts back into their shared slots on failure.
+///
+/// Called by [`MountTable::take_shared_mounts`] when a later slot fails,
+/// so that earlier slots are not permanently emptied.
+fn rollback_taken_mounts(taken: Vec<Mount>, slots: &[Arc<Mutex<Option<Mount>>>]) {
+    for (shared, mount) in slots.iter().zip(taken) {
+        if let Ok(mut slot) = shared.lock() {
+            *slot = Some(mount);
+        }
     }
 }
 
