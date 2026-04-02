@@ -201,6 +201,28 @@ impl<'h> HeapRead<'h, List> {
         Ok(Value::Ref(heap_id))
     }
 
+    /// Deletes a slice of items from the list (e.g., `del lst[1:4]`).
+    ///
+    /// Collects matching indices, then removes them in reverse order so that
+    /// earlier indices remain valid as later ones are removed.
+    fn delitem_slice(&mut self, slice: &super::Slice, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<()> {
+        let len = self.get(vm.heap).items.len();
+        let (start, stop, step) = slice
+            .indices(len)
+            .map_err(|()| ExcType::value_error_slice_step_zero())?;
+
+        let mut indices = collect_slice_indices(start, stop, step, len);
+
+        // Sort descending so we remove from highest index first, preserving
+        // lower indices as we go.
+        indices.sort_unstable_by(|a, b| b.cmp(a));
+        for &idx in &indices {
+            let removed = self.get_mut(vm.heap).items.remove(idx);
+            removed.drop_with_heap(vm);
+        }
+        Ok(())
+    }
+
     /// Clones the item at the given index with proper refcount management.
     pub(crate) fn clone_item(&self, index: usize, vm: &mut VM<'h, '_, impl ResourceTracker>) -> Value {
         self.get(vm.heap).items[index].clone_with_heap(vm.heap)
@@ -308,6 +330,16 @@ impl<'h> PyTrait<'h> for HeapRead<'h, List> {
 
     fn py_delitem(&mut self, key: Value, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<()> {
         defer_drop!(key, vm);
+
+        // Slice deletion: `del lst[1:4]` or `del lst[::2]`
+        // Copy the slice data to release the immutable heap borrow before mutating.
+        if let Value::Ref(id) = *key
+            && let HeapData::Slice(slice) = vm.heap.get(id)
+        {
+            let slice = slice.clone();
+            return self.delitem_slice(&slice, vm);
+        }
+
         let index = key.as_index(vm, Type::List)?;
         let len = i64::try_from(self.get(vm.heap).len()).expect("list length exceeds i64::MAX");
         let normalized = if index < 0 { index + len } else { index };
@@ -878,6 +910,38 @@ pub(crate) fn get_slice_items(
     }
 
     Ok(result)
+}
+
+/// Collects the indices selected by a slice, in forward order.
+///
+/// Uses `i64` arithmetic (matching `get_slice_items`) so the sentinel
+/// `stop > len` value for negative steps that mean "go to the beginning"
+/// is handled correctly.
+fn collect_slice_indices(start: usize, stop: usize, step: i64, len: usize) -> Vec<usize> {
+    let mut indices = Vec::new();
+    if let Ok(step_usize) = usize::try_from(step) {
+        let mut i = start;
+        while i < stop && i < len {
+            indices.push(i);
+            i += step_usize;
+        }
+    } else {
+        let step_abs = i64::try_from(step.unsigned_abs()).expect("step magnitude fits i64");
+        let mut i = i64::try_from(start).expect("start fits i64");
+        let stop_i64 = if stop > len {
+            -1
+        } else {
+            i64::try_from(stop).expect("stop fits i64")
+        };
+        while let Ok(i_usize) = usize::try_from(i) {
+            if i_usize >= len || i <= stop_i64 {
+                break;
+            }
+            indices.push(i_usize);
+            i -= step_abs;
+        }
+    }
+    indices
 }
 
 #[cfg(test)]

@@ -193,6 +193,34 @@ try:
 except IndexError:
     pass
 
+# === del list slice (contiguous) ===
+lst6 = [0, 1, 2, 3, 4, 5]
+del lst6[1:4]
+assert lst6 == [0, 4, 5], f'list after del[1:4]: {lst6}'
+
+# === del list slice (step) ===
+lst7 = [0, 1, 2, 3, 4, 5]
+del lst7[::2]
+assert lst7 == [1, 3, 5], f'list after del[::2]: {lst7}'
+
+# === del list slice (reverse) ===
+lst8 = [0, 1, 2, 3, 4, 5]
+del lst8[::-1]
+assert lst8 == [], f'list after del[::-1]: {lst8}'
+
+# === del list slice (empty range) ===
+lst9 = [0, 1, 2]
+del lst9[1:1]
+assert lst9 == [0, 1, 2], f'list after del[1:1]: {lst9}'
+
+# === del list slice step zero raises ValueError ===
+lst10 = [0, 1, 2]
+try:
+    del lst10[::0]
+    assert False, 'expected ValueError'
+except ValueError as e:
+    assert str(e) == 'slice step cannot be zero', f'wrong msg: {e}'
+
 # === del on non-subscriptable type raises TypeError ===
 t = (1, 2, 3)
 try:

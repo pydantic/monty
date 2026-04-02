@@ -597,28 +597,19 @@ impl<'a> Parser<'a> {
 
     /// Parses a single target of a `del` statement.
     ///
-    /// Supports variable names (`del x`) and subscripts (`del d['key']`).
+    /// Supports variable names (`del x`) and subscripts (`del d['key']`, `del lst[1:3]`).
     /// Attribute deletion (`del obj.attr`) is not yet supported since Monty
-    /// does not have user-defined classes. Slice deletion is also still unsupported,
-    /// so `del a[1:3]` is rejected here instead of compiling to scalar item deletion.
+    /// does not have user-defined classes.
     fn parse_delete_target(&mut self, target: AstExpr) -> Result<DeleteTarget, ParseError> {
         match target {
             AstExpr::Name(ast::ExprName { id, range, .. }) => Ok(DeleteTarget::Name(self.identifier(&id, range))),
             AstExpr::Subscript(ast::ExprSubscript {
                 value, slice, range, ..
-            }) => {
-                if matches!(slice.as_ref(), AstExpr::Slice(_)) {
-                    return Err(ParseError::not_implemented(
-                        "del with slice targets",
-                        self.convert_range(range),
-                    ));
-                }
-                Ok(DeleteTarget::Subscript(Box::new(DeleteSubscriptTarget {
-                    target: self.parse_expression(*value)?,
-                    index: self.parse_expression(*slice)?,
-                    position: self.convert_range(range),
-                })))
-            }
+            }) => Ok(DeleteTarget::Subscript(Box::new(DeleteSubscriptTarget {
+                target: self.parse_expression(*value)?,
+                index: self.parse_expression(*slice)?,
+                position: self.convert_range(range),
+            }))),
             other => Err(ParseError::not_implemented(
                 "del with attribute targets",
                 self.convert_range(other.range()),
