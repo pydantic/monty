@@ -3,7 +3,7 @@ import * as fs from 'fs'
 import * as os from 'os'
 import * as path from 'path'
 
-import { Monty, MontyRepl, MountDirectory, MontyRuntimeError, MontySnapshot, MontyComplete } from '../wrapper'
+import { Monty, MontyRepl, MountDir, MontyRuntimeError, MontySnapshot, MontyComplete } from '../wrapper'
 
 // =============================================================================
 // Helper: create a temporary directory with test files
@@ -22,35 +22,35 @@ function createTestDir(): { dir: string; cleanup: () => void } {
 }
 
 // =============================================================================
-// MountDirectory validation
+// MountDir validation
 // =============================================================================
 
-test('MountDirectory repr', (t) => {
+test('MountDir repr', (t) => {
   const { dir, cleanup } = createTestDir()
   try {
-    const md = new MountDirectory('/data', dir, { mode: 'read-only' })
+    const md = new MountDir('/data', dir, { mode: 'read-only' })
     const repr = md.repr()
-    t.true(repr.includes('MountDirectory'))
+    t.true(repr.includes('MountDir'))
     t.true(repr.includes('/data'))
   } finally {
     cleanup()
   }
 })
 
-test('MountDirectory invalid mode', (t) => {
+test('MountDir invalid mode', (t) => {
   const { dir, cleanup } = createTestDir()
   try {
-    const error = t.throws(() => new MountDirectory('/data', dir, { mode: 'invalid' as any }))
+    const error = t.throws(() => new MountDir('/data', dir, { mode: 'invalid' as any }))
     t.true(error?.message.includes("Invalid mode 'invalid'"))
   } finally {
     cleanup()
   }
 })
 
-test('MountDirectory attributes', (t) => {
+test('MountDir attributes', (t) => {
   const { dir, cleanup } = createTestDir()
   try {
-    const md = new MountDirectory('/data', dir, { mode: 'read-only' })
+    const md = new MountDir('/data', dir, { mode: 'read-only' })
     t.is(md.virtualPath, '/data')
     t.is(md.mode, 'read-only')
   } finally {
@@ -58,36 +58,36 @@ test('MountDirectory attributes', (t) => {
   }
 })
 
-test('MountDirectory nonexistent host path', (t) => {
-  t.throws(() => new MountDirectory('/data', '/nonexistent/path/that/does/not/exist'))
+test('MountDir nonexistent host path', (t) => {
+  t.throws(() => new MountDir('/data', '/nonexistent/path/that/does/not/exist'))
 })
 
-test('MountDirectory non-absolute virtual path', (t) => {
+test('MountDir non-absolute virtual path', (t) => {
   const { dir, cleanup } = createTestDir()
   try {
-    t.throws(() => new MountDirectory('relative', dir))
+    t.throws(() => new MountDir('relative', dir))
   } finally {
     cleanup()
   }
 })
 
-test('MountDirectory default mode is overlay', (t) => {
+test('MountDir default mode is overlay', (t) => {
   const { dir, cleanup } = createTestDir()
   try {
-    const md = new MountDirectory('/data', dir)
+    const md = new MountDir('/data', dir)
     t.is(md.mode, 'overlay')
   } finally {
     cleanup()
   }
 })
 
-test('MountDirectory write_bytes_limit', (t) => {
+test('MountDir write_bytes_limit', (t) => {
   const { dir, cleanup } = createTestDir()
   try {
-    const md = new MountDirectory('/data', dir, { writeBytesLimit: 1024 })
+    const md = new MountDir('/data', dir, { writeBytesLimit: 1024 })
     t.is(md.writeBytesLimit, 1024)
 
-    const md2 = new MountDirectory('/data', dir)
+    const md2 = new MountDir('/data', dir)
     t.is(md2.writeBytesLimit, null)
   } finally {
     cleanup()
@@ -101,7 +101,7 @@ test('MountDirectory write_bytes_limit', (t) => {
 test('read_text via mount', (t) => {
   const { dir, cleanup } = createTestDir()
   try {
-    const md = new MountDirectory('/data', dir, { mode: 'read-only' })
+    const md = new MountDir('/data', dir, { mode: 'read-only' })
     const result = new Monty("from pathlib import Path; Path('/data/hello.txt').read_text()").run({ mount: md })
     t.is(result, 'hello world')
   } finally {
@@ -112,7 +112,7 @@ test('read_text via mount', (t) => {
 test('read_bytes via mount', (t) => {
   const { dir, cleanup } = createTestDir()
   try {
-    const md = new MountDirectory('/data', dir, { mode: 'read-only' })
+    const md = new MountDir('/data', dir, { mode: 'read-only' })
     const result = new Monty("from pathlib import Path; Path('/data/data.bin').read_bytes()").run({ mount: md })
     t.deepEqual(result, Buffer.from([0x00, 0x01, 0x02]))
   } finally {
@@ -123,7 +123,7 @@ test('read_bytes via mount', (t) => {
 test('path exists via mount', (t) => {
   const { dir, cleanup } = createTestDir()
   try {
-    const md = new MountDirectory('/data', dir, { mode: 'read-only' })
+    const md = new MountDir('/data', dir, { mode: 'read-only' })
     const code = `
 from pathlib import Path
 exists_file = Path('/data/hello.txt').exists()
@@ -141,7 +141,7 @@ exists_missing = Path('/data/nope.txt').exists()
 test('is_file and is_dir via mount', (t) => {
   const { dir, cleanup } = createTestDir()
   try {
-    const md = new MountDirectory('/data', dir, { mode: 'read-only' })
+    const md = new MountDir('/data', dir, { mode: 'read-only' })
     const code = `
 from pathlib import Path
 [Path('/data/hello.txt').is_file(), Path('/data/hello.txt').is_dir(),
@@ -157,7 +157,7 @@ from pathlib import Path
 test('iterdir via mount', (t) => {
   const { dir, cleanup } = createTestDir()
   try {
-    const md = new MountDirectory('/data', dir, { mode: 'read-only' })
+    const md = new MountDir('/data', dir, { mode: 'read-only' })
     const code = `
 from pathlib import Path
 sorted([p.name for p in Path('/data').iterdir()])
@@ -172,7 +172,7 @@ sorted([p.name for p in Path('/data').iterdir()])
 test('stat via mount', (t) => {
   const { dir, cleanup } = createTestDir()
   try {
-    const md = new MountDirectory('/data', dir, { mode: 'read-only' })
+    const md = new MountDir('/data', dir, { mode: 'read-only' })
     const code = `
 from pathlib import Path
 s = Path('/data/hello.txt').stat()
@@ -188,7 +188,7 @@ s.st_size
 test('read nested file via mount', (t) => {
   const { dir, cleanup } = createTestDir()
   try {
-    const md = new MountDirectory('/data', dir, { mode: 'read-only' })
+    const md = new MountDir('/data', dir, { mode: 'read-only' })
     const result = new Monty("from pathlib import Path; Path('/data/subdir/nested.txt').read_text()").run({
       mount: md,
     })
@@ -205,7 +205,7 @@ test('read nested file via mount', (t) => {
 test('write blocked on read-only mount', (t) => {
   const { dir, cleanup } = createTestDir()
   try {
-    const md = new MountDirectory('/data', dir, { mode: 'read-only' })
+    const md = new MountDir('/data', dir, { mode: 'read-only' })
     const error = t.throws(
       () => new Monty("from pathlib import Path; Path('/data/new.txt').write_text('x')").run({ mount: md }),
       { instanceOf: MontyRuntimeError },
@@ -219,7 +219,7 @@ test('write blocked on read-only mount', (t) => {
 test('write succeeds on read-write mount', (t) => {
   const { dir, cleanup } = createTestDir()
   try {
-    const md = new MountDirectory('/data', dir, { mode: 'read-write' })
+    const md = new MountDir('/data', dir, { mode: 'read-write' })
     const code = `
 from pathlib import Path
 Path('/data/new.txt').write_text('written by monty')
@@ -237,7 +237,7 @@ Path('/data/new.txt').read_text()
 test('overlay write does not modify host', (t) => {
   const { dir, cleanup } = createTestDir()
   try {
-    const md = new MountDirectory('/data', dir, { mode: 'overlay' })
+    const md = new MountDir('/data', dir, { mode: 'overlay' })
     const code = `
 from pathlib import Path
 Path('/data/overlay_file.txt').write_text('overlay content')
@@ -255,7 +255,7 @@ Path('/data/overlay_file.txt').read_text()
 test('overlay read falls through to host', (t) => {
   const { dir, cleanup } = createTestDir()
   try {
-    const md = new MountDirectory('/data', dir, { mode: 'overlay' })
+    const md = new MountDir('/data', dir, { mode: 'overlay' })
     const result = new Monty("from pathlib import Path; Path('/data/hello.txt').read_text()").run({ mount: md })
     t.is(result, 'hello world')
   } finally {
@@ -266,7 +266,7 @@ test('overlay read falls through to host', (t) => {
 test('overlay persists across runs', (t) => {
   const { dir, cleanup } = createTestDir()
   try {
-    const md = new MountDirectory('/data', dir, { mode: 'overlay' })
+    const md = new MountDir('/data', dir, { mode: 'overlay' })
     new Monty("from pathlib import Path; Path('/data/persistent.txt').write_text('run1')").run({ mount: md })
     const result = new Monty("from pathlib import Path; Path('/data/persistent.txt').read_text()").run({ mount: md })
     t.is(result, 'run1')
@@ -282,7 +282,7 @@ test('overlay persists across runs', (t) => {
 test('mkdir and rmdir via mount', (t) => {
   const { dir, cleanup } = createTestDir()
   try {
-    const md = new MountDirectory('/data', dir, { mode: 'overlay' })
+    const md = new MountDir('/data', dir, { mode: 'overlay' })
     const code = `
 from pathlib import Path
 Path('/data/newdir').mkdir()
@@ -301,7 +301,7 @@ after = Path('/data/newdir').exists()
 test('unlink via mount', (t) => {
   const { dir, cleanup } = createTestDir()
   try {
-    const md = new MountDirectory('/data', dir, { mode: 'overlay' })
+    const md = new MountDir('/data', dir, { mode: 'overlay' })
     const code = `
 from pathlib import Path
 Path('/data/hello.txt').unlink()
@@ -319,7 +319,7 @@ Path('/data/hello.txt').exists()
 test('rename via mount', (t) => {
   const { dir, cleanup } = createTestDir()
   try {
-    const md = new MountDirectory('/data', dir, { mode: 'overlay' })
+    const md = new MountDir('/data', dir, { mode: 'overlay' })
     const code = `
 from pathlib import Path
 Path('/data/hello.txt').rename('/data/renamed.txt')
@@ -335,7 +335,7 @@ Path('/data/hello.txt').rename('/data/renamed.txt')
 test('resolve via mount', (t) => {
   const { dir, cleanup } = createTestDir()
   try {
-    const md = new MountDirectory('/data', dir, { mode: 'read-only' })
+    const md = new MountDir('/data', dir, { mode: 'read-only' })
     const result = new Monty("from pathlib import Path; str(Path('/data/subdir/../hello.txt').resolve())").run({
       mount: md,
     })
@@ -352,7 +352,7 @@ test('resolve via mount', (t) => {
 test('path traversal blocked', (t) => {
   const { dir, cleanup } = createTestDir()
   try {
-    const md = new MountDirectory('/data', dir, { mode: 'read-only' })
+    const md = new MountDir('/data', dir, { mode: 'read-only' })
     const error = t.throws(
       () => new Monty("from pathlib import Path; Path('/data/../../etc/passwd').read_text()").run({ mount: md }),
       { instanceOf: MontyRuntimeError },
@@ -366,7 +366,7 @@ test('path traversal blocked', (t) => {
 test('unmounted path denied', (t) => {
   const { dir, cleanup } = createTestDir()
   try {
-    const md = new MountDirectory('/data', dir, { mode: 'read-only' })
+    const md = new MountDir('/data', dir, { mode: 'read-only' })
     const error = t.throws(
       () => new Monty("from pathlib import Path; Path('/other/file.txt').exists()").run({ mount: md }),
       { instanceOf: MontyRuntimeError },
@@ -384,7 +384,7 @@ test('unmounted path denied', (t) => {
 test('non-filesystem os call without fallback', (t) => {
   const { dir, cleanup } = createTestDir()
   try {
-    const md = new MountDirectory('/data', dir, { mode: 'read-only' })
+    const md = new MountDir('/data', dir, { mode: 'read-only' })
     const error = t.throws(() => new Monty("import os; os.getenv('PATH')").run({ mount: md }), {
       instanceOf: MontyRuntimeError,
     })
@@ -403,10 +403,7 @@ test('multiple mounts with different modes', (t) => {
   const dir2 = fs.mkdtempSync(path.join(os.tmpdir(), 'monty-mount-test2-'))
   fs.writeFileSync(path.join(dir2, 'file2.txt'), 'from mount2')
   try {
-    const mounts = [
-      new MountDirectory('/ro', dir1, { mode: 'read-only' }),
-      new MountDirectory('/rw', dir2, { mode: 'read-write' }),
-    ]
+    const mounts = [new MountDir('/ro', dir1, { mode: 'read-only' }), new MountDir('/rw', dir2, { mode: 'read-write' })]
     const code = `
 from pathlib import Path
 a = Path('/ro/hello.txt').read_text()
@@ -428,7 +425,7 @@ b = Path('/rw/file2.txt').read_text()
 test('mount works with start/resume for external functions', (t) => {
   const { dir, cleanup } = createTestDir()
   try {
-    const md = new MountDirectory('/data', dir, { mode: 'read-only' })
+    const md = new MountDir('/data', dir, { mode: 'read-only' })
     const code = `
 from pathlib import Path
 content = Path('/data/hello.txt').read_text()
@@ -457,7 +454,7 @@ result + content
 test('REPL feed with mount read', (t) => {
   const { dir, cleanup } = createTestDir()
   try {
-    const md = new MountDirectory('/data', dir, { mode: 'read-only' })
+    const md = new MountDir('/data', dir, { mode: 'read-only' })
     const repl = new MontyRepl()
     repl.feed('from pathlib import Path', { mount: md })
     const result = repl.feed("Path('/data/hello.txt').read_text()", { mount: md })
@@ -470,7 +467,7 @@ test('REPL feed with mount read', (t) => {
 test('REPL overlay write persists across feeds', (t) => {
   const { dir, cleanup } = createTestDir()
   try {
-    const md = new MountDirectory('/data', dir, { mode: 'overlay' })
+    const md = new MountDir('/data', dir, { mode: 'overlay' })
     const repl = new MontyRepl()
     repl.feed('from pathlib import Path', { mount: md })
     repl.feed("Path('/data/new.txt').write_text('from repl')", { mount: md })
@@ -486,7 +483,7 @@ test('REPL overlay write persists across feeds', (t) => {
 test('REPL overlay overwrite persists', (t) => {
   const { dir, cleanup } = createTestDir()
   try {
-    const md = new MountDirectory('/data', dir, { mode: 'overlay' })
+    const md = new MountDir('/data', dir, { mode: 'overlay' })
     const repl = new MontyRepl()
     repl.feed('from pathlib import Path', { mount: md })
     repl.feed("Path('/data/hello.txt').write_text('version1')", { mount: md })
@@ -503,7 +500,7 @@ test('REPL overlay overwrite persists', (t) => {
 test('REPL overlay delete persists across feeds', (t) => {
   const { dir, cleanup } = createTestDir()
   try {
-    const md = new MountDirectory('/data', dir, { mode: 'overlay' })
+    const md = new MountDir('/data', dir, { mode: 'overlay' })
     const repl = new MontyRepl()
     repl.feed('from pathlib import Path', { mount: md })
     repl.feed("Path('/data/hello.txt').unlink()", { mount: md })
@@ -519,7 +516,7 @@ test('REPL overlay delete persists across feeds', (t) => {
 test('REPL overlay mkdir and nested write persist', (t) => {
   const { dir, cleanup } = createTestDir()
   try {
-    const md = new MountDirectory('/data', dir, { mode: 'overlay' })
+    const md = new MountDir('/data', dir, { mode: 'overlay' })
     const repl = new MontyRepl()
     repl.feed('from pathlib import Path', { mount: md })
     repl.feed("Path('/data/mydir').mkdir()", { mount: md })
@@ -535,7 +532,7 @@ test('REPL overlay mkdir and nested write persist', (t) => {
 test('REPL overlay iterdir sees overlay files', (t) => {
   const { dir, cleanup } = createTestDir()
   try {
-    const md = new MountDirectory('/data', dir, { mode: 'overlay' })
+    const md = new MountDir('/data', dir, { mode: 'overlay' })
     const repl = new MontyRepl()
     repl.feed('from pathlib import Path', { mount: md })
     repl.feed("Path('/data/extra.txt').write_text('extra')", { mount: md })
@@ -549,7 +546,7 @@ test('REPL overlay iterdir sees overlay files', (t) => {
 test('REPL overlay shared between REPL and Monty.run()', (t) => {
   const { dir, cleanup } = createTestDir()
   try {
-    const md = new MountDirectory('/data', dir, { mode: 'overlay' })
+    const md = new MountDir('/data', dir, { mode: 'overlay' })
     // Write via REPL
     const repl = new MontyRepl()
     repl.feed('from pathlib import Path', { mount: md })
@@ -565,7 +562,7 @@ test('REPL overlay shared between REPL and Monty.run()', (t) => {
 test('REPL read-write mount writes to host', (t) => {
   const { dir, cleanup } = createTestDir()
   try {
-    const md = new MountDirectory('/data', dir, { mode: 'read-write' })
+    const md = new MountDir('/data', dir, { mode: 'read-write' })
     const repl = new MontyRepl()
     repl.feed('from pathlib import Path', { mount: md })
     repl.feed("Path('/data/rw_file.txt').write_text('written')", { mount: md })
@@ -581,7 +578,7 @@ test('REPL read-write mount writes to host', (t) => {
 test('REPL read-only mount blocks write', (t) => {
   const { dir, cleanup } = createTestDir()
   try {
-    const md = new MountDirectory('/data', dir, { mode: 'read-only' })
+    const md = new MountDir('/data', dir, { mode: 'read-only' })
     const repl = new MontyRepl()
     repl.feed('from pathlib import Path', { mount: md })
     const error = t.throws(() => repl.feed("Path('/data/nope.txt').write_text('x')", { mount: md }), {

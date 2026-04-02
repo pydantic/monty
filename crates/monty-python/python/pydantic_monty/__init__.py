@@ -18,7 +18,7 @@ from ._monty import (
     MontyRuntimeError,
     MontySyntaxError,
     MontyTypingError,
-    MountDirectory,
+    MountDir,
     NameLookupSnapshot,
     __version__,
     load_repl_snapshot,
@@ -45,7 +45,7 @@ __all__ = (
     'MontyRuntimeError',
     'MontyTypingError',
     'Frame',
-    'MountDirectory',
+    'MountDir',
     'load_snapshot',
     'load_repl_snapshot',
     # os_access

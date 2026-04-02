@@ -7,7 +7,7 @@ import type {
   FeedOptions as NativeFeedOptions,
   Frame,
   JsMontyObject,
-  MountDirectoryOptions,
+  MountDirOptions,
   MontyOptions,
   NameLookupLoadOptions,
   NameLookupResumeOptions,
@@ -20,7 +20,7 @@ import type {
 
 import {
   Monty as NativeMonty,
-  MountDirectory,
+  MountDir,
   MontyRepl as NativeMontyRepl,
   MontySnapshot as NativeMontySnapshot,
   MontyNameLookup as NativeMontyNameLookup,
@@ -31,7 +31,7 @@ import {
 
 export type {
   MontyOptions,
-  MountDirectoryOptions,
+  MountDirOptions,
   ResourceLimits,
   Frame,
   ExceptionInfo,
@@ -46,22 +46,22 @@ export type {
 /** Options for running code. */
 export interface RunOptions extends Omit<NativeRunOptions, 'mount'> {
   /** Filesystem mount(s) for the sandbox. */
-  mount?: MountDirectory | MountDirectory[]
+  mount?: MountDir | MountDir[]
 }
 
 /** Options for starting execution. */
 export interface StartOptions extends Omit<NativeStartOptions, 'mount'> {
   /** Filesystem mount(s) for the sandbox. */
-  mount?: MountDirectory | MountDirectory[]
+  mount?: MountDir | MountDir[]
 }
 
 /** Options for REPL feed(). */
 export interface FeedOptions extends Omit<NativeFeedOptions, 'mount'> {
   /** Filesystem mount(s) for the sandbox. */
-  mount?: MountDirectory | MountDirectory[]
+  mount?: MountDir | MountDir[]
 }
 
-export { MountDirectory }
+export { MountDir }
 
 /**
  * Alias for ResourceLimits (deprecated name).
@@ -625,7 +625,7 @@ export interface RunMontyAsyncOptions {
   /** Callback invoked on each print() call. The first argument is the stream name (always "stdout"), the second is the printed text. */
   printCallback?: (stream: string, text: string) => void
   /** Filesystem mount(s) for the sandbox. */
-  mount?: MountDirectory | MountDirectory[]
+  mount?: MountDir | MountDir[]
 }
 
 /**

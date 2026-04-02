@@ -1,13 +1,13 @@
 //! Python bindings for filesystem mount configuration.
 //!
-//! Exposes [`PyMountDirectory`] (a single mount point with shared overlay state)
+//! Exposes [`PyMountDir`] (a single mount point with shared overlay state)
 //! and [`OsHandler`] (a collection of mounts with optional fallback callback).
 //! Filesystem operations are handled entirely in Rust via the core
 //! [`monty::fs::MountTable`], with no Python round-trip.
 //!
 //! # Take/put pattern
 //!
-//! [`PyMountDirectory`] owns its [`Mount`] behind `Arc<Mutex<Option<Mount>>>`.
+//! [`PyMountDir`] owns its [`Mount`] behind `Arc<Mutex<Option<Mount>>>`.
 //! When `Monty.run()` starts, each mount is **taken** out of its slot (zero-cost
 //! `Option::take`), moved into a plain [`MountTable`], and execution proceeds
 //! with no locking overhead. When the run finishes, each mount is **put back**.
@@ -31,7 +31,7 @@ use crate::exceptions::exc_monty_to_py;
 pub(crate) type SharedMount = Arc<Mutex<Option<Mount>>>;
 
 // =============================================================================
-// MountDirectory — owns a shared Mount
+// MountDir — owns a shared Mount
 // =============================================================================
 
 /// A single mount point mapping a virtual path to a host directory.
@@ -44,14 +44,14 @@ pub(crate) type SharedMount = Arc<Mutex<Option<Mount>>>;
 /// - `'read-only'` — sandbox can read but not write
 /// - `'read-write'` — sandbox can read and write real host files
 /// - `'overlay'` — reads fall through to host; writes are captured in memory
-#[pyclass(name = "MountDirectory")]
-pub struct PyMountDirectory {
+#[pyclass(name = "MountDir")]
+pub struct PyMountDir {
     /// Shared mount storage. `None` while a run is in progress.
     pub(crate) shared: SharedMount,
 }
 
 #[pymethods]
-impl PyMountDirectory {
+impl PyMountDir {
     /// Creates a new mount directory.
     ///
     /// # Arguments
@@ -108,17 +108,17 @@ impl PyMountDirectory {
         let guard = self.shared.lock().unwrap();
         match guard.as_ref() {
             Some(mount) => format!(
-                "MountDirectory('{}', '{}', '{}')",
+                "MountDir('{}', '{}', '{}')",
                 mount.virtual_path(),
                 mount.host_path().display(),
                 mount.mode().as_str()
             ),
-            None => "MountDirectory(<in use>)".to_owned(),
+            None => "MountDir(<in use>)".to_owned(),
         }
     }
 }
 
-impl PyMountDirectory {
+impl PyMountDir {
     /// Accesses the inner mount, returning an error if it's currently taken for a run.
     fn with_mount<T>(&self, f: impl FnOnce(&Mount) -> T) -> PyResult<T> {
         let guard = self.shared.lock().unwrap();
@@ -149,7 +149,7 @@ impl OsHandler {
     /// Builds an internal mount table from the `mount` and `os` parameters
     /// of `Monty.run()`.
     ///
-    /// - `mount`: `MountDirectory | list[MountDirectory] | None`
+    /// - `mount`: `MountDir | list[MountDir] | None`
     /// - `os`: `Callable | None` — fallback for non-filesystem OS operations
     ///
     /// Returns `None` if both are `None`, meaning no OS handling is configured.
@@ -200,20 +200,20 @@ impl OsHandler {
 // Helpers
 // =============================================================================
 
-/// Extracts shared mounts from `mount` argument: `MountDirectory | list[MountDirectory]`.
+/// Extracts shared mounts from `mount` argument: `MountDir | list[MountDir]`.
 fn extract_mounts(arg: &Bound<'_, PyAny>) -> PyResult<Vec<SharedMount>> {
-    if let Ok(md) = arg.cast::<PyMountDirectory>() {
-        // Single MountDirectory
+    if let Ok(md) = arg.cast::<PyMountDir>() {
+        // Single MountDir
         Ok(vec![Arc::clone(&md.borrow().shared)])
     } else if let Ok(list) = arg.cast::<PyList>() {
-        // List of MountDirectory
+        // List of MountDir
         let mut mounts = Vec::with_capacity(list.len());
         for item in list.iter() {
-            let md: PyRef<'_, PyMountDirectory> = item.extract().map_err(|_| {
+            let md: PyRef<'_, PyMountDir> = item.extract().map_err(|_| {
                 if let Ok(t) = item.get_type().name() {
-                    PyTypeError::new_err(format!("mount list items must be MountDirectory, got '{t}'"))
+                    PyTypeError::new_err(format!("mount list items must be MountDir, got '{t}'"))
                 } else {
-                    PyTypeError::new_err("mount list items must be MountDirectory")
+                    PyTypeError::new_err("mount list items must be MountDir")
                 }
             })?;
             mounts.push(Arc::clone(&md.shared));
@@ -221,11 +221,9 @@ fn extract_mounts(arg: &Bound<'_, PyAny>) -> PyResult<Vec<SharedMount>> {
         Ok(mounts)
     } else if let Ok(t) = arg.get_type().name() {
         Err(PyTypeError::new_err(format!(
-            "mount must be a MountDirectory or list[MountDirectory], got '{t}'"
+            "mount must be a MountDir or list[MountDir], got '{t}'"
         )))
     } else {
-        Err(PyTypeError::new_err(
-            "mount must be a MountDirectory or list[MountDirectory]",
-        ))
+        Err(PyTypeError::new_err("mount must be a MountDir or list[MountDir]"))
     }
 }

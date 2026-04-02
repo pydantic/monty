@@ -108,7 +108,7 @@ pub struct RunOptions<'env> {
     /// Keys are function names, values are callable functions.
     pub external_functions: Option<Object<'env>>,
     /// Filesystem mount(s) for the sandbox.
-    /// A single `MountDirectory` or an array of `MountDirectory`.
+    /// A single `MountDir` or an array of `MountDir`.
     pub mount: Option<Object<'env>>,
 }
 
@@ -123,7 +123,7 @@ pub struct StartOptions<'env> {
     /// Optional print callback function.
     pub print_callback: Option<JsPrintCallback<'env>>,
     /// Filesystem mount(s) for the sandbox.
-    /// A single `MountDirectory` or an array of `MountDirectory`.
+    /// A single `MountDir` or an array of `MountDir`.
     pub mount: Option<Object<'env>>,
 }
 
@@ -525,7 +525,7 @@ pub struct MontyReplOptions {
 #[derive(Default)]
 pub struct FeedOptions<'env> {
     /// Filesystem mount(s) for the sandbox.
-    /// A single `MountDirectory` or an array of `MountDirectory`.
+    /// A single `MountDir` or an array of `MountDir`.
     pub mount: Option<Object<'env>>,
 }
 

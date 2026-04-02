@@ -59,7 +59,7 @@ impl MountTable {
     /// Adds a pre-built [`Mount`] to the table.
     ///
     /// Use this when a `Mount` was constructed elsewhere (e.g. owned by a Python
-    /// `MountDirectory` and temporarily taken for the duration of a run).
+    /// `MountDir` and temporarily taken for the duration of a run).
     pub fn push_mount(&mut self, mount: Mount) {
         // Keep mounts sorted longest-prefix-first so dispatch can stop at the
         // first match without re-sorting the whole table on every insertion.
@@ -204,7 +204,7 @@ fn rollback_taken_mounts(taken: Vec<Mount>, slots: &[Arc<Mutex<Option<Mount>>>])
 ///
 /// Owns the [`MountMode`] which includes overlay state for
 /// [`MountMode::OverlayMemory`] mounts. Can be stored externally (e.g. in a
-/// Python `MountDirectory`) and temporarily moved into a [`MountTable`] for
+/// Python `MountDir`) and temporarily moved into a [`MountTable`] for
 /// the duration of execution via [`MountTable::push_mount`] /
 /// [`MountTable::take_shared_mounts`].
 #[derive(Debug)]

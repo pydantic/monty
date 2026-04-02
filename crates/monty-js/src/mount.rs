@@ -1,13 +1,13 @@
 //! JavaScript/TypeScript bindings for filesystem mount configuration.
 //!
-//! Exposes [`MountDirectory`] (a single mount point with shared overlay state)
+//! Exposes [`MountDir`] (a single mount point with shared overlay state)
 //! and [`OsHandler`] (a collection of mounts for filesystem operations).
 //! Filesystem operations are handled entirely in Rust via the core
 //! [`monty::fs::MountTable`], with no JavaScript round-trip.
 //!
 //! # Take/put pattern
 //!
-//! [`MountDirectory`] owns its [`Mount`] behind `Arc<Mutex<Option<Mount>>>`.
+//! [`MountDir`] owns its [`Mount`] behind `Arc<Mutex<Option<Mount>>>`.
 //! When `Monty.run()` or `Monty.start()` begins, each mount is **taken** out
 //! of its slot (zero-cost `Option::take`), moved into a plain [`MountTable`],
 //! and execution proceeds with no locking overhead. When the run finishes
@@ -30,13 +30,13 @@ pub(crate) type SharedMount = Arc<Mutex<Option<Mount>>>;
 pub(crate) struct ExtractedMounts(pub Vec<SharedMount>);
 
 // =============================================================================
-// MountDirectory — owns a shared Mount
+// MountDir — owns a shared Mount
 // =============================================================================
 
-/// Options for creating a new MountDirectory.
+/// Options for creating a new MountDir.
 #[napi(object)]
 #[derive(Default)]
-pub struct MountDirectoryOptions {
+pub struct MountDirOptions {
     /// Access mode: `'read-only'`, `'read-write'`, or `'overlay'` (default).
     pub mode: Option<String>,
     /// Optional limit on cumulative bytes written through this mount.
@@ -54,20 +54,20 @@ pub struct MountDirectoryOptions {
 /// - `'read-write'` — sandbox can read and write real host files
 /// - `'overlay'` — reads fall through to host; writes are captured in memory
 #[napi]
-pub struct MountDirectory {
+pub struct MountDir {
     /// Shared mount storage. `None` while a run is in progress.
     pub(crate) shared: SharedMount,
 }
 
 #[napi]
-impl MountDirectory {
+impl MountDir {
     /// Creates a new mount directory.
     ///
     /// @param virtualPath - Absolute virtual path prefix (e.g. `"/data"`)
     /// @param hostPath - Path to the real host directory
     /// @param options - Optional mode and write_bytes_limit
     #[napi(constructor)]
-    pub fn new(virtual_path: String, host_path: String, options: Option<MountDirectoryOptions>) -> Result<Self> {
+    pub fn new(virtual_path: String, host_path: String, options: Option<MountDirOptions>) -> Result<Self> {
         let options = options.unwrap_or_default();
         let mode_str = options.mode.as_deref().unwrap_or("overlay");
         let mount_mode = MountMode::from_mode_str(mode_str).map_err(|e| Error::new(Status::InvalidArg, e))?;
@@ -124,17 +124,17 @@ impl MountDirectory {
         let guard = self.shared.lock().unwrap();
         match guard.as_ref() {
             Some(mount) => format!(
-                "MountDirectory('{}', '{}', '{}')",
+                "MountDir('{}', '{}', '{}')",
                 mount.virtual_path(),
                 mount.host_path().display(),
                 mount.mode().as_str()
             ),
-            None => "MountDirectory(<in use>)".to_owned(),
+            None => "MountDir(<in use>)".to_owned(),
         }
     }
 }
 
-impl MountDirectory {
+impl MountDir {
     /// Accesses the inner mount, returning an error if it's currently taken for a run.
     fn with_mount<T>(&self, f: impl FnOnce(&Mount) -> T) -> Result<T> {
         let guard = self.shared.lock().unwrap();
@@ -187,9 +187,9 @@ impl OsHandler {
 // Helpers
 // =============================================================================
 
-/// Extracts shared mounts from a JS argument: `MountDirectory | MountDirectory[]`.
+/// Extracts shared mounts from a JS argument: `MountDir | MountDir[]`.
 ///
-/// Uses napi's `FromNapiRef` to extract the Rust `MountDirectory` from the JS value.
+/// Uses napi's `FromNapiRef` to extract the Rust `MountDir` from the JS value.
 pub(crate) fn extract_mounts(arg: &Object<'_>) -> Result<ExtractedMounts> {
     let env_raw = arg.value().env;
 
@@ -201,17 +201,17 @@ pub(crate) fn extract_mounts(arg: &Object<'_>) -> Result<ExtractedMounts> {
             let item: Unknown = arg.get_element(i)?;
             // SAFETY: `env_raw` is a valid napi environment, and `item.raw()` is a valid napi
             // value obtained from the array. `from_napi_ref` checks the type tag before casting.
-            let md: &MountDirectory = unsafe { MountDirectory::from_napi_ref(env_raw, item.raw()) }
-                .map_err(|_| Error::new(Status::InvalidArg, "mount array items must be MountDirectory"))?;
+            let md: &MountDir = unsafe { MountDir::from_napi_ref(env_raw, item.raw()) }
+                .map_err(|_| Error::new(Status::InvalidArg, "mount array items must be MountDir"))?;
             mounts.push(Arc::clone(&md.shared));
         }
         return Ok(ExtractedMounts(mounts));
     }
 
-    // Try as single MountDirectory
+    // Try as single MountDir
     // SAFETY: `env_raw` is a valid napi environment, and `arg.raw()` is a valid napi
     // value from the function argument. `from_napi_ref` checks the type tag before casting.
-    let md: &MountDirectory = unsafe { MountDirectory::from_napi_ref(env_raw, arg.raw()) }
-        .map_err(|_| Error::new(Status::InvalidArg, "mount must be a MountDirectory or MountDirectory[]"))?;
+    let md: &MountDir = unsafe { MountDir::from_napi_ref(env_raw, arg.raw()) }
+        .map_err(|_| Error::new(Status::InvalidArg, "mount must be a MountDir or MountDir[]"))?;
     Ok(ExtractedMounts(vec![Arc::clone(&md.shared)]))
 }

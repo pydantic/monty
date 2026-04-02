@@ -20,7 +20,7 @@ __all__ = [
     'MontySyntaxError',
     'MontyRuntimeError',
     'MontyTypingError',
-    'MountDirectory',
+    'MountDir',
     'Frame',
     'load_snapshot',
     'load_repl_snapshot',
@@ -28,7 +28,7 @@ __all__ = [
 __version__: str
 
 @final
-class MountDirectory:
+class MountDir:
     """A single mount point configuration mapping a virtual path to a host directory."""
 
     virtual_path: str
@@ -43,7 +43,7 @@ class MountDirectory:
         *,
         mode: Literal['read-only', 'read-write', 'overlay'] = 'overlay',
         write_bytes_limit: int | None = None,
-    ) -> MountDirectory: ...
+    ) -> MountDir: ...
 
 @final
 class Monty:
@@ -107,7 +107,7 @@ class Monty:
         limits: ResourceLimits | None = None,
         external_functions: dict[str, Callable[..., Any]] | None = None,
         print_callback: Callable[[Literal['stdout'], str], None] | None = None,
-        mount: MountDirectory | list[MountDirectory] | None = None,
+        mount: MountDir | list[MountDir] | None = None,
         os: Callable[[OsFunction, tuple[Any, ...], dict[str, Any]], Any] | None = None,
     ) -> Any:
         """
@@ -280,7 +280,7 @@ class MontyRepl:
         inputs: dict[str, Any] | None = None,
         external_functions: dict[str, Callable[..., Any]] | None = None,
         print_callback: Callable[[Literal['stdout'], str], None] | None = None,
-        mount: MountDirectory | list[MountDirectory] | None = None,
+        mount: MountDir | list[MountDir] | None = None,
         os: Callable[[str, tuple[Any, ...], dict[str, Any]], Any] | None = None,
     ) -> Any:
         """

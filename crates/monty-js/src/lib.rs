@@ -40,4 +40,4 @@ pub use monty_cls::{
     ExceptionInput, Monty, MontyComplete, MontyNameLookup, MontyOptions, MontyRepl, MontySnapshot,
     NameLookupLoadOptions, NameLookupResumeOptions, ResumeOptions, RunOptions, SnapshotLoadOptions, StartOptions,
 };
-pub use mount::{MountDirectory, MountDirectoryOptions};
+pub use mount::{MountDir, MountDirOptions};
