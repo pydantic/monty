@@ -345,7 +345,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, List> {
         let normalized = if index < 0 { index + len } else { index };
 
         if normalized < 0 || normalized >= len {
-            return Err(ExcType::list_index_error());
+            return Err(ExcType::list_assignment_index_error());
         }
 
         let idx = usize::try_from(normalized).expect("list index validated non-negative");

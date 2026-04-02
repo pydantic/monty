@@ -6,5 +6,5 @@ Traceback (most recent call last):
   File "del__type_error.py", line 2, in <module>
     del t[0]
         ~~~~
-TypeError: 'tuple' object does not support item deletion
+TypeError: 'tuple' object doesn't support item deletion
 """

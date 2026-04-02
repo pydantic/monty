@@ -435,8 +435,8 @@ fn matrix_multiplication_augmented_assignment_has_descriptive_message() {
 
 #[test]
 fn del_statement_compiles_and_runs() {
-    let run = MontyRun::new("x = 1\ndel x".to_owned(), "test.py", vec![])
-        .expect("del statement should compile successfully");
+    let run =
+        MontyRun::new("x = 1\ndel x".to_owned(), "test.py", vec![]).expect("del statement should compile successfully");
     let result = run.run_no_limits(vec![]);
     assert!(result.is_ok(), "del statement should execute successfully");
 }

@@ -227,4 +227,4 @@ try:
     del t[0]
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert str(e) == "'tuple' object does not support item deletion", f'wrong msg: {e}'
+    assert str(e) == "'tuple' object doesn't support item deletion", f'wrong msg: {e}'
