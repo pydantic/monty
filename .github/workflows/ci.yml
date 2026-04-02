@@ -430,7 +430,8 @@ jobs:
           merge-multiple: true
           path: dist
 
-      - run: pip install pydantic-monty --no-index --find-links dist --force-reinstall
+      - run: pip install typing_extensions
+      - run: pip install pydantic-monty --no-index --no-deps --find-links dist --force-reinstall
       - run: python -c "import pydantic_monty; print(pydantic_monty.Monty('1 + 2').run())"
 
   # Inspect built artifacts
