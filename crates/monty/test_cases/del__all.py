@@ -2,9 +2,10 @@
 x = 42
 del x
 try:
-    x    assert False, 'expected error after del'
-except NameError:
-    pass
+    x
+    assert False, 'expected error after del'
+except NameError as exc:
+    assert str(exc) == "name 'x' is not defined", f'wrong msg: {exc}'
 
 # === del dict key ===
 d = {'a': 1, 'b': 2, 'c': 3}
@@ -33,14 +34,37 @@ b = 2
 c = 3
 del a, b
 try:
-    a    assert False, 'expected error for a'
-except NameError:
-    pass
+    a
+    assert False, 'expected error for a'
+except NameError as exc:
+    assert str(exc) == "name 'a' is not defined", f'wrong msg: {exc}'
 try:
-    b    assert False, 'expected error for b'
-except NameError:
-    pass
+    b
+    assert False, 'expected error for b'
+except NameError as exc:
+    assert str(exc) == "name 'b' is not defined", f'wrong msg: {exc}'
 assert c == 3, 'c should be unchanged'
+
+# === del missing global raises NameError ===
+try:
+    del missing
+    assert False, 'expected NameError for missing'
+except NameError as exc:
+    assert str(exc) == "name 'missing' is not defined", f'wrong msg: {exc}'
+
+# === del duplicated target raises on second delete ===
+dup = 1
+try:
+    del dup, dup
+    assert False, 'expected NameError for repeated delete target'
+except NameError as exc:
+    assert str(exc) == "name 'dup' is not defined", f'wrong msg: {exc}'
+
+try:
+    dup
+    assert False, 'expected dup to remain deleted'
+except NameError as exc:
+    assert str(exc) == "name 'dup' is not defined", f'wrong msg: {exc}'
 
 # === del and re-assign ===
 val = 'hello'

@@ -857,11 +857,11 @@ impl<'h, 'a, T: ResourceTracker> VM<'h, 'a, T> {
                 }
                 Opcode::DeleteLocal => {
                     let slot = u16::from(fetch_u8!(cached_frame));
-                    self.delete_local(&cached_frame, slot);
+                    try_catch_sync!(self, cached_frame, self.delete_local(&cached_frame, slot));
                 }
                 Opcode::DeleteGlobal => {
                     let slot = fetch_u16!(cached_frame);
-                    self.delete_global(slot);
+                    try_catch_sync!(self, cached_frame, self.delete_global(slot));
                 }
                 // Variables - Callable-context Local Loads
                 Opcode::LoadLocalCallable => {
@@ -1837,11 +1837,23 @@ impl<'h, 'a, T: ResourceTracker> VM<'h, 'a, T> {
         old_value.drop_with_heap(self);
     }
 
-    /// Deletes a local variable (sets it to Undefined).
-    fn delete_local(&mut self, cached_frame: &CachedFrame<'a>, slot: u16) {
-        let target = &mut self.stack[cached_frame.stack_base + slot as usize];
-        let old_value = mem::replace(target, Value::Undefined);
+    /// Deletes a local variable, raising the same error family as a load when the
+    /// target is already unbound.
+    fn delete_local(&mut self, cached_frame: &CachedFrame<'a>, slot: u16) -> RunResult<()> {
+        let is_assigned = cached_frame.code.is_assigned_local(slot);
+        let name = cached_frame.code.local_name(slot);
+        let slot_index = cached_frame.stack_base + slot as usize;
+        if matches!(self.stack.get(slot_index), Some(Value::Undefined)) {
+            return Err(if is_assigned {
+                self.unbound_local_error(slot, name)
+            } else {
+                self.name_error(slot, name)
+            });
+        }
+
+        let old_value = mem::replace(&mut self.stack[slot_index], Value::Undefined);
         old_value.drop_with_heap(self);
+        Ok(())
     }
 
     /// Loads a global variable and pushes it onto the stack.
@@ -1857,10 +1869,11 @@ impl<'h, 'a, T: ResourceTracker> VM<'h, 'a, T> {
             let name = self.current_frame().code.local_name(slot);
 
             // If the name is registered as an assigned local (e.g. a module-level
-            // variable or comprehension loop variable), raise UnboundLocalError
-            // immediately rather than yielding NameLookup.
+            // variable or comprehension loop variable), raise NameError immediately
+            // rather than yielding NameLookup — we know the name existed in this
+            // scope so there's no point asking the host to resolve it.
             if self.current_frame().code.is_assigned_local(slot) {
-                return Err(self.unbound_local_error(slot, name));
+                return Err(self.name_error(slot, name));
             }
 
             let Some(name_id) = name else {
@@ -1885,10 +1898,17 @@ impl<'h, 'a, T: ResourceTracker> VM<'h, 'a, T> {
         old_value.drop_with_heap(self);
     }
 
-    /// Deletes a global variable (sets it to Undefined).
-    fn delete_global(&mut self, slot: u16) {
-        let old_value = mem::replace(&mut self.globals[slot as usize], Value::Undefined);
+    /// Deletes a global variable, raising `NameError` if the binding does not exist.
+    fn delete_global(&mut self, slot: u16) -> RunResult<()> {
+        let name = self.current_frame().code.local_name(slot);
+        let slot_index = slot as usize;
+        if matches!(self.globals.get(slot_index), Some(Value::Undefined)) {
+            return Err(self.name_error(slot, name));
+        }
+
+        let old_value = mem::replace(&mut self.globals[slot_index], Value::Undefined);
         old_value.drop_with_heap(self);
+        Ok(())
     }
 
     /// Loads from a closure cell and pushes onto the stack.

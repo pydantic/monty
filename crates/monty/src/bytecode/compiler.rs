@@ -3103,18 +3103,26 @@ impl<'a> Compiler<'a> {
     /// because module-level locals live in the globals array.
     fn compile_delete(&mut self, target: &Identifier) {
         let slot = u16::try_from(target.namespace_id().index()).expect("local slot exceeds u16");
+        self.code.set_location(target.position, None);
         match target.scope {
             NameScope::Local | NameScope::LocalUnassigned => {
+                self.code.register_local_name(slot, target.name_id);
                 if self.is_module_scope {
                     self.code.emit_u16(Opcode::DeleteGlobal, slot);
-                } else if let Ok(s) = u8::try_from(slot) {
-                    self.code.emit_u8(Opcode::DeleteLocal, s);
                 } else {
-                    // Wide variant not implemented yet
-                    todo!("DeleteLocalW for slot > 255");
+                    if matches!(target.scope, NameScope::Local) {
+                        self.code.register_assigned_local(slot);
+                    }
+                    if let Ok(s) = u8::try_from(slot) {
+                        self.code.emit_u8(Opcode::DeleteLocal, s);
+                    } else {
+                        // Wide variant not implemented yet
+                        todo!("DeleteLocalW for slot > 255");
+                    }
                 }
             }
             NameScope::Global => {
+                self.code.register_local_name(slot, target.name_id);
                 self.code.emit_u16(Opcode::DeleteGlobal, slot);
             }
             NameScope::Cell => {

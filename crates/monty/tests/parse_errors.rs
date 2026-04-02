@@ -59,6 +59,17 @@ fn with_statement_returns_not_implemented_error() {
 }
 
 #[test]
+fn del_slice_targets_return_not_implemented_error() {
+    let result = MontyRun::new("items = [1, 2, 3]\ndel items[1:2]".to_owned(), "test.py", vec![]);
+    let exc = result.expect_err("expected parse error");
+    assert_eq!(exc.exc_type(), ExcType::NotImplementedError);
+    assert_eq!(
+        exc.message(),
+        Some("The monty syntax parser does not yet support del with slice targets"),
+    );
+}
+
+#[test]
 fn error_display_format() {
     // Verify the Display format matches Python's exception output with traceback
     let result = MontyRun::new("1 + 2j".to_owned(), "test.py", vec![]);
