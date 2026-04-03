@@ -17,6 +17,7 @@ use std::{cmp::Ordering, collections::HashSet, mem};
 
 pub(crate) use call::CallResult;
 use scheduler::Scheduler;
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::{
     MontyObject,
@@ -516,7 +517,53 @@ pub struct VMSnapshot {
     ///
     /// Preserved across snapshots so that resumed execution raises `NameError`
     /// (not `UnboundLocalError`) for previously deleted globals.
+    #[serde(
+        serialize_with = "serialize_deleted_globals",
+        deserialize_with = "deserialize_deleted_globals"
+    )]
     deleted_globals: Option<Box<HashSet<u16>>>,
+}
+
+/// Serializes deleted global slots using the legacy on-wire `HashSet<u16>` shape.
+///
+/// Keeping the wire format stable avoids breaking persisted snapshots while still
+/// allowing the in-memory VM representation to use `Option<Box<_>>` for footprint.
+#[expect(
+    clippy::box_collection,
+    reason = "matches the compact in-memory VMSnapshot field we are serializing"
+)]
+#[expect(
+    clippy::ref_option,
+    reason = "serde serialize_with requires a shared reference to the field type"
+)]
+fn serialize_deleted_globals<S>(deleted_globals: &Option<Box<HashSet<u16>>>, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    match deleted_globals {
+        Some(set) => set.serialize(serializer),
+        None => HashSet::<u16>::new().serialize(serializer),
+    }
+}
+
+/// Deserializes deleted global slots from the legacy `HashSet<u16>` wire format.
+///
+/// Empty sets map back to `None` so the VM keeps the compact "no deleted globals"
+/// representation after loading a snapshot.
+#[expect(
+    clippy::box_collection,
+    reason = "matches the compact in-memory VMSnapshot field we are reconstructing"
+)]
+fn deserialize_deleted_globals<'de, D>(deserializer: D) -> Result<Option<Box<HashSet<u16>>>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let deleted_globals = HashSet::<u16>::deserialize(deserializer)?;
+    if deleted_globals.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(Box::new(deleted_globals)))
+    }
 }
 
 // ============================================================================
@@ -2078,5 +2125,65 @@ impl<T: ResourceTracker> ContainsHeap for VM<'_, '_, T> {
     }
     fn heap_mut(&mut self) -> &mut Heap<T> {
         self.heap
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashSet;
+
+    use serde::{Deserialize, Serialize};
+
+    use super::{deserialize_deleted_globals, serialize_deleted_globals};
+
+    #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+    struct LegacyDeletedGlobals {
+        deleted_globals: HashSet<u16>,
+    }
+
+    #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+    #[expect(
+        clippy::box_collection,
+        reason = "mirrors the production field shape for wire-format compatibility testing"
+    )]
+    struct CurrentDeletedGlobals {
+        #[serde(
+            serialize_with = "serialize_deleted_globals",
+            deserialize_with = "deserialize_deleted_globals"
+        )]
+        deleted_globals: Option<Box<HashSet<u16>>>,
+    }
+
+    #[test]
+    fn deleted_globals_wire_format_matches_legacy_hashset() {
+        let mut deleted_globals = HashSet::new();
+        deleted_globals.insert(3);
+        deleted_globals.insert(7);
+
+        let legacy = LegacyDeletedGlobals {
+            deleted_globals: deleted_globals.clone(),
+        };
+        let current = CurrentDeletedGlobals {
+            deleted_globals: Some(Box::new(deleted_globals)),
+        };
+
+        let legacy_bytes = postcard::to_allocvec(&legacy).expect("legacy snapshot should serialize");
+        let current_bytes = postcard::to_allocvec(&current).expect("current snapshot should serialize");
+        assert_eq!(
+            current_bytes, legacy_bytes,
+            "wire format should remain backwards compatible"
+        );
+    }
+
+    #[test]
+    fn deleted_globals_empty_legacy_hashset_restores_to_none() {
+        let legacy = LegacyDeletedGlobals {
+            deleted_globals: HashSet::new(),
+        };
+        let bytes = postcard::to_allocvec(&legacy).expect("legacy snapshot should serialize");
+        let current: CurrentDeletedGlobals =
+            postcard::from_bytes(&bytes).expect("current snapshot should deserialize legacy bytes");
+
+        assert_eq!(current.deleted_globals, None);
     }
 }
