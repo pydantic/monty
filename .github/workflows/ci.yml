@@ -455,7 +455,7 @@ jobs:
       # no release versioning, see https://github.com/dtolnay/rust-toolchain/issues/180
       - uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9
         with:
-          toolchain: nightlystable
+          toolchain: stable
           components: llvm-tools
 
       - name: build PGO wheel
