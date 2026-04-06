@@ -14,6 +14,8 @@ on:
         type: boolean
         default: false
 
+permissions: {}
+
 env:
   COLUMNS: 150
   UV_PYTHON: '3.14'
@@ -25,26 +27,35 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
 
-      - uses: dtolnay/rust-toolchain@nightly
+      # no release versioning, see https://github.com/dtolnay/rust-toolchain/issues/180
+      - uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9
         with:
+          toolchain: nightly
           components: rustfmt, clippy
-      - uses: Swatinem/rust-cache@v2
+
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
+          lookup-only: false # zizmor: ignore[cache-poisoning] -- Job does not produce release artifacts and does not have sensitive permissions
           cache-on-failure: true
           prefix-key: 'v1-rust'
 
-      - uses: astral-sh/setup-uv@v7
+      - uses: astral-sh/setup-uv@cec208311dfd045dd5311c1add060b2062131d57 # v8.0.0
+        with:
+          enable-cache: true # zizmor: ignore[cache-poisoning] -- Job does not produce release artifacts and does not have sensitive permissions
+
       - run: uv sync --all-packages --only-dev
 
-      - uses: actions/cache@v5
+      - uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4  # zizmor: ignore[cache-poisoning] -- Job does not produce release artifacts and does not have sensitive permissions
         with:
           path: ~/.cache/pre-commit
           key: pre-commit|${{ env.UV_PYTHON }}|${{ hashFiles('.pre-commit-config.yaml') }}
 
       - name: Setup node
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0 # zizmor: ignore[cache-poisoning] -- Job does not produce release artifacts and does not have sensitive permissions
         with:
           node-version: 24
           cache: npm
@@ -70,19 +81,28 @@ jobs:
       pull-requests: write
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
 
-      - uses: dtolnay/rust-toolchain@stable
+      # no release versioning, see https://github.com/dtolnay/rust-toolchain/issues/180
+      - uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9
         with:
+          toolchain: stable
           components: llvm-tools
-      - uses: Swatinem/rust-cache@v2
+
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
+          lookup-only: false # zizmor: ignore[cache-poisoning] -- Job does not produce release artifacts and does not have sensitive permissions
           cache-on-failure: true
 
-      - uses: taiki-e/install-action@cargo-llvm-cov
+      - uses: taiki-e/install-action@1ed3272338f573e042a2e6bca3893aa19f43b47a # v2.71.3
+        with:
+          tool: cargo-llvm-cov
 
       # this means pyo3 will use Python 3.14 in tests
-      - uses: actions/setup-python@v6
+      - name: set up python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
           python-version: '3.14'
 
@@ -104,12 +124,12 @@ jobs:
       # Generate codecov report (use `report` subcommand to avoid recompilation)
       - run: cargo llvm-cov report --codecov --output-path=codecov.json --ignore-filename-regex '(tests/|test_cases/|/tests\.rs$$)'
 
-      - uses: codecov/codecov-action@v5
+      - uses: codecov/codecov-action@57e3a136b779b570ffcdbf80b3bdc90e7fab3de2 # v6.0.0
         with:
           files: codecov.json
           token: ${{ secrets.CODECOV_TOKEN }}
 
-      - uses: getsentry/codecov-action@main
+      - uses: getsentry/codecov-action@03112cc3b486a3397dc8d17a58680008721fc86f # 0.3.7
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           files: codecov.json
@@ -130,12 +150,23 @@ jobs:
       UV_PYTHON: ${{ matrix.python-version }}
 
     steps:
-      - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
+          persist-credentials: false
+
+      # no release versioning, see https://github.com/dtolnay/rust-toolchain/issues/180
+      - uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9
+        with:
+          toolchain: stable
+
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          lookup-only: false # zizmor: ignore[cache-poisoning] -- Job does not produce release artifacts and does not have sensitive permissions
           cache-on-failure: true
-      - uses: astral-sh/setup-uv@v7
+
+      - uses: astral-sh/setup-uv@cec208311dfd045dd5311c1add060b2062131d57 # v8.0.0
+        with:
+          enable-cache: true # zizmor: ignore[cache-poisoning] -- Job does not produce release artifacts and does not have sensitive permissions
 
       - run: uv sync --all-packages --only-dev
       - run: make dev-py
@@ -158,14 +189,22 @@ jobs:
     runs-on: ${{ matrix.os }}
 
     steps:
-      - uses: actions/checkout@v6
-
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
+          persist-credentials: false
+
+      # no release versioning, see https://github.com/dtolnay/rust-toolchain/issues/180
+      - uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9
+        with:
+          toolchain: stable
+
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          lookup-only: false # zizmor: ignore[cache-poisoning] -- Job does not produce release artifacts and does not have sensitive permissions
           cache-on-failure: true
 
-      - uses: actions/setup-python@v6
+      - name: set up python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
           python-version: '3.14'
 
@@ -183,17 +222,26 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v6
-
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
+          persist-credentials: false
+
+      # no release versioning, see https://github.com/dtolnay/rust-toolchain/issues/180
+      - uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9
+        with:
+          toolchain: stable
+
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          lookup-only: false # zizmor: ignore[cache-poisoning] -- Job does not produce release artifacts and does not have sensitive permissions
           cache-on-failure: true
 
-      - uses: actions/setup-python@v6
+      - name: set up python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
           python-version: '3.14'
-          # don't use .venv python in CI
+
+      # don't use .venv python in CI
       - run: rm .cargo/config.toml
 
       - run: make dev-bench
@@ -202,13 +250,20 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v6
-
-      - uses: dtolnay/rust-toolchain@nightly
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
+          persist-credentials: false
+
+      # no release versioning, see https://github.com/dtolnay/rust-toolchain/issues/180
+      - uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9
+        with:
+          toolchain: nightly
           components: miri
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          lookup-only: false # zizmor: ignore[cache-poisoning] -- Job does not produce release artifacts and does not have sensitive permissions
+          cache-on-failure: true
 
       # don't use .venv python in CI
       - run: rm .cargo/config.toml
@@ -229,12 +284,19 @@ jobs:
           # - string_input_panic
 
     steps:
-      - uses: actions/checkout@v6
-
-      - uses: dtolnay/rust-toolchain@nightly
-      - id: cache-rust
-        uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
+          persist-credentials: false
+
+      # no release versioning, see https://github.com/dtolnay/rust-toolchain/issues/180
+      - uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9
+        with:
+          toolchain: nightly
+
+      - id: cache-rust
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          lookup-only: false # zizmor: ignore[cache-poisoning] -- Job does not produce release artifacts and does not have sensitive permissions
           cache-on-failure: true
           prefix-key: 'v1-rust-fuzz'
           workspaces: 'crates/fuzz -> target'
@@ -265,7 +327,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Decide whether the needed jobs succeeded or failed
-        uses: re-actors/alls-green@release/v1
+        uses: re-actors/alls-green@05ac9388f0aebcb5727afa17fcccfecd6f8ec5fe # v1.2.2
         with:
           jobs: ${{ toJSON(needs) }}
 
@@ -273,17 +335,22 @@ jobs:
   build-sdist:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
           python-version: '3.12'
-      - uses: PyO3/maturin-action@v1
+
+      - uses: PyO3/maturin-action@04ac600d27cdf7a9a280dadf7147097c42b757ad # v1.50.1
         with:
           command: sdist
           args: --out dist
           rust-toolchain: stable
           working-directory: crates/monty-python
-      - uses: actions/upload-artifact@v6
+
+      - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
           name: pypi_files-sdist
           path: crates/monty-python/dist
@@ -329,14 +396,16 @@ jobs:
 
     runs-on: ${{ (matrix.os == 'linux' && 'ubuntu-latest') || (matrix.os == 'macos' && 'macos-latest') || (matrix.os == 'windows' && 'windows-latest') }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
 
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
           python-version: '3.12'
 
       - name: build wheels
-        uses: PyO3/maturin-action@v1
+        uses: PyO3/maturin-action@04ac600d27cdf7a9a280dadf7147097c42b757ad # v1.50.1
         with:
           target: ${{ matrix.target }}
           manylinux: ${{ matrix.manylinux || 'auto' }}
@@ -345,7 +414,7 @@ jobs:
           docker-options: -e CI
           working-directory: crates/monty-python
 
-      - uses: actions/upload-artifact@v6
+      - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
           name: pypi_files-${{ matrix.os }}-${{ matrix.target }}-${{ matrix.manylinux || 'manylinux' }}
           path: crates/monty-python/dist
@@ -375,14 +444,18 @@ jobs:
     runs-on: ${{ matrix.runs-on }}
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
 
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
           python-version: '3.12'
 
-      - uses: dtolnay/rust-toolchain@stable
+      # no release versioning, see https://github.com/dtolnay/rust-toolchain/issues/180
+      - uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9
         with:
+          toolchain: nightlystable
           components: llvm-tools
 
       - name: build PGO wheel
@@ -392,7 +465,7 @@ jobs:
           interpreter: ${{ matrix.interpreter }}
           rust-toolchain: stable
 
-      - uses: actions/upload-artifact@v6
+      - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
           name: pypi_files-${{ matrix.os }}-pgo
           path: ${{ steps.pgo.outputs.wheel-dir }}
@@ -409,15 +482,17 @@ jobs:
         target: [aarch64, armv7, s390x, ppc64le]
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
 
-      - uses: actions/download-artifact@v7
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           pattern: pypi_files-linux-${{ matrix.target }}-*
           merge-multiple: true
           path: dist
 
-      - uses: uraimo/run-on-arch-action@v3
+      - uses: uraimo/run-on-arch-action@d94c13912ea685de38fccc1109385b83fd79427d # v3.0.1
         name: install & test
         with:
           arch: ${{ matrix.target }}
@@ -452,13 +527,15 @@ jobs:
             runs-on: windows-latest
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
 
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
           python-version: '3.12'
 
-      - uses: actions/download-artifact@v7
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           pattern: pypi_files-${{ matrix.os }}-*
           merge-multiple: true
@@ -473,7 +550,7 @@ jobs:
     needs: [build, build-pgo, build-sdist]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/download-artifact@v7
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           pattern: pypi_files-*
           merge-multiple: true
@@ -485,8 +562,11 @@ jobs:
           ls -1 dist/ | wc -l
           echo "Expected ~50 wheel files (5 Python versions × 10 platform variants)"
 
-      - uses: astral-sh/setup-uv@v7
-      - run: uvx twine check dist/*
+      - uses: astral-sh/setup-uv@cec208311dfd045dd5311c1add060b2062131d57 # v8.0.0
+        with:
+          enable-cache: true # zizmor: ignore[cache-poisoning] -- Job does not produce release artifacts and does not have sensitive permissions
+
+      - run: uvx twine check --strict dist/*
 
   # Release to PyPI
   release-python:
@@ -503,19 +583,22 @@ jobs:
       id-token: write
 
     steps:
-      - uses: actions/checkout@v6
-      - uses: astral-sh/setup-uv@v7
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          enable-cache: true
+          persist-credentials: false
 
-      - uses: actions/download-artifact@v7
+      - uses: astral-sh/setup-uv@cec208311dfd045dd5311c1add060b2062131d57 # v8.0.0
+        with:
+          enable-cache: true # zizmor: ignore[cache-poisoning] -- Job does not produce release artifacts and does not have sensitive permissions
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           pattern: pypi_files-*
           merge-multiple: true
           path: dist
 
       - id: check-version
-        uses: samuelcolvin/check-python-version@v5
+        uses: samuelcolvin/check-python-version@ee87cddb8049d2694cc03badc8569765a05cef00 # v5
         with:
           version_file_path: 'Cargo.toml'
 
@@ -553,20 +636,24 @@ jobs:
             target: wasm32-wasip1-threads
             build: npm run build:napi -- --target wasm32-wasip1-threads && npm run build:ts
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
       - name: Setup node
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
         with:
           node-version: 24
-          cache: npm
-          cache-dependency-path: crates/monty-js/package-lock.json
-      - name: Install
-        uses: dtolnay/rust-toolchain@stable
+          package-manager-cache: false
+
+      # no release versioning, see https://github.com/dtolnay/rust-toolchain/issues/180
+      - uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9
         with:
           toolchain: stable
           targets: ${{ matrix.settings.target }}
+
       - name: Cache cargo
-        uses: actions/cache@v5
+        uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4  # zizmor: ignore[cache-poisoning]
         with:
           path: |
             ~/.cargo/registry/index/
@@ -576,41 +663,50 @@ jobs:
             .cargo-cache
             target/
           key: ${{ matrix.settings.target }}-cargo-${{ matrix.settings.host }}
+
       # don't use .venv python in CI
       - run: rm .cargo/config.toml
-      - uses: mlugg/setup-zig@v2
+
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
         if: ${{ contains(matrix.settings.target, 'musl') }}
         with:
           version: 0.14.1
+          use-cache: false
+
       - name: Install cargo-zigbuild
-        uses: taiki-e/install-action@v2
+        uses: taiki-e/install-action@1ed3272338f573e042a2e6bca3893aa19f43b47a # v2.71.3
         if: ${{ contains(matrix.settings.target, 'musl') }}
         with:
           tool: cargo-zigbuild
+
       - name: Setup toolchain
         run: ${{ matrix.settings.setup }}
         if: ${{ matrix.settings.setup }}
         shell: bash
+
       - name: Install dependencies
         run: npm install
         working-directory: crates/monty-js
+
       - name: Build
         run: ${{ matrix.settings.build }}
         shell: bash
         working-directory: crates/monty-js
+
       - name: Upload artifact
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
           name: js-bindings-${{ matrix.settings.target }}
           path: |
             crates/monty-js/monty.*.node
             crates/monty-js/monty.*.wasm
           if-no-files-found: error
+
       # need to upload the .js files generated by napi; they are identical for whatever target
       # so might as well upload from the linux job
       - if: ${{ matrix.settings.target == 'x86_64-unknown-linux-gnu' }}
         name: Upload artifact
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
           name: js-stubs
           path: |
@@ -650,31 +746,39 @@ jobs:
           - '22'
     runs-on: ${{ matrix.settings.host }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
       - name: Setup node
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0  # zizmor: ignore[cache-poisoning] -- Job does not produce release artifacts and does not have sensitive permissions
         with:
           node-version: ${{ matrix.node }}
           cache: npm
           cache-dependency-path: crates/monty-js/package-lock.json
           architecture: ${{ matrix.settings.architecture }}
+
       - name: Install dependencies
         run: npm install
         working-directory: crates/monty-js
+
       - name: Download artifacts
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: js-bindings-${{ matrix.settings.target }}
           path: crates/monty-js
+
       - name: Download artifacts
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: js-stubs
           path: crates/monty-js
+
       - name: List packages
         run: ls -R .
         shell: bash
         working-directory: crates/monty-js
+
       - name: Test bindings
         run: npm test
         working-directory: crates/monty-js
@@ -694,13 +798,17 @@ jobs:
           - '22'
     runs-on: ${{ contains(matrix.target, 'aarch64') && 'ubuntu-24.04-arm' || 'ubuntu-latest' }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
       - name: Setup node
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0  # zizmor: ignore[cache-poisoning] -- Job does not produce release artifacts and does not have sensitive permissions
         with:
           node-version: ${{ matrix.node }}
           cache: npm
           cache-dependency-path: crates/monty-js/package-lock.json
+
       - name: Output docker params
         id: docker
         run: |
@@ -720,25 +828,29 @@ jobs:
               console.log('IMAGE=node:${{ matrix.node }}-slim')
             }
           " >> $GITHUB_OUTPUT
+
       - name: Install dependencies
         run: npm install
         working-directory: crates/monty-js
+
       - name: Download artifacts
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: js-bindings-${{ matrix.target }}
           path: crates/monty-js
+
       - name: Download artifacts
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: js-stubs
           path: crates/monty-js
+
       - name: List packages
         run: ls -R .
         shell: bash
         working-directory: crates/monty-js
       - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
+        uses: docker/setup-qemu-action@ce360397dd3f832beb865e1373c09c0e9f86d70a # v4.0.0
         if: ${{ contains(matrix.target, 'armv7') }}
         with:
           platforms: all
@@ -746,7 +858,10 @@ jobs:
         if: ${{ contains(matrix.target, 'armv7') }}
       - name: Test bindings
         run: >
-          docker run --rm -v ${{ github.workspace }}:${{ github.workspace }} -w ${{ github.workspace }}/crates/monty-js --platform ${{ steps.docker.outputs.PLATFORM }} ${{ steps.docker.outputs.IMAGE }} npm test
+          docker run --rm -v ${{ github.workspace }}:${{ github.workspace }} -w ${{ github.workspace }}/crates/monty-js --platform ${OUTPUTS_PLATFORM} ${OUTPUTS_IMAGE} npm test
+        env:
+          OUTPUTS_PLATFORM: ${{ steps.docker.outputs.PLATFORM }}
+          OUTPUTS_IMAGE: ${{ steps.docker.outputs.IMAGE }}
 
   test-js-wasi:
     name: Test WASI target
@@ -754,30 +869,38 @@ jobs:
       - build-js
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
       - name: Setup node
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0  # zizmor: ignore[cache-poisoning] -- Job does not produce release artifacts and does not have sensitive permissions
         with:
           node-version: 24
           cache: npm
           cache-dependency-path: crates/monty-js/package-lock.json
+
       - name: Install dependencies
         run: npm install --cpu wasm32
         working-directory: crates/monty-js
+
       - name: Download artifacts
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: js-bindings-wasm32-wasip1-threads
           path: crates/monty-js
+
       - name: Download artifacts
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: js-stubs
           path: crates/monty-js
+
       - name: List packages
         run: ls -R .
         shell: bash
         working-directory: crates/monty-js
+
       - name: Test bindings
         run: npm test
         env:
@@ -798,38 +921,47 @@ jobs:
       contents: write
       id-token: write
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
       - name: Setup node
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
         with:
           node-version: 24
-          cache: npm
-          cache-dependency-path: crates/monty-js/package-lock.json
+          package-manager-cache: false
           registry-url: 'https://registry.npmjs.org'
+
       - name: Install dependencies
         run: npm install
         working-directory: crates/monty-js
+
       - name: create npm dirs
         run: npm run create-npm-dirs
         working-directory: crates/monty-js
+
       - name: Download all artifacts
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           pattern: js-bindings-*
           path: crates/monty-js/artifacts
           merge-multiple: true
+
       - name: Download artifacts
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: js-stubs
           path: crates/monty-js
+
       - name: Move artifacts
         run: npm run artifacts
         working-directory: crates/monty-js
+
       - name: List packages
         run: ls -R ./npm
         shell: bash
         working-directory: crates/monty-js
+
       - name: Publish
         run: |
           if [[ "$GITHUB_REF" =~ ^refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then

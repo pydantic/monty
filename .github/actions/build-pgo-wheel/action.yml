@@ -22,7 +22,7 @@ runs:
       run: mkdir -p ${{ github.workspace }}/profdata
 
     - name: build initial wheel (instrumented)
-      uses: PyO3/maturin-action@v1
+      uses: PyO3/maturin-action@04ac600d27cdf7a9a280dadf7147097c42b757ad # v1.50.1
       with:
         manylinux: auto
         args: >
@@ -35,26 +35,25 @@ runs:
       env:
         RUSTFLAGS: '-Cprofile-generate=${{ github.workspace }}/profdata'
 
-    - name: detect rust host
-      run: echo RUST_HOST=$(rustc -Vv | grep host | cut -d ' ' -f 2) >> "$GITHUB_ENV"
-      shell: bash
-
     - name: generate pgo data
       run: |
+        export RUST_HOST=$(rustc --print host-tuple)
         pip install typing_extensions
         pip install pydantic-monty --no-index --no-deps --find-links pgo-wheel --force-reinstall
         python exercise.py
-        rustup run ${{ inputs.rust-toolchain }} bash -c 'echo LLVM_PROFDATA=$RUSTUP_HOME/toolchains/$RUSTUP_TOOLCHAIN/lib/rustlib/$RUST_HOST/bin/llvm-profdata >> "$GITHUB_ENV"'
+        rustup run ${INPUTS_RUST_TOOLCHAIN} bash -c 'echo LLVM_PROFDATA=$RUSTUP_HOME/toolchains/$RUSTUP_TOOLCHAIN/lib/rustlib/$RUST_HOST/bin/llvm-profdata >> "$GITHUB_ENV"'
       shell: bash
       working-directory: crates/monty-python
+      env:
+        INPUTS_RUST_TOOLCHAIN: ${{ inputs.rust-toolchain }}
 
     - name: merge pgo data
       # PowerShell handles paths on Windows better, and works well enough on Unix
-      run: ${{ env.LLVM_PROFDATA }} merge -o ${{ github.workspace }}/merged.profdata ${{ github.workspace }}/profdata
+      run: ${{ env.LLVM_PROFDATA }} merge -o ${{ github.workspace }}/merged.profdata ${{ github.workspace }}/profdata # zizmor: ignore[template-injection]
       shell: pwsh
 
     - name: build pgo-optimized wheel
-      uses: PyO3/maturin-action@v1
+      uses: PyO3/maturin-action@04ac600d27cdf7a9a280dadf7147097c42b757ad # v1.50.1
       with:
         manylinux: auto
         args: >
