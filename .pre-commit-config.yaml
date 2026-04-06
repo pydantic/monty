@@ -19,6 +19,12 @@ repos:
         additional_dependencies:
           - tomli
 
+  - repo: https://github.com/google/yamlfmt
+    # Configuration for yamlfmt is in yamlfmt.yaml
+    rev: v0.21.0
+    hooks:
+      - id: yamlfmt
+
   - repo: local
     hooks:
       - id: format-rs

@@ -5,20 +5,20 @@ on:
     branches:
       - main
     tags:
-      - "**"
+      - '**'
   pull_request: {}
   workflow_dispatch:
     inputs:
       run_release:
-        description: "Run release jobs (for manual tag releases)"
+        description: 'Run release jobs (for manual tag releases)'
         type: boolean
         default: false
 
 env:
   COLUMNS: 150
-  UV_PYTHON: "3.14"
-  UV_FROZEN: "1"
-  DEBUG: "napi:*"
+  UV_PYTHON: '3.14'
+  UV_FROZEN: '1'
+  DEBUG: 'napi:*'
 
 jobs:
   lint:
@@ -33,7 +33,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: true
-          prefix-key: "v1-rust"
+          prefix-key: 'v1-rust'
 
       - uses: astral-sh/setup-uv@v7
       - run: uv sync --all-packages --only-dev
@@ -84,7 +84,7 @@ jobs:
       # this means pyo3 will use Python 3.14 in tests
       - uses: actions/setup-python@v6
         with:
-          python-version: "3.14"
+          python-version: '3.14'
 
       - run: rustc --version --verbose
       - run: python3 -V
@@ -124,7 +124,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
+        python-version: ['3.10', '3.11', '3.12', '3.13', '3.14']
 
     env:
       UV_PYTHON: ${{ matrix.python-version }}
@@ -167,7 +167,7 @@ jobs:
 
       - uses: actions/setup-python@v6
         with:
-          python-version: "3.14"
+          python-version: '3.14'
 
       # don't use .venv python in CI
       - name: Remove cargo config (Unix)
@@ -192,7 +192,7 @@ jobs:
 
       - uses: actions/setup-python@v6
         with:
-          python-version: "3.14"
+          python-version: '3.14'
           # don't use .venv python in CI
       - run: rm .cargo/config.toml
 
@@ -236,8 +236,8 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: true
-          prefix-key: "v1-rust-fuzz"
-          workspaces: "crates/fuzz -> target"
+          prefix-key: 'v1-rust-fuzz'
+          workspaces: 'crates/fuzz -> target'
 
       - if: steps.cache-rust.outputs.cache-hit != 'true'
         run: cargo install cargo-fuzz
@@ -276,7 +276,7 @@ jobs:
       - uses: actions/checkout@v6
       - uses: actions/setup-python@v6
         with:
-          python-version: "3.12"
+          python-version: '3.12'
       - uses: PyO3/maturin-action@v1
         with:
           command: sdist
@@ -333,7 +333,7 @@ jobs:
 
       - uses: actions/setup-python@v6
         with:
-          python-version: "3.12"
+          python-version: '3.12'
 
       - name: build wheels
         uses: PyO3/maturin-action@v1
@@ -379,7 +379,7 @@ jobs:
 
       - uses: actions/setup-python@v6
         with:
-          python-version: "3.12"
+          python-version: '3.12'
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -456,7 +456,7 @@ jobs:
 
       - uses: actions/setup-python@v6
         with:
-          python-version: "3.12"
+          python-version: '3.12'
 
       - uses: actions/download-artifact@v7
         with:
@@ -517,12 +517,12 @@ jobs:
       - id: check-version
         uses: samuelcolvin/check-python-version@v5
         with:
-          version_file_path: "Cargo.toml"
+          version_file_path: 'Cargo.toml'
 
       - run: ls -lhR dist/
 
       - name: Publish to PyPI
-        run: "uv publish --trusted-publishing always dist/*"
+        run: 'uv publish --trusted-publishing always dist/*'
 
   build-js:
     name: build JS - ${{ matrix.settings.target }} - node@22
@@ -625,8 +625,8 @@ jobs:
             crates/monty-js/wasi-worker-browser.mjs
           if-no-files-found: error
     env:
-      MACOSX_DEPLOYMENT_TARGET: "10.13"
-      CARGO_INCREMENTAL: "1"
+      MACOSX_DEPLOYMENT_TARGET: '10.13'
+      CARGO_INCREMENTAL: '1'
 
   test-js-macOS-windows-binding:
     name: Test JS bindings on ${{ matrix.settings.target }} - node@${{ matrix.node }}
@@ -646,8 +646,8 @@ jobs:
             target: x86_64-apple-darwin
             architecture: x64
         node:
-          - "20"
-          - "22"
+          - '20'
+          - '22'
     runs-on: ${{ matrix.settings.host }}
     steps:
       - uses: actions/checkout@v6
@@ -690,8 +690,8 @@ jobs:
           - x86_64-unknown-linux-gnu
           - aarch64-unknown-linux-gnu
         node:
-          - "20"
-          - "22"
+          - '20'
+          - '22'
     runs-on: ${{ contains(matrix.target, 'aarch64') && 'ubuntu-24.04-arm' || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@v6
@@ -805,7 +805,7 @@ jobs:
           node-version: 24
           cache: npm
           cache-dependency-path: crates/monty-js/package-lock.json
-          registry-url: "https://registry.npmjs.org"
+          registry-url: 'https://registry.npmjs.org'
       - name: Install dependencies
         run: npm install
         working-directory: crates/monty-js

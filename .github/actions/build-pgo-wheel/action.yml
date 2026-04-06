@@ -15,7 +15,7 @@ outputs:
     value: ${{ steps.find_wheel.outputs.dir }}
 
 runs:
-  using: "composite"
+  using: 'composite'
   steps:
     - name: prepare profiling directory
       shell: bash

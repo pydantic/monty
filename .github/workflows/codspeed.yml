@@ -27,7 +27,7 @@ jobs:
 
       - uses: actions/setup-python@v6
         with:
-          python-version: "3.14"
+          python-version: '3.14'
 
       - name: Remove .cargo config to use system Python
         run: rm .cargo/config.toml
