@@ -6,7 +6,6 @@
 use std::{
     cmp::Ordering,
     fmt::{Display, Write},
-    mem,
 };
 
 use crate::{
@@ -17,7 +16,7 @@ use crate::{
     heap::{DropWithHeap, HeapData, HeapGuard, HeapId, HeapReadOutput},
     intern::StaticStrings,
     resource::ResourceTracker,
-    sorting::sort_indices,
+    sorting::{apply_permutation, sort_indices},
     types::{PyTrait, long_int::check_bigint_str_digits_limit, str::allocate_string},
     value::Value,
 };
@@ -521,18 +520,7 @@ fn serialize_dict(
     vm: &mut VM<'_, '_, impl ResourceTracker>,
 ) -> RunResult<()> {
     if config.skipkeys() {
-        // Cannot use `retain` here because removed `Value::Ref` entries need
-        // `drop_with_heap` to decrement reference counts properly.
-        let mut i = 0;
-        while i < entries.len() {
-            if is_json_key_allowed(&entries[i].0, vm) {
-                i += 1;
-            } else {
-                let (key, value) = entries.remove(i);
-                key.drop_with_heap(vm);
-                value.drop_with_heap(vm);
-            }
-        }
+        skip_disallowed_dict_keys(entries, vm);
     } else if let Some((key, _)) = entries.iter().find(|(key, _)| !is_json_key_allowed(key, vm)) {
         return Err(ExcType::json_invalid_key_error(key.py_type(vm)));
     }
@@ -575,18 +563,31 @@ fn sort_dict_entries(entries: &mut Vec<(Value, Value)>, vm: &mut VM<'_, '_, impl
     let mut compare_values_guard = HeapGuard::new(compare_values, vm);
     let (compare_values, vm) = compare_values_guard.as_parts_mut();
     sort_indices(&mut indices, compare_values.as_slice(), false, vm)?;
+    apply_permutation(entries.as_mut_slice(), &mut indices);
+    Ok(())
+}
 
-    let mut ordered: Vec<(Value, Value)> = Vec::with_capacity(entries.len());
-    for index in indices {
-        ordered.push((
-            entries[index].0.clone_with_heap(vm),
-            entries[index].1.clone_with_heap(vm),
-        ));
+/// Removes dict entries whose keys are not JSON-serializable, preserving order.
+///
+/// `skipkeys=True` must drop invalid entries without disturbing the relative
+/// order of the retained pairs. A two-pointer compaction avoids the repeated
+/// shifting cost of `Vec::remove(i)` while still cleaning up skipped `Value`
+/// references with `drop_with_heap`.
+fn skip_disallowed_dict_keys(entries: &mut Vec<(Value, Value)>, vm: &mut VM<'_, '_, impl ResourceTracker>) {
+    let mut write = 0;
+    for read in 0..entries.len() {
+        if is_json_key_allowed(&entries[read].0, vm) {
+            if write != read {
+                entries.swap(write, read);
+            }
+            write += 1;
+        }
     }
 
-    let old_entries = mem::replace(entries, ordered);
-    old_entries.drop_with_heap(vm);
-    Ok(())
+    for (key, value) in entries.drain(write..) {
+        key.drop_with_heap(vm);
+        value.drop_with_heap(vm);
+    }
 }
 
 /// Returns whether a value is an allowed JSON object key type.
