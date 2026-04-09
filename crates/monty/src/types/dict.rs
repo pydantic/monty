@@ -127,6 +127,96 @@ impl Dict {
         }
         Ok(dict_guard.into_inner())
     }
+
+    /// Inserts a JSON object entry whose key is guaranteed to be a string.
+    ///
+    /// This specialized path avoids the generic `py_eq`/candidate-cloning lookup
+    /// used by ordinary dict insertion. JSON object keys are always strings, so
+    /// we can compare keys directly by their string contents while preserving the
+    /// same duplicate-key semantics as CPython (`{"a": 1, "a": 2}` keeps the
+    /// last value and retains the first insertion position).
+    pub fn set_json_string_key(
+        &mut self,
+        key: Value,
+        value: Value,
+        vm: &mut VM<'_, '_, impl ResourceTracker>,
+    ) -> RunResult<Option<Value>> {
+        debug_assert!(json_key_string_slice(&key, vm.heap, vm.interns).is_some());
+
+        if matches!(key, Value::Ref(_)) || matches!(value, Value::Ref(_)) {
+            self.contains_refs = true;
+        }
+
+        let hash = key.py_hash(vm)?.expect("json object keys are always hashable strings");
+        let opt_index = self.find_json_string_key_index(hash, &key, vm.heap, vm.interns);
+
+        let entry = DictEntry { key, value, hash };
+        if let Some(index) = opt_index {
+            let old_entry = mem::replace(&mut self.entries[index], entry);
+            old_entry.key.drop_with_heap(vm);
+            Ok(Some(old_entry.value))
+        } else {
+            vm.heap.track_growth(2 * VALUE_SIZE)?;
+            let index = self.entries.len();
+            self.entries.push(entry);
+            self.indices.insert_unique(hash, index, |&i| self.entries[i].hash);
+            Ok(None)
+        }
+    }
+
+    /// Finds the existing entry index for a JSON string key.
+    ///
+    /// The `hash` must match the Python string hash for `key`. Only string keys
+    /// participate; any non-string entry is treated as non-equal.
+    fn find_json_string_key_index(
+        &self,
+        hash: u64,
+        key: &Value,
+        heap: &Heap<impl ResourceTracker>,
+        interns: &Interns,
+    ) -> Option<usize> {
+        let key_str = json_key_string_slice(key, heap, interns).expect("json object keys are always string values");
+        self.indices
+            .find(hash, |&idx| {
+                let entry = &self.entries[idx];
+                entry.hash == hash && json_key_equals_str(&entry.key, key_str, heap, interns)
+            })
+            .copied()
+    }
+}
+
+/// Returns the underlying string slice for a JSON object key value.
+///
+/// JSON object parsing only inserts string keys, but the helper remains
+/// defensive and returns `None` for any non-string value.
+fn json_key_string_slice<'a>(
+    key: &'a Value,
+    heap: &'a Heap<impl ResourceTracker>,
+    interns: &'a Interns,
+) -> Option<&'a str> {
+    match key {
+        Value::InternString(id) => Some(interns.get_str(*id)),
+        Value::Ref(id) => match heap.get(*id) {
+            HeapData::Str(string) => Some(string.as_str()),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Returns whether `key` is a string equal to `expected`.
+///
+/// This bypasses Python's full equality machinery because JSON object keys are
+/// always strings, so content comparison is sufficient and much cheaper.
+fn json_key_equals_str(key: &Value, expected: &str, heap: &Heap<impl ResourceTracker>, interns: &Interns) -> bool {
+    match key {
+        Value::InternString(id) => interns.get_str(*id) == expected,
+        Value::Ref(id) => match heap.get(*id) {
+            HeapData::Str(string) => string.as_str() == expected,
+            _ => false,
+        },
+        _ => false,
+    }
 }
 
 impl<'h> HeapRead<'h, Dict> {

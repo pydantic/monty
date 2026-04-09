@@ -290,14 +290,15 @@ fn parse_json_object(
         return Ok(Value::Ref(dict_id));
     };
 
-    let pairs = Vec::new();
-    let mut pairs_guard = HeapGuard::new(pairs, vm);
+    let mut dict_guard = HeapGuard::new(Dict::new(), vm);
     {
-        let (pairs, vm) = pairs_guard.as_parts_mut();
+        let (dict, vm) = dict_guard.as_parts_mut();
         loop {
             let key_value = allocate_cached_string(key, cache, vm.heap)?;
             let value = parse_json_value(jiter, depth + 1, cache, vm)?;
-            pairs.push((key_value, value));
+            if let Some(old_value) = dict.set_json_string_key(key_value, value, vm)? {
+                old_value.drop_with_heap(vm);
+            }
 
             let Some(next_key) = parse_next_object_key(jiter)? else {
                 break;
@@ -306,8 +307,7 @@ fn parse_json_object(
         }
     }
 
-    let pairs = pairs_guard.into_inner();
-    let dict = Dict::from_pairs(pairs, vm)?;
+    let dict = dict_guard.into_inner();
     let dict_id = vm.heap.allocate(HeapData::Dict(dict))?;
     Ok(Value::Ref(dict_id))
 }
