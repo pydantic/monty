@@ -342,3 +342,100 @@ info: Function defined here
 info: rule `invalid-argument-type` is enabled by default
 
 """)
+
+
+# === MontyRepl type checking ===
+
+
+def test_repl_type_check_method_no_errors():
+    """MontyRepl.type_check() returns None for valid code."""
+    repl = pydantic_monty.MontyRepl()
+    assert repl.type_check('x = 1') is None
+
+
+def test_repl_type_check_method_with_errors():
+    """MontyRepl.type_check() raises MontyTypingError for invalid code."""
+    repl = pydantic_monty.MontyRepl()
+    with pytest.raises(pydantic_monty.MontyTypingError):
+        repl.type_check('"hello" + 1')
+
+
+def test_repl_type_check_method_with_prefix():
+    """MontyRepl.type_check() uses prefix_code for declarations."""
+    repl = pydantic_monty.MontyRepl()
+    # Without prefix, x is undefined
+    with pytest.raises(pydantic_monty.MontyTypingError):
+        repl.type_check('result = x + 1')
+    # With prefix declaring x, it should pass
+    assert repl.type_check('result = x + 1', prefix_code='x = 0') is None
+
+
+def test_repl_type_check_default_off():
+    """Default type_check=False does not check code on feed_run."""
+    repl = pydantic_monty.MontyRepl()
+    # This has a type error but should not raise since type_check is off
+    repl.feed_run('x = 1')
+
+
+def test_repl_feed_run_type_check_enabled():
+    """type_check=True raises MontyTypingError on feed_run with bad code."""
+    repl = pydantic_monty.MontyRepl(type_check=True)
+    with pytest.raises(pydantic_monty.MontyTypingError) as exc_info:
+        repl.feed_run('"hello" + 1')
+    assert 'unsupported-operator' in str(exc_info.value)
+
+
+def test_repl_feed_run_type_check_valid():
+    """type_check=True allows valid code through."""
+    repl = pydantic_monty.MontyRepl(type_check=True)
+    result = repl.feed_run('1 + 2')
+    assert result == 3
+
+
+def test_repl_type_check_accumulated():
+    """Second snippet can see definitions from the first via accumulated code."""
+    repl = pydantic_monty.MontyRepl(type_check=True)
+    repl.feed_run('x: int = 1')
+    # Second snippet uses x — should pass because accumulated code defines it
+    result = repl.feed_run('x + 2')
+    assert result == 3
+
+
+def test_repl_type_check_accumulated_function():
+    """Functions defined in earlier snippets are visible to type checker."""
+    repl = pydantic_monty.MontyRepl(type_check=True)
+    repl.feed_run("""
+def add(a: int, b: int) -> int:
+    return a + b
+""")
+    result = repl.feed_run('add(1, 2)')
+    assert result == 3
+
+
+def test_repl_type_check_with_stubs():
+    """type_check_stubs provides context for type checking."""
+    repl = pydantic_monty.MontyRepl(type_check=True, type_check_stubs='x: int = 0')
+    # x is declared in stubs, so this should type-check fine
+    result = repl.feed_run('x + 1', inputs={'x': 5})
+    assert result == 6
+
+
+def test_repl_skip_type_check():
+    """skip_type_check=True bypasses type checking for that call."""
+    repl = pydantic_monty.MontyRepl(type_check=True)
+    # Without skip, this raises MontyTypingError
+    with pytest.raises(pydantic_monty.MontyTypingError):
+        repl.feed_run('"hello" + 1')
+    # With skip_type_check=True, the type error is not raised (but runtime error still occurs)
+    with pytest.raises(pydantic_monty.MontyRuntimeError):
+        repl.feed_run('"hello" + 1', skip_type_check=True)
+
+
+def test_repl_type_check_line_numbers():
+    """Error line numbers refer to the new snippet, not accumulated code."""
+    repl = pydantic_monty.MontyRepl(type_check=True)
+    repl.feed_run('x: int = 1')
+    with pytest.raises(pydantic_monty.MontyTypingError) as exc_info:
+        repl.feed_run('"hello" + 1')
+    # Line 1 should refer to the new snippet, not offset by previous code
+    assert 'main.py:1:1' in str(exc_info.value)

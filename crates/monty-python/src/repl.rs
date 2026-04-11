@@ -26,7 +26,7 @@ use crate::{
     exceptions::{MontyError, exc_py_to_monty},
     external::{ExternalFunctionRegistry, dispatch_method_call},
     limits::{CancellationFlag, FutureCancellationGuard, PySignalTracker, extract_limits},
-    monty_cls::{CallbackStringPrint, EitherProgress},
+    monty_cls::{CallbackStringPrint, EitherProgress, py_type_check},
     mount::OsHandler,
 };
 
@@ -67,6 +67,11 @@ pub struct PyMontyRepl {
     /// Name of the script being executed.
     #[pyo3(get)]
     pub script_name: String,
+
+    /// Type checking stubs and accumulated code from all previously executed snippets,
+    /// used as context for type checking subsequent snippets.
+    /// None if type checking is disabled.
+    type_check_stubs: Option<Mutex<String>>,
 }
 
 #[pymethods]
@@ -75,12 +80,19 @@ impl PyMontyRepl {
     ///
     /// No code is parsed or executed at construction time — all execution
     /// is driven through `feed_run()`.
+    ///
+    /// When `type_check` is `True`, each snippet fed via `feed_run()`, `feed_run_async()`,
+    /// or `feed_start()` is statically type-checked before execution. The accumulated code
+    /// from previous snippets is used as stub context so the type checker knows about
+    /// previously defined names.
     #[new]
-    #[pyo3(signature = (*, script_name="main.py", limits=None, dataclass_registry=None))]
+    #[pyo3(signature = (*, script_name="main.py", limits=None, type_check=false, type_check_stubs=None, dataclass_registry=None))]
     fn new(
         py: Python<'_>,
         script_name: &str,
         limits: Option<&Bound<'_, PyDict>>,
+        type_check: bool,
+        type_check_stubs: Option<&str>,
         dataclass_registry: Option<&Bound<'_, PyList>>,
     ) -> PyResult<Self> {
         let dc_registry = DcRegistry::from_list(py, dataclass_registry)?;
@@ -98,12 +110,27 @@ impl PyMontyRepl {
             repl: Mutex::new(Some(repl)),
             dc_registry,
             script_name,
+            type_check_stubs: if type_check {
+                Some(Mutex::new(type_check_stubs.map(Into::into).unwrap_or_default()))
+            } else {
+                None
+            },
         })
     }
 
     /// Registers a dataclass type for proper isinstance() support on output.
     fn register_dataclass(&self, cls: &Bound<'_, PyType>) -> PyResult<()> {
         self.dc_registry.insert(cls)
+    }
+
+    /// Performs static type checking on the given code snippet.
+    ///
+    /// Checks the snippet in isolation using `prefix_code` as stub context.
+    /// This does not use the accumulated code from previous `feed_run` calls —
+    /// use `prefix_code` to provide any needed declarations.
+    #[pyo3(signature = (code, prefix_code=None))]
+    fn type_check(&self, py: Python<'_>, code: &str, prefix_code: Option<&str>) -> PyResult<()> {
+        py_type_check(py, code, &self.script_name, prefix_code, "type_stubs.pyi")
     }
 
     /// Feeds and executes a single incremental REPL snippet.
@@ -115,7 +142,7 @@ impl PyMontyRepl {
     /// lookups are dispatched to the provided callables — matching the behavior
     /// of `Monty.run(external_functions=...)`.
     #[expect(clippy::too_many_arguments)]
-    #[pyo3(signature = (code, *, inputs=None, external_functions=None, print_callback=None, mount=None, os=None))]
+    #[pyo3(signature = (code, *, inputs=None, external_functions=None, print_callback=None, mount=None, os=None, skip_type_check=false))]
     fn feed_run<'py>(
         &self,
         py: Python<'py>,
@@ -125,7 +152,9 @@ impl PyMontyRepl {
         print_callback: Option<Py<PyAny>>,
         mount: Option<&Bound<'_, PyAny>>,
         os: Option<&Bound<'_, PyAny>>,
+        skip_type_check: bool,
     ) -> PyResult<Bound<'py, PyAny>> {
+        self.run_type_check_if_enabled(py, code, skip_type_check)?;
         let input_values = extract_repl_inputs(inputs, &self.dc_registry)?;
 
         let mut print_cb;
@@ -140,7 +169,7 @@ impl PyMontyRepl {
         let os_handler = OsHandler::from_run_args(py, mount, os)?;
 
         if external_functions.is_some() || os_handler.is_some() {
-            return self.feed_run_with_externals(
+            let result = self.feed_run_with_externals(
                 py,
                 code,
                 input_values,
@@ -148,6 +177,10 @@ impl PyMontyRepl {
                 os_handler.as_ref(),
                 print_writer,
             );
+            if result.is_ok() {
+                self.append_to_stubs(code);
+            }
+            return result;
         }
 
         let mut guard = self
@@ -164,6 +197,7 @@ impl PyMontyRepl {
         }
         .map_err(|e| MontyError::new_err(py, e))?;
 
+        self.append_to_stubs(code);
         Ok(monty_to_py(py, &output, &self.dc_registry)?.into_bound(py))
     }
 
@@ -176,15 +210,21 @@ impl PyMontyRepl {
     ///
     /// This enables the same iterative start/resume pattern used by `Monty.start()`,
     /// including support for async external functions via `FutureSnapshot`.
-    #[pyo3(signature = (code, *, inputs=None, print_callback=None))]
+    #[pyo3(signature = (code, *, inputs=None, print_callback=None, skip_type_check=false))]
     fn feed_start<'py>(
         slf: &Bound<'py, Self>,
         py: Python<'py>,
         code: &str,
         inputs: Option<&Bound<'_, PyDict>>,
         print_callback: Option<Py<PyAny>>,
+        skip_type_check: bool,
     ) -> PyResult<Bound<'py, PyAny>> {
         let this = slf.get();
+        this.run_type_check_if_enabled(py, code, skip_type_check)?;
+        // Append to accumulated code for type checking future snippets.
+        // Done before execution so that definitions are available to the type checker
+        // even if this snippet's execution is paused via snapshots.
+        this.append_to_stubs(code);
         let input_values = extract_repl_inputs(inputs, &this.dc_registry)?;
 
         let mut print_cb;
@@ -239,7 +279,8 @@ impl PyMontyRepl {
     ///
     /// # Raises
     /// Various Python exceptions matching what the code would raise.
-    #[pyo3(signature = (code, *, inputs=None, external_functions=None, print_callback=None, os=None))]
+    #[expect(clippy::too_many_arguments)]
+    #[pyo3(signature = (code, *, inputs=None, external_functions=None, print_callback=None, os=None, skip_type_check=false))]
     fn feed_run_async<'py>(
         slf: &Bound<'py, Self>,
         py: Python<'py>,
@@ -248,6 +289,7 @@ impl PyMontyRepl {
         external_functions: Option<&Bound<'_, PyDict>>,
         print_callback: Option<Py<PyAny>>,
         os: Option<Py<PyAny>>,
+        skip_type_check: bool,
     ) -> PyResult<Bound<'py, PyAny>> {
         if let Some(ref os_cb) = os
             && !os_cb.bind(py).is_callable()
@@ -258,6 +300,7 @@ impl PyMontyRepl {
         }
 
         let this = slf.get();
+        this.run_type_check_if_enabled(py, code, skip_type_check)?;
         let input_values = extract_repl_inputs(inputs, &this.dc_registry)?;
         let dc_registry = this.dc_registry.clone_ref(py);
         let ext_fns = external_functions.map(|d| d.clone().unbind());
@@ -279,27 +322,39 @@ impl PyMontyRepl {
     }
 
     /// Serializes this REPL session to bytes.
+    ///
+    /// Type checking state (`type_check`, `type_check_stubs`, `accumulated_code`)
+    /// is included so that type checking resumes correctly after deserialization.
     fn dump<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
         #[derive(serde::Serialize)]
         struct SerializedRepl<'a> {
             repl: &'a EitherRepl,
             script_name: &'a str,
+            type_check_stubs: Option<&'a str>,
         }
 
         let guard = self.repl.lock().unwrap_or_else(PoisonError::into_inner);
         let repl = guard
             .as_ref()
             .ok_or_else(|| PyRuntimeError::new_err("REPL session is currently executing another snippet"))?;
+        let stubs_guard = self
+            .type_check_stubs
+            .as_ref()
+            .map(|m| m.lock().unwrap_or_else(PoisonError::into_inner));
 
         let serialized = SerializedRepl {
             repl,
             script_name: &self.script_name,
+            type_check_stubs: stubs_guard.as_deref().map(String::as_str),
         };
         let bytes = postcard::to_allocvec(&serialized).map_err(|e| PyValueError::new_err(e.to_string()))?;
         Ok(PyBytes::new(py, &bytes))
     }
 
     /// Restores a REPL session from `dump()` bytes.
+    ///
+    /// Type checking state is restored from the serialized data, so type checking
+    /// continues to work correctly for subsequent `feed_run` calls.
     #[staticmethod]
     #[pyo3(signature = (data, *, dataclass_registry=None))]
     fn load(
@@ -311,6 +366,8 @@ impl PyMontyRepl {
         struct SerializedReplOwned {
             repl: EitherRepl,
             script_name: String,
+            #[serde(default)]
+            type_check_stubs: Option<String>,
         }
 
         let serialized: SerializedReplOwned =
@@ -320,6 +377,7 @@ impl PyMontyRepl {
             repl: Mutex::new(Some(serialized.repl)),
             dc_registry: DcRegistry::from_list(py, dataclass_registry)?,
             script_name: serialized.script_name,
+            type_check_stubs: serialized.type_check_stubs.map(Mutex::new),
         })
     }
 
@@ -404,6 +462,10 @@ impl ReplAsyncStart {
         let cleanup_notifier = ReplCleanupNotifier::new(event_loop, cleanup_waiter.clone_ref(py));
         let start_guard = CleanupStartGuard::new(cleanup_notifier.clone());
         let start_print_callback = print_callback.as_ref().map(|cb| cb.clone_ref(py));
+        // Keep a reference to the repl owner and the code so we can append
+        // to the type-checking stubs after successful execution.
+        let stubs_repl_owner = repl_owner.clone_ref(py);
+        let stubs_code = code.clone();
         let future = future_into_py(py, async move {
             let mut start_guard = start_guard;
             let cancellation_flag = Arc::new(AtomicBool::new(false));
@@ -457,6 +519,9 @@ impl ReplAsyncStart {
                 }
             };
             cancellation_guard.disarm();
+            if result.is_ok() {
+                Python::attach(|py| stubs_repl_owner.bind(py).get().append_to_stubs(&stubs_code));
+            }
             result
         })?;
         Ok((future.unbind(), cleanup_waiter))
@@ -585,6 +650,34 @@ async def await_repl_with_cleanup(future, cleanup_waiter):
 }
 
 impl PyMontyRepl {
+    /// Runs type checking on the new snippet if enabled and not skipped.
+    ///
+    /// Uses `type_check_stubs + accumulated_code` as stubs so that error line numbers
+    /// in the diagnostics refer to lines in the new snippet, not the prefix context.
+    fn run_type_check_if_enabled(&self, py: Python<'_>, code: &str, skip: bool) -> PyResult<()> {
+        if skip {
+            return Ok(());
+        }
+        let Some(stubs_mutex) = &self.type_check_stubs else {
+            return Ok(());
+        };
+        let stubs = stubs_mutex.lock().unwrap_or_else(PoisonError::into_inner);
+        let stubs_ref = if stubs.is_empty() { None } else { Some(stubs.as_str()) };
+        py_type_check(py, code, &self.script_name, stubs_ref, "repl_type_stubs.pyi")
+    }
+
+    /// Appends a snippet to the accumulated code buffer after successful type checking.
+    ///
+    /// Only accumulates when type checking is enabled, since the buffer is only
+    /// used as context for type checking subsequent snippets.
+    fn append_to_stubs(&self, code: &str) {
+        if let Some(stubs_mutex) = &self.type_check_stubs {
+            let mut stubs = stubs_mutex.lock().unwrap_or_else(PoisonError::into_inner);
+            stubs.push_str(code);
+            stubs.push('\n');
+        }
+    }
+
     /// Executes a REPL snippet with external function and OS call support.
     ///
     /// Uses the iterative `feed_start` / resume loop to handle external function
@@ -771,6 +864,7 @@ impl PyMontyRepl {
             repl: Mutex::new(None),
             dc_registry,
             script_name,
+            type_check_stubs: None,
         }
     }
 
