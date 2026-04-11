@@ -40,6 +40,18 @@ pub(crate) enum EitherRepl {
     Limited(CoreMontyRepl<PySignalTracker<LimitedTracker>>),
 }
 
+/// Tracks the REPL source context used for incremental type checking.
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+pub(crate) struct TypeCheckState {
+    /// `committed_stubs` contains user-provided stub declarations plus snippets that
+    /// have successfully committed to the REPL state.
+    committed_stubs: String,
+    /// `pending_snippet` is reserved
+    /// for a `feed_start()` snippet that is paused behind a snapshot and must only
+    /// become visible to the type checker if that snapshot chain completes.
+    pending_snippet: Option<String>,
+}
+
 impl EitherRepl {
     /// Installs or clears the async cancellation flag on the underlying tracker.
     fn set_cancellation_flag(&mut self, cancel_flag: Option<CancellationFlag>) {
@@ -68,10 +80,10 @@ pub struct PyMontyRepl {
     #[pyo3(get)]
     pub script_name: String,
 
-    /// Type checking stubs and accumulated code from all previously executed snippets,
-    /// used as context for type checking subsequent snippets.
+    /// Type-check context for this REPL session.
+    ///
     /// None if type checking is disabled.
-    type_check_stubs: Option<Mutex<String>>,
+    type_check_state: Option<Mutex<TypeCheckState>>,
 }
 
 #[pymethods]
@@ -110,8 +122,11 @@ impl PyMontyRepl {
             repl: Mutex::new(Some(repl)),
             dc_registry,
             script_name,
-            type_check_stubs: if type_check {
-                Some(Mutex::new(type_check_stubs.map(Into::into).unwrap_or_default()))
+            type_check_state: if type_check {
+                Some(Mutex::new(TypeCheckState {
+                    committed_stubs: type_check_stubs.map(Into::into).unwrap_or_default(),
+                    pending_snippet: None,
+                }))
             } else {
                 None
             },
@@ -178,7 +193,7 @@ impl PyMontyRepl {
                 print_writer,
             );
             if result.is_ok() {
-                self.append_to_stubs(code);
+                self.append_to_committed_stubs(code);
             }
             return result;
         }
@@ -197,7 +212,7 @@ impl PyMontyRepl {
         }
         .map_err(|e| MontyError::new_err(py, e))?;
 
-        self.append_to_stubs(code);
+        self.append_to_committed_stubs(code);
         Ok(monty_to_py(py, &output, &self.dc_registry)?.into_bound(py))
     }
 
@@ -221,10 +236,6 @@ impl PyMontyRepl {
     ) -> PyResult<Bound<'py, PyAny>> {
         let this = slf.get();
         this.run_type_check_if_enabled(py, code, skip_type_check)?;
-        // Append to accumulated code for type checking future snippets.
-        // Done before execution so that definitions are available to the type checker
-        // even if this snippet's execution is paused via snapshots.
-        this.append_to_stubs(code);
         let input_values = extract_repl_inputs(inputs, &this.dc_registry)?;
 
         let mut print_cb;
@@ -238,6 +249,7 @@ impl PyMontyRepl {
         let mut print_output = SendWrapper::new(print_writer);
 
         let repl = this.take_repl()?;
+        this.set_pending_type_check(code);
         let repl_owner: Py<Self> = slf.clone().unbind();
 
         let code_owned = code.to_owned();
@@ -330,22 +342,22 @@ impl PyMontyRepl {
         struct SerializedRepl<'a> {
             repl: &'a EitherRepl,
             script_name: &'a str,
-            type_check_stubs: Option<&'a str>,
+            type_check_state: Option<&'a TypeCheckState>,
         }
 
         let guard = self.repl.lock().unwrap_or_else(PoisonError::into_inner);
         let repl = guard
             .as_ref()
             .ok_or_else(|| PyRuntimeError::new_err("REPL session is currently executing another snippet"))?;
-        let stubs_guard = self
-            .type_check_stubs
+        let type_check_state_guard = self
+            .type_check_state
             .as_ref()
             .map(|m| m.lock().unwrap_or_else(PoisonError::into_inner));
 
         let serialized = SerializedRepl {
             repl,
             script_name: &self.script_name,
-            type_check_stubs: stubs_guard.as_deref().map(String::as_str),
+            type_check_state: type_check_state_guard.as_deref(),
         };
         let bytes = postcard::to_allocvec(&serialized).map_err(|e| PyValueError::new_err(e.to_string()))?;
         Ok(PyBytes::new(py, &bytes))
@@ -366,18 +378,42 @@ impl PyMontyRepl {
         struct SerializedReplOwned {
             repl: EitherRepl,
             script_name: String,
-            #[serde(default)]
+            type_check_state: Option<TypeCheckState>,
+        }
+
+        #[derive(serde::Deserialize)]
+        struct SerializedReplOwnedLegacy {
+            repl: EitherRepl,
+            script_name: String,
             type_check_stubs: Option<String>,
         }
 
-        let serialized: SerializedReplOwned =
-            postcard::from_bytes(data.as_bytes()).map_err(|e| PyValueError::new_err(e.to_string()))?;
+        let bytes = data.as_bytes();
+        let type_check_state = if let Ok(serialized) = postcard::from_bytes::<SerializedReplOwned>(bytes) {
+            return Ok(Self {
+                repl: Mutex::new(Some(serialized.repl)),
+                dc_registry: DcRegistry::from_list(py, dataclass_registry)?,
+                script_name: serialized.script_name,
+                type_check_state: serialized.type_check_state.map(Mutex::new),
+            });
+        } else {
+            let serialized: SerializedReplOwnedLegacy =
+                postcard::from_bytes(bytes).map_err(|e| PyValueError::new_err(e.to_string()))?;
+            (
+                serialized.repl,
+                serialized.script_name,
+                serialized.type_check_stubs.map(|committed_stubs| TypeCheckState {
+                    committed_stubs,
+                    pending_snippet: None,
+                }),
+            )
+        };
 
         Ok(Self {
-            repl: Mutex::new(Some(serialized.repl)),
+            repl: Mutex::new(Some(type_check_state.0)),
             dc_registry: DcRegistry::from_list(py, dataclass_registry)?,
-            script_name: serialized.script_name,
-            type_check_stubs: serialized.type_check_stubs.map(Mutex::new),
+            script_name: type_check_state.1,
+            type_check_state: type_check_state.2.map(Mutex::new),
         })
     }
 
@@ -520,7 +556,7 @@ impl ReplAsyncStart {
             };
             cancellation_guard.disarm();
             if result.is_ok() {
-                Python::attach(|py| stubs_repl_owner.bind(py).get().append_to_stubs(&stubs_code));
+                Python::attach(|py| stubs_repl_owner.bind(py).get().append_to_committed_stubs(&stubs_code));
             }
             result
         })?;
@@ -658,24 +694,66 @@ impl PyMontyRepl {
         if skip {
             return Ok(());
         }
-        let Some(stubs_mutex) = &self.type_check_stubs else {
+        let Some(state_mutex) = &self.type_check_state else {
             return Ok(());
         };
-        let stubs = stubs_mutex.lock().unwrap_or_else(PoisonError::into_inner);
-        let stubs_ref = if stubs.is_empty() { None } else { Some(stubs.as_str()) };
+        let state = state_mutex.lock().unwrap_or_else(PoisonError::into_inner);
+        let stubs_ref = if state.committed_stubs.is_empty() {
+            None
+        } else {
+            Some(state.committed_stubs.as_str())
+        };
         py_type_check(py, code, &self.script_name, stubs_ref, "repl_type_stubs.pyi")
     }
 
-    /// Appends a snippet to the accumulated code buffer after successful type checking.
+    /// Appends a snippet directly to committed type-check stubs.
     ///
-    /// Only accumulates when type checking is enabled, since the buffer is only
-    /// used as context for type checking subsequent snippets.
-    fn append_to_stubs(&self, code: &str) {
-        if let Some(stubs_mutex) = &self.type_check_stubs {
-            let mut stubs = stubs_mutex.lock().unwrap_or_else(PoisonError::into_inner);
-            stubs.push_str(code);
-            stubs.push('\n');
+    /// Used by immediate-execution paths where the snippet is already known to
+    /// have committed before control returns to Python.
+    fn append_to_committed_stubs(&self, code: &str) {
+        if let Some(state_mutex) = &self.type_check_state {
+            let mut state = state_mutex.lock().unwrap_or_else(PoisonError::into_inner);
+            state.committed_stubs.push('\n');
+            state.committed_stubs.push_str(code);
         }
+    }
+
+    /// Records a `feed_start()` snippet until it either commits or rolls back.
+    fn set_pending_type_check(&self, code: &str) {
+        if let Some(state_mutex) = &self.type_check_state {
+            let mut state = state_mutex.lock().unwrap_or_else(PoisonError::into_inner);
+            debug_assert!(
+                state.pending_snippet.is_none(),
+                "pending REPL type-check snippet must be cleared before starting a new one"
+            );
+            state.pending_snippet = Some(code.to_owned());
+        }
+    }
+
+    /// Moves the pending `feed_start()` snippet into committed type-check state.
+    pub(crate) fn commit_pending_type_check(&self) {
+        if let Some(state_mutex) = &self.type_check_state {
+            let mut state = state_mutex.lock().unwrap_or_else(PoisonError::into_inner);
+            if let Some(code) = state.pending_snippet.take() {
+                state.committed_stubs.push('\n');
+                state.committed_stubs.push_str(&code);
+            }
+        }
+    }
+
+    /// Discards any in-flight `feed_start()` snippet during rollback paths.
+    pub(crate) fn discard_pending_type_check(&self) {
+        if let Some(state_mutex) = &self.type_check_state {
+            let mut state = state_mutex.lock().unwrap_or_else(PoisonError::into_inner);
+            state.pending_snippet = None;
+        }
+    }
+
+    /// Returns a clone of the current type-check state for snapshot serialization.
+    pub(crate) fn type_check_state_clone(&self) -> Option<TypeCheckState> {
+        self.type_check_state
+            .as_ref()
+            .map(|state_mutex| state_mutex.lock().unwrap_or_else(PoisonError::into_inner).clone())
     }
 
     /// Executes a REPL snippet with external function and OS call support.
@@ -859,12 +937,16 @@ impl PyMontyRepl {
     /// The REPL mutex starts as `None` — the real REPL state lives inside the
     /// deserialized snapshot and will be restored via `put_repl` when the
     /// snapshot is resumed to completion.
-    pub(crate) fn empty_owner(script_name: String, dc_registry: DcRegistry) -> Self {
+    pub(crate) fn empty_owner(
+        script_name: String,
+        dc_registry: DcRegistry,
+        type_check_state: Option<TypeCheckState>,
+    ) -> Self {
         Self {
             repl: Mutex::new(None),
             dc_registry,
             script_name,
-            type_check_stubs: None,
+            type_check_state: type_check_state.map(Mutex::new),
         }
     }
 
@@ -876,13 +958,25 @@ impl PyMontyRepl {
         *guard = Some(repl);
     }
 
+    /// Restores the REPL after a successful `feed_start()` completion.
+    pub(crate) fn put_repl_after_commit(&self, repl: EitherRepl) {
+        self.commit_pending_type_check();
+        self.put_repl(repl);
+    }
+
+    /// Restores the REPL after a rollback path.
+    pub(crate) fn put_repl_after_rollback(&self, repl: EitherRepl) {
+        self.discard_pending_type_check();
+        self.put_repl(repl);
+    }
+
     /// Extracts the REPL from a `ReplStartError`, restores it into `self.repl`,
     /// and returns the Python exception.
     fn restore_repl_from_start_error<T: ResourceTracker>(&self, py: Python<'_>, err: ReplStartError<T>) -> PyErr
     where
         EitherRepl: FromCoreRepl<T>,
     {
-        self.put_repl(EitherRepl::from_core(err.repl));
+        self.put_repl_after_rollback(EitherRepl::from_core(err.repl));
         MontyError::new_err(py, err.error)
     }
 }

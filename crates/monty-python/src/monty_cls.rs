@@ -651,7 +651,7 @@ where
 {
     match progress {
         ReplProgress::Complete { repl, value } => {
-            repl_owner.get().put_repl(EitherRepl::from_core(repl));
+            repl_owner.get().put_repl_after_commit(EitherRepl::from_core(repl));
             PyMontyComplete::create(py, &value, &dc_registry)
         }
         ReplProgress::FunctionCall(call) => {
@@ -1358,7 +1358,7 @@ impl PyNameLookupSnapshot {
     /// `ValueError` if serialization fails.
     /// `RuntimeError` if the progress has already been resumed.
     fn dump<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
-        let bytes = serialization::dump_lookup_snapshot(&self.snapshot, &self.script_name, &self.variable_name)?;
+        let bytes = serialization::dump_lookup_snapshot(py, &self.snapshot, &self.script_name, &self.variable_name)?;
         Ok(PyBytes::new(py, &bytes))
     }
 
@@ -1603,7 +1603,7 @@ impl PyFutureSnapshot {
     /// `ValueError` if serialization fails.
     /// `RuntimeError` if the progress has already been resumed.
     fn dump<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
-        let bytes = serialization::dump_future_snapshot(&self.snapshot, &self.script_name)?;
+        let bytes = serialization::dump_future_snapshot(py, &self.snapshot, &self.script_name)?;
         Ok(PyBytes::new(py, &bytes))
     }
 
@@ -1768,7 +1768,9 @@ fn restore_repl_from_repl_start_error<T: ResourceTracker>(
 where
     EitherRepl: FromCoreRepl<T>,
 {
-    repl_owner.get().put_repl(EitherRepl::from_core(err.repl));
+    repl_owner
+        .get()
+        .put_repl_after_rollback(EitherRepl::from_core(err.repl));
     MontyError::new_err(py, err.error)
 }
 

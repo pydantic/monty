@@ -753,3 +753,116 @@ def test_repl_type_check_dump_load_preserves_state():
     # And still catch type errors
     with pytest.raises(pydantic_monty.MontyTypingError):
         repl2.feed_run('"hello" + 1')
+
+
+def test_repl_type_check_feed_start_runtime_error_does_not_pollute_state():
+    """A failed feed_start() snippet must not leak definitions into later type checks."""
+    repl = pydantic_monty.MontyRepl(type_check=True)
+    with pytest.raises(pydantic_monty.MontyRuntimeError):
+        repl.feed_start("""\
+def foo(x: int) -> int:
+    return x
+
+1 / 0
+""")
+
+    with pytest.raises(pydantic_monty.MontyTypingError) as exc_info:
+        repl.feed_run('foo("x")')
+    assert str(exc_info.value) == snapshot("""\
+error[unresolved-reference]: Name `foo` used when not defined
+ --> main.py:1:1
+  |
+1 | foo("x")
+  | ^^^
+  |
+info: rule `unresolved-reference` is enabled by default
+
+""")
+
+
+def test_repl_type_check_load_repl_snapshot_preserves_accumulated_state():
+    """load_repl_snapshot() keeps prior committed type-check state."""
+    repl = pydantic_monty.MontyRepl(
+        type_check=True,
+        type_check_stubs="""\
+def fetch(x: int) -> int:
+    return 0
+""",
+    )
+    repl.feed_run('x: int = 1')
+
+    progress = repl.feed_start('fetch(x)')
+    assert isinstance(progress, pydantic_monty.FunctionSnapshot)
+    data = progress.dump()
+    loaded, loaded_repl = pydantic_monty.load_repl_snapshot(data)
+    assert isinstance(loaded, pydantic_monty.FunctionSnapshot)
+    loaded.resume(return_value=1)
+
+    with pytest.raises(pydantic_monty.MontyTypingError) as exc_info:
+        loaded_repl.feed_run('y: str = x')
+    assert 'invalid-assignment' in str(exc_info.value)
+    assert 'main.py:1' in str(exc_info.value)
+
+
+def test_repl_type_check_load_repl_snapshot_preserves_pending_snippet():
+    """A paused feed_start() snippet becomes visible to type checking after snapshot completion."""
+    repl = pydantic_monty.MontyRepl(
+        type_check=True,
+        type_check_stubs="""\
+def fetch(x: int) -> int:
+    return 0
+""",
+    )
+
+    progress = repl.feed_start("""\
+def foo(x: int) -> int:
+    return x
+
+fetch(1)
+""")
+    assert isinstance(progress, pydantic_monty.FunctionSnapshot)
+    data = progress.dump()
+    loaded, loaded_repl = pydantic_monty.load_repl_snapshot(data)
+    assert isinstance(loaded, pydantic_monty.FunctionSnapshot)
+    loaded.resume(return_value=1)
+
+    with pytest.raises(pydantic_monty.MontyTypingError) as exc_info:
+        loaded_repl.feed_run('foo("x")')
+    assert 'invalid-argument-type' in str(exc_info.value)
+    assert 'main.py:1' in str(exc_info.value)
+
+
+def test_repl_type_check_load_repl_snapshot_preserves_user_stubs():
+    """load_repl_snapshot() preserves user-provided type_check_stubs."""
+    repl = pydantic_monty.MontyRepl(
+        type_check=True,
+        type_check_stubs="""\
+def fetch(url: str) -> str:
+    return ''
+""",
+    )
+
+    progress = repl.feed_start('fetch("https://example.com")')
+    assert isinstance(progress, pydantic_monty.FunctionSnapshot)
+    data = progress.dump()
+    loaded, loaded_repl = pydantic_monty.load_repl_snapshot(data)
+    assert isinstance(loaded, pydantic_monty.FunctionSnapshot)
+    loaded.resume(return_value='ok')
+
+    with pytest.raises(pydantic_monty.MontyTypingError) as exc_info:
+        loaded_repl.feed_run('fetch(123)')
+    assert 'invalid-argument-type' in str(exc_info.value)
+    assert 'repl_type_stubs.pyi' in str(exc_info.value)
+
+
+def test_repl_type_check_stubs_without_trailing_newline():
+    """Stubs without a trailing newline don't corrupt accumulated code."""
+    stubs = 'def fetch(url: str) -> str: ...'  # no trailing \n
+    repl = pydantic_monty.MontyRepl(type_check=True, type_check_stubs=stubs)
+    repl.feed_run(
+        "response = fetch('url')",
+        external_functions={'fetch': lambda url: 'data'},  # pyright: ignore[reportUnknownLambdaType]
+    )
+    # response must be visible in the next snippet even though stubs lacked \n
+    result = repl.feed_run('response.upper()')
+    assert result == snapshot('DATA')
