@@ -439,3 +439,317 @@ def test_repl_type_check_line_numbers():
         repl.feed_run('"hello" + 1')
     # Line 1 should refer to the new snippet, not offset by previous code
     assert 'main.py:1:1' in str(exc_info.value)
+
+
+def test_repl_type_check_line_numbers_multiline():
+    """Error line numbers are correct for multi-line snippets with accumulated context."""
+    repl = pydantic_monty.MontyRepl(type_check=True)
+    repl.feed_run('x: int = 1')
+    repl.feed_run('y: str = "hello"')
+    with pytest.raises(pydantic_monty.MontyTypingError) as exc_info:
+        repl.feed_run('a = 1\nb = "hi" + 1')
+    # Error is on line 2 of the new snippet, not offset by previous snippets
+    assert str(exc_info.value) == snapshot("""\
+error[unsupported-operator]: Unsupported `+` operation
+ --> main.py:2:5
+  |
+1 | a = 1
+2 | b = "hi" + 1
+  |     ----^^^-
+  |     |      |
+  |     |      Has type `Literal[1]`
+  |     Has type `Literal["hi"]`
+  |
+info: rule `unsupported-operator` is enabled by default
+
+""")
+
+
+def test_repl_type_check_stubs_with_external_functions():
+    """type_check_stubs can declare external function signatures for the REPL."""
+    stubs = """\
+def fetch(url: str) -> str:
+    return ''
+"""
+    repl = pydantic_monty.MontyRepl(type_check=True, type_check_stubs=stubs)
+    # Should type-check fine: fetch is declared in stubs
+    result = repl.feed_run(
+        'result = fetch("https://example.com")',
+        external_functions={'fetch': lambda url: 'response'},  # pyright: ignore[reportUnknownLambdaType]
+    )
+    assert result == snapshot(None)
+
+
+def test_repl_type_check_stubs_wrong_arg_type():
+    """type_check_stubs catches wrong argument types to declared functions."""
+    stubs = """\
+def fetch(url: str) -> str:
+    return ''
+"""
+    repl = pydantic_monty.MontyRepl(type_check=True, type_check_stubs=stubs)
+    with pytest.raises(pydantic_monty.MontyTypingError) as exc_info:
+        repl.feed_run('fetch(123)')
+    assert 'invalid-argument-type' in str(exc_info.value)
+    # Error should reference the snippet line, not stubs
+    assert 'main.py:1' in str(exc_info.value)
+
+
+def test_repl_type_check_accumulated_catches_type_mismatch():
+    """Type checker catches mismatches with variables from earlier snippets."""
+    repl = pydantic_monty.MontyRepl(type_check=True)
+    repl.feed_run('x: int = 1')
+    with pytest.raises(pydantic_monty.MontyTypingError) as exc_info:
+        repl.feed_run('y: str = x')
+    assert 'invalid-assignment' in str(exc_info.value)
+
+
+def test_repl_type_check_feed_start():
+    """feed_start also type-checks when type_check=True."""
+    repl = pydantic_monty.MontyRepl(type_check=True)
+    with pytest.raises(pydantic_monty.MontyTypingError):
+        repl.feed_start('"hello" + 1')
+
+
+def test_repl_type_check_feed_start_valid():
+    """feed_start allows valid code when type_check=True."""
+    repl = pydantic_monty.MontyRepl(type_check=True)
+    progress = repl.feed_start('1 + 2')
+    assert isinstance(progress, pydantic_monty.MontyComplete)
+    assert progress.output == snapshot(3)
+
+
+def test_repl_type_check_feed_start_skip():
+    """feed_start respects skip_type_check."""
+    repl = pydantic_monty.MontyRepl(type_check=True)
+    # Would fail type check, but skip_type_check=True bypasses it
+    with pytest.raises(pydantic_monty.MontyRuntimeError):
+        repl.feed_start('"hello" + 1', skip_type_check=True)
+
+
+def test_repl_type_check_feed_start_accumulated():
+    """feed_start sees accumulated code from prior feed_run calls."""
+    repl = pydantic_monty.MontyRepl(type_check=True)
+    repl.feed_run('x: int = 10')
+    progress = repl.feed_start('x + 5')
+    assert isinstance(progress, pydantic_monty.MontyComplete)
+    assert progress.output == snapshot(15)
+
+
+def test_repl_type_check_display_format():
+    """MontyTypingError from REPL type checking supports display() formats."""
+    repl = pydantic_monty.MontyRepl(type_check=True)
+    with pytest.raises(pydantic_monty.MontyTypingError) as exc_info:
+        repl.feed_run('"hello" + 1')
+    assert exc_info.value.display('concise') == snapshot(
+        'main.py:1:1: error[unsupported-operator] Operator `+` is not supported between objects of type `Literal["hello"]` and `Literal[1]`\n'
+    )
+
+
+def test_repl_type_check_stubs_filename():
+    """Errors referencing stubs use the repl_type_stubs.pyi filename."""
+    stubs = """\
+def fetch(url: str) -> str:
+    return ''
+"""
+    repl = pydantic_monty.MontyRepl(type_check=True, type_check_stubs=stubs)
+    with pytest.raises(pydantic_monty.MontyTypingError) as exc_info:
+        repl.feed_run('fetch(123)')
+    # The stubs file should be referenced as repl_type_stubs.pyi
+    assert 'repl_type_stubs.pyi' in str(exc_info.value)
+
+
+def test_repl_type_check_multiple_snippets_sequence():
+    """Type checking works correctly across a sequence of snippets."""
+    repl = pydantic_monty.MontyRepl(type_check=True)
+    repl.feed_run('x: int = 1')
+    repl.feed_run('y: int = x + 1')
+    repl.feed_run('z: int = x + y')
+    result = repl.feed_run('x + y + z')
+    assert result == snapshot(6)
+
+
+def test_repl_type_check_function_define_then_call():
+    """Function defined in one snippet can be called with correct types in the next."""
+    repl = pydantic_monty.MontyRepl(type_check=True)
+    repl.feed_run("""\
+def greet(name: str) -> str:
+    return 'hello ' + name
+""")
+    result = repl.feed_run("greet('world')")
+    assert result == snapshot('hello world')
+
+
+def test_repl_type_check_function_define_then_call_wrong_type():
+    """Calling a function from a prior snippet with wrong arg type is caught."""
+    repl = pydantic_monty.MontyRepl(type_check=True)
+    repl.feed_run("""\
+def greet(name: str) -> str:
+    return 'hello ' + name
+""")
+    with pytest.raises(pydantic_monty.MontyTypingError) as exc_info:
+        repl.feed_run('greet(42)')
+    assert 'invalid-argument-type' in str(exc_info.value)
+    # Error should point to line 1 of the new snippet
+    assert 'main.py:1' in str(exc_info.value)
+
+
+def test_repl_type_check_function_return_type_used():
+    """Return type of a function from a prior snippet is used for type checking."""
+    repl = pydantic_monty.MontyRepl(type_check=True)
+    repl.feed_run("""\
+def get_count() -> int:
+    return 5
+""")
+    # Assigning return value to int should pass
+    repl.feed_run('x: int = get_count()')
+    # Assigning return value to str should fail
+    with pytest.raises(pydantic_monty.MontyTypingError) as exc_info:
+        repl.feed_run('y: str = get_count()')
+    assert 'invalid-assignment' in str(exc_info.value)
+
+
+def test_repl_type_check_redefine_function():
+    """Redefining a function with a new signature updates the type checker's view."""
+    repl = pydantic_monty.MontyRepl(type_check=True)
+    # First definition: takes int
+    repl.feed_run("""\
+def process(x: int) -> int:
+    return x + 1
+""")
+    result = repl.feed_run('process(5)')
+    assert result == snapshot(6)
+    # Redefine: now takes str
+    repl.feed_run("""\
+def process(x: str) -> str:
+    return x + '!'
+""")
+    result = repl.feed_run("process('hi')")
+    assert result == snapshot('hi!')
+
+
+def test_repl_type_check_redefine_function_then_call_later():
+    """Redefining a function in one step, then calling it in a later step uses the new signature."""
+    repl = pydantic_monty.MontyRepl(type_check=True)
+    # First definition: int -> int
+    repl.feed_run("""\
+def transform(x: int) -> int:
+    return x + 1
+""")
+    assert repl.feed_run('transform(5)') == snapshot(6)
+    # Redefine: str -> str
+    repl.feed_run("""\
+def transform(x: str) -> str:
+    return x + '!'
+""")
+    # Call in a separate step — the accumulated stubs contain both definitions,
+    # but the type checker should use the latest (str -> str)
+    assert repl.feed_run("transform('hi')") == snapshot('hi!')
+    # Calling with the old signature (int) should now fail type checking
+    with pytest.raises(pydantic_monty.MontyTypingError) as exc_info:
+        repl.feed_run('transform(42)')
+    assert 'invalid-argument-type' in str(exc_info.value)
+
+
+def test_repl_type_check_redefine_variable_type():
+    """Redefining a variable with a new type updates the type checker's view."""
+    repl = pydantic_monty.MontyRepl(type_check=True)
+    repl.feed_run('x: int = 1')
+    repl.feed_run('y: int = x + 1')
+    assert repl.feed_run('y') == snapshot(2)
+    # Redefine x as str
+    repl.feed_run('x: str = "hello"')
+    result = repl.feed_run('x + " world"')
+    assert result == snapshot('hello world')
+
+
+def test_repl_type_check_function_calling_prior_function():
+    """A function defined in one snippet can call a function from an earlier snippet."""
+    repl = pydantic_monty.MontyRepl(type_check=True)
+    repl.feed_run("""\
+def double(x: int) -> int:
+    return x * 2
+""")
+    repl.feed_run("""\
+def quadruple(x: int) -> int:
+    return double(double(x))
+""")
+    result = repl.feed_run('quadruple(3)')
+    assert result == snapshot(12)
+
+
+def test_repl_type_check_variable_used_across_many_snippets():
+    """A variable defined early is usable across many subsequent snippets."""
+    repl = pydantic_monty.MontyRepl(type_check=True)
+    repl.feed_run('total: int = 0')
+    repl.feed_run('total = total + 10')
+    repl.feed_run('total = total + 20')
+    repl.feed_run('total = total + 30')
+    result = repl.feed_run('total')
+    assert result == snapshot(60)
+
+
+def test_repl_type_check_stubs_and_accumulated_together():
+    """Stubs and accumulated code both contribute to type checking context."""
+    stubs = """\
+def multiply(a: int, b: int) -> int:
+    return 0
+"""
+    repl = pydantic_monty.MontyRepl(type_check=True, type_check_stubs=stubs)
+    # Define a helper that references the stub function — type checking passes
+    # because the stub declares multiply. skip_type_check on subsequent calls
+    # since multiply doesn't exist at runtime.
+    repl.feed_run("""\
+def square(x: int) -> int:
+    return multiply(x, x)
+""")
+    # Type checker sees square returns int (from accumulated) and multiply takes ints (from stubs)
+    # Calling square with wrong type should fail type checking
+    with pytest.raises(pydantic_monty.MontyTypingError):
+        repl.feed_run('square("hello")')
+    # Assigning square's return to wrong type should also fail
+    with pytest.raises(pydantic_monty.MontyTypingError):
+        repl.feed_run('bad: str = square(5)')
+
+
+def test_repl_type_check_multiple_functions_interacting():
+    """Multiple functions defined across snippets can interact correctly."""
+    repl = pydantic_monty.MontyRepl(type_check=True)
+    repl.feed_run("""\
+def to_int(s: str) -> int:
+    return len(s)
+""")
+    repl.feed_run("""\
+def to_str(n: int) -> str:
+    return str(n)
+""")
+    repl.feed_run("""\
+def roundtrip(s: str) -> str:
+    return to_str(to_int(s))
+""")
+    result = repl.feed_run("roundtrip('hello')")
+    assert result == snapshot('5')
+
+
+def test_repl_type_check_script_name():
+    """Custom script_name appears in type check error messages."""
+    repl = pydantic_monty.MontyRepl(type_check=True, script_name='my_repl.py')
+    with pytest.raises(pydantic_monty.MontyTypingError) as exc_info:
+        repl.feed_run('"hello" + 1')
+    assert 'my_repl.py:1:1' in str(exc_info.value)
+
+
+def test_repl_type_check_dump_load_preserves_state():
+    """Type checking state is preserved through dump/load."""
+    repl = pydantic_monty.MontyRepl(type_check=True)
+    repl.feed_run('x: int = 1')
+
+    data = repl.dump()
+    repl2 = pydantic_monty.MontyRepl.load(data)
+
+    # Loaded REPL should still type-check with accumulated context
+    result = repl2.feed_run('x + 2')
+    assert result == snapshot(3)
+
+    # And still catch type errors
+    with pytest.raises(pydantic_monty.MontyTypingError):
+        repl2.feed_run('"hello" + 1')
