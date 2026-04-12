@@ -1,4 +1,4 @@
-use std::{env, fs};
+use std::{env, fs, thread};
 
 use monty_type_checking::{SourceFile, type_check};
 use pretty_assertions::assert_eq;
@@ -15,6 +15,44 @@ result = add(1, 2)
 
     let result = type_check(&SourceFile::new(code, "main.py"), None).unwrap();
     assert!(result.is_none());
+}
+
+#[test]
+fn type_checking_pool_reuse_does_not_leak_state() {
+    let ok = type_check(&SourceFile::new("x = 1", "main.py"), None).unwrap();
+    assert!(ok.is_none());
+
+    let err = type_check(&SourceFile::new("'hello' + 1", "main.py"), None).unwrap();
+    assert!(err.is_some());
+
+    let ok_again = type_check(&SourceFile::new("x = 1", "main.py"), None).unwrap();
+    assert!(ok_again.is_none());
+}
+
+#[test]
+fn type_checking_pool_reuse_does_not_leak_stubs() {
+    let with_stubs = type_check(
+        &SourceFile::new("result = call1_stub_var + 1", "main.py"),
+        Some(&SourceFile::new("call1_stub_var = 0", "type_stubs.pyi")),
+    )
+    .unwrap();
+    assert!(with_stubs.is_none());
+
+    let without_stubs = type_check(&SourceFile::new("result = call1_stub_var + 1", "main.py"), None).unwrap();
+    let failure = without_stubs.expect("stub-defined name should not survive db cleanup");
+
+    assert_eq!(
+        failure.to_string(),
+        r"error[unresolved-reference]: Name `call1_stub_var` used when not defined
+ --> main.py:1:10
+  |
+1 | result = call1_stub_var + 1
+  |          ^^^^^^^^^^^^^^
+  |
+info: rule `unresolved-reference` is enabled by default
+
+"
+    );
 }
 
 #[test]
@@ -51,6 +89,46 @@ info: rule `invalid-argument-type` is enabled by default
 
 "#
     );
+}
+
+#[test]
+fn type_checking_rejects_nested_paths() {
+    let error = type_check(&SourceFile::new("x = 1", "nested/main.py"), None).unwrap_err();
+    assert_eq!(
+        error,
+        "Type checking only supports root-level source file names, got 'nested/main.py'"
+    );
+}
+
+#[test]
+fn type_checking_concurrent_calls() {
+    thread::scope(|scope| {
+        let handles = (0..8)
+            .map(|_| {
+                scope.spawn(|| {
+                    for _ in 0..10 {
+                        let result = type_check(
+                            &SourceFile::new(
+                                "\
+def add(x: int, y: int) -> int:
+    return x + y
+
+result = add(1, 2)",
+                                "main.py",
+                            ),
+                            None,
+                        )
+                        .unwrap();
+                        assert!(result.is_none());
+                    }
+                })
+            })
+            .collect::<Vec<_>>();
+
+        for handle in handles {
+            handle.join().unwrap();
+        }
+    });
 }
 
 #[test]

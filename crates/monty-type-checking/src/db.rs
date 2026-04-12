@@ -1,9 +1,6 @@
 use std::{
     fmt,
-    sync::{
-        Arc, Mutex, OnceLock,
-        atomic::{AtomicU64, Ordering},
-    },
+    sync::{Arc, Mutex, OnceLock},
 };
 
 use ruff_db::{
@@ -21,74 +18,35 @@ use ty_python_semantic::{
     types::check_types,
 };
 
-/// Virtual source root — user files are written under this prefix and module resolution
-/// treats it as the project root. Shared between [`build_warm_db`] and [`type_check`].
+/// Virtual source root used for all in-memory type-checking files.
+///
+/// The reusable database pool only supports root-level user files, so every public
+/// `SourceFile.path` is mapped directly under `/`.
 pub(crate) const SRC_ROOT: &str = "/";
 
-/// Path used by the warmup dummy file. Picked to never collide with any user-supplied
-/// script path so its stale interning is never queried again after the db is built.
+/// Warmup file used to populate stdlib/type-semantic caches in a fresh database.
+///
+/// The file is removed before the database is returned to the pool so pooled runs
+/// always start from an empty visible filesystem.
 const WARMUP_PATH: &str = "/__monty_warmup__.py";
 
-/// Prefix used to uniquify per-call internal file paths.
+/// Maximum number of warm `MemoryDb` instances kept in the process-wide pool.
 ///
-/// Each `type_check` call writes to paths like `/__mc42__main.py`, which creates a
-/// distinct salsa `File` ingredient per call so memos from one call never shadow
-/// another's. The prefix is stripped from rendered diagnostics so users see plain
-/// paths like `main.py` — see [`strip_unique_prefix`].
-pub(crate) const CALL_PATH_PREFIX: &str = "__mc";
-
-/// Separator between the call counter and the user's script name (e.g. `__mc42__`).
-pub(crate) const CALL_PATH_SEP: &str = "__";
-
-/// Process-wide counter feeding [`CALL_PATH_PREFIX`]; bumped atomically per call.
-static CALL_COUNTER: AtomicU64 = AtomicU64::new(0);
-
-/// Return the next unique internal-path prefix and its call counter.
-///
-/// The returned `String` (e.g. `"__mc42__"`) is what appears in internal file paths
-/// and must be passed to [`strip_unique_prefix`] when rendering diagnostics.
-pub(crate) fn next_call_prefix() -> String {
-    let counter = CALL_COUNTER.fetch_add(1, Ordering::Relaxed);
-    format!("{CALL_PATH_PREFIX}{counter}{CALL_PATH_SEP}")
-}
-
-/// Remove every `__mc<digits>__` segment from `rendered`.
-///
-/// Used by `TypeCheckingDiagnostics` to hide the internal uniquifying prefix from
-/// the end-user — file paths in error output should read `main.py`, not
-/// `__mc42__main.py`. Implemented as a hand-rolled scanner to avoid pulling in a
-/// regex crate for a trivial pattern.
-pub(crate) fn strip_unique_prefix(rendered: &str) -> String {
-    let mut out = String::with_capacity(rendered.len());
-    let mut cursor = 0;
-    let bytes = rendered.as_bytes();
-    while let Some(start_rel) = rendered[cursor..].find(CALL_PATH_PREFIX) {
-        let start = cursor + start_rel;
-        out.push_str(&rendered[cursor..start]);
-        let after_prefix = start + CALL_PATH_PREFIX.len();
-        let mut digit_end = after_prefix;
-        while digit_end < bytes.len() && bytes[digit_end].is_ascii_digit() {
-            digit_end += 1;
-        }
-        // Only strip when we have at least one digit followed by the separator — otherwise
-        // `__mc` is an ordinary substring (e.g. appearing in user code) and should stay.
-        if digit_end > after_prefix && rendered[digit_end..].starts_with(CALL_PATH_SEP) {
-            cursor = digit_end + CALL_PATH_SEP.len();
-        } else {
-            out.push_str(CALL_PATH_PREFIX);
-            cursor = after_prefix;
-        }
-    }
-    out.push_str(&rendered[cursor..]);
-    out
-}
+/// The pool is intentionally small because every warm database retains its own
+/// Salsa memo graph and typeshed-derived semantic state.
+const MAX_POOLED_DBS: usize = 4;
 
 /// Very simple in-memory salsa/ty database.
 ///
 /// Mostly taken from
 /// https://github.com/astral-sh/ruff/blob/7bacca9b625c2a658470afd99a0bf0aa0b4f1dbb/crates/ty_python_semantic/src/db.rs#L51
+///
+/// ## Lifetime invariant
+///
+/// Each `MemoryDb` owns a unique Salsa storage. It must never be cloned or shared
+/// with another live handle because Salsa setters require exclusive access to the
+/// underlying `Arc<Zalsa>`.
 #[salsa::db]
-#[derive(Clone)]
 pub(crate) struct MemoryDb {
     storage: salsa::Storage<Self>,
     files: Files,
@@ -100,7 +58,7 @@ pub(crate) struct MemoryDb {
 
 impl fmt::Debug for MemoryDb {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("TypeCheckingFailure")
+        f.debug_struct("MemoryDb")
             .field("files", &self.files)
             .field("system", &self.system)
             .field("vendored", &self.vendored)
@@ -111,7 +69,8 @@ impl fmt::Debug for MemoryDb {
 }
 
 impl MemoryDb {
-    pub fn new() -> Self {
+    /// Create a fresh database with its own Salsa storage and Monty's fixed typing config.
+    fn new() -> Self {
         Self {
             storage: salsa::Storage::new(None),
             system: TestSystem::default(),
@@ -123,44 +82,88 @@ impl MemoryDb {
     }
 }
 
-/// The single process-wide type-checking database.
+/// Pool of reusable warm databases for root-file type checking.
 ///
-/// ## Why one shared db instead of "clone-per-call"?
-///
-/// Salsa's input setters (what `write_file` ultimately calls) require exclusive access to
-/// the underlying `Arc<Zalsa>` via `Arc::get_mut`. If anything else holds a clone of the
-/// storage, `get_mut` fails and salsa's `cancel_others()` waits indefinitely for the other
-/// handles to drop — a single long-lived "warm template" whose handle never drops would
-/// deadlock the very next write, even from a single-threaded caller. So instead we keep
-/// **one** `MemoryDb` behind a [`Mutex`] and serialize all `type_check` calls through it.
-///
-/// ## How correctness is preserved across calls
-///
-/// Each call writes its user code to a path containing a unique counter (see
-/// [`next_call_prefix`]), which creates a fresh salsa `File` ingredient per call.
-/// That means memos computed for call 1's `File` can never be accidentally returned
-/// for call 2's `File` (different salsa key), so diagnostics produced by an earlier
-/// call continue to render correctly even after later calls have run — they query
-/// their own `File`'s source text, which still lives in the shared in-memory fs.
-///
-/// ## Warmup
-///
-/// First access runs `build_warm_db`, which initializes the salsa `Program` singleton,
-/// resolves vendored typeshed search paths, and runs `check_types` on a trivial snippet
-/// referencing the common builtins (`int`, `str`, etc.). This populates the salsa memo
-/// table so the first *real* call doesn't pay the stdlib parse cost.
-pub(crate) fn global_db() -> &'static Mutex<MemoryDb> {
-    static GLOBAL_DB: OnceLock<Mutex<MemoryDb>> = OnceLock::new();
-    GLOBAL_DB.get_or_init(|| Mutex::new(build_warm_db()))
+/// Each checked-out db is owned by exactly one caller until it is either returned
+/// clean or dropped. This keeps Salsa's single-writer invariant intact while still
+/// allowing concurrent type checks to use different warm databases.
+struct MemoryDbPool {
+    dbs: Mutex<Vec<MemoryDb>>,
 }
 
-/// Build the one-shot warm database. Runs once behind the [`global_db`] `OnceLock`.
+impl MemoryDbPool {
+    /// Access the process-wide database pool.
+    fn global() -> &'static Self {
+        static GLOBAL_POOL: OnceLock<MemoryDbPool> = OnceLock::new();
+        GLOBAL_POOL.get_or_init(|| Self {
+            dbs: Mutex::new(Vec::new()),
+        })
+    }
+
+    /// Check out one warm database from the pool, creating a fresh warmed db if needed.
+    fn checkout(&'static self) -> Result<PooledMemoryDb, String> {
+        let maybe_db = {
+            let mut dbs = self.dbs.lock().map_err(|e| e.to_string())?;
+            dbs.pop()
+        };
+
+        Ok(PooledMemoryDb {
+            db: Some(maybe_db.unwrap_or_else(build_warm_db)),
+            pool: self,
+        })
+    }
+
+    /// Return a fully scrubbed database to the pool if there is capacity left.
+    fn release(&self, db: MemoryDb) -> Result<(), String> {
+        let mut dbs = self.dbs.lock().map_err(|e| e.to_string())?;
+        if dbs.len() < MAX_POOLED_DBS {
+            dbs.push(db);
+        }
+        Ok(())
+    }
+}
+
+/// Exclusive lease for one pooled database.
+///
+/// The caller must only return the lease with [`Self::return_clean`] after all user
+/// files have been deleted and synced out of the in-memory filesystem. Dropping the
+/// lease without returning it discards the db, which is the panic-safe fallback.
+pub(crate) struct PooledMemoryDb {
+    db: Option<MemoryDb>,
+    pool: &'static MemoryDbPool,
+}
+
+impl PooledMemoryDb {
+    /// Borrow the checked-out database mutably for one type-check run.
+    pub(crate) fn db(&mut self) -> &mut MemoryDb {
+        self.db
+            .as_mut()
+            .expect("pooled memory db accessed after being returned")
+    }
+
+    /// Return a scrubbed database to the pool.
+    pub(crate) fn return_clean(mut self) -> Result<(), String> {
+        let db = self.db.take().expect("pooled memory db returned more than once");
+        self.pool.release(db)
+    }
+}
+
+/// Check out a database from the global pool.
+pub(crate) fn checkout_db() -> Result<PooledMemoryDb, String> {
+    MemoryDbPool::global().checkout()
+}
+
+/// Build one warm database ready for pooled reuse.
+///
+/// The warmup initializes the `Program` singleton, resolves typeshed-backed search
+/// paths, runs a trivial check that touches common builtin types, and then removes
+/// the warmup file again so the returned db has no visible user files.
 fn build_warm_db() -> MemoryDb {
     let mut db = MemoryDb::new();
     let src_root = SystemPathBuf::from(SRC_ROOT);
     db.files().try_add_root(&db, &src_root, FileRootKind::Project);
 
-    let search_paths = SearchPathSettings::new(vec![src_root])
+    let search_paths = SearchPathSettings::new(vec![src_root.clone()])
         .to_search_paths(db.system(), db.vendored())
         .expect("vendored typeshed search paths always resolve");
 
@@ -176,12 +179,7 @@ fn build_warm_db() -> MemoryDb {
         },
     );
 
-    // Prewarm: parse and analyze the stdlib stubs every real call transitively touches.
-    // The warmup references the most common builtin types (`int`, `str`, `float`, `list`,
-    // `dict`, `bool`) so typechecking resolves them from typeshed's `builtins.pyi` /
-    // `typing.pyi` / `types.pyi` and caches the resulting semantic graph. These memos
-    // live in the db's salsa storage and are reused by every subsequent `type_check`
-    // call, so the first real call doesn't pay the stdlib parse cost.
+    // Prewarm the db with the stdlib stubs every real call tends to touch.
     let warmup_code = "\
 x: int = 0
 y: str = ''
@@ -194,6 +192,12 @@ d: dict[str, int] = {}
     db.write_file(&warmup, warmup_code).expect("warmup write");
     let warmup_file = system_path_to_file(&db, &warmup).expect("warmup file");
     let _ = check_types(&db, warmup_file);
+
+    db.memory_file_system()
+        .remove_file(&warmup)
+        .expect("warmup file exists during warmup cleanup");
+    warmup_file.sync(&mut db);
+    File::sync_path(&mut db, &src_root);
 
     db
 }

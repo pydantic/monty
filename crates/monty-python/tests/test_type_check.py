@@ -13,9 +13,9 @@ def test_type_check_no_errors():
 def test_type_check_no_cross_call_state_leak():
     """Successive calls must not see stale results from earlier calls.
 
-    Every type_check call writes the same script path ('main.py') into the process-wide
-    warm database. Salsa invalidates the file's memos on each write — this regression
-    test guards that behavior end-to-end.
+    The type checker reuses warm `MemoryDb` instances from a pool, but each call must
+    still scrub its root files before the db is returned. This regression test checks
+    that a pooled db reused for the same script name does not leak the previous result.
     """
     # Valid code first.
     assert pydantic_monty.Monty('x = 1').type_check() is None
@@ -29,23 +29,25 @@ def test_type_check_no_cross_call_state_leak():
 def test_type_check_stubs_not_leaked_to_later_call():
     """Stub declarations from an earlier call must not be visible to a later one.
 
-    The warm-template optimization shares Salsa storage across calls, but each call
-    owns its own in-memory filesystem. A name defined in call 1's stubs must therefore
-    be unresolved in call 2 when that call doesn't pass stubs — regardless of memo
-    state carried over in the shared storage.
+    Warm pooled databases keep their semantic caches, but every call must delete and
+    sync the temporary root files it wrote. A name defined in call 1's stubs must
+    therefore be unresolved in call 2 when that call does not pass stubs.
     """
-    # Call 1: stubs declare `call1_stub_var`; code referencing it type-checks clean.
-    assert (
-        pydantic_monty.Monty(
-            'result = call1_stub_var + 1',
-            type_check_stubs='call1_stub_var = 0',
-        ).type_check()
-        is None
-    )
+    # Call 1: prefix code declares `call1_stub_var`; code referencing it type-checks clean.
+    assert pydantic_monty.Monty('result = call1_stub_var + 1').type_check(prefix_code='call1_stub_var = 0') is None
     # Call 2: same expression, no stubs — `call1_stub_var` must be undefined.
     with pytest.raises(pydantic_monty.MontyTypingError) as exc_info:
         pydantic_monty.Monty('result = call1_stub_var + 1').type_check()
-    assert str(exc_info.value) == snapshot()
+    assert str(exc_info.value) == snapshot("""\
+error[unresolved-reference]: Name `call1_stub_var` used when not defined
+ --> main.py:1:10
+  |
+1 | result = call1_stub_var + 1
+  |          ^^^^^^^^^^^^^^
+  |
+info: rule `unresolved-reference` is enabled by default
+
+""")
 
 
 def test_type_check_with_errors():

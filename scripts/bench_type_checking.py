@@ -2,8 +2,8 @@
 Benchmark: time successive calls to `Monty.type_check()` on the same small snippet.
 
 Measures the first, second, third, and fourth call independently so you can see
-the one-time warm-template cost (first call) vs. the steady-state cost (calls 2+)
-of the shared Salsa storage pre-warm.
+the one-time pooled-db warmup cost (first call) vs. the steady-state cost (calls 2+)
+once a scrubbed warm database is available for reuse.
 
 Usage:
     python scripts/bench_type_checking.py [--runs N]
