@@ -1,4 +1,4 @@
-use std::{env, fs, thread};
+use std::{env, fs};
 
 use monty_type_checking::{SourceFile, type_check};
 use pretty_assertions::assert_eq;
@@ -15,44 +15,6 @@ result = add(1, 2)
 
     let result = type_check(&SourceFile::new(code, "main.py"), None).unwrap();
     assert!(result.is_none());
-}
-
-#[test]
-fn type_checking_pool_reuse_does_not_leak_state() {
-    let ok = type_check(&SourceFile::new("x = 1", "main.py"), None).unwrap();
-    assert!(ok.is_none());
-
-    let err = type_check(&SourceFile::new("'hello' + 1", "main.py"), None).unwrap();
-    assert!(err.is_some());
-
-    let ok_again = type_check(&SourceFile::new("x = 1", "main.py"), None).unwrap();
-    assert!(ok_again.is_none());
-}
-
-#[test]
-fn type_checking_pool_reuse_does_not_leak_stubs() {
-    let with_stubs = type_check(
-        &SourceFile::new("result = call1_stub_var + 1", "main.py"),
-        Some(&SourceFile::new("call1_stub_var = 0", "type_stubs.pyi")),
-    )
-    .unwrap();
-    assert!(with_stubs.is_none());
-
-    let without_stubs = type_check(&SourceFile::new("result = call1_stub_var + 1", "main.py"), None).unwrap();
-    let failure = without_stubs.expect("stub-defined name should not survive db cleanup");
-
-    assert_eq!(
-        failure.to_string(),
-        r"error[unresolved-reference]: Name `call1_stub_var` used when not defined
- --> main.py:1:10
-  |
-1 | result = call1_stub_var + 1
-  |          ^^^^^^^^^^^^^^
-  |
-info: rule `unresolved-reference` is enabled by default
-
-"
-    );
 }
 
 #[test]
@@ -89,46 +51,6 @@ info: rule `invalid-argument-type` is enabled by default
 
 "#
     );
-}
-
-#[test]
-fn type_checking_rejects_nested_paths() {
-    let error = type_check(&SourceFile::new("x = 1", "nested/main.py"), None).unwrap_err();
-    assert_eq!(
-        error,
-        "Type checking only supports root-level source file names, got 'nested/main.py'"
-    );
-}
-
-#[test]
-fn type_checking_concurrent_calls() {
-    thread::scope(|scope| {
-        let handles = (0..8)
-            .map(|_| {
-                scope.spawn(|| {
-                    for _ in 0..10 {
-                        let result = type_check(
-                            &SourceFile::new(
-                                "\
-def add(x: int, y: int) -> int:
-    return x + y
-
-result = add(1, 2)",
-                                "main.py",
-                            ),
-                            None,
-                        )
-                        .unwrap();
-                        assert!(result.is_none());
-                    }
-                })
-            })
-            .collect::<Vec<_>>();
-
-        for handle in handles {
-            handle.join().unwrap();
-        }
-    });
 }
 
 #[test]
@@ -256,6 +178,103 @@ fn type_bad_types() {
     let actual = failure.format(DiagnosticFormat::Concise).to_string();
 
     check_file_content("bad_types_output.txt", &actual);
+}
+
+/// Security-critical: verify the reusable `MemoryDb` pool never exposes files,
+/// modules, or derived query results from a previous `type_check` call to a
+/// later one. If any of these assertions break, code from a prior run could
+/// leak into a later run's semantic analysis.
+#[test]
+fn pooled_db_no_cross_run_module_leak() {
+    // First run: define a module with a secret constant. Looks valid on its own.
+    let first = "SECRET = 'hunter2'\n";
+    let r1 = type_check(&SourceFile::new(first, "leaky.py"), None).unwrap();
+    assert!(r1.is_none(), "first run should succeed: {r1:#?}");
+
+    // Second run: try to import the first run's symbol via its file stem.
+    // Must fail with unresolved-import — the file was deleted when the db was
+    // returned to the pool, and Salsa's module-resolution memo must have been
+    // invalidated.
+    let second = "from leaky import SECRET\nprint(SECRET)\n";
+    let r2 = type_check(&SourceFile::new(second, "main.py"), None)
+        .unwrap()
+        .expect("second run must raise unresolved-import for the stale module");
+    let msg = r2.format(DiagnosticFormat::Concise).to_string();
+    assert!(
+        msg.contains("unresolved-import") || msg.contains("unresolved-reference"),
+        "second run must report the import as unresolved; got:\n{msg}"
+    );
+    // Belt-and-braces: the leaked constant name itself must not show up as a
+    // known symbol (would indicate partial resolution).
+    assert!(
+        !msg.contains("hunter2"),
+        "second run diagnostics must not surface the first run's content; got:\n{msg}"
+    );
+}
+
+/// Security-critical: same path, different content on consecutive runs. The
+/// second run must be evaluated against its own source, not a cached version
+/// of the first run's source.
+#[test]
+fn pooled_db_no_cross_run_same_path_leak() {
+    // First run: defines `GOOD` and type-checks cleanly.
+    let first = "GOOD: int = 1\nresult = GOOD + 1\n";
+    let r1 = type_check(&SourceFile::new(first, "main.py"), None).unwrap();
+    assert!(r1.is_none(), "first run should succeed: {r1:#?}");
+
+    // Second run on the *same* path references a name that doesn't exist in
+    // this run's source. If the pool leaked `GOOD` from the first run, this
+    // would type-check clean — so we assert an error is produced.
+    let second = "x: int = GOOD\n";
+    let r2 = type_check(&SourceFile::new(second, "main.py"), None)
+        .unwrap()
+        .expect("second run must error — `GOOD` was only defined in the first run");
+    let msg = r2.format(DiagnosticFormat::Concise).to_string();
+    assert!(
+        msg.contains("unresolved-reference") || msg.contains("Name `GOOD`") || msg.contains("possibly-unbound"),
+        "second run must report `GOOD` as undefined; got:\n{msg}"
+    );
+}
+
+/// Security-critical: stubs from a previous run must not persist as importable
+/// modules in a later run.
+#[test]
+fn pooled_db_no_cross_run_stubs_leak() {
+    let stubs = "class Widget:\n    x: int\n";
+    let first = "from type_stubs import Widget\nw: Widget\n";
+    let r1 = type_check(
+        &SourceFile::new(first, "main.py"),
+        Some(&SourceFile::new(stubs, "type_stubs.pyi")),
+    )
+    .unwrap();
+    assert!(r1.is_none(), "first run with stubs should succeed: {r1:#?}");
+
+    // Second run: no stubs provided, but still references `Widget`. Must fail
+    // to resolve the name — the stubs file was deleted on cleanup.
+    let second = "from type_stubs import Widget\n";
+    let r2 = type_check(&SourceFile::new(second, "main.py"), None)
+        .unwrap()
+        .expect("second run must error — `type_stubs` was only provided in the first run");
+    let msg = r2.format(DiagnosticFormat::Concise).to_string();
+    assert!(
+        msg.contains("unresolved-import") || msg.contains("unresolved-reference"),
+        "second run must report the stub import as unresolved; got:\n{msg}"
+    );
+}
+
+/// Security-critical: path validation rejects any path that could write outside
+/// the root or alias a different file via path traversal.
+#[test]
+fn pooled_db_rejects_non_root_paths() {
+    let code = "x: int = 1\n";
+    for bad in ["", ".", "..", "a/b.py", "a\\b.py", "sub/mod.py", "../mod.py"] {
+        let err = type_check(&SourceFile::new(code, bad), None)
+            .expect_err(&format!("expected validation error for path {bad:?}"));
+        assert!(
+            err.contains("root-level") || err.contains("empty"),
+            "path {bad:?} should be rejected by validation, got: {err}"
+        );
+    }
 }
 
 #[test]

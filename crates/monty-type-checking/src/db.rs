@@ -27,7 +27,7 @@ pub(crate) const SRC_ROOT: &str = "/";
 ///
 /// The pool is intentionally small because every reused database retains its own
 /// Salsa memo graph and typeshed-derived semantic state.
-const MAX_POOLED_DBS: usize = 4;
+const MAX_POOLED_DBS: usize = 8;
 
 /// Very simple in-memory salsa/ty database.
 ///
