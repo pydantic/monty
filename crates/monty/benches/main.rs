@@ -196,19 +196,28 @@ const PAIR_TUPLES: &str = "len([(i, i + 1) for i in range(100_000)])";
 /// Sourced from `medium_response.json` (a jiter bench fixture).
 const JSON_MEDIUM: &str = include_str!("medium_response.json");
 
-/// Parses a ~2 KB JSON document into a Python object each iteration.
+/// Parses a ~2 KB JSON document into a Python object 1,000 times per Monty run.
+/// Looping inside Monty amortises per-call VM/import/input-binding overhead so the
+/// measurement reflects steady-state parse cost rather than startup.
 /// Returns the number of top-level keys (2) as the verification value.
 const JSON_LOADS: &str = "
 import json
-len(json.loads(DATA))
+r = 0
+for _ in range(1_000):
+    r = len(json.loads(DATA))
+r
 ";
 
-/// Parses JSON once per iteration and re-serialises it to a string.
-/// Returns the length of the serialised output so the result can be verified.
+/// Parses JSON then serialises it back to a string 1,000 times per Monty run.
+/// Loop sits inside Monty for the same reason as `JSON_LOADS`.
+/// Returns the length of the final serialised output so the result can be verified.
 const JSON_DUMPS: &str = "
 import json
 obj = json.loads(DATA)
-len(json.dumps(obj))
+r = 0
+for _ in range(1_000):
+    r = len(json.dumps(obj))
+r
 ";
 
 /// Benchmarks end-to-end execution (parsing + running) using Monty.
