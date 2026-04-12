@@ -48,9 +48,8 @@ def main() -> None:
     if '--runs' in sys.argv:
         runs = int(sys.argv[sys.argv.index('--runs') + 1])
 
-    print('type_check() latency, successive calls on the same snippet')
-    print('(if call 1 looks stuck, rebuild with `make dev-py-release`)')
-    print('-' * 60, flush=True)
+    print('type_check() latency, successive calls')
+    print('-' * 50, flush=True)
 
     times: list[float] = []
     for i in range(1, runs + 1):
@@ -60,12 +59,7 @@ def main() -> None:
         speedup = f'  {times[0] / t:.1f}x faster than call 1' if i > 1 and t > 0 else ''
         print(f'\r  call {i}: {format_ms(t):>10}{speedup}          ', flush=True)
 
-    if len(times) > 1:
-        steady_avg = sum(times[1:]) / len(times[1:])
-        print('-' * 60)
-        print(f'  steady-state avg (calls 2..{runs}): {format_ms(steady_avg)}')
-        if steady_avg > 0:
-            print(f'  first-call overhead vs. steady-state: {times[0] / steady_avg:.1f}x')
+    print('-' * 50)
 
 
 if __name__ == '__main__':
