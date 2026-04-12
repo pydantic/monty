@@ -1,33 +1,17 @@
-use std::{
-    fmt,
-    sync::{Arc, Mutex, OnceLock},
-};
+use std::{fmt, sync::Arc};
 
 use ruff_db::{
     Db as SourceDb,
-    files::{File, FileRootKind, Files},
-    system::{DbWithTestSystem, System, SystemPathBuf, TestSystem},
+    files::{File, Files},
+    system::{DbWithTestSystem, System, TestSystem},
     vendored::VendoredFileSystem,
 };
 use ruff_python_ast::PythonVersion;
-use ty_module_resolver::{Db as ModuleResolverDb, SearchPathSettings, SearchPaths};
+use ty_module_resolver::{Db as ModuleResolverDb, SearchPaths};
 use ty_python_semantic::{
-    AnalysisSettings, Db, Program, ProgramSettings, PythonPlatform, PythonVersionSource, PythonVersionWithSource,
-    default_lint_registry,
+    AnalysisSettings, Db, Program, default_lint_registry,
     lint::{LintRegistry, RuleSelection},
 };
-
-/// Virtual source root used for all in-memory type-checking files.
-///
-/// The reusable database pool only supports root-level user files, so every public
-/// `SourceFile.path` is mapped directly under `/`.
-pub(crate) const SRC_ROOT: &str = "/";
-
-/// Maximum number of reusable `MemoryDb` instances kept in the process-wide pool.
-///
-/// The pool is intentionally small because every reused database retains its own
-/// Salsa memo graph and typeshed-derived semantic state.
-const MAX_POOLED_DBS: usize = 8;
 
 /// Very simple in-memory salsa/ty database.
 ///
@@ -63,7 +47,7 @@ impl fmt::Debug for MemoryDb {
 
 impl MemoryDb {
     /// Create a fresh database with its own Salsa storage and Monty's fixed typing config.
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             storage: salsa::Storage::new(None),
             system: TestSystem::default(),
@@ -73,107 +57,6 @@ impl MemoryDb {
             analysis_settings: AnalysisSettings::default().into(),
         }
     }
-}
-
-/// Pool of reusable databases for root-file type checking.
-///
-/// Each checked-out db is owned by exactly one caller until it is either returned
-/// clean or dropped. This keeps Salsa's single-writer invariant intact while still
-/// allowing concurrent type checks to use different databases.
-struct MemoryDbPool {
-    dbs: Mutex<Vec<MemoryDb>>,
-}
-
-impl MemoryDbPool {
-    /// Access the process-wide database pool.
-    fn global() -> &'static Self {
-        static GLOBAL_POOL: OnceLock<MemoryDbPool> = OnceLock::new();
-        GLOBAL_POOL.get_or_init(|| Self {
-            dbs: Mutex::new(Vec::new()),
-        })
-    }
-
-    /// Check out one pooled database, creating a fresh configured db if needed.
-    fn checkout(&'static self) -> Result<PooledMemoryDb, String> {
-        let maybe_db = {
-            let mut dbs = self.dbs.lock().map_err(|e| e.to_string())?;
-            dbs.pop()
-        };
-
-        Ok(PooledMemoryDb {
-            db: Some(maybe_db.unwrap_or_else(build_pooled_db)),
-            pool: self,
-        })
-    }
-
-    /// Return a fully scrubbed database to the pool if there is capacity left.
-    fn release(&self, db: MemoryDb) -> Result<(), String> {
-        let mut dbs = self.dbs.lock().map_err(|e| e.to_string())?;
-        if dbs.len() < MAX_POOLED_DBS {
-            dbs.push(db);
-        }
-        Ok(())
-    }
-}
-
-/// Exclusive lease for one pooled database.
-///
-/// The caller must only return the lease with [`Self::return_clean`] after all user
-/// files have been deleted and synced out of the in-memory filesystem. Dropping the
-/// lease without returning it discards the db, which is the panic-safe fallback.
-pub(crate) struct PooledMemoryDb {
-    db: Option<MemoryDb>,
-    pool: &'static MemoryDbPool,
-}
-
-impl PooledMemoryDb {
-    /// Borrow the checked-out database mutably for one type-check run.
-    pub(crate) fn db(&mut self) -> &mut MemoryDb {
-        self.db
-            .as_mut()
-            .expect("pooled memory db accessed after being returned")
-    }
-
-    /// Return a scrubbed database to the pool.
-    pub(crate) fn return_clean(mut self) -> Result<(), String> {
-        let db = self.db.take().expect("pooled memory db returned more than once");
-        self.pool.release(db)
-    }
-}
-
-/// Check out a database from the global pool.
-pub(crate) fn checkout_db() -> Result<PooledMemoryDb, String> {
-    MemoryDbPool::global().checkout()
-}
-
-/// Build one fresh database ready to enter the pool.
-///
-/// This sets up the source root and `Program` settings, but it intentionally does
-/// not run a synthetic type-check. The first real caller that uses a brand new db
-/// pays the cold-start cost; subsequent pooled reuses benefit from the populated
-/// Salsa caches created by real user work.
-fn build_pooled_db() -> MemoryDb {
-    let db = MemoryDb::new();
-    let src_root = SystemPathBuf::from(SRC_ROOT);
-    db.files().try_add_root(&db, &src_root, FileRootKind::Project);
-
-    let search_paths = SearchPathSettings::new(vec![src_root])
-        .to_search_paths(db.system(), db.vendored())
-        .expect("vendored typeshed search paths always resolve");
-
-    Program::from_settings(
-        &db,
-        ProgramSettings {
-            python_version: PythonVersionWithSource {
-                version: db.python_version(),
-                source: PythonVersionSource::default(),
-            },
-            python_platform: PythonPlatform::default(),
-            search_paths,
-        },
-    );
-
-    db
 }
 
 impl DbWithTestSystem for MemoryDb {

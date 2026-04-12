@@ -1,6 +1,5 @@
 use std::{
     fmt::{self, Display},
-    io::ErrorKind,
     sync::Arc,
 };
 
@@ -9,13 +8,16 @@ use ruff_db::{
         Annotation, Diagnostic, DiagnosticFormat, DiagnosticId, DisplayDiagnosticConfig, DisplayDiagnostics,
         UnifiedFile,
     },
-    files::{File, system_path_to_file},
-    system::{DbWithTestSystem, DbWithWritableSystem as _, SystemPathBuf},
+    files::File,
+    system::{DbWithWritableSystem as _, SystemPathBuf},
 };
 use ruff_text_size::{TextRange, TextSize};
 use ty_python_semantic::types::check_types;
 
-use crate::db::{MemoryDb, SRC_ROOT, checkout_db};
+use crate::{
+    db::MemoryDb,
+    pool::{PooledTypeCheckDb, SRC_ROOT},
+};
 
 /// All diagnostic formats supported by `TypeCheckingDiagnostics`.
 const SUPPORTED_FORMATS: [DiagnosticFormat; 9] = [
@@ -43,22 +45,6 @@ impl<'a> SourceFile<'a> {
     #[must_use]
     pub fn new(source_code: &'a str, path: &'a str) -> Self {
         Self { source_code, path }
-    }
-}
-
-/// File written into a pooled database during one type-check run.
-///
-/// Cleanup uses both the path and, when available, the interned `File` handle to
-/// make sure Salsa observes the deletion before the db is returned to the pool.
-struct TouchedRootFile {
-    path: SystemPathBuf,
-    file: Option<File>,
-}
-
-impl TouchedRootFile {
-    /// Track a root file path that must be deleted before the db is reused.
-    fn new(path: SystemPathBuf) -> Self {
-        Self { path, file: None }
     }
 }
 
@@ -117,39 +103,30 @@ pub fn type_check(
         ));
     }
 
-    let mut pooled_db = checkout_db()?;
-    let mut touched_files = Vec::new();
+    let mut pooled_db = PooledTypeCheckDb::checkout()?;
     let result = type_check_with_db(
-        pooled_db.db(),
+        &mut pooled_db,
         python_source,
         &main_path,
         stubs_file.zip(stubs_path.as_ref()),
-        &mut touched_files,
     );
-    let cleanup = cleanup_touched_files(pooled_db.db(), &touched_files);
-
-    if cleanup.is_ok() {
-        pooled_db.return_clean()?;
-    }
-
-    combine_type_check_results(result, cleanup)
+    pooled_db.finish(result)
 }
 
-/// Run one type-check operation against a checked-out database.
+/// Run one type-check operation against a checked-out pooled database.
 ///
-/// The caller provides the already-validated root file paths and a mutable list of
-/// touched files so cleanup can run even if this function returns an error.
+/// The caller provides already-validated root file paths, while the pooled wrapper
+/// owns the temporary-file bookkeeping needed for cleanup.
 fn type_check_with_db(
-    db: &mut MemoryDb,
+    pooled_db: &mut PooledTypeCheckDb,
     python_source: &SourceFile<'_>,
     main_path: &SystemPathBuf,
     stubs_file: Option<(&SourceFile<'_>, &SystemPathBuf)>,
-    touched_files: &mut Vec<TouchedRootFile>,
 ) -> Result<Option<TypeCheckingDiagnostics>, String> {
     let main_source = python_source.source_code;
 
     let (main_file, code_offset) = if let Some((stubs_file, stubs_path)) = stubs_file {
-        write_root_file(db, touched_files, stubs_path, stubs_file.source_code)?;
+        pooled_db.write_root_file(stubs_path, stubs_file.source_code)?;
 
         // Import the stub module into the user's source so ty sees those definitions
         // while keeping user-visible spans anchored to the original file later.
@@ -158,13 +135,14 @@ fn type_check_with_db(
         let offset = u32::try_from(new_source.len()).map_err(to_string)?;
         new_source.push_str(main_source);
 
-        let main_file = write_root_file(db, touched_files, main_path, &new_source)?;
+        let main_file = pooled_db.write_root_file(main_path, &new_source)?;
         (main_file, offset)
     } else {
-        let main_file = write_root_file(db, touched_files, main_path, main_source)?;
+        let main_file = pooled_db.write_root_file(main_path, main_source)?;
         (main_file, 0)
     };
 
+    let db = pooled_db.db();
     let mut diagnostics = check_types(db, main_file);
     diagnostics.retain(filter_diagnostics);
 
@@ -193,66 +171,6 @@ fn type_check_with_db(
     let rendered = RenderedDiagnostics::new(db, &diagnostics);
 
     Ok(Some(TypeCheckingDiagnostics::new(rendered)))
-}
-
-/// Write one root file into the db and remember it for mandatory cleanup.
-fn write_root_file(
-    db: &mut MemoryDb,
-    touched_files: &mut Vec<TouchedRootFile>,
-    path: &SystemPathBuf,
-    source: &str,
-) -> Result<File, String> {
-    db.write_file(path, source).map_err(to_string)?;
-    touched_files.push(TouchedRootFile::new(path.clone()));
-
-    let file = system_path_to_file(db, path).map_err(to_string)?;
-    touched_files
-        .last_mut()
-        .expect("newly pushed touched file must exist")
-        .file = Some(file);
-
-    Ok(file)
-}
-
-/// Remove all files written during a type-check run and sync the filesystem changes.
-///
-/// Cleanup runs in reverse write order and always syncs `/` once at the end so root
-/// directory listings cannot leak between pooled sessions.
-fn cleanup_touched_files(db: &mut MemoryDb, touched_files: &[TouchedRootFile]) -> Result<(), String> {
-    for touched in touched_files.iter().rev() {
-        match db.memory_file_system().remove_file(&touched.path) {
-            Ok(()) => {}
-            Err(err) if err.kind() == ErrorKind::NotFound => {}
-            Err(err) => {
-                return Err(format!(
-                    "Failed to remove pooled type-check file '{}': {err}",
-                    touched.path
-                ));
-            }
-        }
-
-        if let Some(file) = touched.file {
-            file.sync(db);
-        } else {
-            File::sync_path(db, &touched.path);
-        }
-    }
-
-    File::sync_path(db, &SystemPathBuf::from(SRC_ROOT));
-    Ok(())
-}
-
-/// Merge the type-check result with the cleanup result without hiding either failure.
-fn combine_type_check_results(
-    type_check_result: Result<Option<TypeCheckingDiagnostics>, String>,
-    cleanup_result: Result<(), String>,
-) -> Result<Option<TypeCheckingDiagnostics>, String> {
-    match (type_check_result, cleanup_result) {
-        (Ok(result), Ok(())) => Ok(result),
-        (Ok(_), Err(cleanup_err)) => Err(cleanup_err),
-        (Err(type_check_err), Ok(())) => Err(type_check_err),
-        (Err(type_check_err), Err(cleanup_err)) => Err(format!("{type_check_err}\ncleanup error: {cleanup_err}")),
-    }
 }
 
 /// Validate that `path` names a single root-level file suitable for pooled reuse.
