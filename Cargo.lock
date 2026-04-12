@@ -1803,7 +1803,10 @@ dependencies = [
 name = "monty_type_checking"
 version = "0.0.11"
 dependencies = [
+ "codspeed-criterion-compat",
+ "criterion",
  "monty_typeshed",
+ "pprof",
  "pretty_assertions",
  "ruff_db",
  "ruff_python_ast",

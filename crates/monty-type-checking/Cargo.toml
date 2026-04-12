@@ -27,6 +27,16 @@ salsa = { workspace = true }
 
 [dev-dependencies]
 pretty_assertions = { workspace = true }
+# Use codspeed-criterion-compat for CI benchmarks, real criterion for local flamegraphs
+codspeed-criterion-compat = "4.2.1"
+criterion = "0.5"
+
+[target.'cfg(unix)'.dev-dependencies]
+pprof = { version = "0.15", features = ["flamegraph", "criterion"] }
+
+[[bench]]
+name = "type_check"
+harness = false
 
 [lints]
 workspace = true

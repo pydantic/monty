@@ -1,24 +1,17 @@
-use std::{
-    fmt::{self, Display},
-    sync::{Arc, Mutex},
-};
+use std::fmt::{self, Display};
 
 use ruff_db::{
-    Db as SourceDb,
     diagnostic::{
         Annotation, Diagnostic, DiagnosticFormat, DiagnosticId, DisplayDiagnosticConfig, DisplayDiagnostics,
         UnifiedFile,
     },
-    files::{File, FileRootKind, system_path_to_file},
+    files::{File, system_path_to_file},
     system::{DbWithWritableSystem as _, SystemPathBuf},
 };
 use ruff_text_size::{TextRange, TextSize};
-use ty_module_resolver::SearchPathSettings;
-use ty_python_semantic::{
-    Program, ProgramSettings, PythonPlatform, PythonVersionSource, PythonVersionWithSource, types::check_types,
-};
+use ty_python_semantic::types::check_types;
 
-use crate::db::MemoryDb;
+use crate::db::{SRC_ROOT, global_db, next_call_prefix, strip_unique_prefix};
 
 /// Definition of a source file.
 pub struct SourceFile<'a> {
@@ -38,6 +31,12 @@ impl<'a> SourceFile<'a> {
 
 /// Type check some python source code, checking if it's valid to run with monty.
 ///
+/// All `type_check` calls share the process-wide warm database (see [`global_db`])
+/// to amortize typeshed parsing across calls. Calls are serialized on a mutex so
+/// salsa's single-writer invariant holds, and each call writes to a unique internal
+/// path (prefixed with `__mc<N>__`) so its salsa `File` ingredient is independent
+/// of every other call's — diagnostics remain correct across concurrent holders.
+///
 /// # Arguments
 /// * `python_source` - The python source code to type check.
 /// * `stubs_file` - Optional stubs file to use for type checking.
@@ -50,49 +49,30 @@ pub fn type_check(
     python_source: &SourceFile<'_>,
     stubs_file: Option<&SourceFile<'_>>,
 ) -> Result<Option<TypeCheckingDiagnostics>, String> {
-    let mut db = MemoryDb::new();
+    let mut db = global_db().lock().map_err(|e| e.to_string())?;
+    let src_root = SystemPathBuf::from(SRC_ROOT);
+    let call_prefix = next_call_prefix();
 
-    // Files must be written under a directory that's registered as a search path for module
-    // resolution to work. We use "/" as the root directory so paths appear without a prefix.
-    let src_root = SystemPathBuf::from("/");
-
-    // Register the source root for Salsa tracking - required for module resolution
-    db.files().try_add_root(&db, &src_root, FileRootKind::Project);
-
-    let search_paths = SearchPathSettings::new(vec![src_root.clone()])
-        .to_search_paths(db.system(), db.vendored())
-        .map_err(to_string)?;
-
-    // The API is confusing here - we have to load the "program" here like this, otherwise we get unwrap
-    // panics when calling `check_types`
-    Program::from_settings(
-        &db,
-        ProgramSettings {
-            python_version: PythonVersionWithSource {
-                version: db.python_version(),
-                source: PythonVersionSource::default(),
-            },
-            python_platform: PythonPlatform::default(),
-            search_paths,
-        },
-    );
-
-    // Build absolute paths for files under /
-    let main_path = src_root.join(python_source.path);
+    // Per-call unique path — `__mc<N>__<user_path>` — prevents the call's `File`
+    // ingredient from colliding with any other call's and keeps earlier diagnostics
+    // valid after later calls have run.
+    let main_path = unique_path(&src_root, &call_prefix, python_source.path);
     let main_source = python_source.source_code;
 
     let code_offset: u32 = if let Some(stubs_file) = stubs_file {
-        let stubs_path = src_root.join(stubs_file.path);
+        let stubs_path = unique_path(&src_root, &call_prefix, stubs_file.path);
 
         // write the stub file
         db.write_file(&stubs_path, stubs_file.source_code).map_err(to_string)?;
 
-        // prepend the stub import to the main source code
-        let stub_stem = stubs_file
-            .path
+        // prepend the stub import to the main source code. Use the uniquified stub
+        // module name so the import resolves against this call's stub file only.
+        let stub_basename = stubs_file.path.rsplit('/').next().unwrap_or(stubs_file.path);
+        let stub_stem = stub_basename
             .split_once('.')
-            .map_or(stubs_file.path, |(before, _)| before);
-        let mut new_source = format!("from {stub_stem} import *\n");
+            .map_or(stub_basename, |(before, _)| before);
+        let unique_stub_module = format!("{call_prefix}{stub_stem}");
+        let mut new_source = format!("from {unique_stub_module} import *\n");
         let offset = u32::try_from(new_source.len()).map_err(to_string)?;
         new_source.push_str(main_source);
 
@@ -106,14 +86,14 @@ pub fn type_check(
         0
     };
 
-    let main_file = system_path_to_file(&db, &main_path).map_err(to_string)?;
-    let mut diagnostics = check_types(&db, main_file);
+    let main_file = system_path_to_file(&*db, &main_path).map_err(to_string)?;
+    let mut diagnostics = check_types(&*db, main_file);
     diagnostics.retain(filter_diagnostics);
 
     if diagnostics.is_empty() {
         Ok(None)
     } else {
-        // without all this errors would appear on the wrong line because we injected `from type_stubs import *`
+        // without all this errors would appear on the wrong line because we injected `from <stub> import *`
 
         // if we injected the stubs import, we need to write the actual source back to the file in the database
         db.write_file(&main_path, main_source).map_err(to_string)?;
@@ -134,10 +114,21 @@ pub fn type_check(
             }
         }
         // Sort diagnostics by line number
-        diagnostics.sort_by(|a, b| a.rendering_sort_key(&db).cmp(&b.rendering_sort_key(&db)));
+        diagnostics.sort_by(|a, b| a.rendering_sort_key(&*db).cmp(&b.rendering_sort_key(&*db)));
 
-        Ok(Some(TypeCheckingDiagnostics::new(diagnostics, db)))
+        Ok(Some(TypeCheckingDiagnostics::new(diagnostics)))
     }
+}
+
+/// Compose the per-call unique path for a user-supplied script name.
+///
+/// The prefix is applied to the basename so that `src/app.py` becomes
+/// `/__mc42__src/app.py` (not `/src/__mc42__app.py`) — simpler to strip and keeps
+/// rendered output close to the user's original path.
+fn unique_path(src_root: &SystemPathBuf, call_prefix: &str, user_path: &str) -> SystemPathBuf {
+    // Trim leading slashes so joining under src_root stays within the project.
+    let trimmed = user_path.trim_start_matches('/');
+    src_root.join(format!("{call_prefix}{trimmed}"))
 }
 
 fn to_string(err: impl Display) -> String {
@@ -163,12 +154,17 @@ fn adjust_annotation_span(ann: &mut Annotation, main_file: File, offset: TextSiz
 }
 
 /// Represents diagnostic details when type checking fails.
+///
+/// Doesn't hold a database clone: rendering acquires the process-wide [`global_db`]
+/// mutex on demand. This matters for correctness — an `Arc<MemoryDb>` captured here
+/// would pin salsa's `Arc<Zalsa>` refcount above 1 and deadlock the next `write_file`
+/// setter (salsa's `Arc::get_mut` spins until refcount drops to 1). The diagnostic's
+/// `File` ingredients are unique per call, so re-querying the db at display time
+/// still returns the original source text produced during this diagnostic's call.
 #[derive(Clone)]
 pub struct TypeCheckingDiagnostics {
     /// The actual diagnostic message
     diagnostics: Vec<Diagnostic>,
-    /// db used to display diagnostics, wrapped in Mutex for Sync so MontyTypingError is sendable
-    db: Arc<Mutex<MemoryDb>>,
     /// How to format the output
     format: DiagnosticFormat,
     /// Whether to highlight the output with ansi colors
@@ -180,13 +176,7 @@ pub struct TypeCheckingDiagnostics {
 /// raw errors are not useful to end users.
 impl fmt::Debug for TypeCheckingDiagnostics {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let config = self.config();
-        let db = self.db.lock().unwrap();
-        write!(
-            f,
-            "TypeCheckingDiagnostics:\n{}",
-            DisplayDiagnostics::new(&*db, &config, &self.diagnostics)
-        )
+        write!(f, "TypeCheckingDiagnostics:\n{self}")
     }
 }
 
@@ -195,23 +185,26 @@ impl fmt::Debug for TypeCheckingDiagnostics {
 #[expect(dead_code)]
 pub struct DebugTypeCheckingDiagnostics<'a> {
     diagnostics: &'a [Diagnostic],
-    db: Arc<Mutex<MemoryDb>>,
     format: DiagnosticFormat,
     color: bool,
 }
 
 impl fmt::Display for TypeCheckingDiagnostics {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let db = self.db.lock().unwrap();
-        DisplayDiagnostics::new(&*db, &self.config(), &self.diagnostics).fmt(f)
+        let rendered = {
+            let db = global_db().lock().expect("global db mutex poisoned");
+            DisplayDiagnostics::new(&*db, &self.config(), &self.diagnostics).to_string()
+        };
+        // Hide the internal `__mc<N>__` uniquifying prefix from user-visible output so
+        // file paths in error messages read `main.py`, not `__mc42__main.py`.
+        f.write_str(&strip_unique_prefix(&rendered))
     }
 }
 
 impl TypeCheckingDiagnostics {
-    fn new(diagnostics: Vec<Diagnostic>, db: MemoryDb) -> Self {
+    fn new(diagnostics: Vec<Diagnostic>) -> Self {
         Self {
             diagnostics,
-            db: Arc::new(Mutex::new(db)),
             format: DiagnosticFormat::Full,
             color: false,
         }
@@ -228,7 +221,6 @@ impl TypeCheckingDiagnostics {
     pub fn debug_details(&self) -> DebugTypeCheckingDiagnostics<'_> {
         DebugTypeCheckingDiagnostics {
             diagnostics: &self.diagnostics,
-            db: self.db.clone(),
             format: self.format,
             color: self.color,
         }

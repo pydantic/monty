@@ -10,6 +10,44 @@ def test_type_check_no_errors():
     assert m.type_check() is None
 
 
+def test_type_check_no_cross_call_state_leak():
+    """Successive calls must not see stale results from earlier calls.
+
+    Every type_check call writes the same script path ('main.py') into the process-wide
+    warm database. Salsa invalidates the file's memos on each write — this regression
+    test guards that behavior end-to-end.
+    """
+    # Valid code first.
+    assert pydantic_monty.Monty('x = 1').type_check() is None
+    # Same script path, invalid code — must produce a fresh error, not a cached None.
+    with pytest.raises(pydantic_monty.MontyTypingError):
+        pydantic_monty.Monty('"hello" + 1').type_check()
+    # Back to valid code — must be None again, not a stale error.
+    assert pydantic_monty.Monty('x = 1').type_check() is None
+
+
+def test_type_check_stubs_not_leaked_to_later_call():
+    """Stub declarations from an earlier call must not be visible to a later one.
+
+    The warm-template optimization shares Salsa storage across calls, but each call
+    owns its own in-memory filesystem. A name defined in call 1's stubs must therefore
+    be unresolved in call 2 when that call doesn't pass stubs — regardless of memo
+    state carried over in the shared storage.
+    """
+    # Call 1: stubs declare `call1_stub_var`; code referencing it type-checks clean.
+    assert (
+        pydantic_monty.Monty(
+            'result = call1_stub_var + 1',
+            type_check_stubs='call1_stub_var = 0',
+        ).type_check()
+        is None
+    )
+    # Call 2: same expression, no stubs — `call1_stub_var` must be undefined.
+    with pytest.raises(pydantic_monty.MontyTypingError) as exc_info:
+        pydantic_monty.Monty('result = call1_stub_var + 1').type_check()
+    assert str(exc_info.value) == snapshot()
+
+
 def test_type_check_with_errors():
     """Type checking code with type errors raises MontyTypingError."""
     m = pydantic_monty.Monty('"hello" + 1')
