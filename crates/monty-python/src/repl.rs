@@ -22,7 +22,7 @@ use crate::{
     async_dispatch::{ReplCleanupNotifier, await_repl_transition, dispatch_loop_repl},
     convert::{get_docstring, monty_to_py, py_to_monty},
     dataclass::DcRegistry,
-    exceptions::{MontyError, exc_py_to_monty},
+    exceptions::exc_py_to_monty,
     external::{ExternalFunctionRegistry, dispatch_method_call},
     limits::{CancellationFlag, FutureCancellationGuard, PySignalTracker, extract_limits},
     monty_cls::{EitherProgress, PyMontyComplete, py_type_check},
@@ -210,7 +210,7 @@ impl PyMontyRepl {
         let output = match result {
             Ok(v) => v,
             Err(e) => {
-                return Err(MontyError::new_err_with_print_output(py, e, print_target.drain_py(py)));
+                return Err(print_target.drain_into_err(py, e));
             }
         };
 
@@ -267,11 +267,7 @@ impl PyMontyRepl {
                     Err(e) => {
                         let err = *e;
                         this.put_repl_after_rollback(EitherRepl::from_core(err.repl));
-                        return Err(MontyError::new_err_with_print_output(
-                            py,
-                            err.error,
-                            print_target.drain_py(py),
-                        ));
+                        return Err(print_target.drain_into_err(py, err.error));
                     }
                 };
                 let either = EitherProgress::$variant(progress, repl_owner);
@@ -832,11 +828,7 @@ impl PyMontyRepl {
                 put_back(mount_table);
                 let err: ReplStartError<T> = *$e;
                 self.put_repl_after_rollback(EitherRepl::from_core(err.repl));
-                return Err(MontyError::new_err_with_print_output(
-                    py,
-                    err.error,
-                    print_target.drain_py(py),
-                ));
+                return Err(print_target.drain_into_err(py, err.error));
             }};
         }
 

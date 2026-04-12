@@ -27,7 +27,9 @@ pub enum PrintStream {
 /// - `Stdout` - Writes to standard output (the default behavior)
 /// - `Collect` - Accumulates output into a target `String` for programmatic access
 /// - `CollectTuples` - Accumulates output as `(stream, text)` pairs, merging consecutive
-///   same-stream fragments into one tuple so each `print()` call yields exactly one entry
+///   same-stream fragments into one tuple. Each write to the same stream extends the
+///   trailing entry rather than producing a new one; a new tuple is only pushed when
+///   the stream changes
 /// - `Callback` - Delegates to a user-provided [`PrintWriterCallback`] implementation
 pub enum PrintWriter<'a> {
     /// Silently discard all output.
@@ -42,7 +44,10 @@ pub enum PrintWriter<'a> {
     /// and `stdout_push` for each separator/terminator. To avoid one tuple per
     /// fragment, this variant appends to the trailing tuple when it already matches
     /// the current stream; a new tuple is only pushed when the stream changes.
-    /// A single `print(a, b)` call therefore produces one `(Stdout, "a b\n")` entry.
+    /// So long as every write targets the same stream (the status quo today, since
+    /// `print()` only writes to stdout), a single `print(a, b)` call produces one
+    /// `(Stdout, "a b\n")` entry — and consecutive prints with `end=''` likewise
+    /// merge into a single trailing entry.
     CollectTuples(&'a mut Vec<(PrintStream, String)>),
     /// Delegate to a custom callback.
     Callback(&'a mut dyn PrintWriterCallback),
@@ -127,11 +132,7 @@ fn append_tuple_str(buf: &mut Vec<(PrintStream, String)>, stream: PrintStream, t
 fn append_tuple_char(buf: &mut Vec<(PrintStream, String)>, stream: PrintStream, ch: char) {
     match buf.last_mut() {
         Some((s, existing)) if *s == stream => existing.push(ch),
-        _ => {
-            let mut s = String::new();
-            s.push(ch);
-            buf.push((stream, s));
-        }
+        _ => buf.push((stream, String::from(ch))),
     }
 }
 

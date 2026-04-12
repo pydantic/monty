@@ -29,7 +29,7 @@ use pyo3::{
     types::{PyList, PyString, PyTuple},
 };
 
-use crate::exceptions::exc_py_to_monty;
+use crate::exceptions::{MontyError, exc_py_to_monty};
 
 /// Shared collect buffer — wrapped in an `Arc<Mutex<..>>` so the buffer survives
 /// across `start`/`resume` snapshot boundaries (the snapshot holds one handle,
@@ -95,15 +95,33 @@ impl PrintTarget {
     /// Returns a fresh `PrintTarget` that targets the same sink as `self`.
     ///
     /// - `Stdout` → `Stdout` (nothing to share).
-    /// - `Callback` → clones the `Py<PyAny>` reference (another handle to the
-    ///   same callable).
+    /// - `Callback` → clones the `Py<PyAny>` reference using the provided GIL
+    ///   token.
     /// - `Collect` → clones the `Arc`, so the new target **writes into the same
     ///   buffer**. This is the desired behavior for threading the target
     ///   through `start`/`resume` chains and into `spawn_blocking` workers.
+    ///
+    /// Used instead of `Clone` to make the share-vs-copy intent explicit.
+    /// Callers without a `Python` token in scope should use
+    /// [`clone_handle_detached`](Self::clone_handle_detached) instead.
     pub fn clone_handle(&self, py: Python<'_>) -> Self {
         match self {
             Self::Stdout => Self::Stdout,
             Self::Callback(cb) => Self::Callback(cb.clone_ref(py)),
+            Self::Collect(arc) => Self::Collect(arc.clone()),
+        }
+    }
+
+    /// Detached variant of [`clone_handle`](Self::clone_handle) for callers
+    /// running without the GIL held (e.g. inside an `async move` block or a
+    /// `spawn_blocking` worker about to hand the clone to another thread).
+    ///
+    /// Acquires the GIL internally only when the `Callback` variant actually
+    /// needs it; `Stdout` and `Collect` skip the acquisition entirely.
+    pub fn clone_handle_detached(&self) -> Self {
+        match self {
+            Self::Stdout => Self::Stdout,
+            Self::Callback(_) => Python::attach(|py| self.clone_handle(py)),
             Self::Collect(arc) => Self::Collect(arc.clone()),
         }
     }
@@ -131,7 +149,11 @@ impl PrintTarget {
     pub fn storage(&self) -> PrintStorage<'_> {
         match self {
             Self::Stdout => PrintStorage::Stdout,
-            Self::Callback(cb) => PrintStorage::Callback(CallbackStringPrint::from_ref(cb)),
+            // Borrow the callback rather than clone it — the storage's lifetime
+            // is bounded by the target, so there is no need to bump the Py ref
+            // count per VM transition (which would require reacquiring the GIL
+            // inside `py.detach`).
+            Self::Callback(cb) => PrintStorage::Callback(CallbackStringPrint(cb)),
             Self::Collect(arc) => PrintStorage::Collect(arc.lock().unwrap_or_else(PoisonError::into_inner)),
         }
     }
@@ -141,28 +163,45 @@ impl PrintTarget {
     ///
     /// Intended for terminal paths — `MontyComplete` on success, or the
     /// `print_output` attribute of `MontyRuntimeError` on failure. Returns
-    /// `None` for non-`Collect` targets so the Python attribute is `None`
+    /// `Ok(None)` for non-`Collect` targets so the Python attribute is `None`
     /// (rather than an empty list) in those modes.
-    pub fn drain_py(&self, py: Python<'_>) -> Option<Py<PyList>> {
+    ///
+    /// Returns `Err` if building the Python list fails (rare — interpreter
+    /// shutdown or allocation failure). Callers should propagate with `?`.
+    pub fn drain_py(&self, py: Python<'_>) -> PyResult<Option<Py<PyList>>> {
         let Self::Collect(arc) = self else {
-            return None;
+            return Ok(None);
         };
         let mut guard = arc.lock().unwrap_or_else(PoisonError::into_inner);
         let items = mem::take(&mut *guard);
-        Some(vec_to_py_list(py, items).expect("failed to build print_output list"))
+        Ok(Some(vec_to_py_list(py, items)?))
+    }
+
+    /// Drains the collect buffer and builds a `MontyError` for `exc`, attaching
+    /// the drained `print_output` list.
+    ///
+    /// If building the Python list fails (rare — interpreter shutdown or
+    /// allocation failure), returns that `PyErr` instead; the underlying
+    /// Monty exception is dropped in that case, but the drain failure is
+    /// what the user actually needs to see.
+    pub fn drain_into_err(&self, py: Python<'_>, exc: MontyException) -> PyErr {
+        match self.drain_py(py) {
+            Ok(list) => MontyError::new_err(py, exc, list),
+            Err(err) => err,
+        }
     }
 
     /// Non-draining peek for snapshot `print_output` getters.
     ///
     /// Clones the current buffer contents into a Python list, leaving the
     /// underlying Vec untouched so further `resume()` calls continue to
-    /// accumulate. Returns `None` for non-`Collect` targets.
-    pub fn snapshot_py(&self, py: Python<'_>) -> Option<Py<PyList>> {
+    /// accumulate. Returns `Ok(None)` for non-`Collect` targets.
+    pub fn snapshot_py(&self, py: Python<'_>) -> PyResult<Option<Py<PyList>>> {
         let Self::Collect(arc) = self else {
-            return None;
+            return Ok(None);
         };
         let guard = arc.lock().unwrap_or_else(PoisonError::into_inner);
-        Some(vec_to_py_list(py, guard.clone()).expect("failed to build print_output list"))
+        Ok(Some(vec_to_py_list(py, guard.clone())?))
     }
 }
 
@@ -196,8 +235,9 @@ fn vec_to_py_list(py: Python<'_>, items: Vec<(PrintStream, String)>) -> PyResult
 pub(crate) enum PrintStorage<'a> {
     /// No-op storage — the writer just targets stdout.
     Stdout,
-    /// Owned callback wrapper (holds a `Py<PyAny>` handle).
-    Callback(CallbackStringPrint),
+    /// Borrowed callback wrapper — points at the `Py<PyAny>` owned by the
+    /// parent `PrintTarget::Callback` variant.
+    Callback(CallbackStringPrint<'a>),
     /// Live `MutexGuard` over the shared collect buffer, held for as long as
     /// this storage exists.
     Collect(MutexGuard<'a, Vec<(PrintStream, String)>>),
@@ -220,19 +260,16 @@ impl PrintStorage<'_> {
 
 /// `PrintWriterCallback` adaptor that forwards each fragment to a Python callable.
 ///
-/// Holds a GIL-independent `Py<PyAny>` reference so it can be used across GIL
-/// release boundaries; the GIL is re-acquired briefly for each invocation.
+/// Borrows the `Py<PyAny>` from the parent `PrintTarget` rather than cloning
+/// it; this avoids reacquiring the GIL on every VM transition just to bump the
+/// reference count. `Py<PyAny>` is `Send + Sync`, so the shared reference is
+/// safe to move across `py.detach` / `spawn_blocking` boundaries. The GIL is
+/// re-acquired once per actual print fragment inside the trait methods —
+/// which is unavoidable, since that is when we call into Python.
 #[derive(Debug)]
-pub(crate) struct CallbackStringPrint(Py<PyAny>);
+pub(crate) struct CallbackStringPrint<'a>(&'a Py<PyAny>);
 
-impl CallbackStringPrint {
-    /// Creates a wrapper that shares a fresh reference to the given callable.
-    fn from_ref(callback: &Py<PyAny>) -> Self {
-        Self(Python::attach(|py| callback.clone_ref(py)))
-    }
-}
-
-impl PrintWriterCallback for CallbackStringPrint {
+impl PrintWriterCallback for CallbackStringPrint<'_> {
     fn stdout_write(&mut self, output: Cow<'_, str>) -> Result<(), MontyException> {
         Python::attach(|py| {
             self.0.bind(py).call1(("stdout", output.as_ref()))?;
@@ -242,8 +279,12 @@ impl PrintWriterCallback for CallbackStringPrint {
     }
 
     fn stdout_push(&mut self, end: char) -> Result<(), MontyException> {
+        // Encode the character into a stack buffer to avoid allocating a
+        // fresh `String` for each separator / terminator that `print()` emits.
+        let mut buf = [0u8; 4];
+        let end_str: &str = end.encode_utf8(&mut buf);
         Python::attach(|py| {
-            self.0.bind(py).call1(("stdout", end.to_string()))?;
+            self.0.bind(py).call1(("stdout", end_str))?;
             Ok::<_, PyErr>(())
         })
         .map_err(|e| Python::attach(|py| exc_py_to_monty(py, &e)))

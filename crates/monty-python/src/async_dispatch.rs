@@ -154,13 +154,13 @@ pub(crate) async fn dispatch_loop_run<T: ResourceTracker + Send + 'static>(
 
                 match call_result {
                     CallResult::Sync(result) => {
-                        let target = Python::attach(|py| print_target.clone_handle(py));
+                        let target = print_target.clone_handle_detached();
                         progress = spawn_resume!(call, result, target).map_err(|e| run_err(&print_target, e))?;
                     }
                     CallResult::Coroutine(coro) => {
                         let call_id = call.call_id;
                         spawn_coroutine_task(&mut join_set, call_id, coro, &dc_registry)?;
-                        let target = Python::attach(|py| print_target.clone_handle(py));
+                        let target = print_target.clone_handle_detached();
                         progress = spawn_resume!(call, ExtFunctionResult::Future(call_id), target)
                             .map_err(|e| run_err(&print_target, e))?;
                     }
@@ -168,17 +168,17 @@ pub(crate) async fn dispatch_loop_run<T: ResourceTracker + Send + 'static>(
             }
             RunProgress::OsCall(call) => {
                 let result = dispatch_os_call_py(call.function, &call.args, &call.kwargs, os.as_ref(), &dc_registry);
-                let target = Python::attach(|py| print_target.clone_handle(py));
+                let target = print_target.clone_handle_detached();
                 progress = spawn_resume!(call, result, target).map_err(|e| run_err(&print_target, e))?;
             }
             RunProgress::NameLookup(lookup) => {
                 let result = resolve_name_lookup(&lookup.name, external_functions.as_ref());
-                let target = Python::attach(|py| print_target.clone_handle(py));
+                let target = print_target.clone_handle_detached();
                 progress = spawn_resume!(lookup, result, target).map_err(|e| run_err(&print_target, e))?;
             }
             RunProgress::ResolveFutures(state) => {
                 let results = wait_for_futures(&mut join_set, state.pending_call_ids()).await?;
-                let target = Python::attach(|py| print_target.clone_handle(py));
+                let target = print_target.clone_handle_detached();
                 progress = spawn_resume!(state, results, target).map_err(|e| run_err(&print_target, e))?;
             }
         }
@@ -188,7 +188,7 @@ pub(crate) async fn dispatch_loop_run<T: ResourceTracker + Send + 'static>(
 /// Builds a `MontyRuntimeError` for an error raised during async dispatch,
 /// attaching the collected print buffer (if any) for the `'collect'` print mode.
 fn run_err(print_target: &PrintTarget, err: MontyException) -> PyErr {
-    Python::attach(|py| MontyError::new_err_with_print_output(py, err, print_target.drain_py(py)))
+    Python::attach(|py| print_target.drain_into_err(py, err))
 }
 
 /// Drives the async dispatch loop for a REPL `MontyRepl.feed_run_async()` call.
@@ -239,7 +239,7 @@ where
 
                 match call_result {
                     CallResult::Sync(result) => {
-                        let target = Python::attach(|py| print_target.clone_handle(py));
+                        let target = print_target.clone_handle_detached();
                         let next_progress =
                             await_repl_transition(&repl_owner, cleanup_notifier.clone(), target, move |target| {
                                 target.with_writer(|writer| call.resume(result, writer))
@@ -253,7 +253,7 @@ where
                             restore_repl(&repl_owner, &cleanup_notifier, call.into_repl());
                             return Err(e);
                         }
-                        let target = Python::attach(|py| print_target.clone_handle(py));
+                        let target = print_target.clone_handle_detached();
                         let next_progress =
                             await_repl_transition(&repl_owner, cleanup_notifier.clone(), target, move |target| {
                                 target.with_writer(|writer| call.resume(ExtFunctionResult::Future(call_id), writer))
@@ -265,7 +265,7 @@ where
             }
             ReplProgress::OsCall(call) => {
                 let result = dispatch_os_call_py(call.function, &call.args, &call.kwargs, os.as_ref(), &dc_registry);
-                let target = Python::attach(|py| print_target.clone_handle(py));
+                let target = print_target.clone_handle_detached();
                 let next_progress =
                     await_repl_transition(&repl_owner, cleanup_notifier.clone(), target, move |target| {
                         target.with_writer(|writer| call.resume(result, writer))
@@ -275,7 +275,7 @@ where
             }
             ReplProgress::NameLookup(lookup) => {
                 let result = resolve_name_lookup(&lookup.name, external_functions.as_ref());
-                let target = Python::attach(|py| print_target.clone_handle(py));
+                let target = print_target.clone_handle_detached();
                 let next_progress =
                     await_repl_transition(&repl_owner, cleanup_notifier.clone(), target, move |target| {
                         target.with_writer(|writer| lookup.resume(result, writer))
@@ -290,7 +290,7 @@ where
                 let ReplProgress::ResolveFutures(state) = progress_guard.take() else {
                     unreachable!("ResolveFutures guard state changed unexpectedly");
                 };
-                let target = Python::attach(|py| print_target.clone_handle(py));
+                let target = print_target.clone_handle_detached();
                 let next_progress =
                     await_repl_transition(&repl_owner, cleanup_notifier.clone(), target, move |target| {
                         target.with_writer(|writer| state.resume(results, writer))
@@ -619,7 +619,7 @@ where
     let py_err = Python::attach(|py| {
         let owner = repl_owner.bind(py).get();
         owner.put_repl_after_rollback(EitherRepl::from_core(err.repl));
-        MontyError::new_err(py, err.error)
+        MontyError::new_err(py, err.error, None)
     });
     cleanup_notifier.finish();
     py_err

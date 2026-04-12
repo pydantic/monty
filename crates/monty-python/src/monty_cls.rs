@@ -83,7 +83,8 @@ impl PyMonty {
         }
 
         // Create the snapshot (parses the code)
-        let runner = MontyRun::new(code, script_name, input_names.clone()).map_err(|e| MontyError::new_err(py, e))?;
+        let runner =
+            MontyRun::new(code, script_name, input_names.clone()).map_err(|e| MontyError::new_err(py, e, None))?;
 
         Ok(Self {
             runner,
@@ -191,11 +192,7 @@ impl PyMonty {
                 match py.detach(|| print_target.with_writer(|writer| runner.start(input_values, $tracker, writer))) {
                     Ok(p) => p,
                     Err(e) => {
-                        return Err(MontyError::new_err_with_print_output(
-                            py,
-                            e,
-                            print_target.drain_py(py),
-                        ));
+                        return Err(print_target.drain_into_err(py, e));
                     }
                 }
             }};
@@ -368,16 +365,14 @@ impl PyMonty {
             // Give the initial `start()` its own handle to the print target so the
             // ongoing buffer keeps accumulating once the dispatch loop takes over
             // ownership of `print_target`.
-            let start_target = Python::attach(|py| print_target.clone_handle(py));
+            let start_target = print_target.clone_handle_detached();
             let tracker = tracker_builder(cancellation_flag);
 
             let progress = await_run_transition(move || {
                 start_target.with_writer(|writer| runner.start(input_values, tracker, writer))
             })
             .await?
-            .map_err(|e| {
-                Python::attach(|py| MontyError::new_err_with_print_output(py, e, print_target.drain_py(py)))
-            })?;
+            .map_err(|e| Python::attach(|py| print_target.drain_into_err(py, e)))?;
 
             let result = dispatch_loop_run(progress, external_functions, os, dc_registry, print_target).await;
             cancellation_guard.disarm();
@@ -474,11 +469,7 @@ impl PyMonty {
                 py.detach(|| print_target.with_writer(|writer| self.runner.run(input_values, tracker, writer)));
             return match result {
                 Ok(v) => PyMontyComplete::create(py, &v, &self.dc_registry, &print_target),
-                Err(err) => Err(MontyError::new_err_with_print_output(
-                    py,
-                    err,
-                    print_target.drain_py(py),
-                )),
+                Err(err) => Err(print_target.drain_into_err(py, err)),
             };
         }
 
@@ -495,7 +486,7 @@ impl PyMonty {
 
         // Convert a VM `MontyException` into a `MontyRuntimeError`, attaching
         // the currently-collected print buffer for `'collect'` runs.
-        let to_err = |py: Python<'_>, e| MontyError::new_err_with_print_output(py, e, print_target.drain_py(py));
+        let to_err = |py: Python<'_>, e| print_target.drain_into_err(py, e);
 
         // Clone the runner since start() consumes it - allows reuse of the parsed code
         let runner = self.runner.clone();
@@ -1029,7 +1020,7 @@ impl PyFunctionSnapshot {
     /// called, without draining the buffer. Further `resume()` calls continue
     /// to append. `None` for other print modes.
     #[getter]
-    fn print_output(&self, py: Python<'_>) -> Option<Py<PyList>> {
+    fn print_output(&self, py: Python<'_>) -> PyResult<Option<Py<PyList>>> {
         self.print_callback.snapshot_py(py)
     }
 
@@ -1058,7 +1049,7 @@ impl PyFunctionSnapshot {
         // Each VM resume builds its writer via `with_writer` inside the
         // `py.detach` closure, so the collect-buffer lock is only held during
         // the transition and `drain_py` on the error path is safe.
-        let to_err = |py: Python<'_>, e| MontyError::new_err_with_print_output(py, e, self.print_callback.drain_py(py));
+        let to_err = |py: Python<'_>, e| self.print_callback.drain_into_err(py, e);
 
         let progress = match snapshot {
             EitherFunctionSnapshot::NoLimitFn(call) => {
@@ -1297,7 +1288,7 @@ impl PyNameLookupSnapshot {
     /// Live view of the collect buffer when `print_callback='collect'`;
     /// `None` for other print modes. See `FunctionSnapshot.print_output`.
     #[getter]
-    fn print_output(&self, py: Python<'_>) -> Option<Py<PyList>> {
+    fn print_output(&self, py: Python<'_>) -> PyResult<Option<Py<PyList>>> {
         self.print_callback.snapshot_py(py)
     }
 
@@ -1318,7 +1309,7 @@ impl PyNameLookupSnapshot {
             NameLookupResult::Undefined
         };
 
-        let to_err = |py: Python<'_>, e| MontyError::new_err_with_print_output(py, e, self.print_callback.drain_py(py));
+        let to_err = |py: Python<'_>, e| self.print_callback.drain_into_err(py, e);
 
         let progress = match snapshot {
             EitherLookupSnapshot::NoLimit(snapshot) => {
@@ -1519,7 +1510,7 @@ impl PyFutureSnapshot {
     /// Live view of the collect buffer when `print_callback='collect'`;
     /// `None` for other print modes. See `FunctionSnapshot.print_output`.
     #[getter]
-    fn print_output(&self, py: Python<'_>) -> Option<Py<PyList>> {
+    fn print_output(&self, py: Python<'_>) -> PyResult<Option<Py<PyList>>> {
         self.print_callback.snapshot_py(py)
     }
 
@@ -1545,7 +1536,7 @@ impl PyFutureSnapshot {
             })
             .collect::<PyResult<Vec<_>>>()?;
 
-        let to_err = |py: Python<'_>, e| MontyError::new_err_with_print_output(py, e, self.print_callback.drain_py(py));
+        let to_err = |py: Python<'_>, e| self.print_callback.drain_into_err(py, e);
 
         let progress = match snapshot {
             EitherFutureSnapshot::NoLimit(snapshot) => {
@@ -1676,7 +1667,7 @@ impl PyMontyComplete {
         let output = monty_to_py(py, output, dc_registry)?;
         let slf = Self {
             output,
-            print_output: print_target.drain_py(py),
+            print_output: print_target.drain_py(py)?,
         };
         slf.into_bound_py_any(py)
     }
@@ -1787,7 +1778,7 @@ where
     repl_owner
         .get()
         .put_repl_after_rollback(EitherRepl::from_core(err.repl));
-    MontyError::new_err(py, err.error)
+    MontyError::new_err(py, err.error, None)
 }
 
 /// Handles an OS call via a Rust [`MountTable`], falling through to the

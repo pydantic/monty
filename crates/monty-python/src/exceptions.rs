@@ -40,27 +40,22 @@ impl MontyError {
     /// Converts a Monty exception to a `PyErr`.
     ///
     /// For `SyntaxError` exceptions, creates a `MontySyntaxError`.
-    /// For all other exceptions, creates a `MontyRuntimeError` with all the exception
-    /// information preserved, including the traceback frames and display string.
+    /// For all other exceptions, creates a `MontyRuntimeError` with all the
+    /// exception information preserved, including the traceback frames and
+    /// display string.
     ///
-    /// Use [`MontyError::new_err_with_print_output`] if the run was started with
-    /// `print_callback='collect'`, so the buffer collected before the error can be
-    /// attached to the resulting `MontyRuntimeError.print_output` attribute.
+    /// `print_output` is the list of `(stream, text)` tuples captured when the
+    /// run was started with `print_callback='collect'`, attached to the
+    /// resulting `MontyRuntimeError.print_output` attribute. Pass `None` when
+    /// there is no collect buffer (default print modes, or errors raised
+    /// before any run began). Ignored for syntax errors, which cannot carry
+    /// print output.
     #[must_use]
-    pub fn new_err(py: Python<'_>, exc: MontyException) -> PyErr {
-        Self::new_err_with_print_output(py, exc, None)
-    }
-
-    /// Same as [`MontyError::new_err`], but attaches `print_output` to the
-    /// resulting `MontyRuntimeError` (ignored for syntax errors, which never
-    /// occur after `print()` has produced any output).
-    #[must_use]
-    pub fn new_err_with_print_output(py: Python<'_>, exc: MontyException, print_output: Option<Py<PyList>>) -> PyErr {
-        // Syntax errors get their own exception type and cannot carry print output.
+    pub fn new_err(py: Python<'_>, exc: MontyException, print_output: Option<Py<PyList>>) -> PyErr {
         if exc.exc_type() == ExcType::SyntaxError {
             MontySyntaxError::new_err(py, exc)
         } else {
-            MontyRuntimeError::new_err_with_print_output(py, exc, print_output)
+            MontyRuntimeError::new_err(py, exc, print_output)
         }
     }
 }
@@ -232,17 +227,11 @@ pub struct MontyRuntimeError {
 }
 
 impl MontyRuntimeError {
-    /// Creates a new `MontyRuntimeError` without any captured print output.
+    /// Creates a `MontyRuntimeError` that optionally carries the print buffer
+    /// collected before the error (for `print_callback='collect'` runs). Pass
+    /// `None` for other print modes.
     #[must_use]
-    pub fn new_err(py: Python<'_>, exc: MontyException) -> PyErr {
-        Self::new_err_with_print_output(py, exc, None)
-    }
-
-    /// Creates a `MontyRuntimeError` that carries the buffer collected before
-    /// the error (for `print_callback='collect'` runs). Pass `None` for other
-    /// print modes.
-    #[must_use]
-    pub fn new_err_with_print_output(py: Python<'_>, exc: MontyException, print_output: Option<Py<PyList>>) -> PyErr {
+    pub fn new_err(py: Python<'_>, exc: MontyException, print_output: Option<Py<PyList>>) -> PyErr {
         // Convert stack frames to PyFrame objects
         let frames_result: PyResult<Vec<Py<PyFrame>>> = exc
             .traceback()

@@ -128,13 +128,10 @@ class Monty:
                 OS function (e.g., bool for exists(), stat_result for stat()).
 
         Returns:
-            A `MontyComplete` with the final `output` value and, if
-            `print_callback='collect'` was used, the captured `print_output` list.
+            A `MontyComplete` value.
 
         Raises:
             MontyRuntimeError: If the code raises an exception during execution.
-                When `print_callback='collect'` the error also carries a
-                `print_output` attribute with what was printed before the error.
         """
 
     def start(
@@ -688,8 +685,11 @@ class MontyComplete:
     def print_output(self) -> list[tuple[Literal['stdout', 'stderr'], str]] | None:
         """Captured `(stream, text)` tuples when the run used `print_callback='collect'`.
 
-        `None` for other print modes. Each `print()` call contributes one entry
-        whose text includes the trailing newline produced by `print`.
+        `None` for other print modes. Each write to the same stream extends the
+        trailing entry rather than producing a new one, so a simple `print(a, b)`
+        call contributes one entry whose text includes the trailing newline
+        produced by `print`. Consecutive `print(..., end='')` calls similarly
+        merge into one entry.
         """
 
     def __repr__(self) -> str: ...
@@ -758,7 +758,11 @@ class MontyRuntimeError(MontyError):
 
     print_output: list[tuple[Literal['stdout', 'stderr'], str]] | None
     """Captured prints up to the moment the error was raised, when the run was
-    started with `print_callback='collect'`. `None` for other print modes."""
+    started with `print_callback='collect'`. `None` for other print modes.
+
+    Note: the buffer is moved onto the error object, so accessing
+    `print_output` on a retained live snapshot *after* the error has been raised
+    returns an empty list (the snapshot's underlying buffer was drained)."""
 
     def traceback(self) -> list[Frame]:
         """Returns the Monty traceback as a list of Frame objects."""
