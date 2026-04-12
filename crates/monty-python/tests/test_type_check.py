@@ -739,7 +739,24 @@ def transform(x: str) -> str:
     # Calling with the old signature (int) should now fail type checking
     with pytest.raises(pydantic_monty.MontyTypingError) as exc_info:
         repl.feed_run('transform(42)')
-    assert 'invalid-argument-type' in str(exc_info.value)
+    assert str(exc_info.value) == snapshot("""\
+error[invalid-argument-type]: Argument to function `transform` is incorrect
+ --> main.py:1:11
+  |
+1 | transform(42)
+  |           ^^ Expected `str`, found `Literal[42]`
+  |
+info: Function defined here
+ --> repl_type_stubs.pyi:6:5
+  |
+5 | transform(5)
+6 | def transform(x: str) -> str:
+  |     ^^^^^^^^^ ------ Parameter declared here
+7 |     return x + '!'
+  |
+info: rule `invalid-argument-type` is enabled by default
+
+""")
 
 
 def test_repl_type_check_redefine_variable_type():
@@ -827,7 +844,19 @@ def test_repl_type_check_script_name():
     repl = pydantic_monty.MontyRepl(type_check=True, script_name='my_repl.py')
     with pytest.raises(pydantic_monty.MontyTypingError) as exc_info:
         repl.feed_run('"hello" + 1')
-    assert 'my_repl.py:1:1' in str(exc_info.value)
+    assert str(exc_info.value) == snapshot("""\
+error[unsupported-operator]: Unsupported `+` operation
+ --> my_repl.py:1:1
+  |
+1 | "hello" + 1
+  | -------^^^-
+  | |         |
+  | |         Has type `Literal[1]`
+  | Has type `Literal["hello"]`
+  |
+info: rule `unsupported-operator` is enabled by default
+
+""")
 
 
 def test_repl_type_check_dump_load_preserves_state():
@@ -1032,7 +1061,16 @@ def test_repl_type_check_feed_start_skip_does_not_accumulate():
     # x should NOT be visible to subsequent type-checked snippets
     with pytest.raises(pydantic_monty.MontyTypingError) as exc_info:
         repl.feed_run('x + 1')
-    assert 'unresolved-reference' in str(exc_info.value)
+    assert str(exc_info.value) == snapshot("""\
+error[unresolved-reference]: Name `x` used when not defined
+ --> main.py:1:1
+  |
+1 | x + 1
+  | ^
+  |
+info: rule `unresolved-reference` is enabled by default
+
+""")
 
 
 # === feed_run_async type check ===
@@ -1081,7 +1119,16 @@ def test_repl_type_check_feed_run_async_skip_does_not_accumulate():
     asyncio.run(go())
     with pytest.raises(pydantic_monty.MontyTypingError) as exc_info:
         repl.feed_run('x + 1')
-    assert 'unresolved-reference' in str(exc_info.value)
+    assert str(exc_info.value) == snapshot("""\
+error[unresolved-reference]: Name `x` used when not defined
+ --> main.py:1:1
+  |
+1 | x + 1
+  | ^
+  |
+info: rule `unresolved-reference` is enabled by default
+
+""")
 
 
 def test_repl_type_check_feed_run_async_runtime_error_does_not_pollute_state():
