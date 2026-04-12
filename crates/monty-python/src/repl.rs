@@ -313,6 +313,7 @@ impl PyMontyRepl {
 
         let this = slf.get();
         this.run_type_check_if_enabled(py, code, skip_type_check)?;
+        this.set_pending_type_check(code);
         let input_values = extract_repl_inputs(inputs, &this.dc_registry)?;
         let dc_registry = this.dc_registry.clone_ref(py);
         let ext_fns = external_functions.map(|d| d.clone().unbind());
@@ -389,31 +390,23 @@ impl PyMontyRepl {
         }
 
         let bytes = data.as_bytes();
-        let type_check_state = if let Ok(serialized) = postcard::from_bytes::<SerializedReplOwned>(bytes) {
-            return Ok(Self {
-                repl: Mutex::new(Some(serialized.repl)),
-                dc_registry: DcRegistry::from_list(py, dataclass_registry)?,
-                script_name: serialized.script_name,
-                type_check_state: serialized.type_check_state.map(Mutex::new),
-            });
+        let (repl, script_name, type_check_state) = if let Ok(s) = postcard::from_bytes::<SerializedReplOwned>(bytes) {
+            (s.repl, s.script_name, s.type_check_state)
         } else {
-            let serialized: SerializedReplOwnedLegacy =
+            let s: SerializedReplOwnedLegacy =
                 postcard::from_bytes(bytes).map_err(|e| PyValueError::new_err(e.to_string()))?;
-            (
-                serialized.repl,
-                serialized.script_name,
-                serialized.type_check_stubs.map(|committed_stubs| TypeCheckState {
-                    committed_stubs,
-                    pending_snippet: None,
-                }),
-            )
+            let state = s.type_check_stubs.map(|committed_stubs| TypeCheckState {
+                committed_stubs,
+                pending_snippet: None,
+            });
+            (s.repl, s.script_name, state)
         };
 
         Ok(Self {
-            repl: Mutex::new(Some(type_check_state.0)),
+            repl: Mutex::new(Some(repl)),
             dc_registry: DcRegistry::from_list(py, dataclass_registry)?,
-            script_name: type_check_state.1,
-            type_check_state: type_check_state.2.map(Mutex::new),
+            script_name,
+            type_check_state: type_check_state.map(Mutex::new),
         })
     }
 
@@ -498,10 +491,6 @@ impl ReplAsyncStart {
         let cleanup_notifier = ReplCleanupNotifier::new(event_loop, cleanup_waiter.clone_ref(py));
         let start_guard = CleanupStartGuard::new(cleanup_notifier.clone());
         let start_print_callback = print_callback.as_ref().map(|cb| cb.clone_ref(py));
-        // Keep a reference to the repl owner and the code so we can append
-        // to the type-checking stubs after successful execution.
-        let stubs_repl_owner = repl_owner.clone_ref(py);
-        let stubs_code = code.clone();
         let future = future_into_py(py, async move {
             let mut start_guard = start_guard;
             let cancellation_flag = Arc::new(AtomicBool::new(false));
@@ -555,9 +544,6 @@ impl ReplAsyncStart {
                 }
             };
             cancellation_guard.disarm();
-            if result.is_ok() {
-                Python::attach(|py| stubs_repl_owner.bind(py).get().append_to_committed_stubs(&stubs_code));
-            }
             result
         })?;
         Ok((future.unbind(), cleanup_waiter))
