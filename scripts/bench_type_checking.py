@@ -2,8 +2,9 @@
 Benchmark: time successive calls to `Monty.type_check()` on different snippets.
 
 Runs six distinct snippets in a fixed order so you can see the one-time pooled-db
-warmup cost (call 1) vs. the steady-state cost (calls 2-6) once a scrubbed warm
-database is available for reuse, without re-checking the exact same source text.
+cold-start cost (call 1) vs. the steady-state cost (calls 2-6) once a scrubbed
+pooled database is available for reuse, without re-checking the exact same source
+text.
 
 Usage:
     python scripts/bench_type_checking.py

@@ -7,17 +7,17 @@ use monty_type_checking::{SourceFile, type_check};
 #[cfg(all(not(codspeed), unix))]
 use pprof::criterion::{Output, PProfProfiler};
 
-/// Force one warm pooled database to exist before the measurement loop.
+/// Force one reusable pooled database to exist before the measurement loop.
 ///
 /// Every benchmark except `type_check__first_call` calls this at setup so the reported
-/// numbers reflect steady-state cost, not the one-shot typeshed prewarm.
+/// numbers reflect steady-state reuse cost, not the first cold call.
 fn prewarm() {
     let _ = type_check(&SourceFile::new("pass", "warmup.py"), None);
 }
 
 /// Steady-state cost of type-checking a trivial snippet. This is the headline metric —
 /// it isolates per-call overhead (check out a pooled db, write one file, run
-/// `check_types`, scrub the file, return the db) from the one-time warmup.
+/// `check_types`, scrub the file, return the db) from the one-time cold start.
 fn bench_warm_trivial(c: &mut Criterion) {
     prewarm();
     c.bench_function("type_check__warm_trivial", |b| {

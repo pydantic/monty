@@ -89,7 +89,7 @@ impl RenderedDiagnostics {
 
 /// Type check some Python source code, checking if it's valid to run with Monty.
 ///
-/// Every call checks out one warm database from the process-wide pool, writes the
+/// Every call checks out one database from the process-wide pool, writes the
 /// root-level source files into that db, renders any diagnostics eagerly, deletes
 /// the temporary files again, and finally returns the scrubbed db to the pool.
 ///

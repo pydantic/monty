@@ -5,8 +5,8 @@ use std::{
 
 use ruff_db::{
     Db as SourceDb,
-    files::{File, FileRootKind, Files, system_path_to_file},
-    system::{DbWithTestSystem, DbWithWritableSystem as _, System, SystemPathBuf, TestSystem},
+    files::{File, FileRootKind, Files},
+    system::{DbWithTestSystem, System, SystemPathBuf, TestSystem},
     vendored::VendoredFileSystem,
 };
 use ruff_python_ast::PythonVersion;
@@ -15,7 +15,6 @@ use ty_python_semantic::{
     AnalysisSettings, Db, Program, ProgramSettings, PythonPlatform, PythonVersionSource, PythonVersionWithSource,
     default_lint_registry,
     lint::{LintRegistry, RuleSelection},
-    types::check_types,
 };
 
 /// Virtual source root used for all in-memory type-checking files.
@@ -24,15 +23,9 @@ use ty_python_semantic::{
 /// `SourceFile.path` is mapped directly under `/`.
 pub(crate) const SRC_ROOT: &str = "/";
 
-/// Warmup file used to populate stdlib/type-semantic caches in a fresh database.
+/// Maximum number of reusable `MemoryDb` instances kept in the process-wide pool.
 ///
-/// The file is removed before the database is returned to the pool so pooled runs
-/// always start from an empty visible filesystem.
-const WARMUP_PATH: &str = "/__monty_warmup__.py";
-
-/// Maximum number of warm `MemoryDb` instances kept in the process-wide pool.
-///
-/// The pool is intentionally small because every warm database retains its own
+/// The pool is intentionally small because every reused database retains its own
 /// Salsa memo graph and typeshed-derived semantic state.
 const MAX_POOLED_DBS: usize = 4;
 
@@ -82,11 +75,11 @@ impl MemoryDb {
     }
 }
 
-/// Pool of reusable warm databases for root-file type checking.
+/// Pool of reusable databases for root-file type checking.
 ///
 /// Each checked-out db is owned by exactly one caller until it is either returned
 /// clean or dropped. This keeps Salsa's single-writer invariant intact while still
-/// allowing concurrent type checks to use different warm databases.
+/// allowing concurrent type checks to use different databases.
 struct MemoryDbPool {
     dbs: Mutex<Vec<MemoryDb>>,
 }
@@ -100,7 +93,7 @@ impl MemoryDbPool {
         })
     }
 
-    /// Check out one warm database from the pool, creating a fresh warmed db if needed.
+    /// Check out one pooled database, creating a fresh configured db if needed.
     fn checkout(&'static self) -> Result<PooledMemoryDb, String> {
         let maybe_db = {
             let mut dbs = self.dbs.lock().map_err(|e| e.to_string())?;
@@ -108,7 +101,7 @@ impl MemoryDbPool {
         };
 
         Ok(PooledMemoryDb {
-            db: Some(maybe_db.unwrap_or_else(build_warm_db)),
+            db: Some(maybe_db.unwrap_or_else(build_pooled_db)),
             pool: self,
         })
     }
@@ -153,17 +146,18 @@ pub(crate) fn checkout_db() -> Result<PooledMemoryDb, String> {
     MemoryDbPool::global().checkout()
 }
 
-/// Build one warm database ready for pooled reuse.
+/// Build one fresh database ready to enter the pool.
 ///
-/// The warmup initializes the `Program` singleton, resolves typeshed-backed search
-/// paths, runs a trivial check that touches common builtin types, and then removes
-/// the warmup file again so the returned db has no visible user files.
-fn build_warm_db() -> MemoryDb {
-    let mut db = MemoryDb::new();
+/// This sets up the source root and `Program` settings, but it intentionally does
+/// not run a synthetic type-check. The first real caller that uses a brand new db
+/// pays the cold-start cost; subsequent pooled reuses benefit from the populated
+/// Salsa caches created by real user work.
+fn build_pooled_db() -> MemoryDb {
+    let db = MemoryDb::new();
     let src_root = SystemPathBuf::from(SRC_ROOT);
     db.files().try_add_root(&db, &src_root, FileRootKind::Project);
 
-    let search_paths = SearchPathSettings::new(vec![src_root.clone()])
+    let search_paths = SearchPathSettings::new(vec![src_root])
         .to_search_paths(db.system(), db.vendored())
         .expect("vendored typeshed search paths always resolve");
 
@@ -178,26 +172,6 @@ fn build_warm_db() -> MemoryDb {
             search_paths,
         },
     );
-
-    // Prewarm the db with the stdlib stubs every real call tends to touch.
-    let warmup_code = "\
-x: int = 0
-y: str = ''
-z: float = 0.0
-b: bool = False
-xs: list[int] = []
-d: dict[str, int] = {}
-";
-    let warmup = SystemPathBuf::from(WARMUP_PATH);
-    db.write_file(&warmup, warmup_code).expect("warmup write");
-    let warmup_file = system_path_to_file(&db, &warmup).expect("warmup file");
-    let _ = check_types(&db, warmup_file);
-
-    db.memory_file_system()
-        .remove_file(&warmup)
-        .expect("warmup file exists during warmup cleanup");
-    warmup_file.sync(&mut db);
-    File::sync_path(&mut db, &src_root);
 
     db
 }
