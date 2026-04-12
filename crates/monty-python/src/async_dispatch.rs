@@ -186,7 +186,7 @@ pub(crate) async fn dispatch_loop_run<T: ResourceTracker + Send + 'static>(
 }
 
 /// Builds a `MontyRuntimeError` for an error raised during async dispatch,
-/// attaching the collected print buffer (if any) for the `'collect'` print mode.
+/// attaching the collected print buffer (if any) for the `'collect-streams' or 'collect-string'` print mode.
 fn run_err(print_target: &PrintTarget, err: MontyException) -> PyErr {
     Python::attach(|py| print_target.drain_into_err(py, err))
 }

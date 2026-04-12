@@ -44,14 +44,15 @@ impl MontyError {
     /// exception information preserved, including the traceback frames and
     /// display string.
     ///
-    /// `print_output` is the list of `(stream, text)` tuples captured when the
-    /// run was started with `print_callback='collect'`, attached to the
+    /// `print_output` is the Python object captured when the run was started
+    /// with `print_callback='collect-streams'` (a `list[tuple[str, str]]`) or
+    /// `print_callback='collect-string'` (a plain `str`), attached to the
     /// resulting `MontyRuntimeError.print_output` attribute. Pass `None` when
     /// there is no collect buffer (default print modes, or errors raised
     /// before any run began). Ignored for syntax errors, which cannot carry
     /// print output.
     #[must_use]
-    pub fn new_err(py: Python<'_>, exc: MontyException, print_output: Option<Py<PyList>>) -> PyErr {
+    pub fn new_err(py: Python<'_>, exc: MontyException, print_output: Option<Py<PyAny>>) -> PyErr {
         if exc.exc_type() == ExcType::SyntaxError {
             MontySyntaxError::new_err(py, exc)
         } else {
@@ -217,21 +218,22 @@ impl MontyTypingError {
 pub struct MontyRuntimeError {
     /// The traceback frames where the error occurred (pre-converted to Python objects).
     frames: Vec<Py<PyFrame>>,
-    /// When the run was started with `print_callback='collect'`, the list of
-    /// `(stream, text)` tuples collected before the error was raised.
+    /// When the run was started with `print_callback='collect-streams'`, the
+    /// list of `(stream, text)` tuples collected before the error; when
+    /// started with `print_callback='collect-string'`, the concatenated `str`.
     ///
     /// `None` for runs that used the default print mode (stdout) or a custom
     /// callback — there is no pre-error buffer to hand out in those modes.
     #[pyo3(get)]
-    print_output: Option<Py<PyList>>,
+    print_output: Option<Py<PyAny>>,
 }
 
 impl MontyRuntimeError {
     /// Creates a `MontyRuntimeError` that optionally carries the print buffer
-    /// collected before the error (for `print_callback='collect'` runs). Pass
-    /// `None` for other print modes.
+    /// collected before the error (for `print_callback='collect-streams'` or
+    /// `'collect-string'` runs). Pass `None` for other print modes.
     #[must_use]
-    pub fn new_err(py: Python<'_>, exc: MontyException, print_output: Option<Py<PyList>>) -> PyErr {
+    pub fn new_err(py: Python<'_>, exc: MontyException, print_output: Option<Py<PyAny>>) -> PyErr {
         // Convert stack frames to PyFrame objects
         let frames_result: PyResult<Vec<Py<PyFrame>>> = exc
             .traceback()

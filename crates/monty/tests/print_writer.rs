@@ -4,7 +4,7 @@ use monty::{MontyRun, NoLimitTracker, PrintWriter};
 fn print_single_string() {
     let ex = MontyRun::new("print('hello')".to_owned(), "test.py", vec![]).unwrap();
     let mut output = String::new();
-    ex.run(vec![], NoLimitTracker, PrintWriter::Collect(&mut output))
+    ex.run(vec![], NoLimitTracker, PrintWriter::CollectString(&mut output))
         .unwrap();
     assert_eq!(output, "hello\n");
 }
@@ -13,7 +13,7 @@ fn print_single_string() {
 fn print_multiple_args() {
     let ex = MontyRun::new("print('hello', 'world')".to_owned(), "test.py", vec![]).unwrap();
     let mut output = String::new();
-    ex.run(vec![], NoLimitTracker, PrintWriter::Collect(&mut output))
+    ex.run(vec![], NoLimitTracker, PrintWriter::CollectString(&mut output))
         .unwrap();
     assert_eq!(output, "hello world\n");
 }
@@ -27,7 +27,7 @@ fn print_multiple_statements() {
     )
     .unwrap();
     let mut output = String::new();
-    ex.run(vec![], NoLimitTracker, PrintWriter::Collect(&mut output))
+    ex.run(vec![], NoLimitTracker, PrintWriter::CollectString(&mut output))
         .unwrap();
     assert_eq!(output, "one\ntwo\nthree\n");
 }
@@ -36,7 +36,7 @@ fn print_multiple_statements() {
 fn print_empty() {
     let ex = MontyRun::new("print()".to_owned(), "test.py", vec![]).unwrap();
     let mut output = String::new();
-    ex.run(vec![], NoLimitTracker, PrintWriter::Collect(&mut output))
+    ex.run(vec![], NoLimitTracker, PrintWriter::CollectString(&mut output))
         .unwrap();
     assert_eq!(output, "\n");
 }
@@ -45,7 +45,7 @@ fn print_empty() {
 fn print_integers() {
     let ex = MontyRun::new("print(1, 2, 3)".to_owned(), "test.py", vec![]).unwrap();
     let mut output = String::new();
-    ex.run(vec![], NoLimitTracker, PrintWriter::Collect(&mut output))
+    ex.run(vec![], NoLimitTracker, PrintWriter::CollectString(&mut output))
         .unwrap();
     assert_eq!(output, "1 2 3\n");
 }
@@ -54,7 +54,7 @@ fn print_integers() {
 fn print_mixed_types() {
     let ex = MontyRun::new("print('count:', 42, True)".to_owned(), "test.py", vec![]).unwrap();
     let mut output = String::new();
-    ex.run(vec![], NoLimitTracker, PrintWriter::Collect(&mut output))
+    ex.run(vec![], NoLimitTracker, PrintWriter::CollectString(&mut output))
         .unwrap();
     assert_eq!(output, "count: 42 True\n");
 }
@@ -70,7 +70,7 @@ greet('Bob')
 ";
     let ex = MontyRun::new(code.to_owned(), "test.py", vec![]).unwrap();
     let mut output = String::new();
-    ex.run(vec![], NoLimitTracker, PrintWriter::Collect(&mut output))
+    ex.run(vec![], NoLimitTracker, PrintWriter::CollectString(&mut output))
         .unwrap();
     assert_eq!(output, "Hello Alice\nHello Bob\n");
 }
@@ -83,7 +83,7 @@ for i in range(3):
 ";
     let ex = MontyRun::new(code.to_owned(), "test.py", vec![]).unwrap();
     let mut output = String::new();
-    ex.run(vec![], NoLimitTracker, PrintWriter::Collect(&mut output))
+    ex.run(vec![], NoLimitTracker, PrintWriter::CollectString(&mut output))
         .unwrap();
     assert_eq!(output, "0\n1\n2\n");
 }
@@ -92,7 +92,7 @@ for i in range(3):
 fn collect_output_accessible_after_run() {
     let ex = MontyRun::new("print('test')".to_owned(), "test.py", vec![]).unwrap();
     let mut output = String::new();
-    ex.run(vec![], NoLimitTracker, PrintWriter::Collect(&mut output))
+    ex.run(vec![], NoLimitTracker, PrintWriter::CollectString(&mut output))
         .unwrap();
     assert_eq!(output, "test\n");
 }
@@ -102,11 +102,11 @@ fn writer_reuse_accumulates() {
     let mut output = String::new();
 
     let ex1 = MontyRun::new("print('first')".to_owned(), "test.py", vec![]).unwrap();
-    ex1.run(vec![], NoLimitTracker, PrintWriter::Collect(&mut output))
+    ex1.run(vec![], NoLimitTracker, PrintWriter::CollectString(&mut output))
         .unwrap();
 
     let ex2 = MontyRun::new("print('second')".to_owned(), "test.py", vec![]).unwrap();
-    ex2.run(vec![], NoLimitTracker, PrintWriter::Collect(&mut output))
+    ex2.run(vec![], NoLimitTracker, PrintWriter::CollectString(&mut output))
         .unwrap();
 
     assert_eq!(output, "first\nsecond\n");
@@ -130,7 +130,7 @@ for i in range(100):
 fn print_custom_sep() {
     let ex = MontyRun::new("print('a', 'b', 'c', sep='-')".to_owned(), "test.py", vec![]).unwrap();
     let mut output = String::new();
-    ex.run(vec![], NoLimitTracker, PrintWriter::Collect(&mut output))
+    ex.run(vec![], NoLimitTracker, PrintWriter::CollectString(&mut output))
         .unwrap();
     assert_eq!(output, "a-b-c\n");
 }
@@ -139,7 +139,7 @@ fn print_custom_sep() {
 fn print_custom_end() {
     let ex = MontyRun::new("print('hello', end='!')".to_owned(), "test.py", vec![]).unwrap();
     let mut output = String::new();
-    ex.run(vec![], NoLimitTracker, PrintWriter::Collect(&mut output))
+    ex.run(vec![], NoLimitTracker, PrintWriter::CollectString(&mut output))
         .unwrap();
     assert_eq!(output, "hello!");
 }
@@ -153,7 +153,7 @@ fn print_custom_sep_and_end() {
     )
     .unwrap();
     let mut output = String::new();
-    ex.run(vec![], NoLimitTracker, PrintWriter::Collect(&mut output))
+    ex.run(vec![], NoLimitTracker, PrintWriter::CollectString(&mut output))
         .unwrap();
     assert_eq!(output, "x, y, z\n---\n");
 }
@@ -162,7 +162,7 @@ fn print_custom_sep_and_end() {
 fn print_empty_sep() {
     let ex = MontyRun::new("print('a', 'b', 'c', sep='')".to_owned(), "test.py", vec![]).unwrap();
     let mut output = String::new();
-    ex.run(vec![], NoLimitTracker, PrintWriter::Collect(&mut output))
+    ex.run(vec![], NoLimitTracker, PrintWriter::CollectString(&mut output))
         .unwrap();
     assert_eq!(output, "abc\n");
 }
@@ -172,7 +172,7 @@ fn print_empty_end() {
     let code = "print('first', end='')\nprint('second')";
     let ex = MontyRun::new(code.to_owned(), "test.py", vec![]).unwrap();
     let mut output = String::new();
-    ex.run(vec![], NoLimitTracker, PrintWriter::Collect(&mut output))
+    ex.run(vec![], NoLimitTracker, PrintWriter::CollectString(&mut output))
         .unwrap();
     assert_eq!(output, "firstsecond\n");
 }
@@ -182,7 +182,7 @@ fn print_sep_none() {
     // sep=None should use default space
     let ex = MontyRun::new("print('a', 'b', sep=None)".to_owned(), "test.py", vec![]).unwrap();
     let mut output = String::new();
-    ex.run(vec![], NoLimitTracker, PrintWriter::Collect(&mut output))
+    ex.run(vec![], NoLimitTracker, PrintWriter::CollectString(&mut output))
         .unwrap();
     // In Python, sep=None means use default, but we treat it as empty string for simplicity
     // This matches: print('a', 'b', sep=None) outputs "ab\n" with our impl
@@ -194,7 +194,7 @@ fn print_end_none() {
     // end=None should use empty string (our interpretation)
     let ex = MontyRun::new("print('hello', end=None)".to_owned(), "test.py", vec![]).unwrap();
     let mut output = String::new();
-    ex.run(vec![], NoLimitTracker, PrintWriter::Collect(&mut output))
+    ex.run(vec![], NoLimitTracker, PrintWriter::CollectString(&mut output))
         .unwrap();
     assert_eq!(output, "hello\n");
 }
@@ -204,7 +204,7 @@ fn print_flush_ignored() {
     // flush=True should be accepted but ignored
     let ex = MontyRun::new("print('test', flush=True)".to_owned(), "test.py", vec![]).unwrap();
     let mut output = String::new();
-    ex.run(vec![], NoLimitTracker, PrintWriter::Collect(&mut output))
+    ex.run(vec![], NoLimitTracker, PrintWriter::CollectString(&mut output))
         .unwrap();
     assert_eq!(output, "test\n");
 }
@@ -214,7 +214,7 @@ fn print_kwargs_dict() {
     // Use a dict literal instead of dict() since dict builtin is not implemented
     let ex = MontyRun::new("print('a', 'b', **{'sep': '-'})".to_owned(), "test.py", vec![]).unwrap();
     let mut output = String::new();
-    ex.run(vec![], NoLimitTracker, PrintWriter::Collect(&mut output))
+    ex.run(vec![], NoLimitTracker, PrintWriter::CollectString(&mut output))
         .unwrap();
     assert_eq!(output, "a-b\n");
 }
@@ -223,7 +223,7 @@ fn print_kwargs_dict() {
 fn print_only_kwargs_no_args() {
     let ex = MontyRun::new("print(sep='-', end='!')".to_owned(), "test.py", vec![]).unwrap();
     let mut output = String::new();
-    ex.run(vec![], NoLimitTracker, PrintWriter::Collect(&mut output))
+    ex.run(vec![], NoLimitTracker, PrintWriter::CollectString(&mut output))
         .unwrap();
     assert_eq!(output, "!");
 }
@@ -232,7 +232,7 @@ fn print_only_kwargs_no_args() {
 fn print_multiline_sep() {
     let ex = MontyRun::new("print(1, 2, 3, sep='\\n')".to_owned(), "test.py", vec![]).unwrap();
     let mut output = String::new();
-    ex.run(vec![], NoLimitTracker, PrintWriter::Collect(&mut output))
+    ex.run(vec![], NoLimitTracker, PrintWriter::CollectString(&mut output))
         .unwrap();
     assert_eq!(output, "1\n2\n3\n");
 }

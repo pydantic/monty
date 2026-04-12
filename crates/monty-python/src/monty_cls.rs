@@ -130,7 +130,7 @@ impl PyMonty {
     /// # Returns
     /// A `MontyComplete` whose `output` field holds the result of the last expression,
     /// and whose `print_output` field holds the collected prints when
-    /// `print_callback='collect'` was used (otherwise `None`).
+    /// `print_callback='collect-streams' or 'collect-string'` was used (otherwise `None`).
     ///
     /// # Raises
     /// Various Python exceptions matching what the code would raise
@@ -154,7 +154,7 @@ impl PyMonty {
         let os_handler = OsHandler::from_run_args(py, mount, os)?;
 
         // Resolve the print target from the Python argument once; the resulting
-        // value is threaded through the VM call chain and, for `'collect'` mode,
+        // value is threaded through the VM call chain and, for `'collect-streams' or 'collect-string'` mode,
         // its buffer is surfaced on the returned `MontyComplete`.
         let print_target = PrintTarget::from_py(print_callback)?;
 
@@ -485,7 +485,7 @@ impl PyMonty {
         };
 
         // Convert a VM `MontyException` into a `MontyRuntimeError`, attaching
-        // the currently-collected print buffer for `'collect'` runs.
+        // the currently-collected print buffer for `'collect-streams' or 'collect-string'` runs.
         let to_err = |py: Python<'_>, e| print_target.drain_into_err(py, e);
 
         // Clone the runner since start() consumes it - allows reuse of the parsed code
@@ -1014,13 +1014,13 @@ impl PyFunctionSnapshot {
 
 #[pymethods]
 impl PyFunctionSnapshot {
-    /// Collected print output when the run was started with `print_callback='collect'`.
+    /// Collected print output when the run was started with `print_callback='collect-streams' or 'collect-string'`.
     ///
     /// Live view: reflects everything printed up to the moment this getter is
     /// called, without draining the buffer. Further `resume()` calls continue
     /// to append. `None` for other print modes.
     #[getter]
-    fn print_output(&self, py: Python<'_>) -> PyResult<Option<Py<PyList>>> {
+    fn print_output(&self, py: Python<'_>) -> PyResult<Option<Py<PyAny>>> {
         self.print_callback.snapshot_py(py)
     }
 
@@ -1285,10 +1285,10 @@ impl PyNameLookupSnapshot {
 
 #[pymethods]
 impl PyNameLookupSnapshot {
-    /// Live view of the collect buffer when `print_callback='collect'`;
+    /// Live view of the collect buffer when `print_callback='collect-streams' or 'collect-string'`;
     /// `None` for other print modes. See `FunctionSnapshot.print_output`.
     #[getter]
-    fn print_output(&self, py: Python<'_>) -> PyResult<Option<Py<PyList>>> {
+    fn print_output(&self, py: Python<'_>) -> PyResult<Option<Py<PyAny>>> {
         self.print_callback.snapshot_py(py)
     }
 
@@ -1507,10 +1507,10 @@ impl PyFutureSnapshot {
 
 #[pymethods]
 impl PyFutureSnapshot {
-    /// Live view of the collect buffer when `print_callback='collect'`;
+    /// Live view of the collect buffer when `print_callback='collect-streams' or 'collect-string'`;
     /// `None` for other print modes. See `FunctionSnapshot.print_output`.
     #[getter]
-    fn print_output(&self, py: Python<'_>) -> PyResult<Option<Py<PyList>>> {
+    fn print_output(&self, py: Python<'_>) -> PyResult<Option<Py<PyAny>>> {
         self.print_callback.snapshot_py(py)
     }
 
@@ -1637,25 +1637,26 @@ impl PyFutureSnapshot {
 /// successful `snapshot.resume()`, and the REPL `feed_*` equivalents.
 ///
 /// Besides the final `output` value, when the run was started with
-/// `print_callback='collect'` this object's `print_output` attribute carries the
-/// list of `(stream, text)` tuples that were captured during execution. For
-/// any other print mode `print_output` is `None`.
+/// `print_callback='collect-streams'` this object's `print_output` attribute
+/// carries the list of `(stream, text)` tuples captured during execution;
+/// with `print_callback='collect-string'` it carries the concatenated `str`.
+/// For any other print mode `print_output` is `None`.
 #[pyclass(name = "MontyComplete", module = "pydantic_monty", frozen)]
 pub struct PyMontyComplete {
     /// Value produced by the last expression of the run.
     #[pyo3(get)]
     pub output: Py<PyAny>,
-    /// Captured `(stream, text)` tuples when `print_callback='collect'`;
-    /// `None` for other print modes.
+    /// Captured print output — `list[tuple[str, str]]` for `'collect-streams'`,
+    /// `str` for `'collect-string'`, `None` for other print modes.
     #[pyo3(get)]
-    pub print_output: Option<Py<PyList>>,
+    pub print_output: Option<Py<PyAny>>,
     // TODO we might want to add stats on execution here like time, allocations, etc.
 }
 
 impl PyMontyComplete {
     /// Builds a `MontyComplete`, draining the collect buffer if one is active.
     ///
-    /// `print_target` is the target used for this run; for `PrintTarget::Collect`
+    /// `print_target` is the target used for this run; for the collect variants
     /// its buffer is moved onto the returned object (the target is left with an
     /// empty buffer), otherwise `print_output` is `None`.
     pub(crate) fn create<'py>(
@@ -1678,9 +1679,12 @@ impl PyMontyComplete {
     fn __repr__(&self, py: Python<'_>) -> PyResult<String> {
         let output_repr = self.output.bind(py).repr()?;
         match &self.print_output {
-            Some(list) => Ok(format!(
-                "MontyComplete(output={output_repr}, print_output=<{} entries>)",
-                list.bind(py).len()
+            // Let Python render the collect buffer — the repr of a list of
+            // tuples or a plain str is already informative, and this avoids
+            // baking variant-specific branches into the Rust formatter.
+            Some(obj) => Ok(format!(
+                "MontyComplete(output={output_repr}, print_output={})",
+                obj.bind(py).repr()?
             )),
             None => Ok(format!("MontyComplete(output={output_repr})")),
         }

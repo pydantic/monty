@@ -23,21 +23,22 @@ pub enum PrintStream {
 /// use the `Callback` variant with a [`PrintWriterCallback`] implementation.
 ///
 /// # Variants
-/// - `Disabled` - Silently discards all output (useful for benchmarking or suppressing output)
-/// - `Stdout` - Writes to standard output (the default behavior)
-/// - `Collect` - Accumulates output into a target `String` for programmatic access
-/// - `CollectTuples` - Accumulates output as `(stream, text)` pairs, merging consecutive
+/// - `Disabled` — silently discards all output (useful for benchmarking or suppressing output).
+/// - `Stdout` — writes to standard output (the default behavior).
+/// - `CollectString` — accumulates output into a target `String` for programmatic access.
+///   No stream labels are preserved; every fragment is appended in the order it was emitted.
+/// - `CollectStreams` — accumulates output as `(stream, text)` pairs, merging consecutive
 ///   same-stream fragments into one tuple. Each write to the same stream extends the
 ///   trailing entry rather than producing a new one; a new tuple is only pushed when
-///   the stream changes
-/// - `Callback` - Delegates to a user-provided [`PrintWriterCallback`] implementation
+///   the stream changes.
+/// - `Callback` — delegates to a user-provided [`PrintWriterCallback`] implementation.
 pub enum PrintWriter<'a> {
     /// Silently discard all output.
     Disabled,
     /// Write to standard output.
     Stdout,
-    /// Collect all output into a string.
-    Collect(&'a mut String),
+    /// Collect all output into a single `String`, in emit order, with no stream labels.
+    CollectString(&'a mut String),
     /// Collect all output as `(stream, text)` tuples.
     ///
     /// The builtin `print()` implementation calls `stdout_write` for each argument
@@ -48,7 +49,7 @@ pub enum PrintWriter<'a> {
     /// `print()` only writes to stdout), a single `print(a, b)` call produces one
     /// `(Stdout, "a b\n")` entry — and consecutive prints with `end=''` likewise
     /// merge into a single trailing entry.
-    CollectTuples(&'a mut Vec<(PrintStream, String)>),
+    CollectStreams(&'a mut Vec<(PrintStream, String)>),
     /// Delegate to a custom callback.
     Callback(&'a mut dyn PrintWriterCallback),
 }
@@ -64,8 +65,8 @@ impl PrintWriter<'_> {
         match self {
             Self::Disabled => PrintWriter::Disabled,
             Self::Stdout => PrintWriter::Stdout,
-            Self::Collect(buf) => PrintWriter::Collect(buf),
-            Self::CollectTuples(buf) => PrintWriter::CollectTuples(buf),
+            Self::CollectString(buf) => PrintWriter::CollectString(buf),
+            Self::CollectStreams(buf) => PrintWriter::CollectStreams(buf),
             Self::Callback(cb) => PrintWriter::Callback(&mut **cb),
         }
     }
@@ -82,12 +83,12 @@ impl PrintWriter<'_> {
                 print!("{output}");
                 Ok(())
             }
-            Self::Collect(buf) => {
+            Self::CollectString(buf) => {
                 buf.push_str(&output);
                 Ok(())
             }
-            Self::CollectTuples(buf) => {
-                append_tuple_str(buf, PrintStream::Stdout, &output);
+            Self::CollectStreams(buf) => {
+                append_streams_str(buf, PrintStream::Stdout, &output);
                 Ok(())
             }
             Self::Callback(cb) => cb.stdout_write(output),
@@ -105,12 +106,12 @@ impl PrintWriter<'_> {
                 print!("{end}");
                 Ok(())
             }
-            Self::Collect(buf) => {
+            Self::CollectString(buf) => {
                 buf.push(end);
                 Ok(())
             }
-            Self::CollectTuples(buf) => {
-                append_tuple_char(buf, PrintStream::Stdout, end);
+            Self::CollectStreams(buf) => {
+                append_streams_char(buf, PrintStream::Stdout, end);
                 Ok(())
             }
             Self::Callback(cb) => cb.stdout_push(end),
@@ -118,18 +119,18 @@ impl PrintWriter<'_> {
     }
 }
 
-/// Appends a string fragment to the collect-tuples buffer, merging into the
+/// Appends a string fragment to the collect-streams buffer, merging into the
 /// trailing tuple when the stream matches.
-fn append_tuple_str(buf: &mut Vec<(PrintStream, String)>, stream: PrintStream, text: &str) {
+fn append_streams_str(buf: &mut Vec<(PrintStream, String)>, stream: PrintStream, text: &str) {
     match buf.last_mut() {
         Some((s, existing)) if *s == stream => existing.push_str(text),
         _ => buf.push((stream, text.to_owned())),
     }
 }
 
-/// Appends a single character to the collect-tuples buffer, merging into the
+/// Appends a single character to the collect-streams buffer, merging into the
 /// trailing tuple when the stream matches.
-fn append_tuple_char(buf: &mut Vec<(PrintStream, String)>, stream: PrintStream, ch: char) {
+fn append_streams_char(buf: &mut Vec<(PrintStream, String)>, stream: PrintStream, ch: char) {
     match buf.last_mut() {
         Some((s, existing)) if *s == stream => existing.push(ch),
         _ => buf.push((stream, String::from(ch))),
