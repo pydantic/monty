@@ -270,7 +270,9 @@ class MontyRepl:
             limits: Optional resource limits configuration
             type_check: Whether to type-check each snippet before execution.
                 When enabled, each `feed_run`/`feed_run_async`/`feed_start` call
-                will run static type checking before executing the code.
+                runs static type checking before executing the code, and each
+                successfully executed snippet is appended to the accumulated
+                context used for type-checking subsequent snippets.
             type_check_stubs: Optional stub code providing type declarations for
                 variables and functions available in the REPL, e.g. input variable
                 types or external function signatures.
@@ -319,12 +321,22 @@ class MontyRepl:
         """
         Execute one incremental snippet and return its output.
 
-        When `inputs` is provided, the key-value pairs are injected into
-        the REPL namespace before executing the snippet.
-
-        When `external_functions` is provided, external function calls and
-        name lookups are dispatched to the provided callables — matching the
-        behavior of `Monty.run(external_functions=...)`.
+        Arguments:
+            code: The Python code snippet to execute
+            inputs: Dict of input values injected into the REPL namespace
+                before executing the snippet
+            external_functions: Dict of external function callbacks. When
+                provided, external function calls and name lookups are
+                dispatched to the provided callables — matching the behavior
+                of `Monty.run(external_functions=...)`.
+            print_callback: Optional callback for print output
+            mount: Optional filesystem mount(s) to expose inside the sandbox
+            os: Optional OS access handler for filesystem operations
+            skip_type_check: When `True`, static type checking is bypassed for
+                this snippet AND the snippet is NOT appended to the accumulated
+                type-check context, so later type-checked snippets will not see
+                any names it defined. Has no effect unless `type_check=True`
+                was set on the REPL.
         """
 
     def feed_run_async(
@@ -349,6 +361,11 @@ class MontyRepl:
             external_functions: Dict of external function callbacks (sync or async)
             print_callback: Optional callback for print output
             os: Optional OS access handler for filesystem operations
+            skip_type_check: When `True`, static type checking is bypassed for
+                this snippet AND the snippet is NOT appended to the accumulated
+                type-check context, so later type-checked snippets will not see
+                any names it defined. Has no effect unless `type_check=True`
+                was set on the REPL.
 
         Returns:
             A coroutine that resolves to the output of the snippet
@@ -378,6 +395,17 @@ class MontyRepl:
         including support for async external functions via `FutureSnapshot`.
 
         On completion or error, the REPL state is automatically restored.
+
+        Arguments:
+            code: The Python code snippet to execute
+            inputs: Dict of input values injected into the REPL namespace
+                before executing the snippet
+            print_callback: Optional callback for print output
+            skip_type_check: When `True`, static type checking is bypassed for
+                this snippet AND the snippet is NOT appended to the accumulated
+                type-check context, so later type-checked snippets will not see
+                any names it defined. Has no effect unless `type_check=True`
+                was set on the REPL.
         """
 
     def dump(self) -> bytes:

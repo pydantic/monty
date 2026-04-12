@@ -1,3 +1,5 @@
+import asyncio
+
 import pytest
 from inline_snapshot import snapshot
 
@@ -382,7 +384,19 @@ def test_repl_feed_run_type_check_enabled():
     repl = pydantic_monty.MontyRepl(type_check=True)
     with pytest.raises(pydantic_monty.MontyTypingError) as exc_info:
         repl.feed_run('"hello" + 1')
-    assert 'unsupported-operator' in str(exc_info.value)
+    assert str(exc_info.value) == snapshot("""\
+error[unsupported-operator]: Unsupported `+` operation
+ --> main.py:1:1
+  |
+1 | "hello" + 1
+  | -------^^^-
+  | |         |
+  | |         Has type `Literal[1]`
+  | Has type `Literal["hello"]`
+  |
+info: rule `unsupported-operator` is enabled by default
+
+""")
 
 
 def test_repl_feed_run_type_check_valid():
@@ -438,7 +452,19 @@ def test_repl_type_check_line_numbers():
     with pytest.raises(pydantic_monty.MontyTypingError) as exc_info:
         repl.feed_run('"hello" + 1')
     # Line 1 should refer to the new snippet, not offset by previous code
-    assert 'main.py:1:1' in str(exc_info.value)
+    assert str(exc_info.value) == snapshot("""\
+error[unsupported-operator]: Unsupported `+` operation
+ --> main.py:1:1
+  |
+1 | "hello" + 1
+  | -------^^^-
+  | |         |
+  | |         Has type `Literal[1]`
+  | Has type `Literal["hello"]`
+  |
+info: rule `unsupported-operator` is enabled by default
+
+""")
 
 
 def test_repl_type_check_line_numbers_multiline():
@@ -489,9 +515,23 @@ def fetch(url: str) -> str:
     repl = pydantic_monty.MontyRepl(type_check=True, type_check_stubs=stubs)
     with pytest.raises(pydantic_monty.MontyTypingError) as exc_info:
         repl.feed_run('fetch(123)')
-    assert 'invalid-argument-type' in str(exc_info.value)
-    # Error should reference the snippet line, not stubs
-    assert 'main.py:1' in str(exc_info.value)
+    assert str(exc_info.value) == snapshot("""\
+error[invalid-argument-type]: Argument to function `fetch` is incorrect
+ --> main.py:1:7
+  |
+1 | fetch(123)
+  |       ^^^ Expected `str`, found `Literal[123]`
+  |
+info: Function defined here
+ --> repl_type_stubs.pyi:1:5
+  |
+1 | def fetch(url: str) -> str:
+  |     ^^^^^ -------- Parameter declared here
+2 |     return ''
+  |
+info: rule `invalid-argument-type` is enabled by default
+
+""")
 
 
 def test_repl_type_check_accumulated_catches_type_mismatch():
@@ -500,7 +540,18 @@ def test_repl_type_check_accumulated_catches_type_mismatch():
     repl.feed_run('x: int = 1')
     with pytest.raises(pydantic_monty.MontyTypingError) as exc_info:
         repl.feed_run('y: str = x')
-    assert 'invalid-assignment' in str(exc_info.value)
+    assert str(exc_info.value) == snapshot("""\
+error[invalid-assignment]: Object of type `int` is not assignable to `str`
+ --> main.py:1:4
+  |
+1 | y: str = x
+  |    ---   ^ Incompatible value of type `int`
+  |    |
+  |    Declared type
+  |
+info: rule `invalid-assignment` is enabled by default
+
+""")
 
 
 def test_repl_type_check_feed_start():
@@ -555,7 +606,23 @@ def fetch(url: str) -> str:
     with pytest.raises(pydantic_monty.MontyTypingError) as exc_info:
         repl.feed_run('fetch(123)')
     # The stubs file should be referenced as repl_type_stubs.pyi
-    assert 'repl_type_stubs.pyi' in str(exc_info.value)
+    assert str(exc_info.value) == snapshot("""\
+error[invalid-argument-type]: Argument to function `fetch` is incorrect
+ --> main.py:1:7
+  |
+1 | fetch(123)
+  |       ^^^ Expected `str`, found `Literal[123]`
+  |
+info: Function defined here
+ --> repl_type_stubs.pyi:1:5
+  |
+1 | def fetch(url: str) -> str:
+  |     ^^^^^ -------- Parameter declared here
+2 |     return ''
+  |
+info: rule `invalid-argument-type` is enabled by default
+
+""")
 
 
 def test_repl_type_check_multiple_snippets_sequence():
@@ -588,9 +655,23 @@ def greet(name: str) -> str:
 """)
     with pytest.raises(pydantic_monty.MontyTypingError) as exc_info:
         repl.feed_run('greet(42)')
-    assert 'invalid-argument-type' in str(exc_info.value)
-    # Error should point to line 1 of the new snippet
-    assert 'main.py:1' in str(exc_info.value)
+    assert str(exc_info.value) == snapshot("""\
+error[invalid-argument-type]: Argument to function `greet` is incorrect
+ --> main.py:1:7
+  |
+1 | greet(42)
+  |       ^^ Expected `str`, found `Literal[42]`
+  |
+info: Function defined here
+ --> repl_type_stubs.pyi:2:5
+  |
+2 | def greet(name: str) -> str:
+  |     ^^^^^ --------- Parameter declared here
+3 |     return 'hello ' + name
+  |
+info: rule `invalid-argument-type` is enabled by default
+
+""")
 
 
 def test_repl_type_check_function_return_type_used():
@@ -605,7 +686,18 @@ def get_count() -> int:
     # Assigning return value to str should fail
     with pytest.raises(pydantic_monty.MontyTypingError) as exc_info:
         repl.feed_run('y: str = get_count()')
-    assert 'invalid-assignment' in str(exc_info.value)
+    assert str(exc_info.value) == snapshot("""\
+error[invalid-assignment]: Object of type `int` is not assignable to `str`
+ --> main.py:1:4
+  |
+1 | y: str = get_count()
+  |    ---   ^^^^^^^^^^^ Incompatible value of type `int`
+  |    |
+  |    Declared type
+  |
+info: rule `invalid-assignment` is enabled by default
+
+""")
 
 
 def test_repl_type_check_redefine_function():
@@ -800,8 +892,18 @@ def fetch(x: int) -> int:
 
     with pytest.raises(pydantic_monty.MontyTypingError) as exc_info:
         loaded_repl.feed_run('y: str = x')
-    assert 'invalid-assignment' in str(exc_info.value)
-    assert 'main.py:1' in str(exc_info.value)
+    assert str(exc_info.value) == snapshot("""\
+error[invalid-assignment]: Object of type `int` is not assignable to `str`
+ --> main.py:1:4
+  |
+1 | y: str = x
+  |    ---   ^ Incompatible value of type `int`
+  |    |
+  |    Declared type
+  |
+info: rule `invalid-assignment` is enabled by default
+
+""")
 
 
 def test_repl_type_check_load_repl_snapshot_preserves_pending_snippet():
@@ -828,8 +930,25 @@ fetch(1)
 
     with pytest.raises(pydantic_monty.MontyTypingError) as exc_info:
         loaded_repl.feed_run('foo("x")')
-    assert 'invalid-argument-type' in str(exc_info.value)
-    assert 'main.py:1' in str(exc_info.value)
+    assert str(exc_info.value) == snapshot("""\
+error[invalid-argument-type]: Argument to function `foo` is incorrect
+ --> main.py:1:5
+  |
+1 | foo("x")
+  |     ^^^ Expected `int`, found `Literal["x"]`
+  |
+info: Function defined here
+ --> repl_type_stubs.pyi:4:5
+  |
+2 |     return 0
+3 |
+4 | def foo(x: int) -> int:
+  |     ^^^ ------ Parameter declared here
+5 |     return x
+  |
+info: rule `invalid-argument-type` is enabled by default
+
+""")
 
 
 def test_repl_type_check_load_repl_snapshot_preserves_user_stubs():
@@ -851,8 +970,23 @@ def fetch(url: str) -> str:
 
     with pytest.raises(pydantic_monty.MontyTypingError) as exc_info:
         loaded_repl.feed_run('fetch(123)')
-    assert 'invalid-argument-type' in str(exc_info.value)
-    assert 'repl_type_stubs.pyi' in str(exc_info.value)
+    assert str(exc_info.value) == snapshot("""\
+error[invalid-argument-type]: Argument to function `fetch` is incorrect
+ --> main.py:1:7
+  |
+1 | fetch(123)
+  |       ^^^ Expected `str`, found `Literal[123]`
+  |
+info: Function defined here
+ --> repl_type_stubs.pyi:1:5
+  |
+1 | def fetch(url: str) -> str:
+  |     ^^^^^ -------- Parameter declared here
+2 |     return ''
+  |
+info: rule `invalid-argument-type` is enabled by default
+
+""")
 
 
 def test_repl_type_check_stubs_without_trailing_newline():
@@ -866,3 +1000,113 @@ def test_repl_type_check_stubs_without_trailing_newline():
     # response must be visible in the next snippet even though stubs lacked \n
     result = repl.feed_run('response.upper()')
     assert result == snapshot('DATA')
+
+
+# === skip_type_check does not append to accumulated stubs ===
+
+
+def test_repl_type_check_feed_run_skip_does_not_accumulate():
+    """skip_type_check=True on feed_run bypasses the check AND does not add the snippet to accumulated stubs."""
+    repl = pydantic_monty.MontyRepl(type_check=True)
+    # Run a snippet with skip — it must not leak into later type checks
+    repl.feed_run('x = "hello"', skip_type_check=True)
+    with pytest.raises(pydantic_monty.MontyTypingError) as exc_info:
+        repl.feed_run('x + 1')
+    assert str(exc_info.value) == snapshot("""\
+error[unresolved-reference]: Name `x` used when not defined
+ --> main.py:1:1
+  |
+1 | x + 1
+  | ^
+  |
+info: rule `unresolved-reference` is enabled by default
+
+""")
+
+
+def test_repl_type_check_feed_start_skip_does_not_accumulate():
+    """skip_type_check=True on feed_start does not add the snippet to accumulated stubs."""
+    repl = pydantic_monty.MontyRepl(type_check=True)
+    progress = repl.feed_start('x = 42', skip_type_check=True)
+    assert isinstance(progress, pydantic_monty.MontyComplete)
+    # x should NOT be visible to subsequent type-checked snippets
+    with pytest.raises(pydantic_monty.MontyTypingError) as exc_info:
+        repl.feed_run('x + 1')
+    assert 'unresolved-reference' in str(exc_info.value)
+
+
+# === feed_run_async type check ===
+
+
+def test_repl_type_check_feed_run_async_enabled():
+    """type_check=True raises MontyTypingError on feed_run_async with bad code."""
+    repl = pydantic_monty.MontyRepl(type_check=True)
+
+    async def go():
+        with pytest.raises(pydantic_monty.MontyTypingError):
+            await repl.feed_run_async('"hello" + 1')
+
+    asyncio.run(go())
+
+
+def test_repl_type_check_feed_run_async_valid():
+    """type_check=True allows valid code through feed_run_async."""
+    repl = pydantic_monty.MontyRepl(type_check=True)
+
+    async def go():
+        return await repl.feed_run_async('1 + 2')
+
+    assert asyncio.run(go()) == snapshot(3)
+
+
+def test_repl_type_check_feed_run_async_skip():
+    """feed_run_async respects skip_type_check."""
+    repl = pydantic_monty.MontyRepl(type_check=True)
+
+    async def go():
+        # Would fail type check, but skip_type_check=True bypasses it
+        with pytest.raises(pydantic_monty.MontyRuntimeError):
+            await repl.feed_run_async('"hello" + 1', skip_type_check=True)
+
+    asyncio.run(go())
+
+
+def test_repl_type_check_feed_run_async_skip_does_not_accumulate():
+    """skip_type_check=True on feed_run_async does not add the snippet to accumulated stubs."""
+    repl = pydantic_monty.MontyRepl(type_check=True)
+
+    async def go():
+        await repl.feed_run_async('x = 42', skip_type_check=True)
+
+    asyncio.run(go())
+    with pytest.raises(pydantic_monty.MontyTypingError) as exc_info:
+        repl.feed_run('x + 1')
+    assert 'unresolved-reference' in str(exc_info.value)
+
+
+def test_repl_type_check_feed_run_async_runtime_error_does_not_pollute_state():
+    """A failed feed_run_async() snippet must not leak definitions into later type checks."""
+    repl = pydantic_monty.MontyRepl(type_check=True)
+
+    async def go():
+        with pytest.raises(pydantic_monty.MontyRuntimeError):
+            await repl.feed_run_async("""\
+def foo(x: int) -> int:
+    return x
+
+1 / 0
+""")
+
+    asyncio.run(go())
+    with pytest.raises(pydantic_monty.MontyTypingError) as exc_info:
+        repl.feed_run('foo("x")')
+    assert str(exc_info.value) == snapshot("""\
+error[unresolved-reference]: Name `foo` used when not defined
+ --> main.py:1:1
+  |
+1 | foo("x")
+  | ^^^
+  |
+info: rule `unresolved-reference` is enabled by default
+
+""")

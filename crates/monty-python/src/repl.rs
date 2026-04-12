@@ -192,7 +192,7 @@ impl PyMontyRepl {
                 os_handler.as_ref(),
                 print_writer,
             );
-            if result.is_ok() {
+            if result.is_ok() && !skip_type_check {
                 self.append_to_committed_stubs(code);
             }
             return result;
@@ -212,7 +212,9 @@ impl PyMontyRepl {
         }
         .map_err(|e| MontyError::new_err(py, e))?;
 
-        self.append_to_committed_stubs(code);
+        if !skip_type_check {
+            self.append_to_committed_stubs(code);
+        }
         Ok(monty_to_py(py, &output, &self.dc_registry)?.into_bound(py))
     }
 
@@ -249,7 +251,9 @@ impl PyMontyRepl {
         let mut print_output = SendWrapper::new(print_writer);
 
         let repl = this.take_repl()?;
-        this.set_pending_type_check(code);
+        if !skip_type_check {
+            this.set_pending_type_check(code);
+        }
         let repl_owner: Py<Self> = slf.clone().unbind();
 
         let code_owned = code.to_owned();
@@ -313,7 +317,9 @@ impl PyMontyRepl {
 
         let this = slf.get();
         this.run_type_check_if_enabled(py, code, skip_type_check)?;
-        this.set_pending_type_check(code);
+        if !skip_type_check {
+            this.set_pending_type_check(code);
+        }
         let input_values = extract_repl_inputs(inputs, &this.dc_registry)?;
         let dc_registry = this.dc_registry.clone_ref(py);
         let ext_fns = external_functions.map(|d| d.clone().unbind());
