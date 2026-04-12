@@ -6,7 +6,7 @@ use std::ffi::CString;
 use codspeed_criterion_compat::{Bencher, Criterion, black_box, criterion_group, criterion_main};
 #[cfg(not(codspeed))]
 use criterion::{Bencher, Criterion, black_box, criterion_group, criterion_main};
-use monty::MontyRun;
+use monty::{MontyObject, MontyRun};
 #[cfg(all(not(codspeed), unix))]
 use pprof::criterion::{Output, PProfProfiler};
 // CPython benchmarks are only run locally, not on CodSpeed CI (requires Python + pyo3 setup)
@@ -23,6 +23,22 @@ fn run_monty(bench: &mut Bencher, code: &str, expected: i64) {
 
     bench.iter(|| {
         let r = ex.run_no_limits(vec![]).unwrap();
+        let int_value: i64 = r.as_ref().try_into().unwrap();
+        black_box(int_value);
+    });
+}
+
+/// Runs a benchmark using the Monty interpreter with a single string input bound to `DATA`.
+/// Parses once, then benchmarks repeated execution with the same input.
+fn run_monty_with_data(bench: &mut Bencher, code: &str, data: &str, expected: i64) {
+    let ex = MontyRun::new(code.to_owned(), "test.py", vec!["DATA".to_owned()]).unwrap();
+    let make_input = || vec![MontyObject::String(data.to_owned())];
+    let r = ex.run_no_limits(make_input()).unwrap();
+    let int_value: i64 = r.as_ref().try_into().unwrap();
+    assert_eq!(int_value, expected);
+
+    bench.iter(|| {
+        let r = ex.run_no_limits(make_input()).unwrap();
         let int_value: i64 = r.as_ref().try_into().unwrap();
         black_box(int_value);
     });
@@ -51,6 +67,39 @@ fn run_cpython(bench: &mut Bencher, code: &str, expected: i64) {
             black_box(r);
         });
     });
+}
+
+/// Runs a benchmark using CPython with a single string argument bound to `DATA`.
+/// Wraps code in `def main(DATA):`, parses once, then benchmarks repeated execution.
+#[cfg(not(codspeed))]
+fn run_cpython_with_data(bench: &mut Bencher, code: &str, data: &str, expected: i64) {
+    Python::attach(|py| {
+        let wrapped = wrap_for_cpython_with_param(code, "DATA");
+        let code_cstr = CString::new(wrapped).expect("Invalid C string in code");
+        let fun: Py<PyAny> = PyModule::from_code(py, &code_cstr, c"test.py", c"main")
+            .unwrap()
+            .getattr("main")
+            .unwrap()
+            .into();
+
+        let r_py = fun.call1(py, (data,)).unwrap();
+        let r: i64 = r_py.extract(py).unwrap();
+        assert_eq!(r, expected);
+
+        bench.iter(|| {
+            let r_py = fun.call1(py, (data,)).unwrap();
+            let r: i64 = r_py.extract(py).unwrap();
+            black_box(r);
+        });
+    });
+}
+
+/// Like [`wrap_for_cpython`] but produces `def main(<param>):` so a single argument can be passed.
+#[cfg(not(codspeed))]
+fn wrap_for_cpython_with_param(code: &str, param: &str) -> String {
+    let base = wrap_for_cpython(code);
+    // Replace the first "def main():" header with one that takes `param`.
+    base.replacen("def main():", &format!("def main({param}):"), 1)
 }
 
 /// Wraps code in a main() function for CPython execution.
@@ -143,6 +192,25 @@ const EMPTY_TUPLES: &str = "len([() for _ in range(100_000)])";
 /// 2-tuple creation benchmark - creates 100,000 2-tuples in a list.
 const PAIR_TUPLES: &str = "len([(i, i + 1) for i in range(100_000)])";
 
+/// JSON payload used by the `json_loads` / `json_dumps` benchmarks.
+/// Sourced from `medium_response.json` (a jiter bench fixture).
+const JSON_MEDIUM: &str = include_str!("medium_response.json");
+
+/// Parses a ~2 KB JSON document into a Python object each iteration.
+/// Returns the number of top-level keys (2) as the verification value.
+const JSON_LOADS: &str = "
+import json
+len(json.loads(DATA))
+";
+
+/// Parses JSON once per iteration and re-serialises it to a string.
+/// Returns the length of the serialised output so the result can be verified.
+const JSON_DUMPS: &str = "
+import json
+obj = json.loads(DATA)
+len(json.dumps(obj))
+";
+
 /// Benchmarks end-to-end execution (parsing + running) using Monty.
 /// This is different from other benchmarks as it includes parsing in the loop.
 fn end_to_end_monty(bench: &mut Bencher) {
@@ -230,6 +298,22 @@ fn criterion_benchmark(c: &mut Criterion) {
     c.bench_function("pair_tuples__monty", |b| run_monty(b, PAIR_TUPLES, 100_000));
     #[cfg(not(codspeed))]
     c.bench_function("pair_tuples__cpython", |b| run_cpython(b, PAIR_TUPLES, 100_000));
+
+    c.bench_function("json_loads__monty", |b| {
+        run_monty_with_data(b, JSON_LOADS, JSON_MEDIUM, 2);
+    });
+    #[cfg(not(codspeed))]
+    c.bench_function("json_loads__cpython", |b| {
+        run_cpython_with_data(b, JSON_LOADS, JSON_MEDIUM, 2);
+    });
+
+    c.bench_function("json_dumps__monty", |b| {
+        run_monty_with_data(b, JSON_DUMPS, JSON_MEDIUM, 1815);
+    });
+    #[cfg(not(codspeed))]
+    c.bench_function("json_dumps__cpython", |b| {
+        run_cpython_with_data(b, JSON_DUMPS, JSON_MEDIUM, 1815);
+    });
 }
 
 // Use pprof flamegraph profiler when running locally on Unix (not on CodSpeed or Windows)
