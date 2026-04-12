@@ -106,12 +106,12 @@ class Monty:
         inputs: dict[str, Any] | None = None,
         limits: ResourceLimits | None = None,
         external_functions: dict[str, Callable[..., Any]] | None = None,
-        print_callback: Callable[[Literal['stdout'], str], None] | None = None,
+        print_callback: Callable[[Literal['stdout', 'stderr'], str], None] | Literal['collect'] | None = None,
         mount: MountDir | list[MountDir] | None = None,
         os: Callable[[OsFunction, tuple[Any, ...], dict[str, Any]], Any] | None = None,
-    ) -> Any:
+    ) -> MontyComplete:
         """
-        Execute the code and return the result.
+        Execute the code and return a `MontyComplete`.
 
         The GIL is released allowing parallel execution.
 
@@ -119,17 +119,22 @@ class Monty:
             inputs: Dict of input variable values (must match names from __init__)
             limits: Optional resource limits configuration
             external_functions: Dict of external function callbacks
-            print_callback: Optional callback for print output
+            print_callback: `None` (stdout), a callable `(stream, text) -> None`, or
+                the literal string `'collect'` to capture prints into
+                `MontyComplete.print_output`.
             os: Optional callback for OS calls.
                 Called with (function_name, args) where function_name is like 'Path.exists'
                 and args is a tuple of arguments. Must return the appropriate value for the
                 OS function (e.g., bool for exists(), stat_result for stat()).
 
         Returns:
-            The result of the last expression in the code
+            A `MontyComplete` with the final `output` value and, if
+            `print_callback='collect'` was used, the captured `print_output` list.
 
         Raises:
-            MontyRuntimeError: If the code raises an exception during execution
+            MontyRuntimeError: If the code raises an exception during execution.
+                When `print_callback='collect'` the error also carries a
+                `print_output` attribute with what was printed before the error.
         """
 
     def start(
@@ -137,7 +142,7 @@ class Monty:
         *,
         inputs: dict[str, Any] | None = None,
         limits: ResourceLimits | None = None,
-        print_callback: Callable[[Literal['stdout'], str], None] | None = None,
+        print_callback: Callable[[Literal['stdout', 'stderr'], str], None] | Literal['collect'] | None = None,
     ) -> FunctionSnapshot | NameLookupSnapshot | FutureSnapshot | MontyComplete:
         """
         Start the code execution and return a progress object, or completion.
@@ -167,9 +172,9 @@ class Monty:
         inputs: dict[str, Any] | None = None,
         limits: ResourceLimits | None = None,
         external_functions: dict[str, Callable[..., Any]] | None = None,
-        print_callback: Callable[[Literal['stdout'], str], None] | None = None,
+        print_callback: Callable[[Literal['stdout', 'stderr'], str], None] | Literal['collect'] | None = None,
         os: AbstractOS | None = None,
-    ) -> Coroutine[Any, Any, Any]:
+    ) -> Coroutine[Any, Any, MontyComplete]:
         """
         Execute the code with support for async external functions.
 
@@ -180,14 +185,16 @@ class Monty:
             inputs: Dict of input variable values (must match names from __init__)
             limits: Optional resource limits configuration
             external_functions: Dict of external function callbacks (sync or async)
-            print_callback: Optional callback for print output
+            print_callback: `None` (stdout), a callable `(stream, text) -> None`, or
+                the literal string `'collect'` to capture prints into
+                `MontyComplete.print_output`.
             os: Optional OS access handler for filesystem operations
 
         Returns:
-            A coroutine that resolves to the result of the last expression
+            A coroutine that resolves to a `MontyComplete`.
 
         Raises:
-            MontyRuntimeError: If the code raises an exception during execution
+            MontyRuntimeError: If the code raises an exception during execution.
         """
 
     def dump(self) -> bytes:
@@ -313,13 +320,13 @@ class MontyRepl:
         *,
         inputs: dict[str, Any] | None = None,
         external_functions: dict[str, Callable[..., Any]] | None = None,
-        print_callback: Callable[[Literal['stdout'], str], None] | None = None,
+        print_callback: Callable[[Literal['stdout', 'stderr'], str], None] | Literal['collect'] | None = None,
         mount: MountDir | list[MountDir] | None = None,
         os: Callable[[str, tuple[Any, ...], dict[str, Any]], Any] | None = None,
         skip_type_check: bool = False,
-    ) -> Any:
+    ) -> MontyComplete:
         """
-        Execute one incremental snippet and return its output.
+        Execute one incremental snippet and return a `MontyComplete`.
 
         Arguments:
             code: The Python code snippet to execute
@@ -345,10 +352,10 @@ class MontyRepl:
         *,
         inputs: dict[str, Any] | None = None,
         external_functions: dict[str, Callable[..., Any]] | None = None,
-        print_callback: Callable[[Literal['stdout'], str], None] | None = None,
+        print_callback: Callable[[Literal['stdout', 'stderr'], str], None] | Literal['collect'] | None = None,
         os: AbstractOS | None = None,
         skip_type_check: bool = False,
-    ) -> Coroutine[Any, Any, Any]:
+    ) -> Coroutine[Any, Any, MontyComplete]:
         """
         Execute one incremental snippet and return its output with support for async external functions.
 
@@ -379,7 +386,7 @@ class MontyRepl:
         code: str,
         *,
         inputs: dict[str, Any] | None = None,
-        print_callback: Callable[[Literal['stdout'], str], None] | None = None,
+        print_callback: Callable[[Literal['stdout', 'stderr'], str], None] | Literal['collect'] | None = None,
         skip_type_check: bool = False,
     ) -> FunctionSnapshot | NameLookupSnapshot | FutureSnapshot | MontyComplete:
         """
@@ -458,6 +465,14 @@ class FunctionSnapshot:
     @property
     def call_id(self) -> int:
         """The unique identifier for this external function call."""
+
+    @property
+    def print_output(self) -> list[tuple[Literal['stdout', 'stderr'], str]] | None:
+        """Live view of captured prints when the run used `print_callback='collect'`.
+
+        Does not drain the buffer — subsequent `resume()` calls keep appending.
+        `None` for other print modes.
+        """
 
     @overload
     def resume(self, *, return_value: Any) -> FunctionSnapshot | NameLookupSnapshot | FutureSnapshot | MontyComplete:
@@ -539,6 +554,10 @@ class NameLookupSnapshot:
     def variable_name(self) -> str:
         """The name of the variable being looked up."""
 
+    @property
+    def print_output(self) -> list[tuple[Literal['stdout', 'stderr'], str]] | None:
+        """Live view of captured prints; see `FunctionSnapshot.print_output`."""
+
     def resume(
         self,
         *,
@@ -607,6 +626,10 @@ class FutureSnapshot:
         Raises an error if the snapshot has already been resumed.
         """
 
+    @property
+    def print_output(self) -> list[tuple[Literal['stdout', 'stderr'], str]] | None:
+        """Live view of captured prints; see `FunctionSnapshot.print_output`."""
+
     def resume(
         self,
         results: dict[int, ExternalResult],
@@ -660,6 +683,14 @@ class MontyComplete:
     @property
     def output(self) -> Any:
         """The final output value from the executed code."""
+
+    @property
+    def print_output(self) -> list[tuple[Literal['stdout', 'stderr'], str]] | None:
+        """Captured `(stream, text)` tuples when the run used `print_callback='collect'`.
+
+        `None` for other print modes. Each `print()` call contributes one entry
+        whose text includes the trailing newline produced by `print`.
+        """
 
     def __repr__(self) -> str: ...
 
@@ -725,6 +756,10 @@ class MontyRuntimeError(MontyError):
     Additionally provides traceback() and display() methods.
     """
 
+    print_output: list[tuple[Literal['stdout', 'stderr'], str]] | None
+    """Captured prints up to the moment the error was raised, when the run was
+    started with `print_callback='collect'`. `None` for other print modes."""
+
     def traceback(self) -> list[Frame]:
         """Returns the Monty traceback as a list of Frame objects."""
 
@@ -775,7 +810,7 @@ class Frame:
 def load_snapshot(
     data: bytes,
     *,
-    print_callback: Callable[[Literal['stdout'], str], None] | None = None,
+    print_callback: Callable[[Literal['stdout', 'stderr'], str], None] | Literal['collect'] | None = None,
     dataclass_registry: list[type] | None = None,
 ) -> FunctionSnapshot | NameLookupSnapshot | FutureSnapshot:
     """Load a non-REPL snapshot from serialized bytes.
@@ -799,7 +834,7 @@ def load_snapshot(
 def load_repl_snapshot(
     data: bytes,
     *,
-    print_callback: Callable[[Literal['stdout'], str], None] | None = None,
+    print_callback: Callable[[Literal['stdout', 'stderr'], str], None] | Literal['collect'] | None = None,
     dataclass_registry: list[type] | None = None,
 ) -> tuple[FunctionSnapshot | NameLookupSnapshot | FutureSnapshot, MontyRepl]:
     """Load a REPL snapshot from serialized bytes.

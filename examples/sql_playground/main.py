@@ -55,7 +55,7 @@ async def main():
     )
 
     # Run the analysis with external functions and OS access
-    results = await m.run_async(
+    complete = await m.run_async(
         external_functions={
             'query_csv': external_funcs.query_csv,
             'read_json': external_funcs.read_json,
@@ -63,6 +63,7 @@ async def main():
         },
         os=fs,
     )
+    results = complete.output
 
     if not results:
         print('No results found. Check if customers have matching Twitter handles and tweets.')

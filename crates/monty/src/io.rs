@@ -2,6 +2,20 @@ use std::borrow::Cow;
 
 use crate::exception_public::MontyException;
 
+/// Identifies the output stream for a single print fragment.
+///
+/// Today the `print()` builtin only writes to `Stdout`. The `Stderr` variant is
+/// included for forward compatibility with a future `print(..., file=sys.stderr)`
+/// implementation so the collected-output API shape does not have to change when
+/// that lands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PrintStream {
+    /// Standard output — the default for every `print()` call today.
+    Stdout,
+    /// Standard error — reserved for future `print(..., file=sys.stderr)` support.
+    Stderr,
+}
+
 /// Output handler for the `print()` builtin function.
 ///
 /// Provides common output modes as enum variants to avoid trait object overhead
@@ -12,6 +26,8 @@ use crate::exception_public::MontyException;
 /// - `Disabled` - Silently discards all output (useful for benchmarking or suppressing output)
 /// - `Stdout` - Writes to standard output (the default behavior)
 /// - `Collect` - Accumulates output into a target `String` for programmatic access
+/// - `CollectTuples` - Accumulates output as `(stream, text)` pairs, merging consecutive
+///   same-stream fragments into one tuple so each `print()` call yields exactly one entry
 /// - `Callback` - Delegates to a user-provided [`PrintWriterCallback`] implementation
 pub enum PrintWriter<'a> {
     /// Silently discard all output.
@@ -20,6 +36,14 @@ pub enum PrintWriter<'a> {
     Stdout,
     /// Collect all output into a string.
     Collect(&'a mut String),
+    /// Collect all output as `(stream, text)` tuples.
+    ///
+    /// The builtin `print()` implementation calls `stdout_write` for each argument
+    /// and `stdout_push` for each separator/terminator. To avoid one tuple per
+    /// fragment, this variant appends to the trailing tuple when it already matches
+    /// the current stream; a new tuple is only pushed when the stream changes.
+    /// A single `print(a, b)` call therefore produces one `(Stdout, "a b\n")` entry.
+    CollectTuples(&'a mut Vec<(PrintStream, String)>),
     /// Delegate to a custom callback.
     Callback(&'a mut dyn PrintWriterCallback),
 }
@@ -36,6 +60,7 @@ impl PrintWriter<'_> {
             Self::Disabled => PrintWriter::Disabled,
             Self::Stdout => PrintWriter::Stdout,
             Self::Collect(buf) => PrintWriter::Collect(buf),
+            Self::CollectTuples(buf) => PrintWriter::CollectTuples(buf),
             Self::Callback(cb) => PrintWriter::Callback(&mut **cb),
         }
     }
@@ -54,6 +79,10 @@ impl PrintWriter<'_> {
             }
             Self::Collect(buf) => {
                 buf.push_str(&output);
+                Ok(())
+            }
+            Self::CollectTuples(buf) => {
+                append_tuple_str(buf, PrintStream::Stdout, &output);
                 Ok(())
             }
             Self::Callback(cb) => cb.stdout_write(output),
@@ -75,7 +104,33 @@ impl PrintWriter<'_> {
                 buf.push(end);
                 Ok(())
             }
+            Self::CollectTuples(buf) => {
+                append_tuple_char(buf, PrintStream::Stdout, end);
+                Ok(())
+            }
             Self::Callback(cb) => cb.stdout_push(end),
+        }
+    }
+}
+
+/// Appends a string fragment to the collect-tuples buffer, merging into the
+/// trailing tuple when the stream matches.
+fn append_tuple_str(buf: &mut Vec<(PrintStream, String)>, stream: PrintStream, text: &str) {
+    match buf.last_mut() {
+        Some((s, existing)) if *s == stream => existing.push_str(text),
+        _ => buf.push((stream, text.to_owned())),
+    }
+}
+
+/// Appends a single character to the collect-tuples buffer, merging into the
+/// trailing tuple when the stream matches.
+fn append_tuple_char(buf: &mut Vec<(PrintStream, String)>, stream: PrintStream, ch: char) {
+    match buf.last_mut() {
+        Some((s, existing)) if *s == stream => existing.push(ch),
+        _ => {
+            let mut s = String::new();
+            s.push(ch);
+            buf.push((stream, s));
         }
     }
 }

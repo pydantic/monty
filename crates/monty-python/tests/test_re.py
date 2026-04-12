@@ -9,7 +9,7 @@ import pydantic_monty
 
 def test_re_module():
     m = pydantic_monty.Monty('import re')
-    output = m.run()
+    output = m.run().output
     assert output is None
 
 
@@ -20,7 +20,7 @@ pattern = re.compile(r'\\d+')
 matches = pattern.findall('There are 24 hours in a day and 365 days in a year.')
 """
     m = pydantic_monty.Monty(code)
-    output = m.run()
+    output = m.run().output
     assert output is None
 
 
@@ -41,7 +41,7 @@ if sys.version_info >= (3, 11):
 def test_re_constant(flags: list[str], target: int):
     code = f'import re; ({",".join(flags)},)'
     m = pydantic_monty.Monty(code)
-    output = m.run()
+    output = m.run().output
     assert all(map(lambda orig: orig == target, output))
 
 
@@ -52,7 +52,7 @@ pattern = re.compile(r'\d+', re.IGNORECASE | re.DOTALL)
 pattern
 """
     m = pydantic_monty.Monty(code)
-    output = m.run()
+    output = m.run().output
     assert output == r"re.compile('\\d+', re.IGNORECASE|re.DOTALL)"
 
 
@@ -63,7 +63,7 @@ pattern = re.compile(r'\\d+')
 pattern.match('123abc')
 """
     m = pydantic_monty.Monty(code)
-    output = m.run()
+    output = m.run().output
     assert output == "<re.Match object; span=(0, 3), match='123'>"
 
 
@@ -75,7 +75,7 @@ match = pattern.match('123-abc')
 match.groups()
 """
     m = pydantic_monty.Monty(code)
-    output = m.run()
+    output = m.run().output
     assert output == ('123', 'abc')
 
 
@@ -87,7 +87,7 @@ result = pattern.sub('-', 'This is a test.')
 result
 """
     m = pydantic_monty.Monty(code)
-    output = m.run()
+    output = m.run().output
     assert output == 'This-is-a-test.'
 
 
@@ -101,7 +101,7 @@ except Exception as e:
 error_message
 """
     m = pydantic_monty.Monty(code)
-    output = m.run()
+    output = m.run().output
     error = 'Parsing error at position 1: Invalid character class'
     assert error in output
 

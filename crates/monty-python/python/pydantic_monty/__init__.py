@@ -66,7 +66,7 @@ async def run_monty_async(
     inputs: dict[str, Any] | None = None,
     external_functions: dict[str, Callable[..., Any]] | None = None,
     limits: ResourceLimits | None = None,
-    print_callback: Callable[[Literal['stdout'], str], None] | None = None,
+    print_callback: Callable[[Literal['stdout', 'stderr'], str], None] | None = None,
     os: AbstractOS | None = None,
 ) -> Any:
     return await monty_runner.run_async(
@@ -85,7 +85,7 @@ async def run_repl_async(
     *,
     inputs: dict[str, Any] | None = None,
     external_functions: dict[str, Callable[..., Any]] | None = None,
-    print_callback: Callable[[Literal['stdout'], str], None] | None = None,
+    print_callback: Callable[[Literal['stdout', 'stderr'], str], None] | None = None,
     os: AbstractOS | None = None,
 ) -> Any:
     return await repl.feed_run_async(

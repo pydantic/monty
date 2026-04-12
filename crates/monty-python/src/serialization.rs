@@ -31,6 +31,7 @@ use crate::{
         EitherFunctionSnapshot, EitherFutureSnapshot, EitherLookupSnapshot, PyFunctionSnapshot, PyFutureSnapshot,
         PyNameLookupSnapshot,
     },
+    print_target::PrintTarget,
     repl::{PyMontyRepl, TypeCheckState},
 };
 
@@ -570,12 +571,13 @@ enum SerializedReplSnapshotRef<'a> {
 pub(crate) fn load_snapshot<'py>(
     py: Python<'py>,
     data: &Bound<'_, PyBytes>,
-    print_callback: Option<Py<PyAny>>,
+    print_callback: Option<&Bound<'_, PyAny>>,
     dataclass_registry: Option<&Bound<'_, PyList>>,
 ) -> PyResult<Bound<'py, PyAny>> {
     let bytes = data.as_bytes();
     let serialized: SerializedSnapshot = deserialize_with_header(bytes)?;
     let dc_registry = DcRegistry::from_list(py, dataclass_registry)?;
+    let print_callback = PrintTarget::from_py(print_callback)?;
 
     match serialized {
         SerializedSnapshot::Function {
@@ -629,12 +631,13 @@ pub(crate) fn load_snapshot<'py>(
 pub(crate) fn load_repl_snapshot<'py>(
     py: Python<'py>,
     data: &Bound<'_, PyBytes>,
-    print_callback: Option<Py<PyAny>>,
+    print_callback: Option<&Bound<'_, PyAny>>,
     dataclass_registry: Option<&Bound<'_, PyList>>,
 ) -> PyResult<(Bound<'py, PyAny>, Py<PyMontyRepl>)> {
     let bytes = data.as_bytes();
     let serialized: SerializedReplSnapshot = deserialize_with_header(bytes)?;
     let dc_registry = DcRegistry::from_list(py, dataclass_registry)?;
+    let print_callback = PrintTarget::from_py(print_callback)?;
 
     match serialized {
         SerializedReplSnapshot::Function {

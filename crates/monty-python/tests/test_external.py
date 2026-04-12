@@ -14,7 +14,7 @@ def test_external_function_no_args():
         assert kwargs == snapshot({})
         return 'called'
 
-    assert m.run(external_functions={'noop': noop}) == snapshot('called')
+    assert m.run(external_functions={'noop': noop}).output == snapshot('called')
 
 
 def test_external_function_positional_args():
@@ -25,7 +25,7 @@ def test_external_function_positional_args():
         assert kwargs == snapshot({})
         return 'ok'
 
-    assert m.run(external_functions={'func': func}) == snapshot('ok')
+    assert m.run(external_functions={'func': func}).output == snapshot('ok')
 
 
 def test_external_function_kwargs_only():
@@ -36,7 +36,7 @@ def test_external_function_kwargs_only():
         assert kwargs == snapshot({'a': 1, 'b': 'two'})
         return 'ok'
 
-    assert m.run(external_functions={'func': func}) == snapshot('ok')
+    assert m.run(external_functions={'func': func}).output == snapshot('ok')
 
 
 def test_external_function_mixed_args_kwargs():
@@ -47,7 +47,7 @@ def test_external_function_mixed_args_kwargs():
         assert kwargs == snapshot({'x': 'hello', 'y': True})
         return 'ok'
 
-    assert m.run(external_functions={'func': func}) == snapshot('ok')
+    assert m.run(external_functions={'func': func}).output == snapshot('ok')
 
 
 def test_external_function_complex_types():
@@ -58,7 +58,7 @@ def test_external_function_complex_types():
         assert kwargs == snapshot({})
         return 'ok'
 
-    assert m.run(external_functions={'func': func}) == snapshot('ok')
+    assert m.run(external_functions={'func': func}).output == snapshot('ok')
 
 
 def test_external_function_returns_none():
@@ -68,7 +68,7 @@ def test_external_function_returns_none():
         assert args == snapshot(())
         assert kwargs == snapshot({})
 
-    assert m.run(external_functions={'do_nothing': do_nothing}) is None
+    assert m.run(external_functions={'do_nothing': do_nothing}).output is None
 
 
 def test_external_function_returns_complex_type():
@@ -77,7 +77,7 @@ def test_external_function_returns_complex_type():
     def get_data(*args: Any, **kwargs: Any) -> dict[str, Any]:
         return {'a': [1, 2, 3], 'b': {'nested': True}}
 
-    result = m.run(external_functions={'get_data': get_data})
+    result = m.run(external_functions={'get_data': get_data}).output
     assert result == snapshot({'a': [1, 2, 3], 'b': {'nested': True}})
 
 
@@ -94,7 +94,7 @@ def test_multiple_external_functions():
         assert kwargs == snapshot({})
         return args[0] * args[1]
 
-    result = m.run(external_functions={'add': add, 'mul': mul})
+    result = m.run(external_functions={'add': add, 'mul': mul}).output
     assert result == snapshot(15)  # 3 + 12
 
 
@@ -110,7 +110,7 @@ def test_external_function_called_multiple_times():
         call_count += 1
         return call_count
 
-    result = m.run(external_functions={'counter': counter})
+    result = m.run(external_functions={'counter': counter}).output
     assert result == snapshot(6)  # 1 + 2 + 3
     assert call_count == snapshot(3)
 
@@ -123,7 +123,7 @@ def test_external_function_with_input():
         assert kwargs == snapshot({})
         return args[0] * 10
 
-    assert m.run(inputs={'x': 5}, external_functions={'process': process}) == snapshot(50)
+    assert m.run(inputs={'x': 5}, external_functions={'process': process}).output == snapshot(50)
 
 
 def test_external_function_not_provided_raises_name_error():
@@ -189,7 +189,7 @@ caught
     def fail(*args: Any, **kwargs: Any) -> None:
         raise ValueError('caught error')
 
-    result = m.run(external_functions={'fail': fail})
+    result = m.run(external_functions={'fail': fail}).output
     assert result == snapshot(True)
 
 
@@ -277,7 +277,7 @@ caught
         raise exception_class('test')
 
     # Child exception should be caught by parent handler (which comes first)
-    result = m.run(external_functions={'fail': fail})
+    result = m.run(external_functions={'fail': fail}).output
     assert result == 'parent'
 
 
@@ -306,7 +306,7 @@ caught
     def fail(*args: Any, **kwargs: Any) -> None:
         raise exception_class('test')
 
-    result = m.run(external_functions={'fail': fail})
+    result = m.run(external_functions={'fail': fail}).output
     assert result == expected_result
 
 
@@ -363,5 +363,5 @@ finally_ran
     def fail(*args: Any, **kwargs: Any) -> None:
         raise ValueError('error')
 
-    result = m.run(external_functions={'fail': fail})
+    result = m.run(external_functions={'fail': fail}).output
     assert result == snapshot(True)

@@ -155,7 +155,7 @@ except ZeroDivisionError as e:
 result
 """
     m = pydantic_monty.Monty(code)
-    assert m.run() == snapshot('caught')
+    assert m.run().output == snapshot('caught')
 
 
 def test_exception_in_function():
