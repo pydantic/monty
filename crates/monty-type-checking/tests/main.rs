@@ -1,4 +1,4 @@
-use std::{env, fs};
+use std::{env, fs, thread};
 
 use monty_type_checking::{SourceFile, type_check};
 use pretty_assertions::assert_eq;
@@ -260,6 +260,44 @@ fn pooled_db_no_cross_run_stubs_leak() {
         msg.contains("unresolved-import") || msg.contains("unresolved-reference"),
         "second run must report the stub import as unresolved; got:\n{msg}"
     );
+}
+
+/// Security-critical: exercise the pool under concurrent load mixing both
+/// clean and failing type-checks. If the cleanup / release logic ever returned
+/// a contaminated db to the pool, subsequent checks would see stale names
+/// from other threads and fail intermittently.
+#[test]
+fn pooled_db_concurrent_runs_stay_isolated() {
+    thread::scope(|scope| {
+        let handles: Vec<_> = (0..8)
+            .map(|thread_idx| {
+                scope.spawn(move || {
+                    for iter in 0..20 {
+                        // Alternate between a clean run that defines a name and
+                        // a run that would only succeed if the prior run's
+                        // name leaked through the pool.
+                        let code_ok = format!("T_{thread_idx}_{iter}: int = 1\n");
+                        let r1 = type_check(&SourceFile::new(&code_ok, "main.py"), None).unwrap();
+                        assert!(r1.is_none(), "ok run must succeed: {r1:#?}");
+
+                        let leak_probe = format!("x: int = T_{thread_idx}_{iter}\n");
+                        // Reusing the same path: if the pool leaked the prior
+                        // run's defs, `T_*_*` would still resolve. It must not.
+                        let r2 = type_check(&SourceFile::new(&leak_probe, "main.py"), None).unwrap();
+                        let d = r2.expect("leak probe must error — prior run's name must not be visible");
+                        let msg = d.format(DiagnosticFormat::Concise).to_string();
+                        assert!(
+                            msg.contains("unresolved-reference") || msg.contains("possibly-unbound"),
+                            "expected unresolved-reference for T_{thread_idx}_{iter}, got:\n{msg}"
+                        );
+                    }
+                })
+            })
+            .collect();
+        for handle in handles {
+            handle.join().unwrap();
+        }
+    });
 }
 
 /// Security-critical: path validation rejects any path that could write outside
