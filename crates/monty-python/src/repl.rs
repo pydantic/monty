@@ -335,9 +335,6 @@ impl PyMontyRepl {
     }
 
     /// Serializes this REPL session to bytes.
-    ///
-    /// Type checking state (`type_check`, `type_check_stubs`, `accumulated_code`)
-    /// is included so that type checking resumes correctly after deserialization.
     fn dump<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
         #[derive(serde::Serialize)]
         struct SerializedRepl<'a> {
@@ -937,7 +934,7 @@ impl PyMontyRepl {
     }
 
     /// Restores a REPL into the mutex after `feed_start` completes successfully.
-    pub(crate) fn put_repl(&self, repl: EitherRepl) {
+    fn put_repl(&self, repl: EitherRepl) {
         let mut repl = repl;
         repl.set_cancellation_flag(None);
         let mut guard = self.repl.lock().unwrap_or_else(PoisonError::into_inner);
