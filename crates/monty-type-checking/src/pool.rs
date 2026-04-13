@@ -100,6 +100,20 @@ impl PooledMemoryDb {
         Ok(file)
     }
 
+    /// Overwrite the contents of a root file that was previously written via
+    /// [`Self::write_root_file`].
+    ///
+    /// Panics if `path` is not already tracked — the caller would otherwise be
+    /// leaving an untracked write behind that cleanup would miss, poisoning the
+    /// pool on release.
+    pub(crate) fn rewrite_root_file(&mut self, path: &SystemPathBuf, source: &str) -> Result<(), String> {
+        assert!(
+            self.touched_files.iter().any(|t| &t.path == path),
+            "rewrite_root_file called for untracked path '{path}' — must call write_root_file first",
+        );
+        self.db().write_file(path, source).map_err(to_string)
+    }
+
     /// Borrow the checked-out database mutably for one type-check run.
     pub(crate) fn db(&mut self) -> &mut MemoryDb {
         &mut self.db
@@ -203,8 +217,8 @@ fn cleanup_touched_files(db: &mut MemoryDb, touched_files: &[TouchedRootFile]) -
     Ok(())
 }
 
-/// Convert a displayable error into the string type used throughout pooling logic.
-fn to_string(err: impl Display) -> String {
+/// Convert a displayable error into the string type used throughout type checking.
+pub(crate) fn to_string(err: impl Display) -> String {
     err.to_string()
 }
 

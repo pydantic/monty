@@ -1,7 +1,4 @@
-use std::{
-    fmt::{self, Display},
-    sync::Arc,
-};
+use std::{fmt, sync::Arc};
 
 use ruff_db::{
     diagnostic::{
@@ -9,14 +6,14 @@ use ruff_db::{
         UnifiedFile,
     },
     files::File,
-    system::{DbWithWritableSystem as _, SystemPathBuf},
+    system::SystemPathBuf,
 };
 use ruff_text_size::{TextRange, TextSize};
 use ty_python_semantic::types::check_types;
 
 use crate::{
     db::MemoryDb,
-    pool::{PooledMemoryDb, SRC_ROOT},
+    pool::{PooledMemoryDb, SRC_ROOT, to_string},
 };
 
 /// All diagnostic formats supported by `TypeCheckingDiagnostics`.
@@ -142,8 +139,7 @@ fn type_check_with_db(
         (main_file, 0)
     };
 
-    let db = pooled_db.db();
-    let mut diagnostics = check_types(db, main_file);
+    let mut diagnostics = check_types(pooled_db.db(), main_file);
     diagnostics.retain(filter_diagnostics);
 
     if diagnostics.is_empty() {
@@ -152,8 +148,10 @@ fn type_check_with_db(
 
     // The stub import only exists to seed names into the semantic model. Restore the
     // original source text before rendering so detached diagnostics show user code.
+    // Route via `rewrite_root_file` so the tracking invariant is checked at runtime
+    // rather than relying on a hand-maintained comment.
     if code_offset > 0 {
-        db.write_file(main_path, main_source).map_err(to_string)?;
+        pooled_db.rewrite_root_file(main_path, main_source)?;
         let offset = TextSize::new(code_offset);
         for diagnostic in &mut diagnostics {
             for ann in diagnostic.annotations_mut() {
@@ -167,6 +165,7 @@ fn type_check_with_db(
         }
     }
 
+    let db = pooled_db.db();
     diagnostics.sort_by(|a, b| a.rendering_sort_key(db).cmp(&b.rendering_sort_key(db)));
     let rendered = RenderedDiagnostics::new(db, &diagnostics);
 
@@ -178,6 +177,12 @@ fn validate_root_file_name(path: &str, role: &str) -> Result<SystemPathBuf, Stri
     if path.is_empty() {
         return Err(format!("Type checking {role} file name cannot be empty"));
     }
+    if path.contains('\0') {
+        return Err(format!(
+            "Type checking {role} file name must not contain NUL bytes, got '{}'",
+            path.escape_debug()
+        ));
+    }
     if path == "." || path == ".." || path.contains('/') || path.contains('\\') {
         return Err(format!(
             "Type checking only supports root-level {role} file names, got '{path}'"
@@ -188,8 +193,12 @@ fn validate_root_file_name(path: &str, role: &str) -> Result<SystemPathBuf, Stri
 }
 
 /// Return the importable module stem for a root-level stub file name.
+///
+/// Uses the first `.` as the split so `foo.stubs.pyi` becomes `foo` (matches
+/// Python's package-import semantics for root-level files — there is no
+/// `foo.stubs` module on disk).
 fn module_stem(file_name: &str) -> &str {
-    file_name.rsplit_once('.').map_or(file_name, |(before, _)| before)
+    file_name.split_once('.').map_or(file_name, |(before, _)| before)
 }
 
 /// Render diagnostics with a specific format/color pair while the database is alive.
@@ -211,11 +220,6 @@ fn diagnostic_format_index(format: DiagnosticFormat) -> usize {
         DiagnosticFormat::Gitlab => 7,
         DiagnosticFormat::Github => 8,
     }
-}
-
-/// Convert a displayable error into the string type used by `type_check`.
-fn to_string(err: impl Display) -> String {
-    err.to_string()
 }
 
 /// Adjust the span of an annotation by subtracting the given offset.

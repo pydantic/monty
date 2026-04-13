@@ -305,11 +305,22 @@ fn pooled_db_concurrent_runs_stay_isolated() {
 #[test]
 fn pooled_db_rejects_non_root_paths() {
     let code = "x: int = 1\n";
-    for bad in ["", ".", "..", "a/b.py", "a\\b.py", "sub/mod.py", "../mod.py"] {
+    for bad in [
+        "",
+        ".",
+        "..",
+        "a/b.py",
+        "a\\b.py",
+        "sub/mod.py",
+        "../mod.py",
+        "/abs/path.py",
+        "/etc/passwd",
+        "has\0nul.py",
+    ] {
         let err = type_check(&SourceFile::new(code, bad), None)
             .expect_err(&format!("expected validation error for path {bad:?}"));
         assert!(
-            err.contains("root-level") || err.contains("empty"),
+            err.contains("root-level") || err.contains("empty") || err.contains("NUL"),
             "path {bad:?} should be rejected by validation, got: {err}"
         );
     }
