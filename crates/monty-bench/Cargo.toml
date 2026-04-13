@@ -1,0 +1,28 @@
+[package]
+name = "monty-bench"
+version = { workspace = true }
+license = { workspace = true }
+rust-version = { workspace = true }
+edition = { workspace = true }
+authors = { workspace = true }
+description = "Benchmarks for the Monty interpreter — compares Monty vs CPython"
+publish = false
+
+[dependencies]
+monty = { path = "../monty" }
+pyo3 = { version = "0.28", features = ["auto-initialize"] }
+codspeed-criterion-compat = "4.2.1"
+criterion = "0.5"
+
+[target.'cfg(unix)'.dependencies]
+pprof = { version = "0.15", features = ["flamegraph", "criterion"] }
+
+[build-dependencies]
+pyo3-build-config = { version = "0.28", features = ["resolve-config"] }
+
+[[bench]]
+name = "main"
+harness = false
+
+[lints]
+workspace = true

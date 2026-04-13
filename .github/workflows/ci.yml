@@ -113,10 +113,13 @@ jobs:
 
       # coverage for `make test-no-features`
       - run: cargo llvm-cov --no-report -p monty
+      - run: cargo llvm-cov run --no-report -p monty-datatest
       # coverage for `make test-ref-count-panic`
       - run: cargo llvm-cov --no-report -p monty --features ref-count-panic
+      - run: cargo llvm-cov run --no-report -p monty-datatest --features ref-count-panic
       # coverage for `make test-ref-count-return`
       - run: cargo llvm-cov --no-report -p monty --features ref-count-return
+      - run: cargo llvm-cov run --no-report -p monty-datatest --features ref-count-return
       # coverage for `make test-type-checking`
       - run: cargo llvm-cov --no-report -p monty_type_checking -p monty_typeshed
       # Generating text report:
@@ -217,6 +220,7 @@ jobs:
         run: Remove-Item .cargo/config.toml
 
       - run: cargo test -p monty --features ref-count-panic
+      - run: cargo run -p monty-datatest --features ref-count-panic
 
   bench-test:
     runs-on: ubuntu-latest

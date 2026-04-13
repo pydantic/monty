@@ -5,6 +5,8 @@ members = [
     "crates/monty-cli",
     "crates/monty-python",
     "crates/monty-js",
+    "crates/monty-datatest",
+    "crates/monty-bench",
     "crates/monty-type-checking",
     "crates/monty-typeshed",
     "crates/fuzz"

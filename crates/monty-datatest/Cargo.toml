@@ -1,0 +1,28 @@
+[package]
+name = "monty-datatest"
+version = { workspace = true }
+license = { workspace = true }
+rust-version = { workspace = true }
+edition = { workspace = true }
+authors = { workspace = true }
+description = "Datatest harness for Monty — runs test cases against both Monty and CPython"
+publish = false
+
+[dependencies]
+monty = { path = "../monty" }
+pyo3 = { version = "0.28", features = ["auto-initialize"] }
+ahash = "0.8.0"
+chrono = "0.4"
+datatest-stable = "0.2"
+similar = "2.7.0"
+tempfile = "3"
+
+[build-dependencies]
+pyo3-build-config = { version = "0.28", features = ["resolve-config"] }
+
+[features]
+ref-count-return = ["monty/ref-count-return"]
+ref-count-panic = ["monty/ref-count-panic"]
+
+[lints]
+workspace = true

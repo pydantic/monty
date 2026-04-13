@@ -148,7 +148,7 @@ len(v)
 
 /// Comprehensive benchmark exercising most supported Python features.
 /// Code is shared with test_cases/bench__kitchen_sink.py
-const KITCHEN_SINK: &str = include_str!("../test_cases/bench__kitchen_sink.py");
+const KITCHEN_SINK: &str = include_str!("../../monty/test_cases/bench__kitchen_sink.py");
 
 const FUNC_CALL_KWARGS: &str = "
 def add(a, b=2):

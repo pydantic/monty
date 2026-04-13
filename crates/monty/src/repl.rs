@@ -145,7 +145,6 @@ impl<T: ResourceTracker> MontyRepl<T> {
             // Inject inputs with VM alive
             if let Err(error) = inject_inputs_into_vm(&executor, input_values, &mut vm) {
                 this.globals = vm.take_globals();
-                vm.cleanup();
                 return Err(error);
             }
 
@@ -157,7 +156,6 @@ impl<T: ResourceTracker> MontyRepl<T> {
                 Some(vm.snapshot())
             } else {
                 this.globals = vm.take_globals();
-                vm.cleanup();
                 None
             };
             Ok((converted, vm_state))
@@ -205,7 +203,6 @@ impl<T: ResourceTracker> MontyRepl<T> {
 
             if let Err(e) = inject_inputs_into_vm(&executor, input_values, &mut vm) {
                 self.globals = vm.take_globals();
-                vm.cleanup();
                 return Err(e);
             }
 
@@ -213,7 +210,6 @@ impl<T: ResourceTracker> MontyRepl<T> {
 
             // Reclaim globals before cleanup.
             self.globals = vm.take_globals();
-            vm.cleanup();
             Ok(result)
         })?;
 
@@ -565,7 +561,6 @@ impl<T: ResourceTracker> ReplNameLookup<T> {
                         Ok(v) => v,
                         Err(e) => {
                             repl.globals = vm.take_globals();
-                            vm.cleanup();
                             return Err(MontyException::runtime_error(format!(
                                 "invalid name lookup result: {e}"
                             )));
@@ -600,7 +595,6 @@ impl<T: ResourceTracker> ReplNameLookup<T> {
                 Some(vm.snapshot())
             } else {
                 repl.globals = vm.take_globals();
-                vm.cleanup();
                 None
             };
             Ok((converted, vm_state))
@@ -687,7 +681,6 @@ impl<T: ResourceTracker> ReplResolveFutures<T> {
 
             if let Some(call_id) = invalid_call_id {
                 repl.globals = vm.take_globals();
-                vm.cleanup();
                 return Err(MontyException::runtime_error(format!(
                     "unknown call_id {call_id}, expected one of: {pending_call_ids:?}"
                 )));
@@ -698,7 +691,6 @@ impl<T: ResourceTracker> ReplResolveFutures<T> {
                     ExtFunctionResult::Return(obj) => {
                         if let Err(e) = vm.resolve_future(call_id, obj) {
                             repl.globals = vm.take_globals();
-                            vm.cleanup();
                             return Err(MontyException::runtime_error(format!(
                                 "Invalid return type for call {call_id}: {e}"
                             )));
@@ -714,7 +706,6 @@ impl<T: ResourceTracker> ReplResolveFutures<T> {
 
             if let Some(error) = vm.take_failed_task_error() {
                 repl.globals = vm.take_globals();
-                vm.cleanup();
                 return Err(error.into_python_exception(&executor.interns, &executor.code));
             }
 
@@ -724,7 +715,6 @@ impl<T: ResourceTracker> ReplResolveFutures<T> {
                 Ok(loaded) => loaded,
                 Err(e) => {
                     repl.globals = vm.take_globals();
-                    vm.cleanup();
                     return Err(e.into_python_exception(&executor.interns, &executor.code));
                 }
             };
@@ -746,7 +736,6 @@ impl<T: ResourceTracker> ReplResolveFutures<T> {
                 Some(vm.snapshot())
             } else {
                 repl.globals = vm.take_globals();
-                vm.cleanup();
                 None
             };
             Ok((converted, vm_state))
@@ -886,7 +875,6 @@ impl<T: ResourceTracker> ReplSnapshot<T> {
                 Some(vm.snapshot())
             } else {
                 repl.globals = vm.take_globals();
-                vm.cleanup();
                 None
             };
             (converted, vm_state)
