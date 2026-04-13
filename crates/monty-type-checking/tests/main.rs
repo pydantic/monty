@@ -200,15 +200,9 @@ fn pooled_db_no_cross_run_module_leak() {
         .unwrap()
         .expect("second run must raise unresolved-import for the stale module");
     let msg = r2.format(DiagnosticFormat::Concise).to_string();
-    assert!(
-        msg.contains("unresolved-import") || msg.contains("unresolved-reference"),
-        "second run must report the import as unresolved; got:\n{msg}"
-    );
-    // Belt-and-braces: the leaked constant name itself must not show up as a
-    // known symbol (would indicate partial resolution).
-    assert!(
-        !msg.contains("hunter2"),
-        "second run diagnostics must not surface the first run's content; got:\n{msg}"
+    assert_eq!(
+        msg,
+        "main.py:1:6: error[unresolved-import] Cannot resolve imported module `leaky`\n",
     );
 }
 
@@ -230,9 +224,9 @@ fn pooled_db_no_cross_run_same_path_leak() {
         .unwrap()
         .expect("second run must error — `GOOD` was only defined in the first run");
     let msg = r2.format(DiagnosticFormat::Concise).to_string();
-    assert!(
-        msg.contains("unresolved-reference") || msg.contains("Name `GOOD`") || msg.contains("possibly-unbound"),
-        "second run must report `GOOD` as undefined; got:\n{msg}"
+    assert_eq!(
+        msg,
+        "main.py:1:10: error[unresolved-reference] Name `GOOD` used when not defined\n",
     );
 }
 
@@ -256,9 +250,9 @@ fn pooled_db_no_cross_run_stubs_leak() {
         .unwrap()
         .expect("second run must error — `type_stubs` was only provided in the first run");
     let msg = r2.format(DiagnosticFormat::Concise).to_string();
-    assert!(
-        msg.contains("unresolved-import") || msg.contains("unresolved-reference"),
-        "second run must report the stub import as unresolved; got:\n{msg}"
+    assert_eq!(
+        msg,
+        "main.py:1:6: error[unresolved-import] Cannot resolve imported module `type_stubs`\n",
     );
 }
 
@@ -286,9 +280,11 @@ fn pooled_db_concurrent_runs_stay_isolated() {
                         let r2 = type_check(&SourceFile::new(&leak_probe, "main.py"), None).unwrap();
                         let d = r2.expect("leak probe must error — prior run's name must not be visible");
                         let msg = d.format(DiagnosticFormat::Concise).to_string();
-                        assert!(
-                            msg.contains("unresolved-reference") || msg.contains("possibly-unbound"),
-                            "expected unresolved-reference for T_{thread_idx}_{iter}, got:\n{msg}"
+                        assert_eq!(
+                            msg,
+                            format!(
+                                "main.py:1:10: error[unresolved-reference] Name `T_{thread_idx}_{iter}` used when not defined\n"
+                            ),
                         );
                     }
                 })
@@ -316,9 +312,9 @@ fn pooled_db_nested_paths_are_cleaned_up() {
         .unwrap()
         .expect("nested-path leak probe must error — `LEAKY` must not survive into the next run");
     let msg = r2.format(DiagnosticFormat::Concise).to_string();
-    assert!(
-        msg.contains("unresolved-reference") || msg.contains("Name `LEAKY`") || msg.contains("possibly-unbound"),
-        "nested-path leak probe must report `LEAKY` as undefined; got:\n{msg}"
+    assert_eq!(
+        msg,
+        "sub_dir/leaky.py:1:10: error[unresolved-reference] Name `LEAKY` used when not defined\n",
     );
 
     // Third run from a *different* nested path importing the previous module must
@@ -327,9 +323,9 @@ fn pooled_db_nested_paths_are_cleaned_up() {
         .unwrap()
         .expect("third run must error — sub_dir/leaky.py was deleted on cleanup");
     let msg = r3.format(DiagnosticFormat::Concise).to_string();
-    assert!(
-        msg.contains("unresolved-import") || msg.contains("unresolved-reference"),
-        "third run must report the import as unresolved; got:\n{msg}"
+    assert_eq!(
+        msg,
+        "other.py:1:6: error[unresolved-import] Cannot resolve imported module `sub_dir.leaky`\n",
     );
 }
 

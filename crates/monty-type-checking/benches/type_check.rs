@@ -60,7 +60,12 @@ fn bench_repl_sequence(c: &mut Criterion) {
                 let path = format!("step_{i}.py");
                 let stubs_src = SourceFile::new(&stubs, "type_stubs.pyi");
                 let main_src = SourceFile::new(snippet, &path);
-                let out = type_check(&main_src, Some(&stubs_src)).unwrap_or(None);
+                let out = type_check(&main_src, Some(&stubs_src))
+                    .expect("repl-sequence benchmark should not hit internal type-check failures");
+                assert!(
+                    out.is_none(),
+                    "repl-sequence benchmark snippet should type-check cleanly: {snippet}"
+                );
                 black_box(out);
                 stubs.push_str(snippet);
                 stubs.push('\n');

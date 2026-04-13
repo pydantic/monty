@@ -48,8 +48,9 @@ impl fmt::Debug for MemoryDb {
 
 /// Virtual source root used for all in-memory type-checking files.
 ///
-/// The reusable database pool only supports root-level user files, so every public
-/// `SourceFile.path` is mapped directly under `/`.
+/// Every public `SourceFile.path` is mapped under `/`, including nested paths such
+/// as `pkg/main.py`. Pool cleanup is responsible for removing any intermediate
+/// directories before a reused db is returned to the next caller.
 pub(crate) const SRC_ROOT: &str = "/";
 
 impl Default for MemoryDb {
