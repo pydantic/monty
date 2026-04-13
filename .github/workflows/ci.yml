@@ -185,75 +185,14 @@ jobs:
           path: python-rust-coverage.json
           if-no-files-found: error
 
-  test-js-coverage:
-    runs-on: ubuntu-latest
-
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          persist-credentials: false
-
-      - name: Setup node
-        uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0  # zizmor: ignore[cache-poisoning] -- Job does not produce release artifacts and does not have sensitive permissions
-        with:
-          # Match the supported JS test matrix; @oxc-node/core currently fails on Node 24 here.
-          node-version: 22
-          cache: npm
-          cache-dependency-path: crates/monty-js/package-lock.json
-
-      # no release versioning, see https://github.com/dtolnay/rust-toolchain/issues/180
-      - uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9
-        with:
-          toolchain: stable
-          components: llvm-tools
-
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
-        with:
-          lookup-only: false # zizmor: ignore[cache-poisoning] -- Job does not produce release artifacts and does not have sensitive permissions
-          cache-on-failure: true
-
-      - uses: taiki-e/install-action@1ed3272338f573e042a2e6bca3893aa19f43b47a # v2.71.3
-        with:
-          tool: cargo-llvm-cov
-
-      - run: rustc --version --verbose
-        # don't use .venv python in CI
-      - run: rm .cargo/config.toml
-
-      - name: Install dependencies
-        run: npm install
-        working-directory: crates/monty-js
-
-      - name: Build and test JS bindings with Rust coverage
-        run: |
-          set -euxo pipefail
-          eval "$(cargo llvm-cov show-env --export-prefix)"
-          cargo llvm-cov clean --workspace
-          cargo build -p monty-js
-          cp \
-            "$CARGO_LLVM_COV_TARGET_DIR"/debug/libmonty_js.so \
-            "$CARGO_LLVM_COV_TARGET_DIR"/debug/monty.linux-x64-gnu.node
-          cd crates/monty-js
-          NAPI_RS_NATIVE_LIBRARY_PATH="$CARGO_LLVM_COV_TARGET_DIR"/debug/monty.linux-x64-gnu.node npm test
-          cd ../..
-          cargo llvm-cov report --ignore-filename-regex "$LLVM_COV_IGNORE_FILENAME_REGEX"
-          cargo llvm-cov report --codecov --output-path=js-rust-coverage.json --ignore-filename-regex "$LLVM_COV_IGNORE_FILENAME_REGEX"
-
-      - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
-        with:
-          name: js-rust-coverage-report
-          path: js-rust-coverage.json
-          if-no-files-found: error
-
   coverage-upload:
     runs-on: ubuntu-latest
     needs:
       - test-rust
       - test-python-coverage
-      - test-js-coverage
 
     permissions:
-      # Needed to download coverage report artifacts from the three producer jobs.
+      # Needed to download coverage report artifacts from the coverage producer jobs.
       contents: read
       actions: read
       # Needed by getsentry/codecov-action when posting the single PR coverage comment.
@@ -275,7 +214,7 @@ jobs:
 
       - uses: codecov/codecov-action@57e3a136b779b570ffcdbf80b3bdc90e7fab3de2 # v6.0.0
         with:
-          files: coverage-reports/rust-coverage.json,coverage-reports/python-rust-coverage.json,coverage-reports/js-rust-coverage.json
+          files: coverage-reports/rust-coverage.json,coverage-reports/python-rust-coverage.json
           disable_search: true
           token: ${{ secrets.CODECOV_TOKEN }}
           name: rust-coverage
@@ -283,7 +222,7 @@ jobs:
       - uses: getsentry/codecov-action@03112cc3b486a3397dc8d17a58680008721fc86f # 0.3.7
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
-          files: coverage-reports/rust-coverage.json,coverage-reports/python-rust-coverage.json,coverage-reports/js-rust-coverage.json
+          files: coverage-reports/rust-coverage.json,coverage-reports/python-rust-coverage.json
           disable-search: true
           coverage-format: codecov
           post-pr-comment: true
@@ -474,7 +413,6 @@ jobs:
       - lint
       - test-rust
       - test-python-coverage
-      - test-js-coverage
       - coverage-upload
       - test-rust-os
       - test-python
