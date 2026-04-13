@@ -4,20 +4,23 @@
 import type {
   ExceptionInfo,
   ExceptionInput,
+  FeedOptions as NativeFeedOptions,
   Frame,
   JsMontyObject,
+  MountDirOptions,
   MontyOptions,
   NameLookupLoadOptions,
   NameLookupResumeOptions,
   ResourceLimits,
   ResumeOptions,
-  RunOptions,
+  RunOptions as NativeRunOptions,
   SnapshotLoadOptions,
-  StartOptions,
+  StartOptions as NativeStartOptions,
 } from './index.js'
 
 import {
   Monty as NativeMonty,
+  MountDir,
   MontyRepl as NativeMontyRepl,
   MontySnapshot as NativeMontySnapshot,
   MontyNameLookup as NativeMontyNameLookup,
@@ -28,11 +31,10 @@ import {
 
 export type {
   MontyOptions,
-  RunOptions,
+  MountDirOptions,
   ResourceLimits,
   Frame,
   ExceptionInfo,
-  StartOptions,
   ResumeOptions,
   ExceptionInput,
   SnapshotLoadOptions,
@@ -40,6 +42,26 @@ export type {
   NameLookupLoadOptions,
   JsMontyObject,
 }
+
+/** Options for running code. */
+export interface RunOptions extends Omit<NativeRunOptions, 'mount'> {
+  /** Filesystem mount(s) for the sandbox. */
+  mount?: MountDir | MountDir[]
+}
+
+/** Options for starting execution. */
+export interface StartOptions extends Omit<NativeStartOptions, 'mount'> {
+  /** Filesystem mount(s) for the sandbox. */
+  mount?: MountDir | MountDir[]
+}
+
+/** Options for REPL feed(). */
+export interface FeedOptions extends Omit<NativeFeedOptions, 'mount'> {
+  /** Filesystem mount(s) for the sandbox. */
+  mount?: MountDir | MountDir[]
+}
+
+export { MountDir }
 
 /**
  * Alias for ResourceLimits (deprecated name).
@@ -352,31 +374,30 @@ export class Monty {
   }
 }
 
+/** Options for creating a new MontyRepl instance. */
+export interface MontyReplOptions {
+  /** Name used in tracebacks and error messages. Default: 'main.py' */
+  scriptName?: string
+  /** Resource limits applied to all snippet executions. */
+  limits?: ResourceLimits
+}
+
 /**
  * Incremental no-replay REPL session.
+ *
+ * Create with `new MontyRepl()` then call `feed()` to execute snippets
+ * incrementally against persistent state.
  */
 export class MontyRepl {
   private _native: NativeMontyRepl
 
   /**
-   * Creates a REPL session directly from source code.
+   * Creates an empty REPL session ready to receive snippets via `feed()`.
+   *
+   * @param options - Optional configuration (scriptName, limits)
    */
-  static create(code: string, options?: MontyOptions, startOptions?: StartOptions): MontyRepl {
-    const result = NativeMontyRepl.create(code, options, startOptions)
-    if (result instanceof NativeMontyException) {
-      if (result.exception.typeName === 'SyntaxError') {
-        throw new MontySyntaxError(result)
-      }
-      throw new MontyRuntimeError(result)
-    }
-    if (result instanceof NativeMontyTypingError) {
-      throw new MontyTypingError(result)
-    }
-    return new MontyRepl(result)
-  }
-
-  constructor(nativeRepl: NativeMontyRepl) {
-    this._native = nativeRepl
+  constructor(options?: MontyReplOptions) {
+    this._native = new NativeMontyRepl(options)
   }
 
   /** Returns the script name for this REPL session. */
@@ -388,11 +409,12 @@ export class MontyRepl {
    * Executes one incremental snippet.
    *
    * @param code - Snippet code to execute
+   * @param options - Optional feed options (mount)
    * @returns Snippet output
    * @throws {MontyRuntimeError} If execution raises an exception
    */
-  feed(code: string): JsMontyObject {
-    const result = this._native.feed(code)
+  feed(code: string, options?: FeedOptions): JsMontyObject {
+    const result = this._native.feed(code, options)
     if (result instanceof NativeMontyException) {
       throw new MontyRuntimeError(result)
     }
@@ -406,7 +428,10 @@ export class MontyRepl {
 
   /** Restores a REPL session from bytes. */
   static load(data: Buffer): MontyRepl {
-    return new MontyRepl(NativeMontyRepl.load(data))
+    const native = NativeMontyRepl.load(data)
+    const repl = Object.create(MontyRepl.prototype) as MontyRepl
+    ;(repl as any)._native = native
+    return repl
   }
 
   /** Returns a string representation of the REPL session. */
@@ -597,6 +622,10 @@ export interface RunMontyAsyncOptions {
   externalFunctions?: Record<string, (...args: unknown[]) => unknown>
   /** Resource limits. */
   limits?: ResourceLimits
+  /** Callback invoked on each print() call. The first argument is the stream name (always "stdout"), the second is the printed text. */
+  printCallback?: (stream: string, text: string) => void
+  /** Filesystem mount(s) for the sandbox. */
+  mount?: MountDir | MountDir[]
 }
 
 /**
@@ -628,11 +657,13 @@ export interface RunMontyAsyncOptions {
  * });
  */
 export async function runMontyAsync(montyRunner: Monty, options: RunMontyAsyncOptions = {}): Promise<JsMontyObject> {
-  const { inputs, externalFunctions = {}, limits } = options
+  const { inputs, externalFunctions = {}, limits, printCallback, mount } = options
 
   let progress: MontySnapshot | MontyNameLookup | MontyComplete = montyRunner.start({
     inputs,
     limits,
+    printCallback,
+    mount,
   })
 
   while (!(progress instanceof MontyComplete)) {

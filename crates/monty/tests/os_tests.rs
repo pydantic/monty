@@ -4,7 +4,9 @@
 //! `RunProgress::OsCall` with the correct `OsFunction` variant and arguments,
 //! and that return values are correctly used by Python code.
 
-use monty::{MontyObject, MontyRun, NoLimitTracker, OsFunction, PrintWriter, RunProgress, file_stat};
+use monty::{
+    MontyDate, MontyDateTime, MontyObject, MontyRun, NoLimitTracker, OsFunction, PrintWriter, RunProgress, file_stat,
+};
 
 /// Helper to run code and extract the OsCall progress.
 ///
@@ -13,7 +15,7 @@ use monty::{MontyObject, MontyRun, NoLimitTracker, OsFunction, PrintWriter, RunP
 /// The state is resumed with a mock result to properly clean up ref counts.
 fn run_to_oscall(code: &str) -> (OsFunction, Vec<MontyObject>) {
     let runner = MontyRun::new(code.to_owned(), "test.py", vec![]).unwrap();
-    let progress = runner.start(vec![], NoLimitTracker, &mut PrintWriter::Stdout).unwrap();
+    let progress = runner.start(vec![], NoLimitTracker, PrintWriter::Stdout).unwrap();
 
     match progress {
         RunProgress::OsCall(call) => {
@@ -36,10 +38,26 @@ fn run_to_oscall(code: &str) -> (OsFunction, Vec<MontyObject>) {
                 | OsFunction::Rename => MontyObject::None,
                 OsFunction::Getenv => MontyObject::String("mock_env_value".to_owned()),
                 OsFunction::GetEnviron => MontyObject::Dict(vec![].into()),
+                OsFunction::DateToday => MontyObject::Date(MontyDate {
+                    year: 2023,
+                    month: 11,
+                    day: 14,
+                }),
+                OsFunction::DateTimeNow => MontyObject::DateTime(MontyDateTime {
+                    year: 2023,
+                    month: 11,
+                    day: 14,
+                    hour: 22,
+                    minute: 13,
+                    second: 20,
+                    microsecond: 0,
+                    offset_seconds: None,
+                    timezone_name: None,
+                }),
             };
             let function = call.function;
             let args = call.args.clone();
-            let _ = call.resume(mock_result, &mut PrintWriter::Stdout);
+            let _ = call.resume(mock_result, PrintWriter::Stdout);
             (function, args)
         }
         _ => panic!("expected OsCall, got {progress:?}"),
@@ -49,13 +67,13 @@ fn run_to_oscall(code: &str) -> (OsFunction, Vec<MontyObject>) {
 /// Helper to run code, provide an OS call result, and get the final value.
 fn run_oscall_with_result(code: &str, mock_result: MontyObject) -> (OsFunction, Vec<MontyObject>, MontyObject) {
     let runner = MontyRun::new(code.to_owned(), "test.py", vec![]).unwrap();
-    let progress = runner.start(vec![], NoLimitTracker, &mut PrintWriter::Stdout).unwrap();
+    let progress = runner.start(vec![], NoLimitTracker, PrintWriter::Stdout).unwrap();
 
     match progress {
         RunProgress::OsCall(call) => {
             let function = call.function;
             let args = call.args.clone();
-            let resumed = call.resume(mock_result, &mut PrintWriter::Stdout).unwrap();
+            let resumed = call.resume(mock_result, PrintWriter::Stdout).unwrap();
             let final_result = resumed.into_complete().expect("expected Complete after resume");
             (function, args, final_result)
         }
@@ -127,14 +145,14 @@ fn path_iterdir() {
 fn path_resolve() {
     let (func, args) = run_to_oscall("from pathlib import Path; Path('./relative').resolve()");
     assert_eq!(func, OsFunction::Resolve);
-    assert_eq!(args, vec![MontyObject::Path("./relative".to_owned())]);
+    assert_eq!(args, vec![MontyObject::Path("relative".to_owned())]);
 }
 
 #[test]
 fn path_absolute() {
     let (func, args) = run_to_oscall("from pathlib import Path; Path('./relative').absolute()");
     assert_eq!(func, OsFunction::Absolute);
-    assert_eq!(args, vec![MontyObject::Path("./relative".to_owned())]);
+    assert_eq!(args, vec![MontyObject::Path("relative".to_owned())]);
 }
 
 // =============================================================================

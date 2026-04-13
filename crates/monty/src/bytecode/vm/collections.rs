@@ -1,17 +1,14 @@
 //! Collection building and unpacking helpers for the VM.
 
-use smallvec::SmallVec;
-
 use super::VM;
 use crate::{
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, RunError, SimpleException},
-    heap::{HeapData, HeapGuard},
-    heap_data::HeapDataMut,
+    heap::{HeapData, HeapGuard, HeapReadOutput},
     intern::StringId,
     resource::ResourceTracker,
     types::{Dict, List, PyTrait, Set, Slice, Type, allocate_tuple, slice::value_to_option_i64, str::allocate_char},
-    value::Value,
+    value::{VALUE_SIZE, Value},
 };
 
 impl<T: ResourceTracker> VM<'_, '_, T> {
@@ -42,7 +39,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
         // Use into_iter to consume items by value, avoiding clone and proper ownership transfer
         let mut iter = items.into_iter();
         while let (Some(key), Some(value)) = (iter.next(), iter.next()) {
-            dict.set(key, value, self.heap, self.interns)?;
+            dict.set(key, value, self)?;
         }
         let heap_id = self.heap.allocate(HeapData::Dict(dict))?;
         self.push(Value::Ref(heap_id));
@@ -54,7 +51,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
         let items = self.pop_n(count);
         let mut set = Set::new();
         for item in items {
-            set.add(item, self.heap, self.interns)?;
+            set.add(item, self)?;
         }
         let heap_id = self.heap.allocate(HeapData::Set(set))?;
         self.push(Value::Ref(heap_id));
@@ -85,10 +82,13 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
         Ok(())
     }
 
-    /// Extends a list with items from an iterable.
+    /// Extends a list with items from an iterable, for PEP 448 `*expr` literal unpacking.
     ///
     /// Stack: [list, iterable] -> [list]
     /// Pops the iterable, extends the list in place, leaves list on stack.
+    ///
+    /// Raises `TypeError("Value after * must be an iterable, not {type}")` for non-iterables,
+    /// matching CPython's message for list/tuple literal unpacking (`[*x]`, `(*x,)`).
     ///
     /// Uses `HeapGuard` for `list_ref` because it is pushed back on success,
     /// and `defer_drop!` for `iterable` because it is always dropped.
@@ -103,10 +103,10 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
 
         let copied_items: Vec<Value> = match iterable {
             Value::Ref(id) => match this.heap.get(*id) {
-                HeapData::List(list) => list.as_slice().iter().map(|v| v.clone_with_heap(this.heap)).collect(),
-                HeapData::Tuple(tuple) => tuple.as_slice().iter().map(|v| v.clone_with_heap(this.heap)).collect(),
-                HeapData::Set(set) => set.storage().iter().map(|v| v.clone_with_heap(this.heap)).collect(),
-                HeapData::Dict(dict) => dict.iter().map(|(k, _)| k.clone_with_heap(this.heap)).collect(),
+                HeapData::List(list) => list.as_slice().iter().map(|v| v.clone_with_heap(this)).collect(),
+                HeapData::Tuple(tuple) => tuple.as_slice().iter().map(|v| v.clone_with_heap(this)).collect(),
+                HeapData::Set(set) => set.storage().iter().map(|v| v.clone_with_heap(this)).collect(),
+                HeapData::Dict(dict) => dict.iter().map(|(k, _)| k.clone_with_heap(this)).collect(),
                 HeapData::Str(s) => {
                     // Need to allocate strings for each character
                     let chars: Vec<char> = s.as_str().chars().collect();
@@ -117,8 +117,8 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
                     items
                 }
                 _ => {
-                    let type_ = iterable.py_type(this.heap);
-                    return Err(ExcType::type_error_not_iterable(type_));
+                    let type_ = iterable.py_type(this);
+                    return Err(ExcType::type_error_value_after_star(type_));
                 }
             },
             Value::InternString(id) => {
@@ -131,18 +131,25 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
                 items
             }
             _ => {
-                let type_ = iterable.py_type(this.heap);
-                return Err(ExcType::type_error_not_iterable(type_));
+                let type_ = iterable.py_type(this);
+                return Err(ExcType::type_error_value_after_star(type_));
             }
         };
 
         // Check if any copied items are refs (for updating contains_refs)
         let has_refs = copied_items.iter().any(|v| matches!(v, Value::Ref(_)));
 
+        // Check memory limit before growing the list
+        if let Value::Ref(_) = list_ref {
+            this.heap.track_growth(copied_items.len() * VALUE_SIZE)?;
+        }
+
         // Extend the list
-        if let Value::Ref(id) = list_ref
-            && let HeapDataMut::List(list) = this.heap.get_mut(*id)
-        {
+        if let Value::Ref(id) = list_ref {
+            let HeapReadOutput::List(mut list) = this.heap.read(*id) else {
+                panic!("list_extend: expected List on heap");
+            };
+            let list = list.get_mut(this.heap);
             // Update contains_refs before extending
             if has_refs {
                 list.set_contains_refs();
@@ -170,18 +177,14 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
         let list_ref = this.pop();
         defer_drop!(list_ref, this);
 
-        let copied_items: SmallVec<_> = if let Value::Ref(id) = list_ref {
-            if let HeapData::List(list) = this.heap.get(*id) {
-                list.as_slice().iter().map(|v| v.clone_with_heap(this.heap)).collect()
-            } else {
-                return Err(RunError::internal("ListToTuple: expected list"));
-            }
-        } else {
+        let Value::Ref(id) = list_ref else {
             return Err(RunError::internal("ListToTuple: expected list ref"));
         };
-
-        // list_ref is dropped by the guard at scope exit; allocate the tuple
-        let value = allocate_tuple(copied_items, this.heap)?;
+        let HeapData::List(list) = this.heap.get(*id) else {
+            return Err(RunError::internal("ListToTuple: expected list"));
+        };
+        let items = list.as_slice().iter().map(|v| v.clone_with_heap(this.heap)).collect();
+        let value = allocate_tuple(items, this.heap)?;
         this.push(value);
         Ok(())
     }
@@ -213,14 +216,14 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
         let copied_items: Vec<(Value, Value)> = if let Value::Ref(id) = mapping {
             if let HeapData::Dict(dict) = this.heap.get(*id) {
                 dict.iter()
-                    .map(|(k, v)| (k.clone_with_heap(this.heap), v.clone_with_heap(this.heap)))
+                    .map(|(k, v)| (k.clone_with_heap(this), v.clone_with_heap(this)))
                     .collect()
             } else {
-                let type_name = mapping.py_type(this.heap).to_string();
+                let type_name = mapping.py_type(this).to_string();
                 return Err(ExcType::type_error_kwargs_not_mapping(&func_name, &type_name));
             }
         } else {
-            let type_name = mapping.py_type(this.heap).to_string();
+            let type_name = mapping.py_type(this).to_string();
             return Err(ExcType::type_error_kwargs_not_mapping(&func_name, &type_name));
         };
 
@@ -257,17 +260,11 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
                 _ => "<unknown>".to_string(),
             };
 
-            // Use with_entry_mut to avoid borrow conflict: takes data out temporarily
-            let result = this.heap.with_entry_mut(dict_id, |heap, data| {
-                if let HeapDataMut::Dict(dict) = data {
-                    dict.set(key, value, heap, this.interns)
-                } else {
-                    Err(RunError::internal("DictMerge: entry is not a Dict"))
-                }
-            });
+            let HeapReadOutput::Dict(mut dict) = this.heap.read(dict_id) else {
+                unreachable!("DictMerge: entry is not a Dict")
+            };
 
-            // If set returned Some, the key already existed (duplicate kwarg)
-            if let Some(old_value) = result? {
+            if let Some(old_value) = dict.set(key, value, this)? {
                 old_value.drop_with_heap(this);
                 return Err(ExcType::type_error_multiple_values(&func_name, &key_str));
             }
@@ -276,6 +273,137 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
         // Push dict_ref back on the stack (don't drop it)
         let (dict_ref, this) = dict_ref_guard.into_parts();
         this.push(dict_ref);
+        Ok(())
+    }
+
+    // ========================================================================
+    // PEP 448 Literal Building
+    // ========================================================================
+
+    /// Silently merges a mapping into the dict literal at `depth` on the stack.
+    ///
+    /// Used for `{**x, ...}` dict literals where later keys silently overwrite
+    /// earlier ones (unlike [`dict_merge`] which raises `TypeError` on duplicate keys
+    /// and is used for function-call `**kwargs`).
+    ///
+    /// Stack (depth = 0): `[..., dict, mapping]` → `[..., dict]`
+    ///
+    /// # Errors
+    ///
+    /// Returns `TypeError: '{type}' object is not a mapping` if the TOS is not a dict.
+    pub(super) fn dict_update(&mut self, depth: usize) -> Result<(), RunError> {
+        let this = self;
+
+        let mapping = this.pop();
+        defer_drop!(mapping, this);
+
+        // Clone all key/value pairs out of the mapping before mutating the target dict
+        let copied_items: Vec<(Value, Value)> = if let Value::Ref(id) = mapping {
+            if let HeapData::Dict(dict) = this.heap.get(*id) {
+                dict.iter()
+                    .map(|(k, v)| (k.clone_with_heap(this), v.clone_with_heap(this)))
+                    .collect()
+            } else {
+                let type_ = mapping.py_type(this);
+                return Err(ExcType::type_error_not_mapping(type_));
+            }
+        } else {
+            let type_ = mapping.py_type(this);
+            return Err(ExcType::type_error_not_mapping(type_));
+        };
+
+        // The target dict sits at `depth` positions below TOS (which is now gone after pop)
+        let stack_len = this.stack.len();
+        let dict_pos = stack_len - 1 - depth;
+        // SAFETY: the compiler always emits BuildDict before DictUpdate, so the
+        // target is always a Value::Ref.  This is a VM invariant: reaching this else
+        // arm means a compiler bug.
+        let Value::Ref(dict_id) = this.stack[dict_pos] else {
+            unreachable!("DictUpdate: target is always a Ref — compiler invariant")
+        };
+
+        for (key, value) in copied_items {
+            let HeapReadOutput::Dict(mut dict) = this.heap.read(dict_id) else {
+                unreachable!("DictUpdate: heap entry is always a Dict — compiler invariant")
+            };
+            let old = dict.set(key, value, this)?;
+            // Silently drop any old value — PEP 448 dict literals allow duplicate keys
+            if let Some(old_val) = old {
+                old_val.drop_with_heap(this);
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Extends a set literal with all items from an iterable.
+    ///
+    /// Used for `{*x, ...}` set literals (PEP 448). Follows the same item-copying
+    /// pattern as [`list_extend`]; raises `TypeError` for non-iterable sources.
+    ///
+    /// Stack (depth = 0): `[..., set, iterable]` → `[..., set]`
+    ///
+    /// # Errors
+    ///
+    /// Returns `TypeError: '{type}' object is not iterable` if TOS is not iterable.
+    pub(super) fn set_extend(&mut self, depth: usize) -> Result<(), RunError> {
+        let this = self;
+
+        let iterable = this.pop();
+        defer_drop!(iterable, this);
+
+        // Clone items from the iterable (same sources as list_extend)
+        let copied_items: Vec<Value> = match iterable {
+            Value::Ref(id) => match this.heap.get(*id) {
+                HeapData::List(list) => list.as_slice().iter().map(|v| v.clone_with_heap(this)).collect(),
+                HeapData::Tuple(tuple) => tuple.as_slice().iter().map(|v| v.clone_with_heap(this)).collect(),
+                HeapData::Set(set) => set.storage().iter().map(|v| v.clone_with_heap(this)).collect(),
+                HeapData::Dict(dict) => dict.iter().map(|(k, _)| k.clone_with_heap(this)).collect(),
+                HeapData::Str(s) => {
+                    let chars: Vec<char> = s.as_str().chars().collect();
+                    let mut items = Vec::with_capacity(chars.len());
+                    for c in chars {
+                        items.push(allocate_char(c, this.heap)?);
+                    }
+                    items
+                }
+                _ => {
+                    let type_ = iterable.py_type(this);
+                    return Err(ExcType::type_error_not_iterable(type_));
+                }
+            },
+            Value::InternString(id) => {
+                let s = this.interns.get_str(*id);
+                let chars: Vec<char> = s.chars().collect();
+                let mut items = Vec::with_capacity(chars.len());
+                for c in chars {
+                    items.push(allocate_char(c, this.heap)?);
+                }
+                items
+            }
+            _ => {
+                let type_ = iterable.py_type(this);
+                return Err(ExcType::type_error_not_iterable(type_));
+            }
+        };
+
+        // The target set sits at `depth` positions below TOS (which is now gone after pop)
+        let stack_len = this.stack.len();
+        let set_pos = stack_len - 1 - depth;
+        // SAFETY: the compiler always emits BuildSet before SetExtend, so the
+        // target is always a Value::Ref.  This is a VM invariant: reaching this else
+        // arm means a compiler bug.
+        let Value::Ref(set_id) = this.stack[set_pos] else {
+            unreachable!("SetExtend: target is always a Ref — compiler invariant")
+        };
+
+        for item in copied_items {
+            let HeapReadOutput::Set(mut set) = this.heap.read(set_id) else {
+                unreachable!("SetExtend: heap entry is always a Set — compiler invariant")
+            };
+            set.add(item, this)?;
+        }
+
         Ok(())
     }
 
@@ -299,16 +427,12 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
             return Err(RunError::internal("ListAppend: expected list ref on stack"));
         };
 
-        // Append to the list using with_entry_mut to handle proper contains_refs tracking
-        self.heap.with_entry_mut(list_id, |heap, data| {
-            if let HeapDataMut::List(list) = data {
-                list.append(heap, value);
-                Ok(())
-            } else {
-                value.drop_with_heap(heap);
-                Err(RunError::internal("ListAppend: expected list on heap"))
-            }
-        })
+        let HeapReadOutput::List(mut list) = self.heap.read(list_id) else {
+            value.drop_with_heap(self);
+            return Err(RunError::internal("ListAppend: expected list on heap"));
+        };
+        list.append(self, value)?;
+        Ok(())
     }
 
     /// Adds TOS to set for comprehension.
@@ -327,15 +451,11 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
             return Err(RunError::internal("SetAdd: expected set ref on stack"));
         };
 
-        // Add to the set using with_entry_mut to avoid borrow conflicts
-        self.heap.with_entry_mut(set_id, |heap, data| {
-            if let HeapDataMut::Set(set) = data {
-                set.add(value, heap, self.interns)
-            } else {
-                value.drop_with_heap(heap);
-                Err(RunError::internal("SetAdd: expected set on heap"))
-            }
-        })?;
+        let HeapReadOutput::Set(mut set) = self.heap.read(set_id) else {
+            value.drop_with_heap(self);
+            return Err(RunError::internal("SetAdd: expected set on heap"));
+        };
+        set.add(value, self)?;
 
         Ok(())
     }
@@ -358,16 +478,12 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
             return Err(RunError::internal("DictSetItem: expected dict ref on stack"));
         };
 
-        // Set item in the dict using with_entry_mut to avoid borrow conflicts
-        let old_value = self.heap.with_entry_mut(dict_id, |heap, data| {
-            if let HeapDataMut::Dict(dict) = data {
-                dict.set(key, value, heap, self.interns)
-            } else {
-                key.drop_with_heap(heap);
-                value.drop_with_heap(heap);
-                Err(RunError::internal("DictSetItem: expected dict on heap"))
-            }
-        })?;
+        let HeapReadOutput::Dict(mut dict) = self.heap.read(dict_id) else {
+            key.drop_with_heap(self);
+            value.drop_with_heap(self);
+            return Err(RunError::internal("DictSetItem: expected dict on heap"));
+        };
+        let old_value = dict.set(key, value, self)?;
 
         // Drop old value if key already existed
         if let Some(old) = old_value {
@@ -420,14 +536,14 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
                         if list_len != count {
                             return Err(unpack_size_error(count, list_len));
                         }
-                        list.as_slice().iter().map(|v| v.clone_with_heap(this.heap)).collect()
+                        list.as_slice().iter().map(|v| v.clone_with_heap(this)).collect()
                     }
                     HeapData::Tuple(tuple) => {
                         let tuple_len = tuple.as_slice().len();
                         if tuple_len != count {
                             return Err(unpack_size_error(count, tuple_len));
                         }
-                        tuple.as_slice().iter().map(|v| v.clone_with_heap(this.heap)).collect()
+                        tuple.as_slice().iter().map(|v| v.clone_with_heap(this)).collect()
                     }
                     HeapData::Str(s) => {
                         let str_len = s.as_str().chars().count();
@@ -445,15 +561,15 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
                         }
                         return Ok(());
                     }
-                    other => {
-                        let type_name = other.py_type(this.heap);
+                    _ => {
+                        let type_name = value.py_type(this);
                         return Err(unpack_type_error(type_name));
                     }
                 }
             }
             // Non-iterable types
             _ => {
-                let type_name = value.py_type(this.heap);
+                let type_name = value.py_type(this);
                 return Err(unpack_type_error(type_name));
             }
         };
@@ -503,14 +619,14 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
                         if list_len < min_items {
                             return Err(unpack_ex_too_few_error(min_items, list_len));
                         }
-                        list.as_slice().iter().map(|v| v.clone_with_heap(this.heap)).collect()
+                        list.as_slice().iter().map(|v| v.clone_with_heap(this)).collect()
                     }
                     HeapData::Tuple(tuple) => {
                         let tuple_len = tuple.as_slice().len();
                         if tuple_len < min_items {
                             return Err(unpack_ex_too_few_error(min_items, tuple_len));
                         }
-                        tuple.as_slice().iter().map(|v| v.clone_with_heap(this.heap)).collect()
+                        tuple.as_slice().iter().map(|v| v.clone_with_heap(this)).collect()
                     }
                     HeapData::Str(s) => {
                         // Collect chars once to avoid double iteration over UTF-8 data
@@ -524,14 +640,14 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
                         }
                         items
                     }
-                    other => {
-                        let type_name = other.py_type(this.heap);
+                    _ => {
+                        let type_name = value.py_type(this);
                         return Err(unpack_type_error(type_name));
                     }
                 }
             }
             _ => {
-                let type_name = value.py_type(this.heap);
+                let type_name = value.py_type(this);
                 return Err(unpack_type_error(type_name));
             }
         };

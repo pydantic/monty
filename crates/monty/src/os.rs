@@ -2,7 +2,7 @@
 //!
 //! This module defines the `OsFunction` enum, which represents operations that
 //! cannot be performed in a sandboxed environment. When a type method needs to
-//! perform one of these operations, it returns an `AttrCallResult::OsCall` variant
+//! perform one of these operations, it returns an `CallResult::OsCall` variant
 //! with the function and arguments. The VM then yields control to the host via
 //! `FrameExit::OsCall`, allowing the host to execute the operation and resume.
 //!
@@ -10,7 +10,7 @@
 //! I/O, filesystem, or network operations. Instead, the host decides whether to
 //! permit and execute such operations.
 
-use crate::{MontyObject, intern::StaticStrings};
+use crate::{ExcType, MontyException, MontyObject, intern::StaticStrings, types::str::StringRepr};
 
 /// OS operations that require host system access.
 ///
@@ -81,6 +81,77 @@ pub enum OsFunction {
     /// Get the entire environment as a dictionary
     #[strum(serialize = "os.environ")]
     GetEnviron,
+    /// Get today's date from the host system (for `date.today()`).
+    ///
+    /// Takes no arguments. The host should return `MontyObject::Date`.
+    #[strum(serialize = "date.today")]
+    DateToday,
+    /// Get the current date/time from the host system (for `datetime.now(tz=...)`).
+    ///
+    /// Takes one argument: the timezone (`MontyObject::TimeZone` or `MontyObject::None`).
+    /// The host should return `MontyObject::DateTime`.
+    #[strum(serialize = "datetime.now")]
+    DateTimeNow,
+}
+
+impl OsFunction {
+    /// Returns `true` if this is a filesystem operation that can be handled by a
+    /// [`MountTable`](crate::fs::MountTable).
+    ///
+    /// Non-filesystem operations (`Getenv`, `GetEnviron`, `DateToday`, `DateTimeNow`)
+    /// return `false` and should be passed through to the host callback.
+    #[must_use]
+    pub fn is_filesystem(&self) -> bool {
+        !matches!(
+            self,
+            Self::Getenv | Self::GetEnviron | Self::DateToday | Self::DateTimeNow
+        )
+    }
+
+    /// Returns `true` if this is a write operation that modifies the filesystem.
+    ///
+    /// Write operations are blocked in read-only mounts and redirected in overlay mounts.
+    #[must_use]
+    pub fn is_write(&self) -> bool {
+        matches!(
+            self,
+            Self::WriteText | Self::WriteBytes | Self::Mkdir | Self::Unlink | Self::Rmdir | Self::Rename
+        )
+    }
+
+    /// Returns `true` for operations that check path existence without reading content.
+    ///
+    /// These operations return `false` for nonexistent paths instead of raising
+    /// `FileNotFoundError`, matching CPython's `pathlib.Path` behavior.
+    #[must_use]
+    pub fn is_existence_check(&self) -> bool {
+        matches!(self, Self::Exists | Self::IsFile | Self::IsDir | Self::IsSymlink)
+    }
+
+    /// Returns an appropriate exception for when no handler is available for this operation.
+    ///
+    /// Filesystem operations return `PermissionError` with the path from `args`.
+    /// Non-filesystem operations return `RuntimeError` indicating the function
+    /// isn't supported.
+    #[must_use]
+    pub fn on_no_handler(&self, args: &[MontyObject]) -> MontyException {
+        if self.is_filesystem() {
+            let path = args.first().map_or("<unknown>", |a| match a {
+                MontyObject::Path(p) => p.as_str(),
+                MontyObject::String(s) => s.as_str(),
+                _ => "<unknown>",
+            });
+            MontyException::new(
+                ExcType::PermissionError,
+                Some(format!("Permission denied: {}", StringRepr(path))),
+            )
+        } else {
+            MontyException::new(
+                ExcType::RuntimeError,
+                Some(format!("'{self}' is not supported in this environment")),
+            )
+        }
+    }
 }
 
 impl TryFrom<StaticStrings> for OsFunction {
@@ -126,7 +197,7 @@ const STAT_RESULT_FIELDS: &[&str] = &[
     "st_mode", "st_ino", "st_dev", "st_nlink", "st_uid", "st_gid", "st_size", "st_atime", "st_mtime", "st_ctime",
 ];
 
-/// Creates a stat_result for a regular file.
+/// Creates a `stat_result` for a regular file.
 ///
 /// The file type bits (`0o100_000`) are automatically added if not present.
 ///
@@ -145,7 +216,7 @@ pub fn file_stat(mode: i64, size: i64, mtime: f64) -> MontyObject {
     stat_result(mode, 0, 0, 1, 0, 0, size, mtime, mtime, mtime)
 }
 
-/// Creates a stat_result for a directory.
+/// Creates a `stat_result` for a directory.
 ///
 /// The directory type bits (`0o040_000`) are automatically added if not present.
 ///
@@ -162,7 +233,7 @@ pub fn dir_stat(mode: i64, mtime: f64) -> MontyObject {
     stat_result(mode, 0, 0, 2, 0, 0, 4096, mtime, mtime, mtime)
 }
 
-/// Creates a stat_result for a symbolic link.
+/// Creates a `stat_result` for a symbolic link.
 ///
 /// The symlink type bits (`0o120_000`) are automatically added if not present.
 ///
@@ -178,7 +249,7 @@ pub fn symlink_stat(mode: i64, mtime: f64) -> MontyObject {
     stat_result(mode, 0, 0, 1, 0, 0, 0, mtime, mtime, mtime)
 }
 
-/// Creates a full stat_result with all 10 fields specified.
+/// Creates a full `stat_result` with all 10 fields specified.
 ///
 /// This is the low-level builder; prefer `file_stat()`, `dir_stat()`, or `symlink_stat()`
 /// for common cases.

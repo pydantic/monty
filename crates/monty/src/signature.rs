@@ -6,10 +6,11 @@
 
 use crate::{
     args::{ArgPosIter, ArgValues},
+    bytecode::VM,
     defer_drop_mut,
     exception_private::{ExcType, RunResult, SimpleException},
     expressions::Identifier,
-    heap::{ContainsHeap, DropWithHeap, Heap, HeapData, HeapGuard},
+    heap::{HeapData, HeapGuard},
     intern::{Interns, StringId},
     resource::ResourceTracker,
     types::{Dict, allocate_tuple},
@@ -190,7 +191,7 @@ impl Signature {
     /// * `heap` - The heap for allocating *args tuple and **kwargs dict
     /// * `interns` - For looking up parameter names in error messages
     /// * `func_name` - Function name for error messages
-    /// * `namespace_size` - The size of the namespace to allocate
+    /// * `namespace` - The namespace to populate with bound arguments. This is mutated in place and will need to be cleaned up on error.
     ///
     /// # Errors
     /// Returns an error if:
@@ -203,8 +204,7 @@ impl Signature {
         &self,
         args: ArgValues,
         defaults: &[Value],
-        heap: &mut Heap<impl ResourceTracker>,
-        interns: &Interns,
+        vm: &mut VM<'_, '_, impl ResourceTracker>,
         func_name: Identifier,
         namespace: &mut Vec<Value>,
     ) -> RunResult<()> {
@@ -214,11 +214,9 @@ impl Signature {
         // on any error path
         let kwonly_given = keyword_args.len();
         let keyword_args = keyword_args.into_iter();
-        defer_drop_mut!(keyword_args, heap);
+        defer_drop_mut!(keyword_args, vm);
 
-        // On error paths need to empty the namespace
-        let mut namespace_guard = HeapGuard::new(NamespaceGuard { namespace }, heap);
-        let (NamespaceGuard { namespace }, heap) = namespace_guard.as_parts_mut();
+        let namespace_base = namespace.len();
 
         // Fast path for simple signatures (no defaults, no special params) and
         // signatures with only positional-or-keyword params and defaults.
@@ -239,12 +237,11 @@ impl Signature {
                 }
             }
 
-            let actual_count = namespace.len();
+            let actual_count = namespace.len() - namespace_base;
             let param_count = self.param_count();
 
             if actual_count == param_count {
                 // Exact match - no defaults needed
-                std::mem::forget(namespace_guard);
                 return Ok(());
             } else if self.bind_mode == BindMode::SimpleWithDefaults {
                 let required = self.required_positional_count();
@@ -254,19 +251,20 @@ impl Signature {
                     let defaults_needed = param_count - actual_count;
                     let defaults_start = self.arg_defaults_count - defaults_needed;
                     for i in 0..defaults_needed {
-                        namespace.push(defaults[defaults_start + i].clone_with_heap(heap));
+                        namespace.push(defaults[defaults_start + i].clone_with_heap(vm));
                     }
-                    std::mem::forget(namespace_guard);
                     return Ok(());
                 }
             }
 
-            return self.wrong_arg_count_error(actual_count, interns, func_name);
+            return self.wrong_arg_count_error(actual_count, vm.interns, func_name);
         }
 
         // Full binding algorithm for complex signatures or kwargs
-        let mut pos_iter_guard = HeapGuard::new(pos_iter, heap);
-        let (pos_iter, heap) = pos_iter_guard.as_parts_mut();
+        // Extract interns before guards since HeapGuard borrows the full VM mutably
+        // but we only need mutable access to the heap portion.
+        let mut pos_iter_guard = HeapGuard::new(pos_iter, vm);
+        let (pos_iter, vm) = pos_iter_guard.as_parts_mut();
 
         // Calculate how many positional params we have
         let pos_param_count = self.pos_arg_count();
@@ -277,7 +275,7 @@ impl Signature {
         if let Some(max) = self.max_positional_count() {
             let positional_count = pos_iter.len();
             if positional_count > max {
-                let func = interns.get_str(func_name.name_id);
+                let func = vm.interns.get_str(func_name.name_id);
                 return Err(ExcType::type_error_too_many_positional(
                     func,
                     max,
@@ -301,7 +299,7 @@ impl Signature {
         // 1. Bind positional args to pos_args, then args
 
         // Bind to pos_args
-        for (i, slot) in namespace.iter_mut().enumerate().take(pos_param_count) {
+        for (i, slot) in namespace[namespace_base..].iter_mut().enumerate().take(pos_param_count) {
             if let Some(val) = pos_iter.next() {
                 *slot = val;
                 bound_params |= 1 << i;
@@ -309,7 +307,7 @@ impl Signature {
         }
 
         // Bind to args
-        for (i, slot) in namespace
+        for (i, slot) in namespace[namespace_base..]
             .iter_mut()
             .enumerate()
             .take(total_positional_params)
@@ -323,7 +321,7 @@ impl Signature {
 
         // 2. Collect excess positional args into *args tuple
         if self.var_args.is_some() {
-            namespace[total_positional_params] = allocate_tuple(pos_iter.collect(), heap)?;
+            namespace[namespace_base + total_positional_params] = allocate_tuple(pos_iter.collect(), vm.heap)?;
         } else {
             // If no *args, excess was already checked above via max_positional_count
             debug_assert_eq!(pos_iter.len(), 0);
@@ -331,19 +329,20 @@ impl Signature {
 
         // 3. Bind keyword args
         // Bind keywords to args and kwargs (not pos_args - those are positional-only)
-        let mut excess_kwargs_guard = HeapGuard::new(self.var_kwargs.is_some().then(Dict::new), heap);
-        let (excess_kwargs, heap) = excess_kwargs_guard.as_parts_mut();
+        let mut excess_kwargs_guard = HeapGuard::new(self.var_kwargs.is_some().then(Dict::new), vm);
+        let (excess_kwargs, vm) = excess_kwargs_guard.as_parts_mut();
 
         'kwargs: for (key, value) in keyword_args {
             // Guard key: dropped on most paths, consumed into **kwargs via into_parts().
-            let mut key_guard = HeapGuard::new(key, heap);
-            let (key, heap) = key_guard.as_parts_mut();
+            let mut key_guard = HeapGuard::new(key, vm);
+            let (key, vm) = key_guard.as_parts_mut();
 
             // Guard value: consumed into namespace/excess_kwargs via into_inner(),
             // or dropped automatically on error paths.
-            let mut value_guard = HeapGuard::new(value, heap);
+            let mut value_guard = HeapGuard::new(value, vm);
+            let vm = value_guard.heap();
 
-            let Some(keyword_name) = key.as_either_str(value_guard.heap()) else {
+            let Some(keyword_name) = key.as_either_str(vm.heap) else {
                 return Err(ExcType::type_error("keywords must be strings"));
             };
 
@@ -351,25 +350,25 @@ impl Signature {
             if let Some(pos_args) = &self.pos_args
                 && let Some(&param_id) = pos_args
                     .iter()
-                    .find(|&&param_id| keyword_name.matches(param_id, interns))
+                    .find(|&&param_id| keyword_name.matches(param_id, vm.interns))
             {
-                let func = interns.get_str(func_name.name_id);
-                let param = interns.get_str(param_id);
+                let func = vm.interns.get_str(func_name.name_id);
+                let param = vm.interns.get_str(param_id);
                 return Err(ExcType::type_error_positional_only(func, param));
             }
 
             // Try positional-or-keyword params
             if let Some(args) = &self.args {
                 for (i, &param_id) in args.iter().enumerate() {
-                    if keyword_name.matches(param_id, interns) {
+                    if keyword_name.matches(param_id, vm.interns) {
                         let ns_idx = pos_param_count + i;
                         if (bound_params & (1 << ns_idx)) != 0 {
-                            let func = interns.get_str(func_name.name_id);
-                            let param = interns.get_str(param_id);
+                            let func = vm.interns.get_str(func_name.name_id);
+                            let param = vm.interns.get_str(param_id);
                             return Err(ExcType::type_error_duplicate_arg(func, param));
                         }
                         let (value, _) = value_guard.into_parts();
-                        namespace[ns_idx] = value;
+                        namespace[namespace_base + ns_idx] = value;
                         bound_params |= 1 << ns_idx;
                         continue 'kwargs;
                     }
@@ -379,16 +378,16 @@ impl Signature {
             // Try keyword-only params
             if let Some(kwargs) = &self.kwargs {
                 for (i, &param_id) in kwargs.iter().enumerate() {
-                    if keyword_name.matches(param_id, interns) {
+                    if keyword_name.matches(param_id, vm.interns) {
                         let ns_idx = total_positional_params + var_args_offset + i;
                         let bit_idx = total_positional_params + i;
                         if (bound_params & (1 << bit_idx)) != 0 {
-                            let func = interns.get_str(func_name.name_id);
-                            let param = interns.get_str(param_id);
+                            let func = vm.interns.get_str(func_name.name_id);
+                            let param = vm.interns.get_str(param_id);
                             return Err(ExcType::type_error_duplicate_arg(func, param));
                         }
                         let (value, _) = value_guard.into_parts();
-                        namespace[ns_idx] = value;
+                        namespace[namespace_base + ns_idx] = value;
                         bound_params |= 1 << bit_idx;
                         continue 'kwargs;
                     }
@@ -398,13 +397,13 @@ impl Signature {
             if let Some(excess_kwargs) = excess_kwargs {
                 // Consume both value and key into **kwargs dict
                 let (value, _) = value_guard.into_parts();
-                let (key, heap) = key_guard.into_parts();
-                excess_kwargs.set(key, value, heap, interns)?;
+                let (key, vm) = key_guard.into_parts();
+                excess_kwargs.set(key, value, vm)?;
                 continue 'kwargs;
             }
 
-            let func = interns.get_str(func_name.name_id);
-            let key_str = keyword_name.as_str(interns);
+            let func = vm.interns.get_str(func_name.name_id);
+            let key_str = keyword_name.as_str(vm.interns);
             return Err(ExcType::type_error_unexpected_keyword(func, key_str));
         }
 
@@ -418,7 +417,7 @@ impl Signature {
             let first_optional = pos_param_count - self.pos_defaults_count;
             for i in first_optional..pos_param_count {
                 if (bound_params & (1 << i)) == 0 {
-                    namespace[i] = defaults[default_idx + (i - first_optional)].clone_with_heap(heap);
+                    namespace[namespace_base + i] = defaults[default_idx + (i - first_optional)].clone_with_heap(vm);
                     bound_params |= 1 << i;
                 }
             }
@@ -431,7 +430,8 @@ impl Signature {
             for i in first_optional..arg_param_count {
                 let ns_idx = pos_param_count + i;
                 if (bound_params & (1 << ns_idx)) == 0 {
-                    namespace[ns_idx] = defaults[default_idx + (i - first_optional)].clone_with_heap(heap);
+                    namespace[namespace_base + ns_idx] =
+                        defaults[default_idx + (i - first_optional)].clone_with_heap(vm);
                     bound_params |= 1 << ns_idx;
                 }
             }
@@ -446,7 +446,7 @@ impl Signature {
                     // Skip past *args slot if present
                     let ns_idx = total_positional_params + var_args_offset + i;
                     if (bound_params & (1 << bound_idx)) == 0 {
-                        namespace[ns_idx] = defaults[default_idx + slot_idx].clone_with_heap(heap);
+                        namespace[namespace_base + ns_idx] = defaults[default_idx + slot_idx].clone_with_heap(vm);
                         bound_params |= 1 << bound_idx;
                     }
                 }
@@ -464,7 +464,7 @@ impl Signature {
             let required_pos_only = pos_args.len().saturating_sub(self.pos_defaults_count);
             for (i, &param_id) in pos_args.iter().enumerate() {
                 if i < required_pos_only && (bound_params & (1 << i)) == 0 {
-                    missing_positional.push(interns.get_str(param_id));
+                    missing_positional.push(vm.interns.get_str(param_id));
                 }
             }
         }
@@ -474,14 +474,14 @@ impl Signature {
             let required_args = args_params.len().saturating_sub(self.arg_defaults_count);
             for (i, &param_id) in args_params.iter().enumerate() {
                 if i < required_args && (bound_params & (1 << (pos_param_count + i))) == 0 {
-                    missing_positional.push(interns.get_str(param_id));
+                    missing_positional.push(vm.interns.get_str(param_id));
                 }
             }
         }
 
         if !missing_positional.is_empty() {
             // Clean up bound values before returning error
-            let func = interns.get_str(func_name.name_id);
+            let func = vm.interns.get_str(func_name.name_id);
             return Err(ExcType::type_error_missing_positional_with_names(
                 func,
                 &missing_positional,
@@ -495,27 +495,24 @@ impl Signature {
             for (i, &param_id) in kwargs_params.iter().enumerate() {
                 let has_default = default_map.and_then(|map| map.get(i)).is_some_and(Option::is_some);
                 if !has_default && (bound_params & (1 << (total_positional_params + i))) == 0 {
-                    missing_kwonly.push(interns.get_str(param_id));
+                    missing_kwonly.push(vm.interns.get_str(param_id));
                 }
             }
         }
 
         if !missing_kwonly.is_empty() {
-            let func = interns.get_str(func_name.name_id);
+            let func = vm.interns.get_str(func_name.name_id);
             return Err(ExcType::type_error_missing_kwonly_with_names(func, &missing_kwonly));
         }
 
         // 5. Insert **kwargs dict if present (at the last slot)
         // Namespace layout: [pos_args][args][*args?][kwargs][**kwargs?]
-        let (excess_kwargs, heap) = excess_kwargs_guard.into_parts();
+        let (excess_kwargs, vm) = excess_kwargs_guard.into_parts();
         if let Some(excess_kwargs) = excess_kwargs {
-            let dict_id = heap.allocate(HeapData::Dict(excess_kwargs))?;
+            let dict_id = vm.heap.allocate(HeapData::Dict(excess_kwargs))?;
             let last_slot = namespace.len() - 1;
             namespace[last_slot] = Value::Ref(dict_id);
         }
-
-        std::mem::drop(pos_iter_guard); // So that `namespace_guard` can be forgotten
-        std::mem::forget(namespace_guard); // Because we have fully constructed the namespace and don't want it cleared
 
         Ok(())
     }
@@ -650,18 +647,5 @@ impl Signature {
         Err(SimpleException::new_msg(ExcType::TypeError, msg)
             .with_position(func_name.position)
             .into())
-    }
-}
-
-/// Empties the namespace on error paths by draining it.
-struct NamespaceGuard<'a> {
-    namespace: &'a mut Vec<Value>,
-}
-
-impl DropWithHeap for NamespaceGuard<'_> {
-    fn drop_with_heap<H: ContainsHeap>(self, heap: &mut H) {
-        for value in self.namespace.drain(..) {
-            value.drop_with_heap(heap);
-        }
     }
 }

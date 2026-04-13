@@ -29,6 +29,59 @@ d = {'a': 1}
 d['a'] = 99
 assert d == {'a': 99}, 'subscript set existing key'
 
+# === Dict subscript augmented assignment ===
+totals = {'photo': 1}
+rtype = 'photo'
+likes = 2
+totals[rtype] += likes
+assert totals == {'photo': 3}, 'subscript += updates existing dict item'
+
+calls = 0
+
+
+def key():
+    global calls
+    calls += 1
+    return 'photo'
+
+
+totals = {'photo': 10}
+totals[key()] += 5
+assert totals == {'photo': 15}, 'subscript += stores the computed result back'
+assert calls == 1, 'subscript += evaluates the index expression once'
+
+captured_total = {'photo': 1}
+captured_likes = 2
+
+
+def apply_captured_increment():
+    captured_total['photo'] += captured_likes
+
+
+apply_captured_increment()
+assert captured_total == {'photo': 3}, 'subscript += works with closure-captured names'
+
+walrus_key = None
+walrus_total = {'photo': 10}
+walrus_total[(walrus_key := 'photo')] += 4
+assert walrus_key == 'photo', 'subscript += allows walrus in the index expression'
+assert walrus_total == {'photo': 14}, 'subscript += with walrus index updates the selected item'
+
+try:
+    missing = {}
+    missing['photo'] += 1
+    assert False, 'subscript += on a missing dict key should raise KeyError'
+except KeyError as e:
+    assert e.args == ('photo',), 'subscript += missing key preserves the missing key in KeyError'
+
+try:
+    existing = {'photo': 'a'}
+    existing['photo'] += 1
+    assert False, 'subscript += with incompatible operand types should raise TypeError'
+except TypeError as e:
+    assert e.args == ('can only concatenate str (not "int") to str',), 'subscript += type error matches CPython'
+    assert existing == {'photo': 'a'}, 'failed subscript += does not overwrite the original dict item'
+
 # === Dict.get() method ===
 d = {'a': 1, 'b': 2}
 assert d.get('a') == 1, 'get existing'
@@ -58,3 +111,23 @@ assert d['self'] is d, 'getitem self'
 
 d = {}
 assert d.get('missing', d) is d, 'get default same dict'
+
+# === Dict unpacking (PEP 448) ===
+a = {'x': 1, 'y': 2}
+b = {'y': 99, 'z': 3}
+assert {**a} == {'x': 1, 'y': 2}, 'single unpack'
+assert {**a, **b} == {'x': 1, 'y': 99, 'z': 3}, 'double unpack, later wins'
+assert {**a, 'y': 0} == {'x': 1, 'y': 0}, 'literal overrides unpacked key'
+assert {'y': 0, **a} == {'y': 2, 'x': 1}, 'unpack overrides earlier literal'
+assert {**a, 'z': 3} == {'x': 1, 'y': 2, 'z': 3}, 'unpack then new key'
+assert {**{}} == {}, 'unpack empty dict'
+assert {**a, **b, 'w': 4} == {'x': 1, 'y': 99, 'z': 3, 'w': 4}, 'complex mixed'
+assert list({**a, 'z': 3}.keys()) == ['x', 'y', 'z'], 'insertion order preserved'
+
+# === Dict unpack TypeError for non-mapping heap ref ===
+# Unpacking a Ref that is NOT a dict (e.g. a list) should raise TypeError
+try:
+    x = {**[1, 2, 3]}
+    assert False, 'expected TypeError'
+except TypeError as e:
+    assert str(e) == "'list' object is not a mapping", f'wrong error: {e}'

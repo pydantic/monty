@@ -79,6 +79,24 @@ test('not implemented error', (t) => {
 })
 
 // =============================================================================
+// OS call errors (no OS callback support in JS bindings)
+// =============================================================================
+
+test('os.environ via run() raises NotImplementedError', (t) => {
+  const m = new Monty('import os\nx = os.environ')
+  const error = t.throws(() => m.run(), isRuntimeError)
+  t.is(error.exception.typeName, 'NotImplementedError')
+  t.is(error.exception.message, "OS function 'os.environ' not implemented with standard execution")
+})
+
+test('os.getenv via run() raises NotImplementedError', (t) => {
+  const m = new Monty("import os\nx = os.getenv('HOME')")
+  const error = t.throws(() => m.run(), isRuntimeError)
+  t.is(error.exception.typeName, 'NotImplementedError')
+  t.is(error.exception.message, "OS function 'os.getenv' not implemented with standard execution")
+})
+
+// =============================================================================
 // MontySyntaxError tests
 // =============================================================================
 

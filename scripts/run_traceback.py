@@ -71,9 +71,12 @@ def run_file_and_get_traceback(
         # Prepare init_globals for iter mode tests
         init_globals = dict(ITER_MODE_GLOBALS) if iter_mode else None
 
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.py') as tmp_file:
+        # Use delete=False so the file can be opened by runpy on Windows,
+        # where NamedTemporaryFile holds an exclusive lock while open.
+        tmp_file = tempfile.NamedTemporaryFile(mode='w', suffix='.py', delete=False)
+        try:
             tmp_file.write(code)
-            tmp_file.flush()
+            tmp_file.close()
             file_path = tmp_file.name
 
             try:
@@ -95,8 +98,8 @@ def run_file_and_get_traceback(
                     elif '__asy.run(__test_main())' in frame:
                         # Skip the asyncio.run(__test_main()) wrapper frame
                         continue
-                    elif '/asyncio/' in frame:
-                        # Skip asyncio internal frames
+                    elif '/asyncio/' in frame or '\\asyncio\\' in frame:
+                        # Skip asyncio internal frames (forward slash on Unix, backslash on Windows)
                         continue
                     elif iter_mode:
                         # In iter mode, skip frames from helper modules
@@ -121,6 +124,8 @@ def run_file_and_get_traceback(
                 sys.setrecursionlimit(previous_recursion_limit)
                 lines = (''.join(result_frames)).splitlines()
                 return '\n'.join(map(normalize_debug_range, lines)).rstrip()
+        finally:
+            os.unlink(tmp_file.name)
 
 
 def _adjust_async_frame(frame: str, tmp_path: str, file_name: str, line_offset: int) -> str | None:

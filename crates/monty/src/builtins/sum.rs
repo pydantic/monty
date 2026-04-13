@@ -1,5 +1,7 @@
 //! Implementation of the sum() builtin function.
 
+use std::mem;
+
 use crate::{
     args::ArgValues,
     bytecode::VM,
@@ -27,7 +29,7 @@ pub fn builtin_sum(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -
     let accumulator = match start.take() {
         Some(v) => {
             // Reject string start values - Python explicitly forbids this
-            if matches!(v.py_type(vm.heap), Type::Str) {
+            if matches!(v.py_type(vm), Type::Str) {
                 v.drop_with_heap(vm);
                 return Err(SimpleException::new_msg(
                     ExcType::TypeError,
@@ -50,14 +52,14 @@ pub fn builtin_sum(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -
         defer_drop!(item, vm);
 
         // Try to add the item to accumulator
-        if let Some(new_value) = accumulator.py_add(item, vm.heap, vm.interns)? {
+        if let Some(new_value) = accumulator.py_add(item, vm)? {
             // Replace the old accumulator with the new value, dropping the old one
-            let old = std::mem::replace(accumulator, new_value);
+            let old = mem::replace(accumulator, new_value);
             old.drop_with_heap(vm);
         } else {
             // Types don't support addition
-            let acc_type = accumulator.py_type(vm.heap);
-            let item_type = item.py_type(vm.heap);
+            let acc_type = accumulator.py_type(vm);
+            let item_type = item.py_type(vm);
             return Err(ExcType::binary_type_error("+", acc_type, item_type));
         }
     }

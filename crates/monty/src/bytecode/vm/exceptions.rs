@@ -151,7 +151,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
             if let Some(entry) = frame.code.find_exception_handler(ip) {
                 // Found a handler! Unwind stack and jump to it.
                 let handler_offset = usize::try_from(entry.handler()).expect("handler offset exceeds usize");
-                let target_stack_depth = frame.stack_base + entry.stack_depth() as usize;
+                let target_stack_depth = frame.stack_base + frame.locals_count as usize + entry.stack_depth() as usize;
 
                 // Unwind stack to target depth (drop excess values)
                 while this.stack.len() > target_stack_depth {
@@ -160,7 +160,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
                 }
 
                 // Push exception value onto stack (handler expects it)
-                let exc_for_stack = exc_value.clone_with_heap(this.heap);
+                let exc_for_stack = exc_value.clone_with_heap(this);
                 this.push(exc_for_stack);
 
                 // Reclaim exc_value from guard - it's being pushed onto exception_stack
@@ -264,7 +264,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
     /// Validates that `exc_type` is a valid exception type (ExcType or tuple of ExcTypes).
     /// Returns `Ok(true)` if exception matches, `Ok(false)` if not, or `Err` if exc_type is invalid.
     pub(super) fn check_exc_match(&self, exception: &Value, exc_type: &Value) -> Result<bool, RunError> {
-        let exc_type_enum = exception.py_type(self.heap);
+        let exc_type_enum = exception.py_type(self);
         self.check_exc_match_inner(exc_type_enum, exc_type)
     }
 

@@ -28,7 +28,7 @@ pub fn builtin_enumerate(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgVal
         Some(Value::Int(n)) => *n,
         Some(Value::Bool(b)) => i64::from(*b),
         Some(v) => {
-            let type_name = v.py_type(vm.heap);
+            let type_name = v.py_type(vm);
             return Err(SimpleException::new_msg(
                 ExcType::TypeError,
                 format!("'{type_name}' object cannot be interpreted as an integer"),

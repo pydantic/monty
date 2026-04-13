@@ -25,6 +25,9 @@ indexmap = { workspace = true }
 serde = { workspace = true }
 postcard = { workspace = true }
 send_wrapper = "0.6.0"
+sha2 = { workspace = true }
+pyo3-async-runtimes = { version = "0.28", features = ["tokio-runtime"] }
+tokio = { version = "1", features = ["rt", "sync"] }
 
 [build-dependencies]
 pyo3-build-config = { version = "0.28", features = ["resolve-config"] }

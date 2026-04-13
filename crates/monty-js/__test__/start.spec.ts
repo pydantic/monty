@@ -395,6 +395,24 @@ test('start can reuse monty instance', (t) => {
 })
 
 // =============================================================================
+// OS call handling in start() tests
+// =============================================================================
+
+test('os.environ via start() throws RuntimeError', (t) => {
+  const m = new Monty('import os\nx = os.environ')
+  const error = t.throws(() => m.start(), { instanceOf: MontyRuntimeError })
+  t.is(error.exception.typeName, 'RuntimeError')
+  t.is(error.exception.message, "'os.environ' is not supported in this environment")
+})
+
+test('os.getenv via start() throws RuntimeError', (t) => {
+  const m = new Monty("import os\nx = os.getenv('HOME')")
+  const error = t.throws(() => m.start(), { instanceOf: MontyRuntimeError })
+  t.is(error.exception.typeName, 'RuntimeError')
+  t.is(error.exception.message, "'os.getenv' is not supported in this environment")
+})
+
+// =============================================================================
 // repr() tests
 // =============================================================================
 

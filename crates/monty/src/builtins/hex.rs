@@ -41,10 +41,10 @@ pub fn builtin_hex(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -
                 let heap_id = heap.allocate(HeapData::Str(Str::new(hex_str)))?;
                 Ok(Value::Ref(heap_id))
             } else {
-                Err(ExcType::type_error_not_integer(value.py_type(heap)))
+                Err(ExcType::type_error_not_integer(value.py_type(vm)))
             }
         }
-        _ => Err(ExcType::type_error_not_integer(value.py_type(heap))),
+        _ => Err(ExcType::type_error_not_integer(value.py_type(vm))),
     }
 }
 

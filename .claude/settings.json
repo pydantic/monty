@@ -52,7 +52,8 @@
       "WebFetch(domain:docs.rs)",
       "WebFetch(domain:pyo3.rs)",
       "WebFetch(domain:napi.rs)",
-      "WebFetch(domain:app.codecov.io)"
+      "WebFetch(domain:app.codecov.io)",
+      "WebFetch(domain:docs.codecov.io)"
     ],
     "deny": [],
     "ask": []

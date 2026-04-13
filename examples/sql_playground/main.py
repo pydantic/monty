@@ -55,8 +55,7 @@ async def main():
     )
 
     # Run the analysis with external functions and OS access
-    results = await pydantic_monty.run_monty_async(
-        m,
+    results = await m.run_async(
         external_functions={
             'query_csv': external_funcs.query_csv,
             'read_json': external_funcs.read_json,

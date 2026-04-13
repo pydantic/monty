@@ -77,6 +77,22 @@ mut_point.z = 30
 assert mut_point.z == 30, 'mut_point.z updated to 30'
 assert repr(mut_point) == 'MutablePoint(x=10, y=20)', 'repr after attribute update'
 
+# === Augmented attribute assignment (+=, -=, etc.) ===
+aug_point = make_mutable_point()
+aug_point.x += 5
+assert aug_point.x == 6, 'augmented attr assign +='
+aug_point.y -= 1
+assert aug_point.y == 1, 'augmented attr assign -='
+aug_point.x *= 3
+assert aug_point.x == 18, 'augmented attr assign *='
+
+# === Chained augmented attribute assignment ===
+outer_aug = make_mutable_point()
+inner_aug = make_mutable_point()
+outer_aug.x = inner_aug
+outer_aug.x.y += 100
+assert inner_aug.y == 102, 'chained augmented attr assign'
+
 # === Nested attribute access (chained get) ===
 # Create outer dataclass with inner dataclass as field
 outer = make_mutable_point()

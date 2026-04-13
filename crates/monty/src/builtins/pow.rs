@@ -27,7 +27,7 @@ pub fn builtin_pow(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -
         [base, exp] => {
             let base = normalize_bool(base);
             let exp = normalize_bool(exp);
-            two_arg_pow(base, exp, vm.heap)
+            two_arg_pow(base, exp, vm)
         }
         [base, exp, m] => {
             let base = normalize_bool(base);
@@ -133,56 +133,56 @@ fn checked_pow_i64(mut base: i64, mut exp: u32) -> Option<i64> {
 /// Implements two-argument pow with LongInt support.
 ///
 /// On overflow, promotes to LongInt instead of returning an error.
-fn two_arg_pow(base: &Value, exp: &Value, heap: &mut Heap<impl ResourceTracker>) -> RunResult<Value> {
+fn two_arg_pow(base: &Value, exp: &Value, vm: &mut VM<'_, '_, impl ResourceTracker>) -> RunResult<Value> {
     match (base, exp) {
-        (Value::Int(b), Value::Int(e)) => int_pow_int(*b, *e, heap),
+        (Value::Int(b), Value::Int(e)) => int_pow_int(*b, *e, vm.heap),
         (Value::Int(b), Value::Ref(id)) => {
             // Clone to avoid borrow conflict with heap mutation
-            let e_bi = if let HeapData::LongInt(li) = heap.get(*id) {
+            let e_bi = if let HeapData::LongInt(li) = vm.heap.get(*id) {
                 li.inner().clone()
             } else {
                 return Err(ExcType::binary_type_error(
                     "** or pow()",
-                    base.py_type(heap),
-                    exp.py_type(heap),
+                    base.py_type(vm),
+                    exp.py_type(vm),
                 ));
             };
-            int_pow_longint(*b, &e_bi, heap)
+            int_pow_longint(*b, &e_bi, vm.heap)
         }
         (Value::Ref(id), Value::Int(e)) => {
             // Clone to avoid borrow conflict with heap mutation
-            let b_bi = if let HeapData::LongInt(li) = heap.get(*id) {
+            let b_bi = if let HeapData::LongInt(li) = vm.heap.get(*id) {
                 li.inner().clone()
             } else {
                 return Err(ExcType::binary_type_error(
                     "** or pow()",
-                    base.py_type(heap),
-                    exp.py_type(heap),
+                    base.py_type(vm),
+                    exp.py_type(vm),
                 ));
             };
-            longint_pow_int(&b_bi, *e, heap)
+            longint_pow_int(&b_bi, *e, vm.heap)
         }
         (Value::Ref(id1), Value::Ref(id2)) => {
             // Clone both to avoid borrow conflict with heap mutation
-            let b_bi = if let HeapData::LongInt(li) = heap.get(*id1) {
+            let b_bi = if let HeapData::LongInt(li) = vm.heap.get(*id1) {
                 li.inner().clone()
             } else {
                 return Err(ExcType::binary_type_error(
                     "** or pow()",
-                    base.py_type(heap),
-                    exp.py_type(heap),
+                    base.py_type(vm),
+                    exp.py_type(vm),
                 ));
             };
-            let e_bi = if let HeapData::LongInt(li) = heap.get(*id2) {
+            let e_bi = if let HeapData::LongInt(li) = vm.heap.get(*id2) {
                 li.inner().clone()
             } else {
                 return Err(ExcType::binary_type_error(
                     "** or pow()",
-                    base.py_type(heap),
-                    exp.py_type(heap),
+                    base.py_type(vm),
+                    exp.py_type(vm),
                 ));
             };
-            longint_pow_longint(&b_bi, &e_bi, heap)
+            longint_pow_longint(&b_bi, &e_bi, vm.heap)
         }
         (Value::Float(b), Value::Float(e)) => {
             if *b == 0.0 && *e < 0.0 {
@@ -209,8 +209,8 @@ fn two_arg_pow(base: &Value, exp: &Value, heap: &mut Heap<impl ResourceTracker>)
         }
         _ => Err(ExcType::binary_type_error(
             "** or pow()",
-            base.py_type(heap),
-            exp.py_type(heap),
+            base.py_type(vm),
+            exp.py_type(vm),
         )),
     }
 }

@@ -3,11 +3,11 @@
 use crate::{
     ExcType,
     args::ArgValues,
-    bytecode::VM,
+    bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{RunResult, SimpleException},
     resource::ResourceTracker,
-    types::{AttrCallResult, PyTrait},
+    types::PyTrait,
     value::Value,
 };
 
@@ -30,7 +30,6 @@ use crate::{
 pub fn builtin_getattr(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     let positional = args.into_pos_only("getattr", vm.heap)?;
     defer_drop!(positional, vm);
-    let heap = &mut *vm.heap;
 
     let (object, name, default) = match positional.as_slice() {
         too_few @ ([] | [_]) => return Err(ExcType::type_error_at_least("getattr", 2, too_few.len())),
@@ -39,15 +38,15 @@ pub fn builtin_getattr(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValue
         too_many => return Err(ExcType::type_error_at_most("getattr", 3, too_many.len())),
     };
 
-    let Some(attr) = name.as_either_str(heap) else {
-        let ty = name.py_type(heap);
+    let Some(attr) = name.as_either_str(vm.heap) else {
+        let ty = name.py_type(vm);
         return Err(
             SimpleException::new_msg(ExcType::TypeError, format!("attribute name must be string, not '{ty}'")).into(),
         );
     };
 
-    match object.py_getattr(&attr, heap, vm.interns) {
-        Ok(AttrCallResult::Value(value)) => Ok(value),
+    match object.py_getattr(&attr, vm) {
+        Ok(CallResult::Value(value)) => Ok(value),
         Ok(_) => {
             // getattr() only retrieves attribute values — OS calls, external calls,
             // method calls, and awaits are not supported here
@@ -57,7 +56,7 @@ pub fn builtin_getattr(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValue
         }
         Err(e) => {
             if let Some(d) = default {
-                Ok(d.clone_with_heap(heap))
+                Ok(d.clone_with_heap(vm))
             } else {
                 Err(e)
             }

@@ -13,27 +13,29 @@ mod exceptions;
 mod format;
 mod scheduler;
 
-use std::cmp::Ordering;
+use std::{cmp::Ordering, mem};
 
-use call::CallResult;
+pub(crate) use call::CallResult;
 use scheduler::Scheduler;
 
 use crate::{
     MontyObject,
     args::ArgValues,
     asyncio::{CallId, TaskId},
-    bytecode::{code::Code, op::Opcode},
+    bytecode::{
+        code::{Code, LocationEntry},
+        op::Opcode,
+    },
     exception_private::{ExcType, RunError, RunResult, SimpleException},
-    heap::{ContainsHeap, Heap, HeapData, HeapId},
+    heap::{ContainsHeap, DropWithHeap, Heap, HeapData, HeapGuard, HeapId, HeapReadOutput, HeapReader},
     heap_data::{Closure, FunctionDefaults},
     intern::{FunctionId, Interns, StringId},
     io::PrintWriter,
-    modules::BuiltinModule,
-    namespace::{GLOBAL_NS_IDX, NamespaceId, Namespaces},
+    modules::{StandardLib, json::JsonStringCache},
     os::OsFunction,
     parse::CodeRange,
     resource::ResourceTracker,
-    types::{LongInt, MontyIter, PyTrait, iter::advance_on_heap},
+    types::{LongInt, MontyIter, PyTrait, timedelta},
     value::{BitwiseOp, EitherStr, Value},
 };
 
@@ -187,7 +189,7 @@ macro_rules! handle_load_result {
 macro_rules! handle_call_result {
     ($self:expr, $cached_frame:ident, $result:expr) => {
         match $result {
-            Ok(CallResult::Push(result)) => $self.push(result),
+            Ok(CallResult::Value(result)) => $self.push(result),
             Ok(CallResult::FramePushed) => reload_cache!($self, $cached_frame),
             Ok(CallResult::External(name, args)) => {
                 let call_id = $self.allocate_call_id();
@@ -338,22 +340,20 @@ pub struct CallFrame<'code> {
     /// Instruction pointer within this frame's bytecode.
     ip: usize,
 
-    /// Base index into operand stack for this frame.
+    /// Base index into the VM stack for this frame's locals region.
     ///
-    /// Used to identify where this frame's stack region begins.
+    /// The frame's locals occupy `stack[stack_base..stack_base + locals_count]`,
+    /// and operands are pushed above that.
     stack_base: usize,
 
-    /// Namespace index for this frame's locals.
+    /// Number of local variable slots in this frame.
     ///
-    /// Exposed as `pub(crate)` so that `NameLookup` (in `run_progress.rs` and `repl.rs`)
-    /// can determine which namespace to cache resolved names into.
-    pub(crate) namespace_idx: NamespaceId,
+    /// Zero for module-level frames (globals are stored separately).
+    /// For function frames, this equals `func.namespace_size`.
+    locals_count: u16,
 
     /// Function ID (for tracebacks). None for module-level code.
     function_id: Option<FunctionId>,
-
-    /// Captured cells for closures.
-    cells: Vec<HeapId>,
 
     /// Call site position (for tracebacks).
     call_position: Option<CodeRange>,
@@ -365,42 +365,48 @@ pub struct CallFrame<'code> {
 
 impl<'code> CallFrame<'code> {
     /// Creates a new call frame for module-level code.
-    pub fn new_module(code: &'code Code, namespace_idx: NamespaceId) -> Self {
+    ///
+    /// Module frames have `locals_count = 0` because module-level variables
+    /// are stored in the VM's `globals` vec, not in the stack.
+    pub fn new_module(code: &'code Code) -> Self {
         Self {
             code,
             ip: 0,
             stack_base: 0,
-            namespace_idx,
+            locals_count: 0,
             function_id: None,
-            cells: Vec::new(),
             call_position: None,
             should_return: false,
         }
     }
 
     /// Creates a new call frame for a function call.
+    ///
+    /// The frame's locals occupy `stack[stack_base..stack_base + locals_count]`.
+    /// Operands are pushed above the locals region.
     pub fn new_function(
         code: &'code Code,
         stack_base: usize,
-        namespace_idx: NamespaceId,
+        locals_count: u16,
         function_id: FunctionId,
-        cells: Vec<HeapId>,
         call_position: Option<CodeRange>,
     ) -> Self {
         Self {
             code,
             ip: 0,
             stack_base,
-            namespace_idx,
+            locals_count,
             function_id: Some(function_id),
-            cells,
             call_position,
             should_return: false,
         }
     }
 }
 
-/// Cached state of the VM derived from the current frame as an optimization
+/// Cached state of the VM derived from the current frame as an optimization.
+///
+/// Holds the hot fields from the current `CallFrame` to avoid repeated
+/// `frames.last()` lookups in the main opcode loop.
 #[derive(Debug, Copy, Clone)]
 pub struct CachedFrame<'code> {
     /// Bytecode being executed.
@@ -409,8 +415,8 @@ pub struct CachedFrame<'code> {
     /// Instruction pointer within this frame's bytecode.
     ip: usize,
 
-    /// Namespace index for this frame's locals.
-    namespace_idx: NamespaceId,
+    /// Base index into the VM stack for this frame's locals.
+    stack_base: usize,
 }
 
 impl<'code> From<&CallFrame<'code>> for CachedFrame<'code> {
@@ -418,14 +424,14 @@ impl<'code> From<&CallFrame<'code>> for CachedFrame<'code> {
         Self {
             code: frame.code,
             ip: frame.ip,
-            namespace_idx: frame.namespace_idx,
+            stack_base: frame.stack_base,
         }
     }
 }
 
 /// Serializable representation of a call frame.
 ///
-/// Cannot store `&Code` (a reference) - instead stores `FunctionId` to look up
+/// Cannot store `&Code` (a reference) — instead stores `FunctionId` to look up
 /// the pre-compiled Code object on resume. Module-level code uses `None`.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct SerializedFrame {
@@ -435,14 +441,11 @@ pub struct SerializedFrame {
     /// Instruction pointer within this frame's bytecode.
     ip: usize,
 
-    /// Base index into operand stack for this frame's locals.
+    /// Base index into the VM stack for this frame's locals region.
     stack_base: usize,
 
-    /// Namespace index for this frame's locals.
-    namespace_idx: NamespaceId,
-
-    /// Captured cells for closures (HeapIds remain valid after heap deserialization).
-    cells: Vec<HeapId>,
+    /// Number of local variable slots (0 for module-level frames).
+    locals_count: u16,
 
     /// Call site position (for tracebacks).
     call_position: Option<CodeRange>,
@@ -459,8 +462,7 @@ impl CallFrame<'_> {
             function_id: self.function_id,
             ip: self.ip,
             stack_base: self.stack_base,
-            namespace_idx: self.namespace_idx,
-            cells: self.cells.clone(),
+            locals_count: self.locals_count,
             call_position: self.call_position,
         }
     }
@@ -479,10 +481,16 @@ impl CallFrame<'_> {
 /// reference counting. Snapshots transfer ownership - they are not copied.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct VMSnapshot {
-    /// Operand stack (may contain Value::Ref(HeapId) pointing to heap).
-    stack: Vec<Value>,
+    /// Operand stack — locals and operands interleaved per frame.
+    ///
+    /// Each function frame's locals occupy `stack[frame.stack_base..frame.stack_base + frame.locals_count]`,
+    /// with operands pushed above.
+    pub(crate) stack: Vec<Value>,
 
-    /// Call frames (serializable form - stores FunctionId, not &Code).
+    /// Module-level (global) variable storage.
+    pub(crate) globals: Vec<Value>,
+
+    /// Call frames (serializable form — stores FunctionId, not &Code).
     frames: Vec<SerializedFrame>,
 
     /// Stack of exceptions being handled for nested except blocks.
@@ -495,29 +503,10 @@ pub struct VMSnapshot {
     /// IP of the instruction that caused the pause (for exception handling).
     instruction_ip: usize,
 
-    /// Counter for external call IDs when scheduler is not initialized.
-    next_call_id: u32,
-
-    /// Scheduler state for async execution (optional).
+    /// Scheduler state (always present).
     ///
-    /// Contains all task state, pending calls, and resolved futures.
-    /// This enables async execution to be paused and resumed across host calls.
-    /// None if no async operations have been performed yet.
-    scheduler: Option<Scheduler>,
-}
-
-impl VMSnapshot {
-    /// Returns the namespace index of the current (topmost) call frame.
-    ///
-    /// This is used by `NameLookup` to determine which namespace to cache
-    /// resolved values into when the lookup originated from a function scope
-    /// (i.e., `is_global` is false).
-    pub fn current_namespace_idx(&self) -> NamespaceId {
-        self.frames
-            .last()
-            .expect("VMSnapshot should have at least one frame")
-            .namespace_idx
-    }
+    /// Contains call ID counter, task state, pending calls, and resolved futures.
+    scheduler: Scheduler,
 }
 
 // ============================================================================
@@ -531,26 +520,34 @@ impl VMSnapshot {
 /// to avoid sync bugs on call/return.
 ///
 /// # Lifetimes
-/// * `'a` - Lifetime of the heap, namespaces, interns, and the print writer borrow
-/// * `'p` - Lifetime of the callback reference inside [`PrintWriter::Callback`]
-pub struct VM<'a, 'p, T: ResourceTracker> {
-    /// Operand stack - values being computed.
-    stack: Vec<Value>,
+/// * `'a` - Lifetime of the heap, namespaces, and interns
+/// * `'p` - Lifetime of the print writer's internal references
+pub struct VM<'h, 'a, T: ResourceTracker> {
+    /// Operand stack — locals and operands interleaved per frame.
+    ///
+    /// Each function frame's locals occupy `stack[frame.stack_base..frame.stack_base + frame.locals_count]`,
+    /// with operands pushed above. Module-level frames have `locals_count = 0`
+    /// because globals are stored separately.
+    pub(crate) stack: Vec<Value>,
 
-    /// Call stack - function frames (each frame has its own IP).
+    /// Module-level (global) variable storage.
+    ///
+    /// Indexed by slot number from `LoadGlobal`/`StoreGlobal` opcodes.
+    /// Separated from the stack because globals persist across function calls
+    /// and are accessed via dedicated opcodes.
+    pub(crate) globals: Vec<Value>,
+
+    /// Call stack — function frames (each frame has its own IP).
     frames: Vec<CallFrame<'a>>,
 
     /// Heap for reference-counted objects.
-    pub(crate) heap: &'a mut Heap<T>,
-
-    /// Namespace stack for variable storage.
-    namespaces: &'a mut Namespaces,
+    pub(crate) heap: &'h mut HeapReader<'h, T>,
 
     /// Interned strings/bytes.
     pub(crate) interns: &'a Interns,
 
     /// Print output writer, borrowed so callers retain access to collected output.
-    pub(crate) print_writer: &'a mut PrintWriter<'p>,
+    pub(crate) print_writer: PrintWriter<'a>,
 
     /// Stack of exceptions being handled for nested except blocks.
     ///
@@ -566,17 +563,12 @@ pub struct VM<'a, 'p, T: ResourceTracker> {
     /// This allows us to find the correct exception handler when an error occurs.
     instruction_ip: usize,
 
-    /// Counter for external call IDs when scheduler is not initialized.
+    /// Scheduler for task management and call ID allocation.
     ///
-    /// Used by `allocate_call_id()` when no scheduler exists (sync code paths).
-    /// When a scheduler is created, this counter is transferred to it.
-    next_call_id: u32,
-
-    /// Scheduler for async task management (lazy - only created when needed).
-    ///
-    /// Manages concurrent tasks, external call tracking, and task switching.
-    /// Created lazily on first async operation to avoid allocations for sync code.
-    scheduler: Option<Scheduler>,
+    /// Always present — owns `next_call_id` (used by both sync and async paths)
+    /// plus async task state. Internal collections don't allocate until first use,
+    /// so sync-only code pays only for the main task entry.
+    scheduler: Scheduler,
 
     /// Module-level code (for restoring main task frames).
     ///
@@ -591,35 +583,42 @@ pub struct VM<'a, 'p, T: ResourceTracker> {
     /// back to a `NameError`, so the traceback points to the name reference rather than
     /// the call expression.
     ext_function_load_ip: Option<usize>,
+
+    /// Per-run string cache for `json.loads()`.
+    ///
+    /// Deduplicates heap allocations for repeated strings (especially dict keys)
+    /// across multiple `json.loads()` calls within a single execution. Lazily
+    /// initialized on first use, cleaned up in [`cleanup()`](Self::cleanup).
+    pub(crate) json_string_cache: JsonStringCache,
 }
 
-impl<'a, 'p, T: ResourceTracker> VM<'a, 'p, T> {
+impl<'h, 'a, T: ResourceTracker> VM<'h, 'a, T> {
     /// Creates a new VM with the given runtime context.
     pub fn new(
-        heap: &'a mut Heap<T>,
-        namespaces: &'a mut Namespaces,
+        globals: Vec<Value>,
+        heap: &'h mut HeapReader<'h, T>,
         interns: &'a Interns,
-        print_writer: &'a mut PrintWriter<'p>,
+        print_writer: PrintWriter<'a>,
     ) -> Self {
         Self {
             stack: Vec::with_capacity(64),
+            globals,
             frames: Vec::with_capacity(16),
             heap,
-            namespaces,
             interns,
             print_writer,
             exception_stack: Vec::new(),
             instruction_ip: 0,
-            next_call_id: 0,
-            scheduler: None,            // Lazy - no allocation for sync code
+            scheduler: Scheduler::new(),
             ext_function_load_ip: None, // Set by LoadGlobalCallable/LoadLocalCallable
             module_code: None,
+            json_string_cache: JsonStringCache::default(),
         }
     }
 
     /// Reconstructs a VM from a snapshot.
     ///
-    /// The heap and namespaces must already be deserialized. `FunctionId` values
+    /// The heap must already be deserialized. `FunctionId` values
     /// in frames are used to look up pre-compiled `Code` objects from the `Interns`.
     /// The `module_code` is used for frames with `function_id = None`.
     ///
@@ -627,16 +626,14 @@ impl<'a, 'p, T: ResourceTracker> VM<'a, 'p, T> {
     /// * `snapshot` - The VM snapshot to restore
     /// * `module_code` - Compiled module code (for frames with function_id = None)
     /// * `heap` - The deserialized heap
-    /// * `namespaces` - The deserialized namespaces
     /// * `interns` - Interns for looking up function code
     /// * `print_writer` - Writer for print output
     pub fn restore(
         snapshot: VMSnapshot,
         module_code: &'a Code,
-        heap: &'a mut Heap<T>,
-        namespaces: &'a mut Namespaces,
+        heap: &'h mut HeapReader<'h, T>,
         interns: &'a Interns,
-        print_writer: &'a mut PrintWriter<'p>,
+        print_writer: PrintWriter<'a>,
     ) -> Self {
         // Reconstruct call frames from serialized form
         let frames: Vec<CallFrame<'_>> = snapshot
@@ -651,50 +648,33 @@ impl<'a, 'p, T: ResourceTracker> VM<'a, 'p, T> {
                     code,
                     ip: sf.ip,
                     stack_base: sf.stack_base,
-                    namespace_idx: sf.namespace_idx,
+                    locals_count: sf.locals_count,
                     function_id: sf.function_id,
-                    cells: sf.cells,
                     call_position: sf.call_position,
                     should_return: false,
                 }
             })
             .collect();
 
-        // Restore recursion depth to match the number of active non-global namespace
-        // frames. During serialization, recursion_depth is transient (defaults to 0),
-        // but cleanup paths call decr_recursion_depth for each non-global frame.
+        // Restore recursion depth to match the number of active function frames.
+        // During serialization, recursion_depth is transient (defaults to 0),
+        // but cleanup paths call decr_recursion_depth for each non-root frame.
         let current_frame_depth = frames.len().saturating_sub(1); // Subtract 1 for root frame which doesn't contribute to depth
         heap.set_recursion_depth(current_frame_depth);
 
         Self {
             stack: snapshot.stack,
+            globals: snapshot.globals,
             frames,
             heap,
-            namespaces,
             interns,
             print_writer,
             exception_stack: snapshot.exception_stack,
             instruction_ip: snapshot.instruction_ip,
-            next_call_id: snapshot.next_call_id,
             scheduler: snapshot.scheduler,
             module_code: Some(module_code),
             ext_function_load_ip: None,
-        }
-    }
-    /// Consumes the VM and creates a snapshot for pause/resume if needed.
-    pub fn check_snapshot(mut self, result: &RunResult<FrameExit>) -> Option<VMSnapshot> {
-        if matches!(
-            result,
-            Ok(FrameExit::ExternalCall { .. }
-                | FrameExit::OsCall { .. }
-                | FrameExit::MethodCall { .. }
-                | FrameExit::ResolveFutures(_)
-                | FrameExit::NameLookup { .. })
-        ) {
-            Some(self.snapshot())
-        } else {
-            self.cleanup();
-            None
+            json_string_cache: JsonStringCache::default(),
         }
     }
 
@@ -706,15 +686,19 @@ impl<'a, 'p, T: ResourceTracker> VM<'a, 'p, T> {
     ///
     /// This is NOT a clone - it's a transfer. After calling this, the original VM
     /// is gone and only the snapshot (+ serialized heap/namespaces) represents the state.
-    pub fn snapshot(self) -> VMSnapshot {
+    pub fn snapshot(mut self) -> VMSnapshot {
+        // Drop cached JSON strings before consuming the VM — they are not
+        // included in the snapshot and their refcounts must be decremented.
+        self.json_string_cache.drop_all(self.heap);
+
         VMSnapshot {
-            // Move values directly - no clone, no refcount increment needed
+            // Move values directly — no clone, no refcount increment needed
             // (the VM owned them, now the snapshot owns them)
             stack: self.stack,
+            globals: self.globals,
             frames: self.frames.into_iter().map(|f| f.serialize()).collect(),
             exception_stack: self.exception_stack,
             instruction_ip: self.instruction_ip,
-            next_call_id: self.next_call_id,
             scheduler: self.scheduler,
         }
     }
@@ -723,7 +707,7 @@ impl<'a, 'p, T: ResourceTracker> VM<'a, 'p, T> {
     pub fn run_module(&mut self, code: &'a Code) -> Result<FrameExit, RunError> {
         // Store module code for restoring main task frames during task switching
         self.module_code = Some(code);
-        self.push_frame(CallFrame::new_module(code, GLOBAL_NS_IDX))?;
+        self.push_frame(CallFrame::new_module(code))?;
         self.run()
     }
 
@@ -733,72 +717,38 @@ impl<'a, 'p, T: ResourceTracker> VM<'a, 'p, T> {
     /// proper reference counting cleanup for any exception values and scheduler state.
     pub fn cleanup(&mut self) {
         // Drop all exceptions in the exception stack
-        for exc in self.exception_stack.drain(..) {
-            exc.drop_with_heap(self.heap);
-        }
-        // Stack should be empty, but clean up just in case
-        for value in self.stack.drain(..) {
-            value.drop_with_heap(self.heap);
-        }
-        // Clean up current frames (main module frame after return, or any remaining frames)
-        self.cleanup_current_frames();
-        // Clean up task frame namespaces (scheduler doesn't have access to namespaces)
-        self.cleanup_all_task_frames();
-        // Clean up scheduler state (task stacks, pending calls, resolved values)
-        if let Some(scheduler) = &mut self.scheduler {
-            scheduler.cleanup(self.heap);
-        }
+        self.exception_stack.drain(..).drop_with_heap(self.heap);
+        // Clean up current task's stack values and frame cell references
+        self.cleanup_current_task();
+        // Clean up scheduler state (task stacks, pending calls, resolved values, frame cells)
+        self.scheduler.cleanup(self.heap);
+        self.globals.drain(..).drop_with_heap(self.heap);
+        // Release cached JSON string values
+        self.json_string_cache.drop_all(self.heap);
     }
 
-    /// Cleans up frames stored in all scheduler tasks.
+    /// Returns the `stack_base` of the current (topmost) call frame.
     ///
-    /// Task frames reference namespaces and cells that need to be cleaned up
-    /// before the VM is dropped. This is separate from `scheduler.cleanup()`
-    /// because the scheduler doesn't have access to the VM's namespaces.
-    ///
-    /// Each task's `recursion_depth` must be restored to the global counter before
-    /// dropping its namespaces, because `save_task_context` subtracted it and
-    /// `namespaces.drop_with_heap` calls `decr_recursion_depth` for each non-global frame.
-    fn cleanup_all_task_frames(&mut self) {
-        let Some(scheduler) = &mut self.scheduler else {
-            return;
-        };
-        // Clean up each task's saved frames
-        for task_idx in 0..scheduler.task_count() {
-            let task_id = TaskId::new(u32::try_from(task_idx).expect("task_idx exceeds u32"));
-            let task = scheduler.get_task_mut(task_id);
-            // Restore this task's depth contribution so decr_recursion_depth
-            // inside drop_with_heap doesn't underflow.
-            let task_depth = task.frames.len();
-            let global_depth = self.heap.get_recursion_depth();
-            self.heap.set_recursion_depth(global_depth + task_depth);
+    /// Used by `NameLookup` resolution to determine which stack region to cache
+    /// resolved values into when the lookup originated from a function scope.
+    pub fn current_stack_base(&self) -> usize {
+        self.frames
+            .last()
+            .expect("VM should have at least one frame")
+            .stack_base
+    }
 
-            for frame in std::mem::take(&mut task.frames) {
-                // Clean up cell references
-                for cell_id in frame.cells {
-                    self.heap.dec_ref(cell_id);
-                }
-                // Clean up the namespace (but not the global namespace)
-                if frame.namespace_idx != GLOBAL_NS_IDX {
-                    self.namespaces.drop_with_heap(frame.namespace_idx, self.heap);
-                }
-            }
-        }
+    /// Takes ownership of the globals vector, replacing it with an empty vec.
+    ///
+    /// Used by the REPL to reclaim globals after VM execution completes,
+    /// before calling `cleanup()` (which would destroy them in ref-count-panic mode).
+    pub fn take_globals(&mut self) -> Vec<Value> {
+        mem::take(&mut self.globals)
     }
 
     /// Allocates a new `CallId` for an external function call.
-    ///
-    /// Works with or without a scheduler. If a scheduler exists, delegates to it.
-    /// Otherwise, uses the VM's `next_call_id` counter directly, avoiding
-    /// scheduler creation overhead for synchronous external calls.
     fn allocate_call_id(&mut self) -> CallId {
-        if let Some(scheduler) = &mut self.scheduler {
-            scheduler.allocate_call_id()
-        } else {
-            let id = CallId::new(self.next_call_id);
-            self.next_call_id += 1;
-            id
-        }
+        self.scheduler.allocate_call_id()
     }
 
     /// Returns true if we're on the main task (or no async at all).
@@ -807,9 +757,7 @@ impl<'a, 'p, T: ResourceTracker> VM<'a, 'p, T> {
     /// module-level completion (return to host) or spawned task completion
     /// (handle task completion and switch).
     fn is_main_task(&self) -> bool {
-        self.scheduler
-            .as_ref()
-            .is_none_or(|s| s.current_task_id().is_none_or(TaskId::is_main))
+        self.scheduler.current_task_id().is_none_or(TaskId::is_main)
     }
 
     /// Main execution loop.
@@ -858,6 +806,13 @@ impl<'a, 'p, T: ResourceTracker> VM<'a, 'p, T> {
                 Opcode::Dup => {
                     let value = self.peek().clone_with_heap(self);
                     self.push(value);
+                }
+                Opcode::Dup2 => {
+                    let len = self.stack.len();
+                    let first = self.stack[len - 2].clone_with_heap(self);
+                    let second = self.stack[len - 1].clone_with_heap(self);
+                    self.push(first);
+                    self.push(second);
                 }
                 Opcode::Rot2 => {
                     // Swap top two: [a, b] → [b, a]
@@ -920,6 +875,10 @@ impl<'a, 'p, T: ResourceTracker> VM<'a, 'p, T> {
                     let slot = u16::from(fetch_u8!(cached_frame));
                     self.delete_local(&cached_frame, slot);
                 }
+                Opcode::DeleteGlobal => {
+                    let slot = fetch_u16!(cached_frame);
+                    self.delete_global(slot);
+                }
                 // Variables - Callable-context Local Loads
                 Opcode::LoadLocalCallable => {
                     let slot = u16::from(fetch_u8!(cached_frame));
@@ -948,11 +907,11 @@ impl<'a, 'p, T: ResourceTracker> VM<'a, 'p, T> {
                 // Variables - Cell Operations (closures)
                 Opcode::LoadCell => {
                     let slot = fetch_u16!(cached_frame);
-                    try_catch_sync!(self, cached_frame, self.load_cell(slot));
+                    try_catch_sync!(self, cached_frame, self.load_cell(&cached_frame, slot));
                 }
                 Opcode::StoreCell => {
                     let slot = fetch_u16!(cached_frame);
-                    self.store_cell(slot);
+                    self.store_cell(&cached_frame, slot);
                 }
                 // Binary Operations - route through exception handling for tracebacks
                 Opcode::BinaryAdd => try_catch_sync!(self, cached_frame, self.binary_add()),
@@ -963,9 +922,9 @@ impl<'a, 'p, T: ResourceTracker> VM<'a, 'p, T> {
                 Opcode::BinaryMod => try_catch_sync!(self, cached_frame, self.binary_mod()),
                 Opcode::BinaryPow => try_catch_sync!(self, cached_frame, self.binary_pow()),
                 // Bitwise operations - only work on integers
-                Opcode::BinaryAnd => try_catch_sync!(self, cached_frame, self.binary_bitwise(BitwiseOp::And)),
-                Opcode::BinaryOr => try_catch_sync!(self, cached_frame, self.binary_bitwise(BitwiseOp::Or)),
-                Opcode::BinaryXor => try_catch_sync!(self, cached_frame, self.binary_bitwise(BitwiseOp::Xor)),
+                Opcode::BinaryAnd => try_catch_sync!(self, cached_frame, self.binary_and()),
+                Opcode::BinaryOr => try_catch_sync!(self, cached_frame, self.binary_or()),
+                Opcode::BinaryXor => try_catch_sync!(self, cached_frame, self.binary_xor()),
                 Opcode::BinaryLShift => {
                     try_catch_sync!(self, cached_frame, self.binary_bitwise(BitwiseOp::LShift));
                 }
@@ -992,7 +951,7 @@ impl<'a, 'p, T: ResourceTracker> VM<'a, 'p, T> {
                 // Unary Operations
                 Opcode::UnaryNot => {
                     let value = self.pop();
-                    let result = !value.py_bool(self.heap, self.interns);
+                    let result = !value.py_bool(self);
                     value.drop_with_heap(self);
                     self.push(Value::Bool(result));
                 }
@@ -1015,22 +974,34 @@ impl<'a, 'p, T: ResourceTracker> VM<'a, 'p, T> {
                         }
                         Value::Float(f) => self.push(Value::Float(-f)),
                         Value::Bool(b) => self.push(Value::Int(if b { -1 } else { 0 })),
-                        Value::Ref(id) => {
-                            if let HeapData::LongInt(li) = self.heap.get(id) {
+                        Value::Ref(id) => match self.heap.get(id) {
+                            HeapData::LongInt(li) => {
                                 let negated = -LongInt::new(li.inner().clone());
                                 value.drop_with_heap(self);
                                 match negated.into_value(self.heap) {
                                     Ok(v) => self.push(v),
                                     Err(e) => catch_sync!(self, cached_frame, RunError::from(e)),
                                 }
-                            } else {
-                                let value_type = value.py_type(self.heap);
+                            }
+                            HeapData::TimeDelta(td) => {
+                                let negated = timedelta::from_total_microseconds(-timedelta::total_microseconds(td));
+                                value.drop_with_heap(self);
+                                match negated {
+                                    Ok(delta) => match self.heap.allocate(HeapData::TimeDelta(delta)) {
+                                        Ok(id) => self.push(Value::Ref(id)),
+                                        Err(e) => catch_sync!(self, cached_frame, RunError::from(e)),
+                                    },
+                                    Err(e) => catch_sync!(self, cached_frame, e),
+                                }
+                            }
+                            _ => {
+                                let value_type = value.py_type(self);
                                 value.drop_with_heap(self);
                                 catch_sync!(self, cached_frame, ExcType::unary_type_error("-", value_type));
                             }
-                        }
+                        },
                         _ => {
-                            let value_type = value.py_type(self.heap);
+                            let value_type = value.py_type(self);
                             value.drop_with_heap(self);
                             catch_sync!(self, cached_frame, ExcType::unary_type_error("-", value_type));
                         }
@@ -1047,13 +1018,13 @@ impl<'a, 'p, T: ResourceTracker> VM<'a, 'p, T> {
                                 // LongInt - return as-is (value already has correct refcount)
                                 self.push(value);
                             } else {
-                                let value_type = value.py_type(self.heap);
+                                let value_type = value.py_type(self);
                                 value.drop_with_heap(self);
                                 catch_sync!(self, cached_frame, ExcType::unary_type_error("+", value_type));
                             }
                         }
                         _ => {
-                            let value_type = value.py_type(self.heap);
+                            let value_type = value.py_type(self);
                             value.drop_with_heap(self);
                             catch_sync!(self, cached_frame, ExcType::unary_type_error("+", value_type));
                         }
@@ -1075,13 +1046,13 @@ impl<'a, 'p, T: ResourceTracker> VM<'a, 'p, T> {
                                     Err(e) => catch_sync!(self, cached_frame, RunError::from(e)),
                                 }
                             } else {
-                                let value_type = value.py_type(self.heap);
+                                let value_type = value.py_type(self);
                                 value.drop_with_heap(self);
                                 catch_sync!(self, cached_frame, ExcType::unary_type_error("~", value_type));
                             }
                         }
                         _ => {
-                            let value_type = value.py_type(self.heap);
+                            let value_type = value.py_type(self);
                             value.drop_with_heap(self);
                             catch_sync!(self, cached_frame, ExcType::unary_type_error("~", value_type));
                         }
@@ -1147,6 +1118,15 @@ impl<'a, 'p, T: ResourceTracker> VM<'a, 'p, T> {
                     let func_name_id = fetch_u16!(cached_frame);
                     try_catch_sync!(self, cached_frame, self.dict_merge(func_name_id));
                 }
+                // PEP 448 literal building
+                Opcode::DictUpdate => {
+                    let depth = fetch_u8!(cached_frame) as usize;
+                    try_catch_sync!(self, cached_frame, self.dict_update(depth));
+                }
+                Opcode::SetExtend => {
+                    let depth = fetch_u8!(cached_frame) as usize;
+                    try_catch_sync!(self, cached_frame, self.set_extend(depth));
+                }
                 // Comprehension Building - append/add/set items during iteration
                 Opcode::ListAppend => {
                     let depth = fetch_u8!(cached_frame) as usize;
@@ -1164,7 +1144,7 @@ impl<'a, 'p, T: ResourceTracker> VM<'a, 'p, T> {
                 Opcode::BinarySubscr => {
                     let index = self.pop();
                     let obj = self.pop();
-                    let result = obj.py_getitem(&index, self.heap, self.interns);
+                    let result = obj.py_getitem(&index, self);
                     obj.drop_with_heap(self);
                     index.drop_with_heap(self);
                     match result {
@@ -1177,7 +1157,7 @@ impl<'a, 'p, T: ResourceTracker> VM<'a, 'p, T> {
                     let index = self.pop();
                     let mut obj = self.pop();
                     let value = self.pop();
-                    let result = obj.py_setitem(index, value, self.heap, self.interns);
+                    let result = obj.py_setitem(index, value, self);
                     obj.drop_with_heap(self);
                     if let Err(e) = result {
                         catch_sync!(self, cached_frame, e);
@@ -1206,7 +1186,7 @@ impl<'a, 'p, T: ResourceTracker> VM<'a, 'p, T> {
                 Opcode::JumpIfTrue => {
                     let offset = fetch_i16!(cached_frame);
                     let cond = self.pop();
-                    if cond.py_bool(self.heap, self.interns) {
+                    if cond.py_bool(self) {
                         jump_relative!(cached_frame.ip, offset);
                     }
                     cond.drop_with_heap(self);
@@ -1214,26 +1194,28 @@ impl<'a, 'p, T: ResourceTracker> VM<'a, 'p, T> {
                 Opcode::JumpIfFalse => {
                     let offset = fetch_i16!(cached_frame);
                     let cond = self.pop();
-                    if !cond.py_bool(self.heap, self.interns) {
+                    if !cond.py_bool(self) {
                         jump_relative!(cached_frame.ip, offset);
                     }
                     cond.drop_with_heap(self);
                 }
                 Opcode::JumpIfTrueOrPop => {
                     let offset = fetch_i16!(cached_frame);
-                    if self.peek().py_bool(self.heap, self.interns) {
+                    let value = self.pop();
+                    if value.py_bool(self) {
+                        self.push(value);
                         jump_relative!(cached_frame.ip, offset);
                     } else {
-                        let value = self.pop();
                         value.drop_with_heap(self);
                     }
                 }
                 Opcode::JumpIfFalseOrPop => {
                     let offset = fetch_i16!(cached_frame);
-                    if self.peek().py_bool(self.heap, self.interns) {
-                        let value = self.pop();
+                    let value = self.pop();
+                    if value.py_bool(self) {
                         value.drop_with_heap(self);
                     } else {
+                        self.push(value);
                         jump_relative!(cached_frame.ip, offset);
                     }
                 }
@@ -1255,18 +1237,23 @@ impl<'a, 'p, T: ResourceTracker> VM<'a, 'p, T> {
                     let Value::Ref(heap_id) = *self.peek() else {
                         return Err(RunError::internal("ForIter: expected iterator ref on stack"));
                     };
+                    let HeapReadOutput::Iter(mut iter) = self.heap.read(heap_id) else {
+                        panic!("ForIter: expected iterator ref on stack");
+                    };
 
-                    // Use advance_iterator which avoids std::mem::replace overhead
-                    // by using a two-phase approach: read state, get value, update index
-                    match advance_on_heap(self.heap, heap_id, self.interns) {
+                    match iter.advance(self) {
                         Ok(Some(value)) => self.push(value),
                         Ok(None) => {
+                            // Drop the HeapRead before dec_ref to release the reader count
+                            drop(iter);
                             // Iterator exhausted - pop it and jump to end
                             let iter = self.pop();
                             iter.drop_with_heap(self);
                             jump_relative!(cached_frame.ip, offset);
                         }
                         Err(e) => {
+                            // Drop the HeapRead before dec_ref to release the reader count
+                            drop(iter);
                             // Error during iteration (e.g., dict size changed)
                             let iter = self.pop();
                             iter.drop_with_heap(self);
@@ -1576,10 +1563,10 @@ impl<'a, 'p, T: ResourceTracker> VM<'a, 'p, T> {
 
     /// Loads a built-in module and pushes it onto the stack.
     fn load_module(&mut self, module_id: u8) -> RunResult<()> {
-        let module = BuiltinModule::from_repr(module_id).expect("unknown module id");
+        let module = StandardLib::from_repr(module_id).expect("unknown module id");
 
         // Create the module on the heap using pre-interned strings
-        let heap_id = module.create(self.heap, self.interns)?;
+        let heap_id = module.create(self)?;
         self.push(Value::Ref(heap_id));
         Ok(())
     }
@@ -1589,7 +1576,7 @@ impl<'a, 'p, T: ResourceTracker> VM<'a, 'p, T> {
     /// Pushes the return value onto the stack and continues execution.
     pub fn resume(&mut self, obj: MontyObject) -> Result<FrameExit, RunError> {
         let value = obj
-            .to_value(self.heap, self.interns)
+            .to_value(self)
             .map_err(|e| SimpleException::new(ExcType::RuntimeError, Some(format!("invalid return type: {e}"))))?;
         self.push(value);
         self.run()
@@ -1707,45 +1694,46 @@ impl<'a, 'p, T: ResourceTracker> VM<'a, 'p, T> {
     }
 
     fn cleanup_frame_state(&mut self, frame: &CallFrame<'_>) {
-        // Clean up frame's stack region
+        // Clean up frame's stack region (locals + operands).
+        // Locals occupy stack[frame.stack_base..frame.stack_base + frame.locals_count],
+        // operands are above that. Draining from stack_base covers both.
         self.stack
             .drain(frame.stack_base..)
             .for_each(|value| value.drop_with_heap(&mut *self.heap));
 
-        // Clean up the namespace (but not the global namespace)
-        if frame.namespace_idx != GLOBAL_NS_IDX {
-            self.namespaces.drop_with_heap(frame.namespace_idx, self.heap);
+        // Track freed memory for locals
+        if frame.locals_count > 0 {
+            let size = frame.locals_count as usize * mem::size_of::<Value>();
+            self.heap.tracker_mut().on_free(|| size);
         }
     }
 
-    /// Cleans up all frames for the current task before switching tasks.
+    /// Cleans up all frames and stack values for the current task.
     ///
     /// Used when a task completes or fails and we need to switch to another task.
-    /// Properly cleans up each frame's namespace and cell references.
-    pub(super) fn cleanup_current_frames(&mut self) {
-        for frame in self.frames.drain(..) {
-            // Clean up cell references
-            for cell_id in frame.cells {
-                self.heap.dec_ref(cell_id);
-            }
-            // Clean up the namespace (but not the global namespace)
-            if frame.namespace_idx != GLOBAL_NS_IDX {
-                self.namespaces.drop_with_heap(frame.namespace_idx, self.heap);
-            }
-        }
+    /// Drains the stack with proper `drop_with_heap` for each value (since locals
+    /// are inlined on the stack), then cleans up each frame's cell references.
+    pub(super) fn cleanup_current_task(&mut self) {
+        self.stack.drain(..).drop_with_heap(self.heap);
+        self.frames.clear();
     }
 
     /// Runs garbage collection with proper GC roots.
     ///
-    /// GC roots include values in namespaces, the operand stack, and exception stack.
+    /// GC roots include values in the stack (locals + operands), globals, and exception stack.
     fn run_gc(&mut self) {
         // Collect roots from all reachable values
         let stack_roots = self.stack.iter().filter_map(Value::ref_id);
+        let globals_roots = self.globals.iter().filter_map(Value::ref_id);
         let exc_roots = self.exception_stack.iter().filter_map(Value::ref_id);
-        let ns_roots = self.namespaces.iter_heap_ids();
+        let json_cache_roots = self.json_string_cache.gc_roots();
 
         // Collect all roots into a vec to avoid lifetime issues
-        let roots: Vec<HeapId> = stack_roots.chain(exc_roots).chain(ns_roots).collect();
+        let roots: Vec<HeapId> = stack_roots
+            .chain(globals_roots)
+            .chain(exc_roots)
+            .chain(json_cache_roots)
+            .collect();
 
         self.heap.collect_garbage(roots);
     }
@@ -1761,7 +1749,7 @@ impl<'a, 'p, T: ResourceTracker> VM<'a, 'p, T> {
         frame
             .code
             .location_for_offset(self.instruction_ip)
-            .map(crate::bytecode::code::LocationEntry::range)
+            .map(LocationEntry::range)
             .unwrap_or_default()
     }
 
@@ -1771,21 +1759,16 @@ impl<'a, 'p, T: ResourceTracker> VM<'a, 'p, T> {
 
     /// Loads a local variable and pushes it onto the stack.
     ///
-    /// Returns `UnboundLocalError` if this is a true local (assigned somewhere in the function)
-    /// or `NameError` if the name doesn't exist in any scope.
-    /// Loads a local variable and pushes it onto the stack.
-    ///
     /// For true locals (assigned somewhere in the function), returns `UnboundLocalError`
     /// if accessed before assignment. For unassigned names (never assigned in this scope),
-    /// returns `NameLookupNeeded` to signal that the host should resolve the name.
+    /// returns `NameLookup` to signal that the host should resolve the name.
     ///
     /// Returns `Ok(None)` for normal loads, `Ok(Some(FrameExit::NameLookup))` when
     /// the host needs to resolve an unknown name, or `Err` for true unbound locals.
     fn load_local(&mut self, cached_frame: &CachedFrame<'a>, slot: u16) -> Result<Option<FrameExit>, RunError> {
-        let namespace = self.namespaces.get(cached_frame.namespace_idx);
-        let value = namespace.get(NamespaceId::new(slot as usize));
+        let value = &self.stack[cached_frame.stack_base + slot as usize];
 
-        // Check for undefined value - raise appropriate error based on whether
+        // Check for undefined value — raise appropriate error based on whether
         // this is a true local (assigned somewhere) or an undefined reference
         if matches!(value, Value::Undefined) {
             let name = cached_frame.code.local_name(slot);
@@ -1793,16 +1776,16 @@ impl<'a, 'p, T: ResourceTracker> VM<'a, 'p, T> {
                 // True local accessed before assignment
                 return Err(self.unbound_local_error(slot, name));
             }
-            // Name doesn't exist in any scope - yield to host for resolution
+            // Name doesn't exist in any scope — yield to host for resolution.
             let name_id = name.expect("LocalUnassigned should always have a name");
             return Ok(Some(FrameExit::NameLookup {
                 name_id,
                 namespace_slot: slot,
-                is_global: cached_frame.namespace_idx == GLOBAL_NS_IDX,
+                is_global: false,
             }));
         }
 
-        self.push(value.clone_with_heap(self.heap));
+        self.push(value.clone_with_heap(self));
         Ok(None)
     }
 
@@ -1812,17 +1795,14 @@ impl<'a, 'p, T: ResourceTracker> VM<'a, 'p, T> {
     /// (a `LocalUnassigned` name), it pushes `Value::ExtFunction(name_id)` so that the
     /// subsequent `CallFunction` opcode can yield `FunctionCall` instead.
     fn load_local_callable(&mut self, cached_frame: &CachedFrame<'a>, slot: u16, name_id: StringId) {
-        let namespace = self.namespaces.get(cached_frame.namespace_idx);
-        let value = namespace.get(NamespaceId::new(slot as usize));
+        let value = &self.stack[cached_frame.stack_base + slot as usize];
 
         if matches!(value, Value::Undefined) {
-            // LocalUnassigned in call context - push ExtFunction for the host to handle.
-            // The name_id comes from the opcode operand (not the local_names array) to
-            // ensure correctness regardless of namespace.
+            // LocalUnassigned in call context — push ExtFunction for the host to handle.
             self.ext_function_load_ip = Some(self.instruction_ip);
             self.push(Value::ExtFunction(name_id));
         } else {
-            self.push(value.clone_with_heap(self.heap));
+            self.push(value.clone_with_heap(self));
         }
     }
 
@@ -1831,15 +1811,8 @@ impl<'a, 'p, T: ResourceTracker> VM<'a, 'p, T> {
     /// Unlike `load_global`, this never yields `NameLookup`. When the variable is undefined,
     /// it pushes `Value::ExtFunction(name_id)` so that the subsequent `CallFunction` opcode
     /// can yield `FunctionCall` instead.
-    ///
-    /// The `name_id` is taken directly from the opcode operand rather than looking it up
-    /// in the code's local_names array, because global slot indices belong to the global
-    /// namespace while local_names stores function-local slot names.
     fn load_global_callable(&mut self, slot: u16, name_id: StringId) {
-        let namespace = self.namespaces.get(GLOBAL_NS_IDX);
-        let value = namespace
-            .get(NamespaceId::new(slot as usize))
-            .clone_with_heap(self.heap);
+        let value = self.globals[slot as usize].clone_with_heap(self);
 
         if matches!(value, Value::Undefined) {
             // Save the load instruction's IP so NameError tracebacks point to the name
@@ -1871,17 +1844,15 @@ impl<'a, 'p, T: ResourceTracker> VM<'a, 'p, T> {
     /// Pops the top of stack and stores it in a local variable.
     fn store_local(&mut self, cached_frame: &CachedFrame<'a>, slot: u16) {
         let value = self.pop();
-        let namespace = self.namespaces.get_mut(cached_frame.namespace_idx);
-        let ns_slot = NamespaceId::new(slot as usize);
-        let old_value = std::mem::replace(namespace.get_mut(ns_slot), value);
+        let target = &mut self.stack[cached_frame.stack_base + slot as usize];
+        let old_value = mem::replace(target, value);
         old_value.drop_with_heap(self);
     }
 
     /// Deletes a local variable (sets it to Undefined).
     fn delete_local(&mut self, cached_frame: &CachedFrame<'a>, slot: u16) {
-        let namespace = self.namespaces.get_mut(cached_frame.namespace_idx);
-        let ns_slot = NamespaceId::new(slot as usize);
-        let old_value = std::mem::replace(namespace.get_mut(ns_slot), Value::Undefined);
+        let target = &mut self.stack[cached_frame.stack_base + slot as usize];
+        let old_value = mem::replace(target, Value::Undefined);
         old_value.drop_with_heap(self);
     }
 
@@ -1891,14 +1862,21 @@ impl<'a, 'p, T: ResourceTracker> VM<'a, 'p, T> {
     /// instead of immediately raising `NameError`. This allows the host to provide
     /// external function bindings lazily.
     fn load_global(&mut self, slot: u16) -> Result<Option<FrameExit>, RunError> {
-        let namespace = self.namespaces.get(GLOBAL_NS_IDX);
-        // Copy without incrementing refcount first (avoids borrow conflict)
-        let value = namespace.get(NamespaceId::new(slot as usize)).clone_with_heap(self);
+        let value = self.globals[slot as usize].clone_with_heap(self);
 
-        // Check for undefined value - yield to host for name resolution
+        // Check for undefined value — raise appropriate error or yield to host
         if matches!(value, Value::Undefined) {
-            let Some(name_id) = self.current_frame().code.local_name(slot) else {
-                // No name available - raise NameError directly
+            let name = self.current_frame().code.local_name(slot);
+
+            // If the name is registered as an assigned local (e.g. a module-level
+            // variable or comprehension loop variable), raise UnboundLocalError
+            // immediately rather than yielding NameLookup.
+            if self.current_frame().code.is_assigned_local(slot) {
+                return Err(self.unbound_local_error(slot, name));
+            }
+
+            let Some(name_id) = name else {
+                // No name available — raise NameError directly
                 return Err(self.name_error(slot, None));
             };
             Ok(Some(FrameExit::NameLookup {
@@ -1915,28 +1893,47 @@ impl<'a, 'p, T: ResourceTracker> VM<'a, 'p, T> {
     /// Pops the top of stack and stores it in a global variable.
     fn store_global(&mut self, slot: u16) {
         let value = self.pop();
-        let namespace = self.namespaces.get_mut(GLOBAL_NS_IDX);
-        let ns_slot = NamespaceId::new(slot as usize);
-        let old_value = std::mem::replace(namespace.get_mut(ns_slot), value);
+        let old_value = mem::replace(&mut self.globals[slot as usize], value);
+        old_value.drop_with_heap(self);
+    }
+
+    /// Deletes a global variable (sets it to Undefined).
+    fn delete_global(&mut self, slot: u16) {
+        let old_value = mem::replace(&mut self.globals[slot as usize], Value::Undefined);
         old_value.drop_with_heap(self);
     }
 
     /// Loads from a closure cell and pushes onto the stack.
     ///
-    /// Returns a NameError if the cell value is undefined (free variable not bound).
-    fn load_cell(&mut self, slot: u16) -> RunResult<()> {
-        let cell_id = self.current_frame().cells[slot as usize];
-        // get_cell_value already clones with proper refcount via clone_with_heap
-        let value = self.heap.get_cell_value(cell_id);
+    /// The cell `HeapId` is read from the frame's local variable slot on the stack
+    /// (cells are stored as `Value::Ref(cell_id)` at known positions in the locals region).
+    /// Returns a `NameError` if the cell value is undefined (free variable not bound).
+    fn load_cell(&mut self, cached_frame: &CachedFrame<'a>, slot: u16) -> RunResult<()> {
+        let cell_id = self.cell_id_from_local(cached_frame, slot);
+        let value = match self.heap.get(cell_id) {
+            HeapData::Cell(c) => c.0.clone_with_heap(self),
+            _ => panic!("LoadCell: entry is not a Cell"),
+        };
 
         // Check for undefined value - raise NameError for unbound free variable
         if matches!(value, Value::Undefined) {
-            let name = self.current_frame().code.local_name(slot);
+            value.drop_with_heap(self);
+            let name = cached_frame.code.local_name(slot);
             return Err(self.free_var_error(name));
         }
 
         self.push(value);
         Ok(())
+    }
+
+    /// Extracts the cell `HeapId` from a local variable slot on the stack.
+    ///
+    /// Cell variables are stored as `Value::Ref(cell_id)` in the frame's locals region.
+    fn cell_id_from_local(&self, cached_frame: &CachedFrame<'_>, slot: u16) -> HeapId {
+        match &self.stack[cached_frame.stack_base + slot as usize] {
+            Value::Ref(cell_id) => *cell_id,
+            other => panic!("LoadCell/StoreCell: expected cell reference in local slot {slot}, found {other:?}"),
+        }
     }
 
     /// Creates a NameError for an unbound free variable.
@@ -1949,10 +1946,19 @@ impl<'a, 'p, T: ResourceTracker> VM<'a, 'p, T> {
     }
 
     /// Pops the top of stack and stores it in a closure cell.
-    fn store_cell(&mut self, slot: u16) {
+    ///
+    /// The cell `HeapId` is read from the frame's local variable slot on the stack.
+    fn store_cell(&mut self, cached_frame: &CachedFrame<'_>, slot: u16) {
         let value = self.pop();
-        let cell_id = self.current_frame().cells[slot as usize];
-        self.heap.set_cell_value(cell_id, value);
+        // The guard will clean up the new value if we panic, or the old value if we swap
+        let mut guard = HeapGuard::new(value, self);
+        let (value, this) = guard.as_parts_mut();
+
+        let cell_id = this.cell_id_from_local(cached_frame, slot);
+        let HeapReadOutput::Cell(mut cell) = this.heap.read(cell_id) else {
+            panic!("StoreCell: entry is not a Cell")
+        };
+        mem::swap(&mut cell.get_mut(this.heap).0, value);
     }
 }
 

@@ -1,5 +1,7 @@
 //! Implementation of the map() builtin function.
 
+use std::iter;
+
 use crate::{
     args::{ArgValues, KwargsValues},
     bytecode::VM,
@@ -75,7 +77,7 @@ pub fn builtin_map(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -
         multiple => 'outer: loop {
             let mut items = Vec::with_capacity(1 + multiple.len());
 
-            for iter in std::iter::once(&mut *first_iter).chain(multiple.iter_mut()) {
+            for iter in iter::once(&mut *first_iter).chain(multiple.iter_mut()) {
                 if let Some(item) = iter.for_next(vm)? {
                     items.push(item);
                 } else {

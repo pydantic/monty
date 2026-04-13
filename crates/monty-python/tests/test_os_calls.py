@@ -354,14 +354,14 @@ def test_os_not_provided_error_ext_func():
     # and OS calls raise NotImplementedError inside Monty
     with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
         m.run(external_functions={'x': int})
-    assert str(exc_info.value) == snapshot("NotImplementedError: OS function 'Path.exists' not implemented")
+    assert str(exc_info.value) == snapshot("PermissionError: Permission denied: '/tmp'")
 
 
 def test_not_callable():
     """Raise NotImplementedError inside inside monty if so os"""
     m = pydantic_monty.Monty('from pathlib import Path; Path("/tmp/test.txt").exists()')
 
-    with pytest.raises(TypeError, match="TypeError: 'int' object is not callable"):
+    with pytest.raises(TypeError, match='os must be callable'):
         m.run(os=123)  # type: ignore
 
 

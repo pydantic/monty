@@ -1,3 +1,4 @@
+# skip-cpython-windows — pathlib uses POSIX paths in Monty's sandbox, Windows CPython resolves differently
 # === Path constructor ===
 from pathlib import Path
 
@@ -75,6 +76,16 @@ assert Path('/usr/bin').as_posix() == '/usr/bin', 'as_posix returns string'
 
 # === __fspath__ method (os.PathLike protocol) ===
 assert Path('/usr/bin').__fspath__() == '/usr/bin', '__fspath__ returns string'
+
+# === dot normalization ===
+# CPython normalizes '.' components but keeps '..'
+assert str(Path('/a/./b')) == '/a/b', 'dot component normalized away'
+assert str(Path('/a/b/.')) == '/a/b', 'trailing dot normalized away'
+assert str(Path('./a')) == 'a', 'leading dot-slash normalized away'
+assert str(Path('.')) == '.', 'lone dot preserved'
+assert str(Path('/a/b/..')) == '/a/b/..', 'double-dot preserved'
+assert str(Path('/a/./b/../c')) == '/a/b/../c', 'dot removed but double-dot kept'
+assert str(Path('/a///b')) == '/a/b', 'consecutive slashes collapsed'
 
 # === repr ===
 r = repr(Path('/usr/bin'))

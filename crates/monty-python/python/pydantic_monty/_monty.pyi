@@ -1,10 +1,12 @@
+from collections.abc import Coroutine
+from pathlib import Path
 from types import EllipsisType
 from typing import Any, Callable, Literal, final, overload
 
 from typing_extensions import Self
 
 from . import ExternalResult, ResourceLimits
-from .os_access import OsFunction
+from .os_access import AbstractOS, OsFunction
 
 __all__ = [
     '__version__',
@@ -18,9 +20,30 @@ __all__ = [
     'MontySyntaxError',
     'MontyRuntimeError',
     'MontyTypingError',
+    'MountDir',
     'Frame',
+    'load_snapshot',
+    'load_repl_snapshot',
 ]
 __version__: str
+
+@final
+class MountDir:
+    """A single mount point configuration mapping a virtual path to a host directory."""
+
+    virtual_path: str
+    host_path: str
+    mode: Literal['read-only', 'read-write', 'overlay']
+    write_bytes_limit: int | None
+
+    def __new__(
+        cls,
+        virtual_path: str,
+        host_path: str | Path,
+        *,
+        mode: Literal['read-only', 'read-write', 'overlay'] = 'overlay',
+        write_bytes_limit: int | None = None,
+    ) -> MountDir: ...
 
 @final
 class Monty:
@@ -84,7 +107,8 @@ class Monty:
         limits: ResourceLimits | None = None,
         external_functions: dict[str, Callable[..., Any]] | None = None,
         print_callback: Callable[[Literal['stdout'], str], None] | None = None,
-        os: Callable[[OsFunction, tuple[Any, ...]], Any] | None = None,
+        mount: MountDir | list[MountDir] | None = None,
+        os: Callable[[OsFunction, tuple[Any, ...], dict[str, Any]], Any] | None = None,
     ) -> Any:
         """
         Execute the code and return the result.
@@ -137,6 +161,35 @@ class Monty:
             MontyRuntimeError: If the code raises an exception during execution
         """
 
+    def run_async(
+        self,
+        *,
+        inputs: dict[str, Any] | None = None,
+        limits: ResourceLimits | None = None,
+        external_functions: dict[str, Callable[..., Any]] | None = None,
+        print_callback: Callable[[Literal['stdout'], str], None] | None = None,
+        os: AbstractOS | None = None,
+    ) -> Coroutine[Any, Any, Any]:
+        """
+        Execute the code with support for async external functions.
+
+        VM resume calls are offloaded to a new thread to avoid blocking the event loop.
+        External functions that return coroutines are awaited on the Python event loop.
+
+        Arguments:
+            inputs: Dict of input variable values (must match names from __init__)
+            limits: Optional resource limits configuration
+            external_functions: Dict of external function callbacks (sync or async)
+            print_callback: Optional callback for print output
+            os: Optional OS access handler for filesystem operations
+
+        Returns:
+            A coroutine that resolves to the result of the last expression
+
+        Raises:
+            MontyRuntimeError: If the code raises an exception during execution
+        """
+
     def dump(self) -> bytes:
         """
         Serialize the Monty instance to a binary format.
@@ -156,7 +209,7 @@ class Monty:
         data: bytes,
         *,
         dataclass_registry: list[type] | None = None,
-    ) -> 'Monty':
+    ) -> Monty:
         """
         Deserialize a Monty instance from binary format.
 
@@ -194,39 +247,165 @@ class MontyRepl:
     """
     Incremental no-replay REPL session.
 
-    Each `feed()` call compiles and executes only the provided snippet against
-    preserved heap/global state.
+    Create with `MontyRepl()` then call `feed_run()` to execute snippets
+    incrementally against persistent heap and namespace state.
     """
 
-    @staticmethod
-    def create(
-        code: str,
+    def __new__(
+        cls,
         *,
         script_name: str = 'main.py',
-        inputs: list[str] | None = None,
-        start_inputs: dict[str, Any] | None = None,
         limits: ResourceLimits | None = None,
-        print_callback: Callable[[Literal['stdout'], str], None] | None = None,
+        type_check: bool = False,
+        type_check_stubs: str | None = None,
         dataclass_registry: list[type] | None = None,
-    ) -> tuple['MontyRepl', Any]:
+    ) -> Self:
         """
-        Create a REPL session directly from source code.
+        Create an empty REPL session ready to receive snippets via `feed_run()`.
 
-        Returns `(repl, output)` where `output` is the initial execution result.
+        No code is parsed or executed at construction time.
+
+        Arguments:
+            script_name: Name used in tracebacks and error messages
+            limits: Optional resource limits configuration
+            type_check: Whether to type-check each snippet before execution.
+                When enabled, each `feed_run`/`feed_run_async`/`feed_start` call
+                runs static type checking before executing the code, and each
+                successfully executed snippet is appended to the accumulated
+                context used for type-checking subsequent snippets.
+            type_check_stubs: Optional stub code providing type declarations for
+                variables and functions available in the REPL, e.g. input variable
+                types or external function signatures.
+            dataclass_registry: Optional list of dataclass types to register for proper
+                isinstance() support on output.
         """
 
     @property
     def script_name(self) -> str:
         """The name of the script being executed."""
 
-    def feed(
+    def register_dataclass(self, cls: type) -> None:
+        """
+        Register a dataclass type for proper isinstance() support on output.
+        """
+
+    def type_check(self, code: str, prefix_code: str | None = None) -> None:
+        """
+        Perform static type checking on the given code snippet.
+
+        Checks the snippet in isolation using `prefix_code` as stub context.
+        This does not use the accumulated code from previous `feed_run` calls —
+        use `prefix_code` to provide any needed declarations.
+
+        Arguments:
+            code: The code to type check
+            prefix_code: Optional code to prepend before type checking,
+                e.g. with input variable declarations or external function signatures
+
+        Raises:
+            RuntimeError: If type checking infrastructure fails
+            MontyTypingError: If type errors are found
+        """
+
+    def feed_run(
         self,
         code: str,
         *,
+        inputs: dict[str, Any] | None = None,
+        external_functions: dict[str, Callable[..., Any]] | None = None,
         print_callback: Callable[[Literal['stdout'], str], None] | None = None,
+        mount: MountDir | list[MountDir] | None = None,
+        os: Callable[[str, tuple[Any, ...], dict[str, Any]], Any] | None = None,
+        skip_type_check: bool = False,
     ) -> Any:
         """
         Execute one incremental snippet and return its output.
+
+        Arguments:
+            code: The Python code snippet to execute
+            inputs: Dict of input values injected into the REPL namespace
+                before executing the snippet
+            external_functions: Dict of external function callbacks. When
+                provided, external function calls and name lookups are
+                dispatched to the provided callables — matching the behavior
+                of `Monty.run(external_functions=...)`.
+            print_callback: Optional callback for print output
+            mount: Optional filesystem mount(s) to expose inside the sandbox
+            os: Optional OS access handler for filesystem operations
+            skip_type_check: When `True`, static type checking is bypassed for
+                this snippet AND the snippet is NOT appended to the accumulated
+                type-check context, so later type-checked snippets will not see
+                any names it defined. Has no effect unless `type_check=True`
+                was set on the REPL.
+        """
+
+    def feed_run_async(
+        self,
+        code: str,
+        *,
+        inputs: dict[str, Any] | None = None,
+        external_functions: dict[str, Callable[..., Any]] | None = None,
+        print_callback: Callable[[Literal['stdout'], str], None] | None = None,
+        os: AbstractOS | None = None,
+        skip_type_check: bool = False,
+    ) -> Coroutine[Any, Any, Any]:
+        """
+        Execute one incremental snippet and return its output with support for async external functions.
+
+        VM resume calls are offloaded to a new thread to avoid blocking the event loop.
+        External functions that return coroutines are awaited on the Python event loop.
+
+        Arguments:
+            code: The Python code snippet to execute
+            inputs: Dict of input values to inject into the REPL namespace
+            external_functions: Dict of external function callbacks (sync or async)
+            print_callback: Optional callback for print output
+            os: Optional OS access handler for filesystem operations
+            skip_type_check: When `True`, static type checking is bypassed for
+                this snippet AND the snippet is NOT appended to the accumulated
+                type-check context, so later type-checked snippets will not see
+                any names it defined. Has no effect unless `type_check=True`
+                was set on the REPL.
+
+        Returns:
+            A coroutine that resolves to the output of the snippet
+
+        Raises:
+            MontyRuntimeError: If the code raises an exception during execution
+        """
+
+    def feed_start(
+        self,
+        code: str,
+        *,
+        inputs: dict[str, Any] | None = None,
+        print_callback: Callable[[Literal['stdout'], str], None] | None = None,
+        skip_type_check: bool = False,
+    ) -> FunctionSnapshot | NameLookupSnapshot | FutureSnapshot | MontyComplete:
+        """
+        Start executing an incremental snippet, yielding snapshots for external calls.
+
+        Unlike `feed_run()`, which handles external function dispatch internally,
+        `feed_start()` returns a snapshot object whenever the code needs an external
+        function call, OS call, name lookup, or future resolution. The caller provides
+        the result via `snapshot.resume(...)`, which returns the next snapshot or
+        `MontyComplete`.
+
+        This enables the same iterative start/resume pattern used by `Monty.start()`,
+        including support for async external functions via `FutureSnapshot`.
+
+        On completion or error, the REPL state is automatically restored.
+
+        Arguments:
+            code: The Python code snippet to execute
+            inputs: Dict of input values injected into the REPL namespace
+                before executing the snippet
+            print_callback: Optional callback for print output
+            skip_type_check: When `True`, static type checking is bypassed for
+                this snippet AND the snippet is NOT appended to the accumulated
+                type-check context, so later type-checked snippets will not see
+                any names it defined. Has no effect unless `type_check=True`
+                was set on the REPL.
         """
 
     def dump(self) -> bytes:
@@ -236,9 +415,8 @@ class MontyRepl:
     def load(
         data: bytes,
         *,
-        print_callback: Callable[[Literal['stdout'], str], None] | None = None,
         dataclass_registry: list[type] | None = None,
-    ) -> 'MontyRepl':
+    ) -> MontyRepl:
         """Restore a REPL session from bytes."""
 
 @final
@@ -328,7 +506,7 @@ class FunctionSnapshot:
         """
         Serialize the FunctionSnapshot instance to a binary format.
 
-        The serialized data can be stored and later restored with `FunctionSnapshot.load()`.
+        The serialized data can be restored with `load_snapshot()` or `load_repl_snapshot()`.
         This allows suspending execution and resuming later, potentially in a different process.
 
         Note: The `print_callback` is not serialized and must be re-provided via
@@ -340,32 +518,6 @@ class FunctionSnapshot:
         Raises:
             ValueError: If serialization fails.
             RuntimeError: If the progress has already been resumed.
-        """
-
-    @staticmethod
-    def load(
-        data: bytes,
-        *,
-        print_callback: Callable[[Literal['stdout'], str], None] | None = None,
-        dataclass_registry: list[type] | None = None,
-    ) -> FunctionSnapshot:
-        """
-        Deserialize a FunctionSnapshot instance from binary format.
-
-        Note: The `print_callback` is not preserved during serialization and must be
-        re-provided as a keyword argument if print output is needed.
-
-        Arguments:
-            data: The serialized FunctionSnapshot data from `dump()`
-            print_callback: Optional callback for print output
-            dataclass_registry: Optional list of dataclass types to register for proper
-                isinstance() support on output, see `register_dataclass()` above.
-
-        Returns:
-            A new FunctionSnapshot instance.
-
-        Raises:
-            ValueError: If deserialization fails.
         """
 
     def __repr__(self) -> str: ...
@@ -419,7 +571,7 @@ class NameLookupSnapshot:
         """
         Serialize the NameLookupSnapshot instance to a binary format.
 
-        The serialized data can be stored and later restored with `NameLookupSnapshot.load()`.
+        The serialized data can be restored with `load_snapshot()` or `load_repl_snapshot()`.
         This allows suspending execution and resuming later, potentially in a different process.
 
         Note: The `print_callback` is not serialized and must be re-provided via
@@ -431,32 +583,6 @@ class NameLookupSnapshot:
         Raises:
             ValueError: If serialization fails.
             RuntimeError: If the progress has already been resumed.
-        """
-
-    @staticmethod
-    def load(
-        data: bytes,
-        *,
-        print_callback: Callable[[Literal['stdout'], str], None] | None = None,
-        dataclass_registry: list[type] | None = None,
-    ) -> NameLookupSnapshot:
-        """
-        Deserialize a NameLookupSnapshot instance from binary format.
-
-        Note: The `print_callback` is not preserved during serialization and must be
-        re-provided as a keyword argument if print output is needed.
-
-        Arguments:
-            data: The serialized NameLookupSnapshot data from `dump()`
-            print_callback: Optional callback for print output
-            dataclass_registry: Optional list of dataclass types to register for proper
-                isinstance() support on output, see `register_dataclass()` above.
-
-        Returns:
-            A new NameLookupSnapshot instance.
-
-        Raises:
-            ValueError: If deserialization fails.
         """
 
     def __repr__(self) -> str: ...
@@ -511,7 +637,7 @@ class FutureSnapshot:
         """
         Serialize the FutureSnapshot instance to a binary format.
 
-        The serialized data can be stored and later restored with `FutureSnapshot.load()`.
+        The serialized data can be restored with `load_snapshot()` or `load_repl_snapshot()`.
         This allows suspending execution and resuming later, potentially in a different process.
 
         Note: The `print_callback` is not serialized and must be re-provided via
@@ -523,32 +649,6 @@ class FutureSnapshot:
         Raises:
             ValueError: If serialization fails.
             RuntimeError: If the progress has already been resumed.
-        """
-
-    @staticmethod
-    def load(
-        data: bytes,
-        *,
-        print_callback: Callable[[Literal['stdout'], str], None] | None = None,
-        dataclass_registry: list[type] | None = None,
-    ) -> 'FutureSnapshot':
-        """
-        Deserialize a FutureSnapshot instance from binary format.
-
-        Note: The `print_callback` is not preserved during serialization and must be
-        re-provided as a keyword argument if print output is needed.
-
-        Arguments:
-            data: The serialized FutureSnapshot data from `dump()`
-            print_callback: Optional callback for print output
-            dataclass_registry: Optional list of dataclass types to register for proper
-                isinstance() support on output, see `register_dataclass()` above.
-
-        Returns:
-            A new FutureSnapshot instance.
-
-        Raises:
-            ValueError: If deserialization fails.
         """
 
     def __repr__(self) -> str: ...
@@ -671,3 +771,51 @@ class Frame:
 
     def dict(self) -> dict[str, int | str | None]:
         """dict of attributes."""
+
+def load_snapshot(
+    data: bytes,
+    *,
+    print_callback: Callable[[Literal['stdout'], str], None] | None = None,
+    dataclass_registry: list[type] | None = None,
+) -> FunctionSnapshot | NameLookupSnapshot | FutureSnapshot:
+    """Load a non-REPL snapshot from serialized bytes.
+
+    Auto-detects the snapshot type (FunctionSnapshot, NameLookupSnapshot, or
+    FutureSnapshot) from the serialized data.
+
+    Arguments:
+        data: Serialized snapshot bytes from `.dump()`
+        print_callback: Optional callback for print output
+        dataclass_registry: Optional list of dataclass types to register
+
+    Returns:
+        The deserialized snapshot, ready to be resumed.
+
+    Raises:
+        ValueError: If deserialization fails or data contains a REPL snapshot
+            (use `load_repl_snapshot` for those).
+    """
+
+def load_repl_snapshot(
+    data: bytes,
+    *,
+    print_callback: Callable[[Literal['stdout'], str], None] | None = None,
+    dataclass_registry: list[type] | None = None,
+) -> tuple[FunctionSnapshot | NameLookupSnapshot | FutureSnapshot, MontyRepl]:
+    """Load a REPL snapshot from serialized bytes.
+
+    Returns both the snapshot and a reconstructed `MontyRepl` session.
+    The snapshot's REPL variant is wired to the returned `MontyRepl`,
+    so resuming the snapshot will update the REPL state.
+
+    Arguments:
+        data: Serialized snapshot bytes from `.dump()` on a REPL snapshot
+        print_callback: Optional callback for print output
+        dataclass_registry: Optional list of dataclass types to register
+
+    Returns:
+        A tuple of (snapshot, MontyRepl).
+
+    Raises:
+        ValueError: If deserialization fails.
+    """

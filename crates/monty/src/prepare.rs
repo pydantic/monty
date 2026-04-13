@@ -3,11 +3,11 @@ use std::collections::hash_map::Entry;
 use ahash::{AHashMap, AHashSet};
 
 use crate::{
-    args::ArgExprs,
+    args::{ArgExprs, CallArg, CallKwarg},
     builtins::Builtins,
     expressions::{
-        Callable, CmpOperator, Comprehension, Expr, ExprLoc, Identifier, Literal, NameScope, Node, Operator,
-        PreparedFunctionDef, PreparedNode, UnpackTarget,
+        Callable, CmpOperator, Comprehension, DictItem, Expr, ExprLoc, Identifier, ImportName, Literal, NameScope,
+        Node, Operator, PreparedFunctionDef, PreparedNode, SequenceItem, UnpackTarget,
     },
     fstring::{FStringPart, FormatSpec},
     intern::{InternerBuilder, StringId},
@@ -371,13 +371,31 @@ impl<'i> Prepare<'i> {
                         object,
                     });
                 }
-                Node::OpAssign { target, op, object } => {
+                Node::OpAssign { target, op, value } => {
                     // Track that this name was assigned
                     self.names_assigned_in_order
                         .insert(self.interner.get_str(target.name_id).to_string());
                     let target = self.get_id(target).0;
-                    let object = self.prepare_expression(object)?;
-                    new_nodes.push(Node::OpAssign { target, op, object });
+                    let value = self.prepare_expression(value)?;
+                    new_nodes.push(Node::OpAssign { target, op, value });
+                }
+                Node::SubscriptOpAssign {
+                    target,
+                    index,
+                    op,
+                    value,
+                    target_position,
+                } => {
+                    let target = self.prepare_expression(target)?;
+                    let index = self.prepare_expression(index)?;
+                    let value = self.prepare_expression(value)?;
+                    new_nodes.push(Node::SubscriptOpAssign {
+                        target,
+                        index,
+                        op,
+                        value,
+                        target_position,
+                    });
                 }
                 Node::SubscriptAssign {
                     target,
@@ -386,12 +404,29 @@ impl<'i> Prepare<'i> {
                     target_position,
                 } => {
                     // SubscriptAssign doesn't assign to the target itself, just modifies it
-                    let target = self.get_id(target).0;
+                    let target = self.prepare_expression(target)?;
                     let index = self.prepare_expression(index)?;
                     let value = self.prepare_expression(value)?;
                     new_nodes.push(Node::SubscriptAssign {
                         target,
                         index,
+                        value,
+                        target_position,
+                    });
+                }
+                Node::AttrOpAssign {
+                    object,
+                    attr,
+                    op,
+                    value,
+                    target_position,
+                } => {
+                    let object = self.prepare_expression(object)?;
+                    let value = self.prepare_expression(value)?;
+                    new_nodes.push(Node::AttrOpAssign {
+                        object,
+                        attr,
+                        op,
                         value,
                         target_position,
                     });
@@ -545,13 +580,19 @@ impl<'i> Prepare<'i> {
                         finally,
                     }));
                 }
-                Node::Import { module_name, binding } => {
-                    // Resolve the binding identifier to get the namespace slot
-                    let (resolved_binding, _) = self.get_id(binding);
-                    new_nodes.push(Node::Import {
-                        module_name,
-                        binding: resolved_binding,
-                    });
+                Node::Import { names } => {
+                    // Resolve each binding identifier to get the namespace slot
+                    let resolved_names = names
+                        .into_iter()
+                        .map(|import_name| {
+                            let (resolved_binding, _) = self.get_id(import_name.binding);
+                            ImportName {
+                                module_name: import_name.module_name,
+                                binding: resolved_binding,
+                            }
+                        })
+                        .collect();
+                    new_nodes.push(Node::Import { names: resolved_names });
                 }
                 Node::ImportFrom {
                     module_name,
@@ -670,36 +711,41 @@ impl<'i> Prepare<'i> {
                 Expr::AttrGet { object, attr }
             }
             Expr::List(elements) => {
-                let expressions = elements
+                let items = elements
                     .into_iter()
-                    .map(|e| self.prepare_expression(e))
+                    .map(|item| self.prepare_sequence_item(item))
                     .collect::<Result<_, ParseError>>()?;
-                Expr::List(expressions)
+                Expr::List(items)
             }
             Expr::Tuple(elements) => {
-                let expressions = elements
+                let items = elements
                     .into_iter()
-                    .map(|e| self.prepare_expression(e))
+                    .map(|item| self.prepare_sequence_item(item))
                     .collect::<Result<_, ParseError>>()?;
-                Expr::Tuple(expressions)
+                Expr::Tuple(items)
             }
             Expr::Subscript { object, index } => Expr::Subscript {
                 object: Box::new(self.prepare_expression(*object)?),
                 index: Box::new(self.prepare_expression(*index)?),
             },
-            Expr::Dict(pairs) => {
-                let prepared_pairs = pairs
+            Expr::Dict(dict_items) => {
+                let prepared = dict_items
                     .into_iter()
-                    .map(|(k, v)| Ok((self.prepare_expression(k)?, self.prepare_expression(v)?)))
+                    .map(|item| match item {
+                        DictItem::Pair(k, v) => {
+                            Ok(DictItem::Pair(self.prepare_expression(k)?, self.prepare_expression(v)?))
+                        }
+                        DictItem::Unpack(e) => Ok(DictItem::Unpack(self.prepare_expression(e)?)),
+                    })
                     .collect::<Result<_, ParseError>>()?;
-                Expr::Dict(prepared_pairs)
+                Expr::Dict(prepared)
             }
             Expr::Set(elements) => {
-                let expressions = elements
+                let items = elements
                     .into_iter()
-                    .map(|e| self.prepare_expression(e))
+                    .map(|item| self.prepare_sequence_item(item))
                     .collect::<Result<_, ParseError>>()?;
-                Expr::Set(expressions)
+                Expr::Set(items)
             }
             Expr::Not(operand) => Expr::Not(Box::new(self.prepare_expression(*operand)?)),
             Expr::UnaryMinus(operand) => Expr::UnaryMinus(Box::new(self.prepare_expression(*operand)?)),
@@ -841,6 +887,17 @@ impl<'i> Prepare<'i> {
         }
 
         Expr::Name(self.get_id(name).0)
+    }
+
+    /// Prepares a `SequenceItem` by recursively preparing its inner expression.
+    ///
+    /// Both `Value` and `Unpack` variants need their expressions prepared
+    /// (name resolution, scope analysis, builtin detection, etc.).
+    fn prepare_sequence_item(&mut self, item: SequenceItem) -> Result<SequenceItem, ParseError> {
+        match item {
+            SequenceItem::Value(e) => Ok(SequenceItem::Value(self.prepare_expression(e)?)),
+            SequenceItem::Unpack(e) => Ok(SequenceItem::Unpack(self.prepare_expression(e)?)),
+        }
     }
 
     /// Prepares a comprehension with scope isolation for loop variables.
@@ -1567,7 +1624,9 @@ impl<'i> Prepare<'i> {
     fn get_id(&mut self, ident: Identifier) -> (Identifier, bool) {
         let name_str = self.interner.get_str(ident.name_id);
 
-        // At module level, all names are local (which is also the global namespace)
+        // At module level, all names are local (which is also the global namespace).
+        // The compiler emits global opcodes for these, so the VM reads/writes
+        // directly from the globals array rather than the stack.
         if self.is_module_scope {
             return match self.name_map.entry(name_str.to_string()) {
                 Entry::Occupied(e) => {
@@ -1921,15 +1980,29 @@ fn collect_scope_info_from_node(
             // Scan value expression for walrus operators
             collect_assigned_names_from_expr(object, assigned_names, interner);
         }
-        Node::OpAssign { target, object, .. } => {
+        Node::OpAssign { target, value, .. } => {
             assigned_names.insert(interner.get_str(target.name_id).to_string());
             // Scan value expression for walrus operators
-            collect_assigned_names_from_expr(object, assigned_names, interner);
+            collect_assigned_names_from_expr(value, assigned_names, interner);
         }
-        Node::SubscriptAssign { index, value, .. } => {
+        Node::SubscriptOpAssign {
+            target, index, value, ..
+        } => {
+            collect_assigned_names_from_expr(target, assigned_names, interner);
+            collect_assigned_names_from_expr(index, assigned_names, interner);
+            collect_assigned_names_from_expr(value, assigned_names, interner);
+        }
+        Node::SubscriptAssign {
+            target, index, value, ..
+        } => {
             // Subscript assignment doesn't create a new name, it modifies existing container
             // But scan expressions for walrus operators
+            collect_assigned_names_from_expr(target, assigned_names, interner);
             collect_assigned_names_from_expr(index, assigned_names, interner);
+            collect_assigned_names_from_expr(value, assigned_names, interner);
+        }
+        Node::AttrOpAssign { object, value, .. } => {
+            collect_assigned_names_from_expr(object, assigned_names, interner);
             collect_assigned_names_from_expr(value, assigned_names, interner);
         }
         Node::AttrAssign { object, value, .. } => {
@@ -2009,9 +2082,11 @@ fn collect_scope_info_from_node(
                 collect_scope_info_from_node(n, global_names, nonlocal_names, assigned_names, interner);
             }
         }
-        // Import creates a binding for the module name (or alias)
-        Node::Import { binding, .. } => {
-            assigned_names.insert(interner.get_str(binding.name_id).to_string());
+        // Import creates bindings for each module name (or alias)
+        Node::Import { names, .. } => {
+            for import_name in names {
+                assigned_names.insert(interner.get_str(import_name.binding.name_id).to_string());
+            }
         }
         // ImportFrom creates bindings for each imported name (or alias)
         Node::ImportFrom { names, .. } => {
@@ -2053,13 +2128,21 @@ fn collect_assigned_names_from_expr(expr: &ExprLoc, assigned_names: &mut AHashSe
         // Recurse into sub-expressions
         Expr::List(items) | Expr::Tuple(items) | Expr::Set(items) => {
             for item in items {
-                collect_assigned_names_from_expr(item, assigned_names, interner);
+                let expr = match item {
+                    SequenceItem::Value(e) | SequenceItem::Unpack(e) => e,
+                };
+                collect_assigned_names_from_expr(expr, assigned_names, interner);
             }
         }
-        Expr::Dict(pairs) => {
-            for (key, value) in pairs {
-                collect_assigned_names_from_expr(key, assigned_names, interner);
-                collect_assigned_names_from_expr(value, assigned_names, interner);
+        Expr::Dict(dict_items) => {
+            for item in dict_items {
+                match item {
+                    DictItem::Pair(key, value) => {
+                        collect_assigned_names_from_expr(key, assigned_names, interner);
+                        collect_assigned_names_from_expr(value, assigned_names, interner);
+                    }
+                    DictItem::Unpack(e) => collect_assigned_names_from_expr(e, assigned_names, interner),
+                }
             }
         }
         Expr::Op { left, right, .. } | Expr::CmpOp { left, right, .. } => {
@@ -2193,6 +2276,25 @@ fn collect_assigned_names_from_args(
                 collect_assigned_names_from_expr(var_kwargs, assigned_names, interner);
             }
         }
+        ArgExprs::GeneralizedCall { args, kwargs } => {
+            for arg in args {
+                match arg {
+                    CallArg::Value(e) | CallArg::Unpack(e) => {
+                        collect_assigned_names_from_expr(e, assigned_names, interner);
+                    }
+                }
+            }
+            for kwarg in kwargs {
+                match kwarg {
+                    CallKwarg::Named(kw) => {
+                        collect_assigned_names_from_expr(&kw.value, assigned_names, interner);
+                    }
+                    CallKwarg::Unpack(e) => {
+                        collect_assigned_names_from_expr(e, assigned_names, interner);
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -2297,11 +2399,25 @@ fn collect_cell_vars_from_node(
         Node::Assign { object, .. } | Node::UnpackAssign { object, .. } => {
             collect_cell_vars_from_expr(object, our_locals, cell_vars, interner);
         }
-        Node::OpAssign { object, .. } => {
-            collect_cell_vars_from_expr(object, our_locals, cell_vars, interner);
+        Node::OpAssign { value, .. } => {
+            collect_cell_vars_from_expr(value, our_locals, cell_vars, interner);
         }
-        Node::SubscriptAssign { index, value, .. } => {
+        Node::SubscriptOpAssign {
+            target, index, value, ..
+        } => {
+            collect_cell_vars_from_expr(target, our_locals, cell_vars, interner);
             collect_cell_vars_from_expr(index, our_locals, cell_vars, interner);
+            collect_cell_vars_from_expr(value, our_locals, cell_vars, interner);
+        }
+        Node::SubscriptAssign {
+            target, index, value, ..
+        } => {
+            collect_cell_vars_from_expr(target, our_locals, cell_vars, interner);
+            collect_cell_vars_from_expr(index, our_locals, cell_vars, interner);
+            collect_cell_vars_from_expr(value, our_locals, cell_vars, interner);
+        }
+        Node::AttrOpAssign { object, value, .. } => {
+            collect_cell_vars_from_expr(object, our_locals, cell_vars, interner);
             collect_cell_vars_from_expr(value, our_locals, cell_vars, interner);
         }
         Node::AttrAssign { object, value, .. } => {
@@ -2373,13 +2489,21 @@ fn collect_cell_vars_from_expr(
         // Recurse into sub-expressions
         Expr::List(items) | Expr::Tuple(items) | Expr::Set(items) => {
             for item in items {
-                collect_cell_vars_from_expr(item, our_locals, cell_vars, interner);
+                let expr = match item {
+                    SequenceItem::Value(e) | SequenceItem::Unpack(e) => e,
+                };
+                collect_cell_vars_from_expr(expr, our_locals, cell_vars, interner);
             }
         }
-        Expr::Dict(pairs) => {
-            for (key, value) in pairs {
-                collect_cell_vars_from_expr(key, our_locals, cell_vars, interner);
-                collect_cell_vars_from_expr(value, our_locals, cell_vars, interner);
+        Expr::Dict(dict_items) => {
+            for item in dict_items {
+                match item {
+                    DictItem::Pair(key, value) => {
+                        collect_cell_vars_from_expr(key, our_locals, cell_vars, interner);
+                        collect_cell_vars_from_expr(value, our_locals, cell_vars, interner);
+                    }
+                    DictItem::Unpack(e) => collect_cell_vars_from_expr(e, our_locals, cell_vars, interner),
+                }
             }
         }
         Expr::Op { left, right, .. } | Expr::CmpOp { left, right, .. } => {
@@ -2439,7 +2563,7 @@ fn collect_cell_vars_from_expr(
         }
         Expr::FString(parts) => {
             for part in parts {
-                if let crate::fstring::FStringPart::Interpolation { expr, .. } = part {
+                if let FStringPart::Interpolation { expr, .. } = part {
                     collect_cell_vars_from_expr(expr, our_locals, cell_vars, interner);
                 }
             }
@@ -2463,7 +2587,6 @@ fn collect_cell_vars_from_args(
     cell_vars: &mut AHashSet<String>,
     interner: &InternerBuilder,
 ) {
-    use crate::args::ArgExprs;
     match args {
         ArgExprs::Empty => {}
         ArgExprs::One(arg) => collect_cell_vars_from_expr(arg, our_locals, cell_vars, interner),
@@ -2504,6 +2627,25 @@ fn collect_cell_vars_from_args(
                 collect_cell_vars_from_expr(var_kwargs, our_locals, cell_vars, interner);
             }
         }
+        ArgExprs::GeneralizedCall { args, kwargs } => {
+            for arg in args {
+                match arg {
+                    CallArg::Value(e) | CallArg::Unpack(e) => {
+                        collect_cell_vars_from_expr(e, our_locals, cell_vars, interner);
+                    }
+                }
+            }
+            for kwarg in kwargs {
+                match kwarg {
+                    CallKwarg::Named(kw) => {
+                        collect_cell_vars_from_expr(&kw.value, our_locals, cell_vars, interner);
+                    }
+                    CallKwarg::Unpack(e) => {
+                        collect_cell_vars_from_expr(e, our_locals, cell_vars, interner);
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -2528,16 +2670,27 @@ fn collect_referenced_names_from_node(node: &ParseNode, referenced: &mut AHashSe
         Node::UnpackAssign { object, .. } => {
             collect_referenced_names_from_expr(object, referenced, interner);
         }
-        Node::OpAssign { target, object, .. } => {
+        Node::OpAssign { target, value, .. } => {
             // OpAssign reads the target before writing
             referenced.insert(interner.get_str(target.name_id).to_string());
-            collect_referenced_names_from_expr(object, referenced, interner);
+            collect_referenced_names_from_expr(value, referenced, interner);
+        }
+        Node::SubscriptOpAssign {
+            target, index, value, ..
+        } => {
+            collect_referenced_names_from_expr(target, referenced, interner);
+            collect_referenced_names_from_expr(index, referenced, interner);
+            collect_referenced_names_from_expr(value, referenced, interner);
         }
         Node::SubscriptAssign {
             target, index, value, ..
         } => {
-            referenced.insert(interner.get_str(target.name_id).to_string());
+            collect_referenced_names_from_expr(target, referenced, interner);
             collect_referenced_names_from_expr(index, referenced, interner);
+            collect_referenced_names_from_expr(value, referenced, interner);
+        }
+        Node::AttrOpAssign { object, value, .. } => {
+            collect_referenced_names_from_expr(object, referenced, interner);
             collect_referenced_names_from_expr(value, referenced, interner);
         }
         Node::AttrAssign { object, value, .. } => {
@@ -2613,11 +2766,7 @@ fn collect_referenced_names_from_node(node: &ParseNode, referenced: &mut AHashSe
 }
 
 /// Collects all names referenced in an expression.
-fn collect_referenced_names_from_expr(
-    expr: &crate::expressions::ExprLoc,
-    referenced: &mut AHashSet<String>,
-    interner: &InternerBuilder,
-) {
+fn collect_referenced_names_from_expr(expr: &ExprLoc, referenced: &mut AHashSet<String>, interner: &InternerBuilder) {
     use crate::expressions::Expr;
     match &expr.expr {
         Expr::Name(ident) => {
@@ -2627,13 +2776,21 @@ fn collect_referenced_names_from_expr(
         Expr::Builtin(_) => {}
         Expr::List(items) | Expr::Tuple(items) | Expr::Set(items) => {
             for item in items {
-                collect_referenced_names_from_expr(item, referenced, interner);
+                let expr = match item {
+                    SequenceItem::Value(e) | SequenceItem::Unpack(e) => e,
+                };
+                collect_referenced_names_from_expr(expr, referenced, interner);
             }
         }
-        Expr::Dict(pairs) => {
-            for (key, value) in pairs {
-                collect_referenced_names_from_expr(key, referenced, interner);
-                collect_referenced_names_from_expr(value, referenced, interner);
+        Expr::Dict(dict_items) => {
+            for item in dict_items {
+                match item {
+                    DictItem::Pair(key, value) => {
+                        collect_referenced_names_from_expr(key, referenced, interner);
+                        collect_referenced_names_from_expr(value, referenced, interner);
+                    }
+                    DictItem::Unpack(e) => collect_referenced_names_from_expr(e, referenced, interner),
+                }
             }
         }
         Expr::Op { left, right, .. } | Expr::CmpOp { left, right, .. } => {
@@ -2806,12 +2963,7 @@ fn collect_referenced_names_from_comprehension(
 }
 
 /// Collects referenced names from argument expressions.
-fn collect_referenced_names_from_args(
-    args: &crate::args::ArgExprs,
-    referenced: &mut AHashSet<String>,
-    interner: &InternerBuilder,
-) {
-    use crate::args::ArgExprs;
+fn collect_referenced_names_from_args(args: &ArgExprs, referenced: &mut AHashSet<String>, interner: &InternerBuilder) {
     match args {
         ArgExprs::Empty => {}
         ArgExprs::One(e) => collect_referenced_names_from_expr(e, referenced, interner),
@@ -2824,8 +2976,52 @@ fn collect_referenced_names_from_args(
                 collect_referenced_names_from_expr(e, referenced, interner);
             }
         }
-        ArgExprs::Kwargs(_) | ArgExprs::ArgsKargs { .. } => {
-            // TODO: handle kwargs when needed
+        ArgExprs::Kwargs(kwargs) => {
+            for kwarg in kwargs {
+                collect_referenced_names_from_expr(&kwarg.value, referenced, interner);
+            }
+        }
+        ArgExprs::ArgsKargs {
+            args,
+            kwargs,
+            var_args,
+            var_kwargs,
+        } => {
+            if let Some(args) = args {
+                for e in args {
+                    collect_referenced_names_from_expr(e, referenced, interner);
+                }
+            }
+            if let Some(kwargs) = kwargs {
+                for kwarg in kwargs {
+                    collect_referenced_names_from_expr(&kwarg.value, referenced, interner);
+                }
+            }
+            if let Some(e) = var_args {
+                collect_referenced_names_from_expr(e, referenced, interner);
+            }
+            if let Some(e) = var_kwargs {
+                collect_referenced_names_from_expr(e, referenced, interner);
+            }
+        }
+        ArgExprs::GeneralizedCall { args, kwargs } => {
+            for arg in args {
+                match arg {
+                    CallArg::Value(e) | CallArg::Unpack(e) => {
+                        collect_referenced_names_from_expr(e, referenced, interner);
+                    }
+                }
+            }
+            for kwarg in kwargs {
+                match kwarg {
+                    CallKwarg::Named(kw) => {
+                        collect_referenced_names_from_expr(&kw.value, referenced, interner);
+                    }
+                    CallKwarg::Unpack(e) => {
+                        collect_referenced_names_from_expr(e, referenced, interner);
+                    }
+                }
+            }
         }
     }
 }

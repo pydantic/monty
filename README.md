@@ -36,7 +36,7 @@ What Monty **can** do:
 - Control resource usage - Monty can track memory usage, allocations, stack depth, and execution time and cancel execution if it exceeds preset limits
 - Collect stdout and stderr and return it to the caller
 - Run async or sync code on the host via async or sync code on the host
-- Use a small subset of the standard library: `sys`, `os`, `typing`, `asyncio`, `re`, `datetime` (soon), `dataclasses` (soon), `json` (soon)
+- Use a small subset of the standard library: `sys`, `os`, `typing`, `asyncio`, `re`, `datetime`, `json`, `dataclasses` (soon)
 
 What Monty **cannot** do:
 
@@ -126,8 +126,7 @@ async def call_llm(prompt: str, messages: Messages) -> str | Messages:
 
 
 async def main():
-    output = await pydantic_monty.run_monty_async(
-        m,
+    output = await m.run_async(
         inputs={'prompt': 'testing'},
         external_functions={'call_llm': call_llm},
     )
@@ -198,7 +197,7 @@ progress = m.start(inputs={'url': 'https://example.com'})
 state = progress.dump()
 
 # Later, restore and resume (e.g., in a different process)
-progress2 = pydantic_monty.FunctionSnapshot.load(state)
+progress2 = pydantic_monty.load_snapshot(state)
 result = progress2.resume(return_value='response data')
 print(result.output)
 #> response data
@@ -219,7 +218,7 @@ fib(x)
 "#;
 
 let runner = MontyRun::new(code.to_owned(), "fib.py", vec!["x".to_owned()]).unwrap();
-let result = runner.run(vec![MontyObject::Int(10)], NoLimitTracker, &mut PrintWriter::Stdout).unwrap();
+let result = runner.run(vec![MontyObject::Int(10)], NoLimitTracker, PrintWriter::Stdout).unwrap();
 assert_eq!(result, MontyObject::Int(55));
 ```
 
@@ -236,7 +235,7 @@ let bytes = runner.dump().unwrap();
 
 // Later, restore and run
 let runner2 = MontyRun::load(&bytes).unwrap();
-let result = runner2.run(vec![MontyObject::Int(41)], NoLimitTracker, &mut PrintWriter::Stdout).unwrap();
+let result = runner2.run(vec![MontyObject::Int(41)], NoLimitTracker, PrintWriter::Stdout).unwrap();
 assert_eq!(result, MontyObject::Int(42));
 ```
 
@@ -326,6 +325,10 @@ async def main():
 if __name__ == '__main__':
     asyncio.run(main())
 ```
+
+## Community Bindings
+
+- **Go**: [gomonty](https://github.com/ewhauser/gomonty/) - Go bindings for the Monty interpreter
 
 # Alternatives
 

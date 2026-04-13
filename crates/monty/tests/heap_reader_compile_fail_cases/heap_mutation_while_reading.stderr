@@ -1,0 +1,10 @@
+error[E0502]: cannot borrow `*heap` as mutable because it is also borrowed as immutable
+  --> crates/monty/src/../tests/heap_reader_compile_fail_cases/cases.rs:28:17
+   |
+27 |         let slice = a.get(heap).as_slice();
+   |                           ---- immutable borrow occurs here
+28 |         let _ = heap.heap_mut().allocate(HeapData::Str(Str::new("boom".into())));
+   |                 ^^^^^^^^^^^^^^^ mutable borrow occurs here
+29 |         let _ = slice.len();
+   |                 ----- immutable borrow later used here
+For more information about this error, try `rustc --explain E0502`.

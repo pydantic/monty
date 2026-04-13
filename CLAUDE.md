@@ -12,7 +12,22 @@ Project goals:
 - **Performance**: Fast execution through compile-time optimizations and efficient memory layout
 - **Simplicity**: Clean, understandable implementation focused on a Python subset
 - **Snapshotting and iteration**: Plan is to allow code to be iteratively executed and snapshotted at each function call
+- **Cross-platform**: Runs on Linux, macOS, and Windows (and any other OS that can run Rust)
 - Targets the latest stable version of Python, currently Python 3.14
+
+## Cross-Platform Requirements
+
+Monty must work identically on Linux, macOS, and Windows. Within the Monty sandbox,
+paths always use POSIX/Linux-style forward slashes (`/`) regardless of the host OS.
+The `MountTable` handles translating between virtual POSIX paths and host-native paths.
+
+Key rules:
+- **Virtual paths** are always POSIX-style (`/mnt/data/file.txt`), never Windows-style
+- **Host paths** use `std::path::Path`/`PathBuf` which handles OS differences automatically
+- Avoid `#[cfg(unix)]`-only code in the main crate — all features must work on all platforms
+- Tests in `crates/monty/tests/` should be cross-platform; use helper functions for
+  OS-specific APIs like symlink creation (see `symlink_file`/`symlink_dir` in `fs_security.rs`)
+- CI runs `cargo test -p monty --features ref-count-panic` on Linux, macOS, and Windows
 
 ## Important Security Notice
 
@@ -37,9 +52,87 @@ Possible security risks to consider:
 * information leakage via timing or error messages
 * Python/Javascript/Rust APIs that accidentally allow developers to expose their host to monty code
 
+## Filesystem Mounts (`crates/monty/src/fs/`)
+
+The `MountTable` allows mounting real host directories into the sandbox at virtual paths,
+with configurable access modes (ReadWrite, ReadOnly, OverlayMemory).
+
+**CRITICAL SECURITY INVARIANT:** The monty runtime MUST NEVER read, write, or
+obtain any information about any file or directory outside the specific directory
+that is mounted. This is enforced by:
+
+- Path canonicalization after mapping virtual → host paths
+- Boundary checks verifying canonical paths remain within the mount
+- Symlink resolution that rejects links pointing outside the mount
+- Virtual-space normalization that prevents `..` escape
+- `Resolve` and `Absolute` returning virtual paths, never host paths
+- Null byte rejection in all paths
+
+All path resolution goes through `fs::path_security::resolve_path()` which is
+the sole security boundary. **Changes to `path_security.rs` require careful security review.**
+
+`heap.rs` and `path_security.rs` are the two most security-critical files in the codebase.
+
 ## Bytecode VM Architecture
 
 Monty is implemented as a bytecode VM, same as CPython.
+
+### HeapReader API — Safe Heap Access
+
+All heap-allocated Python objects (lists, dicts, strings, etc.) are stored in a paged arena (`Heap`). The `HeapReader` API provides **compile-time safe** access to heap data. This is the primary mechanism for reading and mutating heap objects throughout the codebase.
+
+**`heap.rs` is a critical safety boundary.** It contains `unsafe` code that underpins the soundness of the entire `HeapReader`/`HeapRead` system (pointer arithmetic, `UnsafeCell` access, reader-count invariants). Do NOT modify `heap.rs` without explicit user approval. Changes to this file require careful review of the safety invariants documented in the code comments.
+
+#### Core concepts
+
+- **`HeapReader<'a, T>`** — A scoped borrow of the heap that produces `HeapRead` handles. Created exclusively via `HeapReader::with(heap, |heap| { ... })`. The `for<'a>` closure bound makes the lifetime `'a` universally quantified, so `HeapRead` pointers cannot escape the closure.
+- **`HeapRead<'a, T>`** — A typed handle to a specific heap entry. Created by `heap.read(id)` which returns a `HeapReadOutput<'a>` enum that you match on. Tracks a reader count that prevents the entry from being freed while the handle exists.
+- **`HeapReadOutput<'a>`** — Enum over all `HeapRead<'a, T>` variants (one per `HeapData` variant). Pattern match to get the typed handle.
+
+#### Reading and mutating heap data
+
+```rust
+// Scoped heap access
+HeapReader::with(heap, |heap| {
+    let output = heap.read(some_id);  // returns HeapReadOutput<'a>
+    match output {
+        HeapReadOutput::List(list) => {
+            let items = list.get(heap);           // &List, borrows heap immutably
+            let items_mut = list.get_mut(heap);   // &mut List, borrows heap mutably
+        }
+        _ => { /* ... */ }
+    }
+})
+```
+
+Key borrowing rules:
+- `get(&self, &HeapReader)` → `&T` — immutable access, prevents heap mutation while reference lives
+- `get_mut(&mut self, &mut HeapReader)` → `&mut T` — mutable access, exclusive
+- Multiple `HeapRead` handles can coexist, but only one can be accessed via `get_mut` at a time
+- `dec_ref()` panics if any reader is active — prevents use-after-free
+
+#### Implementing type methods with HeapRead
+
+Type methods are implemented as `impl<'h> HeapRead<'h, T>` blocks. The `PyTrait<'h>` trait provides the common interface:
+
+```rust
+// Methods on a heap type
+impl<'h> HeapRead<'h, List> {
+    pub fn append(&mut self, vm: &mut VM<'h, '_, impl ResourceTracker>, item: Value) -> RunResult<()> {
+        self.get_mut(vm.heap).items.push(item);
+        Ok(())
+    }
+}
+
+// PyTrait implementation
+impl<'h> PyTrait<'h> for HeapRead<'h, List> {
+    fn py_type(&self, vm: &VM<'h, '_, impl ResourceTracker>) -> Type { Type::List }
+    fn py_len(&self, vm: &VM<'h, '_, impl ResourceTracker>) -> Option<usize> {
+        Some(self.get(vm.heap).items.len())
+    }
+    // ...
+}
+```
 
 ### Reference Count Safety
 
@@ -65,7 +158,7 @@ defer_drop_mut!(iter, vm);
 while let Some(item) = iter.for_next(vm)? { ... }
 ```
 
-**Limitation:** because the macro rebinds the heap, it cannot be used inside `&mut self` methods where `self` owns the heap — first assign `let this = self;` and pass `this` instead.
+**Limitation:** because the macro rebinds the heap, it cannot be used inside `&mut self` methods on the VM where `self` owns the heap — first assign `let this = self;` and pass `this` instead.
 
 #### 2. `HeapGuard` (when you need control over the value's fate)
 
@@ -91,7 +184,7 @@ For very simple cases with a single linear code path and no branching between ac
 
 ```rust
 let iter = self.pop();
-iter.drop_with_heap(&mut self.heap); // single path, no branching
+iter.drop_with_heap(self); // single path, no branching
 ```
 
 Avoid manual `drop_with_heap` whenever there are multiple code paths (branching, `?`, `continue`, early returns) between acquiring and releasing the value — that is exactly where `defer_drop!` or `HeapGuard` prevent leaks by guaranteeing cleanup on every path.
@@ -229,14 +322,12 @@ See more test commands above.
 
 Read `Makefile` for other useful commands.
 
-DO NOT run `cargo run --`, it will fail because of issues with Python bindings.
-
 You can use the `./playground` directory (excluded from git, create with `mkdir -p playground`) to write files
 when you want to experiment by running a file with cpython or monty, e.g.:
 * `python3 playground/test.py` to run the file with cpython
 * `cargo run -- playground/test.py` to run the file with monty
 
-DO NOT use `/tmp` or pipe code to the interpreter as it requires extra permissions and can slow you down!
+DO NOT use `/tmp` or pipe code to the interpreter, or use `python3 -c ...` as it requires extra permissions and can slow you down!
 
 More details in the "python-playground" skill.
 
@@ -296,7 +387,7 @@ Do NOT use `# Return=` when you could use `assert` instead
 
 ### Traceback Tests (Preferred for Errors)
 
-For tests that expect exceptions, **prefer traceback tests over `# Raise=`** because they verify:
+For tests that expect exceptions, **prefer traceback tests over `# Raise=` or `try` / `except`** because they verify:
 - The full traceback with all stack frames
 - Correct line numbers for each frame
 - Function names in the traceback
@@ -326,7 +417,23 @@ Key points:
 - The `<module>` frame name is used for top-level code
 - Tests run against both Monty and CPython, so the traceback must match both
 
-Only use `# Raise=` when you only care about the exception type/message and not the traceback.
+If you don't care about the traceback or it intentionally differs from cpython (e.g. for `json`) and you want to test
+multiple cases in the same file, use this style
+
+```py
+try:
+    ...
+    assert False, 'expected <task> to fail'
+except <ErrorType> as exc:
+    assert str(exc) = '<expected exception message>'
+```
+
+IMPORTANT: don't just check that an exception is raised, you should always check the exception message.
+
+IMPORTANT: DON'T BE LAZY. If the exception differs between cpython and Monty, either fix the exception message, or
+stop and report the problem!
+
+Only use `# Raise=` when you only care about the exception type/message and not the traceback and you can't use a try/except block.
 
 ### Python fixture markers
 
@@ -421,26 +528,6 @@ Container types (`List`, `Tuple`, `Dict`) also have `clone_with_heap()` methods.
 
 **Resource limits**: When resource limits (allocations, memory, time) are exceeded, execution terminates with a `ResourceError`. No guarantees are made about the state of the heap or reference counts after a resource limit is exceeded. The heap may contain orphaned objects with incorrect refcounts. This is acceptable because resource exhaustion is a terminal error - the execution context should be discarded.
 
-## NOTES
-
-ALWAYS consider code quality when adding new code, if functions are getting too complex or code is duplicated, move relevant logic to a new file.
-Make sure functions are added in the most logical place, e.g. as methods on a struct where appropriate.
-
-The code should follow the "newspaper" style where public and primary functions are at the top of the file, followed by private functions and utilities.
-ALWAYS put utility, private functions and "sub functions" underneath the function they're used in.
-
-It is important to the long term health of the project and maintainability of the codebase that code is well structured and organized, this is very important.
-
-ALWAYS run `make format-rs` and `make lint-rs` after making changes to rust code and fix all suggestions to maintain code quality.
-
-ALWAYS run `make lint-py` after making changes to python code and fix all suggestions to maintain code quality.
-
-ALWAYS update this file when it is out of date.
-
-NEVER add imports anywhere except at the top of the file, this applies to both python and rust.
-
-NEVER write `unsafe` code, if you think you need to write unsafe code, explicitly ask the user or leave a `todo!()` with a suggestion and explanation.
-
 ## JavaScript Package (`monty-js`)
 
 The JavaScript package provides Node.js bindings for the Monty interpreter via napi-rs, located in `crates/monty-js/`.
@@ -514,3 +601,25 @@ npm test
 - Tests use [ava](https://github.com/avajs/ava) and live in `crates/monty-js/__test__/`
 - Tests are written in TypeScript
 - Follow the existing test style in the `__test__/` directory
+
+## NOTES
+
+ALWAYS consider code quality when adding new code, if functions are getting too complex or code is duplicated, move relevant logic to a new file.
+Make sure functions are added in the most logical place, e.g. as methods on a struct where appropriate.
+
+The code should follow the "newspaper" style where public and primary functions are at the top of the file, followed by private functions and utilities.
+ALWAYS put utility, private functions and "sub functions" underneath the function they're used in.
+
+It is important to the long term health of the project and maintainability of the codebase that code is well structured and organized, this is very important.
+
+ALWAYS run `make format-rs` and `make lint-rs` after making changes to rust code and fix all suggestions to maintain code quality.
+
+ALWAYS run `make lint-py` after making changes to python code and fix all suggestions to maintain code quality.
+
+ALWAYS update this file when it is out of date.
+
+NEVER add imports anywhere except at the top of the file, this applies to both python and rust.
+
+NEVER write `unsafe` code, if you think you need to write unsafe code, explicitly ask the user or leave a `todo!()` with a suggestion and explanation.
+
+When you get asked a question like "Is X really the best approach" ANSWER THE QUESTION! don't try to make a chance based on a perceived instruction in the question!

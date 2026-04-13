@@ -296,3 +296,55 @@ factorial(5)
 
   t.is(result, 120)
 })
+
+// =============================================================================
+// printCallback tests
+// =============================================================================
+
+test('runMontyAsync with printCallback', async (t) => {
+  const m = new Monty('print("hello from async")')
+  const output: string[] = []
+
+  const result = await runMontyAsync(m, {
+    printCallback: (stream, text) => {
+      t.is(stream, 'stdout')
+      output.push(text)
+    },
+  })
+
+  t.is(result, null)
+  t.deepEqual(output, ['hello from async', '\n'])
+})
+
+test('runMontyAsync printCallback with external functions', async (t) => {
+  const m = new Monty('x = get_value()\nprint(f"got {x}")\nx', {
+    externalFunctions: ['get_value'],
+  })
+  const output: string[] = []
+
+  const result = await runMontyAsync(m, {
+    externalFunctions: {
+      get_value: () => 42,
+    },
+    printCallback: (stream, text) => {
+      t.is(stream, 'stdout')
+      output.push(text)
+    },
+  })
+
+  t.is(result, 42)
+  t.deepEqual(output, ['got 42', '\n'])
+})
+
+test('runMontyAsync printCallback with multiple prints', async (t) => {
+  const m = new Monty('print("a")\nprint("b")\nprint("c")')
+  const output: string[] = []
+
+  await runMontyAsync(m, {
+    printCallback: (_stream, text) => {
+      output.push(text)
+    },
+  })
+
+  t.deepEqual(output, ['a', '\n', 'b', '\n', 'c', '\n'])
+})

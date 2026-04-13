@@ -3,19 +3,19 @@
 //! Provides a slice object representing start:stop:step indices for sequence slicing.
 //! Each field is optional (None in Python), where None means "use the default for that field".
 
-use std::fmt::Write;
+use std::{fmt, fmt::Write, mem};
 
 use ahash::AHashSet;
 
 use crate::{
     args::ArgValues,
-    bytecode::VM,
+    bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{ExcType, RunResult},
-    heap::{Heap, HeapData, HeapId},
-    intern::{Interns, StaticStrings},
+    heap::{HeapData, HeapId, HeapItem, HeapRead},
+    intern::StaticStrings,
     resource::{ResourceError, ResourceTracker},
-    types::{AttrCallResult, PyTrait, Type},
+    types::{PyTrait, Type},
     value::{EitherStr, Value},
 };
 
@@ -178,76 +178,70 @@ fn normalize_index(index: i64, length: i64, lower: i64, upper: i64) -> i64 {
     normalized.clamp(lower, upper)
 }
 
-impl PyTrait for Slice {
-    fn py_type(&self, _heap: &Heap<impl ResourceTracker>) -> Type {
+impl<'h> PyTrait<'h> for HeapRead<'h, Slice> {
+    fn py_type(&self, _vm: &VM<'h, '_, impl ResourceTracker>) -> Type {
         Type::Slice
     }
 
-    fn py_estimate_size(&self) -> usize {
-        std::mem::size_of::<Self>()
-    }
-
-    fn py_len(&self, _heap: &Heap<impl ResourceTracker>, _interns: &Interns) -> Option<usize> {
+    fn py_len(&self, _vm: &VM<'h, '_, impl ResourceTracker>) -> Option<usize> {
         // Slices don't have a length in Python
         None
     }
 
-    fn py_eq(
-        &self,
-        other: &Self,
-        _heap: &mut Heap<impl ResourceTracker>,
-        _interns: &Interns,
-    ) -> Result<bool, ResourceError> {
-        Ok(self.start == other.start && self.stop == other.stop && self.step == other.step)
+    fn py_eq(&self, other: &Self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> Result<bool, ResourceError> {
+        let a = self.get(vm.heap);
+        let b = other.get(vm.heap);
+        Ok(a.start == b.start && a.stop == b.stop && a.step == b.step)
     }
 
-    fn py_bool(&self, _heap: &Heap<impl ResourceTracker>, _interns: &Interns) -> bool {
-        // Slices are always truthy in Python
+    fn py_bool(&self, _vm: &mut VM<'h, '_, impl ResourceTracker>) -> bool {
+        // Slice always truthy
         true
     }
 
     fn py_repr_fmt(
         &self,
         f: &mut impl Write,
-        _heap: &Heap<impl ResourceTracker>,
+        vm: &VM<'h, '_, impl ResourceTracker>,
         _heap_ids: &mut AHashSet<HeapId>,
-        _interns: &Interns,
-    ) -> std::fmt::Result {
+    ) -> RunResult<()> {
         f.write_str("slice(")?;
-        format_option_i64(f, self.start)?;
+        format_option_i64(f, self.get(vm.heap).start)?;
         f.write_str(", ")?;
-        format_option_i64(f, self.stop)?;
+        format_option_i64(f, self.get(vm.heap).stop)?;
         f.write_str(", ")?;
-        format_option_i64(f, self.step)?;
-        f.write_char(')')
+        format_option_i64(f, self.get(vm.heap).step)?;
+        Ok(f.write_char(')')?)
     }
 
-    fn py_dec_ref_ids(&mut self, _stack: &mut Vec<HeapId>) {
-        // Slice doesn't contain heap references, nothing to do
-    }
-
-    fn py_getattr(
-        &self,
-        attr: &EitherStr,
-        _heap: &mut Heap<impl ResourceTracker>,
-        interns: &Interns,
-    ) -> RunResult<Option<AttrCallResult>> {
+    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<Option<CallResult>> {
+        let this = self.get(vm.heap);
         // Fast path: interned strings can be matched by ID without string comparison
         if let Some(ss) = attr.static_string() {
             return match ss {
-                StaticStrings::Start => Ok(Some(AttrCallResult::Value(option_i64_to_value(self.start)))),
-                StaticStrings::Stop => Ok(Some(AttrCallResult::Value(option_i64_to_value(self.stop)))),
-                StaticStrings::Step => Ok(Some(AttrCallResult::Value(option_i64_to_value(self.step)))),
+                StaticStrings::Start => Ok(Some(CallResult::Value(option_i64_to_value(this.start)))),
+                StaticStrings::Stop => Ok(Some(CallResult::Value(option_i64_to_value(this.stop)))),
+                StaticStrings::Step => Ok(Some(CallResult::Value(option_i64_to_value(this.step)))),
                 _ => Ok(None),
             };
         }
         // Slow path: heap-allocated strings need string comparison
-        match attr.as_str(interns) {
-            "start" => Ok(Some(AttrCallResult::Value(option_i64_to_value(self.start)))),
-            "stop" => Ok(Some(AttrCallResult::Value(option_i64_to_value(self.stop)))),
-            "step" => Ok(Some(AttrCallResult::Value(option_i64_to_value(self.step)))),
+        match attr.as_str(vm.interns) {
+            "start" => Ok(Some(CallResult::Value(option_i64_to_value(this.start)))),
+            "stop" => Ok(Some(CallResult::Value(option_i64_to_value(this.stop)))),
+            "step" => Ok(Some(CallResult::Value(option_i64_to_value(this.step)))),
             _ => Ok(None),
         }
+    }
+}
+
+impl HeapItem for Slice {
+    fn py_estimate_size(&self) -> usize {
+        mem::size_of::<Self>()
+    }
+
+    fn py_dec_ref_ids(&mut self, _stack: &mut Vec<HeapId>) {
+        // Slice doesn't contain heap references, nothing to do
     }
 }
 
@@ -260,7 +254,7 @@ pub(crate) fn option_i64_to_value(opt: Option<i64>) -> Value {
 }
 
 /// Formats an Option<i64> for repr output (None or the integer).
-fn format_option_i64(f: &mut impl Write, value: Option<i64>) -> std::fmt::Result {
+fn format_option_i64(f: &mut impl Write, value: Option<i64>) -> fmt::Result {
     match value {
         Some(i) => write!(f, "{i}"),
         None => f.write_str("None"),

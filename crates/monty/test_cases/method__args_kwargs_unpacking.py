@@ -219,3 +219,41 @@ d = {}
 extra = {'b': 'from_dict'}
 d.update(a='original', **extra)
 assert d == {'a': 'original', 'b': 'from_dict'}, f'update with different kwargs: {d}'
+
+# ============================================================
+# PEP 448 generalized method calls (multiple * or **)
+# ============================================================
+
+# === Multiple **kwargs in method call ===
+d = {}
+d.update(**{'a': 1}, **{'b': 2})
+assert d == {'a': 1, 'b': 2}, f'update with multiple **kwargs: {d}'
+
+d = {'x': 0}
+d.update(**{'a': 1}, **{'b': 2}, **{'c': 3})
+assert d == {'x': 0, 'a': 1, 'b': 2, 'c': 3}, f'update with three **kwargs: {d}'
+
+# Mixed named kwargs and multiple **kwargs
+d = {}
+d.update(a=1, **{'b': 2}, **{'c': 3})
+assert d == {'a': 1, 'b': 2, 'c': 3}, f'update named + multiple **kwargs: {d}'
+
+# === Positional args mixed with *unpack in method GeneralizedCall ===
+# insert(*[0], 1): positional 1 comes AFTER the *unpack → GeneralizedCall.
+# This exercises CallArg::Unpack (the *[0]) and CallArg::Value (the 1)
+# in the compile_method_call GeneralizedCall branch.
+my_list = [2, 3]
+my_list.insert(*[0], 1)
+assert my_list == [1, 2, 3], 'insert: star index then positional value'
+
+my_list2 = ['a', 'b', 'c', 'd']
+my_list2.insert(*[1], 'x')
+assert my_list2 == ['a', 'x', 'b', 'c', 'd'], 'insert: star index then positional string'
+
+# === *args + multiple **kwargs in method GeneralizedCall ===
+# d.update(*[...], **{...}, **{...}): two **unpacks → GeneralizedCall (not ArgsKargs).
+# The *unpack in args covers CallArg::Unpack; the two **unpacks mean has_kwargs=True,
+# covering the kwargs dict-builder block in the compile_method_call GeneralizedCall branch.
+d = {}
+d.update(*[{}], **{'a': 1}, **{'b': 2})
+assert d == {'a': 1, 'b': 2}, 'update: star args + two star-star kwargs'

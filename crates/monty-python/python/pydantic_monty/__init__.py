@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Callable, Literal, TypedDict, TypeVar, cast
+from typing import TYPE_CHECKING, Any, Callable, Literal, TypedDict
+
+from typing_extensions import deprecated
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable
     from types import EllipsisType
 
 from ._monty import (
@@ -17,14 +18,18 @@ from ._monty import (
     MontyRuntimeError,
     MontySyntaxError,
     MontyTypingError,
+    MountDir,
     NameLookupSnapshot,
     __version__,
+    load_repl_snapshot,
+    load_snapshot,
 )
 from .os_access import AbstractFile, AbstractOS, CallbackFile, MemoryFile, OSAccess, OsFunction, StatResult
 
 __all__ = (
     # this file
     'run_monty_async',
+    'run_repl_async',
     'ExternalResult',
     'ResourceLimits',
     # _monty
@@ -40,6 +45,9 @@ __all__ = (
     'MontyRuntimeError',
     'MontyTypingError',
     'Frame',
+    'MountDir',
+    'load_snapshot',
+    'load_repl_snapshot',
     # os_access
     'StatResult',
     'OsFunction',
@@ -49,9 +57,9 @@ __all__ = (
     'CallbackFile',
     'OSAccess',
 )
-T = TypeVar('T')
 
 
+@deprecated('Use Monty.run_async() instead')
 async def run_monty_async(
     monty_runner: Monty,
     *,
@@ -61,127 +69,32 @@ async def run_monty_async(
     print_callback: Callable[[Literal['stdout'], str], None] | None = None,
     os: AbstractOS | None = None,
 ) -> Any:
-    """Run a Monty script with async external functions and optional OS access.
-
-    This function provides a convenient way to run Monty code that uses both async
-    external functions and filesystem operations via OSAccess.
-
-    Args:
-        monty_runner: The Monty runner to use.
-        external_functions: A dictionary of external functions to use, can be sync or async.
-        inputs: A dictionary of inputs to use.
-        limits: The resource limits to use.
-        print_callback: A callback to use for printing.
-        os: Optional OS access handler for filesystem operations (e.g., OSAccess instance).
-
-    Returns:
-        The output of the Monty script.
-    """
-    import asyncio
-    import inspect
-    from concurrent.futures import ThreadPoolExecutor
-    from functools import partial
-
-    loop = asyncio.get_running_loop()
-    external_functions = external_functions or {}
-    tasks: dict[int, asyncio.Task[tuple[int, ExternalResult]]] = {}
-
-    with ThreadPoolExecutor() as pool:
-
-        async def run_in_pool(func: Callable[[], T]) -> T:
-            return await loop.run_in_executor(pool, func)
-
-        progress = await run_in_pool(
-            partial(monty_runner.start, inputs=inputs, limits=limits, print_callback=print_callback)
-        )
-
-        try:
-            while True:
-                if isinstance(progress, MontyComplete):
-                    return progress.output
-                elif isinstance(progress, FunctionSnapshot):
-                    # Handle OS function calls (e.g., Path.read_text, Path.exists)
-                    if progress.is_os_function:
-                        # When is_os_function is True, function_name is always an OsFunction
-                        os_func_name = cast(OsFunction, progress.function_name)
-                        if os is None:
-                            e = NotImplementedError(
-                                f'OS function {progress.function_name} called but no os handler provided'
-                            )
-                            progress = await run_in_pool(partial(progress.resume, exception=e))
-                        else:
-                            try:
-                                result = os(os_func_name, progress.args, progress.kwargs)
-                            except Exception as exc:
-                                progress = await run_in_pool(partial(progress.resume, exception=exc))
-                            else:
-                                progress = await run_in_pool(partial(progress.resume, return_value=result))
-                    # Handle dataclass method calls (first arg is the instance)
-                    elif progress.is_method_call:
-                        self_obj = progress.args[0]
-                        method = getattr(self_obj, progress.function_name)
-                        remaining_args = progress.args[1:]
-                        try:
-                            result = method(*remaining_args, **progress.kwargs)
-                        except Exception as exc:
-                            progress = await run_in_pool(partial(progress.resume, exception=exc))
-                        else:
-                            if inspect.iscoroutine(result):
-                                call_id = progress.call_id
-                                tasks[call_id] = asyncio.create_task(_run_external_function(call_id, result))
-                                progress = await run_in_pool(partial(progress.resume, future=...))
-                            else:
-                                progress = await run_in_pool(partial(progress.resume, return_value=result))
-                    # Handle external function calls
-                    elif ext_function := external_functions.get(progress.function_name):
-                        try:
-                            result = ext_function(*progress.args, **progress.kwargs)
-                        except Exception as exc:
-                            progress = await run_in_pool(partial(progress.resume, exception=exc))
-                        else:
-                            if inspect.iscoroutine(result):
-                                call_id = progress.call_id
-                                tasks[call_id] = asyncio.create_task(_run_external_function(call_id, result))
-                                progress = await run_in_pool(partial(progress.resume, future=...))
-                            else:
-                                progress = await run_in_pool(partial(progress.resume, return_value=result))
-                    else:
-                        e = LookupError(f"Unable to find '{progress.function_name}' in external functions dict")
-                        progress = await run_in_pool(partial(progress.resume, exception=e))
-                else:
-                    assert isinstance(progress, FutureSnapshot), f'Unexpected progress type {progress!r}'
-
-                    current_tasks: list[asyncio.Task[tuple[int, ExternalResult]]] = []
-                    for call_id in progress.pending_call_ids:
-                        if task := tasks.get(call_id):
-                            current_tasks.append(task)
-
-                    done, _ = await asyncio.wait(current_tasks, return_when=asyncio.FIRST_COMPLETED)
-
-                    results: dict[int, ExternalResult] = {}
-                    for task in done:
-                        call_id, result = task.result()
-                        results[call_id] = result
-                        tasks.pop(call_id)
-
-                    progress = await run_in_pool(partial(progress.resume, results))
-
-        finally:
-            for task in tasks.values():
-                task.cancel()
-            try:
-                await asyncio.gather(*tasks.values())
-            except asyncio.CancelledError:
-                pass
+    return await monty_runner.run_async(
+        inputs=inputs,
+        external_functions=external_functions,
+        limits=limits,
+        print_callback=print_callback,
+        os=os,
+    )
 
 
-async def _run_external_function(call_id: int, coro: Awaitable[Any]) -> tuple[int, ExternalResult]:
-    try:
-        result = await coro
-    except Exception as e:
-        return call_id, ExternalException(exception=e)
-    else:
-        return call_id, ExternalReturnValue(return_value=result)
+@deprecated('Use MontyRepl.feed_run_async() instead')
+async def run_repl_async(
+    repl: MontyRepl,
+    code: str,
+    *,
+    inputs: dict[str, Any] | None = None,
+    external_functions: dict[str, Callable[..., Any]] | None = None,
+    print_callback: Callable[[Literal['stdout'], str], None] | None = None,
+    os: AbstractOS | None = None,
+) -> Any:
+    return await repl.feed_run_async(
+        code,
+        inputs=inputs,
+        external_functions=external_functions,
+        print_callback=print_callback,
+        os=os,
+    )
 
 
 class ResourceLimits(TypedDict, total=False):

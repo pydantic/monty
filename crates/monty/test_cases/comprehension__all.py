@@ -191,3 +191,18 @@ assert list(a + b for a, b in pairs) == [3, 7], 'generator with unpacking'
 assert ''.join(str(x) for x in range(5)) == '01234', 'list of strings join'
 a = '1', '2', '3'
 assert ''.join(a) == '123', 'tuple of strings join'
+
+# === Regression: Iterator panic with try/except inside loop ===
+# Issue: https://github.com/pydantic/monty/issues/177
+# Verifies that exception handling in a comprehension inside a loop doesn't
+# corrupt the outer loop's iterator (causing "expected Iterator on heap" panic).
+# A prior loop is needed to potentially trigger incorrect stack depth tracking.
+for _ in range(1):
+    pass
+
+for s in ['hello']:
+    try:
+        # Inner comprehension raises exception
+        [int(c) for c in s]
+    except ValueError:
+        pass

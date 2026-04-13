@@ -8,14 +8,15 @@
 
 use std::mem;
 
+use serde::de::DeserializeOwned;
+
 use crate::{
     ExcType, MontyException,
     asyncio::CallId,
     bytecode::{FrameExit, VM, VMSnapshot},
     exception_private::{RunError, RunResult},
-    heap::Heap,
+    heap::{Heap, HeapReader},
     io::PrintWriter,
-    namespace::{GLOBAL_NS_IDX, NamespaceId, Namespaces},
     object::MontyObject,
     os::OsFunction,
     resource::ResourceTracker,
@@ -108,7 +109,7 @@ impl<T: ResourceTracker + serde::Serialize> RunProgress<T> {
     }
 }
 
-impl<T: ResourceTracker + serde::de::DeserializeOwned> RunProgress<T> {
+impl<T: ResourceTracker + DeserializeOwned> RunProgress<T> {
     /// Deserializes execution state from binary format.
     ///
     /// # Errors
@@ -188,7 +189,7 @@ impl<T: ResourceTracker> FunctionCall<T> {
     pub fn resume(
         self,
         result: impl Into<ExtFunctionResult>,
-        print: &mut PrintWriter<'_>,
+        print: PrintWriter<'_>,
     ) -> Result<RunProgress<T>, MontyException> {
         self.snapshot.run(result, print)
     }
@@ -204,7 +205,7 @@ impl<T: ResourceTracker> FunctionCall<T> {
     ///
     /// # Arguments
     /// * `print` — Writer for print output.
-    pub fn resume_pending(self, print: &mut PrintWriter<'_>) -> Result<RunProgress<T>, MontyException> {
+    pub fn resume_pending(self, print: PrintWriter<'_>) -> Result<RunProgress<T>, MontyException> {
         self.snapshot.run(ExtFunctionResult::Future(self.call_id), print)
     }
 }
@@ -260,9 +261,9 @@ impl<T: ResourceTracker> OsCall<T> {
     pub fn resume(
         self,
         result: impl Into<ExtFunctionResult>,
-        print: &mut PrintWriter<'_>,
+        print: PrintWriter<'_>,
     ) -> Result<RunProgress<T>, MontyException> {
-        self.snapshot.run(result, print)
+        self.snapshot.run(result.into(), print)
     }
 }
 
@@ -305,8 +306,8 @@ impl<T: ResourceTracker> NameLookup<T> {
 
     /// Resumes execution after name resolution.
     ///
-    /// Caches the resolved value in the namespace slot before restoring the VM,
-    /// then either pushes the value onto the stack or raises `NameError`.
+    /// Caches the resolved value in the appropriate slot (globals or stack)
+    /// before restoring the VM, then either pushes the value or raises `NameError`.
     ///
     /// # Arguments
     /// * `result` — The resolved value or `Undefined`.
@@ -314,59 +315,56 @@ impl<T: ResourceTracker> NameLookup<T> {
     pub fn resume(
         mut self,
         result: impl Into<NameLookupResult>,
-        print: &mut PrintWriter<'_>,
+        mut print: PrintWriter<'_>,
     ) -> Result<RunProgress<T>, MontyException> {
-        // Resolve the name lookup result BEFORE restoring the VM, since the VM
-        // borrows heap/namespaces mutably and we need direct access for caching.
-        let resolved_value = match result.into() {
-            NameLookupResult::Value(obj) => {
-                let value = obj
-                    .to_value(&mut self.snapshot.heap, &self.snapshot.executor.interns)
-                    .map_err(|e| MontyException::runtime_error(format!("invalid name lookup result: {e}")))?;
+        let result = result.into();
 
-                // Cache the resolved value in the appropriate namespace slot.
-                let ns_slot = NamespaceId::new(self.namespace_slot as usize);
-                let ns_idx = if self.is_global {
-                    GLOBAL_NS_IDX
-                } else {
-                    self.snapshot.vm_state.current_namespace_idx()
-                };
-                let namespace = self.snapshot.namespaces.get_mut(ns_idx);
-                let old = mem::replace(namespace.get_mut(ns_slot), value.clone_with_heap(&self.snapshot.heap));
-                old.drop_with_heap(&mut self.snapshot.heap);
+        let (converted, vm_state) = HeapReader::with(&mut self.snapshot.heap, |heap| {
+            // Restore the VM first, then convert inside its lifetime
+            let mut vm = VM::restore(
+                self.snapshot.vm_state,
+                &self.snapshot.executor.module_code,
+                heap,
+                &self.snapshot.executor.interns,
+                print.reborrow(),
+            );
 
-                Some(value)
-            }
-            NameLookupResult::Undefined => None,
-        };
+            // Resolve the name lookup result with the VM alive
+            let vm_result = match result {
+                NameLookupResult::Value(obj) => {
+                    let value = obj.to_value(&mut vm).map_err(|e| {
+                        vm.cleanup();
+                        MontyException::runtime_error(format!("invalid name lookup result: {e}"))
+                    })?;
 
-        // Now restore the VM (borrows heap and namespaces)
-        let mut vm = VM::restore(
-            self.snapshot.vm_state,
-            &self.snapshot.executor.module_code,
-            &mut self.snapshot.heap,
-            &mut self.snapshot.namespaces,
-            &self.snapshot.executor.interns,
-            print,
-        );
+                    // Cache the resolved value in the appropriate slot
+                    let slot = self.namespace_slot as usize;
+                    if self.is_global {
+                        let cloned = value.clone_with_heap(&vm);
+                        let old = mem::replace(&mut vm.globals[slot], cloned);
+                        old.drop_with_heap(&mut vm);
+                    } else {
+                        let stack_base = vm.current_stack_base();
+                        let cloned = value.clone_with_heap(&vm);
+                        let old = mem::replace(&mut vm.stack[stack_base + slot], cloned);
+                        old.drop_with_heap(&mut vm);
+                    }
 
-        // Resume execution: either push the resolved value or raise NameError
-        // through the VM so that traceback information is properly captured.
-        let vm_result = if let Some(value) = resolved_value {
-            vm.push(value);
-            vm.run()
-        } else {
-            let err = ExcType::name_error(&self.name);
-            vm.resume_with_exception(err.into())
-        };
-        let vm_state = vm.check_snapshot(&vm_result);
-        handle_vm_result(
-            vm_result,
-            vm_state,
-            self.snapshot.executor,
-            self.snapshot.heap,
-            self.snapshot.namespaces,
-        )
+                    vm.push(value);
+                    vm.run()
+                }
+                NameLookupResult::Undefined => {
+                    let err = ExcType::name_error(&self.name);
+                    vm.resume_with_exception(err.into())
+                }
+            };
+
+            // Three-phase: convert while VM alive, snapshot, build progress
+            let converted = convert_frame_exit(vm_result, &mut vm);
+            let vm_state = check_snapshot_from_converted(&converted, vm);
+            Ok((converted, vm_state))
+        })?;
+        build_run_progress(converted, vm_state, self.snapshot.executor, self.snapshot.heap)
     }
 }
 
@@ -386,30 +384,21 @@ impl<T: ResourceTracker> NameLookup<T> {
 pub struct ResolveFutures<T: ResourceTracker> {
     /// The executor containing compiled code and interns.
     executor: Executor,
-    /// The VM state containing stack, frames, and exception state.
+    /// The VM state containing stack, frames, globals, and exception state.
     vm_state: VMSnapshot,
     /// The heap containing all allocated objects.
     heap: Heap<T>,
-    /// The namespaces containing all variable bindings.
-    namespaces: Namespaces,
     /// The pending call_ids that this snapshot is waiting on.
     pending_call_ids: Vec<u32>,
 }
 
 impl<T: ResourceTracker> ResolveFutures<T> {
     /// Creates a new `ResolveFutures` from its parts.
-    fn new(
-        executor: Executor,
-        vm_state: VMSnapshot,
-        heap: Heap<T>,
-        namespaces: Namespaces,
-        pending_call_ids: Vec<u32>,
-    ) -> Self {
+    fn new(executor: Executor, vm_state: VMSnapshot, heap: Heap<T>, pending_call_ids: Vec<u32>) -> Self {
         Self {
             executor,
             vm_state,
             heap,
-            namespaces,
             pending_call_ids,
         }
     }
@@ -438,13 +427,12 @@ impl<T: ResourceTracker> ResolveFutures<T> {
     pub fn resume(
         self,
         results: Vec<(u32, ExtFunctionResult)>,
-        print: &mut PrintWriter<'_>,
+        mut print: PrintWriter<'_>,
     ) -> Result<RunProgress<T>, MontyException> {
         let Self {
             executor,
             vm_state,
             mut heap,
-            mut namespaces,
             pending_call_ids,
         } = self;
 
@@ -454,79 +442,72 @@ impl<T: ResourceTracker> ResolveFutures<T> {
             .find(|(call_id, _)| !pending_call_ids.contains(call_id))
             .map(|(call_id, _)| *call_id);
 
-        // Restore the VM from the snapshot (must happen before any error return to clean up properly).
-        let mut vm = VM::restore(
-            vm_state,
-            &executor.module_code,
-            &mut heap,
-            &mut namespaces,
-            &executor.interns,
-            print,
-        );
+        let (converted, vm_state) = HeapReader::with(&mut heap, |heap| {
+            // Restore the VM from the snapshot (must happen before any error return to clean up properly).
+            let mut vm = VM::restore(
+                vm_state,
+                &executor.module_code,
+                heap,
+                &executor.interns,
+                print.reborrow(),
+            );
 
-        // Now check for invalid call_ids after VM is restored.
-        if let Some(call_id) = invalid_call_id {
-            vm.cleanup();
-            #[cfg(feature = "ref-count-panic")]
-            namespaces.drop_global_with_heap(&mut heap);
-            return Err(MontyException::runtime_error(format!(
-                "unknown call_id {call_id}, expected one of: {pending_call_ids:?}"
-            )));
-        }
+            // Now check for invalid call_ids after VM is restored.
+            if let Some(call_id) = invalid_call_id {
+                vm.cleanup();
+                return Err(MontyException::runtime_error(format!(
+                    "unknown call_id {call_id}, expected one of: {pending_call_ids:?}"
+                )));
+            }
 
-        for (call_id, ext_result) in results {
-            match ext_result {
-                ExtFunctionResult::Return(obj) => vm.resolve_future(call_id, obj).map_err(|e| {
-                    MontyException::runtime_error(format!("Invalid return type for call {call_id}: {e}"))
-                })?,
-                ExtFunctionResult::Error(exc) => vm.fail_future(call_id, exc.into()),
-                ExtFunctionResult::Future(_) => {}
-                ExtFunctionResult::NotFound(function_name) => {
-                    vm.fail_future(call_id, ExtFunctionResult::not_found_exc(&function_name));
+            for (call_id, ext_result) in results {
+                match ext_result {
+                    ExtFunctionResult::Return(obj) => vm.resolve_future(call_id, obj).map_err(|e| {
+                        MontyException::runtime_error(format!("Invalid return type for call {call_id}: {e}"))
+                    })?,
+                    ExtFunctionResult::Error(exc) => vm.fail_future(call_id, exc.into()),
+                    ExtFunctionResult::Future(_) => {}
+                    ExtFunctionResult::NotFound(function_name) => {
+                        vm.fail_future(call_id, ExtFunctionResult::not_found_exc(&function_name));
+                    }
                 }
             }
-        }
 
-        // Check if the current task has failed.
-        if let Some(error) = vm.take_failed_task_error() {
-            vm.cleanup();
-            #[cfg(feature = "ref-count-panic")]
-            namespaces.drop_global_with_heap(&mut heap);
-            return Err(error.into_python_exception(&executor.interns, &executor.code));
-        }
-
-        // Push resolved value for main task if it was blocked.
-        let main_task_ready = vm.prepare_current_task_after_resolve();
-
-        let loaded_task = match vm.load_ready_task_if_needed() {
-            Ok(loaded) => loaded,
-            Err(e) => {
+            // Check if the current task has failed.
+            if let Some(error) = vm.take_failed_task_error() {
                 vm.cleanup();
-                #[cfg(feature = "ref-count-panic")]
-                namespaces.drop_global_with_heap(&mut heap);
-                return Err(e.into_python_exception(&executor.interns, &executor.code));
+                return Err(error.into_python_exception(&executor.interns, &executor.code));
             }
-        };
 
-        // If no task is ready and there are still pending calls, return ResolveFutures.
-        if !main_task_ready && !loaded_task {
-            let pending_call_ids = vm.get_pending_call_ids();
-            if !pending_call_ids.is_empty() {
-                let vm_state = vm.snapshot();
-                let pending_call_ids: Vec<u32> = pending_call_ids.iter().map(|id| id.raw()).collect();
-                return Ok(RunProgress::ResolveFutures(Self {
-                    executor,
-                    vm_state,
-                    heap,
-                    namespaces,
-                    pending_call_ids,
-                }));
+            // Push resolved value for main task if it was blocked.
+            let main_task_ready = vm.prepare_current_task_after_resolve();
+
+            let loaded_task = match vm.load_ready_task_if_needed() {
+                Ok(loaded) => loaded,
+                Err(e) => {
+                    vm.cleanup();
+                    return Err(e.into_python_exception(&executor.interns, &executor.code));
+                }
+            };
+
+            // If no task is ready and there are still pending calls, return ResolveFutures.
+            if !main_task_ready && !loaded_task {
+                let pending_call_ids = vm.get_pending_call_ids();
+                if !pending_call_ids.is_empty() {
+                    let vm_state = vm.snapshot();
+                    let pending_call_ids: Vec<u32> = pending_call_ids.iter().map(|id| id.raw()).collect();
+                    return Ok((ConvertedExit::ResolveFutures(pending_call_ids), Some(vm_state)));
+                }
             }
-        }
 
-        let result = vm.run();
-        let vm_state = vm.check_snapshot(&result);
-        handle_vm_result(result, vm_state, executor, heap, namespaces)
+            let result = vm.run();
+
+            // Three-phase: convert while VM alive, snapshot, build progress
+            let converted = convert_frame_exit(result, &mut vm);
+            let vm_state = check_snapshot_from_converted(&converted, vm);
+            Ok((converted, vm_state))
+        })?;
+        build_run_progress(converted, vm_state, executor, heap)
     }
 }
 
@@ -544,12 +525,10 @@ impl<T: ResourceTracker> ResolveFutures<T> {
 pub(crate) struct Snapshot<T: ResourceTracker> {
     /// The executor containing compiled code and interns.
     pub(crate) executor: Executor,
-    /// The VM state containing stack, frames, and exception state.
+    /// The VM state containing stack, frames, globals, and exception state.
     pub(crate) vm_state: VMSnapshot,
     /// The heap containing all allocated objects.
     pub(crate) heap: Heap<T>,
-    /// The namespaces containing all variable bindings.
-    pub(crate) namespaces: Namespaces,
 }
 
 impl<T: ResourceTracker> Snapshot<T> {
@@ -557,35 +536,39 @@ impl<T: ResourceTracker> Snapshot<T> {
     pub(crate) fn run(
         mut self,
         result: impl Into<ExtFunctionResult>,
-        print: &mut PrintWriter<'_>,
+        mut print: PrintWriter<'_>,
     ) -> Result<RunProgress<T>, MontyException> {
         let ext_result = result.into();
 
-        let mut vm = VM::restore(
-            self.vm_state,
-            &self.executor.module_code,
-            &mut self.heap,
-            &mut self.namespaces,
-            &self.executor.interns,
-            print,
-        );
+        let (converted, vm_state) = HeapReader::with(&mut self.heap, |heap| {
+            let mut vm = VM::restore(
+                self.vm_state,
+                &self.executor.module_code,
+                heap,
+                &self.executor.interns,
+                print.reborrow(),
+            );
 
-        let vm_result = match ext_result {
-            ExtFunctionResult::Return(obj) => vm.resume(obj),
-            ExtFunctionResult::Error(exc) => vm.resume_with_exception(exc.into()),
-            ExtFunctionResult::Future(raw_call_id) => {
-                let call_id = CallId::new(raw_call_id);
-                vm.add_pending_call(call_id);
-                vm.push(Value::ExternalFuture(call_id));
-                vm.run()
-            }
-            ExtFunctionResult::NotFound(function_name) => {
-                vm.resume_with_exception(ExtFunctionResult::not_found_exc(&function_name))
-            }
-        };
+            let vm_result = match ext_result {
+                ExtFunctionResult::Return(obj) => vm.resume(obj),
+                ExtFunctionResult::Error(exc) => vm.resume_with_exception(exc.into()),
+                ExtFunctionResult::Future(raw_call_id) => {
+                    let call_id = CallId::new(raw_call_id);
+                    vm.add_pending_call(call_id);
+                    vm.push(Value::ExternalFuture(call_id));
+                    vm.run()
+                }
+                ExtFunctionResult::NotFound(function_name) => {
+                    vm.resume_with_exception(ExtFunctionResult::not_found_exc(&function_name))
+                }
+            };
 
-        let vm_state = vm.check_snapshot(&vm_result);
-        handle_vm_result(vm_result, vm_state, self.executor, self.heap, self.namespaces)
+            // Three-phase: convert while VM alive, snapshot, build progress
+            let converted = convert_frame_exit(vm_result, &mut vm);
+            let vm_state = check_snapshot_from_converted(&converted, vm);
+            (converted, vm_state)
+        });
+        build_run_progress(converted, vm_state, self.executor, self.heap)
     }
 }
 
@@ -645,24 +628,149 @@ impl From<MontyException> for ExtFunctionResult {
 }
 
 // ---------------------------------------------------------------------------
-// Executor (re-export from run.rs via pub(crate))
-// ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
 // handle_vm_result
 // ---------------------------------------------------------------------------
 
-/// Converts a VM `FrameExit` result into the appropriate `RunProgress` variant.
+/// Pre-converted frame exit data, produced while the VM is still alive.
 ///
-/// This is used by both `Snapshot::run()` and `ResolveFutures::resume()` to
-/// convert raw VM results into typed progress values.
-#[cfg_attr(not(feature = "ref-count-panic"), expect(unused_mut))]
-pub(crate) fn handle_vm_result<T: ResourceTracker>(
+/// This intermediate enum holds `MontyObject`s and `String`s instead of `Value`s
+/// and `StringId`s. It exists to separate the conversion phase (needs `&mut VM`)
+/// from the snapshot/progress construction phase (needs owned `Heap`).
+pub(crate) enum ConvertedExit {
+    /// Execution completed with a final result.
+    Complete(MontyObject),
+    /// External function call or dataclass method call.
+    FunctionCall {
+        function_name: String,
+        args: Vec<MontyObject>,
+        kwargs: Vec<(MontyObject, MontyObject)>,
+        call_id: u32,
+        method_call: bool,
+    },
+    /// OS-level operation.
+    OsCall {
+        function: OsFunction,
+        args: Vec<MontyObject>,
+        kwargs: Vec<(MontyObject, MontyObject)>,
+        call_id: u32,
+    },
+    /// All async tasks are blocked waiting for external futures.
+    ResolveFutures(Vec<u32>),
+    /// Unresolved name lookup.
+    NameLookup {
+        name: String,
+        namespace_slot: u16,
+        is_global: bool,
+    },
+    /// Runtime error.
+    Error(RunError),
+}
+
+impl ConvertedExit {
+    /// Returns true if this exit requires a VM snapshot for later resumption.
+    pub(crate) fn needs_snapshot(&self) -> bool {
+        !matches!(self, Self::Complete(_) | Self::Error(_))
+    }
+}
+
+/// Converts a `FrameExit` into a `ConvertedExit` while the VM is still alive.
+///
+/// All `Value` → `MontyObject` and `StringId` → `String` conversions happen here,
+/// while the VM (and its heap/interns) are still accessible.
+pub(crate) fn convert_frame_exit(
     result: RunResult<FrameExit>,
+    vm: &mut VM<'_, '_, impl ResourceTracker>,
+) -> ConvertedExit {
+    match result {
+        Ok(FrameExit::Return(value)) => ConvertedExit::Complete(MontyObject::new(value, vm)),
+        Ok(FrameExit::ExternalCall {
+            function_name,
+            args,
+            call_id,
+            ..
+        }) => {
+            let name = function_name.into_string(vm.interns);
+            let (args_py, kwargs_py) = args.into_py_objects(vm);
+            ConvertedExit::FunctionCall {
+                function_name: name,
+                args: args_py,
+                kwargs: kwargs_py,
+                call_id: call_id.raw(),
+                method_call: false,
+            }
+        }
+        Ok(FrameExit::OsCall {
+            function,
+            args,
+            call_id,
+        }) => {
+            let (args_py, kwargs_py) = args.into_py_objects(vm);
+            ConvertedExit::OsCall {
+                function,
+                args: args_py,
+                kwargs: kwargs_py,
+                call_id: call_id.raw(),
+            }
+        }
+        Ok(FrameExit::MethodCall {
+            method_name,
+            args,
+            call_id,
+        }) => {
+            let name = method_name.into_string(vm.interns);
+            let (args_py, kwargs_py) = args.into_py_objects(vm);
+            ConvertedExit::FunctionCall {
+                function_name: name,
+                args: args_py,
+                kwargs: kwargs_py,
+                call_id: call_id.raw(),
+                method_call: true,
+            }
+        }
+        Ok(FrameExit::ResolveFutures(pending_call_ids)) => {
+            ConvertedExit::ResolveFutures(pending_call_ids.iter().map(|id| id.raw()).collect())
+        }
+        Ok(FrameExit::NameLookup {
+            name_id,
+            namespace_slot,
+            is_global,
+        }) => {
+            let name = vm.interns.get_str(name_id).to_owned();
+            ConvertedExit::NameLookup {
+                name,
+                namespace_slot,
+                is_global,
+            }
+        }
+        Err(err) => ConvertedExit::Error(err),
+    }
+}
+
+/// Decides whether to snapshot or clean up the VM based on the converted exit.
+///
+/// Consumes the VM. Returns `Some(VMSnapshot)` for suspendable exits, `None` for
+/// completion/error (in which case the VM is cleaned up).
+pub(crate) fn check_snapshot_from_converted(
+    converted: &ConvertedExit,
+    mut vm: VM<'_, '_, impl ResourceTracker>,
+) -> Option<VMSnapshot> {
+    if converted.needs_snapshot() {
+        Some(vm.snapshot())
+    } else {
+        vm.cleanup();
+        None
+    }
+}
+
+/// Assembles a `RunProgress` from already-converted data and owned heap.
+///
+/// This runs after the VM has been dropped (releasing the heap borrow),
+/// so the heap can be moved into `Snapshot` structs.
+pub(crate) fn build_run_progress<T: ResourceTracker>(
+    converted: ConvertedExit,
     vm_state: Option<VMSnapshot>,
     executor: Executor,
-    mut heap: Heap<T>,
-    mut namespaces: Namespaces,
+    heap: Heap<T>,
 ) -> Result<RunProgress<T>, MontyException> {
     macro_rules! new_snapshot {
         () => {
@@ -670,97 +778,54 @@ pub(crate) fn handle_vm_result<T: ResourceTracker>(
                 executor,
                 vm_state: vm_state.expect("snapshot should exist"),
                 heap,
-                namespaces,
             }
         };
     }
 
-    match result {
-        Ok(FrameExit::Return(value)) => {
-            #[cfg(feature = "ref-count-panic")]
-            namespaces.drop_global_with_heap(&mut heap);
-
-            let obj = MontyObject::new(value, &mut heap, &executor.interns);
-            Ok(RunProgress::Complete(obj))
-        }
-        Ok(FrameExit::ExternalCall {
+    match converted {
+        ConvertedExit::Complete(obj) => Ok(RunProgress::Complete(obj)),
+        ConvertedExit::FunctionCall {
             function_name,
             args,
+            kwargs,
             call_id,
-            ..
-        }) => {
-            let function_name = function_name.into_string(&executor.interns);
-            let (args_py, kwargs_py) = args.into_py_objects(&mut heap, &executor.interns);
-
-            Ok(RunProgress::FunctionCall(FunctionCall::new(
-                function_name,
-                args_py,
-                kwargs_py,
-                call_id.raw(),
-                false,
-                new_snapshot!(),
-            )))
-        }
-        Ok(FrameExit::OsCall {
+            method_call,
+        } => Ok(RunProgress::FunctionCall(FunctionCall::new(
+            function_name,
+            args,
+            kwargs,
+            call_id,
+            method_call,
+            new_snapshot!(),
+        ))),
+        ConvertedExit::OsCall {
             function,
             args,
+            kwargs,
             call_id,
-        }) => {
-            let (args_py, kwargs_py) = args.into_py_objects(&mut heap, &executor.interns);
-
-            Ok(RunProgress::OsCall(OsCall::new(
-                function,
-                args_py,
-                kwargs_py,
-                call_id.raw(),
-                new_snapshot!(),
-            )))
-        }
-        Ok(FrameExit::MethodCall {
-            method_name,
+        } => Ok(RunProgress::OsCall(OsCall::new(
+            function,
             args,
+            kwargs,
             call_id,
-        }) => {
-            let function_name = method_name.into_string(&executor.interns);
-            let (args_py, kwargs_py) = args.into_py_objects(&mut heap, &executor.interns);
-
-            Ok(RunProgress::FunctionCall(FunctionCall::new(
-                function_name,
-                args_py,
-                kwargs_py,
-                call_id.raw(),
-                true,
-                new_snapshot!(),
-            )))
-        }
-        Ok(FrameExit::ResolveFutures(pending_call_ids)) => {
-            let pending_call_ids: Vec<u32> = pending_call_ids.iter().map(|id| id.raw()).collect();
-            Ok(RunProgress::ResolveFutures(ResolveFutures::new(
-                executor,
-                vm_state.expect("snapshot should exist for ResolveFutures"),
-                heap,
-                namespaces,
-                pending_call_ids,
-            )))
-        }
-        Ok(FrameExit::NameLookup {
-            name_id,
+            new_snapshot!(),
+        ))),
+        ConvertedExit::ResolveFutures(pending_call_ids) => Ok(RunProgress::ResolveFutures(ResolveFutures::new(
+            executor,
+            vm_state.expect("snapshot should exist for ResolveFutures"),
+            heap,
+            pending_call_ids,
+        ))),
+        ConvertedExit::NameLookup {
+            name,
             namespace_slot,
             is_global,
-        }) => {
-            let name = executor.interns.get_str(name_id).to_owned();
-            Ok(RunProgress::NameLookup(NameLookup::new(
-                name,
-                namespace_slot,
-                is_global,
-                new_snapshot!(),
-            )))
-        }
-        Err(err) => {
-            #[cfg(feature = "ref-count-panic")]
-            namespaces.drop_global_with_heap(&mut heap);
-
-            Err(err.into_python_exception(&executor.interns, &executor.code))
-        }
+        } => Ok(RunProgress::NameLookup(NameLookup::new(
+            name,
+            namespace_slot,
+            is_global,
+            new_snapshot!(),
+        ))),
+        ConvertedExit::Error(err) => Err(err.into_python_exception(&executor.interns, &executor.code)),
     }
 }

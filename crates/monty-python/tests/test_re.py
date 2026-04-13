@@ -143,7 +143,8 @@ matches
 
     data = progress.dump()
 
-    progress2 = pydantic_monty.FunctionSnapshot.load(data)
+    progress2 = pydantic_monty.load_snapshot(data)
+    assert isinstance(progress2, pydantic_monty.FunctionSnapshot)
 
     result = progress2.resume(return_value=None)
     assert isinstance(result, pydantic_monty.MontyComplete)

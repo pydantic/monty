@@ -1,6 +1,7 @@
 use std::{borrow::Cow, fmt};
 
 use num_bigint::BigInt;
+use num_traits::Num;
 use ruff_python_ast::{
     self as ast, BoolOp, CmpOp, ConversionFlag as RuffConversionFlag, ElifElseClause, Expr as AstExpr,
     InterpolatedStringElement, Keyword, Number, Operator as AstOperator, ParameterWithDefault, Stmt, UnaryOp,
@@ -11,14 +12,16 @@ use ruff_text_size::{Ranged, TextRange};
 
 use crate::{
     StackFrame,
-    args::{ArgExprs, Kwarg},
+    args::{ArgExprs, CallArg, CallKwarg, Kwarg},
     exception_private::ExcType,
     exception_public::{CodeLoc, MontyException},
     expressions::{
-        Callable, CmpOperator, Comprehension, Expr, ExprLoc, Identifier, Literal, Node, Operator, UnpackTarget,
+        Callable, CmpOperator, Comprehension, DictItem, Expr, ExprLoc, Identifier, ImportName, Literal, Node, Operator,
+        SequenceItem, UnpackTarget,
     },
     fstring::{ConversionFlag, FStringPart, FormatSpec},
     intern::{InternerBuilder, StringId},
+    types::long_int::INT_MAX_STR_DIGITS,
     value::EitherStr,
 };
 
@@ -291,11 +294,41 @@ impl<'a> Parser<'a> {
             Stmt::Assign(ast::StmtAssign {
                 targets, value, range, ..
             }) => self.parse_assignment(first(targets, self.convert_range(range))?, *value),
-            Stmt::AugAssign(ast::StmtAugAssign { target, op, value, .. }) => Ok(Node::OpAssign {
-                target: self.parse_identifier(*target)?,
-                op: convert_op(op),
-                object: self.parse_expression(*value)?,
-            }),
+            Stmt::AugAssign(ast::StmtAugAssign { target, op, value, .. }) => {
+                let op = convert_op(op);
+                let value = self.parse_expression(*value)?;
+                match *target {
+                    AstExpr::Subscript(ast::ExprSubscript {
+                        value: object,
+                        slice,
+                        range,
+                        ..
+                    }) => Ok(Node::SubscriptOpAssign {
+                        target: self.parse_expression(*object)?,
+                        index: self.parse_expression(*slice)?,
+                        op,
+                        value,
+                        target_position: self.convert_range(range),
+                    }),
+                    AstExpr::Attribute(ast::ExprAttribute {
+                        value: object,
+                        attr,
+                        range,
+                        ..
+                    }) => Ok(Node::AttrOpAssign {
+                        object: self.parse_expression(*object)?,
+                        attr: EitherStr::Interned(self.interner.intern(attr.id())),
+                        op,
+                        value,
+                        target_position: self.convert_range(range),
+                    }),
+                    other => Ok(Node::OpAssign {
+                        target: self.parse_identifier(other)?,
+                        op,
+                        value,
+                    }),
+                }
+            }
             Stmt::AnnAssign(ast::StmtAnnAssign { target, value, .. }) => match value {
                 Some(value) => self.parse_assignment(*target, *value),
                 None => Ok(Node::Pass),
@@ -402,22 +435,21 @@ impl<'a> Parser<'a> {
                 Ok(Node::Assert { test, msg })
             }
             Stmt::Import(ast::StmtImport { names, range, .. }) => {
-                // We only support single module imports (e.g., `import sys`)
-                // Multi-module imports (e.g., `import sys, os`) are not supported
                 let position = self.convert_range(range);
-                if names.len() != 1 {
-                    return Err(ParseError::not_implemented("multi-module import statements", position));
-                }
-                let alias_node = &names[0];
-                let module_name = self.interner.intern(&alias_node.name);
-                // The binding name is the alias if present, otherwise the module name
-                let binding_name = alias_node
-                    .asname
-                    .as_ref()
-                    .map_or(module_name, |n| self.interner.intern(&n.id));
-                // Create an unresolved identifier (namespace slot will be set during prepare)
-                let binding = Identifier::new(binding_name, position);
-                Ok(Node::Import { module_name, binding })
+                let import_names = names
+                    .iter()
+                    .map(|alias_node| {
+                        let module_name = self.interner.intern(&alias_node.name);
+                        // The binding name is the alias if present, otherwise the module name
+                        let binding_name = alias_node
+                            .asname
+                            .as_ref()
+                            .map_or(module_name, |n| self.interner.intern(&n.id));
+                        let binding = Identifier::new(binding_name, position);
+                        ImportName { module_name, binding }
+                    })
+                    .collect();
+                Ok(Node::Import { names: import_names })
             }
             Stmt::ImportFrom(ast::StmtImportFrom {
                 module,
@@ -513,7 +545,7 @@ impl<'a> Parser<'a> {
             AstExpr::Subscript(ast::ExprSubscript {
                 value, slice, range, ..
             }) => Ok(Node::SubscriptAssign {
-                target: self.parse_identifier(*value)?,
+                target: self.parse_expression(*value)?,
                 index: self.parse_expression(*slice)?,
                 value: self.parse_expression(rhs)?,
                 target_position: self.convert_range(range),
@@ -710,25 +742,27 @@ impl<'a> Parser<'a> {
             )),
             AstExpr::Dict(ast::ExprDict { items, range, .. }) => {
                 let position = self.convert_range(range);
-                let mut pairs = Vec::new();
+                let mut dict_items = Vec::new();
                 for ast::DictItem { key, value } in items {
-                    // key is Option<Expr> - None represents ** unpacking which we don't support yet
+                    // key is Option<Expr> - None represents ** unpacking (PEP 448)
                     if let Some(key_expr_ast) = key {
                         let key_expr = self.parse_expression(key_expr_ast)?;
                         let value_expr = self.parse_expression(value)?;
-                        pairs.push((key_expr, value_expr));
+                        dict_items.push(DictItem::Pair(key_expr, value_expr));
                     } else {
-                        return Err(ParseError::not_implemented(
-                            "dictionary unpacking in literals",
-                            position,
-                        ));
+                        // **expr unpack in a dict literal: later keys silently win
+                        let unpack_expr = self.parse_expression(value)?;
+                        dict_items.push(DictItem::Unpack(unpack_expr));
                     }
                 }
-                Ok(ExprLoc::new(position, Expr::Dict(pairs)))
+                Ok(ExprLoc::new(position, Expr::Dict(dict_items)))
             }
             AstExpr::Set(ast::ExprSet { elts, range, .. }) => {
-                let elements: Result<Vec<_>, _> = elts.into_iter().map(|e| self.parse_expression(e)).collect();
-                Ok(ExprLoc::new(self.convert_range(range), Expr::Set(elements?)))
+                let mut items = Vec::new();
+                for e in elts {
+                    items.push(self.parse_sequence_item(e)?);
+                }
+                Ok(ExprLoc::new(self.convert_range(range), Expr::Set(items)))
             }
             AstExpr::ListComp(ast::ExprListComp {
                 elt, generators, range, ..
@@ -821,33 +855,20 @@ impl<'a> Parser<'a> {
             }) => {
                 let position = self.convert_range(range);
                 let ast::Arguments { args, keywords, .. } = arguments;
-                let mut positional_args = Vec::new();
-                let mut var_args_expr: Option<ExprLoc> = None;
-                let mut seen_star = false;
+                let args_vec = args.into_vec();
+                let keywords_vec = keywords.into_vec();
 
-                for arg_expr in args.into_vec() {
-                    match arg_expr {
-                        AstExpr::Starred(ast::ExprStarred { value, .. }) => {
-                            if var_args_expr.is_some() {
-                                return Err(ParseError::not_implemented("multiple *args unpacking", position));
-                            }
-                            var_args_expr = Some(self.parse_expression(*value)?);
-                            seen_star = true;
-                        }
-                        other => {
-                            if seen_star {
-                                return Err(ParseError::not_implemented(
-                                    "positional arguments after *args unpacking",
-                                    position,
-                                ));
-                            }
-                            positional_args.push(self.parse_expression(other)?);
-                        }
-                    }
-                }
-                // Separate regular kwargs (key=value) from var_kwargs (**expr)
-                let (kwargs, var_kwargs) = self.parse_keywords(keywords.into_vec())?;
-                let args = ArgExprs::new_with_var_kwargs(positional_args, var_args_expr, kwargs, var_kwargs);
+                // Detect whether we need the generalized path (PEP 448):
+                // - multiple *args unpacks, OR
+                // - positional argument after *args, OR
+                // - multiple **kwargs unpacks
+                let needs_generalized = Self::needs_generalized_call(&args_vec, &keywords_vec);
+
+                let args = if needs_generalized {
+                    self.parse_generalized_call_args(args_vec, keywords_vec)?
+                } else {
+                    self.parse_simple_call_args(args_vec, keywords_vec)?
+                };
                 match *func {
                     AstExpr::Name(ast::ExprName { id, range, .. }) => {
                         // Always create Callable::Name — builtin resolution happens in
@@ -914,10 +935,9 @@ impl<'a> Parser<'a> {
                         if let Some(i) = i.as_i64() {
                             Literal::Int(i)
                         } else {
-                            // Integer too large for i64, parse string representation as BigInt
-                            // Handles radix prefixes (0x, 0o, 0b) and underscores
-                            let bi = parse_int_literal(&i.to_string())
-                                .ok_or_else(|| ParseError::syntax(format!("invalid integer literal: {i}"), position))?;
+                            // Integer too large for i64, parse string representation as BigInt.
+                            // Handles radix prefixes (0x, 0o, 0b) and underscores.
+                            let bi = parse_int_literal(&i.to_string(), position)?;
                             let long_int_id = self.interner.intern_long_int(bi);
                             Literal::LongInt(long_int_id)
                         }
@@ -971,19 +991,17 @@ impl<'a> Parser<'a> {
                 Ok(ExprLoc::new(position, expr))
             }
             AstExpr::List(ast::ExprList { elts, range, .. }) => {
-                let items = elts
-                    .into_iter()
-                    .map(|f| self.parse_expression(f))
-                    .collect::<Result<_, ParseError>>()?;
-
+                let mut items = Vec::new();
+                for e in elts {
+                    items.push(self.parse_sequence_item(e)?);
+                }
                 Ok(ExprLoc::new(self.convert_range(range), Expr::List(items)))
             }
             AstExpr::Tuple(ast::ExprTuple { elts, range, .. }) => {
-                let items = elts
-                    .into_iter()
-                    .map(|f| self.parse_expression(f))
-                    .collect::<Result<_, ParseError>>()?;
-
+                let mut items = Vec::new();
+                for e in elts {
+                    items.push(self.parse_sequence_item(e)?);
+                }
                 Ok(ExprLoc::new(self.convert_range(range), Expr::Tuple(items)))
             }
             AstExpr::Slice(ast::ExprSlice {
@@ -1010,6 +1028,117 @@ impl<'a> Parser<'a> {
                 self.convert_range(i.range),
             )),
         }
+    }
+
+    /// Converts an AST expression into a `SequenceItem` for list/tuple/set literals.
+    ///
+    /// A `Starred` node becomes `SequenceItem::Unpack`; all other expressions
+    /// become `SequenceItem::Value`. This is the entry point for PEP 448 unpack
+    /// handling in collection literals.
+    fn parse_sequence_item(&mut self, expr: AstExpr) -> Result<SequenceItem, ParseError> {
+        if let AstExpr::Starred(ast::ExprStarred { value, .. }) = expr {
+            Ok(SequenceItem::Unpack(self.parse_expression(*value)?))
+        } else {
+            Ok(SequenceItem::Value(self.parse_expression(expr)?))
+        }
+    }
+
+    /// Detects whether a function call needs the generalized `GeneralizedCall` path.
+    ///
+    /// Returns `true` when the call has:
+    /// - More than one `*unpack` among positional args, OR
+    /// - A plain positional arg following a `*unpack`, OR
+    /// - More than one `**unpack` among keyword args.
+    ///
+    /// In all these cases the simple `ArgsKargs` representation is insufficient
+    /// and `parse_generalized_call_args` must be used instead.
+    fn needs_generalized_call(args: &[AstExpr], keywords: &[Keyword]) -> bool {
+        let mut seen_star = false;
+        for arg in args {
+            match arg {
+                AstExpr::Starred(_) => {
+                    if seen_star {
+                        return true; // second *unpack
+                    }
+                    seen_star = true;
+                }
+                _ => {
+                    if seen_star {
+                        return true; // positional after *unpack
+                    }
+                }
+            }
+        }
+        // Multiple **kwargs unpacks?
+        keywords.iter().filter(|k| k.arg.is_none()).count() > 1
+    }
+
+    /// Parses function call args for the simple case (at most one * and one **).
+    ///
+    /// Returns `ArgExprs::new_with_var_kwargs(...)` as before, preserving the
+    /// fast path for the vast majority of function calls.
+    fn parse_simple_call_args(
+        &mut self,
+        args_vec: Vec<AstExpr>,
+        keywords_vec: Vec<Keyword>,
+    ) -> Result<ArgExprs, ParseError> {
+        let mut positional_args = Vec::new();
+        let mut var_args_expr: Option<ExprLoc> = None;
+
+        for arg_expr in args_vec {
+            match arg_expr {
+                AstExpr::Starred(ast::ExprStarred { value, .. }) => {
+                    var_args_expr = Some(self.parse_expression(*value)?);
+                }
+                other => {
+                    positional_args.push(self.parse_expression(other)?);
+                }
+            }
+        }
+        let (kwargs, var_kwargs) = self.parse_keywords(keywords_vec)?;
+        Ok(ArgExprs::new_with_var_kwargs(
+            positional_args,
+            var_args_expr,
+            kwargs,
+            var_kwargs,
+        ))
+    }
+
+    /// Parses function call args for the PEP 448 generalized case.
+    ///
+    /// Builds `Vec<CallArg>` and `Vec<CallKwarg>` preserving the full order of
+    /// positional and keyword arguments so the compiler can emit correct
+    /// `ListAppend`/`ListExtend`/`DictMerge` sequences.
+    fn parse_generalized_call_args(
+        &mut self,
+        args_vec: Vec<AstExpr>,
+        keywords_vec: Vec<Keyword>,
+    ) -> Result<ArgExprs, ParseError> {
+        let mut call_args = Vec::new();
+        for arg_expr in args_vec {
+            match arg_expr {
+                AstExpr::Starred(ast::ExprStarred { value, .. }) => {
+                    call_args.push(CallArg::Unpack(self.parse_expression(*value)?));
+                }
+                other => {
+                    call_args.push(CallArg::Value(self.parse_expression(other)?));
+                }
+            }
+        }
+
+        let mut call_kwargs = Vec::new();
+        for kwarg in keywords_vec {
+            if let Some(key) = kwarg.arg {
+                let key_ident = self.identifier(&key.id, key.range);
+                let value = self.parse_expression(kwarg.value)?;
+                call_kwargs.push(CallKwarg::Named(Kwarg { key: key_ident, value }));
+            } else {
+                let unpack_expr = self.parse_expression(kwarg.value)?;
+                call_kwargs.push(CallKwarg::Unpack(unpack_expr));
+            }
+        }
+
+        Ok(ArgExprs::new_generalized(call_args, call_kwargs))
     }
 
     /// Parses keyword arguments, separating regular kwargs from var_kwargs (`**expr`).
@@ -1590,8 +1719,11 @@ impl ParseError {
 /// - Octal: `0o777`, `0O777`
 /// - Binary: `0b1010`, `0B1010`
 ///
-/// Returns `None` if the string cannot be parsed.
-fn parse_int_literal(s: &str) -> Option<BigInt> {
+/// Check digit limit before the expensive O(n^2) decimal BigInt parse.
+/// Only decimal is limited — hex/octal/binary use O(n) algorithms and are handled above.
+///
+/// Returns `ParseError` if the string cannot be parsed.
+fn parse_int_literal(s: &str, position: CodeRange) -> Result<BigInt, ParseError> {
     // Remove underscores (Python allows them as digit separators)
     let cleaned: String = s.chars().filter(|c| *c != '_').collect();
     let cleaned = cleaned.as_str();
@@ -1600,14 +1732,33 @@ fn parse_int_literal(s: &str) -> Option<BigInt> {
     if cleaned.len() >= 2 {
         let prefix = &cleaned[..2];
         let digits = &cleaned[2..];
+
+        let from_radix = |radix: u32| -> Result<BigInt, ParseError> {
+            BigInt::from_str_radix(digits, radix)
+                .map_err(|e| ParseError::syntax(format!("invalid integer literal: {s:?}, error: {e}"), position))
+        };
+
         match prefix.to_ascii_lowercase().as_str() {
-            "0x" => return BigInt::parse_bytes(digits.as_bytes(), 16),
-            "0o" => return BigInt::parse_bytes(digits.as_bytes(), 8),
-            "0b" => return BigInt::parse_bytes(digits.as_bytes(), 2),
+            "0x" => return from_radix(16),
+            "0o" => return from_radix(8),
+            "0b" => return from_radix(2),
             _ => {}
         }
     }
 
     // Default to decimal
-    cleaned.parse::<BigInt>().ok()
+    let digit_count = cleaned.bytes().filter(u8::is_ascii_digit).count();
+    if digit_count > INT_MAX_STR_DIGITS {
+        Err(ParseError::syntax(
+            format!(
+                "Exceeds the limit ({INT_MAX_STR_DIGITS} digits) for integer string conversion: \
+                 value has {digit_count} digits; consider hexadecimal for large integer literals"
+            ),
+            position,
+        ))
+    } else {
+        cleaned
+            .parse::<BigInt>()
+            .map_err(|e| ParseError::syntax(format!("invalid integer literal {s:?}, error: {e}"), position))
+    }
 }

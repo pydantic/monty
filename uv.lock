@@ -1246,6 +1246,9 @@ wheels = [
 [[package]]
 name = "pydantic-monty"
 source = { editable = "crates/monty-python" }
+dependencies = [
+    { name = "typing-extensions" },
+]
 
 [package.dev-dependencies]
 dev = [
@@ -1259,6 +1262,7 @@ dev = [
 ]
 
 [package.metadata]
+requires-dist = [{ name = "typing-extensions", specifier = ">=4.5" }]
 
 [package.metadata.requires-dev]
 dev = [
