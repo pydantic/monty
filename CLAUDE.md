@@ -310,7 +310,8 @@ make test-ref-count-panic
 make test-cases
 
 # Run a specific test
-cargo test -p monty --test datatest_runner --features ref-count-panic str__ops
+cargo test -p monty --test TEST --features ref-count-panic str__ops
+cargo run -p monty-datatest --features ref-count-panic str__ops
 
 # Run the interpreter on a Python file
 cargo run -- <file.py>

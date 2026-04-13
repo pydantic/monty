@@ -42,10 +42,10 @@ jobs:
         run: cargo install cargo-codspeed
 
       - name: Build benchmarks
-        run: cargo codspeed build -p monty --bench main
+        run: cargo codspeed build -p monty-bench --bench main
 
       - name: Run benchmarks
         uses: CodSpeedHQ/action@d872884a306dd4853acf0f584f4b706cf0cc72a2 # v4.13.0
         with:
           mode: simulation
-          run: cargo codspeed run -p monty --bench main
+          run: cargo codspeed run -p monty-bench --bench main

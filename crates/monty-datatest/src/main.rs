@@ -1209,7 +1209,11 @@ impl fmt::Display for TestFailure {
 /// This function executes Python code via the MontyRun and validates the result
 /// against the expected outcome specified in the fixture.
 fn try_run_test(path: &Path, code: &str, expectation: &Expectation) -> Result<(), TestFailure> {
-    let test_name = path.strip_prefix("test_cases/").unwrap_or(path).display().to_string();
+    let test_name = path
+        .strip_prefix("crates/monty/test_cases")
+        .unwrap_or(path)
+        .display()
+        .to_string();
 
     // Reset the mutable VFS for each test
     reset_mutable_vfs();
@@ -1395,7 +1399,11 @@ fn try_run_test(path: &Path, code: &str, expectation: &Expectation) -> Result<()
 /// This function handles tests marked with `# call-external` directive by using the
 /// iterative executor API and providing implementations for predefined external functions.
 fn try_run_iter_test(path: &Path, code: &str, expectation: &Expectation) -> Result<(), TestFailure> {
-    let test_name = path.strip_prefix("test_cases/").unwrap_or(path).display().to_string();
+    let test_name = path
+        .strip_prefix("crates/monty/test_cases")
+        .unwrap_or(path)
+        .display()
+        .to_string();
 
     // Reset the mutable VFS for each test
     reset_mutable_vfs();
@@ -1535,7 +1543,11 @@ fn try_run_iter_test(path: &Path, code: &str, expectation: &Expectation) -> Resu
 /// Runs a `# mount-fs` test: creates a temp directory, mounts it via `MountTable`,
 /// and dispatches OS calls through the mount table instead of the virtual filesystem.
 fn try_run_mount_fs_test(path: &Path, code: &str, expectation: &Expectation) -> Result<(), TestFailure> {
-    let test_name = path.strip_prefix("test_cases/").unwrap_or(path).display().to_string();
+    let test_name = path
+        .strip_prefix("crates/monty/test_cases")
+        .unwrap_or(path)
+        .display()
+        .to_string();
 
     let tmpdir = create_mount_fs_tempdir();
     let mut mount_table = MountTable::new();
@@ -1910,7 +1922,7 @@ fn import_run_traceback(py: Python<'_>) -> Bound<'_, PyModule> {
     let sys = py.import("sys").expect("Failed to import sys");
     let sys_path = sys.getattr("path").expect("Failed to get sys.path");
     sys_path
-        .call_method1("insert", (0, "../../scripts"))
+        .call_method1("insert", (0, "scripts"))
         .expect("Failed to add scripts to sys.path");
 
     // Import the run_traceback module
@@ -1955,7 +1967,11 @@ fn try_run_cpython_test(
         return Ok(());
     }
 
-    let test_name = path.strip_prefix("test_cases/").unwrap_or(path).display().to_string();
+    let test_name = path
+        .strip_prefix("crates/monty/test_cases")
+        .unwrap_or(path)
+        .display()
+        .to_string();
 
     // Traceback tests use the external script for reliable caret line support
     if let Expectation::Traceback(expected) = expectation {
@@ -2217,7 +2233,11 @@ where
 fn run_test_cases_monty(path: &Path) -> Result<(), Box<dyn Error>> {
     let content = fs::read_to_string(path)?;
     let (code, expectation, config) = parse_fixture(&content);
-    let test_name = path.strip_prefix("test_cases/").unwrap_or(path).display().to_string();
+    let test_name = path
+        .strip_prefix("crates/monty/test_cases")
+        .unwrap_or(path)
+        .display()
+        .to_string();
 
     // Move data into the closure since it needs 'static lifetime
     let path_owned = path.to_owned();
@@ -2270,7 +2290,11 @@ fn run_test_cases_monty(path: &Path) -> Result<(), Box<dyn Error>> {
 fn run_test_cases_cpython(path: &Path) -> Result<(), Box<dyn Error>> {
     let content = fs::read_to_string(path)?;
     let (code, expectation, config) = parse_fixture(&content);
-    let test_name = path.strip_prefix("test_cases/").unwrap_or(path).display().to_string();
+    let test_name = path
+        .strip_prefix("crates/monty/test_cases")
+        .unwrap_or(path)
+        .display()
+        .to_string();
 
     // Skip CPython tests that rely on POSIX path semantics when running on Windows
     if cfg!(windows) && config.skip_cpython_windows {
@@ -2301,9 +2325,9 @@ fn run_test_cases_cpython(path: &Path) -> Result<(), Box<dyn Error>> {
 // Generate tests for all fixture files using datatest-stable harness macro
 datatest_stable::harness!(
     run_test_cases_monty,
-    "test_cases",
+    "crates/monty/test_cases",
     r"^.*\.py$",
     run_test_cases_cpython,
-    "test_cases",
+    "crates/monty/test_cases",
     r"^.*\.py$",
 );
