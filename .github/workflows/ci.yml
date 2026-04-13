@@ -223,14 +223,17 @@ jobs:
         run: npm install
         working-directory: crates/monty-js
 
-      - name: Build and test JS bindings and run tests with Rust coverage
+      - name: Build and test JS bindings with Rust coverage
         run: |
           set -euxo pipefail
           eval "$(cargo llvm-cov show-env --export-prefix)"
           cargo llvm-cov clean --workspace
+          cargo build -p monty-js
+          cp \
+            "$CARGO_LLVM_COV_TARGET_DIR"/debug/libmonty_js.so \
+            "$CARGO_LLVM_COV_TARGET_DIR"/debug/monty.linux-x64-gnu.node
           cd crates/monty-js
-          npm run build:debug
-          npm test
+          NAPI_RS_NATIVE_LIBRARY_PATH="$CARGO_LLVM_COV_TARGET_DIR"/debug/monty.linux-x64-gnu.node npm test
           cd ../..
           cargo llvm-cov report --ignore-filename-regex "$LLVM_COV_IGNORE_FILENAME_REGEX"
           cargo llvm-cov report --codecov --output-path=js-rust-coverage.json --ignore-filename-regex "$LLVM_COV_IGNORE_FILENAME_REGEX"
