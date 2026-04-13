@@ -45,9 +45,9 @@ impl fmt::Debug for MemoryDb {
     }
 }
 
-impl MemoryDb {
+impl Default for MemoryDb {
     /// Create a fresh database with its own Salsa storage and Monty's fixed typing config.
-    pub(crate) fn new() -> Self {
+    fn default() -> Self {
         Self {
             storage: salsa::Storage::new(None),
             system: TestSystem::default(),

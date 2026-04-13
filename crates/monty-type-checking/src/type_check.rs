@@ -16,7 +16,7 @@ use ty_python_semantic::types::check_types;
 
 use crate::{
     db::MemoryDb,
-    pool::{PooledTypeCheckDb, SRC_ROOT},
+    pool::{PooledMemoryDb, SRC_ROOT},
 };
 
 /// All diagnostic formats supported by `TypeCheckingDiagnostics`.
@@ -103,7 +103,7 @@ pub fn type_check(
         ));
     }
 
-    let mut pooled_db = PooledTypeCheckDb::checkout()?;
+    let mut pooled_db = PooledMemoryDb::checkout()?;
     let result = type_check_with_db(
         &mut pooled_db,
         python_source,
@@ -118,7 +118,7 @@ pub fn type_check(
 /// The caller provides already-validated root file paths, while the pooled wrapper
 /// owns the temporary-file bookkeeping needed for cleanup.
 fn type_check_with_db(
-    pooled_db: &mut PooledTypeCheckDb,
+    pooled_db: &mut PooledMemoryDb,
     python_source: &SourceFile<'_>,
     main_path: &SystemPathBuf,
     stubs_file: Option<(&SourceFile<'_>, &SystemPathBuf)>,
