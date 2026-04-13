@@ -1,24 +1,16 @@
 use std::{
-    fmt::Display,
+    fmt::{self, Display},
     io::ErrorKind,
+    mem,
     sync::{Mutex, OnceLock},
 };
 
 use ruff_db::{
-    Db as SourceDb,
-    files::{File, FileRootKind, system_path_to_file},
+    files::{File, system_path_to_file},
     system::{DbWithTestSystem, DbWithWritableSystem as _, SystemPathBuf},
 };
-use ty_module_resolver::SearchPathSettings;
-use ty_python_semantic::{Program, ProgramSettings, PythonPlatform, PythonVersionSource, PythonVersionWithSource};
 
-use crate::db::MemoryDb;
-
-/// Virtual source root used for all in-memory type-checking files.
-///
-/// The reusable database pool only supports root-level user files, so every public
-/// `SourceFile.path` is mapped directly under `/`.
-pub(crate) const SRC_ROOT: &str = "/";
+use crate::db::{MemoryDb, SRC_ROOT};
 
 /// Maximum number of reusable `MemoryDb` instances kept in the process-wide pool.
 ///
@@ -52,7 +44,7 @@ impl MemoryDbPool {
         };
 
         Ok(PooledMemoryDb {
-            db: maybe_db.unwrap_or_else(build_pooled_db),
+            db: Some(maybe_db.unwrap_or_default()),
             pool: self,
             touched_files: Vec::new(),
         })
@@ -70,13 +62,30 @@ impl MemoryDbPool {
 
 /// Exclusive lease for one pooled database.
 ///
-/// The caller must return the lease with [`Self::finish`], which scrubs the files
-/// written during the run before releasing the db back to the pool. Dropping the
-/// lease without calling `finish` discards the db, which is the panic-safe fallback.
+/// On [`Drop`] the lease scrubs every file that was written during its lifetime
+/// and, if cleanup succeeded, returns the database to the global pool. A db whose
+/// cleanup fails is intentionally discarded — a contaminated db must never re-enter
+/// the pool because it would poison every subsequent type-check.
+///
+/// This RAII pattern lets `TypeCheckingDiagnostics` keep the lease alive across the
+/// entire lifetime of a returned diagnostics object (so lazy rendering still works
+/// against the live db) and the db is released exactly when the diagnostics are no
+/// longer reachable.
 pub(crate) struct PooledMemoryDb {
-    db: MemoryDb,
+    /// `Option` so `Drop` can move the db out into the pool without leaving an
+    /// empty placeholder `MemoryDb` behind. Always `Some` while the lease is
+    /// observable to the rest of the codebase.
+    db: Option<MemoryDb>,
     pool: &'static MemoryDbPool,
     touched_files: Vec<TouchedRootFile>,
+}
+
+impl fmt::Debug for PooledMemoryDb {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PooledMemoryDb")
+            .field("touched_files", &self.touched_files.len())
+            .finish_non_exhaustive()
+    }
 }
 
 impl PooledMemoryDb {
@@ -87,14 +96,13 @@ impl PooledMemoryDb {
 
     /// Write one root file into the db and remember it for mandatory cleanup.
     pub(crate) fn write_root_file(&mut self, path: &SystemPathBuf, source: &str) -> Result<File, String> {
-        self.db().write_file(path, source).map_err(to_string)?;
+        let db = self.db_mut();
+        db.write_file(path, source).map_err(to_string)?;
 
         // The write above succeeded, so interning the path must succeed — otherwise the
         // file would live in the db but be untracked, poisoning the pool on release, hence the panic.
-        let file = match system_path_to_file(self.db(), path) {
-            Ok(file) => file,
-            Err(e) => panic!("interning a just-written root file must succeed, DB in an unsafe state: {e}"),
-        };
+        let file = system_path_to_file(db, path)
+            .unwrap_or_else(|e| panic!("interning a just-written root file must succeed, DB in an unsafe state: {e}"));
 
         self.touched_files.push(TouchedRootFile::new(path.clone(), file));
         Ok(file)
@@ -111,65 +119,37 @@ impl PooledMemoryDb {
             self.touched_files.iter().any(|t| &t.path == path),
             "rewrite_root_file called for untracked path '{path}' — must call write_root_file first",
         );
-        self.db().write_file(path, source).map_err(to_string)
+        self.db_mut().write_file(path, source).map_err(to_string)
     }
 
-    /// Borrow the checked-out database mutably for one type-check run.
-    pub(crate) fn db(&mut self) -> &mut MemoryDb {
-        &mut self.db
+    /// Borrow the checked-out database (e.g. for `check_types` or rendering).
+    pub(crate) fn db(&self) -> &MemoryDb {
+        self.db.as_ref().expect("db is only None inside Drop")
     }
 
-    /// Scrub the run's temporary files, optionally return the db to the pool, and
-    /// then forward the caller's original result.
-    pub(crate) fn finish<T>(self, run_result: Result<T, String>) -> Result<T, String> {
-        let Self {
-            mut db,
-            pool,
-            touched_files,
-        } = self;
-
-        let cleanup_result = cleanup_touched_files(&mut db, &touched_files);
-        if cleanup_result.is_ok() {
-            pool.release(db)?;
-        }
-
-        match (run_result, cleanup_result) {
-            (Ok(result), Ok(())) => Ok(result),
-            (Ok(_), Err(cleanup_err)) => Err(cleanup_err),
-            (Err(run_err), Ok(())) => Err(run_err),
-            (Err(run_err), Err(cleanup_err)) => Err(format!("{run_err}\ncleanup error: {cleanup_err}")),
-        }
+    fn db_mut(&mut self) -> &mut MemoryDb {
+        self.db.as_mut().expect("db is only None inside Drop")
     }
 }
 
-/// Build one fresh database ready to enter the pool.
-///
-/// This sets up the source root and `Program` settings, but it intentionally does
-/// not run a synthetic type-check. The first real caller that uses a brand new db
-/// pays the cold-start cost; subsequent pooled reuses benefit from the populated
-/// Salsa caches created by real user work.
-fn build_pooled_db() -> MemoryDb {
-    let db = MemoryDb::default();
-    let src_root = SystemPathBuf::from(SRC_ROOT);
-    db.files().try_add_root(&db, &src_root, FileRootKind::Project);
+impl Drop for PooledMemoryDb {
+    fn drop(&mut self) {
+        // `Drop` only gives us `&mut self`. Take the db out of the `Option` so we own
+        // it for cleanup and release, leaving `None` behind for the implicit drop of
+        // `self`'s remaining fields.
+        let Some(mut db) = self.db.take() else { return };
+        let touched_files = mem::take(&mut self.touched_files);
 
-    let search_paths = SearchPathSettings::new(vec![src_root])
-        .to_search_paths(db.system(), db.vendored())
-        .expect("vendored typeshed search paths always resolve");
-
-    Program::from_settings(
-        &db,
-        ProgramSettings {
-            python_version: PythonVersionWithSource {
-                version: db.python_version(),
-                source: PythonVersionSource::default(),
-            },
-            python_platform: PythonPlatform::default(),
-            search_paths,
-        },
-    );
-
-    db
+        // Cleanup or release failures leave the global pool in a state we cannot
+        // reason about, so we panic loudly. Drop-time panics will abort if they
+        // happen during unwinding from another panic, which is the desired behavior:
+        // a poisoned pool is worse than aborting the process.
+        cleanup_touched_files(&mut db, &touched_files)
+            .unwrap_or_else(|err| panic!("monty type-check pool: failed to scrub db on drop: {err}"));
+        self.pool
+            .release(db)
+            .unwrap_or_else(|err| panic!("monty type-check pool: failed to release db on drop: {err}"));
+    }
 }
 
 /// File written into a pooled database during one type-check run.
@@ -255,18 +235,18 @@ mod tests {
             system_path_to_file(pooled.db(), &path).is_ok(),
             "file should be visible within the run that wrote it",
         );
-        pooled.finish::<()>(Ok(())).expect("finish first run");
+        drop(pooled);
 
         assert_eq!(pool_len(), 1, "scrubbed db should be released back to the pool");
 
         // Second checkout pops the only entry, so we are guaranteed the same db.
-        let mut pooled = PooledMemoryDb::checkout().expect("re-checkout");
+        let pooled = PooledMemoryDb::checkout().expect("re-checkout");
         assert_eq!(pool_len(), 0, "pool should be empty after re-checkout");
         assert!(
             matches!(system_path_to_file(pooled.db(), &path), Err(FileError::NotFound)),
             "previous run's file must not be visible in the reused db",
         );
-        pooled.finish::<()>(Ok(())).expect("finish second run");
+        drop(pooled);
 
         drain_pool();
     }

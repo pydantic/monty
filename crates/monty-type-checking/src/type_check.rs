@@ -1,4 +1,7 @@
-use std::{fmt, sync::Arc};
+use std::{
+    fmt,
+    sync::{Arc, Mutex},
+};
 
 use ruff_db::{
     diagnostic::{
@@ -12,130 +15,72 @@ use ruff_text_size::{TextRange, TextSize};
 use ty_python_semantic::types::check_types;
 
 use crate::{
-    db::MemoryDb,
-    pool::{PooledMemoryDb, SRC_ROOT, to_string},
+    db::SRC_ROOT,
+    pool::{PooledMemoryDb, to_string},
 };
 
-/// All diagnostic formats supported by `TypeCheckingDiagnostics`.
-const SUPPORTED_FORMATS: [DiagnosticFormat; 9] = [
-    DiagnosticFormat::Full,
-    DiagnosticFormat::Concise,
-    DiagnosticFormat::Azure,
-    DiagnosticFormat::Json,
-    DiagnosticFormat::JsonLines,
-    DiagnosticFormat::Rdjson,
-    DiagnosticFormat::Pylint,
-    DiagnosticFormat::Gitlab,
-    DiagnosticFormat::Github,
-];
-
-/// Definition of a source file used by the Monty type-checking wrapper.
+/// Definition of a source file.
 pub struct SourceFile<'a> {
-    /// Python source code to type check.
+    /// source code
     pub source_code: &'a str,
-    /// User-visible file name used for diagnostics and module resolution.
+    /// file path
     pub path: &'a str,
 }
 
 impl<'a> SourceFile<'a> {
-    /// Create a new source file value.
+    /// Create a new source file.
     #[must_use]
     pub fn new(source_code: &'a str, path: &'a str) -> Self {
         Self { source_code, path }
     }
 }
 
-/// Pre-rendered diagnostic strings detached from the live Salsa database.
-///
-/// Every supported `(format, color)` pair is rendered while the database is still
-/// alive, which lets pooled databases be scrubbed immediately after type checking.
-struct RenderedDiagnostics {
-    plain: [String; SUPPORTED_FORMATS.len()],
-    color: [String; SUPPORTED_FORMATS.len()],
-}
-
-impl RenderedDiagnostics {
-    /// Render all supported format/color combinations against the current db state.
-    fn new(db: &MemoryDb, diagnostics: &[Diagnostic]) -> Self {
-        Self {
-            plain: SUPPORTED_FORMATS.map(|format| render_diagnostics(db, diagnostics, format, false)),
-            color: SUPPORTED_FORMATS.map(|format| render_diagnostics(db, diagnostics, format, true)),
-        }
-    }
-
-    /// Return the pre-rendered output for the requested format and color mode.
-    fn get(&self, format: DiagnosticFormat, color: bool) -> &str {
-        let index = diagnostic_format_index(format);
-        if color { &self.color[index] } else { &self.plain[index] }
-    }
-}
-
-/// Type check some Python source code, checking if it's valid to run with Monty.
-///
-/// Every call checks out one database from the process-wide pool, writes the
-/// root-level source files into that db, renders any diagnostics eagerly, deletes
-/// the temporary files again, and finally returns the scrubbed db to the pool.
+/// Type check some python source code, checking if it's valid to run with monty.
 ///
 /// # Arguments
-/// * `python_source` - The Python source code to type check.
-/// * `stubs_file` - Optional stubs file to import during type checking.
+/// * `python_source` - The python source code to type check.
+/// * `stubs_file` - Optional stubs file to use for type checking.
 ///
 /// # Returns
-/// * `Ok(Some(TypeCheckingDiagnostics))` - The code contains typing errors.
-/// * `Ok(None)` - The code type-checks cleanly.
-/// * `Err(String)` - An unexpected/internal error occurred while type checking.
+/// * `Ok(Some(TypeCheckingFailure))` - If there are typing errors.
+/// * `Ok(None)` - If there are no typing errors.
+/// * `Err(String)` - If there was an unexpected/internal error during type checking.
 pub fn type_check(
     python_source: &SourceFile<'_>,
     stubs_file: Option<&SourceFile<'_>>,
 ) -> Result<Option<TypeCheckingDiagnostics>, String> {
+    // Validate paths up front so checkout cost isn't paid for an invalid call,
+    // and so cleanup never has to deal with paths that escape the source root.
     let main_path = validate_root_file_name(python_source.path, "source")?;
     let stubs_path = stubs_file
-        .map(|stubs_file| validate_root_file_name(stubs_file.path, "stub"))
+        .map(|s| validate_root_file_name(s.path, "stub"))
         .transpose()?;
 
-    if stubs_path.as_ref().is_some_and(|path| path == &main_path) {
-        return Err(format!(
-            "Type checking source and stubs must use different root file names: '{}'",
-            python_source.path
-        ));
-    }
-
+    // Check out a pre-configured db from the global pool. The `Drop` impl on
+    // `PooledMemoryDb` scrubs every root file we write below and returns the db to
+    // the pool when the lease is no longer reachable — either at the end of this
+    // function (clean run) or when the returned `TypeCheckingDiagnostics` is dropped.
     let mut pooled_db = PooledMemoryDb::checkout()?;
-    let result = type_check_with_db(
-        &mut pooled_db,
-        python_source,
-        &main_path,
-        stubs_file.zip(stubs_path.as_ref()),
-    );
-    pooled_db.finish(result)
-}
 
-/// Run one type-check operation against a checked-out pooled database.
-///
-/// The caller provides already-validated root file paths, while the pooled wrapper
-/// owns the temporary-file bookkeeping needed for cleanup.
-fn type_check_with_db(
-    pooled_db: &mut PooledMemoryDb,
-    python_source: &SourceFile<'_>,
-    main_path: &SystemPathBuf,
-    stubs_file: Option<(&SourceFile<'_>, &SystemPathBuf)>,
-) -> Result<Option<TypeCheckingDiagnostics>, String> {
     let main_source = python_source.source_code;
 
-    let (main_file, code_offset) = if let Some((stubs_file, stubs_path)) = stubs_file {
-        pooled_db.write_root_file(stubs_path, stubs_file.source_code)?;
+    let (main_file, code_offset): (File, u32) = if let Some((stubs_file, stubs_path)) = stubs_file.zip(stubs_path) {
+        pooled_db.write_root_file(&stubs_path, stubs_file.source_code)?;
 
-        // Import the stub module into the user's source so ty sees those definitions
-        // while keeping user-visible spans anchored to the original file later.
-        let stub_stem = module_stem(stubs_file.path);
+        // prepend the stub import to the main source code
+        let stub_stem = stubs_file
+            .path
+            .split_once('.')
+            .map_or(stubs_file.path, |(before, _)| before);
         let mut new_source = format!("from {stub_stem} import *\n");
         let offset = u32::try_from(new_source.len()).map_err(to_string)?;
         new_source.push_str(main_source);
 
-        let main_file = pooled_db.write_root_file(main_path, &new_source)?;
+        let main_file = pooled_db.write_root_file(&main_path, &new_source)?;
+        // one line offset for errors vs. the original source code since we injected the stub import
         (main_file, offset)
     } else {
-        let main_file = pooled_db.write_root_file(main_path, main_source)?;
+        let main_file = pooled_db.write_root_file(&main_path, main_source)?;
         (main_file, 0)
     };
 
@@ -146,17 +91,19 @@ fn type_check_with_db(
         return Ok(None);
     }
 
-    // The stub import only exists to seed names into the semantic model. Restore the
-    // original source text before rendering so detached diagnostics show user code.
-    // Route via `rewrite_root_file` so the tracking invariant is checked at runtime
-    // rather than relying on a hand-maintained comment.
+    // without all this errors would appear on the wrong line because we injected `from type_stubs import *`
+
+    // if we injected the stubs import, we need to write the actual source back to the file in the database
+    pooled_db.rewrite_root_file(&main_path, main_source)?;
+    // and then adjust each span in the error message to account for the injected stubs import
     if code_offset > 0 {
-        pooled_db.rewrite_root_file(main_path, main_source)?;
         let offset = TextSize::new(code_offset);
         for diagnostic in &mut diagnostics {
+            // Adjust spans in main diagnostic annotations (only for spans in the main file)
             for ann in diagnostic.annotations_mut() {
                 adjust_annotation_span(ann, main_file, offset);
             }
+            // Adjust spans in sub-diagnostic annotations (e.g., "info: Function defined here")
             for sub in diagnostic.sub_diagnostics_mut() {
                 for ann in sub.annotations_mut() {
                     adjust_annotation_span(ann, main_file, offset);
@@ -164,15 +111,21 @@ fn type_check_with_db(
             }
         }
     }
+    // Sort diagnostics by line number
+    diagnostics.sort_by(|a, b| {
+        a.rendering_sort_key(pooled_db.db())
+            .cmp(&b.rendering_sort_key(pooled_db.db()))
+    });
 
-    let db = pooled_db.db();
-    diagnostics.sort_by(|a, b| a.rendering_sort_key(db).cmp(&b.rendering_sort_key(db)));
-    let rendered = RenderedDiagnostics::new(db, &diagnostics);
-
-    Ok(Some(TypeCheckingDiagnostics::new(rendered)))
+    Ok(Some(TypeCheckingDiagnostics::new(diagnostics, pooled_db)))
 }
 
-/// Validate that `path` names a single root-level file suitable for pooled reuse.
+/// Validate that `path` names a single root-level file suitable for the pooled db.
+///
+/// The pool tracks every written file by exact path and removes them on release;
+/// allowing nested or absolute paths would let stale directory entries leak
+/// between calls and could be used to alias real host paths if the underlying
+/// filesystem ever changed. Reject anything that is not a simple file name.
 fn validate_root_file_name(path: &str, role: &str) -> Result<SystemPathBuf, String> {
     if path.is_empty() {
         return Err(format!("Type checking {role} file name cannot be empty"));
@@ -188,46 +141,17 @@ fn validate_root_file_name(path: &str, role: &str) -> Result<SystemPathBuf, Stri
             "Type checking only supports root-level {role} file names, got '{path}'"
         ));
     }
-
     Ok(SystemPathBuf::from(SRC_ROOT).join(path))
-}
-
-/// Return the importable module stem for a root-level stub file name.
-///
-/// Uses the first `.` as the split so `foo.stubs.pyi` becomes `foo` (matches
-/// Python's package-import semantics for root-level files — there is no
-/// `foo.stubs` module on disk).
-fn module_stem(file_name: &str) -> &str {
-    file_name.split_once('.').map_or(file_name, |(before, _)| before)
-}
-
-/// Render diagnostics with a specific format/color pair while the database is alive.
-fn render_diagnostics(db: &MemoryDb, diagnostics: &[Diagnostic], format: DiagnosticFormat, color: bool) -> String {
-    let config = DisplayDiagnosticConfig::new("monty").format(format).color(color);
-    DisplayDiagnostics::new(db, &config, diagnostics).to_string()
-}
-
-/// Convert a `DiagnosticFormat` to its slot in [`SUPPORTED_FORMATS`].
-fn diagnostic_format_index(format: DiagnosticFormat) -> usize {
-    match format {
-        DiagnosticFormat::Full => 0,
-        DiagnosticFormat::Concise => 1,
-        DiagnosticFormat::Azure => 2,
-        DiagnosticFormat::Json => 3,
-        DiagnosticFormat::JsonLines => 4,
-        DiagnosticFormat::Rdjson => 5,
-        DiagnosticFormat::Pylint => 6,
-        DiagnosticFormat::Gitlab => 7,
-        DiagnosticFormat::Github => 8,
-    }
 }
 
 /// Adjust the span of an annotation by subtracting the given offset.
 ///
-/// This compensates for the injected `from <stub> import *` line so diagnostics still
-/// point at the user's original source.
+/// This is used when we inject a stub import at the beginning of the source code,
+/// and need to adjust all spans to account for the injected code.
+/// Only adjusts spans that belong to the main file being type-checked.
 fn adjust_annotation_span(ann: &mut Annotation, main_file: File, offset: TextSize) {
     let span = ann.get_span();
+    // Only adjust spans for the main file (not stubs or other files)
     if let UnifiedFile::Ty(span_file) = span.file()
         && *span_file == main_file
         && let Some(range) = span.range()
@@ -240,64 +164,94 @@ fn adjust_annotation_span(ann: &mut Annotation, main_file: File, offset: TextSiz
 
 /// Represents diagnostic details when type checking fails.
 ///
-/// The diagnostics are fully detached from the live database. Every supported output
-/// format is rendered eagerly while the db is still checked out, which lets the db be
-/// scrubbed and returned to the pool immediately afterwards.
+/// The pooled database is held inside an `Arc<Mutex<...>>` so that:
+/// 1. Diagnostic rendering can borrow the db lazily on every `Display`/`Debug` call,
+///    avoiding eager pre-rendering of every output format.
+/// 2. The `MontyTypingError` Python exception that wraps this type stays `Send + Sync`.
+/// 3. The `PooledMemoryDb` is released back to the pool exactly when the last clone
+///    of this `Arc` is dropped — RAII via `PooledMemoryDb`'s `Drop` impl.
 #[derive(Clone)]
 pub struct TypeCheckingDiagnostics {
-    rendered: Arc<RenderedDiagnostics>,
+    /// The actual diagnostic message
+    diagnostics: Vec<Diagnostic>,
+    /// Pooled db used to display diagnostics. Wrapped in `Mutex` for `Sync` so
+    /// `MontyTypingError` is sendable; the inner `Drop` impl releases the db when
+    /// the last `Arc` clone is dropped.
+    pooled_db: Arc<Mutex<PooledMemoryDb>>,
+    /// How to format the output
     format: DiagnosticFormat,
+    /// Whether to highlight the output with ansi colors
     color: bool,
 }
 
-/// True debug details for detached type-checking diagnostics.
+/// Debug output for TypeCheckingDiagnostics shows the pretty typing output, and no other values since
+/// this will be displayed when users are printing `Result<..., TypeCheckingDiagnostics>` etc. and the
+/// raw errors are not useful to end users.
+impl fmt::Debug for TypeCheckingDiagnostics {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let config = self.config();
+        let pooled_db = self.pooled_db.lock().unwrap();
+        write!(
+            f,
+            "TypeCheckingDiagnostics:\n{}",
+            DisplayDiagnostics::new(pooled_db.db(), &config, &self.diagnostics)
+        )
+    }
+}
+
+/// To display true debugs details about the TypeCheckingDiagnostics
 #[derive(Debug)]
 #[expect(dead_code)]
 pub struct DebugTypeCheckingDiagnostics<'a> {
-    current_output: &'a str,
+    diagnostics: &'a [Diagnostic],
+    pooled_db: Arc<Mutex<PooledMemoryDb>>,
     format: DiagnosticFormat,
     color: bool,
-}
-
-impl fmt::Debug for TypeCheckingDiagnostics {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "TypeCheckingDiagnostics:\n{self}")
-    }
 }
 
 impl fmt::Display for TypeCheckingDiagnostics {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.rendered.get(self.format, self.color))
+        let pooled_db = self.pooled_db.lock().unwrap();
+        DisplayDiagnostics::new(pooled_db.db(), &self.config(), &self.diagnostics).fmt(f)
     }
 }
 
 impl TypeCheckingDiagnostics {
-    /// Create detached diagnostics with the default full, non-colored output mode.
-    fn new(rendered: RenderedDiagnostics) -> Self {
+    fn new(diagnostics: Vec<Diagnostic>, pooled_db: PooledMemoryDb) -> Self {
         Self {
-            rendered: Arc::new(rendered),
+            diagnostics,
+            pooled_db: Arc::new(Mutex::new(pooled_db)),
             format: DiagnosticFormat::Full,
             color: false,
         }
     }
 
-    /// Return details useful when debugging detached diagnostics behavior.
+    fn config(&self) -> DisplayDiagnosticConfig {
+        DisplayDiagnosticConfig::new("monty")
+            .format(self.format)
+            .color(self.color)
+    }
+
+    /// To display debug details for the TypeCheckingDiagnostics since debug is the pretty output
     #[must_use]
     pub fn debug_details(&self) -> DebugTypeCheckingDiagnostics<'_> {
         DebugTypeCheckingDiagnostics {
-            current_output: self.rendered.get(self.format, self.color),
+            diagnostics: &self.diagnostics,
+            pooled_db: self.pooled_db.clone(),
             format: self.format,
             color: self.color,
         }
     }
 
-    /// Set the output format for later display.
+    /// Set the format of the diagnostics.
     #[must_use]
     pub fn format(self, format: DiagnosticFormat) -> Self {
         Self { format, ..self }
     }
 
-    /// Set the output format from a string accepted by the public bindings.
+    /// Set the format of the diagnostics from a string.
+    /// Valid formats: "full", "concise", "azure", "json", "jsonlines", "rdjson",
+    /// "pylint", "gitlab", "github".
     pub fn format_from_str(self, format: &str) -> Result<Self, String> {
         let format = match format.to_ascii_lowercase().as_str() {
             "full" => DiagnosticFormat::Full,
@@ -307,6 +261,8 @@ impl TypeCheckingDiagnostics {
             "jsonlines" | "json-lines" => DiagnosticFormat::JsonLines,
             "rdjson" => DiagnosticFormat::Rdjson,
             "pylint" => DiagnosticFormat::Pylint,
+            // don't bother with the "junit" feature, please check the binary size and add it if you need this format
+            // "junit" => DiagnosticFormat::Junit,
             "gitlab" => DiagnosticFormat::Gitlab,
             "github" => DiagnosticFormat::Github,
             _ => return Err(format!("Unknown format: {format}")),
@@ -314,14 +270,14 @@ impl TypeCheckingDiagnostics {
         Ok(Self { format, ..self })
     }
 
-    /// Set whether future displays should use the colored pre-rendered output.
+    /// Set whether to highlight the output with ansi colors
     #[must_use]
     pub fn color(self, color: bool) -> Self {
         Self { color, ..self }
     }
 }
 
-/// Filter out diagnostics we intentionally ignore for now.
+/// Filter out diagnostics we want to ignore.
 ///
 /// Should only be necessary until <https://github.com/astral-sh/ty/issues/2599> is fixed.
 fn filter_diagnostics(d: &Diagnostic) -> bool {

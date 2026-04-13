@@ -2,14 +2,15 @@ use std::{fmt, sync::Arc};
 
 use ruff_db::{
     Db as SourceDb,
-    files::{File, Files},
-    system::{DbWithTestSystem, System, TestSystem},
+    files::{File, FileRootKind, Files},
+    system::{DbWithTestSystem, System, SystemPathBuf, TestSystem},
     vendored::VendoredFileSystem,
 };
 use ruff_python_ast::PythonVersion;
-use ty_module_resolver::{Db as ModuleResolverDb, SearchPaths};
+use ty_module_resolver::{Db as ModuleResolverDb, SearchPathSettings, SearchPaths};
 use ty_python_semantic::{
-    AnalysisSettings, Db, Program, default_lint_registry,
+    AnalysisSettings, Db, Program, ProgramSettings, PythonPlatform, PythonVersionSource, PythonVersionWithSource,
+    default_lint_registry,
     lint::{LintRegistry, RuleSelection},
 };
 
@@ -45,17 +46,49 @@ impl fmt::Debug for MemoryDb {
     }
 }
 
+/// Virtual source root used for all in-memory type-checking files.
+///
+/// The reusable database pool only supports root-level user files, so every public
+/// `SourceFile.path` is mapped directly under `/`.
+pub(crate) const SRC_ROOT: &str = "/";
+
 impl Default for MemoryDb {
-    /// Create a fresh database with its own Salsa storage and Monty's fixed typing config.
+    /// Create a fresh database wired up for type checking under `SRC_ROOT`.
+    ///
+    /// Registers `SRC_ROOT` as a Salsa-tracked project root and installs the
+    /// `Program` settings needed by `check_types`. Returning a db without this
+    /// setup would unwrap-panic the first time `check_types` is called, so this
+    /// constructor is the only sanctioned way to build a `MemoryDb`.
     fn default() -> Self {
-        Self {
+        let src_root = SystemPathBuf::from(SRC_ROOT);
+        let db = Self {
             storage: salsa::Storage::new(None),
             system: TestSystem::default(),
             vendored: monty_typeshed::file_system().clone(),
             files: Files::default(),
             rule_selection: Arc::new(RuleSelection::from_registry(default_lint_registry())),
             analysis_settings: AnalysisSettings::default().into(),
-        }
+        };
+
+        db.files().try_add_root(&db, &src_root, FileRootKind::Project);
+
+        let search_paths = SearchPathSettings::new(vec![src_root.to_path_buf()])
+            .to_search_paths(db.system(), db.vendored())
+            .expect("vendored typeshed search paths always resolve");
+
+        Program::from_settings(
+            &db,
+            ProgramSettings {
+                python_version: PythonVersionWithSource {
+                    version: db.python_version(),
+                    source: PythonVersionSource::default(),
+                },
+                python_platform: PythonPlatform::default(),
+                search_paths,
+            },
+        );
+
+        db
     }
 }
 
