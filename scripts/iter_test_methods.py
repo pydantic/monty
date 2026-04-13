@@ -407,17 +407,26 @@ def _remove_from_parent_dir(path_str: str) -> None:
 _original_path_new = Path.__new__
 
 
-def _virtual_path_new(cls: type, *args: object, **kwargs: object) -> Path:
+def _virtual_path_new(cls: type[Path], *args: object, **kwargs: object) -> Path:
     """Custom __new__ that returns VirtualPath for paths starting with /virtual or /nonexistent.
 
     Only virtual paths get the VirtualPath treatment. All other paths use the
     standard pathlib behavior (PosixPath/WindowsPath).
+
+    We must also handle ``cls is VirtualPath`` (not just ``cls is Path``)
+    because pathlib internally calls ``type(self)(*pathsegments)`` from
+    methods like ``with_segments`` / ``parent``, which re-enters this
+    patched ``__new__`` with the subclass as *cls*.  Without this guard
+    the fallback to ``_original_path_new`` triggers infinite recursion in
+    Python 3.14+.
     """
-    if cls is Path and args and isinstance(args[0], str):
+    if args and isinstance(args[0], str):
         path_str = args[0]
         if path_str.startswith('/virtual') or path_str.startswith('/nonexistent'):
             return object.__new__(VirtualPath)
-    return _original_path_new(cls, *args, **kwargs)  # pyright: ignore[reportUnknownVariableType,reportArgumentType]
+    if issubclass(cls, VirtualPath):
+        return object.__new__(VirtualPath)
+    return _original_path_new(cls, *args, **kwargs)  # pyright: ignore[reportArgumentType]
 
 
 # Apply the monkey-patch

@@ -1,4 +1,4 @@
-# mode: iter
+# call-external
 # Test setattr() builtin function
 
 mut_point = make_mutable_point()
