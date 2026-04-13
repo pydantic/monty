@@ -168,18 +168,16 @@ jobs:
       - run: uv sync --all-packages --only-dev
         # don't use .venv python in CI
       - run: rm .cargo/config.toml
-      - run: cargo llvm-cov clean --workspace
 
-      - name: Build Python bindings with Rust coverage
+      - name: Build and test Python bindings and run pytest with Rust coverage
         run: |
           set -euxo pipefail
           eval "$(cargo llvm-cov show-env --export-prefix)"
+          cargo llvm-cov clean --workspace
           uv run maturin develop --uv -m crates/monty-python/Cargo.toml
-
-      - run: uv run --package pydantic-monty --only-dev pytest crates/monty-python/tests
-
-      - run: cargo llvm-cov report --ignore-filename-regex "$LLVM_COV_IGNORE_FILENAME_REGEX"
-      - run: cargo llvm-cov report --codecov --output-path=python-rust-coverage.json --ignore-filename-regex "$LLVM_COV_IGNORE_FILENAME_REGEX"
+          uv run --package pydantic-monty --only-dev pytest crates/monty-python/tests
+          cargo llvm-cov report --ignore-filename-regex "$LLVM_COV_IGNORE_FILENAME_REGEX"
+          cargo llvm-cov report --codecov --output-path=python-rust-coverage.json --ignore-filename-regex "$LLVM_COV_IGNORE_FILENAME_REGEX"
 
       - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
@@ -225,18 +223,17 @@ jobs:
         run: npm install
         working-directory: crates/monty-js
 
-      - run: cargo llvm-cov clean --workspace
-
-      - name: Build and test JS bindings with Rust coverage
+      - name: Build and test JS bindings and run tests with Rust coverage
         run: |
           set -euxo pipefail
           eval "$(cargo llvm-cov show-env --export-prefix)"
+          cargo llvm-cov clean --workspace
           cd crates/monty-js
           npm run build:debug
           npm test
-
-      - run: cargo llvm-cov report --ignore-filename-regex "$LLVM_COV_IGNORE_FILENAME_REGEX"
-      - run: cargo llvm-cov report --codecov --output-path=js-rust-coverage.json --ignore-filename-regex "$LLVM_COV_IGNORE_FILENAME_REGEX"
+          cd ../..
+          cargo llvm-cov report --ignore-filename-regex "$LLVM_COV_IGNORE_FILENAME_REGEX"
+          cargo llvm-cov report --codecov --output-path=js-rust-coverage.json --ignore-filename-regex "$LLVM_COV_IGNORE_FILENAME_REGEX"
 
       - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
