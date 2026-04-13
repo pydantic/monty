@@ -4,6 +4,8 @@ use std::{
     vec::{Drain, IntoIter},
 };
 
+use smallvec::SmallVec;
+
 use crate::{
     ResourceTracker,
     heap::{Heap, HeapId, RecursionToken},
@@ -105,6 +107,17 @@ impl<U: DropWithHeap> DropWithHeap for Option<U> {
 }
 
 impl<U: DropWithHeap> DropWithHeap for Vec<U> {
+    fn drop_with_heap<H: ContainsHeap>(self, heap: &mut H) {
+        for value in self {
+            value.drop_with_heap(heap);
+        }
+    }
+}
+
+impl<A: smallvec::Array> DropWithHeap for SmallVec<A>
+where
+    A::Item: DropWithHeap,
+{
     fn drop_with_heap<H: ContainsHeap>(self, heap: &mut H) {
         for value in self {
             value.drop_with_heap(heap);

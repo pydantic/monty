@@ -5,7 +5,7 @@ use crate::{
     bytecode::VM,
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, RunError, RunResult, SimpleException},
-    heap::HeapData,
+    heap::{HeapData, HeapGuard},
     resource::ResourceTracker,
     types::{List, MontyIter, PyTrait, allocate_tuple, tuple::TupleVec},
     value::Value,
@@ -30,41 +30,30 @@ pub fn builtin_zip(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -
     }
 
     // Create iterators for each iterable
-    let mut iterators: Vec<MontyIter> = Vec::with_capacity(positional.len());
+    let iterators: Vec<MontyIter> = Vec::with_capacity(positional.len());
+    defer_drop_mut!(iterators, vm);
     for iterable in positional {
-        match MontyIter::new(iterable, vm) {
-            Ok(iter) => iterators.push(iter),
-            Err(e) => {
-                // Clean up already-created iterators
-                for iter in iterators {
-                    iter.drop_with_heap(vm);
-                }
-                return Err(e);
-            }
-        }
+        iterators.push(MontyIter::new(iterable, vm)?);
     }
 
-    let mut result: Vec<Value> = Vec::new();
+    let mut result_guard = HeapGuard::new(Vec::new(), vm);
+    let (result, vm) = result_guard.as_parts_mut();
 
     // Zip until shortest iterator is exhausted
-    loop {
-        let mut tuple_items = TupleVec::with_capacity(iterators.len());
+    'outer: loop {
+        let mut items_guard = HeapGuard::new(TupleVec::with_capacity(iterators.len()), vm);
+        let (tuple_items, vm) = items_guard.as_parts_mut();
 
         for (i, iter) in iterators.iter_mut().enumerate() {
             if let Some(item) = iter.for_next(vm)? {
                 tuple_items.push(item);
             } else {
-                // This iterator is exhausted — drop partial tuple items and stop
-                for item in tuple_items {
-                    item.drop_with_heap(vm);
-                }
+                // This iterator is exhausted - stop zipping
 
                 if strict {
                     // In strict mode, if i > 0 then argument i+1 ran out before
                     // the earlier ones, so it is "shorter."
                     if i > 0 {
-                        cleanup_result(&mut result, vm);
-                        cleanup_iterators(iterators, vm);
                         return Err(strict_length_error(i + 1, i, "shorter"));
                     }
                     // i == 0: first iterator exhausted — verify every remaining
@@ -75,23 +64,24 @@ pub fn builtin_zip(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -
                     for (j, remaining) in iterators.iter_mut().enumerate().skip(1) {
                         if let Some(extra) = remaining.for_next(vm)? {
                             extra.drop_with_heap(vm);
-                            cleanup_result(&mut result, vm);
-                            cleanup_iterators(iterators, vm);
                             return Err(strict_length_error(j + 1, j, "longer"));
                         }
                     }
                 }
 
-                cleanup_iterators(iterators, vm);
-                let heap_id = vm.heap.allocate(HeapData::List(List::new(result)))?;
-                return Ok(Value::Ref(heap_id));
+                break 'outer;
             }
         }
 
         // Create tuple from collected items
+        let (tuple_items, vm) = items_guard.into_parts();
         let tuple_val = allocate_tuple(tuple_items, vm.heap)?;
         result.push(tuple_val);
     }
+
+    let (result, vm) = result_guard.into_parts();
+    let heap_id = vm.heap.allocate(HeapData::List(List::new(result)))?;
+    Ok(Value::Ref(heap_id))
 }
 
 /// Extracts the `strict` keyword argument from `zip()`.
@@ -130,20 +120,6 @@ fn extract_zip_strict(kwargs: KwargsValues, vm: &mut VM<'_, '_, impl ResourceTra
         Err(error)
     } else {
         Ok(strict)
-    }
-}
-
-/// Cleans up all iterators after the zip loop completes or errors.
-fn cleanup_iterators(iterators: Vec<MontyIter>, vm: &mut VM<'_, '_, impl ResourceTracker>) {
-    for iter in iterators {
-        iter.drop_with_heap(vm);
-    }
-}
-
-/// Drops all accumulated result tuples, used on error paths in strict mode.
-fn cleanup_result(result: &mut Vec<Value>, vm: &mut VM<'_, '_, impl ResourceTracker>) {
-    for val in result.drain(..) {
-        val.drop_with_heap(vm);
     }
 }
 
