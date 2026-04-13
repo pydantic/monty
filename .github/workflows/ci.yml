@@ -196,7 +196,8 @@ jobs:
       - name: Setup node
         uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0  # zizmor: ignore[cache-poisoning] -- Job does not produce release artifacts and does not have sensitive permissions
         with:
-          node-version: 24
+          # Match the supported JS test matrix; @oxc-node/core currently fails on Node 24 here.
+          node-version: 22
           cache: npm
           cache-dependency-path: crates/monty-js/package-lock.json
 
