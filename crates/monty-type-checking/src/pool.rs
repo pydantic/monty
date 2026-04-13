@@ -207,3 +207,61 @@ fn cleanup_touched_files(db: &mut MemoryDb, touched_files: &[TouchedRootFile]) -
 fn to_string(err: impl Display) -> String {
     err.to_string()
 }
+
+#[cfg(test)]
+mod tests {
+    use std::{ptr, sync::Mutex};
+
+    use ruff_db::files::FileError;
+
+    use super::*;
+
+    /// Serializes tests that manipulate the process-wide pool so they observe a
+    /// deterministic pool state rather than racing with each other.
+    static TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn pool_is_global_singleton() {
+        assert!(
+            ptr::eq(MemoryDbPool::global(), MemoryDbPool::global()),
+            "global pool must resolve to the same instance on every call",
+        );
+    }
+
+    #[test]
+    fn reused_db_does_not_leak_previous_files() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        drain_pool();
+
+        let path = SystemPathBuf::from("/pool_test_reuse.py");
+
+        let mut pooled = PooledMemoryDb::checkout().expect("initial checkout");
+        pooled.write_root_file(&path, "x = 1\n").expect("write root file");
+        assert!(
+            system_path_to_file(pooled.db(), &path).is_ok(),
+            "file should be visible within the run that wrote it",
+        );
+        pooled.finish::<()>(Ok(())).expect("finish first run");
+
+        assert_eq!(pool_len(), 1, "scrubbed db should be released back to the pool");
+
+        // Second checkout pops the only entry, so we are guaranteed the same db.
+        let mut pooled = PooledMemoryDb::checkout().expect("re-checkout");
+        assert_eq!(pool_len(), 0, "pool should be empty after re-checkout");
+        assert!(
+            matches!(system_path_to_file(pooled.db(), &path), Err(FileError::NotFound)),
+            "previous run's file must not be visible in the reused db",
+        );
+        pooled.finish::<()>(Ok(())).expect("finish second run");
+
+        drain_pool();
+    }
+
+    fn pool_len() -> usize {
+        MemoryDbPool::global().dbs.lock().unwrap().len()
+    }
+
+    fn drain_pool() {
+        MemoryDbPool::global().dbs.lock().unwrap().clear();
+    }
+}
