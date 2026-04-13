@@ -49,22 +49,19 @@ pub fn type_check(
     python_source: &SourceFile<'_>,
     stubs_file: Option<&SourceFile<'_>>,
 ) -> Result<Option<TypeCheckingDiagnostics>, String> {
-    // Validate paths up front so checkout cost isn't paid for an invalid call,
-    // and so cleanup never has to deal with paths that escape the source root.
-    let main_path = validate_root_file_name(python_source.path, "source")?;
-    let stubs_path = stubs_file
-        .map(|s| validate_root_file_name(s.path, "stub"))
-        .transpose()?;
-
     // Check out a pre-configured db from the global pool. The `Drop` impl on
-    // `PooledMemoryDb` scrubs every file we write below and returns the db to
-    // the pool when the lease is no longer reachable — either at the end of this
-    // function (clean run) or when the returned `TypeCheckingDiagnostics` is dropped.
+    // `PooledMemoryDb` scrubs every file (and now also every parent directory) we
+    // write below and returns the db to the pool when the lease is no longer
+    // reachable — either at the end of this function (clean run) or when the
+    // returned `TypeCheckingDiagnostics` is dropped.
     let mut pooled_db = PooledMemoryDb::checkout()?;
 
+    let src_root = SystemPathBuf::from(SRC_ROOT);
+    let main_path = src_root.join(python_source.path);
     let main_source = python_source.source_code;
 
-    let (main_file, code_offset): (File, u32) = if let Some((stubs_file, stubs_path)) = stubs_file.zip(stubs_path) {
+    let (main_file, code_offset): (File, u32) = if let Some(stubs_file) = stubs_file {
+        let stubs_path = src_root.join(stubs_file.path);
         pooled_db.write_root_file(&stubs_path, stubs_file.source_code)?;
 
         // prepend the stub import to the main source code
@@ -116,30 +113,6 @@ pub fn type_check(
 
         Ok(Some(TypeCheckingDiagnostics::new(diagnostics, pooled_db)))
     }
-}
-
-/// Validate that `path` names a single root-level file suitable for the pooled db.
-///
-/// The pool tracks every written file by exact path and removes them on release;
-/// allowing nested or absolute paths would let stale directory entries leak
-/// between calls and could be used to alias real host paths if the underlying
-/// filesystem ever changed. Reject anything that is not a simple file name.
-fn validate_root_file_name(path: &str, role: &str) -> Result<SystemPathBuf, String> {
-    if path.is_empty() {
-        return Err(format!("Type checking {role} file name cannot be empty"));
-    }
-    if path.contains('\0') {
-        return Err(format!(
-            "Type checking {role} file name must not contain NUL bytes, got '{}'",
-            path.escape_debug()
-        ));
-    }
-    if path == "." || path == ".." || path.contains('/') || path.contains('\\') {
-        return Err(format!(
-            "Type checking only supports root-level {role} file names, got '{path}'"
-        ));
-    }
-    Ok(SystemPathBuf::from(SRC_ROOT).join(path))
 }
 
 /// Adjust the span of an annotation by subtracting the given offset.

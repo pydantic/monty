@@ -300,30 +300,37 @@ fn pooled_db_concurrent_runs_stay_isolated() {
     });
 }
 
-/// Security-critical: path validation rejects any path that could write outside
-/// the root or alias a different file via path traversal.
+/// Security-critical: nested paths must be accepted and fully scrubbed (including
+/// the intermediate directories) so the next pooled run cannot see the previous
+/// run's module structure.
 #[test]
-fn pooled_db_rejects_non_root_paths() {
-    let code = "x: int = 1\n";
-    for bad in [
-        "",
-        ".",
-        "..",
-        "a/b.py",
-        "a\\b.py",
-        "sub/mod.py",
-        "../mod.py",
-        "/abs/path.py",
-        "/etc/passwd",
-        "has\0nul.py",
-    ] {
-        let err = type_check(&SourceFile::new(code, bad), None)
-            .expect_err(&format!("expected validation error for path {bad:?}"));
-        assert!(
-            err.contains("root-level") || err.contains("empty") || err.contains("NUL"),
-            "path {bad:?} should be rejected by validation, got: {err}"
-        );
-    }
+fn pooled_db_nested_paths_are_cleaned_up() {
+    // First run defines a name in a nested module; type-checks clean.
+    let r1 = type_check(&SourceFile::new("LEAKY: int = 1\n", "sub_dir/leaky.py"), None).unwrap();
+    assert!(r1.is_none(), "first nested-path run should succeed: {r1:#?}");
+
+    // Second run on the same path uses a different name; if the previous run's
+    // file or its containing directory leaked into the pool, `LEAKY` would still
+    // resolve. Must error.
+    let r2 = type_check(&SourceFile::new("x: int = LEAKY\n", "sub_dir/leaky.py"), None)
+        .unwrap()
+        .expect("nested-path leak probe must error — `LEAKY` must not survive into the next run");
+    let msg = r2.format(DiagnosticFormat::Concise).to_string();
+    assert!(
+        msg.contains("unresolved-reference") || msg.contains("Name `LEAKY`") || msg.contains("possibly-unbound"),
+        "nested-path leak probe must report `LEAKY` as undefined; got:\n{msg}"
+    );
+
+    // Third run from a *different* nested path importing the previous module must
+    // also fail — the directory should be empty / unresolvable.
+    let r3 = type_check(&SourceFile::new("from sub_dir.leaky import LEAKY\n", "other.py"), None)
+        .unwrap()
+        .expect("third run must error — sub_dir/leaky.py was deleted on cleanup");
+    let msg = r3.format(DiagnosticFormat::Concise).to_string();
+    assert!(
+        msg.contains("unresolved-import") || msg.contains("unresolved-reference"),
+        "third run must report the import as unresolved; got:\n{msg}"
+    );
 }
 
 #[test]

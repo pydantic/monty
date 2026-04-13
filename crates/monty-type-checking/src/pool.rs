@@ -168,6 +168,14 @@ impl TouchedRootFile {
         Self { path, file }
     }
 
+    /// Remove the file from the in-memory filesystem, then walk its ancestor
+    /// chain and remove every directory under `SRC_ROOT` that has become empty.
+    ///
+    /// `remove_directory` requires the directory to be empty, so if two touched
+    /// files live in the same directory the first cleanup hits
+    /// `DirectoryNotEmpty` (silently swallowed) and the second succeeds once its
+    /// file is gone. This gives us correct cleanup without needing to sort paths
+    /// or coordinate across `TouchedRootFile`s.
     fn cleanup(&self, db: &mut MemoryDb) -> Result<(), String> {
         match db.memory_file_system().remove_file(&self.path) {
             Ok(()) => {}
@@ -180,14 +188,46 @@ impl TouchedRootFile {
             }
         }
         self.file.sync(db);
+
+        // Walk parents up to but not including SRC_ROOT, removing each empty directory
+        // and syncing its path so Salsa invalidates any cached directory listing.
+        let src_root = SystemPathBuf::from(SRC_ROOT);
+        let mut ancestor = self.path.parent();
+        while let Some(dir) = ancestor
+            && dir != src_root.as_path()
+        {
+            match db.memory_file_system().remove_directory(dir) {
+                Ok(()) => {}
+                // Another touched file still lives in this directory; it will be
+                // removed by a later `cleanup` call. Every ancestor above this
+                // one is necessarily also non-empty (they contain this directory),
+                // so there is no point walking further up.
+                //
+                // `MemoryFileSystem::remove_directory` reports "directory not
+                // empty" as `io::Error::other(...)` (kind `Other`), so we match on
+                // the message rather than on `ErrorKind::DirectoryNotEmpty`.
+                Err(err) if err.to_string().contains("directory not empty") => break,
+                // `NotFound` at this point would mean the directory never existed
+                // or was already removed, both of which indicate a logic bug
+                // (e.g. the same path tracked twice) — fail loudly.
+                Err(err) => {
+                    return Err(format!("Failed to remove pooled type-check directory '{dir}': {err}"));
+                }
+            }
+            File::sync_path(db, dir);
+            ancestor = dir.parent();
+        }
         Ok(())
     }
 }
 
 /// Remove all files written during a type-check run and sync the filesystem changes.
 ///
-/// Cleanup runs in reverse write order and always syncs `/` once at the end so root
-/// directory listings cannot leak between pooled sessions.
+/// Each `TouchedRootFile::cleanup` removes its own file and walks its ancestor
+/// chain up to `SRC_ROOT`, removing any directory that has become empty. Shared
+/// parent directories collapse naturally once the last file inside them is gone.
+/// We sync `SRC_ROOT` once at the end so the next pooled session cannot observe
+/// the previous root directory listing.
 fn cleanup_touched_files(db: &mut MemoryDb, touched_files: &[TouchedRootFile]) -> Result<(), String> {
     for touched in touched_files.iter().rev() {
         touched.cleanup(db)?;
@@ -206,7 +246,7 @@ pub(crate) fn to_string(err: impl Display) -> String {
 mod tests {
     use std::{ptr, sync::Mutex};
 
-    use ruff_db::files::FileError;
+    use ruff_db::{files::FileError, system::SystemPath};
 
     use super::*;
 
@@ -245,6 +285,93 @@ mod tests {
         assert!(
             matches!(system_path_to_file(pooled.db(), &path), Err(FileError::NotFound)),
             "previous run's file must not be visible in the reused db",
+        );
+        drop(pooled);
+
+        drain_pool();
+    }
+
+    /// Nested file should be removed AND its parent directory collapsed, so a
+    /// reused db cannot tell the previous run's module structure ever existed.
+    #[test]
+    fn nested_file_cleanup_removes_parent_directory() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        drain_pool();
+
+        let path = SystemPathBuf::from("/sub_dir/nested.py");
+
+        let mut pooled = PooledMemoryDb::checkout().expect("checkout");
+        pooled.write_root_file(&path, "x = 1\n").expect("write nested file");
+        assert!(pooled.db().memory_file_system().is_directory("/sub_dir"));
+        assert!(pooled.db().memory_file_system().is_file(&path));
+        drop(pooled);
+
+        // Pop the same db back out and confirm both file and parent dir are gone.
+        let pooled = PooledMemoryDb::checkout().expect("re-checkout");
+        let fs = pooled.db().memory_file_system();
+        assert!(!fs.exists(&path), "nested file must be removed after cleanup");
+        assert!(
+            !fs.is_directory(SystemPath::new("/sub_dir")),
+            "empty parent directory must be removed so it cannot leak into the next run"
+        );
+        drop(pooled);
+
+        drain_pool();
+    }
+
+    /// Deep nesting: the whole ancestor chain between the file and `/` should
+    /// collapse, leaving only `/` behind.
+    #[test]
+    fn deeply_nested_file_cleans_up_full_chain() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        drain_pool();
+
+        let path = SystemPathBuf::from("/a/b/c/deep.py");
+
+        let mut pooled = PooledMemoryDb::checkout().expect("checkout");
+        pooled
+            .write_root_file(&path, "x = 1\n")
+            .expect("write deeply nested file");
+        drop(pooled);
+
+        let pooled = PooledMemoryDb::checkout().expect("re-checkout");
+        let fs = pooled.db().memory_file_system();
+        for dir in ["/a/b/c", "/a/b", "/a"] {
+            assert!(
+                !fs.is_directory(SystemPath::new(dir)),
+                "ancestor directory '{dir}' must be removed after cleanup"
+            );
+        }
+        assert!(fs.is_directory(SystemPath::new("/")), "SRC_ROOT itself must stay");
+        drop(pooled);
+
+        drain_pool();
+    }
+
+    /// Two touched files in the same parent dir: the first cleanup hits
+    /// `DirectoryNotEmpty` (silently tolerated), the second cleanup finally
+    /// removes the now-empty directory.
+    #[test]
+    fn shared_parent_directory_collapses_when_last_file_removed() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        drain_pool();
+
+        let a = SystemPathBuf::from("/shared/a.py");
+        let b = SystemPathBuf::from("/shared/b.py");
+
+        let mut pooled = PooledMemoryDb::checkout().expect("checkout");
+        pooled.write_root_file(&a, "x = 1\n").expect("write a");
+        pooled.write_root_file(&b, "y = 2\n").expect("write b");
+        assert!(pooled.db().memory_file_system().is_directory("/shared"));
+        drop(pooled);
+
+        let pooled = PooledMemoryDb::checkout().expect("re-checkout");
+        let fs = pooled.db().memory_file_system();
+        assert!(!fs.exists(&a));
+        assert!(!fs.exists(&b));
+        assert!(
+            !fs.is_directory(SystemPath::new("/shared")),
+            "shared parent must be removed once both files are gone",
         );
         drop(pooled);
 
