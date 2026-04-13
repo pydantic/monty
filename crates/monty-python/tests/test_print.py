@@ -216,7 +216,19 @@ def test_collect_streams_run_returns_raw_output() -> None:
     result = m.run(print_callback=collector)
 
     assert result == snapshot(123)
-    assert collector.output == snapshot([('stdout', 'a\nb 1\n')])
+    assert collector.output == snapshot([('stdout', 'a\n'), ('stdout', 'b '), ('stdout', '1\n')])
+
+
+def test_collect_streams_repr() -> None:
+    collector = pydantic_monty.CollectStreams()
+
+    assert collector.output == snapshot([])
+    assert repr(collector) == snapshot('CollectStreams(output=[])')
+
+    pydantic_monty.Monty('print("hello")').run(print_callback=collector)
+
+    assert collector.output == snapshot([('stdout', 'hello\n')])
+    assert repr(collector) == snapshot("CollectStreams(output=[('stdout', 'hello\\n')])")
 
 
 def test_collect_string_run_returns_raw_output() -> None:
@@ -227,6 +239,27 @@ def test_collect_string_run_returns_raw_output() -> None:
 
     assert result == snapshot(123)
     assert collector.output == snapshot('a\nb 1\n')
+
+
+def test_collect_string_repr() -> None:
+    collector = pydantic_monty.CollectString()
+
+    assert collector.output == snapshot('')
+    assert repr(collector) == snapshot("CollectString(output='')")
+
+    pydantic_monty.Monty('print("hello")').run(print_callback=collector)
+
+    assert collector.output == snapshot('hello\n')
+    assert repr(collector) == snapshot("CollectString(output='hello\\n')")
+
+
+def test_collect_string_reuse_across_runs_accumulates() -> None:
+    collector = pydantic_monty.CollectString()
+
+    assert pydantic_monty.Monty('print("one")').run(print_callback=collector) is None
+    assert pydantic_monty.Monty('print("two")').run(print_callback=collector) is None
+
+    assert collector.output == snapshot('one\ntwo\n')
 
 
 def test_collect_streams_start_resume_uses_collector_only() -> None:
@@ -249,7 +282,18 @@ print("after", x)
     assert isinstance(complete, pydantic_monty.MontyComplete)
     assert not hasattr(complete, 'print_output')
     assert complete.output is None
-    assert collector.output == snapshot([('stdout', 'before\nafter 5\n')])
+    assert collector.output == snapshot([('stdout', 'before\n'), ('stdout', 'after '), ('stdout', '5\n')])
+
+
+def test_collect_streams_error_stays_on_collector() -> None:
+    m = pydantic_monty.Monty('print("about to fail"); raise ValueError("boom")')
+    collector = pydantic_monty.CollectStreams()
+
+    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
+        m.run(print_callback=collector)
+
+    assert collector.output == snapshot([('stdout', 'about to fail\n')])
+    assert not hasattr(exc_info.value, 'print_output')
 
 
 def test_collect_string_error_stays_on_collector() -> None:
@@ -261,6 +305,30 @@ def test_collect_string_error_stays_on_collector() -> None:
 
     assert collector.output == snapshot('about to fail\n')
     assert not hasattr(exc_info.value, 'print_output')
+
+
+def test_collect_streams_run_async_accumulates_across_external_call() -> None:
+    code = """
+print("before")
+x = await fetch()
+print("after", x)
+"""
+    m = pydantic_monty.Monty(code)
+    collector = pydantic_monty.CollectStreams()
+
+    async def fetch() -> int:
+        return 10
+
+    async def go() -> object:
+        return await m.run_async(
+            external_functions={'fetch': fetch},
+            print_callback=collector,
+        )
+
+    result = asyncio.run(go())
+
+    assert result is None
+    assert collector.output == snapshot([('stdout', 'before\n'), ('stdout', 'after '), ('stdout', '10\n')])
 
 
 def test_collect_string_run_async_accumulates_across_external_call() -> None:
@@ -309,6 +377,30 @@ print("after", x)
     assert complete.output is None
     assert first_collector.output == snapshot('before\n')
     assert loaded_collector.output == snapshot('after 10\n')
+
+
+def test_load_snapshot_uses_fresh_collect_streams() -> None:
+    code = """
+print("before")
+x = fetch()
+print("after", x)
+"""
+    m = pydantic_monty.Monty(code)
+    first_collector = pydantic_monty.CollectStreams()
+    progress = m.start(print_callback=first_collector)
+    assert isinstance(progress, pydantic_monty.FunctionSnapshot)
+    assert first_collector.output == snapshot([('stdout', 'before\n')])
+
+    data = progress.dump()
+    loaded_collector = pydantic_monty.CollectStreams()
+    loaded = pydantic_monty.load_snapshot(data, print_callback=loaded_collector)
+    assert isinstance(loaded, pydantic_monty.FunctionSnapshot)
+    complete = loaded.resume(return_value=10)
+
+    assert isinstance(complete, pydantic_monty.MontyComplete)
+    assert complete.output is None
+    assert first_collector.output == snapshot([('stdout', 'before\n')])
+    assert loaded_collector.output == snapshot([('stdout', 'after '), ('stdout', '10\n')])
 
 
 def test_collectors_are_valid_print_callback_values() -> None:

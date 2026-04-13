@@ -88,7 +88,7 @@ impl PrintWriter<'_> {
                 Ok(())
             }
             Self::CollectStreams(buf) => {
-                append_streams_str(buf, PrintStream::Stdout, &output);
+                buf.push((PrintStream::Stdout, output.into_owned()));
                 Ok(())
             }
             Self::Callback(cb) => cb.stdout_write(output),
@@ -116,15 +116,6 @@ impl PrintWriter<'_> {
             }
             Self::Callback(cb) => cb.stdout_push(end),
         }
-    }
-}
-
-/// Appends a string fragment to the collect-streams buffer, merging into the
-/// trailing tuple when the stream matches.
-fn append_streams_str(buf: &mut Vec<(PrintStream, String)>, stream: PrintStream, text: &str) {
-    match buf.last_mut() {
-        Some((s, existing)) if *s == stream => existing.push_str(text),
-        _ => buf.push((stream, text.to_owned())),
     }
 }
 

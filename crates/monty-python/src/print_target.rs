@@ -26,7 +26,7 @@ use pyo3::{
     exceptions::PyTypeError,
     intern,
     prelude::*,
-    types::{PyList, PyString, PyTuple},
+    types::{PyList, PyString},
 };
 
 use crate::exceptions::exc_py_to_monty;
@@ -66,13 +66,25 @@ impl PyCollectStreams {
 
     /// Returns the collected `(stream, text)` tuples so far.
     #[getter]
-    fn output(&self, py: Python<'_>) -> PyResult<Py<PyList>> {
-        let guard = self.buffer.lock().unwrap_or_else(PoisonError::into_inner);
-        vec_to_py_list(py, guard.clone())
+    fn output<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
+        PyList::new(
+            py,
+            self.buffer
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .iter()
+                .map(|(stream, text)| {
+                    let label = match stream {
+                        PrintStream::Stdout => intern!(py, "stdout"),
+                        PrintStream::Stderr => intern!(py, "stderr"),
+                    };
+                    (label, text.as_str())
+                }),
+        )
     }
 
     fn __repr__(&self, py: Python<'_>) -> PyResult<String> {
-        Ok(format!("CollectStreams(output={})", self.output(py)?.bind(py).repr()?))
+        Ok(format!("CollectStreams(output={})", self.output(py)?.repr()?))
     }
 }
 
@@ -104,13 +116,13 @@ impl PyCollectString {
 
     /// Returns the collected text so far.
     #[getter]
-    fn output(&self, py: Python<'_>) -> Py<PyString> {
+    fn output<'py>(&self, py: Python<'py>) -> Bound<'py, PyString> {
         let guard = self.buffer.lock().unwrap_or_else(PoisonError::into_inner);
-        PyString::new(py, guard.as_str()).unbind()
+        PyString::new(py, guard.as_str())
     }
 
     fn __repr__(&self, py: Python<'_>) -> PyResult<String> {
-        Ok(format!("CollectString(output={})", self.output(py).bind(py).repr()?))
+        Ok(format!("CollectString(output={})", self.output(py).repr()?))
     }
 }
 
@@ -244,24 +256,6 @@ impl PrintTarget {
             Self::CollectString(arc) => PrintStorage::CollectString(arc.lock().unwrap_or_else(PoisonError::into_inner)),
         }
     }
-}
-
-/// Builds the Python list exposed by `CollectStreams.output`.
-///
-/// Each entry is a 2-tuple `(stream_label, text)`. The stream labels are
-/// interned module-level strings so all entries share one `PyString` per
-/// stream, keeping memory down for large collected outputs.
-fn vec_to_py_list(py: Python<'_>, items: Vec<(PrintStream, String)>) -> PyResult<Py<PyList>> {
-    let list = PyList::empty(py);
-    for (stream, text) in items {
-        let label = match stream {
-            PrintStream::Stdout => intern!(py, "stdout"),
-            PrintStream::Stderr => intern!(py, "stderr"),
-        };
-        let tuple = PyTuple::new(py, [label.clone().into_any(), PyString::new(py, &text).into_any()])?;
-        list.append(tuple)?;
-    }
-    Ok(list.unbind())
 }
 
 /// Live writer storage — owns the per-call backing (mutex guard, callback
