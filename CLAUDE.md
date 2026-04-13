@@ -459,7 +459,7 @@ All these markers must be at the start of comment lines to be recognized.
 - The ONLY exception is `await` expressions outside of async functions, where you should add `# pyright: ignore`
 - Run `make lint-py` after adding tests
 - Use `make complete-tests` to fill in blank expectations
-- Tests run via `datatest-stable` harness in `tests/datatest_runner.rs`, use `make test-cases` to run them
+- Regression tests run via `datatest-stable` harness in `crates/monty-datatest/src/main.rs`, use `make test-cases` to run them
 
 ## Python Package (`pydantic-monty`)
 

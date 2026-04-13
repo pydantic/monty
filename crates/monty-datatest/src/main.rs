@@ -1918,7 +1918,7 @@ fn format_traceback(py: Python<'_>, exc: &PyErr) -> String {
 
 /// Import the run_traceback module
 fn import_run_traceback(py: Python<'_>) -> Bound<'_, PyModule> {
-    // Add scripts directory to sys.path (tests run from crates/monty/)
+    // Add scripts directory to sys.path (binary is expected to be run from project root)
     let sys = py.import("sys").expect("Failed to import sys");
     let sys_path = sys.getattr("path").expect("Failed to get sys.path");
     sys_path
