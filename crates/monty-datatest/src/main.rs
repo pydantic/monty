@@ -1,14 +1,16 @@
 use std::{
     cell::RefCell,
     collections::{HashMap, HashSet},
+    env::set_current_dir,
     error::Error,
     ffi::CString,
-    fmt, fs,
+    fmt,
+    fs::{self, canonicalize},
     panic::{self, AssertUnwindSafe},
-    path::Path,
+    path::{Path, PathBuf},
     str,
     sync::{
-        OnceLock,
+        LazyLock, OnceLock,
         mpsc::{self, RecvTimeoutError},
     },
     thread,
@@ -24,6 +26,14 @@ use monty::{
 };
 use pyo3::{prelude::*, types::PyDict};
 use similar::TextDiff;
+
+const SCRIPTS_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../scripts");
+const TEST_CASES_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../monty/test_cases");
+const WORKSPACE_ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../..");
+const TEST_CASES_RELATIVE_DIR: &str = "crates/monty/test_cases";
+
+static CANONICAL_WS_DIR: LazyLock<PathBuf> =
+    LazyLock::new(|| canonicalize(WORKSPACE_ROOT).expect("Failed to canonicalize workspace root"));
 
 /// Recursion limit for test execution.
 ///
@@ -1210,7 +1220,7 @@ impl fmt::Display for TestFailure {
 /// against the expected outcome specified in the fixture.
 fn try_run_test(path: &Path, code: &str, expectation: &Expectation) -> Result<(), TestFailure> {
     let test_name = path
-        .strip_prefix("crates/monty/test_cases")
+        .strip_prefix(TEST_CASES_RELATIVE_DIR)
         .unwrap_or(path)
         .display()
         .to_string();
@@ -1400,7 +1410,7 @@ fn try_run_test(path: &Path, code: &str, expectation: &Expectation) -> Result<()
 /// iterative executor API and providing implementations for predefined external functions.
 fn try_run_iter_test(path: &Path, code: &str, expectation: &Expectation) -> Result<(), TestFailure> {
     let test_name = path
-        .strip_prefix("crates/monty/test_cases")
+        .strip_prefix(TEST_CASES_RELATIVE_DIR)
         .unwrap_or(path)
         .display()
         .to_string();
@@ -1544,7 +1554,7 @@ fn try_run_iter_test(path: &Path, code: &str, expectation: &Expectation) -> Resu
 /// and dispatches OS calls through the mount table instead of the virtual filesystem.
 fn try_run_mount_fs_test(path: &Path, code: &str, expectation: &Expectation) -> Result<(), TestFailure> {
     let test_name = path
-        .strip_prefix("crates/monty/test_cases")
+        .strip_prefix(TEST_CASES_RELATIVE_DIR)
         .unwrap_or(path)
         .display()
         .to_string();
@@ -1922,7 +1932,7 @@ fn import_run_traceback(py: Python<'_>) -> Bound<'_, PyModule> {
     let sys = py.import("sys").expect("Failed to import sys");
     let sys_path = sys.getattr("path").expect("Failed to get sys.path");
     sys_path
-        .call_method1("insert", (0, "scripts"))
+        .call_method1("insert", (0, SCRIPTS_DIR))
         .expect("Failed to add scripts to sys.path");
 
     // Import the run_traceback module
@@ -1968,7 +1978,7 @@ fn try_run_cpython_test(
     }
 
     let test_name = path
-        .strip_prefix("crates/monty/test_cases")
+        .strip_prefix(TEST_CASES_RELATIVE_DIR)
         .unwrap_or(path)
         .display()
         .to_string();
@@ -2231,10 +2241,15 @@ where
 /// Handles xfail with strict semantics: if a test is marked `xfail=monty`, it must fail.
 /// If an xfail test passes unexpectedly, that's an error.
 fn run_test_cases_monty(path: &Path) -> Result<(), Box<dyn Error>> {
+    set_current_dir(CANONICAL_WS_DIR.as_path())?;
+
+    let path = path.canonicalize()?;
+    let path = path.strip_prefix(CANONICAL_WS_DIR.as_path())?;
+
     let content = fs::read_to_string(path)?;
     let (code, expectation, config) = parse_fixture(&content);
     let test_name = path
-        .strip_prefix("crates/monty/test_cases")
+        .strip_prefix(TEST_CASES_RELATIVE_DIR)
         .unwrap_or(path)
         .display()
         .to_string();
@@ -2288,10 +2303,15 @@ fn run_test_cases_monty(path: &Path) -> Result<(), Box<dyn Error>> {
 /// Handles xfail with strict semantics: if a test is marked `xfail=cpython`, it must fail.
 /// If an xfail test passes unexpectedly, that's an error.
 fn run_test_cases_cpython(path: &Path) -> Result<(), Box<dyn Error>> {
+    set_current_dir(CANONICAL_WS_DIR.as_path())?;
+
+    let path = path.canonicalize()?;
+    let path = path.strip_prefix(CANONICAL_WS_DIR.as_path())?;
+
     let content = fs::read_to_string(path)?;
     let (code, expectation, config) = parse_fixture(&content);
     let test_name = path
-        .strip_prefix("crates/monty/test_cases")
+        .strip_prefix(TEST_CASES_RELATIVE_DIR)
         .unwrap_or(path)
         .display()
         .to_string();
@@ -2325,9 +2345,9 @@ fn run_test_cases_cpython(path: &Path) -> Result<(), Box<dyn Error>> {
 // Generate tests for all fixture files using datatest-stable harness macro
 datatest_stable::harness!(
     run_test_cases_monty,
-    "crates/monty/test_cases",
+    TEST_CASES_DIR,
     r"^.*\.py$",
     run_test_cases_cpython,
-    "crates/monty/test_cases",
+    TEST_CASES_DIR,
     r"^.*\.py$",
 );
