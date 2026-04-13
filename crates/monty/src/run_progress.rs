@@ -332,10 +332,9 @@ impl<T: ResourceTracker> NameLookup<T> {
             // Resolve the name lookup result with the VM alive
             let vm_result = match result {
                 NameLookupResult::Value(obj) => {
-                    let value = obj.to_value(&mut vm).map_err(|e| {
-                        vm.cleanup();
-                        MontyException::runtime_error(format!("invalid name lookup result: {e}"))
-                    })?;
+                    let value = obj
+                        .to_value(&mut vm)
+                        .map_err(|e| MontyException::runtime_error(format!("invalid name lookup result: {e}")))?;
 
                     // Cache the resolved value in the appropriate slot
                     let slot = self.namespace_slot as usize;
@@ -454,7 +453,6 @@ impl<T: ResourceTracker> ResolveFutures<T> {
 
             // Now check for invalid call_ids after VM is restored.
             if let Some(call_id) = invalid_call_id {
-                vm.cleanup();
                 return Err(MontyException::runtime_error(format!(
                     "unknown call_id {call_id}, expected one of: {pending_call_ids:?}"
                 )));
@@ -475,7 +473,6 @@ impl<T: ResourceTracker> ResolveFutures<T> {
 
             // Check if the current task has failed.
             if let Some(error) = vm.take_failed_task_error() {
-                vm.cleanup();
                 return Err(error.into_python_exception(&executor.interns, &executor.code));
             }
 
@@ -485,7 +482,6 @@ impl<T: ResourceTracker> ResolveFutures<T> {
             let loaded_task = match vm.load_ready_task_if_needed() {
                 Ok(loaded) => loaded,
                 Err(e) => {
-                    vm.cleanup();
                     return Err(e.into_python_exception(&executor.interns, &executor.code));
                 }
             };
@@ -749,15 +745,14 @@ pub(crate) fn convert_frame_exit(
 /// Decides whether to snapshot or clean up the VM based on the converted exit.
 ///
 /// Consumes the VM. Returns `Some(VMSnapshot)` for suspendable exits, `None` for
-/// completion/error (in which case the VM is cleaned up).
+/// completion/error (in which case the VM's `Drop` impl handles cleanup).
 pub(crate) fn check_snapshot_from_converted(
     converted: &ConvertedExit,
-    mut vm: VM<'_, '_, impl ResourceTracker>,
+    vm: VM<'_, '_, impl ResourceTracker>,
 ) -> Option<VMSnapshot> {
     if converted.needs_snapshot() {
         Some(vm.snapshot())
     } else {
-        vm.cleanup();
         None
     }
 }

@@ -588,7 +588,7 @@ pub struct VM<'h, 'a, T: ResourceTracker> {
     ///
     /// Deduplicates heap allocations for repeated strings (especially dict keys)
     /// across multiple `json.loads()` calls within a single execution. Lazily
-    /// initialized on first use, cleaned up in [`cleanup()`](Self::cleanup).
+    /// initialized on first use, cleaned up when the VM is dropped.
     pub(crate) json_string_cache: JsonStringCache,
 }
 
@@ -694,12 +694,12 @@ impl<'h, 'a, T: ResourceTracker> VM<'h, 'a, T> {
         VMSnapshot {
             // Move values directly — no clone, no refcount increment needed
             // (the VM owned them, now the snapshot owns them)
-            stack: self.stack,
-            globals: self.globals,
-            frames: self.frames.into_iter().map(|f| f.serialize()).collect(),
-            exception_stack: self.exception_stack,
+            stack: mem::take(&mut self.stack),
+            globals: mem::take(&mut self.globals),
+            frames: self.frames.iter().map(CallFrame::serialize).collect(),
+            exception_stack: mem::take(&mut self.exception_stack),
             instruction_ip: self.instruction_ip,
-            scheduler: self.scheduler,
+            scheduler: mem::take(&mut self.scheduler),
         }
     }
 
@@ -709,22 +709,6 @@ impl<'h, 'a, T: ResourceTracker> VM<'h, 'a, T> {
         self.module_code = Some(code);
         self.push_frame(CallFrame::new_module(code))?;
         self.run()
-    }
-
-    /// Cleans up VM state before the VM is dropped.
-    ///
-    /// This method must be called before the VM goes out of scope to ensure
-    /// proper reference counting cleanup for any exception values and scheduler state.
-    pub fn cleanup(&mut self) {
-        // Drop all exceptions in the exception stack
-        self.exception_stack.drain(..).drop_with_heap(self.heap);
-        // Clean up current task's stack values and frame cell references
-        self.cleanup_current_task();
-        // Clean up scheduler state (task stacks, pending calls, resolved values, frame cells)
-        self.scheduler.cleanup(self.heap);
-        self.globals.drain(..).drop_with_heap(self.heap);
-        // Release cached JSON string values
-        self.json_string_cache.drop_all(self.heap);
     }
 
     /// Returns the `stack_base` of the current (topmost) call frame.
@@ -740,8 +724,9 @@ impl<'h, 'a, T: ResourceTracker> VM<'h, 'a, T> {
 
     /// Takes ownership of the globals vector, replacing it with an empty vec.
     ///
-    /// Used by the REPL to reclaim globals after VM execution completes,
-    /// before calling `cleanup()` (which would destroy them in ref-count-panic mode).
+    /// Used by the REPL to reclaim globals after VM execution completes.
+    /// Must be called before the VM is dropped, since `Drop` will clean up
+    /// any remaining globals with `drop_with_heap`.
     pub fn take_globals(&mut self) -> Vec<Value> {
         mem::take(&mut self.globals)
     }
@@ -1970,5 +1955,21 @@ impl<T: ResourceTracker> ContainsHeap for VM<'_, '_, T> {
     }
     fn heap_mut(&mut self) -> &mut Heap<T> {
         self.heap
+    }
+}
+
+/// Ensures proper reference-counting cleanup when the VM goes out of scope.
+///
+/// Drains exception stack, operand stack, globals, scheduler state, and JSON
+/// string cache — all of which may hold heap references that need their
+/// ref-counts decremented. Fields that were already emptied (e.g. by
+/// `take_globals`) are harmlessly drained as empty.
+impl<T: ResourceTracker> Drop for VM<'_, '_, T> {
+    fn drop(&mut self) {
+        self.exception_stack.drain(..).drop_with_heap(self.heap);
+        self.cleanup_current_task();
+        self.scheduler.cleanup(self.heap);
+        self.globals.drain(..).drop_with_heap(self.heap);
+        self.json_string_cache.drop_all(self.heap);
     }
 }
