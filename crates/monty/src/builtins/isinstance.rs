@@ -3,6 +3,8 @@
 use super::Builtins;
 use crate::{
     args::ArgValues,
+    bytecode::VM,
+    defer_drop,
     exception_private::{ExcType, RunResult},
     heap::{Heap, HeapData},
     resource::ResourceTracker,
@@ -13,19 +15,17 @@ use crate::{
 /// Implementation of the isinstance() builtin function.
 ///
 /// Checks if an object is an instance of a class or a tuple of classes.
-pub fn builtin_isinstance(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
-    let (obj, classinfo) = args.get_two_args("isinstance", heap)?;
-    let obj_type = obj.py_type(heap);
+pub fn builtin_isinstance(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let (obj, classinfo) = args.get_two_args("isinstance", vm.heap)?;
+    defer_drop!(obj, vm);
+    defer_drop!(classinfo, vm);
+    let obj_type = obj.py_type(vm);
+    let heap = &mut *vm.heap;
 
-    let Ok(result) = isinstance_check(obj_type, &classinfo, heap) else {
-        obj.drop_with_heap(heap);
-        classinfo.drop_with_heap(heap);
-        return Err(ExcType::isinstance_arg2_error());
-    };
-
-    obj.drop_with_heap(heap);
-    classinfo.drop_with_heap(heap);
-    Ok(Value::Bool(result))
+    match isinstance_check(obj_type, classinfo, heap) {
+        Ok(result) => Ok(Value::Bool(result)),
+        Err(()) => Err(ExcType::isinstance_arg2_error()),
+    }
 }
 
 /// Recursively checks if obj_type matches classinfo for isinstance().
@@ -52,7 +52,7 @@ fn isinstance_check(obj_type: Type, classinfo: &Value, heap: &Heap<impl Resource
         // Tuple of types (possibly nested): isinstance(x, (int, (str, bytes)))
         Value::Ref(id) => {
             if let HeapData::Tuple(tuple) = heap.get(*id) {
-                for v in tuple.as_vec() {
+                for v in tuple.as_slice() {
                     if isinstance_check(obj_type, v, heap)? {
                         return Ok(true);
                     }

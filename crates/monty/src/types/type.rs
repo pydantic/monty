@@ -1,26 +1,30 @@
 use std::fmt;
 
-use strum::EnumString;
+use num_bigint::BigInt;
 
 use crate::{
     args::ArgValues,
+    bytecode::VM,
+    defer_drop,
     exception_private::{ExcType, RunError, RunResult, SimpleException},
-    heap::{Heap, HeapData},
-    intern::Interns,
+    heap::{DropWithHeap, Heap, HeapData},
+    intern::{StaticStrings, StringId},
     resource::ResourceTracker,
-    types::{Bytes, Dict, FrozenSet, List, MontyIter, PyTrait, Range, Set, Slice, Str, Tuple, str::StringRepr},
+    types::{
+        AttrCallResult, Bytes, Dict, FrozenSet, List, LongInt, MontyIter, Path, PyTrait, Range, Set, Slice, Str,
+        TimeZone, Tuple, bytes::bytes_fromhex, date, datetime, dict::dict_fromkeys, long_int::INT_MAX_STR_DIGITS,
+        str::StringRepr, timedelta,
+    },
     value::Value,
 };
 
 /// Represents the Python type of a value.
 ///
 /// This enum is used both for type checking and as a callable constructor.
-/// When parsed from a string (e.g., "list", "dict"), it can be used to create
-/// new instances of that type.
-///
-/// Note: `Exception` variants is disabled for strum's `EnumString` (they can't be parsed from strings).
-#[derive(Debug, Clone, Copy, EnumString, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
-#[strum(serialize_all = "lowercase")]
+/// Some variants are Python builtins accessible by name (e.g., `int`, `list`),
+/// while others are internal types only available through imports or introspection
+/// (e.g., `TextIOWrapper`, `PosixPath`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 #[expect(clippy::enum_variant_names)]
 pub enum Type {
     Ellipsis,
@@ -31,29 +35,42 @@ pub enum Type {
     Float,
     Range,
     Slice,
+    Date,
+    DateTime,
+    TimeDelta,
+    TimeZone,
     Str,
     Bytes,
     List,
     Tuple,
     NamedTuple,
     Dict,
+    DictKeys,
+    DictItems,
+    DictValues,
     Set,
     FrozenSet,
     Dataclass,
-    #[strum(disabled)]
     Exception(ExcType),
     Function,
     BuiltinFunction,
     Cell,
-    #[strum(serialize = "iter")]
     Iterator,
+    /// Coroutine type for async functions and external futures.
+    Coroutine,
     Module,
     /// Marker types like stdout/stderr - displays as "TextIOWrapper"
-    #[strum(serialize = "TextIOWrapper")]
     TextIOWrapper,
     /// typing module special forms (Any, Optional, Union, etc.) - displays as "typing._SpecialForm"
-    #[strum(serialize = "typing._SpecialForm")]
     SpecialForm,
+    /// A filesystem path from `pathlib.Path` - displays as "PosixPath"
+    Path,
+    /// A property descriptor - displays as "property"
+    Property,
+    /// A compiled regex pattern from `re.compile()` - displays as "re.Pattern"
+    RePattern,
+    /// A regex match result from `re.match()` / `re.search()` etc. - displays as "re.Match"
+    ReMatch,
 }
 
 impl fmt::Display for Type {
@@ -67,12 +84,19 @@ impl fmt::Display for Type {
             Self::Float => f.write_str("float"),
             Self::Range => f.write_str("range"),
             Self::Slice => f.write_str("slice"),
+            Self::Date => f.write_str("date"),
+            Self::DateTime => f.write_str("datetime.datetime"),
+            Self::TimeDelta => f.write_str("timedelta"),
+            Self::TimeZone => f.write_str("timezone"),
             Self::Str => f.write_str("str"),
             Self::Bytes => f.write_str("bytes"),
             Self::List => f.write_str("list"),
             Self::Tuple => f.write_str("tuple"),
             Self::NamedTuple => f.write_str("namedtuple"),
             Self::Dict => f.write_str("dict"),
+            Self::DictKeys => f.write_str("dict_keys"),
+            Self::DictItems => f.write_str("dict_items"),
+            Self::DictValues => f.write_str("dict_values"),
             Self::Set => f.write_str("set"),
             Self::FrozenSet => f.write_str("frozenset"),
             Self::Dataclass => f.write_str("dataclass"),
@@ -81,24 +105,90 @@ impl fmt::Display for Type {
             Self::BuiltinFunction => f.write_str("builtin_function_or_method"),
             Self::Cell => f.write_str("cell"),
             Self::Iterator => f.write_str("iterator"),
+            Self::Coroutine => f.write_str("coroutine"),
             Self::Module => f.write_str("module"),
             Self::TextIOWrapper => f.write_str("_io.TextIOWrapper"),
             Self::SpecialForm => f.write_str("typing._SpecialForm"),
+            Self::Path => f.write_str("PosixPath"),
+            Self::Property => f.write_str("property"),
+            Self::RePattern => f.write_str("re.Pattern"),
+            Self::ReMatch => f.write_str("re.Match"),
         }
     }
 }
 
 impl Type {
+    /// Returns the Python source-level name for builtin types that can be called directly.
+    ///
+    /// This differs from `Display` for internal representation-only names such as
+    /// `Type::Iterator`, which displays as `iterator` for repr/type output but is
+    /// exposed as the builtin constructor `iter` in Python source.
+    #[must_use]
+    pub const fn builtin_name(self) -> Option<&'static str> {
+        match self {
+            Self::Bool => Some("bool"),
+            Self::Int => Some("int"),
+            Self::Float => Some("float"),
+            Self::Str => Some("str"),
+            Self::Bytes => Some("bytes"),
+            Self::List => Some("list"),
+            Self::Tuple => Some("tuple"),
+            Self::Dict => Some("dict"),
+            Self::Set => Some("set"),
+            Self::FrozenSet => Some("frozenset"),
+            Self::Range => Some("range"),
+            Self::Slice => Some("slice"),
+            Self::Iterator => Some("iter"),
+            Self::Type => Some("type"),
+            Self::Property => Some("property"),
+            _ => None,
+        }
+    }
+
+    /// Resolves a bare Python name to a builtin type, if it is one.
+    ///
+    /// Only matches names that are true Python builtins — accessible without any import.
+    /// Internal types like `TextIOWrapper`, `PosixPath`, `NoneType`, and `ellipsis` are
+    /// intentionally excluded because they require imports or are not directly nameable.
+    ///
+    /// This replaces the previous strum `FromStr` derive which matched ALL variants,
+    /// including internal types that shouldn't be resolvable from bare names.
+    #[must_use]
+    pub fn from_builtin_name(name: &str) -> Option<Self> {
+        match name {
+            "bool" => Some(Self::Bool),
+            "int" => Some(Self::Int),
+            "float" => Some(Self::Float),
+            "str" => Some(Self::Str),
+            "bytes" => Some(Self::Bytes),
+            "list" => Some(Self::List),
+            "tuple" => Some(Self::Tuple),
+            "dict" => Some(Self::Dict),
+            "set" => Some(Self::Set),
+            "frozenset" => Some(Self::FrozenSet),
+            "range" => Some(Self::Range),
+            "slice" => Some(Self::Slice),
+            "iter" => Some(Self::Iterator),
+            "type" => Some(Self::Type),
+            "property" => Some(Self::Property),
+            _ => None,
+        }
+    }
+
     /// Checks if a value of type `self` is an instance of `other`.
     ///
     /// This handles Python's subtype relationships:
     /// - `bool` is a subtype of `int` (so `isinstance(True, int)` returns True)
+    /// - `datetime` is a subtype of `date` (so `isinstance(datetime_obj, date)` returns True)
     #[must_use]
     pub fn is_instance_of(self, other: Self) -> bool {
         if self == other {
             true
         } else if self == Self::Bool && other == Self::Int {
             // bool is a subtype of int in Python
+            true
+        } else if self == Self::DateTime && other == Self::Date {
+            // datetime is a subtype of date in Python
             true
         } else {
             false
@@ -125,6 +215,7 @@ impl Type {
             Self::Range => Some(10),
             Self::Slice => Some(11),
             Self::Iterator => Some(12),
+            Self::Path => Some(13),
             _ => None,
         }
     }
@@ -148,7 +239,39 @@ impl Type {
             10 => Some(Self::Range),
             11 => Some(Self::Slice),
             12 => Some(Self::Iterator),
+            13 => Some(Self::Path),
             _ => None,
+        }
+    }
+
+    /// Dispatches classmethod calls on builtin type objects (e.g. `dict.fromkeys`).
+    ///
+    /// Keeps classmethod behavior centralized with type semantics instead of VM call plumbing.
+    pub(crate) fn call_class_method(
+        self,
+        method_id: StringId,
+        args: ArgValues,
+        vm: &mut VM<'_, '_, impl ResourceTracker>,
+    ) -> RunResult<AttrCallResult> {
+        match (self, method_id) {
+            (Self::Dict, m) if m == StaticStrings::Fromkeys => dict_fromkeys(args, vm).map(AttrCallResult::Value),
+            (Self::Bytes, m) if m == StaticStrings::Fromhex => bytes_fromhex(args, vm).map(AttrCallResult::Value),
+            (Self::Date, m) if m == StaticStrings::Today => date::class_today(vm.heap, args),
+            (Self::Date, m) if m == StaticStrings::Fromisoformat => {
+                date::class_fromisoformat(vm.heap, args, vm.interns).map(AttrCallResult::Value)
+            }
+            (Self::DateTime, m) if m == StaticStrings::Now => datetime::class_now(vm.heap, args, vm.interns),
+            (Self::DateTime, m) if m == StaticStrings::Strptime => {
+                datetime::class_strptime(vm.heap, args, vm.interns).map(AttrCallResult::Value)
+            }
+            (Self::DateTime, m) if m == StaticStrings::Fromisoformat => {
+                datetime::class_fromisoformat(vm.heap, args, vm.interns).map(AttrCallResult::Value)
+            }
+            _ => {
+                let method_name = vm.interns.get_str(method_id);
+                args.drop_with_heap(vm.heap);
+                Err(ExcType::attribute_error(self, method_name))
+            }
         }
     }
 
@@ -156,80 +279,71 @@ impl Type {
     ///
     /// Dispatches to the appropriate type's init method for container types,
     /// or handles primitive type conversions inline.
-    pub(crate) fn call(
-        self,
-        heap: &mut Heap<impl ResourceTracker>,
-        args: ArgValues,
-        interns: &Interns,
-    ) -> RunResult<Value> {
+    pub(crate) fn call(self, vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
         match self {
             // Container types - delegate to init methods
-            Self::List => List::init(heap, args, interns),
-            Self::Tuple => Tuple::init(heap, args, interns),
-            Self::Dict => Dict::init(heap, args, interns),
-            Self::Set => Set::init(heap, args, interns),
-            Self::FrozenSet => FrozenSet::init(heap, args, interns),
-            Self::Str => Str::init(heap, args, interns),
-            Self::Bytes => Bytes::init(heap, args, interns),
-            Self::Range => Range::init(heap, args),
-            Self::Slice => Slice::init(heap, args),
-            Self::Iterator => MontyIter::init(heap, args, interns),
+            Self::List => List::init(vm, args),
+            Self::Tuple => Tuple::init(vm, args),
+            Self::Dict => Dict::init(vm, args),
+            Self::Set => Set::init(vm, args),
+            Self::FrozenSet => FrozenSet::init(vm, args),
+            Self::Str => Str::init(vm, args),
+            Self::Bytes => Bytes::init(vm, args),
+            Self::Range => Range::init(vm, args),
+            Self::Slice => Slice::init(vm, args),
+            Self::Date => date::init(vm.heap, args, vm.interns),
+            Self::DateTime => datetime::init(vm.heap, args, vm.interns),
+            Self::TimeDelta => timedelta::init(vm.heap, args, vm.interns),
+            Self::TimeZone => TimeZone::init(vm.heap, args, vm.interns),
+            Self::Iterator => MontyIter::init(vm, args),
+            Self::Path => Path::init(vm, args),
 
             // Primitive types - inline implementation
             Self::Int => {
-                let value = args.get_zero_one_arg("int", heap)?;
-                match value {
-                    None => Ok(Value::Int(0)),
-                    Some(v) => {
-                        let result = match &v {
-                            Value::Int(i) => Ok(Value::Int(*i)),
-                            Value::Float(f) => Ok(Value::Int(f64_to_i64_truncate(*f))),
-                            Value::Bool(b) => Ok(Value::Int(i64::from(*b))),
-                            Value::InternString(string_id) => parse_i64_from_str(interns.get_str(*string_id)),
-                            Value::Ref(heap_id) => match heap.get(*heap_id) {
-                                HeapData::Str(s) => parse_i64_from_str(s.as_str()),
-                                _ => Err(ExcType::type_error_int_conversion(v.py_type(heap))),
-                            },
-                            _ => Err(ExcType::type_error_int_conversion(v.py_type(heap))),
-                        };
-                        v.drop_with_heap(heap);
-                        result
-                    }
+                let interns = vm.interns;
+                let Some(v) = args.get_zero_one_arg("int", vm.heap)? else {
+                    return Ok(Value::Int(0));
+                };
+                defer_drop!(v, vm);
+                match v {
+                    Value::Int(i) => Ok(Value::Int(*i)),
+                    Value::Float(f) => Ok(Value::Int(f64_to_i64_truncate(*f))),
+                    Value::Bool(b) => Ok(Value::Int(i64::from(*b))),
+                    Value::InternString(string_id) => parse_int_from_str(interns.get_str(*string_id), vm.heap),
+                    Value::Ref(heap_id) => match vm.heap.get(*heap_id) {
+                        HeapData::Str(s) => parse_int_from_str(s.as_str(), vm.heap),
+                        HeapData::LongInt(_) => Ok(v.clone_with_heap(vm.heap)),
+                        _ => Err(ExcType::type_error_int_conversion(v.py_type(vm))),
+                    },
+                    _ => Err(ExcType::type_error_int_conversion(v.py_type(vm))),
                 }
             }
             Self::Float => {
-                let value = args.get_zero_one_arg("float", heap)?;
-                match value {
-                    None => Ok(Value::Float(0.0)),
-                    Some(v) => {
-                        let result = match &v {
-                            Value::Float(f) => Ok(Value::Float(*f)),
-                            Value::Int(i) => Ok(Value::Float(*i as f64)),
-                            Value::Bool(b) => Ok(Value::Float(if *b { 1.0 } else { 0.0 })),
-                            Value::InternString(string_id) => {
-                                Ok(Value::Float(parse_f64_from_str(interns.get_str(*string_id))?))
-                            }
-                            Value::Ref(heap_id) => match heap.get(*heap_id) {
-                                HeapData::Str(s) => Ok(Value::Float(parse_f64_from_str(s.as_str())?)),
-                                _ => Err(ExcType::type_error_float_conversion(v.py_type(heap))),
-                            },
-                            _ => Err(ExcType::type_error_float_conversion(v.py_type(heap))),
-                        };
-                        v.drop_with_heap(heap);
-                        result
+                let interns = vm.interns;
+                let Some(v) = args.get_zero_one_arg("float", vm.heap)? else {
+                    return Ok(Value::Float(0.0));
+                };
+                defer_drop!(v, vm);
+                match v {
+                    Value::Float(f) => Ok(Value::Float(*f)),
+                    Value::Int(i) => Ok(Value::Float(*i as f64)),
+                    Value::Bool(b) => Ok(Value::Float(if *b { 1.0 } else { 0.0 })),
+                    Value::InternString(string_id) => {
+                        Ok(Value::Float(parse_f64_from_str(interns.get_str(*string_id))?))
                     }
+                    Value::Ref(heap_id) => match vm.heap.get(*heap_id) {
+                        HeapData::Str(s) => Ok(Value::Float(parse_f64_from_str(s.as_str())?)),
+                        _ => Err(ExcType::type_error_float_conversion(v.py_type(vm))),
+                    },
+                    _ => Err(ExcType::type_error_float_conversion(v.py_type(vm))),
                 }
             }
             Self::Bool => {
-                let value = args.get_zero_one_arg("bool", heap)?;
-                match value {
-                    None => Ok(Value::Bool(false)),
-                    Some(v) => {
-                        let result = v.py_bool(heap, interns);
-                        v.drop_with_heap(heap);
-                        Ok(Value::Bool(result))
-                    }
-                }
+                let Some(v) = args.get_zero_one_arg("bool", vm.heap)? else {
+                    return Ok(Value::Bool(false));
+                };
+                defer_drop!(v, vm);
+                Ok(Value::Bool(v.py_bool(vm)))
             }
 
             // Non-callable types - raise TypeError
@@ -297,31 +411,64 @@ fn value_error_could_not_convert_string_to_float(value: &str) -> RunError {
     .into()
 }
 
-/// Parses a Python `int()` string argument into an `i64`.
+/// Parses a Python `int()` string argument into an `Int` or `LongInt`.
 ///
-/// Handles whitespace stripping and removing _ and returns appropriate `ValueError` on failure.
-fn parse_i64_from_str(value: &str) -> RunResult<Value> {
+/// Handles whitespace stripping and removing `_` separators. Returns `Value::Int` if the value
+/// fits in i64, otherwise allocates a `LongInt` on the heap. Returns `ValueError` on failure.
+fn parse_int_from_str(value: &str, heap: &Heap<impl ResourceTracker>) -> RunResult<Value> {
+    let invalid = || ExcType::value_error_invalid_literal_for_int(StringRepr(value));
+    // Try parsing as i64 first (fast path)
     if let Ok(int) = value.parse::<i64>() {
         return Ok(Value::Int(int));
     }
     let trimmed = value.trim();
 
     if let Ok(int) = trimmed.parse::<i64>() {
+        return Ok(Value::Int(int));
+    }
+
+    // Validate underscore placement before stripping.
+    // CPython rejects: leading _, trailing _, consecutive __, _ right after sign.
+    if !is_valid_int_underscores(trimmed) {
+        return Err(invalid());
+    }
+
+    // Strip underscores after validation
+    let normalized = trimmed.replace('_', "");
+    if let Ok(int) = normalized.parse::<i64>() {
         Ok(Value::Int(int))
-    } else if let Ok(int) = trimmed.replace('_', "").parse::<i64>() {
-        Ok(Value::Int(int))
+    } else if normalized.len() > INT_MAX_STR_DIGITS {
+        // Only do detailed validation when the string is long enough to possibly
+        // exceed the digit limit — avoids the O(n) scan on short strings.
+        let digit_count = normalized.bytes().filter(u8::is_ascii_digit).count();
+        let has_sign = normalized.starts_with(['+', '-']);
+
+        if digit_count + usize::from(has_sign) != normalized.len() || digit_count == 0 {
+            // Non-digit chars present → "invalid literal" takes precedence
+            Err(invalid())
+        } else if digit_count > INT_MAX_STR_DIGITS {
+            Err(ExcType::value_error_int_str_too_large(digit_count))
+        } else {
+            // Sign pushed length over limit but digit count is within it — parse is safe
+            let bi = normalized.parse::<BigInt>().map_err(|_| invalid())?;
+            Ok(LongInt::new(bi).into_value(heap)?)
+        }
+    } else if let Ok(bi) = normalized.parse::<BigInt>() {
+        Ok(LongInt::new(bi).into_value(heap)?)
     } else {
-        Err(value_error_invalid_literal_for_int(value))
+        Err(invalid())
     }
 }
 
-/// Creates the `ValueError` raised by `int()` when a string cannot be parsed.
+/// Validates underscore placement in an integer literal string.
 ///
-/// Matches CPython's message format: `invalid literal for int() with base 10: '...'`.
-fn value_error_invalid_literal_for_int(value: &str) -> RunError {
-    SimpleException::new_msg(
-        ExcType::ValueError,
-        format!("invalid literal for int() with base 10: {}", StringRepr(value)),
-    )
-    .into()
+/// Returns `false` for: leading `_`, trailing `_`, consecutive `__`,
+/// or `_` immediately after a sign character. Matches CPython's rules.
+fn is_valid_int_underscores(s: &str) -> bool {
+    if !s.contains('_') {
+        return true;
+    }
+    let digits = s.strip_prefix(['+', '-']).unwrap_or(s);
+    // No leading or trailing underscores, no consecutive underscores
+    !digits.starts_with('_') && !digits.ends_with('_') && !digits.contains("__")
 }

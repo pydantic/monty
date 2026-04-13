@@ -1,10 +1,12 @@
-use std::vec::IntoIter;
+use std::{mem, slice, vec::IntoIter};
 
 use crate::{
     MontyObject, ResourceTracker,
-    exception_private::{ExcType, RunResult},
+    bytecode::VM,
+    defer_drop, defer_drop_mut,
+    exception_private::{ExcType, RunError, RunResult, SimpleException},
     expressions::{ExprLoc, Identifier},
-    heap::Heap,
+    heap::{ContainsHeap, DropWithHeap, Heap, HeapGuard},
     intern::{Interns, StringId},
     parse::ParseError,
     types::{Dict, dict::DictIntoIter},
@@ -106,6 +108,74 @@ impl ArgValues {
         }
     }
 
+    /// Extracts an optional argument that can be passed positionally or as a named keyword.
+    ///
+    /// Accepts `method()`, `method(value)`, or `method(name=value)`, but raises
+    /// `TypeError` if both a positional and keyword argument are provided. This covers
+    /// the common Python pattern of methods with a single optional argument like
+    /// `str.expandtabs(tabsize=8)` or `str.splitlines(keepends=False)`.
+    ///
+    /// Uses `EitherStr::matches()` for fast O(1) comparison when the kwarg key is interned.
+    ///
+    /// On error, properly drops all contained values to maintain reference counts.
+    pub fn get_zero_one_named_arg(
+        self,
+        method_name: &str,
+        kwarg_name: impl Into<StringId>,
+        heap: &mut Heap<impl ResourceTracker>,
+        interns: &Interns,
+    ) -> RunResult<Option<Value>> {
+        let (mut pos, kwargs) = self.into_parts();
+
+        let positional = pos.next();
+
+        // Reject extra positional arguments
+        if pos.len() != 0 {
+            let count = 1 + pos.len();
+            positional.drop_with_heap(heap);
+            pos.drop_with_heap(heap);
+            kwargs.drop_with_heap(heap);
+            return Err(ExcType::type_error_at_most(method_name, 1, count));
+        }
+
+        let kwargs_iter = kwargs.into_iter();
+        defer_drop_mut!(kwargs_iter, heap);
+
+        let mut result = positional;
+        let has_positional = result.is_some();
+
+        let kwarg_name = kwarg_name.into();
+
+        for (key, value) in kwargs_iter {
+            defer_drop!(key, heap);
+            let mut value_guard = HeapGuard::new(value, heap);
+
+            let Some(keyword_name) = key.as_either_str(value_guard.heap()) else {
+                result.drop_with_heap(value_guard.heap());
+                return Err(ExcType::type_error_kwargs_nonstring_key());
+            };
+
+            if keyword_name.matches(kwarg_name, interns) {
+                if has_positional {
+                    result.drop_with_heap(value_guard.heap());
+                    return Err(ExcType::type_error_duplicate_arg(
+                        method_name,
+                        keyword_name.as_str(interns),
+                    ));
+                }
+                result = Some(value_guard.into_inner());
+            } else {
+                result.drop_with_heap(value_guard.heap());
+                return Err(ExcType::type_error_unexpected_keyword(
+                    method_name,
+                    keyword_name.as_str(interns),
+                ));
+            }
+        }
+
+        Ok(result)
+    }
+
     /// Checks that zero, one, or two arguments were passed.
     ///
     /// Returns (None, None) for 0 args, (Some(a), None) for 1 arg, (Some(a), Some(b)) for 2 args.
@@ -127,10 +197,11 @@ impl ArgValues {
         }
     }
 
-    /// Extracts two keyword-only arguments by name.
+    /// Extracts a keyword-only pair by name.
     ///
     /// Validates that no positional arguments are provided and only the specified
-    /// keyword arguments are present. Returns `(None, None)` for missing kwargs.
+    /// keyword arguments are present. Returns `(None, None)` when neither keyword
+    /// is provided.
     ///
     /// # Arguments
     /// * `method_name` - Method name for error messages (e.g., "list.sort")
@@ -142,7 +213,7 @@ impl ArgValues {
     /// - Any positional arguments are provided
     /// - A keyword argument other than `kwarg1` or `kwarg2` is provided
     /// - A keyword is not a string
-    pub fn extract_two_kwargs_only(
+    pub fn extract_keyword_only_pair(
         self,
         method_name: &str,
         kwarg1: &str,
@@ -151,61 +222,43 @@ impl ArgValues {
         interns: &Interns,
     ) -> RunResult<(Option<Value>, Option<Value>)> {
         let (pos, kwargs) = self.into_parts();
+        defer_drop!(pos, heap);
 
         // Check no positional arguments
-        let mut pos_iter = pos;
-        if pos_iter.next().is_some() {
-            for v in pos_iter {
-                v.drop_with_heap(heap);
-            }
+        if pos.len() > 0 {
             kwargs.drop_with_heap(heap);
             return Err(ExcType::type_error_no_args(method_name, 1));
         }
 
-        // Parse keyword arguments
-        let mut val1: Option<Value> = None;
-        let mut val2: Option<Value> = None;
+        kwargs.parse_named_kwargs_pair(method_name, kwarg1, kwarg2, heap, interns, |method_name, key_str| {
+            ExcType::type_error(format!(
+                "'{key_str}' is an invalid keyword argument for {method_name}()"
+            ))
+        })
+    }
 
-        for (key, value) in kwargs {
-            let Some(keyword_name) = key.as_either_str(heap) else {
-                key.drop_with_heap(heap);
-                value.drop_with_heap(heap);
-                if let Some(v) = val1 {
-                    v.drop_with_heap(heap);
-                }
-                if let Some(v) = val2 {
-                    v.drop_with_heap(heap);
-                }
-                return Err(ExcType::type_error("keywords must be strings"));
-            };
-
-            let key_str = keyword_name.as_str(interns);
-            if key_str == kwarg1 {
-                key.drop_with_heap(heap);
-                if let Some(old) = val1.replace(value) {
-                    old.drop_with_heap(heap);
-                }
-            } else if key_str == kwarg2 {
-                key.drop_with_heap(heap);
-                if let Some(old) = val2.replace(value) {
-                    old.drop_with_heap(heap);
-                }
-            } else {
-                key.drop_with_heap(heap);
-                value.drop_with_heap(heap);
-                if let Some(v) = val1 {
-                    v.drop_with_heap(heap);
-                }
-                if let Some(v) = val2 {
-                    v.drop_with_heap(heap);
-                }
-                return Err(ExcType::type_error(format!(
-                    "'{key_str}' is an invalid keyword argument for {method_name}()"
-                )));
+    /// Prepends a value as the first positional argument.
+    ///
+    /// Used to insert `self` when dispatching dataclass method calls to the host.
+    /// The dataclass instance becomes the first arg so the host can reconstruct
+    /// the original object and call the method on it.
+    pub fn prepend(self, value: Value) -> Self {
+        match self {
+            Self::Empty => Self::One(value),
+            Self::One(a) => Self::Two(value, a),
+            Self::Two(a, b) => Self::ArgsKargs {
+                args: vec![value, a, b],
+                kwargs: KwargsValues::Empty,
+            },
+            Self::Kwargs(kw) => Self::ArgsKargs {
+                args: vec![value],
+                kwargs: kw,
+            },
+            Self::ArgsKargs { mut args, kwargs } => {
+                args.insert(0, value);
+                Self::ArgsKargs { args, kwargs }
             }
         }
-
-        Ok((val1, val2))
     }
 
     /// Splits into positional iterator and keyword values without allocating
@@ -213,11 +266,45 @@ impl ArgValues {
     pub fn into_parts(self) -> (ArgPosIter, KwargsValues) {
         match self {
             Self::Empty => (ArgPosIter::Empty, KwargsValues::Empty),
-            Self::One(v) => (ArgPosIter::One(Some(v)), KwargsValues::Empty),
-            Self::Two(v1, v2) => (ArgPosIter::Two(Some(v1), Some(v2)), KwargsValues::Empty),
+            Self::One(v) => (ArgPosIter::One(v), KwargsValues::Empty),
+            Self::Two(v1, v2) => (ArgPosIter::Two([v1, v2]), KwargsValues::Empty),
             Self::Kwargs(kwargs) => (ArgPosIter::Empty, kwargs),
             Self::ArgsKargs { args, kwargs } => (ArgPosIter::Vec(args.into_iter()), kwargs),
         }
+    }
+
+    /// Variant of [`into_parts()`](Self::into_parts) that accepts no kwargs, returning an error if any are present.
+    pub fn into_pos_only(self, method_name: &str, heap: &mut Heap<impl ResourceTracker>) -> RunResult<ArgPosIter> {
+        match self {
+            Self::Empty => Ok(ArgPosIter::Empty),
+            Self::One(v) => Ok(ArgPosIter::One(v)),
+            Self::Two(v1, v2) => Ok(ArgPosIter::Two([v1, v2])),
+            Self::Kwargs(kwargs) => {
+                if kwargs.is_empty() {
+                    Ok(ArgPosIter::Empty)
+                } else {
+                    Err(Self::unexpected_kwargs_error(kwargs, method_name, heap))
+                }
+            }
+            Self::ArgsKargs { args, kwargs } => {
+                if kwargs.is_empty() {
+                    Ok(ArgPosIter::Vec(args.into_iter()))
+                } else {
+                    args.drop_with_heap(heap);
+                    Err(Self::unexpected_kwargs_error(kwargs, method_name, heap))
+                }
+            }
+        }
+    }
+
+    #[cold]
+    fn unexpected_kwargs_error(
+        kwargs: KwargsValues,
+        method_name: &str,
+        heap: &mut Heap<impl ResourceTracker>,
+    ) -> RunError {
+        kwargs.drop_with_heap(heap);
+        ExcType::type_error_no_kwargs(method_name)
     }
 
     /// Converts the arguments into a Vec of MontyObjects.
@@ -225,20 +312,16 @@ impl ArgValues {
     /// This is used when passing arguments to external functions.
     pub fn into_py_objects(
         self,
-        heap: &mut Heap<impl ResourceTracker>,
-        interns: &Interns,
+        vm: &mut VM<'_, '_, impl ResourceTracker>,
     ) -> (Vec<MontyObject>, Vec<(MontyObject, MontyObject)>) {
         match self {
             Self::Empty => (vec![], vec![]),
-            Self::One(a) => (vec![MontyObject::new(a, heap, interns)], vec![]),
-            Self::Two(a1, a2) => (
-                vec![MontyObject::new(a1, heap, interns), MontyObject::new(a2, heap, interns)],
-                vec![],
-            ),
-            Self::Kwargs(kwargs) => (vec![], kwargs.into_py_objects(heap, interns)),
+            Self::One(a) => (vec![MontyObject::new(a, vm)], vec![]),
+            Self::Two(a1, a2) => (vec![MontyObject::new(a1, vm), MontyObject::new(a2, vm)], vec![]),
+            Self::Kwargs(kwargs) => (vec![], kwargs.into_py_objects(vm)),
             Self::ArgsKargs { args, kwargs } => (
-                args.into_iter().map(|v| MontyObject::new(v, heap, interns)).collect(),
-                kwargs.into_py_objects(heap, interns),
+                args.into_iter().map(|v| MontyObject::new(v, vm)).collect(),
+                kwargs.into_py_objects(vm),
             ),
         }
     }
@@ -255,12 +338,10 @@ impl ArgValues {
             Self::ArgsKargs { args, .. } => args.len(),
         }
     }
+}
 
-    /// Properly drops all values in the arguments, decrementing reference counts.
-    ///
-    /// This must be called when discarding `ArgValues` that may contain `Value::Ref`
-    /// variants to maintain correct reference counts on the heap.
-    pub fn drop_with_heap(self, heap: &mut Heap<impl ResourceTracker>) {
+impl DropWithHeap for ArgValues {
+    fn drop_with_heap<H: ContainsHeap>(self, heap: &mut H) {
         match self {
             Self::Empty => {}
             Self::One(v) => v.drop_with_heap(heap),
@@ -272,9 +353,7 @@ impl ArgValues {
                 kwargs.drop_with_heap(heap);
             }
             Self::ArgsKargs { args, kwargs } => {
-                for v in args {
-                    v.drop_with_heap(heap);
-                }
+                args.drop_with_heap(heap);
                 kwargs.drop_with_heap(heap);
             }
         }
@@ -291,9 +370,21 @@ impl ArgValues {
 /// the caller is responsible for either using it or calling `drop_with_heap()` on it.
 pub(crate) enum ArgPosIter {
     Empty,
-    One(Option<Value>),
-    Two(Option<Value>, Option<Value>),
+    One(Value),
+    Two([Value; 2]),
     Vec(IntoIter<Value>),
+}
+
+impl ArgPosIter {
+    /// Returns a slice of the remaining positional arguments without consuming them.
+    pub fn as_slice(&self) -> &[Value] {
+        match self {
+            Self::Empty => &[],
+            Self::One(v) => slice::from_ref(v),
+            Self::Two(array) => array.as_slice(),
+            Self::Vec(iter) => iter.as_slice(),
+        }
+    }
 }
 
 impl Iterator for ArgPosIter {
@@ -303,8 +394,19 @@ impl Iterator for ArgPosIter {
     fn next(&mut self) -> Option<Value> {
         match self {
             Self::Empty => None,
-            Self::One(v) => v.take(),
-            Self::Two(v1, v2) => v1.take().or_else(|| v2.take()),
+            Self::One(_) => {
+                let Self::One(v) = mem::replace(self, Self::Empty) else {
+                    unreachable!()
+                };
+                Some(v)
+            }
+            Self::Two(_) => {
+                let Self::Two([v1, v2]) = mem::replace(self, Self::Empty) else {
+                    unreachable!()
+                };
+                *self = Self::One(v2);
+                Some(v1)
+            }
             Self::Vec(iter) => iter.next(),
         }
     }
@@ -313,20 +415,25 @@ impl Iterator for ArgPosIter {
     fn size_hint(&self) -> (usize, Option<usize>) {
         match self {
             Self::Empty => (0, Some(0)),
-            Self::One(v) => {
-                let n = usize::from(v.is_some());
-                (n, Some(n))
-            }
-            Self::Two(v1, v2) => {
-                let n = usize::from(v1.is_some()) + usize::from(v2.is_some());
-                (n, Some(n))
-            }
+            Self::One(_) => (1, Some(1)),
+            Self::Two(_) => (2, Some(2)),
             Self::Vec(iter) => iter.size_hint(),
         }
     }
 }
 
 impl ExactSizeIterator for ArgPosIter {}
+
+impl DropWithHeap for ArgPosIter {
+    fn drop_with_heap<H: ContainsHeap>(self, heap: &mut H) {
+        match self {
+            Self::Empty => {}
+            Self::One(v1) => v1.drop_with_heap(heap),
+            Self::Two(v12) => v12.drop_with_heap(heap),
+            Self::Vec(iter) => iter.drop_with_heap(heap),
+        }
+    }
+}
 
 /// Type for keyword arguments.
 ///
@@ -359,30 +466,96 @@ impl KwargsValues {
     /// Converts the arguments into a Vec of MontyObjects.
     ///
     /// This is used when passing arguments to external functions.
-    fn into_py_objects(
-        self,
-        heap: &mut Heap<impl ResourceTracker>,
-        interns: &Interns,
-    ) -> Vec<(MontyObject, MontyObject)> {
+    fn into_py_objects(self, vm: &mut VM<'_, '_, impl ResourceTracker>) -> Vec<(MontyObject, MontyObject)> {
         match self {
             Self::Empty => vec![],
             Self::Inline(kvs) => kvs
                 .into_iter()
                 .map(|(k, v)| {
-                    let key = MontyObject::String(interns.get_str(k).to_owned());
-                    let value = MontyObject::new(v, heap, interns);
+                    let key = MontyObject::String(vm.interns.get_str(k).to_owned());
+                    let value = MontyObject::new(v, vm);
                     (key, value)
                 })
                 .collect(),
             Self::Dict(dict) => dict
                 .into_iter()
-                .map(|(k, v)| (MontyObject::new(k, heap, interns), MontyObject::new(v, heap, interns)))
+                .map(|(k, v)| (MontyObject::new(k, vm), MontyObject::new(v, vm)))
                 .collect(),
         }
     }
 
+    /// Helper for functions which do not yet support kwargs, returns an `Err` if there are kwargs.
+    pub fn not_supported_yet(self, method_name: &str, heap: &mut Heap<impl ResourceTracker>) -> RunResult<()> {
+        if self.is_empty() {
+            Ok(())
+        } else {
+            self.drop_with_heap(heap);
+            Err(SimpleException::new_msg(
+                ExcType::TypeError,
+                format!("{method_name}() does not support keyword arguments yet"),
+            )
+            .into())
+        }
+    }
+
+    /// Parses a fixed pair of named keyword arguments with duplicate checking.
+    ///
+    /// This helper is intentionally narrow: it covers the common builtin/method
+    /// pattern of accepting a tiny fixed keyword surface such as `key/default`
+    /// or `key/reverse`, while leaving positional-argument validation and any
+    /// post-processing to the caller.
+    ///
+    /// `unexpected_keyword` formats the call-site-specific error for keywords
+    /// other than `kwarg1` and `kwarg2`.
+    pub fn parse_named_kwargs_pair(
+        self,
+        func_name: &str,
+        kwarg1: &str,
+        kwarg2: &str,
+        heap: &mut Heap<impl ResourceTracker>,
+        interns: &Interns,
+        unexpected_keyword: impl Fn(&str, &str) -> RunError,
+    ) -> RunResult<(Option<Value>, Option<Value>)> {
+        let kwargs = self.into_iter();
+        defer_drop_mut!(kwargs, heap);
+
+        // Guards are reversed so that destructure can pull them.
+        let mut val2_guard = HeapGuard::new(None::<Value>, heap);
+        let (val2, heap) = val2_guard.as_parts_mut();
+        let mut val1_guard = HeapGuard::new(None::<Value>, heap);
+        let (val1, heap) = val1_guard.as_parts_mut();
+
+        for (key, value) in kwargs {
+            defer_drop!(key, heap);
+            let mut value = HeapGuard::new(value, heap);
+
+            let Some(keyword_name) = key.as_either_str(value.heap()) else {
+                return Err(ExcType::type_error_kwargs_nonstring_key());
+            };
+
+            let key_str = keyword_name.as_str(interns);
+            if key_str == kwarg1 {
+                if val1.is_some() {
+                    return Err(ExcType::type_error_multiple_values(func_name, key_str));
+                }
+                *val1 = Some(value.into_inner());
+            } else if key_str == kwarg2 {
+                if val2.is_some() {
+                    return Err(ExcType::type_error_multiple_values(func_name, key_str));
+                }
+                *val2 = Some(value.into_inner());
+            } else {
+                return Err(unexpected_keyword(func_name, key_str));
+            }
+        }
+
+        Ok((val1_guard.into_inner(), val2_guard.into_inner()))
+    }
+}
+
+impl DropWithHeap for KwargsValues {
     /// Properly drops all values in the arguments, decrementing reference counts.
-    pub fn drop_with_heap(self, heap: &mut Heap<impl ResourceTracker>) {
+    fn drop_with_heap<H: ContainsHeap>(self, heap: &mut H) {
         match self {
             Self::Empty => {}
             Self::Inline(kvs) => {
@@ -446,11 +619,58 @@ impl Iterator for KwargsValuesIter {
 
 impl ExactSizeIterator for KwargsValuesIter {}
 
+impl DropWithHeap for KwargsValuesIter {
+    fn drop_with_heap<H: ContainsHeap>(self, heap: &mut H) {
+        match self {
+            Self::Empty => {}
+            Self::Inline(iter) => {
+                for (_, v) in iter {
+                    v.drop_with_heap(heap);
+                }
+            }
+            Self::Dict(iter) => {
+                for (k, v) in iter {
+                    k.drop_with_heap(heap);
+                    v.drop_with_heap(heap);
+                }
+            }
+        }
+    }
+}
+
 /// A keyword argument in a function call expression.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Kwarg {
     pub key: Identifier,
     pub value: ExprLoc,
+}
+
+/// A positional argument item in a generalized function call (PEP 448).
+///
+/// Used in `ArgExprs::GeneralizedCall` when a call has multiple `*unpacks`
+/// or positional arguments after a `*unpack`. Each item is either a plain
+/// value or a `*expr` iterable to be unpacked into the argument tuple.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub(crate) enum CallArg {
+    /// A plain positional argument.
+    Value(ExprLoc),
+    /// A `*expr` unpack — the iterable is spread into consecutive arguments.
+    Unpack(ExprLoc),
+}
+
+/// A keyword argument item in a generalized function call (PEP 448).
+///
+/// Used in `ArgExprs::GeneralizedCall` when a call has multiple `**unpacks`
+/// or named kwargs interspersed with `**unpacks`. Duplicate keys from any
+/// combination raise `TypeError` (both `f(**a, **b)` with shared keys and
+/// `f(x=1, **{'x': 2})` are errors). This is enforced by `DictMerge` in
+/// the compiler.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub(crate) enum CallKwarg {
+    /// A named keyword argument: `key=value`.
+    Named(Kwarg),
+    /// A `**expr` unpack — the mapping's entries are merged into kwargs.
+    Unpack(ExprLoc),
 }
 
 /// Expressions that make up a function call's arguments.
@@ -467,9 +687,31 @@ pub enum ArgExprs {
         kwargs: Option<Vec<Kwarg>>,
         var_kwargs: Option<ExprLoc>,
     },
+    /// Generalized call with PEP 448 unpacking.
+    ///
+    /// Used when a call has multiple `*args` unpacks, positional arguments
+    /// after a `*unpack`, or multiple `**kwargs` unpacks. The compiler
+    /// builds the args tuple incrementally using `BuildList(0)` +
+    /// `ListAppend`/`ListExtend` + `ListToTuple`, and the kwargs dict
+    /// using `BuildDict(0)` + `DictMerge` (which raises `TypeError` on
+    /// duplicate keys).
+    GeneralizedCall {
+        args: Vec<CallArg>,
+        kwargs: Vec<CallKwarg>,
+    },
 }
 
 impl ArgExprs {
+    /// Creates a `GeneralizedCall` for PEP 448 calls with multiple unpacks.
+    ///
+    /// Use this when a function call has multiple `*args` unpacks, positional
+    /// arguments after a `*unpack`, or multiple `**kwargs` unpacks. The compiler
+    /// will emit `BuildList(0)` + `ListAppend`/`ListExtend` + `ListToTuple` for
+    /// the args tuple, and `BuildDict(0)` + `DictMerge` for the kwargs dict.
+    pub(crate) fn new_generalized(args: Vec<CallArg>, kwargs: Vec<CallKwarg>) -> Self {
+        Self::GeneralizedCall { args, kwargs }
+    }
+
     /// Creates a new `ArgExprs` with optional `*args` and `**kwargs` unpacking expressions.
     ///
     /// This is used when parsing function calls that may include `*expr` / `**expr`
@@ -515,7 +757,7 @@ impl ArgExprs {
         mut f: impl FnMut(ExprLoc) -> Result<ExprLoc, ParseError>,
     ) -> Result<(), ParseError> {
         // Swap self with Empty to take ownership, then rebuild
-        let taken = std::mem::replace(self, Self::Empty);
+        let taken = mem::replace(self, Self::Empty);
         *self = match taken {
             Self::Empty => Self::Empty,
             Self::One(arg) => Self::One(f(arg)?),
@@ -561,6 +803,26 @@ impl ArgExprs {
                     kwargs,
                     var_kwargs,
                 }
+            }
+            Self::GeneralizedCall { args, kwargs } => {
+                let args = args
+                    .into_iter()
+                    .map(|arg| match arg {
+                        CallArg::Value(e) => Ok(CallArg::Value(f(e)?)),
+                        CallArg::Unpack(e) => Ok(CallArg::Unpack(f(e)?)),
+                    })
+                    .collect::<Result<Vec<_>, ParseError>>()?;
+                let kwargs = kwargs
+                    .into_iter()
+                    .map(|kwarg| match kwarg {
+                        CallKwarg::Named(kw) => Ok(CallKwarg::Named(Kwarg {
+                            key: kw.key,
+                            value: f(kw.value)?,
+                        })),
+                        CallKwarg::Unpack(e) => Ok(CallKwarg::Unpack(f(e)?)),
+                    })
+                    .collect::<Result<Vec<_>, ParseError>>()?;
+                Self::GeneralizedCall { args, kwargs }
             }
         };
         Ok(())

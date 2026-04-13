@@ -1,18 +1,21 @@
 //! Public interface for running Monty code.
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+use ahash::AHashMap;
+
 use crate::{
     ExcType, MontyException,
-    bytecode::{Code, Compiler, FrameExit, VM, VMSnapshot},
-    exception_private::{RunError, RunResult},
-    heap::Heap,
-    intern::{ExtFunctionId, Interns},
-    io::{PrintWriter, StdPrint},
-    namespace::Namespaces,
+    bytecode::{Code, Compiler, FrameExit, VM},
+    exception_private::RunResult,
+    heap::{DropWithHeap, Heap, HeapReader},
+    intern::{InternerBuilder, Interns},
+    io::PrintWriter,
+    namespace::NamespaceId,
     object::MontyObject,
-    parse::parse,
-    prepare::prepare,
+    parse::{parse, parse_with_interner},
+    prepare::{prepare, prepare_with_existing_names},
     resource::{NoLimitTracker, ResourceTracker},
+    run_progress::{RunProgress, build_run_progress, check_snapshot_from_converted, convert_frame_exit},
     value::Value,
 };
 
@@ -27,7 +30,7 @@ use crate::{
 /// ```
 /// use monty::{MontyRun, MontyObject};
 ///
-/// let runner = MontyRun::new("x + 1".to_owned(), "test.py", vec!["x".to_owned()], vec![]).unwrap();
+/// let runner = MontyRun::new("x + 1".to_owned(), "test.py", vec!["x".to_owned()]).unwrap();
 /// let result = runner.run_no_limits(vec![MontyObject::Int(41)]).unwrap();
 /// assert_eq!(result, MontyObject::Int(42));
 /// ```
@@ -50,13 +53,8 @@ impl MontyRun {
     ///
     /// # Errors
     /// Returns `MontyException` if the code cannot be parsed.
-    pub fn new(
-        code: String,
-        script_name: &str,
-        input_names: Vec<String>,
-        external_functions: Vec<String>,
-    ) -> Result<Self, MontyException> {
-        Executor::new(code, script_name, input_names, external_functions).map(|executor| Self { executor })
+    pub fn new(code: String, script_name: &str, input_names: Vec<String>) -> Result<Self, MontyException> {
+        Executor::new(code, script_name, input_names).map(|executor| Self { executor })
     }
 
     /// Returns the code that was parsed to create this snapshot.
@@ -79,19 +77,19 @@ impl MontyRun {
     /// # Arguments
     /// * `inputs` - Values to fill the first N slots of the namespace
     /// * `resource_tracker` - Custom resource tracker implementation
-    /// * `print` - print print implementation
+    /// * `print` - print output writer
     pub fn run(
         &self,
         inputs: Vec<MontyObject>,
         resource_tracker: impl ResourceTracker,
-        print: &mut impl PrintWriter,
+        print: PrintWriter<'_>,
     ) -> Result<MontyObject, MontyException> {
         self.executor.run(inputs, resource_tracker, print)
     }
 
     /// Executes the code to completion with no resource limits, printing to stdout/stderr.
     pub fn run_no_limits(&self, inputs: Vec<MontyObject>) -> Result<MontyObject, MontyException> {
-        self.run(inputs, NoLimitTracker, &mut StdPrint)
+        self.run(inputs, NoLimitTracker, PrintWriter::Stdout)
     }
 
     /// Serializes the runner to a binary format.
@@ -121,7 +119,7 @@ impl MontyRun {
     /// Creates the heap and namespaces, then begins execution.
     ///
     /// For iterative execution, `start()` consumes self and returns a `RunProgress`:
-    /// - `RunProgress::FunctionCall { ..., state }` - external function call, call `state.run(return_value)` to resume
+    /// - `RunProgress::FunctionCall(call)` - external function call, call `call.resume(return_value)` to resume
     /// - `RunProgress::Complete(value)` - execution finished
     ///
     /// This enables snapshotting execution state and returning control to the host
@@ -145,325 +143,54 @@ impl MontyRun {
         self,
         inputs: Vec<MontyObject>,
         resource_tracker: T,
-        print: &mut impl PrintWriter,
+        mut print: PrintWriter<'_>,
     ) -> Result<RunProgress<T>, MontyException> {
         let executor = self.executor;
 
-        // Create heap and prepare namespaces
+        // Create heap and VM with empty globals, then populate inputs with VM alive
         let mut heap = Heap::new(executor.namespace_size, resource_tracker);
-        let mut namespaces = executor.prepare_namespaces(inputs, &mut heap)?;
+        let globals = executor.empty_globals();
+        let (converted, vm_state) = HeapReader::with(&mut heap, |heap| {
+            let mut vm = VM::new(globals, heap, &executor.interns, print.reborrow());
+            executor.populate_inputs(inputs, &mut vm)?;
 
-        // Create and run VM - scope the VM borrow so we can move heap/namespaces after
-        let (result, vm_state) = {
-            let mut vm = VM::new(&mut heap, &mut namespaces, &executor.interns, print);
-            let result = vm.run_module(&executor.module_code);
+            // Start execution
+            let vm_result = vm.run_module(&executor.module_code);
 
-            // Handle the result - convert VM to snapshot if needed for external call
-            if let Ok(FrameExit::ExternalCall { .. }) = &result {
-                // Need to snapshot the VM for resumption
-                (result, Some(vm.into_snapshot()))
-            } else {
-                // Clean up VM state
-                vm.cleanup();
-                (result, None)
-            }
-        };
-
-        // Now handle the result with owned heap and namespaces
-        match result {
-            Ok(FrameExit::Return(value)) => {
-                // Clean up the global namespace before returning (only needed with ref-count-panic)
-                #[cfg(feature = "ref-count-panic")]
-                namespaces.drop_global_with_heap(&mut heap);
-
-                // Convert to MontyObject
-                let obj = MontyObject::new(value, &mut heap, &executor.interns);
-                Ok(RunProgress::Complete(obj))
-            }
-            Ok(FrameExit::ExternalCall { ext_function_id, args }) => {
-                // Get function name and convert args to MontyObjects (includes both positional and kwargs)
-                let function_name = executor.interns.get_external_function_name(ext_function_id);
-                let (args_py, kwargs_py) = args.into_py_objects(&mut heap, &executor.interns);
-
-                Ok(RunProgress::FunctionCall {
-                    function_name,
-                    args: args_py,
-                    kwargs: kwargs_py,
-                    state: Snapshot {
-                        executor,
-                        vm_state: vm_state.expect("snapshot should exist for ExternalCall"),
-                        heap,
-                        namespaces,
-                    },
-                })
-            }
-            Err(err) => {
-                // Clean up the global namespace before returning (only needed with ref-count-panic)
-                #[cfg(feature = "ref-count-panic")]
-                namespaces.drop_global_with_heap(&mut heap);
-
-                // Convert to MontyException
-                Err(err.into_python_exception(&executor.interns, &executor.code))
-            }
-        }
-    }
-}
-
-/// Result of a single step of iterative execution.
-///
-/// This enum owns the execution state, ensuring type-safe state transitions.
-/// - `FunctionCall` contains info about an external function call and state to resume
-/// - `Complete` contains just the final value (execution is done)
-///
-/// # Type Parameters
-/// * `T` - Resource tracker implementation (e.g., `NoLimitTracker` or `LimitedTracker`)
-///
-/// Serialization requires `T: Serialize + Deserialize`.
-#[expect(clippy::large_enum_variant)]
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-#[serde(bound(serialize = "T: serde::Serialize", deserialize = "T: serde::de::DeserializeOwned"))]
-pub enum RunProgress<T: ResourceTracker> {
-    /// Execution paused at an external function call. Call `state.run(return_value)` to resume.
-    FunctionCall {
-        /// The name of the function being called.
-        function_name: String,
-        /// The positional arguments passed to the function.
-        args: Vec<MontyObject>,
-        /// The keyword arguments passed to the function (key, value pairs).
-        kwargs: Vec<(MontyObject, MontyObject)>,
-        /// The execution state that can be resumed with a return value.
-        state: Snapshot<T>,
-    },
-    /// Execution completed with a final result.
-    Complete(MontyObject),
-}
-
-impl<T: ResourceTracker> RunProgress<T> {
-    /// Consumes the `RunProgress` and returns external function call info and state.
-    ///
-    /// Returns (function_name, positional_args, keyword_args, state).
-    #[must_use]
-    #[expect(clippy::type_complexity)]
-    pub fn into_function_call(
-        self,
-    ) -> Option<(String, Vec<MontyObject>, Vec<(MontyObject, MontyObject)>, Snapshot<T>)> {
-        match self {
-            Self::FunctionCall {
-                function_name,
-                args,
-                kwargs,
-                state,
-            } => Some((function_name, args, kwargs, state)),
-            Self::Complete(_) => None,
-        }
-    }
-
-    /// Consumes the `RunProgress` and returns the final value.
-    #[must_use]
-    pub fn into_complete(self) -> Option<MontyObject> {
-        match self {
-            Self::Complete(value) => Some(value),
-            Self::FunctionCall { .. } => None,
-        }
-    }
-}
-
-impl<T: ResourceTracker + serde::Serialize> RunProgress<T> {
-    /// Serializes the execution state to a binary format.
-    ///
-    /// # Errors
-    /// Returns an error if serialization fails.
-    pub fn dump(&self) -> Result<Vec<u8>, postcard::Error> {
-        postcard::to_allocvec(self)
-    }
-}
-
-impl<T: ResourceTracker + serde::de::DeserializeOwned> RunProgress<T> {
-    /// Deserializes execution state from binary format.
-    ///
-    /// # Errors
-    /// Returns an error if deserialization fails.
-    pub fn load(bytes: &[u8]) -> Result<Self, postcard::Error> {
-        postcard::from_bytes(bytes)
-    }
-}
-
-/// Execution state that can be resumed after an external function call.
-///
-/// This struct owns all runtime state and provides a `run()` method to continue
-/// execution with the return value from the external function. When `run()` is
-/// called, it consumes self and returns the next `RunProgress`.
-///
-/// External function calls occur when calling a function that is not a builtin,
-/// exception, or user-defined function.
-///
-/// # Type Parameters
-/// * `T` - Resource tracker implementation
-///
-/// Serialization requires `T: Serialize + Deserialize`.
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-#[serde(bound(serialize = "T: serde::Serialize", deserialize = "T: serde::de::DeserializeOwned"))]
-pub struct Snapshot<T: ResourceTracker> {
-    /// The executor containing compiled code and interns.
-    executor: Executor,
-    /// The VM state containing stack, frames, and exception state.
-    vm_state: VMSnapshot,
-    /// The heap containing all allocated objects.
-    heap: Heap<T>,
-    /// The namespaces containing all variable bindings.
-    namespaces: Namespaces,
-}
-
-/// Return value or exception from an external function.
-#[derive(Debug)]
-pub enum ExternalResult {
-    /// Continues execution with the return value from the external function.
-    Return(MontyObject),
-    /// Continues execution with the exception raised by the external function.
-    Error(MontyException),
-}
-
-impl From<MontyObject> for ExternalResult {
-    fn from(value: MontyObject) -> Self {
-        Self::Return(value)
-    }
-}
-
-impl From<MontyException> for ExternalResult {
-    fn from(exception: MontyException) -> Self {
-        Self::Error(exception)
-    }
-}
-
-/// Helper enum for resuming execution with either a return value or an exception.
-///
-/// Used by `Snapshot::run` to decide whether to call `VM::resume` (for normal returns)
-/// or `VM::resume_with_exception` (for external function errors).
-enum ResumeWith {
-    /// External function returned a value normally.
-    Value(Value),
-    /// External function raised an exception.
-    Exception(RunError),
-}
-
-impl<T: ResourceTracker> Snapshot<T> {
-    /// Continues execution with the return value or exception from the external function.
-    ///
-    /// Consumes self and returns the next execution progress.
-    ///
-    /// # Arguments
-    /// * `result` - The return value or exception from the external function
-    /// * `print` - The print writer to use for output
-    ///
-    /// # Panics
-    /// This method should not panic under normal operation. Internal assertions
-    /// may panic if the VM reaches an inconsistent state (indicating a bug).
-    pub fn run(
-        mut self,
-        result: impl Into<ExternalResult>,
-        print: &mut impl PrintWriter,
-    ) -> Result<RunProgress<T>, MontyException> {
-        let ext_result = result.into();
-
-        // Convert return value or exception before creating VM (to avoid borrow conflicts)
-        let resume_with = match ext_result {
-            ExternalResult::Return(obj) => match obj.to_value(&mut self.heap, &self.executor.interns) {
-                Ok(value) => ResumeWith::Value(value),
-                Err(e) => {
-                    return Err(MontyException::runtime_error(format!("invalid return type: {e}")));
-                }
-            },
-            ExternalResult::Error(exc) => ResumeWith::Exception(exc.into()),
-        };
-
-        // Scope the VM borrow so we can move heap/namespaces after
-        let (result, vm_state) = {
-            // Restore the VM from the snapshot
-            let mut vm = VM::restore(
-                self.vm_state,
-                &self.executor.module_code,
-                &mut self.heap,
-                &mut self.namespaces,
-                &self.executor.interns,
-                print,
-            );
-
-            // Resume execution with the result or exception
-            let vm_result = match resume_with {
-                ResumeWith::Value(value) => vm.resume(value),
-                ResumeWith::Exception(error) => vm.resume_with_exception(error),
-            };
-
-            // Handle the result - convert VM to snapshot if needed for external call
-            if let Ok(FrameExit::ExternalCall { .. }) = &vm_result {
-                // Need to snapshot the VM for resumption
-                (vm_result, Some(vm.into_snapshot()))
-            } else {
-                // Clean up VM state
-                vm.cleanup();
-                (vm_result, None)
-            }
-        };
-
-        // Now handle the result with owned heap and namespaces
-        match result {
-            Ok(FrameExit::Return(value)) => {
-                // Clean up the global namespace before returning (only needed with ref-count-panic)
-                #[cfg(feature = "ref-count-panic")]
-                self.namespaces.drop_global_with_heap(&mut self.heap);
-
-                // Convert to MontyObject
-                let obj = MontyObject::new(value, &mut self.heap, &self.executor.interns);
-                Ok(RunProgress::Complete(obj))
-            }
-            Ok(FrameExit::ExternalCall { ext_function_id, args }) => {
-                // Get function name and convert args to MontyObjects (includes both positional and kwargs)
-                let function_name = self.executor.interns.get_external_function_name(ext_function_id);
-                let (args_py, kwargs_py) = args.into_py_objects(&mut self.heap, &self.executor.interns);
-
-                Ok(RunProgress::FunctionCall {
-                    function_name,
-                    args: args_py,
-                    kwargs: kwargs_py,
-                    state: Self {
-                        executor: self.executor,
-                        vm_state: vm_state.expect("snapshot should exist for ExternalCall"),
-                        heap: self.heap,
-                        namespaces: self.namespaces,
-                    },
-                })
-            }
-            Err(err) => {
-                // Clean up the global namespace before returning (only needed with ref-count-panic)
-                #[cfg(feature = "ref-count-panic")]
-                self.namespaces.drop_global_with_heap(&mut self.heap);
-
-                // Convert to MontyException
-                Err(err.into_python_exception(&self.executor.interns, &self.executor.code))
-            }
-        }
+            // Three-phase conversion: convert while VM alive, then snapshot, then build progress
+            let converted = convert_frame_exit(vm_result, &mut vm);
+            let vm_state = check_snapshot_from_converted(&converted, vm);
+            Ok((converted, vm_state))
+        })?;
+        build_run_progress(converted, vm_state, executor, heap)
     }
 }
 
 /// Lower level interface to parse code and run it to completion.
 ///
 /// This is an internal type used by [`MontyRun`]. It stores the compiled bytecode and source code
-/// for error reporting.
+/// for error reporting. Also used by `run_progress` and `repl` modules.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
-struct Executor {
+pub(crate) struct Executor {
     /// Number of slots needed in the global namespace.
-    namespace_size: usize,
-    /// Maps variable names to their indices in the namespace. Used for ref-count testing.
-    #[cfg(feature = "ref-count-return")]
-    name_map: ahash::AHashMap<String, crate::namespace::NamespaceId>,
+    pub(crate) namespace_size: usize,
+    /// Maps variable names to their indices in the namespace.
+    ///
+    /// Used by:
+    /// - ref-count tests for looking up variables by name
+    /// - REPL incremental compilation to preserve stable global slot IDs across snippets
+    pub(crate) name_map: AHashMap<String, NamespaceId>,
     /// Compiled bytecode for the module.
-    module_code: Code,
+    pub(crate) module_code: Code,
     /// Interned strings used for looking up names and filenames during execution.
-    interns: Interns,
-    /// IDs to create values to inject into the the namespace to represent external functions.
-    external_function_ids: Vec<ExtFunctionId>,
+    pub(crate) interns: Interns,
     /// Source code for error reporting (extracting preview lines for tracebacks).
-    code: String,
+    pub(crate) code: String,
+    /// Input variable names that were injected for this snippet.
+    ///
+    /// Used by the REPL path to look up namespace slots for injected inputs.
+    /// Empty for the standard (non-REPL) execution path.
+    pub(crate) input_names: Vec<String>,
     /// Estimated heap capacity for pre-allocation on subsequent runs.
     /// Uses AtomicUsize for thread-safety (required by PyO3's Sync bound).
     heap_capacity: AtomicUsize,
@@ -473,34 +200,24 @@ impl Clone for Executor {
     fn clone(&self) -> Self {
         Self {
             namespace_size: self.namespace_size,
-            #[cfg(feature = "ref-count-return")]
             name_map: self.name_map.clone(),
             module_code: self.module_code.clone(),
             interns: self.interns.clone(),
-            external_function_ids: self.external_function_ids.clone(),
             code: self.code.clone(),
+            input_names: self.input_names.clone(),
             heap_capacity: AtomicUsize::new(self.heap_capacity.load(Ordering::Relaxed)),
         }
     }
 }
 
 impl Executor {
-    /// Creates a new executor with the given code, filename, input names, and external functions.
-    fn new(
-        code: String,
-        script_name: &str,
-        input_names: Vec<String>,
-        external_functions: Vec<String>,
-    ) -> Result<Self, MontyException> {
+    /// Creates a new executor with the given code, filename, and input names.
+    pub(crate) fn new(code: String, script_name: &str, input_names: Vec<String>) -> Result<Self, MontyException> {
         let parse_result = parse(&code, script_name).map_err(|e| e.into_python_exc(script_name, &code))?;
-        let prepared = prepare(parse_result, input_names, &external_functions)
-            .map_err(|e| e.into_python_exc(script_name, &code))?;
-
-        // Incrementing order matches the indexes used in intern::Interns::get_external_function_name
-        let external_function_ids = (0..external_functions.len()).map(ExtFunctionId::new).collect();
+        let prepared = prepare(parse_result, input_names).map_err(|e| e.into_python_exc(script_name, &code))?;
 
         // Create interns with empty functions (functions will be set after compilation)
-        let mut interns = Interns::new(prepared.interner, Vec::new(), external_functions);
+        let mut interns = Interns::new(prepared.interner, Vec::new());
 
         // Compile the module to bytecode, which also compiles all nested functions
         let namespace_size_u16 = u16::try_from(prepared.namespace_size).expect("module namespace size exceeds u16");
@@ -512,13 +229,62 @@ impl Executor {
 
         Ok(Self {
             namespace_size: prepared.namespace_size,
-            #[cfg(feature = "ref-count-return")]
             name_map: prepared.name_map,
             module_code: compile_result.code,
             interns,
-            external_function_ids,
             code,
+            input_names: Vec::new(),
             heap_capacity: AtomicUsize::new(prepared.namespace_size),
+        })
+    }
+
+    /// Compiles one REPL snippet against existing session metadata.
+    ///
+    /// This differs from [`new`](Self::new) in three ways required for true
+    /// no-replay REPL execution:
+    /// - Seeds parsing from `existing_interns` so old `StringId` values stay stable.
+    /// - Seeds compilation with existing functions so old `FunctionId` values remain valid.
+    /// - Reuses `existing_name_map` and appends new global names only.
+    ///
+    /// `input_names` are pre-registered in the name map before preparation so they
+    /// receive stable namespace slots that the REPL input-injection logic can use.
+    pub(crate) fn new_repl_snippet(
+        code: String,
+        script_name: &str,
+        mut existing_name_map: AHashMap<String, NamespaceId>,
+        existing_interns: &Interns,
+        input_names: Vec<String>,
+    ) -> Result<Self, MontyException> {
+        // Pre-register input names so they get stable slots before preparation.
+        for name in &input_names {
+            let next_slot = existing_name_map.len();
+            existing_name_map
+                .entry(name.clone())
+                .or_insert_with(|| NamespaceId::new(next_slot));
+        }
+
+        let seeded_interner = InternerBuilder::from_interns(existing_interns, &code);
+        let parse_result = parse_with_interner(&code, script_name, seeded_interner)
+            .map_err(|e| e.into_python_exc(script_name, &code))?;
+        let prepared = prepare_with_existing_names(parse_result, existing_name_map)
+            .map_err(|e| e.into_python_exc(script_name, &code))?;
+
+        let existing_functions = existing_interns.functions_clone();
+        let mut interns = Interns::new(prepared.interner, Vec::new());
+        let namespace_size_u16 = u16::try_from(prepared.namespace_size).expect("module namespace size exceeds u16");
+        let compile_result =
+            Compiler::compile_module_with_functions(&prepared.nodes, &interns, namespace_size_u16, existing_functions)
+                .map_err(|e| e.into_python_exc(script_name, &code))?;
+        interns.set_functions(compile_result.functions);
+
+        Ok(Self {
+            namespace_size: prepared.namespace_size,
+            name_map: prepared.name_map,
+            module_code: compile_result.code,
+            interns,
+            code,
+            input_names,
+            heap_capacity: AtomicUsize::new(0),
         })
     }
 
@@ -531,34 +297,77 @@ impl Executor {
     /// # Arguments
     /// * `inputs` - Values to fill the first N slots of the namespace
     /// * `resource_tracker` - Custom resource tracker implementation
-    /// * `print` - Print implementation for print() output
+    /// * `print` - Print output writer
     fn run(
         &self,
         inputs: Vec<MontyObject>,
         resource_tracker: impl ResourceTracker,
-        print: &mut impl PrintWriter,
+        mut print: PrintWriter<'_>,
     ) -> Result<MontyObject, MontyException> {
         let heap_capacity = self.heap_capacity.load(Ordering::Relaxed);
         let mut heap = Heap::new(heap_capacity, resource_tracker);
-        let mut namespaces = self.prepare_namespaces(inputs, &mut heap)?;
+        let globals = self.empty_globals();
 
-        // Create and run VM
-        let mut vm = VM::new(&mut heap, &mut namespaces, &self.interns, print);
-        let frame_exit_result = vm.run_module(&self.module_code);
-
-        // Clean up VM state before it goes out of scope
-        vm.cleanup();
+        // Create VM first, then populate inputs with VM alive
+        let result = HeapReader::with(&mut heap, |heap| {
+            let mut vm = VM::new(globals, heap, &self.interns, print.reborrow());
+            self.populate_inputs(inputs, &mut vm)?;
+            let result = self.run_to_completion(&mut vm);
+            vm.cleanup();
+            result
+        });
 
         if heap.size() > heap_capacity {
             self.heap_capacity.store(heap.size(), Ordering::Relaxed);
         }
 
-        // Clean up the global namespace before returning (only needed with ref-count-panic)
-        #[cfg(feature = "ref-count-panic")]
-        namespaces.drop_global_with_heap(&mut heap);
+        result.map_err(|e| e.into_python_exception(&self.interns, &self.code))
+    }
 
-        frame_exit_to_object(frame_exit_result, &mut heap, &self.interns)
-            .map_err(|e| e.into_python_exception(&self.interns, &self.code))
+    /// Runs module code on an already-configured VM to completion.
+    ///
+    /// Executes [`VM::run_module`], then handles `NameLookup` and `ExternalCall`
+    /// exits by raising `NameError` through the VM so tracebacks are properly
+    /// captured. Finally converts the result via [`frame_exit_to_object`].
+    ///
+    /// This is the shared non-iterative execution core used by both the standard
+    /// `run` path and the REPL's `feed_run` path.
+    pub(crate) fn run_to_completion<'a>(&'a self, vm: &mut VM<'_, 'a, impl ResourceTracker>) -> RunResult<MontyObject> {
+        let mut frame_exit_result = vm.run_module(&self.module_code);
+
+        // Handle NameLookup and ExternalCall exits by raising NameError through the VM
+        // so that traceback information is properly captured. In the non-iterative path,
+        // there's no host to resolve names or external functions, so these become NameErrors.
+        loop {
+            match frame_exit_result {
+                Ok(FrameExit::NameLookup { name_id, .. }) => {
+                    let name = self.interns.get_str(name_id);
+                    let err = ExcType::name_error(name);
+                    frame_exit_result = vm.resume_with_exception(err.into());
+                }
+                Ok(FrameExit::ExternalCall {
+                    function_name,
+                    args,
+                    name_load_ip,
+                    ..
+                }) => {
+                    // In non-iterative execution, an ExtFunction from LoadGlobalCallable/
+                    // LoadLocalCallable means the name was undefined — raise NameError.
+                    // Restore the frame IP to the load instruction so the traceback
+                    // points to the name reference, not the call expression.
+                    if let Some(load_ip) = name_load_ip {
+                        vm.set_instruction_ip(load_ip);
+                    }
+                    let name = function_name.as_str(&self.interns);
+                    args.drop_with_heap(vm);
+                    let err = ExcType::name_error(name);
+                    frame_exit_result = vm.resume_with_exception(err.into());
+                }
+                _ => break,
+            }
+        }
+
+        frame_exit_to_object(frame_exit_result, vm)
     }
 
     /// Executes the code and returns both the result and reference count data, used for testing only.
@@ -579,91 +388,131 @@ impl Executor {
         use std::collections::HashSet;
 
         let mut heap = Heap::new(self.namespace_size, NoLimitTracker);
-        let mut namespaces = self.prepare_namespaces(inputs, &mut heap)?;
+        let globals = self.empty_globals();
 
-        // Create and run VM with StdPrint for output
-        let mut print = StdPrint;
-        let mut vm = VM::new(&mut heap, &mut namespaces, &self.interns, &mut print);
-        let frame_exit_result = vm.run_module(&self.module_code);
+        HeapReader::with(&mut heap, |heap| {
+            // Create VM, populate inputs, and run
+            let mut vm = VM::new(globals, heap, &self.interns, PrintWriter::Stdout);
+            self.populate_inputs(inputs, &mut vm)?;
+            let frame_exit_result = vm.run_module(&self.module_code);
 
-        // Compute ref counts before consuming the heap - return value is still alive
-        let final_namespace = namespaces.into_global();
-        let mut counts = ahash::AHashMap::new();
-        let mut unique_ids = HashSet::new();
+            // Take globals out of the VM so we can inspect them, but keep VM alive
+            // for heap access and later conversion.
+            let globals = vm.take_globals();
 
-        for (name, &namespace_id) in &self.name_map {
-            if let Some(Value::Ref(id)) = final_namespace.get_opt(namespace_id) {
-                counts.insert(name.clone(), heap.get_refcount(*id));
-                unique_ids.insert(*id);
+            // Read refcounts BEFORE converting the return value, because
+            // `frame_exit_to_object` drops the return value (decrementing its refcount).
+            let mut counts = ahash::AHashMap::new();
+            let mut unique_ids = HashSet::new();
+
+            for (name, &namespace_id) in &self.name_map {
+                let idx = namespace_id.index();
+                if idx < globals.len()
+                    && let Value::Ref(id) = &globals[idx]
+                {
+                    counts.insert(name.clone(), vm.heap.get_refcount(*id));
+                    unique_ids.insert(*id);
+                }
             }
-        }
-        let unique_refs = unique_ids.len();
-        let heap_count = heap.entry_count();
+            let unique_refs = unique_ids.len();
+            let heap_count = vm.heap.entry_count();
 
-        // Clean up the namespace after reading ref counts but before moving the heap
-        for obj in final_namespace {
-            obj.drop_with_heap(&mut heap);
-        }
+            // Convert return value while VM is still alive (needs access to interns)
+            let py_object = frame_exit_to_object(frame_exit_result, &mut vm)
+                .map_err(|e| e.into_python_exception(&self.interns, &self.code))?;
 
-        // Now convert the return value to MontyObject (this drops the Value, decrementing refcount)
-        let py_object = frame_exit_to_object(frame_exit_result, &mut heap, &self.interns)
-            .map_err(|e| e.into_python_exception(&self.interns, &self.code))?;
+            vm.cleanup();
 
-        let allocations_since_gc = heap.get_allocations_since_gc();
+            // Drop globals with proper ref counting
+            for value in globals {
+                value.drop_with_heap(vm.heap);
+            }
 
-        Ok(RefCountOutput {
-            py_object,
-            counts,
-            unique_refs,
-            heap_count,
-            allocations_since_gc,
+            let allocations_since_gc = vm.heap.get_allocations_since_gc();
+
+            Ok(RefCountOutput {
+                py_object,
+                counts,
+                unique_refs,
+                heap_count,
+                allocations_since_gc,
+            })
         })
     }
 
-    /// Prepares the namespace namespaces for execution.
+    /// Creates an empty globals vector with all slots set to `Undefined`.
     ///
-    /// Converts each `MontyObject` input to a `Value`, allocating on the heap if needed.
-    /// Returns the prepared Namespaces or an error if there are too many inputs or invalid input types.
-    fn prepare_namespaces(
+    /// Used to initialize global storage before input population. The VM is created
+    /// with these empty globals, then [`populate_inputs`](Self::populate_inputs) fills
+    /// the input slots while the VM is alive.
+    pub(crate) fn empty_globals(&self) -> Vec<Value> {
+        (0..self.namespace_size).map(|_| Value::Undefined).collect()
+    }
+
+    /// Converts `MontyObject` inputs to `Value`s and writes them into the VM's globals.
+    ///
+    /// This runs with the VM alive so that `to_value` has access to the full VM context.
+    /// On error partway through, the VM's `cleanup()` (via drop) will drain globals and
+    /// properly decrement refcounts for any already-converted values.
+    pub(crate) fn populate_inputs(
         &self,
         inputs: Vec<MontyObject>,
-        heap: &mut Heap<impl ResourceTracker>,
-    ) -> Result<Namespaces, MontyException> {
-        let Some(extra) = self
-            .namespace_size
-            .checked_sub(self.external_function_ids.len() + inputs.len())
-        else {
+        vm: &mut VM<'_, '_, impl ResourceTracker>,
+    ) -> Result<(), MontyException> {
+        if inputs.len() > self.namespace_size {
             return Err(MontyException::runtime_error("too many inputs for namespace"));
-        };
-        // register external functions in the namespace first, matching the logic in prepare
-        let mut namespace: Vec<Value> = Vec::with_capacity(self.namespace_size);
-        for f_id in &self.external_function_ids {
-            namespace.push(Value::ExtFunction(*f_id));
         }
-        // Convert each MontyObject to a Value, propagating any invalid input errors
-        for input in inputs {
-            namespace.push(
-                input
-                    .to_value(heap, &self.interns)
-                    .map_err(|e| MontyException::runtime_error(format!("invalid input type: {e}")))?,
-            );
+        for (i, input) in inputs.into_iter().enumerate() {
+            let value = input
+                .to_value(vm)
+                .map_err(|e| MontyException::runtime_error(format!("invalid input type: {e}")))?;
+            vm.globals[i] = value;
         }
-        if extra > 0 {
-            namespace.extend((0..extra).map(|_| Value::Undefined));
-        }
-        Ok(Namespaces::new(namespace))
+        Ok(())
     }
 }
 
-fn frame_exit_to_object(
+/// Converts module/frame exit results into plain `MontyObject` outputs.
+///
+/// Used by non-iterative execution paths where suspendable outcomes (external calls,
+/// name lookups) are not supported and should produce errors.
+pub(crate) fn frame_exit_to_object(
     frame_exit_result: RunResult<FrameExit>,
-    heap: &mut Heap<impl ResourceTracker>,
-    interns: &Interns,
+    vm: &mut VM<'_, '_, impl ResourceTracker>,
 ) -> RunResult<MontyObject> {
     match frame_exit_result? {
-        FrameExit::Return(return_value) => Ok(MontyObject::new(return_value, heap, interns)),
-        FrameExit::ExternalCall { .. } => {
-            Err(ExcType::not_implemented("external function calls not supported by standard execution.").into())
+        FrameExit::Return(return_value) => Ok(MontyObject::new(return_value, vm)),
+        FrameExit::ExternalCall {
+            function_name, args, ..
+        } => {
+            args.drop_with_heap(vm);
+            let function_name = function_name.as_str(vm.interns);
+            Err(ExcType::not_implemented(format!(
+                "External function '{function_name}' not implemented with standard execution"
+            ))
+            .into())
+        }
+        FrameExit::OsCall { function, args, .. } => {
+            args.drop_with_heap(vm);
+            Err(ExcType::not_implemented(format!(
+                "OS function '{function}' not implemented with standard execution"
+            ))
+            .into())
+        }
+        FrameExit::MethodCall { method_name, args, .. } => {
+            args.drop_with_heap(vm);
+            let name = method_name.as_str(vm.interns);
+            Err(
+                ExcType::not_implemented(format!("Method call '{name}' not implemented with standard execution"))
+                    .into(),
+            )
+        }
+        FrameExit::ResolveFutures(_) => {
+            Err(ExcType::not_implemented("async futures not supported by standard execution.").into())
+        }
+        FrameExit::NameLookup { name_id, .. } => {
+            let name = vm.interns.get_str(name_id);
+            Err(ExcType::name_error(name).into())
         }
     }
 }

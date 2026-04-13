@@ -20,4 +20,5 @@ mod vm;
 
 pub use code::Code;
 pub use compiler::Compiler;
+pub(crate) use vm::CallResult;
 pub use vm::{FrameExit, VM, VMSnapshot};

@@ -54,3 +54,14 @@ reveal_type(TimeoutError())
 reveal_type(TypeError())
 reveal_type(ValueError())
 reveal_type(StopIteration())
+
+# fmt: off
+# === datetime types ===
+import datetime  # noqa: E402, I001
+# fmt: on
+
+reveal_type(datetime.date(2024, 1, 15))
+reveal_type(datetime.time(12, 30))
+reveal_type(datetime.datetime(2024, 1, 15, 12, 30))
+reveal_type(datetime.timedelta(days=1))
+reveal_type(datetime.timezone.utc)

@@ -10,10 +10,10 @@ reveal_types.py:18:13: info[revealed-type] Revealed type: `list[Unknown | int]`
 reveal_types.py:19:13: info[revealed-type] Revealed type: `tuple[Literal[1], Literal[2]]`
 reveal_types.py:20:13: info[revealed-type] Revealed type: `dict[Unknown | int, Unknown | int]`
 reveal_types.py:21:13: info[revealed-type] Revealed type: `set[Unknown | int]`
-reveal_types.py:22:13: info[revealed-type] Revealed type: `frozenset[Unknown | int]`
+reveal_types.py:22:13: info[revealed-type] Revealed type: `frozenset[int]`
 reveal_types.py:23:13: info[revealed-type] Revealed type: `range`
-reveal_types.py:26:13: info[revealed-type] Revealed type: `enumerate[Unknown | int]`
-reveal_types.py:27:13: info[revealed-type] Revealed type: `reversed[Unknown | int]`
+reveal_types.py:26:13: info[revealed-type] Revealed type: `enumerate[int]`
+reveal_types.py:27:13: info[revealed-type] Revealed type: `reversed[int]`
 reveal_types.py:28:13: info[revealed-type] Revealed type: `zip[Unknown]`
 reveal_types.py:31:13: info[revealed-type] Revealed type: `slice[Any, Any, Any]`
 reveal_types.py:34:13: info[revealed-type] Revealed type: `BaseException`
@@ -39,3 +39,8 @@ reveal_types.py:53:13: info[revealed-type] Revealed type: `TimeoutError`
 reveal_types.py:54:13: info[revealed-type] Revealed type: `TypeError`
 reveal_types.py:55:13: info[revealed-type] Revealed type: `ValueError`
 reveal_types.py:56:13: info[revealed-type] Revealed type: `StopIteration`
+reveal_types.py:63:13: info[revealed-type] Revealed type: `date`
+reveal_types.py:64:13: info[revealed-type] Revealed type: `time`
+reveal_types.py:65:13: info[revealed-type] Revealed type: `datetime`
+reveal_types.py:66:13: info[revealed-type] Revealed type: `timedelta`
+reveal_types.py:67:13: info[revealed-type] Revealed type: `timezone`

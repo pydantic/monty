@@ -1,4 +1,4 @@
-# mode: iter
+# call-external
 # External calls in boolean short-circuit expressions
 
 # === Basic boolean operations ===

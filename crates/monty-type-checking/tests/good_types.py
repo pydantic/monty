@@ -1,5 +1,12 @@
+import asyncio
+import datetime
+import json
+import os
+import re
 import sys
-from typing import assert_type
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, assert_type
 
 # === Type checking helper functions ===
 
@@ -374,3 +381,211 @@ print(sys.version)
 print(sys.version_info)
 print(None, file=sys.stdout)
 print(None, file=sys.stderr)
+
+# === async ===
+
+
+async def foo(a: int):
+    return a * 2
+
+
+async def bar():
+    await foo(1)
+    await foo(2)
+    await foo(3)
+
+
+await asyncio.gather(bar())  # pyright: ignore
+
+asyncio.run(foo(1))
+
+
+@dataclass
+class Point:
+    x: int
+    y: float
+
+
+p = Point(1, 2)
+assert_type(p.x, int)
+assert_type(p.y, float)
+p.x = 3
+print(p)
+
+path = Path(__file__)
+assert_type(path, Path)
+# assert_type(path.name, str)
+
+p2 = path.parent
+assert_type(p2, Path)
+
+p3 = path / 'test.txt'
+assert_type(p3, Path)
+assert p3.name == 'test.txt'
+
+x = os.getenv('foobar')
+assert_type(x, str | None)
+
+y = os.getenv('foobar', default=int('123'))
+assert_type(y, str | int)
+
+x2 = os.environ.get('foobar')
+assert_type(x2, str | None)
+
+
+# === re module ===
+
+# re.search returns Match or None
+s1 = re.search(r'\d+', 'abc 42')
+assert_type(s1, re.Match[str] | None)
+
+# re.match returns Match or None
+s2 = re.match(r'\w+', 'hello')
+assert_type(s2, re.Match[str] | None)
+
+# re.fullmatch returns Match or None
+s3 = re.fullmatch(r'\w+', 'hello')
+assert_type(s3, re.Match[str] | None)
+
+# re.compile returns Pattern
+p_re = re.compile(r'\d+')
+assert_type(p_re, re.Pattern[str])
+
+# re.findall returns list of Any
+fa = re.findall(r'\d+', 'a1 b2 c3')
+assert_type(fa, list[Any])
+
+# re.sub returns str
+s4 = re.sub(r'\d+', 'X', 'a1 b2')
+assert_type(s4, str)
+
+# Pattern.search returns Match or None
+p_re2 = re.compile(r'(\w+)')
+s5 = p_re2.search('hello world')
+assert_type(s5, re.Match[str] | None)
+
+# Pattern.match returns Match or None
+s6 = p_re2.match('hello world')
+assert_type(s6, re.Match[str] | None)
+
+# Pattern.sub returns str
+s7 = p_re2.sub('X', 'hello world')
+assert_type(s7, str)
+
+# Pattern.findall returns list of Any
+fa2 = p_re2.findall('hello world')
+assert_type(fa2, list[Any])
+
+
+# === datetime module ===
+
+# date construction
+dt_date = datetime.date(2024, 1, 15)
+assert_type(dt_date, datetime.date)
+
+# date properties
+check_int(dt_date.year)
+check_int(dt_date.month)
+check_int(dt_date.day)
+
+# date methods
+check_str(dt_date.isoformat())
+check_str(dt_date.strftime('%Y-%m-%d'))
+check_int(dt_date.weekday())
+check_int(dt_date.isoweekday())
+check_int(dt_date.toordinal())
+check_str(dt_date.ctime())
+
+# date classmethods (return Unknown due to type checker limitations)
+datetime.date.today()
+datetime.date.fromisoformat('2024-01-15')
+datetime.date.fromordinal(738900)
+
+# date replace
+dt_replaced = dt_date.replace(year=2025)
+assert_type(dt_replaced, datetime.date)
+
+# date arithmetic
+dt_delta = datetime.timedelta(days=1)
+dt_date2 = dt_date + dt_delta
+assert_type(dt_date2, datetime.date)
+dt_diff = dt_date - dt_date
+assert_type(dt_diff, datetime.timedelta)
+
+# time construction
+dt_time = datetime.time(12, 30, 45)
+assert_type(dt_time, datetime.time)
+
+# time properties
+check_int(dt_time.hour)
+check_int(dt_time.minute)
+check_int(dt_time.second)
+check_int(dt_time.microsecond)
+
+# time methods
+check_str(dt_time.isoformat())
+check_str(dt_time.strftime('%H:%M:%S'))
+
+# time replace
+dt_time2 = dt_time.replace(hour=14)
+assert_type(dt_time2, datetime.time)
+
+# timedelta construction
+td = datetime.timedelta(days=5, hours=3, minutes=30)
+assert_type(td, datetime.timedelta)
+
+# timedelta properties
+check_int(td.days)
+check_int(td.seconds)
+check_int(td.microseconds)
+
+# timedelta methods
+check_float(td.total_seconds())
+
+# timedelta arithmetic
+td2 = td + td
+assert_type(td2, datetime.timedelta)
+td3 = td - td
+assert_type(td3, datetime.timedelta)
+td4 = td * 2
+assert_type(td4, datetime.timedelta)
+
+# datetime construction
+dt = datetime.datetime(2024, 1, 15, 12, 30, 45)
+assert_type(dt, datetime.datetime)
+
+# datetime properties
+check_int(dt.year)
+check_int(dt.month)
+check_int(dt.day)
+check_int(dt.hour)
+check_int(dt.minute)
+check_int(dt.second)
+check_int(dt.microsecond)
+
+# datetime methods
+check_str(dt.isoformat())
+check_str(dt.strftime('%Y-%m-%d %H:%M:%S'))
+check_float(dt.timestamp())
+dt_d = dt.date()
+assert_type(dt_d, datetime.date)
+dt_t = dt.time()
+assert_type(dt_t, datetime.time)
+
+# datetime classmethods (return Unknown due to type checker limitations)
+datetime.datetime.now()
+datetime.datetime.strptime('2024-01-15', '%Y-%m-%d')
+datetime.datetime.fromtimestamp(1000000.0)
+
+# datetime replace
+dt_rep = dt.replace(year=2025)
+assert_type(dt_rep, datetime.datetime)
+
+# timezone
+utc = datetime.timezone.utc
+assert_type(utc, datetime.timezone)
+tz = datetime.timezone(datetime.timedelta(hours=5))
+assert_type(tz, datetime.timezone)
+
+assert_type(json.loads('null'), Any)
+assert_type(json.dumps(None), str)

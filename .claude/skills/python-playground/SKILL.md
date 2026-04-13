@@ -9,21 +9,23 @@ Run Python code in an isolated playground directory for testing and experimentat
 
 ## Instructions
 
-1. First, ensure the playground directory exists: `mkdir -p playground`
+1. First, ensure the playground directory exists. If the `playground` directory doesn't already exist, run `mkdir playground`.
 2. Use the Write tool to create the Python file at `playground/test.py`
 3. Run with: `uv run playground/test.py` to test cpython behavior or `cargo run -- playground/test.py` to test monty behavior
 
-IMPORTANT: Use separate tool calls for each step - do NOT chain commands with `&&` or use heredocs. This allows the pre-approved commands to work without prompting.
+IMPORTANT: Use separate tool calls for each step - do NOT chain commands with `&&`. This allows the pre-approved commands to work without prompting.
 
 ## Example workflow
 
-Step 1 - Create directory (Bash, already allowed):
+Step 1 - Create directory if it doesn't already exist (Bash, already allowed):
+
 ```bash
-mkdir -p playground
+mkdir playground
 ```
 
 Step 2 - Write code (use Write tool, not cat):
 Write to `playground/test.py`:
+
 ```python
 def foo():
     raise ValueError('test')
@@ -32,6 +34,7 @@ foo()
 ```
 
 Step 3 - Run script (Bash, already allowed):
+
 ```bash
 uv run playground/test.py
 ```

@@ -10,6 +10,8 @@
 //! - `W` suffix, 2 bytes (u16/i16): `LoadLocalW`, `Jump`, `LoadConst`
 //! - Compound (multiple operands): `CallFunctionKw` (u8 + u8), `MakeClosure` (u16 + u8)
 
+use std::{error, fmt};
+
 use strum::FromRepr;
 
 /// Opcode discriminant - just identifies the instruction type.
@@ -17,6 +19,10 @@ use strum::FromRepr;
 /// Operands (if any) follow in the bytecode stream and are fetched separately.
 /// With `#[repr(u8)]`, each opcode is exactly 1 byte. Uses `strum::FromRepr` for
 /// efficient byte-to-opcode conversion (bounds check + transmute).
+///
+/// Opcode bytes are part of Monty's serialized `Code` format, so existing values
+/// must remain stable across releases. Append new opcodes to the end of the enum
+/// instead of inserting them into the middle.
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, FromRepr)]
 pub enum Opcode {
@@ -71,6 +77,28 @@ pub enum Opcode {
     StoreCell,
     /// Delete local variable. Operand: u8 slot.
     DeleteLocal,
+    /// Load local in call context: pushes `ExtFunction(name_id)` for undefined names
+    /// instead of yielding `NameLookup`. Operands: u8 slot, u16 name_id.
+    ///
+    /// Used when compiling function calls like `foo()` where `foo` is `LocalUnassigned`.
+    /// If the variable is defined, behaves identically to `LoadLocal`.
+    /// If undefined, pushes an `ExtFunction` value so execution continues to `CallFunction`,
+    /// which naturally yields `FunctionCall` instead of `NameLookup`.
+    /// The name_id is encoded in the operand to avoid namespace lookup ambiguity.
+    LoadLocalCallable,
+    /// Wide variant of `LoadLocalCallable`. Operands: u16 slot, u16 name_id.
+    LoadLocalCallableW,
+    /// Load global in call context: pushes `ExtFunction(name_id)` for undefined names
+    /// instead of yielding `NameLookup`. Operands: u16 slot, u16 name_id.
+    ///
+    /// Used when compiling function calls like `foo()` where `foo` is a global.
+    /// If the variable is defined, behaves identically to `LoadGlobal`.
+    /// If undefined, pushes an `ExtFunction` value so execution continues to `CallFunction`,
+    /// which naturally yields `FunctionCall` instead of `NameLookup`.
+    /// The name_id is encoded in the operand because global and local slot indices
+    /// belong to different namespaces — using the current frame's local_names would
+    /// return the wrong name when called from inside a function.
+    LoadGlobalCallable,
 
     // === Binary Operations (no operand) ===
     /// Add: a + b.
@@ -231,8 +259,7 @@ pub enum Opcode {
     BinarySubscr,
     /// a[b] = c: pop value, pop index, pop obj.
     StoreSubscr,
-    /// del a[b]: pop index, pop obj.
-    DeleteSubscr,
+    // NOTE: DeleteSubscr removed - `del` statement not supported by parser
     /// Pop obj, push obj.attr. Operand: u16 name_id.
     LoadAttr,
     /// Pop module, push module.attr for `from ... import`. Operand: u16 name_id.
@@ -242,8 +269,7 @@ pub enum Opcode {
     LoadAttrImport,
     /// Pop value, pop obj, set obj.attr. Operand: u16 name_id.
     StoreAttr,
-    /// Pop obj, delete obj.attr. Operand: u16 name_id.
-    DeleteAttr,
+    // NOTE: DeleteAttr removed - `del` statement not supported by parser
 
     // === Function Calls ===
     /// Call TOS with n positional args. Operand: u8 arg_count.
@@ -269,14 +295,18 @@ pub enum Opcode {
     /// After the two count bytes, there are kw_count little-endian u16 values,
     /// each being a StringId index for the corresponding keyword argument name.
     CallFunctionKw,
-    /// Call method. Operands: u16 name_id, u8 arg_count.
-    CallMethod,
-    /// Call method with keyword args. Operands: u16 name_id, u8 pos_count, u8 kw_count, then kw_count u16 name indices.
+    /// Call attribute on object. Operands: u16 name_id, u8 arg_count.
+    ///
+    /// This is used for both method calls (`obj.method(args)`) and module
+    /// attribute calls (`module.func(args)`). The attribute is looked up
+    /// on the object and called with the given arguments.
+    CallAttr,
+    /// Call attribute with keyword args. Operands: u16 name_id, u8 pos_count, u8 kw_count, then kw_count u16 name indices.
     ///
     /// Stack: [obj, pos_args..., kw_values...]
     /// After the operands, there are kw_count little-endian u16 values,
     /// each being a StringId index for the corresponding keyword argument name.
-    CallMethodKw,
+    CallAttrKw,
     /// Call a defined function with *args tuple and **kwargs dict. Operand: u8 flags.
     ///
     /// Flags:
@@ -289,6 +319,18 @@ pub enum Opcode {
     ///
     /// Used for calls with `*args` and/or `**kwargs` unpacking.
     CallFunctionExtended,
+    /// Call attribute with *args tuple and **kwargs dict. Operands: u16 name_id, u8 flags.
+    ///
+    /// Flags:
+    /// - bit 0: has kwargs dict on stack
+    ///
+    /// Stack layout (bottom to top):
+    /// - receiver object
+    /// - args tuple
+    /// - kwargs dict (if flag bit 0 set)
+    ///
+    /// Used for method calls with `*args` and/or `**kwargs` unpacking.
+    CallAttrExtended,
 
     // === Control Flow ===
     /// Unconditional relative jump. Operand: i16 offset.
@@ -318,8 +360,7 @@ pub enum Opcode {
     // Note: No SetupTry/PopExceptHandler - we use static exception_table
     /// Raise TOS as exception.
     Raise,
-    /// Raise TOS from TOS-1.
-    RaiseFrom,
+    // NOTE: RaiseFrom removed - `raise ... from ...` not supported by parser
     /// Re-raise current exception (bare `raise`).
     Reraise,
     /// Clear current_exception when exiting except block.
@@ -334,6 +375,18 @@ pub enum Opcode {
     // === Return ===
     /// Return TOS from function.
     ReturnValue,
+
+    // === Async/Await ===
+    /// Await the TOS value.
+    ///
+    /// Handles `ExternalFuture`, `Coroutine`, and `GatherFuture` awaitables.
+    /// For `ExternalFuture`: if resolved, pushes result; if pending, blocks task.
+    /// For `Coroutine`: validates state is `New`, then starts execution.
+    /// For `GatherFuture`: spawns all coroutines as tasks and blocks until completion.
+    ///
+    /// Raises `TypeError` if TOS is not awaitable.
+    /// Raises `RuntimeError` if coroutine/future has already been awaited.
+    Await,
 
     // === Unpacking ===
     /// Unpack TOS into n values. Operand: u8 count.
@@ -351,6 +404,42 @@ pub enum Opcode {
     /// The module_id maps to `BuiltinModule` (0=sys, 1=typing).
     /// Creates the module on the heap and pushes a `Value::Ref` to it.
     LoadModule,
+    /// Raises `ModuleNotFoundError` at runtime. Operand: u16 constant index for module name.
+    ///
+    /// This opcode is emitted when the compiler encounters an import of an unknown module.
+    /// Instead of failing at compile time, the error is deferred to runtime so that
+    /// imports inside `if TYPE_CHECKING:` blocks or other non-executed code paths
+    /// don't cause errors.
+    ///
+    /// The operand is an index into the constant pool where the module name string is stored.
+    RaiseImportError,
+    /// Duplicate the top two stack values, preserving order: `[a, b] -> [a, b, a, b]`.
+    ///
+    /// Appended at the end to preserve the serialized byte values of all older opcodes.
+    Dup2,
+    /// Delete global variable (set to Undefined). Operand: u16 slot.
+    ///
+    /// Appended at the end to preserve the serialized byte values of all older opcodes.
+    DeleteGlobal,
+
+    /// Pop a mapping, silently merge into the dict at `depth`. Operand: u8 depth.
+    ///
+    /// Used for `**expr` unpack inside dict literals, where later keys overwrite earlier ones
+    /// (unlike `DictMerge` which raises `TypeError` on duplicate keys).
+    ///
+    /// Stack: [..., dict, iter1, ..., iterN, mapping] -> [..., dict, iter1, ..., iterN]
+    /// Pops mapping (TOS), merges into dict at stack position `len - 2 - depth`.
+    /// Raises `TypeError` if `mapping` is not a dict.
+    DictUpdate,
+    /// Pop an iterable, add all items to set at `depth`. Operand: u8 depth.
+    ///
+    /// Used for `*expr` unpack inside set literals (e.g., `{*a, 1}`).
+    /// Follows the same depth convention as `ListAppend`/`SetAdd`.
+    ///
+    /// Stack: [..., set, iter1, ..., iterN, iterable] -> [..., set, iter1, ..., iterN]
+    /// Pops iterable (TOS), adds each item to set at stack position `len - 2 - depth`.
+    /// Raises `TypeError` if iterable is not iterable.
+    SetExtend,
 }
 
 impl TryFrom<u8> for Opcode {
@@ -370,25 +459,14 @@ impl Opcode {
     /// For opcodes that have known, fixed stack effects, returns `Some(i16)`.
     #[must_use]
     pub const fn stack_effect(self) -> Option<i16> {
-        use Opcode::{
-            BinaryAdd, BinaryAnd, BinaryDiv, BinaryFloorDiv, BinaryLShift, BinaryMatMul, BinaryMod, BinaryMul,
-            BinaryOr, BinaryPow, BinaryRShift, BinarySub, BinarySubscr, BinaryXor, BuildDict, BuildFString, BuildList,
-            BuildSet, BuildSlice, BuildTuple, CallBuiltinFunction, CallBuiltinType, CallFunction, CallFunctionExtended,
-            CallFunctionKw, CallMethod, CallMethodKw, CheckExcMatch, ClearException, CompareEq, CompareGe, CompareGt,
-            CompareIn, CompareIs, CompareIsNot, CompareLe, CompareLt, CompareModEq, CompareNe, CompareNotIn,
-            DeleteAttr, DeleteLocal, DeleteSubscr, DictMerge, DictSetItem, Dup, ForIter, FormatValue, GetIter,
-            InplaceAdd, InplaceAnd, InplaceDiv, InplaceFloorDiv, InplaceLShift, InplaceMod, InplaceMul, InplaceOr,
-            InplacePow, InplaceRShift, InplaceSub, InplaceXor, Jump, JumpIfFalse, JumpIfFalseOrPop, JumpIfTrue,
-            JumpIfTrueOrPop, ListAppend, ListExtend, ListToTuple, LoadAttr, LoadAttrImport, LoadCell, LoadConst,
-            LoadFalse, LoadGlobal, LoadLocal, LoadLocal0, LoadLocal1, LoadLocal2, LoadLocal3, LoadLocalW, LoadModule,
-            LoadNone, LoadSmallInt, LoadTrue, MakeClosure, MakeFunction, Nop, Pop, Raise, RaiseFrom, Reraise,
-            ReturnValue, Rot2, Rot3, SetAdd, StoreAttr, StoreCell, StoreGlobal, StoreLocal, StoreLocalW, StoreSubscr,
-            UnaryInvert, UnaryNeg, UnaryNot, UnaryPos, UnpackEx, UnpackSequence,
-        };
+        #![expect(clippy::allow_attributes, reason = "expect seems broken with enum_glob_use")]
+        #[allow(clippy::enum_glob_use, reason = "simplifies churn")]
+        use Opcode::*;
         Some(match self {
             // Stack operations
             Pop => -1,
             Dup => 1,
+            Dup2 => 2,
             Rot2 | Rot3 => 0, // reorder, no net change
 
             // Constants & Literals (all push 1)
@@ -396,9 +474,10 @@ impl Opcode {
 
             // Variables - loads push, stores pop
             LoadLocal0 | LoadLocal1 | LoadLocal2 | LoadLocal3 => 1,
-            LoadLocal | LoadLocalW | LoadGlobal | LoadCell => 1,
+            LoadLocal | LoadLocalW | LoadLocalCallable | LoadLocalCallableW | LoadGlobal | LoadGlobalCallable
+            | LoadCell => 1,
             StoreLocal | StoreLocalW | StoreGlobal | StoreCell => -1,
-            DeleteLocal => 0, // doesn't affect stack
+            DeleteLocal | DeleteGlobal => 0, // doesn't affect stack
 
             // Binary operations: pop 2, push 1 = -1
             BinaryAdd | BinarySub | BinaryMul | BinaryDiv | BinaryFloorDiv | BinaryMod | BinaryPow | BinaryAnd
@@ -435,14 +514,12 @@ impl Opcode {
             // Subscript & Attribute
             BinarySubscr => -1,             // pop 2, push 1
             StoreSubscr => -3,              // pop 3, push 0
-            DeleteSubscr => -2,             // pop 2, push 0
             LoadAttr | LoadAttrImport => 0, // pop 1, push 1
             StoreAttr => -2,                // pop 2, push 0
-            DeleteAttr => -1,               // pop 1, push 0
 
             // Function calls - depend on arg count
-            CallFunction | CallBuiltinFunction | CallBuiltinType | CallFunctionKw | CallMethod | CallMethodKw
-            | CallFunctionExtended => return None,
+            CallFunction | CallBuiltinFunction | CallBuiltinType | CallFunctionKw | CallAttr | CallAttrKw
+            | CallFunctionExtended | CallAttrExtended => return None,
 
             // Control flow - no stack effect (jumps don't push/pop)
             Jump => 0,
@@ -453,12 +530,14 @@ impl Opcode {
             GetIter => 0,           // pop iterable, push iterator
             ForIter => return None, // pushes value or jumps (variable)
 
+            // Async/await
+            Await => 0, // pop awaitable, push result
+
             // Function definition - push 1 (the function/closure)
             MakeFunction | MakeClosure => 1,
 
             // Exception handling
             Raise => -1,         // pop exception
-            RaiseFrom => -2,     // pop exception, pop cause
             Reraise => 0,        // no stack change (reads from exception_stack)
             ClearException => 0, // clears exception_stack, no operand stack change
             CheckExcMatch => 0,  // pop exc_type, push bool (net 0, but exc stays)
@@ -469,11 +548,18 @@ impl Opcode {
             // Unpacking - depends on operand
             UnpackSequence | UnpackEx => return None,
 
+            // Dict/set literal extensions (PEP 448):
+            // DictUpdate: pop mapping, silently merge into dict below = -1
+            DictUpdate => -1,
+            // SetExtend: pop iterable, add all items to set below = -1
+            SetExtend => -1,
+
             // Special
             Nop => 0,
 
             // Module
-            LoadModule => 1, // push module
+            LoadModule => 1,       // push module
+            RaiseImportError => 0, // raises exception, no stack change before that
         })
     }
 }
@@ -482,31 +568,45 @@ impl Opcode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct InvalidOpcodeError(pub u8);
 
-impl std::fmt::Display for InvalidOpcodeError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Display for InvalidOpcodeError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "invalid opcode byte: {}", self.0)
     }
 }
 
-impl std::error::Error for InvalidOpcodeError {}
+impl error::Error for InvalidOpcodeError {}
 
 #[cfg(test)]
 mod tests {
+    use std::mem;
+
     use super::*;
 
     #[test]
     fn test_opcode_roundtrip() {
-        // Verify that all opcodes from 0 to LoadModule (last opcode) can be converted to u8 and back
-        for byte in 0..=Opcode::LoadModule as u8 {
+        // Verify that all opcodes from 0 to DeleteGlobal (last opcode) can be converted to u8 and back.
+        for byte in 0..=Opcode::DeleteGlobal as u8 {
             let opcode = Opcode::try_from(byte).unwrap();
             assert_eq!(opcode as u8, byte, "opcode {opcode:?} has wrong discriminant");
         }
     }
 
     #[test]
+    fn test_serialized_opcode_values_remain_stable() {
+        // `RaiseImportError` was the tail opcode before `Dup2` was introduced. Keeping it at
+        // byte 110 preserves compatibility for serialized runners and snapshots compiled by
+        // older versions.
+        assert_eq!(Opcode::RaiseImportError as u8, 110);
+        assert_eq!(Opcode::Dup2 as u8, 111);
+        assert_eq!(Opcode::DeleteGlobal as u8, 112);
+        assert_eq!(Opcode::DictUpdate as u8, 113);
+        assert_eq!(Opcode::SetExtend as u8, 114);
+    }
+
+    #[test]
     fn test_invalid_opcode() {
         // Byte just after the last valid opcode should fail
-        let result = Opcode::try_from(Opcode::LoadModule as u8 + 1);
+        let result = Opcode::try_from(Opcode::SetExtend as u8 + 1);
         assert!(result.is_err());
         // 255 should also fail
         let result = Opcode::try_from(255u8);
@@ -516,6 +616,6 @@ mod tests {
     #[test]
     fn test_opcode_size() {
         // Verify opcode is 1 byte
-        assert_eq!(std::mem::size_of::<Opcode>(), 1);
+        assert_eq!(mem::size_of::<Opcode>(), 1);
     }
 }

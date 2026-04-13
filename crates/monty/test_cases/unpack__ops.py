@@ -92,3 +92,62 @@ assert a == 99, 'single element list unpack'
 
 (a,) = 'z'
 assert a == 'z', 'single char string unpack'
+
+# === Star unpacking (extended unpacking) ===
+# Star at end
+first, *rest = [1, 2, 3, 4, 5]
+assert first == 1, 'star at end: first'
+assert rest == [2, 3, 4, 5], 'star at end: rest'
+
+# Star at start
+*init, last = [1, 2, 3, 4, 5]
+assert init == [1, 2, 3, 4], 'star at start: init'
+assert last == 5, 'star at start: last'
+
+# Star in middle
+first, *middle, last = [1, 2, 3, 4, 5]
+assert first == 1, 'star in middle: first'
+assert middle == [2, 3, 4], 'star in middle: middle'
+assert last == 5, 'star in middle: last'
+
+# Empty rest (minimum values)
+first, *rest, last = [1, 2]
+assert first == 1, 'empty rest: first'
+assert rest == [], 'empty rest: rest is empty list'
+assert last == 2, 'empty rest: last'
+
+# From tuple
+a, *b = (10, 20, 30)
+assert a == 10, 'star from tuple: a'
+assert b == [20, 30], 'star from tuple: b is list'
+
+# From string
+first, *mid, last = 'abcde'
+assert first == 'a', 'star from string: first'
+assert mid == ['b', 'c', 'd'], 'star from string: mid'
+assert last == 'e', 'star from string: last'
+
+# With more targets before star
+a, b, c, *rest = [1, 2, 3, 4, 5, 6]
+assert a == 1, 'multiple before star: a'
+assert b == 2, 'multiple before star: b'
+assert c == 3, 'multiple before star: c'
+assert rest == [4, 5, 6], 'multiple before star: rest'
+
+# With more targets after star
+*init, x, y, z = [1, 2, 3, 4, 5, 6]
+assert init == [1, 2, 3], 'multiple after star: init'
+assert x == 4, 'multiple after star: x'
+assert y == 5, 'multiple after star: y'
+assert z == 6, 'multiple after star: z'
+
+# Star captures all but one
+head, *tail = [1]
+assert head == 1, 'single item: head'
+assert tail == [], 'single item: tail is empty'
+
+# Star with bracket syntax
+[a, *b, c] = [1, 2, 3, 4]
+assert a == 1, 'bracket syntax: a'
+assert b == [2, 3], 'bracket syntax: b'
+assert c == 4, 'bracket syntax: c'

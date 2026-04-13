@@ -2,9 +2,9 @@
 
 use crate::{
     args::ArgValues,
+    bytecode::VM,
+    defer_drop, defer_drop_mut,
     exception_private::RunResult,
-    heap::Heap,
-    intern::Interns,
     resource::ResourceTracker,
     types::{MontyIter, PyTrait},
     value::Value,
@@ -14,19 +14,17 @@ use crate::{
 ///
 /// Returns True if all elements of the iterable are true (or if the iterable is empty).
 /// Short-circuits on the first falsy value.
-pub fn builtin_all(heap: &mut Heap<impl ResourceTracker>, args: ArgValues, interns: &Interns) -> RunResult<Value> {
-    let iterable = args.get_one_arg("all", heap)?;
-    let mut iter = MontyIter::new(iterable, heap, interns)?;
+pub fn builtin_all(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let iterable = args.get_one_arg("all", vm.heap)?;
+    let iter = MontyIter::new(iterable, vm)?;
+    defer_drop_mut!(iter, vm);
 
-    while let Some(item) = iter.for_next(heap, interns)? {
-        let is_truthy = item.py_bool(heap, interns);
-        item.drop_with_heap(heap);
-        if !is_truthy {
-            iter.drop_with_heap(heap);
+    while let Some(item) = iter.for_next(vm)? {
+        defer_drop!(item, vm);
+        if !item.py_bool(vm) {
             return Ok(Value::Bool(false));
         }
     }
 
-    iter.drop_with_heap(heap);
     Ok(Value::Bool(true))
 }

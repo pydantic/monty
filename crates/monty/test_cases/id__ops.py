@@ -20,7 +20,7 @@ assert id(True) == id(True), 'True singleton'
 assert id(False) == id(False), 'False singleton'
 assert id(...) == id(...), 'Ellipsis singleton'
 
-# bool and int are distinct (unlike CPython)
+# bool and int are distinct
 assert id(True) != id(1), 'True is not 1'
 assert id(False) != id(0), 'False is not 0'
 
@@ -53,7 +53,11 @@ assert a is b, 'list mutate preserves identity'
 
 # === Mixed types have distinct ids ===
 assert id(1) != id('1'), 'int vs str distinct'
-assert id([]) != id(()), 'list vs tuple distinct'
+
+# === Tuple singleton is guaranteed to have a unique id ===
+assert id([]) != id(()), 'list vs tuple singleton distinct'
+assert id({}) != id(()), 'dict vs tuple singleton distinct'
+assert id(1) != id(()), 'int vs tuple singleton distinct'
 
 # === Multiple refs share id ===
 x = [1, 2]

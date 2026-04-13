@@ -8,7 +8,7 @@ exercising the full interpreter pipeline for profiling.
 import time
 from pathlib import Path
 
-import monty
+import pydantic_monty
 
 
 def main():
@@ -22,17 +22,17 @@ def main():
         # Exercise parsing and type checking
         try:
             try:
-                m = monty.Monty(code, type_check=True)
-            except monty.MontyTypingError:
+                m = pydantic_monty.Monty(code, type_check=True)
+            except pydantic_monty.MontyTypingError:
                 # Many test cases have type errors
-                m = monty.Monty(code)
+                m = pydantic_monty.Monty(code)
                 type_errors += 1
 
             # Exercise execution
             run += 1
             m.run(print_callback=lambda _, __: None)
             run_success += 1
-        except monty.MontyError:
+        except pydantic_monty.MontyError:
             # ignore syntax errors or errors while running the code
             pass
         except Exception as e:

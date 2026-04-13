@@ -1,4 +1,4 @@
-# mode: iter
+# call-external
 # Test external call with exception variable
 
 exc_with_ext = None

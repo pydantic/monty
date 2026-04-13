@@ -1,4 +1,4 @@
-# mode: iter
+# call-external
 # === Basic external function tests ===
 
 # Simple calls

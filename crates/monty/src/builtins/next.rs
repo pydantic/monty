@@ -1,7 +1,7 @@
 //! Implementation of the next() builtin function.
 
 use crate::{
-    args::ArgValues, exception_private::RunResult, heap::Heap, intern::Interns, resource::ResourceTracker,
+    args::ArgValues, bytecode::VM, defer_drop, exception_private::RunResult, resource::ResourceTracker,
     types::iter::iterator_next, value::Value,
 };
 
@@ -14,11 +14,8 @@ use crate::{
 ///   `StopIteration` when the iterator is exhausted.
 /// - `next(iterator, default)` - Returns the next item from the iterator, or
 ///   `default` if the iterator is exhausted.
-pub fn builtin_next(heap: &mut Heap<impl ResourceTracker>, args: ArgValues, interns: &Interns) -> RunResult<Value> {
-    let (iterator, default) = args.get_one_two_args("next", heap)?;
-
-    let result = iterator_next(&iterator, default, heap, interns);
-    // Drop the iterator value (the iterator object itself remains on the heap)
-    iterator.drop_with_heap(heap);
-    result
+pub fn builtin_next(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let (iterator, default) = args.get_one_two_args("next", vm.heap)?;
+    defer_drop!(iterator, vm);
+    iterator_next(iterator, default, vm)
 }

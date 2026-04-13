@@ -5,8 +5,10 @@ use num_traits::Signed;
 
 use crate::{
     args::ArgValues,
+    bytecode::VM,
+    defer_drop,
     exception_private::{ExcType, RunResult},
-    heap::{Heap, HeapData},
+    heap::HeapData,
     resource::ResourceTracker,
     types::{PyTrait, Str},
     value::Value,
@@ -16,10 +18,12 @@ use crate::{
 ///
 /// Converts an integer to a lowercase hexadecimal string prefixed with '0x'.
 /// Supports both i64 and BigInt integers.
-pub fn builtin_hex(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
-    let value = args.get_one_arg("hex", heap)?;
+pub fn builtin_hex(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let value = args.get_one_arg("hex", vm.heap)?;
+    defer_drop!(value, vm);
+    let heap = &mut *vm.heap;
 
-    let result = match &value {
+    match value {
         Value::Int(n) => {
             let abs_digits = format!("{:x}", n.unsigned_abs());
             let prefix = if *n < 0 { "-0x" } else { "0x" };
@@ -37,14 +41,11 @@ pub fn builtin_hex(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> Ru
                 let heap_id = heap.allocate(HeapData::Str(Str::new(hex_str)))?;
                 Ok(Value::Ref(heap_id))
             } else {
-                Err(ExcType::type_error_not_integer(value.py_type(heap)))
+                Err(ExcType::type_error_not_integer(value.py_type(vm)))
             }
         }
-        _ => Err(ExcType::type_error_not_integer(value.py_type(heap))),
-    };
-
-    value.drop_with_heap(heap);
-    result
+        _ => Err(ExcType::type_error_not_integer(value.py_type(vm))),
+    }
 }
 
 /// Formats a BigInt as a hexadecimal string with '0x' prefix.

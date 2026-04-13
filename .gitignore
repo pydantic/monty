@@ -1,4 +1,5 @@
 *.py[cod]
+*.so
 /.idea/
 /target/
 /env*/
@@ -12,3 +13,10 @@
 /playground/
 /type-sizes.txt
 /sandbox/
+/starlark-rust/
+/.playwright-mcp/
+/crates/fuzz/artifacts/
+/crates/fuzz/corpus/
+/.worktrees/
+/.zed/
+/scripts/json_files/

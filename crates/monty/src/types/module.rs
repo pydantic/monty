@@ -1,11 +1,17 @@
 //! Python module type for representing imported modules.
 
+use std::mem;
+
 use crate::{
-    heap::{Heap, HeapId},
-    intern::{Interns, StringId},
+    args::ArgValues,
+    bytecode::{CallResult, VM},
+    defer_drop,
+    exception_private::{ExcType, RunResult},
+    heap::{HeapGuard, HeapId, HeapItem, HeapRead},
+    intern::StringId,
     resource::ResourceTracker,
-    types::{Dict, PyTrait},
-    value::Value,
+    types::Dict,
+    value::{EitherStr, Value},
 };
 
 /// A Python module with a name and attribute dictionary.
@@ -53,36 +59,10 @@ impl Module {
     /// # Panics
     ///
     /// Panics if the attribute name string has not been pre-interned.
-    pub fn set_attr(
-        &mut self,
-        name: impl Into<StringId>,
-        value: Value,
-        heap: &mut Heap<impl ResourceTracker>,
-        interns: &Interns,
-    ) {
+    pub fn set_attr(&mut self, name: impl Into<StringId>, value: Value, vm: &mut VM<'_, '_, impl ResourceTracker>) {
         let key = Value::InternString(name.into());
         // Unwrap is safe because InternString keys are always hashable
-        self.attrs.set(key, value, heap, interns).unwrap();
-    }
-
-    /// Looks up an attribute by name in the module's attribute dictionary.
-    ///
-    /// Returns `Some(value)` if the attribute exists, `None` otherwise.
-    /// The returned value is copied without incrementing refcount - caller must
-    /// call `heap.inc_ref()` if the value is a `Value::Ref`.
-    pub fn get_attr(
-        &self,
-        attr_value: &Value,
-        heap: &mut Heap<impl ResourceTracker>,
-        interns: &Interns,
-    ) -> Option<Value> {
-        // Dict::get returns Result because of hash computation, but InternString keys
-        // are always hashable, so unwrap is safe here.
-        self.attrs
-            .get(attr_value, heap, interns)
-            .ok()
-            .flatten()
-            .map(Value::copy_for_extend)
+        self.attrs.set(key, value, vm).unwrap();
     }
 
     /// Returns whether this module has any heap references in its attributes.
@@ -92,6 +72,78 @@ impl Module {
 
     /// Collects child HeapIds for reference counting.
     pub fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
+        self.attrs.py_dec_ref_ids(stack);
+    }
+}
+
+impl<'h> HeapRead<'h, Module> {
+    /// Gets an attribute by string ID for the `py_getattr` trait method.
+    ///
+    /// Returns the attribute value if found, or `None` if the attribute doesn't exist.
+    /// For `Property` values, invokes the property getter rather than returning
+    /// the Property itself - this implements Python's descriptor protocol.
+    pub fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h, '_, impl ResourceTracker>) -> Option<CallResult> {
+        let value = self
+            .get(vm.heap)
+            .attrs
+            .get_by_str(attr.as_str(vm.interns), vm.heap, vm.interns)?;
+
+        // If the value is a Property, invoke its getter to compute the actual value
+        if let Value::Property(prop) = *value {
+            Some(prop.get())
+        } else {
+            Some(CallResult::Value(value.clone_with_heap(vm)))
+        }
+    }
+
+    /// Calls an attribute as a function on this module.
+    ///
+    /// Modules don't have methods - they have callable attributes. This looks up
+    /// the attribute and calls it if it's a `ModuleFunction`.
+    ///
+    /// Returns `CallResult` because module functions may need OS operations
+    /// (e.g., `os.getenv()`) that require host involvement.
+    pub fn py_call_attr(
+        &mut self,
+        _self_id: HeapId,
+        vm: &mut VM<'h, '_, impl ResourceTracker>,
+        attr: &EitherStr,
+        args: ArgValues,
+    ) -> RunResult<CallResult> {
+        let mut args_guard = HeapGuard::new(args, vm);
+        let vm = args_guard.heap();
+
+        let attr_str = match attr {
+            EitherStr::Interned(id) => vm.interns.get_str(*id),
+            EitherStr::Heap(s) => {
+                return Err(ExcType::attribute_error_module(
+                    vm.interns.get_str(self.get(vm.heap).name),
+                    s,
+                ));
+            }
+        };
+
+        match self.get(vm.heap).attrs().get_by_str(attr_str, vm.heap, vm.interns) {
+            Some(value) => {
+                let value = value.clone_with_heap(vm);
+                let (args, vm) = args_guard.into_parts();
+                defer_drop!(value, vm);
+                vm.call_function(value, args)
+            }
+            None => Err(ExcType::attribute_error_module(
+                vm.interns.get_str(self.get(vm.heap).name),
+                attr.as_str(vm.interns),
+            )),
+        }
+    }
+}
+
+impl HeapItem for Module {
+    fn py_estimate_size(&self) -> usize {
+        mem::size_of::<Self>() + self.attrs.py_estimate_size()
+    }
+
+    fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
         self.attrs.py_dec_ref_ids(stack);
     }
 }

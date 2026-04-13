@@ -1,4 +1,4 @@
-# mode: iter
+# call-external
 # === External function calls inside user-defined functions ===
 
 # Basic function calling external function

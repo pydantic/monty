@@ -1,20 +1,29 @@
 use std::{
+    cell::RefCell,
+    collections::{HashMap, HashSet},
     error::Error,
     ffi::CString,
-    fs,
+    fmt, fs,
     panic::{self, AssertUnwindSafe},
     path::Path,
-    sync::mpsc::{self, RecvTimeoutError},
+    str,
+    sync::{
+        OnceLock,
+        mpsc::{self, RecvTimeoutError},
+    },
     thread,
     time::Duration,
 };
 
 use ahash::AHashMap;
+use chrono::{Datelike, Timelike};
 use monty::{
-    ExcType, ExternalResult, LimitedTracker, MontyException, MontyObject, MontyRun, ResourceLimits, RunProgress,
-    StdPrint,
+    ExcType, ExtFunctionResult, LimitedTracker, MontyDate, MontyDateTime, MontyException, MontyObject, MontyRun,
+    NameLookupResult, OsFunction, PrintWriter, ResourceLimits, RunProgress, dir_stat, file_stat,
+    fs::{MountMode, MountTable, OverlayState},
 };
 use pyo3::{prelude::*, types::PyDict};
+use similar::TextDiff;
 
 /// Recursion limit for test execution.
 ///
@@ -28,14 +37,20 @@ const TEST_RECURSION_LIMIT: usize = 50;
 
 /// Test configuration parsed from directive comments.
 ///
-/// Parsed from an optional first-line comment like `# xfail=monty,cpython` or `# mode: iter`.
+/// Parsed from an optional first-line comment like `# xfail=monty,cpython` or `# call-external`.
 /// If not present, defaults to running on both interpreters in standard mode.
 ///
 /// ## Xfail Semantics (Strict)
 /// - `xfail=monty` - Test is expected to fail on Monty; if it passes, that's an error
 /// - `xfail=cpython` - Test is expected to fail on CPython; if it passes, that's an error
+///
+/// ## Platform-Specific Skips
+/// - `skip-cpython-windows` - Skip CPython test on Windows (Monty test still runs).
+///   Used for tests that rely on POSIX path semantics which Monty's sandbox always
+///   provides but Windows CPython does not.
 /// - `xfail=monty,cpython` - Expected to fail on both interpreters
 #[derive(Debug, Clone, Default)]
+#[expect(clippy::struct_excessive_bools)]
 struct TestConfig {
     /// When true, test is expected to fail on Monty (strict xfail).
     xfail_monty: bool,
@@ -43,6 +58,17 @@ struct TestConfig {
     xfail_cpython: bool,
     /// When true, use MontyRun with external function support instead of MontyRun.
     iter_mode: bool,
+    /// When true, wrap code in async context for CPython execution.
+    /// Used for tests with top-level await which Monty supports but CPython doesn't.
+    async_mode: bool,
+    /// When true, create a temporary directory with a known structure and mount it.
+    /// For Monty: mounted at `/mnt` with `OverlayMemory` mode.
+    /// For CPython: passed as real path. `root` variable injected into both.
+    mount_fs: bool,
+    /// When true, skip CPython test on Windows. Used for tests that rely on POSIX
+    /// path semantics (e.g. pathlib tests using `/` paths) which are correct for
+    /// Monty's always-POSIX sandbox but behave differently on Windows CPython.
+    skip_cpython_windows: bool,
 }
 
 /// Represents the expected outcome of a test fixture
@@ -79,7 +105,7 @@ impl Expectation {
 
 /// Parse a Python fixture file into code, expected outcome, and test configuration.
 ///
-/// The file may optionally start with a `# xfail=monty,cpython` comment to specify
+/// The file may optionally contain a `# xfail=monty,cpython` comment to specify
 /// which interpreters the test is expected to fail on. If not present, defaults to
 /// running on both and expecting success.
 ///
@@ -106,45 +132,35 @@ fn parse_fixture(content: &str) -> (String, Expectation, TestConfig) {
 
     assert!(!lines.is_empty(), "Empty fixture file");
 
-    // Check for directives at the start of the file
-    // Supports: # xfail=monty,cpython and # mode: iter (can be combined on same line)
-    // Note: Directive lines are kept in the code (they're Python comments) to preserve line numbers
-    let (config, code_start_idx) = if let Some(first_line) = lines.first() {
-        let mut config = TestConfig::default();
+    // comment lines with leading # and spaces stripped
+    let comment_lines = lines
+        .iter()
+        .filter(|line| line.starts_with('#'))
+        .map(|line| line.trim_start_matches('#').trim())
+        .collect::<Vec<_>>();
 
-        // Check for mode: iter directive
-        if first_line.contains("mode: iter") {
-            config.iter_mode = true;
-        }
-
-        // Check for xfail= directive
-        if let Some(xfail_idx) = first_line.find("xfail=") {
-            let xfail_str = &first_line[xfail_idx + 6..];
-            // Parse until whitespace or end of line
-            let xfail_end = xfail_str.find(|c: char| c.is_whitespace()).unwrap_or(xfail_str.len());
-            let xfail_str = &xfail_str[..xfail_end];
-            config.xfail_monty = xfail_str.contains("monty");
-            if xfail_str.contains("cpython") {
-                config.xfail_cpython = true;
-            }
-        }
-
-        (config, 0)
-    } else {
-        (TestConfig::default(), 0)
+    let mount_fs = comment_lines.iter().any(|line| line.starts_with("mount-fs"));
+    let mut config = TestConfig {
+        iter_mode: comment_lines.iter().any(|line| line.starts_with("call-external")) || mount_fs,
+        async_mode: comment_lines.iter().any(|line| line.starts_with("run-async")),
+        mount_fs,
+        skip_cpython_windows: comment_lines
+            .iter()
+            .any(|line| line.starts_with("skip-cpython-windows")),
+        ..Default::default()
     };
-
-    // Check if first code line has an expectation (this is an error)
-    if let Some(first_code_line) = lines.get(code_start_idx) {
-        assert!(
-            !(first_code_line.starts_with("# Return") || first_code_line.starts_with("# Raise")),
-            "Expectation comment must be on the LAST line, not the first line"
-        );
+    // Check for "xfail=" directive
+    if let Some(&xfail_line) = comment_lines.iter().find(|line| line.starts_with("xfail=")) {
+        // Parse until whitespace or end of line
+        let xfail_end = xfail_line.find(|c: char| c.is_whitespace()).unwrap_or(xfail_line.len());
+        let xfail_str = &xfail_line[..xfail_end];
+        config.xfail_monty = xfail_str.contains("monty");
+        config.xfail_cpython = xfail_str.contains("cpython");
     }
 
     // Check for TRACEBACK expectation (triple-quoted string at end of file)
     // Format: """TRACEBACK:\n...\n"""
-    if let Some((code, traceback)) = parse_traceback_expectation(content, code_start_idx) {
+    if let Some((code, traceback)) = parse_traceback_expectation(content) {
         return (code, Expectation::Traceback(traceback), config);
     }
 
@@ -156,31 +172,19 @@ fn parse_fixture(content: &str) -> (String, Expectation, TestConfig) {
     let (expectation, code_lines) = if let Some(expected) = last_line.strip_prefix("# ref-counts=") {
         (
             Expectation::RefCounts(parse_ref_counts(expected)),
-            &lines[code_start_idx..lines.len() - 1],
+            &lines[..lines.len() - 1],
         )
     } else if let Some(expected) = last_line.strip_prefix("# Return.str=") {
-        (
-            Expectation::ReturnStr(expected.to_string()),
-            &lines[code_start_idx..lines.len() - 1],
-        )
+        (Expectation::ReturnStr(expected.to_string()), &lines[..lines.len() - 1])
     } else if let Some(expected) = last_line.strip_prefix("# Return.type=") {
-        (
-            Expectation::ReturnType(expected.to_string()),
-            &lines[code_start_idx..lines.len() - 1],
-        )
+        (Expectation::ReturnType(expected.to_string()), &lines[..lines.len() - 1])
     } else if let Some(expected) = last_line.strip_prefix("# Return=") {
-        (
-            Expectation::Return(expected.to_string()),
-            &lines[code_start_idx..lines.len() - 1],
-        )
+        (Expectation::Return(expected.to_string()), &lines[..lines.len() - 1])
     } else if let Some(expected) = last_line.strip_prefix("# Raise=") {
-        (
-            Expectation::Raise(expected.to_string()),
-            &lines[code_start_idx..lines.len() - 1],
-        )
+        (Expectation::Raise(expected.to_string()), &lines[..lines.len() - 1])
     } else {
         // No expectation comment - just run and check it doesn't raise
-        (Expectation::NoException, &lines[code_start_idx..])
+        (Expectation::NoException, &lines[..])
     };
 
     // Code is everything except the directive comment (and expectation comment if present)
@@ -196,9 +200,12 @@ fn parse_fixture(content: &str) -> (String, Expectation, TestConfig) {
 ///
 /// The traceback string should contain the full expected output including the
 /// "Traceback (most recent call last):" header and the exception line.
-fn parse_traceback_expectation(content: &str, code_start_idx: usize) -> Option<(String, String)> {
-    // Format: """\nTRACEBACK:\n...\n"""
+fn parse_traceback_expectation(content: &str) -> Option<(String, String)> {
     const MARKER: &str = "\"\"\"\nTRACEBACK:\n";
+
+    // Normalize \r\n to \n so this works on Windows where git may check out
+    // files with CRLF line endings.
+    let content = content.replace("\r\n", "\n");
 
     // Find the TRACEBACK marker
     let marker_pos = content.find(MARKER)?;
@@ -206,7 +213,7 @@ fn parse_traceback_expectation(content: &str, code_start_idx: usize) -> Option<(
     // Extract the code before the marker
     let code_part = &content[..marker_pos];
     let lines: Vec<&str> = code_part.lines().collect();
-    let code = lines[code_start_idx..].join("\n").trim_end().to_string();
+    let code = lines.join("\n").trim_end().to_string();
 
     // Extract the traceback content between the markers
     let after_marker = &content[marker_pos + MARKER.len()..];
@@ -245,21 +252,6 @@ fn parse_ref_counts(s: &str) -> AHashMap<String, usize> {
     counts
 }
 
-/// External function names available in iter mode tests.
-///
-/// These functions are provided by the test runner when a test uses `# mode: iter`.
-const ITER_EXT_FUNCTIONS: &[&str] = &[
-    "add_ints",           // (a, b) -> a + b (integers)
-    "concat_strings",     // (a, b) -> a + b (strings)
-    "return_value",       // (x) -> x (identity)
-    "get_list",           // () -> [1, 2, 3]
-    "raise_error",        // (exc_type: str, message: str) -> raises exception
-    "make_point",         // () -> Dataclass Point(x=1, y=2) (immutable)
-    "make_mutable_point", // () -> Dataclass Point(x=1, y=2) (mutable)
-    "make_user",          // (name) -> Dataclass User(name=name, active=True) (immutable)
-    "make_empty",         // () -> Dataclass Empty() (immutable, no fields)
-];
-
 /// Python implementations of external functions for running iter mode tests in CPython.
 ///
 /// These implementations mirror the behavior of `dispatch_external_call` so that
@@ -269,34 +261,107 @@ const ITER_EXT_FUNCTIONS: &[&str] = &[
 /// `scripts/run_traceback.py` to ensure consistency.
 const ITER_EXT_FUNCTIONS_PYTHON: &str = include_str!("../../../scripts/iter_test_methods.py");
 
+/// Creates a temporary directory with a known structure for `# mount-fs` tests.
+///
+/// The directory layout is:
+/// ```text
+/// tmpdir/
+///   hello.txt          -> "hello world\n"
+///   empty.txt          -> ""
+///   data.bin           -> b"\x00\x01\x02\x03"
+///   subdir/
+///     nested.txt       -> "nested content"
+///     deep/
+///       file.txt       -> "deep file"
+///   readonly.txt       -> "readonly content"
+/// ```
+fn create_mount_fs_tempdir() -> tempfile::TempDir {
+    let dir = tempfile::TempDir::new().expect("failed to create temp dir for mount-fs test");
+    let p = dir.path();
+
+    fs::write(p.join("hello.txt"), "hello world\n").unwrap();
+    fs::write(p.join("empty.txt"), "").unwrap();
+    fs::write(p.join("data.bin"), b"\x00\x01\x02\x03").unwrap();
+    fs::create_dir_all(p.join("subdir/deep")).unwrap();
+    fs::write(p.join("subdir/nested.txt"), "nested content").unwrap();
+    fs::write(p.join("subdir/deep/file.txt"), "deep file").unwrap();
+    fs::write(p.join("readonly.txt"), "readonly content").unwrap();
+
+    dir
+}
+
+/// Pre-imports Python modules that can cause race conditions during parallel test execution.
+///
+/// Python's import machinery isn't fully thread-safe during module initialization.
+/// When multiple tests try to import modules like `typing` or `dataclasses` simultaneously,
+/// one thread may see a partially initialized module, causing `AttributeError`.
+///
+/// This function must be called once before any parallel test execution to ensure
+/// all relevant modules are fully initialized.
+fn ensure_python_modules_imported() {
+    static INIT: OnceLock<()> = OnceLock::new();
+    INIT.get_or_init(|| {
+        Python::attach(|py| {
+            // Import modules that are used by iter_test_methods.py and can cause race conditions.
+            // The order matters: import dependencies first.
+            py.import("typing").expect("Failed to import typing");
+            py.import("dataclasses").expect("Failed to import dataclasses");
+            py.import("pathlib").expect("Failed to import pathlib");
+            py.import("stat").expect("Failed to import stat");
+            py.import("asyncio").expect("Failed to import asyncio");
+            py.import("traceback").expect("Failed to import traceback");
+
+            // Also pre-execute the iter_test_methods code once to ensure all its
+            // module-level code (dataclass definitions, monkey-patches) is initialized
+            let ext_funcs_cstr = CString::new(ITER_EXT_FUNCTIONS_PYTHON).expect("Invalid C string");
+            py.run(&ext_funcs_cstr, None, None)
+                .expect("Failed to pre-initialize iter_test_methods");
+        });
+    });
+}
+
+/// Result from dispatching an external function call.
+///
+/// Distinguishes between synchronous calls (return immediately) and
+/// asynchronous calls (return a future that needs later resolution).
+enum DispatchResult {
+    /// Synchronous result - pass directly to `state.run()`.
+    Sync(ExtFunctionResult),
+    /// Asynchronous call - use `state.run_pending()` and resolve later.
+    /// Contains the value to resolve the future with.
+    Async(MontyObject),
+}
+
 /// Dispatches an external function call to the appropriate test implementation.
 ///
-/// Returns `ExternalResult::Return` for successful calls, or `ExternalResult::Error`
-/// for calls that should raise an exception.
+/// Returns `DispatchResult::Sync` for synchronous calls or `DispatchResult::Async`
+/// for coroutine calls that should use `run_pending()`.
 ///
 /// # Panics
 /// Panics if the function name is unknown or arguments are invalid types.
-fn dispatch_external_call(name: &str, args: Vec<MontyObject>) -> ExternalResult {
+fn dispatch_external_call(name: &str, args: Vec<MontyObject>) -> DispatchResult {
     match name {
         "add_ints" => {
             assert!(args.len() == 2, "add_ints requires 2 arguments");
             let a = i64::try_from(&args[0]).expect("add_ints: first arg must be int");
             let b = i64::try_from(&args[1]).expect("add_ints: second arg must be int");
-            MontyObject::Int(a + b).into()
+            DispatchResult::Sync(MontyObject::Int(a + b).into())
         }
         "concat_strings" => {
             assert!(args.len() == 2, "concat_strings requires 2 arguments");
             let a = String::try_from(&args[0]).expect("concat_strings: first arg must be str");
             let b = String::try_from(&args[1]).expect("concat_strings: second arg must be str");
-            MontyObject::String(a + &b).into()
+            DispatchResult::Sync(MontyObject::String(a + &b).into())
         }
         "return_value" => {
             assert!(args.len() == 1, "return_value requires 1 argument");
-            args.into_iter().next().unwrap().into()
+            DispatchResult::Sync(args.into_iter().next().unwrap().into())
         }
         "get_list" => {
             assert!(args.is_empty(), "get_list requires no arguments");
-            MontyObject::List(vec![MontyObject::Int(1), MontyObject::Int(2), MontyObject::Int(3)]).into()
+            DispatchResult::Sync(
+                MontyObject::List(vec![MontyObject::Int(1), MontyObject::Int(2), MontyObject::Int(3)]).into(),
+            )
         }
         "raise_error" => {
             // raise_error(exc_type: str, message: str) -> raises exception
@@ -310,75 +375,809 @@ fn dispatch_external_call(name: &str, args: Vec<MontyObject>) -> ExternalResult 
                 "RuntimeError" => ExcType::RuntimeError,
                 _ => panic!("raise_error: unsupported exception type: {exc_type_str}"),
             };
-            MontyException::new(exc_type, Some(message)).into()
+            DispatchResult::Sync(MontyException::new(exc_type, Some(message)).into())
         }
         "make_point" => {
             assert!(args.is_empty(), "make_point requires no arguments");
             // Return an immutable Point(x=1, y=2) dataclass
-            MontyObject::Dataclass {
-                name: "Point".to_string(),
-                type_id: 0, // Test fixture has no real Python type
-                field_names: vec!["x".to_string(), "y".to_string()],
-                attrs: vec![
-                    (MontyObject::String("x".to_string()), MontyObject::Int(1)),
-                    (MontyObject::String("y".to_string()), MontyObject::Int(2)),
-                ]
+            DispatchResult::Sync(
+                MontyObject::Dataclass {
+                    name: "Point".to_string(),
+                    type_id: 0, // Test fixture has no real Python type
+                    field_names: vec!["x".to_string(), "y".to_string()],
+                    attrs: vec![
+                        (MontyObject::String("x".to_string()), MontyObject::Int(1)),
+                        (MontyObject::String("y".to_string()), MontyObject::Int(2)),
+                    ]
+                    .into(),
+
+                    frozen: true,
+                }
                 .into(),
-                methods: vec![],
-                frozen: true,
-            }
-            .into()
+            )
         }
         "make_mutable_point" => {
             assert!(args.is_empty(), "make_mutable_point requires no arguments");
             // Return a mutable Point(x=1, y=2) dataclass
-            MontyObject::Dataclass {
-                name: "MutablePoint".to_string(),
-                type_id: 0, // Test fixture has no real Python type
-                field_names: vec!["x".to_string(), "y".to_string()],
-                attrs: vec![
-                    (MontyObject::String("x".to_string()), MontyObject::Int(1)),
-                    (MontyObject::String("y".to_string()), MontyObject::Int(2)),
-                ]
+            DispatchResult::Sync(
+                MontyObject::Dataclass {
+                    name: "MutablePoint".to_string(),
+                    type_id: 0, // Test fixture has no real Python type
+                    field_names: vec!["x".to_string(), "y".to_string()],
+                    attrs: vec![
+                        (MontyObject::String("x".to_string()), MontyObject::Int(1)),
+                        (MontyObject::String("y".to_string()), MontyObject::Int(2)),
+                    ]
+                    .into(),
+
+                    frozen: false,
+                }
                 .into(),
-                methods: vec![],
-                frozen: false,
-            }
-            .into()
+            )
         }
         "make_user" => {
             assert!(args.len() == 1, "make_user requires 1 argument");
             let name = String::try_from(&args[0]).expect("make_user: first arg must be str");
             // Return an immutable User(name=name, active=True) dataclass
-            MontyObject::Dataclass {
-                name: "User".to_string(),
-                type_id: 0, // Test fixture has no real Python type
-                field_names: vec!["name".to_string(), "active".to_string()],
-                attrs: vec![
-                    (MontyObject::String("name".to_string()), MontyObject::String(name)),
-                    (MontyObject::String("active".to_string()), MontyObject::Bool(true)),
-                ]
+            DispatchResult::Sync(
+                MontyObject::Dataclass {
+                    name: "User".to_string(),
+                    type_id: 0, // Test fixture has no real Python type
+                    field_names: vec!["name".to_string(), "active".to_string()],
+                    attrs: vec![
+                        (MontyObject::String("name".to_string()), MontyObject::String(name)),
+                        (MontyObject::String("active".to_string()), MontyObject::Bool(true)),
+                    ]
+                    .into(),
+
+                    frozen: true,
+                }
                 .into(),
-                methods: vec![],
-                frozen: true,
-            }
-            .into()
+            )
         }
         "make_empty" => {
             assert!(args.is_empty(), "make_empty requires no arguments");
             // Return an immutable empty dataclass with no fields
+            DispatchResult::Sync(
+                MontyObject::Dataclass {
+                    name: "Empty".to_string(),
+                    type_id: 0, // Test fixture has no real Python type
+                    field_names: vec![],
+                    attrs: vec![].into(),
+
+                    frozen: true,
+                }
+                .into(),
+            )
+        }
+        "async_call" => {
+            // async_call(x) -> coroutine that returns x
+            // This is an async function - use run_pending() and resolve later
+            assert!(args.len() == 1, "async_call requires 1 argument");
+            DispatchResult::Async(args.into_iter().next().unwrap())
+        }
+        _ => panic!("Unknown external function: {name}"),
+    }
+}
+
+/// Dispatches a dataclass method call to the appropriate test implementation.
+///
+/// The first argument is always the dataclass instance (`self`). Known methods
+/// are implemented to mirror the Python dataclass methods in `iter_test_methods.py`.
+/// Unknown methods return `AttributeError`.
+fn dispatch_method_call(
+    method_name: &str,
+    args: &[MontyObject],
+    kwargs: &[(MontyObject, MontyObject)],
+) -> ExtFunctionResult {
+    let class_name = match args.first() {
+        Some(MontyObject::Dataclass { name, .. }) => name.as_str(),
+        _ => "<unknown>",
+    };
+
+    match (class_name, method_name) {
+        // Point.sum(self) -> int
+        ("Point" | "MutablePoint", "sum") => {
+            let (x, y) = extract_point_fields(&args[0]);
+            MontyObject::Int(x + y).into()
+        }
+        // Point.add(self, dx, dy) -> Point
+        ("Point", "add") => {
+            assert!(args.len() == 3, "Point.add requires self, dx, dy");
+            let (x, y) = extract_point_fields(&args[0]);
+            let dx = i64::try_from(&args[1]).expect("dx must be int");
+            let dy = i64::try_from(&args[2]).expect("dy must be int");
             MontyObject::Dataclass {
-                name: "Empty".to_string(),
-                type_id: 0, // Test fixture has no real Python type
-                field_names: vec![],
-                attrs: vec![].into(),
-                methods: vec![],
+                name: "Point".to_string(),
+                type_id: 0,
+                field_names: vec!["x".to_string(), "y".to_string()],
+                attrs: vec![
+                    (MontyObject::String("x".to_string()), MontyObject::Int(x + dx)),
+                    (MontyObject::String("y".to_string()), MontyObject::Int(y + dy)),
+                ]
+                .into(),
                 frozen: true,
             }
             .into()
         }
-        _ => panic!("Unknown external function: {name}"),
+        // Point.scale(self, factor) -> Point
+        ("Point", "scale") => {
+            assert!(args.len() == 2, "Point.scale requires self, factor");
+            let (x, y) = extract_point_fields(&args[0]);
+            let factor = i64::try_from(&args[1]).expect("factor must be int");
+            MontyObject::Dataclass {
+                name: "Point".to_string(),
+                type_id: 0,
+                field_names: vec!["x".to_string(), "y".to_string()],
+                attrs: vec![
+                    (MontyObject::String("x".to_string()), MontyObject::Int(x * factor)),
+                    (MontyObject::String("y".to_string()), MontyObject::Int(y * factor)),
+                ]
+                .into(),
+                frozen: true,
+            }
+            .into()
+        }
+        // Point.describe(self, label='point') -> str
+        ("Point", "describe") => {
+            let (x, y) = extract_point_fields(&args[0]);
+            // Check positional arg first, then kwargs, then default
+            let label = if args.len() > 1 {
+                String::try_from(&args[1]).expect("label must be str")
+            } else if let Some(kw_label) = get_kwarg_str(kwargs, "label") {
+                kw_label
+            } else {
+                "point".to_string()
+            };
+            MontyObject::String(format!("{label}({x}, {y})")).into()
+        }
+        // MutablePoint.shift(self, dx, dy) -> None (mutates in-place via host)
+        // Note: In the test runner, we can't actually mutate the dataclass in-place
+        // since the host doesn't have direct heap access. Return None as the method
+        // would in Python (the mutation happens inside Python's method body).
+        // For test coverage purposes, we just return None.
+        ("MutablePoint", "shift") => MontyObject::None.into(),
+        // User.greeting(self) -> str
+        ("User", "greeting") => {
+            let name = extract_user_name(&args[0]);
+            MontyObject::String(format!("Hello, {name}!")).into()
+        }
+        // Unknown method — return AttributeError
+        _ => {
+            let message = format!("'{class_name}' object has no attribute '{method_name}'");
+            MontyException::new(ExcType::AttributeError, Some(message)).into()
+        }
     }
+}
+
+/// Extracts (x, y) fields from a Point or MutablePoint `MontyObject::Dataclass`.
+fn extract_point_fields(obj: &MontyObject) -> (i64, i64) {
+    match obj {
+        MontyObject::Dataclass { attrs, .. } => {
+            let mut x = 0i64;
+            let mut y = 0i64;
+            for (key, value) in attrs {
+                if let MontyObject::String(k) = key {
+                    match k.as_str() {
+                        "x" => x = i64::try_from(value).expect("x must be int"),
+                        "y" => y = i64::try_from(value).expect("y must be int"),
+                        _ => {}
+                    }
+                }
+            }
+            (x, y)
+        }
+        other => panic!("Expected Dataclass, got {other:?}"),
+    }
+}
+
+/// Extracts a string kwarg value by key name.
+fn get_kwarg_str(kwargs: &[(MontyObject, MontyObject)], name: &str) -> Option<String> {
+    for (key, value) in kwargs {
+        if let MontyObject::String(key_str) = key
+            && key_str == name
+        {
+            return Some(String::try_from(value).expect("kwarg value must be str"));
+        }
+    }
+    None
+}
+
+/// Extracts the `name` field from a User `MontyObject::Dataclass`.
+fn extract_user_name(obj: &MontyObject) -> String {
+    match obj {
+        MontyObject::Dataclass { attrs, .. } => {
+            for (key, value) in attrs {
+                if let MontyObject::String(k) = key
+                    && k == "name"
+                {
+                    return String::try_from(value).expect("name must be str");
+                }
+            }
+            panic!("User dataclass has no 'name' field");
+        }
+        other => panic!("Expected Dataclass, got {other:?}"),
+    }
+}
+
+// =============================================================================
+// Virtual Filesystem for OS Call Tests
+// =============================================================================
+
+/// Virtual file entry for OS call tests (static VFS).
+struct StaticVirtualFile {
+    content: &'static [u8],
+    mode: i64,
+}
+
+/// Virtual file entry (owned, for unified VFS lookups).
+struct VirtualFile {
+    content: Vec<u8>,
+    mode: i64,
+}
+
+/// Virtual filesystem modification time (arbitrary fixed timestamp).
+const VFS_MTIME: f64 = 1_700_000_000.0;
+
+/// Virtual filesystem for testing Path methods.
+///
+/// Structure:
+/// ```text
+/// /virtual/
+/// ├── file.txt           (file, 644, "hello world\n")
+/// ├── data.bin           (file, 644, b"\x00\x01\x02\x03")
+/// ├── empty.txt          (file, 644, "")
+/// ├── subdir/
+/// │   ├── nested.txt     (file, 644, "nested content")
+/// │   └── deep/
+/// │       └── file.txt   (file, 644, "deep")
+/// └── readonly.txt       (file, 444, "readonly")
+///
+/// /nonexistent           (does not exist)
+/// ```
+fn get_static_virtual_file(path: &str) -> Option<StaticVirtualFile> {
+    match path {
+        "/virtual/file.txt" => Some(StaticVirtualFile {
+            content: b"hello world\n",
+            mode: 0o644,
+        }),
+        "/virtual/data.bin" => Some(StaticVirtualFile {
+            content: b"\x00\x01\x02\x03",
+            mode: 0o644,
+        }),
+        "/virtual/empty.txt" => Some(StaticVirtualFile {
+            content: b"",
+            mode: 0o644,
+        }),
+        "/virtual/subdir/nested.txt" => Some(StaticVirtualFile {
+            content: b"nested content",
+            mode: 0o644,
+        }),
+        "/virtual/subdir/deep/file.txt" => Some(StaticVirtualFile {
+            content: b"deep",
+            mode: 0o644,
+        }),
+        "/virtual/readonly.txt" => Some(StaticVirtualFile {
+            content: b"readonly",
+            mode: 0o444,
+        }),
+        _ => None,
+    }
+}
+
+/// Gets a virtual file, checking the mutable layer first, then falling back to static.
+fn get_virtual_file(path: &str) -> Option<VirtualFile> {
+    // Check mutable layer first
+    let mutable_result = MUTABLE_VFS.with(|vfs| {
+        let vfs = vfs.borrow();
+        // Check if deleted
+        if vfs.deleted_files.contains(path) {
+            return Some(None);
+        }
+        // Check if exists in mutable layer
+        if let Some((content, mode)) = vfs.files.get(path) {
+            return Some(Some(VirtualFile {
+                content: content.clone(),
+                mode: *mode,
+            }));
+        }
+        None
+    });
+
+    match mutable_result {
+        Some(Some(file)) => Some(file),
+        Some(None) => None, // File was deleted
+        None => {
+            // Fall back to static VFS
+            get_static_virtual_file(path).map(|f| VirtualFile {
+                content: f.content.to_vec(),
+                mode: f.mode,
+            })
+        }
+    }
+}
+
+// =============================================================================
+// Mutable VFS Layer (Thread-Local Storage for Write Operations)
+// =============================================================================
+
+/// Mutable state for the virtual filesystem, supporting write operations.
+///
+/// This layer sits on top of the static VFS and allows tests to create, modify, and
+/// delete files and directories. The state is thread-local so tests don't interfere
+/// with each other.
+#[derive(Default)]
+struct MutableVfs {
+    /// Files created or modified during test execution.
+    files: HashMap<String, (Vec<u8>, i64)>, // path -> (content, mode)
+    /// Directories created during test execution.
+    dirs: HashSet<String>,
+    /// Files deleted during test execution (shadows static VFS entries).
+    deleted_files: HashSet<String>,
+    /// Directories deleted during test execution.
+    deleted_dirs: HashSet<String>,
+}
+
+thread_local! {
+    /// Thread-local mutable VFS state.
+    static MUTABLE_VFS: RefCell<MutableVfs> = RefCell::new(MutableVfs::default());
+}
+
+/// Resets the mutable VFS state for a new test.
+fn reset_mutable_vfs() {
+    MUTABLE_VFS.with(|vfs| {
+        *vfs.borrow_mut() = MutableVfs::default();
+    });
+}
+
+/// Check if the given path is a directory in the virtual filesystem.
+fn is_virtual_dir(path: &str) -> bool {
+    // Check mutable layer first
+    let result = MUTABLE_VFS.with(|vfs| {
+        let vfs = vfs.borrow();
+        if vfs.deleted_dirs.contains(path) {
+            return Some(false);
+        }
+        if vfs.dirs.contains(path) {
+            return Some(true);
+        }
+        None
+    });
+    if let Some(is_dir) = result {
+        return is_dir;
+    }
+    // Fall back to static VFS
+    matches!(path, "/virtual" | "/virtual/subdir" | "/virtual/subdir/deep")
+}
+
+/// Get directory entries for a virtual directory.
+fn get_virtual_dir_entries(path: &str) -> Option<Vec<String>> {
+    // First check if the directory exists
+    if !is_virtual_dir(path) {
+        return None;
+    }
+
+    // Get static entries (if any)
+    let static_entries: Vec<&'static str> = match path {
+        "/virtual" => vec![
+            "/virtual/file.txt",
+            "/virtual/data.bin",
+            "/virtual/empty.txt",
+            "/virtual/subdir",
+            "/virtual/readonly.txt",
+        ],
+        "/virtual/subdir" => vec!["/virtual/subdir/nested.txt", "/virtual/subdir/deep"],
+        "/virtual/subdir/deep" => vec!["/virtual/subdir/deep/file.txt"],
+        _ => vec![],
+    };
+
+    // Combine with mutable layer
+    MUTABLE_VFS.with(|vfs| {
+        let vfs = vfs.borrow();
+        let mut entries: HashSet<String> = static_entries
+            .iter()
+            .filter(|e| {
+                let s: &str = e;
+                !vfs.deleted_files.contains(s) && !vfs.deleted_dirs.contains(s)
+            })
+            .map(|e| (*e).to_owned())
+            .collect();
+
+        // Add mutable files and dirs in this directory
+        let prefix = if path.ends_with('/') {
+            path.to_owned()
+        } else {
+            format!("{path}/")
+        };
+        for file_path in vfs.files.keys() {
+            if file_path.starts_with(&prefix) {
+                // Only include direct children (not nested)
+                let rest = &file_path[prefix.len()..];
+                if !rest.contains('/') {
+                    entries.insert(file_path.clone());
+                }
+            }
+        }
+        for dir_path in &vfs.dirs {
+            if dir_path.starts_with(&prefix) {
+                let rest = &dir_path[prefix.len()..];
+                if !rest.contains('/') {
+                    entries.insert(dir_path.clone());
+                }
+            }
+        }
+
+        Some(entries.into_iter().collect())
+    })
+}
+
+/// Helper to get a boolean kwarg by name.
+fn get_kwarg_bool(kwargs: &[(MontyObject, MontyObject)], name: &str) -> bool {
+    for (key, value) in kwargs {
+        if let MontyObject::String(key_str) = key
+            && key_str == name
+        {
+            return matches!(value, MontyObject::Bool(true));
+        }
+    }
+    false
+}
+
+/// Dispatches an OS function call using the virtual filesystem.
+///
+/// Returns an `ExternalResult` to pass back to the Monty interpreter.
+/// Raises `FileNotFoundError` for missing files/directories.
+#[expect(clippy::cast_possible_wrap)] // Virtual file sizes are tiny, no wrap possible
+fn dispatch_os_call(
+    function: OsFunction,
+    args: &[MontyObject],
+    kwargs: &[(MontyObject, MontyObject)],
+) -> ExtFunctionResult {
+    // Handle DateToday — return deterministic fixture date (local date at UTC+02:00).
+    // Deterministic timestamp: 1_700_000_000 UTC = 2023-11-14 22:13:20 UTC.
+    // With local offset +7200 (UTC+02:00), local date is 2023-11-15.
+    if function == OsFunction::DateToday {
+        return MontyObject::Date(MontyDate {
+            year: 2023,
+            month: 11,
+            day: 15,
+        })
+        .into();
+    }
+
+    // Handle DateTimeNow — return deterministic fixture datetime.
+    // The `tz` arg (args[0]) determines naive vs aware.
+    if function == OsFunction::DateTimeNow {
+        return dispatch_datetime_now(args).into();
+    }
+
+    // Handle GetEnviron first as it takes no path argument
+    if function == OsFunction::GetEnviron {
+        // Return the virtual environment as a dict
+        let env_dict = vec![
+            (
+                MontyObject::String("VIRTUAL_HOME".to_owned()),
+                MontyObject::String("/virtual/home".to_owned()),
+            ),
+            (
+                MontyObject::String("VIRTUAL_USER".to_owned()),
+                MontyObject::String("testuser".to_owned()),
+            ),
+            (
+                MontyObject::String("VIRTUAL_EMPTY".to_owned()),
+                MontyObject::String(String::new()),
+            ),
+        ];
+        return MontyObject::Dict(env_dict.into()).into();
+    }
+
+    // Extract path from MontyObject::Path (or String for backwards compatibility)
+    let path = match &args[0] {
+        MontyObject::Path(p) => p.clone(),
+        MontyObject::String(s) => s.clone(),
+        other => panic!("OS call: first arg must be path, got {other:?}"),
+    };
+
+    match function {
+        OsFunction::GetEnviron | OsFunction::DateToday | OsFunction::DateTimeNow => unreachable!("handled above"),
+        OsFunction::Exists => {
+            let exists = get_virtual_file(&path).is_some() || is_virtual_dir(&path);
+            MontyObject::Bool(exists).into()
+        }
+        OsFunction::IsFile => {
+            let is_file = get_virtual_file(&path).is_some();
+            MontyObject::Bool(is_file).into()
+        }
+        OsFunction::IsDir => {
+            let is_dir = is_virtual_dir(&path);
+            MontyObject::Bool(is_dir).into()
+        }
+        OsFunction::IsSymlink => {
+            // Virtual filesystem doesn't have symlinks
+            MontyObject::Bool(false).into()
+        }
+        OsFunction::ReadText => {
+            if let Some(file) = get_virtual_file(&path) {
+                match str::from_utf8(&file.content) {
+                    Ok(text) => MontyObject::String(text.to_owned()).into(),
+                    Err(_) => MontyException::new(
+                        ExcType::UnicodeDecodeError,
+                        Some("'utf-8' codec can't decode bytes".to_owned()),
+                    )
+                    .into(),
+                }
+            } else {
+                MontyException::new(
+                    ExcType::FileNotFoundError,
+                    Some(format!("[Errno 2] No such file or directory: '{path}'")),
+                )
+                .into()
+            }
+        }
+        OsFunction::ReadBytes => {
+            if let Some(file) = get_virtual_file(&path) {
+                MontyObject::Bytes(file.content).into()
+            } else {
+                MontyException::new(
+                    ExcType::FileNotFoundError,
+                    Some(format!("[Errno 2] No such file or directory: '{path}'")),
+                )
+                .into()
+            }
+        }
+        OsFunction::Stat => {
+            if let Some(file) = get_virtual_file(&path) {
+                file_stat(file.mode, file.content.len() as i64, VFS_MTIME).into()
+            } else if is_virtual_dir(&path) {
+                dir_stat(0o755, VFS_MTIME).into()
+            } else {
+                MontyException::new(
+                    ExcType::FileNotFoundError,
+                    Some(format!("[Errno 2] No such file or directory: '{path}'")),
+                )
+                .into()
+            }
+        }
+        OsFunction::Iterdir => {
+            if let Some(entries) = get_virtual_dir_entries(&path) {
+                // Return Path objects, not strings
+                let list: Vec<MontyObject> = entries.into_iter().map(MontyObject::Path).collect();
+                MontyObject::List(list).into()
+            } else {
+                MontyException::new(
+                    ExcType::FileNotFoundError,
+                    Some(format!("[Errno 2] No such file or directory: '{path}'")),
+                )
+                .into()
+            }
+        }
+        OsFunction::Resolve | OsFunction::Absolute => {
+            // For virtual paths, return as-is (they're already absolute)
+            MontyObject::String(path).into()
+        }
+        OsFunction::Getenv => {
+            // Virtual environment for testing os.getenv()
+            // args[0] is key, args[1] is default (may be None)
+            let key = String::try_from(&args[0]).expect("getenv: first arg must be key string");
+            let default = &args[1];
+
+            // Provide a few test environment variables
+            let value = match key.as_str() {
+                "VIRTUAL_HOME" => Some("/virtual/home"),
+                "VIRTUAL_USER" => Some("testuser"),
+                "VIRTUAL_EMPTY" => Some(""),
+                _ => None,
+            };
+
+            if let Some(v) = value {
+                MontyObject::String(v.to_owned()).into()
+            } else if matches!(default, MontyObject::None) {
+                MontyObject::None.into()
+            } else {
+                // Return the default value
+                default.clone().into()
+            }
+        }
+        OsFunction::WriteText => {
+            // args[0] is path, args[1] is text content
+            let text = String::try_from(&args[1]).expect("write_text: second arg must be string");
+            MUTABLE_VFS.with(|vfs| {
+                let mut vfs = vfs.borrow_mut();
+                vfs.files.insert(path.clone(), (text.into_bytes(), 0o644));
+                vfs.deleted_files.remove(&path);
+            });
+            // write_text returns the number of bytes written
+            let byte_count = MUTABLE_VFS.with(|vfs| vfs.borrow().files.get(&path).map_or(0, |(c, _)| c.len()));
+            MontyObject::Int(byte_count as i64).into()
+        }
+        OsFunction::WriteBytes => {
+            // args[0] is path, args[1] is bytes content
+            let bytes = match &args[1] {
+                MontyObject::Bytes(b) => b.clone(),
+                other => panic!("write_bytes: second arg must be bytes, got {other:?}"),
+            };
+            let byte_count = bytes.len();
+            MUTABLE_VFS.with(|vfs| {
+                let mut vfs = vfs.borrow_mut();
+                vfs.files.insert(path.clone(), (bytes, 0o644));
+                vfs.deleted_files.remove(&path);
+            });
+            // write_bytes returns the number of bytes written
+            MontyObject::Int(byte_count as i64).into()
+        }
+        OsFunction::Mkdir => {
+            // Check for parents and exist_ok in kwargs (e.g., mkdir(parents=True, exist_ok=True))
+            let parents = get_kwarg_bool(kwargs, "parents");
+            let exist_ok = get_kwarg_bool(kwargs, "exist_ok");
+
+            // Check if already exists
+            if is_virtual_dir(&path) {
+                if exist_ok {
+                    return MontyObject::None.into();
+                }
+                return MontyException::new(ExcType::OSError, Some(format!("[Errno 17] File exists: '{path}'"))).into();
+            }
+
+            // Check parent directory
+            let parent = Path::new(&path)
+                .parent()
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_default();
+            if !parent.is_empty() && !is_virtual_dir(&parent) {
+                if parents {
+                    // Create parent directories recursively
+                    create_parent_dirs(&parent);
+                } else {
+                    return MontyException::new(
+                        ExcType::FileNotFoundError,
+                        Some(format!("[Errno 2] No such file or directory: '{path}'")),
+                    )
+                    .into();
+                }
+            }
+
+            MUTABLE_VFS.with(|vfs| {
+                let mut vfs = vfs.borrow_mut();
+                vfs.deleted_dirs.remove(&path);
+                vfs.dirs.insert(path);
+            });
+            MontyObject::None.into()
+        }
+        OsFunction::Unlink => {
+            // args[0] is path
+            if get_virtual_file(&path).is_some() {
+                MUTABLE_VFS.with(|vfs| {
+                    let mut vfs = vfs.borrow_mut();
+                    vfs.files.remove(&path);
+                    vfs.deleted_files.insert(path);
+                });
+                MontyObject::None.into()
+            } else {
+                MontyException::new(
+                    ExcType::FileNotFoundError,
+                    Some(format!("[Errno 2] No such file or directory: '{path}'")),
+                )
+                .into()
+            }
+        }
+        OsFunction::Rmdir => {
+            // args[0] is path
+            if is_virtual_dir(&path) {
+                MUTABLE_VFS.with(|vfs| {
+                    let mut vfs = vfs.borrow_mut();
+                    vfs.dirs.remove(&path);
+                    vfs.deleted_dirs.insert(path);
+                });
+                MontyObject::None.into()
+            } else {
+                MontyException::new(
+                    ExcType::FileNotFoundError,
+                    Some(format!("[Errno 2] No such file or directory: '{path}'")),
+                )
+                .into()
+            }
+        }
+        OsFunction::Rename => {
+            // args[0] is src path, args[1] is dest path
+            let dest = match &args[1] {
+                MontyObject::Path(p) => p.clone(),
+                MontyObject::String(s) => s.clone(),
+                other => panic!("rename: second arg must be path, got {other:?}"),
+            };
+
+            if let Some(file) = get_virtual_file(&path) {
+                MUTABLE_VFS.with(|vfs| {
+                    let mut vfs = vfs.borrow_mut();
+                    // Remove from old location
+                    vfs.files.remove(&path);
+                    vfs.deleted_files.insert(path);
+                    // Add to new location
+                    vfs.files.insert(dest, (file.content, file.mode));
+                });
+                MontyObject::None.into()
+            } else if is_virtual_dir(&path) {
+                MUTABLE_VFS.with(|vfs| {
+                    let mut vfs = vfs.borrow_mut();
+                    vfs.dirs.remove(&path);
+                    vfs.deleted_dirs.insert(path);
+                    vfs.dirs.insert(dest);
+                });
+                MontyObject::None.into()
+            } else {
+                MontyException::new(
+                    ExcType::FileNotFoundError,
+                    Some(format!("[Errno 2] No such file or directory: '{path}'")),
+                )
+                .into()
+            }
+        }
+    }
+}
+
+/// Deterministic UTC timestamp for datetime test fixtures (2023-11-14 22:13:20 UTC).
+const DATETIME_FIXTURE_TIMESTAMP: i64 = 1_700_000_000;
+
+/// Dispatches a `DateTimeNow` OS call, returning a deterministic `MontyDateTime`.
+///
+/// The `tz` argument (args[0]) determines whether a naive or aware datetime is
+/// returned. The deterministic timestamp is 1_700_000_000 UTC (2023-11-14 22:13:20 UTC).
+/// For naive datetimes the virtual local offset is UTC+02:00.
+fn dispatch_datetime_now(args: &[MontyObject]) -> MontyObject {
+    let tz = args.first().expect("DateTimeNow requires a tz argument");
+    match tz {
+        MontyObject::None => {
+            // Naive datetime: apply local offset to get local wall-clock time
+            // 1_700_000_000 UTC + 7200 = 2023-11-15 00:13:20 local
+            MontyObject::DateTime(MontyDateTime {
+                year: 2023,
+                month: 11,
+                day: 15,
+                hour: 0,
+                minute: 13,
+                second: 20,
+                microsecond: 0,
+                offset_seconds: None,
+                timezone_name: None,
+            })
+        }
+        MontyObject::TimeZone(tz) => {
+            // Aware datetime: convert UTC timestamp to the requested timezone
+            let offset_delta = chrono::TimeDelta::try_seconds(i64::from(tz.offset_seconds)).expect("valid offset");
+            let utc = chrono::DateTime::from_timestamp(DATETIME_FIXTURE_TIMESTAMP, 0).expect("valid timestamp");
+            let local = (utc + offset_delta).naive_utc();
+            MontyObject::DateTime(MontyDateTime {
+                year: local.year(),
+                month: u8::try_from(local.month()).expect("month fits u8"),
+                day: u8::try_from(local.day()).expect("day fits u8"),
+                hour: u8::try_from(local.hour()).expect("hour fits u8"),
+                minute: u8::try_from(local.minute()).expect("minute fits u8"),
+                second: u8::try_from(local.second()).expect("second fits u8"),
+                microsecond: 0,
+                offset_seconds: Some(tz.offset_seconds),
+                timezone_name: tz.name.clone(),
+            })
+        }
+        _ => panic!("DateTimeNow: tz argument must be None or TimeZone, got {tz:?}"),
+    }
+}
+
+/// Helper to create parent directories recursively.
+fn create_parent_dirs(path: &str) {
+    if is_virtual_dir(path) {
+        return;
+    }
+    // Create parent first
+    if let Some(parent) = Path::new(path).parent() {
+        let parent_str = parent.to_string_lossy().to_string();
+        if !parent_str.is_empty() {
+            create_parent_dirs(&parent_str);
+        }
+    }
+    // Create this directory
+    MUTABLE_VFS.with(|vfs| {
+        let mut vfs = vfs.borrow_mut();
+        vfs.dirs.insert(path.to_owned());
+    });
 }
 
 /// Represents a test failure with details about expected vs actual values.
@@ -390,13 +1189,18 @@ struct TestFailure {
     actual: String,
 }
 
-impl std::fmt::Display for TestFailure {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
+impl fmt::Display for TestFailure {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        writeln!(
             f,
-            "[{}] {} mismatch\n  expected: {}\n  actual: {}",
-            self.test_name, self.kind, self.expected, self.actual
-        )
+            "[{}] {} mismatch\ngot {:?}\ndiff:",
+            self.test_name, self.kind, self.actual
+        )?;
+
+        for change in TextDiff::from_lines(&self.expected, &self.actual).iter_all_changes() {
+            write!(f, "{}{}", change.tag(), change)?;
+        }
+        Ok(())
     }
 }
 
@@ -407,10 +1211,13 @@ impl std::fmt::Display for TestFailure {
 fn try_run_test(path: &Path, code: &str, expectation: &Expectation) -> Result<(), TestFailure> {
     let test_name = path.strip_prefix("test_cases/").unwrap_or(path).display().to_string();
 
+    // Reset the mutable VFS for each test
+    reset_mutable_vfs();
+
     // Handle ref-count-return tests separately since they need run_ref_counts()
     #[cfg(feature = "ref-count-return")]
     if let Expectation::RefCounts(expected) = expectation {
-        match MontyRun::new(code.to_owned(), &test_name, vec![], vec![]) {
+        match MontyRun::new(code.to_owned(), &test_name, vec![]) {
             Ok(ex) => {
                 let result = ex.run_ref_counts(vec![]);
                 match result {
@@ -460,10 +1267,10 @@ fn try_run_test(path: &Path, code: &str, expectation: &Expectation) -> Result<()
         }
     }
 
-    match MontyRun::new(code.to_owned(), &test_name, vec![], vec![]) {
+    match MontyRun::new(code.to_owned(), &test_name, vec![]) {
         Ok(ex) => {
             let limits = ResourceLimits::new().max_recursion_depth(Some(TEST_RECURSION_LIMIT));
-            let result = ex.run(vec![], LimitedTracker::new(limits), &mut StdPrint);
+            let result = ex.run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout);
             match result {
                 Ok(obj) => match expectation {
                     Expectation::ReturnStr(expected) => {
@@ -585,10 +1392,13 @@ fn try_run_test(path: &Path, code: &str, expectation: &Expectation) -> Result<()
 
 /// Try to run a test using MontyRun with external function support.
 ///
-/// This function handles tests marked with `# mode: iter` directive by using the
+/// This function handles tests marked with `# call-external` directive by using the
 /// iterative executor API and providing implementations for predefined external functions.
 fn try_run_iter_test(path: &Path, code: &str, expectation: &Expectation) -> Result<(), TestFailure> {
     let test_name = path.strip_prefix("test_cases/").unwrap_or(path).display().to_string();
+
+    // Reset the mutable VFS for each test
+    reset_mutable_vfs();
 
     // Ref-counting tests not supported in iter mode
     #[cfg(feature = "ref-count-return")]
@@ -601,9 +1411,7 @@ fn try_run_iter_test(path: &Path, code: &str, expectation: &Expectation) -> Resu
         });
     }
 
-    let ext_functions: Vec<String> = ITER_EXT_FUNCTIONS.iter().copied().map(str::to_string).collect();
-
-    let exec = match MontyRun::new(code.to_owned(), &test_name, vec![], ext_functions) {
+    let exec = match MontyRun::new(code.to_owned(), &test_name, vec![]) {
         Ok(e) => e,
         Err(parse_err) => {
             if let Expectation::Raise(expected) = expectation {
@@ -724,14 +1532,140 @@ fn try_run_iter_test(path: &Path, code: &str, expectation: &Expectation) -> Resu
     Ok(())
 }
 
+/// Runs a `# mount-fs` test: creates a temp directory, mounts it via `MountTable`,
+/// and dispatches OS calls through the mount table instead of the virtual filesystem.
+fn try_run_mount_fs_test(path: &Path, code: &str, expectation: &Expectation) -> Result<(), TestFailure> {
+    let test_name = path.strip_prefix("test_cases/").unwrap_or(path).display().to_string();
+
+    let tmpdir = create_mount_fs_tempdir();
+    let mut mount_table = MountTable::new();
+    mount_table
+        .mount(
+            "/mnt",
+            tmpdir.path(),
+            MountMode::OverlayMemory(OverlayState::new()),
+            None,
+        )
+        .expect("failed to mount temp dir for mount-fs test");
+
+    let exec = match MontyRun::new(code.to_owned(), &test_name, vec![]) {
+        Ok(e) => e,
+        Err(parse_err) => {
+            return Err(TestFailure {
+                test_name,
+                kind: "Unexpected parse error".to_string(),
+                expected: "success".to_string(),
+                actual: parse_err.to_string(),
+            });
+        }
+    };
+
+    let result = run_mount_fs_iter_loop(exec, &mut mount_table);
+
+    match result {
+        Ok(_) => match expectation {
+            Expectation::NoException => {}
+            Expectation::Raise(expected) | Expectation::Traceback(expected) => {
+                return Err(TestFailure {
+                    test_name,
+                    kind: "Exception".to_string(),
+                    expected: expected.clone(),
+                    actual: "no exception raised".to_string(),
+                });
+            }
+            _ => {}
+        },
+        Err(e) => {
+            if let Expectation::Raise(expected) = expectation {
+                let output = e.py_repr();
+                if output != *expected {
+                    return Err(TestFailure {
+                        test_name,
+                        kind: "Exception".to_string(),
+                        expected: expected.clone(),
+                        actual: output,
+                    });
+                }
+            } else if let Expectation::Traceback(expected) = expectation {
+                let output = e.to_string();
+                if output != *expected {
+                    return Err(TestFailure {
+                        test_name,
+                        kind: "Traceback".to_string(),
+                        expected: expected.clone(),
+                        actual: output,
+                    });
+                }
+            } else {
+                return Err(TestFailure {
+                    test_name,
+                    kind: "Unexpected error".to_string(),
+                    expected: "success".to_string(),
+                    actual: e.to_string(),
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Execution loop for `# mount-fs` tests.
+///
+/// Dispatches OS calls through the mount table. Name lookups resolve `root`
+/// to `Path('/mnt')` so Python code can access the mounted directory.
+fn run_mount_fs_iter_loop(exec: MontyRun, mount_table: &mut MountTable) -> Result<MontyObject, MontyException> {
+    let limits = ResourceLimits::new().max_recursion_depth(Some(TEST_RECURSION_LIMIT));
+    let mut progress = exec.start(vec![], LimitedTracker::new(limits), PrintWriter::Stdout)?;
+
+    loop {
+        match progress {
+            RunProgress::Complete(result) => return Ok(result),
+            RunProgress::FunctionCall(call) => {
+                // No external function calls expected in mount-fs tests.
+                panic!("unexpected FunctionCall in mount-fs test: {}", call.function_name);
+            }
+            RunProgress::ResolveFutures(_) => {
+                panic!("unexpected ResolveFutures in mount-fs test");
+            }
+            RunProgress::NameLookup(lookup) => {
+                let result = match lookup.name.as_str() {
+                    "root" => NameLookupResult::Value(MontyObject::Path("/mnt".to_owned())),
+                    _ => NameLookupResult::Undefined,
+                };
+                progress = lookup.resume(result, PrintWriter::Stdout)?;
+            }
+            RunProgress::OsCall(call) => {
+                // Dispatch through the mount table first.
+                let result = mount_table.handle_os_call(call.function, &call.args, &call.kwargs);
+                let ext_result = match result {
+                    Some(Ok(obj)) => ExtFunctionResult::Return(obj),
+                    Some(Err(err)) => ExtFunctionResult::Error(err.into_exception()),
+                    None => {
+                        // Non-filesystem operation — dispatch to the regular handler.
+                        dispatch_os_call(call.function, &call.args, &call.kwargs)
+                    }
+                };
+                progress = call.resume(ext_result, PrintWriter::Stdout)?;
+            }
+        }
+    }
+}
+
 /// Execute the iter loop, dispatching external function calls until complete.
 ///
 /// When `ref-count-panic` feature is NOT enabled, this function also tests
 /// serialization round-trips by dumping and loading the execution state at
 /// each external function call boundary.
+///
+/// Supports both synchronous and asynchronous external functions:
+/// - Sync functions: result is passed immediately via `state.run()`
+/// - Async functions: `state.run_pending()` creates a future, resolved via `ResolveFutures`
 fn run_iter_loop(exec: MontyRun) -> Result<MontyObject, MontyException> {
     let limits = ResourceLimits::new().max_recursion_depth(Some(TEST_RECURSION_LIMIT));
-    let mut progress = exec.start(vec![], LimitedTracker::new(limits), &mut StdPrint)?;
+    let mut progress = exec.start(vec![], LimitedTracker::new(limits), PrintWriter::Stdout)?;
+
+    // Track pending async calls: (call_id, result_value)
+    let mut pending_results: Vec<(u32, MontyObject)> = Vec::new();
 
     loop {
         // Test serialization round-trip at each step (skip when ref-count-panic is enabled
@@ -744,14 +1678,78 @@ fn run_iter_loop(exec: MontyRun) -> Result<MontyObject, MontyException> {
 
         match progress {
             RunProgress::Complete(result) => return Ok(result),
-            RunProgress::FunctionCall {
-                function_name,
-                args,
-                kwargs: _,
-                state,
-            } => {
-                let return_value = dispatch_external_call(&function_name, args);
-                progress = state.run(return_value, &mut StdPrint)?;
+            RunProgress::FunctionCall(call) => {
+                // Method calls on dataclasses are dispatched to the host.
+                // Dispatch known methods; return AttributeError for unknown ones.
+                if call.method_call {
+                    let result = dispatch_method_call(&call.function_name, &call.args, &call.kwargs);
+                    progress = call.resume(result, PrintWriter::Stdout)?;
+                    continue;
+                }
+                let dispatch_result = dispatch_external_call(&call.function_name, call.args.clone());
+                match dispatch_result {
+                    DispatchResult::Sync(return_value) => {
+                        progress = call.resume(return_value, PrintWriter::Stdout)?;
+                    }
+                    DispatchResult::Async(result_value) => {
+                        // Store the result for later resolution
+                        pending_results.push((call.call_id, result_value));
+                        // Continue execution with a pending future
+                        progress = call.resume_pending(PrintWriter::Stdout)?;
+                    }
+                }
+            }
+            RunProgress::ResolveFutures(state) => {
+                // Resolve all pending futures that we have results for
+                let results: Vec<(u32, ExtFunctionResult)> = state
+                    .pending_call_ids()
+                    .iter()
+                    .filter_map(|p| {
+                        pending_results.iter().position(|(id, _)| id == p).map(|idx| {
+                            let (call_id, value) = pending_results.remove(idx);
+                            (call_id, ExtFunctionResult::Return(value))
+                        })
+                    })
+                    .collect();
+
+                assert!(
+                    !results.is_empty(),
+                    "ResolveFutures: no results available for pending calls: {:?}",
+                    state.pending_call_ids().iter().collect::<Vec<_>>()
+                );
+
+                progress = state.resume(results, PrintWriter::Stdout)?;
+            }
+            RunProgress::NameLookup(lookup) => {
+                let result = match lookup.name.as_str() {
+                    // External functions — resolved as callable Function objects
+                    "add_ints" | "concat_strings" | "return_value" | "get_list" | "raise_error" | "make_point"
+                    | "make_mutable_point" | "make_user" | "make_empty" | "async_call" => {
+                        NameLookupResult::Value(MontyObject::Function {
+                            name: lookup.name.clone(),
+                            docstring: None,
+                        })
+                    }
+                    // Non-function constants — resolved as plain values
+                    "CONST_INT" => NameLookupResult::Value(MontyObject::Int(42)),
+                    "CONST_STR" => NameLookupResult::Value(MontyObject::String("hello".to_string())),
+                    #[expect(clippy::approx_constant, reason = "3.14 is the intended test value")]
+                    "CONST_FLOAT" => NameLookupResult::Value(MontyObject::Float(3.14)),
+                    "CONST_BOOL" => NameLookupResult::Value(MontyObject::Bool(true)),
+                    "CONST_LIST" => NameLookupResult::Value(MontyObject::List(vec![
+                        MontyObject::Int(1),
+                        MontyObject::Int(2),
+                        MontyObject::Int(3),
+                    ])),
+                    "CONST_NONE" => NameLookupResult::Value(MontyObject::None),
+                    // Unknown names → NameError
+                    _ => NameLookupResult::Undefined,
+                };
+                progress = lookup.resume(result, PrintWriter::Stdout)?;
+            }
+            RunProgress::OsCall(call) => {
+                let result = dispatch_os_call(call.function, &call.args, &call.kwargs);
+                progress = call.resume(result, PrintWriter::Stdout)?;
             }
         }
     }
@@ -792,6 +1790,72 @@ fn split_code_for_module(code: &str, need_return_value: bool) -> (String, Option
     }
 }
 
+/// Wraps code in an async context for CPython execution.
+///
+/// Monty supports top-level `await`, but CPython does not. This function transforms code
+/// like:
+///
+/// ```python
+/// async def foo():
+///     return 1
+/// result = await foo()
+/// ```
+///
+/// Into:
+///
+/// ```python
+/// import asyncio
+/// async def __test_main():
+///     async def foo():
+///         return 1
+///     result = await foo()
+///     return result  # if need_return_value
+/// __test_result__ = asyncio.run(__test_main())
+/// ```
+fn wrap_code_for_async(code: &str, need_return_value: bool) -> (String, Option<String>) {
+    let lines: Vec<&str> = code.lines().collect();
+
+    // Find the last non-empty, non-comment line
+    let last_idx = lines
+        .iter()
+        .rposition(|line| {
+            let trimmed = line.trim();
+            !trimmed.is_empty() && !trimmed.starts_with('#')
+        })
+        .expect("Empty code");
+
+    // Indent all code by 4 spaces for the function body
+    let indented: String = lines
+        .iter()
+        .map(|line| {
+            if line.is_empty() {
+                String::new()
+            } else {
+                format!("    {line}")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    let return_stmt = if need_return_value {
+        // The last non-empty, non-comment line is the expression to return
+        let last_line = lines[last_idx].trim();
+        format!("\n    return {last_line}")
+    } else {
+        String::new()
+    };
+
+    let wrapped = format!(
+        "import asyncio\nasync def __test_main():\n{indented}{return_stmt}\n__test_result__ = asyncio.run(__test_main())"
+    );
+
+    if need_return_value {
+        (wrapped, Some("__test_result__".to_string()))
+    } else {
+        (wrapped, None)
+    }
+}
+
 /// Run the traceback script to get CPython's traceback output for a test file.
 ///
 /// This imports scripts/run_traceback.py via pyo3 and calls `run_file_and_get_traceback()`
@@ -800,7 +1864,9 @@ fn split_code_for_module(code: &str, need_return_value: bool) -> (String, Option
 ///
 /// When `iter_mode` is true, external function implementations are injected into the
 /// file's globals before execution.
-fn run_traceback_script(path: &Path, iter_mode: bool) -> String {
+///
+/// When `async_mode` is true, code is wrapped in an async context before execution.
+fn run_traceback_script(path: &Path, iter_mode: bool, async_mode: bool) -> String {
     Python::attach(|py| {
         let run_traceback = import_run_traceback(py);
 
@@ -808,11 +1874,11 @@ fn run_traceback_script(path: &Path, iter_mode: bool) -> String {
         let abs_path = path.canonicalize().expect("Failed to get absolute path");
         let path_str = abs_path.to_str().expect("Invalid UTF-8 in path");
 
-        // Call run_file_and_get_traceback with the recursion limit and iter_mode flag
+        // Call run_file_and_get_traceback with the recursion limit, iter_mode, and async_mode flags
         let result = run_traceback
             .call_method1(
                 "run_file_and_get_traceback",
-                (path_str, TEST_RECURSION_LIMIT, iter_mode),
+                (path_str, TEST_RECURSION_LIMIT, iter_mode, async_mode),
             )
             .expect("Failed to call run_file_and_get_traceback");
 
@@ -877,7 +1943,13 @@ fn try_run_cpython_test(
     code: &str,
     expectation: &Expectation,
     iter_mode: bool,
+    async_mode: bool,
+    mount_fs: bool,
 ) -> Result<(), TestFailure> {
+    // Ensure Python modules are imported before parallel tests access them.
+    // This prevents race conditions during module initialization.
+    ensure_python_modules_imported();
+
     // Skip RefCounts tests - only relevant for Monty
     if matches!(expectation, Expectation::RefCounts(_)) {
         return Ok(());
@@ -887,7 +1959,7 @@ fn try_run_cpython_test(
 
     // Traceback tests use the external script for reliable caret line support
     if let Expectation::Traceback(expected) = expectation {
-        let result = run_traceback_script(path, iter_mode);
+        let result = run_traceback_script(path, iter_mode, async_mode);
         if result != *expected {
             return Err(TestFailure {
                 test_name,
@@ -899,18 +1971,46 @@ fn try_run_cpython_test(
         return Ok(());
     }
 
+    // For mount-fs tests, create a fresh temp directory and inject `root` as a real Path.
+    // The TempDir must outlive the test execution so the directory isn't cleaned up early.
+    let mount_tmpdir = if mount_fs {
+        Some(create_mount_fs_tempdir())
+    } else {
+        None
+    };
+    let mount_root_setup: Option<String> = mount_tmpdir.as_ref().map(|tmpdir| {
+        let tmpdir_path = tmpdir.path().to_string_lossy().to_string();
+        format!(
+            "from pathlib import Path as _Path; root = _Path('{}')",
+            tmpdir_path.replace('\\', "\\\\").replace('\'', "\\'")
+        )
+    });
+
     let need_return_value = matches!(
         expectation,
         Expectation::Return(_) | Expectation::ReturnStr(_) | Expectation::ReturnType(_)
     );
-    let (statements, maybe_expr) = split_code_for_module(code, need_return_value);
+
+    // Use async wrapper for tests with top-level await
+    let (statements, maybe_expr) = if async_mode {
+        wrap_code_for_async(code, need_return_value)
+    } else {
+        split_code_for_module(code, need_return_value)
+    };
 
     let result: CpythonResult = Python::attach(|py| {
         // Execute statements at module level
         let globals = PyDict::new(py);
 
+        // For mount-fs tests, inject `root` variable pointing to real temp directory.
+        if let Some(ref setup_code) = mount_root_setup {
+            let setup_cstr = CString::new(setup_code.as_str()).expect("Invalid C string in mount-fs setup");
+            py.run(&setup_cstr, Some(&globals), None)
+                .expect("Failed to set up mount-fs root for CPython");
+        }
+
         // For iter mode tests, inject external function implementations into globals
-        if iter_mode {
+        if iter_mode && !mount_fs {
             let ext_funcs_cstr = CString::new(ITER_EXT_FUNCTIONS_PYTHON).expect("Invalid C string in ext funcs");
             py.run(&ext_funcs_cstr, Some(&globals), None)
                 .expect("Failed to define external functions for iter mode");
@@ -1044,8 +2144,13 @@ fn format_cpython_exception(py: Python<'_>, e: &PyErr) -> String {
 /// Timeout duration for Monty tests.
 ///
 /// Tests that exceed this duration are considered to be hanging (infinite loop)
-/// and will fail with a timeout error.
-const TEST_TIMEOUT: Duration = Duration::from_secs(2);
+/// and will fail with a timeout error. Disabled under miri since the interpreter
+/// overhead makes normal tests exceed the 2s limit.
+const TEST_TIMEOUT: Duration = if cfg!(miri) {
+    Duration::from_secs(600)
+} else {
+    Duration::from_secs(2)
+};
 
 /// Result from running a test with a timeout.
 enum TimeoutResult<T> {
@@ -1114,17 +2219,18 @@ fn run_test_cases_monty(path: &Path) -> Result<(), Box<dyn Error>> {
     let (code, expectation, config) = parse_fixture(&content);
     let test_name = path.strip_prefix("test_cases/").unwrap_or(path).display().to_string();
 
-    // Clone data for the closure since it needs 'static lifetime
+    // Move data into the closure since it needs 'static lifetime
     let path_owned = path.to_owned();
-    let code_owned = code.clone();
-    let expectation_owned = expectation.clone();
     let iter_mode = config.iter_mode;
+    let mount_fs = config.mount_fs;
 
     let result = run_with_timeout(TEST_TIMEOUT, move || {
-        if iter_mode {
-            try_run_iter_test(&path_owned, &code_owned, &expectation_owned)
+        if mount_fs {
+            try_run_mount_fs_test(&path_owned, &code, &expectation)
+        } else if iter_mode {
+            try_run_iter_test(&path_owned, &code, &expectation)
         } else {
-            try_run_test(&path_owned, &code_owned, &expectation_owned)
+            try_run_test(&path_owned, &code, &expectation)
         }
     });
 
@@ -1166,7 +2272,19 @@ fn run_test_cases_cpython(path: &Path) -> Result<(), Box<dyn Error>> {
     let (code, expectation, config) = parse_fixture(&content);
     let test_name = path.strip_prefix("test_cases/").unwrap_or(path).display().to_string();
 
-    let result = try_run_cpython_test(path, &code, &expectation, config.iter_mode);
+    // Skip CPython tests that rely on POSIX path semantics when running on Windows
+    if cfg!(windows) && config.skip_cpython_windows {
+        return Ok(());
+    }
+
+    let result = try_run_cpython_test(
+        path,
+        &code,
+        &expectation,
+        config.iter_mode,
+        config.async_mode,
+        config.mount_fs,
+    );
 
     if config.xfail_cpython {
         // Strict xfail: test must fail; if it passed, xfail should be removed

@@ -1,4 +1,4 @@
-# mode: iter
+# call-external
 # BUG: This test hangs (infinite loop) - external calls in boolean expressions
 # with side effects cause incorrect behavior.
 

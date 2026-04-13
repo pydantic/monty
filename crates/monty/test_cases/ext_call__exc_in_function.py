@@ -1,4 +1,4 @@
-# mode: iter
+# call-external
 def wrapper():
     raise_error('ValueError', 'from external')
 

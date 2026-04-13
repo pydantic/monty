@@ -1,4 +1,4 @@
-# mode: iter
+# call-external
 # Test that assigning to a frozen dataclass raises FrozenInstanceError
 point = make_point()
 point.x = 10

@@ -2,9 +2,9 @@
 
 use crate::{
     args::ArgValues,
+    bytecode::VM,
+    defer_drop, defer_drop_mut,
     exception_private::RunResult,
-    heap::Heap,
-    intern::Interns,
     resource::ResourceTracker,
     types::{MontyIter, PyTrait},
     value::Value,
@@ -14,19 +14,17 @@ use crate::{
 ///
 /// Returns True if any element of the iterable is true.
 /// Returns False for an empty iterable. Short-circuits on the first truthy value.
-pub fn builtin_any(heap: &mut Heap<impl ResourceTracker>, args: ArgValues, interns: &Interns) -> RunResult<Value> {
-    let iterable = args.get_one_arg("any", heap)?;
-    let mut iter = MontyIter::new(iterable, heap, interns)?;
+pub fn builtin_any(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let iterable = args.get_one_arg("any", vm.heap)?;
+    let iter = MontyIter::new(iterable, vm)?;
+    defer_drop_mut!(iter, vm);
 
-    while let Some(item) = iter.for_next(heap, interns)? {
-        let is_truthy = item.py_bool(heap, interns);
-        item.drop_with_heap(heap);
-        if is_truthy {
-            iter.drop_with_heap(heap);
+    while let Some(item) = iter.for_next(vm)? {
+        defer_drop!(item, vm);
+        if item.py_bool(vm) {
             return Ok(Value::Bool(true));
         }
     }
 
-    iter.drop_with_heap(heap);
     Ok(Value::Bool(false))
 }

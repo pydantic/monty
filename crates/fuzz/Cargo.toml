@@ -1,0 +1,30 @@
+[package]
+name = "monty-fuzz"
+publish = false
+version = { workspace = true }
+edition = { workspace = true }
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+arbitrary = { version = "1", features = ["derive"] }
+libfuzzer-sys = "0.4"
+monty = { path = "../monty" }
+
+[[bin]]
+name = "string_input_panic"
+path = "fuzz_targets/string_input_panic.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "tokens_input_panic"
+path = "fuzz_targets/tokens_input_panic.rs"
+test = false
+doc = false
+bench = false
+
+[lints]
+workspace = true

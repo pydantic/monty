@@ -1,7 +1,7 @@
-//! String and bytes interning for efficient storage of literals and identifiers.
+//! String, bytes, and long integer interning for efficient storage of literals and identifiers.
 //!
-//! This module provides interners that store unique strings and bytes in vectors
-//! and return indices (`StringId`, `BytesId`) for efficient storage and comparison.
+//! This module provides interners that store unique strings, bytes, and long integers in vectors
+//! and return indices (`StringId`, `BytesId`, `LongIntId`) for efficient storage and comparison.
 //! This avoids the overhead of cloning strings or using atomic reference counting.
 //!
 //! The interners are populated during parsing and preparation, then owned by the `Executor`.
@@ -12,9 +12,10 @@
 //! * 1000 to count(StaticStrings) - strings StaticStrings
 //! * 10_000+ - strings interned per executor
 
-use std::{str::FromStr, sync::LazyLock};
+use std::{array, str::FromStr, sync::LazyLock};
 
 use ahash::AHashMap;
+use num_bigint::BigInt;
 use strum::{EnumString, FromRepr, IntoStaticStr};
 
 use crate::{function::Function, value::Value};
@@ -58,7 +59,7 @@ const INTERN_STRING_ID_OFFSET: usize = 10_000;
 /// Uses `LazyLock` to build the array at runtime (once), leaking the strings to get
 /// `'static` lifetime. The leak is intentional and bounded (128 single-byte strings).
 static ASCII_STRS: LazyLock<[&'static str; 128]> = LazyLock::new(|| {
-    std::array::from_fn(|i| {
+    array::from_fn(|i| {
         // Safe: i is always 0-127 for a 128-element array
         let s = char::from(u8::try_from(i).expect("index out of u8 range")).to_string();
         // Leak to get 'static lifetime - this is intentional and bounded (128 bytes total)
@@ -68,7 +69,7 @@ static ASCII_STRS: LazyLock<[&'static str; 128]> = LazyLock::new(|| {
 });
 
 /// Static string values which are known at compile time and don't need to be interned.
-#[repr(u8)]
+#[repr(u16)]
 #[derive(
     Debug, Clone, Copy, FromRepr, EnumString, IntoStaticStr, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
 )]
@@ -116,7 +117,6 @@ pub enum StaticStrings {
     Union,
     Intersection,
     Difference,
-    #[strum(serialize = "symmetric_difference")]
     SymmetricDifference,
     Issubset,
     Issuperset,
@@ -170,6 +170,12 @@ pub enum StaticStrings {
     Ljust,
     Rjust,
     Zfill,
+    Expandtabs,
+    // Keyword argument names for string/bytes methods and constructors
+    Tabsize,
+    Keepends,
+    Object,
+    Source,
     // Additional string methods
     Encode,
     Isidentifier,
@@ -189,40 +195,41 @@ pub enum StaticStrings {
 
     // ==========================
     // sys module strings
-    #[strum(serialize = "sys")]
     Sys,
     #[strum(serialize = "sys.version_info")]
     SysVersionInfo,
-    #[strum(serialize = "version")]
     Version,
-    #[strum(serialize = "version_info")]
     VersionInfo,
-    #[strum(serialize = "platform")]
     Platform,
-    #[strum(serialize = "stdout")]
     Stdout,
-    #[strum(serialize = "stderr")]
     Stderr,
-    #[strum(serialize = "major")]
     Major,
-    #[strum(serialize = "minor")]
     Minor,
-    #[strum(serialize = "micro")]
     Micro,
-    #[strum(serialize = "releaselevel")]
     Releaselevel,
-    #[strum(serialize = "serial")]
     Serial,
-    #[strum(serialize = "final")]
     Final,
     #[strum(serialize = "3.14.0 (Monty)")]
     MontyVersionString,
-    #[strum(serialize = "monty")]
     Monty,
 
     // ==========================
+    // os.stat_result fields
+    #[strum(serialize = "StatResult")]
+    OsStatResult,
+    StMode,
+    StIno,
+    StDev,
+    StNlink,
+    StUid,
+    StGid,
+    StSize,
+    StAtime,
+    StMtime,
+    StCtime,
+
+    // ==========================
     // typing module strings
-    #[strum(serialize = "typing")]
     Typing,
     #[strum(serialize = "TYPE_CHECKING")]
     TypeChecking,
@@ -278,8 +285,302 @@ pub enum StaticStrings {
     NoReturn,
 
     // ==========================
+    // asyncio module strings
+    Asyncio,
+    Gather,
+    Run,
+
+    // ==========================
+    // os module strings
+    Os,
+    Getenv,
+    Environ,
+    Default,
+
+    // ==========================
     // Exception attributes
     Args,
+
+    // ==========================
+    // Type attributes
+    #[strum(serialize = "__name__")]
+    DunderName,
+
+    // ==========================
+    // pathlib module strings
+    Pathlib,
+    #[strum(serialize = "Path")]
+    PathClass,
+
+    // Path properties (pure - no I/O)
+    Name,
+    Parent,
+    Stem,
+    Suffix,
+    Suffixes,
+    Parts,
+
+    // Path pure methods (no I/O)
+    IsAbsolute,
+    Joinpath,
+    WithName,
+    WithStem,
+    WithSuffix,
+    AsPosix,
+    #[strum(serialize = "__fspath__")]
+    Fspath,
+
+    // Path filesystem methods (require OsAccess - yield external calls)
+    Exists,
+    IsFile,
+    IsDir,
+    IsSymlink,
+    #[strum(serialize = "stat")]
+    StatMethod,
+    ReadBytes,
+    ReadText,
+    Iterdir,
+    Resolve,
+    Absolute,
+
+    // Path write methods (require OsAccess - yield external calls)
+    WriteText,
+    WriteBytes,
+    Mkdir,
+    Unlink,
+    Rmdir,
+    Rename,
+
+    // Slice attributes
+    Start,
+    Stop,
+    Step,
+
+    // ==========================
+    // module strings
+    // ==========================
+
+    // math module strings
+    Math,
+    // Rounding
+    Floor,
+    Ceil,
+    Trunc,
+    // Roots & powers
+    Sqrt,
+    Isqrt,
+    Cbrt,
+    Pow,
+    Exp,
+    Exp2,
+    Expm1,
+    // Logarithms
+    Log,
+    Log1p,
+    Log2,
+    Log10,
+    // Float properties
+    Fabs,
+    Isnan,
+    Isinf,
+    Isfinite,
+    Copysign,
+    Isclose,
+    Nextafter,
+    Ulp,
+    // Trigonometric
+    Sin,
+    Cos,
+    Tan,
+    Asin,
+    Acos,
+    Atan,
+    Atan2,
+    // Hyperbolic
+    Sinh,
+    Cosh,
+    Tanh,
+    Asinh,
+    Acosh,
+    Atanh,
+    // Angular conversion
+    Degrees,
+    Radians,
+    // Integer math
+    Factorial,
+    Gcd,
+    Lcm,
+    Comb,
+    Perm,
+    // Modular / decomposition
+    Fmod,
+    Remainder,
+    Modf,
+    Frexp,
+    Ldexp,
+    // Special functions
+    Gamma,
+    Lgamma,
+    Erf,
+    Erfc,
+    // Constants
+    /// `math.pi` constant
+    Pi,
+    /// `math.e` constant
+    #[strum(serialize = "e")]
+    MathE,
+    /// `math.tau` constant
+    Tau,
+    /// `math.inf` constant
+    #[strum(serialize = "inf")]
+    MathInf,
+    /// `math.nan` constant
+    #[strum(serialize = "nan")]
+    MathNan,
+
+    // ==========================
+    // json module strings
+    /// Module name for `import json`.
+    Json,
+    /// `json.loads()` function.
+    Loads,
+    /// `json.dumps()` function.
+    Dumps,
+    /// `json.JSONDecodeError` exception.
+    #[strum(serialize = "JSONDecodeError")]
+    JsonDecodeError,
+    /// `json.dumps(indent=...)` keyword.
+    Indent,
+    /// `json.dumps(sort_keys=...)` keyword.
+    #[strum(serialize = "sort_keys")]
+    SortKeys,
+    /// `json.dumps(ensure_ascii=...)` keyword.
+    #[strum(serialize = "ensure_ascii")]
+    EnsureAscii,
+    /// `json.dumps(allow_nan=...)` keyword.
+    #[strum(serialize = "allow_nan")]
+    AllowNan,
+    /// `json.dumps(separators=...)` keyword.
+    Separators,
+    /// `json.dumps(skipkeys=...)` keyword.
+    Skipkeys,
+
+    // ==========================
+    // datetime module strings
+    Datetime,
+    Date,
+    Timedelta,
+    Timezone,
+    Today,
+    Now,
+    Utc,
+    TotalSeconds,
+    Tzinfo,
+    // date/datetime field attributes
+    Year,
+    Month,
+    Day,
+    Hour,
+    Minute,
+    Second,
+    Microsecond,
+    // timedelta constructor/attribute names
+    Days,
+    Seconds,
+    Microseconds,
+    Milliseconds,
+    Minutes,
+    Hours,
+    Weeks,
+    // timezone constructor kwargs
+    Offset,
+    // datetime.now() kwarg
+    Tz,
+    // date/datetime methods
+    Isoformat,
+    Strftime,
+    Weekday,
+    Isoweekday,
+    Timestamp,
+    Strptime,
+    Fromisoformat,
+
+    // re module strings
+    /// Module name for `import re`.
+    Re,
+    /// `re.compile()` function
+    Compile,
+    /// `re.match()` / `pattern.match()` method
+    Match,
+    /// `re.search()` / `pattern.search()` method
+    Search,
+    /// `re.fullmatch()` / `pattern.fullmatch()` method
+    Fullmatch,
+    /// `re.findall()` / `pattern.findall()` method
+    Findall,
+    /// `re.sub()` / `pattern.sub()` method
+    Sub,
+    /// `match.group()` method
+    Group,
+    /// `match.groups()` method
+    Groups,
+    /// `match.span()` method
+    Span,
+    /// `match.end()` method
+    End,
+    /// `re.Pattern`
+    #[strum(serialize = "Pattern")]
+    PatternClass,
+    /// `re.Match`
+    #[strum(serialize = "Match")]
+    MatchClass,
+    /// `pattern.pattern`
+    #[strum(serialize = "pattern")]
+    PatternAttr,
+    /// `match.string`
+    #[strum(serialize = "string")]
+    StringAttr,
+    /// `pattern.flags`
+    Flags,
+    /// `re.IGNORECASE` flag
+    #[strum(serialize = "IGNORECASE")]
+    Ignorecase,
+    /// `re.I` flag, alias
+    #[strum(serialize = "I")]
+    I,
+    /// `re.MULTILINE` flag
+    #[strum(serialize = "MULTILINE")]
+    MultilineFlag,
+    /// `re.M` flag, alias
+    #[strum(serialize = "M")]
+    M,
+    /// `re.DOTALL` flag
+    #[strum(serialize = "DOTALL")]
+    DotallFlag,
+    /// `re.S` flag, alias
+    #[strum(serialize = "S")]
+    S,
+    /// `re.NOFLAG` flag
+    #[strum(serialize = "NOFLAG")]
+    NoFlag,
+    /// `re.ASCII` flag
+    #[strum(serialize = "ASCII")]
+    AsciiFlag,
+    /// `re.A` flag, alias
+    #[strum(serialize = "A")]
+    A,
+    /// `re.PatternError` exception
+    #[strum(serialize = "PatternError")]
+    PatternError,
+    /// `re.error` exception alias (same as `re.PatternError`)
+    #[strum(serialize = "error")]
+    Error,
+    /// `re.escape()` function
+    Escape,
+    /// `re.finditer()` / `pattern.finditer()` method
+    Finditer,
+    /// `match.groupdict()` method
+    Groupdict,
 }
 
 impl StaticStrings {
@@ -289,7 +590,7 @@ impl StaticStrings {
     /// (e.g., it's an ASCII char or a dynamically interned string).
     pub fn from_string_id(id: StringId) -> Option<Self> {
         let enum_id = id.0.checked_sub(STATIC_STRING_ID_OFFSET)?;
-        u8::try_from(enum_id).ok().and_then(Self::from_repr)
+        u16::try_from(enum_id).ok().and_then(Self::from_repr)
     }
 }
 
@@ -333,6 +634,21 @@ impl BytesId {
     }
 }
 
+/// Index into the long integer interner's storage.
+///
+/// Used for integer literals that exceed i64 range. The actual `BigInt` values
+/// are stored in the `Interns` table and looked up by index at runtime.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub struct LongIntId(u32);
+
+impl LongIntId {
+    /// Returns the raw index value.
+    #[inline]
+    pub fn index(self) -> usize {
+        self.0 as usize
+    }
+}
+
 /// Unique identifier for functions
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
 pub struct FunctionId(u32);
@@ -354,27 +670,11 @@ impl FunctionId {
     }
 }
 
-/// Unique identifier for external functions
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
-pub struct ExtFunctionId(u32);
-
-impl ExtFunctionId {
-    pub fn new(index: usize) -> Self {
-        Self(index.try_into().expect("Invalid external function id"))
-    }
-
-    /// Returns the raw index value.
-    #[inline]
-    pub fn index(self) -> usize {
-        self.0 as usize
-    }
-}
-
-/// A string and bytes interner that stores unique values and returns indices for lookup.
+/// A string, bytes, and long integer interner that stores unique values and returns indices for lookup.
 ///
 /// Interns are deduplicated on insertion - interning the same string twice returns
-/// the same `StringId`. Bytes are NOT deduplicated (rare enough that it's not worth it).
-/// The interner owns all strings/bytes and provides lookup by index.
+/// the same `StringId`. Bytes and long integers are NOT deduplicated (rare enough that it's not worth it).
+/// The interner owns all strings/bytes/long integers and provides lookup by index.
 ///
 /// # Thread Safety
 ///
@@ -389,6 +689,9 @@ pub struct InternerBuilder {
     /// Storage for interned bytes literals, indexed by `BytesId`.
     /// Not deduplicated since bytes literals are rare.
     bytes: Vec<Vec<u8>>,
+    /// Storage for interned long integer literals, indexed by `LongIntId`.
+    /// Not deduplicated since long integer literals are rare.
+    long_ints: Vec<BigInt>,
 }
 
 impl InternerBuilder {
@@ -414,7 +717,32 @@ impl InternerBuilder {
             string_map: AHashMap::with_capacity(capacity),
             strings: Vec::with_capacity(capacity),
             bytes: Vec::new(),
+            long_ints: Vec::new(),
         }
+    }
+
+    /// Creates a builder pre-seeded from an existing [`Interns`] table.
+    ///
+    /// This is used by REPL incremental compilation: previously compiled interned
+    /// values keep stable IDs, and newly interned values are appended.
+    pub(crate) fn from_interns(interns: &Interns, code: &str) -> Self {
+        let mut builder = Self::new(code);
+        builder.strings.clone_from(&interns.strings);
+        builder.bytes.clone_from(&interns.bytes);
+        builder.long_ints.clone_from(&interns.long_ints);
+
+        builder.string_map = builder
+            .strings
+            .iter()
+            .enumerate()
+            .map(|(index, value)| {
+                let id = StringId(
+                    u32::try_from(INTERN_STRING_ID_OFFSET + index).expect("StringId overflow while seeding interner"),
+                );
+                (value.clone(), id)
+            })
+            .collect();
+        builder
     }
 
     /// Interns a string, returning its `StringId`.
@@ -447,6 +775,15 @@ impl InternerBuilder {
         id
     }
 
+    /// Interns a long integer, returning its `LongIntId`.
+    ///
+    /// Big integers are not deduplicated since literals exceeding i64 are rare.
+    pub fn intern_long_int(&mut self, bi: BigInt) -> LongIntId {
+        let id = LongIntId(self.long_ints.len().try_into().expect("LongIntId overflow"));
+        self.long_ints.push(bi);
+        id
+    }
+
     /// Looks up a string by its `StringId`.
     #[inline]
     pub fn get_str(&self, id: StringId) -> &str {
@@ -470,24 +807,24 @@ fn get_str(strings: &[String], id: StringId) -> &str {
     }
 }
 
-/// Read-only storage for interned string and bytes.
+/// Read-only storage for interned strings, bytes, and long integers.
 ///
-/// This provides lookup by `StringId`, `BytesId` and `FunctionId` for interned literals and functions
+/// This provides lookup by `StringId`, `BytesId`, `LongIntId` and `FunctionId` for interned literals and functions.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) struct Interns {
     strings: Vec<String>,
     bytes: Vec<Vec<u8>>,
+    long_ints: Vec<BigInt>,
     functions: Vec<Function>,
-    external_functions: Vec<String>,
 }
 
 impl Interns {
-    pub fn new(interner: InternerBuilder, functions: Vec<Function>, external_functions: Vec<String>) -> Self {
+    pub fn new(interner: InternerBuilder, functions: Vec<Function>) -> Self {
         Self {
             strings: interner.strings,
             bytes: interner.bytes,
+            long_ints: interner.long_ints,
             functions,
-            external_functions,
         }
     }
 
@@ -511,6 +848,16 @@ impl Interns {
         &self.bytes[id.index()]
     }
 
+    /// Looks up a long integer by its `LongIntId`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the `LongIntId` is invalid.
+    #[inline]
+    pub fn get_long_int(&self, id: LongIntId) -> &BigInt {
+        &self.long_ints[id.index()]
+    }
+
     /// Lookup a function by its `FunctionId`
     ///
     /// # Panics
@@ -521,17 +868,29 @@ impl Interns {
         self.functions.get(id.index()).expect("Function not found")
     }
 
-    /// Lookup an external function name by its `ExtFunctionId`
+    /// Looks up the `StringId` for a string, checking ASCII, static strings, and interned strings.
     ///
-    /// # Panics
+    /// This is the reverse of `get_str`: given a string, find its StringId.
+    /// Used when the host provides a name (e.g., from a NameLookup response) that was
+    /// previously interned during preparation.
     ///
-    /// Panics if the `ExtFunctionId` is invalid.
-    #[inline]
-    pub fn get_external_function_name(&self, id: ExtFunctionId) -> String {
-        self.external_functions
-            .get(id.index())
-            .expect("External function not found")
-            .clone()
+    /// Error if the string was never interned.
+    pub fn get_string_id_by_name(&self, s: &str) -> Option<StringId> {
+        // Check single ASCII char
+        if s.len() == 1 {
+            return Some(StringId::from_ascii(s.as_bytes()[0]));
+        }
+        // Check static strings
+        if let Ok(ss) = StaticStrings::from_str(s) {
+            return Some(ss.into());
+        }
+        // Check interned strings
+        for (i, interned) in self.strings.iter().enumerate() {
+            if interned == s {
+                return u32::try_from(INTERN_STRING_ID_OFFSET + i).ok().map(StringId);
+            }
+        }
+        None
     }
 
     /// Sets the compiled functions.
@@ -540,5 +899,12 @@ impl Interns {
     /// compiled from `PreparedFunctionDef` nodes.
     pub fn set_functions(&mut self, functions: Vec<Function>) {
         self.functions = functions;
+    }
+
+    /// Returns a clone of the compiled function table.
+    ///
+    /// Used by REPL incremental compilation to preserve existing function IDs.
+    pub(crate) fn functions_clone(&self) -> Vec<Function> {
+        self.functions.clone()
     }
 }
