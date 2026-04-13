@@ -22,10 +22,10 @@ use crate::{
     async_dispatch::{ReplCleanupNotifier, await_repl_transition, dispatch_loop_repl},
     convert::{get_docstring, monty_to_py, py_to_monty},
     dataclass::DcRegistry,
-    exceptions::exc_py_to_monty,
+    exceptions::{MontyError, exc_py_to_monty},
     external::{ExternalFunctionRegistry, dispatch_method_call},
     limits::{CancellationFlag, FutureCancellationGuard, PySignalTracker, extract_limits},
-    monty_cls::{EitherProgress, PyMontyComplete, py_type_check},
+    monty_cls::{EitherProgress, py_type_check},
     mount::OsHandler,
     print_target::PrintTarget,
 };
@@ -199,9 +199,8 @@ impl PyMontyRepl {
             .as_mut()
             .ok_or_else(|| PyRuntimeError::new_err("REPL session is currently executing another snippet"))?;
 
-        // `with_writer` only holds the collect-buffer lock for the duration of
-        // the VM call; between calls (and on the error path below) the lock is
-        // free so `drain_py` is safe.
+        // `with_writer` only holds any collector lock for the duration of the
+        // VM call.
         let result = match repl {
             EitherRepl::NoLimit(repl) => print_target.with_writer(|w| repl.feed_run(code, input_values, w)),
             EitherRepl::Limited(repl) => print_target.with_writer(|w| repl.feed_run(code, input_values, w)),
@@ -210,14 +209,14 @@ impl PyMontyRepl {
         let output = match result {
             Ok(v) => v,
             Err(e) => {
-                return Err(print_target.drain_into_err(py, e));
+                return Err(MontyError::new_err(py, e));
             }
         };
 
         if !skip_type_check {
             self.append_to_committed_stubs(code);
         }
-        PyMontyComplete::create(py, &output, &self.dc_registry, &print_target)
+        monty_to_py(py, &output, &self.dc_registry).map(|obj| obj.into_bound(py))
     }
 
     /// Starts executing an incremental snippet, yielding snapshots for external calls.
@@ -255,9 +254,8 @@ impl PyMontyRepl {
         let dc_registry = this.dc_registry.clone_ref(py);
         let script_name = this.script_name.clone();
 
-        // Each transition builds its own writer via `with_writer` so the
-        // collect-buffer lock is only held during the VM call, leaving
-        // `drain_py` on the error path deadlock-free.
+        // Each transition builds its own writer via `with_writer` so any
+        // collector lock is only held during the VM call.
         macro_rules! feed_start_impl {
             ($repl:expr, $variant:ident) => {{
                 let result = py
@@ -267,7 +265,7 @@ impl PyMontyRepl {
                     Err(e) => {
                         let err = *e;
                         this.put_repl_after_rollback(EitherRepl::from_core(err.repl));
-                        return Err(print_target.drain_into_err(py, err.error));
+                        return Err(MontyError::new_err(py, err.error));
                     }
                 };
                 let either = EitherProgress::$variant(progress, repl_owner);
@@ -783,7 +781,7 @@ impl PyMontyRepl {
         match result {
             Ok((output, restored_repl)) => {
                 self.put_repl(restored_repl);
-                PyMontyComplete::create(py, &output, &self.dc_registry, print_target)
+                monty_to_py(py, &output, &self.dc_registry).map(|obj| obj.into_bound(py))
             }
             Err(err) => Err(err),
         }
@@ -820,15 +818,12 @@ impl PyMontyRepl {
             }
         };
 
-        // `with_writer` holds the collect-buffer lock only during each VM
-        // transition; between calls the lock is released, so `drain_py` on
-        // the error path below does not deadlock.
         macro_rules! restore_err {
             ($e:expr) => {{
                 put_back(mount_table);
                 let err: ReplStartError<T> = *$e;
                 self.put_repl_after_rollback(EitherRepl::from_core(err.repl));
-                return Err(print_target.drain_into_err(py, err.error));
+                return Err(MontyError::new_err(py, err.error));
             }};
         }
 

@@ -50,14 +50,14 @@ def test_file_nested_within_file_rejected():
 def test_empty_initialization():
     """OSAccess can be initialized with no files."""
     fs = OSAccess()
-    result = Monty('from pathlib import Path; Path("/any/path").exists()').run(os=fs).output
+    result = Monty('from pathlib import Path; Path("/any/path").exists()').run(os=fs)
     assert result is False
 
 
 def test_environ_parameter():
     """OSAccess accepts environ parameter for environment variables."""
     fs = OSAccess(environ={'MY_VAR': 'my_value'})
-    result = Monty("import os; os.getenv('MY_VAR')").run(os=fs).output
+    result = Monty("import os; os.getenv('MY_VAR')").run(os=fs)
     assert result == snapshot('my_value')
 
 
@@ -69,14 +69,14 @@ def test_environ_parameter():
 def test_path_exists_file():
     """path_exists returns True for existing files."""
     fs = OSAccess([MemoryFile('/test/file.txt', content='hello')])
-    result = Monty('from pathlib import Path; Path("/test/file.txt").exists()').run(os=fs).output
+    result = Monty('from pathlib import Path; Path("/test/file.txt").exists()').run(os=fs)
     assert result is True
 
 
 def test_path_exists_directory():
     """path_exists returns True for directories created by file paths."""
     fs = OSAccess([MemoryFile('/test/subdir/file.txt', content='hello')])
-    result = Monty('from pathlib import Path; Path("/test/subdir").exists()').run(os=fs).output
+    result = Monty('from pathlib import Path; Path("/test/subdir").exists()').run(os=fs)
     assert result is True
 
 
@@ -87,56 +87,56 @@ def test_path_exists_nested():
 from pathlib import Path
 (Path('/a').exists(), Path('/a/b').exists(), Path('/a/b/c').exists(), Path('/a/b/c/d').exists())
 """
-    result = Monty(code).run(os=fs).output
+    result = Monty(code).run(os=fs)
     assert result == snapshot((True, True, True, True))
 
 
 def test_path_exists_missing():
     """path_exists returns False for non-existent paths."""
     fs = OSAccess([MemoryFile('/test/file.txt', content='hello')])
-    result = Monty('from pathlib import Path; Path("/other/path").exists()').run(os=fs).output
+    result = Monty('from pathlib import Path; Path("/other/path").exists()').run(os=fs)
     assert result is False
 
 
 def test_path_is_file_for_file():
     """path_is_file returns True for files."""
     fs = OSAccess([MemoryFile('/test/file.txt', content='hello')])
-    result = Monty('from pathlib import Path; Path("/test/file.txt").is_file()').run(os=fs).output
+    result = Monty('from pathlib import Path; Path("/test/file.txt").is_file()').run(os=fs)
     assert result is True
 
 
 def test_path_is_file_for_directory():
     """path_is_file returns False for directories."""
     fs = OSAccess([MemoryFile('/test/subdir/file.txt', content='hello')])
-    result = Monty('from pathlib import Path; Path("/test/subdir").is_file()').run(os=fs).output
+    result = Monty('from pathlib import Path; Path("/test/subdir").is_file()').run(os=fs)
     assert result is False
 
 
 def test_path_is_file_missing():
     """path_is_file returns False for non-existent paths."""
     fs = OSAccess()
-    result = Monty('from pathlib import Path; Path("/missing").is_file()').run(os=fs).output
+    result = Monty('from pathlib import Path; Path("/missing").is_file()').run(os=fs)
     assert result is False
 
 
 def test_path_is_dir_for_directory():
     """path_is_dir returns True for directories."""
     fs = OSAccess([MemoryFile('/test/subdir/file.txt', content='hello')])
-    result = Monty('from pathlib import Path; Path("/test/subdir").is_dir()').run(os=fs).output
+    result = Monty('from pathlib import Path; Path("/test/subdir").is_dir()').run(os=fs)
     assert result is True
 
 
 def test_path_is_dir_for_file():
     """path_is_dir returns False for files."""
     fs = OSAccess([MemoryFile('/test/file.txt', content='hello')])
-    result = Monty('from pathlib import Path; Path("/test/file.txt").is_dir()').run(os=fs).output
+    result = Monty('from pathlib import Path; Path("/test/file.txt").is_dir()').run(os=fs)
     assert result is False
 
 
 def test_path_is_dir_missing():
     """path_is_dir returns False for non-existent paths."""
     fs = OSAccess()
-    result = Monty('from pathlib import Path; Path("/missing").is_dir()').run(os=fs).output
+    result = Monty('from pathlib import Path; Path("/missing").is_dir()').run(os=fs)
     assert result is False
 
 
@@ -147,7 +147,7 @@ def test_path_is_symlink_always_false():
 from pathlib import Path
 (Path('/test/file.txt').is_symlink(), Path('/test').is_symlink(), Path('/missing').is_symlink())
 """
-    result = Monty(code).run(os=fs).output
+    result = Monty(code).run(os=fs)
     assert result == snapshot((False, False, False))
 
 
@@ -159,28 +159,28 @@ from pathlib import Path
 def test_read_text_string_content():
     """path_read_text returns string content directly."""
     fs = OSAccess([MemoryFile('/test/file.txt', content='hello world')])
-    result = Monty('from pathlib import Path; Path("/test/file.txt").read_text()').run(os=fs).output
+    result = Monty('from pathlib import Path; Path("/test/file.txt").read_text()').run(os=fs)
     assert result == snapshot('hello world')
 
 
 def test_read_text_bytes_content_decoded():
     """path_read_text decodes bytes content as UTF-8."""
     fs = OSAccess([MemoryFile('/test/file.txt', content=b'bytes content')])
-    result = Monty('from pathlib import Path; Path("/test/file.txt").read_text()').run(os=fs).output
+    result = Monty('from pathlib import Path; Path("/test/file.txt").read_text()').run(os=fs)
     assert result == snapshot('bytes content')
 
 
 def test_read_bytes_bytes_content():
     """path_read_bytes returns bytes content directly."""
     fs = OSAccess([MemoryFile('/test/file.bin', content=b'\x00\x01\x02\x03')])
-    result = Monty('from pathlib import Path; Path("/test/file.bin").read_bytes()').run(os=fs).output
+    result = Monty('from pathlib import Path; Path("/test/file.bin").read_bytes()').run(os=fs)
     assert result == snapshot(b'\x00\x01\x02\x03')
 
 
 def test_read_bytes_string_content_encoded():
     """path_read_bytes encodes string content as UTF-8."""
     fs = OSAccess([MemoryFile('/test/file.txt', content='hello')])
-    result = Monty('from pathlib import Path; Path("/test/file.txt").read_bytes()').run(os=fs).output
+    result = Monty('from pathlib import Path; Path("/test/file.txt").read_bytes()').run(os=fs)
     assert result == snapshot(b'hello')
 
 
@@ -231,7 +231,7 @@ def test_write_text_via_monty():
 from pathlib import Path
 Path('/test/new.txt').write_text('new content')
 """
-    result = Monty(code).run(os=fs).output
+    result = Monty(code).run(os=fs)
     # write_text returns the number of bytes written
     assert result == snapshot(11)
 
@@ -260,7 +260,7 @@ def test_write_bytes_via_monty():
 from pathlib import Path
 Path('/test/new.bin').write_bytes(b'binary data')
 """
-    result = Monty(code).run(os=fs).output
+    result = Monty(code).run(os=fs)
     assert result == snapshot(11)
     assert fs.path_read_bytes(P('/test/new.bin')) == b'binary data'
 
@@ -577,7 +577,7 @@ def test_iterdir_list_contents():
 from pathlib import Path
 [str(p) for p in Path('/test').iterdir()]
 """
-    result = Monty(code).run(os=fs).output
+    result = Monty(code).run(os=fs)
     # Result may be in any order, so sort in Python
     assert sorted(result) == snapshot(['/test/a.txt', '/test/b.txt', '/test/subdir'])
 
@@ -687,7 +687,7 @@ from pathlib import Path
 s = Path('/test/file.txt').stat()
 (s.st_size, s.st_mode & 0o777)
 """
-    result = Monty(code).run(os=fs).output
+    result = Monty(code).run(os=fs)
     assert result == snapshot((11, 0o644))
 
 
@@ -699,7 +699,7 @@ from pathlib import Path
 s = Path('/test/file.txt').stat()
 s.st_mode & 0o777
 """
-    result = Monty(code).run(os=fs).output
+    result = Monty(code).run(os=fs)
     assert result == snapshot(0o755)
 
 
@@ -711,7 +711,7 @@ from pathlib import Path
 s = Path('/test/subdir').stat()
 s.st_mode
 """
-    result = Monty(code).run(os=fs).output
+    result = Monty(code).run(os=fs)
     # Directory mode bits: 0o040000 (directory) | 0o755 (default perms) = 0o040755
     assert result == snapshot(0o040755)
 
@@ -731,7 +731,7 @@ def test_stat_bytes_content_size():
 from pathlib import Path
 Path('/test/file.bin').stat().st_size
 """
-    result = Monty(code).run(os=fs).output
+    result = Monty(code).run(os=fs)
     assert result == snapshot(5)
 
 
@@ -743,7 +743,7 @@ def test_stat_unicode_size():
 from pathlib import Path
 Path('/test/file.txt').stat().st_size
 """
-    result = Monty(code).run(os=fs).output
+    result = Monty(code).run(os=fs)
     assert result == snapshot(3)
 
 
@@ -883,7 +883,7 @@ def test_path_resolve_absolute():
 from pathlib import Path
 str(Path('/test/file.txt').resolve())
 """
-    result = Monty(code).run(os=fs).output
+    result = Monty(code).run(os=fs)
     assert result == snapshot('/test/file.txt')
 
 
@@ -894,7 +894,7 @@ def test_path_absolute_already_absolute():
 from pathlib import Path
 str(Path('/already/absolute').absolute())
 """
-    result = Monty(code).run(os=fs).output
+    result = Monty(code).run(os=fs)
     assert result == snapshot('/already/absolute')
 
 
@@ -905,7 +905,7 @@ def test_path_absolute_relative():
 from pathlib import Path
 str(Path('relative/path').absolute())
 """
-    result = Monty(code).run(os=fs).output
+    result = Monty(code).run(os=fs)
     assert result == snapshot('/relative/path')
 
 
@@ -916,7 +916,7 @@ def test_path_resolve_same_as_absolute():
 from pathlib import Path
 str(Path('relative').resolve()) == str(Path('relative').absolute())
 """
-    result = Monty(code).run(os=fs).output
+    result = Monty(code).run(os=fs)
     assert result is True
 
 
@@ -928,21 +928,21 @@ str(Path('relative').resolve()) == str(Path('relative').absolute())
 def test_getenv_existing_key():
     """getenv returns value for existing key."""
     fs = OSAccess(environ={'MY_VAR': 'my_value'})
-    result = Monty("import os; os.getenv('MY_VAR')").run(os=fs).output
+    result = Monty("import os; os.getenv('MY_VAR')").run(os=fs)
     assert result == snapshot('my_value')
 
 
 def test_getenv_missing_key():
     """getenv returns None for missing key."""
     fs = OSAccess(environ={'OTHER': 'value'})
-    result = Monty("import os; os.getenv('MISSING')").run(os=fs).output
+    result = Monty("import os; os.getenv('MISSING')").run(os=fs)
     assert result is None
 
 
 def test_getenv_missing_with_default():
     """getenv returns default for missing key when default provided."""
     fs = OSAccess(environ={})
-    result = Monty("import os; os.getenv('MISSING', 'default_value')").run(os=fs).output
+    result = Monty("import os; os.getenv('MISSING', 'default_value')").run(os=fs)
     assert result == snapshot('default_value')
 
 
@@ -953,21 +953,21 @@ def test_getenv_multiple_vars():
 import os
 (os.getenv('VAR1'), os.getenv('VAR2'), os.getenv('VAR3'))
 """
-    result = Monty(code).run(os=fs).output
+    result = Monty(code).run(os=fs)
     assert result == snapshot(('value1', 'value2', 'value3'))
 
 
 def test_get_environ_returns_dict():
     """os.environ returns the full environ dict."""
     fs = OSAccess(environ={'HOME': '/home/user', 'USER': 'testuser'})
-    result = Monty('import os; os.environ').run(os=fs).output
+    result = Monty('import os; os.environ').run(os=fs)
     assert result == snapshot({'HOME': '/home/user', 'USER': 'testuser'})
 
 
 def test_get_environ_key_access():
     """os.environ['KEY'] returns the value."""
     fs = OSAccess(environ={'MY_VAR': 'my_value'})
-    result = Monty("import os; os.environ['MY_VAR']").run(os=fs).output
+    result = Monty("import os; os.environ['MY_VAR']").run(os=fs)
     assert result == snapshot('my_value')
 
 
@@ -982,21 +982,21 @@ def test_get_environ_key_missing_raises():
 def test_get_environ_get_method():
     """os.environ.get() works correctly."""
     fs = OSAccess(environ={'HOME': '/home/user'})
-    result = Monty("import os; os.environ.get('HOME')").run(os=fs).output
+    result = Monty("import os; os.environ.get('HOME')").run(os=fs)
     assert result == snapshot('/home/user')
 
 
 def test_get_environ_get_missing_with_default():
     """os.environ.get() returns default for missing key."""
     fs = OSAccess(environ={})
-    result = Monty("import os; os.environ.get('MISSING', 'fallback')").run(os=fs).output
+    result = Monty("import os; os.environ.get('MISSING', 'fallback')").run(os=fs)
     assert result == snapshot('fallback')
 
 
 def test_get_environ_len():
     """len(os.environ) returns the number of env vars."""
     fs = OSAccess(environ={'A': '1', 'B': '2', 'C': '3'})
-    result = Monty('import os; len(os.environ)').run(os=fs).output
+    result = Monty('import os; len(os.environ)').run(os=fs)
     assert result == snapshot(3)
 
 
@@ -1007,35 +1007,35 @@ def test_get_environ_contains():
 import os
 ('PRESENT' in os.environ, 'ABSENT' in os.environ)
 """
-    result = Monty(code).run(os=fs).output
+    result = Monty(code).run(os=fs)
     assert result == snapshot((True, False))
 
 
 def test_get_environ_keys():
     """os.environ.keys() returns the keys."""
     fs = OSAccess(environ={'X': '1', 'Y': '2'})
-    result = Monty('import os; list(os.environ.keys())').run(os=fs).output
+    result = Monty('import os; list(os.environ.keys())').run(os=fs)
     assert set(result) == snapshot({'X', 'Y'})
 
 
 def test_get_environ_values():
     """os.environ.values() returns the values."""
     fs = OSAccess(environ={'X': 'a', 'Y': 'b'})
-    result = Monty('import os; list(os.environ.values())').run(os=fs).output
+    result = Monty('import os; list(os.environ.values())').run(os=fs)
     assert set(result) == snapshot({'a', 'b'})
 
 
 def test_get_environ_items():
     """os.environ.items() returns key-value pairs."""
     fs = OSAccess(environ={'X': '1', 'Y': '2'})
-    result = Monty('import os; list(os.environ.items())').run(os=fs).output
+    result = Monty('import os; list(os.environ.items())').run(os=fs)
     assert set(result) == snapshot({('X', '1'), ('Y', '2')})
 
 
 def test_get_environ_empty():
     """os.environ returns empty dict when no environ provided."""
     fs = OSAccess()
-    result = Monty('import os; os.environ').run(os=fs).output
+    result = Monty('import os; os.environ').run(os=fs)
     assert result == snapshot({})
 
 
@@ -1110,7 +1110,7 @@ def test_callback_file_read():
     file = CallbackFile('/test/file.txt', read=read_fn, write=write_fn)
     fs = OSAccess([file])
 
-    result = Monty('from pathlib import Path; Path("/test/file.txt").read_text()').run(os=fs).output
+    result = Monty('from pathlib import Path; Path("/test/file.txt").read_text()').run(os=fs)
     assert result == snapshot('content from /test/file.txt')
     assert len(read_calls) == 1
 
@@ -1181,7 +1181,7 @@ def test_custom_abstract_file():
     custom = CustomFile('/test/custom.txt', 'custom content')
     fs = OSAccess([custom])
 
-    result = Monty('from pathlib import Path; Path("/test/custom.txt").read_text()').run(os=fs).output
+    result = Monty('from pathlib import Path; Path("/test/custom.txt").read_text()').run(os=fs)
     assert result == snapshot('custom content')
 
 
@@ -1195,7 +1195,7 @@ def test_custom_abstract_file_mixed_with_memory_file():
 from pathlib import Path
 (Path('/test/custom.txt').read_text(), Path('/test/memory.txt').read_text())
 """
-    result = Monty(code).run(os=fs).output
+    result = Monty(code).run(os=fs)
     assert result == snapshot(('from custom', 'from memory'))
 
 
@@ -1252,7 +1252,7 @@ def test_root_directory():
 from pathlib import Path
 (Path('/').is_dir(), sorted([str(p) for p in Path('/').iterdir()]))
 """
-    result = Monty(code).run(os=fs).output
+    result = Monty(code).run(os=fs)
     assert result == snapshot((True, ['/file.txt']))
 
 
@@ -1263,7 +1263,7 @@ def test_empty_file():
 from pathlib import Path
 (Path('/empty.txt').read_text(), Path('/empty.txt').stat().st_size)
 """
-    result = Monty(code).run(os=fs).output
+    result = Monty(code).run(os=fs)
     assert result == snapshot(('', 0))
 
 
@@ -1274,7 +1274,7 @@ def test_large_nested_path():
 from pathlib import Path
 Path('/a/b/c/d/e/f/g/h/i/j/file.txt').read_text()
 """
-    result = Monty(code).run(os=fs).output
+    result = Monty(code).run(os=fs)
     assert result == snapshot('deep')
 
 
@@ -1282,5 +1282,5 @@ def test_special_characters_in_content():
     """Special characters in file content are handled correctly."""
     content = 'line1\nline2\ttab\r\nwindows'
     fs = OSAccess([MemoryFile('/special.txt', content=content)])
-    result = Monty('from pathlib import Path; Path("/special.txt").read_text()').run(os=fs).output
+    result = Monty('from pathlib import Path; Path("/special.txt").read_text()').run(os=fs)
     assert result == snapshot('line1\nline2\ttab\r\nwindows')

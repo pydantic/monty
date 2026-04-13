@@ -22,6 +22,7 @@ use std::sync::OnceLock;
 pub use exceptions::{MontyError, MontyRuntimeError, MontySyntaxError, MontyTypingError, PyFrame};
 pub use monty_cls::{PyFunctionSnapshot, PyFutureSnapshot, PyMonty, PyMontyComplete, PyNameLookupSnapshot};
 pub use mount::PyMountDir;
+pub use print_target::{PyCollectStreams, PyCollectString};
 use pyo3::prelude::*;
 pub use repl::PyMontyRepl;
 
@@ -53,6 +54,10 @@ mod _monty {
     use super::MontySyntaxError;
     #[pymodule_export]
     use super::MontyTypingError;
+    #[pymodule_export]
+    use super::PyCollectStreams as CollectStreams;
+    #[pymodule_export]
+    use super::PyCollectString as CollectString;
     #[pymodule_export]
     use super::PyFrame as Frame;
     #[pymodule_export]

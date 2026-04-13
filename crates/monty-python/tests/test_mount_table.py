@@ -78,13 +78,13 @@ def test_non_absolute_virtual_path(test_dir: Path):
 
 def test_read_text(test_dir: Path):
     md = MountDir('/data', str(test_dir), mode='read-only')
-    result = Monty("from pathlib import Path; Path('/data/hello.txt').read_text()").run(mount=md).output
+    result = Monty("from pathlib import Path; Path('/data/hello.txt').read_text()").run(mount=md)
     assert result == snapshot('hello world')
 
 
 def test_read_bytes(test_dir: Path):
     md = MountDir('/data', str(test_dir), mode='read-only')
-    result = Monty("from pathlib import Path; Path('/data/data.bin').read_bytes()").run(mount=md).output
+    result = Monty("from pathlib import Path; Path('/data/data.bin').read_bytes()").run(mount=md)
     assert result == snapshot(b'\x00\x01\x02')
 
 
@@ -97,7 +97,7 @@ exists_dir = Path('/data/subdir').exists()
 exists_missing = Path('/data/nope.txt').exists()
 (exists_file, exists_dir, exists_missing)
 """
-    result = Monty(code).run(mount=md).output
+    result = Monty(code).run(mount=md)
     assert result == snapshot((True, True, False))
 
 
@@ -108,7 +108,7 @@ from pathlib import Path
 (Path('/data/hello.txt').is_file(), Path('/data/hello.txt').is_dir(),
  Path('/data/subdir').is_file(), Path('/data/subdir').is_dir())
 """
-    result = Monty(code).run(mount=md).output
+    result = Monty(code).run(mount=md)
     assert result == snapshot((True, False, False, True))
 
 
@@ -118,7 +118,7 @@ def test_iterdir(test_dir: Path):
 from pathlib import Path
 sorted([p.name for p in Path('/data').iterdir()])
 """
-    result = Monty(code).run(mount=md).output
+    result = Monty(code).run(mount=md)
     assert result == snapshot(['data.bin', 'hello.txt', 'subdir'])
 
 
@@ -129,13 +129,13 @@ from pathlib import Path
 s = Path('/data/hello.txt').stat()
 s.st_size
 """
-    result = Monty(code).run(mount=md).output
+    result = Monty(code).run(mount=md)
     assert result == snapshot(11)
 
 
 def test_read_nested(test_dir: Path):
     md = MountDir('/data', str(test_dir), mode='read-only')
-    result = Monty("from pathlib import Path; Path('/data/subdir/nested.txt').read_text()").run(mount=md).output
+    result = Monty("from pathlib import Path; Path('/data/subdir/nested.txt').read_text()").run(mount=md)
     assert result == snapshot('nested content')
 
 
@@ -158,7 +158,7 @@ from pathlib import Path
 Path('/data/new.txt').write_text('written by monty')
 Path('/data/new.txt').read_text()
 """
-    result = Monty(code).run(mount=md).output
+    result = Monty(code).run(mount=md)
     assert result == snapshot('written by monty')
     # Verify it was actually written to the host filesystem
     assert (test_dir / 'new.txt').read_text() == 'written by monty'
@@ -171,7 +171,7 @@ from pathlib import Path
 Path('/data/overlay_file.txt').write_text('overlay content')
 Path('/data/overlay_file.txt').read_text()
 """
-    result = Monty(code).run(mount=md).output
+    result = Monty(code).run(mount=md)
     assert result == snapshot('overlay content')
     # Verify host filesystem was NOT modified
     assert not (test_dir / 'overlay_file.txt').exists()
@@ -179,14 +179,14 @@ Path('/data/overlay_file.txt').read_text()
 
 def test_overlay_read_falls_through(test_dir: Path):
     md = MountDir('/data', str(test_dir), mode='overlay')
-    result = Monty("from pathlib import Path; Path('/data/hello.txt').read_text()").run(mount=md).output
+    result = Monty("from pathlib import Path; Path('/data/hello.txt').read_text()").run(mount=md)
     assert result == snapshot('hello world')
 
 
 def test_overlay_persists_across_runs(test_dir: Path):
     md = MountDir('/data', str(test_dir), mode='overlay')
     Monty("from pathlib import Path; Path('/data/persistent.txt').write_text('run1')").run(mount=md)
-    result = Monty("from pathlib import Path; Path('/data/persistent.txt').read_text()").run(mount=md).output
+    result = Monty("from pathlib import Path; Path('/data/persistent.txt').read_text()").run(mount=md)
     assert result == snapshot('run1')
 
 
@@ -205,7 +205,7 @@ Path('/data/newdir').rmdir()
 after = Path('/data/newdir').exists()
 (exists, after)
 """
-    result = Monty(code).run(mount=md).output
+    result = Monty(code).run(mount=md)
     assert result == snapshot((True, False))
 
 
@@ -216,7 +216,7 @@ from pathlib import Path
 Path('/data/hello.txt').unlink()
 Path('/data/hello.txt').exists()
 """
-    result = Monty(code).run(mount=md).output
+    result = Monty(code).run(mount=md)
     assert result is False
     # Host file should still exist (overlay mode)
     assert (test_dir / 'hello.txt').exists()
@@ -229,13 +229,13 @@ from pathlib import Path
 Path('/data/hello.txt').rename('/data/renamed.txt')
 (Path('/data/hello.txt').exists(), Path('/data/renamed.txt').read_text())
 """
-    result = Monty(code).run(mount=md).output
+    result = Monty(code).run(mount=md)
     assert result == snapshot((False, 'hello world'))
 
 
 def test_resolve(test_dir: Path):
     md = MountDir('/data', str(test_dir), mode='read-only')
-    result = Monty("from pathlib import Path; str(Path('/data/subdir/../hello.txt').resolve())").run(mount=md).output
+    result = Monty("from pathlib import Path; str(Path('/data/subdir/../hello.txt').resolve())").run(mount=md)
     assert result == snapshot('/data/hello.txt')
 
 
@@ -270,7 +270,7 @@ def test_fallback_for_getenv(test_dir: Path):
         return None
 
     md = MountDir('/data', str(test_dir), mode='read-only')
-    result = Monty("import os; os.getenv('MY_VAR')").run(mount=md, os=fallback).output
+    result = Monty("import os; os.getenv('MY_VAR')").run(mount=md, os=fallback)
     assert result == snapshot('my_value')
 
 
@@ -301,7 +301,7 @@ a = Path('/ro/hello.txt').read_text()
 b = Path('/rw/file2.txt').read_text()
 (a, b)
 """
-        result = Monty(code).run(mount=mounts).output
+        result = Monty(code).run(mount=mounts)
         assert result == snapshot(('hello world', 'from mount2'))
 
 
@@ -314,7 +314,7 @@ def test_repl_feed_run_with_mount(test_dir: Path):
     md = MountDir('/data', str(test_dir), mode='read-only')
     repl = MontyRepl()
     repl.feed_run('from pathlib import Path', mount=md)
-    result = repl.feed_run("Path('/data/hello.txt').read_text()", mount=md).output
+    result = repl.feed_run("Path('/data/hello.txt').read_text()", mount=md)
     assert result == snapshot('hello world')
 
 
@@ -324,7 +324,7 @@ def test_repl_overlay_write_persists_across_feeds(test_dir: Path):
     repl = MontyRepl()
     repl.feed_run('from pathlib import Path', mount=md)
     repl.feed_run("Path('/data/new.txt').write_text('from repl')", mount=md)
-    result = repl.feed_run("Path('/data/new.txt').read_text()", mount=md).output
+    result = repl.feed_run("Path('/data/new.txt').read_text()", mount=md)
     assert result == snapshot('from repl')
     # Host not modified
     assert not (test_dir / 'new.txt').exists()
@@ -337,7 +337,7 @@ def test_repl_overlay_overwrite_persists(test_dir: Path):
     repl.feed_run('from pathlib import Path', mount=md)
     repl.feed_run("Path('/data/hello.txt').write_text('version1')", mount=md)
     repl.feed_run("Path('/data/hello.txt').write_text('version2')", mount=md)
-    result = repl.feed_run("Path('/data/hello.txt').read_text()", mount=md).output
+    result = repl.feed_run("Path('/data/hello.txt').read_text()", mount=md)
     assert result == snapshot('version2')
     # Original host file unchanged
     assert (test_dir / 'hello.txt').read_text() == 'hello world'
@@ -349,7 +349,7 @@ def test_repl_overlay_delete_persists(test_dir: Path):
     repl = MontyRepl()
     repl.feed_run('from pathlib import Path', mount=md)
     repl.feed_run("Path('/data/hello.txt').unlink()", mount=md)
-    result = repl.feed_run("Path('/data/hello.txt').exists()", mount=md).output
+    result = repl.feed_run("Path('/data/hello.txt').exists()", mount=md)
     assert result is False
     # Host file still exists
     assert (test_dir / 'hello.txt').exists()
@@ -362,7 +362,7 @@ def test_repl_overlay_mkdir_persists(test_dir: Path):
     repl.feed_run('from pathlib import Path', mount=md)
     repl.feed_run("Path('/data/mydir').mkdir()", mount=md)
     repl.feed_run("Path('/data/mydir/file.txt').write_text('nested')", mount=md)
-    result = repl.feed_run("Path('/data/mydir/file.txt').read_text()", mount=md).output
+    result = repl.feed_run("Path('/data/mydir/file.txt').read_text()", mount=md)
     assert result == snapshot('nested')
     assert not (test_dir / 'mydir').exists()
 
@@ -373,7 +373,7 @@ def test_repl_overlay_iterdir_sees_overlay_files(test_dir: Path):
     repl = MontyRepl()
     repl.feed_run('from pathlib import Path', mount=md)
     repl.feed_run("Path('/data/extra.txt').write_text('extra')", mount=md)
-    result = repl.feed_run("sorted([p.name for p in Path('/data').iterdir()])", mount=md).output
+    result = repl.feed_run("sorted([p.name for p in Path('/data').iterdir()])", mount=md)
     assert result == snapshot(['data.bin', 'extra.txt', 'hello.txt', 'subdir'])
 
 
@@ -385,7 +385,7 @@ def test_repl_overlay_shared_between_repl_and_monty(test_dir: Path):
     repl.feed_run('from pathlib import Path', mount=md)
     repl.feed_run("Path('/data/shared.txt').write_text('from repl')", mount=md)
     # Read via Monty.run()
-    result = Monty("from pathlib import Path; Path('/data/shared.txt').read_text()").run(mount=md).output
+    result = Monty("from pathlib import Path; Path('/data/shared.txt').read_text()").run(mount=md)
     assert result == snapshot('from repl')
 
 
@@ -395,7 +395,7 @@ def test_repl_read_write_mount(test_dir: Path):
     repl = MontyRepl()
     repl.feed_run('from pathlib import Path', mount=md)
     repl.feed_run("Path('/data/rw_file.txt').write_text('written')", mount=md)
-    result = repl.feed_run("Path('/data/rw_file.txt').read_text()", mount=md).output
+    result = repl.feed_run("Path('/data/rw_file.txt').read_text()", mount=md)
     assert result == snapshot('written')
     # Host was actually modified
     assert (test_dir / 'rw_file.txt').read_text() == 'written'

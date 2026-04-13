@@ -34,7 +34,7 @@ def test_resource_limits_repr():
 def test_run_with_limits():
     m = pydantic_monty.Monty('1 + 1')
     limits = pydantic_monty.ResourceLimits(max_duration_secs=5.0)
-    assert m.run(limits=limits).output == snapshot(2)
+    assert m.run(limits=limits) == snapshot(2)
 
 
 def test_recursion_limit():
@@ -64,7 +64,7 @@ recurse(5)
 """
     m = pydantic_monty.Monty(code)
     limits = pydantic_monty.ResourceLimits(max_recursion_depth=100)
-    assert m.run(limits=limits).output == snapshot(5)
+    assert m.run(limits=limits) == snapshot(5)
 
 
 def test_allocation_limit():
@@ -100,7 +100,7 @@ len(result)
 def test_limits_with_inputs():
     m = pydantic_monty.Monty('x * 2', inputs=['x'])
     limits = pydantic_monty.ResourceLimits(max_duration_secs=5.0)
-    assert m.run(inputs={'x': 21}, limits=limits).output == snapshot(42)
+    assert m.run(inputs={'x': 21}, limits=limits) == snapshot(42)
 
 
 def test_limits_wrong_type_raises_error():
@@ -112,7 +112,7 @@ def test_limits_wrong_type_raises_error():
 def test_limits_none_value_allowed():
     m = pydantic_monty.Monty('1 + 1')
     # None is valid to explicitly disable a limit
-    assert m.run(limits={'max_allocations': None}).output == snapshot(2)  # pyright: ignore[reportArgumentType]
+    assert m.run(limits={'max_allocations': None}) == snapshot(2)  # pyright: ignore[reportArgumentType]
 
 
 def test_signal_alarm_custom_error():
@@ -224,7 +224,7 @@ def test_small_operations_within_limit():
     """Smaller operations should succeed even with limits."""
     m = pydantic_monty.Monty('2 ** 1000')
     limits = pydantic_monty.ResourceLimits(max_memory=1_000_000)
-    result = m.run(limits=limits).output
+    result = m.run(limits=limits)
     assert result > 0
 
 

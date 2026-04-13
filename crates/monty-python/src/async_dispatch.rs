@@ -33,7 +33,6 @@ use crate::{
         CallResult, ExternalFunctionRegistry, dispatch_method_call_or_coroutine, py_err_to_ext_result,
         py_obj_to_ext_result,
     },
-    monty_cls::PyMontyComplete,
     print_target::PrintTarget,
     repl::{EitherRepl, FromCoreRepl, PyMontyRepl},
 };
@@ -138,9 +137,7 @@ pub(crate) async fn dispatch_loop_run<T: ResourceTracker + Send + 'static>(
     loop {
         match progress {
             RunProgress::Complete(result) => {
-                return Python::attach(|py| {
-                    PyMontyComplete::create(py, &result, &dc_registry, &print_target).map(Bound::unbind)
-                });
+                return Python::attach(|py| monty_to_py(py, &result, &dc_registry));
             }
             RunProgress::FunctionCall(call) => {
                 let call_result = dispatch_function_call(
@@ -155,40 +152,38 @@ pub(crate) async fn dispatch_loop_run<T: ResourceTracker + Send + 'static>(
                 match call_result {
                     CallResult::Sync(result) => {
                         let target = print_target.clone_handle_detached();
-                        progress = spawn_resume!(call, result, target).map_err(|e| run_err(&print_target, e))?;
+                        progress = spawn_resume!(call, result, target)
+                            .map_err(|e| Python::attach(|py| MontyError::new_err(py, e)))?;
                     }
                     CallResult::Coroutine(coro) => {
                         let call_id = call.call_id;
                         spawn_coroutine_task(&mut join_set, call_id, coro, &dc_registry)?;
                         let target = print_target.clone_handle_detached();
                         progress = spawn_resume!(call, ExtFunctionResult::Future(call_id), target)
-                            .map_err(|e| run_err(&print_target, e))?;
+                            .map_err(|e| Python::attach(|py| MontyError::new_err(py, e)))?;
                     }
                 }
             }
             RunProgress::OsCall(call) => {
                 let result = dispatch_os_call_py(call.function, &call.args, &call.kwargs, os.as_ref(), &dc_registry);
                 let target = print_target.clone_handle_detached();
-                progress = spawn_resume!(call, result, target).map_err(|e| run_err(&print_target, e))?;
+                progress =
+                    spawn_resume!(call, result, target).map_err(|e| Python::attach(|py| MontyError::new_err(py, e)))?;
             }
             RunProgress::NameLookup(lookup) => {
                 let result = resolve_name_lookup(&lookup.name, external_functions.as_ref());
                 let target = print_target.clone_handle_detached();
-                progress = spawn_resume!(lookup, result, target).map_err(|e| run_err(&print_target, e))?;
+                progress = spawn_resume!(lookup, result, target)
+                    .map_err(|e| Python::attach(|py| MontyError::new_err(py, e)))?;
             }
             RunProgress::ResolveFutures(state) => {
                 let results = wait_for_futures(&mut join_set, state.pending_call_ids()).await?;
                 let target = print_target.clone_handle_detached();
-                progress = spawn_resume!(state, results, target).map_err(|e| run_err(&print_target, e))?;
+                progress = spawn_resume!(state, results, target)
+                    .map_err(|e| Python::attach(|py| MontyError::new_err(py, e)))?;
             }
         }
     }
-}
-
-/// Builds a `MontyRuntimeError` for an error raised during async dispatch,
-/// attaching the collected print buffer (if any) for the `'collect-streams' or 'collect-string'` print mode.
-fn run_err(print_target: &PrintTarget, err: MontyException) -> PyErr {
-    Python::attach(|py| print_target.drain_into_err(py, err))
 }
 
 /// Drives the async dispatch loop for a REPL `MontyRepl.feed_run_async()` call.
@@ -224,7 +219,7 @@ where
                     let owner = repl_owner.bind(py).get();
                     owner.put_repl_after_commit(EitherRepl::from_core(repl));
                     cleanup_notifier.finish();
-                    PyMontyComplete::create(py, &value, &dc_registry, &print_target).map(Bound::unbind)
+                    monty_to_py(py, &value, &dc_registry)
                 });
             }
             ReplProgress::FunctionCall(call) => {
@@ -619,7 +614,7 @@ where
     let py_err = Python::attach(|py| {
         let owner = repl_owner.bind(py).get();
         owner.put_repl_after_rollback(EitherRepl::from_core(err.repl));
-        MontyError::new_err(py, err.error, None)
+        MontyError::new_err(py, err.error)
     });
     cleanup_notifier.finish();
     py_err

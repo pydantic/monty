@@ -83,8 +83,7 @@ impl PyMonty {
         }
 
         // Create the snapshot (parses the code)
-        let runner =
-            MontyRun::new(code, script_name, input_names.clone()).map_err(|e| MontyError::new_err(py, e, None))?;
+        let runner = MontyRun::new(code, script_name, input_names.clone()).map_err(|e| MontyError::new_err(py, e))?;
 
         Ok(Self {
             runner,
@@ -125,12 +124,10 @@ impl PyMonty {
         py_type_check(py, self.runner.code(), &self.script_name, prefix_code, "type_stubs.pyi")
     }
 
-    /// Executes the code and returns a `MontyComplete`.
+    /// Executes the code and returns the result.
     ///
     /// # Returns
-    /// A `MontyComplete` whose `output` field holds the result of the last expression,
-    /// and whose `print_output` field holds the collected prints when
-    /// `print_callback='collect-streams' or 'collect-string'` was used (otherwise `None`).
+    /// The result of the last expression in the code.
     ///
     /// # Raises
     /// Various Python exceptions matching what the code would raise
@@ -153,9 +150,9 @@ impl PyMonty {
         // Build the internal mount table from mount + os parameters.
         let os_handler = OsHandler::from_run_args(py, mount, os)?;
 
-        // Resolve the print target from the Python argument once; the resulting
-        // value is threaded through the VM call chain and, for `'collect-streams' or 'collect-string'` mode,
-        // its buffer is surfaced on the returned `MontyComplete`.
+        // Resolve the print target from the Python argument once; the
+        // resulting value is threaded through the VM call chain so collector
+        // objects keep accumulating across transitions.
         let print_target = PrintTarget::from_py(print_callback)?;
 
         // Run with appropriate tracker type (must branch due to different generic types)
@@ -185,14 +182,14 @@ impl PyMonty {
         let runner = self.runner.clone();
 
         // Each `start` transition builds its own writer via `with_writer`, so
-        // the collect-buffer mutex is only held during `runner.start` and
-        // released before `drain_py` runs on the error path.
+        // any collector buffer is only locked for the duration of
+        // `runner.start`.
         macro_rules! start_impl {
             ($tracker:expr) => {{
                 match py.detach(|| print_target.with_writer(|writer| runner.start(input_values, $tracker, writer))) {
                     Ok(p) => p,
                     Err(e) => {
-                        return Err(print_target.drain_into_err(py, e));
+                        return Err(MontyError::new_err(py, e));
                     }
                 }
             }};
@@ -372,7 +369,7 @@ impl PyMonty {
                 start_target.with_writer(|writer| runner.start(input_values, tracker, writer))
             })
             .await?
-            .map_err(|e| Python::attach(|py| print_target.drain_into_err(py, e)))?;
+            .map_err(|e| Python::attach(|py| MontyError::new_err(py, e)))?;
 
             let result = dispatch_loop_run(progress, external_functions, os, dc_registry, print_target).await;
             cancellation_guard.disarm();
@@ -453,11 +450,9 @@ impl PyMonty {
         os_handler: Option<OsHandler>,
         print_target: PrintTarget,
     ) -> PyResult<Bound<'py, PyAny>> {
-        // Each VM transition builds its own `PrintWriter` via `print_target.with_writer`
-        // (inside the detached closure), which only holds the collect-buffer
-        // mutex for the duration of that transition. Between transitions the
-        // lock is free, so `print_target.drain_py` (used on errors) can acquire
-        // it without deadlocking.
+        // Each VM transition builds its own `PrintWriter` via
+        // `print_target.with_writer`, which only holds any collector lock for
+        // the duration of that transition.
 
         // Check if any inputs contain dataclasses (including nested in containers) —
         // if so, we need the iterative path because method calls could happen lazily
@@ -468,8 +463,8 @@ impl PyMonty {
             let result =
                 py.detach(|| print_target.with_writer(|writer| self.runner.run(input_values, tracker, writer)));
             return match result {
-                Ok(v) => PyMontyComplete::create(py, &v, &self.dc_registry, &print_target),
-                Err(err) => Err(print_target.drain_into_err(py, err)),
+                Ok(v) => monty_to_py(py, &v, &self.dc_registry).map(|obj| obj.into_bound(py)),
+                Err(err) => Err(MontyError::new_err(py, err)),
             };
         }
 
@@ -484,9 +479,7 @@ impl PyMonty {
             }
         };
 
-        // Convert a VM `MontyException` into a `MontyRuntimeError`, attaching
-        // the currently-collected print buffer for `'collect-streams' or 'collect-string'` runs.
-        let to_err = |py: Python<'_>, e| print_target.drain_into_err(py, e);
+        let to_err = |py: Python<'_>, e| MontyError::new_err(py, e);
 
         // Clone the runner since start() consumes it - allows reuse of the parsed code
         let runner = self.runner.clone();
@@ -503,7 +496,7 @@ impl PyMonty {
             match progress {
                 RunProgress::Complete(result) => {
                     put_back(mount_table);
-                    return PyMontyComplete::create(py, &result, &self.dc_registry, &print_target);
+                    return monty_to_py(py, &result, &self.dc_registry).map(|obj| obj.into_bound(py));
                 }
                 RunProgress::FunctionCall(call) => {
                     // Dataclass method calls have method_call=true and the first arg is the instance
@@ -618,7 +611,7 @@ where
     EitherFutureSnapshot: FromResolveFutures<T>,
 {
     match progress {
-        RunProgress::Complete(result) => PyMontyComplete::create(py, &result, &dc_registry, &print_callback),
+        RunProgress::Complete(result) => PyMontyComplete::create(py, &result, &dc_registry),
         RunProgress::FunctionCall(call) => {
             PyFunctionSnapshot::function_call(py, call, script_name, print_callback, dc_registry)
         }
@@ -653,7 +646,7 @@ where
     match progress {
         ReplProgress::Complete { repl, value } => {
             repl_owner.get().put_repl_after_commit(EitherRepl::from_core(repl));
-            PyMontyComplete::create(py, &value, &dc_registry, &print_callback)
+            PyMontyComplete::create(py, &value, &dc_registry)
         }
         ReplProgress::FunctionCall(call) => {
             PyFunctionSnapshot::repl_function_call(py, call, script_name, print_callback, dc_registry, repl_owner)
@@ -1014,16 +1007,6 @@ impl PyFunctionSnapshot {
 
 #[pymethods]
 impl PyFunctionSnapshot {
-    /// Collected print output when the run was started with `print_callback='collect-streams' or 'collect-string'`.
-    ///
-    /// Live view: reflects everything printed up to the moment this getter is
-    /// called, without draining the buffer. Further `resume()` calls continue
-    /// to append. `None` for other print modes.
-    #[getter]
-    fn print_output(&self, py: Python<'_>) -> PyResult<Option<Py<PyAny>>> {
-        self.print_callback.snapshot_py(py)
-    }
-
     /// Resumes execution with either a return value, exception or future.
     ///
     /// Exactly one of `return_value`, `exception` or `future` must be provided as a keyword argument.
@@ -1046,10 +1029,7 @@ impl PyFunctionSnapshot {
         };
         let external_result = extract_external_result(py, kwargs, ARGS_ERROR, &self.dc_registry, self.call_id)?;
 
-        // Each VM resume builds its writer via `with_writer` inside the
-        // `py.detach` closure, so the collect-buffer lock is only held during
-        // the transition and `drain_py` on the error path is safe.
-        let to_err = |py: Python<'_>, e| self.print_callback.drain_into_err(py, e);
+        let to_err = |py: Python<'_>, e| MontyError::new_err(py, e);
 
         let progress = match snapshot {
             EitherFunctionSnapshot::NoLimitFn(call) => {
@@ -1285,13 +1265,6 @@ impl PyNameLookupSnapshot {
 
 #[pymethods]
 impl PyNameLookupSnapshot {
-    /// Live view of the collect buffer when `print_callback='collect-streams' or 'collect-string'`;
-    /// `None` for other print modes. See `FunctionSnapshot.print_output`.
-    #[getter]
-    fn print_output(&self, py: Python<'_>) -> PyResult<Option<Py<PyAny>>> {
-        self.print_callback.snapshot_py(py)
-    }
-
     /// Resumes execution with either a value or undefined.
     #[pyo3(signature = (**kwargs))]
     pub fn resume<'py>(&self, py: Python<'py>, kwargs: Option<&Bound<'_, PyDict>>) -> PyResult<Bound<'py, PyAny>> {
@@ -1309,7 +1282,7 @@ impl PyNameLookupSnapshot {
             NameLookupResult::Undefined
         };
 
-        let to_err = |py: Python<'_>, e| self.print_callback.drain_into_err(py, e);
+        let to_err = |py: Python<'_>, e| MontyError::new_err(py, e);
 
         let progress = match snapshot {
             EitherLookupSnapshot::NoLimit(snapshot) => {
@@ -1507,13 +1480,6 @@ impl PyFutureSnapshot {
 
 #[pymethods]
 impl PyFutureSnapshot {
-    /// Live view of the collect buffer when `print_callback='collect-streams' or 'collect-string'`;
-    /// `None` for other print modes. See `FunctionSnapshot.print_output`.
-    #[getter]
-    fn print_output(&self, py: Python<'_>) -> PyResult<Option<Py<PyAny>>> {
-        self.print_callback.snapshot_py(py)
-    }
-
     /// Resumes execution with results for one or more futures.
     #[pyo3(signature = (results))]
     pub fn resume<'py>(&self, py: Python<'py>, results: &Bound<'_, PyDict>) -> PyResult<Bound<'py, PyAny>> {
@@ -1536,7 +1502,7 @@ impl PyFutureSnapshot {
             })
             .collect::<PyResult<Vec<_>>>()?;
 
-        let to_err = |py: Python<'_>, e| self.print_callback.drain_into_err(py, e);
+        let to_err = |py: Python<'_>, e| MontyError::new_err(py, e);
 
         let progress = match snapshot {
             EitherFutureSnapshot::NoLimit(snapshot) => {
@@ -1633,43 +1599,28 @@ impl PyFutureSnapshot {
     }
 }
 
-/// Terminal result of a Monty run — produced by `Monty.run`, `Monty.run_async`,
-/// successful `snapshot.resume()`, and the REPL `feed_*` equivalents.
+/// Terminal result of an iterative Monty run.
 ///
-/// Besides the final `output` value, when the run was started with
-/// `print_callback='collect-streams'` this object's `print_output` attribute
-/// carries the list of `(stream, text)` tuples captured during execution;
-/// with `print_callback='collect-string'` it carries the concatenated `str`.
-/// For any other print mode `print_output` is `None`.
+/// `Monty.start()` and the snapshot `resume()` methods yield `MontyComplete`
+/// when execution finishes without requiring the direct `run()` APIs to change
+/// their return type.
 #[pyclass(name = "MontyComplete", module = "pydantic_monty", frozen)]
 pub struct PyMontyComplete {
     /// Value produced by the last expression of the run.
     #[pyo3(get)]
     pub output: Py<PyAny>,
-    /// Captured print output — `list[tuple[str, str]]` for `'collect-streams'`,
-    /// `str` for `'collect-string'`, `None` for other print modes.
-    #[pyo3(get)]
-    pub print_output: Option<Py<PyAny>>,
     // TODO we might want to add stats on execution here like time, allocations, etc.
 }
 
 impl PyMontyComplete {
-    /// Builds a `MontyComplete`, draining the collect buffer if one is active.
-    ///
-    /// `print_target` is the target used for this run; for the collect variants
-    /// its buffer is moved onto the returned object (the target is left with an
-    /// empty buffer), otherwise `print_output` is `None`.
+    /// Builds a `MontyComplete` from the final Monty output value.
     pub(crate) fn create<'py>(
         py: Python<'py>,
         output: &MontyObject,
         dc_registry: &DcRegistry,
-        print_target: &PrintTarget,
     ) -> PyResult<Bound<'py, PyAny>> {
         let output = monty_to_py(py, output, dc_registry)?;
-        let slf = Self {
-            output,
-            print_output: print_target.drain_py(py)?,
-        };
+        let slf = Self { output };
         slf.into_bound_py_any(py)
     }
 }
@@ -1677,17 +1628,7 @@ impl PyMontyComplete {
 #[pymethods]
 impl PyMontyComplete {
     fn __repr__(&self, py: Python<'_>) -> PyResult<String> {
-        let output_repr = self.output.bind(py).repr()?;
-        match &self.print_output {
-            // Let Python render the collect buffer — the repr of a list of
-            // tuples or a plain str is already informative, and this avoids
-            // baking variant-specific branches into the Rust formatter.
-            Some(obj) => Ok(format!(
-                "MontyComplete(output={output_repr}, print_output={})",
-                obj.bind(py).repr()?
-            )),
-            None => Ok(format!("MontyComplete(output={output_repr})")),
-        }
+        Ok(format!("MontyComplete(output={})", self.output.bind(py).repr()?))
     }
 }
 
@@ -1782,7 +1723,7 @@ where
     repl_owner
         .get()
         .put_repl_after_rollback(EitherRepl::from_core(err.repl));
-    MontyError::new_err(py, err.error, None)
+    MontyError::new_err(py, err.error)
 }
 
 /// Handles an OS call via a Rust [`MountTable`], falling through to the

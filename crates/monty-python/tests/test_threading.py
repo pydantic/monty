@@ -25,7 +25,7 @@ x
 """
     m = pydantic_monty.Monty(code)
     start = time.perf_counter()
-    result = m.run().output
+    result = m.run()
     diff = time.perf_counter() - start
     assert result == 200_000
 
@@ -56,7 +56,7 @@ print(x)
 
     m = pydantic_monty.Monty(code)
     start = time.perf_counter()
-    result = m.run(print_callback=print_callback).output
+    result = m.run(print_callback=print_callback)
     diff = time.perf_counter() - start
     assert result is None
     assert captured == snapshot(['stdout: 200000', 'stdout: \n'])
@@ -90,7 +90,7 @@ x
 """
     m = pydantic_monty.Monty(code)
     start = time.perf_counter()
-    result = m.run(external_functions={'double': double}).output
+    result = m.run(external_functions={'double': double})
     diff = time.perf_counter() - start
     assert result == 300_000
 

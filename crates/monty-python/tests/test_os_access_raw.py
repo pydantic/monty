@@ -190,7 +190,7 @@ def test_abstract_filesystem_exists():
     fs.files['/test.txt'] = b'hello'
 
     m = pydantic_monty.Monty('from pathlib import Path; Path("/test.txt").exists()')
-    result = m.run(os=fs).output
+    result = m.run(os=fs)
 
     assert result is True
 
@@ -200,7 +200,7 @@ def test_abstract_filesystem_exists_missing():
     fs = TestOS()
 
     m = pydantic_monty.Monty('from pathlib import Path; Path("/missing.txt").exists()')
-    result = m.run(os=fs).output
+    result = m.run(os=fs)
 
     assert result is False
 
@@ -216,7 +216,7 @@ from pathlib import Path
 (Path('/file.txt').is_file(), Path('/mydir').is_file())
 """
     m = pydantic_monty.Monty(code)
-    result = m.run(os=fs).output
+    result = m.run(os=fs)
 
     assert result == snapshot((True, False))
 
@@ -232,7 +232,7 @@ from pathlib import Path
 (Path('/file.txt').is_dir(), Path('/mydir').is_dir())
 """
     m = pydantic_monty.Monty(code)
-    result = m.run(os=fs).output
+    result = m.run(os=fs)
 
     assert result == snapshot((False, True))
 
@@ -243,7 +243,7 @@ def test_abstract_filesystem_read_text():
     fs.files['/hello.txt'] = b'Hello, World!'
 
     m = pydantic_monty.Monty('from pathlib import Path; Path("/hello.txt").read_text()')
-    result = m.run(os=fs).output
+    result = m.run(os=fs)
 
     assert result == snapshot('Hello, World!')
 
@@ -265,7 +265,7 @@ def test_abstract_filesystem_read_bytes():
     fs.files['/data.bin'] = b'\x00\x01\x02\x03'
 
     m = pydantic_monty.Monty('from pathlib import Path; Path("/data.bin").read_bytes()')
-    result = m.run(os=fs).output
+    result = m.run(os=fs)
 
     assert result == snapshot(b'\x00\x01\x02\x03')
 
@@ -286,7 +286,7 @@ s = Path('/file.txt').stat()
 (s.st_size, s.st_mode)
 """
     m = pydantic_monty.Monty(code)
-    result = m.run(os=fs).output
+    result = m.run(os=fs)
 
     assert result == snapshot((11, 0o100644))
 
@@ -302,7 +302,7 @@ s = Path('/mydir').stat()
 s.st_mode
 """
     m = pydantic_monty.Monty(code)
-    result = m.run(os=fs).output
+    result = m.run(os=fs)
 
     assert result == snapshot(0o040755)
 
@@ -343,7 +343,7 @@ from pathlib import Path
 list(Path('/mydir').iterdir())
 """
     m = pydantic_monty.Monty(code)
-    result = m.run(os=fs).output
+    result = m.run(os=fs)
 
     # Result is a list of Path objects with child names joined to parent
     assert len(result) == 3
@@ -361,7 +361,7 @@ from pathlib import Path
 list(Path('/empty').iterdir())
 """
     m = pydantic_monty.Monty(code)
-    result = m.run(os=fs).output
+    result = m.run(os=fs)
 
     assert result == snapshot([])
 
@@ -380,7 +380,7 @@ from pathlib import Path
 str(Path('/foo/bar/../baz').resolve())
 """
     m = pydantic_monty.Monty(code)
-    result = m.run(os=fs).output
+    result = m.run(os=fs)
 
     assert result == snapshot('/foo/baz')
 
@@ -394,7 +394,7 @@ from pathlib import Path
 str(Path('/already/absolute').absolute())
 """
     m = pydantic_monty.Monty(code)
-    result = m.run(os=fs).output
+    result = m.run(os=fs)
 
     assert result == snapshot('/already/absolute')
 
@@ -408,7 +408,7 @@ import os
 os.getenv('TEST_VAR')
 """
     m = pydantic_monty.Monty(code)
-    result = m.run(os=fs).output
+    result = m.run(os=fs)
 
     assert result == snapshot('test_value')
 
@@ -422,7 +422,7 @@ import os
 os.getenv('NONEXISTENT')
 """
     m = pydantic_monty.Monty(code)
-    result = m.run(os=fs).output
+    result = m.run(os=fs)
 
     assert result is None
 
@@ -436,7 +436,7 @@ import os
 os.getenv('NONEXISTENT', 'my_default')
 """
     m = pydantic_monty.Monty(code)
-    result = m.run(os=fs).output
+    result = m.run(os=fs)
 
     assert result == snapshot('my_default')
 
@@ -471,7 +471,7 @@ def test_dir_stat_helper():
 
 def test_path_monty_to_py():
     m = pydantic_monty.Monty('from pathlib import Path; Path("/foo/bar/thing.txt")')
-    result = m.run().output
+    result = m.run()
     assert result == PurePosixPath('/foo/bar/thing.txt')
     assert type(result) is PurePosixPath
 
@@ -479,5 +479,5 @@ def test_path_monty_to_py():
 def test_path_py_to_monty():
     p = PurePosixPath('/foo/bar/thing.txt')
     m = pydantic_monty.Monty('f"type={type(p)} {p=}"', inputs=['p'])
-    result = m.run(inputs={'p': p}).output
+    result = m.run(inputs={'p': p})
     assert result == snapshot("type=<class 'PosixPath'> p=PosixPath('/foo/bar/thing.txt')")

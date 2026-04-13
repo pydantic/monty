@@ -15,7 +15,7 @@ def test_monty_dump_load_roundtrip():
     assert len(data) > 0
 
     m2 = pydantic_monty.Monty.load(data)
-    assert m2.run(inputs={'x': 41}).output == snapshot(42)
+    assert m2.run(inputs={'x': 41}) == snapshot(42)
 
 
 def test_monty_dump_load_preserves_script_name():
@@ -31,7 +31,7 @@ def test_monty_dump_load_preserves_inputs():
     data = m.dump()
 
     m2 = pydantic_monty.Monty.load(data)
-    assert m2.run(inputs={'x': 1, 'y': 2}).output == snapshot(3)
+    assert m2.run(inputs={'x': 1, 'y': 2}) == snapshot(3)
 
 
 def test_monty_dump_load_preserves_external_functions():
@@ -39,7 +39,7 @@ def test_monty_dump_load_preserves_external_functions():
     data = m.dump()
 
     m2 = pydantic_monty.Monty.load(data)
-    result = m2.run(external_functions={'func': lambda: 42}).output
+    result = m2.run(external_functions={'func': lambda: 42})
     assert result == snapshot(42)
 
 
@@ -190,7 +190,7 @@ def test_monty_dump_load_various_outputs(code: str, expected: Any):
     m = pydantic_monty.Monty(code)
     data = m.dump()
     m2 = pydantic_monty.Monty.load(data)
-    assert m2.run().output == expected
+    assert m2.run() == expected
 
 
 def test_progress_dump_load_with_limits():
@@ -220,7 +220,7 @@ def test_monty_load_dataclass():
 
     m2 = pydantic_monty.Monty.load(data)
     m2.register_dataclass(Person)
-    result = m2.run(inputs={'x': Person(name='Alice', age=30)}).output
+    result = m2.run(inputs={'x': Person(name='Alice', age=30)})
     assert isinstance(result, Person)
 
 

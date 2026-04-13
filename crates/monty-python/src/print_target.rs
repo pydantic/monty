@@ -5,58 +5,128 @@
 //! - `None` — print fragments go to the process stdout (default).
 //! - A callable `(stream, text) -> None` — each fragment is forwarded to the
 //!   callback. Used e.g. to tee output to a logger.
-//! - The string `'collect-streams'` — fragments accumulate into an internal
-//!   buffer of `(stream, text)` tuples. Exposed via `MontyComplete.print_output`
-//!   (and the equivalent on `MontyRuntimeError` / snapshots) as
-//!   `list[tuple[Literal['stdout','stderr'], str]]`.
-//! - The string `'collect-string'` — fragments accumulate into a single flat
-//!   `String`, in emit order, with no stream labels. Exposed as a plain `str`
-//!   for callers that just want the raw printed output.
-//!
-//! Both collect modes surface their buffer on success (via `MontyComplete`),
-//! on failure (via `MontyRuntimeError.print_output`), and are live-visible on
-//! `FunctionSnapshot` / `NameLookupSnapshot` / `FutureSnapshot` for inspection
-//! mid-run.
+//! - A `CollectStreams()` instance — fragments accumulate into a shared buffer
+//!   of `(stream, text)` tuples exposed via `CollectStreams.output`.
+//! - A `CollectString()` instance — fragments accumulate into a shared flat
+//!   `String` exposed via `CollectString.output`.
 //!
 //! This module encapsulates that dispatch. The rest of the bindings thread a
-//! [`PrintTarget`] value through `start`/`resume`/`run`/`run_async` in place of
-//! the previous `Option<Py<PyAny>>` and delegate writer construction here.
+//! [`PrintTarget`] value through `start`/`resume`/`run`/`run_async`, while the
+//! collector objects themselves remain the single public place that exposes the
+//! captured output.
 
 use std::{
     borrow::Cow,
-    mem,
     sync::{Arc, Mutex, MutexGuard, PoisonError},
 };
 
 use monty::{MontyException, PrintStream, PrintWriter, PrintWriterCallback};
 use pyo3::{
+    PyRef,
     exceptions::PyTypeError,
     intern,
     prelude::*,
     types::{PyList, PyString, PyTuple},
 };
 
-use crate::exceptions::{MontyError, exc_py_to_monty};
+use crate::exceptions::exc_py_to_monty;
 
-/// Shared buffer for the `'collect-streams'` mode — wrapped in an
-/// `Arc<Mutex<..>>` so the buffer survives across `start`/`resume` snapshot
-/// boundaries (the snapshot holds one handle, the VM call locks it for the
-/// duration of a transition) and can also be observed concurrently via
-/// `snapshot_py` for live snapshot inspection.
+/// Shared buffer for the `CollectStreams` mode.
+///
+/// The `Arc<Mutex<..>>` wrapper lets a single collector keep accumulating
+/// across `start()` / `resume()` / async / snapshot-load boundaries while still
+/// allowing read access from Python between transitions.
 type CollectStreamsBuffer = Arc<Mutex<Vec<(PrintStream, String)>>>;
 
-/// Shared buffer for the `'collect-string'` mode — a flat `String`, shared
-/// under the same `Arc<Mutex<..>>` scheme as `CollectStreamsBuffer` for the
-/// same reasons (snapshot survival, live peek).
+/// Shared buffer for the `CollectString` mode.
+///
+/// This follows the same sharing scheme as [`CollectStreamsBuffer`], but stores
+/// a flat concatenated string instead of labelled stream fragments.
 type CollectStringBuffer = Arc<Mutex<String>>;
+
+/// Python collector that records printed fragments as `(stream, text)` tuples.
+///
+/// Pass `CollectStreams()` as `print_callback` to share one collector across an
+/// entire run or snapshot chain. Reading `.output` clones the current buffer
+/// without draining it, so callers can inspect intermediate state and continue
+/// accumulating into the same collector.
+#[pyclass(name = "CollectStreams", module = "pydantic_monty", frozen)]
+#[derive(Debug, Default)]
+pub struct PyCollectStreams {
+    buffer: CollectStreamsBuffer,
+}
+
+#[pymethods]
+impl PyCollectStreams {
+    /// Creates an empty stream collector.
+    #[new]
+    fn new() -> Self {
+        Self::default()
+    }
+
+    /// Returns the collected `(stream, text)` tuples so far.
+    #[getter]
+    fn output(&self, py: Python<'_>) -> PyResult<Py<PyList>> {
+        let guard = self.buffer.lock().unwrap_or_else(PoisonError::into_inner);
+        vec_to_py_list(py, guard.clone())
+    }
+
+    fn __repr__(&self, py: Python<'_>) -> PyResult<String> {
+        Ok(format!("CollectStreams(output={})", self.output(py)?.bind(py).repr()?))
+    }
+}
+
+impl PyCollectStreams {
+    /// Returns a cloneable handle to the shared collector buffer.
+    fn buffer(&self) -> CollectStreamsBuffer {
+        self.buffer.clone()
+    }
+}
+
+/// Python collector that records printed fragments into one concatenated string.
+///
+/// Pass `CollectString()` as `print_callback` to accumulate raw printed text
+/// while still letting the corresponding run or snapshot return its ordinary
+/// execution value.
+#[pyclass(name = "CollectString", module = "pydantic_monty", frozen)]
+#[derive(Debug, Default)]
+pub struct PyCollectString {
+    buffer: CollectStringBuffer,
+}
+
+#[pymethods]
+impl PyCollectString {
+    /// Creates an empty string collector.
+    #[new]
+    fn new() -> Self {
+        Self::default()
+    }
+
+    /// Returns the collected text so far.
+    #[getter]
+    fn output(&self, py: Python<'_>) -> Py<PyString> {
+        let guard = self.buffer.lock().unwrap_or_else(PoisonError::into_inner);
+        PyString::new(py, guard.as_str()).unbind()
+    }
+
+    fn __repr__(&self, py: Python<'_>) -> PyResult<String> {
+        Ok(format!("CollectString(output={})", self.output(py).bind(py).repr()?))
+    }
+}
+
+impl PyCollectString {
+    /// Returns a cloneable handle to the shared collector buffer.
+    fn buffer(&self) -> CollectStringBuffer {
+        self.buffer.clone()
+    }
+}
 
 /// Destination for Monty `print()` output.
 ///
 /// The variant is chosen once from the Python `print_callback` argument (via
 /// [`PrintTarget::from_py`]) and threaded through the execution chain. It is
 /// not invoked directly — call [`PrintTarget::with_writer`] to build a
-/// `PrintWriter` on demand (used by each VM transition) and [`drain_py`] or
-/// [`snapshot_py`] to read the collected buffer back out.
+/// `PrintWriter` on demand for each VM transition.
 ///
 /// # Foot-guns
 ///
@@ -64,9 +134,6 @@ type CollectStringBuffer = Arc<Mutex<String>>;
 ///   cheap but **shares** the buffer. Use [`PrintTarget::clone_handle`] /
 ///   [`clone_handle_detached`](Self::clone_handle_detached) instead of `Clone`
 ///   so the intent is explicit.
-/// - Draining (`drain_py`) empties the buffer. After an error path drains,
-///   subsequent snapshot access would return an empty list / empty string.
-///   This is by design: the error consumes the buffer.
 #[derive(Debug, Default)]
 pub(crate) enum PrintTarget {
     /// Print goes to process stdout — the default when no `print_callback` is set.
@@ -85,27 +152,22 @@ pub(crate) enum PrintTarget {
 impl PrintTarget {
     /// Parses a Python `print_callback` argument into a `PrintTarget`.
     ///
-    /// Accepts `None`, the string `'collect-streams'`, the string
-    /// `'collect-string'`, or a callable. Any other value is a `TypeError` so
-    /// mistakes surface eagerly rather than during execution.
+    /// Accepts `None`, a callable, `CollectStreams()`, or `CollectString()`.
+    /// Any other value is a `TypeError` so mistakes surface eagerly rather
+    /// than during execution.
     pub fn from_py(value: Option<&Bound<'_, PyAny>>) -> PyResult<Self> {
         let Some(obj) = value else {
             return Ok(Self::Stdout);
         };
-        if let Ok(s) = obj.cast::<PyString>() {
-            let s = s.to_cow()?;
-            match s.as_ref() {
-                "collect-streams" => Ok(Self::CollectStreams(Arc::default())),
-                "collect-string" => Ok(Self::CollectString(Arc::default())),
-                other => Err(PyTypeError::new_err(format!(
-                    "print_callback string must be 'collect-streams' or 'collect-string', got {other:?}"
-                ))),
-            }
+        if let Ok(collector) = obj.extract::<PyRef<'_, PyCollectStreams>>() {
+            Ok(Self::CollectStreams(collector.buffer()))
+        } else if let Ok(collector) = obj.extract::<PyRef<'_, PyCollectString>>() {
+            Ok(Self::CollectString(collector.buffer()))
         } else if obj.is_callable() {
             Ok(Self::Callback(obj.clone().unbind()))
         } else {
             Err(PyTypeError::new_err(
-                "print_callback must be a callable, 'collect-streams', 'collect-string', or None",
+                "print_callback must be a callable, CollectStreams(), CollectString(), or None",
             ))
         }
     }
@@ -153,8 +215,8 @@ impl PrintTarget {
     /// The writer borrows from this target for the duration of `f`, so the
     /// closure shape keeps lifetimes sound. For the collect variants, the
     /// internal mutex is held for the entirety of `f` — that is fine because a
-    /// single VM transition is synchronous and the only other user of the
-    /// buffer is `snapshot_py` which only runs between transitions.
+    /// single VM transition is synchronous and Python only inspects collectors
+    /// between transitions.
     pub fn with_writer<R>(&self, f: impl FnOnce(PrintWriter<'_>) -> R) -> R {
         let mut storage = self.storage();
         f(storage.writer())
@@ -182,71 +244,9 @@ impl PrintTarget {
             Self::CollectString(arc) => PrintStorage::CollectString(arc.lock().unwrap_or_else(PoisonError::into_inner)),
         }
     }
-
-    /// Takes the collected buffer out of the target and converts it to the
-    /// appropriate Python object (`list[tuple[str, str]]` for streams mode,
-    /// `str` for string mode).
-    ///
-    /// Intended for terminal paths — `MontyComplete` on success, or the
-    /// `print_output` attribute of `MontyRuntimeError` on failure. Returns
-    /// `Ok(None)` for non-collect targets so the Python attribute is `None`
-    /// (rather than an empty list / empty string) in those modes.
-    ///
-    /// Returns `Err` if building the Python object fails (rare — interpreter
-    /// shutdown or allocation failure). Callers should propagate with `?`.
-    pub fn drain_py(&self, py: Python<'_>) -> PyResult<Option<Py<PyAny>>> {
-        match self {
-            Self::CollectStreams(arc) => {
-                let mut guard = arc.lock().unwrap_or_else(PoisonError::into_inner);
-                let items = mem::take(&mut *guard);
-                Ok(Some(vec_to_py_list(py, items)?.into_any()))
-            }
-            Self::CollectString(arc) => {
-                let mut guard = arc.lock().unwrap_or_else(PoisonError::into_inner);
-                let text = mem::take(&mut *guard);
-                Ok(Some(PyString::new(py, &text).into_any().unbind()))
-            }
-            _ => Ok(None),
-        }
-    }
-
-    /// Drains the collect buffer and builds a `MontyError` for `exc`, attaching
-    /// the drained `print_output` object.
-    ///
-    /// If building the Python object fails (rare — interpreter shutdown or
-    /// allocation failure), returns that `PyErr` instead; the underlying
-    /// Monty exception is dropped in that case, but the drain failure is
-    /// what the user actually needs to see.
-    pub fn drain_into_err(&self, py: Python<'_>, exc: MontyException) -> PyErr {
-        match self.drain_py(py) {
-            Ok(out) => MontyError::new_err(py, exc, out),
-            Err(err) => err,
-        }
-    }
-
-    /// Non-draining peek for snapshot `print_output` getters.
-    ///
-    /// Clones the current buffer contents into a Python object (list or
-    /// string) leaving the underlying buffer untouched so further `resume()`
-    /// calls continue to accumulate. Returns `Ok(None)` for non-collect
-    /// targets.
-    pub fn snapshot_py(&self, py: Python<'_>) -> PyResult<Option<Py<PyAny>>> {
-        match self {
-            Self::CollectStreams(arc) => {
-                let guard = arc.lock().unwrap_or_else(PoisonError::into_inner);
-                Ok(Some(vec_to_py_list(py, guard.clone())?.into_any()))
-            }
-            Self::CollectString(arc) => {
-                let guard = arc.lock().unwrap_or_else(PoisonError::into_inner);
-                Ok(Some(PyString::new(py, guard.as_str()).into_any().unbind()))
-            }
-            _ => Ok(None),
-        }
-    }
 }
 
-/// Builds the Python list that is exposed as `print_output` for the
-/// `'collect-streams'` mode.
+/// Builds the Python list exposed by `CollectStreams.output`.
 ///
 /// Each entry is a 2-tuple `(stream_label, text)`. The stream labels are
 /// interned module-level strings so all entries share one `PyString` per

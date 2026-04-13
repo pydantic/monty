@@ -79,7 +79,7 @@ async def test_run_monty_async_sync_function():
     def get_value():
         return 42
 
-    result = (await m.run_async(external_functions={'get_value': get_value})).output
+    result = await m.run_async(external_functions={'get_value': get_value})
     assert result == snapshot(42)
 
 
@@ -91,7 +91,7 @@ async def test_run_monty_async_async_function():
         await asyncio.sleep(0.001)
         return 'async result'
 
-    result = (await m.run_async(external_functions={'fetch_data': fetch_data})).output
+    result = await m.run_async(external_functions={'fetch_data': fetch_data})
     assert result == snapshot('async result')
 
 
@@ -149,7 +149,7 @@ caught
     def fail():
         raise ValueError('caught error')
 
-    result = (await m.run_async(external_functions={'fail': fail})).output
+    result = await m.run_async(external_functions={'fail': fail})
     assert result == snapshot(True)
 
 
@@ -169,7 +169,7 @@ await asyncio.gather(fetch_a(), fetch_b())
         await asyncio.sleep(0.005)
         return 'b'
 
-    result = (await m.run_async(external_functions={'fetch_a': fetch_a, 'fetch_b': fetch_b})).output
+    result = await m.run_async(external_functions={'fetch_a': fetch_a, 'fetch_b': fetch_b})
     assert result == snapshot(['a', 'b'])
 
 
@@ -189,7 +189,7 @@ sync_val + async_val
         await asyncio.sleep(0.001)
         return 5
 
-    result = (await m.run_async(external_functions={'sync_func': sync_func, 'async_func': async_func})).output
+    result = await m.run_async(external_functions={'sync_func': sync_func, 'async_func': async_func})
     assert result == snapshot(15)
 
 
@@ -200,7 +200,7 @@ async def test_run_monty_async_with_inputs():
     def process(a: int, b: int) -> int:
         return a * b
 
-    result = (await m.run_async(inputs={'x': 6, 'y': 7}, external_functions={'process': process})).output
+    result = await m.run_async(inputs={'x': 6, 'y': 7}, external_functions={'process': process})
     assert result == snapshot(42)
 
 
@@ -212,7 +212,7 @@ async def test_run_monty_async_with_print_callback():
         output.append((stream, text))
 
     m = pydantic_monty.Monty('print("hello from async")')
-    result = (await m.run_async(print_callback=callback)).output
+    result = await m.run_async(print_callback=callback)
     assert result is None
     assert output == snapshot([('stdout', 'hello from async'), ('stdout', '\n')])
 
@@ -224,14 +224,14 @@ async def test_run_monty_async_function_returning_none():
     def do_nothing():
         return None
 
-    result = (await m.run_async(external_functions={'do_nothing': do_nothing})).output
+    result = await m.run_async(external_functions={'do_nothing': do_nothing})
     assert result is None
 
 
 async def test_run_monty_async_no_external_calls():
     """Test run_monty_async when code has no external calls."""
     m = pydantic_monty.Monty('1 + 2 + 3')
-    result = (await m.run_async()).output
+    result = await m.run_async()
     assert result == snapshot(6)
 
 
@@ -251,7 +251,7 @@ Path('/test.txt').read_text()
         """,
     )
 
-    result = (await m.run_async(os=fs)).output
+    result = await m.run_async(os=fs)
     assert result == snapshot('hello world')
 
 
@@ -272,12 +272,10 @@ await process(content)
         """,
     )
 
-    result = (
-        await m.run_async(
-            external_functions={'process': process},
-            os=fs,
-        )
-    ).output
+    result = await m.run_async(
+        external_functions={'process': process},
+        os=fs,
+    )
     assert result == snapshot('TEST DATA')
 
 
@@ -373,15 +371,13 @@ await main()
     async def get_weather_description(lat: float, lng: float):
         return city_descs[(lat, lng)]
 
-    result = (
-        await m.run_async(
-            external_functions={
-                'get_lat_lng': get_lat_lng,
-                'get_temp': get_temp,
-                'get_weather_description': get_weather_description,
-            },
-        )
-    ).output
+    result = await m.run_async(
+        external_functions={
+            'get_lat_lng': get_lat_lng,
+            'get_temp': get_temp,
+            'get_weather_description': get_weather_description,
+        },
+    )
     assert result == snapshot(
         [
             {'city': 'London', 'temp': 15.0, 'description': 'Cloudy'},
@@ -406,7 +402,7 @@ p.read_text()
         """,
     )
 
-    result = (await m.run_async(os=fs)).output
+    result = await m.run_async(os=fs)
     assert result == snapshot('updated')
 
 
@@ -441,7 +437,7 @@ await asyncio.gather(foo(1), bar(2))
     assert progress.output == snapshot([3, 4])
 
     # REPL should still be usable after async completion
-    assert repl.feed_run('1 + 1').output == snapshot(2)
+    assert repl.feed_run('1 + 1') == snapshot(2)
 
 
 def test_repl_feed_start_async_state_persistence():
@@ -461,8 +457,8 @@ def test_repl_feed_start_async_state_persistence():
     assert isinstance(progress, pydantic_monty.MontyComplete)
     assert progress.output is None  # assignment, not expression
 
-    assert repl.feed_run('result').output == snapshot('fetched')
-    assert repl.feed_run('x').output == snapshot(10)
+    assert repl.feed_run('result') == snapshot('fetched')
+    assert repl.feed_run('x') == snapshot(10)
 
 
 # === Tests for run_repl_async ===
@@ -475,7 +471,7 @@ async def test_run_repl_async_sync_function():
     def get_value():
         return 42
 
-    result = (await repl.feed_run_async('get_value()', external_functions={'get_value': get_value})).output
+    result = await repl.feed_run_async('get_value()', external_functions={'get_value': get_value})
     assert result == snapshot(42)
 
 
@@ -487,7 +483,7 @@ async def test_run_repl_async_async_function():
         await asyncio.sleep(0.001)
         return 'async result'
 
-    result = (await repl.feed_run_async('await fetch_data()', external_functions={'fetch_data': fetch_data})).output
+    result = await repl.feed_run_async('await fetch_data()', external_functions={'fetch_data': fetch_data})
     assert result == snapshot('async result')
 
 
@@ -501,7 +497,7 @@ async def test_run_repl_async_state_persists():
     ext = {'double': double}
     await repl.feed_run_async('x = 10', external_functions=ext)
     await repl.feed_run_async('y = double(x)', external_functions=ext)
-    result = (await repl.feed_run_async('y', external_functions=ext)).output
+    result = await repl.feed_run_async('y', external_functions=ext)
     assert result == snapshot(20)
 
 
@@ -515,7 +511,7 @@ async def test_run_repl_async_async_state_persists():
     ext = {'fetch': fetch}
     await repl.feed_run_async("a = await fetch('one')", external_functions=ext)
     await repl.feed_run_async("b = await fetch('two')", external_functions=ext)
-    result = (await repl.feed_run_async('a + b', external_functions=ext)).output
+    result = await repl.feed_run_async('a + b', external_functions=ext)
     assert result == snapshot('value_onevalue_two')
 
 
@@ -535,7 +531,7 @@ async def test_run_repl_async_gather():
 import asyncio
 await asyncio.gather(fetch_a(), fetch_b())
 """
-    result = (await repl.feed_run_async(code, external_functions={'fetch_a': fetch_a, 'fetch_b': fetch_b})).output
+    result = await repl.feed_run_async(code, external_functions={'fetch_a': fetch_a, 'fetch_b': fetch_b})
     assert result == snapshot(['a', 'b'])
 
 
@@ -561,7 +557,7 @@ async def test_run_repl_async_error_preserves_state():
     with pytest.raises(pydantic_monty.MontyRuntimeError):
         await repl.feed_run_async('fail()', external_functions={'fail': fail})
 
-    result = (await repl.feed_run_async('x')).output
+    result = await repl.feed_run_async('x')
     assert result == snapshot(42)
 
 
@@ -572,7 +568,7 @@ async def test_run_repl_async_with_inputs():
     def add(a: int, b: int) -> int:
         return a + b
 
-    result = (await repl.feed_run_async('add(x, y)', inputs={'x': 3, 'y': 4}, external_functions={'add': add})).output
+    result = await repl.feed_run_async('add(x, y)', inputs={'x': 3, 'y': 4}, external_functions={'add': add})
     assert result == snapshot(7)
 
 
@@ -599,7 +595,7 @@ async def test_run_repl_async_with_os():
 from pathlib import Path
 Path('/test.txt').read_text()
 """
-    result = (await repl.feed_run_async(code, os=fs)).output
+    result = await repl.feed_run_async(code, os=fs)
     assert result == snapshot('repl content')
 
 
@@ -619,16 +615,14 @@ sync_val = sync_func()
 async_val = await async_func()
 sync_val + async_val
 """
-    result = (
-        await repl.feed_run_async(code, external_functions={'sync_func': sync_func, 'async_func': async_func})
-    ).output
+    result = await repl.feed_run_async(code, external_functions={'sync_func': sync_func, 'async_func': async_func})
     assert result == snapshot(15)
 
 
 async def test_run_repl_async_no_external_calls():
     """run_repl_async works when code has no external calls."""
     repl = pydantic_monty.MontyRepl()
-    result = (await repl.feed_run_async('1 + 2 + 3')).output
+    result = await repl.feed_run_async('1 + 2 + 3')
     assert result == snapshot(6)
 
 
@@ -684,7 +678,7 @@ len(batch)
     )
 
     # Snippet 5: LLM extracts final result
-    result = (await repl.feed_run_async('[u["name"] for u in all_users]', external_functions=ext)).output
+    result = await repl.feed_run_async('[u["name"] for u in all_users]', external_functions=ext)
     assert result == snapshot(['Alice', 'Bob', 'Charlie'])
 
 
@@ -707,18 +701,16 @@ async def test_repl_llm_error_recovery_retry():
         await repl.feed_run_async("data = await flaky_api('test')", external_functions=ext)
 
     # Snippet 2: LLM wraps in try/except and retries
-    result = (
-        await repl.feed_run_async(
-            """\
+    result = await repl.feed_run_async(
+        """\
 try:
     data = await flaky_api('test')
 except Exception as e:
     data = 'fallback'
 data
 """,
-            external_functions=ext,
-        )
-    ).output
+        external_functions=ext,
+    )
     assert result == snapshot('result for test')
 
 
@@ -741,15 +733,13 @@ def parse_title(html):
     )
 
     # Snippet 2: LLM uses it, gets raw html back
-    result = (
-        await repl.feed_run_async(
-            """\
+    result = await repl.feed_run_async(
+        """\
 html = await fetch('example.com')
 parse_title(html)
 """,
-            external_functions=ext,
-        )
-    ).output
+        external_functions=ext,
+    )
     assert result == snapshot('<html>example.com</html>')
 
     # Snippet 3: LLM redefines parser with better logic
@@ -764,7 +754,7 @@ def parse_title(html):
     )
 
     # Snippet 4: uses improved parser on previously fetched data
-    result = (await repl.feed_run_async('parse_title(html)', external_functions=ext)).output
+    result = await repl.feed_run_async('parse_title(html)', external_functions=ext)
     assert result == snapshot('example.com')
 
 
@@ -794,7 +784,7 @@ for r in results:
     record(s)
 summaries
 """
-    result = (await repl.feed_run_async(code, external_functions=ext)).output
+    result = await repl.feed_run_async(code, external_functions=ext)
     assert result == snapshot(['summary(python async_result_1)', 'summary(python async_result_2)'])
     assert records == snapshot(['summary(python async_result_1)', 'summary(python async_result_2)'])
 
@@ -816,7 +806,7 @@ items = ['apple', 'banana', 'cherry', 'date', 'elderberry']
 prices = await asyncio.gather(*(fetch_price(item) for item in items))
 dict(zip(items, prices))
 """
-    result = (await repl.feed_run_async(code, external_functions=ext)).output
+    result = await repl.feed_run_async(code, external_functions=ext)
     assert result == snapshot({'apple': 1.5, 'banana': 0.75, 'cherry': 3.0, 'date': 5.0, 'elderberry': 8.0})
 
 
@@ -840,7 +830,7 @@ for key in ['good', 'bad', 'also_good']:
         results[key] = 'missing'
 results
 """
-    result = (await repl.feed_run_async(code, external_functions=ext)).output
+    result = await repl.feed_run_async(code, external_functions=ext)
     assert result == snapshot({'good': 'data_good', 'bad': 'missing', 'also_good': 'data_also_good'})
 
 
@@ -871,7 +861,7 @@ for key in ['x', 'y', 'x']:
         results.append(val)
 results
 """
-    result = (await repl.feed_run_async(code, external_functions=ext)).output
+    result = await repl.feed_run_async(code, external_functions=ext)
     assert result == snapshot(['cached_x', 'looked up y', 'cached_x'])
     assert call_count == 1  # only 'y' triggered a call
 
@@ -898,7 +888,7 @@ for m in models:
     record_model(m['name'], m['params'], 0.01)
 len(models)
 """
-    result = (await repl.feed_run_async(code, external_functions=ext)).output
+    result = await repl.feed_run_async(code, external_functions=ext)
     assert result == snapshot(2)
     assert recorded == snapshot(
         [{'name': 'gpt-4', 'params': '1.7T', 'price': 0.01}, {'name': 'claude-3', 'params': '???', 'price': 0.01}]
@@ -935,7 +925,7 @@ def fetch_with_retry(url, max_retries=3):
     )
 
     # Snippet 2: LLM uses the retry helper
-    result = (await repl.feed_run_async("fetch_with_retry('example.com')", external_functions=ext)).output
+    result = await repl.feed_run_async("fetch_with_retry('example.com')", external_functions=ext)
     assert result == snapshot('content of example.com')
     assert attempt_counts == snapshot({'example.com': 2})
 
@@ -968,7 +958,7 @@ results = await asyncio.gather(
 )
 results
 """
-    result = (await repl.feed_run_async(code, external_functions=ext)).output
+    result = await repl.feed_run_async(code, external_functions=ext)
     assert result == snapshot(
         [
             {'id': 1, 'name': 'user_1', 'posts': ['post_1_1', 'post_1_2']},
@@ -1000,9 +990,8 @@ async def test_repl_llm_external_returns_complex_nested_structure():
     await repl.feed_run_async('response = await get_api_response()', external_functions=ext)
 
     # Snippet 2: LLM navigates nested structure
-    result = (
-        await repl.feed_run_async(
-            """\
+    result = await repl.feed_run_async(
+        """\
 users = response['data']['users']
 averages = {}
 for u in users:
@@ -1010,9 +999,8 @@ for u in users:
     averages[u['name']] = round(avg, 1)
 averages
 """,
-            external_functions=ext,
-        )
-    ).output
+        external_functions=ext,
+    )
     assert result == snapshot({'Alice': 91.3, 'Bob': 84.3})
 
 
@@ -1030,7 +1018,7 @@ page1 = await search('test', limit=2, offset=0)
 page2 = await search('test', limit=2, offset=2)
 page1['results'] + page2['results']
 """
-    result = (await repl.feed_run_async(code, external_functions=ext)).output
+    result = await repl.feed_run_async(code, external_functions=ext)
     assert result == snapshot(['test_0', 'test_1', 'test_0', 'test_1'])
 
 
@@ -1058,7 +1046,7 @@ raw = Path('/data.csv').read_text()
     )
 
     # Snippet 2: process with external
-    result = (await repl.feed_run_async('await analyze(raw)', external_functions=ext, os=fs)).output
+    result = await repl.feed_run_async('await analyze(raw)', external_functions=ext, os=fs)
     assert result == snapshot({'alice': 95, 'bob': 87, 'charlie': 92})
 
 
@@ -1085,7 +1073,7 @@ async def test_repl_llm_long_multi_step_session():
     ext = {'query_db': query_db}
 
     # Step 1: LLM explores what's available
-    result = (await repl.feed_run_async('await query_db("products")', external_functions=ext)).output
+    result = await repl.feed_run_async('await query_db("products")', external_functions=ext)
     assert len(result) == 4
 
     # Step 2: LLM filters by category
@@ -1095,16 +1083,14 @@ async def test_repl_llm_long_multi_step_session():
     )
 
     # Step 3: LLM computes stats
-    result = (
-        await repl.feed_run_async(
-            """\
+    result = await repl.feed_run_async(
+        """\
 total = sum(p['price'] for p in tools)
 avg = total / len(tools)
 {'count': len(tools), 'total': round(total, 2), 'average': round(avg, 2)}
 """,
-            external_functions=ext,
-        )
-    ).output
+        external_functions=ext,
+    )
     assert result == snapshot({'count': 2, 'total': 14.98, 'average': 7.49})
 
     # Step 4: LLM also checks electronics
@@ -1114,9 +1100,8 @@ avg = total / len(tools)
     )
 
     # Step 5: LLM builds final summary from accumulated state
-    result = (
-        await repl.feed_run_async(
-            """\
+    result = await repl.feed_run_async(
+        """\
 summary = {}
 for cat, items in [('tools', tools), ('electronics', electronics)]:
     summary[cat] = {
@@ -1126,9 +1111,8 @@ for cat, items in [('tools', tools), ('electronics', electronics)]:
     }
 summary
 """,
-            external_functions=ext,
-        )
-    ).output
+        external_functions=ext,
+    )
     assert result == snapshot(
         {
             'tools': {'count': 2, 'total': 14.98, 'items': ['Widget', 'Doohickey']},
@@ -1149,23 +1133,20 @@ async def test_repl_llm_string_manipulation_of_external_result():
     await repl.feed_run_async("html = await fetch_page('example.com')", external_functions=ext)
 
     # LLM extracts title
-    result = (
-        await repl.feed_run_async(
-            """\
+    result = await repl.feed_run_async(
+        """\
 start = html.find('<title>') + len('<title>')
 end = html.find('</title>')
 title = html[start:end]
 title
 """,
-            external_functions=ext,
-        )
-    ).output
+        external_functions=ext,
+    )
     assert result == snapshot('Test Page')
 
     # LLM extracts paragraphs
-    result = (
-        await repl.feed_run_async(
-            """\
+    result = await repl.feed_run_async(
+        """\
 paragraphs = []
 remaining = html
 while '<p>' in remaining:
@@ -1175,9 +1156,8 @@ while '<p>' in remaining:
     remaining = remaining[e + 4:]
 paragraphs
 """,
-            external_functions=ext,
-        )
-    ).output
+        external_functions=ext,
+    )
     assert result == snapshot(['Hello', 'World'])
 
 
@@ -1198,7 +1178,7 @@ async def test_repl_llm_syntax_error_then_fix():
         await repl.feed_run_async('y = add(x,', external_functions=ext)
 
     # Snippet 3: state preserved, LLM fixes the code
-    result = (await repl.feed_run_async('y = add(x, 5)\ny', external_functions=ext)).output
+    result = await repl.feed_run_async('y = add(x, 5)\ny', external_functions=ext)
     assert result == snapshot(15)
 
 
@@ -1208,7 +1188,7 @@ async def test_repl_llm_syntax_error_then_fix():
 async def test_run_monty_async_with_limits():
     """run_async works with resource limits."""
     m = pydantic_monty.Monty('x + 1', inputs=['x'])
-    result = (await m.run_async(inputs={'x': 41}, limits={'max_duration_secs': 5.0})).output
+    result = await m.run_async(inputs={'x': 41}, limits={'max_duration_secs': 5.0})
     assert result == snapshot(42)
 
 
@@ -1261,7 +1241,7 @@ async def test_run_repl_async_concurrent_raises():
 
     # Wrap in a coroutine so asyncio.create_task works with the pyo3 Future
     async def run_first():
-        return (await repl.feed_run_async('await slow_func()', external_functions=ext)).output
+        return await repl.feed_run_async('await slow_func()', external_functions=ext)
 
     # Start first call (don't await yet)
     task1 = asyncio.create_task(run_first())
@@ -1288,7 +1268,7 @@ async def test_run_repl_async_discarded_awaitable_does_not_take_repl():
 
     pending = repl.feed_run_async('await slow_func()', external_functions={'slow_func': slow_func})
 
-    result = (await repl.feed_run_async('1 + 1')).output
+    result = await repl.feed_run_async('1 + 1')
     assert result == snapshot(2)
     del pending
 
@@ -1313,7 +1293,7 @@ async def test_run_repl_async_cancel_restores_repl():
     with pytest.raises(asyncio.CancelledError):
         await task
 
-    result = (await repl.feed_run_async('x')).output
+    result = await repl.feed_run_async('x')
     assert result == snapshot(100)
 
 
@@ -1337,7 +1317,7 @@ while True:
     with pytest.raises(asyncio.CancelledError):
         await asyncio.wait_for(task, 1.0)
 
-    result = (await repl.feed_run_async('x')).output
+    result = await repl.feed_run_async('x')
     assert result == snapshot(100)
 
 
@@ -1357,7 +1337,7 @@ async def test_run_repl_async_error_restores_repl_on_async_failure():
         await repl.feed_run_async('await failing_async()', external_functions={'failing_async': failing_async})
 
     # REPL should still be usable and state should be preserved
-    result = (await repl.feed_run_async('x')).output
+    result = await repl.feed_run_async('x')
     assert result == snapshot(100)
 
 

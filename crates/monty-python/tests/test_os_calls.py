@@ -274,7 +274,7 @@ def test_os_basic():
         return True
 
     m = pydantic_monty.Monty('from pathlib import Path; Path("/tmp/test.txt").exists()')
-    result = m.run(os=os_handler).output
+    result = m.run(os=os_handler)
 
     assert result is True
     assert calls == snapshot([('Path.exists', (PurePosixPath('/tmp/test.txt'),))])
@@ -294,7 +294,7 @@ info = Path('/tmp/file.txt').stat()
 (info.st_mode, info.st_size)
 """
     m = pydantic_monty.Monty(code)
-    result = m.run(os=os_handler).output
+    result = m.run(os=os_handler)
 
     assert result == snapshot((0o100_644, 1024))
 
@@ -325,7 +325,7 @@ else:
 result
 """
     m = pydantic_monty.Monty(code)
-    result = m.run(os=os_handler).output
+    result = m.run(os=os_handler)
 
     assert result == snapshot('file contents')
     assert calls == snapshot(['Path.exists', 'Path.read_text'])
@@ -403,7 +403,7 @@ def test_os_getenv_callback():
         return None
 
     m = pydantic_monty.Monty('import os; os.getenv("HOME")')
-    result = m.run(os=os_handler).output
+    result = m.run(os=os_handler)
     assert result == snapshot('/home/user')
 
 
@@ -418,7 +418,7 @@ def test_os_getenv_callback_missing():
         return None
 
     m = pydantic_monty.Monty('import os; os.getenv("NONEXISTENT")')
-    result = m.run(os=os_handler).output
+    result = m.run(os=os_handler)
     assert result is None
 
 
@@ -433,7 +433,7 @@ def test_os_getenv_callback_with_default():
         return None
 
     m = pydantic_monty.Monty('import os; os.getenv("NONEXISTENT", "default_value")')
-    result = m.run(os=os_handler).output
+    result = m.run(os=os_handler)
     assert result == snapshot('default_value')
 
 
@@ -462,7 +462,7 @@ def test_os_environ_key_access():
         return None
 
     m = pydantic_monty.Monty("import os; os.environ['HOME']")
-    result = m.run(os=os_handler).output
+    result = m.run(os=os_handler)
     assert result == snapshot('/home/user')
 
 
@@ -489,7 +489,7 @@ def test_os_environ_get_method():
         return None
 
     m = pydantic_monty.Monty("import os; os.environ.get('HOME')")
-    result = m.run(os=os_handler).output
+    result = m.run(os=os_handler)
     assert result == snapshot('/home/user')
 
 
@@ -502,7 +502,7 @@ def test_os_environ_get_with_default():
         return None
 
     m = pydantic_monty.Monty("import os; os.environ.get('MISSING', 'default')")
-    result = m.run(os=os_handler).output
+    result = m.run(os=os_handler)
     assert result == snapshot('default')
 
 
@@ -515,7 +515,7 @@ def test_os_environ_len():
         return None
 
     m = pydantic_monty.Monty('import os; len(os.environ)')
-    result = m.run(os=os_handler).output
+    result = m.run(os=os_handler)
     assert result == snapshot(3)
 
 
@@ -528,7 +528,7 @@ def test_os_environ_contains():
         return None
 
     m = pydantic_monty.Monty("import os; ('HOME' in os.environ, 'MISSING' in os.environ)")
-    result = m.run(os=os_handler).output
+    result = m.run(os=os_handler)
     assert result == snapshot((True, False))
 
 
@@ -541,7 +541,7 @@ def test_os_environ_keys():
         return None
 
     m = pydantic_monty.Monty('import os; list(os.environ.keys())')
-    result = m.run(os=os_handler).output
+    result = m.run(os=os_handler)
     assert set(result) == snapshot({'HOME', 'USER'})
 
 
@@ -554,7 +554,7 @@ def test_os_environ_values():
         return None
 
     m = pydantic_monty.Monty('import os; list(os.environ.values())')
-    result = m.run(os=os_handler).output
+    result = m.run(os=os_handler)
     assert set(result) == snapshot({'1', '2'})
 
 
@@ -598,7 +598,7 @@ def test_path_write_text_callback():
         return None
 
     m = pydantic_monty.Monty('from pathlib import Path; Path("/tmp/test.txt").write_text("test content")')
-    result = m.run(os=os_handler).output
+    result = m.run(os=os_handler)
 
     assert result == snapshot(12)
     assert written_files == snapshot({'/tmp/test.txt': 'test content'})
@@ -807,7 +807,7 @@ Path('/tmp/mydir/file.txt').write_text('hello')
 Path('/tmp/mydir/file.txt').read_text()
 """
     m = pydantic_monty.Monty(code)
-    result = m.run(os=os_handler).output
+    result = m.run(os=os_handler)
 
     assert result == snapshot('file content')
     assert operations == snapshot(

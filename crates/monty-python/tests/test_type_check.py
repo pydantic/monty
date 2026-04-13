@@ -250,7 +250,7 @@ def test_constructor_default_allows_run_with_inputs():
     # Code with undefined variable - type checking would fail
     m = pydantic_monty.Monty('x + 1', inputs=['x'])
     # But runtime works fine with the input provided
-    result = m.run(inputs={'x': 5}).output
+    result = m.run(inputs={'x': 5})
     assert result == 6
 
 
@@ -442,7 +442,7 @@ info: rule `unsupported-operator` is enabled by default
 def test_repl_feed_run_type_check_valid():
     """type_check=True allows valid code through."""
     repl = pydantic_monty.MontyRepl(type_check=True)
-    result = repl.feed_run('1 + 2').output
+    result = repl.feed_run('1 + 2')
     assert result == 3
 
 
@@ -451,7 +451,7 @@ def test_repl_type_check_accumulated():
     repl = pydantic_monty.MontyRepl(type_check=True)
     repl.feed_run('x: int = 1')
     # Second snippet uses x — should pass because accumulated code defines it
-    result = repl.feed_run('x + 2').output
+    result = repl.feed_run('x + 2')
     assert result == 3
 
 
@@ -462,7 +462,7 @@ def test_repl_type_check_accumulated_function():
 def add(a: int, b: int) -> int:
     return a + b
 """)
-    result = repl.feed_run('add(1, 2)').output
+    result = repl.feed_run('add(1, 2)')
     assert result == 3
 
 
@@ -470,7 +470,7 @@ def test_repl_type_check_with_stubs():
     """type_check_stubs provides context for type checking."""
     repl = pydantic_monty.MontyRepl(type_check=True, type_check_stubs='x: int = 0')
     # x is declared in stubs, so this should type-check fine
-    result = repl.feed_run('x + 1', inputs={'x': 5}).output
+    result = repl.feed_run('x + 1', inputs={'x': 5})
     assert result == 6
 
 
@@ -542,7 +542,7 @@ def fetch(url: str) -> str:
     result = repl.feed_run(
         'result = fetch("https://example.com")',
         external_functions={'fetch': lambda url: 'response'},  # pyright: ignore[reportUnknownLambdaType]
-    ).output
+    )
     assert result == snapshot(None)
 
 
@@ -671,7 +671,7 @@ def test_repl_type_check_multiple_snippets_sequence():
     repl.feed_run('x: int = 1')
     repl.feed_run('y: int = x + 1')
     repl.feed_run('z: int = x + y')
-    result = repl.feed_run('x + y + z').output
+    result = repl.feed_run('x + y + z')
     assert result == snapshot(6)
 
 
@@ -682,7 +682,7 @@ def test_repl_type_check_function_define_then_call():
 def greet(name: str) -> str:
     return 'hello ' + name
 """)
-    result = repl.feed_run("greet('world')").output
+    result = repl.feed_run("greet('world')")
     assert result == snapshot('hello world')
 
 
@@ -748,14 +748,14 @@ def test_repl_type_check_redefine_function():
 def process(x: int) -> int:
     return x + 1
 """)
-    result = repl.feed_run('process(5)').output
+    result = repl.feed_run('process(5)')
     assert result == snapshot(6)
     # Redefine: now takes str
     repl.feed_run("""\
 def process(x: str) -> str:
     return x + '!'
 """)
-    result = repl.feed_run("process('hi')").output
+    result = repl.feed_run("process('hi')")
     assert result == snapshot('hi!')
 
 
@@ -767,7 +767,7 @@ def test_repl_type_check_redefine_function_then_call_later():
 def transform(x: int) -> int:
     return x + 1
 """)
-    assert repl.feed_run('transform(5)').output == snapshot(6)
+    assert repl.feed_run('transform(5)') == snapshot(6)
     # Redefine: str -> str
     repl.feed_run("""\
 def transform(x: str) -> str:
@@ -775,7 +775,7 @@ def transform(x: str) -> str:
 """)
     # Call in a separate step — the accumulated stubs contain both definitions,
     # but the type checker should use the latest (str -> str)
-    assert repl.feed_run("transform('hi')").output == snapshot('hi!')
+    assert repl.feed_run("transform('hi')") == snapshot('hi!')
     # Calling with the old signature (int) should now fail type checking
     with pytest.raises(pydantic_monty.MontyTypingError) as exc_info:
         repl.feed_run('transform(42)')
@@ -804,10 +804,10 @@ def test_repl_type_check_redefine_variable_type():
     repl = pydantic_monty.MontyRepl(type_check=True)
     repl.feed_run('x: int = 1')
     repl.feed_run('y: int = x + 1')
-    assert repl.feed_run('y').output == snapshot(2)
+    assert repl.feed_run('y') == snapshot(2)
     # Redefine x as str
     repl.feed_run('x: str = "hello"')
-    result = repl.feed_run('x + " world"').output
+    result = repl.feed_run('x + " world"')
     assert result == snapshot('hello world')
 
 
@@ -822,7 +822,7 @@ def double(x: int) -> int:
 def quadruple(x: int) -> int:
     return double(double(x))
 """)
-    result = repl.feed_run('quadruple(3)').output
+    result = repl.feed_run('quadruple(3)')
     assert result == snapshot(12)
 
 
@@ -833,7 +833,7 @@ def test_repl_type_check_variable_used_across_many_snippets():
     repl.feed_run('total = total + 10')
     repl.feed_run('total = total + 20')
     repl.feed_run('total = total + 30')
-    result = repl.feed_run('total').output
+    result = repl.feed_run('total')
     assert result == snapshot(60)
 
 
@@ -875,7 +875,7 @@ def to_str(n: int) -> str:
 def roundtrip(s: str) -> str:
     return to_str(to_int(s))
 """)
-    result = repl.feed_run("roundtrip('hello')").output
+    result = repl.feed_run("roundtrip('hello')")
     assert result == snapshot('5')
 
 
@@ -908,7 +908,7 @@ def test_repl_type_check_dump_load_preserves_state():
     repl2 = pydantic_monty.MontyRepl.load(data)
 
     # Loaded REPL should still type-check with accumulated context
-    result = repl2.feed_run('x + 2').output
+    result = repl2.feed_run('x + 2')
     assert result == snapshot(3)
 
     # And still catch type errors
@@ -1067,7 +1067,7 @@ def test_repl_type_check_stubs_without_trailing_newline():
         external_functions={'fetch': lambda url: 'data'},  # pyright: ignore[reportUnknownLambdaType]
     )
     # response must be visible in the next snippet even though stubs lacked \n
-    result = repl.feed_run('response.upper()').output
+    result = repl.feed_run('response.upper()')
     assert result == snapshot('DATA')
 
 
@@ -1132,7 +1132,7 @@ def test_repl_type_check_feed_run_async_valid():
     repl = pydantic_monty.MontyRepl(type_check=True)
 
     async def go():
-        return (await repl.feed_run_async('1 + 2')).output
+        return await repl.feed_run_async('1 + 2')
 
     assert asyncio.run(go()) == snapshot(3)
 

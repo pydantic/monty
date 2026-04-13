@@ -102,7 +102,7 @@ class MontyRunner(CodeRunner):
         # Prepend imports - OSAccess now handles relative paths
         wrapped_code = f'from pathlib import Path\nimport os\n{code}'
         m = Monty(wrapped_code)
-        return m.run(os=self._get_os_access()).output
+        return m.run(os=self._get_os_access())
 
     def tree(self) -> TreeDict:
         result: TreeDict = {}
