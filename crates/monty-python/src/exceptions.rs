@@ -44,6 +44,7 @@ impl MontyError {
     /// information preserved, including the traceback frames and display string.
     #[must_use]
     pub fn new_err(py: Python<'_>, exc: MontyException) -> PyErr {
+        // Syntax errors get their own exception type
         if exc.exc_type() == ExcType::SyntaxError {
             MontySyntaxError::new_err(py, exc)
         } else {
@@ -228,6 +229,7 @@ impl MontyRuntimeError {
         };
 
         let base_error = MontyError::new(exc);
+        // Create the MontyRuntimeError with proper initialization
         let runtime_error = Self { frames };
 
         let init = pyo3::PyClassInitializer::from(base_error).add_subclass(runtime_error);

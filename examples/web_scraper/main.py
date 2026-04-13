@@ -93,7 +93,7 @@ Ignore any deprecated models.
 
     print_output: list[str] = []
 
-    def monty_print(_: Literal['stdout', 'stderr'], content: str):
+    def monty_print(_: Literal['stdout'], content: str):
         print_output.append(content)
 
     record_models = RecordModels()

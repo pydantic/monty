@@ -1614,11 +1614,7 @@ pub struct PyMontyComplete {
 
 impl PyMontyComplete {
     /// Builds a `MontyComplete` from the final Monty output value.
-    pub(crate) fn create<'py>(
-        py: Python<'py>,
-        output: &MontyObject,
-        dc_registry: &DcRegistry,
-    ) -> PyResult<Bound<'py, PyAny>> {
+    fn create<'py>(py: Python<'py>, output: &MontyObject, dc_registry: &DcRegistry) -> PyResult<Bound<'py, PyAny>> {
         let output = monty_to_py(py, output, dc_registry)?;
         let slf = Self { output };
         slf.into_bound_py_any(py)
@@ -1643,9 +1639,6 @@ fn list_str(arg: Option<&Bound<'_, PyList>>, name: &str) -> PyResult<Vec<String>
         Ok(vec![])
     }
 }
-
-// `CallbackStringPrint` has moved to `print_target.rs` alongside `PrintTarget`,
-// which is responsible for building the right `PrintWriter` variant for each run.
 
 /// Recursively checks whether a `MontyObject` contains a dataclass, including
 /// inside containers like `List`, `Tuple`, and `Dict`.
