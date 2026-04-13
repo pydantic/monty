@@ -57,7 +57,7 @@ pub fn type_check(
         .transpose()?;
 
     // Check out a pre-configured db from the global pool. The `Drop` impl on
-    // `PooledMemoryDb` scrubs every root file we write below and returns the db to
+    // `PooledMemoryDb` scrubs every file we write below and returns the db to
     // the pool when the lease is no longer reachable — either at the end of this
     // function (clean run) or when the returned `TypeCheckingDiagnostics` is dropped.
     let mut pooled_db = PooledMemoryDb::checkout()?;
@@ -88,36 +88,34 @@ pub fn type_check(
     diagnostics.retain(filter_diagnostics);
 
     if diagnostics.is_empty() {
-        return Ok(None);
-    }
+        Ok(None)
+    } else {
+        // without all this errors would appear on the wrong line because we injected `from type_stubs import *`
 
-    // without all this errors would appear on the wrong line because we injected `from type_stubs import *`
-
-    // if we injected the stubs import, we need to write the actual source back to the file in the database
-    pooled_db.rewrite_root_file(&main_path, main_source)?;
-    // and then adjust each span in the error message to account for the injected stubs import
-    if code_offset > 0 {
-        let offset = TextSize::new(code_offset);
-        for diagnostic in &mut diagnostics {
-            // Adjust spans in main diagnostic annotations (only for spans in the main file)
-            for ann in diagnostic.annotations_mut() {
-                adjust_annotation_span(ann, main_file, offset);
-            }
-            // Adjust spans in sub-diagnostic annotations (e.g., "info: Function defined here")
-            for sub in diagnostic.sub_diagnostics_mut() {
-                for ann in sub.annotations_mut() {
+        // if we injected the stubs import, we need to write the actual source back to the file in the database
+        pooled_db.rewrite_root_file(&main_path, main_source)?;
+        // and then adjust each span in the error message to account for the injected stubs import
+        if code_offset > 0 {
+            let offset = TextSize::new(code_offset);
+            for diagnostic in &mut diagnostics {
+                // Adjust spans in main diagnostic annotations (only for spans in the main file)
+                for ann in diagnostic.annotations_mut() {
                     adjust_annotation_span(ann, main_file, offset);
+                }
+                // Adjust spans in sub-diagnostic annotations (e.g., "info: Function defined here")
+                for sub in diagnostic.sub_diagnostics_mut() {
+                    for ann in sub.annotations_mut() {
+                        adjust_annotation_span(ann, main_file, offset);
+                    }
                 }
             }
         }
-    }
-    // Sort diagnostics by line number
-    diagnostics.sort_by(|a, b| {
-        a.rendering_sort_key(pooled_db.db())
-            .cmp(&b.rendering_sort_key(pooled_db.db()))
-    });
+        // Sort diagnostics by line number
+        let db = pooled_db.db();
+        diagnostics.sort_by(|a, b| a.rendering_sort_key(db).cmp(&b.rendering_sort_key(db)));
 
-    Ok(Some(TypeCheckingDiagnostics::new(diagnostics, pooled_db)))
+        Ok(Some(TypeCheckingDiagnostics::new(diagnostics, pooled_db)))
+    }
 }
 
 /// Validate that `path` names a single root-level file suitable for the pooled db.
