@@ -10,6 +10,7 @@ mod bytecode;
 mod exception_private;
 mod exception_public;
 mod expressions;
+pub mod fs;
 mod fstring;
 mod function;
 mod heap_data;

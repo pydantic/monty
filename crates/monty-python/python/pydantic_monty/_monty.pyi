@@ -1,4 +1,5 @@
 from collections.abc import Coroutine
+from pathlib import Path
 from types import EllipsisType
 from typing import Any, Callable, Literal, final, overload
 
@@ -19,11 +20,30 @@ __all__ = [
     'MontySyntaxError',
     'MontyRuntimeError',
     'MontyTypingError',
+    'MountDir',
     'Frame',
     'load_snapshot',
     'load_repl_snapshot',
 ]
 __version__: str
+
+@final
+class MountDir:
+    """A single mount point configuration mapping a virtual path to a host directory."""
+
+    virtual_path: str
+    host_path: str
+    mode: Literal['read-only', 'read-write', 'overlay']
+    write_bytes_limit: int | None
+
+    def __new__(
+        cls,
+        virtual_path: str,
+        host_path: str | Path,
+        *,
+        mode: Literal['read-only', 'read-write', 'overlay'] = 'overlay',
+        write_bytes_limit: int | None = None,
+    ) -> MountDir: ...
 
 @final
 class Monty:
@@ -87,7 +107,8 @@ class Monty:
         limits: ResourceLimits | None = None,
         external_functions: dict[str, Callable[..., Any]] | None = None,
         print_callback: Callable[[Literal['stdout'], str], None] | None = None,
-        os: Callable[[OsFunction, tuple[Any, ...]], Any] | None = None,
+        mount: MountDir | list[MountDir] | None = None,
+        os: Callable[[OsFunction, tuple[Any, ...], dict[str, Any]], Any] | None = None,
     ) -> Any:
         """
         Execute the code and return the result.
@@ -235,12 +256,28 @@ class MontyRepl:
         *,
         script_name: str = 'main.py',
         limits: ResourceLimits | None = None,
+        type_check: bool = False,
+        type_check_stubs: str | None = None,
         dataclass_registry: list[type] | None = None,
     ) -> Self:
         """
         Create an empty REPL session ready to receive snippets via `feed_run()`.
 
         No code is parsed or executed at construction time.
+
+        Arguments:
+            script_name: Name used in tracebacks and error messages
+            limits: Optional resource limits configuration
+            type_check: Whether to type-check each snippet before execution.
+                When enabled, each `feed_run`/`feed_run_async`/`feed_start` call
+                runs static type checking before executing the code, and each
+                successfully executed snippet is appended to the accumulated
+                context used for type-checking subsequent snippets.
+            type_check_stubs: Optional stub code providing type declarations for
+                variables and functions available in the REPL, e.g. input variable
+                types or external function signatures.
+            dataclass_registry: Optional list of dataclass types to register for proper
+                isinstance() support on output.
         """
 
     @property
@@ -252,6 +289,24 @@ class MontyRepl:
         Register a dataclass type for proper isinstance() support on output.
         """
 
+    def type_check(self, code: str, prefix_code: str | None = None) -> None:
+        """
+        Perform static type checking on the given code snippet.
+
+        Checks the snippet in isolation using `prefix_code` as stub context.
+        This does not use the accumulated code from previous `feed_run` calls —
+        use `prefix_code` to provide any needed declarations.
+
+        Arguments:
+            code: The code to type check
+            prefix_code: Optional code to prepend before type checking,
+                e.g. with input variable declarations or external function signatures
+
+        Raises:
+            RuntimeError: If type checking infrastructure fails
+            MontyTypingError: If type errors are found
+        """
+
     def feed_run(
         self,
         code: str,
@@ -259,17 +314,29 @@ class MontyRepl:
         inputs: dict[str, Any] | None = None,
         external_functions: dict[str, Callable[..., Any]] | None = None,
         print_callback: Callable[[Literal['stdout'], str], None] | None = None,
+        mount: MountDir | list[MountDir] | None = None,
         os: Callable[[str, tuple[Any, ...], dict[str, Any]], Any] | None = None,
+        skip_type_check: bool = False,
     ) -> Any:
         """
         Execute one incremental snippet and return its output.
 
-        When `inputs` is provided, the key-value pairs are injected into
-        the REPL namespace before executing the snippet.
-
-        When `external_functions` is provided, external function calls and
-        name lookups are dispatched to the provided callables — matching the
-        behavior of `Monty.run(external_functions=...)`.
+        Arguments:
+            code: The Python code snippet to execute
+            inputs: Dict of input values injected into the REPL namespace
+                before executing the snippet
+            external_functions: Dict of external function callbacks. When
+                provided, external function calls and name lookups are
+                dispatched to the provided callables — matching the behavior
+                of `Monty.run(external_functions=...)`.
+            print_callback: Optional callback for print output
+            mount: Optional filesystem mount(s) to expose inside the sandbox
+            os: Optional OS access handler for filesystem operations
+            skip_type_check: When `True`, static type checking is bypassed for
+                this snippet AND the snippet is NOT appended to the accumulated
+                type-check context, so later type-checked snippets will not see
+                any names it defined. Has no effect unless `type_check=True`
+                was set on the REPL.
         """
 
     def feed_run_async(
@@ -280,6 +347,7 @@ class MontyRepl:
         external_functions: dict[str, Callable[..., Any]] | None = None,
         print_callback: Callable[[Literal['stdout'], str], None] | None = None,
         os: AbstractOS | None = None,
+        skip_type_check: bool = False,
     ) -> Coroutine[Any, Any, Any]:
         """
         Execute one incremental snippet and return its output with support for async external functions.
@@ -293,6 +361,11 @@ class MontyRepl:
             external_functions: Dict of external function callbacks (sync or async)
             print_callback: Optional callback for print output
             os: Optional OS access handler for filesystem operations
+            skip_type_check: When `True`, static type checking is bypassed for
+                this snippet AND the snippet is NOT appended to the accumulated
+                type-check context, so later type-checked snippets will not see
+                any names it defined. Has no effect unless `type_check=True`
+                was set on the REPL.
 
         Returns:
             A coroutine that resolves to the output of the snippet
@@ -307,6 +380,7 @@ class MontyRepl:
         *,
         inputs: dict[str, Any] | None = None,
         print_callback: Callable[[Literal['stdout'], str], None] | None = None,
+        skip_type_check: bool = False,
     ) -> FunctionSnapshot | NameLookupSnapshot | FutureSnapshot | MontyComplete:
         """
         Start executing an incremental snippet, yielding snapshots for external calls.
@@ -321,6 +395,17 @@ class MontyRepl:
         including support for async external functions via `FutureSnapshot`.
 
         On completion or error, the REPL state is automatically restored.
+
+        Arguments:
+            code: The Python code snippet to execute
+            inputs: Dict of input values injected into the REPL namespace
+                before executing the snippet
+            print_callback: Optional callback for print output
+            skip_type_check: When `True`, static type checking is bypassed for
+                this snippet AND the snippet is NOT appended to the accumulated
+                type-check context, so later type-checked snippets will not see
+                any names it defined. Has no effect unless `type_check=True`
+                was set on the REPL.
         """
 
     def dump(self) -> bytes:

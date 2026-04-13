@@ -145,14 +145,14 @@ fn path_iterdir() {
 fn path_resolve() {
     let (func, args) = run_to_oscall("from pathlib import Path; Path('./relative').resolve()");
     assert_eq!(func, OsFunction::Resolve);
-    assert_eq!(args, vec![MontyObject::Path("./relative".to_owned())]);
+    assert_eq!(args, vec![MontyObject::Path("relative".to_owned())]);
 }
 
 #[test]
 fn path_absolute() {
     let (func, args) = run_to_oscall("from pathlib import Path; Path('./relative').absolute()");
     assert_eq!(func, OsFunction::Absolute);
-    assert_eq!(args, vec![MontyObject::Path("./relative".to_owned())]);
+    assert_eq!(args, vec![MontyObject::Path("relative".to_owned())]);
 }
 
 // =============================================================================

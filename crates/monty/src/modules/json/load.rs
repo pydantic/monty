@@ -3,16 +3,17 @@
 //! This module owns conversion from JSON bytes into Monty runtime values,
 //! including CPython-compatible `JSONDecodeError` construction.
 
-use std::borrow::Cow;
+use std::{borrow::Cow, mem};
 
 use jiter::{Jiter, JiterError, JiterErrorType, JsonErrorType, NumberAny, NumberInt, Peek};
 
+use super::JsonStringCache;
 use crate::{
     args::ArgValues,
     bytecode::VM,
     defer_drop,
     exception_private::{ExcType, RunError, RunResult},
-    heap::{DropWithHeap, HeapData, HeapGuard},
+    heap::{ContainsHeap, DropWithHeap, HeapData, HeapGuard, HeapReader},
     resource::{ResourceError, ResourceTracker},
     types::{
         Dict, List, LongInt, PyTrait,
@@ -120,11 +121,21 @@ fn parse_json_input(value: &Value, vm: &mut VM<'_, '_, impl ResourceTracker>) ->
 
 /// Parses raw JSON bytes using `jiter` and converts the result to a Monty value.
 ///
+/// The VM's per-run string cache is temporarily extracted so that it can be
+/// passed alongside the VM through the recursive parse functions without
+/// borrow conflicts. It is always restored before returning.
+///
 /// Syntax errors are wrapped in `json.JSONDecodeError` using the same
 /// line/column/character suffix as CPython.
 fn parse_json_bytes(bytes: &[u8], vm: &mut VM<'_, '_, impl ResourceTracker>) -> RunResult<Value> {
     let mut jiter = Jiter::new(bytes).with_allow_inf_nan();
-    let value = parse_json_value(&mut jiter, 0, vm).map_err(|error| match error {
+    // Take the cache out of the VM so we can pass it alongside &mut VM
+    // without conflicting borrows. `mem::take` leaves `Default` in its place.
+    let mut cache = mem::take(&mut vm.json_string_cache);
+    let result = parse_json_value(&mut jiter, 0, &mut cache, vm);
+    // Always restore the cache before returning, regardless of success/failure.
+    vm.json_string_cache = cache;
+    let value = result.map_err(|error| match error {
         JsonLoadError::Parse(error) => json_number_out_of_range_to_run_error(&error, bytes)
             .unwrap_or_else(|| json_error_to_run_error(&error, &jiter, bytes)),
         JsonLoadError::Run(error) => error,
@@ -145,10 +156,11 @@ fn parse_json_bytes(bytes: &[u8], vm: &mut VM<'_, '_, impl ResourceTracker>) -> 
 fn parse_json_value(
     jiter: &mut Jiter<'_>,
     depth: usize,
+    cache: &mut JsonStringCache,
     vm: &mut VM<'_, '_, impl ResourceTracker>,
 ) -> ParseResult<Value> {
     let peek = jiter.peek()?;
-    parse_json_value_from_peek(peek, jiter, depth, vm)
+    parse_json_value_from_peek(peek, jiter, depth, cache, vm)
 }
 
 /// Converts a peeked JSON token into a Monty value.
@@ -159,6 +171,7 @@ fn parse_json_value_from_peek(
     peek: Peek,
     jiter: &mut Jiter<'_>,
     depth: usize,
+    cache: &mut JsonStringCache,
     vm: &mut VM<'_, '_, impl ResourceTracker>,
 ) -> ParseResult<Value> {
     match peek {
@@ -167,14 +180,30 @@ fn parse_json_value_from_peek(
             Ok(Value::None)
         }
         Peek::True | Peek::False => jiter.known_bool(peek).map(Value::Bool).map_err(Into::into),
-        Peek::String => Ok(allocate_string(parse_json_string(jiter)?, vm.heap)?),
-        Peek::Array => parse_json_array(jiter, depth, vm),
-        Peek::Object => parse_json_object(jiter, depth, vm),
+        Peek::String => allocate_cached_string(parse_json_string(jiter)?, cache, vm.heap),
+        Peek::Array => parse_json_array(jiter, depth, cache, vm),
+        Peek::Object => parse_json_object(jiter, depth, cache, vm),
         _ if peek.is_num() => parse_json_number(peek, jiter, vm),
         _ => Err(JsonLoadError::Parse(JiterError {
             error_type: JiterErrorType::JsonError(JsonErrorType::ExpectedSomeValue),
             index: jiter.current_index(),
         })),
+    }
+}
+
+/// Allocates a string using the cache when eligible, falling back to direct
+/// allocation for empty/single-char strings (already interned by
+/// `allocate_string`).
+fn allocate_cached_string(
+    s: String,
+    cache: &mut JsonStringCache,
+    heap: &HeapReader<'_, impl ResourceTracker>,
+) -> ParseResult<Value> {
+    if s.len() < 2 {
+        // Empty and single-char strings are interned by allocate_string.
+        Ok(allocate_string(s, heap.heap())?)
+    } else {
+        Ok(cache.get_or_allocate(s, heap)?)
     }
 }
 
@@ -208,6 +237,7 @@ fn parse_json_number(
 fn parse_json_array(
     jiter: &mut Jiter<'_>,
     depth: usize,
+    cache: &mut JsonStringCache,
     vm: &mut VM<'_, '_, impl ResourceTracker>,
 ) -> ParseResult<Value> {
     check_json_recursion_limit(jiter, depth)?;
@@ -222,7 +252,7 @@ fn parse_json_array(
     {
         let (values, vm) = values_guard.as_parts_mut();
         loop {
-            values.push(parse_json_value_from_peek(next, jiter, depth + 1, vm)?);
+            values.push(parse_json_value_from_peek(next, jiter, depth + 1, cache, vm)?);
             let Some(array_peek) = jiter.array_step()? else {
                 break;
             };
@@ -250,6 +280,7 @@ fn parse_json_string(jiter: &mut Jiter<'_>) -> ParseResult<String> {
 fn parse_json_object(
     jiter: &mut Jiter<'_>,
     depth: usize,
+    cache: &mut JsonStringCache,
     vm: &mut VM<'_, '_, impl ResourceTracker>,
 ) -> ParseResult<Value> {
     check_json_recursion_limit(jiter, depth)?;
@@ -259,14 +290,15 @@ fn parse_json_object(
         return Ok(Value::Ref(dict_id));
     };
 
-    let pairs = Vec::new();
-    let mut pairs_guard = HeapGuard::new(pairs, vm);
+    let mut dict_guard = HeapGuard::new(Dict::new(), vm);
     {
-        let (pairs, vm) = pairs_guard.as_parts_mut();
+        let (dict, vm) = dict_guard.as_parts_mut();
         loop {
-            let key_value = allocate_string(key, vm.heap)?;
-            let value = parse_json_value(jiter, depth + 1, vm)?;
-            pairs.push((key_value, value));
+            let key_value = allocate_cached_string(key, cache, vm.heap)?;
+            let value = parse_json_value(jiter, depth + 1, cache, vm)?;
+            if let Some(old_value) = dict.set_json_string_key(key_value, value, vm)? {
+                old_value.drop_with_heap(vm);
+            }
 
             let Some(next_key) = parse_next_object_key(jiter)? else {
                 break;
@@ -275,8 +307,7 @@ fn parse_json_object(
         }
     }
 
-    let pairs = pairs_guard.into_inner();
-    let dict = Dict::from_pairs(pairs, vm)?;
+    let dict = dict_guard.into_inner();
     let dict_id = vm.heap.allocate(HeapData::Dict(dict))?;
     Ok(Value::Ref(dict_id))
 }

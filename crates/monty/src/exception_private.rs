@@ -101,6 +101,9 @@ pub enum ExcType {
     IsADirectoryError,
     /// Subclass of OSError - for when a path is not a directory but one was expected.
     NotADirectoryError,
+    /// Subclass of OSError - for when an operation is not permitted (e.g., writing
+    /// to a read-only mount, or attempting to access a path outside a mounted directory).
+    PermissionError,
 
     // --- Standalone exception types ---
     AssertionError,
@@ -160,10 +163,14 @@ impl ExcType {
             Self::ValueError => matches!(self, Self::UnicodeDecodeError | Self::JsonDecodeError),
             // ImportError catches ModuleNotFoundError
             Self::ImportError => matches!(self, Self::ModuleNotFoundError),
-            // OSError catches FileNotFoundError, FileExistsError, IsADirectoryError, NotADirectoryError
+            // OSError catches FileNotFoundError, FileExistsError, IsADirectoryError, NotADirectoryError, PermissionError
             Self::OSError => matches!(
                 self,
-                Self::FileNotFoundError | Self::FileExistsError | Self::IsADirectoryError | Self::NotADirectoryError
+                Self::FileNotFoundError
+                    | Self::FileExistsError
+                    | Self::IsADirectoryError
+                    | Self::NotADirectoryError
+                    | Self::PermissionError
             ),
             // All other types only match exactly (handled by self == handler_type above)
             _ => false,

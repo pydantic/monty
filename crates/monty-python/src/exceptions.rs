@@ -418,6 +418,7 @@ pub fn exc_monty_to_py(py: Python<'_>, exc: MontyException) -> PyErr {
         ExcType::FileExistsError => exceptions::PyFileExistsError::new_err(msg),
         ExcType::IsADirectoryError => exceptions::PyIsADirectoryError::new_err(msg),
         ExcType::NotADirectoryError => exceptions::PyNotADirectoryError::new_err(msg),
+        ExcType::PermissionError => exceptions::PyPermissionError::new_err(msg),
         ExcType::RePatternError => {
             if let Ok(re_pattern_error) = get_re_pattern_error(py)
                 && let Ok(exc_instance) = re_pattern_error.call1((PyString::new(py, &msg),))
@@ -523,6 +524,8 @@ fn py_err_to_exc_type(exc: &Bound<'_, exceptions::PyBaseException>) -> ExcType {
                 ExcType::IsADirectoryError
             } else if exceptions::PyNotADirectoryError::type_check(exc) {
                 ExcType::NotADirectoryError
+            } else if exceptions::PyPermissionError::type_check(exc) {
+                ExcType::PermissionError
             } else {
                 ExcType::OSError
             }

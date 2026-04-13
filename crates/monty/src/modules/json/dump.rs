@@ -6,7 +6,6 @@
 use std::{
     cmp::Ordering,
     fmt::{Display, Write},
-    mem,
 };
 
 use crate::{
@@ -17,7 +16,7 @@ use crate::{
     heap::{DropWithHeap, HeapData, HeapGuard, HeapId, HeapReadOutput},
     intern::StaticStrings,
     resource::ResourceTracker,
-    sorting::sort_indices,
+    sorting::{apply_permutation, sort_indices},
     types::{PyTrait, long_int::check_bigint_str_digits_limit, str::allocate_string},
     value::Value,
 };
@@ -521,18 +520,7 @@ fn serialize_dict(
     vm: &mut VM<'_, '_, impl ResourceTracker>,
 ) -> RunResult<()> {
     if config.skipkeys() {
-        // Cannot use `retain` here because removed `Value::Ref` entries need
-        // `drop_with_heap` to decrement reference counts properly.
-        let mut i = 0;
-        while i < entries.len() {
-            if is_json_key_allowed(&entries[i].0, vm) {
-                i += 1;
-            } else {
-                let (key, value) = entries.remove(i);
-                key.drop_with_heap(vm);
-                value.drop_with_heap(vm);
-            }
-        }
+        skip_disallowed_dict_keys(entries, vm);
     } else if let Some((key, _)) = entries.iter().find(|(key, _)| !is_json_key_allowed(key, vm)) {
         return Err(ExcType::json_invalid_key_error(key.py_type(vm)));
     }
@@ -575,18 +563,31 @@ fn sort_dict_entries(entries: &mut Vec<(Value, Value)>, vm: &mut VM<'_, '_, impl
     let mut compare_values_guard = HeapGuard::new(compare_values, vm);
     let (compare_values, vm) = compare_values_guard.as_parts_mut();
     sort_indices(&mut indices, compare_values.as_slice(), false, vm)?;
+    apply_permutation(entries.as_mut_slice(), &mut indices);
+    Ok(())
+}
 
-    let mut ordered: Vec<(Value, Value)> = Vec::with_capacity(entries.len());
-    for index in indices {
-        ordered.push((
-            entries[index].0.clone_with_heap(vm),
-            entries[index].1.clone_with_heap(vm),
-        ));
+/// Removes dict entries whose keys are not JSON-serializable, preserving order.
+///
+/// `skipkeys=True` must drop invalid entries without disturbing the relative
+/// order of the retained pairs. A two-pointer compaction avoids the repeated
+/// shifting cost of `Vec::remove(i)` while still cleaning up skipped `Value`
+/// references with `drop_with_heap`.
+fn skip_disallowed_dict_keys(entries: &mut Vec<(Value, Value)>, vm: &mut VM<'_, '_, impl ResourceTracker>) {
+    let mut write = 0;
+    for read in 0..entries.len() {
+        if is_json_key_allowed(&entries[read].0, vm) {
+            if write != read {
+                entries.swap(write, read);
+            }
+            write += 1;
+        }
     }
 
-    let old_entries = mem::replace(entries, ordered);
-    old_entries.drop_with_heap(vm);
-    Ok(())
+    for (key, value) in entries.drain(write..) {
+        key.drop_with_heap(vm);
+        value.drop_with_heap(vm);
+    }
 }
 
 /// Returns whether a value is an allowed JSON object key type.
@@ -788,29 +789,104 @@ fn with_entered_container<R>(
 
 /// Writes a Rust string as a JSON string token.
 ///
-/// The writer escapes control characters, quotes, and backslashes in all modes.
-/// When `ensure_ascii` is enabled, non-ASCII code points are emitted as `\uXXXX`
-/// escapes using surrogate pairs for supplementary-plane characters.
+/// Uses a byte-oriented batch strategy inspired by serde_json: a 256-entry
+/// lookup table classifies each byte in O(1), and contiguous runs of safe bytes
+/// are flushed with a single `push_str` rather than character-by-character.
+///
+/// When `ensure_ascii` is enabled, non-ASCII code points (bytes >= 0x80) are
+/// emitted as `\uXXXX` escapes using surrogate pairs for supplementary-plane
+/// characters.
 fn write_json_string(value: &str, out: &mut String, ensure_ascii: bool) {
     out.push('"');
-    for ch in value.chars() {
-        match ch {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\u{08}' => out.push_str("\\b"),
-            '\u{0C}' => out.push_str("\\f"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            ch if ch <= '\u{1F}' => {
-                write!(out, "\\u{:04x}", ch as u32).expect("writing to String cannot fail");
+    let bytes = value.as_bytes();
+    let mut start = 0;
+    let mut i = 0;
+
+    while i < bytes.len() {
+        let byte = bytes[i];
+
+        if ensure_ascii && byte >= 0x7F {
+            // Flush the safe ASCII run accumulated so far.
+            out.push_str(&value[start..i]);
+            if byte == 0x7F {
+                // DEL (0x7F) is a control character that CPython escapes.
+                out.push_str("\\u007f");
+                i += 1;
+            } else {
+                // Decode the full character at this position and emit \uXXXX escapes.
+                let ch = value[i..].chars().next().expect("valid UTF-8");
+                write_json_escape_for_non_ascii(ch, out);
+                i += ch.len_utf8();
             }
-            ch if ensure_ascii && (ch as u32) > 0x7E => write_json_escape_for_non_ascii(ch, out),
-            ch => out.push(ch),
+            start = i;
+            continue;
         }
+
+        let escape = ESCAPE_TABLE[byte as usize];
+        if escape == 0 {
+            // Safe byte — keep scanning.
+            i += 1;
+            continue;
+        }
+
+        // Flush the safe run before this byte.
+        out.push_str(&value[start..i]);
+
+        // Write the escape sequence.
+        match escape {
+            b'b' => out.push_str("\\b"),
+            b't' => out.push_str("\\t"),
+            b'n' => out.push_str("\\n"),
+            b'f' => out.push_str("\\f"),
+            b'r' => out.push_str("\\r"),
+            b'"' => out.push_str("\\\""),
+            b'\\' => out.push_str("\\\\"),
+            b'u' => {
+                write!(out, "\\u{:04x}", u32::from(byte)).expect("writing to String cannot fail");
+            }
+            _ => unreachable!(),
+        }
+
+        i += 1;
+        start = i;
     }
+
+    // Flush the final safe run.
+    out.push_str(&value[start..]);
     out.push('"');
 }
+
+/// Byte lookup table for JSON string escaping.
+///
+/// Each entry is either 0 (byte is safe, no escaping needed) or a shorthand
+/// character that indicates which escape to emit:
+/// - `b'"'`  → `\"`
+/// - `b'\\'` → `\\`
+/// - `b'b'`  → `\b` (backspace, 0x08)
+/// - `b't'`  → `\t` (tab, 0x09)
+/// - `b'n'`  → `\n` (newline, 0x0A)
+/// - `b'f'`  → `\f` (form feed, 0x0C)
+/// - `b'r'`  → `\r` (carriage return, 0x0D)
+/// - `b'u'`  → `\u00XX` (other control characters, 0x00–0x1F)
+#[rustfmt::skip]
+static ESCAPE_TABLE: [u8; 256] = {
+    let mut table = [0u8; 256];
+    // Control characters 0x00–0x1F default to \u00XX escapes.
+    let mut i = 0;
+    while i < 0x20 {
+        table[i] = b'u';
+        i += 1;
+    }
+    // Override the named escapes.
+    table[0x08] = b'b';  // backspace
+    table[0x09] = b't';  // tab
+    table[0x0A] = b'n';  // newline
+    table[0x0C] = b'f';  // form feed
+    table[0x0D] = b'r';  // carriage return
+    table[0x22] = b'"';  // quote
+    table[0x5C] = b'\\'; // backslash
+    table
+};
 
 /// Writes a non-ASCII character using JSON `\uXXXX` escapes.
 ///

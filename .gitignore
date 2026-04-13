@@ -19,3 +19,4 @@
 /crates/fuzz/corpus/
 /.worktrees/
 /.zed/
+/scripts/json_files/

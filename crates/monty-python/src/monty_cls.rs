@@ -11,7 +11,7 @@ use ::monty::{
     NoLimitTracker, OsCall, PrintWriter, PrintWriterCallback, ReplFunctionCall, ReplNameLookup, ReplOsCall,
     ReplProgress, ReplResolveFutures, ReplStartError, ResolveFutures, ResourceTracker, RunProgress,
 };
-use monty::{ExcType, NameLookup};
+use monty::{NameLookup, fs::MountTable};
 use monty_type_checking::{SourceFile, type_check};
 use pyo3::{
     IntoPyObjectExt,
@@ -30,6 +30,7 @@ use crate::{
     exceptions::{MontyError, MontyTypingError, exc_py_to_monty},
     external::{ExternalFunctionRegistry, dispatch_method_call},
     limits::{CancellationFlag, FutureCancellationGuard, PySignalTracker, extract_limits},
+    mount::OsHandler,
     repl::{EitherRepl, FromCoreRepl, PyMontyRepl},
     serialization,
 };
@@ -79,7 +80,7 @@ impl PyMonty {
         let input_names = list_str(inputs, "inputs")?;
 
         if type_check {
-            py_type_check(py, &code, script_name, type_check_stubs)?;
+            py_type_check(py, &code, script_name, type_check_stubs, "type_stubs.pyi")?;
         }
 
         // Create the snapshot (parses the code)
@@ -121,7 +122,7 @@ impl PyMonty {
     /// * `MontyTypingError` if type errors are found
     #[pyo3(signature = (prefix_code=None))]
     fn type_check(&self, py: Python<'_>, prefix_code: Option<&str>) -> PyResult<()> {
-        py_type_check(py, self.runner.code(), &self.script_name, prefix_code)
+        py_type_check(py, self.runner.code(), &self.script_name, prefix_code, "type_stubs.pyi")
     }
 
     /// Executes the code and returns the result.
@@ -131,7 +132,8 @@ impl PyMonty {
     ///
     /// # Raises
     /// Various Python exceptions matching what the code would raise
-    #[pyo3(signature = (*, inputs=None, limits=None, external_functions=None, print_callback=None, os=None))]
+    #[expect(clippy::too_many_arguments)]
+    #[pyo3(signature = (*, inputs=None, limits=None, external_functions=None, print_callback=None, mount=None, os=None))]
     fn run(
         &self,
         py: Python<'_>,
@@ -139,18 +141,15 @@ impl PyMonty {
         limits: Option<&Bound<'_, PyDict>>,
         external_functions: Option<&Bound<'_, PyDict>>,
         print_callback: Option<&Bound<'_, PyAny>>,
+        mount: Option<&Bound<'_, PyAny>>,
         os: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<Py<PyAny>> {
         // Clone the Arc handle — all clones share the same underlying registry,
         // so auto-registrations during execution are visible to all users.
         let input_values = self.extract_input_values(inputs, &self.dc_registry)?;
 
-        if let Some(os_callback) = os
-            && !os_callback.is_callable()
-        {
-            let msg = format!("TypeError: '{}' object is not callable", os_callback.get_type().name()?);
-            return Err(PyTypeError::new_err(msg));
-        }
+        // Build the internal mount table from mount + os parameters.
+        let os_handler = OsHandler::from_run_args(py, mount, os)?;
 
         // Build print writer
         let mut print_cb;
@@ -165,10 +164,10 @@ impl PyMonty {
         // Run with appropriate tracker type (must branch due to different generic types)
         if let Some(limits) = limits {
             let tracker = PySignalTracker::new(LimitedTracker::new(extract_limits(limits)?));
-            self.run_impl(py, input_values, tracker, external_functions, os, print_writer)
+            self.run_impl(py, input_values, tracker, external_functions, os_handler, print_writer)
         } else {
             let tracker = PySignalTracker::new(NoLimitTracker);
-            self.run_impl(py, input_values, tracker, external_functions, os, print_writer)
+            self.run_impl(py, input_values, tracker, external_functions, os_handler, print_writer)
         }
     }
 
@@ -391,8 +390,14 @@ impl PyMonty {
     }
 }
 
-fn py_type_check(py: Python<'_>, code: &str, script_name: &str, type_stubs: Option<&str>) -> PyResult<()> {
-    let type_stubs = type_stubs.map(|type_stubs| SourceFile::new(type_stubs, "type_stubs.pyi"));
+pub(crate) fn py_type_check(
+    py: Python<'_>,
+    code: &str,
+    script_name: &str,
+    type_stubs: Option<&str>,
+    stubs_name: &str,
+) -> PyResult<()> {
+    let type_stubs = type_stubs.map(|type_stubs| SourceFile::new(type_stubs, stubs_name));
 
     let opt_diagnostics =
         type_check(&SourceFile::new(code, script_name), type_stubs.as_ref()).map_err(PyRuntimeError::new_err)?;
@@ -447,13 +452,14 @@ impl PyMonty {
     ///
     /// Takes explicit field references instead of `&mut self` so that `run()` can
     /// remain `&self` (required for concurrent thread access in PyO3).
+    #[expect(clippy::needless_pass_by_value)]
     fn run_impl(
         &self,
         py: Python<'_>,
         input_values: Vec<MontyObject>,
         tracker: impl ResourceTracker + Send,
         external_functions: Option<&Bound<'_, PyDict>>,
-        os: Option<&Bound<'_, PyAny>>,
+        os_handler: Option<OsHandler>,
         print_output: PrintWriter<'_>,
     ) -> PyResult<Py<PyAny>> {
         // wrap print_output in SendWrapper so that it can be accessed inside the py.detach calls despite
@@ -465,21 +471,40 @@ impl PyMonty {
         // and need to be dispatched to the host.
         let has_dataclass_inputs = || input_values.iter().any(contains_dataclass);
 
-        if external_functions.is_none() && os.is_none() && !has_dataclass_inputs() {
+        if external_functions.is_none() && os_handler.is_none() && !has_dataclass_inputs() {
             return match py.detach(|| self.runner.run(input_values, tracker, print_output.reborrow())) {
                 Ok(v) => monty_to_py(py, &v, &self.dc_registry),
                 Err(err) => Err(MontyError::new_err(py, err)),
             };
         }
+
+        // Take mounts out of their shared slots for zero-overhead execution.
+        // They are put back when the run completes (including on error paths).
+        let mut mount_table: Option<MountTable> = os_handler.as_ref().map(OsHandler::take).transpose()?;
+
+        // Helper: put mounts back into shared slots.
+        let put_back = |table: Option<MountTable>| {
+            if let (Some(h), Some(table)) = (&os_handler, table) {
+                h.put_back(table);
+            }
+        };
+
         // Clone the runner since start() consumes it - allows reuse of the parsed code
         let runner = self.runner.clone();
-        let mut progress = py
-            .detach(|| runner.start(input_values, tracker, print_output.reborrow()))
-            .map_err(|e| MontyError::new_err(py, e))?;
+        let mut progress = match py.detach(|| runner.start(input_values, tracker, print_output.reborrow())) {
+            Ok(p) => p,
+            Err(e) => {
+                put_back(mount_table);
+                return Err(MontyError::new_err(py, e));
+            }
+        };
 
         loop {
             match progress {
-                RunProgress::Complete(result) => return monty_to_py(py, &result, &self.dc_registry),
+                RunProgress::Complete(result) => {
+                    put_back(mount_table);
+                    return monty_to_py(py, &result, &self.dc_registry);
+                }
                 RunProgress::FunctionCall(call) => {
                     // Dataclass method calls have method_call=true and the first arg is the instance
                     let return_value = if call.method_call {
@@ -488,15 +513,20 @@ impl PyMonty {
                         let registry = ExternalFunctionRegistry::new(py, ext_fns, &self.dc_registry);
                         registry.call(&call.function_name, &call.args, &call.kwargs)
                     } else {
+                        put_back(mount_table);
                         return Err(PyRuntimeError::new_err(format!(
                             "External function '{}' called but no external_functions provided",
                             call.function_name
                         )));
                     };
 
-                    progress = py
-                        .detach(|| call.resume(return_value, print_output.reborrow()))
-                        .map_err(|e| MontyError::new_err(py, e))?;
+                    progress = match py.detach(|| call.resume(return_value, print_output.reborrow())) {
+                        Ok(p) => p,
+                        Err(e) => {
+                            put_back(mount_table);
+                            return Err(MontyError::new_err(py, e));
+                        }
+                    };
                 }
                 RunProgress::NameLookup(lookup) => {
                     let result = if let Some(ext_fns) = external_functions
@@ -510,48 +540,33 @@ impl PyMonty {
                         NameLookupResult::Undefined
                     };
 
-                    progress = py
-                        .detach(|| lookup.resume(result, print_output.reborrow()))
-                        .map_err(|e| MontyError::new_err(py, e))?;
+                    progress = match py.detach(|| lookup.resume(result, print_output.reborrow())) {
+                        Ok(p) => p,
+                        Err(e) => {
+                            put_back(mount_table);
+                            return Err(MontyError::new_err(py, e));
+                        }
+                    };
                 }
                 RunProgress::ResolveFutures(_) => {
+                    put_back(mount_table);
                     return Err(PyRuntimeError::new_err("async futures not supported with `Monty.run`"));
                 }
                 RunProgress::OsCall(call) => {
-                    let result: ExtFunctionResult = if let Some(os_callback) = os {
-                        // Convert args to Python
-                        let py_args: Vec<Py<PyAny>> = call
-                            .args
-                            .iter()
-                            .map(|arg| monty_to_py(py, arg, &self.dc_registry))
-                            .collect::<PyResult<_>>()?;
-                        let py_args_tuple = PyTuple::new(py, py_args)?;
-
-                        // Convert kwargs to Python dict
-                        let py_kwargs = PyDict::new(py);
-                        for (k, v) in &call.kwargs {
-                            py_kwargs.set_item(
-                                monty_to_py(py, k, &self.dc_registry)?,
-                                monty_to_py(py, v, &self.dc_registry)?,
-                            )?;
-                        }
-
-                        // call the os callback, if an exception is raised, return it to monty
-                        match os_callback.call1((call.function.to_string(), py_args_tuple, py_kwargs)) {
-                            Ok(result) => py_to_monty(&result, &self.dc_registry)?.into(),
-                            Err(err) => exc_py_to_monty(py, &err).into(),
-                        }
+                    let fallback = os_handler.as_ref().and_then(|h| h.fallback.as_ref());
+                    let result: ExtFunctionResult = if let Some(table) = &mut mount_table {
+                        handle_mount_os_call(py, &call, table, fallback, &self.dc_registry)?
                     } else {
-                        MontyException::new(
-                            ExcType::NotImplementedError,
-                            Some(format!("OS function '{}' not implemented", call.function)),
-                        )
-                        .into()
+                        call.function.on_no_handler(&call.args).into()
                     };
 
-                    progress = py
-                        .detach(|| call.resume(result, print_output.reborrow()))
-                        .map_err(|e| MontyError::new_err(py, e))?;
+                    progress = match py.detach(|| call.resume(result, print_output.reborrow())) {
+                        Ok(p) => p,
+                        Err(e) => {
+                            put_back(mount_table);
+                            return Err(MontyError::new_err(py, e));
+                        }
+                    };
                 }
             }
         }
@@ -636,7 +651,7 @@ where
 {
     match progress {
         ReplProgress::Complete { repl, value } => {
-            repl_owner.get().put_repl(EitherRepl::from_core(repl));
+            repl_owner.get().put_repl_after_commit(EitherRepl::from_core(repl));
             PyMontyComplete::create(py, &value, &dc_registry)
         }
         ReplProgress::FunctionCall(call) => {
@@ -1343,7 +1358,7 @@ impl PyNameLookupSnapshot {
     /// `ValueError` if serialization fails.
     /// `RuntimeError` if the progress has already been resumed.
     fn dump<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
-        let bytes = serialization::dump_lookup_snapshot(&self.snapshot, &self.script_name, &self.variable_name)?;
+        let bytes = serialization::dump_lookup_snapshot(py, &self.snapshot, &self.script_name, &self.variable_name)?;
         Ok(PyBytes::new(py, &bytes))
     }
 
@@ -1588,7 +1603,7 @@ impl PyFutureSnapshot {
     /// `ValueError` if serialization fails.
     /// `RuntimeError` if the progress has already been resumed.
     fn dump<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
-        let bytes = serialization::dump_future_snapshot(&self.snapshot, &self.script_name)?;
+        let bytes = serialization::dump_future_snapshot(py, &self.snapshot, &self.script_name)?;
         Ok(PyBytes::new(py, &bytes))
     }
 
@@ -1753,6 +1768,61 @@ fn restore_repl_from_repl_start_error<T: ResourceTracker>(
 where
     EitherRepl: FromCoreRepl<T>,
 {
-    repl_owner.get().put_repl(EitherRepl::from_core(err.repl));
+    repl_owner
+        .get()
+        .put_repl_after_rollback(EitherRepl::from_core(err.repl));
     MontyError::new_err(py, err.error)
+}
+
+/// Handles an OS call via a Rust [`MountTable`], falling through to the
+/// `fallback` callable for unhandled operations.
+///
+/// The mount table returns `None` for non-filesystem ops and for paths that
+/// don't match any mount. In both cases we try the fallback, or fall back to
+/// [`OsFunction::on_no_handler`] which returns `PermissionError` for filesystem
+/// ops and `RuntimeError` for non-filesystem ops.
+pub(crate) fn handle_mount_os_call<T: ResourceTracker>(
+    py: Python<'_>,
+    call: &OsCall<T>,
+    table: &mut MountTable,
+    fallback: Option<&Py<PyAny>>,
+    dc_registry: &DcRegistry,
+) -> PyResult<ExtFunctionResult> {
+    match table.handle_os_call(call.function, &call.args, &call.kwargs) {
+        Some(Ok(obj)) => Ok(obj.into()),
+        Some(Err(mount_err)) => Ok(mount_err.into_exception().into()),
+        None => {
+            // Intentional: unmounted paths fall through to `os=`.
+            if let Some(fb) = fallback {
+                call_os_callback(py, call, fb.bind(py), dc_registry)
+            } else {
+                Ok(call.function.on_no_handler(&call.args).into())
+            }
+        }
+    }
+}
+
+/// Calls a Python OS callback with the given OS call's function name, args, and kwargs.
+pub(crate) fn call_os_callback<T: ResourceTracker>(
+    py: Python<'_>,
+    call: &OsCall<T>,
+    callback: &Bound<'_, PyAny>,
+    dc_registry: &DcRegistry,
+) -> PyResult<ExtFunctionResult> {
+    let py_args: Vec<Py<PyAny>> = call
+        .args
+        .iter()
+        .map(|arg| monty_to_py(py, arg, dc_registry))
+        .collect::<PyResult<_>>()?;
+    let py_args_tuple = PyTuple::new(py, py_args)?;
+
+    let py_kwargs = PyDict::new(py);
+    for (k, v) in &call.kwargs {
+        py_kwargs.set_item(monty_to_py(py, k, dc_registry)?, monty_to_py(py, v, dc_registry)?)?;
+    }
+
+    match callback.call1((call.function.to_string(), py_args_tuple, py_kwargs)) {
+        Ok(result) => Ok(py_to_monty(&result, dc_registry)?.into()),
+        Err(err) => Ok(exc_py_to_monty(py, &err).into()),
+    }
 }

@@ -1732,7 +1732,7 @@ dependencies = [
 
 [[package]]
 name = "monty"
-version = "0.0.9"
+version = "0.0.11"
 dependencies = [
  "ahash",
  "bytemuck",
@@ -1762,21 +1762,23 @@ dependencies = [
  "smallvec",
  "speedate",
  "strum",
+ "tempfile",
 ]
 
 [[package]]
 name = "monty-cli"
-version = "0.0.9"
+version = "0.0.11"
 dependencies = [
  "clap",
  "monty",
  "monty_type_checking",
  "rustyline",
+ "tempfile",
 ]
 
 [[package]]
 name = "monty-fuzz"
-version = "0.0.9"
+version = "0.0.11"
 dependencies = [
  "arbitrary",
  "libfuzzer-sys",
@@ -1785,7 +1787,7 @@ dependencies = [
 
 [[package]]
 name = "monty-js"
-version = "0.0.9"
+version = "0.0.11"
 dependencies = [
  "monty",
  "monty_type_checking",
@@ -1799,7 +1801,7 @@ dependencies = [
 
 [[package]]
 name = "monty_type_checking"
-version = "0.0.9"
+version = "0.0.11"
 dependencies = [
  "monty_typeshed",
  "pretty_assertions",
@@ -1813,7 +1815,7 @@ dependencies = [
 
 [[package]]
 name = "monty_typeshed"
-version = "0.0.9"
+version = "0.0.11"
 dependencies = [
  "path-slash",
  "ruff_db",
@@ -2240,7 +2242,7 @@ dependencies = [
 
 [[package]]
 name = "pydantic-monty"
-version = "0.0.9"
+version = "0.0.11"
 dependencies = [
  "indexmap",
  "monty",

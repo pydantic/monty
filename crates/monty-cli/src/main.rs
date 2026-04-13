@@ -7,7 +7,8 @@ use std::{
 use clap::Parser;
 use monty::{
     LimitedTracker, MontyObject, MontyRepl, MontyRun, NameLookupResult, NoLimitTracker, PrintWriter,
-    ReplContinuationMode, ResourceLimits, ResourceTracker, RunProgress, detect_repl_continuation_mode,
+    ReplContinuationMode, ReplProgress, ResourceLimits, ResourceTracker, RunProgress, detect_repl_continuation_mode,
+    fs::{MountMode, MountTable, OverlayState},
 };
 use rustyline::{DefaultEditor, error::ReadlineError};
 // disabled due to format failing on https://github.com/pydantic/monty/pull/75 where CI and local wanted imports ordered differently
@@ -34,6 +35,7 @@ const ARROW: &str = "❯";
 /// - `monty -c <cmd>` executes `<cmd>` as a Python program
 /// - `monty -i` starts an empty interactive REPL
 /// - `monty -i <file>` seeds the REPL with file contents
+/// - `monty -m host::virtual[::mode[::write_limit_bytes]]` mounts a directory into the sandbox
 #[derive(Parser)]
 #[command(version)]
 struct Cli {
@@ -51,6 +53,16 @@ struct Cli {
 
     /// Python file to execute.
     file: Option<String>,
+
+    /// Mount a host directory into the sandbox.
+    ///
+    /// Format: `/host/path::/virtual/path[::mode[::write_limit_bytes]]`
+    ///
+    /// Uses `::` as separator to avoid ambiguity with Windows drive letters.
+    /// Modes: `ro` (read-only, default), `rw` (read-write), `overlay` (in-memory overlay).
+    /// `write_limit_bytes` is optional and applies to all write modes.
+    #[arg(short = 'm', long = "mount")]
+    mounts: Vec<String>,
 
     /// Maximum number of heap allocations before execution is terminated.
     #[arg(long)]
@@ -116,15 +128,24 @@ fn main() -> ExitCode {
     let type_check_enabled = cli.type_check;
     let limits = cli.resource_limits();
 
+    // Build mount table early to fail fast on bad -m args.
+    let mount_table = match build_mount_table(&cli.mounts) {
+        Ok(mt) => mt,
+        Err(err) => {
+            eprintln!("{BOLD_RED}error{RESET}: {err}");
+            return ExitCode::FAILURE;
+        }
+    };
+
     if let Some(cmd) = cli.command {
         if cli.file.is_some() {
             eprintln!("{BOLD_RED}error{RESET}: cannot specify both -c and a file");
             return ExitCode::FAILURE;
         }
         return if cli.interactive {
-            dispatch_repl("<string>", &cmd, limits)
+            dispatch_repl("<string>", &cmd, limits, mount_table)
         } else {
-            dispatch_script("<string>", cmd, type_check_enabled, limits)
+            dispatch_script("<string>", cmd, type_check_enabled, limits, mount_table)
         };
     }
 
@@ -137,13 +158,13 @@ fn main() -> ExitCode {
             }
         };
         return if cli.interactive {
-            dispatch_repl(file_path, &code, limits)
+            dispatch_repl(file_path, &code, limits, mount_table)
         } else {
-            dispatch_script(file_path, code, type_check_enabled, limits)
+            dispatch_script(file_path, code, type_check_enabled, limits, mount_table)
         };
     }
 
-    dispatch_repl("repl.py", "", limits)
+    dispatch_repl("repl.py", "", limits, mount_table)
 }
 
 /// Dispatches script execution with either `LimitedTracker` or `NoLimitTracker`.
@@ -155,20 +176,32 @@ fn dispatch_script(
     code: String,
     type_check_enabled: bool,
     limits: Option<ResourceLimits>,
+    mount_table: Option<MountTable>,
 ) -> ExitCode {
     if let Some(limits) = limits {
-        run_script(file_path, code, type_check_enabled, LimitedTracker::new(limits))
+        run_script(
+            file_path,
+            code,
+            type_check_enabled,
+            LimitedTracker::new(limits),
+            mount_table,
+        )
     } else {
-        run_script(file_path, code, type_check_enabled, NoLimitTracker)
+        run_script(file_path, code, type_check_enabled, NoLimitTracker, mount_table)
     }
 }
 
 /// Dispatches REPL startup with either `LimitedTracker` or `NoLimitTracker`.
-fn dispatch_repl(file_path: &str, code: &str, limits: Option<ResourceLimits>) -> ExitCode {
+fn dispatch_repl(
+    file_path: &str,
+    code: &str,
+    limits: Option<ResourceLimits>,
+    mount_table: Option<MountTable>,
+) -> ExitCode {
     if let Some(limits) = limits {
-        run_repl(file_path, code, LimitedTracker::new(limits))
+        run_repl(file_path, code, LimitedTracker::new(limits), mount_table)
     } else {
-        run_repl(file_path, code, NoLimitTracker)
+        run_repl(file_path, code, NoLimitTracker, mount_table)
     }
 }
 
@@ -176,12 +209,18 @@ fn dispatch_repl(file_path: &str, code: &str, limits: Option<ResourceLimits>) ->
 ///
 /// This path keeps the existing CLI behavior: run type-checking for visibility,
 /// compile the file as a full module, and execute it either through direct
-/// execution or through the suspendable progress loop when external functions
-/// are enabled.
+/// execution or through the suspendable progress loop when mounts or external
+/// functions are enabled.
 ///
 /// Returns `ExitCode::SUCCESS` for successful execution and
 /// `ExitCode::FAILURE` for parse/type/runtime failures.
-fn run_script(file_path: &str, code: String, type_check_enabled: bool, tracker: impl ResourceTracker) -> ExitCode {
+fn run_script(
+    file_path: &str,
+    code: String,
+    type_check_enabled: bool,
+    tracker: impl ResourceTracker,
+    mut mount_table: Option<MountTable>,
+) -> ExitCode {
     if type_check_enabled {
         let start = Instant::now();
         if let Some(failure) = type_check(&SourceFile::new(&code, file_path), None).unwrap() {
@@ -210,7 +249,9 @@ fn run_script(file_path: &str, code: String, type_check_enabled: bool, tracker: 
         }
     };
 
-    if EXT_FUNCTIONS {
+    // Use the start() + loop path when mounts are configured or external functions
+    // are enabled, since we need to intercept OsCalls.
+    if EXT_FUNCTIONS || mount_table.is_some() {
         let start = Instant::now();
         let progress = match runner.start(inputs, tracker, PrintWriter::Stdout) {
             Ok(p) => p,
@@ -224,7 +265,7 @@ fn run_script(file_path: &str, code: String, type_check_enabled: bool, tracker: 
             }
         };
 
-        match run_until_complete(progress) {
+        match run_until_complete(progress, &mut mount_table) {
             Ok(value) => {
                 let elapsed = start.elapsed();
                 eprintln!(
@@ -274,11 +315,16 @@ fn run_script(file_path: &str, code: String, type_check_enabled: bool, tracker: 
 ///
 /// Returns `ExitCode::SUCCESS` on EOF or `exit`, and `ExitCode::FAILURE` on
 /// initialization or I/O errors.
-fn run_repl(file_path: &str, code: &str, tracker: impl ResourceTracker) -> ExitCode {
-    let mut repl = MontyRepl::new(file_path, tracker);
+fn run_repl(
+    file_path: &str,
+    code: &str,
+    tracker: impl ResourceTracker,
+    mut mount_table: Option<MountTable>,
+) -> ExitCode {
+    let mut repl = Some(MontyRepl::new(file_path, tracker));
 
     if !code.is_empty() {
-        execute_repl_snippet(&mut repl, code);
+        execute_repl_snippet(&mut repl, code, &mut mount_table);
     }
 
     eprintln!("Monty v{} REPL. Type `exit` to exit.", env!("CARGO_PKG_VERSION"));
@@ -329,7 +375,7 @@ fn run_repl(file_path: &str, code: &str, tracker: impl ResourceTracker) -> ExitC
 
         if continuation_mode == ReplContinuationMode::IncompleteBlock && snippet.is_empty() {
             let _ = rl.add_history_entry(pending_snippet.trim_end());
-            execute_repl_snippet(&mut repl, &pending_snippet);
+            execute_repl_snippet(&mut repl, &pending_snippet, &mut mount_table);
             pending_snippet.clear();
             continuation_mode = ReplContinuationMode::Complete;
             continue;
@@ -342,7 +388,7 @@ fn run_repl(file_path: &str, code: &str, tracker: impl ResourceTracker) -> ExitC
                     continue;
                 }
                 let _ = rl.add_history_entry(pending_snippet.trim_end());
-                execute_repl_snippet(&mut repl, &pending_snippet);
+                execute_repl_snippet(&mut repl, &pending_snippet, &mut mount_table);
                 pending_snippet.clear();
                 continuation_mode = ReplContinuationMode::Complete;
             }
@@ -357,15 +403,87 @@ fn run_repl(file_path: &str, code: &str, tracker: impl ResourceTracker) -> ExitC
 }
 
 /// Executes one collected REPL snippet, printing the result or error.
-fn execute_repl_snippet(repl: &mut MontyRepl<impl ResourceTracker>, snippet: &str) {
-    match repl.feed_run(snippet, vec![], PrintWriter::Stdout) {
-        Ok(output) => {
-            if output != MontyObject::None {
-                println!("{output}");
+///
+/// When mounts are configured, uses `feed_start()` + a progress loop to intercept
+/// `OsCall`s. Otherwise uses the simpler `feed_run()` path.
+///
+/// Takes `&mut Option<MontyRepl<T>>` because `feed_start` consumes the repl —
+/// we `take()` it out, run to completion, then put it back.
+fn execute_repl_snippet(
+    repl: &mut Option<MontyRepl<impl ResourceTracker>>,
+    snippet: &str,
+    mount_table: &mut Option<MountTable>,
+) {
+    let r = repl.take().expect("repl must be present");
+
+    if mount_table.is_some() {
+        match execute_repl_with_mounts(r, snippet, mount_table) {
+            Ok((returned_repl, output)) => {
+                if output != MontyObject::None {
+                    println!("{output}");
+                }
+                *repl = Some(returned_repl);
+            }
+            Err((returned_repl, err)) => {
+                eprintln!("{BOLD_RED}error{RESET}: {err}");
+                *repl = Some(returned_repl);
             }
         }
-        Err(err) => {
-            eprintln!("{BOLD_RED}error{RESET}: {err}");
+    } else {
+        // No mounts — use the simple feed_run path (takes &mut self).
+        let mut r = r;
+        match r.feed_run(snippet, vec![], PrintWriter::Stdout) {
+            Ok(output) => {
+                if output != MontyObject::None {
+                    println!("{output}");
+                }
+            }
+            Err(err) => {
+                eprintln!("{BOLD_RED}error{RESET}: {err}");
+            }
+        }
+        *repl = Some(r);
+    }
+}
+
+/// Runs a REPL snippet with mount support via the `feed_start` + progress loop path.
+///
+/// Returns `Ok((repl, value))` on success, or `Err((repl, message))` on failure.
+/// The repl is always returned so the caller can continue the session.
+#[expect(clippy::result_large_err)]
+fn execute_repl_with_mounts<T: ResourceTracker>(
+    r: MontyRepl<T>,
+    snippet: &str,
+    mount_table: &mut Option<MountTable>,
+) -> Result<(MontyRepl<T>, MontyObject), (MontyRepl<T>, String)> {
+    let mut progress = match r.feed_start(snippet, vec![], PrintWriter::Stdout) {
+        Ok(p) => p,
+        Err(err) => return Err((err.repl, format!("{}", err.error))),
+    };
+
+    loop {
+        match progress {
+            ReplProgress::Complete { repl, value } => return Ok((repl, value)),
+            ReplProgress::OsCall(call) => {
+                let result = handle_os_call(call.function, &call.args, &call.kwargs, mount_table);
+                match call.resume(result, PrintWriter::Stdout) {
+                    Ok(p) => progress = p,
+                    Err(err) => return Err((err.repl, format!("{}", err.error))),
+                }
+            }
+            ReplProgress::FunctionCall(call) => {
+                return Err((
+                    call.into_repl(),
+                    "external function calls not supported in CLI".to_owned(),
+                ));
+            }
+            ReplProgress::NameLookup(lookup) => match lookup.resume(NameLookupResult::Undefined, PrintWriter::Stdout) {
+                Ok(p) => progress = p,
+                Err(err) => return Err((err.repl, format!("{}", err.error))),
+            },
+            ReplProgress::ResolveFutures(state) => {
+                return Err((state.into_repl(), "async futures not supported in CLI".to_owned()));
+            }
         }
     }
 }
@@ -376,9 +494,13 @@ fn execute_repl_snippet(repl: &mut MontyRepl<impl ResourceTracker>, snippet: &st
 /// external calls and returns the final value when execution reaches
 /// `RunProgress::Complete`.
 ///
-/// Returns an error string for unsupported suspend points (OS calls or async
-/// futures) or invalid external-function dispatch.
-fn run_until_complete(mut progress: RunProgress<impl ResourceTracker>) -> Result<MontyObject, String> {
+/// When a mount table is provided, filesystem `OsCall`s are handled via the
+/// mount table. Non-filesystem `OsCall`s and `OsCall`s without a mount table
+/// produce an error.
+fn run_until_complete(
+    mut progress: RunProgress<impl ResourceTracker>,
+    mount_table: &mut Option<MountTable>,
+) -> Result<MontyObject, String> {
     loop {
         match progress {
             RunProgress::Complete(value) => return Ok(value),
@@ -408,12 +530,33 @@ fn run_until_complete(mut progress: RunProgress<impl ResourceTracker>) -> Result
                     .map_err(|err| format!("{err}"))?;
             }
             RunProgress::OsCall(call) => {
-                return Err(format!(
-                    "OS calls not supported in CLI: {:?}({:?})",
-                    call.function, call.args
-                ));
+                let result = handle_os_call(call.function, &call.args, &call.kwargs, mount_table);
+                progress = call
+                    .resume(result, PrintWriter::Stdout)
+                    .map_err(|err| format!("{err}"))?;
             }
         }
+    }
+}
+
+/// Handles a filesystem `OsCall` using the mount table if available.
+///
+/// Returns the operation result as an `ExtFunctionResult` — either a successful
+/// `MontyObject` or an exception for errors / unsupported operations.
+fn handle_os_call(
+    function: monty::OsFunction,
+    args: &[MontyObject],
+    kwargs: &[(MontyObject, MontyObject)],
+    mount_table: &mut Option<MountTable>,
+) -> monty::ExtFunctionResult {
+    if let Some(mounts) = mount_table.as_mut() {
+        match mounts.handle_os_call(function, args, kwargs) {
+            Some(Ok(obj)) => obj.into(),
+            Some(Err(err)) => err.into_exception().into(),
+            None => function.on_no_handler(args).into(),
+        }
+    } else {
+        function.on_no_handler(args).into()
     }
 }
 
@@ -439,6 +582,90 @@ fn resolve_external_call(function_name: &str, args: &[MontyObject]) -> Result<Mo
         Err(format!("add_ints requires integer arguments, got {args:?}"))
     }
 }
+
+// =============================================================================
+// Mount parsing
+// =============================================================================
+
+/// Builds a [`MountTable`] from CLI `-m` arguments.
+///
+/// Returns `None` if no mounts were specified. Fails early with a descriptive
+/// error if any mount spec is malformed or the host path doesn't exist.
+fn build_mount_table(mount_args: &[String]) -> Result<Option<MountTable>, String> {
+    if mount_args.is_empty() {
+        return Ok(None);
+    }
+
+    let mut table = MountTable::new();
+    for arg in mount_args {
+        let (host_path, virtual_path, mode, write_bytes_limit) = parse_mount(arg)?;
+        table
+            .mount(&virtual_path, &host_path, mode, write_bytes_limit)
+            .map_err(|e| format!("mount {arg}: {e}"))?;
+    }
+    Ok(Some(table))
+}
+
+/// Parses a single mount specification string.
+///
+/// Format: `host_path::virtual_path[::mode[::write_limit_bytes]]`
+///
+/// Uses `::` as the separator to avoid ambiguity with Windows drive letters
+/// (e.g., `C:\data::/mnt::rw::1000000`).
+///
+/// Mode defaults to `ro` (read-only) when omitted. Valid modes:
+/// - `ro` — read-only
+/// - `rw` — read-write
+/// - `overlay` — in-memory copy-on-write overlay
+fn parse_mount(spec: &str) -> Result<(String, String, MountMode, Option<u64>), String> {
+    let parts: Vec<&str> = spec.split("::").collect();
+
+    let (host_path, virtual_path, mode_str, limit_str) = match parts.len() {
+        2 => (parts[0], parts[1], "ro", None),
+        3 => (parts[0], parts[1], parts[2], None),
+        4 => (parts[0], parts[1], parts[2], Some(parts[3])),
+        _ => {
+            return Err(format!(
+                "invalid mount spec '{spec}': expected host_path::virtual_path[::mode[::write_limit_bytes]]"
+            ));
+        }
+    };
+
+    if host_path.is_empty() || virtual_path.is_empty() {
+        return Err(format!(
+            "invalid mount spec '{spec}': host and virtual paths must not be empty"
+        ));
+    }
+
+    let mode = match mode_str {
+        "ro" => MountMode::ReadOnly,
+        "rw" => MountMode::ReadWrite,
+        "overlay" => MountMode::OverlayMemory(OverlayState::new()),
+        other => {
+            return Err(format!(
+                "invalid mount mode '{other}' in '{spec}': expected 'ro', 'rw', or 'overlay'"
+            ));
+        }
+    };
+
+    let write_bytes_limit = match limit_str {
+        Some("") => {
+            return Err(format!("invalid write limit in '{spec}': value must not be empty"));
+        }
+        Some(limit) => Some(
+            limit
+                .parse::<u64>()
+                .map_err(|_| format!("invalid write limit '{limit}' in '{spec}': expected a non-negative integer"))?,
+        ),
+        None => None,
+    };
+
+    Ok((host_path.to_owned(), virtual_path.to_owned(), mode, write_bytes_limit))
+}
+
+// =============================================================================
+// File I/O and formatting utilities
+// =============================================================================
 
 /// Reads a Python source file from disk, returning its contents as a string.
 ///

@@ -217,7 +217,7 @@ where
                 progress_guard.disarm();
                 return Python::attach(|py| {
                     let owner = repl_owner.bind(py).get();
-                    owner.put_repl(EitherRepl::from_core(repl));
+                    owner.put_repl_after_commit(EitherRepl::from_core(repl));
                     cleanup_notifier.finish();
                     monty_to_py(py, &value, &dc_registry)
                 });
@@ -605,7 +605,7 @@ fn restore_repl<T: ResourceTracker>(
 {
     Python::attach(|py| {
         let owner = repl_owner.bind(py).get();
-        owner.put_repl(EitherRepl::from_core(repl));
+        owner.put_repl_after_rollback(EitherRepl::from_core(repl));
     });
     cleanup_notifier.finish();
 }
@@ -635,7 +635,7 @@ where
 {
     let py_err = Python::attach(|py| {
         let owner = repl_owner.bind(py).get();
-        owner.put_repl(EitherRepl::from_core(err.repl));
+        owner.put_repl_after_rollback(EitherRepl::from_core(err.repl));
         MontyError::new_err(py, err.error)
     });
     cleanup_notifier.finish();

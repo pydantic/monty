@@ -73,15 +73,16 @@ pub fn sort_indices(
 
 /// Rearranges `items` in-place according to a permutation of indices.
 ///
-/// After calling this, `items[i]` will hold the value that was originally at
+/// After calling this, `items[i]` will hold the element that was originally at
 /// `items[indices[i]]`. The algorithm chases permutation cycles and swaps
 /// elements into their final positions, using O(1) extra memory beyond the
 /// `indices` slice (which is mutated to track visited positions).
 ///
-/// Each element is moved at most twice (one swap = two moves), so the total
-/// work is O(n) moves. This is at most 2x the moves of building a fresh
-/// `Vec`, but avoids allocating a second buffer.
-pub fn apply_permutation(items: &mut [Value], indices: &mut [usize]) {
+/// The helper is generic so callers can avoid allocating a second buffer when
+/// reordering either raw `Value`s or compound structures that already own their
+/// contents. Each element is moved at most twice (one swap = two moves), so
+/// the total work is O(n) moves while preserving the target permutation.
+pub fn apply_permutation<T>(items: &mut [T], indices: &mut [usize]) {
     for i in 0..items.len() {
         if indices[i] == i {
             continue;

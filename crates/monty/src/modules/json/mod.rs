@@ -12,6 +12,9 @@
 
 mod dump;
 mod load;
+mod string_cache;
+
+pub(crate) use string_cache::JsonStringCache;
 
 use super::ModuleFunctions;
 use crate::{
