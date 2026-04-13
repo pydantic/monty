@@ -10,6 +10,8 @@ from .os_access import AbstractOS, OsFunction
 
 __all__ = [
     '__version__',
+    'CollectStreams',
+    'CollectString',
     'Monty',
     'MontyRepl',
     'MontyComplete',
@@ -26,6 +28,24 @@ __all__ = [
     'load_repl_snapshot',
 ]
 __version__: str
+
+@final
+class CollectStreams:
+    """Collect printed output as `(stream, text)` tuples."""
+
+    def __new__(cls) -> CollectStreams: ...
+    @property
+    def output(self) -> list[tuple[Literal['stdout', 'stderr'], str]]:
+        """Collected output so far."""
+
+@final
+class CollectString:
+    """Collect printed output as one concatenated string."""
+
+    def __new__(cls) -> CollectString: ...
+    @property
+    def output(self) -> str:
+        """Collected output so far."""
 
 @final
 class MountDir:
@@ -106,7 +126,7 @@ class Monty:
         inputs: dict[str, Any] | None = None,
         limits: ResourceLimits | None = None,
         external_functions: dict[str, Callable[..., Any]] | None = None,
-        print_callback: Callable[[Literal['stdout'], str], None] | None = None,
+        print_callback: Callable[[Literal['stdout'], str], None] | CollectStreams | CollectString | None = None,
         mount: MountDir | list[MountDir] | None = None,
         os: Callable[[OsFunction, tuple[Any, ...], dict[str, Any]], Any] | None = None,
     ) -> Any:
@@ -119,17 +139,18 @@ class Monty:
             inputs: Dict of input variable values (must match names from __init__)
             limits: Optional resource limits configuration
             external_functions: Dict of external function callbacks
-            print_callback: Optional callback for print output
+            print_callback: `None` (stdout), a callable `(stream, text) -> None`,
+                `CollectStreams()`, or `CollectString()`.
             os: Optional callback for OS calls.
                 Called with (function_name, args) where function_name is like 'Path.exists'
                 and args is a tuple of arguments. Must return the appropriate value for the
                 OS function (e.g., bool for exists(), stat_result for stat()).
 
         Returns:
-            The result of the last expression in the code
+            The result of the last expression in the code.
 
         Raises:
-            MontyRuntimeError: If the code raises an exception during execution
+            MontyRuntimeError: If the code raises an exception during execution.
         """
 
     def start(
@@ -137,7 +158,7 @@ class Monty:
         *,
         inputs: dict[str, Any] | None = None,
         limits: ResourceLimits | None = None,
-        print_callback: Callable[[Literal['stdout'], str], None] | None = None,
+        print_callback: Callable[[Literal['stdout'], str], None] | CollectStreams | CollectString | None = None,
     ) -> FunctionSnapshot | NameLookupSnapshot | FutureSnapshot | MontyComplete:
         """
         Start the code execution and return a progress object, or completion.
@@ -167,7 +188,7 @@ class Monty:
         inputs: dict[str, Any] | None = None,
         limits: ResourceLimits | None = None,
         external_functions: dict[str, Callable[..., Any]] | None = None,
-        print_callback: Callable[[Literal['stdout'], str], None] | None = None,
+        print_callback: Callable[[Literal['stdout'], str], None] | CollectStreams | CollectString | None = None,
         os: AbstractOS | None = None,
     ) -> Coroutine[Any, Any, Any]:
         """
@@ -180,14 +201,15 @@ class Monty:
             inputs: Dict of input variable values (must match names from __init__)
             limits: Optional resource limits configuration
             external_functions: Dict of external function callbacks (sync or async)
-            print_callback: Optional callback for print output
+            print_callback: `None` (stdout), a callable `(stream, text) -> None`,
+                `CollectStreams()`, or `CollectString()`.
             os: Optional OS access handler for filesystem operations
 
         Returns:
-            A coroutine that resolves to the result of the last expression
+            A coroutine that resolves to the result of the last expression.
 
         Raises:
-            MontyRuntimeError: If the code raises an exception during execution
+            MontyRuntimeError: If the code raises an exception during execution.
         """
 
     def dump(self) -> bytes:
@@ -313,7 +335,7 @@ class MontyRepl:
         *,
         inputs: dict[str, Any] | None = None,
         external_functions: dict[str, Callable[..., Any]] | None = None,
-        print_callback: Callable[[Literal['stdout'], str], None] | None = None,
+        print_callback: Callable[[Literal['stdout'], str], None] | CollectStreams | CollectString | None = None,
         mount: MountDir | list[MountDir] | None = None,
         os: Callable[[str, tuple[Any, ...], dict[str, Any]], Any] | None = None,
         skip_type_check: bool = False,
@@ -345,7 +367,7 @@ class MontyRepl:
         *,
         inputs: dict[str, Any] | None = None,
         external_functions: dict[str, Callable[..., Any]] | None = None,
-        print_callback: Callable[[Literal['stdout'], str], None] | None = None,
+        print_callback: Callable[[Literal['stdout'], str], None] | CollectStreams | CollectString | None = None,
         os: AbstractOS | None = None,
         skip_type_check: bool = False,
     ) -> Coroutine[Any, Any, Any]:
@@ -379,7 +401,7 @@ class MontyRepl:
         code: str,
         *,
         inputs: dict[str, Any] | None = None,
-        print_callback: Callable[[Literal['stdout'], str], None] | None = None,
+        print_callback: Callable[[Literal['stdout'], str], None] | CollectStreams | CollectString | None = None,
         skip_type_check: bool = False,
     ) -> FunctionSnapshot | NameLookupSnapshot | FutureSnapshot | MontyComplete:
         """
@@ -509,8 +531,8 @@ class FunctionSnapshot:
         The serialized data can be restored with `load_snapshot()` or `load_repl_snapshot()`.
         This allows suspending execution and resuming later, potentially in a different process.
 
-        Note: The `print_callback` is not serialized and must be re-provided via
-        `set_print_callback()` after loading if print output is needed.
+        Note: The `print_callback` is not serialized and must be re-provided to
+        `load_snapshot()` or `load_repl_snapshot()` when the snapshot is restored.
 
         Returns:
             Bytes containing the serialized FunctionSnapshot instance.
@@ -574,8 +596,8 @@ class NameLookupSnapshot:
         The serialized data can be restored with `load_snapshot()` or `load_repl_snapshot()`.
         This allows suspending execution and resuming later, potentially in a different process.
 
-        Note: The `print_callback` is not serialized and must be re-provided via
-        `set_print_callback()` after loading if print output is needed.
+        Note: The `print_callback` is not serialized and must be re-provided to
+        `load_snapshot()` or `load_repl_snapshot()` when the snapshot is restored.
 
         Returns:
             Bytes containing the serialized NameLookupSnapshot instance.
@@ -640,8 +662,8 @@ class FutureSnapshot:
         The serialized data can be restored with `load_snapshot()` or `load_repl_snapshot()`.
         This allows suspending execution and resuming later, potentially in a different process.
 
-        Note: The `print_callback` is not serialized and must be re-provided via
-        `set_print_callback()` after loading if print output is needed.
+        Note: The `print_callback` is not serialized and must be re-provided to
+        `load_snapshot()` or `load_repl_snapshot()` when the snapshot is restored.
 
         Returns:
             Bytes containing the serialized FutureSnapshot instance.
@@ -775,7 +797,7 @@ class Frame:
 def load_snapshot(
     data: bytes,
     *,
-    print_callback: Callable[[Literal['stdout'], str], None] | None = None,
+    print_callback: Callable[[Literal['stdout'], str], None] | CollectStreams | CollectString | None = None,
     dataclass_registry: list[type] | None = None,
 ) -> FunctionSnapshot | NameLookupSnapshot | FutureSnapshot:
     """Load a non-REPL snapshot from serialized bytes.
@@ -799,7 +821,7 @@ def load_snapshot(
 def load_repl_snapshot(
     data: bytes,
     *,
-    print_callback: Callable[[Literal['stdout'], str], None] | None = None,
+    print_callback: Callable[[Literal['stdout'], str], None] | CollectStreams | CollectString | None = None,
     dataclass_registry: list[type] | None = None,
 ) -> tuple[FunctionSnapshot | NameLookupSnapshot | FutureSnapshot, MontyRepl]:
     """Load a REPL snapshot from serialized bytes.

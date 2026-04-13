@@ -11,8 +11,8 @@
 use std::mem::drop;
 
 use monty::{
-    ExcType, ExtFunctionResult, MontyException, MontyObject, MontyRepl, NameLookupResult, OsFunction, PrintWriter,
-    ReplProgress, ReplStartError, ResourceTracker, RunProgress,
+    ExcType, ExtFunctionResult, MontyException, MontyObject, MontyRepl, NameLookupResult, OsFunction, ReplProgress,
+    ReplStartError, ResourceTracker, RunProgress,
 };
 use pyo3::{
     exceptions::PyRuntimeError,
@@ -33,7 +33,7 @@ use crate::{
         CallResult, ExternalFunctionRegistry, dispatch_method_call_or_coroutine, py_err_to_ext_result,
         py_obj_to_ext_result,
     },
-    monty_cls::CallbackStringPrint,
+    print_target::PrintTarget,
     repl::{EitherRepl, FromCoreRepl, PyMontyRepl},
 };
 
@@ -89,13 +89,13 @@ impl ReplCleanupNotifier {
 
 /// Resumes a snapshot in a blocking thread via `spawn_blocking`.
 ///
-/// Moves the snapshot and its resume input into a blocking task, creates
-/// a `PrintWriter` from the optional callback, and calls `resume()`.
+/// Moves the snapshot and its resume input into a blocking task, builds a
+/// `PrintWriter` from a fresh handle to the print target, and calls `resume()`.
 /// Returns the raw result — callers handle error mapping (which differs
 /// between Run and REPL paths).
 macro_rules! spawn_resume {
-    ($snapshot:expr, $input:expr, $print_cb:expr) => {
-        spawn_blocking(move || with_print_writer($print_cb, |writer| $snapshot.resume($input, writer)))
+    ($snapshot:expr, $input:expr, $print_target:expr) => {
+        spawn_blocking(move || $print_target.with_writer(|writer| $snapshot.resume($input, writer)))
             .await
             .map_err(join_error_to_py)?
     };
@@ -130,7 +130,7 @@ pub(crate) async fn dispatch_loop_run<T: ResourceTracker + Send + 'static>(
     external_functions: Option<Py<PyDict>>,
     os: Option<Py<PyAny>>,
     dc_registry: DcRegistry,
-    print_callback: Option<Py<PyAny>>,
+    print_target: PrintTarget,
 ) -> PyResult<Py<PyAny>> {
     let mut join_set: JoinSet<(u32, ExtFunctionResult)> = JoinSet::new();
 
@@ -151,35 +151,35 @@ pub(crate) async fn dispatch_loop_run<T: ResourceTracker + Send + 'static>(
 
                 match call_result {
                     CallResult::Sync(result) => {
-                        let print_cb = clone_py_opt(print_callback.as_ref());
-                        progress = spawn_resume!(call, result, print_cb)
+                        let target = print_target.clone_handle_detached();
+                        progress = spawn_resume!(call, result, target)
                             .map_err(|e| Python::attach(|py| MontyError::new_err(py, e)))?;
                     }
                     CallResult::Coroutine(coro) => {
                         let call_id = call.call_id;
                         spawn_coroutine_task(&mut join_set, call_id, coro, &dc_registry)?;
-                        let print_cb = clone_py_opt(print_callback.as_ref());
-                        progress = spawn_resume!(call, ExtFunctionResult::Future(call_id), print_cb)
+                        let target = print_target.clone_handle_detached();
+                        progress = spawn_resume!(call, ExtFunctionResult::Future(call_id), target)
                             .map_err(|e| Python::attach(|py| MontyError::new_err(py, e)))?;
                     }
                 }
             }
             RunProgress::OsCall(call) => {
                 let result = dispatch_os_call_py(call.function, &call.args, &call.kwargs, os.as_ref(), &dc_registry);
-                let print_cb = clone_py_opt(print_callback.as_ref());
-                progress = spawn_resume!(call, result, print_cb)
-                    .map_err(|e| Python::attach(|py| MontyError::new_err(py, e)))?;
+                let target = print_target.clone_handle_detached();
+                progress =
+                    spawn_resume!(call, result, target).map_err(|e| Python::attach(|py| MontyError::new_err(py, e)))?;
             }
             RunProgress::NameLookup(lookup) => {
                 let result = resolve_name_lookup(&lookup.name, external_functions.as_ref());
-                let print_cb = clone_py_opt(print_callback.as_ref());
-                progress = spawn_resume!(lookup, result, print_cb)
+                let target = print_target.clone_handle_detached();
+                progress = spawn_resume!(lookup, result, target)
                     .map_err(|e| Python::attach(|py| MontyError::new_err(py, e)))?;
             }
             RunProgress::ResolveFutures(state) => {
                 let results = wait_for_futures(&mut join_set, state.pending_call_ids()).await?;
-                let print_cb = clone_py_opt(print_callback.as_ref());
-                progress = spawn_resume!(state, results, print_cb)
+                let target = print_target.clone_handle_detached();
+                progress = spawn_resume!(state, results, target)
                     .map_err(|e| Python::attach(|py| MontyError::new_err(py, e)))?;
             }
         }
@@ -203,7 +203,7 @@ pub(crate) async fn dispatch_loop_repl<T: ResourceTracker + Send + 'static>(
     external_functions: Option<Py<PyDict>>,
     os: Option<Py<PyAny>>,
     dc_registry: DcRegistry,
-    print_callback: Option<Py<PyAny>>,
+    print_target: PrintTarget,
 ) -> PyResult<Py<PyAny>>
 where
     EitherRepl: FromCoreRepl<T>,
@@ -234,10 +234,10 @@ where
 
                 match call_result {
                     CallResult::Sync(result) => {
-                        let print_cb = clone_py_opt(print_callback.as_ref());
+                        let target = print_target.clone_handle_detached();
                         let next_progress =
-                            await_repl_transition(&repl_owner, cleanup_notifier.clone(), print_cb, move |print_cb| {
-                                with_print_writer(print_cb, |writer| call.resume(result, writer))
+                            await_repl_transition(&repl_owner, cleanup_notifier.clone(), target, move |target| {
+                                target.with_writer(|writer| call.resume(result, writer))
                             })
                             .await?;
                         progress_guard.store(next_progress);
@@ -248,12 +248,10 @@ where
                             restore_repl(&repl_owner, &cleanup_notifier, call.into_repl());
                             return Err(e);
                         }
-                        let print_cb = clone_py_opt(print_callback.as_ref());
+                        let target = print_target.clone_handle_detached();
                         let next_progress =
-                            await_repl_transition(&repl_owner, cleanup_notifier.clone(), print_cb, move |print_cb| {
-                                with_print_writer(print_cb, |writer| {
-                                    call.resume(ExtFunctionResult::Future(call_id), writer)
-                                })
+                            await_repl_transition(&repl_owner, cleanup_notifier.clone(), target, move |target| {
+                                target.with_writer(|writer| call.resume(ExtFunctionResult::Future(call_id), writer))
                             })
                             .await?;
                         progress_guard.store(next_progress);
@@ -262,20 +260,20 @@ where
             }
             ReplProgress::OsCall(call) => {
                 let result = dispatch_os_call_py(call.function, &call.args, &call.kwargs, os.as_ref(), &dc_registry);
-                let print_cb = clone_py_opt(print_callback.as_ref());
+                let target = print_target.clone_handle_detached();
                 let next_progress =
-                    await_repl_transition(&repl_owner, cleanup_notifier.clone(), print_cb, move |print_cb| {
-                        with_print_writer(print_cb, |writer| call.resume(result, writer))
+                    await_repl_transition(&repl_owner, cleanup_notifier.clone(), target, move |target| {
+                        target.with_writer(|writer| call.resume(result, writer))
                     })
                     .await?;
                 progress_guard.store(next_progress);
             }
             ReplProgress::NameLookup(lookup) => {
                 let result = resolve_name_lookup(&lookup.name, external_functions.as_ref());
-                let print_cb = clone_py_opt(print_callback.as_ref());
+                let target = print_target.clone_handle_detached();
                 let next_progress =
-                    await_repl_transition(&repl_owner, cleanup_notifier.clone(), print_cb, move |print_cb| {
-                        with_print_writer(print_cb, |writer| lookup.resume(result, writer))
+                    await_repl_transition(&repl_owner, cleanup_notifier.clone(), target, move |target| {
+                        target.with_writer(|writer| lookup.resume(result, writer))
                     })
                     .await?;
                 progress_guard.store(next_progress);
@@ -287,10 +285,10 @@ where
                 let ReplProgress::ResolveFutures(state) = progress_guard.take() else {
                     unreachable!("ResolveFutures guard state changed unexpectedly");
                 };
-                let print_cb = clone_py_opt(print_callback.as_ref());
+                let target = print_target.clone_handle_detached();
                 let next_progress =
-                    await_repl_transition(&repl_owner, cleanup_notifier.clone(), print_cb, move |print_cb| {
-                        with_print_writer(print_cb, |writer| state.resume(results, writer))
+                    await_repl_transition(&repl_owner, cleanup_notifier.clone(), target, move |target| {
+                        target.with_writer(|writer| state.resume(results, writer))
                     })
                     .await?;
                 progress_guard.store(next_progress);
@@ -303,23 +301,8 @@ where
 // Shared helpers
 // ---------------------------------------------------------------------------
 
-/// Creates a `PrintWriter` from an optional print callback and invokes `f` with it.
-///
-/// If a callback is provided, creates a `CallbackStringPrint` that acquires
-/// the GIL internally via `Python::attach()` when the VM calls print.
-/// Otherwise uses `PrintWriter::Stdout`.
-///
-/// Uses a closure pattern because `PrintWriter::Callback` borrows the
-/// `CallbackStringPrint`, so the writer can't outlive this function.
-pub(crate) fn with_print_writer<R>(print_callback: Option<Py<PyAny>>, f: impl FnOnce(PrintWriter<'_>) -> R) -> R {
-    match print_callback {
-        Some(cb) => {
-            let mut print_cb = CallbackStringPrint::from_py(cb);
-            f(PrintWriter::Callback(&mut print_cb))
-        }
-        None => f(PrintWriter::Stdout),
-    }
-}
+// `PrintWriter` construction has moved to `PrintTarget::with_writer` in
+// `print_target.rs` — see that module for the Stdout/Callback/Collect dispatch.
 
 /// Dispatches a function call to either a dataclass method or an external function,
 /// detecting coroutines for async dispatch.
@@ -483,11 +466,6 @@ fn join_error_to_py(err: JoinError) -> PyErr {
     PyRuntimeError::new_err(format!("Async task failed: {err}"))
 }
 
-/// Clones an optional `Py<PyAny>` by acquiring the GIL.
-fn clone_py_opt(opt: Option<&Py<PyAny>>) -> Option<Py<PyAny>> {
-    opt.map(|v| Python::attach(|py| v.clone_ref(py)))
-}
-
 /// Clones a REPL owner handle while holding the GIL.
 fn clone_repl_owner(repl_owner: &Py<PyMontyRepl>) -> Py<PyMontyRepl> {
     Python::attach(|py| repl_owner.clone_ref(py))
@@ -503,12 +481,12 @@ fn clone_repl_owner(repl_owner: &Py<PyMontyRepl>) -> Py<PyMontyRepl> {
 pub(crate) async fn await_repl_transition<T, F>(
     repl_owner: &Py<PyMontyRepl>,
     cleanup_notifier: ReplCleanupNotifier,
-    print_callback: Option<Py<PyAny>>,
+    print_target: PrintTarget,
     transition: F,
 ) -> PyResult<ReplProgress<T>>
 where
     T: ResourceTracker + Send + 'static,
-    F: FnOnce(Option<Py<PyAny>>) -> Result<ReplProgress<T>, Box<ReplStartError<T>>> + Send + 'static,
+    F: FnOnce(PrintTarget) -> Result<ReplProgress<T>, Box<ReplStartError<T>>> + Send + 'static,
     EitherRepl: FromCoreRepl<T>,
 {
     let (sender, receiver) = oneshot::channel();
@@ -518,7 +496,7 @@ where
     let receiver_cleanup = cleanup_notifier.clone();
 
     drop(spawn_blocking(move || {
-        let result = transition(print_callback);
+        let result = transition(print_target);
         if let Err(result) = sender.send(result) {
             restore_repl_from_transition_result(&sender_owner, &sender_cleanup, result);
         }
