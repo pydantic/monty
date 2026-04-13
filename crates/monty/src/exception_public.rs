@@ -1,4 +1,7 @@
-use std::fmt::{self, Write};
+use std::{
+    error,
+    fmt::{self, Write},
+};
 
 use crate::{
     exception_private::{ExcType, RawStackFrame},
@@ -8,7 +11,7 @@ use crate::{
 };
 
 /// Public representation of a Monty exception.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct MontyException {
     /// The exception type raised
     exc_type: ExcType,
@@ -69,7 +72,7 @@ impl fmt::Display for MontyException {
     }
 }
 
-impl std::error::Error for MontyException {}
+impl error::Error for MontyException {}
 
 impl MontyException {
     /// Create a new MontyException with the given exception type and message.
@@ -175,7 +178,7 @@ fn frames_are_identical(a: &StackFrame, b: &StackFrame) -> bool {
 /// Monty uses only `~` characters for caret markers in tracebacks, unlike CPython 3.11+
 /// which uses `~` for the function name and `^` for arguments (e.g., `~~~~~~~~~~~^^^^^^^^^^^`).
 /// This simplification is intentional - Monty marks the entire expression span uniformly.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct StackFrame {
     /// The filename where the code is located.
     pub filename: String,

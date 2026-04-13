@@ -67,3 +67,48 @@ assert val == 65, 'bytes getitem value is correct'
 b = b'abc'
 assert b[False] == 97, 'bytes getitem with False'
 assert b[True] == 98, 'bytes getitem with True'
+
+# === Bytes comparisons ===
+assert b'abc' < b'abd', 'bytes < bytes'
+assert b'abd' > b'abc', 'bytes > bytes'
+assert b'abc' <= b'abc', 'bytes <= bytes equal'
+assert b'abc' <= b'abd', 'bytes <= bytes less'
+assert b'abd' >= b'abd', 'bytes >= bytes equal'
+assert b'abd' >= b'abc', 'bytes >= bytes greater'
+
+# Different lengths
+assert b'ab' < b'abc', 'shorter prefix is less'
+assert b'' < b'a', 'empty bytes is less'
+assert b'abc' > b'ab', 'longer bytes with same prefix is greater'
+
+# Non-ASCII byte values
+assert b'\x00' < b'\xff', 'null byte < 0xff'
+assert b'\xfe' < b'\xff', '0xfe < 0xff'
+
+# Sorting
+assert sorted([b'c', b'a', b'b']) == [b'a', b'b', b'c'], 'sorted bytes list'
+assert sorted([b'bb', b'a', b'ba']) == [b'a', b'ba', b'bb'], 'sorted different length bytes'
+
+# === bytes() constructor with keyword argument ===
+assert bytes(source=b'hello') == b'hello', 'bytes source kwarg bytes'
+assert bytes(source=3) == b'\x00\x00\x00', 'bytes source kwarg int'
+
+# bytes() constructor error cases
+import sys
+
+_monty = 'Monty' in sys.version
+
+try:
+    bytes(wrong=3)
+    assert False, 'bytes wrong kwarg should raise'
+except TypeError as e:
+    assert str(e) == "bytes() got an unexpected keyword argument 'wrong'", f'wrong: {e}'
+
+try:
+    bytes(3, source=3)
+    assert False, 'bytes pos + kwarg should raise'
+except TypeError as e:
+    if _monty:
+        assert str(e) == "bytes() got multiple values for argument 'source'", f'dup: {e}'
+    else:
+        assert str(e) == "argument for bytes() given by name ('source') and position (1)", f'dup: {e}'

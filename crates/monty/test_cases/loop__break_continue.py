@@ -104,6 +104,53 @@ for x in [1, 2, 3]:
     result.append('after')  # unreachable
 assert result == ['before'], 'break on first iteration'
 
+
+# === Double break (unreachable second break) ===
+def double_break(value):
+    for i in range(0, 1):
+        break
+        break
+    return value
+
+
+assert double_break('hello') == 'hello', 'double break returns value correctly'
+assert double_break(42) == 42, 'double break works with int'
+
+
+# === Two breaks in different branches (both reachable) ===
+def two_breaks(items):
+    result = []
+    for x in items:
+        if x < 0:
+            result.append('negative')
+            break
+        if x > 100:
+            result.append('too big')
+            break
+        result.append(x)
+    return result
+
+
+assert two_breaks([1, 2, 3]) == [1, 2, 3], 'no break taken'
+assert two_breaks([1, -1, 3]) == [1, 'negative'], 'first break taken'
+assert two_breaks([1, 200, 3]) == [1, 'too big'], 'second break taken'
+assert two_breaks([-5]) == ['negative'], 'negative on first item'
+assert two_breaks([999]) == ['too big'], 'too big on first item'
+
+
+# === Double continue (unreachable second continue) ===
+def double_continue(items):
+    out = []
+    for x in items:
+        out.append(x)
+        continue
+        continue
+    return out
+
+
+assert double_continue([1, 2, 3]) == [1, 2, 3], 'double continue keeps normal loop output'
+assert double_continue([]) == [], 'double continue handles empty input'
+
 # === Continue on every iteration ===
 result = []
 for x in [1, 2, 3]:

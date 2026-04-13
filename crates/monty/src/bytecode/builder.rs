@@ -115,6 +115,23 @@ impl CodeBuilder {
         }
     }
 
+    /// Emits an instruction with two u8 operands and updates stack depth tracking.
+    ///
+    /// Used for UnpackEx: before_count (u8) + after_count (u8)
+    pub fn emit_u8_u8(&mut self, op: Opcode, operand1: u8, operand2: u8) {
+        self.record_location();
+        self.bytecode.push(op as u8);
+        self.bytecode.push(operand1);
+        self.bytecode.push(operand2);
+        // UnpackEx: pops 1, pushes (before + 1 + after) = before + after + 1
+        // Net effect: before + after
+        if op == Opcode::UnpackEx {
+            self.adjust_stack(i16::from(operand1) + i16::from(operand2));
+        } else if let Some(effect) = op.stack_effect() {
+            self.adjust_stack(effect);
+        }
+    }
+
     /// Emits an instruction with a u16 operand (little-endian) and updates stack depth tracking.
     pub fn emit_u16(&mut self, op: Opcode, operand: u16) {
         self.record_location();
@@ -127,7 +144,7 @@ impl CodeBuilder {
     /// Emits an instruction with a u16 operand followed by a u8 operand.
     ///
     /// Used for MakeFunction: func_id (u16) + defaults_count (u8)
-    /// Used for CallMethod: method_name_id (u16) + arg_count (u8)
+    /// Used for CallAttr: attr_name_id (u16) + arg_count (u8)
     pub fn emit_u16_u8(&mut self, op: Opcode, operand1: u16, operand2: u8) {
         self.record_location();
         self.bytecode.push(op as u8);
@@ -139,7 +156,7 @@ impl CodeBuilder {
                 // pops defaults_count defaults, pushes function: 1 - defaults_count
                 self.adjust_stack(1 - i16::from(operand2));
             }
-            Opcode::CallMethod => {
+            Opcode::CallAttr => {
                 // pops obj + args, pushes result: 1 - (1 + arg_count) = -arg_count
                 self.adjust_stack(-i16::from(operand2));
             }
@@ -224,23 +241,23 @@ impl CodeBuilder {
         self.adjust_stack(-total_args);
     }
 
-    /// Emits CallMethodKw with inline keyword names.
+    /// Emits CallAttrKw with inline keyword names.
     ///
-    /// Operands: method_name_id (u16) + pos_count (u8) + kw_count (u8) + kw_count * name_id (u16 each)
+    /// Operands: attr_name_id (u16) + pos_count (u8) + kw_count (u8) + kw_count * name_id (u16 each)
     ///
     /// The kwname_ids slice contains StringId indices for each keyword argument
     /// name, in order matching how the values were pushed to the stack.
-    pub fn emit_call_method_kw(&mut self, method_name_id: u16, pos_count: u8, kwname_ids: &[u16]) {
+    pub fn emit_call_attr_kw(&mut self, attr_name_id: u16, pos_count: u8, kwname_ids: &[u16]) {
         self.record_location();
-        self.bytecode.push(Opcode::CallMethodKw as u8);
-        self.bytecode.extend_from_slice(&method_name_id.to_le_bytes());
+        self.bytecode.push(Opcode::CallAttrKw as u8);
+        self.bytecode.extend_from_slice(&attr_name_id.to_le_bytes());
         self.bytecode.push(pos_count);
         self.bytecode
             .push(u8::try_from(kwname_ids.len()).expect("keyword count exceeds u8"));
         for &name_id in kwname_ids {
             self.bytecode.extend_from_slice(&name_id.to_le_bytes());
         }
-        // CallMethodKw: pops obj + pos_args + kw_args, pushes result
+        // CallAttrKw: pops obj + pos_args + kw_args, pushes result
         // Stack effect: 1 - (1 + pos_count + kw_count) = -pos_count - kw_count
         let kw_count = i16::try_from(kwname_ids.len()).expect("keyword count exceeds i16");
         let total_args = i16::from(pos_count) + kw_count;
@@ -372,6 +389,45 @@ impl CodeBuilder {
                 }
             }
         }
+    }
+
+    /// Emits a `LoadLocalCallable` instruction for call-context loads.
+    ///
+    /// Unlike `emit_load_local`, this does NOT use specialized 0-3 variants since
+    /// external function calls are rare enough that the optimization isn't worth
+    /// the extra opcode slots. The `name_id` is encoded directly in the operand
+    /// to avoid needing to look up the name from the code's local_names array.
+    pub fn emit_load_local_callable(&mut self, slot: u16, name_id: StringId) {
+        let name_id_u16 = u16::try_from(name_id.index()).expect("name_id exceeds u16");
+        if let Ok(s) = u8::try_from(slot) {
+            // Emit LoadLocalCallable with u8 slot + u16 name_id
+            self.record_location();
+            self.bytecode.push(Opcode::LoadLocalCallable as u8);
+            self.bytecode.push(s);
+            self.bytecode.extend_from_slice(&name_id_u16.to_le_bytes());
+            self.adjust_stack(1);
+        } else {
+            // Emit LoadLocalCallableW with u16 slot + u16 name_id
+            self.record_location();
+            self.bytecode.push(Opcode::LoadLocalCallableW as u8);
+            self.bytecode.extend_from_slice(&slot.to_le_bytes());
+            self.bytecode.extend_from_slice(&name_id_u16.to_le_bytes());
+            self.adjust_stack(1);
+        }
+    }
+
+    /// Emits a `LoadGlobalCallable` instruction for call-context loads.
+    ///
+    /// The `name_id` is encoded directly in the operand to avoid the ambiguity
+    /// of looking up global names from a function's local_names array (global slots
+    /// and local slots use different namespaces).
+    pub fn emit_load_global_callable(&mut self, slot: u16, name_id: StringId) {
+        let name_id_u16 = u16::try_from(name_id.index()).expect("name_id exceeds u16");
+        self.record_location();
+        self.bytecode.push(Opcode::LoadGlobalCallable as u8);
+        self.bytecode.extend_from_slice(&slot.to_le_bytes());
+        self.bytecode.extend_from_slice(&name_id_u16.to_le_bytes());
+        self.adjust_stack(1);
     }
 
     /// Emits `StoreLocal`, using wide variant for slots > 255.

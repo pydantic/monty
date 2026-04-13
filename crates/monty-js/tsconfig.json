@@ -1,14 +1,17 @@
 {
   "compilerOptions": {
-    "target": "ESNext",
+    "target": "ES2020",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
     "strict": true,
-    "moduleResolution": "node",
-    "module": "CommonJS",
-    "noUnusedLocals": true,
-    "noUnusedParameters": true,
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
     "esModuleInterop": true,
-    "allowSyntheticDefaultImports": true
+    "skipLibCheck": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true
   },
-  "include": ["."],
-  "exclude": ["node_modules", "bench", "__test__"]
+  "include": ["wrapper.ts"],
+  "exclude": ["node_modules", "__test__", "benchmark"]
 }

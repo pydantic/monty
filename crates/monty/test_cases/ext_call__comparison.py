@@ -1,4 +1,4 @@
-# mode: iter
+# call-external
 # External calls in comparison expressions
 
 # External call on left side of comparison

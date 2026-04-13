@@ -2,11 +2,11 @@ use crate::{
     args::ArgExprs,
     builtins::Builtins,
     fstring::FStringPart,
-    intern::{BytesId, StringId},
+    intern::{BytesId, LongIntId, StringId},
     namespace::NamespaceId,
     parse::{CodeRange, ParsedSignature, Try},
     signature::Signature,
-    value::{Attr, Marker, Value},
+    value::{EitherStr, Marker, Value},
 };
 
 /// Indicates which namespace a variable reference belongs to.
@@ -83,6 +83,19 @@ impl Identifier {
     }
 }
 
+/// A single module in an `import` statement (e.g., `sys` in `import sys` or `sys as s`).
+///
+/// Each entry in `import a, b as c` becomes one `ImportName` with its own
+/// module name and binding target.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ImportName {
+    /// The module name to import (e.g., "sys", "typing").
+    pub module_name: StringId,
+    /// The binding target — the alias if provided, otherwise the module name.
+    /// After the prepare phase, this includes the resolved namespace slot.
+    pub binding: Identifier,
+}
+
 /// Target of a function call expression.
 ///
 /// Represents a callable that can be either:
@@ -96,6 +109,44 @@ pub enum Callable {
     Builtin(Builtins),
     /// A name to be looked up in the namespace at runtime (e.g., `x` in `x = len; x('abc')`).
     Name(Identifier),
+}
+
+/// An item in a list, tuple, or set literal.
+///
+/// PEP 448 allows any number of `*expr` unpack items to appear alongside
+/// regular values in list/tuple/set literals (e.g., `[1, *a, 2]`).
+/// This enum represents either a plain value or an iterable to be unpacked.
+///
+/// Used in `Expr::List`, `Expr::Tuple`, and `Expr::Set` to represent each
+/// element of the literal. When the fast path is taken (no unpack items),
+/// only `Value` variants are present and the compiler emits a single
+/// `BuildList`/`BuildTuple`/`BuildSet` instruction. When any `Unpack` item
+/// is present, the compiler emits `Build*(0)` followed by per-item
+/// `ListAppend`/`SetAdd` and `ListExtend`/`SetExtend` instructions.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub(crate) enum SequenceItem {
+    /// A plain expression value in the literal.
+    Value(ExprLoc),
+    /// An `*expr` unpack — the iterable is expanded in-place.
+    Unpack(ExprLoc),
+}
+
+/// An item in a dict literal.
+///
+/// PEP 448 allows `**expr` unpack items to appear alongside normal key:value
+/// pairs in dict literals (e.g., `{'a': 1, **d, 'b': 2}`). Duplicate keys
+/// from later items silently overwrite earlier ones (unlike `**kwargs` in
+/// function calls, where duplicates raise `TypeError`).
+///
+/// Used in `Expr::Dict`. When no `Unpack` items are present the compiler
+/// emits a single `BuildDict` instruction. Otherwise it emits `BuildDict(0)`
+/// followed by per-item `DictSetItem` and `DictUpdate` instructions.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub(crate) enum DictItem {
+    /// A plain `key: value` pair.
+    Pair(ExprLoc, ExprLoc),
+    /// A `**expr` unpack — the mapping is merged in-place, later keys win.
+    Unpack(ExprLoc),
 }
 
 /// An expression in the AST.
@@ -121,7 +172,7 @@ pub enum Expr {
     /// like `a.b.c.method()`.
     AttrCall {
         object: Box<ExprLoc>,
-        attr: Attr,
+        attr: EitherStr,
         /// same as above for Box
         args: Box<ArgExprs>,
     },
@@ -141,7 +192,7 @@ pub enum Expr {
     /// special attribute handling. Supports chained attribute access.
     AttrGet {
         object: Box<ExprLoc>,
-        attr: Attr,
+        attr: EitherStr,
     },
     Op {
         left: Box<ExprLoc>,
@@ -153,8 +204,29 @@ pub enum Expr {
         op: CmpOperator,
         right: Box<ExprLoc>,
     },
-    List(Vec<ExprLoc>),
-    Tuple(Vec<ExprLoc>),
+    /// Chain comparison expression: `a < b < c < d`
+    ///
+    /// Unlike single comparisons, chain comparisons evaluate intermediate values
+    /// only once and short-circuit on the first false result. Compiled to bytecode
+    /// that uses stack manipulation (Dup, Rot) rather than temporary variables,
+    /// avoiding namespace pollution.
+    ChainCmp {
+        /// The leftmost operand in the chain.
+        left: Box<ExprLoc>,
+        /// Sequence of (operator, operand) pairs: `[(op1, b), (op2, c), ...]`
+        comparisons: Vec<(CmpOperator, ExprLoc)>,
+    },
+    /// List literal: `[a, *b, c]`
+    ///
+    /// Each element is a `SequenceItem` which may be a plain value or an `*unpack`.
+    /// When no unpack items are present (common case), the compiler emits a single
+    /// `BuildList(N)`. When any unpack is present it emits `BuildList(0)` followed
+    /// by per-item `ListAppend`/`ListExtend` instructions.
+    List(Vec<SequenceItem>),
+    /// Tuple literal: `(a, *b, c)` or `a, *b, c`
+    ///
+    /// Same compilation strategy as `List` but ends with `ListToTuple`.
+    Tuple(Vec<SequenceItem>),
     Subscript {
         object: Box<ExprLoc>,
         index: Box<ExprLoc>,
@@ -168,11 +240,18 @@ pub enum Expr {
         upper: Option<Box<ExprLoc>>,
         step: Option<Box<ExprLoc>>,
     },
-    Dict(Vec<(ExprLoc, ExprLoc)>),
-    /// Set literal expression: `{1, 2, 3}`.
+    /// Dict literal: `{'a': 1, **d, 'b': 2}`
+    ///
+    /// Each element is a `DictItem` which may be a plain `key: value` pair or a `**unpack`.
+    /// When no unpack items are present the compiler emits `BuildDict(N)`. Otherwise it
+    /// emits `BuildDict(0)` followed by per-item `DictSetItem`/`DictUpdate` instructions.
+    /// Duplicate keys from later items silently overwrite earlier ones.
+    Dict(Vec<DictItem>),
+    /// Set literal expression: `{1, *a, 2}`.
     ///
     /// Note: `{}` is always a dict, not an empty set. Use `set()` for empty sets.
-    Set(Vec<ExprLoc>),
+    /// Compilation strategy mirrors `List` but uses `SetAdd`/`SetExtend`.
+    Set(Vec<SequenceItem>),
     /// Unary `not` expression - evaluates to the boolean negation of the operand's truthiness.
     Not(Box<ExprLoc>),
     /// Unary minus expression - negates a numeric value.
@@ -181,6 +260,12 @@ pub enum Expr {
     UnaryPlus(Box<ExprLoc>),
     /// Unary bitwise NOT expression - inverts all bits of an integer.
     UnaryInvert(Box<ExprLoc>),
+    /// Await expression - suspends execution until the awaited value resolves.
+    ///
+    /// Can await `ExternalFuture`, `Coroutine`, or `GatherFuture` values.
+    /// Raises `TypeError` for non-awaitable values.
+    /// Unlike standard Python, `await` is allowed at module level (like Jupyter notebooks).
+    Await(Box<ExprLoc>),
     /// F-string expression containing literal and interpolated parts.
     ///
     /// At evaluation time, each part is processed in sequence:
@@ -248,11 +333,24 @@ pub enum Expr {
         /// The body is wrapped as `[Node::Return(body_expr)]` during preparation.
         func_def: Box<PreparedFunctionDef>,
     },
+    /// Named expression (walrus operator): `(target := value)`
+    ///
+    /// Evaluates `value`, assigns it to `target`, and returns the value as the
+    /// expression result. The target is treated as an assignment for scope analysis,
+    /// so it creates a local binding in the enclosing scope.
+    ///
+    /// Per PEP 572, in comprehensions the target binds in the enclosing scope,
+    /// not the comprehension's implicit scope.
+    Named {
+        target: Identifier,
+        value: Box<ExprLoc>,
+    },
 }
 
-/// Target for tuple unpacking - can be a single name or nested tuple.
+/// Target for tuple unpacking - can be a single name, nested tuple, or starred target.
 ///
 /// Supports recursive structures like `(a, b), c` or `a, (b, c)`.
+/// Also supports starred targets like `first, *rest = [1, 2, 3, 4]`.
 /// Used in assignment statements, for loop targets, and comprehension targets.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum UnpackTarget {
@@ -265,6 +363,10 @@ pub enum UnpackTarget {
         /// Source position covering all targets (for error caret placement)
         position: CodeRange,
     },
+    /// Starred target: `*rest` - captures remaining values into a list.
+    ///
+    /// Only one starred target is allowed per unpacking level.
+    Starred(Identifier),
 }
 
 /// A generator clause in a comprehension: `for target in iter [if cond1] [if cond2]...`
@@ -307,6 +409,9 @@ pub enum Literal {
     Str(StringId),
     /// An interned bytes literal. The BytesId references the bytes in the Interns table.
     Bytes(BytesId),
+    /// An interned long integer literal. The `LongIntId` references the value in the Interns table.
+    /// Used for integer literals that exceed the i64 range.
+    LongInt(LongIntId),
     /// A marker value (e.g., typing constructs like Any, Optional, etc.).
     Marker(Marker),
 }
@@ -325,6 +430,7 @@ impl From<Literal> for Value {
             Literal::Float(v) => Self::Float(v),
             Literal::Str(string_id) => Self::InternString(string_id),
             Literal::Bytes(bytes_id) => Self::InternBytes(bytes_id),
+            Literal::LongInt(long_int_id) => Self::InternLongInt(long_int_id),
             Literal::Marker(marker) => Self::Marker(marker),
         }
     }
@@ -381,13 +487,49 @@ pub enum Node<F> {
     OpAssign {
         target: Identifier,
         op: Operator,
-        object: ExprLoc,
+        /// The right-hand side value of the augmented assignment (e.g., `1` in `x += 1`).
+        value: ExprLoc,
     },
+    /// Augmented subscript assignment (e.g., `totals[key] += value` or `a[0][1] += 1`).
+    ///
+    /// This evaluates the container expression and index exactly once, then performs the
+    /// inplace operation on the current item before storing the result back.
+    /// Limiting duplicate evaluation is important because index expressions may
+    /// have side effects and CPython only evaluates them once.
+    /// The `target` is an arbitrary expression evaluating to the container — it can be
+    /// a simple name, a nested subscript (`a[0]`), or an attribute access (`obj.field`).
+    SubscriptOpAssign {
+        target: ExprLoc,
+        index: ExprLoc,
+        op: Operator,
+        /// The right-hand side value of the augmented assignment (e.g., `1` in `a[0] += 1`).
+        value: ExprLoc,
+        /// Position of the subscript expression (e.g., `totals[key]`) for traceback carets.
+        target_position: CodeRange,
+    },
+    /// Subscript assignment (e.g., `lst[0] = value` or `a[0][1] = value`).
+    ///
+    /// The `target` is an arbitrary expression evaluating to the container — it can be
+    /// a simple name, a nested subscript (`a[0]`), or an attribute access (`obj.field`).
     SubscriptAssign {
-        target: Identifier,
+        target: ExprLoc,
         index: ExprLoc,
         value: ExprLoc,
         /// Position of the subscript expression (e.g., `lst[10]`) for traceback carets.
+        target_position: CodeRange,
+    },
+    /// Augmented attribute assignment (e.g., `point.x += 1` or `a.b.c -= 5`).
+    ///
+    /// Evaluates the object expression once, loads the attribute, performs the
+    /// inplace operation with the right-hand side, then stores the result back.
+    /// The `object` is an arbitrary expression — it can be a name, a subscript,
+    /// or a chained attribute access.
+    AttrOpAssign {
+        object: ExprLoc,
+        attr: EitherStr,
+        op: Operator,
+        value: ExprLoc,
+        /// Position of the attribute expression (e.g., `point.x`) for traceback carets.
         target_position: CodeRange,
     },
     /// Attribute assignment (e.g., `point.x = 5` or `a.b.c = 5`).
@@ -397,7 +539,7 @@ pub enum Node<F> {
     /// Supports chained attribute access on the left-hand side.
     AttrAssign {
         object: ExprLoc,
-        attr: Attr,
+        attr: EitherStr,
         target_position: CodeRange,
         value: ExprLoc,
     },
@@ -405,6 +547,15 @@ pub enum Node<F> {
         /// Loop target - either a single identifier or tuple unpacking pattern.
         target: UnpackTarget,
         iter: ExprLoc,
+        body: Vec<Self>,
+        or_else: Vec<Self>,
+    },
+    /// While loop statement: `while test: body [else: orelse]`
+    ///
+    /// Executes body repeatedly while test is truthy. If the loop exits normally
+    /// (not via break), the else block runs.
+    While {
+        test: ExprLoc,
         body: Vec<Self>,
         or_else: Vec<Self>,
     },
@@ -449,15 +600,14 @@ pub enum Node<F> {
     /// Executes body, catches matching exceptions with handlers, runs else if no exception,
     /// and always runs finally.
     Try(Try<Self>),
-    /// Import statement (e.g., `import sys`, `import sys as s`).
+    /// Import statement (e.g., `import sys`, `import sys, os`, `import sys as s`).
     ///
-    /// Loads a module and binds it to a name in the current namespace.
+    /// Loads one or more modules and binds them to names in the current namespace.
+    /// Multi-module imports like `import sys, os` are represented as a single node
+    /// with multiple entries in the vector.
     Import {
-        /// The module name to import (e.g., "sys", "typing").
-        module_name: StringId,
-        /// The binding target - contains the name (or alias), position, and namespace slot.
-        /// After prepare phase, this includes the resolved namespace slot for storing the module.
-        binding: Identifier,
+        /// The modules to import, each with a module name and binding target.
+        names: Vec<ImportName>,
     },
     /// From-import statement (e.g., `from typing import TYPE_CHECKING`).
     ///
@@ -512,6 +662,11 @@ pub struct PreparedFunctionDef {
     /// Each group contains only the parameters that have defaults, in declaration order.
     /// The counts in `signature` indicate how many defaults exist for each group.
     pub default_exprs: Vec<ExprLoc>,
+    /// Whether this is an async function (`async def`).
+    ///
+    /// When true, calling this function creates a `Coroutine` object instead of
+    /// immediately pushing a frame.
+    pub is_async: bool,
 }
 
 /// Type alias for prepared AST nodes (output of prepare phase).

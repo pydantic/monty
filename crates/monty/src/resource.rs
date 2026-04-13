@@ -1,4 +1,6 @@
 use std::{
+    cell::Cell,
+    error::Error,
     fmt,
     time::{Duration, Instant},
 };
@@ -15,6 +17,124 @@ use crate::{
 /// where operations like `2 ** 10_000_000` allocate huge amounts of memory before
 /// the allocation check can catch them.
 pub const LARGE_RESULT_THRESHOLD: usize = 100_000;
+
+/// Pre-checks that an operation producing `item_len * count` bytes won't exceed resource limits.
+///
+/// Used for sequence repeats (`'x' * 999_999_999`), padding operations
+/// (`str.ljust`, `str.center`, `str.zfill`, etc.), and any other operation
+/// where the result size is a simple product of two known values.
+pub fn check_repeat_size(item_len: usize, count: usize, tracker: &impl ResourceTracker) -> Result<(), ResourceError> {
+    check_estimated_size(item_len.saturating_mul(count), tracker)
+}
+
+/// Pre-checks that `base ** exponent` won't exceed resource limits before computing.
+///
+/// The result of `base ** exp` has approximately `base_bits * exp` bits.
+/// For bases with 0 or 1 significant bits (0, 1, -1), the result is always
+/// small regardless of exponent, so the check is skipped.
+///
+/// The estimate includes a 4× safety multiplier because `BigInt::pow` uses repeated squaring,
+/// which allocates intermediate values on the Rust heap (not tracked by the resource tracker).
+/// At peak, old/new base and old/new accumulator coexist simultaneously during each
+/// multiplication step, requiring roughly 4× the final result size in memory.
+pub fn check_pow_size(base_bits: u64, exponent: u64, tracker: &impl ResourceTracker) -> Result<(), ResourceError> {
+    // 0**n = 0, 1**n = 1, (-1)**n = ±1 — always small
+    if base_bits <= 1 {
+        return Ok(());
+    }
+    let result_bytes = estimate_bits_to_bytes(base_bits.saturating_mul(exponent));
+    // Repeated squaring needs ~4× result size in peak memory (old/new base + old/new accumulator
+    // coexist during each multiplication step), and these are Rust heap allocations not tracked
+    // by the resource tracker.
+    check_estimated_size(result_bytes.saturating_mul(4), tracker)
+}
+
+/// Pre-checks that an integer multiplication won't exceed resource limits.
+///
+/// The result of multiplying two numbers has at most `a_bits + b_bits` bits.
+pub fn check_mult_size(a_bits: u64, b_bits: u64, tracker: &impl ResourceTracker) -> Result<(), ResourceError> {
+    check_estimated_size(estimate_bits_to_bytes(a_bits.saturating_add(b_bits)), tracker)
+}
+
+/// Pre-checks that a left shift won't exceed resource limits.
+///
+/// The result of `value << shift` has approximately `value_bits + shift` bits.
+/// For zero values the result is always zero, so the check is skipped.
+pub fn check_lshift_size(
+    value_bits: u64,
+    shift_amount: u64,
+    tracker: &impl ResourceTracker,
+) -> Result<(), ResourceError> {
+    if value_bits == 0 {
+        return Ok(());
+    }
+    check_estimated_size(estimate_bits_to_bytes(value_bits.saturating_add(shift_amount)), tracker)
+}
+
+/// Pre-checks that an integer division overflow promotion won't exceed resource limits.
+///
+/// Division results are bounded by the dividend size, but we still check for consistency
+/// with other BigInt promotion paths.
+pub fn check_div_size(dividend_bits: u64, tracker: &impl ResourceTracker) -> Result<(), ResourceError> {
+    check_estimated_size(estimate_bits_to_bytes(dividend_bits), tracker)
+}
+
+/// Pre-checks that a string/bytes replace won't exceed resource limits before allocating.
+///
+/// This prevents DoS via expressions like `('a' * 1000).replace('a', 'b' * 10_000_000)`
+/// where a small tracked input is amplified into a huge untracked Rust `String`/`Vec`
+/// by `String::replace()` before `allocate_string()` can check the result.
+///
+/// The upper bound on result size is: if `old` is non-empty, at most `input_len / old_len`
+/// replacements can occur, each producing `new_len` bytes instead of `old_len`. When `count`
+/// is specified, replacements are capped to that value.
+pub fn check_replace_size(
+    input_len: usize,
+    old_len: usize,
+    new_len: usize,
+    count: i64,
+    tracker: &impl ResourceTracker,
+) -> Result<(), ResourceError> {
+    // Empty pattern (old_len == 0): inserts before each element + after the last = input_len + 1
+    let max_replacements = input_len
+        .checked_div(old_len)
+        .unwrap_or_else(|| input_len.saturating_add(1));
+
+    let replacements = if count < 0 {
+        max_replacements
+    } else {
+        max_replacements.min(usize::try_from(count).unwrap_or(usize::MAX))
+    };
+
+    // Result = input_len - (replacements * old_len) + (replacements * new_len)
+    let removed = replacements.saturating_mul(old_len);
+    let added = replacements.saturating_mul(new_len);
+    let estimated = input_len.saturating_sub(removed).saturating_add(added);
+
+    check_estimated_size(estimated, tracker)
+}
+
+/// Checks an estimated result size against the resource tracker.
+///
+/// Only calls the tracker when the estimate exceeds `LARGE_RESULT_THRESHOLD`
+/// to avoid overhead on small operations.
+pub(crate) fn check_estimated_size(
+    estimated_bytes: usize,
+    tracker: &impl ResourceTracker,
+) -> Result<(), ResourceError> {
+    if estimated_bytes > LARGE_RESULT_THRESHOLD {
+        tracker.check_large_result(estimated_bytes)?;
+    }
+    Ok(())
+}
+
+/// Converts an estimated bit count to bytes, saturating to `usize::MAX` on overflow.
+///
+/// Overflow means the result is astronomically large, so saturating ensures
+/// the resource limit check always triggers rather than being silently skipped.
+fn estimate_bits_to_bytes(bits: u64) -> usize {
+    usize::try_from(bits.saturating_add(7) / 8).unwrap_or(usize::MAX)
+}
 
 /// Error returned when a resource limit is exceeded during execution.
 ///
@@ -56,7 +176,7 @@ impl fmt::Display for ResourceError {
     }
 }
 
-impl std::error::Error for ResourceError {}
+impl Error for ResourceError {}
 
 impl ResourceError {
     /// Converts this resource error to a Python exception with optional stack frame.
@@ -97,7 +217,14 @@ impl ResourceError {
 
 impl From<ResourceError> for RunError {
     fn from(err: ResourceError) -> Self {
-        Self::UncatchableExc(err.into_exception(None))
+        // RecursionError is catchable in CPython, so it must be catchable here too.
+        // Other resource errors (memory, time, allocation) remain uncatchable to prevent
+        // untrusted code from suppressing resource limit violations.
+        if matches!(err, ResourceError::Recursion { .. }) {
+            Self::Exc(err.into_exception(None))
+        } else {
+            Self::UncatchableExc(err.into_exception(None))
+        }
     }
 }
 
@@ -117,19 +244,23 @@ pub trait ResourceTracker: fmt::Debug {
     ///
     /// # Arguments
     /// * `size` - Approximate size in bytes of the allocation
-    fn on_allocate(&mut self, get_size: impl FnOnce() -> usize) -> Result<(), ResourceError>;
+    fn on_allocate(&self, get_size: impl FnOnce() -> usize) -> Result<(), ResourceError>;
 
     /// Called when memory is freed (during dec_ref or garbage collection).
     ///
     /// # Arguments
     /// * `size` - Size in bytes of the freed allocation
-    fn on_free(&mut self, get_size: impl FnOnce() -> usize);
+    fn on_free(&self, get_size: impl FnOnce() -> usize);
 
     /// Called periodically (at statement boundaries) to check time limits.
     ///
     /// Returns `Ok(())` if within time limit, or `Err(ResourceError::Time)`
     /// if the limit is exceeded.
-    fn check_time(&mut self) -> Result<(), ResourceError>;
+    ///
+    /// Takes `&self` rather than `&mut self` because checking elapsed time is a
+    /// read-only operation. This allows time checks in contexts that only have
+    /// an immutable heap reference, such as `py_repr_fmt`.
+    fn check_time(&self) -> Result<(), ResourceError>;
 
     /// Called before pushing a new call frame to check recursion depth.
     ///
@@ -152,6 +283,17 @@ pub trait ResourceTracker: fmt::Debug {
     ///
     /// Returns `Ok(())` to allow the operation, or `Err(ResourceError)` to reject.
     fn check_large_result(&self, estimated_bytes: usize) -> Result<(), ResourceError>;
+
+    /// Called when an existing heap object grows in place (e.g., `list.append`, `dict[k] = v`).
+    ///
+    /// Updates tracked memory and checks limits. Unlike `on_allocate`, this does not
+    /// increment the allocation count — it only tracks memory growth of an already-allocated
+    /// object. The growth is automatically balanced on free because `on_free` reads
+    /// `py_estimate_size()` which includes all grown elements.
+    ///
+    /// # Arguments
+    /// * `additional_bytes` - Approximate additional memory consumed by the growth
+    fn on_grow(&self, additional_bytes: usize) -> Result<(), ResourceError>;
 }
 
 /// A resource tracker that imposes no limits except default recursion limit.
@@ -162,15 +304,20 @@ pub struct NoLimitTracker;
 
 impl ResourceTracker for NoLimitTracker {
     #[inline]
-    fn on_allocate(&mut self, _: impl FnOnce() -> usize) -> Result<(), ResourceError> {
+    fn on_allocate(&self, _: impl FnOnce() -> usize) -> Result<(), ResourceError> {
         Ok(())
     }
 
     #[inline]
-    fn on_free(&mut self, _: impl FnOnce() -> usize) {}
+    fn on_free(&self, _: impl FnOnce() -> usize) {}
 
     #[inline]
-    fn check_time(&mut self) -> Result<(), ResourceError> {
+    fn check_time(&self) -> Result<(), ResourceError> {
+        Ok(())
+    }
+
+    #[inline]
+    fn on_grow(&self, _: usize) -> Result<(), ResourceError> {
         Ok(())
     }
 
@@ -216,6 +363,9 @@ pub struct ResourceLimits {
     /// Maximum recursion depth (function call stack depth).
     pub max_recursion_depth: Option<usize>,
 }
+
+/// Recommended maximum recursion depth if not otherwise specified.
+pub const DEFAULT_MAX_RECURSION_DEPTH: usize = 1000;
 
 impl ResourceLimits {
     /// Creates a new ResourceLimits with all limits disabled, except max recursion which is set to 1000.
@@ -263,11 +413,30 @@ impl ResourceLimits {
     }
 }
 
+/// How often to actually check `Instant::elapsed()` in `check_time`.
+///
+/// Calling `Instant::elapsed()` on every `check_time` invocation adds measurable
+/// overhead in tight loops (the VM calls `check_time` on every instruction).
+/// By only checking every N calls, we reduce this overhead while still catching
+/// timeouts promptly.
+const TIME_CHECK_INTERVAL: u16 = 10;
+
 /// A resource tracker that enforces configurable limits.
 ///
 /// Tracks allocation count, memory usage, and execution time, returning
 /// errors when limits are exceeded. Also schedules garbage collection
 /// at configurable intervals.
+///
+/// When serialized/deserialized, the `start_time` is reset to `Instant::now()`.
+/// This means time limits restart from zero after deserialization.
+/// A resource tracker that enforces configurable limits.
+///
+/// Tracks allocation count, memory usage, and execution time, returning
+/// errors when limits are exceeded. Also schedules garbage collection
+/// at configurable intervals.
+///
+/// Uses `Cell` for interior mutability to allow many methods which take
+/// `&self` (enabling `&self` on critical methods such as `Heap::allocate`).
 ///
 /// When serialized/deserialized, the `start_time` is reset to `Instant::now()`.
 /// This means time limits restart from zero after deserialization.
@@ -279,9 +448,11 @@ pub struct LimitedTracker {
     #[serde(skip, default = "Instant::now")]
     start_time: Instant,
     /// Total number of allocations made.
-    allocation_count: usize,
+    allocation_count: Cell<usize>,
     /// Current approximate memory usage in bytes.
-    current_memory: usize,
+    current_memory: Cell<usize>,
+    /// Counter for rate-limiting `Instant::elapsed()` calls in `check_time`.
+    check_counter: Cell<u16>,
 }
 
 impl LimitedTracker {
@@ -294,21 +465,22 @@ impl LimitedTracker {
         Self {
             limits,
             start_time: Instant::now(),
-            allocation_count: 0,
-            current_memory: 0,
+            allocation_count: Cell::new(0),
+            current_memory: Cell::new(0),
+            check_counter: Cell::new(0),
         }
     }
 
     /// Returns the current allocation count.
     #[must_use]
     pub fn allocation_count(&self) -> usize {
-        self.allocation_count
+        self.allocation_count.get()
     }
 
     /// Returns the current approximate memory usage.
     #[must_use]
     pub fn current_memory(&self) -> usize {
-        self.current_memory
+        self.current_memory.get()
     }
 
     /// Returns the elapsed time since tracker creation.
@@ -316,24 +488,36 @@ impl LimitedTracker {
     pub fn elapsed(&self) -> Duration {
         self.start_time.elapsed()
     }
+
+    /// Sets the maximum execution duration and resets the start time to now.
+    ///
+    /// This is useful when resuming execution after an external function call
+    /// where you want to enforce a different (typically shorter) time limit
+    /// for the resumed phase without counting the time spent in the host.
+    pub fn set_max_duration(&mut self, duration: Duration) {
+        self.limits.max_duration = Some(duration);
+        self.start_time = Instant::now();
+    }
 }
 
 impl ResourceTracker for LimitedTracker {
-    fn on_allocate(&mut self, get_size: impl FnOnce() -> usize) -> Result<(), ResourceError> {
+    fn on_allocate(&self, get_size: impl FnOnce() -> usize) -> Result<(), ResourceError> {
+        let count = self.allocation_count.get();
         // Check allocation count limit
         if let Some(max) = self.limits.max_allocations
-            && self.allocation_count >= max
+            && count >= max
         {
             return Err(ResourceError::Allocation {
                 limit: max,
-                count: self.allocation_count + 1,
+                count: count + 1,
             });
         }
 
         let size = get_size();
         // Check memory limit
+        let current_mem = self.current_memory.get();
         if let Some(max) = self.limits.max_memory {
-            let new_memory = self.current_memory + size;
+            let new_memory = current_mem + size;
             if new_memory > max {
                 return Err(ResourceError::Memory {
                     limit: max,
@@ -343,21 +527,48 @@ impl ResourceTracker for LimitedTracker {
         }
 
         // Update tracking state
-        self.allocation_count += 1;
-        self.current_memory += size;
+        self.allocation_count.set(count + 1);
+        self.current_memory.set(current_mem + size);
 
         Ok(())
     }
 
-    fn on_free(&mut self, get_size: impl FnOnce() -> usize) {
-        self.current_memory = self.current_memory.saturating_sub(get_size());
+    fn on_free(&self, get_size: impl FnOnce() -> usize) {
+        let current = self.current_memory.get();
+        self.current_memory.set(current.saturating_sub(get_size()));
     }
 
-    fn check_time(&mut self) -> Result<(), ResourceError> {
+    fn on_grow(&self, additional_bytes: usize) -> Result<(), ResourceError> {
+        let current_mem = self.current_memory.get();
+        let new_memory = current_mem.saturating_add(additional_bytes);
+        if let Some(max) = self.limits.max_memory
+            && new_memory > max
+        {
+            return Err(ResourceError::Memory {
+                limit: max,
+                used: new_memory,
+            });
+        }
+        // Always update current_memory, matching on_allocate's behavior,
+        // so current_memory() remains accurate even without a memory limit.
+        self.current_memory.set(new_memory);
+        Ok(())
+    }
+
+    fn check_time(&self) -> Result<(), ResourceError> {
         if let Some(max) = self.limits.max_duration {
-            let elapsed = self.start_time.elapsed();
-            if elapsed > max {
-                return Err(ResourceError::Time { limit: max, elapsed });
+            self.check_counter.update(|c| c.wrapping_add(1));
+            if self.check_counter.get().is_multiple_of(TIME_CHECK_INTERVAL) {
+                // Only call Instant::elapsed() every TIME_CHECK_INTERVAL calls
+                let elapsed = self.start_time.elapsed();
+                if elapsed > max {
+                    // Reset counter so the very next check_time call also triggers
+                    // an elapsed check. This is important because some callers
+                    // (e.g. repr_sequence_fmt) catch the error and return normally,
+                    // and we need the VM loop's next check_time to re-detect timeout.
+                    self.check_counter.set(TIME_CHECK_INTERVAL.wrapping_sub(1));
+                    return Err(ResourceError::Time { limit: max, elapsed });
+                }
             }
         }
         Ok(())
@@ -379,7 +590,7 @@ impl ResourceTracker for LimitedTracker {
     fn check_large_result(&self, estimated_bytes: usize) -> Result<(), ResourceError> {
         // Check if this would exceed memory limit
         if let Some(max) = self.limits.max_memory {
-            let new_memory = self.current_memory.saturating_add(estimated_bytes);
+            let new_memory = self.current_memory.get().saturating_add(estimated_bytes);
             if new_memory > max {
                 return Err(ResourceError::Memory {
                     limit: max,

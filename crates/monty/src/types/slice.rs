@@ -3,18 +3,20 @@
 //! Provides a slice object representing start:stop:step indices for sequence slicing.
 //! Each field is optional (None in Python), where None means "use the default for that field".
 
-use std::fmt::Write;
+use std::{fmt, fmt::Write, mem};
 
 use ahash::AHashSet;
 
 use crate::{
     args::ArgValues,
+    bytecode::{CallResult, VM},
+    defer_drop,
     exception_private::{ExcType, RunResult},
-    heap::{Heap, HeapData, HeapId},
-    intern::Interns,
-    resource::ResourceTracker,
+    heap::{HeapData, HeapId, HeapItem, HeapRead},
+    intern::StaticStrings,
+    resource::{ResourceError, ResourceTracker},
     types::{PyTrait, Type},
-    value::Value,
+    value::{EitherStr, Value},
 };
 
 /// Python slice object representing start:stop:step indices.
@@ -50,54 +52,29 @@ impl Slice {
     /// - `slice(start, stop, step)` - slice with all three components
     ///
     /// Each argument can be None to indicate "use default".
-    pub fn init(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
-        let slice = match args {
-            ArgValues::Empty => return Err(ExcType::type_error_at_least("slice", 1, 0)),
-            ArgValues::One(stop_val) => {
-                // Store result before dropping to avoid refcount leak on error
-                let stop = value_to_option_i64(&stop_val);
-                stop_val.drop_with_heap(heap);
-                Self::new(None, stop?, None)
-            }
-            ArgValues::Two(start_val, stop_val) => {
-                // Store results before dropping to avoid refcount leak on error
-                let start = value_to_option_i64(&start_val);
-                let stop = value_to_option_i64(&stop_val);
-                start_val.drop_with_heap(heap);
-                stop_val.drop_with_heap(heap);
-                Self::new(start?, stop?, None)
-            }
-            ArgValues::ArgsKargs { args, kwargs } if kwargs.is_empty() && args.len() == 3 => {
-                let mut iter = args.into_iter();
-                let start_val = iter.next().unwrap();
-                let stop_val = iter.next().unwrap();
-                let step_val = iter.next().unwrap();
+    pub fn init(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+        let heap = &mut *vm.heap;
+        let pos_args = args.into_pos_only("slice", heap)?;
+        defer_drop!(pos_args, heap);
 
-                // Store results before dropping to avoid refcount leak on error
-                let start = value_to_option_i64(&start_val);
-                let stop = value_to_option_i64(&stop_val);
-                let step = value_to_option_i64(&step_val);
-                start_val.drop_with_heap(heap);
-                stop_val.drop_with_heap(heap);
-                step_val.drop_with_heap(heap);
-
-                Self::new(start?, stop?, step?)
+        let slice = match pos_args.as_slice() {
+            [] => return Err(ExcType::type_error_at_least("slice", 1, 0)),
+            [first_arg] => {
+                let stop = value_to_option_i64(first_arg)?;
+                Self::new(None, stop, None)
             }
-            ArgValues::Kwargs(kwargs) => {
-                kwargs.drop_with_heap(heap);
-                return Err(ExcType::type_error_no_kwargs("slice"));
+            [first_arg, second_arg] => {
+                let start = value_to_option_i64(first_arg)?;
+                let stop = value_to_option_i64(second_arg)?;
+                Self::new(start, stop, None)
             }
-            ArgValues::ArgsKargs { args, kwargs } => {
-                let arg_count = args.len();
-                for v in args {
-                    v.drop_with_heap(heap);
-                }
-                if !kwargs.is_empty() {
-                    kwargs.drop_with_heap(heap);
-                    return Err(ExcType::type_error_no_kwargs("slice"));
-                }
-                return Err(ExcType::type_error_at_most("slice", 3, arg_count));
+            [first_arg, second_arg, third_arg] => {
+                let start = value_to_option_i64(first_arg)?;
+                let stop = value_to_option_i64(second_arg)?;
+                let step = value_to_option_i64(third_arg)?;
+                Self::new(start, stop, step)
             }
+            _ => return Err(ExcType::type_error_at_most("slice", 3, pos_args.len())),
         };
 
         Ok(Value::Ref(heap.allocate(HeapData::Slice(slice))?))
@@ -201,43 +178,66 @@ fn normalize_index(index: i64, length: i64, lower: i64, upper: i64) -> i64 {
     normalized.clamp(lower, upper)
 }
 
-impl PyTrait for Slice {
-    fn py_type(&self, _heap: &Heap<impl ResourceTracker>) -> Type {
+impl<'h> PyTrait<'h> for HeapRead<'h, Slice> {
+    fn py_type(&self, _vm: &VM<'h, '_, impl ResourceTracker>) -> Type {
         Type::Slice
     }
 
-    fn py_estimate_size(&self) -> usize {
-        std::mem::size_of::<Self>()
-    }
-
-    fn py_len(&self, _heap: &Heap<impl ResourceTracker>, _interns: &Interns) -> Option<usize> {
+    fn py_len(&self, _vm: &VM<'h, '_, impl ResourceTracker>) -> Option<usize> {
         // Slices don't have a length in Python
         None
     }
 
-    fn py_eq(&self, other: &Self, _heap: &mut Heap<impl ResourceTracker>, _interns: &Interns) -> bool {
-        self.start == other.start && self.stop == other.stop && self.step == other.step
+    fn py_eq(&self, other: &Self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> Result<bool, ResourceError> {
+        let a = self.get(vm.heap);
+        let b = other.get(vm.heap);
+        Ok(a.start == b.start && a.stop == b.stop && a.step == b.step)
     }
 
-    fn py_bool(&self, _heap: &Heap<impl ResourceTracker>, _interns: &Interns) -> bool {
-        // Slices are always truthy in Python
+    fn py_bool(&self, _vm: &mut VM<'h, '_, impl ResourceTracker>) -> bool {
+        // Slice always truthy
         true
     }
 
     fn py_repr_fmt(
         &self,
         f: &mut impl Write,
-        _heap: &Heap<impl ResourceTracker>,
+        vm: &VM<'h, '_, impl ResourceTracker>,
         _heap_ids: &mut AHashSet<HeapId>,
-        _interns: &Interns,
-    ) -> std::fmt::Result {
+    ) -> RunResult<()> {
         f.write_str("slice(")?;
-        format_option_i64(f, self.start)?;
+        format_option_i64(f, self.get(vm.heap).start)?;
         f.write_str(", ")?;
-        format_option_i64(f, self.stop)?;
+        format_option_i64(f, self.get(vm.heap).stop)?;
         f.write_str(", ")?;
-        format_option_i64(f, self.step)?;
-        f.write_char(')')
+        format_option_i64(f, self.get(vm.heap).step)?;
+        Ok(f.write_char(')')?)
+    }
+
+    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<Option<CallResult>> {
+        let this = self.get(vm.heap);
+        // Fast path: interned strings can be matched by ID without string comparison
+        if let Some(ss) = attr.static_string() {
+            return match ss {
+                StaticStrings::Start => Ok(Some(CallResult::Value(option_i64_to_value(this.start)))),
+                StaticStrings::Stop => Ok(Some(CallResult::Value(option_i64_to_value(this.stop)))),
+                StaticStrings::Step => Ok(Some(CallResult::Value(option_i64_to_value(this.step)))),
+                _ => Ok(None),
+            };
+        }
+        // Slow path: heap-allocated strings need string comparison
+        match attr.as_str(vm.interns) {
+            "start" => Ok(Some(CallResult::Value(option_i64_to_value(this.start)))),
+            "stop" => Ok(Some(CallResult::Value(option_i64_to_value(this.stop)))),
+            "step" => Ok(Some(CallResult::Value(option_i64_to_value(this.step)))),
+            _ => Ok(None),
+        }
+    }
+}
+
+impl HeapItem for Slice {
+    fn py_estimate_size(&self) -> usize {
+        mem::size_of::<Self>()
     }
 
     fn py_dec_ref_ids(&mut self, _stack: &mut Vec<HeapId>) {
@@ -254,7 +254,7 @@ pub(crate) fn option_i64_to_value(opt: Option<i64>) -> Value {
 }
 
 /// Formats an Option<i64> for repr output (None or the integer).
-fn format_option_i64(f: &mut impl Write, value: Option<i64>) -> std::fmt::Result {
+fn format_option_i64(f: &mut impl Write, value: Option<i64>) -> fmt::Result {
     match value {
         Some(i) => write!(f, "{i}"),
         None => f.write_str("None"),

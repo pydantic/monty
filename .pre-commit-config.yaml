@@ -2,8 +2,9 @@ fail_fast: true
 
 repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
-    rev: v4.0.1
+    rev: v6.0.0
     hooks:
+      - id: no-commit-to-branch # prevent direct commits to the `main` branch
       - id: check-yaml
       - id: check-toml
       - id: end-of-file-fixer
@@ -17,6 +18,18 @@ repos:
       - id: codespell
         additional_dependencies:
           - tomli
+
+  - repo: https://github.com/google/yamlfmt
+    # Configuration for yamlfmt is in yamlfmt.yaml
+    rev: v0.21.0
+    hooks:
+      - id: yamlfmt
+
+  - repo: https://github.com/zizmorcore/zizmor-pre-commit
+    # Configuration for yamlfmt is in .github/zizmor.yml
+    rev: v1.23.1
+    hooks:
+      - id: zizmor
 
   - repo: local
     hooks:

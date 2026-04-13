@@ -3,22 +3,58 @@ requires = ["maturin>=1.9.4,<2.0"]
 build-backend = "maturin"
 
 [project]
-# uses this package name since `monty` is taken, the module is still named `monty`
-name = "monty-python"
-version = "0.1.0"
+# the module is named `pydantic_monty`
+name = "pydantic-monty"
 description = "Python bindings for the Monty sandboxed Python interpreter"
-license = "MIT"
 readme = "README.md"
 requires-python = ">=3.10"
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Programming Language :: Python",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Information Technology",
+    "Intended Audience :: System Administrators",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: Unix",
+    "Operating System :: POSIX :: Linux",
+    "Environment :: MacOS X",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: Internet",
+    "Programming Language :: Python :: Implementation",
+]
+dependencies = [
+    "typing_extensions>=4.5",
+]
+dynamic = ["license", "version"]
+
+[project.urls]
+Homepage = "https://github.com/pydantic/monty"
+Source = "https://github.com/pydantic/monty"
 
 [tool.maturin]
+python-source = "python"
+module-name = "pydantic_monty._monty"
 features = ["pyo3/extension-module"]
 
 [dependency-groups]
 dev = [
+    "anyio>=4.0",
     "black>=25.12.0",
+    "dirty-equals>=0.11",
     "inline-snapshot>=0.31.1",
     "pytest>=9.0.2",
     "pytest-examples>=0.0.14",
     "pytest-pretty>=1.3.0",
 ]
+
+[tool.pytest.ini_options]
+anyio_mode = "auto"
+xfail_strict = true
+filterwarnings = ["error"]

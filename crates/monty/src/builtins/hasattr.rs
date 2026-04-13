@@ -3,11 +3,11 @@
 use crate::{
     ExcType,
     args::ArgValues,
+    bytecode::{CallResult, VM},
+    defer_drop,
     exception_private::{RunResult, SimpleException},
-    heap::Heap,
-    intern::Interns,
     resource::ResourceTracker,
-    value::Value,
+    value::{EitherStr, Value},
 };
 
 /// Implementation of the hasattr() builtin function.
@@ -26,51 +26,36 @@ use crate::{
 /// hasattr(slice(1, 10), 'start') # True - slice has start attribute
 /// hasattr(42, 'nonexistent')    # False - int has no such attribute
 /// ```
-pub fn builtin_hasattr(heap: &mut Heap<impl ResourceTracker>, args: ArgValues, interns: &Interns) -> RunResult<Value> {
-    let (mut positional, kwargs) = args.into_parts();
+pub fn builtin_hasattr(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let positional = args.into_pos_only("hasattr", vm.heap)?;
+    defer_drop!(positional, vm);
 
-    let pos_count = positional.len();
-    let kw_count = kwargs.len();
-
-    if !kwargs.is_empty() {
-        for (k, v) in kwargs {
-            k.drop_with_heap(heap);
-            v.drop_with_heap(heap);
-        }
-        for v in positional {
-            v.drop_with_heap(heap);
-        }
-        return Err(ExcType::type_error_arg_count("hasattr", 2, pos_count + kw_count));
-    }
-
-    if pos_count != 2 {
-        for v in positional {
-            v.drop_with_heap(heap);
-        }
-        return Err(ExcType::type_error_arg_count("hasattr", 2, pos_count));
-    }
-
-    let object = positional.next().unwrap();
-    let name = positional.next().unwrap();
+    let (object, name) = match positional.as_slice() {
+        [object, name] => (object, name),
+        other => return Err(ExcType::type_error_arg_count("hasattr", 2, other.len())),
+    };
 
     let Value::InternString(name_id) = name else {
-        object.drop_with_heap(heap);
-        name.drop_with_heap(heap);
         return Err(SimpleException::new_msg(ExcType::TypeError, "hasattr(): attribute name must be string").into());
     };
 
-    name.drop_with_heap(heap);
-
     // important: we must own the returned value if py_get_attr succeeds to drop it
-    let has_attr = match object.py_get_attr(name_id, heap, interns) {
-        Ok(value) => {
-            value.drop_with_heap(heap);
+    let has_attr = match object.py_getattr(&EitherStr::Interned(*name_id), vm) {
+        Ok(CallResult::Value(value)) => {
+            value.drop_with_heap(vm);
             true
+        }
+        Ok(_) => {
+            // hasattr() only tests attribute values — OS calls, external calls,
+            // method calls, and awaits are not supported here
+            //
+            // TODO: might need to support this case?
+            return Err(
+                SimpleException::new_msg(ExcType::TypeError, "getattr(): attribute is not a simple value").into(),
+            );
         }
         Err(_) => false,
     };
-
-    object.drop_with_heap(heap);
 
     Ok(Value::Bool(has_attr))
 }

@@ -67,6 +67,17 @@ copy_dict = dict(orig_dict)
 copy_dict[3] = 4
 assert orig_dict == {1: 2}, 'dict copy is independent'
 assert copy_dict == {1: 2, 3: 4}, 'dict copy modified'
+assert dict([('a', 1), ('b', 2)]) == {'a': 1, 'b': 2}, 'dict(list of tuples)'
+assert dict((('a', 1), ('b', 2))) == {'a': 1, 'b': 2}, 'dict(tuple of tuples)'
+
+headers = ['a', 'b']
+row_data = [1, 2]
+assert dict(zip(headers, row_data)) == {'a': 1, 'b': 2}, 'dict(zip(list, list))'
+assert dict(zip(['a', 'b'], [1])) == {'a': 1}, 'dict(zip()) truncates to shortest iterable'
+
+assert dict(a=1, b=2) == {'a': 1, 'b': 2}, 'dict keyword arguments'
+assert dict([('a', 1)], b=2) == {'a': 1, 'b': 2}, 'dict positional iterable plus kwargs'
+assert dict([('a', 1)], a=2) == {'a': 2}, 'dict kwargs overwrite positional iterable values'
 
 # === str() constructor ===
 assert str() == '', 'str() empty'
@@ -98,6 +109,8 @@ assert int(-3.7) == -3, 'int(negative float) truncates toward zero'
 assert int(3.0) == 3, 'int(whole float)'
 assert int(True) == 1, 'int(True)'
 assert int(False) == 0, 'int(False)'
+x = 12345678901234567890
+assert int(x) is x, 'int constructor on int is identity'
 
 # int() with extreme float values (should clamp to i64 range in Monty)
 # Note: Python uses arbitrary precision; Monty clamps to i64
@@ -173,3 +186,17 @@ assert not isinstance([], (int, (str, bytes))), 'isinstance nested tuple no matc
 
 # NoneType capitalization
 assert repr(type(None)) == "<class 'NoneType'>", 'NoneType capitalized'
+
+# === type().__name__ ===
+assert type(42).__name__ == 'int', 'int type name'
+assert type('hello').__name__ == 'str', 'str type name'
+assert type(True).__name__ == 'bool', 'bool type name'
+assert type(None).__name__ == 'NoneType', 'NoneType name'
+assert type([1, 2]).__name__ == 'list', 'list type name'
+assert type({'a': 1}).__name__ == 'dict', 'dict type name'
+
+# type().__name__ for exceptions
+try:
+    raise ValueError('test')
+except ValueError as e:
+    assert type(e).__name__ == 'ValueError', 'exception type name'

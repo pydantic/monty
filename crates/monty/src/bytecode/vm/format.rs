@@ -2,29 +2,29 @@
 
 use super::VM;
 use crate::{
+    defer_drop,
     exception_private::{ExcType, RunError, SimpleException},
     fstring::{ParsedFormatSpec, ascii_escape, decode_format_spec, format_string, format_with_spec},
-    io::PrintWriter,
-    resource::ResourceTracker,
+    resource::{ResourceTracker, check_repeat_size},
     types::{PyTrait, str::allocate_string},
     value::Value,
 };
 
-impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
+impl<T: ResourceTracker> VM<'_, '_, T> {
     /// Builds an f-string by concatenating n string parts from the stack.
     pub(super) fn build_fstring(&mut self, count: usize) -> Result<(), RunError> {
-        let parts = self.pop_n(count);
+        let this = self;
+        let parts = this.pop_n(count);
+        defer_drop!(parts, this);
         let mut result = String::new();
 
-        for part in parts {
-            // Each part should be a string (interned or heap-allocated)
-            let part_str = part.py_str(self.heap, self.interns);
+        for part in parts.as_slice() {
+            let part_str = part.py_str(this)?;
             result.push_str(&part_str);
-            part.drop_with_heap(self.heap);
         }
 
-        let value = allocate_string(result, self.heap)?;
-        self.push(value);
+        let value = allocate_string(result, this.heap)?;
+        this.push(value);
         Ok(())
     }
 
@@ -45,82 +45,59 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
     /// - !r conversion: convert to repr first, then format as string
     /// - !a conversion: convert to ascii repr first, then format as string
     pub(super) fn format_value(&mut self, flags: u8) -> Result<(), RunError> {
+        let this = self;
         let conversion = flags & 0x03;
         let has_format_spec = (flags & 0x04) != 0;
 
         // Pop format spec if present (pushed before value, so popped after)
-        let format_spec = if has_format_spec {
-            let spec_value = self.pop();
-            Some(spec_value)
-        } else {
-            None
-        };
+        let format_spec = if has_format_spec { Some(this.pop()) } else { None };
 
-        let value = self.pop();
+        let value = this.pop();
+        defer_drop!(value, this);
 
         // Format with spec applied to original value type, or convert and format as string
         let formatted = if let Some(spec_value) = format_spec {
-            // Get the parsed format spec
-            let spec = match self.get_format_spec(&spec_value, &value) {
-                Ok(s) => s,
-                Err(e) => {
-                    // Clean up both values before returning error
-                    spec_value.drop_with_heap(self.heap);
-                    value.drop_with_heap(self.heap);
-                    return Err(e);
-                }
-            };
+            defer_drop!(spec_value, this);
 
-            // Format based on value type and conversion flag
-            // Use a helper closure to handle errors with proper cleanup
-            let format_result: Result<String, RunError> = match conversion {
+            let spec = this.get_format_spec(spec_value, value)?;
+
+            // Pre-check: reject format specs with huge width before pad_string
+            // allocates an untracked Rust String.
+            check_repeat_size(spec.width, spec.fill.len_utf8(), this.heap.tracker())?;
+
+            match conversion {
                 // No conversion - format original value
-                0 => format_with_spec(&value, &spec, self.heap, self.interns),
+                0 => format_with_spec(value, &spec, this)?,
                 // !s - convert to str, format as string
                 1 => {
-                    let s = value.py_str(self.heap, self.interns);
-                    format_string(&s, &spec).map_err(Into::into)
+                    let s = value.py_str(this)?;
+                    format_string(&s, &spec)?
                 }
                 // !r - convert to repr, format as string
                 2 => {
-                    let s = value.py_repr(self.heap, self.interns);
-                    format_string(&s, &spec).map_err(Into::into)
+                    let s = value.py_repr(this)?;
+                    format_string(&s, &spec)?
                 }
                 // !a - convert to ascii, format as string
                 3 => {
-                    let s = ascii_escape(&value.py_repr(self.heap, self.interns));
-                    format_string(&s, &spec).map_err(Into::into)
+                    let s = ascii_escape(&value.py_repr(this)?);
+                    format_string(&s, &spec)?
                 }
-                _ => format_with_spec(&value, &spec, self.heap, self.interns),
-            };
-
-            // Handle format errors with proper cleanup
-            match format_result {
-                Ok(result) => {
-                    spec_value.drop_with_heap(self.heap);
-                    result
-                }
-                Err(e) => {
-                    spec_value.drop_with_heap(self.heap);
-                    value.drop_with_heap(self.heap);
-                    return Err(e);
-                }
+                _ => format_with_spec(value, &spec, this)?,
             }
         } else {
             // No format spec - just convert based on conversion flag
             match conversion {
-                0 => value.py_str(self.heap, self.interns).into_owned(),
-                1 => value.py_str(self.heap, self.interns).into_owned(),
-                2 => value.py_repr(self.heap, self.interns).into_owned(),
-                3 => ascii_escape(&value.py_repr(self.heap, self.interns)),
-                _ => value.py_str(self.heap, self.interns).into_owned(),
+                0 => value.py_str(this)?.into_owned(),
+                1 => value.py_str(this)?.into_owned(),
+                2 => value.py_repr(this)?.into_owned(),
+                3 => ascii_escape(&value.py_repr(this)?),
+                _ => value.py_str(this)?.into_owned(),
             }
         };
 
-        value.drop_with_heap(self.heap);
-
-        let value = allocate_string(formatted, self.heap)?;
-        self.push(value);
+        let result = allocate_string(formatted, this.heap)?;
+        this.push(result);
         Ok(())
     }
 
@@ -137,10 +114,10 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
             }
             _ => {
                 // Dynamic format spec - parse the string
-                let spec_str = spec_value.py_str(self.heap, self.interns);
+                let spec_str = spec_value.py_str(self)?;
                 spec_str.parse::<ParsedFormatSpec>().map_err(|invalid| {
                     // Only fetch type in error path
-                    let value_type = value_for_error.py_type(self.heap);
+                    let value_type = value_for_error.py_type(self);
                     RunError::Exc(
                         SimpleException::new_msg(
                             ExcType::ValueError,

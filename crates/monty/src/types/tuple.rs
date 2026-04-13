@@ -1,37 +1,52 @@
-/// Python tuple type, wrapping a `Vec<Value>`.
+/// Python tuple type using `SmallVec` for inline storage of small tuples.
 ///
 /// This type provides Python tuple semantics. Tuples are immutable sequences
 /// that can contain any Python object. Like lists, tuples properly handle
 /// reference counting for heap-allocated values.
+///
+/// # Optimization
+/// Uses `SmallVec<[Value; 2]>` to store up to 2 elements inline without heap
+/// allocation. This benefits common cases like 2-tuples from `enumerate()`,
+/// `dict.items()`, and function return values.
 ///
 /// # Implemented Methods
 /// - `index(value[, start[, end]])` - Find first index of value
 /// - `count(value)` - Count occurrences
 ///
 /// All tuple methods from Python's builtins are implemented.
-use std::fmt::Write;
+use std::{cmp::Ordering, fmt::Write, mem};
 
 use ahash::AHashSet;
+use smallvec::SmallVec;
 
-use super::{
-    MontyIter, PyTrait,
-    list::{get_slice_items, repr_sequence_fmt},
-};
+use super::{MontyIter, PyTrait};
 use crate::{
     args::ArgValues,
+    bytecode::{CallResult, VM},
+    defer_drop,
     exception_private::{ExcType, RunResult},
-    heap::{Heap, HeapData, HeapId},
-    intern::{Interns, StaticStrings},
-    resource::ResourceTracker,
-    types::Type,
-    value::{Attr, Value},
+    heap::{DropWithHeap, Heap, HeapData, HeapId, HeapItem, HeapRead},
+    intern::StaticStrings,
+    resource::{ResourceError, ResourceTracker},
+    types::{
+        Type,
+        list::{get_slice_items, repr_sequence_fmt},
+    },
+    value::{EitherStr, Value},
 };
+
+/// Inline capacity for small tuples. Tuples with 2 or fewer elements avoid
+/// heap allocation for the items storage.
+const TUPLE_INLINE_CAPACITY: usize = 3;
+
+/// Storage type for tuple items. Uses SmallVec to inline small tuples.
+pub(crate) type TupleVec = SmallVec<[Value; TUPLE_INLINE_CAPACITY]>;
 
 /// Python tuple value stored on the heap.
 ///
-/// Wraps a `Vec<Value>` and provides Python-compatible tuple operations.
-/// Unlike lists, tuples are conceptually immutable (though this is not
-/// enforced at the type level for internal operations).
+/// Uses `SmallVec<[Value; 3]>` internally to avoid separate heap allocation
+/// for tuples with 3 or fewer elements. This is a significant optimization
+/// since small tuples are very common (enumerate, dict items, returns, etc.).
 ///
 /// # Reference Counting
 /// When a tuple is freed, all contained heap references have their refcounts
@@ -43,7 +58,7 @@ use crate::{
 /// tuple contains only primitive values (ints, bools, None, etc.).
 #[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
 pub(crate) struct Tuple {
-    items: Vec<Value>,
+    items: TupleVec,
     /// True if any item in the tuple is a `Value::Ref`. Set at creation time
     /// since tuples are immutable.
     contains_refs: bool,
@@ -55,20 +70,20 @@ impl Tuple {
     /// Automatically computes the `contains_refs` flag by checking if any value
     /// is a `Value::Ref`. Since tuples are immutable, this flag never changes.
     ///
+    /// For tuples with 3 or fewer elements, the items are stored inline in the
+    /// SmallVec without additional heap allocation.
+    ///
     /// Note: This does NOT increment reference counts - the caller must
     /// ensure refcounts are properly managed.
     #[must_use]
-    pub fn new(vec: Vec<Value>) -> Self {
-        let contains_refs = vec.iter().any(|v| matches!(v, Value::Ref(_)));
-        Self {
-            items: vec,
-            contains_refs,
-        }
+    fn new(items: TupleVec) -> Self {
+        let contains_refs = items.iter().any(|v| matches!(v, Value::Ref(_)));
+        Self { items, contains_refs }
     }
 
-    /// Returns a reference to the underlying vector.
+    /// Returns a reference to the underlying SmallVec.
     #[must_use]
-    pub fn as_vec(&self) -> &Vec<Value> {
+    pub fn as_slice(&self) -> &[Value] {
         &self.items
     }
 
@@ -83,97 +98,216 @@ impl Tuple {
 
     /// Creates a tuple from the `tuple()` constructor call.
     ///
-    /// - `tuple()` with no args returns an empty tuple
+    /// - `tuple()` with no args returns an empty tuple (singleton)
     /// - `tuple(iterable)` creates a tuple from any iterable (list, tuple, range, str, bytes, dict)
-    pub fn init(heap: &mut Heap<impl ResourceTracker>, args: ArgValues, interns: &Interns) -> RunResult<Value> {
-        let value = args.get_zero_one_arg("tuple", heap)?;
+    pub fn init(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+        let value = args.get_zero_one_arg("tuple", vm.heap)?;
         match value {
             None => {
-                let heap_id = heap.allocate(HeapData::Tuple(Self::new(Vec::new())))?;
-                Ok(Value::Ref(heap_id))
+                // Use empty tuple singleton
+                Ok(vm.heap.get_empty_tuple())
             }
             Some(v) => {
-                let mut iter = MontyIter::new(v, heap, interns)?;
-                let items = iter.collect(heap, interns)?;
-                iter.drop_with_heap(heap);
-                let heap_id = heap.allocate(HeapData::Tuple(Self::new(items)))?;
-                Ok(Value::Ref(heap_id))
+                let items = MontyIter::new(v, vm)?.collect(vm)?;
+                Ok(allocate_tuple(items, vm.heap)?)
             }
         }
-    }
-}
-
-impl FromIterator<Value> for Tuple {
-    fn from_iter<I: IntoIterator<Item = Value>>(iter: I) -> Self {
-        Self::new(iter.into_iter().collect())
     }
 }
 
 impl From<Tuple> for Vec<Value> {
     fn from(tuple: Tuple) -> Self {
+        tuple.items.into_vec()
+    }
+}
+
+impl From<Tuple> for TupleVec {
+    fn from(tuple: Tuple) -> Self {
         tuple.items
     }
 }
 
-impl PyTrait for Tuple {
-    fn py_type(&self, _heap: &Heap<impl ResourceTracker>) -> Type {
+/// Allocates a tuple, using the empty tuple singleton when appropriate.
+///
+/// This is the preferred way to allocate tuples as it provides:
+/// - Empty tuple interning: `() is ()` returns `True`
+/// - SmallVec optimization for small tuples (≤3 elements)
+///
+/// # Example Usage
+/// ```ignore
+/// // Empty tuple - returns singleton
+/// let empty = allocate_tuple(Vec::new(), heap)?;
+///
+/// // Small tuple - stored inline in SmallVec
+/// let pair = allocate_tuple(vec![Value::Int(1), Value::Int(2)], heap)?;
+/// ```
+pub fn allocate_tuple(
+    items: SmallVec<[Value; TUPLE_INLINE_CAPACITY]>,
+    heap: &Heap<impl ResourceTracker>,
+) -> Result<Value, ResourceError> {
+    if items.is_empty() {
+        Ok(heap.get_empty_tuple())
+    } else {
+        // Allocate a new tuple (SmallVec will inline if ≤3 elements)
+        let heap_id = heap.allocate(HeapData::Tuple(Tuple::new(items)))?;
+        Ok(Value::Ref(heap_id))
+    }
+}
+
+impl<'h> HeapRead<'h, Tuple> {
+    /// Clones the item at the given index with proper refcount management.
+    pub(crate) fn clone_item(&self, index: usize, vm: &mut VM<'h, '_, impl ResourceTracker>) -> Value {
+        self.get(vm.heap).items[index].clone_with_heap(vm)
+    }
+
+    /// Clones all items from this tuple with proper refcount management.
+    fn clone_all_items(&self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> TupleVec {
+        let len = self.get(vm.heap).items.len();
+        let mut result = TupleVec::with_capacity(len);
+        for i in 0..len {
+            result.push(self.clone_item(i, vm));
+        }
+        result
+    }
+}
+
+impl<'h> PyTrait<'h> for HeapRead<'h, Tuple> {
+    fn py_type(&self, _vm: &VM<'h, '_, impl ResourceTracker>) -> Type {
         Type::Tuple
     }
 
-    fn py_estimate_size(&self) -> usize {
-        std::mem::size_of::<Self>() + self.items.len() * std::mem::size_of::<Value>()
+    fn py_len(&self, vm: &VM<'h, '_, impl ResourceTracker>) -> Option<usize> {
+        Some(self.get(vm.heap).items.len())
     }
 
-    fn py_len(&self, _heap: &Heap<impl ResourceTracker>, _interns: &Interns) -> Option<usize> {
-        Some(self.items.len())
-    }
-
-    fn py_getitem(&self, key: &Value, heap: &mut Heap<impl ResourceTracker>, _interns: &Interns) -> RunResult<Value> {
+    fn py_getitem(&self, key: &Value, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<Value> {
         // Check for slice first (Value::Ref pointing to HeapData::Slice)
-        if let Value::Ref(id) = key
-            && let HeapData::Slice(slice) = heap.get(*id)
+        if let Value::Ref(key_id) = key
+            && let HeapData::Slice(slice_obj) = vm.heap.get(*key_id)
         {
-            let (start, stop, step) = slice
-                .indices(self.items.len())
+            let (start, stop, step) = slice_obj
+                .indices(self.get(vm.heap).items.len())
                 .map_err(|()| ExcType::value_error_slice_step_zero())?;
-
-            let items = get_slice_items(&self.items, start, stop, step, heap);
-            let heap_id = heap.allocate(HeapData::Tuple(Self::new(items)))?;
-            return Ok(Value::Ref(heap_id));
+            let items = get_slice_items(&self.get(vm.heap).items, start, stop, step, vm.heap)?;
+            return Ok(allocate_tuple(items.into(), vm.heap)?);
         }
 
-        // Extract integer index, accepting both Int and Bool (True=1, False=0)
-        let index = match key {
-            Value::Int(i) => *i,
-            Value::Bool(b) => i64::from(*b),
-            _ => return Err(ExcType::type_error_indices(Type::Tuple, key.py_type(heap))),
-        };
+        // Extract integer index, accepting Int, Bool (True=1, False=0), and LongInt
+        let index = key.as_index(vm, Type::Tuple)?;
+        let len = self.get(vm.heap).as_slice().len();
+        let len_i64 = i64::try_from(len).expect("tuple length exceeds i64::MAX");
+        let normalized = if index < 0 { index + len_i64 } else { index };
 
-        // Convert to usize, handling negative indices (Python-style: -1 = last element)
-        let len = i64::try_from(self.items.len()).expect("tuple length exceeds i64::MAX");
-        let normalized_index = if index < 0 { index + len } else { index };
-
-        // Bounds check
-        if normalized_index < 0 || normalized_index >= len {
+        if normalized < 0 || normalized >= len_i64 {
             return Err(ExcType::tuple_index_error());
         }
 
-        // Return clone of the item with proper refcount increment
-        // Safety: normalized_index is validated to be in [0, len) above
-        let idx = usize::try_from(normalized_index).expect("tuple index validated non-negative");
-        Ok(self.items[idx].clone_with_heap(heap))
+        let idx = usize::try_from(normalized).expect("tuple index validated non-negative");
+        Ok(self.clone_item(idx, vm))
     }
 
-    fn py_eq(&self, other: &Self, heap: &mut Heap<impl ResourceTracker>, interns: &Interns) -> bool {
-        if self.items.len() != other.items.len() {
-            return false;
+    fn py_eq(&self, other: &Self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> Result<bool, ResourceError> {
+        let a_len = self.get(vm.heap).items.len();
+        if a_len != other.get(vm.heap).items.len() {
+            return Ok(false);
         }
-        for (i1, i2) in self.items.iter().zip(&other.items) {
-            if !i1.py_eq(i2, heap, interns) {
-                return false;
+        let token = vm.heap.incr_recursion_depth()?;
+        defer_drop!(token, vm);
+        for i in 0..a_len {
+            vm.heap.check_time()?;
+            let a_val = self.clone_item(i, vm);
+            let b_val = other.clone_item(i, vm);
+            let result = a_val.py_eq(&b_val, vm);
+            a_val.drop_with_heap(vm);
+            b_val.drop_with_heap(vm);
+            if !result? {
+                return Ok(false);
             }
         }
-        true
+        Ok(true)
+    }
+
+    /// Lexicographic comparison for tuples.
+    ///
+    /// Compares element-by-element left-to-right. The first non-equal pair
+    /// determines the result. If all compared elements are equal, the shorter
+    /// tuple is considered less than the longer one — matching Python semantics:
+    /// `(1, 2) < (1, 2, 3)` is `True`.
+    ///
+    /// Returns `None` if any element pair is incomparable (e.g. `int` vs `str`).
+    fn py_cmp(
+        &self,
+        other: &Self,
+        vm: &mut VM<'h, '_, impl ResourceTracker>,
+    ) -> Result<Option<Ordering>, ResourceError> {
+        let a_len = self.get(vm.heap).items.len();
+        let b_len = other.get(vm.heap).items.len();
+        let min_len = a_len.min(b_len);
+        let token = vm.heap.incr_recursion_depth()?;
+        defer_drop!(token, vm);
+        for i in 0..min_len {
+            vm.heap.check_time()?;
+            let av = self.clone_item(i, vm);
+            let bv = other.clone_item(i, vm);
+            defer_drop!(av, vm);
+            defer_drop!(bv, vm);
+            match av.py_cmp(bv, vm)? {
+                Some(Ordering::Equal) => {}
+                Some(ord) => return Ok(Some(ord)),
+                None => {
+                    // py_cmp returned None — the elements don't support ordering.
+                    // CPython checks __eq__ first and only calls __lt__ for non-equal
+                    // pairs, so equal-but-unorderable elements (e.g. None == None)
+                    // should be treated as equal and not block comparison.
+                    if !av.py_eq(bv, vm)? {
+                        return Ok(None);
+                    }
+                }
+            }
+        }
+        Ok(Some(a_len.cmp(&b_len)))
+    }
+
+    fn py_add(&self, other: &Self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> Result<Option<Value>, ResourceError> {
+        let mut items = self.clone_all_items(vm);
+        items.extend(other.clone_all_items(vm));
+        Ok(Some(allocate_tuple(items, vm.heap)?))
+    }
+
+    fn py_call_attr(
+        &mut self,
+        _self_id: HeapId,
+        vm: &mut VM<'h, '_, impl ResourceTracker>,
+        attr: &EitherStr,
+        args: ArgValues,
+    ) -> RunResult<CallResult> {
+        match attr.static_string() {
+            Some(StaticStrings::Index) => tuple_index(self, args, vm).map(CallResult::Value),
+            Some(StaticStrings::Count) => tuple_count(self, args, vm).map(CallResult::Value),
+            _ => {
+                args.drop_with_heap(vm);
+                Err(ExcType::attribute_error(Type::Tuple, attr.as_str(vm.interns)))
+            }
+        }
+    }
+
+    fn py_bool(&self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> bool {
+        !self.get(vm.heap).items.is_empty()
+    }
+
+    fn py_repr_fmt(
+        &self,
+        f: &mut impl Write,
+        vm: &VM<'h, '_, impl ResourceTracker>,
+        heap_ids: &mut AHashSet<HeapId>,
+    ) -> RunResult<()> {
+        repr_sequence_fmt('(', ')', &self.get(vm.heap).items, f, vm, heap_ids)
+    }
+}
+
+impl HeapItem for Tuple {
+    fn py_estimate_size(&self) -> usize {
+        mem::size_of::<Self>() + self.items.len() * mem::size_of::<Value>()
     }
 
     /// Pushes all heap IDs contained in this tuple onto the stack.
@@ -193,162 +327,71 @@ impl PyTrait for Tuple {
             }
         }
     }
-
-    fn py_call_attr(
-        &mut self,
-        heap: &mut Heap<impl ResourceTracker>,
-        attr: &Attr,
-        args: ArgValues,
-        interns: &Interns,
-    ) -> RunResult<Value> {
-        match attr.static_string() {
-            Some(StaticStrings::Index) => tuple_index(self, args, heap, interns),
-            Some(StaticStrings::Count) => tuple_count(self, args, heap, interns),
-            _ => {
-                args.drop_with_heap(heap);
-                Err(ExcType::attribute_error(Type::Tuple, attr.as_str(interns)))
-            }
-        }
-    }
-
-    fn py_bool(&self, _heap: &Heap<impl ResourceTracker>, _interns: &Interns) -> bool {
-        !self.items.is_empty()
-    }
-
-    fn py_repr_fmt(
-        &self,
-        f: &mut impl Write,
-        heap: &Heap<impl ResourceTracker>,
-        heap_ids: &mut AHashSet<HeapId>,
-        interns: &Interns,
-    ) -> std::fmt::Result {
-        repr_sequence_fmt('(', ')', &self.items, f, heap, heap_ids, interns)
-    }
 }
 
 /// Implements Python's `tuple.index(value[, start[, end]])` method.
 ///
 /// Returns the index of the first occurrence of value.
 /// Raises ValueError if the value is not found.
-fn tuple_index(
-    tuple: &Tuple,
+fn tuple_index<'h>(
+    tuple: &HeapRead<'h, Tuple>,
     args: ArgValues,
-    heap: &mut Heap<impl ResourceTracker>,
-    interns: &Interns,
+    vm: &mut VM<'h, '_, impl ResourceTracker>,
 ) -> RunResult<Value> {
-    let (value, start, end) = parse_tuple_index_args("tuple.index", tuple.as_vec().len(), args, heap)?;
+    let pos_args = args.into_pos_only("tuple.index", vm.heap)?;
+    defer_drop!(pos_args, vm);
 
-    // Search for the value in the specified range
-    for (i, item) in tuple.as_vec()[start..end].iter().enumerate() {
-        if value.py_eq(item, heap, interns) {
-            value.drop_with_heap(heap);
-            let idx = i64::try_from(start + i).expect("index exceeds i64::MAX");
+    let len = tuple.get(vm.heap).as_slice().len();
+    let (value, start, end) = match pos_args.as_slice() {
+        [] => return Err(ExcType::type_error_at_least("tuple.index", 1, 0)),
+        [value] => (value, 0, len),
+        [value, start_arg] => {
+            let start = normalize_tuple_index(start_arg.as_int(vm)?, len);
+            (value, start, len)
+        }
+        [value, start_arg, end_arg] => {
+            let start = normalize_tuple_index(start_arg.as_int(vm)?, len);
+            let end = normalize_tuple_index(end_arg.as_int(vm)?, len).max(start);
+            (value, start, end)
+        }
+        other => return Err(ExcType::type_error_at_most("tuple.index", 3, other.len())),
+    };
+
+    for i in start..end {
+        let item = tuple.clone_item(i, vm);
+        defer_drop!(item, vm);
+        if value.py_eq(item, vm)? {
+            let idx = i64::try_from(i).expect("index exceeds i64::MAX");
             return Ok(Value::Int(idx));
         }
     }
 
-    value.drop_with_heap(heap);
     Err(ExcType::value_error_not_in_tuple())
 }
 
 /// Implements Python's `tuple.count(value)` method.
 ///
 /// Returns the number of occurrences of value in the tuple.
-fn tuple_count(
-    tuple: &Tuple,
+fn tuple_count<'h>(
+    tuple: &HeapRead<'h, Tuple>,
     args: ArgValues,
-    heap: &mut Heap<impl ResourceTracker>,
-    interns: &Interns,
+    vm: &mut VM<'h, '_, impl ResourceTracker>,
 ) -> RunResult<Value> {
-    let value = args.get_one_arg("tuple.count", heap)?;
+    let value = args.get_one_arg("tuple.count", vm.heap)?;
+    defer_drop!(value, vm);
 
-    let count = tuple
-        .as_vec()
-        .iter()
-        .filter(|item| value.py_eq(item, heap, interns))
-        .count();
+    let len = tuple.get(vm.heap).as_slice().len();
+    let mut count = 0usize;
+    for i in 0..len {
+        let item = tuple.clone_item(i, vm);
+        defer_drop!(item, vm);
+        if value.py_eq(item, vm)? {
+            count += 1;
+        }
+    }
 
-    value.drop_with_heap(heap);
     let count_i64 = i64::try_from(count).expect("count exceeds i64::MAX");
     Ok(Value::Int(count_i64))
-}
-
-/// Parses arguments for tuple.index() method.
-///
-/// Returns (value, start, end) where start and end are normalized indices.
-/// Guarantees `start <= end` to prevent slice panics.
-fn parse_tuple_index_args(
-    method: &str,
-    len: usize,
-    args: ArgValues,
-    heap: &mut Heap<impl ResourceTracker>,
-) -> RunResult<(Value, usize, usize)> {
-    let (pos, kwargs) = args.into_parts();
-    if !kwargs.is_empty() {
-        kwargs.drop_with_heap(heap);
-        return Err(ExcType::type_error_no_kwargs(method));
-    }
-
-    let mut pos_iter = pos;
-    let value = pos_iter
-        .next()
-        .ok_or_else(|| ExcType::type_error_at_least(method, 1, 0))?;
-    let start_value = pos_iter.next();
-    let end_value = pos_iter.next();
-
-    // Check no extra arguments - must drop the 4th arg consumed by .next()
-    if let Some(fourth) = pos_iter.next() {
-        fourth.drop_with_heap(heap);
-        for v in pos_iter {
-            v.drop_with_heap(heap);
-        }
-        value.drop_with_heap(heap);
-        if let Some(v) = start_value {
-            v.drop_with_heap(heap);
-        }
-        if let Some(v) = end_value {
-            v.drop_with_heap(heap);
-        }
-        return Err(ExcType::type_error_at_most(method, 3, 4));
-    }
-
-    // Extract start (default 0)
-    let start = if let Some(v) = start_value {
-        let result = v.as_int(heap);
-        v.drop_with_heap(heap);
-        match result {
-            Ok(i) => normalize_tuple_index(i, len),
-            Err(e) => {
-                value.drop_with_heap(heap);
-                if let Some(ev) = end_value {
-                    ev.drop_with_heap(heap);
-                }
-                return Err(e);
-            }
-        }
-    } else {
-        0
-    };
-
-    // Extract end (default len)
-    let end = if let Some(v) = end_value {
-        let result = v.as_int(heap);
-        v.drop_with_heap(heap);
-        match result {
-            Ok(i) => normalize_tuple_index(i, len),
-            Err(e) => {
-                value.drop_with_heap(heap);
-                return Err(e);
-            }
-        }
-    } else {
-        len
-    };
-
-    // Ensure start <= end to prevent slice panics (Python treats start > end as empty slice)
-    let end = end.max(start);
-
-    Ok((value, start, end))
 }
 
 /// Normalizes a Python-style tuple index to a valid index in range [0, len].

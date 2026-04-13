@@ -2,8 +2,9 @@
 
 use crate::{
     args::ArgValues,
+    bytecode::VM,
+    defer_drop,
     exception_private::{ExcType, RunResult, SimpleException},
-    heap::Heap,
     resource::ResourceTracker,
     types::PyTrait,
     value::Value,
@@ -21,30 +22,30 @@ pub fn normalize_bool_to_int(value: Value) -> Value {
 /// Rounds a number to a given precision in decimal digits.
 /// If ndigits is omitted or None, returns the nearest integer.
 /// Uses banker's rounding (round half to even).
-pub fn builtin_round(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
-    let (number, ndigits) = args.get_one_two_args("round", heap)?;
+pub fn builtin_round(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let (number, ndigits) = args.get_one_two_args("round", vm.heap)?;
     let number = normalize_bool_to_int(number);
+    defer_drop!(number, vm);
+    defer_drop!(ndigits, vm);
 
     // Determine the number of digits (None means round to integer)
     // Extract digits value before potentially consuming ndigits for error handling
-    let (digits, ndigits_to_drop): (Option<i64>, Option<Value>) = match ndigits {
-        Some(Value::None) => (None, Some(Value::None)),
-        Some(Value::Int(n)) => (Some(n), Some(Value::Int(n))),
-        Some(Value::Bool(b)) => (Some(i64::from(b)), Some(Value::Bool(b))),
+    let digits: Option<i64> = match ndigits {
+        Some(Value::None) => None,
+        Some(Value::Int(n)) => Some(*n),
+        Some(Value::Bool(b)) => Some(i64::from(*b)),
         Some(v) => {
-            let type_name = v.py_type(heap);
-            number.drop_with_heap(heap);
-            v.drop_with_heap(heap);
+            let type_name = v.py_type(vm);
             return Err(SimpleException::new_msg(
                 ExcType::TypeError,
                 format!("'{type_name}' object cannot be interpreted as an integer"),
             )
             .into());
         }
-        None => (None, None),
+        None => None,
     };
 
-    let result = match &number {
+    match number {
         Value::Int(n) => {
             if let Some(d) = digits {
                 if d >= 0 {
@@ -83,20 +84,14 @@ pub fn builtin_round(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> 
             }
         }
         _ => {
-            let type_name = number.py_type(heap);
+            let type_name = number.py_type(vm);
             Err(SimpleException::new_msg(
                 ExcType::TypeError,
                 format!("type {type_name} doesn't define __round__ method"),
             )
             .into())
         }
-    };
-
-    number.drop_with_heap(heap);
-    if let Some(v) = ndigits_to_drop {
-        v.drop_with_heap(heap);
     }
-    result
 }
 
 /// Implements banker's rounding (round half to even).

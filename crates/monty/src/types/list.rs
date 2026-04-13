@@ -1,18 +1,20 @@
-use std::{cmp::Ordering, fmt::Write};
+use std::{fmt::Write, mem};
 
 use ahash::AHashSet;
+use smallvec::SmallVec;
 
 use super::{MontyIter, PyTrait};
 use crate::{
     args::ArgValues,
-    builtins::Builtins,
+    bytecode::{CallResult, VM},
+    defer_drop, defer_drop_mut,
     exception_private::{ExcType, RunError, RunResult},
-    heap::{Heap, HeapData, HeapId},
-    intern::{Interns, StaticStrings},
-    io::PrintWriter,
+    heap::{DropWithHeap, Heap, HeapData, HeapGuard, HeapId, HeapItem, HeapRead, HeapReadOutput},
+    intern::StaticStrings,
     resource::{ResourceError, ResourceTracker},
+    sorting::{apply_permutation, sort_indices},
     types::Type,
-    value::{Attr, Value},
+    value::{EitherStr, VALUE_SIZE, Value},
 };
 
 /// Python list type, wrapping a Vec of Values.
@@ -76,7 +78,7 @@ impl List {
 
     /// Returns a reference to the underlying vector.
     #[must_use]
-    pub fn as_vec(&self) -> &Vec<Value> {
+    pub fn as_slice(&self) -> &[Value] {
         &self.items
     }
 
@@ -106,21 +108,33 @@ impl List {
         self.contains_refs
     }
 
+    /// Marks that the list contains heap references.
+    ///
+    /// This should be called when directly mutating the list's items vector
+    /// (via `as_vec_mut()`) with values that include `Value::Ref` variants.
+    #[inline]
+    pub fn set_contains_refs(&mut self) {
+        self.contains_refs = true;
+    }
+}
+
+impl<'h> HeapRead<'h, List> {
     /// Appends an element to the end of the list.
     ///
     /// The caller transfers ownership of `item` to the list. The item's refcount
     /// is NOT incremented here - the caller is responsible for ensuring the refcount
     /// was already incremented (e.g., via `clone_with_heap` or `evaluate_use`).
-    ///
-    /// Returns `Value::None`, matching Python's behavior where `list.append()` returns None.
-    pub fn append(&mut self, heap: &mut Heap<impl ResourceTracker>, item: Value) {
+    pub fn append(&mut self, vm: &mut VM<'h, '_, impl ResourceTracker>, item: Value) -> RunResult<()> {
+        // Check memory limit before growing the internal Vec
+        vm.heap.track_growth(VALUE_SIZE)?;
         // Track if we're adding a reference and mark potential cycle
         if matches!(item, Value::Ref(_)) {
-            self.contains_refs = true;
-            heap.mark_potential_cycle();
+            self.get_mut(vm.heap).contains_refs = true;
+            vm.heap.mark_potential_cycle();
         }
         // Ownership transfer - refcount was already handled by caller
-        self.items.push(item);
+        self.get_mut(vm.heap).items.push(item);
+        Ok(())
     }
 
     /// Inserts an element at the specified index.
@@ -132,96 +146,99 @@ impl List {
     /// # Arguments
     /// * `index` - The position to insert at (0-based). If index >= len(),
     ///   the item is appended to the end (matching Python semantics).
-    ///
-    /// Returns `Value::None`, matching Python's behavior where `list.insert()` returns None.
-    pub fn insert(&mut self, heap: &mut Heap<impl ResourceTracker>, index: usize, item: Value) {
+    pub fn insert(&mut self, vm: &mut VM<'h, '_, impl ResourceTracker>, index: usize, item: Value) -> RunResult<()> {
+        // Check memory limit before growing the internal Vec
+        vm.heap.track_growth(VALUE_SIZE)?;
         // Track if we're adding a reference and mark potential cycle
         if matches!(item, Value::Ref(_)) {
-            self.contains_refs = true;
-            heap.mark_potential_cycle();
+            self.get_mut(vm.heap).contains_refs = true;
+            vm.heap.mark_potential_cycle();
         }
         // Ownership transfer - refcount was already handled by caller
         // Python's insert() appends if index is out of bounds
-        if index >= self.items.len() {
-            self.items.push(item);
+        let this = self.get_mut(vm.heap);
+        if index >= this.items.len() {
+            this.items.push(item);
         } else {
-            self.items.insert(index, item);
+            this.items.insert(index, item);
         }
+        Ok(())
     }
+}
 
+impl List {
     /// Creates a list from the `list()` constructor call.
     ///
     /// - `list()` with no args returns an empty list
     /// - `list(iterable)` creates a list from any iterable (list, tuple, range, str, bytes, dict)
-    pub fn init(heap: &mut Heap<impl ResourceTracker>, args: ArgValues, interns: &Interns) -> RunResult<Value> {
-        let value = args.get_zero_one_arg("list", heap)?;
+    pub fn init(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+        let value = args.get_zero_one_arg("list", vm.heap)?;
         match value {
             None => {
-                let heap_id = heap.allocate(HeapData::List(Self::new(Vec::new())))?;
+                let heap_id = vm.heap.allocate(HeapData::List(Self::new(Vec::new())))?;
                 Ok(Value::Ref(heap_id))
             }
             Some(v) => {
-                let mut iter = MontyIter::new(v, heap, interns)?;
-                let items = iter.collect(heap, interns)?;
-                iter.drop_with_heap(heap);
-                let heap_id = heap.allocate(HeapData::List(Self::new(items)))?;
+                let items = MontyIter::new(v, vm)?.collect(vm)?;
+                let heap_id = vm.heap.allocate(HeapData::List(Self::new(items)))?;
                 Ok(Value::Ref(heap_id))
             }
         }
     }
+}
 
+impl<'h> HeapRead<'h, List> {
     /// Handles slice-based indexing for lists.
     ///
     /// Returns a new list containing the selected elements.
-    fn getitem_slice(&self, slice: &crate::types::Slice, heap: &mut Heap<impl ResourceTracker>) -> RunResult<Value> {
+    fn getitem_slice(&self, slice: &super::Slice, vm: &VM<'h, '_, impl ResourceTracker>) -> RunResult<Value> {
         let (start, stop, step) = slice
-            .indices(self.items.len())
+            .indices(self.get(vm.heap).items.len())
             .map_err(|()| ExcType::value_error_slice_step_zero())?;
 
-        let items = get_slice_items(&self.items, start, stop, step, heap);
-        let heap_id = heap.allocate(HeapData::List(Self::new(items)))?;
+        let items = get_slice_items(&self.get(vm.heap).items, start, stop, step, vm.heap)?;
+        let heap_id = vm.heap.allocate(HeapData::List(List::new(items)))?;
         Ok(Value::Ref(heap_id))
     }
-}
 
-impl From<List> for Vec<Value> {
-    fn from(list: List) -> Self {
-        list.items
+    /// Clones the item at the given index with proper refcount management.
+    pub(crate) fn clone_item(&self, index: usize, vm: &mut VM<'h, '_, impl ResourceTracker>) -> Value {
+        self.get(vm.heap).items[index].clone_with_heap(vm.heap)
+    }
+
+    /// Clones all items from this list with proper refcount management.
+    fn clone_all_items(&self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> Vec<Value> {
+        let len = self.get(vm.heap).items.len();
+        let mut result = Vec::with_capacity(len);
+        for i in 0..len {
+            result.push(self.clone_item(i, vm));
+        }
+        result
     }
 }
 
-impl PyTrait for List {
-    fn py_type(&self, _heap: &Heap<impl ResourceTracker>) -> Type {
+impl<'h> PyTrait<'h> for HeapRead<'h, List> {
+    fn py_type(&self, _vm: &VM<'h, '_, impl ResourceTracker>) -> Type {
         Type::List
     }
 
-    fn py_estimate_size(&self) -> usize {
-        std::mem::size_of::<Self>() + self.items.len() * std::mem::size_of::<Value>()
+    fn py_len(&self, vm: &VM<'h, '_, impl ResourceTracker>) -> Option<usize> {
+        Some(self.get(vm.heap).items.len())
     }
 
-    fn py_len(&self, _heap: &Heap<impl ResourceTracker>, _interns: &Interns) -> Option<usize> {
-        Some(self.items.len())
-    }
-
-    fn py_getitem(&self, key: &Value, heap: &mut Heap<impl ResourceTracker>, _interns: &Interns) -> RunResult<Value> {
+    fn py_getitem(&self, key: &Value, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<Value> {
         // Check for slice first (Value::Ref pointing to HeapData::Slice)
         if let Value::Ref(id) = key
-            && let HeapData::Slice(slice) = heap.get(*id)
+            && let HeapData::Slice(slice) = vm.heap.get(*id)
         {
-            // Clone the slice to release the borrow on heap before calling getitem_slice
-            let slice = slice.clone();
-            return self.getitem_slice(&slice, heap);
+            return self.getitem_slice(slice, vm);
         }
 
-        // Extract integer index, accepting both Int and Bool (True=1, False=0)
-        let index = match key {
-            Value::Int(i) => *i,
-            Value::Bool(b) => i64::from(*b),
-            _ => return Err(ExcType::type_error_indices(Type::List, key.py_type(heap))),
-        };
+        // Extract integer index, accepting Int, Bool (True=1, False=0), and LongInt
+        let index = key.as_index(vm, Type::List)?;
 
         // Convert to usize, handling negative indices (Python-style: -1 = last element)
-        let len = i64::try_from(self.items.len()).expect("list length exceeds i64::MAX");
+        let len = i64::try_from(self.get(vm.heap).len()).expect("list length exceeds i64::MAX");
         let normalized_index = if index < 0 { index + len } else { index };
 
         // Bounds check
@@ -232,62 +249,172 @@ impl PyTrait for List {
         // Return clone of the item with proper refcount increment
         // Safety: normalized_index is validated to be in [0, len) above
         let idx = usize::try_from(normalized_index).expect("list index validated non-negative");
-        Ok(self.items[idx].clone_with_heap(heap))
+        Ok(self.get(vm.heap).items[idx].clone_with_heap(vm))
     }
 
-    fn py_setitem(
-        &mut self,
-        key: Value,
-        value: Value,
-        heap: &mut Heap<impl ResourceTracker>,
-        _interns: &Interns,
-    ) -> RunResult<()> {
-        // Extract integer index, accepting both Int and Bool (True=1, False=0)
-        let index = match key {
+    fn py_setitem(&mut self, key: Value, value: Value, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<()> {
+        defer_drop!(key, vm);
+        defer_drop_mut!(value, vm);
+
+        // Extract integer index, accepting Int, Bool (True=1, False=0), and LongInt.
+        // Note: The LongInt-to-i64 conversion is defensive code. In normal execution,
+        // heap-allocated LongInt values always exceed i64 range because into_value()
+        // demotes i64-fitting values to Value::Int. However, this could be reached via
+        // deserialization of crafted snapshot data.
+        let index = match *key {
             Value::Int(i) => i,
             Value::Bool(b) => i64::from(b),
+            Value::Ref(heap_id) => {
+                if let HeapData::LongInt(li) = vm.heap.get(heap_id) {
+                    if let Some(i) = li.to_i64() {
+                        i
+                    } else {
+                        return Err(ExcType::index_error_int_too_large());
+                    }
+                } else {
+                    let key_type = key.py_type(vm);
+                    return Err(ExcType::type_error_list_assignment_indices(key_type));
+                }
+            }
             _ => {
-                let key_type = key.py_type(heap);
-                key.drop_with_heap(heap);
-                value.drop_with_heap(heap);
+                let key_type = key.py_type(vm);
                 return Err(ExcType::type_error_list_assignment_indices(key_type));
             }
         };
 
         // Normalize negative indices (Python-style: -1 = last element)
-        let len = i64::try_from(self.items.len()).expect("list length exceeds i64::MAX");
+        let len = i64::try_from(self.get(vm.heap).len()).expect("list length exceeds i64::MAX");
         let normalized_index = if index < 0 { index + len } else { index };
 
         // Bounds check
         if normalized_index < 0 || normalized_index >= len {
-            value.drop_with_heap(heap);
             return Err(ExcType::list_assignment_index_error());
         }
 
-        // Replace value, drop old one
         let idx = usize::try_from(normalized_index).expect("index validated non-negative");
-        let old_value = std::mem::replace(&mut self.items[idx], value);
-        old_value.drop_with_heap(heap);
 
-        // Update contains_refs if adding a Ref
-        if matches!(self.items[idx], Value::Ref(_)) {
-            self.contains_refs = true;
-            heap.mark_potential_cycle();
+        // Update contains_refs if storing a Ref (must check before swap,
+        // since after swap `value` holds the old item)
+        if matches!(*value, Value::Ref(_)) {
+            self.get_mut(vm.heap).contains_refs = true;
+            vm.heap.mark_potential_cycle();
         }
+
+        // Replace value (old one dropped by defer_drop_mut guard)
+        mem::swap(&mut self.get_mut(vm.heap).items[idx], value);
 
         Ok(())
     }
 
-    fn py_eq(&self, other: &Self, heap: &mut Heap<impl ResourceTracker>, interns: &Interns) -> bool {
-        if self.items.len() != other.items.len() {
-            return false;
+    fn py_eq(&self, other: &Self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> Result<bool, ResourceError> {
+        let a_len = self.get(vm.heap).items.len();
+        if a_len != other.get(vm.heap).items.len() {
+            return Ok(false);
         }
-        for (i1, i2) in self.items.iter().zip(&other.items) {
-            if !i1.py_eq(i2, heap, interns) {
-                return false;
+        let token = vm.heap.incr_recursion_depth()?;
+        defer_drop!(token, vm);
+        for i in 0..a_len {
+            vm.heap.check_time()?;
+            let a_val = self.clone_item(i, vm);
+            let b_val = other.clone_item(i, vm);
+            let result = a_val.py_eq(&b_val, vm);
+            a_val.drop_with_heap(vm);
+            b_val.drop_with_heap(vm);
+            if !result? {
+                return Ok(false);
             }
         }
-        true
+        Ok(true)
+    }
+
+    fn py_bool(&self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> bool {
+        !self.get(vm.heap).items.is_empty()
+    }
+
+    fn py_repr_fmt(
+        &self,
+        f: &mut impl Write,
+        vm: &VM<'h, '_, impl ResourceTracker>,
+        heap_ids: &mut AHashSet<HeapId>,
+    ) -> RunResult<()> {
+        repr_sequence_fmt('[', ']', &self.get(vm.heap).items, f, vm, heap_ids)
+    }
+
+    fn py_add(&self, other: &Self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> Result<Option<Value>, ResourceError> {
+        let mut items = self.clone_all_items(vm);
+        items.extend(other.clone_all_items(vm));
+        let id = vm.heap.allocate(HeapData::List(List::new(items)))?;
+        Ok(Some(Value::Ref(id)))
+    }
+
+    fn py_iadd(
+        &mut self,
+        other: &Value,
+        vm: &mut VM<'h, '_, impl ResourceTracker>,
+        self_id: Option<HeapId>,
+    ) -> Result<bool, ResourceError> {
+        let Value::Ref(other_id) = other else {
+            return Ok(false);
+        };
+
+        if Some(*other_id) == self_id {
+            // Self-extend: clone our own items with proper refcounting
+            let items = self.clone_all_items(vm);
+            // Check memory limit before extending
+            vm.heap.track_growth(items.len() * VALUE_SIZE)?;
+            if self.get(vm.heap).contains_refs {
+                vm.heap.mark_potential_cycle();
+            }
+            self.get_mut(vm.heap).items.extend(items);
+        } else {
+            // Pre-check memory limit before extending from the other list.
+            // Read source list via HeapRead, clone items into a temporary Vec
+            let source = vm.heap.read(*other_id);
+            let HeapReadOutput::List(source_list) = source else {
+                return Ok(false);
+            };
+            let source_len = source_list.get(vm.heap).len();
+            vm.heap.track_growth(source_len * VALUE_SIZE)?;
+            let source_items = source_list.clone_all_items(vm);
+            // Check if new items contain refs
+            let has_new_refs = source_items.iter().any(|v| matches!(v, Value::Ref(_)));
+            self.get_mut(vm.heap).items.extend(source_items);
+            if self.get(vm.heap).contains_refs || has_new_refs {
+                if has_new_refs {
+                    self.get_mut(vm.heap).contains_refs = true;
+                }
+                vm.heap.mark_potential_cycle();
+            }
+        }
+
+        Ok(true)
+    }
+
+    /// Delegates methods to `call_list_method`.
+    fn py_call_attr(
+        &mut self,
+        _self_id: HeapId,
+        vm: &mut VM<'h, '_, impl ResourceTracker>,
+        attr: &EitherStr,
+        args: ArgValues,
+    ) -> RunResult<CallResult> {
+        if attr.static_string() == Some(StaticStrings::Sort) {
+            do_list_sort(self, args, vm)?;
+            return Ok(CallResult::Value(Value::None));
+        }
+
+        let Some(method) = attr.static_string() else {
+            args.drop_with_heap(vm);
+            return Err(ExcType::attribute_error(Type::List, attr.as_str(vm.interns)));
+        };
+
+        call_list_method(self, method, args, vm).map(CallResult::Value)
+    }
+}
+
+impl HeapItem for List {
+    fn py_estimate_size(&self) -> usize {
+        mem::size_of::<Self>() + self.items.len() * VALUE_SIZE
     }
 
     fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
@@ -303,98 +430,6 @@ impl PyTrait for List {
             }
         }
     }
-
-    fn py_bool(&self, _heap: &Heap<impl ResourceTracker>, _interns: &Interns) -> bool {
-        !self.items.is_empty()
-    }
-
-    fn py_repr_fmt(
-        &self,
-        f: &mut impl Write,
-        heap: &Heap<impl ResourceTracker>,
-        heap_ids: &mut AHashSet<HeapId>,
-        interns: &Interns,
-    ) -> std::fmt::Result {
-        repr_sequence_fmt('[', ']', &self.items, f, heap, heap_ids, interns)
-    }
-
-    fn py_add(
-        &self,
-        other: &Self,
-        heap: &mut Heap<impl ResourceTracker>,
-        _interns: &Interns,
-    ) -> Result<Option<Value>, crate::resource::ResourceError> {
-        // Clone both lists' contents with proper refcounting
-        let mut result: Vec<Value> = self.items.iter().map(|obj| obj.clone_with_heap(heap)).collect();
-        let other_cloned: Vec<Value> = other.items.iter().map(|obj| obj.clone_with_heap(heap)).collect();
-        result.extend(other_cloned);
-        let id = heap.allocate(HeapData::List(Self::new(result)))?;
-        Ok(Some(Value::Ref(id)))
-    }
-
-    fn py_iadd(
-        &mut self,
-        other: Value,
-        heap: &mut Heap<impl ResourceTracker>,
-        self_id: Option<HeapId>,
-        _interns: &Interns,
-    ) -> Result<bool, crate::resource::ResourceError> {
-        // Extract the value ID first, keeping `other` around to drop later
-        let Value::Ref(other_id) = &other else { return Ok(false) };
-
-        if Some(*other_id) == self_id {
-            // Self-extend: clone our own items with proper refcounting
-            let items = self
-                .items
-                .iter()
-                .map(|obj| obj.clone_with_heap(heap))
-                .collect::<Vec<_>>();
-            // If we're self-extending and have refs, mark potential cycle
-            if self.contains_refs {
-                heap.mark_potential_cycle();
-            }
-            self.items.extend(items);
-        } else {
-            // Get items from other list using iadd_extend_from_heap helper
-            // This handles the borrow checker limitations with lifetime propagation
-            let prev_len = self.items.len();
-            if !heap.iadd_extend_list(*other_id, &mut self.items) {
-                return Ok(false);
-            }
-            // Check if we added any refs and mark potential cycle
-            if self.contains_refs {
-                // Already had refs, but adding more may create cycles
-                heap.mark_potential_cycle();
-            } else {
-                for item in &self.items[prev_len..] {
-                    if matches!(item, Value::Ref(_)) {
-                        self.contains_refs = true;
-                        heap.mark_potential_cycle();
-                        break;
-                    }
-                }
-            }
-        }
-
-        // Drop the other value - we've extracted its contents and are done with the temporary reference
-        other.drop_with_heap(heap);
-        Ok(true)
-    }
-
-    fn py_call_attr(
-        &mut self,
-        heap: &mut Heap<impl ResourceTracker>,
-        attr: &Attr,
-        args: ArgValues,
-        interns: &Interns,
-    ) -> RunResult<Value> {
-        let Some(method) = attr.static_string() else {
-            args.drop_with_heap(heap);
-            return Err(ExcType::attribute_error(Type::List, attr.as_str(interns)));
-        };
-
-        call_list_method(self, method, args, heap, interns)
-    }
 }
 
 /// Dispatches a method call on a list value.
@@ -406,41 +441,40 @@ impl PyTrait for List {
 /// * `method` - The method to call (e.g., `StaticStrings::Append`)
 /// * `args` - The method arguments
 /// * `heap` - The heap for allocation and reference counting
-/// * `interns` - The interns table for resolving interned strings
-fn call_list_method(
-    list: &mut List,
+fn call_list_method<'h>(
+    list: &mut HeapRead<'h, List>,
     method: StaticStrings,
     args: ArgValues,
-    heap: &mut Heap<impl ResourceTracker>,
-    interns: &Interns,
+    vm: &mut VM<'h, '_, impl ResourceTracker>,
 ) -> RunResult<Value> {
+    let heap = &mut *vm.heap;
     match method {
         StaticStrings::Append => {
             let item = args.get_one_arg("list.append", heap)?;
-            list.append(heap, item);
+            list.append(vm, item)?;
             Ok(Value::None)
         }
-        StaticStrings::Insert => list_insert(list, args, heap),
-        StaticStrings::Pop => list_pop(list, args, heap),
-        StaticStrings::Remove => list_remove(list, args, heap, interns),
+        StaticStrings::Insert => list_insert(list, args, vm),
+        StaticStrings::Pop => list_pop(list, args, vm),
+        StaticStrings::Remove => list_remove(list, args, vm),
         StaticStrings::Clear => {
             args.check_zero_args("list.clear", heap)?;
-            list_clear(list, heap);
+            list_clear(list, vm);
             Ok(Value::None)
         }
         StaticStrings::Copy => {
             args.check_zero_args("list.copy", heap)?;
-            Ok(list_copy(list, heap)?)
+            Ok(list_copy(list.get(heap), heap)?)
         }
-        StaticStrings::Extend => list_extend(list, args, heap, interns),
-        StaticStrings::Index => list_index(list, args, heap, interns),
-        StaticStrings::Count => list_count(list, args, heap, interns),
+        StaticStrings::Extend => list_extend(list, args, vm),
+        StaticStrings::Index => list_index(list, args, vm),
+        StaticStrings::Count => list_count(list, args, vm),
         StaticStrings::Reverse => {
             args.check_zero_args("list.reverse", heap)?;
-            list.items.reverse();
+            list.get_mut(vm.heap).items.reverse();
             Ok(Value::None)
         }
-        // Note: list.sort is handled at VM level in call.rs to support key functions
+        // Note: list.sort is handled by py_call_attr which intercepts it before reaching here
         _ => {
             args.drop_with_heap(heap);
             Err(ExcType::attribute_error(Type::List, method.into()))
@@ -449,22 +483,20 @@ fn call_list_method(
 }
 
 /// Implements Python's `list.insert(index, item)` method.
-fn list_insert(list: &mut List, args: ArgValues, heap: &mut Heap<impl ResourceTracker>) -> RunResult<Value> {
-    let (index_obj, item) = args.get_two_args("insert", heap)?;
+fn list_insert<'h>(
+    list: &mut HeapRead<'h, List>,
+    args: ArgValues,
+    vm: &mut VM<'h, '_, impl ResourceTracker>,
+) -> RunResult<Value> {
+    let (index_obj, item) = args.get_two_args("insert", vm.heap)?;
+    defer_drop!(index_obj, vm);
+    let mut item_guard = HeapGuard::new(item, vm);
+    let vm = item_guard.heap();
     // Python's insert() handles negative indices by adding len
     // If still negative after adding len, clamps to 0
     // If >= len, appends to end
-    let index_result = index_obj.as_int(heap);
-    // Drop index_obj before propagating error - it could be a Ref (e.g., dict)
-    index_obj.drop_with_heap(heap);
-    let index_i64 = match index_result {
-        Ok(i) => i,
-        Err(e) => {
-            item.drop_with_heap(heap);
-            return Err(e);
-        }
-    };
-    let len = list.items.len();
+    let index_i64 = index_obj.as_int(vm)?;
+    let len = list.get(vm.heap).items.len();
     let len_i64 = i64::try_from(len).expect("list length exceeds i64::MAX");
     let index = if index_i64 < 0 {
         // Negative index: add length, clamp to 0 if still negative
@@ -474,7 +506,8 @@ fn list_insert(list: &mut List, args: ArgValues, heap: &mut Heap<impl ResourceTr
         // Positive index: clamp to len if too large
         usize::try_from(index_i64).unwrap_or(len)
     };
-    list.insert(heap, index, item);
+    let (item, heap) = item_guard.into_parts();
+    list.insert(heap, index, item)?;
     Ok(Value::None)
 }
 
@@ -482,26 +515,30 @@ fn list_insert(list: &mut List, args: ArgValues, heap: &mut Heap<impl ResourceTr
 ///
 /// Removes the item at the given index (default: -1) and returns it.
 /// Raises IndexError if the list is empty or the index is out of range.
-fn list_pop(list: &mut List, args: ArgValues, heap: &mut Heap<impl ResourceTracker>) -> RunResult<Value> {
-    let index_arg = args.get_zero_one_arg("list.pop", heap)?;
+fn list_pop<'h>(
+    list: &mut HeapRead<'h, List>,
+    args: ArgValues,
+    vm: &mut VM<'h, '_, impl ResourceTracker>,
+) -> RunResult<Value> {
+    let index_arg = args.get_zero_one_arg("list.pop", vm.heap)?;
 
     // Validate index type FIRST (if provided), matching Python's validation order.
     // Python raises TypeError for bad index type even on empty list.
     let index_i64 = if let Some(v) = index_arg {
-        let result = v.as_int(heap);
-        v.drop_with_heap(heap);
+        let result = v.as_int(vm);
+        v.drop_with_heap(vm);
         result?
     } else {
         -1
     };
 
     // THEN check empty list
-    if list.items.is_empty() {
+    if list.get(vm.heap).items.is_empty() {
         return Err(ExcType::index_error_pop_empty_list());
     }
 
     // Normalize index
-    let len = list.items.len();
+    let len = list.get(vm.heap).items.len();
     let len_i64 = i64::try_from(len).expect("list length exceeds i64::MAX");
     let normalized = if index_i64 < 0 { index_i64 + len_i64 } else { index_i64 };
 
@@ -512,36 +549,38 @@ fn list_pop(list: &mut List, args: ArgValues, heap: &mut Heap<impl ResourceTrack
 
     // Remove and return the item
     let idx = usize::try_from(normalized).expect("index validated non-negative");
-    Ok(list.items.remove(idx))
+    Ok(list.get_mut(vm.heap).items.remove(idx))
 }
 
 /// Implements Python's `list.remove(value)` method.
 ///
 /// Removes the first occurrence of value. Raises ValueError if not found.
-fn list_remove(
-    list: &mut List,
+fn list_remove<'h>(
+    list: &mut HeapRead<'h, List>,
     args: ArgValues,
-    heap: &mut Heap<impl ResourceTracker>,
-    interns: &Interns,
+    vm: &mut VM<'h, '_, impl ResourceTracker>,
 ) -> RunResult<Value> {
-    let value = args.get_one_arg("list.remove", heap)?;
+    let value = args.get_one_arg("list.remove", vm.heap)?;
+    defer_drop!(value, vm);
 
     // Find the first matching element
     let mut found_idx = None;
-    for (i, item) in list.items.iter().enumerate() {
-        if value.py_eq(item, heap, interns) {
+    let len = list.get(vm.heap).len();
+    for i in 0..len {
+        vm.heap.check_time()?;
+        let item = list.get(vm.heap).items[i].clone_with_heap(vm.heap);
+        defer_drop!(item, vm);
+        if value.py_eq(item, vm)? {
             found_idx = Some(i);
             break;
         }
     }
 
-    value.drop_with_heap(heap);
-
     match found_idx {
         Some(idx) => {
             // Remove the element and drop its refcount
-            let removed = list.items.remove(idx);
-            removed.drop_with_heap(heap);
+            let removed = list.get_mut(vm.heap).items.remove(idx);
+            removed.drop_with_heap(vm.heap);
             Ok(Value::None)
         }
         None => Err(ExcType::value_error_remove_not_in_list()),
@@ -551,17 +590,15 @@ fn list_remove(
 /// Implements Python's `list.clear()` method.
 ///
 /// Removes all items from the list.
-fn list_clear(list: &mut List, heap: &mut Heap<impl ResourceTracker>) {
-    for item in list.items.drain(..) {
-        item.drop_with_heap(heap);
-    }
+fn list_clear<'h>(list: &mut HeapRead<'h, List>, vm: &mut VM<'h, '_, impl ResourceTracker>) {
+    mem::take(&mut list.get_mut(vm.heap).items).drop_with_heap(vm);
     // Note: contains_refs stays true even if all refs removed, per conservative GC strategy
 }
 
 /// Implements Python's `list.copy()` method.
 ///
 /// Returns a shallow copy of the list.
-fn list_copy(list: &List, heap: &mut Heap<impl ResourceTracker>) -> Result<Value, ResourceError> {
+fn list_copy(list: &List, heap: &Heap<impl ResourceTracker>) -> Result<Value, ResourceError> {
     let items: Vec<Value> = list.items.iter().map(|v| v.clone_with_heap(heap)).collect();
     let heap_id = heap.allocate(HeapData::List(List::new(items)))?;
     Ok(Value::Ref(heap_id))
@@ -570,25 +607,22 @@ fn list_copy(list: &List, heap: &mut Heap<impl ResourceTracker>) -> Result<Value
 /// Implements Python's `list.extend(iterable)` method.
 ///
 /// Extends the list by appending all items from the iterable.
-fn list_extend(
-    list: &mut List,
+fn list_extend<'h>(
+    list: &mut HeapRead<'h, List>,
     args: ArgValues,
-    heap: &mut Heap<impl ResourceTracker>,
-    interns: &Interns,
+    vm: &mut VM<'h, '_, impl ResourceTracker>,
 ) -> RunResult<Value> {
-    let iterable = args.get_one_arg("list.extend", heap)?;
+    let iterable = args.get_one_arg("list.extend", vm.heap)?;
+    let items: SmallVec<[_; 2]> = MontyIter::new(iterable, vm)?.collect(vm)?;
 
-    // Create iterator for the iterable
-    let mut iter = MontyIter::new(iterable, heap, interns)?;
-
-    // Collect all items from the iterator
-    let items = iter.collect(heap, interns)?;
-    iter.drop_with_heap(heap);
-
-    // Add each item to the list
-    for item in items {
-        list.append(heap, item);
+    // Batch memory check for all items at once, then extend
+    vm.heap.track_growth(items.len() * VALUE_SIZE)?;
+    let has_refs = items.iter().any(|v| matches!(v, Value::Ref(_)));
+    if has_refs {
+        list.get_mut(vm.heap).set_contains_refs();
+        vm.heap.mark_potential_cycle();
     }
+    list.get_mut(vm.heap).as_vec_mut().extend(items);
 
     Ok(Value::None)
 }
@@ -597,125 +631,68 @@ fn list_extend(
 ///
 /// Returns the index of the first occurrence of value.
 /// Raises ValueError if the value is not found.
-fn list_index(
-    list: &List,
+fn list_index<'h>(
+    list: &HeapRead<'h, List>,
     args: ArgValues,
-    heap: &mut Heap<impl ResourceTracker>,
-    interns: &Interns,
+    vm: &mut VM<'h, '_, impl ResourceTracker>,
 ) -> RunResult<Value> {
-    let (value, start, end) = parse_index_count_args("list.index", list.items.len(), args, heap)?;
+    let pos_args = args.into_pos_only("list.index", vm.heap)?;
+    defer_drop!(pos_args, vm);
+
+    let len = list.get(vm.heap).items.len();
+    let (value, start, end) = match pos_args.as_slice() {
+        [] => return Err(ExcType::type_error_at_least("list.index", 1, 0)),
+        [value] => (value, 0, len),
+        [value, start_arg] => {
+            let start = normalize_list_index(start_arg.as_int(vm)?, len);
+            (value, start, len)
+        }
+        [value, start_arg, end_arg] => {
+            let start = normalize_list_index(start_arg.as_int(vm)?, len);
+            let end = normalize_list_index(end_arg.as_int(vm)?, len).max(start);
+            (value, start, end)
+        }
+        other => return Err(ExcType::type_error_at_most("list.index", 3, other.len())),
+    };
 
     // Search for the value in the specified range
-    for (i, item) in list.items[start..end].iter().enumerate() {
-        if value.py_eq(item, heap, interns) {
-            value.drop_with_heap(heap);
-            let idx = i64::try_from(start + i).expect("index exceeds i64::MAX");
+    for i in start..end {
+        vm.heap.check_time()?;
+        let item = list.get(vm.heap).items[i].clone_with_heap(vm);
+        defer_drop!(item, vm);
+        if value.py_eq(item, vm)? {
+            let idx = i64::try_from(i).expect("index exceeds i64::MAX");
             return Ok(Value::Int(idx));
         }
     }
 
-    value.drop_with_heap(heap);
     Err(ExcType::value_error_not_in_list())
 }
 
 /// Implements Python's `list.count(value)` method.
 ///
 /// Returns the number of occurrences of value in the list.
-fn list_count(
-    list: &List,
+fn list_count<'h>(
+    list: &HeapRead<'h, List>,
     args: ArgValues,
-    heap: &mut Heap<impl ResourceTracker>,
-    interns: &Interns,
+    vm: &mut VM<'h, '_, impl ResourceTracker>,
 ) -> RunResult<Value> {
-    let value = args.get_one_arg("list.count", heap)?;
+    let value = args.get_one_arg("list.count", vm.heap)?;
+    defer_drop!(value, vm);
 
-    let count = list
-        .items
-        .iter()
-        .filter(|item| value.py_eq(item, heap, interns))
-        .count();
+    let mut count: usize = 0;
+    let len = list.get(vm.heap).len();
+    for i in 0..len {
+        vm.heap.check_time()?;
+        let item = list.get(vm.heap).items[i].clone_with_heap(vm);
+        defer_drop!(item, vm);
+        if value.py_eq(item, vm)? {
+            count += 1;
+        }
+    }
 
-    value.drop_with_heap(heap);
     let count_i64 = i64::try_from(count).expect("count exceeds i64::MAX");
     Ok(Value::Int(count_i64))
-}
-
-/// Parses arguments for list.index() and similar methods.
-///
-/// Returns (value, start, end) where start and end are normalized indices.
-/// Guarantees `start <= end` to prevent slice panics.
-fn parse_index_count_args(
-    method: &str,
-    len: usize,
-    args: ArgValues,
-    heap: &mut Heap<impl ResourceTracker>,
-) -> RunResult<(Value, usize, usize)> {
-    let (pos, kwargs) = args.into_parts();
-    if !kwargs.is_empty() {
-        kwargs.drop_with_heap(heap);
-        return Err(ExcType::type_error_no_kwargs(method));
-    }
-
-    let mut pos_iter = pos;
-    let value = pos_iter
-        .next()
-        .ok_or_else(|| ExcType::type_error_at_least(method, 1, 0))?;
-    let start_value = pos_iter.next();
-    let end_value = pos_iter.next();
-
-    // Check no extra arguments - must drop the 4th arg consumed by .next()
-    if let Some(fourth) = pos_iter.next() {
-        fourth.drop_with_heap(heap);
-        for v in pos_iter {
-            v.drop_with_heap(heap);
-        }
-        value.drop_with_heap(heap);
-        if let Some(v) = start_value {
-            v.drop_with_heap(heap);
-        }
-        if let Some(v) = end_value {
-            v.drop_with_heap(heap);
-        }
-        return Err(ExcType::type_error_at_most(method, 3, 4));
-    }
-
-    // Extract start (default 0)
-    let start = if let Some(v) = start_value {
-        let result = v.as_int(heap);
-        v.drop_with_heap(heap);
-        match result {
-            Ok(i) => normalize_list_index(i, len),
-            Err(e) => {
-                value.drop_with_heap(heap);
-                if let Some(ev) = end_value {
-                    ev.drop_with_heap(heap);
-                }
-                return Err(e);
-            }
-        }
-    } else {
-        0
-    };
-
-    // Extract end (default len)
-    let end = if let Some(v) = end_value {
-        let result = v.as_int(heap);
-        v.drop_with_heap(heap);
-        match result {
-            Ok(i) => normalize_list_index(i, len),
-            Err(e) => {
-                value.drop_with_heap(heap);
-                return Err(e);
-            }
-        }
-    } else {
-        len
-    };
-
-    // Ensure start <= end to prevent slice panics (Python treats start > end as empty slice)
-    let end = end.max(start);
-
-    Ok((value, start, end))
 }
 
 /// Normalizes a Python-style list index to a valid index in range [0, len].
@@ -729,38 +706,18 @@ fn normalize_list_index(index: i64, len: usize) -> usize {
 }
 
 /// Performs an in-place sort on a list with optional key function and reverse flag.
-///
-/// This is called from the VM's `call_method` when `list.sort()` is invoked.
-/// The function lives here (rather than in VM) to keep list-related logic together,
-/// with the VM only passing through its resources.
-///
-/// Uses a staged approach to avoid borrow checker issues:
-/// 1. Parse and validate arguments
-/// 2. Extract items from the list (temporarily empties it)
-/// 3. Compute key values if a key function is provided
-/// 4. Sort indices based on items or key values
-/// 5. Rearrange items in sorted order and put back into the list
-///
-/// # Arguments
-/// * `list_id` - The heap ID of the list to sort
-/// * `args` - The method arguments (keyword-only: `key` and `reverse`)
-/// * `heap` - The heap for memory management
-/// * `interns` - Interned strings for comparisons
-/// * `print_writer` - Output writer (needed for builtin function calls)
-pub(crate) fn do_list_sort(
-    list_id: HeapId,
+fn do_list_sort<'h>(
+    list: &mut HeapRead<'h, List>,
     args: ArgValues,
-    heap: &mut Heap<impl ResourceTracker>,
-    interns: &Interns,
-    print_writer: &mut impl PrintWriter,
+    vm: &mut VM<'h, '_, impl ResourceTracker>,
 ) -> Result<(), RunError> {
     // Parse keyword-only arguments: key and reverse
-    let (key_arg, reverse_arg) = args.extract_two_kwargs_only("list.sort", "key", "reverse", heap, interns)?;
+    let (key_arg, reverse_arg) = args.extract_keyword_only_pair("list.sort", "key", "reverse", vm.heap, vm.interns)?;
 
     // Convert reverse to bool (default false)
     let reverse = if let Some(v) = reverse_arg {
-        let result = v.py_bool(heap, interns);
-        v.drop_with_heap(heap);
+        let result = v.py_bool(vm);
+        v.drop_with_heap(vm);
         result
     } else {
         false
@@ -769,168 +726,44 @@ pub(crate) fn do_list_sort(
     // Handle key function (None means no key function)
     let key_fn = match key_arg {
         Some(v) if matches!(v, Value::None) => {
-            v.drop_with_heap(heap);
+            v.drop_with_heap(vm);
             None
         }
         other => other,
     };
+    defer_drop!(key_fn, vm);
 
-    // Step 1: Extract items from the list (temporarily empties it)
-    let mut items: Vec<Value> = {
-        let HeapData::List(list) = heap.get_mut(list_id) else {
-            if let Some(k) = key_fn {
-                k.drop_with_heap(heap);
-            }
-            return Err(RunError::internal("expected list in do_list_sort"));
-        };
-        list.as_vec_mut().drain(..).collect()
-    };
-
-    // Step 2: Compute key values if key function provided
-    let key_values: Option<Vec<Value>> = if let Some(ref key) = key_fn {
-        let mut keys: Vec<Value> = Vec::with_capacity(items.len());
-        for item in &items {
-            let elem = item.clone_with_heap(heap);
-            match call_key_function(key, elem, heap, interns, print_writer) {
-                Ok(key_value) => keys.push(key_value),
-                Err(e) => {
-                    // Clean up and restore items to list on error
-                    for k in keys {
-                        k.drop_with_heap(heap);
-                    }
-                    if let Some(k) = key_fn {
-                        k.drop_with_heap(heap);
-                    }
-                    // Restore items to the list
-                    if let HeapData::List(list) = heap.get_mut(list_id) {
-                        for item in items {
-                            list.as_vec_mut().push(item);
-                        }
-                    }
-                    return Err(e);
-                }
-            }
+    // 1. Compute key values if a key function was provided, otherwise we'll sort by the items themselves
+    let compare_values = if let Some(f) = key_fn {
+        let len = list.get(vm.heap).items.len();
+        let keys: Vec<Value> = Vec::with_capacity(len);
+        // Use a HeapGuard to ensure that if key function evaluation fails partway through,
+        // we clean up any keys that were successfully computed
+        let mut keys_guard = HeapGuard::new(keys, vm);
+        let (keys, vm) = keys_guard.as_parts_mut();
+        for i in 0..len {
+            let item = list.get(vm.heap).items[i].clone_with_heap(vm);
+            keys.push(vm.evaluate_function("sorted() key argument", f, ArgValues::One(item))?);
         }
-        Some(keys)
+        keys_guard.into_inner()
     } else {
-        None
+        list.get(vm.heap)
+            .items
+            .iter()
+            .map(|item| item.clone_with_heap(vm.heap))
+            .collect()
     };
+    defer_drop!(compare_values, vm);
 
-    // Drop the key function - we're done with it
-    if let Some(k) = key_fn {
-        k.drop_with_heap(heap);
-    }
-
-    // Step 3: Sort indices based on items or key values
-    let len = items.len();
+    // 2. Sort indices by comparing key values (or items themselves if no key)
+    let len = compare_values.len();
     let mut indices: Vec<usize> = (0..len).collect();
-    let mut sort_error: Option<RunError> = None;
 
-    if let Some(ref keys) = key_values {
-        indices.sort_by(|&a, &b| {
-            if sort_error.is_some() {
-                return Ordering::Equal;
-            }
-            if let Some(ord) = keys[a].py_cmp(&keys[b], heap, interns) {
-                if reverse { ord.reverse() } else { ord }
-            } else {
-                sort_error = Some(ExcType::type_error(format!(
-                    "'<' not supported between instances of '{}' and '{}'",
-                    keys[a].py_type(heap),
-                    keys[b].py_type(heap)
-                )));
-                Ordering::Equal
-            }
-        });
-    } else {
-        indices.sort_by(|&a, &b| {
-            if sort_error.is_some() {
-                return Ordering::Equal;
-            }
-            if let Some(ord) = items[a].py_cmp(&items[b], heap, interns) {
-                if reverse { ord.reverse() } else { ord }
-            } else {
-                sort_error = Some(ExcType::type_error(format!(
-                    "'<' not supported between instances of '{}' and '{}'",
-                    items[a].py_type(heap),
-                    items[b].py_type(heap)
-                )));
-                Ordering::Equal
-            }
-        });
-    }
+    sort_indices(&mut indices, compare_values, reverse, vm)?;
 
-    // Clean up key values
-    if let Some(keys) = key_values {
-        for k in keys {
-            k.drop_with_heap(heap);
-        }
-    }
-
-    // Check for sort error
-    if let Some(err) = sort_error {
-        // Restore items to list before returning error
-        if let HeapData::List(list) = heap.get_mut(list_id) {
-            for item in items {
-                list.as_vec_mut().push(item);
-            }
-        }
-        return Err(err);
-    }
-
-    // Step 4: Rearrange items in sorted order using index permutation
-    let mut sorted_items: Vec<Value> = Vec::with_capacity(len);
-    for &i in &indices {
-        // Move the value out, replacing with Undefined as placeholder
-        sorted_items.push(std::mem::replace(&mut items[i], Value::Undefined));
-    }
-
-    // Put sorted items back into the list
-    let HeapData::List(list) = heap.get_mut(list_id) else {
-        return Err(RunError::internal("expected list in do_list_sort"));
-    };
-
-    for item in sorted_items {
-        list.as_vec_mut().push(item);
-    }
-
-    // items now contains Undefined values - no cleanup needed
+    // 3. Rearrange items in-place according to the sorted permutation
+    apply_permutation(&mut list.get_mut(vm.heap).items, &mut indices);
     Ok(())
-}
-
-/// Calls a key function on a single element for sorting.
-///
-/// Currently supports builtin functions directly. User-defined functions return
-/// an error since they would require VM frame management for proper execution.
-fn call_key_function(
-    key_fn: &Value,
-    elem: Value,
-    heap: &mut Heap<impl ResourceTracker>,
-    interns: &Interns,
-    print_writer: &mut impl PrintWriter,
-) -> Result<Value, RunError> {
-    match key_fn {
-        Value::Builtin(Builtins::Function(builtin)) => {
-            let args = ArgValues::One(elem);
-            builtin.call(heap, args, interns, print_writer)
-        }
-        Value::Builtin(Builtins::Type(t)) => {
-            // Type constructors (int, str, float, etc.) are callable key functions
-            let args = ArgValues::One(elem);
-            t.call(heap, args, interns)
-        }
-        Value::DefFunction(_) | Value::ExtFunction(_) | Value::Ref(_) => {
-            // User-defined or external functions require VM frame management
-            elem.drop_with_heap(heap);
-            Err(ExcType::type_error(
-                "list.sort() key argument must be a builtin function (user-defined functions not yet supported)",
-            ))
-        }
-        _ => {
-            elem.drop_with_heap(heap);
-            Err(ExcType::type_error("list.sort() key must be callable or None"))
-        }
-    }
 }
 
 /// Writes a formatted sequence of values to a formatter.
@@ -943,28 +776,39 @@ fn call_key_function(
 /// * `end` - The closing character (e.g., ']' for lists, ')' for tuples)
 /// * `items` - The slice of values to format
 /// * `f` - The formatter to write to
-/// * `heap` - The heap for resolving value references
+/// * `vm` - The VM for resolving value references and looking up interned strings
 /// * `heap_ids` - Set of heap IDs being repr'd (for cycle detection)
-/// * `interns` - The interned strings table for looking up string/bytes literals
 pub(crate) fn repr_sequence_fmt(
     start: char,
     end: char,
     items: &[Value],
     f: &mut impl Write,
-    heap: &Heap<impl ResourceTracker>,
+    vm: &VM<'_, '_, impl ResourceTracker>,
     heap_ids: &mut AHashSet<HeapId>,
-    interns: &Interns,
-) -> std::fmt::Result {
+) -> RunResult<()> {
+    // Check depth limit before recursing
+    let heap = &*vm.heap;
+    let Some(token) = heap.incr_recursion_depth_for_repr() else {
+        return Ok(f.write_str("...")?);
+    };
+    crate::defer_drop_immutable_heap!(token, heap);
+
     f.write_char(start)?;
     let mut iter = items.iter();
     if let Some(first) = iter.next() {
-        first.py_repr_fmt(f, heap, heap_ids, interns)?;
+        first.py_repr_fmt(f, vm, heap_ids)?;
         for item in iter {
+            if heap.check_time().is_err() {
+                f.write_str(", ...[timeout]")?;
+                break;
+            }
             f.write_str(", ")?;
-            item.py_repr_fmt(f, heap, heap_ids, interns)?;
+            item.py_repr_fmt(f, vm, heap_ids)?;
         }
     }
-    f.write_char(end)
+    f.write_char(end)?;
+
+    Ok(())
 }
 
 /// Helper to extract items from a slice for list/tuple slicing.
@@ -973,6 +817,7 @@ pub(crate) fn repr_sequence_fmt(
 /// iterates backward from start down to (but not including) stop.
 ///
 /// Returns a new Vec of cloned values with proper refcount increments.
+/// Checks the time limit on each iteration to enforce timeouts during slicing.
 ///
 /// Note: step must be non-zero (callers should validate this via `slice.indices()`).
 pub(crate) fn get_slice_items(
@@ -980,8 +825,8 @@ pub(crate) fn get_slice_items(
     start: usize,
     stop: usize,
     step: i64,
-    heap: &mut Heap<impl ResourceTracker>,
-) -> Vec<Value> {
+    heap: &Heap<impl ResourceTracker>,
+) -> RunResult<Vec<Value>> {
     let mut result = Vec::new();
 
     // try_from succeeds for non-negative step; step==0 rejected upstream by slice.indices()
@@ -989,6 +834,7 @@ pub(crate) fn get_slice_items(
         // Positive step: iterate forward
         let mut i = start;
         while i < stop && i < items.len() {
+            heap.check_time()?;
             result.push(items[i].clone_with_heap(heap));
             i += step_usize;
         }
@@ -1009,10 +855,138 @@ pub(crate) fn get_slice_items(
             if i_usize >= items.len() || i <= stop_i64 {
                 break;
             }
+            heap.check_time()?;
             result.push(items[i_usize].clone_with_heap(heap));
             i -= step_abs_i64;
         }
     }
 
-    result
+    Ok(result)
+}
+
+#[cfg(test)]
+mod tests {
+    use num_bigint::BigInt;
+
+    use super::*;
+    use crate::{
+        PrintWriter,
+        heap::{Heap, HeapReader},
+        intern::{InternerBuilder, Interns},
+        resource::NoLimitTracker,
+        types::LongInt,
+    };
+
+    /// Creates a minimal Interns for testing.
+    fn create_test_interns() -> Interns {
+        let interner = InternerBuilder::new("");
+        Interns::new(interner, vec![])
+    }
+
+    /// Creates a heap with a list and a LongInt index, bypassing into_value() demotion.
+    ///
+    /// This allows testing the defensive code path where a LongInt contains an i64-fitting value.
+    fn create_heap_with_list_and_longint(
+        list_items: Vec<Value>,
+        index_value: BigInt,
+    ) -> (Heap<NoLimitTracker>, HeapId, HeapId) {
+        let heap = Heap::new(16, NoLimitTracker);
+        let list = List::new(list_items);
+        let list_id = heap.allocate(HeapData::List(list)).unwrap();
+        let long_int = LongInt::new(index_value);
+        let index_id = heap.allocate(HeapData::LongInt(long_int)).unwrap();
+        (heap, list_id, index_id)
+    }
+
+    /// Tests py_setitem with a LongInt index that fits in i64.
+    ///
+    /// This is a defensive code path - normally unreachable because LongInt::into_value()
+    /// demotes i64-fitting values to Value::Int. However, it could be reached via
+    /// deserialization of crafted snapshot data.
+    #[test]
+    fn py_setitem_longint_fits_in_i64() {
+        let (mut heap, list_id, index_id) =
+            create_heap_with_list_and_longint(vec![Value::Int(10), Value::Int(20), Value::Int(30)], BigInt::from(1));
+        let interns = create_test_interns();
+
+        let key = Value::Ref(index_id);
+        let new_value = Value::Int(99);
+        heap.inc_ref(index_id);
+
+        let result = HeapReader::with(&mut heap, |heap| {
+            let mut vm = VM::new(Vec::new(), heap, &interns, PrintWriter::Disabled);
+            let HeapReadOutput::List(mut list) = vm.heap.read(list_id) else {
+                panic!("expected list");
+            };
+            list.py_setitem(key, new_value, &mut vm)
+        });
+
+        assert!(result.is_ok());
+
+        // Verify the list was updated by checking it matches expected Int value
+        let HeapData::List(list) = heap.get(list_id) else {
+            panic!("expected list");
+        };
+        assert!(matches!(list.as_slice()[1], Value::Int(99)));
+
+        // Clean up
+        Value::Ref(list_id).drop_with_heap(&mut heap);
+    }
+
+    /// Tests py_setitem with a negative LongInt index that fits in i64.
+    #[test]
+    fn py_setitem_longint_negative_fits_in_i64() {
+        let (mut heap, list_id, index_id) = create_heap_with_list_and_longint(
+            vec![Value::Int(10), Value::Int(20), Value::Int(30)],
+            BigInt::from(-1), // Last element
+        );
+        let interns = create_test_interns();
+
+        let key = Value::Ref(index_id);
+        let new_value = Value::Int(99);
+        heap.inc_ref(index_id);
+
+        let result = HeapReader::with(&mut heap, |heap| {
+            let mut vm = VM::new(Vec::new(), heap, &interns, PrintWriter::Disabled);
+            let HeapReadOutput::List(mut list) = vm.heap.read(list_id) else {
+                panic!("expected list");
+            };
+            list.py_setitem(key, new_value, &mut vm)
+        });
+
+        assert!(result.is_ok());
+
+        // Verify the last element was updated
+        let HeapData::List(list) = heap.get(list_id) else {
+            panic!("expected list");
+        };
+        assert!(matches!(list.as_slice()[2], Value::Int(99)));
+
+        Value::Ref(list_id).drop_with_heap(&mut heap);
+    }
+
+    /// Tests py_setitem with i64::MAX as a LongInt index.
+    #[test]
+    fn py_setitem_longint_at_i64_max() {
+        let (mut heap, list_id, index_id) =
+            create_heap_with_list_and_longint(vec![Value::Int(10)], BigInt::from(i64::MAX));
+        let interns = create_test_interns();
+
+        let key = Value::Ref(index_id);
+        let new_value = Value::Int(99);
+        heap.inc_ref(index_id);
+
+        // This should fail with IndexError because i64::MAX is out of bounds for a 1-element list
+        let result = HeapReader::with(&mut heap, |heap| {
+            let mut vm = VM::new(Vec::new(), heap, &interns, PrintWriter::Disabled);
+            let HeapReadOutput::List(mut list) = vm.heap.read(list_id) else {
+                panic!("expected list");
+            };
+            list.py_setitem(key, new_value, &mut vm)
+        });
+
+        assert!(result.is_err());
+
+        Value::Ref(list_id).drop_with_heap(&mut heap);
+    }
 }

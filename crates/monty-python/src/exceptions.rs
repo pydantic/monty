@@ -14,11 +14,12 @@
 //! ```
 
 use ::monty::{ExcType, MontyException, StackFrame};
-use monty_type_checking::TypeCheckingFailure;
+use monty_type_checking::TypeCheckingDiagnostics;
 use pyo3::{
     PyClassInitializer, PyTypeCheck,
     exceptions::{self},
     prelude::*,
+    sync::PyOnceLock,
     types::{PyDict, PyList, PyString},
 };
 
@@ -28,7 +29,7 @@ use crate::dataclass::get_frozen_instance_error;
 ///
 /// This is the parent class for both `MontySyntaxError` and `MontyRuntimeError`.
 /// Catching `MontyError` will catch any exception raised by Monty.
-#[pyclass(extends=exceptions::PyException, module="monty", subclass)]
+#[pyclass(extends=exceptions::PyException, module="pydantic_monty", subclass, skip_from_py_object)]
 #[derive(Clone)]
 pub struct MontyError {
     /// The underlying Monty exception.
@@ -98,7 +99,7 @@ impl MontyError {
 /// Raised when Python code has syntax errors or cannot be parsed by Monty.
 ///
 /// Inherits from `MontyError`. The inner exception is always a `SyntaxError`.
-#[pyclass(extends=MontyError, module="monty")]
+#[pyclass(extends=MontyError, module="pydantic_monty", skip_from_py_object)]
 #[derive(Clone)]
 pub struct MontySyntaxError;
 
@@ -156,15 +157,15 @@ impl MontySyntaxError {
 /// Inherits from `MontyError`. This exception is raised when static type
 /// analysis detects type errors. Stores the `TypeCheckingFailure` so diagnostics
 /// can be re-rendered with different format/color settings via `display()`.
-#[pyclass(extends=MontyError, module="monty", unsendable)]
+#[pyclass(extends=MontyError, module="pydantic_monty")]
 pub struct MontyTypingError {
-    failure: TypeCheckingFailure,
+    failure: TypeCheckingDiagnostics,
 }
 
 impl MontyTypingError {
     /// Creates a `MontyTypingError` from a `TypeCheckingFailure`.
     #[must_use]
-    pub fn new_err(py: Python<'_>, failure: TypeCheckingFailure) -> PyErr {
+    pub fn new_err(py: Python<'_>, failure: TypeCheckingDiagnostics) -> PyErr {
         // we need a MontyException to create the base, but it shouldn't be visible anywhere
         let base = MontyError::new(MontyException::new(ExcType::TypeError, None));
         let init = PyClassInitializer::from(base).add_subclass(Self { failure });
@@ -205,7 +206,7 @@ impl MontyTypingError {
 ///
 /// Inherits from `MontyError`. Additionally provides `traceback()` to access
 /// the Monty stack frames where the error occurred.
-#[pyclass(extends=MontyError, module="monty")]
+#[pyclass(extends=MontyError, module="pydantic_monty")]
 pub struct MontyRuntimeError {
     /// The traceback frames where the error occurred (pre-converted to Python objects).
     frames: Vec<Py<PyFrame>>,
@@ -293,7 +294,7 @@ impl MontyRuntimeError {
 ///
 /// Contains all the information needed to display a traceback line:
 /// the file location, function name, and optional source code preview.
-#[pyclass(name = "Frame", module = "monty", frozen)]
+#[pyclass(name = "Frame", module = "pydantic_monty", frozen, skip_from_py_object)]
 #[derive(Debug, Clone)]
 pub struct PyFrame {
     /// The filename where the code is located.
@@ -401,8 +402,32 @@ pub fn exc_monty_to_py(py: Python<'_>, exc: MontyException) -> PyErr {
         ExcType::TypeError => exceptions::PyTypeError::new_err(msg),
         ExcType::ValueError => exceptions::PyValueError::new_err(msg),
         ExcType::UnicodeDecodeError => exceptions::PyUnicodeDecodeError::new_err(msg),
+        ExcType::JsonDecodeError => {
+            if let Ok(json_decode_error) = get_json_decode_error(py)
+                && let Ok(exc_instance) = json_decode_error.call1((PyString::new(py, &msg),))
+            {
+                PyErr::from_value(exc_instance)
+            } else {
+                exceptions::PyValueError::new_err(msg)
+            }
+        }
         ExcType::ImportError => exceptions::PyImportError::new_err(msg),
         ExcType::ModuleNotFoundError => exceptions::PyModuleNotFoundError::new_err(msg),
+        ExcType::OSError => exceptions::PyOSError::new_err(msg),
+        ExcType::FileNotFoundError => exceptions::PyFileNotFoundError::new_err(msg),
+        ExcType::FileExistsError => exceptions::PyFileExistsError::new_err(msg),
+        ExcType::IsADirectoryError => exceptions::PyIsADirectoryError::new_err(msg),
+        ExcType::NotADirectoryError => exceptions::PyNotADirectoryError::new_err(msg),
+        ExcType::PermissionError => exceptions::PyPermissionError::new_err(msg),
+        ExcType::RePatternError => {
+            if let Ok(re_pattern_error) = get_re_pattern_error(py)
+                && let Ok(exc_instance) = re_pattern_error.call1((PyString::new(py, &msg),))
+            {
+                PyErr::from_value(exc_instance)
+            } else {
+                exceptions::PyRuntimeError::new_err(msg)
+            }
+        }
     }
 }
 
@@ -437,7 +462,9 @@ fn py_err_to_exc_type(exc: &Bound<'_, exceptions::PyBaseException>) -> ExcType {
             ExcType::TypeError
         // ValueError hierarchy (check UnicodeDecodeError first as it's a subclass)
         } else if exceptions::PyValueError::type_check(exc) {
-            if exceptions::PyUnicodeDecodeError::type_check(exc) {
+            if is_json_decode_error(exc) {
+                ExcType::JsonDecodeError
+            } else if exceptions::PyUnicodeDecodeError::type_check(exc) {
                 ExcType::UnicodeDecodeError
             } else {
                 ExcType::ValueError
@@ -487,6 +514,21 @@ fn py_err_to_exc_type(exc: &Bound<'_, exceptions::PyBaseException>) -> ExcType {
             } else {
                 ExcType::NameError
             }
+        // OSError hierarchy (check specific subclasses first)
+        } else if exceptions::PyOSError::type_check(exc) {
+            if exceptions::PyFileNotFoundError::type_check(exc) {
+                ExcType::FileNotFoundError
+            } else if exceptions::PyFileExistsError::type_check(exc) {
+                ExcType::FileExistsError
+            } else if exceptions::PyIsADirectoryError::type_check(exc) {
+                ExcType::IsADirectoryError
+            } else if exceptions::PyNotADirectoryError::type_check(exc) {
+                ExcType::NotADirectoryError
+            } else if exceptions::PyPermissionError::type_check(exc) {
+                ExcType::PermissionError
+            } else {
+                ExcType::OSError
+            }
         // other standalone exception types
         } else if exceptions::PyTimeoutError::type_check(exc) {
             ExcType::TimeoutError
@@ -516,4 +558,35 @@ fn is_frozen_instance_error(exc: &Bound<'_, exceptions::PyBaseException>) -> boo
     } else {
         false
     }
+}
+
+/// Checks if an exception is an instance of `json.JSONDecodeError`.
+///
+/// The concrete class lives in Python's standard library rather than PyO3's
+/// built-in exception wrappers, so we look it up lazily and cache the type.
+fn is_json_decode_error(exc: &Bound<'_, exceptions::PyBaseException>) -> bool {
+    if let Ok(json_decode_error_cls) = get_json_decode_error(exc.py()) {
+        exc.is_instance(json_decode_error_cls).unwrap_or(false)
+    } else {
+        false
+    }
+}
+
+fn get_re_pattern_error(py: Python<'_>) -> PyResult<&Bound<'_, PyAny>> {
+    static RE_PATTERN_ERROR: PyOnceLock<Py<PyAny>> = PyOnceLock::new();
+
+    if cfg!(Py_3_13) {
+        RE_PATTERN_ERROR.import(py, "re", "PatternError")
+    } else {
+        RE_PATTERN_ERROR.import(py, "re", "error")
+    }
+}
+
+/// Returns the cached `json.JSONDecodeError` class.
+///
+/// This avoids repeated imports while still using the stdlib-defined subclass
+/// of `ValueError` rather than fabricating a plain `ValueError`.
+fn get_json_decode_error(py: Python<'_>) -> PyResult<&Bound<'_, PyAny>> {
+    static JSON_DECODE_ERROR: PyOnceLock<Py<PyAny>> = PyOnceLock::new();
+    JSON_DECODE_ERROR.import(py, "json", "JSONDecodeError")
 }

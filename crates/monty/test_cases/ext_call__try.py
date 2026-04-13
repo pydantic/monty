@@ -1,4 +1,4 @@
-# mode: iter
+# call-external
 # === External calls in try blocks ===
 
 # Basic external call in try body

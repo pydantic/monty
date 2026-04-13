@@ -2,11 +2,12 @@
 
 use crate::{
     args::ArgValues,
-    exception_private::{ExcType, RunResult, SimpleException},
-    heap::{Heap, HeapData},
-    intern::Interns,
+    bytecode::VM,
+    defer_drop_mut,
+    exception_private::RunResult,
+    heap::HeapData,
     resource::ResourceTracker,
-    types::{List, MontyIter, Tuple},
+    types::{List, MontyIter, allocate_tuple, tuple::TupleVec},
     value::Value,
 };
 
@@ -15,38 +16,28 @@ use crate::{
 /// Returns a list of tuples, where the i-th tuple contains the i-th element
 /// from each of the argument iterables. Stops when the shortest iterable is exhausted.
 /// Note: In Python this returns an iterator, but we return a list for simplicity.
-pub fn builtin_zip(heap: &mut Heap<impl ResourceTracker>, args: ArgValues, interns: &Interns) -> RunResult<Value> {
+pub fn builtin_zip(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     let (positional, kwargs) = args.into_parts();
+    defer_drop_mut!(positional, vm);
 
-    // Check for unsupported kwargs (strict not yet implemented)
-    if !kwargs.is_empty() {
-        for (k, v) in kwargs {
-            k.drop_with_heap(heap);
-            v.drop_with_heap(heap);
-        }
-        for v in positional {
-            v.drop_with_heap(heap);
-        }
-        return Err(
-            SimpleException::new_msg(ExcType::TypeError, "zip() does not support keyword arguments yet").into(),
-        );
-    }
+    // TODO: support kwargs (strict)
+    kwargs.not_supported_yet("zip", vm.heap)?;
 
     if positional.len() == 0 {
         // zip() with no arguments returns empty list
-        let heap_id = heap.allocate(HeapData::List(List::new(Vec::new())))?;
+        let heap_id = vm.heap.allocate(HeapData::List(List::new(Vec::new())))?;
         return Ok(Value::Ref(heap_id));
     }
 
     // Create iterators for each iterable
     let mut iterators: Vec<MontyIter> = Vec::with_capacity(positional.len());
     for iterable in positional {
-        match MontyIter::new(iterable, heap, interns) {
+        match MontyIter::new(iterable, vm) {
             Ok(iter) => iterators.push(iter),
             Err(e) => {
                 // Clean up already-created iterators
                 for iter in iterators {
-                    iter.drop_with_heap(heap);
+                    iter.drop_with_heap(vm);
                 }
                 return Err(e);
             }
@@ -57,30 +48,30 @@ pub fn builtin_zip(heap: &mut Heap<impl ResourceTracker>, args: ArgValues, inter
 
     // Zip until shortest iterator is exhausted
     'outer: loop {
-        let mut tuple_items: Vec<Value> = Vec::with_capacity(iterators.len());
+        let mut tuple_items = TupleVec::with_capacity(iterators.len());
 
         for iter in &mut iterators {
-            if let Some(item) = iter.for_next(heap, interns)? {
+            if let Some(item) = iter.for_next(vm)? {
                 tuple_items.push(item);
             } else {
                 // This iterator is exhausted - drop partial tuple items and stop
                 for item in tuple_items {
-                    item.drop_with_heap(heap);
+                    item.drop_with_heap(vm);
                 }
                 break 'outer;
             }
         }
 
         // Create tuple from collected items
-        let tuple_id = heap.allocate(HeapData::Tuple(Tuple::new(tuple_items)))?;
-        result.push(Value::Ref(tuple_id));
+        let tuple_val = allocate_tuple(tuple_items, vm.heap)?;
+        result.push(tuple_val);
     }
 
     // Clean up iterators
     for iter in iterators {
-        iter.drop_with_heap(heap);
+        iter.drop_with_heap(vm);
     }
 
-    let heap_id = heap.allocate(HeapData::List(List::new(result)))?;
+    let heap_id = vm.heap.allocate(HeapData::List(List::new(result)))?;
     Ok(Value::Ref(heap_id))
 }

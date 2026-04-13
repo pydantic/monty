@@ -1,17 +1,21 @@
-use std::fmt::Write;
+use std::{fmt::Write, mem};
 
 use ahash::AHashSet;
+use bytemuck::TransparentWrapper;
 use hashbrown::HashTable;
+use smallvec::SmallVec;
 
 use super::{MontyIter, PyTrait};
 use crate::{
     args::ArgValues,
+    bytecode::{CallResult, VM},
+    defer_drop, defer_drop_mut,
     exception_private::{ExcType, RunResult},
-    heap::{Heap, HeapData, HeapId},
-    intern::{Interns, StaticStrings},
-    resource::ResourceTracker,
+    heap::{ContainsHeap, DropWithHeap, HeapData, HeapGuard, HeapId, HeapItem, HeapRead},
+    intern::StaticStrings,
+    resource::{ResourceError, ResourceTracker},
     types::Type,
-    value::{Attr, Value},
+    value::{EitherStr, Value},
 };
 
 /// Entry in the set storage, containing a value and its cached hash.
@@ -63,33 +67,12 @@ impl SetStorage {
         storage
     }
 
-    /// Drops all values in this storage, decrementing their reference counts.
-    fn drop_all_values(self, heap: &mut Heap<impl ResourceTracker>) {
-        for entry in self.entries {
-            entry.value.drop_with_heap(heap);
-        }
-    }
-
-    /// Copies entries without incrementing reference counts.
-    ///
-    /// Used to break borrow conflicts: copy entries first, then after the
-    /// borrow ends, call `inc_refs_for_entries` to fix up refcounts.
-    fn copy_entries(&self) -> Vec<(Value, u64)> {
+    /// Clones entries with proper reference counting.
+    fn clone_entries(&self, heap: &impl ContainsHeap) -> Vec<(Value, u64)> {
         self.entries
             .iter()
-            .map(|e| (e.value.copy_for_extend(), e.hash))
+            .map(|e| (e.value.clone_with_heap(heap), e.hash))
             .collect()
-    }
-
-    /// Increments reference counts for all Ref values in an entries vector.
-    ///
-    /// Call this after `copy_entries` once the original borrow is released.
-    fn inc_refs_for_entries(entries: &[(Value, u64)], heap: &mut Heap<impl ResourceTracker>) {
-        for (v, _) in entries {
-            if let Value::Ref(id) = v {
-                heap.inc_ref(*id);
-            }
-        }
     }
 
     /// Returns the number of elements in the set.
@@ -118,88 +101,112 @@ impl SetStorage {
     ///
     /// The caller transfers ownership of `value`. If the value is already in
     /// the set, it will be dropped.
-    fn add(&mut self, value: Value, heap: &mut Heap<impl ResourceTracker>, interns: &Interns) -> RunResult<bool> {
-        let Some(hash) = value.py_hash(heap, interns) else {
-            let err = ExcType::type_error_unhashable_set_element(value.py_type(heap));
-            value.drop_with_heap(heap);
-            return Err(err);
+    fn add(&mut self, value: Value, vm: &mut VM<'_, '_, impl ResourceTracker>) -> RunResult<bool> {
+        let hash = match value.py_hash(vm) {
+            Ok(Some(h)) => h,
+            Ok(None) => {
+                let err = ExcType::type_error_unhashable_set_element(value.py_type(vm));
+                value.drop_with_heap(vm);
+                return Err(err);
+            }
+            Err(e) => {
+                value.drop_with_heap(vm);
+                return Err(e.into());
+            }
         };
 
-        // Check if value already exists
+        // Check if value already exists.
         let existing = self
             .indices
-            .find(hash, |&idx| value.py_eq(&self.entries[idx].value, heap, interns));
+            .find(hash, |&idx| value.py_eq(&self.entries[idx].value, vm).unwrap_or(false));
 
         if existing.is_some() {
             // Value already in set, drop the new value
-            value.drop_with_heap(heap);
+            value.drop_with_heap(vm);
             Ok(false)
         } else {
-            // Add new entry
+            // Track memory growth before adding the new entry.
+            // Growth unit matches SetStorage::estimate_size which uses size_of::<SetEntry>().
+            vm.heap.track_growth(mem::size_of::<SetEntry>())?;
             let index = self.entries.len();
             self.entries.push(SetEntry { value, hash });
             self.indices.insert_unique(hash, index, |&idx| self.entries[idx].hash);
             Ok(true)
         }
     }
+}
 
+impl<'h> HeapRead<'h, SetStorage> {
     /// Removes an element from the set.
     ///
     /// Returns `Ok(true)` if the element was removed, `Ok(false)` if not found.
     /// Returns `Err` if the key is unhashable.
-    fn remove(&mut self, value: &Value, heap: &mut Heap<impl ResourceTracker>, interns: &Interns) -> RunResult<bool> {
+    fn remove(&mut self, value: &Value, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<bool> {
         let hash = value
-            .py_hash(heap, interns)
-            .ok_or_else(|| ExcType::type_error_unhashable_set_element(value.py_type(heap)))?;
+            .py_hash(vm)?
+            .ok_or_else(|| ExcType::type_error_unhashable_set_element(value.py_type(vm)))?;
 
-        let entry = self.indices.entry(
-            hash,
-            |&idx| value.py_eq(&self.entries[idx].value, heap, interns),
-            |&idx| self.entries[idx].hash,
-        );
-
-        if let hashbrown::hash_table::Entry::Occupied(occ) = entry {
-            let index = *occ.get();
-            let removed_entry = self.entries.remove(index);
-            occ.remove();
-
-            // Update indices for entries that shifted down
-            for idx in &mut self.indices {
-                if *idx > index {
-                    *idx -= 1;
-                }
+        // Collect candidates by hash
+        let mut candidates: SmallVec<[usize; 2]> = SmallVec::new();
+        let storage = &self.get(vm.heap);
+        storage.indices.find(hash, |&idx| {
+            if storage.entries[idx].hash == hash {
+                candidates.push(idx);
             }
+            false
+        });
 
-            // Drop the removed value
-            removed_entry.value.drop_with_heap(heap);
-            Ok(true)
-        } else {
-            Ok(false)
+        // Compare each candidate
+        let mut found_index = None;
+        for candidate_index in candidates {
+            let candidate_value = self.get(vm.heap).entries[candidate_index].value.clone_with_heap(vm);
+            defer_drop!(candidate_value, vm);
+            if value.py_eq(candidate_value, vm)? {
+                found_index = Some(candidate_index);
+                break;
+            }
         }
+
+        let Some(index) = found_index else {
+            return Ok(false);
+        };
+
+        // Remove via short-lived mutable borrow
+        let storage = self.get_mut(vm.heap);
+        let removed_entry = storage.entries.remove(index);
+        storage.indices.clear();
+        for (idx, e) in storage.entries.iter().enumerate() {
+            storage.indices.insert_unique(e.hash, idx, |&i| storage.entries[i].hash);
+        }
+
+        removed_entry.value.drop_with_heap(vm);
+        Ok(true)
     }
 
     /// Removes an element from the set without raising an error if not found.
     ///
     /// Returns `Ok(())` always (unless the key is unhashable).
-    fn discard(&mut self, value: &Value, heap: &mut Heap<impl ResourceTracker>, interns: &Interns) -> RunResult<()> {
-        self.remove(value, heap, interns)?;
+    fn discard(&mut self, value: &Value, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<()> {
+        self.remove(value, vm)?;
         Ok(())
     }
 
     /// Removes and returns an arbitrary element from the set.
     ///
     /// Returns `Err(KeyError)` if the set is empty.
-    fn pop(&mut self) -> RunResult<Value> {
-        if self.entries.is_empty() {
+    fn pop(&mut self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<Value> {
+        if self.get(vm.heap).is_empty() {
             return Err(ExcType::key_error_pop_empty_set());
         }
 
         // Remove the last entry (most efficient)
-        let entry = self.entries.pop().expect("checked non-empty");
+        let storage = self.get_mut(vm.heap);
+        let entry = storage.entries.pop().expect("checked non-empty");
 
         // Remove from hash table
-        self.indices
-            .find_entry(entry.hash, |&idx| idx == self.entries.len())
+        storage
+            .indices
+            .find_entry(entry.hash, |&idx| idx == storage.entries.len())
             .expect("entry must exist")
             .remove();
 
@@ -207,15 +214,16 @@ impl SetStorage {
     }
 
     /// Removes all elements from the set.
-    fn clear(&mut self, heap: &mut Heap<impl ResourceTracker>) {
-        for entry in self.entries.drain(..) {
-            entry.value.drop_with_heap(heap);
-        }
-        self.indices.clear();
+    fn clear(&mut self, vm: &mut VM<'h, '_, impl ResourceTracker>) {
+        let entries: Vec<SetEntry> = self.get_mut(vm.heap).entries.drain(..).collect();
+        self.get_mut(vm.heap).indices.clear();
+        entries.drop_with_heap(vm);
     }
+}
 
+impl SetStorage {
     /// Creates a deep clone with proper reference counting.
-    fn clone_with_heap(&self, heap: &mut Heap<impl ResourceTracker>) -> Self {
+    fn clone_with_heap(&self, heap: &impl ContainsHeap) -> Self {
         Self {
             indices: self.indices.clone(),
             entries: self
@@ -228,19 +236,39 @@ impl SetStorage {
                 .collect(),
         }
     }
+}
 
+impl<'h> HeapRead<'h, SetStorage> {
     /// Checks if the set contains a value.
-    pub fn contains(&self, value: &Value, heap: &mut Heap<impl ResourceTracker>, interns: &Interns) -> RunResult<bool> {
+    pub fn contains(&self, value: &Value, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<bool> {
         let hash = value
-            .py_hash(heap, interns)
-            .ok_or_else(|| ExcType::type_error_unhashable_set_element(value.py_type(heap)))?;
+            .py_hash(vm)?
+            .ok_or_else(|| ExcType::type_error_unhashable_set_element(value.py_type(vm)))?;
 
-        Ok(self
-            .indices
-            .find(hash, |&idx| value.py_eq(&self.entries[idx].value, heap, interns))
-            .is_some())
+        // Collect candidates by hash
+        let mut candidates: SmallVec<[usize; 2]> = SmallVec::new();
+        let storage = &self.get(vm.heap);
+        storage.indices.find(hash, |&idx| {
+            if storage.entries[idx].hash == hash {
+                candidates.push(idx);
+            }
+            false
+        });
+
+        // Compare each candidate
+        for candidate_index in candidates {
+            let candidate_value = self.get(vm.heap).entries[candidate_index].value.clone_with_heap(vm);
+            defer_drop!(candidate_value, vm);
+            if value.py_eq(candidate_value, vm)? {
+                return Ok(true);
+            }
+        }
+
+        Ok(false)
     }
+}
 
+impl SetStorage {
     /// Returns an iterator over the values in the set.
     pub(crate) fn iter(&self) -> impl Iterator<Item = &Value> {
         self.entries.iter().map(|e| &e.value)
@@ -263,27 +291,34 @@ impl SetStorage {
             }
         }
     }
+}
 
+impl<'h> HeapRead<'h, SetStorage> {
     /// Compares two sets for equality.
-    fn eq(&self, other: &Self, heap: &mut Heap<impl ResourceTracker>, interns: &Interns) -> bool {
-        if self.len() != other.len() {
-            return false;
+    fn eq(&self, other: &Self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> Result<bool, ResourceError> {
+        if self.get(vm.heap).len() != other.get(vm.heap).len() {
+            return Ok(false);
         }
-
+        let token = vm.heap.incr_recursion_depth()?;
+        defer_drop!(token, vm);
         // Check that every element in self is in other
-        for entry in &self.entries {
-            match other.contains(&entry.value, heap, interns) {
-                Ok(true) => {}
-                _ => return false,
+        let len = self.get(vm.heap).entries.len();
+        for i in 0..len {
+            let elem = self.get(vm.heap).entries[i].value.clone_with_heap(vm);
+            defer_drop!(elem, vm);
+            if !matches!(other.contains(elem, vm), Ok(true)) {
+                return Ok(false);
             }
         }
-        true
+        Ok(true)
     }
+}
 
+impl SetStorage {
     /// Returns true if this set is a subset of other.
-    fn is_subset(&self, other: &Self, heap: &mut Heap<impl ResourceTracker>, interns: &Interns) -> RunResult<bool> {
+    fn is_subset(&self, other: &Self, vm: &mut VM<'_, '_, impl ResourceTracker>) -> RunResult<bool> {
         for entry in &self.entries {
-            if !other.contains(&entry.value, heap, interns)? {
+            if !vm.heap.protect(other).contains(&entry.value, vm)? {
                 return Ok(false);
             }
         }
@@ -291,12 +326,12 @@ impl SetStorage {
     }
 
     /// Returns true if this set is a superset of other.
-    fn is_superset(&self, other: &Self, heap: &mut Heap<impl ResourceTracker>, interns: &Interns) -> RunResult<bool> {
-        other.is_subset(self, heap, interns)
+    fn is_superset(&self, other: &Self, vm: &mut VM<'_, '_, impl ResourceTracker>) -> RunResult<bool> {
+        other.is_subset(self, vm)
     }
 
     /// Returns true if this set has no elements in common with other.
-    fn is_disjoint(&self, other: &Self, heap: &mut Heap<impl ResourceTracker>, interns: &Interns) -> RunResult<bool> {
+    fn is_disjoint(&self, other: &Self, vm: &mut VM<'_, '_, impl ResourceTracker>) -> RunResult<bool> {
         // Iterate over the smaller set for efficiency
         let (smaller, larger) = if self.len() <= other.len() {
             (self, other)
@@ -305,91 +340,102 @@ impl SetStorage {
         };
 
         for entry in &smaller.entries {
-            if larger.contains(&entry.value, heap, interns)? {
+            if vm.heap.protect(larger).contains(&entry.value, vm)? {
                 return Ok(false);
             }
         }
         Ok(true)
     }
+}
 
+impl<'h> HeapRead<'h, SetStorage> {
     /// Returns a new set containing elements in either set (union).
-    fn union(&self, other: &Self, heap: &mut Heap<impl ResourceTracker>, interns: &Interns) -> RunResult<Self> {
-        let mut result = self.clone_with_heap(heap);
-        for entry in &other.entries {
-            let value = entry.value.clone_with_heap(heap);
-            result.add(value, heap, interns)?;
+    fn union(&self, other: &Self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<SetStorage> {
+        let mut result_guard = HeapGuard::new(self.get(vm.heap).clone_with_heap(vm), vm);
+        let (result, vm) = result_guard.as_parts_mut();
+        let len = other.get(vm.heap).len();
+        for idx in 0..len {
+            let value = other.get(vm.heap).entries[idx].value.clone_with_heap(vm);
+            result.add(value, vm)?;
         }
-        Ok(result)
+        Ok(result_guard.into_inner())
     }
 
     /// Returns a new set containing elements in both sets (intersection).
-    fn intersection(&self, other: &Self, heap: &mut Heap<impl ResourceTracker>, interns: &Interns) -> RunResult<Self> {
-        let mut result = Self::new();
+    fn intersection(&self, other: &Self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<SetStorage> {
+        let mut result_guard = HeapGuard::new(SetStorage::new(), vm);
+        let (result, vm) = result_guard.as_parts_mut();
         // Iterate over the smaller set for efficiency
-        let (smaller, larger) = if self.len() <= other.len() {
+        let (smaller, larger) = if self.get(vm.heap).len() <= other.get(vm.heap).len() {
             (self, other)
         } else {
             (other, self)
         };
 
-        for entry in &smaller.entries {
-            if larger.contains(&entry.value, heap, interns)? {
-                let value = entry.value.clone_with_heap(heap);
-                result.add(value, heap, interns)?;
+        let len = smaller.get(vm.heap).len();
+        for idx in 0..len {
+            let value = smaller.get(vm.heap).entries[idx].value.clone_with_heap(vm);
+            let mut value_guard = HeapGuard::new(value, vm);
+            let (value, vm) = value_guard.as_parts_mut();
+            if larger.contains(value, vm)? {
+                let (value, vm) = value_guard.into_parts();
+                result.add(value, vm)?;
             }
         }
-        Ok(result)
+        Ok(result_guard.into_inner())
     }
 
     /// Returns a new set containing elements in self but not in other (difference).
-    fn difference(&self, other: &Self, heap: &mut Heap<impl ResourceTracker>, interns: &Interns) -> RunResult<Self> {
-        let mut result = Self::new();
-        for entry in &self.entries {
-            if !other.contains(&entry.value, heap, interns)? {
-                let value = entry.value.clone_with_heap(heap);
-                result.add(value, heap, interns)?;
+    fn difference(&self, other: &Self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<SetStorage> {
+        let mut result_guard = HeapGuard::new(SetStorage::new(), vm);
+        let (result, vm) = result_guard.as_parts_mut();
+        let len = self.get(vm.heap).len();
+        for idx in 0..len {
+            let value = self.get(vm.heap).entries[idx].value.clone_with_heap(vm);
+            let mut value_guard = HeapGuard::new(value, vm);
+            let (value, vm) = value_guard.as_parts_mut();
+            if !other.contains(value, vm)? {
+                let (value, vm) = value_guard.into_parts();
+                result.add(value, vm)?;
             }
         }
-        Ok(result)
+        Ok(result_guard.into_inner())
     }
 
     /// Returns a new set containing elements in either set but not both (symmetric difference).
-    fn symmetric_difference(
-        &self,
-        other: &Self,
-        heap: &mut Heap<impl ResourceTracker>,
-        interns: &Interns,
-    ) -> RunResult<Self> {
-        let mut result = Self::new();
+    fn symmetric_difference(&self, other: &Self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<SetStorage> {
+        let mut result_guard = HeapGuard::new(SetStorage::new(), vm);
+        let (result, vm) = result_guard.as_parts_mut();
 
         // Add elements in self but not in other
-        for entry in &self.entries {
-            if !other.contains(&entry.value, heap, interns)? {
-                let value = entry.value.clone_with_heap(heap);
-                result.add(value, heap, interns)?;
+        let len = self.get(vm.heap).len();
+        for idx in 0..len {
+            let value = self.get(vm.heap).entries[idx].value.clone_with_heap(vm);
+            let mut value_guard = HeapGuard::new(value, vm);
+            let (value, vm) = value_guard.as_parts_mut();
+            if !other.contains(value, vm)? {
+                let (value, vm) = value_guard.into_parts();
+                result.add(value, vm)?;
             }
         }
 
         // Add elements in other but not in self
-        for entry in &other.entries {
-            if !self.contains(&entry.value, heap, interns)? {
-                let value = entry.value.clone_with_heap(heap);
-                result.add(value, heap, interns)?;
+        let len = other.get(vm.heap).len();
+        for idx in 0..len {
+            let value = other.get(vm.heap).entries[idx].value.clone_with_heap(vm);
+            let mut value_guard = HeapGuard::new(value, vm);
+            let (value, vm) = value_guard.as_parts_mut();
+            if !self.contains(value, vm)? {
+                let (value, vm) = value_guard.into_parts();
+                result.add(value, vm)?;
             }
         }
 
-        Ok(result)
+        Ok(result_guard.into_inner())
     }
+}
 
-    /// Adds all elements from other to this set (in-place union).
-    fn update(&mut self, other: &Self, heap: &mut Heap<impl ResourceTracker>, interns: &Interns) -> RunResult<()> {
-        for entry in &other.entries {
-            let value = entry.value.clone_with_heap(heap);
-            self.add(value, heap, interns)?;
-        }
-        Ok(())
-    }
-
+impl SetStorage {
     /// Writes the repr format to a formatter.
     ///
     /// For sets, outputs `{elem1, elem2, ...}` (no type prefix).
@@ -397,14 +443,19 @@ impl SetStorage {
     fn repr_fmt(
         &self,
         f: &mut impl Write,
-        heap: &Heap<impl ResourceTracker>,
+        vm: &VM<'_, '_, impl ResourceTracker>,
         heap_ids: &mut AHashSet<HeapId>,
-        interns: &Interns,
         type_name: &str,
-    ) -> std::fmt::Result {
+    ) -> RunResult<()> {
         if self.is_empty() {
-            return write!(f, "{type_name}()");
+            return Ok(write!(f, "{type_name}()")?);
         }
+
+        // Check depth limit before recursing
+        let Some(token) = vm.heap.incr_recursion_depth_for_repr() else {
+            return Ok(f.write_str("{...}")?);
+        };
+        crate::defer_drop_immutable_heap!(token, vm);
 
         // frozenset needs type prefix: frozenset({...}), but set doesn't: {...}
         let needs_prefix = type_name != "set";
@@ -416,22 +467,27 @@ impl SetStorage {
         let mut first = true;
         for entry in &self.entries {
             if !first {
+                if vm.heap.check_time().is_err() {
+                    f.write_str(", ...[timeout]")?;
+                    break;
+                }
                 f.write_str(", ")?;
             }
             first = false;
-            entry.value.py_repr_fmt(f, heap, heap_ids, interns)?;
+            entry.value.py_repr_fmt(f, vm, heap_ids)?;
         }
         f.write_char('}')?;
 
         if needs_prefix {
             f.write_char(')')?;
         }
+
         Ok(())
     }
 
     /// Estimates the memory size of this storage.
     fn estimate_size(&self) -> usize {
-        std::mem::size_of::<Self>() + self.len() * std::mem::size_of::<SetEntry>()
+        mem::size_of::<Self>() + self.len() * mem::size_of::<SetEntry>()
     }
 }
 
@@ -445,7 +501,8 @@ impl SetStorage {
 /// When values are added, their reference counts are NOT incremented by the set -
 /// the caller transfers ownership. When values are removed or the set is cleared,
 /// their reference counts are decremented.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, TransparentWrapper)]
+#[repr(transparent)]
 pub(crate) struct Set(SetStorage);
 
 impl Set {
@@ -485,72 +542,75 @@ impl Set {
     /// Adds an element to the set, transferring ownership.
     ///
     /// Returns `Ok(true)` if added, `Ok(false)` if already present.
-    pub fn add(&mut self, value: Value, heap: &mut Heap<impl ResourceTracker>, interns: &Interns) -> RunResult<bool> {
-        self.0.add(value, heap, interns)
+    pub fn add(&mut self, value: Value, vm: &mut VM<'_, '_, impl ResourceTracker>) -> RunResult<bool> {
+        self.0.add(value, vm)
     }
+}
 
+impl<'h> HeapRead<'h, Set> {
     /// Removes an element from the set.
     ///
     /// Returns `Err(KeyError)` if the element is not present.
-    pub fn remove(&mut self, value: &Value, heap: &mut Heap<impl ResourceTracker>, interns: &Interns) -> RunResult<()> {
-        if self.0.remove(value, heap, interns)? {
+    pub fn remove(&mut self, value: &Value, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<()> {
+        if self.peel_mut().remove(value, vm)? {
             Ok(())
         } else {
-            Err(ExcType::key_error(value, heap, interns))
+            Err(ExcType::key_error(value, vm))
         }
     }
 
     /// Removes an element from the set if present.
     ///
     /// Does not raise an error if the element is not found.
-    pub fn discard(
-        &mut self,
-        value: &Value,
-        heap: &mut Heap<impl ResourceTracker>,
-        interns: &Interns,
-    ) -> RunResult<()> {
-        self.0.discard(value, heap, interns)
+    pub fn discard(&mut self, value: &Value, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<()> {
+        self.peel_mut().discard(value, vm)
     }
 
     /// Removes and returns an arbitrary element from the set.
     ///
     /// Returns `Err(KeyError)` if the set is empty.
-    pub fn pop(&mut self) -> RunResult<Value> {
-        self.0.pop()
+    pub fn pop(&mut self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<Value> {
+        self.peel_mut().pop(vm)
     }
 
     /// Removes all elements from the set.
-    pub fn clear(&mut self, heap: &mut Heap<impl ResourceTracker>) {
-        self.0.clear(heap);
+    pub fn clear(&mut self, vm: &mut VM<'h, '_, impl ResourceTracker>) {
+        self.peel_mut().clear(vm);
     }
 
     /// Returns a shallow copy of the set.
     #[must_use]
-    pub fn copy(&self, heap: &mut Heap<impl ResourceTracker>) -> Self {
-        Self(self.0.clone_with_heap(heap))
+    pub fn copy(&self, vm: &VM<'h, '_, impl ResourceTracker>) -> Set {
+        Set(self.get(vm.heap).0.clone_with_heap(vm.heap))
     }
+}
 
-    /// Checks if the set contains a value.
-    pub fn contains(&self, value: &Value, heap: &mut Heap<impl ResourceTracker>, interns: &Interns) -> RunResult<bool> {
-        self.0.contains(value, heap, interns)
-    }
-
+impl Set {
     /// Returns the internal storage (for set operations between Set and FrozenSet).
     pub(crate) fn storage(&self) -> &SetStorage {
         &self.0
+    }
+
+    /// Returns an iterator over the set's elements in insertion order.
+    ///
+    /// This is primarily used by other runtime helpers that need to implement
+    /// set-like protocols while still preserving Monty's single canonical set
+    /// storage implementation.
+    pub(crate) fn iter(&self) -> impl Iterator<Item = &Value> {
+        self.0.iter()
     }
 
     /// Creates a set from the `set()` constructor call.
     ///
     /// - `set()` with no args returns an empty set
     /// - `set(iterable)` creates a set from any iterable (list, tuple, set, dict, range, str, bytes)
-    pub fn init(heap: &mut Heap<impl ResourceTracker>, args: ArgValues, interns: &Interns) -> RunResult<Value> {
-        let value = args.get_zero_one_arg("set", heap)?;
+    pub fn init(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+        let value = args.get_zero_one_arg("set", vm.heap)?;
         let set = match value {
             None => Self::new(),
-            Some(v) => Self::from_iterable(v, heap, interns)?,
+            Some(v) => Self::from_iterable(v, vm)?,
         };
-        let heap_id = heap.allocate(HeapData::Set(set))?;
+        let heap_id = vm.heap.allocate(HeapData::Set(set))?;
         Ok(Value::Ref(heap_id))
     }
 
@@ -558,12 +618,12 @@ impl Set {
     ///
     /// Unlike list/tuple which can just collect into a Vec, sets need to add
     /// each element individually to handle duplicates and compute hashes.
-    fn from_iterator(mut iter: MontyIter, heap: &mut Heap<impl ResourceTracker>, interns: &Interns) -> RunResult<Self> {
-        let mut set = Self::with_capacity(iter.size_hint(heap));
-        while let Some(item) = iter.for_next(heap, interns)? {
-            set.add(item, heap, interns)?;
+    fn from_iterator(iter: MontyIter, vm: &mut VM<'_, '_, impl ResourceTracker>) -> RunResult<Self> {
+        defer_drop_mut!(iter, vm);
+        let mut set = Self::with_capacity(iter.size_hint(vm.heap));
+        while let Some(item) = iter.for_next(vm)? {
+            set.add(item, vm)?;
         }
-        iter.drop_with_heap(heap);
         Ok(set)
     }
 
@@ -571,382 +631,490 @@ impl Set {
     ///
     /// This is a convenience method used by helper methods that need to convert
     /// arbitrary iterables to sets. It uses `MontyIter` internally.
-    fn from_iterable(iterable: Value, heap: &mut Heap<impl ResourceTracker>, interns: &Interns) -> RunResult<Self> {
-        let iter = MontyIter::new(iterable, heap, interns)?;
-        let set = Self::from_iterator(iter, heap, interns)?;
+    fn from_iterable(iterable: Value, vm: &mut VM<'_, '_, impl ResourceTracker>) -> RunResult<Self> {
+        let iter = MontyIter::new(iterable, vm)?;
+        let set = Self::from_iterator(iter, vm)?;
         Ok(set)
     }
 }
 
-impl PyTrait for Set {
-    fn py_type(&self, _heap: &Heap<impl ResourceTracker>) -> Type {
+impl<'h> HeapRead<'h, Set> {
+    /// Adds an element to the set, transferring ownership.
+    ///
+    /// Returns `Ok(true)` if the element was added (not already present),
+    /// `Ok(false)` if the element was already in the set (and the value is dropped).
+    /// Returns `Err` if the element is unhashable (and the value is dropped).
+    ///
+    /// Uses a two-phase lookup (collect candidates, then compare) to avoid
+    /// holding a borrow on the set storage during `py_eq` calls.
+    pub fn add(&mut self, value: Value, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<bool> {
+        let hash = match value.py_hash(vm) {
+            Ok(Some(h)) => h,
+            Ok(None) => {
+                let err = ExcType::type_error_unhashable_set_element(value.py_type(vm));
+                value.drop_with_heap(vm);
+                return Err(err);
+            }
+            Err(e) => {
+                value.drop_with_heap(vm);
+                return Err(e.into());
+            }
+        };
+
+        // Collect candidate indices to avoid borrow conflict between set storage and py_eq
+        let mut candidates: SmallVec<[usize; 2]> = SmallVec::new();
+        let storage = &self.get(vm.heap).0;
+        storage.indices.find(hash, |&idx| {
+            if storage.entries[idx].hash == hash {
+                candidates.push(idx);
+            }
+            false
+        });
+
+        for candidate_index in candidates {
+            let candidate_value = self.get(vm.heap).0.entries[candidate_index].value.clone_with_heap(vm);
+            defer_drop!(candidate_value, vm);
+            if value.py_eq(candidate_value, vm)? {
+                // Value already in set, drop the new value
+                value.drop_with_heap(vm);
+                return Ok(false);
+            }
+        }
+
+        // Track memory growth before adding the new entry.
+        // Growth unit matches SetStorage::estimate_size which uses size_of::<SetEntry>().
+        vm.heap.track_growth(mem::size_of::<SetEntry>())?;
+
+        // Add new entry
+        let storage = &mut self.get_mut(vm.heap).0;
+        let index = storage.entries.len();
+        storage.entries.push(SetEntry { value, hash });
+        storage
+            .indices
+            .insert_unique(hash, index, |&idx| storage.entries[idx].hash);
+        Ok(true)
+    }
+
+    pub(crate) fn contains(&self, value: &Value, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<bool> {
+        self.peel_ref().contains(value, vm)
+    }
+
+    /// `set.update(iterable)` via HeapRead.
+    fn hr_update(&mut self, other: Value, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<()> {
+        // Try direct extraction from Set/FrozenSet
+        let entries_opt = {
+            match &other {
+                Value::Ref(id) => match vm.heap.get(*id) {
+                    HeapData::Set(s) => Some(s.0.clone_entries(vm.heap)),
+                    HeapData::FrozenSet(fs) => Some(fs.0.clone_entries(vm.heap)),
+                    _ => None,
+                },
+                _ => None,
+            }
+        };
+
+        if let Some(entries) = entries_opt {
+            other.drop_with_heap(vm);
+            for (value, _hash) in entries {
+                self.add(value, vm)?;
+            }
+            return Ok(());
+        }
+
+        // Fall back to iterable
+        let temp_set = Set::from_iterable(other, vm)?;
+        let entries: Vec<SetEntry> = temp_set.0.entries.into_iter().collect();
+        for entry in entries {
+            self.add(entry.value, vm)?;
+        }
+        Ok(())
+    }
+
+    /// Set algebra operations (union, intersection, difference, symmetric_difference)
+    /// via HeapRead. Clones self's storage once, then calls the existing `SetStorage`
+    /// methods on the standalone copy.
+    fn set_algebra(&self, other: Value, op: SetAlgebra, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<Value> {
+        let other_storage = Set::get_storage_from_value(other, vm)?;
+        defer_drop!(other_storage, vm);
+        let other_storage = vm.heap.protect(other_storage);
+
+        let result = match op {
+            SetAlgebra::Union => self.peel_ref().union(&other_storage, vm)?,
+            SetAlgebra::Intersection => self.peel_ref().intersection(&other_storage, vm)?,
+            SetAlgebra::Difference => self.peel_ref().difference(&other_storage, vm)?,
+            SetAlgebra::SymmetricDifference => self.peel_ref().symmetric_difference(&other_storage, vm)?,
+        };
+
+        let heap_id = vm.heap.allocate(HeapData::Set(Set(result)))?;
+        Ok(Value::Ref(heap_id))
+    }
+
+    /// Set comparison operations (issubset, issuperset, isdisjoint) via HeapRead.
+    /// Clones self's storage once for the comparison.
+    fn comparison_op(
+        &self,
+        other: &Value,
+        op: SetComparison,
+        vm: &mut VM<'h, '_, impl ResourceTracker>,
+    ) -> RunResult<bool> {
+        // Get other's storage
+        let entries_opt = match other {
+            Value::Ref(id) => match vm.heap.get(*id) {
+                HeapData::Set(s) => Some(s.0.clone_entries(vm.heap)),
+                HeapData::FrozenSet(fs) => Some(fs.0.clone_entries(vm.heap)),
+                _ => None,
+            },
+            _ => None,
+        };
+
+        let other_storage = if let Some(entries) = entries_opt {
+            SetStorage::from_entries(entries)
+        } else {
+            let temp = Set::from_iterable(other.clone_with_heap(vm), vm)?;
+            temp.0
+        };
+        defer_drop!(other_storage, vm);
+
+        let self_storage = self.get(vm.heap).0.clone_with_heap(vm.heap);
+        defer_drop!(self_storage, vm);
+
+        match op {
+            SetComparison::Subset => self_storage.is_subset(other_storage, vm),
+            SetComparison::Superset => self_storage.is_superset(other_storage, vm),
+            SetComparison::Disjoint => self_storage.is_disjoint(other_storage, vm),
+        }
+    }
+}
+
+/// Which set algebra operation to perform.
+#[derive(Debug, Clone, Copy)]
+enum SetAlgebra {
+    Union,
+    Intersection,
+    Difference,
+    SymmetricDifference,
+}
+
+/// Which set comparison operation to perform.
+#[derive(Debug, Clone, Copy)]
+enum SetComparison {
+    Subset,
+    Superset,
+    Disjoint,
+}
+
+impl DropWithHeap for Set {
+    fn drop_with_heap<H: ContainsHeap>(self, heap: &mut H) {
+        self.0.drop_with_heap(heap);
+    }
+}
+
+impl DropWithHeap for SetStorage {
+    fn drop_with_heap<H: ContainsHeap>(self, heap: &mut H) {
+        self.entries.drop_with_heap(heap);
+    }
+}
+
+impl DropWithHeap for FrozenSet {
+    fn drop_with_heap<H: ContainsHeap>(self, heap: &mut H) {
+        self.0.drop_with_heap(heap);
+    }
+}
+
+impl<'h> HeapRead<'h, FrozenSet> {
+    /// Checks if the frozenset contains a value, using the candidate collection pattern
+    /// to avoid holding a borrow on the storage during `py_eq` calls.
+    pub(crate) fn contains(&self, value: &Value, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<bool> {
+        let hash = value
+            .py_hash(vm)?
+            .ok_or_else(|| ExcType::type_error_unhashable_set_element(value.py_type(vm)))?;
+
+        // Collect candidate indices (hash match only) via shared borrow
+        let mut candidates: SmallVec<[usize; 2]> = SmallVec::new();
+        let storage = &self.get(vm.heap).0;
+        storage.indices.find(hash, |&idx| {
+            if storage.entries[idx].hash == hash {
+                candidates.push(idx);
+            }
+            false
+        });
+
+        for candidate_index in candidates {
+            let candidate_value = self.get(vm.heap).0.entries[candidate_index].value.clone_with_heap(vm);
+            defer_drop!(candidate_value, vm);
+            if value.py_eq(candidate_value, vm)? {
+                return Ok(true);
+            }
+        }
+
+        Ok(false)
+    }
+
+    /// Binary set operation via HeapRead. Creates a new frozenset from the result.
+    ///
+    /// Clones self's storage entries to release the heap borrow before calling
+    /// the set operations (which need `&mut VM` for hashing and equality checks).
+    pub(crate) fn binary_op_value(
+        &self,
+        other: &Value,
+        op: SetBinaryOp,
+        vm: &mut VM<'h, '_, impl ResourceTracker>,
+    ) -> RunResult<Option<FrozenSet>> {
+        let Some(other_storage) = get_storage_from_set_operand(other, vm)? else {
+            return Ok(None);
+        };
+        defer_drop!(other_storage, vm);
+        let other_storage = vm.heap.protect(other_storage);
+
+        let result = match op {
+            SetBinaryOp::And => FrozenSet(self.peel_ref().intersection(&other_storage, vm)?),
+            SetBinaryOp::Or => FrozenSet(self.peel_ref().union(&other_storage, vm)?),
+            SetBinaryOp::Xor => FrozenSet(self.peel_ref().symmetric_difference(&other_storage, vm)?),
+            SetBinaryOp::Sub => FrozenSet(self.peel_ref().difference(&other_storage, vm)?),
+        };
+        Ok(Some(result))
+    }
+
+    /// Set algebra operations for frozenset via HeapRead.
+    fn set_algebra(&self, other: Value, op: SetAlgebra, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<Value> {
+        let other_storage = Set::get_storage_from_value(other, vm)?;
+        defer_drop!(other_storage, vm);
+        let other_storage = vm.heap.protect(other_storage);
+
+        let result = match op {
+            SetAlgebra::Union => self.peel_ref().union(&other_storage, vm)?,
+            SetAlgebra::Intersection => self.peel_ref().intersection(&other_storage, vm)?,
+            SetAlgebra::Difference => self.peel_ref().difference(&other_storage, vm)?,
+            SetAlgebra::SymmetricDifference => self.peel_ref().symmetric_difference(&other_storage, vm)?,
+        };
+
+        let heap_id = vm.heap.allocate(HeapData::FrozenSet(FrozenSet(result)))?;
+        Ok(Value::Ref(heap_id))
+    }
+
+    /// Set comparison operations for frozenset via HeapRead.
+    fn comparison_op(
+        &self,
+        other: &Value,
+        op: SetComparison,
+        vm: &mut VM<'h, '_, impl ResourceTracker>,
+    ) -> RunResult<bool> {
+        let entries_opt = match other {
+            Value::Ref(id) => match vm.heap.get(*id) {
+                HeapData::Set(s) => Some(s.0.clone_entries(vm.heap)),
+                HeapData::FrozenSet(fs) => Some(fs.0.clone_entries(vm.heap)),
+                _ => None,
+            },
+            _ => None,
+        };
+
+        let other_storage = if let Some(entries) = entries_opt {
+            SetStorage::from_entries(entries)
+        } else {
+            let temp = Set::from_iterable(other.clone_with_heap(vm), vm)?;
+            temp.0
+        };
+        defer_drop!(other_storage, vm);
+
+        let self_storage = self.get(vm.heap).0.clone_with_heap(vm.heap);
+        defer_drop!(self_storage, vm);
+
+        match op {
+            SetComparison::Subset => self_storage.is_subset(other_storage, vm),
+            SetComparison::Superset => self_storage.is_superset(other_storage, vm),
+            SetComparison::Disjoint => self_storage.is_disjoint(other_storage, vm),
+        }
+    }
+}
+
+impl DropWithHeap for SetEntry {
+    fn drop_with_heap<H: ContainsHeap>(self, heap: &mut H) {
+        self.value.drop_with_heap(heap);
+    }
+}
+
+impl<'h> PyTrait<'h> for HeapRead<'h, Set> {
+    fn py_type(&self, _vm: &VM<'h, '_, impl ResourceTracker>) -> Type {
         Type::Set
     }
 
-    fn py_estimate_size(&self) -> usize {
-        self.0.estimate_size()
+    fn py_len(&self, vm: &VM<'h, '_, impl ResourceTracker>) -> Option<usize> {
+        Some(self.get(vm.heap).len())
     }
 
-    fn py_len(&self, _heap: &Heap<impl ResourceTracker>, _interns: &Interns) -> Option<usize> {
-        Some(self.len())
+    fn py_eq(&self, other: &Self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> Result<bool, ResourceError> {
+        self.peel_ref().eq(other.peel_ref(), vm)
     }
 
-    fn py_eq(&self, other: &Self, heap: &mut Heap<impl ResourceTracker>, interns: &Interns) -> bool {
-        self.0.eq(&other.0, heap, interns)
-    }
-
-    fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
-        self.0.collect_dec_ref_ids(stack);
-    }
-
-    fn py_bool(&self, _heap: &Heap<impl ResourceTracker>, _interns: &Interns) -> bool {
-        !self.is_empty()
+    fn py_bool(&self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> bool {
+        !self.get(vm.heap).is_empty()
     }
 
     fn py_repr_fmt(
         &self,
         f: &mut impl Write,
-        heap: &Heap<impl ResourceTracker>,
+        vm: &VM<'h, '_, impl ResourceTracker>,
         heap_ids: &mut AHashSet<HeapId>,
-        interns: &Interns,
-    ) -> std::fmt::Result {
-        self.0.repr_fmt(f, heap, heap_ids, interns, "set")
+    ) -> RunResult<()> {
+        self.get(vm.heap).0.repr_fmt(f, vm, heap_ids, "set")
     }
 
     fn py_call_attr(
         &mut self,
-        heap: &mut Heap<impl ResourceTracker>,
-        attr: &Attr,
+        _self_id: HeapId,
+        vm: &mut VM<'h, '_, impl ResourceTracker>,
+        attr: &EitherStr,
         args: ArgValues,
-        interns: &Interns,
-    ) -> RunResult<Value> {
-        let Some(method) = attr.static_string() else {
-            return Err(ExcType::attribute_error(Type::Set, attr.as_str(interns)));
+    ) -> RunResult<CallResult> {
+        let value = match attr.static_string() {
+            Some(StaticStrings::Add) => {
+                let value = args.get_one_arg("set.add", vm.heap)?;
+                self.add(value, vm)?;
+                Ok(Value::None)
+            }
+            Some(StaticStrings::Remove) => {
+                let value = args.get_one_arg("set.remove", vm.heap)?;
+                defer_drop!(value, vm);
+                self.remove(value, vm)?;
+                Ok(Value::None)
+            }
+            Some(StaticStrings::Discard) => {
+                let value = args.get_one_arg("set.discard", vm.heap)?;
+                defer_drop!(value, vm);
+                self.discard(value, vm)?;
+                Ok(Value::None)
+            }
+            Some(StaticStrings::Pop) => {
+                args.check_zero_args("set.pop", vm.heap)?;
+                self.pop(vm)
+            }
+            Some(StaticStrings::Clear) => {
+                args.check_zero_args("set.clear", vm.heap)?;
+                self.clear(vm);
+                Ok(Value::None)
+            }
+            Some(StaticStrings::Copy) => {
+                args.check_zero_args("set.copy", vm.heap)?;
+                let copy = self.copy(vm);
+                let heap_id = vm.heap.allocate(HeapData::Set(copy))?;
+                Ok(Value::Ref(heap_id))
+            }
+            Some(StaticStrings::Update) => {
+                let other = args.get_one_arg("set.update", vm.heap)?;
+                self.hr_update(other, vm)?;
+                Ok(Value::None)
+            }
+            Some(StaticStrings::Union) => {
+                let other = args.get_one_arg("set.union", vm.heap)?;
+                self.set_algebra(other, SetAlgebra::Union, vm)
+            }
+            Some(StaticStrings::Intersection) => {
+                let other = args.get_one_arg("set.intersection", vm.heap)?;
+                self.set_algebra(other, SetAlgebra::Intersection, vm)
+            }
+            Some(StaticStrings::Difference) => {
+                let other = args.get_one_arg("set.difference", vm.heap)?;
+                self.set_algebra(other, SetAlgebra::Difference, vm)
+            }
+            Some(StaticStrings::SymmetricDifference) => {
+                let other = args.get_one_arg("set.symmetric_difference", vm.heap)?;
+                self.set_algebra(other, SetAlgebra::SymmetricDifference, vm)
+            }
+            Some(StaticStrings::Issubset) => {
+                let other = args.get_one_arg("set.issubset", vm.heap)?;
+                defer_drop!(other, vm);
+                Ok(Value::Bool(self.comparison_op(other, SetComparison::Subset, vm)?))
+            }
+            Some(StaticStrings::Issuperset) => {
+                let other = args.get_one_arg("set.issuperset", vm.heap)?;
+                defer_drop!(other, vm);
+                Ok(Value::Bool(self.comparison_op(other, SetComparison::Superset, vm)?))
+            }
+            Some(StaticStrings::Isdisjoint) => {
+                let other = args.get_one_arg("set.isdisjoint", vm.heap)?;
+                defer_drop!(other, vm);
+                Ok(Value::Bool(self.comparison_op(other, SetComparison::Disjoint, vm)?))
+            }
+            _ => {
+                args.drop_with_heap(vm);
+                return Err(ExcType::attribute_error(Type::Set, attr.as_str(vm.interns)));
+            }
         };
-
-        match method {
-            StaticStrings::Add => {
-                let value = args.get_one_arg("set.add", heap)?;
-                self.add(value, heap, interns)?;
-                Ok(Value::None)
-            }
-            StaticStrings::Remove => {
-                let value = args.get_one_arg("set.remove", heap)?;
-                let result = self.remove(&value, heap, interns);
-                value.drop_with_heap(heap);
-                result?;
-                Ok(Value::None)
-            }
-            StaticStrings::Discard => {
-                let value = args.get_one_arg("set.discard", heap)?;
-                let result = self.discard(&value, heap, interns);
-                value.drop_with_heap(heap);
-                result?;
-                Ok(Value::None)
-            }
-            StaticStrings::Pop => {
-                args.check_zero_args("set.pop", heap)?;
-                self.pop()
-            }
-            StaticStrings::Clear => {
-                args.check_zero_args("set.clear", heap)?;
-                self.clear(heap);
-                Ok(Value::None)
-            }
-            StaticStrings::Copy => {
-                args.check_zero_args("set.copy", heap)?;
-                let copy = self.copy(heap);
-                let heap_id = heap.allocate(HeapData::Set(copy))?;
-                Ok(Value::Ref(heap_id))
-            }
-            StaticStrings::Update => {
-                let other = args.get_one_arg("set.update", heap)?;
-                self.update_from_value(other, heap, interns)?;
-                Ok(Value::None)
-            }
-            StaticStrings::Union => {
-                let other = args.get_one_arg("set.union", heap)?;
-                let result = self.union_from_value(other, heap, interns)?;
-                let heap_id = heap.allocate(HeapData::Set(result))?;
-                Ok(Value::Ref(heap_id))
-            }
-            StaticStrings::Intersection => {
-                let other = args.get_one_arg("set.intersection", heap)?;
-                let result = self.intersection_from_value(other, heap, interns)?;
-                let heap_id = heap.allocate(HeapData::Set(result))?;
-                Ok(Value::Ref(heap_id))
-            }
-            StaticStrings::Difference => {
-                let other = args.get_one_arg("set.difference", heap)?;
-                let result = self.difference_from_value(other, heap, interns)?;
-                let heap_id = heap.allocate(HeapData::Set(result))?;
-                Ok(Value::Ref(heap_id))
-            }
-            StaticStrings::SymmetricDifference => {
-                let other = args.get_one_arg("set.symmetric_difference", heap)?;
-                let result = self.symmetric_difference_from_value(other, heap, interns)?;
-                let heap_id = heap.allocate(HeapData::Set(result))?;
-                Ok(Value::Ref(heap_id))
-            }
-            StaticStrings::Issubset => {
-                let other = args.get_one_arg("set.issubset", heap)?;
-                let result = self.issubset_from_value(&other, heap, interns);
-                other.drop_with_heap(heap);
-                Ok(Value::Bool(result?))
-            }
-            StaticStrings::Issuperset => {
-                let other = args.get_one_arg("set.issuperset", heap)?;
-                let result = self.issuperset_from_value(&other, heap, interns);
-                other.drop_with_heap(heap);
-                Ok(Value::Bool(result?))
-            }
-            StaticStrings::Isdisjoint => {
-                let other = args.get_one_arg("set.isdisjoint", heap)?;
-                let result = self.isdisjoint_from_value(&other, heap, interns);
-                other.drop_with_heap(heap);
-                Ok(Value::Bool(result?))
-            }
-            _ => Err(ExcType::attribute_error(Type::Set, attr.as_str(interns))),
-        }
-    }
-
-    fn py_sub(
-        &self,
-        _other: &Self,
-        _heap: &mut Heap<impl ResourceTracker>,
-    ) -> Result<Option<Value>, crate::resource::ResourceError> {
-        // This is called from heap.rs with two Sets
-        // We need interns for contains check, but py_sub doesn't have it
-        // This is a limitation - we'll need to handle this differently
-        // For now, return None to indicate not supported via this path
-        Ok(None)
+        value.map(CallResult::Value)
     }
 }
 
+/// Pure set/frozenset binary operators shared by both concrete container types.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum SetBinaryOp {
+    And,
+    Or,
+    Xor,
+    Sub,
+}
+
 /// Helper methods for set operations with arbitrary iterables.
+impl<'h> HeapRead<'h, Set> {
+    /// Implements operator-form set algebra, which only accepts set/frozenset operands.
+    ///
+    /// Unlike method forms such as `set.union(iterable)`, the binary operators
+    /// `& | ^ -` are intentionally strict and return `None` for operands outside
+    /// the set-like values CPython accepts here (`set`, `frozenset`,
+    /// `dict_keys`, and `dict_items`) so the VM can raise the standard
+    /// unsupported-operands `TypeError`.
+    pub(crate) fn binary_op_value(
+        &self,
+        other: &Value,
+        op: SetBinaryOp,
+        vm: &mut VM<'h, '_, impl ResourceTracker>,
+    ) -> RunResult<Option<Set>> {
+        let Some(other_storage) = get_storage_from_set_operand(other, vm)? else {
+            return Ok(None);
+        };
+        defer_drop!(other_storage, vm);
+        let other_storage = vm.heap.protect(other_storage);
+
+        let result = match op {
+            SetBinaryOp::And => Set(self.peel_ref().intersection(&other_storage, vm)?),
+            SetBinaryOp::Or => Set(self.peel_ref().union(&other_storage, vm)?),
+            SetBinaryOp::Xor => Set(self.peel_ref().symmetric_difference(&other_storage, vm)?),
+            SetBinaryOp::Sub => Set(self.peel_ref().difference(&other_storage, vm)?),
+        };
+        Ok(Some(result))
+    }
+}
+
 impl Set {
-    /// Updates this set with elements from an iterable value.
-    fn update_from_value(
-        &mut self,
-        other: Value,
-        heap: &mut Heap<impl ResourceTracker>,
-        interns: &Interns,
-    ) -> RunResult<()> {
-        // Try to get entries from a Set/FrozenSet directly
-        let entries_opt = match &other {
-            Value::Ref(id) => match heap.get(*id) {
-                HeapData::Set(other_set) => Some(other_set.0.copy_entries()),
-                HeapData::FrozenSet(other_set) => Some(other_set.0.copy_entries()),
-                _ => None,
-            },
-            _ => None,
-        };
-
-        if let Some(entries) = entries_opt {
-            // Borrow released, now we can use heap mutably
-            // IMPORTANT: Inc refs BEFORE dropping the source to avoid use-after-free
-            SetStorage::inc_refs_for_entries(&entries, heap);
-            other.drop_with_heap(heap);
-            for (value, _hash) in entries {
-                self.add(value, heap, interns)?;
-            }
-            return Ok(());
-        }
-
-        // Fall back to creating a temporary set from the iterable
-        let temp_set = Self::from_iterable(other, heap, interns)?;
-        self.0.update(&temp_set.0, heap, interns)?;
-        temp_set.0.drop_all_values(heap);
-        Ok(())
-    }
-
-    /// Returns a new set with elements from both this set and an iterable.
-    fn union_from_value(
-        &self,
-        other: Value,
-        heap: &mut Heap<impl ResourceTracker>,
-        interns: &Interns,
-    ) -> RunResult<Self> {
-        let other_storage = Self::get_storage_from_value(other, heap, interns)?;
-        let result_storage = self.0.union(&other_storage, heap, interns)?;
-        // Clean up other_storage if it was created from a non-set
-        for entry in other_storage.entries {
-            entry.value.drop_with_heap(heap);
-        }
-        Ok(Self(result_storage))
-    }
-
-    /// Returns a new set with elements common to both this set and an iterable.
-    fn intersection_from_value(
-        &self,
-        other: Value,
-        heap: &mut Heap<impl ResourceTracker>,
-        interns: &Interns,
-    ) -> RunResult<Self> {
-        let other_storage = Self::get_storage_from_value(other, heap, interns)?;
-        let result_storage = self.0.intersection(&other_storage, heap, interns)?;
-        for entry in other_storage.entries {
-            entry.value.drop_with_heap(heap);
-        }
-        Ok(Self(result_storage))
-    }
-
-    /// Returns a new set with elements in this set but not in an iterable.
-    fn difference_from_value(
-        &self,
-        other: Value,
-        heap: &mut Heap<impl ResourceTracker>,
-        interns: &Interns,
-    ) -> RunResult<Self> {
-        let other_storage = Self::get_storage_from_value(other, heap, interns)?;
-        let result_storage = self.0.difference(&other_storage, heap, interns)?;
-        for entry in other_storage.entries {
-            entry.value.drop_with_heap(heap);
-        }
-        Ok(Self(result_storage))
-    }
-
-    /// Returns a new set with elements in either set but not both.
-    fn symmetric_difference_from_value(
-        &self,
-        other: Value,
-        heap: &mut Heap<impl ResourceTracker>,
-        interns: &Interns,
-    ) -> RunResult<Self> {
-        let other_storage = Self::get_storage_from_value(other, heap, interns)?;
-        let result_storage = self.0.symmetric_difference(&other_storage, heap, interns)?;
-        for entry in other_storage.entries {
-            entry.value.drop_with_heap(heap);
-        }
-        Ok(Self(result_storage))
-    }
-
-    /// Checks if this set is a subset of an iterable.
-    fn issubset_from_value(
-        &self,
-        other: &Value,
-        heap: &mut Heap<impl ResourceTracker>,
-        interns: &Interns,
-    ) -> RunResult<bool> {
-        // Try to get entries from a Set/FrozenSet directly
-        let entries_opt = match other {
-            Value::Ref(id) => match heap.get(*id) {
-                HeapData::Set(other_set) => Some(other_set.0.copy_entries()),
-                HeapData::FrozenSet(other_set) => Some(other_set.0.copy_entries()),
-                _ => None,
-            },
-            _ => None,
-        };
-
-        if let Some(entries) = entries_opt {
-            // Borrow released, build temporary storage and check
-            SetStorage::inc_refs_for_entries(&entries, heap);
-            let other_storage = SetStorage::from_entries(entries);
-            let result = self.0.is_subset(&other_storage, heap, interns);
-            other_storage.drop_all_values(heap);
-            return result;
-        }
-
-        // Handle all other iterables (list, tuple, range, str, bytes, dict, etc.)
-        let temp = Self::from_iterable(other.clone_with_heap(heap), heap, interns)?;
-        let result = self.0.is_subset(&temp.0, heap, interns);
-        temp.0.drop_all_values(heap);
-        result
-    }
-
-    /// Checks if this set is a superset of an iterable.
-    fn issuperset_from_value(
-        &self,
-        other: &Value,
-        heap: &mut Heap<impl ResourceTracker>,
-        interns: &Interns,
-    ) -> RunResult<bool> {
-        // Try to get entries from a Set/FrozenSet directly
-        let entries_opt = match other {
-            Value::Ref(id) => match heap.get(*id) {
-                HeapData::Set(other_set) => Some(other_set.0.copy_entries()),
-                HeapData::FrozenSet(other_set) => Some(other_set.0.copy_entries()),
-                _ => None,
-            },
-            _ => None,
-        };
-
-        if let Some(entries) = entries_opt {
-            // Borrow released, build temporary storage and check
-            SetStorage::inc_refs_for_entries(&entries, heap);
-            let other_storage = SetStorage::from_entries(entries);
-            let result = self.0.is_superset(&other_storage, heap, interns);
-            other_storage.drop_all_values(heap);
-            return result;
-        }
-
-        // Handle all other iterables (list, tuple, range, str, bytes, dict, etc.)
-        let temp = Self::from_iterable(other.clone_with_heap(heap), heap, interns)?;
-        let result = self.0.is_superset(&temp.0, heap, interns);
-        temp.0.drop_all_values(heap);
-        result
-    }
-
-    /// Checks if this set has no elements in common with an iterable.
-    fn isdisjoint_from_value(
-        &self,
-        other: &Value,
-        heap: &mut Heap<impl ResourceTracker>,
-        interns: &Interns,
-    ) -> RunResult<bool> {
-        // Try to get entries from a Set/FrozenSet directly
-        let entries_opt = match other {
-            Value::Ref(id) => match heap.get(*id) {
-                HeapData::Set(other_set) => Some(other_set.0.copy_entries()),
-                HeapData::FrozenSet(other_set) => Some(other_set.0.copy_entries()),
-                _ => None,
-            },
-            _ => None,
-        };
-
-        if let Some(entries) = entries_opt {
-            // Borrow released, build temporary storage and check
-            SetStorage::inc_refs_for_entries(&entries, heap);
-            let other_storage = SetStorage::from_entries(entries);
-            let result = self.0.is_disjoint(&other_storage, heap, interns);
-            other_storage.drop_all_values(heap);
-            return result;
-        }
-
-        // Handle all other iterables (list, tuple, range, str, bytes, dict, etc.)
-        let temp = Self::from_iterable(other.clone_with_heap(heap), heap, interns)?;
-        let result = self.0.is_disjoint(&temp.0, heap, interns);
-        temp.0.drop_all_values(heap);
-        result
-    }
-
     /// Helper to get SetStorage from a Value (either directly or by conversion).
-    fn get_storage_from_value(
-        value: Value,
-        heap: &mut Heap<impl ResourceTracker>,
-        interns: &Interns,
-    ) -> RunResult<SetStorage> {
+    fn get_storage_from_value(value: Value, vm: &mut VM<'_, '_, impl ResourceTracker>) -> RunResult<SetStorage> {
         // Try to get entries from a Set/FrozenSet directly
         let entries_opt = match &value {
-            Value::Ref(id) => match heap.get(*id) {
-                HeapData::Set(set) => Some(set.0.copy_entries()),
-                HeapData::FrozenSet(set) => Some(set.0.copy_entries()),
+            Value::Ref(id) => match vm.heap.get(*id) {
+                HeapData::Set(set) => Some(set.0.clone_entries(vm.heap)),
+                HeapData::FrozenSet(set) => Some(set.0.clone_entries(vm.heap)),
                 _ => None,
             },
             _ => None,
         };
 
         if let Some(entries) = entries_opt {
-            // Borrow released, build storage with proper refcounts
-            // IMPORTANT: Inc refs BEFORE dropping the source to avoid use-after-free
-            SetStorage::inc_refs_for_entries(&entries, heap);
-            value.drop_with_heap(heap);
+            value.drop_with_heap(vm);
             return Ok(SetStorage::from_entries(entries));
         }
 
         // Convert iterable to set
-        let temp_set = Self::from_iterable(value, heap, interns)?;
+        let temp_set = Self::from_iterable(value, vm)?;
         Ok(temp_set.0)
+    }
+}
+
+impl HeapItem for Set {
+    fn py_estimate_size(&self) -> usize {
+        self.0.estimate_size()
+    }
+
+    fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
+        self.0.collect_dec_ref_ids(stack);
     }
 }
 
@@ -958,7 +1126,8 @@ impl Set {
 /// # Hashability
 /// Unlike mutable sets, frozensets can be used as dict keys or set elements because
 /// they are immutable. The hash is computed as the XOR of element hashes (order-independent).
-#[derive(Debug, Default)]
+#[derive(Debug, Default, TransparentWrapper)]
+#[repr(transparent)]
 pub(crate) struct FrozenSet(SetStorage);
 
 impl FrozenSet {
@@ -989,35 +1158,36 @@ impl FrozenSet {
         self.0.has_refs()
     }
 
-    /// Returns a shallow copy of the frozenset.
-    #[must_use]
-    pub fn copy(&self, heap: &mut Heap<impl ResourceTracker>) -> Self {
-        Self(self.0.clone_with_heap(heap))
-    }
-
     /// Returns the internal storage.
     pub(crate) fn storage(&self) -> &SetStorage {
         &self.0
     }
+}
 
-    /// Checks if the frozenset contains a value.
-    pub fn contains(&self, value: &Value, heap: &mut Heap<impl ResourceTracker>, interns: &Interns) -> RunResult<bool> {
-        self.0.contains(value, heap, interns)
-    }
-
+impl<'h> HeapRead<'h, FrozenSet> {
     /// Computes the hash of this frozenset.
     ///
     /// The hash is the XOR of all element hashes, making it order-independent.
-    pub fn compute_hash(&self, heap: &mut Heap<impl ResourceTracker>, interns: &Interns) -> Option<u64> {
+    /// Checks recursion depth before recursing into element hashes.
+    pub fn compute_hash(&self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> Result<Option<u64>, ResourceError> {
+        let token = vm.heap.incr_recursion_depth()?;
+        defer_drop!(token, vm);
         let mut hash: u64 = 0;
-        for entry in &self.0.entries {
+        let len = self.get(vm.heap).0.entries.len();
+        for idx in 0..len {
+            let item = self.get(vm.heap).0.entries[idx].value.clone_with_heap(vm);
+            defer_drop!(item, vm);
             // All elements must be hashable (enforced at construction)
-            let elem_hash = entry.value.py_hash(heap, interns)?;
-            hash ^= elem_hash;
+            match item.py_hash(vm)? {
+                Some(h) => hash ^= h,
+                None => return Ok(None),
+            }
         }
-        Some(hash)
+        Ok(Some(hash))
     }
+}
 
+impl FrozenSet {
     /// Creates a frozenset from a Set, consuming the Set's storage.
     ///
     /// This is used when we need to convert a mutable set to an immutable frozenset
@@ -1030,281 +1200,134 @@ impl FrozenSet {
     ///
     /// - `frozenset()` with no args returns an empty frozenset
     /// - `frozenset(iterable)` creates a frozenset from any iterable (list, tuple, set, dict, range, str, bytes)
-    pub fn init(heap: &mut Heap<impl ResourceTracker>, args: ArgValues, interns: &Interns) -> RunResult<Value> {
-        let value = args.get_zero_one_arg("frozenset", heap)?;
+    pub fn init(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+        let value = args.get_zero_one_arg("frozenset", vm.heap)?;
         let frozenset = match value {
             None => Self::new(),
-            Some(v) => Self::from_set(Set::from_iterable(v, heap, interns)?),
+            Some(v) => Self::from_set(Set::from_iterable(v, vm)?),
         };
-        let heap_id = heap.allocate(HeapData::FrozenSet(frozenset))?;
+        let heap_id = vm.heap.allocate(HeapData::FrozenSet(frozenset))?;
         Ok(Value::Ref(heap_id))
-    }
-
-    /// Returns a new frozenset with elements from both this and another set.
-    pub(crate) fn union(
-        &self,
-        other: &SetStorage,
-        heap: &mut Heap<impl ResourceTracker>,
-        interns: &Interns,
-    ) -> RunResult<Self> {
-        Ok(Self(self.0.union(other, heap, interns)?))
-    }
-
-    /// Returns a new frozenset with elements common to both sets.
-    pub(crate) fn intersection(
-        &self,
-        other: &SetStorage,
-        heap: &mut Heap<impl ResourceTracker>,
-        interns: &Interns,
-    ) -> RunResult<Self> {
-        Ok(Self(self.0.intersection(other, heap, interns)?))
-    }
-
-    /// Returns a new frozenset with elements in this set but not in other.
-    pub(crate) fn difference(
-        &self,
-        other: &SetStorage,
-        heap: &mut Heap<impl ResourceTracker>,
-        interns: &Interns,
-    ) -> RunResult<Self> {
-        Ok(Self(self.0.difference(other, heap, interns)?))
-    }
-
-    /// Returns a new frozenset with elements in either set but not both.
-    pub(crate) fn symmetric_difference(
-        &self,
-        other: &SetStorage,
-        heap: &mut Heap<impl ResourceTracker>,
-        interns: &Interns,
-    ) -> RunResult<Self> {
-        Ok(Self(self.0.symmetric_difference(other, heap, interns)?))
     }
 }
 
-impl PyTrait for FrozenSet {
-    fn py_type(&self, _heap: &Heap<impl ResourceTracker>) -> Type {
+impl<'h> PyTrait<'h> for HeapRead<'h, FrozenSet> {
+    fn py_type(&self, _vm: &VM<'h, '_, impl ResourceTracker>) -> Type {
         Type::FrozenSet
     }
 
-    fn py_estimate_size(&self) -> usize {
-        self.0.estimate_size()
+    fn py_len(&self, vm: &VM<'h, '_, impl ResourceTracker>) -> Option<usize> {
+        Some(self.get(vm.heap).len())
     }
 
-    fn py_len(&self, _heap: &Heap<impl ResourceTracker>, _interns: &Interns) -> Option<usize> {
-        Some(self.len())
+    fn py_eq(&self, other: &Self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> Result<bool, ResourceError> {
+        self.peel_ref().eq(other.peel_ref(), vm)
     }
 
-    fn py_eq(&self, other: &Self, heap: &mut Heap<impl ResourceTracker>, interns: &Interns) -> bool {
-        self.0.eq(&other.0, heap, interns)
-    }
-
-    fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
-        self.0.collect_dec_ref_ids(stack);
-    }
-
-    fn py_bool(&self, _heap: &Heap<impl ResourceTracker>, _interns: &Interns) -> bool {
-        !self.is_empty()
+    fn py_bool(&self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> bool {
+        !self.get(vm.heap).is_empty()
     }
 
     fn py_repr_fmt(
         &self,
         f: &mut impl Write,
-        heap: &Heap<impl ResourceTracker>,
+        vm: &VM<'h, '_, impl ResourceTracker>,
         heap_ids: &mut AHashSet<HeapId>,
-        interns: &Interns,
-    ) -> std::fmt::Result {
-        self.0.repr_fmt(f, heap, heap_ids, interns, "frozenset")
+    ) -> RunResult<()> {
+        self.get(vm.heap).0.repr_fmt(f, vm, heap_ids, "frozenset")
     }
 
     fn py_call_attr(
         &mut self,
-        heap: &mut Heap<impl ResourceTracker>,
-        attr: &Attr,
+        _self_id: HeapId,
+        vm: &mut VM<'h, '_, impl ResourceTracker>,
+        attr: &EitherStr,
         args: ArgValues,
-        interns: &Interns,
-    ) -> RunResult<Value> {
-        let Some(method) = attr.static_string() else {
-            return Err(ExcType::attribute_error(Type::FrozenSet, attr.as_str(interns)));
+    ) -> RunResult<CallResult> {
+        let value = match attr.static_string() {
+            Some(StaticStrings::Copy) => {
+                args.check_zero_args("frozenset.copy", vm.heap)?;
+                let cloned = self.get(vm.heap).0.clone_with_heap(vm.heap);
+                let heap_id = vm.heap.allocate(HeapData::FrozenSet(FrozenSet(cloned)))?;
+                Ok(Value::Ref(heap_id))
+            }
+            Some(StaticStrings::Union) => {
+                let other = args.get_one_arg("frozenset.union", vm.heap)?;
+                self.set_algebra(other, SetAlgebra::Union, vm)
+            }
+            Some(StaticStrings::Intersection) => {
+                let other = args.get_one_arg("frozenset.intersection", vm.heap)?;
+                self.set_algebra(other, SetAlgebra::Intersection, vm)
+            }
+            Some(StaticStrings::Difference) => {
+                let other = args.get_one_arg("frozenset.difference", vm.heap)?;
+                self.set_algebra(other, SetAlgebra::Difference, vm)
+            }
+            Some(StaticStrings::SymmetricDifference) => {
+                let other = args.get_one_arg("frozenset.symmetric_difference", vm.heap)?;
+                self.set_algebra(other, SetAlgebra::SymmetricDifference, vm)
+            }
+            Some(StaticStrings::Issubset) => {
+                let other = args.get_one_arg("frozenset.issubset", vm.heap)?;
+                defer_drop!(other, vm);
+                Ok(Value::Bool(self.comparison_op(other, SetComparison::Subset, vm)?))
+            }
+            Some(StaticStrings::Issuperset) => {
+                let other = args.get_one_arg("frozenset.issuperset", vm.heap)?;
+                defer_drop!(other, vm);
+                Ok(Value::Bool(self.comparison_op(other, SetComparison::Superset, vm)?))
+            }
+            Some(StaticStrings::Isdisjoint) => {
+                let other = args.get_one_arg("frozenset.isdisjoint", vm.heap)?;
+                defer_drop!(other, vm);
+                Ok(Value::Bool(self.comparison_op(other, SetComparison::Disjoint, vm)?))
+            }
+            _ => {
+                args.drop_with_heap(vm);
+                return Err(ExcType::attribute_error(Type::FrozenSet, attr.as_str(vm.interns)));
+            }
         };
-
-        match method {
-            StaticStrings::Copy => {
-                args.check_zero_args("frozenset.copy", heap)?;
-                let copy = self.copy(heap);
-                let heap_id = heap.allocate(HeapData::FrozenSet(copy))?;
-                Ok(Value::Ref(heap_id))
-            }
-            StaticStrings::Union => {
-                let other = args.get_one_arg("frozenset.union", heap)?;
-                let other_storage = Set::get_storage_from_value(other, heap, interns)?;
-                let result = self.union(&other_storage, heap, interns)?;
-                for entry in other_storage.entries {
-                    entry.value.drop_with_heap(heap);
-                }
-                let heap_id = heap.allocate(HeapData::FrozenSet(result))?;
-                Ok(Value::Ref(heap_id))
-            }
-            StaticStrings::Intersection => {
-                let other = args.get_one_arg("frozenset.intersection", heap)?;
-                let other_storage = Set::get_storage_from_value(other, heap, interns)?;
-                let result = self.intersection(&other_storage, heap, interns)?;
-                for entry in other_storage.entries {
-                    entry.value.drop_with_heap(heap);
-                }
-                let heap_id = heap.allocate(HeapData::FrozenSet(result))?;
-                Ok(Value::Ref(heap_id))
-            }
-            StaticStrings::Difference => {
-                let other = args.get_one_arg("frozenset.difference", heap)?;
-                let other_storage = Set::get_storage_from_value(other, heap, interns)?;
-                let result = self.difference(&other_storage, heap, interns)?;
-                for entry in other_storage.entries {
-                    entry.value.drop_with_heap(heap);
-                }
-                let heap_id = heap.allocate(HeapData::FrozenSet(result))?;
-                Ok(Value::Ref(heap_id))
-            }
-            StaticStrings::SymmetricDifference => {
-                let other = args.get_one_arg("frozenset.symmetric_difference", heap)?;
-                let other_storage = Set::get_storage_from_value(other, heap, interns)?;
-                let result = self.symmetric_difference(&other_storage, heap, interns)?;
-                for entry in other_storage.entries {
-                    entry.value.drop_with_heap(heap);
-                }
-                let heap_id = heap.allocate(HeapData::FrozenSet(result))?;
-                Ok(Value::Ref(heap_id))
-            }
-            StaticStrings::Issubset => {
-                let other = args.get_one_arg("frozenset.issubset", heap)?;
-                let result = self.issubset_from_value(&other, heap, interns);
-                other.drop_with_heap(heap);
-                Ok(Value::Bool(result?))
-            }
-            StaticStrings::Issuperset => {
-                let other = args.get_one_arg("frozenset.issuperset", heap)?;
-                let result = self.issuperset_from_value(&other, heap, interns);
-                other.drop_with_heap(heap);
-                Ok(Value::Bool(result?))
-            }
-            StaticStrings::Isdisjoint => {
-                let other = args.get_one_arg("frozenset.isdisjoint", heap)?;
-                let result = self.isdisjoint_from_value(&other, heap, interns);
-                other.drop_with_heap(heap);
-                Ok(Value::Bool(result?))
-            }
-            _ => Err(ExcType::attribute_error(Type::FrozenSet, attr.as_str(interns))),
-        }
-    }
-
-    fn py_sub(
-        &self,
-        _other: &Self,
-        _heap: &mut Heap<impl ResourceTracker>,
-    ) -> Result<Option<Value>, crate::resource::ResourceError> {
-        // Same limitation as Set - needs interns
-        Ok(None)
+        value.map(CallResult::Value)
     }
 }
 
-/// Helper methods for frozenset operations with arbitrary iterables.
-impl FrozenSet {
-    /// Checks if this frozenset is a subset of an iterable.
-    fn issubset_from_value(
-        &self,
-        other: &Value,
-        heap: &mut Heap<impl ResourceTracker>,
-        interns: &Interns,
-    ) -> RunResult<bool> {
-        // Try to get entries from a Set/FrozenSet directly
-        let entries_opt = match other {
-            Value::Ref(id) => match heap.get(*id) {
-                HeapData::Set(other_set) => Some(other_set.0.copy_entries()),
-                HeapData::FrozenSet(other_set) => Some(other_set.0.copy_entries()),
-                _ => None,
-            },
-            _ => None,
-        };
-
-        if let Some(entries) = entries_opt {
-            // Borrow released, build temporary storage and check
-            SetStorage::inc_refs_for_entries(&entries, heap);
-            let other_storage = SetStorage::from_entries(entries);
-            let result = self.0.is_subset(&other_storage, heap, interns);
-            other_storage.drop_all_values(heap);
-            return result;
-        }
-
-        // Handle all other iterables (list, tuple, range, str, bytes, dict, etc.)
-        let temp = Set::from_iterable(other.clone_with_heap(heap), heap, interns)?;
-        let result = self.0.is_subset(&temp.0, heap, interns);
-        temp.0.drop_all_values(heap);
-        result
+impl HeapItem for FrozenSet {
+    fn py_estimate_size(&self) -> usize {
+        self.0.estimate_size()
     }
 
-    /// Checks if this frozenset is a superset of an iterable.
-    fn issuperset_from_value(
-        &self,
-        other: &Value,
-        heap: &mut Heap<impl ResourceTracker>,
-        interns: &Interns,
-    ) -> RunResult<bool> {
-        // Try to get entries from a Set/FrozenSet directly
-        let entries_opt = match other {
-            Value::Ref(id) => match heap.get(*id) {
-                HeapData::Set(other_set) => Some(other_set.0.copy_entries()),
-                HeapData::FrozenSet(other_set) => Some(other_set.0.copy_entries()),
-                _ => None,
-            },
-            _ => None,
-        };
-
-        if let Some(entries) = entries_opt {
-            // Borrow released, build temporary storage and check
-            SetStorage::inc_refs_for_entries(&entries, heap);
-            let other_storage = SetStorage::from_entries(entries);
-            let result = self.0.is_superset(&other_storage, heap, interns);
-            other_storage.drop_all_values(heap);
-            return result;
-        }
-
-        // Handle all other iterables (list, tuple, range, str, bytes, dict, etc.)
-        let temp = Set::from_iterable(other.clone_with_heap(heap), heap, interns)?;
-        let result = self.0.is_superset(&temp.0, heap, interns);
-        temp.0.drop_all_values(heap);
-        result
+    fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
+        self.0.collect_dec_ref_ids(stack);
     }
+}
 
-    /// Checks if this frozenset has no elements in common with an iterable.
-    fn isdisjoint_from_value(
-        &self,
-        other: &Value,
-        heap: &mut Heap<impl ResourceTracker>,
-        interns: &Interns,
-    ) -> RunResult<bool> {
-        // Try to get entries from a Set/FrozenSet directly
-        let entries_opt = match other {
-            Value::Ref(id) => match heap.get(*id) {
-                HeapData::Set(other_set) => Some(other_set.0.copy_entries()),
-                HeapData::FrozenSet(other_set) => Some(other_set.0.copy_entries()),
-                _ => None,
-            },
-            _ => None,
-        };
+/// Returns temporary set storage only for operator-valid set operands.
+///
+/// This is stricter than `Set::get_storage_from_value(...)`: operator forms
+/// only accept CPython's set-like operands (`set`, `frozenset`, `dict_keys`,
+/// and `dict_items`), while method forms accept any iterable.
+fn get_storage_from_set_operand(
+    value: &Value,
+    vm: &mut VM<'_, '_, impl ResourceTracker>,
+) -> RunResult<Option<SetStorage>> {
+    let Value::Ref(id) = value else {
+        return Ok(None);
+    };
 
-        if let Some(entries) = entries_opt {
-            // Borrow released, build temporary storage and check
-            SetStorage::inc_refs_for_entries(&entries, heap);
-            let other_storage = SetStorage::from_entries(entries);
-            let result = self.0.is_disjoint(&other_storage, heap, interns);
-            other_storage.drop_all_values(heap);
-            return result;
+    match vm.heap.get(*id) {
+        HeapData::Set(set) => Ok(Some(SetStorage::from_entries(set.0.clone_entries(vm.heap)))),
+        HeapData::FrozenSet(set) => Ok(Some(SetStorage::from_entries(set.0.clone_entries(vm.heap)))),
+        // Dict views are `Copy` — matched value is not borrowed from the heap,
+        // so `to_set` can take `&mut VM` below without conflict.
+        HeapData::DictKeysView(view) => {
+            let Set(storage) = view.to_set(vm)?;
+            Ok(Some(storage))
         }
-
-        // Handle all other iterables (list, tuple, range, str, bytes, dict, etc.)
-        let temp = Set::from_iterable(other.clone_with_heap(heap), heap, interns)?;
-        let result = self.0.is_disjoint(&temp.0, heap, interns);
-        temp.0.drop_all_values(heap);
-        result
+        HeapData::DictItemsView(view) => {
+            let Set(storage) = view.to_set(vm)?;
+            Ok(Some(storage))
+        }
+        _ => Ok(None),
     }
 }
 

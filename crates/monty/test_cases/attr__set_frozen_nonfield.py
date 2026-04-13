@@ -1,4 +1,4 @@
-# mode: iter
+# call-external
 # Test that setting a non-field attribute on frozen dataclass raises error
 point = make_point()
 point.z = 42

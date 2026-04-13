@@ -1,24 +1,18 @@
 //! Implementation of the id() builtin function.
 
-use crate::{args::ArgValues, exception_private::RunResult, heap::Heap, resource::ResourceTracker, value::Value};
+use crate::{
+    args::ArgValues, bytecode::VM, defer_drop, exception_private::RunResult, resource::ResourceTracker, value::Value,
+};
 
 /// Implementation of the id() builtin function.
 ///
 /// Returns the identity of an object (unique integer for the object's lifetime).
-pub fn builtin_id(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
-    let value = args.get_one_arg("id", heap)?;
+pub fn builtin_id(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let value = args.get_one_arg("id", vm.heap)?;
+    defer_drop!(value, vm);
+
     let id = value.id();
-    // For heap values, we intentionally don't drop to prevent heap slot reuse
-    // which would cause id([]) == id([]) to return True (same slot reused).
-    // For immediate values, dropping is a no-op since they don't use heap slots.
-    // This is an acceptable trade-off: small leak for heap values passed to id(),
-    // but correct semantics for value identity.
-    if matches!(value, Value::Ref(_)) {
-        #[cfg(feature = "ref-count-panic")]
-        std::mem::forget(value);
-    } else {
-        value.drop_with_heap(heap);
-    }
+
     // Python's id() returns a signed integer; reinterpret bits for large values
     // On 64-bit: large addresses wrap to negative; on 32-bit: always fits positive
     #[expect(
