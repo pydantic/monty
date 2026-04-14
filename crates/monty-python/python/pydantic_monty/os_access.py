@@ -199,6 +199,8 @@ class AbstractOS(ABC):
                 return self.date_today()
             case 'datetime.now':
                 return self.datetime_now(*args)
+            case _:  # pyright: ignore[reportUnnecessaryComparison]
+                raise NotImplementedError(f'Unknown OS function: {function_name}')
 
     @abstractmethod
     def path_exists(self, path: PurePosixPath) -> bool:

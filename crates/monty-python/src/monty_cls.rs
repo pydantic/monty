@@ -1107,8 +1107,7 @@ impl PyFunctionSnapshot {
             .lock()
             .map_err(|_| PyRuntimeError::new_err("Snapshot is currently being resumed by another thread"))?;
 
-        let snapshot = mem::replace(&mut *snapshot, EitherFunctionSnapshot::Done);
-        let external_result = match &snapshot {
+        let external_result = match &*snapshot {
             EitherFunctionSnapshot::NoLimitOs(call) => call.function.on_no_handler(&call.args).into(),
             EitherFunctionSnapshot::LimitedOs(call) => call.function.on_no_handler(&call.args).into(),
             EitherFunctionSnapshot::ReplNoLimitOs(call, _) => call.function.on_no_handler(&call.args).into(),
@@ -1121,6 +1120,7 @@ impl PyFunctionSnapshot {
             }
         };
 
+        let snapshot = mem::replace(&mut *snapshot, EitherFunctionSnapshot::Done);
         self.resume_with_result(py, snapshot, external_result)
     }
 
