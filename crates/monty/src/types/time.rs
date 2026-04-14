@@ -37,7 +37,11 @@ use crate::{
     heap::{Heap, HeapData, HeapId, HeapItem, HeapRead},
     intern::{Interns, StaticStrings},
     resource::{ResourceError, ResourceTracker},
-    types::{PyTrait, TimeZone, Type, str::Str, str::StringRepr, timezone, value_to_i32},
+    types::{
+        PyTrait, TimeZone, Type,
+        str::{Str, StringRepr},
+        timezone, value_to_i32,
+    },
     value::{EitherStr, Value},
 };
 
