@@ -10,7 +10,11 @@
 //! I/O, filesystem, or network operations. Instead, the host decides whether to
 //! permit and execute such operations.
 
-use crate::{ExcType, MontyException, MontyObject, intern::StaticStrings, types::str::StringRepr};
+use chrono::{Datelike, Local, Timelike, Utc};
+
+use crate::{
+    ExcType, MontyDate, MontyDateTime, MontyException, MontyObject, intern::StaticStrings, types::str::StringRepr,
+};
 
 /// OS operations that require host system access.
 ///
@@ -283,4 +287,71 @@ pub fn stat_result(
             MontyObject::Float(st_ctime),
         ],
     }
+}
+
+// =============================================================================
+// Host clock helpers
+// =============================================================================
+// These helpers are used by standard (non-iterative) execution to satisfy the
+// `DateToday` and `DateTimeNow` OS calls directly from the host clock, without
+// going through the suspend/resume plumbing. The iterative (`start`/`resume`)
+// path still surfaces these as `RunProgress::OsCall`, so hosts can keep
+// overriding them with deterministic clocks when needed.
+//
+// Reading the host wall-clock is deliberately allowed in the sandbox: it only
+// exposes time-of-day, which untrusted code can already estimate via loop
+// timing. It does not grant access to the filesystem, environment, or any
+// external resources.
+
+/// Returns the host system's local date as a `MontyObject::Date`.
+///
+/// Used by `date.today()` in standard execution. Mirrors the CPython semantics
+/// of returning the local civil date (not UTC).
+#[must_use]
+pub(crate) fn host_date_today() -> MontyObject {
+    let local = Local::now().naive_local();
+    MontyObject::Date(MontyDate {
+        year: local.year(),
+        month: u8::try_from(local.month()).expect("month is always 1..=12"),
+        day: u8::try_from(local.day()).expect("day is always 1..=31"),
+    })
+}
+
+/// Returns the host system's current date/time as a `MontyObject::DateTime`.
+///
+/// Used by `datetime.now(tz=...)` in standard execution. The `tz` argument
+/// determines the returned value:
+/// - `MontyObject::None`: naive datetime using local wall-clock time.
+/// - `MontyObject::TimeZone`: aware datetime, with the host's UTC instant
+///   adjusted by the fixed offset and the original tz metadata retained so the
+///   constructed datetime keeps `tzinfo == tz`.
+///
+/// Any other `tz` variant is treated like `None`; callers in the VM have
+/// already validated the argument, so this is a defensive fallback.
+#[must_use]
+pub(crate) fn host_datetime_now(tz: &MontyObject) -> MontyObject {
+    // For aware tz, compute local civil components by shifting the real UTC
+    // instant by the fixed offset, and preserve the caller's offset/name so
+    // `datetime.tzinfo` stays equal to the supplied tz. For naive/None, fall
+    // back to the host's local wall-clock time.
+    let (local, offset_seconds, timezone_name) = if let MontyObject::TimeZone(tz) = tz {
+        let offset_delta =
+            chrono::TimeDelta::try_seconds(i64::from(tz.offset_seconds)).expect("timezone offset validated");
+        let local = (Utc::now() + offset_delta).naive_utc();
+        (local, Some(tz.offset_seconds), tz.name.clone())
+    } else {
+        (Local::now().naive_local(), None, None)
+    };
+
+    MontyObject::DateTime(MontyDateTime {
+        year: local.year(),
+        month: u8::try_from(local.month()).expect("month is always 1..=12"),
+        day: u8::try_from(local.day()).expect("day is always 1..=31"),
+        hour: u8::try_from(local.hour()).expect("hour is always 0..=23"),
+        minute: u8::try_from(local.minute()).expect("minute is always 0..=59"),
+        second: u8::try_from(local.second()).expect("second is always 0..=59"),
+        microsecond: local.and_utc().timestamp_subsec_micros(),
+        offset_seconds,
+        timezone_name,
+    })
 }

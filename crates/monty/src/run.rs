@@ -12,6 +12,7 @@ use crate::{
     io::PrintWriter,
     namespace::NamespaceId,
     object::MontyObject,
+    os::{OsFunction, host_date_today, host_datetime_now},
     parse::{parse, parse_with_interner},
     prepare::{prepare, prepare_with_existing_names},
     resource::{NoLimitTracker, ResourceTracker},
@@ -324,18 +325,22 @@ impl Executor {
 
     /// Runs module code on an already-configured VM to completion.
     ///
-    /// Executes [`VM::run_module`], then handles `NameLookup` and `ExternalCall`
-    /// exits by raising `NameError` through the VM so tracebacks are properly
-    /// captured. Finally converts the result via [`frame_exit_to_object`].
+    /// Executes [`VM::run_module`], then handles `NameLookup`, `ExternalCall`,
+    /// and host-clock OS exits so the non-iterative path can run code that uses
+    /// `datetime.now()` / `date.today()` without yielding to a host callback.
+    /// Finally converts the result via [`frame_exit_to_object`].
     ///
     /// This is the shared non-iterative execution core used by both the standard
     /// `run` path and the REPL's `feed_run` path.
     pub(crate) fn run_to_completion<'a>(&'a self, vm: &mut VM<'_, 'a, impl ResourceTracker>) -> RunResult<MontyObject> {
         let mut frame_exit_result = vm.run_module(&self.module_code);
 
-        // Handle NameLookup and ExternalCall exits by raising NameError through the VM
-        // so that traceback information is properly captured. In the non-iterative path,
-        // there's no host to resolve names or external functions, so these become NameErrors.
+        // Handle suspendable exits that the standard path can satisfy itself:
+        // - `NameLookup`/`ExternalCall`: no host to consult, so raise `NameError`
+        //   with traceback info preserved.
+        // - `OsCall` with `DateTimeNow`/`DateToday`: read the host clock directly
+        //   and resume, so callers never need to wire up a host callback for the
+        //   common `datetime.now()` / `date.today()` cases.
         loop {
             match frame_exit_result {
                 Ok(FrameExit::NameLookup { name_id, .. }) => {
@@ -360,6 +365,24 @@ impl Executor {
                     args.drop_with_heap(vm);
                     let err = ExcType::name_error(name);
                     frame_exit_result = vm.resume_with_exception(err.into());
+                }
+                Ok(FrameExit::OsCall {
+                    function: function @ (OsFunction::DateTimeNow | OsFunction::DateToday),
+                    args,
+                    ..
+                }) => {
+                    // Convert args to owned MontyObjects (this drops the backing heap refs),
+                    // then compute the result against the host clock and resume.
+                    let (args_py, kwargs_py) = args.into_py_objects(vm);
+                    let result = match function {
+                        OsFunction::DateTimeNow => host_datetime_now(args_py.first().unwrap_or(&MontyObject::None)),
+                        OsFunction::DateToday => host_date_today(),
+                        _ => unreachable!("outer pattern restricts to clock OS calls"),
+                    };
+                    // `kwargs_py` can only be empty for these two OS functions — the
+                    // classmethod builders always use positional `ArgValues`.
+                    debug_assert!(kwargs_py.is_empty(), "clock OS calls never carry kwargs");
+                    frame_exit_result = vm.resume(result);
                 }
                 _ => break,
             }
