@@ -1,10 +1,11 @@
-"""Tests for OS function calls (Path methods) via the start/resume API.
+"""Tests for OS function calls via the start/resume API.
 
-These tests verify that Path filesystem methods correctly yield OS calls
-with the right function name and arguments, and that return values from
-the host are properly converted and used by Monty code.
+These tests verify that filesystem, environment, and clock operations
+yield OS calls with the right function name and arguments, and that
+return values from the host are properly converted and used by Monty code.
 """
 
+import datetime
 from pathlib import PurePosixPath
 from typing import Any
 
@@ -392,6 +393,42 @@ def test_os_getenv_with_default_yields_oscall():
     assert result.args == snapshot(('MISSING', 'fallback'))
 
 
+def test_date_today_yields_oscall():
+    """date.today() yields an OS call with no arguments."""
+    m = pydantic_monty.Monty('from datetime import date; date.today()')
+    result = m.start()
+
+    assert isinstance(result, pydantic_monty.FunctionSnapshot)
+    assert result.is_os_function is True
+    assert result.function_name == snapshot('date.today')
+    assert result.args == snapshot(())
+    assert result.kwargs == snapshot({})
+
+
+def test_datetime_now_yields_oscall():
+    """datetime.now() yields an OS call with a single timezone argument."""
+    m = pydantic_monty.Monty('from datetime import datetime; datetime.now()')
+    result = m.start()
+
+    assert isinstance(result, pydantic_monty.FunctionSnapshot)
+    assert result.is_os_function is True
+    assert result.function_name == snapshot('datetime.now')
+    assert result.args == snapshot((None,))
+    assert result.kwargs == snapshot({})
+
+
+def test_datetime_now_with_timezone_yields_oscall():
+    """datetime.now(timezone.utc) forwards the timezone to the host callback."""
+    m = pydantic_monty.Monty('from datetime import datetime, timezone; datetime.now(timezone.utc)')
+    result = m.start()
+
+    assert isinstance(result, pydantic_monty.FunctionSnapshot)
+    assert result.is_os_function is True
+    assert result.function_name == snapshot('datetime.now')
+    assert result.args == (datetime.timezone.utc,)
+    assert result.kwargs == snapshot({})
+
+
 def test_os_getenv_callback():
     """os.getenv() with os works correctly."""
 
@@ -405,6 +442,44 @@ def test_os_getenv_callback():
     m = pydantic_monty.Monty('import os; os.getenv("HOME")')
     result = m.run(os=os_handler)
     assert result == snapshot('/home/user')
+
+
+def test_date_today_callback():
+    """date.today() works through the direct os callback."""
+
+    def os_handler(
+        function_name: str, args: tuple[Any, ...], kwargs: dict[str, Any] | None = None
+    ) -> datetime.date | None:
+        if function_name == 'date.today':
+            assert args == ()
+            return datetime.date(2024, 1, 15)
+        return None
+
+    m = pydantic_monty.Monty('from datetime import date; date.today()')
+    result = m.run(os=os_handler)
+    assert (type(result).__name__, repr(result)) == snapshot(('date', 'datetime.date(2024, 1, 15)'))
+
+
+def test_datetime_now_callback_with_timezone():
+    """datetime.now() works through the direct os callback and receives tzinfo."""
+
+    def os_handler(
+        function_name: str, args: tuple[Any, ...], kwargs: dict[str, Any] | None = None
+    ) -> datetime.datetime | None:
+        if function_name == 'datetime.now':
+            (tzinfo,) = args
+            assert tzinfo == datetime.timezone.utc
+            return datetime.datetime(2024, 1, 15, 10, 30, 5, 123456, tzinfo=tzinfo)
+        return None
+
+    m = pydantic_monty.Monty('from datetime import datetime, timezone; datetime.now(timezone.utc)')
+    result = m.run(os=os_handler)
+    assert (type(result).__name__, repr(result)) == snapshot(
+        (
+            'datetime',
+            'datetime.datetime(2024, 1, 15, 10, 30, 5, 123456, tzinfo=datetime.timezone.utc)',
+        )
+    )
 
 
 def test_os_getenv_callback_missing():

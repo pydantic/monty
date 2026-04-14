@@ -7,6 +7,7 @@ to verify behavior as it would be used in practice.
 For tests of the AbstractOS interface via custom subclasses, see test_os_access_raw.py.
 """
 
+import datetime
 from pathlib import PurePosixPath
 from typing import Any
 
@@ -59,6 +60,21 @@ def test_environ_parameter():
     fs = OSAccess(environ={'MY_VAR': 'my_value'})
     result = Monty("import os; os.getenv('MY_VAR')").run(os=fs)
     assert result == snapshot('my_value')
+
+
+def test_time_methods_direct_api():
+    """OSAccess exposes host clock helpers for date.today() and datetime.now()."""
+    fs = OSAccess()
+
+    today = fs.date_today()
+    naive_now = fs.datetime_now()
+    aware_now = fs.datetime_now(datetime.timezone.utc)
+
+    assert isinstance(today, datetime.date)
+    assert isinstance(naive_now, datetime.datetime)
+    assert naive_now.tzinfo is None
+    assert isinstance(aware_now, datetime.datetime)
+    assert aware_now.tzinfo == datetime.timezone.utc
 
 
 # =============================================================================
