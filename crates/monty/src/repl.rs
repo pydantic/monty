@@ -686,49 +686,7 @@ impl<T: ResourceTracker> ReplResolveFutures<T> {
                 )));
             }
 
-            for (call_id, ext_result) in results {
-                match ext_result {
-                    ExtFunctionResult::Return(obj) => {
-                        if let Err(e) = vm.resolve_future(call_id, obj) {
-                            repl.globals = vm.take_globals();
-                            return Err(MontyException::runtime_error(format!(
-                                "Invalid return type for call {call_id}: {e}"
-                            )));
-                        }
-                    }
-                    ExtFunctionResult::Error(exc) => vm.fail_future(call_id, RunError::from(exc)),
-                    ExtFunctionResult::Future(_) => {}
-                    ExtFunctionResult::NotFound(function_name) => {
-                        vm.fail_future(call_id, ExtFunctionResult::not_found_exc(&function_name));
-                    }
-                }
-            }
-
-            if let Some(error) = vm.take_failed_task_error() {
-                repl.globals = vm.take_globals();
-                return Err(error.into_python_exception(&executor.interns, &executor.code));
-            }
-
-            let main_task_ready = vm.prepare_current_task_after_resolve();
-
-            let loaded_task = match vm.load_ready_task_if_needed() {
-                Ok(loaded) => loaded,
-                Err(e) => {
-                    repl.globals = vm.take_globals();
-                    return Err(e.into_python_exception(&executor.interns, &executor.code));
-                }
-            };
-
-            if !main_task_ready && !loaded_task {
-                let pending_call_ids = vm.get_pending_call_ids();
-                if !pending_call_ids.is_empty() {
-                    let vm_state = vm.snapshot();
-                    let pending_call_ids: Vec<u32> = pending_call_ids.iter().map(|id| id.raw()).collect();
-                    return Ok((ConvertedExit::ResolveFutures(pending_call_ids), Some(vm_state)));
-                }
-            }
-
-            let vm_result = vm.run();
+            let vm_result = vm.resume_with_resolved_futures(results);
 
             // Convert while VM alive, then snapshot or reclaim globals
             let converted = convert_frame_exit(vm_result, &mut vm);

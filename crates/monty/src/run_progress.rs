@@ -458,45 +458,7 @@ impl<T: ResourceTracker> ResolveFutures<T> {
                 )));
             }
 
-            for (call_id, ext_result) in results {
-                match ext_result {
-                    ExtFunctionResult::Return(obj) => vm.resolve_future(call_id, obj).map_err(|e| {
-                        MontyException::runtime_error(format!("Invalid return type for call {call_id}: {e}"))
-                    })?,
-                    ExtFunctionResult::Error(exc) => vm.fail_future(call_id, exc.into()),
-                    ExtFunctionResult::Future(_) => {}
-                    ExtFunctionResult::NotFound(function_name) => {
-                        vm.fail_future(call_id, ExtFunctionResult::not_found_exc(&function_name));
-                    }
-                }
-            }
-
-            // Check if the current task has failed.
-            if let Some(error) = vm.take_failed_task_error() {
-                return Err(error.into_python_exception(&executor.interns, &executor.code));
-            }
-
-            // Push resolved value for main task if it was blocked.
-            let main_task_ready = vm.prepare_current_task_after_resolve();
-
-            let loaded_task = match vm.load_ready_task_if_needed() {
-                Ok(loaded) => loaded,
-                Err(e) => {
-                    return Err(e.into_python_exception(&executor.interns, &executor.code));
-                }
-            };
-
-            // If no task is ready and there are still pending calls, return ResolveFutures.
-            if !main_task_ready && !loaded_task {
-                let pending_call_ids = vm.get_pending_call_ids();
-                if !pending_call_ids.is_empty() {
-                    let vm_state = vm.snapshot();
-                    let pending_call_ids: Vec<u32> = pending_call_ids.iter().map(|id| id.raw()).collect();
-                    return Ok((ConvertedExit::ResolveFutures(pending_call_ids), Some(vm_state)));
-                }
-            }
-
-            let result = vm.run();
+            let result = vm.resume_with_resolved_futures(results);
 
             // Three-phase: convert while VM alive, snapshot, build progress
             let converted = convert_frame_exit(result, &mut vm);
