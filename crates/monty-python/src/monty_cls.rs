@@ -1003,32 +1003,17 @@ impl PyFunctionSnapshot {
         };
         slf.into_bound_py_any(py)
     }
-}
 
-#[pymethods]
-impl PyFunctionSnapshot {
-    /// Resumes execution with either a return value, exception or future.
+    /// Resumes a consumed snapshot with a precomputed external result.
     ///
-    /// Exactly one of `return_value`, `exception` or `future` must be provided as a keyword argument.
-    ///
-    /// # Raises
-    /// * `TypeError` if both arguments are provided, or neither
-    /// * `RuntimeError` if the snapshot has already been resumed
-    #[pyo3(signature = (**kwargs))]
-    pub fn resume<'py>(&self, py: Python<'py>, kwargs: Option<&Bound<'_, PyDict>>) -> PyResult<Bound<'py, PyAny>> {
-        const ARGS_ERROR: &str = "resume() accepts either return_value or exception, not both";
-
-        let mut snapshot = self
-            .snapshot
-            .lock()
-            .map_err(|_| PyRuntimeError::new_err("Snapshot is currently being resumed by another thread"))?;
-
-        let snapshot = mem::replace(&mut *snapshot, EitherFunctionSnapshot::Done);
-        let Some(kwargs) = kwargs else {
-            return Err(PyTypeError::new_err(ARGS_ERROR));
-        };
-        let external_result = extract_external_result(py, kwargs, ARGS_ERROR, &self.dc_registry, self.call_id)?;
-
+    /// Both `resume()` and `resume_not_handled()` funnel through this helper so
+    /// OS and REPL snapshots share identical state-restoration behavior.
+    fn resume_with_result<'py>(
+        &self,
+        py: Python<'py>,
+        snapshot: EitherFunctionSnapshot,
+        external_result: ExtFunctionResult,
+    ) -> PyResult<Bound<'py, PyAny>> {
         let to_err = |py: Python<'_>, e| MontyError::new_err(py, e);
 
         let progress = match snapshot {
@@ -1082,6 +1067,61 @@ impl PyFunctionSnapshot {
             self.print_callback.clone_handle(py),
             dc_registry,
         )
+    }
+}
+
+#[pymethods]
+impl PyFunctionSnapshot {
+    /// Resumes execution with either a return value, exception or future.
+    ///
+    /// Exactly one of `return_value`, `exception` or `future` must be provided as a keyword argument.
+    ///
+    /// # Raises
+    /// * `TypeError` if both arguments are provided, or neither
+    /// * `RuntimeError` if the snapshot has already been resumed
+    #[pyo3(signature = (**kwargs))]
+    pub fn resume<'py>(&self, py: Python<'py>, kwargs: Option<&Bound<'_, PyDict>>) -> PyResult<Bound<'py, PyAny>> {
+        const ARGS_ERROR: &str = "resume() accepts either return_value or exception, not both";
+
+        let mut snapshot = self
+            .snapshot
+            .lock()
+            .map_err(|_| PyRuntimeError::new_err("Snapshot is currently being resumed by another thread"))?;
+
+        let snapshot = mem::replace(&mut *snapshot, EitherFunctionSnapshot::Done);
+        let Some(kwargs) = kwargs else {
+            return Err(PyTypeError::new_err(ARGS_ERROR));
+        };
+        let external_result = extract_external_result(py, kwargs, ARGS_ERROR, &self.dc_registry, self.call_id)?;
+        self.resume_with_result(py, snapshot, external_result)
+    }
+
+    /// Resumes an OS snapshot using Monty's default "not handled" behavior.
+    ///
+    /// This is only valid for OS function snapshots. It resumes execution as if
+    /// no handler had been available for the pending OS call, producing the same
+    /// `PermissionError` or `RuntimeError` that Monty would normally raise.
+    pub fn resume_not_handled<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let mut snapshot = self
+            .snapshot
+            .lock()
+            .map_err(|_| PyRuntimeError::new_err("Snapshot is currently being resumed by another thread"))?;
+
+        let snapshot = mem::replace(&mut *snapshot, EitherFunctionSnapshot::Done);
+        let external_result = match &snapshot {
+            EitherFunctionSnapshot::NoLimitOs(call) => call.function.on_no_handler(&call.args).into(),
+            EitherFunctionSnapshot::LimitedOs(call) => call.function.on_no_handler(&call.args).into(),
+            EitherFunctionSnapshot::ReplNoLimitOs(call, _) => call.function.on_no_handler(&call.args).into(),
+            EitherFunctionSnapshot::ReplLimitedOs(call, _) => call.function.on_no_handler(&call.args).into(),
+            EitherFunctionSnapshot::Done => return Err(PyRuntimeError::new_err("Progress already resumed")),
+            _ => {
+                return Err(PyTypeError::new_err(
+                    "resume_not_handled() is only valid for OS function snapshots",
+                ));
+            }
+        };
+
+        self.resume_with_result(py, snapshot, external_result)
     }
 
     /// Serializes the FunctionSnapshot instance to a binary format.
@@ -1767,7 +1807,14 @@ pub(crate) fn call_os_callback<T: ResourceTracker>(
     }
 
     match callback.call1((call.function.to_string(), py_args_tuple, py_kwargs)) {
-        Ok(result) => Ok(py_to_monty(&result, dc_registry)?.into()),
+        Ok(result) => {
+            let not_handled = crate::get_not_handled(py)?.bind(py);
+            if result.is(not_handled) {
+                Ok(call.function.on_no_handler(&call.args).into())
+            } else {
+                Ok(py_to_monty(&result, dc_registry)?.into())
+            }
+        }
         Err(err) => Ok(exc_py_to_monty(py, &err).into()),
     }
 }

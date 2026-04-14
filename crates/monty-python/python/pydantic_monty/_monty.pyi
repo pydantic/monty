@@ -10,6 +10,7 @@ from .os_access import AbstractOS, OsFunction
 
 __all__ = [
     '__version__',
+    'NOT_HANDLED',
     'CollectStreams',
     'CollectString',
     'Monty',
@@ -28,6 +29,8 @@ __all__ = [
     'load_repl_snapshot',
 ]
 __version__: str
+
+NOT_HANDLED = object()
 
 @final
 class CollectStreams:
@@ -522,6 +525,13 @@ class FunctionSnapshot:
         No result is provided, we simply resume execution stating that a future is pending.
 
         See docstring for the first overload for more information.
+        """
+
+    def resume_not_handled(self) -> FunctionSnapshot | NameLookupSnapshot | FutureSnapshot | MontyComplete:
+        """Resume an OS snapshot using Monty's default unhandled-OS behavior.
+
+        This is only valid when `is_os_function` is `True`. It behaves the same
+        as leaving the OS call unhandled in Monty's runtime.
         """
 
     def dump(self) -> bytes:

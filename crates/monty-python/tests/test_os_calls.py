@@ -13,7 +13,7 @@ import pytest
 from inline_snapshot import snapshot
 
 import pydantic_monty
-from pydantic_monty import StatResult
+from pydantic_monty import NOT_HANDLED, StatResult
 
 # =============================================================================
 # Basic OS call yielding
@@ -364,6 +364,97 @@ def test_not_callable():
 
     with pytest.raises(TypeError, match='os must be callable'):
         m.run(os=123)  # type: ignore
+
+
+def test_not_handled_sentinel_filesystem_callback():
+    """Returning NOT_HANDLED from an os callback uses the filesystem fallback error."""
+
+    def os_callback(function_name: str, args: tuple[Any, ...], kwargs: dict[str, Any]) -> object:
+        del function_name, args, kwargs
+        return NOT_HANDLED
+
+    code = """
+from pathlib import Path
+message = None
+try:
+    Path('/tmp').exists()
+except PermissionError as exc:
+    message = str(exc)
+message
+"""
+    result = pydantic_monty.Monty(code).run(os=os_callback)
+
+    assert result == snapshot("Permission denied: '/tmp'")
+
+
+def test_not_handled_sentinel_non_filesystem_callback():
+    """Returning NOT_HANDLED from an os callback uses the non-filesystem fallback error."""
+
+    def os_callback(function_name: str, args: tuple[Any, ...], kwargs: dict[str, Any]) -> object:
+        del function_name, args, kwargs
+        return NOT_HANDLED
+
+    code = """
+import os
+message = None
+try:
+    os.getenv('HOME')
+except RuntimeError as exc:
+    message = str(exc)
+message
+"""
+    result = pydantic_monty.Monty(code).run(os=os_callback)
+
+    assert result == snapshot("'os.getenv' is not supported in this environment")
+
+
+def test_resume_not_handled_filesystem():
+    """resume_not_handled() injects Monty's default filesystem fallback error."""
+    code = """
+from pathlib import Path
+message = None
+try:
+    Path('/tmp').exists()
+except PermissionError as exc:
+    message = str(exc)
+message
+"""
+    progress = pydantic_monty.Monty(code).start()
+
+    assert isinstance(progress, pydantic_monty.FunctionSnapshot)
+    result = progress.resume_not_handled()
+
+    assert isinstance(result, pydantic_monty.MontyComplete)
+    assert result.output == snapshot("Permission denied: '/tmp'")
+
+
+def test_resume_not_handled_non_filesystem():
+    """resume_not_handled() injects Monty's default non-filesystem fallback error."""
+    code = """
+import os
+message = None
+try:
+    os.getenv('HOME')
+except RuntimeError as exc:
+    message = str(exc)
+message
+"""
+    progress = pydantic_monty.Monty(code).start()
+
+    assert isinstance(progress, pydantic_monty.FunctionSnapshot)
+    result = progress.resume_not_handled()
+
+    assert isinstance(result, pydantic_monty.MontyComplete)
+    assert result.output == snapshot("'os.getenv' is not supported in this environment")
+
+
+def test_resume_not_handled_rejects_non_os_snapshots():
+    """resume_not_handled() only applies to yielded OS calls."""
+    progress = pydantic_monty.Monty('func()').start()
+
+    assert isinstance(progress, pydantic_monty.FunctionSnapshot)
+    with pytest.raises(TypeError, match='only valid for OS function snapshots'):
+        progress.resume_not_handled()
 
 
 # =============================================================================

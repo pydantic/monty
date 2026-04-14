@@ -5,6 +5,8 @@ from abc import ABC, abstractmethod
 from pathlib import PurePosixPath
 from typing import TYPE_CHECKING, Any, Callable, Literal, NamedTuple, Protocol, Sequence, TypeAlias, TypeGuard
 
+from ._monty import NOT_HANDLED
+
 if TYPE_CHECKING:
     # Self is 3.11+, hence this
     from typing import Self
@@ -122,11 +124,27 @@ class AbstractOS(ABC):
     """
 
     def __call__(self, function_name: OsFunction, args: tuple[Any, ...], kwargs: dict[str, Any] | None = None) -> Any:
+        """Adapter used by Monty's `os=` callback surface.
+
+        Monty calls `__call__` directly, so this method stays as the public
+        callable entrypoint. Override `dispatch()` when you want to customize
+        routing or return `NOT_HANDLED`.
+
+        Returns:
+            The OS operation result, or `NOT_HANDLED` to let Monty apply its
+            standard unhandled-operation behavior.
+        """
+        try:
+            return self.dispatch(function_name, args, kwargs)
+        except NotImplementedError:
+            return NOT_HANDLED
+
+    def dispatch(self, function_name: OsFunction, args: tuple[Any, ...], kwargs: dict[str, Any] | None = None) -> Any:
         """Dispatch an OS operation to the appropriate method.
 
-        This is called by Monty when Monty code invokes `pathlib.Path` methods,
-        environment accessors, or host clock helpers.
-        You typically don't need to override this method.
+        This handles Monty's built-in `pathlib.Path`, `os`, and host clock
+        operations. Subclasses can override it for custom behavior or return
+        `NOT_HANDLED` to delegate back to Monty's default fallback errors.
 
         Args:
             function_name: The OS operation being called (e.g., 'Path.exists').

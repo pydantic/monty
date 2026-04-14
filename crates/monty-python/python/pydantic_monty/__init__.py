@@ -8,6 +8,7 @@ if TYPE_CHECKING:
     from types import EllipsisType
 
 from ._monty import (
+    NOT_HANDLED,
     CollectStreams,
     CollectString,
     Frame,
@@ -26,7 +27,15 @@ from ._monty import (
     load_repl_snapshot,
     load_snapshot,
 )
-from .os_access import AbstractFile, AbstractOS, CallbackFile, MemoryFile, OSAccess, OsFunction, StatResult
+from .os_access import (
+    AbstractFile,
+    AbstractOS,
+    CallbackFile,
+    MemoryFile,
+    OSAccess,
+    OsFunction,
+    StatResult,
+)
 
 __all__ = (
     # this file
@@ -55,6 +64,7 @@ __all__ = (
     # os_access
     'StatResult',
     'OsFunction',
+    'NOT_HANDLED',
     'AbstractOS',
     'AbstractFile',
     'MemoryFile',

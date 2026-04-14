@@ -12,7 +12,7 @@ import pytest
 from inline_snapshot import snapshot
 
 import pydantic_monty
-from pydantic_monty import AbstractOS, StatResult
+from pydantic_monty import NOT_HANDLED, AbstractOS, StatResult
 
 
 class TestOS(AbstractOS):
@@ -238,6 +238,56 @@ def test_abstract_os_datetime_now_with_timezone():
             'datetime.datetime(2024, 1, 15, 10, 30, 5, 123456, tzinfo=datetime.timezone.utc)',
         )
     )
+
+
+def test_abstract_os_dispatch():
+    """AbstractOS.dispatch() routes built-in OS operations to the matching method."""
+    fs = TestOS()
+    fs.files['/test.txt'] = b'hello'
+
+    result = fs.dispatch('Path.read_text', (PurePosixPath('/test.txt'),), {})
+    assert result == snapshot('hello')
+
+
+def test_abstract_os_dispatch_not_handled():
+    """AbstractOS.dispatch() returns NOT_HANDLED when a handler raises NotImplementedError."""
+
+    class PartialOS(TestOS):
+        def path_exists(self, path: PurePosixPath) -> bool:
+            raise NotImplementedError
+
+    fs = PartialOS()
+    result = fs('Path.exists', (PurePosixPath('/tmp'),), {})
+
+    assert result is NOT_HANDLED
+
+
+def test_abstract_os_dispatch_not_handled_falls_back_in_run():
+    """Returning NOT_HANDLED from dispatch() uses Monty's default fallback error."""
+
+    class PartialOS(TestOS):
+        def dispatch(
+            self,
+            function_name: pydantic_monty.OsFunction,
+            args: tuple[object, ...],
+            kwargs: dict[str, object] | None = None,
+        ) -> object:
+            if function_name == 'Path.exists':
+                return NOT_HANDLED
+            return super().dispatch(function_name, args, kwargs)
+
+    fs = PartialOS()
+    code = """
+from pathlib import Path
+message = None
+try:
+    Path('/tmp').exists()
+except PermissionError as exc:
+    message = str(exc)
+message
+"""
+    result = pydantic_monty.Monty(code).run(os=fs)
+    assert result == snapshot("Permission denied: '/tmp'")
 
 
 def test_abstract_filesystem_is_file():
