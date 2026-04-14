@@ -469,6 +469,8 @@ pub enum StaticStrings {
     // datetime module strings
     Datetime,
     Date,
+    /// `datetime.time` class name and attribute on `datetime.datetime`.
+    Time,
     Timedelta,
     Timezone,
     Today,
@@ -484,6 +486,8 @@ pub enum StaticStrings {
     Minute,
     Second,
     Microsecond,
+    /// `datetime.time.fold` attribute / `time(fold=...)` keyword.
+    Fold,
     // timedelta constructor/attribute names
     Days,
     Seconds,

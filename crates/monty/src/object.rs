@@ -675,6 +675,11 @@ impl MontyObject {
                         offset_seconds: tz.offset_seconds,
                         name: tz.name.clone(),
                     }),
+                    // Phase 1: `time` has no dedicated `MontyObject` variant yet;
+                    // round-tripping it through the public API falls back to a repr
+                    // placeholder. We can add a `MontyTime` variant in a future phase
+                    // once host bindings need it.
+                    HeapData::Time(_) => repr_or_error(object, vm),
                     // Cells are internal closure implementation details
                     HeapData::Cell(cell) => {
                         // Show the cell's contents

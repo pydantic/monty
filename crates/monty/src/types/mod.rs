@@ -25,6 +25,7 @@ pub mod re_pattern;
 pub mod set;
 pub mod slice;
 pub mod str;
+pub mod time;
 pub mod timedelta;
 pub mod timezone;
 pub mod tuple;

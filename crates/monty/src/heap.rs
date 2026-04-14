@@ -26,7 +26,7 @@ use crate::{
     types::{
         Bytes, Dataclass, Dict, DictItemsView, DictKeysView, DictValuesView, FrozenSet, List, LongInt, Module,
         MontyIter, NamedTuple, Path, Range, ReMatch, RePattern, Set, Slice, Str, TimeZone, Tuple, allocate_tuple, date,
-        datetime, timedelta, timezone,
+        datetime, time, timedelta, timezone,
     },
     value::Value,
 };
@@ -88,6 +88,7 @@ impl HashState {
             | HeapData::LongInt(_)
             | HeapData::Date(_)
             | HeapData::DateTime(_)
+            | HeapData::Time(_)
             | HeapData::TimeDelta(_)
             | HeapData::TimeZone(_) => Self::Unknown,
             // Dataclass hashability depends on the mutable flag
@@ -232,6 +233,7 @@ impl<'a, T: ResourceTracker> HeapReader<'a, T> {
             HeapData::ReMatch(re_match) => HeapReadOutput::ReMatch(heap_read(base, re_match, readers)),
             HeapData::Date(d) => HeapReadOutput::Date(heap_read(base, d, readers)),
             HeapData::DateTime(d) => HeapReadOutput::DateTime(heap_read(base, d, readers)),
+            HeapData::Time(t) => HeapReadOutput::Time(heap_read(base, t, readers)),
             HeapData::TimeDelta(d) => HeapReadOutput::TimeDelta(heap_read(base, d, readers)),
             HeapData::TimeZone(d) => HeapReadOutput::TimeZone(heap_read(base, d, readers)),
         }
@@ -317,6 +319,7 @@ pub enum HeapReadOutput<'a> {
     ReMatch(HeapRead<'a, ReMatch>),
     Date(HeapRead<'a, date::Date>),
     DateTime(HeapRead<'a, datetime::DateTime>),
+    Time(HeapRead<'a, time::Time>),
     TimeDelta(HeapRead<'a, timedelta::TimeDelta>),
     TimeZone(HeapRead<'a, timezone::TimeZone>),
 }
@@ -1406,6 +1409,12 @@ fn compute_hash_from_read<'h>(
             let mut hasher = DefaultHasher::new();
             heap_disc(vm.heap, id).hash(&mut hasher);
             d.get(vm.heap).hash(&mut hasher);
+            Ok(Some(hasher.finish()))
+        }
+        HeapReadOutput::Time(t) => {
+            let mut hasher = DefaultHasher::new();
+            heap_disc(vm.heap, id).hash(&mut hasher);
+            t.get(vm.heap).hash(&mut hasher);
             Ok(Some(hasher.finish()))
         }
         HeapReadOutput::TimeDelta(d) => {

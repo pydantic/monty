@@ -13,7 +13,7 @@ use crate::{
     types::{
         AttrCallResult, Bytes, Dict, FrozenSet, List, LongInt, MontyIter, Path, PyTrait, Range, Set, Slice, Str,
         TimeZone, Tuple, bytes::bytes_fromhex, date, datetime, dict::dict_fromkeys, long_int::INT_MAX_STR_DIGITS,
-        str::StringRepr, timedelta,
+        str::StringRepr, time, timedelta,
     },
     value::Value,
 };
@@ -37,6 +37,7 @@ pub enum Type {
     Slice,
     Date,
     DateTime,
+    Time,
     TimeDelta,
     TimeZone,
     Str,
@@ -86,6 +87,7 @@ impl fmt::Display for Type {
             Self::Slice => f.write_str("slice"),
             Self::Date => f.write_str("date"),
             Self::DateTime => f.write_str("datetime.datetime"),
+            Self::Time => f.write_str("datetime.time"),
             Self::TimeDelta => f.write_str("timedelta"),
             Self::TimeZone => f.write_str("timezone"),
             Self::Str => f.write_str("str"),
@@ -293,6 +295,7 @@ impl Type {
             Self::Slice => Slice::init(vm, args),
             Self::Date => date::init(vm.heap, args, vm.interns),
             Self::DateTime => datetime::init(vm.heap, args, vm.interns),
+            Self::Time => time::init(vm.heap, args, vm.interns),
             Self::TimeDelta => timedelta::init(vm.heap, args, vm.interns),
             Self::TimeZone => TimeZone::init(vm.heap, args, vm.interns),
             Self::Iterator => MontyIter::init(vm, args),

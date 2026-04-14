@@ -14,7 +14,7 @@ use crate::{
     types::{
         Bytes, Dataclass, Dict, DictItemsView, DictKeysView, DictValuesView, FrozenSet, List, LongInt, Module,
         MontyIter, NamedTuple, Path, PyTrait, Range, ReMatch, RePattern, Set, Slice, Str, Tuple, Type, date, datetime,
-        dict_view::DictView, timedelta, timezone,
+        dict_view::DictView, time, timedelta, timezone,
     },
     value::{EitherStr, Value},
 };
@@ -119,6 +119,8 @@ pub(crate) enum HeapData {
     Date(date::Date),
     /// A `datetime.datetime` value stored with chrono primitives.
     DateTime(datetime::DateTime),
+    /// A `datetime.time` value stored with narrow integer fields.
+    Time(time::Time),
     /// A `datetime.timedelta` duration value stored with `chrono::TimeDelta`.
     TimeDelta(timedelta::TimeDelta),
     /// A fixed-offset `datetime.timezone` value.
@@ -238,6 +240,7 @@ impl HeapData {
             Self::ReMatch(_) => Type::ReMatch,
             Self::Date(_) => Type::Date,
             Self::DateTime(_) => Type::DateTime,
+            Self::Time(_) => Type::Time,
             Self::TimeDelta(_) => Type::TimeDelta,
             Self::TimeZone(_) => Type::TimeZone,
         }
@@ -274,6 +277,7 @@ impl HeapData {
             Self::ExtFunction(s) => mem::size_of::<String>() + s.len(),
             Self::Date(d) => d.py_estimate_size(),
             Self::DateTime(d) => d.py_estimate_size(),
+            Self::Time(t) => t.py_estimate_size(),
             Self::TimeDelta(d) => d.py_estimate_size(),
             Self::TimeZone(d) => d.py_estimate_size(),
         }
@@ -449,7 +453,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             Self::ReMatch(m) => m.py_bool(vm),
             Self::RePattern(p) => p.py_bool(vm),
             Self::TimeDelta(td) => td.py_bool(vm),
-            Self::Date(_) | Self::DateTime(_) | Self::TimeZone(_) => true,
+            Self::Date(_) | Self::DateTime(_) | Self::Time(_) | Self::TimeZone(_) => true,
         }
     }
 
@@ -479,6 +483,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             HeapReadOutput::TimeDelta(td) => Ok(td.py_call_attr(self_id, vm, attr, args)?),
             HeapReadOutput::Date(d) => Ok(d.py_call_attr(self_id, vm, attr, args)?),
             HeapReadOutput::DateTime(dt) => Ok(dt.py_call_attr(self_id, vm, attr, args)?),
+            HeapReadOutput::Time(t) => Ok(t.py_call_attr(self_id, vm, attr, args)?),
             // Types without methods — return AttributeError
             _ => {
                 args.drop_with_heap(vm);
@@ -516,6 +521,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             Self::RePattern(p) => p.py_type(vm),
             Self::Date(d) => d.py_type(vm),
             Self::DateTime(d) => d.py_type(vm),
+            Self::Time(t) => t.py_type(vm),
             Self::TimeDelta(d) => d.py_type(vm),
             Self::TimeZone(d) => d.py_type(vm),
         }
@@ -647,6 +653,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             // Datetime types
             (HeapReadOutput::Date(a), HeapReadOutput::Date(b)) => a.py_eq(b, vm),
             (HeapReadOutput::DateTime(a), HeapReadOutput::DateTime(b)) => a.py_eq(b, vm),
+            (HeapReadOutput::Time(a), HeapReadOutput::Time(b)) => a.py_eq(b, vm),
             (HeapReadOutput::TimeDelta(a), HeapReadOutput::TimeDelta(b)) => a.py_eq(b, vm),
             (HeapReadOutput::TimeZone(a), HeapReadOutput::TimeZone(b)) => a.py_eq(b, vm),
             // Identity-only types (handled by HeapId comparison above)
@@ -713,6 +720,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             Self::ExtFunction(name) => Ok(write!(f, "<function '{}' external>", name.get(vm.heap))?),
             Self::Date(d) => d.py_repr_fmt(f, vm, heap_ids),
             Self::DateTime(d) => d.py_repr_fmt(f, vm, heap_ids),
+            Self::Time(t) => t.py_repr_fmt(f, vm, heap_ids),
             Self::TimeDelta(d) => d.py_repr_fmt(f, vm, heap_ids),
             Self::TimeZone(d) => d.py_repr_fmt(f, vm, heap_ids),
         }
@@ -735,6 +743,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             // Datetime types have their own str output
             Self::Date(d) => d.py_str(vm),
             Self::DateTime(d) => d.py_str(vm),
+            Self::Time(t) => t.py_str(vm),
             Self::TimeDelta(d) => d.py_str(vm),
             Self::TimeZone(d) => d.py_str(vm),
             // All other types use repr
@@ -912,6 +921,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             Self::Path(p) => p.py_getattr(attr, vm),
             Self::Date(d) => d.py_getattr(attr, vm),
             Self::DateTime(dt) => dt.py_getattr(attr, vm),
+            Self::Time(t) => t.py_getattr(attr, vm),
             Self::TimeDelta(td) => td.py_getattr(attr, vm),
             _ => Ok(None),
         }

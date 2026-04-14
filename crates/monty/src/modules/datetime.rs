@@ -3,6 +3,7 @@
 //! This module exposes a minimal phase-1 surface:
 //! - `date`
 //! - `datetime`
+//! - `time`
 //! - `timedelta`
 //! - `timezone`
 //!
@@ -35,6 +36,7 @@ pub fn create_module(vm: &mut VM<'_, '_, impl ResourceTracker>) -> Result<HeapId
         Value::Builtin(Builtins::Type(Type::DateTime)),
         vm,
     );
+    module.set_attr(StaticStrings::Time, Value::Builtin(Builtins::Type(Type::Time)), vm);
     module.set_attr(
         StaticStrings::Timedelta,
         Value::Builtin(Builtins::Type(Type::TimeDelta)),
