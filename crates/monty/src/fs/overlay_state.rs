@@ -9,7 +9,6 @@ use std::{
     fs,
     ops::Bound,
     path::{Path, PathBuf},
-    time::SystemTime,
 };
 
 /// In-memory overlay state for [`super::MountMode::OverlayMemory`].
@@ -110,10 +109,6 @@ pub(super) struct OverlayFile {
 pub(super) struct OverlayFileRef {
     /// Canonical host path for the original file contents.
     pub host_path: PathBuf,
-    /// Modification time copied from the original file.
-    pub mtime: f64,
-    /// File size in bytes.
-    pub size: i64,
 }
 
 impl OverlayFileRef {
@@ -124,17 +119,9 @@ impl OverlayFileRef {
     /// the path itself is a symlink that should be preserved as-is.
     #[must_use]
     pub fn from_host_path(path: &Path) -> Option<Self> {
-        let metadata = fs::metadata(path).ok()?;
-        let mtime = metadata
-            .modified()
-            .unwrap_or(SystemTime::UNIX_EPOCH)
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .map_or(0.0, |duration| duration.as_secs_f64());
-        let size = i64::try_from(metadata.len()).unwrap_or(i64::MAX);
+        fs::metadata(path).ok()?;
         Some(Self {
             host_path: path.to_path_buf(),
-            mtime,
-            size,
         })
     }
 
@@ -145,17 +132,9 @@ impl OverlayFileRef {
     /// symlink identity across overlay renames.
     #[must_use]
     pub fn from_lstat(path: &Path) -> Option<Self> {
-        let metadata = fs::symlink_metadata(path).ok()?;
-        let mtime = metadata
-            .modified()
-            .unwrap_or(SystemTime::UNIX_EPOCH)
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .map_or(0.0, |duration| duration.as_secs_f64());
-        let size = i64::try_from(metadata.len()).unwrap_or(i64::MAX);
+        fs::symlink_metadata(path).ok()?;
         Some(Self {
             host_path: path.to_path_buf(),
-            mtime,
-            size,
         })
     }
 }

@@ -11,9 +11,9 @@ use monty::{
 /// Helper to run code and extract the OsCall progress.
 ///
 /// Runs the provided Python code and asserts that it yields an `OsCall`.
-/// Returns the `OsFunction` and positional arguments from the call.
+/// Returns the `OsFunction`, positional arguments, and keyword arguments from the call.
 /// The state is resumed with a mock result to properly clean up ref counts.
-fn run_to_oscall(code: &str) -> (OsFunction, Vec<MontyObject>) {
+fn run_to_oscall(code: &str) -> (OsFunction, Vec<MontyObject>, Vec<(MontyObject, MontyObject)>) {
     let runner = MontyRun::new(code.to_owned(), "test.py", vec![]).unwrap();
     let progress = runner.start(vec![], NoLimitTracker, PrintWriter::Stdout).unwrap();
 
@@ -27,15 +27,18 @@ fn run_to_oscall(code: &str) -> (OsFunction, Vec<MontyObject>) {
                 OsFunction::ReadText | OsFunction::Resolve | OsFunction::Absolute => {
                     MontyObject::String("mock".to_owned())
                 }
+                OsFunction::Readlink => MontyObject::Path("mock".to_owned()),
                 OsFunction::ReadBytes => MontyObject::Bytes(vec![]),
-                OsFunction::Stat => MontyObject::None,
+                OsFunction::Stat | OsFunction::Lstat => MontyObject::None,
                 OsFunction::Iterdir => MontyObject::List(vec![]),
                 OsFunction::WriteText
                 | OsFunction::WriteBytes
                 | OsFunction::Mkdir
+                | OsFunction::Chmod
                 | OsFunction::Unlink
                 | OsFunction::Rmdir
-                | OsFunction::Rename => MontyObject::None,
+                | OsFunction::Rename
+                | OsFunction::SymlinkTo => MontyObject::None,
                 OsFunction::Getenv => MontyObject::String("mock_env_value".to_owned()),
                 OsFunction::GetEnviron => MontyObject::Dict(vec![].into()),
                 OsFunction::DateToday => MontyObject::Date(MontyDate {
@@ -57,8 +60,9 @@ fn run_to_oscall(code: &str) -> (OsFunction, Vec<MontyObject>) {
             };
             let function = call.function;
             let args = call.args.clone();
+            let kwargs = call.kwargs.clone();
             let _ = call.resume(mock_result, PrintWriter::Stdout);
-            (function, args)
+            (function, args, kwargs)
         }
         _ => panic!("expected OsCall, got {progress:?}"),
     }
@@ -87,72 +91,176 @@ fn run_oscall_with_result(code: &str, mock_result: MontyObject) -> (OsFunction, 
 
 #[test]
 fn path_exists() {
-    let (func, args) = run_to_oscall("from pathlib import Path; Path('/tmp/test.txt').exists()");
+    let (func, args, kwargs) = run_to_oscall("from pathlib import Path; Path('/tmp/test.txt').exists()");
     assert_eq!(func, OsFunction::Exists);
     assert_eq!(args, vec![MontyObject::Path("/tmp/test.txt".to_owned())]);
+    assert!(kwargs.is_empty());
 }
 
 #[test]
 fn path_is_file() {
-    let (func, args) = run_to_oscall("from pathlib import Path; Path('/tmp/test.txt').is_file()");
+    let (func, args, kwargs) = run_to_oscall("from pathlib import Path; Path('/tmp/test.txt').is_file()");
     assert_eq!(func, OsFunction::IsFile);
     assert_eq!(args, vec![MontyObject::Path("/tmp/test.txt".to_owned())]);
+    assert!(kwargs.is_empty());
 }
 
 #[test]
 fn path_is_dir() {
-    let (func, args) = run_to_oscall("from pathlib import Path; Path('/tmp').is_dir()");
+    let (func, args, kwargs) = run_to_oscall("from pathlib import Path; Path('/tmp').is_dir()");
     assert_eq!(func, OsFunction::IsDir);
     assert_eq!(args, vec![MontyObject::Path("/tmp".to_owned())]);
+    assert!(kwargs.is_empty());
 }
 
 #[test]
 fn path_is_symlink() {
-    let (func, args) = run_to_oscall("from pathlib import Path; Path('/tmp/link').is_symlink()");
+    let (func, args, kwargs) = run_to_oscall("from pathlib import Path; Path('/tmp/link').is_symlink()");
     assert_eq!(func, OsFunction::IsSymlink);
     assert_eq!(args, vec![MontyObject::Path("/tmp/link".to_owned())]);
+    assert!(kwargs.is_empty());
+}
+
+#[test]
+fn path_readlink() {
+    let (func, args, kwargs) = run_to_oscall("from pathlib import Path; Path('/tmp/link').readlink()");
+    assert_eq!(func, OsFunction::Readlink);
+    assert_eq!(args, vec![MontyObject::Path("/tmp/link".to_owned())]);
+    assert!(kwargs.is_empty());
 }
 
 #[test]
 fn path_read_text() {
-    let (func, args) = run_to_oscall("from pathlib import Path; Path('/tmp/file.txt').read_text()");
+    let (func, args, kwargs) = run_to_oscall("from pathlib import Path; Path('/tmp/file.txt').read_text()");
     assert_eq!(func, OsFunction::ReadText);
     assert_eq!(args, vec![MontyObject::Path("/tmp/file.txt".to_owned())]);
+    assert!(kwargs.is_empty());
 }
 
 #[test]
 fn path_read_bytes() {
-    let (func, args) = run_to_oscall("from pathlib import Path; Path('/tmp/file.bin').read_bytes()");
+    let (func, args, kwargs) = run_to_oscall("from pathlib import Path; Path('/tmp/file.bin').read_bytes()");
     assert_eq!(func, OsFunction::ReadBytes);
     assert_eq!(args, vec![MontyObject::Path("/tmp/file.bin".to_owned())]);
+    assert!(kwargs.is_empty());
 }
 
 #[test]
 fn path_stat() {
-    let (func, args) = run_to_oscall("from pathlib import Path; Path('/tmp/file.txt').stat()");
+    let (func, args, kwargs) = run_to_oscall("from pathlib import Path; Path('/tmp/file.txt').stat()");
     assert_eq!(func, OsFunction::Stat);
     assert_eq!(args, vec![MontyObject::Path("/tmp/file.txt".to_owned())]);
+    assert!(kwargs.is_empty());
+}
+
+#[test]
+fn path_stat_follow_symlinks_false() {
+    let (func, args, kwargs) = run_to_oscall("from pathlib import Path; Path('/tmp/link').stat(follow_symlinks=False)");
+    assert_eq!(func, OsFunction::Stat);
+    assert_eq!(args, vec![MontyObject::Path("/tmp/link".to_owned())]);
+    assert_eq!(
+        kwargs,
+        vec![(
+            MontyObject::String("follow_symlinks".to_owned()),
+            MontyObject::Bool(false)
+        )]
+    );
+}
+
+#[test]
+fn path_lstat() {
+    let (func, args, kwargs) = run_to_oscall("from pathlib import Path; Path('/tmp/link').lstat()");
+    assert_eq!(func, OsFunction::Lstat);
+    assert_eq!(args, vec![MontyObject::Path("/tmp/link".to_owned())]);
+    assert!(kwargs.is_empty());
+}
+
+#[test]
+fn path_chmod() {
+    let (func, args, kwargs) = run_to_oscall("from pathlib import Path; Path('/tmp/file.txt').chmod(0o600)");
+    assert_eq!(func, OsFunction::Chmod);
+    assert_eq!(
+        args,
+        vec![MontyObject::Path("/tmp/file.txt".to_owned()), MontyObject::Int(0o600)]
+    );
+    assert!(kwargs.is_empty());
+}
+
+#[test]
+fn path_chmod_follow_symlinks_false() {
+    let (func, args, kwargs) =
+        run_to_oscall("from pathlib import Path; Path('/tmp/link').chmod(0o600, follow_symlinks=False)");
+    assert_eq!(func, OsFunction::Chmod);
+    assert_eq!(
+        args,
+        vec![MontyObject::Path("/tmp/link".to_owned()), MontyObject::Int(0o600)]
+    );
+    assert_eq!(
+        kwargs,
+        vec![(
+            MontyObject::String("follow_symlinks".to_owned()),
+            MontyObject::Bool(false)
+        )]
+    );
+}
+
+#[test]
+fn path_symlink_to() {
+    let (func, args, kwargs) = run_to_oscall("from pathlib import Path; Path('/tmp/link').symlink_to('/tmp/target')");
+    assert_eq!(func, OsFunction::SymlinkTo);
+    assert_eq!(
+        args,
+        vec![
+            MontyObject::Path("/tmp/link".to_owned()),
+            MontyObject::String("/tmp/target".to_owned()),
+        ]
+    );
+    assert!(kwargs.is_empty());
+}
+
+#[test]
+fn path_symlink_to_target_is_directory() {
+    let (func, args, kwargs) =
+        run_to_oscall("from pathlib import Path; Path('/tmp/link').symlink_to('/tmp/dir', target_is_directory=True)");
+    assert_eq!(func, OsFunction::SymlinkTo);
+    assert_eq!(
+        args,
+        vec![
+            MontyObject::Path("/tmp/link".to_owned()),
+            MontyObject::String("/tmp/dir".to_owned()),
+        ]
+    );
+    assert_eq!(
+        kwargs,
+        vec![(
+            MontyObject::String("target_is_directory".to_owned()),
+            MontyObject::Bool(true)
+        )]
+    );
 }
 
 #[test]
 fn path_iterdir() {
-    let (func, args) = run_to_oscall("from pathlib import Path; Path('/tmp').iterdir()");
+    let (func, args, kwargs) = run_to_oscall("from pathlib import Path; Path('/tmp').iterdir()");
     assert_eq!(func, OsFunction::Iterdir);
     assert_eq!(args, vec![MontyObject::Path("/tmp".to_owned())]);
+    assert!(kwargs.is_empty());
 }
 
 #[test]
 fn path_resolve() {
-    let (func, args) = run_to_oscall("from pathlib import Path; Path('./relative').resolve()");
+    let (func, args, kwargs) = run_to_oscall("from pathlib import Path; Path('./relative').resolve()");
     assert_eq!(func, OsFunction::Resolve);
     assert_eq!(args, vec![MontyObject::Path("relative".to_owned())]);
+    assert!(kwargs.is_empty());
 }
 
 #[test]
 fn path_absolute() {
-    let (func, args) = run_to_oscall("from pathlib import Path; Path('./relative').absolute()");
+    let (func, args, kwargs) = run_to_oscall("from pathlib import Path; Path('./relative').absolute()");
     assert_eq!(func, OsFunction::Absolute);
     assert_eq!(args, vec![MontyObject::Path("relative".to_owned())]);
+    assert!(kwargs.is_empty());
 }
 
 // =============================================================================
@@ -161,21 +269,21 @@ fn path_absolute() {
 
 #[test]
 fn path_with_spaces() {
-    let (func, args) = run_to_oscall("from pathlib import Path; Path('/path/with spaces/file.txt').exists()");
+    let (func, args, _) = run_to_oscall("from pathlib import Path; Path('/path/with spaces/file.txt').exists()");
     assert_eq!(func, OsFunction::Exists);
     assert_eq!(args[0], MontyObject::Path("/path/with spaces/file.txt".to_owned()));
 }
 
 #[test]
 fn path_with_unicode() {
-    let (func, args) = run_to_oscall("from pathlib import Path; Path('/путь/文件.txt').exists()");
+    let (func, args, _) = run_to_oscall("from pathlib import Path; Path('/путь/文件.txt').exists()");
     assert_eq!(func, OsFunction::Exists);
     assert_eq!(args[0], MontyObject::Path("/путь/文件.txt".to_owned()));
 }
 
 #[test]
 fn path_concatenation_yields_correct_path() {
-    let (func, args) = run_to_oscall(
+    let (func, args, _) = run_to_oscall(
         r"
 from pathlib import Path
 base = Path('/home')
@@ -339,7 +447,7 @@ fn os_getenv_yields_oscall() {
 import os
 os.getenv('PATH')
 ";
-    let (func, args) = run_to_oscall(code);
+    let (func, args, _) = run_to_oscall(code);
     assert_eq!(func, OsFunction::Getenv);
     // First arg is key, second is default (None if not provided)
     assert_eq!(args[0], MontyObject::String("PATH".to_owned()));
@@ -352,7 +460,7 @@ fn os_getenv_with_default() {
 import os
 os.getenv('MISSING', 'fallback')
 ";
-    let (func, args) = run_to_oscall(code);
+    let (func, args, _) = run_to_oscall(code);
     assert_eq!(func, OsFunction::Getenv);
     assert_eq!(args[0], MontyObject::String("MISSING".to_owned()));
     assert_eq!(args[1], MontyObject::String("fallback".to_owned()));
@@ -379,7 +487,7 @@ fn os_environ_yields_oscall() {
 import os
 os.environ
 ";
-    let (func, args) = run_to_oscall(code);
+    let (func, args, _) = run_to_oscall(code);
     assert_eq!(func, OsFunction::GetEnviron);
     // GetEnviron takes no arguments
     assert!(args.is_empty(), "expected empty args, got {args:?}");

@@ -3,7 +3,7 @@ from __future__ import annotations
 import datetime
 from abc import ABC, abstractmethod
 from pathlib import PurePosixPath
-from typing import TYPE_CHECKING, Any, Callable, Literal, NamedTuple, Protocol, Sequence, TypeAlias, TypeGuard
+from typing import TYPE_CHECKING, Any, Callable, Literal, NamedTuple, Protocol, Sequence, TypeAlias, TypeGuard, cast
 
 from ._monty import NOT_HANDLED
 
@@ -18,6 +18,7 @@ OsFunction = Literal[
     'Path.is_file',
     'Path.is_dir',
     'Path.is_symlink',
+    'Path.readlink',
     'Path.read_text',
     'Path.read_bytes',
     'Path.write_text',
@@ -27,7 +28,10 @@ OsFunction = Literal[
     'Path.rmdir',
     'Path.iterdir',
     'Path.stat',
+    'Path.lstat',
+    'Path.chmod',
     'Path.rename',
+    'Path.symlink_to',
     'Path.resolve',
     'Path.absolute',
     'os.getenv',
@@ -81,6 +85,28 @@ class StatResult(NamedTuple):
 
         mtime = time.time() if mtime is None else mtime
         return cls(mode, 0, 0, 2, 0, 0, 4096, mtime, mtime, mtime)
+
+    @classmethod
+    def symlink_stat(cls, mode: int = 0o777, mtime: float | None = None) -> Self:
+        """Creates a stat_result namedtuple for a symbolic link.
+
+        Use this for `Path.lstat()` or `Path.stat(follow_symlinks=False)` when
+        the path itself is a symlink rather than the symlink target.
+
+        Args:
+            mode: Symlink permissions as octal (e.g. 0o777) or full mode with symlink type bits
+            mtime: Modification time as Unix timestamp, defaults to Now.
+
+        Returns:
+            A namedtuple with stat_result fields.
+        """
+        import time
+
+        if mode < 0o1000:
+            mode = mode | 0o120_000
+
+        mtime = time.time() if mtime is None else mtime
+        return cls(mode, 0, 0, 1, 0, 0, 0, mtime, mtime, mtime)
 
     st_mode: int
     """protection bits"""
@@ -164,6 +190,8 @@ class AbstractOS(ABC):
                 return self.path_is_dir(*args)
             case 'Path.is_symlink':
                 return self.path_is_symlink(*args)
+            case 'Path.readlink':
+                return self.path_readlink(*args)
             case 'Path.read_text':
                 return self.path_read_text(*args)
             case 'Path.read_bytes':
@@ -184,9 +212,23 @@ class AbstractOS(ABC):
             case 'Path.iterdir':
                 return self.path_iterdir(*args)
             case 'Path.stat':
-                return self.path_stat(*args)
+                assert len(kwargs) <= 1, f'Unexpected keyword arguments: {kwargs}'
+                follow_symlinks = kwargs.get('follow_symlinks', True)
+                if follow_symlinks:
+                    return self.path_stat(*args)
+                return self.path_lstat(*args)
+            case 'Path.lstat':
+                return self.path_lstat(*args)
+            case 'Path.chmod':
+                assert len(kwargs) <= 1, f'Unexpected keyword arguments: {kwargs}'
+                follow_symlinks = kwargs.get('follow_symlinks', True)
+                return self.path_chmod(*args, follow_symlinks=follow_symlinks)
             case 'Path.rename':
                 return self.path_rename(*args)
+            case 'Path.symlink_to':
+                assert len(kwargs) <= 1, f'Unexpected keyword arguments: {kwargs}'
+                target_is_directory = kwargs.get('target_is_directory', False)
+                return self.path_symlink_to(*args, target_is_directory=target_is_directory)
             case 'Path.resolve':
                 return self.path_resolve(*args)
             case 'Path.absolute':
@@ -263,6 +305,21 @@ class AbstractOS(ABC):
         Raises:
             FileNotFoundError: If the file does not exist.
             IsADirectoryError: If the path is a directory.
+        """
+        raise NotImplementedError
+
+    def path_readlink(self, path: PurePosixPath) -> PurePosixPath:
+        """Read and return the raw target of a symbolic link.
+
+        Args:
+            path: The symlink path to inspect.
+
+        Returns:
+            The target path exactly as the filesystem stores it.
+
+        Raises:
+            FileNotFoundError: If the path does not exist.
+            OSError: If the path is not a symbolic link or the backend does not support symlinks.
         """
         raise NotImplementedError
 
@@ -374,7 +431,6 @@ class AbstractOS(ABC):
         """
         raise NotImplementedError
 
-    @abstractmethod
     def path_stat(self, path: PurePosixPath) -> StatResult:
         """Get file status information.
 
@@ -391,6 +447,24 @@ class AbstractOS(ABC):
         """
         raise NotImplementedError
 
+    def path_lstat(self, path: PurePosixPath) -> StatResult:
+        """Get status information without following the final symlink component.
+
+        Override this when the backend distinguishes symlink metadata from
+        target metadata. The default implementation falls back to `path_stat()`,
+        which preserves compatibility for older subclasses that only implement
+        the original method surface.
+        """
+        return self.path_stat(path)
+
+    def path_chmod(self, path: PurePosixPath, mode: int, *, follow_symlinks: bool = True) -> None:
+        """Change the visible mode bits for a file, directory, or symlink.
+
+        Backends may raise `NotImplementedError` when permissions are not
+        meaningful or when non-following symlink chmod is unsupported.
+        """
+        raise NotImplementedError
+
     @abstractmethod
     def path_rename(self, path: PurePosixPath, target: PurePosixPath) -> None:
         """Rename a file or directory.
@@ -402,6 +476,22 @@ class AbstractOS(ABC):
         Raises:
             FileNotFoundError: If the source path does not exist.
             FileExistsError: If the target already exists (platform-dependent).
+        """
+        raise NotImplementedError
+
+    def path_symlink_to(
+        self,
+        path: PurePosixPath,
+        target: PurePosixPath,
+        *,
+        target_is_directory: bool = False,
+    ) -> None:
+        """Create a symbolic link at `path` that points to `target`.
+
+        Args:
+            path: The symlink path to create.
+            target: The target path stored in the symlink.
+            target_is_directory: Hint used by Windows-style backends.
         """
         raise NotImplementedError
 
@@ -715,6 +805,7 @@ class OSAccess(AbstractOS):
     files: list[AbstractFile]
     environ: dict[str, str]
     _tree: Tree
+    _dir_permissions: dict[PurePosixPath, int]
 
     def __init__(
         self,
@@ -743,6 +834,7 @@ class OSAccess(AbstractOS):
         self.environ = environ or {}
         # Initialize tree with root directory - / is always present
         self._tree = {'/': {}}
+        self._dir_permissions = {PurePosixPath('/'): 0o755}
         root_dir = PurePosixPath(root_dir)
         assert root_dir.is_absolute(), f'Root directory must be absolute, got {root_dir}'
         for file in self.files:
@@ -750,10 +842,14 @@ class OSAccess(AbstractOS):
                 file.path = root_dir / file.path
 
             subtree = self._tree
+            current = PurePosixPath('/')
             *dir_parts, name = file.path.parts
             for part in dir_parts:
                 entry = subtree.setdefault(part, {})
                 if _is_dir(entry):
+                    if part != '/':
+                        current /= part
+                        self._dir_permissions.setdefault(current, 0o755)
                     subtree = entry
                 else:
                     raise ValueError(f'Cannot put file {file} within sub-directory of file {entry}')
@@ -823,14 +919,18 @@ class OSAccess(AbstractOS):
         parent_entry = self._parent_entry(path)
         if _is_dir(parent_entry):
             parent_entry[PurePosixPath(path).name] = {}
+            self._dir_permissions[PurePosixPath(path)] = 0o755
             return
         elif _is_file(parent_entry):
             raise NotADirectoryError(f'[Errno 20] Not a directory: {str(path)!r}')
         elif parents:
-            subtree = self._tree
-            for part in PurePosixPath(path).parts:
+            subtree = cast(Tree, self._tree['/'])
+            current = PurePosixPath('/')
+            for part in PurePosixPath(path).parts[1:]:
+                current /= part
                 entry = subtree.setdefault(part, {})
                 if _is_dir(entry):
+                    self._dir_permissions.setdefault(current, 0o755)
                     subtree = entry
                 else:
                     raise NotADirectoryError(f'[Errno 20] Not a directory: {str(path)!r}')
@@ -853,6 +953,7 @@ class OSAccess(AbstractOS):
         parent_dir = self._parent_entry(path)
         assert _is_dir(parent_dir), f'Expected parent of a file to always be a directory, got {parent_dir}'
         del parent_dir[PurePosixPath(path).name]
+        self._dir_permissions.pop(PurePosixPath(path), None)
 
     def path_iterdir(self, path: PurePosixPath) -> list[PurePosixPath]:
         # Return full paths as PurePosixPath objects (will be converted to MontyObject::Path)
@@ -866,7 +967,19 @@ class OSAccess(AbstractOS):
             size = len(content) if isinstance(content, bytes) else len(content.encode())
             return StatResult.file_stat(size=size, mode=entry.permissions)
         else:
-            return StatResult.dir_stat()
+            return StatResult.dir_stat(mode=self._dir_permissions.get(PurePosixPath(path), 0o755))
+
+    def path_lstat(self, path: PurePosixPath) -> StatResult:
+        return self.path_stat(path)
+
+    def path_chmod(self, path: PurePosixPath, mode: int, *, follow_symlinks: bool = True) -> None:
+        del follow_symlinks  # OSAccess has no symlink entries today.
+
+        entry = self._get_entry_exists(path)
+        if _is_file(entry):
+            entry.permissions = mode
+        else:
+            self._dir_permissions[PurePosixPath(path)] = mode
 
     def path_rename(self, path: PurePosixPath, target: PurePosixPath) -> None:
         src_entry = self._get_entry(path)
@@ -894,6 +1007,8 @@ class OSAccess(AbstractOS):
             del parent_dir[src_name]
             # and put it in the new directory
             target_parent[target_name] = src_entry
+            src_entry.path = PurePosixPath(target)
+            src_entry.name = src_entry.path.name
         else:
             assert _is_dir(src_entry), 'src path must be a directory here'
             if _is_file(target_entry):
@@ -907,9 +1022,13 @@ class OSAccess(AbstractOS):
             del parent_dir[src_name]
             # and put it in the new directory
             target_parent[target_name] = src_entry
+            old_path = PurePosixPath(path)
+            new_path = PurePosixPath(target)
+            mode = self._dir_permissions.pop(old_path, 0o755)
+            self._dir_permissions[new_path] = mode
 
             # Update paths for all files in the renamed directory
-            self._update_paths_recursive(src_entry, PurePosixPath(path), PurePosixPath(target))
+            self._update_paths_recursive(src_entry, old_path, new_path)
 
     def path_resolve(self, path: PurePosixPath) -> str:
         # No symlinks in OSAccess, so resolve is same as absolute with normalization
@@ -973,10 +1092,18 @@ class OSAccess(AbstractOS):
         AbstractFile objects still have their old paths. This method recursively
         updates all file paths by replacing old_prefix with new_prefix.
         """
+        for old_path, mode in list(self._dir_permissions.items()):
+            if old_path == old_prefix or old_prefix not in old_path.parents:
+                continue
+            relative = old_path.relative_to(old_prefix)
+            self._dir_permissions[new_prefix / relative] = mode
+            del self._dir_permissions[old_path]
+
         for entry in tree.values():
             if _is_file(entry):
                 # Replace old prefix with new prefix in file path
                 relative = entry.path.relative_to(old_prefix)
                 entry.path = new_prefix / relative
+                entry.name = entry.path.name
             elif _is_dir(entry):
                 self._update_paths_recursive(entry, old_prefix, new_prefix)

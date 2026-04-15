@@ -167,6 +167,21 @@ from pathlib import Path
     assert result == snapshot((False, False, False))
 
 
+def test_path_chmod_updates_visible_mode_bits():
+    """OSAccess.path_chmod updates the mode returned by Path.stat()."""
+    fs = OSAccess([MemoryFile('/test/file.txt', content='hello')])
+    code = """
+from pathlib import Path
+path = Path('/test/file.txt')
+before = oct(path.stat().st_mode)
+path.chmod(0o600)
+after = oct(path.stat().st_mode)
+(before, after)
+"""
+    result = Monty(code).run(os=fs)
+    assert result == snapshot(('0o100644', '0o100600'))
+
+
 # =============================================================================
 # Reading Files (via Monty)
 # =============================================================================

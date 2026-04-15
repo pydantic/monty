@@ -906,6 +906,9 @@ fn dispatch_os_call(
             // Virtual filesystem doesn't have symlinks
             MontyObject::Bool(false).into()
         }
+        OsFunction::Readlink => {
+            MontyException::new(ExcType::OSError, Some(format!("[Errno 22] Invalid argument: '{path}'"))).into()
+        }
         OsFunction::ReadText => {
             if let Some(file) = get_virtual_file(&path) {
                 match str::from_utf8(&file.content) {
@@ -936,6 +939,19 @@ fn dispatch_os_call(
             }
         }
         OsFunction::Stat => {
+            if let Some(file) = get_virtual_file(&path) {
+                file_stat(file.mode, file.content.len() as i64, VFS_MTIME).into()
+            } else if is_virtual_dir(&path) {
+                dir_stat(0o755, VFS_MTIME).into()
+            } else {
+                MontyException::new(
+                    ExcType::FileNotFoundError,
+                    Some(format!("[Errno 2] No such file or directory: '{path}'")),
+                )
+                .into()
+            }
+        }
+        OsFunction::Lstat => {
             if let Some(file) = get_virtual_file(&path) {
                 file_stat(file.mode, file.content.len() as i64, VFS_MTIME).into()
             } else if is_virtual_dir(&path) {
@@ -1014,6 +1030,16 @@ fn dispatch_os_call(
             });
             // write_bytes returns the number of bytes written
             MontyObject::Int(byte_count as i64).into()
+        }
+        OsFunction::Chmod => {
+            let mode = i64::try_from(&args[1]).expect("chmod: second arg must be int");
+            MUTABLE_VFS.with(|vfs| {
+                let mut vfs = vfs.borrow_mut();
+                if let Some((_, file_mode)) = vfs.files.get_mut(&path) {
+                    *file_mode = mode;
+                }
+            });
+            MontyObject::None.into()
         }
         OsFunction::Mkdir => {
             // Check for parents and exist_ok in kwargs (e.g., mkdir(parents=True, exist_ok=True))
@@ -1121,6 +1147,11 @@ fn dispatch_os_call(
                 .into()
             }
         }
+        OsFunction::SymlinkTo => MontyException::new(
+            ExcType::OSError,
+            Some(format!("Path.symlink_to() is not supported in iter mode: '{path}'")),
+        )
+        .into(),
     }
 }
 

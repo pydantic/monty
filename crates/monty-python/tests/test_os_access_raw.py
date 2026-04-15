@@ -22,7 +22,9 @@ class TestOS(AbstractOS):
 
     def __init__(self) -> None:
         self.files: dict[str, bytes] = {}
+        self.file_permissions: dict[str, int] = {}
         self.directories: set[str] = {'/'}
+        self.dir_permissions: dict[str, int] = {'/': 0o755}
 
     def _ensure_parent_exists(self, path: str) -> None:
         """Ensure all parent directories exist."""
@@ -30,6 +32,7 @@ class TestOS(AbstractOS):
         for i in range(1, len(parts)):
             parent = '/'.join(parts[:i]) or '/'
             self.directories.add(parent)
+            self.dir_permissions.setdefault(parent, 0o755)
 
     def path_exists(self, path: PurePosixPath) -> bool:
         p = str(path)
@@ -60,12 +63,14 @@ class TestOS(AbstractOS):
         p = str(path)
         self._ensure_parent_exists(p)
         self.files[p] = data.encode('utf-8')
+        self.file_permissions[p] = 0o644
         return len(data)
 
     def path_write_bytes(self, path: PurePosixPath, data: bytes) -> int:
         p = str(path)
         self._ensure_parent_exists(p)
         self.files[p] = data
+        self.file_permissions[p] = 0o644
         return len(data)
 
     def path_mkdir(self, path: PurePosixPath, parents: bool, exist_ok: bool) -> None:
@@ -77,12 +82,14 @@ class TestOS(AbstractOS):
         if parents:
             self._ensure_parent_exists(p)
         self.directories.add(p)
+        self.dir_permissions[p] = 0o755
 
     def path_unlink(self, path: PurePosixPath) -> None:
         p = str(path)
         if p not in self.files:
             raise FileNotFoundError(f'No such file: {p}')
         del self.files[p]
+        self.file_permissions.pop(p, None)
 
     def path_rmdir(self, path: PurePosixPath) -> None:
         p = str(path)
@@ -96,6 +103,7 @@ class TestOS(AbstractOS):
             if d != p and d.startswith(p + '/'):
                 raise OSError(f'Directory not empty: {p}')
         self.directories.remove(p)
+        self.dir_permissions.pop(p, None)
 
     def path_iterdir(self, path: PurePosixPath) -> list[PurePosixPath]:
         p = str(path)
@@ -124,9 +132,19 @@ class TestOS(AbstractOS):
     def path_stat(self, path: PurePosixPath) -> StatResult:
         p = str(path)
         if p in self.files:
-            return StatResult.file_stat(len(self.files[p]), 0o644, 0.0)
+            return StatResult.file_stat(len(self.files[p]), self.file_permissions.get(p, 0o644), 0.0)
         elif p in self.directories:
-            return StatResult.dir_stat(0o755, 0.0)
+            return StatResult.dir_stat(self.dir_permissions.get(p, 0o755), 0.0)
+        else:
+            raise FileNotFoundError(f'No such file or directory: {p}')
+
+    def path_chmod(self, path: PurePosixPath, mode: int, *, follow_symlinks: bool = True) -> None:
+        del follow_symlinks
+        p = str(path)
+        if p in self.files:
+            self.file_permissions[p] = mode
+        elif p in self.directories:
+            self.dir_permissions[p] = mode
         else:
             raise FileNotFoundError(f'No such file or directory: {p}')
 
@@ -189,6 +207,91 @@ class TestOS(AbstractOS):
         return datetime.datetime(2024, 1, 15, 10, 30, 5, 123456, tzinfo=tz)
 
 
+class SymlinkOS(TestOS):
+    """A simple virtual filesystem that also models symbolic links."""
+
+    __test__ = False
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.symlinks: dict[str, str] = {}
+        self.symlink_permissions: dict[str, int] = {}
+
+    def path_exists(self, path: PurePosixPath) -> bool:
+        p = str(path)
+        if p in self.symlinks:
+            return super().path_exists(PurePosixPath(self.symlinks[p]))
+        return super().path_exists(path)
+
+    def path_is_file(self, path: PurePosixPath) -> bool:
+        p = str(path)
+        if p in self.symlinks:
+            return super().path_is_file(PurePosixPath(self.symlinks[p]))
+        return super().path_is_file(path)
+
+    def path_is_dir(self, path: PurePosixPath) -> bool:
+        p = str(path)
+        if p in self.symlinks:
+            return super().path_is_dir(PurePosixPath(self.symlinks[p]))
+        return super().path_is_dir(path)
+
+    def path_is_symlink(self, path: PurePosixPath) -> bool:
+        return str(path) in self.symlinks
+
+    def path_read_text(self, path: PurePosixPath) -> str:
+        p = str(path)
+        if p in self.symlinks:
+            return super().path_read_text(PurePosixPath(self.symlinks[p]))
+        return super().path_read_text(path)
+
+    def path_read_bytes(self, path: PurePosixPath) -> bytes:
+        p = str(path)
+        if p in self.symlinks:
+            return super().path_read_bytes(PurePosixPath(self.symlinks[p]))
+        return super().path_read_bytes(path)
+
+    def path_readlink(self, path: PurePosixPath) -> PurePosixPath:
+        p = str(path)
+        if p not in self.symlinks:
+            raise OSError(f'Not a symbolic link: {p}')
+        return PurePosixPath(self.symlinks[p])
+
+    def path_stat(self, path: PurePosixPath) -> StatResult:
+        p = str(path)
+        if p in self.symlinks:
+            return super().path_stat(PurePosixPath(self.symlinks[p]))
+        return super().path_stat(path)
+
+    def path_lstat(self, path: PurePosixPath) -> StatResult:
+        p = str(path)
+        if p in self.symlinks:
+            return StatResult.symlink_stat(self.symlink_permissions.get(p, 0o777), 0.0)
+        return super().path_lstat(path)
+
+    def path_chmod(self, path: PurePosixPath, mode: int, *, follow_symlinks: bool = True) -> None:
+        p = str(path)
+        if p in self.symlinks and not follow_symlinks:
+            self.symlink_permissions[p] = mode
+            return
+        if p in self.symlinks:
+            super().path_chmod(PurePosixPath(self.symlinks[p]), mode)
+            return
+        super().path_chmod(path, mode, follow_symlinks=follow_symlinks)
+
+    def path_symlink_to(
+        self,
+        path: PurePosixPath,
+        target: PurePosixPath,
+        *,
+        target_is_directory: bool = False,
+    ) -> None:
+        del target_is_directory
+        p = str(path)
+        self._ensure_parent_exists(p)
+        self.symlinks[p] = str(target)
+        self.symlink_permissions[p] = 0o777
+
+
 # =============================================================================
 # Basic AbstractOS tests
 # =============================================================================
@@ -213,6 +316,68 @@ def test_abstract_filesystem_exists_missing():
     result = m.run(os=fs)
 
     assert result is False
+
+
+def test_abstract_os_readlink() -> None:
+    """AbstractOS.path_readlink() is routed through `Path.readlink()`."""
+    fs = SymlinkOS()
+    fs.path_write_text(PurePosixPath('/target.txt'), 'hello')
+    fs.path_symlink_to(PurePosixPath('/link.txt'), PurePosixPath('/target.txt'))
+
+    m = pydantic_monty.Monty('from pathlib import Path; str(Path("/link.txt").readlink())')
+    result = m.run(os=fs)
+
+    assert result == snapshot('/target.txt')
+
+
+def test_abstract_os_lstat() -> None:
+    """AbstractOS.path_lstat() preserves symlink metadata instead of following."""
+    fs = SymlinkOS()
+    fs.path_write_text(PurePosixPath('/target.txt'), 'hello')
+    fs.path_symlink_to(PurePosixPath('/link.txt'), PurePosixPath('/target.txt'))
+
+    m = pydantic_monty.Monty('from pathlib import Path; oct(Path("/link.txt").lstat().st_mode)')
+    result = m.run(os=fs)
+
+    assert result == snapshot('0o120777')
+
+
+def test_abstract_os_stat_follow_symlinks_false() -> None:
+    """Path.stat(follow_symlinks=False) uses the non-following stat hook."""
+    fs = SymlinkOS()
+    fs.path_write_text(PurePosixPath('/target.txt'), 'hello')
+    fs.path_symlink_to(PurePosixPath('/link.txt'), PurePosixPath('/target.txt'))
+
+    code = """
+from pathlib import Path
+(
+    oct(Path('/link.txt').stat().st_mode),
+    oct(Path('/link.txt').stat(follow_symlinks=False).st_mode),
+)
+"""
+    result = pydantic_monty.Monty(code).run(os=fs)
+    assert result == snapshot(('0o100644', '0o120777'))
+
+
+def test_abstract_os_symlink_to_and_chmod() -> None:
+    """AbstractOS backends can create symlinks and chmod either link or target."""
+    fs = SymlinkOS()
+    fs.path_write_text(PurePosixPath('/target.txt'), 'hello')
+
+    code = """
+from pathlib import Path
+link = Path('/link.txt')
+link.symlink_to(Path('/target.txt'))
+link.chmod(0o600)
+link.chmod(0o700, follow_symlinks=False)
+(
+    oct(Path('/target.txt').stat().st_mode),
+    oct(link.lstat().st_mode),
+    link.read_text(),
+)
+"""
+    result = pydantic_monty.Monty(code).run(os=fs)
+    assert result == snapshot(('0o100600', '0o120700', 'hello'))
 
 
 def test_abstract_os_date_today():

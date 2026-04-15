@@ -39,6 +39,9 @@ pub enum OsFunction {
     /// Check if path is a symbolic link
     #[strum(serialize = "Path.is_symlink")]
     IsSymlink,
+    /// Read the raw target of a symbolic link
+    #[strum(serialize = "Path.readlink")]
+    Readlink,
     /// Read file contents as text
     #[strum(serialize = "Path.read_text")]
     ReadText,
@@ -66,9 +69,18 @@ pub enum OsFunction {
     /// Get file stats
     #[strum(serialize = "Path.stat")]
     Stat,
+    /// Get file stats without following the final symbolic link
+    #[strum(serialize = "Path.lstat")]
+    Lstat,
+    /// Change file mode bits
+    #[strum(serialize = "Path.chmod")]
+    Chmod,
     /// Rename/move file
     #[strum(serialize = "Path.rename")]
     Rename,
+    /// Create a symbolic link
+    #[strum(serialize = "Path.symlink_to")]
+    SymlinkTo,
     /// Get resolved absolute path
     #[strum(serialize = "Path.resolve")]
     Resolve,
@@ -115,7 +127,14 @@ impl OsFunction {
     pub fn is_write(&self) -> bool {
         matches!(
             self,
-            Self::WriteText | Self::WriteBytes | Self::Mkdir | Self::Unlink | Self::Rmdir | Self::Rename
+            Self::WriteText
+                | Self::WriteBytes
+                | Self::Mkdir
+                | Self::SymlinkTo
+                | Self::Chmod
+                | Self::Unlink
+                | Self::Rmdir
+                | Self::Rename
         )
     }
 
@@ -167,9 +186,12 @@ impl TryFrom<StaticStrings> for OsFunction {
             StaticStrings::IsFile => Ok(Self::IsFile),
             StaticStrings::IsDir => Ok(Self::IsDir),
             StaticStrings::IsSymlink => Ok(Self::IsSymlink),
+            StaticStrings::Readlink => Ok(Self::Readlink),
             StaticStrings::ReadText => Ok(Self::ReadText),
             StaticStrings::ReadBytes => Ok(Self::ReadBytes),
             StaticStrings::StatMethod => Ok(Self::Stat),
+            StaticStrings::Lstat => Ok(Self::Lstat),
+            StaticStrings::Chmod => Ok(Self::Chmod),
             StaticStrings::Iterdir => Ok(Self::Iterdir),
             StaticStrings::Resolve => Ok(Self::Resolve),
             StaticStrings::Absolute => Ok(Self::Absolute),
@@ -177,6 +199,7 @@ impl TryFrom<StaticStrings> for OsFunction {
             StaticStrings::WriteText => Ok(Self::WriteText),
             StaticStrings::WriteBytes => Ok(Self::WriteBytes),
             StaticStrings::Mkdir => Ok(Self::Mkdir),
+            StaticStrings::SymlinkTo => Ok(Self::SymlinkTo),
             StaticStrings::Unlink => Ok(Self::Unlink),
             StaticStrings::Rmdir => Ok(Self::Rmdir),
             StaticStrings::Rename => Ok(Self::Rename),

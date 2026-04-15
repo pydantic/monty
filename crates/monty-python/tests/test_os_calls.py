@@ -43,6 +43,62 @@ def test_path_stat_yields_oscall():
     assert result.args == snapshot((PurePosixPath('/etc/passwd'),))
 
 
+def test_path_lstat_yields_oscall():
+    """Path.lstat() yields a dedicated OS call."""
+    m = pydantic_monty.Monty('from pathlib import Path; Path("/etc/link").lstat()')
+    result = m.start()
+
+    assert isinstance(result, pydantic_monty.FunctionSnapshot)
+    assert result.is_os_function is True
+    assert result.function_name == snapshot('Path.lstat')
+    assert result.args == snapshot((PurePosixPath('/etc/link'),))
+    assert result.kwargs == snapshot({})
+
+
+def test_path_stat_follow_symlinks_false_yields_kwargs():
+    """Path.stat(follow_symlinks=False) forwards the follow_symlinks kwarg."""
+    m = pydantic_monty.Monty('from pathlib import Path; Path("/etc/link").stat(follow_symlinks=False)')
+    result = m.start()
+
+    assert isinstance(result, pydantic_monty.FunctionSnapshot)
+    assert result.function_name == snapshot('Path.stat')
+    assert result.args == snapshot((PurePosixPath('/etc/link'),))
+    assert result.kwargs == snapshot({'follow_symlinks': False})
+
+
+def test_path_readlink_yields_oscall():
+    """Path.readlink() yields an OS call returning a path-like result."""
+    m = pydantic_monty.Monty('from pathlib import Path; Path("/tmp/link").readlink()')
+    result = m.start()
+
+    assert isinstance(result, pydantic_monty.FunctionSnapshot)
+    assert result.function_name == snapshot('Path.readlink')
+    assert result.args == snapshot((PurePosixPath('/tmp/link'),))
+    assert result.kwargs == snapshot({})
+
+
+def test_path_chmod_yields_oscall():
+    """Path.chmod() yields an OS call with the mode argument."""
+    m = pydantic_monty.Monty('from pathlib import Path; Path("/tmp/file.txt").chmod(0o600)')
+    result = m.start()
+
+    assert isinstance(result, pydantic_monty.FunctionSnapshot)
+    assert result.function_name == snapshot('Path.chmod')
+    assert result.args == snapshot((PurePosixPath('/tmp/file.txt'), 0o600))
+    assert result.kwargs == snapshot({})
+
+
+def test_path_symlink_to_yields_oscall():
+    """Path.symlink_to() yields an OS call with the link path and target."""
+    m = pydantic_monty.Monty('from pathlib import Path; Path("/tmp/link").symlink_to(Path("/tmp/target"))')
+    result = m.start()
+
+    assert isinstance(result, pydantic_monty.FunctionSnapshot)
+    assert result.function_name == snapshot('Path.symlink_to')
+    assert result.args == snapshot((PurePosixPath('/tmp/link'), PurePosixPath('/tmp/target')))
+    assert result.kwargs == snapshot({})
+
+
 def test_path_read_text_yields_oscall():
     """Path.read_text() yields an OS call."""
     m = pydantic_monty.Monty('from pathlib import Path; Path("/tmp/hello.txt").read_text()')

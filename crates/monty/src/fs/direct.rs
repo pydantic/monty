@@ -3,16 +3,17 @@
 //! This backend resolves a sandbox path to a validated host path and then calls
 //! the corresponding `std::fs` operation without any overlay indirection.
 
-use std::{fs, path::PathBuf};
+use std::{fs, io::ErrorKind, path::PathBuf};
 
 use super::{
     common::{
         MountContext, check_write_limit, commit_write_bytes, iterdir_fs, mkdir_fs, read_bytes_fs, read_text_fs,
-        rmdir_fs, stat_fs, unlink_fs, write_bytes_fs, write_text_fs,
+        readlink_fs, relative_target_to_host_path, rmdir_fs, stat_fs, symlink_fs, unlink_fs, write_bytes_fs,
+        write_text_fs,
     },
     dispatch::FsRequest,
     error::MountError,
-    path_security::{ResolveMode, resolve_path},
+    path_security::{ResolveMode, normalize_virtual_path, reject_overlong_path, resolve_path, strip_mount_prefix},
 };
 use crate::MontyObject;
 
@@ -31,6 +32,7 @@ pub(super) fn execute(request: FsRequest<'_>, ctx: &mut MountContext<'_>) -> Res
         FsRequest::IsFile { path } => is_file(path, ctx),
         FsRequest::IsDir { path } => is_dir(path, ctx),
         FsRequest::IsSymlink { path } => is_symlink(path, ctx),
+        FsRequest::Readlink { path } => readlink(path, ctx),
         FsRequest::ReadText { path } => {
             let resolved = resolve_path(path, ctx.mount_virtual, ctx.mount_host, ResolveMode::Existing)?;
             read_text_fs(&resolved.host_path, path)
@@ -55,10 +57,25 @@ pub(super) fn execute(request: FsRequest<'_>, ctx: &mut MountContext<'_>) -> Res
             let resolved = resolve_path(path, ctx.mount_virtual, ctx.mount_host, ResolveMode::Existing)?;
             iterdir_fs(&resolved.host_path, path, ctx.mount_host)
         }
-        FsRequest::Stat { path } => {
-            let resolved = resolve_path(path, ctx.mount_virtual, ctx.mount_host, ResolveMode::Existing)?;
-            stat_fs(&resolved.host_path, path)
+        FsRequest::Stat { path, follow_symlinks } => {
+            let mode = if follow_symlinks {
+                ResolveMode::Existing
+            } else {
+                ResolveMode::Lstat
+            };
+            let resolved = resolve_path(path, ctx.mount_virtual, ctx.mount_host, mode)?;
+            stat_fs(&resolved.host_path, path, follow_symlinks)
         }
+        FsRequest::Chmod {
+            path,
+            mode,
+            follow_symlinks,
+        } => chmod(path, mode, follow_symlinks, ctx),
+        FsRequest::SymlinkTo {
+            path,
+            target,
+            target_is_directory,
+        } => symlink_to(path, target, target_is_directory, ctx),
         FsRequest::Rename { src, dst } => rename(src, dst, ctx),
         FsRequest::Resolve { path } | FsRequest::Absolute { path } => {
             Ok(MontyObject::Path(super::path_security::normalize_virtual_path(path)))
@@ -99,6 +116,12 @@ fn is_symlink(path: &str, ctx: &MountContext<'_>) -> Result<MontyObject, MountEr
     }))
 }
 
+/// Implements `Path.readlink()` while keeping host-only targets hidden.
+fn readlink(path: &str, ctx: &MountContext<'_>) -> Result<MontyObject, MountError> {
+    let resolved = resolve_path(path, ctx.mount_virtual, ctx.mount_host, ResolveMode::Lstat)?;
+    readlink_fs(&resolved.host_path, path, ctx.mount_virtual, ctx.mount_host)
+}
+
 /// Writes text after validating quota and creation-path security.
 fn write_text(path: &str, data: &str, ctx: &mut MountContext<'_>) -> Result<MontyObject, MountError> {
     check_write_limit(data.len(), ctx)?;
@@ -128,6 +151,31 @@ fn mkdir(path: &str, parents: bool, exist_ok: bool, ctx: &MountContext<'_>) -> R
     mkdir_fs(&resolved.host_path, parents, exist_ok, path)
 }
 
+/// Changes writable bits using the cross-platform readonly permission flag.
+fn chmod(path: &str, mode: i64, follow_symlinks: bool, ctx: &MountContext<'_>) -> Result<MontyObject, MountError> {
+    let resolve_mode = if follow_symlinks {
+        ResolveMode::Existing
+    } else {
+        ResolveMode::Lstat
+    };
+    let resolved = resolve_path(path, ctx.mount_virtual, ctx.mount_host, resolve_mode)?;
+
+    if !follow_symlinks && resolved.host_path.is_symlink() {
+        return Err(MountError::io_err(
+            ErrorKind::Unsupported,
+            "Operation not supported",
+            path,
+        ));
+    }
+
+    let mut permissions = fs::metadata(&resolved.host_path)
+        .map_err(|err| MountError::Io(err, path.to_owned()))?
+        .permissions();
+    permissions.set_readonly(mode & 0o222 == 0);
+    fs::set_permissions(&resolved.host_path, permissions).map_err(|err| MountError::Io(err, path.to_owned()))?;
+    Ok(MontyObject::None)
+}
+
 /// Removes a file or symlink entry itself rather than following symlink targets.
 fn unlink(path: &str, ctx: &MountContext<'_>) -> Result<MontyObject, MountError> {
     let resolved = resolve_path(path, ctx.mount_virtual, ctx.mount_host, ResolveMode::Lstat)?;
@@ -140,6 +188,48 @@ fn rename(src: &str, dst: &str, ctx: &MountContext<'_>) -> Result<MontyObject, M
     let dst_resolved = resolve_path(dst, ctx.mount_virtual, ctx.mount_host, ResolveMode::Creation)?;
     fs::rename(&src_resolved.host_path, &dst_resolved.host_path).map_err(|err| MountError::Io(err, src.to_owned()))?;
     Ok(MontyObject::None)
+}
+
+/// Creates a symlink whose target remains within the mounted virtual namespace.
+fn symlink_to(
+    path: &str,
+    target: &str,
+    target_is_directory: bool,
+    ctx: &MountContext<'_>,
+) -> Result<MontyObject, MountError> {
+    let resolved = resolve_path(path, ctx.mount_virtual, ctx.mount_host, ResolveMode::Creation)?;
+    let target_host = symlink_target_to_host_path(path, target, ctx)?;
+    symlink_fs(&resolved.host_path, &target_host, target_is_directory, path)
+}
+
+/// Converts a sandbox symlink target into the host-native target used on disk.
+fn symlink_target_to_host_path(path: &str, target: &str, ctx: &MountContext<'_>) -> Result<PathBuf, MountError> {
+    if target.starts_with('/') {
+        let normalized = normalize_virtual_path(target);
+        reject_overlong_path(&normalized, target)?;
+        let relative = strip_mount_prefix(&normalized, ctx.mount_virtual).ok_or_else(|| MountError::PathEscape {
+            virtual_path: path.to_owned(),
+        })?;
+        return Ok(if relative.is_empty() {
+            ctx.mount_host.to_path_buf()
+        } else {
+            ctx.mount_host.join(relative)
+        });
+    }
+
+    let normalized_link = normalize_virtual_path(path);
+    let parent = normalized_link
+        .rsplit_once('/')
+        .map_or("/", |(prefix, _)| if prefix.is_empty() { "/" } else { prefix });
+    let normalized_target = normalize_virtual_path(&format!("{parent}/{target}"));
+    reject_overlong_path(&normalized_target, target)?;
+    if strip_mount_prefix(&normalized_target, ctx.mount_virtual).is_none() {
+        return Err(MountError::PathEscape {
+            virtual_path: path.to_owned(),
+        });
+    }
+
+    Ok(relative_target_to_host_path(target))
 }
 
 /// Resolves a path for boolean existence-style operations.

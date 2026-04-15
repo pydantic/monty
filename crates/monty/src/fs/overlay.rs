@@ -15,7 +15,7 @@ use ahash::AHashSet;
 use super::{
     common::{
         MountContext, bytes_to_utf8, check_write_limit, commit_write_bytes, current_timestamp, dir_mtime,
-        format_child_path, list_visible_real_dir_entry_names, read_bytes_fs, read_text_fs, stat_fs,
+        format_child_path, list_visible_real_dir_entry_names, read_bytes_fs, read_text_fs, readlink_fs, stat_fs,
     },
     dispatch::FsRequest,
     error::MountError,
@@ -47,6 +47,7 @@ pub(super) fn execute(
         FsRequest::IsFile { path } => is_file(state, &relative_path(path, ctx)?, ctx, path),
         FsRequest::IsDir { path } => is_dir(state, &relative_path(path, ctx)?, ctx, path),
         FsRequest::IsSymlink { path } => is_symlink(state, &relative_path(path, ctx)?, ctx, path),
+        FsRequest::Readlink { path } => readlink(state, &relative_path(path, ctx)?, ctx, path),
         FsRequest::ReadText { path } => read_text(state, &relative_path(path, ctx)?, ctx, path),
         FsRequest::ReadBytes { path } => read_bytes(state, &relative_path(path, ctx)?, ctx, path),
         FsRequest::WriteText { path, data } => write_text(state, path, data, ctx),
@@ -56,10 +57,14 @@ pub(super) fn execute(
             parents,
             exist_ok,
         } => mkdir(state, &relative_path(path, ctx)?, parents, exist_ok, ctx, path),
+        FsRequest::Chmod { path, .. } => unsupported(path),
+        FsRequest::SymlinkTo { path, .. } => unsupported(path),
         FsRequest::Unlink { path } => unlink(state, &relative_path(path, ctx)?, ctx, path),
         FsRequest::Rmdir { path } => rmdir(state, &relative_path(path, ctx)?, ctx, path),
         FsRequest::Iterdir { path } => iterdir(state, &relative_path(path, ctx)?, ctx, path),
-        FsRequest::Stat { path } => stat(state, &relative_path(path, ctx)?, ctx, path),
+        FsRequest::Stat { path, follow_symlinks } => {
+            stat(state, &relative_path(path, ctx)?, ctx, path, follow_symlinks)
+        }
         FsRequest::Rename { src, dst } => rename(state, src, dst, ctx),
         FsRequest::Resolve { path } | FsRequest::Absolute { path } => {
             Ok(MontyObject::Path(normalize_virtual_path(path)))
@@ -93,7 +98,8 @@ fn is_file(
     vpath: &str,
 ) -> Result<MontyObject, MountError> {
     let is_file = match state.get(relative) {
-        Some(OverlayEntry::File(_) | OverlayEntry::RealFileRef(_)) => true,
+        Some(OverlayEntry::File(_)) => true,
+        Some(OverlayEntry::RealFileRef(file_ref)) => file_ref.host_path.is_file(),
         Some(OverlayEntry::Directory { .. } | OverlayEntry::Deleted) => false,
         None => match resolve_real_path_state(vpath, ctx, ResolveMode::Existing)? {
             RealPathState::Present(host_path) => host_path.is_file(),
@@ -112,7 +118,8 @@ fn is_dir(
 ) -> Result<MontyObject, MountError> {
     let is_dir = match state.get(relative) {
         Some(OverlayEntry::Directory { .. }) => true,
-        Some(OverlayEntry::File(_) | OverlayEntry::RealFileRef(_) | OverlayEntry::Deleted) => false,
+        Some(OverlayEntry::File(_) | OverlayEntry::Deleted) => false,
+        Some(OverlayEntry::RealFileRef(file_ref)) => file_ref.host_path.is_dir(),
         None => match resolve_real_path_state(vpath, ctx, ResolveMode::Existing)? {
             RealPathState::Present(host_path) => host_path.is_dir(),
             RealPathState::Missing => false,
@@ -129,6 +136,7 @@ fn is_symlink(
     vpath: &str,
 ) -> Result<MontyObject, MountError> {
     let is_symlink = match state.get(relative) {
+        Some(OverlayEntry::RealFileRef(file_ref)) => file_ref.host_path.is_symlink(),
         Some(_) => false,
         None => match resolve_real_path_state(vpath, ctx, ResolveMode::Lstat)? {
             RealPathState::Present(host_path) => host_path.is_symlink(),
@@ -136,6 +144,31 @@ fn is_symlink(
         },
     };
     Ok(MontyObject::Bool(is_symlink))
+}
+
+/// Implements `Path.readlink()` for real symlink fallthrough and renamed symlinks.
+fn readlink(
+    state: &OverlayState,
+    relative: &str,
+    ctx: &MountContext<'_>,
+    vpath: &str,
+) -> Result<MontyObject, MountError> {
+    match state.get(relative) {
+        Some(OverlayEntry::RealFileRef(file_ref)) if file_ref.host_path.is_symlink() => {
+            readlink_fs(&file_ref.host_path, vpath, ctx.mount_virtual, ctx.mount_host)
+        }
+        Some(OverlayEntry::File(_) | OverlayEntry::Directory { .. }) => {
+            Err(MountError::io_err(ErrorKind::InvalidInput, "Invalid argument", vpath))
+        }
+        Some(OverlayEntry::Deleted) => Err(MountError::not_found(vpath)),
+        Some(OverlayEntry::RealFileRef(_)) => {
+            Err(MountError::io_err(ErrorKind::InvalidInput, "Invalid argument", vpath))
+        }
+        None => {
+            let resolved = resolve_path(vpath, ctx.mount_virtual, ctx.mount_host, ResolveMode::Lstat)?;
+            readlink_fs(&resolved.host_path, vpath, ctx.mount_virtual, ctx.mount_host)
+        }
+    }
 }
 
 /// Reads text from the overlay or from the real filesystem on fallback.
@@ -501,20 +534,40 @@ fn real_directory_has_visible_children(
 }
 
 /// Returns the `stat()` result for an overlay or fallthrough path.
-fn stat(state: &OverlayState, relative: &str, ctx: &MountContext<'_>, vpath: &str) -> Result<MontyObject, MountError> {
+fn stat(
+    state: &OverlayState,
+    relative: &str,
+    ctx: &MountContext<'_>,
+    vpath: &str,
+    follow_symlinks: bool,
+) -> Result<MontyObject, MountError> {
     match state.get(relative) {
         Some(OverlayEntry::File(file)) => {
             let size = i64::try_from(file.content.len()).unwrap_or(i64::MAX);
             Ok(file_stat(0o644, size, file.mtime))
         }
-        Some(OverlayEntry::RealFileRef(file_ref)) => Ok(file_stat(0o644, file_ref.size, file_ref.mtime)),
+        Some(OverlayEntry::RealFileRef(file_ref)) => stat_fs(&file_ref.host_path, vpath, follow_symlinks),
         Some(OverlayEntry::Directory { mtime }) => Ok(dir_stat(0o755, *mtime)),
         Some(OverlayEntry::Deleted) => Err(MountError::not_found(vpath)),
         None => {
-            let resolved = resolve_path(vpath, ctx.mount_virtual, ctx.mount_host, ResolveMode::Existing)?;
-            stat_fs(&resolved.host_path, vpath)
+            let mode = if follow_symlinks {
+                ResolveMode::Existing
+            } else {
+                ResolveMode::Lstat
+            };
+            let resolved = resolve_path(vpath, ctx.mount_virtual, ctx.mount_host, mode)?;
+            stat_fs(&resolved.host_path, vpath, follow_symlinks)
         }
     }
+}
+
+/// Returns a consistent "operation not supported" error for overlay-only gaps.
+fn unsupported(vpath: &str) -> Result<MontyObject, MountError> {
+    Err(MountError::io_err(
+        ErrorKind::Unsupported,
+        "Operation not supported",
+        vpath,
+    ))
 }
 
 /// Lists directory contents while merging overlay and real entries.

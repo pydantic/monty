@@ -335,8 +335,11 @@ pub enum StaticStrings {
     IsFile,
     IsDir,
     IsSymlink,
+    Readlink,
     #[strum(serialize = "stat")]
     StatMethod,
+    Lstat,
+    Chmod,
     ReadBytes,
     ReadText,
     Iterdir,
@@ -347,9 +350,12 @@ pub enum StaticStrings {
     WriteText,
     WriteBytes,
     Mkdir,
+    SymlinkTo,
     Unlink,
     Rmdir,
     Rename,
+    FollowSymlinks,
+    TargetIsDirectory,
 
     // Slice attributes
     Start,

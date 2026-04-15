@@ -4,10 +4,19 @@
 //! backend modules can focus on mount semantics rather than repeating the same
 //! byte decoding, stat conversion, and quota bookkeeping logic.
 
-use std::{fs, io::ErrorKind, path::Path, time::SystemTime};
+#[cfg(unix)]
+use std::os::unix::fs::symlink as unix_symlink;
+#[cfg(windows)]
+use std::os::windows::fs::{symlink_dir as win_symlink_dir, symlink_file as win_symlink_file};
+use std::{
+    fs,
+    io::{self, ErrorKind},
+    path::{Path, PathBuf},
+    time::SystemTime,
+};
 
 use super::error::MountError;
-use crate::{MontyObject, dir_stat, file_stat};
+use crate::{MontyObject, dir_stat, file_stat, symlink_stat};
 
 /// Per-call mount context shared by the filesystem backends.
 ///
@@ -116,20 +125,135 @@ pub(super) fn rmdir_fs(path: &Path, vpath: &str) -> Result<MontyObject, MountErr
 }
 
 /// Returns a `stat_result`-shaped object for a file or directory.
-pub(super) fn stat_fs(path: &Path, vpath: &str) -> Result<MontyObject, MountError> {
-    let metadata = fs::metadata(path).map_err(|err| MountError::Io(err, vpath.to_owned()))?;
+pub(super) fn stat_fs(path: &Path, vpath: &str, follow_symlinks: bool) -> Result<MontyObject, MountError> {
+    let metadata = if follow_symlinks {
+        fs::metadata(path)
+    } else {
+        fs::symlink_metadata(path)
+    }
+    .map_err(|err| MountError::Io(err, vpath.to_owned()))?;
     let mtime = metadata
         .modified()
         .unwrap_or(SystemTime::UNIX_EPOCH)
         .duration_since(SystemTime::UNIX_EPOCH)
         .map_or(0.0, |duration| duration.as_secs_f64());
     let size = i64::try_from(metadata.len()).unwrap_or(i64::MAX);
+    let readonly = metadata.permissions().readonly();
+    let file_type = metadata.file_type();
 
-    if metadata.is_dir() {
-        Ok(dir_stat(0o755, mtime))
+    if file_type.is_symlink() {
+        let mode = if readonly { 0o555 } else { 0o777 };
+        Ok(symlink_stat(mode, mtime))
+    } else if file_type.is_dir() {
+        let mode = if readonly { 0o555 } else { 0o755 };
+        Ok(dir_stat(mode, mtime))
     } else {
-        Ok(file_stat(0o644, size, mtime))
+        let mode = if readonly { 0o444 } else { 0o644 };
+        Ok(file_stat(mode, size, mtime))
     }
+}
+
+/// Reads a symlink target and converts absolute host paths back into sandbox paths.
+pub(super) fn readlink_fs(
+    path: &Path,
+    vpath: &str,
+    mount_virtual: &str,
+    mount_host: &Path,
+) -> Result<MontyObject, MountError> {
+    let target = fs::read_link(path).map_err(|err| MountError::Io(err, vpath.to_owned()))?;
+    let target = host_symlink_target_to_virtual(&target, mount_virtual, mount_host, vpath)?;
+    Ok(MontyObject::Path(target))
+}
+
+/// Maps a host symlink target back into sandbox-visible path space.
+fn host_symlink_target_to_virtual(
+    target: &Path,
+    mount_virtual: &str,
+    mount_host: &Path,
+    vpath: &str,
+) -> Result<String, MountError> {
+    if target.is_absolute() {
+        let relative = target.strip_prefix(mount_host).map_err(|_| MountError::PathEscape {
+            virtual_path: vpath.to_owned(),
+        })?;
+        return Ok(join_virtual_path(mount_virtual, relative));
+    }
+
+    Ok(path_to_posix_string(target))
+}
+
+/// Joins a mount-relative host path onto the sandbox mount prefix.
+fn join_virtual_path(mount_virtual: &str, relative: &Path) -> String {
+    let suffix = path_to_posix_string(relative);
+    if suffix.is_empty() || suffix == "." {
+        mount_virtual.to_owned()
+    } else if mount_virtual == "/" {
+        format!("/{suffix}")
+    } else {
+        format!("{mount_virtual}/{suffix}")
+    }
+}
+
+/// Converts a host path into a POSIX-style string for sandbox exposure.
+pub(super) fn path_to_posix_string(path: &Path) -> String {
+    let mut parts = Vec::new();
+    for component in path.components() {
+        parts.push(component.as_os_str().to_string_lossy().into_owned());
+    }
+
+    if path.is_absolute() {
+        let joined = parts.iter().skip(1).map(String::as_str).collect::<Vec<_>>().join("/");
+        if joined.is_empty() {
+            "/".to_owned()
+        } else {
+            format!("/{joined}")
+        }
+    } else if parts.is_empty() {
+        ".".to_owned()
+    } else {
+        parts.join("/")
+    }
+}
+
+/// Creates a symlink in the host filesystem using the platform's native API.
+pub(super) fn symlink_fs(
+    path: &Path,
+    target: &Path,
+    target_is_directory: bool,
+    vpath: &str,
+) -> Result<MontyObject, MountError> {
+    create_symlink(target, path, target_is_directory).map_err(|err| MountError::Io(err, vpath.to_owned()))?;
+    Ok(MontyObject::None)
+}
+
+/// Cross-platform symlink creation helper.
+fn create_symlink(target: &Path, link: &Path, target_is_directory: bool) -> io::Result<()> {
+    #[cfg(unix)]
+    {
+        let _ = target_is_directory;
+        unix_symlink(target, link)
+    }
+
+    #[cfg(windows)]
+    {
+        if target_is_directory {
+            win_symlink_dir(target, link)
+        } else {
+            win_symlink_file(target, link)
+        }
+    }
+}
+
+/// Converts a sandbox-relative target string into a host-native relative path.
+pub(super) fn relative_target_to_host_path(target: &str) -> PathBuf {
+    let mut path = PathBuf::new();
+    for component in target.split('/') {
+        if component.is_empty() {
+            continue;
+        }
+        path.push(component);
+    }
+    path
 }
 
 /// Lists visible directory entries from the real filesystem.

@@ -18,6 +18,8 @@ pub(super) enum FsRequest<'a> {
     IsDir { path: &'a str },
     /// `Path.is_symlink()`
     IsSymlink { path: &'a str },
+    /// `Path.readlink()`
+    Readlink { path: &'a str },
     /// `Path.read_text()`
     ReadText { path: &'a str },
     /// `Path.read_bytes()`
@@ -42,9 +44,27 @@ pub(super) enum FsRequest<'a> {
     /// `Path.iterdir()`
     Iterdir { path: &'a str },
     /// `Path.stat()`
-    Stat { path: &'a str },
+    Stat { path: &'a str, follow_symlinks: bool },
+    /// `Path.chmod(mode, follow_symlinks=...)`
+    Chmod {
+        /// Target path.
+        path: &'a str,
+        /// Requested mode bits.
+        mode: i64,
+        /// Whether to follow the final symlink component.
+        follow_symlinks: bool,
+    },
     /// `Path.rename(dst)`
     Rename { src: &'a str, dst: &'a str },
+    /// `Path.symlink_to(target, target_is_directory=...)`
+    SymlinkTo {
+        /// Link path created by the operation.
+        path: &'a str,
+        /// Raw symlink target string supplied by Python code.
+        target: &'a str,
+        /// Whether Windows should create a directory symlink.
+        target_is_directory: bool,
+    },
     /// `Path.resolve()`
     Resolve { path: &'a str },
     /// `Path.absolute()`
@@ -60,6 +80,7 @@ impl<'a> FsRequest<'a> {
             | Self::IsFile { path }
             | Self::IsDir { path }
             | Self::IsSymlink { path }
+            | Self::Readlink { path }
             | Self::ReadText { path }
             | Self::ReadBytes { path }
             | Self::WriteText { path, .. }
@@ -68,7 +89,9 @@ impl<'a> FsRequest<'a> {
             | Self::Unlink { path }
             | Self::Rmdir { path }
             | Self::Iterdir { path }
-            | Self::Stat { path }
+            | Self::Stat { path, .. }
+            | Self::Chmod { path, .. }
+            | Self::SymlinkTo { path, .. }
             | Self::Resolve { path }
             | Self::Absolute { path }
             | Self::Rename { src: path, .. } => path,
@@ -92,6 +115,8 @@ impl<'a> FsRequest<'a> {
             Self::WriteText { .. }
                 | Self::WriteBytes { .. }
                 | Self::Mkdir { .. }
+                | Self::Chmod { .. }
+                | Self::SymlinkTo { .. }
                 | Self::Unlink { .. }
                 | Self::Rmdir { .. }
                 | Self::Rename { .. }
@@ -116,6 +141,7 @@ pub(super) fn parse_fs_request<'a>(
         OsFunction::IsFile => Ok(FsRequest::IsFile { path }),
         OsFunction::IsDir => Ok(FsRequest::IsDir { path }),
         OsFunction::IsSymlink => Ok(FsRequest::IsSymlink { path }),
+        OsFunction::Readlink => Ok(FsRequest::Readlink { path }),
         OsFunction::ReadText => Ok(FsRequest::ReadText { path }),
         OsFunction::ReadBytes => Ok(FsRequest::ReadBytes { path }),
         OsFunction::WriteText => Ok(FsRequest::WriteText {
@@ -137,10 +163,27 @@ pub(super) fn parse_fs_request<'a>(
         OsFunction::Unlink => Ok(FsRequest::Unlink { path }),
         OsFunction::Rmdir => Ok(FsRequest::Rmdir { path }),
         OsFunction::Iterdir => Ok(FsRequest::Iterdir { path }),
-        OsFunction::Stat => Ok(FsRequest::Stat { path }),
+        OsFunction::Stat => Ok(FsRequest::Stat {
+            path,
+            follow_symlinks: parse_follow_symlinks(kwargs),
+        }),
+        OsFunction::Lstat => Ok(FsRequest::Stat {
+            path,
+            follow_symlinks: false,
+        }),
+        OsFunction::Chmod => Ok(FsRequest::Chmod {
+            path,
+            mode: parse_mode_arg(extra_args)?,
+            follow_symlinks: parse_follow_symlinks(kwargs),
+        }),
         OsFunction::Rename => Ok(FsRequest::Rename {
             src: path,
             dst: parse_path_arg(extra_args, "rename")?,
+        }),
+        OsFunction::SymlinkTo => Ok(FsRequest::SymlinkTo {
+            path,
+            target: parse_path_arg(extra_args, "symlink_to")?,
+            target_is_directory: parse_target_is_directory(kwargs),
         }),
         OsFunction::Resolve => Ok(FsRequest::Resolve { path }),
         OsFunction::Absolute => Ok(FsRequest::Absolute { path }),
@@ -228,4 +271,40 @@ fn parse_mkdir_kwargs(kwargs: &[(MontyObject, MontyObject)]) -> (bool, bool) {
     }
 
     (parents, exist_ok)
+}
+
+/// Extracts the mode integer for `Path.chmod(mode)`.
+fn parse_mode_arg(extra_args: &[MontyObject]) -> Result<i64, MountError> {
+    match extra_args.first() {
+        Some(MontyObject::Int(mode)) => Ok(*mode),
+        Some(arg) => Err(MountError::InvalidMount(format!(
+            "chmod: mode must be int, not {}",
+            arg.type_name()
+        ))),
+        None => Err(MountError::InvalidMount(
+            "Path.chmod() missing 1 required positional argument: 'mode'".to_owned(),
+        )),
+    }
+}
+
+/// Extracts `follow_symlinks` for `Path.stat()` and `Path.chmod()`.
+fn parse_follow_symlinks(kwargs: &[(MontyObject, MontyObject)]) -> bool {
+    parse_bool_kwarg(kwargs, "follow_symlinks").unwrap_or(true)
+}
+
+/// Extracts `target_is_directory` for `Path.symlink_to()`.
+fn parse_target_is_directory(kwargs: &[(MontyObject, MontyObject)]) -> bool {
+    parse_bool_kwarg(kwargs, "target_is_directory").unwrap_or(false)
+}
+
+/// Extracts a boolean keyword argument when present.
+fn parse_bool_kwarg(kwargs: &[(MontyObject, MontyObject)], name: &str) -> Option<bool> {
+    for (key, value) in kwargs {
+        if let (MontyObject::String(key_name), MontyObject::Bool(flag)) = (key, value)
+            && key_name == name
+        {
+            return Some(*flag);
+        }
+    }
+    None
 }
