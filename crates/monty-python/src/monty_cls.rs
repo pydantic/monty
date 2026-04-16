@@ -1169,36 +1169,36 @@ impl PyFunctionSnapshot {
 
 #[pymethods]
 impl PyFunctionSnapshot {
-    /// Resumes execution with either a return value, exception or future.
+    /// Resumes execution with a result dict.
     ///
-    /// Exactly one of `return_value`, `exception` or `future` must be provided as a keyword argument.
+    /// `result` must be a dict with exactly one of `'return_value'`,
+    /// `'exception'`, or `'future'`. The dict-shaped API matches the inner
+    /// values of `FutureSnapshot.resume({call_id: {...}, ...})` so callers
+    /// can construct results uniformly.
     ///
     /// When `mount` or `os` is provided, OS calls produced by the resumed
     /// execution are auto-dispatched internally until a non-OS event is reached,
     /// matching the semantics of `Monty.start(mount=..., os=...)`.
     ///
     /// # Raises
-    /// * `TypeError` if both arguments are provided, or neither
+    /// * `TypeError` if `result` is not a dict with exactly one of the expected keys
     /// * `RuntimeError` if the snapshot has already been resumed
-    #[pyo3(signature = (*, mount=None, os=None, **kwargs))]
+    #[pyo3(signature = (result, *, mount=None, os=None))]
     pub fn resume<'py>(
         &self,
         py: Python<'py>,
+        result: &Bound<'_, PyDict>,
         mount: Option<&Bound<'_, PyAny>>,
         os: Option<&Bound<'_, PyAny>>,
-        kwargs: Option<&Bound<'_, PyDict>>,
     ) -> PyResult<Bound<'py, PyAny>> {
-        const ARGS_ERROR: &str = "resume() accepts either return_value or exception, not both";
+        const ARGS_ERROR: &str = "result must be a dict with exactly one of 'return_value', 'exception', or 'future'";
 
         // Validate everything BEFORE consuming the snapshot. A failure here
-        // (bad mount/os, missing/wrong kwargs, unconvertible return_value)
+        // (bad mount/os, malformed result dict, unconvertible return_value)
         // must leave the snapshot intact so the caller can retry — and for
         // REPL variants, must avoid leaking the REPL stored inside the call.
         let os_handler = OsHandler::from_run_args(py, mount, os)?;
-        let Some(kwargs) = kwargs else {
-            return Err(PyTypeError::new_err(ARGS_ERROR));
-        };
-        let external_result = extract_external_result(py, kwargs, ARGS_ERROR, &self.dc_registry, self.call_id)?;
+        let external_result = extract_external_result(py, result, ARGS_ERROR, &self.dc_registry, self.call_id)?;
 
         let mut snapshot = self
             .snapshot
@@ -1206,10 +1206,11 @@ impl PyFunctionSnapshot {
             .map_err(|_| PyRuntimeError::new_err("Snapshot is currently being resumed by another thread"))?;
 
         if matches!(*snapshot, EitherFunctionSnapshot::Done) {
-            return Err(PyRuntimeError::new_err("Progress already resumed"));
+            Err(PyRuntimeError::new_err("Progress already resumed"))
+        } else {
+            let snapshot = mem::replace(&mut *snapshot, EitherFunctionSnapshot::Done);
+            self.resume_with_result(py, snapshot, external_result, os_handler.as_ref())
         }
-        let snapshot = mem::replace(&mut *snapshot, EitherFunctionSnapshot::Done);
-        self.resume_with_result(py, snapshot, external_result, os_handler.as_ref())
     }
 
     /// Resumes an OS snapshot using Monty's default "not handled" behavior.

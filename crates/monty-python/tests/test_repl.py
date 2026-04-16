@@ -496,7 +496,7 @@ def test_feed_start_external_function():
     assert isinstance(progress, pydantic_monty.FunctionSnapshot)
     assert progress.function_name == snapshot('add')
     assert progress.args == snapshot((1, 2))
-    progress = progress.resume(return_value=3)
+    progress = progress.resume({'return_value': 3})
     assert isinstance(progress, pydantic_monty.MontyComplete)
     assert progress.output == snapshot(3)
     # REPL should still be usable after
@@ -508,7 +508,7 @@ def test_feed_start_external_function_preserves_state():
     repl = pydantic_monty.MontyRepl()
     progress = repl.feed_start('result = add(1, 2)')
     assert isinstance(progress, pydantic_monty.FunctionSnapshot)
-    progress = progress.resume(return_value=42)
+    progress = progress.resume({'return_value': 42})
     assert isinstance(progress, pydantic_monty.MontyComplete)
     assert repl.feed_run('result') == snapshot(42)
 
@@ -520,10 +520,10 @@ def test_feed_start_multiple_external_calls():
     progress = repl.feed_start(code)
     assert isinstance(progress, pydantic_monty.FunctionSnapshot)
     assert progress.function_name == snapshot('foo')
-    progress = progress.resume(return_value=10)
+    progress = progress.resume({'return_value': 10})
     assert isinstance(progress, pydantic_monty.FunctionSnapshot)
     assert progress.function_name == snapshot('bar')
-    progress = progress.resume(return_value=20)
+    progress = progress.resume({'return_value': 20})
     assert isinstance(progress, pydantic_monty.MontyComplete)
     assert progress.output == snapshot(30)
 
@@ -546,7 +546,7 @@ def test_feed_start_resume_error_preserves_repl_state():
     assert isinstance(progress, pydantic_monty.FunctionSnapshot)
     # Resume with an exception that isn't caught
     with pytest.raises(pydantic_monty.MontyRuntimeError):
-        progress.resume(exception=ValueError('boom'))
+        progress.resume({'exception': ValueError('boom')})
     assert repl.feed_run('x') == snapshot(99)
 
 
@@ -557,7 +557,7 @@ def test_feed_start_with_inputs():
     assert isinstance(progress, pydantic_monty.FunctionSnapshot)
     assert progress.function_name == snapshot('process')
     assert progress.args == snapshot((5,))
-    progress = progress.resume(return_value=25)
+    progress = progress.resume({'return_value': 25})
     assert isinstance(progress, pydantic_monty.MontyComplete)
     assert progress.output == snapshot(25)
 
@@ -600,7 +600,7 @@ def test_feed_start_dump_load_repl_snapshot():
     assert loaded.args == snapshot((10, 2))
 
     # Resume the loaded snapshot
-    result = loaded.resume(return_value=12)
+    result = loaded.resume({'return_value': 12})
     assert isinstance(result, pydantic_monty.MontyComplete)
     assert result.output == snapshot(12)
 
@@ -622,7 +622,7 @@ def test_feed_start_dump_load_repl_snapshot_preserves_state():
     data = progress.dump()
     loaded, loaded_repl = pydantic_monty.load_repl_snapshot(data)
     assert isinstance(loaded, pydantic_monty.FunctionSnapshot)
-    result = loaded.resume(return_value='done')
+    result = loaded.resume({'return_value': 'done'})
     assert isinstance(result, pydantic_monty.MontyComplete)
 
     # Counter should still be 2, and result should be set
@@ -659,7 +659,7 @@ def test_feed_start_dump_load_repl_snapshot_multiple_calls():
     data = progress.dump()
     loaded, _ = pydantic_monty.load_repl_snapshot(data)
     assert isinstance(loaded, pydantic_monty.FunctionSnapshot)
-    progress2 = loaded.resume(return_value=10)
+    progress2 = loaded.resume({'return_value': 10})
 
     assert isinstance(progress2, pydantic_monty.FunctionSnapshot)
     assert progress2.function_name == snapshot('bar')
@@ -668,7 +668,7 @@ def test_feed_start_dump_load_repl_snapshot_multiple_calls():
     data2 = progress2.dump()
     loaded2, _ = pydantic_monty.load_repl_snapshot(data2)
     assert isinstance(loaded2, pydantic_monty.FunctionSnapshot)
-    result = loaded2.resume(return_value=20)
+    result = loaded2.resume({'return_value': 20})
 
     assert isinstance(result, pydantic_monty.MontyComplete)
     assert result.output == snapshot(30)
@@ -698,7 +698,7 @@ def test_feed_start_dump_load_repl_snapshot_with_print_callback():
     loaded, loaded_repl = pydantic_monty.load_repl_snapshot(data, print_callback=callback)
     assert isinstance(loaded, pydantic_monty.FunctionSnapshot)
     # Resume — the loaded snapshot should use the print callback for subsequent prints
-    loaded.resume(return_value=42)
+    loaded.resume({'return_value': 42})
     loaded_repl.feed_run('print(x)', print_callback=callback)
     assert ''.join(output) == snapshot('42\n')
 
@@ -727,7 +727,7 @@ def test_non_repl_dump_load_with_load_snapshot():
     assert loaded.function_name == snapshot('func')
     assert loaded.args == snapshot((1, 2))
 
-    result = loaded.resume(return_value=100)
+    result = loaded.resume({'return_value': 100})
     assert isinstance(result, pydantic_monty.MontyComplete)
     assert result.output == snapshot(100)
 
@@ -737,7 +737,7 @@ def test_feed_start_dump_after_resume_fails():
     repl = pydantic_monty.MontyRepl()
     progress = repl.feed_start('fetch()')
     assert isinstance(progress, pydantic_monty.FunctionSnapshot)
-    progress.resume(return_value=1)
+    progress.resume({'return_value': 1})
 
     with pytest.raises(RuntimeError) as exc_info:
         progress.dump()
@@ -810,7 +810,7 @@ process(content)
     assert progress.is_os_function is False
     assert progress.function_name == snapshot('process')
     assert progress.args == snapshot(('hello world',))
-    final = progress.resume(return_value='processed')
+    final = progress.resume({'return_value': 'processed'})
     assert isinstance(final, pydantic_monty.MontyComplete)
     # Subsequent feed_run sees REPL state from the snippet.
     assert repl.feed_run('content') == snapshot('hello world')
@@ -931,7 +931,7 @@ def test_feed_start_os_handler_invalid_rejected():
 
 
 def test_repl_function_snapshot_resume_with_mount(test_dir: Path):
-    """REPL FunctionSnapshot.resume(return_value=..., mount=...) auto-dispatches OS calls."""
+    """REPL FunctionSnapshot.resume({'return_value': ...}, mount=...) auto-dispatches OS calls."""
     md = MountDir('/data', str(test_dir), mode='read-only')
     code = """
 from pathlib import Path
@@ -944,7 +944,7 @@ result = (x, content)
     assert isinstance(p1, pydantic_monty.FunctionSnapshot)
     assert p1.function_name == snapshot('fetch')
 
-    final = p1.resume(return_value='fetched', mount=md)
+    final = p1.resume({'return_value': 'fetched'}, mount=md)
     assert isinstance(final, pydantic_monty.MontyComplete)
     # State committed — `result` is visible in a subsequent snippet.
     assert repl.feed_run('result') == snapshot(('fetched', 'hello world'))
@@ -965,7 +965,7 @@ result = (x, exists)
 """
     p1 = repl.feed_start(code)
     assert isinstance(p1, pydantic_monty.FunctionSnapshot)
-    p1.resume(return_value='fetched', os=os_cb)
+    p1.resume({'return_value': 'fetched'}, os=os_cb)
     assert repl.feed_run('result') == snapshot(('fetched', True))
 
 
@@ -983,12 +983,12 @@ b = second(c)
     assert isinstance(p1, pydantic_monty.FunctionSnapshot)
     assert p1.function_name == snapshot('first')
 
-    p2 = p1.resume(return_value=1, mount=md)
+    p2 = p1.resume({'return_value': 1}, mount=md)
     assert isinstance(p2, pydantic_monty.FunctionSnapshot)
     assert p2.is_os_function is False
     assert p2.function_name == snapshot('second')
     assert p2.args == snapshot(('hello world',))
-    p2.resume(return_value=2)
+    p2.resume({'return_value': 2})
     # REPL is usable after completion
     assert repl.feed_run('a') == snapshot(1)
 
@@ -1072,7 +1072,7 @@ y
     # The OS call inside the auto-dispatch chain raises PermissionError; the
     # REPL must be rolled back so `x` is still accessible in a later snippet.
     with pytest.raises(pydantic_monty.MontyRuntimeError):
-        p1.resume(return_value='fetched', mount=md)
+        p1.resume({'return_value': 'fetched'}, mount=md)
     assert repl.feed_run('x') == snapshot(42)
     assert_mount_reusable(md)
 
@@ -1094,7 +1094,7 @@ len(result)
     assert isinstance(progress, pydantic_monty.FunctionSnapshot)
 
     with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
-        progress.resume(return_value='fetched', mount=md)
+        progress.resume({'return_value': 'fetched'}, mount=md)
     assert isinstance(exc_info.value.exception(), MemoryError)
     assert_mount_reusable(md)
 
@@ -1111,7 +1111,7 @@ result = (y, content)
 """
     p1 = repl.feed_start(code)
     assert isinstance(p1, pydantic_monty.FunctionSnapshot)
-    p1.resume(return_value='v', mount=md)
+    p1.resume({'return_value': 'v'}, mount=md)
 
     # The same mount should be reusable.
     m = pydantic_monty.Monty("from pathlib import Path; Path('/data/subdir/nested.txt').read_text()")
@@ -1132,7 +1132,7 @@ pair = (result, content)
     assert isinstance(progress, pydantic_monty.FunctionSnapshot)
     call_id = progress.call_id
 
-    progress = progress.resume(future=...)
+    progress = progress.resume({'future': ...})
     assert isinstance(progress, pydantic_monty.FutureSnapshot)
     final = progress.resume({call_id: {'return_value': 'fetched'}}, mount=md)
     assert isinstance(final, pydantic_monty.MontyComplete)
@@ -1156,7 +1156,7 @@ len(values)
     assert isinstance(progress, pydantic_monty.FunctionSnapshot)
     call_id = progress.call_id
 
-    progress = progress.resume(future=...)
+    progress = progress.resume({'future': ...})
     assert isinstance(progress, pydantic_monty.FutureSnapshot)
     with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
         progress.resume({call_id: {'return_value': 'fetched'}}, mount=md)
@@ -1181,7 +1181,7 @@ result = (value, content)
 
     def os_cb(func: str, args: tuple[Any, ...], kwargs: dict[str, Any]) -> bool:
         with pytest.raises(ValueError, match='already in use by another run'):
-            pending.resume(return_value='fetched', mount=md)
+            pending.resume({'return_value': 'fetched'}, mount=md)
         return False
 
     outer = pydantic_monty.Monty("from pathlib import Path; Path('/outside').exists()")

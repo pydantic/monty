@@ -1,7 +1,6 @@
 from collections.abc import Coroutine
 from pathlib import Path
-from types import EllipsisType
-from typing import Any, Callable, Literal, final, overload
+from typing import Any, Callable, Literal, final
 
 from typing_extensions import Self
 
@@ -512,11 +511,10 @@ class FunctionSnapshot:
     def call_id(self) -> int:
         """The unique identifier for this external function call."""
 
-    @overload
     def resume(
         self,
+        result: ExternalResult,
         *,
-        return_value: Any,
         mount: MountDir | list[MountDir] | None = None,
         os: Callable[[OsFunction, tuple[Any, ...], dict[str, Any]], Any] | None = None,
     ) -> FunctionSnapshot | NameLookupSnapshot | FutureSnapshot | MontyComplete:
@@ -550,34 +548,6 @@ class FunctionSnapshot:
             TypeError: If both arguments are provided.
             RuntimeError: If execution has already completed.
             MontyRuntimeError: If the code raises an exception during execution
-        """
-
-    @overload
-    def resume(
-        self,
-        *,
-        exception: BaseException,
-        mount: MountDir | list[MountDir] | None = None,
-        os: Callable[[OsFunction, tuple[Any, ...], dict[str, Any]], Any] | None = None,
-    ) -> FunctionSnapshot | NameLookupSnapshot | FutureSnapshot | MontyComplete:
-        """Resume execution by raising the exception in the Monty interpreter.
-
-        See docstring for the first overload for more information.
-        """
-
-    @overload
-    def resume(
-        self,
-        *,
-        future: EllipsisType,
-        mount: MountDir | list[MountDir] | None = None,
-        os: Callable[[OsFunction, tuple[Any, ...], dict[str, Any]], Any] | None = None,
-    ) -> FunctionSnapshot | NameLookupSnapshot | FutureSnapshot | MontyComplete:
-        """Resume execution by returning a pending future.
-
-        No result is provided, we simply resume execution stating that a future is pending.
-
-        See docstring for the first overload for more information.
         """
 
     def resume_not_handled(

@@ -258,6 +258,25 @@ Avoid `fn my_func<T: MyTrait>(..., param: T)` style function definitions, STRONG
 
 Also avoid using functions and structs via a path like `std::borrow::Cow::Owned(...)`, instead import `Cow` globally with `use std::borrow::Cow;`.
 
+STRONGLY prefer expression-oriented style: use `if`/`match` as expressions with a trailing (tail) expression rather than early `return` with a guard clause. E.g. prefer
+
+```rs
+if cond { a } else { b }
+```
+
+over
+
+```rs
+if cond {
+    return a;
+}
+b
+```
+
+This applies to function bodies and block expressions alike. Only use early `return` when it genuinely simplifies control flow (e.g. several guard clauses at the top of a function).
+
+This applies even more strongly to long `if cond { ... } else if cond2 { ... } ... else { ... }` chains — keep them as a single expression yielding a value, rather than scattering `return` statements through each branch.
+
 NEVER use `allow()` in rust lint markers, instead use `expect()` so any unnecessary markers are removed. E.g. use
 
 ```rs

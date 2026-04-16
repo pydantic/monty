@@ -957,7 +957,7 @@ def fetch(x: int) -> int:
     data = progress.dump()
     loaded, loaded_repl = pydantic_monty.load_repl_snapshot(data)
     assert isinstance(loaded, pydantic_monty.FunctionSnapshot)
-    loaded.resume(return_value=1)
+    loaded.resume({'return_value': 1})
 
     with pytest.raises(pydantic_monty.MontyTypingError) as exc_info:
         loaded_repl.feed_run('y: str = x')
@@ -995,7 +995,7 @@ fetch(1)
     data = progress.dump()
     loaded, loaded_repl = pydantic_monty.load_repl_snapshot(data)
     assert isinstance(loaded, pydantic_monty.FunctionSnapshot)
-    loaded.resume(return_value=1)
+    loaded.resume({'return_value': 1})
 
     with pytest.raises(pydantic_monty.MontyTypingError) as exc_info:
         loaded_repl.feed_run('foo("x")')
@@ -1035,7 +1035,7 @@ def fetch(url: str) -> str:
     data = progress.dump()
     loaded, loaded_repl = pydantic_monty.load_repl_snapshot(data)
     assert isinstance(loaded, pydantic_monty.FunctionSnapshot)
-    loaded.resume(return_value='ok')
+    loaded.resume({'return_value': 'ok'})
 
     with pytest.raises(pydantic_monty.MontyTypingError) as exc_info:
         loaded_repl.feed_run('fetch(123)')

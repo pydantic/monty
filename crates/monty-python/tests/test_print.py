@@ -277,7 +277,7 @@ print("after", x)
     assert not hasattr(progress, 'print_output')
     assert collector.output == snapshot([('stdout', 'before\n')])
 
-    complete = progress.resume(return_value=5)
+    complete = progress.resume({'return_value': 5})
 
     assert isinstance(complete, pydantic_monty.MontyComplete)
     assert not hasattr(complete, 'print_output')
@@ -371,7 +371,7 @@ print("after", x)
     loaded_collector = pydantic_monty.CollectString()
     loaded = pydantic_monty.load_snapshot(data, print_callback=loaded_collector)
     assert isinstance(loaded, pydantic_monty.FunctionSnapshot)
-    complete = loaded.resume(return_value=10)
+    complete = loaded.resume({'return_value': 10})
 
     assert isinstance(complete, pydantic_monty.MontyComplete)
     assert complete.output is None
@@ -395,7 +395,7 @@ print("after", x)
     loaded_collector = pydantic_monty.CollectStreams()
     loaded = pydantic_monty.load_snapshot(data, print_callback=loaded_collector)
     assert isinstance(loaded, pydantic_monty.FunctionSnapshot)
-    complete = loaded.resume(return_value=10)
+    complete = loaded.resume({'return_value': 10})
 
     assert isinstance(complete, pydantic_monty.MontyComplete)
     assert complete.output is None

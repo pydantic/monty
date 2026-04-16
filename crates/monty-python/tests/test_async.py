@@ -15,7 +15,7 @@ def test_async():
     assert progress.function_name == snapshot('foobar')
     assert progress.args == snapshot((1, 2))
     call_id = progress.call_id
-    progress = progress.resume(future=...)
+    progress = progress.resume({'future': ...})
     assert isinstance(progress, pydantic_monty.FutureSnapshot)
     assert progress.pending_call_ids == snapshot([call_id])
     progress = progress.resume({call_id: {'return_value': 3}})
@@ -36,12 +36,12 @@ await asyncio.gather(foo(1), bar(2))
     assert progress.args == snapshot((1,))
     foo_call_ids = progress.call_id
 
-    progress = progress.resume(future=...)
+    progress = progress.resume({'future': ...})
     assert isinstance(progress, pydantic_monty.FunctionSnapshot)
     assert progress.function_name == snapshot('bar')
     assert progress.args == snapshot((2,))
     bar_call_ids = progress.call_id
-    progress = progress.resume(future=...)
+    progress = progress.resume({'future': ...})
 
     assert isinstance(progress, pydantic_monty.FutureSnapshot)
     dump_progress = progress.dump()
@@ -455,11 +455,11 @@ await asyncio.gather(foo(1), bar(2))
     assert progress.function_name == snapshot('foo')
     foo_call_id = progress.call_id
 
-    progress = progress.resume(future=...)
+    progress = progress.resume({'future': ...})
     assert isinstance(progress, pydantic_monty.FunctionSnapshot)
     assert progress.function_name == snapshot('bar')
     bar_call_id = progress.call_id
-    progress = progress.resume(future=...)
+    progress = progress.resume({'future': ...})
 
     assert isinstance(progress, pydantic_monty.FutureSnapshot)
     from dirty_equals import IsList
@@ -484,7 +484,7 @@ def test_repl_feed_start_async_state_persistence():
     assert progress.args == snapshot((10,))
     call_id = progress.call_id
 
-    progress = progress.resume(future=...)
+    progress = progress.resume({'future': ...})
     assert isinstance(progress, pydantic_monty.FutureSnapshot)
     progress = progress.resume({call_id: {'return_value': 'fetched'}})
     assert isinstance(progress, pydantic_monty.MontyComplete)

@@ -85,7 +85,7 @@ def test_exists_resume():
     snapshot_result = m.start()
 
     assert isinstance(snapshot_result, pydantic_monty.FunctionSnapshot)
-    result = snapshot_result.resume(return_value=True)
+    result = snapshot_result.resume({'return_value': True})
 
     assert isinstance(result, pydantic_monty.MontyComplete)
     assert result.output is True
@@ -102,7 +102,7 @@ content = Path('/tmp/hello.txt').read_text()
     snapshot_result = m.start()
 
     assert isinstance(snapshot_result, pydantic_monty.FunctionSnapshot)
-    result = snapshot_result.resume(return_value='Hello, World!')
+    result = snapshot_result.resume({'return_value': 'Hello, World!'})
 
     assert isinstance(result, pydantic_monty.MontyComplete)
     assert result.output == snapshot('Content: Hello, World!')
@@ -127,7 +127,7 @@ info = Path('/tmp/file.txt').stat()
     assert snapshot_result.function_name == snapshot('Path.stat')
 
     # Resume with a file_stat result - Monty accesses multiple fields
-    result = snapshot_result.resume(return_value=StatResult.file_stat(1024, 0o100_644, 1234567890.0))
+    result = snapshot_result.resume({'return_value': StatResult.file_stat(1024, 0o100_644, 1234567890.0)})
 
     assert isinstance(result, pydantic_monty.MontyComplete)
     # st_mode=0o100_644, st_size=1024, info[6]=st_size=1024
@@ -144,7 +144,7 @@ Path('/tmp/file.txt').stat()
     snapshot_result = m.start()
 
     assert isinstance(snapshot_result, pydantic_monty.FunctionSnapshot)
-    result = snapshot_result.resume(return_value=StatResult.file_stat(2048, 0o100_755, 1700000000.0))
+    result = snapshot_result.resume({'return_value': StatResult.file_stat(2048, 0o100_755, 1700000000.0)})
 
     assert isinstance(result, pydantic_monty.MontyComplete)
     stat_result = result.output
@@ -169,7 +169,7 @@ Path('/tmp/file.txt').stat()
     snapshot_result = m.start()
 
     assert isinstance(snapshot_result, pydantic_monty.FunctionSnapshot)
-    result = snapshot_result.resume(return_value=StatResult.file_stat(512, 0o644, 0.0))
+    result = snapshot_result.resume({'return_value': StatResult.file_stat(512, 0o644, 0.0)})
 
     assert isinstance(result, pydantic_monty.MontyComplete)
     assert repr(result.output) == snapshot(
@@ -202,12 +202,12 @@ is_file = p.is_file()
     assert result.function_name == snapshot('Path.exists')
 
     # Resume exists() with True
-    result = result.resume(return_value=True)
+    result = result.resume({'return_value': True})
     assert isinstance(result, pydantic_monty.FunctionSnapshot)
     assert result.function_name == snapshot('Path.is_file')
 
     # Resume is_file() with True
-    result = result.resume(return_value=True)
+    result = result.resume({'return_value': True})
     assert isinstance(result, pydantic_monty.MontyComplete)
     assert result.output == snapshot((True, True))
 
@@ -231,12 +231,12 @@ content
     assert result.function_name == snapshot('Path.exists')
 
     # Resume exists() with True - should trigger read_text()
-    result = result.resume(return_value=True)
+    result = result.resume({'return_value': True})
     assert isinstance(result, pydantic_monty.FunctionSnapshot)
     assert result.function_name == snapshot('Path.read_text')
 
     # Resume read_text() with content
-    result = result.resume(return_value='file contents')
+    result = result.resume({'return_value': 'file contents'})
     assert isinstance(result, pydantic_monty.MontyComplete)
     assert result.output == snapshot('file contents')
 
@@ -746,7 +746,7 @@ def test_path_write_text_resume():
     snapshot_result = m.start()
 
     assert isinstance(snapshot_result, pydantic_monty.FunctionSnapshot)
-    result = snapshot_result.resume(return_value=5)  # write_text returns number of bytes written
+    result = snapshot_result.resume({'return_value': 5})  # write_text returns number of bytes written
 
     assert isinstance(result, pydantic_monty.MontyComplete)
     assert result.output == snapshot(5)
@@ -792,7 +792,7 @@ def test_path_write_bytes_resume():
     snapshot_result = m.start()
 
     assert isinstance(snapshot_result, pydantic_monty.FunctionSnapshot)
-    result = snapshot_result.resume(return_value=3)
+    result = snapshot_result.resume({'return_value': 3})
 
     assert isinstance(result, pydantic_monty.MontyComplete)
     assert result.output == snapshot(3)
@@ -852,7 +852,7 @@ def test_path_mkdir_resume():
     snapshot_result = m.start()
 
     assert isinstance(snapshot_result, pydantic_monty.FunctionSnapshot)
-    result = snapshot_result.resume(return_value=None)
+    result = snapshot_result.resume({'return_value': None})
 
     assert isinstance(result, pydantic_monty.MontyComplete)
     assert result.output is None
@@ -880,7 +880,7 @@ def test_path_unlink_resume():
     snapshot_result = m.start()
 
     assert isinstance(snapshot_result, pydantic_monty.FunctionSnapshot)
-    result = snapshot_result.resume(return_value=None)
+    result = snapshot_result.resume({'return_value': None})
 
     assert isinstance(result, pydantic_monty.MontyComplete)
     assert result.output is None
@@ -908,7 +908,7 @@ def test_path_rmdir_resume():
     snapshot_result = m.start()
 
     assert isinstance(snapshot_result, pydantic_monty.FunctionSnapshot)
-    result = snapshot_result.resume(return_value=None)
+    result = snapshot_result.resume({'return_value': None})
 
     assert isinstance(result, pydantic_monty.MontyComplete)
     assert result.output is None
@@ -937,7 +937,7 @@ def test_path_rename_resume():
 
     assert isinstance(snapshot_result, pydantic_monty.FunctionSnapshot)
     # rename() returns None (the new Path is constructed by Monty)
-    result = snapshot_result.resume(return_value=None)
+    result = snapshot_result.resume({'return_value': None})
 
     assert isinstance(result, pydantic_monty.MontyComplete)
     assert result.output is None
