@@ -782,6 +782,38 @@ fn ro_rename_blocked() {
     );
 }
 
+#[test]
+fn ro_chmod_blocked() {
+    let dir = create_test_dir();
+    let mut mt = mount_at_mnt(&dir, MountMode::ReadOnly);
+
+    let exc = call_chmod(&mut mt, "/mnt/hello.txt", 0o600, true)
+        .unwrap()
+        .unwrap_err()
+        .into_exception();
+    assert_exc(
+        &exc,
+        ExcType::PermissionError,
+        "[Errno 30] Read-only file system: '/mnt/hello.txt'",
+    );
+}
+
+#[test]
+fn ro_symlink_to_blocked() {
+    let dir = create_test_dir();
+    let mut mt = mount_at_mnt(&dir, MountMode::ReadOnly);
+
+    let exc = call_symlink_to(&mut mt, "/mnt/new_link.txt", "/mnt/hello.txt", false)
+        .unwrap()
+        .unwrap_err()
+        .into_exception();
+    assert_exc(
+        &exc,
+        ExcType::PermissionError,
+        "[Errno 30] Read-only file system: '/mnt/new_link.txt'",
+    );
+}
+
 // =============================================================================
 // OverlayMemory mode
 // =============================================================================
@@ -2062,6 +2094,30 @@ fn rw_readlink_absolute_target_returns_virtual_path() {
     assert_eq!(target, MontyObject::Path("/mnt/hello.txt".to_owned()));
 }
 
+/// `readlink()` should preserve an in-mount relative target exactly as stored.
+#[test]
+#[cfg(unix)]
+fn rw_readlink_relative_target_returns_raw_relative_path() {
+    let dir = create_test_dir();
+    symlink_file("hello.txt", dir.path().join("relative_link.txt"));
+
+    let mut mt = mount_at_mnt(&dir, MountMode::ReadWrite);
+    let target = call_readlink(&mut mt, "/mnt/relative_link.txt").unwrap().unwrap();
+    assert_eq!(target, MontyObject::Path("hello.txt".to_owned()));
+}
+
+/// Broken but in-bounds relative symlinks should still expose their raw target.
+#[test]
+#[cfg(unix)]
+fn rw_readlink_broken_relative_target_within_mount() {
+    let dir = create_test_dir();
+    symlink_file("missing.txt", dir.path().join("broken_link.txt"));
+
+    let mut mt = mount_at_mnt(&dir, MountMode::ReadWrite);
+    let target = call_readlink(&mut mt, "/mnt/broken_link.txt").unwrap().unwrap();
+    assert_eq!(target, MontyObject::Path("missing.txt".to_owned()));
+}
+
 /// `readlink()` should also work for real symlinks falling through overlay mode.
 #[test]
 fn ovl_mem_readlink_real_symlink() {
@@ -2126,6 +2182,19 @@ fn rw_chmod_round_trips_stat_mode() {
     assert_eq!(stat_size(&stat), 12);
 }
 
+/// Direct mounts should also preserve chmod overrides for directories.
+#[test]
+fn rw_chmod_directory_round_trips_stat_mode() {
+    let dir = create_test_dir();
+    let mut mt = mount_at_mnt(&dir, MountMode::ReadWrite);
+
+    call_chmod(&mut mt, "/mnt/subdir", 0o700, true).unwrap().unwrap();
+
+    let stat = call_ok(&mut mt, OsFunction::Stat, "/mnt/subdir");
+    assert_eq!(stat_mode(&stat) & 0o777, 0o700);
+    assert_eq!(stat_mode(&stat) & 0o170_000, 0o040_000);
+}
+
 /// Chmod mode overrides should move with renamed files on direct mounts.
 #[test]
 fn rw_chmod_mode_persists_after_rename() {
@@ -2139,6 +2208,42 @@ fn rw_chmod_mode_persists_after_rename() {
 
     let stat = call_ok(&mut mt, OsFunction::Stat, "/mnt/renamed.txt");
     assert_eq!(stat_mode(&stat) & 0o777, 0o600);
+}
+
+/// Directory renames should move descendant chmod overrides as well.
+#[test]
+fn rw_chmod_descendant_mode_persists_after_directory_rename() {
+    let dir = create_test_dir();
+    let mut mt = mount_at_mnt(&dir, MountMode::ReadWrite);
+
+    call_chmod(&mut mt, "/mnt/subdir/nested.txt", 0o600, true)
+        .unwrap()
+        .unwrap();
+    call_rename(&mut mt, "/mnt/subdir", "/mnt/renamed_dir")
+        .unwrap()
+        .unwrap();
+
+    let stat = call_ok(&mut mt, OsFunction::Stat, "/mnt/renamed_dir/nested.txt");
+    assert_eq!(stat_mode(&stat) & 0o777, 0o600);
+}
+
+/// Non-following chmod on symlinks should surface the explicit unsupported error.
+#[test]
+fn rw_chmod_follow_symlinks_false_on_symlink_is_unsupported() {
+    let dir = create_test_dir();
+    symlink_file(dir.path().join("hello.txt"), dir.path().join("link.txt"));
+
+    let mut mt = mount_at_mnt(&dir, MountMode::ReadWrite);
+    let exc = call_chmod(&mut mt, "/mnt/link.txt", 0o600, false)
+        .unwrap()
+        .unwrap_err()
+        .into_exception();
+    assert_eq!(exc.exc_type(), ExcType::OSError);
+    assert!(
+        exc.message().unwrap_or("").contains("Operation not supported"),
+        "expected unsupported error, got {:?}",
+        exc.message()
+    );
 }
 
 /// Overlay mounts currently reject chmod because they do not track symlink-aware metadata.
@@ -2180,6 +2285,43 @@ fn rw_symlink_to_creates_file_link() {
     assert_eq!(
         call_readlink(&mut mt, "/mnt/new_link.txt").unwrap().unwrap(),
         MontyObject::Path("/mnt/hello.txt".to_owned())
+    );
+}
+
+/// Relative symlink targets should be stored relative and remain readable.
+#[test]
+fn rw_symlink_to_relative_target() {
+    let dir = create_test_dir();
+    let mut mt = mount_at_mnt(&dir, MountMode::ReadWrite);
+
+    call_symlink_to(&mut mt, "/mnt/new_link.txt", "hello.txt", false)
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(
+        call_readlink(&mut mt, "/mnt/new_link.txt").unwrap().unwrap(),
+        MontyObject::Path("hello.txt".to_owned())
+    );
+    assert_eq!(
+        call_ok(&mut mt, OsFunction::ReadText, "/mnt/new_link.txt"),
+        MontyObject::String("hello world\n".to_owned())
+    );
+}
+
+/// Relative symlink targets that escape the mount must be rejected.
+#[test]
+fn rw_symlink_to_relative_escape_is_blocked() {
+    let dir = create_test_dir();
+    let mut mt = mount_at_mnt(&dir, MountMode::ReadWrite);
+
+    let exc = call_symlink_to(&mut mt, "/mnt/new_link.txt", "../outside.txt", false)
+        .unwrap()
+        .unwrap_err()
+        .into_exception();
+    assert_eq!(exc.exc_type(), ExcType::PermissionError);
+    assert_eq!(
+        exc.message().unwrap_or(""),
+        "[Errno 13] Permission denied: '/mnt/new_link.txt'"
     );
 }
 
@@ -2544,4 +2686,104 @@ fn take_shared_mounts_rollback_restores_all_prior() {
     // Both prior slots should be restored.
     assert!(slot1.lock().unwrap().is_some(), "slot 1 must be restored");
     assert!(slot2.lock().unwrap().is_some(), "slot 2 must be restored");
+}
+
+// =============================================================================
+// Dispatch parsing errors
+// =============================================================================
+
+/// Filesystem dispatch should validate argument types before reaching the backend.
+#[test]
+fn fs_dispatch_rejects_write_text_non_string_data() {
+    let dir = create_test_dir();
+    let mut mt = mount_at_mnt(&dir, MountMode::ReadWrite);
+
+    let exc = mt
+        .handle_os_call(
+            OsFunction::WriteText,
+            &[MontyObject::Path("/mnt/file.txt".to_owned()), MontyObject::Int(1)],
+            &[],
+        )
+        .unwrap()
+        .unwrap_err()
+        .into_exception();
+    assert_eq!(exc.exc_type(), ExcType::TypeError);
+    assert_eq!(exc.message().unwrap_or(""), "data must be str, not int");
+}
+
+#[test]
+fn fs_dispatch_rejects_write_bytes_missing_data() {
+    let dir = create_test_dir();
+    let mut mt = mount_at_mnt(&dir, MountMode::ReadWrite);
+
+    let exc = mt
+        .handle_os_call(
+            OsFunction::WriteBytes,
+            &[MontyObject::Path("/mnt/file.bin".to_owned())],
+            &[],
+        )
+        .unwrap()
+        .unwrap_err()
+        .into_exception();
+    assert_eq!(exc.exc_type(), ExcType::TypeError);
+    assert_eq!(
+        exc.message().unwrap_or(""),
+        "Path.write_bytes() missing 1 required positional argument: 'data'"
+    );
+}
+
+#[test]
+fn fs_dispatch_rejects_chmod_non_integer_mode() {
+    let dir = create_test_dir();
+    let mut mt = mount_at_mnt(&dir, MountMode::ReadWrite);
+
+    let exc = mt
+        .handle_os_call(
+            OsFunction::Chmod,
+            &[
+                MontyObject::Path("/mnt/hello.txt".to_owned()),
+                MontyObject::String("bad".to_owned()),
+            ],
+            &[],
+        )
+        .unwrap()
+        .unwrap_err()
+        .into_exception();
+    assert_eq!(exc.exc_type(), ExcType::TypeError);
+    assert_eq!(exc.message().unwrap_or(""), "chmod: mode must be int, not str");
+}
+
+#[test]
+fn fs_dispatch_rejects_rename_non_path_destination() {
+    let dir = create_test_dir();
+    let mut mt = mount_at_mnt(&dir, MountMode::ReadWrite);
+
+    let exc = mt
+        .handle_os_call(
+            OsFunction::Rename,
+            &[MontyObject::Path("/mnt/hello.txt".to_owned()), MontyObject::Int(1)],
+            &[],
+        )
+        .unwrap()
+        .unwrap_err()
+        .into_exception();
+    assert_eq!(exc.exc_type(), ExcType::TypeError);
+    assert_eq!(exc.message().unwrap_or(""), "rename: expected path argument");
+}
+
+#[test]
+fn fs_dispatch_rejects_missing_primary_path() {
+    let dir = create_test_dir();
+    let mut mt = mount_at_mnt(&dir, MountMode::ReadWrite);
+
+    let exc = mt
+        .handle_os_call(OsFunction::Exists, &[], &[])
+        .unwrap()
+        .unwrap_err()
+        .into_exception();
+    assert_eq!(exc.exc_type(), ExcType::TypeError);
+    assert_eq!(
+        exc.message().unwrap_or(""),
+        "filesystem operation missing path argument"
+    );
 }
