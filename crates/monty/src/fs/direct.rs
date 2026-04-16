@@ -3,7 +3,11 @@
 //! This backend resolves a sandbox path to a validated host path and then calls
 //! the corresponding `std::fs` operation without any overlay indirection.
 
-use std::{fs, io::ErrorKind, path::PathBuf};
+use std::{
+    fs,
+    io::ErrorKind,
+    path::{Path, PathBuf},
+};
 
 use super::{
     common::{
@@ -51,7 +55,9 @@ pub(super) fn execute(request: FsRequest<'_>, ctx: &mut MountContext<'_>) -> Res
         FsRequest::Unlink { path } => unlink(path, ctx),
         FsRequest::Rmdir { path } => {
             let resolved = resolve_path(path, ctx.mount_virtual, ctx.mount_host, ResolveMode::Existing)?;
-            rmdir_fs(&resolved.host_path, path)
+            let result = rmdir_fs(&resolved.host_path, path)?;
+            ctx.chmod_modes.remove(&resolved.host_path);
+            Ok(result)
         }
         FsRequest::Iterdir { path } => {
             let resolved = resolve_path(path, ctx.mount_virtual, ctx.mount_host, ResolveMode::Existing)?;
@@ -64,7 +70,8 @@ pub(super) fn execute(request: FsRequest<'_>, ctx: &mut MountContext<'_>) -> Res
                 ResolveMode::Lstat
             };
             let resolved = resolve_path(path, ctx.mount_virtual, ctx.mount_host, mode)?;
-            stat_fs(&resolved.host_path, path, follow_symlinks)
+            let mode_override = ctx.chmod_modes.get(&resolved.host_path).copied();
+            stat_fs(&resolved.host_path, path, follow_symlinks, mode_override)
         }
         FsRequest::Chmod {
             path,
@@ -152,7 +159,7 @@ fn mkdir(path: &str, parents: bool, exist_ok: bool, ctx: &MountContext<'_>) -> R
 }
 
 /// Changes writable bits using the cross-platform readonly permission flag.
-fn chmod(path: &str, mode: i64, follow_symlinks: bool, ctx: &MountContext<'_>) -> Result<MontyObject, MountError> {
+fn chmod(path: &str, mode: i64, follow_symlinks: bool, ctx: &mut MountContext<'_>) -> Result<MontyObject, MountError> {
     let resolve_mode = if follow_symlinks {
         ResolveMode::Existing
     } else {
@@ -173,20 +180,24 @@ fn chmod(path: &str, mode: i64, follow_symlinks: bool, ctx: &MountContext<'_>) -
         .permissions();
     permissions.set_readonly(mode & 0o222 == 0);
     fs::set_permissions(&resolved.host_path, permissions).map_err(|err| MountError::Io(err, path.to_owned()))?;
+    ctx.chmod_modes.insert(resolved.host_path, mode);
     Ok(MontyObject::None)
 }
 
 /// Removes a file or symlink entry itself rather than following symlink targets.
-fn unlink(path: &str, ctx: &MountContext<'_>) -> Result<MontyObject, MountError> {
+fn unlink(path: &str, ctx: &mut MountContext<'_>) -> Result<MontyObject, MountError> {
     let resolved = resolve_path(path, ctx.mount_virtual, ctx.mount_host, ResolveMode::Lstat)?;
-    unlink_fs(&resolved.host_path, path)
+    let result = unlink_fs(&resolved.host_path, path)?;
+    ctx.chmod_modes.remove(&resolved.host_path);
+    Ok(result)
 }
 
 /// Renames a filesystem entry within the same mount.
-fn rename(src: &str, dst: &str, ctx: &MountContext<'_>) -> Result<MontyObject, MountError> {
+fn rename(src: &str, dst: &str, ctx: &mut MountContext<'_>) -> Result<MontyObject, MountError> {
     let src_resolved = resolve_path(src, ctx.mount_virtual, ctx.mount_host, ResolveMode::Lstat)?;
     let dst_resolved = resolve_path(dst, ctx.mount_virtual, ctx.mount_host, ResolveMode::Creation)?;
     fs::rename(&src_resolved.host_path, &dst_resolved.host_path).map_err(|err| MountError::Io(err, src.to_owned()))?;
+    move_chmod_modes_for_rename(&src_resolved.host_path, &dst_resolved.host_path, ctx);
     Ok(MontyObject::None)
 }
 
@@ -245,5 +256,32 @@ fn resolve_existence_state(
         Ok(resolved) => Ok(ResolvedPathState::Present(resolved.host_path)),
         Err(MountError::Io(_, _)) => Ok(ResolvedPathState::Missing),
         Err(err) => Err(err),
+    }
+}
+
+/// Moves any recorded chmod overrides after a rename succeeds.
+///
+/// Directory renames must also retarget descendant overrides so subsequent
+/// `stat()` calls continue to report the requested mode bits on moved entries.
+fn move_chmod_modes_for_rename(src: &Path, dst: &Path, ctx: &mut MountContext<'_>) {
+    let moved_keys: Vec<PathBuf> = ctx
+        .chmod_modes
+        .keys()
+        .filter(|path| **path == *src || path.starts_with(src))
+        .cloned()
+        .collect();
+
+    for old_path in moved_keys {
+        let Some(mode) = ctx.chmod_modes.remove(&old_path) else {
+            continue;
+        };
+        let new_path = if old_path == src {
+            dst.to_path_buf()
+        } else if let Ok(relative) = old_path.strip_prefix(src) {
+            dst.join(relative)
+        } else {
+            continue;
+        };
+        ctx.chmod_modes.insert(new_path, mode);
     }
 }

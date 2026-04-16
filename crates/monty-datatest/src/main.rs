@@ -2374,6 +2374,121 @@ fn run_test_cases_cpython(path: &Path) -> Result<(), Box<dyn Error>> {
 }
 
 // Generate tests for all fixture files using datatest-stable harness macro
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Helper to build a path argument list for `dispatch_os_call()`.
+    fn path_args(path: &str) -> [MontyObject; 1] {
+        [MontyObject::Path(path.to_owned())]
+    }
+
+    /// Helper to read `st_mode` from a stat result.
+    fn stat_mode(result: ExtFunctionResult) -> i64 {
+        match result {
+            ExtFunctionResult::Return(MontyObject::NamedTuple { values, .. }) => match &values[0] {
+                MontyObject::Int(mode) => *mode,
+                other => panic!("expected st_mode int, got {other:?}"),
+            },
+            other => panic!("expected stat result, got {other:?}"),
+        }
+    }
+
+    /// Boolean kwargs should default to false and only return true for `Bool(true)`.
+    #[test]
+    fn get_kwarg_bool_reads_boolean_kwargs() {
+        let kwargs = vec![
+            (
+                MontyObject::String("follow_symlinks".to_owned()),
+                MontyObject::Bool(false),
+            ),
+            (
+                MontyObject::String("target_is_directory".to_owned()),
+                MontyObject::Bool(true),
+            ),
+        ];
+
+        assert!(!get_kwarg_bool(&kwargs, "follow_symlinks"));
+        assert!(get_kwarg_bool(&kwargs, "target_is_directory"));
+        assert!(!get_kwarg_bool(&kwargs, "missing"));
+    }
+
+    /// Iter-mode fixtures do not model symlinks, so `readlink()` should report the fallback error.
+    #[test]
+    fn dispatch_os_call_readlink_reports_invalid_argument() {
+        reset_mutable_vfs();
+        let result = dispatch_os_call(OsFunction::Readlink, &path_args("/virtual/file.txt"), &[]);
+        match result {
+            ExtFunctionResult::Error(exc) => {
+                assert_eq!(exc.exc_type(), ExcType::OSError);
+                assert_eq!(
+                    exc.message().unwrap_or(""),
+                    "[Errno 22] Invalid argument: '/virtual/file.txt'"
+                );
+            }
+            other => panic!("expected readlink error, got {other:?}"),
+        }
+    }
+
+    /// `lstat()` should mirror `stat()` in the symlink-free virtual fixture filesystem.
+    #[test]
+    fn dispatch_os_call_lstat_matches_stat() {
+        reset_mutable_vfs();
+        let stat = dispatch_os_call(OsFunction::Stat, &path_args("/virtual/file.txt"), &[]);
+        let lstat = dispatch_os_call(OsFunction::Lstat, &path_args("/virtual/file.txt"), &[]);
+        assert_eq!(stat_mode(stat), stat_mode(lstat));
+    }
+
+    /// `chmod()` should update the tracked mode used by later stat calls.
+    #[test]
+    fn dispatch_os_call_chmod_updates_virtual_mode() {
+        reset_mutable_vfs();
+        let write_args = [
+            MontyObject::Path("/virtual/new.txt".to_owned()),
+            MontyObject::String("hello".to_owned()),
+        ];
+        dispatch_os_call(OsFunction::WriteText, &write_args, &[]);
+
+        let chmod_args = [
+            MontyObject::Path("/virtual/new.txt".to_owned()),
+            MontyObject::Int(0o600),
+        ];
+        let chmod_result = dispatch_os_call(OsFunction::Chmod, &chmod_args, &[]);
+        assert!(matches!(chmod_result, ExtFunctionResult::Return(MontyObject::None)));
+
+        let stat = dispatch_os_call(OsFunction::Stat, &path_args("/virtual/new.txt"), &[]);
+        assert_eq!(stat_mode(stat) & 0o777, 0o600);
+    }
+
+    /// `symlink_to()` remains intentionally unsupported in iter-mode fixtures.
+    #[test]
+    fn dispatch_os_call_symlink_to_reports_iter_mode_gap() {
+        reset_mutable_vfs();
+        let args = [
+            MontyObject::Path("/virtual/link.txt".to_owned()),
+            MontyObject::Path("/virtual/file.txt".to_owned()),
+        ];
+        let result = dispatch_os_call(
+            OsFunction::SymlinkTo,
+            &args,
+            &[(
+                MontyObject::String("target_is_directory".to_owned()),
+                MontyObject::Bool(false),
+            )],
+        );
+        match result {
+            ExtFunctionResult::Error(exc) => {
+                assert_eq!(exc.exc_type(), ExcType::OSError);
+                assert_eq!(
+                    exc.message().unwrap_or(""),
+                    "Path.symlink_to() is not supported in iter mode: '/virtual/link.txt'"
+                );
+            }
+            other => panic!("expected symlink_to error, got {other:?}"),
+        }
+    }
+}
+
 datatest_stable::harness!(
     run_test_cases_monty,
     TEST_CASES_DIR,

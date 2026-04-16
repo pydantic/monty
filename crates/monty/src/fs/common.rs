@@ -9,9 +9,10 @@ use std::os::unix::fs::symlink as unix_symlink;
 #[cfg(windows)]
 use std::os::windows::fs::{symlink_dir as win_symlink_dir, symlink_file as win_symlink_file};
 use std::{
+    collections::BTreeMap,
     fs,
     io::{self, ErrorKind},
-    path::{Path, PathBuf},
+    path::{Component, Path, PathBuf},
     time::SystemTime,
 };
 
@@ -31,6 +32,8 @@ pub(super) struct MountContext<'a> {
     pub write_bytes_used: &'a mut u64,
     /// Optional cumulative write cap for the mount.
     pub write_bytes_limit: Option<u64>,
+    /// Mount-local chmod overrides used to present stable POSIX-like `stat()` bits.
+    pub chmod_modes: &'a mut BTreeMap<PathBuf, i64>,
 }
 
 /// Reads a file as UTF-8 text, preserving `UnicodeDecodeError` semantics.
@@ -125,7 +128,16 @@ pub(super) fn rmdir_fs(path: &Path, vpath: &str) -> Result<MontyObject, MountErr
 }
 
 /// Returns a `stat_result`-shaped object for a file or directory.
-pub(super) fn stat_fs(path: &Path, vpath: &str, follow_symlinks: bool) -> Result<MontyObject, MountError> {
+///
+/// Direct mounts optionally supply a mount-local mode override so `chmod()` and
+/// `stat()` can round-trip consistently across host platforms whose native
+/// permission models do not map neatly onto POSIX bits.
+pub(super) fn stat_fs(
+    path: &Path,
+    vpath: &str,
+    follow_symlinks: bool,
+    mode_override: Option<i64>,
+) -> Result<MontyObject, MountError> {
     let metadata = if follow_symlinks {
         fs::metadata(path)
     } else {
@@ -142,13 +154,13 @@ pub(super) fn stat_fs(path: &Path, vpath: &str, follow_symlinks: bool) -> Result
     let file_type = metadata.file_type();
 
     if file_type.is_symlink() {
-        let mode = if readonly { 0o555 } else { 0o777 };
+        let mode = mode_override.unwrap_or(if readonly { 0o555 } else { 0o777 });
         Ok(symlink_stat(mode, mtime))
     } else if file_type.is_dir() {
-        let mode = if readonly { 0o555 } else { 0o755 };
+        let mode = mode_override.unwrap_or(if readonly { 0o555 } else { 0o755 });
         Ok(dir_stat(mode, mtime))
     } else {
-        let mode = if readonly { 0o444 } else { 0o644 };
+        let mode = mode_override.unwrap_or(if readonly { 0o444 } else { 0o644 });
         Ok(file_stat(mode, size, mtime))
     }
 }
@@ -161,25 +173,106 @@ pub(super) fn readlink_fs(
     mount_host: &Path,
 ) -> Result<MontyObject, MountError> {
     let target = fs::read_link(path).map_err(|err| MountError::Io(err, vpath.to_owned()))?;
-    let target = host_symlink_target_to_virtual(&target, mount_virtual, mount_host, vpath)?;
+    let target = host_symlink_target_to_virtual(path, &target, mount_virtual, mount_host, vpath)?;
     Ok(MontyObject::Path(target))
 }
 
 /// Maps a host symlink target back into sandbox-visible path space.
 fn host_symlink_target_to_virtual(
+    link_path: &Path,
     target: &Path,
     mount_virtual: &str,
     mount_host: &Path,
     vpath: &str,
 ) -> Result<String, MountError> {
     if target.is_absolute() {
-        let relative = target.strip_prefix(mount_host).map_err(|_| MountError::PathEscape {
-            virtual_path: vpath.to_owned(),
-        })?;
+        let resolved_target = validate_symlink_target(link_path, target, mount_host, vpath)?;
+        let relative = resolved_target
+            .strip_prefix(mount_host)
+            .map_err(|_| MountError::PathEscape {
+                virtual_path: vpath.to_owned(),
+            })?;
         return Ok(join_virtual_path(mount_virtual, relative));
     }
 
+    validate_symlink_target(link_path, target, mount_host, vpath)?;
     Ok(path_to_posix_string(target))
+}
+
+/// Validates that a symlink target stays within the mounted host directory.
+///
+/// Relative targets are resolved against the symlink's canonical parent. The
+/// returned path is lexically normalized so broken-but-in-bounds links still
+/// work, while existing targets also receive a canonical boundary check so
+/// intermediate symlink escapes are rejected.
+fn validate_symlink_target(
+    link_path: &Path,
+    target: &Path,
+    mount_host: &Path,
+    vpath: &str,
+) -> Result<PathBuf, MountError> {
+    let link_parent = link_path.parent().ok_or_else(|| MountError::PathEscape {
+        virtual_path: vpath.to_owned(),
+    })?;
+    if target.is_absolute() {
+        let canonical_target = canonicalize_target_or_parent(target, vpath)?;
+        if !canonical_target.starts_with(mount_host) {
+            return Err(MountError::PathEscape {
+                virtual_path: vpath.to_owned(),
+            });
+        }
+        return Ok(canonical_target);
+    }
+
+    let resolved_target = link_parent.join(target);
+    let lexical_target = lexically_normalize_host_path(&resolved_target);
+    if !lexical_target.starts_with(mount_host) {
+        return Err(MountError::PathEscape {
+            virtual_path: vpath.to_owned(),
+        });
+    }
+
+    if let Ok(canonical_target) = canonicalize_target_or_parent(&resolved_target, vpath)
+        && !canonical_target.starts_with(mount_host)
+    {
+        return Err(MountError::PathEscape {
+            virtual_path: vpath.to_owned(),
+        });
+    }
+
+    Ok(lexical_target)
+}
+
+/// Lexically normalizes a host path without requiring it to exist.
+fn lexically_normalize_host_path(path: &Path) -> PathBuf {
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::Prefix(prefix) => normalized.push(prefix.as_os_str()),
+            Component::RootDir => normalized.push(component.as_os_str()),
+            Component::CurDir => {}
+            Component::ParentDir => {
+                normalized.pop();
+            }
+            Component::Normal(part) => normalized.push(part),
+        }
+    }
+    normalized
+}
+
+/// Canonicalizes a target path, falling back to its existing parent for broken links.
+fn canonicalize_target_or_parent(path: &Path, vpath: &str) -> Result<PathBuf, MountError> {
+    if let Ok(canonical) = fs::canonicalize(path) {
+        return Ok(canonical);
+    }
+
+    let parent = path.parent().ok_or_else(|| MountError::PathEscape {
+        virtual_path: vpath.to_owned(),
+    })?;
+    let canonical_parent = fs::canonicalize(parent).map_err(|_| MountError::PathEscape {
+        virtual_path: vpath.to_owned(),
+    })?;
+    Ok(canonical_parent.join(path.file_name().unwrap_or_default()))
 }
 
 /// Joins a mount-relative host path onto the sandbox mount prefix.

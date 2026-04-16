@@ -4,6 +4,7 @@
 //! virtual path to a real host directory with a specific access mode.
 
 use std::{
+    collections::BTreeMap,
     fs,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
@@ -219,6 +220,12 @@ pub struct Mount {
     write_bytes_used: u64,
     /// Optional cap on cumulative bytes written. When exceeded, writes raise `OSError`.
     write_bytes_limit: Option<u64>,
+    /// Mount-local mode overrides recorded by `chmod()` for cross-platform `stat()`.
+    ///
+    /// Host filesystems vary widely in how much of the POSIX mode space they
+    /// preserve. Keeping the requested bits here lets Monty report stable mode
+    /// values back to sandbox code without depending on host-specific behavior.
+    chmod_modes: BTreeMap<PathBuf, i64>,
 }
 
 impl Mount {
@@ -261,6 +268,7 @@ impl Mount {
             mode,
             write_bytes_used: 0,
             write_bytes_limit,
+            chmod_modes: BTreeMap::new(),
         })
     }
 
@@ -301,6 +309,7 @@ impl Mount {
             mount_host: &self.host_path,
             write_bytes_used: &mut self.write_bytes_used,
             write_bytes_limit: self.write_bytes_limit,
+            chmod_modes: &mut self.chmod_modes,
         };
         dispatch::execute(request, &mut ctx, &mut self.mode)
     }

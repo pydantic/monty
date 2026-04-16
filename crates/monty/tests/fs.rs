@@ -134,6 +134,88 @@ fn call_rename(mt: &mut MountTable, src: &str, dst: &str) -> Option<Result<Monty
     )
 }
 
+/// Shorthand for `Path.readlink()`.
+fn call_readlink(mt: &mut MountTable, path: &str) -> Option<Result<MontyObject, MountError>> {
+    mt.handle_os_call(OsFunction::Readlink, &[MontyObject::Path(path.to_owned())], &[])
+}
+
+/// Shorthand for `Path.lstat()`.
+fn call_lstat(mt: &mut MountTable, path: &str) -> Option<Result<MontyObject, MountError>> {
+    mt.handle_os_call(OsFunction::Lstat, &[MontyObject::Path(path.to_owned())], &[])
+}
+
+/// Shorthand for `Path.stat(follow_symlinks=...)`.
+fn call_stat_follow_symlinks(
+    mt: &mut MountTable,
+    path: &str,
+    follow_symlinks: bool,
+) -> Option<Result<MontyObject, MountError>> {
+    mt.handle_os_call(
+        OsFunction::Stat,
+        &[MontyObject::Path(path.to_owned())],
+        &[(
+            MontyObject::String("follow_symlinks".to_owned()),
+            MontyObject::Bool(follow_symlinks),
+        )],
+    )
+}
+
+/// Shorthand for `Path.chmod(mode, follow_symlinks=...)`.
+fn call_chmod(
+    mt: &mut MountTable,
+    path: &str,
+    mode: i64,
+    follow_symlinks: bool,
+) -> Option<Result<MontyObject, MountError>> {
+    mt.handle_os_call(
+        OsFunction::Chmod,
+        &[MontyObject::Path(path.to_owned()), MontyObject::Int(mode)],
+        &[(
+            MontyObject::String("follow_symlinks".to_owned()),
+            MontyObject::Bool(follow_symlinks),
+        )],
+    )
+}
+
+/// Shorthand for `Path.symlink_to(target, target_is_directory=...)`.
+fn call_symlink_to(
+    mt: &mut MountTable,
+    path: &str,
+    target: &str,
+    target_is_directory: bool,
+) -> Option<Result<MontyObject, MountError>> {
+    mt.handle_os_call(
+        OsFunction::SymlinkTo,
+        &[MontyObject::Path(path.to_owned()), MontyObject::Path(target.to_owned())],
+        &[(
+            MontyObject::String("target_is_directory".to_owned()),
+            MontyObject::Bool(target_is_directory),
+        )],
+    )
+}
+
+/// Extracts `st_mode` from a stat result.
+fn stat_mode(obj: &MontyObject) -> i64 {
+    match obj {
+        MontyObject::NamedTuple { values, .. } => match &values[0] {
+            MontyObject::Int(mode) => *mode,
+            other => panic!("expected st_mode to be Int, got {other:?}"),
+        },
+        other => panic!("expected NamedTuple from stat, got {other:?}"),
+    }
+}
+
+/// Extracts `st_size` from a stat result.
+fn stat_size(obj: &MontyObject) -> i64 {
+    match obj {
+        MontyObject::NamedTuple { values, .. } => match &values[6] {
+            MontyObject::Int(size) => *size,
+            other => panic!("expected st_size to be Int, got {other:?}"),
+        },
+        other => panic!("expected NamedTuple from stat, got {other:?}"),
+    }
+}
+
 /// Extracts entry names from an iterdir result list, sorted for deterministic comparison.
 fn sorted_names(obj: &MontyObject) -> Vec<String> {
     match obj {
@@ -1966,6 +2048,178 @@ fn rw_rename_symlink_renames_link_not_target() {
     assert_eq!(
         fs::read_to_string(dir.path().join("hello.txt")).unwrap(),
         "hello world\n"
+    );
+}
+
+/// `readlink()` on an absolute in-mount symlink should return the virtual target path.
+#[test]
+fn rw_readlink_absolute_target_returns_virtual_path() {
+    let dir = create_test_dir();
+    symlink_file(dir.path().join("hello.txt"), dir.path().join("link.txt"));
+
+    let mut mt = mount_at_mnt(&dir, MountMode::ReadWrite);
+    let target = call_readlink(&mut mt, "/mnt/link.txt").unwrap().unwrap();
+    assert_eq!(target, MontyObject::Path("/mnt/hello.txt".to_owned()));
+}
+
+/// `readlink()` should also work for real symlinks falling through overlay mode.
+#[test]
+fn ovl_mem_readlink_real_symlink() {
+    let dir = create_test_dir();
+    symlink_file(dir.path().join("hello.txt"), dir.path().join("link.txt"));
+
+    let mut mt = mount_at_mnt(&dir, MountMode::OverlayMemory(OverlayState::new()));
+    let target = call_readlink(&mut mt, "/mnt/link.txt").unwrap().unwrap();
+    assert_eq!(target, MontyObject::Path("/mnt/hello.txt".to_owned()));
+}
+
+/// A renamed real symlink should keep working through the overlay `RealFileRef` path.
+#[test]
+#[cfg(unix)]
+fn ovl_mem_readlink_renamed_symlink() {
+    let dir = create_test_dir();
+    symlink_file(dir.path().join("hello.txt"), dir.path().join("link.txt"));
+
+    let mut mt = mount_at_mnt(&dir, MountMode::OverlayMemory(OverlayState::new()));
+    call_rename(&mut mt, "/mnt/link.txt", "/mnt/moved_link.txt")
+        .unwrap()
+        .unwrap();
+
+    let target = call_readlink(&mut mt, "/mnt/moved_link.txt").unwrap().unwrap();
+    assert_eq!(target, MontyObject::Path("/mnt/hello.txt".to_owned()));
+}
+
+/// `lstat()` should report the symlink itself rather than its target.
+#[test]
+fn rw_lstat_reports_symlink_mode() {
+    let dir = create_test_dir();
+    symlink_file(dir.path().join("hello.txt"), dir.path().join("link.txt"));
+
+    let mut mt = mount_at_mnt(&dir, MountMode::ReadWrite);
+    let stat = call_lstat(&mut mt, "/mnt/link.txt").unwrap().unwrap();
+    assert_eq!(stat_mode(&stat) & 0o170_000, 0o120_000);
+}
+
+/// `stat(follow_symlinks=False)` should also report the symlink itself.
+#[test]
+fn rw_stat_follow_symlinks_false_reports_symlink_mode() {
+    let dir = create_test_dir();
+    symlink_file(dir.path().join("hello.txt"), dir.path().join("link.txt"));
+
+    let mut mt = mount_at_mnt(&dir, MountMode::ReadWrite);
+    let stat = call_stat_follow_symlinks(&mut mt, "/mnt/link.txt", false)
+        .unwrap()
+        .unwrap();
+    assert_eq!(stat_mode(&stat) & 0o170_000, 0o120_000);
+}
+
+/// `chmod()` should be reflected by a subsequent `stat()` on direct mounts.
+#[test]
+fn rw_chmod_round_trips_stat_mode() {
+    let dir = create_test_dir();
+    let mut mt = mount_at_mnt(&dir, MountMode::ReadWrite);
+
+    call_chmod(&mut mt, "/mnt/hello.txt", 0o600, true).unwrap().unwrap();
+
+    let stat = call_ok(&mut mt, OsFunction::Stat, "/mnt/hello.txt");
+    assert_eq!(stat_mode(&stat) & 0o777, 0o600);
+    assert_eq!(stat_size(&stat), 12);
+}
+
+/// Chmod mode overrides should move with renamed files on direct mounts.
+#[test]
+fn rw_chmod_mode_persists_after_rename() {
+    let dir = create_test_dir();
+    let mut mt = mount_at_mnt(&dir, MountMode::ReadWrite);
+
+    call_chmod(&mut mt, "/mnt/hello.txt", 0o600, true).unwrap().unwrap();
+    call_rename(&mut mt, "/mnt/hello.txt", "/mnt/renamed.txt")
+        .unwrap()
+        .unwrap();
+
+    let stat = call_ok(&mut mt, OsFunction::Stat, "/mnt/renamed.txt");
+    assert_eq!(stat_mode(&stat) & 0o777, 0o600);
+}
+
+/// Overlay mounts currently reject chmod because they do not track symlink-aware metadata.
+#[test]
+fn ovl_mem_chmod_is_unsupported() {
+    let dir = create_test_dir();
+    let mut mt = mount_at_mnt(&dir, MountMode::OverlayMemory(OverlayState::new()));
+
+    let exc = call_chmod(&mut mt, "/mnt/hello.txt", 0o600, true)
+        .unwrap()
+        .unwrap_err()
+        .into_exception();
+    assert_eq!(exc.exc_type(), ExcType::OSError);
+    assert!(
+        exc.message().unwrap_or("").contains("Operation not supported"),
+        "expected unsupported error, got {:?}",
+        exc.message()
+    );
+}
+
+/// `symlink_to()` should create a readable file symlink on direct mounts.
+#[test]
+fn rw_symlink_to_creates_file_link() {
+    let dir = create_test_dir();
+    let mut mt = mount_at_mnt(&dir, MountMode::ReadWrite);
+
+    call_symlink_to(&mut mt, "/mnt/new_link.txt", "/mnt/hello.txt", false)
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(
+        call_ok(&mut mt, OsFunction::IsSymlink, "/mnt/new_link.txt"),
+        MontyObject::Bool(true)
+    );
+    assert_eq!(
+        call_ok(&mut mt, OsFunction::ReadText, "/mnt/new_link.txt"),
+        MontyObject::String("hello world\n".to_owned())
+    );
+    assert_eq!(
+        call_readlink(&mut mt, "/mnt/new_link.txt").unwrap().unwrap(),
+        MontyObject::Path("/mnt/hello.txt".to_owned())
+    );
+}
+
+/// `symlink_to(..., target_is_directory=True)` should create a directory symlink.
+#[test]
+fn rw_symlink_to_creates_directory_link() {
+    let dir = create_test_dir();
+    let mut mt = mount_at_mnt(&dir, MountMode::ReadWrite);
+
+    call_symlink_to(&mut mt, "/mnt/subdir_link", "/mnt/subdir", true)
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(
+        call_ok(&mut mt, OsFunction::IsSymlink, "/mnt/subdir_link"),
+        MontyObject::Bool(true)
+    );
+    assert_eq!(
+        call_ok(&mut mt, OsFunction::IsDir, "/mnt/subdir_link"),
+        MontyObject::Bool(true)
+    );
+    let names = sorted_names(&call_ok(&mut mt, OsFunction::Iterdir, "/mnt/subdir_link"));
+    assert_eq!(names, vec!["deep", "nested.txt"]);
+}
+
+/// Overlay mounts currently reject symlink creation because they lack an in-memory symlink model.
+#[test]
+fn ovl_mem_symlink_to_is_unsupported() {
+    let dir = create_test_dir();
+    let mut mt = mount_at_mnt(&dir, MountMode::OverlayMemory(OverlayState::new()));
+
+    let exc = call_symlink_to(&mut mt, "/mnt/new_link.txt", "/mnt/hello.txt", false)
+        .unwrap()
+        .unwrap_err()
+        .into_exception();
+    assert_eq!(exc.exc_type(), ExcType::OSError);
+    assert!(
+        exc.message().unwrap_or("").contains("Operation not supported"),
+        "expected unsupported error, got {:?}",
+        exc.message()
     );
 }
 

@@ -341,6 +341,34 @@ mod symlink_tests {
     }
 
     #[test]
+    #[cfg(unix)] // Relative symlink targets are not supported on Windows
+    fn relative_symlink_escape_readlink() {
+        for (label, mode) in all_modes() {
+            let dir = create_test_dir();
+
+            // The raw target itself points outside the mount and must not be exposed.
+            symlink_file("../secret.txt", dir.path().join("rel_escape_file"));
+
+            let mut mt = mount_at_mnt(&dir, mode);
+            assert_blocked(&mut mt, OsFunction::Readlink, "/mnt/rel_escape_file");
+            eprintln!("  {label}: passed");
+        }
+    }
+
+    #[test]
+    fn absolute_symlink_escape_readlink() {
+        for (label, mode) in all_modes() {
+            let dir = create_test_dir();
+            let outside = TempDir::new().unwrap();
+            symlink_file(outside.path().join("secret.txt"), dir.path().join("abs_escape_file"));
+
+            let mut mt = mount_at_mnt(&dir, mode);
+            assert_blocked(&mut mt, OsFunction::Readlink, "/mnt/abs_escape_file");
+            eprintln!("  {label}: passed");
+        }
+    }
+
+    #[test]
     fn symlink_escape_no_info_leak() {
         // Error messages should only contain virtual path, not host path.
         let dir = create_test_dir();

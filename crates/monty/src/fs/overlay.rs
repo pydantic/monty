@@ -546,7 +546,7 @@ fn stat(
             let size = i64::try_from(file.content.len()).unwrap_or(i64::MAX);
             Ok(file_stat(0o644, size, file.mtime))
         }
-        Some(OverlayEntry::RealFileRef(file_ref)) => stat_fs(&file_ref.host_path, vpath, follow_symlinks),
+        Some(OverlayEntry::RealFileRef(file_ref)) => stat_fs(&file_ref.host_path, vpath, follow_symlinks, None),
         Some(OverlayEntry::Directory { mtime }) => Ok(dir_stat(0o755, *mtime)),
         Some(OverlayEntry::Deleted) => Err(MountError::not_found(vpath)),
         None => {
@@ -556,7 +556,7 @@ fn stat(
                 ResolveMode::Lstat
             };
             let resolved = resolve_path(vpath, ctx.mount_virtual, ctx.mount_host, mode)?;
-            stat_fs(&resolved.host_path, vpath, follow_symlinks)
+            stat_fs(&resolved.host_path, vpath, follow_symlinks, None)
         }
     }
 }
