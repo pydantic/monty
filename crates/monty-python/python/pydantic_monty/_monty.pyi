@@ -531,9 +531,7 @@ class FunctionSnapshot:
         must be passed `mount`/`os` again to continue the behavior.
 
         Arguments:
-            return_value: The value to return from the external function call.
-            exception: An exception to raise in the Monty interpreter.
-            future: A future to await in the Monty interpreter.
+            result: A typeddict representing the return value, exception, or pending future.
             mount: Optional filesystem mount(s) to expose inside the sandbox.
             os: Optional callback for OS calls. Return `NOT_HANDLED` to fall back
                 to Monty's default unhandled behavior.

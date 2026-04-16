@@ -245,6 +245,17 @@ caught
     assert result.output == snapshot(True)
 
 
+def test_invalid_exception():
+    code = 'foo()'
+    m = pydantic_monty.Monty(code)
+    progress = m.start()
+    assert isinstance(progress, pydantic_monty.FunctionSnapshot)
+
+    with pytest.raises(TypeError) as exc_info:
+        progress.resume({'exception': 123})  # pyright: ignore[reportArgumentType]
+    assert exc_info.value.args[0] == snapshot("'int' object is not an instance of 'BaseException'")
+
+
 def test_start_progress_resume_exception_propagates_uncaught():
     """Test that uncaught exceptions from resume() propagate to caller."""
     code = 'external_func()'
@@ -288,21 +299,21 @@ def test_invalid_resume_args():
     with pytest.raises(TypeError) as exc_info:
         progress.resume({})  # pyright: ignore[reportArgumentType]
     assert exc_info.value.args[0] == snapshot(
-        "result must be a dict with exactly one of 'return_value', 'exception', or 'future'"
+        "ExternalResult must be a dict with exactly one of 'return_value', 'exception', or 'future'"
     )
 
     # Multiple keys — must have exactly one.
     with pytest.raises(TypeError) as exc_info:
         progress.resume({'return_value': 42, 'exception': ValueError('error')})  # pyright: ignore[reportArgumentType]
     assert exc_info.value.args[0] == snapshot(
-        "result must be a dict with exactly one of 'return_value', 'exception', or 'future'"
+        "ExternalResult must be a dict with exactly one of 'return_value', 'exception', or 'future'"
     )
 
     # Wrong key — must be one of the recognized ones.
     with pytest.raises(TypeError) as exc_info:
         progress.resume({'bogus': 1})  # pyright: ignore[reportArgumentType]
     assert exc_info.value.args[0] == snapshot(
-        "result must be a dict with exactly one of 'return_value', 'exception', or 'future'"
+        "ExternalResult must be a dict with exactly one of 'return_value', 'exception', or 'future'"
     )
 
     # Unexpected kwarg — pyo3 surfaces the unexpected-kwarg TypeError.

@@ -135,14 +135,20 @@ class ResourceLimits(TypedDict, total=False):
 
 
 class ExternalReturnValue(TypedDict):
+    """Represents the return value of an external function call."""
+
     return_value: Any
 
 
 class ExternalException(TypedDict):
+    """Represents an exception raised during an external function call."""
+
     exception: Exception
 
 
 class ExternalFuture(TypedDict):
+    """Represents a pending future returned from an external function call."""
+
     future: EllipsisType
 
 

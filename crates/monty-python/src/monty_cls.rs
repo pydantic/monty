@@ -13,8 +13,8 @@ use ::monty::{
 use monty::{NameLookup, fs::MountTable};
 use monty_type_checking::{SourceFile, type_check};
 use pyo3::{
-    IntoPyObjectExt,
-    exceptions::{PyKeyError, PyRuntimeError, PyTypeError, PyValueError},
+    CastIntoError, IntoPyObjectExt, PyTypeCheck,
+    exceptions::{PyBaseException, PyKeyError, PyRuntimeError, PyTypeError, PyValueError},
     intern,
     prelude::*,
     types::{PyBytes, PyDict, PyList, PyTuple, PyType},
@@ -1191,14 +1191,12 @@ impl PyFunctionSnapshot {
         mount: Option<&Bound<'_, PyAny>>,
         os: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<Bound<'py, PyAny>> {
-        const ARGS_ERROR: &str = "result must be a dict with exactly one of 'return_value', 'exception', or 'future'";
-
         // Validate everything BEFORE consuming the snapshot. A failure here
         // (bad mount/os, malformed result dict, unconvertible return_value)
         // must leave the snapshot intact so the caller can retry — and for
         // REPL variants, must avoid leaking the REPL stored inside the call.
         let os_handler = OsHandler::from_run_args(py, mount, os)?;
-        let external_result = extract_external_result(py, result, ARGS_ERROR, &self.dc_registry, self.call_id)?;
+        let external_result = extract_external_result(py, result, &self.dc_registry, self.call_id)?;
 
         let mut snapshot = self
             .snapshot
@@ -1685,8 +1683,6 @@ impl PyFutureSnapshot {
         mount: Option<&Bound<'_, PyAny>>,
         os: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<Bound<'py, PyAny>> {
-        const ARGS_ERROR: &str = "results values must be a dict with either 'return_value' or 'exception', not both";
-
         // Validate everything BEFORE consuming the snapshot — a malformed
         // `results` dict must leave the snapshot intact for retry, and
         // (for REPL variants) avoid leaking the REPL stored inside.
@@ -1696,7 +1692,7 @@ impl PyFutureSnapshot {
             .map(|(key, value)| {
                 let call_id = key.extract::<u32>()?;
                 let dict = value.cast::<PyDict>()?;
-                let value = extract_external_result(py, dict, ARGS_ERROR, &self.dc_registry, call_id)?;
+                let value = extract_external_result(py, dict, &self.dc_registry, call_id)?;
                 Ok((call_id, value))
             })
             .collect::<PyResult<Vec<_>>>()?;
@@ -1890,20 +1886,27 @@ struct SerializedMonty {
 fn extract_external_result(
     py: Python<'_>,
     dict: &Bound<'_, PyDict>,
-    error_msg: &'static str,
     dc_registry: &DcRegistry,
     call_id: u32,
 ) -> PyResult<ExtFunctionResult> {
+    const ARGS_ERROR: &str =
+        "ExternalResult must be a dict with exactly one of 'return_value', 'exception', or 'future'";
     if dict.len() != 1 {
-        Err(PyTypeError::new_err(error_msg))
+        Err(PyTypeError::new_err(ARGS_ERROR))
     } else if let Some(rv) = dict.get_item(intern!(py, "return_value"))? {
         // Return value provided
         Ok(py_to_monty(&rv, dc_registry)?.into())
     } else if let Some(exc) = dict.get_item(intern!(py, "exception"))? {
         // Exception provided
-        let py_err = PyErr::from_value(exc.into_any());
-        Ok(exc_py_to_monty(py, &py_err).into())
+        if PyBaseException::type_check(&exc) {
+            let py_err = PyErr::from_value(exc.into_any());
+            Ok(exc_py_to_monty(py, &py_err).into())
+        } else {
+            let to = PyBaseException::classinfo_object(py);
+            Err(CastIntoError::new(exc, to).into())
+        }
     } else if let Some(exc) = dict.get_item(intern!(py, "future"))? {
+        // Future provided
         if exc.eq(py.Ellipsis()).unwrap_or_default() {
             Ok(ExtFunctionResult::Future(call_id))
         } else {
@@ -1913,7 +1916,7 @@ fn extract_external_result(
         }
     } else {
         // wrong key in kwargs
-        Err(PyTypeError::new_err(error_msg))
+        Err(PyTypeError::new_err(ARGS_ERROR))
     }
 }
 
