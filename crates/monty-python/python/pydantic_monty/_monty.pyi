@@ -543,7 +543,7 @@ class FunctionSnapshot:
             MontyComplete if execution finished.
 
         Raises:
-            TypeError: If both arguments are provided.
+            TypeError: If both arguments are incorrect.
             RuntimeError: If execution has already completed.
             MontyRuntimeError: If the code raises an exception during execution
         """
