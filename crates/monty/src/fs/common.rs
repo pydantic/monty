@@ -256,17 +256,28 @@ fn lexically_normalize_host_path(path: &Path) -> PathBuf {
     normalized
 }
 
-/// Canonicalizes a target path, falling back to its existing parent for broken links.
+/// Canonicalizes a target path, falling back to the nearest existing ancestor for broken links.
 fn canonicalize_target_or_parent(path: &Path, vpath: &str) -> Result<PathBuf, MountError> {
-    if let Ok(canonical) = fs::canonicalize(path) {
-        return Ok(canonical);
-    }
+    let mut missing_components = Vec::new();
+    let mut current = path;
 
-    let parent = path.parent().expect("resolved symlink targets always have a parent");
-    let canonical_parent = fs::canonicalize(parent).map_err(|_| MountError::PathEscape {
-        virtual_path: vpath.to_owned(),
-    })?;
-    Ok(canonical_parent.join(path.file_name().unwrap_or_default()))
+    loop {
+        if let Ok(canonical) = fs::canonicalize(current) {
+            let mut rebuilt = canonical;
+            for component in missing_components.iter().rev() {
+                rebuilt.push(component);
+            }
+            return Ok(rebuilt);
+        }
+
+        let file_name = current.file_name().ok_or_else(|| MountError::PathEscape {
+            virtual_path: vpath.to_owned(),
+        })?;
+        missing_components.push(file_name.to_os_string());
+        current = current.parent().ok_or_else(|| MountError::PathEscape {
+            virtual_path: vpath.to_owned(),
+        })?;
+    }
 }
 
 /// Joins a mount-relative host path onto the sandbox mount prefix.

@@ -451,10 +451,13 @@ class AbstractOS(ABC):
         """Get status information without following the final symlink component.
 
         Override this when the backend distinguishes symlink metadata from
-        target metadata. The default implementation falls back to `path_stat()`,
-        which preserves compatibility for older subclasses that only implement
-        the original method surface.
+        target metadata. The default implementation preserves compatibility for
+        regular files and directories, but refuses to silently follow symlinks
+        because that would report incorrect metadata for `Path.lstat()` and
+        `Path.stat(follow_symlinks=False)`.
         """
+        if self.path_is_symlink(path):
+            raise NotImplementedError
         return self.path_stat(path)
 
     def path_chmod(self, path: PurePosixPath, mode: int, *, follow_symlinks: bool = True) -> None:

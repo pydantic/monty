@@ -2131,6 +2131,21 @@ fn rw_readlink_relative_target_returns_raw_relative_path() {
     assert_eq!(target, MontyObject::Path("hello.txt".to_owned()));
 }
 
+/// Broken absolute symlinks that still point inside the mount should round-trip.
+#[test]
+#[cfg(unix)]
+fn rw_readlink_broken_absolute_target_within_mount() {
+    let dir = create_test_dir();
+    symlink_file(
+        dir.path().join("missing_parent").join("ghost.txt"),
+        dir.path().join("broken_abs_link.txt"),
+    );
+
+    let mut mt = mount_at_mnt(&dir, MountMode::ReadWrite);
+    let target = call_readlink(&mut mt, "/mnt/broken_abs_link.txt").unwrap().unwrap();
+    assert_eq!(target, MontyObject::Path("/mnt/missing_parent/ghost.txt".to_owned()));
+}
+
 /// Broken but in-bounds relative symlinks should still expose their raw target.
 #[test]
 #[cfg(unix)]

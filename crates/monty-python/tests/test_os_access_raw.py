@@ -292,6 +292,13 @@ class SymlinkOS(TestOS):
         self.symlink_permissions[p] = 0o777
 
 
+class LegacySymlinkOS(SymlinkOS):
+    """Symlink backend that intentionally relies on AbstractOS default lstat behavior."""
+
+    __test__ = False
+    path_lstat = AbstractOS.path_lstat
+
+
 # =============================================================================
 # Basic AbstractOS tests
 # =============================================================================
@@ -340,6 +347,16 @@ def test_abstract_os_lstat() -> None:
     result = m.run(os=fs)
 
     assert result == snapshot('0o120777')
+
+
+def test_legacy_abstract_os_lstat_rejects_symlink_fallback() -> None:
+    """The default lstat fallback should not silently follow symlinks."""
+    fs = LegacySymlinkOS()
+    fs.path_write_text(PurePosixPath('/target.txt'), 'hello')
+    fs.path_symlink_to(PurePosixPath('/link.txt'), PurePosixPath('/target.txt'))
+
+    with pytest.raises(NotImplementedError):
+        fs.path_lstat(PurePosixPath('/link.txt'))
 
 
 def test_abstract_os_stat_follow_symlinks_false() -> None:
