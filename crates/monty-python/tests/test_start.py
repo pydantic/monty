@@ -875,3 +875,82 @@ def test_resume_invalid_os_rejected():
     with pytest.raises(TypeError) as exc_info:
         p1.resume(return_value=1, os=123)  # pyright: ignore[reportArgumentType]
     assert str(exc_info.value) == snapshot("os must be callable, got 'int'")
+
+
+# === Tests that snapshot is preserved on resume() validation errors ===
+
+
+def test_function_snapshot_preserved_on_invalid_kwargs():
+    """`resume()` with bad kwargs leaves the snapshot intact for retry.
+
+    A typo in the kwarg name (or both/neither return_value+exception) used to
+    consume the snapshot via `mem::replace(..., Done)` before validating, so
+    the user lost their snapshot to a one-character typo.
+    """
+    p1 = Monty('fetch()').start()
+    assert isinstance(p1, pydantic_monty.FunctionSnapshot)
+
+    # Wrong kwarg name — TypeError, snapshot must NOT be consumed.
+    with pytest.raises(TypeError):
+        p1.resume(retrun_value=1)  # pyright: ignore[reportCallIssue]
+    # Both args provided — TypeError, snapshot must NOT be consumed.
+    with pytest.raises(TypeError):
+        p1.resume(return_value=1, exception=ValueError('x'))  # pyright: ignore[reportCallIssue]
+    # No args provided — TypeError, snapshot must NOT be consumed.
+    with pytest.raises(TypeError):
+        p1.resume()  # pyright: ignore[reportCallIssue]
+
+    # Snapshot is still usable.
+    final = p1.resume(return_value=42)
+    assert isinstance(final, pydantic_monty.MontyComplete)
+    assert final.output == snapshot(42)
+
+
+def test_function_snapshot_preserved_on_invalid_mount():
+    """Validation of `mount`/`os` happens before the snapshot is consumed."""
+    p1 = Monty('fetch()').start()
+    assert isinstance(p1, pydantic_monty.FunctionSnapshot)
+    with pytest.raises(TypeError):
+        p1.resume(return_value=1, os=123)  # pyright: ignore[reportArgumentType]
+    final = p1.resume(return_value=42)
+    assert isinstance(final, pydantic_monty.MontyComplete)
+    assert final.output == snapshot(42)
+
+
+def test_name_lookup_snapshot_preserved_on_invalid_value():
+    """`NameLookupSnapshot.resume()` with an unconvertible `value` preserves the snapshot."""
+
+    class Custom:
+        pass
+
+    p1 = Monty('x = my_name; x').start()
+    assert isinstance(p1, pydantic_monty.NameLookupSnapshot)
+
+    # Custom non-convertible object → TypeError from py_to_monty, snapshot intact.
+    with pytest.raises(TypeError):
+        p1.resume(value=Custom())
+
+    final = p1.resume(value=42)
+    assert isinstance(final, pydantic_monty.MontyComplete)
+    assert final.output == snapshot(42)
+
+
+def test_future_snapshot_preserved_on_invalid_results():
+    """`FutureSnapshot.resume()` with a malformed `results` dict preserves the snapshot."""
+    progress = Monty('x = await fetch(); x').start()
+    assert isinstance(progress, pydantic_monty.FunctionSnapshot)
+    call_id = progress.call_id
+
+    progress = progress.resume(future=...)
+    assert isinstance(progress, pydantic_monty.FutureSnapshot)
+
+    # Bad call_id type (string instead of int) → TypeError, snapshot intact.
+    with pytest.raises(TypeError):
+        progress.resume({'not-an-int': {'return_value': 1}})  # pyright: ignore[reportArgumentType]
+    # Inner dict has both keys → TypeError, snapshot intact.
+    with pytest.raises(TypeError):
+        progress.resume({call_id: {'return_value': 1, 'exception': ValueError('x')}})  # pyright: ignore[reportArgumentType]
+
+    final = progress.resume({call_id: {'return_value': 42}})
+    assert isinstance(final, pydantic_monty.MontyComplete)
+    assert final.output == snapshot(42)

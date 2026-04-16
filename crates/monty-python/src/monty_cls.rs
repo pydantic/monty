@@ -1190,18 +1190,25 @@ impl PyFunctionSnapshot {
     ) -> PyResult<Bound<'py, PyAny>> {
         const ARGS_ERROR: &str = "resume() accepts either return_value or exception, not both";
 
+        // Validate everything BEFORE consuming the snapshot. A failure here
+        // (bad mount/os, missing/wrong kwargs, unconvertible return_value)
+        // must leave the snapshot intact so the caller can retry — and for
+        // REPL variants, must avoid leaking the REPL stored inside the call.
         let os_handler = OsHandler::from_run_args(py, mount, os)?;
+        let Some(kwargs) = kwargs else {
+            return Err(PyTypeError::new_err(ARGS_ERROR));
+        };
+        let external_result = extract_external_result(py, kwargs, ARGS_ERROR, &self.dc_registry, self.call_id)?;
 
         let mut snapshot = self
             .snapshot
             .lock()
             .map_err(|_| PyRuntimeError::new_err("Snapshot is currently being resumed by another thread"))?;
 
+        if matches!(*snapshot, EitherFunctionSnapshot::Done) {
+            return Err(PyRuntimeError::new_err("Progress already resumed"));
+        }
         let snapshot = mem::replace(&mut *snapshot, EitherFunctionSnapshot::Done);
-        let Some(kwargs) = kwargs else {
-            return Err(PyTypeError::new_err(ARGS_ERROR));
-        };
-        let external_result = extract_external_result(py, kwargs, ARGS_ERROR, &self.dc_registry, self.call_id)?;
         self.resume_with_result(py, snapshot, external_result, os_handler.as_ref())
     }
 
@@ -1439,14 +1446,10 @@ impl PyNameLookupSnapshot {
         os: Option<&Bound<'_, PyAny>>,
         kwargs: Option<&Bound<'_, PyDict>>,
     ) -> PyResult<Bound<'py, PyAny>> {
+        // Validate everything BEFORE consuming the snapshot — a `py_to_monty`
+        // failure on `value` must leave the snapshot intact for retry, and
+        // (for REPL variants) avoid leaking the REPL stored inside.
         let os_handler = OsHandler::from_run_args(py, mount, os)?;
-
-        let mut snapshot = self
-            .snapshot
-            .lock()
-            .map_err(|_| PyRuntimeError::new_err("Snapshot is currently being resumed by another thread"))?;
-
-        let snapshot = mem::replace(&mut *snapshot, EitherLookupSnapshot::Done);
         let lookup_result = if let Some(kwargs) = kwargs
             && let Some(value) = kwargs.get_item(intern!(py, "value"))?
         {
@@ -1454,6 +1457,16 @@ impl PyNameLookupSnapshot {
         } else {
             NameLookupResult::Undefined
         };
+
+        let mut snapshot = self
+            .snapshot
+            .lock()
+            .map_err(|_| PyRuntimeError::new_err("Snapshot is currently being resumed by another thread"))?;
+
+        if matches!(*snapshot, EitherLookupSnapshot::Done) {
+            return Err(PyRuntimeError::new_err("Progress already resumed"));
+        }
+        let snapshot = mem::replace(&mut *snapshot, EitherLookupSnapshot::Done);
 
         let to_err = |py: Python<'_>, e| MontyError::new_err(py, e);
 
@@ -1673,15 +1686,10 @@ impl PyFutureSnapshot {
     ) -> PyResult<Bound<'py, PyAny>> {
         const ARGS_ERROR: &str = "results values must be a dict with either 'return_value' or 'exception', not both";
 
+        // Validate everything BEFORE consuming the snapshot — a malformed
+        // `results` dict must leave the snapshot intact for retry, and
+        // (for REPL variants) avoid leaking the REPL stored inside.
         let os_handler = OsHandler::from_run_args(py, mount, os)?;
-
-        let mut snapshot = self
-            .snapshot
-            .lock()
-            .map_err(|_| PyRuntimeError::new_err("Snapshot is currently being resumed by another thread"))?;
-
-        let snapshot = mem::replace(&mut *snapshot, EitherFutureSnapshot::Done);
-
         let external_results = results
             .iter()
             .map(|(key, value)| {
@@ -1691,6 +1699,16 @@ impl PyFutureSnapshot {
                 Ok((call_id, value))
             })
             .collect::<PyResult<Vec<_>>>()?;
+
+        let mut snapshot = self
+            .snapshot
+            .lock()
+            .map_err(|_| PyRuntimeError::new_err("Snapshot is currently being resumed by another thread"))?;
+
+        if matches!(*snapshot, EitherFutureSnapshot::Done) {
+            return Err(PyRuntimeError::new_err("Progress already resumed"));
+        }
+        let snapshot = mem::replace(&mut *snapshot, EitherFutureSnapshot::Done);
 
         let to_err = |py: Python<'_>, e| MontyError::new_err(py, e);
 
