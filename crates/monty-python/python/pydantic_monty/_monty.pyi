@@ -356,7 +356,7 @@ class MontyRepl:
         external_functions: dict[str, Callable[..., Any]] | None = None,
         print_callback: Callable[[Literal['stdout'], str], None] | CollectStreams | CollectString | None = None,
         mount: MountDir | list[MountDir] | None = None,
-        os: Callable[[str, tuple[Any, ...], dict[str, Any]], Any] | None = None,
+        os: Callable[[OsFunction, tuple[Any, ...], dict[str, Any]], Any] | None = None,
         skip_type_check: bool = False,
     ) -> Any:
         """
@@ -422,7 +422,7 @@ class MontyRepl:
         inputs: dict[str, Any] | None = None,
         print_callback: Callable[[Literal['stdout'], str], None] | CollectStreams | CollectString | None = None,
         mount: MountDir | list[MountDir] | None = None,
-        os: Callable[[str, tuple[Any, ...], dict[str, Any]], Any] | None = None,
+        os: Callable[[OsFunction, tuple[Any, ...], dict[str, Any]], Any] | None = None,
         skip_type_check: bool = False,
     ) -> FunctionSnapshot | NameLookupSnapshot | FutureSnapshot | MontyComplete:
         """

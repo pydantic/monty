@@ -574,8 +574,17 @@ impl PyMonty {
                 }
                 RunProgress::OsCall(call) => {
                     let fallback = os_handler.as_ref().and_then(|h| h.fallback.as_ref());
+                    // `handle_mount_os_call` can fail during Python⇄Monty conversion;
+                    // put mounts back before propagating so the `MountDir` slot doesn't
+                    // get permanently stuck in the "in use" state.
                     let result: ExtFunctionResult = if let Some(table) = &mut mount_table {
-                        handle_mount_os_call(py, &call, table, fallback, &self.dc_registry)?
+                        match handle_mount_os_call(py, &call, table, fallback, &self.dc_registry) {
+                            Ok(r) => r,
+                            Err(e) => {
+                                put_back(mount_table);
+                                return Err(e);
+                            }
+                        }
                     } else {
                         call.function.on_no_handler(&call.args).into()
                     };

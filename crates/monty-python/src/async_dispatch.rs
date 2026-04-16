@@ -379,10 +379,21 @@ fn dispatch_os_call_py(
             .bind(py)
             .call1((function.to_string(), py_args_tuple, py_kwargs))
         {
-            Ok(result) => match py_to_monty(&result, dc_registry) {
-                Ok(obj) => ExtFunctionResult::Return(obj),
-                Err(err) => ExtFunctionResult::Error(exc_py_to_monty(py, &err)),
-            },
+            Ok(result) => {
+                // Honor the `NOT_HANDLED` sentinel by falling through to the default
+                // unhandled behavior, matching the sync `call_os_callback_parts` path.
+                match crate::get_not_handled(py) {
+                    Ok(not_handled) if result.is(not_handled.bind(py)) => {
+                        return function.on_no_handler(args).into();
+                    }
+                    Ok(_) => {}
+                    Err(err) => return ExtFunctionResult::Error(exc_py_to_monty(py, &err)),
+                }
+                match py_to_monty(&result, dc_registry) {
+                    Ok(obj) => ExtFunctionResult::Return(obj),
+                    Err(err) => ExtFunctionResult::Error(exc_py_to_monty(py, &err)),
+                }
+            }
             Err(err) => ExtFunctionResult::Error(exc_py_to_monty(py, &err)),
         }
     })

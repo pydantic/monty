@@ -910,8 +910,18 @@ impl PyMontyRepl {
                     };
                 }
                 ReplProgress::OsCall(call) => {
+                    // `handle_repl_os_call` can fail during Python⇄Monty conversion of
+                    // args/results. The OS call still owns the REPL handle — extract
+                    // it via `into_repl` and put mounts back so neither leaks.
                     let result: ExtFunctionResult =
-                        handle_repl_os_call(py, &call, mount_table.as_mut(), fallback, &self.dc_registry)?;
+                        match handle_repl_os_call(py, &call, mount_table.as_mut(), fallback, &self.dc_registry) {
+                            Ok(r) => r,
+                            Err(e) => {
+                                put_back(mount_table);
+                                self.put_repl_after_rollback(EitherRepl::from_core(call.into_repl()));
+                                return Err(e);
+                            }
+                        };
 
                     progress = match py.detach(|| print_target.with_writer(|w| call.resume(result, w))) {
                         Ok(p) => p,
