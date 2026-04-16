@@ -49,6 +49,15 @@ st_dir = Path('/virtual/subdir').stat()
 assert st_dir.st_mode & 0o170000 == 0o040000, 'stat is directory'
 assert st_dir.st_mode & 0o777 == 0o755, 'stat dir mode permissions'
 
+# === lstat() and stat(follow_symlinks=False) ===
+st_lstat = Path('/virtual/file.txt').lstat()
+assert st_lstat.st_size == 12, 'lstat size for regular file'
+assert st_lstat.st_mode & 0o777 == 0o644, 'lstat mode permissions'
+
+st_no_follow = Path('/virtual/file.txt').stat(follow_symlinks=False)
+assert st_no_follow.st_size == 12, 'stat follow_symlinks=False size for regular file'
+assert st_no_follow.st_mode & 0o777 == 0o644, 'stat follow_symlinks=False mode permissions'
+
 # === stat() index access ===
 st2 = Path('/virtual/file.txt').stat()
 assert st2[6] == 12, 'stat index access for st_size'
@@ -109,6 +118,13 @@ assert Path('/virtual/file.txt').read_text() == 'overwritten', 'write_text overw
 Path('/virtual/binary.dat').write_bytes(b'\xff\xfe\xfd')
 assert Path('/virtual/binary.dat').read_bytes() == b'\xff\xfe\xfd', 'write_bytes creates file'
 
+# === chmod() ===
+Path('/virtual/file.txt').chmod(0o600)
+assert Path('/virtual/file.txt').stat().st_mode & 0o777 == 0o600, 'chmod updates file mode'
+
+Path('/virtual/file.txt').chmod(0o640, follow_symlinks=False)
+assert Path('/virtual/file.txt').stat().st_mode & 0o777 == 0o640, 'chmod follow_symlinks=False updates file mode'
+
 # === mkdir() ===
 Path('/virtual/new_dir').mkdir()
 assert Path('/virtual/new_dir').is_dir() == True, 'mkdir creates directory'
@@ -135,3 +151,18 @@ Path('/virtual/old_name.txt').write_text('rename test')
 Path('/virtual/old_name.txt').rename(Path('/virtual/new_name.txt'))
 assert Path('/virtual/old_name.txt').exists() == False, 'rename removes old path'
 assert Path('/virtual/new_name.txt').read_text() == 'rename test', 'rename creates new path'
+
+# === unsupported readlink() and symlink_to() in iter mode ===
+try:
+    Path('/virtual/file.txt').readlink()
+    assert False, 'expected readlink() on regular file to fail'
+except OSError as exc:
+    assert str(exc) == "[Errno 22] Invalid argument: '/virtual/file.txt'", f'unexpected readlink error: {exc}'
+
+try:
+    Path('/virtual/link.txt').symlink_to(Path('/virtual/file.txt'))
+    assert False, 'expected symlink_to() in iter mode to fail'
+except OSError as exc:
+    assert str(exc) == "Path.symlink_to() is not supported in iter mode: '/virtual/link.txt'", (
+        f'unexpected symlink_to error: {exc}'
+    )

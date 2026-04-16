@@ -264,6 +264,12 @@ class VirtualPath(type(Path())):
             raise FileNotFoundError(2, 'No such file or directory', path_str)
         return super().stat(follow_symlinks=follow_symlinks)
 
+    def lstat(self) -> VirtualStatResult | os.stat_result:  # pyright: ignore[reportIncompatibleMethodOverride]
+        path_str = str(self)
+        if is_virtual_path(path_str):
+            return self.stat(follow_symlinks=False)
+        return super().lstat()
+
     def iterdir(self):  # pyright: ignore[reportUnknownParameterType]
         path_str = str(self)
         if is_virtual_path(path_str):
@@ -312,6 +318,15 @@ class VirtualPath(type(Path())):
             _add_to_parent_dir(path_str)
             return len(data)
         return super().write_bytes(data)
+
+    def chmod(self, mode: int, *, follow_symlinks: bool = True) -> None:
+        path_str = str(self)
+        if is_virtual_path(path_str):
+            if path_str in VIRTUAL_FILES:
+                content, _ = VIRTUAL_FILES[path_str]
+                VIRTUAL_FILES[path_str] = (content, mode)
+            return
+        super().chmod(mode, follow_symlinks=follow_symlinks)
 
     def mkdir(self, mode: int = 0o777, parents: bool = False, exist_ok: bool = False) -> None:
         path_str = str(self)
@@ -382,6 +397,22 @@ class VirtualPath(type(Path())):
                 return VirtualPath(target_str)
             raise FileNotFoundError(2, 'No such file or directory', path_str)
         return VirtualPath(super().rename(target))
+
+    def readlink(self) -> 'VirtualPath':
+        path_str = str(self)
+        if is_virtual_path(path_str):
+            raise OSError(22, 'Invalid argument', path_str)
+        return VirtualPath(super().readlink())
+
+    def symlink_to(  # pyright: ignore[reportIncompatibleMethodOverride]
+        self,
+        target: 'VirtualPath | str',
+        target_is_directory: bool = False,
+    ) -> None:
+        path_str = str(self)
+        if is_virtual_path(path_str):
+            raise OSError(f"Path.symlink_to() is not supported in iter mode: '{path_str}'")
+        super().symlink_to(target, target_is_directory=target_is_directory)
 
     # __truediv__ is NOT overridden - the parent class already uses type(self)
     # to create new paths, which will be VirtualPath instances
