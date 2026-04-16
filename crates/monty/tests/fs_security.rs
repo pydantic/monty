@@ -369,6 +369,42 @@ mod symlink_tests {
     }
 
     #[test]
+    #[cfg(unix)] // Relative symlink targets are not supported on Windows
+    fn relative_symlink_escape_via_intermediate_symlink_readlink() {
+        for (label, mode) in all_modes() {
+            let dir = create_test_dir();
+            let outside = TempDir::new().unwrap();
+
+            fs::create_dir_all(outside.path().join("escape")).unwrap();
+            symlink_dir(outside.path(), dir.path().join("symlink_parent"));
+            symlink_file(
+                "symlink_parent/escape/file.txt",
+                dir.path().join("indirect_escape_file"),
+            );
+
+            let mut mt = mount_at_mnt(&dir, mode);
+            assert_blocked(&mut mt, OsFunction::Readlink, "/mnt/indirect_escape_file");
+            eprintln!("  {label}: passed");
+        }
+    }
+
+    #[test]
+    #[cfg(unix)] // Relative symlink targets are not supported on Windows
+    fn absolute_broken_symlink_missing_parent_readlink() {
+        for (label, mode) in all_modes() {
+            let dir = create_test_dir();
+            symlink_file(
+                "/definitely-missing-parent/ghost.txt",
+                dir.path().join("broken_abs_file"),
+            );
+
+            let mut mt = mount_at_mnt(&dir, mode);
+            assert_blocked(&mut mt, OsFunction::Readlink, "/mnt/broken_abs_file");
+            eprintln!("  {label}: passed");
+        }
+    }
+
+    #[test]
     fn symlink_escape_no_info_leak() {
         // Error messages should only contain virtual path, not host path.
         let dir = create_test_dir();

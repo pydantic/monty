@@ -189,9 +189,7 @@ fn host_symlink_target_to_virtual(
         let resolved_target = validate_symlink_target(link_path, target, mount_host, vpath)?;
         let relative = resolved_target
             .strip_prefix(mount_host)
-            .map_err(|_| MountError::PathEscape {
-                virtual_path: vpath.to_owned(),
-            })?;
+            .expect("validated absolute symlink targets stay within the mount");
         return Ok(join_virtual_path(mount_virtual, relative));
     }
 
@@ -211,9 +209,7 @@ fn validate_symlink_target(
     mount_host: &Path,
     vpath: &str,
 ) -> Result<PathBuf, MountError> {
-    let link_parent = link_path.parent().ok_or_else(|| MountError::PathEscape {
-        virtual_path: vpath.to_owned(),
-    })?;
+    let link_parent = link_path.parent().expect("resolved host paths always have a parent");
     if target.is_absolute() {
         let canonical_target = canonicalize_target_or_parent(target, vpath)?;
         if !canonical_target.starts_with(mount_host) {
@@ -266,9 +262,7 @@ fn canonicalize_target_or_parent(path: &Path, vpath: &str) -> Result<PathBuf, Mo
         return Ok(canonical);
     }
 
-    let parent = path.parent().ok_or_else(|| MountError::PathEscape {
-        virtual_path: vpath.to_owned(),
-    })?;
+    let parent = path.parent().expect("resolved symlink targets always have a parent");
     let canonical_parent = fs::canonicalize(parent).map_err(|_| MountError::PathEscape {
         virtual_path: vpath.to_owned(),
     })?;

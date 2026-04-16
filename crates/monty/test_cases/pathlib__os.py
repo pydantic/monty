@@ -54,9 +54,19 @@ st_lstat = Path('/virtual/file.txt').lstat()
 assert st_lstat.st_size == 12, 'lstat size for regular file'
 assert st_lstat.st_mode & 0o777 == 0o644, 'lstat mode permissions'
 
+st_lstat_dir = Path('/virtual/subdir').lstat()
+assert st_lstat_dir.st_mode & 0o170000 == 0o040000, 'lstat directory mode type'
+assert st_lstat_dir.st_mode & 0o777 == 0o755, 'lstat directory permissions'
+
 st_no_follow = Path('/virtual/file.txt').stat(follow_symlinks=False)
 assert st_no_follow.st_size == 12, 'stat follow_symlinks=False size for regular file'
 assert st_no_follow.st_mode & 0o777 == 0o644, 'stat follow_symlinks=False mode permissions'
+
+try:
+    Path('/nonexistent').lstat()
+    assert False, 'expected lstat() on nonexistent path to fail'
+except FileNotFoundError as exc:
+    assert str(exc) == "[Errno 2] No such file or directory: '/nonexistent'", f'unexpected lstat error: {exc}'
 
 # === stat() index access ===
 st2 = Path('/virtual/file.txt').stat()
@@ -124,6 +134,9 @@ assert Path('/virtual/file.txt').stat().st_mode & 0o777 == 0o600, 'chmod updates
 
 Path('/virtual/file.txt').chmod(0o640, follow_symlinks=False)
 assert Path('/virtual/file.txt').stat().st_mode & 0o777 == 0o640, 'chmod follow_symlinks=False updates file mode'
+
+Path('/nonexistent').chmod(0o600)
+assert Path('/nonexistent').exists() == False, 'chmod on nonexistent path remains nonexistent in iter mode'
 
 # === mkdir() ===
 Path('/virtual/new_dir').mkdir()

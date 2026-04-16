@@ -272,15 +272,17 @@ fn move_chmod_modes_for_rename(src: &Path, dst: &Path, ctx: &mut MountContext<'_
         .collect();
 
     for old_path in moved_keys {
-        let Some(mode) = ctx.chmod_modes.remove(&old_path) else {
-            continue;
-        };
+        let mode = ctx
+            .chmod_modes
+            .remove(&old_path)
+            .expect("moved chmod keys are collected from chmod_modes");
         let new_path = if old_path == src {
             dst.to_path_buf()
-        } else if let Ok(relative) = old_path.strip_prefix(src) {
-            dst.join(relative)
         } else {
-            continue;
+            let relative = old_path
+                .strip_prefix(src)
+                .expect("moved descendant chmod key starts with rename source");
+            dst.join(relative)
         };
         ctx.chmod_modes.insert(new_path, mode);
     }
