@@ -486,10 +486,10 @@ def test_start_os_handler_invalid_rejected():
 
 
 def test_start_resume_after_auto_dispatch_yields_os_snapshot(test_dir: Path):
-    """After start() returns a non-OS snapshot, auto-dispatch stops.
+    """When resume() is called without mount/os, auto-dispatch stops.
 
     OS calls produced by a later resume() surface as a FunctionSnapshot with
-    is_os_function=True, as before — the mount context does not persist.
+    is_os_function=True — the mount context must be re-provided via resume().
     """
     md = MountDir('/data', str(test_dir), mode='read-only')
     code = """
@@ -505,9 +505,201 @@ second = Path('/data/subdir/nested.txt').read_text()
     assert isinstance(p1, pydantic_monty.FunctionSnapshot)
     assert p1.function_name == snapshot('process')
 
-    # Resume with the external result. Second OS call now surfaces as an OS snapshot,
-    # because mount context does not persist across resume() calls.
+    # Resume without mount=: second OS call surfaces as an OS snapshot.
     p2 = p1.resume(return_value='processed')
     assert isinstance(p2, pydantic_monty.FunctionSnapshot)
     assert p2.is_os_function is True
     assert p2.function_name == snapshot('Path.read_text')
+
+
+# === Tests for snapshot.resume(mount=..., os=...) ===
+
+
+def test_function_snapshot_resume_with_mount_drives_os(test_dir: Path):
+    """resume(return_value=..., mount=...) auto-dispatches OS calls and runs to completion."""
+    md = MountDir('/data', str(test_dir), mode='read-only')
+    code = """
+from pathlib import Path
+x = fetch()
+content = Path('/data/hello.txt').read_text()
+(x, content)
+"""
+    m = Monty(code)
+    p1 = m.start(mount=md)
+    assert isinstance(p1, pydantic_monty.FunctionSnapshot)
+    assert p1.function_name == snapshot('fetch')
+
+    # Pass mount= on resume — the OS call after the external function is now auto-dispatched.
+    result = p1.resume(return_value='fetched', mount=md)
+    assert isinstance(result, pydantic_monty.MontyComplete)
+    assert result.output == snapshot(('fetched', 'hello world'))
+
+
+def test_function_snapshot_resume_with_os_callback_drives_os():
+    """resume(return_value=..., os=...) auto-dispatches OS calls via the callback."""
+
+    def os_cb(func: str, args: tuple[Any, ...], kwargs: dict[str, Any]) -> bool:
+        return True
+
+    code = """
+x = fetch()
+from pathlib import Path
+exists = Path('/tmp/some.txt').exists()
+(x, exists)
+"""
+    m = Monty(code)
+    p1 = m.start()  # no mount/os at start — fetch yields first
+    assert isinstance(p1, pydantic_monty.FunctionSnapshot)
+    assert p1.function_name == snapshot('fetch')
+
+    result = p1.resume(return_value='fetched', os=os_cb)
+    assert isinstance(result, pydantic_monty.MontyComplete)
+    assert result.output == snapshot(('fetched', True))
+
+
+def test_function_snapshot_resume_with_mount_yields_next_external(test_dir: Path):
+    """resume(..., mount=...) auto-dispatches OS calls then yields the next external function."""
+    md = MountDir('/data', str(test_dir), mode='read-only')
+    code = """
+from pathlib import Path
+a = first()
+c = Path('/data/hello.txt').read_text()
+b = second(c)
+"""
+    m = Monty(code)
+    p1 = m.start()
+    assert isinstance(p1, pydantic_monty.FunctionSnapshot)
+    assert p1.function_name == snapshot('first')
+
+    # Pass mount=; OS call between first() and second() is auto-dispatched.
+    p2 = p1.resume(return_value=1, mount=md)
+    assert isinstance(p2, pydantic_monty.FunctionSnapshot)
+    assert p2.is_os_function is False
+    assert p2.function_name == snapshot('second')
+    assert p2.args == snapshot(('hello world',))
+
+
+def test_function_snapshot_resume_exception_with_mount(test_dir: Path):
+    """resume(exception=..., mount=...) works when the exception is caught and execution continues with OS calls."""
+    md = MountDir('/data', str(test_dir), mode='read-only')
+    code = """
+from pathlib import Path
+try:
+    result = fetch()
+except ValueError:
+    result = Path('/data/hello.txt').read_text()
+result
+"""
+    m = Monty(code)
+    p1 = m.start()
+    assert isinstance(p1, pydantic_monty.FunctionSnapshot)
+    assert p1.function_name == snapshot('fetch')
+
+    final = p1.resume(exception=ValueError('boom'), mount=md)
+    assert isinstance(final, pydantic_monty.MontyComplete)
+    assert final.output == snapshot('hello world')
+
+
+def test_name_lookup_snapshot_resume_with_mount(test_dir: Path):
+    """NameLookupSnapshot.resume(value=..., mount=...) auto-dispatches subsequent OS calls."""
+    md = MountDir('/data', str(test_dir), mode='read-only')
+    code = """
+from pathlib import Path
+v = my_name
+content = Path('/data/hello.txt').read_text()
+(v, content)
+"""
+    m = Monty(code)
+    p1 = m.start()
+    assert isinstance(p1, pydantic_monty.NameLookupSnapshot)
+    assert p1.variable_name == snapshot('my_name')
+
+    result = p1.resume(value=42, mount=md)
+    assert isinstance(result, pydantic_monty.MontyComplete)
+    assert result.output == snapshot((42, 'hello world'))
+
+
+def test_resume_not_handled_with_mount(test_dir: Path):
+    """resume_not_handled(mount=...) auto-dispatches subsequent OS calls.
+
+    The initial OS call is marked unhandled (raises PermissionError), but the
+    sandbox catches it and subsequent OS calls (handled via mount) auto-dispatch.
+    """
+    md = MountDir('/data', str(test_dir), mode='read-only')
+    code = """
+from pathlib import Path
+try:
+    Path('/outside').exists()
+    raised = False
+except PermissionError:
+    raised = True
+content = Path('/data/hello.txt').read_text()
+(raised, content)
+"""
+    m = Monty(code)
+    p1 = m.start()
+    assert isinstance(p1, pydantic_monty.FunctionSnapshot)
+    assert p1.is_os_function is True
+    assert p1.function_name == snapshot('Path.exists')
+
+    result = p1.resume_not_handled(mount=md)
+    assert isinstance(result, pydantic_monty.MontyComplete)
+    assert result.output == snapshot((True, 'hello world'))
+
+
+def test_resume_mount_then_next_os_snapshot_without_mount(test_dir: Path):
+    """Auto-dispatch only covers the single resume() call — next resume without mount yields OS snapshot."""
+    md = MountDir('/data', str(test_dir), mode='read-only')
+    code = """
+from pathlib import Path
+x = first()
+a = Path('/data/hello.txt').read_text()
+y = middle()
+b = Path('/data/subdir/nested.txt').read_text()
+(x, a, y, b)
+"""
+    m = Monty(code)
+    p1 = m.start()
+    assert isinstance(p1, pydantic_monty.FunctionSnapshot)
+    assert p1.function_name == snapshot('first')
+
+    # Resume with mount: first OS call auto-dispatched, yields at middle().
+    p2 = p1.resume(return_value=1, mount=md)
+    assert isinstance(p2, pydantic_monty.FunctionSnapshot)
+    assert p2.function_name == snapshot('middle')
+
+    # Resume without mount: second OS call surfaces as an OS snapshot.
+    p3 = p2.resume(return_value=2)
+    assert isinstance(p3, pydantic_monty.FunctionSnapshot)
+    assert p3.is_os_function is True
+    assert p3.function_name == snapshot('Path.read_text')
+
+
+def test_resume_mount_put_back_after_auto_dispatch(test_dir: Path):
+    """After resume() with mount/os completes, the mount is put back."""
+    md = MountDir('/data', str(test_dir), mode='read-only')
+    code = """
+x = fetch()
+from pathlib import Path
+content = Path('/data/hello.txt').read_text()
+(x, content)
+"""
+    m = Monty(code)
+    p1 = m.start()
+    assert isinstance(p1, pydantic_monty.FunctionSnapshot)
+    final = p1.resume(return_value='x', mount=md)
+    assert isinstance(final, pydantic_monty.MontyComplete)
+
+    # Reusing the mount should still work after resume finishes.
+    m2 = Monty("from pathlib import Path; Path('/data/subdir/nested.txt').read_text()")
+    assert m2.run(mount=md) == snapshot('nested content')
+
+
+def test_resume_invalid_os_rejected():
+    """Non-callable `os=` on resume is rejected with TypeError."""
+    m = Monty('fetch()')
+    p1 = m.start()
+    assert isinstance(p1, pydantic_monty.FunctionSnapshot)
+    with pytest.raises(TypeError) as exc_info:
+        p1.resume(return_value=1, os=123)  # pyright: ignore[reportArgumentType]
+    assert str(exc_info.value) == snapshot("os must be callable, got 'int'")

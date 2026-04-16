@@ -882,3 +882,151 @@ def test_feed_start_os_handler_invalid_rejected():
     assert str(exc_info.value) == snapshot("os must be callable, got 'int'")
     # REPL untouched by the validation failure.
     assert repl.feed_run('x') == snapshot(1)
+
+
+# === Tests for REPL snapshot.resume(mount=..., os=...) ===
+
+
+def test_repl_function_snapshot_resume_with_mount(test_dir: Path):
+    """REPL FunctionSnapshot.resume(return_value=..., mount=...) auto-dispatches OS calls."""
+    md = MountDir('/data', str(test_dir), mode='read-only')
+    code = """
+from pathlib import Path
+x = fetch()
+content = Path('/data/hello.txt').read_text()
+result = (x, content)
+"""
+    repl = pydantic_monty.MontyRepl()
+    p1 = repl.feed_start(code)
+    assert isinstance(p1, pydantic_monty.FunctionSnapshot)
+    assert p1.function_name == snapshot('fetch')
+
+    final = p1.resume(return_value='fetched', mount=md)
+    assert isinstance(final, pydantic_monty.MontyComplete)
+    # State committed — `result` is visible in a subsequent snippet.
+    assert repl.feed_run('result') == snapshot(('fetched', 'hello world'))
+
+
+def test_repl_function_snapshot_resume_with_os_callback():
+    """REPL resume() with os= auto-dispatches OS calls via the callback."""
+
+    def os_cb(func: str, args: tuple[Any, ...], kwargs: dict[str, Any]) -> bool:
+        return True
+
+    repl = pydantic_monty.MontyRepl()
+    code = """
+from pathlib import Path
+x = fetch()
+exists = Path('/tmp/x.txt').exists()
+result = (x, exists)
+"""
+    p1 = repl.feed_start(code)
+    assert isinstance(p1, pydantic_monty.FunctionSnapshot)
+    p1.resume(return_value='fetched', os=os_cb)
+    assert repl.feed_run('result') == snapshot(('fetched', True))
+
+
+def test_repl_function_snapshot_resume_yields_next_external(test_dir: Path):
+    """REPL resume(..., mount=...) auto-dispatches OS calls then yields next FunctionSnapshot."""
+    md = MountDir('/data', str(test_dir), mode='read-only')
+    code = """
+from pathlib import Path
+a = first()
+c = Path('/data/hello.txt').read_text()
+b = second(c)
+"""
+    repl = pydantic_monty.MontyRepl()
+    p1 = repl.feed_start(code)
+    assert isinstance(p1, pydantic_monty.FunctionSnapshot)
+    assert p1.function_name == snapshot('first')
+
+    p2 = p1.resume(return_value=1, mount=md)
+    assert isinstance(p2, pydantic_monty.FunctionSnapshot)
+    assert p2.is_os_function is False
+    assert p2.function_name == snapshot('second')
+    assert p2.args == snapshot(('hello world',))
+    p2.resume(return_value=2)
+    # REPL is usable after completion
+    assert repl.feed_run('a') == snapshot(1)
+
+
+def test_repl_name_lookup_resume_with_mount(test_dir: Path):
+    """REPL NameLookupSnapshot.resume(value=..., mount=...) auto-dispatches subsequent OS calls."""
+    md = MountDir('/data', str(test_dir), mode='read-only')
+    code = """
+from pathlib import Path
+v = my_name
+content = Path('/data/hello.txt').read_text()
+result = (v, content)
+"""
+    repl = pydantic_monty.MontyRepl()
+    p1 = repl.feed_start(code)
+    assert isinstance(p1, pydantic_monty.NameLookupSnapshot)
+    assert p1.variable_name == snapshot('my_name')
+
+    final = p1.resume(value=42, mount=md)
+    assert isinstance(final, pydantic_monty.MontyComplete)
+    assert repl.feed_run('result') == snapshot((42, 'hello world'))
+
+
+def test_repl_resume_not_handled_with_mount(test_dir: Path):
+    """REPL FunctionSnapshot.resume_not_handled(mount=...) auto-dispatches subsequent OS calls."""
+    md = MountDir('/data', str(test_dir), mode='read-only')
+    code = """
+from pathlib import Path
+try:
+    Path('/outside').exists()
+    raised = False
+except PermissionError:
+    raised = True
+content = Path('/data/hello.txt').read_text()
+result = (raised, content)
+"""
+    repl = pydantic_monty.MontyRepl()
+    p1 = repl.feed_start(code)
+    assert isinstance(p1, pydantic_monty.FunctionSnapshot)
+    assert p1.is_os_function is True
+
+    final = p1.resume_not_handled(mount=md)
+    assert isinstance(final, pydantic_monty.MontyComplete)
+    assert repl.feed_run('result') == snapshot((True, 'hello world'))
+
+
+def test_repl_resume_mount_preserves_repl_on_error(test_dir: Path):
+    """When an OS-dispatch chain during resume fails, REPL state is preserved."""
+    md = MountDir('/data', str(test_dir), mode='read-only')
+    repl = pydantic_monty.MontyRepl()
+    repl.feed_run('x = 42')
+    code = """
+from pathlib import Path
+y = fetch()
+Path('/outside/path.txt').read_text()
+y
+"""
+    p1 = repl.feed_start(code)
+    assert isinstance(p1, pydantic_monty.FunctionSnapshot)
+
+    # The OS call inside the auto-dispatch chain raises PermissionError; the
+    # REPL must be rolled back so `x` is still accessible in a later snippet.
+    with pytest.raises(pydantic_monty.MontyRuntimeError):
+        p1.resume(return_value='fetched', mount=md)
+    assert repl.feed_run('x') == snapshot(42)
+
+
+def test_repl_resume_mount_put_back_after_completion(test_dir: Path):
+    """After REPL resume() with mount completes, the mount can be reused."""
+    md = MountDir('/data', str(test_dir), mode='read-only')
+    repl = pydantic_monty.MontyRepl()
+    code = """
+from pathlib import Path
+y = fetch()
+content = Path('/data/hello.txt').read_text()
+result = (y, content)
+"""
+    p1 = repl.feed_start(code)
+    assert isinstance(p1, pydantic_monty.FunctionSnapshot)
+    p1.resume(return_value='v', mount=md)
+
+    # The same mount should be reusable.
+    m = pydantic_monty.Monty("from pathlib import Path; Path('/data/subdir/nested.txt').read_text()")
+    assert m.run(mount=md) == snapshot('nested content')

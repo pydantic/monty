@@ -30,7 +30,7 @@ use crate::{
     limits::{CancellationFlag, FutureCancellationGuard, PySignalTracker, extract_limits},
     mount::OsHandler,
     print_target::PrintTarget,
-    repl::{EitherRepl, FromCoreRepl, PyMontyRepl},
+    repl::{EitherRepl, FromCoreRepl, PyMontyRepl, drive_repl_progress_through_os_calls},
     serialization,
 };
 
@@ -605,6 +605,55 @@ pub(crate) enum EitherProgress {
 }
 
 impl EitherProgress {
+    /// Auto-dispatches OS-call events on the wrapped progress until a non-OS
+    /// event is reached.
+    ///
+    /// Callers that pass `mount` or `os` to `Monty.start`, `MontyRepl.feed_start`,
+    /// or any of the `snapshot.resume(...)` methods use this to continue running
+    /// the VM past filesystem / OS operations without yielding control back to
+    /// Python. The underlying per-progress helpers ([`drive_run_progress_through_os_calls`]
+    /// and [`drive_repl_progress_through_os_calls`]) handle the
+    /// mount take/put-back lifecycle and, for the REPL case, rollback of REPL
+    /// state on resume errors.
+    pub(crate) fn drive_through_os_calls(
+        self,
+        py: Python<'_>,
+        handler: &OsHandler,
+        print_target: &PrintTarget,
+        dc_registry: &DcRegistry,
+    ) -> PyResult<Self> {
+        match self {
+            Self::NoLimit(p) => Ok(Self::NoLimit(drive_run_progress_through_os_calls(
+                py,
+                p,
+                handler,
+                print_target,
+                dc_registry,
+            )?)),
+            Self::Limited(p) => Ok(Self::Limited(drive_run_progress_through_os_calls(
+                py,
+                p,
+                handler,
+                print_target,
+                dc_registry,
+            )?)),
+            Self::ReplNoLimit(p, owner) => {
+                let next = {
+                    let this = owner.get();
+                    drive_repl_progress_through_os_calls(py, p, handler, print_target, dc_registry, this)?
+                };
+                Ok(Self::ReplNoLimit(next, owner))
+            }
+            Self::ReplLimited(p, owner) => {
+                let next = {
+                    let this = owner.get();
+                    drive_repl_progress_through_os_calls(py, p, handler, print_target, dc_registry, this)?
+                };
+                Ok(Self::ReplLimited(next, owner))
+            }
+        }
+    }
+
     /// Converts progress into the appropriate Python object:
     /// function snapshot, name lookup snapshot, future snapshot, or complete.
     pub(crate) fn progress_or_complete(
@@ -1034,11 +1083,17 @@ impl PyFunctionSnapshot {
     ///
     /// Both `resume()` and `resume_not_handled()` funnel through this helper so
     /// OS and REPL snapshots share identical state-restoration behavior.
+    ///
+    /// When `os_handler` is `Some`, the resumed progress is driven through any
+    /// pending OS-call events before being converted to a Python snapshot, so
+    /// callers who pass `mount=`/`os=` to `resume()` get the same auto-dispatch
+    /// semantics as `Monty.start(mount=..., os=...)`.
     fn resume_with_result<'py>(
         &self,
         py: Python<'py>,
         snapshot: EitherFunctionSnapshot,
         external_result: ExtFunctionResult,
+        os_handler: Option<&OsHandler>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let to_err = |py: Python<'_>, e| MontyError::new_err(py, e);
 
@@ -1086,6 +1141,13 @@ impl PyFunctionSnapshot {
             EitherFunctionSnapshot::Done => return Err(PyRuntimeError::new_err("Progress already resumed")),
         };
 
+        // Auto-dispatch OS calls if the caller provided `mount`/`os`. For REPL
+        // variants the helper handles REPL rollback on any error itself.
+        let progress = match os_handler {
+            Some(handler) => progress.drive_through_os_calls(py, handler, &self.print_callback, &self.dc_registry)?,
+            None => progress,
+        };
+
         let dc_registry = self.dc_registry.clone_ref(py);
         progress.progress_or_complete(
             py,
@@ -1102,12 +1164,24 @@ impl PyFunctionSnapshot {
     ///
     /// Exactly one of `return_value`, `exception` or `future` must be provided as a keyword argument.
     ///
+    /// When `mount` or `os` is provided, OS calls produced by the resumed
+    /// execution are auto-dispatched internally until a non-OS event is reached,
+    /// matching the semantics of `Monty.start(mount=..., os=...)`.
+    ///
     /// # Raises
     /// * `TypeError` if both arguments are provided, or neither
     /// * `RuntimeError` if the snapshot has already been resumed
-    #[pyo3(signature = (**kwargs))]
-    pub fn resume<'py>(&self, py: Python<'py>, kwargs: Option<&Bound<'_, PyDict>>) -> PyResult<Bound<'py, PyAny>> {
+    #[pyo3(signature = (*, mount=None, os=None, **kwargs))]
+    pub fn resume<'py>(
+        &self,
+        py: Python<'py>,
+        mount: Option<&Bound<'_, PyAny>>,
+        os: Option<&Bound<'_, PyAny>>,
+        kwargs: Option<&Bound<'_, PyDict>>,
+    ) -> PyResult<Bound<'py, PyAny>> {
         const ARGS_ERROR: &str = "resume() accepts either return_value or exception, not both";
+
+        let os_handler = OsHandler::from_run_args(py, mount, os)?;
 
         let mut snapshot = self
             .snapshot
@@ -1119,7 +1193,7 @@ impl PyFunctionSnapshot {
             return Err(PyTypeError::new_err(ARGS_ERROR));
         };
         let external_result = extract_external_result(py, kwargs, ARGS_ERROR, &self.dc_registry, self.call_id)?;
-        self.resume_with_result(py, snapshot, external_result)
+        self.resume_with_result(py, snapshot, external_result, os_handler.as_ref())
     }
 
     /// Resumes an OS snapshot using Monty's default "not handled" behavior.
@@ -1127,7 +1201,19 @@ impl PyFunctionSnapshot {
     /// This is only valid for OS function snapshots. It resumes execution as if
     /// no handler had been available for the pending OS call, producing the same
     /// `PermissionError` or `RuntimeError` that Monty would normally raise.
-    pub fn resume_not_handled<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+    ///
+    /// When `mount` or `os` is provided, subsequent OS calls produced by the
+    /// resumed execution are auto-dispatched, matching the semantics of
+    /// `Monty.start(mount=..., os=...)`.
+    #[pyo3(signature = (*, mount=None, os=None))]
+    pub fn resume_not_handled<'py>(
+        &self,
+        py: Python<'py>,
+        mount: Option<&Bound<'_, PyAny>>,
+        os: Option<&Bound<'_, PyAny>>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let os_handler = OsHandler::from_run_args(py, mount, os)?;
+
         let mut snapshot = self
             .snapshot
             .lock()
@@ -1147,7 +1233,7 @@ impl PyFunctionSnapshot {
         };
 
         let snapshot = mem::replace(&mut *snapshot, EitherFunctionSnapshot::Done);
-        self.resume_with_result(py, snapshot, external_result)
+        self.resume_with_result(py, snapshot, external_result, os_handler.as_ref())
     }
 
     /// Serializes the FunctionSnapshot instance to a binary format.
@@ -1332,8 +1418,20 @@ impl PyNameLookupSnapshot {
 #[pymethods]
 impl PyNameLookupSnapshot {
     /// Resumes execution with either a value or undefined.
-    #[pyo3(signature = (**kwargs))]
-    pub fn resume<'py>(&self, py: Python<'py>, kwargs: Option<&Bound<'_, PyDict>>) -> PyResult<Bound<'py, PyAny>> {
+    ///
+    /// When `mount` or `os` is provided, OS calls produced after the name is
+    /// resolved are auto-dispatched until a non-OS event is reached, matching
+    /// the semantics of `Monty.start(mount=..., os=...)`.
+    #[pyo3(signature = (*, mount=None, os=None, **kwargs))]
+    pub fn resume<'py>(
+        &self,
+        py: Python<'py>,
+        mount: Option<&Bound<'_, PyAny>>,
+        os: Option<&Bound<'_, PyAny>>,
+        kwargs: Option<&Bound<'_, PyDict>>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let os_handler = OsHandler::from_run_args(py, mount, os)?;
+
         let mut snapshot = self
             .snapshot
             .lock()
@@ -1372,6 +1470,11 @@ impl PyNameLookupSnapshot {
                 EitherProgress::ReplLimited(result, owner)
             }
             EitherLookupSnapshot::Done => return Err(PyRuntimeError::new_err("Progress already resumed")),
+        };
+
+        let progress = match os_handler.as_ref() {
+            Some(handler) => progress.drive_through_os_calls(py, handler, &self.print_callback, &self.dc_registry)?,
+            None => progress,
         };
 
         // Clone the Arc handle for the next snapshot/complete
@@ -1547,9 +1650,21 @@ impl PyFutureSnapshot {
 #[pymethods]
 impl PyFutureSnapshot {
     /// Resumes execution with results for one or more futures.
-    #[pyo3(signature = (results))]
-    pub fn resume<'py>(&self, py: Python<'py>, results: &Bound<'_, PyDict>) -> PyResult<Bound<'py, PyAny>> {
+    ///
+    /// When `mount` or `os` is provided, OS calls produced after the futures
+    /// resolve are auto-dispatched until a non-OS event is reached, matching
+    /// the semantics of `Monty.start(mount=..., os=...)`.
+    #[pyo3(signature = (results, *, mount=None, os=None))]
+    pub fn resume<'py>(
+        &self,
+        py: Python<'py>,
+        results: &Bound<'_, PyDict>,
+        mount: Option<&Bound<'_, PyAny>>,
+        os: Option<&Bound<'_, PyAny>>,
+    ) -> PyResult<Bound<'py, PyAny>> {
         const ARGS_ERROR: &str = "results values must be a dict with either 'return_value' or 'exception', not both";
+
+        let os_handler = OsHandler::from_run_args(py, mount, os)?;
 
         let mut snapshot = self
             .snapshot
@@ -1604,6 +1719,11 @@ impl PyFutureSnapshot {
                 EitherProgress::ReplLimited(result, owner)
             }
             EitherFutureSnapshot::Done => return Err(PyRuntimeError::new_err("Progress already resumed")),
+        };
+
+        let progress = match os_handler.as_ref() {
+            Some(handler) => progress.drive_through_os_calls(py, handler, &self.print_callback, &self.dc_registry)?,
+            None => progress,
         };
 
         let dc_registry = self.dc_registry.clone_ref(py);

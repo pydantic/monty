@@ -1001,13 +1001,14 @@ fn extract_repl_inputs(
 
 /// Auto-dispatches [`ReplProgress::OsCall`] events until a non-OS progress is reached.
 ///
-/// Used by [`PyMontyRepl::feed_start`] when the caller supplies a `mount` or
-/// `os` argument. Mirrors `drive_run_progress_through_os_calls` but also takes
-/// care of REPL rollback when a resume call fails: on error the REPL is
-/// restored via [`PyMontyRepl::put_repl_after_rollback`] before returning.
+/// Used by [`PyMontyRepl::feed_start`] and the snapshot `resume()` methods
+/// when the caller supplies a `mount` or `os` argument. Mirrors
+/// `drive_run_progress_through_os_calls` but also takes care of REPL rollback
+/// when a resume call fails: on error the REPL is restored via
+/// [`PyMontyRepl::put_repl_after_rollback`] before returning.
 ///
 /// Mounts are taken at the start and put back on every exit path.
-fn drive_repl_progress_through_os_calls<T: ResourceTracker + Send>(
+pub(crate) fn drive_repl_progress_through_os_calls<T: ResourceTracker + Send>(
     py: Python<'_>,
     mut progress: ReplProgress<T>,
     handler: &OsHandler,

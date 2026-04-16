@@ -513,17 +513,32 @@ class FunctionSnapshot:
         """The unique identifier for this external function call."""
 
     @overload
-    def resume(self, *, return_value: Any) -> FunctionSnapshot | NameLookupSnapshot | FutureSnapshot | MontyComplete:
+    def resume(
+        self,
+        *,
+        return_value: Any,
+        mount: MountDir | list[MountDir] | None = None,
+        os: Callable[[OsFunction, tuple[Any, ...], dict[str, Any]], Any] | None = None,
+    ) -> FunctionSnapshot | NameLookupSnapshot | FutureSnapshot | MontyComplete:
         """Resume execution with a return value from the external function.
 
         `resume` may only be called once on each FunctionSnapshot instance.
 
         The GIL is released allowing parallel execution.
 
+        When `mount` or `os` is provided, OS calls produced by the resumed
+        execution are auto-dispatched internally until the next non-OS event,
+        matching the semantics of `Monty.start(mount=..., os=...)`. Auto-dispatch
+        does not persist beyond this single `resume()` call — each `resume()`
+        must be passed `mount`/`os` again to continue the behavior.
+
         Arguments:
             return_value: The value to return from the external function call.
             exception: An exception to raise in the Monty interpreter.
             future: A future to await in the Monty interpreter.
+            mount: Optional filesystem mount(s) to expose inside the sandbox.
+            os: Optional callback for OS calls. Return `NOT_HANDLED` to fall back
+                to Monty's default unhandled behavior.
 
         Returns:
             FunctionSnapshot if another external function call is pending,
@@ -539,7 +554,11 @@ class FunctionSnapshot:
 
     @overload
     def resume(
-        self, *, exception: BaseException
+        self,
+        *,
+        exception: BaseException,
+        mount: MountDir | list[MountDir] | None = None,
+        os: Callable[[OsFunction, tuple[Any, ...], dict[str, Any]], Any] | None = None,
     ) -> FunctionSnapshot | NameLookupSnapshot | FutureSnapshot | MontyComplete:
         """Resume execution by raising the exception in the Monty interpreter.
 
@@ -547,7 +566,13 @@ class FunctionSnapshot:
         """
 
     @overload
-    def resume(self, *, future: EllipsisType) -> FunctionSnapshot | NameLookupSnapshot | FutureSnapshot | MontyComplete:
+    def resume(
+        self,
+        *,
+        future: EllipsisType,
+        mount: MountDir | list[MountDir] | None = None,
+        os: Callable[[OsFunction, tuple[Any, ...], dict[str, Any]], Any] | None = None,
+    ) -> FunctionSnapshot | NameLookupSnapshot | FutureSnapshot | MontyComplete:
         """Resume execution by returning a pending future.
 
         No result is provided, we simply resume execution stating that a future is pending.
@@ -555,11 +580,19 @@ class FunctionSnapshot:
         See docstring for the first overload for more information.
         """
 
-    def resume_not_handled(self) -> FunctionSnapshot | NameLookupSnapshot | FutureSnapshot | MontyComplete:
+    def resume_not_handled(
+        self,
+        *,
+        mount: MountDir | list[MountDir] | None = None,
+        os: Callable[[OsFunction, tuple[Any, ...], dict[str, Any]], Any] | None = None,
+    ) -> FunctionSnapshot | NameLookupSnapshot | FutureSnapshot | MontyComplete:
         """Resume an OS snapshot using Monty's default unhandled-OS behavior.
 
         This is only valid when `is_os_function` is `True`. It behaves the same
         as leaving the OS call unhandled in Monty's runtime.
+
+        When `mount` or `os` is provided, OS calls produced by the resumed
+        execution are auto-dispatched until a non-OS event is reached.
         """
 
     def dump(self) -> bytes:
@@ -603,6 +636,8 @@ class NameLookupSnapshot:
         self,
         *,
         value: Any | None = None,
+        mount: MountDir | list[MountDir] | None = None,
+        os: Callable[[OsFunction, tuple[Any, ...], dict[str, Any]], Any] | None = None,
     ) -> FunctionSnapshot | NameLookupSnapshot | FutureSnapshot | MontyComplete:
         """Resume execution with result the value from a name lookup, if any.
 
@@ -612,8 +647,15 @@ class NameLookupSnapshot:
 
         The GIL is released allowing parallel execution.
 
+        When `mount` or `os` is provided, OS calls produced after the name is
+        resolved are auto-dispatched until a non-OS event is reached, matching
+        the semantics of `Monty.start(mount=..., os=...)`.
+
         Arguments:
             value: The value from the name lookup, if any.
+            mount: Optional filesystem mount(s) to expose inside the sandbox.
+            os: Optional callback for OS calls. Return `NOT_HANDLED` to fall back
+                to Monty's default unhandled behavior.
 
         Returns:
             FunctionSnapshot if an external function call is pending,
@@ -670,6 +712,9 @@ class FutureSnapshot:
     def resume(
         self,
         results: dict[int, ExternalResult],
+        *,
+        mount: MountDir | list[MountDir] | None = None,
+        os: Callable[[OsFunction, tuple[Any, ...], dict[str, Any]], Any] | None = None,
     ) -> FunctionSnapshot | NameLookupSnapshot | FutureSnapshot | MontyComplete:
         """Resume execution with results for one or more futures.
 
@@ -677,9 +722,16 @@ class FutureSnapshot:
 
         The GIL is released allowing parallel execution.
 
+        When `mount` or `os` is provided, OS calls produced after the futures
+        resolve are auto-dispatched until a non-OS event is reached, matching
+        the semantics of `Monty.start(mount=..., os=...)`.
+
         Arguments:
             results: Dict mapping call_id to result dict. Each result dict must have
                 either 'return_value' or 'exception' key (not both).
+            mount: Optional filesystem mount(s) to expose inside the sandbox.
+            os: Optional callback for OS calls. Return `NOT_HANDLED` to fall back
+                to Monty's default unhandled behavior.
 
         Returns:
             FunctionSnapshot if an external function call is pending,
