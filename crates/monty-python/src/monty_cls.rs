@@ -1913,9 +1913,11 @@ where
 /// non-OS events (return the snapshot so the caller can drive external functions,
 /// name lookups, or futures from Python).
 ///
-/// Mounts are taken out of their shared slots at the start and put back on every
-/// exit path (the non-OS return, resume failure, or [`handle_mount_os_call`] error)
-/// so the taken/put-back invariant matches `run_impl`.
+/// Mounts are taken out of their shared slots lazily on the first OS call and
+/// put back on every exit path (the non-OS return, resume failure, or
+/// [`handle_mount_os_call`] error) so the taken/put-back invariant matches
+/// `run_impl` without failing on mount contention for progress that never
+/// reaches an OS call.
 pub(crate) fn drive_run_progress_through_os_calls<T: ResourceTracker + Send>(
     py: Python<'_>,
     mut progress: RunProgress<T>,
@@ -1923,28 +1925,39 @@ pub(crate) fn drive_run_progress_through_os_calls<T: ResourceTracker + Send>(
     print_target: &PrintTarget,
     dc_registry: &DcRegistry,
 ) -> PyResult<RunProgress<T>> {
-    let mut mount_table = handler.take()?;
+    let mut mount_table: Option<MountTable> = None;
     let fallback = handler.fallback.as_ref();
+    let put_back = |mount_table: &mut Option<MountTable>| {
+        if let Some(table) = mount_table.take() {
+            handler.put_back(table);
+        }
+    };
     loop {
         match progress {
             RunProgress::OsCall(call) => {
-                let result = match handle_mount_os_call(py, &call, &mut mount_table, fallback, dc_registry) {
+                let table = if let Some(table) = mount_table.as_mut() {
+                    table
+                } else {
+                    let table = handler.take()?;
+                    mount_table.insert(table)
+                };
+                let result = match handle_mount_os_call(py, &call, table, fallback, dc_registry) {
                     Ok(r) => r,
                     Err(e) => {
-                        handler.put_back(mount_table);
+                        put_back(&mut mount_table);
                         return Err(e);
                     }
                 };
                 progress = match py.detach(|| print_target.with_writer(|w| call.resume(result, w))) {
                     Ok(p) => p,
                     Err(e) => {
-                        handler.put_back(mount_table);
+                        put_back(&mut mount_table);
                         return Err(MontyError::new_err(py, e));
                     }
                 };
             }
             other => {
-                handler.put_back(mount_table);
+                put_back(&mut mount_table);
                 return Ok(other);
             }
         }
@@ -1986,23 +1999,47 @@ pub(crate) fn call_os_callback<T: ResourceTracker>(
     callback: &Bound<'_, PyAny>,
     dc_registry: &DcRegistry,
 ) -> PyResult<ExtFunctionResult> {
-    let py_args: Vec<Py<PyAny>> = call
-        .args
+    call_os_callback_parts(
+        py,
+        &call.function.to_string(),
+        &call.args,
+        &call.kwargs,
+        callback,
+        dc_registry,
+        || call.function.on_no_handler(&call.args).into(),
+    )
+}
+
+/// Shared implementation for dispatching an OS callback from either run or REPL progress.
+///
+/// Both `OsCall<T>` and `ReplOsCall<T>` expose the same user-facing callback
+/// shape, so the marshalling and `NOT_HANDLED` semantics live in one place to
+/// keep both bindings variants behaviorally identical.
+pub(crate) fn call_os_callback_parts(
+    py: Python<'_>,
+    function_name: &str,
+    args: &[MontyObject],
+    kwargs: &[(MontyObject, MontyObject)],
+    callback: &Bound<'_, PyAny>,
+    dc_registry: &DcRegistry,
+    on_not_handled: impl FnOnce() -> ExtFunctionResult,
+) -> PyResult<ExtFunctionResult> {
+    let py_args: Vec<Py<PyAny>> = args
         .iter()
         .map(|arg| monty_to_py(py, arg, dc_registry))
         .collect::<PyResult<_>>()?;
     let py_args_tuple = PyTuple::new(py, py_args)?;
 
     let py_kwargs = PyDict::new(py);
-    for (k, v) in &call.kwargs {
+    for (k, v) in kwargs {
         py_kwargs.set_item(monty_to_py(py, k, dc_registry)?, monty_to_py(py, v, dc_registry)?)?;
     }
 
-    match callback.call1((call.function.to_string(), py_args_tuple, py_kwargs)) {
+    match callback.call1((function_name, py_args_tuple, py_kwargs)) {
         Ok(result) => {
             let not_handled = crate::get_not_handled(py)?.bind(py);
             if result.is(not_handled) {
-                Ok(call.function.on_no_handler(&call.args).into())
+                Ok(on_not_handled())
             } else {
                 Ok(py_to_monty(&result, dc_registry)?.into())
             }

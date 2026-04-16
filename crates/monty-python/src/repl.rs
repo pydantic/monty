@@ -14,7 +14,7 @@ use pyo3::{
     exceptions::{PyRuntimeError, PyTypeError, PyValueError},
     prelude::*,
     sync::PyOnceLock,
-    types::{PyBytes, PyDict, PyList, PyModule, PyTuple, PyType},
+    types::{PyBytes, PyDict, PyList, PyModule, PyType},
 };
 use pyo3_async_runtimes::tokio::future_into_py;
 
@@ -22,10 +22,10 @@ use crate::{
     async_dispatch::{ReplCleanupNotifier, await_repl_transition, dispatch_loop_repl},
     convert::{get_docstring, monty_to_py, py_to_monty},
     dataclass::DcRegistry,
-    exceptions::{MontyError, exc_py_to_monty},
+    exceptions::MontyError,
     external::{ExternalFunctionRegistry, dispatch_method_call},
     limits::{CancellationFlag, FutureCancellationGuard, PySignalTracker, extract_limits},
-    monty_cls::{EitherProgress, py_type_check},
+    monty_cls::{EitherProgress, call_os_callback_parts, py_type_check},
     mount::OsHandler,
     print_target::PrintTarget,
 };
@@ -1007,7 +1007,10 @@ fn extract_repl_inputs(
 /// when a resume call fails: on error the REPL is restored via
 /// [`PyMontyRepl::put_repl_after_rollback`] before returning.
 ///
-/// Mounts are taken at the start and put back on every exit path.
+/// Mounts are taken lazily on the first OS call and put back on every exit
+/// path. This avoids spurious mount-contention failures for progress that
+/// never reaches an OS call, while still restoring the REPL on any failure
+/// after the OS-dispatch path is entered.
 pub(crate) fn drive_repl_progress_through_os_calls<T: ResourceTracker + Send>(
     py: Python<'_>,
     mut progress: ReplProgress<T>,
@@ -1019,15 +1022,32 @@ pub(crate) fn drive_repl_progress_through_os_calls<T: ResourceTracker + Send>(
 where
     EitherRepl: FromCoreRepl<T>,
 {
-    let mut mount_table = handler.take()?;
+    let mut mount_table: Option<MountTable> = None;
     let fallback = handler.fallback.as_ref();
+    let put_back = |mount_table: &mut Option<MountTable>| {
+        if let Some(table) = mount_table.take() {
+            handler.put_back(table);
+        }
+    };
     loop {
         match progress {
             ReplProgress::OsCall(call) => {
-                let result = match handle_repl_os_call(py, &call, Some(&mut mount_table), fallback, dc_registry) {
+                let table = if let Some(table) = mount_table.as_mut() {
+                    Some(table)
+                } else {
+                    let table = match handler.take() {
+                        Ok(table) => table,
+                        Err(e) => {
+                            repl_this.put_repl_after_rollback(EitherRepl::from_core(call.into_repl()));
+                            return Err(e);
+                        }
+                    };
+                    Some(mount_table.insert(table))
+                };
+                let result = match handle_repl_os_call(py, &call, table, fallback, dc_registry) {
                     Ok(r) => r,
                     Err(e) => {
-                        handler.put_back(mount_table);
+                        put_back(&mut mount_table);
                         // handle_repl_os_call can fail during Python⇄Monty
                         // conversion of args/results. The OS call still owns
                         // the REPL handle — extract it via `into_repl` and
@@ -1039,7 +1059,7 @@ where
                 progress = match py.detach(|| print_target.with_writer(|w| call.resume(result, w))) {
                     Ok(p) => p,
                     Err(e) => {
-                        handler.put_back(mount_table);
+                        put_back(&mut mount_table);
                         let err = *e;
                         repl_this.put_repl_after_rollback(EitherRepl::from_core(err.repl));
                         return Err(MontyError::new_err(py, err.error));
@@ -1047,7 +1067,7 @@ where
                 };
             }
             other => {
-                handler.put_back(mount_table);
+                put_back(&mut mount_table);
                 return Ok(other);
             }
         }
@@ -1077,33 +1097,15 @@ fn handle_repl_os_call<T: ResourceTracker>(
     }
 
     if let Some(fb) = fallback {
-        // `call_os_callback` in monty_cls.rs expects an `OsCall<T>` but we
-        // have a `ReplOsCall<T>`; the callback conversion logic is inlined
-        // here. It mirrors `call_os_callback` including the `NOT_HANDLED`
-        // sentinel check so REPL and non-REPL callbacks behave identically.
-        let py_args: Vec<Py<PyAny>> = call
-            .args
-            .iter()
-            .map(|arg| monty_to_py(py, arg, dc_registry))
-            .collect::<PyResult<_>>()?;
-        let py_args_tuple = PyTuple::new(py, py_args)?;
-
-        let py_kwargs = PyDict::new(py);
-        for (k, v) in &call.kwargs {
-            py_kwargs.set_item(monty_to_py(py, k, dc_registry)?, monty_to_py(py, v, dc_registry)?)?;
-        }
-
-        return match fb.bind(py).call1((call.function.to_string(), py_args_tuple, py_kwargs)) {
-            Ok(result) => {
-                let not_handled = crate::get_not_handled(py)?.bind(py);
-                if result.is(not_handled) {
-                    Ok(call.function.on_no_handler(&call.args).into())
-                } else {
-                    Ok(py_to_monty(&result, dc_registry)?.into())
-                }
-            }
-            Err(err) => Ok(exc_py_to_monty(py, &err).into()),
-        };
+        return call_os_callback_parts(
+            py,
+            &call.function.to_string(),
+            &call.args,
+            &call.kwargs,
+            fb.bind(py),
+            dc_registry,
+            || call.function.on_no_handler(&call.args).into(),
+        );
     }
 
     Ok(call.function.on_no_handler(&call.args).into())

@@ -26,6 +26,12 @@ def test_dir() -> Generator[Path, None, None]:
         yield p
 
 
+def assert_mount_reusable(md: MountDir) -> None:
+    """Assert that a previously used mount was returned to its shared slot."""
+    result = Monty("from pathlib import Path; Path('/data/subdir/nested.txt').read_text()").run(mount=md)
+    assert result == snapshot('nested content')
+
+
 # =============================================================================
 # MountDir validation
 # =============================================================================
@@ -188,6 +194,37 @@ def test_overlay_persists_across_runs(test_dir: Path):
     Monty("from pathlib import Path; Path('/data/persistent.txt').write_text('run1')").run(mount=md)
     result = Monty("from pathlib import Path; Path('/data/persistent.txt').read_text()").run(mount=md)
     assert result == snapshot('run1')
+
+
+def test_run_mount_released_after_runtime_error(test_dir: Path):
+    """Monty.run() puts mounts back when execution raises after an OS call."""
+    md = MountDir('/data', str(test_dir), mode='read-only')
+    code = """
+from pathlib import Path
+Path('/data/hello.txt').read_text()
+1 / 0
+"""
+    with pytest.raises(MontyRuntimeError) as exc_info:
+        Monty(code).run(mount=md)
+    assert isinstance(exc_info.value.exception(), ZeroDivisionError)
+    assert_mount_reusable(md)
+
+
+def test_run_mount_released_after_resource_error(test_dir: Path):
+    """Monty.run() puts mounts back when a resource limit trips after an OS call."""
+    md = MountDir('/data', str(test_dir), mode='read-only')
+    code = """
+from pathlib import Path
+Path('/data/hello.txt').read_text()
+result = []
+    for i in range(1000):
+        result.append('x' * 100)
+len(result)
+"""
+    with pytest.raises(MontyRuntimeError) as exc_info:
+        Monty(code).run(mount=md, limits={'max_memory': 100})
+    assert isinstance(exc_info.value.exception(), MemoryError)
+    assert_mount_reusable(md)
 
 
 # =============================================================================
@@ -409,3 +446,36 @@ def test_repl_read_only_mount_blocks_write(test_dir: Path):
     with pytest.raises(MontyRuntimeError) as exc_info:
         repl.feed_run("Path('/data/nope.txt').write_text('x')", mount=md)
     assert 'Read-only file system' in str(exc_info.value)
+
+
+def test_repl_feed_run_mount_released_after_runtime_error(test_dir: Path):
+    """MontyRepl.feed_run() puts mounts back when execution raises after an OS call."""
+    md = MountDir('/data', str(test_dir), mode='read-only')
+    repl = MontyRepl()
+    code = """
+from pathlib import Path
+Path('/data/hello.txt').read_text()
+1 / 0
+"""
+    with pytest.raises(MontyRuntimeError) as exc_info:
+        repl.feed_run(code, mount=md)
+    assert isinstance(exc_info.value.exception(), ZeroDivisionError)
+    assert_mount_reusable(md)
+
+
+def test_repl_feed_run_mount_released_after_resource_error(test_dir: Path):
+    """MontyRepl.feed_run() puts mounts back when a resource limit trips after an OS call."""
+    md = MountDir('/data', str(test_dir), mode='read-only')
+    repl = MontyRepl(limits={'max_memory': 100})
+    code = """
+from pathlib import Path
+Path('/data/hello.txt').read_text()
+result = []
+for i in range(1000):
+    result.append('x' * 100)
+len(result)
+"""
+    with pytest.raises(MontyRuntimeError) as exc_info:
+        repl.feed_run(code, mount=md)
+    assert isinstance(exc_info.value.exception(), MemoryError)
+    assert_mount_reusable(md)

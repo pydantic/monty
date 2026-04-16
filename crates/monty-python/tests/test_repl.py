@@ -767,6 +767,12 @@ def test_dir() -> Generator[Path, None, None]:
         yield p
 
 
+def assert_mount_reusable(md: MountDir) -> None:
+    """Assert that a previously used mount was returned to its shared slot."""
+    m = pydantic_monty.Monty("from pathlib import Path; Path('/data/subdir/nested.txt').read_text()")
+    assert m.run(mount=md) == snapshot('nested content')
+
+
 def test_feed_start_with_mount_returns_complete(test_dir: Path):
     """feed_start() with mount auto-dispatches OS calls and returns MontyComplete directly."""
     md = MountDir('/data', str(test_dir), mode='read-only')
@@ -822,6 +828,25 @@ def test_feed_start_mount_preserves_repl_state_on_runtime_error(test_dir: Path):
     with pytest.raises(pydantic_monty.MontyRuntimeError):
         repl.feed_start("from pathlib import Path; Path('/outside/path.txt').read_text()", mount=md)
     assert repl.feed_run('x') == snapshot(42)
+    assert_mount_reusable(md)
+
+
+def test_feed_start_mount_released_after_resource_error(test_dir: Path):
+    """feed_start(mount=...) puts mounts back when a resource limit trips after an OS call."""
+    md = MountDir('/data', str(test_dir), mode='read-only')
+    repl = pydantic_monty.MontyRepl(limits={'max_memory': 100})
+    code = """
+from pathlib import Path
+Path('/data/hello.txt').read_text()
+result = []
+for i in range(1000):
+    result.append('x' * 100)
+len(result)
+"""
+    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
+        repl.feed_start(code, mount=md)
+    assert isinstance(exc_info.value.exception(), MemoryError)
+    assert_mount_reusable(md)
 
 
 def test_feed_start_mount_persists_across_snippets(test_dir: Path):
@@ -871,6 +896,24 @@ def test_feed_start_mount_released_after_completion(test_dir: Path):
     # Same mount reused by a different Monty instance after feed_start returned.
     m = pydantic_monty.Monty("from pathlib import Path; Path('/data/subdir/nested.txt').read_text()")
     assert m.run(mount=md) == snapshot('nested content')
+
+
+def test_feed_start_mount_contention_on_os_call_restores_repl_state(test_dir: Path):
+    """A mount-take failure during REPL OS auto-dispatch rolls the REPL back."""
+    md = MountDir('/data', str(test_dir), mode='read-only')
+    repl = pydantic_monty.MontyRepl()
+    repl.feed_run('x = 42')
+
+    def os_cb(func: str, args: tuple[Any, ...], kwargs: dict[str, Any]) -> bool:
+        with pytest.raises(ValueError, match='already in use by another run'):
+            repl.feed_start("from pathlib import Path; Path('/data/hello.txt').read_text()", mount=md)
+        return False
+
+    outer = pydantic_monty.Monty("from pathlib import Path; Path('/outside').exists()")
+    result = outer.start(mount=md, os=os_cb)
+    assert isinstance(result, pydantic_monty.MontyComplete)
+    assert result.output is False
+    assert repl.feed_run('x') == snapshot(42)
 
 
 def test_feed_start_os_handler_invalid_rejected():
@@ -969,6 +1012,26 @@ result = (v, content)
     assert repl.feed_run('result') == snapshot((42, 'hello world'))
 
 
+def test_repl_name_lookup_resume_mount_released_after_runtime_error(test_dir: Path):
+    """REPL NameLookupSnapshot.resume(..., mount=...) puts mounts back on runtime error."""
+    md = MountDir('/data', str(test_dir), mode='read-only')
+    code = """
+from pathlib import Path
+value = missing_name
+Path('/data/hello.txt').read_text()
+1 / 0
+"""
+    repl = pydantic_monty.MontyRepl()
+    progress = repl.feed_start(code)
+    assert isinstance(progress, pydantic_monty.NameLookupSnapshot)
+
+    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
+        progress.resume(value=42, mount=md)
+    assert isinstance(exc_info.value.exception(), ZeroDivisionError)
+    assert repl.feed_run('1 + 1') == snapshot(2)
+    assert_mount_reusable(md)
+
+
 def test_repl_resume_not_handled_with_mount(test_dir: Path):
     """REPL FunctionSnapshot.resume_not_handled(mount=...) auto-dispatches subsequent OS calls."""
     md = MountDir('/data', str(test_dir), mode='read-only')
@@ -1011,6 +1074,29 @@ y
     with pytest.raises(pydantic_monty.MontyRuntimeError):
         p1.resume(return_value='fetched', mount=md)
     assert repl.feed_run('x') == snapshot(42)
+    assert_mount_reusable(md)
+
+
+def test_repl_resume_mount_released_after_resource_error(test_dir: Path):
+    """REPL FunctionSnapshot.resume(..., mount=...) puts mounts back on resource error."""
+    md = MountDir('/data', str(test_dir), mode='read-only')
+    repl = pydantic_monty.MontyRepl(limits={'max_allocations': 100})
+    code = """
+from pathlib import Path
+value = fetch()
+Path('/data/hello.txt').read_text()
+result = []
+for i in range(10000):
+    result.append([i])
+len(result)
+"""
+    progress = repl.feed_start(code)
+    assert isinstance(progress, pydantic_monty.FunctionSnapshot)
+
+    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
+        progress.resume(return_value='fetched', mount=md)
+    assert isinstance(exc_info.value.exception(), MemoryError)
+    assert_mount_reusable(md)
 
 
 def test_repl_resume_mount_put_back_after_completion(test_dir: Path):
@@ -1030,3 +1116,76 @@ result = (y, content)
     # The same mount should be reusable.
     m = pydantic_monty.Monty("from pathlib import Path; Path('/data/subdir/nested.txt').read_text()")
     assert m.run(mount=md) == snapshot('nested content')
+
+
+def test_repl_future_snapshot_resume_with_mount(test_dir: Path):
+    """REPL FutureSnapshot.resume(..., mount=...) auto-dispatches OS calls and completes."""
+    md = MountDir('/data', str(test_dir), mode='read-only')
+    repl = pydantic_monty.MontyRepl()
+    code = """
+result = await fetch()
+from pathlib import Path
+content = Path('/data/hello.txt').read_text()
+pair = (result, content)
+"""
+    progress = repl.feed_start(code)
+    assert isinstance(progress, pydantic_monty.FunctionSnapshot)
+    call_id = progress.call_id
+
+    progress = progress.resume(future=...)
+    assert isinstance(progress, pydantic_monty.FutureSnapshot)
+    final = progress.resume({call_id: {'return_value': 'fetched'}}, mount=md)
+    assert isinstance(final, pydantic_monty.MontyComplete)
+    assert repl.feed_run('pair') == snapshot(('fetched', 'hello world'))
+
+
+def test_repl_future_snapshot_resume_mount_released_after_resource_error(test_dir: Path):
+    """REPL FutureSnapshot.resume(..., mount=...) puts mounts back on resource error."""
+    md = MountDir('/data', str(test_dir), mode='read-only')
+    repl = pydantic_monty.MontyRepl(limits={'max_allocations': 100})
+    code = """
+result = await fetch()
+from pathlib import Path
+Path('/data/hello.txt').read_text()
+values = []
+for i in range(10000):
+    values.append([i])
+len(values)
+"""
+    progress = repl.feed_start(code)
+    assert isinstance(progress, pydantic_monty.FunctionSnapshot)
+    call_id = progress.call_id
+
+    progress = progress.resume(future=...)
+    assert isinstance(progress, pydantic_monty.FutureSnapshot)
+    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
+        progress.resume({call_id: {'return_value': 'fetched'}}, mount=md)
+    assert isinstance(exc_info.value.exception(), MemoryError)
+    assert_mount_reusable(md)
+
+
+def test_repl_resume_mount_contention_on_os_call_restores_repl_state(test_dir: Path):
+    """A mount-take failure during REPL resume() auto-dispatch rolls the REPL back."""
+    md = MountDir('/data', str(test_dir), mode='read-only')
+    repl = pydantic_monty.MontyRepl()
+    repl.feed_run('x = 42')
+    pending = repl.feed_start(
+        """
+from pathlib import Path
+value = fetch()
+content = Path('/data/hello.txt').read_text()
+result = (value, content)
+"""
+    )
+    assert isinstance(pending, pydantic_monty.FunctionSnapshot)
+
+    def os_cb(func: str, args: tuple[Any, ...], kwargs: dict[str, Any]) -> bool:
+        with pytest.raises(ValueError, match='already in use by another run'):
+            pending.resume(return_value='fetched', mount=md)
+        return False
+
+    outer = pydantic_monty.Monty("from pathlib import Path; Path('/outside').exists()")
+    result = outer.start(mount=md, os=os_cb)
+    assert isinstance(result, pydantic_monty.MontyComplete)
+    assert result.output is False
+    assert repl.feed_run('x') == snapshot(42)

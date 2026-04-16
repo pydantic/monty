@@ -364,6 +364,12 @@ def test_dir() -> Generator[Path, None, None]:
         yield p
 
 
+def assert_mount_reusable(md: MountDir) -> None:
+    """Assert that a previously used mount was returned to its shared slot."""
+    m = Monty("from pathlib import Path; Path('/data/subdir/nested.txt').read_text()")
+    assert m.run(mount=md) == snapshot('nested content')
+
+
 def test_start_with_mount_read_returns_complete(test_dir: Path):
     """start() with mount auto-dispatches OS calls and returns MontyComplete directly."""
     md = MountDir('/data', str(test_dir), mode='read-only')
@@ -468,6 +474,37 @@ def test_start_mount_released_after_completion(test_dir: Path):
     assert second == snapshot('nested content')
 
 
+def test_start_mount_released_after_runtime_error(test_dir: Path):
+    """start(mount=...) puts mounts back when auto-dispatch ends in a runtime error."""
+    md = MountDir('/data', str(test_dir), mode='read-only')
+    code = """
+from pathlib import Path
+Path('/data/hello.txt').read_text()
+1 / 0
+"""
+    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
+        Monty(code).start(mount=md)
+    assert isinstance(exc_info.value.exception(), ZeroDivisionError)
+    assert_mount_reusable(md)
+
+
+def test_start_mount_released_after_resource_error(test_dir: Path):
+    """start(mount=...) puts mounts back when a resource limit trips after an OS call."""
+    md = MountDir('/data', str(test_dir), mode='read-only')
+    code = """
+from pathlib import Path
+Path('/data/hello.txt').read_text()
+result = []
+for i in range(1000):
+    result.append('x' * 100)
+len(result)
+"""
+    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
+        Monty(code).start(mount=md, limits=pydantic_monty.ResourceLimits(max_memory=100))
+    assert isinstance(exc_info.value.exception(), MemoryError)
+    assert_mount_reusable(md)
+
+
 def test_start_no_mount_os_still_yields_os_snapshot():
     """Control test: without mount/os, OS calls still surface as is_os_function snapshots."""
     m = Monty("from pathlib import Path; Path('/tmp/x.txt').exists()")
@@ -510,6 +547,22 @@ second = Path('/data/subdir/nested.txt').read_text()
     assert isinstance(p2, pydantic_monty.FunctionSnapshot)
     assert p2.is_os_function is True
     assert p2.function_name == snapshot('Path.read_text')
+
+
+def test_start_mount_ignored_when_progress_never_reaches_os_call(test_dir: Path):
+    """start(mount=...) does not take the mount unless an OS call is actually reached."""
+    md = MountDir('/data', str(test_dir), mode='read-only')
+
+    def os_cb(func: str, args: tuple[Any, ...], kwargs: dict[str, Any]) -> bool:
+        inner = Monty('1 + 1').start(mount=md)
+        assert isinstance(inner, pydantic_monty.MontyComplete)
+        assert inner.output == snapshot(2)
+        return False
+
+    outer = Monty("from pathlib import Path; Path('/outside').exists()")
+    result = outer.start(mount=md, os=os_cb)
+    assert isinstance(result, pydantic_monty.MontyComplete)
+    assert result.output is False
 
 
 # === Tests for snapshot.resume(mount=..., os=...) ===
@@ -619,6 +672,24 @@ content = Path('/data/hello.txt').read_text()
     assert result.output == snapshot((42, 'hello world'))
 
 
+def test_name_lookup_resume_mount_released_after_runtime_error(test_dir: Path):
+    """NameLookupSnapshot.resume(..., mount=...) puts mounts back on runtime error."""
+    md = MountDir('/data', str(test_dir), mode='read-only')
+    code = """
+from pathlib import Path
+value = missing_name
+Path('/data/hello.txt').read_text()
+1 / 0
+"""
+    progress = Monty(code).start()
+    assert isinstance(progress, pydantic_monty.NameLookupSnapshot)
+
+    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
+        progress.resume(value=42, mount=md)
+    assert isinstance(exc_info.value.exception(), ZeroDivisionError)
+    assert_mount_reusable(md)
+
+
 def test_resume_not_handled_with_mount(test_dir: Path):
     """resume_not_handled(mount=...) auto-dispatches subsequent OS calls.
 
@@ -693,6 +764,107 @@ content = Path('/data/hello.txt').read_text()
     # Reusing the mount should still work after resume finishes.
     m2 = Monty("from pathlib import Path; Path('/data/subdir/nested.txt').read_text()")
     assert m2.run(mount=md) == snapshot('nested content')
+
+
+def test_resume_mount_released_after_runtime_error(test_dir: Path):
+    """FunctionSnapshot.resume(..., mount=...) puts mounts back on runtime error."""
+    md = MountDir('/data', str(test_dir), mode='read-only')
+    code = """
+from pathlib import Path
+fetch()
+Path('/data/hello.txt').read_text()
+1 / 0
+"""
+    progress = Monty(code).start()
+    assert isinstance(progress, pydantic_monty.FunctionSnapshot)
+
+    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
+        progress.resume(return_value='fetched', mount=md)
+    assert isinstance(exc_info.value.exception(), ZeroDivisionError)
+    assert_mount_reusable(md)
+
+
+def test_resume_mount_released_after_resource_error(test_dir: Path):
+    """FunctionSnapshot.resume(..., mount=...) puts mounts back on resource error."""
+    md = MountDir('/data', str(test_dir), mode='read-only')
+    code = """
+from pathlib import Path
+fetch()
+Path('/data/hello.txt').read_text()
+result = []
+for i in range(10000):
+    result.append([i])
+len(result)
+"""
+    progress = Monty(code).start(limits=pydantic_monty.ResourceLimits(max_allocations=100))
+    assert isinstance(progress, pydantic_monty.FunctionSnapshot)
+
+    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
+        progress.resume(return_value='fetched', mount=md)
+    assert isinstance(exc_info.value.exception(), MemoryError)
+    assert_mount_reusable(md)
+
+
+def test_future_snapshot_resume_with_mount(test_dir: Path):
+    """FutureSnapshot.resume(..., mount=...) auto-dispatches OS calls and completes."""
+    md = MountDir('/data', str(test_dir), mode='read-only')
+    code = """
+value = await fetch()
+from pathlib import Path
+content = Path('/data/hello.txt').read_text()
+(value, content)
+"""
+    progress = Monty(code).start()
+    assert isinstance(progress, pydantic_monty.FunctionSnapshot)
+    call_id = progress.call_id
+
+    progress = progress.resume(future=...)
+    assert isinstance(progress, pydantic_monty.FutureSnapshot)
+    final = progress.resume({call_id: {'return_value': 'fetched'}}, mount=md)
+    assert isinstance(final, pydantic_monty.MontyComplete)
+    assert final.output == snapshot(('fetched', 'hello world'))
+
+
+def test_future_snapshot_resume_mount_released_after_resource_error(test_dir: Path):
+    """FutureSnapshot.resume(..., mount=...) puts mounts back on resource error."""
+    md = MountDir('/data', str(test_dir), mode='read-only')
+    code = """
+value = await fetch()
+from pathlib import Path
+Path('/data/hello.txt').read_text()
+result = []
+for i in range(10000):
+    result.append([i])
+len(result)
+"""
+    progress = Monty(code).start(limits=pydantic_monty.ResourceLimits(max_allocations=100))
+    assert isinstance(progress, pydantic_monty.FunctionSnapshot)
+    call_id = progress.call_id
+
+    progress = progress.resume(future=...)
+    assert isinstance(progress, pydantic_monty.FutureSnapshot)
+    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
+        progress.resume({call_id: {'return_value': 'fetched'}}, mount=md)
+    assert isinstance(exc_info.value.exception(), MemoryError)
+    assert_mount_reusable(md)
+
+
+def test_resume_mount_ignored_when_progress_never_reaches_os_call(test_dir: Path):
+    """resume(mount=...) does not take the mount unless the resumed code hits an OS call."""
+    md = MountDir('/data', str(test_dir), mode='read-only')
+    pending = Monty('fetch()').start()
+    assert isinstance(pending, pydantic_monty.FunctionSnapshot)
+
+    def os_cb(func: str, args: tuple[Any, ...], kwargs: dict[str, Any]) -> bool:
+        inner = pending.resume(return_value=1, mount=md)
+        assert isinstance(inner, pydantic_monty.MontyComplete)
+        assert inner.output == snapshot(1)
+        return False
+
+    outer = Monty("from pathlib import Path; Path('/outside').exists()")
+    result = outer.start(mount=md, os=os_cb)
+    assert isinstance(result, pydantic_monty.MontyComplete)
+    assert result.output is False
 
 
 def test_resume_invalid_os_rejected():
