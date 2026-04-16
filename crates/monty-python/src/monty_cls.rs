@@ -165,19 +165,35 @@ impl PyMonty {
         }
     }
 
-    #[pyo3(signature = (*, inputs=None, limits=None, print_callback=None))]
+    /// Starts code execution, returning a progress snapshot or the final result.
+    ///
+    /// When `mount` or `os` is provided, OS calls are resolved automatically via
+    /// the same logic as [`Monty::run`] (mount table first, then the Python
+    /// callback), and the method only returns a snapshot when a non-OS event is
+    /// reached (external function, name lookup, future, or completion).
+    ///
+    /// The auto-dispatch does **not** persist across subsequent `snapshot.resume()`
+    /// calls — once a snapshot is returned, any OS call produced by a later resume
+    /// surfaces as a `FunctionSnapshot` with `is_os_function=True`, as before.
+    #[pyo3(signature = (*, inputs=None, limits=None, print_callback=None, mount=None, os=None))]
     fn start<'py>(
         &self,
         py: Python<'py>,
         inputs: Option<&Bound<'py, PyDict>>,
         limits: Option<&Bound<'py, PyDict>>,
         print_callback: Option<&Bound<'_, PyAny>>,
+        mount: Option<&Bound<'_, PyAny>>,
+        os: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<Bound<'py, PyAny>> {
         // Clone the Arc handle — shares the same underlying registry
         let dc_registry = self.dc_registry.clone_ref(py);
         let input_values = self.extract_input_values(inputs, &dc_registry)?;
 
         let print_target = PrintTarget::from_py(print_callback)?;
+
+        // Validate mount + os and build the handler BEFORE taking mounts or
+        // starting the VM, so validation errors don't leave any state taken.
+        let os_handler = OsHandler::from_run_args(py, mount, os)?;
 
         let runner = self.runner.clone();
 
@@ -186,11 +202,21 @@ impl PyMonty {
         // `runner.start`.
         macro_rules! start_impl {
             ($tracker:expr) => {{
-                match py.detach(|| print_target.with_writer(|writer| runner.start(input_values, $tracker, writer))) {
+                let progress = match py
+                    .detach(|| print_target.with_writer(|writer| runner.start(input_values, $tracker, writer)))
+                {
                     Ok(p) => p,
                     Err(e) => {
                         return Err(MontyError::new_err(py, e));
                     }
+                };
+                // When mount/os is configured, consume OS-call events internally
+                // until we reach the first non-OS event. Mounts are taken inside
+                // the helper and put back on every exit path.
+                if let Some(handler) = &os_handler {
+                    drive_run_progress_through_os_calls(py, progress, handler, &print_target, &self.dc_registry)?
+                } else {
+                    progress
                 }
             }};
         }
@@ -1757,6 +1783,52 @@ where
         .get()
         .put_repl_after_rollback(EitherRepl::from_core(err.repl));
     MontyError::new_err(py, err.error)
+}
+
+/// Auto-dispatches [`RunProgress::OsCall`] events until a non-OS progress is reached.
+///
+/// Used by [`PyMonty::start`] when the caller supplies a `mount` or `os` argument:
+/// the method should behave like `run()` for OS calls (resolve them internally
+/// via the mount table and optional Python fallback) but like `start()` for
+/// non-OS events (return the snapshot so the caller can drive external functions,
+/// name lookups, or futures from Python).
+///
+/// Mounts are taken out of their shared slots at the start and put back on every
+/// exit path (the non-OS return, resume failure, or [`handle_mount_os_call`] error)
+/// so the taken/put-back invariant matches `run_impl`.
+pub(crate) fn drive_run_progress_through_os_calls<T: ResourceTracker + Send>(
+    py: Python<'_>,
+    mut progress: RunProgress<T>,
+    handler: &OsHandler,
+    print_target: &PrintTarget,
+    dc_registry: &DcRegistry,
+) -> PyResult<RunProgress<T>> {
+    let mut mount_table = handler.take()?;
+    let fallback = handler.fallback.as_ref();
+    loop {
+        match progress {
+            RunProgress::OsCall(call) => {
+                let result = match handle_mount_os_call(py, &call, &mut mount_table, fallback, dc_registry) {
+                    Ok(r) => r,
+                    Err(e) => {
+                        handler.put_back(mount_table);
+                        return Err(e);
+                    }
+                };
+                progress = match py.detach(|| print_target.with_writer(|w| call.resume(result, w))) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        handler.put_back(mount_table);
+                        return Err(MontyError::new_err(py, e));
+                    }
+                };
+            }
+            other => {
+                handler.put_back(mount_table);
+                return Ok(other);
+            }
+        }
+    }
 }
 
 /// Handles an OS call via a Rust [`MountTable`], falling through to the

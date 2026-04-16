@@ -142,8 +142,9 @@ class Monty:
             inputs: Dict of input variable values (must match names from __init__)
             limits: Optional resource limits configuration
             external_functions: Dict of external function callbacks
-            print_callback: `None` (stdout), a callable `(stream, text) -> None`,
+            print_callback: `None` (write to stdout/stderr), a callable `(stream, text) -> None`,
                 `CollectStreams()`, or `CollectString()`.
+            mount: Optional filesystem mount(s) to expose inside the sandbox.
             os: Optional callback for OS calls.
                 Called with (function_name, args) where function_name is like 'Path.exists'
                 and args is a tuple of arguments. Must return the appropriate value for the
@@ -162,6 +163,8 @@ class Monty:
         inputs: dict[str, Any] | None = None,
         limits: ResourceLimits | None = None,
         print_callback: Callable[[Literal['stdout'], str], None] | CollectStreams | CollectString | None = None,
+        mount: MountDir | list[MountDir] | None = None,
+        os: Callable[[OsFunction, tuple[Any, ...], dict[str, Any]], Any] | None = None,
     ) -> FunctionSnapshot | NameLookupSnapshot | FutureSnapshot | MontyComplete:
         """
         Start the code execution and return a progress object, or completion.
@@ -170,10 +173,23 @@ class Monty:
 
         The GIL is released allowing parallel execution.
 
+        When `mount` or `os` is provided, OS calls are resolved automatically using
+        the same logic as `run()` (mount table first, then the `os` callback),
+        this method only returns a snapshot when a non-OS event is reached
+        (external function, name lookup, future, or completion).
+
+        Auto-dispatch does NOT persist across subsequent `snapshot.resume()` calls —
+        OS calls produced after the first resume surface as a `FunctionSnapshot`
+        with `is_os_function=True`, as before.
+
         Arguments:
             inputs: Dict of input variable values (must match names from __init__)
             limits: Optional resource limits configuration
             print_callback: Optional callback for print output
+            mount: Optional filesystem mount(s) to expose inside the sandbox.
+            os: Optional callback for OS calls. Called with (function_name, args, kwargs)
+                and must return the appropriate value for the OS function. Return
+                `NOT_HANDLED` to fall back to Monty's default unhandled behavior.
 
         Returns:
             FunctionSnapshot if an external function call is pending,
@@ -405,6 +421,8 @@ class MontyRepl:
         *,
         inputs: dict[str, Any] | None = None,
         print_callback: Callable[[Literal['stdout'], str], None] | CollectStreams | CollectString | None = None,
+        mount: MountDir | list[MountDir] | None = None,
+        os: Callable[[str, tuple[Any, ...], dict[str, Any]], Any] | None = None,
         skip_type_check: bool = False,
     ) -> FunctionSnapshot | NameLookupSnapshot | FutureSnapshot | MontyComplete:
         """
@@ -419,6 +437,12 @@ class MontyRepl:
         This enables the same iterative start/resume pattern used by `Monty.start()`,
         including support for async external functions via `FutureSnapshot`.
 
+        When `mount` or `os` is provided, OS calls are resolved automatically using
+        the same logic as `feed_run()`, and this method only returns a snapshot when
+        a non-OS event is reached. Auto-dispatch does NOT persist across subsequent
+        `snapshot.resume()` calls — OS calls produced after the first resume surface
+        as a `FunctionSnapshot` with `is_os_function=True`, as before.
+
         On completion or error, the REPL state is automatically restored.
 
         Arguments:
@@ -426,6 +450,10 @@ class MontyRepl:
             inputs: Dict of input values injected into the REPL namespace
                 before executing the snippet
             print_callback: Optional callback for print output
+            mount: Optional filesystem mount(s) to expose inside the sandbox.
+            os: Optional callback for OS calls. Called with (function_name, args, kwargs)
+                and must return the appropriate value for the OS function. Return
+                `NOT_HANDLED` to fall back to Monty's default unhandled behavior.
             skip_type_check: When `True`, static type checking is bypassed for
                 this snippet AND the snippet is NOT appended to the accumulated
                 type-check context, so later type-checked snippets will not see

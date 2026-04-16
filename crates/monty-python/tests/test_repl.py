@@ -1,9 +1,13 @@
-from typing import Callable, Literal
+import tempfile
+from collections.abc import Generator
+from pathlib import Path
+from typing import Any, Callable, Literal
 
 import pytest
 from inline_snapshot import snapshot
 
 import pydantic_monty
+from pydantic_monty import NOT_HANDLED, MountDir
 
 PrintCallback = Callable[[Literal['stdout'], str], None]
 
@@ -747,3 +751,134 @@ def test_inputs_various_types():
     assert repl.feed_run('f', inputs={'f': 3.14}) == snapshot(3.14)
     assert repl.feed_run('b', inputs={'b': True}) == snapshot(True)
     assert repl.feed_run('lst', inputs={'lst': [1, 2]}) == snapshot([1, 2])
+
+
+# === Tests for MontyRepl.feed_start(mount=..., os=...) ===
+
+
+@pytest.fixture
+def test_dir() -> Generator[Path, None, None]:
+    """Creates a temporary directory with test files for mount-based REPL tests."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        p = Path(tmpdir)
+        (p / 'hello.txt').write_text('hello world')
+        (p / 'subdir').mkdir()
+        (p / 'subdir' / 'nested.txt').write_text('nested content')
+        yield p
+
+
+def test_feed_start_with_mount_returns_complete(test_dir: Path):
+    """feed_start() with mount auto-dispatches OS calls and returns MontyComplete directly."""
+    md = MountDir('/data', str(test_dir), mode='read-only')
+    repl = pydantic_monty.MontyRepl()
+    progress = repl.feed_start("from pathlib import Path; Path('/data/hello.txt').read_text()", mount=md)
+    assert isinstance(progress, pydantic_monty.MontyComplete)
+    assert progress.output == snapshot('hello world')
+    # REPL remains usable after auto-dispatch completes.
+    assert repl.feed_run('1 + 1') == snapshot(2)
+
+
+def test_feed_start_with_os_callback_returns_complete():
+    """feed_start() with os= callback auto-dispatches OS calls to the callback."""
+
+    def os_cb(func: str, args: tuple[Any, ...], kwargs: dict[str, Any]) -> bool:
+        return True
+
+    repl = pydantic_monty.MontyRepl()
+    progress = repl.feed_start("from pathlib import Path; Path('/any/path.txt').exists()", os=os_cb)
+    assert isinstance(progress, pydantic_monty.MontyComplete)
+    assert progress.output is True
+
+
+def test_feed_start_mount_then_external_function(test_dir: Path):
+    """OS calls are auto-dispatched, then feed_start returns an external FunctionSnapshot."""
+    md = MountDir('/data', str(test_dir), mode='read-only')
+    code = """
+from pathlib import Path
+content = Path('/data/hello.txt').read_text()
+process(content)
+"""
+    repl = pydantic_monty.MontyRepl()
+    progress = repl.feed_start(code, mount=md)
+    assert isinstance(progress, pydantic_monty.FunctionSnapshot)
+    assert progress.is_os_function is False
+    assert progress.function_name == snapshot('process')
+    assert progress.args == snapshot(('hello world',))
+    final = progress.resume(return_value='processed')
+    assert isinstance(final, pydantic_monty.MontyComplete)
+    # Subsequent feed_run sees REPL state from the snippet.
+    assert repl.feed_run('content') == snapshot('hello world')
+
+
+def test_feed_start_mount_preserves_repl_state_on_runtime_error(test_dir: Path):
+    """When the OS-dispatch chain raises a runtime error, REPL state is preserved."""
+    md = MountDir('/data', str(test_dir), mode='read-only')
+    repl = pydantic_monty.MontyRepl()
+    repl.feed_run('x = 42')
+
+    # Reading a path outside the mount raises PermissionError from the sandbox.
+    # The feed_start path runs an auto-dispatch loop whose resume fails; the
+    # REPL must be rolled back so `x` is still accessible.
+    with pytest.raises(pydantic_monty.MontyRuntimeError):
+        repl.feed_start("from pathlib import Path; Path('/outside/path.txt').read_text()", mount=md)
+    assert repl.feed_run('x') == snapshot(42)
+
+
+def test_feed_start_mount_persists_across_snippets(test_dir: Path):
+    """Overlay-mode mount preserves written state across multiple feed_start calls."""
+    md = MountDir('/data', str(test_dir), mode='overlay')
+    repl = pydantic_monty.MontyRepl()
+
+    # First snippet writes a file via the overlay.
+    p1 = repl.feed_start(
+        "from pathlib import Path; Path('/data/new.txt').write_text('snippet-one')",
+        mount=md,
+    )
+    assert isinstance(p1, pydantic_monty.MontyComplete)
+
+    # Second snippet reads the file written by the first — proves the mount
+    # state (and REPL state) both persisted, and both snippets auto-dispatched.
+    p2 = repl.feed_start(
+        "from pathlib import Path; Path('/data/new.txt').read_text()",
+        mount=md,
+    )
+    assert isinstance(p2, pydantic_monty.MontyComplete)
+    assert p2.output == snapshot('snippet-one')
+
+
+def test_feed_start_os_not_handled_falls_through():
+    """NOT_HANDLED sentinel falls back to Monty's default unhandled behavior."""
+
+    def os_cb(func: str, args: tuple[Any, ...], kwargs: dict[str, Any]) -> object:
+        return NOT_HANDLED
+
+    repl = pydantic_monty.MontyRepl()
+    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
+        repl.feed_start("from pathlib import Path; Path('/any/path.txt').exists()", os=os_cb)
+    inner = exc_info.value.exception()
+    assert isinstance(inner, PermissionError)
+    # REPL state must still be usable after the failed snippet.
+    assert repl.feed_run('1 + 1') == snapshot(2)
+
+
+def test_feed_start_mount_released_after_completion(test_dir: Path):
+    """After feed_start auto-dispatches, the mount is put back and usable again."""
+    md = MountDir('/data', str(test_dir), mode='read-only')
+    repl = pydantic_monty.MontyRepl()
+    first = repl.feed_start("from pathlib import Path; Path('/data/hello.txt').read_text()", mount=md)
+    assert isinstance(first, pydantic_monty.MontyComplete)
+
+    # Same mount reused by a different Monty instance after feed_start returned.
+    m = pydantic_monty.Monty("from pathlib import Path; Path('/data/subdir/nested.txt').read_text()")
+    assert m.run(mount=md) == snapshot('nested content')
+
+
+def test_feed_start_os_handler_invalid_rejected():
+    """Non-callable os= is rejected before any REPL state is taken."""
+    repl = pydantic_monty.MontyRepl()
+    repl.feed_run('x = 1')
+    with pytest.raises(TypeError) as exc_info:
+        repl.feed_start('x', os=123)  # pyright: ignore[reportArgumentType]
+    assert str(exc_info.value) == snapshot("os must be callable, got 'int'")
+    # REPL untouched by the validation failure.
+    assert repl.feed_run('x') == snapshot(1)

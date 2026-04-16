@@ -32,4 +32,4 @@ mod mount_mode;
 mod mount_table;
 mod overlay;
 mod overlay_state;
-pub(super) mod path_security;
+mod path_security;
