@@ -1,3 +1,4 @@
+import sys
 import tempfile
 from collections.abc import Generator
 from pathlib import Path, PurePosixPath
@@ -324,6 +325,7 @@ def test_resume_with_exc_type_data_propagates_uncaught():
     assert inner.args[0] == snapshot('bad type')
 
 
+@pytest.mark.skipif(sys.version_info < (3, 13), reason='re.PatternError was added in Python 3.13')
 def test_resume_with_exc_type_data_dotted_name():
     """Dotted ExcType names like `re.PatternError` map to the right Python subclass."""
     import re
