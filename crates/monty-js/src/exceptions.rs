@@ -244,10 +244,10 @@ impl Frame {
     pub fn from_stack_frame(frame: &StackFrame) -> Self {
         Self {
             filename: frame.filename.clone(),
-            line: u32::from(frame.start.line),
-            column: u32::from(frame.start.column),
-            end_line: u32::from(frame.end.line),
-            end_column: u32::from(frame.end.column),
+            line: frame.start.line,
+            column: frame.start.column,
+            end_line: frame.end.line,
+            end_column: frame.end.column,
             function_name: frame.frame_name.clone(),
             source_line: frame.preview_line.clone(),
         }

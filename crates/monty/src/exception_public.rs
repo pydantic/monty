@@ -318,12 +318,15 @@ impl StackFrame {
 /// A line and column position in source code.
 ///
 /// Uses 1-based indexing for both line and column to match Python's conventions.
+///
+/// `u32` matches `ruff_text_size::TextSize`, which underpins all source ranges
+/// returned by the parser, so conversions between the two are zero-cost.
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct CodeLoc {
     /// Line number (1-based).
-    pub line: u16,
+    pub line: u32,
     /// Column number (1-based).
-    pub column: u16,
+    pub column: u32,
 }
 
 impl Default for CodeLoc {
@@ -333,17 +336,18 @@ impl Default for CodeLoc {
 }
 
 impl CodeLoc {
-    /// Creates a new CodeLoc from usize values.
+    /// Creates a new CodeLoc from 0-based values.
     ///
     /// Lines and columns numbers are 1-indexed for display, hence `+1`
     ///
     /// # Panics
-    /// Panics if the line or column number overflows `u16`.
+    /// Panics if the 0-based line or column equals `u32::MAX` (i.e. would
+    /// overflow when shifted to 1-based).
     #[must_use]
-    pub fn new(line: usize, column: usize) -> Self {
+    pub fn new(line: u32, column: u32) -> Self {
         Self {
-            line: u16::try_from(line).expect("Line number overflow") + 1,
-            column: u16::try_from(column).expect("Column number overflow") + 1,
+            line: line.checked_add(1).expect("line number overflow"),
+            column: column.checked_add(1).expect("column number overflow"),
         }
     }
 }

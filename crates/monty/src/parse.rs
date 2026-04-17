@@ -8,7 +8,7 @@ use ruff_python_ast::{
     name::Name,
 };
 use ruff_python_parser::parse_module;
-use ruff_text_size::{Ranged, TextRange};
+use ruff_text_size::{Ranged, TextRange, TextSize};
 
 use crate::{
     StackFrame,
@@ -34,7 +34,7 @@ pub const MAX_NESTING_DEPTH: u16 = 200;
 /// (no inlining, debug info, etc.). The limit is set conservatively to prevent
 /// stack overflow while still catching the error before the recursion limit.
 #[cfg(debug_assertions)]
-pub const MAX_NESTING_DEPTH: u16 = 35;
+pub const MAX_NESTING_DEPTH: u16 = 30;
 
 /// A parameter in a function signature with optional default value.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -160,7 +160,11 @@ pub(crate) fn parse_with_interner(
 /// Holds references to the source code and owns a string interner for names.
 /// The filename is interned once at construction and reused for all CodeRanges.
 pub struct Parser<'a> {
-    line_ends: Vec<usize>,
+    /// Byte offsets of every `\n` character in `code`, in order.
+    ///
+    /// Stored as `TextSize` so positions flow through the parser in the same
+    /// `u32` representation that ruff uses for `TextRange`.
+    line_ends: Vec<TextSize>,
     code: &'a str,
     /// Interned filename ID, used for all CodeRanges created by this parser.
     filename_id: StringId,
@@ -174,11 +178,13 @@ pub struct Parser<'a> {
 
 impl<'a> Parser<'a> {
     fn new(code: &'a str, filename: &'a str, mut interner: InternerBuilder) -> Self {
-        // Position of each line in the source code, to convert indexes to line number and column number
+        // Position of each line in the source code, to convert byte offsets
+        // into (line, column) pairs.
         let mut line_ends = vec![];
-        for (i, c) in code.chars().enumerate() {
+        for (i, c) in code.char_indices() {
             if c == '\n' {
-                line_ends.push(i);
+                // Ruff only supports files up to 4 GiB.
+                line_ends.push(TextSize::try_from(i).expect("source exceeds 4 GiB"));
             }
         }
         let filename_id = interner.intern(filename);
@@ -1465,35 +1471,41 @@ impl<'a> Parser<'a> {
     }
 
     fn convert_range(&self, range: TextRange) -> CodeRange {
-        let start = range.start().into();
-        let (start_line_no, start_line_start, _) = self.index_to_position(start);
-        let start = CodeLoc::new(start_line_no, start - start_line_start);
+        let (start_line, start_line_start, _) = self.index_to_position(range.start());
+        let start = CodeLoc::new(start_line, (range.start() - start_line_start).to_u32());
 
-        let end = range.end().into();
-        let (end_line_no, end_line_start, _) = self.index_to_position(end);
-        let end = CodeLoc::new(end_line_no, end - end_line_start);
+        let (end_line, end_line_start, _) = self.index_to_position(range.end());
+        let end = CodeLoc::new(end_line, (range.end() - end_line_start).to_u32());
 
-        // Store line number for single-line ranges, None for multi-line
-        let preview_line = if start_line_no == end_line_no {
-            Some(u32::try_from(start_line_no).expect("line number exceeds u32"))
-        } else {
-            None
-        };
+        // Store the line number only for single-line ranges; multi-line
+        // ranges have no single preview line to highlight.
+        let preview_line = (start_line == end_line).then_some(start_line);
 
         CodeRange::new(self.filename_id, start, end, preview_line)
     }
 
-    fn index_to_position(&self, index: usize) -> (usize, usize, Option<usize>) {
-        let mut line_start = 0;
+    /// Maps a byte offset within `code` to its 0-based line number, the byte
+    /// offset of that line's start, and (if present) the byte offset of the
+    /// terminating newline.
+    fn index_to_position(&self, index: TextSize) -> (u32, TextSize, Option<TextSize>) {
+        let mut line_start = TextSize::new(0);
         for (line_no, line_end) in self.line_ends.iter().enumerate() {
             if index <= *line_end {
-                return (line_no, line_start, Some(*line_end));
+                return (
+                    u32::try_from(line_no).expect("line number exceeds u32"),
+                    line_start,
+                    Some(*line_end),
+                );
             }
-            line_start = *line_end + 1;
+            line_start = *line_end + TextSize::new(1);
         }
-        // Content after the last newline (file without trailing newline)
-        // line_ends.len() gives the correct 0-indexed line number
-        (self.line_ends.len(), line_start, None)
+        // Content after the last newline (file without trailing newline) —
+        // `line_ends.len()` is the correct 0-indexed line number.
+        (
+            u32::try_from(self.line_ends.len()).expect("line number exceeds u32"),
+            line_start,
+            None,
+        )
     }
 
     /// Decrements the depth remaining for nested parentheses.
@@ -1760,5 +1772,39 @@ fn parse_int_literal(s: &str, position: CodeRange) -> Result<BigInt, ParseError>
         cleaned
             .parse::<BigInt>()
             .map_err(|e| ParseError::syntax(format!("invalid integer literal {s:?}, error: {e}"), position))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{ExcType, MontyRun};
+
+    #[test]
+    fn non_ascii_earlier_line_does_not_shift_column() {
+        // "x = 'é'\nundefined_name": 'é' is two UTF-8 bytes but one character,
+        // ensure position is correctly calculated
+        let code = "x = 'é'\nundefined_name".to_string();
+        let run = MontyRun::new(code, "test.py", vec![]).expect("should parse");
+        let err = run.run_no_limits(vec![]).expect_err("should raise NameError");
+        assert_eq!(err.exc_type(), ExcType::NameError);
+        let frame = err.traceback().last().expect("traceback has at least one frame");
+        assert_eq!(frame.start.line, 2, "NameError is on line 2");
+        assert_eq!(
+            frame.start.column, 1,
+            "start column should be 1 regardless of non-ASCII on previous line"
+        );
+        assert_eq!(
+            frame.end.column, 15,
+            "end column should be 15 (1-indexed past the 14-char identifier)"
+        );
+    }
+
+    #[test]
+    fn long_source_line_does_not_overflow_column() {
+        // https://github.com/pydantic/monty/issues/341
+        let code = format!("x = \"{}\"\nassert len(x) == 65530", "a".repeat(65530));
+        let run = MontyRun::new(code, "test.py", vec![]).expect("long line should parse without panicking");
+        let result = run.run_no_limits(vec![]);
+        assert!(result.is_ok(), "long line should run: {result:?}");
     }
 }
