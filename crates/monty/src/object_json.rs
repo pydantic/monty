@@ -14,18 +14,25 @@
 //! - Non-JSON-native values are wrapped in a single-key object with a
 //!   `$`-prefixed discriminator (e.g. `Tuple` → `{"$tuple":[...]}`,
 //!   `Bytes` → `{"$bytes":[...]}`, `Exception` → `{"$exception":{...}}`).
+//! - `...` (Ellipsis) serializes as the bare string `"..."` — it's a
+//!   singleton, so the string form is unambiguous and cheaper for consumers
+//!   to handle than a tagged object.
 //! - Dataclasses and namedtuples are emitted as two-key objects carrying
 //!   both the instance's attribute/field data and its class name:
 //!   `{"$dataclass": {"x": 1, "y": 2}, "name": "Point"}`.
 //! - Dates and timezones serialize as structured objects so fields are
 //!   accessible to consumers without parsing ISO strings.
-//! - Dict keys that are not strings are stringified via Python's `repr()`
-//!   (so `{1: "a"}` → `{"1": "a"}`, `{(1,2): "a"}` → `{"(1, 2)": "a"}`).
+//! - Dicts whose keys are all Python strings serialize as a normal JSON
+//!   object. Any dict with a non-string key falls back to a tagged
+//!   `{"$dict": [[k, v], ...]}` form so the real key type is preserved —
+//!   e.g. `{1: "a", (1, 2): "b"}` → `{"$dict": [[1, "a"], [{"$tuple":[1,2]}, "b"]]}`.
 //!
 //! This format is intentionally **output-only**: several variants (`Tuple`,
 //! `Bytes`, `Set`, dataclass instances, ...) cannot be unambiguously recovered
 //! from their natural JSON shape. For round-trip serialization use
 //! `serde_json::to_string(&monty_object)` with the derived format instead.
+
+use std::fmt::Display;
 
 use serde::{
     Serialize, Serializer,
@@ -88,7 +95,7 @@ impl Serialize for JsonMontyObject<'_> {
             MontyObject::DateTime(dt) => dt.serialize(serializer),
             MontyObject::TimeDelta(td) => td.serialize(serializer),
             MontyObject::TimeZone(tz) => tz.serialize(serializer),
-            MontyObject::Ellipsis => serialize_tagged(serializer, "$ellipsis", &true),
+            MontyObject::Ellipsis => serializer.serialize_str("..."),
             MontyObject::Tuple(items) => serialize_tagged_seq(serializer, "$tuple", items),
             MontyObject::Set(items) => serialize_tagged_seq(serializer, "$set", items),
             MontyObject::FrozenSet(items) => serialize_tagged_seq(serializer, "$frozenset", items),
@@ -98,10 +105,10 @@ impl Serialize for JsonMontyObject<'_> {
                 field_names,
                 values,
             } => serialize_named(
+                serializer,
                 "$namedtuple",
                 &FieldsBody { field_names, values },
                 type_name,
-                serializer,
             ),
             MontyObject::Exception { exc_type, arg } => {
                 let type_str: &'static str = exc_type.into();
@@ -116,10 +123,10 @@ impl Serialize for JsonMontyObject<'_> {
             }
             MontyObject::Path(p) => serialize_tagged(serializer, "$path", p),
             MontyObject::Dataclass { name, attrs, .. } => {
-                serialize_named("$dataclass", &AttrsBody(attrs), name, serializer)
+                serialize_named(serializer, "$dataclass", &AttrsBody(attrs), name)
             }
             MontyObject::Type(t) => serialize_tagged(serializer, "$type", &TypeName(*t)),
-            MontyObject::BuiltinFunction(f) => serialize_tagged(serializer, "$builtin", &f.to_string()),
+            MontyObject::BuiltinFunction(f) => serialize_tagged(serializer, "$builtin", &DisplayAsStr(f)),
             MontyObject::Function { name, .. } => serialize_tagged(serializer, "$function", name),
             MontyObject::Repr(s) => serialize_tagged(serializer, "$repr", s),
             MontyObject::Cycle(_, placeholder) => serialize_tagged(serializer, "$cycle", placeholder),
@@ -154,31 +161,32 @@ fn serialize_tagged_seq<S: Serializer>(
     serialize_tagged(serializer, tag, &SeqBody(items))
 }
 
-/// Serialize a `Dict` as a JSON object. Keys that are Python strings become
-/// JSON string keys directly; any other key is stringified via Python's
-/// `repr()` (e.g. `1` → `"1"`, `(1, 2)` → `"(1, 2)"`). JSON requires string
-/// keys, so this matches what a user would write by hand rather than escaping
-/// into a separate tagged shape.
+/// Serialize a `Dict`. If every key is a Python string, emit a normal JSON
+/// object (the common case). Otherwise fall back to a tagged
+/// `{"$dict": [[k, v], ...]}` form so non-string keys preserve their real
+/// type — a bare JSON object can only use string keys, so stringifying
+/// them would be lossy.
 fn serialize_dict<S: Serializer>(serializer: S, pairs: &DictPairs) -> Result<S::Ok, S::Error> {
-    let count = pairs.into_iter().count();
-    let mut map = serializer.serialize_map(Some(count))?;
-    for (k, v) in pairs {
-        match k {
-            MontyObject::String(key) => map.serialize_entry(key, &JsonMontyObject(v))?,
-            other => map.serialize_entry(&other.py_repr(), &JsonMontyObject(v))?,
+    if pairs.into_iter().all(|(k, _)| matches!(k, MontyObject::String(_))) {
+        let mut map = serializer.serialize_map(Some(pairs.len()))?;
+        for (k, v) in pairs {
+            let MontyObject::String(key) = k else { unreachable!() };
+            map.serialize_entry(key, &JsonMontyObject(v))?;
         }
+        map.end()
+    } else {
+        serialize_tagged(serializer, "$dict", &DictPairsBody(pairs))
     }
-    map.end()
 }
 
 /// Emit a two-key object `{"<tag>": <body>, "name": "<name>"}`. Used by
 /// dataclass and namedtuple to pair the instance's data with its class name
 /// at the same nesting level rather than burying `name` inside the body.
 fn serialize_named<S: Serializer>(
+    serializer: S,
     tag: &'static str,
     body: &impl Serialize,
     name: &str,
-    serializer: S,
 ) -> Result<S::Ok, S::Error> {
     let mut map = serializer.serialize_map(Some(2))?;
     map.serialize_entry(tag, body)?;
@@ -193,6 +201,21 @@ struct SeqBody<'a>(&'a [MontyObject]);
 impl Serialize for SeqBody<'_> {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         serialize_seq(serializer, self.0)
+    }
+}
+
+/// Body of a `$dict` tag — each pair becomes a two-element JSON array
+/// `[key, value]` with both sides recursively serialized via
+/// `JsonMontyObject`, so non-string keys retain their real type.
+struct DictPairsBody<'a>(&'a DictPairs);
+
+impl Serialize for DictPairsBody<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut seq = serializer.serialize_seq(Some(self.0.len()))?;
+        for (k, v) in self.0 {
+            seq.serialize_element(&[JsonMontyObject(k), JsonMontyObject(v)])?;
+        }
+        seq.end()
     }
 }
 
@@ -221,8 +244,7 @@ struct AttrsBody<'a>(&'a DictPairs);
 
 impl Serialize for AttrsBody<'_> {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let count = self.0.into_iter().count();
-        let mut map = serializer.serialize_map(Some(count))?;
+        let mut map = serializer.serialize_map(Some(self.0.len()))?;
         for (k, v) in self.0 {
             let MontyObject::String(key) = k else {
                 return Err(S::Error::custom("dataclass attrs must have string keys"));
@@ -246,6 +268,16 @@ struct ExceptionBody<'a> {
 struct TypeName(Type);
 
 impl Serialize for TypeName {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_str(&self.0)
+    }
+}
+
+/// Adapter that serializes any `Display` value as its string form without
+/// allocating a `String` first (`collect_str` streams via `fmt::Write`).
+struct DisplayAsStr<T>(T);
+
+impl<T: Display> Serialize for DisplayAsStr<T> {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         serializer.collect_str(&self.0)
     }

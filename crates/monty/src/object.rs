@@ -1382,7 +1382,15 @@ impl FromIterator<(MontyObject, MontyObject)> for DictPairs {
 }
 
 impl DictPairs {
-    fn is_empty(&self) -> bool {
+    /// Number of (key, value) pairs held by this dict.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    /// Whether this dict has no pairs.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
 

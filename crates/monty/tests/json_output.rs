@@ -57,8 +57,9 @@ fn json_output_bytes_tagged() {
 }
 
 #[test]
-fn json_output_ellipsis_tagged() {
-    assert_eq!(to_json(&MontyObject::Ellipsis), r#"{"$ellipsis":true}"#);
+fn json_output_ellipsis_bare_string() {
+    // Ellipsis is a singleton so a bare "..." string is unambiguous.
+    assert_eq!(to_json(&MontyObject::Ellipsis), r#""...""#);
 }
 
 #[test]
@@ -92,30 +93,42 @@ fn json_output_repr_tagged() {
     assert_eq!(to_json(&obj), r#"{"$repr":"<function foo>"}"#);
 }
 
-// === Non-string dict keys become JSON string keys via Python `repr()` ===
+// === Non-string dict keys trigger `$dict` fallback preserving key types ===
 
 #[test]
-fn json_output_dict_int_keys_reprd() {
-    // Integer keys stringify as their decimal repr.
+fn json_output_dict_int_keys_tagged() {
+    // Any non-string key switches the whole dict to `{"$dict": [[k, v], ...]}`
+    // so the original key type is preserved round-trip.
     let ex = MontyRun::new("{1: 'a', 2: 'b'}".to_owned(), "test.py", vec![]).unwrap();
     let result = ex.run_no_limits(vec![]).unwrap();
-    assert_eq!(to_json(&result), r#"{"1":"a","2":"b"}"#);
+    assert_eq!(to_json(&result), r#"{"$dict":[[1,"a"],[2,"b"]]}"#);
 }
 
 #[test]
-fn json_output_dict_tuple_keys_reprd() {
-    // Tuple keys stringify as their Python `repr()` ("(1, 2)"), producing a
-    // regular JSON object rather than a tagged fallback shape.
+fn json_output_dict_tuple_keys_tagged() {
     let ex = MontyRun::new("{(1, 2): 'a', (3, 4): 'b'}".to_owned(), "test.py", vec![]).unwrap();
     let result = ex.run_no_limits(vec![]).unwrap();
-    assert_eq!(to_json(&result), r#"{"(1, 2)":"a","(3, 4)":"b"}"#);
+    assert_eq!(
+        to_json(&result),
+        r#"{"$dict":[[{"$tuple":[1,2]},"a"],[{"$tuple":[3,4]},"b"]]}"#
+    );
 }
 
 #[test]
-fn json_output_dict_none_and_bool_keys_reprd() {
+fn json_output_dict_mixed_keys_tagged() {
+    // With one int and one string key the dict still goes through the
+    // `$dict` path — a bare JSON object would have to coerce `1` to `"1"`,
+    // colliding with any real `"1"` string key.
+    let ex = MontyRun::new("{1: 'a', '1': 'b'}".to_owned(), "test.py", vec![]).unwrap();
+    let result = ex.run_no_limits(vec![]).unwrap();
+    assert_eq!(to_json(&result), r#"{"$dict":[[1,"a"],["1","b"]]}"#);
+}
+
+#[test]
+fn json_output_dict_none_and_bool_keys_tagged() {
     let ex = MontyRun::new("{None: 1, True: 2, False: 3}".to_owned(), "test.py", vec![]).unwrap();
     let result = ex.run_no_limits(vec![]).unwrap();
-    assert_eq!(to_json(&result), r#"{"None":1,"True":2,"False":3}"#);
+    assert_eq!(to_json(&result), r#"{"$dict":[[null,1],[true,2],[false,3]]}"#);
 }
 
 // === Dataclass and namedtuple share a `{"$<tag>": {...}, "name": "..."}` shape ===

@@ -695,7 +695,7 @@ where
     EitherFutureSnapshot: FromResolveFutures<T>,
 {
     match progress {
-        RunProgress::Complete(result) => PyMontyComplete::create(py, &result, &dc_registry),
+        RunProgress::Complete(result) => PyMontyComplete::create(py, result, &dc_registry),
         RunProgress::FunctionCall(call) => {
             PyFunctionSnapshot::function_call(py, call, script_name, print_callback, dc_registry)
         }
@@ -730,7 +730,7 @@ where
     match progress {
         ReplProgress::Complete { repl, value } => {
             repl_owner.get().put_repl_after_commit(EitherRepl::from_core(repl));
-            PyMontyComplete::create(py, &value, &dc_registry)
+            PyMontyComplete::create(py, value, &dc_registry)
         }
         ReplProgress::FunctionCall(call) => {
             PyFunctionSnapshot::repl_function_call(py, call, script_name, print_callback, dc_registry, repl_owner)
@@ -1833,14 +1833,12 @@ pub struct PyMontyComplete {
 }
 
 impl PyMontyComplete {
-    /// Builds a `MontyComplete` from the final Monty output value.
-    ///
-    /// The `MontyObject` is cloned rather than consumed so the iterative
-    /// runners can still use their local value for debug logging etc.; the
-    /// registry clone is a cheap refcount bump on the underlying Python dict.
-    fn create<'py>(py: Python<'py>, output: &MontyObject, dc_registry: &DcRegistry) -> PyResult<Bound<'py, PyAny>> {
+    /// Builds a `MontyComplete` by taking ownership of the final Monty output
+    /// value. The registry clone is a cheap refcount bump on the underlying
+    /// Python dict.
+    fn create<'py>(py: Python<'py>, output: MontyObject, dc_registry: &DcRegistry) -> PyResult<Bound<'py, PyAny>> {
         let slf = Self {
-            monty_output: output.clone(),
+            monty_output: output,
             dc_registry: dc_registry.clone_ref(py),
         };
         slf.into_bound_py_any(py)
