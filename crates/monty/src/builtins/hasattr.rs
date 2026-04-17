@@ -5,9 +5,10 @@ use crate::{
     args::ArgValues,
     bytecode::{CallResult, VM},
     defer_drop,
-    exception_private::{RunResult, SimpleException},
+    exception_private::{RunError, RunResult, SimpleException},
     resource::ResourceTracker,
-    value::{EitherStr, Value},
+    types::PyTrait,
+    value::Value,
 };
 
 /// Implementation of the hasattr() builtin function.
@@ -35,12 +36,16 @@ pub fn builtin_hasattr(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValue
         other => return Err(ExcType::type_error_arg_count("hasattr", 2, other.len())),
     };
 
-    let Value::InternString(name_id) = name else {
-        return Err(SimpleException::new_msg(ExcType::TypeError, "hasattr(): attribute name must be string").into());
+    let Some(name) = name.as_either_str(vm.heap) else {
+        return Err(SimpleException::new_msg(
+            ExcType::TypeError,
+            format!("attribute name must be string, not '{}'", name.py_type(vm)),
+        )
+        .into());
     };
 
     // important: we must own the returned value if py_get_attr succeeds to drop it
-    let has_attr = match object.py_getattr(&EitherStr::Interned(*name_id), vm) {
+    let has_attr = match object.py_getattr(&name, vm) {
         Ok(CallResult::Value(value)) => {
             value.drop_with_heap(vm);
             true
@@ -51,10 +56,11 @@ pub fn builtin_hasattr(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValue
             //
             // TODO: might need to support this case?
             return Err(
-                SimpleException::new_msg(ExcType::TypeError, "getattr(): attribute is not a simple value").into(),
+                SimpleException::new_msg(ExcType::TypeError, "hasattr(): attribute is not a simple value").into(),
             );
         }
-        Err(_) => false,
+        Err(RunError::Exc(e)) if e.exc.exc_type() == ExcType::AttributeError => false,
+        Err(e) => return Err(e),
     };
 
     Ok(Value::Bool(has_attr))

@@ -22,29 +22,29 @@ assert hasattr('hello', 'nonexistent') == False, 'str should not have nonexisten
 try:
     hasattr()
     assert False, 'hasattr() with no args should raise TypeError'
-except TypeError:
-    pass
+except TypeError as e:
+    assert str(e) == 'hasattr expected 2 arguments, got 0', str(e)
 
 try:
     hasattr(s)
     assert False, 'hasattr() with 1 arg should raise TypeError'
-except TypeError:
-    pass
+except TypeError as e:
+    assert str(e) == 'hasattr expected 2 arguments, got 1', str(e)
 
 try:
     hasattr(s, 'start', 'extra')
     assert False, 'hasattr() with 3 args should raise TypeError'
-except TypeError:
-    pass
+except TypeError as e:
+    assert str(e) == 'hasattr expected 2 arguments, got 3', str
 
 try:
     hasattr(s, 123)
     assert False, 'hasattr() with non-string name should raise TypeError'
 except TypeError as e:
-    assert 'attribute name must be string' in str(e), 'Error message should mention string requirement'
+    assert str(e) == "attribute name must be string, not 'int'", str(e)
 
 try:
     hasattr(s, None)
     assert False, 'hasattr() with None name should raise TypeError'
-except TypeError:
-    pass
+except TypeError as e:
+    assert str(e) == "attribute name must be string, not 'NoneType'", str(e)
