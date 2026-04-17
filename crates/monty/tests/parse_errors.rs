@@ -439,3 +439,14 @@ fn del_statement_returns_not_implemented_error() {
     let result = MontyRun::new("x = 1\ndel x".to_owned(), "test.py", vec![]);
     assert_eq!(get_exc_type(result), ExcType::NotImplementedError);
 }
+
+#[test]
+fn long_source_line_does_not_overflow_column() {
+    // https://github.com/pydantic/monty/issues/341
+    //
+    // (code locations was previously limited to u16 values for line / col)
+    let code = format!("x = \"{}\"\nassert len(x) == 65530", "a".repeat(65530));
+    let run = MontyRun::new(code, "test.py", vec![]).expect("long line should parse without panicking");
+    let result = run.run_no_limits(vec![]);
+    assert!(result.is_ok(), "long line should run: {result:?}");
+}

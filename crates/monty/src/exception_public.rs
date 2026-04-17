@@ -338,16 +338,16 @@ impl Default for CodeLoc {
 impl CodeLoc {
     /// Creates a new CodeLoc from 0-based values.
     ///
-    /// Lines and columns numbers are 1-indexed for display, hence `+1`
-    ///
-    /// # Panics
-    /// Panics if the 0-based line or column equals `u32::MAX` (i.e. would
-    /// overflow when shifted to 1-based).
+    /// Lines and columns numbers are 1-indexed for display, hence `+ 1`.
+    /// Saturates at `u32::MAX` rather than panicking — overflow here is
+    /// already unreachable for any source ruff will accept (it caps source
+    /// size at 4 GiB), and saturation keeps the parser panic-free even if
+    /// that ever changes.
     #[must_use]
     pub fn new(line: u32, column: u32) -> Self {
         Self {
-            line: line.checked_add(1).expect("line number overflow"),
-            column: column.checked_add(1).expect("column number overflow"),
+            line: line.saturating_add(1),
+            column: column.saturating_add(1),
         }
     }
 }

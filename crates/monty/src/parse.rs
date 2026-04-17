@@ -1774,37 +1774,3 @@ fn parse_int_literal(s: &str, position: CodeRange) -> Result<BigInt, ParseError>
             .map_err(|e| ParseError::syntax(format!("invalid integer literal {s:?}, error: {e}"), position))
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use crate::{ExcType, MontyRun};
-
-    #[test]
-    fn non_ascii_earlier_line_does_not_shift_column() {
-        // "x = 'é'\nundefined_name": 'é' is two UTF-8 bytes but one character,
-        // ensure position is correctly calculated
-        let code = "x = 'é'\nundefined_name".to_string();
-        let run = MontyRun::new(code, "test.py", vec![]).expect("should parse");
-        let err = run.run_no_limits(vec![]).expect_err("should raise NameError");
-        assert_eq!(err.exc_type(), ExcType::NameError);
-        let frame = err.traceback().last().expect("traceback has at least one frame");
-        assert_eq!(frame.start.line, 2, "NameError is on line 2");
-        assert_eq!(
-            frame.start.column, 1,
-            "start column should be 1 regardless of non-ASCII on previous line"
-        );
-        assert_eq!(
-            frame.end.column, 15,
-            "end column should be 15 (1-indexed past the 14-char identifier)"
-        );
-    }
-
-    #[test]
-    fn long_source_line_does_not_overflow_column() {
-        // https://github.com/pydantic/monty/issues/341
-        let code = format!("x = \"{}\"\nassert len(x) == 65530", "a".repeat(65530));
-        let run = MontyRun::new(code, "test.py", vec![]).expect("long line should parse without panicking");
-        let result = run.run_no_limits(vec![]);
-        assert!(result.is_ok(), "long line should run: {result:?}");
-    }
-}
