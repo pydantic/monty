@@ -158,7 +158,7 @@ fn serialize_tagged_seq<S: Serializer>(
     tag: &'static str,
     items: &[MontyObject],
 ) -> Result<S::Ok, S::Error> {
-    serialize_tagged(serializer, tag, &SeqBody(items))
+    serialize_tagged(serializer, tag, &JsonMontyArray(items))
 }
 
 /// Serialize a `Dict`. If every key is a Python string, emit a normal JSON
@@ -167,7 +167,11 @@ fn serialize_tagged_seq<S: Serializer>(
 /// type — a bare JSON object can only use string keys, so stringifying
 /// them would be lossy.
 fn serialize_dict<S: Serializer>(serializer: S, pairs: &DictPairs) -> Result<S::Ok, S::Error> {
-    if pairs.into_iter().all(|(k, _)| matches!(k, MontyObject::String(_))) {
+    // `DictPairs` is an opaque wrapper; borrow as a slice via `into_iter`
+    // on `&DictPairs` for the key scan, then hand the slice to the pairs
+    // serializer through a small projection helper.
+    let is_all_strings = pairs.into_iter().all(|(k, _)| matches!(k, MontyObject::String(_)));
+    if is_all_strings {
         let mut map = serializer.serialize_map(Some(pairs.len()))?;
         for (k, v) in pairs {
             let MontyObject::String(key) = k else { unreachable!() };
@@ -176,6 +180,21 @@ fn serialize_dict<S: Serializer>(serializer: S, pairs: &DictPairs) -> Result<S::
         map.end()
     } else {
         serialize_tagged(serializer, "$dict", &DictPairsBody(pairs))
+    }
+}
+
+/// `DictPairs`-equivalent of `PairsArrayBody`; mirrors the body shape used
+/// by `JsonMontyPairs` but borrows from the opaque `DictPairs` newtype
+/// rather than a raw slice.
+struct DictPairsBody<'a>(&'a DictPairs);
+
+impl Serialize for DictPairsBody<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut seq = serializer.serialize_seq(Some(self.0.len()))?;
+        for (k, v) in self.0 {
+            seq.serialize_element(&[JsonMontyObject(k), JsonMontyObject(v)])?;
+        }
+        seq.end()
     }
 }
 
@@ -194,22 +213,51 @@ fn serialize_named<S: Serializer>(
     map.end()
 }
 
-/// Inline body for tagged sequences; exists so `serialize_tagged` can take
-/// a single `&impl Serialize` rather than needing a specialized variant.
-struct SeqBody<'a>(&'a [MontyObject]);
+/// Serialize-only wrapper around a slice of [`MontyObject`]s that produces a
+/// JSON array in the natural form (e.g. `[1, "two", {"$tuple": [3, 4]}]`).
+///
+/// Use this when you have a raw slice and don't want to transiently
+/// construct a `MontyObject::List` just to borrow it: it's equivalent to
+/// wrapping the slice in a list, but avoids the clone.
+pub struct JsonMontyArray<'a>(pub &'a [MontyObject]);
 
-impl Serialize for SeqBody<'_> {
+impl Serialize for JsonMontyArray<'_> {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         serialize_seq(serializer, self.0)
+    }
+}
+
+/// Serialize-only wrapper around a slice of `(key, value)` pairs that
+/// produces the same shape as a `MontyObject::Dict`: a plain JSON object
+/// when every key is a Python string, else a `{"$dict": [[k, v], ...]}`
+/// fallback that preserves key types.
+///
+/// Intended for pair-list structures stored as `Vec<(MontyObject, MontyObject)>`
+/// (e.g. the `kwargs` on a function snapshot) so they can be serialized
+/// without constructing a `DictPairs` or a full `MontyObject::Dict`.
+pub struct JsonMontyPairs<'a>(pub &'a [(MontyObject, MontyObject)]);
+
+impl Serialize for JsonMontyPairs<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        if self.0.iter().all(|(k, _)| matches!(k, MontyObject::String(_))) {
+            let mut map = serializer.serialize_map(Some(self.0.len()))?;
+            for (k, v) in self.0 {
+                let MontyObject::String(key) = k else { unreachable!() };
+                map.serialize_entry(key, &JsonMontyObject(v))?;
+            }
+            map.end()
+        } else {
+            serialize_tagged(serializer, "$dict", &PairsArrayBody(self.0))
+        }
     }
 }
 
 /// Body of a `$dict` tag — each pair becomes a two-element JSON array
 /// `[key, value]` with both sides recursively serialized via
 /// `JsonMontyObject`, so non-string keys retain their real type.
-struct DictPairsBody<'a>(&'a DictPairs);
+struct PairsArrayBody<'a>(&'a [(MontyObject, MontyObject)]);
 
-impl Serialize for DictPairsBody<'_> {
+impl Serialize for PairsArrayBody<'_> {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         let mut seq = serializer.serialize_seq(Some(self.0.len()))?;
         for (k, v) in self.0 {

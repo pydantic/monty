@@ -507,6 +507,31 @@ class FunctionSnapshot:
     def kwargs(self) -> dict[str, Any]:
         """The keyword arguments passed to the external function."""
 
+    def args_json(self) -> str:
+        """Serialize the positional args as a JSON array.
+
+        Uses the same natural-form mapping as 'MontyComplete.output_json':
+        JSON-native Python values ('None', 'bool', 'int', 'float',
+        'str', list, and dict with string keys) are emitted bare, while
+        non-JSON-native values (tuples, bytes, sets, dataclasses, ...) are
+        wrapped in a single-key object with a '$'-prefixed tag such as
+        '{"$tuple": [...]}'.
+
+        Raises:
+            RuntimeError: If serialization fails.
+        """
+
+    def kwargs_json(self) -> str:
+        """Serialize the keyword args as a JSON object.
+
+        Python kwargs always have string keys, so the result is a plain
+        '{"<name>": <value>, ...}' object using the same natural-form
+        mapping as 'args_json' for the values.
+
+        Raises:
+            RuntimeError: If serialization fails.
+        """
+
     @property
     def call_id(self) -> int:
         """The unique identifier for this external function call."""
@@ -746,14 +771,14 @@ class MontyComplete:
         save it to a local variable.
         """
 
-    def json_output(self) -> str:
+    def output_json(self) -> str:
         """Serialize the output as a JSON string.
 
         Uses a natural mapping where JSON-native Python types (None, bool,
         int, float, str, list, and dict with string keys) become bare JSON
         values. Non-JSON-native types (tuples, bytes, sets, dataclasses, ...)
-        are wrapped in a single-key object with a ``$``-prefixed tag such as
-        ``{"$tuple": [...]}`` or ``{"$bytes": [...]}``.
+        are wrapped in a single-key object with a '$'-prefixed tag such as
+        `{"$tuple": [...]}` or `{"$bytes": [...]}`.
 
         Raises:
             RuntimeError: If serialization fails.

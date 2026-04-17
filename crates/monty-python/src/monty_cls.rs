@@ -6,9 +6,9 @@ use std::{
 
 // Use `::monty` to refer to the external crate (not the pymodule)
 use ::monty::{
-    ExcType, ExtFunctionResult, FunctionCall, JsonMontyObject, LimitedTracker, MontyException, MontyObject, MontyRun,
-    NameLookupResult, NoLimitTracker, OsCall, ReplFunctionCall, ReplNameLookup, ReplOsCall, ReplProgress,
-    ReplResolveFutures, ReplStartError, ResolveFutures, ResourceTracker, RunProgress,
+    ExcType, ExtFunctionResult, FunctionCall, JsonMontyArray, JsonMontyObject, JsonMontyPairs, LimitedTracker,
+    MontyException, MontyObject, MontyRun, NameLookupResult, NoLimitTracker, OsCall, ReplFunctionCall, ReplNameLookup,
+    ReplOsCall, ReplProgress, ReplResolveFutures, ReplStartError, ResolveFutures, ResourceTracker, RunProgress,
 };
 use monty::{NameLookup, fs::MountTable};
 use monty_type_checking::{SourceFile, type_check};
@@ -882,15 +882,18 @@ pub struct PyFunctionSnapshot {
     /// The name of the function being called.
     #[pyo3(get)]
     pub function_name: String,
-    /// The positional arguments passed to the function.
-    #[pyo3(get)]
-    pub args: Py<PyTuple>,
-    /// The keyword arguments passed to the function (key, value pairs).
-    #[pyo3(get)]
-    pub kwargs: Py<PyDict>,
     /// The unique identifier for this call
     #[pyo3(get)]
     pub call_id: u32,
+
+    /// Positional args in Monty's native representation. Python callers see
+    /// them as a `tuple` via the `args` getter, which converts on each
+    /// access (mirroring `MontyComplete.output`); `args_json()` serializes
+    /// straight from this vec without a Python round-trip.
+    args: Vec<MontyObject>,
+    /// Keyword args as (key, value) pairs — same rationale as `args`;
+    /// exposed as a Python `dict` via the `kwargs` getter.
+    kwargs: Vec<(MontyObject, MontyObject)>,
 }
 
 impl PyFunctionSnapshot {
@@ -911,15 +914,8 @@ impl PyFunctionSnapshot {
         let function_name = call.function_name.clone();
         let call_id = call.call_id;
         let method_call = call.method_call;
-        let items: PyResult<Vec<Py<PyAny>>> = call
-            .args
-            .iter()
-            .map(|item| monty_to_py(py, item, &dc_registry))
-            .collect();
-        let dict = PyDict::new(py);
-        for (k, v) in &call.kwargs {
-            dict.set_item(monty_to_py(py, k, &dc_registry)?, monty_to_py(py, v, &dc_registry)?)?;
-        }
+        let args = call.args.clone();
+        let kwargs = call.kwargs.clone();
 
         let slf = Self {
             snapshot: Mutex::new(EitherFunctionSnapshot::from_fn(call)),
@@ -928,10 +924,10 @@ impl PyFunctionSnapshot {
             is_os_function: false,
             is_method_call: method_call,
             function_name,
-            args: PyTuple::new(py, items?)?.unbind(),
-            kwargs: dict.unbind(),
             call_id,
             dc_registry,
+            args,
+            kwargs,
         };
         slf.into_bound_py_any(py)
     }
@@ -952,15 +948,8 @@ impl PyFunctionSnapshot {
     {
         let function_name = call.function.to_string();
         let call_id = call.call_id;
-        let items: PyResult<Vec<Py<PyAny>>> = call
-            .args
-            .iter()
-            .map(|item| monty_to_py(py, item, &dc_registry))
-            .collect();
-        let dict = PyDict::new(py);
-        for (k, v) in &call.kwargs {
-            dict.set_item(monty_to_py(py, k, &dc_registry)?, monty_to_py(py, v, &dc_registry)?)?;
-        }
+        let args = call.args.clone();
+        let kwargs = call.kwargs.clone();
 
         let slf = Self {
             snapshot: Mutex::new(EitherFunctionSnapshot::from_os(call)),
@@ -969,10 +958,10 @@ impl PyFunctionSnapshot {
             is_os_function: true,
             is_method_call: false,
             function_name,
-            args: PyTuple::new(py, items?)?.unbind(),
-            kwargs: dict.unbind(),
             call_id,
             dc_registry,
+            args,
+            kwargs,
         };
         slf.into_bound_py_any(py)
     }
@@ -992,15 +981,8 @@ impl PyFunctionSnapshot {
         let function_name = call.function_name.clone();
         let call_id = call.call_id;
         let method_call = call.method_call;
-        let items: PyResult<Vec<Py<PyAny>>> = call
-            .args
-            .iter()
-            .map(|item| monty_to_py(py, item, &dc_registry))
-            .collect();
-        let dict = PyDict::new(py);
-        for (k, v) in &call.kwargs {
-            dict.set_item(monty_to_py(py, k, &dc_registry)?, monty_to_py(py, v, &dc_registry)?)?;
-        }
+        let args = call.args.clone();
+        let kwargs = call.kwargs.clone();
 
         let slf = Self {
             snapshot: Mutex::new(EitherFunctionSnapshot::from_repl_fn(call, repl_owner)),
@@ -1009,10 +991,10 @@ impl PyFunctionSnapshot {
             is_os_function: false,
             is_method_call: method_call,
             function_name,
-            args: PyTuple::new(py, items?)?.unbind(),
-            kwargs: dict.unbind(),
             call_id,
             dc_registry,
+            args,
+            kwargs,
         };
         slf.into_bound_py_any(py)
     }
@@ -1031,15 +1013,8 @@ impl PyFunctionSnapshot {
     {
         let function_name = call.function.to_string();
         let call_id = call.call_id;
-        let items: PyResult<Vec<Py<PyAny>>> = call
-            .args
-            .iter()
-            .map(|item| monty_to_py(py, item, &dc_registry))
-            .collect();
-        let dict = PyDict::new(py);
-        for (k, v) in &call.kwargs {
-            dict.set_item(monty_to_py(py, k, &dc_registry)?, monty_to_py(py, v, &dc_registry)?)?;
-        }
+        let args = call.args.clone();
+        let kwargs = call.kwargs.clone();
 
         let slf = Self {
             snapshot: Mutex::new(EitherFunctionSnapshot::from_repl_os(call, repl_owner)),
@@ -1048,10 +1023,10 @@ impl PyFunctionSnapshot {
             is_os_function: true,
             is_method_call: false,
             function_name,
-            args: PyTuple::new(py, items?)?.unbind(),
-            kwargs: dict.unbind(),
             call_id,
             dc_registry,
+            args,
+            kwargs,
         };
         slf.into_bound_py_any(py)
     }
@@ -1069,8 +1044,8 @@ impl PyFunctionSnapshot {
         is_os_function: bool,
         is_method_call: bool,
         function_name: String,
-        args: Py<PyTuple>,
-        kwargs: Py<PyDict>,
+        args: Vec<MontyObject>,
+        kwargs: Vec<(MontyObject, MontyObject)>,
         call_id: u32,
     ) -> PyResult<Bound<'_, PyAny>> {
         let slf = Self {
@@ -1275,9 +1250,52 @@ impl PyFunctionSnapshot {
             &self.args,
             &self.kwargs,
             self.call_id,
-            &self.dc_registry,
         )?;
         Ok(PyBytes::new(py, &bytes))
+    }
+
+    /// Converts the stored Monty args into a Python `tuple` on each access.
+    /// Like `MontyComplete.output`, the conversion is redone every call so
+    /// the class can stay frozen and we don't keep a second copy of the
+    /// data; heavy consumers should bind the result to a local.
+    #[getter]
+    fn args<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyTuple>> {
+        let items: Vec<Py<PyAny>> = self
+            .args
+            .iter()
+            .map(|item| monty_to_py(py, item, &self.dc_registry))
+            .collect::<PyResult<_>>()?;
+        PyTuple::new(py, items)
+    }
+
+    /// Converts the stored Monty kwargs into a Python `dict` on each access.
+    /// Same on-demand rationale as `args`.
+    #[getter]
+    fn kwargs<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let dict = PyDict::new(py);
+        for (k, v) in &self.kwargs {
+            dict.set_item(
+                monty_to_py(py, k, &self.dc_registry)?,
+                monty_to_py(py, v, &self.dc_registry)?,
+            )?;
+        }
+        Ok(dict)
+    }
+
+    /// Serializes the positional args as a JSON array using the natural-form
+    /// mapping (see [`JsonMontyObject`]) — JSON-native Python values are
+    /// emitted bare, non-JSON-native values get a `{"$<tag>": ...}` wrapper.
+    fn args_json(&self) -> PyResult<String> {
+        serde_json::to_string(&JsonMontyArray(&self.args))
+            .map_err(|e| PyRuntimeError::new_err(format!("failed to serialize args as JSON: {e}")))
+    }
+
+    /// Serializes the keyword args as a JSON object. Python kwargs always
+    /// have string keys, so this is a plain `{"<name>": <value>, ...}`
+    /// object; values use the same natural-form mapping as `args_json`.
+    fn kwargs_json(&self) -> PyResult<String> {
+        serde_json::to_string(&JsonMontyPairs(&self.kwargs))
+            .map_err(|e| PyRuntimeError::new_err(format!("failed to serialize kwargs as JSON: {e}")))
     }
 
     fn __repr__(&self, py: Python<'_>) -> PyResult<String> {
@@ -1285,8 +1303,8 @@ impl PyFunctionSnapshot {
             "FunctionSnapshot(script_name='{}', function_name='{}', args={}, kwargs={})",
             self.script_name,
             self.function_name,
-            self.args.bind(py).repr()?,
-            self.kwargs.bind(py).repr()?
+            self.args(py)?.repr()?,
+            self.kwargs(py)?.repr()?
         ))
     }
 }
@@ -1861,7 +1879,7 @@ impl PyMontyComplete {
     /// (see [`JsonMontyObject`]): JSON-native Python types become bare JSON
     /// values, non-JSON-native types are wrapped in a `{"$<tag>": ...}`
     /// object. This format is **output-only** and not round-trippable.
-    fn json_output(&self) -> PyResult<String> {
+    fn output_json(&self) -> PyResult<String> {
         serde_json::to_string(&JsonMontyObject(&self.monty_output))
             .map_err(|e| PyRuntimeError::new_err(format!("failed to serialize output as JSON: {e}")))
     }
