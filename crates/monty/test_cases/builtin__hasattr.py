@@ -35,7 +35,7 @@ try:
     hasattr(s, 'start', 'extra')
     assert False, 'hasattr() with 3 args should raise TypeError'
 except TypeError as e:
-    assert str(e) == 'hasattr expected 2 arguments, got 3', str
+    assert str(e) == 'hasattr expected 2 arguments, got 3', str(e)
 
 try:
     hasattr(s, 123)
