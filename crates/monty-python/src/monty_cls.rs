@@ -1835,7 +1835,7 @@ impl PyFutureSnapshot {
 ///
 /// The final value is stored as a `MontyObject` and converted to a Python
 /// object lazily on each access of the `output` property. This lets
-/// `json_output()` serialize the value directly from the Rust representation
+/// `output_json()` serialize the value directly from the Rust representation
 /// without a Python round-trip, while still giving Python callers a native
 /// Python value when they want one.
 #[pyclass(name = "MontyComplete", module = "pydantic_monty", frozen)]
