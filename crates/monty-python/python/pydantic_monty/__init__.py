@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Callable, Literal, NotRequired, TypedDict
+from typing import TYPE_CHECKING, Any, Callable, Literal
 
-from typing_extensions import deprecated
+from typing_extensions import NotRequired, TypedDict, deprecated
 
 if TYPE_CHECKING:
     from types import EllipsisType
