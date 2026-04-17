@@ -70,8 +70,7 @@ fn js_number_to_usize(value: f64, name: &str) -> usize {
         v => {
             #[expect(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
             let value = v as u64;
-            usize::try_from(value)
-                .unwrap_or_else(|_| panic!("{name} must fit in Rust usize on this platform"))
+            usize::try_from(value).unwrap_or_else(|_| panic!("{name} must fit in Rust usize on this platform"))
         }
     }
 }
