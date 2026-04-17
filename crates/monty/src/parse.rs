@@ -1472,10 +1472,20 @@ impl<'a> Parser<'a> {
 
     fn convert_range(&self, range: TextRange) -> CodeRange {
         let (start_line, start_line_start, _) = self.index_to_position(range.start());
-        let start = CodeLoc::new(start_line, (range.start() - start_line_start).to_u32());
+        let start_col = self.code[start_line_start.to_usize()..range.start().to_usize()]
+            .chars()
+            .count()
+            .try_into()
+            .expect("column number exceeds u32");
+        let start = CodeLoc::new(start_line, start_col);
 
         let (end_line, end_line_start, _) = self.index_to_position(range.end());
-        let end = CodeLoc::new(end_line, (range.end() - end_line_start).to_u32());
+        let end_col = self.code[end_line_start.to_usize()..range.end().to_usize()]
+            .chars()
+            .count()
+            .try_into()
+            .expect("column number exceeds u32");
+        let end = CodeLoc::new(end_line, end_col);
 
         // Store the line number only for single-line ranges; multi-line
         // ranges have no single preview line to highlight.

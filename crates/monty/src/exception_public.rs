@@ -325,7 +325,7 @@ impl StackFrame {
 pub struct CodeLoc {
     /// Line number (1-based).
     pub line: u32,
-    /// Column number (1-based).
+    /// Column number (1-based), counted in characters (not bytes).
     pub column: u32,
 }
 
