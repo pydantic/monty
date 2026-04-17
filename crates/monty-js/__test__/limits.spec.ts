@@ -93,6 +93,19 @@ len(result)
   t.true(error.message.includes('MemoryError'))
 })
 
+test('memory limit accepts values below u32 max', (t) => {
+  const m = new Monty('1 + 1')
+  const limits: ResourceLimits = { maxMemory: 2 ** 31 }
+  t.is(m.run({ limits }), 2)
+})
+
+test('memory limit accepts values above u32 max', (t) => {
+  const m = new Monty('1 + 1')
+  const limits: ResourceLimits = { maxMemory: 2 ** 33 }
+  t.is(m.run({ limits }), 2)
+})
+
+
 // =============================================================================
 // Limits with inputs tests
 // =============================================================================
