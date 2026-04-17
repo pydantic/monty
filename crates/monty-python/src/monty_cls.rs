@@ -6,9 +6,9 @@ use std::{
 
 // Use `::monty` to refer to the external crate (not the pymodule)
 use ::monty::{
-    ExcType, ExtFunctionResult, FunctionCall, LimitedTracker, MontyException, MontyObject, MontyRun, NameLookupResult,
-    NoLimitTracker, OsCall, ReplFunctionCall, ReplNameLookup, ReplOsCall, ReplProgress, ReplResolveFutures,
-    ReplStartError, ResolveFutures, ResourceTracker, RunProgress,
+    ExcType, ExtFunctionResult, FunctionCall, JsonMontyObject, LimitedTracker, MontyException, MontyObject, MontyRun,
+    NameLookupResult, NoLimitTracker, OsCall, ReplFunctionCall, ReplNameLookup, ReplOsCall, ReplProgress,
+    ReplResolveFutures, ReplStartError, ResolveFutures, ResourceTracker, RunProgress,
 };
 use monty::{NameLookup, fs::MountTable};
 use monty_type_checking::{SourceFile, type_check};
@@ -1814,27 +1814,62 @@ impl PyFutureSnapshot {
 /// `Monty.start()` and the snapshot `resume()` methods yield `MontyComplete`
 /// when execution finishes without requiring the direct `run()` APIs to change
 /// their return type.
+///
+/// The final value is stored as a `MontyObject` and converted to a Python
+/// object lazily on each access of the `output` property. This lets
+/// `json_output()` serialize the value directly from the Rust representation
+/// without a Python round-trip, while still giving Python callers a native
+/// Python value when they want one.
 #[pyclass(name = "MontyComplete", module = "pydantic_monty", frozen)]
 pub struct PyMontyComplete {
-    /// Value produced by the last expression of the run.
-    #[pyo3(get)]
-    pub output: Py<PyAny>,
+    /// Value produced by the last expression of the run, in Monty's native
+    /// representation. Converted to a Python value on demand via `output`.
+    monty_output: MontyObject,
+    /// Dataclass registry required to reconstruct registered dataclass
+    /// instances when converting `monty_output` back to Python. Shares the
+    /// same underlying Python dict as the registry used during execution.
+    dc_registry: DcRegistry,
     // TODO we might want to add stats on execution here like time, allocations, etc.
 }
 
 impl PyMontyComplete {
     /// Builds a `MontyComplete` from the final Monty output value.
+    ///
+    /// The `MontyObject` is cloned rather than consumed so the iterative
+    /// runners can still use their local value for debug logging etc.; the
+    /// registry clone is a cheap refcount bump on the underlying Python dict.
     fn create<'py>(py: Python<'py>, output: &MontyObject, dc_registry: &DcRegistry) -> PyResult<Bound<'py, PyAny>> {
-        let output = monty_to_py(py, output, dc_registry)?;
-        let slf = Self { output };
+        let slf = Self {
+            monty_output: output.clone(),
+            dc_registry: dc_registry.clone_ref(py),
+        };
         slf.into_bound_py_any(py)
     }
 }
 
 #[pymethods]
 impl PyMontyComplete {
-    fn __repr__(&self, py: Python<'_>) -> PyResult<String> {
-        Ok(format!("MontyComplete(output={})", self.output.bind(py).repr()?))
+    /// Converts the stored `MontyObject` into a Python value on each access.
+    ///
+    /// Conversion is intentionally re-done every call: it keeps the class
+    /// `frozen` (no interior mutability needed) and avoids retaining a
+    /// Python-side copy of the output that may never be read.
+    #[getter]
+    fn output(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        monty_to_py(py, &self.monty_output, &self.dc_registry)
+    }
+
+    /// Serializes the output as JSON using the natural-form mapping
+    /// (see [`JsonMontyObject`]): JSON-native Python types become bare JSON
+    /// values, non-JSON-native types are wrapped in a `{"$<tag>": ...}`
+    /// object. This format is **output-only** and not round-trippable.
+    fn json_output(&self) -> PyResult<String> {
+        serde_json::to_string(&JsonMontyObject(&self.monty_output))
+            .map_err(|e| PyRuntimeError::new_err(format!("failed to serialize output as JSON: {e}")))
+    }
+
+    fn __repr__(&self) -> String {
+        format!("MontyComplete(output={})", self.monty_output.py_repr())
     }
 }
 

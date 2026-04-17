@@ -19,6 +19,7 @@ mod io;
 mod modules;
 mod namespace;
 mod object;
+mod object_json;
 mod os;
 mod parse;
 mod prepare;
@@ -38,6 +39,7 @@ pub use crate::{
     exception_public::{CodeLoc, MontyException, StackFrame},
     io::{PrintStream, PrintWriter, PrintWriterCallback},
     object::{DictPairs, InvalidInputError, MontyDate, MontyDateTime, MontyObject, MontyTimeDelta, MontyTimeZone},
+    object_json::JsonMontyObject,
     os::{OsFunction, dir_stat, file_stat, stat_result, symlink_stat},
     repl::{
         MontyRepl, ReplContinuationMode, ReplFunctionCall, ReplNameLookup, ReplOsCall, ReplProgress,

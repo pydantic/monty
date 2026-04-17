@@ -739,7 +739,25 @@ class MontyComplete:
 
     @property
     def output(self) -> Any:
-        """The final output value from the executed code."""
+        """The final output value from the executed code.
+
+        Converted from Monty's internal representation to a Python object on
+        each access. Callers that want to inspect the value repeatedly should
+        save it to a local variable.
+        """
+
+    def json_output(self) -> str:
+        """Serialize the output as a JSON string.
+
+        Uses a natural mapping where JSON-native Python types (None, bool,
+        int, float, str, list, and dict with string keys) become bare JSON
+        values. Non-JSON-native types (tuples, bytes, sets, dataclasses, ...)
+        are wrapped in a single-key object with a ``$``-prefixed tag such as
+        ``{"$tuple": [...]}`` or ``{"$bytes": [...]}``.
+
+        Raises:
+            RuntimeError: If serialization fails.
+        """
 
     def __repr__(self) -> str: ...
 

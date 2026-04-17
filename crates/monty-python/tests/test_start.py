@@ -189,6 +189,83 @@ def test_complete_repr():
     assert repr(result) == snapshot('MontyComplete(output=42)')
 
 
+def test_complete_output_is_fresh_each_access():
+    # The `output` property converts the stored `MontyObject` to Python on each
+    # access, so repeated reads produce independent lists rather than aliasing.
+    m = pydantic_monty.Monty('[1, 2, 3]')
+    result = m.start()
+    assert isinstance(result, pydantic_monty.MontyComplete)
+    first = result.output
+    second = result.output
+    assert first == snapshot([1, 2, 3])
+    assert first == second
+    assert first is not second
+
+
+@pytest.mark.parametrize(
+    ('code', 'expected'),
+    [
+        ('None', snapshot('null')),
+        ('True', snapshot('true')),
+        ('42', snapshot('42')),
+        ('2 ** 200', snapshot('1606938044258990275541962092341162602522202993782792835301376')),
+        ('1.5', snapshot('1.5')),
+        ("'hi'", snapshot('"hi"')),
+        ('[1, "two", None]', snapshot('[1,"two",null]')),
+        ("{'a': 1, 'b': 'two'}", snapshot('{"a":1,"b":"two"}')),
+        ('(1, 2)', snapshot('{"$tuple":[1,2]}')),
+        ("b'hi'", snapshot('{"$bytes":[104,105]}')),
+        ('...', snapshot('{"$ellipsis":true}')),
+        ('{1: "a", 2: "b"}', snapshot('{"1":"a","2":"b"}')),
+        ('{(1, 2): "a"}', snapshot('{"(1, 2)":"a"}')),
+        ('{None: 1, True: 2}', snapshot('{"None":1,"True":2}')),
+        ('type(int)', snapshot('{"$type":"type"}')),
+        ('int', snapshot('{"$type":"int"}')),
+        ("from pathlib import Path\nPath('hello')", snapshot('{"$path":"hello"}')),
+    ],
+)
+def test_complete_json_output(code: str, expected: str):
+    m = pydantic_monty.Monty(code)
+    result = m.start()
+    assert isinstance(result, pydantic_monty.MontyComplete)
+    assert result.json_output() == expected
+
+
+def test_complete_json_output_dataclass():
+    # Dataclasses serialize as `{"$dataclass": {<attrs>}, "name": "<ClassName>"}`
+    # so consumers can both see the instance's data and know what class it came from.
+    from dataclasses import dataclass
+
+    @dataclass
+    class Point:
+        x: int
+        y: int
+
+    m = pydantic_monty.Monty('p', inputs=['p'], dataclass_registry=[Point])
+    result = m.start(inputs={'p': Point(x=1, y=2)})
+    assert isinstance(result, pydantic_monty.MontyComplete)
+    assert result.json_output() == snapshot('{"$dataclass":{"x":1,"y":2},"name":"Point"}')
+
+
+def test_complete_json_output_namedtuple():
+    # `sys.version_info` is the most convenient namedtuple to get out of
+    # Monty (no class definitions in the parser), and exercises both the
+    # fields-as-object body and the `name` sibling key.
+    m = pydantic_monty.Monty('import sys; sys.version_info')
+    result = m.start()
+    assert isinstance(result, pydantic_monty.MontyComplete)
+    assert result.json_output() == snapshot(
+        '{"$namedtuple":{"major":3,"minor":14,"micro":0,"releaselevel":"final","serial":0},"name":"sys.version_info"}'
+    )
+
+
+def test_complete_json_output_nested():
+    m = pydantic_monty.Monty("{'items': [1, 'two', None, (10, 20)], 'flag': True}")
+    result = m.start()
+    assert isinstance(result, pydantic_monty.MontyComplete)
+    assert result.json_output() == snapshot('{"items":[1,"two",null,{"$tuple":[10,20]}],"flag":true}')
+
+
 def test_start_can_reuse_monty_instance():
     m = pydantic_monty.Monty('func(x)', inputs=['x'])
 
