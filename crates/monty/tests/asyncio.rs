@@ -693,8 +693,8 @@ results
     assert_eq!(call_ids.len(), 3, "should have 3 external calls");
     assert_eq!(state.pending_call_ids().len(), 3, "should have 3 pending calls");
 
-    // Resolve only the gather's direct external call first (call_ids[0] = async_call(999)).
-    // This triggers mem::take on gather.task_ids, corrupting it to [].
+    // A previous implementation of Monty had an issue where resolving the direct external call
+    // first would corrupt the pending calls state in the gather.
     let results = vec![(call_ids[0], ExtFunctionResult::Return(MontyObject::Int(999)))];
     let progress = state.resume(results, PrintWriter::Stdout).unwrap();
 
@@ -702,15 +702,10 @@ results
         .into_resolve_futures()
         .expect("should need more futures (slow_a and slow_b still pending)");
 
-    // Now resolve one coroutine's inner call. This will make that coroutine complete.
-    // With the mem::take bug, handle_task_completion would see gather.task_ids = []
-    // (corrupted) and falsely consider the gather complete, panicking on the other
-    // coroutine's None result.
     let remaining = state.pending_call_ids();
     assert_eq!(remaining.len(), 2, "should have 2 remaining calls");
 
-    // Resolve one of the remaining calls (both coroutines return the same value
-    // since call ordering between slow_a/slow_b is nondeterministic)
+    // Resolve one of the remaining calls
     let results = vec![(remaining[0], ExtFunctionResult::Return(MontyObject::Int(42)))];
     let progress = state.resume(results, PrintWriter::Stdout).unwrap();
 
@@ -721,7 +716,7 @@ results
 
     assert_eq!(state.pending_call_ids().len(), 1, "should have 1 remaining call");
 
-    // Resolve the last call (same value — both coroutines just return `val`)
+    // Resolve the last call
     let last_id = state.pending_call_ids()[0];
     let results = vec![(last_id, ExtFunctionResult::Return(MontyObject::Int(42)))];
     let progress = state.resume(results, PrintWriter::Stdout).unwrap();
