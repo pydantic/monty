@@ -6,9 +6,9 @@ use std::{
 
 // Use `::monty` to refer to the external crate (not the pymodule)
 use ::monty::{
-    ExtFunctionResult, FunctionCall, LimitedTracker, MontyObject, MontyRun, NameLookupResult, NoLimitTracker, OsCall,
-    ReplFunctionCall, ReplNameLookup, ReplOsCall, ReplProgress, ReplResolveFutures, ReplStartError, ResolveFutures,
-    ResourceTracker, RunProgress,
+    ExcType, ExtFunctionResult, FunctionCall, LimitedTracker, MontyException, MontyObject, MontyRun, NameLookupResult,
+    NoLimitTracker, OsCall, ReplFunctionCall, ReplNameLookup, ReplOsCall, ReplProgress, ReplResolveFutures,
+    ReplStartError, ResolveFutures, ResourceTracker, RunProgress,
 };
 use monty::{NameLookup, fs::MountTable};
 use monty_type_checking::{SourceFile, type_check};
@@ -1879,9 +1879,14 @@ struct SerializedMonty {
 ///
 /// Any dataclass return values are automatically registered in the `dc_registry` via `py_to_monty`
 /// so they can be properly reconstructed on output.
-/// Extracts an `ExternalResult` from a Python dict with a single key.
+/// Extracts an `ExternalResult` from a Python dict.
 ///
-/// Accepts `return_value`, `exception`, or `future` (with value `...`).
+/// Accepts one of:
+/// * `{'return_value': obj}` — a successful return value
+/// * `{'exception': exc}` — a concrete `BaseException` instance
+/// * `{'exc_type': name, 'message'?: str}` — an exception identified by type name
+/// * `{'future': ...}` — a pending coroutine result (`...` is the only valid value)
+///
 /// The `call_id` is required for `future` results to track the pending call.
 fn extract_external_result(
     py: Python<'_>,
@@ -1889,8 +1894,29 @@ fn extract_external_result(
     dc_registry: &DcRegistry,
     call_id: u32,
 ) -> PyResult<ExtFunctionResult> {
-    const ARGS_ERROR: &str =
-        "ExternalResult must be a dict with exactly one of 'return_value', 'exception', or 'future'";
+    const ARGS_ERROR: &str = "ExternalResult must be a dict with one of: 'return_value', 'exception', 'exc_type' (with optional 'message'), or 'future'";
+    // ExternalExceptionData variant: {'exc_type': str, 'message'?: str} — handled
+    // separately from the other variants because it can have two keys.
+    if let Some(exc_type_val) = dict.get_item(intern!(py, "exc_type"))? {
+        let message_val = dict.get_item(intern!(py, "message"))?;
+        let expected_len = if message_val.is_some() { 2 } else { 1 };
+        if dict.len() != expected_len {
+            return Err(PyTypeError::new_err(ARGS_ERROR));
+        }
+        let exc_type_str: String = exc_type_val
+            .extract()
+            .map_err(|_| PyTypeError::new_err("'exc_type' must be a string"))?;
+        let exc_type = exc_type_str
+            .parse::<ExcType>()
+            .map_err(|_| PyTypeError::new_err(format!("Unknown exception type: '{exc_type_str}'")))?;
+        let message = message_val
+            .map(|m| {
+                m.extract::<String>()
+                    .map_err(|_| PyTypeError::new_err("'message' must be a string"))
+            })
+            .transpose()?;
+        return Ok(ExtFunctionResult::Error(MontyException::new(exc_type, message)));
+    }
     if dict.len() != 1 {
         Err(PyTypeError::new_err(ARGS_ERROR))
     } else if let Some(rv) = dict.get_item(intern!(py, "return_value"))? {

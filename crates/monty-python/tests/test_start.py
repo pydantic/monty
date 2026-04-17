@@ -256,6 +256,140 @@ def test_invalid_exception():
     assert exc_info.value.args[0] == snapshot("'int' object is not an instance of 'BaseException'")
 
 
+def test_resume_with_exc_type_data():
+    """Resuming with ExternalExceptionData (exc_type + optional message) raises the exception by name."""
+    code = """
+try:
+    external_func()
+except ValueError as e:
+    caught = str(e)
+caught
+"""
+    m = pydantic_monty.Monty(code)
+    progress = m.start()
+    assert isinstance(progress, pydantic_monty.FunctionSnapshot)
+
+    result = progress.resume({'exc_type': 'ValueError', 'message': 'boom'})
+    assert isinstance(result, pydantic_monty.MontyComplete)
+    assert result.output == snapshot('boom')
+
+
+def test_resume_with_exc_type_data_no_message():
+    """ExternalExceptionData without a message raises an exception with empty args."""
+    code = """
+try:
+    external_func()
+except KeyError as e:
+    caught = e.args
+caught
+"""
+    m = pydantic_monty.Monty(code)
+    progress = m.start()
+    assert isinstance(progress, pydantic_monty.FunctionSnapshot)
+
+    result = progress.resume({'exc_type': 'KeyError'})
+    assert isinstance(result, pydantic_monty.MontyComplete)
+    assert result.output == snapshot(())
+
+
+def test_resume_with_exc_type_data_subclass_caught_by_parent():
+    """An exception identified by name is caught by parent except handlers via the normal hierarchy."""
+    code = """
+try:
+    external_func()
+except LookupError as e:
+    caught = ('LookupError', str(e))
+caught
+"""
+    m = pydantic_monty.Monty(code)
+    progress = m.start()
+    assert isinstance(progress, pydantic_monty.FunctionSnapshot)
+
+    result = progress.resume({'exc_type': 'IndexError', 'message': 'out of range'})
+    assert isinstance(result, pydantic_monty.MontyComplete)
+    assert result.output == snapshot(('LookupError', 'out of range'))
+
+
+def test_resume_with_exc_type_data_propagates_uncaught():
+    """An uncaught ExternalExceptionData propagates as a MontyRuntimeError with the matching Python type."""
+    code = 'external_func()'
+    m = pydantic_monty.Monty(code)
+    progress = m.start()
+    assert isinstance(progress, pydantic_monty.FunctionSnapshot)
+
+    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
+        progress.resume({'exc_type': 'TypeError', 'message': 'bad type'})
+    inner = exc_info.value.exception()
+    assert isinstance(inner, TypeError)
+    assert inner.args[0] == snapshot('bad type')
+
+
+def test_resume_with_exc_type_data_dotted_name():
+    """Dotted ExcType names like `re.PatternError` map to the right Python subclass."""
+    import re
+
+    m = pydantic_monty.Monty('external_func()')
+    progress = m.start()
+    assert isinstance(progress, pydantic_monty.FunctionSnapshot)
+    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
+        progress.resume({'exc_type': 're.PatternError', 'message': 'bad pattern'})
+    inner = exc_info.value.exception()
+    assert isinstance(inner, re.PatternError)
+    assert inner.args[0] == snapshot('bad pattern')
+
+
+def test_resume_with_exc_type_data_caught_by_value_error():
+    """`json.JSONDecodeError` resumed by name is caught by `ValueError` (its parent)."""
+    code = """
+try:
+    external_func()
+except ValueError as e:
+    caught = str(e)
+caught
+"""
+    m = pydantic_monty.Monty(code)
+    progress = m.start()
+    assert isinstance(progress, pydantic_monty.FunctionSnapshot)
+    result = progress.resume({'exc_type': 'json.JSONDecodeError', 'message': 'bad json'})
+    assert isinstance(result, pydantic_monty.MontyComplete)
+    assert result.output == snapshot('bad json')
+
+
+def test_resume_with_unknown_exc_type():
+    """An unknown exc_type string is rejected before the snapshot is consumed."""
+    m = pydantic_monty.Monty('external_func()')
+    progress = m.start()
+    assert isinstance(progress, pydantic_monty.FunctionSnapshot)
+    with pytest.raises(TypeError) as exc_info:
+        progress.resume({'exc_type': 'NotARealError'})  # pyright: ignore[reportArgumentType]
+    assert exc_info.value.args[0] == snapshot("Unknown exception type: 'NotARealError'")
+
+    # Snapshot must remain usable after a validation failure.
+    result = progress.resume({'return_value': None})
+    assert isinstance(result, pydantic_monty.MontyComplete)
+
+
+def test_resume_with_exc_type_invalid_shape():
+    """`exc_type` combined with other keys (besides `message`) is rejected."""
+    m = pydantic_monty.Monty('external_func()')
+    progress = m.start()
+    assert isinstance(progress, pydantic_monty.FunctionSnapshot)
+    with pytest.raises(TypeError) as exc_info:
+        progress.resume({'exc_type': 'ValueError', 'return_value': 1})  # pyright: ignore[reportArgumentType]
+    assert exc_info.value.args[0] == snapshot(
+        "ExternalResult must be a dict with one of: 'return_value', 'exception', 'exc_type' (with optional 'message'), or 'future'"
+    )
+
+
+def test_resume_with_exc_type_non_string():
+    m = pydantic_monty.Monty('external_func()')
+    progress = m.start()
+    assert isinstance(progress, pydantic_monty.FunctionSnapshot)
+    with pytest.raises(TypeError) as exc_info:
+        progress.resume({'exc_type': 123})  # pyright: ignore[reportArgumentType]
+    assert exc_info.value.args[0] == snapshot("'exc_type' must be a string")
+
+
 def test_start_progress_resume_exception_propagates_uncaught():
     """Test that uncaught exceptions from resume() propagate to caller."""
     code = 'external_func()'
@@ -299,21 +433,21 @@ def test_invalid_resume_args():
     with pytest.raises(TypeError) as exc_info:
         progress.resume({})  # pyright: ignore[reportArgumentType]
     assert exc_info.value.args[0] == snapshot(
-        "ExternalResult must be a dict with exactly one of 'return_value', 'exception', or 'future'"
+        "ExternalResult must be a dict with one of: 'return_value', 'exception', 'exc_type' (with optional 'message'), or 'future'"
     )
 
     # Multiple keys — must have exactly one.
     with pytest.raises(TypeError) as exc_info:
         progress.resume({'return_value': 42, 'exception': ValueError('error')})  # pyright: ignore[reportArgumentType]
     assert exc_info.value.args[0] == snapshot(
-        "ExternalResult must be a dict with exactly one of 'return_value', 'exception', or 'future'"
+        "ExternalResult must be a dict with one of: 'return_value', 'exception', 'exc_type' (with optional 'message'), or 'future'"
     )
 
     # Wrong key — must be one of the recognized ones.
     with pytest.raises(TypeError) as exc_info:
         progress.resume({'bogus': 1})  # pyright: ignore[reportArgumentType]
     assert exc_info.value.args[0] == snapshot(
-        "ExternalResult must be a dict with exactly one of 'return_value', 'exception', or 'future'"
+        "ExternalResult must be a dict with one of: 'return_value', 'exception', 'exc_type' (with optional 'message'), or 'future'"
     )
 
     # Unexpected kwarg — pyo3 surfaces the unexpected-kwarg TypeError.

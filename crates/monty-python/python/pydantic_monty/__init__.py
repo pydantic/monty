@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Callable, Literal, TypedDict
+from typing import TYPE_CHECKING, Any, Callable, Literal, NotRequired, TypedDict
 
 from typing_extensions import deprecated
 
@@ -146,10 +146,70 @@ class ExternalException(TypedDict):
     exception: Exception
 
 
+ExcType = Literal[
+    'Exception',
+    'BaseException',
+    'SystemExit',
+    'KeyboardInterrupt',
+    'ArithmeticError',
+    'OverflowError',
+    'ZeroDivisionError',
+    'LookupError',
+    'IndexError',
+    'KeyError',
+    'RuntimeError',
+    'NotImplementedError',
+    'RecursionError',
+    'AttributeError',
+    'FrozenInstanceError',
+    'NameError',
+    'UnboundLocalError',
+    'ValueError',
+    'UnicodeDecodeError',
+    'json.JSONDecodeError',
+    'ImportError',
+    'ModuleNotFoundError',
+    'OSError',
+    'FileNotFoundError',
+    'FileExistsError',
+    'IsADirectoryError',
+    'NotADirectoryError',
+    'PermissionError',
+    'AssertionError',
+    'MemoryError',
+    'StopIteration',
+    'SyntaxError',
+    'TimeoutError',
+    'TypeError',
+    're.PatternError',
+]
+"""String names of Python exception types that Monty understands.
+
+Used by `ExternalExceptionData` to identify an exception by name rather than
+passing a concrete Python exception instance. Names match Python's built-in
+exception classes, except for `json.JSONDecodeError` and `re.PatternError`
+which are dotted to disambiguate from their `ValueError` / `RuntimeError`
+parents.
+"""
+
+
+class ExternalExceptionData(TypedDict):
+    """Represents an exception raised during an external function call by its type and optional message.
+
+    Prefer this variant over `ExternalException` when the caller does not have
+    (or does not want to construct) a concrete Python exception instance —
+    e.g. when resuming a snapshot from a worker process where the original
+    exception type is not available, or when resuming from another language.
+    """
+
+    exc_type: ExcType
+    message: NotRequired[str]
+
+
 class ExternalFuture(TypedDict):
     """Represents a pending future returned from an external function call."""
 
     future: EllipsisType
 
 
-ExternalResult = ExternalReturnValue | ExternalException | ExternalFuture
+ExternalResult = ExternalReturnValue | ExternalException | ExternalExceptionData | ExternalFuture
