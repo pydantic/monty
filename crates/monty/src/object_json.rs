@@ -14,9 +14,13 @@
 //! - Non-JSON-native values are wrapped in a single-key object with a
 //!   `$`-prefixed discriminator (e.g. `Tuple` → `{"$tuple":[...]}`,
 //!   `Bytes` → `{"$bytes":[...]}`, `Exception` → `{"$exception":{...}}`).
-//! - `...` (Ellipsis) serializes as the bare string `"..."` — it's a
-//!   singleton, so the string form is unambiguous and cheaper for consumers
-//!   to handle than a tagged object.
+//! - `...` (Ellipsis) serializes as `{"$ellipsis": "..."}` so it's
+//!   unambiguously distinguishable from a plain string `"..."` while
+//!   staying consistent with the other `$`-tagged non-JSON-native shapes.
+//! - Non-finite floats (`nan`, `inf`, `-inf`) serialize as
+//!   `{"$float": "nan" | "inf" | "-inf"}` because plain JSON has no
+//!   representation for them and `serde_json` would otherwise emit `null`,
+//!   collapsing them with `None`.
 //! - Dataclasses and namedtuples are emitted as two-key objects carrying
 //!   both the instance's attribute/field data and its class name:
 //!   `{"$dataclass": {"x": 1, "y": 2}, "name": "Point"}`.
@@ -85,7 +89,24 @@ impl Serialize for JsonMontyObject<'_> {
                     n.serialize(serializer)
                 }
             }
-            MontyObject::Float(f) => serializer.serialize_f64(*f),
+            MontyObject::Float(f) => {
+                // `serde_json` emits non-finite f64s as JSON `null`, which
+                // would make `nan` / `inf` indistinguishable from `None`.
+                // Wrap them in a `$float` tag with `"nan"` / `"inf"` /
+                // `"-inf"` so the real value survives round-trip.
+                if f.is_finite() {
+                    serializer.serialize_f64(*f)
+                } else {
+                    let s = if f.is_nan() {
+                        "nan"
+                    } else if *f > 0.0 {
+                        "inf"
+                    } else {
+                        "-inf"
+                    };
+                    serialize_tagged(serializer, "$float", &s)
+                }
+            }
             MontyObject::String(s) => serializer.serialize_str(s),
             MontyObject::List(items) => serialize_seq(serializer, items),
             MontyObject::Dict(pairs) => serialize_dict(serializer, pairs),
@@ -95,7 +116,7 @@ impl Serialize for JsonMontyObject<'_> {
             MontyObject::DateTime(dt) => dt.serialize(serializer),
             MontyObject::TimeDelta(td) => td.serialize(serializer),
             MontyObject::TimeZone(tz) => tz.serialize(serializer),
-            MontyObject::Ellipsis => serializer.serialize_str("..."),
+            MontyObject::Ellipsis => serialize_tagged(serializer, "$ellipsis", &"..."),
             MontyObject::Tuple(items) => serialize_tagged_seq(serializer, "$tuple", items),
             MontyObject::Set(items) => serialize_tagged_seq(serializer, "$set", items),
             MontyObject::FrozenSet(items) => serialize_tagged_seq(serializer, "$frozenset", items),

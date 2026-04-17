@@ -57,9 +57,19 @@ fn json_output_bytes_tagged() {
 }
 
 #[test]
-fn json_output_ellipsis_bare_string() {
-    // Ellipsis is a singleton so a bare "..." string is unambiguous.
-    assert_eq!(to_json(&MontyObject::Ellipsis), r#""...""#);
+fn json_output_ellipsis_tagged() {
+    // Tagged rather than bare so it never collides with a plain `"..."`
+    // string result.
+    assert_eq!(to_json(&MontyObject::Ellipsis), r#"{"$ellipsis":"..."}"#);
+}
+
+#[test]
+fn json_output_non_finite_floats_tagged() {
+    // `serde_json` would silently emit `null` for non-finite floats,
+    // colliding with `None`. The `$float` tag preserves them.
+    assert_eq!(to_json(&MontyObject::Float(f64::NAN)), r#"{"$float":"nan"}"#);
+    assert_eq!(to_json(&MontyObject::Float(f64::INFINITY)), r#"{"$float":"inf"}"#);
+    assert_eq!(to_json(&MontyObject::Float(f64::NEG_INFINITY)), r#"{"$float":"-inf"}"#);
 }
 
 #[test]

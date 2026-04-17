@@ -233,7 +233,7 @@ def test_complete_output_is_fresh_each_access():
         ("{'a': 1, 'b': 'two'}", snapshot('{"a":1,"b":"two"}')),
         ('(1, 2)', snapshot('{"$tuple":[1,2]}')),
         ("b'hi'", snapshot('{"$bytes":[104,105]}')),
-        ('...', snapshot('"..."')),
+        ('...', snapshot('{"$ellipsis":"..."}')),
         ('{1: "a", 2: "b"}', snapshot('{"$dict":[[1,"a"],[2,"b"]]}')),
         ('{(1, 2): "a"}', snapshot('{"$dict":[[{"$tuple":[1,2]},"a"]]}')),
         ('{None: 1, True: 2}', snapshot('{"$dict":[[null,1],[true,2]]}')),
