@@ -772,13 +772,23 @@ class MontyComplete:
         """
 
     def output_json(self) -> str:
-        """Serialize the output as a JSON string.
+        """Serialize the output as a Monty-specific JSON string.
 
-        Uses a natural mapping where JSON-native Python types (None, bool,
-        int, float, str, list, and dict with string keys) become bare JSON
-        values. Non-JSON-native types (tuples, bytes, sets, dataclasses, ...)
-        are wrapped in a single-key object with a '$'-prefixed tag such as
-        `{"$tuple": [...]}` or `{"$bytes": [...]}`.
+        This is **not** a drop-in wrapper around ``json.dumps(result.output)``:
+        the shape is chosen to preserve types that plain JSON can't express,
+        so consumers can round-trip richer Python values than CPython's
+        stdlib would allow. JSON-native Python types (None, bool, int, float,
+        str, list, and dict with string keys) become bare JSON values.
+        Non-JSON-native types are wrapped in a single-key object with a
+        ``$``-prefixed tag, for example:
+
+        - tuple → ``{"$tuple": [...]}``
+        - bytes → ``{"$bytes": [...]}``
+        - set / frozenset → ``{"$set": [...]}`` / ``{"$frozenset": [...]}``
+        - ``...`` → ``{"$ellipsis": "..."}``
+        - ``nan`` / ``inf`` / ``-inf`` → ``{"$float": "nan" | "inf" | "-inf"}``
+        - dict with any non-string key → ``{"$dict": [[k, v], ...]}``
+        - dataclass → ``{"$dataclass": {...}, "name": "ClassName"}``
 
         Raises:
             RuntimeError: If serialization fails.

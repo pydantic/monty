@@ -188,9 +188,14 @@ fn serialize_tagged_seq<S: Serializer>(
 /// type — a bare JSON object can only use string keys, so stringifying
 /// them would be lossy.
 fn serialize_dict<S: Serializer>(serializer: S, pairs: &DictPairs) -> Result<S::Ok, S::Error> {
-    // `DictPairs` is an opaque wrapper; borrow as a slice via `into_iter`
-    // on `&DictPairs` for the key scan, then hand the slice to the pairs
-    // serializer through a small projection helper.
+    // The output shape depends on whether every key is a string, so we
+    // pre-scan before committing to a format — opening `serialize_map` and
+    // then discovering a non-string key midway would leave a half-built
+    // JSON object that can't be recovered into the `$dict` shape. The
+    // scan is a pointer-chase over the enum discriminant only; the heavy
+    // per-value serialization happens in the subsequent pass. For dicts
+    // with all-string keys (the common case) this is effectively O(n)
+    // work plus an O(n) discriminant scan.
     let is_all_strings = pairs.into_iter().all(|(k, _)| matches!(k, MontyObject::String(_)));
     if is_all_strings {
         let mut map = serializer.serialize_map(Some(pairs.len()))?;
@@ -260,6 +265,9 @@ pub struct JsonMontyPairs<'a>(pub &'a [(MontyObject, MontyObject)]);
 
 impl Serialize for JsonMontyPairs<'_> {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        // See `serialize_dict` for why the pre-scan is needed: the choice
+        // between `{"k": v, ...}` and `{"$dict": [[k, v], ...]}` must be
+        // made before opening the outer map/object.
         if self.0.iter().all(|(k, _)| matches!(k, MontyObject::String(_))) {
             let mut map = serializer.serialize_map(Some(self.0.len()))?;
             for (k, v) in self.0 {
@@ -291,6 +299,12 @@ impl Serialize for PairsArrayBody<'_> {
 /// Serializes a namedtuple's body as a JSON object mapping each field name
 /// to the corresponding value (e.g. `{"x": 1, "y": 2}`). Field names are
 /// always valid Python identifiers so no escaping/repr is needed.
+///
+/// A well-formed `MontyObject::NamedTuple` invariantly has
+/// `field_names.len() == values.len()`. A mismatch indicates a bug upstream
+/// (handwritten construction, corrupted deserialization, ...) — rather
+/// than silently truncating one side with `zip`, we surface the mismatch
+/// as a serde error so the problem is loud.
 struct FieldsBody<'a> {
     field_names: &'a [String],
     values: &'a [MontyObject],
@@ -298,6 +312,13 @@ struct FieldsBody<'a> {
 
 impl Serialize for FieldsBody<'_> {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        if self.field_names.len() != self.values.len() {
+            return Err(S::Error::custom(format!(
+                "namedtuple field/value length mismatch: {} field names vs {} values",
+                self.field_names.len(),
+                self.values.len(),
+            )));
+        }
         let mut map = serializer.serialize_map(Some(self.values.len()))?;
         for (name, value) in self.field_names.iter().zip(self.values) {
             map.serialize_entry(name, &JsonMontyObject(value))?;
