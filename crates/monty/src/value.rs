@@ -1723,29 +1723,33 @@ impl Value {
     /// On success, drops the old attribute value if one existed.
     pub fn py_set_attr(
         &self,
-        name_id: StringId,
+        name: &EitherStr,
         value: Self,
         vm: &mut VM<'_, '_, impl ResourceTracker>,
     ) -> RunResult<()> {
-        let attr_name = vm.interns.get_str(name_id);
-
         if let Self::Ref(heap_id) = self {
             match vm.heap.read(*heap_id) {
                 HeapReadOutput::Dataclass(mut dc) => {
-                    let old_value = dc.set_attr(Self::InternString(name_id), value, vm)?;
+                    let name_value = match name {
+                        EitherStr::Interned(string_id) => Self::InternString(*string_id),
+                        // TODO: should avoid needing to clone String via `EitherStr` - maybe
+                        // `EitherStr` should store a `HeapRead<Str>`?
+                        EitherStr::Heap(s) => Self::Ref(vm.heap.allocate(HeapData::Str(Str::from(s.to_owned())))?),
+                    };
+                    let old_value = dc.set_attr(name_value, value, vm)?;
                     old_value.drop_with_heap(vm);
                     Ok(())
                 }
                 other => {
                     let type_name = other.py_type(vm);
                     value.drop_with_heap(vm);
-                    Err(ExcType::attribute_error_no_setattr(type_name, attr_name))
+                    Err(ExcType::attribute_error_no_setattr(type_name, name.as_str(vm.interns)))
                 }
             }
         } else {
             let type_name = self.py_type(vm);
             value.drop_with_heap(vm);
-            Err(ExcType::attribute_error_no_setattr(type_name, attr_name))
+            Err(ExcType::attribute_error_no_setattr(type_name, name.as_str(vm.interns)))
         }
     }
 

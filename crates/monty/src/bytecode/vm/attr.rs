@@ -58,6 +58,6 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
 
         let value = this.pop();
         // py_set_attr takes ownership of value and drops it on error
-        obj.py_set_attr(name_id, value, this)
+        obj.py_set_attr(&EitherStr::Interned(name_id), value, this)
     }
 }

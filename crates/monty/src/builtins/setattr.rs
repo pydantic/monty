@@ -7,6 +7,7 @@ use crate::{
     defer_drop,
     exception_private::{RunResult, SimpleException},
     resource::ResourceTracker,
+    types::PyTrait,
     value::Value,
 };
 
@@ -14,9 +15,6 @@ use crate::{
 ///
 /// Sets the named attribute on the given object to the specified value
 /// This is the counterpart to getattr(). Returns None on success
-///
-/// Note: Currently only dataclass objects support attribute setting
-/// Other object types will raise AttributeError
 ///
 /// Examples:
 /// ```python
@@ -32,12 +30,16 @@ pub fn builtin_setattr(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValue
         other => return Err(ExcType::type_error_arg_count("setattr", 3, other.len())),
     };
 
-    let Value::InternString(name_id) = name else {
-        return Err(SimpleException::new_msg(ExcType::TypeError, "setattr(): attribute name must be string").into());
+    let Some(name) = name.as_either_str(vm.heap) else {
+        return Err(SimpleException::new_msg(
+            ExcType::TypeError,
+            format!("attribute name must be string, not '{}'", name.py_type(vm)),
+        )
+        .into());
     };
 
-    // note: py_set_attr takes ownership of value and drops it on error
-    object.py_set_attr(*name_id, value.clone_with_heap(vm), vm)?;
+    // note: py_set_attr takes ownership of the inc-ref'd value and drops it on error
+    object.py_set_attr(&name, value.clone_with_heap(vm), vm)?;
 
     Ok(Value::None)
 }
