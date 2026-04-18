@@ -231,6 +231,18 @@ fn end_to_end_monty(bench: &mut Bencher) {
     });
 }
 
+/// Parses 1,000 repetitions of `x = 1` to track the cost of Monty's Ruff-AST → Monty-AST
+/// conversion pass on many trivial statements. A scaled-down version of the `latency.py`
+/// workload (which uses 100,000 lines) — kept small enough for criterion while still
+/// large enough that per-statement conversion cost dominates fixed overhead.
+fn parse_1k_assigns(bench: &mut Bencher) {
+    let code: String = "x = 1\n".repeat(1_000);
+    bench.iter(|| {
+        let ex = MontyRun::new(black_box(code.clone()), "test.py", vec![]).unwrap();
+        black_box(ex);
+    });
+}
+
 /// Benchmarks end-to-end execution (parsing + running) using CPython.
 /// This is different from other benchmarks as it includes parsing in the loop.
 #[cfg(not(codspeed))]
@@ -265,6 +277,7 @@ fn criterion_benchmark(c: &mut Criterion) {
     c.bench_function("loop_mod_13__cpython", |b| run_cpython(b, LOOP_MOD_13, 77));
 
     c.bench_function("end_to_end__monty", end_to_end_monty);
+    c.bench_function("parse_1k_assigns__monty", parse_1k_assigns);
     #[cfg(not(codspeed))]
     c.bench_function("end_to_end__cpython", end_to_end_cpython);
 
