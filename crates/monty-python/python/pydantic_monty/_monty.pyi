@@ -105,6 +105,30 @@ class Monty:
             MontyTypingError: If type_check is True and type errors are found
         """
 
+    @staticmethod
+    def ainit(
+        code: str,
+        *,
+        script_name: str = 'main.py',
+        inputs: list[str] | None = None,
+        type_check: bool = False,
+        type_check_stubs: str | None = None,
+        dataclass_registry: list[type] | None = None,
+    ) -> Coroutine[Any, Any, Monty]:
+        """
+        Async alternative constructor that parses and (optionally) type-checks
+        the code on a worker thread, returning a coroutine that resolves to a
+        new `Monty` instance.
+
+        Use this from `async def` callers when the source might be large or
+        when type-checking is enabled, so the build does not block the event
+        loop. Arguments and exceptions match `__new__`.
+
+        Raises:
+            MontySyntaxError: If the code cannot be parsed
+            MontyTypingError: If type_check is True and type errors are found
+        """
+
     def type_check(self, prefix_code: str | None = None) -> None:
         """
         Perform static type checking on the code.

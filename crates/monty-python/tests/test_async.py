@@ -1426,3 +1426,37 @@ async def test_run_async_async_external_return_lone_surrogate():
     with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
         await m.run_async(external_functions={'get_str': get_str})
     assert isinstance(exc_info.value.exception(), ValueError)
+
+
+# === Tests for Monty.ainit (async constructor) ===
+
+
+async def test_ainit_basic():
+    """`Monty.ainit` returns a usable Monty instance and `run` works."""
+    m = await pydantic_monty.Monty.ainit('1 + 2')
+    assert isinstance(m, pydantic_monty.Monty)
+    assert m.run() == snapshot(3)
+
+
+async def test_ainit_with_inputs():
+    """`Monty.ainit` accepts inputs and the resulting Monty runs with them."""
+    m = await pydantic_monty.Monty.ainit('x * y', inputs=['x', 'y'])
+    assert await m.run_async(inputs={'x': 6, 'y': 7}) == snapshot(42)
+
+
+async def test_ainit_syntax_error():
+    """A parse failure surfaces as `MontySyntaxError` from the awaitable."""
+    with pytest.raises(pydantic_monty.MontySyntaxError):
+        await pydantic_monty.Monty.ainit('def foo(:')
+
+
+async def test_ainit_type_check_failure():
+    """Type errors with `type_check=True` surface as `MontyTypingError`."""
+    with pytest.raises(pydantic_monty.MontyTypingError):
+        await pydantic_monty.Monty.ainit('"hello" + 1', type_check=True)
+
+
+async def test_ainit_type_check_success():
+    """Successful type check returns a usable Monty instance."""
+    m = await pydantic_monty.Monty.ainit('x: int = 1\nx + 2', type_check=True)
+    assert m.run() == snapshot(3)

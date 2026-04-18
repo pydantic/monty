@@ -203,11 +203,12 @@ impl PyMontyRepl {
             .ok_or_else(|| PyRuntimeError::new_err("REPL session is currently executing another snippet"))?;
 
         // `with_writer` only holds any collector lock for the duration of the
-        // VM call.
-        let result = match repl {
+        // VM call. The GIL is released around the call so other Python threads
+        // can run while the snippet executes.
+        let result = py.detach(|| match repl {
             EitherRepl::NoLimit(repl) => print_target.with_writer(|w| repl.feed_run(code, input_values, w)),
             EitherRepl::Limited(repl) => print_target.with_writer(|w| repl.feed_run(code, input_values, w)),
-        };
+        });
 
         let output = match result {
             Ok(v) => v,
