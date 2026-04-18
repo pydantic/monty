@@ -348,13 +348,22 @@ impl<'a> Compiler<'a> {
                 // and, for every target except the last, emit `Dup` to keep a copy
                 // underneath the target-specific store logic. The final target
                 // consumes the remaining copy, leaving the stack balanced.
+                //
+                // The parser only produces `ChainAssign` with `targets.len() >= 2`,
+                // but because `Node` derives `Deserialize`, untrusted snapshot input
+                // could otherwise reach here with 0 or 1 targets. `split_last()`
+                // handles both cases safely without an unsigned underflow, and the
+                // `is_empty` branch pops the leftover RHS value so the operand stack
+                // stays balanced.
                 self.compile_expr(object)?;
-                let last_idx = targets.len() - 1;
-                for (i, target) in targets.iter().enumerate() {
-                    if i != last_idx {
+                if let Some((last, rest)) = targets.split_last() {
+                    for target in rest {
                         self.code.emit(Opcode::Dup);
+                        self.compile_assign_target(target)?;
                     }
-                    self.compile_assign_target(target)?;
+                    self.compile_assign_target(last)?;
+                } else {
+                    self.code.emit(Opcode::Pop);
                 }
             }
             Node::If { test, body, or_else } => self.compile_if(test, body, or_else)?,
