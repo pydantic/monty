@@ -359,3 +359,28 @@ foo()
     frames = exc_info.value.traceback()
     frame = frames[0]
     assert repr(frame) == snapshot("Frame(filename='main.py', line=5, column=1, function_name='<module>')")
+
+
+def test_non_ascii_earlier_line_does_not_shift_columns():
+    # CodeRange stores raw byte offsets and the SourceMap expands them lazily,
+    # so a multi-byte character on an earlier line must not shift the column
+    # reported for a later line. Columns are characters, not bytes — the non-
+    # ASCII slow path in SourceMap::resolve_byte is the interesting code here.
+    code = "greeting = 'héllo'\nundefined_name\n"
+    m = pydantic_monty.Monty(code)
+    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
+        m.run()
+    frames = exc_info.value.traceback()
+    assert [f.dict() for f in frames] == snapshot(
+        [
+            {
+                'filename': 'main.py',
+                'line': 2,
+                'column': 1,
+                'end_line': 2,
+                'end_column': 15,
+                'function_name': '<module>',
+                'source_line': 'undefined_name',
+            }
+        ]
+    )
