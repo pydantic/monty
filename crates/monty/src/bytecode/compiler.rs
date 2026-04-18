@@ -2591,14 +2591,25 @@ impl<'a> Compiler<'a> {
     /// `StoreAttr` expects `[.., value, object]` with `object` on top, so this evaluates
     /// `object` above the incoming value. Used by both `Node::AttrAssign` and chained-
     /// assignment attribute steps.
+    ///
+    /// The parser always stores attribute names as `EitherStr::Interned`, so the hot
+    /// path never hits the `Heap` branch. We still check it explicitly rather than
+    /// panicking because `Node` derives `Deserialize` — an untrusted snapshot could
+    /// carry a `Heap` attribute name, and defense-in-depth says the compiler should
+    /// surface that as a graceful `CompileError` instead of aborting the process.
     fn emit_attr_store(
         &mut self,
         object: &ExprLoc,
         attr: &EitherStr,
         target_position: CodeRange,
     ) -> Result<(), CompileError> {
+        let Some(name_id) = attr.string_id() else {
+            return Err(CompileError::new(
+                "internal error: attribute name in AST must be interned",
+                target_position,
+            ));
+        };
         self.compile_expr(object)?;
-        let name_id = attr.string_id().expect("StoreAttr requires interned attr name");
         self.code.set_location(target_position, None);
         self.code.emit_u16(
             Opcode::StoreAttr,

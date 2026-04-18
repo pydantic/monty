@@ -204,3 +204,94 @@ def type_error_after_name():
 
 
 assert type_error_after_name() == 'type-error', 'later subscript target sees updated binding'
+
+
+# === Coverage: AssignTarget::Subscript in every chain position ===
+# Subscript as the *first* (non-last) target of a 2-way chain.
+sub_first = [0]
+sub_first[0] = sub_first_name = 1001
+assert sub_first[0] == 1001, 'subscript first: list slot written'
+assert sub_first_name == 1001, 'subscript first: name gets value'
+
+# Subscript as the *middle* target of a 3-way chain.
+sub_mid = [0]
+sub_mid_first = sub_mid[0] = sub_mid_last = 1002
+assert sub_mid_first == 1002, 'subscript middle: first name'
+assert sub_mid[0] == 1002, 'subscript middle: list slot written'
+assert sub_mid_last == 1002, 'subscript middle: last name'
+
+# Dict-subscript in the middle of a chain alongside list-subscript targets.
+sub_dict_mid = {}
+sub_list_mid = [0]
+sub_chain_name = sub_list_mid[0] = sub_dict_mid['k'] = 1003
+assert sub_chain_name == 1003 and sub_list_mid[0] == 1003 and sub_dict_mid['k'] == 1003, 'dict + list subscript chain'
+
+
+# === Coverage: AssignTarget::Unpack in every chain position ===
+# Tuple unpack as the *last* target, name as the first.
+unpack_last_name = (uL_a, uL_b) = (11, 12)
+assert unpack_last_name == (11, 12), 'unpack last: name gets tuple'
+assert uL_a == 11 and uL_b == 12, 'unpack last: unpacked values'
+
+# Tuple unpack as the *middle* target in a 3-way chain.
+(uM_a, uM_b) = unpack_mid_name = unpack_mid_last = (21, 22)
+assert (uM_a, uM_b) == (21, 22), 'unpack middle: first-pos unpack'
+assert unpack_mid_name == (21, 22), 'unpack middle: middle-pos name'
+assert unpack_mid_last == (21, 22), 'unpack middle: last-pos name'
+
+# List-unpack syntax inside a chain.
+[uli_a, uli_b] = unpack_list_name = [31, 32]
+assert uli_a == 31 and uli_b == 32, 'list-unpack in chain'
+assert unpack_list_name == [31, 32], 'list-unpack chain name'
+
+# Nested tuple unpack inside a chain.
+((n_x, n_y), n_z) = nested_unpack_name = ((41, 42), 43)
+assert nested_unpack_name == ((41, 42), 43), 'nested unpack: whole tuple'
+assert n_x == 41 and n_y == 42 and n_z == 43, 'nested unpack: leaves'
+
+# Starred unpack inside a chain.
+(*starred_rest, starred_tail) = starred_whole = [51, 52, 53, 54]
+assert starred_whole == [51, 52, 53, 54], 'starred unpack: whole list'
+assert starred_rest == [51, 52, 53], 'starred unpack: rest'
+assert starred_tail == 54, 'starred unpack: tail'
+
+
+# === Coverage: AssignTarget::Name in every chain position is already
+# exercised above (first/middle/last in multiple earlier sections). ===
+
+
+# === Coverage: full-mix three-way chain across Name / Subscript / Unpack ===
+mix_box = [None]
+(mix_a, mix_b) = mix_name = mix_box[0] = (61, 62)
+assert mix_box[0] == (61, 62), 'mix chain subscript'
+assert mix_name == (61, 62), 'mix chain name'
+assert mix_a == 61 and mix_b == 62, 'mix chain unpack'
+
+
+# === Coverage: chain inside a function where all targets become locals ===
+def chain_locals_all_shapes():
+    holder = [0]
+    (fa, fb) = fname = holder[0] = (71, 72)
+    return fname, holder[0], fa, fb
+
+
+assert chain_locals_all_shapes() == ((71, 72), (71, 72), 71, 72), 'chain locals mixed shapes'
+
+
+# === Coverage: long 5-way chain over Name and Subscript only ===
+L = [0, 0]
+D = {}
+long_name = L[0] = L[1] = D['k'] = D['j'] = 808
+assert long_name == 808, 'long scalar chain name'
+assert L == [808, 808], 'long scalar chain list slots'
+assert D == {'k': 808, 'j': 808}, 'long scalar chain dict entries'
+
+
+# === Coverage: long 5-way chain that also includes Unpack (needs iterable RHS) ===
+M = [(0, 0), (0, 0)]
+M2 = {}
+(ua, ub) = whole_name = M[0] = M[1] = M2['k'] = (9, 10)
+assert whole_name == (9, 10), 'long mixed: whole-name gets tuple'
+assert M == [(9, 10), (9, 10)], 'long mixed: list subscript slots'
+assert M2 == {'k': (9, 10)}, 'long mixed: dict subscript slot'
+assert ua == 9 and ub == 10, 'long mixed: unpack leaves'
