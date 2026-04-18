@@ -1391,3 +1391,38 @@ async def test_run_repl_async_os_not_callable():
 
     with pytest.raises(TypeError, match='not callable'):
         await repl.feed_run_async('1 + 1', os=42)  # pyright: ignore[reportArgumentType]
+
+
+async def test_run_async_sync_external_return_lone_surrogate():
+    """A sync callback returning a lone-surrogate string surfaces inside Monty
+    as a catchable ValueError via the async dispatch path."""
+    code = """
+try:
+    get_str()
+    result = 'no error'
+except ValueError:
+    result = 'caught'
+result
+"""
+    m = pydantic_monty.Monty(code)
+    result = await m.run_async(external_functions={'get_str': lambda: '\ud83d'})
+    assert result == snapshot('caught')
+
+
+async def test_run_async_async_external_return_lone_surrogate():
+    """An async callback returning a lone-surrogate string surfaces as
+    `MontyRuntimeError(ValueError)` rather than a raw `UnicodeEncodeError`.
+
+    Note: coroutine exceptions currently propagate out of the dispatch loop
+    rather than being caught by an in-Monty `try/except` at the `await` site
+    (a pre-existing asymmetry vs. the sync path), so we only assert the
+    top-level exception shape here.
+    """
+
+    async def get_str() -> str:
+        return '\ud83d'
+
+    m = pydantic_monty.Monty('await get_str()')
+    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
+        await m.run_async(external_functions={'get_str': get_str})
+    assert isinstance(exc_info.value.exception(), ValueError)

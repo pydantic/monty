@@ -1187,9 +1187,10 @@ def test_name_lookup_snapshot_preserved_on_invalid_value():
     p1 = Monty('x = my_name; x').start()
     assert isinstance(p1, pydantic_monty.NameLookupSnapshot)
 
-    # Custom non-convertible object → TypeError from py_to_monty, snapshot intact.
-    with pytest.raises(TypeError):
+    # Custom non-convertible object → MontyRuntimeError(TypeError), snapshot intact.
+    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
         p1.resume(value=Custom())
+    assert isinstance(exc_info.value.exception(), TypeError)
 
     final = p1.resume(value=42)
     assert isinstance(final, pydantic_monty.MontyComplete)
@@ -1215,3 +1216,36 @@ def test_future_snapshot_preserved_on_invalid_results():
     final = progress.resume({call_id: {'return_value': 42}})
     assert isinstance(final, pydantic_monty.MontyComplete)
     assert final.output == snapshot(42)
+
+
+def test_name_lookup_resume_lone_surrogate_value():
+    """A lone-surrogate string in `value` fails UTF-8 conversion; the caller sees
+    `MontyRuntimeError(ValueError)` rather than a raw `UnicodeEncodeError`."""
+    p = Monty('my_name').start()
+    assert isinstance(p, pydantic_monty.NameLookupSnapshot)
+    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
+        p.resume(value='\ud83d')
+    assert isinstance(exc_info.value.exception(), ValueError)
+
+
+def test_function_snapshot_resume_lone_surrogate_return_value():
+    """A lone-surrogate string as `return_value` on a FunctionSnapshot surfaces
+    as `MontyRuntimeError(ValueError)` rather than a raw `UnicodeEncodeError`."""
+    p = Monty('fetch()').start()
+    assert isinstance(p, pydantic_monty.FunctionSnapshot)
+    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
+        p.resume({'return_value': '\ud83d'})
+    assert isinstance(exc_info.value.exception(), ValueError)
+
+
+def test_future_snapshot_resume_lone_surrogate_return_value():
+    """A lone-surrogate string as `return_value` inside a FutureSnapshot's
+    results dict surfaces as `MontyRuntimeError(ValueError)`."""
+    p = Monty('x = await fetch(); x').start()
+    assert isinstance(p, pydantic_monty.FunctionSnapshot)
+    call_id = p.call_id
+    p = p.resume({'future': ...})
+    assert isinstance(p, pydantic_monty.FutureSnapshot)
+    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
+        p.resume({call_id: {'return_value': '\ud83d'}})
+    assert isinstance(exc_info.value.exception(), ValueError)

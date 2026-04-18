@@ -20,8 +20,19 @@ use pyo3::{
 
 use crate::{
     dataclass::{DcRegistry, dataclass_to_monty, dataclass_to_py, is_dataclass},
-    exceptions::{exc_monty_to_py, exc_to_monty_object},
+    exceptions::{exc_monty_to_py, exc_py_to_monty, exc_to_monty_object},
 };
+
+/// Like `py_to_monty`, but converts any `PyErr` into a `MontyException`.
+///
+/// Use this at every boundary where an untrusted host value flows into Monty
+/// (inputs, external/OS return values, snapshot resume values). Callers then
+/// wrap the `MontyException` as they see fit — `MontyError::new_err(py, e)` for
+/// Python-API returns, or `ExtFunctionResult::Error(e)` for mid-execution
+/// dispatch — so raw PyO3 errors like `UnicodeEncodeError` never escape.
+pub fn py_to_monty_value(obj: &Bound<'_, PyAny>, dc_registry: &DcRegistry) -> Result<MontyObject, MontyException> {
+    py_to_monty(obj, dc_registry).map_err(|e| exc_py_to_monty(obj.py(), &e))
+}
 
 /// Converts a Python object to Monty's `MontyObject` representation.
 ///

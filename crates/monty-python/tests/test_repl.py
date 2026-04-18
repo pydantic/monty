@@ -201,6 +201,15 @@ def test_runtime_error_input_value_lone_surrogate():
     )
 
 
+def test_runtime_error_input_key_lone_surrogate():
+    # An input *key* containing a lone surrogate also goes through UTF-8
+    # conversion; wrap it the same way.
+    repl = pydantic_monty.MontyRepl()
+    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
+        repl.feed_run('x', inputs={'\ud83d': 1})
+    assert isinstance(exc_info.value.exception(), ValueError)
+
+
 def test_runtime_error_preserves_state():
     """A runtime error should not destroy previously defined state."""
     repl = pydantic_monty.MontyRepl()
@@ -1248,3 +1257,52 @@ result = (value, content)
     assert isinstance(result, pydantic_monty.MontyComplete)
     assert result.output is False
     assert repl.feed_run('x') == snapshot(42)
+
+
+def test_repl_name_lookup_resume_lone_surrogate_value():
+    """REPL NameLookupSnapshot.resume(value=...) with a lone-surrogate string
+    surfaces as `MontyRuntimeError(ValueError)` and leaves the snapshot intact
+    for retry, matching the existing early-validation contract."""
+    repl = pydantic_monty.MontyRepl()
+    p = repl.feed_start('my_name + 1')
+    assert isinstance(p, pydantic_monty.NameLookupSnapshot)
+    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
+        p.resume(value='\ud83d')
+    assert isinstance(exc_info.value.exception(), ValueError)
+    final = p.resume(value=41)
+    assert isinstance(final, pydantic_monty.MontyComplete)
+    assert final.output == snapshot(42)
+    assert repl.feed_run('1 + 1') == snapshot(2)
+
+
+def test_repl_function_snapshot_resume_lone_surrogate_return_value():
+    """REPL FunctionSnapshot.resume({'return_value': <lone surrogate>}) surfaces
+    as `MontyRuntimeError(ValueError)` and leaves the snapshot intact for retry."""
+    repl = pydantic_monty.MontyRepl()
+    p = repl.feed_start('fetch() + 1')
+    assert isinstance(p, pydantic_monty.FunctionSnapshot)
+    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
+        p.resume({'return_value': '\ud83d'})
+    assert isinstance(exc_info.value.exception(), ValueError)
+    final = p.resume({'return_value': 41})
+    assert isinstance(final, pydantic_monty.MontyComplete)
+    assert final.output == snapshot(42)
+    assert repl.feed_run('1 + 1') == snapshot(2)
+
+
+def test_repl_future_snapshot_resume_lone_surrogate_return_value():
+    """REPL FutureSnapshot.resume with a lone-surrogate `return_value` surfaces
+    as `MontyRuntimeError(ValueError)` and leaves the snapshot intact for retry."""
+    repl = pydantic_monty.MontyRepl()
+    p = repl.feed_start('await fetch()')
+    assert isinstance(p, pydantic_monty.FunctionSnapshot)
+    call_id = p.call_id
+    p = p.resume({'future': ...})
+    assert isinstance(p, pydantic_monty.FutureSnapshot)
+    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
+        p.resume({call_id: {'return_value': '\ud83d'}})
+    assert isinstance(exc_info.value.exception(), ValueError)
+    final = p.resume({call_id: {'return_value': 42}})
+    assert isinstance(final, pydantic_monty.MontyComplete)
+    assert final.output == snapshot(42)
+    assert repl.feed_run('1 + 1') == snapshot(2)

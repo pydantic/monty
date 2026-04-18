@@ -23,7 +23,7 @@ use pyo3_async_runtimes::tokio::future_into_py;
 
 use crate::{
     async_dispatch::{await_run_transition, dispatch_loop_run},
-    convert::{get_docstring, monty_to_py, py_to_monty},
+    convert::{get_docstring, monty_to_py, py_to_monty_value},
     dataclass::DcRegistry,
     exceptions::{MontyError, MontyTypingError, exc_py_to_monty},
     external::{ExternalFunctionRegistry, dispatch_method_call},
@@ -451,23 +451,16 @@ impl PyMonty {
             )));
         };
 
-        // Extract values in declaration order.
-        //
-        // Conversion errors from `py_to_monty` (e.g. `UnicodeEncodeError` for a
-        // string containing lone surrogates) are wrapped as `MontyRuntimeError`
-        // so input-value failures mirror the way external-function return
-        // values surface — the caller sees a single, consistent exception type
-        // rather than a raw PyO3 error like `UnicodeEncodeError`.
+        // Extract values in declaration order. `py_to_monty_value` converts any
+        // PyErr (e.g. `UnicodeEncodeError` for a lone-surrogate string) into a
+        // `MontyException`, which we then raise as `MontyRuntimeError`.
         self.input_names
             .iter()
             .map(|name| {
                 let value = inputs
                     .get_item(name)?
                     .ok_or_else(|| PyKeyError::new_err(format!("Missing required input: '{name}'")))?;
-                py_to_monty(&value, dc_registry).map_err(|e| {
-                    let py = value.py();
-                    MontyError::new_err(py, exc_py_to_monty(py, &e))
-                })
+                py_to_monty_value(&value, dc_registry).map_err(|e| MontyError::new_err(value.py(), e))
             })
             .collect::<PyResult<_>>()
     }
@@ -1480,7 +1473,8 @@ impl PyNameLookupSnapshot {
         let lookup_result = if let Some(kwargs) = kwargs
             && let Some(value) = kwargs.get_item(intern!(py, "value"))?
         {
-            NameLookupResult::Value(py_to_monty(&value, &self.dc_registry)?)
+            let monty_value = py_to_monty_value(&value, &self.dc_registry).map_err(|e| MontyError::new_err(py, e))?;
+            NameLookupResult::Value(monty_value)
         } else {
             NameLookupResult::Undefined
         };
@@ -2001,8 +1995,11 @@ fn extract_external_result(
     if dict.len() != 1 {
         Err(PyTypeError::new_err(ARGS_ERROR))
     } else if let Some(rv) = dict.get_item(intern!(py, "return_value"))? {
-        // Return value provided
-        Ok(py_to_monty(&rv, dc_registry)?.into())
+        // Return value provided. Wrap conversion failures (e.g. lone
+        // surrogates) as `MontyRuntimeError` rather than letting a raw PyErr
+        // escape the pymethod.
+        let monty_value = py_to_monty_value(&rv, dc_registry).map_err(|e| MontyError::new_err(py, e))?;
+        Ok(monty_value.into())
     } else if let Some(exc) = dict.get_item(intern!(py, "exception"))? {
         // Exception provided
         if PyBaseException::type_check(&exc) {
@@ -2179,7 +2176,13 @@ pub(crate) fn call_os_callback_parts(
             if result.is(not_handled) {
                 Ok(on_not_handled())
             } else {
-                Ok(py_to_monty(&result, dc_registry)?.into())
+                // A conversion failure on the callback's return value surfaces
+                // inside Monty execution as `ExtFunctionResult::Error`, matching
+                // how a raised exception from the callback is handled below.
+                match py_to_monty_value(&result, dc_registry) {
+                    Ok(v) => Ok(v.into()),
+                    Err(e) => Ok(ExtFunctionResult::Error(e)),
+                }
             }
         }
         Err(err) => Ok(exc_py_to_monty(py, &err).into()),

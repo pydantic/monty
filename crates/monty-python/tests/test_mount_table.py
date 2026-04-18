@@ -485,19 +485,43 @@ def test_run_mount_released_after_callback_marshalling_error(test_dir: Path):
     """Monty.run() puts mounts back when the os= callback returns an unconvertible value.
 
     The fallback callback returns an object that cannot be converted back into a
-    Monty value, so `py_to_monty` raises TypeError mid-OS-dispatch. The mount
-    must still be returned to its shared slot.
+    Monty value, so the conversion failure is surfaced inside Monty as a
+    `TypeError` wrapped in `MontyRuntimeError`. The mount must still be
+    returned to its shared slot on that error path.
     """
     md = MountDir('/data', str(test_dir), mode='read-only')
 
     def os_cb(func: object, args: tuple[object, ...], kwargs: dict[str, object]) -> object:
-        return object()  # unconvertible — triggers TypeError in py_to_monty
+        return object()  # unconvertible — surfaces inside Monty as TypeError
 
     # Path is outside the mount so it falls through to the os= fallback.
     code = "from pathlib import Path; Path('/outside/path.txt').exists()"
-    with pytest.raises(TypeError):
+    with pytest.raises(MontyRuntimeError) as exc_info:
         Monty(code).run(mount=md, os=os_cb)
+    assert isinstance(exc_info.value.exception(), TypeError)
     assert_mount_reusable(md)
+
+
+def test_os_callback_lone_surrogate_return_surfaces_inside_monty(test_dir: Path):
+    """An os= callback returning a lone-surrogate string surfaces inside Monty
+    as a catchable `ValueError` rather than escaping as a raw `UnicodeEncodeError`."""
+    md = MountDir('/data', str(test_dir), mode='read-only')
+
+    def os_cb(func: object, args: tuple[object, ...], kwargs: dict[str, object]) -> object:
+        return '\ud83d'  # unconvertible UTF-8 — surfaces as ValueError inside Monty
+
+    # Catching inside Monty proves the error arrives as an in-VM exception rather
+    # than propagating out as a raw PyErr.
+    code = (
+        'from pathlib import Path\n'
+        'try:\n'
+        "    Path('/outside/path.txt').read_text()\n"
+        "    result = 'no error'\n"
+        'except ValueError as e:\n'
+        "    result = 'caught'\n"
+        'result'
+    )
+    assert Monty(code).run(mount=md, os=os_cb) == snapshot('caught')
 
 
 def test_repl_feed_run_mount_and_repl_released_after_callback_marshalling_error(test_dir: Path):
@@ -512,11 +536,12 @@ def test_repl_feed_run_mount_and_repl_released_after_callback_marshalling_error(
     repl.feed_run('x = 42')
 
     def os_cb(func: object, args: tuple[object, ...], kwargs: dict[str, object]) -> object:
-        return object()  # unconvertible — triggers TypeError in py_to_monty
+        return object()  # unconvertible — surfaces inside Monty as TypeError
 
     code = "from pathlib import Path; Path('/outside/path.txt').exists()"
-    with pytest.raises(TypeError):
+    with pytest.raises(MontyRuntimeError) as exc_info:
         repl.feed_run(code, mount=md, os=os_cb)
+    assert isinstance(exc_info.value.exception(), TypeError)
     # REPL state must still be intact — `x` is visible in a later snippet.
     assert repl.feed_run('x') == snapshot(42)
     assert_mount_reusable(md)
