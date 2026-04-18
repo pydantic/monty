@@ -21,8 +21,8 @@ use crate::{
     exception_private::ExcType,
     exception_public::{MontyException, SourceMap, StackFrame},
     expressions::{
-        Callable, CmpOperator, Comprehension, DictItem, Expr, ExprLoc, Identifier, Literal, NameScope, Node, Operator,
-        PreparedFunctionDef, PreparedNode, SequenceItem, UnpackTarget,
+        AssignTarget, Callable, CmpOperator, Comprehension, DictItem, Expr, ExprLoc, Identifier, Literal, NameScope,
+        Node, Operator, PreparedFunctionDef, PreparedNode, SequenceItem, UnpackTarget,
     },
     fstring::{ConversionFlag, FStringPart, FormatSpec, ParsedFormatSpec, encode_format_spec},
     function::Function,
@@ -376,6 +376,21 @@ impl<'a> Compiler<'a> {
                     Opcode::StoreAttr,
                     u16::try_from(name_id.index()).expect("name index exceeds u16"),
                 );
+            }
+            Node::ChainAssign { targets, object } => {
+                // Python evaluates the RHS once, then assigns to each target in
+                // left-to-right source order. We materialise the value on the stack
+                // and, for every target except the last, emit `Dup` to keep a copy
+                // underneath the target-specific store logic. The final target
+                // consumes the remaining copy, leaving the stack balanced.
+                self.compile_expr(object)?;
+                let last_idx = targets.len() - 1;
+                for (i, target) in targets.iter().enumerate() {
+                    if i != last_idx {
+                        self.code.emit(Opcode::Dup);
+                    }
+                    self.compile_assign_target(target)?;
+                }
             }
             Node::If { test, body, or_else } => self.compile_if(test, body, or_else)?,
             Node::For {
@@ -2549,6 +2564,68 @@ impl<'a> Compiler<'a> {
                 }
             }
         }
+    }
+
+    /// Compiles a single step of a chained assignment, consuming the value on top of stack.
+    ///
+    /// The value to assign is expected to already be at the top of the operand stack when
+    /// this is called (put there either by `compile_expr(object)` for the final step, or by
+    /// `Opcode::Dup` for non-final steps). Each target shape reproduces the store logic
+    /// used by the equivalent single-target `Node` variant: subscript pushes container and
+    /// index above the value, attribute pushes the object, and unpack emits
+    /// `UnpackSequence`/`UnpackEx` followed by per-element stores.
+    fn compile_assign_target(&mut self, target: &AssignTarget) -> Result<(), CompileError> {
+        match target {
+            AssignTarget::Name(ident) => {
+                self.compile_store(ident);
+            }
+            AssignTarget::Subscript {
+                target,
+                index,
+                target_position,
+            } => {
+                // Stack going in: [.., value]
+                // StoreSubscr wants: [.., value, obj, index]
+                self.compile_expr(target)?;
+                self.compile_expr(index)?;
+                self.code.set_location(*target_position, None);
+                self.code.emit(Opcode::StoreSubscr);
+            }
+            AssignTarget::Attr {
+                object,
+                attr,
+                target_position,
+            } => {
+                // Stack going in: [.., value]
+                // StoreAttr wants: [.., value, obj]
+                self.compile_expr(object)?;
+                let name_id = attr.string_id().expect("StoreAttr requires interned attr name");
+                self.code.set_location(*target_position, None);
+                self.code.emit_u16(
+                    Opcode::StoreAttr,
+                    u16::try_from(name_id.index()).expect("name index exceeds u16"),
+                );
+            }
+            AssignTarget::Unpack {
+                targets,
+                targets_position,
+            } => {
+                let star_idx = targets.iter().position(|t| matches!(t, UnpackTarget::Starred(_)));
+                self.code.set_location(*targets_position, None);
+                if let Some(star_idx) = star_idx {
+                    let before = u8::try_from(star_idx).expect("too many targets before star");
+                    let after = u8::try_from(targets.len() - star_idx - 1).expect("too many targets after star");
+                    self.code.emit_u8_u8(Opcode::UnpackEx, before, after);
+                } else {
+                    let count = u8::try_from(targets.len()).expect("too many targets in unpack");
+                    self.code.emit_u8(Opcode::UnpackSequence, count);
+                }
+                for t in targets {
+                    self.compile_unpack_target(t);
+                }
+            }
+        }
+        Ok(())
     }
 
     // ========================================================================

@@ -369,6 +369,45 @@ pub enum UnpackTarget {
     Starred(Identifier),
 }
 
+/// Target of a single assignment step within a chained assignment.
+///
+/// Chained assignments (`a = b[i] = obj.x = expr`) evaluate `expr` once and
+/// then assign the resulting value to each target in left-to-right order.
+/// `AssignTarget` captures just the target portion of each of the usual
+/// single-target assignment node variants (`Assign`, `SubscriptAssign`,
+/// `AttrAssign`, `UnpackAssign`) so they can share a common list in
+/// `Node::ChainAssign` without embedding a dummy source expression.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub enum AssignTarget {
+    /// Simple name target: `a`.
+    Name(Identifier),
+    /// Subscript target: `container[index]`.
+    Subscript {
+        /// Expression evaluating to the container object.
+        target: ExprLoc,
+        /// Expression evaluating to the index/key.
+        index: ExprLoc,
+        /// Position of the full subscript expression (for traceback carets).
+        target_position: CodeRange,
+    },
+    /// Attribute target: `obj.attr`.
+    Attr {
+        /// Expression evaluating to the object whose attribute is being set.
+        object: ExprLoc,
+        /// The attribute name.
+        attr: EitherStr,
+        /// Position of the full attribute expression (for traceback carets).
+        target_position: CodeRange,
+    },
+    /// Tuple/list unpacking target: `a, b` or `[a, *rest]`.
+    Unpack {
+        /// The individual unpack targets (can be names, starred, or nested tuples).
+        targets: Vec<UnpackTarget>,
+        /// Source position covering all targets (for error caret placement).
+        targets_position: CodeRange,
+    },
+}
+
 /// A generator clause in a comprehension: `for target in iter [if cond1] [if cond2]...`
 ///
 /// Represents one `for` clause with zero or more `if` filters. Multiple generators
@@ -542,6 +581,22 @@ pub enum Node<F> {
         attr: EitherStr,
         target_position: CodeRange,
         value: ExprLoc,
+    },
+    /// Chained assignment (e.g., `a = b = c = value` or `a = lst[i] = obj.x = value`).
+    ///
+    /// Python evaluates the right-hand side exactly once and then assigns the resulting
+    /// value to each target in left-to-right source order. The compiler realises this
+    /// by evaluating `object`, duplicating its value on the stack before each non-final
+    /// target's store, and letting the final target consume the remaining copy.
+    ///
+    /// Only emitted when there are two or more targets; single-target assignments still
+    /// use the simpler `Assign`/`UnpackAssign`/`SubscriptAssign`/`AttrAssign` variants
+    /// so the hot path stays flat.
+    ChainAssign {
+        /// Targets to assign to, in left-to-right source order.
+        targets: Vec<AssignTarget>,
+        /// The right-hand side expression, evaluated exactly once.
+        object: ExprLoc,
     },
     For {
         /// Loop target - either a single identifier or tuple unpacking pattern.

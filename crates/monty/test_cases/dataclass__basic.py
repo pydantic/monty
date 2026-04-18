@@ -93,6 +93,21 @@ outer_aug.x = inner_aug
 outer_aug.x.y += 100
 assert inner_aug.y == 102, 'chained augmented attr assign'
 
+# === Chained attribute assignment (a.x = b.x = value) ===
+ca = make_mutable_point()
+cb = make_mutable_point()
+ca.x = cb.x = 77
+assert ca.x == 77, 'chained attr assign ca.x'
+assert cb.x == 77, 'chained attr assign cb.x'
+
+# === Chained mixed attribute/name/subscript assignment ===
+holder = [0]
+cm = make_mutable_point()
+val = cm.y = holder[0] = 321
+assert val == 321, 'chain name gets value'
+assert cm.y == 321, 'chain attribute gets value'
+assert holder[0] == 321, 'chain subscript gets value'
+
 # === Nested attribute access (chained get) ===
 # Create outer dataclass with inner dataclass as field
 outer = make_mutable_point()
