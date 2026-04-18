@@ -23,6 +23,7 @@ ruff_text_size = { workspace = true }
 ahash = { version = "0.8.0", features = ["serde"] }
 indexmap = { workspace = true }
 serde = { workspace = true }
+serde_json = { workspace = true }
 postcard = { workspace = true }
 strum = { version = "0.27", features = ["derive"] }
 hashbrown = "0.16"
@@ -48,28 +49,7 @@ ref-count-return = []
 ref-count-panic = []
 
 [dev-dependencies]
-pyo3 = { version = "0.28", features = ["auto-initialize"] }
-# Use codspeed-criterion-compat for CI benchmarks, real criterion for local flamegraphs
-codspeed-criterion-compat = "4.2.1"
-criterion = "0.5"
-datatest-stable = "0.2"
-serde_json = "1.0"
-similar = "2.7.0"
 tempfile = "3"
-
-[target.'cfg(unix)'.dev-dependencies]
-pprof = { version = "0.15", features = ["flamegraph", "criterion"] }
-
-[build-dependencies]
-pyo3-build-config = { version = "0.28", features = ["resolve-config"] }
-
-[[bench]]
-name = "main"
-harness = false
-
-[[test]]
-name = "datatest_runner"
-harness = false
 
 [lints]
 workspace = true

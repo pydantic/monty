@@ -121,10 +121,10 @@ dump(matches)
     assert progress.args == snapshot(())
     assert progress.kwargs == snapshot({})
 
-    progress2 = progress.resume(return_value='\\d+')
+    progress2 = progress.resume({'return_value': '\\d+'})
     assert isinstance(progress2, pydantic_monty.FunctionSnapshot)
 
-    result = progress2.resume(return_value=['123', '456'])
+    result = progress2.resume({'return_value': ['123', '456']})
     assert isinstance(result, pydantic_monty.MontyComplete)
     assert result.output == snapshot(['123', '456'])
 
@@ -146,7 +146,7 @@ matches
     progress2 = pydantic_monty.load_snapshot(data)
     assert isinstance(progress2, pydantic_monty.FunctionSnapshot)
 
-    result = progress2.resume(return_value=None)
+    result = progress2.resume({'return_value': None})
     assert isinstance(result, pydantic_monty.MontyComplete)
     assert result.output == snapshot(['Test', '123'])
 

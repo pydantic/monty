@@ -332,10 +332,9 @@ impl<T: ResourceTracker> NameLookup<T> {
             // Resolve the name lookup result with the VM alive
             let vm_result = match result {
                 NameLookupResult::Value(obj) => {
-                    let value = obj.to_value(&mut vm).map_err(|e| {
-                        vm.cleanup();
-                        MontyException::runtime_error(format!("invalid name lookup result: {e}"))
-                    })?;
+                    let value = obj
+                        .to_value(&mut vm)
+                        .map_err(|e| MontyException::runtime_error(format!("invalid name lookup result: {e}")))?;
 
                     // Cache the resolved value in the appropriate slot
                     let slot = self.namespace_slot as usize;
@@ -454,53 +453,12 @@ impl<T: ResourceTracker> ResolveFutures<T> {
 
             // Now check for invalid call_ids after VM is restored.
             if let Some(call_id) = invalid_call_id {
-                vm.cleanup();
                 return Err(MontyException::runtime_error(format!(
                     "unknown call_id {call_id}, expected one of: {pending_call_ids:?}"
                 )));
             }
 
-            for (call_id, ext_result) in results {
-                match ext_result {
-                    ExtFunctionResult::Return(obj) => vm.resolve_future(call_id, obj).map_err(|e| {
-                        MontyException::runtime_error(format!("Invalid return type for call {call_id}: {e}"))
-                    })?,
-                    ExtFunctionResult::Error(exc) => vm.fail_future(call_id, exc.into()),
-                    ExtFunctionResult::Future(_) => {}
-                    ExtFunctionResult::NotFound(function_name) => {
-                        vm.fail_future(call_id, ExtFunctionResult::not_found_exc(&function_name));
-                    }
-                }
-            }
-
-            // Check if the current task has failed.
-            if let Some(error) = vm.take_failed_task_error() {
-                vm.cleanup();
-                return Err(error.into_python_exception(&executor.interns, &executor.code));
-            }
-
-            // Push resolved value for main task if it was blocked.
-            let main_task_ready = vm.prepare_current_task_after_resolve();
-
-            let loaded_task = match vm.load_ready_task_if_needed() {
-                Ok(loaded) => loaded,
-                Err(e) => {
-                    vm.cleanup();
-                    return Err(e.into_python_exception(&executor.interns, &executor.code));
-                }
-            };
-
-            // If no task is ready and there are still pending calls, return ResolveFutures.
-            if !main_task_ready && !loaded_task {
-                let pending_call_ids = vm.get_pending_call_ids();
-                if !pending_call_ids.is_empty() {
-                    let vm_state = vm.snapshot();
-                    let pending_call_ids: Vec<u32> = pending_call_ids.iter().map(|id| id.raw()).collect();
-                    return Ok((ConvertedExit::ResolveFutures(pending_call_ids), Some(vm_state)));
-                }
-            }
-
-            let result = vm.run();
+            let result = vm.resume_with_resolved_futures(results);
 
             // Three-phase: convert while VM alive, snapshot, build progress
             let converted = convert_frame_exit(result, &mut vm);
@@ -749,15 +707,14 @@ pub(crate) fn convert_frame_exit(
 /// Decides whether to snapshot or clean up the VM based on the converted exit.
 ///
 /// Consumes the VM. Returns `Some(VMSnapshot)` for suspendable exits, `None` for
-/// completion/error (in which case the VM is cleaned up).
+/// completion/error (in which case the VM's `Drop` impl handles cleanup).
 pub(crate) fn check_snapshot_from_converted(
     converted: &ConvertedExit,
-    mut vm: VM<'_, '_, impl ResourceTracker>,
+    vm: VM<'_, '_, impl ResourceTracker>,
 ) -> Option<VMSnapshot> {
     if converted.needs_snapshot() {
         Some(vm.snapshot())
     } else {
-        vm.cleanup();
         None
     }
 }
@@ -826,6 +783,8 @@ pub(crate) fn build_run_progress<T: ResourceTracker>(
             is_global,
             new_snapshot!(),
         ))),
-        ConvertedExit::Error(err) => Err(err.into_python_exception(&executor.interns, &executor.code)),
+        ConvertedExit::Error(err) => {
+            Err(err.into_python_exception(&executor.interns, |_| Some(executor.code.as_str())))
+        }
     }
 }

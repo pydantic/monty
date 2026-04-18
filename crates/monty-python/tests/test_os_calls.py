@@ -1,10 +1,11 @@
-"""Tests for OS function calls (Path methods) via the start/resume API.
+"""Tests for OS function calls via the start/resume API.
 
-These tests verify that Path filesystem methods correctly yield OS calls
-with the right function name and arguments, and that return values from
-the host are properly converted and used by Monty code.
+These tests verify that filesystem, environment, and clock operations
+yield OS calls with the right function name and arguments, and that
+return values from the host are properly converted and used by Monty code.
 """
 
+import datetime
 from pathlib import PurePosixPath
 from typing import Any
 
@@ -12,7 +13,7 @@ import pytest
 from inline_snapshot import snapshot
 
 import pydantic_monty
-from pydantic_monty import StatResult
+from pydantic_monty import NOT_HANDLED, StatResult
 
 # =============================================================================
 # Basic OS call yielding
@@ -84,7 +85,7 @@ def test_exists_resume():
     snapshot_result = m.start()
 
     assert isinstance(snapshot_result, pydantic_monty.FunctionSnapshot)
-    result = snapshot_result.resume(return_value=True)
+    result = snapshot_result.resume({'return_value': True})
 
     assert isinstance(result, pydantic_monty.MontyComplete)
     assert result.output is True
@@ -101,7 +102,7 @@ content = Path('/tmp/hello.txt').read_text()
     snapshot_result = m.start()
 
     assert isinstance(snapshot_result, pydantic_monty.FunctionSnapshot)
-    result = snapshot_result.resume(return_value='Hello, World!')
+    result = snapshot_result.resume({'return_value': 'Hello, World!'})
 
     assert isinstance(result, pydantic_monty.MontyComplete)
     assert result.output == snapshot('Content: Hello, World!')
@@ -126,7 +127,7 @@ info = Path('/tmp/file.txt').stat()
     assert snapshot_result.function_name == snapshot('Path.stat')
 
     # Resume with a file_stat result - Monty accesses multiple fields
-    result = snapshot_result.resume(return_value=StatResult.file_stat(1024, 0o100_644, 1234567890.0))
+    result = snapshot_result.resume({'return_value': StatResult.file_stat(1024, 0o100_644, 1234567890.0)})
 
     assert isinstance(result, pydantic_monty.MontyComplete)
     # st_mode=0o100_644, st_size=1024, info[6]=st_size=1024
@@ -143,7 +144,7 @@ Path('/tmp/file.txt').stat()
     snapshot_result = m.start()
 
     assert isinstance(snapshot_result, pydantic_monty.FunctionSnapshot)
-    result = snapshot_result.resume(return_value=StatResult.file_stat(2048, 0o100_755, 1700000000.0))
+    result = snapshot_result.resume({'return_value': StatResult.file_stat(2048, 0o100_755, 1700000000.0)})
 
     assert isinstance(result, pydantic_monty.MontyComplete)
     stat_result = result.output
@@ -168,7 +169,7 @@ Path('/tmp/file.txt').stat()
     snapshot_result = m.start()
 
     assert isinstance(snapshot_result, pydantic_monty.FunctionSnapshot)
-    result = snapshot_result.resume(return_value=StatResult.file_stat(512, 0o644, 0.0))
+    result = snapshot_result.resume({'return_value': StatResult.file_stat(512, 0o644, 0.0)})
 
     assert isinstance(result, pydantic_monty.MontyComplete)
     assert repr(result.output) == snapshot(
@@ -201,12 +202,12 @@ is_file = p.is_file()
     assert result.function_name == snapshot('Path.exists')
 
     # Resume exists() with True
-    result = result.resume(return_value=True)
+    result = result.resume({'return_value': True})
     assert isinstance(result, pydantic_monty.FunctionSnapshot)
     assert result.function_name == snapshot('Path.is_file')
 
     # Resume is_file() with True
-    result = result.resume(return_value=True)
+    result = result.resume({'return_value': True})
     assert isinstance(result, pydantic_monty.MontyComplete)
     assert result.output == snapshot((True, True))
 
@@ -230,12 +231,12 @@ content
     assert result.function_name == snapshot('Path.exists')
 
     # Resume exists() with True - should trigger read_text()
-    result = result.resume(return_value=True)
+    result = result.resume({'return_value': True})
     assert isinstance(result, pydantic_monty.FunctionSnapshot)
     assert result.function_name == snapshot('Path.read_text')
 
     # Resume read_text() with content
-    result = result.resume(return_value='file contents')
+    result = result.resume({'return_value': 'file contents'})
     assert isinstance(result, pydantic_monty.MontyComplete)
     assert result.output == snapshot('file contents')
 
@@ -365,6 +366,97 @@ def test_not_callable():
         m.run(os=123)  # type: ignore
 
 
+def test_not_handled_sentinel_filesystem_callback():
+    """Returning NOT_HANDLED from an os callback uses the filesystem fallback error."""
+
+    def os_callback(function_name: str, args: tuple[Any, ...], kwargs: dict[str, Any]) -> object:
+        del function_name, args, kwargs
+        return NOT_HANDLED
+
+    code = """
+from pathlib import Path
+message = None
+try:
+    Path('/tmp').exists()
+except PermissionError as exc:
+    message = str(exc)
+message
+"""
+    result = pydantic_monty.Monty(code).run(os=os_callback)
+
+    assert result == snapshot("Permission denied: '/tmp'")
+
+
+def test_not_handled_sentinel_non_filesystem_callback():
+    """Returning NOT_HANDLED from an os callback uses the non-filesystem fallback error."""
+
+    def os_callback(function_name: str, args: tuple[Any, ...], kwargs: dict[str, Any]) -> object:
+        del function_name, args, kwargs
+        return NOT_HANDLED
+
+    code = """
+import os
+message = None
+try:
+    os.getenv('HOME')
+except RuntimeError as exc:
+    message = str(exc)
+message
+"""
+    result = pydantic_monty.Monty(code).run(os=os_callback)
+
+    assert result == snapshot("'os.getenv' is not supported in this environment")
+
+
+def test_resume_not_handled_filesystem():
+    """resume_not_handled() injects Monty's default filesystem fallback error."""
+    code = """
+from pathlib import Path
+message = None
+try:
+    Path('/tmp').exists()
+except PermissionError as exc:
+    message = str(exc)
+message
+"""
+    progress = pydantic_monty.Monty(code).start()
+
+    assert isinstance(progress, pydantic_monty.FunctionSnapshot)
+    result = progress.resume_not_handled()
+
+    assert isinstance(result, pydantic_monty.MontyComplete)
+    assert result.output == snapshot("Permission denied: '/tmp'")
+
+
+def test_resume_not_handled_non_filesystem():
+    """resume_not_handled() injects Monty's default non-filesystem fallback error."""
+    code = """
+import os
+message = None
+try:
+    os.getenv('HOME')
+except RuntimeError as exc:
+    message = str(exc)
+message
+"""
+    progress = pydantic_monty.Monty(code).start()
+
+    assert isinstance(progress, pydantic_monty.FunctionSnapshot)
+    result = progress.resume_not_handled()
+
+    assert isinstance(result, pydantic_monty.MontyComplete)
+    assert result.output == snapshot("'os.getenv' is not supported in this environment")
+
+
+def test_resume_not_handled_rejects_non_os_snapshots():
+    """resume_not_handled() only applies to yielded OS calls."""
+    progress = pydantic_monty.Monty('func()').start()
+
+    assert isinstance(progress, pydantic_monty.FunctionSnapshot)
+    with pytest.raises(TypeError, match='only valid for OS function snapshots'):
+        progress.resume_not_handled()
+
+
 # =============================================================================
 # os.getenv() tests
 # =============================================================================
@@ -392,6 +484,42 @@ def test_os_getenv_with_default_yields_oscall():
     assert result.args == snapshot(('MISSING', 'fallback'))
 
 
+def test_date_today_yields_oscall():
+    """date.today() yields an OS call with no arguments."""
+    m = pydantic_monty.Monty('from datetime import date; date.today()')
+    result = m.start()
+
+    assert isinstance(result, pydantic_monty.FunctionSnapshot)
+    assert result.is_os_function is True
+    assert result.function_name == snapshot('date.today')
+    assert result.args == snapshot(())
+    assert result.kwargs == snapshot({})
+
+
+def test_datetime_now_yields_oscall():
+    """datetime.now() yields an OS call with a single timezone argument."""
+    m = pydantic_monty.Monty('from datetime import datetime; datetime.now()')
+    result = m.start()
+
+    assert isinstance(result, pydantic_monty.FunctionSnapshot)
+    assert result.is_os_function is True
+    assert result.function_name == snapshot('datetime.now')
+    assert result.args == snapshot((None,))
+    assert result.kwargs == snapshot({})
+
+
+def test_datetime_now_with_timezone_yields_oscall():
+    """datetime.now(timezone.utc) forwards the timezone to the host callback."""
+    m = pydantic_monty.Monty('from datetime import datetime, timezone; datetime.now(timezone.utc)')
+    result = m.start()
+
+    assert isinstance(result, pydantic_monty.FunctionSnapshot)
+    assert result.is_os_function is True
+    assert result.function_name == snapshot('datetime.now')
+    assert result.args == (datetime.timezone.utc,)
+    assert result.kwargs == snapshot({})
+
+
 def test_os_getenv_callback():
     """os.getenv() with os works correctly."""
 
@@ -405,6 +533,44 @@ def test_os_getenv_callback():
     m = pydantic_monty.Monty('import os; os.getenv("HOME")')
     result = m.run(os=os_handler)
     assert result == snapshot('/home/user')
+
+
+def test_date_today_callback():
+    """date.today() works through the direct os callback."""
+
+    def os_handler(
+        function_name: str, args: tuple[Any, ...], kwargs: dict[str, Any] | None = None
+    ) -> datetime.date | None:
+        if function_name == 'date.today':
+            assert args == ()
+            return datetime.date(2024, 1, 15)
+        return None
+
+    m = pydantic_monty.Monty('from datetime import date; date.today()')
+    result = m.run(os=os_handler)
+    assert (type(result).__name__, repr(result)) == snapshot(('date', 'datetime.date(2024, 1, 15)'))
+
+
+def test_datetime_now_callback_with_timezone():
+    """datetime.now() works through the direct os callback and receives tzinfo."""
+
+    def os_handler(
+        function_name: str, args: tuple[Any, ...], kwargs: dict[str, Any] | None = None
+    ) -> datetime.datetime | None:
+        if function_name == 'datetime.now':
+            (tzinfo,) = args
+            assert tzinfo == datetime.timezone.utc
+            return datetime.datetime(2024, 1, 15, 10, 30, 5, 123456, tzinfo=tzinfo)
+        return None
+
+    m = pydantic_monty.Monty('from datetime import datetime, timezone; datetime.now(timezone.utc)')
+    result = m.run(os=os_handler)
+    assert (type(result).__name__, repr(result)) == snapshot(
+        (
+            'datetime',
+            'datetime.datetime(2024, 1, 15, 10, 30, 5, 123456, tzinfo=datetime.timezone.utc)',
+        )
+    )
 
 
 def test_os_getenv_callback_missing():
@@ -580,7 +746,7 @@ def test_path_write_text_resume():
     snapshot_result = m.start()
 
     assert isinstance(snapshot_result, pydantic_monty.FunctionSnapshot)
-    result = snapshot_result.resume(return_value=5)  # write_text returns number of bytes written
+    result = snapshot_result.resume({'return_value': 5})  # write_text returns number of bytes written
 
     assert isinstance(result, pydantic_monty.MontyComplete)
     assert result.output == snapshot(5)
@@ -626,7 +792,7 @@ def test_path_write_bytes_resume():
     snapshot_result = m.start()
 
     assert isinstance(snapshot_result, pydantic_monty.FunctionSnapshot)
-    result = snapshot_result.resume(return_value=3)
+    result = snapshot_result.resume({'return_value': 3})
 
     assert isinstance(result, pydantic_monty.MontyComplete)
     assert result.output == snapshot(3)
@@ -686,7 +852,7 @@ def test_path_mkdir_resume():
     snapshot_result = m.start()
 
     assert isinstance(snapshot_result, pydantic_monty.FunctionSnapshot)
-    result = snapshot_result.resume(return_value=None)
+    result = snapshot_result.resume({'return_value': None})
 
     assert isinstance(result, pydantic_monty.MontyComplete)
     assert result.output is None
@@ -714,7 +880,7 @@ def test_path_unlink_resume():
     snapshot_result = m.start()
 
     assert isinstance(snapshot_result, pydantic_monty.FunctionSnapshot)
-    result = snapshot_result.resume(return_value=None)
+    result = snapshot_result.resume({'return_value': None})
 
     assert isinstance(result, pydantic_monty.MontyComplete)
     assert result.output is None
@@ -742,7 +908,7 @@ def test_path_rmdir_resume():
     snapshot_result = m.start()
 
     assert isinstance(snapshot_result, pydantic_monty.FunctionSnapshot)
-    result = snapshot_result.resume(return_value=None)
+    result = snapshot_result.resume({'return_value': None})
 
     assert isinstance(result, pydantic_monty.MontyComplete)
     assert result.output is None
@@ -771,7 +937,7 @@ def test_path_rename_resume():
 
     assert isinstance(snapshot_result, pydantic_monty.FunctionSnapshot)
     # rename() returns None (the new Path is constructed by Monty)
-    result = snapshot_result.resume(return_value=None)
+    result = snapshot_result.resume({'return_value': None})
 
     assert isinstance(result, pydantic_monty.MontyComplete)
     assert result.output is None

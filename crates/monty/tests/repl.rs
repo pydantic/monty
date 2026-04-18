@@ -129,6 +129,37 @@ fn repl_tracebacks_use_incrementing_python_input_filenames() {
 }
 
 #[test]
+fn repl_cross_snippet_traceback_resolves_against_defining_source() {
+    // Tracebacks for a function defined in snippet 0 and called in snippet 1
+    // must resolve frame positions against the source of the snippet that
+    // actually produced the `CodeRange`, not the source of the snippet that
+    // triggered the exception. `CodeRange` stores raw byte offsets, so
+    // indexing snippet 0's offsets into snippet 1's source would give wrong
+    // line/column/preview-line data (or worse).
+    let (mut repl, _) = init_repl("");
+
+    feed_run_print(&mut repl, "def f():\n    raise ValueError('boom')").unwrap();
+    let err = feed_run_print(&mut repl, "f()").unwrap_err();
+
+    let tb = err.traceback();
+    assert_eq!(tb.len(), 2, "expected call-site + raise-site frames");
+
+    // Frame 0: the call site, snippet 1.
+    assert_eq!(tb[0].filename, "<python-input-1>");
+    assert_eq!(tb[0].start.line, 1);
+    assert_eq!(tb[0].preview_line.as_deref(), Some("f()"));
+
+    // Frame 1: the raise inside f(), defined in snippet 0.
+    assert_eq!(tb[1].filename, "<python-input-0>");
+    assert_eq!(tb[1].start.line, 2);
+    assert_eq!(
+        tb[1].preview_line.as_deref(),
+        Some("    raise ValueError('boom')"),
+        "preview line must come from the snippet that defined f, not the current snippet"
+    );
+}
+
+#[test]
 fn repl_dump_load_survives_between_snippets() {
     let (mut repl, _) = init_repl("total = 1");
     feed_run_print(&mut repl, "total = total + 1").unwrap();

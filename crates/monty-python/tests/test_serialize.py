@@ -64,7 +64,7 @@ def test_progress_dump_load_roundtrip():
     assert progress2.args == snapshot((1, 2))
     assert progress2.kwargs == snapshot({})
 
-    result = progress2.resume(return_value=100)
+    result = progress2.resume({'return_value': 100})
     assert isinstance(result, pydantic_monty.MontyComplete)
     assert result.output == snapshot(100)
 
@@ -98,7 +98,7 @@ def test_progress_dump_after_resume_fails():
     progress = m.start()
     assert isinstance(progress, pydantic_monty.FunctionSnapshot)
 
-    progress.resume(return_value=1)
+    progress.resume({'return_value': 1})
 
     with pytest.raises(RuntimeError) as exc_info:
         progress.dump()
@@ -124,7 +124,7 @@ def test_progress_dump_load_multiple_calls():
     assert isinstance(progress2, pydantic_monty.FunctionSnapshot)
 
     # Resume with first return value
-    progress3 = progress2.resume(return_value=10)
+    progress3 = progress2.resume({'return_value': 10})
     assert isinstance(progress3, pydantic_monty.FunctionSnapshot)
     assert progress3.function_name == snapshot('b')
 
@@ -134,7 +134,7 @@ def test_progress_dump_load_multiple_calls():
     assert isinstance(progress4, pydantic_monty.FunctionSnapshot)
 
     # Resume with second return value
-    result = progress4.resume(return_value=5)
+    result = progress4.resume({'return_value': 5})
     assert isinstance(result, pydantic_monty.MontyComplete)
     assert result.output == snapshot(15)
 
@@ -156,7 +156,7 @@ def test_progress_load_with_print_callback():
     progress2 = pydantic_monty.load_snapshot(data, print_callback=callback)
     assert isinstance(progress2, pydantic_monty.FunctionSnapshot)
 
-    result = progress2.resume(return_value=None)
+    result = progress2.resume({'return_value': None})
     assert isinstance(result, pydantic_monty.MontyComplete)
     assert output == snapshot([('stdout', 'after'), ('stdout', '\n')])
 
@@ -170,7 +170,7 @@ def test_progress_load_without_print_callback():
     progress2 = pydantic_monty.load_snapshot(data)
     assert isinstance(progress2, pydantic_monty.FunctionSnapshot)
 
-    result = progress2.resume(return_value=42)
+    result = progress2.resume({'return_value': 42})
     assert isinstance(result, pydantic_monty.MontyComplete)
     assert result.output == snapshot(42)
 
@@ -203,7 +203,7 @@ def test_progress_dump_load_with_limits():
     progress2 = pydantic_monty.load_snapshot(data)
     assert isinstance(progress2, pydantic_monty.FunctionSnapshot)
 
-    result = progress2.resume(return_value=99)
+    result = progress2.resume({'return_value': 99})
     assert isinstance(result, pydantic_monty.MontyComplete)
     assert result.output == snapshot(99)
 
@@ -239,7 +239,7 @@ def test_progress_dump_load_dataclass():
     assert progress2.args == snapshot(())
     assert progress2.kwargs == snapshot({})
 
-    result = progress2.resume(return_value=Person(name='Alice', age=30))
+    result = progress2.resume({'return_value': Person(name='Alice', age=30)})
     assert isinstance(result, pydantic_monty.MontyComplete)
     assert isinstance(result.output, Person)
     assert result.output.name == snapshot('Alice')
@@ -265,7 +265,7 @@ def test_progress_dump_load_unknown_dataclass():
     assert isinstance(progress2, pydantic_monty.FunctionSnapshot)
 
     # Resume execution — x is returned as UnknownDataclass
-    result = progress2.resume(return_value=None)
+    result = progress2.resume({'return_value': None})
     assert isinstance(result, pydantic_monty.MontyComplete)
 
     output = result.output

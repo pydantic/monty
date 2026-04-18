@@ -12,7 +12,7 @@
 //! lazily initialized so programs that never call `json.loads()` pay zero cost.
 //!
 //! The cache lives on the [`VM`] and is scoped to a single execution run. It
-//! is cleaned up in [`VM::cleanup()`] and its entries are registered as GC
+//! is cleaned up when the VM is dropped and its entries are registered as GC
 //! roots in [`VM::run_gc()`].
 
 use std::iter;
@@ -56,7 +56,7 @@ type CacheEntry = Option<(u64, Box<str>, Value)>;
 /// - Backing storage allocated on the first `get_or_allocate` call with an
 ///   eligible string (2–64 bytes).
 /// - Persists across multiple `json.loads()` calls within the same run.
-/// - Cleaned up in `VM::cleanup()` via [`drop_all`](Self::drop_all).
+/// - Cleaned up when the VM is dropped via [`drop_all`](Self::drop_all).
 /// - Cached values are reported as GC roots via [`gc_roots`](Self::gc_roots).
 #[derive(Default)]
 pub(crate) struct JsonStringCache {
@@ -95,7 +95,7 @@ impl JsonStringCache {
 
     /// Drops all cached values, decrementing their refcounts.
     ///
-    /// Called during `VM::cleanup()` before the heap is torn down.
+    /// Called during `VM::drop()` before the heap is torn down.
     pub fn drop_all(&mut self, heap: &mut impl ContainsHeap) {
         if let Some(inner) = &mut self.inner {
             for entry in inner.entries.iter_mut() {

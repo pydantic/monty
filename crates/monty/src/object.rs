@@ -32,53 +32,6 @@ use crate::{
     value::{EitherStr, Value},
 };
 
-/// A Python value that can be passed to or returned from the interpreter.
-///
-/// This is the public-facing type for Python values. It owns all its data and can be
-/// freely cloned, serialized, or stored. Unlike the internal `Value` type, `MontyObject`
-/// does not require a heap for operations.
-///
-/// # Input vs Output Variants
-///
-/// Most variants can be used both as inputs (passed to `Executor::run()`) and outputs
-/// (returned from execution). However:
-/// - `Repr` is output-only: represents values that have no direct `MontyObject` mapping
-/// - `Exception` can be used as input (to raise) or output (when code raises)
-///
-/// # Hashability
-///
-/// Only immutable variants implement `Hash`, including the datetime family
-/// (`Date`, `DateTime`, `TimeDelta`, `TimeZone`). Attempting to hash mutable
-/// variants (`List`, `Dict`) will panic.
-///
-/// # JSON Serialization
-///
-/// `MontyObject` supports JSON serialization with natural mappings:
-///
-/// **Bidirectional (can serialize and deserialize):**
-/// - `None` ↔ JSON `null`
-/// - `Bool` ↔ JSON `true`/`false`
-/// - `Int` ↔ JSON integer
-/// - `Float` ↔ JSON float
-/// - `String` ↔ JSON string
-/// - `List` ↔ JSON array
-/// - `Dict` ↔ JSON object (keys must be interns)
-/// - `Date` ↔ `{"year": ..., "month": ..., "day": ...}`
-/// - `DateTime` ↔ object with date/time fields and optional timezone metadata
-/// - `TimeDelta` ↔ object with normalized `days/seconds/microseconds`
-/// - `TimeZone` ↔ object with fixed `offset_seconds` and optional `name`
-///
-/// **Output-only (serialize only, cannot deserialize from JSON):**
-/// - `Ellipsis` → `{"$ellipsis": true}`
-/// - `Tuple` → `{"$tuple": [...]}`
-/// - `Bytes` → `{"$bytes": [...]}`
-/// - `Exception` → `{"$exception": {"type": "...", "arg": "..."}}`
-/// - `Repr` → `{"$repr": "..."}`
-///
-/// # Binary Serialization
-///
-/// For binary serialization (e.g., with postcard), `MontyObject` uses derived serde
-/// with internally tagged format. This differs from the natural JSON format.
 /// A Python `datetime.date` value with year, month, and day components.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct MontyDate {
@@ -233,6 +186,44 @@ fn monty_datetime_naive(datetime: &MontyDateTime) -> Option<NaiveDateTime> {
     Some(date.and_time(time))
 }
 
+/// A Python value that can be passed to or returned from the interpreter.
+///
+/// This is the public-facing type for Python values. It owns all its data and can be
+/// freely cloned, serialized, or stored. Unlike the internal `Value` type, `MontyObject`
+/// does not require a heap for operations.
+///
+/// # Input vs Output Variants
+///
+/// Most variants can be used both as inputs (passed to `Executor::run()`) and outputs
+/// (returned from execution). However:
+/// - `Repr` is output-only: represents values that have no direct `MontyObject` mapping
+/// - `Exception` can be used as input (to raise) or output (when code raises)
+///
+/// # Hashability
+///
+/// Only immutable variants implement `Hash`, including the datetime family
+/// (`Date`, `DateTime`, `TimeDelta`, `TimeZone`). Attempting to hash mutable
+/// variants (`List`, `Dict`) will panic.
+///
+/// # Serialization
+///
+/// `MontyObject` has two distinct serialization paths:
+///
+/// 1. **Derived serde (round-trippable)** — the default `Serialize` /
+///    `Deserialize` impls use an externally tagged format
+///    (`{"Int": 42}`, `{"String": "hi"}`, ...). This is what `postcard` and
+///    `serde_json::to_string(&obj)` produce. It is lossless and designed for
+///    snapshots and binary transport, not for human-facing JSON.
+///
+/// 2. **Natural JSON (output-only)** — wrap the value in
+///    [`JsonMontyObject`](crate::JsonMontyObject) for a much more ergonomic
+///    shape where JSON-native Python values serialize bare
+///    (`42`, `"hi"`, `[...]`, `{"a": 1}`) and non-JSON-native values use a
+///    `{"$<tag>": ...}` convention (`{"$tuple": [...]}`, `{"$bytes": [...]}`,
+///    `{"$ellipsis": "..."}`, `{"$float": "nan"}`, ...). See the
+///    `object_json` module docs for the full mapping. This form is
+///    intentionally not round-trippable — use the derived format if you
+///    need to reconstruct a `MontyObject` from JSON.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum MontyObject {
     /// Python's `Ellipsis` singleton (`...`).
@@ -1382,7 +1373,15 @@ impl FromIterator<(MontyObject, MontyObject)> for DictPairs {
 }
 
 impl DictPairs {
-    fn is_empty(&self) -> bool {
+    /// Number of (key, value) pairs held by this dict.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    /// Whether this dict has no pairs.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
 

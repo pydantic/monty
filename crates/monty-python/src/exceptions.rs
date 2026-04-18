@@ -302,16 +302,16 @@ pub struct PyFrame {
     pub filename: String,
     /// Line number (1-based).
     #[pyo3(get)]
-    pub line: u16,
+    pub line: u32,
     /// Column number (1-based).
     #[pyo3(get)]
-    pub column: u16,
+    pub column: u32,
     /// End line number (1-based).
     #[pyo3(get)]
-    pub end_line: u16,
+    pub end_line: u32,
     /// End column number (1-based).
     #[pyo3(get)]
-    pub end_column: u16,
+    pub end_column: u32,
     /// The name of the function, or None for module-level code.
     #[pyo3(get)]
     pub function_name: Option<String>,

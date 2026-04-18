@@ -18,19 +18,19 @@ use ::monty::{
 use pyo3::{
     exceptions::{PyRuntimeError, PyValueError},
     prelude::*,
-    types::{PyBytes, PyDict, PyList, PyTuple},
+    types::{PyBytes, PyList},
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::{
-    convert::{monty_to_py, py_to_monty},
     dataclass::DcRegistry,
     limits::PySignalTracker,
     monty_cls::{
         EitherFunctionSnapshot, EitherFutureSnapshot, EitherLookupSnapshot, PyFunctionSnapshot, PyFutureSnapshot,
         PyNameLookupSnapshot,
     },
+    print_target::PrintTarget,
     repl::{PyMontyRepl, TypeCheckState},
 };
 
@@ -383,10 +383,9 @@ pub(crate) fn dump_function_snapshot(
     is_os_function: bool,
     is_method_call: bool,
     function_name: &str,
-    args: &Py<PyTuple>,
-    kwargs: &Py<PyDict>,
+    args: &[MontyObject],
+    kwargs: &[(MontyObject, MontyObject)],
     call_id: u32,
-    dc_registry: &DcRegistry,
 ) -> PyResult<Vec<u8>> {
     let snapshot = snapshot_mutex.lock().unwrap_or_else(PoisonError::into_inner);
     if matches!(&*snapshot, EitherFunctionSnapshot::Done) {
@@ -394,9 +393,6 @@ pub(crate) fn dump_function_snapshot(
             "Cannot dump progress that has already been resumed",
         ));
     }
-
-    let args_monty = convert_args_to_monty(py, args, dc_registry)?;
-    let kwargs_monty = convert_kwargs_to_monty(py, kwargs, dc_registry)?;
 
     let serde_ref = snapshot.as_serde_ref();
 
@@ -411,8 +407,8 @@ pub(crate) fn dump_function_snapshot(
             is_os_function,
             is_method_call,
             function_name,
-            args: &args_monty,
-            kwargs: &kwargs_monty,
+            args,
+            kwargs,
             call_id,
         };
         serialize_with_header(&serialized).map_err(|e| PyValueError::new_err(e.to_string()))
@@ -423,8 +419,8 @@ pub(crate) fn dump_function_snapshot(
             is_os_function,
             is_method_call,
             function_name,
-            args: &args_monty,
-            kwargs: &kwargs_monty,
+            args,
+            kwargs,
             call_id,
         };
         serialize_with_header(&serialized).map_err(|e| PyValueError::new_err(e.to_string()))
@@ -570,12 +566,13 @@ enum SerializedReplSnapshotRef<'a> {
 pub(crate) fn load_snapshot<'py>(
     py: Python<'py>,
     data: &Bound<'_, PyBytes>,
-    print_callback: Option<Py<PyAny>>,
+    print_callback: Option<&Bound<'_, PyAny>>,
     dataclass_registry: Option<&Bound<'_, PyList>>,
 ) -> PyResult<Bound<'py, PyAny>> {
     let bytes = data.as_bytes();
     let serialized: SerializedSnapshot = deserialize_with_header(bytes)?;
     let dc_registry = DcRegistry::from_list(py, dataclass_registry)?;
+    let print_callback = PrintTarget::from_py(print_callback)?;
 
     match serialized {
         SerializedSnapshot::Function {
@@ -589,8 +586,6 @@ pub(crate) fn load_snapshot<'py>(
             call_id,
         } => {
             let either = snapshot.into_either()?;
-            let py_args = monty_objects_to_py_tuple(py, &args, &dc_registry)?;
-            let py_kwargs = monty_pairs_to_py_dict(py, &kwargs, &dc_registry)?;
             PyFunctionSnapshot::from_deserialized(
                 py,
                 either,
@@ -600,8 +595,8 @@ pub(crate) fn load_snapshot<'py>(
                 is_os_function,
                 is_method_call,
                 function_name,
-                py_args,
-                py_kwargs,
+                args,
+                kwargs,
                 call_id,
             )
         }
@@ -629,12 +624,13 @@ pub(crate) fn load_snapshot<'py>(
 pub(crate) fn load_repl_snapshot<'py>(
     py: Python<'py>,
     data: &Bound<'_, PyBytes>,
-    print_callback: Option<Py<PyAny>>,
+    print_callback: Option<&Bound<'_, PyAny>>,
     dataclass_registry: Option<&Bound<'_, PyList>>,
 ) -> PyResult<(Bound<'py, PyAny>, Py<PyMontyRepl>)> {
     let bytes = data.as_bytes();
     let serialized: SerializedReplSnapshot = deserialize_with_header(bytes)?;
     let dc_registry = DcRegistry::from_list(py, dataclass_registry)?;
+    let print_callback = PrintTarget::from_py(print_callback)?;
 
     match serialized {
         SerializedReplSnapshot::Function {
@@ -650,8 +646,6 @@ pub(crate) fn load_repl_snapshot<'py>(
         } => {
             let repl_py = create_empty_py_repl(py, &script_name, &dc_registry, type_check_state)?;
             let either = snapshot.into_either_with_repl(repl_py.clone_ref(py));
-            let py_args = monty_objects_to_py_tuple(py, &args, &dc_registry)?;
-            let py_kwargs = monty_pairs_to_py_dict(py, &kwargs, &dc_registry)?;
             let snap = PyFunctionSnapshot::from_deserialized(
                 py,
                 either,
@@ -661,8 +655,8 @@ pub(crate) fn load_repl_snapshot<'py>(
                 is_os_function,
                 is_method_call,
                 function_name,
-                py_args,
-                py_kwargs,
+                args,
+                kwargs,
                 call_id,
             )?;
             Ok((snap, repl_py))
@@ -710,57 +704,6 @@ fn create_empty_py_repl(
 ) -> PyResult<Py<PyMontyRepl>> {
     let repl_obj = PyMontyRepl::empty_owner(script_name.to_owned(), dc_registry.clone_ref(py), type_check_state);
     Py::new(py, repl_obj)
-}
-
-// ---------------------------------------------------------------------------
-// Conversion helpers
-// ---------------------------------------------------------------------------
-
-/// Converts a `Py<PyTuple>` of Python args to `Vec<MontyObject>`.
-fn convert_args_to_monty(py: Python<'_>, args: &Py<PyTuple>, dc_registry: &DcRegistry) -> PyResult<Vec<MontyObject>> {
-    args.bind(py)
-        .iter()
-        .map(|item| py_to_monty(&item, dc_registry))
-        .collect()
-}
-
-/// Converts a `Py<PyDict>` of Python kwargs to `Vec<(MontyObject, MontyObject)>`.
-fn convert_kwargs_to_monty(
-    py: Python<'_>,
-    kwargs: &Py<PyDict>,
-    dc_registry: &DcRegistry,
-) -> PyResult<Vec<(MontyObject, MontyObject)>> {
-    kwargs
-        .bind(py)
-        .iter()
-        .map(|(k, v)| Ok((py_to_monty(&k, dc_registry)?, py_to_monty(&v, dc_registry)?)))
-        .collect()
-}
-
-/// Converts `&[MontyObject]` to a Python tuple.
-fn monty_objects_to_py_tuple(
-    py: Python<'_>,
-    objects: &[MontyObject],
-    dc_registry: &DcRegistry,
-) -> PyResult<Py<PyTuple>> {
-    let items: Vec<Py<PyAny>> = objects
-        .iter()
-        .map(|item| monty_to_py(py, item, dc_registry))
-        .collect::<PyResult<_>>()?;
-    Ok(PyTuple::new(py, items)?.unbind())
-}
-
-/// Converts `&[(MontyObject, MontyObject)]` to a Python dict.
-fn monty_pairs_to_py_dict(
-    py: Python<'_>,
-    pairs: &[(MontyObject, MontyObject)],
-    dc_registry: &DcRegistry,
-) -> PyResult<Py<PyDict>> {
-    let dict = PyDict::new(py);
-    for (k, v) in pairs {
-        dict.set_item(monty_to_py(py, k, dc_registry)?, monty_to_py(py, v, dc_registry)?)?;
-    }
-    Ok(dict.unbind())
 }
 
 // ---------------------------------------------------------------------------

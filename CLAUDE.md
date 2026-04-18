@@ -258,6 +258,25 @@ Avoid `fn my_func<T: MyTrait>(..., param: T)` style function definitions, STRONG
 
 Also avoid using functions and structs via a path like `std::borrow::Cow::Owned(...)`, instead import `Cow` globally with `use std::borrow::Cow;`.
 
+STRONGLY prefer expression-oriented style: use `if`/`match` as expressions with a trailing (tail) expression rather than early `return` with a guard clause. E.g. prefer
+
+```rs
+if cond { a } else { b }
+```
+
+over
+
+```rs
+if cond {
+    return a;
+}
+b
+```
+
+This applies to function bodies and block expressions alike. Only use early `return` when it genuinely simplifies control flow (e.g. several guard clauses at the top of a function).
+
+This applies even more strongly to long `if cond { ... } else if cond2 { ... } ... else { ... }` chains — keep them as a single expression yielding a value, rather than scattering `return` statements through each branch.
+
 NEVER use `allow()` in rust lint markers, instead use `expect()` so any unnecessary markers are removed. E.g. use
 
 ```rs
@@ -310,7 +329,8 @@ make test-ref-count-panic
 make test-cases
 
 # Run a specific test
-cargo test -p monty --test datatest_runner --features ref-count-panic str__ops
+cargo test -p monty --test TEST --features ref-count-panic str__ops
+cargo run -p monty-datatest --features ref-count-panic str__ops
 
 # Run the interpreter on a Python file
 cargo run -- <file.py>
@@ -458,7 +478,7 @@ All these markers must be at the start of comment lines to be recognized.
 - The ONLY exception is `await` expressions outside of async functions, where you should add `# pyright: ignore`
 - Run `make lint-py` after adding tests
 - Use `make complete-tests` to fill in blank expectations
-- Tests run via `datatest-stable` harness in `tests/datatest_runner.rs`, use `make test-cases` to run them
+- Regression tests run via `datatest-stable` harness in `crates/monty-datatest/src/main.rs`, use `make test-cases` to run them
 
 ## Python Package (`pydantic-monty`)
 

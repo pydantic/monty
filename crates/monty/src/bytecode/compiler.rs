@@ -19,7 +19,7 @@ use crate::{
     args::{ArgExprs, CallArg, CallKwarg, Kwarg},
     builtins::Builtins,
     exception_private::ExcType,
-    exception_public::{MontyException, StackFrame},
+    exception_public::{MontyException, SourceMap, StackFrame},
     expressions::{
         Callable, CmpOperator, Comprehension, DictItem, Expr, ExprLoc, Identifier, Literal, NameScope, Node, Operator,
         PreparedFunctionDef, PreparedNode, SequenceItem, UnpackTarget,
@@ -3145,11 +3145,12 @@ impl CompileError {
     /// - SyntaxError: hides the `, in <module>` part (CPython's format)
     /// - ModuleNotFoundError: hides caret markers (CPython doesn't show them)
     pub fn into_python_exc(self, filename: &str, source: &str) -> MontyException {
+        let source_map = SourceMap::new(source);
         let mut frame = if self.exc_type == ExcType::SyntaxError {
             // SyntaxError uses different format: no `, in <module>`
-            StackFrame::from_position_syntax_error(self.position, filename, source)
+            StackFrame::from_position_syntax_error(self.position, filename, &source_map)
         } else {
-            StackFrame::from_position(self.position, filename, source)
+            StackFrame::from_position(self.position, filename, &source_map)
         };
         // CPython doesn't show carets for module not found errors
         if self.exc_type == ExcType::ModuleNotFoundError {

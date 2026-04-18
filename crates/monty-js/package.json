@@ -1,6 +1,6 @@
 {
   "name": "@pydantic/monty",
-  "version": "0.0.11",
+  "version": "0.0.14",
   "type": "module",
   "description": "Sandboxed Python interpreter for JavaScript/TypeScript",
   "main": "wrapper.js",

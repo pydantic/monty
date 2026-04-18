@@ -15,7 +15,7 @@ def test_async():
     assert progress.function_name == snapshot('foobar')
     assert progress.args == snapshot((1, 2))
     call_id = progress.call_id
-    progress = progress.resume(future=...)
+    progress = progress.resume({'future': ...})
     assert isinstance(progress, pydantic_monty.FutureSnapshot)
     assert progress.pending_call_ids == snapshot([call_id])
     progress = progress.resume({call_id: {'return_value': 3}})
@@ -36,12 +36,12 @@ await asyncio.gather(foo(1), bar(2))
     assert progress.args == snapshot((1,))
     foo_call_ids = progress.call_id
 
-    progress = progress.resume(future=...)
+    progress = progress.resume({'future': ...})
     assert isinstance(progress, pydantic_monty.FunctionSnapshot)
     assert progress.function_name == snapshot('bar')
     assert progress.args == snapshot((2,))
     bar_call_ids = progress.call_id
-    progress = progress.resume(future=...)
+    progress = progress.resume({'future': ...})
 
     assert isinstance(progress, pydantic_monty.FutureSnapshot)
     dump_progress = progress.dump()
@@ -314,6 +314,39 @@ Path('/test.txt').exists()
     assert 'not implemented' in inner.args[0]
 
 
+async def test_run_monty_async_os_callback_not_handled():
+    """`NOT_HANDLED` from the async os callback falls through to default unhandled behavior.
+
+    Mirrors the sync `Monty.run(os=...)` semantics — without this, the sentinel
+    object would be passed through `py_to_monty` and surface as a TypeError.
+    """
+
+    def os_cb(func: object, args: tuple[object, ...], kwargs: dict[str, object]) -> object:
+        return pydantic_monty.NOT_HANDLED
+
+    m = pydantic_monty.Monty("from pathlib import Path; Path('/foo.txt').exists()")
+    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
+        await m.run_async(os=os_cb)  # pyright: ignore[reportArgumentType]
+    inner = exc_info.value.exception()
+    assert isinstance(inner, PermissionError)
+
+
+async def test_repl_feed_run_async_os_callback_not_handled():
+    """Same as above but for `MontyRepl.feed_run_async`."""
+
+    def os_cb(func: object, args: tuple[object, ...], kwargs: dict[str, object]) -> object:
+        return pydantic_monty.NOT_HANDLED
+
+    repl = pydantic_monty.MontyRepl()
+    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
+        await repl.feed_run_async(
+            "from pathlib import Path; Path('/foo.txt').exists()",
+            os=os_cb,  # pyright: ignore[reportArgumentType]
+        )
+    inner = exc_info.value.exception()
+    assert isinstance(inner, PermissionError)
+
+
 async def test_run_monty_async_nested_gather_with_external_functions():
     """Test nested asyncio.gather with spawned tasks and external async functions.
 
@@ -422,11 +455,11 @@ await asyncio.gather(foo(1), bar(2))
     assert progress.function_name == snapshot('foo')
     foo_call_id = progress.call_id
 
-    progress = progress.resume(future=...)
+    progress = progress.resume({'future': ...})
     assert isinstance(progress, pydantic_monty.FunctionSnapshot)
     assert progress.function_name == snapshot('bar')
     bar_call_id = progress.call_id
-    progress = progress.resume(future=...)
+    progress = progress.resume({'future': ...})
 
     assert isinstance(progress, pydantic_monty.FutureSnapshot)
     from dirty_equals import IsList
@@ -451,7 +484,7 @@ def test_repl_feed_start_async_state_persistence():
     assert progress.args == snapshot((10,))
     call_id = progress.call_id
 
-    progress = progress.resume(future=...)
+    progress = progress.resume({'future': ...})
     assert isinstance(progress, pydantic_monty.FutureSnapshot)
     progress = progress.resume({call_id: {'return_value': 'fetched'}})
     assert isinstance(progress, pydantic_monty.MontyComplete)

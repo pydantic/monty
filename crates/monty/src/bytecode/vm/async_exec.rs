@@ -8,17 +8,18 @@
 
 use std::mem;
 
-use super::{AwaitResult, CallFrame, VM};
+use super::{AwaitResult, CallFrame, FrameExit, VM};
 use crate::{
-    InvalidInputError, MontyObject,
+    InvalidInputError, MontyException, MontyObject,
     args::ArgValues,
     asyncio::{CallId, CoroutineState, GatherItem, TaskId},
     bytecode::vm::scheduler::{PendingCallData, SerializedTaskFrame, TaskState},
     defer_drop,
-    exception_private::{ExcType, RunError, SimpleException},
+    exception_private::{ExcType, RunError, RunResult, SimpleException},
     heap::{HeapData, HeapGuard, HeapId, HeapReadOutput},
     intern::FunctionId,
     resource::ResourceTracker,
+    run_progress::ExtFunctionResult,
     types::{List, PyTrait},
     value::Value,
 };
@@ -830,106 +831,86 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
         );
     }
 
-    /// Prepares the current task to continue after futures are resolved.
-    ///
-    /// When the current task (main or spawned) was blocked on an external future and
-    /// that future is now resolved, this method takes the resolved value from the
-    /// scheduler and pushes it onto the VM's stack so execution can continue.
-    ///
-    /// This is called by `FutureSnapshot::resume()` after resolving futures but before
-    /// calling `vm.run()`. It handles the task whose frames are currently in the VM.
-    /// Other unblocked tasks get their resolved values during task switching in
-    /// `load_or_init_task`.
-    ///
-    /// # Returns
-    /// `true` if a value was pushed, `false` if no task was ready to continue.
-    pub fn prepare_current_task_after_resolve(&mut self) -> bool {
-        // Check if there's a current task (main or spawned)
-        let Some(current_task_id) = self.scheduler.current_task_id() else {
-            return false;
-        };
-
-        // Take the resolved value for the current task (if it was unblocked)
-        if let Some(value) = self.scheduler.take_resolved_for_task(current_task_id) {
-            // Remove task from ready_queue since we're handling it directly.
-            // resolve() added it to ready_queue, but since frames are already
-            // in the VM (not saved/restored), we handle it here instead of via task switching.
-            self.scheduler.remove_from_ready_queue(current_task_id);
-            self.push(value);
-            true
-        } else {
-            false
-        }
-    }
-
-    /// Loads a ready task if the VM needs one.
-    ///
-    /// This is called by `FutureSnapshot::resume()` after resolving futures but before
-    /// calling `vm.run()`. It handles two cases:
-    /// 1. **No frames in VM**: A task context needs to be loaded from the scheduler
-    ///    (e.g., gather completed while tasks were running and we yielded with no frames).
-    /// 2. **Current task is blocked**: The current task's frames are in the VM but it's
-    ///    still blocked (e.g., only some futures were resolved in incremental resolution).
-    ///    Saves the blocked task's context and switches to a ready task.
-    ///
-    /// # Returns
-    /// - `Ok(true)` if a task was loaded and execution can continue
-    /// - `Ok(false)` if no task switch is needed (current task is runnable or no ready tasks)
-    /// - `Err(error)` if loading the task failed
-    pub fn load_ready_task_if_needed(&mut self) -> Result<bool, RunError> {
-        // If frames exist, check if the current task is blocked. If it's not blocked
-        // (i.e., it was just unblocked), there's nothing to do - it will continue running.
-        if !self.frames.is_empty() {
-            let current_blocked = self.scheduler.current_task_id().is_some_and(|tid| {
-                matches!(
-                    self.scheduler.get_task(tid).state,
-                    TaskState::BlockedOnCall(_) | TaskState::BlockedOnGather(_)
-                )
-            });
-            if !current_blocked {
-                return Ok(false);
-            }
-
-            // Current task is blocked - save its context before switching
-            if let Some(tid) = self.scheduler.current_task_id() {
-                self.save_task_context(tid);
-            }
-        }
-
-        // Check if there's a ready task to load
-        let Some(next_task_id) = self.scheduler.next_ready_task() else {
-            return Ok(false);
-        };
-
-        self.scheduler.set_current_task(Some(next_task_id));
-        self.load_or_init_task(next_task_id)?;
-        Ok(true)
-    }
-
     /// Gets the pending call IDs from the scheduler.
     pub fn get_pending_call_ids(&self) -> Vec<CallId> {
         self.scheduler.pending_call_ids()
     }
 
-    /// Takes the error from a failed task if the current task has failed.
+    /// Resolves external futures and resumes execution.
     ///
-    /// Returns `Some(error)` if the current task is in `TaskState::Failed`, `None` otherwise.
-    /// Used by `FutureSnapshot::resume` to propagate errors after resolving futures.
-    ///
-    /// Only replaces the state when the task has actually failed - other states
-    /// (e.g., `BlockedOnCall`) are left untouched.
-    pub fn take_failed_task_error(&mut self) -> Option<RunError> {
-        let current_task_id = self.scheduler.current_task_id()?;
-        let task = self.scheduler.get_task_mut(current_task_id);
-
-        // Only replace state if it's actually Failed - otherwise we'd corrupt
-        // the task's real state (e.g., BlockedOnCall) by overwriting it with Ready.
-        if matches!(task.state, TaskState::Failed(_))
-            && let TaskState::Failed(error) = mem::replace(&mut task.state, TaskState::Ready)
-        {
-            return Some(error);
+    /// This is the standard sequence for resuming after a `FrameExit::ResolveFutures`:
+    /// 1. Resolve or fail each future from the provided results
+    /// 2. Attempt to resume the current task (or fail it if any future resolution caused it to fail)
+    /// 3. Load a ready task if needed (current task still blocked)
+    /// 4. If no task is ready, return `ResolveFutures` with remaining pending call IDs
+    pub fn resume_with_resolved_futures(&mut self, results: Vec<(u32, ExtFunctionResult)>) -> RunResult<FrameExit> {
+        for (call_id, ext_result) in results {
+            match ext_result {
+                ExtFunctionResult::Return(obj) => {
+                    self.resolve_future(call_id, obj).map_err(|e| {
+                        RunError::from(MontyException::runtime_error(format!(
+                            "Invalid return type for call {call_id}: {e}"
+                        )))
+                    })?;
+                }
+                ExtFunctionResult::Error(exc) => self.fail_future(call_id, RunError::from(exc)),
+                ExtFunctionResult::Future(_) => {}
+                ExtFunctionResult::NotFound(function_name) => {
+                    self.fail_future(call_id, ExtFunctionResult::not_found_exc(&function_name));
+                }
+            }
         }
-        None
+
+        if let Some(current_task_id) = self.scheduler.current_task_id() {
+            let task = self.scheduler.get_task_mut(current_task_id);
+
+            match task.state {
+                TaskState::Failed(_) => {
+                    // Current task failed - propagate error to caller
+                    let TaskState::Failed(err) = mem::replace(&mut task.state, TaskState::Ready) else {
+                        unreachable!();
+                    };
+                    return Err(err);
+                }
+                TaskState::BlockedOnCall(_) | TaskState::BlockedOnGather(_) => {
+                    // Current task is still blocked on unresolved futures.
+                }
+                TaskState::Ready => {
+                    if let Some(value) = self.scheduler.take_resolved_for_task(current_task_id) {
+                        self.push(value);
+                    }
+                    self.scheduler.remove_from_ready_queue(current_task_id);
+                    return self.run();
+                }
+                TaskState::Completed(_) => {
+                    // Should never have suspended if the task was completed
+                    panic!(
+                        "current task is in unexpected Completed state after resolving futures: {:?}",
+                        task.state
+                    );
+                }
+            }
+        }
+
+        // Current task was not able to resume, but there might be other ready tasks which can make
+        // progress
+        if let Some(next_task_id) = self.scheduler.next_ready_task() {
+            if let Some(current_task_id) = self.scheduler.current_task_id() {
+                self.save_task_context(current_task_id);
+            }
+            self.scheduler.set_current_task(Some(next_task_id));
+            self.load_or_init_task(next_task_id)?;
+            return self.run();
+        }
+
+        let pending_call_ids = self.get_pending_call_ids();
+
+        assert!(
+            !pending_call_ids.is_empty(),
+            "resume_with_resolved_futures called but no pending calls and no ready tasks"
+        );
+
+        Ok(FrameExit::ResolveFutures(pending_call_ids))
     }
 }
 

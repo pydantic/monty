@@ -1,9 +1,15 @@
+import re
+import sys
+import tempfile
+from collections.abc import Generator
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 import pytest
 from inline_snapshot import snapshot
 
 import pydantic_monty
+from pydantic_monty import NOT_HANDLED, Monty, MountDir
 
 
 def test_start_no_external_functions_returns_complete():
@@ -38,7 +44,7 @@ def test_start_progress_resume_returns_complete():
     assert progress.args == snapshot(())
     assert progress.kwargs == snapshot({})
 
-    result = progress.resume(return_value=42)
+    result = progress.resume({'return_value': 42})
     assert isinstance(result, pydantic_monty.MontyComplete)
     assert result.output == snapshot(42)
 
@@ -70,6 +76,24 @@ def test_start_progress_with_mixed_args_kwargs():
     assert progress.kwargs == snapshot({'x': 'hello', 'y': True})
 
 
+def test_function_snapshot_args_kwargs_json():
+    # Natural-form JSON mirrors `output_json`: JSON-native values serialize
+    # bare, tuples/sets/etc. are tagged.
+    m = pydantic_monty.Monty('func(1, "two", (3, 4), a=True, b=None)')
+    progress = m.start()
+    assert isinstance(progress, pydantic_monty.FunctionSnapshot)
+    assert progress.args_json() == snapshot('[1,"two",{"$tuple":[3,4]}]')
+    assert progress.kwargs_json() == snapshot('{"a":true,"b":null}')
+
+
+def test_function_snapshot_args_kwargs_json_empty():
+    m = pydantic_monty.Monty('func()')
+    progress = m.start()
+    assert isinstance(progress, pydantic_monty.FunctionSnapshot)
+    assert progress.args_json() == snapshot('[]')
+    assert progress.kwargs_json() == snapshot('{}')
+
+
 def test_start_multiple_external_calls():
     m = pydantic_monty.Monty('a() + b()')
 
@@ -79,12 +103,12 @@ def test_start_multiple_external_calls():
     assert progress.function_name == snapshot('a')
 
     # Resume with first return value
-    progress = progress.resume(return_value=10)
+    progress = progress.resume({'return_value': 10})
     assert isinstance(progress, pydantic_monty.FunctionSnapshot)
     assert progress.function_name == snapshot('b')
 
     # Resume with second return value
-    result = progress.resume(return_value=5)
+    result = progress.resume({'return_value': 5})
     assert isinstance(result, pydantic_monty.MontyComplete)
     assert result.output == snapshot(15)
 
@@ -99,7 +123,7 @@ def test_start_chain_of_external_calls():
         assert isinstance(progress, pydantic_monty.FunctionSnapshot), 'Expected FunctionSnapshot'
         assert progress.function_name == snapshot('c')
         call_count += 1
-        progress = progress.resume(return_value=call_count)
+        progress = progress.resume({'return_value': call_count})
 
     assert isinstance(progress, pydantic_monty.MontyComplete)
     assert progress.output == snapshot(6)  # 1 + 2 + 3
@@ -140,11 +164,11 @@ def test_start_resume_cannot_be_called_twice():
     assert isinstance(progress, pydantic_monty.FunctionSnapshot)
 
     # First resume succeeds
-    progress.resume(return_value=1)
+    progress.resume({'return_value': 1})
 
     # Second resume should fail
     with pytest.raises(RuntimeError) as exc_info:
-        progress.resume(return_value=2)
+        progress.resume({'return_value': 2})
     assert exc_info.value.args[0] == snapshot('Progress already resumed')
 
 
@@ -153,7 +177,7 @@ def test_start_complex_return_value():
     progress = m.start()
     assert isinstance(progress, pydantic_monty.FunctionSnapshot)
 
-    result = progress.resume(return_value={'a': [1, 2, 3], 'b': {'nested': True}})
+    result = progress.resume({'return_value': {'a': [1, 2, 3], 'b': {'nested': True}}})
     assert isinstance(result, pydantic_monty.MontyComplete)
     assert result.output == snapshot({'a': [1, 2, 3], 'b': {'nested': True}})
 
@@ -163,7 +187,7 @@ def test_start_resume_with_none():
     progress = m.start()
     assert isinstance(progress, pydantic_monty.FunctionSnapshot)
 
-    result = progress.resume(return_value=None)
+    result = progress.resume({'return_value': None})
     assert isinstance(result, pydantic_monty.MontyComplete)
     assert result.output is None
 
@@ -184,6 +208,83 @@ def test_complete_repr():
     assert repr(result) == snapshot('MontyComplete(output=42)')
 
 
+def test_complete_output_is_fresh_each_access():
+    # The `output` property converts the stored `MontyObject` to Python on each
+    # access, so repeated reads produce independent lists rather than aliasing.
+    m = pydantic_monty.Monty('[1, 2, 3]')
+    result = m.start()
+    assert isinstance(result, pydantic_monty.MontyComplete)
+    first = result.output
+    second = result.output
+    assert first == snapshot([1, 2, 3])
+    assert first == second
+    assert first is not second
+
+
+@pytest.mark.parametrize(
+    ('code', 'expected'),
+    [
+        ('None', snapshot('null')),
+        ('True', snapshot('true')),
+        ('42', snapshot('42')),
+        ('2 ** 200', snapshot('1606938044258990275541962092341162602522202993782792835301376')),
+        ('1.5', snapshot('1.5')),
+        ("'hi'", snapshot('"hi"')),
+        ('[1, "two", None]', snapshot('[1,"two",null]')),
+        ("{'a': 1, 'b': 'two'}", snapshot('{"a":1,"b":"two"}')),
+        ('(1, 2)', snapshot('{"$tuple":[1,2]}')),
+        ("b'hi'", snapshot('{"$bytes":[104,105]}')),
+        ('...', snapshot('{"$ellipsis":"..."}')),
+        ('{1: "a", 2: "b"}', snapshot('{"$dict":[[1,"a"],[2,"b"]]}')),
+        ('{(1, 2): "a"}', snapshot('{"$dict":[[{"$tuple":[1,2]},"a"]]}')),
+        ('{None: 1, True: 2}', snapshot('{"$dict":[[null,1],[true,2]]}')),
+        ('type(int)', snapshot('{"$type":"type"}')),
+        ('int', snapshot('{"$type":"int"}')),
+        ("from pathlib import Path\nPath('hello')", snapshot('{"$path":"hello"}')),
+    ],
+)
+def test_complete_output_json(code: str, expected: str):
+    m = pydantic_monty.Monty(code)
+    result = m.start()
+    assert isinstance(result, pydantic_monty.MontyComplete)
+    assert result.output_json() == expected
+
+
+def test_complete_output_json_dataclass():
+    # Dataclasses serialize as `{"$dataclass": {<attrs>}, "name": "<ClassName>"}`
+    # so consumers can both see the instance's data and know what class it came from.
+    from dataclasses import dataclass
+
+    @dataclass
+    class Point:
+        x: int
+        y: int
+
+    m = pydantic_monty.Monty('p', inputs=['p'], dataclass_registry=[Point])
+    result = m.start(inputs={'p': Point(x=1, y=2)})
+    assert isinstance(result, pydantic_monty.MontyComplete)
+    assert result.output_json() == snapshot('{"$dataclass":{"x":1,"y":2},"name":"Point"}')
+
+
+def test_complete_output_json_namedtuple():
+    # `sys.version_info` is the most convenient namedtuple to get out of
+    # Monty (no class definitions in the parser), and exercises both the
+    # fields-as-object body and the `name` sibling key.
+    m = pydantic_monty.Monty('import sys; sys.version_info')
+    result = m.start()
+    assert isinstance(result, pydantic_monty.MontyComplete)
+    assert result.output_json() == snapshot(
+        '{"$namedtuple":{"major":3,"minor":14,"micro":0,"releaselevel":"final","serial":0},"name":"sys.version_info"}'
+    )
+
+
+def test_complete_output_json_nested():
+    m = pydantic_monty.Monty("{'items': [1, 'two', None, (10, 20)], 'flag': True}")
+    result = m.start()
+    assert isinstance(result, pydantic_monty.MontyComplete)
+    assert result.output_json() == snapshot('{"items":[1,"two",null,{"$tuple":[10,20]}],"flag":true}')
+
+
 def test_start_can_reuse_monty_instance():
     m = pydantic_monty.Monty('func(x)', inputs=['x'])
 
@@ -191,7 +292,7 @@ def test_start_can_reuse_monty_instance():
     progress1 = m.start(inputs={'x': 1})
     assert isinstance(progress1, pydantic_monty.FunctionSnapshot)
     assert progress1.args == snapshot((1,))
-    result1 = progress1.resume(return_value=10)
+    result1 = progress1.resume({'return_value': 10})
     assert isinstance(result1, pydantic_monty.MontyComplete)
     assert result1.output == snapshot(10)
 
@@ -199,7 +300,7 @@ def test_start_can_reuse_monty_instance():
     progress2 = m.start(inputs={'x': 2})
     assert isinstance(progress2, pydantic_monty.FunctionSnapshot)
     assert progress2.args == snapshot((2,))
-    result2 = progress2.resume(return_value=20)
+    result2 = progress2.resume({'return_value': 20})
     assert isinstance(result2, pydantic_monty.MontyComplete)
     assert result2.output == snapshot(20)
 
@@ -236,9 +337,153 @@ caught
     assert isinstance(progress, pydantic_monty.FunctionSnapshot)
 
     # Resume with an exception using keyword argument
-    result = progress.resume(exception=ValueError('test error'))
+    result = progress.resume({'exception': ValueError('test error')})
     assert isinstance(result, pydantic_monty.MontyComplete)
     assert result.output == snapshot(True)
+
+
+def test_invalid_exception():
+    code = 'foo()'
+    m = pydantic_monty.Monty(code)
+    progress = m.start()
+    assert isinstance(progress, pydantic_monty.FunctionSnapshot)
+
+    with pytest.raises(TypeError) as exc_info:
+        progress.resume({'exception': 123})  # pyright: ignore[reportArgumentType]
+    assert exc_info.value.args[0] == snapshot("'int' object is not an instance of 'BaseException'")
+
+
+def test_resume_with_exc_type_data():
+    """Resuming with ExternalExceptionData (exc_type + optional message) raises the exception by name."""
+    code = """
+try:
+    external_func()
+except ValueError as e:
+    caught = str(e)
+caught
+"""
+    m = pydantic_monty.Monty(code)
+    progress = m.start()
+    assert isinstance(progress, pydantic_monty.FunctionSnapshot)
+
+    result = progress.resume({'exc_type': 'ValueError', 'message': 'boom'})
+    assert isinstance(result, pydantic_monty.MontyComplete)
+    assert result.output == snapshot('boom')
+
+
+def test_resume_with_exc_type_data_no_message():
+    """ExternalExceptionData without a message raises an exception with empty args."""
+    code = """
+try:
+    external_func()
+except KeyError as e:
+    caught = e.args
+caught
+"""
+    m = pydantic_monty.Monty(code)
+    progress = m.start()
+    assert isinstance(progress, pydantic_monty.FunctionSnapshot)
+
+    result = progress.resume({'exc_type': 'KeyError'})
+    assert isinstance(result, pydantic_monty.MontyComplete)
+    assert result.output == snapshot(())
+
+
+def test_resume_with_exc_type_data_subclass_caught_by_parent():
+    """An exception identified by name is caught by parent except handlers via the normal hierarchy."""
+    code = """
+try:
+    external_func()
+except LookupError as e:
+    caught = ('LookupError', str(e))
+caught
+"""
+    m = pydantic_monty.Monty(code)
+    progress = m.start()
+    assert isinstance(progress, pydantic_monty.FunctionSnapshot)
+
+    result = progress.resume({'exc_type': 'IndexError', 'message': 'out of range'})
+    assert isinstance(result, pydantic_monty.MontyComplete)
+    assert result.output == snapshot(('LookupError', 'out of range'))
+
+
+def test_resume_with_exc_type_data_propagates_uncaught():
+    """An uncaught ExternalExceptionData propagates as a MontyRuntimeError with the matching Python type."""
+    code = 'external_func()'
+    m = pydantic_monty.Monty(code)
+    progress = m.start()
+    assert isinstance(progress, pydantic_monty.FunctionSnapshot)
+
+    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
+        progress.resume({'exc_type': 'TypeError', 'message': 'bad type'})
+    inner = exc_info.value.exception()
+    assert isinstance(inner, TypeError)
+    assert inner.args[0] == snapshot('bad type')
+
+
+@pytest.mark.skipif(sys.version_info < (3, 13), reason='re.PatternError was added in Python 3.13')
+def test_resume_with_exc_type_data_dotted_name():
+    """Dotted ExcType names like `re.PatternError` map to the right Python subclass."""
+    m = pydantic_monty.Monty('external_func()')
+    progress = m.start()
+    assert isinstance(progress, pydantic_monty.FunctionSnapshot)
+    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
+        progress.resume({'exc_type': 're.PatternError', 'message': 'bad pattern'})
+    inner = exc_info.value.exception()
+    assert isinstance(inner, re.PatternError)
+    assert inner.args[0] == snapshot('bad pattern')
+
+
+def test_resume_with_exc_type_data_caught_by_value_error():
+    """`json.JSONDecodeError` resumed by name is caught by `ValueError` (its parent)."""
+    code = """
+try:
+    external_func()
+except ValueError as e:
+    caught = str(e)
+caught
+"""
+    m = pydantic_monty.Monty(code)
+    progress = m.start()
+    assert isinstance(progress, pydantic_monty.FunctionSnapshot)
+    result = progress.resume({'exc_type': 'json.JSONDecodeError', 'message': 'bad json'})
+    assert isinstance(result, pydantic_monty.MontyComplete)
+    assert result.output == snapshot('bad json')
+
+
+def test_resume_with_unknown_exc_type():
+    """An unknown exc_type string is rejected before the snapshot is consumed."""
+    m = pydantic_monty.Monty('external_func()')
+    progress = m.start()
+    assert isinstance(progress, pydantic_monty.FunctionSnapshot)
+    with pytest.raises(TypeError) as exc_info:
+        progress.resume({'exc_type': 'NotARealError'})  # pyright: ignore[reportArgumentType]
+    assert exc_info.value.args[0] == snapshot("Unknown exception type: 'NotARealError'")
+
+    # Snapshot must remain usable after a validation failure.
+    result = progress.resume({'return_value': None})
+    assert isinstance(result, pydantic_monty.MontyComplete)
+
+
+def test_resume_with_exc_type_invalid_shape():
+    """`exc_type` combined with other keys (besides `message`) is rejected."""
+    m = pydantic_monty.Monty('external_func()')
+    progress = m.start()
+    assert isinstance(progress, pydantic_monty.FunctionSnapshot)
+    with pytest.raises(TypeError) as exc_info:
+        progress.resume({'exc_type': 'ValueError', 'return_value': 1})  # pyright: ignore[reportArgumentType]
+    assert exc_info.value.args[0] == snapshot(
+        "ExternalResult must be a dict with one of: 'return_value', 'exception', 'exc_type' (with optional 'message'), or 'future'"
+    )
+
+
+def test_resume_with_exc_type_non_string():
+    m = pydantic_monty.Monty('external_func()')
+    progress = m.start()
+    assert isinstance(progress, pydantic_monty.FunctionSnapshot)
+    with pytest.raises(TypeError) as exc_info:
+        progress.resume({'exc_type': 123})  # pyright: ignore[reportArgumentType]
+    assert exc_info.value.args[0] == snapshot("'exc_type' must be a string")
 
 
 def test_start_progress_resume_exception_propagates_uncaught():
@@ -250,7 +495,7 @@ def test_start_progress_resume_exception_propagates_uncaught():
 
     # Resume with an exception that won't be caught - wrapped in MontyRuntimeError
     with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
-        progress.resume(exception=ValueError('uncaught error'))
+        progress.resume({'exception': ValueError('uncaught error')})
     inner = exc_info.value.exception()
     assert isinstance(inner, ValueError)
     assert inner.args[0] == snapshot('uncaught error')
@@ -261,32 +506,52 @@ def test_resume_none():
     m = pydantic_monty.Monty(code)
     progress = m.start()
     assert isinstance(progress, pydantic_monty.FunctionSnapshot)
-    result = progress.resume(return_value=None)
+    result = progress.resume({'return_value': None})
     assert isinstance(result, pydantic_monty.MontyComplete)
     assert result.output == snapshot(None)
 
 
 def test_invalid_resume_args():
-    """Test that resume() with no args returns None."""
+    """`resume()` validates the result dict shape without consuming the snapshot."""
     code = 'external_func()'
     m = pydantic_monty.Monty(code)
     progress = m.start()
     assert isinstance(progress, pydantic_monty.FunctionSnapshot)
 
-    # no args provided
+    # No positional `result` argument — pyo3 surfaces the missing-arg TypeError.
     with pytest.raises(TypeError) as exc_info:
         progress.resume()  # pyright: ignore[reportCallIssue]
-    assert exc_info.value.args[0] == snapshot('resume() accepts either return_value or exception, not both')
+    assert exc_info.value.args[0] == snapshot(
+        "FunctionSnapshot.resume() missing 1 required positional argument: 'result'"
+    )
 
-    # Both arguments provided
+    # Empty result dict — must have exactly one key.
     with pytest.raises(TypeError) as exc_info:
-        progress.resume(return_value=42, exception=ValueError('error'))  # pyright: ignore[reportCallIssue]
-    assert exc_info.value.args[0] == snapshot('resume() accepts either return_value or exception, not both')
+        progress.resume({})  # pyright: ignore[reportArgumentType]
+    assert exc_info.value.args[0] == snapshot(
+        "ExternalResult must be a dict with one of: 'return_value', 'exception', 'exc_type' (with optional 'message'), or 'future'"
+    )
 
-    # invalid kwarg provided
+    # Multiple keys — must have exactly one.
     with pytest.raises(TypeError) as exc_info:
-        progress.resume(invalid_kwarg=42)  # pyright: ignore[reportCallIssue]
-    assert exc_info.value.args[0] == snapshot('resume() accepts either return_value or exception, not both')
+        progress.resume({'return_value': 42, 'exception': ValueError('error')})  # pyright: ignore[reportArgumentType]
+    assert exc_info.value.args[0] == snapshot(
+        "ExternalResult must be a dict with one of: 'return_value', 'exception', 'exc_type' (with optional 'message'), or 'future'"
+    )
+
+    # Wrong key — must be one of the recognized ones.
+    with pytest.raises(TypeError) as exc_info:
+        progress.resume({'bogus': 1})  # pyright: ignore[reportArgumentType]
+    assert exc_info.value.args[0] == snapshot(
+        "ExternalResult must be a dict with one of: 'return_value', 'exception', 'exc_type' (with optional 'message'), or 'future'"
+    )
+
+    # Unexpected kwarg — pyo3 surfaces the unexpected-kwarg TypeError.
+    with pytest.raises(TypeError) as exc_info:
+        progress.resume({'return_value': 1}, invalid_kwarg=42)  # pyright: ignore[reportCallIssue]
+    assert exc_info.value.args[0] == snapshot(
+        "FunctionSnapshot.resume() got an unexpected keyword argument 'invalid_kwarg'"
+    )
 
 
 def test_start_progress_resume_exception_in_nested_try():
@@ -309,7 +574,7 @@ except ValueError:
     progress = m.start()
     assert isinstance(progress, pydantic_monty.FunctionSnapshot)
 
-    result = progress.resume(exception=ValueError('propagates to outer'))
+    result = progress.resume({'exception': ValueError('propagates to outer')})
     assert isinstance(result, pydantic_monty.MontyComplete)
     assert result.output == snapshot((True, True))
 
@@ -341,6 +606,612 @@ def test_ext_function_alt_name():
     assert p2.args == snapshot(())
     assert p2.kwargs == snapshot({})
 
-    result = p2.resume(return_value=42)
+    result = p2.resume({'return_value': 42})
     assert isinstance(result, pydantic_monty.MontyComplete)
     assert result.output == snapshot(42)
+
+
+# === Tests for Monty.start(mount=..., os=...) ===
+
+
+@pytest.fixture
+def test_dir() -> Generator[Path, None, None]:
+    """Creates a temporary directory with test files for mount-based tests."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        p = Path(tmpdir)
+        (p / 'hello.txt').write_text('hello world')
+        (p / 'subdir').mkdir()
+        (p / 'subdir' / 'nested.txt').write_text('nested content')
+        yield p
+
+
+def assert_mount_reusable(md: MountDir) -> None:
+    """Assert that a previously used mount was returned to its shared slot."""
+    m = Monty("from pathlib import Path; Path('/data/subdir/nested.txt').read_text()")
+    assert m.run(mount=md) == snapshot('nested content')
+
+
+def test_start_with_mount_read_returns_complete(test_dir: Path):
+    """start() with mount auto-dispatches OS calls and returns MontyComplete directly."""
+    md = MountDir('/data', str(test_dir), mode='read-only')
+    m = Monty("from pathlib import Path; Path('/data/hello.txt').read_text()")
+    result = m.start(mount=md)
+    assert isinstance(result, pydantic_monty.MontyComplete)
+    assert result.output == snapshot('hello world')
+
+
+def test_start_with_os_callback_returns_complete():
+    """start() with os= callback auto-dispatches OS calls to the callback."""
+    calls: list[tuple[str, tuple[Any, ...]]] = []
+
+    def os_cb(func: str, args: tuple[Any, ...], kwargs: dict[str, Any]) -> bool:
+        calls.append((func, args))
+        return True
+
+    m = Monty("from pathlib import Path; Path('/any/path.txt').exists()")
+    result = m.start(os=os_cb)
+    assert isinstance(result, pydantic_monty.MontyComplete)
+    assert result.output is True
+    assert calls == snapshot([('Path.exists', (PurePosixPath('/any/path.txt'),))])
+
+
+def test_start_with_os_callback_not_handled():
+    """NOT_HANDLED sentinel falls back to Monty's default unhandled behavior (PermissionError)."""
+
+    def os_cb(func: str, args: tuple[Any, ...], kwargs: dict[str, Any]) -> object:
+        return NOT_HANDLED
+
+    m = Monty("from pathlib import Path; Path('/any/path.txt').exists()")
+    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
+        m.start(os=os_cb)
+    inner = exc_info.value.exception()
+    assert isinstance(inner, PermissionError)
+
+
+def test_start_mount_then_external_function(test_dir: Path):
+    """OS calls are auto-dispatched, then start() returns the external FunctionSnapshot."""
+    md = MountDir('/data', str(test_dir), mode='read-only')
+    code = """
+from pathlib import Path
+content = Path('/data/hello.txt').read_text()
+process(content)
+"""
+    m = Monty(code)
+    result = m.start(mount=md)
+    assert isinstance(result, pydantic_monty.FunctionSnapshot)
+    assert result.is_os_function is False
+    assert result.function_name == snapshot('process')
+    assert result.args == snapshot(('hello world',))
+    final = result.resume({'return_value': 'processed'})
+    assert isinstance(final, pydantic_monty.MontyComplete)
+    assert final.output == snapshot('processed')
+
+
+def test_start_mount_then_name_lookup(test_dir: Path):
+    """OS calls are auto-dispatched, then start() returns NameLookupSnapshot for a bare name."""
+    md = MountDir('/data', str(test_dir), mode='read-only')
+    code = """
+from pathlib import Path
+x = Path('/data/hello.txt').read_text()
+y = unknown_name
+"""
+    m = Monty(code)
+    result = m.start(mount=md)
+    assert isinstance(result, pydantic_monty.NameLookupSnapshot)
+    assert result.variable_name == snapshot('unknown_name')
+
+
+def test_start_os_callback_exception_caught():
+    """Exceptions raised by the os= callback are propagated into the sandbox as Python exceptions."""
+
+    def os_cb(func: str, args: tuple[Any, ...], kwargs: dict[str, Any]) -> object:
+        raise ValueError('not allowed')
+
+    code = """
+from pathlib import Path
+try:
+    Path('/etc/passwd').read_text()
+    caught = False
+except ValueError as exc:
+    caught = (True, str(exc))
+caught
+"""
+    m = Monty(code)
+    result = m.start(os=os_cb)
+    assert isinstance(result, pydantic_monty.MontyComplete)
+    assert result.output == snapshot((True, 'not allowed'))
+
+
+def test_start_mount_released_after_completion(test_dir: Path):
+    """After start() returns, the mount is put back and reusable by another run."""
+    md = MountDir('/data', str(test_dir), mode='read-only')
+    m1 = Monty("from pathlib import Path; Path('/data/hello.txt').read_text()")
+    first = m1.start(mount=md)
+    assert isinstance(first, pydantic_monty.MontyComplete)
+
+    # The mount was put back — a second Monty instance can use the same mount.
+    m2 = Monty("from pathlib import Path; Path('/data/subdir/nested.txt').read_text()")
+    second = m2.run(mount=md)
+    assert second == snapshot('nested content')
+
+
+def test_start_mount_released_after_runtime_error(test_dir: Path):
+    """start(mount=...) puts mounts back when auto-dispatch ends in a runtime error."""
+    md = MountDir('/data', str(test_dir), mode='read-only')
+    code = """
+from pathlib import Path
+Path('/data/hello.txt').read_text()
+1 / 0
+"""
+    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
+        Monty(code).start(mount=md)
+    assert isinstance(exc_info.value.exception(), ZeroDivisionError)
+    assert_mount_reusable(md)
+
+
+def test_start_mount_released_after_resource_error(test_dir: Path):
+    """start(mount=...) puts mounts back when a resource limit trips after an OS call."""
+    md = MountDir('/data', str(test_dir), mode='read-only')
+    code = """
+from pathlib import Path
+Path('/data/hello.txt').read_text()
+result = []
+for i in range(1000):
+    result.append('x' * 100)
+len(result)
+"""
+    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
+        Monty(code).start(mount=md, limits=pydantic_monty.ResourceLimits(max_memory=100))
+    assert isinstance(exc_info.value.exception(), MemoryError)
+    assert_mount_reusable(md)
+
+
+def test_start_no_mount_os_still_yields_os_snapshot():
+    """Control test: without mount/os, OS calls still surface as is_os_function snapshots."""
+    m = Monty("from pathlib import Path; Path('/tmp/x.txt').exists()")
+    result = m.start()
+    assert isinstance(result, pydantic_monty.FunctionSnapshot)
+    assert result.is_os_function is True
+    assert result.function_name == snapshot('Path.exists')
+
+
+def test_start_os_handler_invalid_rejected():
+    """Non-callable os= is rejected before any VM work."""
+    m = Monty("from pathlib import Path; Path('/tmp/x.txt').exists()")
+    with pytest.raises(TypeError) as exc_info:
+        m.start(os=123)  # pyright: ignore[reportArgumentType]
+    assert str(exc_info.value) == snapshot("os must be callable, got 'int'")
+
+
+def test_start_resume_after_auto_dispatch_yields_os_snapshot(test_dir: Path):
+    """When resume() is called without mount/os, auto-dispatch stops.
+
+    OS calls produced by a later resume() surface as a FunctionSnapshot with
+    is_os_function=True — the mount context must be re-provided via resume().
+    """
+    md = MountDir('/data', str(test_dir), mode='read-only')
+    code = """
+from pathlib import Path
+first = Path('/data/hello.txt').read_text()
+mid = process(first)
+second = Path('/data/subdir/nested.txt').read_text()
+(first, mid, second)
+"""
+    m = Monty(code)
+    # First OS call is auto-dispatched, returns at external `process`.
+    p1 = m.start(mount=md)
+    assert isinstance(p1, pydantic_monty.FunctionSnapshot)
+    assert p1.function_name == snapshot('process')
+
+    # Resume without mount=: second OS call surfaces as an OS snapshot.
+    p2 = p1.resume({'return_value': 'processed'})
+    assert isinstance(p2, pydantic_monty.FunctionSnapshot)
+    assert p2.is_os_function is True
+    assert p2.function_name == snapshot('Path.read_text')
+
+
+def test_start_mount_ignored_when_progress_never_reaches_os_call(test_dir: Path):
+    """start(mount=...) does not take the mount unless an OS call is actually reached."""
+    md = MountDir('/data', str(test_dir), mode='read-only')
+
+    def os_cb(func: str, args: tuple[Any, ...], kwargs: dict[str, Any]) -> bool:
+        inner = Monty('1 + 1').start(mount=md)
+        assert isinstance(inner, pydantic_monty.MontyComplete)
+        assert inner.output == snapshot(2)
+        return False
+
+    outer = Monty("from pathlib import Path; Path('/outside').exists()")
+    result = outer.start(mount=md, os=os_cb)
+    assert isinstance(result, pydantic_monty.MontyComplete)
+    assert result.output is False
+
+
+# === Tests for snapshot.resume(mount=..., os=...) ===
+
+
+def test_function_snapshot_resume_with_mount_drives_os(test_dir: Path):
+    """resume(return_value=..., mount=...) auto-dispatches OS calls and runs to completion."""
+    md = MountDir('/data', str(test_dir), mode='read-only')
+    code = """
+from pathlib import Path
+x = fetch()
+content = Path('/data/hello.txt').read_text()
+(x, content)
+"""
+    m = Monty(code)
+    p1 = m.start(mount=md)
+    assert isinstance(p1, pydantic_monty.FunctionSnapshot)
+    assert p1.function_name == snapshot('fetch')
+
+    # Pass mount= on resume — the OS call after the external function is now auto-dispatched.
+    result = p1.resume({'return_value': 'fetched'}, mount=md)
+    assert isinstance(result, pydantic_monty.MontyComplete)
+    assert result.output == snapshot(('fetched', 'hello world'))
+
+
+def test_function_snapshot_resume_with_os_callback_drives_os():
+    """resume(return_value=..., os=...) auto-dispatches OS calls via the callback."""
+
+    def os_cb(func: str, args: tuple[Any, ...], kwargs: dict[str, Any]) -> bool:
+        return True
+
+    code = """
+x = fetch()
+from pathlib import Path
+exists = Path('/tmp/some.txt').exists()
+(x, exists)
+"""
+    m = Monty(code)
+    p1 = m.start()  # no mount/os at start — fetch yields first
+    assert isinstance(p1, pydantic_monty.FunctionSnapshot)
+    assert p1.function_name == snapshot('fetch')
+
+    result = p1.resume({'return_value': 'fetched'}, os=os_cb)
+    assert isinstance(result, pydantic_monty.MontyComplete)
+    assert result.output == snapshot(('fetched', True))
+
+
+def test_function_snapshot_resume_with_mount_yields_next_external(test_dir: Path):
+    """resume(..., mount=...) auto-dispatches OS calls then yields the next external function."""
+    md = MountDir('/data', str(test_dir), mode='read-only')
+    code = """
+from pathlib import Path
+a = first()
+c = Path('/data/hello.txt').read_text()
+b = second(c)
+"""
+    m = Monty(code)
+    p1 = m.start()
+    assert isinstance(p1, pydantic_monty.FunctionSnapshot)
+    assert p1.function_name == snapshot('first')
+
+    # Pass mount=; OS call between first() and second() is auto-dispatched.
+    p2 = p1.resume({'return_value': 1}, mount=md)
+    assert isinstance(p2, pydantic_monty.FunctionSnapshot)
+    assert p2.is_os_function is False
+    assert p2.function_name == snapshot('second')
+    assert p2.args == snapshot(('hello world',))
+
+
+def test_function_snapshot_resume_exception_with_mount(test_dir: Path):
+    """resume(exception=..., mount=...) works when the exception is caught and execution continues with OS calls."""
+    md = MountDir('/data', str(test_dir), mode='read-only')
+    code = """
+from pathlib import Path
+try:
+    result = fetch()
+except ValueError:
+    result = Path('/data/hello.txt').read_text()
+result
+"""
+    m = Monty(code)
+    p1 = m.start()
+    assert isinstance(p1, pydantic_monty.FunctionSnapshot)
+    assert p1.function_name == snapshot('fetch')
+
+    final = p1.resume({'exception': ValueError('boom')}, mount=md)
+    assert isinstance(final, pydantic_monty.MontyComplete)
+    assert final.output == snapshot('hello world')
+
+
+def test_name_lookup_snapshot_resume_with_mount(test_dir: Path):
+    """NameLookupSnapshot.resume(value=..., mount=...) auto-dispatches subsequent OS calls."""
+    md = MountDir('/data', str(test_dir), mode='read-only')
+    code = """
+from pathlib import Path
+v = my_name
+content = Path('/data/hello.txt').read_text()
+(v, content)
+"""
+    m = Monty(code)
+    p1 = m.start()
+    assert isinstance(p1, pydantic_monty.NameLookupSnapshot)
+    assert p1.variable_name == snapshot('my_name')
+
+    result = p1.resume(value=42, mount=md)
+    assert isinstance(result, pydantic_monty.MontyComplete)
+    assert result.output == snapshot((42, 'hello world'))
+
+
+def test_name_lookup_resume_mount_released_after_runtime_error(test_dir: Path):
+    """NameLookupSnapshot.resume(..., mount=...) puts mounts back on runtime error."""
+    md = MountDir('/data', str(test_dir), mode='read-only')
+    code = """
+from pathlib import Path
+value = missing_name
+Path('/data/hello.txt').read_text()
+1 / 0
+"""
+    progress = Monty(code).start()
+    assert isinstance(progress, pydantic_monty.NameLookupSnapshot)
+
+    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
+        progress.resume(value=42, mount=md)
+    assert isinstance(exc_info.value.exception(), ZeroDivisionError)
+    assert_mount_reusable(md)
+
+
+def test_resume_not_handled_with_mount(test_dir: Path):
+    """resume_not_handled(mount=...) auto-dispatches subsequent OS calls.
+
+    The initial OS call is marked unhandled (raises PermissionError), but the
+    sandbox catches it and subsequent OS calls (handled via mount) auto-dispatch.
+    """
+    md = MountDir('/data', str(test_dir), mode='read-only')
+    code = """
+from pathlib import Path
+try:
+    Path('/outside').exists()
+    raised = False
+except PermissionError:
+    raised = True
+content = Path('/data/hello.txt').read_text()
+(raised, content)
+"""
+    m = Monty(code)
+    p1 = m.start()
+    assert isinstance(p1, pydantic_monty.FunctionSnapshot)
+    assert p1.is_os_function is True
+    assert p1.function_name == snapshot('Path.exists')
+
+    result = p1.resume_not_handled(mount=md)
+    assert isinstance(result, pydantic_monty.MontyComplete)
+    assert result.output == snapshot((True, 'hello world'))
+
+
+def test_resume_mount_then_next_os_snapshot_without_mount(test_dir: Path):
+    """Auto-dispatch only covers the single resume() call — next resume without mount yields OS snapshot."""
+    md = MountDir('/data', str(test_dir), mode='read-only')
+    code = """
+from pathlib import Path
+x = first()
+a = Path('/data/hello.txt').read_text()
+y = middle()
+b = Path('/data/subdir/nested.txt').read_text()
+(x, a, y, b)
+"""
+    m = Monty(code)
+    p1 = m.start()
+    assert isinstance(p1, pydantic_monty.FunctionSnapshot)
+    assert p1.function_name == snapshot('first')
+
+    # Resume with mount: first OS call auto-dispatched, yields at middle().
+    p2 = p1.resume({'return_value': 1}, mount=md)
+    assert isinstance(p2, pydantic_monty.FunctionSnapshot)
+    assert p2.function_name == snapshot('middle')
+
+    # Resume without mount: second OS call surfaces as an OS snapshot.
+    p3 = p2.resume({'return_value': 2})
+    assert isinstance(p3, pydantic_monty.FunctionSnapshot)
+    assert p3.is_os_function is True
+    assert p3.function_name == snapshot('Path.read_text')
+
+
+def test_resume_mount_put_back_after_auto_dispatch(test_dir: Path):
+    """After resume() with mount/os completes, the mount is put back."""
+    md = MountDir('/data', str(test_dir), mode='read-only')
+    code = """
+x = fetch()
+from pathlib import Path
+content = Path('/data/hello.txt').read_text()
+(x, content)
+"""
+    m = Monty(code)
+    p1 = m.start()
+    assert isinstance(p1, pydantic_monty.FunctionSnapshot)
+    final = p1.resume({'return_value': 'x'}, mount=md)
+    assert isinstance(final, pydantic_monty.MontyComplete)
+
+    # Reusing the mount should still work after resume finishes.
+    m2 = Monty("from pathlib import Path; Path('/data/subdir/nested.txt').read_text()")
+    assert m2.run(mount=md) == snapshot('nested content')
+
+
+def test_resume_mount_released_after_runtime_error(test_dir: Path):
+    """FunctionSnapshot.resume(..., mount=...) puts mounts back on runtime error."""
+    md = MountDir('/data', str(test_dir), mode='read-only')
+    code = """
+from pathlib import Path
+fetch()
+Path('/data/hello.txt').read_text()
+1 / 0
+"""
+    progress = Monty(code).start()
+    assert isinstance(progress, pydantic_monty.FunctionSnapshot)
+
+    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
+        progress.resume({'return_value': 'fetched'}, mount=md)
+    assert isinstance(exc_info.value.exception(), ZeroDivisionError)
+    assert_mount_reusable(md)
+
+
+def test_resume_mount_released_after_resource_error(test_dir: Path):
+    """FunctionSnapshot.resume(..., mount=...) puts mounts back on resource error."""
+    md = MountDir('/data', str(test_dir), mode='read-only')
+    code = """
+from pathlib import Path
+fetch()
+Path('/data/hello.txt').read_text()
+result = []
+for i in range(10000):
+    result.append([i])
+len(result)
+"""
+    progress = Monty(code).start(limits=pydantic_monty.ResourceLimits(max_allocations=100))
+    assert isinstance(progress, pydantic_monty.FunctionSnapshot)
+
+    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
+        progress.resume({'return_value': 'fetched'}, mount=md)
+    assert isinstance(exc_info.value.exception(), MemoryError)
+    assert_mount_reusable(md)
+
+
+def test_future_snapshot_resume_with_mount(test_dir: Path):
+    """FutureSnapshot.resume(..., mount=...) auto-dispatches OS calls and completes."""
+    md = MountDir('/data', str(test_dir), mode='read-only')
+    code = """
+value = await fetch()
+from pathlib import Path
+content = Path('/data/hello.txt').read_text()
+(value, content)
+"""
+    progress = Monty(code).start()
+    assert isinstance(progress, pydantic_monty.FunctionSnapshot)
+    call_id = progress.call_id
+
+    progress = progress.resume({'future': ...})
+    assert isinstance(progress, pydantic_monty.FutureSnapshot)
+    final = progress.resume({call_id: {'return_value': 'fetched'}}, mount=md)
+    assert isinstance(final, pydantic_monty.MontyComplete)
+    assert final.output == snapshot(('fetched', 'hello world'))
+
+
+def test_future_snapshot_resume_mount_released_after_resource_error(test_dir: Path):
+    """FutureSnapshot.resume(..., mount=...) puts mounts back on resource error."""
+    md = MountDir('/data', str(test_dir), mode='read-only')
+    code = """
+value = await fetch()
+from pathlib import Path
+Path('/data/hello.txt').read_text()
+result = []
+for i in range(10000):
+    result.append([i])
+len(result)
+"""
+    progress = Monty(code).start(limits=pydantic_monty.ResourceLimits(max_allocations=100))
+    assert isinstance(progress, pydantic_monty.FunctionSnapshot)
+    call_id = progress.call_id
+
+    progress = progress.resume({'future': ...})
+    assert isinstance(progress, pydantic_monty.FutureSnapshot)
+    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
+        progress.resume({call_id: {'return_value': 'fetched'}}, mount=md)
+    assert isinstance(exc_info.value.exception(), MemoryError)
+    assert_mount_reusable(md)
+
+
+def test_resume_mount_ignored_when_progress_never_reaches_os_call(test_dir: Path):
+    """resume(mount=...) does not take the mount unless the resumed code hits an OS call."""
+    md = MountDir('/data', str(test_dir), mode='read-only')
+    pending = Monty('fetch()').start()
+    assert isinstance(pending, pydantic_monty.FunctionSnapshot)
+
+    def os_cb(func: str, args: tuple[Any, ...], kwargs: dict[str, Any]) -> bool:
+        inner = pending.resume({'return_value': 1}, mount=md)
+        assert isinstance(inner, pydantic_monty.MontyComplete)
+        assert inner.output == snapshot(1)
+        return False
+
+    outer = Monty("from pathlib import Path; Path('/outside').exists()")
+    result = outer.start(mount=md, os=os_cb)
+    assert isinstance(result, pydantic_monty.MontyComplete)
+    assert result.output is False
+
+
+def test_resume_invalid_os_rejected():
+    """Non-callable `os=` on resume is rejected with TypeError."""
+    m = Monty('fetch()')
+    p1 = m.start()
+    assert isinstance(p1, pydantic_monty.FunctionSnapshot)
+    with pytest.raises(TypeError) as exc_info:
+        p1.resume({'return_value': 1}, os=123)  # pyright: ignore[reportArgumentType]
+    assert str(exc_info.value) == snapshot("os must be callable, got 'int'")
+
+
+# === Tests that snapshot is preserved on resume() validation errors ===
+
+
+def test_function_snapshot_preserved_on_invalid_result():
+    """`resume()` with a bad result dict leaves the snapshot intact for retry.
+
+    A typo in the result key, an empty dict, or multiple keys used to
+    consume the snapshot via `mem::replace(..., Done)` before validating, so
+    the user lost their snapshot to a one-character typo.
+    """
+    p1 = Monty('fetch()').start()
+    assert isinstance(p1, pydantic_monty.FunctionSnapshot)
+
+    # Wrong key — TypeError, snapshot must NOT be consumed.
+    with pytest.raises(TypeError):
+        p1.resume({'retrun_value': 1})  # pyright: ignore[reportArgumentType]
+    # Multiple keys — TypeError, snapshot must NOT be consumed.
+    with pytest.raises(TypeError):
+        p1.resume({'return_value': 1, 'exception': ValueError('x')})  # pyright: ignore[reportArgumentType]
+    # Missing positional — TypeError, snapshot must NOT be consumed.
+    with pytest.raises(TypeError):
+        p1.resume()  # pyright: ignore[reportCallIssue]
+
+    # Snapshot is still usable.
+    final = p1.resume({'return_value': 42})
+    assert isinstance(final, pydantic_monty.MontyComplete)
+    assert final.output == snapshot(42)
+
+
+def test_function_snapshot_preserved_on_invalid_mount():
+    """Validation of `mount`/`os` happens before the snapshot is consumed."""
+    p1 = Monty('fetch()').start()
+    assert isinstance(p1, pydantic_monty.FunctionSnapshot)
+    with pytest.raises(TypeError):
+        p1.resume({'return_value': 1}, os=123)  # pyright: ignore[reportArgumentType]
+    final = p1.resume({'return_value': 42})
+    assert isinstance(final, pydantic_monty.MontyComplete)
+    assert final.output == snapshot(42)
+
+
+def test_name_lookup_snapshot_preserved_on_invalid_value():
+    """`NameLookupSnapshot.resume()` with an unconvertible `value` preserves the snapshot."""
+
+    class Custom:
+        pass
+
+    p1 = Monty('x = my_name; x').start()
+    assert isinstance(p1, pydantic_monty.NameLookupSnapshot)
+
+    # Custom non-convertible object → TypeError from py_to_monty, snapshot intact.
+    with pytest.raises(TypeError):
+        p1.resume(value=Custom())
+
+    final = p1.resume(value=42)
+    assert isinstance(final, pydantic_monty.MontyComplete)
+    assert final.output == snapshot(42)
+
+
+def test_future_snapshot_preserved_on_invalid_results():
+    """`FutureSnapshot.resume()` with a malformed `results` dict preserves the snapshot."""
+    progress = Monty('x = await fetch(); x').start()
+    assert isinstance(progress, pydantic_monty.FunctionSnapshot)
+    call_id = progress.call_id
+
+    progress = progress.resume({'future': ...})
+    assert isinstance(progress, pydantic_monty.FutureSnapshot)
+
+    # Bad call_id type (string instead of int) → TypeError, snapshot intact.
+    with pytest.raises(TypeError):
+        progress.resume({'not-an-int': {'return_value': 1}})  # pyright: ignore[reportArgumentType]
+    # Inner dict has both keys → TypeError, snapshot intact.
+    with pytest.raises(TypeError):
+        progress.resume({call_id: {'return_value': 1, 'exception': ValueError('x')}})  # pyright: ignore[reportArgumentType]
+
+    final = progress.resume({call_id: {'return_value': 42}})
+    assert isinstance(final, pydantic_monty.MontyComplete)
+    assert final.output == snapshot(42)

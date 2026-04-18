@@ -1,7 +1,6 @@
 from collections.abc import Coroutine
 from pathlib import Path
-from types import EllipsisType
-from typing import Any, Callable, Literal, final, overload
+from typing import Any, Callable, Literal, final
 
 from typing_extensions import Self
 
@@ -10,6 +9,9 @@ from .os_access import AbstractOS, OsFunction
 
 __all__ = [
     '__version__',
+    'NOT_HANDLED',
+    'CollectStreams',
+    'CollectString',
     'Monty',
     'MontyRepl',
     'MontyComplete',
@@ -26,6 +28,26 @@ __all__ = [
     'load_repl_snapshot',
 ]
 __version__: str
+
+NOT_HANDLED = object()
+
+@final
+class CollectStreams:
+    """Collect printed output as `(stream, text)` tuples."""
+
+    def __new__(cls) -> CollectStreams: ...
+    @property
+    def output(self) -> list[tuple[Literal['stdout', 'stderr'], str]]:
+        """Collected output so far."""
+
+@final
+class CollectString:
+    """Collect printed output as one concatenated string."""
+
+    def __new__(cls) -> CollectString: ...
+    @property
+    def output(self) -> str:
+        """Collected output so far."""
 
 @final
 class MountDir:
@@ -106,7 +128,7 @@ class Monty:
         inputs: dict[str, Any] | None = None,
         limits: ResourceLimits | None = None,
         external_functions: dict[str, Callable[..., Any]] | None = None,
-        print_callback: Callable[[Literal['stdout'], str], None] | None = None,
+        print_callback: Callable[[Literal['stdout'], str], None] | CollectStreams | CollectString | None = None,
         mount: MountDir | list[MountDir] | None = None,
         os: Callable[[OsFunction, tuple[Any, ...], dict[str, Any]], Any] | None = None,
     ) -> Any:
@@ -119,17 +141,19 @@ class Monty:
             inputs: Dict of input variable values (must match names from __init__)
             limits: Optional resource limits configuration
             external_functions: Dict of external function callbacks
-            print_callback: Optional callback for print output
+            print_callback: `None` (write to stdout/stderr), a callable `(stream, text) -> None`,
+                `CollectStreams()`, or `CollectString()`.
+            mount: Optional filesystem mount(s) to expose inside the sandbox.
             os: Optional callback for OS calls.
                 Called with (function_name, args) where function_name is like 'Path.exists'
                 and args is a tuple of arguments. Must return the appropriate value for the
                 OS function (e.g., bool for exists(), stat_result for stat()).
 
         Returns:
-            The result of the last expression in the code
+            The result of the last expression in the code.
 
         Raises:
-            MontyRuntimeError: If the code raises an exception during execution
+            MontyRuntimeError: If the code raises an exception during execution.
         """
 
     def start(
@@ -137,7 +161,9 @@ class Monty:
         *,
         inputs: dict[str, Any] | None = None,
         limits: ResourceLimits | None = None,
-        print_callback: Callable[[Literal['stdout'], str], None] | None = None,
+        print_callback: Callable[[Literal['stdout'], str], None] | CollectStreams | CollectString | None = None,
+        mount: MountDir | list[MountDir] | None = None,
+        os: Callable[[OsFunction, tuple[Any, ...], dict[str, Any]], Any] | None = None,
     ) -> FunctionSnapshot | NameLookupSnapshot | FutureSnapshot | MontyComplete:
         """
         Start the code execution and return a progress object, or completion.
@@ -146,10 +172,23 @@ class Monty:
 
         The GIL is released allowing parallel execution.
 
+        When `mount` or `os` is provided, OS calls are resolved automatically using
+        the same logic as `run()` (mount table first, then the `os` callback),
+        this method only returns a snapshot when a non-OS event is reached
+        (external function, name lookup, future, or completion).
+
+        Auto-dispatch does NOT persist across subsequent `snapshot.resume()` calls —
+        OS calls produced after the first resume surface as a `FunctionSnapshot`
+        with `is_os_function=True`, as before.
+
         Arguments:
             inputs: Dict of input variable values (must match names from __init__)
             limits: Optional resource limits configuration
             print_callback: Optional callback for print output
+            mount: Optional filesystem mount(s) to expose inside the sandbox.
+            os: Optional callback for OS calls. Called with (function_name, args, kwargs)
+                and must return the appropriate value for the OS function. Return
+                `NOT_HANDLED` to fall back to Monty's default unhandled behavior.
 
         Returns:
             FunctionSnapshot if an external function call is pending,
@@ -167,7 +206,7 @@ class Monty:
         inputs: dict[str, Any] | None = None,
         limits: ResourceLimits | None = None,
         external_functions: dict[str, Callable[..., Any]] | None = None,
-        print_callback: Callable[[Literal['stdout'], str], None] | None = None,
+        print_callback: Callable[[Literal['stdout'], str], None] | CollectStreams | CollectString | None = None,
         os: AbstractOS | None = None,
     ) -> Coroutine[Any, Any, Any]:
         """
@@ -180,14 +219,15 @@ class Monty:
             inputs: Dict of input variable values (must match names from __init__)
             limits: Optional resource limits configuration
             external_functions: Dict of external function callbacks (sync or async)
-            print_callback: Optional callback for print output
+            print_callback: `None` (stdout), a callable `(stream, text) -> None`,
+                `CollectStreams()`, or `CollectString()`.
             os: Optional OS access handler for filesystem operations
 
         Returns:
-            A coroutine that resolves to the result of the last expression
+            A coroutine that resolves to the result of the last expression.
 
         Raises:
-            MontyRuntimeError: If the code raises an exception during execution
+            MontyRuntimeError: If the code raises an exception during execution.
         """
 
     def dump(self) -> bytes:
@@ -313,9 +353,9 @@ class MontyRepl:
         *,
         inputs: dict[str, Any] | None = None,
         external_functions: dict[str, Callable[..., Any]] | None = None,
-        print_callback: Callable[[Literal['stdout'], str], None] | None = None,
+        print_callback: Callable[[Literal['stdout'], str], None] | CollectStreams | CollectString | None = None,
         mount: MountDir | list[MountDir] | None = None,
-        os: Callable[[str, tuple[Any, ...], dict[str, Any]], Any] | None = None,
+        os: Callable[[OsFunction, tuple[Any, ...], dict[str, Any]], Any] | None = None,
         skip_type_check: bool = False,
     ) -> Any:
         """
@@ -345,7 +385,7 @@ class MontyRepl:
         *,
         inputs: dict[str, Any] | None = None,
         external_functions: dict[str, Callable[..., Any]] | None = None,
-        print_callback: Callable[[Literal['stdout'], str], None] | None = None,
+        print_callback: Callable[[Literal['stdout'], str], None] | CollectStreams | CollectString | None = None,
         os: AbstractOS | None = None,
         skip_type_check: bool = False,
     ) -> Coroutine[Any, Any, Any]:
@@ -379,7 +419,9 @@ class MontyRepl:
         code: str,
         *,
         inputs: dict[str, Any] | None = None,
-        print_callback: Callable[[Literal['stdout'], str], None] | None = None,
+        print_callback: Callable[[Literal['stdout'], str], None] | CollectStreams | CollectString | None = None,
+        mount: MountDir | list[MountDir] | None = None,
+        os: Callable[[OsFunction, tuple[Any, ...], dict[str, Any]], Any] | None = None,
         skip_type_check: bool = False,
     ) -> FunctionSnapshot | NameLookupSnapshot | FutureSnapshot | MontyComplete:
         """
@@ -394,6 +436,12 @@ class MontyRepl:
         This enables the same iterative start/resume pattern used by `Monty.start()`,
         including support for async external functions via `FutureSnapshot`.
 
+        When `mount` or `os` is provided, OS calls are resolved automatically using
+        the same logic as `feed_run()`, and this method only returns a snapshot when
+        a non-OS event is reached. Auto-dispatch does NOT persist across subsequent
+        `snapshot.resume()` calls — OS calls produced after the first resume surface
+        as a `FunctionSnapshot` with `is_os_function=True`, as before.
+
         On completion or error, the REPL state is automatically restored.
 
         Arguments:
@@ -401,6 +449,10 @@ class MontyRepl:
             inputs: Dict of input values injected into the REPL namespace
                 before executing the snippet
             print_callback: Optional callback for print output
+            mount: Optional filesystem mount(s) to expose inside the sandbox.
+            os: Optional callback for OS calls. Called with (function_name, args, kwargs)
+                and must return the appropriate value for the OS function. Return
+                `NOT_HANDLED` to fall back to Monty's default unhandled behavior.
             skip_type_check: When `True`, static type checking is bypassed for
                 this snippet AND the snippet is NOT appended to the accumulated
                 type-check context, so later type-checked snippets will not see
@@ -455,22 +507,59 @@ class FunctionSnapshot:
     def kwargs(self) -> dict[str, Any]:
         """The keyword arguments passed to the external function."""
 
+    def args_json(self) -> str:
+        """Serialize the positional args as a JSON array.
+
+        Uses the same natural-form mapping as 'MontyComplete.output_json':
+        JSON-native Python values ('None', 'bool', 'int', 'float',
+        'str', list, and dict with string keys) are emitted bare, while
+        non-JSON-native values (tuples, bytes, sets, dataclasses, ...) are
+        wrapped in a single-key object with a '$'-prefixed tag such as
+        '{"$tuple": [...]}'.
+
+        Raises:
+            RuntimeError: If serialization fails.
+        """
+
+    def kwargs_json(self) -> str:
+        """Serialize the keyword args as a JSON object.
+
+        Python kwargs always have string keys, so the result is a plain
+        '{"<name>": <value>, ...}' object using the same natural-form
+        mapping as 'args_json' for the values.
+
+        Raises:
+            RuntimeError: If serialization fails.
+        """
+
     @property
     def call_id(self) -> int:
         """The unique identifier for this external function call."""
 
-    @overload
-    def resume(self, *, return_value: Any) -> FunctionSnapshot | NameLookupSnapshot | FutureSnapshot | MontyComplete:
+    def resume(
+        self,
+        result: ExternalResult,
+        *,
+        mount: MountDir | list[MountDir] | None = None,
+        os: Callable[[OsFunction, tuple[Any, ...], dict[str, Any]], Any] | None = None,
+    ) -> FunctionSnapshot | NameLookupSnapshot | FutureSnapshot | MontyComplete:
         """Resume execution with a return value from the external function.
 
         `resume` may only be called once on each FunctionSnapshot instance.
 
         The GIL is released allowing parallel execution.
 
+        When `mount` or `os` is provided, OS calls produced by the resumed
+        execution are auto-dispatched internally until the next non-OS event,
+        matching the semantics of `Monty.start(mount=..., os=...)`. Auto-dispatch
+        does not persist beyond this single `resume()` call — each `resume()`
+        must be passed `mount`/`os` again to continue the behavior.
+
         Arguments:
-            return_value: The value to return from the external function call.
-            exception: An exception to raise in the Monty interpreter.
-            future: A future to await in the Monty interpreter.
+            result: A typeddict representing the return value, exception, or pending future.
+            mount: Optional filesystem mount(s) to expose inside the sandbox.
+            os: Optional callback for OS calls. Return `NOT_HANDLED` to fall back
+                to Monty's default unhandled behavior.
 
         Returns:
             FunctionSnapshot if another external function call is pending,
@@ -479,27 +568,24 @@ class FunctionSnapshot:
             MontyComplete if execution finished.
 
         Raises:
-            TypeError: If both arguments are provided.
+            TypeError: If both arguments are incorrect.
             RuntimeError: If execution has already completed.
             MontyRuntimeError: If the code raises an exception during execution
         """
 
-    @overload
-    def resume(
-        self, *, exception: BaseException
+    def resume_not_handled(
+        self,
+        *,
+        mount: MountDir | list[MountDir] | None = None,
+        os: Callable[[OsFunction, tuple[Any, ...], dict[str, Any]], Any] | None = None,
     ) -> FunctionSnapshot | NameLookupSnapshot | FutureSnapshot | MontyComplete:
-        """Resume execution by raising the exception in the Monty interpreter.
+        """Resume an OS snapshot using Monty's default unhandled-OS behavior.
 
-        See docstring for the first overload for more information.
-        """
+        This is only valid when `is_os_function` is `True`. It behaves the same
+        as leaving the OS call unhandled in Monty's runtime.
 
-    @overload
-    def resume(self, *, future: EllipsisType) -> FunctionSnapshot | NameLookupSnapshot | FutureSnapshot | MontyComplete:
-        """Resume execution by returning a pending future.
-
-        No result is provided, we simply resume execution stating that a future is pending.
-
-        See docstring for the first overload for more information.
+        When `mount` or `os` is provided, OS calls produced by the resumed
+        execution are auto-dispatched until a non-OS event is reached.
         """
 
     def dump(self) -> bytes:
@@ -509,8 +595,8 @@ class FunctionSnapshot:
         The serialized data can be restored with `load_snapshot()` or `load_repl_snapshot()`.
         This allows suspending execution and resuming later, potentially in a different process.
 
-        Note: The `print_callback` is not serialized and must be re-provided via
-        `set_print_callback()` after loading if print output is needed.
+        Note: The `print_callback` is not serialized and must be re-provided to
+        `load_snapshot()` or `load_repl_snapshot()` when the snapshot is restored.
 
         Returns:
             Bytes containing the serialized FunctionSnapshot instance.
@@ -543,6 +629,8 @@ class NameLookupSnapshot:
         self,
         *,
         value: Any | None = None,
+        mount: MountDir | list[MountDir] | None = None,
+        os: Callable[[OsFunction, tuple[Any, ...], dict[str, Any]], Any] | None = None,
     ) -> FunctionSnapshot | NameLookupSnapshot | FutureSnapshot | MontyComplete:
         """Resume execution with result the value from a name lookup, if any.
 
@@ -552,8 +640,15 @@ class NameLookupSnapshot:
 
         The GIL is released allowing parallel execution.
 
+        When `mount` or `os` is provided, OS calls produced after the name is
+        resolved are auto-dispatched until a non-OS event is reached, matching
+        the semantics of `Monty.start(mount=..., os=...)`.
+
         Arguments:
             value: The value from the name lookup, if any.
+            mount: Optional filesystem mount(s) to expose inside the sandbox.
+            os: Optional callback for OS calls. Return `NOT_HANDLED` to fall back
+                to Monty's default unhandled behavior.
 
         Returns:
             FunctionSnapshot if an external function call is pending,
@@ -574,8 +669,8 @@ class NameLookupSnapshot:
         The serialized data can be restored with `load_snapshot()` or `load_repl_snapshot()`.
         This allows suspending execution and resuming later, potentially in a different process.
 
-        Note: The `print_callback` is not serialized and must be re-provided via
-        `set_print_callback()` after loading if print output is needed.
+        Note: The `print_callback` is not serialized and must be re-provided to
+        `load_snapshot()` or `load_repl_snapshot()` when the snapshot is restored.
 
         Returns:
             Bytes containing the serialized NameLookupSnapshot instance.
@@ -610,6 +705,9 @@ class FutureSnapshot:
     def resume(
         self,
         results: dict[int, ExternalResult],
+        *,
+        mount: MountDir | list[MountDir] | None = None,
+        os: Callable[[OsFunction, tuple[Any, ...], dict[str, Any]], Any] | None = None,
     ) -> FunctionSnapshot | NameLookupSnapshot | FutureSnapshot | MontyComplete:
         """Resume execution with results for one or more futures.
 
@@ -617,9 +715,16 @@ class FutureSnapshot:
 
         The GIL is released allowing parallel execution.
 
+        When `mount` or `os` is provided, OS calls produced after the futures
+        resolve are auto-dispatched until a non-OS event is reached, matching
+        the semantics of `Monty.start(mount=..., os=...)`.
+
         Arguments:
             results: Dict mapping call_id to result dict. Each result dict must have
                 either 'return_value' or 'exception' key (not both).
+            mount: Optional filesystem mount(s) to expose inside the sandbox.
+            os: Optional callback for OS calls. Return `NOT_HANDLED` to fall back
+                to Monty's default unhandled behavior.
 
         Returns:
             FunctionSnapshot if an external function call is pending,
@@ -640,8 +745,8 @@ class FutureSnapshot:
         The serialized data can be restored with `load_snapshot()` or `load_repl_snapshot()`.
         This allows suspending execution and resuming later, potentially in a different process.
 
-        Note: The `print_callback` is not serialized and must be re-provided via
-        `set_print_callback()` after loading if print output is needed.
+        Note: The `print_callback` is not serialized and must be re-provided to
+        `load_snapshot()` or `load_repl_snapshot()` when the snapshot is restored.
 
         Returns:
             Bytes containing the serialized FutureSnapshot instance.
@@ -659,7 +764,35 @@ class MontyComplete:
 
     @property
     def output(self) -> Any:
-        """The final output value from the executed code."""
+        """The final output value from the executed code.
+
+        Converted from Monty's internal representation to a Python object on
+        each access. Callers that want to inspect the value repeatedly should
+        save it to a local variable.
+        """
+
+    def output_json(self) -> str:
+        """Serialize the output as a Monty-specific JSON string.
+
+        This is **not** a drop-in wrapper around ``json.dumps(result.output)``:
+        the shape is chosen to preserve types that plain JSON can't express,
+        so consumers can round-trip richer Python values than CPython's
+        stdlib would allow. JSON-native Python types (None, bool, int, float,
+        str, list, and dict with string keys) become bare JSON values.
+        Non-JSON-native types are wrapped in a single-key object with a
+        ``$``-prefixed tag, for example:
+
+        - tuple → ``{"$tuple": [...]}``
+        - bytes → ``{"$bytes": [...]}``
+        - set / frozenset → ``{"$set": [...]}`` / ``{"$frozenset": [...]}``
+        - ``...`` → ``{"$ellipsis": "..."}``
+        - ``nan`` / ``inf`` / ``-inf`` → ``{"$float": "nan" | "inf" | "-inf"}``
+        - dict with any non-string key → ``{"$dict": [[k, v], ...]}``
+        - dataclass → ``{"$dataclass": {...}, "name": "ClassName"}``
+
+        Raises:
+            RuntimeError: If serialization fails.
+        """
 
     def __repr__(self) -> str: ...
 
@@ -775,7 +908,7 @@ class Frame:
 def load_snapshot(
     data: bytes,
     *,
-    print_callback: Callable[[Literal['stdout'], str], None] | None = None,
+    print_callback: Callable[[Literal['stdout'], str], None] | CollectStreams | CollectString | None = None,
     dataclass_registry: list[type] | None = None,
 ) -> FunctionSnapshot | NameLookupSnapshot | FutureSnapshot:
     """Load a non-REPL snapshot from serialized bytes.
@@ -799,7 +932,7 @@ def load_snapshot(
 def load_repl_snapshot(
     data: bytes,
     *,
-    print_callback: Callable[[Literal['stdout'], str], None] | None = None,
+    print_callback: Callable[[Literal['stdout'], str], None] | CollectStreams | CollectString | None = None,
     dataclass_registry: list[type] | None = None,
 ) -> tuple[FunctionSnapshot | NameLookupSnapshot | FutureSnapshot, MontyRepl]:
     """Load a REPL snapshot from serialized bytes.
