@@ -11,7 +11,7 @@ use crate::{
     args::ArgValues,
     bytecode::{CallResult, VM},
     defer_drop,
-    exception_public::{MontyException, StackFrame},
+    exception_public::{MontyException, SourceMap, StackFrame},
     fstring::FormatError,
     heap::{HeapData, HeapRead},
     intern::{Interns, StaticStrings, StringId},
@@ -1600,13 +1600,14 @@ impl ExceptionRaise {
     /// Extracts preview lines from the source code for traceback display.
     #[must_use]
     pub fn into_python_exception(self, interns: &Interns, source: &str) -> MontyException {
+        let source_map = SourceMap::new(source);
         let traceback = self
             .frame
             .map(|frame| {
                 let mut frames = Vec::new();
                 let mut current = Some(&frame);
                 while let Some(f) = current {
-                    frames.push(StackFrame::from_raw(f, interns, source));
+                    frames.push(StackFrame::from_raw(f, interns, &source_map));
                     current = f.parent.as_deref();
                 }
                 // Reverse so outermost frame is first (Python's "most recent call last" ordering)

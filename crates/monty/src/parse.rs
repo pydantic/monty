@@ -8,13 +8,13 @@ use ruff_python_ast::{
     name::Name,
 };
 use ruff_python_parser::parse_module;
-use ruff_text_size::{Ranged, TextRange, TextSize};
+use ruff_text_size::{Ranged, TextRange};
 
 use crate::{
     StackFrame,
     args::{ArgExprs, CallArg, CallKwarg, Kwarg},
     exception_private::ExcType,
-    exception_public::{CodeLoc, MontyException},
+    exception_public::{MontyException, SourceMap},
     expressions::{
         Callable, CmpOperator, Comprehension, DictItem, Expr, ExprLoc, Identifier, ImportName, Literal, Node, Operator,
         SequenceItem, UnpackTarget,
@@ -160,11 +160,6 @@ pub(crate) fn parse_with_interner(
 /// Holds references to the source code and owns a string interner for names.
 /// The filename is interned once at construction and reused for all CodeRanges.
 pub struct Parser<'a> {
-    /// Byte offsets of every `\n` character in `code`, in order.
-    ///
-    /// Stored as `TextSize` so positions flow through the parser in the same
-    /// `u32` representation that ruff uses for `TextRange`.
-    line_ends: Vec<TextSize>,
     code: &'a str,
     /// Interned filename ID, used for all CodeRanges created by this parser.
     filename_id: StringId,
@@ -178,18 +173,8 @@ pub struct Parser<'a> {
 
 impl<'a> Parser<'a> {
     fn new(code: &'a str, filename: &'a str, mut interner: InternerBuilder) -> Self {
-        // Position of each line in the source code, to convert byte offsets
-        // into (line, column) pairs.
-        let mut line_ends = vec![];
-        for (i, c) in code.char_indices() {
-            if c == '\n' {
-                // Ruff only supports files up to 4 GiB.
-                line_ends.push(TextSize::try_from(i).expect("source exceeds 4 GiB"));
-            }
-        }
         let filename_id = interner.intern(filename);
         Self {
-            line_ends,
             code,
             filename_id,
             interner,
@@ -198,7 +183,17 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_statements(&mut self, statements: Vec<Stmt>) -> Result<Vec<ParseNode>, ParseError> {
-        statements.into_iter().map(|f| self.parse_statement(f)).collect()
+        // Explicit pre-allocation matters here — `.map(..).collect::<Result<Vec<_>, _>>()`
+        // does NOT pre-size the output. Collecting into `Result<Vec<_>, _>` runs the
+        // iterator through `iter::try_process`'s `Shunt` adapter (so an `Err` can
+        // short-circuit), and `Shunt`'s `size_hint` lower bound is 0 — which loses
+        // the `TrustedLen` specialization that would otherwise forward the source
+        // `Vec`'s length. Each `Stmt` maps to exactly one `ParseNode`.
+        let mut out = Vec::with_capacity(statements.len());
+        for stmt in statements {
+            out.push(self.parse_statement(stmt)?);
+        }
+        Ok(out)
     }
 
     fn parse_elif_else_clauses(&mut self, clauses: Vec<ElifElseClause>) -> Result<Vec<ParseNode>, ParseError> {
@@ -298,8 +293,26 @@ impl<'a> Parser<'a> {
             )),
             Stmt::TypeAlias(t) => Err(ParseError::not_implemented("type aliases", self.convert_range(t.range))),
             Stmt::Assign(ast::StmtAssign {
-                targets, value, range, ..
-            }) => self.parse_assignment(first(targets, self.convert_range(range))?, *value),
+                mut targets,
+                value,
+                range,
+                ..
+            }) => {
+                // Python chained assignment (`a = b = 1`) is parsed by ruff as
+                // multiple targets; Monty only supports a single target, so we
+                // extract the one element inline here. Inlining avoids building
+                // a `Debug`-formatted error eagerly on every hot assignment.
+                let target = match targets.len() {
+                    1 => targets.pop().expect("len == 1"),
+                    n => {
+                        return Err(ParseError::syntax(
+                            format!("Expected 1 assignment target, got {n}"),
+                            self.convert_range(range),
+                        ));
+                    }
+                };
+                self.parse_assignment(target, *value)
+            }
             Stmt::AugAssign(ast::StmtAugAssign { target, op, value, .. }) => {
                 let op = convert_op(op);
                 let value = self.parse_expression(*value)?;
@@ -1471,51 +1484,11 @@ impl<'a> Parser<'a> {
     }
 
     fn convert_range(&self, range: TextRange) -> CodeRange {
-        let (start_line, start_line_start, _) = self.index_to_position(range.start());
-        let start_col = self.code[start_line_start.to_usize()..range.start().to_usize()]
-            .chars()
-            .count()
-            .try_into()
-            .expect("column number exceeds u32");
-        let start = CodeLoc::new(start_line, start_col);
-
-        let (end_line, end_line_start, _) = self.index_to_position(range.end());
-        let end_col = self.code[end_line_start.to_usize()..range.end().to_usize()]
-            .chars()
-            .count()
-            .try_into()
-            .expect("column number exceeds u32");
-        let end = CodeLoc::new(end_line, end_col);
-
-        // Store the line number only for single-line ranges; multi-line
-        // ranges have no single preview line to highlight.
-        let preview_line = (start_line == end_line).then_some(start_line);
-
-        CodeRange::new(self.filename_id, start, end, preview_line)
-    }
-
-    /// Maps a byte offset within `code` to its 0-based line number, the byte
-    /// offset of that line's start, and (if present) the byte offset of the
-    /// terminating newline.
-    fn index_to_position(&self, index: TextSize) -> (u32, TextSize, Option<TextSize>) {
-        let mut line_start = TextSize::new(0);
-        for (line_no, line_end) in self.line_ends.iter().enumerate() {
-            if index <= *line_end {
-                return (
-                    u32::try_from(line_no).expect("line number exceeds u32"),
-                    line_start,
-                    Some(*line_end),
-                );
-            }
-            line_start = *line_end + TextSize::new(1);
+        CodeRange {
+            filename: self.filename_id,
+            start_byte: range.start().into(),
+            end_byte: range.end().into(),
         }
-        // Content after the last newline (file without trailing newline) —
-        // `line_ends.len()` is the correct 0-indexed line number.
-        (
-            u32::try_from(self.line_ends.len()).expect("line number exceeds u32"),
-            line_start,
-            None,
-        )
     }
 
     /// Decrements the depth remaining for nested parentheses.
@@ -1528,19 +1501,6 @@ impl<'a> Parser<'a> {
             let position = self.convert_range(get_range());
             Err(ParseError::syntax("too many nested parentheses", position))
         }
-    }
-}
-
-fn first<T: fmt::Debug>(v: Vec<T>, position: CodeRange) -> Result<T, ParseError> {
-    if v.len() == 1 {
-        v.into_iter()
-            .next()
-            .ok_or_else(|| ParseError::syntax("Expected 1 element, got 0", position))
-    } else {
-        Err(ParseError::syntax(
-            format!("Expected 1 element, got {} (raw: {v:?})", v.len()),
-            position,
-        ))
     }
 }
 
@@ -1594,59 +1554,38 @@ fn convert_conversion_flag(flag: RuffConversionFlag) -> ConversionFlag {
     }
 }
 
-/// Source code location information for error reporting.
+/// Source code location for a parsed node, stored as raw byte offsets.
 ///
-/// Contains filename (as StringId), line/column positions, and optionally a line number for
-/// extracting the preview line from source during traceback formatting.
+/// `CodeRange` is written by the parser for every AST node and must therefore
+/// be cheap to construct. Storing just byte offsets (matching ruff's native
+/// `TextRange` representation) means producing a `CodeRange` is a single
+/// struct assignment — no line/column resolution, no UTF-8 char iteration,
+/// no line-index lookup.
 ///
-/// To display the filename, the caller must provide access to the string storage.
+/// When a diagnostic (traceback, syntax error) actually needs human-readable
+/// line/column positions or a source preview line, a [`SourceMap`] is built
+/// over the source text once at the diagnostic boundary and used to resolve
+/// byte offsets lazily. This keeps the parse hot path O(1) per node while
+/// preserving exact CPython-compatible column semantics (`chars().count()`
+/// on the relevant line only) at diagnostic time.
 #[derive(Clone, Copy, Default, Eq, PartialEq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct CodeRange {
     /// Interned filename ID - look up in Interns to get the actual string.
     pub filename: StringId,
-    /// Line number (0-indexed) for extracting preview from source. None if range spans multiple lines.
-    preview_line: Option<u32>,
-    start: CodeLoc,
-    end: CodeLoc,
+    /// Byte offset of the range start within the source text.
+    pub start_byte: u32,
+    /// Byte offset of the range end (exclusive) within the source text.
+    pub end_byte: u32,
 }
 
-/// Custom Debug implementation to make displaying code much less verbose.
+/// Custom Debug implementation to keep AST-printing output compact.
 impl fmt::Debug for CodeRange {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "CodeRange{{filename: {:?}, start: {:?}, end: {:?}}}",
-            self.filename, self.start, self.end
+            "CodeRange{{filename: {:?}, start_byte: {}, end_byte: {}}}",
+            self.filename, self.start_byte, self.end_byte
         )
-    }
-}
-
-impl CodeRange {
-    fn new(filename: StringId, start: CodeLoc, end: CodeLoc, preview_line: Option<u32>) -> Self {
-        Self {
-            filename,
-            preview_line,
-            start,
-            end,
-        }
-    }
-
-    /// Returns the start position.
-    #[must_use]
-    pub fn start(&self) -> CodeLoc {
-        self.start
-    }
-
-    /// Returns the end position.
-    #[must_use]
-    pub fn end(&self) -> CodeLoc {
-        self.end
-    }
-
-    /// Returns the preview line number (0-indexed) if available.
-    #[must_use]
-    pub fn preview_line_number(&self) -> Option<u32> {
-        self.preview_line
     }
 }
 
@@ -1708,26 +1647,27 @@ impl ParseError {
 
 impl ParseError {
     pub fn into_python_exc(self, filename: &str, source: &str) -> MontyException {
+        let source_map = SourceMap::new(source);
         match self {
             Self::Syntax { msg, position } => MontyException::new_full(
                 ExcType::SyntaxError,
                 Some(msg.into_owned()),
-                vec![StackFrame::from_position_syntax_error(position, filename, source)],
+                vec![StackFrame::from_position_syntax_error(position, filename, &source_map)],
             ),
             Self::NotImplemented { msg, position } => MontyException::new_full(
                 ExcType::NotImplementedError,
                 Some(format!("The monty syntax parser does not yet support {msg}")),
-                vec![StackFrame::from_position(position, filename, source)],
+                vec![StackFrame::from_position(position, filename, &source_map)],
             ),
             Self::NotSupported { msg, position } => MontyException::new_full(
                 ExcType::NotImplementedError,
                 Some(msg.into_owned()),
-                vec![StackFrame::from_position(position, filename, source)],
+                vec![StackFrame::from_position(position, filename, &source_map)],
             ),
             Self::Import { msg, position } => MontyException::new_full(
                 ExcType::ImportError,
                 Some(msg.into_owned()),
-                vec![StackFrame::from_position_no_caret(position, filename, source)],
+                vec![StackFrame::from_position_no_caret(position, filename, &source_map)],
             ),
         }
     }

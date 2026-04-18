@@ -245,70 +245,72 @@ impl fmt::Display for StackFrame {
 }
 
 impl StackFrame {
-    pub(crate) fn from_raw(f: &RawStackFrame, interns: &Interns, source: &str) -> Self {
+    /// Builds a runtime `StackFrame` from an internal `RawStackFrame`.
+    ///
+    /// Resolves the raw filename/frame-name `StringId`s via `interns` and
+    /// expands the position's byte offsets to line/column and a preview
+    /// line via `source_map`.
+    pub(crate) fn from_raw(f: &RawStackFrame, interns: &Interns, source_map: &SourceMap<'_>) -> Self {
         let filename = interns.get_str(f.position.filename).to_string();
+        let (start, end, preview_line) = source_map.resolve_range(f.position);
         Self {
             filename,
-            start: f.position.start(),
-            end: f.position.end(),
+            start,
+            end,
             frame_name: f.frame_name.map(|id| interns.get_str(id).to_string()),
-            preview_line: f
-                .position
-                .preview_line_number()
-                .and_then(|ln| source.lines().nth(ln as usize))
-                .map(str::to_string),
+            preview_line,
             hide_caret: f.hide_caret,
             hide_frame_name: false,
         }
     }
 
-    /// Creates a `StackFrame` from a `CodeRange` for SyntaxError.
+    /// Builds a `StackFrame` for a `SyntaxError`.
     ///
-    /// Sets `hide_frame_name: true` because CPython's SyntaxError format doesn't
-    /// show the `, in <module>` part.
-    pub(crate) fn from_position_syntax_error(position: CodeRange, filename: &str, source: &str) -> Self {
+    /// Sets `hide_frame_name: true` because CPython's SyntaxError format
+    /// omits the trailing `, in <module>` part.
+    pub(crate) fn from_position_syntax_error(position: CodeRange, filename: &str, source_map: &SourceMap<'_>) -> Self {
+        let (start, end, preview_line) = source_map.resolve_range(position);
         Self {
             filename: filename.to_string(),
-            start: position.start(),
-            end: position.end(),
+            start,
+            end,
             frame_name: None,
-            preview_line: position
-                .preview_line_number()
-                .and_then(|ln| source.lines().nth(ln as usize))
-                .map(str::to_string),
+            preview_line,
             hide_caret: false,
             hide_frame_name: true,
         }
     }
 
-    pub(crate) fn from_position(position: CodeRange, filename: &str, source: &str) -> Self {
+    /// Builds a generic `StackFrame` from a `CodeRange` and filename.
+    ///
+    /// Used for runtime-style errors raised outside the VM's frame tracking
+    /// (e.g. parse-phase `NotImplementedError`) where caret markers and the
+    /// `, in <module>` suffix are both shown.
+    pub(crate) fn from_position(position: CodeRange, filename: &str, source_map: &SourceMap<'_>) -> Self {
+        let (start, end, preview_line) = source_map.resolve_range(position);
         Self {
             filename: filename.to_string(),
-            start: position.start(),
-            end: position.end(),
+            start,
+            end,
             frame_name: None,
-            preview_line: position
-                .preview_line_number()
-                .and_then(|ln| source.lines().nth(ln as usize))
-                .map(str::to_string),
+            preview_line,
             hide_caret: false,
             hide_frame_name: false,
         }
     }
 
-    /// Creates a `StackFrame` from a `CodeRange` without caret markers.
+    /// Builds a `StackFrame` with caret markers suppressed.
     ///
-    /// Used for errors like `ImportError` where CPython doesn't show caret markers.
-    pub(crate) fn from_position_no_caret(position: CodeRange, filename: &str, source: &str) -> Self {
+    /// Used for errors like `ImportError` and `ModuleNotFoundError`, where
+    /// CPython shows the source preview line but no `~~~` carets beneath it.
+    pub(crate) fn from_position_no_caret(position: CodeRange, filename: &str, source_map: &SourceMap<'_>) -> Self {
+        let (start, end, preview_line) = source_map.resolve_range(position);
         Self {
             filename: filename.to_string(),
-            start: position.start(),
-            end: position.end(),
+            start,
+            end,
             frame_name: None,
-            preview_line: position
-                .preview_line_number()
-                .and_then(|ln| source.lines().nth(ln as usize))
-                .map(str::to_string),
+            preview_line,
             hide_caret: true,
             hide_frame_name: false,
         }
@@ -349,5 +351,105 @@ impl CodeLoc {
             line: line.saturating_add(1),
             column: column.saturating_add(1),
         }
+    }
+}
+
+/// Lazy resolver from raw byte offsets (stored on every [`CodeRange`]) back to
+/// human-readable line/column/preview-line information.
+///
+/// Monty's parser stores only byte offsets per AST node to keep the post-parse
+/// hot path O(1) per node. `SourceMap` is built once at the diagnostic
+/// boundary — when converting an internal error into a public
+/// [`MontyException`] — and used to resolve every frame in the traceback.
+/// Building it scans the source once to index line starts; with a 100k-line
+/// source this is a few hundred microseconds and fires only when an exception
+/// is actually raised.
+///
+/// Column semantics remain exactly CPython-compatible: columns count Unicode
+/// scalar values, not bytes. The ASCII fast path (the overwhelmingly common
+/// case for Python source) skips the `chars()` iterator entirely.
+pub struct SourceMap<'s> {
+    source: &'s str,
+    /// Byte offset of the start of each line. Length equals the number of
+    /// lines; `line_starts[0]` is always 0.
+    line_starts: Vec<u32>,
+}
+
+impl<'s> SourceMap<'s> {
+    /// Builds a line-start index over `source`.
+    ///
+    /// Amortizes across every frame in the traceback — one O(n) scan, then
+    /// O(log n) lookups per frame.
+    #[must_use]
+    pub fn new(source: &'s str) -> Self {
+        let mut line_starts = Vec::with_capacity(source.len() / 40 + 1);
+        line_starts.push(0);
+        for (i, b) in source.bytes().enumerate() {
+            if b == b'\n' {
+                // source should never exceed 4 GB
+                let start = u32::try_from(i + 1).unwrap_or(u32::MAX);
+                line_starts.push(start);
+            }
+        }
+        Self { source, line_starts }
+    }
+
+    /// Resolves a `CodeRange` into `(start, end, preview_line)`.
+    ///
+    /// `preview_line` is `Some(line)` only when `start` and `end` lie on the
+    /// same line — matching the previous semantics where multi-line ranges
+    /// have no single preview to highlight.
+    pub(crate) fn resolve_range(&self, range: CodeRange) -> (CodeLoc, CodeLoc, Option<String>) {
+        let (start_line_idx, start) = self.resolve_byte(range.start_byte);
+        let (end_line_idx, end) = self.resolve_byte(range.end_byte);
+        let preview_line = if start_line_idx == end_line_idx {
+            Some(self.line_text(start_line_idx).to_string())
+        } else {
+            None
+        };
+        (start, end, preview_line)
+    }
+
+    /// Resolves a raw byte offset to `(0-based line index, CodeLoc)`.
+    ///
+    /// Column is the number of Unicode scalar values between the line start
+    /// and the offset; uses an ASCII fast path when the preceding slice is
+    /// pure ASCII.
+    fn resolve_byte(&self, byte: u32) -> (usize, CodeLoc) {
+        // partition_point(|&s| s <= byte) gives the index of the first line
+        // whose start is strictly greater than `byte`; subtracting one maps
+        // `byte` back to the line it actually lies on.
+        let line_idx = self.line_starts.partition_point(|&s| s <= byte).saturating_sub(1);
+        let line_start = self.line_starts[line_idx];
+        let slice_start = line_start as usize;
+        let slice_end = (byte as usize).min(self.source.len());
+        let slice = &self.source[slice_start..slice_end];
+        // Ruff caps source files at 4 GiB, so any byte-based column count fits
+        // comfortably in `u32`; saturate defensively if that ever changes.
+        let col = if slice.is_ascii() {
+            u32::try_from(slice.len()).unwrap_or(u32::MAX)
+        } else {
+            u32::try_from(slice.chars().count()).unwrap_or(u32::MAX)
+        };
+        (
+            line_idx,
+            CodeLoc::new(u32::try_from(line_idx).expect("line number exceeds u32"), col),
+        )
+    }
+
+    /// Returns the raw text of a 0-based line index, without the trailing
+    /// newline.
+    fn line_text(&self, line_idx: usize) -> &'s str {
+        let start = self.line_starts[line_idx] as usize;
+        let end = self
+            .line_starts
+            .get(line_idx + 1)
+            .map_or(self.source.len(), |&next| next.saturating_sub(1) as usize);
+        // Guard against a trailing empty "line" past the last newline with no
+        // content (e.g. when `start == source.len()`).
+        let end = end.max(start);
+        // Strip a trailing `\r` if the source uses CRLF line endings.
+        let line = &self.source[start..end];
+        line.strip_suffix('\r').unwrap_or(line)
     }
 }
