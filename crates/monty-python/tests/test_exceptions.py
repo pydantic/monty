@@ -140,6 +140,21 @@ def test_syntax_error_lone_surrogate():
     assert isinstance(inner, SyntaxError)
 
 
+def test_runtime_error_input_value_lone_surrogate():
+    # An input string containing a lone surrogate fails UTF-8 conversion during
+    # `py_to_monty`. We wrap the resulting `UnicodeEncodeError` as a
+    # `MontyRuntimeError(ValueError)` so input-value failures surface the same
+    # way as failures when an external function returns such a string.
+    m = pydantic_monty.Monty('x', inputs=['x'])
+    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
+        m.run(inputs={'x': '\ud83d'})
+    assert str(exc_info.value) == snapshot(
+        "ValueError: 'utf-8' codec can't encode character '\\ud83d' in position 0: surrogates not allowed"
+    )
+    inner = exc_info.value.exception()
+    assert isinstance(inner, ValueError)
+
+
 # === Catching with base class ===
 
 

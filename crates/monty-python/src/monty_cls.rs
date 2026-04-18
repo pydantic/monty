@@ -451,14 +451,23 @@ impl PyMonty {
             )));
         };
 
-        // Extract values in declaration order
+        // Extract values in declaration order.
+        //
+        // Conversion errors from `py_to_monty` (e.g. `UnicodeEncodeError` for a
+        // string containing lone surrogates) are wrapped as `MontyRuntimeError`
+        // so input-value failures mirror the way external-function return
+        // values surface — the caller sees a single, consistent exception type
+        // rather than a raw PyO3 error like `UnicodeEncodeError`.
         self.input_names
             .iter()
             .map(|name| {
                 let value = inputs
                     .get_item(name)?
                     .ok_or_else(|| PyKeyError::new_err(format!("Missing required input: '{name}'")))?;
-                py_to_monty(&value, dc_registry)
+                py_to_monty(&value, dc_registry).map_err(|e| {
+                    let py = value.py();
+                    MontyError::new_err(py, exc_py_to_monty(py, &e))
+                })
             })
             .collect::<PyResult<_>>()
     }
