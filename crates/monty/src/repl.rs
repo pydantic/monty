@@ -47,6 +47,16 @@ pub struct MontyRepl<T: ResourceTracker> {
     global_name_map: AHashMap<String, NamespaceId>,
     /// Persistent intern table across snippets so intern/function IDs remain valid.
     interns: Interns,
+    /// Source text of every snippet that has been fed, keyed by its
+    /// generated script name (`<python-input-N>`).
+    ///
+    /// Required because a traceback raised in snippet N can include frames
+    /// from functions defined in snippet M < N. Those frames carry
+    /// `CodeRange` byte offsets that index into snippet M's source, so the
+    /// diagnostic pass must be able to look that source up by filename —
+    /// the current snippet's `Executor.code` is not sufficient.
+    #[serde(default)]
+    sources: AHashMap<String, String>,
     /// Persistent heap across snippets.
     heap: Heap<T>,
     /// Persistent global variable values across snippets.
@@ -71,6 +81,7 @@ impl<T: ResourceTracker> MontyRepl<T> {
             next_input_id: 0,
             global_name_map: AHashMap::new(),
             interns: Interns::new(InternerBuilder::default(), Vec::new()),
+            sources: AHashMap::new(),
             heap,
             globals: Vec::new(),
         }
@@ -126,6 +137,8 @@ impl<T: ResourceTracker> MontyRepl<T> {
         let (input_names, input_values): (Vec<_>, Vec<_>) = inputs.into_iter().unzip();
 
         let input_script_name = this.next_input_script_name();
+        // Preserve this snippet's source (see `feed_run` for rationale).
+        this.sources.insert(input_script_name.clone(), code.to_owned());
         let executor = match Executor::new_repl_snippet(
             code.to_owned(),
             &input_script_name,
@@ -188,6 +201,11 @@ impl<T: ResourceTracker> MontyRepl<T> {
         let (input_names, input_values): (Vec<_>, Vec<_>) = inputs.into_iter().unzip();
 
         let input_script_name = self.next_input_script_name();
+        // Preserve this snippet's source before anything can fail, so later
+        // tracebacks with frames from this snippet can still resolve line/
+        // column/preview information — `Executor.code` only survives until
+        // the next feed.
+        self.sources.insert(input_script_name.clone(), code.to_owned());
         let executor = Executor::new_repl_snippet(
             code.to_owned(),
             &input_script_name,
@@ -216,16 +234,13 @@ impl<T: ResourceTracker> MontyRepl<T> {
         // Commit compiler metadata even on runtime errors.
         // Snippets can mutate globals before raising, and those values may contain
         // FunctionId/StringId values that must be interpreted with the updated tables.
-        let Executor {
-            name_map,
-            interns,
-            code,
-            ..
-        } = executor;
+        let Executor { name_map, interns, .. } = executor;
         self.global_name_map = name_map;
         self.interns = interns;
 
-        result.map_err(|e| e.into_python_exception(&self.interns, &code))
+        // Resolve every traceback frame against the source of the snippet that
+        // produced it — frames from earlier snippets live in `self.sources`.
+        result.map_err(|e| e.into_python_exception(&self.interns, |fname| self.sources.get(fname).map(String::as_str)))
     }
 
     /// Grows the globals vector to at least `size` slots.
@@ -940,7 +955,13 @@ fn build_repl_progress<T: ResourceTracker>(
             snapshot: new_repl_snapshot!(),
         })),
         ConvertedExit::Error(err) => {
-            let error = err.into_python_exception(&executor.interns, &executor.code);
+            // Resolve traceback frames against every snippet the REPL has
+            // seen, not just the currently-executing one. `executor.interns`
+            // is still required because it holds the StringIds referenced by
+            // the in-flight frames; `repl.sources` holds every snippet's
+            // source text and is what owns any older snippets' sources.
+            let error =
+                err.into_python_exception(&executor.interns, |fname| repl.sources.get(fname).map(String::as_str));
             // Commit compiler metadata even on runtime errors, matching feed() behavior.
             // Snippets can create new variables or functions before raising, and those
             // values may reference FunctionId/StringId values from the new tables.

@@ -783,6 +783,8 @@ pub(crate) fn build_run_progress<T: ResourceTracker>(
             is_global,
             new_snapshot!(),
         ))),
-        ConvertedExit::Error(err) => Err(err.into_python_exception(&executor.interns, &executor.code)),
+        ConvertedExit::Error(err) => {
+            Err(err.into_python_exception(&executor.interns, |_| Some(executor.code.as_str())))
+        }
     }
 }
