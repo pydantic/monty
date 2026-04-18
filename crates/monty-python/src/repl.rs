@@ -20,12 +20,13 @@ use pyo3_async_runtimes::tokio::future_into_py;
 
 use crate::{
     async_dispatch::{ReplCleanupNotifier, await_repl_transition, dispatch_loop_repl},
+    build::{extract_source_code, py_type_check},
     convert::{get_docstring, monty_to_py, py_to_monty_value},
     dataclass::DcRegistry,
     exceptions::{MontyError, exc_py_to_monty},
     external::{ExternalFunctionRegistry, dispatch_method_call},
     limits::{CancellationFlag, FutureCancellationGuard, PySignalTracker, extract_limits},
-    monty_cls::{EitherProgress, call_os_callback_parts, extract_source_code, py_type_check},
+    monty_cls::{EitherProgress, call_os_callback_parts},
     mount::OsHandler,
     print_target::PrintTarget,
 };

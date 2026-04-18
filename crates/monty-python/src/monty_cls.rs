@@ -11,7 +11,6 @@ use ::monty::{
     ReplOsCall, ReplProgress, ReplResolveFutures, ReplStartError, ResolveFutures, ResourceTracker, RunProgress,
 };
 use monty::{NameLookup, fs::MountTable};
-use monty_type_checking::{SourceFile, TypeCheckingDiagnostics, type_check};
 use pyo3::{
     CastIntoError, IntoPyObjectExt, PyTypeCheck,
     exceptions::{PyBaseException, PyKeyError, PyRuntimeError, PyTypeError, PyValueError},
@@ -23,9 +22,10 @@ use pyo3_async_runtimes::tokio::future_into_py;
 
 use crate::{
     async_dispatch::{await_run_transition, dispatch_loop_run},
+    build::{ConstructInputs, py_type_check},
     convert::{get_docstring, monty_to_py, py_to_monty_value},
     dataclass::DcRegistry,
-    exceptions::{MontyError, MontyTypingError, exc_py_to_monty},
+    exceptions::{MontyError, exc_py_to_monty},
     external::{ExternalFunctionRegistry, dispatch_method_call},
     limits::{CancellationFlag, FutureCancellationGuard, PySignalTracker, extract_limits},
     mount::OsHandler,
@@ -76,23 +76,20 @@ impl PyMonty {
         type_check_stubs: Option<&str>,
         dataclass_registry: Option<&Bound<'_, PyList>>,
     ) -> PyResult<Self> {
-        let input_names = list_str(inputs, "inputs")?;
-        let code = extract_source_code(py, code)?;
-        let dc_registry = DcRegistry::from_list(py, dataclass_registry)?;
+        let inputs = ConstructInputs::from_py(
+            py,
+            code,
+            script_name,
+            inputs,
+            type_check,
+            type_check_stubs,
+            dataclass_registry,
+        )?;
 
         // Type-checking and parsing are pure-Rust CPU work; releasing the GIL
         // here means other Python threads can run for the duration of the
         // build, which can be substantial for large source files.
-        let runner = py
-            .detach(|| build_runner(code, script_name, input_names.clone(), type_check, type_check_stubs))
-            .map_err(|e| build_err_to_pyerr(py, e))?;
-
-        Ok(Self {
-            runner,
-            script_name: script_name.to_string(),
-            input_names,
-            dc_registry,
-        })
+        py.detach(|| inputs.build()).map_err(|e| e.into_pyerr(py))
     }
 
     /// Async alternative constructor: parses (and optionally type-checks) the code
@@ -120,38 +117,22 @@ impl PyMonty {
     ) -> PyResult<Bound<'py, PyAny>> {
         // Extract everything that requires the GIL up-front so the spawned
         // worker only sees owned, `Send` data.
-        let input_names = list_str(inputs, "inputs")?;
-        let code = extract_source_code(py, code)?;
-        let dc_registry = DcRegistry::from_list(py, dataclass_registry)?;
-        let script_name = script_name.to_string();
-        let type_check_stubs = type_check_stubs.map(str::to_owned);
-        let do_type_check = type_check;
+        let inputs = ConstructInputs::from_py(
+            py,
+            code,
+            script_name,
+            inputs,
+            type_check,
+            type_check_stubs,
+            dataclass_registry,
+        )?;
 
         future_into_py(py, async move {
-            let names_for_runner = input_names.clone();
-            let script_for_build = script_name.clone();
-            let stubs_for_build = type_check_stubs.clone();
-            let runner = await_run_transition(move || {
-                build_runner(
-                    code,
-                    &script_for_build,
-                    names_for_runner,
-                    do_type_check,
-                    stubs_for_build.as_deref(),
-                )
-            })
-            .await?
-            .map_err(|e| Python::attach(|py| build_err_to_pyerr(py, e)))?;
+            let monty = await_run_transition(move || inputs.build())
+                .await?
+                .map_err(|e| Python::attach(|py| e.into_pyerr(py)))?;
 
-            Python::attach(|py| {
-                let monty = Self {
-                    runner,
-                    script_name,
-                    input_names,
-                    dc_registry,
-                };
-                Py::new(py, monty).map(Py::into_any)
-            })
+            Python::attach(|py| Py::new(py, monty).map(Py::into_any))
         })
     }
 
@@ -466,100 +447,22 @@ impl PyMonty {
     }
 }
 
-/// The result of running [`run_type_check_off_gil`] without holding the GIL.
-///
-/// The two failure modes are kept separate so the GIL-side conversion can raise
-/// [`MontyTypingError`] for diagnostic findings and [`PyRuntimeError`] for
-/// internal type-checker failures, matching the behavior of [`py_type_check`].
-pub(crate) enum TypeCheckErr {
-    /// The type checker reported diagnostic errors in the user code.
-    Diagnostics(TypeCheckingDiagnostics),
-    /// The type checker itself failed (infrastructure error, not a user error).
-    Internal(String),
-}
-
-/// Runs the static type checker without touching Python — safe to call inside
-/// `py.detach(...)` or a `tokio::task::spawn_blocking` worker.
-///
-/// This is the building block shared by [`py_type_check`] (sync GIL-aware
-/// wrapper) and [`build_runner`] (used by both the sync `__new__` constructor
-/// and the async `Monty.ainit` classmethod).
-pub(crate) fn run_type_check_off_gil(
-    code: &str,
-    script_name: &str,
-    type_stubs: Option<&str>,
-    stubs_name: &str,
-) -> Result<(), TypeCheckErr> {
-    let type_stubs = type_stubs.map(|s| SourceFile::new(s, stubs_name));
-    match type_check(&SourceFile::new(code, script_name), type_stubs.as_ref()) {
-        Ok(None) => Ok(()),
-        Ok(Some(diag)) => Err(TypeCheckErr::Diagnostics(diag)),
-        Err(msg) => Err(TypeCheckErr::Internal(msg)),
-    }
-}
-
-/// Converts a [`TypeCheckErr`] into the appropriate Python exception.
-///
-/// Must be called while holding the GIL. Diagnostic errors become
-/// [`MontyTypingError`]; infrastructure errors become [`PyRuntimeError`].
-pub(crate) fn type_check_err_to_pyerr(py: Python<'_>, err: TypeCheckErr) -> PyErr {
-    match err {
-        TypeCheckErr::Diagnostics(diag) => MontyTypingError::new_err(py, diag),
-        TypeCheckErr::Internal(msg) => PyRuntimeError::new_err(msg),
-    }
-}
-
-/// GIL-aware wrapper around [`run_type_check_off_gil`] that releases the GIL
-/// for the duration of the type-check work and converts errors to `PyErr`.
-pub(crate) fn py_type_check(
-    py: Python<'_>,
-    code: &str,
-    script_name: &str,
-    type_stubs: Option<&str>,
-    stubs_name: &str,
-) -> PyResult<()> {
-    py.detach(|| run_type_check_off_gil(code, script_name, type_stubs, stubs_name))
-        .map_err(|e| type_check_err_to_pyerr(py, e))
-}
-
-/// Errors that can occur while constructing a [`MontyRun`] in [`build_runner`].
-///
-/// Carries a Rust-only payload so that construction can run inside `py.detach`
-/// or `spawn_blocking` and the GIL-side wrapper can convert to the matching
-/// `PyErr` afterwards via [`build_err_to_pyerr`].
-pub(crate) enum BuildErr {
-    /// Type checking found a problem (diagnostics or infrastructure failure).
-    TypeCheck(TypeCheckErr),
-    /// Parsing the user code failed (raised as `MontySyntaxError` etc).
-    Parse(MontyException),
-}
-
-/// Builds a [`MontyRun`] off the GIL, optionally type-checking the source first.
-///
-/// This is the shared body of the sync `Monty::__new__` constructor and the
-/// async `Monty.ainit` classmethod — both call this from inside `py.detach`
-/// or a `spawn_blocking` worker so that parsing/type-checking never blocks the
-/// caller's GIL or the async event loop.
-pub(crate) fn build_runner(
-    code: String,
-    script_name: &str,
-    input_names: Vec<String>,
-    do_type_check: bool,
-    type_check_stubs: Option<&str>,
-) -> Result<MontyRun, BuildErr> {
-    if do_type_check {
-        run_type_check_off_gil(&code, script_name, type_check_stubs, "type_stubs.pyi").map_err(BuildErr::TypeCheck)?;
-    }
-    MontyRun::new(code, script_name, input_names).map_err(BuildErr::Parse)
-}
-
-/// Converts a [`BuildErr`] into the appropriate Python exception.
-///
-/// Must be called while holding the GIL.
-pub(crate) fn build_err_to_pyerr(py: Python<'_>, err: BuildErr) -> PyErr {
-    match err {
-        BuildErr::TypeCheck(e) => type_check_err_to_pyerr(py, e),
-        BuildErr::Parse(e) => MontyError::new_err(py, e),
+impl PyMonty {
+    /// Assembles a `PyMonty` from its parts. Used by the off-GIL build path in
+    /// [`crate::build::ConstructInputs::build`] (which cannot construct the
+    /// struct directly because the fields are private to this module).
+    pub(crate) fn from_parts(
+        runner: MontyRun,
+        script_name: String,
+        input_names: Vec<String>,
+        dc_registry: DcRegistry,
+    ) -> Self {
+        Self {
+            runner,
+            script_name,
+            input_names,
+            dc_registry,
+        }
     }
 }
 
@@ -2030,38 +1933,6 @@ impl PyMontyComplete {
 
     fn __repr__(&self) -> String {
         format!("MontyComplete(output={})", self.monty_output.py_repr())
-    }
-}
-
-/// Extracts Python source code from a `PyString`, converting encoding failures
-/// into a `MontySyntaxError` rather than letting the raw `UnicodeEncodeError`
-/// bubble up.
-///
-/// Python strings may contain lone surrogates (e.g. `'\ud83d'`) that cannot be
-/// encoded as UTF-8. Such strings are not valid Python source, so we report
-/// them as a syntax error instead of an encoding error.
-pub(crate) fn extract_source_code(py: Python<'_>, code: &Bound<'_, PyString>) -> PyResult<String> {
-    match code.to_str() {
-        Ok(s) => Ok(s.to_owned()),
-        Err(_) => Err(MontyError::new_err(
-            py,
-            MontyException::new(
-                ExcType::SyntaxError,
-                Some("source code is not valid UTF-8 (contains lone surrogates)".to_string()),
-            ),
-        )),
-    }
-}
-
-fn list_str(arg: Option<&Bound<'_, PyList>>, name: &str) -> PyResult<Vec<String>> {
-    if let Some(names) = arg {
-        names
-            .iter()
-            .map(|item| item.extract::<String>())
-            .collect::<PyResult<Vec<_>>>()
-            .map_err(|e| PyTypeError::new_err(format!("{name}: {e}")))
-    } else {
-        Ok(vec![])
     }
 }
 

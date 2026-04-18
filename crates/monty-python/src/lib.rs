@@ -5,6 +5,7 @@
 //! function callbacks.
 
 mod async_dispatch;
+mod build;
 mod convert;
 mod dataclass;
 mod exceptions;
