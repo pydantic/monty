@@ -67,6 +67,7 @@ known-first-party = ["pydantic_monty"]
     "F704", # await outside function - needed for testing top-level async/await
     "F811", # Redefinition of unused variable
     "F821", # traceback undefined call test intentionally uses undefined name
+    "F823", # chained-assign test intentionally reads a local before its first assignment
     "F841", # unused variable - needed for testing exception variable cleanup
     "F401", # Intentionally imports unknown typing constructs to test silent ignore behavior
     "F403", # star import test intentionally uses `from sys import *`

@@ -260,29 +260,7 @@ impl<'a> Compiler<'a> {
                 object,
             } => {
                 self.compile_expr(object)?;
-
-                // Check if there's a starred target
-                let star_idx = targets.iter().position(|t| matches!(t, UnpackTarget::Starred(_)));
-
-                // Set location to targets for proper caret in tracebacks
-                self.code.set_location(*targets_position, None);
-
-                if let Some(star_idx) = star_idx {
-                    // Has starred target - use UnpackEx
-                    let before = u8::try_from(star_idx).expect("too many targets before star");
-                    let after = u8::try_from(targets.len() - star_idx - 1).expect("too many targets after star");
-                    self.code.emit_u8_u8(Opcode::UnpackEx, before, after);
-                } else {
-                    // No starred target - use UnpackSequence
-                    let count = u8::try_from(targets.len()).expect("too many targets in unpack");
-                    self.code.emit_u8(Opcode::UnpackSequence, count);
-                }
-
-                // After UnpackSequence/UnpackEx, values are on stack with first item on top
-                // Store them in order (first target gets first item), handling nesting
-                for target in targets {
-                    self.compile_unpack_target(target);
-                }
+                self.emit_unpack_store(targets, *targets_position);
             }
             Node::OpAssign { target, op, value } => {
                 let Some(opcode) = operator_to_inplace_opcode(op) else {
@@ -326,13 +304,8 @@ impl<'a> Compiler<'a> {
                 value,
                 target_position,
             } => {
-                // Stack order for StoreSubscr: value, obj, index
                 self.compile_expr(value)?;
-                self.compile_expr(target)?;
-                self.compile_expr(index)?;
-                // Set location to the target (e.g., `lst[10]`) for proper caret in tracebacks
-                self.code.set_location(*target_position, None);
-                self.code.emit(Opcode::StoreSubscr);
+                self.emit_subscript_store(target, index, *target_position)?;
             }
             Node::AttrOpAssign {
                 object,
@@ -366,16 +339,8 @@ impl<'a> Compiler<'a> {
                 target_position,
                 value,
             } => {
-                // Stack order for StoreAttr: value, obj
                 self.compile_expr(value)?;
-                self.compile_expr(object)?;
-                let name_id = attr.string_id().expect("StoreAttr requires interned attr name");
-                // Set location to the target (e.g., `x.foo`) for proper caret in tracebacks
-                self.code.set_location(*target_position, None);
-                self.code.emit_u16(
-                    Opcode::StoreAttr,
-                    u16::try_from(name_id.index()).expect("name index exceeds u16"),
-                );
+                self.emit_attr_store(object, attr, *target_position)?;
             }
             Node::ChainAssign { targets, object } => {
                 // Python evaluates the RHS once, then assigns to each target in
@@ -2566,66 +2531,93 @@ impl<'a> Compiler<'a> {
         }
     }
 
-    /// Compiles a single step of a chained assignment, consuming the value on top of stack.
+    /// Compiles a single assignment step, assuming the value to assign is on top of stack.
     ///
-    /// The value to assign is expected to already be at the top of the operand stack when
-    /// this is called (put there either by `compile_expr(object)` for the final step, or by
-    /// `Opcode::Dup` for non-final steps). Each target shape reproduces the store logic
-    /// used by the equivalent single-target `Node` variant: subscript pushes container and
-    /// index above the value, attribute pushes the object, and unpack emits
-    /// `UnpackSequence`/`UnpackEx` followed by per-element stores.
+    /// Central per-shape dispatch for assignment stores. Called once per step of a chained
+    /// assignment, and also by the single-target `Node::SubscriptAssign`/`AttrAssign`/
+    /// `UnpackAssign`/`Assign` handlers (after they push the RHS). Keeping this dispatch
+    /// in one place ensures the store sequences stay in sync across single-target and
+    /// chained forms.
     fn compile_assign_target(&mut self, target: &AssignTarget) -> Result<(), CompileError> {
         match target {
-            AssignTarget::Name(ident) => {
-                self.compile_store(ident);
-            }
+            AssignTarget::Name(ident) => self.compile_store(ident),
             AssignTarget::Subscript {
                 target,
                 index,
                 target_position,
-            } => {
-                // Stack going in: [.., value]
-                // StoreSubscr wants: [.., value, obj, index]
-                self.compile_expr(target)?;
-                self.compile_expr(index)?;
-                self.code.set_location(*target_position, None);
-                self.code.emit(Opcode::StoreSubscr);
-            }
+            } => self.emit_subscript_store(target, index, *target_position)?,
             AssignTarget::Attr {
                 object,
                 attr,
                 target_position,
-            } => {
-                // Stack going in: [.., value]
-                // StoreAttr wants: [.., value, obj]
-                self.compile_expr(object)?;
-                let name_id = attr.string_id().expect("StoreAttr requires interned attr name");
-                self.code.set_location(*target_position, None);
-                self.code.emit_u16(
-                    Opcode::StoreAttr,
-                    u16::try_from(name_id.index()).expect("name index exceeds u16"),
-                );
-            }
+            } => self.emit_attr_store(object, attr, *target_position)?,
             AssignTarget::Unpack {
                 targets,
                 targets_position,
-            } => {
-                let star_idx = targets.iter().position(|t| matches!(t, UnpackTarget::Starred(_)));
-                self.code.set_location(*targets_position, None);
-                if let Some(star_idx) = star_idx {
-                    let before = u8::try_from(star_idx).expect("too many targets before star");
-                    let after = u8::try_from(targets.len() - star_idx - 1).expect("too many targets after star");
-                    self.code.emit_u8_u8(Opcode::UnpackEx, before, after);
-                } else {
-                    let count = u8::try_from(targets.len()).expect("too many targets in unpack");
-                    self.code.emit_u8(Opcode::UnpackSequence, count);
-                }
-                for t in targets {
-                    self.compile_unpack_target(t);
-                }
-            }
+            } => self.emit_unpack_store(targets, *targets_position),
         }
         Ok(())
+    }
+
+    /// Emits the bytecode for `container[index] = value`, assuming `value` is on top of stack.
+    ///
+    /// `StoreSubscr` expects the stack to be `[.., value, container, index]` with `index`
+    /// on top, so this evaluates `target` (container) and then `index` above the incoming
+    /// value. Used by both `Node::SubscriptAssign` and chained-assignment subscript steps.
+    fn emit_subscript_store(
+        &mut self,
+        target: &ExprLoc,
+        index: &ExprLoc,
+        target_position: CodeRange,
+    ) -> Result<(), CompileError> {
+        self.compile_expr(target)?;
+        self.compile_expr(index)?;
+        self.code.set_location(target_position, None);
+        self.code.emit(Opcode::StoreSubscr);
+        Ok(())
+    }
+
+    /// Emits the bytecode for `object.attr = value`, assuming `value` is on top of stack.
+    ///
+    /// `StoreAttr` expects `[.., value, object]` with `object` on top, so this evaluates
+    /// `object` above the incoming value. Used by both `Node::AttrAssign` and chained-
+    /// assignment attribute steps.
+    fn emit_attr_store(
+        &mut self,
+        object: &ExprLoc,
+        attr: &EitherStr,
+        target_position: CodeRange,
+    ) -> Result<(), CompileError> {
+        self.compile_expr(object)?;
+        let name_id = attr.string_id().expect("StoreAttr requires interned attr name");
+        self.code.set_location(target_position, None);
+        self.code.emit_u16(
+            Opcode::StoreAttr,
+            u16::try_from(name_id.index()).expect("name index exceeds u16"),
+        );
+        Ok(())
+    }
+
+    /// Emits the bytecode for unpacking assignments (`a, b = value`, `[a, *rest] = value`).
+    ///
+    /// Assumes the iterable is already on top of stack, chooses between `UnpackSequence`
+    /// (no starred target) and `UnpackEx` (exactly one starred target), then stores the
+    /// unpacked values into each sub-target — recursing through nested tuple patterns.
+    /// Shared between `Node::UnpackAssign` and chained-assignment unpack steps.
+    fn emit_unpack_store(&mut self, targets: &[UnpackTarget], targets_position: CodeRange) {
+        let star_idx = targets.iter().position(|t| matches!(t, UnpackTarget::Starred(_)));
+        self.code.set_location(targets_position, None);
+        if let Some(star_idx) = star_idx {
+            let before = u8::try_from(star_idx).expect("too many targets before star");
+            let after = u8::try_from(targets.len() - star_idx - 1).expect("too many targets after star");
+            self.code.emit_u8_u8(Opcode::UnpackEx, before, after);
+        } else {
+            let count = u8::try_from(targets.len()).expect("too many targets in unpack");
+            self.code.emit_u8(Opcode::UnpackSequence, count);
+        }
+        for t in targets {
+            self.compile_unpack_target(t);
+        }
     }
 
     // ========================================================================

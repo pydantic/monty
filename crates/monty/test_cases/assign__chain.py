@@ -53,23 +53,12 @@ target_list[0] = target_list[1] = target_list[2] = 7
 assert target_list == [7, 7, 7], 'all slots set to 7'
 
 # === Chain with side-effecting subscript expressions ===
-# Make sure container/index sub-expressions are evaluated at store time,
-# after the RHS, in left-to-right order across targets.
+# Verify that the RHS runs once, and that each target's container *and* index
+# sub-expressions are evaluated lazily at store time, in left-to-right order
+# across targets and interleaved container→index within each target.
 order = []
-
-
-def tag(name, value):
-    order.append(name)
-    return value
-
-
 bucket_a = [0]
 bucket_b = [0]
-tag('rhs_outer', 0)  # sanity
-
-# Target container expressions are evaluated lazily, once per target:
-# RHS is `compute()` called once, then each target's container/index evaluates.
-order.clear()
 
 
 def compute():
@@ -82,15 +71,25 @@ def get_a():
     return bucket_a
 
 
+def idx_a():
+    order.append('a_index')
+    return 0
+
+
 def get_b():
     order.append('b_container')
     return bucket_b
 
 
-get_a()[0] = get_b()[0] = compute()
+def idx_b():
+    order.append('b_index')
+    return 0
+
+
+get_a()[idx_a()] = get_b()[idx_b()] = compute()
 assert bucket_a[0] == 55, 'bucket a populated'
 assert bucket_b[0] == 55, 'bucket b populated'
-assert order == ['rhs', 'a_container', 'b_container'], f'store order {order}'
+assert order == ['rhs', 'a_container', 'a_index', 'b_container', 'b_index'], f'store order {order}'
 
 # === Chaining with augmented (op-assign) is NOT allowed in Python syntax,
 # so we only cover plain `=` here. ===
@@ -98,3 +97,110 @@ assert order == ['rhs', 'a_container', 'b_container'], f'store order {order}'
 # === Long chain ===
 a1 = a2 = a3 = a4 = a5 = 'x'
 assert a1 == 'x' and a2 == 'x' and a3 == 'x' and a4 == 'x' and a5 == 'x', 'long chain all equal'
+
+
+# === Chained assignment in function scope (all targets become locals) ===
+def fn_locals():
+    la = lb = lc = 100
+    return la, lb, lc
+
+
+assert fn_locals() == (100, 100, 100), 'chained locals'
+
+
+# === Chained assignment through `global` ===
+g1 = g2 = 0
+
+
+def set_globals():
+    global g1, g2
+    g1 = g2 = 77
+
+
+set_globals()
+assert g1 == 77, 'chained global g1'
+assert g2 == 77, 'chained global g2'
+
+
+# === Chained assignment mixing a local and a global ===
+g3 = 0
+
+
+def mix_local_global():
+    global g3
+    loc = g3 = 88
+    return loc
+
+
+assert mix_local_global() == 88, 'chain local gets value'
+assert g3 == 88, 'chain global gets value'
+
+
+# === Chained assignment through `nonlocal` ===
+def set_nonlocals():
+    x = y = 0
+
+    def inner():
+        nonlocal x, y
+        x = y = 123
+
+    inner()
+    return x, y
+
+
+assert set_nonlocals() == (123, 123), 'chained nonlocal targets'
+
+
+# === Chained assignment mixing a local and a nonlocal ===
+def mix_local_nonlocal():
+    x = 0
+
+    def inner():
+        nonlocal x
+        local = x = 222
+        return local
+
+    local = inner()
+    return local, x
+
+
+assert mix_local_nonlocal() == (222, 222), 'chain local and nonlocal'
+
+
+# === Walrus inside RHS of a chained assignment ===
+# The walrus binds `cc` before any target store; both `aa` and `bb` then receive
+# the post-walrus expression result.
+def walrus_in_chain():
+    aa = bb = (cc := 55) + 1
+    return aa, bb, cc
+
+
+assert walrus_in_chain() == (56, 56, 55), 'walrus binds before targets'
+
+
+# === UnboundLocalError: subscript container evaluated before its own assignment ===
+# `lst` is a local (it is one of the chain targets), so at store time of `lst[0]`
+# the name `lst` has no value yet and evaluating the container must raise.
+def unbound_subscript():
+    try:
+        lst[0] = lst = [1, 2, 3]
+    except UnboundLocalError:
+        return 'unbound'
+    return 'no-error'
+
+
+assert unbound_subscript() == 'unbound', 'subscript target container sees unbound local'
+
+
+# === TypeError: name store happens first, later subscript target sees wrong type ===
+# First store: `nm` becomes the int 1. Second store evaluates `nm[0]` on an int,
+# which is not subscriptable.
+def type_error_after_name():
+    try:
+        nm = nm[0] = 1
+    except TypeError:
+        return 'type-error'
+    return 'no-error'
+
+
+assert type_error_after_name() == 'type-error', 'later subscript target sees updated binding'
