@@ -26,7 +26,7 @@ use tokio::{
 };
 
 use crate::{
-    convert::{get_docstring, monty_to_py, py_to_monty},
+    convert::{get_docstring, monty_to_py, py_to_monty_value},
     dataclass::DcRegistry,
     exceptions::{MontyError, exc_py_to_monty},
     external::{
@@ -389,9 +389,9 @@ fn dispatch_os_call_py(
                     Ok(_) => {}
                     Err(err) => return ExtFunctionResult::Error(exc_py_to_monty(py, &err)),
                 }
-                match py_to_monty(&result, dc_registry) {
+                match py_to_monty_value(&result, dc_registry) {
                     Ok(obj) => ExtFunctionResult::Return(obj),
-                    Err(err) => ExtFunctionResult::Error(exc_py_to_monty(py, &err)),
+                    Err(exc) => ExtFunctionResult::Error(exc),
                 }
             }
             Err(err) => ExtFunctionResult::Error(exc_py_to_monty(py, &err)),
@@ -436,7 +436,7 @@ fn spawn_coroutine_task(
         match future.await {
             Ok(py_result) => Python::attach(|py| {
                 let bound = py_result.bind(py);
-                (call_id, py_obj_to_ext_result(py, bound, &dc_registry))
+                (call_id, py_obj_to_ext_result(bound, &dc_registry))
             }),
             Err(err) => Python::attach(|py| (call_id, py_err_to_ext_result(py, &err))),
         }

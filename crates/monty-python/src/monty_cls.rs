@@ -1473,8 +1473,9 @@ impl PyNameLookupSnapshot {
         let lookup_result = if let Some(kwargs) = kwargs
             && let Some(value) = kwargs.get_item(intern!(py, "value"))?
         {
-            let monty_value = py_to_monty_value(&value, &self.dc_registry).map_err(|e| MontyError::new_err(py, e))?;
-            NameLookupResult::Value(monty_value)
+            NameLookupResult::Value(
+                py_to_monty_value(&value, &self.dc_registry).map_err(|e| MontyError::new_err(py, e))?,
+            )
         } else {
             NameLookupResult::Undefined
         };
@@ -1996,10 +1997,11 @@ fn extract_external_result(
         Err(PyTypeError::new_err(ARGS_ERROR))
     } else if let Some(rv) = dict.get_item(intern!(py, "return_value"))? {
         // Return value provided. Wrap conversion failures (e.g. lone
-        // surrogates) as `MontyRuntimeError` rather than letting a raw PyErr
-        // escape the pymethod.
-        let monty_value = py_to_monty_value(&rv, dc_registry).map_err(|e| MontyError::new_err(py, e))?;
-        Ok(monty_value.into())
+        // surrogates, unconvertible types) as `MontyRuntimeError` rather than
+        // letting a raw PyErr escape the pymethod.
+        Ok(py_to_monty_value(&rv, dc_registry)
+            .map_err(|e| MontyError::new_err(py, e))?
+            .into())
     } else if let Some(exc) = dict.get_item(intern!(py, "exception"))? {
         // Exception provided
         if PyBaseException::type_check(&exc) {

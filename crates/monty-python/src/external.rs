@@ -12,7 +12,7 @@ use pyo3::{
 };
 
 use crate::{
-    convert::{monty_to_py, py_to_monty},
+    convert::{monty_to_py, py_to_monty, py_to_monty_value},
     dataclass::DcRegistry,
     exceptions::exc_py_to_monty,
 };
@@ -294,9 +294,9 @@ fn result_to_call_result(py: Python<'_>, result: &Bound<'_, PyAny>, dc_registry:
     if is_coroutine(py, result) {
         CallResult::Coroutine(result.clone().unbind())
     } else {
-        match py_to_monty(result, dc_registry) {
+        match py_to_monty_value(result, dc_registry) {
             Ok(monty_obj) => CallResult::Sync(ExtFunctionResult::Return(monty_obj)),
-            Err(err) => CallResult::Sync(ExtFunctionResult::Error(exc_py_to_monty(py, &err))),
+            Err(exc) => CallResult::Sync(ExtFunctionResult::Error(exc)),
         }
     }
 }
@@ -320,12 +320,12 @@ pub fn py_err_to_ext_result(py: Python<'_>, err: &PyErr) -> ExtFunctionResult {
 /// Converts a Python object from an async external function result into an `ExtFunctionResult`.
 ///
 /// Used by the async dispatch loop when a spawned coroutine completes successfully.
-/// Uses `exc_py_to_monty` for conversion errors, matching the sync path in
-/// `result_to_call_result` so that the same bad return value produces the same
-/// exception shape regardless of whether the external function was sync or async.
-pub fn py_obj_to_ext_result(py: Python<'_>, obj: &Bound<'_, PyAny>, dc_registry: &DcRegistry) -> ExtFunctionResult {
-    match py_to_monty(obj, dc_registry) {
+/// Routes conversion failures through `py_to_monty_value` so that the same bad
+/// return value produces the same exception shape regardless of whether the
+/// external function was sync or async.
+pub fn py_obj_to_ext_result(obj: &Bound<'_, PyAny>, dc_registry: &DcRegistry) -> ExtFunctionResult {
+    match py_to_monty_value(obj, dc_registry) {
         Ok(monty_obj) => ExtFunctionResult::Return(monty_obj),
-        Err(err) => ExtFunctionResult::Error(exc_py_to_monty(py, &err)),
+        Err(exc) => ExtFunctionResult::Error(exc),
     }
 }
