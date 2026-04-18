@@ -1,4 +1,5 @@
 import asyncio
+import threading
 
 import pytest
 from dirty_equals import IsList
@@ -1352,6 +1353,56 @@ while True:
 
     result = await repl.feed_run_async('x')
     assert result == snapshot(100)
+
+
+async def test_run_repl_feed_run_and_dump_gather_do_not_deadlock():
+    """Concurrent sync `feed_run()` and `dump()` finish without deadlocking."""
+    repl = pydantic_monty.MontyRepl(limits={'max_duration_secs': 0.1})
+    started = threading.Event()
+
+    def run_busy_snippet():
+        started.set()
+        return repl.feed_run(
+            """\
+while True:
+    pass
+"""
+        )
+
+    async def busy_task():
+        with pytest.raises(pydantic_monty.MontyRuntimeError):
+            await asyncio.to_thread(run_busy_snippet)
+
+    async def dump_task():
+        await asyncio.to_thread(started.wait)
+        await asyncio.sleep(0.01)
+        with pytest.raises(RuntimeError, match='currently executing'):
+            await asyncio.to_thread(repl.dump)
+
+    await asyncio.wait_for(asyncio.gather(busy_task(), dump_task()), 1.0)
+
+
+async def test_run_repl_type_checked_feed_runs_gather_do_not_deadlock():
+    """Concurrent type-checked sync `feed_run()` calls finish without deadlocking."""
+    type_check_stubs = '\n'.join(f'value_{i}: int' for i in range(1_500))
+    repl = pydantic_monty.MontyRepl(type_check=True, type_check_stubs=type_check_stubs)
+    started = threading.Event()
+
+    def run_bad_snippet():
+        started.set()
+        return repl.feed_run("bad_value: int = 'oops'")
+
+    async def bad_task():
+        with pytest.raises(pydantic_monty.MontyTypingError):
+            await asyncio.to_thread(run_bad_snippet)
+
+    async def good_task():
+        await asyncio.to_thread(started.wait)
+        await asyncio.sleep(0.01)
+        result = await asyncio.to_thread(repl.feed_run, '1 + 1')
+        assert result == snapshot(2)
+
+    await asyncio.wait_for(asyncio.gather(bad_task(), good_task()), 2.0)
 
 
 # === Tests for async error + REPL restoration ===
