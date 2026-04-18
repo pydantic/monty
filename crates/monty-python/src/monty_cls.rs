@@ -17,7 +17,7 @@ use pyo3::{
     exceptions::{PyBaseException, PyKeyError, PyRuntimeError, PyTypeError, PyValueError},
     intern,
     prelude::*,
-    types::{PyBytes, PyDict, PyList, PyTuple, PyType},
+    types::{PyBytes, PyDict, PyList, PyString, PyTuple, PyType},
 };
 use pyo3_async_runtimes::tokio::future_into_py;
 
@@ -69,7 +69,7 @@ impl PyMonty {
     #[pyo3(signature = (code, *, script_name="main.py", inputs=None, type_check=false, type_check_stubs=None, dataclass_registry=None))]
     fn new(
         py: Python<'_>,
-        code: String,
+        code: &Bound<'_, PyString>,
         script_name: &str,
         inputs: Option<&Bound<'_, PyList>>,
         type_check: bool,
@@ -77,6 +77,7 @@ impl PyMonty {
         dataclass_registry: Option<&Bound<'_, PyList>>,
     ) -> PyResult<Self> {
         let input_names = list_str(inputs, "inputs")?;
+        let code = extract_source_code(py, code)?;
 
         if type_check {
             py_type_check(py, &code, script_name, type_check_stubs, "type_stubs.pyi")?;
@@ -1886,6 +1887,26 @@ impl PyMontyComplete {
 
     fn __repr__(&self) -> String {
         format!("MontyComplete(output={})", self.monty_output.py_repr())
+    }
+}
+
+/// Extracts Python source code from a `PyString`, converting encoding failures
+/// into a `MontySyntaxError` rather than letting the raw `UnicodeEncodeError`
+/// bubble up.
+///
+/// Python strings may contain lone surrogates (e.g. `'\ud83d'`) that cannot be
+/// encoded as UTF-8. Such strings are not valid Python source, so we report
+/// them as a syntax error instead of an encoding error.
+pub(crate) fn extract_source_code(py: Python<'_>, code: &Bound<'_, PyString>) -> PyResult<String> {
+    match code.to_str() {
+        Ok(s) => Ok(s.to_owned()),
+        Err(_) => Err(MontyError::new_err(
+            py,
+            MontyException::new(
+                ExcType::SyntaxError,
+                Some("source code is not valid UTF-8 (contains lone surrogates)".to_string()),
+            ),
+        )),
     }
 }
 

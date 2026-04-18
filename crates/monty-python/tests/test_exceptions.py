@@ -129,6 +129,17 @@ def test_syntax_error_invalid_syntax():
     assert isinstance(inner, SyntaxError)
 
 
+def test_syntax_error_lone_surrogate():
+    # Lone surrogates cannot be encoded as UTF-8, so they are not valid Python
+    # source. We report this as MontySyntaxError rather than letting PyO3's raw
+    # UnicodeEncodeError bubble out.
+    with pytest.raises(pydantic_monty.MontySyntaxError) as exc_info:
+        pydantic_monty.Monty('\ud83d')
+    assert str(exc_info.value) == snapshot('source code is not valid UTF-8 (contains lone surrogates)')
+    inner = exc_info.value.exception()
+    assert isinstance(inner, SyntaxError)
+
+
 # === Catching with base class ===
 
 

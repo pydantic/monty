@@ -1,3 +1,4 @@
+import re
 import sys
 import tempfile
 from collections.abc import Generator
@@ -423,8 +424,6 @@ def test_resume_with_exc_type_data_propagates_uncaught():
 @pytest.mark.skipif(sys.version_info < (3, 13), reason='re.PatternError was added in Python 3.13')
 def test_resume_with_exc_type_data_dotted_name():
     """Dotted ExcType names like `re.PatternError` map to the right Python subclass."""
-    import re
-
     m = pydantic_monty.Monty('external_func()')
     progress = m.start()
     assert isinstance(progress, pydantic_monty.FunctionSnapshot)
