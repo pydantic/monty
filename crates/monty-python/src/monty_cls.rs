@@ -104,9 +104,11 @@ impl PyMonty {
     /// Use this from `async def` callers when the source might be large or when
     /// type-checking is enabled, so a slow build cannot stall other tasks on the
     /// event loop.
-    #[staticmethod]
+    #[classmethod]
     #[pyo3(signature = (code, *, script_name="main.py", inputs=None, type_check=false, type_check_stubs=None, dataclass_registry=None))]
-    fn ainit<'py>(
+    #[expect(clippy::too_many_arguments)]
+    fn acreate<'py>(
+        _cls: &Bound<'_, PyType>,
         py: Python<'py>,
         code: &Bound<'_, PyString>,
         script_name: &str,

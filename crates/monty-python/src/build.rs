@@ -5,7 +5,7 @@
 //! types ([`TypeCheckErr`], [`BuildErr`]), the type-check entry points
 //! ([`run_type_check_off_gil`], [`py_type_check`]), and the [`ConstructInputs`]
 //! bundle that the sync `Monty::__new__` (via `py.detach`) and the async
-//! `Monty.ainit` (via `tokio::task::spawn_blocking`) both consume.
+//! `Monty.acreate` (via `tokio::task::spawn_blocking`) both consume.
 //!
 //! Keeping these together lets both constructors share a single code path while
 //! also serving the standalone type-check entry points used elsewhere
@@ -55,7 +55,7 @@ impl TypeCheckErr {
 ///
 /// This is the building block shared by [`py_type_check`] (sync GIL-aware
 /// wrapper) and [`ConstructInputs::build`] (used by both the sync `__new__`
-/// constructor and the async `Monty.ainit` classmethod).
+/// constructor and the async `Monty.acreate` classmethod).
 pub(crate) fn run_type_check_off_gil(
     code: &str,
     script_name: &str,
@@ -110,7 +110,7 @@ impl BuildErr {
 /// All owned inputs needed to construct a [`PyMonty`].
 ///
 /// Built on the GIL by [`ConstructInputs::from_py`] from the Python-side
-/// arguments shared by `Monty::__new__` and `Monty.ainit`, then consumed
+/// arguments shared by `Monty::__new__` and `Monty.acreate`, then consumed
 /// off-GIL via [`ConstructInputs::build`] so the heavy parse + type-check
 /// work never blocks the caller.
 pub(crate) struct ConstructInputs {
@@ -145,7 +145,7 @@ impl ConstructInputs {
     }
 
     /// Off-GIL parse + assembly of the `PyMonty` instance. Safe to call from
-    /// `py.detach` (sync `__new__`) or `tokio::task::spawn_blocking` (`ainit`).
+    /// `py.detach` (sync `__new__`) or `tokio::task::spawn_blocking` (`acreate`).
     pub(crate) fn build(self) -> Result<PyMonty, BuildErr> {
         let Self {
             code,

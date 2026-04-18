@@ -105,8 +105,9 @@ class Monty:
             MontyTypingError: If type_check is True and type errors are found
         """
 
-    @staticmethod
-    def ainit(
+    @classmethod
+    def acreate(
+        cls,
         code: str,
         *,
         script_name: str = 'main.py',
@@ -114,7 +115,7 @@ class Monty:
         type_check: bool = False,
         type_check_stubs: str | None = None,
         dataclass_registry: list[type] | None = None,
-    ) -> Coroutine[Any, Any, Monty]:
+    ) -> Coroutine[Any, Any, Self]:
         """
         Async alternative constructor that parses and (optionally) type-checks
         the code on a worker thread, returning a coroutine that resolves to a
