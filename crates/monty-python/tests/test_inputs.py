@@ -52,8 +52,8 @@ def test_no_inputs_declared_but_provided_raises():
     m = pydantic_monty.Monty('1 + 1')
     with pytest.raises(TypeError, match='No input variables declared but inputs dict was provided'):
         m.run(inputs={'x': 1})
-        with pytest.raises(TypeError, match='No input variables declared but inputs dict was provided'):
-            m.run(inputs={})
+
+    assert m.run(inputs={}) == 2
 
 
 def test_inputs_order_independent():
