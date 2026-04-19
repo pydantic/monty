@@ -140,6 +140,56 @@ def test_syntax_error_lone_surrogate():
     assert isinstance(inner, SyntaxError)
 
 
+def test_input_name_lone_surrogate():
+    # An input *name* containing a lone surrogate cannot be encoded as UTF-8,
+    # so it cannot be a valid Python identifier. We surface this as
+    # `MontySyntaxError` (matching how invalid UTF-8 is handled for source
+    # code and type stubs) rather than letting PyO3's raw `UnicodeEncodeError`
+    # bubble up wrapped as a misleading `TypeError`.
+    with pytest.raises(pydantic_monty.MontySyntaxError) as exc_info:
+        pydantic_monty.Monty('1', inputs=['\ud83d'])
+    assert str(exc_info.value) == snapshot('inputs entry is not valid UTF-8 (contains lone surrogates)')
+    assert isinstance(exc_info.value.exception(), SyntaxError)
+
+
+def test_input_name_wrong_type():
+    # A non-string element in `inputs` still raises `TypeError` with the
+    # argument name so users can tell which argument is wrong.
+    with pytest.raises(TypeError) as exc_info:
+        pydantic_monty.Monty('1', inputs=[123])  # pyright: ignore[reportArgumentType]
+    assert str(exc_info.value) == snapshot("inputs: 'int' object is not an instance of 'str'")
+
+
+def test_syntax_error_stubs_lone_surrogate():
+    # Stubs are parsed as Python source, so invalid UTF-8 is not valid source
+    # text. We surface this as `MontySyntaxError` (matching the behavior for
+    # the main `code` argument) rather than letting PyO3's `UnicodeEncodeError`
+    # bubble up.
+    with pytest.raises(pydantic_monty.MontySyntaxError) as exc_info:
+        pydantic_monty.Monty('1', type_check=True, type_check_stubs='\ud83d')
+    assert str(exc_info.value) == snapshot('type_check_stubs is not valid UTF-8 (contains lone surrogates)')
+    assert isinstance(exc_info.value.exception(), SyntaxError)
+
+
+def test_syntax_error_stubs_lone_surrogate_without_type_check():
+    # Stubs are validated even when `type_check=False` because the raw PyO3
+    # decode happens at argument extraction time; we want a consistent error
+    # regardless of whether the stubs would actually be used.
+    with pytest.raises(pydantic_monty.MontySyntaxError) as exc_info:
+        pydantic_monty.Monty('1', type_check_stubs='\ud83d')
+    assert str(exc_info.value) == snapshot('type_check_stubs is not valid UTF-8 (contains lone surrogates)')
+
+
+def test_syntax_error_type_check_prefix_code_lone_surrogate():
+    # The standalone `Monty.type_check(prefix_code=...)` entry point shares the
+    # same extraction logic, so invalid UTF-8 in `prefix_code` is also raised
+    # as `MontySyntaxError`.
+    m = pydantic_monty.Monty('1')
+    with pytest.raises(pydantic_monty.MontySyntaxError) as exc_info:
+        m.type_check(prefix_code='\ud83d')
+    assert str(exc_info.value) == snapshot('type_check_stubs is not valid UTF-8 (contains lone surrogates)')
+
+
 def test_runtime_error_input_value_lone_surrogate():
     # An input string containing a lone surrogate fails UTF-8 conversion during
     # `py_to_monty`. We wrap the resulting `UnicodeEncodeError` as a

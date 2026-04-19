@@ -131,15 +131,15 @@ impl ConstructInputs {
         script_name: &str,
         inputs: Option<&Bound<'_, PyList>>,
         do_type_check: bool,
-        type_check_stubs: Option<&str>,
+        type_check_stubs: Option<&Bound<'_, PyString>>,
         dataclass_registry: Option<&Bound<'_, PyList>>,
     ) -> PyResult<Self> {
         Ok(Self {
-            input_names: list_str(inputs, "inputs")?,
+            input_names: list_str(py, inputs, "inputs")?,
             code: extract_source_code(py, code)?,
             script_name: script_name.to_string(),
             do_type_check,
-            type_check_stubs: type_check_stubs.map(str::to_owned),
+            type_check_stubs: extract_type_check_stubs(py, type_check_stubs)?,
             dc_registry: DcRegistry::from_list(py, dataclass_registry)?,
         })
     }
@@ -187,16 +187,61 @@ pub(crate) fn extract_source_code(py: Python<'_>, code: &Bound<'_, PyString>) ->
     }
 }
 
-/// Extracts a list of strings from an optional Python list argument, raising a
-/// helpful `TypeError` (with the argument name) when an element is the wrong
-/// type.
-fn list_str(arg: Option<&Bound<'_, PyList>>, name: &str) -> PyResult<Vec<String>> {
+/// Extracts the optional `type_check_stubs` argument, converting invalid UTF-8
+/// (lone surrogates) into a `MontySyntaxError`.
+///
+/// Stubs are Python source that gets parsed before type checking runs; text
+/// that can't even be decoded as UTF-8 is not valid Python source, so we
+/// classify it as a syntax error (same rationale as [`extract_source_code`])
+/// rather than leaking PyO3's raw `UnicodeEncodeError`.
+pub(crate) fn extract_type_check_stubs(
+    py: Python<'_>,
+    type_check_stubs: Option<&Bound<'_, PyString>>,
+) -> PyResult<Option<String>> {
+    match type_check_stubs {
+        Some(stubs) => match stubs.to_str() {
+            Ok(s) => Ok(Some(s.to_owned())),
+            Err(_) => Err(MontyError::new_err(
+                py,
+                MontyException::new(
+                    ExcType::SyntaxError,
+                    Some("type_check_stubs is not valid UTF-8 (contains lone surrogates)".to_string()),
+                ),
+            )),
+        },
+        None => Ok(None),
+    }
+}
+
+/// Extracts a list of strings from an optional Python list argument.
+///
+/// Distinguishes two failure modes so callers get precise errors:
+/// - a non-string element raises `TypeError` (wrong argument shape — no Monty
+///   equivalent makes sense, so a plain Python `TypeError` is appropriate)
+/// - a string with a lone surrogate raises [`MontySyntaxError`], matching how
+///   [`extract_source_code`] handles the same condition on the source-code
+///   argument: input names become Python identifiers, so unencodable text is
+///   not valid source and is reported as a syntax error rather than leaking
+///   PyO3's raw `UnicodeEncodeError` wrapped in a misleading `TypeError`.
+fn list_str(py: Python<'_>, arg: Option<&Bound<'_, PyList>>, name: &str) -> PyResult<Vec<String>> {
     if let Some(names) = arg {
         names
             .iter()
-            .map(|item| item.extract::<String>())
-            .collect::<PyResult<Vec<_>>>()
-            .map_err(|e| PyTypeError::new_err(format!("{name}: {e}")))
+            .map(|item| {
+                let s = item
+                    .cast::<PyString>()
+                    .map_err(|e| PyTypeError::new_err(format!("{name}: {e}")))?;
+                s.to_str().map(str::to_owned).map_err(|_| {
+                    MontyError::new_err(
+                        py,
+                        MontyException::new(
+                            ExcType::SyntaxError,
+                            Some(format!("{name} entry is not valid UTF-8 (contains lone surrogates)")),
+                        ),
+                    )
+                })
+            })
+            .collect()
     } else {
         Ok(vec![])
     }

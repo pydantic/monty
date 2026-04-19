@@ -20,7 +20,7 @@ use pyo3_async_runtimes::tokio::future_into_py;
 
 use crate::{
     async_dispatch::{ReplCleanupNotifier, await_repl_transition, dispatch_loop_repl},
-    build::{extract_source_code, py_type_check},
+    build::{extract_source_code, extract_type_check_stubs, py_type_check},
     convert::{get_docstring, monty_to_py, py_to_monty_value},
     dataclass::DcRegistry,
     exceptions::{MontyError, exc_py_to_monty},
@@ -105,11 +105,15 @@ impl PyMontyRepl {
         script_name: &str,
         limits: Option<&Bound<'_, PyDict>>,
         type_check: bool,
-        type_check_stubs: Option<&str>,
+        type_check_stubs: Option<&Bound<'_, PyString>>,
         dataclass_registry: Option<&Bound<'_, PyList>>,
     ) -> PyResult<Self> {
         let dc_registry = DcRegistry::from_list(py, dataclass_registry)?;
         let script_name = script_name.to_string();
+        // Validate stub UTF-8 up-front so non-UTF-8 stubs surface as a
+        // `MontyTypingError` (matching the `Monty` constructor) rather than a
+        // raw `UnicodeEncodeError`, even when `type_check=False`.
+        let committed_stubs = extract_type_check_stubs(py, type_check_stubs)?.unwrap_or_default();
 
         let repl = if let Some(limits) = limits {
             let tracker = PySignalTracker::new(LimitedTracker::new(extract_limits(limits)?));
@@ -125,7 +129,7 @@ impl PyMontyRepl {
             script_name,
             type_check_state: if type_check {
                 Some(Mutex::new(TypeCheckState {
-                    committed_stubs: type_check_stubs.map(Into::into).unwrap_or_default(),
+                    committed_stubs,
                     pending_snippet: None,
                 }))
             } else {
@@ -145,9 +149,15 @@ impl PyMontyRepl {
     /// This does not use the accumulated code from previous `feed_run` calls —
     /// use `prefix_code` to provide any needed declarations.
     #[pyo3(signature = (code, prefix_code=None))]
-    fn type_check(&self, py: Python<'_>, code: &Bound<'_, PyString>, prefix_code: Option<&str>) -> PyResult<()> {
+    fn type_check(
+        &self,
+        py: Python<'_>,
+        code: &Bound<'_, PyString>,
+        prefix_code: Option<&Bound<'_, PyString>>,
+    ) -> PyResult<()> {
         let code = extract_source_code(py, code)?;
-        py_type_check(py, &code, &self.script_name, prefix_code, "type_stubs.pyi")
+        let prefix_code = extract_type_check_stubs(py, prefix_code)?;
+        py_type_check(py, &code, &self.script_name, prefix_code.as_deref(), "type_stubs.pyi")
     }
 
     /// Feeds and executes a single incremental REPL snippet.

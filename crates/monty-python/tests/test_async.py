@@ -1511,3 +1511,10 @@ async def test_acreate_type_check_success():
     """Successful type check returns a usable Monty instance."""
     m = await pydantic_monty.Monty.acreate('x: int = 1\nx + 2', type_check=True)
     assert m.run() == snapshot(3)
+
+
+async def test_acreate_stubs_lone_surrogate():
+    """Invalid UTF-8 in `type_check_stubs` surfaces as `MontySyntaxError`."""
+    with pytest.raises(pydantic_monty.MontySyntaxError) as exc_info:
+        await pydantic_monty.Monty.acreate('1', type_check=True, type_check_stubs='\ud83d')
+    assert str(exc_info.value) == snapshot('type_check_stubs is not valid UTF-8 (contains lone surrogates)')
