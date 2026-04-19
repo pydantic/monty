@@ -216,14 +216,7 @@ impl Clone for Executor {
 impl Executor {
     /// Creates a new executor with the given code, filename, and input names.
     pub(crate) fn new(code: String, script_name: &str, input_names: Vec<String>) -> Result<Self, MontyException> {
-        for name in &input_names {
-            if !is_identifier(name) {
-                return Err(MontyException::new(
-                    ExcType::SyntaxError,
-                    Some(format!("Input name {} not a valid identifier", StringRepr(name))),
-                ));
-            }
-        }
+        check_identifier(&input_names)?;
         let parse_result = parse(&code, script_name).map_err(|e| e.into_python_exc(script_name, &code))?;
         let prepared = prepare(parse_result, input_names).map_err(|e| e.into_python_exc(script_name, &code))?;
 
@@ -266,6 +259,7 @@ impl Executor {
         existing_interns: &Interns,
         input_names: Vec<String>,
     ) -> Result<Self, MontyException> {
+        check_identifier(&input_names)?;
         // Pre-register input names so they get stable slots before preparation.
         for name in &input_names {
             let next_slot = existing_name_map.len();
@@ -542,4 +536,19 @@ pub struct RefCountOutput {
     /// If GC ran during execution, this will be lower than the total number of
     /// allocations. Compare this against expected allocation count to verify GC ran.
     pub allocations_since_gc: u32,
+}
+
+/// Check if input names are valid Python identifiers.
+///
+/// `is_identifier` also checks that the names are not keywords.
+fn check_identifier(input_names: &[String]) -> Result<(), MontyException> {
+    for name in input_names {
+        if !is_identifier(name) {
+            return Err(MontyException::new(
+                ExcType::SyntaxError,
+                Some(format!("Input name {} not a valid identifier", StringRepr(name))),
+            ));
+        }
+    }
+    Ok(())
 }

@@ -1323,3 +1323,10 @@ def test_repl_future_snapshot_resume_lone_surrogate_return_value():
     assert isinstance(final, pydantic_monty.MontyComplete)
     assert final.output == snapshot(42)
     assert repl.feed_run('1 + 1') == snapshot(2)
+
+
+def test_input_invalid_identifier():
+    repl = pydantic_monty.MontyRepl()
+    with pytest.raises(pydantic_monty.MontySyntaxError) as exc_info:
+        repl.feed_start('x', inputs={'foo.bar': 42})
+    assert str(exc_info.value) == snapshot("Input name 'foo.bar' not a valid identifier")
