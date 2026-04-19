@@ -8,7 +8,7 @@ use ::monty::{MontyDate, MontyDateTime, MontyObject, MontyTimeDelta, MontyTimeZo
 use monty::MontyException;
 use num_bigint::BigInt;
 use pyo3::{
-    exceptions::{PyBaseException, PyTypeError},
+    exceptions::{PyBaseException, PyRuntimeError, PyTypeError},
     intern,
     prelude::*,
     sync::PyOnceLock,
@@ -23,6 +23,8 @@ use crate::{
     exceptions::{exc_monty_to_py, exc_py_to_monty, exc_to_monty_object},
 };
 
+const MAX_DEPTH: u8 = 200;
+
 /// Like `py_to_monty`, but converts any `PyErr` into a `MontyException`.
 ///
 /// Use this at every boundary where an untrusted host value flows into Monty
@@ -31,7 +33,7 @@ use crate::{
 /// Python-API returns, or `ExtFunctionResult::Error(e)` for mid-execution
 /// dispatch — so raw PyO3 errors like `UnicodeEncodeError` never escape.
 pub fn py_to_monty_value(obj: &Bound<'_, PyAny>, dc_registry: &DcRegistry) -> Result<MontyObject, MontyException> {
-    py_to_monty(obj, dc_registry).map_err(|e| exc_py_to_monty(obj.py(), &e))
+    py_to_monty(obj, dc_registry, 0).map_err(|e| exc_py_to_monty(obj.py(), &e))
 }
 
 /// Converts a Python object to Monty's `MontyObject` representation.
@@ -46,8 +48,11 @@ pub fn py_to_monty_value(obj: &Bound<'_, PyAny>, dc_registry: &DcRegistry) -> Re
 /// # Important
 /// Checks `bool` before `int` since `bool` is a subclass of `int` in Python.
 /// Callable check is last since many Python types (classes, etc.) are technically callable.
-pub fn py_to_monty(obj: &Bound<'_, PyAny>, dc_registry: &DcRegistry) -> PyResult<MontyObject> {
-    if obj.is_none() {
+pub fn py_to_monty(obj: &Bound<'_, PyAny>, dc_registry: &DcRegistry, mut depth: u8) -> PyResult<MontyObject> {
+    depth += 1;
+    if depth > MAX_DEPTH {
+        Err(PyRuntimeError::new_err("Max input depth exceeded"))
+    } else if obj.is_none() {
         Ok(MontyObject::None)
     } else if let Ok(bool) = obj.cast::<PyBool>() {
         // Check bool BEFORE int since bool is a subclass of int in Python
@@ -68,7 +73,8 @@ pub fn py_to_monty(obj: &Bound<'_, PyAny>, dc_registry: &DcRegistry) -> PyResult
     } else if let Ok(bytes) = obj.cast::<PyBytes>() {
         Ok(MontyObject::Bytes(bytes.extract()?))
     } else if let Ok(list) = obj.cast::<PyList>() {
-        let items: PyResult<Vec<MontyObject>> = list.iter().map(|item| py_to_monty(&item, dc_registry)).collect();
+        let items: PyResult<Vec<MontyObject>> =
+            list.iter().map(|item| py_to_monty(&item, dc_registry, depth)).collect();
         Ok(MontyObject::List(items?))
     } else if let Ok(tuple) = obj.cast::<PyTuple>() {
         // Check for namedtuple BEFORE treating as regular tuple
@@ -91,7 +97,10 @@ pub fn py_to_monty(obj: &Bound<'_, PyAny>, dc_registry: &DcRegistry) -> PyResult
             // Extract field names as strings
             let field_names: PyResult<Vec<String>> = fields_tuple.iter().map(|f| f.extract::<String>()).collect();
             // Extract values
-            let values: PyResult<Vec<MontyObject>> = tuple.iter().map(|item| py_to_monty(&item, dc_registry)).collect();
+            let values: PyResult<Vec<MontyObject>> = tuple
+                .iter()
+                .map(|item| py_to_monty(&item, dc_registry, depth))
+                .collect();
             return Ok(MontyObject::NamedTuple {
                 type_name,
                 field_names: field_names?,
@@ -99,21 +108,32 @@ pub fn py_to_monty(obj: &Bound<'_, PyAny>, dc_registry: &DcRegistry) -> PyResult
             });
         }
         // Regular tuple
-        let items: PyResult<Vec<MontyObject>> = tuple.iter().map(|item| py_to_monty(&item, dc_registry)).collect();
+        let items: PyResult<Vec<MontyObject>> = tuple
+            .iter()
+            .map(|item| py_to_monty(&item, dc_registry, depth))
+            .collect();
         Ok(MontyObject::Tuple(items?))
     } else if let Ok(dict) = obj.cast::<PyDict>() {
         // in theory we could provide a way of passing the iterator direct to the internal MontyObject construct
         // it's probably not worth it right now
         Ok(MontyObject::dict(
             dict.iter()
-                .map(|(k, v)| Ok((py_to_monty(&k, dc_registry)?, py_to_monty(&v, dc_registry)?)))
+                .map(|(k, v)| {
+                    Ok((
+                        py_to_monty(&k, dc_registry, depth)?,
+                        py_to_monty(&v, dc_registry, depth)?,
+                    ))
+                })
                 .collect::<PyResult<Vec<(MontyObject, MontyObject)>>>()?,
         ))
     } else if let Ok(set) = obj.cast::<PySet>() {
-        let items: PyResult<Vec<MontyObject>> = set.iter().map(|item| py_to_monty(&item, dc_registry)).collect();
+        let items: PyResult<Vec<MontyObject>> = set.iter().map(|item| py_to_monty(&item, dc_registry, depth)).collect();
         Ok(MontyObject::Set(items?))
     } else if let Ok(frozenset) = obj.cast::<PyFrozenSet>() {
-        let items: PyResult<Vec<MontyObject>> = frozenset.iter().map(|item| py_to_monty(&item, dc_registry)).collect();
+        let items: PyResult<Vec<MontyObject>> = frozenset
+            .iter()
+            .map(|item| py_to_monty(&item, dc_registry, depth))
+            .collect();
         Ok(MontyObject::FrozenSet(items?))
     } else if obj.is(obj.py().Ellipsis()) {
         Ok(MontyObject::Ellipsis)

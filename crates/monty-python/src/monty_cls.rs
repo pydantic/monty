@@ -488,33 +488,32 @@ impl PyMonty {
         dc_registry: &DcRegistry,
     ) -> PyResult<Vec<::monty::MontyObject>> {
         if self.input_names.is_empty() {
-            if inputs.is_some() {
-                return Err(PyTypeError::new_err(
+            if inputs.map_or(0, PyDictMethods::len) == 0 {
+                Ok(vec![])
+            } else {
+                Err(PyTypeError::new_err(
                     "No input variables declared but inputs dict was provided",
-                ));
+                ))
             }
-            return Ok(vec![]);
-        }
-
-        let Some(inputs) = inputs else {
-            return Err(PyTypeError::new_err(format!(
+        } else if let Some(inputs) = inputs {
+            // Extract values in declaration order. `py_to_monty_value` converts any
+            // PyErr (e.g. `UnicodeEncodeError` for a lone-surrogate string) into a
+            // `MontyException`, which we then raise as `MontyRuntimeError`.
+            self.input_names
+                .iter()
+                .map(|name| {
+                    let value = inputs
+                        .get_item(name)?
+                        .ok_or_else(|| PyKeyError::new_err(format!("Missing required input: '{name}'")))?;
+                    py_to_monty_value(&value, dc_registry).map_err(|e| MontyError::new_err(value.py(), e))
+                })
+                .collect::<PyResult<_>>()
+        } else {
+            Err(PyTypeError::new_err(format!(
                 "Missing required inputs: {:?}",
                 self.input_names
-            )));
-        };
-
-        // Extract values in declaration order. `py_to_monty_value` converts any
-        // PyErr (e.g. `UnicodeEncodeError` for a lone-surrogate string) into a
-        // `MontyException`, which we then raise as `MontyRuntimeError`.
-        self.input_names
-            .iter()
-            .map(|name| {
-                let value = inputs
-                    .get_item(name)?
-                    .ok_or_else(|| PyKeyError::new_err(format!("Missing required input: '{name}'")))?;
-                py_to_monty_value(&value, dc_registry).map_err(|e| MontyError::new_err(value.py(), e))
-            })
-            .collect::<PyResult<_>>()
+            )))
+        }
     }
 
     /// Runs code with a generic resource tracker, releasing the GIL during execution.

@@ -73,8 +73,8 @@ pub fn dataclass_to_monty(value: &Bound<'_, PyAny>, dc_registry: &DcRegistry) ->
             }
 
             let field_value = value.getattr(field_name_obj.cast::<PyString>()?)?;
-            let field_name_monty = py_to_monty(&field_name_obj, dc_registry)?;
-            let field_value_monty = py_to_monty(&field_value, dc_registry)?;
+            let field_name_monty = py_to_monty(&field_name_obj, dc_registry, 0)?;
+            let field_value_monty = py_to_monty(&field_value, dc_registry, 0)?;
 
             field_names.push(field_name_str);
             attrs.push((field_name_monty, field_value_monty));

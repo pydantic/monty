@@ -1,3 +1,5 @@
+from typing import Any
+
 import pytest
 from inline_snapshot import snapshot
 
@@ -124,3 +126,17 @@ foo(10)
     m = pydantic_monty.Monty(code, inputs=['x'])
     # x=5 (input), foo(10) with y=10, returns x + y = 5 + 10 = 15
     assert m.run(inputs={'x': 5}) == snapshot(15)
+
+
+def test_deep_input():
+    m = pydantic_monty.Monty('x', inputs=['x'])
+    x: list[Any] = []
+    x.append(x)
+    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
+        m.run(inputs={'x': x})
+    assert str(exc_info.value) == snapshot('RuntimeError: Max input depth exceeded')
+
+
+def test_empty_inputs():
+    m = pydantic_monty.Monty('1 + 1', inputs=[])
+    assert m.run(inputs={}) == snapshot(2)
