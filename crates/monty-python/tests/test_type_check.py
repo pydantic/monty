@@ -36,7 +36,7 @@ def test_type_check_stubs_not_leaked_to_later_call():
     therefore be unresolved in call 2 when that call does not pass stubs.
     """
     # Call 1: prefix code declares `call1_stub_var`; code referencing it type-checks clean.
-    assert pydantic_monty.Monty('result = call1_stub_var + 1').type_check(prefix_code='call1_stub_var = 0') is None
+    assert pydantic_monty.Monty('result = call1_stub_var + 1').type_check('call1_stub_var = 0') is None
     # Call 2: same expression, no stubs — `call1_stub_var` must be undefined.
     with pytest.raises(pydantic_monty.MontyTypingError) as exc_info:
         pydantic_monty.Monty('result = call1_stub_var + 1').type_check()
@@ -131,7 +131,7 @@ def test_type_check_with_prefix_code():
     with pytest.raises(pydantic_monty.MontyTypingError):
         m.type_check()
     # With prefix declaring x as a variable, it should pass
-    assert m.type_check(prefix_code='x = 0') is None
+    assert m.type_check('x = 0') is None
 
 
 def test_type_check_display_invalid_format():
@@ -409,7 +409,7 @@ def test_repl_type_check_method_with_prefix():
     with pytest.raises(pydantic_monty.MontyTypingError):
         repl.type_check('result = x + 1')
     # With prefix declaring x, it should pass
-    assert repl.type_check('result = x + 1', prefix_code='x = 0') is None
+    assert repl.type_check('result = x + 1', type_check_stubs='x = 0') is None
 
 
 def test_repl_type_check_default_off():

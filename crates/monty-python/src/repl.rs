@@ -148,16 +148,22 @@ impl PyMontyRepl {
     /// Checks the snippet in isolation using `prefix_code` as stub context.
     /// This does not use the accumulated code from previous `feed_run` calls —
     /// use `prefix_code` to provide any needed declarations.
-    #[pyo3(signature = (code, prefix_code=None))]
+    #[pyo3(signature = (code, type_check_stubs=None))]
     fn type_check(
         &self,
         py: Python<'_>,
         code: &Bound<'_, PyString>,
-        prefix_code: Option<&Bound<'_, PyString>>,
+        type_check_stubs: Option<&Bound<'_, PyString>>,
     ) -> PyResult<()> {
         let code = extract_source_code(py, code)?;
-        let prefix_code = extract_type_check_stubs(py, prefix_code)?;
-        py_type_check(py, &code, &self.script_name, prefix_code.as_deref(), "type_stubs.pyi")
+        let type_check_stubs = extract_type_check_stubs(py, type_check_stubs)?;
+        py_type_check(
+            py,
+            &code,
+            &self.script_name,
+            type_check_stubs.as_deref(),
+            "type_stubs.pyi",
+        )
     }
 
     /// Feeds and executes a single incremental REPL snippet.

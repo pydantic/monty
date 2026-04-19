@@ -205,7 +205,7 @@ pub(crate) fn extract_type_check_stubs(
                 py,
                 MontyException::new(
                     ExcType::SyntaxError,
-                    Some("type_check_stubs is not valid UTF-8 (contains lone surrogates)".to_string()),
+                    Some("type_check_stubs is not valid UTF-8".to_string()),
                 ),
             )),
         },

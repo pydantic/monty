@@ -129,7 +129,7 @@ class Monty:
             MontyTypingError: If type_check is True and type errors are found
         """
 
-    def type_check(self, prefix_code: str | None = None) -> None:
+    def type_check(self, type_check_stubs: str | None = None) -> None:
         """
         Perform static type checking on the code.
 
@@ -137,7 +137,7 @@ class Monty:
         a subset of Python's type system supported by Monty.
 
         Arguments:
-            prefix_code: Optional code to prepend before type checking,
+            type_check_stubs: Optional code to prepend before type checking,
                 e.g. with input variable declarations or external function signatures.
 
         Raises:
@@ -353,17 +353,17 @@ class MontyRepl:
         Register a dataclass type for proper isinstance() support on output.
         """
 
-    def type_check(self, code: str, prefix_code: str | None = None) -> None:
+    def type_check(self, code: str, type_check_stubs: str | None = None) -> None:
         """
         Perform static type checking on the given code snippet.
 
-        Checks the snippet in isolation using `prefix_code` as stub context.
+        Checks the snippet in isolation using `type_check_stubs` as stub context.
         This does not use the accumulated code from previous `feed_run` calls —
-        use `prefix_code` to provide any needed declarations.
+        use `type_check_stubs` to provide any needed declarations.
 
         Arguments:
             code: The code to type check
-            prefix_code: Optional code to prepend before type checking,
+            type_check_stubs: Optional code to prepend before type checking,
                 e.g. with input variable declarations or external function signatures
 
         Raises:

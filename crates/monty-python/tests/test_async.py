@@ -1517,4 +1517,4 @@ async def test_acreate_stubs_lone_surrogate():
     """Invalid UTF-8 in `type_check_stubs` surfaces as `MontySyntaxError`."""
     with pytest.raises(pydantic_monty.MontySyntaxError) as exc_info:
         await pydantic_monty.Monty.acreate('1', type_check=True, type_check_stubs='\ud83d')
-    assert str(exc_info.value) == snapshot('type_check_stubs is not valid UTF-8 (contains lone surrogates)')
+    assert str(exc_info.value) == snapshot('type_check_stubs is not valid UTF-8')

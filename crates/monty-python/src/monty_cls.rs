@@ -165,14 +165,14 @@ impl PyMonty {
     /// # Raises
     /// * `RuntimeError` if type checking infrastructure fails
     /// * `MontyTypingError` if type errors are found
-    #[pyo3(signature = (prefix_code=None))]
-    fn type_check(&self, py: Python<'_>, prefix_code: Option<&Bound<'_, PyString>>) -> PyResult<()> {
-        let prefix_code = extract_type_check_stubs(py, prefix_code)?;
+    #[pyo3(signature = (type_check_stubs=None))]
+    fn type_check(&self, py: Python<'_>, type_check_stubs: Option<&Bound<'_, PyString>>) -> PyResult<()> {
+        let type_check_stubs = extract_type_check_stubs(py, type_check_stubs)?;
         py_type_check(
             py,
             self.runner.code(),
             &self.script_name,
-            prefix_code.as_deref(),
+            type_check_stubs.as_deref(),
             "type_stubs.pyi",
         )
     }

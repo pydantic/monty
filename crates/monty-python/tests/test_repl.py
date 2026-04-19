@@ -193,7 +193,7 @@ def test_syntax_error_stubs_lone_surrogate():
     # `MontySyntaxError`, matching the `Monty` constructor.
     with pytest.raises(pydantic_monty.MontySyntaxError) as exc_info:
         pydantic_monty.MontyRepl(type_check=True, type_check_stubs='\ud83d')
-    assert str(exc_info.value) == snapshot('type_check_stubs is not valid UTF-8 (contains lone surrogates)')
+    assert str(exc_info.value) == snapshot('type_check_stubs is not valid UTF-8')
 
 
 def test_syntax_error_type_check_prefix_code_lone_surrogate():
@@ -201,8 +201,8 @@ def test_syntax_error_type_check_prefix_code_lone_surrogate():
     # UTF-8 and raises `MontySyntaxError`.
     repl = pydantic_monty.MontyRepl()
     with pytest.raises(pydantic_monty.MontySyntaxError) as exc_info:
-        repl.type_check('1', prefix_code='\ud83d')
-    assert str(exc_info.value) == snapshot('type_check_stubs is not valid UTF-8 (contains lone surrogates)')
+        repl.type_check('1', type_check_stubs='\ud83d')
+    assert str(exc_info.value) == snapshot('type_check_stubs is not valid UTF-8')
 
 
 def test_runtime_error_input_value_lone_surrogate():
