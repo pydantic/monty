@@ -2,6 +2,7 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use ahash::AHashMap;
+use ruff_python_stdlib::identifiers::is_identifier;
 
 use crate::{
     ExcType, MontyException,
@@ -16,6 +17,7 @@ use crate::{
     prepare::{prepare, prepare_with_existing_names},
     resource::{NoLimitTracker, ResourceTracker},
     run_progress::{RunProgress, build_run_progress, check_snapshot_from_converted, convert_frame_exit},
+    types::str::StringRepr,
     value::Value,
 };
 
@@ -214,6 +216,14 @@ impl Clone for Executor {
 impl Executor {
     /// Creates a new executor with the given code, filename, and input names.
     pub(crate) fn new(code: String, script_name: &str, input_names: Vec<String>) -> Result<Self, MontyException> {
+        for name in &input_names {
+            if !is_identifier(name) {
+                return Err(MontyException::new(
+                    ExcType::SyntaxError,
+                    Some(format!("Input name {} not a valid identifier", StringRepr(name))),
+                ));
+            }
+        }
         let parse_result = parse(&code, script_name).map_err(|e| e.into_python_exc(script_name, &code))?;
         let prepared = prepare(parse_result, input_names).map_err(|e| e.into_python_exc(script_name, &code))?;
 

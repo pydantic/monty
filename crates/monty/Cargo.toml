@@ -18,6 +18,7 @@ path = "src/lib.rs"
 
 [dependencies]
 ruff_python_parser = { workspace = true }
+ruff_python_stdlib = { workspace = true }
 ruff_python_ast = { workspace = true }
 ruff_text_size = { workspace = true }
 ahash = { version = "0.8.0", features = ["serde"] }
