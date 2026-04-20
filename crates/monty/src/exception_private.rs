@@ -259,19 +259,6 @@ impl ExcType {
         })
     }
 
-    /// Creates a FrozenInstanceError for assigning to a frozen dataclass.
-    ///
-    /// Matches CPython's `dataclasses.FrozenInstanceError` which is a subclass of `AttributeError`.
-    /// Message format: "cannot assign to field 'attr_name'"
-    #[must_use]
-    pub(crate) fn frozen_instance_error(attr_name: &str) -> RunError {
-        SimpleException::new_msg(
-            Self::FrozenInstanceError,
-            format!("cannot assign to field '{attr_name}'"),
-        )
-        .into()
-    }
-
     #[must_use]
     pub(crate) fn type_error_not_sub(type_: Type) -> RunError {
         SimpleException::new_msg(Self::TypeError, format!("'{type_}' object is not subscriptable")).into()

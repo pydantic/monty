@@ -11,7 +11,7 @@ use crate::{
     args::ArgValues,
     bytecode::{CallResult, VM},
     defer_drop,
-    exception_private::{ExcType, RunResult},
+    exception_private::{ExcType, RunResult, SimpleException},
     heap::{
         BorrowedHeapRead, BorrowedHeapReadMut, HeapId, HeapItem, HeapRead, heap_read_ref_as_field,
         heap_read_ref_as_field_mut,
@@ -141,14 +141,14 @@ impl<'h> HeapRead<'h, Dataclass> {
     ) -> RunResult<Option<Value>> {
         if self.get(vm.heap).frozen {
             // Get attribute name for error message
-            let attr_name = match &name {
-                Value::InternString(id) => vm.interns.get_str(*id).to_string(),
-                _ => "<unknown>".to_string(),
-            };
+            let exc = SimpleException::new_msg(
+                ExcType::FrozenInstanceError,
+                format!("cannot assign to field {}", &name.py_repr(vm)?),
+            );
             // Drop the values we were given ownership of
             name.drop_with_heap(vm);
             value.drop_with_heap(vm);
-            return Err(ExcType::frozen_instance_error(&attr_name));
+            return Err(exc.into());
         }
         self.attrs_mut().set(name, value, vm)
     }
