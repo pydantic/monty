@@ -98,10 +98,10 @@ impl Slice {
     /// For negative step:
     /// - start defaults to length-1, stop defaults to -1 (before beginning)
     /// - start is clamped to [-1, length-1], stop to [-1, length-1]
-    pub fn indices(&self, length: usize) -> Result<(usize, usize, i64), ()> {
+    pub fn indices(&self, length: usize) -> RunResult<(i64, i64, i64)> {
         let step = self.step.unwrap_or(1);
         if step == 0 {
-            return Err(());
+            return Err(ExcType::value_error_slice_step_zero());
         }
 
         let len = i64::try_from(length).unwrap_or(i64::MAX);
@@ -114,11 +114,7 @@ impl Slice {
             let start = self.start.map_or(default_start, |s| normalize_index(s, len, 0, len));
             let stop = self.stop.map_or(default_stop, |s| normalize_index(s, len, 0, len));
 
-            // Convert to usize, clamping to valid range
-            let start_usize = usize::try_from(start.max(0)).unwrap_or(0);
-            let stop_usize = usize::try_from(stop.max(0)).unwrap_or(0).min(length);
-
-            Ok((start_usize, stop_usize, step))
+            Ok((start, stop, step))
         } else {
             // Negative step: iterate backward
             // For negative step, we need different handling
@@ -130,28 +126,7 @@ impl Slice {
                 .map_or(default_start, |s| normalize_index(s, len, -1, len - 1));
             let stop = self.stop.map_or(default_stop, |s| normalize_index(s, len, -1, len - 1));
 
-            // The start can be at most len-1
-            let start_i64 = start.min(len - 1);
-            let stop_i64 = stop; // can be -1 to mean "go all the way to beginning"
-
-            // If start normalizes to < 0, it means the starting position is before index 0.
-            // For negative step iteration, this produces an empty slice.
-            // Return (0, 0, step) which makes the iteration condition `0 > 0` false immediately.
-            if start_i64 < 0 {
-                return Ok((0, 0, step));
-            }
-
-            let start_usize = usize::try_from(start_i64).unwrap_or(0);
-
-            // For stop, we encode it specially: if stop is -1, it means "stop before index 0"
-            // We'll use length + 1 as a sentinel to indicate "stop was None or evaluates to before 0"
-            let stop_usize = if stop_i64 < 0 {
-                length + 1 // sentinel value meaning "go all the way to the beginning"
-            } else {
-                usize::try_from(stop_i64).unwrap_or(0)
-            };
-
-            Ok((start_usize, stop_usize, step))
+            Ok((start, stop, step))
         }
     }
 }
@@ -258,5 +233,57 @@ fn format_option_i64(f: &mut impl Write, value: Option<i64>) -> fmt::Result {
     match value {
         Some(i) => write!(f, "{i}"),
         None => f.write_str("None"),
+    }
+}
+
+/// Applies a Python `slice` to an iterator and collects the result.
+///
+/// This is the shared back-end for `[start:stop:step]` indexing on every
+/// sequence type — `str`, `bytes`, `list`, `tuple` — that wants to evaluate
+/// the slice eagerly into a new container. (`range` is the exception: it
+/// composes the slice symbolically into a new `Range`, so it doesn't go
+/// through here.)
+///
+/// `collect_map` is applied **after** the slicing logic, so per-item work
+/// (e.g. `clone_with_heap` for heap-allocated `Value`s) only runs on items
+/// that survive the slice. Use `|x| x` when no transform is needed.
+pub(crate) fn slice_collect_iterator<Iter: DoubleEndedIterator + Clone, U, T: FromIterator<U>>(
+    slice: &Slice,
+    iter: Iter,
+    collect_map: impl Fn(Iter::Item) -> U,
+) -> RunResult<T> {
+    let length = iter.clone().count();
+    let (start, stop, step) = slice.indices(length)?;
+
+    if step > 0 {
+        // saturate at usize::MAX - will take just the first item if step is too large for usize
+        let step: usize = step.try_into().unwrap_or(usize::MAX);
+        // with step > 0, slice.indices() guarantee 0 <= start/stop <= length
+        let start = start
+            .try_into()
+            .expect("slice.indices() guarantees start > 0 for step > 0");
+        let stop = stop
+            .try_into()
+            .expect("slice.indices() guarantees stop > 0 for step > 0");
+        Ok(iter.take(stop).skip(start).step_by(step).map(collect_map).collect())
+    } else {
+        // step < 0, iterate backward
+        let step: usize = step.unsigned_abs().try_into().unwrap_or(usize::MAX);
+
+        // the +1 is because when reverse iterating, at index 'start' we want to include the item at start,
+        // which means we need to skip 'length - start - 1' items from the end. Similar for stop.
+        //
+        // Both start and stop can be in the range [-1, length-1] for negative step, so after the +1 they are
+        // known to be positive and can convert to usize (saturating if needed)
+        let normalized_start = length.saturating_sub(start.saturating_add(1).try_into().unwrap_or(usize::MAX));
+        let normalized_stop = length.saturating_sub(stop.saturating_add(1).try_into().unwrap_or(usize::MAX));
+
+        Ok(iter
+            .rev()
+            .take(normalized_stop)
+            .skip(normalized_start)
+            .step_by(step)
+            .map(collect_map)
+            .collect())
     }
 }

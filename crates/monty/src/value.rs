@@ -24,10 +24,11 @@ use crate::{
     resource::{ResourceError, ResourceTracker, check_div_size, check_lshift_size, check_pow_size, check_repeat_size},
     types::{
         Bytes, LongInt, Property, PyTrait, Str, Type,
-        bytes::{bytes_repr_fmt, get_byte_at_index, get_bytes_slice},
+        bytes::{bytes_repr_fmt, get_byte_at_index},
         long_int::check_bits_str_digits_limit,
         path,
-        str::{allocate_char, get_char_at_index, get_str_slice, string_repr_fmt},
+        slice::slice_collect_iterator,
+        str::{allocate_char, get_char_at_index, string_repr_fmt},
         timedelta,
     },
 };
@@ -1304,12 +1305,8 @@ impl PyTrait<'_> for Value {
                     && let HeapData::Slice(slice_obj) = vm.heap.get(*key_id)
                 {
                     let s = interns.get_str(*string_id);
-                    let char_count = s.chars().count();
-                    let (start, stop, step) = slice_obj
-                        .indices(char_count)
-                        .map_err(|()| ExcType::value_error_slice_step_zero())?;
-                    let result_str = get_str_slice(s, start, stop, step);
-                    let heap_id = vm.heap.allocate(HeapData::Str(Str::from(result_str)))?;
+                    let result_str = slice_collect_iterator(slice_obj, s.chars(), |c| c)?;
+                    let heap_id = vm.heap.allocate(HeapData::Str(Str::from_boxed(result_str)))?;
                     return Ok(Self::Ref(heap_id));
                 }
 
@@ -1330,10 +1327,7 @@ impl PyTrait<'_> for Value {
                     && let HeapData::Slice(slice_obj) = vm.heap.get(*key_id)
                 {
                     let bytes = interns.get_bytes(*bytes_id);
-                    let (start, stop, step) = slice_obj
-                        .indices(bytes.len())
-                        .map_err(|()| ExcType::value_error_slice_step_zero())?;
-                    let result_bytes = get_bytes_slice(bytes, start, stop, step);
+                    let result_bytes = slice_collect_iterator(slice_obj, bytes.iter(), |b| *b)?;
                     let heap_id = vm.heap.allocate(HeapData::Bytes(Bytes::new(result_bytes)))?;
                     return Ok(Self::Ref(heap_id));
                 }

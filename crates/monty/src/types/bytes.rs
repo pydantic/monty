@@ -79,7 +79,7 @@ use crate::{
     heap::{DropWithHeap, Heap, HeapData, HeapGuard, HeapId, HeapItem, HeapRead, heap_read_ref_as_field},
     intern::{StaticStrings, StringId},
     resource::{ResourceError, ResourceTracker, check_repeat_size, check_replace_size},
-    types::List,
+    types::{List, slice::slice_collect_iterator},
     value::{EitherStr, Value},
 };
 
@@ -111,50 +111,6 @@ pub fn get_byte_at_index(bytes: &[u8], index: i64) -> Option<u8> {
 
     let idx = usize::try_from(normalized).ok()?;
     Some(bytes[idx])
-}
-
-/// Extracts a slice of a byte array.
-///
-/// Handles both positive and negative step values. For negative step,
-/// iterates backward from start down to (but not including) stop.
-/// The `stop` parameter uses a sentinel value of `len + 1` for negative
-/// step to indicate "go to the beginning".
-///
-/// Note: step must be non-zero (callers should validate this via `slice.indices()`).
-pub(crate) fn get_bytes_slice(bytes: &[u8], start: usize, stop: usize, step: i64) -> Vec<u8> {
-    let mut result = Vec::new();
-
-    // try_from succeeds for non-negative step; step==0 rejected upstream by slice.indices()
-    if let Ok(step_usize) = usize::try_from(step) {
-        // Positive step: iterate forward
-        let mut i = start;
-        while i < stop && i < bytes.len() {
-            result.push(bytes[i]);
-            i += step_usize;
-        }
-    } else {
-        // Negative step: iterate backward
-        // start is the highest index, stop is the sentinel
-        // stop > bytes.len() means "go to the beginning"
-        let step_abs = usize::try_from(-step).expect("step is negative so -step is positive");
-        let step_abs_i64 = i64::try_from(step_abs).expect("step magnitude fits in i64");
-        let mut i = i64::try_from(start).expect("start index fits in i64");
-        let stop_i64 = if stop > bytes.len() {
-            -1
-        } else {
-            i64::try_from(stop).expect("stop bounded by bytes.len() fits in i64")
-        };
-
-        while let Ok(i_usize) = usize::try_from(i) {
-            if i_usize >= bytes.len() || i <= stop_i64 {
-                break;
-            }
-            result.push(bytes[i_usize]);
-            i -= step_abs_i64;
-        }
-    }
-
-    result
 }
 
 /// Python bytes value stored on the heap.
@@ -258,11 +214,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Bytes> {
             && let HeapData::Slice(slice) = vm.heap.get(*id)
         {
             let b = self.get(vm.heap);
-            let (start, stop, step) = slice
-                .indices(b.0.len())
-                .map_err(|()| ExcType::value_error_slice_step_zero())?;
-
-            let sliced_bytes = get_bytes_slice(&b.0, start, stop, step);
+            let sliced_bytes = slice_collect_iterator(slice, b.0.iter(), |b| *b)?;
             let heap_id = vm.heap.allocate(HeapData::Bytes(Bytes::new(sliced_bytes)))?;
             return Ok(Value::Ref(heap_id));
         }
@@ -858,8 +810,7 @@ fn parse_bytes_sub_args(
 /// Normalizes a Python-style bytes index to a valid index in range [0, len].
 fn normalize_bytes_index(index: i64, len: usize) -> usize {
     if index < 0 {
-        let abs_index = usize::try_from(-index).unwrap_or(usize::MAX);
-        len.saturating_sub(abs_index)
+        len.saturating_sub(index.unsigned_abs().try_into().unwrap_or(usize::MAX))
     } else {
         usize::try_from(index).unwrap_or(len).min(len)
     }

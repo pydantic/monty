@@ -16,7 +16,7 @@ use crate::{
     heap::{DropWithHeap, Heap, HeapData, HeapGuard, HeapId, HeapItem, HeapRead, heap_read_ref_as_field},
     intern::{StaticStrings, StringId},
     resource::{ResourceError, ResourceTracker, check_repeat_size, check_replace_size},
-    types::Type,
+    types::{Type, slice::slice_collect_iterator},
     value::{EitherStr, Value},
 };
 
@@ -32,6 +32,12 @@ impl Str {
     #[must_use]
     pub fn new(s: String) -> Self {
         Self(s.into())
+    }
+
+    /// Creates a new Str from a Rust Box<str>.
+    #[must_use]
+    pub fn from_boxed(s: Box<str>) -> Self {
+        Self(s)
     }
 
     /// Returns a reference to the inner string.
@@ -60,13 +66,8 @@ impl Str {
     ///
     /// Returns a new string containing the selected characters (Unicode-aware).
     fn getitem_slice(&self, slice: &super::Slice, heap: &Heap<impl ResourceTracker>) -> RunResult<Value> {
-        let char_count = self.0.chars().count();
-        let (start, stop, step) = slice
-            .indices(char_count)
-            .map_err(|()| ExcType::value_error_slice_step_zero())?;
-
-        let result_str = get_str_slice(&self.0, start, stop, step);
-        let heap_id = heap.allocate(HeapData::Str(Self::from(result_str)))?;
+        let result_str = slice_collect_iterator(slice, self.0.chars(), |c| c)?;
+        let heap_id = heap.allocate(HeapData::Str(Self(result_str)))?;
         Ok(Value::Ref(heap_id))
     }
 }
@@ -145,52 +146,6 @@ pub fn get_char_at_index(s: &str, index: i64) -> Option<char> {
 
     let idx = usize::try_from(normalized).ok()?;
     s.chars().nth(idx)
-}
-
-/// Extracts a slice of a string (Unicode-aware).
-///
-/// Handles both positive and negative step values. For negative step,
-/// iterates backward from start down to (but not including) stop.
-/// The `stop` parameter uses a sentinel value of `len + 1` for negative
-/// step to indicate "go to the beginning".
-///
-/// Note: step must be non-zero (callers should validate this via `slice.indices()`).
-pub(crate) fn get_str_slice(s: &str, start: usize, stop: usize, step: i64) -> String {
-    let chars: Vec<char> = s.chars().collect();
-    let mut result = String::new();
-
-    // try_from succeeds for non-negative step; step==0 rejected upstream by slice.indices()
-    if let Ok(step_usize) = usize::try_from(step) {
-        // Positive step: iterate forward
-        let mut i = start;
-        while i < stop && i < chars.len() {
-            result.push(chars[i]);
-            i += step_usize;
-        }
-    } else {
-        // Negative step: iterate backward
-        // start is the highest index, stop is the sentinel
-        // stop > chars.len() means "go to the beginning"
-        let step_abs = usize::try_from(-step).expect("step is negative so -step is positive");
-        let step_abs_i64 = i64::try_from(step_abs).expect("step magnitude fits in i64");
-        let mut i = i64::try_from(start).expect("start index fits in i64");
-        // stop > chars.len() is sentinel meaning "go to beginning", use -1
-        let stop_i64 = if stop > chars.len() {
-            -1
-        } else {
-            i64::try_from(stop).expect("stop bounded by chars.len() fits in i64")
-        };
-
-        while let Ok(i_usize) = usize::try_from(i) {
-            if i_usize >= chars.len() || i <= stop_i64 {
-                break;
-            }
-            result.push(chars[i_usize]);
-            i -= step_abs_i64;
-        }
-    }
-
-    result
 }
 
 impl ops::Deref for Str {
@@ -1175,8 +1130,7 @@ fn normalize_index(index: i64, len: usize) -> usize {
     if index < 0 {
         // Safe cast: we've checked index is negative, so -index is positive
         // For very large negative numbers that don't fit in usize, saturate to usize::MAX
-        let abs_index = usize::try_from(-index).unwrap_or(usize::MAX);
-        len.saturating_sub(abs_index)
+        len.saturating_sub(index.unsigned_abs().try_into().unwrap_or(usize::MAX))
     } else {
         // Safe cast: we've checked index is non-negative
         // For values > usize::MAX, saturate to len

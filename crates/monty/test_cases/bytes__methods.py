@@ -68,6 +68,12 @@ assert b'hello'.count(b'l', 5, 2) == 0, 'count with start > end returns 0'
 assert not b'hello'.startswith(b'h', 5, 2), 'startswith with start > end is false'
 assert not b'hello'.endswith(b'o', 5, 2), 'endswith with start > end is false'
 
+# === Edge case: i64::MIN start/end — regression: `-index` on i64::MIN used to panic ===
+_I64_MIN = -(2**63)
+assert b'hello'.startswith(b'h', _I64_MIN), 'startswith with i64::MIN start clamps to 0'
+assert not b'hello'.startswith(b'h', 0, _I64_MIN), 'startswith with i64::MIN end clamps to 0'
+assert not b'hello'.endswith(b'o', _I64_MIN, _I64_MIN), 'endswith with i64::MIN bounds'
+
 # === bytes.lower() ===
 assert b'HELLO'.lower() == b'hello', 'lower basic'
 assert b'Hello World'.lower() == b'hello world', 'lower mixed case'
