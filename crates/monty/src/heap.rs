@@ -729,11 +729,17 @@ impl<T: ResourceTracker> Heap<T> {
             recursion_depth: Cell::new(0),
             timezone_utc: None,
         };
-        // TBC: should the empty tuple contribute to the resource limits?
-        // If not, can just place it in `entries` directly without going through `allocate()`.
-        let empty_tuple = this
-            .allocate(HeapData::Tuple(Tuple::default()))
-            .expect("Failed to allocate empty tuple singleton");
+
+        let empty_tuple = HeapData::Tuple(Tuple::default());
+        let hash_state = HashState::for_data(&empty_tuple);
+        let new_entry = HeapValue {
+            refcount: Cell::new(1),
+            readers: Cell::new(0),
+            data: UnsafeHeapData(UnsafeCell::new(empty_tuple)),
+            hash_state,
+        };
+
+        let empty_tuple = this.entries.allocate(new_entry);
         debug_assert_eq!(empty_tuple, EMPTY_TUPLE_ID);
         this
     }

@@ -258,6 +258,20 @@ result
 }
 
 #[test]
+fn memory_limit_zero() {
+    let code = "x = 1 + 2\nx";
+    let ex = MontyRun::new(code.to_owned(), "test.py", vec![]).unwrap();
+    // Set zero memory limit - should fail immediately
+    let limits = ResourceLimits::new().max_memory(0);
+    let result = ex.run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout);
+
+    assert!(
+        result.is_ok(),
+        "should allow zero memory for simple operations that don't allocate"
+    );
+}
+
+#[test]
 fn combined_limits() {
     // Test multiple limits together
     let code = "x = 1 + 2\nx";
@@ -603,7 +617,7 @@ fn pow_intermediate_allocation_multiplier() {
     // 2 bits * 500000 = 125KB final, × 4 = 500072 bytes (includes base memory offset)
     assert_eq!(
         exc.message(),
-        Some("memory limit exceeded: 500072 bytes > 200000 bytes")
+        Some("memory limit exceeded: 500000 bytes > 200000 bytes")
     );
 }
 
@@ -648,7 +662,7 @@ fn pow_fuzzer_oom_chained_exponentiation() {
     // 2 bits * 3661666 = 915KB final, × 4 = 3661740 bytes
     assert_eq!(
         exc.message(),
-        Some("memory limit exceeded: 3661740 bytes > 1048576 bytes")
+        Some("memory limit exceeded: 3661668 bytes > 1048576 bytes")
     );
 }
 
@@ -671,7 +685,7 @@ fn pow_fuzzer_oom_full_input() {
     // so estimate = 2 * 3661666 bits = 915KB. With 4× multiplier: 3661740 bytes > 1MB.
     assert_eq!(
         exc.message(),
-        Some("memory limit exceeded: 3661740 bytes > 1048576 bytes")
+        Some("memory limit exceeded: 3661668 bytes > 1048576 bytes")
     );
 }
 
@@ -815,7 +829,7 @@ fn bigint_rejected_before_allocation() {
     assert_eq!(exc.exc_type(), ExcType::MemoryError);
     assert_eq!(
         exc.message(),
-        Some("memory limit exceeded: 1000072 bytes > 100000 bytes")
+        Some("memory limit exceeded: 1000000 bytes > 100000 bytes")
     );
 }
 
