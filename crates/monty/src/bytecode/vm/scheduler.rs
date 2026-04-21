@@ -129,6 +129,35 @@ impl Task {
     pub fn is_finished(&self) -> bool {
         matches!(self.state, TaskState::Completed(_) | TaskState::Failed(_))
     }
+
+    /// Appends every heap reference owned by this parked task to `roots`.
+    ///
+    /// Suspended tasks keep their operand stack and exception stack outside the
+    /// live VM state. GC must therefore walk both the saved values and the task's
+    /// scheduler metadata, otherwise reachable heap entries can be swept while the
+    /// task is blocked.
+    fn extend_gc_roots(&self, roots: &mut Vec<HeapId>) {
+        roots.extend(self.stack.iter().filter_map(Value::ref_id));
+        roots.extend(self.exception_stack.iter().filter_map(Value::ref_id));
+        roots.extend(self.coroutine_id);
+        roots.extend(self.gather_id);
+        self.state.extend_gc_roots(roots);
+    }
+}
+
+impl TaskState {
+    /// Appends every heap reference stored in this task state to `roots`.
+    ///
+    /// Most task states are pure metadata, but completed tasks retain their return
+    /// values and gather-blocked tasks retain the gather heap object that will wake
+    /// them later.
+    fn extend_gc_roots(&self, roots: &mut Vec<HeapId>) {
+        match self {
+            Self::Ready | Self::BlockedOnCall(_) | Self::Failed(_) => {}
+            Self::BlockedOnGather(gather_id) => roots.push(*gather_id),
+            Self::Completed(value) => roots.extend(value.ref_id()),
+        }
+    }
 }
 
 /// Internal representation of a pending external call.
@@ -141,6 +170,16 @@ pub(crate) struct PendingCallData {
     pub args: ArgValues,
     /// Task that created this call (for ignoring results if task is cancelled).
     pub creator_task: TaskId,
+}
+
+impl PendingCallData {
+    /// Appends every heap reference owned by this pending call entry to `roots`.
+    ///
+    /// External-call state can outlive the active VM stack while the host resolves
+    /// the call, so GC must treat any stored argument values as roots.
+    fn extend_gc_roots(&self, roots: &mut Vec<HeapId>) {
+        self.args.extend_gc_roots(roots);
+    }
 }
 
 /// Scheduler for managing call IDs, async tasks, and external call tracking.
@@ -201,6 +240,22 @@ impl Scheduler {
             consumed: AHashSet::new(),
             gather_waiters: AHashMap::new(),
         }
+    }
+
+    /// Appends every scheduler-owned heap reference to `roots`.
+    ///
+    /// The VM's live stack only covers the currently executing task. Spawned or
+    /// blocked tasks, resolved futures, and gather bookkeeping all live in the
+    /// scheduler and must therefore participate in the GC root set.
+    pub(crate) fn extend_gc_roots(&self, roots: &mut Vec<HeapId>) {
+        for task in &self.tasks {
+            task.extend_gc_roots(roots);
+        }
+        for data in self.pending_calls.values() {
+            data.extend_gc_roots(roots);
+        }
+        roots.extend(self.resolved.values().filter_map(Value::ref_id));
+        roots.extend(self.gather_waiters.values().map(|(gather_id, _)| *gather_id));
     }
 
     /// Returns the currently executing task ID.

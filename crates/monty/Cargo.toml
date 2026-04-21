@@ -48,6 +48,9 @@ ref-count-return = []
 # without being dereferenced.
 # should be used for testing only
 ref-count-panic = []
+# test-hooks exposes small internal helpers needed by integration tests that
+# exercise production behavior without duplicating implementation details.
+test-hooks = []
 
 [dev-dependencies]
 tempfile = "3"

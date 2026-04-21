@@ -1703,24 +1703,34 @@ impl<'h, 'a, T: ResourceTracker> VM<'h, 'a, T> {
         self.frames.clear();
     }
 
-    /// Runs garbage collection with proper GC roots.
+    /// Collects every heap root currently reachable from the VM and scheduler.
     ///
-    /// GC roots include values in the stack (locals + operands), globals, and exception stack.
+    /// The active VM only owns the current task's stack. Async scheduler state
+    /// stores additional reachable values for suspended tasks, completed task
+    /// results, gather bookkeeping, and resolved futures, so those roots must be
+    /// included here as well.
+    fn gc_roots(&self) -> Vec<HeapId> {
+        let mut roots: Vec<HeapId> = self.stack.iter().filter_map(Value::ref_id).collect();
+        roots.extend(self.globals.iter().filter_map(Value::ref_id));
+        roots.extend(self.exception_stack.iter().filter_map(Value::ref_id));
+        roots.extend(self.json_string_cache.gc_roots());
+        self.scheduler.extend_gc_roots(&mut roots);
+        roots
+    }
+
+    /// Runs garbage collection with the VM's complete root set.
     fn run_gc(&mut self) {
-        // Collect roots from all reachable values
-        let stack_roots = self.stack.iter().filter_map(Value::ref_id);
-        let globals_roots = self.globals.iter().filter_map(Value::ref_id);
-        let exc_roots = self.exception_stack.iter().filter_map(Value::ref_id);
-        let json_cache_roots = self.json_string_cache.gc_roots();
-
-        // Collect all roots into a vec to avoid lifetime issues
-        let roots: Vec<HeapId> = stack_roots
-            .chain(globals_roots)
-            .chain(exc_roots)
-            .chain(json_cache_roots)
-            .collect();
-
+        let roots = self.gc_roots();
         self.heap.collect_garbage(roots);
+    }
+
+    /// Forces a GC cycle using the production root walk.
+    ///
+    /// This is only compiled for tests so integration tests can reproduce GC
+    /// bugs deterministically without reimplementing the root-set logic.
+    #[cfg(feature = "test-hooks")]
+    pub(crate) fn __force_gc_for_tests(&mut self) {
+        self.run_gc();
     }
 
     /// Returns the current source position for traceback generation, or `None`

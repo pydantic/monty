@@ -6,7 +6,7 @@ use crate::{
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, RunError, RunResult, SimpleException},
     expressions::{ExprLoc, Identifier},
-    heap::{ContainsHeap, DropWithHeap, Heap, HeapGuard},
+    heap::{ContainsHeap, DropWithHeap, Heap, HeapGuard, HeapId},
     intern::{Interns, StringId},
     parse::ParseError,
     types::{Dict, dict::DictIntoIter},
@@ -326,6 +326,26 @@ impl ArgValues {
         }
     }
 
+    /// Appends every heap reference held by these arguments to `roots`.
+    ///
+    /// This is used by the async scheduler's GC root walk when arguments outlive
+    /// the active VM stack, such as values parked in pending external-call state.
+    pub(crate) fn extend_gc_roots(&self, roots: &mut Vec<HeapId>) {
+        match self {
+            Self::Empty => {}
+            Self::One(value) => roots.extend(value.ref_id()),
+            Self::Two(value1, value2) => {
+                roots.extend(value1.ref_id());
+                roots.extend(value2.ref_id());
+            }
+            Self::Kwargs(kwargs) => kwargs.extend_gc_roots(roots),
+            Self::ArgsKargs { args, kwargs } => {
+                roots.extend(args.iter().filter_map(Value::ref_id));
+                kwargs.extend_gc_roots(roots);
+            }
+        }
+    }
+
     /// Returns the number of positional arguments.
     ///
     /// For `Kwargs` returns 0, for `ArgsKargs` returns only the positional args count.
@@ -495,6 +515,25 @@ impl KwargsValues {
                 format!("{method_name}() does not support keyword arguments yet"),
             )
             .into())
+        }
+    }
+
+    /// Appends every heap reference held by these keyword arguments to `roots`.
+    ///
+    /// Inline kwargs only need to walk their values because keys are interned
+    /// strings. Dict-backed kwargs can hold heap-backed keys and values, so both
+    /// sides of each entry must be rooted.
+    pub(crate) fn extend_gc_roots(&self, roots: &mut Vec<HeapId>) {
+        match self {
+            Self::Empty => {}
+            Self::Inline(kvs) => roots.extend(kvs.iter().filter_map(|(_, value)| value.ref_id())),
+            Self::Dict(dict) => {
+                roots.extend(
+                    dict.iter()
+                        .flat_map(|(key, value)| [key.ref_id(), value.ref_id()])
+                        .flatten(),
+                );
+            }
         }
     }
 
