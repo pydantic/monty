@@ -157,6 +157,8 @@ impl Range {
         let new_start = self.start.saturating_add(start.saturating_mul(self.step));
 
         // Calculate the number of elements in the sliced range
+        // The guarantee on slice.indices will be that stop and start can at most be range_len apart,
+        // so the subtraction won't overflow.
         let num_elements = div_ceil(stop - start, step);
 
         // new_stop = new_start + num_elements * new_step
