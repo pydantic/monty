@@ -255,12 +255,9 @@ fn parse_indent_value(value: Value, vm: &mut VM<'_, '_, impl ResourceTracker>) -
         Value::InternString(string_id) => Ok(Some(vm.interns.get_str(*string_id).to_owned())),
         Value::Ref(heap_id) => match vm.heap.read(*heap_id) {
             HeapReadOutput::Str(string) => Ok(Some(string.get(vm.heap).as_str().to_owned())),
-            HeapReadOutput::LongInt(long_int) => spaces_from_indent_count(
-                long_int
-                    .get(vm.heap)
-                    .to_i64()
-                    .ok_or_else(ExcType::overflow_shift_count)?,
-            ),
+            HeapReadOutput::LongInt(long_int) => {
+                spaces_from_indent_count(long_int.get(vm.heap).to_i64().ok_or_else(ExcType::overflow_c_ssize_t)?)
+            }
             _ => Err(ExcType::type_error("indent must be None, an integer or a string")),
         },
         _ => Err(ExcType::type_error("indent must be None, an integer or a string")),
@@ -277,7 +274,7 @@ fn spaces_from_indent_count(count: i64) -> RunResult<Option<String>> {
     } else {
         match usize::try_from(count) {
             Ok(count) => Ok(Some(" ".repeat(count))),
-            Err(_) => Err(ExcType::overflow_shift_count()),
+            Err(_) => Err(ExcType::overflow_c_ssize_t()),
         }
     }
 }

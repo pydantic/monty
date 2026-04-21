@@ -248,12 +248,18 @@ fn format_option_i64(f: &mut impl Write, value: Option<i64>) -> fmt::Result {
 /// (e.g. `clone_with_heap` for heap-allocated `Value`s) only runs on items
 /// that survive the slice. Use `|x| x` when no transform is needed.
 pub(crate) fn slice_collect_iterator<Iter: DoubleEndedIterator + Clone, U, T: FromIterator<U>>(
+    vm: &VM<'_, '_, impl ResourceTracker>,
     slice: &Slice,
     iter: Iter,
     collect_map: impl Fn(Iter::Item) -> U,
 ) -> RunResult<T> {
     let length = iter.clone().count();
     let (start, stop, step) = slice.indices(length)?;
+
+    let final_collect_op = |item| -> RunResult<U> {
+        vm.heap.check_time()?;
+        Ok(collect_map(item))
+    };
 
     if step > 0 {
         // saturate at usize::MAX - will take just the first item if step is too large for usize
@@ -265,7 +271,11 @@ pub(crate) fn slice_collect_iterator<Iter: DoubleEndedIterator + Clone, U, T: Fr
         let stop = stop
             .try_into()
             .expect("slice.indices() guarantees stop > 0 for step > 0");
-        Ok(iter.take(stop).skip(start).step_by(step).map(collect_map).collect())
+        iter.take(stop)
+            .skip(start)
+            .step_by(step)
+            .map(final_collect_op)
+            .collect()
     } else {
         // step < 0, iterate backward
         let step: usize = step.unsigned_abs().try_into().unwrap_or(usize::MAX);
@@ -278,12 +288,22 @@ pub(crate) fn slice_collect_iterator<Iter: DoubleEndedIterator + Clone, U, T: Fr
         let normalized_start = length.saturating_sub(start.saturating_add(1).try_into().unwrap_or(usize::MAX));
         let normalized_stop = length.saturating_sub(stop.saturating_add(1).try_into().unwrap_or(usize::MAX));
 
-        Ok(iter
-            .rev()
+        iter.rev()
             .take(normalized_stop)
             .skip(normalized_start)
             .step_by(step)
-            .map(collect_map)
-            .collect())
+            .map(final_collect_op)
+            .collect()
+    }
+}
+
+/// Normalizes a Python-style index (allowing negative indexing) by adding `length` if negative,
+/// and then clamping to the range [0, length].
+pub(crate) fn normalize_sequence_index(index: i64, len: usize) -> usize {
+    if index < 0 {
+        let abs_index = index.unsigned_abs().try_into().unwrap_or(usize::MAX);
+        len.saturating_sub(abs_index)
+    } else {
+        usize::try_from(index).unwrap_or(len).min(len)
     }
 }

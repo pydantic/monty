@@ -79,7 +79,10 @@ use crate::{
     heap::{DropWithHeap, Heap, HeapData, HeapGuard, HeapId, HeapItem, HeapRead, heap_read_ref_as_field},
     intern::{StaticStrings, StringId},
     resource::{ResourceError, ResourceTracker, check_repeat_size, check_replace_size},
-    types::{List, slice::slice_collect_iterator},
+    types::{
+        List,
+        slice::{normalize_sequence_index, slice_collect_iterator},
+    },
     value::{EitherStr, Value},
 };
 
@@ -214,7 +217,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Bytes> {
             && let HeapData::Slice(slice) = vm.heap.get(*id)
         {
             let b = self.get(vm.heap);
-            let sliced_bytes = slice_collect_iterator(slice, b.0.iter(), |b| *b)?;
+            let sliced_bytes = slice_collect_iterator(vm, slice, b.0.iter(), |b| *b)?;
             let heap_id = vm.heap.allocate(HeapData::Bytes(Bytes::new(sliced_bytes)))?;
             return Ok(Value::Ref(heap_id));
         }
@@ -672,13 +675,13 @@ fn parse_bytes_prefix_suffix_args(
         }
         [prefix_value, start_value] => {
             let prefix = extract_bytes_for_prefix_suffix(prefix_value, method, vm)?;
-            let start = normalize_bytes_index(start_value.as_int(vm)?, len);
+            let start = normalize_sequence_index(start_value.as_int(vm)?, len);
             (prefix, start, len)
         }
         [prefix_value, start_value, end_value] => {
             let prefix = extract_bytes_for_prefix_suffix(prefix_value, method, vm)?;
-            let start = normalize_bytes_index(start_value.as_int(vm)?, len);
-            let end = normalize_bytes_index(end_value.as_int(vm)?, len);
+            let start = normalize_sequence_index(start_value.as_int(vm)?, len);
+            let end = normalize_sequence_index(end_value.as_int(vm)?, len);
             (prefix, start, end)
         }
         [] => return Err(ExcType::type_error_at_least(method, 1, 0)),
@@ -790,13 +793,13 @@ fn parse_bytes_sub_args(
         }
         [sub_value, start_value] => {
             let sub = extract_bytes_only(sub_value, vm)?;
-            let start = normalize_bytes_index(start_value.as_int(vm)?, len);
+            let start = normalize_sequence_index(start_value.as_int(vm)?, len);
             (sub, start, len)
         }
         [sub_value, start_value, end_value] => {
             let sub = extract_bytes_only(sub_value, vm)?;
-            let start = normalize_bytes_index(start_value.as_int(vm)?, len);
-            let end = normalize_bytes_index(end_value.as_int(vm)?, len);
+            let start = normalize_sequence_index(start_value.as_int(vm)?, len);
+            let end = normalize_sequence_index(end_value.as_int(vm)?, len);
             (sub, start, end)
         }
         [] => return Err(ExcType::type_error_at_least(method, 1, 0)),
@@ -805,15 +808,6 @@ fn parse_bytes_sub_args(
 
     // Ensure start <= end to prevent slice panics (Python treats start > end as empty slice)
     Ok((sub.to_owned(), start, end.max(start)))
-}
-
-/// Normalizes a Python-style bytes index to a valid index in range [0, len].
-fn normalize_bytes_index(index: i64, len: usize) -> usize {
-    if index < 0 {
-        len.saturating_sub(index.unsigned_abs().try_into().unwrap_or(usize::MAX))
-    } else {
-        usize::try_from(index).unwrap_or(len).min(len)
-    }
 }
 
 // =============================================================================

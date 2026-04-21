@@ -13,7 +13,10 @@ use crate::{
     intern::StaticStrings,
     resource::{ResourceError, ResourceTracker},
     sorting::{apply_permutation, sort_indices},
-    types::{Type, slice::slice_collect_iterator},
+    types::{
+        Type,
+        slice::{normalize_sequence_index, slice_collect_iterator},
+    },
     value::{EitherStr, VALUE_SIZE, Value},
 };
 
@@ -192,7 +195,7 @@ impl<'h> HeapRead<'h, List> {
     ///
     /// Returns a new list containing the selected elements.
     fn getitem_slice(&self, slice: &super::Slice, vm: &VM<'h, '_, impl ResourceTracker>) -> RunResult<Value> {
-        let items = slice_collect_iterator(slice, self.get(vm.heap).items.iter(), |item| {
+        let items = slice_collect_iterator(vm, slice, self.get(vm.heap).items.iter(), |item| {
             item.clone_with_heap(vm.heap)
         })?;
         let heap_id = vm.heap.allocate(HeapData::List(List::new(items)))?;
@@ -642,12 +645,12 @@ fn list_index<'h>(
         [] => return Err(ExcType::type_error_at_least("list.index", 1, 0)),
         [value] => (value, 0, len),
         [value, start_arg] => {
-            let start = normalize_list_index(start_arg.as_int(vm)?, len);
+            let start = normalize_sequence_index(start_arg.as_int(vm)?, len);
             (value, start, len)
         }
         [value, start_arg, end_arg] => {
-            let start = normalize_list_index(start_arg.as_int(vm)?, len);
-            let end = normalize_list_index(end_arg.as_int(vm)?, len).max(start);
+            let start = normalize_sequence_index(start_arg.as_int(vm)?, len);
+            let end = normalize_sequence_index(end_arg.as_int(vm)?, len).max(start);
             (value, start, end)
         }
         other => return Err(ExcType::type_error_at_most("list.index", 3, other.len())),
@@ -691,16 +694,6 @@ fn list_count<'h>(
 
     let count_i64 = i64::try_from(count).expect("count exceeds i64::MAX");
     Ok(Value::Int(count_i64))
-}
-
-/// Normalizes a Python-style list index to a valid index in range [0, len].
-fn normalize_list_index(index: i64, len: usize) -> usize {
-    if index < 0 {
-        let abs_index = index.unsigned_abs().try_into().unwrap_or(usize::MAX);
-        len.saturating_sub(abs_index)
-    } else {
-        usize::try_from(index).unwrap_or(len).min(len)
-    }
 }
 
 /// Performs an in-place sort on a list with optional key function and reverse flag.

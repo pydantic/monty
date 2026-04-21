@@ -94,6 +94,12 @@ assert len(range(1, 5)) == 4, 'len(range(1, 5))'
 assert len(range(0, 10, 2)) == 5, 'len(range step 2)'
 assert len(range(10, 0, -1)) == 10, 'len(range negative step)'
 assert len(range(0, 10, 3)) == 4, 'len(range step 3)'
+assert len(range(-(2**62), 2**62 - 1)) == 2**63 - 1, 'len(range large)'
+try:
+    assert len(range(-(2**62), (2**62))) == 2**63
+    assert False, 'len(range with bounds at int64 limits should raise OverflowError'
+except OverflowError as e:
+    assert str(e) == 'Python int too large to convert to C ssize_t', str(e)
 
 # === range equality by sequence (not parameters) ===
 assert range(0, 3, 2) == range(0, 4, 2), 'ranges with same sequence [0,2] are equal'

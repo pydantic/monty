@@ -16,7 +16,10 @@ use crate::{
     heap::{DropWithHeap, Heap, HeapData, HeapGuard, HeapId, HeapItem, HeapRead, heap_read_ref_as_field},
     intern::{StaticStrings, StringId},
     resource::{ResourceError, ResourceTracker, check_repeat_size, check_replace_size},
-    types::{Type, slice::slice_collect_iterator},
+    types::{
+        Type,
+        slice::{normalize_sequence_index, slice_collect_iterator},
+    },
     value::{EitherStr, Value},
 };
 
@@ -65,9 +68,9 @@ impl Str {
     /// Handles slice-based indexing for strings.
     ///
     /// Returns a new string containing the selected characters (Unicode-aware).
-    fn getitem_slice(&self, slice: &super::Slice, heap: &Heap<impl ResourceTracker>) -> RunResult<Value> {
-        let result_str = slice_collect_iterator(slice, self.0.chars(), |c| c)?;
-        let heap_id = heap.allocate(HeapData::Str(Self(result_str)))?;
+    fn getitem_slice(&self, vm: &VM<'_, '_, impl ResourceTracker>, slice: &super::Slice) -> RunResult<Value> {
+        let result_str = slice_collect_iterator(vm, slice, self.0.chars(), |c| c)?;
+        let heap_id = vm.heap.allocate(HeapData::Str(Self(result_str)))?;
         Ok(Value::Ref(heap_id))
     }
 }
@@ -171,7 +174,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Str> {
         if let Value::Ref(id) = key
             && let HeapData::Slice(slice) = vm.heap.get(*id)
         {
-            return self.get(vm.heap).getitem_slice(slice, vm.heap);
+            return self.get(vm.heap).getitem_slice(vm, slice);
         }
 
         // Extract integer index, accepting Int, Bool (True=1, False=0), and LongInt
@@ -1125,19 +1128,6 @@ fn extract_int_arg(value: &Value, vm: &mut VM<'_, '_, impl ResourceTracker>) -> 
     }
 }
 
-/// Normalizes a Python-style index to a valid index in range [0, len].
-fn normalize_index(index: i64, len: usize) -> usize {
-    if index < 0 {
-        // Safe cast: we've checked index is negative, so -index is positive
-        // For very large negative numbers that don't fit in usize, saturate to usize::MAX
-        len.saturating_sub(index.unsigned_abs().try_into().unwrap_or(usize::MAX))
-    } else {
-        // Safe cast: we've checked index is non-negative
-        // For values > usize::MAX, saturate to len
-        usize::try_from(index).unwrap_or(len).min(len)
-    }
-}
-
 /// Extracts an optional index from a `Value`, treating `None` as `default`.
 ///
 /// Used by argument parsers where `None` means "use the default index" and
@@ -1151,7 +1141,7 @@ fn optional_index(
     if matches!(value, Value::None) {
         Ok(default)
     } else {
-        Ok(normalize_index(extract_int_arg(value, vm)?, str_len))
+        Ok(normalize_sequence_index(extract_int_arg(value, vm)?, str_len))
     }
 }
 

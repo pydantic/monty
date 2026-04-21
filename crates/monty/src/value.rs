@@ -1305,7 +1305,7 @@ impl PyTrait<'_> for Value {
                     && let HeapData::Slice(slice_obj) = vm.heap.get(*key_id)
                 {
                     let s = interns.get_str(*string_id);
-                    let result_str = slice_collect_iterator(slice_obj, s.chars(), |c| c)?;
+                    let result_str = slice_collect_iterator(vm, slice_obj, s.chars(), |c| c)?;
                     let heap_id = vm.heap.allocate(HeapData::Str(Str::from_boxed(result_str)))?;
                     return Ok(Self::Ref(heap_id));
                 }
@@ -1327,7 +1327,7 @@ impl PyTrait<'_> for Value {
                     && let HeapData::Slice(slice_obj) = vm.heap.get(*key_id)
                 {
                     let bytes = interns.get_bytes(*bytes_id);
-                    let result_bytes = slice_collect_iterator(slice_obj, bytes.iter(), |b| *b)?;
+                    let result_bytes = slice_collect_iterator(vm, slice_obj, bytes.iter(), |b| *b)?;
                     let heap_id = vm.heap.allocate(HeapData::Bytes(Bytes::new(result_bytes)))?;
                     return Ok(Self::Ref(heap_id));
                 }
@@ -1761,7 +1761,7 @@ impl Value {
             Self::Int(i) => Ok(*i),
             Self::Ref(heap_id) => {
                 if let HeapData::LongInt(li) = vm.heap.get(*heap_id) {
-                    li.to_i64().ok_or_else(ExcType::overflow_shift_count)
+                    li.to_i64().ok_or_else(ExcType::overflow_c_ssize_t)
                 } else {
                     let msg = format!("'{}' object cannot be interpreted as an integer", self.py_type(vm));
                     Err(SimpleException::new_msg(ExcType::TypeError, msg).into())
@@ -1845,7 +1845,7 @@ impl Value {
                         return Err(ExcType::value_error_negative_shift_count());
                     } else {
                         // Shift amount too large to fit in i64 - this would be astronomically large
-                        return Err(ExcType::overflow_shift_count());
+                        return Err(ExcType::overflow_c_ssize_t());
                     }
                 }
                 BitwiseOp::RShift => {

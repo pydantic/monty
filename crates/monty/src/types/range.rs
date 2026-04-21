@@ -67,7 +67,15 @@ impl Range {
     /// Returns the length of the range (number of elements it will yield).
     #[must_use]
     pub fn len(&self) -> usize {
-        div_ceil(self.stop - self.start, self.step).try_into().unwrap_or(0)
+        // self.stop - self.start could be up to i64::MAX - i64::MIN, which overflows i64,
+        // so we use i128 for the calculation to avoid overflow. The result then saturates at
+        // usize boundaries
+        let start = i128::from(self.start);
+        let stop = i128::from(self.stop);
+        let step = i128::from(self.step);
+
+        let len = div_ceil(stop - start, step);
+        len.max(0).try_into().unwrap_or(usize::MAX)
     }
 
     #[must_use]
