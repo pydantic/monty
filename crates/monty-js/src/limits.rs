@@ -35,8 +35,8 @@ pub struct JsResourceLimits {
 /// the boundary, then convert them into Monty's internal `ResourceLimits`.
 ///
 /// Returns `Err` for invalid JS number inputs that cannot be represented as
-/// `usize`. This function may panic if `maxDurationSecs` is invalid for
-/// `std::time::Duration::from_secs_f64` (for example, negative or non-finite).
+/// `usize` or for invalid duration values rejected by
+/// `std::time::Duration::try_from_secs_f64`.
 pub fn extract_limits(js_limits: JsResourceLimits) -> Result<ResourceLimits> {
     let max_recursion_depth = js_limits
         .max_recursion_depth
@@ -50,7 +50,9 @@ pub fn extract_limits(js_limits: JsResourceLimits) -> Result<ResourceLimits> {
         limits = limits.max_allocations(js_number_to_usize(max, "maxAllocations")?);
     }
     if let Some(secs) = js_limits.max_duration_secs {
-        limits = limits.max_duration(Duration::from_secs_f64(secs));
+        limits = limits.max_duration(
+            Duration::try_from_secs_f64(secs).map_err(|err| Error::new(Status::InvalidArg, err.to_string()))?,
+        );
     }
     if let Some(max) = js_limits.max_memory {
         limits = limits.max_memory(js_number_to_usize(max, "maxMemory")?);

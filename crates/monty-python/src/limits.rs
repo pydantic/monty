@@ -12,7 +12,7 @@ use std::{
 };
 
 use monty::{DEFAULT_MAX_RECURSION_DEPTH, ExcType, MontyException, ResourceError, ResourceTracker};
-use pyo3::{prelude::*, types::PyDict};
+use pyo3::{exceptions::PyValueError, prelude::*, types::PyDict};
 
 use crate::exceptions::exc_py_to_monty;
 
@@ -32,6 +32,7 @@ pub(crate) type CancellationFlag = Arc<AtomicBool>;
 /// (except `max_recursion_depth` which defaults to 1000).
 ///
 /// Raises `TypeError` if a value is present but has the wrong type.
+/// Raises `ValueError` if `max_duration_secs` is not a valid duration value.
 pub fn extract_limits(dict: &Bound<'_, PyDict>) -> PyResult<monty::ResourceLimits> {
     let max_allocations = extract_optional_usize(dict, "max_allocations")?;
     let max_duration_secs = extract_optional_f64(dict, "max_duration_secs")?;
@@ -46,7 +47,8 @@ pub fn extract_limits(dict: &Bound<'_, PyDict>) -> PyResult<monty::ResourceLimit
         limits = limits.max_allocations(max);
     }
     if let Some(secs) = max_duration_secs {
-        limits = limits.max_duration(Duration::from_secs_f64(secs));
+        limits = limits
+            .max_duration(Duration::try_from_secs_f64(secs).map_err(|err| PyValueError::new_err(err.to_string()))?);
     }
     if let Some(max) = max_memory {
         limits = limits.max_memory(max);

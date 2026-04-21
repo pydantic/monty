@@ -88,16 +88,17 @@ struct Cli {
 impl Cli {
     /// Builds `ResourceLimits` from the parsed CLI arguments.
     ///
-    /// Returns `None` when no resource flags were provided, which lets the
+    /// Returns `Ok(None)` when no resource flags were provided, which lets the
     /// caller fall back to `NoLimitTracker` for zero-overhead execution.
-    fn resource_limits(&self) -> Option<ResourceLimits> {
+    /// Returns `Err` if a supplied flag cannot be converted into a valid limit.
+    fn resource_limits(&self) -> Result<Option<ResourceLimits>, String> {
         if self.max_allocations.is_none()
             && self.max_duration.is_none()
             && self.max_memory.is_none()
             && self.gc_interval.is_none()
             && self.max_recursion_depth.is_none()
         {
-            return None;
+            return Ok(None);
         }
 
         let mut limits = ResourceLimits::new();
@@ -105,7 +106,9 @@ impl Cli {
             limits = limits.max_allocations(n);
         }
         if let Some(secs) = self.max_duration {
-            limits = limits.max_duration(Duration::from_secs_f64(secs));
+            limits = limits.max_duration(
+                Duration::try_from_secs_f64(secs).map_err(|err| format!("invalid --max-duration: {err}"))?,
+            );
         }
         if let Some(bytes) = self.max_memory {
             limits = limits.max_memory(bytes);
@@ -116,7 +119,7 @@ impl Cli {
         if let Some(depth) = self.max_recursion_depth {
             limits = limits.max_recursion_depth(Some(depth));
         }
-        Some(limits)
+        Ok(Some(limits))
     }
 }
 
@@ -126,7 +129,14 @@ fn main() -> ExitCode {
     let cli = Cli::parse();
 
     let type_check_enabled = cli.type_check;
-    let limits = cli.resource_limits();
+
+    let limits = match cli.resource_limits() {
+        Ok(limits) => limits,
+        Err(err) => {
+            eprintln!("{BOLD_RED}error{RESET}: {err}");
+            return ExitCode::FAILURE;
+        }
+    };
 
     // Build mount table early to fail fast on bad -m args.
     let mount_table = match build_mount_table(&cli.mounts) {
