@@ -65,7 +65,14 @@
 /// - `expandtabs(tabsize=8)` - Tab expansion
 /// - `translate(table[, delete])` - Character translation
 /// - `maketrans(frm, to)` - Create translation table (staticmethod)
-use std::{cmp::Ordering, fmt, fmt::Write, mem, ops, str};
+use std::{
+    cmp::Ordering,
+    collections::hash_map::DefaultHasher,
+    fmt,
+    fmt::Write,
+    hash::{Hash, Hasher},
+    mem, ops, str,
+};
 
 use ahash::AHashSet;
 use smallvec::smallvec;
@@ -278,6 +285,18 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Bytes> {
 
     fn py_eq(&self, other: &Self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> Result<bool, ResourceError> {
         Ok(self.get(vm.heap).0 == other.get(vm.heap).0)
+    }
+
+    fn py_hash(
+        &self,
+        _self_id: HeapId,
+        vm: &mut VM<'h, '_, impl ResourceTracker>,
+    ) -> Result<Option<u64>, ResourceError> {
+        // Must match `Value::InternBytes` so the same content hashes equally
+        // regardless of whether the bytes live on the heap or in the intern table.
+        let mut hasher = DefaultHasher::new();
+        self.get(vm.heap).as_slice().hash(&mut hasher);
+        Ok(Some(hasher.finish()))
     }
 
     fn py_cmp(

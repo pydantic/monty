@@ -153,12 +153,38 @@ impl<'h> HeapRead<'h, Dataclass> {
         self.attrs_mut().set(name, value, vm)
     }
 
-    /// Computes the hash for this dataclass if it's frozen.
+    pub fn attrs(&self) -> BorrowedHeapRead<'_, 'h, Dict> {
+        heap_read_ref_as_field!(self, Dataclass, attrs)
+    }
+
+    pub fn attrs_mut(&mut self) -> BorrowedHeapReadMut<'_, 'h, Dict> {
+        heap_read_ref_as_field_mut!(self, Dataclass, attrs)
+    }
+}
+
+impl<'h> PyTrait<'h> for HeapRead<'h, Dataclass> {
+    fn py_type(&self, _vm: &VM<'h, '_, impl ResourceTracker>) -> Type {
+        Type::Dataclass
+    }
+
+    fn py_len(&self, _vm: &VM<'h, '_, impl ResourceTracker>) -> Option<usize> {
+        // Dataclasses don't have a length
+        None
+    }
+
+    fn py_eq(&self, other: &Self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> Result<bool, ResourceError> {
+        // Dataclasses are equal if they have the same name and equal attrs
+        Ok(self.get(vm.heap).name == other.get(vm.heap).name && self.attrs().py_eq(&other.attrs(), vm)?)
+    }
+
+    /// Hashes a frozen dataclass by its class name and the values of declared fields.
     ///
-    /// Returns `Ok(Some(hash))` for frozen (immutable) dataclasses, `Ok(None)` for mutable ones.
-    /// Returns `Err(ResourceError::Recursion)` if the recursion limit is exceeded.
-    /// The hash is computed from the class name and declared field values only.
-    pub fn compute_hash(&self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> Result<Option<u64>, ResourceError> {
+    /// Mutable (non-frozen) dataclasses return `None` (unhashable).
+    fn py_hash(
+        &self,
+        _self_id: HeapId,
+        vm: &mut VM<'h, '_, impl ResourceTracker>,
+    ) -> Result<Option<u64>, ResourceError> {
         // Only frozen (immutable) dataclasses are hashable
         if !self.get(vm.heap).frozen {
             return Ok(None);
@@ -183,30 +209,6 @@ impl<'h> HeapRead<'h, Dataclass> {
             }
         }
         Ok(Some(hasher.finish()))
-    }
-
-    pub fn attrs(&self) -> BorrowedHeapRead<'_, 'h, Dict> {
-        heap_read_ref_as_field!(self, Dataclass, attrs)
-    }
-
-    pub fn attrs_mut(&mut self) -> BorrowedHeapReadMut<'_, 'h, Dict> {
-        heap_read_ref_as_field_mut!(self, Dataclass, attrs)
-    }
-}
-
-impl<'h> PyTrait<'h> for HeapRead<'h, Dataclass> {
-    fn py_type(&self, _vm: &VM<'h, '_, impl ResourceTracker>) -> Type {
-        Type::Dataclass
-    }
-
-    fn py_len(&self, _vm: &VM<'h, '_, impl ResourceTracker>) -> Option<usize> {
-        // Dataclasses don't have a length
-        None
-    }
-
-    fn py_eq(&self, other: &Self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> Result<bool, ResourceError> {
-        // Dataclasses are equal if they have the same name and equal attrs
-        Ok(self.get(vm.heap).name == other.get(vm.heap).name && self.attrs().py_eq(&other.attrs(), vm)?)
     }
 
     fn py_bool(&self, _vm: &mut VM<'h, '_, impl ResourceTracker>) -> bool {

@@ -1164,29 +1164,6 @@ impl FrozenSet {
     }
 }
 
-impl<'h> HeapRead<'h, FrozenSet> {
-    /// Computes the hash of this frozenset.
-    ///
-    /// The hash is the XOR of all element hashes, making it order-independent.
-    /// Checks recursion depth before recursing into element hashes.
-    pub fn compute_hash(&self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> Result<Option<u64>, ResourceError> {
-        let token = vm.heap.incr_recursion_depth()?;
-        defer_drop!(token, vm);
-        let mut hash: u64 = 0;
-        let len = self.get(vm.heap).0.entries.len();
-        for idx in 0..len {
-            let item = self.get(vm.heap).0.entries[idx].value.clone_with_heap(vm);
-            defer_drop!(item, vm);
-            // All elements must be hashable (enforced at construction)
-            match item.py_hash(vm)? {
-                Some(h) => hash ^= h,
-                None => return Ok(None),
-            }
-        }
-        Ok(Some(hash))
-    }
-}
-
 impl FrozenSet {
     /// Creates a frozenset from a Set, consuming the Set's storage.
     ///
@@ -1222,6 +1199,31 @@ impl<'h> PyTrait<'h> for HeapRead<'h, FrozenSet> {
 
     fn py_eq(&self, other: &Self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> Result<bool, ResourceError> {
         self.peel_ref().eq(other.peel_ref(), vm)
+    }
+
+    /// Hashes the frozenset by XORing all element hashes.
+    ///
+    /// XOR is commutative, so the hash is independent of insertion order — two
+    /// frozensets with the same members hash equally regardless of how they were built.
+    fn py_hash(
+        &self,
+        _self_id: HeapId,
+        vm: &mut VM<'h, '_, impl ResourceTracker>,
+    ) -> Result<Option<u64>, ResourceError> {
+        let token = vm.heap.incr_recursion_depth()?;
+        defer_drop!(token, vm);
+        let mut hash: u64 = 0;
+        let len = self.get(vm.heap).0.entries.len();
+        for idx in 0..len {
+            let item = self.get(vm.heap).0.entries[idx].value.clone_with_heap(vm);
+            defer_drop!(item, vm);
+            // All elements must be hashable (enforced at construction)
+            match item.py_hash(vm)? {
+                Some(h) => hash ^= h,
+                None => return Ok(None),
+            }
+        }
+        Ok(Some(hash))
     }
 
     fn py_bool(&self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> bool {

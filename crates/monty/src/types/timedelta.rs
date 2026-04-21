@@ -4,7 +4,14 @@
 //! normalized `(days, seconds, microseconds)` semantics for constructors, arithmetic,
 //! and formatting.
 
-use std::{borrow::Cow, cmp::Ordering, fmt::Write, mem};
+use std::{
+    borrow::Cow,
+    cmp::Ordering,
+    collections::hash_map::DefaultHasher,
+    fmt::Write,
+    hash::{Hash, Hasher},
+    mem,
+};
 
 use ahash::AHashSet;
 use chrono::TimeDelta as ChronoTimeDelta;
@@ -332,6 +339,16 @@ impl<'h> PyTrait<'h> for HeapRead<'h, TimeDelta> {
 
     fn py_eq(&self, other: &Self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> Result<bool, ResourceError> {
         Ok(total_microseconds(self.get(vm.heap)) == total_microseconds(other.get(vm.heap)))
+    }
+
+    fn py_hash(
+        &self,
+        _self_id: HeapId,
+        vm: &mut VM<'h, '_, impl ResourceTracker>,
+    ) -> Result<Option<u64>, ResourceError> {
+        let mut hasher = DefaultHasher::new();
+        self.get(vm.heap).hash(&mut hasher);
+        Ok(Some(hasher.finish()))
     }
 
     fn py_cmp(

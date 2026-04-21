@@ -4,7 +4,12 @@
 //! (require `OsAccess` implementation). Pure methods are handled directly by the VM,
 //! while filesystem methods yield external function calls for the host to resolve.
 
-use std::{fmt::Write, mem};
+use std::{
+    collections::hash_map::DefaultHasher,
+    fmt::Write,
+    hash::{Hash, Hasher},
+    mem,
+};
 
 use ahash::AHashSet;
 use smallvec::SmallVec;
@@ -485,6 +490,16 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Path> {
 
     fn py_eq(&self, other: &Self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> Result<bool, ResourceError> {
         Ok(self.get(vm.heap).path == other.get(vm.heap).path)
+    }
+
+    fn py_hash(
+        &self,
+        _self_id: HeapId,
+        vm: &mut VM<'h, '_, impl ResourceTracker>,
+    ) -> Result<Option<u64>, ResourceError> {
+        let mut hasher = DefaultHasher::new();
+        self.get(vm.heap).as_str().hash(&mut hasher);
+        Ok(Some(hasher.finish()))
     }
 
     fn py_bool(&self, _vm: &mut VM<'h, '_, impl ResourceTracker>) -> bool {

@@ -3,7 +3,12 @@
 //! Provides a range object that supports iteration over a sequence of integers
 //! with configurable start, stop, and step values.
 
-use std::{fmt::Write, mem};
+use std::{
+    collections::hash_map::DefaultHasher,
+    fmt::Write,
+    hash::{Hash, Hasher},
+    mem,
+};
 
 use ahash::AHashSet;
 
@@ -258,6 +263,16 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Range> {
             return Ok(true); // Both empty
         }
         Ok(a.start == b.start && a.step == b.step)
+    }
+
+    fn py_hash(
+        &self,
+        _self_id: HeapId,
+        vm: &mut VM<'h, '_, impl ResourceTracker>,
+    ) -> Result<Option<u64>, ResourceError> {
+        let mut hasher = DefaultHasher::new();
+        self.get(vm.heap).hash(&mut hasher);
+        Ok(Some(hasher.finish()))
     }
 
     fn py_bool(&self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> bool {

@@ -6,6 +6,7 @@
 use std::{
     borrow::Cow,
     cmp::Ordering,
+    collections::hash_map::DefaultHasher,
     fmt::Write,
     hash::{Hash, Hasher},
     mem,
@@ -989,6 +990,16 @@ impl<'h> PyTrait<'h> for HeapRead<'h, DateTime> {
             return Ok(utc_micros(a) == utc_micros(b));
         }
         Ok(local_micros(a) == local_micros(b))
+    }
+
+    fn py_hash(
+        &self,
+        _self_id: HeapId,
+        vm: &mut VM<'h, '_, impl ResourceTracker>,
+    ) -> Result<Option<u64>, ResourceError> {
+        let mut hasher = DefaultHasher::new();
+        self.get(vm.heap).hash(&mut hasher);
+        Ok(Some(hasher.finish()))
     }
 
     fn py_cmp(

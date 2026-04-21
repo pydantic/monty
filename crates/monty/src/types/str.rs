@@ -2,7 +2,15 @@
 ///
 /// This type provides Python string semantics. Currently supports basic
 /// operations like length and equality comparison.
-use std::{borrow::Cow, cmp::Ordering, fmt, fmt::Write, mem, ops};
+use std::{
+    borrow::Cow,
+    cmp::Ordering,
+    collections::hash_map::DefaultHasher,
+    fmt,
+    fmt::Write,
+    hash::{Hash, Hasher},
+    mem, ops,
+};
 
 use ahash::AHashSet;
 use smallvec::smallvec;
@@ -230,6 +238,18 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Str> {
 
     fn py_eq(&self, other: &Self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> Result<bool, ResourceError> {
         Ok(self.get(vm.heap).0 == other.get(vm.heap).0)
+    }
+
+    fn py_hash(
+        &self,
+        _self_id: HeapId,
+        vm: &mut VM<'h, '_, impl ResourceTracker>,
+    ) -> Result<Option<u64>, ResourceError> {
+        // Must match `Value::InternString` so the same characters hash equally
+        // regardless of whether the string lives on the heap or in the intern table.
+        let mut hasher = DefaultHasher::new();
+        self.get(vm.heap).as_str().hash(&mut hasher);
+        Ok(Some(hasher.finish()))
     }
 
     fn py_bool(&self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> bool {

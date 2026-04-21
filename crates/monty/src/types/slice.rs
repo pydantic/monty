@@ -3,7 +3,13 @@
 //! Provides a slice object representing start:stop:step indices for sequence slicing.
 //! Each field is optional (None in Python), where None means "use the default for that field".
 
-use std::{fmt, fmt::Write, mem};
+use std::{
+    collections::hash_map::DefaultHasher,
+    fmt,
+    fmt::Write,
+    hash::{Hash, Hasher},
+    mem,
+};
 
 use ahash::AHashSet;
 
@@ -192,6 +198,16 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Slice> {
         let a = self.get(vm.heap);
         let b = other.get(vm.heap);
         Ok(a.start == b.start && a.stop == b.stop && a.step == b.step)
+    }
+
+    fn py_hash(
+        &self,
+        _self_id: HeapId,
+        vm: &mut VM<'h, '_, impl ResourceTracker>,
+    ) -> Result<Option<u64>, ResourceError> {
+        let mut hasher = DefaultHasher::new();
+        self.get(vm.heap).hash(&mut hasher);
+        Ok(Some(hasher.finish()))
     }
 
     fn py_bool(&self, _vm: &mut VM<'h, '_, impl ResourceTracker>) -> bool {

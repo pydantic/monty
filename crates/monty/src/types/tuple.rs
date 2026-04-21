@@ -14,7 +14,13 @@
 /// - `count(value)` - Count occurrences
 ///
 /// All tuple methods from Python's builtins are implemented.
-use std::{cmp::Ordering, fmt::Write, mem};
+use std::{
+    cmp::Ordering,
+    collections::hash_map::DefaultHasher,
+    fmt::Write,
+    hash::{Hash, Hasher},
+    mem,
+};
 
 use ahash::AHashSet;
 use smallvec::SmallVec;
@@ -225,6 +231,31 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Tuple> {
             }
         }
         Ok(true)
+    }
+
+    /// Hashes the tuple as the combined hash of its elements.
+    ///
+    /// Identical to `NamedTuple::py_hash`, so a `Tuple` and a `NamedTuple` with
+    /// the same elements hash equally — required because they compare equal
+    /// (matching CPython, where `NamedTuple` is a `tuple` subclass).
+    fn py_hash(
+        &self,
+        _self_id: HeapId,
+        vm: &mut VM<'h, '_, impl ResourceTracker>,
+    ) -> Result<Option<u64>, ResourceError> {
+        let token = vm.heap.incr_recursion_depth()?;
+        defer_drop!(token, vm);
+        let len = self.get(vm.heap).items.len();
+        let mut hasher = DefaultHasher::new();
+        for i in 0..len {
+            let item = self.clone_item(i, vm);
+            defer_drop!(item, vm);
+            match item.py_hash(vm)? {
+                Some(h) => h.hash(&mut hasher),
+                None => return Ok(None),
+            }
+        }
+        Ok(Some(hasher.finish()))
     }
 
     /// Lexicographic comparison for tuples.

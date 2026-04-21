@@ -6,7 +6,7 @@ use std::{
 
 #[cfg(feature = "ref-count-panic")]
 use super::py_dec_ref_ids_for_data;
-use crate::heap::{HeapId, HeapValue, heap_entries::iter::HeapEntriesIter};
+use crate::heap::{HeapEntry, HeapId, heap_entries::iter::HeapEntriesIter};
 
 /// Number of entries per page. Chosen to balance between wasted memory (from
 /// partially-filled last pages) and the frequency of page allocations.
@@ -16,7 +16,7 @@ const PAGE_SIZE: usize = 256;
 /// `MaybeUninit` slots — only slots at indices below `HeapEntries::len` are
 /// initialized.
 type Page = Box<[Slot; PAGE_SIZE]>;
-type Slot = MaybeUninit<Option<HeapValue>>;
+type Slot = MaybeUninit<Option<HeapEntry>>;
 
 /// Paged storage for heap entries that guarantees address stability.
 ///
@@ -104,7 +104,7 @@ impl HeapEntries {
     /// Panics if `index >= len`, or if the slot is freed.
     #[inline]
     #[track_caller]
-    pub fn get(&self, index: usize) -> &HeapValue {
+    pub fn get(&self, index: usize) -> &HeapEntry {
         // SAFETY: (DH) this call does not expose free slots which could be invalidated
         // by calls to `.allocate()`.
         unsafe { self.get_inner(index) }.expect("HeapEntries::get - data already freed")
@@ -117,7 +117,7 @@ impl HeapEntries {
     /// Callers must not alias borrows from this method to calls to `allocate()`, as `None`
     /// slots can be invalidated by reuse from the freelist.
     #[track_caller]
-    unsafe fn get_inner(&self, index: usize) -> Option<&HeapValue> {
+    unsafe fn get_inner(&self, index: usize) -> Option<&HeapEntry> {
         let len = self.len.get();
         assert!(index < len, "HeapEntries::get: index {index} out of bounds (len={len})");
         // SAFETY: (DH) all slots at indices < self.len have been initialized via `allocate`.
@@ -130,7 +130,7 @@ impl HeapEntries {
     /// # Panics
     /// Panics if `index >= len`.
     #[inline]
-    pub fn get_mut(&mut self, index: usize) -> &mut Option<HeapValue> {
+    pub fn get_mut(&mut self, index: usize) -> &mut Option<HeapEntry> {
         let len = self.len.get();
         assert!(
             index < len,
@@ -141,7 +141,7 @@ impl HeapEntries {
     }
 
     /// Retain only values satisfying the predicate, freeing the rest.
-    pub fn retain(&mut self, mut predicate: impl FnMut(usize, &mut HeapValue) -> bool) {
+    pub fn retain(&mut self, mut predicate: impl FnMut(usize, &mut HeapEntry) -> bool) {
         let len = self.len.get();
         for i in 0..len {
             // SAFETY: (DH) all slots at indices < self.len have been initialized via `allocate`.
@@ -174,7 +174,7 @@ impl HeapEntries {
     /// - **Vec growth** (`pages.push(new_page)`) reallocates the page pointer array,
     ///   not the page contents. Any existing `&HeapValue` reference points into a
     ///   `Box`'s heap allocation, not into the `Vec`'s buffer.
-    pub fn allocate(&self, value: HeapValue) -> HeapId {
+    pub fn allocate(&self, value: HeapEntry) -> HeapId {
         // SAFETY: (DH) only `&mut` methods will touch the free list, except for this one
         // call site. `HeapEntries` is also not thread-safe, so calls to allocate cannot race.
         // This guarantees this `.pop()` cannot overlap with other operations on the free list.
@@ -214,7 +214,7 @@ impl HeapEntries {
 
     /// Iterates the live values
     #[cfg(feature = "ref-count-return")]
-    pub fn iter(&self) -> impl Iterator<Item = &HeapValue> {
+    pub fn iter(&self) -> impl Iterator<Item = &HeapEntry> {
         // SAFETY: (DH) iterating only the live entries ensures that caller
         // can never observe `None` entries which could be invalidated by
         // calls to `allocate()`
@@ -255,7 +255,7 @@ impl serde::Serialize for HeapEntries {
 
 impl<'de> serde::Deserialize<'de> for HeapEntries {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let entries: Vec<Option<HeapValue>> = Vec::deserialize(deserializer)?;
+        let entries: Vec<Option<HeapEntry>> = Vec::deserialize(deserializer)?;
         let mut this = Self::with_capacity(entries.len());
 
         // Re-initialize the freelist from none entries
@@ -303,7 +303,7 @@ impl Drop for HeapEntries {
 
 /// Place iterator inside a submodule to create a safety boundary on `new` constructor
 mod iter {
-    use super::{HeapEntries, HeapValue};
+    use super::{HeapEntries, HeapEntry};
 
     pub(super) struct HeapEntriesIter<'a> {
         entries: &'a HeapEntries,
@@ -323,7 +323,7 @@ mod iter {
     }
 
     impl<'a> Iterator for HeapEntriesIter<'a> {
-        type Item = (usize, Option<&'a HeapValue>);
+        type Item = (usize, Option<&'a HeapEntry>);
 
         fn next(&mut self) -> Option<Self::Item> {
             let current_index = self.index;
@@ -350,9 +350,9 @@ mod tests {
     use super::*;
     use crate::heap::{HashState, HeapData, UnsafeHeapData};
 
-    fn dummy(label: &str) -> HeapValue {
+    fn dummy(label: &str) -> HeapEntry {
         use crate::types::Str;
-        HeapValue {
+        HeapEntry {
             refcount: Cell::new(1),
             data: UnsafeHeapData(UnsafeCell::new(HeapData::Str(Str::new(label.to_owned())))),
             readers: Cell::new(0),

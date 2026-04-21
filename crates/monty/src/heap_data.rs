@@ -1,10 +1,17 @@
-use std::{borrow::Cow, fmt::Write, mem, ops::Deref};
+use std::{
+    borrow::Cow,
+    collections::hash_map::DefaultHasher,
+    fmt::Write,
+    hash::{Hash, Hasher},
+    mem,
+    ops::Deref,
+};
 
 use ahash::AHashSet;
 use num_integer::Integer;
 
 use crate::{
-    ExcType, ResourceTracker,
+    ExcType, ResourceError, ResourceTracker,
     args::ArgValues,
     asyncio::{CallId, Coroutine, GatherFuture, GatherItem},
     bytecode::{CallResult, VM},
@@ -660,6 +667,63 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             | (HeapReadOutput::DictValuesView(_), HeapReadOutput::DictValuesView(_)) => Ok(false),
             // Different types are never equal
             _ => Ok(false),
+        }
+    }
+
+    /// Dispatches `py_hash` to the variant's per-type `PyTrait` implementation.
+    ///
+    /// For types that lack a dedicated `HeapRead` trait impl (`Closure`,
+    /// `FunctionDefaults`, `Cell`, `LongInt`, `ExtFunction`), the hash is
+    /// computed inline here. Variants left in the catch-all `_ => Ok(None)`
+    /// arm are unhashable.
+    fn py_hash(
+        &self,
+        self_id: HeapId,
+        vm: &mut VM<'h, '_, impl ResourceTracker>,
+    ) -> Result<Option<u64>, ResourceError> {
+        match self {
+            Self::Str(s) => s.py_hash(self_id, vm),
+            Self::Bytes(b) => b.py_hash(self_id, vm),
+            Self::Tuple(t) => t.py_hash(self_id, vm),
+            Self::NamedTuple(nt) => nt.py_hash(self_id, vm),
+            Self::FrozenSet(fs) => fs.py_hash(self_id, vm),
+            Self::Dataclass(dc) => dc.py_hash(self_id, vm),
+            Self::Range(r) => r.py_hash(self_id, vm),
+            Self::Slice(s) => s.py_hash(self_id, vm),
+            Self::Path(p) => p.py_hash(self_id, vm),
+            Self::Date(d) => d.py_hash(self_id, vm),
+            Self::DateTime(d) => d.py_hash(self_id, vm),
+            Self::TimeDelta(d) => d.py_hash(self_id, vm),
+            Self::TimeZone(d) => d.py_hash(self_id, vm),
+            // Closure / FunctionDefaults: hash by function ID. Two equal
+            // closures share the same `func_id`, so this is sufficient.
+            Self::Closure(c) => {
+                let mut hasher = DefaultHasher::new();
+                c.get(vm.heap).func_id.hash(&mut hasher);
+                Ok(Some(hasher.finish()))
+            }
+            Self::FunctionDefaults(fd) => {
+                let mut hasher = DefaultHasher::new();
+                fd.get(vm.heap).func_id.hash(&mut hasher);
+                Ok(Some(hasher.finish()))
+            }
+            // Cell uses identity hashing (matches Python's default for cell objects).
+            Self::Cell(_) => {
+                let mut hasher = DefaultHasher::new();
+                self_id.hash(&mut hasher);
+                Ok(Some(hasher.finish()))
+            }
+            // LongInt's hash matches `Value::InternLongInt`'s, since they are
+            // both Python `int` values and must hash equally when equal.
+            Self::LongInt(li) => Ok(Some(li.get(vm.heap).hash())),
+            Self::ExtFunction(name) => {
+                let mut hasher = DefaultHasher::new();
+                name.get(vm.heap).hash(&mut hasher);
+                Ok(Some(hasher.finish()))
+            }
+            // Unhashable: List, Dict, Set, the dict views, Iter, Module,
+            // Exception, Coroutine, GatherFuture, RePattern, ReMatch.
+            _ => Ok(None),
         }
     }
 
