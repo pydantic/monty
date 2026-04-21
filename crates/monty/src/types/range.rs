@@ -67,15 +67,17 @@ impl Range {
     /// Returns the length of the range (number of elements it will yield).
     #[must_use]
     pub fn len(&self) -> usize {
+        self.len_i128().try_into().unwrap_or(usize::MAX)
+    }
+
+    fn len_i128(&self) -> i128 {
         // self.stop - self.start could be up to i64::MAX - i64::MIN, which overflows i64,
-        // so we use i128 for the calculation to avoid overflow. The result then saturates at
-        // usize boundaries
+        // so we use i128 for the calculation to avoid overflow.
         let start = i128::from(self.start);
         let stop = i128::from(self.stop);
         let step = i128::from(self.step);
 
-        let len = div_ceil(stop - start, step);
-        len.max(0).try_into().unwrap_or(usize::MAX)
+        div_ceil(stop - start, step).max(0)
     }
 
     #[must_use]
@@ -195,11 +197,14 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Range> {
 
         let range = *self.get(vm.heap);
 
+        // Calculate in i128 space to avoid overflow issues with large ranges and indices.
+
         // Extract integer index, accepting Int, Bool (True=1, False=0), and LongInt
-        let index = key.as_index(vm, Type::Range)?;
+        let index = i128::from(key.as_index(vm, Type::Range)?);
 
         // Get range length for normalization
-        let len = i64::try_from(range.len()).expect("range length exceeds i64::MAX");
+        let len = range.len_i128();
+
         let normalized = if index < 0 { index + len } else { index };
 
         // Bounds check
@@ -208,12 +213,11 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Range> {
         }
 
         // Calculate: start + normalized * step
-        // Use checked arithmetic to avoid overflow in intermediate calculations
-        let offset = normalized
-            .checked_mul(range.step)
-            .and_then(|v| range.start.checked_add(v))
-            .expect("range element calculation overflowed");
-        Ok(Value::Int(offset))
+        let offset = i128::from(range.start) + (normalized * i128::from(range.step));
+
+        // because start / stop / step are i64, the result must always fit in i64 as well
+        let offset_i64 = offset.try_into().expect("calculated range index should fit in i64");
+        Ok(Value::Int(offset_i64))
     }
 
     fn py_eq(&self, other: &Self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> Result<bool, ResourceError> {

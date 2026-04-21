@@ -38,20 +38,16 @@ pub fn builtin_pow(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -
                 (Value::Int(b), Value::Int(e), Value::Int(m_val)) => {
                     if *m_val == 0 {
                         Err(SimpleException::new_msg(ExcType::ValueError, "pow() 3rd argument cannot be 0").into())
-                    } else if *e < 0 {
+                    } else if let Ok(e) = u64::try_from(*e) {
+                        // Use modular exponentiation
+                        Ok(Value::Int(mod_pow(*b, e, *m_val)))
+                    } else {
+                        debug_assert!(*e < 0, "i64 -> u64 succeeds for all non-negative values");
                         Err(SimpleException::new_msg(
                             ExcType::ValueError,
                             "pow() 2nd argument cannot be negative when 3rd argument specified",
                         )
                         .into())
-                    } else {
-                        // Use modular exponentiation
-                        let result = mod_pow(
-                            *b,
-                            u64::try_from(*e).expect("pow exponent >= 0 but failed u64 conversion"),
-                            *m_val,
-                        );
-                        Ok(Value::Int(result))
                     }
                 }
                 _ => Err(SimpleException::new_msg(

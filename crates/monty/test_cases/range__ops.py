@@ -240,3 +240,7 @@ assert -1.0 not in range(5), '-1.0 not in range(5)'
 assert True in range(5), 'True in range(5)'
 assert False in range(5), 'False in range(5)'
 assert True not in range(0), 'True not in empty range'
+
+# Large ranges which can hit monty's range i64 limits should not panic
+assert range(-(2**63), 2**63 - 1)[0] == -(2**63), 'range with len exceeding i64::MAX get first item'
+assert range(-(2**63), 2**63 - 1, 2**63 - 1)[2] == 2**63 - 2, 'range with step exceeding i64::MAX get last item'
