@@ -334,8 +334,14 @@ impl Monty {
             }};
         }
 
-        if let Some(limits) = limits {
-            let tracker = LimitedTracker::new(limits.try_into()?);
+        if let Some(resource_limits) = limits {
+            let tracker = match resource_limits.try_into() {
+                Ok(r) => LimitedTracker::new(r),
+                Err(err) => {
+                    put_back(mount_table);
+                    return Err(err);
+                }
+            };
             run_loop!(tracker)
         } else {
             run_loop!(NoLimitTracker)
@@ -383,8 +389,14 @@ impl Monty {
         let print_callback_ref = options.print_callback.as_ref().map(Function::create_ref).transpose()?;
 
         // Start execution with appropriate tracker
-        if let Some(limits) = options.limits {
-            let tracker = LimitedTracker::new(limits.try_into()?);
+        if let Some(resource_limits) = options.limits {
+            let tracker = match resource_limits.try_into() {
+                Ok(r) => LimitedTracker::new(r),
+                Err(err) => {
+                    put_back_mount_state(mount_state);
+                    return Err(err);
+                }
+            };
             let progress = match runner.start(input_values, tracker, print_writer) {
                 Ok(p) => p,
                 Err(exc) => {
