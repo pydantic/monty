@@ -1170,10 +1170,8 @@ impl<T: ResourceTracker> Heap<T> {
 
     /// Returns whether garbage collection should run.
     ///
-    /// GC only runs when reference cycles may exist and the number of
-    /// GC-tracked allocations since the last collection has reached the
-    /// configured interval. If the resource tracker does not override the
-    /// interval, the built-in default is used.
+    /// True if reference cycles count exist in the heap
+    /// and the number of allocations since the last GC exceeds the interval.
     #[inline]
     pub fn should_gc(&self) -> bool {
         let interval = self.tracker.gc_interval().unwrap_or(GC_INTERVAL);
