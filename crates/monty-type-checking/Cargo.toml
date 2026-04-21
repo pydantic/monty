@@ -27,6 +27,7 @@ salsa = { workspace = true }
 
 [dev-dependencies]
 pretty_assertions = { workspace = true }
+insta = { workspace = true }
 # Use codspeed-criterion-compat for CI benchmarks, real criterion for local flamegraphs
 codspeed-criterion-compat = "4.2.1"
 criterion = "0.5"

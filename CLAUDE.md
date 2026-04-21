@@ -480,6 +480,14 @@ All these markers must be at the start of comment lines to be recognized.
 - Use `make complete-tests` to fill in blank expectations
 - Regression tests run via `datatest-stable` harness in `crates/monty-datatest/src/main.rs`, use `make test-cases` to run them
 
+### Rust integration tests and `insta` snapshots
+
+In `crates/*/tests/*.rs` (but **not** `crates/monty/test_cases/`), use [`insta`](https://insta.rs) `assert_snapshot!` for multi-line strings, serialized output, error messages otherwise fuzz-checked via `.contains(...)`, and any fixture currently compared via a hand-rolled `UPDATE_EXPECT` helper (use external snapshots under `tests/snapshots/`).
+
+Keep `assert_eq!` for scalars, enums, and structural values (`MontyObject`, `Vec`, etc.), and for principled membership checks like `vec.contains(...)`.
+
+Workflow: write `assert_snapshot!(value, @"");`, then `cargo insta test --accept` to populate (plain `INSTA_UPDATE=always` does **not** update inline `@"..."` snapshots — you need the `cargo insta` subcommand, installed via `cargo install cargo-insta`). Add `insta = { workspace = true }` to `[dev-dependencies]` when introducing it to a new crate.
+
 ## Python Package (`pydantic-monty`)
 
 The Python package provides Python bindings for the Monty interpreter, located in `crates/monty-python/`.

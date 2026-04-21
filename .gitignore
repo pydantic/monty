@@ -20,3 +20,4 @@
 /.worktrees/
 /.zed/
 /scripts/json_files/
+.DS_Store

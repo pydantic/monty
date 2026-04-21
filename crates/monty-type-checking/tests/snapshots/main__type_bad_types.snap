@@ -1,3 +1,7 @@
+---
+source: crates/monty-type-checking/tests/main.rs
+expression: actual
+---
 bad_types.py:22:11: error[invalid-argument-type] Argument to function `takes_int` is incorrect: Expected `int`, found `Literal["hello"]`
 bad_types.py:23:11: error[invalid-argument-type] Argument to function `takes_int` is incorrect: Expected `int`, found `float`
 bad_types.py:24:11: error[invalid-argument-type] Argument to function `takes_str` is incorrect: Expected `str`, found `Literal[42]`
