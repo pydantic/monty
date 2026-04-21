@@ -710,11 +710,12 @@ impl<'de, T: ResourceTracker + serde::Deserialize<'de>> serde::Deserialize<'de> 
     }
 }
 
-/// GC interval - run GC every 100,000 applicable allocations.
+/// Default GC interval - run GC every 100,000 applicable allocations unless
+/// the configured resource tracker overrides it.
 ///
 /// This is intentionally infrequent to minimize overhead while still
 /// eventually collecting reference cycles.
-const GC_INTERVAL: u32 = 100_000;
+const GC_INTERVAL: usize = 100_000;
 
 impl<T: ResourceTracker> Heap<T> {
     /// Creates a new heap with the given resource tracker.
@@ -1169,11 +1170,14 @@ impl<T: ResourceTracker> Heap<T> {
 
     /// Returns whether garbage collection should run.
     ///
-    /// True if reference cycles count exist in the heap
-    /// and the number of allocations since the last GC exceeds the interval.
+    /// GC only runs when reference cycles may exist and the number of
+    /// GC-tracked allocations since the last collection has reached the
+    /// configured interval. If the resource tracker does not override the
+    /// interval, the built-in default is used.
     #[inline]
     pub fn should_gc(&self) -> bool {
-        self.may_have_cycles.get() && self.allocations_since_gc.get() >= GC_INTERVAL
+        let interval = self.tracker.gc_interval().unwrap_or(GC_INTERVAL);
+        self.may_have_cycles.get() && (self.allocations_since_gc.get() as usize) >= interval
     }
 
     /// Runs mark-sweep garbage collection to free unreachable cycles.

@@ -310,6 +310,39 @@ len(result)
 }
 
 #[test]
+#[cfg(feature = "ref-count-return")]
+fn gc_interval_limit_is_respected() {
+    // This test verifies that a custom GC interval is actually used instead of
+    // the built-in default. We create self-referencing list cycles so GC is
+    // eligible to run, then assert that a small configured interval causes a
+    // collection before the default 100,000 allocation threshold.
+    let code = r"
+for i in range(25):
+    a = []
+    a.append(a)
+result = 'done'
+result
+";
+    let ex = MontyRun::new(code.to_owned(), "test.py", vec![]).unwrap();
+
+    let limits = ResourceLimits::new().gc_interval(10);
+    let output = ex
+        .run_ref_counts_with_tracker(vec![], LimitedTracker::new(limits))
+        .expect("should succeed with custom GC interval");
+
+    assert!(
+        output.allocations_since_gc < 10,
+        "configured GC interval should trigger collections before the default; allocations_since_gc = {}",
+        output.allocations_since_gc
+    );
+    assert!(
+        output.heap_count < 20,
+        "GC should collect most unreachable list cycles: {} heap objects",
+        output.heap_count
+    );
+}
+
+#[test]
 #[cfg_attr(
     feature = "ref-count-panic",
     ignore = "resource exhaustion doesn't guarantee heap state consistency"

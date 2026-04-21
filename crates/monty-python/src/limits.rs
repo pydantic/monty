@@ -227,4 +227,8 @@ impl<T: ResourceTracker> ResourceTracker for PySignalTracker<T> {
     fn on_grow(&self, additional_bytes: usize) -> Result<(), ResourceError> {
         self.inner.on_grow(additional_bytes)
     }
+
+    fn gc_interval(&self) -> Option<usize> {
+        self.inner.gc_interval()
+    }
 }
