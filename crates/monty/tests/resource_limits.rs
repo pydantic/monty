@@ -63,7 +63,7 @@ result
 
     let output = ex.run_ref_counts(vec![]).expect("should succeed");
 
-    // GC_INTERVAL is 100,000. With 200,001 iterations creating dict cycles,
+    // DEFAULT_GC_INTERVAL is 100,000. With 200,001 iterations creating dict cycles,
     // GC must have run at least once, resetting allocations_since_gc.
     // If may_have_cycles was never set (has_refs() disabled), GC never runs
     // and allocations_since_gc would be ~400k (2 dicts per iteration).
@@ -114,7 +114,7 @@ len(result)
 
     let output = ex.run_ref_counts(vec![]).expect("should succeed");
 
-    // GC_INTERVAL is 100,000. With 200,001 iterations creating list cycles,
+    // DEFAULT_GC_INTERVAL is 100,000. With 200,001 iterations creating list cycles,
     // GC must have run at least twice, resetting allocations_since_gc.
     assert!(
         output.allocations_since_gc < 100_000,
@@ -289,24 +289,36 @@ len(result)
 }
 
 #[test]
+#[cfg(feature = "ref-count-return")]
 fn gc_interval_triggers_collection() {
-    // This test verifies that GC can run without crashing
-    // We can't easily verify that GC actually collected anything without
-    // adding more introspection, but we can verify it runs
+    // This test verifies that the built-in GC interval still triggers collection
+    // on real reference cycles even when no custom tracker interval is supplied.
+    // A sufficiently large number of cycles should force collection here.
     let code = r"
-result = []
-for i in range(100):
-    temp = [1, 2, 3]
-    result.append(i)
-len(result)
+result = 'done'
+for i in range(210000):
+    a = []
+    a.append(a)
+result
 ";
     let ex = MontyRun::new(code.to_owned(), "test.py", vec![]).unwrap();
 
-    // Set GC to run every 10 allocations
-    let limits = ResourceLimits::new().gc_interval(10);
-    let result = ex.run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout);
+    let output = ex
+        .run_ref_counts(vec![])
+        .expect("should succeed with GC enabled on cycles");
 
-    assert!(result.is_ok(), "should succeed with GC enabled");
+    assert_eq!(output.py_object, MontyObject::String("done".to_owned()));
+    assert!(
+        output.allocations_since_gc < 100_000,
+        "default GC interval should have triggered collection: allocations_since_gc = {}",
+        output.allocations_since_gc
+    );
+    // Expected remaining cycles × 2, with a little slack.
+    assert!(
+        output.heap_count <= 20_000,
+        "GC should collect most unreachable list cycles: {} heap objects",
+        output.heap_count
+    );
 }
 
 #[test]
@@ -330,13 +342,15 @@ result
         .run_ref_counts_with_tracker(vec![], LimitedTracker::new(limits))
         .expect("should succeed with custom GC interval");
 
+    assert_eq!(output.py_object, MontyObject::String("done".to_owned()));
     assert!(
         output.allocations_since_gc < 10,
         "configured GC interval should trigger collections before the default; allocations_since_gc = {}",
         output.allocations_since_gc
     );
+    // Expected remaining cycles × 2, with a little slack.
     assert!(
-        output.heap_count < 20,
+        output.heap_count <= 10,
         "GC should collect most unreachable list cycles: {} heap objects",
         output.heap_count
     );
