@@ -76,6 +76,12 @@ len(result)
   t.true(error.message.includes('MemoryError'))
 })
 
+test('allocation limit accepts values above u32 max', (t) => {
+  const m = new Monty('1 + 1')
+  const limits: ResourceLimits = { maxAllocations: 2 ** 33 }
+  t.is(m.run({ limits }), 2)
+})
+
 // =============================================================================
 // Memory limit tests
 // =============================================================================
@@ -91,12 +97,6 @@ len(result)
   const limits: ResourceLimits = { maxMemory: 100 }
   const error = t.throws(() => m.run({ limits }), { instanceOf: MontyRuntimeError })
   t.true(error.message.includes('MemoryError'))
-})
-
-test('memory limit accepts values below u32 max', (t) => {
-  const m = new Monty('1 + 1')
-  const limits: ResourceLimits = { maxMemory: 2 ** 31 }
-  t.is(m.run({ limits }), 2)
 })
 
 test('memory limit accepts values above u32 max', (t) => {

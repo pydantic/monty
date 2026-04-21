@@ -226,7 +226,7 @@ impl Monty {
         }
 
         let result = if let Some(limits) = options.limits {
-            let tracker = LimitedTracker::new(limits.into());
+            let tracker = LimitedTracker::new(limits.try_into()?);
             self.runner.run(input_values, tracker, print_writer)
         } else {
             let tracker = NoLimitTracker;
@@ -335,7 +335,7 @@ impl Monty {
         }
 
         if let Some(limits) = limits {
-            let tracker = LimitedTracker::new(limits.into());
+            let tracker = LimitedTracker::new(limits.try_into()?);
             run_loop!(tracker)
         } else {
             run_loop!(NoLimitTracker)
@@ -384,7 +384,7 @@ impl Monty {
 
         // Start execution with appropriate tracker
         if let Some(limits) = options.limits {
-            let tracker = LimitedTracker::new(limits.into());
+            let tracker = LimitedTracker::new(limits.try_into()?);
             let progress = match runner.start(input_values, tracker, print_writer) {
                 Ok(p) => p,
                 Err(exc) => {
@@ -548,22 +548,21 @@ impl MontyRepl {
     ///
     /// @param options - Optional configuration (scriptName, limits)
     #[napi(constructor)]
-    #[must_use]
-    pub fn new(options: Option<MontyReplOptions>) -> Self {
+    pub fn new(options: Option<MontyReplOptions>) -> Result<Self> {
         let options = options.unwrap_or_default();
         let script_name = options.script_name.unwrap_or_else(|| "main.py".to_string());
 
         let repl = if let Some(limits) = options.limits {
-            let tracker = LimitedTracker::new(limits.into());
+            let tracker = LimitedTracker::new(limits.try_into()?);
             EitherRepl::Limited(CoreMontyRepl::new(&script_name, tracker))
         } else {
             EitherRepl::NoLimit(CoreMontyRepl::new(&script_name, NoLimitTracker))
         };
 
-        Self {
+        Ok(Self {
             repl: Some(repl),
             script_name,
-        }
+        })
     }
 
     /// Returns the script name for this REPL session.
