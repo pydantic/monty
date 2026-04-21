@@ -116,7 +116,7 @@ test-no-features: ## Run rust tests without any features enabled
 
 .PHONY: test-ref-count-panic
 test-ref-count-panic: ## Run rust tests with ref-count-panic enabled
-	cargo test -p monty --features ref-count-panic
+	cargo test -p monty --features "ref-count-panic test-hooks"
 	cargo run -p monty-datatest --features ref-count-panic
 
 .PHONY: test-ref-count-return
