@@ -45,7 +45,8 @@ jiter = { version = "0.13.0", features = ["num-bigint"] }
 # should be used for testing only
 ref-count-return = []
 # memory-model-checks enables a Drop implementation on Value which catches heap allocated values that are dropped
-# without being dereferenced.
+# without being dereferenced, and sets the default GC interval to 1 so garbage collection runs on every
+# GC-tracked allocation.
 # should be used for testing only
 memory-model-checks = []
 # test-hooks exposes small internal helpers needed by integration tests that

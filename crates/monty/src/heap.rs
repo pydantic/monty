@@ -713,6 +713,8 @@ impl<'de, T: ResourceTracker + serde::Deserialize<'de>> serde::Deserialize<'de> 
 ///
 /// This is intentionally infrequent to minimize overhead while still
 /// eventually collecting reference cycles.
+///
+/// When the `memory-model-checks` feature is enabled, this is reduced to 1 to stress-test GC behavior.
 const DEFAULT_GC_INTERVAL: usize = if cfg!(feature = "memory-model-checks") {
     1
 } else {
