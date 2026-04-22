@@ -1218,6 +1218,30 @@ def test_future_snapshot_preserved_on_invalid_results():
     assert final.output == snapshot(42)
 
 
+def test_future_snapshot_resume_exception_caught_at_await():
+    """Exceptions used to resume a future are raised at the `await` expression."""
+    code = """
+try:
+    await fetch()
+    result = 'not caught'
+except ValueError as exc:
+    result = 'caught: ' + str(exc)
+
+result
+"""
+    progress = Monty(code).start()
+    assert isinstance(progress, pydantic_monty.FunctionSnapshot)
+    assert progress.function_name == snapshot('fetch')
+    call_id = progress.call_id
+
+    progress = progress.resume({'future': ...})
+    assert isinstance(progress, pydantic_monty.FutureSnapshot)
+
+    final = progress.resume({call_id: {'exception': ValueError('async boom')}})
+    assert isinstance(final, pydantic_monty.MontyComplete)
+    assert final.output == snapshot('caught: async boom')
+
+
 def test_name_lookup_resume_lone_surrogate_value():
     """A lone-surrogate string in `value` fails UTF-8 conversion; the caller sees
     `MontyRuntimeError(ValueError)` rather than a raw `UnicodeEncodeError`."""

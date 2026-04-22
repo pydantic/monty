@@ -866,11 +866,15 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
 
             match task.state {
                 TaskState::Failed(_) => {
-                    // Current task failed - propagate error to caller
+                    // Current task failed because a future resolved with an
+                    // exception. Route that exception through the normal VM
+                    // machinery so a surrounding `try`/`except` around the
+                    // `await` can catch it; if no handler matches,
+                    // `resume_with_exception` still propagates the error.
                     let TaskState::Failed(err) = mem::replace(&mut task.state, TaskState::Ready) else {
                         unreachable!();
                     };
-                    return Err(err);
+                    return self.resume_with_exception(err);
                 }
                 TaskState::BlockedOnCall(_) | TaskState::BlockedOnGather(_) => {
                     // Current task is still blocked on unresolved futures.
