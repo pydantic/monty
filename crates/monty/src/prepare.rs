@@ -1270,6 +1270,13 @@ impl<'i> Prepare<'i> {
         // Extract param names from the parsed signature for scope analysis
         let param_names: Vec<StringId> = parsed_sig.param_names().collect();
 
+        // Reject duplicate parameter names. CPython raises `SyntaxError` at compile
+        // time; accepting them here desynchronizes the namespace layout built by
+        // `new_function` (`name_map` is deduplicated by HashMap semantics but each
+        // `NamespaceId` comes from the positional index), which later panics
+        // `load_local` at runtime.
+        reject_duplicate_params(&param_names, self.interner, name.position)?;
+
         // Pass 1: Collect scope information from the function body
         let scope_info = collect_function_scope_info(&body, &param_names, self.interner);
 
@@ -1485,6 +1492,9 @@ impl<'i> Prepare<'i> {
 
         // Extract param names from the parsed signature for scope analysis
         let param_names: Vec<StringId> = parsed_sig.param_names().collect();
+
+        // Reject duplicate parameter names (see `prepare_function_def` for the rationale).
+        reject_duplicate_params(&param_names, self.interner, position)?;
 
         // Pass 1: Collect scope information from the lambda body
         // (Lambdas can't have global/nonlocal declarations, but can have nested functions)
@@ -1918,6 +1928,32 @@ struct FunctionScopeInfo {
     /// OR they may be builtin/global reads. The actual implicit captures are determined
     /// by filtering against enclosing_locals in new_function.
     potential_captures: AHashSet<String>,
+}
+
+/// Validates that a function's parameter list has no duplicate names.
+///
+/// Ruff's parser accepts duplicate parameter names (e.g. `def f(x, x)`) that CPython
+/// rejects at compile time. Accepting them here would desynchronize the namespace
+/// layout: `name_map.len()` counts unique names while each `NamespaceId` comes
+/// from the positional index, so the duplicate resolves to a slot past the
+/// allocated stack region and panics `load_local` at runtime. Rejecting at the
+/// prepare phase matches CPython's compile-time check.
+fn reject_duplicate_params(
+    param_names: &[StringId],
+    interner: &InternerBuilder,
+    position: CodeRange,
+) -> Result<(), ParseError> {
+    let mut seen = AHashSet::with_capacity(param_names.len());
+    for string_id in param_names {
+        if !seen.insert(*string_id) {
+            let name_str = interner.get_str(*string_id);
+            return Err(ParseError::syntax(
+                format!("duplicate argument '{name_str}' in function definition"),
+                position,
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Scans a function body to collect scope information (first phase of preparation).

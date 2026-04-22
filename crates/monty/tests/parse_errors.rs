@@ -441,6 +441,45 @@ fn del_statement_returns_not_implemented_error() {
 }
 
 #[test]
+fn duplicate_positional_parameter_returns_syntax_error() {
+    // https://github.com/pydantic/monty/issues/377
+    //
+    // Ruff's parser accepts `def f(x, x)` though CPython rejects it at compile time.
+    // Without an explicit check, `Prepare::new_function` would size the frame from
+    // the unique-name count (HashMap::len) while resolving the duplicate to a
+    // positional NamespaceId that points past the allocated stack region, panicking
+    // `load_local` at call time.
+    let result = MontyRun::new("def f(x, x): return x\nf(1, 2)".to_owned(), "test.py", vec![]);
+    let exc = result.expect_err("expected compile error");
+    assert_eq!(exc.exc_type(), ExcType::SyntaxError);
+    assert_eq!(exc.message(), Some("duplicate argument 'x' in function definition"));
+}
+
+#[test]
+fn duplicate_keyword_only_parameter_returns_syntax_error() {
+    let result = MontyRun::new("def f(*, x, x): return x".to_owned(), "test.py", vec![]);
+    let exc = result.expect_err("expected compile error");
+    assert_eq!(exc.exc_type(), ExcType::SyntaxError);
+    assert_eq!(exc.message(), Some("duplicate argument 'x' in function definition"));
+}
+
+#[test]
+fn duplicate_mixed_positional_and_keyword_only_parameter_returns_syntax_error() {
+    let result = MontyRun::new("def f(x, *, x=1): return x".to_owned(), "test.py", vec![]);
+    let exc = result.expect_err("expected compile error");
+    assert_eq!(exc.exc_type(), ExcType::SyntaxError);
+    assert_eq!(exc.message(), Some("duplicate argument 'x' in function definition"));
+}
+
+#[test]
+fn duplicate_lambda_parameter_returns_syntax_error() {
+    let result = MontyRun::new("f = lambda x, x: x".to_owned(), "test.py", vec![]);
+    let exc = result.expect_err("expected compile error");
+    assert_eq!(exc.exc_type(), ExcType::SyntaxError);
+    assert_eq!(exc.message(), Some("duplicate argument 'x' in function definition"));
+}
+
+#[test]
 fn long_source_line_does_not_overflow_column() {
     // https://github.com/pydantic/monty/issues/341
     //
