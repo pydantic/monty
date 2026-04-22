@@ -98,6 +98,42 @@ assert f'{-42: d}' == '-42', 'integer negative space'
 # sign-aware padding
 assert f'{-23:=5d}' == '-  23', 'sign-aware padding'
 
+# i64::MIN: formatting must not overflow when taking abs of the minimum int
+assert f'{-9223372036854775808:d}' == '-9223372036854775808', 'i64 min :d'
+assert f'{-9223372036854775808:+d}' == '-9223372036854775808', 'i64 min with sign'
+assert f'{-9223372036854775808:=22d}' == '-  9223372036854775808', 'i64 min sign-aware padding'
+
+# integer fill character with alignment
+assert f'{42:*>10d}' == '********42', 'int fill right'
+assert f'{42:*<10d}' == '42********', 'int fill left'
+assert f'{42:*^10d}' == '****42****', 'int fill center'
+
+# === Integer non-decimal bases ===
+# binary
+assert f'{10:b}' == '1010', 'binary positive'
+assert f'{-10:b}' == '-1010', 'binary negative'
+assert f'{0:b}' == '0', 'binary zero'
+
+# octal
+assert f'{8:o}' == '10', 'octal positive'
+assert f'{-8:o}' == '-10', 'octal negative'
+
+# hexadecimal (lower and upper)
+assert f'{255:x}' == 'ff', 'hex lowercase'
+assert f'{-255:x}' == '-ff', 'hex lowercase negative'
+assert f'{255:X}' == 'FF', 'hex uppercase'
+assert f'{-255:X}' == '-FF', 'hex uppercase negative'
+
+# === Integer as Unicode character (:c) ===
+assert f'{65:c}' == 'A', 'char ascii'
+assert f'{0x4E2D:c}' == '中', 'char BMP unicode'
+
+# === Bool with format spec ===
+# bool is a subclass of int, so :d works
+assert f'{True:d}' == '1', 'bool True as int'
+assert f'{False:d}' == '0', 'bool False as int'
+assert f'{True:04d}' == '0001', 'bool with zero-pad'
+
 # === Float formatting ===
 # basic float
 assert f'{3.14159}' == '3.14159', 'basic float'
@@ -134,6 +170,69 @@ assert f'{1234567890:g}' == '1.23457e+09', 'general format large number'
 assert f'{0.25:%}' == '25.000000%', 'percentage default precision'
 assert f'{0.25:.1%}' == '25.0%', 'percentage with precision'
 assert f'{0.125:.0%}' == '12%', 'percentage zero precision'
+
+# zero precision rounds (banker's/half-even style per Python)
+assert f'{3.7:.0f}' == '4', 'zero precision rounds up'
+assert f'{3.4:.0f}' == '3', 'zero precision rounds down'
+assert f'{1234.5:.0e}' == '1e+03', 'zero precision exponential'
+
+# uppercase exponential
+assert f'{1234.5:E}' == '1.234500E+03', 'uppercase E'
+
+# float fill character with alignment + precision
+assert f'{3.14:*>10.2f}' == '******3.14', 'float fill right'
+assert f'{3.14:*<10.2f}' == '3.14******', 'float fill left'
+assert f'{3.14:*^10.2f}' == '***3.14***', 'float fill center'
+
+# large and small magnitude exponents
+assert f'{1e100:.3e}' == '1.000e+100', 'very large exponent'
+assert f'{1e-100:.3e}' == '1.000e-100', 'very small exponent'
+
+# high precision reveals f64 representation
+assert f'{0.1:.20f}' == '0.10000000000000000555', 'high precision float'
+
+# === Large dynamic precision ===
+# Precision > u16::MAX (65535) must not overflow Rust's `format!` precision
+# argument. Each of these exercises a different internal format code path.
+assert f'{1:.{10**6}f}' == '1.' + '0' * 10**6, 'huge precision :f'
+assert f'{1:.{10**6}e}' == '1.' + '0' * 10**6 + 'e+00', 'huge precision :e'
+assert f'{1:.{10**6}E}' == '1.' + '0' * 10**6 + 'E+00', 'huge precision :E'
+assert f'{0.5:.{10**6}%}' == '50.' + '0' * 10**6 + '%', 'huge precision :%'
+# :g strips trailing zeros, so the visible result is short, but the
+# underlying format call still uses the full precision internally.
+assert f'{1.5:.{10**6}g}' == '1.5', 'huge precision :g fixed branch'
+assert f'{1e-10:.{10**6}g}' == '1.0000000000000000364321973154977415791655470655996396089904010295867919921875e-10', (
+    'huge precision :g exponential branch'
+)
+
+# === Large static width/precision ===
+# Static format specs are parsed at parse time and packed into 16 bits for
+# width and precision; values >= 65536 (or 65535 for precision, which is
+# reserved as the "no precision" marker) must still round-trip correctly.
+assert len(f'{1.5:.65535f}') == 65537, 'static precision 65535'
+assert len(f'{1.5:.65536f}') == 65538, 'static precision 65536'
+assert len(f'{42:65536d}') == 65536, 'static width 65536'
+
+# === Integer with float format types ===
+# Python allows formatting integers with float types
+assert f'{42:f}' == '42.000000', 'int as :f'
+assert f'{42:.2f}' == '42.00', 'int as :.2f'
+assert f'{42:.2e}' == '4.20e+01', 'int as :.2e'
+assert f'{1234:g}' == '1234', 'int as :g'
+assert f'{5:%}' == '500.000000%', 'int as :%'
+
+# === Negative zero preserves sign ===
+assert f'{-0.0}' == '-0.0', 'negative zero default'
+assert f'{-0.0:f}' == '-0.000000', 'negative zero :f'
+assert f'{-0.0:+.2f}' == '-0.00', 'negative zero with sign'
+
+# === Infinity formatting across format codes ===
+# inf bypasses precision/width-pad zero rules and renders as 'inf'
+assert f'{float("inf"):f}' == 'inf', 'inf :f'
+assert f'{float("inf"):e}' == 'inf', 'inf :e'
+assert f'{float("inf"):.3f}' == 'inf', 'inf with precision'
+assert f'{float("inf"):+f}' == '+inf', 'inf with sign'
+assert f'{float("-inf"):f}' == '-inf', 'negative inf'
 
 # === Nested format specs ===
 width = 10
@@ -203,6 +302,12 @@ assert f'hello {name}' == 'hello world', 'str concat with fstring'
 # === Whitespace in format spec ===
 # no extra whitespace handling needed, width handles it
 assert f'{"x":5}' == 'x    ', 'single char width'
+
+# === Empty format spec with various types ===
+# trailing `:` with no spec behaves like no spec
+assert f'{42:}' == '42', 'empty spec int'
+assert f'{3.14:}' == '3.14', 'empty spec float'
+assert f'{"hi":}' == 'hi', 'empty spec string'
 
 # === Unicode character counting in padding ===
 x = 'café'
