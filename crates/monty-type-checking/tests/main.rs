@@ -287,7 +287,7 @@ fn pooled_db_nested_paths_are_cleaned_up() {
     );
 }
 
-/// Snapshot stored in `tests/snapshots/main__test_reveal_types.snap`.
+/// Snapshot stored in `tests/snapshots/main__reveal_types.snap`.
 /// Run `cargo insta review` (or `cargo insta test --accept`) to update.
 #[test]
 fn test_reveal_types() {
