@@ -2,6 +2,10 @@ import test from 'ava'
 
 import { Monty, MontyRuntimeError, type ResourceLimits } from '../wrapper'
 
+// The WASI target uses 32-bit `usize`, so limits above u32::MAX cannot be represented.
+// Skip u32-overflow tests when running against the WASI build.
+const testAboveU32 = process.env.NAPI_RS_FORCE_WASI ? test.skip : test
+
 // =============================================================================
 // ResourceLimits construction tests
 // =============================================================================
@@ -76,7 +80,7 @@ len(result)
   t.true(error.message.includes('MemoryError'))
 })
 
-test('allocation limit accepts values above u32 max', (t) => {
+testAboveU32('allocation limit accepts values above u32 max', (t) => {
   const m = new Monty('1 + 1')
   const limits: ResourceLimits = { maxAllocations: 2 ** 33 }
   t.is(m.run({ limits }), 2)
@@ -99,7 +103,7 @@ len(result)
   t.true(error.message.includes('MemoryError'))
 })
 
-test('memory limit accepts values above u32 max', (t) => {
+testAboveU32('memory limit accepts values above u32 max', (t) => {
   const m = new Monty('1 + 1')
   const limits: ResourceLimits = { maxMemory: 2 ** 33 }
   t.is(m.run({ limits }), 2)
