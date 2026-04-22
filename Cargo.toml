@@ -15,7 +15,7 @@ default-members = ["crates/monty-cli"]
 
 [workspace.package]
 edition = "2024"
-version = "0.0.16"
+version = "0.0.17"
 rust-version = "1.90"
 license = "MIT"
 authors = ["Samuel Colvin <samuel@pydantic.dev>"]
