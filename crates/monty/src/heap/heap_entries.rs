@@ -4,7 +4,7 @@ use std::{
     mem::MaybeUninit,
 };
 
-#[cfg(feature = "ref-count-panic")]
+#[cfg(feature = "memory-model-checks")]
 use super::py_dec_ref_ids_for_data;
 use crate::heap::{HeapEntry, HeapId, heap_entries::iter::HeapEntriesIter};
 
@@ -149,6 +149,7 @@ impl HeapEntries {
             if let Some(value) = slot.as_mut()
                 && !predicate(i, value)
             {
+                debug_assert_eq!(value.readers.get(), 0);
                 *slot = None; // Free the slot by setting it to None
                 self.free(HeapId::from_index(i)); // Add the slot ID to the free list
             }
@@ -213,12 +214,11 @@ impl HeapEntries {
     }
 
     /// Iterates the live values
-    #[cfg(feature = "ref-count-return")]
-    pub fn iter(&self) -> impl Iterator<Item = &HeapEntry> {
+    pub fn iter(&self) -> impl Iterator<Item = (HeapId, &HeapEntry)> {
         // SAFETY: (DH) iterating only the live entries ensures that caller
         // can never observe `None` entries which could be invalidated by
         // calls to `allocate()`
-        unsafe { HeapEntriesIter::new(self) }.filter_map(|(_idx, slot)| slot)
+        unsafe { HeapEntriesIter::new(self) }.filter_map(|(idx, slot)| slot.map(|s| (HeapId::from_index(idx), s)))
     }
 
     /// Returns a freed slot to the free list for reuse.
@@ -291,7 +291,7 @@ impl Drop for HeapEntries {
                 // Mark all contained Objects as Dereferenced before dropping.
                 // We use py_dec_ref_ids for this since it handles the marking
                 // (we ignore the collected IDs since we're dropping everything anyway).
-                #[cfg(feature = "ref-count-panic")]
+                #[cfg(feature = "memory-model-checks")]
                 if let Some(value) = slot.assume_init_mut() {
                     py_dec_ref_ids_for_data(value.data.0.get_mut(), &mut Vec::new());
                 }

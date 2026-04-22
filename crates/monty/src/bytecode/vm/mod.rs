@@ -1382,8 +1382,8 @@ impl<'h, 'a, T: ResourceTracker> VM<'h, 'a, T> {
                     // We use individual pops which reverses order, so we need to reverse back
                     let mut cells = Vec::with_capacity(cell_count);
                     for _ in 0..cell_count {
-                        // mut needed for dec_ref_forget when ref-count-panic feature is enabled
-                        #[cfg_attr(not(feature = "ref-count-panic"), expect(unused_mut))]
+                        // mut needed for dec_ref_forget when memory-model-checks feature is enabled
+                        #[cfg_attr(not(feature = "memory-model-checks"), expect(unused_mut))]
                         let mut cell_val = self.pop();
                         match &cell_val {
                             Value::Ref(heap_id) => {
@@ -1392,7 +1392,7 @@ impl<'h, 'a, T: ResourceTracker> VM<'h, 'a, T> {
                                 // Mark the Value as dereferenced since Closure takes ownership
                                 // of the reference count (we don't call drop_with_heap because
                                 // we're not decrementing the refcount, just transferring it)
-                                #[cfg(feature = "ref-count-panic")]
+                                #[cfg(feature = "memory-model-checks")]
                                 cell_val.dec_ref_forget();
                             }
                             _ => {

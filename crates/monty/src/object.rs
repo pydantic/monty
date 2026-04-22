@@ -736,7 +736,7 @@ impl MontyObject {
             Value::Builtin(Builtins::Type(t)) => Self::Type(*t),
             Value::Builtin(Builtins::ExcType(e)) => Self::Type(Type::Exception(*e)),
             Value::Builtin(Builtins::Function(f)) => Self::BuiltinFunction(*f),
-            #[cfg(feature = "ref-count-panic")]
+            #[cfg(feature = "memory-model-checks")]
             Value::Dereferenced => panic!("Dereferenced found while converting to MontyObject"),
             _ => repr_or_error(object, vm),
         }

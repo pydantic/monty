@@ -824,12 +824,12 @@ impl HeapItem for Dict {
         for entry in &mut self.entries {
             if let Value::Ref(id) = &entry.key {
                 stack.push(*id);
-                #[cfg(feature = "ref-count-panic")]
+                #[cfg(feature = "memory-model-checks")]
                 entry.key.dec_ref_forget();
             }
             if let Value::Ref(id) = &entry.value {
                 stack.push(*id);
-                #[cfg(feature = "ref-count-panic")]
+                #[cfg(feature = "memory-model-checks")]
                 entry.value.dec_ref_forget();
             }
         }

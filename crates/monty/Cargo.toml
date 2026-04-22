@@ -44,10 +44,10 @@ jiter = { version = "0.13.0", features = ["num-bigint"] }
 # ref-count-return changes behavior to return information on reference counts to check they're correct
 # should be used for testing only
 ref-count-return = []
-# ref-count-panic enables a Drop implementation on Value which catches heap allocated values that are dropped
+# memory-model-checks enables a Drop implementation on Value which catches heap allocated values that are dropped
 # without being dereferenced.
 # should be used for testing only
-ref-count-panic = []
+memory-model-checks = []
 # test-hooks exposes small internal helpers needed by integration tests that
 # exercise production behavior without duplicating implementation details.
 test-hooks = []

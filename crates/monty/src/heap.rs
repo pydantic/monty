@@ -353,7 +353,7 @@ impl<'a, T: ?Sized> HeapRead<'a, T> {
         //    paged storage (`HeapEntries`) where each page is never reallocated or moved.
         //  - The HeapRead holds a strong reader reference (via the `readers` counter in
         //    `HeapValue`) which guarantees the entry will never be freed by `dec_ref`
-        //    while this `HeapRead` exists.
+        //    or `collect_garbage` while this `HeapRead` exists.
         //  - The type of the `HeapValue` can never change once allocated. This is
         //    guaranteed by never exposing `&mut HeapData` outside of this module.
         //  - The borrow on `HeapReader` guarantees that there are no mutable borrows on any heap
@@ -713,7 +713,11 @@ impl<'de, T: ResourceTracker + serde::Deserialize<'de>> serde::Deserialize<'de> 
 ///
 /// This is intentionally infrequent to minimize overhead while still
 /// eventually collecting reference cycles.
-const DEFAULT_GC_INTERVAL: usize = 100_000;
+const DEFAULT_GC_INTERVAL: usize = if cfg!(feature = "memory-model-checks") {
+    1
+} else {
+    100_000
+};
 
 impl<T: ResourceTracker> Heap<T> {
     /// Creates a new heap with the given resource tracker.
@@ -1199,9 +1203,26 @@ impl<T: ResourceTracker> Heap<T> {
         // Use Vec<bool> instead of HashSet for O(1) operations without hashing overhead
         let mut reachable: Vec<bool> = vec![false; self.entries.len()];
         let mut work_list: Vec<HeapId> = root;
+
+        // Need to always visit the empty tuple to avoid it being freed.
+        work_list.push(EMPTY_TUPLE_ID);
+
         // Add the timezone UTC singleton as a GC root if it exists
         if let Some(utc_id) = self.timezone_utc {
             work_list.push(utc_id);
+        }
+
+        // TODO: any value which lives on the C stack should also be a root, this is
+        // a structural deficiency which needs fixing. Will cause bugs and panics
+        // all over the place plus strange execution.
+        for (id, entry) in self.entries.iter() {
+            if entry.readers.get() > 0 {
+                // This entry is currently borrowed as a HeapRead, use it as a root
+                //
+                // This is a poor substitute for proper stack roots but at least
+                // ensures that the invariant in `HeapRead` is not violated.
+                work_list.push(id);
+            }
         }
 
         while let Some(id) = work_list.pop() {
@@ -1228,8 +1249,8 @@ impl<T: ResourceTracker> Heap<T> {
             // Notify tracker of freed memory
             self.tracker.on_free(|| value.data.0.get_mut().py_estimate_size());
 
-            // Mark Values as Dereferenced when ref-count-panic is enabled
-            #[cfg(feature = "ref-count-panic")]
+            // Mark Values as Dereferenced when memory-model-checks is enabled
+            #[cfg(feature = "memory-model-checks")]
             py_dec_ref_ids_for_data(value.data.0.get_mut(), &mut Vec::new());
 
             false

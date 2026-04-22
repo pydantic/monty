@@ -112,9 +112,9 @@ jobs:
       # coverage for `make test-no-features`
       - run: cargo llvm-cov --no-report -p monty
       - run: cargo llvm-cov run --no-report -p monty-datatest
-      # coverage for `make test-ref-count-panic`
-      - run: cargo llvm-cov --no-report -p monty --features ref-count-panic
-      - run: cargo llvm-cov run --no-report -p monty-datatest --features ref-count-panic
+      # coverage for `make test-memory-model-checks`
+      - run: cargo llvm-cov --no-report -p monty --features memory-model-checks
+      - run: cargo llvm-cov run --no-report -p monty-datatest --features memory-model-checks
       # coverage for `make test-ref-count-return`
       - run: cargo llvm-cov --no-report -p monty --features ref-count-return
       - run: cargo llvm-cov run --no-report -p monty-datatest --features ref-count-return
@@ -307,8 +307,8 @@ jobs:
         if: runner.os == 'Windows'
         run: Remove-Item .cargo/config.toml
 
-      - run: cargo test -p monty --features ref-count-panic
-      - run: cargo run -p monty-datatest --features ref-count-panic
+      - run: cargo test -p monty --features memory-model-checks
+      - run: cargo run -p monty-datatest --features memory-model-checks
 
   bench-test:
     runs-on: ubuntu-latest

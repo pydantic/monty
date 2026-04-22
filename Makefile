@@ -114,10 +114,10 @@ test-no-features: ## Run rust tests without any features enabled
 	cargo test -p monty
 	cargo run -p monty-datatest
 
-.PHONY: test-ref-count-panic
-test-ref-count-panic: ## Run rust tests with ref-count-panic enabled
-	cargo test -p monty --features "ref-count-panic test-hooks"
-	cargo run -p monty-datatest --features ref-count-panic
+.PHONY: test-memory-model-checks
+test-memory-model-checks: ## Run rust tests with memory-model-checks enabled
+	cargo test -p monty --features "memory-model-checks test-hooks"
+	cargo run -p monty-datatest --features memory-model-checks
 
 .PHONY: test-ref-count-return
 test-ref-count-return: ## Run rust tests with ref-count-return enabled
@@ -153,7 +153,7 @@ test-docs: dev-py ## Test docs examples only
 	cargo test --doc -p monty
 
 .PHONY: test
-test: test-ref-count-panic test-ref-count-return test-no-features test-type-checking test-py miri ## Run rust tests
+test: test-memory-model-checks test-ref-count-return test-no-features test-type-checking test-py miri ## Run rust tests
 
 .PHONY: testcov
 testcov: ## Run Rust tests with coverage, print table, and generate HTML report
@@ -162,9 +162,9 @@ testcov: ## Run Rust tests with coverage, print table, and generate HTML report
 	echo "coverage for `make test-no-features`"
 	cargo llvm-cov --no-report -p monty
 	cargo llvm-cov run --no-report -p monty-datatest
-	echo "coverage for `make test-ref-count-panic`"
-	cargo llvm-cov --no-report -p monty --features ref-count-panic
-	cargo llvm-cov run --no-report -p monty-datatest --features ref-count-panic
+	echo "coverage for `make test-memory-model-checks`"
+	cargo llvm-cov --no-report -p monty --features memory-model-checks
+	cargo llvm-cov run --no-report -p monty-datatest --features memory-model-checks
 	echo "coverage for `make test-ref-count-return`"
 	cargo llvm-cov --no-report -p monty --features ref-count-return
 	cargo llvm-cov run --no-report -p monty-datatest --features ref-count-return
@@ -213,7 +213,7 @@ fuzz-tokens_input_panic: ## Run the `tokens_input_panic` fuzz target (structured
 	cargo +nightly fuzz run --fuzz-dir crates/fuzz tokens_input_panic
 
 .PHONY: main
-main: lint test-ref-count-panic test-py ## run linting and the most important tests
+main: lint test-memory-model-checks test-py ## run linting and the most important tests
 
 # (must stay last!)
 .PHONY: help

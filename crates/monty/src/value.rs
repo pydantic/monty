@@ -95,10 +95,10 @@ pub(crate) enum Value {
     Ref(HeapId),
 
     /// Sentinel value indicating this Value was properly cleaned up via `drop_with_heap`.
-    /// Only exists when `ref-count-panic` feature is enabled. Used to verify reference counting
+    /// Only exists when `memory-model-checks` feature is enabled. Used to verify reference counting
     /// correctness - if a `Ref` variant is dropped without calling `drop_with_heap`, the
     /// Drop impl will panic.
-    #[cfg(feature = "ref-count-panic")]
+    #[cfg(feature = "memory-model-checks")]
     Dereferenced,
 }
 
@@ -110,8 +110,8 @@ pub(crate) const VALUE_SIZE: usize = mem::size_of::<Value>();
 
 /// Drop implementation that panics if a `Ref` variant is dropped without calling `drop_with_heap`.
 /// This helps catch reference counting bugs during development/testing.
-/// Only enabled when the `ref-count-panic` feature is active.
-#[cfg(feature = "ref-count-panic")]
+/// Only enabled when the `memory-model-checks` feature is active.
+#[cfg(feature = "memory-model-checks")]
 impl Drop for Value {
     fn drop(&mut self) {
         if let Self::Ref(id) = self {
@@ -144,7 +144,7 @@ impl PyTrait<'_> for Value {
             Self::Property(_) => Type::Property,
             Self::ExternalFuture(_) => Type::Coroutine,
             Self::Ref(id) => vm.heap.read(*id).py_type(vm),
-            #[cfg(feature = "ref-count-panic")]
+            #[cfg(feature = "memory-model-checks")]
             Self::Dereferenced => panic!("Cannot access Dereferenced object"),
         }
     }
@@ -347,7 +347,7 @@ impl PyTrait<'_> for Value {
             Self::InternString(string_id) => !vm.interns.get_str(*string_id).is_empty(),
             Self::InternBytes(bytes_id) => !vm.interns.get_bytes(*bytes_id).is_empty(),
             Self::Ref(id) => vm.heap.read(*id).py_bool(vm),
-            #[cfg(feature = "ref-count-panic")]
+            #[cfg(feature = "memory-model-checks")]
             Self::Dereferenced => panic!("Cannot access Dereferenced object"),
         }
     }
@@ -405,7 +405,7 @@ impl PyTrait<'_> for Value {
                     result
                 }
             }
-            #[cfg(feature = "ref-count-panic")]
+            #[cfg(feature = "memory-model-checks")]
             Self::Dereferenced => panic!("Cannot access Dereferenced object"),
         }
     }
@@ -1380,7 +1380,7 @@ impl Value {
             Self::Property(_) => Type::Property,
             Self::ExternalFuture(_) => Type::Coroutine,
             Self::Ref(_) => Type::NoneType, // callers should resolve Ref via HeapData::py_type()
-            #[cfg(feature = "ref-count-panic")]
+            #[cfg(feature = "memory-model-checks")]
             Self::Dereferenced => Type::NoneType,
         }
     }
@@ -1430,7 +1430,7 @@ impl Value {
             Self::Property(p) => property_value_id(*p),
             // ExternalFutures get IDs based on their call_id
             Self::ExternalFuture(call_id) => external_future_value_id(*call_id),
-            #[cfg(feature = "ref-count-panic")]
+            #[cfg(feature = "memory-model-checks")]
             Self::Dereferenced => panic!("Cannot get id of Dereferenced object"),
         }
     }
@@ -1525,7 +1525,7 @@ impl Value {
             Self::InternString(_) | Self::InternBytes(_) | Self::InternLongInt(_) | Self::Ref(_) => {
                 unreachable!("covered above")
             }
-            #[cfg(feature = "ref-count-panic")]
+            #[cfg(feature = "memory-model-checks")]
             Self::Dereferenced => panic!("Cannot access Dereferenced object"),
         }
         Ok(Some(hasher.finish()))
@@ -1918,17 +1918,17 @@ impl Value {
     /// # Important
     /// This method MUST be called before overwriting a namespace slot or discarding
     /// a value to prevent memory leaks.
-    #[cfg(not(feature = "ref-count-panic"))]
+    #[cfg(not(feature = "memory-model-checks"))]
     #[inline]
     pub fn drop_with_heap(self, heap: &mut impl ContainsHeap) {
         if let Self::Ref(id) = self {
             heap.heap_mut().dec_ref(id);
         }
     }
-    /// With `ref-count-panic` enabled, `Ref` variants are replaced with `Dereferenced` and
+    /// With `memory-model-checks` enabled, `Ref` variants are replaced with `Dereferenced` and
     /// the original is forgotten to prevent the Drop impl from panicking. Non-Ref variants
     /// are left unchanged since they don't trigger the Drop panic.
-    #[cfg(feature = "ref-count-panic")]
+    #[cfg(feature = "memory-model-checks")]
     pub fn drop_with_heap(mut self, heap: &mut impl ContainsHeap) {
         let old = mem::replace(&mut self, Self::Dereferenced);
         if let Self::Ref(id) = &old {
@@ -1960,7 +1960,7 @@ impl Value {
             Self::Property(p) => Self::Property(*p),
             Self::ExternalFuture(call_id) => Self::ExternalFuture(*call_id),
             Self::Ref(_) => panic!("Ref clones must go through clone_with_heap to maintain refcounts"),
-            #[cfg(feature = "ref-count-panic")]
+            #[cfg(feature = "memory-model-checks")]
             Self::Dereferenced => panic!("Cannot copy Dereferenced object"),
         }
     }
@@ -1968,7 +1968,7 @@ impl Value {
     /// Mark as Dereferenced to prevent Drop panic
     ///
     /// This should be called from `py_dec_ref_ids` methods only
-    #[cfg(feature = "ref-count-panic")]
+    #[cfg(feature = "memory-model-checks")]
     pub fn dec_ref_forget(&mut self) {
         let old = mem::replace(self, Self::Dereferenced);
         mem::forget(old);
@@ -1977,12 +1977,12 @@ impl Value {
     /// Pushes any contained `HeapId` onto the stack for reference counting.
     ///
     /// For `Value::Ref` variants, pushes the heap ID so the referenced object's
-    /// refcount can be decremented. When `ref-count-panic` is enabled, also marks
+    /// refcount can be decremented. When `memory-model-checks` is enabled, also marks
     /// this value as `Dereferenced` to prevent Drop panics.
     pub fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
         if let Self::Ref(id) = self {
             stack.push(*id);
-            #[cfg(feature = "ref-count-panic")]
+            #[cfg(feature = "memory-model-checks")]
             self.dec_ref_forget();
         }
     }

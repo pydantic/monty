@@ -109,14 +109,14 @@ pub(crate) fn gather(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> 
     let mut items = Vec::new();
     let mut coroutine_ids_to_cleanup: Vec<HeapId> = Vec::new();
 
-    #[cfg_attr(not(feature = "ref-count-panic"), expect(unused_mut))]
+    #[cfg_attr(not(feature = "memory-model-checks"), expect(unused_mut))]
     for mut arg in pos_args {
         match &arg {
             Value::Ref(id) if heap.get(*id).is_coroutine() => {
                 coroutine_ids_to_cleanup.push(*id);
                 items.push(GatherItem::Coroutine(*id));
                 // Transfer ownership to GatherFuture - mark Value as consumed without dec_ref
-                #[cfg(feature = "ref-count-panic")]
+                #[cfg(feature = "memory-model-checks")]
                 arg.dec_ref_forget();
             }
             Value::ExternalFuture(call_id) => {

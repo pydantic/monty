@@ -191,8 +191,8 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
         // the gather completes (in handle_task_completion).
         let (awaitable, this) = awaitable_guard.into_parts();
         #[cfg_attr(
-            not(feature = "ref-count-panic"),
-            expect(clippy::forget_non_drop, reason = "has Drop with ref-count-panic feature")
+            not(feature = "memory-model-checks"),
+            expect(clippy::forget_non_drop, reason = "has Drop with memory-model-checks feature")
         )]
         mem::forget(awaitable);
 

@@ -309,7 +309,7 @@ pub trait PyTrait<'h> {
         // `py_call_attr` takes ownership of the argument bundle. Implementations that
         // do not recognize the attribute still need to release those values before
         // reporting `AttributeError`, otherwise method calls on unsupported types leak
-        // references on the error path (caught by `ref-count-panic`).
+        // references on the error path (caught by `memory-model-checks`).
         args.drop_with_heap(vm);
         Err(ExcType::attribute_error(self.py_type(vm), attr.as_str(vm.interns)))
     }

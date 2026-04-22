@@ -372,7 +372,7 @@ result
 
 #[test]
 #[cfg_attr(
-    feature = "ref-count-panic",
+    feature = "memory-model-checks",
     ignore = "resource exhaustion doesn't guarantee heap state consistency"
 )]
 fn executor_iter_resource_limit_on_resume() {
@@ -408,7 +408,7 @@ fn executor_iter_resource_limit_on_resume() {
 
 #[test]
 #[cfg_attr(
-    feature = "ref-count-panic",
+    feature = "memory-model-checks",
     ignore = "resource exhaustion doesn't guarantee heap state consistency"
 )]
 fn executor_iter_resource_limit_before_function_call() {
@@ -433,7 +433,7 @@ fn executor_iter_resource_limit_before_function_call() {
 
 #[test]
 #[cfg_attr(
-    feature = "ref-count-panic",
+    feature = "memory-model-checks",
     ignore = "resource exhaustion doesn't guarantee heap state consistency"
 )]
 fn char_f_string_not_allocated() {
@@ -497,7 +497,7 @@ fn executor_iter_resource_limit_multiple_function_calls() {
 /// the memory limit.
 #[test]
 #[cfg_attr(
-    feature = "ref-count-panic",
+    feature = "memory-model-checks",
     ignore = "resource exhaustion doesn't guarantee heap state consistency"
 )]
 fn recursion_respects_memory_limit() {
@@ -529,7 +529,7 @@ recurse(1000)
 /// Test that recursion depth limit returns an error.
 #[test]
 #[cfg_attr(
-    feature = "ref-count-panic",
+    feature = "memory-model-checks",
     ignore = "resource exhaustion doesn't guarantee heap state consistency"
 )]
 fn recursion_depth_limit_exceeded() {
@@ -1204,7 +1204,7 @@ fn timeout_in_all_builtin() {
 /// `enumerate()` creates tuples on each iteration via `for_next()`.
 #[test]
 #[cfg_attr(
-    feature = "ref-count-panic",
+    feature = "memory-model-checks",
     ignore = "resource exhaustion doesn't guarantee heap state consistency"
 )]
 fn timeout_in_any_builtin() {
@@ -1238,7 +1238,7 @@ fn timeout_in_str_join() {
 /// The sort comparison loop has an explicit `heap.check_time()` call.
 #[test]
 #[cfg_attr(
-    feature = "ref-count-panic",
+    feature = "memory-model-checks",
     ignore = "resource exhaustion doesn't guarantee heap state consistency"
 )]
 fn timeout_in_sorted_comparison_loop() {
@@ -1257,7 +1257,7 @@ sorted(x)
 /// repetition to prevent large sequence multiplications from bypassing timeout.
 #[test]
 #[cfg_attr(
-    feature = "ref-count-panic",
+    feature = "memory-model-checks",
     ignore = "resource exhaustion doesn't guarantee heap state consistency"
 )]
 fn timeout_in_list_repetition() {
@@ -1270,7 +1270,7 @@ fn timeout_in_list_repetition() {
 /// now check the time limit.
 #[test]
 #[cfg_attr(
-    feature = "ref-count-panic",
+    feature = "memory-model-checks",
     ignore = "resource exhaustion doesn't guarantee heap state consistency"
 )]
 fn timeout_in_tuple_repetition() {
@@ -1283,7 +1283,7 @@ fn timeout_in_tuple_repetition() {
 /// it must compare every element before returning True.
 #[test]
 #[cfg_attr(
-    feature = "ref-count-panic",
+    feature = "memory-model-checks",
     ignore = "resource exhaustion doesn't guarantee heap state consistency"
 )]
 fn timeout_in_list_equality() {
@@ -1301,7 +1301,7 @@ a == b
 /// dicts, it must check every entry before returning True.
 #[test]
 #[cfg_attr(
-    feature = "ref-count-panic",
+    feature = "memory-model-checks",
     ignore = "resource exhaustion doesn't guarantee heap state consistency"
 )]
 fn timeout_in_dict_equality() {
@@ -1319,7 +1319,7 @@ a == b
 /// that now calls `heap.check_time()` on each iteration.
 #[test]
 #[cfg_attr(
-    feature = "ref-count-panic",
+    feature = "memory-model-checks",
     ignore = "resource exhaustion doesn't guarantee heap state consistency"
 )]
 fn timeout_in_str_splitlines() {
@@ -1335,7 +1335,7 @@ s.splitlines()
 /// `bytes_splitlines()` scans bytes for line endings and now checks the time limit.
 #[test]
 #[cfg_attr(
-    feature = "ref-count-panic",
+    feature = "memory-model-checks",
     ignore = "resource exhaustion doesn't guarantee heap state consistency"
 )]
 fn timeout_in_bytes_splitlines() {
@@ -1403,7 +1403,7 @@ fn assert_repr_timeout(code: &str, label: &str) {
 /// to trigger the timeout.
 #[test]
 #[cfg_attr(
-    feature = "ref-count-panic",
+    feature = "memory-model-checks",
     ignore = "resource exhaustion doesn't guarantee heap state consistency"
 )]
 fn timeout_truncation_in_list_repr() {
@@ -1421,7 +1421,7 @@ repr(x)
 /// making repr formatting slow enough to trigger the timeout.
 #[test]
 #[cfg_attr(
-    feature = "ref-count-panic",
+    feature = "memory-model-checks",
     ignore = "resource exhaustion doesn't guarantee heap state consistency"
 )]
 fn timeout_truncation_in_dict_repr() {
@@ -1439,7 +1439,7 @@ repr(x)
 /// to trigger the timeout.
 #[test]
 #[cfg_attr(
-    feature = "ref-count-panic",
+    feature = "memory-model-checks",
     ignore = "resource exhaustion doesn't guarantee heap state consistency"
 )]
 fn timeout_truncation_in_set_repr() {
