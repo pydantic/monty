@@ -1242,6 +1242,80 @@ result
     assert final.output == snapshot('caught: async boom')
 
 
+def test_future_snapshot_resume_gather_exception_caught_at_await():
+    """A failed future in `gather` raises the original error at the await site."""
+    code = """
+import asyncio
+
+try:
+    await asyncio.gather(fetch_a(), fetch_b())
+    result = 'not caught'
+except ValueError as exc:
+    result = 'caught: ' + str(exc)
+except RuntimeError as exc:
+    result = 'wrong error: ' + str(exc)
+
+result
+"""
+    progress = Monty(code).start()
+    assert isinstance(progress, pydantic_monty.FunctionSnapshot)
+    assert progress.function_name == snapshot('fetch_a')
+    fetch_a_call_id = progress.call_id
+
+    progress = progress.resume({'future': ...})
+    assert isinstance(progress, pydantic_monty.FunctionSnapshot)
+    assert progress.function_name == snapshot('fetch_b')
+    fetch_b_call_id = progress.call_id
+
+    progress = progress.resume({'future': ...})
+    assert isinstance(progress, pydantic_monty.FutureSnapshot)
+    assert sorted(progress.pending_call_ids) == sorted([fetch_a_call_id, fetch_b_call_id])
+
+    final = progress.resume({fetch_a_call_id: {'exception': ValueError('async boom')}})
+    assert isinstance(final, pydantic_monty.MontyComplete)
+    assert final.output == snapshot('caught: async boom')
+
+
+def test_future_snapshot_resume_gathered_coroutine_exception_caught_at_await():
+    """Failures inside gathered coroutines raise the original error at the await site."""
+    code = """
+import asyncio
+
+async def get_a():
+    return await fetch_a()
+
+async def get_b():
+    return await fetch_b()
+
+try:
+    await asyncio.gather(get_a(), get_b())
+    result = 'not caught'
+except ValueError as exc:
+    result = 'caught: ' + str(exc)
+except RuntimeError as exc:
+    result = 'wrong error: ' + str(exc)
+
+result
+"""
+    progress = Monty(code).start()
+    assert isinstance(progress, pydantic_monty.FunctionSnapshot)
+    assert progress.function_name == snapshot('fetch_a')
+    fetch_a_call_id = progress.call_id
+
+    progress = progress.resume({'future': ...})
+    assert isinstance(progress, pydantic_monty.FunctionSnapshot)
+    assert progress.function_name == snapshot('fetch_b')
+    fetch_b_call_id = progress.call_id
+
+    progress = progress.resume({'future': ...})
+    assert isinstance(progress, pydantic_monty.FutureSnapshot)
+    assert sorted(progress.pending_call_ids) == sorted([fetch_a_call_id, fetch_b_call_id])
+
+    final = progress.resume({fetch_a_call_id: {'exception': ValueError('async boom')}})
+    assert isinstance(final, pydantic_monty.MontyComplete)
+    assert final.output == snapshot('caught: async boom')
+
+
 def test_name_lookup_resume_lone_surrogate_value():
     """A lone-surrogate string in `value` fails UTF-8 conversion; the caller sees
     `MontyRuntimeError(ValueError)` rather than a raw `UnicodeEncodeError`."""

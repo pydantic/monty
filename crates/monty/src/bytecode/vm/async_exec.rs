@@ -749,7 +749,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
     /// Called by the host when an async external call fails with an exception.
     /// Finds the task blocked on this CallId and fails it with the error.
     /// If the task is part of a gather, cancels sibling tasks.
-    pub fn fail_future(&mut self, call_id: u32, error: RunError) {
+    pub fn fail_future(&mut self, call_id: u32, error: RunError) -> Result<(), RunError> {
         let call_id = CallId::new(call_id);
 
         // Check if a gather is waiting on this CallId
@@ -791,6 +791,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
                 self.scheduler.fail_task(waiter_id, error);
                 // Release the GatherFuture
                 self.heap.dec_ref(gather_id);
+                self.switch_to_failed_waiter(waiter_id)?;
             }
         } else if let Some((task_id, Some(gid))) = self.scheduler.fail_for_call(call_id, error) {
             // Original path: task is directly BlockedOnCall and part of a gather
@@ -798,17 +799,50 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
             let HeapReadOutput::GatherFuture(mut gather) = self.heap.read(gid) else {
                 panic!("gather_id doesn't point to a GatherFuture")
             };
-            let task_ids = mem::take(&mut gather.get_mut(self.heap).task_ids);
+            let gather_mut = gather.get_mut(self.heap);
+            let task_ids = mem::take(&mut gather_mut.task_ids);
+            let waiter = gather_mut.waiter;
             // Drop the HeapRead before cancel_task which may free heap objects
             drop(gather);
 
             // Cancel sibling tasks (filter out self and already-finished tasks)
+            let mut cancelled_task_ids = Vec::new();
             for sibling_id in task_ids {
                 if sibling_id != task_id && !self.scheduler.get_task(sibling_id).is_finished() {
                     self.scheduler.cancel_task(sibling_id, self.heap);
+                    cancelled_task_ids.push(sibling_id);
                 }
             }
+
+            self.scheduler.remove_pending_calls_for_tasks(&cancelled_task_ids);
+
+            if let Some(waiter_id) = waiter {
+                let TaskState::Failed(err) =
+                    mem::replace(&mut self.scheduler.get_task_mut(task_id).state, TaskState::Ready)
+                else {
+                    unreachable!("task failed by fail_for_call should be in Failed state");
+                };
+                self.scheduler.fail_task(waiter_id, err);
+                self.heap.dec_ref(gid);
+                self.switch_to_failed_waiter(waiter_id)?;
+            }
         }
+        Ok(())
+    }
+
+    /// Switches VM execution to a failed gather waiter when needed.
+    ///
+    /// A gathered coroutine may be the current task when one of its sibling
+    /// futures fails. In that case the current task can be cancelled as part of
+    /// gather cleanup, but the exception visible at `await gather(...)` must be
+    /// the original failure stored on the waiter, not the sibling cancellation.
+    fn switch_to_failed_waiter(&mut self, waiter_id: TaskId) -> Result<(), RunError> {
+        if self.scheduler.current_task_id() != Some(waiter_id) {
+            self.cleanup_current_task();
+            self.scheduler.set_current_task(Some(waiter_id));
+            self.load_or_init_task(waiter_id)?;
+        }
+        Ok(())
     }
 
     /// Adds pending call data for an external function call.
@@ -853,10 +887,10 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
                         )))
                     })?;
                 }
-                ExtFunctionResult::Error(exc) => self.fail_future(call_id, RunError::from(exc)),
+                ExtFunctionResult::Error(exc) => self.fail_future(call_id, RunError::from(exc))?,
                 ExtFunctionResult::Future(_) => {}
                 ExtFunctionResult::NotFound(function_name) => {
-                    self.fail_future(call_id, ExtFunctionResult::not_found_exc(&function_name));
+                    self.fail_future(call_id, ExtFunctionResult::not_found_exc(&function_name))?;
                 }
             }
         }
@@ -866,11 +900,12 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
 
             match task.state {
                 TaskState::Failed(_) => {
-                    // Current task failed because a future resolved with an
-                    // exception. Route that exception through the normal VM
-                    // machinery so a surrounding `try`/`except` around the
-                    // `await` can catch it; if no handler matches,
-                    // `resume_with_exception` still propagates the error.
+                    // A resumed future failed the task that owns the await
+                    // expression. Route the failure through the normal VM
+                    // machinery so `try`/`except` around a direct await or
+                    // `asyncio.gather(...)` can catch the original exception.
+                    // If no handler matches, `resume_with_exception` still
+                    // propagates the error to the host.
                     let TaskState::Failed(err) = mem::replace(&mut task.state, TaskState::Ready) else {
                         unreachable!();
                     };

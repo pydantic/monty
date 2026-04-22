@@ -308,6 +308,16 @@ impl Scheduler {
         self.pending_calls.remove(&call_id);
     }
 
+    /// Removes pending calls created by any of the provided tasks.
+    ///
+    /// Used when a gather failure cancels sibling tasks. Their external calls
+    /// must stop appearing as resumable pending work once the gather waiter is
+    /// failed with the original exception.
+    pub fn remove_pending_calls_for_tasks(&mut self, task_ids: &[TaskId]) {
+        self.pending_calls
+            .retain(|_, data| !task_ids.contains(&data.creator_task));
+    }
+
     /// Returns true if a CallId has already been awaited (consumed).
     #[inline]
     pub fn is_consumed(&self, call_id: CallId) -> bool {
