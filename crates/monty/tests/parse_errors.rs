@@ -450,3 +450,82 @@ fn long_source_line_does_not_overflow_column() {
     let result = run.run_no_limits(vec![]);
     assert!(result.is_ok(), "long line should run: {result:?}");
 }
+
+// === Parse error messages must not leak ruff_python_ast Debug formatting ===
+//
+// These guard the previously observed info-disclosure where compile-time
+// parse errors returned the Rust `Debug` formatting of the offending AST
+// node verbatim in the HTTP response body (`ExprStarred { node_index:
+// NodeIndex(None), range: ..., ... }`). The messages should now be short
+// human prose that does not expose ruff's internal struct layout.
+
+/// Asserts an error message is present, contains the expected prose,
+/// and does not leak any telltale `ruff_python_ast` Debug tokens.
+fn assert_no_debug_leak(msg: Option<&str>, expected_substr: &str) {
+    let msg = msg.expect("error should have a message");
+    assert!(
+        msg.contains(expected_substr),
+        "expected message to contain {expected_substr:?}, got: {msg:?}"
+    );
+    for tok in [
+        "ExprStarred",
+        "ExprName",
+        "ExprAttribute",
+        "ExprSubscript",
+        "ExprNumberLiteral",
+        "NodeIndex",
+        "node_index",
+        "ctx: Store",
+        "ctx: Load",
+    ] {
+        assert!(
+            !msg.contains(tok),
+            "parse error must not leak ruff AST Debug token {tok:?}, got: {msg:?}"
+        );
+    }
+}
+
+#[test]
+fn starred_assignment_target_name_has_clean_message() {
+    // `*a = [1, 2]`: Ruff parses the LHS as a bare starred target, which
+    // Monty rejects at `parse_identifier`. The message must not embed the
+    // Debug format of the `ExprStarred` node.
+    let result = MontyRun::new("*a = [1, 2]".to_owned(), "test.py", vec![]);
+    let exc = result.expect_err("expected parse error");
+    assert_eq!(exc.exc_type(), ExcType::SyntaxError);
+    assert_no_debug_leak(exc.message(), "starred expression");
+}
+
+#[test]
+fn starred_attribute_target_has_clean_message() {
+    // `*x.y = 1`: starred target wrapping an attribute. Same rejection
+    // path, different inner node shape. Message must not leak
+    // `ExprAttribute` / `Identifier` Debug.
+    let result = MontyRun::new("*x.y = 1".to_owned(), "test.py", vec![]);
+    let exc = result.expect_err("expected parse error");
+    assert_eq!(exc.exc_type(), ExcType::SyntaxError);
+    assert_no_debug_leak(exc.message(), "starred expression");
+}
+
+#[test]
+fn starred_subscript_target_has_clean_message() {
+    // `*x[0] = 1`: starred target wrapping a subscript. Must not leak
+    // `ExprSubscript` / `ExprNumberLiteral` Debug.
+    let result = MontyRun::new("*x[0] = 1".to_owned(), "test.py", vec![]);
+    let exc = result.expect_err("expected parse error");
+    assert_eq!(exc.exc_type(), ExcType::SyntaxError);
+    assert_no_debug_leak(exc.message(), "starred expression");
+}
+
+#[test]
+fn for_loop_attribute_target_has_clean_message() {
+    // `for x.y in [1]: pass`: attribute as a for-loop target. CPython
+    // accepts this; Monty currently rejects at `parse_unpack_target_impl`
+    // with a generic "invalid unpacking target" error. That rejection of
+    // valid Python is a separate issue; this test locks only that the
+    // error message does not leak `ExprAttribute` Debug.
+    let result = MontyRun::new("for x.y in [1]: pass".to_owned(), "test.py", vec![]);
+    let exc = result.expect_err("expected parse error");
+    assert_eq!(exc.exc_type(), ExcType::SyntaxError);
+    assert_no_debug_leak(exc.message(), "attribute");
+}
