@@ -1249,13 +1249,10 @@ impl<'a> Parser<'a> {
     fn parse_identifier(&mut self, ast: AstExpr) -> Result<Identifier, ParseError> {
         match ast {
             AstExpr::Name(ast::ExprName { id, range, .. }) => Ok(self.identifier(&id, range)),
-            other => {
-                let kind = describe_expr_kind(&other);
-                Err(ParseError::syntax(
-                    format!("Expected name, got {kind}"),
-                    self.convert_range(other.range()),
-                ))
-            }
+            other => Err(ParseError::syntax(
+                format!("Expected name, got {}", describe_expr_kind(&other)),
+                self.convert_range(other.range()),
+            )),
         }
     }
 
@@ -1353,13 +1350,10 @@ impl<'a> Parser<'a> {
                 }
                 Ok(UnpackTarget::Tuple { targets, position })
             }
-            other => {
-                let kind = describe_expr_kind(&other);
-                Err(ParseError::syntax(
-                    format!("invalid unpacking target: {kind}"),
-                    self.convert_range(other.range()),
-                ))
-            }
+            other => Err(ParseError::syntax(
+                format!("invalid unpacking target: {}", describe_expr_kind(&other)),
+                self.convert_range(other.range()),
+            )),
         }
     }
 
