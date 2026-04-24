@@ -16,7 +16,7 @@
 
 use std::fmt;
 
-use monty::StackFrame;
+use monty::{ExcType, StackFrame};
 use monty_type_checking::TypeCheckingDiagnostics;
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
@@ -262,8 +262,7 @@ pub fn exc_js_to_monty(js_err: napi::Error) -> ::monty::MontyException {
     ::monty::MontyException::new(exc, Some(arg))
 }
 
-fn js_err_to_exc_type(exc: napi::Status) -> ::monty::ExcType {
-    use ::monty::ExcType;
+fn js_err_to_exc_type(exc: napi::Status) -> ExcType {
     match exc {
         napi::Status::Ok => ExcType::Exception, // Should never happen
         napi::Status::InvalidArg => ExcType::TypeError,

@@ -461,7 +461,7 @@ impl Opcode {
     pub const fn stack_effect(self) -> Option<i16> {
         #![expect(clippy::allow_attributes, reason = "expect seems broken with enum_glob_use")]
         #[allow(clippy::enum_glob_use, reason = "simplifies churn")]
-        use Opcode::*;
+        use Opcode::*; // allow local import
         Some(match self {
             // Stack operations
             Pop => -1,

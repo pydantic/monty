@@ -5,6 +5,7 @@ use std::{
 };
 
 use ahash::AHashSet;
+use serde::ser::SerializeStruct;
 
 use super::{Dict, PyTrait};
 use crate::{
@@ -335,7 +336,6 @@ impl HeapItem for Dataclass {
 // Serializes all five fields.
 impl serde::Serialize for Dataclass {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        use serde::ser::SerializeStruct;
         let mut state = serializer.serialize_struct("Dataclass", 5)?;
         state.serialize_field("name", &self.name)?;
         state.serialize_field("type_id", &self.type_id)?;

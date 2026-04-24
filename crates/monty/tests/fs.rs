@@ -4,6 +4,10 @@
 //! ReadOnly, OverlayMemory) and all supported filesystem
 //! operations. Uses real temporary directories to verify correct behavior.
 
+#[cfg(unix)]
+use std::os::unix::fs::symlink as unix_symlink;
+#[cfg(windows)]
+use std::os::windows::fs::symlink_file as win_symlink_file;
 use std::{
     fs,
     path::Path,
@@ -79,16 +83,10 @@ fn call_err(mt: &mut MountTable, func: OsFunction, path: &str) -> MontyException
 /// `std::os::windows::fs::symlink_file`.
 fn symlink_file(original: impl AsRef<Path>, link: impl AsRef<Path>) {
     #[cfg(unix)]
-    {
-        use std::os::unix::fs::symlink as unix_symlink;
-        unix_symlink(original.as_ref(), link.as_ref()).unwrap();
-    }
+    unix_symlink(original.as_ref(), link.as_ref()).unwrap();
 
     #[cfg(windows)]
-    {
-        use std::os::windows::fs::symlink_file as win_symlink_file;
-        win_symlink_file(original.as_ref(), link.as_ref()).unwrap();
-    }
+    win_symlink_file(original.as_ref(), link.as_ref()).unwrap();
 }
 
 /// Asserts an exception has the expected type and message.

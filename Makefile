@@ -82,7 +82,7 @@ lint-rs:  ## Lint Rust code with clippy and import checks
 	@cargo clippy --version
 	cargo clippy --workspace --tests -p monty-bench --bench main -- -D warnings
 	cargo clippy --workspace --tests --all-features -- -D warnings
-	uv run scripts/check_imports.py
+	./scripts/check_imports.py
 
 .PHONY: clippy-fix
 clippy-fix: ## Fix Rust code with clippy

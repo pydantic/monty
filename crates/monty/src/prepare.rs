@@ -2843,7 +2843,6 @@ fn collect_referenced_names_from_node(node: &ParseNode, referenced: &mut AHashSe
 
 /// Collects all names referenced in an expression.
 fn collect_referenced_names_from_expr(expr: &ExprLoc, referenced: &mut AHashSet<String>, interner: &InternerBuilder) {
-    use crate::expressions::Expr;
     match &expr.expr {
         Expr::Name(ident) => {
             referenced.insert(interner.get_str(ident.name_id).to_string());

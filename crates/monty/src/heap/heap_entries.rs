@@ -348,10 +348,12 @@ mod tests {
     use std::collections::HashSet;
 
     use super::*;
-    use crate::heap::{HashState, HeapData, UnsafeHeapData};
+    use crate::{
+        heap::{HashState, HeapData, UnsafeHeapData},
+        types::Str,
+    };
 
     fn dummy(label: &str) -> HeapEntry {
-        use crate::types::Str;
         HeapEntry {
             refcount: Cell::new(1),
             data: UnsafeHeapData(UnsafeCell::new(HeapData::Str(Str::new(label.to_owned())))),

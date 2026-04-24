@@ -6,7 +6,7 @@
 //! F-strings can contain literal text and interpolated expressions with optional
 //! conversion flags (`!s`, `!r`, `!a`) and format specifications.
 
-use std::{fmt, iter, str::FromStr};
+use std::{fmt, fmt::Write, iter, str::FromStr};
 
 use crate::{
     bytecode::VM,
@@ -670,7 +670,6 @@ pub fn format_float_g(f: f64, spec: &ParsedFormatSpec) -> String {
 /// Used for the `!a` conversion flag in f-strings. Takes a string (typically a repr)
 /// and escapes all non-ASCII characters using `\xNN`, `\uNNNN`, or `\UNNNNNNNN`.
 pub fn ascii_escape(s: &str) -> String {
-    use std::fmt::Write;
     let mut result = String::new();
     for c in s.chars() {
         if c.is_ascii() {

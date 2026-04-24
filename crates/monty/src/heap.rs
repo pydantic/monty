@@ -9,6 +9,7 @@ use std::{
 };
 
 use bytemuck::TransparentWrapper;
+use serde::ser::SerializeStruct;
 use smallvec::SmallVec;
 
 // Re-export items moved to `heap_traits` so that `crate::heap::HeapGuard` etc. continue
@@ -674,7 +675,6 @@ pub(crate) struct Heap<T: ResourceTracker> {
 
 impl<T: ResourceTracker + serde::Serialize> serde::Serialize for Heap<T> {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        use serde::ser::SerializeStruct;
         let mut state = serializer.serialize_struct("Heap", 5)?;
         state.serialize_field("entries", &self.entries)?;
         state.serialize_field("tracker", &self.tracker)?;

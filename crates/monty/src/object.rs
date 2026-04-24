@@ -20,7 +20,7 @@ use crate::{
     heap::{HeapData, HeapId},
     resource::{ResourceError, ResourceTracker},
     types::{
-        LongInt, NamedTuple, Path, PyTrait, TimeZone, Type, allocate_tuple,
+        Dataclass, LongInt, NamedTuple, Path, PyTrait, TimeZone, Type, allocate_tuple,
         bytes::{Bytes, bytes_repr},
         date as date_type, datetime as datetime_type,
         dict::Dict,
@@ -503,7 +503,6 @@ impl MontyObject {
                 attrs,
                 frozen,
             } => {
-                use crate::types::Dataclass;
                 // Convert attrs to Dict
                 let pairs: Result<Vec<(Value, Value)>, InvalidInputError> = attrs
                     .into_iter()

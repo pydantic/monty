@@ -43,7 +43,7 @@
 //! console.log('Final result:', progress.output);
 //! ```
 
-use std::{borrow::Cow, mem, ptr, result};
+use std::{borrow::Cow, fmt::Write, mem, ptr, result};
 
 use monty::{
     fs::MountTable, ExcType, ExtFunctionResult, FunctionCall, LimitedTracker, MontyException, MontyObject,
@@ -467,7 +467,6 @@ impl Monty {
     /// Returns a string representation of the Monty instance.
     #[napi]
     pub fn repr(&self) -> String {
-        use std::fmt::Write;
         let lines = self.runner.code().lines().count();
         let mut s = format!(
             "Monty(<{} line{} of code>, scriptName='{}'",
