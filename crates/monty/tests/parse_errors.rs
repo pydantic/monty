@@ -355,7 +355,7 @@ fn deeply_nested_attribute_access_exceed_limit() {
     }
     let err = get_parse_err(code);
     assert_eq!(err.exc_type(), ExcType::SyntaxError);
-    assert_snapshot!(err.message().unwrap(), @"too many nested parentheses");
+    assert_snapshot!(err.message().unwrap(), @"Source is too deeply nested");
 }
 
 #[test]

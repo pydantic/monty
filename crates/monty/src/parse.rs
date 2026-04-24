@@ -168,7 +168,7 @@ pub struct Parser<'a> {
     pub interner: InternerBuilder,
     /// Remaining nesting depth budget for recursive structures.
     /// Starts at MAX_NESTING_DEPTH and decrements on each nested level.
-    /// When it reaches zero, we return a "too many nested parentheses" error.
+    /// When it reaches zero, we return a "Source is too deeply nested" syntax error.
     depth_remaining: u16,
 }
 
@@ -1640,7 +1640,7 @@ impl<'a> Parser<'a> {
             Ok(())
         } else {
             let position = self.convert_range(get_range());
-            Err(ParseError::syntax("too many nested parentheses", position))
+            Err(ParseError::syntax("Source is too deeply nested", position))
         }
     }
 }

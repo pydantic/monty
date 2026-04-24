@@ -187,13 +187,12 @@ impl MontySyntaxError {
     #[pyo3(signature = (format = "traceback"))]
     #[expect(clippy::needless_pass_by_value, reason = "required by macro")]
     fn display(slf: PyRef<'_, Self>, format: &str) -> PyResult<String> {
-        let parent = slf.as_super();
         match format {
-            "traceback" => Ok(parent.exc.to_string()),
-            "msg" => Ok(parent.message().unwrap_or_default().to_string()),
-            "type-msg" => Ok(parent.exc.summary()),
+            "traceback" => Ok(slf.as_super().exc.to_string()),
+            "type-msg" => Ok(slf.as_super().exc.summary()),
+            "msg" => Ok(slf.as_super().message().unwrap_or_default().to_string()),
             _ => Err(exceptions::PyValueError::new_err(format!(
-                "Invalid display format: '{format}'. Expected 'type-msg', or 'msg'"
+                "Invalid display format: '{format}'. Expected 'traceback', 'type-msg', or 'msg'"
             ))),
         }
     }

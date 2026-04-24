@@ -65,8 +65,8 @@ impl Default for MemoryDb {
     /// Create a fresh database wired up for type checking under `SRC_ROOT`.
     ///
     /// Registers `SRC_ROOT` as a Salsa-tracked project root and installs the
-    /// `Program` settings needed by `check_types`. Returning a db without this
-    /// setup would unwrap-panic the first time `check_types` is called, so this
+    /// `Program` settings needed by `check_file_unwrap`. Returning a db without this
+    /// setup would unwrap-panic the first time `check_file_unwrap` is called, so this
     /// constructor is the only sanctioned way to build a `MemoryDb`.
     fn default() -> Self {
         let src_root = SystemPathBuf::from(SRC_ROOT);
@@ -140,10 +140,11 @@ impl PythonCoreDb for MemoryDb {
 #[salsa::db]
 impl Db for MemoryDb {
     fn check_file(&self, file: File) -> Vec<Diagnostic> {
-        if !self.should_check_file(file) {
-            return Vec::new();
+        if self.should_check_file(file) {
+            check_file_unwrap(self, file)
+        } else {
+            Vec::new()
         }
-        check_file_unwrap(self, file)
     }
 
     fn rule_selection(&self, _file: File) -> &RuleSelection {
