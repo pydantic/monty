@@ -841,7 +841,10 @@ class MontySyntaxError(MontyError):
     Inherits exception(), __str__() from MontyError.
     """
 
-    def display(self, format: Literal['type-msg', 'msg'] = 'msg') -> str:
+    def traceback(self) -> list[Frame]:
+        """Returns the Monty traceback as a list of Frame objects."""
+
+    def display(self, format: Literal['traceback', 'type-msg', 'msg'] = 'traceback') -> str:
         """Returns formatted exception string.
 
         Args:

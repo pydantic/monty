@@ -99,62 +99,6 @@ impl MontyError {
     }
 }
 
-/// Raised when Python code has syntax errors or cannot be parsed by Monty.
-///
-/// Inherits from `MontyError`. The inner exception is always a `SyntaxError`.
-#[pyclass(extends=MontyError, module="pydantic_monty", skip_from_py_object)]
-#[derive(Clone)]
-pub struct MontySyntaxError;
-
-impl MontySyntaxError {
-    /// Creates a new `MontySyntaxError` with the given message.
-    #[must_use]
-    pub fn new_err(py: Python<'_>, exc: MontyException) -> PyErr {
-        let base_error = MontyError::new(exc);
-        let init = PyClassInitializer::from(base_error).add_subclass(Self);
-        match Py::new(py, init) {
-            Ok(err) => PyErr::from_value(err.into_bound(py).into_any()),
-            Err(e) => e,
-        }
-    }
-}
-
-#[pymethods]
-impl MontySyntaxError {
-    /// Returns formatted exception string.
-    ///
-    /// Args:
-    ///     format: 'type-msg' - 'ExceptionType: message' format
-    ///             'msg' - just the message
-    #[pyo3(signature = (format = "msg"))]
-    #[expect(clippy::needless_pass_by_value, reason = "required by macro")]
-    fn display(slf: PyRef<'_, Self>, format: &str) -> PyResult<String> {
-        let parent = slf.as_super();
-        match format {
-            "msg" => Ok(parent.message().unwrap_or_default().to_string()),
-            "type-msg" => Ok(parent.exc.summary()),
-            _ => Err(exceptions::PyValueError::new_err(format!(
-                "Invalid display format: '{format}'. Expected 'type-msg', or 'msg'"
-            ))),
-        }
-    }
-
-    #[expect(clippy::needless_pass_by_value, reason = "required by macro")]
-    fn __str__(slf: PyRef<'_, Self>) -> String {
-        slf.as_super().message().unwrap_or_default().to_string()
-    }
-
-    #[expect(clippy::needless_pass_by_value, reason = "required by macro")]
-    fn __repr__(slf: PyRef<'_, Self>) -> String {
-        let parent = slf.as_super();
-        if let Some(msg) = parent.message() {
-            format!("MontySyntaxError({msg})")
-        } else {
-            "MontySyntaxError()".to_string()
-        }
-    }
-}
-
 /// Raised when type checking finds errors in the code.
 ///
 /// Inherits from `MontyError`. This exception is raised when static type
@@ -202,6 +146,71 @@ impl MontyTypingError {
 
     fn __repr__(&self) -> String {
         format!("MontyTypingError({})", self.failure)
+    }
+}
+
+/// Raised when Python code has syntax errors or cannot be parsed by Monty.
+///
+/// Inherits from `MontyError`. The inner exception is always a `SyntaxError`.
+#[pyclass(extends=MontyError, module="pydantic_monty", skip_from_py_object)]
+pub struct MontySyntaxError {
+    traceback: Traceback,
+}
+
+impl MontySyntaxError {
+    /// Creates a new `MontySyntaxError` with the given message.
+    #[must_use]
+    pub fn new_err(py: Python<'_>, exc: MontyException) -> PyErr {
+        let traceback = match Traceback::new(py, &exc) {
+            Ok(frames) => frames,
+            Err(e) => return e,
+        };
+
+        let base_error = MontyError::new(exc);
+        let syntax_error = Self { traceback };
+        let init = PyClassInitializer::from(base_error).add_subclass(syntax_error);
+        match Py::new(py, init) {
+            Ok(err) => PyErr::from_value(err.into_bound(py).into_any()),
+            Err(e) => e,
+        }
+    }
+}
+
+#[pymethods]
+impl MontySyntaxError {
+    /// Returns the Monty traceback as a list of Frame objects.
+    fn traceback(&self, py: Python<'_>) -> Py<PyList> {
+        self.traceback.py_list(py)
+    }
+
+    /// Returns formatted exception string.
+    #[pyo3(signature = (format = "traceback"))]
+    #[expect(clippy::needless_pass_by_value, reason = "required by macro")]
+    fn display(slf: PyRef<'_, Self>, format: &str) -> PyResult<String> {
+        let parent = slf.as_super();
+        match format {
+            "traceback" => Ok(parent.exc.to_string()),
+            "msg" => Ok(parent.message().unwrap_or_default().to_string()),
+            "type-msg" => Ok(parent.exc.summary()),
+            _ => Err(exceptions::PyValueError::new_err(format!(
+                "Invalid display format: '{format}'. Expected 'type-msg', or 'msg'"
+            ))),
+        }
+    }
+
+    #[expect(clippy::needless_pass_by_value, reason = "required by macro")]
+    fn __str__(slf: PyRef<'_, Self>) -> String {
+        slf.as_super().message().unwrap_or_default().to_string()
+    }
+
+    #[expect(clippy::needless_pass_by_value, reason = "required by macro")]
+    fn __repr__(slf: PyRef<'_, Self>) -> String {
+        let parent = slf.as_super();
+        if let Some(msg) = parent.message() {
+            format!("MontySyntaxError({msg})")
+        } else {
+            "MontySyntaxError()".to_string()
+        }
     }
 }
 
@@ -288,8 +297,6 @@ impl MontyRuntimeError {
     }
 
     /// Returns formatted exception string.
-    ///
-    /// Overrides the base class to provide the full traceback when format='traceback'.
     #[pyo3(signature = (format = "traceback"))]
     #[expect(clippy::needless_pass_by_value, reason = "required by macro")]
     fn display(slf: PyRef<'_, Self>, format: &str) -> PyResult<String> {
@@ -325,6 +332,38 @@ impl MontyRuntimeError {
             return format!("MontyRuntimeError({exc_type_name}: {msg})");
         }
         format!("MontyRuntimeError({exc_type_name})")
+    }
+}
+
+/// The traceback frames where the error occurred (pre-converted to Python objects).
+struct Traceback(Vec<Py<PyFrame>>);
+
+impl Traceback {
+    fn new(py: Python<'_>, exc: &MontyException) -> PyResult<Self> {
+        // Convert stack frames to PyFrame objects
+        exc.traceback()
+            .iter()
+            .map(|f| {
+                let source_line = f.preview_line.as_ref().map(|arc| PyString::new(py, arc).unbind());
+                Py::new(
+                    py,
+                    PyFrame {
+                        filename: f.filename.clone(),
+                        line: f.start.line,
+                        column: f.start.column,
+                        end_line: f.end.line,
+                        end_column: f.end.column,
+                        function_name: f.frame_name.clone(),
+                        source_line,
+                    },
+                )
+            })
+            .collect::<PyResult<Vec<Py<PyFrame>>>>()
+            .map(Self)
+    }
+
+    fn py_list(&self, py: Python<'_>) -> Py<PyList> {
+        PyList::new(py, &self.0).expect("failed to create frames list").unbind()
     }
 }
 
