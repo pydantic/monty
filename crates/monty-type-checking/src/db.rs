@@ -2,15 +2,20 @@ use std::{fmt, sync::Arc};
 
 use ruff_db::{
     Db as SourceDb,
+    diagnostic::Diagnostic,
     files::{File, FileRootKind, Files},
     system::{DbWithTestSystem, System, SystemPathBuf, TestSystem},
     vendored::VendoredFileSystem,
 };
 use ruff_python_ast::PythonVersion;
-use ty_module_resolver::{Db as ModuleResolverDb, SearchPathSettings, SearchPaths};
+use ty_module_resolver::{Db as ModuleResolverDb, FallibleStrategy, SearchPathSettings, SearchPaths};
+use ty_python_core::{
+    Db as PythonCoreDb,
+    platform::PythonPlatform,
+    program::{Program, ProgramSettings},
+};
 use ty_python_semantic::{
-    AnalysisSettings, Db, Program, ProgramSettings, PythonPlatform, PythonVersionSource, PythonVersionWithSource,
-    default_lint_registry,
+    AnalysisSettings, Db, PythonVersionSource, PythonVersionWithSource, check_file_unwrap, default_lint_registry,
     lint::{LintRegistry, RuleSelection},
 };
 
@@ -21,10 +26,13 @@ use ty_python_semantic::{
 ///
 /// ## Lifetime invariant
 ///
-/// Each `MemoryDb` owns a unique Salsa storage. It must never be cloned or shared
-/// with another live handle because Salsa setters require exclusive access to the
-/// underlying `Arc<Zalsa>`.
+/// Each `MemoryDb` owns a unique Salsa storage. The pool must never clone a pooled
+/// instance or hand out parallel live handles because Salsa setters require
+/// exclusive access to the underlying `Arc<Zalsa>`. `Clone` is only derived to
+/// satisfy `ty_python_semantic::Db::dyn_clone`, which is reached only by ty's
+/// autofix pipeline — a code path monty never drives.
 #[salsa::db]
+#[derive(Clone)]
 pub(crate) struct MemoryDb {
     storage: salsa::Storage<Self>,
     files: Files,
@@ -74,7 +82,7 @@ impl Default for MemoryDb {
         db.files().try_add_root(&db, &src_root, FileRootKind::Project);
 
         let search_paths = SearchPathSettings::new(vec![src_root.to_path_buf()])
-            .to_search_paths(db.system(), db.vendored())
+            .to_search_paths(db.system(), db.vendored(), &FallibleStrategy)
             .expect("vendored typeshed search paths always resolve");
 
         Program::from_settings(
@@ -123,9 +131,19 @@ impl SourceDb for MemoryDb {
 }
 
 #[salsa::db]
-impl Db for MemoryDb {
+impl PythonCoreDb for MemoryDb {
     fn should_check_file(&self, file: File) -> bool {
         !file.path(self).is_vendored_path()
+    }
+}
+
+#[salsa::db]
+impl Db for MemoryDb {
+    fn check_file(&self, file: File) -> Vec<Diagnostic> {
+        if !self.should_check_file(file) {
+            return Vec::new();
+        }
+        check_file_unwrap(self, file)
     }
 
     fn rule_selection(&self, _file: File) -> &RuleSelection {
@@ -142,6 +160,10 @@ impl Db for MemoryDb {
 
     fn verbose(&self) -> bool {
         false
+    }
+
+    fn dyn_clone(&self) -> Box<dyn Db> {
+        Box::new(self.clone())
     }
 }
 
