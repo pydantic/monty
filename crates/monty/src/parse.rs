@@ -146,7 +146,8 @@ pub(crate) fn parse_with_interner(
     interner: InternerBuilder,
 ) -> Result<ParseResult, ParseError> {
     let mut parser = Parser::new(code, filename, interner);
-    let parsed = parse_module(code).map_err(|e| ParseError::syntax(e.to_string(), parser.convert_range(e.range())))?;
+    let parsed =
+        parse_module(code).map_err(|e| ParseError::syntax(e.error.to_string(), parser.convert_range(e.range())))?;
     let module = parsed.into_syntax();
     let nodes = parser.parse_statements(module.body)?;
     Ok(ParseResult {

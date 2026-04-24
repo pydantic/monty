@@ -2763,7 +2763,7 @@ dependencies = [
 [[package]]
 name = "ruff_annotate_snippets"
 version = "0.1.0"
-source = "git+https://github.com/samuelcolvin/ruff.git?rev=c7d3f28cb21f1520d156301eb5ec0d13857105ae#c7d3f28cb21f1520d156301eb5ec0d13857105ae"
+source = "git+https://github.com/samuelcolvin/ruff.git?rev=af72bbf75ff34f50f6fadf2ec3f1dec1af1eb5d1#af72bbf75ff34f50f6fadf2ec3f1dec1af1eb5d1"
 dependencies = [
  "anstyle",
  "memchr",
@@ -2773,7 +2773,7 @@ dependencies = [
 [[package]]
 name = "ruff_db"
 version = "0.0.0"
-source = "git+https://github.com/samuelcolvin/ruff.git?rev=c7d3f28cb21f1520d156301eb5ec0d13857105ae#c7d3f28cb21f1520d156301eb5ec0d13857105ae"
+source = "git+https://github.com/samuelcolvin/ruff.git?rev=af72bbf75ff34f50f6fadf2ec3f1dec1af1eb5d1#af72bbf75ff34f50f6fadf2ec3f1dec1af1eb5d1"
 dependencies = [
  "anstyle",
  "arc-swap",
@@ -2810,7 +2810,7 @@ dependencies = [
 [[package]]
 name = "ruff_diagnostics"
 version = "0.0.0"
-source = "git+https://github.com/samuelcolvin/ruff.git?rev=c7d3f28cb21f1520d156301eb5ec0d13857105ae#c7d3f28cb21f1520d156301eb5ec0d13857105ae"
+source = "git+https://github.com/samuelcolvin/ruff.git?rev=af72bbf75ff34f50f6fadf2ec3f1dec1af1eb5d1#af72bbf75ff34f50f6fadf2ec3f1dec1af1eb5d1"
 dependencies = [
  "get-size2",
  "is-macro",
@@ -2821,7 +2821,7 @@ dependencies = [
 [[package]]
 name = "ruff_index"
 version = "0.0.0"
-source = "git+https://github.com/samuelcolvin/ruff.git?rev=c7d3f28cb21f1520d156301eb5ec0d13857105ae#c7d3f28cb21f1520d156301eb5ec0d13857105ae"
+source = "git+https://github.com/samuelcolvin/ruff.git?rev=af72bbf75ff34f50f6fadf2ec3f1dec1af1eb5d1#af72bbf75ff34f50f6fadf2ec3f1dec1af1eb5d1"
 dependencies = [
  "get-size2",
  "ruff_macros",
@@ -2831,7 +2831,7 @@ dependencies = [
 [[package]]
 name = "ruff_macros"
 version = "0.0.0"
-source = "git+https://github.com/samuelcolvin/ruff.git?rev=c7d3f28cb21f1520d156301eb5ec0d13857105ae#c7d3f28cb21f1520d156301eb5ec0d13857105ae"
+source = "git+https://github.com/samuelcolvin/ruff.git?rev=af72bbf75ff34f50f6fadf2ec3f1dec1af1eb5d1#af72bbf75ff34f50f6fadf2ec3f1dec1af1eb5d1"
 dependencies = [
  "heck",
  "itertools 0.14.0",
@@ -2845,7 +2845,7 @@ dependencies = [
 [[package]]
 name = "ruff_memory_usage"
 version = "0.0.0"
-source = "git+https://github.com/samuelcolvin/ruff.git?rev=c7d3f28cb21f1520d156301eb5ec0d13857105ae#c7d3f28cb21f1520d156301eb5ec0d13857105ae"
+source = "git+https://github.com/samuelcolvin/ruff.git?rev=af72bbf75ff34f50f6fadf2ec3f1dec1af1eb5d1#af72bbf75ff34f50f6fadf2ec3f1dec1af1eb5d1"
 dependencies = [
  "get-size2",
 ]
@@ -2853,7 +2853,7 @@ dependencies = [
 [[package]]
 name = "ruff_notebook"
 version = "0.0.0"
-source = "git+https://github.com/samuelcolvin/ruff.git?rev=c7d3f28cb21f1520d156301eb5ec0d13857105ae#c7d3f28cb21f1520d156301eb5ec0d13857105ae"
+source = "git+https://github.com/samuelcolvin/ruff.git?rev=af72bbf75ff34f50f6fadf2ec3f1dec1af1eb5d1#af72bbf75ff34f50f6fadf2ec3f1dec1af1eb5d1"
 dependencies = [
  "anyhow",
  "itertools 0.14.0",
@@ -2871,7 +2871,7 @@ dependencies = [
 [[package]]
 name = "ruff_python_ast"
 version = "0.0.0"
-source = "git+https://github.com/samuelcolvin/ruff.git?rev=c7d3f28cb21f1520d156301eb5ec0d13857105ae#c7d3f28cb21f1520d156301eb5ec0d13857105ae"
+source = "git+https://github.com/samuelcolvin/ruff.git?rev=af72bbf75ff34f50f6fadf2ec3f1dec1af1eb5d1#af72bbf75ff34f50f6fadf2ec3f1dec1af1eb5d1"
 dependencies = [
  "aho-corasick",
  "bitflags 2.10.0",
@@ -2890,7 +2890,7 @@ dependencies = [
 [[package]]
 name = "ruff_python_literal"
 version = "0.0.0"
-source = "git+https://github.com/samuelcolvin/ruff.git?rev=c7d3f28cb21f1520d156301eb5ec0d13857105ae#c7d3f28cb21f1520d156301eb5ec0d13857105ae"
+source = "git+https://github.com/samuelcolvin/ruff.git?rev=af72bbf75ff34f50f6fadf2ec3f1dec1af1eb5d1#af72bbf75ff34f50f6fadf2ec3f1dec1af1eb5d1"
 dependencies = [
  "bitflags 2.10.0",
  "icu_properties",
@@ -2901,7 +2901,7 @@ dependencies = [
 [[package]]
 name = "ruff_python_parser"
 version = "0.0.0"
-source = "git+https://github.com/samuelcolvin/ruff.git?rev=c7d3f28cb21f1520d156301eb5ec0d13857105ae#c7d3f28cb21f1520d156301eb5ec0d13857105ae"
+source = "git+https://github.com/samuelcolvin/ruff.git?rev=af72bbf75ff34f50f6fadf2ec3f1dec1af1eb5d1#af72bbf75ff34f50f6fadf2ec3f1dec1af1eb5d1"
 dependencies = [
  "bitflags 2.10.0",
  "bstr",
@@ -2921,7 +2921,7 @@ dependencies = [
 [[package]]
 name = "ruff_python_stdlib"
 version = "0.0.0"
-source = "git+https://github.com/samuelcolvin/ruff.git?rev=c7d3f28cb21f1520d156301eb5ec0d13857105ae#c7d3f28cb21f1520d156301eb5ec0d13857105ae"
+source = "git+https://github.com/samuelcolvin/ruff.git?rev=af72bbf75ff34f50f6fadf2ec3f1dec1af1eb5d1#af72bbf75ff34f50f6fadf2ec3f1dec1af1eb5d1"
 dependencies = [
  "bitflags 2.10.0",
  "unicode-ident",
@@ -2930,7 +2930,7 @@ dependencies = [
 [[package]]
 name = "ruff_python_trivia"
 version = "0.0.0"
-source = "git+https://github.com/samuelcolvin/ruff.git?rev=c7d3f28cb21f1520d156301eb5ec0d13857105ae#c7d3f28cb21f1520d156301eb5ec0d13857105ae"
+source = "git+https://github.com/samuelcolvin/ruff.git?rev=af72bbf75ff34f50f6fadf2ec3f1dec1af1eb5d1#af72bbf75ff34f50f6fadf2ec3f1dec1af1eb5d1"
 dependencies = [
  "itertools 0.14.0",
  "ruff_source_file",
@@ -2941,7 +2941,7 @@ dependencies = [
 [[package]]
 name = "ruff_source_file"
 version = "0.0.0"
-source = "git+https://github.com/samuelcolvin/ruff.git?rev=c7d3f28cb21f1520d156301eb5ec0d13857105ae#c7d3f28cb21f1520d156301eb5ec0d13857105ae"
+source = "git+https://github.com/samuelcolvin/ruff.git?rev=af72bbf75ff34f50f6fadf2ec3f1dec1af1eb5d1#af72bbf75ff34f50f6fadf2ec3f1dec1af1eb5d1"
 dependencies = [
  "get-size2",
  "memchr",
@@ -2952,7 +2952,7 @@ dependencies = [
 [[package]]
 name = "ruff_text_size"
 version = "0.0.0"
-source = "git+https://github.com/samuelcolvin/ruff.git?rev=c7d3f28cb21f1520d156301eb5ec0d13857105ae#c7d3f28cb21f1520d156301eb5ec0d13857105ae"
+source = "git+https://github.com/samuelcolvin/ruff.git?rev=af72bbf75ff34f50f6fadf2ec3f1dec1af1eb5d1#af72bbf75ff34f50f6fadf2ec3f1dec1af1eb5d1"
 dependencies = [
  "get-size2",
  "serde",
@@ -3542,7 +3542,7 @@ dependencies = [
 [[package]]
 name = "ty_combine"
 version = "0.0.0"
-source = "git+https://github.com/samuelcolvin/ruff.git?rev=c7d3f28cb21f1520d156301eb5ec0d13857105ae#c7d3f28cb21f1520d156301eb5ec0d13857105ae"
+source = "git+https://github.com/samuelcolvin/ruff.git?rev=af72bbf75ff34f50f6fadf2ec3f1dec1af1eb5d1#af72bbf75ff34f50f6fadf2ec3f1dec1af1eb5d1"
 dependencies = [
  "ordermap",
  "ruff_db",
@@ -3552,7 +3552,7 @@ dependencies = [
 [[package]]
 name = "ty_module_resolver"
 version = "0.0.0"
-source = "git+https://github.com/samuelcolvin/ruff.git?rev=c7d3f28cb21f1520d156301eb5ec0d13857105ae#c7d3f28cb21f1520d156301eb5ec0d13857105ae"
+source = "git+https://github.com/samuelcolvin/ruff.git?rev=af72bbf75ff34f50f6fadf2ec3f1dec1af1eb5d1#af72bbf75ff34f50f6fadf2ec3f1dec1af1eb5d1"
 dependencies = [
  "anyhow",
  "camino",
@@ -3575,7 +3575,7 @@ dependencies = [
 [[package]]
 name = "ty_python_core"
 version = "0.0.0"
-source = "git+https://github.com/samuelcolvin/ruff.git?rev=c7d3f28cb21f1520d156301eb5ec0d13857105ae#c7d3f28cb21f1520d156301eb5ec0d13857105ae"
+source = "git+https://github.com/samuelcolvin/ruff.git?rev=af72bbf75ff34f50f6fadf2ec3f1dec1af1eb5d1#af72bbf75ff34f50f6fadf2ec3f1dec1af1eb5d1"
 dependencies = [
  "bitflags 2.10.0",
  "bitvec",
@@ -3605,7 +3605,7 @@ dependencies = [
 [[package]]
 name = "ty_python_semantic"
 version = "0.0.0"
-source = "git+https://github.com/samuelcolvin/ruff.git?rev=c7d3f28cb21f1520d156301eb5ec0d13857105ae#c7d3f28cb21f1520d156301eb5ec0d13857105ae"
+source = "git+https://github.com/samuelcolvin/ruff.git?rev=af72bbf75ff34f50f6fadf2ec3f1dec1af1eb5d1#af72bbf75ff34f50f6fadf2ec3f1dec1af1eb5d1"
 dependencies = [
  "bitflags 2.10.0",
  "compact_str",
@@ -3644,7 +3644,7 @@ dependencies = [
 [[package]]
 name = "ty_site_packages"
 version = "0.0.0"
-source = "git+https://github.com/samuelcolvin/ruff.git?rev=c7d3f28cb21f1520d156301eb5ec0d13857105ae#c7d3f28cb21f1520d156301eb5ec0d13857105ae"
+source = "git+https://github.com/samuelcolvin/ruff.git?rev=af72bbf75ff34f50f6fadf2ec3f1dec1af1eb5d1#af72bbf75ff34f50f6fadf2ec3f1dec1af1eb5d1"
 dependencies = [
  "camino",
  "colored 3.0.0",
@@ -3665,7 +3665,7 @@ dependencies = [
 [[package]]
 name = "ty_static"
 version = "0.0.1"
-source = "git+https://github.com/samuelcolvin/ruff.git?rev=c7d3f28cb21f1520d156301eb5ec0d13857105ae#c7d3f28cb21f1520d156301eb5ec0d13857105ae"
+source = "git+https://github.com/samuelcolvin/ruff.git?rev=af72bbf75ff34f50f6fadf2ec3f1dec1af1eb5d1#af72bbf75ff34f50f6fadf2ec3f1dec1af1eb5d1"
 dependencies = [
  "ruff_macros",
 ]
@@ -3673,7 +3673,7 @@ dependencies = [
 [[package]]
 name = "ty_vendored"
 version = "0.0.0"
-source = "git+https://github.com/samuelcolvin/ruff.git?rev=c7d3f28cb21f1520d156301eb5ec0d13857105ae#c7d3f28cb21f1520d156301eb5ec0d13857105ae"
+source = "git+https://github.com/samuelcolvin/ruff.git?rev=af72bbf75ff34f50f6fadf2ec3f1dec1af1eb5d1#af72bbf75ff34f50f6fadf2ec3f1dec1af1eb5d1"
 dependencies = [
  "path-slash",
  "ruff_db",

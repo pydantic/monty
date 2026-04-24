@@ -14,5 +14,5 @@ fn deeply_nested_parentheses_do_not_stack_overflow() {
     }
     let result = MontyRun::new(code, "test.py", vec![]);
     let err = result.expect_err("expected parse error for deeply nested parentheses");
-    assert_snapshot!(err.message().unwrap_or(""), @"Source is too deeply nested for the parser at byte range 199..200");
+    assert_snapshot!(err.message().unwrap_or(""), @"Source is too deeply nested");
 }

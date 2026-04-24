@@ -47,7 +47,6 @@ error[unresolved-reference]: Name `call1_stub_var` used when not defined
 1 | result = call1_stub_var + 1
   |          ^^^^^^^^^^^^^^
   |
-info: rule `unresolved-reference` is enabled by default
 
 """)
 
@@ -67,7 +66,6 @@ error[unsupported-operator]: Unsupported `+` operation
   | |         Has type `Literal[1]`
   | Has type `Literal["hello"]`
   |
-info: rule `unsupported-operator` is enabled by default
 
 """)
 
@@ -90,7 +88,6 @@ error[invalid-return-type]: Return type does not match returned value
 3 |     return "not an int"
   |            ^^^^^^^^^^^^ expected `int`, found `Literal["not an int"]`
   |
-info: rule `invalid-return-type` is enabled by default
 
 """)
 
@@ -107,7 +104,6 @@ error[unresolved-reference]: Name `undefined_var` used when not defined
 1 | print(undefined_var)
   |       ^^^^^^^^^^^^^
   |
-info: rule `unresolved-reference` is enabled by default
 
 """)
 
@@ -183,7 +179,6 @@ MontyTypingError(error[unsupported-operator]: Unsupported `+` operation
   | |         Has type `Literal[1]`
   | Has type `Literal["hello"]`
   |
-info: rule `unsupported-operator` is enabled by default
 
 )\
 """)
@@ -231,7 +226,6 @@ error[unsupported-operator]: Unsupported `+` operation
   | |         Has type `Literal[1]`
   | Has type `Literal["hello"]`
   |
-info: rule `unsupported-operator` is enabled by default
 
 """)
 
@@ -298,7 +292,6 @@ error[unsupported-operator]: Unsupported `+` operation
   |               |   Has type `Literal[1]`
   |               Has type `Literal["hello"]`
   |
-info: rule `unsupported-operator` is enabled by default
 
 """)
 
@@ -351,7 +344,6 @@ error[unresolved-reference]: Name `MXessages` used when not defined
 2 |     while True:
 3 |         print(f'messages so far: {messages}')
   |
-info: rule `unresolved-reference` is enabled by default
 
 """)
 
@@ -381,7 +373,6 @@ info: Function defined here
   |           ^^^^^^^^              ------------------ Parameter declared here
 6 |     ...
   |
-info: rule `invalid-argument-type` is enabled by default
 
 """)
 
@@ -434,7 +425,6 @@ error[unsupported-operator]: Unsupported `+` operation
   | |         Has type `Literal[1]`
   | Has type `Literal["hello"]`
   |
-info: rule `unsupported-operator` is enabled by default
 
 """)
 
@@ -502,7 +492,6 @@ error[unsupported-operator]: Unsupported `+` operation
   | |         Has type `Literal[1]`
   | Has type `Literal["hello"]`
   |
-info: rule `unsupported-operator` is enabled by default
 
 """)
 
@@ -526,7 +515,6 @@ error[unsupported-operator]: Unsupported `+` operation
   |     |      Has type `Literal[1]`
   |     Has type `Literal["hi"]`
   |
-info: rule `unsupported-operator` is enabled by default
 
 """)
 
@@ -569,7 +557,6 @@ info: Function defined here
   |     ^^^^^ -------- Parameter declared here
 2 |     return ''
   |
-info: rule `invalid-argument-type` is enabled by default
 
 """)
 
@@ -589,7 +576,6 @@ error[invalid-assignment]: Object of type `int` is not assignable to `str`
   |    |
   |    Declared type
   |
-info: rule `invalid-assignment` is enabled by default
 
 """)
 
@@ -660,7 +646,6 @@ info: Function defined here
   |     ^^^^^ -------- Parameter declared here
 2 |     return ''
   |
-info: rule `invalid-argument-type` is enabled by default
 
 """)
 
@@ -709,7 +694,6 @@ info: Function defined here
   |     ^^^^^ --------- Parameter declared here
 3 |     return 'hello ' + name
   |
-info: rule `invalid-argument-type` is enabled by default
 
 """)
 
@@ -735,7 +719,6 @@ error[invalid-assignment]: Object of type `int` is not assignable to `str`
   |    |
   |    Declared type
   |
-info: rule `invalid-assignment` is enabled by default
 
 """)
 
@@ -794,7 +777,6 @@ info: Function defined here
   |     ^^^^^^^^^ ------ Parameter declared here
 7 |     return x + '!'
   |
-info: rule `invalid-argument-type` is enabled by default
 
 """)
 
@@ -894,7 +876,6 @@ error[unsupported-operator]: Unsupported `+` operation
   | |         Has type `Literal[1]`
   | Has type `Literal["hello"]`
   |
-info: rule `unsupported-operator` is enabled by default
 
 """)
 
@@ -936,7 +917,6 @@ error[unresolved-reference]: Name `foo` used when not defined
 1 | foo("x")
   | ^^^
   |
-info: rule `unresolved-reference` is enabled by default
 
 """)
 
@@ -970,7 +950,6 @@ error[invalid-assignment]: Object of type `int` is not assignable to `str`
   |    |
   |    Declared type
   |
-info: rule `invalid-assignment` is enabled by default
 
 """)
 
@@ -1015,7 +994,6 @@ info: Function defined here
   |     ^^^ ------ Parameter declared here
 5 |     return x
   |
-info: rule `invalid-argument-type` is enabled by default
 
 """)
 
@@ -1053,7 +1031,6 @@ info: Function defined here
   |     ^^^^^ -------- Parameter declared here
 2 |     return ''
   |
-info: rule `invalid-argument-type` is enabled by default
 
 """)
 
@@ -1088,7 +1065,6 @@ error[unresolved-reference]: Name `x` used when not defined
 1 | x + 1
   | ^
   |
-info: rule `unresolved-reference` is enabled by default
 
 """)
 
@@ -1108,7 +1084,6 @@ error[unresolved-reference]: Name `x` used when not defined
 1 | x + 1
   | ^
   |
-info: rule `unresolved-reference` is enabled by default
 
 """)
 
@@ -1166,7 +1141,6 @@ error[unresolved-reference]: Name `x` used when not defined
 1 | x + 1
   | ^
   |
-info: rule `unresolved-reference` is enabled by default
 
 """)
 
@@ -1194,6 +1168,5 @@ error[unresolved-reference]: Name `foo` used when not defined
 1 | foo("x")
   | ^^^
   |
-info: rule `unresolved-reference` is enabled by default
 
 """)

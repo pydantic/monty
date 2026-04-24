@@ -39,15 +39,15 @@ lto = false
 
 [workspace.dependencies]
 # ruff, ty and related crates
-ruff_python_parser = { git = "https://github.com/samuelcolvin/ruff.git", package = "ruff_python_parser", rev = "c7d3f28cb21f1520d156301eb5ec0d13857105ae" }
-ruff_python_stdlib = { git = "https://github.com/samuelcolvin/ruff.git", package = "ruff_python_stdlib", rev = "c7d3f28cb21f1520d156301eb5ec0d13857105ae" }
-ruff_python_ast = { git = "https://github.com/samuelcolvin/ruff.git", package = "ruff_python_ast", rev = "c7d3f28cb21f1520d156301eb5ec0d13857105ae" }
-ruff_text_size = { git = "https://github.com/samuelcolvin/ruff.git", package = "ruff_text_size", rev = "c7d3f28cb21f1520d156301eb5ec0d13857105ae" }
-ruff_db = { git = "https://github.com/samuelcolvin/ruff.git", package = "ruff_db", rev = "c7d3f28cb21f1520d156301eb5ec0d13857105ae", features = ["serde"] }
-ty_python_semantic = { git = "https://github.com/samuelcolvin/ruff.git", package = "ty_python_semantic", rev = "c7d3f28cb21f1520d156301eb5ec0d13857105ae" }
-ty_python_core = { git = "https://github.com/samuelcolvin/ruff.git", package = "ty_python_core", rev = "c7d3f28cb21f1520d156301eb5ec0d13857105ae" }
-ty_module_resolver = { git = "https://github.com/samuelcolvin/ruff.git", package = "ty_module_resolver", rev = "c7d3f28cb21f1520d156301eb5ec0d13857105ae" }
-ty_vendored = { git = "https://github.com/samuelcolvin/ruff.git", package = "ty_vendored", rev = "c7d3f28cb21f1520d156301eb5ec0d13857105ae" }
+ruff_python_parser = { git = "https://github.com/samuelcolvin/ruff.git", package = "ruff_python_parser", rev = "af72bbf75ff34f50f6fadf2ec3f1dec1af1eb5d1" }
+ruff_python_stdlib = { git = "https://github.com/samuelcolvin/ruff.git", package = "ruff_python_stdlib", rev = "af72bbf75ff34f50f6fadf2ec3f1dec1af1eb5d1" }
+ruff_python_ast = { git = "https://github.com/samuelcolvin/ruff.git", package = "ruff_python_ast", rev = "af72bbf75ff34f50f6fadf2ec3f1dec1af1eb5d1" }
+ruff_text_size = { git = "https://github.com/samuelcolvin/ruff.git", package = "ruff_text_size", rev = "af72bbf75ff34f50f6fadf2ec3f1dec1af1eb5d1" }
+ruff_db = { git = "https://github.com/samuelcolvin/ruff.git", package = "ruff_db", rev = "af72bbf75ff34f50f6fadf2ec3f1dec1af1eb5d1", features = ["serde"] }
+ty_python_semantic = { git = "https://github.com/samuelcolvin/ruff.git", package = "ty_python_semantic", rev = "af72bbf75ff34f50f6fadf2ec3f1dec1af1eb5d1" }
+ty_python_core = { git = "https://github.com/samuelcolvin/ruff.git", package = "ty_python_core", rev = "af72bbf75ff34f50f6fadf2ec3f1dec1af1eb5d1" }
+ty_module_resolver = { git = "https://github.com/samuelcolvin/ruff.git", package = "ty_module_resolver", rev = "af72bbf75ff34f50f6fadf2ec3f1dec1af1eb5d1" }
+ty_vendored = { git = "https://github.com/samuelcolvin/ruff.git", package = "ty_vendored", rev = "af72bbf75ff34f50f6fadf2ec3f1dec1af1eb5d1" }
 # salsa version matches current main of ruff
 salsa = { version="0.26.1", default-features = false, features = [
     "compact_str",
