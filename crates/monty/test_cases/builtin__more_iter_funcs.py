@@ -331,6 +331,20 @@ assert list(enumerate(['x'])) == [(0, 'x')], 'enumerate single element'
 assert list(enumerate(['a', 'b'], 1)) == [(1, 'a'), (2, 'b')], 'enumerate with start'
 assert list(enumerate(['a', 'b'], 10)) == [(10, 'a'), (11, 'b')], 'enumerate with start 10'
 
+# enumerate with start as keyword argument
+assert list(enumerate(['a', 'b', 'c'], start=1)) == [(1, 'a'), (2, 'b'), (3, 'c')], 'enumerate start=1 kwarg'
+assert list(enumerate(['a', 'b'], start=10)) == [(10, 'a'), (11, 'b')], 'enumerate start=10 kwarg'
+assert list(enumerate([], start=5)) == [], 'enumerate empty with start kwarg'
+
+# enumerate rejects unknown keyword arguments
+try:
+    list(enumerate(['a'], nope=1))
+    assert False, 'enumerate with invalid keyword should raise TypeError'
+except TypeError as e:
+    assert e.args == ("enumerate() got an unexpected keyword argument 'nope'",), (
+        'enumerate invalid keyword error matches CPython'
+    )
+
 # enumerate string
 assert list(enumerate('ab')) == [(0, 'a'), (1, 'b')], 'enumerate string'
 
