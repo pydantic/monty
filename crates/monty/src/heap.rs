@@ -1241,6 +1241,9 @@ impl<T: ResourceTracker> Heap<T> {
             }
         }
 
+        let mut released_child_refs = Vec::new();
+        let mut temp_buffer = Vec::new();
+
         // Sweep phase: free unreachable values
         self.entries.retain(|id, value| {
             if reachable[id] {
@@ -1251,12 +1254,26 @@ impl<T: ResourceTracker> Heap<T> {
             // Notify tracker of freed memory
             self.tracker.on_free(|| value.data.0.get_mut().py_estimate_size());
 
-            // Mark Values as Dereferenced when memory-model-checks is enabled
-            #[cfg(feature = "memory-model-checks")]
-            py_dec_ref_ids_for_data(value.data.0.get_mut(), &mut Vec::new());
+            // Collect child IDs to dec_ref - to avoid overlapping borrows, we have to wait until after retain finishes to do the
+            // dec_ref calls since they can mutate the heap
+            py_dec_ref_ids_for_data(value.data.0.get_mut(), &mut temp_buffer);
+
+            // collect into temp_buffer and then filter reachable ones into released_child_refs
+            // to minimise the amount of allocation we do while retaining
+            for child_id in temp_buffer.drain(..) {
+                if reachable[child_id.index()] {
+                    released_child_refs.push(child_id);
+                }
+            }
 
             false
         });
+
+        for released_id in released_child_refs {
+            // refcount cannot underflow because these were all reachable values, so they could
+            // be reached from outside of cycles
+            self.entries.get(released_id.index()).refcount.update(|r| r - 1);
+        }
 
         // Reset cycle flag after GC - cycles have been collected
         self.may_have_cycles.set(false);

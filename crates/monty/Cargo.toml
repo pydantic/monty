@@ -43,7 +43,7 @@ jiter = { version = "0.13.0", features = ["num-bigint"] }
 [features]
 # ref-count-return changes behavior to return information on reference counts to check they're correct
 # should be used for testing only
-ref-count-return = []
+ref-count-return = ["test-hooks"]
 # memory-model-checks enables a Drop implementation on Value which catches heap allocated values that are dropped
 # without being dereferenced, and sets the default GC interval to 1 so garbage collection runs on every
 # GC-tracked allocation.
