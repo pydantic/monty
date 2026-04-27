@@ -24,7 +24,10 @@ use crate::{
         AssignTarget, Callable, CmpOperator, Comprehension, DictItem, Expr, ExprLoc, Identifier, Literal, NameScope,
         Node, Operator, PreparedFunctionDef, PreparedNode, SequenceItem, UnpackTarget,
     },
-    fstring::{ConversionFlag, FStringPart, FormatSpec, ParsedFormatSpec, encode_format_spec},
+    fstring::{
+        ConversionFlag, FStringPart, FormatSpec, MAX_ENCODED_PRECISION, MAX_ENCODED_WIDTH, ParsedFormatSpec,
+        encode_format_spec,
+    },
     function::Function,
     intern::{Interns, StringId},
     modules::StandardLib,
@@ -2744,7 +2747,7 @@ impl<'a> Compiler<'a> {
                 // Static format spec - push a marker constant with the parsed spec info
                 // We store this as a special format spec value in the constant pool
                 // The VM will recognize this and use the pre-parsed spec
-                let const_idx = self.add_format_spec_const(parsed);
+                let const_idx = self.add_format_spec_const(parsed)?;
                 self.code.emit_u16(Opcode::LoadConst, const_idx);
                 Ok(conv_bits | 0x04) // has format spec on stack
             }
@@ -2764,14 +2767,23 @@ impl<'a> Compiler<'a> {
     /// Adds a format spec to the constant pool as an encoded integer.
     ///
     /// Uses the encoding from `fstring::encode_format_spec` and stores it as
-    /// a negative integer to distinguish from regular ints.
-    fn add_format_spec_const(&mut self, spec: &ParsedFormatSpec) -> u16 {
-        let encoded = encode_format_spec(spec);
+    /// a negative integer to distinguish from regular ints. Returns a
+    /// `CompileError` if the width or precision is larger than the compact
+    /// encoding can represent — far beyond any realistic format spec.
+    fn add_format_spec_const(&mut self, spec: &ParsedFormatSpec) -> Result<u16, CompileError> {
+        let encoded = encode_format_spec(spec).ok_or_else(|| {
+            CompileError::new(
+                format!(
+                    "format specifier width or precision exceeds supported limits (max width {MAX_ENCODED_WIDTH}, max precision {MAX_ENCODED_PRECISION})"
+                ),
+                CodeRange::default(),
+            )
+        })?;
         // Use negative to distinguish from regular ints (format spec marker)
         // We negate and subtract 1 to ensure it's negative and recoverable
         let encoded_i64 = i64::try_from(encoded).expect("format spec encoding exceeds i64::MAX");
         let marker = -(encoded_i64 + 1);
-        self.code.add_const(Value::Int(marker))
+        Ok(self.code.add_const(Value::Int(marker)))
     }
 
     // ========================================================================

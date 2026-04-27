@@ -6,7 +6,11 @@
 //! F-strings can contain literal text and interpolated expressions with optional
 //! conversion flags (`!s`, `!r`, `!a`) and format specifications.
 
-use std::{fmt, iter, str::FromStr};
+use std::{
+    fmt::{self, Write as _},
+    iter,
+    str::FromStr,
+};
 
 use crate::{
     bytecode::VM,
@@ -109,6 +113,40 @@ pub struct ParsedFormatSpec {
     pub precision: Option<usize>,
     /// Type character: 's', 'd', 'f', 'e', 'g', etc.
     pub type_char: Option<char>,
+}
+
+impl fmt::Display for ParsedFormatSpec {
+    /// Renders the spec back into the string form `from_str` would parse.
+    ///
+    /// Used as a fallback when `encode_format_spec` can't fit the spec into the
+    /// compact bytecode constant encoding (e.g. precision or width larger than
+    /// the encoding reserves): we serialize the spec to a string constant and
+    /// let the VM parse it dynamically.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if let Some(align) = self.align {
+            // Only emit fill when it's non-default; otherwise ambiguity with sign chars.
+            if self.fill != ' ' {
+                f.write_char(self.fill)?;
+            }
+            f.write_char(align)?;
+        }
+        if let Some(sign) = self.sign {
+            f.write_char(sign)?;
+        }
+        if self.zero_pad {
+            f.write_char('0')?;
+        }
+        if self.width > 0 {
+            write!(f, "{}", self.width)?;
+        }
+        if let Some(precision) = self.precision {
+            write!(f, ".{precision}")?;
+        }
+        if let Some(type_char) = self.type_char {
+            f.write_char(type_char)?;
+        }
+        Ok(())
+    }
 }
 
 impl FromStr for ParsedFormatSpec {
@@ -311,17 +349,37 @@ pub fn format_with_spec(
     }
 }
 
+/// Maximum width that fits in the 20-bit width field of the encoded format spec.
+pub const MAX_ENCODED_WIDTH: usize = (1 << 20) - 1;
+
+/// Maximum precision that fits in the 21-bit precision field of the encoded format
+/// spec. One slot (the zero value) is reserved to mean "no precision", so the
+/// usable range for an explicit precision is `0..=MAX_ENCODED_PRECISION`.
+pub const MAX_ENCODED_PRECISION: usize = (1 << 21) - 2;
+
 /// Encodes a ParsedFormatSpec into a u64 for storage in bytecode constants.
 ///
-/// Encoding layout (fits in 48 bits):
+/// Returns `None` if any field exceeds the encoding's capacity — the caller
+/// should fall back to a dynamic (string-based) format spec in that case.
+///
+/// Encoding layout (fits in 60 bits, so the result round-trips through `i64`):
 /// - bits 0-7: fill character (as ASCII, default space=32)
 /// - bits 8-10: align (0=none, 1='<', 2='>', 3='^', 4='=')
 /// - bits 11-12: sign (0=none, 1='+', 2='-', 3=' ')
 /// - bit 13: zero_pad
-/// - bits 14-29: width (16 bits, max 65535)
-/// - bits 30-45: precision (16 bits, using 0xFFFF as "no precision")
-/// - bits 46-50: type_char (0=none, 1-15=explicit type mapping: b,c,d,e,E,f,F,g,G,n,o,s,x,X,%)
-pub fn encode_format_spec(spec: &ParsedFormatSpec) -> u64 {
+/// - bits 14-33: width (20 bits, max `MAX_ENCODED_WIDTH`)
+/// - bits 34-54: precision+1 (21 bits; 0 = no precision)
+/// - bits 55-59: type_char (0=none, 1-15=explicit type mapping: b,c,d,e,E,f,F,g,G,n,o,s,x,X,%)
+pub fn encode_format_spec(spec: &ParsedFormatSpec) -> Option<u64> {
+    if spec.width > MAX_ENCODED_WIDTH {
+        return None;
+    }
+    if let Some(p) = spec.precision
+        && p > MAX_ENCODED_PRECISION
+    {
+        return None;
+    }
+
     let fill = spec.fill as u64;
     let align = match spec.align {
         None => 0u64,
@@ -340,7 +398,9 @@ pub fn encode_format_spec(spec: &ParsedFormatSpec) -> u64 {
     };
     let zero_pad = u64::from(spec.zero_pad);
     let width = spec.width as u64;
-    let precision = spec.precision.map_or(0xFFFFu64, |p| p as u64);
+    // Store precision as `p + 1`, reserving 0 for the "no precision" marker.
+    // `p + 1` fits in u64 because `p <= MAX_ENCODED_PRECISION` was checked above.
+    let precision = spec.precision.map_or(0u64, |p| p as u64 + 1);
     let type_char = spec.type_char.map_or(0u64, |c| match c {
         'b' => 1,
         'c' => 2,
@@ -360,7 +420,7 @@ pub fn encode_format_spec(spec: &ParsedFormatSpec) -> u64 {
         _ => 0,
     });
 
-    fill | (align << 8) | (sign << 11) | (zero_pad << 13) | (width << 14) | (precision << 30) | (type_char << 46)
+    Some(fill | (align << 8) | (sign << 11) | (zero_pad << 13) | (width << 14) | (precision << 34) | (type_char << 55))
 }
 
 /// Decodes a u64 back into a ParsedFormatSpec.
@@ -373,9 +433,9 @@ pub fn decode_format_spec(encoded: u64) -> ParsedFormatSpec {
     let align_bits = (encoded >> 8) & 0x07;
     let sign_bits = (encoded >> 11) & 0x03;
     let zero_pad = ((encoded >> 13) & 0x01) != 0;
-    let width = ((encoded >> 14) & 0xFFFF) as usize;
-    let precision_raw = ((encoded >> 30) & 0xFFFF) as usize;
-    let type_bits = ((encoded >> 46) & 0x1F) as u8;
+    let width = ((encoded >> 14) & 0xF_FFFF) as usize;
+    let precision_raw = ((encoded >> 34) & 0x1F_FFFF) as usize;
+    let type_bits = ((encoded >> 55) & 0x1F) as u8;
 
     let align = match align_bits {
         1 => Some('<'),
@@ -392,10 +452,11 @@ pub fn decode_format_spec(encoded: u64) -> ParsedFormatSpec {
         _ => None,
     };
 
-    let precision = if precision_raw == 0xFFFF {
+    // Encoding stores `precision + 1`, so 0 means "no precision".
+    let precision = if precision_raw == 0 {
         None
     } else {
-        Some(precision_raw)
+        Some(precision_raw - 1)
     };
 
     let type_char = match type_bits {
@@ -467,7 +528,8 @@ pub fn format_string(value: &str, spec: &ParsedFormatSpec) -> Result<String, For
 /// - Alignment: Right-aligned by default for numbers, pads to `width` with `fill` character
 pub fn format_int(n: i64, spec: &ParsedFormatSpec) -> String {
     let is_negative = n < 0;
-    let abs_str = n.abs().to_string();
+    // Use unsigned_abs() to avoid overflow panic on i64::MIN
+    let abs_str = n.unsigned_abs().to_string();
 
     // Build the sign prefix
     let sign = if is_negative {
@@ -549,7 +611,7 @@ pub fn format_float_f(f: f64, spec: &ParsedFormatSpec) -> String {
     let is_negative = f.is_sign_negative() && !f.is_nan();
     let abs_val = f.abs();
 
-    let abs_str = format!("{abs_val:.precision$}");
+    let abs_str = fmt_float_fixed(abs_val, precision);
 
     let sign = if is_negative {
         "-"
@@ -589,11 +651,7 @@ pub fn format_float_e(f: f64, spec: &ParsedFormatSpec, uppercase: bool) -> Strin
     let is_negative = f.is_sign_negative() && !f.is_nan();
     let abs_val = f.abs();
 
-    let abs_str = if uppercase {
-        format!("{abs_val:.precision$E}")
-    } else {
-        format!("{abs_val:.precision$e}")
-    };
+    let abs_str = fmt_float_exp(abs_val, precision, uppercase);
 
     // Fix exponent format to match Python (e+03 not e3)
     let abs_str = fix_exp_format(&abs_str);
@@ -639,14 +697,17 @@ pub fn format_float_g(f: f64, spec: &ParsedFormatSpec) -> String {
     let abs_str = if exp < -4 || exp >= prec_i32 {
         // Use exponential notation
         let exp_prec = precision.saturating_sub(1);
-        let formatted = format!("{abs_val:.exp_prec$e}");
+        // Cap Rust precision; trailing zeros are stripped so padding isn't needed.
+        let formatted = fmt_float_exp(abs_val, exp_prec.min(MAX_FMT_PRECISION_EXP), false);
         // Python strips trailing zeros from the mantissa
         strip_trailing_zeros_exp(&formatted)
     } else {
         // Use fixed notation - result is non-negative due to .max(0)
         let sig_digits_i32 = (prec_i32 - exp - 1).max(0);
         let sig_digits = usize::try_from(sig_digits_i32).expect("sig_digits guaranteed non-negative");
-        let formatted = format!("{abs_val:.sig_digits$}");
+        // Cap Rust precision; trailing zeros are stripped so padding isn't needed.
+        let cap = sig_digits.min(MAX_FMT_PRECISION);
+        let formatted = format!("{abs_val:.cap$}");
         strip_trailing_zeros(&formatted)
     };
 
@@ -670,7 +731,6 @@ pub fn format_float_g(f: f64, spec: &ParsedFormatSpec) -> String {
 /// Used for the `!a` conversion flag in f-strings. Takes a string (typically a repr)
 /// and escapes all non-ASCII characters using `\xNN`, `\uNNNN`, or `\UNNNNNNNN`.
 pub fn ascii_escape(s: &str) -> String {
-    use std::fmt::Write;
     let mut result = String::new();
     for c in s.chars() {
         if c.is_ascii() {
@@ -700,7 +760,7 @@ pub fn format_float_percent(f: f64, spec: &ParsedFormatSpec) -> String {
     let is_negative = percent_val.is_sign_negative() && !percent_val.is_nan();
     let abs_val = percent_val.abs();
 
-    let abs_str = format!("{abs_val:.precision$}%");
+    let abs_str = format!("{}%", fmt_float_fixed(abs_val, precision));
 
     let sign = if is_negative {
         "-"
@@ -720,6 +780,64 @@ pub fn format_float_percent(f: f64, spec: &ParsedFormatSpec) -> String {
 // ============================================================================
 // Helper functions
 // ============================================================================
+
+/// Maximum precision Rust's `format!` accepts for fixed-point float formatting
+/// before it panics with "Formatting argument out of range" (i.e. `u16::MAX`).
+///
+/// Python allows arbitrary precision in f-strings (e.g. `.{10**6}f`), so
+/// we cap at this limit and pad manually with zeros beyond it.
+const MAX_FMT_PRECISION: usize = u16::MAX as usize;
+
+/// Maximum precision Rust's `format!` accepts for exponential (`e`/`E`) float
+/// formatting. One less than `MAX_FMT_PRECISION` because Rust's internal
+/// `to_exact_exp_str` uses `ndigits = precision + 1`, which would overflow
+/// `u16::MAX` and hit an `ndigits > 0` assertion at exactly `u16::MAX`.
+const MAX_FMT_PRECISION_EXP: usize = (u16::MAX as usize) - 1;
+
+/// Formats a float in fixed-point notation at an arbitrary precision.
+///
+/// Rust's `format!` panics if precision exceeds `u16::MAX`. For non-finite
+/// values (NaN/inf) precision is ignored entirely, matching Rust's behavior.
+/// For finite values beyond the native limit we format at `MAX_FMT_PRECISION`
+/// and append trailing zeros — f64 precision bottoms out long before this, so
+/// every additional digit Python would emit is a zero anyway.
+fn fmt_float_fixed(abs_val: f64, precision: usize) -> String {
+    if precision <= MAX_FMT_PRECISION || !abs_val.is_finite() {
+        return format!("{abs_val:.precision$}");
+    }
+    let mut s = format!("{abs_val:.MAX_FMT_PRECISION$}");
+    s.extend(iter::repeat_n('0', precision - MAX_FMT_PRECISION));
+    s
+}
+
+/// Formats a float in exponential notation at an arbitrary precision.
+///
+/// Same precision-capping strategy as `fmt_float_fixed`, but trailing zeros
+/// are injected into the mantissa (before the exponent marker) rather than
+/// appended to the end.
+fn fmt_float_exp(abs_val: f64, precision: usize, uppercase: bool) -> String {
+    if precision <= MAX_FMT_PRECISION_EXP || !abs_val.is_finite() {
+        return if uppercase {
+            format!("{abs_val:.precision$E}")
+        } else {
+            format!("{abs_val:.precision$e}")
+        };
+    }
+    let base = if uppercase {
+        format!("{abs_val:.MAX_FMT_PRECISION_EXP$E}")
+    } else {
+        format!("{abs_val:.MAX_FMT_PRECISION_EXP$e}")
+    };
+    let extra = precision - MAX_FMT_PRECISION_EXP;
+    // Inject padding zeros immediately before the exponent marker.
+    if let Some(e_pos) = base.find(['e', 'E']) {
+        let (mantissa, exp_part) = base.split_at(e_pos);
+        let zeros: String = iter::repeat_n('0', extra).collect();
+        format!("{mantissa}{zeros}{exp_part}")
+    } else {
+        base
+    }
+}
 
 /// Pads a string to a given width with alignment.
 ///

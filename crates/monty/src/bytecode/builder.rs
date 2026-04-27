@@ -160,6 +160,11 @@ impl CodeBuilder {
                 // pops obj + args, pushes result: 1 - (1 + arg_count) = -arg_count
                 self.adjust_stack(-i16::from(operand2));
             }
+            Opcode::CallAttrExtended => {
+                // Pops obj + args_tuple (+ kwargs_dict if flag set), pushes result.
+                // Flag=0 (no kwargs): pops 2, pushes 1 -> -1. Flag=1 (kwargs): pops 3, pushes 1 -> -2.
+                self.adjust_stack(-1 - i16::from(operand2 & 1));
+            }
             _ => {
                 if let Some(effect) = op.stack_effect() {
                     self.adjust_stack(effect);
@@ -528,6 +533,9 @@ impl CodeBuilder {
         let effect: i16 = match op {
             // CallFunction pops (callable + args), pushes result: -(1 + arg_count) + 1 = -arg_count
             Opcode::CallFunction => -i16::from(operand),
+            // CallFunctionExtended pops callable + args_tuple (+ kwargs_dict if flag set), pushes result.
+            // Flag=0 (no kwargs): pops 2, pushes 1 -> -1. Flag=1 (kwargs): pops 3, pushes 1 -> -2.
+            Opcode::CallFunctionExtended => -1 - i16::from(operand & 1),
             // UnpackSequence pops 1, pushes n: n - 1
             Opcode::UnpackSequence => i16::from(operand) - 1,
             // ListAppend/SetAdd pop value: -1 (depth operand doesn't affect stack count)
