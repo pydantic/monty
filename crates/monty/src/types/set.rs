@@ -11,7 +11,7 @@ use crate::{
     bytecode::{CallResult, VM},
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, RunResult},
-    heap::{ContainsHeap, DropWithHeap, HeapData, HeapGuard, HeapId, HeapItem, HeapRead},
+    heap::{ContainsHeap, DropWithHeap, HeapData, HeapGuard, HeapId, HeapItem, HeapRead, HeapReadOutput},
     intern::StaticStrings,
     resource::{ResourceError, ResourceTracker},
     types::Type,
@@ -1316,16 +1316,20 @@ fn get_storage_from_set_operand(
         return Ok(None);
     };
 
-    match vm.heap.get(*id) {
-        HeapData::Set(set) => Ok(Some(SetStorage::from_entries(set.0.clone_entries(vm.heap)))),
-        HeapData::FrozenSet(set) => Ok(Some(SetStorage::from_entries(set.0.clone_entries(vm.heap)))),
+    match vm.heap.read(*id) {
+        HeapReadOutput::Set(set) => Ok(Some(SetStorage::from_entries(
+            set.get(vm.heap).0.clone_entries(vm.heap),
+        ))),
+        HeapReadOutput::FrozenSet(set) => Ok(Some(SetStorage::from_entries(
+            set.get(vm.heap).0.clone_entries(vm.heap),
+        ))),
         // Dict views are `Copy` — matched value is not borrowed from the heap,
         // so `to_set` can take `&mut VM` below without conflict.
-        HeapData::DictKeysView(view) => {
+        HeapReadOutput::DictKeysView(view) => {
             let Set(storage) = view.to_set(vm)?;
             Ok(Some(storage))
         }
-        HeapData::DictItemsView(view) => {
+        HeapReadOutput::DictItemsView(view) => {
             let Set(storage) = view.to_set(vm)?;
             Ok(Some(storage))
         }
