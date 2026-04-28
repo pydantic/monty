@@ -41,77 +41,39 @@ pub fn builtin_divmod(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues
                 Ok(allocate_tuple(smallvec![quot_val, rem_val], vm.heap)?)
             }
         }
-        (Value::Int(x), Value::Ref(id)) => {
-            if let HeapData::LongInt(li) = vm.heap.get(*id) {
-                if li.is_zero() {
-                    Err(ExcType::divmod_by_zero())
-                } else {
-                    let x_bi = BigInt::from(*x);
-                    let (quot, rem) = bigint_floor_divmod(&x_bi, li.inner());
-                    let quot_val = LongInt::new(quot).into_value(vm.heap)?;
-                    let rem_val = LongInt::new(rem).into_value(vm.heap)?;
-                    Ok(allocate_tuple(smallvec![quot_val, rem_val], vm.heap)?)
-                }
+        (Value::Int(x), Value::Ref(id)) if let HeapData::LongInt(li) = vm.heap.get(*id) => {
+            if li.is_zero() {
+                Err(ExcType::divmod_by_zero())
             } else {
-                let a_type = a.py_type(vm);
-                let b_type = b.py_type(vm);
-                Err(SimpleException::new_msg(
-                    ExcType::TypeError,
-                    format!("unsupported operand type(s) for divmod(): '{a_type}' and '{b_type}'"),
-                )
-                .into())
+                let x_bi = BigInt::from(*x);
+                let (quot, rem) = bigint_floor_divmod(&x_bi, li.inner());
+                let quot_val = LongInt::new(quot).into_value(vm.heap)?;
+                let rem_val = LongInt::new(rem).into_value(vm.heap)?;
+                Ok(allocate_tuple(smallvec![quot_val, rem_val], vm.heap)?)
             }
         }
-        (Value::Ref(id), Value::Int(y)) => {
-            if let HeapData::LongInt(li) = vm.heap.get(*id) {
-                if *y == 0 {
-                    Err(ExcType::divmod_by_zero())
-                } else {
-                    let y_bi = BigInt::from(*y);
-                    let (quot, rem) = bigint_floor_divmod(li.inner(), &y_bi);
-                    let quot_val = LongInt::new(quot).into_value(vm.heap)?;
-                    let rem_val = LongInt::new(rem).into_value(vm.heap)?;
-                    Ok(allocate_tuple(smallvec![quot_val, rem_val], vm.heap)?)
-                }
+        (Value::Ref(id), Value::Int(y)) if let HeapData::LongInt(li) = vm.heap.get(*id) => {
+            if *y == 0 {
+                Err(ExcType::divmod_by_zero())
             } else {
-                let a_type = a.py_type(vm);
-                let b_type = b.py_type(vm);
-                Err(SimpleException::new_msg(
-                    ExcType::TypeError,
-                    format!("unsupported operand type(s) for divmod(): '{a_type}' and '{b_type}'"),
-                )
-                .into())
+                let y_bi = BigInt::from(*y);
+                let (quot, rem) = bigint_floor_divmod(li.inner(), &y_bi);
+                let quot_val = LongInt::new(quot).into_value(vm.heap)?;
+                let rem_val = LongInt::new(rem).into_value(vm.heap)?;
+                Ok(allocate_tuple(smallvec![quot_val, rem_val], vm.heap)?)
             }
         }
-        (Value::Ref(id1), Value::Ref(id2)) => {
-            let x_bi = if let HeapData::LongInt(li) = vm.heap.get(*id1) {
-                li.inner().clone()
+        (Value::Ref(id1), Value::Ref(id2))
+            if let HeapData::LongInt(x_li) = vm.heap.get(*id1)
+                && let HeapData::LongInt(y_li) = vm.heap.get(*id2) =>
+        {
+            if y_li.is_zero() {
+                Err(ExcType::divmod_by_zero())
             } else {
-                let a_type = a.py_type(vm);
-                let b_type = b.py_type(vm);
-                return Err(SimpleException::new_msg(
-                    ExcType::TypeError,
-                    format!("unsupported operand type(s) for divmod(): '{a_type}' and '{b_type}'"),
-                )
-                .into());
-            };
-            if let HeapData::LongInt(li) = vm.heap.get(*id2) {
-                if li.is_zero() {
-                    Err(ExcType::divmod_by_zero())
-                } else {
-                    let (quot, rem) = bigint_floor_divmod(&x_bi, li.inner());
-                    let quot_val = LongInt::new(quot).into_value(vm.heap)?;
-                    let rem_val = LongInt::new(rem).into_value(vm.heap)?;
-                    Ok(allocate_tuple(smallvec![quot_val, rem_val], vm.heap)?)
-                }
-            } else {
-                let a_type = a.py_type(vm);
-                let b_type = b.py_type(vm);
-                Err(SimpleException::new_msg(
-                    ExcType::TypeError,
-                    format!("unsupported operand type(s) for divmod(): '{a_type}' and '{b_type}'"),
-                )
-                .into())
+                let (quot, rem) = bigint_floor_divmod(x_li.inner(), y_li.inner());
+                let quot_val = LongInt::new(quot).into_value(vm.heap)?;
+                let rem_val = LongInt::new(rem).into_value(vm.heap)?;
+                Ok(allocate_tuple(smallvec![quot_val, rem_val], vm.heap)?)
             }
         }
         (Value::Float(x), Value::Float(y)) => {

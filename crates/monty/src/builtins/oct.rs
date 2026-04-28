@@ -36,14 +36,10 @@ pub fn builtin_oct(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -
             let heap_id = vm.heap.allocate(HeapData::Str(Str::new(s.to_string())))?;
             Ok(Value::Ref(heap_id))
         }
-        Value::Ref(id) => {
-            if let HeapData::LongInt(li) = vm.heap.get(*id) {
-                let oct_str = format_bigint_oct(li.inner());
-                let heap_id = vm.heap.allocate(HeapData::Str(Str::new(oct_str)))?;
-                Ok(Value::Ref(heap_id))
-            } else {
-                Err(ExcType::type_error_not_integer(value.py_type(vm)))
-            }
+        Value::Ref(id) if let HeapData::LongInt(li) = vm.heap.get(*id) => {
+            let oct_str = format_bigint_oct(li.inner());
+            let heap_id = vm.heap.allocate(HeapData::Str(Str::new(oct_str)))?;
+            Ok(Value::Ref(heap_id))
         }
         _ => Err(ExcType::type_error_not_integer(value.py_type(vm))),
     }

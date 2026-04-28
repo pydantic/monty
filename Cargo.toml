@@ -16,7 +16,7 @@ default-members = ["crates/monty-cli"]
 [workspace.package]
 edition = "2024"
 version = "0.0.17"
-rust-version = "1.90"
+rust-version = "1.95"
 license = "MIT"
 authors = ["Samuel Colvin <samuel@pydantic.dev>"]
 description = "A sandboxed, snapshotable Python interpreter written in Rust."

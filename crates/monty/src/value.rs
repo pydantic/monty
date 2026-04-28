@@ -176,38 +176,22 @@ impl PyTrait<'_> for Value {
             (Self::None, Self::None) => Ok(true),
 
             // Int == LongInt comparison
-            (Self::Int(a), Self::Ref(id)) => {
-                if let HeapData::LongInt(li) = vm.heap.get(*id) {
-                    Ok(BigInt::from(*a) == *li.inner())
-                } else {
-                    Ok(false)
-                }
+            (Self::Int(a), Self::Ref(id)) if let HeapData::LongInt(li) = vm.heap.get(*id) => {
+                Ok(BigInt::from(*a) == *li.inner())
             }
             // LongInt == Int comparison
-            (Self::Ref(id), Self::Int(b)) => {
-                if let HeapData::LongInt(li) = vm.heap.get(*id) {
-                    Ok(*li.inner() == BigInt::from(*b))
-                } else {
-                    Ok(false)
-                }
+            (Self::Ref(id), Self::Int(b)) if let HeapData::LongInt(li) = vm.heap.get(*id) => {
+                Ok(*li.inner() == BigInt::from(*b))
             }
 
             // For interned interns, compare by StringId first (fast path for same interned string)
             (Self::InternString(s1), Self::InternString(s2)) => Ok(s1 == s2),
             // for strings we need to account for the fact they might be either interned or not
-            (Self::InternString(string_id), Self::Ref(id2)) => {
-                if let HeapData::Str(s2) = vm.heap.get(*id2) {
-                    Ok(interns.get_str(*string_id) == s2.as_str())
-                } else {
-                    Ok(false)
-                }
+            (Self::InternString(string_id), Self::Ref(id2)) if let HeapData::Str(s2) = vm.heap.get(*id2) => {
+                Ok(interns.get_str(*string_id) == s2.as_str())
             }
-            (Self::Ref(id1), Self::InternString(string_id)) => {
-                if let HeapData::Str(s1) = vm.heap.get(*id1) {
-                    Ok(s1.as_str() == interns.get_str(*string_id))
-                } else {
-                    Ok(false)
-                }
+            (Self::Ref(id1), Self::InternString(string_id)) if let HeapData::Str(s1) = vm.heap.get(*id1) => {
+                Ok(s1.as_str() == interns.get_str(*string_id))
             }
 
             // For interned bytes, compare by content (bytes are not deduplicated unlike interns)
@@ -216,19 +200,11 @@ impl PyTrait<'_> for Value {
                 Ok(b1 == b2 || interns.get_bytes(*b1) == interns.get_bytes(*b2))
             }
             // same for bytes
-            (Self::InternBytes(bytes_id), Self::Ref(id2)) => {
-                if let HeapData::Bytes(b2) = vm.heap.get(*id2) {
-                    Ok(interns.get_bytes(*bytes_id) == b2.as_slice())
-                } else {
-                    Ok(false)
-                }
+            (Self::InternBytes(bytes_id), Self::Ref(id2)) if let HeapData::Bytes(b2) = vm.heap.get(*id2) => {
+                Ok(interns.get_bytes(*bytes_id) == b2.as_slice())
             }
-            (Self::Ref(id1), Self::InternBytes(bytes_id)) => {
-                if let HeapData::Bytes(b1) = vm.heap.get(*id1) {
-                    Ok(b1.as_slice() == interns.get_bytes(*bytes_id))
-                } else {
-                    Ok(false)
-                }
+            (Self::Ref(id1), Self::InternBytes(bytes_id)) if let HeapData::Bytes(b1) = vm.heap.get(*id1) => {
+                Ok(b1.as_slice() == interns.get_bytes(*bytes_id))
             }
 
             (Self::Ref(id1), Self::Ref(id2)) => {
@@ -272,20 +248,12 @@ impl PyTrait<'_> for Value {
             (Self::Bool(s), _) => Self::Int(i64::from(*s)).py_cmp(other, vm),
             (_, Self::Bool(s)) => self.py_cmp(&Self::Int(i64::from(*s)), vm),
             // Int vs LongInt comparison
-            (Self::Int(a), Self::Ref(id)) => {
-                if let HeapData::LongInt(li) = vm.heap.get(*id) {
-                    Ok(BigInt::from(*a).partial_cmp(li.inner()))
-                } else {
-                    Ok(None)
-                }
+            (Self::Int(a), Self::Ref(id)) if let HeapData::LongInt(li) = vm.heap.get(*id) => {
+                Ok(BigInt::from(*a).partial_cmp(li.inner()))
             }
             // LongInt vs Int comparison
-            (Self::Ref(id), Self::Int(b)) => {
-                if let HeapData::LongInt(li) = vm.heap.get(*id) {
-                    Ok(li.inner().partial_cmp(&BigInt::from(*b)))
-                } else {
-                    Ok(None)
-                }
+            (Self::Ref(id), Self::Int(b)) if let HeapData::LongInt(li) = vm.heap.get(*id) => {
+                Ok(li.inner().partial_cmp(&BigInt::from(*b)))
             }
             // Ref vs Ref comparison: handles LongInt, Str, and Tuple
             (Self::Ref(id1), Self::Ref(id2)) => match (vm.heap.read(*id1), vm.heap.read(*id2)) {
@@ -308,19 +276,11 @@ impl PyTrait<'_> for Value {
                 Ok(interns.get_str(*s1).partial_cmp(interns.get_str(*s2)))
             }
             // Cross-type string comparisons: interned vs heap-allocated
-            (Self::InternString(s1), Self::Ref(id2)) => {
-                if let HeapData::Str(s2) = vm.heap.get(*id2) {
-                    Ok(interns.get_str(*s1).partial_cmp(s2.as_str()))
-                } else {
-                    Ok(None)
-                }
+            (Self::InternString(s1), Self::Ref(id2)) if let HeapData::Str(s2) = vm.heap.get(*id2) => {
+                Ok(interns.get_str(*s1).partial_cmp(s2.as_str()))
             }
-            (Self::Ref(id1), Self::InternString(s2)) => {
-                if let HeapData::Str(s1) = vm.heap.get(*id1) {
-                    Ok(s1.as_str().partial_cmp(interns.get_str(*s2)))
-                } else {
-                    Ok(None)
-                }
+            (Self::Ref(id1), Self::InternString(s2)) if let HeapData::Str(s1) = vm.heap.get(*id1) => {
+                Ok(s1.as_str().partial_cmp(interns.get_str(*s2)))
             }
             (Self::InternBytes(b1), Self::InternBytes(b2)) => {
                 Ok(interns.get_bytes(*b1).partial_cmp(interns.get_bytes(*b2)))
@@ -432,13 +392,11 @@ impl PyTrait<'_> for Value {
                 }
             }
             // Int + LongInt
-            (Self::Int(i), Self::Ref(id)) | (Self::Ref(id), Self::Int(i)) => {
-                if let HeapData::LongInt(li) = vm.heap.get(*id) {
-                    let result = LongInt::new(li.inner() + i);
-                    result.into_value(vm.heap).map(Some)
-                } else {
-                    Ok(None)
-                }
+            (Self::Int(i), Self::Ref(id)) | (Self::Ref(id), Self::Int(i))
+                if let HeapData::LongInt(li) = vm.heap.get(*id) =>
+            {
+                let result = LongInt::new(li.inner() + i);
+                result.into_value(vm.heap).map(Some)
             }
             (Self::Float(v1), Self::Float(v2)) => Ok(Some(Self::Float(v1 + v2))),
             // Int + Float and Float + Int
@@ -454,21 +412,13 @@ impl PyTrait<'_> for Value {
                 Ok(Some(Self::Ref(vm.heap.allocate(HeapData::Str(concat.into()))?)))
             }
             // for strings we need to account for the fact they might be either interned or not
-            (Self::InternString(string_id), Self::Ref(id2)) => {
-                if let HeapData::Str(s2) = vm.heap.get(*id2) {
-                    let concat = format!("{}{}", interns.get_str(*string_id), s2.as_str());
-                    Ok(Some(Self::Ref(vm.heap.allocate(HeapData::Str(concat.into()))?)))
-                } else {
-                    Ok(None)
-                }
+            (Self::InternString(string_id), Self::Ref(id2)) if let HeapData::Str(s2) = vm.heap.get(*id2) => {
+                let concat = format!("{}{}", interns.get_str(*string_id), s2.as_str());
+                Ok(Some(Self::Ref(vm.heap.allocate(HeapData::Str(concat.into()))?)))
             }
-            (Self::Ref(id1), Self::InternString(string_id)) => {
-                if let HeapData::Str(s1) = vm.heap.get(*id1) {
-                    let concat = format!("{}{}", s1.as_str(), interns.get_str(*string_id));
-                    Ok(Some(Self::Ref(vm.heap.allocate(HeapData::Str(concat.into()))?)))
-                } else {
-                    Ok(None)
-                }
+            (Self::Ref(id1), Self::InternString(string_id)) if let HeapData::Str(s1) = vm.heap.get(*id1) => {
+                let concat = format!("{}{}", s1.as_str(), interns.get_str(*string_id));
+                Ok(Some(Self::Ref(vm.heap.allocate(HeapData::Str(concat.into()))?)))
             }
             // same for bytes
             (Self::InternBytes(b1), Self::InternBytes(b2)) => {
@@ -479,27 +429,19 @@ impl PyTrait<'_> for Value {
                 b.extend_from_slice(bytes2);
                 Ok(Some(Self::Ref(vm.heap.allocate(HeapData::Bytes(b.into()))?)))
             }
-            (Self::InternBytes(bytes_id), Self::Ref(id2)) => {
-                if let HeapData::Bytes(b2) = vm.heap.get(*id2) {
-                    let bytes1 = interns.get_bytes(*bytes_id);
-                    let mut b = Vec::with_capacity(bytes1.len() + b2.len());
-                    b.extend_from_slice(bytes1);
-                    b.extend_from_slice(b2);
-                    Ok(Some(Self::Ref(vm.heap.allocate(HeapData::Bytes(b.into()))?)))
-                } else {
-                    Ok(None)
-                }
+            (Self::InternBytes(bytes_id), Self::Ref(id2)) if let HeapData::Bytes(b2) = vm.heap.get(*id2) => {
+                let bytes1 = interns.get_bytes(*bytes_id);
+                let mut b = Vec::with_capacity(bytes1.len() + b2.len());
+                b.extend_from_slice(bytes1);
+                b.extend_from_slice(b2);
+                Ok(Some(Self::Ref(vm.heap.allocate(HeapData::Bytes(b.into()))?)))
             }
-            (Self::Ref(id1), Self::InternBytes(bytes_id)) => {
-                if let HeapData::Bytes(b1) = vm.heap.get(*id1) {
-                    let bytes2 = interns.get_bytes(*bytes_id);
-                    let mut b = Vec::with_capacity(b1.len() + bytes2.len());
-                    b.extend_from_slice(b1);
-                    b.extend_from_slice(bytes2);
-                    Ok(Some(Self::Ref(vm.heap.allocate(HeapData::Bytes(b.into()))?)))
-                } else {
-                    Ok(None)
-                }
+            (Self::Ref(id1), Self::InternBytes(bytes_id)) if let HeapData::Bytes(b1) = vm.heap.get(*id1) => {
+                let bytes2 = interns.get_bytes(*bytes_id);
+                let mut b = Vec::with_capacity(b1.len() + bytes2.len());
+                b.extend_from_slice(b1);
+                b.extend_from_slice(bytes2);
+                Ok(Some(Self::Ref(vm.heap.allocate(HeapData::Bytes(b.into()))?)))
             }
             _ => Ok(None),
         }
@@ -518,22 +460,14 @@ impl PyTrait<'_> for Value {
                 }
             }
             // Int - LongInt
-            (Self::Int(a), Self::Ref(id)) => {
-                if let HeapData::LongInt(li) = vm.heap.get(*id) {
-                    let result = LongInt::from(*a) - LongInt::new(li.inner().clone());
-                    result.into_value(vm.heap).map(Some)
-                } else {
-                    Ok(None)
-                }
+            (Self::Int(a), Self::Ref(id)) if let HeapData::LongInt(li) = vm.heap.get(*id) => {
+                let result = LongInt::from(*a) - LongInt::new(li.inner().clone());
+                result.into_value(vm.heap).map(Some)
             }
             // LongInt - Int
-            (Self::Ref(id), Self::Int(b)) => {
-                if let HeapData::LongInt(li) = vm.heap.get(*id) {
-                    let result = LongInt::new(li.inner().clone()) - LongInt::from(*b);
-                    result.into_value(vm.heap).map(Some)
-                } else {
-                    Ok(None)
-                }
+            (Self::Ref(id), Self::Int(b)) if let HeapData::LongInt(li) = vm.heap.get(*id) => {
+                let result = LongInt::new(li.inner().clone()) - LongInt::from(*b);
+                result.into_value(vm.heap).map(Some)
             }
             // LongInt - LongInt
             (Self::Ref(id1), Self::Ref(id2)) => {
@@ -565,31 +499,19 @@ impl PyTrait<'_> for Value {
                 }
             }
             // Int % LongInt
-            (Self::Int(a), Self::Ref(id)) => {
-                // Clone to avoid borrow conflict with heap mutation
-                let b_clone = if let HeapData::LongInt(li) = vm.heap.get(*id) {
-                    if li.is_zero() {
-                        return Err(ExcType::zero_division().into());
-                    }
-                    li.inner().clone()
-                } else {
-                    return Ok(None);
-                };
-                let bi = BigInt::from(*a).mod_floor(&b_clone);
+            (Self::Int(a), Self::Ref(id)) if let HeapData::LongInt(li) = vm.heap.get(*id) => {
+                if li.is_zero() {
+                    return Err(ExcType::zero_division().into());
+                }
+                let bi = BigInt::from(*a).mod_floor(li.inner());
                 Ok(Some(LongInt::new(bi).into_value(vm.heap)?))
             }
             // LongInt % Int
-            (Self::Ref(id), Self::Int(b)) => {
+            (Self::Ref(id), Self::Int(b)) if let HeapData::LongInt(li) = vm.heap.get(*id) => {
                 if *b == 0 {
                     return Err(ExcType::zero_division().into());
                 }
-                // Clone to avoid borrow conflict with heap mutation
-                let a_clone = if let HeapData::LongInt(li) = vm.heap.get(*id) {
-                    li.inner().clone()
-                } else {
-                    return Ok(None);
-                };
-                let bi = a_clone.mod_floor(&BigInt::from(*b));
+                let bi = li.inner().mod_floor(&BigInt::from(*b));
                 Ok(Some(LongInt::new(bi).into_value(vm.heap)?))
             }
             // LongInt % LongInt
@@ -771,29 +693,25 @@ impl PyTrait<'_> for Value {
             }
 
             // String repetition with LongInt: "ab" * bigint or bigint * "ab"
-            (Self::InternString(s), Self::Ref(id)) | (Self::Ref(id), Self::InternString(s)) => {
-                if let HeapData::LongInt(li) = vm.heap.get(*id) {
-                    let count = longint_to_repeat_count(li)?;
-                    let str_ref = interns.get_str(*s);
-                    check_repeat_size(str_ref.len(), count, vm.heap.tracker())?;
-                    let result = str_ref.repeat(count);
-                    Ok(Some(Self::Ref(vm.heap.allocate(HeapData::Str(result.into()))?)))
-                } else {
-                    Ok(None)
-                }
+            (Self::InternString(s), Self::Ref(id)) | (Self::Ref(id), Self::InternString(s))
+                if let HeapData::LongInt(li) = vm.heap.get(*id) =>
+            {
+                let count = longint_to_repeat_count(li)?;
+                let str_ref = interns.get_str(*s);
+                check_repeat_size(str_ref.len(), count, vm.heap.tracker())?;
+                let result = str_ref.repeat(count);
+                Ok(Some(Self::Ref(vm.heap.allocate(HeapData::Str(result.into()))?)))
             }
 
             // Bytes repetition with LongInt: b"ab" * bigint or bigint * b"ab"
-            (Self::InternBytes(b), Self::Ref(id)) | (Self::Ref(id), Self::InternBytes(b)) => {
-                if let HeapData::LongInt(li) = vm.heap.get(*id) {
-                    let count = longint_to_repeat_count(li)?;
-                    let bytes_ref = interns.get_bytes(*b);
-                    check_repeat_size(bytes_ref.len(), count, vm.heap.tracker())?;
-                    let result: Vec<u8> = bytes_ref.repeat(count);
-                    Ok(Some(Self::Ref(vm.heap.allocate(HeapData::Bytes(result.into()))?)))
-                } else {
-                    Ok(None)
-                }
+            (Self::InternBytes(b), Self::Ref(id)) | (Self::Ref(id), Self::InternBytes(b))
+                if let HeapData::LongInt(li) = vm.heap.get(*id) =>
+            {
+                let count = longint_to_repeat_count(li)?;
+                let bytes_ref = interns.get_bytes(*b);
+                check_repeat_size(bytes_ref.len(), count, vm.heap.tracker())?;
+                let result: Vec<u8> = bytes_ref.repeat(count);
+                Ok(Some(Self::Ref(vm.heap.allocate(HeapData::Bytes(result.into()))?)))
             }
 
             _ => Ok(None),
