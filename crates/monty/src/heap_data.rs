@@ -698,7 +698,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
     fn py_repr_fmt(
         &self,
         f: &mut impl Write,
-        vm: &VM<'h, '_, impl ResourceTracker>,
+        vm: &mut VM<'h, '_, impl ResourceTracker>,
         heap_ids: &mut AHashSet<HeapId>,
     ) -> RunResult<()> {
         match self {
@@ -750,7 +750,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
         }
     }
 
-    fn py_str(&self, vm: &VM<'h, '_, impl ResourceTracker>) -> RunResult<Cow<'static, str>> {
+    fn py_str(&self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<Cow<'static, str>> {
         match self {
             // Strings return their value directly without quotes
             Self::Str(s) => Ok(Cow::Owned(s.get(vm.heap).as_str().to_owned())),

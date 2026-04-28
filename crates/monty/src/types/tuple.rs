@@ -328,10 +328,11 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Tuple> {
     fn py_repr_fmt(
         &self,
         f: &mut impl Write,
-        vm: &VM<'h, '_, impl ResourceTracker>,
+        vm: &mut VM<'h, '_, impl ResourceTracker>,
         heap_ids: &mut AHashSet<HeapId>,
     ) -> RunResult<()> {
-        repr_sequence_fmt('(', ')', &self.get(vm.heap).items, f, vm, heap_ids)
+        let len = self.get(vm.heap).as_slice().len();
+        repr_sequence_fmt('(', ')', len, |heap, i| &self.get(heap).as_slice()[i], f, vm, heap_ids)
     }
 }
 

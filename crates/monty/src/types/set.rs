@@ -435,27 +435,25 @@ impl<'h> HeapRead<'h, SetStorage> {
     }
 }
 
-impl SetStorage {
+impl<'h> HeapRead<'h, SetStorage> {
     /// Writes the repr format to a formatter.
-    ///
-    /// For sets, outputs `{elem1, elem2, ...}` (no type prefix).
-    /// For frozensets, outputs `frozenset({elem1, elem2, ...})`.
-    fn repr_fmt(
+    fn repr_fmt<T: ResourceTracker>(
         &self,
         f: &mut impl Write,
-        vm: &VM<'_, '_, impl ResourceTracker>,
+        vm: &mut VM<'h, '_, T>,
         heap_ids: &mut AHashSet<HeapId>,
         type_name: &str,
     ) -> RunResult<()> {
-        if self.is_empty() {
+        let len = self.get(vm.heap).len();
+        if len == 0 {
             return Ok(write!(f, "{type_name}()")?);
         }
 
         // Check depth limit before recursing
-        let Some(token) = vm.heap.incr_recursion_depth_for_repr() else {
+        let Ok(token) = vm.heap.incr_recursion_depth() else {
             return Ok(f.write_str("{...}")?);
         };
-        crate::defer_drop_immutable_heap!(token, vm);
+        defer_drop!(token, vm);
 
         // frozenset needs type prefix: frozenset({...}), but set doesn't: {...}
         let needs_prefix = type_name != "set";
@@ -464,17 +462,23 @@ impl SetStorage {
         }
 
         f.write_char('{')?;
-        let mut first = true;
-        for entry in &self.entries {
-            if !first {
+        for i in 0..len {
+            if i > 0 {
                 if vm.heap.check_time().is_err() {
                     f.write_str(", ...[timeout]")?;
                     break;
                 }
                 f.write_str(", ")?;
             }
-            first = false;
-            entry.value.py_repr_fmt(f, vm, heap_ids)?;
+            // Refcount-bump each element before recursing so a user-defined
+            // `__repr__` mutating the set can't free the entry mid-format.
+            let value = self
+                .get(vm.heap)
+                .value_at(i)
+                .expect("index in range")
+                .clone_with_heap(vm.heap);
+            defer_drop!(value, vm);
+            value.py_repr_fmt(f, vm, heap_ids)?;
         }
         f.write_char('}')?;
 
@@ -484,7 +488,9 @@ impl SetStorage {
 
         Ok(())
     }
+}
 
+impl SetStorage {
     /// Estimates the memory size of this storage.
     fn estimate_size(&self) -> usize {
         mem::size_of::<Self>() + self.len() * mem::size_of::<SetEntry>()
@@ -953,10 +959,10 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Set> {
     fn py_repr_fmt(
         &self,
         f: &mut impl Write,
-        vm: &VM<'h, '_, impl ResourceTracker>,
+        vm: &mut VM<'h, '_, impl ResourceTracker>,
         heap_ids: &mut AHashSet<HeapId>,
     ) -> RunResult<()> {
-        self.get(vm.heap).0.repr_fmt(f, vm, heap_ids, "set")
+        self.peel_ref().repr_fmt(f, vm, heap_ids, "set")
     }
 
     fn py_call_attr(
@@ -1233,10 +1239,10 @@ impl<'h> PyTrait<'h> for HeapRead<'h, FrozenSet> {
     fn py_repr_fmt(
         &self,
         f: &mut impl Write,
-        vm: &VM<'h, '_, impl ResourceTracker>,
+        vm: &mut VM<'h, '_, impl ResourceTracker>,
         heap_ids: &mut AHashSet<HeapId>,
     ) -> RunResult<()> {
-        self.get(vm.heap).0.repr_fmt(f, vm, heap_ids, "frozenset")
+        self.peel_ref().repr_fmt(f, vm, heap_ids, "frozenset")
     }
 
     fn py_call_attr(

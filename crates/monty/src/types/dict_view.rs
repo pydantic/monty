@@ -157,11 +157,11 @@ impl<'h> PyTrait<'h> for HeapRead<'h, DictKeysView> {
     fn py_repr_fmt(
         &self,
         f: &mut impl Write,
-        vm: &VM<'h, '_, impl ResourceTracker>,
+        vm: &mut VM<'h, '_, impl ResourceTracker>,
         heap_ids: &mut AHashSet<HeapId>,
     ) -> RunResult<()> {
         f.write_str("dict_keys([")?;
-        write_dict_keys_contents(f, self.get(vm.heap).dict(vm.heap), vm, heap_ids)?;
+        write_dict_keys_contents(f, &self.dict(vm), vm, heap_ids)?;
         Ok(f.write_str("])")?)
     }
 
@@ -311,11 +311,11 @@ impl<'h> PyTrait<'h> for HeapRead<'h, DictItemsView> {
     fn py_repr_fmt(
         &self,
         f: &mut impl Write,
-        vm: &VM<'h, '_, impl ResourceTracker>,
+        vm: &mut VM<'h, '_, impl ResourceTracker>,
         heap_ids: &mut AHashSet<HeapId>,
     ) -> RunResult<()> {
         f.write_str("dict_items([")?;
-        write_dict_items_contents(f, self.get(vm.heap).dict(vm.heap), vm, heap_ids)?;
+        write_dict_items_contents(f, &self.dict(vm), vm, heap_ids)?;
         Ok(f.write_str("])")?)
     }
 
@@ -377,6 +377,15 @@ impl DictView for DictValuesView {
     }
 }
 
+impl<'h> HeapRead<'h, DictValuesView> {
+    fn dict(&self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> HeapRead<'h, Dict> {
+        let HeapReadOutput::Dict(dict) = vm.heap.read(self.get(vm.heap).dict_id) else {
+            panic!("dict_values view must always reference a dict");
+        };
+        dict
+    }
+}
+
 impl<'h> PyTrait<'h> for HeapRead<'h, DictValuesView> {
     fn py_type(&self, _vm: &VM<'h, '_, impl ResourceTracker>) -> Type {
         Type::DictValues
@@ -393,11 +402,11 @@ impl<'h> PyTrait<'h> for HeapRead<'h, DictValuesView> {
     fn py_repr_fmt(
         &self,
         f: &mut impl Write,
-        vm: &VM<'h, '_, impl ResourceTracker>,
+        vm: &mut VM<'h, '_, impl ResourceTracker>,
         heap_ids: &mut AHashSet<HeapId>,
     ) -> RunResult<()> {
         f.write_str("dict_values([")?;
-        write_dict_values_contents(f, self.get(vm.heap).dict(vm.heap), vm, heap_ids)?;
+        write_dict_values_contents(f, &self.dict(vm), vm, heap_ids)?;
         Ok(f.write_str("])")?)
     }
 }
@@ -464,39 +473,55 @@ fn dict_items_eq_set_like<'h, T: ResourceTracker>(
 }
 
 /// Writes the repr payload for a keys view without its outer wrapper.
-fn write_dict_keys_contents(
+fn write_dict_keys_contents<'h>(
     f: &mut impl Write,
-    dict: &Dict,
-    vm: &VM<'_, '_, impl ResourceTracker>,
+    dict: &HeapRead<'h, Dict>,
+    vm: &mut VM<'h, '_, impl ResourceTracker>,
     heap_ids: &mut AHashSet<HeapId>,
 ) -> RunResult<()> {
-    let mut first = true;
-    for (key, _) in dict {
-        if !first {
+    let len = dict.get(vm.heap).len();
+    for i in 0..len {
+        if i > 0 {
             f.write_str(", ")?;
         }
-        first = false;
+        let key = dict
+            .get(vm.heap)
+            .key_at(i)
+            .expect("index in range")
+            .clone_with_heap(vm.heap);
+        defer_drop!(key, vm);
         key.py_repr_fmt(f, vm, heap_ids)?;
     }
     Ok(())
 }
 
 /// Writes the repr payload for an items view without its outer wrapper.
-fn write_dict_items_contents(
+fn write_dict_items_contents<'h>(
     f: &mut impl Write,
-    dict: &Dict,
-    vm: &VM<'_, '_, impl ResourceTracker>,
+    dict: &HeapRead<'h, Dict>,
+    vm: &mut VM<'h, '_, impl ResourceTracker>,
     heap_ids: &mut AHashSet<HeapId>,
 ) -> RunResult<()> {
-    let mut first = true;
-    for (key, value) in dict {
-        if !first {
+    let len = dict.get(vm.heap).len();
+    for i in 0..len {
+        if i > 0 {
             f.write_str(", ")?;
         }
-        first = false;
         f.write_char('(')?;
+        let key = dict
+            .get(vm.heap)
+            .key_at(i)
+            .expect("index in range")
+            .clone_with_heap(vm.heap);
+        defer_drop!(key, vm);
         key.py_repr_fmt(f, vm, heap_ids)?;
         f.write_str(", ")?;
+        let value = dict
+            .get(vm.heap)
+            .value_at(i)
+            .expect("index in range")
+            .clone_with_heap(vm.heap);
+        defer_drop!(value, vm);
         value.py_repr_fmt(f, vm, heap_ids)?;
         f.write_char(')')?;
     }
@@ -504,18 +529,23 @@ fn write_dict_items_contents(
 }
 
 /// Writes the repr payload for a values view without its outer wrapper.
-fn write_dict_values_contents(
+fn write_dict_values_contents<'h>(
     f: &mut impl Write,
-    dict: &Dict,
-    vm: &VM<'_, '_, impl ResourceTracker>,
+    dict: &HeapRead<'h, Dict>,
+    vm: &mut VM<'h, '_, impl ResourceTracker>,
     heap_ids: &mut AHashSet<HeapId>,
 ) -> RunResult<()> {
-    let mut first = true;
-    for (_, value) in dict {
-        if !first {
+    let len = dict.get(vm.heap).len();
+    for i in 0..len {
+        if i > 0 {
             f.write_str(", ")?;
         }
-        first = false;
+        let value = dict
+            .get(vm.heap)
+            .value_at(i)
+            .expect("index in range")
+            .clone_with_heap(vm.heap);
+        defer_drop!(value, vm);
         value.py_repr_fmt(f, vm, heap_ids)?;
     }
     Ok(())

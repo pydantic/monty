@@ -315,7 +315,7 @@ impl PyTrait<'_> for Value {
     fn py_repr_fmt(
         &self,
         f: &mut impl Write,
-        vm: &VM<'_, '_, impl ResourceTracker>,
+        vm: &mut VM<'_, '_, impl ResourceTracker>,
         heap_ids: &mut AHashSet<HeapId>,
     ) -> RunResult<()> {
         let interns = vm.interns;
@@ -370,7 +370,7 @@ impl PyTrait<'_> for Value {
         }
     }
 
-    fn py_str(&self, vm: &VM<'_, '_, impl ResourceTracker>) -> RunResult<Cow<'static, str>> {
+    fn py_str(&self, vm: &mut VM<'_, '_, impl ResourceTracker>) -> RunResult<Cow<'static, str>> {
         match self {
             Self::InternString(string_id) => Ok(vm.interns.get_str(*string_id).to_owned().into()),
             Self::Ref(id) => vm.heap.read(*id).py_str(vm),
@@ -2073,7 +2073,7 @@ impl Marker {
     /// System markers have special repr formats ("<stdout>", "<stderr>").
     /// `typing.Union` uses `<class 'typing.Union'>` format (matching CPython).
     /// Other typing markers are prefixed with "typing." (e.g., "typing.Any").
-    fn py_repr_fmt(self, f: &mut impl Write) -> fmt::Result {
+    pub(crate) fn py_repr_fmt(self, f: &mut impl Write) -> fmt::Result {
         let s: &'static str = self.0.into();
         match self.0 {
             StaticStrings::Stdout => f.write_str("<stdout>")?,

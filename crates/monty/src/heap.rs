@@ -15,7 +15,7 @@ use smallvec::SmallVec;
 // Re-export items moved to `heap_traits` so that `crate::heap::HeapGuard` etc. continue
 // to resolve (used by the `defer_drop!` macros and throughout the codebase).
 pub(crate) use crate::heap_data::HeapData;
-pub(crate) use crate::heap_traits::{ContainsHeap, DropWithHeap, HeapGuard, HeapItem, ImmutableHeapGuard};
+pub(crate) use crate::heap_traits::{ContainsHeap, DropWithHeap, HeapGuard, HeapItem};
 use crate::{
     asyncio::{Coroutine, GatherFuture, GatherItem},
     bytecode::VM,
@@ -619,13 +619,8 @@ impl<'de> serde::Deserialize<'de> for UnsafeHeapData {
 /// Zero-size token returned by [`Heap::incr_recursion_depth`].
 ///
 /// Represents one level of recursion depth that must be released when the
-/// recursive operation completes. There are two ways to release the token:
-///
-/// - **`DropWithHeap`** — for `&mut Heap` paths (e.g., `py_eq`). Compatible with
-///   `defer_drop!` and `HeapGuard` for automatic cleanup on all code paths.
-/// - **`DropWithImmutableHeap`** — for `&Heap` paths (e.g., `py_repr_fmt`) where
-///   only shared access is available. Compatible with `defer_drop_immutable_heap!`
-///   and `ImmutableHeapGuard`.
+/// recursive operation completes. Released via [`DropWithHeap`] — compatible
+/// with [`defer_drop!`] and [`HeapGuard`] for automatic cleanup on all code paths.
 #[derive(Debug)]
 pub(crate) struct RecursionToken(());
 
@@ -788,8 +783,8 @@ impl<T: ResourceTracker> Heap<T> {
     /// Increments the recursion depth and checks the limit via the `ResourceTracker`.
     ///
     /// Returns `Ok(RecursionToken)` if within limits. The caller must ensure the
-    /// token is released on all code paths — either via `defer_drop!`/`HeapGuard`
-    /// (for `&mut Heap` contexts) or via `RecursionToken::release()` (for `&Heap` contexts).
+    /// token is released on all code paths — typically via `defer_drop!` or `HeapGuard`,
+    /// which call [`DropWithHeap::drop_with_heap`] on the token.
     ///
     /// Returns `Err(ResourceError::Recursion)` if the limit would be exceeded.
     #[inline]
@@ -798,16 +793,6 @@ impl<T: ResourceTracker> Heap<T> {
         self.tracker.check_recursion_depth(depth)?;
         self.recursion_depth.set(depth + 1);
         Ok(RecursionToken(()))
-    }
-
-    /// Increments the recursion depth, returning `Some(RecursionToken)` if within
-    /// limits, or `None` if the limit is exceeded.
-    ///
-    /// Use this in repr-like contexts where exceeding the limit should produce
-    /// truncated output (e.g., `[...]`) rather than an error.
-    #[inline]
-    pub fn incr_recursion_depth_for_repr(&self) -> Option<RecursionToken> {
-        self.incr_recursion_depth().ok()
     }
 
     /// Decrements the recursion depth.

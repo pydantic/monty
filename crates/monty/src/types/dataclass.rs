@@ -220,15 +220,14 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Dataclass> {
     fn py_repr_fmt(
         &self,
         f: &mut impl Write,
-        vm: &VM<'h, '_, impl ResourceTracker>,
+        vm: &mut VM<'h, '_, impl ResourceTracker>,
         heap_ids: &mut AHashSet<HeapId>,
     ) -> RunResult<()> {
         // Check depth limit before recursing
-        let heap = &*vm.heap;
-        let Some(token) = heap.incr_recursion_depth_for_repr() else {
+        let Ok(token) = vm.heap.incr_recursion_depth() else {
             return Ok(f.write_str("...")?);
         };
-        crate::defer_drop_immutable_heap!(token, heap);
+        defer_drop!(token, vm);
 
         // Format: ClassName(field1=value1, field2=value2, ...)
         // Only declared fields are shown, not dynamically added attributes
@@ -236,19 +235,21 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Dataclass> {
         f.write_str(dc.name(vm.interns))?;
         f.write_char('(')?;
 
-        let mut first = true;
-        for field_name in &dc.field_names {
-            if !first {
+        let field_count = self.get(vm.heap).field_names.len();
+        let interns = vm.interns;
+        for i in 0..field_count {
+            if i > 0 {
                 f.write_str(", ")?;
             }
-            first = false;
-
             // Write field name
+            let field_name = &self.get(vm.heap).field_names[i];
             f.write_str(field_name)?;
             f.write_char('=')?;
 
             // Look up value in attrs
-            if let Some(value) = self.get(vm.heap).attrs.get_by_str(field_name, heap, vm.interns) {
+            if let Some(value) = self.get(vm.heap).attrs.get_by_str(field_name, vm.heap, interns) {
+                let value = value.clone_with_heap(vm.heap);
+                defer_drop!(value, vm);
                 value.py_repr_fmt(f, vm, heap_ids)?;
             } else {
                 // Field not found - shouldn't happen for well-formed dataclasses

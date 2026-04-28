@@ -260,7 +260,7 @@ impl fmt::Display for FormatError {
 pub fn format_with_spec(
     value: &Value,
     spec: &ParsedFormatSpec,
-    vm: &VM<'_, '_, impl ResourceTracker>,
+    vm: &mut VM<'_, '_, impl ResourceTracker>,
 ) -> Result<String, RunError> {
     let value_type = value.py_type(vm);
 
