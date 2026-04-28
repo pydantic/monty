@@ -1323,8 +1323,6 @@ fn get_storage_from_set_operand(
         HeapReadOutput::FrozenSet(set) => Ok(Some(SetStorage::from_entries(
             set.get(vm.heap).0.clone_entries(vm.heap),
         ))),
-        // Dict views are `Copy` — matched value is not borrowed from the heap,
-        // so `to_set` can take `&mut VM` below without conflict.
         HeapReadOutput::DictKeysView(view) => {
             let Set(storage) = view.to_set(vm)?;
             Ok(Some(storage))
