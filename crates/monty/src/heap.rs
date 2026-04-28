@@ -2,7 +2,7 @@ use std::{
     cell::{Cell, UnsafeCell},
     fmt,
     marker::PhantomData,
-    mem::{ManuallyDrop, size_of},
+    mem::ManuallyDrop,
     ops::{Deref, DerefMut},
     ptr::{self, NonNull},
     vec,
@@ -10,7 +10,6 @@ use std::{
 
 use bytemuck::TransparentWrapper;
 use serde::ser::SerializeStruct;
-use smallvec::SmallVec;
 
 // Re-export items moved to `heap_traits` so that `crate::heap::HeapGuard` etc. continue
 // to resolve (used by the `defer_drop!` macros and throughout the codebase).
@@ -19,19 +18,20 @@ pub(crate) use crate::heap_traits::{ContainsHeap, DropWithHeap, HeapGuard, HeapI
 use crate::{
     asyncio::{Coroutine, GatherFuture, GatherItem},
     bytecode::VM,
-    exception_private::{ExcType, RunResult, SimpleException},
+    exception_private::SimpleException,
     heap_data::{CellValue, Closure, FunctionDefaults},
-    resource::{ResourceError, ResourceTracker, check_mult_size, check_repeat_size},
+    resource::{ResourceError, ResourceTracker},
     types::{
         Bytes, Dataclass, Dict, DictItemsView, DictKeysView, DictValuesView, FrozenSet, List, LongInt, Module,
-        MontyIter, NamedTuple, Path, PyTrait, Range, ReMatch, RePattern, Set, Slice, Str, TimeZone, Tuple,
-        allocate_tuple, date, datetime, timedelta, timezone,
+        MontyIter, NamedTuple, Path, PyTrait, Range, ReMatch, RePattern, Set, Slice, Str, TimeZone, Tuple, date,
+        datetime, timedelta, timezone,
     },
     value::Value,
 };
 
-mod heap_entries;
-use heap_entries::HeapEntries;
+mod free_list;
+mod stable_heap;
+use stable_heap::StableHeap;
 
 /// Unique identifier for values stored inside the heap arena.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
@@ -180,7 +180,7 @@ impl<'a, T: ResourceTracker> HeapReader<'a, T> {
         }
 
         let heap = self.heap.heap();
-        let entry = heap.entries.get(id.index());
+        let entry = heap.entries.get(id);
 
         // Increment the reader count for this entry. The corresponding decrement
         // happens in `HeapRead::drop`.
@@ -573,7 +573,7 @@ pub struct HeapEntry {
     /// The payload data
     data: UnsafeHeapData,
     /// Current hashing status / cached hash value
-    hash_state: HashState,
+    hash_state: Cell<HashState>,
 }
 
 /// This wrapper containing `UnsafeCell` exists to allow for data inside of `HeapValue`
@@ -651,7 +651,7 @@ impl DropWithHeap for RecursionToken {
 #[derive(Debug)]
 pub(crate) struct Heap<T: ResourceTracker> {
     /// Paged storage for heap entries with integrated free list.
-    entries: HeapEntries,
+    entries: StableHeap<HeapEntry>,
     /// Resource tracker for enforcing limits and scheduling GC.
     tracker: T,
     /// True if reference cycles may exist. Set when a container stores a Ref,
@@ -689,7 +689,7 @@ impl<'de, T: ResourceTracker + serde::Deserialize<'de>> serde::Deserialize<'de> 
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         #[derive(serde::Deserialize)]
         struct HeapFields<T> {
-            entries: HeapEntries,
+            entries: StableHeap<HeapEntry>,
             tracker: T,
             may_have_cycles: bool,
             allocations_since_gc: u32,
@@ -727,7 +727,7 @@ impl<T: ResourceTracker> Heap<T> {
     /// Use this to create heaps with custom resource limits or GC scheduling.
     pub fn new(capacity: usize, tracker: T) -> Self {
         let this = Self {
-            entries: HeapEntries::with_capacity(capacity),
+            entries: StableHeap::with_capacity(capacity),
             tracker,
             may_have_cycles: Cell::new(false),
             allocations_since_gc: Cell::new(0),
@@ -741,7 +741,7 @@ impl<T: ResourceTracker> Heap<T> {
             refcount: Cell::new(1),
             readers: Cell::new(0),
             data: UnsafeHeapData(UnsafeCell::new(empty_tuple)),
-            hash_state,
+            hash_state: Cell::new(hash_state),
         };
 
         let empty_tuple = this.entries.allocate(new_entry);
@@ -891,7 +891,7 @@ impl<T: ResourceTracker> Heap<T> {
             refcount: Cell::new(1),
             readers: Cell::new(0),
             data: UnsafeHeapData(UnsafeCell::new(data)),
-            hash_state,
+            hash_state: Cell::new(hash_state),
         };
 
         let id = self.entries.allocate(new_entry);
@@ -935,7 +935,7 @@ impl<T: ResourceTracker> Heap<T> {
     /// # Panics
     /// Panics if the value ID is invalid or the value has already been freed.
     pub fn inc_ref(&self, id: HeapId) {
-        let value = self.entries.get(id.index());
+        let value = self.entries.get(id);
         value.refcount.update(|r| r + 1);
     }
 
@@ -952,27 +952,27 @@ impl<T: ResourceTracker> Heap<T> {
         let mut current_id = id;
         let mut work_stack = Vec::new();
         loop {
-            let slot = self.entries.get_mut(current_id.index());
-            let entry = slot.as_mut().expect("Heap::dec_ref: object already freed");
-            if entry.refcount.get() > 1 {
-                entry.refcount.update(|r| r - 1);
+            let mut entry = self
+                .entries
+                .entry(current_id)
+                .expect("Heap::dec_ref: value already freed");
+            let heap_entry = entry.get();
+            if heap_entry.refcount.get() > 1 {
+                heap_entry.refcount.update(|r| r - 1);
             } else {
                 assert!(
-                    entry.readers.get() == 0,
+                    heap_entry.readers.get() == 0,
                     "Heap::dec_ref: cannot free HeapId({}) with {} active reader(s)",
                     current_id.index(),
-                    entry.readers.get(),
+                    heap_entry.readers.get(),
                 );
-                if let Some(mut value) = slot.take() {
-                    // refcount == 1, free the value and add slot to free list for reuse
-                    self.entries.free(current_id);
+                let mut value = entry.free();
 
-                    // Notify tracker of freed memory
-                    self.tracker.on_free(|| value.data.0.get_mut().py_estimate_size());
+                // Notify tracker of freed memory
+                self.tracker.on_free(|| value.data.0.get_mut().py_estimate_size());
 
-                    // Collect child IDs and push onto work stack for iterative processing
-                    py_dec_ref_ids_for_data(value.data.0.get_mut(), &mut work_stack);
-                }
+                // Collect child IDs and push onto work stack for iterative processing
+                py_dec_ref_ids_for_data(value.data.0.get_mut(), &mut work_stack);
             }
 
             let Some(next_id) = work_stack.pop() else {
@@ -989,7 +989,7 @@ impl<T: ResourceTracker> Heap<T> {
     /// or the data is currently borrowed via `with_entry_mut`/`call_attr`.
     #[must_use]
     pub fn get(&self, id: HeapId) -> &HeapData {
-        let data = &self.entries.get(id.index()).data;
+        let data = &self.entries.get(id).data;
         // SAFETY: (DH) no mutable references into `HeapData` is possible while the heap is borrowed
         unsafe { &*data.0.get() }
     }
@@ -1009,14 +1009,9 @@ impl<T: ResourceTracker> Heap<T> {
         //
         // That only matters before the hash is cached, so not the worst thing for performance.
 
-        let entry = vm
-            .heap
-            .entries
-            .get_mut(id.index())
-            .as_mut()
-            .expect("Heap::get_or_compute_hash: object already freed");
+        let entry = vm.heap.entries.get(id);
 
-        match entry.hash_state {
+        match entry.hash_state.get() {
             HashState::Unhashable => return Ok(None),
             HashState::Cached(hash) => return Ok(Some(hash)),
             HashState::Unknown => {}
@@ -1025,16 +1020,11 @@ impl<T: ResourceTracker> Heap<T> {
         let hash = vm.heap.read(id).py_hash(id, vm)?;
 
         // Cache the result
-        let entry = vm
-            .heap
-            .entries
-            .get_mut(id.index())
-            .as_mut()
-            .expect("Heap::get_or_compute_hash: object freed during compute");
-        entry.hash_state = match hash {
+        let entry = vm.heap.entries.get(id);
+        entry.hash_state.set(match hash {
             Some(value) => HashState::Cached(value),
             None => HashState::Unhashable,
-        };
+        });
         Ok(hash)
     }
 
@@ -1047,7 +1037,7 @@ impl<T: ResourceTracker> Heap<T> {
     #[must_use]
     #[cfg(feature = "ref-count-return")]
     pub fn get_refcount(&self, id: HeapId) -> usize {
-        self.entries.get(id.index()).refcount.get()
+        self.entries.get(id).refcount.get()
     }
 
     /// Returns the number of live (non-freed) values on the heap.
@@ -1062,117 +1052,6 @@ impl<T: ResourceTracker> Heap<T> {
     pub fn entry_count(&self) -> usize {
         // Skip index 0 which is the empty tuple singleton
         self.entries.iter().skip(1).count()
-    }
-
-    /// Multiplies a heap-allocated value by an `i64`.
-    ///
-    /// If `id` refers to a `LongInt`, performs integer multiplication with a size
-    /// pre-check. Otherwise, treats `id` as a sequence and `int_val` as the repeat
-    /// count. This avoids multiple `heap.get()` calls by looking up the data once.
-    ///
-    /// Returns `Ok(None)` if the heap entry is neither a LongInt nor a sequence type.
-    pub fn mult_ref_by_i64(&mut self, id: HeapId, int_val: i64) -> RunResult<Option<Value>> {
-        match self.get(id) {
-            HeapData::LongInt(li) => {
-                check_mult_size(li.bits(), i64_bits(int_val), &self.tracker)?;
-                let result = LongInt::new(li.inner().clone()) * LongInt::from(int_val);
-                Ok(Some(result.into_value(self)?))
-            }
-            HeapData::TimeDelta(td) => {
-                let total = timedelta::total_microseconds(td)
-                    .checked_mul(i128::from(int_val))
-                    .ok_or_else(|| {
-                        SimpleException::new_msg(ExcType::OverflowError, "timedelta multiplication overflow")
-                    })?;
-                let delta = timedelta::from_total_microseconds(total)?;
-                Ok(Some(Value::Ref(self.allocate(HeapData::TimeDelta(delta))?)))
-            }
-            _ => {
-                let count = i64_to_repeat_count(int_val)?;
-                self.mult_sequence(id, count)
-            }
-        }
-    }
-
-    /// Multiplies two heap-allocated values.
-    ///
-    /// Returns Ok(None) for unsupported type combinations.
-    pub fn mult_heap_values(&mut self, id1: HeapId, id2: HeapId) -> RunResult<Option<Value>> {
-        let (seq_id, count) = match (self.get(id1), self.get(id2)) {
-            (HeapData::LongInt(a), HeapData::LongInt(b)) => {
-                check_mult_size(a.bits(), b.bits(), &self.tracker)?;
-                let result = LongInt::new(a.inner() * b.inner());
-                return Ok(Some(result.into_value(self)?));
-            }
-            (HeapData::LongInt(li), _) => {
-                let count = longint_to_repeat_count(li)?;
-                (id2, count)
-            }
-            (_, HeapData::LongInt(li)) => {
-                let count = longint_to_repeat_count(li)?;
-                (id1, count)
-            }
-            _ => return Ok(None),
-        };
-
-        self.mult_sequence(seq_id, count)
-    }
-
-    /// Multiplies (repeats) a sequence by an integer count.
-    ///
-    /// This method handles sequence repetition for Python's `*` operator when applied
-    /// to sequences (str, bytes, list, tuple). It creates a new heap-allocated sequence
-    /// with the elements repeated `count` times.
-    ///
-    /// # Arguments
-    /// * `id` - HeapId of the sequence to repeat
-    /// * `count` - Number of times to repeat (0 returns empty sequence)
-    ///
-    /// # Returns
-    /// * `Ok(Some(Value))` - The new repeated sequence
-    /// * `Ok(None)` - If the heap entry is not a sequence type
-    /// * `Err` - If allocation fails due to resource limits
-    pub fn mult_sequence(&mut self, id: HeapId, count: usize) -> RunResult<Option<Value>> {
-        match self.get(id) {
-            HeapData::Str(s) => {
-                check_repeat_size(s.len(), count, &self.tracker)?;
-                Ok(Some(Value::Ref(
-                    self.allocate(HeapData::Str(s.as_str().repeat(count).into()))?,
-                )))
-            }
-            HeapData::Bytes(b) => {
-                check_repeat_size(b.len(), count, &self.tracker)?;
-                Ok(Some(Value::Ref(
-                    self.allocate(HeapData::Bytes(b.as_slice().repeat(count).into()))?,
-                )))
-            }
-            HeapData::List(list) => {
-                check_repeat_size(list.len().saturating_mul(size_of::<Value>()), count, &self.tracker)?;
-                let mut result = Vec::with_capacity(list.as_slice().len() * count);
-                for _ in 0..count {
-                    result.extend(list.as_slice().iter().map(|v| v.clone_with_heap(self)));
-                    self.check_time()?;
-                }
-                Ok(Some(Value::Ref(self.allocate(HeapData::List(List::new(result)))?)))
-            }
-            HeapData::Tuple(tuple) => {
-                if count == 0 {
-                    return Ok(Some(self.get_empty_tuple()));
-                }
-                check_repeat_size(
-                    tuple.as_slice().len().saturating_mul(size_of::<Value>()),
-                    count,
-                    &self.tracker,
-                )?;
-                let mut result = SmallVec::with_capacity(tuple.as_slice().len() * count);
-                for _ in 0..count {
-                    result.extend(tuple.as_slice().iter().map(|v| v.clone_with_heap(self)));
-                    self.check_time()?;
-                }
-                Ok(Some(allocate_tuple(result, self)?))
-            }
-            _ => Ok(None),
-        }
     }
 
     /// Returns whether garbage collection should run.
@@ -1236,9 +1115,7 @@ impl<T: ResourceTracker> Heap<T> {
             reachable[idx] = true;
 
             // Add children to work list
-            if let Some(entry) = self.entries.get_mut(idx) {
-                collect_child_ids(entry.data.0.get_mut(), &mut work_list);
-            }
+            collect_child_ids(self.get(id), &mut work_list);
         }
 
         let mut released_child_refs = Vec::new();
@@ -1249,6 +1126,14 @@ impl<T: ResourceTracker> Heap<T> {
             if reachable[id] {
                 return true;
             }
+
+            debug_assert_eq!(
+                value.readers.get(),
+                0,
+                "Heap::collect_garbage: unreachable HeapId({}) has {} active reader(s)",
+                id,
+                value.readers.get()
+            );
 
             // This entry is unreachable - free it
             // Notify tracker of freed memory
@@ -1272,7 +1157,7 @@ impl<T: ResourceTracker> Heap<T> {
         for released_id in released_child_refs {
             // refcount cannot underflow because these were all reachable values, so they could
             // be reached from outside of cycles
-            self.entries.get(released_id.index()).refcount.update(|r| r - 1);
+            self.entries.get(released_id).refcount.update(|r| r - 1);
         }
 
         // Reset cycle flag after GC - cycles have been collected
@@ -1281,41 +1166,15 @@ impl<T: ResourceTracker> Heap<T> {
     }
 }
 
-/// Computes the number of significant bits in an `i64`.
-///
-/// Returns 0 for zero, otherwise returns the position of the highest set bit
-/// plus one. Uses unsigned absolute value to handle negative numbers correctly.
-fn i64_bits(value: i64) -> u64 {
-    if value == 0 {
-        0
-    } else {
-        u64::from(64 - value.unsigned_abs().leading_zeros())
-    }
-}
-
-/// Converts an `i64` repeat count to `usize` for sequence repetition.
-///
-/// Returns 0 for negative values (Python treats negative repeat counts as 0).
-/// Returns `OverflowError` if the value exceeds `usize::MAX`.
-fn i64_to_repeat_count(n: i64) -> RunResult<usize> {
-    if n <= 0 {
-        Ok(0)
-    } else {
-        usize::try_from(n).map_err(|_| ExcType::overflow_repeat_count().into())
-    }
-}
-
-/// Converts a `LongInt` repeat count to `usize` for sequence repetition.
-///
-/// Returns 0 for negative values (Python treats negative repeat counts as 0).
-/// Returns `OverflowError` if the value exceeds `usize::MAX`.
-fn longint_to_repeat_count(li: &LongInt) -> RunResult<usize> {
-    if li.is_negative() {
-        Ok(0)
-    } else if let Some(count) = li.to_usize() {
-        Ok(count)
-    } else {
-        Err(ExcType::overflow_repeat_count().into())
+// With `memory-model-checks` enabled, need to manually clean up the heap to avoid the
+// bookkeeping causing panics at shutdown.
+#[cfg(feature = "memory-model-checks")]
+impl<T: ResourceTracker> Drop for Heap<T> {
+    fn drop(&mut self) {
+        self.entries.retain(|_, value| {
+            py_dec_ref_ids_for_data(value.data.0.get_mut(), &mut Vec::new());
+            false
+        });
     }
 }
 

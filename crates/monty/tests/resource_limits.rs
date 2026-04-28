@@ -1027,9 +1027,9 @@ fn list_mult_within_limit() {
 
 /// Test that `int * bytes` (int on left) is also rejected by the pre-check.
 ///
-/// This catches a bug where interned bytes/strings bypassed the `mult_sequence`
-/// pre-check because `py_mult` handled `InternBytes * Int` inline without
-/// checking resource limits.
+/// This catches a bug where interned bytes/strings bypassed the sequence-repetition
+/// pre-check in `py_mult` because the `InternBytes * Int` arm was handled inline
+/// without checking resource limits.
 #[test]
 fn int_times_bytes_memory_limit() {
     // int on left side: 1000000 * b'x' = 1MB
@@ -1253,8 +1253,8 @@ sorted(x)
 
 /// Test that `[1] * 10_000_000` (list repetition) respects the time limit.
 ///
-/// The `mult_sequence()` copy loop now calls `heap.check_time()` on each
-/// repetition to prevent large sequence multiplications from bypassing timeout.
+/// The sequence-repetition copy loop in `py_mult` now calls `heap.check_time()`
+/// on each repetition to prevent large sequence multiplications from bypassing timeout.
 #[test]
 #[cfg_attr(
     feature = "memory-model-checks",
@@ -1266,8 +1266,8 @@ fn timeout_in_list_repetition() {
 
 /// Test that `(1,) * 10_000_000` (tuple repetition) respects the time limit.
 ///
-/// Same as list repetition but for tuples — both paths in `mult_sequence()`
-/// now check the time limit.
+/// Same as list repetition but for tuples — both sequence-repetition paths in
+/// `py_mult` now check the time limit.
 #[test]
 #[cfg_attr(
     feature = "memory-model-checks",
