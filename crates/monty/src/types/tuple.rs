@@ -332,6 +332,17 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Tuple> {
         heap_ids: &mut AHashSet<HeapId>,
     ) -> RunResult<()> {
         let len = self.get(vm.heap).as_slice().len();
+
+        if len == 1 {
+            // Special case for single-element tuples: include the trailing comma
+            let item = self.clone_item(0, vm);
+            defer_drop!(item, vm);
+            write!(f, "(")?;
+            item.py_repr_fmt(f, vm, heap_ids)?;
+            write!(f, ",)")?;
+            return Ok(());
+        }
+
         repr_sequence_fmt('(', ')', len, |heap, i| &self.get(heap).as_slice()[i], f, vm, heap_ids)
     }
 }
