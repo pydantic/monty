@@ -14,7 +14,7 @@ use crate::{
     args::ArgValues,
     asyncio::{CallId, TaskId},
     exception_private::RunError,
-    heap::{ContainsHeap, DropWithHeap, Heap, HeapData, HeapId},
+    heap::{ContainsHeap, DropWithHeap, Heap, HeapData, HeapId, HeapReadOutput, HeapReader},
     intern::FunctionId,
     parse::CodeRange,
     resource::ResourceTracker,
@@ -583,24 +583,54 @@ impl Scheduler {
     }
 
     /// Fails the task blocked on a specific CallId with an error.
-    ///
-    /// Used when an external function returns an error via `FutureSnapshot::resume`.
-    /// Uses `pending_calls` for O(1) lookup of the blocked task.
-    ///
-    /// # Returns
-    /// A tuple of (task_id, gather_id) if a task was found,
-    /// or None if no task was blocked on this CallId.
-    /// Callers should get siblings from `GatherFuture.task_ids` if gather_id is Some.
-    pub fn fail_for_call(
-        &mut self,
-        call_id: CallId,
-        error: RunError,
-        heap: &mut Heap<impl ResourceTracker>,
-    ) -> Option<(TaskId, Option<HeapId>)> {
+    pub fn fail_for_call(&mut self, call_id: CallId, error: RunError, heap: &mut HeapReader<'_, impl ResourceTracker>) {
         // Get blocked task from pending_calls (O(1) lookup)
-        let task_id = self.pending_calls.remove(&call_id)?.creator_task;
-        let gather_id = self.fail_task(task_id, error, heap);
-        Some((task_id, gather_id))
+        let task_id = self
+            .pending_calls
+            .remove(&call_id)
+            .expect("attempted to fail nonexistent task")
+            .creator_task;
+
+        // Check if a gather is waiting on this CallId
+        if let Some((gather_id, _result_idx)) = self.take_gather_waiter(call_id) {
+            self.remove_pending_call(call_id);
+
+            // Get the gather's waiter, task_ids, and OTHER pending calls
+            // We need to remove all pending calls for this gather from gather_waiters
+            // before we dec_ref the gather, otherwise subsequent errors for the same
+            // gather would try to access a freed heap object.
+            // Use get_mut and take to avoid allocations - gather is being destroyed anyway.
+            let HeapReadOutput::GatherFuture(mut gather) = heap.read(gather_id) else {
+                panic!("gather_id doesn't point to a GatherFuture")
+            };
+            let gather_mut = gather.get_mut(heap);
+            let mut other_pending_calls = mem::take(&mut gather_mut.pending_calls);
+            other_pending_calls.retain(|&cid| cid != call_id);
+            let Some(waiter_id) = gather_mut.waiter else {
+                panic!("gather has no waiter task")
+            };
+            let task_ids = mem::take(&mut gather_mut.task_ids);
+            // Drop the HeapRead before operations that may free heap objects
+            drop(gather);
+
+            // Remove all other pending calls for this gather from gather_waiters and pending_calls
+            // This prevents subsequent errors from trying to access the freed gather
+            for other_call_id in other_pending_calls {
+                self.take_gather_waiter(other_call_id);
+                self.remove_pending_call(other_call_id);
+            }
+
+            // Cancel all sibling tasks in the gather
+            for sibling_id in task_ids {
+                self.cancel_task(sibling_id, heap);
+            }
+
+            // Fail the waiter task (the task that awaited the gather)
+            self.fail_task(waiter_id, error, heap);
+        } else {
+            // Not a gather-related error - just fail the blocked task.
+            self.fail_task(task_id, error, heap);
+        }
     }
 
     /// Returns the task that created a specific pending call.

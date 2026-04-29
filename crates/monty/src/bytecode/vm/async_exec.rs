@@ -322,13 +322,15 @@ impl<'h, T: ResourceTracker> VM<'h, '_, T> {
                 };
                 let task_ids = mem::take(&mut gather.get_mut(self.heap).task_ids);
                 let results = mem::take(&mut gather.get_mut(self.heap).results);
+                let mut results_guard = HeapGuard::new(results, self);
+                let this = results_guard.heap();
 
                 // Drop the reader before any operations that may free heap objects (e.g., cancelling tasks)
                 drop(gather);
 
                 // First check if any task failed
                 let failed_task = task_ids.iter().find_map(|tid| {
-                    let task = self.scheduler.get_task_mut(*tid);
+                    let task = this.scheduler.get_task_mut(*tid);
                     match &task.state {
                         TaskState::Failed(_) => {
                             let TaskState::Failed(err) = mem::replace(&mut task.state, TaskState::Ready) else {
@@ -342,19 +344,20 @@ impl<'h, T: ResourceTracker> VM<'h, '_, T> {
 
                 // Release every spawned task
                 for tid in task_ids {
-                    self.scheduler.cancel_task(tid, self.heap);
+                    this.scheduler.cancel_task(tid, this.heap);
                 }
 
                 // Make waiter ready but don't add to ready queue since we're switching directly to it
-                self.scheduler.set_state(waiter_id, TaskState::Ready, self.heap);
-                self.cleanup_current_task();
-                self.scheduler.set_current_task(Some(waiter_id));
-                self.load_or_init_task(waiter_id)?;
+                this.scheduler.set_state(waiter_id, TaskState::Ready, this.heap);
+                this.cleanup_current_task();
+                this.scheduler.set_current_task(Some(waiter_id));
+                this.load_or_init_task(waiter_id)?;
 
                 return if let Some(err) = failed_task {
                     // Error is raised in waiter context
                     Err(err)
                 } else {
+                    let results = results_guard.into_inner();
                     let results: Vec<Value> = results
                         .into_iter()
                         .map(|r| r.expect("all results should be filled when gather is complete"))
@@ -658,7 +661,9 @@ impl<'h, T: ResourceTracker> VM<'h, '_, T> {
                 });
                 if all_tasks_complete {
                     // Gather is complete - build result and push to waiter's stack
-                    let waiter = gather.get(self.heap).waiter;
+                    let Some(waiter_id) = gather.get(self.heap).waiter else {
+                        panic!("gather future has no waiter when gather is complete")
+                    };
                     let task_ids = mem::take(&mut gather.get_mut(self.heap).task_ids);
                     // Steal results from gather using mem::take - avoids refcount dance
                     // (copy + inc_ref + dec_ref on gather drop). Since gather is being
@@ -675,27 +680,25 @@ impl<'h, T: ResourceTracker> VM<'h, '_, T> {
                         self.scheduler.cancel_task(tid, self.heap);
                     }
 
-                    if let Some(waiter_id) = waiter {
-                        let list_id = self.heap.allocate(HeapData::List(List::new(results)))?;
+                    let list_id = self.heap.allocate(HeapData::List(List::new(results)))?;
 
-                        // Push result onto waiter's stack and mark as ready.
-                        // Check if the waiter's context is currently in the VM (frames not saved
-                        // to the task). This is the case when the waiter is the current task
-                        // and hasn't been switched away from (e.g., external-only gather).
-                        let waiter_context_in_vm =
-                            self.scheduler.current_task_id() == Some(waiter_id) && !self.frames.is_empty();
+                    // Push result onto waiter's stack and mark as ready.
+                    // Check if the waiter's context is currently in the VM (frames not saved
+                    // to the task). This is the case when the waiter is the current task
+                    // and hasn't been switched away from (e.g., external-only gather).
+                    let waiter_context_in_vm =
+                        self.scheduler.current_task_id() == Some(waiter_id) && !self.frames.is_empty();
 
-                        if waiter_context_in_vm {
-                            // Waiter's frames are in the VM - push directly onto VM stack
-                            self.stack.push(Value::Ref(list_id));
-                            // Mark as ready but don't add to ready_queue.
-                            self.scheduler.set_state(waiter_id, TaskState::Ready, self.heap);
-                        } else {
-                            // Waiter's context is saved in the task (either spawned task,
-                            // or main task that was saved when switching to spawned tasks)
-                            self.scheduler.get_task_mut(waiter_id).stack.push(Value::Ref(list_id));
-                            self.scheduler.make_ready(waiter_id, self.heap);
-                        }
+                    if waiter_context_in_vm {
+                        // Waiter's frames are in the VM - push directly onto VM stack
+                        self.stack.push(Value::Ref(list_id));
+                        // Mark as ready but don't add to ready_queue.
+                        self.scheduler.set_state(waiter_id, TaskState::Ready, self.heap);
+                    } else {
+                        // Waiter's context is saved in the task (either spawned task,
+                        // or main task that was saved when switching to spawned tasks)
+                        self.scheduler.get_task_mut(waiter_id).stack.push(Value::Ref(list_id));
+                        self.scheduler.make_ready(waiter_id, self.heap);
                     }
                 }
             }
@@ -715,61 +718,7 @@ impl<'h, T: ResourceTracker> VM<'h, '_, T> {
     pub fn fail_future(&mut self, call_id: u32, error: RunError) {
         let call_id = CallId::new(call_id);
 
-        // Check if a gather is waiting on this CallId
-        if let Some((gather_id, _result_idx)) = self.scheduler.take_gather_waiter(call_id) {
-            // Remove from pending_calls so it doesn't appear in get_pending_call_ids()
-            // (fail_for_call handles this for the non-gather case)
-            self.scheduler.remove_pending_call(call_id);
-
-            // Get the gather's waiter, task_ids, and OTHER pending calls
-            // We need to remove all pending calls for this gather from gather_waiters
-            // before we dec_ref the gather, otherwise subsequent errors for the same
-            // gather would try to access a freed heap object.
-            // Use get_mut and take to avoid allocations - gather is being destroyed anyway.
-            let HeapReadOutput::GatherFuture(mut gather) = self.heap.read(gather_id) else {
-                panic!("gather_id doesn't point to a GatherFuture")
-            };
-            let gather_mut = gather.get_mut(self.heap);
-            let mut other_pending_calls = mem::take(&mut gather_mut.pending_calls);
-            other_pending_calls.retain(|&cid| cid != call_id);
-            let waiter = gather_mut.waiter;
-            let task_ids = mem::take(&mut gather_mut.task_ids);
-            // Drop the HeapRead before operations that may free heap objects
-            drop(gather);
-
-            // Remove all other pending calls for this gather from gather_waiters and pending_calls
-            // This prevents subsequent errors from trying to access the freed gather
-            for other_call_id in other_pending_calls {
-                self.scheduler.take_gather_waiter(other_call_id);
-                self.scheduler.remove_pending_call(other_call_id);
-            }
-
-            // Cancel all sibling tasks in the gather
-            for sibling_id in task_ids {
-                self.scheduler.cancel_task(sibling_id, self.heap);
-            }
-
-            // Fail the waiter task (the task that awaited the gather)
-            if let Some(waiter_id) = waiter {
-                self.scheduler.fail_task(waiter_id, error, self.heap);
-            }
-        } else if let Some((task_id, Some(gid))) = self.scheduler.fail_for_call(call_id, error, self.heap) {
-            // Original path: task is directly BlockedOnCall and part of a gather
-            // Take task_ids from GatherFuture - gather is being destroyed anyway
-            let HeapReadOutput::GatherFuture(mut gather) = self.heap.read(gid) else {
-                panic!("gather_id doesn't point to a GatherFuture")
-            };
-            let task_ids = mem::take(&mut gather.get_mut(self.heap).task_ids);
-            // Drop the HeapRead before cancel_task which may free heap objects
-            drop(gather);
-
-            // Cancel sibling tasks (filter out self and already-finished tasks)
-            for sibling_id in task_ids {
-                if sibling_id != task_id && !self.scheduler.get_task(sibling_id).is_finished() {
-                    self.scheduler.cancel_task(sibling_id, self.heap);
-                }
-            }
-        }
+        self.scheduler.fail_for_call(call_id, error, self.heap);
     }
 
     /// Adds pending call data for an external function call.
