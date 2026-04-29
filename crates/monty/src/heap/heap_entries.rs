@@ -141,6 +141,11 @@ impl HeapEntries {
     }
 
     /// Retain only values satisfying the predicate, freeing the rest.
+    ///
+    /// Currently used only by the `retain_then_allocate_reuses_freed_slots`
+    /// unit test; the production cycle collector frees White entries one by
+    /// one through [`Self::free`] instead.
+    #[cfg(test)]
     pub fn retain(&mut self, mut predicate: impl FnMut(usize, &mut HeapEntry) -> bool) {
         let len = self.len.get();
         for i in 0..len {
@@ -349,7 +354,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        heap::{HashState, HeapData, UnsafeHeapData},
+        heap::{CcColor, HashState, HeapData, UnsafeHeapData},
         types::Str,
     };
 
@@ -359,6 +364,7 @@ mod tests {
             data: UnsafeHeapData(UnsafeCell::new(HeapData::Str(Str::new(label.to_owned())))),
             readers: Cell::new(0),
             hash_state: HashState::Unknown,
+            color: Cell::new(CcColor::Black),
         }
     }
 

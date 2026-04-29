@@ -234,8 +234,8 @@ impl From<ResourceError> for RunError {
 /// as well as schedule periodic garbage collection.
 ///
 /// All implementations should eventually trigger garbage collection to handle
-/// reference cycles. The `should_gc` method controls *frequency*, not whether
-/// GC runs at all.
+/// reference cycles. [`gc_interval`](Self::gc_interval) controls *frequency*,
+/// not whether GC runs at all.
 pub trait ResourceTracker: fmt::Debug {
     /// Called before each heap allocation.
     ///
@@ -295,10 +295,17 @@ pub trait ResourceTracker: fmt::Debug {
     /// * `additional_bytes` - Approximate additional memory consumed by the growth
     fn on_grow(&self, additional_bytes: usize) -> Result<(), ResourceError>;
 
-    /// Returns the configured garbage collection interval, in GC-tracked allocations.
+    /// Returns the configured cycle-collection trigger threshold.
     ///
-    /// Implementations that do not expose a configurable GC interval should return `None`,
-    /// which tells the heap to use its built-in default scheduling threshold.
+    /// Trial deletion seeds work from `dec_ref` events: every GC-tracked entry
+    /// whose refcount drops to a non-zero value becomes a Purple candidate.
+    /// The collector runs once the number of pending candidates reaches this
+    /// threshold. Smaller values trade higher collector overhead for tighter
+    /// bounds on transient cycle-induced heap growth.
+    ///
+    /// Implementations that do not expose a configurable interval should
+    /// return `None`, which tells the heap to use its built-in default
+    /// threshold.
     fn gc_interval(&self) -> Option<usize>;
 }
 
@@ -369,7 +376,8 @@ pub struct ResourceLimits {
     pub max_duration: Option<Duration>,
     /// Maximum heap memory in bytes (approximate).
     pub max_memory: Option<usize>,
-    /// Run garbage collection every N allocations.
+    /// Run cycle collection once N Purple candidates have accumulated. See
+    /// [`ResourceTracker::gc_interval`] for the precise unit.
     pub gc_interval: Option<usize>,
     /// Maximum recursion depth (function call stack depth).
     pub max_recursion_depth: Option<usize>,
@@ -409,7 +417,9 @@ impl ResourceLimits {
         self
     }
 
-    /// Sets the garbage collection interval (run GC every N allocations).
+    /// Sets the cycle-collection trigger threshold: run cycle collection once
+    /// `interval` Purple candidates have accumulated. See
+    /// [`ResourceTracker::gc_interval`] for the precise semantics.
     #[must_use]
     pub fn gc_interval(mut self, interval: usize) -> Self {
         self.gc_interval = Some(interval);

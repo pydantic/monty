@@ -54,6 +54,41 @@ impl HeapId {
 /// The empty tuple is a singleton which is allocated at startup.
 const EMPTY_TUPLE_ID: HeapId = HeapId(0);
 
+/// Color tag used by the trial-deletion cycle collector (Bacon–Rajan, ECOOP 2001).
+///
+/// Each [`HeapEntry`] carries a color that represents what the collector currently
+/// believes about the entry. Outside of a running collection, every reachable
+/// entry is either [`Black`](Self::Black) (live, not part of any suspected cycle)
+/// or [`Purple`](Self::Purple) (a candidate cycle root discovered by `dec_ref`,
+/// awaiting investigation). [`Gray`](Self::Gray) and [`White`](Self::White) are
+/// transient states used only during a [`Heap::collect_cycles`] call.
+///
+/// The encoding fits in a single byte and is serialized as part of every
+/// [`HeapEntry`]: a snapshot taken with cycles pending must round-trip through
+/// serde so the entries stay enrolled as candidates after restore (otherwise a
+/// graph that becomes garbage just before snapshot would leak permanently).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+pub(crate) enum CcColor {
+    /// Live and not currently a cycle candidate. Default state for every newly
+    /// allocated entry.
+    #[default]
+    Black,
+    /// Visited by `MarkGray` during a collection cycle. Children's refcounts
+    /// have been provisionally decremented; a later `Scan` pass decides whether
+    /// to resurrect (back to [`Black`](Self::Black)) or condemn
+    /// ([`White`](Self::White)) the entry.
+    Gray,
+    /// Confirmed unreachable by the current collection: every reference into
+    /// the entry comes from another condemned entry. `CollectWhite` will free
+    /// it. Only seen mid-collection.
+    White,
+    /// Candidate cycle root. Set by `dec_ref` whenever a GC-tracked entry's
+    /// refcount drops to a non-zero value — the only situation in which a new
+    /// reference cycle can become unreachable. The collector seeds its work
+    /// from every entry currently flagged Purple.
+    Purple,
+}
+
 /// Hash caching state stored alongside each heap entry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 enum HashState {
@@ -354,7 +389,9 @@ impl<'a, T: ?Sized> HeapRead<'a, T> {
         //    paged storage (`HeapEntries`) where each page is never reallocated or moved.
         //  - The HeapRead holds a strong reader reference (via the `readers` counter in
         //    `HeapValue`) which guarantees the entry will never be freed by `dec_ref`
-        //    or `collect_garbage` while this `HeapRead` exists.
+        //    or `collect_cycles` while this `HeapRead` exists. The cycle collector's
+        //    `Scan` phase treats `readers > 0` as an external reference and resurrects
+        //    the entry to Black instead of condemning it as White.
         //  - The type of the `HeapValue` can never change once allocated. This is
         //    guaranteed by never exposing `&mut HeapData` outside of this module.
         //  - The borrow on `HeapReader` guarantees that there are no mutable borrows on any heap
@@ -554,11 +591,11 @@ pub(crate) use heap_read_ref_as_field_mut;
 /// caches the computed hash. Mutable types (List, Dict) start as `Unhashable` and
 /// will raise TypeError if used as dict keys.
 ///
-/// The `data` field is an Option to support temporary borrowing: when methods like
-/// `with_entry_mut` or `call_attr` need mutable access to both the data and the heap,
-/// they can `.take()` the data out (leaving `None`), pass `&mut Heap` to user code,
-/// then restore the data. This avoids unsafe code while keeping `refcount` accessible
-/// for `inc_ref`/`dec_ref` during the borrow.
+/// The `color` field encodes the entry's state for the trial-deletion cycle
+/// collector (see [`CcColor`]). Outside of a running collection, every live
+/// entry is either Black (uninteresting) or Purple (a cycle-root candidate
+/// queued for investigation). Cell-typed so `dec_ref` can flip Black → Purple
+/// behind a shared reference to the entry.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct HeapEntry {
     refcount: Cell<usize>,
@@ -574,6 +611,14 @@ pub struct HeapEntry {
     data: UnsafeHeapData,
     /// Current hashing status / cached hash value
     hash_state: HashState,
+    /// Cycle-collector color. See [`CcColor`].
+    ///
+    /// Round-trips through serde because a snapshot taken between bytecode
+    /// instructions can capture entries in the [`Purple`](CcColor::Purple)
+    /// pending-collection state; dropping the color on restore would leak
+    /// any cycle that became unreachable just before the snapshot.
+    #[serde(default)]
+    color: Cell<CcColor>,
 }
 
 /// This wrapper containing `UnsafeCell` exists to allow for data inside of `HeapValue`
@@ -643,6 +688,12 @@ impl DropWithHeap for RecursionToken {
 /// When an value is freed via `dec_ref`, its slot ID is added to the free list.
 /// New allocations pop from the free list when available, otherwise append.
 ///
+/// Cycle collection uses Bacon–Rajan trial deletion: candidates come from
+/// `dec_ref` (every container whose refcount drops to a non-zero value is
+/// flagged [`Purple`](CcColor::Purple)), so the VM does not enumerate live
+/// roots — refcount math itself proves reachability and values held only on
+/// the Rust stack are correctly preserved by their non-zero refcount.
+///
 /// Generic over `T: ResourceTracker` to support different resource tracking strategies.
 /// When `T = NoLimitTracker` (the default), all resource checks compile away to no-ops.
 ///
@@ -654,13 +705,17 @@ pub(crate) struct Heap<T: ResourceTracker> {
     entries: HeapEntries,
     /// Resource tracker for enforcing limits and scheduling GC.
     tracker: T,
-    /// True if reference cycles may exist. Set when a container stores a Ref,
-    /// cleared after GC completes. When false, GC can skip mark-sweep entirely.
-    /// Uses `Cell` for interior mutability so that `allocate(&self)` can set this flag.
-    may_have_cycles: Cell<bool>,
-    /// Number of GC applicable allocations since the last GC.
-    /// Uses `Cell` for interior mutability so that `allocate(&self)` can increment.
-    allocations_since_gc: Cell<u32>,
+    /// Number of entries currently flagged [`Purple`](CcColor::Purple) — i.e.,
+    /// suspected cycle roots awaiting collection.
+    ///
+    /// Acts as both the GC trigger (the collector runs once this exceeds the
+    /// configured interval) and an early-out: when zero, `collect_cycles` has
+    /// no candidates and skips its heap walk entirely. Reset to zero at the
+    /// end of every successful collection.
+    ///
+    /// All `dec_ref` paths that mutate this counter take `&mut self`, so a
+    /// plain `usize` is sufficient (no interior mutability needed).
+    purple_count: usize,
     /// Current recursion depth — incremented on function calls and data structure traversals.
     ///
     /// Uses `Cell` for interior mutability so that methods with only `&Heap`
@@ -675,11 +730,10 @@ pub(crate) struct Heap<T: ResourceTracker> {
 
 impl<T: ResourceTracker + serde::Serialize> serde::Serialize for Heap<T> {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let mut state = serializer.serialize_struct("Heap", 5)?;
+        let mut state = serializer.serialize_struct("Heap", 4)?;
         state.serialize_field("entries", &self.entries)?;
         state.serialize_field("tracker", &self.tracker)?;
-        state.serialize_field("may_have_cycles", &self.may_have_cycles.get())?;
-        state.serialize_field("allocations_since_gc", &self.allocations_since_gc.get())?;
+        state.serialize_field("purple_count", &self.purple_count)?;
         state.serialize_field("timezone_utc", &self.timezone_utc)?;
         state.end()
     }
@@ -691,8 +745,8 @@ impl<'de, T: ResourceTracker + serde::Deserialize<'de>> serde::Deserialize<'de> 
         struct HeapFields<T> {
             entries: HeapEntries,
             tracker: T,
-            may_have_cycles: bool,
-            allocations_since_gc: u32,
+            #[serde(default)]
+            purple_count: usize,
             #[serde(default)]
             timezone_utc: Option<HeapId>,
         }
@@ -700,21 +754,24 @@ impl<'de, T: ResourceTracker + serde::Deserialize<'de>> serde::Deserialize<'de> 
         Ok(Self {
             entries: fields.entries,
             tracker: fields.tracker,
-            may_have_cycles: Cell::new(fields.may_have_cycles),
-            allocations_since_gc: Cell::new(fields.allocations_since_gc),
+            purple_count: fields.purple_count,
             recursion_depth: Cell::new(0),
             timezone_utc: fields.timezone_utc,
         })
     }
 }
 
-/// Default GC interval - run GC every 100,000 applicable allocations unless
-/// the configured resource tracker overrides it.
+/// Default cycle-collection trigger threshold, in [`Purple`](CcColor::Purple)
+/// candidate count.
 ///
-/// This is intentionally infrequent to minimize overhead while still
-/// eventually collecting reference cycles.
+/// The collector skips its heap walk entirely when no candidates exist, so
+/// this knob only sets how many candidates are allowed to accumulate before a
+/// trace is forced. The default of 100 000 trades a small steady-state heap
+/// growth (bounded by the threshold) for very low collector overhead in
+/// allocation-heavy programs.
 ///
-/// When the `memory-model-checks` feature is enabled, this is reduced to 1 to stress-test GC behavior.
+/// When the `memory-model-checks` feature is enabled, this is reduced to 1 to
+/// stress-test GC behavior on every cycle candidate.
 const DEFAULT_GC_INTERVAL: usize = if cfg!(feature = "memory-model-checks") {
     1
 } else {
@@ -729,12 +786,16 @@ impl<T: ResourceTracker> Heap<T> {
         let this = Self {
             entries: HeapEntries::with_capacity(capacity),
             tracker,
-            may_have_cycles: Cell::new(false),
-            allocations_since_gc: Cell::new(0),
+            purple_count: 0,
             recursion_depth: Cell::new(0),
             timezone_utc: None,
         };
 
+        // The empty-tuple singleton starts with refcount = 1 — that single ref *is* the
+        // permanent heap-owned reference. `get_empty_tuple` bumps the refcount on each
+        // hand-out so callers can `dec_ref` normally; the heap-owned ref keeps the
+        // singleton's rc ≥ 1 forever, which is why trial deletion needs no special-case
+        // rooting for it (a debug_assert in `dec_ref` enforces the invariant).
         let empty_tuple = HeapData::Tuple(Tuple::default());
         let hash_state = HashState::for_data(&empty_tuple);
         let new_entry = HeapEntry {
@@ -742,6 +803,7 @@ impl<T: ResourceTracker> Heap<T> {
             readers: Cell::new(0),
             data: UnsafeHeapData(UnsafeCell::new(empty_tuple)),
             hash_state,
+            color: Cell::new(CcColor::Black),
         };
 
         let empty_tuple = this.entries.allocate(new_entry);
@@ -844,23 +906,15 @@ impl<T: ResourceTracker> Heap<T> {
         self.entries.len()
     }
 
-    /// Marks that a reference cycle may exist in the heap.
+    /// Returns the number of cycle-collection candidates currently flagged
+    /// [`Purple`](CcColor::Purple).
     ///
-    /// Call this when a container (list, dict, tuple, etc.) stores a reference
-    /// to another heap object. This enables the GC to skip mark-sweep entirely
-    /// when no cycles are possible.
-    #[inline]
-    pub fn mark_potential_cycle(&self) {
-        self.may_have_cycles.set(true);
-    }
-
-    /// Returns the number of GC-tracked allocations since the last garbage collection.
-    ///
-    /// This counter increments for each allocation of a GC-tracked type (List, Dict, etc.)
-    /// and resets to 0 when `collect_garbage` runs. Useful for testing GC behavior.
+    /// Used by `run_ref_counts` to expose the trial-deletion trigger metric to
+    /// tests. Counts seeds, not heap entries — see [`Heap::collect_cycles`] for
+    /// how candidates are produced and consumed.
     #[cfg(feature = "ref-count-return")]
-    pub fn get_allocations_since_gc(&self) -> u32 {
-        self.allocations_since_gc.get()
+    pub fn get_purple_count(&self) -> usize {
+        self.purple_count
     }
 
     /// Allocates a new heap entry.
@@ -868,23 +922,11 @@ impl<T: ResourceTracker> Heap<T> {
     /// Returns `Err(ResourceError)` if allocation would exceed configured limits.
     /// Use this when you need to handle resource limit errors gracefully.
     ///
-    /// Only GC-tracked types (containers that can hold references) count toward the
-    /// GC allocation threshold. Leaf types like strings don't trigger GC.
-    ///
-    /// When allocating a container that contains heap references, marks potential
-    /// cycles to enable garbage collection.
+    /// Trial deletion does not need to be told that a cycle *might* now exist —
+    /// the collector seeds itself from `dec_ref` events. Allocation simply hands
+    /// the entry back with the default [`Black`](CcColor::Black) color.
     pub fn allocate(&self, data: HeapData) -> Result<HeapId, ResourceError> {
         self.tracker.on_allocate(|| data.py_estimate_size())?;
-        if data.is_gc_tracked() {
-            self.allocations_since_gc
-                .set(self.allocations_since_gc.get().wrapping_add(1));
-            // Mark potential cycles if this container has heap references.
-            // This is essential for types like Dict where setitem doesn't call
-            // mark_potential_cycle() - the allocation is the only place to detect refs.
-            if data.has_refs() {
-                self.may_have_cycles.set(true);
-            }
-        }
 
         let hash_state = HashState::for_data(&data);
         let new_entry = HeapEntry {
@@ -892,6 +934,7 @@ impl<T: ResourceTracker> Heap<T> {
             readers: Cell::new(0),
             data: UnsafeHeapData(UnsafeCell::new(data)),
             hash_state,
+            color: Cell::new(CcColor::Black),
         };
 
         let id = self.entries.allocate(new_entry);
@@ -945,6 +988,14 @@ impl<T: ResourceTracker> Heap<T> {
     /// when freeing deeply nested containers (e.g., a list nested 10,000 levels deep).
     /// This is analogous to CPython's "trashcan" mechanism for safe deallocation.
     ///
+    /// Implements the candidate-enrollment side of Bacon–Rajan trial deletion: any
+    /// GC-tracked entry whose refcount survives the decrement gets flagged
+    /// [`Purple`](CcColor::Purple), so the next [`collect_cycles`](Self::collect_cycles)
+    /// can investigate it. Entries that drop to zero are freed immediately on the
+    /// existing fast path; if such an entry was Purple, the heap-wide
+    /// `purple_count` is rebalanced so it stays in sync with the actual number
+    /// of Purple entries.
+    ///
     /// # Panics
     /// Panics if the value ID is invalid, the value has already been freed, or
     /// the refcount would reach zero while active `HeapRead` readers exist.
@@ -956,13 +1007,35 @@ impl<T: ResourceTracker> Heap<T> {
             let entry = slot.as_mut().expect("Heap::dec_ref: object already freed");
             if entry.refcount.get() > 1 {
                 entry.refcount.update(|r| r - 1);
+
+                // SAFETY: only `&mut self` paths reach here, so reading the
+                // discriminant of `data` cannot race with mutation.
+                let is_gc_tracked = unsafe { &*entry.data.0.get() }.is_gc_tracked();
+                if is_gc_tracked && entry.color.get() != CcColor::Purple {
+                    // The refcount survived — this entry is the only place a
+                    // newly unreachable cycle could now be hiding. Flag it as
+                    // a candidate for the next `collect_cycles`.
+                    entry.color.set(CcColor::Purple);
+                    self.purple_count += 1;
+                }
             } else {
+                debug_assert!(
+                    current_id != EMPTY_TUPLE_ID,
+                    "Heap::dec_ref: empty-tuple singleton's heap-owned refcount must never reach zero",
+                );
                 assert!(
                     entry.readers.get() == 0,
                     "Heap::dec_ref: cannot free HeapId({}) with {} active reader(s)",
                     current_id.index(),
                     entry.readers.get(),
                 );
+                // If the entry was a pending cycle candidate, decrement
+                // `purple_count` to reflect that it is leaving the heap before
+                // the collector reaches it.
+                if entry.color.get() == CcColor::Purple {
+                    debug_assert!(self.purple_count > 0);
+                    self.purple_count -= 1;
+                }
                 if let Some(mut value) = slot.take() {
                     // refcount == 1, free the value and add slot to free list for reuse
                     self.entries.free(current_id);
@@ -1175,92 +1248,256 @@ impl<T: ResourceTracker> Heap<T> {
         }
     }
 
-    /// Returns whether garbage collection should run.
+    /// Returns whether cycle collection should run.
     ///
-    /// True if reference cycles count exist in the heap
-    /// and the number of allocations since the last GC exceeds the interval.
+    /// True when the number of pending [`Purple`](CcColor::Purple) candidates
+    /// has reached the configured trigger threshold. Trial deletion's work is
+    /// proportional to the candidate count, so this metric is a direct signal
+    /// of how much the collector has to do — unlike the old "any
+    /// allocation, any cycle" overestimate it replaces.
     #[inline]
     pub fn should_gc(&self) -> bool {
         let interval = self.tracker.gc_interval().unwrap_or(DEFAULT_GC_INTERVAL);
-        self.may_have_cycles.get() && (self.allocations_since_gc.get() as usize) >= interval
+        self.purple_count >= interval
     }
 
-    /// Runs mark-sweep garbage collection to free unreachable cycles.
+    /// Runs Bacon–Rajan trial-deletion cycle collection.
     ///
-    /// This method takes a closure that provides an iterator of root HeapIds
-    /// (typically from the VM's globals and stack). It marks all reachable objects starting
-    /// from roots, then sweeps (frees) any unreachable objects.
+    /// Walks every entry currently flagged [`Purple`](CcColor::Purple) (the
+    /// candidates accumulated by `dec_ref`) and frees any references that turn
+    /// out to live entirely inside an unreachable cycle. Refcount math itself
+    /// proves liveness — entries reachable from outside the candidate set
+    /// (including those held only on the Rust stack and those with active
+    /// `HeapRead` readers) survive automatically because their refcount or
+    /// reader count remains non-zero — so no explicit root walk is required.
     ///
-    /// This is necessary because reference counting alone cannot free cycles
-    /// where objects reference each other but are unreachable from the program.
+    /// Phases:
+    ///
+    /// 1. **`MarkRoots`** — single linear pass over `entries` that finds
+    ///    Purple entries, runs `MarkGray` on each, and collects the resulting
+    ///    seed list. Purple entries reached transitively by an earlier seed's
+    ///    `MarkGray` turn Gray and are correctly skipped, so each cycle root
+    ///    is only seeded once.
+    /// 2. **`Scan`** — for each seed, decide whether the subtree is alive
+    ///    (`s.refcount > 0 || s.readers > 0`, resurrect to Black) or condemned
+    ///    (mark White and recurse).
+    /// 3. **`CollectWhite`** — free White entries iteratively. Child
+    ///    refcounts were already balanced by `MarkGray`/`ScanBlack`, so this
+    ///    phase does **not** call `dec_ref` on children — it only walks them
+    ///    to free transitively.
+    ///
+    /// All four phases iterate via explicit work stacks instead of recursion
+    /// (the textbook formulation is recursive); a 10 000-deep nested cycle
+    /// must collect without a Rust stack overflow.
     ///
     /// # Caller Responsibility
-    /// The caller should check `should_gc()` before calling this method.
-    /// If no cycles are possible, the caller can skip GC entirely.
-    ///
-    /// # Arguments
-    /// * `root` - HeapIds that are roots
-    pub fn collect_garbage(&mut self, root: Vec<HeapId>) {
-        // Mark phase: collect all reachable IDs using BFS
-        // Use Vec<bool> instead of HashSet for O(1) operations without hashing overhead
-        let mut reachable: Vec<bool> = vec![false; self.entries.len()];
-        let mut work_list: Vec<HeapId> = root;
-
-        // Need to always visit the empty tuple to avoid it being freed.
-        work_list.push(EMPTY_TUPLE_ID);
-
-        // Add the timezone UTC singleton as a GC root if it exists
-        if let Some(utc_id) = self.timezone_utc {
-            work_list.push(utc_id);
+    /// The caller should check [`should_gc`](Self::should_gc) before calling
+    /// this method. With `purple_count == 0` the function returns immediately
+    /// without touching the heap.
+    pub fn collect_cycles(&mut self) {
+        if self.purple_count == 0 {
+            return;
         }
 
-        // TODO: any value which lives on the C stack should also be a root, this is
-        // a structural deficiency which needs fixing. Will cause bugs and panics
-        // all over the place plus strange execution.
-        for (id, entry) in self.entries.iter() {
-            if entry.readers.get() > 0 {
-                // This entry is currently borrowed as a HeapRead, use it as a root
-                //
-                // This is a poor substitute for proper stack roots but at least
-                // ensures that the invariant in `HeapRead` is not violated.
-                work_list.push(id);
+        let seeds = self.mark_roots();
+        self.scan_roots(&seeds);
+        self.collect_roots(&seeds);
+
+        // After `MarkRoots` no Purple entries remain in the heap; confirm the
+        // invariant and zero the counter so the next `dec_ref` event re-seeds
+        // from a clean baseline.
+        self.purple_count = 0;
+    }
+
+    /// `MarkRoots`: linear pass over entries, run `MarkGray` on each Purple
+    /// seed, return the seed list.
+    ///
+    /// Purple entries reached transitively by an earlier seed's `MarkGray`
+    /// flip to Gray before the iterator visits them, so the
+    /// `entry.color.get() == Purple` check naturally dedupes — the dominator
+    /// seed handles the whole subtree.
+    fn mark_roots(&mut self) -> Vec<HeapId> {
+        // Collect Purple seed IDs without holding a borrow on `self` so we can
+        // mutate refcounts during the subsequent `mark_gray` pass.
+        let seeds: Vec<HeapId> = self
+            .entries
+            .iter()
+            .filter_map(|(id, entry)| (entry.color.get() == CcColor::Purple).then_some(id))
+            .collect();
+
+        let mut filtered_seeds = Vec::with_capacity(seeds.len());
+        let mut work_stack = Vec::new();
+        for id in seeds {
+            // Re-check Purple: an earlier seed's `mark_gray` may have already
+            // visited this entry and flipped its color to Gray.
+            let entry = self.entries.get(id.index());
+            if entry.color.get() == CcColor::Purple {
+                self.mark_gray(id, &mut work_stack);
+                filtered_seeds.push(id);
             }
         }
+        filtered_seeds
+    }
 
-        while let Some(id) = work_list.pop() {
-            let idx = id.index();
-            // Skip if out of bounds or already visited
-            if idx >= reachable.len() || reachable[idx] {
+    /// `MarkGray` (iterative): paint `s` and its transitive children Gray,
+    /// decrementing each child's refcount once per traversal edge.
+    ///
+    /// After this completes for every seed, every Gray entry's refcount equals
+    /// the count of *external* references into it (refs originating outside
+    /// the candidate subgraph). `Scan` uses that property to decide
+    /// alive/condemned.
+    fn mark_gray(&self, start: HeapId, work_stack: &mut Vec<HeapId>) {
+        debug_assert!(work_stack.is_empty());
+        work_stack.push(start);
+        while let Some(id) = work_stack.pop() {
+            let entry = self.entries.get(id.index());
+            if entry.color.get() == CcColor::Gray {
                 continue;
             }
-            reachable[idx] = true;
-
-            // Add children to work list
-            if let Some(entry) = self.entries.get_mut(idx) {
-                collect_child_ids(entry.data.0.get_mut(), &mut work_list);
+            entry.color.set(CcColor::Gray);
+            // SAFETY: read-only walk of children via `&Heap`. No mutable
+            // borrows into heap data exist on this code path.
+            let data = unsafe { &*entry.data.0.get() };
+            let len_before = work_stack.len();
+            collect_child_ids(data, work_stack);
+            // Decrement each newly enqueued child's refcount. The recursion
+            // (push back onto the stack) is what gives us the depth-first
+            // descent; the rc-- happens *before* we recurse, matching the
+            // textbook Bacon–Rajan ordering.
+            for child_id in &work_stack[len_before..] {
+                let child = self.entries.get(child_id.index());
+                debug_assert!(
+                    child.refcount.get() > 0,
+                    "mark_gray: child refcount underflow at HeapId({})",
+                    child_id.index(),
+                );
+                child.refcount.update(|r| r - 1);
             }
         }
+    }
 
-        // Sweep phase: free unreachable values
-        self.entries.retain(|id, value| {
-            if reachable[id] {
-                return true;
+    /// `Scan` over every seed: resurrect alive subtrees (Black) or condemn
+    /// dead ones (White).
+    fn scan_roots(&mut self, seeds: &[HeapId]) {
+        let mut work_stack = Vec::new();
+        for &seed in seeds {
+            self.scan(seed, &mut work_stack);
+        }
+    }
+
+    /// `Scan` (iterative): each Gray entry is either resurrected via
+    /// `ScanBlack` (external reference exists — refcount > 0 or active
+    /// `HeapRead` reader) or painted White and its Gray children recursed.
+    fn scan(&self, start: HeapId, work_stack: &mut Vec<HeapId>) {
+        debug_assert!(work_stack.is_empty());
+        work_stack.push(start);
+        while let Some(id) = work_stack.pop() {
+            let entry = self.entries.get(id.index());
+            if entry.color.get() != CcColor::Gray {
+                continue;
             }
+            if entry.refcount.get() > 0 || entry.readers.get() > 0 {
+                // External reference exists (either a refcount we couldn't
+                // account for inside the candidate set, or a live `HeapRead`
+                // pointing into the entry). Resurrect this entry and its
+                // transitive Gray children back to Black.
+                self.scan_black(id);
+            } else {
+                entry.color.set(CcColor::White);
+                // SAFETY: read-only walk of children.
+                let data = unsafe { &*entry.data.0.get() };
+                collect_child_ids(data, work_stack);
+            }
+        }
+    }
 
-            // This entry is unreachable - free it
-            // Notify tracker of freed memory
+    /// `ScanBlack` (iterative): resurrect a subtree by re-incrementing
+    /// children's refcounts that `MarkGray` previously decremented, restoring
+    /// the heap to the state it would have had if no cycle was suspected.
+    ///
+    /// Children's refcounts are incremented once per traversal edge — even if
+    /// the child is already Black — so multi-edge graphs (a child reachable
+    /// from two parents in the resurrected subtree) balance the matching
+    /// per-edge decrements `MarkGray` performed. Recursion only descends into
+    /// non-Black children so each entry is processed at most once.
+    fn scan_black(&self, start: HeapId) {
+        let mut work_stack = vec![start];
+        let mut children_buf = Vec::new();
+        while let Some(id) = work_stack.pop() {
+            let entry = self.entries.get(id.index());
+            if entry.color.get() == CcColor::Black {
+                // Already processed via another edge — skip to avoid
+                // re-walking children (which would double-increment
+                // grandchildren).
+                continue;
+            }
+            entry.color.set(CcColor::Black);
+            // SAFETY: read-only walk of children.
+            let data = unsafe { &*entry.data.0.get() };
+            children_buf.clear();
+            collect_child_ids(data, &mut children_buf);
+            for &child_id in &children_buf {
+                let child = self.entries.get(child_id.index());
+                child.refcount.update(|r| r + 1);
+                if child.color.get() != CcColor::Black {
+                    work_stack.push(child_id);
+                }
+            }
+        }
+    }
+
+    /// `CollectRoots` + `CollectWhite` (iterative): free every entry painted
+    /// White by `Scan`, walking transitively through White children.
+    ///
+    /// Refcounts are not adjusted on children: `MarkGray` decremented and
+    /// `ScanBlack` re-incremented in balance, so any Black child of a White
+    /// parent has its rc already correctly reflecting the lost edge from the
+    /// freed parent. Children that are themselves White are about to be freed
+    /// and don't need rc adjustments either.
+    ///
+    /// `py_dec_ref_ids_for_data` is used to walk children — under
+    /// `memory-model-checks` it has the side effect of marking child
+    /// `Value::Ref`s as `Dereferenced`, which prevents the panic that would
+    /// otherwise fire when the freed entry's data is dropped with live
+    /// `Value::Ref` payloads.
+    fn collect_roots(&mut self, seeds: &[HeapId]) {
+        let mut work_stack = Vec::new();
+        for &seed in seeds {
+            self.collect_white(seed, &mut work_stack);
+        }
+    }
+
+    fn collect_white(&mut self, start: HeapId, work_stack: &mut Vec<HeapId>) {
+        debug_assert!(work_stack.is_empty());
+        work_stack.push(start);
+        while let Some(id) = work_stack.pop() {
+            let slot = self.entries.get_mut(id.index());
+            let Some(entry) = slot.as_ref() else {
+                // Already freed via another seed's traversal — ignore.
+                continue;
+            };
+            if entry.color.get() != CcColor::White {
+                // Either resurrected to Black by `Scan` or never visited
+                // (still Black/Gray from somewhere). Don't free.
+                continue;
+            }
+            debug_assert!(
+                entry.readers.get() == 0,
+                "collect_white: cannot free HeapId({}) with {} active reader(s)",
+                id.index(),
+                entry.readers.get(),
+            );
+            let mut value = slot.take().expect("collect_white: slot vanished after color check");
+            self.entries.free(id);
             self.tracker.on_free(|| value.data.0.get_mut().py_estimate_size());
-
-            // Mark Values as Dereferenced when memory-model-checks is enabled
-            #[cfg(feature = "memory-model-checks")]
-            py_dec_ref_ids_for_data(value.data.0.get_mut(), &mut Vec::new());
-
-            false
-        });
-
-        // Reset cycle flag after GC - cycles have been collected
-        self.may_have_cycles.set(false);
-        self.allocations_since_gc.set(0);
+            // Walk children, marking child `Value::Ref`s as `Dereferenced`
+            // under `memory-model-checks` so dropping the freed entry's data
+            // doesn't trip a Drop-panic on a live `Value::Ref` payload. The
+            // pushed child IDs feed the work stack so we recursively walk
+            // White grandchildren — we do *not* `dec_ref` these children
+            // (`MarkGray`/`ScanBlack` already balanced their refcounts).
+            py_dec_ref_ids_for_data(value.data.0.get_mut(), work_stack);
+        }
     }
 }
 
@@ -1520,3 +1757,183 @@ fn py_dec_ref_ids_for_data(data: &mut HeapData, stack: &mut Vec<HeapId>) {
 #[cfg(heap_reader_compile_fail_tests)]
 #[path = "../tests/heap_reader_compile_fail_cases/cases.rs"]
 mod heap_reader_compile_fail_cases;
+
+/// Cycle-collector unit tests.
+///
+/// These live inside `heap.rs` (rather than under `crates/monty/tests/`)
+/// because they need to manipulate `Heap` state directly — building a cycle
+/// without a VM, peeking at `purple_count`, and rooting an entry only via a
+/// Rust local binding. The integration-test surface only exposes
+/// Python-driven execution and cannot construct any of those scenarios.
+///
+/// In particular, the [`cstack_only_cycle_survives_collection`] test
+/// validates the central correctness property of trial deletion: a heap
+/// entry referenced *only* from the Rust C stack survives a cycle
+/// collection because its non-zero refcount is itself proof of liveness.
+/// That behavior was previously a known soundness gap of the explicit-roots
+/// mark–sweep collector.
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{resource::NoLimitTracker, types::List, value::Value};
+
+    /// Returns whether a heap entry is still allocated at `id`.
+    fn is_alive<T: ResourceTracker>(heap: &Heap<T>, id: HeapId) -> bool {
+        heap.entries.iter().any(|(other, _)| other == id)
+    }
+
+    /// Allocates a self-referencing one-element list and returns its id.
+    ///
+    /// The list's items become `[Value::Ref(id)]` and its refcount is bumped
+    /// to 2 to reflect both the caller's ref and the new self-reference.
+    fn alloc_self_cycle(heap: &Heap<NoLimitTracker>) -> HeapId {
+        let id = heap.allocate(HeapData::List(List::new(vec![]))).unwrap();
+        let entry = heap
+            .entries
+            .iter()
+            .find(|(other, _)| *other == id)
+            .map(|(_, e)| e)
+            .expect("entry just allocated");
+        // SAFETY: no other borrow into this entry's data exists during the test.
+        let data = unsafe { &mut *entry.data.0.get() };
+        match data {
+            HeapData::List(list) => {
+                list.set_contains_refs();
+                list.as_vec_mut().push(Value::Ref(id));
+            }
+            _ => unreachable!(),
+        }
+        // The new self-pointer counts as one more reference into the entry.
+        heap.inc_ref(id);
+        id
+    }
+
+    #[test]
+    fn cstack_only_cycle_survives_collection() {
+        let mut heap = Heap::<NoLimitTracker>::new(16, NoLimitTracker);
+        let id = alloc_self_cycle(&heap);
+
+        // Simulate a Rust-side local `Value::Ref` binding by bumping the
+        // refcount one extra time. Then `dec_ref` it back down to 2 — that
+        // dec_ref is what enrolls the entry as a Purple candidate, mimicking
+        // exactly the situation under the old GC where the local binding
+        // wasn't published in any explicit root set.
+        heap.inc_ref(id); // rc = 3
+        heap.dec_ref(id); // rc = 2, flagged Purple
+        assert_eq!(heap.purple_count, 1);
+
+        // Cycle collection must not free the entry: the local "C-stack" ref
+        // contributes one of its two surviving refcount units, so trial
+        // deletion sees rc > 0 after MarkGray and resurrects the subtree.
+        heap.collect_cycles();
+        assert_eq!(heap.purple_count, 0);
+        assert!(is_alive(&heap, id), "C-stack-rooted cycle was freed");
+        assert!(matches!(heap.get(id), HeapData::List(_)));
+
+        // Drop the simulated Rust local. Now the cycle is genuinely isolated
+        // (rc 1 = self-pointer only). The next collection must reclaim it.
+        heap.dec_ref(id); // rc = 1, re-flagged Purple
+        assert_eq!(heap.purple_count, 1);
+        heap.collect_cycles();
+        assert_eq!(heap.purple_count, 0);
+        assert!(!is_alive(&heap, id), "isolated cycle should have been freed");
+    }
+
+    #[test]
+    fn heap_read_rooted_cycle_survives_collection() {
+        let mut heap = Heap::<NoLimitTracker>::new(16, NoLimitTracker);
+        let id = alloc_self_cycle(&heap);
+
+        // Bump `readers` manually to mimic a live `HeapRead` pointing into
+        // the entry. The borrow checker prevents holding a real `HeapRead`
+        // across `collect_cycles` (which requires `&mut Heap`), so we
+        // splice the same counter that `HeapRead::Drop` decrements.
+        let readers_before = heap.entries.get(id.index()).readers.get();
+        heap.entries.get(id.index()).readers.set(readers_before + 1);
+
+        // Drive the entry into Purple via dec_ref: rc 2 → 1. Without the
+        // `readers > 0` special-case in `Scan`, the resulting cycle would
+        // be condemned to White and freed.
+        heap.dec_ref(id); // rc = 1, flagged Purple
+        assert_eq!(heap.purple_count, 1);
+
+        heap.collect_cycles();
+        assert!(
+            is_alive(&heap, id),
+            "entry with active HeapRead reader was freed by collect_cycles"
+        );
+
+        // Restore the simulated reader so `Heap::drop` can clean up
+        // without tripping the `dec_ref` active-readers assertion.
+        heap.entries.get(id.index()).readers.set(readers_before);
+        // The entry is leaked here on purpose (rc = 1 from the self-ref,
+        // no external root remains, but the collector ran already and the
+        // color is Black — the next dec_ref would try to recurse into the
+        // self-pointer after freeing the entry). `Heap::drop` walks every
+        // slot and tears them down regardless of refcount, so leaking
+        // here is safe for the duration of the test.
+    }
+
+    #[test]
+    fn isolated_simple_cycle_is_collected() {
+        // Sanity check: a self-reference cycle with no external rooting
+        // gets collected on the next `collect_cycles` call.
+        let mut heap = Heap::<NoLimitTracker>::new(16, NoLimitTracker);
+        let id = alloc_self_cycle(&heap);
+        // After alloc_self_cycle: rc = 2 (allocate's 1 + self-ref's 1).
+        // Drop the caller's reference. rc 2 → 1, marks Purple.
+        heap.dec_ref(id);
+        assert_eq!(heap.purple_count, 1);
+        heap.collect_cycles();
+        assert!(!is_alive(&heap, id));
+        assert_eq!(heap.purple_count, 0);
+    }
+
+    #[test]
+    fn empty_tuple_singleton_survives_collection() {
+        // The empty-tuple singleton is no longer rooted explicitly by the
+        // collector. Its refcount stays ≥ 1 forever (initial heap-owned
+        // ref), which is what keeps it alive — verify the collector does
+        // not accidentally free it even after spurious Purple flagging.
+        let mut heap = Heap::<NoLimitTracker>::new(16, NoLimitTracker);
+        // Fake a dec_ref event that would mark the empty tuple Purple.
+        heap.inc_ref(EMPTY_TUPLE_ID);
+        heap.dec_ref(EMPTY_TUPLE_ID);
+        heap.collect_cycles();
+        assert!(
+            is_alive(&heap, EMPTY_TUPLE_ID),
+            "empty tuple singleton must survive collection"
+        );
+    }
+
+    #[test]
+    fn pending_purple_cycle_round_trips_through_serde() {
+        // A snapshot can be taken between any two bytecode instructions, so
+        // entries flagged Purple by `dec_ref` but not yet visited by the
+        // collector must survive serde round-trips. Otherwise a cycle that
+        // becomes garbage just before snapshot would leak permanently after
+        // restore (the post-restore VM would never re-touch it).
+        let mut heap = Heap::<NoLimitTracker>::new(16, NoLimitTracker);
+        let id = alloc_self_cycle(&heap);
+        // Drop the caller's external ref so the entry is genuinely
+        // unreachable except via its self-pointer. dec_ref flags Purple.
+        heap.dec_ref(id); // rc 2 → 1
+        assert_eq!(heap.purple_count, 1);
+        let pre_color = heap.entries.get(id.index()).color.get();
+        assert_eq!(pre_color, CcColor::Purple);
+
+        // Round-trip through postcard.
+        let bytes = postcard::to_allocvec(&heap).expect("serialize");
+        let mut restored: Heap<NoLimitTracker> = postcard::from_bytes(&bytes).expect("deserialize");
+
+        // `purple_count` and the per-entry color must round-trip.
+        assert_eq!(restored.purple_count, 1);
+        assert_eq!(restored.entries.get(id.index()).color.get(), CcColor::Purple);
+
+        // Run the collector on the restored heap; the cycle is unreachable
+        // and must be reclaimed.
+        restored.collect_cycles();
+        assert!(!is_alive(&restored, id));
+        assert_eq!(restored.purple_count, 0);
+    }
+}

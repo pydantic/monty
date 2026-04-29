@@ -130,10 +130,11 @@ impl<'h> HeapRead<'h, List> {
     pub fn append(&mut self, vm: &mut VM<'h, '_, impl ResourceTracker>, item: Value) -> RunResult<()> {
         // Check memory limit before growing the internal Vec
         vm.heap.track_growth(VALUE_SIZE)?;
-        // Track if we're adding a reference and mark potential cycle
+        // Track whether the list now contains heap refs so child-walk fast paths
+        // can short-circuit; cycle-collector seeding is handled by `dec_ref`,
+        // not at mutation time.
         if matches!(item, Value::Ref(_)) {
             self.get_mut(vm.heap).contains_refs = true;
-            vm.heap.mark_potential_cycle();
         }
         // Ownership transfer - refcount was already handled by caller
         self.get_mut(vm.heap).items.push(item);
@@ -152,10 +153,10 @@ impl<'h> HeapRead<'h, List> {
     pub fn insert(&mut self, vm: &mut VM<'h, '_, impl ResourceTracker>, index: usize, item: Value) -> RunResult<()> {
         // Check memory limit before growing the internal Vec
         vm.heap.track_growth(VALUE_SIZE)?;
-        // Track if we're adding a reference and mark potential cycle
+        // Track whether the list now contains heap refs so child-walk fast paths
+        // can short-circuit; cycle-collector seeding is handled by `dec_ref`.
         if matches!(item, Value::Ref(_)) {
             self.get_mut(vm.heap).contains_refs = true;
-            vm.heap.mark_potential_cycle();
         }
         // Ownership transfer - refcount was already handled by caller
         // Python's insert() appends if index is out of bounds
@@ -298,7 +299,6 @@ impl<'h> PyTrait<'h> for HeapRead<'h, List> {
         // since after swap `value` holds the old item)
         if matches!(*value, Value::Ref(_)) {
             self.get_mut(vm.heap).contains_refs = true;
-            vm.heap.mark_potential_cycle();
         }
 
         // Replace value (old one dropped by defer_drop_mut guard)
@@ -363,9 +363,6 @@ impl<'h> PyTrait<'h> for HeapRead<'h, List> {
             let items = self.clone_all_items(vm);
             // Check memory limit before extending
             vm.heap.track_growth(items.len() * VALUE_SIZE)?;
-            if self.get(vm.heap).contains_refs {
-                vm.heap.mark_potential_cycle();
-            }
             self.get_mut(vm.heap).items.extend(items);
         } else {
             // Pre-check memory limit before extending from the other list.
@@ -380,11 +377,8 @@ impl<'h> PyTrait<'h> for HeapRead<'h, List> {
             // Check if new items contain refs
             let has_new_refs = source_items.iter().any(|v| matches!(v, Value::Ref(_)));
             self.get_mut(vm.heap).items.extend(source_items);
-            if self.get(vm.heap).contains_refs || has_new_refs {
-                if has_new_refs {
-                    self.get_mut(vm.heap).contains_refs = true;
-                }
-                vm.heap.mark_potential_cycle();
+            if has_new_refs {
+                self.get_mut(vm.heap).contains_refs = true;
             }
         }
 
@@ -621,7 +615,6 @@ fn list_extend<'h>(
     let has_refs = items.iter().any(|v| matches!(v, Value::Ref(_)));
     if has_refs {
         list.get_mut(vm.heap).set_contains_refs();
-        vm.heap.mark_potential_cycle();
     }
     list.get_mut(vm.heap).as_vec_mut().extend(items);
 
