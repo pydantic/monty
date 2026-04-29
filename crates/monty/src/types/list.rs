@@ -9,7 +9,7 @@ use crate::{
     bytecode::{CallResult, VM},
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, RunError, RunResult},
-    heap::{DropWithHeap, Heap, HeapData, HeapGuard, HeapId, HeapItem, HeapRead, HeapReadOutput},
+    heap::{DropWithHeap, Heap, HeapData, HeapGuard, HeapId, HeapItem, HeapRead, HeapReadOutput, HeapReader},
     intern::StaticStrings,
     resource::{ResourceError, ResourceTracker},
     sorting::{apply_permutation, sort_indices},
@@ -335,10 +335,11 @@ impl<'h> PyTrait<'h> for HeapRead<'h, List> {
     fn py_repr_fmt(
         &self,
         f: &mut impl Write,
-        vm: &VM<'h, '_, impl ResourceTracker>,
+        vm: &mut VM<'h, '_, impl ResourceTracker>,
         heap_ids: &mut AHashSet<HeapId>,
     ) -> RunResult<()> {
-        repr_sequence_fmt('[', ']', &self.get(vm.heap).items, f, vm, heap_ids)
+        let len = self.get(vm.heap).len();
+        repr_sequence_fmt('[', ']', len, |heap, i| &self.get(heap).as_slice()[i], f, vm, heap_ids)
     }
 
     fn py_add(&self, other: &Self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> Result<Option<Value>, ResourceError> {
@@ -765,37 +766,38 @@ fn do_list_sort<'h>(
 /// # Arguments
 /// * `start` - The opening character (e.g., '[' for lists, '(' for tuples)
 /// * `end` - The closing character (e.g., ']' for lists, ')' for tuples)
-/// * `items` - The slice of values to format
+/// * `len` - The number of items to format
+/// * `get_item` - Returns the i-th value via brief immutable heap access
 /// * `f` - The formatter to write to
 /// * `vm` - The VM for resolving value references and looking up interned strings
 /// * `heap_ids` - Set of heap IDs being repr'd (for cycle detection)
-pub(crate) fn repr_sequence_fmt(
+pub(crate) fn repr_sequence_fmt<'h, T: ResourceTracker>(
     start: char,
     end: char,
-    items: &[Value],
+    len: usize,
+    get_item: impl for<'r> Fn(&'r HeapReader<'h, T>, usize) -> &'r Value,
     f: &mut impl Write,
-    vm: &VM<'_, '_, impl ResourceTracker>,
+    vm: &mut VM<'h, '_, T>,
     heap_ids: &mut AHashSet<HeapId>,
 ) -> RunResult<()> {
     // Check depth limit before recursing
-    let heap = &*vm.heap;
-    let Some(token) = heap.incr_recursion_depth_for_repr() else {
+    let Ok(token) = vm.heap.incr_recursion_depth() else {
         return Ok(f.write_str("...")?);
     };
-    crate::defer_drop_immutable_heap!(token, heap);
+    defer_drop!(token, vm);
 
     f.write_char(start)?;
-    let mut iter = items.iter();
-    if let Some(first) = iter.next() {
-        first.py_repr_fmt(f, vm, heap_ids)?;
-        for item in iter {
-            if heap.check_time().is_err() {
+    for i in 0..len {
+        if i > 0 {
+            if vm.heap.check_time().is_err() {
                 f.write_str(", ...[timeout]")?;
                 break;
             }
             f.write_str(", ")?;
-            item.py_repr_fmt(f, vm, heap_ids)?;
         }
+        let item = get_item(vm.heap, i).clone_with_heap(vm.heap);
+        defer_drop!(item, vm);
+        item.py_repr_fmt(f, vm, heap_ids)?;
     }
     f.write_char(end)?;
 

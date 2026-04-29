@@ -328,10 +328,22 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Tuple> {
     fn py_repr_fmt(
         &self,
         f: &mut impl Write,
-        vm: &VM<'h, '_, impl ResourceTracker>,
+        vm: &mut VM<'h, '_, impl ResourceTracker>,
         heap_ids: &mut AHashSet<HeapId>,
     ) -> RunResult<()> {
-        repr_sequence_fmt('(', ')', &self.get(vm.heap).items, f, vm, heap_ids)
+        let len = self.get(vm.heap).as_slice().len();
+
+        if len == 1 {
+            // Special case for single-element tuples: include the trailing comma
+            let item = self.clone_item(0, vm);
+            defer_drop!(item, vm);
+            write!(f, "(")?;
+            item.py_repr_fmt(f, vm, heap_ids)?;
+            write!(f, ",)")?;
+            return Ok(());
+        }
+
+        repr_sequence_fmt('(', ')', len, |heap, i| &self.get(heap).as_slice()[i], f, vm, heap_ids)
     }
 }
 

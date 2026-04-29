@@ -8,7 +8,7 @@ use smallvec::SmallVec;
 
 use crate::{
     ResourceTracker,
-    heap::{Heap, HeapId, RecursionToken},
+    heap::{Heap, HeapId},
     value::Value,
 };
 
@@ -157,67 +157,6 @@ impl<U: DropWithHeap, V: DropWithHeap> DropWithHeap for (U, V) {
     }
 }
 
-/// Trait for types that require only an immutable heap reference for cleanup.
-///
-/// Unlike [`DropWithHeap`], which requires `&mut Heap`, this trait works with `&Heap`.
-/// This is needed for cleanup in contexts that only have shared access to the heap,
-/// such as `py_repr_fmt` and `py_str` formatting methods.
-///
-/// Currently implemented for [`RecursionToken`], which decrements the recursion depth
-/// counter via interior mutability (`Cell`).
-pub(crate) trait DropWithImmutableHeap {
-    /// Consume `self` and perform cleanup using an immutable heap reference.
-    fn drop_with_immutable_heap<T: ResourceTracker>(self, heap: &Heap<T>);
-}
-
-impl DropWithImmutableHeap for RecursionToken {
-    #[inline]
-    fn drop_with_immutable_heap<T: ResourceTracker>(self, heap: &Heap<T>) {
-        heap.decr_recursion_depth();
-    }
-}
-
-/// RAII guard that ensures a [`DropWithImmutableHeap`] value is cleaned up on every code path.
-///
-/// Like [`HeapGuard`], but holds an immutable `&Heap<T>` instead of requiring `&mut` access
-/// via [`ContainsHeap`]. This is useful in contexts that only have shared access to the heap,
-/// such as `py_repr_fmt` formatting methods.
-///
-/// On the normal path, the guarded value can be borrowed via [`as_parts`](Self::as_parts).
-/// The guard's `Drop` impl calls [`DropWithImmutableHeap::drop_with_immutable_heap`]
-/// automatically, so cleanup happens on all exit paths.
-pub(crate) struct ImmutableHeapGuard<'a, H: ContainsHeap, V: DropWithImmutableHeap> {
-    value: ManuallyDrop<V>,
-    heap: &'a H,
-}
-
-impl<'a, H: ContainsHeap, V: DropWithImmutableHeap> ImmutableHeapGuard<'a, H, V> {
-    /// Creates a new `ImmutableHeapGuard` for the given value and immutable heap reference.
-    #[inline]
-    pub fn new(value: V, heap: &'a H) -> Self {
-        Self {
-            value: ManuallyDrop::new(value),
-            heap,
-        }
-    }
-
-    /// Borrows the value (immutably) and heap (immutably) out of the guard.
-    ///
-    /// This is what [`defer_drop_immutable_heap!`] calls internally. The returned
-    /// references are tied to the guard's lifetime, so the value cannot escape.
-    #[inline]
-    pub fn as_parts(&self) -> (&V, &'a H) {
-        (&self.value, self.heap)
-    }
-}
-
-impl<H: ContainsHeap, V: DropWithImmutableHeap> Drop for ImmutableHeapGuard<'_, H, V> {
-    fn drop(&mut self) {
-        // SAFETY: [DH] - value is never manually dropped until this point
-        unsafe { ManuallyDrop::take(&mut self.value) }.drop_with_immutable_heap(self.heap.heap());
-    }
-}
-
 /// RAII guard that ensures a [`DropWithHeap`] value is cleaned up on every code path.
 ///
 /// The guard's `Drop` impl calls [`DropWithHeap::drop_with_heap`] automatically, so
@@ -345,25 +284,5 @@ macro_rules! defer_drop_mut {
         )]
         #[allow(unused_variables)]
         let ($value, $heap) = _guard.as_parts_mut();
-    };
-}
-
-/// Like [`defer_drop!`], but for [`DropWithImmutableHeap`] values that only need `&Heap`
-/// for cleanup.
-///
-/// Creates an [`ImmutableHeapGuard`] and immediately rebinds `$value` as `&V` and `$heap`
-/// as `&Heap<T>`. The guard will call [`DropWithImmutableHeap::drop_with_immutable_heap`]
-/// when scope exits. Use this for values like [`RecursionToken`] in contexts that only have
-/// shared access to the heap (e.g., `py_repr_fmt` formatting methods).
-#[macro_export]
-macro_rules! defer_drop_immutable_heap {
-    ($value:ident, $heap:ident) => {
-        let _guard = $crate::heap::ImmutableHeapGuard::new($value, $heap);
-        #[allow(
-            clippy::allow_attributes,
-            reason = "the reborrowed parts may not both be used in every case, so allow unused vars to avoid warnings"
-        )]
-        #[allow(unused_variables)]
-        let ($value, $heap) = _guard.as_parts();
     };
 }

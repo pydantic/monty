@@ -255,7 +255,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Range> {
     fn py_repr_fmt(
         &self,
         f: &mut impl Write,
-        vm: &VM<'h, '_, impl ResourceTracker>,
+        vm: &mut VM<'h, '_, impl ResourceTracker>,
         _heap_ids: &mut AHashSet<HeapId>,
     ) -> RunResult<()> {
         let this = self.get(vm.heap);

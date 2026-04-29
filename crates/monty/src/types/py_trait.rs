@@ -161,7 +161,7 @@ pub trait PyTrait<'h> {
     /// visited heap IDs. When a cycle is detected (ID already in `heap_ids`), implementations
     /// should write an ellipsis (e.g., `[...]` for lists, `{...}` for dicts).
     ///
-    /// Recursion depth is tracked via `heap.incr_recursion_depth_for_repr()`.
+    /// Recursion depth is tracked via `heap.incr_recursion_depth()`.
     ///
     /// # Arguments
     /// * `f` - The formatter to write to
@@ -170,14 +170,14 @@ pub trait PyTrait<'h> {
     fn py_repr_fmt(
         &self,
         f: &mut impl Write,
-        vm: &VM<'h, '_, impl ResourceTracker>,
+        vm: &mut VM<'h, '_, impl ResourceTracker>,
         heap_ids: &mut AHashSet<HeapId>,
     ) -> RunResult<()>;
 
     /// Returns the Python `repr()` string for this value.
     ///
     /// Convenience wrapper around `py_repr_fmt` that returns an owned string.
-    fn py_repr(&self, vm: &VM<'h, '_, impl ResourceTracker>) -> RunResult<Cow<'static, str>> {
+    fn py_repr(&self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<Cow<'static, str>> {
         let mut s = String::new();
         let mut heap_ids = AHashSet::new();
         self.py_repr_fmt(&mut s, vm, &mut heap_ids)?;
@@ -185,7 +185,7 @@ pub trait PyTrait<'h> {
     }
 
     /// Returns the Python `str()` string for this value.
-    fn py_str(&self, vm: &VM<'h, '_, impl ResourceTracker>) -> RunResult<Cow<'static, str>> {
+    fn py_str(&self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<Cow<'static, str>> {
         self.py_repr(vm)
     }
 

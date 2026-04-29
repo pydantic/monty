@@ -324,7 +324,7 @@ impl ExcType {
     /// If the key's string conversion fails (e.g. huge LongInt exceeding
     /// `INT_MAX_STR_DIGITS`), falls back to the type name so that a
     /// `KeyError` is always raised rather than a spurious `ValueError`.
-    pub(crate) fn key_error(key: &Value, vm: &VM<'_, '_, impl ResourceTracker>) -> RunError {
+    pub(crate) fn key_error(key: &Value, vm: &mut VM<'_, '_, impl ResourceTracker>) -> RunError {
         let key_str = match key.py_str(vm) {
             Ok(s) => s.into_owned(),
             Err(_) => format!("<{}>", key.py_type(vm)),
