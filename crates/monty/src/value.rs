@@ -1391,7 +1391,7 @@ impl Value {
     /// For heap-allocated values (Ref variant), this computes the hash lazily
     /// on first use and caches it for subsequent calls.
     pub fn py_hash(&self, vm: &mut VM<'_, '_, impl ResourceTracker>) -> Result<Option<u64>, ResourceError> {
-        // strings bytes bigints and heap allocated values have their own hashing logic
+        let mut hasher = DefaultHasher::new();
         match self {
             // Hash just the actual string or bytes content for consistency with heap Str/Bytes
             // hence we don't include the discriminant
@@ -1405,6 +1405,21 @@ impl Value {
                 vm.interns.get_bytes(*bytes_id).hash(&mut hasher);
                 return Ok(Some(hasher.finish()));
             }
+            // Bool and int hash directly as their value, and are equivalent
+            Self::Bool(b) => return Ok(Some((*b).into())),
+            Self::Int(i) => return Ok(Some(i.cast_unsigned())),
+            Self::Float(f) => {
+                return {
+                    if f.fract() == 0.0 && *f >= (i64::MIN as f64) && *f <= (i64::MAX as f64) {
+                        // Hash floats that are mathematically integers the same as Ints (e.g., 1.0 hashes the same as 1)
+                        #[expect(clippy::cast_possible_truncation)]
+                        Ok(Some((*f as i64).cast_unsigned()))
+                    } else {
+                        // Hash the bit representation of the float
+                        Ok(Some(f.to_bits()))
+                    }
+                };
+            }
             // Hash BigInt consistently with LongInt (using sign and bytes for large values)
             Self::InternLongInt(long_int_id) => {
                 let bi = vm.interns.get_long_int(*long_int_id);
@@ -1416,19 +1431,8 @@ impl Value {
             }
             // For heap-allocated values (includes Range and Exception), compute hash lazily and cache it
             Self::Ref(id) => return Heap::get_or_compute_hash(vm, *id),
-            _ => {}
-        }
-
-        let mut hasher = DefaultHasher::new();
-        // hash based on discriminant to avoid collisions with different types
-        discriminant(self).hash(&mut hasher);
-        match self {
-            // Immediate values can be hashed directly
-            Self::Undefined | Self::Ellipsis | Self::None => {}
-            Self::Bool(b) => b.hash(&mut hasher),
-            Self::Int(i) => i.hash(&mut hasher),
-            // Hash the bit representation of float for consistency
-            Self::Float(f) => f.to_bits().hash(&mut hasher),
+            // Singleton values can be hashed directly
+            Self::Undefined | Self::Ellipsis | Self::None => discriminant(self).hash(&mut hasher),
             Self::Builtin(b) => b.hash(&mut hasher),
             Self::ModuleFunction(mf) => mf.hash(&mut hasher),
             // Hash functions based on function ID
@@ -1440,12 +1444,10 @@ impl Value {
             Self::Property(p) => p.hash(&mut hasher),
             // ExternalFutures are hashable based on their call ID
             Self::ExternalFuture(call_id) => call_id.raw().hash(&mut hasher),
-            Self::InternString(_) | Self::InternBytes(_) | Self::InternLongInt(_) | Self::Ref(_) => {
-                unreachable!("covered above")
-            }
             #[cfg(feature = "memory-model-checks")]
             Self::Dereferenced => panic!("Cannot access Dereferenced object"),
         }
+
         Ok(Some(hasher.finish()))
     }
 
