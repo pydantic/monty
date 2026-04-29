@@ -585,11 +585,12 @@ impl Scheduler {
     /// Fails the task blocked on a specific CallId with an error.
     pub fn fail_for_call(&mut self, call_id: CallId, error: RunError, heap: &mut HeapReader<'_, impl ResourceTracker>) {
         // Get blocked task from pending_calls (O(1) lookup)
-        let task_id = self
-            .pending_calls
-            .remove(&call_id)
-            .expect("attempted to fail nonexistent task")
-            .creator_task;
+        let Some(pending_call) = self.pending_calls.remove(&call_id) else {
+            // No pending call found - nothing to fail. Possibly cancelled by a sibling task failure.
+            return;
+        };
+
+        let task_id = pending_call.creator_task;
 
         // Check if a gather is waiting on this CallId
         if let Some((gather_id, _result_idx)) = self.take_gather_waiter(call_id) {
