@@ -12,9 +12,9 @@ use ahash::{AHashMap, AHashSet};
 
 use crate::{
     args::ArgValues,
-    asyncio::{CallId, GatherItem, TaskId},
-    exception_private::{ExcType, RunError, SimpleException},
-    heap::{DropWithHeap, Heap, HeapData, HeapId, HeapReadOutput, HeapReader},
+    asyncio::{CallId, TaskId},
+    exception_private::RunError,
+    heap::{DropWithHeap, Heap, HeapData, HeapId, HeapReader},
     intern::FunctionId,
     parse::CodeRange,
     resource::ResourceTracker,
@@ -135,7 +135,9 @@ impl Task {
     /// Suspended tasks keep their operand stack and exception stack outside the
     /// live VM state. GC must therefore walk both the saved values and the task's
     /// scheduler metadata, otherwise reachable heap entries can be swept while the
-    /// task is blocked.
+    /// task is blocked. `coroutine_id` and `gather_id` are owning references
+    /// (inc_ref'd in [`Scheduler::spawn`], dec_ref'd in [`Scheduler::remove_task`])
+    /// so they participate in the root set.
     fn extend_gc_roots(&self, roots: &mut Vec<HeapId>) {
         roots.extend(self.stack.iter().filter_map(Value::ref_id));
         roots.extend(self.exception_stack.iter().filter_map(Value::ref_id));
@@ -196,8 +198,13 @@ impl PendingCallData {
 /// (the VM holds it). Spawned tasks (1+) store their context in the Task struct.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub(crate) struct Scheduler {
-    /// All tasks (main task at index 0, spawned tasks follow).
-    tasks: Vec<Task>,
+    /// All tasks keyed by their `TaskId`.
+    ///
+    /// Sparse storage so that finished tasks can be removed during execution
+    /// without invalidating outstanding `TaskId`s. `TaskId`s are monotonically
+    /// allocated (never reused), so a `HashMap` keeps memory bounded — a
+    /// `Vec<Option<Task>>` would grow without bound across long-running sessions.
+    tasks: AHashMap<TaskId, Task>,
     /// Queue of task IDs ready to execute.
     ready_queue: VecDeque<TaskId>,
     /// Currently executing task (None only during task switching).
@@ -226,13 +233,16 @@ impl Scheduler {
     /// It starts as the current task (not in the ready queue) since it runs
     /// immediately without needing to be scheduled.
     pub fn new() -> Self {
-        let mut main_task = Task::new(TaskId::default(), None, None, None);
+        let main_task_id = TaskId::default();
+        let mut main_task = Task::new(main_task_id, None, None, None);
         // Main task starts Running, not Ready (it's the current task, not waiting)
         main_task.state = TaskState::Ready; // Will be set properly when it blocks
+        let mut tasks = AHashMap::new();
+        tasks.insert(main_task_id, main_task);
         Self {
-            tasks: vec![main_task],
+            tasks,
             ready_queue: VecDeque::new(), // Main task is current, not in ready queue
-            current_task: Some(TaskId::default()),
+            current_task: Some(main_task_id),
             next_task_id: 1,
             next_call_id: 0,
             pending_calls: AHashMap::new(),
@@ -248,7 +258,7 @@ impl Scheduler {
     /// blocked tasks, resolved futures, and gather bookkeeping all live in the
     /// scheduler and must therefore participate in the GC root set.
     pub(crate) fn extend_gc_roots(&self, roots: &mut Vec<HeapId>) {
-        for task in &self.tasks {
+        for task in self.tasks.values() {
             task.extend_gc_roots(roots);
         }
         for data in self.pending_calls.values() {
@@ -272,7 +282,7 @@ impl Scheduler {
     /// Panics if the task ID doesn't exist.
     #[inline]
     pub fn get_task(&self, task_id: TaskId) -> &Task {
-        &self.tasks[task_id.raw() as usize]
+        self.tasks.get(&task_id).expect("Scheduler::get_task: task not found")
     }
 
     /// Returns a mutable reference to a task by ID.
@@ -281,7 +291,9 @@ impl Scheduler {
     /// Panics if the task ID doesn't exist.
     #[inline]
     pub fn get_task_mut(&mut self, task_id: TaskId) -> &mut Task {
-        &mut self.tasks[task_id.raw() as usize]
+        self.tasks
+            .get_mut(&task_id)
+            .expect("Scheduler::get_task_mut: task not found")
     }
 
     /// Allocates a new CallId for an external function call.
@@ -374,7 +386,10 @@ impl Scheduler {
     /// for that call and clears the `unblocked_by` field.
     /// Returns `None` if the task wasn't unblocked by a resolved call.
     pub fn take_resolved_for_task(&mut self, task_id: TaskId) -> Option<Value> {
-        let task = &mut self.tasks[task_id.raw() as usize];
+        let task = self
+            .tasks
+            .get_mut(&task_id)
+            .expect("Scheduler::take_resolved_for_task: task not found");
         if let Some(call_id) = task.unblocked_by.take() {
             self.resolved.remove(&call_id)
         } else {
@@ -420,7 +435,13 @@ impl Scheduler {
     /// Creates a new task that will execute the given coroutine when scheduled.
     /// The task is added to the ready queue.
     ///
+    /// Both `coroutine_id` and `gather_id` (when present) become **owning**
+    /// references held by the new task — `inc_ref` is called on each before
+    /// storing. The matching `dec_ref` happens in [`Scheduler::remove_task`]
+    /// when the task is eventually removed (typically at gather finalization).
+    ///
     /// # Arguments
+    /// * `heap` - Heap to increment reference counts in
     /// * `coroutine_id` - HeapId of the coroutine to execute
     /// * `gather_id` - Optional HeapId of the GatherFuture this task belongs to
     /// * `gather_result_idx` - Optional index in the gather's results for this task
@@ -429,6 +450,7 @@ impl Scheduler {
     /// The TaskId of the newly created task.
     pub fn spawn(
         &mut self,
+        heap: &Heap<impl ResourceTracker>,
         coroutine_id: HeapId,
         gather_id: Option<HeapId>,
         gather_result_idx: Option<usize>,
@@ -436,8 +458,15 @@ impl Scheduler {
         let task_id = TaskId::new(self.next_task_id);
         self.next_task_id += 1;
 
+        // Take ownership of the heap references — the task now holds an inc_ref'd
+        // pointer to its coroutine and (if applicable) its enclosing gather.
+        heap.inc_ref(coroutine_id);
+        if let Some(gid) = gather_id {
+            heap.inc_ref(gid);
+        }
+
         let task = Task::new(task_id, Some(coroutine_id), gather_id, gather_result_idx);
-        self.tasks.push(task);
+        self.tasks.insert(task_id, task);
         self.ready_queue.push_back(task_id);
 
         task_id
@@ -486,40 +515,36 @@ impl Scheduler {
         gather_id
     }
 
-    /// Cancels a task, cleaning up its resources.
+    /// Cancels a task, fully releasing its resources and removing it from the
+    /// scheduler.
     ///
-    /// This marks the task as Failed with a cancellation error and cleans up:
-    /// - Stack values
-    /// - Exception stack values
-    /// - Frame cell references
-    /// - Frame namespaces
-    /// - Nested gathers (if the task was blocked on one)
-    /// - Completed task results (if task finished before cancellation)
-    ///
-    /// The caller is responsible for cleaning up the task's coroutine on the heap.
-    ///
-    /// # Arguments
-    /// * `task_id` - ID of the task to cancel
-    /// * `heap` - Heap for dropping values and cell cleanup
+    /// Drops the task's stack, exception stack, any pending `Completed` result,
+    /// and recursively cancels any inner gather it was blocked on. After this
+    /// call the task no longer exists in `Scheduler::tasks`; its owning
+    /// references to its coroutine and (outer) gather are released by
+    /// [`Scheduler::remove_task`].
     pub fn cancel_task(&mut self, task_id: TaskId, heap: &mut HeapReader<'_, impl ResourceTracker>) {
-        // If task already finished, clean up its result value and return
-        if self.get_task(task_id).is_finished() {
-            let task = self.get_task_mut(task_id);
-            if let TaskState::Completed(value) = mem::replace(&mut task.state, TaskState::Ready) {
-                value.drop_with_heap(heap);
-            }
-            // Note: Failed tasks don't have values to clean up (RunError doesn't contain Values)
+        // No-op if the task has already been removed (idempotent — finalization
+        // sites may iterate task ids that include already-cancelled siblings).
+        let Some(task) = self.tasks.get(&task_id) else {
+            return;
+        };
+        // Already finished: just remove (drops any Completed value alongside
+        // the rest of the per-task state).
+        if task.is_finished() {
+            self.remove_task(task_id, heap);
             return;
         }
 
         // Remove from ready queue if present (do this before getting mutable task reference)
         self.ready_queue.retain(|&id| id != task_id);
 
-        // Check if task is blocked on a gather and get the gather info before mutating task
+        // If blocked on a nested gather, recursively cancel inner tasks first.
+        // Each recursive cancel_task ends in remove_task, which dec_refs that
+        // task's owning ref to the inner gather and its coroutine.
         let inner_gather_info = {
             let task = self.get_task(task_id);
             if let TaskState::BlockedOnGather(gather_id) = task.state {
-                // Get inner gather's task IDs from heap
                 if let HeapData::GatherFuture(gather) = heap.get(gather_id) {
                     Some((gather_id, gather.task_ids.clone()))
                 } else {
@@ -530,57 +555,18 @@ impl Scheduler {
             }
         };
 
-        // Recursively cancel inner gather's tasks first
         if let Some((inner_gather_id, inner_task_ids)) = inner_gather_info {
             for inner_task_id in inner_task_ids {
                 self.cancel_task(inner_task_id, heap);
             }
-
-            // Cleanup the inner GatherFuture
-            let HeapReadOutput::GatherFuture(mut gather) = heap.read(inner_gather_id) else {
-                panic!("inner_gather_id doesn't point to a GatherFuture")
-            };
-            let gather_mut = gather.get_mut(heap);
-            let items = mem::take(&mut gather_mut.items);
-            let results = mem::take(&mut gather_mut.results);
-
-            // Now cleanup the extracted data with mutable heap access
-            for item in items {
-                if let GatherItem::Coroutine(coro_id) = item {
-                    heap.dec_ref(coro_id);
-                }
-            }
-            for value in results.into_iter().flatten() {
-                value.drop_with_heap(heap);
-            }
-
-            // Dec_ref the gather itself
-            drop(gather);
+            // Per-task owning refs to the inner gather have already been
+            // released by the recursive cancellations. Drop the inner gather's
+            // logical "alive awaitable" reference; the cascade frees its
+            // remaining items and any partial results.
             heap.dec_ref(inner_gather_id);
         }
 
-        // Now get mutable reference to the task for cleanup
-        let task = self.get_task_mut(task_id);
-
-        // Clean up stack values
-        for value in mem::take(&mut task.stack) {
-            value.drop_with_heap(heap);
-        }
-
-        // Clean up exception stack values
-        for value in mem::take(&mut task.exception_stack) {
-            value.drop_with_heap(heap);
-        }
-
-        // Restore this task's depth contribution before cleanup,
-        // since save_task_context subtracted it.
-        let task_depth = task.frames.len();
-        let global_depth = heap.get_recursion_depth();
-        heap.set_recursion_depth(global_depth + task_depth);
-        task.frames.clear();
-
-        // Mark as failed with a cancellation error
-        task.state = TaskState::Failed(SimpleException::new_msg(ExcType::RuntimeError, "task was cancelled").into());
+        self.remove_task(task_id, heap);
     }
 
     /// Fails the task blocked on a specific CallId with an error.
@@ -610,15 +596,46 @@ impl Scheduler {
     /// Returns true if a task has been cancelled or failed.
     #[inline]
     pub fn is_task_failed(&self, task_id: TaskId) -> bool {
-        matches!(self.tasks.get(task_id.raw() as usize), Some(task) if matches!(task.state, TaskState::Failed(_)))
+        self.tasks
+            .get(&task_id)
+            .is_some_and(|task| matches!(task.state, TaskState::Failed(_)))
     }
 
-    /// Cleans up all scheduler resources: pending calls, resolved values, task
-    /// stacks/exception stacks, completed results, and task frame cell references.
+    /// Removes a task from the scheduler, dropping all of its owned resources.
     ///
-    /// Each task's `recursion_depth` is restored to the global counter before
-    /// dropping cells, because `save_task_context` subtracted the recursion depth
-    /// and cleanup needs the correct depth to avoid underflow.
+    /// Drops the task's stack values, exception stack, any pending `Completed`
+    /// result, and `dec_ref`s the owning `coroutine_id` / `gather_id` references
+    /// established by [`Scheduler::spawn`].
+    ///
+    /// No-op if the task id is unknown.
+    ///
+    /// # Caller responsibility
+    /// Callers must ensure no other code path still holds the `TaskId` (e.g.,
+    /// `current_task` has been swapped to a different task, the task is no
+    /// longer in any `gather.task_ids`, no pending call references it).
+    fn remove_task(&mut self, task_id: TaskId, heap: &mut Heap<impl ResourceTracker>) {
+        let Some(mut task) = self.tasks.remove(&task_id) else {
+            return;
+        };
+        for value in mem::take(&mut task.stack) {
+            value.drop_with_heap(heap);
+        }
+        for value in mem::take(&mut task.exception_stack) {
+            value.drop_with_heap(heap);
+        }
+        if let TaskState::Completed(value) = mem::replace(&mut task.state, TaskState::Ready) {
+            value.drop_with_heap(heap);
+        }
+        if let Some(coro_id) = task.coroutine_id.take() {
+            heap.dec_ref(coro_id);
+        }
+        if let Some(gid) = task.gather_id.take() {
+            heap.dec_ref(gid);
+        }
+    }
+
+    /// Cleans up all scheduler resources: pending calls, resolved values, and
+    /// every remaining task (via [`Scheduler::remove_task`]).
     pub fn cleanup(&mut self, heap: &mut Heap<impl ResourceTracker>) {
         // Drop pending call arguments
         for (_, data) in mem::take(&mut self.pending_calls) {
@@ -628,22 +645,11 @@ impl Scheduler {
         for (_, value) in mem::take(&mut self.resolved) {
             value.drop_with_heap(heap);
         }
-        // Drop task stack/exception values and completed results
-        for task in &mut self.tasks {
-            for value in mem::take(&mut task.stack) {
-                value.drop_with_heap(heap);
-            }
-            for value in mem::take(&mut task.exception_stack) {
-                value.drop_with_heap(heap);
-            }
-            if let TaskState::Completed(value) = mem::replace(&mut task.state, TaskState::Ready) {
-                value.drop_with_heap(heap);
-            }
-            // Restore recursion depth and clear frames
-            let task_depth = task.frames.len();
-            let global_depth = heap.get_recursion_depth();
-            heap.set_recursion_depth(global_depth + task_depth);
-            task.frames.clear();
+        // Remove every remaining task — drains the map and runs the per-task
+        // cleanup uniformly via `remove_task`.
+        let task_ids: Vec<TaskId> = self.tasks.keys().copied().collect();
+        for task_id in task_ids {
+            self.remove_task(task_id, heap);
         }
     }
 }
