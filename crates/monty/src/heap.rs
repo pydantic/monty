@@ -2,7 +2,7 @@ use std::{
     cell::{Cell, UnsafeCell},
     fmt,
     marker::PhantomData,
-    mem::{ManuallyDrop, size_of},
+    mem::ManuallyDrop,
     ops::{Deref, DerefMut},
     ptr::{self, NonNull},
     vec,
@@ -10,28 +10,28 @@ use std::{
 
 use bytemuck::TransparentWrapper;
 use serde::ser::SerializeStruct;
-use smallvec::SmallVec;
 
 // Re-export items moved to `heap_traits` so that `crate::heap::HeapGuard` etc. continue
 // to resolve (used by the `defer_drop!` macros and throughout the codebase).
 pub(crate) use crate::heap_data::HeapData;
-pub(crate) use crate::heap_traits::{ContainsHeap, DropWithHeap, HeapGuard, HeapItem, ImmutableHeapGuard};
+pub(crate) use crate::heap_traits::{ContainsHeap, DropWithHeap, HeapGuard, HeapItem};
 use crate::{
     asyncio::{Coroutine, GatherFuture, GatherItem},
     bytecode::VM,
-    exception_private::{ExcType, RunResult, SimpleException},
+    exception_private::SimpleException,
     heap_data::{CellValue, Closure, FunctionDefaults},
-    resource::{ResourceError, ResourceTracker, check_mult_size, check_repeat_size},
+    resource::{ResourceError, ResourceTracker},
     types::{
         Bytes, Dataclass, Dict, DictItemsView, DictKeysView, DictValuesView, FrozenSet, List, LongInt, Module,
-        MontyIter, NamedTuple, Path, PyTrait, Range, ReMatch, RePattern, Set, Slice, Str, TimeZone, Tuple,
-        allocate_tuple, date, datetime, timedelta, timezone,
+        MontyIter, NamedTuple, Path, PyTrait, Range, ReMatch, RePattern, Set, Slice, Str, TimeZone, Tuple, date,
+        datetime, timedelta, timezone,
     },
     value::Value,
 };
 
-mod heap_entries;
-use heap_entries::HeapEntries;
+mod free_list;
+mod stable_heap;
+use stable_heap::StableHeap;
 
 /// Unique identifier for values stored inside the heap arena.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
@@ -215,7 +215,7 @@ impl<'a, T: ResourceTracker> HeapReader<'a, T> {
         }
 
         let heap = self.heap.heap();
-        let entry = heap.entries.get(id.index());
+        let entry = heap.entries.get(id);
 
         // Increment the reader count for this entry. The corresponding decrement
         // happens in `HeapRead::drop`.
@@ -610,7 +610,7 @@ pub struct HeapEntry {
     /// The payload data
     data: UnsafeHeapData,
     /// Current hashing status / cached hash value
-    hash_state: HashState,
+    hash_state: Cell<HashState>,
     /// Cycle-collector color. See [`CcColor`].
     ///
     /// Round-trips through serde because a snapshot taken between bytecode
@@ -664,13 +664,8 @@ impl<'de> serde::Deserialize<'de> for UnsafeHeapData {
 /// Zero-size token returned by [`Heap::incr_recursion_depth`].
 ///
 /// Represents one level of recursion depth that must be released when the
-/// recursive operation completes. There are two ways to release the token:
-///
-/// - **`DropWithHeap`** — for `&mut Heap` paths (e.g., `py_eq`). Compatible with
-///   `defer_drop!` and `HeapGuard` for automatic cleanup on all code paths.
-/// - **`DropWithImmutableHeap`** — for `&Heap` paths (e.g., `py_repr_fmt`) where
-///   only shared access is available. Compatible with `defer_drop_immutable_heap!`
-///   and `ImmutableHeapGuard`.
+/// recursive operation completes. Released via [`DropWithHeap`] — compatible
+/// with [`defer_drop!`] and [`HeapGuard`] for automatic cleanup on all code paths.
 #[derive(Debug)]
 pub(crate) struct RecursionToken(());
 
@@ -702,7 +697,7 @@ impl DropWithHeap for RecursionToken {
 #[derive(Debug)]
 pub(crate) struct Heap<T: ResourceTracker> {
     /// Paged storage for heap entries with integrated free list.
-    entries: HeapEntries,
+    entries: StableHeap<HeapEntry>,
     /// Resource tracker for enforcing limits and scheduling GC.
     tracker: T,
     /// Number of entries currently flagged [`Purple`](CcColor::Purple) — i.e.,
@@ -743,7 +738,7 @@ impl<'de, T: ResourceTracker + serde::Deserialize<'de>> serde::Deserialize<'de> 
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         #[derive(serde::Deserialize)]
         struct HeapFields<T> {
-            entries: HeapEntries,
+            entries: StableHeap<HeapEntry>,
             tracker: T,
             #[serde(default)]
             purple_count: usize,
@@ -784,7 +779,7 @@ impl<T: ResourceTracker> Heap<T> {
     /// Use this to create heaps with custom resource limits or GC scheduling.
     pub fn new(capacity: usize, tracker: T) -> Self {
         let this = Self {
-            entries: HeapEntries::with_capacity(capacity),
+            entries: StableHeap::with_capacity(capacity),
             tracker,
             purple_count: 0,
             recursion_depth: Cell::new(0),
@@ -802,7 +797,7 @@ impl<T: ResourceTracker> Heap<T> {
             refcount: Cell::new(1),
             readers: Cell::new(0),
             data: UnsafeHeapData(UnsafeCell::new(empty_tuple)),
-            hash_state,
+            hash_state: Cell::new(hash_state),
             color: Cell::new(CcColor::Black),
         };
 
@@ -850,8 +845,8 @@ impl<T: ResourceTracker> Heap<T> {
     /// Increments the recursion depth and checks the limit via the `ResourceTracker`.
     ///
     /// Returns `Ok(RecursionToken)` if within limits. The caller must ensure the
-    /// token is released on all code paths — either via `defer_drop!`/`HeapGuard`
-    /// (for `&mut Heap` contexts) or via `RecursionToken::release()` (for `&Heap` contexts).
+    /// token is released on all code paths — typically via `defer_drop!` or `HeapGuard`,
+    /// which call [`DropWithHeap::drop_with_heap`] on the token.
     ///
     /// Returns `Err(ResourceError::Recursion)` if the limit would be exceeded.
     #[inline]
@@ -860,16 +855,6 @@ impl<T: ResourceTracker> Heap<T> {
         self.tracker.check_recursion_depth(depth)?;
         self.recursion_depth.set(depth + 1);
         Ok(RecursionToken(()))
-    }
-
-    /// Increments the recursion depth, returning `Some(RecursionToken)` if within
-    /// limits, or `None` if the limit is exceeded.
-    ///
-    /// Use this in repr-like contexts where exceeding the limit should produce
-    /// truncated output (e.g., `[...]`) rather than an error.
-    #[inline]
-    pub fn incr_recursion_depth_for_repr(&self) -> Option<RecursionToken> {
-        self.incr_recursion_depth().ok()
     }
 
     /// Decrements the recursion depth.
@@ -933,7 +918,7 @@ impl<T: ResourceTracker> Heap<T> {
             refcount: Cell::new(1),
             readers: Cell::new(0),
             data: UnsafeHeapData(UnsafeCell::new(data)),
-            hash_state,
+            hash_state: Cell::new(hash_state),
             color: Cell::new(CcColor::Black),
         };
 
@@ -978,7 +963,7 @@ impl<T: ResourceTracker> Heap<T> {
     /// # Panics
     /// Panics if the value ID is invalid or the value has already been freed.
     pub fn inc_ref(&self, id: HeapId) {
-        let value = self.entries.get(id.index());
+        let value = self.entries.get(id);
         value.refcount.update(|r| r + 1);
     }
 
@@ -1003,19 +988,22 @@ impl<T: ResourceTracker> Heap<T> {
         let mut current_id = id;
         let mut work_stack = Vec::new();
         loop {
-            let slot = self.entries.get_mut(current_id.index());
-            let entry = slot.as_mut().expect("Heap::dec_ref: object already freed");
-            if entry.refcount.get() > 1 {
-                entry.refcount.update(|r| r - 1);
+            let mut entry = self
+                .entries
+                .entry(current_id)
+                .expect("Heap::dec_ref: value already freed");
+            let heap_entry = entry.get();
+            if heap_entry.refcount.get() > 1 {
+                heap_entry.refcount.update(|r| r - 1);
 
                 // SAFETY: only `&mut self` paths reach here, so reading the
                 // discriminant of `data` cannot race with mutation.
-                let is_gc_tracked = unsafe { &*entry.data.0.get() }.is_gc_tracked();
-                if is_gc_tracked && entry.color.get() != CcColor::Purple {
+                let is_gc_tracked = unsafe { &*heap_entry.data.0.get() }.is_gc_tracked();
+                if is_gc_tracked && heap_entry.color.get() != CcColor::Purple {
                     // The refcount survived — this entry is the only place a
                     // newly unreachable cycle could now be hiding. Flag it as
                     // a candidate for the next `collect_cycles`.
-                    entry.color.set(CcColor::Purple);
+                    heap_entry.color.set(CcColor::Purple);
                     self.purple_count += 1;
                 }
             } else {
@@ -1024,28 +1012,25 @@ impl<T: ResourceTracker> Heap<T> {
                     "Heap::dec_ref: empty-tuple singleton's heap-owned refcount must never reach zero",
                 );
                 assert!(
-                    entry.readers.get() == 0,
+                    heap_entry.readers.get() == 0,
                     "Heap::dec_ref: cannot free HeapId({}) with {} active reader(s)",
                     current_id.index(),
-                    entry.readers.get(),
+                    heap_entry.readers.get(),
                 );
                 // If the entry was a pending cycle candidate, decrement
                 // `purple_count` to reflect that it is leaving the heap before
                 // the collector reaches it.
-                if entry.color.get() == CcColor::Purple {
+                if heap_entry.color.get() == CcColor::Purple {
                     debug_assert!(self.purple_count > 0);
                     self.purple_count -= 1;
                 }
-                if let Some(mut value) = slot.take() {
-                    // refcount == 1, free the value and add slot to free list for reuse
-                    self.entries.free(current_id);
+                let mut value = entry.free();
 
-                    // Notify tracker of freed memory
-                    self.tracker.on_free(|| value.data.0.get_mut().py_estimate_size());
+                // Notify tracker of freed memory
+                self.tracker.on_free(|| value.data.0.get_mut().py_estimate_size());
 
-                    // Collect child IDs and push onto work stack for iterative processing
-                    py_dec_ref_ids_for_data(value.data.0.get_mut(), &mut work_stack);
-                }
+                // Collect child IDs and push onto work stack for iterative processing
+                py_dec_ref_ids_for_data(value.data.0.get_mut(), &mut work_stack);
             }
 
             let Some(next_id) = work_stack.pop() else {
@@ -1062,7 +1047,7 @@ impl<T: ResourceTracker> Heap<T> {
     /// or the data is currently borrowed via `with_entry_mut`/`call_attr`.
     #[must_use]
     pub fn get(&self, id: HeapId) -> &HeapData {
-        let data = &self.entries.get(id.index()).data;
+        let data = &self.entries.get(id).data;
         // SAFETY: (DH) no mutable references into `HeapData` is possible while the heap is borrowed
         unsafe { &*data.0.get() }
     }
@@ -1082,14 +1067,9 @@ impl<T: ResourceTracker> Heap<T> {
         //
         // That only matters before the hash is cached, so not the worst thing for performance.
 
-        let entry = vm
-            .heap
-            .entries
-            .get_mut(id.index())
-            .as_mut()
-            .expect("Heap::get_or_compute_hash: object already freed");
+        let entry = vm.heap.entries.get(id);
 
-        match entry.hash_state {
+        match entry.hash_state.get() {
             HashState::Unhashable => return Ok(None),
             HashState::Cached(hash) => return Ok(Some(hash)),
             HashState::Unknown => {}
@@ -1098,16 +1078,11 @@ impl<T: ResourceTracker> Heap<T> {
         let hash = vm.heap.read(id).py_hash(id, vm)?;
 
         // Cache the result
-        let entry = vm
-            .heap
-            .entries
-            .get_mut(id.index())
-            .as_mut()
-            .expect("Heap::get_or_compute_hash: object freed during compute");
-        entry.hash_state = match hash {
+        let entry = vm.heap.entries.get(id);
+        entry.hash_state.set(match hash {
             Some(value) => HashState::Cached(value),
             None => HashState::Unhashable,
-        };
+        });
         Ok(hash)
     }
 
@@ -1120,7 +1095,7 @@ impl<T: ResourceTracker> Heap<T> {
     #[must_use]
     #[cfg(feature = "ref-count-return")]
     pub fn get_refcount(&self, id: HeapId) -> usize {
-        self.entries.get(id.index()).refcount.get()
+        self.entries.get(id).refcount.get()
     }
 
     /// Returns the number of live (non-freed) values on the heap.
@@ -1135,117 +1110,6 @@ impl<T: ResourceTracker> Heap<T> {
     pub fn entry_count(&self) -> usize {
         // Skip index 0 which is the empty tuple singleton
         self.entries.iter().skip(1).count()
-    }
-
-    /// Multiplies a heap-allocated value by an `i64`.
-    ///
-    /// If `id` refers to a `LongInt`, performs integer multiplication with a size
-    /// pre-check. Otherwise, treats `id` as a sequence and `int_val` as the repeat
-    /// count. This avoids multiple `heap.get()` calls by looking up the data once.
-    ///
-    /// Returns `Ok(None)` if the heap entry is neither a LongInt nor a sequence type.
-    pub fn mult_ref_by_i64(&mut self, id: HeapId, int_val: i64) -> RunResult<Option<Value>> {
-        match self.get(id) {
-            HeapData::LongInt(li) => {
-                check_mult_size(li.bits(), i64_bits(int_val), &self.tracker)?;
-                let result = LongInt::new(li.inner().clone()) * LongInt::from(int_val);
-                Ok(Some(result.into_value(self)?))
-            }
-            HeapData::TimeDelta(td) => {
-                let total = timedelta::total_microseconds(td)
-                    .checked_mul(i128::from(int_val))
-                    .ok_or_else(|| {
-                        SimpleException::new_msg(ExcType::OverflowError, "timedelta multiplication overflow")
-                    })?;
-                let delta = timedelta::from_total_microseconds(total)?;
-                Ok(Some(Value::Ref(self.allocate(HeapData::TimeDelta(delta))?)))
-            }
-            _ => {
-                let count = i64_to_repeat_count(int_val)?;
-                self.mult_sequence(id, count)
-            }
-        }
-    }
-
-    /// Multiplies two heap-allocated values.
-    ///
-    /// Returns Ok(None) for unsupported type combinations.
-    pub fn mult_heap_values(&mut self, id1: HeapId, id2: HeapId) -> RunResult<Option<Value>> {
-        let (seq_id, count) = match (self.get(id1), self.get(id2)) {
-            (HeapData::LongInt(a), HeapData::LongInt(b)) => {
-                check_mult_size(a.bits(), b.bits(), &self.tracker)?;
-                let result = LongInt::new(a.inner() * b.inner());
-                return Ok(Some(result.into_value(self)?));
-            }
-            (HeapData::LongInt(li), _) => {
-                let count = longint_to_repeat_count(li)?;
-                (id2, count)
-            }
-            (_, HeapData::LongInt(li)) => {
-                let count = longint_to_repeat_count(li)?;
-                (id1, count)
-            }
-            _ => return Ok(None),
-        };
-
-        self.mult_sequence(seq_id, count)
-    }
-
-    /// Multiplies (repeats) a sequence by an integer count.
-    ///
-    /// This method handles sequence repetition for Python's `*` operator when applied
-    /// to sequences (str, bytes, list, tuple). It creates a new heap-allocated sequence
-    /// with the elements repeated `count` times.
-    ///
-    /// # Arguments
-    /// * `id` - HeapId of the sequence to repeat
-    /// * `count` - Number of times to repeat (0 returns empty sequence)
-    ///
-    /// # Returns
-    /// * `Ok(Some(Value))` - The new repeated sequence
-    /// * `Ok(None)` - If the heap entry is not a sequence type
-    /// * `Err` - If allocation fails due to resource limits
-    pub fn mult_sequence(&mut self, id: HeapId, count: usize) -> RunResult<Option<Value>> {
-        match self.get(id) {
-            HeapData::Str(s) => {
-                check_repeat_size(s.len(), count, &self.tracker)?;
-                Ok(Some(Value::Ref(
-                    self.allocate(HeapData::Str(s.as_str().repeat(count).into()))?,
-                )))
-            }
-            HeapData::Bytes(b) => {
-                check_repeat_size(b.len(), count, &self.tracker)?;
-                Ok(Some(Value::Ref(
-                    self.allocate(HeapData::Bytes(b.as_slice().repeat(count).into()))?,
-                )))
-            }
-            HeapData::List(list) => {
-                check_repeat_size(list.len().saturating_mul(size_of::<Value>()), count, &self.tracker)?;
-                let mut result = Vec::with_capacity(list.as_slice().len() * count);
-                for _ in 0..count {
-                    result.extend(list.as_slice().iter().map(|v| v.clone_with_heap(self)));
-                    self.check_time()?;
-                }
-                Ok(Some(Value::Ref(self.allocate(HeapData::List(List::new(result)))?)))
-            }
-            HeapData::Tuple(tuple) => {
-                if count == 0 {
-                    return Ok(Some(self.get_empty_tuple()));
-                }
-                check_repeat_size(
-                    tuple.as_slice().len().saturating_mul(size_of::<Value>()),
-                    count,
-                    &self.tracker,
-                )?;
-                let mut result = SmallVec::with_capacity(tuple.as_slice().len() * count);
-                for _ in 0..count {
-                    result.extend(tuple.as_slice().iter().map(|v| v.clone_with_heap(self)));
-                    self.check_time()?;
-                }
-                Ok(Some(allocate_tuple(result, self)?))
-            }
-            _ => Ok(None),
-        }
     }
 
     /// Returns whether cycle collection should run.
@@ -1330,7 +1194,7 @@ impl<T: ResourceTracker> Heap<T> {
         for id in seeds {
             // Re-check Purple: an earlier seed's `mark_gray` may have already
             // visited this entry and flipped its color to Gray.
-            let entry = self.entries.get(id.index());
+            let entry = self.entries.get(id);
             if entry.color.get() == CcColor::Purple {
                 self.mark_gray(id, &mut work_stack);
                 filtered_seeds.push(id);
@@ -1350,7 +1214,7 @@ impl<T: ResourceTracker> Heap<T> {
         debug_assert!(work_stack.is_empty());
         work_stack.push(start);
         while let Some(id) = work_stack.pop() {
-            let entry = self.entries.get(id.index());
+            let entry = self.entries.get(id);
             if entry.color.get() == CcColor::Gray {
                 continue;
             }
@@ -1365,7 +1229,7 @@ impl<T: ResourceTracker> Heap<T> {
             // descent; the rc-- happens *before* we recurse, matching the
             // textbook Bacon–Rajan ordering.
             for child_id in &work_stack[len_before..] {
-                let child = self.entries.get(child_id.index());
+                let child = self.entries.get(*child_id);
                 debug_assert!(
                     child.refcount.get() > 0,
                     "mark_gray: child refcount underflow at HeapId({})",
@@ -1392,7 +1256,7 @@ impl<T: ResourceTracker> Heap<T> {
         debug_assert!(work_stack.is_empty());
         work_stack.push(start);
         while let Some(id) = work_stack.pop() {
-            let entry = self.entries.get(id.index());
+            let entry = self.entries.get(id);
             if entry.color.get() != CcColor::Gray {
                 continue;
             }
@@ -1424,7 +1288,7 @@ impl<T: ResourceTracker> Heap<T> {
         let mut work_stack = vec![start];
         let mut children_buf = Vec::new();
         while let Some(id) = work_stack.pop() {
-            let entry = self.entries.get(id.index());
+            let entry = self.entries.get(id);
             if entry.color.get() == CcColor::Black {
                 // Already processed via another edge — skip to avoid
                 // re-walking children (which would double-increment
@@ -1437,7 +1301,7 @@ impl<T: ResourceTracker> Heap<T> {
             children_buf.clear();
             collect_child_ids(data, &mut children_buf);
             for &child_id in &children_buf {
-                let child = self.entries.get(child_id.index());
+                let child = self.entries.get(child_id);
                 child.refcount.update(|r| r + 1);
                 if child.color.get() != CcColor::Black {
                     work_stack.push(child_id);
@@ -1471,24 +1335,23 @@ impl<T: ResourceTracker> Heap<T> {
         debug_assert!(work_stack.is_empty());
         work_stack.push(start);
         while let Some(id) = work_stack.pop() {
-            let slot = self.entries.get_mut(id.index());
-            let Some(entry) = slot.as_ref() else {
+            let Some(mut entry) = self.entries.entry(id) else {
                 // Already freed via another seed's traversal — ignore.
                 continue;
             };
-            if entry.color.get() != CcColor::White {
+            let heap_entry = entry.get();
+            if heap_entry.color.get() != CcColor::White {
                 // Either resurrected to Black by `Scan` or never visited
                 // (still Black/Gray from somewhere). Don't free.
                 continue;
             }
             debug_assert!(
-                entry.readers.get() == 0,
+                heap_entry.readers.get() == 0,
                 "collect_white: cannot free HeapId({}) with {} active reader(s)",
                 id.index(),
-                entry.readers.get(),
+                heap_entry.readers.get(),
             );
-            let mut value = slot.take().expect("collect_white: slot vanished after color check");
-            self.entries.free(id);
+            let mut value = entry.free();
             self.tracker.on_free(|| value.data.0.get_mut().py_estimate_size());
             // Walk children, marking child `Value::Ref`s as `Dereferenced`
             // under `memory-model-checks` so dropping the freed entry's data
@@ -1501,41 +1364,15 @@ impl<T: ResourceTracker> Heap<T> {
     }
 }
 
-/// Computes the number of significant bits in an `i64`.
-///
-/// Returns 0 for zero, otherwise returns the position of the highest set bit
-/// plus one. Uses unsigned absolute value to handle negative numbers correctly.
-fn i64_bits(value: i64) -> u64 {
-    if value == 0 {
-        0
-    } else {
-        u64::from(64 - value.unsigned_abs().leading_zeros())
-    }
-}
-
-/// Converts an `i64` repeat count to `usize` for sequence repetition.
-///
-/// Returns 0 for negative values (Python treats negative repeat counts as 0).
-/// Returns `OverflowError` if the value exceeds `usize::MAX`.
-fn i64_to_repeat_count(n: i64) -> RunResult<usize> {
-    if n <= 0 {
-        Ok(0)
-    } else {
-        usize::try_from(n).map_err(|_| ExcType::overflow_repeat_count().into())
-    }
-}
-
-/// Converts a `LongInt` repeat count to `usize` for sequence repetition.
-///
-/// Returns 0 for negative values (Python treats negative repeat counts as 0).
-/// Returns `OverflowError` if the value exceeds `usize::MAX`.
-fn longint_to_repeat_count(li: &LongInt) -> RunResult<usize> {
-    if li.is_negative() {
-        Ok(0)
-    } else if let Some(count) = li.to_usize() {
-        Ok(count)
-    } else {
-        Err(ExcType::overflow_repeat_count().into())
+// With `memory-model-checks` enabled, need to manually clean up the heap to avoid the
+// bookkeeping causing panics at shutdown.
+#[cfg(feature = "memory-model-checks")]
+impl<T: ResourceTracker> Drop for Heap<T> {
+    fn drop(&mut self) {
+        self.entries.retain(|_, value| {
+            py_dec_ref_ids_for_data(value.data.0.get_mut(), &mut Vec::new());
+            false
+        });
     }
 }
 
@@ -1691,6 +1528,15 @@ fn collect_child_ids(data: &HeapData, work_list: &mut Vec<HeapId>) {
                 }
             }
         }
+        HeapData::DateTime(dt) => {
+            // Aware datetimes retain a heap reference to the tzinfo object so that
+            // `dt.tzinfo is tz` identity is preserved across attribute lookups.
+            // GC must follow that reference, otherwise the timezone gets swept
+            // while the datetime still points at the freed slot.
+            if let Some(tz_id) = dt.tzinfo_ref() {
+                work_list.push(tz_id);
+            }
+        }
         // Leaf types with no heap references
         _ => {}
     }
@@ -1743,6 +1589,13 @@ fn py_dec_ref_ids_for_data(data: &mut HeapData, stack: &mut Vec<HeapId>) {
             // Decrement ref count for result values that are heap references
             for result in gather.results.iter_mut().flatten() {
                 result.py_dec_ref_ids(stack);
+            }
+        }
+        HeapData::DateTime(dt) => {
+            // Mirror `collect_child_ids`: when an aware datetime is freed we must
+            // also drop the retained tzinfo reference so its refcount is balanced.
+            if let Some(tz_id) = dt.tzinfo_ref() {
+                stack.push(tz_id);
             }
         }
         // other types have no nested heap references
@@ -1848,8 +1701,8 @@ mod tests {
         // the entry. The borrow checker prevents holding a real `HeapRead`
         // across `collect_cycles` (which requires `&mut Heap`), so we
         // splice the same counter that `HeapRead::Drop` decrements.
-        let readers_before = heap.entries.get(id.index()).readers.get();
-        heap.entries.get(id.index()).readers.set(readers_before + 1);
+        let readers_before = heap.entries.get(id).readers.get();
+        heap.entries.get(id).readers.set(readers_before + 1);
 
         // Drive the entry into Purple via dec_ref: rc 2 → 1. Without the
         // `readers > 0` special-case in `Scan`, the resulting cycle would
@@ -1865,7 +1718,7 @@ mod tests {
 
         // Restore the simulated reader so `Heap::drop` can clean up
         // without tripping the `dec_ref` active-readers assertion.
-        heap.entries.get(id.index()).readers.set(readers_before);
+        heap.entries.get(id).readers.set(readers_before);
         // The entry is leaked here on purpose (rc = 1 from the self-ref,
         // no external root remains, but the collector ran already and the
         // color is Black — the next dec_ref would try to recurse into the
@@ -1919,7 +1772,7 @@ mod tests {
         // unreachable except via its self-pointer. dec_ref flags Purple.
         heap.dec_ref(id); // rc 2 → 1
         assert_eq!(heap.purple_count, 1);
-        let pre_color = heap.entries.get(id.index()).color.get();
+        let pre_color = heap.entries.get(id).color.get();
         assert_eq!(pre_color, CcColor::Purple);
 
         // Round-trip through postcard.
@@ -1928,7 +1781,7 @@ mod tests {
 
         // `purple_count` and the per-entry color must round-trip.
         assert_eq!(restored.purple_count, 1);
-        assert_eq!(restored.entries.get(id.index()).color.get(), CcColor::Purple);
+        assert_eq!(restored.entries.get(id).color.get(), CcColor::Purple);
 
         // Run the collector on the restored heap; the cycle is unreachable
         // and must be reclaimed.

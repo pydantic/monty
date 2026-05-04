@@ -278,7 +278,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, TimeZone> {
     fn py_repr_fmt(
         &self,
         f: &mut impl Write,
-        vm: &VM<'h, '_, impl ResourceTracker>,
+        vm: &mut VM<'h, '_, impl ResourceTracker>,
         _heap_ids: &mut AHashSet<HeapId>,
     ) -> RunResult<()> {
         let tz = self.get(vm.heap);
@@ -296,7 +296,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, TimeZone> {
         Ok(())
     }
 
-    fn py_str(&self, vm: &VM<'h, '_, impl ResourceTracker>) -> RunResult<Cow<'static, str>> {
+    fn py_str(&self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<Cow<'static, str>> {
         let tz = self.get(vm.heap);
         if let Some(name) = &tz.name {
             return Ok(Cow::Owned(name.clone()));

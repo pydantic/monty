@@ -84,11 +84,7 @@ impl LongInt {
     pub fn hash(&self) -> u64 {
         // If the LongInt fits in i64, hash as i64 for consistency
         if let Some(i) = self.0.to_i64() {
-            let mut hasher = DefaultHasher::new();
-            // Hash the i64 discriminant and value to match Value::Int hashing
-            mem::discriminant(&Value::Int(0)).hash(&mut hasher);
-            i.hash(&mut hasher);
-            hasher.finish()
+            i.cast_unsigned()
         } else {
             // For LongInts outside i64 range, use byte representation
             let mut hasher = DefaultHasher::new();

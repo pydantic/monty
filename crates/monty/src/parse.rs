@@ -1250,7 +1250,7 @@ impl<'a> Parser<'a> {
         match ast {
             AstExpr::Name(ast::ExprName { id, range, .. }) => Ok(self.identifier(&id, range)),
             other => Err(ParseError::syntax(
-                format!("Expected name, got {other:?}"),
+                format!("Expected name, got {}", describe_expr_kind(&other)),
                 self.convert_range(other.range()),
             )),
         }
@@ -1351,7 +1351,7 @@ impl<'a> Parser<'a> {
                 Ok(UnpackTarget::Tuple { targets, position })
             }
             other => Err(ParseError::syntax(
-                format!("invalid unpacking target: {other:?}"),
+                format!("invalid unpacking target: {}", describe_expr_kind(&other)),
                 self.convert_range(other.range()),
             )),
         }
@@ -1608,6 +1608,48 @@ fn convert_conversion_flag(flag: RuffConversionFlag) -> ConversionFlag {
         RuffConversionFlag::Str => ConversionFlag::Str,
         RuffConversionFlag::Repr => ConversionFlag::Repr,
         RuffConversionFlag::Ascii => ConversionFlag::Ascii,
+    }
+}
+
+/// Short human-readable name for an `AstExpr` variant, for use in
+/// user-facing parse errors. Avoids the Rust `Debug` formatting of the
+/// node, which would leak internal field names, ranges, and struct
+/// layout of `ruff_python_ast` into the error message.
+fn describe_expr_kind(expr: &AstExpr) -> &'static str {
+    match expr {
+        AstExpr::Name(_) => "name",
+        AstExpr::Starred(_) => "starred expression",
+        AstExpr::Attribute(_) => "attribute",
+        AstExpr::Subscript(_) => "subscript",
+        AstExpr::Call(_) => "function call",
+        AstExpr::Tuple(_) => "tuple",
+        AstExpr::List(_) => "list",
+        AstExpr::Set(_) => "set",
+        AstExpr::Dict(_) => "dict",
+        AstExpr::NumberLiteral(_) => "number literal",
+        AstExpr::StringLiteral(_) => "string literal",
+        AstExpr::BytesLiteral(_) => "bytes literal",
+        AstExpr::BooleanLiteral(_) => "boolean literal",
+        AstExpr::NoneLiteral(_) => "None",
+        AstExpr::EllipsisLiteral(_) => "...",
+        AstExpr::FString(_) => "f-string",
+        AstExpr::TString(_) => "t-string",
+        AstExpr::Lambda(_) => "lambda",
+        AstExpr::If(_) => "conditional expression",
+        AstExpr::BoolOp(_) => "boolean expression",
+        AstExpr::BinOp(_) => "binary expression",
+        AstExpr::UnaryOp(_) => "unary expression",
+        AstExpr::Compare(_) => "comparison",
+        AstExpr::Named(_) => "named expression",
+        AstExpr::Yield(_) => "yield expression",
+        AstExpr::YieldFrom(_) => "yield from expression",
+        AstExpr::Await(_) => "await expression",
+        AstExpr::ListComp(_) => "list comprehension",
+        AstExpr::SetComp(_) => "set comprehension",
+        AstExpr::DictComp(_) => "dict comprehension",
+        AstExpr::Generator(_) => "generator expression",
+        AstExpr::Slice(_) => "slice",
+        AstExpr::IpyEscapeCommand(_) => "IPython escape command",
     }
 }
 

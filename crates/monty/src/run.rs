@@ -422,6 +422,8 @@ impl Executor {
             self.populate_inputs(inputs, &mut vm)?;
             let frame_exit_result = vm.run_module(&self.module_code);
 
+            vm.__force_gc_for_tests();
+
             // Take globals out of the VM so we can inspect them, but keep VM alive
             // for heap access and later conversion.
             let globals = vm.take_globals();

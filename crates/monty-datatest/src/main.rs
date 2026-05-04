@@ -2228,7 +2228,7 @@ fn format_cpython_exception(py: Python<'_>, e: &PyErr) -> String {
 /// and will fail with a timeout error. Disabled under miri since the interpreter
 /// overhead makes normal tests exceed the 2s limit.
 const TEST_TIMEOUT: Duration = if cfg!(miri) {
-    Duration::from_secs(600)
+    Duration::from_mins(10)
 } else {
     Duration::from_secs(2)
 };

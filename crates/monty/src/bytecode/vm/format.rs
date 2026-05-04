@@ -105,7 +105,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
     ///
     /// The `value_for_error` parameter is used to include the value type in error messages.
     /// Uses lazy type capture: only calls `py_type()` in error paths.
-    fn get_format_spec(&self, spec_value: &Value, value_for_error: &Value) -> Result<ParsedFormatSpec, RunError> {
+    fn get_format_spec(&mut self, spec_value: &Value, value_for_error: &Value) -> Result<ParsedFormatSpec, RunError> {
         match spec_value {
             Value::Int(n) if *n < 0 => {
                 // Decode the encoded format spec; n < 0 ensures (-n - 1) >= 0

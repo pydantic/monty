@@ -375,9 +375,9 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
             return Ok(None);
         };
 
-        let lhs_set = match this.heap.get(*lhs_id) {
-            HeapData::DictKeysView(view) => view.to_set(this)?,
-            HeapData::DictItemsView(view) => view.to_set(this)?,
+        let lhs_set = match this.heap.read(*lhs_id) {
+            HeapReadOutput::DictKeysView(view) => view.to_set(this)?,
+            HeapReadOutput::DictItemsView(view) => view.to_set(this)?,
             _ => return Ok(None),
         };
         defer_drop!(lhs_set, this);

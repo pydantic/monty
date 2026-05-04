@@ -285,23 +285,6 @@ impl ReMatch {
     }
 }
 
-impl ReMatch {
-    /// Formats this match for `repr()` output.
-    ///
-    /// Kept as an inherent method so `HeapData` can call it without going
-    /// through a `HeapRead` handle.
-    pub fn py_repr_fmt(
-        &self,
-        f: &mut impl Write,
-        _vm: &VM<'_, '_, impl ResourceTracker>,
-        _heap_ids: &mut AHashSet<HeapId>,
-    ) -> RunResult<()> {
-        write!(f, "<re.Match object; span=({}, {}), match=", self.start, self.end)?;
-        string_repr_fmt(&self.full_match, f)?;
-        Ok(f.write_char('>')?)
-    }
-}
-
 impl<'h> PyTrait<'h> for HeapRead<'h, ReMatch> {
     fn py_type(&self, _vm: &VM<'h, '_, impl ResourceTracker>) -> Type {
         Type::ReMatch
@@ -324,10 +307,13 @@ impl<'h> PyTrait<'h> for HeapRead<'h, ReMatch> {
     fn py_repr_fmt(
         &self,
         f: &mut impl Write,
-        vm: &VM<'h, '_, impl ResourceTracker>,
-        heap_ids: &mut AHashSet<HeapId>,
+        vm: &mut VM<'h, '_, impl ResourceTracker>,
+        _heap_ids: &mut AHashSet<HeapId>,
     ) -> RunResult<()> {
-        self.get(vm.heap).py_repr_fmt(f, vm, heap_ids)
+        let m = self.get(vm.heap);
+        write!(f, "<re.Match object; span=({}, {}), match=", m.start, m.end)?;
+        string_repr_fmt(&m.full_match, f)?;
+        Ok(f.write_char('>')?)
     }
 
     fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<Option<CallResult>> {
