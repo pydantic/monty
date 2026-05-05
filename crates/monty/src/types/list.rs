@@ -698,6 +698,18 @@ fn list_count<'h>(
 }
 
 /// Performs an in-place sort on a list with optional key function and reverse flag.
+///
+/// To safely support user-supplied `key` callbacks (and rich-comparison `__lt__`
+/// methods) that may reentrantly mutate the same list, we follow CPython's
+/// strategy: the list's `items` vector is **detached** for the duration of the
+/// sort so the list looks empty to any reentrant code. All sort work is then
+/// performed on the detached buffer. After sorting, if the list is still empty
+/// we restore the (now sorted) buffer; if the user repopulated the list during
+/// the sort we discard our buffer and raise
+/// `ValueError: list modified during sort`, matching CPython exactly.
+///
+/// This avoids the previous panic where a stale loop-bound captured before
+/// iteration could index past the live list's length after a callback shrank it.
 fn do_list_sort<'h>(
     list: &mut HeapRead<'h, List>,
     args: ArgValues,
@@ -725,25 +737,73 @@ fn do_list_sort<'h>(
     };
     defer_drop!(key_fn, vm);
 
-    // 1. Compute key values if a key function was provided, otherwise we'll sort by the items themselves
+    // Detach the list's items so reentrant access via the list's heap id sees
+    // an empty list. The detached items still carry their existing refcounts;
+    // we'll either move them back into the list (success) or drop them
+    // (mutation detected / error during sort).
+    let items = mem::take(&mut list.get_mut(vm.heap).items);
+    let mut items_guard = HeapGuard::new(items, vm);
+    let (items, vm) = items_guard.as_parts_mut();
+
+    let sort_result = sort_detached_items(items, key_fn.as_ref(), reverse, vm);
+
+    // Re-attach the detached items. CPython's semantics: regardless of whether
+    // the user mutated the list during the sort, we always restore the detached
+    // buffer (which holds the original refs sorted-or-partially-sorted) so
+    // refcounts stay consistent. If the user *did* mutate the list, we drop
+    // their interleaved values first, then put our buffer back, then surface
+    // the `ValueError: list modified during sort` after any pre-existing sort
+    // error.
+    let (items, vm) = items_guard.into_parts();
+    let was_modified = !list.get(vm.heap).items.is_empty();
+    if was_modified {
+        // Discard whatever the user appended/inserted on the empty live list.
+        mem::take(&mut list.get_mut(vm.heap).items).drop_with_heap(vm);
+    }
+    // Restore the detached buffer (sorted on success, partially-permuted on
+    // sort error). The `contains_refs` flag was not cleared by `mem::take`
+    // (only the Vec was taken), so it correctly still describes the buffer
+    // being put back.
+    *list.get_mut(vm.heap).as_vec_mut() = items;
+
+    // Surface any sort error first; otherwise the modification error (if any).
+    sort_result?;
+    if was_modified {
+        Err(ExcType::value_error_list_modified_during_sort())
+    } else {
+        Ok(())
+    }
+}
+
+/// Performs the actual sort work on a detached items buffer.
+///
+/// Extracted from [`do_list_sort`] so the caller can use a single
+/// detach/re-attach scope around the work and uniformly handle reentrant
+/// list mutation regardless of where in the sort it occurred.
+fn sort_detached_items(
+    items: &mut [Value],
+    key_fn: Option<&Value>,
+    reverse: bool,
+    vm: &mut VM<'_, impl ResourceTracker>,
+) -> Result<(), RunError> {
+    // 1. Compute key values if a key function was provided, otherwise we'll
+    // sort by the items themselves.
     let compare_values = if let Some(f) = key_fn {
-        let len = list.get(vm.heap).items.len();
-        let keys: Vec<Value> = Vec::with_capacity(len);
+        let keys: Vec<Value> = Vec::with_capacity(items.len());
         // Use a HeapGuard to ensure that if key function evaluation fails partway through,
         // we clean up any keys that were successfully computed
         let mut keys_guard = HeapGuard::new(keys, vm);
         let (keys, vm) = keys_guard.as_parts_mut();
-        for i in 0..len {
-            let item = list.get(vm.heap).items[i].clone_with_heap(vm);
+        // Iterate the detached buffer directly. Reentrant mutation via the
+        // list's heap id targets the empty live list, not this buffer, so we
+        // never observe a shifting length here.
+        for item in items.iter() {
+            let item = item.clone_with_heap(vm);
             keys.push(vm.evaluate_function("sorted() key argument", f, ArgValues::One(item))?);
         }
         keys_guard.into_inner()
     } else {
-        list.get(vm.heap)
-            .items
-            .iter()
-            .map(|item| item.clone_with_heap(vm.heap))
-            .collect()
+        items.iter().map(|item| item.clone_with_heap(vm.heap)).collect()
     };
     defer_drop!(compare_values, vm);
 
@@ -753,8 +813,9 @@ fn do_list_sort<'h>(
 
     sort_indices(&mut indices, compare_values, reverse, vm)?;
 
-    // 3. Rearrange items in-place according to the sorted permutation
-    apply_permutation(&mut list.get_mut(vm.heap).items, &mut indices);
+    // 3. Rearrange items in-place in the detached buffer.
+    apply_permutation(items, &mut indices);
+
     Ok(())
 }
 

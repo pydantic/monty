@@ -1230,6 +1230,18 @@ impl ExcType {
         SimpleException::new_msg(Self::ValueError, "list.remove(x): x not in list").into()
     }
 
+    /// Creates a ValueError for `list.sort()` when the list was reentrantly
+    /// mutated by a user-supplied `key` callback (or comparison) during the sort.
+    ///
+    /// CPython detaches the list's storage for the duration of the sort so the
+    /// list looks empty to reentrant code, then raises this error if the user
+    /// re-populated the list while the sort was in progress. Matches CPython's
+    /// exact message: `ValueError: list modified during sort`.
+    #[must_use]
+    pub(crate) fn value_error_list_modified_during_sort() -> RunError {
+        SimpleException::new_msg(Self::ValueError, "list modified during sort").into()
+    }
+
     /// Creates an IndexError for popping from an empty list.
     ///
     /// Matches CPython's format: `IndexError: pop from empty list`
