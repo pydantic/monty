@@ -174,7 +174,7 @@ impl<'h> HeapRead<'h, ReMatch> {
     ///
     /// Groups that didn't participate in the match have the `default` value
     /// (typically `None`).
-    fn get_groupdict(&self, default: &Value, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<Value> {
+    fn get_groupdict(&self, default: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Value> {
         let this = self.get(vm.heap);
         let mut pairs = Vec::with_capacity(this.named_groups.len());
         for (name, idx) in &this.named_groups {
@@ -286,20 +286,20 @@ impl ReMatch {
 }
 
 impl<'h> PyTrait<'h> for HeapRead<'h, ReMatch> {
-    fn py_type(&self, _vm: &VM<'h, '_, impl ResourceTracker>) -> Type {
+    fn py_type(&self, _vm: &VM<'h, impl ResourceTracker>) -> Type {
         Type::ReMatch
     }
 
-    fn py_len(&self, _vm: &VM<'h, '_, impl ResourceTracker>) -> Option<usize> {
+    fn py_len(&self, _vm: &VM<'h, impl ResourceTracker>) -> Option<usize> {
         None
     }
 
-    fn py_eq(&self, _other: &Self, _vm: &mut VM<'h, '_, impl ResourceTracker>) -> Result<bool, ResourceError> {
+    fn py_eq(&self, _other: &Self, _vm: &mut VM<'h, impl ResourceTracker>) -> Result<bool, ResourceError> {
         // Match objects are not comparable
         Ok(false)
     }
 
-    fn py_bool(&self, _vm: &mut VM<'h, '_, impl ResourceTracker>) -> bool {
+    fn py_bool(&self, _vm: &mut VM<'h, impl ResourceTracker>) -> bool {
         // Match objects are always truthy
         true
     }
@@ -307,7 +307,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, ReMatch> {
     fn py_repr_fmt(
         &self,
         f: &mut impl Write,
-        vm: &mut VM<'h, '_, impl ResourceTracker>,
+        vm: &mut VM<'h, impl ResourceTracker>,
         _heap_ids: &mut AHashSet<HeapId>,
     ) -> RunResult<()> {
         let m = self.get(vm.heap);
@@ -316,7 +316,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, ReMatch> {
         Ok(f.write_char('>')?)
     }
 
-    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<Option<CallResult>> {
+    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<CallResult>> {
         match attr.static_string() {
             Some(StaticStrings::StringAttr) => {
                 let s = Str::new(self.get(vm.heap).input_string.clone());
@@ -330,7 +330,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, ReMatch> {
     fn py_call_attr(
         &mut self,
         _self_id: HeapId,
-        vm: &mut VM<'h, '_, impl ResourceTracker>,
+        vm: &mut VM<'h, impl ResourceTracker>,
         attr: &EitherStr,
         args: ArgValues,
     ) -> RunResult<CallResult> {
@@ -365,7 +365,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, ReMatch> {
         Ok(CallResult::Value(result))
     }
 
-    fn py_getitem(&self, key: &Value, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<Value> {
+    fn py_getitem(&self, key: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Value> {
         match key {
             Value::Int(n) => self.get(vm.heap).get_group(*n, vm.heap),
             Value::Bool(b) => self.get(vm.heap).get_group(i64::from(*b), vm.heap),
@@ -416,7 +416,7 @@ impl HeapItem for ReMatch {
 fn call_group<'h>(
     m: &HeapRead<'h, ReMatch>,
     args: ArgValues,
-    vm: &mut VM<'h, '_, impl ResourceTracker>,
+    vm: &mut VM<'h, impl ResourceTracker>,
 ) -> RunResult<Value> {
     match args {
         ArgValues::Empty => m.get(vm.heap).get_group(0, vm.heap),
@@ -446,7 +446,7 @@ fn call_group<'h>(
 }
 
 /// Resolves a single group argument — integer, bool, or string (named group).
-fn resolve_group_arg(m: &ReMatch, val: &Value, vm: &VM<'_, '_, impl ResourceTracker>) -> RunResult<Value> {
+fn resolve_group_arg(m: &ReMatch, val: &Value, vm: &VM<'_, impl ResourceTracker>) -> RunResult<Value> {
     match val {
         Value::Int(n) => m.get_group(*n, vm.heap),
         Value::Bool(b) => m.get_group(i64::from(*b), vm.heap),

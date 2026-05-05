@@ -83,7 +83,7 @@ impl JsonDumpsConfig {
     ///
     /// Unsupported keyword names and not-yet-implemented CPython kwargs raise
     /// immediately so typos or dropped behavior do not go unnoticed.
-    fn parse_kwargs(kwargs: KwargsValues, vm: &mut VM<'_, '_, impl ResourceTracker>) -> RunResult<Self> {
+    fn parse_kwargs(kwargs: KwargsValues, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<Self> {
         let kwargs_iter = kwargs.into_iter();
         defer_drop_mut!(kwargs_iter, vm);
 
@@ -208,7 +208,7 @@ impl JsonDumpsConfig {
 ///
 /// CPython kwargs `cls`, `default`, and `check_circular` are intentionally
 /// unsupported and will raise `TypeError` if passed.
-pub(super) fn call_dumps(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+pub(super) fn call_dumps(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     let (mut pos, kwargs) = args.into_parts();
 
     let Some(obj) = pos.next() else {
@@ -244,7 +244,7 @@ pub(super) fn call_dumps(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgVal
 /// spaces per nesting level (with zero and negative values enabling newline-
 /// only pretty printing), and
 /// strings are repeated once per depth level exactly like CPython.
-fn parse_indent_value(value: Value, vm: &mut VM<'_, '_, impl ResourceTracker>) -> RunResult<Option<String>> {
+fn parse_indent_value(value: Value, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<Option<String>> {
     let mut value_guard = HeapGuard::new(value, vm);
     let (value, vm) = value_guard.as_parts_mut();
 
@@ -283,10 +283,7 @@ fn spaces_from_indent_count(count: i64) -> RunResult<Option<String>> {
 ///
 /// `None` leaves the default separators intact. Otherwise the value must be a
 /// two-item list or tuple of strings representing the item and key separators.
-fn parse_separators_value(
-    value: Value,
-    vm: &mut VM<'_, '_, impl ResourceTracker>,
-) -> RunResult<Option<(String, String)>> {
+fn parse_separators_value(value: Value, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<Option<(String, String)>> {
     let mut value_guard = HeapGuard::new(value, vm);
     let (value, vm) = value_guard.as_parts_mut();
 
@@ -352,7 +349,7 @@ fn check_separators_length(len: usize) -> RunResult<()> {
 /// their positional argument index in `make_encoder()`. The `role` parameter
 /// selects the matching CPython argument number (6 for `item_separator`,
 /// 5 for `key_separator`) so the error message matches CPython exactly.
-fn json_separator_to_string(value: &Value, role: &str, vm: &VM<'_, '_, impl ResourceTracker>) -> RunResult<String> {
+fn json_separator_to_string(value: &Value, role: &str, vm: &VM<'_, impl ResourceTracker>) -> RunResult<String> {
     let arg_num = if role == "item_separator" { 6 } else { 5 };
     match value {
         Value::InternString(string_id) => Ok(vm.interns.get_str(*string_id).to_owned()),
@@ -380,7 +377,7 @@ fn serialize_value(
     config: &JsonDumpsConfig,
     depth: usize,
     active_containers: &mut Vec<HeapId>,
-    vm: &mut VM<'_, '_, impl ResourceTracker>,
+    vm: &mut VM<'_, impl ResourceTracker>,
 ) -> RunResult<()> {
     match value {
         Value::None => {
@@ -475,7 +472,7 @@ fn serialize_sequence(
     config: &JsonDumpsConfig,
     depth: usize,
     active_containers: &mut Vec<HeapId>,
-    vm: &mut VM<'_, '_, impl ResourceTracker>,
+    vm: &mut VM<'_, impl ResourceTracker>,
 ) -> RunResult<()> {
     out.push('[');
     if items.is_empty() {
@@ -514,7 +511,7 @@ fn serialize_dict(
     config: &JsonDumpsConfig,
     depth: usize,
     active_containers: &mut Vec<HeapId>,
-    vm: &mut VM<'_, '_, impl ResourceTracker>,
+    vm: &mut VM<'_, impl ResourceTracker>,
 ) -> RunResult<()> {
     if config.skipkeys() {
         skip_disallowed_dict_keys(entries, vm);
@@ -554,7 +551,7 @@ fn serialize_dict(
 /// The implementation mirrors the error style used by `sorted()` and
 /// `list.sort()`: when two keys are not orderable, it raises
 /// `TypeError: '<' not supported between instances of ...`.
-fn sort_dict_entries(entries: &mut Vec<(Value, Value)>, vm: &mut VM<'_, '_, impl ResourceTracker>) -> RunResult<()> {
+fn sort_dict_entries(entries: &mut Vec<(Value, Value)>, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<()> {
     let mut indices: Vec<usize> = (0..entries.len()).collect();
     let compare_values: Vec<Value> = entries.iter().map(|(key, _)| key.clone_with_heap(vm)).collect();
     let mut compare_values_guard = HeapGuard::new(compare_values, vm);
@@ -570,7 +567,7 @@ fn sort_dict_entries(entries: &mut Vec<(Value, Value)>, vm: &mut VM<'_, '_, impl
 /// order of the retained pairs. A two-pointer compaction avoids the repeated
 /// shifting cost of `Vec::remove(i)` while still cleaning up skipped `Value`
 /// references with `drop_with_heap`.
-fn skip_disallowed_dict_keys(entries: &mut Vec<(Value, Value)>, vm: &mut VM<'_, '_, impl ResourceTracker>) {
+fn skip_disallowed_dict_keys(entries: &mut Vec<(Value, Value)>, vm: &mut VM<'_, impl ResourceTracker>) {
     let mut write = 0;
     for read in 0..entries.len() {
         if is_json_key_allowed(&entries[read].0, vm) {
@@ -591,7 +588,7 @@ fn skip_disallowed_dict_keys(entries: &mut Vec<(Value, Value)>, vm: &mut VM<'_, 
 ///
 /// CPython accepts strings, integers, floats, booleans, and `None`, then
 /// coerces the non-string cases to JSON strings during output.
-fn is_json_key_allowed(value: &Value, vm: &VM<'_, '_, impl ResourceTracker>) -> bool {
+fn is_json_key_allowed(value: &Value, vm: &VM<'_, impl ResourceTracker>) -> bool {
     matches!(
         value,
         Value::None | Value::Bool(_) | Value::Int(_) | Value::Float(_) | Value::InternString(_)
@@ -606,7 +603,7 @@ fn write_json_key(
     key: &Value,
     out: &mut String,
     config: &JsonDumpsConfig,
-    vm: &VM<'_, '_, impl ResourceTracker>,
+    vm: &VM<'_, impl ResourceTracker>,
 ) -> RunResult<()> {
     let ensure_ascii = config.ensure_ascii();
     match key {

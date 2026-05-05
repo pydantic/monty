@@ -14,7 +14,7 @@ use crate::{
 ///
 /// Returns True if any element of the iterable is true.
 /// Returns False for an empty iterable. Short-circuits on the first truthy value.
-pub fn builtin_any(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+pub fn builtin_any(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     let iterable = args.get_one_arg("any", vm.heap)?;
     let iter = MontyIter::new(iterable, vm)?;
     defer_drop_mut!(iter, vm);

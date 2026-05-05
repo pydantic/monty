@@ -10,7 +10,7 @@ use crate::{
     value::EitherStr,
 };
 
-impl<T: ResourceTracker> VM<'_, '_, T> {
+impl<T: ResourceTracker> VM<'_, T> {
     /// Loads an attribute from an object and pushes it onto the stack.
     ///
     /// Returns an AttributeError if the attribute doesn't exist.

@@ -85,15 +85,20 @@ All heap-allocated Python objects (lists, dicts, strings, etc.) are stored in a 
 
 #### Core concepts
 
-- **`HeapReader<'a, T>`** — A scoped borrow of the heap that produces `HeapRead` handles. Created exclusively via `HeapReader::with(heap, |heap| { ... })`. The `for<'a>` closure bound makes the lifetime `'a` universally quantified, so `HeapRead` pointers cannot escape the closure.
+- **`HeapReader<'a, T>`** — A scoped borrow of the heap that produces `HeapRead` handles. Created exclusively via `HeapReader::with`, which takes a `for<'a>` closure bound makes the lifetime `'a` universally quantified, so `HeapRead` pointers cannot escape the closure.
 - **`HeapRead<'a, T>`** — A typed handle to a specific heap entry. Created by `heap.read(id)` which returns a `HeapReadOutput<'a>` enum that you match on. Tracks a reader count that prevents the entry from being freed while the handle exists.
 - **`HeapReadOutput<'a>`** — Enum over all `HeapRead<'a, T>` variants (one per `HeapData` variant). Pattern match to get the typed handle.
 
 #### Reading and mutating heap data
 
 ```rust
-// Scoped heap access
-HeapReader::with(heap, |heap| {
+// Scoped heap access.
+// The second argument allows for extra data to be
+// passed into the closure, will be rebranded as
+// `&'a mut ...` to match the `'a` lifetime of the
+// `HeapRead` handle, so the closure can have additional
+// context while still having the `for <'a>` safety guarantee.
+HeapReader::with(heap, &mut (), |heap, ()| {
     let output = heap.read(some_id);  // returns HeapReadOutput<'a>
     match output {
         HeapReadOutput::List(list) => {

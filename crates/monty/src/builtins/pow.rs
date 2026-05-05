@@ -18,7 +18,7 @@ use crate::{
 ///
 /// Returns base to the power exp. With three arguments, returns (base ** exp) % mod.
 /// Handles negative exponents by returning a float.
-pub fn builtin_pow(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+pub fn builtin_pow(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     // pow() accepts 2 or 3 arguments
     let positional = args.into_pos_only("pow", vm.heap)?;
     defer_drop!(positional, vm);
@@ -133,7 +133,7 @@ fn checked_pow_i64(mut base: i64, mut exp: u32) -> Option<i64> {
 /// Implements two-argument pow with LongInt support.
 ///
 /// On overflow, promotes to LongInt instead of returning an error.
-fn two_arg_pow(base: &Value, exp: &Value, vm: &mut VM<'_, '_, impl ResourceTracker>) -> RunResult<Value> {
+fn two_arg_pow(base: &Value, exp: &Value, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<Value> {
     match (base, exp) {
         (Value::Int(b), Value::Int(e)) => int_pow_int(*b, *e, vm.heap),
         (Value::Int(b), Value::Ref(id)) if let HeapData::LongInt(li) = vm.heap.get(*id) => {

@@ -428,7 +428,7 @@ impl HeapItem for GatherFuture {
 }
 
 impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
-    fn py_bool(&self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> bool {
+    fn py_bool(&self, vm: &mut VM<'h, impl ResourceTracker>) -> bool {
         match self {
             Self::Str(s) => s.py_bool(vm),
             Self::Bytes(b) => b.py_bool(vm),
@@ -463,7 +463,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
     fn py_call_attr(
         &mut self,
         self_id: HeapId,
-        vm: &mut VM<'h, '_, impl ResourceTracker>,
+        vm: &mut VM<'h, impl ResourceTracker>,
         attr: &EitherStr,
         args: ArgValues,
     ) -> Result<CallResult, RunError> {
@@ -495,7 +495,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
         }
     }
 
-    fn py_type(&self, vm: &VM<'h, '_, impl ResourceTracker>) -> Type {
+    fn py_type(&self, vm: &VM<'h, impl ResourceTracker>) -> Type {
         match self {
             Self::Str(s) => s.py_type(vm),
             Self::Bytes(b) => b.py_type(vm),
@@ -528,7 +528,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
         }
     }
 
-    fn py_len(&self, vm: &VM<'h, '_, impl ResourceTracker>) -> Option<usize> {
+    fn py_len(&self, vm: &VM<'h, impl ResourceTracker>) -> Option<usize> {
         match self {
             Self::Str(s) => s.py_len(vm),
             Self::Bytes(b) => b.py_len(vm),
@@ -551,7 +551,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
         }
     }
 
-    fn py_eq(&self, other: &Self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> Result<bool, crate::ResourceError> {
+    fn py_eq(&self, other: &Self, vm: &mut VM<'h, impl ResourceTracker>) -> Result<bool, crate::ResourceError> {
         match (self, other) {
             // Simple types: compare with shared borrows (no &mut VM needed)
             (HeapReadOutput::Str(a), HeapReadOutput::Str(b)) => Ok(a.get(vm.heap).as_str() == b.get(vm.heap).as_str()),
@@ -644,11 +644,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
     /// `FunctionDefaults`, `Cell`, `LongInt`, `ExtFunction`), the hash is
     /// computed inline here. Variants left in the catch-all `_ => Ok(None)`
     /// arm are unhashable.
-    fn py_hash(
-        &self,
-        self_id: HeapId,
-        vm: &mut VM<'h, '_, impl ResourceTracker>,
-    ) -> Result<Option<u64>, ResourceError> {
+    fn py_hash(&self, self_id: HeapId, vm: &mut VM<'h, impl ResourceTracker>) -> Result<Option<u64>, ResourceError> {
         match self {
             Self::Str(s) => s.py_hash(self_id, vm),
             Self::Bytes(b) => b.py_hash(self_id, vm),
@@ -698,7 +694,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
     fn py_repr_fmt(
         &self,
         f: &mut impl Write,
-        vm: &mut VM<'h, '_, impl ResourceTracker>,
+        vm: &mut VM<'h, impl ResourceTracker>,
         heap_ids: &mut AHashSet<HeapId>,
     ) -> RunResult<()> {
         match self {
@@ -750,7 +746,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
         }
     }
 
-    fn py_str(&self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<Cow<'static, str>> {
+    fn py_str(&self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Cow<'static, str>> {
         match self {
             // Strings return their value directly without quotes
             Self::Str(s) => Ok(Cow::Owned(s.get(vm.heap).as_str().to_owned())),
@@ -777,7 +773,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
     fn py_add(
         &self,
         other: &Self,
-        vm: &mut VM<'h, '_, impl ResourceTracker>,
+        vm: &mut VM<'h, impl ResourceTracker>,
     ) -> Result<Option<Value>, crate::ResourceError> {
         match (self, other) {
             (HeapReadOutput::Str(a), HeapReadOutput::Str(b)) => {
@@ -827,7 +823,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
     fn py_sub(
         &self,
         other: &Self,
-        vm: &mut VM<'h, '_, impl ResourceTracker>,
+        vm: &mut VM<'h, impl ResourceTracker>,
     ) -> Result<Option<Value>, crate::ResourceError> {
         match (self, other) {
             (HeapReadOutput::LongInt(a), HeapReadOutput::LongInt(b)) => {
@@ -869,7 +865,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
         }
     }
 
-    fn py_mod(&self, other: &Self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<Option<Value>> {
+    fn py_mod(&self, other: &Self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<Value>> {
         match (self, other) {
             (HeapReadOutput::LongInt(a), HeapReadOutput::LongInt(b)) => {
                 if b.get(vm.heap).is_zero() {
@@ -886,7 +882,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
     fn py_iadd(
         &mut self,
         other: &Value,
-        vm: &mut VM<'h, '_, impl ResourceTracker>,
+        vm: &mut VM<'h, impl ResourceTracker>,
         self_id: Option<HeapId>,
     ) -> Result<bool, crate::ResourceError> {
         match self {
@@ -895,7 +891,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
         }
     }
 
-    fn py_getitem(&self, key: &Value, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<Value> {
+    fn py_getitem(&self, key: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Value> {
         match self {
             Self::Str(s) => s.py_getitem(key, vm),
             Self::Bytes(b) => b.py_getitem(key, vm),
@@ -909,7 +905,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
         }
     }
 
-    fn py_setitem(&mut self, key: Value, value: Value, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<()> {
+    fn py_setitem(&mut self, key: Value, value: Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<()> {
         match self {
             Self::List(l) => l.py_setitem(key, value, vm),
             Self::Dict(d) => d.py_setitem(key, value, vm),
@@ -921,7 +917,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
         }
     }
 
-    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<Option<CallResult>> {
+    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<CallResult>> {
         match self {
             Self::Str(s) => s.py_getattr(attr, vm),
             Self::Bytes(b) => b.py_getattr(attr, vm),

@@ -30,7 +30,7 @@ pub fn sort_indices(
     indices: &mut [usize],
     values: &[Value],
     reverse: bool,
-    vm: &mut VM<'_, '_, impl ResourceTracker>,
+    vm: &mut VM<'_, impl ResourceTracker>,
 ) -> Result<(), RunError> {
     let mut sort_error: Option<RunError> = None;
 
