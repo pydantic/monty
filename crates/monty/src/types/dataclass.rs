@@ -144,7 +144,7 @@ impl<'h> HeapRead<'h, Dataclass> {
             // Get attribute name for error message
             let exc = SimpleException::new_msg(
                 ExcType::FrozenInstanceError,
-                format!("cannot assign to field {}", &name.py_repr(vm)?),
+                format!("cannot assign to field {}", name.py_repr(vm)?),
             );
             // Drop the values we were given ownership of
             name.drop_with_heap(vm);
