@@ -590,6 +590,10 @@ pub enum StaticStrings {
     Gc,
     /// `gc.collect()` function.
     Collect,
+    /// `gc.disable()` function.
+    Disable,
+    /// `gc.enable()` function.
+    Enable,
 }
 
 impl StaticStrings {

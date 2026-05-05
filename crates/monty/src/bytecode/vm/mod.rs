@@ -1719,18 +1719,23 @@ impl<'h, 'a, T: ResourceTracker> VM<'h, 'a, T> {
     }
 
     /// Runs garbage collection with the VM's complete root set.
-    fn run_gc(&mut self) {
+    ///
+    /// Returns the number of unreachable heap entries freed during the sweep.
+    /// The auto-GC call site discards this; the test-hook path surfaces it via
+    /// `gc.collect()` to mirror CPython's return value.
+    fn run_gc(&mut self) -> usize {
         let roots = self.gc_roots();
-        self.heap.collect_garbage(roots);
+        self.heap.collect_garbage(roots)
     }
 
-    /// Forces a GC cycle using the production root walk.
+    /// Forces a GC cycle using the production root walk and returns the freed
+    /// count.
     ///
     /// This is only compiled for tests so integration tests can reproduce GC
     /// bugs deterministically without reimplementing the root-set logic.
     #[cfg(feature = "test-hooks")]
-    pub(crate) fn __force_gc_for_tests(&mut self) {
-        self.run_gc();
+    pub(crate) fn __force_gc_for_tests(&mut self) -> usize {
+        self.run_gc()
     }
 
     /// Returns the current source position for traceback generation, or `None`

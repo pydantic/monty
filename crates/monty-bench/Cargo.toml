@@ -9,9 +9,6 @@ description = "Benchmarks for the Monty interpreter — compares Monty vs CPytho
 publish = false
 
 [dependencies]
-# `test-hooks` exposes the `gc` Python module (and `gc.collect()`) so the GC
-# benches can drive a single collection pass deterministically without reaching
-# into a private VM helper.
 monty = { path = "../monty", features = ["test-hooks"] }
 pyo3 = { version = "0.28", features = ["auto-initialize"] }
 codspeed-criterion-compat = "4.2.1"

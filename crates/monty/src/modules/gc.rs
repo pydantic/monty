@@ -1,15 +1,20 @@
 //! Implementation of Python's `gc` module — only available under the `test-hooks` feature.
 //!
-//! This module exists purely so integration tests can drive Monty's garbage
-//! collector deterministically from Python source. It is **not** part of the
-//! public sandbox surface: enabling it from production builds would let
-//! untrusted code force GC cycles, which is not a behavior we want exposed.
+//! This module exists purely so integration tests and benches can drive Monty's
+//! garbage collector deterministically from Python source. It is **not** part of
+//! the public sandbox surface: enabling it from production builds would let
+//! untrusted code force GC cycles or suppress them entirely, which is not a
+//! behavior we want exposed.
 //!
-//! The only function provided is `gc.collect()`, which forces a full GC cycle
-//! using the production root walk (the same one the VM runs implicitly when
-//! `should_gc()` fires). It returns `0` to mirror CPython's signature
-//! (number of unreachable objects collected) without us needing to track that
-//! statistic — Monty's GC frees unreachable objects but doesn't surface a count.
+//! The functions provided are:
+//! - `gc.collect()` — forces a full GC cycle using the production root walk
+//!   (the same one the VM runs implicitly when `should_gc()` fires). Returns the
+//!   number of unreachable heap entries that were freed during the sweep, to
+//!   mirror CPython's return value.
+//! - `gc.disable()` / `gc.enable()` — toggle automatic collection. Mirrors the
+//!   CPython API closely enough that the same Python script can run on both
+//!   runtimes without runtime-specific branching (used by `monty-bench`).
+//!   Explicit `gc.collect()` calls still run while disabled.
 
 use crate::{
     args::ArgValues,
@@ -25,30 +30,31 @@ use crate::{
 
 /// Functions exposed by the `gc` module.
 ///
-/// Currently only `collect` is implemented — that is sufficient to let tests
-/// trigger a deterministic GC cycle from Python without reaching into Rust
-/// helpers like `VM::__force_gc_for_tests`.
+/// Just enough surface for tests and benches to script deterministic GC cycles
+/// from Python — no observation/tuning APIs (`gc.get_objects`, `gc.set_threshold`,
+/// ...) since those would let test code peer at heap internals in ways that
+/// aren't stable across Monty versions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, strum::Display, serde::Serialize, serde::Deserialize)]
 #[strum(serialize_all = "lowercase")]
 pub(crate) enum GcFunctions {
     /// `gc.collect()` — forces a full garbage collection cycle.
     Collect,
+    /// `gc.disable()` — suppresses automatic GC until `gc.enable()` is called.
+    Disable,
+    /// `gc.enable()` — resumes automatic GC after a prior `gc.disable()`.
+    Enable,
 }
 
 /// Creates the `gc` module and allocates it on the heap.
-///
-/// Registers `gc.collect` as a `ModuleFunctions::Gc` variant. The module is
-/// otherwise empty — we deliberately do not expose CPython's tuning knobs
-/// (`gc.disable`, `gc.set_threshold`, `gc.get_objects`, ...) because they
-/// would let test code reach into and observe the heap in ways that aren't
-/// stable across Monty versions.
 pub fn create_module(vm: &mut VM<'_, '_, impl ResourceTracker>) -> Result<HeapId, ResourceError> {
     let mut module = Module::new(StaticStrings::Gc);
-    module.set_attr(
-        StaticStrings::Collect,
-        Value::ModuleFunction(ModuleFunctions::Gc(GcFunctions::Collect)),
-        vm,
-    );
+    for (name, function) in [
+        (StaticStrings::Collect, GcFunctions::Collect),
+        (StaticStrings::Disable, GcFunctions::Disable),
+        (StaticStrings::Enable, GcFunctions::Enable),
+    ] {
+        module.set_attr(name, Value::ModuleFunction(ModuleFunctions::Gc(function)), vm);
+    }
     vm.heap.allocate(HeapData::Module(module))
 }
 
@@ -63,18 +69,44 @@ pub(super) fn call(
 ) -> RunResult<Value> {
     match function {
         GcFunctions::Collect => collect(vm, args),
+        GcFunctions::Disable => disable(vm, args),
+        GcFunctions::Enable => enable(vm, args),
     }
 }
 
-/// `gc.collect()` — forces a full GC cycle and returns `0`.
+/// `gc.collect()` — forces a full GC cycle and returns the number of unreachable
+/// heap entries freed during the sweep.
 ///
-/// Mirrors CPython's signature (which returns the number of unreachable
-/// objects collected), but always returns `0` because Monty's GC doesn't
-/// track that count. Tests that need to assert specific GC behavior should
-/// observe the side effects (e.g. that previously-unreachable cycles are
-/// freed) rather than the return value.
+/// CPython returns the count of *unreachable objects* found, which is the same
+/// number Monty's mark-sweep frees in one pass — every unreachable entry is
+/// reclaimed (Monty has no equivalent of CPython's `gc.garbage` for objects with
+/// finalizers, so nothing survives the sweep).
+///
+/// Counts are clamped to `i64::MAX` if they ever exceed it; in practice a single
+/// heap can't hold that many entries, but the conversion is fallible so we
+/// saturate rather than panic.
 fn collect(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     args.check_zero_args("gc.collect", vm.heap)?;
-    vm.__force_gc_for_tests();
-    Ok(Value::Int(0))
+    let freed = vm.__force_gc_for_tests();
+    Ok(Value::Int(i64::try_from(freed).unwrap_or(i64::MAX)))
+}
+
+/// `gc.disable()` — suppresses automatic GC until [`enable`] is called.
+///
+/// Returns `None` to match CPython. Explicit [`collect`] calls still run while
+/// auto-GC is disabled, so a script can build a known amount of garbage and then
+/// time exactly one collection pass.
+fn disable(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    args.check_zero_args("gc.disable", vm.heap)?;
+    vm.heap.disable_gc();
+    Ok(Value::None)
+}
+
+/// `gc.enable()` — re-enables automatic GC after a prior [`disable`].
+///
+/// Returns `None` to match CPython. Calling on an already-enabled heap is a no-op.
+fn enable(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    args.check_zero_args("gc.enable", vm.heap)?;
+    vm.heap.enable_gc();
+    Ok(Value::None)
 }
