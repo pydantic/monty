@@ -711,6 +711,13 @@ pub(crate) struct Heap<T: ResourceTracker> {
     /// All `dec_ref` paths that mutate this counter take `&mut self`, so a
     /// plain `usize` is sufficient (no interior mutability needed).
     purple_count: usize,
+    /// When true, [`should_gc`](Self::should_gc) returns false regardless of
+    /// the candidate count, suppressing automatic cycle-collection passes.
+    /// Toggled by the `gc.disable()` / `gc.enable()` Python helpers (only
+    /// registered under the `test-hooks` feature). Explicit `gc.collect()`
+    /// calls still run.
+    #[cfg(feature = "test-hooks")]
+    gc_disabled: bool,
     /// Current recursion depth — incremented on function calls and data structure traversals.
     ///
     /// Uses `Cell` for interior mutability so that methods with only `&Heap`
@@ -750,6 +757,8 @@ impl<'de, T: ResourceTracker + serde::Deserialize<'de>> serde::Deserialize<'de> 
             entries: fields.entries,
             tracker: fields.tracker,
             purple_count: fields.purple_count,
+            #[cfg(feature = "test-hooks")]
+            gc_disabled: false,
             recursion_depth: Cell::new(0),
             timezone_utc: fields.timezone_utc,
         })
@@ -782,6 +791,8 @@ impl<T: ResourceTracker> Heap<T> {
             entries: StableHeap::with_capacity(capacity),
             tracker,
             purple_count: 0,
+            #[cfg(feature = "test-hooks")]
+            gc_disabled: false,
             recursion_depth: Cell::new(0),
             timezone_utc: None,
         };
@@ -1119,10 +1130,37 @@ impl<T: ResourceTracker> Heap<T> {
     /// proportional to the candidate count, so this metric is a direct signal
     /// of how much the collector has to do — unlike the old "any
     /// allocation, any cycle" overestimate it replaces.
+    ///
+    /// Always returns false when [`disable_gc`](Self::disable_gc) has been
+    /// called without a matching [`enable_gc`](Self::enable_gc); explicit
+    /// [`collect_cycles`](Self::collect_cycles) calls still run regardless.
     #[inline]
     pub fn should_gc(&self) -> bool {
+        #[cfg(feature = "test-hooks")]
+        if self.gc_disabled {
+            return false;
+        }
         let interval = self.tracker.gc_interval().unwrap_or(DEFAULT_GC_INTERVAL);
         self.purple_count >= interval
+    }
+
+    /// Suppresses automatic garbage collection until [`enable_gc`](Self::enable_gc)
+    /// is called.
+    ///
+    /// Explicit [`collect_cycles`](Self::collect_cycles) calls still run while
+    /// disabled, so a script can build a known amount of garbage and then time
+    /// exactly one collection pass.
+    #[cfg(feature = "test-hooks")]
+    pub fn disable_gc(&mut self) {
+        self.gc_disabled = true;
+    }
+
+    /// Resumes automatic garbage collection after a prior [`disable_gc`](Self::disable_gc).
+    ///
+    /// Calling [`enable_gc`](Self::enable_gc) on an already-enabled heap is a no-op.
+    #[cfg(feature = "test-hooks")]
+    pub fn enable_gc(&mut self) {
+        self.gc_disabled = false;
     }
 
     /// Runs Bacon–Rajan trial-deletion cycle collection.
@@ -1154,23 +1192,26 @@ impl<T: ResourceTracker> Heap<T> {
     /// (the textbook formulation is recursive); a 10 000-deep nested cycle
     /// must collect without a Rust stack overflow.
     ///
+    /// Returns the number of unreachable entries that were freed during the sweep.
+    ///
     /// # Caller Responsibility
     /// The caller should check [`should_gc`](Self::should_gc) before calling
     /// this method. With `purple_count == 0` the function returns immediately
     /// without touching the heap.
-    pub fn collect_cycles(&mut self) {
+    pub fn collect_cycles(&mut self) -> usize {
         if self.purple_count == 0 {
-            return;
+            return 0;
         }
 
         let seeds = self.mark_roots();
         self.scan_roots(&seeds);
-        self.collect_roots(&seeds);
+        let freed = self.collect_roots(&seeds);
 
         // After `MarkRoots` no Purple entries remain in the heap; confirm the
         // invariant and zero the counter so the next `dec_ref` event re-seeds
         // from a clean baseline.
         self.purple_count = 0;
+        freed
     }
 
     /// `MarkRoots`: linear pass over entries, run `MarkGray` on each Purple
@@ -1311,7 +1352,8 @@ impl<T: ResourceTracker> Heap<T> {
     }
 
     /// `CollectRoots` + `CollectWhite` (iterative): free every entry painted
-    /// White by `Scan`, walking transitively through White children.
+    /// White by `Scan`, walking transitively through White children. Returns
+    /// the number of entries actually freed during the sweep.
     ///
     /// Refcounts are not adjusted on children: `MarkGray` decremented and
     /// `ScanBlack` re-incremented in balance, so any Black child of a White
@@ -1324,16 +1366,19 @@ impl<T: ResourceTracker> Heap<T> {
     /// `Value::Ref`s as `Dereferenced`, which prevents the panic that would
     /// otherwise fire when the freed entry's data is dropped with live
     /// `Value::Ref` payloads.
-    fn collect_roots(&mut self, seeds: &[HeapId]) {
+    fn collect_roots(&mut self, seeds: &[HeapId]) -> usize {
         let mut work_stack = Vec::new();
+        let mut freed = 0;
         for &seed in seeds {
-            self.collect_white(seed, &mut work_stack);
+            freed += self.collect_white(seed, &mut work_stack);
         }
+        freed
     }
 
-    fn collect_white(&mut self, start: HeapId, work_stack: &mut Vec<HeapId>) {
+    fn collect_white(&mut self, start: HeapId, work_stack: &mut Vec<HeapId>) -> usize {
         debug_assert!(work_stack.is_empty());
         work_stack.push(start);
+        let mut freed = 0;
         while let Some(id) = work_stack.pop() {
             let Some(mut entry) = self.entries.entry(id) else {
                 // Already freed via another seed's traversal — ignore.
@@ -1353,6 +1398,7 @@ impl<T: ResourceTracker> Heap<T> {
             );
             let mut value = entry.free();
             self.tracker.on_free(|| value.data.0.get_mut().py_estimate_size());
+            freed += 1;
             // Walk children, marking child `Value::Ref`s as `Dereferenced`
             // under `memory-model-checks` so dropping the freed entry's data
             // doesn't trip a Drop-panic on a live `Value::Ref` payload. The
@@ -1361,6 +1407,7 @@ impl<T: ResourceTracker> Heap<T> {
             // (`MarkGray`/`ScanBlack` already balanced their refcounts).
             py_dec_ref_ids_for_data(value.data.0.get_mut(), work_stack);
         }
+        freed
     }
 }
 

@@ -581,6 +581,19 @@ pub enum StaticStrings {
     Finditer,
     /// `match.groupdict()` method
     Groupdict,
+
+    // ==========================
+    // gc module strings (only reachable when the `test-hooks` feature is enabled,
+    // but interned unconditionally so the variant ordering — and therefore every
+    // `StringId` used elsewhere — stays stable across feature combinations).
+    /// Module name for `import gc`.
+    Gc,
+    /// `gc.collect()` function.
+    Collect,
+    /// `gc.disable()` function.
+    Disable,
+    /// `gc.enable()` function.
+    Enable,
 }
 
 impl StaticStrings {

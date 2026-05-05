@@ -1710,17 +1710,20 @@ impl<'h, 'a, T: ResourceTracker> VM<'h, 'a, T> {
     /// already keeps its referent alive via refcount, so the collector treats
     /// any non-zero refcount as proof of liveness. See
     /// [`Heap::collect_cycles`].
-    fn run_gc(&mut self) {
-        self.heap.collect_cycles();
+    ///
+    /// Returns the number of unreachable heap entries freed during the sweep.
+    fn run_gc(&mut self) -> usize {
+        self.heap.collect_cycles()
     }
 
-    /// Forces a GC cycle using the production root walk.
+    /// Forces a GC cycle and returns the freed count.
     ///
     /// This is only compiled for tests so integration tests can reproduce GC
-    /// bugs deterministically without reimplementing the root-set logic.
+    /// bugs deterministically. Trial deletion needs no root walk, so this just
+    /// drives [`Heap::collect_cycles`] unconditionally.
     #[cfg(feature = "test-hooks")]
-    pub(crate) fn __force_gc_for_tests(&mut self) {
-        self.run_gc();
+    pub(crate) fn __force_gc_for_tests(&mut self) -> usize {
+        self.run_gc()
     }
 
     /// Returns the current source position for traceback generation, or `None`
