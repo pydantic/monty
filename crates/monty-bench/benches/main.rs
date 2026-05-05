@@ -6,7 +6,7 @@ use std::ffi::CString;
 use codspeed_criterion_compat::{Bencher, Criterion, black_box, criterion_group, criterion_main};
 #[cfg(not(codspeed))]
 use criterion::{Bencher, Criterion, black_box, criterion_group, criterion_main};
-use monty::{MontyObject, MontyRun};
+use monty::{LimitedTracker, MontyObject, MontyRun, PrintWriter, ResourceLimits};
 #[cfg(all(not(codspeed), unix))]
 use pprof::criterion::{Output, PProfProfiler};
 // CPython benchmarks are only run locally, not on CodSpeed CI (requires Python + pyo3 setup)
@@ -39,6 +39,34 @@ fn run_monty_with_data(bench: &mut Bencher, code: &str, data: &str, expected: i6
 
     bench.iter(|| {
         let r = ex.run_no_limits(make_input()).unwrap();
+        let int_value: i64 = r.as_ref().try_into().unwrap();
+        black_box(int_value);
+    });
+}
+
+/// Runs a Monty benchmark with automatic GC suppressed.
+///
+/// Uses a [`LimitedTracker`] with `gc_interval = usize::MAX` so the runtime never
+/// triggers a collection on its own. This is what makes the GC benches deterministic:
+/// the script builds a known number of cycles, then calls `gc.collect()` exactly
+/// once, and that single collection pass is what gets timed alongside the (cheap)
+/// cycle-construction loop. With the default 100k-allocation threshold an auto-GC
+/// could fire mid-loop and split the work unpredictably across iterations.
+fn run_monty_no_auto_gc(bench: &mut Bencher, code: &str, expected: i64) {
+    let ex = MontyRun::new(code.to_owned(), "test.py", vec![]).unwrap();
+    let make_tracker = || {
+        let limits = ResourceLimits {
+            gc_interval: Some(usize::MAX),
+            ..ResourceLimits::default()
+        };
+        LimitedTracker::new(limits)
+    };
+    let r = ex.run(vec![], make_tracker(), PrintWriter::Stdout).unwrap();
+    let int_value: i64 = r.as_ref().try_into().unwrap();
+    assert_eq!(int_value, expected);
+
+    bench.iter(|| {
+        let r = ex.run(vec![], make_tracker(), PrintWriter::Stdout).unwrap();
         let int_value: i64 = r.as_ref().try_into().unwrap();
         black_box(int_value);
     });
@@ -192,6 +220,50 @@ const EMPTY_TUPLES: &str = "len([() for _ in range(100_000)])";
 /// 2-tuple creation benchmark - creates 100,000 2-tuples in a list.
 const PAIR_TUPLES: &str = "len([(i, i + 1) for i in range(100_000)])";
 
+/// Single-collection latency benchmark — Monty variant.
+///
+/// Builds 50,000 self-referencing lists (each `a; a.append(a)` forms a cycle that
+/// ref counting alone cannot free), then forces exactly one mark-sweep pass via
+/// `gc.collect()`. Paired with [`GC_COLLECT_CPYTHON`] for direct comparison against
+/// CPython's collector on the same shape of garbage.
+///
+/// 50,000 stays under Monty's `DEFAULT_GC_INTERVAL` of 100,000 (we also force the
+/// interval to `usize::MAX` via [`run_monty_no_auto_gc`], but the conservative N
+/// makes the bench robust to allocation-counting changes). It is also large enough
+/// that the mark-sweep walk dominates the loop body, so the measurement reflects
+/// collection latency rather than per-iteration overhead.
+///
+/// Returns `0` (Monty's `gc.collect()` always returns `0` — see `modules/gc.rs`).
+const GC_COLLECT_MONTY: &str = "
+import gc
+for _ in range(50_000):
+    a = []
+    a.append(a)
+gc.collect()
+";
+
+/// Single-collection latency benchmark — CPython variant.
+///
+/// Same shape as [`GC_COLLECT_MONTY`] but with `gc.disable()` up front so CPython's
+/// generational collector doesn't fire mid-loop on its much-tighter default thresholds
+/// (gen-0 fires every ~700 allocations). Without this the explicit `gc.collect()`
+/// would have nothing left to do and the bench would just measure auto-collection
+/// scattered through the build phase.
+///
+/// Returns `0` so the runner's `i64` extraction matches the Monty variant — CPython's
+/// `gc.collect()` returns the number of unreachable objects collected, which we don't
+/// care to assert on.
+#[cfg(not(codspeed))]
+const GC_COLLECT_CPYTHON: &str = "
+import gc
+gc.disable()
+for _ in range(50_000):
+    a = []
+    a.append(a)
+gc.collect()
+0
+";
+
 /// JSON payload used by the `json_loads` / `json_dumps` benchmarks.
 /// Sourced from `medium_response.json` (a jiter bench fixture).
 const JSON_MEDIUM: &str = include_str!("medium_response.json");
@@ -336,6 +408,12 @@ fn criterion_benchmark(c: &mut Criterion) {
     c.bench_function("json_dumps__cpython", |b| {
         run_cpython_with_data(b, JSON_DUMPS, JSON_MEDIUM, 1815);
     });
+
+    // Single-collection latency: build a known number of cycles (auto-GC suppressed)
+    // and time the explicit `gc.collect()` pass against CPython doing the same.
+    c.bench_function("gc_collect__monty", |b| run_monty_no_auto_gc(b, GC_COLLECT_MONTY, 0));
+    #[cfg(not(codspeed))]
+    c.bench_function("gc_collect__cpython", |b| run_cpython(b, GC_COLLECT_CPYTHON, 0));
 }
 
 // Use pprof flamegraph profiler when running locally on Unix (not on CodSpeed or Windows)
