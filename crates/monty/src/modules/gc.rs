@@ -9,11 +9,8 @@
 //! The functions provided are:
 //! - `gc.collect()` — forces a full GC cycle using the production root walk
 //!   (the same one the VM runs implicitly when `should_gc()` fires). Returns the
-//!   number of unreachable heap entries that were freed during the sweep, to
-//!   mirror CPython's return value.
-//! - `gc.disable()` / `gc.enable()` — toggle automatic collection. Mirrors the
-//!   CPython API closely enough that the same Python script can run on both
-//!   runtimes without runtime-specific branching (used by `monty-bench`).
+//!   number of unreachable heap entries that were freed during the sweep.
+//! - `gc.disable()` / `gc.enable()` — toggle automatic collection.
 //!   Explicit `gc.collect()` calls still run while disabled.
 
 use crate::{

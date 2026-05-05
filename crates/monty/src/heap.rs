@@ -666,7 +666,7 @@ pub(crate) struct Heap<T: ResourceTracker> {
     /// the `gc.disable()` / `gc.enable()` Python helpers (only registered under
     /// the `test-hooks` feature). Explicit `gc.collect()` calls still run.
     #[cfg(feature = "test-hooks")]
-    gc_disabled: Cell<bool>,
+    gc_disabled: bool,
     /// Current recursion depth — incremented on function calls and data structure traversals.
     ///
     /// Uses `Cell` for interior mutability so that methods with only `&Heap`
@@ -709,7 +709,7 @@ impl<'de, T: ResourceTracker + serde::Deserialize<'de>> serde::Deserialize<'de> 
             may_have_cycles: Cell::new(fields.may_have_cycles),
             allocations_since_gc: Cell::new(fields.allocations_since_gc),
             #[cfg(feature = "test-hooks")]
-            gc_disabled: Cell::new(false),
+            gc_disabled: false,
             recursion_depth: Cell::new(0),
             timezone_utc: fields.timezone_utc,
         })
@@ -740,7 +740,7 @@ impl<T: ResourceTracker> Heap<T> {
             may_have_cycles: Cell::new(false),
             allocations_since_gc: Cell::new(0),
             #[cfg(feature = "test-hooks")]
-            gc_disabled: Cell::new(false),
+            gc_disabled: false,
             recursion_depth: Cell::new(0),
             timezone_utc: None,
         };
@@ -1196,7 +1196,7 @@ impl<T: ResourceTracker> Heap<T> {
     #[inline]
     pub fn should_gc(&self) -> bool {
         #[cfg(feature = "test-hooks")]
-        if self.gc_disabled.get() {
+        if self.gc_disabled {
             return false;
         }
         let interval = self.tracker.gc_interval().unwrap_or(DEFAULT_GC_INTERVAL);
@@ -1206,16 +1206,16 @@ impl<T: ResourceTracker> Heap<T> {
     /// Suppresses automatic garbage collection until [`enable_gc`](Self::enable_gc)
     /// is called.
     #[cfg(feature = "test-hooks")]
-    pub fn disable_gc(&self) {
-        self.gc_disabled.set(true);
+    pub fn disable_gc(&mut self) {
+        self.gc_disabled = true;
     }
 
     /// Resumes automatic garbage collection after a prior [`disable_gc`](Self::disable_gc).
     ///
     /// Calling [`enable_gc`](Self::enable_gc) on an already-enabled heap is a no-op.
     #[cfg(feature = "test-hooks")]
-    pub fn enable_gc(&self) {
-        self.gc_disabled.set(false);
+    pub fn enable_gc(&mut self) {
+        self.gc_disabled = false;
     }
 
     /// Runs mark-sweep garbage collection to free unreachable cycles.

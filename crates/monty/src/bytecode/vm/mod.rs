@@ -1721,8 +1721,6 @@ impl<'h, 'a, T: ResourceTracker> VM<'h, 'a, T> {
     /// Runs garbage collection with the VM's complete root set.
     ///
     /// Returns the number of unreachable heap entries freed during the sweep.
-    /// The auto-GC call site discards this; the test-hook path surfaces it via
-    /// `gc.collect()` to mirror CPython's return value.
     fn run_gc(&mut self) -> usize {
         let roots = self.gc_roots();
         self.heap.collect_garbage(roots)

@@ -355,10 +355,6 @@ fn criterion_benchmark(c: &mut Criterion) {
         run_cpython_with_data(b, JSON_DUMPS, JSON_MEDIUM, 1815);
     });
 
-    // Single-collection latency: `gc.disable()` in the script suppresses auto-GC
-    // in both runtimes, then 50k cycles are built and one explicit `gc.collect()`
-    // pass is timed alongside (the `disable` and `enable` Python helpers are
-    // exposed by `monty`'s `test-hooks` feature).
     c.bench_function("gc_collect__monty", |b| run_monty(b, GC_COLLECT, 0));
     #[cfg(not(codspeed))]
     c.bench_function("gc_collect__cpython", |b| run_cpython(b, GC_COLLECT, 0));
