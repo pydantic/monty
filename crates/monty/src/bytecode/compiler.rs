@@ -243,12 +243,24 @@ impl<'a> Compiler<'a> {
                 self.code.emit(Opcode::Pop); // Discard result
             }
             Node::Return(expr) => {
+                // `return` is terminating: any subsequent statement in the same
+                // block compiles as dead code. Capture the statement-entry depth
+                // and restore it after `compile_return` so the tracker reflects
+                // what fall-through (if it were live) would arrive at, rather
+                // than carrying the return value's residue. Inside a
+                // try-finally, `compile_return` emits a Jump leaving the value
+                // on the stack — without this restore, the inflated tracker
+                // poisons later jumps' merge invariants.
+                let dead_code_depth = self.code.stack_depth();
                 self.compile_expr(expr)?;
                 self.compile_return();
+                self.code.set_stack_depth(dead_code_depth);
             }
             Node::ReturnNone => {
+                let dead_code_depth = self.code.stack_depth();
                 self.code.emit(Opcode::LoadNone);
                 self.compile_return();
+                self.code.set_stack_depth(dead_code_depth);
             }
             Node::Assign { target, object } => {
                 self.compile_expr(object)?;
@@ -1187,19 +1199,22 @@ impl<'a> Compiler<'a> {
         // Jump past cleanup (result already on stack)
         let end_jump = self.code.emit_jump(Opcode::Jump);
 
-        // Cleanup: remove the saved intermediate value, keep False result
+        // Cleanup: remove the saved intermediate value, keep False result.
         // The cleanup is only reached via JumpIfFalseOrPop which doesn't pop,
-        // so the stack has: [intermediate, False] (2 extra items from base)
+        // so the stack has: [intermediate, False] (2 extra items from base).
+        // Reset the tracker BEFORE the patch so `patch_jump`'s merge-invariant
+        // assertion sees the live (jump-taken) depth — fall-through here is
+        // dead because of the unconditional Jump just emitted.
+        self.code.set_stack_depth(base_depth + 2); // [intermediate, False]
         for jump in cleanup_jumps {
             self.code.patch_jump(jump);
         }
-        self.code.set_stack_depth(base_depth + 2); // [intermediate, False]
         self.code.emit(Opcode::Rot2); // [False, intermediate]
-        self.code.emit(Opcode::Pop); // [False]
+        self.code.emit(Opcode::Pop); // [False] — tracker now base_depth + 1
 
         self.code.patch_jump(end_jump);
-        // Final result is on stack: base_depth + 1
-        self.code.set_stack_depth(base_depth + 1);
+        // Final result is on stack: base_depth + 1 (verified by patch_jump
+        // assertion above; no manual reset needed).
 
         Ok(())
     }
@@ -1235,11 +1250,22 @@ impl<'a> Compiler<'a> {
     }
 
     /// Compiles a ternary conditional expression.
+    ///
+    /// Both branches push exactly one value, but the compiler's stack-depth
+    /// tracker would naively double-count those pushes (it sees the body
+    /// branch push, then the orelse branch push, as if both ran). Reset the
+    /// tracker between branches so the merge invariant holds at each
+    /// `patch_jump`.
     fn compile_if_else_expr(&mut self, test: &ExprLoc, body: &ExprLoc, orelse: &ExprLoc) -> Result<(), CompileError> {
         self.compile_expr(test)?;
         let else_jump = self.code.emit_jump(Opcode::JumpIfFalse);
+        // Depth at the start of either branch (cond was popped by JumpIfFalse).
+        let branch_entry_depth = self.code.stack_depth();
         self.compile_expr(body)?;
         let end_jump = self.code.emit_jump(Opcode::Jump);
+        // Body's push is dead beyond `end_jump`; reset to branch-entry depth
+        // for the orelse branch (and to satisfy `patch_jump`'s assertion).
+        self.code.set_stack_depth(branch_entry_depth);
         self.code.patch_jump(else_jump);
         self.compile_expr(orelse)?;
         self.code.patch_jump(end_jump);
@@ -2123,10 +2149,12 @@ impl<'a> Compiler<'a> {
         // Jump back to loop start
         self.code.emit_jump_to(Opcode::Jump, loop_start);
 
-        // End of loop - ForIter jumps here when iterator is exhausted
-        self.code.patch_jump(end_jump);
-        // Iterator is popped when loop ends normally, so restore depth to before loop
+        // End of loop. Fall-through is dead (Jump above is unconditional);
+        // the patch target is reached only via ForIter's exhausted path,
+        // which pops the iterator — so the live depth is `loop_exit_depth`.
+        // Reset before patching so the merge invariant holds.
         self.code.set_stack_depth(loop_exit_depth);
+        self.code.patch_jump(end_jump);
 
         // Pop loop info before compiling else block
         let loop_info = self.loop_stack.pop().expect("loop stack underflow");
@@ -2490,10 +2518,12 @@ impl<'a> Compiler<'a> {
         // Jump back to loop start
         self.code.emit_jump_to(Opcode::Jump, loop_start);
 
-        // End of loop
-        self.code.patch_jump(end_jump);
-        // Iterator is popped when loop ends normally, so restore depth to before loop
+        // End of loop. Fall-through is dead (Jump above); only ForIter's
+        // exhausted path reaches the patch target, with the iterator already
+        // popped — depth is `loop_exit_depth`. Reset before patching to
+        // uphold the merge invariant.
         self.code.set_stack_depth(loop_exit_depth);
+        self.code.patch_jump(end_jump);
 
         Ok(())
     }
@@ -2908,15 +2938,17 @@ impl<'a> Compiler<'a> {
             let finally_target = self.finally_targets.pop().expect("finally_targets should not be empty");
 
             // === Finally with return path ===
+            // Each return jump arrives with the return value on stack, so
+            // depth = stack_depth + 1. Reset BEFORE patching so the merge
+            // invariant holds.
             let return_start = if finally_target.return_jumps.is_empty() {
                 None
             } else {
                 let start = self.code.current_offset();
+                self.code.set_stack_depth(stack_depth + 1);
                 for jump in finally_target.return_jumps {
                     self.code.patch_jump(jump);
                 }
-                // Return value is on stack, stack = stack_depth + 1
-                self.code.set_stack_depth(stack_depth + 1);
                 self.compile_block(&try_block.finally)?;
                 self.compile_return();
                 Some(start)
@@ -2926,25 +2958,28 @@ impl<'a> Compiler<'a> {
             // For each break, run finally then either:
             // - Jump to outer finally's break path (if there's an outer finally between us and the loop)
             // - Jump directly to the loop's break target
+            //
+            // Break already popped the iterator, so stack = stack_depth - 1
+            // (the iterator was on stack at try entry, break removed it).
+            // Reset BEFORE patching to uphold the merge invariant.
             if !finally_target.break_jumps.is_empty() {
+                self.code.set_stack_depth(stack_depth.saturating_sub(1));
                 for break_info in &finally_target.break_jumps {
                     self.code.patch_jump(break_info.jump);
                 }
-                // Break already popped the iterator, so stack = stack_depth - 1
-                // (the iterator was on stack at try entry, break removed it)
-                self.code.set_stack_depth(stack_depth.saturating_sub(1));
                 self.compile_block(&try_block.finally)?;
                 // After finally, compile the break again (handles nested finally or direct jump)
                 self.compile_control_flow_after_finally(&finally_target.break_jumps, true);
             }
 
             // === Finally with continue path ===
+            // Continue doesn't pop the iterator, stack = stack_depth. Reset
+            // BEFORE patching to uphold the merge invariant.
             if !finally_target.continue_jumps.is_empty() {
+                self.code.set_stack_depth(stack_depth);
                 for continue_info in &finally_target.continue_jumps {
                     self.code.patch_jump(continue_info.jump);
                 }
-                // Continue doesn't pop the iterator, stack = stack_depth
-                self.code.set_stack_depth(stack_depth);
                 self.compile_block(&try_block.finally)?;
                 // After finally, compile the continue again (handles nested finally or direct jump)
                 self.compile_control_flow_after_finally(&finally_target.continue_jumps, false);
@@ -2956,9 +2991,11 @@ impl<'a> Compiler<'a> {
         };
 
         // === Else block (runs if no exception) ===
-        self.code.patch_jump(after_try_jump);
-        // Normal path from try body, stack = stack_depth
+        // The after_try_jump is taken from the end of the try body when no
+        // exception was raised, so stack = stack_depth at the patch target.
+        // Reset BEFORE patching to uphold the merge invariant.
         self.code.set_stack_depth(stack_depth);
+        self.code.patch_jump(after_try_jump);
         let else_start = self.code.current_offset();
         if has_else {
             self.compile_block(&try_block.or_else)?;
@@ -2966,14 +3003,18 @@ impl<'a> Compiler<'a> {
         let else_end = self.code.current_offset();
 
         // === Normal finally path (no exception pending, no return) ===
-        // Patch all jumps from handlers to go here
+        // Patch all jumps from handlers to go here. Each handler popped the
+        // exception before its Jump, so depth = stack_depth at the patch
+        // target. Reset BEFORE patching to uphold the merge invariant.
+        // (Note: tracker may already equal stack_depth via fall-through from
+        // the else block, but resetting is a no-op in that case and makes
+        // the invariant hold whether there is an else block or not.)
+        self.code.set_stack_depth(stack_depth);
         for jump in finally_jumps {
             self.code.patch_jump(jump);
         }
 
         if has_finally {
-            // Stack = stack_depth (no exception, no return value)
-            self.code.set_stack_depth(stack_depth);
             self.compile_block(&try_block.finally)?;
         }
 
@@ -3045,15 +3086,16 @@ impl<'a> Compiler<'a> {
         for (i, handler) in handlers.iter().enumerate() {
             let is_last = i == handlers.len() - 1;
 
-            // Patch jumps from previous handler's non-match to here
-            // If jumping from a previous handler's no-match, stack has [exc, exc] (duplicate)
-            // We need to pop the duplicate before starting this handler's check
+            // Patch jumps from previous handler's non-match to here.
+            // If jumping from a previous handler's no-match, stack has
+            // [exc, exc] (duplicate kept by the JumpIfFalse no-match path) =
+            // handler_entry_depth + 1. Reset the tracker BEFORE patching so
+            // `patch_jump`'s merge invariant sees the live (jump-taken) depth.
             if !next_handler_jumps.is_empty() {
+                self.code.set_stack_depth(handler_entry_depth + 1);
                 for jump in next_handler_jumps.drain(..) {
                     self.code.patch_jump(jump);
                 }
-                // Reset stack depth for jump target: [exc, exc] = handler_entry_depth + 1
-                self.code.set_stack_depth(handler_entry_depth + 1);
                 // Pop the duplicate from previous handler's check
                 self.code.emit(Opcode::Pop);
             }
@@ -3123,12 +3165,14 @@ impl<'a> Compiler<'a> {
                 // Jump to finally
                 finally_jumps.push(self.code.emit_jump(Opcode::Jump));
 
-                // If this was last handler and no match, we need to reraise
+                // If this was last handler and no match, we need to reraise.
+                // The patch target is reached only via JumpIfFalse's no-match
+                // path — stack [exception, exception] = handler_entry_depth + 1.
+                // Fall-through is dead (we just emitted an unconditional Jump
+                // to finally above), so reset the tracker BEFORE patching.
                 if is_last {
-                    self.code.patch_jump(no_match_jump);
-                    // Coming from JumpIfFalse no-match path, stack has [exception, exception]
-                    // Reset stack depth for jump target
                     self.code.set_stack_depth(handler_entry_depth + 1);
+                    self.code.patch_jump(no_match_jump);
                     // We need to pop the duplicate before reraising
                     self.code.emit(Opcode::Pop);
                     self.code.emit(Opcode::Reraise);

@@ -85,13 +85,17 @@ impl CodeBuilder {
     }
 
     /// Emits a no-operand instruction and updates stack depth tracking.
+    ///
+    /// All variable-effect opcodes (where `Opcode::stack_effect()` returns
+    /// `None`) take operands, so calling this with one is a compiler bug —
+    /// hence the panic on `None` rather than silently defaulting to `0`.
     pub fn emit(&mut self, op: Opcode) {
         self.record_location();
         self.bytecode.push(op as u8);
-        // Track stack effect for opcodes with known fixed effects
-        if let Some(effect) = op.stack_effect() {
-            self.adjust_stack(effect);
-        }
+        let effect = op.stack_effect().unwrap_or_else(|| {
+            panic!("variable-effect opcode {op:?} emitted via emit (no operand) — variable-effect ops require an operand-aware emit helper")
+        });
+        self.adjust_stack(effect);
     }
 
     /// Emits an instruction with a u8 operand and updates stack depth tracking.
@@ -109,10 +113,10 @@ impl CodeBuilder {
         self.bytecode.push(op as u8);
         // Reinterpret i8 as u8 for bytecode encoding
         self.bytecode.push(operand.to_ne_bytes()[0]);
-        // Track stack effect for opcodes with known fixed effects
-        if let Some(effect) = op.stack_effect() {
-            self.adjust_stack(effect);
-        }
+        let effect = op.stack_effect().unwrap_or_else(|| {
+            panic!("variable-effect opcode {op:?} emitted via emit_i8 without a stack-effect override")
+        });
+        self.adjust_stack(effect);
     }
 
     /// Emits an instruction with two u8 operands and updates stack depth tracking.
@@ -127,7 +131,10 @@ impl CodeBuilder {
         // Net effect: before + after
         if op == Opcode::UnpackEx {
             self.adjust_stack(i16::from(operand1) + i16::from(operand2));
-        } else if let Some(effect) = op.stack_effect() {
+        } else {
+            let effect = op.stack_effect().unwrap_or_else(|| {
+                panic!("variable-effect opcode {op:?} emitted via emit_u8_u8 without a stack-effect override")
+            });
             self.adjust_stack(effect);
         }
     }
@@ -150,7 +157,9 @@ impl CodeBuilder {
         self.bytecode.push(op as u8);
         self.bytecode.extend_from_slice(&operand1.to_le_bytes());
         self.bytecode.push(operand2);
-        // Track stack effects based on opcode
+        // Track stack effects based on opcode. Variable-effect opcodes that
+        // aren't enumerated below will hit the panic in the fallback rather
+        // than silently defaulting to `0` (which would drift the tracker).
         match op {
             Opcode::MakeFunction => {
                 // pops defaults_count defaults, pushes function: 1 - defaults_count
@@ -160,10 +169,17 @@ impl CodeBuilder {
                 // pops obj + args, pushes result: 1 - (1 + arg_count) = -arg_count
                 self.adjust_stack(-i16::from(operand2));
             }
+            Opcode::CallAttrExtended => {
+                // pops receiver + args_tuple (+ kwargs_dict if flag bit 0),
+                // pushes result. operand2 is the u8 flags: 0 or 1.
+                // Effect: -(1 + has_kwargs).
+                self.adjust_stack(-(1 + i16::from(operand2 & 0x01)));
+            }
             _ => {
-                if let Some(effect) = op.stack_effect() {
-                    self.adjust_stack(effect);
-                }
+                let effect = op.stack_effect().unwrap_or_else(|| {
+                    panic!("variable-effect opcode {op:?} emitted via emit_u16_u8 without a stack-effect override")
+                });
+                self.adjust_stack(effect);
             }
         }
     }
@@ -182,7 +198,10 @@ impl CodeBuilder {
         // Stack effect: 1 - defaults_count
         if op == Opcode::MakeClosure {
             self.adjust_stack(1 - i16::from(operand2));
-        } else if let Some(effect) = op.stack_effect() {
+        } else {
+            let effect = op.stack_effect().unwrap_or_else(|| {
+                panic!("variable-effect opcode {op:?} emitted via emit_u16_u8_u8 without a stack-effect override")
+            });
             self.adjust_stack(effect);
         }
     }
@@ -268,27 +287,40 @@ impl CodeBuilder {
     ///
     /// The jump offset is initially set to 0 and must be patched with
     /// `patch_jump()` once the target location is known.
+    ///
+    /// The returned label carries both the bytecode offset to patch and the
+    /// stack depth that the *jump-taken* path will leave on the stack at the
+    /// patch target. `patch_jump` uses that depth to enforce the merge
+    /// invariant (every branch arriving at the patch point agrees on stack
+    /// depth). Forward jumps differ in how they affect the two paths:
+    ///
+    /// | Opcode                              | fall-through effect | jump-taken target depth |
+    /// |-------------------------------------|---------------------|-------------------------|
+    /// | `Jump`                              | `0` (dead)          | unchanged from pre-emit |
+    /// | `JumpIfTrue` / `JumpIfFalse`        | `-1` (cond popped)  | pre-emit `- 1`          |
+    /// | `JumpIfTrueOrPop` / `JumpIfFalseOrPop` | `-1` (cond popped) | pre-emit (cond kept)    |
+    /// | `ForIter`                           | `+1` (value pushed) | pre-emit `- 1` (iter popped) |
     #[must_use]
     pub fn emit_jump(&mut self, op: Opcode) -> JumpLabel {
         self.record_location();
-        let label = JumpLabel(self.bytecode.len());
+        let pre_depth = self.current_stack_depth;
+        let offset = self.bytecode.len();
         self.bytecode.push(op as u8);
         // Placeholder for i16 offset (will be patched)
         self.bytecode.extend_from_slice(&0i16.to_le_bytes());
-        // Track stack effect
-        match op {
-            // ForIter: when successful (not jumping), pushes next value (+1)
-            // When exhausted (jumping), pops iterator (-1), but that's after loop
-            Opcode::ForIter => self.adjust_stack(1),
-            // JumpIfTrueOrPop/JumpIfFalseOrPop: pops when not jumping (fallthrough)
-            Opcode::JumpIfTrueOrPop | Opcode::JumpIfFalseOrPop => self.adjust_stack(-1),
-            _ => {
-                if let Some(effect) = op.stack_effect() {
-                    self.adjust_stack(effect);
-                }
-            }
-        }
-        label
+
+        // Determine fall-through stack effect and jump-taken target depth.
+        // See the table on the docstring above for the per-opcode semantics.
+        let (fallthrough_effect, target_depth): (i16, u16) = match op {
+            Opcode::Jump => (0, pre_depth),
+            Opcode::JumpIfTrue | Opcode::JumpIfFalse => (-1, pre_depth.saturating_sub(1)),
+            Opcode::JumpIfTrueOrPop | Opcode::JumpIfFalseOrPop => (-1, pre_depth),
+            Opcode::ForIter => (1, pre_depth.saturating_sub(1)),
+            _ => panic!("emit_jump called with non-jump opcode {op:?}"),
+        };
+        self.adjust_stack(fallthrough_effect);
+
+        JumpLabel { offset, target_depth }
     }
 
     /// Patches a forward jump to point to the current bytecode location.
@@ -297,22 +329,39 @@ impl CodeBuilder {
     /// instruction's operand (i.e., where execution would continue if
     /// the jump is not taken).
     ///
+    /// In debug builds, asserts that the builder's tracked stack depth at the
+    /// patch point matches the depth that the jump-taken path leaves on the
+    /// stack (recorded by `emit_jump` in the label). When fall-through reaches
+    /// the patch point, this catches branches that disagree on depth — a
+    /// recurring class of compiler bug. When fall-through is unreachable
+    /// (because of an upstream unconditional `Jump` or `Reraise`), callers
+    /// must pre-align the tracker via `set_stack_depth` so the assertion
+    /// reflects the live (jump-taken) path.
+    ///
     /// # Panics
     ///
-    /// Panics if the jump offset exceeds i16 range (-32768..32767), which
-    /// indicates the function is too large. This is a compile-time error
-    /// rather than silent truncation.
+    /// - In debug builds, panics if the tracker disagrees with
+    ///   `label.target_depth`.
+    /// - Always panics if the jump offset exceeds i16 range (-32768..32767),
+    ///   which indicates the function is too large. This is a compile-time
+    ///   error rather than silent truncation.
     pub fn patch_jump(&mut self, label: JumpLabel) {
+        debug_assert_eq!(
+            self.current_stack_depth, label.target_depth,
+            "stack-depth mismatch at jump merge: builder tracker is {} but jump label expects {}; \
+             branches reaching this merge point disagree on stack state",
+            self.current_stack_depth, label.target_depth,
+        );
         let target = self.bytecode.len();
         // Offset is relative to position after the jump instruction (opcode + i16 = 3 bytes)
         let target_i64 = i64::try_from(target).expect("bytecode target exceeds i64");
-        let label_i64 = i64::try_from(label.0).expect("bytecode label exceeds i64");
+        let label_i64 = i64::try_from(label.offset).expect("bytecode label exceeds i64");
         let raw_offset = target_i64 - label_i64 - 3;
         let offset =
             i16::try_from(raw_offset).expect("jump offset exceeds i16 range (-32768..32767); function too large");
         let bytes = offset.to_le_bytes();
-        self.bytecode[label.0 + 1] = bytes[0];
-        self.bytecode[label.0 + 2] = bytes[1];
+        self.bytecode[label.offset + 1] = bytes[0];
+        self.bytecode[label.offset + 2] = bytes[1];
     }
 
     /// Emits a backward jump to a known target offset.
@@ -330,10 +379,17 @@ impl CodeBuilder {
             i16::try_from(raw_offset).expect("jump offset exceeds i16 range (-32768..32767); function too large");
         self.bytecode.push(op as u8);
         self.bytecode.extend_from_slice(&offset.to_le_bytes());
-        // Track stack effect (jump instructions pop condition)
-        if let Some(effect) = op.stack_effect() {
-            self.adjust_stack(effect);
-        }
+        // Track stack effect. `emit_jump_to` is only used for unconditional
+        // backward jumps (e.g. loop continuation), where the only valid
+        // opcode is `Jump` with a fixed effect of 0. Any opcode whose effect
+        // depends on which branch is taken (`ForIter`, `JumpIfTrueOrPop`,
+        // etc.) cannot be encoded as a backward jump because we don't have a
+        // patch label to record per-branch target depths — panic loudly if
+        // misused rather than silently defaulting to `0`.
+        let effect = op.stack_effect().unwrap_or_else(|| {
+            panic!("variable-effect opcode {op:?} emitted via emit_jump_to — only fixed-effect jumps are supported on the backward-jump path")
+        });
+        self.adjust_stack(effect);
     }
 
     /// Returns the current bytecode offset.
@@ -523,19 +579,40 @@ impl CodeBuilder {
     /// Tracks stack effect for opcodes with u8 operand.
     ///
     /// For opcodes with variable effects (like `CallFunction`, `BuildList`),
-    /// calculates the effect based on the operand.
+    /// calculates the effect based on the operand. For variable-effect opcodes
+    /// not enumerated here, falling through to `op.stack_effect()` would
+    /// silently default to `0` for `None` returns and drift the tracker — so
+    /// the fallback panics instead.
     fn track_stack_effect_u8(&mut self, op: Opcode, operand: u8) {
         let effect: i16 = match op {
             // CallFunction pops (callable + args), pushes result: -(1 + arg_count) + 1 = -arg_count
             Opcode::CallFunction => -i16::from(operand),
+            // CallFunctionExtended pops callable + args_tuple (+ kwargs_dict if flag bit 0),
+            // pushes result. flags is 0 (no kwargs) or 1 (has kwargs). Effect: -(1 + has_kwargs).
+            Opcode::CallFunctionExtended => -(1 + i16::from(operand & 0x01)),
+            // FormatValue: bit 2 (0x04) of flags indicates a format spec on stack.
+            // Without spec: pop value, push result = 0. With spec: pop value + spec,
+            // push result = -1.
+            Opcode::FormatValue => {
+                if operand & 0x04 != 0 {
+                    -1
+                } else {
+                    0
+                }
+            }
             // UnpackSequence pops 1, pushes n: n - 1
             Opcode::UnpackSequence => i16::from(operand) - 1,
             // ListAppend/SetAdd pop value: -1 (depth operand doesn't affect stack count)
             Opcode::ListAppend | Opcode::SetAdd => -1,
             // DictSetItem pops key and value: -2
             Opcode::DictSetItem => -2,
-            // Default: use fixed effect if available
-            _ => op.stack_effect().unwrap_or(0),
+            // Default: use fixed effect; panic if the opcode declares a
+            // variable effect (`stack_effect()` returns `None`) but isn't
+            // handled above — this is a forcing function so new variable-effect
+            // opcodes can't silently drift the tracker.
+            _ => op
+                .stack_effect()
+                .unwrap_or_else(|| panic!("variable-effect opcode {op:?} emitted via emit_u8 without a stack-effect override in track_stack_effect_u8")),
         };
         self.adjust_stack(effect);
     }
@@ -543,7 +620,9 @@ impl CodeBuilder {
     /// Tracks stack effect for opcodes with u16 operand.
     ///
     /// For opcodes with variable effects (like `BuildList`, `BuildTuple`),
-    /// calculates the effect based on the operand.
+    /// calculates the effect based on the operand. Variable-effect opcodes
+    /// not enumerated here trigger a panic in the fallback rather than
+    /// silently defaulting to `0`.
     fn track_stack_effect_u16(&mut self, op: Opcode, operand: u16) {
         // Safe cast: operand won't exceed i16::MAX in practice (would be a huge list)
         let operand_i16 = operand.cast_signed();
@@ -554,8 +633,9 @@ impl CodeBuilder {
             Opcode::BuildDict => 1 - 2 * operand_i16,
             // BuildFString: pop n parts, push 1: 1 - n
             Opcode::BuildFString => 1 - operand_i16,
-            // Default: use fixed effect if available
-            _ => op.stack_effect().unwrap_or(0),
+            _ => op.stack_effect().unwrap_or_else(|| {
+                panic!("variable-effect opcode {op:?} emitted via emit_u16 without a stack-effect override in track_stack_effect_u16")
+            }),
         };
         self.adjust_stack(effect);
     }
@@ -572,10 +652,17 @@ impl CodeBuilder {
 
 /// Label for a forward jump that needs patching.
 ///
-/// Stores the bytecode offset where the jump instruction was emitted.
-/// Pass this to `patch_jump()` once the target location is known.
+/// Carries the bytecode offset where the jump instruction was emitted, plus
+/// the stack depth that the jump-taken path leaves on the stack at the patch
+/// target. The depth is computed by `emit_jump` from the per-opcode semantics
+/// of the jump (see that method's docs) and used by `patch_jump` to assert
+/// the merge invariant — every branch reaching the patch point must agree on
+/// stack depth. Pass this to `patch_jump()` once the target location is known.
 #[derive(Debug, Clone, Copy)]
-pub struct JumpLabel(usize);
+pub struct JumpLabel {
+    offset: usize,
+    target_depth: u16,
+}
 
 #[cfg(test)]
 mod tests {
@@ -613,8 +700,14 @@ mod tests {
     fn test_forward_jump() {
         let mut builder = CodeBuilder::new();
         let jump = builder.emit_jump(Opcode::Jump);
+        // The two LoadNones below are dead code (unconditional Jump above), but
+        // they still get emitted to exercise the offset patching. Reset the
+        // builder's tracker before patching so the merge invariant in
+        // `patch_jump` reflects the live (jump-taken) path, where stack depth
+        // is unchanged from before the Jump.
         builder.emit(Opcode::LoadNone); // 1 byte, skipped by jump
         builder.emit(Opcode::LoadNone); // 1 byte, skipped by jump
+        builder.set_stack_depth(0);
         builder.patch_jump(jump);
         builder.emit(Opcode::LoadNone); // Return value
         builder.emit(Opcode::ReturnValue);
