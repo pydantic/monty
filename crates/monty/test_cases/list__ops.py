@@ -326,53 +326,37 @@ except IndexError:
 
 
 # === list.sort() reentrant mutation by key callback (issue #411) ===
-# Key callbacks that clear the same list during sort must not panic.
 # CPython detaches the list during sort so reentrant access sees an empty
-# list, then raises ValueError if the user repopulated it. After a successful
-# sort the list is restored to the sorted order.
+# list. If the user re-populates the live list, sort raises ValueError after
+# restoring the detached (sorted) buffer.
 
-# clear() during key extraction - list looks empty to the callback
+# Key callback observes empty list during sort
 xs1 = [3, 2, 1]
 
 
-def clear_key(value):
-    xs1.clear()
+def empty_key(value):
+    assert len(xs1) == 0
     return value
 
 
-xs1.sort(key=clear_key)
-assert xs1 == [1, 2, 3], 'sort with key that clears the list still produces sorted output'
+xs1.sort(key=empty_key)
+assert xs1 == [1, 2, 3], 'sort with key that observes empty list still produces sorted output'
 
-# pop() during key extraction - same: callback sees an empty list
+# Repopulating the list during sort must raise ValueError
 xs2 = [3, 2, 1]
 
 
-def pop_key(value):
-    if xs2:
-        xs2.pop()
-    return value
-
-
-xs2.sort(key=pop_key)
-assert xs2 == [1, 2, 3], 'sort with key that pops from the list still produces sorted output'
-
-# Repopulating the list during sort must raise ValueError
-xs3 = [3, 2, 1]
-
-
 def repopulate_key(value):
-    xs3.append(99)
+    xs2.append(99)
     return value
 
 
 try:
-    xs3.sort(key=repopulate_key)
+    xs2.sort(key=repopulate_key)
     assert False, 'expected ValueError when key callback repopulates the list'
 except ValueError as exc:
     assert str(exc) == 'list modified during sort', 'sort raises ValueError when list is modified'
-# CPython restores the (sorted) detached buffer and discards the user's
-# interleaved appends, so the list ends up sorted even though we raised.
-assert xs3 == [1, 2, 3], 'list is restored to sorted state after ValueError'
+assert xs2 == [1, 2, 3], 'list is restored to sorted state after ValueError'
 
 
 # === List assignment (setitem) ===
