@@ -230,6 +230,7 @@ impl<'i> Prepare<'i> {
     fn new_function(
         capacity: usize,
         params: &[StringId],
+        position: CodeRange,
         assigned_names: AHashSet<String>,
         global_names: AHashSet<String>,
         nonlocal_names: AHashSet<String>,
@@ -238,10 +239,25 @@ impl<'i> Prepare<'i> {
         enclosing_locals: Option<AHashSet<String>>,
         cell_var_names: AHashSet<String>,
         interner: &'i InternerBuilder,
-    ) -> Self {
+    ) -> Result<Self, ParseError> {
+        // Reject duplicate parameter names while building the name_map.
+        // Ruff's parser accepts `def f(x, x)` that CPython rejects at compile
+        // time; without this check, `name_map` is deduplicated by HashMap
+        // semantics but each `NamespaceId` comes from the positional index,
+        // so the duplicate slot lands past the allocated stack region and
+        // panics `load_local` at runtime.
         let mut name_map = AHashMap::with_capacity(capacity);
         for (index, string_id) in params.iter().enumerate() {
-            name_map.insert(interner.get_str(*string_id).to_string(), NamespaceId::new(index));
+            let name_str = interner.get_str(*string_id);
+            if name_map
+                .insert(name_str.to_string(), NamespaceId::new(index))
+                .is_some()
+            {
+                return Err(ParseError::syntax(
+                    format!("duplicate argument '{name_str}' in function definition"),
+                    position,
+                ));
+            }
         }
         let namespace_size = name_map.len();
 
@@ -281,7 +297,7 @@ impl<'i> Prepare<'i> {
             free_var_map.insert(name, NamespaceId::new(slot));
         }
 
-        Self {
+        Ok(Self {
             interner,
             name_map,
             namespace_size,
@@ -294,7 +310,7 @@ impl<'i> Prepare<'i> {
             free_var_map,
             cell_var_map,
             unassigned_ref_names: AHashSet::new(),
-        }
+        })
     }
 
     /// Recursively prepares a sequence of AST nodes by resolving names and transforming expressions.
@@ -1267,15 +1283,12 @@ impl<'i> Prepare<'i> {
         // Register the function name in the current scope
         let (name, _) = self.get_id(name);
 
-        // Extract param names from the parsed signature for scope analysis
+        // Extract param names from the parsed signature for scope analysis.
+        // Duplicate names (`def f(x, x)`) are rejected inside `new_function`
+        // when it builds the namespace `name_map`, since duplicates would
+        // desynchronize `name_map.len()` from the positional `NamespaceId`
+        // and later panic `load_local` at runtime.
         let param_names: Vec<StringId> = parsed_sig.param_names().collect();
-
-        // Reject duplicate parameter names. CPython raises `SyntaxError` at compile
-        // time; accepting them here desynchronizes the namespace layout built by
-        // `new_function` (`name_map` is deduplicated by HashMap semantics but each
-        // `NamespaceId` comes from the positional index), which later panics
-        // `load_local` at runtime.
-        reject_duplicate_params(&param_names, self.interner, name.position)?;
 
         // Pass 1: Collect scope information from the function body
         let scope_info = collect_function_scope_info(&body, &param_names, self.interner);
@@ -1317,6 +1330,7 @@ impl<'i> Prepare<'i> {
         let mut inner_prepare = Prepare::new_function(
             body.len(),
             &param_names,
+            name.position,
             scope_info.assigned_names,
             scope_info.global_names,
             scope_info.nonlocal_names,
@@ -1325,7 +1339,7 @@ impl<'i> Prepare<'i> {
             Some(enclosing_locals),
             scope_info.cell_var_names,
             self.interner,
-        );
+        )?;
 
         // Prepare the function body
         let prepared_body = inner_prepare.prepare_nodes(body)?;
@@ -1490,11 +1504,9 @@ impl<'i> Prepare<'i> {
         let body_as_node: ParseNode = Node::Return(body.clone());
         let body_nodes = vec![body_as_node];
 
-        // Extract param names from the parsed signature for scope analysis
+        // Extract param names from the parsed signature for scope analysis.
+        // Duplicates are rejected inside `new_function` (see its doc).
         let param_names: Vec<StringId> = parsed_sig.param_names().collect();
-
-        // Reject duplicate parameter names (see `prepare_function_def` for the rationale).
-        reject_duplicate_params(&param_names, self.interner, position)?;
 
         // Pass 1: Collect scope information from the lambda body
         // (Lambdas can't have global/nonlocal declarations, but can have nested functions)
@@ -1534,6 +1546,7 @@ impl<'i> Prepare<'i> {
         let mut inner_prepare = Prepare::new_function(
             body_nodes.len(),
             &param_names,
+            position,
             scope_info.assigned_names,
             scope_info.global_names,
             scope_info.nonlocal_names,
@@ -1542,7 +1555,7 @@ impl<'i> Prepare<'i> {
             Some(enclosing_locals),
             scope_info.cell_var_names,
             self.interner,
-        );
+        )?;
 
         // Prepare the lambda body
         let prepared_body = inner_prepare.prepare_nodes(body_nodes)?;
@@ -1928,32 +1941,6 @@ struct FunctionScopeInfo {
     /// OR they may be builtin/global reads. The actual implicit captures are determined
     /// by filtering against enclosing_locals in new_function.
     potential_captures: AHashSet<String>,
-}
-
-/// Validates that a function's parameter list has no duplicate names.
-///
-/// Ruff's parser accepts duplicate parameter names (e.g. `def f(x, x)`) that CPython
-/// rejects at compile time. Accepting them here would desynchronize the namespace
-/// layout: `name_map.len()` counts unique names while each `NamespaceId` comes
-/// from the positional index, so the duplicate resolves to a slot past the
-/// allocated stack region and panics `load_local` at runtime. Rejecting at the
-/// prepare phase matches CPython's compile-time check.
-fn reject_duplicate_params(
-    param_names: &[StringId],
-    interner: &InternerBuilder,
-    position: CodeRange,
-) -> Result<(), ParseError> {
-    let mut seen = AHashSet::with_capacity(param_names.len());
-    for string_id in param_names {
-        if !seen.insert(*string_id) {
-            let name_str = interner.get_str(*string_id);
-            return Err(ParseError::syntax(
-                format!("duplicate argument '{name_str}' in function definition"),
-                position,
-            ));
-        }
-    }
-    Ok(())
 }
 
 /// Scans a function body to collect scope information (first phase of preparation).
