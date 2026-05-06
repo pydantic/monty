@@ -1719,8 +1719,7 @@ impl<'h, 'a, T: ResourceTracker> VM<'h, 'a, T> {
     /// Forces a GC cycle and returns the freed count.
     ///
     /// This is only compiled for tests so integration tests can reproduce GC
-    /// bugs deterministically. Trial deletion needs no root walk, so this just
-    /// drives [`Heap::collect_cycles`] unconditionally.
+    /// bugs deterministically.
     #[cfg(feature = "test-hooks")]
     pub(crate) fn __force_gc_for_tests(&mut self) -> usize {
         self.run_gc()

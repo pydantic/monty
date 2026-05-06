@@ -1416,10 +1416,13 @@ impl<T: ResourceTracker> Heap<T> {
 #[cfg(feature = "memory-model-checks")]
 impl<T: ResourceTracker> Drop for Heap<T> {
     fn drop(&mut self) {
-        self.entries.retain(|_, value| {
-            py_dec_ref_ids_for_data(value.data.0.get_mut(), &mut Vec::new());
-            false
-        });
+        for id in 0..self.entries.len() {
+            if let Some(mut entry) = self.entries.entry(HeapId::from_index(id)) {
+                // Mark all `Value::Ref` payloads as `Dereferenced` so they don't panic when dropped
+                py_dec_ref_ids_for_data(entry.get().data.0.get_mut(), &mut Vec::new());
+                entry.free();
+            }
+        }
     }
 }
 

@@ -117,23 +117,6 @@ impl<T> StableHeap<T> {
         StableHeapEntry::new(id, value, &mut self.free_list)
     }
 
-    /// Retain only values satisfying the predicate, freeing the rest.
-    ///
-    /// Trial-deletion cycle collection frees White entries one by one through
-    /// `StableHeapEntry::free`, so this bulk variant is currently only needed
-    /// by the `memory-model-checks` shutdown sweep and unit tests.
-    #[cfg(any(test, feature = "memory-model-checks"))]
-    pub fn retain(&mut self, mut predicate: impl FnMut(usize, &mut T) -> bool) {
-        let len = self.len.get();
-        for i in 0..len {
-            if let Some(mut entry) = self.entry(HeapId::from_index(i))
-                && !predicate(i, entry.get())
-            {
-                entry.free();
-            }
-        }
-    }
-
     /// Allocates a slot — reusing from the free list or appending — and returns its ID.
     ///
     /// Takes `&self` instead of `&mut self`, enabling allocation while holding shared
@@ -221,13 +204,6 @@ impl<T> StableHeap<T> {
     fn page_slot_indices(id: HeapId) -> (usize, usize) {
         let index = id.index();
         (index / PAGE_SIZE, index % PAGE_SIZE)
-    }
-
-    /// Tests whether the value at index i is allocated. Panics if `i >= self.len()`
-    #[cfg(test)]
-    fn is_allocated(&self, id: HeapId) -> bool {
-        // SAFETY: [DH] - call does not expose borrowed data
-        unsafe { self.slot_at(id) }.is_some()
     }
 }
 
@@ -376,7 +352,6 @@ mod iter {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashSet;
 
     use super::*;
 
@@ -495,42 +470,6 @@ mod tests {
         // Live references must still see the original value.
         for r in &live_refs {
             assert_eq!(**r, "original");
-        }
-    }
-
-    #[test]
-    fn retain_then_allocate_reuses_freed_slots() {
-        // Use retain to free slots, then allocate into the freed slots.
-        let mut entries = StableHeap::with_capacity(16);
-
-        for _ in 0..6 {
-            entries.allocate("v");
-        }
-
-        // Retain only even-indexed entries.
-        entries.retain(|i, _| i % 2 == 0);
-
-        // Odd slots should now be None.
-        for i in [1, 3, 5] {
-            assert!(!entries.is_allocated(HeapId::from_index(i)));
-        }
-
-        // Allocate should reuse freed slots.
-        let r1 = entries.allocate("new-1");
-        let r2 = entries.allocate("new-2");
-        let r3 = entries.allocate("new-3");
-
-        // The reused IDs should be the ones that were freed.
-        let reused: HashSet<usize> = [r1, r2, r3].iter().map(|id| id.index()).collect();
-        assert!(reused.contains(&1) || reused.contains(&3) || reused.contains(&5));
-        assert_eq!(reused.len(), 3);
-
-        // All slots should now be occupied.
-        for i in 0..6 {
-            assert!(
-                entries.is_allocated(HeapId::from_index(i)),
-                "slot {i} should be occupied"
-            );
         }
     }
 }
