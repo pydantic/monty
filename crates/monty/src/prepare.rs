@@ -249,10 +249,7 @@ impl<'i> Prepare<'i> {
         let mut name_map = AHashMap::with_capacity(capacity);
         for (index, string_id) in params.iter().enumerate() {
             let name_str = interner.get_str(*string_id);
-            if name_map
-                .insert(name_str.to_string(), NamespaceId::new(index))
-                .is_some()
-            {
+            if name_map.insert(name_str.to_string(), NamespaceId::new(index)).is_some() {
                 return Err(ParseError::syntax(
                     format!("duplicate argument '{name_str}' in function definition"),
                     position,
