@@ -58,7 +58,7 @@ pub(crate) enum CallResult {
     AwaitValue(Value),
 }
 
-impl<T: ResourceTracker> VM<'_, '_, T> {
+impl<T: ResourceTracker> VM<'_, T> {
     // ========================================================================
     // Call Opcode Executors
     // ========================================================================

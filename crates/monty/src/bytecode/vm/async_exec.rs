@@ -24,7 +24,7 @@ use crate::{
     value::Value,
 };
 
-impl<'h, T: ResourceTracker> VM<'h, '_, T> {
+impl<'h, T: ResourceTracker> VM<'h, T> {
     /// Executes the Await opcode.
     ///
     /// Pops the awaitable from the stack and handles it based on its type:

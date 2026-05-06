@@ -19,7 +19,7 @@ use crate::{
 /// - `flush`: whether to flush the stream (accepted but ignored)
 ///
 /// The `file` kwarg is not supported.
-pub fn builtin_print(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+pub fn builtin_print(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     // Split into positional args and kwargs
     let (positional, kwargs) = args.into_parts();
     defer_drop!(positional, vm);
@@ -57,7 +57,7 @@ pub fn builtin_print(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues)
 /// Returns (sep, end) where each is Some if provided.
 fn extract_print_kwargs(
     kwargs: KwargsValues,
-    vm: &mut VM<'_, '_, impl ResourceTracker>,
+    vm: &mut VM<'_, impl ResourceTracker>,
 ) -> RunResult<(Option<String>, Option<String>)> {
     let mut sep: Option<String> = None;
     let mut end: Option<String> = None;
@@ -112,7 +112,7 @@ fn extract_print_kwargs(
 ///
 /// The kwarg can be None (returns None) or a string (returns Some).
 /// Raises TypeError for other types.
-fn extract_string_kwarg(value: &Value, name: &str, vm: &VM<'_, '_, impl ResourceTracker>) -> RunResult<Option<String>> {
+fn extract_string_kwarg(value: &Value, name: &str, vm: &VM<'_, impl ResourceTracker>) -> RunResult<Option<String>> {
     match value {
         Value::None => Ok(None),
         Value::InternString(string_id) => Ok(Some(vm.interns.get_str(*string_id).to_owned())),

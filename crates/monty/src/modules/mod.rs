@@ -87,7 +87,7 @@ impl StandardLib {
     /// # Panics
     ///
     /// Panics if the required strings have not been pre-interned during prepare phase.
-    pub fn create(self, vm: &mut VM<'_, '_, impl ResourceTracker>) -> Result<HeapId, ResourceError> {
+    pub fn create(self, vm: &mut VM<'_, impl ResourceTracker>) -> Result<HeapId, ResourceError> {
         match self {
             Self::Sys => sys::create_module(vm),
             Self::Typing => typing::create_module(vm),
@@ -137,7 +137,7 @@ impl ModuleFunctions {
     ///
     /// Returns `CallResult` to support both immediate values and OS calls that
     /// require host involvement (e.g., `os.getenv()` needs the host to provide environment variables).
-    pub fn call(self, vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<CallResult> {
+    pub fn call(self, vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<CallResult> {
         match self {
             Self::Asyncio(functions) => asyncio::call(vm.heap, functions, args),
             Self::Json(functions) => json::call(vm, functions, args).map(CallResult::Value),

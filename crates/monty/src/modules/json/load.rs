@@ -70,7 +70,7 @@ const JSON_RECURSION_LIMIT: usize = 200;
 /// CPython kwargs `cls`, `object_hook`, `parse_float`, `parse_int`,
 /// `parse_constant`, and `object_pairs_hook` are intentionally unsupported
 /// and will raise `TypeError` if passed.
-pub(super) fn call_loads(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+pub(super) fn call_loads(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     let (mut pos, kwargs) = args.into_parts();
     if let Some((key, value)) = kwargs.into_iter().next() {
         defer_drop!(key, vm);
@@ -105,7 +105,7 @@ pub(super) fn call_loads(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgVal
 /// The parser works directly on the underlying byte slice. Decoded strings from
 /// `jiter` are copied into Monty's heap immediately before any further parser
 /// movement so borrowed tape-backed data never escapes.
-fn parse_json_input(value: &Value, vm: &mut VM<'_, '_, impl ResourceTracker>) -> RunResult<Value> {
+fn parse_json_input(value: &Value, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<Value> {
     let bytes: Cow<'_, [u8]> = match value {
         Value::InternString(string_id) => Cow::Borrowed(vm.interns.get_str(*string_id).as_bytes()),
         Value::InternBytes(bytes_id) => Cow::Borrowed(vm.interns.get_bytes(*bytes_id)),
@@ -127,7 +127,7 @@ fn parse_json_input(value: &Value, vm: &mut VM<'_, '_, impl ResourceTracker>) ->
 ///
 /// Syntax errors are wrapped in `json.JSONDecodeError` using the same
 /// line/column/character suffix as CPython.
-fn parse_json_bytes(bytes: &[u8], vm: &mut VM<'_, '_, impl ResourceTracker>) -> RunResult<Value> {
+fn parse_json_bytes(bytes: &[u8], vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<Value> {
     let mut jiter = Jiter::new(bytes).with_allow_inf_nan();
     // Take the cache out of the VM so we can pass it alongside &mut VM
     // without conflicting borrows. `mem::take` leaves `Default` in its place.
@@ -157,7 +157,7 @@ fn parse_json_value(
     jiter: &mut Jiter<'_>,
     depth: usize,
     cache: &mut JsonStringCache,
-    vm: &mut VM<'_, '_, impl ResourceTracker>,
+    vm: &mut VM<'_, impl ResourceTracker>,
 ) -> ParseResult<Value> {
     let peek = jiter.peek()?;
     parse_json_value_from_peek(peek, jiter, depth, cache, vm)
@@ -172,7 +172,7 @@ fn parse_json_value_from_peek(
     jiter: &mut Jiter<'_>,
     depth: usize,
     cache: &mut JsonStringCache,
-    vm: &mut VM<'_, '_, impl ResourceTracker>,
+    vm: &mut VM<'_, impl ResourceTracker>,
 ) -> ParseResult<Value> {
     match peek {
         Peek::Null => {
@@ -212,11 +212,7 @@ fn allocate_cached_string(
 /// Integer tokens are counted directly from the source bytes so
 /// `INT_MAX_STR_DIGITS` errors report the same digit count as CPython without
 /// first allocating an oversized decimal string.
-fn parse_json_number(
-    peek: Peek,
-    jiter: &mut Jiter<'_>,
-    vm: &mut VM<'_, '_, impl ResourceTracker>,
-) -> ParseResult<Value> {
+fn parse_json_number(peek: Peek, jiter: &mut Jiter<'_>, vm: &mut VM<'_, impl ResourceTracker>) -> ParseResult<Value> {
     let start = jiter.current_index();
     match jiter.known_number(peek) {
         Ok(NumberAny::Int(NumberInt::Int(value))) => Ok(Value::Int(value)),
@@ -238,7 +234,7 @@ fn parse_json_array(
     jiter: &mut Jiter<'_>,
     depth: usize,
     cache: &mut JsonStringCache,
-    vm: &mut VM<'_, '_, impl ResourceTracker>,
+    vm: &mut VM<'_, impl ResourceTracker>,
 ) -> ParseResult<Value> {
     check_json_recursion_limit(jiter, depth)?;
 
@@ -281,7 +277,7 @@ fn parse_json_object(
     jiter: &mut Jiter<'_>,
     depth: usize,
     cache: &mut JsonStringCache,
-    vm: &mut VM<'_, '_, impl ResourceTracker>,
+    vm: &mut VM<'_, impl ResourceTracker>,
 ) -> ParseResult<Value> {
     check_json_recursion_limit(jiter, depth)?;
 

@@ -3,8 +3,8 @@ error[E0521]: borrowed data escapes outside of closure
    |
 83 |     let mut smuggled: Option<HeapRead<'_, List>> = None;
    |         ------------ `smuggled` declared here, outside of the closure body
-84 |     HeapReader::with(heap, |heap| {
-   |                             ---- `heap` is a reference that is only valid in the closure body
+84 |     HeapReader::with(heap, &mut (), |heap, ()| {
+   |                                      ---- `heap` is a reference that is only valid in the closure body
 ...
 89 |         smuggled = Some(a);
    |         ^^^^^^^^ `heap` escapes the closure body here
