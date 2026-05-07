@@ -1203,10 +1203,10 @@ impl NdArray {
                     }
                 }
             }
-            let rlen = row_indices.len();
-            let clen = col_indices.len();
-            let row_arr = Self::new(row_indices, vec![rlen], NdArrayDtype::Int64);
-            let col_arr = Self::new(col_indices, vec![clen], NdArrayDtype::Int64);
+            let row_len = row_indices.len();
+            let col_len = col_indices.len();
+            let row_arr = Self::new(row_indices, vec![row_len], NdArrayDtype::Int64);
+            let col_arr = Self::new(col_indices, vec![col_len], NdArrayDtype::Int64);
             let row_val = Value::Ref(heap.allocate(HeapData::NdArray(row_arr))?);
             let col_val = Value::Ref(heap.allocate(HeapData::NdArray(col_arr))?);
             let tup = allocate_tuple(smallvec![row_val, col_val], heap)?;
