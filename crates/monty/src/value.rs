@@ -1531,8 +1531,11 @@ impl Value {
                     }
                 };
             }
-            // For heap-allocated values (includes Range and Exception), compute hash lazily and cache it
-            Self::Ref(id) => return Heap::get_or_compute_hash(vm, *id),
+            // For heap-allocated values, dispatch to the per-type `py_hash`
+            // impl. Types that benefit from caching (Str/Bytes/Tuple/
+            // NamedTuple/FrozenSet/Path) carry an inline `cached_hash`;
+            // cheap-to-hash types recompute each call.
+            Self::Ref(id) => return vm.heap.read(*id).py_hash(*id, vm),
             // Singleton values can be hashed directly
             Self::Undefined | Self::Ellipsis | Self::None => discriminant(self).hash(&mut hasher),
             Self::Builtin(b) => b.hash(&mut hasher),

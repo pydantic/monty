@@ -65,7 +65,7 @@
 /// - `expandtabs(tabsize=8)` - Tab expansion
 /// - `translate(table[, delete])` - Character translation
 /// - `maketrans(frm, to)` - Create translation table (staticmethod)
-use std::{cmp::Ordering, fmt, fmt::Write, mem, ops, str};
+use std::{cell::Cell, cmp::Ordering, fmt, fmt::Write, mem, ops, str};
 
 use ahash::AHashSet;
 use smallvec::smallvec;
@@ -121,14 +121,25 @@ pub fn get_byte_at_index(bytes: &[u8], index: i64) -> Option<u8> {
 ///
 /// Wraps a `Vec<u8>` and provides Python-compatible operations.
 /// See the module-level documentation for implemented and unimplemented methods.
-#[derive(Debug, Clone, PartialEq, Default, serde::Serialize, serde::Deserialize)]
-pub(crate) struct Bytes(Vec<u8>);
+///
+/// Carries an inline `cached_hash` field (skipped on serde) so a `Bytes` only
+/// computes its Python hash once. See [`super::Str`] for the same pattern.
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[serde(transparent)]
+pub(crate) struct Bytes(Vec<u8>, #[serde(skip)] Cell<Option<HashValue>>);
+
+impl PartialEq for Bytes {
+    /// Compares only the byte content — `cached_hash` is a pure optimisation.
+    fn eq(&self, other: &Self) -> bool {
+        self.0 == other.0
+    }
+}
 
 impl Bytes {
     /// Creates a new Bytes from a byte vector.
     #[must_use]
     pub fn new(bytes: Vec<u8>) -> Self {
-        Self(bytes)
+        Self(bytes, Cell::new(None))
     }
 
     /// Returns a reference to the inner byte slice.
@@ -179,13 +190,13 @@ impl Bytes {
 
 impl From<Vec<u8>> for Bytes {
     fn from(bytes: Vec<u8>) -> Self {
-        Self(bytes)
+        Self::new(bytes)
     }
 }
 
 impl From<&[u8]> for Bytes {
     fn from(bytes: &[u8]) -> Self {
-        Self(bytes.to_vec())
+        Self::new(bytes.to_vec())
     }
 }
 
@@ -237,7 +248,16 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Bytes> {
     }
 
     fn py_hash(&self, _self_id: HeapId, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<HashValue>> {
-        Ok(Some(hash_python_bytes(self.get(vm.heap).as_slice())))
+        let b = self.get(vm.heap);
+        if let Some(cached) = b.1.get() {
+            return Ok(Some(cached));
+        }
+        // Delegates to the canonical helper used by both heap and intern paths;
+        // an interned `b"foo"` and a heap `b"foo"` must hash identically for
+        // dict lookup to work.
+        let hash = hash_python_bytes(b.as_slice());
+        b.1.set(Some(hash));
+        Ok(Some(hash))
     }
 
     fn py_cmp(&self, other: &Self, vm: &mut VM<'h, impl ResourceTracker>) -> Result<Option<Ordering>, ResourceError> {

@@ -8,7 +8,6 @@ use std::{
     vec,
 };
 
-use bytemuck::TransparentWrapper;
 use serde::ser::SerializeStruct;
 
 // Re-export items moved to `heap_traits` so that `crate::heap::HeapGuard` etc. continue
@@ -17,15 +16,13 @@ pub(crate) use crate::heap_data::HeapData;
 pub(crate) use crate::heap_traits::{ContainsHeap, DropWithHeap, HeapGuard, HeapItem};
 use crate::{
     asyncio::{Coroutine, GatherFuture, GatherItem},
-    bytecode::VM,
-    exception_private::{RunResult, SimpleException},
-    hash::HashValue,
+    exception_private::SimpleException,
     heap_data::{CellValue, Closure, FunctionDefaults},
     resource::{ResourceError, ResourceTracker},
     types::{
         Bytes, Dataclass, Dict, DictItemsView, DictKeysView, DictValuesView, FrozenSet, List, LongInt, Module,
-        MontyIter, NamedTuple, Path, PyTrait, Range, ReMatch, RePattern, Set, Slice, Str, TimeZone, Tuple, date,
-        datetime, timedelta, timezone,
+        MontyIter, NamedTuple, Path, Range, ReMatch, RePattern, Set, Slice, Str, TimeZone, Tuple, date, datetime,
+        timedelta, timezone,
     },
     value::Value,
 };
@@ -54,59 +51,6 @@ impl HeapId {
 
 /// The empty tuple is a singleton which is allocated at startup.
 const EMPTY_TUPLE_ID: HeapId = HeapId(0);
-
-/// Hash caching state stored alongside each heap entry.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-enum HashState {
-    /// Hash has not yet been computed but the value might be hashable.
-    Unknown,
-    /// Cached hash value for immutable types that have been hashed at least once.
-    Cached(HashValue),
-    /// Value is unhashable (mutable types or tuples containing unhashables).
-    Unhashable,
-}
-
-impl HashState {
-    fn for_data(data: &HeapData) -> Self {
-        match data {
-            // Cells are hashable by identity (like all Python objects without __hash__ override)
-            // FrozenSet is immutable and hashable
-            // Range is immutable and hashable
-            // Slice is immutable and hashable (like in CPython)
-            // LongInt is immutable and hashable
-            // NamedTuple is immutable and hashable (like Tuple)
-            HeapData::Str(_)
-            | HeapData::Bytes(_)
-            | HeapData::Tuple(_)
-            | HeapData::NamedTuple(_)
-            | HeapData::FrozenSet(_)
-            | HeapData::Cell(_)
-            | HeapData::Closure(_)
-            | HeapData::FunctionDefaults(_)
-            | HeapData::Range(_)
-            | HeapData::Slice(_)
-            | HeapData::LongInt(_)
-            | HeapData::Date(_)
-            | HeapData::DateTime(_)
-            | HeapData::TimeDelta(_)
-            | HeapData::TimeZone(_) => Self::Unknown,
-            // Dataclass hashability depends on the mutable flag
-            HeapData::Dataclass(dc) => {
-                if dc.is_frozen() {
-                    Self::Unknown
-                } else {
-                    Self::Unhashable
-                }
-            }
-            // Path is immutable and hashable
-            HeapData::Path(_) => Self::Unknown,
-            // ExtFunction is hashable (by identity, like closures)
-            HeapData::ExtFunction(_) => Self::Unknown,
-            // other types are unhashable
-            _ => Self::Unhashable,
-        }
-    }
-}
 
 /// This structure allows for reading into the heap more efficiently than repeated calls to `Heap::get` and
 /// `Heap::get_mut` by performing the indexing and type lookup once, and then using the borrow checker to
@@ -382,28 +326,6 @@ impl<'a, T: ?Sized> HeapRead<'a, T> {
         unsafe { self.value.as_mut() }
     }
 
-    /// Cast this reader around some type T which is a transparent wrapper around U
-    /// to its inner type. Name peel comes from `TransparentWrapper::peel` method.
-    pub fn peel_ref<U>(&self) -> &HeapRead<'a, U>
-    where
-        T: TransparentWrapper<U>,
-    {
-        // SAFETY: (DH) all `HeapRead` have the same layout, T and U pointers are
-        // equivalent due to the `#[repr(transparent)] struct T(U)`
-        unsafe { NonNull::from(self).cast().as_ref() }
-    }
-
-    /// Cast this reader around some type T which is a transparent wrapper around U
-    /// to its inner type. Name peel comes from `TransparentWrapper::peel` method.
-    pub fn peel_mut<U>(&mut self) -> &mut HeapRead<'a, U>
-    where
-        T: TransparentWrapper<U>,
-    {
-        // SAFETY: (DH) all `HeapRead` have the same layout, T and U pointers are
-        // equivalent due to the `#[repr(transparent)] struct T(U)`
-        unsafe { NonNull::from(self).cast().as_mut() }
-    }
-
     /// Casts this reader to a field of type `U` at some `offset` within the struct.
     ///
     /// Transfers ownership of the reader count from `self` to the returned `HeapRead`.
@@ -562,17 +484,14 @@ macro_rules! heap_read_ref_as_field_mut {
 
 pub(crate) use heap_read_ref_as_field_mut;
 
-/// A single entry inside the heap arena, storing refcount, payload, and hash metadata.
+/// A single entry inside the heap arena, storing refcount and payload.
 ///
-/// The `hash_state` field tracks whether the heap entry is hashable and, if so,
-/// caches the computed hash. Mutable types (List, Dict) start as `Unhashable` and
-/// will raise TypeError if used as dict keys.
-///
-/// The `data` field is an Option to support temporary borrowing: when methods like
-/// `with_entry_mut` or `call_attr` need mutable access to both the data and the heap,
-/// they can `.take()` the data out (leaving `None`), pass `&mut Heap` to user code,
-/// then restore the data. This avoids unsafe code while keeping `refcount` accessible
-/// for `inc_ref`/`dec_ref` during the borrow.
+/// Hashing state lives on the per-type structs that benefit from it
+/// ([`Str`], [`Bytes`], [`Tuple`], [`NamedTuple`], [`FrozenSet`] (via
+/// `SetStorage`), [`Path`]). Cheap-to-hash types ([`Range`], [`Slice`],
+/// dates etc.) recompute on demand. Unhashable types ([`List`], [`Dict`],
+/// [`Set`]) return `None` from `py_hash` directly. None of these need
+/// per-entry metadata.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct HeapEntry {
     refcount: Cell<usize>,
@@ -586,8 +505,6 @@ pub struct HeapEntry {
     readers: Cell<usize>,
     /// The payload data
     data: UnsafeHeapData,
-    /// Current hashing status / cached hash value
-    hash_state: Cell<HashState>,
 }
 
 /// This wrapper containing `UnsafeCell` exists to allow for data inside of `HeapValue`
@@ -755,12 +672,10 @@ impl<T: ResourceTracker> Heap<T> {
         };
 
         let empty_tuple = HeapData::Tuple(Tuple::default());
-        let hash_state = HashState::for_data(&empty_tuple);
         let new_entry = HeapEntry {
             refcount: Cell::new(1),
             readers: Cell::new(0),
             data: UnsafeHeapData(UnsafeCell::new(empty_tuple)),
-            hash_state: Cell::new(hash_state),
         };
 
         let empty_tuple = this.entries.allocate(new_entry);
@@ -895,12 +810,10 @@ impl<T: ResourceTracker> Heap<T> {
             }
         }
 
-        let hash_state = HashState::for_data(&data);
         let new_entry = HeapEntry {
             refcount: Cell::new(1),
             readers: Cell::new(0),
             data: UnsafeHeapData(UnsafeCell::new(data)),
-            hash_state: Cell::new(hash_state),
         };
 
         let id = self.entries.allocate(new_entry);
@@ -1001,40 +914,6 @@ impl<T: ResourceTracker> Heap<T> {
         let data = &self.entries.get(id).data;
         // SAFETY: (DH) no mutable references into `HeapData` is possible while the heap is borrowed
         unsafe { &*data.0.get() }
-    }
-
-    /// Returns or computes the hash for the heap entry at the given ID.
-    ///
-    /// Hashes are computed lazily on first use and then cached. Returns
-    /// `Ok(Some(hash))` for immutable types, `Ok(None)` for mutable types,
-    /// or `Err(ResourceError::Recursion)` if the recursion limit is exceeded.
-    ///
-    /// # Panics
-    /// Panics if the value ID is invalid or the value has already been freed.
-    pub fn get_or_compute_hash(vm: &mut VM<'_, T>, id: HeapId) -> RunResult<Option<HashValue>> {
-        // TODO: it should be possible to refactor the triple lookup to just one, probably by having an
-        // internal `vm.heap.read_entry` method which can then derive the `HeapReadOutput` for `py_hash`
-        // later, and can live without a VM borrow to allow reading / writing the hash.
-        //
-        // That only matters before the hash is cached, so not the worst thing for performance.
-
-        let entry = vm.heap.entries.get(id);
-
-        match entry.hash_state.get() {
-            HashState::Unhashable => return Ok(None),
-            HashState::Cached(hash) => return Ok(Some(hash)),
-            HashState::Unknown => {}
-        }
-
-        let hash = vm.heap.read(id).py_hash(id, vm)?;
-
-        // Cache the result
-        let entry = vm.heap.entries.get(id);
-        entry.hash_state.set(match hash {
-            Some(value) => HashState::Cached(value),
-            None => HashState::Unhashable,
-        });
-        Ok(hash)
     }
 
     /// Returns the reference count for the heap entry at the given ID.

@@ -16,6 +16,7 @@
 /// This type is used for `sys.version_info` and similar structured tuples where
 /// named access improves usability and readability.
 use std::{
+    cell::Cell,
     collections::hash_map::DefaultHasher,
     fmt::Write,
     hash::{Hash, Hasher},
@@ -63,6 +64,9 @@ pub(crate) struct NamedTuple {
     items: Vec<Value>,
     /// True if any item is a `Value::Ref`. Set at creation time since named tuples are immutable.
     contains_refs: bool,
+    /// Lazily-computed Python hash. Same rationale as [`super::Tuple::cached_hash`].
+    #[serde(skip)]
+    cached_hash: Cell<Option<HashValue>>,
 }
 
 impl NamedTuple {
@@ -90,6 +94,7 @@ impl NamedTuple {
             field_names,
             items,
             contains_refs,
+            cached_hash: Cell::new(None),
         }
     }
 
@@ -238,7 +243,12 @@ impl<'h> PyTrait<'h> for HeapRead<'h, NamedTuple> {
 
     /// Hashes by element only (not by class name), matching `Tuple::py_hash`
     /// so a `NamedTuple` and a `Tuple` with equal elements share the same hash.
+    /// Caches the computed hash on first call (see `Tuple::py_hash` for the
+    /// caching rationale).
     fn py_hash(&self, _self_id: HeapId, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<HashValue>> {
+        if let Some(cached) = self.get(vm.heap).cached_hash.get() {
+            return Ok(Some(cached));
+        }
         let token = vm.heap.incr_recursion_depth()?;
         defer_drop!(token, vm);
         let len = self.get(vm.heap).len();
@@ -251,7 +261,9 @@ impl<'h> PyTrait<'h> for HeapRead<'h, NamedTuple> {
                 None => return Ok(None),
             }
         }
-        Ok(Some(HashValue::new(hasher.finish())))
+        let hash = HashValue::new(hasher.finish());
+        self.get(vm.heap).cached_hash.set(Some(hash));
+        Ok(Some(hash))
     }
 
     fn py_bool(&self, vm: &mut VM<'h, impl ResourceTracker>) -> bool {

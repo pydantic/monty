@@ -2,7 +2,7 @@
 ///
 /// This type provides Python string semantics. Currently supports basic
 /// operations like length and equality comparison.
-use std::{borrow::Cow, cmp::Ordering, fmt, fmt::Write, mem, ops};
+use std::{borrow::Cow, cell::Cell, cmp::Ordering, fmt, fmt::Write, mem, ops};
 
 use ahash::AHashSet;
 use smallvec::smallvec;
@@ -28,20 +28,32 @@ use crate::{
 ///
 /// Wraps a Rust `String` and provides Python-compatible operations.
 /// `len()` returns the number of Unicode codepoints (characters), matching Python semantics.
-#[derive(Debug, Clone, PartialEq, Default, serde::Serialize, serde::Deserialize)]
-pub(crate) struct Str(Box<str>);
+///
+/// Carries an inline `cached_hash` field so a `Str` only computes its Python
+/// hash once.
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[serde(transparent)]
+pub(crate) struct Str(Box<str>, #[serde(skip)] Cell<Option<HashValue>>);
+
+impl PartialEq for Str {
+    /// Compares only the string content — the `cached_hash` field is a pure
+    /// optimisation and must not affect equality.
+    fn eq(&self, other: &Self) -> bool {
+        self.0 == other.0
+    }
+}
 
 impl Str {
     /// Creates a new Str from a Rust String.
     #[must_use]
     pub fn new(s: String) -> Self {
-        Self(s.into())
+        Self(s.into(), Cell::new(None))
     }
 
     /// Creates a new Str from a Rust Box<str>.
     #[must_use]
     pub fn from_boxed(s: Box<str>) -> Self {
-        Self(s)
+        Self(s, Cell::new(None))
     }
 
     /// Returns a reference to the inner string.
@@ -70,21 +82,21 @@ impl Str {
     ///
     /// Returns a new string containing the selected characters (Unicode-aware).
     fn getitem_slice(&self, vm: &VM<'_, impl ResourceTracker>, slice: &super::Slice) -> RunResult<Value> {
-        let result_str = slice_collect_iterator(vm, slice, self.0.chars(), |c| c)?;
-        let heap_id = vm.heap.allocate(HeapData::Str(Self(result_str)))?;
+        let result_str: Box<str> = slice_collect_iterator(vm, slice, self.0.chars(), |c| c)?;
+        let heap_id = vm.heap.allocate(HeapData::Str(Self::from_boxed(result_str)))?;
         Ok(Value::Ref(heap_id))
     }
 }
 
 impl From<String> for Str {
     fn from(s: String) -> Self {
-        Self(s.into())
+        Self::new(s)
     }
 }
 
 impl From<&str> for Str {
     fn from(s: &str) -> Self {
-        Self(s.into())
+        Self::from_boxed(s.into())
     }
 }
 
@@ -192,7 +204,16 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Str> {
     }
 
     fn py_hash(&self, _self_id: HeapId, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<HashValue>> {
-        Ok(Some(hash_python_str(self.get(vm.heap).as_str())))
+        let s = self.get(vm.heap);
+        if let Some(cached) = s.1.get() {
+            return Ok(Some(cached));
+        }
+        // Delegates to the canonical helper used by both heap and intern paths;
+        // an interned `"foo"` and a heap `"foo"` must hash identically for dict
+        // lookup to work.
+        let hash = hash_python_str(s.as_str());
+        s.1.set(Some(hash));
+        Ok(Some(hash))
     }
 
     fn py_bool(&self, vm: &mut VM<'h, impl ResourceTracker>) -> bool {

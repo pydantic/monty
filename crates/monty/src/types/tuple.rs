@@ -15,6 +15,7 @@
 ///
 /// All tuple methods from Python's builtins are implemented.
 use std::{
+    cell::Cell,
     cmp::Ordering,
     collections::hash_map::DefaultHasher,
     fmt::Write,
@@ -70,6 +71,12 @@ pub(crate) struct Tuple {
     /// True if any item in the tuple is a `Value::Ref`. Set at creation time
     /// since tuples are immutable.
     contains_refs: bool,
+    /// Lazily-computed Python hash. Tuples are immutable so this is
+    /// computed on first `py_hash` and reused thereafter. Skipped on
+    /// serde — recomputable from `items` and we don't want to lock the
+    /// snapshot format to the current hash function.
+    #[serde(skip)]
+    cached_hash: Cell<Option<HashValue>>,
 }
 
 impl Tuple {
@@ -86,7 +93,11 @@ impl Tuple {
     #[must_use]
     fn new(items: TupleVec) -> Self {
         let contains_refs = items.iter().any(|v| matches!(v, Value::Ref(_)));
-        Self { items, contains_refs }
+        Self {
+            items,
+            contains_refs,
+            cached_hash: Cell::new(None),
+        }
     }
 
     /// Returns a reference to the underlying SmallVec.
@@ -238,7 +249,14 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Tuple> {
     /// Identical to `NamedTuple::py_hash`, so a `Tuple` and a `NamedTuple` with
     /// the same elements hash equally — required because they compare equal
     /// (matching CPython, where `NamedTuple` is a `tuple` subclass).
+    ///
+    /// Caches the computed hash on first call. We only cache the `Some(_)`
+    /// outcome — `None` (unhashable child) is uncommon and skipping it
+    /// keeps the cache slot free of a 3-state encoding.
     fn py_hash(&self, _self_id: HeapId, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<HashValue>> {
+        if let Some(cached) = self.get(vm.heap).cached_hash.get() {
+            return Ok(Some(cached));
+        }
         let token = vm.heap.incr_recursion_depth()?;
         defer_drop!(token, vm);
         let len = self.get(vm.heap).items.len();
@@ -251,7 +269,9 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Tuple> {
                 None => return Ok(None),
             }
         }
-        Ok(Some(HashValue::new(hasher.finish())))
+        let hash = HashValue::new(hasher.finish());
+        self.get(vm.heap).cached_hash.set(Some(hash));
+        Ok(Some(hash))
     }
 
     /// Lexicographic comparison for tuples.

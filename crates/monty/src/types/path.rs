@@ -5,6 +5,7 @@
 //! while filesystem methods yield external function calls for the host to resolve.
 
 use std::{
+    cell::Cell,
     collections::hash_map::DefaultHasher,
     fmt::Write,
     hash::{Hash, Hasher},
@@ -35,10 +36,22 @@ use crate::{
 ///
 /// The path is immutable - all operations that would modify the path return
 /// new `Path` objects or strings.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) struct Path {
     /// The normalized path string.
     path: String,
+    /// Lazily-computed Python hash. Paths are immutable (all "modifying"
+    /// operations return new `Path` objects). Skipped on serde — see
+    /// [`super::Str::cached_hash`] for the rationale.
+    #[serde(skip)]
+    cached_hash: Cell<Option<HashValue>>,
+}
+
+impl PartialEq for Path {
+    /// Compares only the path string — `cached_hash` is a pure optimisation.
+    fn eq(&self, other: &Self) -> bool {
+        self.path == other.path
+    }
 }
 
 impl Path {
@@ -51,6 +64,7 @@ impl Path {
     pub fn new(path: String) -> Self {
         Self {
             path: normalize_path(path),
+            cached_hash: Cell::new(None),
         }
     }
 
@@ -494,9 +508,15 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Path> {
     }
 
     fn py_hash(&self, _self_id: HeapId, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<HashValue>> {
+        let p = self.get(vm.heap);
+        if let Some(cached) = p.cached_hash.get() {
+            return Ok(Some(cached));
+        }
         let mut hasher = DefaultHasher::new();
-        self.get(vm.heap).as_str().hash(&mut hasher);
-        Ok(Some(HashValue::new(hasher.finish())))
+        p.as_str().hash(&mut hasher);
+        let hash = HashValue::new(hasher.finish());
+        p.cached_hash.set(Some(hash));
+        Ok(Some(hash))
     }
 
     fn py_bool(&self, _vm: &mut VM<'h, impl ResourceTracker>) -> bool {

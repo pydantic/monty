@@ -100,12 +100,11 @@ pub trait PyTrait<'h> {
     ///
     /// Returns `Ok(Some(hash))` for hashable types, `Ok(None)` for unhashable
     /// types (such as `list` and `dict`), or `Err(ResourceError::Recursion)` if
-    /// the recursion limit is exceeded while hashing nested containers.
+    /// the recursion limit is exceeded while hashing nested containers.`
     ///
     /// Container implementations should track recursion depth via
     /// `heap.incr_recursion_depth()` and recurse through `Value::py_hash` for
-    /// nested values, which dispatches via `Heap::get_or_compute_hash` so that
-    /// the per-entry hash cache is shared.
+    /// nested values.
     ///
     /// `self_id` is the heap ID of this value; it is required for types like
     /// `Cell` that hash by identity. Most implementations ignore it.
