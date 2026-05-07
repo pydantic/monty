@@ -562,40 +562,7 @@ Container types (`List`, `Tuple`, `Dict`) also have `clone_with_heap()` methods.
 ### Cycle collection — Bacon–Rajan trial deletion
 
 Reference counting alone cannot reclaim cycles. Monty uses **Bacon–Rajan trial deletion**
-(`Heap::collect_cycles` in `crates/monty/src/heap.rs`):
-
-- Every heap entry carries a `CcColor` (`Black`/`Gray`/`White`/`Purple`).
-- `dec_ref` on a GC-tracked entry that survives the decrement (refcount stays
-  non-zero) flags the entry **Purple** and bumps `Heap::purple_count` — that
-  entry is the only place a newly unreachable cycle could now be hiding.
-- Once `purple_count` reaches the configured `gc_interval` threshold,
-  `collect_cycles` runs: a single linear pass over `entries` seeds `MarkGray`
-  from every Purple entry, then `Scan` either resurrects (`ScanBlack`) or
-  condemns (`White`) each subtree based on whether refcount math leaves any
-  external reference. `CollectWhite` frees condemned entries.
-
-Consequences for code in this repo:
-
-- **No `gc_roots()` walk.** The VM does not enumerate live values for the
-  collector. Anything held on the Rust stack, in `VM::stack`, in scheduler
-  tasks, in `JsonStringCache`, etc. survives automatically because each
-  stored `Value::Ref` keeps the refcount above zero.
-- **`HeapRead` keeps its target alive.** `Scan` treats `readers > 0` as
-  external rooting, so an entry with an active `HeapRead` can't be freed
-  even when its refcount appears to fall inside a cycle.
-- **No `mark_potential_cycle` calls.** Container mutations don't notify the
-  collector — `dec_ref` does that for them when refs subsequently drop.
-- **Singletons (`EMPTY_TUPLE_ID`, `timezone_utc`)** keep an extra heap-owned
-  refcount that pins them at rc ≥ 1. A `debug_assert!` in `dec_ref` enforces
-  this for the empty-tuple singleton.
-- **Snapshots round-trip the collector state.** Both the per-entry `color`
-  and `Heap::purple_count` are serialized so a snapshot taken with cycles
-  pending continues to enroll those candidates after restore.
-
-The cycle-collection trigger threshold is exposed via
-`ResourceTracker::gc_interval()` and counts **Purple candidates** (not
-allocations). Smaller values trade collector overhead for tighter bounds on
-transient cycle-induced heap growth.
+(`Heap::collect_cycles` in `crates/monty/src/heap.rs`).
 
 **Resource limits**: When resource limits (allocations, memory, time) are exceeded, execution terminates with a `ResourceError`. No guarantees are made about the state of the heap or reference counts after a resource limit is exceeded. The heap may contain orphaned objects with incorrect refcounts. This is acceptable because resource exhaustion is a terminal error - the execution context should be discarded.
 

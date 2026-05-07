@@ -456,14 +456,14 @@ impl Executor {
                 value.drop_with_heap(vm.heap);
             }
 
-            let purple_count = vm.heap.get_purple_count();
+            let allocations_since_gc = vm.heap.get_allocations_since_gc();
 
             Ok(RefCountOutput {
                 py_object,
                 counts,
                 unique_refs,
                 heap_count,
-                purple_count,
+                allocations_since_gc,
             })
         })
     }
@@ -555,15 +555,13 @@ pub struct RefCountOutput {
     pub counts: ahash::AHashMap<String, usize>,
     pub unique_refs: usize,
     pub heap_count: usize,
-    /// Number of suspected cycle-root candidates currently pending in the
-    /// trial-deletion cycle collector.
+    /// Number of GC-tracked allocations since the last cycle collection.
     ///
-    /// Trial deletion enrolls every GC-tracked entry whose refcount drops to
-    /// a non-zero value as a candidate (a "Purple" entry); the collector
-    /// processes them in batches and zeroes the counter after every
-    /// successful run. A small value relative to the total allocations
-    /// performed is evidence that the collector ran during execution.
-    pub purple_count: usize,
+    /// If the collector ran during execution, this will be much lower than
+    /// the total number of GC-tracked allocations performed. Compare against
+    /// the configured `gc_interval` to verify GC fired at the expected
+    /// cadence.
+    pub allocations_since_gc: u32,
 }
 
 /// Check if input names are valid Python identifiers.

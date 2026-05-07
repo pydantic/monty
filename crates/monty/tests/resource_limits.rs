@@ -26,26 +26,22 @@ fn resolve_name_lookups<T: monty::ResourceTracker>(
     Ok(progress)
 }
 
-/// Test that GC properly collects dict cycles via trial-deletion candidate enrollment.
+/// Test that GC properly collects dict cycles.
 ///
-/// This test creates cycles using dict literals and dict setitem. Dict mutation
-/// itself does not enroll candidates; instead, every cycle eventually surfaces
-/// when one of its members is `dec_ref`'d to a non-zero refcount on the next
-/// loop iteration's reassignment, flagging that entry as a Purple seed.
+/// Each iteration creates a fresh `d1 <-> d2` cycle and the next iteration's
+/// reassignment leaves it unreachable. Trial deletion enrolls those entries
+/// as cycle-root candidates via `dec_ref`; the alloc-count interval is what
+/// actually fires the collector at a controlled rate.
 #[test]
 #[cfg(feature = "ref-count-return")]
 fn gc_collects_dict_cycles_via_has_refs() {
-    // Create 200,001 dict cycles. Each iteration:
-    // - Creates empty dict d1
-    // - Creates dict d2 = {'ref': d1}
-    // - Sets d1['ref'] = d2 - creates cycle d1 <-> d2
-    // - On next iteration, both dicts are reassigned. The reassignment
-    //   `dec_ref`s the previous d1/d2 from rc=2 to rc=1 (still alive in the
-    //   cycle), enrolling them as Purple candidates for the next collection.
+    // Create 200,001 dict cycles. Each iteration allocates two GC-tracked
+    // dicts and forms a cycle between them; on the next iteration, both are
+    // reassigned and the cycle is unreachable.
     //
-    // The default cycle-collection interval is 100,000 candidates. With
-    // 200,001 iterations producing two candidates per iteration, GC must
-    // run at least once. After it runs, only the final cycle remains.
+    // GC fires every DEFAULT_GC_INTERVAL (100,000) GC-tracked allocations
+    // when there are pending cycle candidates. With ~400k allocations across
+    // 200,001 iterations, the collector must run at least once.
     let code = r"
 # Create many dict cycles
 for i in range(200001):
@@ -61,15 +57,14 @@ result
 
     let output = ex.run_ref_counts(vec![]).expect("should succeed");
 
-    // DEFAULT_GC_INTERVAL is 100,000 candidates. With 200,001 iterations
-    // each producing Purple seeds, the collector must have run at least once
-    // and reset `purple_count` toward zero. If candidate enrollment is
-    // broken, purple_count would grow unbounded into the hundreds of
-    // thousands.
+    // DEFAULT_GC_INTERVAL is 100,000. With 200,001 iterations creating dict
+    // cycles, GC must have run at least once, resetting allocations_since_gc.
+    // If the collector never ran, allocations_since_gc would be ~400k
+    // (2 dicts per iteration).
     assert!(
-        output.purple_count < 100_000,
-        "GC should have run (Purple seeds must accumulate from dec_ref): purple_count = {}",
-        output.purple_count
+        output.allocations_since_gc < 100_000,
+        "GC should have run: allocations_since_gc = {}",
+        output.allocations_since_gc
     );
 
     // Verify that GC collected most cycles.
@@ -84,21 +79,22 @@ result
 
 /// Test that GC properly collects self-referencing list cycles.
 ///
-/// Each iteration's `a.append(a)` produces a self-referencing list, then the
-/// next iteration's reassignment `dec_ref`s the previous `a` from rc=2 to
-/// rc=1, enrolling it as a Purple seed for the trial-deletion collector.
+/// Each iteration's `a.append(a)` produces a self-referencing list; the next
+/// iteration's reassignment leaves the previous list unreachable. Trial
+/// deletion enrolls it as a candidate via `dec_ref`, and the alloc-count
+/// interval triggers the collector once enough have accumulated.
 #[test]
 #[cfg(feature = "ref-count-return")]
 fn gc_collects_list_cycles() {
     // Create 200,001 self-referencing list cycles. Each iteration:
     // - Creates empty list `a`
-    // - Appends `a` to itself (rc rises to 2: var slot + self-reference)
-    // - On next iteration, `a` is reassigned, dec_ref'ing the previous list
-    //   from rc=2 to rc=1 — that flags it Purple for the next collection.
+    // - Appends `a` to itself (creating a self-reference cycle)
+    // - On next iteration, `a` is reassigned, making the cycle unreachable
     //
-    // Default trigger threshold is 100,000 Purple candidates. With 200,001
-    // iterations producing one candidate per iteration, GC must run at
-    // least once. After it runs, only the final cycle remains.
+    // GC fires every DEFAULT_GC_INTERVAL (100,000) GC-tracked allocations
+    // when there are pending candidates. With 200,001 iterations the
+    // collector must run at least twice. After it runs, only the final
+    // cycle should remain.
     let code = r"
 # Create many self-referencing list cycles
 for i in range(200001):
@@ -113,13 +109,12 @@ len(result)
 
     let output = ex.run_ref_counts(vec![]).expect("should succeed");
 
-    // DEFAULT_GC_INTERVAL is 100,000 Purple seeds. With 200,001 iterations
-    // each enrolling one seed, the collector must have run at least twice
-    // and reset `purple_count` near zero.
+    // DEFAULT_GC_INTERVAL is 100,000. With 200,001 iterations creating list
+    // cycles, GC must have run at least twice, resetting allocations_since_gc.
     assert!(
-        output.purple_count < 100_000,
-        "GC should have run: purple_count = {}",
-        output.purple_count
+        output.allocations_since_gc < 100_000,
+        "GC should have run: allocations_since_gc = {}",
+        output.allocations_since_gc
     );
 
     // Verify that GC collected most cycles.
@@ -305,10 +300,10 @@ len(result)
 #[test]
 #[cfg(feature = "ref-count-return")]
 fn gc_interval_triggers_collection() {
-    // This test verifies that the built-in cycle-collection interval still
-    // triggers collection on real reference cycles even when no custom
-    // tracker interval is supplied. Each iteration produces one Purple
-    // candidate; running enough iterations exceeds the default threshold.
+    // This test verifies that the built-in GC interval still triggers
+    // collection on real reference cycles even when no custom tracker
+    // interval is supplied. A sufficiently large number of cycles forces
+    // collection here.
     let code = r"
 result = 'done'
 for i in range(210000):
@@ -324,9 +319,9 @@ result
 
     assert_eq!(output.py_object, MontyObject::String("done".to_owned()));
     assert!(
-        output.purple_count < 100_000,
-        "default GC interval should have triggered collection: purple_count = {}",
-        output.purple_count
+        output.allocations_since_gc < 100_000,
+        "default GC interval should have triggered collection: allocations_since_gc = {}",
+        output.allocations_since_gc
     );
     // Expected remaining cycles × 2, with a little slack.
     assert!(
@@ -339,11 +334,10 @@ result
 #[test]
 #[cfg(feature = "ref-count-return")]
 fn gc_interval_limit_is_respected() {
-    // This test verifies that a custom cycle-collection interval is actually
-    // used instead of the built-in default. We create self-referencing list
-    // cycles so GC is eligible to run, then assert that a small configured
-    // interval causes a collection before the default 100,000-candidate
-    // threshold.
+    // This test verifies that a custom GC interval is actually used instead
+    // of the built-in default. We create self-referencing list cycles so GC
+    // is eligible to run, then assert that a small configured interval
+    // causes a collection before the default 100,000-allocation threshold.
     let code = r"
 for i in range(25):
     a = []
@@ -360,9 +354,9 @@ result
 
     assert_eq!(output.py_object, MontyObject::String("done".to_owned()));
     assert!(
-        output.purple_count < 10,
-        "configured GC interval should trigger collections before the default; purple_count = {}",
-        output.purple_count
+        output.allocations_since_gc < 10,
+        "configured GC interval should trigger collections before the default; allocations_since_gc = {}",
+        output.allocations_since_gc
     );
     // Expected remaining cycles × 2, with a little slack.
     assert!(
