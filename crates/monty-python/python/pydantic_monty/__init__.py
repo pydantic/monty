@@ -115,7 +115,22 @@ class ResourceLimits(TypedDict, total=False):
     """
     Configuration for resource limits during code execution.
 
-    All limits are optional. Omit a key to disable that limit.
+    All keys are optional. Omit a key to disable that limit.
+
+    Passing `limits=None` (the default on `Monty(...)` / `MontyRepl(...)` /
+    `Monty.run(...)` / `Monty.run_async(...)` / `Monty.start(...)`) applies
+    conservative safe defaults:
+
+    * `max_duration_secs = 30`
+    * `max_memory = 256 * 1024 * 1024` (256 MiB)
+    * `max_allocations = 1_000_000`
+    * `max_recursion_depth = 1000`
+
+    These defaults exist so an unconfigured embedder cannot expose the host
+    process to wall-clock, memory, or allocation exhaustion via untrusted
+    Python. Pass an explicit `ResourceLimits(...)` dict to override; pass
+    `ResourceLimits()` (an empty dict) to opt out of the per-run caps and
+    keep only the implicit 1000-frame recursion limit.
     """
 
     max_allocations: int

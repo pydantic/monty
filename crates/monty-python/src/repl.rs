@@ -25,7 +25,7 @@ use crate::{
     dataclass::DcRegistry,
     exceptions::{MontyError, exc_py_to_monty},
     external::{ExternalFunctionRegistry, dispatch_method_call},
-    limits::{CancellationFlag, FutureCancellationGuard, PySignalTracker, extract_limits},
+    limits::{CancellationFlag, FutureCancellationGuard, PySignalTracker, default_safe_limits, extract_limits},
     monty_cls::{EitherProgress, call_os_callback_parts},
     mount::OsHandler,
     print_target::PrintTarget,
@@ -115,13 +115,14 @@ impl PyMontyRepl {
         // raw `UnicodeEncodeError`, even when `type_check=False`.
         let committed_stubs = extract_type_check_stubs(py, type_check_stubs)?.unwrap_or_default();
 
-        let repl = if let Some(limits) = limits {
-            let tracker = PySignalTracker::new(LimitedTracker::new(extract_limits(limits)?));
-            EitherRepl::Limited(CoreMontyRepl::new(&script_name, tracker))
-        } else {
-            let tracker = PySignalTracker::new(NoLimitTracker);
-            EitherRepl::NoLimit(CoreMontyRepl::new(&script_name, tracker))
+        // When `limits=None` we apply safe defaults rather than running uncapped.
+        // Pass `limits={}` to opt into the implicit-recursion-only configuration.
+        let resolved_limits = match limits {
+            Some(dict) => extract_limits(dict)?,
+            None => default_safe_limits(),
         };
+        let tracker = PySignalTracker::new(LimitedTracker::new(resolved_limits));
+        let repl = EitherRepl::Limited(CoreMontyRepl::new(&script_name, tracker));
 
         Ok(Self {
             repl: Mutex::new(Some(repl)),

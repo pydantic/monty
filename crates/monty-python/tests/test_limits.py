@@ -109,6 +109,23 @@ def test_limits_wrong_type_raises_error():
         m.run(limits={'max_allocations': 'not an int'})  # pyright: ignore[reportArgumentType]
 
 
+def test_start_limits_wrong_type_raises_error():
+    m = pydantic_monty.Monty('1 + 1')
+    with pytest.raises(TypeError):
+        m.start(limits={'max_allocations': 'not an int'})  # pyright: ignore[reportArgumentType]
+
+
+async def test_run_async_limits_wrong_type_raises_error():
+    m = pydantic_monty.Monty('1 + 1')
+    with pytest.raises(TypeError):
+        await m.run_async(limits={'max_allocations': 'not an int'})  # pyright: ignore[reportArgumentType]
+
+
+def test_repl_limits_wrong_type_raises_error():
+    with pytest.raises(TypeError):
+        pydantic_monty.MontyRepl(limits={'max_allocations': 'not an int'})  # pyright: ignore[reportArgumentType]
+
+
 def test_limits_none_value_allowed():
     m = pydantic_monty.Monty('1 + 1')
     # None is valid to explicitly disable a limit
@@ -255,3 +272,41 @@ def test_timeout_enforced_in_builtin_loops(code: str):
     assert isinstance(exc_info.value.exception(), TimeoutError)
     # Should terminate promptly - well under 2 seconds
     assert elapsed < 2.0
+
+
+def test_default_limits_bound_runaway_loop():
+    """`limits=None` must apply safe defaults — an infinite loop terminates with TimeoutError.
+
+    Previously `limits=None` selected `NoLimitTracker`, so `while True: pass`
+    would hang the host process indefinitely.
+    """
+    m = pydantic_monty.Monty('while True:\n    pass')
+    start = time.monotonic()
+    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
+        m.run()
+    elapsed = time.monotonic() - start
+    assert isinstance(exc_info.value.exception(), TimeoutError)
+    # The default cap is 30s; cut it off well before that for CI sanity.
+    assert elapsed < 35.0
+
+
+def test_default_limits_bound_runaway_alloc():
+    """`limits=None` must apply safe defaults — runaway allocation hits MemoryError."""
+    m = pydantic_monty.Monty('list(range(10 ** 18))')
+    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
+        m.run()
+    assert isinstance(exc_info.value.exception(), (MemoryError, TimeoutError))
+
+
+def test_empty_limits_dict_opts_out_of_default_caps():
+    """`limits={}` opts out of every per-run cap (only the recursion limit applies).
+
+    This is the documented escape hatch for callers that want unbounded
+    execution — e.g. trusted self-hosted scripts where the embedder has its
+    own external watchdog.
+    """
+    # Exercise an allocation pattern that the safe-default cap would reject
+    # (1M allocations) but the implicit recursion-only configuration accepts.
+    m = pydantic_monty.Monty('len([0] * 5_000_000)')
+    limits = pydantic_monty.ResourceLimits()
+    assert m.run(limits=limits) == 5_000_000

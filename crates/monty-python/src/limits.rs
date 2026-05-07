@@ -19,6 +19,29 @@ use crate::exceptions::exc_py_to_monty;
 /// Shared flag used to interrupt async Monty execution after Python task cancellation.
 pub(crate) type CancellationFlag = Arc<AtomicBool>;
 
+/// Default `max_duration_secs` applied when `limits=None`.
+pub const DEFAULT_MAX_DURATION_SECS: u64 = 30;
+/// Default `max_memory` (bytes) applied when `limits=None`.
+pub const DEFAULT_MAX_MEMORY_BYTES: usize = 256 * 1024 * 1024;
+/// Default `max_allocations` applied when `limits=None`.
+pub const DEFAULT_MAX_ALLOCATIONS: usize = 1_000_000;
+
+/// Resource limits applied when a caller passes `limits=None`.
+///
+/// Conservative defaults chosen so an unconfigured embedder cannot expose the
+/// host process to wall-clock, memory, or allocation exhaustion via untrusted
+/// Python. Any caller that needs different (or no) caps must pass an explicit
+/// `limits` dict — pass `limits={}` to opt out of every per-run cap and keep
+/// only the implicit 1000-frame recursion limit.
+#[must_use]
+pub fn default_safe_limits() -> monty::ResourceLimits {
+    monty::ResourceLimits::new()
+        .max_recursion_depth(Some(DEFAULT_MAX_RECURSION_DEPTH))
+        .max_duration(Duration::from_secs(DEFAULT_MAX_DURATION_SECS))
+        .max_memory(DEFAULT_MAX_MEMORY_BYTES)
+        .max_allocations(DEFAULT_MAX_ALLOCATIONS)
+}
+
 /// Extracts resource limits from a Python dict.
 ///
 /// The dict should have the following optional keys:

@@ -27,7 +27,7 @@ use crate::{
     dataclass::DcRegistry,
     exceptions::{MontyError, exc_py_to_monty},
     external::{ExternalFunctionRegistry, dispatch_method_call},
-    limits::{CancellationFlag, FutureCancellationGuard, PySignalTracker, extract_limits},
+    limits::{CancellationFlag, FutureCancellationGuard, PySignalTracker, default_safe_limits, extract_limits},
     mount::OsHandler,
     print_target::PrintTarget,
     repl::{EitherRepl, FromCoreRepl, PyMontyRepl, drive_repl_progress_through_os_calls},
@@ -208,14 +208,14 @@ impl PyMonty {
         // objects keep accumulating across transitions.
         let print_target = PrintTarget::from_py(print_callback)?;
 
-        // Run with appropriate tracker type (must branch due to different generic types)
-        if let Some(limits) = limits {
-            let tracker = PySignalTracker::new(LimitedTracker::new(extract_limits(limits)?));
-            self.run_impl(py, input_values, tracker, external_functions, os_handler, print_target)
-        } else {
-            let tracker = PySignalTracker::new(NoLimitTracker);
-            self.run_impl(py, input_values, tracker, external_functions, os_handler, print_target)
-        }
+        // When `limits=None` we apply safe defaults rather than running uncapped.
+        // Pass `limits={}` to opt into the implicit-recursion-only configuration.
+        let resolved_limits = match limits {
+            Some(dict) => extract_limits(dict)?,
+            None => default_safe_limits(),
+        };
+        let tracker = PySignalTracker::new(LimitedTracker::new(resolved_limits));
+        self.run_impl(py, input_values, tracker, external_functions, os_handler, print_target)
     }
 
     /// Starts code execution, returning a progress snapshot or the final result.
@@ -274,14 +274,14 @@ impl PyMonty {
             }};
         }
 
-        // Branch on limits (different generic types)
-        let progress = if let Some(limits) = limits {
-            let tracker = PySignalTracker::new(LimitedTracker::new(extract_limits(limits)?));
-            EitherProgress::Limited(start_impl!(tracker))
-        } else {
-            let tracker = PySignalTracker::new(NoLimitTracker);
-            EitherProgress::NoLimit(start_impl!(tracker))
+        // When `limits=None` we apply safe defaults rather than running uncapped.
+        // Pass `limits={}` to opt into the implicit-recursion-only configuration.
+        let resolved_limits = match limits {
+            Some(dict) => extract_limits(dict)?,
+            None => default_safe_limits(),
         };
+        let tracker = PySignalTracker::new(LimitedTracker::new(resolved_limits));
+        let progress = EitherProgress::Limited(start_impl!(tracker));
         progress.progress_or_complete(py, self.script_name.clone(), print_target, dc_registry)
     }
 
@@ -318,34 +318,28 @@ impl PyMonty {
         }
 
         let input_values = self.extract_input_values(inputs, &self.dc_registry)?;
-        let limits = limits.map(extract_limits).transpose()?;
+        // When `limits=None` we apply safe defaults rather than running uncapped.
+        // Pass `limits={}` to opt into the implicit-recursion-only configuration.
+        let resolved_limits = match limits {
+            Some(dict) => extract_limits(dict)?,
+            None => default_safe_limits(),
+        };
         let dc_registry = self.dc_registry.clone_ref(py);
         let ext_fns = external_functions.map(|d| d.clone().unbind());
         let print_target = PrintTarget::from_py(print_callback)?;
         let runner = self.runner.clone();
-        if let Some(limits) = limits {
-            Self::run_async_with_tracker(
-                py,
-                runner,
-                input_values,
-                ext_fns,
-                os,
-                dc_registry,
-                print_target,
-                move |cancel_flag| PySignalTracker::new_with_cancellation(LimitedTracker::new(limits), cancel_flag),
-            )
-        } else {
-            Self::run_async_with_tracker(
-                py,
-                runner,
-                input_values,
-                ext_fns,
-                os,
-                dc_registry,
-                print_target,
-                move |cancel_flag| PySignalTracker::new_with_cancellation(NoLimitTracker, cancel_flag),
-            )
-        }
+        Self::run_async_with_tracker(
+            py,
+            runner,
+            input_values,
+            ext_fns,
+            os,
+            dc_registry,
+            print_target,
+            move |cancel_flag| {
+                PySignalTracker::new_with_cancellation(LimitedTracker::new(resolved_limits), cancel_flag)
+            },
+        )
     }
 
     /// Serializes the Monty instance to a binary format.
