@@ -248,6 +248,17 @@ assert np.vander(np.array([1, 2, 3]), 3, True).tolist() == [
     [1, 2, 4],
     [1, 3, 9],
 ], 'vander increasing'
+assert np.kron([1, 2], [10, 20, 30]).tolist() == [10, 20, 30, 20, 40, 60], 'kron 1d'
+assert np.kron([[1, 2], [3, 4]], [[0, 5], [6, 7]]).tolist() == [
+    [0, 5, 0, 10],
+    [6, 7, 12, 14],
+    [0, 15, 0, 20],
+    [18, 21, 24, 28],
+], 'kron 2d'
+assert np.cov([1, 2, 3]) == 1.0, 'cov 1d'
+assert np.cov([[1, 2, 3], [2, 4, 6]]).tolist() == [[1.0, 2.0], [2.0, 4.0]], 'cov 2d rows'
+assert np.corrcoef([1, 2, 3]) == 1.0, 'corrcoef 1d'
+assert np.corrcoef([[1, 2, 3], [2, 4, 6]]).tolist() == [[1.0, 1.0], [1.0, 1.0]], 'corrcoef 2d rows'
 
 unique_input = np.array([3, 1, 3, 2, 1, 3])
 assert np.sort(np.unique_values(unique_input)).tolist() == [1, 2, 3], 'unique_values sorted contents'

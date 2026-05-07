@@ -1301,6 +1301,12 @@ pub enum StaticStrings {
     /// `numpy.lexsort()` indirect stable sorting helper.
     #[strum(serialize = "lexsort")]
     NpLexsort,
+    /// `numpy.cov()` covariance helper.
+    #[strum(serialize = "cov")]
+    NpCov,
+    /// `numpy.corrcoef()` correlation coefficient helper.
+    #[strum(serialize = "corrcoef")]
+    NpCorrcoef,
     /// `numpy.extract()` function
     #[strum(serialize = "extract")]
     NpExtract,
@@ -1352,6 +1358,9 @@ pub enum StaticStrings {
     /// `numpy.cross()` function
     #[strum(serialize = "cross")]
     NpCross,
+    /// `numpy.kron()` Kronecker product helper.
+    #[strum(serialize = "kron")]
+    NpKron,
     /// `numpy.trapezoid()` function
     #[strum(serialize = "trapezoid")]
     NpTrapezoid,

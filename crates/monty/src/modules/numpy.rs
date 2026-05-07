@@ -577,6 +577,10 @@ pub(crate) enum NumpyFunctions {
     Partition,
     /// `numpy.lexsort(keys)` — indirect stable sort over 1-D key arrays.
     Lexsort,
+    /// `numpy.cov(m)` — covariance matrix for 1-D or row-wise 2-D input.
+    Cov,
+    /// `numpy.corrcoef(x)` — correlation matrix for 1-D or row-wise 2-D input.
+    Corrcoef,
     /// `numpy.searchsorted(a, v)` — find insertion points.
     Searchsorted,
     /// `numpy.extract(condition, arr)` — extract elements by condition.
@@ -615,6 +619,8 @@ pub(crate) enum NumpyFunctions {
     Vecmat,
     /// `numpy.cross(a, b)` — cross product (3-element vectors).
     Cross,
+    /// `numpy.kron(a, b)` — Kronecker product.
+    Kron,
     /// `numpy.trapezoid(y, x=None, dx=1.0)` — composite trapezoidal integral.
     Trapezoid,
     /// `numpy.vander(x, N=None, increasing=False)` — Vandermonde matrix.
@@ -990,6 +996,8 @@ const NUMPY_FUNCTIONS: &[(StaticStrings, NumpyFunctions)] = &[
     (StaticStrings::NpArgpartition, NumpyFunctions::Argpartition),
     (StaticStrings::Partition, NumpyFunctions::Partition),
     (StaticStrings::NpLexsort, NumpyFunctions::Lexsort),
+    (StaticStrings::NpCov, NumpyFunctions::Cov),
+    (StaticStrings::NpCorrcoef, NumpyFunctions::Corrcoef),
     (StaticStrings::NpSearchsorted, NumpyFunctions::Searchsorted),
     (StaticStrings::NpExtract, NumpyFunctions::Extract),
     (StaticStrings::NpTrimZeros, NumpyFunctions::TrimZeros),
@@ -1009,6 +1017,7 @@ const NUMPY_FUNCTIONS: &[(StaticStrings, NumpyFunctions)] = &[
     (StaticStrings::NpMatvec, NumpyFunctions::Matvec),
     (StaticStrings::NpVecmat, NumpyFunctions::Vecmat),
     (StaticStrings::NpCross, NumpyFunctions::Cross),
+    (StaticStrings::NpKron, NumpyFunctions::Kron),
     (StaticStrings::NpTrapezoid, NumpyFunctions::Trapezoid),
     (StaticStrings::NpVander, NumpyFunctions::Vander),
     // Phase 10: Additional creation and numerical
@@ -1516,6 +1525,8 @@ pub(super) fn call(
         NumpyFunctions::Argpartition => call_argpartition(vm, args).map(CallResult::Value),
         NumpyFunctions::Partition => call_partition(vm, args).map(CallResult::Value),
         NumpyFunctions::Lexsort => call_lexsort(vm, args).map(CallResult::Value),
+        NumpyFunctions::Cov => call_cov(vm, args).map(CallResult::Value),
+        NumpyFunctions::Corrcoef => call_corrcoef(vm, args).map(CallResult::Value),
         NumpyFunctions::Searchsorted => call_searchsorted(vm, args).map(CallResult::Value),
         NumpyFunctions::Extract => call_extract(vm, args).map(CallResult::Value),
         NumpyFunctions::TrimZeros => call_trim_zeros(vm, args).map(CallResult::Value),
@@ -1536,6 +1547,7 @@ pub(super) fn call(
         NumpyFunctions::Vecdot => call_dot(vm, args).map(CallResult::Value), // 1D vector subset
         NumpyFunctions::Matvec | NumpyFunctions::Vecmat => call_matmul(vm, args).map(CallResult::Value),
         NumpyFunctions::Cross => call_cross(vm, args).map(CallResult::Value),
+        NumpyFunctions::Kron => call_kron(vm, args).map(CallResult::Value),
         NumpyFunctions::Trapezoid => call_trapezoid(vm, args).map(CallResult::Value),
         NumpyFunctions::Vander => call_vander(vm, args).map(CallResult::Value),
         // Phase 10: Additional creation and numerical
@@ -6700,6 +6712,98 @@ fn compare_lexsort_indices(keys: &[NdArray], lhs: usize, rhs: usize) -> Ordering
     lhs.cmp(&rhs)
 }
 
+/// `numpy.cov(m)` — covariance for 1-D or row-wise 2-D real arrays.
+fn call_cov(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let arg = args.get_one_arg("numpy.cov", vm.heap)?;
+    defer_drop!(arg, vm);
+    let arr = ndarray_from_value(arg, "numpy.cov", vm)?;
+    let (rows, _) = covariance_shape(&arr, "numpy.cov")?;
+    let data = covariance_matrix_data(&arr, "numpy.cov", vm.heap.tracker())?;
+    if rows == 1 {
+        Ok(Value::Float(data[0]))
+    } else {
+        let result = NdArray::new(data, vec![rows, rows], NdArrayDtype::Float64);
+        Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(result))?))
+    }
+}
+
+/// `numpy.corrcoef(x)` — correlation coefficients for 1-D or row-wise 2-D arrays.
+fn call_corrcoef(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let arg = args.get_one_arg("numpy.corrcoef", vm.heap)?;
+    defer_drop!(arg, vm);
+    let arr = ndarray_from_value(arg, "numpy.corrcoef", vm)?;
+    let (rows, _) = covariance_shape(&arr, "numpy.corrcoef")?;
+    let cov = covariance_matrix_data(&arr, "numpy.corrcoef", vm.heap.tracker())?;
+    if rows == 1 {
+        Ok(Value::Float(1.0))
+    } else {
+        let mut data = Vec::with_capacity(cov.len());
+        for row in 0..rows {
+            for col in 0..rows {
+                let denom = (cov[row * rows + row] * cov[col * rows + col]).sqrt();
+                data.push(if denom.is_nan() || denom <= 0.0 {
+                    f64::NAN
+                } else {
+                    cov[row * rows + col] / denom
+                });
+            }
+        }
+        let result = NdArray::new(data, vec![rows, rows], NdArrayDtype::Float64);
+        Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(result))?))
+    }
+}
+
+/// Returns `(variables, observations)` for covariance-style helpers.
+fn covariance_shape(arr: &NdArray, name: &str) -> RunResult<(usize, usize)> {
+    match arr.shape() {
+        [cols] => Ok((1, *cols)),
+        [rows, cols] => Ok((*rows, *cols)),
+        _ => Err(SimpleException::new_msg(
+            ExcType::ValueError,
+            format!("{name}() input has more than 2 dimensions"),
+        )
+        .into()),
+    }
+}
+
+/// Computes the row-wise sample covariance matrix, matching NumPy's default `bias=False`.
+fn covariance_matrix_data(arr: &NdArray, name: &str, tracker: &impl ResourceTracker) -> RunResult<Vec<f64>> {
+    let (rows, cols) = covariance_shape(arr, name)?;
+    check_array_alloc_size(rows.saturating_mul(rows), tracker)?;
+    let means = (0..rows)
+        .map(|row| covariance_row_mean(arr, row, cols))
+        .collect::<Vec<_>>();
+    let denom = if cols > 1 { usize_to_f64(cols - 1) } else { f64::NAN };
+    let mut data = Vec::with_capacity(rows * rows);
+    for lhs in 0..rows {
+        for rhs in 0..rows {
+            let mut sum = 0.0;
+            for col in 0..cols {
+                let lhs_delta = covariance_value(arr, lhs, col, cols) - means[lhs];
+                let rhs_delta = covariance_value(arr, rhs, col, cols) - means[rhs];
+                sum += lhs_delta * rhs_delta;
+            }
+            data.push(sum / denom);
+        }
+    }
+    Ok(data)
+}
+
+/// Computes one variable row mean for covariance-style helpers.
+fn covariance_row_mean(arr: &NdArray, row: usize, cols: usize) -> f64 {
+    let sum = (0..cols).map(|col| covariance_value(arr, row, col, cols)).sum::<f64>();
+    sum / usize_to_f64(cols)
+}
+
+/// Reads a row/column value from either 1-D or row-wise 2-D covariance input.
+fn covariance_value(arr: &NdArray, row: usize, col: usize, cols: usize) -> f64 {
+    if arr.shape().len() == 1 {
+        arr.data()[col]
+    } else {
+        arr.data()[row * cols + col]
+    }
+}
+
 /// `numpy.searchsorted(a, v)` — find insertion points for `v` in sorted array `a`.
 #[expect(
     clippy::cast_possible_wrap,
@@ -7015,6 +7119,77 @@ fn call_cross(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResu
     let dtype = promote_dtype(a.dtype(), b.dtype());
     let result = NdArray::new(data, vec![3], dtype);
     Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(result))?))
+}
+
+/// `numpy.kron(a, b)` — Kronecker product for numeric ndarrays.
+fn call_kron(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let (a_val, b_val) = args.get_two_args("numpy.kron", vm.heap)?;
+    defer_drop!(a_val, vm);
+    defer_drop!(b_val, vm);
+    let a = ndarray_from_value(a_val, "numpy.kron", vm)?;
+    let b = ndarray_from_value(b_val, "numpy.kron", vm)?;
+    let result = kron_arrays(&a, &b, vm.heap.tracker())?;
+    Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(result))?))
+}
+
+/// Computes the Kronecker product using NumPy's left-padded shape alignment.
+fn kron_arrays(a: &NdArray, b: &NdArray, tracker: &impl ResourceTracker) -> RunResult<NdArray> {
+    let ndim = a.ndim().max(b.ndim());
+    let a_shape = left_padded_shape(a.shape(), ndim);
+    let b_shape = left_padded_shape(b.shape(), ndim);
+    let output_shape = a_shape
+        .iter()
+        .zip(b_shape.iter())
+        .map(|(&lhs, &rhs)| lhs.checked_mul(rhs))
+        .collect::<Option<Vec<_>>>()
+        .ok_or_else(|| SimpleException::new_msg(ExcType::ValueError, "numpy.kron() dimensions overflow"))?;
+    let output_len = checked_shape_product(&output_shape, "numpy.kron")?;
+    check_array_alloc_size(output_len, tracker)?;
+
+    let mut data = vec![0.0; output_len];
+    for (a_index, &a_value) in a.data().iter().enumerate() {
+        let a_coords = flat_index_to_coords(a_index, &a_shape);
+        for (b_index, &b_value) in b.data().iter().enumerate() {
+            let b_coords = flat_index_to_coords(b_index, &b_shape);
+            let output_coords = a_coords
+                .iter()
+                .zip(b_coords.iter())
+                .zip(b_shape.iter())
+                .map(|((&a_coord, &b_coord), &b_dim)| a_coord * b_dim + b_coord)
+                .collect::<Vec<_>>();
+            let output_index = coords_to_flat_index(&output_coords, &output_shape);
+            data[output_index] = a_value * b_value;
+        }
+    }
+    Ok(NdArray::new(data, output_shape, promote_dtype(a.dtype(), b.dtype())))
+}
+
+/// Left-pads an ndarray shape with ones to participate in NumPy-style shape alignment.
+fn left_padded_shape(shape: &[usize], ndim: usize) -> Vec<usize> {
+    let mut padded = vec![1; ndim.saturating_sub(shape.len())];
+    padded.extend_from_slice(shape);
+    padded
+}
+
+/// Converts a row-major flat index to coordinates for a shape.
+fn flat_index_to_coords(mut index: usize, shape: &[usize]) -> Vec<usize> {
+    let mut coords = vec![0; shape.len()];
+    for axis in (0..shape.len()).rev() {
+        let dim = shape[axis];
+        if dim > 0 {
+            coords[axis] = index % dim;
+            index /= dim;
+        }
+    }
+    coords
+}
+
+/// Converts row-major coordinates to a flat index.
+fn coords_to_flat_index(coords: &[usize], shape: &[usize]) -> usize {
+    coords
+        .iter()
+        .zip(shape.iter())
+        .fold(0usize, |index, (&coord, &dim)| index * dim + coord)
 }
 
 /// `numpy.trapezoid(y, x=None, dx=1.0)` — integrate 1-D samples by the trapezoidal rule.
