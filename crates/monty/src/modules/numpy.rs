@@ -571,6 +571,12 @@ pub(crate) enum NumpyFunctions {
     // --- Phase 7: Sorting, searching, set operations ---
     /// `numpy.argsort(a)` — module-level argsort.
     ArgsortMod,
+    /// `numpy.argpartition(a, kth)` — indirect partition indices for 1-D arrays.
+    Argpartition,
+    /// `numpy.partition(a, kth)` — partition values for 1-D arrays.
+    Partition,
+    /// `numpy.lexsort(keys)` — indirect stable sort over 1-D key arrays.
+    Lexsort,
     /// `numpy.searchsorted(a, v)` — find insertion points.
     Searchsorted,
     /// `numpy.extract(condition, arr)` — extract elements by condition.
@@ -981,6 +987,9 @@ const NUMPY_FUNCTIONS: &[(StaticStrings, NumpyFunctions)] = &[
     (StaticStrings::NpEmptyLike, NumpyFunctions::EmptyLike),
     // Phase 7: Sorting, searching, set ops
     (StaticStrings::NpArgsort, NumpyFunctions::ArgsortMod),
+    (StaticStrings::NpArgpartition, NumpyFunctions::Argpartition),
+    (StaticStrings::Partition, NumpyFunctions::Partition),
+    (StaticStrings::NpLexsort, NumpyFunctions::Lexsort),
     (StaticStrings::NpSearchsorted, NumpyFunctions::Searchsorted),
     (StaticStrings::NpExtract, NumpyFunctions::Extract),
     (StaticStrings::NpTrimZeros, NumpyFunctions::TrimZeros),
@@ -1504,6 +1513,9 @@ pub(super) fn call(
         NumpyFunctions::EmptyLike => call_like(vm, args, 0.0, "numpy.empty_like").map(CallResult::Value),
         // Phase 7: Sorting, searching, set ops
         NumpyFunctions::ArgsortMod => call_argsort_mod(vm, args).map(CallResult::Value),
+        NumpyFunctions::Argpartition => call_argpartition(vm, args).map(CallResult::Value),
+        NumpyFunctions::Partition => call_partition(vm, args).map(CallResult::Value),
+        NumpyFunctions::Lexsort => call_lexsort(vm, args).map(CallResult::Value),
         NumpyFunctions::Searchsorted => call_searchsorted(vm, args).map(CallResult::Value),
         NumpyFunctions::Extract => call_extract(vm, args).map(CallResult::Value),
         NumpyFunctions::TrimZeros => call_trim_zeros(vm, args).map(CallResult::Value),
@@ -6597,25 +6609,95 @@ fn call_argsort_mod(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> R
     let arg = args.get_one_arg("numpy.argsort", vm.heap)?;
     defer_drop!(arg, vm);
     let arr = ndarray_from_value(arg, "numpy.argsort", vm)?;
-    let data = arr.data();
-    let mut indices: Vec<usize> = (0..data.len()).collect();
-    indices.sort_by(|&a, &b| {
-        let va = data[a];
-        let vb = data[b];
-        va.partial_cmp(&vb).unwrap_or_else(|| {
-            if va.is_nan() && vb.is_nan() {
-                Ordering::Equal
-            } else if va.is_nan() {
-                Ordering::Greater
-            } else {
-                Ordering::Less
-            }
-        })
-    });
-    let result_data: Vec<f64> = indices.iter().map(|&i| i as f64).collect();
+    let result_data = argsort_index_data(arr.data());
     let len = result_data.len();
     let result = NdArray::new(result_data, vec![len], NdArrayDtype::Int64);
     Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(result))?))
+}
+
+/// `numpy.argpartition(a, kth)` — deterministic argsort-compatible subset.
+fn call_argpartition(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let (arg, kth) = args.get_two_args("numpy.argpartition", vm.heap)?;
+    defer_drop!(arg, vm);
+    defer_drop!(kth, vm);
+    let arr = ndarray_from_value(arg, "numpy.argpartition", vm)?;
+    validate_partition_kth(kth, arr.data().len(), "numpy.argpartition")?;
+    let result_data = argsort_index_data(arr.data());
+    let len = result_data.len();
+    let result = NdArray::new(result_data, vec![len], NdArrayDtype::Int64);
+    Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(result))?))
+}
+
+/// `numpy.partition(a, kth)` — deterministic sorted-output subset for 1-D arrays.
+fn call_partition(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let (arg, kth) = args.get_two_args("numpy.partition", vm.heap)?;
+    defer_drop!(arg, vm);
+    defer_drop!(kth, vm);
+    let arr = ndarray_from_value(arg, "numpy.partition", vm)?;
+    validate_partition_kth(kth, arr.data().len(), "numpy.partition")?;
+    let mut data = arr.data().to_vec();
+    data.sort_by(nan_last_cmp);
+    let result = NdArray::new(data, arr.shape().to_vec(), arr.dtype());
+    Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(result))?))
+}
+
+/// `numpy.lexsort(keys)` — indirect stable sort using the last key as primary.
+fn call_lexsort(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let keys_val = args.get_one_arg("numpy.lexsort", vm.heap)?;
+    defer_drop!(keys_val, vm);
+    let key_values = sequence_items(keys_val, "numpy.lexsort", vm)?;
+    defer_drop!(key_values, vm);
+    let keys = key_values
+        .iter()
+        .map(|value| ndarray_from_value(value, "numpy.lexsort", vm))
+        .collect::<RunResult<Vec<_>>>()?;
+    let Some(first) = keys.first() else {
+        let result = NdArray::new(Vec::new(), vec![0], NdArrayDtype::Int64);
+        return Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(result))?));
+    };
+    let len = first.data().len();
+    for key in &keys {
+        if key.shape().len() != 1 || key.data().len() != len {
+            return Err(SimpleException::new_msg(ExcType::ValueError, "all keys need to be the same shape").into());
+        }
+    }
+    check_array_alloc_size(len, vm.heap.tracker())?;
+
+    let mut indices: Vec<usize> = (0..len).collect();
+    indices.sort_by(|&lhs, &rhs| compare_lexsort_indices(&keys, lhs, rhs));
+    let result_data = indices.into_iter().map(usize_to_f64).collect();
+    let result = NdArray::new(result_data, vec![len], NdArrayDtype::Int64);
+    Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(result))?))
+}
+
+/// Produces stable argsort indices encoded in Monty's integer ndarray storage.
+fn argsort_index_data(data: &[f64]) -> Vec<f64> {
+    let mut indices: Vec<usize> = (0..data.len()).collect();
+    indices.sort_by(|&a, &b| nan_last_cmp(&data[a], &data[b]));
+    indices.into_iter().map(usize_to_f64).collect()
+}
+
+/// Validates the scalar `kth` accepted by the supported partition subset.
+fn validate_partition_kth(kth: &Value, len: usize, name: &str) -> RunResult<()> {
+    let kth = value_to_i64_arg(kth, name, "kth")?;
+    let len_i64 = usize_to_i64(len)?;
+    let normalized = if kth < 0 { len_i64.saturating_add(kth) } else { kth };
+    if normalized < 0 || normalized >= len_i64 {
+        Err(SimpleException::new_msg(ExcType::ValueError, "kth out of bounds").into())
+    } else {
+        Ok(())
+    }
+}
+
+/// Compares two row indices across `lexsort` keys, with later keys taking priority.
+fn compare_lexsort_indices(keys: &[NdArray], lhs: usize, rhs: usize) -> Ordering {
+    for key in keys.iter().rev() {
+        let ordering = nan_last_cmp(&key.data()[lhs], &key.data()[rhs]);
+        if ordering != Ordering::Equal {
+            return ordering;
+        }
+    }
+    lhs.cmp(&rhs)
 }
 
 /// `numpy.searchsorted(a, v)` — find insertion points for `v` in sorted array `a`.

@@ -695,6 +695,9 @@ pub enum StaticStrings {
     /// `ndarray.argsort()` method
     #[strum(serialize = "argsort")]
     NpArgsort,
+    /// `numpy.argpartition()` function
+    #[strum(serialize = "argpartition")]
+    NpArgpartition,
     /// `ndarray.astype()` method
     #[strum(serialize = "astype")]
     NpAstype,
@@ -1295,6 +1298,9 @@ pub enum StaticStrings {
     /// `numpy.searchsorted()` function
     #[strum(serialize = "searchsorted")]
     NpSearchsorted,
+    /// `numpy.lexsort()` indirect stable sorting helper.
+    #[strum(serialize = "lexsort")]
+    NpLexsort,
     /// `numpy.extract()` function
     #[strum(serialize = "extract")]
     NpExtract,

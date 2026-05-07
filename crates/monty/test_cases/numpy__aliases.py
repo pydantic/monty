@@ -263,6 +263,14 @@ assert unique_all.indices.tolist() == [1, 3, 0], 'unique_all first indices'
 assert unique_all.inverse_indices.tolist() == [2, 0, 2, 1, 0, 2], 'unique_all inverse indices'
 assert unique_all.counts.tolist() == [2, 1, 3], 'unique_all counts'
 
+partition_input = np.array([3, 1, 2])
+assert np.partition(partition_input, 1).tolist() == [1, 2, 3], 'partition 1d deterministic sorted subset'
+assert np.argpartition(partition_input, 1).tolist() == [1, 2, 0], 'argpartition 1d deterministic argsort subset'
+assert np.partition(partition_input, -1).tolist() == [1, 2, 3], 'partition negative kth'
+lex_row = np.lexsort(([2, 1, 2, 1], [0, 1, 0, 0]))
+assert lex_row.tolist() == [3, 0, 2, 1], 'lexsort two keys'
+assert np.lexsort(([3, 1, 2],)).tolist() == [1, 2, 0], 'lexsort one key'
+
 
 # === integer and boolean bitwise helpers ===
 assert np.bitwise_and(6, 3) == 2, 'bitwise_and scalar'
