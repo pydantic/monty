@@ -79,9 +79,9 @@ use crate::{
     modules::ModuleFunctions,
     resource::{ResourceError, ResourceTracker, check_array_alloc_size},
     types::{
-        List, Module, NamedTuple, NdArray, PyTrait, allocate_tuple,
+        Dict, List, Module, NamedTuple, NdArray, PyTrait, allocate_tuple,
         ndarray::{NdArrayDtype, nan_last_cmp, ndarray_from_list, promote_dtype, promote_dtype_with_scalar},
-        str::allocate_string,
+        str::{Str, allocate_string},
     },
     value::Value,
 };
@@ -431,6 +431,20 @@ pub(crate) enum NumpyFunctions {
     Isscalar,
     /// `numpy.iterable(a)` — true for values accepted by Monty's iterator protocol.
     Iterable,
+    /// `numpy.can_cast(from_, to)` — compact dtype cast predicate.
+    CanCast,
+    /// `numpy.promote_types(type1, type2)` — compact dtype promotion helper.
+    PromoteTypes,
+    /// `numpy.result_type(*arrays_and_dtypes)` — compact dtype result helper.
+    ResultType,
+    /// `numpy.common_type(*arrays)` — compact common dtype helper.
+    CommonType,
+    /// `numpy.min_scalar_type(a)` — compact scalar dtype helper.
+    MinScalarType,
+    /// `numpy.mintypecode(typechars)` — legacy dtype character helper.
+    Mintypecode,
+    /// `numpy.typename(char)` — legacy dtype character name helper.
+    Typename,
     /// `numpy.atleast_1d(*arrays)` — view inputs as arrays with at least one dimension.
     Atleast1d,
     /// `numpy.atleast_2d(*arrays)` — view inputs as arrays with at least two dimensions.
@@ -697,8 +711,33 @@ pub fn create_module(vm: &mut VM<'_, impl ResourceTracker>) -> Result<HeapId, Re
     for (name, target) in NUMPY_DTYPE_ALIASES {
         module.set_attr(*name, Value::InternString((*target).into()), vm);
     }
+    module.set_attr(StaticStrings::NpTypecodes, numpy_typecodes_dict(vm)?, vm);
 
     vm.heap.allocate(HeapData::Module(module))
+}
+
+/// Builds NumPy's legacy `typecodes` dictionary for code that inspects dtype families.
+fn numpy_typecodes_dict(vm: &mut VM<'_, impl ResourceTracker>) -> Result<Value, ResourceError> {
+    let pairs = [
+        ("Character", "c"),
+        ("Integer", "bhilqnp"),
+        ("UnsignedInteger", "BHILQNP"),
+        ("Float", "efdg"),
+        ("Complex", "FDG"),
+        ("AllInteger", "bBhHiIlLqQnNpP"),
+        ("AllFloat", "efdgFDG"),
+        ("Datetime", "Mm"),
+        ("All", "?bhilqnpBHILQNPefdgFDGSUVOMm"),
+    ]
+    .into_iter()
+    .map(|(key, value)| {
+        let key = Value::Ref(vm.heap.allocate(HeapData::Str(Str::new(key.to_string())))?);
+        let value = Value::Ref(vm.heap.allocate(HeapData::Str(Str::new(value.to_string())))?);
+        Ok((key, value))
+    })
+    .collect::<Result<Vec<_>, ResourceError>>()?;
+    let dict = Dict::from_pairs(pairs, vm).expect("numpy.typecodes uses hashable string literal keys");
+    Ok(Value::Ref(vm.heap.allocate(HeapData::Dict(dict))?))
 }
 
 /// NumPy dtype attributes supported by Monty's compact numeric ndarray model.
@@ -943,6 +982,13 @@ const NUMPY_FUNCTIONS: &[(StaticStrings, NumpyFunctions)] = &[
     (StaticStrings::NpIscomplexobj, NumpyFunctions::Iscomplexobj),
     (StaticStrings::NpIsscalar, NumpyFunctions::Isscalar),
     (StaticStrings::NpIterable, NumpyFunctions::Iterable),
+    (StaticStrings::NpCanCast, NumpyFunctions::CanCast),
+    (StaticStrings::NpPromoteTypes, NumpyFunctions::PromoteTypes),
+    (StaticStrings::NpResultType, NumpyFunctions::ResultType),
+    (StaticStrings::NpCommonType, NumpyFunctions::CommonType),
+    (StaticStrings::NpMinScalarType, NumpyFunctions::MinScalarType),
+    (StaticStrings::NpMintypecode, NumpyFunctions::Mintypecode),
+    (StaticStrings::NpTypename, NumpyFunctions::Typename),
     (StaticStrings::NpAtleast1d, NumpyFunctions::Atleast1d),
     (StaticStrings::NpAtleast2d, NumpyFunctions::Atleast2d),
     (StaticStrings::NpAtleast3d, NumpyFunctions::Atleast3d),
@@ -1465,6 +1511,13 @@ pub(super) fn call(
         }
         NumpyFunctions::Isscalar => call_isscalar(vm, args).map(CallResult::Value),
         NumpyFunctions::Iterable => call_iterable(vm, args).map(CallResult::Value),
+        NumpyFunctions::CanCast => call_can_cast(vm, args).map(CallResult::Value),
+        NumpyFunctions::PromoteTypes => call_promote_types(vm, args).map(CallResult::Value),
+        NumpyFunctions::ResultType => call_result_type(vm, args).map(CallResult::Value),
+        NumpyFunctions::CommonType => call_common_type(vm, args).map(CallResult::Value),
+        NumpyFunctions::MinScalarType => call_min_scalar_type(vm, args).map(CallResult::Value),
+        NumpyFunctions::Mintypecode => call_mintypecode(vm, args).map(CallResult::Value),
+        NumpyFunctions::Typename => call_typename(vm, args).map(CallResult::Value),
         NumpyFunctions::Atleast1d => call_atleast_nd(vm, args, 1, "numpy.atleast_1d").map(CallResult::Value),
         NumpyFunctions::Atleast2d => call_atleast_nd(vm, args, 2, "numpy.atleast_2d").map(CallResult::Value),
         NumpyFunctions::Atleast3d => call_atleast_nd(vm, args, 3, "numpy.atleast_3d").map(CallResult::Value),
@@ -4654,6 +4707,253 @@ fn call_iterable(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunR
     let arg = args.get_one_arg("numpy.iterable", vm.heap)?;
     defer_drop!(arg, vm);
     Ok(Value::Bool(is_numpy_iterable(arg, vm)))
+}
+
+/// `numpy.can_cast(from_, to)` — safe cast predicate for Monty's compact dtype set.
+fn call_can_cast(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let (from_val, to_val) = args.get_two_args("numpy.can_cast", vm.heap)?;
+    defer_drop!(from_val, vm);
+    defer_drop!(to_val, vm);
+    let from = dtype_meta_from_dtype_value(from_val, "numpy.can_cast", vm)?;
+    let to = dtype_meta_from_dtype_value(to_val, "numpy.can_cast", vm)?;
+    Ok(Value::Bool(can_cast_dtype_meta(from, to)))
+}
+
+/// `numpy.promote_types(type1, type2)` — promoted dtype marker.
+fn call_promote_types(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let (first_val, second_val) = args.get_two_args("numpy.promote_types", vm.heap)?;
+    defer_drop!(first_val, vm);
+    defer_drop!(second_val, vm);
+    let first = dtype_meta_from_dtype_value(first_val, "numpy.promote_types", vm)?;
+    let second = dtype_meta_from_dtype_value(second_val, "numpy.promote_types", vm)?;
+    Ok(dtype_meta_value(promote_dtype_meta(first, second)))
+}
+
+/// `numpy.result_type(*arrays_and_dtypes)` — result dtype marker for real numeric inputs.
+fn call_result_type(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let pos = args.into_pos_only("numpy.result_type", vm.heap)?;
+    defer_drop_mut!(pos, vm);
+    if pos.len() == 0 {
+        return Err(ExcType::type_error_at_least("numpy.result_type", 1, 0));
+    }
+
+    let mut result = CompactDtype::Bool;
+    for arg in pos.by_ref() {
+        defer_drop!(arg, vm);
+        result = promote_dtype_meta(result, dtype_meta_from_value(arg, "numpy.result_type", vm)?);
+    }
+    Ok(dtype_meta_value(result))
+}
+
+/// `numpy.common_type(*arrays)` — common real dtype marker, with float64 as minimum.
+fn call_common_type(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let pos = args.into_pos_only("numpy.common_type", vm.heap)?;
+    defer_drop_mut!(pos, vm);
+    if pos.len() == 0 {
+        return Err(ExcType::type_error_at_least("numpy.common_type", 1, 0));
+    }
+
+    for arg in pos.by_ref() {
+        defer_drop!(arg, vm);
+        dtype_meta_from_value(arg, "numpy.common_type", vm)?;
+    }
+    Ok(dtype_meta_value(CompactDtype::Float64))
+}
+
+/// `numpy.min_scalar_type(a)` — smallest compatible marker in Monty's compact dtype set.
+fn call_min_scalar_type(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let arg = args.get_one_arg("numpy.min_scalar_type", vm.heap)?;
+    defer_drop!(arg, vm);
+    Ok(dtype_meta_value(dtype_meta_from_value(
+        arg,
+        "numpy.min_scalar_type",
+        vm,
+    )?))
+}
+
+/// `numpy.mintypecode(typechars, typeset='GDFgdf', default='d')` — legacy dtype code helper.
+fn call_mintypecode(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let pos = args.into_pos_only("numpy.mintypecode", vm.heap)?;
+    defer_drop_mut!(pos, vm);
+    let typechars_val = pos
+        .next()
+        .ok_or_else(|| ExcType::type_error_at_least("numpy.mintypecode", 1, 0))?;
+    defer_drop!(typechars_val, vm);
+    let typeset = if let Some(typeset_val) = pos.next() {
+        defer_drop!(typeset_val, vm);
+        string_from_value(typeset_val, "numpy.mintypecode", vm)?
+    } else {
+        "GDFgdf".to_string()
+    };
+    let default = if let Some(default_val) = pos.next() {
+        defer_drop!(default_val, vm);
+        string_from_value(default_val, "numpy.mintypecode", vm)?
+    } else {
+        "d".to_string()
+    };
+    if let Some(extra) = pos.next() {
+        extra.drop_with_heap(vm);
+        return Err(ExcType::type_error_at_most("numpy.mintypecode", 3, 4));
+    }
+
+    let chars = typechars_from_value(typechars_val, "numpy.mintypecode", vm)?;
+    let result = mintypecode_result(&chars, &typeset, &default);
+    allocate_string(result.to_string(), vm.heap)
+}
+
+/// `numpy.typename(char)` — human-readable legacy dtype character name.
+fn call_typename(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let arg = args.get_one_arg("numpy.typename", vm.heap)?;
+    defer_drop!(arg, vm);
+    let text = string_from_value(arg, "numpy.typename", vm)?;
+    let name = match text.as_str() {
+        "?" => "bool",
+        "b" => "signed char",
+        "B" => "unsigned char",
+        "h" => "short",
+        "H" => "unsigned short",
+        "i" => "integer",
+        "I" => "unsigned integer",
+        "l" => "long integer",
+        "L" => "unsigned long integer",
+        "q" => "long integer",
+        "Q" => "unsigned long integer",
+        "e" => "half precision",
+        "f" => "single precision",
+        "d" => "double precision",
+        "g" => "long precision",
+        "F" => "complex single precision",
+        "D" => "complex double precision",
+        "G" => "complex long double precision",
+        "c" => "character",
+        _ => {
+            return Err(SimpleException::new_msg(ExcType::KeyError, format!("'{}'", text.escape_debug())).into());
+        }
+    };
+    allocate_string(name.to_string(), vm.heap)
+}
+
+/// Compact dtype categories that fit Monty's bool/int/float ndarray storage model.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum CompactDtype {
+    /// Boolean arrays and scalar markers.
+    Bool,
+    /// Integer arrays and scalar markers.
+    Int,
+    /// Single-precision dtype marker accepted as a float storage alias.
+    Float32,
+    /// Double-precision dtype marker used by Monty's float arrays and scalars.
+    Float64,
+}
+
+/// Parses a dtype argument such as `np.float64` or `'int64'`.
+fn dtype_meta_from_dtype_value(
+    value: &Value,
+    name: &str,
+    vm: &VM<'_, impl ResourceTracker>,
+) -> RunResult<CompactDtype> {
+    let text = string_from_value(value, name, vm)?;
+    dtype_meta_from_str(&text, name)
+}
+
+/// Infers the compact dtype for a dtype marker, scalar, ndarray, or list.
+fn dtype_meta_from_value(value: &Value, name: &str, vm: &VM<'_, impl ResourceTracker>) -> RunResult<CompactDtype> {
+    if let Ok(text) = string_from_value(value, name, vm) {
+        dtype_meta_from_str(&text, name)
+    } else if let Ok((_, dtype)) = numeric_scalar_info(value, name, vm) {
+        Ok(dtype_meta_from_ndarray_dtype(dtype))
+    } else {
+        let arr = ndarray_from_value(value, name, vm)?;
+        Ok(dtype_meta_from_ndarray_dtype(arr.dtype()))
+    }
+}
+
+/// Maps dtype text onto Monty's compact dtype categories.
+fn dtype_meta_from_str(text: &str, name: &str) -> RunResult<CompactDtype> {
+    match text {
+        "bool" | "bool_" | "?" => Ok(CompactDtype::Bool),
+        "int8" | "int16" | "int32" | "int64" | "int_" | "intc" | "intp" | "long" | "longlong" | "byte" | "short"
+        | "uint8" | "uint16" | "uint32" | "uint64" | "uint" | "uintc" | "uintp" | "ubyte" | "ushort" | "ulong"
+        | "ulonglong" | "i" | "l" | "q" | "b" | "h" | "B" | "H" | "I" | "L" | "Q" => Ok(CompactDtype::Int),
+        "float16" | "float32" | "half" | "single" | "f" | "e" => Ok(CompactDtype::Float32),
+        "float64" | "double" | "longdouble" | "float" | "d" | "g" => Ok(CompactDtype::Float64),
+        _ => Err(ExcType::type_error(format!("{name}() unsupported dtype: {text}"))),
+    }
+}
+
+/// Converts an ndarray dtype into a compact dtype category.
+fn dtype_meta_from_ndarray_dtype(dtype: NdArrayDtype) -> CompactDtype {
+    match dtype {
+        NdArrayDtype::Bool => CompactDtype::Bool,
+        NdArrayDtype::Int64 => CompactDtype::Int,
+        NdArrayDtype::Float64 => CompactDtype::Float64,
+    }
+}
+
+/// Returns an interned dtype marker for a compact dtype category.
+fn dtype_meta_value(dtype: CompactDtype) -> Value {
+    let marker = match dtype {
+        CompactDtype::Bool => StaticStrings::NpBool_,
+        CompactDtype::Int => StaticStrings::NpInt64,
+        CompactDtype::Float32 => StaticStrings::NpFloat32,
+        CompactDtype::Float64 => StaticStrings::NpFloat64,
+    };
+    Value::InternString(marker.into())
+}
+
+/// Promotes two compact dtype categories using NumPy's real numeric ordering.
+fn promote_dtype_meta(first: CompactDtype, second: CompactDtype) -> CompactDtype {
+    first.max(second)
+}
+
+/// Returns whether a cast is safe in the compact bool -> int -> float ordering.
+fn can_cast_dtype_meta(from: CompactDtype, to: CompactDtype) -> bool {
+    from <= to
+}
+
+/// Extracts an owned Python string from interned or heap string values.
+fn string_from_value(value: &Value, name: &str, vm: &VM<'_, impl ResourceTracker>) -> RunResult<String> {
+    match value {
+        Value::InternString(id) => Ok(vm.interns.get_str(*id).to_string()),
+        Value::Ref(id) => match vm.heap.get(*id) {
+            HeapData::Str(text) => Ok(text.as_str().to_string()),
+            _ => Err(ExcType::type_error(format!("{name}() expected a string"))),
+        },
+        _ => Err(ExcType::type_error(format!("{name}() expected a string"))),
+    }
+}
+
+/// Extracts legacy dtype character codes from a string or sequence of strings.
+fn typechars_from_value(value: &Value, name: &str, vm: &VM<'_, impl ResourceTracker>) -> RunResult<Vec<char>> {
+    if let Ok(text) = string_from_value(value, name, vm) {
+        Ok(text.chars().collect())
+    } else {
+        let items = match value {
+            Value::Ref(id) => match vm.heap.get(*id) {
+                HeapData::List(list) => list.as_slice(),
+                HeapData::Tuple(tuple) => tuple.as_slice(),
+                _ => return Err(ExcType::type_error(format!("{name}() expected a string or sequence"))),
+            },
+            _ => return Err(ExcType::type_error(format!("{name}() expected a string or sequence"))),
+        };
+        let mut chars = Vec::new();
+        for item in items {
+            let text = string_from_value(item, name, vm)?;
+            chars.extend(text.chars());
+        }
+        Ok(chars)
+    }
+}
+
+/// Chooses the minimal type code present in `typeset`, falling back to `default`.
+fn mintypecode_result(chars: &[char], typeset: &str, default: &str) -> char {
+    let priority = ['G', 'D', 'F', 'g', 'd', 'f'];
+    priority
+        .iter()
+        .copied()
+        .find(|code| chars.contains(code) && typeset.contains(*code))
+        .or_else(|| default.chars().next())
+        .unwrap_or('d')
 }
 
 /// Returns whether a value should be treated as scalar by `numpy.isscalar()`.

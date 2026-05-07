@@ -935,6 +935,30 @@ pub enum StaticStrings {
     /// `numpy.longdouble` dtype alias (maps to float64 internally)
     #[strum(serialize = "longdouble")]
     NpLongdouble,
+    /// `numpy.can_cast()` compact dtype cast predicate.
+    #[strum(serialize = "can_cast")]
+    NpCanCast,
+    /// `numpy.promote_types()` compact dtype promotion helper.
+    #[strum(serialize = "promote_types")]
+    NpPromoteTypes,
+    /// `numpy.result_type()` compact dtype result helper.
+    #[strum(serialize = "result_type")]
+    NpResultType,
+    /// `numpy.common_type()` compact common dtype helper.
+    #[strum(serialize = "common_type")]
+    NpCommonType,
+    /// `numpy.min_scalar_type()` compact scalar dtype helper.
+    #[strum(serialize = "min_scalar_type")]
+    NpMinScalarType,
+    /// `numpy.mintypecode()` legacy dtype character helper.
+    #[strum(serialize = "mintypecode")]
+    NpMintypecode,
+    /// `numpy.typename()` legacy dtype character name helper.
+    #[strum(serialize = "typename")]
+    NpTypename,
+    /// `numpy.typecodes` legacy dtype character mapping.
+    #[strum(serialize = "typecodes")]
+    NpTypecodes,
     /// `numpy.little_endian` constant
     #[strum(serialize = "little_endian")]
     NpLittleEndian,
