@@ -201,6 +201,22 @@ assert rolled.tolist()[0][0] == [0, 4, 8], 'rollaxis first vector'
 assert rolled.tolist()[1][3] == [15, 19, 23], 'rollaxis last vector'
 
 
+# === linear algebra and numeric wrappers ===
+assert np.vecdot(np.array([1, 2, 3]), np.array([4, 5, 6])) == 32, 'vecdot 1d'
+assert np.matvec(np.array([[1, 2], [3, 4]]), np.array([10, 20])).tolist() == [50, 110], 'matvec 2d 1d'
+assert np.vecmat(np.array([10, 20]), np.array([[1, 2], [3, 4]])).tolist() == [70, 100], 'vecmat 1d 2d'
+assert np.trapezoid(np.array([1, 2, 3])) == 4.0, 'trapezoid unit spacing'
+assert np.trapezoid(np.array([1, 2, 3]), np.array([0, 1, 3])) == 6.5, 'trapezoid x coordinates'
+assert np.trapezoid(np.array([1, 2, 3]), None, 2.0) == 8.0, 'trapezoid dx'
+assert np.vander(np.array([1, 2, 3])).tolist() == [[1, 1, 1], [4, 2, 1], [9, 3, 1]], 'vander default'
+assert np.vander(np.array([1, 2, 3]), 2).tolist() == [[1, 1], [2, 1], [3, 1]], 'vander n'
+assert np.vander(np.array([1, 2, 3]), 3, True).tolist() == [
+    [1, 1, 1],
+    [1, 2, 4],
+    [1, 3, 9],
+], 'vander increasing'
+
+
 # === integer and boolean bitwise helpers ===
 assert np.bitwise_and(6, 3) == 2, 'bitwise_and scalar'
 assert np.bitwise_and(True, False) == False, 'bitwise_and bool scalar'

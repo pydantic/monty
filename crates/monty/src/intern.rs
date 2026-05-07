@@ -1214,9 +1214,24 @@ pub enum StaticStrings {
     /// `numpy.vdot()` function
     #[strum(serialize = "vdot")]
     NpVdot,
+    /// `numpy.vecdot()` function
+    #[strum(serialize = "vecdot")]
+    NpVecdot,
+    /// `numpy.matvec()` function
+    #[strum(serialize = "matvec")]
+    NpMatvec,
+    /// `numpy.vecmat()` function
+    #[strum(serialize = "vecmat")]
+    NpVecmat,
     /// `numpy.cross()` function
     #[strum(serialize = "cross")]
     NpCross,
+    /// `numpy.trapezoid()` function
+    #[strum(serialize = "trapezoid")]
+    NpTrapezoid,
+    /// `numpy.vander()` function
+    #[strum(serialize = "vander")]
+    NpVander,
     /// `numpy.logspace()` function
     #[strum(serialize = "logspace")]
     NpLogspace,

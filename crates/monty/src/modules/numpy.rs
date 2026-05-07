@@ -54,6 +54,7 @@
 //! - `numpy.split(a, sections_or_indices)`, `numpy.cumsum(a)`, `numpy.dot(a, b)`
 //! - `numpy.take`, `numpy.compress`, `numpy.swapaxes`, `numpy.permute_dims`
 //! - `numpy.matrix_transpose`, `numpy.moveaxis`, `numpy.rollaxis`, `numpy.rot90`
+//! - `numpy.vecdot`, `numpy.matvec`, `numpy.vecmat`, `numpy.trapezoid`, `numpy.vander`
 //!
 //! ## Search & index
 //! - `numpy.nonzero(a)`, `numpy.argwhere(a)`
@@ -576,8 +577,18 @@ pub(crate) enum NumpyFunctions {
     Outer,
     /// `numpy.vdot(a, b)` — vector dot product (flattens first).
     Vdot,
+    /// `numpy.vecdot(a, b)` — vector dot product.
+    Vecdot,
+    /// `numpy.matvec(a, x)` — matrix-vector multiplication.
+    Matvec,
+    /// `numpy.vecmat(x, a)` — vector-matrix multiplication.
+    Vecmat,
     /// `numpy.cross(a, b)` — cross product (3-element vectors).
     Cross,
+    /// `numpy.trapezoid(y, x=None, dx=1.0)` — composite trapezoidal integral.
+    Trapezoid,
+    /// `numpy.vander(x, N=None, increasing=False)` — Vandermonde matrix.
+    Vander,
 
     // --- Phase 10: Additional creation functions ---
     /// `numpy.logspace(start, stop, num)` — log-spaced values.
@@ -925,7 +936,12 @@ const NUMPY_FUNCTIONS: &[(StaticStrings, NumpyFunctions)] = &[
     (StaticStrings::NpInner, NumpyFunctions::Inner),
     (StaticStrings::NpOuter, NumpyFunctions::Outer),
     (StaticStrings::NpVdot, NumpyFunctions::Vdot),
+    (StaticStrings::NpVecdot, NumpyFunctions::Vecdot),
+    (StaticStrings::NpMatvec, NumpyFunctions::Matvec),
+    (StaticStrings::NpVecmat, NumpyFunctions::Vecmat),
     (StaticStrings::NpCross, NumpyFunctions::Cross),
+    (StaticStrings::NpTrapezoid, NumpyFunctions::Trapezoid),
+    (StaticStrings::NpVander, NumpyFunctions::Vander),
     // Phase 10: Additional creation and numerical
     (StaticStrings::NpLogspace, NumpyFunctions::Logspace),
     (StaticStrings::NpGeomspace, NumpyFunctions::Geomspace),
@@ -1431,7 +1447,11 @@ pub(super) fn call(
         NumpyFunctions::Inner => call_dot(vm, args).map(CallResult::Value), // For 1D, inner = dot
         NumpyFunctions::Outer => call_outer(vm, args).map(CallResult::Value),
         NumpyFunctions::Vdot => call_dot(vm, args).map(CallResult::Value), // vdot flattens first, same as dot for 1D
+        NumpyFunctions::Vecdot => call_dot(vm, args).map(CallResult::Value), // 1D vector subset
+        NumpyFunctions::Matvec | NumpyFunctions::Vecmat => call_matmul(vm, args).map(CallResult::Value),
         NumpyFunctions::Cross => call_cross(vm, args).map(CallResult::Value),
+        NumpyFunctions::Trapezoid => call_trapezoid(vm, args).map(CallResult::Value),
+        NumpyFunctions::Vander => call_vander(vm, args).map(CallResult::Value),
         // Phase 10: Additional creation and numerical
         NumpyFunctions::Logspace => call_logspace(vm, args).map(CallResult::Value),
         NumpyFunctions::Geomspace => call_geomspace(vm, args).map(CallResult::Value),
@@ -6435,6 +6455,134 @@ fn call_cross(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResu
     let dtype = promote_dtype(a.dtype(), b.dtype());
     let result = NdArray::new(data, vec![3], dtype);
     Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(result))?))
+}
+
+/// `numpy.trapezoid(y, x=None, dx=1.0)` — integrate 1-D samples by the trapezoidal rule.
+fn call_trapezoid(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let pos = args.into_pos_only("numpy.trapezoid", vm.heap)?;
+    defer_drop_mut!(pos, vm);
+
+    let y_val = pos
+        .next()
+        .ok_or_else(|| ExcType::type_error_at_least("numpy.trapezoid", 1, 0))?;
+    defer_drop!(y_val, vm);
+    let x_val = pos.next();
+    let dx_val = pos.next();
+    for extra in pos {
+        extra.drop_with_heap(vm);
+    }
+
+    let y = ndarray_from_value(y_val, "numpy.trapezoid", vm)?;
+    let x = if let Some(x_val) = x_val {
+        defer_drop!(x_val, vm);
+        if matches!(x_val, Value::None) {
+            None
+        } else {
+            Some(ndarray_from_value(x_val, "numpy.trapezoid", vm)?)
+        }
+    } else {
+        None
+    };
+    let dx = if let Some(dx_val) = dx_val {
+        defer_drop!(dx_val, vm);
+        to_f64(dx_val, vm)?
+    } else {
+        1.0
+    };
+
+    let result = trapezoid_1d(&y, x.as_ref(), dx)?;
+    Ok(Value::Float(result))
+}
+
+/// Integrates flattened samples using either explicit x-coordinates or a fixed spacing.
+fn trapezoid_1d(y: &NdArray, x: Option<&NdArray>, dx: f64) -> RunResult<f64> {
+    if let Some(x) = x
+        && x.len() != y.len()
+    {
+        return Err(
+            SimpleException::new_msg(ExcType::ValueError, "numpy.trapezoid() x and y must have same length").into(),
+        );
+    }
+
+    let mut total = 0.0;
+    for index in 1..y.len() {
+        let width = x.map_or(dx, |coords| coords.data()[index] - coords.data()[index - 1]);
+        total += (y.data()[index - 1] + y.data()[index]) * 0.5 * width;
+    }
+    Ok(total)
+}
+
+/// `numpy.vander(x, N=None, increasing=False)` — construct a Vandermonde matrix.
+fn call_vander(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let pos = args.into_pos_only("numpy.vander", vm.heap)?;
+    defer_drop_mut!(pos, vm);
+
+    let x_val = pos
+        .next()
+        .ok_or_else(|| ExcType::type_error_at_least("numpy.vander", 1, 0))?;
+    defer_drop!(x_val, vm);
+    let n_val = pos.next();
+    let increasing_val = pos.next();
+    for extra in pos {
+        extra.drop_with_heap(vm);
+    }
+
+    let x = ndarray_from_value(x_val, "numpy.vander", vm)?;
+    let n = if let Some(n_val) = n_val {
+        defer_drop!(n_val, vm);
+        if matches!(n_val, Value::None) {
+            x.len()
+        } else {
+            value_to_nonnegative_usize(n_val, "numpy.vander", "N")?
+        }
+    } else {
+        x.len()
+    };
+    let increasing = if let Some(increasing_val) = increasing_val {
+        defer_drop!(increasing_val, vm);
+        value_to_bool_arg(increasing_val, "numpy.vander", "increasing")?
+    } else {
+        false
+    };
+
+    vander_1d(&x, n, increasing, vm.heap)
+}
+
+/// Builds a Vandermonde matrix for a 1-D numeric input.
+fn vander_1d(x: &NdArray, n: usize, increasing: bool, heap: &Heap<impl ResourceTracker>) -> RunResult<Value> {
+    if x.ndim() == 1 {
+        let len = x.len();
+        check_array_alloc_size(len * n, heap.tracker())?;
+        let mut data = Vec::with_capacity(len * n);
+        for &value in x.data() {
+            for col in 0..n {
+                let power = if increasing { col } else { n - 1 - col };
+                data.push(pow_usize(value, power));
+            }
+        }
+        let result = NdArray::new(data, vec![len, n], x.dtype());
+        Ok(Value::Ref(heap.allocate(HeapData::NdArray(result))?))
+    } else {
+        Err(SimpleException::new_msg(ExcType::ValueError, "numpy.vander() x must be a one-dimensional array").into())
+    }
+}
+
+/// Raises a base to a non-negative integer exponent without lossy casts.
+fn pow_usize(base: f64, exponent: usize) -> f64 {
+    let mut result = 1.0;
+    for _ in 0..exponent {
+        result *= base;
+    }
+    result
+}
+
+/// Converts a Python truth value argument used by NumPy option flags.
+fn value_to_bool_arg(value: &Value, name: &str, arg_name: &str) -> RunResult<bool> {
+    match value {
+        Value::Bool(value) => Ok(*value),
+        Value::Int(value) => Ok(*value != 0),
+        _ => Err(ExcType::type_error(format!("{name}() {arg_name} must be a boolean"))),
+    }
 }
 
 // --- Phase 10: Additional creation and numerical ---
