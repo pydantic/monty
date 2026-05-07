@@ -27,7 +27,7 @@ use crate::{
 /// map(pow, [2, 3], [3, 2])          # [8, 9]
 /// map(str, [1, 2, 3])               # ['1', '2', '3']
 /// ```
-pub fn builtin_map(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+pub fn builtin_map(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     let (positional, kwargs) = args.into_parts();
     defer_drop_mut!(positional, vm);
 

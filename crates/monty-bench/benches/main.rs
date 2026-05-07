@@ -192,6 +192,24 @@ const EMPTY_TUPLES: &str = "len([() for _ in range(100_000)])";
 /// 2-tuple creation benchmark - creates 100,000 2-tuples in a list.
 const PAIR_TUPLES: &str = "len([(i, i + 1) for i in range(100_000)])";
 
+/// Single-collection latency benchmark.
+///
+/// 50,000 self-referencing lists (each `a; a.append(a)` forms a cycle that ref
+/// counting alone cannot free).
+///
+/// The trailing `0` exists so the runner's `i64` extraction sees a known value:
+/// Monty's `gc.collect()` always returns `0` but CPython returns the count of
+/// unreachable objects collected, which we don't care to assert on.
+const GC_COLLECT: &str = "
+import gc
+gc.disable()
+for _ in range(50_000):
+    a = []
+    a.append(a)
+gc.collect()
+0
+";
+
 /// JSON payload used by the `json_loads` / `json_dumps` benchmarks.
 /// Sourced from `medium_response.json` (a jiter bench fixture).
 const JSON_MEDIUM: &str = include_str!("medium_response.json");
@@ -336,6 +354,10 @@ fn criterion_benchmark(c: &mut Criterion) {
     c.bench_function("json_dumps__cpython", |b| {
         run_cpython_with_data(b, JSON_DUMPS, JSON_MEDIUM, 1815);
     });
+
+    c.bench_function("gc_collect__monty", |b| run_monty(b, GC_COLLECT, 0));
+    #[cfg(not(codspeed))]
+    c.bench_function("gc_collect__cpython", |b| run_cpython(b, GC_COLLECT, 0));
 }
 
 // Use pprof flamegraph profiler when running locally on Unix (not on CodSpeed or Windows)

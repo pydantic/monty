@@ -17,7 +17,7 @@ use crate::{
 /// from each of the argument iterables. Stops when the shortest iterable is exhausted.
 /// When `strict=True`, raises `ValueError` if any iterable has a different length.
 /// Note: In Python this returns an iterator, but we return a list for simplicity.
-pub fn builtin_zip(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+pub fn builtin_zip(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     let (positional, kwargs) = args.into_parts();
     defer_drop_mut!(positional, vm);
 
@@ -88,7 +88,7 @@ pub fn builtin_zip(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -
 ///
 /// Accepts any truthy/falsy value for `strict`, matching CPython behavior.
 /// Raises `TypeError` for unexpected keyword arguments.
-fn extract_zip_strict(kwargs: KwargsValues, vm: &mut VM<'_, '_, impl ResourceTracker>) -> RunResult<bool> {
+fn extract_zip_strict(kwargs: KwargsValues, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<bool> {
     let mut strict = false;
     let mut error: Option<RunError> = None;
 

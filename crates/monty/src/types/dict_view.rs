@@ -59,7 +59,7 @@ impl DictKeysView {
 }
 
 impl<'h> HeapRead<'h, DictKeysView> {
-    fn dict(&self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> HeapRead<'h, Dict> {
+    fn dict(&self, vm: &mut VM<'h, impl ResourceTracker>) -> HeapRead<'h, Dict> {
         let HeapReadOutput::Dict(dict) = vm.heap.read(self.get(vm.heap).dict_id) else {
             panic!("dict_keys view must always reference a dict");
         };
@@ -70,7 +70,7 @@ impl<'h> HeapRead<'h, DictKeysView> {
     pub(crate) fn eq_set(
         &self,
         other: &HeapRead<'h, Set>,
-        vm: &mut VM<'h, '_, impl ResourceTracker>,
+        vm: &mut VM<'h, impl ResourceTracker>,
     ) -> Result<bool, ResourceError> {
         dict_keys_eq_set_like(
             &self.dict(vm),
@@ -84,7 +84,7 @@ impl<'h> HeapRead<'h, DictKeysView> {
     pub(crate) fn eq_frozenset(
         &self,
         other: &HeapRead<'h, FrozenSet>,
-        vm: &mut VM<'h, '_, impl ResourceTracker>,
+        vm: &mut VM<'h, impl ResourceTracker>,
     ) -> Result<bool, ResourceError> {
         dict_keys_eq_set_like(
             &self.dict(vm),
@@ -99,7 +99,7 @@ impl<'h> HeapRead<'h, DictKeysView> {
     /// Dict-view operators always produce ordinary `set` results in CPython,
     /// so the VM uses this helper as the left-hand-side snapshot for `& | ^ -`
     /// and for `isdisjoint(...)`.
-    pub(crate) fn to_set(&self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<Set> {
+    pub(crate) fn to_set(&self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Set> {
         let dict = self.dict(vm);
         let len = dict.get(vm.heap).len();
         let mut result = Set::with_capacity(len);
@@ -114,7 +114,7 @@ impl<'h> HeapRead<'h, DictKeysView> {
     pub(crate) fn isdisjoint_from_value(
         &self,
         other: &Value,
-        vm: &mut VM<'h, '_, impl ResourceTracker>,
+        vm: &mut VM<'h, impl ResourceTracker>,
     ) -> RunResult<bool> {
         let self_set = self.to_set(vm)?;
         defer_drop!(self_set, vm);
@@ -131,15 +131,15 @@ impl DictView for DictKeysView {
 }
 
 impl<'h> PyTrait<'h> for HeapRead<'h, DictKeysView> {
-    fn py_type(&self, _vm: &VM<'h, '_, impl ResourceTracker>) -> Type {
+    fn py_type(&self, _vm: &VM<'h, impl ResourceTracker>) -> Type {
         Type::DictKeys
     }
 
-    fn py_len(&self, vm: &VM<'h, '_, impl ResourceTracker>) -> Option<usize> {
+    fn py_len(&self, vm: &VM<'h, impl ResourceTracker>) -> Option<usize> {
         Some(self.get(vm.heap).dict(vm.heap).len())
     }
 
-    fn py_eq(&self, other: &Self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> Result<bool, ResourceError> {
+    fn py_eq(&self, other: &Self, vm: &mut VM<'h, impl ResourceTracker>) -> Result<bool, ResourceError> {
         if self.get(vm.heap).dict_id == other.get(vm.heap).dict_id {
             return Ok(true);
         }
@@ -157,7 +157,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, DictKeysView> {
     fn py_repr_fmt(
         &self,
         f: &mut impl Write,
-        vm: &mut VM<'h, '_, impl ResourceTracker>,
+        vm: &mut VM<'h, impl ResourceTracker>,
         heap_ids: &mut AHashSet<HeapId>,
     ) -> RunResult<()> {
         f.write_str("dict_keys([")?;
@@ -168,7 +168,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, DictKeysView> {
     fn py_call_attr(
         &mut self,
         _self_id: HeapId,
-        vm: &mut VM<'h, '_, impl ResourceTracker>,
+        vm: &mut VM<'h, impl ResourceTracker>,
         attr: &EitherStr,
         args: ArgValues,
     ) -> RunResult<CallResult> {
@@ -218,7 +218,7 @@ impl DictItemsView {
 }
 
 impl<'h> HeapRead<'h, DictItemsView> {
-    fn dict(&self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> HeapRead<'h, Dict> {
+    fn dict(&self, vm: &mut VM<'h, impl ResourceTracker>) -> HeapRead<'h, Dict> {
         let HeapReadOutput::Dict(dict) = vm.heap.read(self.get(vm.heap).dict_id) else {
             panic!("dict_items view must always reference a dict");
         };
@@ -229,7 +229,7 @@ impl<'h> HeapRead<'h, DictItemsView> {
     pub(crate) fn eq_set(
         &self,
         other: &HeapRead<'h, Set>,
-        vm: &mut VM<'h, '_, impl ResourceTracker>,
+        vm: &mut VM<'h, impl ResourceTracker>,
     ) -> Result<bool, ResourceError> {
         dict_items_eq_set_like(
             &self.dict(vm),
@@ -243,7 +243,7 @@ impl<'h> HeapRead<'h, DictItemsView> {
     pub(crate) fn eq_frozenset(
         &self,
         other: &HeapRead<'h, FrozenSet>,
-        vm: &mut VM<'h, '_, impl ResourceTracker>,
+        vm: &mut VM<'h, impl ResourceTracker>,
     ) -> Result<bool, ResourceError> {
         dict_items_eq_set_like(
             &self.dict(vm),
@@ -257,7 +257,7 @@ impl<'h> HeapRead<'h, DictItemsView> {
     ///
     /// Each item is allocated as a 2-tuple so later set-like operators and
     /// membership checks observe standard Python tuple semantics.
-    pub(crate) fn to_set(&self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<Set> {
+    pub(crate) fn to_set(&self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Set> {
         let dict = self.dict(vm);
         let len = dict.get(vm.heap).len();
         let mut result = Set::with_capacity(len);
@@ -273,7 +273,7 @@ impl<'h> HeapRead<'h, DictItemsView> {
     pub(crate) fn isdisjoint_from_value(
         &self,
         other: &Value,
-        vm: &mut VM<'h, '_, impl ResourceTracker>,
+        vm: &mut VM<'h, impl ResourceTracker>,
     ) -> RunResult<bool> {
         let self_set = self.to_set(vm)?;
         defer_drop!(self_set, vm);
@@ -290,15 +290,15 @@ impl DictView for DictItemsView {
 }
 
 impl<'h> PyTrait<'h> for HeapRead<'h, DictItemsView> {
-    fn py_type(&self, _vm: &VM<'h, '_, impl ResourceTracker>) -> Type {
+    fn py_type(&self, _vm: &VM<'h, impl ResourceTracker>) -> Type {
         Type::DictItems
     }
 
-    fn py_len(&self, vm: &VM<'h, '_, impl ResourceTracker>) -> Option<usize> {
+    fn py_len(&self, vm: &VM<'h, impl ResourceTracker>) -> Option<usize> {
         Some(self.get(vm.heap).dict(vm.heap).len())
     }
 
-    fn py_eq(&self, other: &Self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> Result<bool, ResourceError> {
+    fn py_eq(&self, other: &Self, vm: &mut VM<'h, impl ResourceTracker>) -> Result<bool, ResourceError> {
         if self.get(vm.heap).dict_id == other.get(vm.heap).dict_id {
             return Ok(true);
         }
@@ -311,7 +311,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, DictItemsView> {
     fn py_repr_fmt(
         &self,
         f: &mut impl Write,
-        vm: &mut VM<'h, '_, impl ResourceTracker>,
+        vm: &mut VM<'h, impl ResourceTracker>,
         heap_ids: &mut AHashSet<HeapId>,
     ) -> RunResult<()> {
         f.write_str("dict_items([")?;
@@ -322,7 +322,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, DictItemsView> {
     fn py_call_attr(
         &mut self,
         _self_id: HeapId,
-        vm: &mut VM<'h, '_, impl ResourceTracker>,
+        vm: &mut VM<'h, impl ResourceTracker>,
         attr: &EitherStr,
         args: ArgValues,
     ) -> RunResult<CallResult> {
@@ -378,7 +378,7 @@ impl DictView for DictValuesView {
 }
 
 impl<'h> HeapRead<'h, DictValuesView> {
-    fn dict(&self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> HeapRead<'h, Dict> {
+    fn dict(&self, vm: &mut VM<'h, impl ResourceTracker>) -> HeapRead<'h, Dict> {
         let HeapReadOutput::Dict(dict) = vm.heap.read(self.get(vm.heap).dict_id) else {
             panic!("dict_values view must always reference a dict");
         };
@@ -387,22 +387,22 @@ impl<'h> HeapRead<'h, DictValuesView> {
 }
 
 impl<'h> PyTrait<'h> for HeapRead<'h, DictValuesView> {
-    fn py_type(&self, _vm: &VM<'h, '_, impl ResourceTracker>) -> Type {
+    fn py_type(&self, _vm: &VM<'h, impl ResourceTracker>) -> Type {
         Type::DictValues
     }
 
-    fn py_len(&self, vm: &VM<'h, '_, impl ResourceTracker>) -> Option<usize> {
+    fn py_len(&self, vm: &VM<'h, impl ResourceTracker>) -> Option<usize> {
         Some(self.get(vm.heap).dict(vm.heap).len())
     }
 
-    fn py_eq(&self, _other: &Self, _vm: &mut VM<'h, '_, impl ResourceTracker>) -> Result<bool, ResourceError> {
+    fn py_eq(&self, _other: &Self, _vm: &mut VM<'h, impl ResourceTracker>) -> Result<bool, ResourceError> {
         Ok(false)
     }
 
     fn py_repr_fmt(
         &self,
         f: &mut impl Write,
-        vm: &mut VM<'h, '_, impl ResourceTracker>,
+        vm: &mut VM<'h, impl ResourceTracker>,
         heap_ids: &mut AHashSet<HeapId>,
     ) -> RunResult<()> {
         f.write_str("dict_values([")?;
@@ -425,8 +425,8 @@ impl HeapItem for DictValuesView {
 fn dict_keys_eq_set_like<'h, T: ResourceTracker>(
     dict: &HeapRead<'h, Dict>,
     other_len: usize,
-    mut contains: impl FnMut(&Value, &mut VM<'h, '_, T>) -> bool,
-    vm: &mut VM<'h, '_, T>,
+    mut contains: impl FnMut(&Value, &mut VM<'h, T>) -> bool,
+    vm: &mut VM<'h, T>,
 ) -> Result<bool, ResourceError> {
     if dict.get(vm.heap).len() != other_len {
         return Ok(false);
@@ -450,8 +450,8 @@ fn dict_keys_eq_set_like<'h, T: ResourceTracker>(
 fn dict_items_eq_set_like<'h, T: ResourceTracker>(
     dict: &HeapRead<'h, Dict>,
     other_len: usize,
-    mut contains: impl FnMut(&Value, &mut VM<'h, '_, T>) -> bool,
-    vm: &mut VM<'h, '_, T>,
+    mut contains: impl FnMut(&Value, &mut VM<'h, T>) -> bool,
+    vm: &mut VM<'h, T>,
 ) -> Result<bool, ResourceError> {
     if dict.get(vm.heap).len() != other_len {
         return Ok(false);
@@ -476,7 +476,7 @@ fn dict_items_eq_set_like<'h, T: ResourceTracker>(
 fn write_dict_keys_contents<'h>(
     f: &mut impl Write,
     dict: &HeapRead<'h, Dict>,
-    vm: &mut VM<'h, '_, impl ResourceTracker>,
+    vm: &mut VM<'h, impl ResourceTracker>,
     heap_ids: &mut AHashSet<HeapId>,
 ) -> RunResult<()> {
     let len = dict.get(vm.heap).len();
@@ -499,7 +499,7 @@ fn write_dict_keys_contents<'h>(
 fn write_dict_items_contents<'h>(
     f: &mut impl Write,
     dict: &HeapRead<'h, Dict>,
-    vm: &mut VM<'h, '_, impl ResourceTracker>,
+    vm: &mut VM<'h, impl ResourceTracker>,
     heap_ids: &mut AHashSet<HeapId>,
 ) -> RunResult<()> {
     let len = dict.get(vm.heap).len();
@@ -532,7 +532,7 @@ fn write_dict_items_contents<'h>(
 fn write_dict_values_contents<'h>(
     f: &mut impl Write,
     dict: &HeapRead<'h, Dict>,
-    vm: &mut VM<'h, '_, impl ResourceTracker>,
+    vm: &mut VM<'h, impl ResourceTracker>,
     heap_ids: &mut AHashSet<HeapId>,
 ) -> RunResult<()> {
     let len = dict.get(vm.heap).len();
@@ -556,10 +556,7 @@ fn write_dict_values_contents<'h>(
 /// Dict-view operators accept any iterable on the right-hand side in CPython,
 /// including one-shot iterator objects. Reusing the same collection path keeps
 /// binary operators and `isdisjoint(...)` consistent with each other.
-pub(crate) fn collect_iterable_to_set(
-    value: Value,
-    vm: &mut VM<'_, '_, impl ResourceTracker>,
-) -> Result<Set, RunError> {
+pub(crate) fn collect_iterable_to_set(value: Value, vm: &mut VM<'_, impl ResourceTracker>) -> Result<Set, RunError> {
     let mut value_guard = HeapGuard::new(value, vm);
     let (value, vm) = value_guard.as_parts_mut();
 
@@ -587,7 +584,7 @@ pub(crate) fn collect_iterable_to_set(
 }
 
 /// Returns whether two temporary sets have no elements in common.
-fn sets_are_disjoint(left: &Set, right: &Set, vm: &mut VM<'_, '_, impl ResourceTracker>) -> RunResult<bool> {
+fn sets_are_disjoint(left: &Set, right: &Set, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<bool> {
     let (smaller, larger) = if left.len() <= right.len() {
         (left, right)
     } else {

@@ -10,7 +10,7 @@ use crate::{
     value::{BitwiseOp, Value},
 };
 
-impl<T: ResourceTracker> VM<'_, '_, T> {
+impl<T: ResourceTracker> VM<'_, T> {
     /// Binary addition with proper refcount handling.
     ///
     /// Uses lazy type capture: only calls `py_type()` in error paths to avoid
@@ -430,7 +430,7 @@ fn apply_dict_view_binary_op(
     lhs: &Set,
     rhs: &Set,
     op: DictViewBinaryOp,
-    vm: &mut VM<'_, '_, impl ResourceTracker>,
+    vm: &mut VM<'_, impl ResourceTracker>,
 ) -> Result<Set, RunError> {
     let mut result = match op {
         DictViewBinaryOp::And => Set::with_capacity(lhs.len().min(rhs.len())),

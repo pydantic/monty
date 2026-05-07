@@ -50,7 +50,7 @@ impl fmt::Display for MontyException {
             if repeat_count > REPEAT_FRAMES_SHOWN {
                 // Show first REPEAT_FRAMES_SHOWN frames, then collapse the rest
                 for j in 0..REPEAT_FRAMES_SHOWN {
-                    write!(f, "{}", &self.traceback[i + j])?;
+                    write!(f, "{}", self.traceback[i + j])?;
                 }
                 let collapsed = repeat_count - REPEAT_FRAMES_SHOWN;
                 writeln!(f, "  [Previous line repeated {collapsed} more times]")?;
@@ -58,7 +58,7 @@ impl fmt::Display for MontyException {
             } else {
                 // Show all frames in this group
                 for j in 0..repeat_count {
-                    write!(f, "{}", &self.traceback[i + j])?;
+                    write!(f, "{}", self.traceback[i + j])?;
                 }
                 i += repeat_count;
             }

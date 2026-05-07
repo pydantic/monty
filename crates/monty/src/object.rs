@@ -352,7 +352,7 @@ impl MontyObject {
     /// then properly drops the Value via `drop_with_heap` to maintain reference counting.
     ///
     /// The `interns` parameter is used to look up interned string/bytes content.
-    pub(crate) fn new(value: Value, vm: &mut VM<'_, '_, impl ResourceTracker>) -> Self {
+    pub(crate) fn new(value: Value, vm: &mut VM<'_, impl ResourceTracker>) -> Self {
         let py_obj = Self::from_value(&value, vm);
         value.drop_with_heap(vm);
         py_obj
@@ -372,7 +372,7 @@ impl MontyObject {
     /// # Errors
     /// Returns `InvalidInputError` if called on the `Repr` variant,
     /// as it is only valid as an output from code execution, not as an input.
-    pub(crate) fn to_value(self, vm: &mut VM<'_, '_, impl ResourceTracker>) -> Result<Value, InvalidInputError> {
+    pub(crate) fn to_value(self, vm: &mut VM<'_, impl ResourceTracker>) -> Result<Value, InvalidInputError> {
         match self {
             Self::Ellipsis => Ok(Value::Ellipsis),
             Self::None => Ok(Value::None),
@@ -535,7 +535,7 @@ impl MontyObject {
 
     /// Top-level entry into [`from_value_inner`], allocating the visited-set used
     /// for cycle detection.
-    fn from_value(object: &Value, vm: &mut VM<'_, '_, impl ResourceTracker>) -> Self {
+    fn from_value(object: &Value, vm: &mut VM<'_, impl ResourceTracker>) -> Self {
         let mut visited = AHashSet::new();
         Self::from_value_inner(object, vm, &mut visited)
     }
@@ -550,11 +550,7 @@ impl MontyObject {
     /// `clone_with_heap` the next child before recursing — the `inc_ref` makes
     /// it safe for a future user-defined `__repr__` to mutate the surrounding
     /// container during the recursive call without freeing the value mid-format.
-    fn from_value_inner(
-        object: &Value,
-        vm: &mut VM<'_, '_, impl ResourceTracker>,
-        visited: &mut AHashSet<HeapId>,
-    ) -> Self {
+    fn from_value_inner(object: &Value, vm: &mut VM<'_, impl ResourceTracker>, visited: &mut AHashSet<HeapId>) -> Self {
         // Check depth limit before processing
         let Ok(token) = vm.heap.incr_recursion_depth() else {
             return Self::Repr("<deeply nested>".to_owned());
@@ -818,7 +814,7 @@ impl MontyObject {
 
 /// Converts a value to its repr string for `MontyObject`, falling back to a
 /// descriptive error message if `py_repr` fails (e.g. INT_MAX_STR_DIGITS).
-fn repr_or_error(value: &Value, vm: &mut VM<'_, '_, impl ResourceTracker>) -> MontyObject {
+fn repr_or_error(value: &Value, vm: &mut VM<'_, impl ResourceTracker>) -> MontyObject {
     match value.py_repr(vm) {
         Ok(s) => MontyObject::Repr(s.into_owned()),
         Err(e) => {

@@ -18,7 +18,8 @@ pub(crate) use crate::heap_traits::{ContainsHeap, DropWithHeap, HeapGuard, HeapI
 use crate::{
     asyncio::{Coroutine, GatherFuture, GatherItem},
     bytecode::VM,
-    exception_private::SimpleException,
+    exception_private::{RunResult, SimpleException},
+    hash::HashValue,
     heap_data::{CellValue, Closure, FunctionDefaults},
     resource::{ResourceError, ResourceTracker},
     types::{
@@ -60,7 +61,7 @@ enum HashState {
     /// Hash has not yet been computed but the value might be hashable.
     Unknown,
     /// Cached hash value for immutable types that have been hashed at least once.
-    Cached(u64),
+    Cached(HashValue),
     /// Value is unhashable (mutable types or tuples containing unhashables).
     Unhashable,
 }
@@ -123,11 +124,24 @@ impl<T: ResourceTracker> HeapReader<'_, T> {
     /// The ONLY way to get a `HeapReader`. By only providing an API which takes a closure which
     /// must be satisfied for all `'a`, it's impossible to create other `HeapReader` with the
     /// exact same lifetime `'a`.
-    pub fn with<R>(heap: &mut Heap<T>, f: impl for<'a> FnOnce(&'a mut HeapReader<'a, T>) -> R) -> R {
-        f(&mut HeapReader {
-            heap: &mut *heap,
-            phantom: PhantomData,
-        })
+    ///
+    /// To allow other data to be borrowed alongside the `HeapReader`, the closure is given a
+    /// `&'a mut D` with the same lifetime as the `HeapReader`, which is forwarded from the
+    /// `&mut D` passed to this function. This rebranding lets callers (most notably the
+    /// `VM`) hold borrows whose lifetime matches the `HeapReader`'s invariant brand `'a`,
+    /// which is what allows the `VM` to be parameterized by a single lifetime.
+    pub fn with<R, D: ?Sized>(
+        heap: &mut Heap<T>,
+        data: &mut D,
+        f: impl for<'a> FnOnce(&'a mut HeapReader<'a, T>, &'a mut D) -> R,
+    ) -> R {
+        f(
+            &mut HeapReader {
+                heap: &mut *heap,
+                phantom: PhantomData,
+            },
+            data,
+        )
     }
 }
 
@@ -656,6 +670,12 @@ pub(crate) struct Heap<T: ResourceTracker> {
     /// Number of GC applicable allocations since the last GC.
     /// Uses `Cell` for interior mutability so that `allocate(&self)` can increment.
     allocations_since_gc: Cell<u32>,
+    /// When true, [`should_gc`](Self::should_gc) returns false regardless of the
+    /// allocation counter, suppressing automatic mark-sweep passes. Toggled by
+    /// the `gc.disable()` / `gc.enable()` Python helpers (only registered under
+    /// the `test-hooks` feature). Explicit `gc.collect()` calls still run.
+    #[cfg(feature = "test-hooks")]
+    gc_disabled: bool,
     /// Current recursion depth — incremented on function calls and data structure traversals.
     ///
     /// Uses `Cell` for interior mutability so that methods with only `&Heap`
@@ -697,6 +717,8 @@ impl<'de, T: ResourceTracker + serde::Deserialize<'de>> serde::Deserialize<'de> 
             tracker: fields.tracker,
             may_have_cycles: Cell::new(fields.may_have_cycles),
             allocations_since_gc: Cell::new(fields.allocations_since_gc),
+            #[cfg(feature = "test-hooks")]
+            gc_disabled: false,
             recursion_depth: Cell::new(0),
             timezone_utc: fields.timezone_utc,
         })
@@ -726,6 +748,8 @@ impl<T: ResourceTracker> Heap<T> {
             tracker,
             may_have_cycles: Cell::new(false),
             allocations_since_gc: Cell::new(0),
+            #[cfg(feature = "test-hooks")]
+            gc_disabled: false,
             recursion_depth: Cell::new(0),
             timezone_utc: None,
         };
@@ -987,7 +1011,7 @@ impl<T: ResourceTracker> Heap<T> {
     ///
     /// # Panics
     /// Panics if the value ID is invalid or the value has already been freed.
-    pub fn get_or_compute_hash(vm: &mut VM<'_, '_, T>, id: HeapId) -> Result<Option<u64>, ResourceError> {
+    pub fn get_or_compute_hash(vm: &mut VM<'_, T>, id: HeapId) -> RunResult<Option<HashValue>> {
         // TODO: it should be possible to refactor the triple lookup to just one, probably by having an
         // internal `vm.heap.read_entry` method which can then derive the `HeapReadOutput` for `py_hash`
         // later, and can live without a VM borrow to allow reading / writing the hash.
@@ -1043,10 +1067,33 @@ impl<T: ResourceTracker> Heap<T> {
     ///
     /// True if reference cycles count exist in the heap
     /// and the number of allocations since the last GC exceeds the interval.
+    ///
+    /// Always returns false when [`disable_gc`](Self::disable_gc) has been called
+    /// without a matching [`enable_gc`](Self::enable_gc); explicit
+    /// [`collect_garbage`](Self::collect_garbage) calls still run regardless.
     #[inline]
     pub fn should_gc(&self) -> bool {
+        #[cfg(feature = "test-hooks")]
+        if self.gc_disabled {
+            return false;
+        }
         let interval = self.tracker.gc_interval().unwrap_or(DEFAULT_GC_INTERVAL);
         self.may_have_cycles.get() && (self.allocations_since_gc.get() as usize) >= interval
+    }
+
+    /// Suppresses automatic garbage collection until [`enable_gc`](Self::enable_gc)
+    /// is called.
+    #[cfg(feature = "test-hooks")]
+    pub fn disable_gc(&mut self) {
+        self.gc_disabled = true;
+    }
+
+    /// Resumes automatic garbage collection after a prior [`disable_gc`](Self::disable_gc).
+    ///
+    /// Calling [`enable_gc`](Self::enable_gc) on an already-enabled heap is a no-op.
+    #[cfg(feature = "test-hooks")]
+    pub fn enable_gc(&mut self) {
+        self.gc_disabled = false;
     }
 
     /// Runs mark-sweep garbage collection to free unreachable cycles.
@@ -1058,13 +1105,15 @@ impl<T: ResourceTracker> Heap<T> {
     /// This is necessary because reference counting alone cannot free cycles
     /// where objects reference each other but are unreachable from the program.
     ///
+    /// Returns the number of unreachable entries that were freed during the sweep.
+    ///
     /// # Caller Responsibility
     /// The caller should check `should_gc()` before calling this method.
     /// If no cycles are possible, the caller can skip GC entirely.
     ///
     /// # Arguments
     /// * `root` - HeapIds that are roots
-    pub fn collect_garbage(&mut self, root: Vec<HeapId>) {
+    pub fn collect_garbage(&mut self, root: Vec<HeapId>) -> usize {
         // Mark phase: collect all reachable IDs using BFS
         // Use Vec<bool> instead of HashSet for O(1) operations without hashing overhead
         let mut reachable: Vec<bool> = vec![false; self.entries.len()];
@@ -1107,6 +1156,7 @@ impl<T: ResourceTracker> Heap<T> {
         let mut temp_buffer = Vec::new();
 
         // Sweep phase: free unreachable values
+        let mut freed = 0usize;
         self.entries.retain(|id, value| {
             if reachable[id] {
                 return true;
@@ -1136,6 +1186,7 @@ impl<T: ResourceTracker> Heap<T> {
                 }
             }
 
+            freed += 1;
             false
         });
 
@@ -1148,6 +1199,8 @@ impl<T: ResourceTracker> Heap<T> {
         // Reset cycle flag after GC - cycles have been collected
         self.may_have_cycles.set(false);
         self.allocations_since_gc.set(0);
+
+        freed
     }
 }
 

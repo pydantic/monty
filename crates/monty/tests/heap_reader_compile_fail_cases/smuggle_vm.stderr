@@ -1,0 +1,28 @@
+error: lifetime may not live long enough
+   --> crates/monty/src/../tests/heap_reader_compile_fail_cases/cases.rs:155:36
+    |
+155 |         |reader, (interns, print)| VM::new(Vec::new(), reader, *interns, print.reborrow()),
+    |          ------                  - ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ returning this value requires that `'1` must outlive `'2`
+    |          |                       |
+    |          |                       return type of closure is VM<'2, T>
+    |          has type `&'1 mut heap::HeapReader<'1, T>`
+    |
+    = note: requirement occurs because of the type `VM<'_, T>`, which makes the generic argument `'_` invariant
+    = note: the struct `VM<'h, T>` is invariant over the parameter `'h`
+    = help: see <https://doc.rust-lang.org/nomicon/subtyping.html> for more information about variance
+error: lifetime may not live long enough
+   --> crates/monty/src/../tests/heap_reader_compile_fail_cases/cases.rs:152:5
+    |
+149 |       interns: &crate::intern::Interns,
+    |                - let's call the lifetime of this reference `'1`
+...
+152 | /     HeapReader::with(
+153 | |         heap,
+154 | |         &mut (interns, crate::io::PrintWriter::Disabled),
+155 | |         |reader, (interns, print)| VM::new(Vec::new(), reader, *interns, print.reborrow()),
+156 | |     )
+    | |_____^ returning this value requires that `'1` must outlive `'static`
+    |
+    = note: requirement occurs because of the type `VM<'_, T>`, which makes the generic argument `'_` invariant
+    = note: the struct `VM<'h, T>` is invariant over the parameter `'h`
+    = help: see <https://doc.rust-lang.org/nomicon/subtyping.html> for more information about variance

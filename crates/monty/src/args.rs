@@ -312,7 +312,7 @@ impl ArgValues {
     /// This is used when passing arguments to external functions.
     pub fn into_py_objects(
         self,
-        vm: &mut VM<'_, '_, impl ResourceTracker>,
+        vm: &mut VM<'_, impl ResourceTracker>,
     ) -> (Vec<MontyObject>, Vec<(MontyObject, MontyObject)>) {
         match self {
             Self::Empty => (vec![], vec![]),
@@ -486,7 +486,7 @@ impl KwargsValues {
     /// Converts the arguments into a Vec of MontyObjects.
     ///
     /// This is used when passing arguments to external functions.
-    fn into_py_objects(self, vm: &mut VM<'_, '_, impl ResourceTracker>) -> Vec<(MontyObject, MontyObject)> {
+    fn into_py_objects(self, vm: &mut VM<'_, impl ResourceTracker>) -> Vec<(MontyObject, MontyObject)> {
         match self {
             Self::Empty => vec![],
             Self::Inline(kvs) => kvs
