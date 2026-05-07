@@ -590,6 +590,15 @@ pub enum StaticStrings {
     /// `numpy.array()` function
     #[strum(serialize = "array")]
     NpArray,
+    /// `numpy.array2string()` array display helper.
+    #[strum(serialize = "array2string")]
+    NpArray2string,
+    /// `numpy.array_repr()` array repr helper.
+    #[strum(serialize = "array_repr")]
+    NpArrayRepr,
+    /// `numpy.array_str()` array string helper.
+    #[strum(serialize = "array_str")]
+    NpArrayStr,
     /// `numpy.asanyarray()` alias for `numpy.asarray()` in Monty's ndarray-only subset.
     #[strum(serialize = "asanyarray")]
     NpAsanyarray,

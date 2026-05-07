@@ -471,5 +471,21 @@ assert np.getbufsize() == 8192, 'getbufsize default'
 assert np.setbufsize(8192) == 8192, 'setbufsize previous size'
 assert np.errstate(divide='ignore') is not None, 'errstate placeholder'
 assert np.printoptions(threshold=10) is not None, 'printoptions placeholder'
+display_int = np.array([1, 2, 3])
+assert np.array2string(display_int) == '[1 2 3]', 'array2string int vector'
+assert np.array_str(display_int) == '[1 2 3]', 'array_str int vector'
+assert np.array_repr(display_int) == 'array([1, 2, 3])', 'array_repr int vector'
+display_float = np.array([1.0, 2.0, 3.0])
+assert np.array2string(display_float) == '[1. 2. 3.]', 'array2string float vector'
+assert np.array_str(display_float) == '[1. 2. 3.]', 'array_str float vector'
+display_bool = np.array([True, False])
+assert np.array2string(display_bool) == '[ True False]', 'array2string bool vector'
+display_matrix = np.array([[1, 2], [3, 4]])
+assert np.array2string(display_matrix) == '[[1 2]\n [3 4]]', 'array2string matrix'
+assert np.array_str(display_matrix) == '[[1 2]\n [3 4]]', 'array_str matrix'
+display_empty = np.array([])
+assert np.array2string(display_empty) == '[]', 'array2string empty'
+assert np.array_str(display_empty) == '[]', 'array_str empty'
+assert np.array_repr(display_empty) == 'array([], dtype=float64)', 'array_repr empty'
 assert np.little_endian == True, 'little_endian constant'
 assert abs(np.euler_gamma - 0.5772156649015329) < 1e-15, 'euler_gamma constant'

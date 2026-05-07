@@ -1374,6 +1374,23 @@ impl NdArray {
         f.write_char(')')
     }
 
+    /// Writes NumPy's bare array string format without the `array(...)` wrapper.
+    ///
+    /// This is used by module-level display helpers such as `numpy.array2string`
+    /// and `numpy.array_str`. It intentionally mirrors Monty's existing compact
+    /// ndarray subset and avoids introducing global print-option state.
+    pub fn array_str_fmt_inner(&self, f: &mut impl Write) -> fmt::Result {
+        if self.shape.is_empty() {
+            if let Some(value) = self.data.first() {
+                self.write_array_string_value(f, *value)
+            } else {
+                f.write_str("[]")
+            }
+        } else {
+            self.write_array_string_recursive(f, &self.shape, 0, 0)
+        }
+    }
+
     /// Recursively writes nested list representation for multi-dimensional arrays.
     fn write_recursive(&self, f: &mut impl Write, remaining_shape: &[usize], offset: usize) -> fmt::Result {
         if remaining_shape.len() == 1 {
@@ -1426,6 +1443,90 @@ impl NdArray {
                 self.write_recursive(f, &remaining_shape[1..], offset + i * sub_size)?;
             }
             f.write_char(']')
+        }
+    }
+
+    /// Recursively writes NumPy's comma-free display format.
+    fn write_array_string_recursive(
+        &self,
+        f: &mut impl Write,
+        remaining_shape: &[usize],
+        offset: usize,
+        depth: usize,
+    ) -> fmt::Result {
+        if remaining_shape.len() == 1 {
+            self.write_array_string_leaf(f, remaining_shape[0], offset)
+        } else {
+            f.write_char('[')?;
+            let sub_size: usize = remaining_shape[1..].iter().product();
+            for i in 0..remaining_shape[0] {
+                if i > 0 {
+                    f.write_char('\n')?;
+                    for _ in 0..=depth {
+                        f.write_char(' ')?;
+                    }
+                }
+                self.write_array_string_recursive(f, &remaining_shape[1..], offset + i * sub_size, depth + 1)?;
+            }
+            f.write_char(']')
+        }
+    }
+
+    /// Writes one flat row for NumPy's bare display format.
+    fn write_array_string_leaf(&self, f: &mut impl Write, len: usize, offset: usize) -> fmt::Result {
+        f.write_char('[')?;
+        let values = (0..len)
+            .map(|i| self.array_string_value(self.data[offset + i]))
+            .collect::<Vec<_>>();
+        let width = values.iter().map(String::len).max().unwrap_or(0);
+        for (index, text) in values.iter().enumerate() {
+            if index > 0 {
+                f.write_char(' ')?;
+            }
+            match self.dtype {
+                NdArrayDtype::Int64 => write!(f, "{text:>width$}")?,
+                NdArrayDtype::Float64 => write!(f, "{text:<width$}")?,
+                NdArrayDtype::Bool => f.write_str(text)?,
+            }
+        }
+        f.write_char(']')
+    }
+
+    /// Writes a scalar value in NumPy's bare array display format.
+    fn write_array_string_value(&self, f: &mut impl Write, value: f64) -> fmt::Result {
+        f.write_str(&self.array_string_value(value))
+    }
+
+    /// Formats a scalar value for NumPy's bare array display format.
+    fn array_string_value(&self, value: f64) -> String {
+        match self.dtype {
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "f64 to i64 truncation is the intended int display"
+            )]
+            NdArrayDtype::Int64 => (value as i64).to_string(),
+            NdArrayDtype::Float64 => {
+                if value.is_nan() {
+                    "nan".to_string()
+                } else if value.is_infinite() {
+                    if value.is_sign_negative() {
+                        "-inf".to_string()
+                    } else {
+                        "inf".to_string()
+                    }
+                } else if value.fract() == 0.0 {
+                    format!("{value:.0}.")
+                } else {
+                    value.to_string()
+                }
+            }
+            NdArrayDtype::Bool => {
+                if value == 0.0 {
+                    "False".to_string()
+                } else {
+                    " True".to_string()
+                }
+            }
         }
     }
 }

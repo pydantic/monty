@@ -41,6 +41,7 @@
 //! ## Testing & inspection
 //! - `numpy.isnan(a)`, `numpy.isinf(a)`, `numpy.isfinite(a)`
 //! - `numpy.array_equal(a, b)`
+//! - `numpy.array2string(a)`, `numpy.array_repr(a)`, `numpy.array_str(a)`
 //! - `numpy.all(a)`, `numpy.any(a)`
 //!
 //! ## Selection & sorting
@@ -94,6 +95,12 @@ use crate::{
 pub(crate) enum NumpyFunctions {
     /// `numpy.array(data)` — create an ndarray from a list.
     Array,
+    /// `numpy.array2string(a)` — bare ndarray display string.
+    Array2string,
+    /// `numpy.array_repr(a)` — ndarray repr string.
+    ArrayRepr,
+    /// `numpy.array_str(a)` — bare ndarray string.
+    ArrayStr,
     /// `numpy.zeros(shape)` — create an array filled with zeros.
     Zeros,
     /// `numpy.ones(shape)` — create an array filled with ones.
@@ -799,6 +806,9 @@ const NUMPY_DTYPE_ALIASES: &[(StaticStrings, StaticStrings)] = &[
 /// Static mapping of attribute names to numpy functions for module creation.
 const NUMPY_FUNCTIONS: &[(StaticStrings, NumpyFunctions)] = &[
     (StaticStrings::NpArray, NumpyFunctions::Array),
+    (StaticStrings::NpArray2string, NumpyFunctions::Array2string),
+    (StaticStrings::NpArrayRepr, NumpyFunctions::ArrayRepr),
+    (StaticStrings::NpArrayStr, NumpyFunctions::ArrayStr),
     (StaticStrings::NpAsanyarray, NumpyFunctions::Asarray),
     (StaticStrings::NpZeros, NumpyFunctions::Zeros),
     (StaticStrings::NpOnes, NumpyFunctions::Ones),
@@ -1137,6 +1147,9 @@ pub(super) fn call(
 ) -> RunResult<CallResult> {
     match function {
         NumpyFunctions::Array => call_array(vm, args).map(CallResult::Value),
+        NumpyFunctions::Array2string => call_array2string(vm, args).map(CallResult::Value),
+        NumpyFunctions::ArrayRepr => call_array_repr(vm, args).map(CallResult::Value),
+        NumpyFunctions::ArrayStr => call_array_str(vm, args).map(CallResult::Value),
         NumpyFunctions::Zeros => call_zeros(vm, args).map(CallResult::Value),
         NumpyFunctions::Ones => call_ones(vm, args).map(CallResult::Value),
         NumpyFunctions::Arange => call_arange(vm, args).map(CallResult::Value),
@@ -1693,6 +1706,44 @@ fn call_array(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResu
     defer_drop!(arg, vm);
     let arr = ndarray_from_list(arg, vm.heap)?;
     Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(arr))?))
+}
+
+/// `numpy.array2string(a)` — format an ndarray without the `array(...)` wrapper.
+fn call_array2string(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let arr = array_display_arg(vm, args, "numpy.array2string")?;
+    let mut output = String::new();
+    arr.array_str_fmt_inner(&mut output)?;
+    allocate_string(output, vm.heap)
+}
+
+/// `numpy.array_repr(a)` — return the ndarray repr string.
+fn call_array_repr(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let arr = array_display_arg(vm, args, "numpy.array_repr")?;
+    let mut output = String::new();
+    arr.py_repr_fmt_inner(&mut output)?;
+    allocate_string(output, vm.heap)
+}
+
+/// `numpy.array_str(a)` — return NumPy's bare ndarray string.
+fn call_array_str(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let arr = array_display_arg(vm, args, "numpy.array_str")?;
+    let mut output = String::new();
+    arr.array_str_fmt_inner(&mut output)?;
+    allocate_string(output, vm.heap)
+}
+
+/// Extracts the ndarray argument for display helpers and ignores optional print-only arguments.
+fn array_display_arg(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues, name: &str) -> RunResult<NdArray> {
+    let (mut pos, kwargs) = args.into_parts();
+    let Some(arg) = pos.next() else {
+        pos.drop_with_heap(vm);
+        kwargs.drop_with_heap(vm);
+        return Err(ExcType::type_error_at_least(name, 1, 0));
+    };
+    defer_drop!(arg, vm);
+    pos.drop_with_heap(vm);
+    kwargs.drop_with_heap(vm);
+    ndarray_from_value(arg, name, vm)
 }
 
 /// `numpy.zeros(shape)` — create an array of zeros with the given shape.
