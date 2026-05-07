@@ -1,9 +1,27 @@
-use std::{
-    cell::Cell,
-    error::Error,
-    fmt,
-    time::{Duration, Instant},
-};
+use std::{cell::Cell, error::Error, fmt, time::Duration};
+
+#[cfg(not(target_arch = "wasm32"))]
+use std::time::Instant;
+
+// std::time::Instant::now() panics on wasm32-unknown-unknown ("time not
+// implemented on this platform"). Time-based resource limits are therefore
+// inert on wasm; elapsed() always returns Duration::ZERO so check_time never
+// trips. Hosts that need a real time budget on wasm should enforce it
+// externally (e.g. via a JS-side timeout).
+#[cfg(target_arch = "wasm32")]
+#[derive(Debug, Clone, Copy)]
+pub struct Instant;
+
+#[cfg(target_arch = "wasm32")]
+impl Instant {
+    pub fn now() -> Self {
+        Self
+    }
+
+    pub fn elapsed(&self) -> Duration {
+        Duration::ZERO
+    }
+}
 
 use crate::{
     ExcType, MontyException,
