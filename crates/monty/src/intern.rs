@@ -1779,20 +1779,16 @@ pub struct InternerBuilder {
 }
 
 impl InternerBuilder {
-    /// Creates a new string interner with pre-interned strings.
+    /// Creates a new interner for code-specific strings, bytes, and integers.
     ///
-    /// Clones from a lazily-initialized base interner that contains all pre-interned
-    /// strings (`<module>`, attribute names, ASCII chars). This avoids rebuilding
-    /// the base set on every call.
+    /// ASCII and [`StaticStrings`] values use deterministic `StringId` ranges and are
+    /// not stored in this builder. The builder only owns dynamically interned strings
+    /// that are specific to the code being parsed, which keeps new parser instances
+    /// cheap to create.
     ///
     /// # Arguments
     /// * `code` - The code being parsed, used for a very rough guess at how many
-    ///   additional strings will be interned beyond the base set.
-    ///
-    /// Pre-interns (via `BASE_INTERNER`):
-    /// - Index 0: `"<module>"` for module-level code
-    /// - Indices 1-MAX_ATTR_ID: Known attribute names (append, insert, get, join, etc.)
-    /// - Indices MAX_ATTR_ID+1..: ASCII single-character strings
+    ///   dynamic strings will be interned.
     pub fn new(code: &str) -> Self {
         // Reserve capacity for code-specific strings
         // Rough guess: count quotes and divide by 2 (open+close per string)
@@ -1840,6 +1836,20 @@ impl InternerBuilder {
             StringId::from_ascii(s.as_bytes()[0])
         } else if let Ok(ss) = StaticStrings::from_str(s) {
             ss.into()
+        } else {
+            self.intern_dynamic(s)
+        }
+    }
+
+    /// Interns a string without checking the static-string table.
+    ///
+    /// Use this for arbitrary host-provided labels such as filenames. Those labels
+    /// still need stable `StringId` values during one compilation, but probing every
+    /// known Python and NumPy attribute name on predictable misses adds fixed parse
+    /// overhead to tiny programs.
+    pub(crate) fn intern_dynamic(&mut self, s: &str) -> StringId {
+        if s.len() == 1 {
+            StringId::from_ascii(s.as_bytes()[0])
         } else {
             *self.string_map.entry(s.to_owned()).or_insert_with(|| {
                 let string_id = self.strings.len() + INTERN_STRING_ID_OFFSET;

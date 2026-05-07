@@ -173,7 +173,7 @@ pub struct Parser<'a> {
 
 impl<'a> Parser<'a> {
     fn new(code: &'a str, filename: &'a str, mut interner: InternerBuilder) -> Self {
-        let filename_id = interner.intern(filename);
+        let filename_id = interner.intern_dynamic(filename);
         Self {
             code,
             filename_id,
