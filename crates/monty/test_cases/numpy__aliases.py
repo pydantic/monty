@@ -508,6 +508,40 @@ assert str(int16_info.dtype) == 'int16', 'iinfo int16 dtype'
 assert np.iinfo('uint8').max == 255, 'iinfo uint8 max'
 assert np.iinfo('uint64').max == 18446744073709551615, 'iinfo uint64 max'
 assert np.iinfo(1).bits == 64, 'iinfo scalar int bits'
+
+
+def fromfunction_sum(row, col):
+    return row + col
+
+
+def fromfunction_linear(row, col):
+    return row * 10 + col
+
+
+def fromfunction_scale(index, scale=1):
+    return index * scale
+
+
+assert np.fromfunction(fromfunction_sum, (2, 3)).tolist() == [
+    [0.0, 1.0, 2.0],
+    [1.0, 2.0, 3.0],
+], 'fromfunction float coordinate sum'
+assert np.fromfunction(fromfunction_linear, (2, 3), dtype=int).tolist() == [
+    [0, 1, 2],
+    [10, 11, 12],
+], 'fromfunction integer coordinate expression'
+assert np.fromfunction(fromfunction_scale, (4,), dtype=int, scale=3).tolist() == [
+    0,
+    3,
+    6,
+    9,
+], 'fromfunction forwards callable kwargs'
+assert np.fromfunction(fromfunction_scale, (0,), dtype=int).tolist() == [], 'fromfunction empty shape'
+assert np.fromiter([1, 2, 3], int).tolist() == [1, 2, 3], 'fromiter int list'
+assert np.fromiter([1, 2.5, 3], float).tolist() == [1.0, 2.5, 3.0], 'fromiter float list'
+assert np.fromiter([1, 2, 3], np.int64, count=2).tolist() == [1, 2], 'fromiter count keyword'
+assert np.fromiter([True, False], bool).tolist() == [True, False], 'fromiter bool dtype'
+assert np.fromiter([1, 2], None).tolist() == [1.0, 2.0], 'fromiter dtype none default'
 assert np.mintypecode(['i', 'f']) == 'f', 'mintypecode int float'
 assert np.typename('i') == 'integer', 'typename integer code'
 assert np.typename('d') == 'double precision', 'typename double code'

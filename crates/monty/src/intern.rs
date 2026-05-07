@@ -599,6 +599,12 @@ pub enum StaticStrings {
     /// `numpy.array_str()` array string helper.
     #[strum(serialize = "array_str")]
     NpArrayStr,
+    /// `numpy.fromfunction()` callable coordinate-array constructor.
+    #[strum(serialize = "fromfunction")]
+    NpFromfunction,
+    /// `numpy.fromiter()` iterable numeric-array constructor.
+    #[strum(serialize = "fromiter")]
+    NpFromiter,
     /// `numpy.asanyarray()` alias for `numpy.asarray()` in Monty's ndarray-only subset.
     #[strum(serialize = "asanyarray")]
     NpAsanyarray,

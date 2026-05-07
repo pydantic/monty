@@ -67,6 +67,7 @@
 use std::{
     cmp::Ordering,
     f64::consts::{E, PI},
+    mem,
     num::FpCategory,
 };
 
@@ -74,18 +75,18 @@ use num_bigint::BigInt;
 use smallvec::SmallVec;
 
 use crate::{
-    args::ArgValues,
+    args::{ArgValues, KwargsValues},
     builtins::Builtins,
     bytecode::{CallResult, VM},
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, RunError, RunResult, SimpleException},
-    heap::{Heap, HeapData, HeapId, HeapReadOutput},
+    heap::{ContainsHeap, Heap, HeapData, HeapGuard, HeapId, HeapReadOutput},
     heap_traits::DropWithHeap,
     intern::StaticStrings,
     modules::ModuleFunctions,
     resource::{ResourceError, ResourceTracker, check_array_alloc_size},
     types::{
-        Dict, List, LongInt, Module, NamedTuple, NdArray, PyTrait, Type, allocate_tuple,
+        Dict, List, LongInt, Module, MontyIter, NamedTuple, NdArray, PyTrait, Type, allocate_tuple,
         ndarray::{NdArrayDtype, nan_last_cmp, ndarray_from_list, promote_dtype, promote_dtype_with_scalar},
         str::{Str, allocate_string},
     },
@@ -106,6 +107,10 @@ pub(crate) enum NumpyFunctions {
     ArrayRepr,
     /// `numpy.array_str(a)` — bare ndarray string.
     ArrayStr,
+    /// `numpy.fromfunction(function, shape, dtype=float)` — call a function with coordinate arrays.
+    Fromfunction,
+    /// `numpy.fromiter(iter, dtype, count=-1)` — create a 1-D numeric array from an iterable.
+    Fromiter,
     /// `numpy.zeros(shape)` — create an array filled with zeros.
     Zeros,
     /// `numpy.ones(shape)` — create an array filled with ones.
@@ -887,6 +892,8 @@ const NUMPY_FUNCTIONS: &[(StaticStrings, NumpyFunctions)] = &[
     (StaticStrings::NpArray2string, NumpyFunctions::Array2string),
     (StaticStrings::NpArrayRepr, NumpyFunctions::ArrayRepr),
     (StaticStrings::NpArrayStr, NumpyFunctions::ArrayStr),
+    (StaticStrings::NpFromfunction, NumpyFunctions::Fromfunction),
+    (StaticStrings::NpFromiter, NumpyFunctions::Fromiter),
     (StaticStrings::NpAsanyarray, NumpyFunctions::Asarray),
     (StaticStrings::NpZeros, NumpyFunctions::Zeros),
     (StaticStrings::NpOnes, NumpyFunctions::Ones),
@@ -1257,6 +1264,8 @@ pub(super) fn call(
         NumpyFunctions::Array2string => call_array2string(vm, args).map(CallResult::Value),
         NumpyFunctions::ArrayRepr => call_array_repr(vm, args).map(CallResult::Value),
         NumpyFunctions::ArrayStr => call_array_str(vm, args).map(CallResult::Value),
+        NumpyFunctions::Fromfunction => call_fromfunction(vm, args).map(CallResult::Value),
+        NumpyFunctions::Fromiter => call_fromiter(vm, args).map(CallResult::Value),
         NumpyFunctions::Zeros => call_zeros(vm, args).map(CallResult::Value),
         NumpyFunctions::Ones => call_ones(vm, args).map(CallResult::Value),
         NumpyFunctions::Arange => call_arange(vm, args).map(CallResult::Value),
@@ -1846,6 +1855,380 @@ fn call_array(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResu
     defer_drop!(arg, vm);
     let arr = ndarray_from_list(arg, vm.heap)?;
     Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(arr))?))
+}
+
+/// `numpy.fromfunction(function, shape, dtype=float, **kwargs)` — call a function with coordinate arrays.
+fn call_fromfunction(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let (mut pos, kwargs) = args.into_parts();
+    let Some(function) = pos.next() else {
+        pos.drop_with_heap(vm);
+        kwargs.drop_with_heap(vm);
+        return Err(ExcType::type_error_at_least("numpy.fromfunction", 2, 0));
+    };
+    defer_drop!(function, vm);
+    let Some(shape_value) = pos.next() else {
+        pos.drop_with_heap(vm);
+        kwargs.drop_with_heap(vm);
+        return Err(ExcType::type_error_at_least("numpy.fromfunction", 2, 1));
+    };
+    defer_drop!(shape_value, vm);
+    if let Some(extra) = pos.next() {
+        extra.drop_with_heap(vm);
+        pos.drop_with_heap(vm);
+        kwargs.drop_with_heap(vm);
+        return Err(ExcType::type_error_at_most("numpy.fromfunction", 2, 3));
+    }
+    pos.drop_with_heap(vm);
+
+    let parsed = parse_fromfunction_kwargs(kwargs, vm)?;
+    defer_drop_mut!(parsed, vm);
+    let shape = extract_shape_from_value(shape_value, "numpy.fromfunction", vm)?;
+    let coordinate_args = coordinate_arrays_for_shape(&shape, parsed.dtype, "numpy.fromfunction", vm)?;
+    let function_kwargs = mem::replace(&mut parsed.extra_kwargs, KwargsValues::Empty);
+    let function_args = args_from_vec_and_kwargs(coordinate_args, function_kwargs);
+    vm.evaluate_function("numpy.fromfunction", function, function_args)
+}
+
+/// Parsed keyword state for `fromfunction()`.
+///
+/// The dtype is consumed immediately while unknown keywords are preserved and
+/// forwarded to the user callable. The custom drop implementation protects
+/// forwarded keyword values until they are moved into the callable argument list.
+struct ParsedFromFunctionKwargs {
+    /// Coordinate-array dtype requested by `dtype=`.
+    dtype: CompactDtype,
+    /// Keyword arguments that should be passed through to the user callable.
+    extra_kwargs: KwargsValues,
+}
+
+impl DropWithHeap for ParsedFromFunctionKwargs {
+    fn drop_with_heap<H: ContainsHeap>(self, heap: &mut H) {
+        self.extra_kwargs.drop_with_heap(heap);
+    }
+}
+
+/// Parses `fromfunction()` keyword arguments, preserving callable kwargs.
+fn parse_fromfunction_kwargs(
+    kwargs: KwargsValues,
+    vm: &mut VM<'_, impl ResourceTracker>,
+) -> RunResult<ParsedFromFunctionKwargs> {
+    let kwargs_iter = kwargs.into_iter();
+    defer_drop_mut!(kwargs_iter, vm);
+    let extra_pairs = Vec::<(Value, Value)>::new();
+    let mut extra_guard = HeapGuard::new(extra_pairs, vm);
+    let (extra_pairs, vm) = extra_guard.as_parts_mut();
+
+    let mut dtype = CompactDtype::Float64;
+    let mut dtype_seen = false;
+    let mut like_seen = false;
+    for (key, value) in kwargs_iter {
+        let Some(keyword_name) = key.as_either_str(vm.heap) else {
+            key.drop_with_heap(vm);
+            value.drop_with_heap(vm);
+            return Err(ExcType::type_error_kwargs_nonstring_key());
+        };
+        let key_str = keyword_name.as_str(vm.interns);
+        if key_str == "dtype" {
+            key.drop_with_heap(vm);
+            defer_drop!(value, vm);
+            if dtype_seen {
+                return Err(ExcType::type_error_multiple_values("numpy.fromfunction", "dtype"));
+            }
+            dtype_seen = true;
+            dtype = dtype_meta_from_optional_dtype_value(value, "numpy.fromfunction", vm)?;
+        } else if key_str == "like" {
+            key.drop_with_heap(vm);
+            value.drop_with_heap(vm);
+            if like_seen {
+                return Err(ExcType::type_error_multiple_values("numpy.fromfunction", "like"));
+            }
+            like_seen = true;
+        } else {
+            extra_pairs.push((key, value));
+        }
+    }
+
+    let (extra_pairs, vm) = extra_guard.into_parts();
+    Ok(ParsedFromFunctionKwargs {
+        dtype,
+        extra_kwargs: kwargs_from_pairs(extra_pairs, vm)?,
+    })
+}
+
+/// `numpy.fromiter(iter, dtype, count=-1)` — build a one-dimensional numeric array.
+fn call_fromiter(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let (mut pos, kwargs) = args.into_parts();
+    let Some(iterable) = pos.next() else {
+        pos.drop_with_heap(vm);
+        kwargs.drop_with_heap(vm);
+        return Err(ExcType::type_error_at_least("numpy.fromiter", 2, 0));
+    };
+    let iterable = Some(iterable);
+    defer_drop_mut!(iterable, vm);
+    let dtype_pos = pos.next();
+    defer_drop_mut!(dtype_pos, vm);
+    let count_pos = pos.next();
+    defer_drop_mut!(count_pos, vm);
+    if let Some(extra) = pos.next() {
+        extra.drop_with_heap(vm);
+        pos.drop_with_heap(vm);
+        kwargs.drop_with_heap(vm);
+        return Err(ExcType::type_error_at_most("numpy.fromiter", 3, 4));
+    }
+    pos.drop_with_heap(vm);
+
+    let parsed = parse_fromiter_kwargs(kwargs, vm)?;
+    let dtype = match (dtype_pos.as_ref(), parsed.dtype) {
+        (Some(_), Some(_)) => return Err(ExcType::type_error_multiple_values("numpy.fromiter", "dtype")),
+        (Some(value), None) => dtype_meta_from_optional_dtype_value(value, "numpy.fromiter", vm)?,
+        (None, Some(dtype)) => dtype,
+        (None, None) => {
+            return Err(SimpleException::new_msg(
+                ExcType::TypeError,
+                "fromiter() missing required argument 'dtype' (pos 2)",
+            )
+            .into());
+        }
+    };
+    let count = match (count_pos.as_ref(), parsed.count) {
+        (Some(_), Some(_)) => return Err(ExcType::type_error_multiple_values("numpy.fromiter", "count")),
+        (Some(value), None) => value_to_i64_arg(value, "numpy.fromiter", "count")?,
+        (None, Some(count)) => count,
+        (None, None) => -1,
+    };
+
+    let iter = MontyIter::new(iterable.take().expect("fromiter iterable is still owned"), vm)?;
+    defer_drop_mut!(iter, vm);
+    let limit = fromiter_count_limit(count, "numpy.fromiter")?;
+    let capacity = limit.unwrap_or_else(|| iter.size_hint(vm.heap));
+    check_array_alloc_size(capacity, vm.heap.tracker())?;
+    let data = collect_fromiter_data(iter, dtype, limit, vm)?;
+    let len = data.len();
+    let arr = NdArray::new(data, vec![len], ndarray_dtype_from_compact(dtype));
+    Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(arr))?))
+}
+
+/// Parsed keyword state for `fromiter()`.
+struct ParsedFromIterKwargs {
+    /// Optional dtype parsed from `dtype=`.
+    dtype: Option<CompactDtype>,
+    /// Optional element limit parsed from `count=`.
+    count: Option<i64>,
+}
+
+/// Parses the narrow keyword surface supported by `fromiter()`.
+fn parse_fromiter_kwargs(
+    kwargs: KwargsValues,
+    vm: &mut VM<'_, impl ResourceTracker>,
+) -> RunResult<ParsedFromIterKwargs> {
+    let kwargs_iter = kwargs.into_iter();
+    defer_drop_mut!(kwargs_iter, vm);
+
+    let mut dtype = None;
+    let mut count = None;
+    let mut like_seen = false;
+    for (key, value) in kwargs_iter {
+        let Some(keyword_name) = key.as_either_str(vm.heap) else {
+            key.drop_with_heap(vm);
+            value.drop_with_heap(vm);
+            return Err(ExcType::type_error_kwargs_nonstring_key());
+        };
+        let key_str = keyword_name.as_str(vm.interns);
+        if key_str == "dtype" {
+            key.drop_with_heap(vm);
+            defer_drop!(value, vm);
+            if dtype.is_some() {
+                return Err(ExcType::type_error_multiple_values("numpy.fromiter", "dtype"));
+            }
+            dtype = Some(dtype_meta_from_optional_dtype_value(value, "numpy.fromiter", vm)?);
+        } else if key_str == "count" {
+            key.drop_with_heap(vm);
+            defer_drop!(value, vm);
+            if count.is_some() {
+                return Err(ExcType::type_error_multiple_values("numpy.fromiter", "count"));
+            }
+            count = Some(value_to_i64_arg(value, "numpy.fromiter", "count")?);
+        } else if key_str == "like" {
+            key.drop_with_heap(vm);
+            value.drop_with_heap(vm);
+            if like_seen {
+                return Err(ExcType::type_error_multiple_values("numpy.fromiter", "like"));
+            }
+            like_seen = true;
+        } else {
+            key.drop_with_heap(vm);
+            value.drop_with_heap(vm);
+            return Err(ExcType::type_error(format!(
+                "'{key_str}' is an invalid keyword argument for numpy.fromiter()"
+            )));
+        }
+    }
+
+    Ok(ParsedFromIterKwargs { dtype, count })
+}
+
+/// Converts NumPy's `count` argument into an optional read limit.
+fn fromiter_count_limit(count: i64, name: &str) -> RunResult<Option<usize>> {
+    match count.cmp(&-1) {
+        Ordering::Equal => Ok(None),
+        Ordering::Less => Ok(Some(0)),
+        Ordering::Greater => Ok(Some(i64_to_nonnegative_usize(count, name, "count")?)),
+    }
+}
+
+/// Consumes an iterator into a numeric backing vector for `fromiter()`.
+fn collect_fromiter_data(
+    iter: &mut MontyIter,
+    dtype: CompactDtype,
+    limit: Option<usize>,
+    vm: &mut VM<'_, impl ResourceTracker>,
+) -> RunResult<Vec<f64>> {
+    let mut data = Vec::with_capacity(limit.unwrap_or_else(|| iter.size_hint(vm.heap)));
+    if let Some(limit) = limit {
+        for _ in 0..limit {
+            let Some(item) = iter.for_next(vm)? else {
+                return Err(SimpleException::new_msg(
+                    ExcType::ValueError,
+                    format!(
+                        "iterator too short: Expected {limit} but iterator had only {} items.",
+                        data.len()
+                    ),
+                )
+                .into());
+            };
+            defer_drop!(item, vm);
+            data.push(cast_value_to_compact_dtype(item, dtype, "numpy.fromiter", vm)?);
+        }
+    } else {
+        while let Some(item) = iter.for_next(vm)? {
+            defer_drop!(item, vm);
+            data.push(cast_value_to_compact_dtype(item, dtype, "numpy.fromiter", vm)?);
+        }
+    }
+    Ok(data)
+}
+
+/// Builds the coordinate arrays passed as positional arguments to `fromfunction()`.
+fn coordinate_arrays_for_shape(
+    shape: &[usize],
+    dtype: CompactDtype,
+    name: &str,
+    vm: &mut VM<'_, impl ResourceTracker>,
+) -> RunResult<Vec<Value>> {
+    let ndim = shape.len();
+    let total = checked_shape_product(shape, name)?;
+    check_array_alloc_size(total.saturating_mul(ndim), vm.heap.tracker())?;
+
+    let mut arrays = Vec::with_capacity(ndim);
+    if ndim > 0 {
+        for axis in 0..ndim {
+            let stride = checked_shape_product(&shape[axis + 1..], name)?;
+            let mut data = Vec::with_capacity(total);
+            for flat in 0..total {
+                let coord = if shape[axis] == 0 {
+                    0
+                } else {
+                    (flat / stride) % shape[axis]
+                };
+                data.push(coordinate_value_for_dtype(coord, dtype));
+            }
+            let arr = NdArray::new(data, shape.to_vec(), ndarray_dtype_from_compact(dtype));
+            arrays.push(Value::Ref(vm.heap.allocate(HeapData::NdArray(arr))?));
+        }
+    }
+    Ok(arrays)
+}
+
+/// Casts one coordinate value to the compact dtype requested by `fromfunction()`.
+fn coordinate_value_for_dtype(coord: usize, dtype: CompactDtype) -> f64 {
+    match dtype {
+        CompactDtype::Bool => {
+            if coord == 0 {
+                0.0
+            } else {
+                1.0
+            }
+        }
+        CompactDtype::Int | CompactDtype::Float32 | CompactDtype::Float64 => usize_to_f64(coord),
+    }
+}
+
+/// Wraps positional and keyword values in the compact `ArgValues` representation.
+fn args_from_vec_and_kwargs(mut args: Vec<Value>, kwargs: KwargsValues) -> ArgValues {
+    if kwargs.is_empty() {
+        match args.len() {
+            0 => ArgValues::Empty,
+            1 => ArgValues::One(args.pop().expect("one positional argument")),
+            2 => {
+                let second = args.pop().expect("second positional argument");
+                let first = args.pop().expect("first positional argument");
+                ArgValues::Two(first, second)
+            }
+            _ => ArgValues::ArgsKargs {
+                args,
+                kwargs: KwargsValues::Empty,
+            },
+        }
+    } else if args.is_empty() {
+        ArgValues::Kwargs(kwargs)
+    } else {
+        ArgValues::ArgsKargs { args, kwargs }
+    }
+}
+
+/// Creates keyword values from owned `(key, value)` pairs.
+fn kwargs_from_pairs(pairs: Vec<(Value, Value)>, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<KwargsValues> {
+    if pairs.is_empty() {
+        Ok(KwargsValues::Empty)
+    } else {
+        Dict::from_pairs(pairs, vm).map(KwargsValues::Dict)
+    }
+}
+
+/// Parses NumPy dtype arguments that accept Python type constructors and `None`.
+fn dtype_meta_from_optional_dtype_value(
+    value: &Value,
+    name: &str,
+    vm: &VM<'_, impl ResourceTracker>,
+) -> RunResult<CompactDtype> {
+    match value {
+        Value::None => Ok(CompactDtype::Float64),
+        Value::Builtin(Builtins::Type(Type::Bool)) => Ok(CompactDtype::Bool),
+        Value::Builtin(Builtins::Type(Type::Int)) => Ok(CompactDtype::Int),
+        Value::Builtin(Builtins::Type(Type::Float)) => Ok(CompactDtype::Float64),
+        _ => dtype_meta_from_dtype_value(value, name, vm),
+    }
+}
+
+/// Converts one Python scalar into the requested compact ndarray backing value.
+fn cast_value_to_compact_dtype(
+    value: &Value,
+    dtype: CompactDtype,
+    _name: &str,
+    vm: &VM<'_, impl ResourceTracker>,
+) -> RunResult<f64> {
+    let value = to_f64(value, vm)?;
+    match dtype {
+        CompactDtype::Bool => Ok(if value == 0.0 { 0.0 } else { 1.0 }),
+        CompactDtype::Int => {
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "fromiter integer conversion follows NumPy's scalar cast behavior"
+            )]
+            let value = value as i64;
+            Ok(i64_to_f64(value))
+        }
+        CompactDtype::Float32 | CompactDtype::Float64 => Ok(value),
+    }
+}
+
+/// Maps compact dtype metadata to Monty's current ndarray storage dtype.
+fn ndarray_dtype_from_compact(dtype: CompactDtype) -> NdArrayDtype {
+    match dtype {
+        CompactDtype::Bool => NdArrayDtype::Bool,
+        CompactDtype::Int => NdArrayDtype::Int64,
+        CompactDtype::Float32 | CompactDtype::Float64 => NdArrayDtype::Float64,
+    }
 }
 
 /// `numpy.array2string(a)` — format an ndarray without the `array(...)` wrapper.
