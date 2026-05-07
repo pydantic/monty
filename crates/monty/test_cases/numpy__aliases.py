@@ -211,6 +211,29 @@ assert np.binary_repr(3, 5) == '00011', 'binary_repr positive width'
 assert np.binary_repr(-3, 5) == '11101', 'binary_repr negative width'
 
 
+# === finite conversion, predicates, and simple 1d helpers ===
+assert np.isposinf([np.inf, -np.inf, 1.0]).tolist() == [True, False, False], 'isposinf values'
+assert np.isneginf([np.inf, -np.inf, 1.0]).tolist() == [False, True, False], 'isneginf values'
+assert np.asarray_chkfinite([1, 2, 3]).tolist() == [1, 2, 3], 'asarray_chkfinite finite'
+try:
+    np.asarray_chkfinite([1.0, np.inf])
+    assert False, 'expected asarray_chkfinite to reject infinity'
+except ValueError as exc:
+    assert str(exc) == 'array must not contain infs or NaNs', 'asarray_chkfinite error message'
+
+assert np.ascontiguousarray([1, 2]).tolist() == [1, 2], 'ascontiguousarray list'
+assert np.asfortranarray([1, 2]).tolist() == [1, 2], 'asfortranarray list'
+assert np.require([1, 2]).tolist() == [1, 2], 'require list'
+assert np.real_if_close([1, 2]).tolist() == [1, 2], 'real_if_close list'
+
+assert np.array_equiv([1, 2], [1, 2]) == True, 'array_equiv equal arrays'
+assert np.array_equiv([1, 1], 1) == True, 'array_equiv scalar broadcast'
+assert np.array_equiv([1, 2], 1) == False, 'array_equiv scalar mismatch'
+assert np.ediff1d([[1, 2], [4, 7]]).tolist() == [1, 2, 3], 'ediff1d flattened'
+assert np.trim_zeros([0, 0, 1, 0, 2, 0]).tolist() == [1, 0, 2], 'trim_zeros both'
+assert np.trim_zeros([0, 0, 1, 0, 2, 0], 'f').tolist() == [1, 0, 2, 0], 'trim_zeros front'
+
+
 # === real-only aliases and introspection helpers ===
 real_values = np.array([-2, 0, 3])
 assert np.conj(-5) == -5, 'conj scalar keeps real value'

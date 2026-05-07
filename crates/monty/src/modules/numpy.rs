@@ -155,6 +155,8 @@ pub(crate) enum NumpyFunctions {
     Power,
     /// `numpy.diff(a)` — n-th discrete difference.
     Diff,
+    /// `numpy.ediff1d(a)` — flattened first-order discrete difference.
+    Ediff1d,
     /// `numpy.full(shape, fill_value)` — array filled with a constant.
     Full,
     /// `numpy.eye(n)` — identity matrix.
@@ -171,10 +173,16 @@ pub(crate) enum NumpyFunctions {
     Isnan,
     /// `numpy.isinf(a)` — element-wise infinity test.
     Isinf,
+    /// `numpy.isposinf(a)` — element-wise positive infinity test.
+    Isposinf,
+    /// `numpy.isneginf(a)` — element-wise negative infinity test.
+    Isneginf,
     /// `numpy.isfinite(a)` — element-wise finiteness test.
     Isfinite,
     /// `numpy.array_equal(a, b)` — true if arrays are element-wise equal.
     ArrayEqual,
+    /// `numpy.array_equiv(a, b)` — true if arrays are equal after scalar broadcasting.
+    ArrayEquiv,
     /// `numpy.count_nonzero(a)` — count of non-zero elements.
     CountNonzero,
     /// `numpy.all(a)` — true if all elements are truthy.
@@ -374,6 +382,8 @@ pub(crate) enum NumpyFunctions {
     Conj,
     /// `numpy.real(a)` — return the real component.
     Real,
+    /// `numpy.real_if_close(a)` — identity for Monty's real-valued numeric subset.
+    RealIfClose,
     /// `numpy.imag(a)` — return the imaginary component.
     Imag,
     /// `numpy.isreal(a)` — element-wise predicate for real values.
@@ -494,6 +504,14 @@ pub(crate) enum NumpyFunctions {
     Flatnonzero,
     /// `numpy.asarray(a)` — convert to array without copy if possible.
     Asarray,
+    /// `numpy.asarray_chkfinite(a)` — convert to array and reject NaN/Inf values.
+    AsarrayChkfinite,
+    /// `numpy.ascontiguousarray(a)` — Monty ndarray conversion with C-order semantics.
+    Ascontiguousarray,
+    /// `numpy.asfortranarray(a)` — Monty ndarray conversion with Fortran-order compatibility.
+    Asfortranarray,
+    /// `numpy.require(a)` — Monty ndarray conversion ignoring unsupported layout flags.
+    Require,
     /// `numpy.column_stack(arrays)` — stack 1D arrays as columns.
     ColumnStack,
     /// `numpy.row_stack(arrays)` — alias for vstack.
@@ -516,6 +534,8 @@ pub(crate) enum NumpyFunctions {
     Searchsorted,
     /// `numpy.extract(condition, arr)` — extract elements by condition.
     Extract,
+    /// `numpy.trim_zeros(filt, trim='fb')` — trim leading and/or trailing zeros.
+    TrimZeros,
     /// `numpy.intersect1d(a, b)` — sorted unique intersection.
     Intersect1d,
     /// `numpy.union1d(a, b)` — sorted unique union.
@@ -673,6 +693,7 @@ const NUMPY_FUNCTIONS: &[(StaticStrings, NumpyFunctions)] = &[
     (StaticStrings::NpPower, NumpyFunctions::Power),
     (StaticStrings::Pow, NumpyFunctions::Power), // alias
     (StaticStrings::NpDiff, NumpyFunctions::Diff),
+    (StaticStrings::NpEdiff1d, NumpyFunctions::Ediff1d),
     (StaticStrings::NpFull, NumpyFunctions::Full),
     (StaticStrings::NpEye, NumpyFunctions::Eye),
     (StaticStrings::Copy, NumpyFunctions::NpCopy),
@@ -681,8 +702,11 @@ const NUMPY_FUNCTIONS: &[(StaticStrings, NumpyFunctions)] = &[
     (StaticStrings::NpOnesLike, NumpyFunctions::OnesLike),
     (StaticStrings::Isnan, NumpyFunctions::Isnan),
     (StaticStrings::Isinf, NumpyFunctions::Isinf),
+    (StaticStrings::NpIsposinf, NumpyFunctions::Isposinf),
+    (StaticStrings::NpIsneginf, NumpyFunctions::Isneginf),
     (StaticStrings::Isfinite, NumpyFunctions::Isfinite),
     (StaticStrings::NpArrayEqual, NumpyFunctions::ArrayEqual),
+    (StaticStrings::NpArrayEquiv, NumpyFunctions::ArrayEquiv),
     (StaticStrings::NpCountNonzero, NumpyFunctions::CountNonzero),
     (StaticStrings::NpAll, NumpyFunctions::All),
     (StaticStrings::NpAny, NumpyFunctions::Any),
@@ -786,6 +810,7 @@ const NUMPY_FUNCTIONS: &[(StaticStrings, NumpyFunctions)] = &[
     (StaticStrings::NpConj, NumpyFunctions::Conj),
     (StaticStrings::NpConjugate, NumpyFunctions::Conj), // alias
     (StaticStrings::NpReal, NumpyFunctions::Real),
+    (StaticStrings::NpRealIfClose, NumpyFunctions::RealIfClose),
     (StaticStrings::NpImag, NumpyFunctions::Imag),
     (StaticStrings::NpIsreal, NumpyFunctions::Isreal),
     (StaticStrings::NpIsrealobj, NumpyFunctions::Isrealobj),
@@ -847,6 +872,10 @@ const NUMPY_FUNCTIONS: &[(StaticStrings, NumpyFunctions)] = &[
     (StaticStrings::NpTrace, NumpyFunctions::Trace),
     (StaticStrings::NpFlatnonzero, NumpyFunctions::Flatnonzero),
     (StaticStrings::NpAsarray, NumpyFunctions::Asarray),
+    (StaticStrings::NpAsarrayChkfinite, NumpyFunctions::AsarrayChkfinite),
+    (StaticStrings::NpAscontiguousarray, NumpyFunctions::Ascontiguousarray),
+    (StaticStrings::NpAsfortranarray, NumpyFunctions::Asfortranarray),
+    (StaticStrings::NpRequire, NumpyFunctions::Require),
     (StaticStrings::NpColumnStack, NumpyFunctions::ColumnStack),
     (StaticStrings::NpRowStack, NumpyFunctions::RowStack),
     (StaticStrings::NpHsplit, NumpyFunctions::Hsplit),
@@ -858,6 +887,7 @@ const NUMPY_FUNCTIONS: &[(StaticStrings, NumpyFunctions)] = &[
     (StaticStrings::NpArgsort, NumpyFunctions::ArgsortMod),
     (StaticStrings::NpSearchsorted, NumpyFunctions::Searchsorted),
     (StaticStrings::NpExtract, NumpyFunctions::Extract),
+    (StaticStrings::NpTrimZeros, NumpyFunctions::TrimZeros),
     (StaticStrings::NpIntersect1d, NumpyFunctions::Intersect1d),
     (StaticStrings::NpUnion1d, NumpyFunctions::Union1d),
     (StaticStrings::NpSetdiff1d, NumpyFunctions::Setdiff1d),
@@ -945,6 +975,7 @@ pub(super) fn call(
         }
         NumpyFunctions::Power => call_power(vm, args).map(CallResult::Value),
         NumpyFunctions::Diff => call_diff(vm, args).map(CallResult::Value),
+        NumpyFunctions::Ediff1d => call_ediff1d(vm, args).map(CallResult::Value),
         NumpyFunctions::Full => call_full(vm, args).map(CallResult::Value),
         NumpyFunctions::Eye => call_eye(vm, args).map(CallResult::Value),
         NumpyFunctions::NpCopy => call_copy(vm, args).map(CallResult::Value),
@@ -953,8 +984,11 @@ pub(super) fn call(
         NumpyFunctions::OnesLike => call_like(vm, args, 1.0, "numpy.ones_like").map(CallResult::Value),
         NumpyFunctions::Isnan => call_bool_test(vm, args, f64::is_nan, "numpy.isnan").map(CallResult::Value),
         NumpyFunctions::Isinf => call_bool_test(vm, args, f64::is_infinite, "numpy.isinf").map(CallResult::Value),
+        NumpyFunctions::Isposinf => call_bool_test(vm, args, f64_is_pos_inf, "numpy.isposinf").map(CallResult::Value),
+        NumpyFunctions::Isneginf => call_bool_test(vm, args, f64_is_neg_inf, "numpy.isneginf").map(CallResult::Value),
         NumpyFunctions::Isfinite => call_bool_test(vm, args, f64::is_finite, "numpy.isfinite").map(CallResult::Value),
         NumpyFunctions::ArrayEqual => call_array_equal(vm, args).map(CallResult::Value),
+        NumpyFunctions::ArrayEquiv => call_array_equiv(vm, args).map(CallResult::Value),
         NumpyFunctions::CountNonzero => call_count_nonzero(vm, args).map(CallResult::Value),
         NumpyFunctions::All => call_all(vm, args).map(CallResult::Value),
         NumpyFunctions::Any => call_any(vm, args).map(CallResult::Value),
@@ -1255,6 +1289,7 @@ pub(super) fn call(
         NumpyFunctions::BinaryRepr => call_binary_repr(vm, args).map(CallResult::Value),
         NumpyFunctions::Conj => call_real_identity(vm, args, "numpy.conj").map(CallResult::Value),
         NumpyFunctions::Real => call_real_identity(vm, args, "numpy.real").map(CallResult::Value),
+        NumpyFunctions::RealIfClose => call_real_if_close(vm, args).map(CallResult::Value),
         NumpyFunctions::Imag => call_imag(vm, args).map(CallResult::Value),
         NumpyFunctions::Isreal => call_realness_elementwise(vm, args, true, "numpy.isreal").map(CallResult::Value),
         NumpyFunctions::Isrealobj => call_realness_object(vm, args, true, "numpy.isrealobj").map(CallResult::Value),
@@ -1333,6 +1368,10 @@ pub(super) fn call(
         NumpyFunctions::Trace => call_trace(vm, args).map(CallResult::Value),
         NumpyFunctions::Flatnonzero => call_flatnonzero(vm, args).map(CallResult::Value),
         NumpyFunctions::Asarray => call_asarray(vm, args).map(CallResult::Value),
+        NumpyFunctions::AsarrayChkfinite => call_asarray_chkfinite(vm, args).map(CallResult::Value),
+        NumpyFunctions::Ascontiguousarray | NumpyFunctions::Asfortranarray | NumpyFunctions::Require => {
+            call_asarray_compat(vm, args).map(CallResult::Value)
+        }
         NumpyFunctions::ColumnStack => call_column_stack(vm, args).map(CallResult::Value),
         NumpyFunctions::RowStack => call_vstack(vm, args).map(CallResult::Value), // alias
         NumpyFunctions::Hsplit => call_hsplit(vm, args).map(CallResult::Value),
@@ -1344,6 +1383,7 @@ pub(super) fn call(
         NumpyFunctions::ArgsortMod => call_argsort_mod(vm, args).map(CallResult::Value),
         NumpyFunctions::Searchsorted => call_searchsorted(vm, args).map(CallResult::Value),
         NumpyFunctions::Extract => call_extract(vm, args).map(CallResult::Value),
+        NumpyFunctions::TrimZeros => call_trim_zeros(vm, args).map(CallResult::Value),
         NumpyFunctions::Intersect1d => {
             call_set_op(vm, args, SetOp::Intersect, "numpy.intersect1d").map(CallResult::Value)
         }
@@ -2268,6 +2308,21 @@ fn call_diff(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResul
     Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(arr))?))
 }
 
+/// `numpy.ediff1d(a)` — flattened first-order difference.
+fn call_ediff1d(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let arg = args.get_one_arg("numpy.ediff1d", vm.heap)?;
+    defer_drop!(arg, vm);
+    let arr = ndarray_from_value(arg, "numpy.ediff1d", vm)?;
+    if arr.len() <= 1 {
+        let result = NdArray::new(Vec::new(), vec![0], arr.dtype());
+        return Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(result))?));
+    }
+    let data: Vec<f64> = arr.data().windows(2).map(|w| w[1] - w[0]).collect();
+    let len = data.len();
+    let arr = NdArray::new(data, vec![len], arr.dtype());
+    Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(arr))?))
+}
+
 /// `numpy.full(shape, fill_value)` — create an array filled with a constant.
 fn call_full(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     let (shape_val, fill_val) = args.get_two_args("numpy.full", vm.heap)?;
@@ -2356,6 +2411,16 @@ fn call_bool_test(
     Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(result))?))
 }
 
+/// Predicate for positive infinity.
+fn f64_is_pos_inf(value: f64) -> bool {
+    value.is_infinite() && value.is_sign_positive()
+}
+
+/// Predicate for negative infinity.
+fn f64_is_neg_inf(value: f64) -> bool {
+    value.is_infinite() && value.is_sign_negative()
+}
+
 /// `numpy.array_equal(a, b)` — true if two arrays have same shape and elements.
 ///
 /// Uses direct f64 equality, so `NaN != NaN` — matching NumPy's behavior.
@@ -2369,6 +2434,60 @@ fn call_array_equal(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> R
 
     let equal = a_arr.shape() == b_arr.shape() && a_arr.data() == b_arr.data();
     Ok(Value::Bool(equal))
+}
+
+/// Numeric input normalized for `numpy.array_equiv`.
+enum ArrayEquivInput {
+    /// Array-like input with copied data and shape.
+    Array { data: Vec<f64>, shape: Vec<usize> },
+    /// Numeric scalar input.
+    Scalar(f64),
+}
+
+/// `numpy.array_equiv(a, b)` — equality with scalar broadcasting.
+fn call_array_equiv(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let (a_val, b_val) = args.get_two_args("numpy.array_equiv", vm.heap)?;
+    defer_drop!(a_val, vm);
+    defer_drop!(b_val, vm);
+    let a = array_equiv_input(a_val, "numpy.array_equiv", vm)?;
+    let b = array_equiv_input(b_val, "numpy.array_equiv", vm)?;
+    Ok(Value::Bool(array_equiv_inputs(&a, &b)))
+}
+
+/// Converts a value into the scalar-or-array form used by `array_equiv`.
+fn array_equiv_input(value: &Value, name: &str, vm: &VM<'_, impl ResourceTracker>) -> RunResult<ArrayEquivInput> {
+    if let Ok((data, shape, _)) = extract_ndarray_info(value, name, vm) {
+        Ok(ArrayEquivInput::Array { data, shape })
+    } else {
+        let (value, _) = numeric_scalar_info(value, name, vm)?;
+        Ok(ArrayEquivInput::Scalar(value))
+    }
+}
+
+/// Compares `array_equiv` inputs with scalar broadcasting.
+fn array_equiv_inputs(a: &ArrayEquivInput, b: &ArrayEquivInput) -> bool {
+    match (a, b) {
+        (
+            ArrayEquivInput::Array {
+                data: a_data,
+                shape: a_shape,
+            },
+            ArrayEquivInput::Array {
+                data: b_data,
+                shape: b_shape,
+            },
+        ) => a_shape == b_shape && a_data == b_data,
+        (ArrayEquivInput::Array { data, .. }, ArrayEquivInput::Scalar(value))
+        | (ArrayEquivInput::Scalar(value), ArrayEquivInput::Array { data, .. }) => {
+            data.iter().all(|item| f64_exact_equal(*item, *value))
+        }
+        (ArrayEquivInput::Scalar(a), ArrayEquivInput::Scalar(b)) => f64_exact_equal(*a, *b),
+    }
+}
+
+/// Exact float equality with NumPy's NaN-is-not-equal behavior and clippy-friendly spelling.
+fn f64_exact_equal(a: f64, b: f64) -> bool {
+    a.partial_cmp(&b) == Some(Ordering::Equal)
 }
 
 /// `numpy.count_nonzero(a)` — count non-zero elements.
@@ -3005,6 +3124,23 @@ fn call_real_identity(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues, na
         Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(arr))?))
     } else {
         let (value, dtype) = numeric_scalar_info(arg, name, vm)?;
+        Ok(scalar_from_f64(value, dtype))
+    }
+}
+
+/// `numpy.real_if_close(a, tol=100)` — identity for Monty's real-valued subset.
+fn call_real_if_close(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let (arg, tol) = args.get_one_two_args("numpy.real_if_close", vm.heap)?;
+    defer_drop!(arg, vm);
+    if let Some(tol) = tol {
+        tol.drop_with_heap(vm);
+    }
+
+    if let Ok((data, shape, dtype)) = extract_ndarray_info(arg, "numpy.real_if_close", vm) {
+        let arr = NdArray::new(data, shape, dtype);
+        Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(arr))?))
+    } else {
+        let (value, dtype) = numeric_scalar_info(arg, "numpy.real_if_close", vm)?;
         Ok(scalar_from_f64(value, dtype))
     }
 }
@@ -5289,6 +5425,33 @@ fn call_asarray(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunRe
     Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(arr))?))
 }
 
+/// Compatibility conversion for layout/order helpers that are no-ops in Monty's ndarray model.
+fn call_asarray_compat(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let pos = args.into_pos_only("numpy.asarray", vm.heap)?;
+    defer_drop_mut!(pos, vm);
+    let arg = pos
+        .next()
+        .ok_or_else(|| ExcType::type_error_at_least("numpy.asarray", 1, 0))?;
+    defer_drop!(arg, vm);
+    for extra in pos.by_ref() {
+        extra.drop_with_heap(vm);
+    }
+    let arr = ndarray_from_value(arg, "numpy.asarray", vm)?;
+    Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(arr))?))
+}
+
+/// `numpy.asarray_chkfinite(a)` — convert to array and reject NaN or infinity.
+fn call_asarray_chkfinite(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let arg = args.get_one_arg("numpy.asarray_chkfinite", vm.heap)?;
+    defer_drop!(arg, vm);
+    let arr = ndarray_from_value(arg, "numpy.asarray_chkfinite", vm)?;
+    if arr.data().iter().all(|value| value.is_finite()) {
+        Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(arr))?))
+    } else {
+        Err(SimpleException::new_msg(ExcType::ValueError, "array must not contain infs or NaNs").into())
+    }
+}
+
 /// `numpy.column_stack(arrays)` — stack 1D arrays as columns into 2D.
 fn call_column_stack(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     let list_val = args.get_one_arg("numpy.column_stack", vm.heap)?;
@@ -5484,6 +5647,52 @@ fn call_extract(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunRe
     let len = data.len();
     let result = NdArray::new(data, vec![len], arr.dtype());
     Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(result))?))
+}
+
+/// `numpy.trim_zeros(filt, trim='fb')` — trim leading and/or trailing zeros from a 1-D input.
+fn call_trim_zeros(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let (arg, trim) = args.get_one_two_args("numpy.trim_zeros", vm.heap)?;
+    defer_drop!(arg, vm);
+    let trim = if let Some(trim) = trim {
+        defer_drop!(trim, vm);
+        string_arg(trim, "numpy.trim_zeros", vm)?
+    } else {
+        "fb".to_owned()
+    };
+    let arr = ndarray_from_value(arg, "numpy.trim_zeros", vm)?;
+    let trim_front = trim.contains('f') || trim.contains('F');
+    let trim_back = trim.contains('b') || trim.contains('B');
+    let mut start = 0usize;
+    let mut end = arr.data().len();
+    if trim_front {
+        start = arr.data().iter().position(|value| *value != 0.0).unwrap_or(end);
+    }
+    if trim_back {
+        end = arr
+            .data()
+            .iter()
+            .rposition(|value| *value != 0.0)
+            .map_or(start, |index| index + 1);
+    }
+    if end < start {
+        end = start;
+    }
+    let data = arr.data()[start..end].to_vec();
+    let len = data.len();
+    let result = NdArray::new(data, vec![len], arr.dtype());
+    Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(result))?))
+}
+
+/// Extracts a string argument from heap or interned string values.
+fn string_arg(value: &Value, name: &str, vm: &VM<'_, impl ResourceTracker>) -> RunResult<String> {
+    match value {
+        Value::InternString(id) => Ok(vm.interns.get_str(*id).to_owned()),
+        Value::Ref(id) => match vm.heap.get(*id) {
+            HeapData::Str(value) => Ok(value.as_str().to_owned()),
+            _ => Err(ExcType::type_error(format!("{name}() expected a string argument"))),
+        },
+        _ => Err(ExcType::type_error(format!("{name}() expected a string argument"))),
+    }
 }
 
 /// Set operation type.

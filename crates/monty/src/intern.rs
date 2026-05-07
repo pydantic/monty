@@ -755,6 +755,9 @@ pub enum StaticStrings {
     /// `numpy.array_equal()` function
     #[strum(serialize = "array_equal")]
     NpArrayEqual,
+    /// `numpy.array_equiv()` shape-compatible equality helper.
+    #[strum(serialize = "array_equiv")]
+    NpArrayEquiv,
     /// `numpy.count_nonzero()` function
     #[strum(serialize = "count_nonzero")]
     NpCountNonzero,
@@ -767,6 +770,9 @@ pub enum StaticStrings {
     /// `numpy.diff()` function
     #[strum(serialize = "diff")]
     NpDiff,
+    /// `numpy.ediff1d()` flattened first-difference helper.
+    #[strum(serialize = "ediff1d")]
+    NpEdiff1d,
     // Note: numpy.append reuses list's Append variant
     /// `numpy.vstack()` function
     #[strum(serialize = "vstack")]
@@ -974,6 +980,9 @@ pub enum StaticStrings {
     /// `numpy.real()` real component helper.
     #[strum(serialize = "real")]
     NpReal,
+    /// `numpy.real_if_close()` real-valued identity helper for Monty's numeric subset.
+    #[strum(serialize = "real_if_close")]
+    NpRealIfClose,
     /// `numpy.imag()` imaginary component helper.
     #[strum(serialize = "imag")]
     NpImag,
@@ -983,6 +992,12 @@ pub enum StaticStrings {
     /// `numpy.isrealobj()` object-level real-valued predicate.
     #[strum(serialize = "isrealobj")]
     NpIsrealobj,
+    /// `numpy.isposinf()` element-wise positive infinity predicate.
+    #[strum(serialize = "isposinf")]
+    NpIsposinf,
+    /// `numpy.isneginf()` element-wise negative infinity predicate.
+    #[strum(serialize = "isneginf")]
+    NpIsneginf,
     /// `numpy.iscomplex()` element-wise complex-valued predicate.
     #[strum(serialize = "iscomplex")]
     NpIscomplex,
@@ -1133,6 +1148,18 @@ pub enum StaticStrings {
     /// `numpy.asarray()` function
     #[strum(serialize = "asarray")]
     NpAsarray,
+    /// `numpy.asarray_chkfinite()` finite-checking array conversion helper.
+    #[strum(serialize = "asarray_chkfinite")]
+    NpAsarrayChkfinite,
+    /// `numpy.ascontiguousarray()` contiguous array conversion helper.
+    #[strum(serialize = "ascontiguousarray")]
+    NpAscontiguousarray,
+    /// `numpy.asfortranarray()` Fortran array conversion helper.
+    #[strum(serialize = "asfortranarray")]
+    NpAsfortranarray,
+    /// `numpy.require()` array requirement helper.
+    #[strum(serialize = "require")]
+    NpRequire,
     /// `numpy.column_stack()` function
     #[strum(serialize = "column_stack")]
     NpColumnStack,
@@ -1154,6 +1181,9 @@ pub enum StaticStrings {
     /// `numpy.extract()` function
     #[strum(serialize = "extract")]
     NpExtract,
+    /// `numpy.trim_zeros()` one-dimensional zero trimming helper.
+    #[strum(serialize = "trim_zeros")]
+    NpTrimZeros,
     /// `numpy.intersect1d()` function
     #[strum(serialize = "intersect1d")]
     NpIntersect1d,
