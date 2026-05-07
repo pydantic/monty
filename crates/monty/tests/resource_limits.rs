@@ -286,10 +286,39 @@ np.zeros(200000)
     assert!(result.is_err(), "large NumPy allocation should exceed memory limit");
     let exc = result.unwrap_err();
     assert_eq!(exc.exc_type(), ExcType::MemoryError);
-    assert_eq!(
-        exc.message(),
-        Some("memory limit exceeded: 1613320 bytes > 100000 bytes")
+    let message = exc.message().expect("MemoryError should include a message");
+    let (used, limit) = parse_memory_limit_message(message);
+    assert_eq!(limit, 100_000);
+    assert!(
+        used >= 1_600_000,
+        "np.zeros(200000) should pre-check the requested f64 data allocation, got: {message}"
     );
+}
+
+/// Parses Monty's standard memory-limit error message into used and limit bytes.
+///
+/// Memory-limit tests often need to verify the stable resource contract while
+/// allowing small tracked-memory offsets from module initialization. This keeps
+/// those assertions focused on the limit semantics instead of incidental heap
+/// state before the checked operation.
+fn parse_memory_limit_message(message: &str) -> (usize, usize) {
+    let rest = message
+        .strip_prefix("memory limit exceeded: ")
+        .unwrap_or_else(|| panic!("unexpected memory error message: {message}"));
+    let (used, limit) = rest
+        .split_once(" bytes > ")
+        .unwrap_or_else(|| panic!("unexpected memory error format: {message}"));
+    let limit = limit
+        .strip_suffix(" bytes")
+        .unwrap_or_else(|| panic!("unexpected memory limit suffix: {message}"));
+
+    (
+        used.parse()
+            .unwrap_or_else(|_| panic!("invalid used byte count in memory error: {message}")),
+        limit
+            .parse()
+            .unwrap_or_else(|_| panic!("invalid limit byte count in memory error: {message}")),
+    )
 }
 
 #[test]
