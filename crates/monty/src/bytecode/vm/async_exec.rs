@@ -108,6 +108,27 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
             return Ok(AwaitResult::ValueReady(Value::Ref(list_id)));
         }
 
+        // Reject any external future that has already been awaited (directly or
+        // via another gather). Without this check, sibling gathers sharing a
+        // future would silently overwrite each other in `gather_waiters`,
+        // leaving the first gather permanently blocked on a CallId that has
+        // already been resolved or is registered against a different gather.
+        // This mirrors the existing `is_consumed` check in `await_external_future`
+        // so that direct double-await and gather-mediated double-await behave
+        // consistently. The dedup pass below ensures intra-gather duplicates
+        // (`gather(f, f)`) are not flagged: each unique CallId is only marked
+        // consumed once, so the first await of a freshly-created future passes
+        // even when it appears in multiple slots.
+        for item in &gather.get(self.heap).items {
+            if let GatherItem::ExternalFuture(call_id) = item
+                && self.scheduler.is_consumed(*call_id)
+            {
+                return Err(
+                    SimpleException::new_msg(ExcType::RuntimeError, "cannot reuse already awaited future").into(),
+                );
+            }
+        }
+
         // Set waiter and walk the items, deduplicating by identity so that the
         // same coroutine or external future passed multiple times runs once and
         // its result is fanned out to every gather slot. This matches CPython's

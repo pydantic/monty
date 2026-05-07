@@ -157,11 +157,6 @@ impl<T: ResourceTracker> VM<'_, T> {
             list.as_vec_mut().extend(copied_items);
         }
 
-        // Mark potential cycle after the mutable borrow ends
-        if has_refs {
-            this.heap.mark_potential_cycle();
-        }
-
         // Push list_ref back on the stack (don't drop it)
         let (list_ref, this) = list_ref_guard.into_parts();
         this.push(list_ref);

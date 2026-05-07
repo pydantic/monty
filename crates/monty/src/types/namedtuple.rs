@@ -29,6 +29,7 @@ use crate::{
     bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{ExcType, RunResult},
+    hash::HashValue,
     heap::{HeapId, HeapItem, HeapRead},
     intern::{Interns, StringId},
     resource::{ResourceError, ResourceTracker},
@@ -237,7 +238,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, NamedTuple> {
 
     /// Hashes by element only (not by class name), matching `Tuple::py_hash`
     /// so a `NamedTuple` and a `Tuple` with equal elements share the same hash.
-    fn py_hash(&self, _self_id: HeapId, vm: &mut VM<'h, impl ResourceTracker>) -> Result<Option<u64>, ResourceError> {
+    fn py_hash(&self, _self_id: HeapId, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<HashValue>> {
         let token = vm.heap.incr_recursion_depth()?;
         defer_drop!(token, vm);
         let len = self.get(vm.heap).len();
@@ -250,7 +251,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, NamedTuple> {
                 None => return Ok(None),
             }
         }
-        Ok(Some(hasher.finish()))
+        Ok(Some(HashValue::new(hasher.finish())))
     }
 
     fn py_bool(&self, vm: &mut VM<'h, impl ResourceTracker>) -> bool {

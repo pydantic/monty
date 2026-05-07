@@ -82,3 +82,26 @@ assert results == [7, 7], f'duplicate external future dedup: {results}'
 g = async_call('dup')
 results = await asyncio.gather(async_call('a'), g, async_call('b'), g)  # pyright: ignore
 assert results == ['a', 'dup', 'b', 'dup'], f'mixed external future dedup: {results}'
+
+
+# === Same external future shared across sibling gathers raises ===
+# Two concurrent helpers each await their own gather around the SAME external
+# future. Without rejection, the second gather's `register_gather_for_call`
+# would silently overwrite the first in the scheduler's waiters map, leaving
+# the first gather permanently blocked. We treat the second use as a reuse of
+# an already-awaited future, mirroring direct `await f; await f` behaviour.
+# CPython models the test fixture's `async_call` as `async def`, so it raises
+# `cannot reuse already awaited coroutine` at the same point.
+async def helper(future):
+    return await asyncio.gather(future)
+
+
+shared = async_call(99)
+try:
+    await asyncio.gather(helper(shared), helper(shared))  # pyright: ignore
+    assert False, 'should have raised RuntimeError'
+except RuntimeError as e:
+    assert str(e) in (
+        'cannot reuse already awaited future',  # Monty: ExternalFuture path
+        'cannot reuse already awaited coroutine',  # CPython: coroutine path
+    ), f'unexpected error: {e}'

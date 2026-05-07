@@ -12,15 +12,16 @@
 //! lazily initialized so programs that never call `json.loads()` pay zero cost.
 //!
 //! The cache lives on the [`VM`] and is scoped to a single execution run. It
-//! is cleaned up when the VM is dropped and its entries are registered as GC
-//! roots in [`VM::run_gc()`].
+//! is cleaned up when the VM is dropped; cached values stay alive across cycle
+//! collections because each `Value::Ref` keeps the entry's refcount above zero,
+//! and trial deletion treats non-zero refcount as proof of liveness.
 
 use std::iter;
 
 use ahash::RandomState;
 
 use crate::{
-    heap::{ContainsHeap, HeapData, HeapId, HeapReader},
+    heap::{ContainsHeap, HeapData, HeapReader},
     resource::{ResourceError, ResourceTracker},
     types::str::Str,
     value::Value,
@@ -57,7 +58,9 @@ type CacheEntry = Option<(u64, Box<str>, Value)>;
 ///   eligible string (2–64 bytes).
 /// - Persists across multiple `json.loads()` calls within the same run.
 /// - Cleaned up when the VM is dropped via [`drop_all`](Self::drop_all).
-/// - Cached values are reported as GC roots via [`gc_roots`](Self::gc_roots).
+/// - Cached values keep themselves alive via the refcount on each cached
+///   `Value::Ref`; the trial-deletion cycle collector treats any non-zero
+///   refcount as proof of liveness, so no explicit root walk is required.
 #[derive(Default)]
 pub(crate) struct JsonStringCache {
     inner: Option<CacheInner>,
@@ -104,17 +107,6 @@ impl JsonStringCache {
                 }
             }
         }
-    }
-
-    /// Yields the `HeapId` of every cached value so the GC treats them as roots.
-    ///
-    /// Without this, a GC cycle could free a heap string that the cache still
-    /// references, leading to a use-after-free on the next cache hit.
-    pub fn gc_roots(&self) -> impl Iterator<Item = HeapId> + '_ {
-        self.inner
-            .iter()
-            .flat_map(|inner| inner.entries.iter())
-            .filter_map(|entry| entry.as_ref().and_then(|(_, _, value)| value.ref_id()))
     }
 }
 

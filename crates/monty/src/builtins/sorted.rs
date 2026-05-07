@@ -1,7 +1,5 @@
 //! Implementation of the sorted() builtin function.
 
-use itertools::Itertools;
-
 use crate::{
     args::ArgValues,
     bytecode::VM,
@@ -9,7 +7,7 @@ use crate::{
     exception_private::{ExcType, RunResult, SimpleException},
     heap::{DropWithHeap, HeapData, HeapGuard},
     resource::ResourceTracker,
-    sorting::{apply_permutation, sort_indices},
+    sorting::sort_values,
     types::{List, MontyIter, PyTrait},
     value::Value,
 };
@@ -27,36 +25,7 @@ pub fn builtin_sorted(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) ->
     let mut items_guard = HeapGuard::new(items, vm);
     let (items, vm) = items_guard.as_parts_mut();
 
-    {
-        // Compute key values if a key function was provided, otherwise we'll sort by the items themselves
-        let mut keys_guard;
-        let (compare_values, vm) = if let Some(f) = key_fn {
-            let keys: Vec<Value> = Vec::with_capacity(items.len());
-            // Use a HeapGuard to ensure that if key function evaluation fails partway through,
-            // we clean up any keys that were successfully computed
-            keys_guard = HeapGuard::new(keys, vm);
-            let (keys, vm) = keys_guard.as_parts_mut();
-            items
-                .iter()
-                .map(|item| {
-                    let item = item.clone_with_heap(vm);
-                    vm.evaluate_function("sorted() key argument", f, ArgValues::One(item))
-                })
-                .process_results(|keys_iter| keys.extend(keys_iter))?;
-            keys_guard.as_parts()
-        } else {
-            (&*items, vm)
-        };
-
-        // Sort indices by comparing key values (or items themselves if no key)
-        let len = compare_values.len();
-        let mut indices: Vec<usize> = (0..len).collect();
-
-        sort_indices(&mut indices, compare_values, reverse, vm)?;
-
-        // Rearrange items in-place according to the sorted permutation
-        apply_permutation(items, &mut indices);
-    }
+    sort_values(items, key_fn.as_ref(), reverse, vm)?;
 
     let (items, vm) = items_guard.into_parts();
     let heap_id = vm.heap.allocate(HeapData::List(List::new(items)))?;

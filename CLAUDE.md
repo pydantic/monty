@@ -559,6 +559,11 @@ Heap-allocated values (`Value::Ref`) use manual reference counting. Key rules:
 
 Container types (`List`, `Tuple`, `Dict`) also have `clone_with_heap()` methods.
 
+### Cycle collection — Bacon–Rajan trial deletion
+
+Reference counting alone cannot reclaim cycles. Monty uses **Bacon–Rajan trial deletion**
+(`Heap::collect_cycles` in `crates/monty/src/heap.rs`).
+
 **Resource limits**: When resource limits (allocations, memory, time) are exceeded, execution terminates with a `ResourceError`. No guarantees are made about the state of the heap or reference counts after a resource limit is exceeded. The heap may contain orphaned objects with incorrect refcounts. This is acceptable because resource exhaustion is a terminal error - the execution context should be discarded.
 
 ## JavaScript Package (`monty-js`)

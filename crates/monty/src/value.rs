@@ -19,6 +19,7 @@ use crate::{
     builtins::Builtins,
     bytecode::{CallResult, VM},
     exception_private::{ExcType, RunError, RunResult, SimpleException},
+    hash::HashValue,
     heap::{ContainsHeap, DropWithHeap, Heap, HeapData, HeapGuard, HeapId, HeapReadOutput},
     intern::{BytesId, FunctionId, Interns, LongIntId, StaticStrings, StringId},
     modules::ModuleFunctions,
@@ -1509,44 +1510,26 @@ impl Value {
     ///
     /// For heap-allocated values (Ref variant), this computes the hash lazily
     /// on first use and caches it for subsequent calls.
-    pub fn py_hash(&self, vm: &mut VM<'_, impl ResourceTracker>) -> Result<Option<u64>, ResourceError> {
+    pub fn py_hash(&self, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<Option<HashValue>> {
         let mut hasher = DefaultHasher::new();
         match self {
-            // Hash just the actual string or bytes content for consistency with heap Str/Bytes
-            // hence we don't include the discriminant
-            Self::InternString(string_id) => {
-                let mut hasher = DefaultHasher::new();
-                vm.interns.get_str(*string_id).hash(&mut hasher);
-                return Ok(Some(hasher.finish()));
-            }
-            Self::InternBytes(bytes_id) => {
-                let mut hasher = DefaultHasher::new();
-                vm.interns.get_bytes(*bytes_id).hash(&mut hasher);
-                return Ok(Some(hasher.finish()));
-            }
+            Self::InternString(string_id) => return Ok(Some(vm.interns.str_hash(*string_id))),
+            Self::InternBytes(bytes_id) => return Ok(Some(vm.interns.bytes_hash(*bytes_id))),
+            Self::InternLongInt(long_int_id) => return Ok(Some(vm.interns.long_int_hash(*long_int_id))),
             // Bool and int hash directly as their value, and are equivalent
-            Self::Bool(b) => return Ok(Some((*b).into())),
-            Self::Int(i) => return Ok(Some(i.cast_unsigned())),
+            Self::Bool(b) => return Ok(Some(HashValue::new((*b).into()))),
+            Self::Int(i) => return Ok(Some(HashValue::new(i.cast_unsigned()))),
             Self::Float(f) => {
                 return {
                     if f.fract() == 0.0 && *f >= (i64::MIN as f64) && *f <= (i64::MAX as f64) {
                         // Hash floats that are mathematically integers the same as Ints (e.g., 1.0 hashes the same as 1)
                         #[expect(clippy::cast_possible_truncation)]
-                        Ok(Some((*f as i64).cast_unsigned()))
+                        Ok(Some(HashValue::new((*f as i64).cast_unsigned())))
                     } else {
                         // Hash the bit representation of the float
-                        Ok(Some(f.to_bits()))
+                        Ok(Some(HashValue::new(f.to_bits())))
                     }
                 };
-            }
-            // Hash BigInt consistently with LongInt (using sign and bytes for large values)
-            Self::InternLongInt(long_int_id) => {
-                let bi = vm.interns.get_long_int(*long_int_id);
-                let mut hasher = DefaultHasher::new();
-                let (sign, bytes) = bi.to_bytes_le();
-                sign.hash(&mut hasher);
-                bytes.hash(&mut hasher);
-                return Ok(Some(hasher.finish()));
             }
             // For heap-allocated values (includes Range and Exception), compute hash lazily and cache it
             Self::Ref(id) => return Heap::get_or_compute_hash(vm, *id),
@@ -1567,7 +1550,7 @@ impl Value {
             Self::Dereferenced => panic!("Cannot access Dereferenced object"),
         }
 
-        Ok(Some(hasher.finish()))
+        Ok(Some(HashValue::new(hasher.finish())))
     }
 
     /// TODO this doesn't have many tests!!! also doesn't cover bytes

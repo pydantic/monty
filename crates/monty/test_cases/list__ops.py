@@ -325,6 +325,40 @@ except IndexError:
     pass  # expected since last_char('') raises IndexError
 
 
+# === list.sort() reentrant mutation by key callback (issue #411) ===
+# CPython detaches the list during sort so reentrant access sees an empty
+# list. If the user re-populates the live list, sort raises ValueError after
+# restoring the detached (sorted) buffer.
+
+# Key callback observes empty list during sort
+xs1 = [3, 2, 1]
+
+
+def empty_key(value):
+    assert len(xs1) == 0
+    return value
+
+
+xs1.sort(key=empty_key)
+assert xs1 == [1, 2, 3], 'sort with key that observes empty list still produces sorted output'
+
+# Repopulating the list during sort must raise ValueError
+xs2 = [3, 2, 1]
+
+
+def repopulate_key(value):
+    xs2.append(99)
+    return value
+
+
+try:
+    xs2.sort(key=repopulate_key)
+    assert False, 'expected ValueError when key callback repopulates the list'
+except ValueError as exc:
+    assert str(exc) == 'list modified during sort', 'sort raises ValueError when list is modified'
+assert xs2 == [1, 2, 3], 'list is restored to sorted state after ValueError'
+
+
 # === List assignment (setitem) ===
 # Basic assignment
 lst = [1, 2, 3]
