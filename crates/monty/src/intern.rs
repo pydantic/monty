@@ -959,6 +959,12 @@ pub enum StaticStrings {
     /// `numpy.i0()` modified Bessel function helper.
     #[strum(serialize = "i0")]
     NpI0,
+    /// `numpy.base_repr()` integer base conversion helper.
+    #[strum(serialize = "base_repr")]
+    NpBaseRepr,
+    /// `numpy.binary_repr()` integer binary conversion helper.
+    #[strum(serialize = "binary_repr")]
+    NpBinaryRepr,
     /// `numpy.conj()` real-valued conjugate helper.
     #[strum(serialize = "conj")]
     NpConj,

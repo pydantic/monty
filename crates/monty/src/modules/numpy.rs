@@ -28,6 +28,7 @@
 //! - `numpy.bitwise_and`, `numpy.invert`, `numpy.left_shift`, `numpy.bitwise_count`
 //! - `numpy.packbits`, `numpy.unpackbits`
 //! - `numpy.i0`, `numpy.bartlett`, `numpy.blackman`, `numpy.hamming`, `numpy.hanning`, `numpy.kaiser`
+//! - `numpy.base_repr`, `numpy.binary_repr`
 //! - `numpy.diff(a)` — discrete differences
 //! - `numpy.round(a, decimals)`, `numpy.clip(a, a_min, a_max)`
 //!
@@ -77,6 +78,7 @@ use crate::{
     types::{
         List, Module, NdArray, PyTrait, allocate_tuple,
         ndarray::{NdArrayDtype, nan_last_cmp, ndarray_from_list, promote_dtype, promote_dtype_with_scalar},
+        str::allocate_string,
     },
     value::Value,
 };
@@ -364,6 +366,10 @@ pub(crate) enum NumpyFunctions {
     Kaiser,
     /// `numpy.i0(x)` — modified Bessel function of the first kind, order 0.
     I0,
+    /// `numpy.base_repr(number, base=2, padding=0)` — integer base conversion string.
+    BaseRepr,
+    /// `numpy.binary_repr(num, width=None)` — integer binary conversion string.
+    BinaryRepr,
     /// `numpy.conj(a)` — return the real-valued conjugate.
     Conj,
     /// `numpy.real(a)` — return the real component.
@@ -774,6 +780,8 @@ const NUMPY_FUNCTIONS: &[(StaticStrings, NumpyFunctions)] = &[
     (StaticStrings::NpHanning, NumpyFunctions::Hanning),
     (StaticStrings::NpKaiser, NumpyFunctions::Kaiser),
     (StaticStrings::NpI0, NumpyFunctions::I0),
+    (StaticStrings::NpBaseRepr, NumpyFunctions::BaseRepr),
+    (StaticStrings::NpBinaryRepr, NumpyFunctions::BinaryRepr),
     // Real-only aliases and introspection helpers
     (StaticStrings::NpConj, NumpyFunctions::Conj),
     (StaticStrings::NpConjugate, NumpyFunctions::Conj), // alias
@@ -1243,6 +1251,8 @@ pub(super) fn call(
         NumpyFunctions::I0 => {
             call_elementwise(vm, args, numpy_i0, "numpy.i0", Some(NdArrayDtype::Float64)).map(CallResult::Value)
         }
+        NumpyFunctions::BaseRepr => call_base_repr(vm, args).map(CallResult::Value),
+        NumpyFunctions::BinaryRepr => call_binary_repr(vm, args).map(CallResult::Value),
         NumpyFunctions::Conj => call_real_identity(vm, args, "numpy.conj").map(CallResult::Value),
         NumpyFunctions::Real => call_real_identity(vm, args, "numpy.real").map(CallResult::Value),
         NumpyFunctions::Imag => call_imag(vm, args).map(CallResult::Value),
@@ -4099,6 +4109,173 @@ fn kaiser_values(len: usize, beta: f64) -> Vec<f64> {
                 .collect()
         }
     }
+}
+
+/// `numpy.base_repr(number, base=2, padding=0)` — convert an integer to a base string.
+fn call_base_repr(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let pos = args.into_pos_only("numpy.base_repr", vm.heap)?;
+    defer_drop_mut!(pos, vm);
+    let number_val = pos
+        .next()
+        .ok_or_else(|| ExcType::type_error_at_least("numpy.base_repr", 1, 0))?;
+    defer_drop!(number_val, vm);
+    let number = value_to_i64_arg(number_val, "numpy.base_repr", "number")?;
+    let base = if let Some(base_val) = pos.next() {
+        defer_drop!(base_val, vm);
+        value_to_i64_arg(base_val, "numpy.base_repr", "base")?
+    } else {
+        2
+    };
+    let padding = if let Some(padding_val) = pos.next() {
+        defer_drop!(padding_val, vm);
+        value_to_i64_arg(padding_val, "numpy.base_repr", "padding")?
+    } else {
+        0
+    };
+    if let Some(extra) = pos.next() {
+        extra.drop_with_heap(vm);
+        return Err(ExcType::type_error_at_most("numpy.base_repr", 3, 4));
+    }
+    let result = format_base_repr(number, base, padding)?;
+    allocate_string(result, vm.heap)
+}
+
+/// `numpy.binary_repr(num, width=None)` — convert an integer to a binary string.
+fn call_binary_repr(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let (num_val, width_val) = args.get_one_two_args("numpy.binary_repr", vm.heap)?;
+    defer_drop!(num_val, vm);
+    let num = value_to_i64_arg(num_val, "numpy.binary_repr", "num")?;
+    let width = if let Some(width_val) = width_val {
+        defer_drop!(width_val, vm);
+        if matches!(width_val, Value::None) {
+            None
+        } else {
+            Some(value_to_i64_arg(width_val, "numpy.binary_repr", "width")?)
+        }
+    } else {
+        None
+    };
+    let result = format_binary_repr(num, width)?;
+    allocate_string(result, vm.heap)
+}
+
+/// Formats `base_repr`, including NumPy's base limits and padding behavior.
+fn format_base_repr(number: i64, base: i64, padding: i64) -> RunResult<String> {
+    let base = validate_base_repr_base(base)?;
+    let padding = nonnegative_padding(padding)?;
+    let magnitude = u128::from(number.unsigned_abs());
+    let digits = format_unsigned_base(magnitude, base);
+    let zero_count = if magnitude == 0 {
+        padding.saturating_sub(1)
+    } else {
+        padding
+    };
+    let zeros = "0".repeat(zero_count);
+    let sign = if number < 0 { "-" } else { "" };
+    Ok(format!("{sign}{zeros}{digits}"))
+}
+
+/// Formats `binary_repr`, including two's-complement output when width is supplied.
+fn format_binary_repr(num: i64, width: Option<i64>) -> RunResult<String> {
+    let magnitude_digits = format_unsigned_base(u128::from(num.unsigned_abs()), 2);
+    if let Some(width) = width {
+        let width_usize = binary_width(width)?;
+        let needed_width = if num < 0 {
+            magnitude_digits.len().saturating_add(1)
+        } else {
+            magnitude_digits.len()
+        };
+        if width_usize < needed_width {
+            return Err(SimpleException::new_msg(
+                ExcType::ValueError,
+                format!("Insufficient bit width={width} provided for binwidth={needed_width}"),
+            )
+            .into());
+        }
+        if num < 0 {
+            let value = twos_complement_value(num, width_usize)?;
+            Ok(left_pad_zeros(format_unsigned_base(value, 2), width_usize))
+        } else {
+            Ok(left_pad_zeros(magnitude_digits, width_usize))
+        }
+    } else if num < 0 {
+        Ok(format!("-{magnitude_digits}"))
+    } else {
+        Ok(magnitude_digits)
+    }
+}
+
+/// Validates the base accepted by `base_repr`.
+fn validate_base_repr_base(base: i64) -> RunResult<u32> {
+    if base < 2 {
+        Err(SimpleException::new_msg(ExcType::ValueError, "Bases less than 2 not handled in base_repr.").into())
+    } else if base > 36 {
+        Err(SimpleException::new_msg(ExcType::ValueError, "Bases greater than 36 not handled in base_repr.").into())
+    } else {
+        u32::try_from(base).map_err(|_| SimpleException::new_msg(ExcType::ValueError, "invalid base").into())
+    }
+}
+
+/// Converts NumPy's `base_repr` padding argument to a repeat count.
+fn nonnegative_padding(padding: i64) -> RunResult<usize> {
+    if padding <= 0 {
+        Ok(0)
+    } else {
+        usize::try_from(padding)
+            .map_err(|_| SimpleException::new_msg(ExcType::ValueError, "base_repr() padding is too large").into())
+    }
+}
+
+/// Converts and validates a `binary_repr` width.
+fn binary_width(width: i64) -> RunResult<usize> {
+    if width < 0 {
+        Err(SimpleException::new_msg(
+            ExcType::ValueError,
+            format!("Insufficient bit width={width} provided for binwidth=1"),
+        )
+        .into())
+    } else {
+        usize::try_from(width)
+            .map_err(|_| SimpleException::new_msg(ExcType::ValueError, "binary_repr() width is too large").into())
+    }
+}
+
+/// Computes a negative integer's two's-complement value for a requested width.
+fn twos_complement_value(num: i64, width: usize) -> RunResult<u128> {
+    if width > 127 {
+        Err(SimpleException::new_msg(ExcType::ValueError, "binary_repr() width is too large").into())
+    } else {
+        let modulus = 1_u128
+            .checked_shl(u32::try_from(width).expect("width is bounded"))
+            .ok_or_else(|| SimpleException::new_msg(ExcType::ValueError, "binary_repr() width is too large"))?;
+        Ok(modulus - u128::from(num.unsigned_abs()))
+    }
+}
+
+/// Left-pads a string with zeros up to `width`.
+fn left_pad_zeros(mut value: String, width: usize) -> String {
+    if value.len() < width {
+        let mut padded = "0".repeat(width - value.len());
+        padded.push_str(&value);
+        value = padded;
+    }
+    value
+}
+
+/// Formats an unsigned integer in bases 2 through 36.
+fn format_unsigned_base(mut value: u128, base: u32) -> String {
+    const DIGITS: &[u8; 36] = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+    if value == 0 {
+        return "0".to_owned();
+    }
+    let base = u128::from(base);
+    let mut out = Vec::new();
+    while value > 0 {
+        let digit = usize::try_from(value % base).expect("digit is less than base");
+        out.push(char::from(DIGITS[digit]));
+        value /= base;
+    }
+    out.iter().rev().collect()
 }
 
 /// Shared implementation for binary NumPy functions that return two results.

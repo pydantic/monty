@@ -198,6 +198,19 @@ assert packed.tolist() == [178], 'packbits byte'
 assert np.unpackbits(packed).tolist() == [1, 0, 1, 1, 0, 0, 1, 0], 'unpackbits roundtrip'
 
 
+# === integer representation helpers ===
+assert np.base_repr(10) == '1010', 'base_repr default base'
+assert np.base_repr(-10) == '-1010', 'base_repr negative'
+assert np.base_repr(10, 16) == 'A', 'base_repr hex'
+assert np.base_repr(10, 2, 5) == '000001010', 'base_repr padding'
+assert np.base_repr(0, 2, 5) == '00000', 'base_repr zero padding'
+
+assert np.binary_repr(3) == '11', 'binary_repr positive'
+assert np.binary_repr(-3) == '-11', 'binary_repr negative no width'
+assert np.binary_repr(3, 5) == '00011', 'binary_repr positive width'
+assert np.binary_repr(-3, 5) == '11101', 'binary_repr negative width'
+
+
 # === real-only aliases and introspection helpers ===
 real_values = np.array([-2, 0, 3])
 assert np.conj(-5) == -5, 'conj scalar keeps real value'
