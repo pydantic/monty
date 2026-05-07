@@ -1508,6 +1508,9 @@ pub enum StaticStrings {
     /// `numpy.vander()` function
     #[strum(serialize = "vander")]
     NpVander,
+    /// `numpy.poly()` polynomial roots-to-coefficients helper.
+    #[strum(serialize = "poly")]
+    NpPoly,
     /// `numpy.polyadd()` polynomial addition helper.
     #[strum(serialize = "polyadd")]
     NpPolyadd,
@@ -1517,6 +1520,9 @@ pub enum StaticStrings {
     /// `numpy.polymul()` polynomial multiplication helper.
     #[strum(serialize = "polymul")]
     NpPolymul,
+    /// `numpy.polydiv()` polynomial division helper.
+    #[strum(serialize = "polydiv")]
+    NpPolydiv,
     /// `numpy.polyint()` polynomial integration helper.
     #[strum(serialize = "polyint")]
     NpPolyint,

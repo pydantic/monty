@@ -711,12 +711,16 @@ pub(crate) enum NumpyFunctions {
     Trapezoid,
     /// `numpy.vander(x, N=None, increasing=False)` — Vandermonde matrix.
     Vander,
+    /// `numpy.poly(seq_of_zeros)` — construct coefficients from real roots.
+    Poly,
     /// `numpy.polyadd(a, b)` — add polynomial coefficient arrays.
     Polyadd,
     /// `numpy.polysub(a, b)` — subtract polynomial coefficient arrays.
     Polysub,
     /// `numpy.polymul(a, b)` — multiply polynomial coefficient arrays.
     Polymul,
+    /// `numpy.polydiv(u, v)` — divide polynomial coefficient arrays.
+    Polydiv,
     /// `numpy.polyint(p, m=1)` — integrate polynomial coefficients.
     Polyint,
     /// `numpy.polyder(p, m=1)` — differentiate polynomial coefficients.
@@ -1200,9 +1204,11 @@ const NUMPY_FUNCTIONS: &[(StaticStrings, NumpyFunctions)] = &[
     (StaticStrings::NpKron, NumpyFunctions::Kron),
     (StaticStrings::NpTrapezoid, NumpyFunctions::Trapezoid),
     (StaticStrings::NpVander, NumpyFunctions::Vander),
+    (StaticStrings::NpPoly, NumpyFunctions::Poly),
     (StaticStrings::NpPolyadd, NumpyFunctions::Polyadd),
     (StaticStrings::NpPolysub, NumpyFunctions::Polysub),
     (StaticStrings::NpPolymul, NumpyFunctions::Polymul),
+    (StaticStrings::NpPolydiv, NumpyFunctions::Polydiv),
     (StaticStrings::NpPolyint, NumpyFunctions::Polyint),
     (StaticStrings::NpPolyder, NumpyFunctions::Polyder),
     (StaticStrings::NpPolyval, NumpyFunctions::Polyval),
@@ -1778,6 +1784,7 @@ pub(super) fn call(
         NumpyFunctions::Kron => call_kron(vm, args).map(CallResult::Value),
         NumpyFunctions::Trapezoid => call_trapezoid(vm, args).map(CallResult::Value),
         NumpyFunctions::Vander => call_vander(vm, args).map(CallResult::Value),
+        NumpyFunctions::Poly => call_poly(vm, args).map(CallResult::Value),
         NumpyFunctions::Polyadd => {
             call_poly_binary(vm, args, "numpy.polyadd", |lhs, rhs| lhs + rhs).map(CallResult::Value)
         }
@@ -1785,6 +1792,7 @@ pub(super) fn call(
             call_poly_binary(vm, args, "numpy.polysub", |lhs, rhs| lhs - rhs).map(CallResult::Value)
         }
         NumpyFunctions::Polymul => call_polymul(vm, args).map(CallResult::Value),
+        NumpyFunctions::Polydiv => call_polydiv(vm, args).map(CallResult::Value),
         NumpyFunctions::Polyint => call_polyint(vm, args).map(CallResult::Value),
         NumpyFunctions::Polyder => call_polyder(vm, args).map(CallResult::Value),
         NumpyFunctions::Polyval => call_polyval(vm, args).map(CallResult::Value),
@@ -9413,6 +9421,24 @@ fn pow_usize(base: f64, exponent: usize) -> f64 {
     result
 }
 
+/// `numpy.poly(seq_of_zeros)` — build descending-power coefficients from real roots.
+fn call_poly(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let roots_val = args.get_one_arg("numpy.poly", vm.heap)?;
+    defer_drop!(roots_val, vm);
+    let roots = polynomial_1d(roots_val, "numpy.poly", vm)?;
+    check_array_alloc_size(roots.len() + 1, vm.heap.tracker())?;
+    let mut coeffs = vec![1.0];
+    for &root in roots.data() {
+        let mut next = vec![0.0; coeffs.len() + 1];
+        for (index, &coeff) in coeffs.iter().enumerate() {
+            next[index] += coeff;
+            next[index + 1] -= coeff * root;
+        }
+        coeffs = next;
+    }
+    allocate_polynomial_array(coeffs, NdArrayDtype::Float64, vm)
+}
+
 /// `numpy.polyadd()` / `numpy.polysub()` — combine descending-power coefficient arrays.
 fn call_poly_binary(
     vm: &mut VM<'_, impl ResourceTracker>,
@@ -9464,6 +9490,45 @@ fn call_polymul(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunRe
         promote_dtype(lhs.dtype(), rhs.dtype()),
         vm,
     )
+}
+
+/// `numpy.polydiv(u, v)` — divide descending-power coefficient arrays.
+fn call_polydiv(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let (dividend_val, divisor_val) = args.get_two_args("numpy.polydiv", vm.heap)?;
+    defer_drop!(dividend_val, vm);
+    defer_drop!(divisor_val, vm);
+    let dividend = polynomial_1d(dividend_val, "numpy.polydiv", vm)?;
+    let divisor = polynomial_1d(divisor_val, "numpy.polydiv", vm)?;
+    let dividend_data = trim_leading_zero_coeffs(dividend.data());
+    let divisor_data = trim_leading_zero_coeffs(divisor.data());
+    if is_zero_polynomial(&divisor_data) {
+        Err(SimpleException::new_msg(ExcType::ZeroDivisionError, "polynomial division by zero").into())
+    } else if dividend_data.len() < divisor_data.len() {
+        let quotient = allocate_polynomial_array(vec![0.0], NdArrayDtype::Float64, vm)?;
+        let remainder = allocate_polynomial_array(dividend_data, NdArrayDtype::Float64, vm)?;
+        Ok(allocate_tuple(smallvec::smallvec![quotient, remainder], vm.heap)?)
+    } else {
+        let quotient_len = dividend_data.len() - divisor_data.len() + 1;
+        check_array_alloc_size(quotient_len, vm.heap.tracker())?;
+        check_array_alloc_size(divisor_data.len().saturating_sub(1), vm.heap.tracker())?;
+        let mut remainder_work = dividend_data;
+        let mut quotient = vec![0.0; quotient_len];
+        for index in 0..quotient_len {
+            let coeff = remainder_work[index] / divisor_data[0];
+            quotient[index] = coeff;
+            for (divisor_index, &divisor_coeff) in divisor_data.iter().enumerate() {
+                remainder_work[index + divisor_index] -= coeff * divisor_coeff;
+            }
+        }
+        let remainder_start = quotient_len;
+        let quotient = allocate_polynomial_array(trim_leading_zero_coeffs(&quotient), NdArrayDtype::Float64, vm)?;
+        let remainder = allocate_polynomial_array(
+            trim_leading_zero_coeffs(&remainder_work[remainder_start..]),
+            NdArrayDtype::Float64,
+            vm,
+        )?;
+        Ok(allocate_tuple(smallvec::smallvec![quotient, remainder], vm.heap)?)
+    }
 }
 
 /// `numpy.polyint(p, m=1)` — integrate coefficients repeatedly with zero constants.
@@ -9585,6 +9650,11 @@ fn trim_leading_zero_coeffs(data: &[f64]) -> Vec<f64> {
         .position(|value| !matches!(value.classify(), FpCategory::Zero))
         .unwrap_or_else(|| data.len().saturating_sub(1));
     data[first_non_zero..].to_vec()
+}
+
+/// Returns true when every coefficient is exactly positive or negative zero.
+fn is_zero_polynomial(data: &[f64]) -> bool {
+    data.iter().all(|value| matches!(value.classify(), FpCategory::Zero))
 }
 
 /// Evaluates descending-power polynomial coefficients for one numeric x value.

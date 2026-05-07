@@ -304,6 +304,13 @@ assert np.vander(np.array([1, 2, 3]), 3, True).tolist() == [
 assert np.polyadd([1, 2, 3], [10, 20]).tolist() == [1, 12, 23], 'polyadd aligns coefficients'
 assert np.polysub([1, 2, 3], [10, 20]).tolist() == [1, -8, -17], 'polysub aligns coefficients'
 assert np.polymul([1, 2], [3, 4]).tolist() == [3, 10, 8], 'polymul convolution'
+assert np.poly([1, 2, 3]).tolist() == [1.0, -6.0, 11.0, -6.0], 'poly roots to coefficients'
+polydiv_exact_q, polydiv_exact_r = np.polydiv([1, 0, -1], [1, -1])
+assert polydiv_exact_q.tolist() == [1.0, 1.0], 'polydiv exact quotient'
+assert polydiv_exact_r.tolist() == [0.0], 'polydiv exact remainder'
+polydiv_rem_q, polydiv_rem_r = np.polydiv([1, 2, 3], [1, 1])
+assert polydiv_rem_q.tolist() == [1.0, 1.0], 'polydiv quotient with remainder'
+assert polydiv_rem_r.tolist() == [2.0], 'polydiv nonzero remainder'
 assert np.polyval([1, 0, -1], 2) == 3, 'polyval scalar'
 assert np.polyval([1, 0, -1], [0, 1, 2]).tolist() == [-1, 0, 3], 'polyval array'
 assert np.polyder([1, 2, 3]).tolist() == [2, 2], 'polyder first derivative'
