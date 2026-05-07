@@ -166,47 +166,6 @@ impl HeapData {
         )
     }
 
-    /// Returns whether this heap data currently contains any heap references (`Value::Ref`).
-    ///
-    /// Used during allocation to determine if this data could create reference cycles.
-    /// When true, `mark_potential_cycle()` should be called to enable GC.
-    ///
-    /// Note: This is separate from `is_gc_tracked()` - a container may be GC-tracked
-    /// (capable of holding refs) but not currently contain any refs.
-    #[inline]
-    pub(crate) fn has_refs(&self) -> bool {
-        match self {
-            Self::List(list) => list.contains_refs(),
-            Self::Tuple(tuple) => tuple.contains_refs(),
-            Self::NamedTuple(nt) => nt.contains_refs(),
-            Self::Dict(dict) => dict.has_refs(),
-            Self::DictKeysView(_) | Self::DictItemsView(_) | Self::DictValuesView(_) => true,
-            Self::Set(set) => set.has_refs(),
-            Self::FrozenSet(fset) => fset.has_refs(),
-            // Closures always have refs when they have captured cells (HeapIds)
-            Self::Closure(closure) => {
-                !closure.cells.is_empty() || closure.defaults.iter().any(|v| matches!(v, Value::Ref(_)))
-            }
-            Self::FunctionDefaults(fd) => fd.defaults.iter().any(|v| matches!(v, Value::Ref(_))),
-            Self::Cell(cell) => matches!(&cell.0, Value::Ref(_)),
-            Self::Dataclass(dc) => dc.has_refs(),
-            Self::Iter(iter) => iter.has_refs(),
-            Self::Module(m) => m.has_refs(),
-            // Coroutines have refs from namespace values (params, cell/free vars)
-            Self::Coroutine(coro) => coro.namespace.iter().any(|v| matches!(v, Value::Ref(_))),
-            // GatherFutures have refs from coroutine items and results
-            Self::GatherFuture(gather) => {
-                gather.items.iter().any(|item| matches!(item, GatherItem::Coroutine(_)))
-                    || gather
-                        .results
-                        .iter()
-                        .any(|r| r.as_ref().is_some_and(|v| matches!(v, Value::Ref(_))))
-            }
-            // Leaf types cannot have refs
-            _ => false,
-        }
-    }
-
     /// Returns true if this heap data is a coroutine.
     #[inline]
     pub fn is_coroutine(&self) -> bool {

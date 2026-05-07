@@ -88,14 +88,6 @@ impl SetStorage {
         self.entries.is_empty()
     }
 
-    /// Returns whether this set contains any heap references (`Value::Ref`).
-    ///
-    /// Used during allocation to determine if this container could create cycles.
-    #[inline]
-    fn has_refs(&self) -> bool {
-        self.entries.iter().any(|e| matches!(e.value, Value::Ref(_)))
-    }
-
     /// Adds an element to the set, transferring ownership.
     ///
     /// Returns `Ok(true)` if the element was added (not already present),
@@ -522,15 +514,6 @@ impl Set {
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
-    }
-
-    /// Returns whether this set contains any heap references (`Value::Ref`).
-    ///
-    /// Used during allocation to determine if this container could create cycles.
-    #[inline]
-    #[must_use]
-    pub fn has_refs(&self) -> bool {
-        self.0.has_refs()
     }
 
     /// Adds an element to the set, transferring ownership.
@@ -1138,15 +1121,6 @@ impl FrozenSet {
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.storage.is_empty()
-    }
-
-    /// Returns whether this frozenset contains any heap references (`Value::Ref`).
-    ///
-    /// Used during allocation to determine if this container could create cycles.
-    #[inline]
-    #[must_use]
-    pub fn has_refs(&self) -> bool {
-        self.storage.has_refs()
     }
 
     /// Returns the internal storage.

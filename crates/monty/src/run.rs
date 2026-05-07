@@ -555,10 +555,12 @@ pub struct RefCountOutput {
     pub counts: ahash::AHashMap<String, usize>,
     pub unique_refs: usize,
     pub heap_count: usize,
-    /// Number of GC-tracked allocations since the last garbage collection.
+    /// Number of GC-tracked allocations since the last cycle collection.
     ///
-    /// If GC ran during execution, this will be lower than the total number of
-    /// allocations. Compare this against expected allocation count to verify GC ran.
+    /// If the collector ran during execution, this will be much lower than
+    /// the total number of GC-tracked allocations performed. Compare against
+    /// the configured `gc_interval` to verify GC fired at the expected
+    /// cadence.
     pub allocations_since_gc: u32,
 }
 

@@ -1699,34 +1699,23 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
         self.frames.clear();
     }
 
-    /// Collects every heap root currently reachable from the VM and scheduler.
+    /// Runs the trial-deletion cycle collector.
     ///
-    /// The active VM only owns the current task's stack. Async scheduler state
-    /// stores additional reachable values for suspended tasks, completed task
-    /// results, gather bookkeeping, and resolved futures, so those roots must be
-    /// included here as well.
-    fn gc_roots(&self) -> Vec<HeapId> {
-        let mut roots: Vec<HeapId> = self.stack.iter().filter_map(Value::ref_id).collect();
-        roots.extend(self.globals.iter().filter_map(Value::ref_id));
-        roots.extend(self.exception_stack.iter().filter_map(Value::ref_id));
-        roots.extend(self.json_string_cache.gc_roots());
-        self.scheduler.extend_gc_roots(&mut roots);
-        roots
-    }
-
-    /// Runs garbage collection with the VM's complete root set.
+    /// Roots are not enumerated by the VM: every value held in the stack,
+    /// globals, exception stack, scheduler tasks, JSON-string cache, etc.
+    /// already keeps its referent alive via refcount, so the collector treats
+    /// any non-zero refcount as proof of liveness. See
+    /// [`Heap::collect_cycles`].
     ///
     /// Returns the number of unreachable heap entries freed during the sweep.
     fn run_gc(&mut self) -> usize {
-        let roots = self.gc_roots();
-        self.heap.collect_garbage(roots)
+        self.heap.collect_cycles()
     }
 
-    /// Forces a GC cycle using the production root walk and returns the freed
-    /// count.
+    /// Forces a GC cycle and returns the freed count.
     ///
     /// This is only compiled for tests so integration tests can reproduce GC
-    /// bugs deterministically without reimplementing the root-set logic.
+    /// bugs deterministically.
     #[cfg(feature = "test-hooks")]
     pub(crate) fn __force_gc_for_tests(&mut self) -> usize {
         self.run_gc()
