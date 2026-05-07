@@ -87,7 +87,10 @@ use crate::{
     resource::{ResourceError, ResourceTracker, check_array_alloc_size},
     types::{
         Dict, List, LongInt, Module, MontyIter, NamedTuple, NdArray, PyTrait, Type, allocate_tuple,
-        ndarray::{NdArrayDtype, nan_last_cmp, ndarray_from_list, promote_dtype, promote_dtype_with_scalar},
+        ndarray::{
+            NdArrayDtype, broadcast_array_data, broadcast_pair_data, broadcast_shape, nan_last_cmp, ndarray_from_list,
+            promote_dtype,
+        },
         str::{Str, allocate_string},
     },
     value::Value,
@@ -211,7 +214,7 @@ pub(crate) enum NumpyFunctions {
     Isfinite,
     /// `numpy.array_equal(a, b)` — true if arrays are element-wise equal.
     ArrayEqual,
-    /// `numpy.array_equiv(a, b)` — true if arrays are equal after scalar broadcasting.
+    /// `numpy.array_equiv(a, b)` — true if arrays are equal after broadcasting.
     ArrayEquiv,
     /// `numpy.count_nonzero(a)` — count of non-zero elements.
     CountNonzero,
@@ -308,6 +311,14 @@ pub(crate) enum NumpyFunctions {
     Size,
     /// `numpy.ndim(a)` — number of dimensions.
     Ndim,
+    /// `numpy.broadcast_shapes(*shapes)` — common broadcast shape.
+    BroadcastShapes,
+    /// `numpy.broadcast_to(array, shape)` — broadcast an array into a shape.
+    BroadcastTo,
+    /// `numpy.broadcast_arrays(*arrays)` — broadcast arrays to a shared shape.
+    BroadcastArrays,
+    /// `numpy.broadcast(*arrays)` — materialized iterable subset of NumPy broadcast.
+    Broadcast,
 
     // --- Phase 3: Inverse trig, hyperbolic, remaining math ---
     /// `numpy.arcsin(a)` — element-wise inverse sine.
@@ -1061,6 +1072,10 @@ const NUMPY_FUNCTIONS: &[(StaticStrings, NumpyFunctions)] = &[
     (StaticStrings::NpShape, NumpyFunctions::Shape),
     (StaticStrings::NpSize, NumpyFunctions::Size),
     (StaticStrings::NpNdim, NumpyFunctions::Ndim),
+    (StaticStrings::NpBroadcastShapes, NumpyFunctions::BroadcastShapes),
+    (StaticStrings::NpBroadcastTo, NumpyFunctions::BroadcastTo),
+    (StaticStrings::NpBroadcastArrays, NumpyFunctions::BroadcastArrays),
+    (StaticStrings::NpBroadcast, NumpyFunctions::Broadcast),
     // Phase 3: Inverse trig, hyperbolic, remaining math
     (StaticStrings::NpArcsin, NumpyFunctions::Arcsin),
     (StaticStrings::Asin, NumpyFunctions::Arcsin), // alias
@@ -1497,6 +1512,10 @@ pub(super) fn call(
         NumpyFunctions::Shape => call_shape(vm, args).map(CallResult::Value),
         NumpyFunctions::Size => call_size(vm, args).map(CallResult::Value),
         NumpyFunctions::Ndim => call_ndim(vm, args).map(CallResult::Value),
+        NumpyFunctions::BroadcastShapes => call_broadcast_shapes(vm, args).map(CallResult::Value),
+        NumpyFunctions::BroadcastTo => call_broadcast_to(vm, args).map(CallResult::Value),
+        NumpyFunctions::BroadcastArrays => call_broadcast_arrays(vm, args).map(CallResult::Value),
+        NumpyFunctions::Broadcast => call_broadcast(vm, args).map(CallResult::Value),
         // Phase 3: Inverse trig, hyperbolic, remaining math
         NumpyFunctions::Arcsin => {
             call_elementwise(vm, args, f64::asin, "numpy.arcsin", Some(NdArrayDtype::Float64)).map(CallResult::Value)
@@ -2924,19 +2943,19 @@ fn call_where(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResu
         extra.drop_with_heap(vm);
     }
 
-    let Value::Ref(cond_id) = cond_val else {
-        return Err(ExcType::type_error("numpy.where() condition must be an ndarray"));
-    };
-    let HeapData::NdArray(cond_arr) = vm.heap.get(*cond_id) else {
-        return Err(ExcType::type_error("numpy.where() condition must be an ndarray"));
-    };
-
-    let cond_data: Vec<f64> = cond_arr.data().to_vec();
-    let cond_shape = cond_arr.shape().to_vec();
-    let len = cond_data.len();
-
-    let x_data = extract_array_or_scalar(x_val, len, vm)?;
-    let y_data = extract_array_or_scalar(y_val, len, vm)?;
+    let cond_arr = ndarray_or_scalar_from_value(cond_val, "numpy.where", vm)?;
+    let x_arr = ndarray_or_scalar_from_value(x_val, "numpy.where", vm)?;
+    let y_arr = ndarray_or_scalar_from_value(y_val, "numpy.where", vm)?;
+    let shape = broadcast_shape(&[cond_arr.shape(), x_arr.shape(), y_arr.shape()], "numpy.where")?;
+    let cond_data = broadcast_array_data(
+        cond_arr.data(),
+        cond_arr.shape(),
+        &shape,
+        "numpy.where",
+        vm.heap.tracker(),
+    )?;
+    let x_data = broadcast_array_data(x_arr.data(), x_arr.shape(), &shape, "numpy.where", vm.heap.tracker())?;
+    let y_data = broadcast_array_data(y_arr.data(), y_arr.shape(), &shape, "numpy.where", vm.heap.tracker())?;
 
     let data: Vec<f64> = cond_data
         .iter()
@@ -2944,52 +2963,10 @@ fn call_where(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResu
         .map(|(&c, (&x, &y))| if c == 0.0 { y } else { x })
         .collect();
 
-    let has_float = x_data.iter().chain(y_data.iter()).any(|v| v.fract() != 0.0);
-    let dtype = if has_float {
-        NdArrayDtype::Float64
-    } else {
-        NdArrayDtype::Int64
-    };
+    let dtype = promote_dtype(x_arr.dtype(), y_arr.dtype());
 
-    let new_arr = NdArray::new(data, cond_shape, dtype);
+    let new_arr = NdArray::new(data, shape, dtype);
     Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(new_arr))?))
-}
-
-/// Extracts data from a value that is either an ndarray (must match `len`) or a scalar
-/// (broadcast to `len`).
-///
-/// When the value is an ndarray, its length is validated against `len` so that the
-/// caller never builds an output with mismatched shape/data — matching NumPy's
-/// broadcasting error on incompatible shapes.
-fn extract_array_or_scalar(val: &Value, len: usize, vm: &VM<'_, impl ResourceTracker>) -> RunResult<Vec<f64>> {
-    match val {
-        Value::Ref(heap_id) => {
-            if let HeapData::NdArray(arr) = vm.heap.get(*heap_id) {
-                if arr.data().len() != len {
-                    return Err(SimpleException::new_msg(
-                        ExcType::ValueError,
-                        format!(
-                            "operands could not be broadcast together with shapes ({},) ({},)",
-                            len,
-                            arr.data().len()
-                        ),
-                    )
-                    .into());
-                }
-                Ok(arr.data().to_vec())
-            } else {
-                Err(ExcType::type_error(
-                    "numpy.where() arguments must be ndarrays or scalars",
-                ))
-            }
-        }
-        Value::Int(n) => Ok(vec![*n as f64; len]),
-        Value::Float(f) => Ok(vec![*f; len]),
-        Value::Bool(b) => Ok(vec![if *b { 1.0 } else { 0.0 }; len]),
-        _ => Err(ExcType::type_error(
-            "numpy.where() arguments must be ndarrays or scalars",
-        )),
-    }
 }
 
 /// Helper for element-wise binary functions like `numpy.maximum(a, b)`.
@@ -2999,43 +2976,7 @@ fn call_pairwise(
     f: fn(f64, f64) -> f64,
     name: &str,
 ) -> RunResult<Value> {
-    let (a_val, b_val) = args.get_two_args(name, vm.heap)?;
-    defer_drop!(a_val, vm);
-
-    let Value::Ref(a_id) = a_val else {
-        b_val.drop_with_heap(vm);
-        return Err(ExcType::type_error(format!("{name}() requires ndarray arguments")));
-    };
-    let Value::Ref(b_id) = &b_val else {
-        b_val.drop_with_heap(vm);
-        return Err(ExcType::type_error(format!("{name}() requires ndarray arguments")));
-    };
-    let b_id = *b_id;
-
-    let HeapData::NdArray(a_arr) = vm.heap.get(*a_id) else {
-        b_val.drop_with_heap(vm);
-        return Err(ExcType::type_error(format!("{name}() requires ndarray arguments")));
-    };
-    let a_data: Vec<f64> = a_arr.data().to_vec();
-    let a_shape = a_arr.shape().to_vec();
-    let a_dtype = a_arr.dtype();
-
-    let HeapData::NdArray(b_arr) = vm.heap.get(b_id) else {
-        b_val.drop_with_heap(vm);
-        return Err(ExcType::type_error(format!("{name}() requires ndarray arguments")));
-    };
-
-    if a_shape != b_arr.shape() {
-        b_val.drop_with_heap(vm);
-        return Err(SimpleException::new_msg(ExcType::ValueError, "operands could not be broadcast together").into());
-    }
-
-    let data: Vec<f64> = a_data.iter().zip(b_arr.data().iter()).map(|(&a, &b)| f(a, b)).collect();
-    let result_dtype = promote_dtype(a_dtype, b_arr.dtype());
-    b_val.drop_with_heap(vm);
-
-    let new_arr = NdArray::new(data, a_shape, result_dtype);
-    Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(new_arr))?))
+    call_numeric_binop(vm, args, f, name, BinopResult::Promoted)
 }
 
 /// Result dtype policy for NumPy binary ufunc-style helpers.
@@ -3051,13 +2992,11 @@ enum BinopResult {
 
 /// Shared implementation for common binary NumPy ufuncs.
 ///
-/// Supports ndarray, list, and scalar inputs. Full NumPy broadcasting is out of
-/// scope for Monty's current ndarray model, but scalar broadcasting and equal
-/// shaped arrays cover the common LLM-generated snippets these wrappers target.
+/// Supports ndarray, list, and scalar inputs with NumPy-style shape broadcasting.
 fn call_numeric_binop(
     vm: &mut VM<'_, impl ResourceTracker>,
     args: ArgValues,
-    f: fn(f64, f64) -> f64,
+    f: impl Fn(f64, f64) -> f64,
     name: &str,
     result: BinopResult,
 ) -> RunResult<Value> {
@@ -3065,41 +3004,24 @@ fn call_numeric_binop(
     defer_drop!(a_val, vm);
     defer_drop!(b_val, vm);
 
-    let a_info = extract_ndarray_info(a_val, name, vm);
-    let b_info = extract_ndarray_info(b_val, name, vm);
+    let a_arr = ndarray_or_scalar_from_value(a_val, name, vm)?;
+    let b_arr = ndarray_or_scalar_from_value(b_val, name, vm)?;
+    let dtype = binop_dtype(result, a_arr.dtype(), b_arr.dtype());
 
-    match (a_info, b_info) {
-        (Ok((a_data, a_shape, a_dtype)), Ok((b_data, b_shape, b_dtype))) => {
-            if a_shape != b_shape {
-                return Err(
-                    SimpleException::new_msg(ExcType::ValueError, "operands could not be broadcast together").into(),
-                );
-            }
-            let data: Vec<f64> = a_data.iter().zip(b_data.iter()).map(|(&a, &b)| f(a, b)).collect();
-            let dtype = binop_dtype(result, a_dtype, b_dtype);
-            let arr = NdArray::new(data, a_shape, dtype);
-            Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(arr))?))
-        }
-        (Ok((a_data, a_shape, a_dtype)), Err(_)) => {
-            let (scalar, scalar_dtype) = numeric_scalar_info(b_val, name, vm)?;
-            let data: Vec<f64> = a_data.iter().map(|&a| f(a, scalar)).collect();
-            let dtype = binop_dtype(result, a_dtype, scalar_dtype);
-            let arr = NdArray::new(data, a_shape, dtype);
-            Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(arr))?))
-        }
-        (Err(_), Ok((b_data, b_shape, b_dtype))) => {
-            let (scalar, scalar_dtype) = numeric_scalar_info(a_val, name, vm)?;
-            let data: Vec<f64> = b_data.iter().map(|&b| f(scalar, b)).collect();
-            let dtype = binop_dtype(result, scalar_dtype, b_dtype);
-            let arr = NdArray::new(data, b_shape, dtype);
-            Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(arr))?))
-        }
-        (Err(_), Err(_)) => {
-            let (a, a_dtype) = numeric_scalar_info(a_val, name, vm)?;
-            let (b, b_dtype) = numeric_scalar_info(b_val, name, vm)?;
-            let dtype = binop_dtype(result, a_dtype, b_dtype);
-            Ok(scalar_from_f64(f(a, b), dtype))
-        }
+    if a_arr.shape().is_empty() && b_arr.shape().is_empty() {
+        Ok(scalar_from_f64(f(a_arr.data()[0], b_arr.data()[0]), dtype))
+    } else {
+        let (left, right, shape) = broadcast_pair_data(
+            a_arr.data(),
+            a_arr.shape(),
+            b_arr.data(),
+            b_arr.shape(),
+            name,
+            vm.heap.tracker(),
+        )?;
+        let data: Vec<f64> = left.iter().zip(right.iter()).map(|(&a, &b)| f(a, b)).collect();
+        let arr = NdArray::new(data, shape, dtype);
+        Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(arr))?))
     }
 }
 
@@ -3483,49 +3405,9 @@ fn call_matmul(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunRes
 
 /// `numpy.power(a, b)` — element-wise power (like `a ** b`).
 ///
-/// Supports array-array, array-scalar, and scalar-array combinations.
+/// Supports scalar, list, and ndarray inputs with NumPy-style broadcasting.
 fn call_power(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
-    let (a_val, b_val) = args.get_two_args("numpy.power", vm.heap)?;
-    defer_drop!(a_val, vm);
-    defer_drop!(b_val, vm);
-
-    let a_info = extract_ndarray_info(a_val, "numpy.power", vm);
-    let b_info = extract_ndarray_info(b_val, "numpy.power", vm);
-
-    match (a_info, b_info) {
-        // Both arrays
-        (Ok((a_data, a_shape, a_dtype)), Ok((b_data, b_shape, b_dtype))) => {
-            if a_shape != b_shape {
-                return Err(
-                    SimpleException::new_msg(ExcType::ValueError, "operands could not be broadcast together").into(),
-                );
-            }
-            let data: Vec<f64> = a_data.iter().zip(b_data.iter()).map(|(&a, &b)| a.powf(b)).collect();
-            let result_dtype = promote_dtype(a_dtype, b_dtype);
-            let arr = NdArray::new(data, a_shape, result_dtype);
-            Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(arr))?))
-        }
-        // First is array, second is scalar
-        (Ok((a_data, a_shape, a_dtype)), Err(_)) => {
-            let scalar = to_f64(b_val, vm)?;
-            let is_float = matches!(b_val, Value::Float(_));
-            let data: Vec<f64> = a_data.iter().map(|&a| a.powf(scalar)).collect();
-            let dtype = promote_dtype_with_scalar(a_dtype, is_float);
-            let arr = NdArray::new(data, a_shape, dtype);
-            Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(arr))?))
-        }
-        // First is scalar, second is array
-        (Err(_), Ok((b_data, b_shape, b_dtype))) => {
-            let scalar = to_f64(a_val, vm)?;
-            let is_float = matches!(a_val, Value::Float(_));
-            let data: Vec<f64> = b_data.iter().map(|&b| scalar.powf(b)).collect();
-            let dtype = promote_dtype_with_scalar(b_dtype, is_float);
-            let arr = NdArray::new(data, b_shape, dtype);
-            Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(arr))?))
-        }
-        // Neither is array
-        (Err(e), _) => Err(e),
-    }
+    call_numeric_binop(vm, args, f64::powf, "numpy.power", BinopResult::Promoted)
 }
 
 /// `numpy.diff(a)` — first-order discrete difference: `a[1:] - a[:-1]`.
@@ -3671,52 +3553,25 @@ fn call_array_equal(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> R
     Ok(Value::Bool(equal))
 }
 
-/// Numeric input normalized for `numpy.array_equiv`.
-enum ArrayEquivInput {
-    /// Array-like input with copied data and shape.
-    Array { data: Vec<f64>, shape: Vec<usize> },
-    /// Numeric scalar input.
-    Scalar(f64),
-}
-
-/// `numpy.array_equiv(a, b)` — equality with scalar broadcasting.
+/// `numpy.array_equiv(a, b)` — equality with NumPy-style broadcasting.
 fn call_array_equiv(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     let (a_val, b_val) = args.get_two_args("numpy.array_equiv", vm.heap)?;
     defer_drop!(a_val, vm);
     defer_drop!(b_val, vm);
-    let a = array_equiv_input(a_val, "numpy.array_equiv", vm)?;
-    let b = array_equiv_input(b_val, "numpy.array_equiv", vm)?;
-    Ok(Value::Bool(array_equiv_inputs(&a, &b)))
-}
-
-/// Converts a value into the scalar-or-array form used by `array_equiv`.
-fn array_equiv_input(value: &Value, name: &str, vm: &VM<'_, impl ResourceTracker>) -> RunResult<ArrayEquivInput> {
-    if let Ok((data, shape, _)) = extract_ndarray_info(value, name, vm) {
-        Ok(ArrayEquivInput::Array { data, shape })
-    } else {
-        let (value, _) = numeric_scalar_info(value, name, vm)?;
-        Ok(ArrayEquivInput::Scalar(value))
-    }
-}
-
-/// Compares `array_equiv` inputs with scalar broadcasting.
-fn array_equiv_inputs(a: &ArrayEquivInput, b: &ArrayEquivInput) -> bool {
-    match (a, b) {
-        (
-            ArrayEquivInput::Array {
-                data: a_data,
-                shape: a_shape,
-            },
-            ArrayEquivInput::Array {
-                data: b_data,
-                shape: b_shape,
-            },
-        ) => a_shape == b_shape && a_data == b_data,
-        (ArrayEquivInput::Array { data, .. }, ArrayEquivInput::Scalar(value))
-        | (ArrayEquivInput::Scalar(value), ArrayEquivInput::Array { data, .. }) => {
-            data.iter().all(|item| f64_exact_equal(*item, *value))
-        }
-        (ArrayEquivInput::Scalar(a), ArrayEquivInput::Scalar(b)) => f64_exact_equal(*a, *b),
+    let a = ndarray_or_scalar_from_value(a_val, "numpy.array_equiv", vm)?;
+    let b = ndarray_or_scalar_from_value(b_val, "numpy.array_equiv", vm)?;
+    match broadcast_pair_data(
+        a.data(),
+        a.shape(),
+        b.data(),
+        b.shape(),
+        "numpy.array_equiv",
+        vm.heap.tracker(),
+    ) {
+        Ok((left, right, _)) => Ok(Value::Bool(
+            left.iter().zip(right.iter()).all(|(&a, &b)| f64_exact_equal(a, b)),
+        )),
+        Err(_) => Ok(Value::Bool(false)),
     }
 }
 
@@ -5546,6 +5401,164 @@ fn call_ndim(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResul
     let shape = array_like_shape(arg, "numpy.ndim", vm)?;
     #[expect(clippy::cast_possible_wrap, reason = "ndim is always small")]
     Ok(Value::Int(shape.len() as i64))
+}
+
+/// `numpy.broadcast_shapes(*shapes)` — return the common NumPy broadcast shape.
+fn call_broadcast_shapes(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let pos = args.into_pos_only("numpy.broadcast_shapes", vm.heap)?;
+    defer_drop_mut!(pos, vm);
+
+    let mut shapes = Vec::new();
+    for shape_value in pos.by_ref() {
+        defer_drop!(shape_value, vm);
+        shapes.push(extract_shape_from_value(shape_value, "numpy.broadcast_shapes", vm)?);
+    }
+
+    let shape_refs: Vec<&[usize]> = shapes.iter().map(Vec::as_slice).collect();
+    let shape = broadcast_shape(&shape_refs, "numpy.broadcast_shapes").map_err(|error| {
+        if shapes.len() == 2 {
+            broadcast_shapes_value_error(&shapes)
+        } else {
+            error
+        }
+    })?;
+    shape_to_tuple(&shape, vm.heap)
+}
+
+/// `numpy.broadcast_to(array, shape)` — materialize an array in a broadcast shape.
+fn call_broadcast_to(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let (array_value, shape_value) = args.get_two_args("numpy.broadcast_to", vm.heap)?;
+    defer_drop!(array_value, vm);
+    defer_drop!(shape_value, vm);
+
+    let array = ndarray_or_scalar_from_value(array_value, "numpy.broadcast_to", vm)?;
+    let shape = extract_shape_from_value(shape_value, "numpy.broadcast_to", vm)?;
+    let data = broadcast_array_data(
+        array.data(),
+        array.shape(),
+        &shape,
+        "numpy.broadcast_to",
+        vm.heap.tracker(),
+    )?;
+    let result = NdArray::new(data, shape, array.dtype());
+    Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(result))?))
+}
+
+/// `numpy.broadcast_arrays(*arrays)` — return arrays materialized in a shared shape.
+fn call_broadcast_arrays(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let (arrays, shape) = broadcast_positional_arrays(vm, args, "numpy.broadcast_arrays")?;
+    let total = checked_shape_product(&shape, "numpy.broadcast_arrays")?;
+    check_array_alloc_size(total.saturating_mul(arrays.len()), vm.heap.tracker())?;
+
+    let mut values = Vec::with_capacity(arrays.len());
+    for array in arrays {
+        let data = broadcast_array_data(
+            array.data(),
+            array.shape(),
+            &shape,
+            "numpy.broadcast_arrays",
+            vm.heap.tracker(),
+        )?;
+        let result = NdArray::new(data, shape.clone(), array.dtype());
+        values.push(Value::Ref(vm.heap.allocate(HeapData::NdArray(result))?));
+    }
+
+    let values: SmallVec<[Value; 3]> = values.into_iter().collect();
+    Ok(allocate_tuple(values, vm.heap)?)
+}
+
+/// `numpy.broadcast(*arrays)` — materialized iterable subset of NumPy's broadcast object.
+///
+/// Real NumPy returns a `numpy.broadcast` object with shape metadata and lazy
+/// iteration. Monty does not yet have a dedicated broadcast object type, so this
+/// sandbox-safe subset returns the same iteration payload as a list of tuples.
+fn call_broadcast(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let (arrays, shape) = broadcast_positional_arrays(vm, args, "numpy.broadcast")?;
+    let total = checked_shape_product(&shape, "numpy.broadcast")?;
+    check_array_alloc_size(total.saturating_mul(arrays.len()), vm.heap.tracker())?;
+
+    let mut materialized = Vec::with_capacity(arrays.len());
+    for array in &arrays {
+        materialized.push(broadcast_array_data(
+            array.data(),
+            array.shape(),
+            &shape,
+            "numpy.broadcast",
+            vm.heap.tracker(),
+        )?);
+    }
+
+    let mut rows = Vec::with_capacity(total);
+    for index in 0..total {
+        let mut items = SmallVec::new();
+        for (array, data) in arrays.iter().zip(materialized.iter()) {
+            items.push(scalar_from_f64(data[index], array.dtype()));
+        }
+        rows.push(allocate_tuple(items, vm.heap)?);
+    }
+
+    Ok(Value::Ref(vm.heap.allocate(HeapData::List(List::new(rows)))?))
+}
+
+/// Converts a shape into a Python tuple of integers.
+fn shape_to_tuple(shape: &[usize], heap: &Heap<impl ResourceTracker>) -> RunResult<Value> {
+    let mut values = SmallVec::new();
+    for &dimension in shape {
+        values.push(Value::Int(usize_to_i64(dimension)?));
+    }
+    Ok(allocate_tuple(values, heap)?)
+}
+
+/// Parses positional array-like inputs and computes their common broadcast shape.
+fn broadcast_positional_arrays(
+    vm: &mut VM<'_, impl ResourceTracker>,
+    args: ArgValues,
+    name: &str,
+) -> RunResult<(Vec<NdArray>, Vec<usize>)> {
+    let pos = args.into_pos_only(name, vm.heap)?;
+    defer_drop_mut!(pos, vm);
+
+    let mut arrays = Vec::new();
+    for value in pos.by_ref() {
+        defer_drop!(value, vm);
+        arrays.push(ndarray_or_scalar_from_value(value, name, vm)?);
+    }
+
+    let shape_refs: Vec<&[usize]> = arrays.iter().map(NdArray::shape).collect();
+    let shape = broadcast_shape(&shape_refs, name)?;
+    Ok((arrays, shape))
+}
+
+/// Builds NumPy's detailed public `broadcast_shapes()` mismatch message.
+fn broadcast_shapes_value_error(shapes: &[Vec<usize>]) -> RunError {
+    SimpleException::new_msg(
+        ExcType::ValueError,
+        format!(
+            "shape mismatch: objects cannot be broadcast to a single shape.  Mismatch is between arg 0 with shape {} and arg 1 with shape {}.",
+            format_public_shape(&shapes[0]),
+            format_public_shape(&shapes[1])
+        ),
+    )
+    .into()
+}
+
+/// Formats a shape using Python tuple display spacing.
+fn format_public_shape(shape: &[usize]) -> String {
+    match shape {
+        [] => "()".to_string(),
+        [dim] => format!("({dim},)"),
+        _ => {
+            let mut formatted = String::from("(");
+            for (index, dim) in shape.iter().enumerate() {
+                if index > 0 {
+                    formatted.push_str(", ");
+                }
+                formatted.push_str(&dim.to_string());
+            }
+            formatted.push(')');
+            formatted
+        }
+    }
 }
 
 /// Returns the shape for ndarray/list inputs and the scalar shape for numbers.
@@ -7380,41 +7393,26 @@ fn call_ldexp(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResu
     defer_drop!(x_val, vm);
     defer_drop!(exp_val, vm);
 
-    let x_info = extract_ndarray_info(x_val, "numpy.ldexp", vm);
-    let exp_info = integer_array_info(exp_val, "numpy.ldexp", vm);
-
-    match (x_info, exp_info) {
-        (Ok((x_data, x_shape, _)), Ok((exp_data, exp_shape))) => {
-            if x_shape != exp_shape {
-                return Err(
-                    SimpleException::new_msg(ExcType::ValueError, "operands could not be broadcast together").into(),
-                );
-            }
-            let data: Vec<f64> = x_data
-                .iter()
-                .zip(exp_data.iter())
-                .map(|(&x, &exp)| numpy_ldexp(x, exp))
-                .collect();
-            let arr = NdArray::new(data, x_shape, NdArrayDtype::Float64);
-            Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(arr))?))
-        }
-        (Ok((x_data, x_shape, _)), Err(_)) => {
-            let exp = integer_scalar_info(exp_val, "numpy.ldexp")?;
-            let data: Vec<f64> = x_data.iter().map(|&x| numpy_ldexp(x, i64_to_f64(exp))).collect();
-            let arr = NdArray::new(data, x_shape, NdArrayDtype::Float64);
-            Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(arr))?))
-        }
-        (Err(_), Ok((exp_data, exp_shape))) => {
-            let (x, _) = numeric_scalar_info(x_val, "numpy.ldexp", vm)?;
-            let data: Vec<f64> = exp_data.iter().map(|&exp| numpy_ldexp(x, exp)).collect();
-            let arr = NdArray::new(data, exp_shape, NdArrayDtype::Float64);
-            Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(arr))?))
-        }
-        (Err(_), Err(_)) => {
-            let (x, _) = numeric_scalar_info(x_val, "numpy.ldexp", vm)?;
-            let exp = integer_scalar_info(exp_val, "numpy.ldexp")?;
-            Ok(Value::Float(numpy_ldexp(x, i64_to_f64(exp))))
-        }
+    let x_arr = ndarray_or_scalar_from_value(x_val, "numpy.ldexp", vm)?;
+    let exp_arr = integer_ndarray_or_scalar_from_value(exp_val, "numpy.ldexp", vm)?;
+    if x_arr.shape().is_empty() && exp_arr.shape().is_empty() {
+        Ok(Value::Float(numpy_ldexp(x_arr.data()[0], exp_arr.data()[0])))
+    } else {
+        let (x_data, exp_data, shape) = broadcast_pair_data(
+            x_arr.data(),
+            x_arr.shape(),
+            exp_arr.data(),
+            exp_arr.shape(),
+            "numpy.ldexp",
+            vm.heap.tracker(),
+        )?;
+        let data: Vec<f64> = x_data
+            .iter()
+            .zip(exp_data.iter())
+            .map(|(&x, &exp)| numpy_ldexp(x, exp))
+            .collect();
+        let arr = NdArray::new(data, shape, NdArrayDtype::Float64);
+        Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(arr))?))
     }
 }
 
@@ -7433,41 +7431,26 @@ fn call_integer_binop(
     defer_drop!(a_val, vm);
     defer_drop!(b_val, vm);
 
-    let a_info = integer_array_info(a_val, name, vm);
-    let b_info = integer_array_info(b_val, name, vm);
-
-    match (a_info, b_info) {
-        (Ok((a_data, a_shape)), Ok((b_data, b_shape))) => {
-            if a_shape != b_shape {
-                return Err(
-                    SimpleException::new_msg(ExcType::ValueError, "operands could not be broadcast together").into(),
-                );
-            }
-            let data: Vec<f64> = a_data
-                .iter()
-                .zip(b_data.iter())
-                .map(|(&a, &b)| i64_to_f64(f(f64_to_i64(a), f64_to_i64(b))))
-                .collect();
-            let arr = NdArray::new(data, a_shape, NdArrayDtype::Int64);
-            Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(arr))?))
-        }
-        (Ok((a_data, a_shape)), Err(_)) => {
-            let scalar = integer_scalar_info(b_val, name)?;
-            let data: Vec<f64> = a_data.iter().map(|&a| i64_to_f64(f(f64_to_i64(a), scalar))).collect();
-            let arr = NdArray::new(data, a_shape, NdArrayDtype::Int64);
-            Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(arr))?))
-        }
-        (Err(_), Ok((b_data, b_shape))) => {
-            let scalar = integer_scalar_info(a_val, name)?;
-            let data: Vec<f64> = b_data.iter().map(|&b| i64_to_f64(f(scalar, f64_to_i64(b)))).collect();
-            let arr = NdArray::new(data, b_shape, NdArrayDtype::Int64);
-            Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(arr))?))
-        }
-        (Err(_), Err(_)) => {
-            let a = integer_scalar_info(a_val, name)?;
-            let b = integer_scalar_info(b_val, name)?;
-            Ok(Value::Int(f(a, b)))
-        }
+    let a_arr = integer_ndarray_or_scalar_from_value(a_val, name, vm)?;
+    let b_arr = integer_ndarray_or_scalar_from_value(b_val, name, vm)?;
+    if a_arr.shape().is_empty() && b_arr.shape().is_empty() {
+        Ok(Value::Int(f(f64_to_i64(a_arr.data()[0]), f64_to_i64(b_arr.data()[0]))))
+    } else {
+        let (left, right, shape) = broadcast_pair_data(
+            a_arr.data(),
+            a_arr.shape(),
+            b_arr.data(),
+            b_arr.shape(),
+            name,
+            vm.heap.tracker(),
+        )?;
+        let data: Vec<f64> = left
+            .iter()
+            .zip(right.iter())
+            .map(|(&a, &b)| i64_to_f64(f(f64_to_i64(a), f64_to_i64(b))))
+            .collect();
+        let arr = NdArray::new(data, shape, NdArrayDtype::Int64);
+        Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(arr))?))
     }
 }
 
@@ -7500,51 +7483,30 @@ fn call_bitwise_binop(
     defer_drop!(a_val, vm);
     defer_drop!(b_val, vm);
 
-    let a_info = integer_array_info_with_dtype(a_val, name, vm);
-    let b_info = integer_array_info_with_dtype(b_val, name, vm);
-
-    match (a_info, b_info) {
-        (Ok((a_data, a_shape, a_dtype)), Ok((b_data, b_shape, b_dtype))) => {
-            if a_shape != b_shape {
-                return Err(
-                    SimpleException::new_msg(ExcType::ValueError, "operands could not be broadcast together").into(),
-                );
-            }
-            let dtype = bitwise_binop_dtype(op, a_dtype, b_dtype);
-            let data = a_data
-                .iter()
-                .zip(b_data.iter())
-                .map(|(&a, &b)| i64_to_f64(apply_integer_bitwise_op(op, f64_to_i64(a), f64_to_i64(b))))
-                .collect();
-            let arr = NdArray::new(data, a_shape, dtype);
-            Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(arr))?))
-        }
-        (Ok((a_data, a_shape, a_dtype)), Err(_)) => {
-            let (scalar, scalar_dtype) = integer_scalar_info_with_dtype(b_val, name)?;
-            let dtype = bitwise_binop_dtype(op, a_dtype, scalar_dtype);
-            let data = a_data
-                .iter()
-                .map(|&a| i64_to_f64(apply_integer_bitwise_op(op, f64_to_i64(a), scalar)))
-                .collect();
-            let arr = NdArray::new(data, a_shape, dtype);
-            Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(arr))?))
-        }
-        (Err(_), Ok((b_data, b_shape, b_dtype))) => {
-            let (scalar, scalar_dtype) = integer_scalar_info_with_dtype(a_val, name)?;
-            let dtype = bitwise_binop_dtype(op, scalar_dtype, b_dtype);
-            let data = b_data
-                .iter()
-                .map(|&b| i64_to_f64(apply_integer_bitwise_op(op, scalar, f64_to_i64(b))))
-                .collect();
-            let arr = NdArray::new(data, b_shape, dtype);
-            Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(arr))?))
-        }
-        (Err(_), Err(_)) => {
-            let (a, a_dtype) = integer_scalar_info_with_dtype(a_val, name)?;
-            let (b, b_dtype) = integer_scalar_info_with_dtype(b_val, name)?;
-            let dtype = bitwise_binop_dtype(op, a_dtype, b_dtype);
-            Ok(scalar_from_integer_result(apply_integer_bitwise_op(op, a, b), dtype))
-        }
+    let a_arr = integer_ndarray_or_scalar_from_value(a_val, name, vm)?;
+    let b_arr = integer_ndarray_or_scalar_from_value(b_val, name, vm)?;
+    let dtype = bitwise_binop_dtype(op, a_arr.dtype(), b_arr.dtype());
+    if a_arr.shape().is_empty() && b_arr.shape().is_empty() {
+        Ok(scalar_from_integer_result(
+            apply_integer_bitwise_op(op, f64_to_i64(a_arr.data()[0]), f64_to_i64(b_arr.data()[0])),
+            dtype,
+        ))
+    } else {
+        let (left, right, shape) = broadcast_pair_data(
+            a_arr.data(),
+            a_arr.shape(),
+            b_arr.data(),
+            b_arr.shape(),
+            name,
+            vm.heap.tracker(),
+        )?;
+        let data = left
+            .iter()
+            .zip(right.iter())
+            .map(|(&a, &b)| i64_to_f64(apply_integer_bitwise_op(op, f64_to_i64(a), f64_to_i64(b))))
+            .collect();
+        let arr = NdArray::new(data, shape, dtype);
+        Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(arr))?))
     }
 }
 
@@ -8020,63 +7982,26 @@ fn call_numeric_tuple_binop(
     defer_drop!(a_val, vm);
     defer_drop!(b_val, vm);
 
-    let a_info = extract_ndarray_info(a_val, name, vm);
-    let b_info = extract_ndarray_info(b_val, name, vm);
+    let a_arr = ndarray_or_scalar_from_value(a_val, name, vm)?;
+    let b_arr = ndarray_or_scalar_from_value(b_val, name, vm)?;
+    let first_dtype = binop_dtype(first_result, a_arr.dtype(), b_arr.dtype());
+    let second_dtype = binop_dtype(second_result, a_arr.dtype(), b_arr.dtype());
 
-    match (a_info, b_info) {
-        (Ok((a_data, a_shape, a_dtype)), Ok((b_data, b_shape, b_dtype))) => {
-            if a_shape != b_shape {
-                return Err(
-                    SimpleException::new_msg(ExcType::ValueError, "operands could not be broadcast together").into(),
-                );
-            }
-            let (first_data, second_data): (Vec<f64>, Vec<f64>) =
-                a_data.iter().zip(b_data.iter()).map(|(&a, &b)| f(a, b)).unzip();
-            tuple_from_arrays(
-                vm,
-                first_data,
-                second_data,
-                a_shape,
-                binop_dtype(first_result, a_dtype, b_dtype),
-                binop_dtype(second_result, a_dtype, b_dtype),
-            )
-        }
-        (Ok((a_data, a_shape, a_dtype)), Err(_)) => {
-            let (scalar, scalar_dtype) = numeric_scalar_info(b_val, name, vm)?;
-            let (first_data, second_data): (Vec<f64>, Vec<f64>) = a_data.iter().map(|&a| f(a, scalar)).unzip();
-            tuple_from_arrays(
-                vm,
-                first_data,
-                second_data,
-                a_shape,
-                binop_dtype(first_result, a_dtype, scalar_dtype),
-                binop_dtype(second_result, a_dtype, scalar_dtype),
-            )
-        }
-        (Err(_), Ok((b_data, b_shape, b_dtype))) => {
-            let (scalar, scalar_dtype) = numeric_scalar_info(a_val, name, vm)?;
-            let (first_data, second_data): (Vec<f64>, Vec<f64>) = b_data.iter().map(|&b| f(scalar, b)).unzip();
-            tuple_from_arrays(
-                vm,
-                first_data,
-                second_data,
-                b_shape,
-                binop_dtype(first_result, scalar_dtype, b_dtype),
-                binop_dtype(second_result, scalar_dtype, b_dtype),
-            )
-        }
-        (Err(_), Err(_)) => {
-            let (a, a_dtype) = numeric_scalar_info(a_val, name, vm)?;
-            let (b, b_dtype) = numeric_scalar_info(b_val, name, vm)?;
-            let (first, second) = f(a, b);
-            tuple_from_scalars(
-                first,
-                second,
-                binop_dtype(first_result, a_dtype, b_dtype),
-                binop_dtype(second_result, a_dtype, b_dtype),
-                vm,
-            )
-        }
+    if a_arr.shape().is_empty() && b_arr.shape().is_empty() {
+        let (first, second) = f(a_arr.data()[0], b_arr.data()[0]);
+        tuple_from_scalars(first, second, first_dtype, second_dtype, vm)
+    } else {
+        let (left, right, shape) = broadcast_pair_data(
+            a_arr.data(),
+            a_arr.shape(),
+            b_arr.data(),
+            b_arr.shape(),
+            name,
+            vm.heap.tracker(),
+        )?;
+        let (first_data, second_data): (Vec<f64>, Vec<f64>) =
+            left.iter().zip(right.iter()).map(|(&a, &b)| f(a, b)).unzip();
+        tuple_from_arrays(vm, first_data, second_data, shape, first_dtype, second_dtype)
     }
 }
 
@@ -8124,6 +8049,23 @@ fn integer_scalar_info_with_dtype(value: &Value, name: &str) -> RunResult<(i64, 
         Value::Int(n) => Ok((*n, NdArrayDtype::Int64)),
         Value::Bool(b) => Ok((i64::from(*b), NdArrayDtype::Bool)),
         _ => Err(integer_ufunc_type_error(name)),
+    }
+}
+
+/// Converts an integer/boolean scalar, list, or ndarray into an integer ndarray.
+///
+/// Scalar values become zero-dimensional arrays so integer ufuncs can use the
+/// same broadcasting path as floating-point ufuncs while still rejecting floats.
+fn integer_ndarray_or_scalar_from_value(
+    value: &Value,
+    name: &str,
+    vm: &VM<'_, impl ResourceTracker>,
+) -> RunResult<NdArray> {
+    if let Ok((data, shape, dtype)) = integer_array_info_with_dtype(value, name, vm) {
+        Ok(NdArray::new(data, shape, dtype))
+    } else {
+        let (value, dtype) = integer_scalar_info_with_dtype(value, name)?;
+        Ok(NdArray::new(vec![i64_to_f64(value)], Vec::new(), dtype))
     }
 }
 
@@ -8930,27 +8872,22 @@ fn call_nancumop(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues, is_sum:
 
 // --- Phase 5: Logical and testing ---
 
-/// Generic logical binary operation on two arrays → Bool result.
+/// Generic logical binary operation on broadcast-compatible inputs.
 fn call_logical_binop(
     vm: &mut VM<'_, impl ResourceTracker>,
     args: ArgValues,
     op: fn(bool, bool) -> bool,
     name: &str,
 ) -> RunResult<Value> {
-    let (a_val, b_val) = args.get_two_args(name, vm.heap)?;
-    defer_drop!(a_val, vm);
-    defer_drop!(b_val, vm);
-    let a = ndarray_from_value(a_val, name, vm)?;
-    let b = ndarray_from_value(b_val, name, vm)?;
-    let data: Vec<f64> = a
-        .data()
-        .iter()
-        .zip(b.data().iter())
-        .map(|(&x, &y)| if op(x != 0.0, y != 0.0) { 1.0 } else { 0.0 })
-        .collect();
-    let len = data.len();
-    let result = NdArray::new(data, vec![len], NdArrayDtype::Bool);
-    Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(result))?))
+    call_numeric_binop(
+        vm,
+        args,
+        |a, b| {
+            if op(a != 0.0, b != 0.0) { 1.0 } else { 0.0 }
+        },
+        name,
+        BinopResult::Bool,
+    )
 }
 
 /// `numpy.logical_not(a)` — element-wise logical NOT.
@@ -8997,12 +8934,19 @@ fn call_allclose(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunR
     for extra in pos {
         extra.drop_with_heap(vm);
     }
-    let a = ndarray_from_value(a_val, "numpy.allclose", vm)?;
-    let b = ndarray_from_value(b_val, "numpy.allclose", vm)?;
-    let close = a
-        .data()
+    let a = ndarray_or_scalar_from_value(a_val, "numpy.allclose", vm)?;
+    let b = ndarray_or_scalar_from_value(b_val, "numpy.allclose", vm)?;
+    let (left, right, _) = broadcast_pair_data(
+        a.data(),
+        a.shape(),
+        b.data(),
+        b.shape(),
+        "numpy.allclose",
+        vm.heap.tracker(),
+    )?;
+    let close = left
         .iter()
-        .zip(b.data().iter())
+        .zip(right.iter())
         .all(|(&x, &y)| (x - y).abs() <= atol + rtol * y.abs());
     Ok(Value::Bool(close))
 }
@@ -9040,23 +8984,33 @@ fn call_isclose(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunRe
     for extra in pos {
         extra.drop_with_heap(vm);
     }
-    let a = ndarray_from_value(a_val, "numpy.isclose", vm)?;
-    let b = ndarray_from_value(b_val, "numpy.isclose", vm)?;
-    let data: Vec<f64> = a
-        .data()
-        .iter()
-        .zip(b.data().iter())
-        .map(|(&x, &y)| {
-            if (x - y).abs() <= atol + rtol * y.abs() {
-                1.0
-            } else {
-                0.0
-            }
-        })
-        .collect();
-    let len = data.len();
-    let result = NdArray::new(data, vec![len], NdArrayDtype::Bool);
-    Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(result))?))
+    let a = ndarray_or_scalar_from_value(a_val, "numpy.isclose", vm)?;
+    let b = ndarray_or_scalar_from_value(b_val, "numpy.isclose", vm)?;
+    let (left, right, shape) = broadcast_pair_data(
+        a.data(),
+        a.shape(),
+        b.data(),
+        b.shape(),
+        "numpy.isclose",
+        vm.heap.tracker(),
+    )?;
+    if shape.is_empty() {
+        Ok(Value::Bool((left[0] - right[0]).abs() <= atol + rtol * right[0].abs()))
+    } else {
+        let data: Vec<f64> = left
+            .iter()
+            .zip(right.iter())
+            .map(|(&x, &y)| {
+                if (x - y).abs() <= atol + rtol * y.abs() {
+                    1.0
+                } else {
+                    0.0
+                }
+            })
+            .collect();
+        let result = NdArray::new(data, shape, NdArrayDtype::Bool);
+        Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(result))?))
+    }
 }
 
 /// `numpy.isin(element, test_elements)` — test membership.

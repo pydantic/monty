@@ -12,7 +12,7 @@
 //! # Supported operations
 //!
 //! - Element-wise arithmetic: `+`, `-`, `*`, `/`, `//`, `%`, `**`, unary `-`
-//! - Scalar broadcasting: `arr + 5`, `arr * 2.0`
+//! - NumPy-style broadcasting: `arr + 5`, `matrix + vector`, singleton dimensions
 //! - Comparisons: `>`, `<`, `==`, `>=`, `<=`, `!=` (return boolean arrays)
 //! - Boolean indexing: `arr[arr > 3]`
 //! - Integer indexing: `arr[0]`, `arr[1][2]` for 2D
@@ -137,6 +137,160 @@ impl NdArray {
     }
 }
 
+/// Computes the shared broadcast shape for NumPy-compatible array operands.
+///
+/// Shapes are aligned from the right. Each aligned dimension is compatible when
+/// the dimensions are equal or either side is `1`; otherwise the operands cannot
+/// be broadcast. A zero dimension can broadcast with `1`, preserving NumPy's
+/// empty-result behavior for shapes such as `(0,)` and `(1,)`.
+pub(crate) fn broadcast_shape(shapes: &[&[usize]], _name: &str) -> RunResult<Vec<usize>> {
+    let ndim = shapes.iter().map(|shape| shape.len()).max().unwrap_or(0);
+    let mut result = vec![1; ndim];
+    for shape in shapes {
+        let offset = ndim - shape.len();
+        for (axis, &dim) in shape.iter().enumerate() {
+            let result_dim = &mut result[offset + axis];
+            if *result_dim == 1 {
+                *result_dim = dim;
+            } else if dim != 1 && dim != *result_dim {
+                return Err(SimpleException::new_msg(ExcType::ValueError, broadcast_error_message(shapes)).into());
+            }
+        }
+    }
+    Ok(result)
+}
+
+/// Materializes an array's data in a target broadcast shape.
+///
+/// NumPy represents most broadcasts as views, but Monty's ndarray stores
+/// contiguous owned data. This helper therefore expands singleton dimensions
+/// into an owned `Vec<f64>` while checking the projected allocation against the
+/// active resource limits before reserving memory.
+pub(crate) fn broadcast_array_data(
+    data: &[f64],
+    from_shape: &[usize],
+    to_shape: &[usize],
+    name: &str,
+    tracker: &impl ResourceTracker,
+) -> RunResult<Vec<f64>> {
+    let actual_shape = broadcast_shape(&[from_shape, to_shape], name)?;
+    if actual_shape != to_shape {
+        return Err(
+            SimpleException::new_msg(ExcType::ValueError, broadcast_error_message(&[from_shape, to_shape])).into(),
+        );
+    }
+    let total = checked_shape_product(to_shape)?;
+    check_array_alloc_size(total, tracker)?;
+    if from_shape == to_shape {
+        Ok(data.to_vec())
+    } else if total == 0 {
+        Ok(Vec::new())
+    } else if from_shape.is_empty() {
+        Ok(vec![data[0]; total])
+    } else {
+        let input_strides = row_major_strides(from_shape);
+        let output_strides = row_major_strides(to_shape);
+        let offset = to_shape.len() - from_shape.len();
+        let mut output = Vec::with_capacity(total);
+        for flat_index in 0..total {
+            let coords = coords_from_flat_index(flat_index, to_shape, &output_strides);
+            let mut input_index = 0;
+            for (axis, (&dim, &stride)) in from_shape.iter().zip(input_strides.iter()).enumerate() {
+                let coord = if dim == 1 { 0 } else { coords[offset + axis] };
+                input_index += coord * stride;
+            }
+            output.push(data[input_index]);
+        }
+        Ok(output)
+    }
+}
+
+/// Broadcasts a pair of arrays and returns materialized data plus the result shape.
+///
+/// This is used by ndarray operators and NumPy ufunc-style functions so they
+/// share the same shape rules, allocation checks, and mismatch messages.
+pub(crate) fn broadcast_pair_data(
+    left_data: &[f64],
+    left_shape: &[usize],
+    right_data: &[f64],
+    right_shape: &[usize],
+    name: &str,
+    tracker: &impl ResourceTracker,
+) -> RunResult<(Vec<f64>, Vec<f64>, Vec<usize>)> {
+    let shape = broadcast_shape(&[left_shape, right_shape], name)?;
+    let total = checked_shape_product(&shape)?;
+    check_array_alloc_size(total.saturating_mul(2), tracker)?;
+    let left = broadcast_array_data(left_data, left_shape, &shape, name, tracker)?;
+    let right = broadcast_array_data(right_data, right_shape, &shape, name, tracker)?;
+    Ok((left, right, shape))
+}
+
+/// Returns the row-major strides for a shape.
+fn row_major_strides(shape: &[usize]) -> Vec<usize> {
+    let mut strides = vec![1; shape.len()];
+    let mut stride = 1usize;
+    for axis in (0..shape.len()).rev() {
+        strides[axis] = stride;
+        stride = stride.saturating_mul(shape[axis]);
+    }
+    strides
+}
+
+/// Converts a flat row-major index into coordinates for the given shape.
+fn coords_from_flat_index(flat_index: usize, shape: &[usize], strides: &[usize]) -> Vec<usize> {
+    shape
+        .iter()
+        .zip(strides.iter())
+        .map(|(&dim, &stride)| {
+            if dim == 0 || stride == 0 {
+                0
+            } else {
+                (flat_index / stride) % dim
+            }
+        })
+        .collect()
+}
+
+/// Computes a shape product while turning overflow into a Python exception.
+fn checked_shape_product(shape: &[usize]) -> RunResult<usize> {
+    shape.iter().try_fold(1usize, |acc, &dim| {
+        acc.checked_mul(dim)
+            .ok_or_else(|| SimpleException::new_msg(ExcType::ValueError, "broadcast dimensions overflow").into())
+    })
+}
+
+/// Formats NumPy's compact two-operand broadcast mismatch message.
+fn broadcast_error_message(shapes: &[&[usize]]) -> String {
+    if shapes.len() == 2 {
+        format!(
+            "operands could not be broadcast together with shapes {} {} ",
+            format_broadcast_shape(shapes[0]),
+            format_broadcast_shape(shapes[1])
+        )
+    } else {
+        "operands could not be broadcast together".to_string()
+    }
+}
+
+/// Formats a shape the way NumPy displays it inside ufunc broadcast errors.
+fn format_broadcast_shape(shape: &[usize]) -> String {
+    match shape {
+        [] => "()".to_string(),
+        [dim] => format!("({dim},)"),
+        _ => {
+            let mut formatted = String::from("(");
+            for (index, dim) in shape.iter().enumerate() {
+                if index > 0 {
+                    formatted.push(',');
+                }
+                write!(formatted, "{dim}").expect("writing to a string cannot fail");
+            }
+            formatted.push(')');
+            formatted
+        }
+    }
+}
+
 // ===========================
 // Indexing operations
 // ===========================
@@ -253,26 +407,24 @@ impl NdArray {
 // ===========================
 
 impl NdArray {
-    /// Element-wise binary operation between two arrays of the same shape.
+    /// Element-wise binary operation between two broadcast-compatible arrays.
     fn elementwise_op(
         &self,
         other: &Self,
         op: fn(f64, f64) -> f64,
         heap: &Heap<impl ResourceTracker>,
     ) -> RunResult<Value> {
-        if self.shape != other.shape {
-            return Err(
-                SimpleException::new_msg(ExcType::ValueError, "operands could not be broadcast together").into(),
-            );
-        }
         let result_dtype = promote_dtype(self.dtype, other.dtype);
-        let data: Vec<f64> = self
-            .data
-            .iter()
-            .zip(other.data.iter())
-            .map(|(&a, &b)| op(a, b))
-            .collect();
-        let arr = Self::new(data, self.shape.clone(), result_dtype);
+        let (left, right, shape) = broadcast_pair_data(
+            &self.data,
+            &self.shape,
+            &other.data,
+            &other.shape,
+            "ndarray binary operation",
+            heap.tracker(),
+        )?;
+        let data: Vec<f64> = left.iter().zip(right.iter()).map(|(&a, &b)| op(a, b)).collect();
+        let arr = Self::new(data, shape, result_dtype);
         Ok(Value::Ref(heap.allocate(HeapData::NdArray(arr))?))
     }
 
@@ -304,25 +456,27 @@ impl NdArray {
         Ok(Value::Ref(heap.allocate(HeapData::NdArray(arr))?))
     }
 
-    /// Element-wise comparison, producing a boolean array.
+    /// Element-wise comparison between two broadcast-compatible arrays.
     fn elementwise_cmp(
         &self,
         other: &Self,
         cmp: fn(f64, f64) -> bool,
         heap: &Heap<impl ResourceTracker>,
     ) -> RunResult<Value> {
-        if self.shape != other.shape {
-            return Err(
-                SimpleException::new_msg(ExcType::ValueError, "operands could not be broadcast together").into(),
-            );
-        }
-        let data: Vec<f64> = self
-            .data
+        let (left, right, shape) = broadcast_pair_data(
+            &self.data,
+            &self.shape,
+            &other.data,
+            &other.shape,
+            "ndarray comparison",
+            heap.tracker(),
+        )?;
+        let data: Vec<f64> = left
             .iter()
-            .zip(other.data.iter())
+            .zip(right.iter())
             .map(|(&a, &b)| if cmp(a, b) { 1.0 } else { 0.0 })
             .collect();
-        let arr = Self::new(data, self.shape.clone(), NdArrayDtype::Bool);
+        let arr = Self::new(data, shape, NdArrayDtype::Bool);
         Ok(Value::Ref(heap.allocate(HeapData::NdArray(arr))?))
     }
 
@@ -392,8 +546,16 @@ impl NdArray {
 
     /// Element-wise true division (always returns float).
     pub fn div(&self, other: &Self, heap: &Heap<impl ResourceTracker>) -> RunResult<Value> {
-        let data: Vec<f64> = self.data.iter().zip(other.data.iter()).map(|(&a, &b)| a / b).collect();
-        let arr = Self::new(data, self.shape.clone(), NdArrayDtype::Float64);
+        let (left, right, shape) = broadcast_pair_data(
+            &self.data,
+            &self.shape,
+            &other.data,
+            &other.shape,
+            "ndarray true division",
+            heap.tracker(),
+        )?;
+        let data: Vec<f64> = left.iter().zip(right.iter()).map(|(&a, &b)| a / b).collect();
+        let arr = Self::new(data, shape, NdArrayDtype::Float64);
         Ok(Value::Ref(heap.allocate(HeapData::NdArray(arr))?))
     }
 
@@ -511,23 +673,25 @@ impl NdArray {
     pub fn bitand(&self, other: &Self, heap: &Heap<impl ResourceTracker>) -> RunResult<Value> {
         check_bitwise_dtype(self.dtype, "&")?;
         check_bitwise_dtype(other.dtype, "&")?;
-        if self.shape != other.shape {
-            return Err(
-                SimpleException::new_msg(ExcType::ValueError, "operands could not be broadcast together").into(),
-            );
-        }
         let result_dtype = if self.dtype == NdArrayDtype::Bool && other.dtype == NdArrayDtype::Bool {
             NdArrayDtype::Bool
         } else {
             NdArrayDtype::Int64
         };
-        let data: Vec<f64> = self
-            .data
+        let (left, right, shape) = broadcast_pair_data(
+            &self.data,
+            &self.shape,
+            &other.data,
+            &other.shape,
+            "ndarray bitwise and",
+            heap.tracker(),
+        )?;
+        let data: Vec<f64> = left
             .iter()
-            .zip(other.data.iter())
+            .zip(right.iter())
             .map(|(&a, &b)| (a as i64 & b as i64) as f64)
             .collect();
-        let arr = Self::new(data, self.shape.clone(), result_dtype);
+        let arr = Self::new(data, shape, result_dtype);
         Ok(Value::Ref(heap.allocate(HeapData::NdArray(arr))?))
     }
 
@@ -560,23 +724,25 @@ impl NdArray {
     pub fn bitor(&self, other: &Self, heap: &Heap<impl ResourceTracker>) -> RunResult<Value> {
         check_bitwise_dtype(self.dtype, "|")?;
         check_bitwise_dtype(other.dtype, "|")?;
-        if self.shape != other.shape {
-            return Err(
-                SimpleException::new_msg(ExcType::ValueError, "operands could not be broadcast together").into(),
-            );
-        }
         let result_dtype = if self.dtype == NdArrayDtype::Bool && other.dtype == NdArrayDtype::Bool {
             NdArrayDtype::Bool
         } else {
             NdArrayDtype::Int64
         };
-        let data: Vec<f64> = self
-            .data
+        let (left, right, shape) = broadcast_pair_data(
+            &self.data,
+            &self.shape,
+            &other.data,
+            &other.shape,
+            "ndarray bitwise or",
+            heap.tracker(),
+        )?;
+        let data: Vec<f64> = left
             .iter()
-            .zip(other.data.iter())
+            .zip(right.iter())
             .map(|(&a, &b)| (a as i64 | b as i64) as f64)
             .collect();
-        let arr = Self::new(data, self.shape.clone(), result_dtype);
+        let arr = Self::new(data, shape, result_dtype);
         Ok(Value::Ref(heap.allocate(HeapData::NdArray(arr))?))
     }
 
@@ -609,23 +775,25 @@ impl NdArray {
     pub fn bitxor(&self, other: &Self, heap: &Heap<impl ResourceTracker>) -> RunResult<Value> {
         check_bitwise_dtype(self.dtype, "^")?;
         check_bitwise_dtype(other.dtype, "^")?;
-        if self.shape != other.shape {
-            return Err(
-                SimpleException::new_msg(ExcType::ValueError, "operands could not be broadcast together").into(),
-            );
-        }
         let result_dtype = if self.dtype == NdArrayDtype::Bool && other.dtype == NdArrayDtype::Bool {
             NdArrayDtype::Bool
         } else {
             NdArrayDtype::Int64
         };
-        let data: Vec<f64> = self
-            .data
+        let (left, right, shape) = broadcast_pair_data(
+            &self.data,
+            &self.shape,
+            &other.data,
+            &other.shape,
+            "ndarray bitwise xor",
+            heap.tracker(),
+        )?;
+        let data: Vec<f64> = left
             .iter()
-            .zip(other.data.iter())
+            .zip(right.iter())
             .map(|(&a, &b)| (a as i64 ^ b as i64) as f64)
             .collect();
-        let arr = Self::new(data, self.shape.clone(), result_dtype);
+        let arr = Self::new(data, shape, result_dtype);
         Ok(Value::Ref(heap.allocate(HeapData::NdArray(arr))?))
     }
 

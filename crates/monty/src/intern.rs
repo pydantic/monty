@@ -736,6 +736,18 @@ pub enum StaticStrings {
     /// `ndarray.shape` attribute / also used by pathlib `parts`
     #[strum(serialize = "shape")]
     NpShape,
+    /// `numpy.broadcast_shapes()`.
+    #[strum(serialize = "broadcast_shapes")]
+    NpBroadcastShapes,
+    /// `numpy.broadcast_to()`.
+    #[strum(serialize = "broadcast_to")]
+    NpBroadcastTo,
+    /// `numpy.broadcast_arrays()`.
+    #[strum(serialize = "broadcast_arrays")]
+    NpBroadcastArrays,
+    /// `numpy.broadcast()`.
+    #[strum(serialize = "broadcast")]
+    NpBroadcast,
     /// `ndarray.min()` / `numpy.min()` — shared with builtins
     #[strum(serialize = "min")]
     NpMin,
