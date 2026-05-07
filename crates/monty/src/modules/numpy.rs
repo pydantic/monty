@@ -224,6 +224,10 @@ pub(crate) enum NumpyFunctions {
     Transpose,
     /// `numpy.take(a, indices)` — gather flattened elements by index.
     Take,
+    /// `numpy.take_along_axis(a, indices, axis)` — gather along an axis.
+    TakeAlongAxis,
+    /// `numpy.resize(a, new_shape)` — repeat flattened data into a new shape.
+    Resize,
     /// `numpy.compress(condition, a)` — select flattened elements by condition.
     Compress,
     /// `numpy.swapaxes(a, axis1, axis2)` — swap two axes.
@@ -238,6 +242,8 @@ pub(crate) enum NumpyFunctions {
     Rollaxis,
     /// `numpy.rot90(a, k=1)` — rotate a 2-D array by quarter turns.
     Rot90,
+    /// `numpy.choose(a, choices)` — select values from a sequence of choices.
+    Choose,
     /// `numpy.append(a, values)` — append values to end of array.
     Append,
     /// `numpy.vstack(arrays)` — stack arrays vertically.
@@ -580,6 +586,8 @@ pub(crate) enum NumpyFunctions {
     FillDiagonal,
     /// `numpy.put(a, ind, v)` — assign flattened positions in place.
     Put,
+    /// `numpy.put_along_axis(a, indices, values, axis)` — assign positions along an axis.
+    PutAlongAxis,
     /// `numpy.copyto(dst, src)` — copy values into an array in place.
     Copyto,
     /// `numpy.putmask(a, mask, values)` — assign positions where a mask is true.
@@ -901,6 +909,8 @@ const NUMPY_FUNCTIONS: &[(StaticStrings, NumpyFunctions)] = &[
     // np.flatten doesn't exist in real NumPy
     (StaticStrings::NpTranspose, NumpyFunctions::Transpose),
     (StaticStrings::NpTake, NumpyFunctions::Take),
+    (StaticStrings::NpTakeAlongAxis, NumpyFunctions::TakeAlongAxis),
+    (StaticStrings::NpResize, NumpyFunctions::Resize),
     (StaticStrings::NpCompress, NumpyFunctions::Compress),
     (StaticStrings::NpSwapaxes, NumpyFunctions::Swapaxes),
     (StaticStrings::NpPermuteDims, NumpyFunctions::PermuteDims),
@@ -908,8 +918,10 @@ const NUMPY_FUNCTIONS: &[(StaticStrings, NumpyFunctions)] = &[
     (StaticStrings::NpMoveaxis, NumpyFunctions::Moveaxis),
     (StaticStrings::NpRollaxis, NumpyFunctions::Rollaxis),
     (StaticStrings::NpRot90, NumpyFunctions::Rot90),
+    (StaticStrings::NpChoose, NumpyFunctions::Choose),
     (StaticStrings::NpFillDiagonal, NumpyFunctions::FillDiagonal),
     (StaticStrings::NpPut, NumpyFunctions::Put),
+    (StaticStrings::NpPutAlongAxis, NumpyFunctions::PutAlongAxis),
     (StaticStrings::NpCopyto, NumpyFunctions::Copyto),
     (StaticStrings::NpPutmask, NumpyFunctions::Putmask),
     (StaticStrings::NpPlace, NumpyFunctions::Place),
@@ -1244,6 +1256,8 @@ pub(super) fn call(
         // np.flatten doesn't exist in real NumPy
         NumpyFunctions::Transpose => call_transpose_mod(vm, args).map(CallResult::Value),
         NumpyFunctions::Take => call_take_mod(vm, args).map(CallResult::Value),
+        NumpyFunctions::TakeAlongAxis => call_take_along_axis(vm, args).map(CallResult::Value),
+        NumpyFunctions::Resize => call_resize(vm, args).map(CallResult::Value),
         NumpyFunctions::Compress => call_compress_mod(vm, args).map(CallResult::Value),
         NumpyFunctions::Swapaxes => call_swapaxes_mod(vm, args).map(CallResult::Value),
         NumpyFunctions::PermuteDims => call_permute_dims(vm, args).map(CallResult::Value),
@@ -1251,8 +1265,10 @@ pub(super) fn call(
         NumpyFunctions::Moveaxis => call_moveaxis(vm, args).map(CallResult::Value),
         NumpyFunctions::Rollaxis => call_rollaxis(vm, args).map(CallResult::Value),
         NumpyFunctions::Rot90 => call_rot90(vm, args).map(CallResult::Value),
+        NumpyFunctions::Choose => call_choose(vm, args).map(CallResult::Value),
         NumpyFunctions::FillDiagonal => call_fill_diagonal(vm, args).map(CallResult::Value),
         NumpyFunctions::Put => call_put(vm, args).map(CallResult::Value),
+        NumpyFunctions::PutAlongAxis => call_put_along_axis(vm, args).map(CallResult::Value),
         NumpyFunctions::Copyto => call_copyto(vm, args).map(CallResult::Value),
         NumpyFunctions::Putmask => call_putmask(vm, args).map(CallResult::Value),
         NumpyFunctions::Place => call_place(vm, args).map(CallResult::Value),
@@ -3071,6 +3087,41 @@ fn call_reshape_mod(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> R
     arr.reshape(shape, vm.heap)
 }
 
+/// `numpy.resize(a, new_shape)` — repeat flattened input data into a new shape.
+fn call_resize(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let pos = args.into_pos_only("numpy.resize", vm.heap)?;
+    defer_drop_mut!(pos, vm);
+
+    let arr_val = pos
+        .next()
+        .ok_or_else(|| ExcType::type_error_at_least("numpy.resize", 2, 0))?;
+    defer_drop!(arr_val, vm);
+    let shape_val = pos
+        .next()
+        .ok_or_else(|| ExcType::type_error_at_least("numpy.resize", 2, 1))?;
+    defer_drop!(shape_val, vm);
+    if let Some(extra) = pos.next() {
+        extra.drop_with_heap(vm);
+        return Err(ExcType::type_error_at_most("numpy.resize", 2, 3));
+    }
+
+    let arr = ndarray_from_value(arr_val, "numpy.resize", vm)?;
+    let shape = extract_shape_from_value(shape_val, "numpy.resize", vm)?;
+    let total = shape.iter().product::<usize>();
+    check_array_alloc_size(total, vm.heap.tracker())?;
+    let data = if total == 0 {
+        Vec::new()
+    } else if arr.data().is_empty() {
+        return Err(SimpleException::new_msg(ExcType::ValueError, "cannot resize an empty array").into());
+    } else {
+        (0..total)
+            .map(|index| arr.data()[index % arr.len()])
+            .collect::<Vec<_>>()
+    };
+    let result = NdArray::new(data, shape, arr.dtype());
+    Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(result))?))
+}
+
 /// `numpy.transpose(a, axes=None)` — transpose an array (module-level wrapper).
 fn call_transpose_mod(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     call_permute_dims_named(vm, args, "numpy.transpose")
@@ -3112,6 +3163,42 @@ fn call_take_mod(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunR
         let indices = ndarray_from_value(indices_val, "numpy.take", vm)?;
         take_flat_indices(&arr, &indices, vm.heap)
     }
+}
+
+/// `numpy.take_along_axis(a, indices, axis)` — gather per-axis positions from an array.
+fn call_take_along_axis(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let (pos, kwargs) = args.into_parts();
+    defer_drop_mut!(pos, vm);
+    let kwargs_iter = kwargs.into_iter();
+    defer_drop_mut!(kwargs_iter, vm);
+
+    let arr_val = pos
+        .next()
+        .ok_or_else(|| ExcType::type_error_at_least("numpy.take_along_axis", 3, 0))?;
+    defer_drop!(arr_val, vm);
+    let indices_val = pos
+        .next()
+        .ok_or_else(|| ExcType::type_error_at_least("numpy.take_along_axis", 3, 1))?;
+    defer_drop!(indices_val, vm);
+    let axis_value = pos.next();
+    defer_drop_mut!(axis_value, vm);
+    if pos.len() != 0 {
+        return Err(ExcType::type_error_at_most("numpy.take_along_axis", 3, 3 + pos.len()));
+    }
+    parse_axis_keyword(kwargs_iter, axis_value, "numpy.take_along_axis", vm)?;
+    let Some(axis_value) = axis_value.as_ref() else {
+        return Err(ExcType::type_error_at_least("numpy.take_along_axis", 3, 2));
+    };
+
+    let arr = ndarray_from_value(arr_val, "numpy.take_along_axis", vm)?;
+    let indices = ndarray_from_value(indices_val, "numpy.take_along_axis", vm)?;
+    let axis = normalize_axis(
+        value_to_i64_arg(axis_value, "numpy.take_along_axis", "axis")?,
+        arr.ndim(),
+        "numpy.take_along_axis",
+    )?;
+    let result = take_along_axis_array(&arr, &indices, axis, "numpy.take_along_axis")?;
+    Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(result))?))
 }
 
 /// `numpy.compress(condition, a)` — select flattened elements where condition is true.
@@ -3324,6 +3411,103 @@ fn call_rot90(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResu
         default_axis_pair(arr.ndim(), "numpy.rot90")?
     };
     rot90_ndarray(&arr, k, axes, vm.heap)
+}
+
+/// `numpy.choose(a, choices)` — choose values from a sequence by integer index array.
+fn call_choose(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let pos = args.into_pos_only("numpy.choose", vm.heap)?;
+    defer_drop_mut!(pos, vm);
+
+    let index_val = pos
+        .next()
+        .ok_or_else(|| ExcType::type_error_at_least("numpy.choose", 2, 0))?;
+    defer_drop!(index_val, vm);
+    let choices_val = pos
+        .next()
+        .ok_or_else(|| ExcType::type_error_at_least("numpy.choose", 2, 1))?;
+    defer_drop!(choices_val, vm);
+    for extra in pos {
+        extra.drop_with_heap(vm);
+    }
+
+    let indices = ndarray_from_value(index_val, "numpy.choose", vm)?;
+    let choice_items = sequence_items(choices_val, "numpy.choose", vm)?;
+    defer_drop!(choice_items, vm);
+    let result = choose_from_arrays(&indices, choice_items, "numpy.choose", vm)?;
+    Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(result))?))
+}
+
+/// Choice buffer used by `numpy.choose`.
+struct ChoiceData {
+    /// Flat scalar or array values for one choice branch.
+    values: Vec<f64>,
+    /// Compact dtype for the choice branch.
+    dtype: NdArrayDtype,
+}
+
+/// Builds the output array for `numpy.choose` from validated choice branches.
+fn choose_from_arrays(
+    indices: &NdArray,
+    choice_items: &[Value],
+    name: &str,
+    vm: &VM<'_, impl ResourceTracker>,
+) -> RunResult<NdArray> {
+    if choice_items.is_empty() {
+        return Err(SimpleException::new_msg(ExcType::ValueError, "invalid entry in choice array").into());
+    }
+
+    let mut choices = Vec::with_capacity(choice_items.len());
+    let mut dtype = NdArrayDtype::Bool;
+    for choice in choice_items {
+        let choice_data = choice_data_from_value(choice, indices.len(), name, vm)?;
+        dtype = if choices.is_empty() {
+            choice_data.dtype
+        } else {
+            promote_dtype(dtype, choice_data.dtype)
+        };
+        choices.push(choice_data);
+    }
+
+    let mut data = Vec::with_capacity(indices.len());
+    for (offset, raw_index) in indices.data().iter().copied().enumerate() {
+        let choice_index = choice_index_from_f64(raw_index, choices.len())?;
+        data.push(broadcast_value_at(&choices[choice_index].values, offset));
+    }
+    Ok(NdArray::new(data, indices.shape().to_vec(), dtype))
+}
+
+/// Converts one `choose` branch into a scalar or index-shaped value buffer.
+fn choice_data_from_value(
+    value: &Value,
+    output_len: usize,
+    name: &str,
+    vm: &VM<'_, impl ResourceTracker>,
+) -> RunResult<ChoiceData> {
+    if let Ok((scalar, dtype)) = numeric_scalar_info(value, name, vm) {
+        Ok(ChoiceData {
+            values: vec![scalar],
+            dtype,
+        })
+    } else {
+        let arr = ndarray_from_value(value, name, vm)?;
+        validate_broadcast_values(arr.data(), output_len, name)?;
+        Ok(ChoiceData {
+            values: arr.data().to_vec(),
+            dtype: arr.dtype(),
+        })
+    }
+}
+
+/// Converts a numeric `choose` selector into a branch index.
+fn choice_index_from_f64(value: f64, choice_count: usize) -> RunResult<usize> {
+    #[expect(clippy::cast_possible_truncation, reason = "choice index from numeric ndarray")]
+    let index = value as i64;
+    if index < 0 || usize::try_from(index).map_or(true, |index| index >= choice_count) {
+        Err(SimpleException::new_msg(ExcType::ValueError, "invalid entry in choice array").into())
+    } else {
+        usize::try_from(index)
+            .map_err(|_| SimpleException::new_msg(ExcType::ValueError, "choice index is too large").into())
+    }
 }
 
 /// Returns the default transpose permutation, which reverses axis order.
@@ -3575,6 +3759,34 @@ fn coords_from_flat_index(flat: usize, shape: &[usize], strides: &[usize]) -> Ve
         .collect()
 }
 
+/// Parses an optional `axis` keyword into the shared axis value slot.
+fn parse_axis_keyword(
+    kwargs_iter: &mut impl Iterator<Item = (Value, Value)>,
+    axis_value: &mut Option<Value>,
+    name: &str,
+    vm: &mut VM<'_, impl ResourceTracker>,
+) -> RunResult<()> {
+    for (key, value) in kwargs_iter {
+        defer_drop!(key, vm);
+        let Some(keyword_name) = key.as_either_str(vm.heap) else {
+            value.drop_with_heap(vm);
+            return Err(ExcType::type_error_kwargs_nonstring_key());
+        };
+        let key_str = keyword_name.as_str(vm.interns);
+        if key_str == "axis" {
+            if axis_value.is_some() {
+                value.drop_with_heap(vm);
+                return Err(ExcType::type_error_duplicate_arg(name, key_str));
+            }
+            *axis_value = Some(value);
+        } else {
+            value.drop_with_heap(vm);
+            return Err(ExcType::type_error_unexpected_keyword(name, key_str));
+        }
+    }
+    Ok(())
+}
+
 /// Implements flattened `take` while preserving the shape of the indices array.
 fn take_flat_indices(arr: &NdArray, indices: &NdArray, heap: &Heap<impl ResourceTracker>) -> RunResult<Value> {
     let mut data = Vec::with_capacity(indices.len());
@@ -3585,6 +3797,59 @@ fn take_flat_indices(arr: &NdArray, indices: &NdArray, heap: &Heap<impl Resource
     }
     let result = NdArray::new(data, indices.shape().to_vec(), arr.dtype());
     Ok(Value::Ref(heap.allocate(HeapData::NdArray(result))?))
+}
+
+/// Implements `take_along_axis` by resolving every indexed output coordinate.
+fn take_along_axis_array(arr: &NdArray, indices: &NdArray, axis: usize, name: &str) -> RunResult<NdArray> {
+    let targets = along_axis_flat_indices(arr.shape(), indices, axis, name)?;
+    let data = targets.into_iter().map(|target| arr.data()[target]).collect::<Vec<_>>();
+    Ok(NdArray::new(data, indices.shape().to_vec(), arr.dtype()))
+}
+
+/// Resolves every `indices` entry into a flat row-major index for an array shape.
+fn along_axis_flat_indices(arr_shape: &[usize], indices: &NdArray, axis: usize, name: &str) -> RunResult<Vec<usize>> {
+    validate_along_axis_shapes(arr_shape, indices.shape(), axis, name)?;
+    let arr_strides = row_major_strides(arr_shape);
+    let index_strides = row_major_strides(indices.shape());
+    let mut targets = Vec::with_capacity(indices.len());
+    for (flat, raw_index) in indices.data().iter().copied().enumerate() {
+        let mut coords = coords_from_flat_index(flat, indices.shape(), &index_strides);
+        #[expect(clippy::cast_possible_truncation, reason = "axis index from numeric ndarray")]
+        {
+            coords[axis] = resolve_flat_index(raw_index as i64, arr_shape[axis])?;
+        }
+        let target = coords
+            .iter()
+            .zip(arr_strides.iter())
+            .map(|(coord, stride)| coord * stride)
+            .sum::<usize>();
+        targets.push(target);
+    }
+    Ok(targets)
+}
+
+/// Validates the shared-dimensional shape rule used by NumPy's along-axis helpers.
+fn validate_along_axis_shapes(arr_shape: &[usize], index_shape: &[usize], axis: usize, name: &str) -> RunResult<()> {
+    if arr_shape.len() != index_shape.len() {
+        Err(SimpleException::new_msg(
+            ExcType::ValueError,
+            format!("{name}() indices and arr must have the same number of dimensions"),
+        )
+        .into())
+    } else if arr_shape
+        .iter()
+        .zip(index_shape.iter())
+        .enumerate()
+        .any(|(dim, (arr_dim, index_dim))| dim != axis && arr_dim != index_dim)
+    {
+        Err(SimpleException::new_msg(
+            ExcType::ValueError,
+            format!("{name}() shape mismatch outside the indexed axis"),
+        )
+        .into())
+    } else {
+        Ok(())
+    }
 }
 
 /// Resolves a possibly negative flattened index.
@@ -3721,6 +3986,61 @@ fn call_put(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult
         unreachable!()
     };
     assign_cycled_values(&mut arr_read.get_mut(vm.heap).data, &indices, &values)?;
+    drop(arr_read);
+    Ok(Value::None)
+}
+
+/// `numpy.put_along_axis(a, indices, values, axis)` — assign values along an axis in place.
+fn call_put_along_axis(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let (pos, kwargs) = args.into_parts();
+    defer_drop_mut!(pos, vm);
+    let kwargs_iter = kwargs.into_iter();
+    defer_drop_mut!(kwargs_iter, vm);
+
+    let arr_val = pos
+        .next()
+        .ok_or_else(|| ExcType::type_error_at_least("numpy.put_along_axis", 4, 0))?;
+    defer_drop!(arr_val, vm);
+    let indices_val = pos
+        .next()
+        .ok_or_else(|| ExcType::type_error_at_least("numpy.put_along_axis", 4, 1))?;
+    defer_drop!(indices_val, vm);
+    let values_val = pos
+        .next()
+        .ok_or_else(|| ExcType::type_error_at_least("numpy.put_along_axis", 4, 2))?;
+    defer_drop!(values_val, vm);
+    let axis_value = pos.next();
+    defer_drop_mut!(axis_value, vm);
+    if pos.len() != 0 {
+        return Err(ExcType::type_error_at_most("numpy.put_along_axis", 4, 4 + pos.len()));
+    }
+    parse_axis_keyword(kwargs_iter, axis_value, "numpy.put_along_axis", vm)?;
+    let Some(axis_value) = axis_value.as_ref() else {
+        return Err(ExcType::type_error_at_least("numpy.put_along_axis", 4, 3));
+    };
+
+    let arr_id = mutable_ndarray_id(arr_val, "numpy.put_along_axis", vm)?;
+    let indices = ndarray_from_value(indices_val, "numpy.put_along_axis", vm)?;
+    let values = mutation_values_from_value(values_val, "numpy.put_along_axis", vm)?;
+    validate_broadcast_values(&values, indices.len(), "numpy.put_along_axis")?;
+    let targets = {
+        let HeapData::NdArray(arr) = vm.heap.get(arr_id) else {
+            unreachable!()
+        };
+        let axis = normalize_axis(
+            value_to_i64_arg(axis_value, "numpy.put_along_axis", "axis")?,
+            arr.ndim(),
+            "numpy.put_along_axis",
+        )?;
+        along_axis_flat_indices(arr.shape(), &indices, axis, "numpy.put_along_axis")?
+    };
+    let HeapReadOutput::NdArray(mut arr_read) = vm.heap.read(arr_id) else {
+        unreachable!()
+    };
+    let arr = arr_read.get_mut(vm.heap);
+    for (index, target) in targets.into_iter().enumerate() {
+        arr.data[target] = broadcast_value_at(&values, index);
+    }
     drop(arr_read);
     Ok(Value::None)
 }

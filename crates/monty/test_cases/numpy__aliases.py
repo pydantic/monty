@@ -492,5 +492,25 @@ display_empty = np.array([])
 assert np.array2string(display_empty) == '[]', 'array2string empty'
 assert np.array_str(display_empty) == '[]', 'array_str empty'
 assert np.array_repr(display_empty) == 'array([], dtype=float64)', 'array_repr empty'
+choose_idx = np.array([0, 1, 0, 1])
+assert np.choose(choose_idx, [[10, 20, 30, 40], [50, 60, 70, 80]]).tolist() == [
+    10,
+    60,
+    30,
+    80,
+], 'choose vector'
+assert np.resize([1, 2, 3], (2, 4)).tolist() == [[1, 2, 3, 1], [2, 3, 1, 2]], 'resize repeats'
+take_axis_arr = np.array([[10, 20, 30], [40, 50, 60]])
+take_axis_idx = np.array([[2, 1], [0, 2]])
+assert np.take_along_axis(take_axis_arr, take_axis_idx, axis=1).tolist() == [
+    [30, 20],
+    [40, 60],
+], 'take_along_axis axis 1'
+assert np.take_along_axis(take_axis_arr, np.array([[1, 0, 1]]), axis=0).tolist() == [[40, 20, 60]], (
+    'take_along_axis axis 0'
+)
+put_axis_arr = np.array([[10, 20, 30], [40, 50, 60]])
+assert np.put_along_axis(put_axis_arr, take_axis_idx, [[99, 88], [77, 66]], axis=1) is None, 'put_along_axis return'
+assert put_axis_arr.tolist() == [[10, 88, 99], [77, 50, 66]], 'put_along_axis axis 1'
 assert np.little_endian == True, 'little_endian constant'
 assert abs(np.euler_gamma - 0.5772156649015329) < 1e-15, 'euler_gamma constant'

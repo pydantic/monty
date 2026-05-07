@@ -791,6 +791,9 @@ pub enum StaticStrings {
     /// `numpy.power()` function
     #[strum(serialize = "power")]
     NpPower,
+    /// `numpy.choose()` indexed choice helper.
+    #[strum(serialize = "choose")]
+    NpChoose,
     /// `numpy.diff()` function
     #[strum(serialize = "diff")]
     NpDiff,
@@ -803,6 +806,9 @@ pub enum StaticStrings {
     /// `numpy.put()` in-place flattened index assignment helper.
     #[strum(serialize = "put")]
     NpPut,
+    /// `numpy.put_along_axis()` in-place indexed assignment helper.
+    #[strum(serialize = "put_along_axis")]
+    NpPutAlongAxis,
     /// `numpy.copyto()` in-place copy helper.
     #[strum(serialize = "copyto")]
     NpCopyto,
@@ -1508,6 +1514,12 @@ pub enum StaticStrings {
     /// `numpy.take()` function / `ndarray.take()` method — take elements at indices
     #[strum(serialize = "take")]
     NpTake,
+    /// `numpy.take_along_axis()` indexed gather helper.
+    #[strum(serialize = "take_along_axis")]
+    NpTakeAlongAxis,
+    /// `numpy.resize()` repeated flattened resize helper.
+    #[strum(serialize = "resize")]
+    NpResize,
     /// `ndarray.fill()` method — fill array with value
     #[strum(serialize = "fill")]
     NpFill,
