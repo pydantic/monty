@@ -1421,15 +1421,8 @@ impl NdArray {
     ///
     /// Accepts NumPy dtype aliases that Monty maps onto its compact dtype set.
     pub fn astype(&self, dtype_str: &str, heap: &Heap<impl ResourceTracker>) -> RunResult<Value> {
-        let new_dtype = match dtype_str {
-            "int64" | "int" | "int32" => NdArrayDtype::Int64,
-            "float64" | "float" | "float32" => NdArrayDtype::Float64,
-            "bool" | "bool_" => NdArrayDtype::Bool,
-            _ => {
-                return Err(
-                    SimpleException::new_msg(ExcType::TypeError, format!("unsupported dtype: {dtype_str}")).into(),
-                );
-            }
+        let Some(new_dtype) = ndarray_dtype_from_numpy_name(dtype_str) else {
+            return Err(SimpleException::new_msg(ExcType::TypeError, format!("unsupported dtype: {dtype_str}")).into());
         };
         let data = match new_dtype {
             NdArrayDtype::Bool => self.data.iter().map(|&v| if v == 0.0 { 0.0 } else { 1.0 }).collect(),
@@ -1501,6 +1494,24 @@ impl NdArray {
             let list = List::new(values);
             Ok(Value::Ref(heap.allocate(HeapData::List(list))?))
         }
+    }
+}
+
+/// Maps NumPy dtype names and compact aliases onto Monty's storage dtypes.
+///
+/// Monty stores the supported numeric subset as bool, int64, or float64. Narrow
+/// integer and float aliases are accepted for compatibility but intentionally
+/// collapse to the closest storage dtype rather than introducing unplanned
+/// memory-layout semantics.
+fn ndarray_dtype_from_numpy_name(dtype_str: &str) -> Option<NdArrayDtype> {
+    match dtype_str {
+        "bool" | "bool_" | "?" => Some(NdArrayDtype::Bool),
+        "int8" | "int16" | "int32" | "int64" | "int_" | "intc" | "intp" | "long" | "longlong" | "byte" | "short"
+        | "uint8" | "uint16" | "uint32" | "uint64" | "uint" | "uintc" | "uintp" | "ubyte" | "ushort" | "ulong"
+        | "ulonglong" | "int" | "i" | "l" | "q" | "b" | "h" | "B" | "H" | "I" | "L" | "Q" => Some(NdArrayDtype::Int64),
+        "float16" | "float32" | "float64" | "half" | "single" | "double" | "longdouble" | "float" | "f" | "e" | "d"
+        | "g" => Some(NdArrayDtype::Float64),
+        _ => None,
     }
 }
 

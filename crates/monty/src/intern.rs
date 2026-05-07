@@ -719,6 +719,15 @@ pub enum StaticStrings {
     /// `ndarray.astype()` method
     #[strum(serialize = "astype")]
     NpAstype,
+    /// `numpy.ndarray` type object.
+    #[strum(serialize = "ndarray")]
+    NpNdarray,
+    /// `numpy.format_float_positional()` function.
+    #[strum(serialize = "format_float_positional")]
+    NpFormatFloatPositional,
+    /// `numpy.format_float_scientific()` function.
+    #[strum(serialize = "format_float_scientific")]
+    NpFormatFloatScientific,
     /// `ndarray.transpose()` method
     #[strum(serialize = "transpose")]
     NpTranspose,

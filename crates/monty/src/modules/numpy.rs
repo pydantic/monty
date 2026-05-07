@@ -43,6 +43,8 @@
 //! - `numpy.array_equal(a, b)`
 //! - `numpy.array2string(a)`, `numpy.array_repr(a)`, `numpy.array_str(a)`
 //! - `numpy.finfo(dtype)`, `numpy.iinfo(dtype)`
+//! - `numpy.dtype(dtype)`, `numpy.astype(a, dtype)`
+//! - `numpy.format_float_positional(x)`, `numpy.format_float_scientific(x)`
 //! - `numpy.all(a)`, `numpy.any(a)`
 //!
 //! ## Selection & sorting
@@ -319,6 +321,14 @@ pub(crate) enum NumpyFunctions {
     BroadcastArrays,
     /// `numpy.broadcast(*arrays)` — materialized iterable subset of NumPy broadcast.
     Broadcast,
+    /// `numpy.dtype(dtype)` — normalize a supported compact dtype marker.
+    Dtype,
+    /// `numpy.astype(a, dtype)` — cast an ndarray to a supported compact dtype.
+    Astype,
+    /// `numpy.format_float_positional(x)` — format a float without scientific notation.
+    FormatFloatPositional,
+    /// `numpy.format_float_scientific(x)` — format a float with scientific notation.
+    FormatFloatScientific,
 
     // --- Phase 3: Inverse trig, hyperbolic, remaining math ---
     /// `numpy.arcsin(a)` — element-wise inverse sine.
@@ -811,6 +821,11 @@ pub fn create_module(vm: &mut VM<'_, impl ResourceTracker>) -> Result<HeapId, Re
         vm,
     );
     module.set_attr(StaticStrings::NpEulerGamma, Value::Float(0.577_215_664_901_532_9), vm);
+    module.set_attr(
+        StaticStrings::NpNdarray,
+        Value::Builtin(Builtins::Type(Type::NdArray)),
+        vm,
+    );
 
     // Dtype type objects — stored as interned strings that astype() recognizes.
     // These allow `arr.astype(np.float64)` to work alongside `arr.astype('float64')`.
@@ -1076,6 +1091,16 @@ const NUMPY_FUNCTIONS: &[(StaticStrings, NumpyFunctions)] = &[
     (StaticStrings::NpBroadcastTo, NumpyFunctions::BroadcastTo),
     (StaticStrings::NpBroadcastArrays, NumpyFunctions::BroadcastArrays),
     (StaticStrings::NpBroadcast, NumpyFunctions::Broadcast),
+    (StaticStrings::Dtype, NumpyFunctions::Dtype),
+    (StaticStrings::NpAstype, NumpyFunctions::Astype),
+    (
+        StaticStrings::NpFormatFloatPositional,
+        NumpyFunctions::FormatFloatPositional,
+    ),
+    (
+        StaticStrings::NpFormatFloatScientific,
+        NumpyFunctions::FormatFloatScientific,
+    ),
     // Phase 3: Inverse trig, hyperbolic, remaining math
     (StaticStrings::NpArcsin, NumpyFunctions::Arcsin),
     (StaticStrings::Asin, NumpyFunctions::Arcsin), // alias
@@ -1516,6 +1541,10 @@ pub(super) fn call(
         NumpyFunctions::BroadcastTo => call_broadcast_to(vm, args).map(CallResult::Value),
         NumpyFunctions::BroadcastArrays => call_broadcast_arrays(vm, args).map(CallResult::Value),
         NumpyFunctions::Broadcast => call_broadcast(vm, args).map(CallResult::Value),
+        NumpyFunctions::Dtype => call_dtype(vm, args).map(CallResult::Value),
+        NumpyFunctions::Astype => call_astype(vm, args).map(CallResult::Value),
+        NumpyFunctions::FormatFloatPositional => call_format_float_positional(vm, args).map(CallResult::Value),
+        NumpyFunctions::FormatFloatScientific => call_format_float_scientific(vm, args).map(CallResult::Value),
         // Phase 3: Inverse trig, hyperbolic, remaining math
         NumpyFunctions::Arcsin => {
             call_elementwise(vm, args, f64::asin, "numpy.arcsin", Some(NdArrayDtype::Float64)).map(CallResult::Value)
@@ -2522,6 +2551,326 @@ fn call_array_str(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> Run
     let mut output = String::new();
     arr.array_str_fmt_inner(&mut output)?;
     allocate_string(output, vm.heap)
+}
+
+/// `numpy.format_float_positional(x, ...)` — format a real scalar without exponent notation.
+fn call_format_float_positional(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let (value, options) = parse_float_format_args(args, "numpy.format_float_positional", true, true, vm)?;
+    allocate_string(format_float_positional_value(value, options), vm.heap)
+}
+
+/// `numpy.format_float_scientific(x, ...)` — format a real scalar with exponent notation.
+fn call_format_float_scientific(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let (value, options) = parse_float_format_args(args, "numpy.format_float_scientific", false, false, vm)?;
+    allocate_string(format_float_scientific_value(value, options), vm.heap)
+}
+
+/// Formatting options shared by NumPy's pure float-format helper functions.
+///
+/// Monty implements the deterministic scalar subset that is useful for generated
+/// Python: precision control, optional leading sign, simple trimming, and the
+/// padding knobs NumPy exposes for array-printer internals. Unsupported object
+/// formatting and locale concerns are intentionally outside this numeric subset.
+#[derive(Clone, Copy)]
+struct FloatFormatOptions {
+    /// Number of fractional or mantissa digits requested by the caller.
+    precision: Option<usize>,
+    /// Whether trailing insignificant zeros should be removed.
+    unique: bool,
+    /// Whether positional precision counts digits after the decimal point.
+    fractional: bool,
+    /// NumPy trim mode; Monty models the common keep/remove behavior.
+    trim: char,
+    /// Whether positive values should include a leading `+`.
+    sign: bool,
+    /// Minimum width to the left of the decimal point.
+    pad_left: Option<usize>,
+    /// Minimum width to the right of the decimal point for positional format.
+    pad_right: Option<usize>,
+    /// Minimum number of digits after the decimal point.
+    min_digits: Option<usize>,
+}
+
+impl Default for FloatFormatOptions {
+    fn default() -> Self {
+        Self {
+            precision: None,
+            unique: true,
+            fractional: true,
+            trim: 'k',
+            sign: false,
+            pad_left: None,
+            pad_right: None,
+            min_digits: None,
+        }
+    }
+}
+
+/// Parses the positional and keyword arguments accepted by the float-format helpers.
+fn parse_float_format_args(
+    args: ArgValues,
+    name: &'static str,
+    allow_fractional: bool,
+    allow_pad_right: bool,
+    vm: &mut VM<'_, impl ResourceTracker>,
+) -> RunResult<(f64, FloatFormatOptions)> {
+    let (pos, kwargs) = args.into_parts();
+    defer_drop_mut!(pos, vm);
+
+    let value = pos.next().ok_or_else(|| ExcType::type_error_at_least(name, 1, 0))?;
+    defer_drop!(value, vm);
+    let precision_pos = pos.next();
+    defer_drop_mut!(precision_pos, vm);
+    if pos.len() != 0 {
+        return Err(ExcType::type_error_at_most(name, 2, 2 + pos.len()));
+    }
+
+    let mut options = FloatFormatOptions::default();
+    let mut precision_seen = false;
+    if let Some(precision) = precision_pos.as_ref() {
+        options.precision = optional_usize_argument(precision, name, "precision")?;
+        precision_seen = true;
+    }
+
+    let kwargs = kwargs.into_iter();
+    defer_drop_mut!(kwargs, vm);
+    for (key, value) in kwargs {
+        defer_drop!(key, vm);
+        defer_drop!(value, vm);
+        let Some(keyword_name) = key.as_either_str(vm.heap) else {
+            return Err(ExcType::type_error_kwargs_nonstring_key());
+        };
+        let key_str = keyword_name.as_str(vm.interns);
+        match key_str {
+            "precision" => {
+                if precision_seen {
+                    return Err(ExcType::type_error_multiple_values(name, "precision"));
+                }
+                options.precision = optional_usize_argument(value, name, "precision")?;
+                precision_seen = true;
+            }
+            "unique" => options.unique = bool_argument(value, name, "unique")?,
+            "fractional" if allow_fractional => options.fractional = bool_argument(value, name, "fractional")?,
+            "trim" => options.trim = trim_argument(value, name, vm)?,
+            "sign" => options.sign = bool_argument(value, name, "sign")?,
+            "pad_left" => options.pad_left = optional_usize_argument(value, name, "pad_left")?,
+            "pad_right" if allow_pad_right => options.pad_right = optional_usize_argument(value, name, "pad_right")?,
+            "min_digits" => options.min_digits = optional_usize_argument(value, name, "min_digits")?,
+            _ => return Err(ExcType::type_error_unexpected_keyword(name, key_str)),
+        }
+    }
+
+    Ok((to_f64(value, vm)?, options))
+}
+
+/// Extracts an optional non-negative integer formatting argument.
+fn optional_usize_argument(value: &Value, name: &str, arg_name: &str) -> RunResult<Option<usize>> {
+    if matches!(value, Value::None) {
+        Ok(None)
+    } else {
+        value_to_nonnegative_usize(value, name, arg_name).map(Some)
+    }
+}
+
+/// Extracts a boolean formatting argument.
+fn bool_argument(value: &Value, name: &str, arg_name: &str) -> RunResult<bool> {
+    match value {
+        Value::Bool(value) => Ok(*value),
+        _ => Err(ExcType::type_error(format!("{name}() {arg_name} must be a bool"))),
+    }
+}
+
+/// Extracts NumPy's one-character float-format trim mode.
+fn trim_argument(value: &Value, name: &str, vm: &VM<'_, impl ResourceTracker>) -> RunResult<char> {
+    let text = string_from_value(value, name, vm)?;
+    let mut chars = text.chars();
+    let Some(trim) = chars.next() else {
+        return Err(SimpleException::new_msg(ExcType::ValueError, "Trim mode must not be empty").into());
+    };
+    if chars.next().is_some() || !matches!(trim, 'k' | '.' | '0' | '-') {
+        Err(SimpleException::new_msg(ExcType::ValueError, "Trim mode must be one of 'k', '.', '0', '-'").into())
+    } else {
+        Ok(trim)
+    }
+}
+
+/// Formats one float using NumPy's positional helper subset.
+fn format_float_positional_value(value: f64, options: FloatFormatOptions) -> String {
+    let sign = float_sign_prefix(value, options.sign);
+    let mut body = if let Some(special) = nonfinite_float_body(value) {
+        special
+    } else {
+        positional_finite_body(value.abs(), options)
+    };
+    body = apply_min_digits(body, options.min_digits, None);
+    let result = format!("{sign}{body}");
+    apply_float_padding(result, options.pad_left, options.pad_right, None)
+}
+
+/// Formats one float using NumPy's scientific helper subset.
+fn format_float_scientific_value(value: f64, options: FloatFormatOptions) -> String {
+    let sign = float_sign_prefix(value, options.sign);
+    let mut body = if let Some(special) = nonfinite_float_body(value) {
+        special
+    } else {
+        scientific_finite_body(value.abs(), options)
+    };
+    body = apply_min_digits(body, options.min_digits, Some('e'));
+    let result = format!("{sign}{body}");
+    apply_float_padding(result, options.pad_left, None, Some('e'))
+}
+
+/// Returns the sign prefix for a formatted float.
+fn float_sign_prefix(value: f64, force_positive: bool) -> &'static str {
+    if value.is_sign_negative() {
+        "-"
+    } else if force_positive {
+        "+"
+    } else {
+        ""
+    }
+}
+
+/// Returns the stable body for NaN and infinity, if the value is not finite.
+fn nonfinite_float_body(value: f64) -> Option<String> {
+    if value.is_nan() {
+        Some("nan".to_string())
+    } else if value.is_infinite() {
+        Some("inf".to_string())
+    } else {
+        None
+    }
+}
+
+/// Formats a finite value without exponent notation.
+fn positional_finite_body(value: f64, options: FloatFormatOptions) -> String {
+    let mut body = if let Some(precision) = options.precision {
+        let precision = if options.fractional {
+            precision
+        } else {
+            fractional_digits_for_significant_precision(value, precision)
+        };
+        format!("{value:.precision$}")
+    } else {
+        value.to_string()
+    };
+    if body.contains('e') || body.contains('E') {
+        body = format!("{value:.15}");
+    }
+    if options.unique {
+        trim_float_fraction(body, options.trim)
+    } else {
+        ensure_decimal_point(body)
+    }
+}
+
+/// Converts significant-digit precision into fractional digits for positional output.
+fn fractional_digits_for_significant_precision(value: f64, precision: usize) -> usize {
+    let whole_digits = value.trunc().to_string().trim_start_matches('-').len();
+    precision.saturating_sub(whole_digits)
+}
+
+/// Formats a finite value with exponent notation and NumPy-style exponent width.
+fn scientific_finite_body(value: f64, options: FloatFormatOptions) -> String {
+    let raw = if let Some(precision) = options.precision {
+        format!("{value:.precision$e}")
+    } else {
+        format!("{value:e}")
+    };
+    let (mantissa, exponent) = raw
+        .split_once('e')
+        .expect("Rust scientific formatting always contains an exponent");
+    let mantissa = if options.unique {
+        trim_float_fraction(mantissa.to_string(), options.trim)
+    } else {
+        ensure_decimal_point(mantissa.to_string())
+    };
+    format!("{mantissa}{}", format_exponent(exponent))
+}
+
+/// Formats an exponent as `e+00`/`e-00`, matching NumPy's helper output.
+fn format_exponent(exponent: &str) -> String {
+    let value = exponent.parse::<i32>().unwrap_or(0);
+    let sign = if value < 0 { '-' } else { '+' };
+    format!("e{sign}{:02}", value.abs())
+}
+
+/// Ensures a finite float body has a decimal point.
+fn ensure_decimal_point(mut body: String) -> String {
+    if !body.contains('.') {
+        body.push('.');
+    }
+    body
+}
+
+/// Trims trailing zeros from a finite float body according to NumPy trim modes.
+fn trim_float_fraction(mut body: String, trim: char) -> String {
+    if let Some(dot) = body.find('.') {
+        while body.ends_with('0') {
+            body.pop();
+        }
+        if body.len() == dot + 1 && trim == '-' {
+            body.pop();
+        }
+    }
+    ensure_decimal_point(body)
+}
+
+/// Pads the fractional part to satisfy `min_digits`.
+fn apply_min_digits(mut body: String, min_digits: Option<usize>, exponent_marker: Option<char>) -> String {
+    let Some(min_digits) = min_digits else {
+        return body;
+    };
+    let exponent_index = exponent_marker.and_then(|marker| body.find(marker));
+    let fraction_end = exponent_index.unwrap_or(body.len());
+    if body[..fraction_end].find('.').is_none() {
+        body.insert(fraction_end, '.');
+    }
+    let dot = body[..fraction_end].find('.').expect("decimal point inserted above");
+    let digits = fraction_end.saturating_sub(dot + 1);
+    if digits < min_digits {
+        let zeros = "0".repeat(min_digits - digits);
+        body.insert_str(fraction_end, &zeros);
+    }
+    body
+}
+
+/// Applies NumPy's left/right padding controls to an already formatted float string.
+fn apply_float_padding(
+    mut text: String,
+    pad_left: Option<usize>,
+    pad_right: Option<usize>,
+    exponent_marker: Option<char>,
+) -> String {
+    if let Some(width) = pad_left {
+        let left_len = float_left_width(&text, exponent_marker);
+        if width > left_len {
+            text.insert_str(0, &" ".repeat(width - left_len));
+        }
+    }
+    if let Some(width) = pad_right {
+        let right_len = float_right_width(&text, exponent_marker);
+        if width > right_len {
+            text.push_str(&" ".repeat(width - right_len));
+        }
+    }
+    text
+}
+
+/// Counts characters before the decimal point or exponent for `pad_left`.
+fn float_left_width(text: &str, exponent_marker: Option<char>) -> usize {
+    let end = exponent_marker
+        .and_then(|marker| text.find(marker))
+        .unwrap_or(text.len());
+    text[..end].find('.').unwrap_or(end)
+}
+
+/// Counts characters after the decimal point and before the exponent for `pad_right`.
+fn float_right_width(text: &str, exponent_marker: Option<char>) -> usize {
+    let end = exponent_marker
+        .and_then(|marker| text.find(marker))
+        .unwrap_or(text.len());
+    text[..end].find('.').map_or(0, |dot| end - dot - 1)
 }
 
 /// Extracts the ndarray argument for display helpers and ignores optional print-only arguments.
@@ -5896,6 +6245,32 @@ fn call_iterable(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunR
     Ok(Value::Bool(is_numpy_iterable(arg, vm)))
 }
 
+/// `numpy.dtype(dtype)` — normalize a supported dtype-like value to Monty's dtype marker.
+fn call_dtype(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let arg = args.get_one_arg("numpy.dtype", vm.heap)?;
+    defer_drop!(arg, vm);
+    Ok(dtype_meta_value(dtype_meta_from_optional_dtype_value(
+        arg,
+        "numpy.dtype",
+        vm,
+    )?))
+}
+
+/// `numpy.astype(a, dtype)` — module-level ndarray dtype conversion.
+///
+/// This mirrors NumPy's pure helper for Monty's compact ndarray subset. The
+/// dtype argument is normalized through the same dtype parser as constructors,
+/// so Python type objects, dtype marker attributes, and supported dtype strings
+/// all reach the same casting implementation used by `ndarray.astype()`.
+fn call_astype(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let (array_val, dtype_val) = args.get_two_args("numpy.astype", vm.heap)?;
+    defer_drop!(array_val, vm);
+    defer_drop!(dtype_val, vm);
+    let arr = ndarray_from_value(array_val, "numpy.astype", vm)?;
+    let dtype = dtype_meta_from_optional_dtype_value(dtype_val, "numpy.astype", vm)?;
+    arr.astype(compact_dtype_name(dtype), vm.heap)
+}
+
 /// `numpy.can_cast(from_, to)` — safe cast predicate for Monty's compact dtype set.
 fn call_can_cast(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     let (from_val, to_val) = args.get_two_args("numpy.can_cast", vm.heap)?;
@@ -6610,6 +6985,16 @@ fn dtype_meta_value(dtype: CompactDtype) -> Value {
         CompactDtype::Float64 => StaticStrings::NpFloat64,
     };
     Value::InternString(marker.into())
+}
+
+/// Returns the canonical dtype text accepted by `NdArray::astype()`.
+fn compact_dtype_name(dtype: CompactDtype) -> &'static str {
+    match dtype {
+        CompactDtype::Bool => "bool",
+        CompactDtype::Int => "int64",
+        CompactDtype::Float32 => "float32",
+        CompactDtype::Float64 => "float64",
+    }
 }
 
 /// Promotes two compact dtype categories using NumPy's real numeric ordering.

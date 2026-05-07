@@ -474,6 +474,18 @@ assert np.array([1, 0, -2]).astype(np.bool).tolist() == [True, False, True], 'bo
 assert np.array([1, 2]).astype(np.double).tolist() == [1.0, 2.0], 'double dtype alias'
 assert np.array([1, 2]).astype(np.float16).tolist() == [1.0, 2.0], 'float16 dtype alias'
 assert np.array([1, 2]).astype(np.longdouble).tolist() == [1.0, 2.0], 'longdouble dtype alias'
+assert np.array([1, 2]).astype('uint8').tolist() == [1, 2], 'astype string uint alias'
+assert np.dtype('float64') == np.float64, 'dtype normalizes float64 string'
+assert np.dtype(np.float32) == np.float32, 'dtype preserves compact float32 marker'
+assert np.dtype(int) == np.int64, 'dtype normalizes Python int type'
+assert np.dtype(float) == np.float64, 'dtype normalizes Python float type'
+assert np.dtype(bool) == np.bool_, 'dtype normalizes Python bool type'
+assert str(np.dtype('int64')) == 'int64', 'dtype string display'
+assert np.astype(np.array([1.2, -2.8]), np.int64).tolist() == [1, -2], 'module astype int dtype'
+assert np.astype(np.array([1, 0, -2]), bool).tolist() == [True, False, True], 'module astype bool dtype'
+assert np.astype(np.array([1, 2]), np.float64).tolist() == [1.0, 2.0], 'module astype float dtype'
+assert isinstance(np.array([1, 2]), np.ndarray) == True, 'ndarray type object matches arrays'
+assert np.ndarray.__name__ == 'ndarray', 'ndarray type object name'
 assert np.can_cast(np.int8, np.int16) == True, 'can_cast integer aliases'
 assert np.can_cast(np.float64, np.int64) == False, 'can_cast float to int is unsafe'
 assert np.promote_types(np.int8, np.float32) == np.float32, 'promote_types int float32'
@@ -508,6 +520,19 @@ assert str(int16_info.dtype) == 'int16', 'iinfo int16 dtype'
 assert np.iinfo('uint8').max == 255, 'iinfo uint8 max'
 assert np.iinfo('uint64').max == 18446744073709551615, 'iinfo uint64 max'
 assert np.iinfo(1).bits == 64, 'iinfo scalar int bits'
+
+
+# === float formatting helpers ===
+assert np.format_float_positional(1.0) == '1.', 'format_float_positional whole float'
+assert np.format_float_positional(1.2, precision=2, unique=False) == '1.20', 'format_float_positional fixed precision'
+assert np.format_float_positional(1.2, sign=True) == '+1.2', 'format_float_positional sign'
+assert np.format_float_positional(1.2, min_digits=4) == '1.2000', 'format_float_positional min digits'
+assert np.format_float_scientific(1.0) == '1.e+00', 'format_float_scientific whole float'
+assert np.format_float_scientific(1000.0) == '1.e+03', 'format_float_scientific positive exponent'
+assert np.format_float_scientific(0.0001234) == '1.234e-04', 'format_float_scientific negative exponent'
+assert np.format_float_scientific(1.2, precision=2, unique=False) == '1.20e+00', (
+    'format_float_scientific fixed precision'
+)
 
 
 def fromfunction_sum(row, col):
