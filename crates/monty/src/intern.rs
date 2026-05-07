@@ -974,6 +974,12 @@ pub enum StaticStrings {
     /// `numpy.seterr()` floating-point error config helper.
     #[strum(serialize = "seterr")]
     NpSeterr,
+    /// `numpy.geterrcall()` floating-point error callback helper.
+    #[strum(serialize = "geterrcall")]
+    NpGeterrcall,
+    /// `numpy.seterrcall()` floating-point error callback helper.
+    #[strum(serialize = "seterrcall")]
+    NpSeterrcall,
     /// `numpy.errstate()` floating-point error context helper.
     #[strum(serialize = "errstate")]
     NpErrstate,
@@ -992,6 +998,12 @@ pub enum StaticStrings {
     /// `numpy.setbufsize()` legacy buffer-size helper.
     #[strum(serialize = "setbufsize")]
     NpSetbufsize,
+    /// `numpy.show_runtime()` no-host runtime display helper.
+    #[strum(serialize = "show_runtime")]
+    NpShowRuntime,
+    /// `numpy.test()` no-op test-runner helper.
+    #[strum(serialize = "test")]
+    NpTest,
     /// `numpy.little_endian` constant
     #[strum(serialize = "little_endian")]
     NpLittleEndian,

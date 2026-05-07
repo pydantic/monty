@@ -456,6 +456,10 @@ pub(crate) enum NumpyFunctions {
     Geterr,
     /// `numpy.seterr(...)` — accepted no-op floating-point error config update.
     Seterr,
+    /// `numpy.geterrcall()` — floating-point error callback query.
+    Geterrcall,
+    /// `numpy.seterrcall(callback)` — accepted no-op error callback update.
+    Seterrcall,
     /// `numpy.errstate(...)` — lightweight floating-point error context placeholder.
     Errstate,
     /// `numpy.get_printoptions()` — print config snapshot.
@@ -468,6 +472,10 @@ pub(crate) enum NumpyFunctions {
     Getbufsize,
     /// `numpy.setbufsize(size)` — accepted no-op buffer size update.
     Setbufsize,
+    /// `numpy.show_runtime()` — no-host runtime display placeholder.
+    ShowRuntime,
+    /// `numpy.test()` — no-op test-runner placeholder.
+    Test,
     /// `numpy.atleast_1d(*arrays)` — view inputs as arrays with at least one dimension.
     Atleast1d,
     /// `numpy.atleast_2d(*arrays)` — view inputs as arrays with at least two dimensions.
@@ -1017,12 +1025,16 @@ const NUMPY_FUNCTIONS: &[(StaticStrings, NumpyFunctions)] = &[
     (StaticStrings::NpTypename, NumpyFunctions::Typename),
     (StaticStrings::NpGeterr, NumpyFunctions::Geterr),
     (StaticStrings::NpSeterr, NumpyFunctions::Seterr),
+    (StaticStrings::NpGeterrcall, NumpyFunctions::Geterrcall),
+    (StaticStrings::NpSeterrcall, NumpyFunctions::Seterrcall),
     (StaticStrings::NpErrstate, NumpyFunctions::Errstate),
     (StaticStrings::NpGetPrintoptions, NumpyFunctions::GetPrintoptions),
     (StaticStrings::NpSetPrintoptions, NumpyFunctions::SetPrintoptions),
     (StaticStrings::NpPrintoptions, NumpyFunctions::Printoptions),
     (StaticStrings::NpGetbufsize, NumpyFunctions::Getbufsize),
     (StaticStrings::NpSetbufsize, NumpyFunctions::Setbufsize),
+    (StaticStrings::NpShowRuntime, NumpyFunctions::ShowRuntime),
+    (StaticStrings::NpTest, NumpyFunctions::Test),
     (StaticStrings::NpAtleast1d, NumpyFunctions::Atleast1d),
     (StaticStrings::NpAtleast2d, NumpyFunctions::Atleast2d),
     (StaticStrings::NpAtleast3d, NumpyFunctions::Atleast3d),
@@ -1557,12 +1569,16 @@ pub(super) fn call(
         NumpyFunctions::Typename => call_typename(vm, args).map(CallResult::Value),
         NumpyFunctions::Geterr => call_geterr(vm, args).map(CallResult::Value),
         NumpyFunctions::Seterr => call_seterr(vm, args).map(CallResult::Value),
+        NumpyFunctions::Geterrcall => call_geterrcall(vm, args).map(CallResult::Value),
+        NumpyFunctions::Seterrcall => call_seterrcall(vm, args).map(CallResult::Value),
         NumpyFunctions::Errstate => call_errstate(vm, args).map(CallResult::Value),
         NumpyFunctions::GetPrintoptions => call_get_printoptions(vm, args).map(CallResult::Value),
         NumpyFunctions::SetPrintoptions => Ok(CallResult::Value(call_set_printoptions(vm, args))),
         NumpyFunctions::Printoptions => call_printoptions(vm, args).map(CallResult::Value),
         NumpyFunctions::Getbufsize => call_getbufsize(vm, args).map(CallResult::Value),
         NumpyFunctions::Setbufsize => call_setbufsize(vm, args).map(CallResult::Value),
+        NumpyFunctions::ShowRuntime => Ok(CallResult::Value(call_show_runtime(vm, args))),
+        NumpyFunctions::Test => Ok(CallResult::Value(call_test(vm, args))),
         NumpyFunctions::Atleast1d => call_atleast_nd(vm, args, 1, "numpy.atleast_1d").map(CallResult::Value),
         NumpyFunctions::Atleast2d => call_atleast_nd(vm, args, 2, "numpy.atleast_2d").map(CallResult::Value),
         NumpyFunctions::Atleast3d => call_atleast_nd(vm, args, 3, "numpy.atleast_3d").map(CallResult::Value),
@@ -4928,6 +4944,19 @@ fn call_seterr(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunRes
     numpy_error_policy_dict(vm)
 }
 
+/// `numpy.geterrcall()` — return the fixed absence of an error callback.
+fn call_geterrcall(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    args.check_zero_args("numpy.geterrcall", vm.heap)?;
+    Ok(Value::None)
+}
+
+/// `numpy.seterrcall(callback)` — accept callback configuration as a no-op.
+fn call_seterrcall(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let callback = args.get_one_arg("numpy.seterrcall", vm.heap)?;
+    callback.drop_with_heap(vm);
+    Ok(Value::None)
+}
+
 /// `numpy.errstate(...)` — lightweight placeholder for context-manager-style code.
 fn call_errstate(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     args.drop_with_heap(vm);
@@ -4963,6 +4992,18 @@ fn call_setbufsize(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> Ru
     let arg = args.get_one_arg("numpy.setbufsize", vm.heap)?;
     arg.drop_with_heap(vm);
     Ok(Value::Int(8192))
+}
+
+/// `numpy.show_runtime()` — no-op placeholder that avoids host runtime introspection.
+fn call_show_runtime(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> Value {
+    args.drop_with_heap(vm);
+    Value::None
+}
+
+/// `numpy.test()` — no-op placeholder that avoids launching NumPy's external test suite.
+fn call_test(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> Value {
+    args.drop_with_heap(vm);
+    Value::None
 }
 
 /// Builds the fixed floating-point error-policy dictionary.
