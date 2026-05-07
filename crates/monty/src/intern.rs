@@ -875,6 +875,36 @@ pub enum StaticStrings {
     /// `numpy.negative()` function — unary -
     #[strum(serialize = "negative")]
     NpNegative,
+    /// `numpy.conj()` real-valued conjugate helper.
+    #[strum(serialize = "conj")]
+    NpConj,
+    /// `numpy.conjugate()` alias for `numpy.conj()`.
+    #[strum(serialize = "conjugate")]
+    NpConjugate,
+    /// `numpy.real()` real component helper.
+    #[strum(serialize = "real")]
+    NpReal,
+    /// `numpy.imag()` imaginary component helper.
+    #[strum(serialize = "imag")]
+    NpImag,
+    /// `numpy.isreal()` element-wise real-valued predicate.
+    #[strum(serialize = "isreal")]
+    NpIsreal,
+    /// `numpy.isrealobj()` object-level real-valued predicate.
+    #[strum(serialize = "isrealobj")]
+    NpIsrealobj,
+    /// `numpy.iscomplex()` element-wise complex-valued predicate.
+    #[strum(serialize = "iscomplex")]
+    NpIscomplex,
+    /// `numpy.iscomplexobj()` object-level complex-valued predicate.
+    #[strum(serialize = "iscomplexobj")]
+    NpIscomplexobj,
+    /// `numpy.isscalar()` scalar predicate.
+    #[strum(serialize = "isscalar")]
+    NpIsscalar,
+    /// `numpy.iterable()` iterable predicate.
+    #[strum(serialize = "iterable")]
+    NpIterable,
     /// `numpy.nansum()` function
     #[strum(serialize = "nansum")]
     NpNansum,

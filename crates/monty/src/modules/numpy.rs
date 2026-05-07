@@ -293,6 +293,24 @@ pub(crate) enum NumpyFunctions {
     Positive,
     /// `numpy.negative(a)` — element-wise unary -.
     Negative,
+    /// `numpy.conj(a)` — return the real-valued conjugate.
+    Conj,
+    /// `numpy.real(a)` — return the real component.
+    Real,
+    /// `numpy.imag(a)` — return the imaginary component.
+    Imag,
+    /// `numpy.isreal(a)` — element-wise predicate for real values.
+    Isreal,
+    /// `numpy.isrealobj(a)` — true when the input is not complex-valued.
+    Isrealobj,
+    /// `numpy.iscomplex(a)` — element-wise predicate for complex values.
+    Iscomplex,
+    /// `numpy.iscomplexobj(a)` — true when the input has a complex dtype.
+    Iscomplexobj,
+    /// `numpy.isscalar(a)` — true for scalar values.
+    Isscalar,
+    /// `numpy.iterable(a)` — true for values accepted by Monty's iterator protocol.
+    Iterable,
 
     // --- Phase 4: NaN-aware aggregations and statistics ---
     /// `numpy.nansum(a)` — sum ignoring NaN.
@@ -625,6 +643,17 @@ const NUMPY_FUNCTIONS: &[(StaticStrings, NumpyFunctions)] = &[
     (StaticStrings::Fabs, NumpyFunctions::Fabs),
     (StaticStrings::NpPositive, NumpyFunctions::Positive),
     (StaticStrings::NpNegative, NumpyFunctions::Negative),
+    // Real-only aliases and introspection helpers
+    (StaticStrings::NpConj, NumpyFunctions::Conj),
+    (StaticStrings::NpConjugate, NumpyFunctions::Conj), // alias
+    (StaticStrings::NpReal, NumpyFunctions::Real),
+    (StaticStrings::NpImag, NumpyFunctions::Imag),
+    (StaticStrings::NpIsreal, NumpyFunctions::Isreal),
+    (StaticStrings::NpIsrealobj, NumpyFunctions::Isrealobj),
+    (StaticStrings::NpIscomplex, NumpyFunctions::Iscomplex),
+    (StaticStrings::NpIscomplexobj, NumpyFunctions::Iscomplexobj),
+    (StaticStrings::NpIsscalar, NumpyFunctions::Isscalar),
+    (StaticStrings::NpIterable, NumpyFunctions::Iterable),
     // Phase 4: NaN-aware aggregations and statistics
     (StaticStrings::NpNansum, NumpyFunctions::Nansum),
     (StaticStrings::NpNanmean, NumpyFunctions::Nanmean),
@@ -975,6 +1004,19 @@ pub(super) fn call(
         }
         NumpyFunctions::Positive => call_elementwise(vm, args, |x| x, "numpy.positive", None).map(CallResult::Value),
         NumpyFunctions::Negative => call_elementwise(vm, args, |x| -x, "numpy.negative", None).map(CallResult::Value),
+        NumpyFunctions::Conj => call_real_identity(vm, args, "numpy.conj").map(CallResult::Value),
+        NumpyFunctions::Real => call_real_identity(vm, args, "numpy.real").map(CallResult::Value),
+        NumpyFunctions::Imag => call_imag(vm, args).map(CallResult::Value),
+        NumpyFunctions::Isreal => call_realness_elementwise(vm, args, true, "numpy.isreal").map(CallResult::Value),
+        NumpyFunctions::Isrealobj => call_realness_object(vm, args, true, "numpy.isrealobj").map(CallResult::Value),
+        NumpyFunctions::Iscomplex => {
+            call_realness_elementwise(vm, args, false, "numpy.iscomplex").map(CallResult::Value)
+        }
+        NumpyFunctions::Iscomplexobj => {
+            call_realness_object(vm, args, false, "numpy.iscomplexobj").map(CallResult::Value)
+        }
+        NumpyFunctions::Isscalar => call_isscalar(vm, args).map(CallResult::Value),
+        NumpyFunctions::Iterable => call_iterable(vm, args).map(CallResult::Value),
         // Phase 4: NaN-aware aggregations and statistics
         NumpyFunctions::Nansum => call_nan_aggregate(vm, args, nan_sum, "numpy.nansum").map(CallResult::Value),
         NumpyFunctions::Nanmean => call_nan_aggregate(vm, args, nan_mean, "numpy.nanmean").map(CallResult::Value),
@@ -2677,6 +2719,149 @@ fn scalar_from_f64(value: f64, dtype: NdArrayDtype) -> Value {
         NdArrayDtype::Int64 => Value::Int(value as i64),
         NdArrayDtype::Float64 => Value::Float(value),
         NdArrayDtype::Bool => Value::Bool(value != 0.0),
+    }
+}
+
+/// `numpy.conj(a)` / `numpy.real(a)` for Monty's real-valued ndarray subset.
+///
+/// Monty does not currently model complex numbers, so the conjugate and real
+/// component are identical to the input. Lists are converted to ndarrays, while
+/// numeric scalars keep their scalar shape and dtype.
+fn call_real_identity(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues, name: &str) -> RunResult<Value> {
+    let arg = args.get_one_arg(name, vm.heap)?;
+    defer_drop!(arg, vm);
+
+    if let Ok((data, shape, dtype)) = extract_ndarray_info(arg, name, vm) {
+        let arr = NdArray::new(data, shape, dtype);
+        Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(arr))?))
+    } else {
+        let (value, dtype) = numeric_scalar_info(arg, name, vm)?;
+        Ok(scalar_from_f64(value, dtype))
+    }
+}
+
+/// `numpy.imag(a)` for Monty's real-valued ndarray subset.
+///
+/// Since complex dtypes are unsupported, every supported numeric input has a
+/// zero imaginary component. The result preserves array shape and scalar-vs-array
+/// form so common NumPy introspection snippets continue to work.
+fn call_imag(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let arg = args.get_one_arg("numpy.imag", vm.heap)?;
+    defer_drop!(arg, vm);
+
+    if let Ok((data, shape, dtype)) = extract_ndarray_info(arg, "numpy.imag", vm) {
+        let arr = NdArray::new(vec![0.0; data.len()], shape, dtype);
+        Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(arr))?))
+    } else {
+        let (_, dtype) = numeric_scalar_info(arg, "numpy.imag", vm)?;
+        Ok(scalar_from_f64(0.0, dtype))
+    }
+}
+
+/// Element-wise `numpy.isreal()` / `numpy.iscomplex()` over real-only inputs.
+///
+/// The safe ndarray model has no complex dtype, so every numeric element is real
+/// and no numeric element is complex. Non-numeric object arrays remain outside
+/// this module's supported surface.
+fn call_realness_elementwise(
+    vm: &mut VM<'_, impl ResourceTracker>,
+    args: ArgValues,
+    is_real: bool,
+    name: &str,
+) -> RunResult<Value> {
+    let arg = args.get_one_arg(name, vm.heap)?;
+    defer_drop!(arg, vm);
+
+    if let Ok((data, shape, _)) = extract_ndarray_info(arg, name, vm) {
+        let fill = bool_to_f64(is_real);
+        let arr = NdArray::new(vec![fill; data.len()], shape, NdArrayDtype::Bool);
+        Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(arr))?))
+    } else {
+        numeric_scalar_info(arg, name, vm)?;
+        Ok(Value::Bool(is_real))
+    }
+}
+
+/// Object-level `numpy.isrealobj()` / `numpy.iscomplexobj()`.
+///
+/// Monty cannot construct complex arrays or scalars, so these predicates are
+/// constant for the current runtime surface. The argument is still consumed and
+/// dropped normally to preserve reference-count behavior.
+fn call_realness_object(
+    vm: &mut VM<'_, impl ResourceTracker>,
+    args: ArgValues,
+    is_real: bool,
+    name: &str,
+) -> RunResult<Value> {
+    let arg = args.get_one_arg(name, vm.heap)?;
+    arg.drop_with_heap(vm);
+    Ok(Value::Bool(is_real))
+}
+
+/// `numpy.isscalar(a)` — report whether a value is scalar in Monty's runtime.
+///
+/// Numeric values, strings/bytes, dates, timedeltas, and long integers are
+/// scalar-like; containers, arrays, modules, functions, and sentinel values are
+/// not. This intentionally avoids invoking user-visible iteration or attribute
+/// lookup, so it remains a pure shape/type predicate.
+fn call_isscalar(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let arg = args.get_one_arg("numpy.isscalar", vm.heap)?;
+    defer_drop!(arg, vm);
+    Ok(Value::Bool(is_numpy_scalar(arg, vm)))
+}
+
+/// `numpy.iterable(a)` — report whether Monty's iterator protocol accepts a value.
+fn call_iterable(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let arg = args.get_one_arg("numpy.iterable", vm.heap)?;
+    defer_drop!(arg, vm);
+    Ok(Value::Bool(is_numpy_iterable(arg, vm)))
+}
+
+/// Returns whether a value should be treated as scalar by `numpy.isscalar()`.
+fn is_numpy_scalar(value: &Value, vm: &VM<'_, impl ResourceTracker>) -> bool {
+    match value {
+        Value::Int(_)
+        | Value::Float(_)
+        | Value::Bool(_)
+        | Value::InternString(_)
+        | Value::InternBytes(_)
+        | Value::InternLongInt(_) => true,
+        Value::Ref(heap_id) => matches!(
+            vm.heap.get(*heap_id),
+            HeapData::LongInt(_)
+                | HeapData::Str(_)
+                | HeapData::Bytes(_)
+                | HeapData::Date(_)
+                | HeapData::DateTime(_)
+                | HeapData::TimeDelta(_)
+                | HeapData::TimeZone(_)
+        ),
+        _ => false,
+    }
+}
+
+/// Returns whether a value can be iterated by Monty's iterator protocol.
+fn is_numpy_iterable(value: &Value, vm: &VM<'_, impl ResourceTracker>) -> bool {
+    match value {
+        Value::InternString(_) | Value::InternBytes(_) => true,
+        Value::Ref(heap_id) => matches!(
+            vm.heap.get(*heap_id),
+            HeapData::List(_)
+                | HeapData::Tuple(_)
+                | HeapData::NamedTuple(_)
+                | HeapData::Dict(_)
+                | HeapData::DictKeysView(_)
+                | HeapData::DictItemsView(_)
+                | HeapData::DictValuesView(_)
+                | HeapData::Set(_)
+                | HeapData::FrozenSet(_)
+                | HeapData::Range(_)
+                | HeapData::Iter(_)
+                | HeapData::Str(_)
+                | HeapData::Bytes(_)
+                | HeapData::NdArray(_)
+        ),
+        _ => false,
     }
 }
 
