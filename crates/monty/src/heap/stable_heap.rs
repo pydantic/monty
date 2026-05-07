@@ -175,6 +175,7 @@ impl<T> StableHeap<T> {
     }
 
     /// Iterates the live values
+    #[cfg(any(feature = "ref-count-return", test))]
     pub fn iter(&self) -> impl Iterator<Item = (HeapId, &T)> {
         // SAFETY: [DH] - iterating only the live entries ensures that caller
         // can never observe `None` entries which could be invalidated by
@@ -218,6 +219,8 @@ fn create_page<T>() -> Box<[Slot<T>; PAGE_SIZE]> {
 
 /// Submodule for `StableHeapEntry` to help enforce a safety boundary around the `new` constructor.
 mod stable_heap_entry {
+    use std::ops::{Deref, DerefMut};
+
     use crate::heap::{HeapId, free_list::FreeList};
 
     pub struct StableHeapEntry<'a, T> {
@@ -239,10 +242,30 @@ mod stable_heap_entry {
             unsafe { self.value.take().unwrap_unchecked() }
         }
 
-        pub fn get(&mut self) -> &mut T {
+        pub fn get(&self) -> &T {
+            // SAFETY: [DH] - impossible to get a `StableHeapEntry` with `None` slot - `new`
+            // is the only constructor
+            unsafe { self.value.as_ref().unwrap_unchecked() }
+        }
+
+        pub fn get_mut(&mut self) -> &mut T {
             // SAFETY: [DH] - impossible to get a `StableHeapEntry` with `None` slot - `new`
             // is the only constructor
             unsafe { self.value.as_mut().unwrap_unchecked() }
+        }
+    }
+
+    impl<T> Deref for StableHeapEntry<'_, T> {
+        type Target = T;
+
+        fn deref(&self) -> &Self::Target {
+            self.get()
+        }
+    }
+
+    impl<T> DerefMut for StableHeapEntry<'_, T> {
+        fn deref_mut(&mut self) -> &mut Self::Target {
+            self.get_mut()
         }
     }
 }

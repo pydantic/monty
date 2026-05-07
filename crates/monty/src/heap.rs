@@ -5,7 +5,6 @@ use std::{
     mem::ManuallyDrop,
     ops::{Deref, DerefMut},
     ptr::{self, NonNull},
-    vec,
 };
 
 use bytemuck::TransparentWrapper;
@@ -1038,7 +1037,7 @@ impl<T: ResourceTracker> Heap<T> {
                 .entries
                 .entry(current_id)
                 .expect("Heap::dec_ref: value already freed");
-            let heap_entry = entry.get();
+            let heap_entry = entry.get_mut();
             if heap_entry.refcount.get() > 1 {
                 heap_entry.refcount.update(|r| r - 1);
 
@@ -1242,9 +1241,43 @@ impl<T: ResourceTracker> Heap<T> {
             return 0;
         }
 
-        let seeds = self.mark_roots();
-        self.scan_roots(&seeds);
-        let freed = self.collect_roots(&seeds);
+        let mut roots = Vec::new();
+        let mut work_stack = Vec::new();
+
+        // 1. Discover roots by finding Purple entries. Mark each root (and its subtree) Gray.
+        for i in 0..self.entries.len() {
+            let id = HeapId(i);
+            let Some(mut entry) = self.entries.entry(id) else {
+                continue;
+            };
+            if entry.get().color.get() != CcColor::Purple {
+                continue;
+            }
+            if entry.get().readers.get() > 0 {
+                // This entry cannot possibly be a root since it has active readers; reset
+                // to Black so it won't be a candidate in the next cycle.
+                entry.get().color.set(CcColor::Black);
+                continue;
+            }
+            roots.push(id);
+            entry.get().color.set(CcColor::Gray);
+
+            // Mark the subtree reachable from this root as gray and decrement refcounts
+            // during edge traversal
+            collect_child_ids(entry.get_mut().data.0.get_mut(), &mut work_stack);
+            self.mark_gray(&mut work_stack);
+        }
+
+        // 2. For each root, scan and resurrect if alive (refcount > 0 or active readers).
+        for root in &roots {
+            self.scan(*root, &mut work_stack);
+        }
+
+        // 3. Collect each root's White children as unreachable garbage.
+        let mut freed = 0;
+        for root in &roots {
+            freed += self.collect_white(*root, &mut work_stack);
+        }
 
         // After `MarkRoots` no Purple entries remain in the heap; zero the
         // counter so the next `dec_ref` event re-seeds from a clean baseline,
@@ -1254,89 +1287,29 @@ impl<T: ResourceTracker> Heap<T> {
         freed
     }
 
-    /// `MarkRoots`: linear pass over entries, run `MarkGray` on each Purple
-    /// seed, return the seed list.
-    ///
-    /// Purple entries reached transitively by an earlier seed's `MarkGray`
-    /// flip to Gray before the iterator visits them, so the
-    /// `entry.color.get() == Purple` check naturally dedupes — the dominator
-    /// seed handles the whole subtree.
-    fn mark_roots(&mut self) -> Vec<HeapId> {
-        // Collect Purple seed IDs without holding a borrow on `self` so we can
-        // mutate refcounts during the subsequent `mark_gray` pass.
-        let seeds: Vec<HeapId> = self
-            .entries
-            .iter()
-            .filter_map(|(id, entry)| (entry.color.get() == CcColor::Purple).then_some(id))
-            .collect();
-
-        let mut filtered_seeds = Vec::with_capacity(seeds.len());
-        let mut work_stack = Vec::new();
-        for id in seeds {
-            // Re-check Purple: an earlier seed's `mark_gray` may have already
-            // visited this entry and flipped its color to Gray. Read out the
-            // color in a temp so the immutable borrow on `self.entries` ends
-            // before the `&mut self` call to `mark_gray`.
-            let is_purple = self.entries.get(id).color.get() == CcColor::Purple;
-            if is_purple {
-                self.mark_gray(id, &mut work_stack);
-                filtered_seeds.push(id);
-            }
-        }
-        filtered_seeds
-    }
-
     /// `MarkGray` (iterative): paint `s` and its transitive children Gray,
     /// decrementing each child's refcount once per traversal edge.
     ///
-    /// After this completes for every seed, every Gray entry's refcount equals
+    /// After this completes for every root, every Gray entry's refcount equals
     /// the count of *external* references into it (refs originating outside
     /// the candidate subgraph). `Scan` uses that property to decide
     /// alive/condemned.
-    fn mark_gray(&mut self, start: HeapId, work_stack: &mut Vec<HeapId>) {
-        debug_assert!(work_stack.is_empty());
-        work_stack.push(start);
+    fn mark_gray(&mut self, work_stack: &mut Vec<HeapId>) {
         while let Some(id) = work_stack.pop() {
-            let len_before = work_stack.len();
-            let visit_children = {
-                let mut entry_handle = self.entries.entry(id).expect("mark_gray: entry already freed");
-                let entry = entry_handle.get();
-                if entry.color.get() == CcColor::Gray {
-                    false
-                } else {
-                    entry.color.set(CcColor::Gray);
-                    // Safe `&mut HeapData` via `UnsafeCell::get_mut`, then reborrowed as
-                    // `&HeapData` for the read-only child walk.
-                    let data: &HeapData = entry.data.0.get_mut();
-                    collect_child_ids(data, work_stack);
-                    true
-                }
-            };
-            if !visit_children {
+            let mut entry = self.entries.entry(id).expect("mark_gray: entry already freed");
+
+            debug_assert!(
+                entry.get().refcount.get() > 0,
+                "mark_gray: refcount underflow at {id:?}"
+            );
+            entry.get().refcount.update(|r| r - 1);
+
+            if entry.get().color.replace(CcColor::Gray) == CcColor::Gray {
+                // Already marked via another edge
                 continue;
             }
-            // Decrement each newly enqueued child's refcount. The recursion
-            // (push back onto the stack) is what gives us the depth-first
-            // descent; the rc-- happens *before* we recurse, matching the
-            // textbook Bacon–Rajan ordering.
-            for child_id in &work_stack[len_before..] {
-                let child = self.entries.get(*child_id);
-                debug_assert!(
-                    child.refcount.get() > 0,
-                    "mark_gray: child refcount underflow at HeapId({})",
-                    child_id.index(),
-                );
-                child.refcount.update(|r| r - 1);
-            }
-        }
-    }
 
-    /// `Scan` over every seed: resurrect alive subtrees (Black) or condemn
-    /// dead ones (White).
-    fn scan_roots(&mut self, seeds: &[HeapId]) {
-        let mut work_stack = Vec::new();
-        for &seed in seeds {
-            self.scan(seed, &mut work_stack);
+            collect_child_ids(entry.get_mut().data.0.get_mut(), work_stack);
         }
     }
 
@@ -1346,30 +1319,28 @@ impl<T: ResourceTracker> Heap<T> {
     fn scan(&mut self, start: HeapId, work_stack: &mut Vec<HeapId>) {
         debug_assert!(work_stack.is_empty());
         work_stack.push(start);
+        let mut black_work_stack = Vec::new();
         while let Some(id) = work_stack.pop() {
-            let resurrect = {
-                let mut entry_handle = self.entries.entry(id).expect("scan: entry already freed");
-                let entry = entry_handle.get();
-                if entry.color.get() != CcColor::Gray {
-                    continue;
-                }
-                if entry.refcount.get() > 0 || entry.readers.get() > 0 {
-                    // External reference exists (either a refcount we couldn't
-                    // account for inside the candidate set, or a live `HeapRead`
-                    // pointing into the entry). Resurrect this entry and its
-                    // transitive Gray children back to Black via `scan_black`,
-                    // which needs `&mut self` so we drop the entry borrow first.
-                    true
-                } else {
-                    entry.color.set(CcColor::White);
-                    let data: &HeapData = entry.data.0.get_mut();
-                    collect_child_ids(data, work_stack);
-                    false
-                }
-            };
-            if resurrect {
-                self.scan_black(id);
+            let mut entry_handle = self.entries.entry(id).expect("scan: entry already freed");
+            let entry = entry_handle.get_mut();
+            if entry.color.get() != CcColor::Gray {
+                // Already processed via another edge
+                continue;
             }
+
+            if entry.refcount.get() == 0 && entry.readers.get() == 0 {
+                entry.color.set(CcColor::White);
+                collect_child_ids(entry.data.0.get_mut(), work_stack);
+                continue;
+            }
+
+            // External reference exists (either a refcount we couldn't
+            // account for inside the candidate set, or a live `HeapRead`
+            // pointing into the entry). Resurrect this entry and its
+            // transitive Gray children back to Black via `scan_black`.
+            collect_child_ids(entry.data.0.get_mut(), &mut black_work_stack);
+            entry.color.set(CcColor::Black);
+            self.mark_black(&mut black_work_stack);
         }
     }
 
@@ -1382,61 +1353,17 @@ impl<T: ResourceTracker> Heap<T> {
     /// from two parents in the resurrected subtree) balance the matching
     /// per-edge decrements `MarkGray` performed. Recursion only descends into
     /// non-Black children so each entry is processed at most once.
-    fn scan_black(&mut self, start: HeapId) {
-        let mut work_stack = vec![start];
-        let mut children_buf = Vec::new();
+    fn mark_black(&mut self, work_stack: &mut Vec<HeapId>) {
         while let Some(id) = work_stack.pop() {
-            children_buf.clear();
-            let visit_children = {
-                let mut entry_handle = self.entries.entry(id).expect("scan_black: entry already freed");
-                let entry = entry_handle.get();
-                if entry.color.get() == CcColor::Black {
-                    // Already processed via another edge — skip to avoid
-                    // re-walking children (which would double-increment
-                    // grandchildren).
-                    false
-                } else {
-                    entry.color.set(CcColor::Black);
-                    let data: &HeapData = entry.data.0.get_mut();
-                    collect_child_ids(data, &mut children_buf);
-                    true
-                }
-            };
-            if !visit_children {
+            let mut entry = self.entries.entry(id).expect("scan_black: entry already freed");
+            entry.refcount.update(|r| r + 1);
+            if entry.color.replace(CcColor::Black) == CcColor::Black {
+                // Already marked via another edge
                 continue;
             }
-            for &child_id in &children_buf {
-                let child = self.entries.get(child_id);
-                child.refcount.update(|r| r + 1);
-                if child.color.get() != CcColor::Black {
-                    work_stack.push(child_id);
-                }
-            }
-        }
-    }
 
-    /// `CollectRoots` + `CollectWhite` (iterative): free every entry painted
-    /// White by `Scan`, walking transitively through White children. Returns
-    /// the number of entries actually freed during the sweep.
-    ///
-    /// Refcounts are not adjusted on children: `MarkGray` decremented and
-    /// `ScanBlack` re-incremented in balance, so any Black child of a White
-    /// parent has its rc already correctly reflecting the lost edge from the
-    /// freed parent. Children that are themselves White are about to be freed
-    /// and don't need rc adjustments either.
-    ///
-    /// `py_dec_ref_ids_for_data` is used to walk children — under
-    /// `memory-model-checks` it has the side effect of marking child
-    /// `Value::Ref`s as `Dereferenced`, which prevents the panic that would
-    /// otherwise fire when the freed entry's data is dropped with live
-    /// `Value::Ref` payloads.
-    fn collect_roots(&mut self, seeds: &[HeapId]) -> usize {
-        let mut work_stack = Vec::new();
-        let mut freed = 0;
-        for &seed in seeds {
-            freed += self.collect_white(seed, &mut work_stack);
+            collect_child_ids(entry.data.0.get_mut(), work_stack);
         }
-        freed
     }
 
     fn collect_white(&mut self, start: HeapId, work_stack: &mut Vec<HeapId>) -> usize {
@@ -1448,7 +1375,7 @@ impl<T: ResourceTracker> Heap<T> {
                 // Already freed via another seed's traversal — ignore.
                 continue;
             };
-            let heap_entry = entry.get();
+            let heap_entry = entry.get_mut();
             if heap_entry.color.get() != CcColor::White {
                 // Either resurrected to Black by `Scan` or never visited
                 // (still Black/Gray from somewhere). Don't free.
@@ -1483,7 +1410,7 @@ impl<T: ResourceTracker> Drop for Heap<T> {
         for id in 0..self.entries.len() {
             if let Some(mut entry) = self.entries.entry(HeapId::from_index(id)) {
                 // Mark all `Value::Ref` payloads as `Dereferenced` so they don't panic when dropped
-                py_dec_ref_ids_for_data(entry.get().data.0.get_mut(), &mut Vec::new());
+                py_dec_ref_ids_for_data(entry.get_mut().data.0.get_mut(), &mut Vec::new());
                 entry.free();
             }
         }
