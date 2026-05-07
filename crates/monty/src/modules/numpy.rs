@@ -237,8 +237,12 @@ pub(crate) enum NumpyFunctions {
     Vstack,
     /// `numpy.hstack(arrays)` — stack arrays horizontally.
     Hstack,
+    /// `numpy.dstack(arrays)` — stack arrays along depth after promoting to 3-D.
+    Dstack,
     /// `numpy.stack(arrays)` — stack arrays along new axis.
     Stack,
+    /// `numpy.unstack(a, axis=0)` — split an array into a tuple along an axis.
+    Unstack,
     /// `numpy.nonzero(a)` — indices of non-zero elements.
     Nonzero,
     /// `numpy.argwhere(a)` — indices where elements are non-zero.
@@ -561,6 +565,8 @@ pub(crate) enum NumpyFunctions {
     Hsplit,
     /// `numpy.vsplit(a, n)` — vertical split.
     Vsplit,
+    /// `numpy.dsplit(a, n)` — depth split.
+    Dsplit,
     /// `numpy.array_split(a, n)` — split into possibly unequal parts.
     ArraySplit,
     /// `numpy.full_like(a, fill_value)` — array of same shape filled with value.
@@ -822,7 +828,9 @@ const NUMPY_FUNCTIONS: &[(StaticStrings, NumpyFunctions)] = &[
     (StaticStrings::Append, NumpyFunctions::Append),
     (StaticStrings::NpVstack, NumpyFunctions::Vstack),
     (StaticStrings::NpHstack, NumpyFunctions::Hstack),
+    (StaticStrings::NpDstack, NumpyFunctions::Dstack),
     (StaticStrings::NpStack, NumpyFunctions::Stack),
+    (StaticStrings::NpUnstack, NumpyFunctions::Unstack),
     (StaticStrings::NpNonzero, NumpyFunctions::Nonzero),
     (StaticStrings::NpArgwhere, NumpyFunctions::Argwhere),
     (StaticStrings::NpTile, NumpyFunctions::Tile),
@@ -988,6 +996,7 @@ const NUMPY_FUNCTIONS: &[(StaticStrings, NumpyFunctions)] = &[
     (StaticStrings::NpRowStack, NumpyFunctions::RowStack),
     (StaticStrings::NpHsplit, NumpyFunctions::Hsplit),
     (StaticStrings::NpVsplit, NumpyFunctions::Vsplit),
+    (StaticStrings::NpDsplit, NumpyFunctions::Dsplit),
     (StaticStrings::NpArraySplit, NumpyFunctions::ArraySplit),
     (StaticStrings::NpFullLike, NumpyFunctions::FullLike),
     (StaticStrings::NpEmptyLike, NumpyFunctions::EmptyLike),
@@ -1135,10 +1144,12 @@ pub(super) fn call(
         NumpyFunctions::Append => call_append(vm, args).map(CallResult::Value),
         NumpyFunctions::Vstack => call_vstack(vm, args).map(CallResult::Value),
         NumpyFunctions::Hstack => call_hstack(vm, args).map(CallResult::Value),
+        NumpyFunctions::Dstack => call_dstack(vm, args).map(CallResult::Value),
         // Note: np.stack with axis=0 is equivalent to np.vstack for 1D inputs.
         // For 2D+ inputs, np.stack creates a new axis, which differs from vstack.
         // We only support the 1D case which is the LLM-common pattern.
         NumpyFunctions::Stack => call_vstack(vm, args).map(CallResult::Value),
+        NumpyFunctions::Unstack => call_unstack(vm, args).map(CallResult::Value),
         NumpyFunctions::Nonzero => call_nonzero(vm, args).map(CallResult::Value),
         NumpyFunctions::Argwhere => call_argwhere(vm, args).map(CallResult::Value),
         NumpyFunctions::Tile => call_tile(vm, args).map(CallResult::Value),
@@ -1517,6 +1528,7 @@ pub(super) fn call(
         NumpyFunctions::RowStack => call_vstack(vm, args).map(CallResult::Value), // alias
         NumpyFunctions::Hsplit => call_hsplit(vm, args).map(CallResult::Value),
         NumpyFunctions::Vsplit => call_vsplit(vm, args).map(CallResult::Value),
+        NumpyFunctions::Dsplit => call_dsplit(vm, args).map(CallResult::Value),
         NumpyFunctions::ArraySplit => call_array_split(vm, args).map(CallResult::Value),
         NumpyFunctions::FullLike => call_full_like(vm, args).map(CallResult::Value),
         NumpyFunctions::EmptyLike => call_like(vm, args, 0.0, "numpy.empty_like").map(CallResult::Value),
@@ -3557,6 +3569,163 @@ fn call_vstack(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunRes
 /// implemented and will incorrectly concatenate along axis=0 instead.
 fn call_hstack(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     call_concatenate(vm, args)
+}
+
+/// `numpy.dstack(arrays)` — stack arrays along the third axis.
+fn call_dstack(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let arg = args.get_one_arg("numpy.dstack", vm.heap)?;
+    defer_drop!(arg, vm);
+    let items = sequence_items(arg, "numpy.dstack", vm)?;
+    defer_drop_mut!(items, vm);
+    if items.is_empty() {
+        return Err(SimpleException::new_msg(ExcType::ValueError, "need at least one array to stack").into());
+    }
+
+    let mut arrays = Vec::with_capacity(items.len());
+    for item in items.iter() {
+        let arr = ndarray_from_value(item, "numpy.dstack", vm)?;
+        arrays.push(dstack_promoted_array(arr));
+    }
+    let result = concatenate_ndarrays_along_axis(&arrays, 2, "numpy.dstack", vm.heap.tracker())?;
+    Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(result))?))
+}
+
+/// `numpy.unstack(a, axis=0)` — split an array into a tuple with one axis removed.
+fn call_unstack(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let pos = args.into_pos_only("numpy.unstack", vm.heap)?;
+    defer_drop_mut!(pos, vm);
+
+    let arr_val = pos
+        .next()
+        .ok_or_else(|| ExcType::type_error_at_least("numpy.unstack", 1, 0))?;
+    defer_drop!(arr_val, vm);
+    let axis = if let Some(axis_val) = pos.next() {
+        defer_drop!(axis_val, vm);
+        value_to_i64_arg(axis_val, "numpy.unstack", "axis")?
+    } else {
+        0
+    };
+    if let Some(extra) = pos.next() {
+        extra.drop_with_heap(vm);
+        return Err(ExcType::type_error_at_most("numpy.unstack", 2, 3));
+    }
+
+    let arr = ndarray_from_value(arr_val, "numpy.unstack", vm)?;
+    let axis = normalize_axis(axis, arr.ndim(), "numpy.unstack")?;
+    let result_shape = shape_without_axis(arr.shape(), axis);
+    let mut values: SmallVec<[Value; 3]> = SmallVec::new();
+    for index in 0..arr.shape()[axis] {
+        let data = slice_ndarray_along_axis(&arr, axis, index, index + 1);
+        if result_shape.is_empty() {
+            values.push(scalar_from_f64(data[0], arr.dtype()));
+        } else {
+            let result = NdArray::new(data, result_shape.clone(), arr.dtype());
+            values.push(Value::Ref(vm.heap.allocate(HeapData::NdArray(result))?));
+        }
+    }
+    allocate_tuple(values, vm.heap).map_err(Into::into)
+}
+
+/// Reshapes one dstack input according to NumPy's `atleast_3d` promotion rules.
+fn dstack_promoted_array(arr: NdArray) -> NdArray {
+    let NdArray { data, shape, dtype } = arr;
+    let shape = match shape.as_slice() {
+        [len] => vec![1, *len, 1],
+        [rows, cols] => vec![*rows, *cols, 1],
+        _ => shape,
+    };
+    NdArray::new(data, shape, dtype)
+}
+
+/// Concatenates arrays along one axis, preserving row-major layout.
+fn concatenate_ndarrays_along_axis(
+    arrays: &[NdArray],
+    axis: usize,
+    name: &str,
+    tracker: &impl ResourceTracker,
+) -> RunResult<NdArray> {
+    let first = arrays
+        .first()
+        .ok_or_else(|| SimpleException::new_msg(ExcType::ValueError, format!("{name}() needs at least one array")))?;
+    let mut output_shape = first.shape().to_vec();
+    if axis >= output_shape.len() {
+        return Err(SimpleException::new_msg(
+            ExcType::ValueError,
+            format!("bad axis for array with {} dimensions", first.ndim()),
+        )
+        .into());
+    }
+
+    output_shape[axis] = 0;
+    let mut dtype = first.dtype();
+    for arr in arrays {
+        if arr.ndim() != first.ndim() || !same_shape_except_axis(arr.shape(), first.shape(), axis) {
+            return Err(SimpleException::new_msg(
+                ExcType::ValueError,
+                format!("{name}() input arrays must have matching dimensions except along the concatenation axis"),
+            )
+            .into());
+        }
+        output_shape[axis] = output_shape[axis]
+            .checked_add(arr.shape()[axis])
+            .ok_or_else(|| SimpleException::new_msg(ExcType::ValueError, format!("{name}() dimensions overflow")))?;
+        dtype = promote_dtype(dtype, arr.dtype());
+    }
+
+    let output_len = checked_shape_product(&output_shape, name)?;
+    check_array_alloc_size(output_len, tracker)?;
+    let inner = shape_product(&first.shape()[axis + 1..]);
+    let outer = shape_product(&first.shape()[..axis]);
+    let mut data = Vec::with_capacity(output_len);
+    for outer_index in 0..outer {
+        for arr in arrays {
+            let axis_len = arr.shape()[axis];
+            let start = outer_index * axis_len * inner;
+            let end = start + axis_len * inner;
+            data.extend_from_slice(&arr.data()[start..end]);
+        }
+    }
+
+    Ok(NdArray::new(data, output_shape, dtype))
+}
+
+/// Returns true when two shapes are equal outside one concatenation axis.
+fn same_shape_except_axis(lhs: &[usize], rhs: &[usize], axis: usize) -> bool {
+    lhs.len() == rhs.len()
+        && lhs
+            .iter()
+            .zip(rhs.iter())
+            .enumerate()
+            .all(|(index, (&left, &right))| index == axis || left == right)
+}
+
+/// Removes one axis from a shape, preserving the order of the remaining axes.
+fn shape_without_axis(shape: &[usize], axis: usize) -> Vec<usize> {
+    shape
+        .iter()
+        .enumerate()
+        .filter_map(|(index, &dim)| (index != axis).then_some(dim))
+        .collect()
+}
+
+/// Copies one half-open slice along an axis out of a row-major ndarray.
+fn slice_ndarray_along_axis(arr: &NdArray, axis: usize, start_axis: usize, end_axis: usize) -> Vec<f64> {
+    let axis_len = arr.shape()[axis];
+    let inner = shape_product(&arr.shape()[axis + 1..]);
+    let outer = shape_product(&arr.shape()[..axis]);
+    let chunk_axis_len = end_axis.saturating_sub(start_axis);
+    let mut data = Vec::with_capacity(outer * chunk_axis_len * inner);
+    for outer_index in 0..outer {
+        let block_start = outer_index * axis_len * inner + start_axis * inner;
+        let block_end = block_start + chunk_axis_len * inner;
+        data.extend_from_slice(&arr.data()[block_start..block_end]);
+    }
+    data
+}
+
+/// Computes a small shape product for already-validated ndarray dimensions.
+fn shape_product(shape: &[usize]) -> usize {
+    shape.iter().product()
 }
 
 /// `numpy.nonzero(a)` — indices of non-zero elements, returned as a tuple of arrays.
@@ -6551,6 +6720,136 @@ fn call_hsplit(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunRes
 /// `numpy.vsplit(a, n)` — split vertically.
 fn call_vsplit(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     call_split(vm, args)
+}
+
+/// `numpy.dsplit(a, indices_or_sections)` — split arrays along depth axis.
+fn call_dsplit(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let (arr_val, idx_val) = args.get_two_args("numpy.dsplit", vm.heap)?;
+    defer_drop!(arr_val, vm);
+    defer_drop!(idx_val, vm);
+    let arr = ndarray_from_value(arr_val, "numpy.dsplit", vm)?;
+    if arr.ndim() < 3 {
+        return Err(SimpleException::new_msg(
+            ExcType::ValueError,
+            "dsplit only works on arrays of 3 or more dimensions",
+        )
+        .into());
+    }
+
+    let split_indices = split_indices_for_axis(idx_val, arr.shape()[2], "numpy.dsplit", vm)?;
+    split_ndarray_along_axis_to_list(&arr, 2, &split_indices, vm)
+}
+
+/// Extracts split points for a fixed array axis from an integer or index sequence.
+fn split_indices_for_axis(
+    value: &Value,
+    axis_len: usize,
+    name: &str,
+    vm: &VM<'_, impl ResourceTracker>,
+) -> RunResult<Vec<usize>> {
+    match value {
+        Value::Int(sections) => equal_split_indices(*sections, axis_len),
+        Value::Ref(id) => match vm.heap.get(*id) {
+            HeapData::List(list) => list
+                .as_slice()
+                .iter()
+                .map(|value| split_index_value_to_usize(value, axis_len, name))
+                .collect(),
+            HeapData::Tuple(tuple) => tuple
+                .as_slice()
+                .iter()
+                .map(|value| split_index_value_to_usize(value, axis_len, name))
+                .collect(),
+            HeapData::NdArray(indices) => indices
+                .data()
+                .iter()
+                .map(|&value| split_index_f64_to_usize(value, axis_len, name))
+                .collect(),
+            _ => Err(ExcType::type_error(format!("{name}() second arg must be int or list"))),
+        },
+        _ => Err(ExcType::type_error(format!("{name}() second arg must be int or list"))),
+    }
+}
+
+/// Computes split points for equal-sized axis sections.
+fn equal_split_indices(sections: i64, axis_len: usize) -> RunResult<Vec<usize>> {
+    if sections <= 0 {
+        return Err(SimpleException::new_msg(ExcType::ValueError, "number sections must be larger than 0").into());
+    }
+    let sections = usize::try_from(sections)
+        .map_err(|_| SimpleException::new_msg(ExcType::ValueError, "number sections is too large"))?;
+    if !axis_len.is_multiple_of(sections) {
+        return Err(
+            SimpleException::new_msg(ExcType::ValueError, "array split does not result in an equal division").into(),
+        );
+    }
+    let chunk_size = axis_len / sections;
+    Ok((1..sections).map(|index| index * chunk_size).collect())
+}
+
+/// Converts one Python split index to a clamped axis offset.
+fn split_index_value_to_usize(value: &Value, axis_len: usize, name: &str) -> RunResult<usize> {
+    match value {
+        Value::Int(index) => split_index_i64_to_usize(*index, axis_len, name),
+        _ => Err(ExcType::type_error("split indices must be integers")),
+    }
+}
+
+/// Converts one ndarray-backed split index to a clamped axis offset.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "integer ndarray values are stored as f64 in Monty's current ndarray model"
+)]
+fn split_index_f64_to_usize(value: f64, axis_len: usize, name: &str) -> RunResult<usize> {
+    if value.is_finite() {
+        split_index_i64_to_usize(value as i64, axis_len, name)
+    } else {
+        Err(SimpleException::new_msg(ExcType::ValueError, format!("{name}() split index must be finite")).into())
+    }
+}
+
+/// Converts one signed split index to a NumPy-style clamped axis offset.
+fn split_index_i64_to_usize(index: i64, axis_len: usize, name: &str) -> RunResult<usize> {
+    let axis_len = i64::try_from(axis_len)
+        .map_err(|_| SimpleException::new_msg(ExcType::ValueError, format!("{name}() axis is too large")))?;
+    let resolved = if index < 0 { index + axis_len } else { index };
+    usize::try_from(resolved.clamp(0, axis_len))
+        .map_err(|_| SimpleException::new_msg(ExcType::ValueError, format!("{name}() split index is too large")).into())
+}
+
+/// Builds a list of ndarray chunks for a set of split points along one axis.
+fn split_ndarray_along_axis_to_list(
+    arr: &NdArray,
+    axis: usize,
+    split_indices: &[usize],
+    vm: &mut VM<'_, impl ResourceTracker>,
+) -> RunResult<Value> {
+    let mut parts = Vec::new();
+    let mut previous = 0;
+    for &index in split_indices {
+        let end = index.min(arr.shape()[axis]);
+        parts.push(axis_chunk_value(arr, axis, previous, end, vm)?);
+        previous = end;
+    }
+    parts.push(axis_chunk_value(arr, axis, previous, arr.shape()[axis], vm)?);
+    let list = List::new(parts);
+    Ok(Value::Ref(vm.heap.allocate(HeapData::List(list))?))
+}
+
+/// Allocates one ndarray chunk for a half-open range along a fixed axis.
+fn axis_chunk_value(
+    arr: &NdArray,
+    axis: usize,
+    start_axis: usize,
+    end_axis: usize,
+    vm: &mut VM<'_, impl ResourceTracker>,
+) -> RunResult<Value> {
+    let data = slice_ndarray_along_axis(arr, axis, start_axis, end_axis);
+    check_array_alloc_size(data.len(), vm.heap.tracker())?;
+    let mut shape = arr.shape().to_vec();
+    shape[axis] = end_axis.saturating_sub(start_axis);
+    let chunk = NdArray::new(data, shape, arr.dtype());
+    Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(chunk))?))
 }
 
 /// `numpy.array_split(a, n)` — split into possibly unequal parts.

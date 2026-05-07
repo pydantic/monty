@@ -795,9 +795,15 @@ pub enum StaticStrings {
     /// `numpy.hstack()` function
     #[strum(serialize = "hstack")]
     NpHstack,
+    /// `numpy.dstack()` function
+    #[strum(serialize = "dstack")]
+    NpDstack,
     /// `numpy.stack()` function
     #[strum(serialize = "stack")]
     NpStack,
+    /// `numpy.unstack()` function
+    #[strum(serialize = "unstack")]
+    NpUnstack,
     /// `numpy.tile()` function
     #[strum(serialize = "tile")]
     NpTile,
@@ -1292,6 +1298,9 @@ pub enum StaticStrings {
     /// `numpy.vsplit()` function
     #[strum(serialize = "vsplit")]
     NpVsplit,
+    /// `numpy.dsplit()` function
+    #[strum(serialize = "dsplit")]
+    NpDsplit,
     /// `numpy.array_split()` function
     #[strum(serialize = "array_split")]
     NpArraySplit,

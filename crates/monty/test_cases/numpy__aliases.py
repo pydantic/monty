@@ -233,6 +233,36 @@ assert rolled.shape == (2, 4, 3), 'rollaxis shape'
 assert rolled.tolist()[0][0] == [0, 4, 8], 'rollaxis first vector'
 assert rolled.tolist()[1][3] == [15, 19, 23], 'rollaxis last vector'
 
+dstack_1d = np.dstack(([1, 2], [3, 4]))
+assert dstack_1d.shape == (1, 2, 2), 'dstack 1d shape'
+assert dstack_1d.tolist() == [[[1, 3], [2, 4]]], 'dstack 1d values'
+dstack_2d = np.dstack(([[1, 2], [3, 4]], [[5, 6], [7, 8]]))
+assert dstack_2d.shape == (2, 2, 2), 'dstack 2d shape'
+assert dstack_2d.tolist() == [[[1, 5], [2, 6]], [[3, 7], [4, 8]]], 'dstack 2d values'
+
+depth_parts = np.dsplit(cube, 2)
+assert len(depth_parts) == 2, 'dsplit equal section count'
+assert depth_parts[0].shape == (2, 3, 2), 'dsplit first equal shape'
+assert depth_parts[0].tolist()[0][0] == [0, 1], 'dsplit first equal values'
+assert depth_parts[1].tolist()[1][2] == [22, 23], 'dsplit second equal values'
+depth_index_parts = np.dsplit(cube, [1, 3])
+assert len(depth_index_parts) == 3, 'dsplit index section count'
+assert depth_index_parts[0].shape == (2, 3, 1), 'dsplit first index shape'
+assert depth_index_parts[1].tolist()[0][1] == [5, 6], 'dsplit middle index values'
+assert depth_index_parts[2].tolist()[1][2] == [23], 'dsplit final index values'
+
+unstack_row0, unstack_row1 = np.unstack(matrix)
+assert unstack_row0.tolist() == [1, 2, 3], 'unstack axis0 first row'
+assert unstack_row1.tolist() == [4, 5, 6], 'unstack axis0 second row'
+unstack_col0, unstack_col1, unstack_col2 = np.unstack(matrix, 1)
+assert unstack_col0.tolist() == [1, 4], 'unstack axis1 first column'
+assert unstack_col1.tolist() == [2, 5], 'unstack axis1 second column'
+assert unstack_col2.tolist() == [3, 6], 'unstack axis1 third column'
+unstack_scalar0, unstack_scalar1, unstack_scalar2 = np.unstack(np.array([1, 2, 3]))
+assert unstack_scalar0 == 1, 'unstack 1d first scalar'
+assert unstack_scalar1 == 2, 'unstack 1d second scalar'
+assert unstack_scalar2 == 3, 'unstack 1d third scalar'
+
 
 # === linear algebra and numeric wrappers ===
 assert np.vecdot(np.array([1, 2, 3]), np.array([4, 5, 6])) == 32, 'vecdot 1d'
