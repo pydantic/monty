@@ -169,6 +169,34 @@ assert scalar_col == 1, 'unravel_index scalar col'
 assert np.ravel_multi_index(([1, 2], [1, 3]), (3, 4)).tolist() == [5, 11], 'ravel_multi_index arrays'
 assert np.ravel_multi_index((1, 1), (3, 4)) == 5, 'ravel_multi_index scalar'
 
+diagflat = np.diagflat([[1, 2], [3, 4]])
+assert diagflat.shape == (4, 4), 'diagflat flattened shape'
+assert diagflat.tolist() == [[1, 0, 0, 0], [0, 2, 0, 0], [0, 0, 3, 0], [0, 0, 0, 4]], 'diagflat values'
+assert np.diagflat([1, 2], 1).tolist() == [[0, 1, 0], [0, 0, 2], [0, 0, 0]], 'diagflat positive k'
+assert np.diagflat([1, 2], -1).tolist() == [[0, 0, 0], [1, 0, 0], [0, 2, 0]], 'diagflat negative k'
+
+ix_row, ix_col = np.ix_([0, 2], [1, 3, 4])
+assert ix_row.shape == (2, 1), 'ix_ first shape'
+assert ix_col.shape == (1, 3), 'ix_ second shape'
+assert ix_row.tolist() == [[0], [2]], 'ix_ first values'
+assert ix_col.tolist() == [[1, 3, 4]], 'ix_ second values'
+
+mask_row, mask_col = np.mask_indices(3, np.triu, 1)
+assert mask_row.tolist() == [0, 0, 1], 'mask_indices upper rows'
+assert mask_col.tolist() == [1, 2, 2], 'mask_indices upper cols'
+lower_row, lower_col = np.mask_indices(3, np.tril, -1)
+assert lower_row.tolist() == [1, 2, 2], 'mask_indices lower rows'
+assert lower_col.tolist() == [0, 0, 1], 'mask_indices lower cols'
+
+memory_arr = np.array([[1, 2], [3, 4]])
+memory_alias = memory_arr
+memory_copy = memory_arr.copy()
+assert np.isfortran(memory_arr) == False, 'isfortran row-major array'
+assert np.shares_memory(memory_arr, memory_alias) == True, 'shares_memory same ndarray ref'
+assert np.shares_memory(memory_arr, memory_copy) == False, 'shares_memory copied ndarray'
+assert np.may_share_memory(memory_arr, memory_alias) == True, 'may_share_memory same ndarray ref'
+assert np.may_share_memory(memory_arr, memory_copy) == False, 'may_share_memory copied ndarray'
+
 
 # === module-level manipulation wrappers ===
 matrix = np.array([[1, 2, 3], [4, 5, 6]])

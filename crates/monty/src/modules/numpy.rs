@@ -59,7 +59,7 @@
 //! ## Search & index
 //! - `numpy.nonzero(a)`, `numpy.argwhere(a)`
 //! - `numpy.diag_indices`, `numpy.tril_indices`, `numpy.triu_indices`
-//! - `numpy.indices`, `numpy.unravel_index`, `numpy.ravel_multi_index`
+//! - `numpy.indices`, `numpy.unravel_index`, `numpy.ravel_multi_index`, `numpy.ix_`
 
 use std::{
     cmp::Ordering,
@@ -523,6 +523,8 @@ pub(crate) enum NumpyFunctions {
     Insert,
     /// `numpy.diag(v)` — extract diagonal or create diagonal matrix.
     Diag,
+    /// `numpy.diagflat(v, k=0)` — create a diagonal matrix from flattened input.
+    Diagflat,
     /// `numpy.diagonal(a)` — return diagonal of array.
     Diagonal,
     /// `numpy.trace(a)` — sum of diagonal elements.
@@ -539,6 +541,16 @@ pub(crate) enum NumpyFunctions {
     Asfortranarray,
     /// `numpy.require(a)` — Monty ndarray conversion ignoring unsupported layout flags.
     Require,
+    /// `numpy.ix_(*args)` — construct open mesh index arrays from 1-D sequences.
+    Ix,
+    /// `numpy.mask_indices(n, mask_func, k=0)` — indices selected by triangular masks.
+    MaskIndices,
+    /// `numpy.isfortran(a)` — true for Fortran-contiguous arrays.
+    Isfortran,
+    /// `numpy.may_share_memory(a, b)` — conservative overlap predicate.
+    MayShareMemory,
+    /// `numpy.shares_memory(a, b)` — exact overlap predicate for Monty's ndarray refs.
+    SharesMemory,
     /// `numpy.column_stack(arrays)` — stack 1D arrays as columns.
     ColumnStack,
     /// `numpy.row_stack(arrays)` — alias for vstack.
@@ -941,6 +953,7 @@ const NUMPY_FUNCTIONS: &[(StaticStrings, NumpyFunctions)] = &[
     (StaticStrings::NpDelete, NumpyFunctions::Delete),
     (StaticStrings::Insert, NumpyFunctions::Insert),
     (StaticStrings::NpDiag, NumpyFunctions::Diag),
+    (StaticStrings::NpDiagflat, NumpyFunctions::Diagflat),
     (StaticStrings::NpDiagonal, NumpyFunctions::Diagonal),
     (StaticStrings::NpTrace, NumpyFunctions::Trace),
     (StaticStrings::NpFlatnonzero, NumpyFunctions::Flatnonzero),
@@ -949,6 +962,11 @@ const NUMPY_FUNCTIONS: &[(StaticStrings, NumpyFunctions)] = &[
     (StaticStrings::NpAscontiguousarray, NumpyFunctions::Ascontiguousarray),
     (StaticStrings::NpAsfortranarray, NumpyFunctions::Asfortranarray),
     (StaticStrings::NpRequire, NumpyFunctions::Require),
+    (StaticStrings::NpIx_, NumpyFunctions::Ix),
+    (StaticStrings::NpMaskIndices, NumpyFunctions::MaskIndices),
+    (StaticStrings::NpIsfortran, NumpyFunctions::Isfortran),
+    (StaticStrings::NpMayShareMemory, NumpyFunctions::MayShareMemory),
+    (StaticStrings::NpSharesMemory, NumpyFunctions::SharesMemory),
     (StaticStrings::NpColumnStack, NumpyFunctions::ColumnStack),
     (StaticStrings::NpRowStack, NumpyFunctions::RowStack),
     (StaticStrings::NpHsplit, NumpyFunctions::Hsplit),
@@ -1454,6 +1472,7 @@ pub(super) fn call(
         NumpyFunctions::Delete => call_delete(vm, args).map(CallResult::Value),
         NumpyFunctions::Insert => call_insert(vm, args).map(CallResult::Value),
         NumpyFunctions::Diag => call_diag(vm, args).map(CallResult::Value),
+        NumpyFunctions::Diagflat => call_diagflat(vm, args).map(CallResult::Value),
         NumpyFunctions::Diagonal => call_diagonal(vm, args).map(CallResult::Value),
         NumpyFunctions::Trace => call_trace(vm, args).map(CallResult::Value),
         NumpyFunctions::Flatnonzero => call_flatnonzero(vm, args).map(CallResult::Value),
@@ -1462,6 +1481,13 @@ pub(super) fn call(
         NumpyFunctions::Ascontiguousarray | NumpyFunctions::Asfortranarray | NumpyFunctions::Require => {
             call_asarray_compat(vm, args).map(CallResult::Value)
         }
+        NumpyFunctions::Ix => call_ix(vm, args).map(CallResult::Value),
+        NumpyFunctions::MaskIndices => call_mask_indices(vm, args).map(CallResult::Value),
+        NumpyFunctions::Isfortran => call_isfortran(vm, args).map(CallResult::Value),
+        NumpyFunctions::MayShareMemory => {
+            call_memory_overlap(vm, args, "numpy.may_share_memory").map(CallResult::Value)
+        }
+        NumpyFunctions::SharesMemory => call_memory_overlap(vm, args, "numpy.shares_memory").map(CallResult::Value),
         NumpyFunctions::ColumnStack => call_column_stack(vm, args).map(CallResult::Value),
         NumpyFunctions::RowStack => call_vstack(vm, args).map(CallResult::Value), // alias
         NumpyFunctions::Hsplit => call_hsplit(vm, args).map(CallResult::Value),
@@ -6188,6 +6214,52 @@ fn call_diag(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResul
     }
 }
 
+/// `numpy.diagflat(v, k=0)` — create a diagonal matrix from flattened input.
+fn call_diagflat(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let (arg, k_val) = args.get_one_two_args("numpy.diagflat", vm.heap)?;
+    defer_drop!(arg, vm);
+    let k = if let Some(k_val) = k_val {
+        defer_drop!(k_val, vm);
+        value_to_i64_arg(k_val, "numpy.diagflat", "k")?
+    } else {
+        0
+    };
+    let arr = ndarray_from_value(arg, "numpy.diagflat", vm)?;
+    let offset = diagflat_offset(k)?;
+    let size = arr
+        .data()
+        .len()
+        .checked_add(offset)
+        .ok_or_else(|| SimpleException::new_msg(ExcType::ValueError, "numpy.diagflat() dimensions overflow"))?;
+    let total = size
+        .checked_mul(size)
+        .ok_or_else(|| SimpleException::new_msg(ExcType::ValueError, "numpy.diagflat() dimensions overflow"))?;
+    check_array_alloc_size(total, vm.heap.tracker())?;
+
+    let mut data = vec![0.0; total];
+    for (index, value) in arr.data().iter().enumerate() {
+        let (row, col) = diagflat_position(index, offset, k);
+        data[row * size + col] = *value;
+    }
+    let result = NdArray::new(data, vec![size, size], arr.dtype());
+    Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(result))?))
+}
+
+/// Converts a diagonal offset into a positive matrix-size expansion.
+fn diagflat_offset(k: i64) -> RunResult<usize> {
+    usize::try_from(k.unsigned_abs())
+        .map_err(|_| SimpleException::new_msg(ExcType::ValueError, "numpy.diagflat() k is too large").into())
+}
+
+/// Computes a row/column pair for one flattened input item.
+fn diagflat_position(index: usize, offset: usize, k: i64) -> (usize, usize) {
+    if k >= 0 {
+        (index, index + offset)
+    } else {
+        (index + offset, index)
+    }
+}
+
 /// `numpy.diagonal(a)` — extract diagonal of 2D array.
 fn call_diagonal(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     // For our purposes, same as diag on 2D
@@ -6250,6 +6322,111 @@ fn call_asarray_compat(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -
     }
     let arr = ndarray_from_value(arg, "numpy.asarray", vm)?;
     Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(arr))?))
+}
+
+/// `numpy.ix_(*args)` — construct open mesh index arrays from 1-D sequences.
+fn call_ix(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let pos = args.into_pos_only("numpy.ix_", vm.heap)?;
+    defer_drop_mut!(pos, vm);
+
+    let mut arrays = Vec::new();
+    for arg in pos.by_ref() {
+        defer_drop!(arg, vm);
+        let arr = ndarray_from_value(arg, "numpy.ix_", vm)?;
+        if arr.shape().len() != 1 {
+            return Err(SimpleException::new_msg(ExcType::ValueError, "Cross index must be 1 dimensional").into());
+        }
+        arrays.push(arr);
+    }
+
+    let total_len = arrays
+        .iter()
+        .try_fold(0usize, |acc, arr| acc.checked_add(arr.data().len()))
+        .ok_or_else(|| SimpleException::new_msg(ExcType::ValueError, "numpy.ix_() dimensions overflow"))?;
+    check_array_alloc_size(total_len, vm.heap.tracker())?;
+
+    let ndim = arrays.len();
+    let mut values: SmallVec<[Value; 3]> = SmallVec::new();
+    for (axis, arr) in arrays.iter().enumerate() {
+        let shape = ix_output_shape(axis, arr.data().len(), ndim);
+        let result = NdArray::new(arr.data().to_vec(), shape, arr.dtype());
+        values.push(Value::Ref(vm.heap.allocate(HeapData::NdArray(result))?));
+    }
+    allocate_tuple(values, vm.heap).map_err(Into::into)
+}
+
+/// Computes the broadcastable shape for one `ix_` output array.
+fn ix_output_shape(axis: usize, len: usize, ndim: usize) -> Vec<usize> {
+    let mut shape = vec![1; ndim];
+    if let Some(dim) = shape.get_mut(axis) {
+        *dim = len;
+    }
+    shape
+}
+
+/// `numpy.mask_indices(n, mask_func, k=0)` — indices selected by a triangular mask.
+fn call_mask_indices(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let pos = args.into_pos_only("numpy.mask_indices", vm.heap)?;
+    defer_drop_mut!(pos, vm);
+
+    let n_val = pos
+        .next()
+        .ok_or_else(|| ExcType::type_error_at_least("numpy.mask_indices", 2, 0))?;
+    defer_drop!(n_val, vm);
+    let n = value_to_nonnegative_usize(n_val, "numpy.mask_indices", "n")?;
+
+    let mask_func = pos
+        .next()
+        .ok_or_else(|| ExcType::type_error_at_least("numpy.mask_indices", 2, 1))?;
+    defer_drop!(mask_func, vm);
+    let kind = triangle_kind_from_mask_func(mask_func)?;
+
+    let k = if let Some(k_val) = pos.next() {
+        defer_drop!(k_val, vm);
+        value_to_i64_arg(k_val, "numpy.mask_indices", "k")?
+    } else {
+        0
+    };
+    if let Some(extra) = pos.next() {
+        extra.drop_with_heap(vm);
+        return Err(ExcType::type_error_at_most("numpy.mask_indices", 3, 4));
+    }
+
+    triangle_indices_tuple(n, k, n, kind, vm)
+}
+
+/// Extracts the supported triangular mask function for `mask_indices()`.
+fn triangle_kind_from_mask_func(value: &Value) -> RunResult<TriangleKind> {
+    match value {
+        Value::ModuleFunction(ModuleFunctions::Numpy(NumpyFunctions::Triu)) => Ok(TriangleKind::Upper),
+        Value::ModuleFunction(ModuleFunctions::Numpy(NumpyFunctions::Tril)) => Ok(TriangleKind::Lower),
+        _ => Err(ExcType::type_error(
+            "numpy.mask_indices() only supports numpy.triu or numpy.tril mask functions",
+        )),
+    }
+}
+
+/// `numpy.isfortran(a)` — Monty arrays are currently stored only in row-major order.
+fn call_isfortran(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let arg = args.get_one_arg("numpy.isfortran", vm.heap)?;
+    arg.drop_with_heap(vm);
+    Ok(Value::Bool(false))
+}
+
+/// `numpy.shares_memory()` / `numpy.may_share_memory()` for Monty's copy-based ndarray model.
+fn call_memory_overlap(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues, name: &str) -> RunResult<Value> {
+    let (a, b) = args.get_two_args(name, vm.heap)?;
+    defer_drop!(a, vm);
+    defer_drop!(b, vm);
+    Ok(Value::Bool(same_ndarray_ref(a, b, vm)))
+}
+
+/// Checks whether both values are the exact same ndarray heap object.
+fn same_ndarray_ref(a: &Value, b: &Value, vm: &VM<'_, impl ResourceTracker>) -> bool {
+    match (a, b) {
+        (Value::Ref(a_id), Value::Ref(b_id)) if a_id == b_id => matches!(vm.heap.get(*a_id), HeapData::NdArray(_)),
+        _ => false,
+    }
 }
 
 /// `numpy.asarray_chkfinite(a)` — convert to array and reject NaN or infinity.

@@ -1232,6 +1232,9 @@ pub enum StaticStrings {
     /// `numpy.diag()` function
     #[strum(serialize = "diag")]
     NpDiag,
+    /// `numpy.diagflat()` function
+    #[strum(serialize = "diagflat")]
+    NpDiagflat,
     /// `numpy.diagonal()` function
     #[strum(serialize = "diagonal")]
     NpDiagonal,
@@ -1256,6 +1259,21 @@ pub enum StaticStrings {
     /// `numpy.require()` array requirement helper.
     #[strum(serialize = "require")]
     NpRequire,
+    /// `numpy.ix_()` open mesh index helper.
+    #[strum(serialize = "ix_")]
+    NpIx_,
+    /// `numpy.mask_indices()` triangular mask index helper.
+    #[strum(serialize = "mask_indices")]
+    NpMaskIndices,
+    /// `numpy.isfortran()` memory layout predicate.
+    #[strum(serialize = "isfortran")]
+    NpIsfortran,
+    /// `numpy.may_share_memory()` conservative memory overlap predicate.
+    #[strum(serialize = "may_share_memory")]
+    NpMayShareMemory,
+    /// `numpy.shares_memory()` exact memory overlap predicate.
+    #[strum(serialize = "shares_memory")]
+    NpSharesMemory,
     /// `numpy.column_stack()` function
     #[strum(serialize = "column_stack")]
     NpColumnStack,
