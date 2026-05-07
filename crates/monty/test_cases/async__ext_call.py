@@ -71,3 +71,14 @@ async def triple_add(a, b, c):
 
 results = await asyncio.gather(triple_add(1, 2, 3), async_call(50))  # pyright: ignore
 assert results == [6, 50], 'gather should work with coroutine with multiple external awaits'
+
+
+# === Gather with the same external future passed twice ===
+f = async_call(7)
+results = await asyncio.gather(f, f)  # pyright: ignore
+assert results == [7, 7], f'duplicate external future dedup: {results}'
+
+# Mixed with unique external futures around the duplicate.
+g = async_call('dup')
+results = await asyncio.gather(async_call('a'), g, async_call('b'), g)  # pyright: ignore
+assert results == ['a', 'dup', 'b', 'dup'], f'mixed external future dedup: {results}'

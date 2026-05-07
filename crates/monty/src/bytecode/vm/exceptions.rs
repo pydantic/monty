@@ -16,7 +16,10 @@ impl<T: ResourceTracker> VM<'_, T> {
     /// Returns the current frame's name for traceback generation.
     ///
     /// Returns the function name for user-defined functions, or `<module>` for
-    /// module-level code.
+    /// module-level code. The frame stack must be non-empty: callers in the
+    /// async path that may run with no active frame (e.g. just before a spawned
+    /// task's first frame is pushed) are expected to route errors through
+    /// `handle_task_failure` rather than the regular exception machinery.
     fn current_frame_name(&self) -> StringId {
         let frame = self.current_frame();
         match frame.function_id {
