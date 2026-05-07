@@ -65,6 +65,7 @@
 use std::{
     cmp::Ordering,
     f64::consts::{E, PI},
+    num::FpCategory,
 };
 
 use smallvec::SmallVec;
@@ -706,6 +707,18 @@ pub(crate) enum NumpyFunctions {
     Trapezoid,
     /// `numpy.vander(x, N=None, increasing=False)` — Vandermonde matrix.
     Vander,
+    /// `numpy.polyadd(a, b)` — add polynomial coefficient arrays.
+    Polyadd,
+    /// `numpy.polysub(a, b)` — subtract polynomial coefficient arrays.
+    Polysub,
+    /// `numpy.polymul(a, b)` — multiply polynomial coefficient arrays.
+    Polymul,
+    /// `numpy.polyint(p, m=1)` — integrate polynomial coefficients.
+    Polyint,
+    /// `numpy.polyder(p, m=1)` — differentiate polynomial coefficients.
+    Polyder,
+    /// `numpy.polyval(p, x)` — evaluate polynomial coefficients.
+    Polyval,
 
     // --- Phase 10: Additional creation functions ---
     /// `numpy.logspace(start, stop, num)` — log-spaced values.
@@ -1166,6 +1179,12 @@ const NUMPY_FUNCTIONS: &[(StaticStrings, NumpyFunctions)] = &[
     (StaticStrings::NpKron, NumpyFunctions::Kron),
     (StaticStrings::NpTrapezoid, NumpyFunctions::Trapezoid),
     (StaticStrings::NpVander, NumpyFunctions::Vander),
+    (StaticStrings::NpPolyadd, NumpyFunctions::Polyadd),
+    (StaticStrings::NpPolysub, NumpyFunctions::Polysub),
+    (StaticStrings::NpPolymul, NumpyFunctions::Polymul),
+    (StaticStrings::NpPolyint, NumpyFunctions::Polyint),
+    (StaticStrings::NpPolyder, NumpyFunctions::Polyder),
+    (StaticStrings::NpPolyval, NumpyFunctions::Polyval),
     // Phase 10: Additional creation and numerical
     (StaticStrings::NpLogspace, NumpyFunctions::Logspace),
     (StaticStrings::NpGeomspace, NumpyFunctions::Geomspace),
@@ -1736,6 +1755,16 @@ pub(super) fn call(
         NumpyFunctions::Kron => call_kron(vm, args).map(CallResult::Value),
         NumpyFunctions::Trapezoid => call_trapezoid(vm, args).map(CallResult::Value),
         NumpyFunctions::Vander => call_vander(vm, args).map(CallResult::Value),
+        NumpyFunctions::Polyadd => {
+            call_poly_binary(vm, args, "numpy.polyadd", |lhs, rhs| lhs + rhs).map(CallResult::Value)
+        }
+        NumpyFunctions::Polysub => {
+            call_poly_binary(vm, args, "numpy.polysub", |lhs, rhs| lhs - rhs).map(CallResult::Value)
+        }
+        NumpyFunctions::Polymul => call_polymul(vm, args).map(CallResult::Value),
+        NumpyFunctions::Polyint => call_polyint(vm, args).map(CallResult::Value),
+        NumpyFunctions::Polyder => call_polyder(vm, args).map(CallResult::Value),
+        NumpyFunctions::Polyval => call_polyval(vm, args).map(CallResult::Value),
         // Phase 10: Additional creation and numerical
         NumpyFunctions::Logspace => call_logspace(vm, args).map(CallResult::Value),
         NumpyFunctions::Geomspace => call_geomspace(vm, args).map(CallResult::Value),
@@ -9208,6 +9237,185 @@ fn pow_usize(base: f64, exponent: usize) -> f64 {
         result *= base;
     }
     result
+}
+
+/// `numpy.polyadd()` / `numpy.polysub()` — combine descending-power coefficient arrays.
+fn call_poly_binary(
+    vm: &mut VM<'_, impl ResourceTracker>,
+    args: ArgValues,
+    name: &str,
+    operation: impl Fn(f64, f64) -> f64,
+) -> RunResult<Value> {
+    let (lhs_val, rhs_val) = args.get_two_args(name, vm.heap)?;
+    defer_drop!(lhs_val, vm);
+    defer_drop!(rhs_val, vm);
+    let lhs = polynomial_1d(lhs_val, name, vm)?;
+    let rhs = polynomial_1d(rhs_val, name, vm)?;
+    let len = lhs.len().max(rhs.len());
+    check_array_alloc_size(len, vm.heap.tracker())?;
+    let mut data = Vec::with_capacity(len);
+    for index in 0..len {
+        let lhs_value = polynomial_aligned_coeff(&lhs, index, len);
+        let rhs_value = polynomial_aligned_coeff(&rhs, index, len);
+        data.push(operation(lhs_value, rhs_value));
+    }
+    allocate_polynomial_array(
+        trim_leading_zero_coeffs(&data),
+        promote_dtype(lhs.dtype(), rhs.dtype()),
+        vm,
+    )
+}
+
+/// `numpy.polymul(a, b)` — multiply descending-power coefficient arrays.
+fn call_polymul(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let (lhs_val, rhs_val) = args.get_two_args("numpy.polymul", vm.heap)?;
+    defer_drop!(lhs_val, vm);
+    defer_drop!(rhs_val, vm);
+    let lhs = polynomial_1d(lhs_val, "numpy.polymul", vm)?;
+    let rhs = polynomial_1d(rhs_val, "numpy.polymul", vm)?;
+    let len = lhs
+        .len()
+        .checked_add(rhs.len())
+        .and_then(|value| value.checked_sub(1))
+        .ok_or_else(|| SimpleException::new_msg(ExcType::ValueError, "numpy.polymul() coefficients overflow"))?;
+    check_array_alloc_size(len, vm.heap.tracker())?;
+    let mut data = vec![0.0; len];
+    for (lhs_index, &lhs_value) in lhs.data().iter().enumerate() {
+        for (rhs_index, &rhs_value) in rhs.data().iter().enumerate() {
+            data[lhs_index + rhs_index] += lhs_value * rhs_value;
+        }
+    }
+    allocate_polynomial_array(
+        trim_leading_zero_coeffs(&data),
+        promote_dtype(lhs.dtype(), rhs.dtype()),
+        vm,
+    )
+}
+
+/// `numpy.polyint(p, m=1)` — integrate coefficients repeatedly with zero constants.
+fn call_polyint(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let (poly, order) = polynomial_unary_args(vm, args, "numpy.polyint")?;
+    let mut data = poly.data().to_vec();
+    for _ in 0..order {
+        let len = data.len();
+        check_array_alloc_size(len + 1, vm.heap.tracker())?;
+        let mut integrated = Vec::with_capacity(len + 1);
+        for (index, &coeff) in data.iter().enumerate() {
+            integrated.push(coeff / usize_to_f64(len - index));
+        }
+        integrated.push(0.0);
+        data = integrated;
+    }
+    allocate_polynomial_array(data, NdArrayDtype::Float64, vm)
+}
+
+/// `numpy.polyder(p, m=1)` — differentiate coefficients repeatedly.
+fn call_polyder(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let (poly, order) = polynomial_unary_args(vm, args, "numpy.polyder")?;
+    let mut data = poly.data().to_vec();
+    for _ in 0..order {
+        if data.len() <= 1 {
+            data = vec![0.0];
+            break;
+        }
+        let degree = data.len() - 1;
+        check_array_alloc_size(degree, vm.heap.tracker())?;
+        let mut derivative = Vec::with_capacity(degree);
+        for (index, &coeff) in data.iter().take(degree).enumerate() {
+            derivative.push(coeff * usize_to_f64(degree - index));
+        }
+        data = trim_leading_zero_coeffs(&derivative);
+    }
+    allocate_polynomial_array(data, poly.dtype(), vm)
+}
+
+/// `numpy.polyval(p, x)` — evaluate coefficients using Horner's method.
+fn call_polyval(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let (poly_val, x_val) = args.get_two_args("numpy.polyval", vm.heap)?;
+    defer_drop!(poly_val, vm);
+    defer_drop!(x_val, vm);
+    let poly = polynomial_1d(poly_val, "numpy.polyval", vm)?;
+    if let Ok((x_data, x_shape, x_dtype)) = extract_ndarray_info(x_val, "numpy.polyval", vm) {
+        check_array_alloc_size(x_data.len(), vm.heap.tracker())?;
+        let data = x_data
+            .iter()
+            .map(|&value| polynomial_eval(poly.data(), value))
+            .collect();
+        let result = NdArray::new(data, x_shape, promote_dtype(poly.dtype(), x_dtype));
+        Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(result))?))
+    } else {
+        let x = to_f64(x_val, vm)?;
+        Ok(Value::Float(polynomial_eval(poly.data(), x)))
+    }
+}
+
+/// Parses one coefficient array plus an optional non-negative derivative/integral order.
+fn polynomial_unary_args(
+    vm: &mut VM<'_, impl ResourceTracker>,
+    args: ArgValues,
+    name: &str,
+) -> RunResult<(NdArray, usize)> {
+    let pos = args.into_pos_only(name, vm.heap)?;
+    defer_drop_mut!(pos, vm);
+    let poly_val = pos.next().ok_or_else(|| ExcType::type_error_at_least(name, 1, 0))?;
+    defer_drop!(poly_val, vm);
+    let order_val = pos.next();
+    for extra in pos {
+        extra.drop_with_heap(vm);
+    }
+    let poly = polynomial_1d(poly_val, name, vm)?;
+    let order = if let Some(order_val) = order_val {
+        defer_drop!(order_val, vm);
+        value_to_nonnegative_usize(order_val, name, "m")?
+    } else {
+        1
+    };
+    Ok((poly, order))
+}
+
+/// Converts one coefficient argument into a one-dimensional ndarray copy.
+fn polynomial_1d(value: &Value, name: &str, vm: &VM<'_, impl ResourceTracker>) -> RunResult<NdArray> {
+    let arr = ndarray_from_value(value, name, vm)?;
+    if arr.ndim() == 1 {
+        Ok(arr)
+    } else {
+        Err(SimpleException::new_msg(ExcType::ValueError, format!("{name}() expects a 1D coefficient array")).into())
+    }
+}
+
+/// Reads a coefficient from a shorter polynomial after aligning by lowest powers.
+fn polynomial_aligned_coeff(poly: &NdArray, output_index: usize, output_len: usize) -> f64 {
+    let offset = output_len.saturating_sub(poly.len());
+    if output_index >= offset {
+        poly.data()[output_index - offset]
+    } else {
+        0.0
+    }
+}
+
+/// Allocates a polynomial coefficient vector as a one-dimensional ndarray.
+fn allocate_polynomial_array(
+    data: Vec<f64>,
+    dtype: NdArrayDtype,
+    vm: &mut VM<'_, impl ResourceTracker>,
+) -> RunResult<Value> {
+    let len = data.len();
+    let result = NdArray::new(data, vec![len], dtype);
+    Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(result))?))
+}
+
+/// Removes leading zero coefficients while preserving at least one coefficient.
+fn trim_leading_zero_coeffs(data: &[f64]) -> Vec<f64> {
+    let first_non_zero = data
+        .iter()
+        .position(|value| !matches!(value.classify(), FpCategory::Zero))
+        .unwrap_or_else(|| data.len().saturating_sub(1));
+    data[first_non_zero..].to_vec()
+}
+
+/// Evaluates descending-power polynomial coefficients for one numeric x value.
+fn polynomial_eval(coefficients: &[f64], x: f64) -> f64 {
+    coefficients.iter().fold(0.0, |acc, &coeff| acc * x + coeff)
 }
 
 /// Converts a Python truth value argument used by NumPy option flags.

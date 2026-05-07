@@ -301,6 +301,15 @@ assert np.vander(np.array([1, 2, 3]), 3, True).tolist() == [
     [1, 2, 4],
     [1, 3, 9],
 ], 'vander increasing'
+assert np.polyadd([1, 2, 3], [10, 20]).tolist() == [1, 12, 23], 'polyadd aligns coefficients'
+assert np.polysub([1, 2, 3], [10, 20]).tolist() == [1, -8, -17], 'polysub aligns coefficients'
+assert np.polymul([1, 2], [3, 4]).tolist() == [3, 10, 8], 'polymul convolution'
+assert np.polyval([1, 0, -1], 2) == 3, 'polyval scalar'
+assert np.polyval([1, 0, -1], [0, 1, 2]).tolist() == [-1, 0, 3], 'polyval array'
+assert np.polyder([1, 2, 3]).tolist() == [2, 2], 'polyder first derivative'
+assert np.polyder([1, 2, 3], 2).tolist() == [2], 'polyder second derivative'
+assert np.polyint([2, 2]).tolist() == [1.0, 2.0, 0.0], 'polyint first integral'
+assert np.polyint([2, 2], 2).tolist() == [1 / 3, 1.0, 0.0, 0.0], 'polyint second integral'
 assert np.kron([1, 2], [10, 20, 30]).tolist() == [10, 20, 30, 20, 40, 60], 'kron 1d'
 assert np.kron([[1, 2], [3, 4]], [[0, 5], [6, 7]]).tolist() == [
     [0, 5, 0, 10],
