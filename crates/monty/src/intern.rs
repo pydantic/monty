@@ -875,6 +875,33 @@ pub enum StaticStrings {
     /// `numpy.negative()` function — unary -
     #[strum(serialize = "negative")]
     NpNegative,
+    /// `numpy.logaddexp()` function.
+    #[strum(serialize = "logaddexp")]
+    NpLogaddexp,
+    /// `numpy.logaddexp2()` function.
+    #[strum(serialize = "logaddexp2")]
+    NpLogaddexp2,
+    /// `numpy.spacing()` function.
+    #[strum(serialize = "spacing")]
+    NpSpacing,
+    /// `numpy.signbit()` function.
+    #[strum(serialize = "signbit")]
+    NpSignbit,
+    /// `numpy.sinc()` function.
+    #[strum(serialize = "sinc")]
+    NpSinc,
+    /// `numpy.heaviside()` function.
+    #[strum(serialize = "heaviside")]
+    NpHeaviside,
+    /// `numpy.fix()` function.
+    #[strum(serialize = "fix")]
+    NpFix,
+    /// `numpy.float_power()` function.
+    #[strum(serialize = "float_power")]
+    NpFloatPower,
+    /// `numpy.divmod()` function.
+    #[strum(serialize = "divmod")]
+    NpDivmod,
     /// `numpy.conj()` real-valued conjugate helper.
     #[strum(serialize = "conj")]
     NpConj,

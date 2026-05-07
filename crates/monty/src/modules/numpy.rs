@@ -23,6 +23,8 @@
 //! - `numpy.sin(a)`, `numpy.cos(a)`, `numpy.tan(a)`, `numpy.log2(a)`, `numpy.log10(a)`
 //! - `numpy.ceil(a)`, `numpy.floor(a)`
 //! - `numpy.power(base, exp)` — element-wise power
+//! - `numpy.copysign`, `numpy.frexp`, `numpy.modf`, `numpy.ldexp`, `numpy.gcd`, `numpy.lcm`
+//! - `numpy.logaddexp`, `numpy.nextafter`, `numpy.spacing`, `numpy.signbit`, `numpy.sinc`
 //! - `numpy.diff(a)` — discrete differences
 //! - `numpy.round(a, decimals)`, `numpy.clip(a, a_min, a_max)`
 //!
@@ -61,7 +63,7 @@ use crate::{
     args::ArgValues,
     bytecode::{CallResult, VM},
     defer_drop, defer_drop_mut,
-    exception_private::{ExcType, RunResult, SimpleException},
+    exception_private::{ExcType, RunError, RunResult, SimpleException},
     heap::{HeapData, HeapId},
     heap_traits::DropWithHeap,
     intern::StaticStrings,
@@ -293,6 +295,40 @@ pub(crate) enum NumpyFunctions {
     Positive,
     /// `numpy.negative(a)` — element-wise unary -.
     Negative,
+    /// `numpy.copysign(a, b)` — element-wise magnitude/sign combination.
+    Copysign,
+    /// `numpy.frexp(a)` — element-wise mantissa/exponent decomposition.
+    Frexp,
+    /// `numpy.modf(a)` — element-wise fractional/integer decomposition.
+    Modf,
+    /// `numpy.ldexp(a, exp)` — element-wise multiply by powers of two.
+    Ldexp,
+    /// `numpy.gcd(a, b)` — element-wise greatest common divisor.
+    Gcd,
+    /// `numpy.lcm(a, b)` — element-wise least common multiple.
+    Lcm,
+    /// `numpy.logaddexp(a, b)` — element-wise log(exp(a) + exp(b)).
+    Logaddexp,
+    /// `numpy.logaddexp2(a, b)` — element-wise log2(2**a + 2**b).
+    Logaddexp2,
+    /// `numpy.nextafter(a, b)` — next floating point value from a toward b.
+    Nextafter,
+    /// `numpy.spacing(a)` — distance to the nearest adjacent floating value.
+    Spacing,
+    /// `numpy.signbit(a)` — element-wise sign-bit predicate.
+    Signbit,
+    /// `numpy.sinc(a)` — normalized sinc function.
+    Sinc,
+    /// `numpy.heaviside(a, h0)` — element-wise Heaviside step function.
+    Heaviside,
+    /// `numpy.trunc(a)` — truncate toward zero.
+    Trunc,
+    /// `numpy.fix(a)` — truncate toward zero.
+    Fix,
+    /// `numpy.float_power(a, b)` — element-wise floating-point exponentiation.
+    FloatPower,
+    /// `numpy.divmod(a, b)` — element-wise floor division and modulo pair.
+    Divmod,
     /// `numpy.conj(a)` — return the real-valued conjugate.
     Conj,
     /// `numpy.real(a)` — return the real component.
@@ -643,6 +679,23 @@ const NUMPY_FUNCTIONS: &[(StaticStrings, NumpyFunctions)] = &[
     (StaticStrings::Fabs, NumpyFunctions::Fabs),
     (StaticStrings::NpPositive, NumpyFunctions::Positive),
     (StaticStrings::NpNegative, NumpyFunctions::Negative),
+    (StaticStrings::Copysign, NumpyFunctions::Copysign),
+    (StaticStrings::Frexp, NumpyFunctions::Frexp),
+    (StaticStrings::Modf, NumpyFunctions::Modf),
+    (StaticStrings::Ldexp, NumpyFunctions::Ldexp),
+    (StaticStrings::Gcd, NumpyFunctions::Gcd),
+    (StaticStrings::Lcm, NumpyFunctions::Lcm),
+    (StaticStrings::NpLogaddexp, NumpyFunctions::Logaddexp),
+    (StaticStrings::NpLogaddexp2, NumpyFunctions::Logaddexp2),
+    (StaticStrings::Nextafter, NumpyFunctions::Nextafter),
+    (StaticStrings::NpSpacing, NumpyFunctions::Spacing),
+    (StaticStrings::NpSignbit, NumpyFunctions::Signbit),
+    (StaticStrings::NpSinc, NumpyFunctions::Sinc),
+    (StaticStrings::NpHeaviside, NumpyFunctions::Heaviside),
+    (StaticStrings::Trunc, NumpyFunctions::Trunc),
+    (StaticStrings::NpFix, NumpyFunctions::Fix),
+    (StaticStrings::NpFloatPower, NumpyFunctions::FloatPower),
+    (StaticStrings::NpDivmod, NumpyFunctions::Divmod),
     // Real-only aliases and introspection helpers
     (StaticStrings::NpConj, NumpyFunctions::Conj),
     (StaticStrings::NpConjugate, NumpyFunctions::Conj), // alias
@@ -1004,6 +1057,71 @@ pub(super) fn call(
         }
         NumpyFunctions::Positive => call_elementwise(vm, args, |x| x, "numpy.positive", None).map(CallResult::Value),
         NumpyFunctions::Negative => call_elementwise(vm, args, |x| -x, "numpy.negative", None).map(CallResult::Value),
+        NumpyFunctions::Copysign => {
+            call_numeric_binop(vm, args, f64::copysign, "numpy.copysign", BinopResult::Float).map(CallResult::Value)
+        }
+        NumpyFunctions::Frexp => call_unary_tuple_func(
+            vm,
+            args,
+            numpy_frexp,
+            "numpy.frexp",
+            NdArrayDtype::Float64,
+            NdArrayDtype::Int64,
+        )
+        .map(CallResult::Value),
+        NumpyFunctions::Modf => call_unary_tuple_func(
+            vm,
+            args,
+            numpy_modf,
+            "numpy.modf",
+            NdArrayDtype::Float64,
+            NdArrayDtype::Float64,
+        )
+        .map(CallResult::Value),
+        NumpyFunctions::Ldexp => call_ldexp(vm, args).map(CallResult::Value),
+        NumpyFunctions::Gcd => call_integer_binop(vm, args, numpy_gcd, "numpy.gcd").map(CallResult::Value),
+        NumpyFunctions::Lcm => call_integer_binop(vm, args, numpy_lcm, "numpy.lcm").map(CallResult::Value),
+        NumpyFunctions::Logaddexp => {
+            call_numeric_binop(vm, args, numpy_logaddexp, "numpy.logaddexp", BinopResult::Float).map(CallResult::Value)
+        }
+        NumpyFunctions::Logaddexp2 => {
+            call_numeric_binop(vm, args, numpy_logaddexp2, "numpy.logaddexp2", BinopResult::Float)
+                .map(CallResult::Value)
+        }
+        NumpyFunctions::Nextafter => {
+            call_numeric_binop(vm, args, libm::nextafter, "numpy.nextafter", BinopResult::Float).map(CallResult::Value)
+        }
+        NumpyFunctions::Spacing => {
+            call_elementwise(vm, args, numpy_spacing, "numpy.spacing", Some(NdArrayDtype::Float64))
+                .map(CallResult::Value)
+        }
+        NumpyFunctions::Signbit => {
+            call_elementwise(vm, args, signbit_as_f64, "numpy.signbit", Some(NdArrayDtype::Bool)).map(CallResult::Value)
+        }
+        NumpyFunctions::Sinc => {
+            call_elementwise(vm, args, numpy_sinc, "numpy.sinc", Some(NdArrayDtype::Float64)).map(CallResult::Value)
+        }
+        NumpyFunctions::Heaviside => {
+            call_numeric_binop(vm, args, numpy_heaviside, "numpy.heaviside", BinopResult::Float).map(CallResult::Value)
+        }
+        NumpyFunctions::Trunc => {
+            call_elementwise(vm, args, f64::trunc, "numpy.trunc", Some(NdArrayDtype::Float64)).map(CallResult::Value)
+        }
+        NumpyFunctions::Fix => {
+            call_elementwise(vm, args, f64::trunc, "numpy.fix", Some(NdArrayDtype::Float64)).map(CallResult::Value)
+        }
+        NumpyFunctions::FloatPower => {
+            call_numeric_binop(vm, args, f64::powf, "numpy.float_power", BinopResult::Float).map(CallResult::Value)
+        }
+        NumpyFunctions::Divmod => call_numeric_tuple_binop(
+            vm,
+            args,
+            numpy_divmod,
+            "numpy.divmod",
+            BinopResult::Promoted,
+            BinopResult::Promoted,
+        )
+        .map(CallResult::Value),
         NumpyFunctions::Conj => call_real_identity(vm, args, "numpy.conj").map(CallResult::Value),
         NumpyFunctions::Real => call_real_identity(vm, args, "numpy.real").map(CallResult::Value),
         NumpyFunctions::Imag => call_imag(vm, args).map(CallResult::Value),
@@ -2863,6 +2981,420 @@ fn is_numpy_iterable(value: &Value, vm: &VM<'_, impl ResourceTracker>) -> bool {
         ),
         _ => false,
     }
+}
+
+/// Shared implementation for unary NumPy functions that return two results.
+///
+/// NumPy's `frexp()` and `modf()` preserve the input's scalar-vs-array form but
+/// package the two outputs in a tuple. This helper keeps that shape handling in
+/// one place so both scalar broadcasting and list-to-array conversion match the
+/// rest of Monty's ufunc subset.
+fn call_unary_tuple_func(
+    vm: &mut VM<'_, impl ResourceTracker>,
+    args: ArgValues,
+    f: fn(f64) -> (f64, f64),
+    name: &str,
+    first_dtype: NdArrayDtype,
+    second_dtype: NdArrayDtype,
+) -> RunResult<Value> {
+    let arg = args.get_one_arg(name, vm.heap)?;
+    defer_drop!(arg, vm);
+
+    if let Ok((data, shape, _)) = extract_ndarray_info(arg, name, vm) {
+        let (first_data, second_data): (Vec<f64>, Vec<f64>) = data.iter().map(|&value| f(value)).unzip();
+        tuple_from_arrays(vm, first_data, second_data, shape, first_dtype, second_dtype)
+    } else {
+        let (value, _) = numeric_scalar_info(arg, name, vm)?;
+        let (first, second) = f(value);
+        tuple_from_scalars(first, second, first_dtype, second_dtype, vm)
+    }
+}
+
+/// `numpy.ldexp(x, exp)` over Monty's numeric scalar/list/ndarray subset.
+///
+/// The exponent operand is intentionally restricted to integer and boolean
+/// dtypes, matching NumPy's ufunc loop selection and preventing accidental
+/// coercion of arbitrary floats into powers-of-two exponents.
+fn call_ldexp(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let (x_val, exp_val) = args.get_two_args("numpy.ldexp", vm.heap)?;
+    defer_drop!(x_val, vm);
+    defer_drop!(exp_val, vm);
+
+    let x_info = extract_ndarray_info(x_val, "numpy.ldexp", vm);
+    let exp_info = integer_array_info(exp_val, "numpy.ldexp", vm);
+
+    match (x_info, exp_info) {
+        (Ok((x_data, x_shape, _)), Ok((exp_data, exp_shape))) => {
+            if x_shape != exp_shape {
+                return Err(
+                    SimpleException::new_msg(ExcType::ValueError, "operands could not be broadcast together").into(),
+                );
+            }
+            let data: Vec<f64> = x_data
+                .iter()
+                .zip(exp_data.iter())
+                .map(|(&x, &exp)| numpy_ldexp(x, exp))
+                .collect();
+            let arr = NdArray::new(data, x_shape, NdArrayDtype::Float64);
+            Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(arr))?))
+        }
+        (Ok((x_data, x_shape, _)), Err(_)) => {
+            let exp = integer_scalar_info(exp_val, "numpy.ldexp")?;
+            let data: Vec<f64> = x_data.iter().map(|&x| numpy_ldexp(x, i64_to_f64(exp))).collect();
+            let arr = NdArray::new(data, x_shape, NdArrayDtype::Float64);
+            Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(arr))?))
+        }
+        (Err(_), Ok((exp_data, exp_shape))) => {
+            let (x, _) = numeric_scalar_info(x_val, "numpy.ldexp", vm)?;
+            let data: Vec<f64> = exp_data.iter().map(|&exp| numpy_ldexp(x, exp)).collect();
+            let arr = NdArray::new(data, exp_shape, NdArrayDtype::Float64);
+            Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(arr))?))
+        }
+        (Err(_), Err(_)) => {
+            let (x, _) = numeric_scalar_info(x_val, "numpy.ldexp", vm)?;
+            let exp = integer_scalar_info(exp_val, "numpy.ldexp")?;
+            Ok(Value::Float(numpy_ldexp(x, i64_to_f64(exp))))
+        }
+    }
+}
+
+/// Shared implementation for integer-only binary ufuncs like `gcd()` and `lcm()`.
+///
+/// Float dtypes are rejected instead of being truncated, because real NumPy has
+/// no safe float loop for these ufuncs. Boolean inputs are accepted and promoted
+/// to integer results.
+fn call_integer_binop(
+    vm: &mut VM<'_, impl ResourceTracker>,
+    args: ArgValues,
+    f: fn(i64, i64) -> i64,
+    name: &str,
+) -> RunResult<Value> {
+    let (a_val, b_val) = args.get_two_args(name, vm.heap)?;
+    defer_drop!(a_val, vm);
+    defer_drop!(b_val, vm);
+
+    let a_info = integer_array_info(a_val, name, vm);
+    let b_info = integer_array_info(b_val, name, vm);
+
+    match (a_info, b_info) {
+        (Ok((a_data, a_shape)), Ok((b_data, b_shape))) => {
+            if a_shape != b_shape {
+                return Err(
+                    SimpleException::new_msg(ExcType::ValueError, "operands could not be broadcast together").into(),
+                );
+            }
+            let data: Vec<f64> = a_data
+                .iter()
+                .zip(b_data.iter())
+                .map(|(&a, &b)| i64_to_f64(f(f64_to_i64(a), f64_to_i64(b))))
+                .collect();
+            let arr = NdArray::new(data, a_shape, NdArrayDtype::Int64);
+            Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(arr))?))
+        }
+        (Ok((a_data, a_shape)), Err(_)) => {
+            let scalar = integer_scalar_info(b_val, name)?;
+            let data: Vec<f64> = a_data.iter().map(|&a| i64_to_f64(f(f64_to_i64(a), scalar))).collect();
+            let arr = NdArray::new(data, a_shape, NdArrayDtype::Int64);
+            Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(arr))?))
+        }
+        (Err(_), Ok((b_data, b_shape))) => {
+            let scalar = integer_scalar_info(a_val, name)?;
+            let data: Vec<f64> = b_data.iter().map(|&b| i64_to_f64(f(scalar, f64_to_i64(b)))).collect();
+            let arr = NdArray::new(data, b_shape, NdArrayDtype::Int64);
+            Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(arr))?))
+        }
+        (Err(_), Err(_)) => {
+            let a = integer_scalar_info(a_val, name)?;
+            let b = integer_scalar_info(b_val, name)?;
+            Ok(Value::Int(f(a, b)))
+        }
+    }
+}
+
+/// Shared implementation for binary NumPy functions that return two results.
+///
+/// `numpy.divmod()` is the motivating case: each operand can be a scalar, list,
+/// or ndarray, and the quotient and remainder outputs must preserve the same
+/// broadcasted shape while being returned as a pair.
+fn call_numeric_tuple_binop(
+    vm: &mut VM<'_, impl ResourceTracker>,
+    args: ArgValues,
+    f: fn(f64, f64) -> (f64, f64),
+    name: &str,
+    first_result: BinopResult,
+    second_result: BinopResult,
+) -> RunResult<Value> {
+    let (a_val, b_val) = args.get_two_args(name, vm.heap)?;
+    defer_drop!(a_val, vm);
+    defer_drop!(b_val, vm);
+
+    let a_info = extract_ndarray_info(a_val, name, vm);
+    let b_info = extract_ndarray_info(b_val, name, vm);
+
+    match (a_info, b_info) {
+        (Ok((a_data, a_shape, a_dtype)), Ok((b_data, b_shape, b_dtype))) => {
+            if a_shape != b_shape {
+                return Err(
+                    SimpleException::new_msg(ExcType::ValueError, "operands could not be broadcast together").into(),
+                );
+            }
+            let (first_data, second_data): (Vec<f64>, Vec<f64>) =
+                a_data.iter().zip(b_data.iter()).map(|(&a, &b)| f(a, b)).unzip();
+            tuple_from_arrays(
+                vm,
+                first_data,
+                second_data,
+                a_shape,
+                binop_dtype(first_result, a_dtype, b_dtype),
+                binop_dtype(second_result, a_dtype, b_dtype),
+            )
+        }
+        (Ok((a_data, a_shape, a_dtype)), Err(_)) => {
+            let (scalar, scalar_dtype) = numeric_scalar_info(b_val, name, vm)?;
+            let (first_data, second_data): (Vec<f64>, Vec<f64>) = a_data.iter().map(|&a| f(a, scalar)).unzip();
+            tuple_from_arrays(
+                vm,
+                first_data,
+                second_data,
+                a_shape,
+                binop_dtype(first_result, a_dtype, scalar_dtype),
+                binop_dtype(second_result, a_dtype, scalar_dtype),
+            )
+        }
+        (Err(_), Ok((b_data, b_shape, b_dtype))) => {
+            let (scalar, scalar_dtype) = numeric_scalar_info(a_val, name, vm)?;
+            let (first_data, second_data): (Vec<f64>, Vec<f64>) = b_data.iter().map(|&b| f(scalar, b)).unzip();
+            tuple_from_arrays(
+                vm,
+                first_data,
+                second_data,
+                b_shape,
+                binop_dtype(first_result, scalar_dtype, b_dtype),
+                binop_dtype(second_result, scalar_dtype, b_dtype),
+            )
+        }
+        (Err(_), Err(_)) => {
+            let (a, a_dtype) = numeric_scalar_info(a_val, name, vm)?;
+            let (b, b_dtype) = numeric_scalar_info(b_val, name, vm)?;
+            let (first, second) = f(a, b);
+            tuple_from_scalars(
+                first,
+                second,
+                binop_dtype(first_result, a_dtype, b_dtype),
+                binop_dtype(second_result, a_dtype, b_dtype),
+                vm,
+            )
+        }
+    }
+}
+
+/// Allocates a tuple containing two ndarray outputs with a shared shape.
+fn tuple_from_arrays(
+    vm: &mut VM<'_, impl ResourceTracker>,
+    first_data: Vec<f64>,
+    second_data: Vec<f64>,
+    shape: Vec<usize>,
+    first_dtype: NdArrayDtype,
+    second_dtype: NdArrayDtype,
+) -> RunResult<Value> {
+    let first_arr = NdArray::new(first_data, shape.clone(), first_dtype);
+    let second_arr = NdArray::new(second_data, shape, second_dtype);
+    let first = Value::Ref(vm.heap.allocate(HeapData::NdArray(first_arr))?);
+    let second = Value::Ref(vm.heap.allocate(HeapData::NdArray(second_arr))?);
+    Ok(allocate_tuple(smallvec::smallvec![first, second], vm.heap)?)
+}
+
+/// Allocates a tuple containing two scalar ufunc outputs.
+fn tuple_from_scalars(
+    first: f64,
+    second: f64,
+    first_dtype: NdArrayDtype,
+    second_dtype: NdArrayDtype,
+    vm: &mut VM<'_, impl ResourceTracker>,
+) -> RunResult<Value> {
+    Ok(allocate_tuple(
+        smallvec::smallvec![
+            scalar_from_f64(first, first_dtype),
+            scalar_from_f64(second, second_dtype)
+        ],
+        vm.heap,
+    )?)
+}
+
+/// Extracts an integer scalar accepted by NumPy's integer-only ufunc loops.
+fn integer_scalar_info(value: &Value, name: &str) -> RunResult<i64> {
+    match value {
+        Value::Int(n) => Ok(*n),
+        Value::Bool(b) => Ok(i64::from(*b)),
+        _ => Err(integer_ufunc_type_error(name)),
+    }
+}
+
+/// Extracts integer ndarray data, accepting lists and rejecting float dtypes.
+fn integer_array_info(
+    value: &Value,
+    name: &str,
+    vm: &VM<'_, impl ResourceTracker>,
+) -> RunResult<(Vec<f64>, Vec<usize>)> {
+    let (data, shape, dtype) = extract_ndarray_info(value, name, vm)?;
+    if dtype == NdArrayDtype::Float64 {
+        Err(integer_ufunc_type_error(name))
+    } else {
+        Ok((data, shape))
+    }
+}
+
+/// Builds a compact TypeError for unsupported integer ufunc inputs.
+fn integer_ufunc_type_error(name: &str) -> RunError {
+    let ufunc = name.strip_prefix("numpy.").unwrap_or(name);
+    SimpleException::new_msg(
+        ExcType::TypeError,
+        format!("ufunc '{ufunc}' not supported for the input types"),
+    )
+    .into()
+}
+
+/// Converts an integer-valued ndarray slot back to `i64`.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "integer ndarray values are represented as f64 in Monty's current ndarray storage"
+)]
+fn f64_to_i64(value: f64) -> i64 {
+    value as i64
+}
+
+/// Converts an `i64` integer result into ndarray backing storage.
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "integer ndarray values are stored as f64 in Monty's current ndarray model"
+)]
+fn i64_to_f64(value: i64) -> f64 {
+    value as f64
+}
+
+/// `numpy.frexp()` scalar kernel returning exponent as an integer-valued float.
+fn numpy_frexp(value: f64) -> (f64, f64) {
+    let (mantissa, exponent) = libm::frexp(value);
+    (mantissa, f64::from(exponent))
+}
+
+/// `numpy.modf()` scalar kernel.
+fn numpy_modf(value: f64) -> (f64, f64) {
+    libm::modf(value)
+}
+
+/// `numpy.ldexp()` scalar kernel with NumPy-style non-raising overflow behavior.
+fn numpy_ldexp(value: f64, exponent: f64) -> f64 {
+    let exponent = f64_to_i64(exponent);
+    let exponent = i32::try_from(exponent).unwrap_or(if exponent < 0 { i32::MIN } else { i32::MAX });
+    libm::ldexp(value, exponent)
+}
+
+/// `numpy.gcd()` scalar kernel using NumPy's wrapping int64 edge behavior.
+fn numpy_gcd(a: i64, b: i64) -> i64 {
+    wrapping_u64_to_i64(gcd_u64(a.unsigned_abs(), b.unsigned_abs()))
+}
+
+/// `numpy.lcm()` scalar kernel using NumPy's wrapping int64 edge behavior.
+fn numpy_lcm(a: i64, b: i64) -> i64 {
+    if a == 0 || b == 0 {
+        0
+    } else {
+        let gcd = gcd_u64(a.unsigned_abs(), b.unsigned_abs());
+        wrapping_u64_to_i64((a.unsigned_abs() / gcd).wrapping_mul(b.unsigned_abs()))
+    }
+}
+
+/// Euclidean GCD for unsigned integer magnitudes.
+fn gcd_u64(mut a: u64, mut b: u64) -> u64 {
+    while b != 0 {
+        let t = b;
+        b = a % b;
+        a = t;
+    }
+    a
+}
+
+/// Reinterprets a NumPy int64 ufunc magnitude after two's-complement wrapping.
+#[expect(
+    clippy::cast_possible_wrap,
+    reason = "NumPy int64 integer ufuncs wrap overflowing unsigned magnitudes into int64"
+)]
+fn wrapping_u64_to_i64(value: u64) -> i64 {
+    value as i64
+}
+
+/// Stable scalar kernel for `numpy.logaddexp()`.
+fn numpy_logaddexp(a: f64, b: f64) -> f64 {
+    if a.is_nan() || b.is_nan() {
+        f64::NAN
+    } else {
+        let max = a.max(b);
+        if max.is_infinite() {
+            max
+        } else {
+            max + ((a - max).exp() + (b - max).exp()).ln()
+        }
+    }
+}
+
+/// Stable scalar kernel for `numpy.logaddexp2()`.
+fn numpy_logaddexp2(a: f64, b: f64) -> f64 {
+    if a.is_nan() || b.is_nan() {
+        f64::NAN
+    } else {
+        let max = a.max(b);
+        if max.is_infinite() {
+            max
+        } else {
+            max + ((a - max).exp2() + (b - max).exp2()).log2()
+        }
+    }
+}
+
+/// Scalar kernel for `numpy.spacing()`.
+fn numpy_spacing(value: f64) -> f64 {
+    if value.is_nan() || value.is_infinite() {
+        f64::NAN
+    } else if value == 0.0 {
+        f64::from_bits(1)
+    } else {
+        let direction = if value > 0.0 { f64::INFINITY } else { f64::NEG_INFINITY };
+        libm::nextafter(value, direction) - value
+    }
+}
+
+/// Scalar kernel for `numpy.signbit()` using the f64 backing representation.
+fn signbit_as_f64(value: f64) -> f64 {
+    bool_to_f64(value.is_sign_negative())
+}
+
+/// Scalar kernel for NumPy's normalized `sinc(x) = sin(pi*x)/(pi*x)`.
+fn numpy_sinc(value: f64) -> f64 {
+    if value == 0.0 {
+        1.0
+    } else {
+        let scaled = PI * value;
+        scaled.sin() / scaled
+    }
+}
+
+/// Scalar kernel for `numpy.heaviside()`.
+fn numpy_heaviside(value: f64, zero_value: f64) -> f64 {
+    if value.is_nan() {
+        f64::NAN
+    } else if value < 0.0 {
+        0.0
+    } else if value == 0.0 {
+        zero_value
+    } else {
+        1.0
+    }
+}
+
+/// Scalar kernel for `numpy.divmod()`.
+fn numpy_divmod(a: f64, b: f64) -> (f64, f64) {
+    ((a / b).floor(), py_mod(a, b))
 }
 
 /// Rounds a scalar using the factor computed from NumPy's `decimals` argument.

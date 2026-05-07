@@ -82,3 +82,67 @@ assert log10_result[0] == 0.0, 'np.log10(1)'
 assert log10_result[1] == 1.0, 'np.log10(10)'
 assert log10_result[2] == 2.0, 'np.log10(100)'
 assert log10_result[3] == 3.0, 'np.log10(1000)'
+
+
+# === low-risk real and integer math ufuncs ===
+assert np.copysign(-2, 3) == 2.0, 'copysign scalar result'
+assert np.copysign([-2, 3], [1, -1]).tolist() == [2.0, -3.0], 'copysign lists'
+
+mantissa, exponent = np.frexp(np.array([0.0, 8.0, -6.0]))
+assert mantissa.tolist() == [0.0, 0.5, -0.75], 'frexp mantissas'
+assert exponent.tolist() == [0, 4, 3], 'frexp exponents'
+scalar_mantissa, scalar_exponent = np.frexp(8.0)
+assert scalar_mantissa == 0.5, 'frexp scalar mantissa'
+assert scalar_exponent == 4, 'frexp scalar exponent'
+
+fractional, integral = np.modf([-2.75, 3.25])
+assert fractional.tolist() == [-0.75, 0.25], 'modf fractional parts'
+assert integral.tolist() == [-2.0, 3.0], 'modf integral parts'
+scalar_fractional, scalar_integral = np.modf(-2.75)
+assert scalar_fractional == -0.75, 'modf scalar fractional'
+assert scalar_integral == -2.0, 'modf scalar integral'
+
+assert np.ldexp(0.5, 3) == 4.0, 'ldexp scalar'
+assert np.ldexp([0.5, -1.5], [3, 2]).tolist() == [4.0, -6.0], 'ldexp lists'
+assert np.gcd(-12, 18) == 6, 'gcd scalar'
+assert np.gcd([12, -18], [8, 12]).tolist() == [4, 6], 'gcd lists'
+assert np.gcd(True, 4) == 1, 'gcd bool scalar'
+assert np.lcm(-4, 6) == 12, 'lcm scalar'
+assert np.lcm([-4, 6], [6, 8]).tolist() == [12, 24], 'lcm lists'
+
+logadd = np.logaddexp([0.0, 1.0], [0.0, 2.0])
+assert abs(logadd[0] - 0.6931471805599453) < 1e-12, 'logaddexp equal inputs'
+assert abs(logadd[1] - 2.313261687518223) < 1e-12, 'logaddexp offset inputs'
+logadd2 = np.logaddexp2([0.0, 1.0], [0.0, 2.0])
+assert logadd2[0] == 1.0, 'logaddexp2 equal inputs'
+assert abs(logadd2[1] - 2.584962500721156) < 1e-12, 'logaddexp2 offset inputs'
+
+assert np.nextafter(0.0, 1.0) == 5e-324, 'nextafter smallest subnormal'
+assert np.nextafter([1.0], [2.0]).tolist() == [1.0000000000000002], 'nextafter lists'
+assert np.spacing([0.0, 1.0, -1.0]).tolist() == [
+    5e-324,
+    2.220446049250313e-16,
+    -2.220446049250313e-16,
+], 'spacing signs'
+assert np.signbit(np.array([0.0, -0.0, -2.0, 3.0])).tolist() == [
+    False,
+    True,
+    True,
+    False,
+], 'signbit array'
+
+sinc_result = np.sinc([0.0, 0.5, 1.0])
+assert sinc_result[0] == 1.0, 'sinc zero'
+assert abs(sinc_result[1] - 0.6366197723675814) < 1e-12, 'sinc half'
+assert abs(sinc_result[2]) < 1e-12, 'sinc one'
+assert np.heaviside([-2.0, 0.0, 3.0], 0.5).tolist() == [0.0, 0.5, 1.0], 'heaviside list'
+assert np.trunc([-2.75, 3.25]).tolist() == [-2.0, 3.0], 'trunc list'
+assert np.fix([-2.75, 3.25]).tolist() == [-2.0, 3.0], 'fix list'
+assert np.float_power([2, 4], [-1, 0.5]).tolist() == [0.5, 2.0], 'float_power lists'
+
+quotient, remainder = np.divmod(np.array([-3, 4]), np.array([2, 3]))
+assert quotient.tolist() == [-2, 1], 'divmod quotient array'
+assert remainder.tolist() == [1, 1], 'divmod remainder array'
+scalar_quotient, scalar_remainder = np.divmod(7, 3)
+assert scalar_quotient == 2, 'divmod scalar quotient'
+assert scalar_remainder == 1, 'divmod scalar remainder'
