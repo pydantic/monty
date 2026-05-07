@@ -512,5 +512,16 @@ assert np.take_along_axis(take_axis_arr, np.array([[1, 0, 1]]), axis=0).tolist()
 put_axis_arr = np.array([[10, 20, 30], [40, 50, 60]])
 assert np.put_along_axis(put_axis_arr, take_axis_idx, [[99, 88], [77, 66]], axis=1) is None, 'put_along_axis return'
 assert put_axis_arr.tolist() == [[10, 88, 99], [77, 50, 66]], 'put_along_axis axis 1'
+assert np.nanquantile([1.0, float('nan'), 3.0], 0.5) == 2.0, 'nanquantile median'
+assert np.nanpercentile([1.0, float('nan'), 3.0], 50) == 2.0, 'nanpercentile median'
+hist_counts, hist_edges = np.histogram([0, 1, 1, 2, 3], bins=3)
+assert hist_counts.tolist() == [1, 2, 2], 'histogram counts'
+assert hist_edges.tolist() == [0.0, 1.0, 2.0, 3.0], 'histogram edges'
+assert np.histogram_bin_edges([0, 1, 1, 2, 3], bins=3).tolist() == [
+    0.0,
+    1.0,
+    2.0,
+    3.0,
+], 'histogram_bin_edges'
 assert np.little_endian == True, 'little_endian constant'
 assert abs(np.euler_gamma - 0.5772156649015329) < 1e-15, 'euler_gamma constant'

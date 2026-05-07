@@ -534,6 +534,14 @@ pub(crate) enum NumpyFunctions {
     Percentile,
     /// `numpy.quantile(a, q)` — q-th quantile (q in [0,1]).
     Quantile,
+    /// `numpy.nanpercentile(a, q)` — q-th percentile ignoring NaN values.
+    Nanpercentile,
+    /// `numpy.nanquantile(a, q)` — q-th quantile ignoring NaN values.
+    Nanquantile,
+    /// `numpy.histogram(a, bins=10)` — one-dimensional histogram counts and edges.
+    Histogram,
+    /// `numpy.histogram_bin_edges(a, bins=10)` — one-dimensional histogram edges.
+    HistogramBinEdges,
     /// `numpy.ptp(a)` — peak-to-peak (max - min).
     Ptp,
     /// `numpy.cumprod(a)` — cumulative product.
@@ -1073,6 +1081,10 @@ const NUMPY_FUNCTIONS: &[(StaticStrings, NumpyFunctions)] = &[
     (StaticStrings::NpAverage, NumpyFunctions::Average),
     (StaticStrings::NpPercentile, NumpyFunctions::Percentile),
     (StaticStrings::NpQuantile, NumpyFunctions::Quantile),
+    (StaticStrings::NpNanpercentile, NumpyFunctions::Nanpercentile),
+    (StaticStrings::NpNanquantile, NumpyFunctions::Nanquantile),
+    (StaticStrings::NpHistogram, NumpyFunctions::Histogram),
+    (StaticStrings::NpHistogramBinEdges, NumpyFunctions::HistogramBinEdges),
     (StaticStrings::NpPtp, NumpyFunctions::Ptp),
     (StaticStrings::NpCumprod, NumpyFunctions::Cumprod),
     (StaticStrings::NpCumulativeProd, NumpyFunctions::Cumprod), // alias
@@ -1629,6 +1641,10 @@ pub(super) fn call(
         NumpyFunctions::Average => call_aggregate(vm, args, NdArray::mean, "numpy.average").map(CallResult::Value),
         NumpyFunctions::Percentile => call_percentile(vm, args).map(CallResult::Value),
         NumpyFunctions::Quantile => call_quantile(vm, args).map(CallResult::Value),
+        NumpyFunctions::Nanpercentile => call_nanpercentile(vm, args).map(CallResult::Value),
+        NumpyFunctions::Nanquantile => call_nanquantile(vm, args).map(CallResult::Value),
+        NumpyFunctions::Histogram => call_histogram(vm, args).map(CallResult::Value),
+        NumpyFunctions::HistogramBinEdges => call_histogram_bin_edges(vm, args).map(CallResult::Value),
         NumpyFunctions::Ptp => call_ptp(vm, args).map(CallResult::Value),
         NumpyFunctions::Cumprod => call_cumprod(vm, args).map(CallResult::Value),
         NumpyFunctions::Nancumsum => call_nancumop(vm, args, true, "numpy.nancumsum").map(CallResult::Value),
@@ -7187,6 +7203,56 @@ fn call_quantile(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunR
     Ok(Value::Float(percentile_impl(arr.data(), q)))
 }
 
+/// `numpy.nanpercentile(a, q)` — q-th percentile after dropping NaN values.
+fn call_nanpercentile(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let (arr_val, q_val) = args.get_two_args("numpy.nanpercentile", vm.heap)?;
+    defer_drop!(arr_val, vm);
+    let arr = ndarray_from_value(arr_val, "numpy.nanpercentile", vm)?;
+    let q = to_f64(&q_val, vm)?;
+    q_val.drop_with_heap(vm);
+    let filtered = non_nan_values(arr.data());
+    Ok(Value::Float(percentile_impl(&filtered, q / 100.0)))
+}
+
+/// `numpy.nanquantile(a, q)` — q-th quantile after dropping NaN values.
+fn call_nanquantile(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let (arr_val, q_val) = args.get_two_args("numpy.nanquantile", vm.heap)?;
+    defer_drop!(arr_val, vm);
+    let arr = ndarray_from_value(arr_val, "numpy.nanquantile", vm)?;
+    let q = to_f64(&q_val, vm)?;
+    q_val.drop_with_heap(vm);
+    let filtered = non_nan_values(arr.data());
+    Ok(Value::Float(percentile_impl(&filtered, q)))
+}
+
+/// `numpy.histogram(a, bins=10)` — one-dimensional histogram counts and bin edges.
+fn call_histogram(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let (arr, bins) = histogram_args(vm, args, "numpy.histogram")?;
+    let (counts, edges) = histogram_counts_edges(arr.data(), bins);
+    let counts_value = Value::Ref(vm.heap.allocate(HeapData::NdArray(NdArray::new(
+        counts,
+        vec![bins],
+        NdArrayDtype::Int64,
+    )))?);
+    let edges_value = Value::Ref(vm.heap.allocate(HeapData::NdArray(NdArray::new(
+        edges,
+        vec![bins + 1],
+        NdArrayDtype::Float64,
+    )))?);
+    Ok(allocate_tuple(smallvec::smallvec![counts_value, edges_value], vm.heap)?)
+}
+
+/// `numpy.histogram_bin_edges(a, bins=10)` — return histogram bin edges only.
+fn call_histogram_bin_edges(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let (arr, bins) = histogram_args(vm, args, "numpy.histogram_bin_edges")?;
+    let edges = histogram_edges(arr.data(), bins);
+    Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(NdArray::new(
+        edges,
+        vec![bins + 1],
+        NdArrayDtype::Float64,
+    )))?))
+}
+
 /// Compute the q-th quantile (q in [0, 1]) using linear interpolation.
 #[expect(
     clippy::cast_possible_truncation,
@@ -7211,6 +7277,134 @@ fn percentile_impl(data: &[f64], q: f64) -> f64 {
     } else {
         sorted[lo] + (sorted[hi] - sorted[lo]) * (idx - lo as f64)
     }
+}
+
+/// Returns a copied vector containing only non-NaN values.
+fn non_nan_values(data: &[f64]) -> Vec<f64> {
+    data.iter().copied().filter(|value| !value.is_nan()).collect()
+}
+
+/// Parses common histogram arguments, currently supporting integer `bins`.
+fn histogram_args(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues, name: &str) -> RunResult<(NdArray, usize)> {
+    let (pos, kwargs) = args.into_parts();
+    defer_drop_mut!(pos, vm);
+    let kwargs_iter = kwargs.into_iter();
+    defer_drop_mut!(kwargs_iter, vm);
+
+    let arr_val = pos.next().ok_or_else(|| ExcType::type_error_at_least(name, 1, 0))?;
+    defer_drop!(arr_val, vm);
+    let bins_value = pos.next();
+    defer_drop_mut!(bins_value, vm);
+    if pos.len() != 0 {
+        return Err(ExcType::type_error_at_most(name, 2, 2 + pos.len()));
+    }
+    parse_bins_keyword(kwargs_iter, bins_value, name, vm)?;
+
+    let arr = ndarray_from_value(arr_val, name, vm)?;
+    let bins = if let Some(value) = bins_value.as_ref() {
+        histogram_bins_from_value(value, name)?
+    } else {
+        10
+    };
+    Ok((arr, bins))
+}
+
+/// Parses a supported `bins` value for histogram helpers.
+fn histogram_bins_from_value(value: &Value, name: &str) -> RunResult<usize> {
+    let bins = value_to_i64_arg(value, name, "bins")?;
+    if bins <= 0 {
+        Err(SimpleException::new_msg(ExcType::ValueError, "`bins` must be positive").into())
+    } else {
+        usize::try_from(bins)
+            .map_err(|_| SimpleException::new_msg(ExcType::ValueError, format!("{name}() bins is too large")).into())
+    }
+}
+
+/// Parses an optional `bins` keyword into the shared bins value slot.
+fn parse_bins_keyword(
+    kwargs_iter: &mut impl Iterator<Item = (Value, Value)>,
+    bins_value: &mut Option<Value>,
+    name: &str,
+    vm: &mut VM<'_, impl ResourceTracker>,
+) -> RunResult<()> {
+    for (key, value) in kwargs_iter {
+        defer_drop!(key, vm);
+        let Some(keyword_name) = key.as_either_str(vm.heap) else {
+            value.drop_with_heap(vm);
+            return Err(ExcType::type_error_kwargs_nonstring_key());
+        };
+        let key_str = keyword_name.as_str(vm.interns);
+        if key_str == "bins" {
+            if bins_value.is_some() {
+                value.drop_with_heap(vm);
+                return Err(ExcType::type_error_duplicate_arg(name, key_str));
+            }
+            *bins_value = Some(value);
+        } else {
+            value.drop_with_heap(vm);
+            return Err(ExcType::type_error_unexpected_keyword(name, key_str));
+        }
+    }
+    Ok(())
+}
+
+/// Computes histogram counts and edges for finite numeric data.
+fn histogram_counts_edges(data: &[f64], bins: usize) -> (Vec<f64>, Vec<f64>) {
+    let edges = histogram_edges(data, bins);
+    let mut counts = vec![0.0; bins];
+    let first = edges[0];
+    let last = edges[bins];
+    let width = (last - first) / bins as f64;
+    if width > 0.0 {
+        for value in data.iter().copied().filter(|value| value.is_finite()) {
+            if value >= first && value <= last {
+                let index = if matches!(value.total_cmp(&last), Ordering::Equal) {
+                    bins - 1
+                } else {
+                    #[expect(
+                        clippy::cast_possible_truncation,
+                        clippy::cast_sign_loss,
+                        reason = "bin index in range"
+                    )]
+                    {
+                        ((value - first) / width).floor() as usize
+                    }
+                };
+                counts[index] += 1.0;
+            }
+        }
+    }
+    (counts, edges)
+}
+
+/// Computes evenly spaced histogram bin edges.
+fn histogram_edges(data: &[f64], bins: usize) -> Vec<f64> {
+    let finite = data
+        .iter()
+        .copied()
+        .filter(|value| value.is_finite())
+        .collect::<Vec<_>>();
+    let (mut first, mut last) = if finite.is_empty() {
+        (0.0, 1.0)
+    } else {
+        let first = finite.iter().copied().fold(f64::INFINITY, f64::min);
+        let last = finite.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+        (first, last)
+    };
+    if matches!(first.total_cmp(&last), Ordering::Equal) {
+        first -= 0.5;
+        last += 0.5;
+    }
+    let width = (last - first) / bins as f64;
+    (0..=bins)
+        .map(|index| {
+            if index == bins {
+                last
+            } else {
+                first + width * index as f64
+            }
+        })
+        .collect()
 }
 
 /// `numpy.ptp(a)` — peak-to-peak: max(a) - min(a).

@@ -1268,6 +1268,12 @@ pub enum StaticStrings {
     /// `numpy.nanmedian()` function
     #[strum(serialize = "nanmedian")]
     NpNanmedian,
+    /// `numpy.nanpercentile()` function
+    #[strum(serialize = "nanpercentile")]
+    NpNanpercentile,
+    /// `numpy.nanquantile()` function
+    #[strum(serialize = "nanquantile")]
+    NpNanquantile,
     /// `numpy.nanargmin()` function
     #[strum(serialize = "nanargmin")]
     NpNanargmin,
@@ -1283,6 +1289,12 @@ pub enum StaticStrings {
     /// `numpy.quantile()` function
     #[strum(serialize = "quantile")]
     NpQuantile,
+    /// `numpy.histogram()` one-dimensional histogram helper.
+    #[strum(serialize = "histogram")]
+    NpHistogram,
+    /// `numpy.histogram_bin_edges()` one-dimensional bin edge helper.
+    #[strum(serialize = "histogram_bin_edges")]
+    NpHistogramBinEdges,
     /// `numpy.ptp()` function — peak to peak
     #[strum(serialize = "ptp")]
     NpPtp,
