@@ -11,6 +11,41 @@ use super::{
 };
 use crate::{intern::StringId, parse::CodeRange, value::Value};
 
+/// State of the abstract operand-stack tracker as the builder emits bytecode.
+///
+/// The compiler tracks "what the operand stack looks like at the point we're
+/// about to emit the next opcode" so that it can record correct stack depths
+/// in `ExceptionEntry` and check the merge invariant at jump patches. Control
+/// flow makes that tracker into a small state machine:
+///
+/// * `Live(depth)` — the most recently emitted opcode falls through to the
+///   next byte. `depth` is the operand-stack height there. `adjust_stack`
+///   updates `depth`; `set_stack_depth` overrides it absolutely.
+/// * `Dead` — the most recently emitted opcode unconditionally diverts
+///   control flow (`Jump`, `ReturnValue`, `Raise`, `Reraise`), so subsequent
+///   bytes are unreachable via fall-through. The depth has no meaningful
+///   value until something re-establishes it: a `patch_jump` whose label
+///   carries the jump-taken target depth, or an explicit `set_stack_depth`
+///   for code reached via the exception table (handler entries).
+///
+/// Modeling this explicitly removes the need for compilers to manually save
+/// and restore `dead_code_depth` around terminating statements — emit-of-
+/// terminator transitions to `Dead`, and `patch_jump` transitions back to
+/// `Live` from the label's recorded target depth. Stack-effect adjustments
+/// in `Dead` are no-ops, so dead code can compile freely without poisoning
+/// the tracker.
+#[derive(Debug, Clone, Copy)]
+enum TrackerState {
+    Live(u16),
+    Dead,
+}
+
+impl Default for TrackerState {
+    fn default() -> Self {
+        Self::Live(0)
+    }
+}
+
 /// Builder for emitting bytecode during compilation.
 ///
 /// Handles encoding opcodes and operands into raw bytes, managing forward jumps
@@ -48,8 +83,8 @@ pub struct CodeBuilder {
     /// Current focus location within the source range.
     current_focus: Option<CodeRange>,
 
-    /// Current stack depth for tracking max stack usage.
-    current_stack_depth: u16,
+    /// Current operand-stack tracker state — see `TrackerState`.
+    tracker: TrackerState,
 
     /// Maximum stack depth seen during compilation.
     max_stack_depth: u16,
@@ -89,6 +124,10 @@ impl CodeBuilder {
     /// All variable-effect opcodes (where `Opcode::stack_effect()` returns
     /// `None`) take operands, so calling this with one is a compiler bug —
     /// hence the panic on `None` rather than silently defaulting to `0`.
+    ///
+    /// Terminator opcodes (`ReturnValue`, `Raise`, `Reraise`) transition the
+    /// tracker to `Dead` after emission so subsequent fall-through emits
+    /// don't disturb live tracking.
     pub fn emit(&mut self, op: Opcode) {
         self.record_location();
         self.bytecode.push(op as u8);
@@ -96,6 +135,9 @@ impl CodeBuilder {
             panic!("variable-effect opcode {op:?} emitted via emit (no operand) — variable-effect ops require an operand-aware emit helper")
         });
         self.adjust_stack(effect);
+        if matches!(op, Opcode::ReturnValue | Opcode::Raise | Opcode::Reraise) {
+            self.mark_dead();
+        }
     }
 
     /// Emits an instruction with a u8 operand and updates stack depth tracking.
@@ -288,29 +330,41 @@ impl CodeBuilder {
     /// The jump offset is initially set to 0 and must be patched with
     /// `patch_jump()` once the target location is known.
     ///
-    /// The returned label carries both the bytecode offset to patch and the
-    /// stack depth that the *jump-taken* path will leave on the stack at the
-    /// patch target. `patch_jump` uses that depth to enforce the merge
-    /// invariant (every branch arriving at the patch point agrees on stack
-    /// depth). Forward jumps differ in how they affect the two paths:
+    /// The returned label carries the bytecode offset to patch and the stack
+    /// depth that the *jump-taken* path leaves on the stack at the patch
+    /// target. `patch_jump` uses that depth to enforce the merge invariant
+    /// (every branch arriving at the patch point agrees on stack depth) and
+    /// to transition the tracker out of `Dead` when fall-through is
+    /// unreachable. Forward jumps differ in how they affect the two paths:
     ///
-    /// | Opcode                              | fall-through effect | jump-taken target depth |
-    /// |-------------------------------------|---------------------|-------------------------|
-    /// | `Jump`                              | `0` (dead)          | unchanged from pre-emit |
-    /// | `JumpIfTrue` / `JumpIfFalse`        | `-1` (cond popped)  | pre-emit `- 1`          |
-    /// | `JumpIfTrueOrPop` / `JumpIfFalseOrPop` | `-1` (cond popped) | pre-emit (cond kept)    |
-    /// | `ForIter`                           | `+1` (value pushed) | pre-emit `- 1` (iter popped) |
+    /// | Opcode                                 | fall-through effect | jump-taken target depth |
+    /// |----------------------------------------|---------------------|-------------------------|
+    /// | `Jump`                                 | n/a (dead)          | unchanged from pre-emit |
+    /// | `JumpIfTrue` / `JumpIfFalse`           | `-1` (cond popped)  | pre-emit `- 1`          |
+    /// | `JumpIfTrueOrPop` / `JumpIfFalseOrPop` | `-1` (cond popped)  | pre-emit (cond kept)    |
+    /// | `ForIter`                              | `+1` (value pushed) | pre-emit `- 1` (iter popped) |
+    ///
+    /// After `Jump` the tracker becomes `Dead` (it's unconditional). All
+    /// other jumps continue to fall through.
+    ///
+    /// # Panics
+    ///
+    /// Panics if called from the `Dead` state — emitting a jump in dead code
+    /// produces unreachable bytecode and obscures the merge invariant.
+    /// Callers must guard with `is_dead()` if they may reach this from a
+    /// terminating block (see e.g. `compile_if`'s if-else bridge).
     #[must_use]
     pub fn emit_jump(&mut self, op: Opcode) -> JumpLabel {
+        let TrackerState::Live(pre_depth) = self.tracker else {
+            panic!("emit_jump({op:?}) called from Dead state — guard with is_dead() at the call site")
+        };
+
         self.record_location();
-        let pre_depth = self.current_stack_depth;
         let offset = self.bytecode.len();
         self.bytecode.push(op as u8);
         // Placeholder for i16 offset (will be patched)
         self.bytecode.extend_from_slice(&0i16.to_le_bytes());
 
-        // Determine fall-through stack effect and jump-taken target depth.
-        // See the table on the docstring above for the per-opcode semantics.
         let (fallthrough_effect, target_depth): (i16, u16) = match op {
             Opcode::Jump => (0, pre_depth),
             Opcode::JumpIfTrue | Opcode::JumpIfFalse => (-1, pre_depth.saturating_sub(1)),
@@ -319,6 +373,10 @@ impl CodeBuilder {
             _ => panic!("emit_jump called with non-jump opcode {op:?}"),
         };
         self.adjust_stack(fallthrough_effect);
+
+        if op == Opcode::Jump {
+            self.mark_dead();
+        }
 
         JumpLabel { offset, target_depth }
     }
@@ -329,29 +387,20 @@ impl CodeBuilder {
     /// instruction's operand (i.e., where execution would continue if
     /// the jump is not taken).
     ///
-    /// In debug builds, asserts that the builder's tracked stack depth at the
-    /// patch point matches the depth that the jump-taken path leaves on the
-    /// stack (recorded by `emit_jump` in the label). When fall-through reaches
-    /// the patch point, this catches branches that disagree on depth — a
-    /// recurring class of compiler bug. When fall-through is unreachable
-    /// (because of an upstream unconditional `Jump` or `Reraise`), callers
-    /// must pre-align the tracker via `set_stack_depth` so the assertion
-    /// reflects the live (jump-taken) path.
+    /// Tracker state transitions: if the tracker is `Dead` (because the
+    /// last live emission was a terminator), `patch_jump` re-establishes
+    /// `Live(label.target_depth)` from the label. If the tracker is already
+    /// `Live`, it asserts agreement — the merge invariant.
     ///
     /// # Panics
     ///
-    /// - In debug builds, panics if the tracker disagrees with
-    ///   `label.target_depth`.
+    /// - In debug builds, panics if the tracker is `Live` and disagrees with
+    ///   `label.target_depth` — this means two reachable paths arrive at the
+    ///   patch point with different stack heights.
     /// - Always panics if the jump offset exceeds i16 range (-32768..32767),
     ///   which indicates the function is too large. This is a compile-time
     ///   error rather than silent truncation.
     pub fn patch_jump(&mut self, label: JumpLabel) {
-        debug_assert_eq!(
-            self.current_stack_depth, label.target_depth,
-            "stack-depth mismatch at jump merge: builder tracker is {} but jump label expects {}; \
-             branches reaching this merge point disagree on stack state",
-            self.current_stack_depth, label.target_depth,
-        );
         let target = self.bytecode.len();
         // Offset is relative to position after the jump instruction (opcode + i16 = 3 bytes)
         let target_i64 = i64::try_from(target).expect("bytecode target exceeds i64");
@@ -362,13 +411,35 @@ impl CodeBuilder {
         let bytes = offset.to_le_bytes();
         self.bytecode[label.offset + 1] = bytes[0];
         self.bytecode[label.offset + 2] = bytes[1];
+
+        match self.tracker {
+            TrackerState::Live(d) => debug_assert_eq!(
+                d, label.target_depth,
+                "stack-depth mismatch at jump merge: builder tracker is {d} but jump label expects {}; \
+                 branches reaching this merge point disagree on stack state",
+                label.target_depth,
+            ),
+            TrackerState::Dead => self.set_stack_depth(label.target_depth),
+        }
     }
 
     /// Emits a backward jump to a known target offset.
     ///
     /// Unlike forward jumps, backward jumps have a known target at emit time,
-    /// so no patching is needed.
+    /// so no patching is needed. Only fixed-effect opcodes are supported here
+    /// (in practice, just `Jump` and the conditional jumps used for
+    /// comprehension filters); branch-dependent jumps like `ForIter` or the
+    /// `OrPop` variants would need per-branch target depths that this
+    /// label-less path can't carry — panic if misused.
+    ///
+    /// After `Jump` (unconditional), the tracker transitions to `Dead`.
+    /// Panics if called from `Dead` — emitting a backward jump in dead code
+    /// produces unreachable bytecode and is always a compiler bug.
     pub fn emit_jump_to(&mut self, op: Opcode, target: usize) {
+        assert!(
+            !self.is_dead(),
+            "emit_jump_to({op:?}) called from Dead state — guard with is_dead() at the call site"
+        );
         self.record_location();
         let current = self.bytecode.len();
         // Offset is relative to position after this instruction (current + 3)
@@ -379,17 +450,13 @@ impl CodeBuilder {
             i16::try_from(raw_offset).expect("jump offset exceeds i16 range (-32768..32767); function too large");
         self.bytecode.push(op as u8);
         self.bytecode.extend_from_slice(&offset.to_le_bytes());
-        // Track stack effect. `emit_jump_to` is only used for unconditional
-        // backward jumps (e.g. loop continuation), where the only valid
-        // opcode is `Jump` with a fixed effect of 0. Any opcode whose effect
-        // depends on which branch is taken (`ForIter`, `JumpIfTrueOrPop`,
-        // etc.) cannot be encoded as a backward jump because we don't have a
-        // patch label to record per-branch target depths — panic loudly if
-        // misused rather than silently defaulting to `0`.
         let effect = op.stack_effect().unwrap_or_else(|| {
             panic!("variable-effect opcode {op:?} emitted via emit_jump_to — only fixed-effect jumps are supported on the backward-jump path")
         });
         self.adjust_stack(effect);
+        if op == Opcode::Jump {
+            self.mark_dead();
+        }
     }
 
     /// Returns the current bytecode offset.
@@ -517,9 +584,30 @@ impl CodeBuilder {
     }
 
     /// Returns the current tracked stack depth.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the tracker is in the `Dead` state. Callers that capture
+    /// depth (e.g. `compile_for`'s `loop_exit_depth`) only ever do so from
+    /// reachable code, so being `Dead` here indicates a compiler bug.
     #[must_use]
     pub fn stack_depth(&self) -> u16 {
-        self.current_stack_depth
+        match self.tracker {
+            TrackerState::Live(d) => d,
+            TrackerState::Dead => panic!(
+                "stack_depth() called while tracker is in Dead state — \
+                 callers should only read depth from reachable code"
+            ),
+        }
+    }
+
+    /// Reports whether the tracker is in the dead-code state.
+    ///
+    /// Used by compile_block to stop emitting after a terminator and by emit
+    /// helpers to decide whether to bother computing live target depths.
+    #[must_use]
+    pub fn is_dead(&self) -> bool {
+        matches!(self.tracker, TrackerState::Dead)
     }
 
     /// Builds the final Code object.
@@ -553,27 +641,47 @@ impl CodeBuilder {
         }
     }
 
-    /// Sets the current stack depth to an absolute value.
+    /// Sets the current stack depth to an absolute value, transitioning to
+    /// `Live` regardless of prior state.
     ///
-    /// Used when compiling code paths that branch and reconverge with different
-    /// stack states (e.g., break/continue through finally blocks).
-    /// Updates `max_stack_depth` if the new depth exceeds it.
+    /// Use this for points reached via the exception table (handler entries,
+    /// finally cleanup) where the depth comes from outside the fall-through
+    /// graph. For ordinary forward-jump merges, `patch_jump` is enough — it
+    /// transitions `Dead → Live` automatically using the label's recorded
+    /// target depth.
     pub fn set_stack_depth(&mut self, depth: u16) {
-        self.current_stack_depth = depth;
+        self.tracker = TrackerState::Live(depth);
         self.max_stack_depth = self.max_stack_depth.max(depth);
     }
 
     /// Adjusts the stack depth by the given delta.
     ///
     /// Positive values indicate pushes, negative values indicate pops.
-    /// Updates `max_stack_depth` if the new depth exceeds it.
+    /// In the `Dead` state this is a no-op: dead code can be emitted freely
+    /// without poisoning the tracker, since the depth there is meaningless
+    /// until re-established by a patch or `set_stack_depth`. Updates
+    /// `max_stack_depth` if the new live depth exceeds it.
     fn adjust_stack(&mut self, delta: i16) {
-        let new_depth = i32::from(self.current_stack_depth) + i32::from(delta);
+        let TrackerState::Live(depth) = self.tracker else {
+            return;
+        };
+        let new_depth = i32::from(depth) + i32::from(delta);
         // Stack depth shouldn't go negative (indicates compiler bug)
         debug_assert!(new_depth >= 0, "Stack depth went negative: {new_depth}");
         // Safe cast: new_depth is non-negative and stack won't exceed u16::MAX in practice
-        self.current_stack_depth = u16::try_from(new_depth.max(0)).unwrap_or(u16::MAX);
-        self.max_stack_depth = self.max_stack_depth.max(self.current_stack_depth);
+        let new_depth = u16::try_from(new_depth.max(0)).unwrap_or(u16::MAX);
+        self.tracker = TrackerState::Live(new_depth);
+        self.max_stack_depth = self.max_stack_depth.max(new_depth);
+    }
+
+    /// Transitions the tracker to the `Dead` state.
+    ///
+    /// Called internally after emitting unconditional terminators (`Jump`,
+    /// `ReturnValue`, `Raise`, `Reraise`). Subsequent emits will not affect
+    /// `current_stack_depth` until `patch_jump` or `set_stack_depth`
+    /// re-establishes a live arrival depth.
+    fn mark_dead(&mut self) {
+        self.tracker = TrackerState::Dead;
     }
 
     /// Tracks stack effect for opcodes with u8 operand.
@@ -639,25 +747,17 @@ impl CodeBuilder {
         };
         self.adjust_stack(effect);
     }
-
-    /// Manually adjust stack depth for complex scenarios.
-    ///
-    /// Use this when the compiler knows the exact stack effect that can't
-    /// be determined from the opcode alone (e.g., exception handlers pushing
-    /// an exception value).
-    pub fn adjust_stack_depth(&mut self, delta: i16) {
-        self.adjust_stack(delta);
-    }
 }
 
 /// Label for a forward jump that needs patching.
 ///
 /// Carries the bytecode offset where the jump instruction was emitted, plus
 /// the stack depth that the jump-taken path leaves on the stack at the patch
-/// target. The depth is computed by `emit_jump` from the per-opcode semantics
-/// of the jump (see that method's docs) and used by `patch_jump` to assert
-/// the merge invariant — every branch reaching the patch point must agree on
-/// stack depth. Pass this to `patch_jump()` once the target location is known.
+/// target. `emit_jump` only runs in the live tracker state (panicking
+/// otherwise), so this depth is always known when the label is constructed.
+/// `patch_jump` uses it to enforce the merge invariant and to transition the
+/// tracker back to `Live` when fall-through to the patch point is
+/// unreachable.
 #[derive(Debug, Clone, Copy)]
 pub struct JumpLabel {
     offset: usize,
@@ -700,14 +800,13 @@ mod tests {
     fn test_forward_jump() {
         let mut builder = CodeBuilder::new();
         let jump = builder.emit_jump(Opcode::Jump);
-        // The two LoadNones below are dead code (unconditional Jump above), but
-        // they still get emitted to exercise the offset patching. Reset the
-        // builder's tracker before patching so the merge invariant in
-        // `patch_jump` reflects the live (jump-taken) path, where stack depth
-        // is unchanged from before the Jump.
+        // The two LoadNones below are dead code (unconditional Jump above);
+        // adjust_stack is a no-op in the Dead state, so they don't poison
+        // tracking. patch_jump transitions the tracker back to Live using
+        // the label's recorded target depth (0 here, unchanged from before
+        // the Jump).
         builder.emit(Opcode::LoadNone); // 1 byte, skipped by jump
         builder.emit(Opcode::LoadNone); // 1 byte, skipped by jump
-        builder.set_stack_depth(0);
         builder.patch_jump(jump);
         builder.emit(Opcode::LoadNone); // Return value
         builder.emit(Opcode::ReturnValue);
