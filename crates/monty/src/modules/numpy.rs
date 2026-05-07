@@ -60,7 +60,8 @@
 //! ## Search & index
 //! - `numpy.nonzero(a)`, `numpy.argwhere(a)`
 //! - `numpy.diag_indices`, `numpy.tril_indices`, `numpy.triu_indices`
-//! - `numpy.indices`, `numpy.unravel_index`, `numpy.ravel_multi_index`, `numpy.ix_`
+//! - `numpy.indices`, `numpy.unravel_index`, `numpy.ravel_multi_index`, `numpy.ndindex`
+//! - `numpy.ndenumerate`, `numpy.nditer`, `numpy.ix_`
 
 use std::{
     cmp::Ordering,
@@ -511,6 +512,12 @@ pub(crate) enum NumpyFunctions {
     UnravelIndex,
     /// `numpy.ravel_multi_index(multi_index, dims)` — coordinates to flat indices.
     RavelMultiIndex,
+    /// `numpy.ndindex(*shape)` — row-major coordinate tuples for a shape.
+    Ndindex,
+    /// `numpy.ndenumerate(a)` — row-major `(index, value)` pairs for an array.
+    Ndenumerate,
+    /// `numpy.nditer(a)` — row-major array scalar values.
+    Nditer,
 
     // --- Phase 4: NaN-aware aggregations and statistics ---
     /// `numpy.nansum(a)` — sum ignoring NaN.
@@ -1109,6 +1116,9 @@ const NUMPY_FUNCTIONS: &[(StaticStrings, NumpyFunctions)] = &[
     (StaticStrings::NpIndices, NumpyFunctions::Indices),
     (StaticStrings::NpUnravelIndex, NumpyFunctions::UnravelIndex),
     (StaticStrings::NpRavelMultiIndex, NumpyFunctions::RavelMultiIndex),
+    (StaticStrings::NpNdindex, NumpyFunctions::Ndindex),
+    (StaticStrings::NpNdenumerate, NumpyFunctions::Ndenumerate),
+    (StaticStrings::NpNditer, NumpyFunctions::Nditer),
     // Phase 4: NaN-aware aggregations and statistics
     (StaticStrings::NpNansum, NumpyFunctions::Nansum),
     (StaticStrings::NpNanmean, NumpyFunctions::Nanmean),
@@ -1681,6 +1691,9 @@ pub(super) fn call(
         NumpyFunctions::Indices => call_indices(vm, args).map(CallResult::Value),
         NumpyFunctions::UnravelIndex => call_unravel_index(vm, args).map(CallResult::Value),
         NumpyFunctions::RavelMultiIndex => call_ravel_multi_index(vm, args).map(CallResult::Value),
+        NumpyFunctions::Ndindex => call_ndindex(vm, args).map(CallResult::Value),
+        NumpyFunctions::Ndenumerate => call_ndenumerate(vm, args).map(CallResult::Value),
+        NumpyFunctions::Nditer => call_nditer(vm, args).map(CallResult::Value),
         // Phase 4: NaN-aware aggregations and statistics
         NumpyFunctions::Nansum => call_nan_aggregate(vm, args, nan_sum, "numpy.nansum").map(CallResult::Value),
         NumpyFunctions::Nanmean => call_nan_aggregate(vm, args, nan_mean, "numpy.nanmean").map(CallResult::Value),
@@ -4937,6 +4950,20 @@ fn ndarray_from_value(value: &Value, name: &str, vm: &VM<'_, impl ResourceTracke
     Ok(NdArray::new(data, shape, dtype))
 }
 
+/// Converts an ndarray/list input or a numeric scalar into an owned ndarray.
+///
+/// NumPy treats scalar inputs as zero-dimensional arrays for iterator-style
+/// helpers. Keeping this conversion local avoids broadening `ndarray_from_value`,
+/// whose stricter array/list contract is relied on by many existing functions.
+fn ndarray_or_scalar_from_value(value: &Value, name: &str, vm: &VM<'_, impl ResourceTracker>) -> RunResult<NdArray> {
+    if let Ok((data, shape, dtype)) = extract_ndarray_info(value, name, vm) {
+        Ok(NdArray::new(data, shape, dtype))
+    } else {
+        let (scalar, dtype) = numeric_scalar_info(value, name, vm)?;
+        Ok(NdArray::new(vec![scalar], Vec::new(), dtype))
+    }
+}
+
 /// Extracts a shape from a Value — supports int (1D), list, or tuple.
 fn extract_shape(value: Value, func_name: &str, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<Vec<usize>> {
     match &value {
@@ -6084,6 +6111,97 @@ fn call_ravel_multi_index(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues
         .map(|value| index_input_info(value, "numpy.ravel_multi_index", vm))
         .collect::<RunResult<Vec<_>>>()?;
     ravel_multi_index_result(&coords, &dimensions, vm)
+}
+
+/// `numpy.ndindex(*shape)` — return row-major coordinate tuples for a shape.
+///
+/// NumPy returns a dedicated iterator object, but Monty's subset materializes the
+/// same finite coordinate sequence as a list. That preserves normal iteration and
+/// `list(np.ndindex(...))` behavior without adding another heap iterator type.
+fn call_ndindex(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let pos = args.into_pos_only("numpy.ndindex", vm.heap)?;
+    defer_drop_mut!(pos, vm);
+
+    let shape = match pos.len() {
+        0 => Vec::new(),
+        1 => extract_shape_from_value(&pos.as_slice()[0], "numpy.ndindex", vm)?,
+        _ => extract_shape_from_items(pos.as_slice(), "numpy.ndindex")?,
+    };
+
+    coordinate_tuple_list(&shape, "numpy.ndindex", vm)
+}
+
+/// `numpy.ndenumerate(a)` — return row-major `(index, value)` pairs for an array.
+///
+/// The value side is converted back to the closest supported Monty scalar dtype,
+/// matching the rest of the ndarray helpers that expose individual elements.
+fn call_ndenumerate(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let arg = args.get_one_arg("numpy.ndenumerate", vm.heap)?;
+    defer_drop!(arg, vm);
+
+    let arr = ndarray_or_scalar_from_value(arg, "numpy.ndenumerate", vm)?;
+    let total = checked_shape_product(arr.shape(), "numpy.ndenumerate")?;
+    check_array_alloc_size(
+        total.saturating_mul(arr.shape().len().saturating_add(1)),
+        vm.heap.tracker(),
+    )?;
+
+    let strides = row_major_strides(arr.shape());
+    let mut parts = Vec::with_capacity(arr.len());
+    for (flat, value) in arr.data().iter().copied().enumerate() {
+        let coords = coords_from_flat_index(flat, arr.shape(), &strides);
+        let index = coordinate_tuple(&coords, vm)?;
+        let value = scalar_from_f64(value, arr.dtype());
+        let pair = allocate_tuple(smallvec::smallvec![index, value], vm.heap)?;
+        parts.push(pair);
+    }
+
+    Ok(Value::Ref(vm.heap.allocate(HeapData::List(List::new(parts)))?))
+}
+
+/// `numpy.nditer(a)` — return row-major scalar values for an array.
+///
+/// This intentionally implements only the simple single-array form. Broader
+/// `nditer` options depend on writable views, casting modes, and multi-operand
+/// iteration that Monty's ndarray model does not currently expose.
+fn call_nditer(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let arg = args.get_one_arg("numpy.nditer", vm.heap)?;
+    defer_drop!(arg, vm);
+
+    let arr = ndarray_or_scalar_from_value(arg, "numpy.nditer", vm)?;
+    check_array_alloc_size(arr.len(), vm.heap.tracker())?;
+    let parts = arr
+        .data()
+        .iter()
+        .copied()
+        .map(|value| scalar_from_f64(value, arr.dtype()))
+        .collect();
+
+    Ok(Value::Ref(vm.heap.allocate(HeapData::List(List::new(parts)))?))
+}
+
+/// Builds a materialized list of coordinate tuples for a row-major shape walk.
+fn coordinate_tuple_list(shape: &[usize], name: &str, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<Value> {
+    let total = checked_shape_product(shape, name)?;
+    check_array_alloc_size(total.saturating_mul(shape.len().max(1)), vm.heap.tracker())?;
+
+    let strides = row_major_strides(shape);
+    let mut parts = Vec::with_capacity(total);
+    for flat in 0..total {
+        let coords = coords_from_flat_index(flat, shape, &strides);
+        parts.push(coordinate_tuple(&coords, vm)?);
+    }
+
+    Ok(Value::Ref(vm.heap.allocate(HeapData::List(List::new(parts)))?))
+}
+
+/// Allocates one coordinate tuple from usize components as Python integers.
+fn coordinate_tuple(coords: &[usize], vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<Value> {
+    let mut values: SmallVec<[Value; 3]> = SmallVec::new();
+    for &coord in coords {
+        values.push(Value::Int(usize_to_i64(coord)?));
+    }
+    allocate_tuple(values, vm.heap).map_err(Into::into)
 }
 
 /// Computes the scalar or array output for `ravel_multi_index`.

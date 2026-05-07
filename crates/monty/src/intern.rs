@@ -1268,6 +1268,15 @@ pub enum StaticStrings {
     /// `numpy.ravel_multi_index()` coordinate-to-flat index helper.
     #[strum(serialize = "ravel_multi_index")]
     NpRavelMultiIndex,
+    /// `numpy.ndindex()` row-major coordinate iterator helper.
+    #[strum(serialize = "ndindex")]
+    NpNdindex,
+    /// `numpy.ndenumerate()` row-major index/value iterator helper.
+    #[strum(serialize = "ndenumerate")]
+    NpNdenumerate,
+    /// `numpy.nditer()` row-major value iterator helper.
+    #[strum(serialize = "nditer")]
+    NpNditer,
     /// `numpy.nansum()` function
     #[strum(serialize = "nansum")]
     NpNansum,

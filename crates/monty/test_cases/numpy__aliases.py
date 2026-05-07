@@ -173,6 +173,19 @@ assert scalar_row == 1, 'unravel_index scalar row'
 assert scalar_col == 1, 'unravel_index scalar col'
 assert np.ravel_multi_index(([1, 2], [1, 3]), (3, 4)).tolist() == [5, 11], 'ravel_multi_index arrays'
 assert np.ravel_multi_index((1, 1), (3, 4)) == 5, 'ravel_multi_index scalar'
+assert list(np.ndindex()) == [()], 'ndindex empty shape'
+assert list(np.ndindex(2, 3)) == [(0, 0), (0, 1), (0, 2), (1, 0), (1, 1), (1, 2)], 'ndindex two dims'
+assert list(np.ndindex((2, 1))) == [(0, 0), (1, 0)], 'ndindex tuple shape'
+nd_iter_arr = np.array([[10, 20], [30, 40]])
+assert list(np.ndenumerate(nd_iter_arr)) == [
+    ((0, 0), 10),
+    ((0, 1), 20),
+    ((1, 0), 30),
+    ((1, 1), 40),
+], 'ndenumerate matrix'
+assert list(np.ndenumerate(5)) == [((), 5)], 'ndenumerate scalar'
+assert list(np.nditer(nd_iter_arr)) == [10, 20, 30, 40], 'nditer matrix order'
+assert list(np.nditer(5)) == [5], 'nditer scalar'
 
 diagflat = np.diagflat([[1, 2], [3, 4]])
 assert diagflat.shape == (4, 4), 'diagflat flattened shape'
