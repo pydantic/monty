@@ -950,6 +950,24 @@ pub enum StaticStrings {
     /// `numpy.longdouble` dtype alias (maps to float64 internally)
     #[strum(serialize = "longdouble")]
     NpLongdouble,
+    /// `numpy.integer` dtype category marker.
+    #[strum(serialize = "integer")]
+    NpInteger,
+    /// `numpy.floating` dtype category marker.
+    #[strum(serialize = "floating")]
+    NpFloating,
+    /// `numpy.inexact` dtype category marker.
+    #[strum(serialize = "inexact")]
+    NpInexact,
+    /// Internal marker value for `numpy.integer`.
+    #[strum(serialize = "__monty_numpy_integer_category")]
+    NpIntegerCategoryMarker,
+    /// Internal marker value for `numpy.floating`.
+    #[strum(serialize = "__monty_numpy_floating_category")]
+    NpFloatingCategoryMarker,
+    /// Internal marker value for `numpy.inexact`.
+    #[strum(serialize = "__monty_numpy_inexact_category")]
+    NpInexactCategoryMarker,
     /// `numpy.can_cast()` compact dtype cast predicate.
     #[strum(serialize = "can_cast")]
     NpCanCast,
@@ -974,6 +992,12 @@ pub enum StaticStrings {
     /// `numpy.typecodes` legacy dtype character mapping.
     #[strum(serialize = "typecodes")]
     NpTypecodes,
+    /// `numpy.issubdtype()` compact dtype category predicate.
+    #[strum(serialize = "issubdtype")]
+    NpIssubdtype,
+    /// `numpy.isdtype()` compact dtype kind predicate.
+    #[strum(serialize = "isdtype")]
+    NpIsdtype,
     /// `numpy.geterr()` floating-point error config helper.
     #[strum(serialize = "geterr")]
     NpGeterr,

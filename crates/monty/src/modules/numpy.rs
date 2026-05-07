@@ -459,6 +459,10 @@ pub(crate) enum NumpyFunctions {
     Mintypecode,
     /// `numpy.typename(char)` — legacy dtype character name helper.
     Typename,
+    /// `numpy.issubdtype(arg1, arg2)` — compact dtype hierarchy predicate.
+    Issubdtype,
+    /// `numpy.isdtype(dtype, kind)` — compact dtype kind predicate.
+    Isdtype,
     /// `numpy.geterr()` — floating-point error config snapshot.
     Geterr,
     /// `numpy.seterr(...)` — accepted no-op floating-point error config update.
@@ -775,6 +779,21 @@ pub fn create_module(vm: &mut VM<'_, impl ResourceTracker>) -> Result<HeapId, Re
     for (name, target) in NUMPY_DTYPE_ALIASES {
         module.set_attr(*name, Value::InternString((*target).into()), vm);
     }
+    module.set_attr(
+        StaticStrings::NpInteger,
+        Value::InternString(StaticStrings::NpIntegerCategoryMarker.into()),
+        vm,
+    );
+    module.set_attr(
+        StaticStrings::NpFloating,
+        Value::InternString(StaticStrings::NpFloatingCategoryMarker.into()),
+        vm,
+    );
+    module.set_attr(
+        StaticStrings::NpInexact,
+        Value::InternString(StaticStrings::NpInexactCategoryMarker.into()),
+        vm,
+    );
     module.set_attr(StaticStrings::NpTypecodes, numpy_typecodes_dict(vm)?, vm);
 
     vm.heap.allocate(HeapData::Module(module))
@@ -1060,6 +1079,8 @@ const NUMPY_FUNCTIONS: &[(StaticStrings, NumpyFunctions)] = &[
     (StaticStrings::NpMinScalarType, NumpyFunctions::MinScalarType),
     (StaticStrings::NpMintypecode, NumpyFunctions::Mintypecode),
     (StaticStrings::NpTypename, NumpyFunctions::Typename),
+    (StaticStrings::NpIssubdtype, NumpyFunctions::Issubdtype),
+    (StaticStrings::NpIsdtype, NumpyFunctions::Isdtype),
     (StaticStrings::NpGeterr, NumpyFunctions::Geterr),
     (StaticStrings::NpSeterr, NumpyFunctions::Seterr),
     (StaticStrings::NpGeterrcall, NumpyFunctions::Geterrcall),
@@ -1620,6 +1641,8 @@ pub(super) fn call(
         NumpyFunctions::MinScalarType => call_min_scalar_type(vm, args).map(CallResult::Value),
         NumpyFunctions::Mintypecode => call_mintypecode(vm, args).map(CallResult::Value),
         NumpyFunctions::Typename => call_typename(vm, args).map(CallResult::Value),
+        NumpyFunctions::Issubdtype => call_issubdtype(vm, args).map(CallResult::Value),
+        NumpyFunctions::Isdtype => call_isdtype(vm, args).map(CallResult::Value),
         NumpyFunctions::Geterr => call_geterr(vm, args).map(CallResult::Value),
         NumpyFunctions::Seterr => call_seterr(vm, args).map(CallResult::Value),
         NumpyFunctions::Geterrcall => call_geterrcall(vm, args).map(CallResult::Value),
@@ -5305,6 +5328,26 @@ fn call_typename(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunR
     allocate_string(name.to_string(), vm.heap)
 }
 
+/// `numpy.issubdtype(arg1, arg2)` — check Monty's compact dtype hierarchy.
+fn call_issubdtype(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let (arg1, arg2) = args.get_two_args("numpy.issubdtype", vm.heap)?;
+    defer_drop!(arg1, vm);
+    defer_drop!(arg2, vm);
+    let first = dtype_kind_from_value(arg1, "numpy.issubdtype", vm)?;
+    let second = dtype_kind_from_value(arg2, "numpy.issubdtype", vm)?;
+    Ok(Value::Bool(is_subdtype_kind(first, second)))
+}
+
+/// `numpy.isdtype(dtype, kind)` — check a dtype against supported Array API kind names.
+fn call_isdtype(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let (dtype_val, kind_val) = args.get_two_args("numpy.isdtype", vm.heap)?;
+    defer_drop!(dtype_val, vm);
+    defer_drop!(kind_val, vm);
+    let dtype = dtype_meta_from_dtype_value(dtype_val, "numpy.isdtype", vm)?;
+    let kind = isdtype_kind_from_value(kind_val, "numpy.isdtype", vm)?;
+    Ok(Value::Bool(is_dtype_kind(dtype, kind)))
+}
+
 /// `numpy.geterr()` — return Monty's fixed floating-point error policy.
 fn call_geterr(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     args.check_zero_args("numpy.geterr", vm.heap)?;
@@ -5452,6 +5495,41 @@ enum CompactDtype {
     Float64,
 }
 
+/// Dtype category markers exposed for hierarchy-style predicates.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum DtypeCategory {
+    /// Boolean dtype category.
+    Bool,
+    /// Integer dtype category.
+    Integer,
+    /// Floating dtype category.
+    Floating,
+    /// Inexact numeric category; complex is unsupported, so this means floating.
+    Inexact,
+    /// Numeric category for integer and floating dtypes.
+    Numeric,
+}
+
+/// Parsed dtype hierarchy operand for `issubdtype`.
+#[derive(Clone, Copy)]
+enum DtypeKind {
+    /// Concrete compact dtype such as `np.int64`.
+    Concrete(CompactDtype),
+    /// Category marker such as `np.integer`.
+    Category(DtypeCategory),
+}
+
+/// Parsed second operand for `isdtype`.
+#[derive(Clone, Copy)]
+enum IsdtypeKind {
+    /// Concrete dtype marker requiring exact equality.
+    Concrete(CompactDtype),
+    /// Named kind string such as `"integral"` or `"real floating"`.
+    Category(DtypeCategory),
+    /// Recognized unsupported kind that is always false for Monty's dtype set.
+    Never,
+}
+
 /// Parses a dtype argument such as `np.float64` or `'int64'`.
 fn dtype_meta_from_dtype_value(
     value: &Value,
@@ -5460,6 +5538,36 @@ fn dtype_meta_from_dtype_value(
 ) -> RunResult<CompactDtype> {
     let text = string_from_value(value, name, vm)?;
     dtype_meta_from_str(&text, name)
+}
+
+/// Parses a concrete dtype or Monty category marker for `issubdtype`.
+fn dtype_kind_from_value(value: &Value, name: &str, vm: &VM<'_, impl ResourceTracker>) -> RunResult<DtypeKind> {
+    let text = string_from_value(value, name, vm)?;
+    if let Some(category) = dtype_category_from_marker_text(&text) {
+        Ok(DtypeKind::Category(category))
+    } else {
+        Ok(DtypeKind::Concrete(dtype_meta_from_str(&text, name)?))
+    }
+}
+
+/// Parses the `kind` operand accepted by Monty's `isdtype` subset.
+fn isdtype_kind_from_value(value: &Value, name: &str, vm: &VM<'_, impl ResourceTracker>) -> RunResult<IsdtypeKind> {
+    let text = string_from_value(value, name, vm)?;
+    if dtype_category_from_marker_text(&text).is_some() {
+        Ok(IsdtypeKind::Never)
+    } else if let Some(category) = isdtype_category_from_name(&text) {
+        Ok(IsdtypeKind::Category(category))
+    } else if matches!(text.as_str(), "complex floating" | "unsigned integer") {
+        Ok(IsdtypeKind::Never)
+    } else if let Ok(dtype) = dtype_meta_from_str(&text, name) {
+        Ok(IsdtypeKind::Concrete(dtype))
+    } else {
+        Err(SimpleException::new_msg(
+            ExcType::ValueError,
+            format!("kind argument is a string, but '{text}' is not a known kind name."),
+        )
+        .into())
+    }
 }
 
 /// Infers the compact dtype for a dtype marker, scalar, ndarray, or list.
@@ -5515,6 +5623,72 @@ fn promote_dtype_meta(first: CompactDtype, second: CompactDtype) -> CompactDtype
 /// Returns whether a cast is safe in the compact bool -> int -> float ordering.
 fn can_cast_dtype_meta(from: CompactDtype, to: CompactDtype) -> bool {
     from <= to
+}
+
+/// Returns true when the first dtype/category is included in the second.
+fn is_subdtype_kind(first: DtypeKind, second: DtypeKind) -> bool {
+    match (first, second) {
+        (DtypeKind::Concrete(lhs), DtypeKind::Concrete(rhs)) => lhs == rhs,
+        (DtypeKind::Concrete(dtype), DtypeKind::Category(category)) => dtype_category_contains_dtype(category, dtype),
+        (DtypeKind::Category(lhs), DtypeKind::Category(rhs)) => dtype_category_contains_category(rhs, lhs),
+        (DtypeKind::Category(_), DtypeKind::Concrete(_)) => false,
+    }
+}
+
+/// Returns true when a concrete dtype matches an `isdtype` kind operand.
+fn is_dtype_kind(dtype: CompactDtype, kind: IsdtypeKind) -> bool {
+    match kind {
+        IsdtypeKind::Concrete(kind_dtype) => dtype == kind_dtype,
+        IsdtypeKind::Category(category) => dtype_category_contains_dtype(category, dtype),
+        IsdtypeKind::Never => false,
+    }
+}
+
+/// Maps Monty's hidden category marker strings back to dtype categories.
+fn dtype_category_from_marker_text(text: &str) -> Option<DtypeCategory> {
+    match text {
+        "__monty_numpy_integer_category" => Some(DtypeCategory::Integer),
+        "__monty_numpy_floating_category" => Some(DtypeCategory::Floating),
+        "__monty_numpy_inexact_category" => Some(DtypeCategory::Inexact),
+        _ => None,
+    }
+}
+
+/// Maps supported Array API dtype kind names to Monty's compact categories.
+fn isdtype_category_from_name(text: &str) -> Option<DtypeCategory> {
+    match text {
+        "bool" => Some(DtypeCategory::Bool),
+        "integral" | "signed integer" => Some(DtypeCategory::Integer),
+        "real floating" => Some(DtypeCategory::Floating),
+        "numeric" => Some(DtypeCategory::Numeric),
+        _ => None,
+    }
+}
+
+/// Returns whether a dtype category includes a concrete compact dtype.
+fn dtype_category_contains_dtype(category: DtypeCategory, dtype: CompactDtype) -> bool {
+    match category {
+        DtypeCategory::Bool => dtype == CompactDtype::Bool,
+        DtypeCategory::Integer => dtype == CompactDtype::Int,
+        DtypeCategory::Floating | DtypeCategory::Inexact => {
+            matches!(dtype, CompactDtype::Float32 | CompactDtype::Float64)
+        }
+        DtypeCategory::Numeric => matches!(dtype, CompactDtype::Int | CompactDtype::Float32 | CompactDtype::Float64),
+    }
+}
+
+/// Returns whether a dtype category includes another category.
+fn dtype_category_contains_category(container: DtypeCategory, member: DtypeCategory) -> bool {
+    match container {
+        DtypeCategory::Bool => member == DtypeCategory::Bool,
+        DtypeCategory::Integer => member == DtypeCategory::Integer,
+        DtypeCategory::Floating => member == DtypeCategory::Floating,
+        DtypeCategory::Inexact => matches!(member, DtypeCategory::Floating | DtypeCategory::Inexact),
+        DtypeCategory::Numeric => matches!(
+            member,
+            DtypeCategory::Integer | DtypeCategory::Floating | DtypeCategory::Inexact | DtypeCategory::Numeric
+        ),
+    }
 }
 
 /// Extracts an owned Python string from interned or heap string values.
