@@ -1262,18 +1262,33 @@ pub enum StaticStrings {
     /// `ndarray.item()` method — extract scalar from single-element array
     #[strum(serialize = "item")]
     NpItem,
-    /// `ndarray.take()` method — take elements at indices
+    /// `numpy.take()` function / `ndarray.take()` method — take elements at indices
     #[strum(serialize = "take")]
     NpTake,
     /// `ndarray.fill()` method — fill array with value
     #[strum(serialize = "fill")]
     NpFill,
-    /// `ndarray.compress()` method — select elements by boolean condition
+    /// `numpy.compress()` function / `ndarray.compress()` method — select elements by boolean condition
     #[strum(serialize = "compress")]
     NpCompress,
-    /// `ndarray.swapaxes()` method
+    /// `numpy.swapaxes()` function / `ndarray.swapaxes()` method
     #[strum(serialize = "swapaxes")]
     NpSwapaxes,
+    /// `numpy.permute_dims()` function — permute ndarray axes
+    #[strum(serialize = "permute_dims")]
+    NpPermuteDims,
+    /// `numpy.matrix_transpose()` function — swap the last two axes
+    #[strum(serialize = "matrix_transpose")]
+    NpMatrixTranspose,
+    /// `numpy.moveaxis()` function — move axes to new positions
+    #[strum(serialize = "moveaxis")]
+    NpMoveaxis,
+    /// `numpy.rollaxis()` function — roll one axis backward
+    #[strum(serialize = "rollaxis")]
+    NpRollaxis,
+    /// `numpy.rot90()` function — rotate a 2-D array by quarter turns
+    #[strum(serialize = "rot90")]
+    NpRot90,
     /// `ndarray.nbytes` attribute
     #[strum(serialize = "nbytes")]
     NpNbytes,

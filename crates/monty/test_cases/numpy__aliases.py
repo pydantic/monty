@@ -170,6 +170,37 @@ assert np.ravel_multi_index(([1, 2], [1, 3]), (3, 4)).tolist() == [5, 11], 'rave
 assert np.ravel_multi_index((1, 1), (3, 4)) == 5, 'ravel_multi_index scalar'
 
 
+# === module-level manipulation wrappers ===
+matrix = np.array([[1, 2, 3], [4, 5, 6]])
+assert np.take(matrix, [0, -1, 2]).tolist() == [1, 6, 3], 'take flattened indices'
+assert np.take(matrix, 2) == 3, 'take flattened scalar index'
+assert np.compress([1, 0, 1, 0, 0, 1], matrix).tolist() == [1, 3, 6], 'compress flattened condition'
+assert np.swapaxes(matrix, 0, 1).tolist() == [[1, 4], [2, 5], [3, 6]], 'swapaxes 2d'
+assert np.swapaxes(matrix, -1, -2).tolist() == [[1, 4], [2, 5], [3, 6]], 'swapaxes negative axes'
+assert np.permute_dims(matrix).tolist() == [[1, 4], [2, 5], [3, 6]], 'permute_dims default'
+assert np.permute_dims(matrix, (0, 1)).tolist() == [[1, 2, 3], [4, 5, 6]], 'permute_dims identity'
+assert np.matrix_transpose(matrix).tolist() == [[1, 4], [2, 5], [3, 6]], 'matrix_transpose 2d'
+try:
+    np.matrix_transpose(np.array([1, 2, 3]))
+    assert False, 'expected matrix_transpose to reject 1d input'
+except ValueError as exc:
+    assert str(exc) == 'Input array must be at least 2-dimensional, but it is 1', 'matrix_transpose 1d error'
+
+assert np.rot90(matrix).tolist() == [[3, 6], [2, 5], [1, 4]], 'rot90 one turn'
+assert np.rot90(matrix, 2).tolist() == [[6, 5, 4], [3, 2, 1]], 'rot90 two turns'
+assert np.rot90(matrix, -1).tolist() == [[4, 1], [5, 2], [6, 3]], 'rot90 negative turn'
+
+cube = np.arange(24).reshape(2, 3, 4)
+moved = np.moveaxis(cube, 0, 2)
+assert moved.shape == (3, 4, 2), 'moveaxis shape'
+assert moved.tolist()[0][0] == [0, 12], 'moveaxis first vector'
+assert moved.tolist()[2][3] == [11, 23], 'moveaxis last vector'
+rolled = np.rollaxis(cube, 2, 1)
+assert rolled.shape == (2, 4, 3), 'rollaxis shape'
+assert rolled.tolist()[0][0] == [0, 4, 8], 'rollaxis first vector'
+assert rolled.tolist()[1][3] == [15, 19, 23], 'rollaxis last vector'
+
+
 # === integer and boolean bitwise helpers ===
 assert np.bitwise_and(6, 3) == 2, 'bitwise_and scalar'
 assert np.bitwise_and(True, False) == False, 'bitwise_and bool scalar'

@@ -52,6 +52,8 @@
 //! - `numpy.append(a, values)`, `numpy.vstack(arrays)`, `numpy.hstack(arrays)`
 //! - `numpy.stack(arrays)`, `numpy.tile(a, reps)`, `numpy.repeat(a, repeats)`
 //! - `numpy.split(a, sections_or_indices)`, `numpy.cumsum(a)`, `numpy.dot(a, b)`
+//! - `numpy.take`, `numpy.compress`, `numpy.swapaxes`, `numpy.permute_dims`
+//! - `numpy.matrix_transpose`, `numpy.moveaxis`, `numpy.rollaxis`, `numpy.rot90`
 //!
 //! ## Search & index
 //! - `numpy.nonzero(a)`, `numpy.argwhere(a)`
@@ -70,7 +72,7 @@ use crate::{
     bytecode::{CallResult, VM},
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, RunError, RunResult, SimpleException},
-    heap::{HeapData, HeapId},
+    heap::{Heap, HeapData, HeapId},
     heap_traits::DropWithHeap,
     intern::StaticStrings,
     modules::ModuleFunctions,
@@ -204,6 +206,22 @@ pub(crate) enum NumpyFunctions {
     // Note: np.flatten doesn't exist in real NumPy — use arr.flatten() method instead
     /// `numpy.transpose(a)` — transpose an array.
     Transpose,
+    /// `numpy.take(a, indices)` — gather flattened elements by index.
+    Take,
+    /// `numpy.compress(condition, a)` — select flattened elements by condition.
+    Compress,
+    /// `numpy.swapaxes(a, axis1, axis2)` — swap two axes.
+    Swapaxes,
+    /// `numpy.permute_dims(a, axes=None)` — permute ndarray axes.
+    PermuteDims,
+    /// `numpy.matrix_transpose(a)` — swap the last two axes.
+    MatrixTranspose,
+    /// `numpy.moveaxis(a, source, destination)` — move axes to new positions.
+    Moveaxis,
+    /// `numpy.rollaxis(a, axis, start=0)` — roll one axis backward.
+    Rollaxis,
+    /// `numpy.rot90(a, k=1)` — rotate a 2-D array by quarter turns.
+    Rot90,
     /// `numpy.append(a, values)` — append values to end of array.
     Append,
     /// `numpy.vstack(arrays)` — stack arrays vertically.
@@ -718,6 +736,14 @@ const NUMPY_FUNCTIONS: &[(StaticStrings, NumpyFunctions)] = &[
     (StaticStrings::Reshape, NumpyFunctions::Reshape),
     // np.flatten doesn't exist in real NumPy
     (StaticStrings::NpTranspose, NumpyFunctions::Transpose),
+    (StaticStrings::NpTake, NumpyFunctions::Take),
+    (StaticStrings::NpCompress, NumpyFunctions::Compress),
+    (StaticStrings::NpSwapaxes, NumpyFunctions::Swapaxes),
+    (StaticStrings::NpPermuteDims, NumpyFunctions::PermuteDims),
+    (StaticStrings::NpMatrixTranspose, NumpyFunctions::MatrixTranspose),
+    (StaticStrings::NpMoveaxis, NumpyFunctions::Moveaxis),
+    (StaticStrings::NpRollaxis, NumpyFunctions::Rollaxis),
+    (StaticStrings::NpRot90, NumpyFunctions::Rot90),
     (StaticStrings::Append, NumpyFunctions::Append),
     (StaticStrings::NpVstack, NumpyFunctions::Vstack),
     (StaticStrings::NpHstack, NumpyFunctions::Hstack),
@@ -1000,6 +1026,14 @@ pub(super) fn call(
         NumpyFunctions::Reshape => call_reshape_mod(vm, args).map(CallResult::Value),
         // np.flatten doesn't exist in real NumPy
         NumpyFunctions::Transpose => call_transpose_mod(vm, args).map(CallResult::Value),
+        NumpyFunctions::Take => call_take_mod(vm, args).map(CallResult::Value),
+        NumpyFunctions::Compress => call_compress_mod(vm, args).map(CallResult::Value),
+        NumpyFunctions::Swapaxes => call_swapaxes_mod(vm, args).map(CallResult::Value),
+        NumpyFunctions::PermuteDims => call_permute_dims(vm, args).map(CallResult::Value),
+        NumpyFunctions::MatrixTranspose => call_matrix_transpose(vm, args).map(CallResult::Value),
+        NumpyFunctions::Moveaxis => call_moveaxis(vm, args).map(CallResult::Value),
+        NumpyFunctions::Rollaxis => call_rollaxis(vm, args).map(CallResult::Value),
+        NumpyFunctions::Rot90 => call_rot90(vm, args).map(CallResult::Value),
         NumpyFunctions::Append => call_append(vm, args).map(CallResult::Value),
         NumpyFunctions::Vstack => call_vstack(vm, args).map(CallResult::Value),
         NumpyFunctions::Hstack => call_hstack(vm, args).map(CallResult::Value),
@@ -2593,12 +2627,588 @@ fn call_reshape_mod(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> R
     arr.reshape(shape, vm.heap)
 }
 
-/// `numpy.transpose(a)` — transpose an array (module-level wrapper).
+/// `numpy.transpose(a, axes=None)` — transpose an array (module-level wrapper).
 fn call_transpose_mod(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
-    let arg = args.get_one_arg("numpy.transpose", vm.heap)?;
+    call_permute_dims_named(vm, args, "numpy.transpose")
+}
+
+/// `numpy.take(a, indices)` — gather flattened elements at integer indices.
+///
+/// Monty supports the default flattened mode. The optional `axis`, `out`, and
+/// `mode` arguments are outside the current ndarray subset and must be omitted
+/// or passed as `None` for `axis`.
+fn call_take_mod(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let pos = args.into_pos_only("numpy.take", vm.heap)?;
+    defer_drop_mut!(pos, vm);
+
+    let arr_val = pos
+        .next()
+        .ok_or_else(|| ExcType::type_error_at_least("numpy.take", 2, 0))?;
+    defer_drop!(arr_val, vm);
+    let indices_val = pos
+        .next()
+        .ok_or_else(|| ExcType::type_error_at_least("numpy.take", 2, 1))?;
+    defer_drop!(indices_val, vm);
+
+    if let Some(axis_val) = pos.next() {
+        defer_drop!(axis_val, vm);
+        if !matches!(axis_val, Value::None) {
+            return Err(ExcType::type_error("numpy.take() axis is not supported yet"));
+        }
+    }
+    for extra in pos {
+        extra.drop_with_heap(vm);
+    }
+
+    let arr = ndarray_from_value(arr_val, "numpy.take", vm)?;
+    if let Value::Int(index) = indices_val {
+        let resolved = resolve_flat_index(*index, arr.len())?;
+        Ok(ndarray_element_to_value(&arr, arr.data()[resolved]))
+    } else {
+        let indices = ndarray_from_value(indices_val, "numpy.take", vm)?;
+        take_flat_indices(&arr, &indices, vm.heap)
+    }
+}
+
+/// `numpy.compress(condition, a)` — select flattened elements where condition is true.
+///
+/// The optional `axis` and `out` arguments are not modeled yet. Omitting `axis`
+/// matches the flattened behavior of NumPy and the existing ndarray method.
+fn call_compress_mod(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let pos = args.into_pos_only("numpy.compress", vm.heap)?;
+    defer_drop_mut!(pos, vm);
+
+    let condition_val = pos
+        .next()
+        .ok_or_else(|| ExcType::type_error_at_least("numpy.compress", 2, 0))?;
+    defer_drop!(condition_val, vm);
+    let arr_val = pos
+        .next()
+        .ok_or_else(|| ExcType::type_error_at_least("numpy.compress", 2, 1))?;
+    defer_drop!(arr_val, vm);
+
+    if let Some(axis_val) = pos.next() {
+        defer_drop!(axis_val, vm);
+        if !matches!(axis_val, Value::None) {
+            return Err(ExcType::type_error("numpy.compress() axis is not supported yet"));
+        }
+    }
+    for extra in pos {
+        extra.drop_with_heap(vm);
+    }
+
+    let condition = ndarray_from_value(condition_val, "numpy.compress", vm)?;
+    let arr = ndarray_from_value(arr_val, "numpy.compress", vm)?;
+    arr.compress(&condition, vm.heap)
+}
+
+/// `numpy.swapaxes(a, axis1, axis2)` — swap two axes of an array.
+fn call_swapaxes_mod(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let pos = args.into_pos_only("numpy.swapaxes", vm.heap)?;
+    defer_drop_mut!(pos, vm);
+
+    let arr_val = pos
+        .next()
+        .ok_or_else(|| ExcType::type_error_at_least("numpy.swapaxes", 3, 0))?;
+    defer_drop!(arr_val, vm);
+    let axis1_val = pos
+        .next()
+        .ok_or_else(|| ExcType::type_error_at_least("numpy.swapaxes", 3, 1))?;
+    defer_drop!(axis1_val, vm);
+    let axis2_val = pos
+        .next()
+        .ok_or_else(|| ExcType::type_error_at_least("numpy.swapaxes", 3, 2))?;
+    defer_drop!(axis2_val, vm);
+    for extra in pos {
+        extra.drop_with_heap(vm);
+    }
+
+    let arr = ndarray_from_value(arr_val, "numpy.swapaxes", vm)?;
+    let axis1 = normalize_axis(
+        value_to_i64_arg(axis1_val, "numpy.swapaxes", "axis1")?,
+        arr.ndim(),
+        "numpy.swapaxes",
+    )?;
+    let axis2 = normalize_axis(
+        value_to_i64_arg(axis2_val, "numpy.swapaxes", "axis2")?,
+        arr.ndim(),
+        "numpy.swapaxes",
+    )?;
+    let mut axes: Vec<usize> = (0..arr.ndim()).collect();
+    axes.swap(axis1, axis2);
+    permute_ndarray_axes(&arr, &axes, vm.heap, "numpy.swapaxes")
+}
+
+/// `numpy.permute_dims(a, axes=None)` — permute ndarray axes.
+fn call_permute_dims(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    call_permute_dims_named(vm, args, "numpy.permute_dims")
+}
+
+/// Shared implementation for `transpose` and `permute_dims`.
+fn call_permute_dims_named(
+    vm: &mut VM<'_, impl ResourceTracker>,
+    args: ArgValues,
+    name: &'static str,
+) -> RunResult<Value> {
+    let pos = args.into_pos_only(name, vm.heap)?;
+    defer_drop_mut!(pos, vm);
+
+    let arr_val = pos.next().ok_or_else(|| ExcType::type_error_at_least(name, 1, 0))?;
+    defer_drop!(arr_val, vm);
+    let axes_val = pos.next();
+    for extra in pos {
+        extra.drop_with_heap(vm);
+    }
+
+    let arr = ndarray_from_value(arr_val, name, vm)?;
+    let axes = if let Some(axes_val) = axes_val {
+        defer_drop!(axes_val, vm);
+        axes_permutation_from_value(axes_val, arr.ndim(), name, vm)?
+    } else {
+        default_transpose_axes(arr.ndim())
+    };
+    permute_ndarray_axes(&arr, &axes, vm.heap, name)
+}
+
+/// `numpy.matrix_transpose(a)` — swap the last two axes of an array.
+fn call_matrix_transpose(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let arg = args.get_one_arg("numpy.matrix_transpose", vm.heap)?;
     defer_drop!(arg, vm);
-    let arr = ndarray_from_value(arg, "numpy.transpose", vm)?;
-    arr.transpose(vm.heap)
+    let arr = ndarray_from_value(arg, "numpy.matrix_transpose", vm)?;
+    let ndim = arr.ndim();
+    if ndim < 2 {
+        Err(SimpleException::new_msg(
+            ExcType::ValueError,
+            format!("Input array must be at least 2-dimensional, but it is {ndim}"),
+        )
+        .into())
+    } else {
+        let mut axes: Vec<usize> = (0..ndim).collect();
+        axes.swap(ndim - 2, ndim - 1);
+        permute_ndarray_axes(&arr, &axes, vm.heap, "numpy.matrix_transpose")
+    }
+}
+
+/// `numpy.moveaxis(a, source, destination)` — move axes to new positions.
+fn call_moveaxis(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let pos = args.into_pos_only("numpy.moveaxis", vm.heap)?;
+    defer_drop_mut!(pos, vm);
+
+    let arr_val = pos
+        .next()
+        .ok_or_else(|| ExcType::type_error_at_least("numpy.moveaxis", 3, 0))?;
+    defer_drop!(arr_val, vm);
+    let source_val = pos
+        .next()
+        .ok_or_else(|| ExcType::type_error_at_least("numpy.moveaxis", 3, 1))?;
+    defer_drop!(source_val, vm);
+    let destination_val = pos
+        .next()
+        .ok_or_else(|| ExcType::type_error_at_least("numpy.moveaxis", 3, 2))?;
+    defer_drop!(destination_val, vm);
+    for extra in pos {
+        extra.drop_with_heap(vm);
+    }
+
+    let arr = ndarray_from_value(arr_val, "numpy.moveaxis", vm)?;
+    let source = axis_list_from_value(source_val, arr.ndim(), "numpy.moveaxis", "source", vm)?;
+    let destination = axis_list_from_value(destination_val, arr.ndim(), "numpy.moveaxis", "destination", vm)?;
+    let axes = moveaxis_permutation(arr.ndim(), &source, &destination)?;
+    permute_ndarray_axes(&arr, &axes, vm.heap, "numpy.moveaxis")
+}
+
+/// `numpy.rollaxis(a, axis, start=0)` — roll an axis backward to a target position.
+fn call_rollaxis(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let pos = args.into_pos_only("numpy.rollaxis", vm.heap)?;
+    defer_drop_mut!(pos, vm);
+
+    let arr_val = pos
+        .next()
+        .ok_or_else(|| ExcType::type_error_at_least("numpy.rollaxis", 2, 0))?;
+    defer_drop!(arr_val, vm);
+    let axis_val = pos
+        .next()
+        .ok_or_else(|| ExcType::type_error_at_least("numpy.rollaxis", 2, 1))?;
+    defer_drop!(axis_val, vm);
+    let start_val = pos.next();
+    for extra in pos {
+        extra.drop_with_heap(vm);
+    }
+
+    let arr = ndarray_from_value(arr_val, "numpy.rollaxis", vm)?;
+    let axis = normalize_axis(
+        value_to_i64_arg(axis_val, "numpy.rollaxis", "axis")?,
+        arr.ndim(),
+        "numpy.rollaxis",
+    )?;
+    let start = if let Some(start_val) = start_val {
+        defer_drop!(start_val, vm);
+        normalize_rollaxis_start(value_to_i64_arg(start_val, "numpy.rollaxis", "start")?, arr.ndim())?
+    } else {
+        0
+    };
+    let axes = rollaxis_permutation(arr.ndim(), axis, start);
+    permute_ndarray_axes(&arr, &axes, vm.heap, "numpy.rollaxis")
+}
+
+/// `numpy.rot90(a, k=1)` — rotate a 2-D array by 90-degree increments.
+fn call_rot90(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let pos = args.into_pos_only("numpy.rot90", vm.heap)?;
+    defer_drop_mut!(pos, vm);
+
+    let arr_val = pos
+        .next()
+        .ok_or_else(|| ExcType::type_error_at_least("numpy.rot90", 1, 0))?;
+    defer_drop!(arr_val, vm);
+    let k_val = pos.next();
+    let axes_val = pos.next();
+    for extra in pos {
+        extra.drop_with_heap(vm);
+    }
+
+    let arr = ndarray_from_value(arr_val, "numpy.rot90", vm)?;
+    let k = if let Some(k_val) = k_val {
+        defer_drop!(k_val, vm);
+        value_to_i64_arg(k_val, "numpy.rot90", "k")?
+    } else {
+        1
+    };
+    let axes = if let Some(axes_val) = axes_val {
+        defer_drop!(axes_val, vm);
+        axis_pair_from_value(axes_val, arr.ndim(), "numpy.rot90", "axes", vm)?
+    } else {
+        default_axis_pair(arr.ndim(), "numpy.rot90")?
+    };
+    rot90_ndarray(&arr, k, axes, vm.heap)
+}
+
+/// Returns the default transpose permutation, which reverses axis order.
+fn default_transpose_axes(ndim: usize) -> Vec<usize> {
+    (0..ndim).rev().collect()
+}
+
+/// Parses a full axis permutation for `transpose`-style calls.
+fn axes_permutation_from_value(
+    value: &Value,
+    ndim: usize,
+    name: &str,
+    vm: &VM<'_, impl ResourceTracker>,
+) -> RunResult<Vec<usize>> {
+    if matches!(value, Value::None) {
+        Ok(default_transpose_axes(ndim))
+    } else {
+        let axes = axis_sequence_from_value(value, ndim, name, "axes", vm)?;
+        ensure_axes_are_permutation(&axes, ndim, name)?;
+        Ok(axes)
+    }
+}
+
+/// Parses a list or tuple of axes without accepting scalar shorthand.
+fn axis_sequence_from_value(
+    value: &Value,
+    ndim: usize,
+    name: &str,
+    arg_name: &str,
+    vm: &VM<'_, impl ResourceTracker>,
+) -> RunResult<Vec<usize>> {
+    match value {
+        Value::Ref(heap_id) => match vm.heap.get(*heap_id) {
+            HeapData::List(list) => axis_sequence_from_items(list.as_slice(), ndim, name, arg_name),
+            HeapData::Tuple(tuple) => axis_sequence_from_items(tuple.as_slice(), ndim, name, arg_name),
+            _ => Err(ExcType::type_error(format!(
+                "{name}() {arg_name} must be a tuple or list of integers"
+            ))),
+        },
+        _ => Err(ExcType::type_error(format!(
+            "{name}() {arg_name} must be a tuple or list of integers"
+        ))),
+    }
+}
+
+/// Parses either a scalar axis or a list/tuple of axes.
+fn axis_list_from_value(
+    value: &Value,
+    ndim: usize,
+    name: &str,
+    arg_name: &str,
+    vm: &VM<'_, impl ResourceTracker>,
+) -> RunResult<Vec<usize>> {
+    match value {
+        Value::Int(axis) => Ok(vec![normalize_axis(*axis, ndim, name)?]),
+        Value::Ref(heap_id) => match vm.heap.get(*heap_id) {
+            HeapData::List(list) => {
+                let axes = axis_sequence_from_items(list.as_slice(), ndim, name, arg_name)?;
+                ensure_unique_axes(&axes, name)?;
+                Ok(axes)
+            }
+            HeapData::Tuple(tuple) => {
+                let axes = axis_sequence_from_items(tuple.as_slice(), ndim, name, arg_name)?;
+                ensure_unique_axes(&axes, name)?;
+                Ok(axes)
+            }
+            _ => Err(ExcType::type_error(format!(
+                "{name}() {arg_name} must be an integer or tuple of integers"
+            ))),
+        },
+        _ => Err(ExcType::type_error(format!(
+            "{name}() {arg_name} must be an integer or tuple of integers"
+        ))),
+    }
+}
+
+/// Converts a sequence of axis values into normalized axis indices.
+fn axis_sequence_from_items(items: &[Value], ndim: usize, name: &str, arg_name: &str) -> RunResult<Vec<usize>> {
+    items
+        .iter()
+        .map(|item| value_to_i64_arg(item, name, arg_name).and_then(|axis| normalize_axis(axis, ndim, name)))
+        .collect()
+}
+
+/// Parses the two-axis tuple used by `rot90`.
+fn axis_pair_from_value(
+    value: &Value,
+    ndim: usize,
+    name: &str,
+    arg_name: &str,
+    vm: &VM<'_, impl ResourceTracker>,
+) -> RunResult<[usize; 2]> {
+    let axes = axis_sequence_from_value(value, ndim, name, arg_name, vm)?;
+    if axes.len() != 2 {
+        Err(ExcType::type_error(format!(
+            "{name}() {arg_name} must contain exactly two axes"
+        )))
+    } else if axes[0] == axes[1] {
+        Err(SimpleException::new_msg(ExcType::ValueError, "Axes must be different.").into())
+    } else {
+        Ok([axes[0], axes[1]])
+    }
+}
+
+/// Returns the default `rot90` axes, validating that the array is at least 2-D.
+fn default_axis_pair(ndim: usize, name: &str) -> RunResult<[usize; 2]> {
+    if ndim < 2 {
+        Err(SimpleException::new_msg(
+            ExcType::ValueError,
+            format!("{name}() requires an array of at least two dimensions"),
+        )
+        .into())
+    } else {
+        Ok([0, 1])
+    }
+}
+
+/// Normalizes a possibly negative axis into a valid dimension index.
+fn normalize_axis(axis: i64, ndim: usize, name: &str) -> RunResult<usize> {
+    let ndim_i64 = i64::try_from(ndim)
+        .map_err(|_| SimpleException::new_msg(ExcType::ValueError, format!("{name}() ndim is too large")))?;
+    let normalized = if axis < 0 { axis + ndim_i64 } else { axis };
+    if normalized < 0 || normalized >= ndim_i64 {
+        Err(SimpleException::new_msg(
+            ExcType::ValueError,
+            format!("bad axis for array with {ndim} dimensions"),
+        )
+        .into())
+    } else {
+        usize::try_from(normalized)
+            .map_err(|_| SimpleException::new_msg(ExcType::ValueError, format!("{name}() axis is too large")).into())
+    }
+}
+
+/// Normalizes `rollaxis(start)`, whose insertion point may be equal to `ndim`.
+fn normalize_rollaxis_start(start: i64, ndim: usize) -> RunResult<usize> {
+    let ndim_i64 = i64::try_from(ndim)
+        .map_err(|_| SimpleException::new_msg(ExcType::ValueError, "numpy.rollaxis() ndim is too large"))?;
+    let normalized = if start < 0 { start + ndim_i64 } else { start };
+    if normalized < 0 || normalized > ndim_i64 {
+        Err(SimpleException::new_msg(
+            ExcType::ValueError,
+            format!("bad axis for array with {ndim} dimensions"),
+        )
+        .into())
+    } else {
+        usize::try_from(normalized)
+            .map_err(|_| SimpleException::new_msg(ExcType::ValueError, "numpy.rollaxis() start is too large").into())
+    }
+}
+
+/// Validates that an axis list has no duplicates.
+fn ensure_unique_axes(axes: &[usize], name: &str) -> RunResult<()> {
+    for (index, axis) in axes.iter().enumerate() {
+        if axes[..index].contains(axis) {
+            return Err(SimpleException::new_msg(ExcType::ValueError, format!("{name}() repeated axis")).into());
+        }
+    }
+    Ok(())
+}
+
+/// Validates that an axis list contains each axis exactly once.
+fn ensure_axes_are_permutation(axes: &[usize], ndim: usize, name: &str) -> RunResult<()> {
+    if axes.len() == ndim {
+        ensure_unique_axes(axes, name)
+    } else {
+        Err(SimpleException::new_msg(ExcType::ValueError, format!("{name}() axes don't match array")).into())
+    }
+}
+
+/// Builds the axis order used by `moveaxis`.
+fn moveaxis_permutation(ndim: usize, source: &[usize], destination: &[usize]) -> RunResult<Vec<usize>> {
+    if source.len() == destination.len() {
+        let mut axes: Vec<usize> = (0..ndim).filter(|axis| !source.contains(axis)).collect();
+        let mut moves: Vec<(usize, usize)> = destination.iter().copied().zip(source.iter().copied()).collect();
+        moves.sort_by_key(|(dest, _)| *dest);
+        for (dest, src) in moves {
+            axes.insert(dest, src);
+        }
+        Ok(axes)
+    } else {
+        Err(SimpleException::new_msg(
+            ExcType::ValueError,
+            "numpy.moveaxis() source and destination arguments must have the same number of elements",
+        )
+        .into())
+    }
+}
+
+/// Builds the axis order used by `rollaxis`.
+fn rollaxis_permutation(ndim: usize, axis: usize, start: usize) -> Vec<usize> {
+    let mut insert_at = start;
+    if axis < insert_at {
+        insert_at -= 1;
+    }
+    let mut axes: Vec<usize> = (0..ndim).collect();
+    axes.remove(axis);
+    axes.insert(insert_at, axis);
+    axes
+}
+
+/// Allocates an ndarray with axes permuted according to NumPy row-major order.
+fn permute_ndarray_axes(
+    arr: &NdArray,
+    axes: &[usize],
+    heap: &Heap<impl ResourceTracker>,
+    name: &str,
+) -> RunResult<Value> {
+    ensure_axes_are_permutation(axes, arr.ndim(), name)?;
+    let new_shape: Vec<usize> = axes.iter().map(|&axis| arr.shape()[axis]).collect();
+    if axes.iter().copied().eq(0..arr.ndim()) || arr.ndim() <= 1 {
+        let result = NdArray::new(arr.data().to_vec(), new_shape, arr.dtype());
+        Ok(Value::Ref(heap.allocate(HeapData::NdArray(result))?))
+    } else {
+        let old_strides = row_major_strides(arr.shape());
+        let new_strides = row_major_strides(&new_shape);
+        let mut data = vec![0.0; arr.len()];
+        for (old_flat, value) in arr.data().iter().copied().enumerate() {
+            let old_coords = coords_from_flat_index(old_flat, arr.shape(), &old_strides);
+            let new_flat = axes
+                .iter()
+                .enumerate()
+                .map(|(new_axis, &old_axis)| old_coords[old_axis] * new_strides[new_axis])
+                .sum::<usize>();
+            data[new_flat] = value;
+        }
+        let result = NdArray::new(data, new_shape, arr.dtype());
+        Ok(Value::Ref(heap.allocate(HeapData::NdArray(result))?))
+    }
+}
+
+/// Computes row-major strides for a shape.
+fn row_major_strides(shape: &[usize]) -> Vec<usize> {
+    let mut strides = vec![1; shape.len()];
+    let mut stride = 1usize;
+    for axis in (0..shape.len()).rev() {
+        strides[axis] = stride;
+        stride = stride.saturating_mul(shape[axis]);
+    }
+    strides
+}
+
+/// Converts a flat row-major index into coordinate components.
+fn coords_from_flat_index(flat: usize, shape: &[usize], strides: &[usize]) -> Vec<usize> {
+    shape
+        .iter()
+        .zip(strides.iter())
+        .map(|(&dim, &stride)| if dim == 0 { 0 } else { (flat / stride) % dim })
+        .collect()
+}
+
+/// Implements flattened `take` while preserving the shape of the indices array.
+fn take_flat_indices(arr: &NdArray, indices: &NdArray, heap: &Heap<impl ResourceTracker>) -> RunResult<Value> {
+    let mut data = Vec::with_capacity(indices.len());
+    for index in indices.data().iter().copied() {
+        #[expect(clippy::cast_possible_truncation, reason = "index from numeric ndarray")]
+        let resolved = resolve_flat_index(index as i64, arr.len())?;
+        data.push(arr.data()[resolved]);
+    }
+    let result = NdArray::new(data, indices.shape().to_vec(), arr.dtype());
+    Ok(Value::Ref(heap.allocate(HeapData::NdArray(result))?))
+}
+
+/// Resolves a possibly negative flattened index.
+fn resolve_flat_index(index: i64, len: usize) -> RunResult<usize> {
+    let len_i64 =
+        i64::try_from(len).map_err(|_| SimpleException::new_msg(ExcType::ValueError, "array is too large"))?;
+    let resolved = if index < 0 { index + len_i64 } else { index };
+    if resolved < 0 || resolved >= len_i64 {
+        Err(SimpleException::new_msg(ExcType::IndexError, "index out of range").into())
+    } else {
+        usize::try_from(resolved)
+            .map_err(|_| SimpleException::new_msg(ExcType::ValueError, "index is too large").into())
+    }
+}
+
+/// Converts a raw ndarray element back to the public scalar Value for its dtype.
+fn ndarray_element_to_value(arr: &NdArray, value: f64) -> Value {
+    match arr.dtype() {
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "f64 to i64 truncation is the intended int conversion"
+        )]
+        NdArrayDtype::Int64 => Value::Int(value as i64),
+        NdArrayDtype::Float64 => Value::Float(value),
+        NdArrayDtype::Bool => Value::Bool(value != 0.0),
+    }
+}
+
+/// Rotates a 2-D ndarray by `k` quarter turns across the requested axis pair.
+fn rot90_ndarray(arr: &NdArray, k: i64, axes: [usize; 2], heap: &Heap<impl ResourceTracker>) -> RunResult<Value> {
+    if arr.ndim() != 2 {
+        Err(SimpleException::new_msg(ExcType::ValueError, "numpy.rot90() only supports 2-D arrays").into())
+    } else if axes != [0, 1] && axes != [1, 0] {
+        Err(SimpleException::new_msg(ExcType::ValueError, "numpy.rot90() only supports axes (0, 1)").into())
+    } else {
+        let adjusted_k = if axes == [1, 0] { -k } else { k };
+        let k = adjusted_k.rem_euclid(4);
+        let rows = arr.shape()[0];
+        let cols = arr.shape()[1];
+        let (data, shape) = match k {
+            0 => (arr.data().to_vec(), arr.shape().to_vec()),
+            1 => {
+                let mut data = Vec::with_capacity(arr.len());
+                for col in (0..cols).rev() {
+                    for row in 0..rows {
+                        data.push(arr.data()[row * cols + col]);
+                    }
+                }
+                (data, vec![cols, rows])
+            }
+            2 => {
+                let mut data = arr.data().to_vec();
+                data.reverse();
+                (data, arr.shape().to_vec())
+            }
+            _ => {
+                let mut data = Vec::with_capacity(arr.len());
+                for col in 0..cols {
+                    for row in (0..rows).rev() {
+                        data.push(arr.data()[row * cols + col]);
+                    }
+                }
+                (data, vec![cols, rows])
+            }
+        };
+        let result = NdArray::new(data, shape, arr.dtype());
+        Ok(Value::Ref(heap.allocate(HeapData::NdArray(result))?))
+    }
 }
 
 /// `numpy.append(a, values)` — append values to end of array (flattened).
