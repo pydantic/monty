@@ -289,6 +289,8 @@ pub(crate) enum NumpyFunctions {
     Arctan,
     /// `numpy.arctan2(y, x)` — element-wise two-argument arctangent.
     Arctan2,
+    /// `numpy.angle(z, deg=False)` — real-valued phase angle.
+    Angle,
     /// `numpy.sinh(a)` — element-wise hyperbolic sine.
     Sinh,
     /// `numpy.cosh(a)` — element-wise hyperbolic cosine.
@@ -575,6 +577,8 @@ pub(crate) enum NumpyFunctions {
     Extract,
     /// `numpy.trim_zeros(filt, trim='fb')` — trim leading and/or trailing zeros.
     TrimZeros,
+    /// `numpy.unwrap(p, discont=None)` — unwrap phase jumps in a 1-D sequence.
+    Unwrap,
     /// `numpy.intersect1d(a, b)` — sorted unique intersection.
     Intersect1d,
     /// `numpy.union1d(a, b)` — sorted unique union.
@@ -824,6 +828,7 @@ const NUMPY_FUNCTIONS: &[(StaticStrings, NumpyFunctions)] = &[
     (StaticStrings::Atan, NumpyFunctions::Arctan), // alias
     (StaticStrings::NpArctan2, NumpyFunctions::Arctan2),
     (StaticStrings::Atan2, NumpyFunctions::Arctan2), // alias
+    (StaticStrings::NpAngle, NumpyFunctions::Angle),
     (StaticStrings::Sinh, NumpyFunctions::Sinh),
     (StaticStrings::Cosh, NumpyFunctions::Cosh),
     (StaticStrings::Tanh, NumpyFunctions::Tanh),
@@ -979,6 +984,7 @@ const NUMPY_FUNCTIONS: &[(StaticStrings, NumpyFunctions)] = &[
     (StaticStrings::NpSearchsorted, NumpyFunctions::Searchsorted),
     (StaticStrings::NpExtract, NumpyFunctions::Extract),
     (StaticStrings::NpTrimZeros, NumpyFunctions::TrimZeros),
+    (StaticStrings::NpUnwrap, NumpyFunctions::Unwrap),
     (StaticStrings::NpIntersect1d, NumpyFunctions::Intersect1d),
     (StaticStrings::NpUnion1d, NumpyFunctions::Union1d),
     (StaticStrings::NpSetdiff1d, NumpyFunctions::Setdiff1d),
@@ -1197,6 +1203,7 @@ pub(super) fn call(
         NumpyFunctions::Arctan2 => {
             call_numeric_binop(vm, args, f64::atan2, "numpy.arctan2", BinopResult::Float).map(CallResult::Value)
         }
+        NumpyFunctions::Angle => call_angle(vm, args).map(CallResult::Value),
         NumpyFunctions::Sinh => {
             call_elementwise(vm, args, f64::sinh, "numpy.sinh", Some(NdArrayDtype::Float64)).map(CallResult::Value)
         }
@@ -1500,6 +1507,7 @@ pub(super) fn call(
         NumpyFunctions::Searchsorted => call_searchsorted(vm, args).map(CallResult::Value),
         NumpyFunctions::Extract => call_extract(vm, args).map(CallResult::Value),
         NumpyFunctions::TrimZeros => call_trim_zeros(vm, args).map(CallResult::Value),
+        NumpyFunctions::Unwrap => call_unwrap(vm, args).map(CallResult::Value),
         NumpyFunctions::Intersect1d => {
             call_set_op(vm, args, SetOp::Intersect, "numpy.intersect1d").map(CallResult::Value)
         }
@@ -3946,6 +3954,33 @@ fn scalar_from_f64(value: f64, dtype: NdArrayDtype) -> Value {
         NdArrayDtype::Float64 => Value::Float(value),
         NdArrayDtype::Bool => Value::Bool(value != 0.0),
     }
+}
+
+/// `numpy.angle(z, deg=False)` for Monty's real-valued numeric subset.
+fn call_angle(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let (arg, deg_val) = args.get_one_two_args("numpy.angle", vm.heap)?;
+    defer_drop!(arg, vm);
+    let deg = if let Some(deg_val) = deg_val {
+        defer_drop!(deg_val, vm);
+        value_to_bool_arg(deg_val, "numpy.angle", "deg")?
+    } else {
+        false
+    };
+
+    if let Ok((data, shape, _)) = extract_ndarray_info(arg, "numpy.angle", vm) {
+        let data = data.into_iter().map(|value| real_phase_angle(value, deg)).collect();
+        let arr = NdArray::new(data, shape, NdArrayDtype::Float64);
+        Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(arr))?))
+    } else {
+        let (value, _) = numeric_scalar_info(arg, "numpy.angle", vm)?;
+        Ok(Value::Float(real_phase_angle(value, deg)))
+    }
+}
+
+/// Computes the phase angle of a real number, preserving NumPy's `-0.0 -> pi` behavior.
+fn real_phase_angle(value: f64, deg: bool) -> f64 {
+    let angle = if value.is_sign_negative() { PI } else { 0.0 };
+    if deg { angle.to_degrees() } else { angle }
 }
 
 /// `numpy.conj(a)` / `numpy.real(a)` for Monty's real-valued ndarray subset.
@@ -6670,6 +6705,90 @@ fn call_trim_zeros(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> Ru
     let len = data.len();
     let result = NdArray::new(data, vec![len], arr.dtype());
     Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(result))?))
+}
+
+/// `numpy.unwrap(p, discont=None, axis=-1)` over Monty's real ndarray values.
+fn call_unwrap(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let pos = args.into_pos_only("numpy.unwrap", vm.heap)?;
+    defer_drop_mut!(pos, vm);
+
+    let arg = pos
+        .next()
+        .ok_or_else(|| ExcType::type_error_at_least("numpy.unwrap", 1, 0))?;
+    defer_drop!(arg, vm);
+    let arr = ndarray_from_value(arg, "numpy.unwrap", vm)?;
+    if arr.ndim() == 0 {
+        return Err(SimpleException::new_msg(
+            ExcType::ValueError,
+            "diff requires input that is at least one dimensional",
+        )
+        .into());
+    }
+
+    let discont = if let Some(discont_val) = pos.next() {
+        defer_drop!(discont_val, vm);
+        if matches!(discont_val, Value::None) {
+            None
+        } else {
+            Some(to_f64(discont_val, vm)?)
+        }
+    } else {
+        None
+    };
+    if let Some(axis_val) = pos.next() {
+        defer_drop!(axis_val, vm);
+        if !matches!(axis_val, Value::None) {
+            let axis = value_to_i64_arg(axis_val, "numpy.unwrap", "axis")?;
+            let axis = normalize_axis(axis, arr.ndim(), "numpy.unwrap")?;
+            if axis != arr.ndim() - 1 {
+                return Err(SimpleException::new_msg(
+                    ExcType::ValueError,
+                    "numpy.unwrap() only supports the last axis",
+                )
+                .into());
+            }
+        }
+    }
+    if let Some(extra) = pos.next() {
+        extra.drop_with_heap(vm);
+        return Err(ExcType::type_error_at_most("numpy.unwrap", 3, 4));
+    }
+
+    check_array_alloc_size(arr.data().len(), vm.heap.tracker())?;
+    let data = unwrap_phase_values(arr.data(), discont);
+    let result = NdArray::new(data, arr.shape().to_vec(), NdArrayDtype::Float64);
+    Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(result))?))
+}
+
+/// Computes NumPy-style phase unwrapping with the default `2*pi` period.
+fn unwrap_phase_values(values: &[f64], discont: Option<f64>) -> Vec<f64> {
+    let Some(&first) = values.first() else {
+        return Vec::new();
+    };
+    let period = 2.0 * PI;
+    let threshold = discont.unwrap_or(PI).max(PI);
+    let mut output = Vec::with_capacity(values.len());
+    output.push(first);
+    let mut correction = 0.0;
+    for pair in values.windows(2) {
+        correction += unwrap_delta_correction(pair[1] - pair[0], threshold, period);
+        output.push(pair[1] + correction);
+    }
+    output
+}
+
+/// Correction needed to map one phase delta into the requested discontinuity interval.
+fn unwrap_delta_correction(delta: f64, threshold: f64, period: f64) -> f64 {
+    if delta.abs() <= threshold {
+        0.0
+    } else {
+        let half_period = period / 2.0;
+        let mut delta_mod = (delta + half_period).rem_euclid(period) - half_period;
+        if delta_mod.to_bits() == (-half_period).to_bits() && delta > 0.0 {
+            delta_mod = half_period;
+        }
+        delta_mod - delta
+    }
 }
 
 /// Extracts a string argument from heap or interned string values.

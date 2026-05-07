@@ -929,6 +929,9 @@ pub enum StaticStrings {
     /// `numpy.arctan2()` function — two-argument arctangent
     #[strum(serialize = "arctan2")]
     NpArctan2,
+    /// `numpy.angle()` function for real-valued phase angles.
+    #[strum(serialize = "angle")]
+    NpAngle,
     /// `numpy.arcsinh()` function
     #[strum(serialize = "arcsinh")]
     NpArcsinh,
@@ -1298,6 +1301,9 @@ pub enum StaticStrings {
     /// `numpy.trim_zeros()` one-dimensional zero trimming helper.
     #[strum(serialize = "trim_zeros")]
     NpTrimZeros,
+    /// `numpy.unwrap()` phase-unwrapping helper.
+    #[strum(serialize = "unwrap")]
+    NpUnwrap,
     /// `numpy.intersect1d()` function
     #[strum(serialize = "intersect1d")]
     NpIntersect1d,

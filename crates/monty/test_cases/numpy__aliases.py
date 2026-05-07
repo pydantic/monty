@@ -49,6 +49,11 @@ assert np.atanh(0.0) == 0.0, 'atanh scalar zero'
 assert abs(np.atanh(0.5) - 0.5493061443340548) < 1e-12, 'atanh scalar half'
 assert np.atan2(0.0, 1.0) == 0.0, 'atan2 scalar zero'
 assert abs(np.atan2(np.array([1.0]), np.array([1.0])).tolist()[0] - np.pi / 4) < 1e-12, 'atan2 array'
+assert np.angle(1.0) == 0.0, 'angle positive real scalar'
+assert np.angle(-1.0) == np.pi, 'angle negative real scalar'
+assert np.angle(-0.0) == np.pi, 'angle negative zero scalar'
+assert np.angle([1.0, -1.0, 0.0, -0.0]).tolist() == [0.0, np.pi, 0.0, np.pi], 'angle real list'
+assert np.angle([-1.0], True).tolist() == [180.0], 'angle degrees'
 
 
 # === np.around -> np.round ===
@@ -321,6 +326,13 @@ assert np.array_equiv([1, 2], 1) == False, 'array_equiv scalar mismatch'
 assert np.ediff1d([[1, 2], [4, 7]]).tolist() == [1, 2, 3], 'ediff1d flattened'
 assert np.trim_zeros([0, 0, 1, 0, 2, 0]).tolist() == [1, 0, 2], 'trim_zeros both'
 assert np.trim_zeros([0, 0, 1, 0, 2, 0], 'f').tolist() == [1, 0, 2, 0], 'trim_zeros front'
+assert np.unwrap([0.0, 1.0, 2.0]).tolist() == [0.0, 1.0, 2.0], 'unwrap no jump'
+unwrapped_pos = np.unwrap([0.0, 3.5, 6.0]).tolist()
+assert abs(unwrapped_pos[1] + 2.7831853071795862) < 1e-12, 'unwrap positive jump first'
+assert abs(unwrapped_pos[2] + 0.28318530717958623) < 1e-12, 'unwrap positive jump second'
+unwrapped_neg = np.unwrap([0.0, -3.5, -6.0]).tolist()
+assert abs(unwrapped_neg[1] - 2.7831853071795862) < 1e-12, 'unwrap negative jump first'
+assert abs(unwrapped_neg[2] - 0.28318530717958623) < 1e-12, 'unwrap negative jump second'
 
 
 # === real-only aliases and introspection helpers ===
