@@ -540,8 +540,12 @@ pub(crate) enum NumpyFunctions {
     Nanquantile,
     /// `numpy.histogram(a, bins=10)` — one-dimensional histogram counts and edges.
     Histogram,
+    /// `numpy.histogram2d(x, y, bins=10)` — two-dimensional histogram.
+    Histogram2d,
     /// `numpy.histogram_bin_edges(a, bins=10)` — one-dimensional histogram edges.
     HistogramBinEdges,
+    /// `numpy.histogramdd(sample, bins=10)` — multi-dimensional histogram.
+    Histogramdd,
     /// `numpy.ptp(a)` — peak-to-peak (max - min).
     Ptp,
     /// `numpy.cumprod(a)` — cumulative product.
@@ -1084,7 +1088,9 @@ const NUMPY_FUNCTIONS: &[(StaticStrings, NumpyFunctions)] = &[
     (StaticStrings::NpNanpercentile, NumpyFunctions::Nanpercentile),
     (StaticStrings::NpNanquantile, NumpyFunctions::Nanquantile),
     (StaticStrings::NpHistogram, NumpyFunctions::Histogram),
+    (StaticStrings::NpHistogram2d, NumpyFunctions::Histogram2d),
     (StaticStrings::NpHistogramBinEdges, NumpyFunctions::HistogramBinEdges),
+    (StaticStrings::NpHistogramdd, NumpyFunctions::Histogramdd),
     (StaticStrings::NpPtp, NumpyFunctions::Ptp),
     (StaticStrings::NpCumprod, NumpyFunctions::Cumprod),
     (StaticStrings::NpCumulativeProd, NumpyFunctions::Cumprod), // alias
@@ -1644,7 +1650,9 @@ pub(super) fn call(
         NumpyFunctions::Nanpercentile => call_nanpercentile(vm, args).map(CallResult::Value),
         NumpyFunctions::Nanquantile => call_nanquantile(vm, args).map(CallResult::Value),
         NumpyFunctions::Histogram => call_histogram(vm, args).map(CallResult::Value),
+        NumpyFunctions::Histogram2d => call_histogram2d(vm, args).map(CallResult::Value),
         NumpyFunctions::HistogramBinEdges => call_histogram_bin_edges(vm, args).map(CallResult::Value),
+        NumpyFunctions::Histogramdd => call_histogramdd(vm, args).map(CallResult::Value),
         NumpyFunctions::Ptp => call_ptp(vm, args).map(CallResult::Value),
         NumpyFunctions::Cumprod => call_cumprod(vm, args).map(CallResult::Value),
         NumpyFunctions::Nancumsum => call_nancumop(vm, args, true, "numpy.nancumsum").map(CallResult::Value),
@@ -7228,7 +7236,7 @@ fn call_nanquantile(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> R
 /// `numpy.histogram(a, bins=10)` — one-dimensional histogram counts and bin edges.
 fn call_histogram(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     let (arr, bins) = histogram_args(vm, args, "numpy.histogram")?;
-    let (counts, edges) = histogram_counts_edges(arr.data(), bins);
+    let (counts, edges) = histogram_counts_edges(arr.data(), bins, vm.heap.tracker())?;
     let counts_value = Value::Ref(vm.heap.allocate(HeapData::NdArray(NdArray::new(
         counts,
         vec![bins],
@@ -7242,15 +7250,66 @@ fn call_histogram(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> Run
     Ok(allocate_tuple(smallvec::smallvec![counts_value, edges_value], vm.heap)?)
 }
 
+/// `numpy.histogram2d(x, y, bins=10)` — two-dimensional histogram counts and edges.
+fn call_histogram2d(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let (x, y, bins) = histogram2d_args(vm, args, "numpy.histogram2d")?;
+    let HistogramNdResult { counts, edges, shape } =
+        histogram_nd_counts_edges(&[x.data(), y.data()], bins, "numpy.histogram2d", vm.heap.tracker())?;
+    let counts_value = Value::Ref(vm.heap.allocate(HeapData::NdArray(NdArray::new(
+        counts,
+        shape,
+        NdArrayDtype::Float64,
+    )))?);
+    let xedges_value = Value::Ref(vm.heap.allocate(HeapData::NdArray(NdArray::new(
+        edges[0].clone(),
+        vec![bins + 1],
+        NdArrayDtype::Float64,
+    )))?);
+    let yedges_value = Value::Ref(vm.heap.allocate(HeapData::NdArray(NdArray::new(
+        edges[1].clone(),
+        vec![bins + 1],
+        NdArrayDtype::Float64,
+    )))?);
+    Ok(allocate_tuple(
+        smallvec::smallvec![counts_value, xedges_value, yedges_value],
+        vm.heap,
+    )?)
+}
+
 /// `numpy.histogram_bin_edges(a, bins=10)` — return histogram bin edges only.
 fn call_histogram_bin_edges(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     let (arr, bins) = histogram_args(vm, args, "numpy.histogram_bin_edges")?;
+    check_array_alloc_size(bins + 1, vm.heap.tracker())?;
     let edges = histogram_edges(arr.data(), bins);
     Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(NdArray::new(
         edges,
         vec![bins + 1],
         NdArrayDtype::Float64,
     )))?))
+}
+
+/// `numpy.histogramdd(sample, bins=10)` — multi-dimensional histogram counts and edge arrays.
+fn call_histogramdd(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let (sample, bins) = histogram_args(vm, args, "numpy.histogramdd")?;
+    let sample_axes = histogramdd_sample_axes(&sample)?;
+    let sample_axis_refs = sample_axes.iter().map(Vec::as_slice).collect::<Vec<_>>();
+    let HistogramNdResult { counts, edges, shape } =
+        histogram_nd_counts_edges(&sample_axis_refs, bins, "numpy.histogramdd", vm.heap.tracker())?;
+    let counts_value = Value::Ref(vm.heap.allocate(HeapData::NdArray(NdArray::new(
+        counts,
+        shape,
+        NdArrayDtype::Float64,
+    )))?);
+    let mut edge_values = Vec::with_capacity(edges.len());
+    for edge in edges {
+        edge_values.push(Value::Ref(vm.heap.allocate(HeapData::NdArray(NdArray::new(
+            edge,
+            vec![bins + 1],
+            NdArrayDtype::Float64,
+        )))?));
+    }
+    let edges_value = Value::Ref(vm.heap.allocate(HeapData::List(List::new(edge_values)))?);
+    Ok(allocate_tuple(smallvec::smallvec![counts_value, edges_value], vm.heap)?)
 }
 
 /// Compute the q-th quantile (q in [0, 1]) using linear interpolation.
@@ -7309,6 +7368,42 @@ fn histogram_args(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues, name: 
     Ok((arr, bins))
 }
 
+/// Parses the positional arrays and optional integer `bins` for `numpy.histogram2d`.
+fn histogram2d_args(
+    vm: &mut VM<'_, impl ResourceTracker>,
+    args: ArgValues,
+    name: &str,
+) -> RunResult<(NdArray, NdArray, usize)> {
+    let (pos, kwargs) = args.into_parts();
+    defer_drop_mut!(pos, vm);
+    let kwargs_iter = kwargs.into_iter();
+    defer_drop_mut!(kwargs_iter, vm);
+
+    let x_val = pos.next().ok_or_else(|| ExcType::type_error_at_least(name, 2, 0))?;
+    defer_drop!(x_val, vm);
+    let y_val = pos.next().ok_or_else(|| ExcType::type_error_at_least(name, 2, 1))?;
+    defer_drop!(y_val, vm);
+    let bins_value = pos.next();
+    defer_drop_mut!(bins_value, vm);
+    if pos.len() != 0 {
+        return Err(ExcType::type_error_at_most(name, 3, 3 + pos.len()));
+    }
+    parse_bins_keyword(kwargs_iter, bins_value, name, vm)?;
+
+    let x = ndarray_from_value(x_val, name, vm)?;
+    let y = ndarray_from_value(y_val, name, vm)?;
+    if x.data().len() == y.data().len() {
+        let bins = if let Some(value) = bins_value.as_ref() {
+            histogram_bins_from_value(value, name)?
+        } else {
+            10
+        };
+        Ok((x, y, bins))
+    } else {
+        Err(SimpleException::new_msg(ExcType::ValueError, "x and y must have the same length").into())
+    }
+}
+
 /// Parses a supported `bins` value for histogram helpers.
 fn histogram_bins_from_value(value: &Value, name: &str) -> RunResult<usize> {
     let bins = value_to_i64_arg(value, name, "bins")?;
@@ -7349,32 +7444,122 @@ fn parse_bins_keyword(
 }
 
 /// Computes histogram counts and edges for finite numeric data.
-fn histogram_counts_edges(data: &[f64], bins: usize) -> (Vec<f64>, Vec<f64>) {
+fn histogram_counts_edges(
+    data: &[f64],
+    bins: usize,
+    tracker: &impl ResourceTracker,
+) -> RunResult<(Vec<f64>, Vec<f64>)> {
+    check_array_alloc_size(bins, tracker)?;
+    check_array_alloc_size(bins + 1, tracker)?;
     let edges = histogram_edges(data, bins);
     let mut counts = vec![0.0; bins];
+    for value in data.iter().copied() {
+        if let Some(index) = histogram_bin_index(value, &edges) {
+            counts[index] += 1.0;
+        }
+    }
+    Ok((counts, edges))
+}
+
+/// Bundles an n-dimensional histogram's flat counts, per-axis edges, and output shape.
+struct HistogramNdResult {
+    /// Flat row-major counts buffer for the histogram ndarray.
+    counts: Vec<f64>,
+    /// One edge vector per sampled dimension.
+    edges: Vec<Vec<f64>>,
+    /// Shape of the counts ndarray, with one bin dimension per sampled axis.
+    shape: Vec<usize>,
+}
+
+/// Computes histogram counts and per-axis edges for same-length sample axes.
+fn histogram_nd_counts_edges(
+    sample_axes: &[&[f64]],
+    bins: usize,
+    name: &str,
+    tracker: &impl ResourceTracker,
+) -> RunResult<HistogramNdResult> {
+    if sample_axes.is_empty() {
+        return Err(
+            SimpleException::new_msg(ExcType::ValueError, format!("{name}() requires sample dimensions")).into(),
+        );
+    }
+    let sample_len = sample_axes[0].len();
+    if sample_axes.iter().any(|axis| axis.len() != sample_len) {
+        return Err(
+            SimpleException::new_msg(ExcType::ValueError, format!("{name}() sample dimensions must match")).into(),
+        );
+    }
+
+    let shape = vec![bins; sample_axes.len()];
+    let total_bins = checked_shape_product(&shape, name)?;
+    check_array_alloc_size(total_bins, tracker)?;
+    check_array_alloc_size((bins + 1).saturating_mul(sample_axes.len()), tracker)?;
+    let edges = sample_axes
+        .iter()
+        .map(|axis| histogram_edges(axis, bins))
+        .collect::<Vec<_>>();
+    let mut counts = vec![0.0; total_bins];
+    for sample_index in 0..sample_len {
+        let mut coords = Vec::with_capacity(sample_axes.len());
+        let mut in_range = true;
+        for (axis, edge) in sample_axes.iter().zip(edges.iter()) {
+            if let Some(bin_index) = histogram_bin_index(axis[sample_index], edge) {
+                coords.push(bin_index);
+            } else {
+                in_range = false;
+                break;
+            }
+        }
+        if in_range {
+            let flat_index = coords_to_flat_index(&coords, &shape);
+            counts[flat_index] += 1.0;
+        }
+    }
+    Ok(HistogramNdResult { counts, edges, shape })
+}
+
+/// Splits a two-dimensional `(n_samples, n_dims)` sample array into per-axis vectors.
+fn histogramdd_sample_axes(sample: &NdArray) -> RunResult<Vec<Vec<f64>>> {
+    match sample.shape() {
+        [_, 0] => {
+            Err(SimpleException::new_msg(ExcType::ValueError, "sample must include at least one dimension").into())
+        }
+        [sample_count, dimensions] => {
+            let mut axes = vec![Vec::with_capacity(*sample_count); *dimensions];
+            for sample_index in 0..*sample_count {
+                let row_start = sample_index * dimensions;
+                for (dimension, axis) in axes.iter_mut().enumerate() {
+                    axis.push(sample.data()[row_start + dimension]);
+                }
+            }
+            Ok(axes)
+        }
+        _ => Err(SimpleException::new_msg(ExcType::ValueError, "sample must be a 2D array").into()),
+    }
+}
+
+/// Returns the bin index for one value against monotonically increasing edges.
+fn histogram_bin_index(value: f64, edges: &[f64]) -> Option<usize> {
+    if !value.is_finite() {
+        return None;
+    }
+    let bins = edges.len().saturating_sub(1);
     let first = edges[0];
     let last = edges[bins];
     let width = (last - first) / bins as f64;
-    if width > 0.0 {
-        for value in data.iter().copied().filter(|value| value.is_finite()) {
-            if value >= first && value <= last {
-                let index = if matches!(value.total_cmp(&last), Ordering::Equal) {
-                    bins - 1
-                } else {
-                    #[expect(
-                        clippy::cast_possible_truncation,
-                        clippy::cast_sign_loss,
-                        reason = "bin index in range"
-                    )]
-                    {
-                        ((value - first) / width).floor() as usize
-                    }
-                };
-                counts[index] += 1.0;
-            }
-        }
+    if width <= 0.0 || value < first || value > last {
+        None
+    } else if matches!(value.total_cmp(&last), Ordering::Equal) {
+        Some(bins - 1)
+    } else {
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "bin index is checked against the edge range"
+        )]
+        let index = ((value - first) / width).floor() as usize;
+        Some(index.min(bins - 1))
     }
-    (counts, edges)
 }
 
 /// Computes evenly spaced histogram bin edges.

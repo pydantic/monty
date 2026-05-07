@@ -523,5 +523,15 @@ assert np.histogram_bin_edges([0, 1, 1, 2, 3], bins=3).tolist() == [
     2.0,
     3.0,
 ], 'histogram_bin_edges'
+hist2d_counts, hist2d_xedges, hist2d_yedges = np.histogram2d([0, 1, 1, 2], [0, 0, 1, 1], bins=2)
+assert hist2d_counts.tolist() == [[1.0, 0.0], [1.0, 2.0]], 'histogram2d counts'
+assert hist2d_xedges.tolist() == [0.0, 1.0, 2.0], 'histogram2d xedges'
+assert hist2d_yedges.tolist() == [0.0, 0.5, 1.0], 'histogram2d yedges'
+histdd_counts, histdd_edges = np.histogramdd(np.array([[0, 0], [1, 0], [1, 1], [2, 1]]), bins=2)
+assert histdd_counts.tolist() == [[1.0, 0.0], [1.0, 2.0]], 'histogramdd counts'
+assert [edge.tolist() for edge in histdd_edges] == [
+    [0.0, 1.0, 2.0],
+    [0.0, 0.5, 1.0],
+], 'histogramdd edges'
 assert np.little_endian == True, 'little_endian constant'
 assert abs(np.euler_gamma - 0.5772156649015329) < 1e-15, 'euler_gamma constant'

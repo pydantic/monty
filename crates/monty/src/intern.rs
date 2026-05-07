@@ -1292,9 +1292,15 @@ pub enum StaticStrings {
     /// `numpy.histogram()` one-dimensional histogram helper.
     #[strum(serialize = "histogram")]
     NpHistogram,
+    /// `numpy.histogram2d()` two-dimensional histogram helper.
+    #[strum(serialize = "histogram2d")]
+    NpHistogram2d,
     /// `numpy.histogram_bin_edges()` one-dimensional bin edge helper.
     #[strum(serialize = "histogram_bin_edges")]
     NpHistogramBinEdges,
+    /// `numpy.histogramdd()` multi-dimensional histogram helper.
+    #[strum(serialize = "histogramdd")]
+    NpHistogramdd,
     /// `numpy.ptp()` function — peak to peak
     #[strum(serialize = "ptp")]
     NpPtp,
