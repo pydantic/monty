@@ -1269,15 +1269,11 @@ impl<T: ResourceTracker> Heap<T> {
         }
 
         // 2. For each root, scan and resurrect if alive (refcount > 0 or active readers).
-        for root in &roots {
-            self.scan(*root, &mut work_stack);
-        }
+        work_stack.extend(roots.iter().copied());
+        self.scan(&mut work_stack);
 
         // 3. Collect each root's White children as unreachable garbage.
-        let mut freed = 0;
-        for root in &roots {
-            freed += self.collect_white(*root, &mut work_stack);
-        }
+        let freed = self.collect_white(&mut roots);
 
         // After `MarkRoots` no Purple entries remain in the heap; zero the
         // counter so the next `dec_ref` event re-seeds from a clean baseline,
@@ -1316,9 +1312,7 @@ impl<T: ResourceTracker> Heap<T> {
     /// `Scan` (iterative): each Gray entry is either resurrected via
     /// `ScanBlack` (external reference exists — refcount > 0 or active
     /// `HeapRead` reader) or painted White and its Gray children recursed.
-    fn scan(&mut self, start: HeapId, work_stack: &mut Vec<HeapId>) {
-        debug_assert!(work_stack.is_empty());
-        work_stack.push(start);
+    fn scan(&mut self, work_stack: &mut Vec<HeapId>) {
         let mut black_work_stack = Vec::new();
         while let Some(id) = work_stack.pop() {
             let mut entry_handle = self.entries.entry(id).expect("scan: entry already freed");
@@ -1366,9 +1360,7 @@ impl<T: ResourceTracker> Heap<T> {
         }
     }
 
-    fn collect_white(&mut self, start: HeapId, work_stack: &mut Vec<HeapId>) -> usize {
-        debug_assert!(work_stack.is_empty());
-        work_stack.push(start);
+    fn collect_white(&mut self, work_stack: &mut Vec<HeapId>) -> usize {
         let mut freed = 0;
         while let Some(id) = work_stack.pop() {
             let Some(mut entry) = self.entries.entry(id) else {
