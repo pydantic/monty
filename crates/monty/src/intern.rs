@@ -932,6 +932,42 @@ pub enum StaticStrings {
     /// `numpy.iterable()` iterable predicate.
     #[strum(serialize = "iterable")]
     NpIterable,
+    /// `numpy.atleast_1d()` shape helper.
+    #[strum(serialize = "atleast_1d")]
+    NpAtleast1d,
+    /// `numpy.atleast_2d()` shape helper.
+    #[strum(serialize = "atleast_2d")]
+    NpAtleast2d,
+    /// `numpy.atleast_3d()` shape helper.
+    #[strum(serialize = "atleast_3d")]
+    NpAtleast3d,
+    /// `numpy.diag_indices()` index helper.
+    #[strum(serialize = "diag_indices")]
+    NpDiagIndices,
+    /// `numpy.diag_indices_from()` index helper.
+    #[strum(serialize = "diag_indices_from")]
+    NpDiagIndicesFrom,
+    /// `numpy.tril_indices()` lower-triangle index helper.
+    #[strum(serialize = "tril_indices")]
+    NpTrilIndices,
+    /// `numpy.tril_indices_from()` lower-triangle index helper.
+    #[strum(serialize = "tril_indices_from")]
+    NpTrilIndicesFrom,
+    /// `numpy.triu_indices()` upper-triangle index helper.
+    #[strum(serialize = "triu_indices")]
+    NpTriuIndices,
+    /// `numpy.triu_indices_from()` upper-triangle index helper.
+    #[strum(serialize = "triu_indices_from")]
+    NpTriuIndicesFrom,
+    /// `numpy.indices()` dense coordinate grid helper.
+    #[strum(serialize = "indices")]
+    NpIndices,
+    /// `numpy.unravel_index()` flat-to-coordinate index helper.
+    #[strum(serialize = "unravel_index")]
+    NpUnravelIndex,
+    /// `numpy.ravel_multi_index()` coordinate-to-flat index helper.
+    #[strum(serialize = "ravel_multi_index")]
+    NpRavelMultiIndex,
     /// `numpy.nansum()` function
     #[strum(serialize = "nansum")]
     NpNansum,

@@ -127,6 +127,49 @@ assert np.ndim([1, 2, 3]) == 1, 'ndim list'
 assert np.ndim(np.array([[1, 2], [3, 4]])) == 2, 'ndim 2d array'
 
 
+# === shape and index helpers ===
+assert np.atleast_1d(5).tolist() == [5], 'atleast_1d scalar'
+assert np.atleast_2d([1, 2, 3]).tolist() == [[1, 2, 3]], 'atleast_2d list'
+assert np.atleast_3d([1, 2, 3]).tolist() == [[[1], [2], [3]]], 'atleast_3d list'
+atleast_a, atleast_b = np.atleast_1d(1, [2, 3])
+assert atleast_a.tolist() == [1], 'atleast_1d multi scalar'
+assert atleast_b.tolist() == [2, 3], 'atleast_1d multi list'
+
+diag_row, diag_col = np.diag_indices(3)
+assert diag_row.tolist() == [0, 1, 2], 'diag_indices first axis'
+assert diag_col.tolist() == [0, 1, 2], 'diag_indices second axis'
+diag_from_row, diag_from_col = np.diag_indices_from(np.ones((3, 3)))
+assert diag_from_row.tolist() == [0, 1, 2], 'diag_indices_from first axis'
+assert diag_from_col.tolist() == [0, 1, 2], 'diag_indices_from second axis'
+
+tril_row, tril_col = np.tril_indices(3)
+assert tril_row.tolist() == [0, 1, 1, 2, 2, 2], 'tril_indices rows'
+assert tril_col.tolist() == [0, 0, 1, 0, 1, 2], 'tril_indices cols'
+tril_from_row, tril_from_col = np.tril_indices_from(np.ones((2, 3)), 1)
+assert tril_from_row.tolist() == [0, 0, 1, 1, 1], 'tril_indices_from rows'
+assert tril_from_col.tolist() == [0, 1, 0, 1, 2], 'tril_indices_from cols'
+
+triu_row, triu_col = np.triu_indices(3)
+assert triu_row.tolist() == [0, 0, 0, 1, 1, 2], 'triu_indices rows'
+assert triu_col.tolist() == [0, 1, 2, 1, 2, 2], 'triu_indices cols'
+triu_from_row, triu_from_col = np.triu_indices_from(np.ones((2, 3)), -1)
+assert triu_from_row.tolist() == [0, 0, 0, 1, 1, 1], 'triu_indices_from rows'
+assert triu_from_col.tolist() == [0, 1, 2, 0, 1, 2], 'triu_indices_from cols'
+
+grid = np.indices((2, 3))
+assert grid.shape == (2, 2, 3), 'indices shape'
+assert grid.tolist() == [[[0, 0, 0], [1, 1, 1]], [[0, 1, 2], [0, 1, 2]]], 'indices values'
+
+unravel_row, unravel_col = np.unravel_index([5, 6], (3, 4))
+assert unravel_row.tolist() == [1, 1], 'unravel_index rows'
+assert unravel_col.tolist() == [1, 2], 'unravel_index cols'
+scalar_row, scalar_col = np.unravel_index(5, (3, 4))
+assert scalar_row == 1, 'unravel_index scalar row'
+assert scalar_col == 1, 'unravel_index scalar col'
+assert np.ravel_multi_index(([1, 2], [1, 3]), (3, 4)).tolist() == [5, 11], 'ravel_multi_index arrays'
+assert np.ravel_multi_index((1, 1), (3, 4)) == 5, 'ravel_multi_index scalar'
+
+
 # === real-only aliases and introspection helpers ===
 real_values = np.array([-2, 0, 3])
 assert np.conj(-5) == -5, 'conj scalar keeps real value'

@@ -51,6 +51,8 @@
 //!
 //! ## Search & index
 //! - `numpy.nonzero(a)`, `numpy.argwhere(a)`
+//! - `numpy.diag_indices`, `numpy.tril_indices`, `numpy.triu_indices`
+//! - `numpy.indices`, `numpy.unravel_index`, `numpy.ravel_multi_index`
 
 use std::{
     cmp::Ordering,
@@ -347,6 +349,30 @@ pub(crate) enum NumpyFunctions {
     Isscalar,
     /// `numpy.iterable(a)` — true for values accepted by Monty's iterator protocol.
     Iterable,
+    /// `numpy.atleast_1d(*arrays)` — view inputs as arrays with at least one dimension.
+    Atleast1d,
+    /// `numpy.atleast_2d(*arrays)` — view inputs as arrays with at least two dimensions.
+    Atleast2d,
+    /// `numpy.atleast_3d(*arrays)` — view inputs as arrays with at least three dimensions.
+    Atleast3d,
+    /// `numpy.diag_indices(n, ndim=2)` — indices for a diagonal in an `ndim` array.
+    DiagIndices,
+    /// `numpy.diag_indices_from(arr)` — diagonal indices matching a square array.
+    DiagIndicesFrom,
+    /// `numpy.tril_indices(n, k=0, m=None)` — lower-triangle indices.
+    TrilIndices,
+    /// `numpy.tril_indices_from(arr, k=0)` — lower-triangle indices for an array.
+    TrilIndicesFrom,
+    /// `numpy.triu_indices(n, k=0, m=None)` — upper-triangle indices.
+    TriuIndices,
+    /// `numpy.triu_indices_from(arr, k=0)` — upper-triangle indices for an array.
+    TriuIndicesFrom,
+    /// `numpy.indices(dimensions)` — dense coordinate grid arrays.
+    Indices,
+    /// `numpy.unravel_index(indices, shape)` — flat indices to coordinates.
+    UnravelIndex,
+    /// `numpy.ravel_multi_index(multi_index, dims)` — coordinates to flat indices.
+    RavelMultiIndex,
 
     // --- Phase 4: NaN-aware aggregations and statistics ---
     /// `numpy.nansum(a)` — sum ignoring NaN.
@@ -707,6 +733,18 @@ const NUMPY_FUNCTIONS: &[(StaticStrings, NumpyFunctions)] = &[
     (StaticStrings::NpIscomplexobj, NumpyFunctions::Iscomplexobj),
     (StaticStrings::NpIsscalar, NumpyFunctions::Isscalar),
     (StaticStrings::NpIterable, NumpyFunctions::Iterable),
+    (StaticStrings::NpAtleast1d, NumpyFunctions::Atleast1d),
+    (StaticStrings::NpAtleast2d, NumpyFunctions::Atleast2d),
+    (StaticStrings::NpAtleast3d, NumpyFunctions::Atleast3d),
+    (StaticStrings::NpDiagIndices, NumpyFunctions::DiagIndices),
+    (StaticStrings::NpDiagIndicesFrom, NumpyFunctions::DiagIndicesFrom),
+    (StaticStrings::NpTrilIndices, NumpyFunctions::TrilIndices),
+    (StaticStrings::NpTrilIndicesFrom, NumpyFunctions::TrilIndicesFrom),
+    (StaticStrings::NpTriuIndices, NumpyFunctions::TriuIndices),
+    (StaticStrings::NpTriuIndicesFrom, NumpyFunctions::TriuIndicesFrom),
+    (StaticStrings::NpIndices, NumpyFunctions::Indices),
+    (StaticStrings::NpUnravelIndex, NumpyFunctions::UnravelIndex),
+    (StaticStrings::NpRavelMultiIndex, NumpyFunctions::RavelMultiIndex),
     // Phase 4: NaN-aware aggregations and statistics
     (StaticStrings::NpNansum, NumpyFunctions::Nansum),
     (StaticStrings::NpNanmean, NumpyFunctions::Nanmean),
@@ -1135,6 +1173,26 @@ pub(super) fn call(
         }
         NumpyFunctions::Isscalar => call_isscalar(vm, args).map(CallResult::Value),
         NumpyFunctions::Iterable => call_iterable(vm, args).map(CallResult::Value),
+        NumpyFunctions::Atleast1d => call_atleast_nd(vm, args, 1, "numpy.atleast_1d").map(CallResult::Value),
+        NumpyFunctions::Atleast2d => call_atleast_nd(vm, args, 2, "numpy.atleast_2d").map(CallResult::Value),
+        NumpyFunctions::Atleast3d => call_atleast_nd(vm, args, 3, "numpy.atleast_3d").map(CallResult::Value),
+        NumpyFunctions::DiagIndices => call_diag_indices(vm, args).map(CallResult::Value),
+        NumpyFunctions::DiagIndicesFrom => call_diag_indices_from(vm, args).map(CallResult::Value),
+        NumpyFunctions::TrilIndices => {
+            call_triangle_indices(vm, args, TriangleKind::Lower, "numpy.tril_indices").map(CallResult::Value)
+        }
+        NumpyFunctions::TrilIndicesFrom => {
+            call_triangle_indices_from(vm, args, TriangleKind::Lower, "numpy.tril_indices_from").map(CallResult::Value)
+        }
+        NumpyFunctions::TriuIndices => {
+            call_triangle_indices(vm, args, TriangleKind::Upper, "numpy.triu_indices").map(CallResult::Value)
+        }
+        NumpyFunctions::TriuIndicesFrom => {
+            call_triangle_indices_from(vm, args, TriangleKind::Upper, "numpy.triu_indices_from").map(CallResult::Value)
+        }
+        NumpyFunctions::Indices => call_indices(vm, args).map(CallResult::Value),
+        NumpyFunctions::UnravelIndex => call_unravel_index(vm, args).map(CallResult::Value),
+        NumpyFunctions::RavelMultiIndex => call_ravel_multi_index(vm, args).map(CallResult::Value),
         // Phase 4: NaN-aware aggregations and statistics
         NumpyFunctions::Nansum => call_nan_aggregate(vm, args, nan_sum, "numpy.nansum").map(CallResult::Value),
         NumpyFunctions::Nanmean => call_nan_aggregate(vm, args, nan_mean, "numpy.nanmean").map(CallResult::Value),
@@ -2981,6 +3039,490 @@ fn is_numpy_iterable(value: &Value, vm: &VM<'_, impl ResourceTracker>) -> bool {
         ),
         _ => false,
     }
+}
+
+/// Triangle side selected by `tril_indices*` and `triu_indices*`.
+#[derive(Clone, Copy)]
+enum TriangleKind {
+    /// Include coordinates on and below the selected diagonal.
+    Lower,
+    /// Include coordinates on and above the selected diagonal.
+    Upper,
+}
+
+/// Integer index input for ravel/unravel helpers.
+///
+/// NumPy returns scalar coordinates for scalar index inputs and arrays for
+/// vector inputs. This enum carries the copied integer data plus the shape
+/// needed to rebuild that same result form.
+enum IndexInput {
+    /// A single scalar index.
+    Scalar(i64),
+    /// A vector/array of indices and the shape to preserve for the output.
+    Array { data: Vec<i64>, shape: Vec<usize> },
+}
+
+/// Shared implementation for `numpy.atleast_1d`, `numpy.atleast_2d`, and `numpy.atleast_3d`.
+///
+/// Each input is converted into Monty's numeric ndarray representation and then
+/// reshaped by adding length-1 axes according to NumPy's common cases. Multiple
+/// inputs return a tuple of arrays, matching NumPy's variadic API.
+fn call_atleast_nd(
+    vm: &mut VM<'_, impl ResourceTracker>,
+    args: ArgValues,
+    min_ndim: usize,
+    name: &str,
+) -> RunResult<Value> {
+    let pos = args.into_pos_only(name, vm.heap)?;
+    defer_drop_mut!(pos, vm);
+
+    let mut outputs: SmallVec<[Value; 3]> = SmallVec::new();
+    for arg in pos.by_ref() {
+        defer_drop!(arg, vm);
+        outputs.push(atleast_nd_value(arg, min_ndim, name, vm)?);
+    }
+
+    if outputs.len() == 1 {
+        Ok(outputs.pop().expect("one output exists"))
+    } else {
+        allocate_tuple(outputs, vm.heap).map_err(Into::into)
+    }
+}
+
+/// Converts one value for the `atleast_*d` family.
+fn atleast_nd_value(
+    value: &Value,
+    min_ndim: usize,
+    name: &str,
+    vm: &mut VM<'_, impl ResourceTracker>,
+) -> RunResult<Value> {
+    let (data, shape, dtype) = if let Ok((data, shape, dtype)) = extract_ndarray_info(value, name, vm) {
+        (data, shape, dtype)
+    } else {
+        let (scalar, dtype) = numeric_scalar_info(value, name, vm)?;
+        (vec![scalar], Vec::new(), dtype)
+    };
+    let shape = atleast_shape(shape, min_ndim);
+    let arr = NdArray::new(data, shape, dtype);
+    Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(arr))?))
+}
+
+/// Computes NumPy's shape expansion for the supported `atleast_*d` cases.
+fn atleast_shape(shape: Vec<usize>, min_ndim: usize) -> Vec<usize> {
+    match (min_ndim, shape.as_slice()) {
+        (1, []) => vec![1],
+        (1, _) => shape,
+        (2, []) => vec![1, 1],
+        (2, [n]) => vec![1, *n],
+        (2, _) => shape,
+        (3, []) => vec![1, 1, 1],
+        (3, [n]) => vec![1, *n, 1],
+        (3, [rows, cols]) => vec![*rows, *cols, 1],
+        (3, _) => shape,
+        _ => shape,
+    }
+}
+
+/// `numpy.diag_indices(n, ndim=2)` — return repeated diagonal index arrays.
+fn call_diag_indices(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let (n_val, ndim_val) = args.get_one_two_args("numpy.diag_indices", vm.heap)?;
+    defer_drop!(n_val, vm);
+    let n = value_to_nonnegative_usize(n_val, "numpy.diag_indices", "n")?;
+    let ndim = if let Some(ndim_val) = ndim_val {
+        defer_drop!(ndim_val, vm);
+        value_to_nonnegative_usize(ndim_val, "numpy.diag_indices", "ndim")?
+    } else {
+        2
+    };
+    diag_indices_tuple(n, ndim, vm)
+}
+
+/// `numpy.diag_indices_from(arr)` — diagonal index arrays for a square input.
+fn call_diag_indices_from(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let arg = args.get_one_arg("numpy.diag_indices_from", vm.heap)?;
+    defer_drop!(arg, vm);
+    let (_, shape, _) = extract_ndarray_info(arg, "numpy.diag_indices_from", vm)?;
+    if shape.len() < 2 {
+        Err(SimpleException::new_msg(ExcType::ValueError, "input array must be at least 2-d").into())
+    } else if !shape.iter().all(|&dim| dim == shape[0]) {
+        Err(SimpleException::new_msg(ExcType::ValueError, "all dimensions of input must be of equal length").into())
+    } else {
+        diag_indices_tuple(shape[0], shape.len(), vm)
+    }
+}
+
+/// Builds a tuple containing `ndim` copies of the diagonal range `0..n`.
+fn diag_indices_tuple(n: usize, ndim: usize, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<Value> {
+    let data: Vec<f64> = (0..n).map(usize_to_f64).collect();
+    let vectors = (0..ndim).map(|_| data.clone()).collect::<Vec<_>>();
+    tuple_from_index_vectors(vm, vectors, &[n])
+}
+
+/// `numpy.tril_indices()` / `numpy.triu_indices()` over the supported integer arguments.
+fn call_triangle_indices(
+    vm: &mut VM<'_, impl ResourceTracker>,
+    args: ArgValues,
+    kind: TriangleKind,
+    name: &str,
+) -> RunResult<Value> {
+    let (n, k, m) = triangle_args(args, name, vm)?;
+    triangle_indices_tuple(n, k, m, kind, vm)
+}
+
+/// `numpy.tril_indices_from()` / `numpy.triu_indices_from()` for 2-D arrays.
+fn call_triangle_indices_from(
+    vm: &mut VM<'_, impl ResourceTracker>,
+    args: ArgValues,
+    kind: TriangleKind,
+    name: &str,
+) -> RunResult<Value> {
+    let (arr_val, k_val) = args.get_one_two_args(name, vm.heap)?;
+    defer_drop!(arr_val, vm);
+    let (_, shape, _) = extract_ndarray_info(arr_val, name, vm)?;
+    let k = if let Some(k_val) = k_val {
+        defer_drop!(k_val, vm);
+        value_to_i64_arg(k_val, name, "k")?
+    } else {
+        0
+    };
+    if shape.len() == 2 {
+        triangle_indices_tuple(shape[0], k, shape[1], kind, vm)
+    } else {
+        Err(SimpleException::new_msg(ExcType::ValueError, "input array must be 2-d").into())
+    }
+}
+
+/// Parses `(n, k=0, m=None)` for triangle index helpers.
+fn triangle_args(args: ArgValues, name: &str, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<(usize, i64, usize)> {
+    let pos = args.into_pos_only(name, vm.heap)?;
+    defer_drop_mut!(pos, vm);
+    let n_val = pos.next().ok_or_else(|| ExcType::type_error_at_least(name, 1, 0))?;
+    defer_drop!(n_val, vm);
+    let n = value_to_nonnegative_usize(n_val, name, "n")?;
+    let k = if let Some(k_val) = pos.next() {
+        defer_drop!(k_val, vm);
+        value_to_i64_arg(k_val, name, "k")?
+    } else {
+        0
+    };
+    let m = if let Some(m_val) = pos.next() {
+        defer_drop!(m_val, vm);
+        if matches!(m_val, Value::None) {
+            n
+        } else {
+            value_to_nonnegative_usize(m_val, name, "m")?
+        }
+    } else {
+        n
+    };
+    if let Some(extra) = pos.next() {
+        extra.drop_with_heap(vm);
+        return Err(ExcType::type_error_at_most(name, 3, 4));
+    }
+    Ok((n, k, m))
+}
+
+/// Builds lower- or upper-triangle row and column index arrays.
+fn triangle_indices_tuple(
+    n: usize,
+    k: i64,
+    m: usize,
+    kind: TriangleKind,
+    vm: &mut VM<'_, impl ResourceTracker>,
+) -> RunResult<Value> {
+    let mut rows = Vec::new();
+    let mut cols = Vec::new();
+    for row in 0..n {
+        let row_i64 = usize_to_i64(row)?;
+        for col in 0..m {
+            let col_i64 = usize_to_i64(col)?;
+            let include = match kind {
+                TriangleKind::Lower => col_i64 <= row_i64.saturating_add(k),
+                TriangleKind::Upper => col_i64 >= row_i64.saturating_add(k),
+            };
+            if include {
+                rows.push(usize_to_f64(row));
+                cols.push(usize_to_f64(col));
+            }
+        }
+    }
+    let len = cols.len();
+    tuple_from_index_vectors(vm, vec![rows, cols], &[len])
+}
+
+/// `numpy.indices(dimensions)` — build dense integer coordinate grids.
+fn call_indices(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let (dims_val, dtype_val) = args.get_one_two_args("numpy.indices", vm.heap)?;
+    defer_drop!(dims_val, vm);
+    if let Some(dtype_val) = dtype_val {
+        dtype_val.drop_with_heap(vm);
+    }
+    let dimensions = extract_shape_from_value(dims_val, "numpy.indices", vm)?;
+    let ndim = dimensions.len();
+    let total = checked_shape_product(&dimensions, "numpy.indices")?;
+    check_array_alloc_size(total.saturating_mul(ndim), vm.heap.tracker())?;
+
+    let mut data = Vec::with_capacity(total.saturating_mul(ndim));
+    if total > 0 {
+        for axis in 0..ndim {
+            let stride = checked_shape_product(&dimensions[axis + 1..], "numpy.indices")?;
+            for flat in 0..total {
+                let coord = if dimensions[axis] == 0 {
+                    0
+                } else {
+                    (flat / stride) % dimensions[axis]
+                };
+                data.push(usize_to_f64(coord));
+            }
+        }
+    }
+    let mut shape = Vec::with_capacity(ndim + 1);
+    shape.push(ndim);
+    shape.extend(dimensions);
+    let arr = NdArray::new(data, shape, NdArrayDtype::Int64);
+    Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(arr))?))
+}
+
+/// `numpy.unravel_index(indices, shape)` — convert flat indices to coordinates.
+fn call_unravel_index(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let (indices_val, shape_val) = args.get_two_args("numpy.unravel_index", vm.heap)?;
+    defer_drop!(indices_val, vm);
+    defer_drop!(shape_val, vm);
+    let dimensions = extract_shape_from_value(shape_val, "numpy.unravel_index", vm)?;
+    let index_input = index_input_info(indices_val, "numpy.unravel_index", vm)?;
+    let total = checked_shape_product(&dimensions, "numpy.unravel_index")?;
+
+    match index_input {
+        IndexInput::Scalar(index) => {
+            let coords = unravel_one_index(index, &dimensions, total, "numpy.unravel_index")?;
+            let values: SmallVec<[Value; 3]> = coords.into_iter().map(Value::Int).collect();
+            allocate_tuple(values, vm.heap).map_err(Into::into)
+        }
+        IndexInput::Array { data, shape } => {
+            let mut vectors = vec![Vec::with_capacity(data.len()); dimensions.len()];
+            for index in data {
+                let coords = unravel_one_index(index, &dimensions, total, "numpy.unravel_index")?;
+                for (axis, coord) in coords.into_iter().enumerate() {
+                    vectors[axis].push(i64_to_f64(coord));
+                }
+            }
+            tuple_from_index_vectors(vm, vectors, &shape)
+        }
+    }
+}
+
+/// `numpy.ravel_multi_index(multi_index, dims)` — convert coordinates to flat indices.
+fn call_ravel_multi_index(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let (multi_val, dims_val) = args.get_two_args("numpy.ravel_multi_index", vm.heap)?;
+    defer_drop!(multi_val, vm);
+    defer_drop!(dims_val, vm);
+
+    let dimensions = extract_shape_from_value(dims_val, "numpy.ravel_multi_index", vm)?;
+    let coord_values = sequence_items(multi_val, "numpy.ravel_multi_index", vm)?;
+    defer_drop!(coord_values, vm);
+    if coord_values.len() != dimensions.len() {
+        return Err(SimpleException::new_msg(
+            ExcType::ValueError,
+            "parameter multi_index must be a sequence of length matching dims",
+        )
+        .into());
+    }
+
+    let coords = coord_values
+        .iter()
+        .map(|value| index_input_info(value, "numpy.ravel_multi_index", vm))
+        .collect::<RunResult<Vec<_>>>()?;
+    ravel_multi_index_result(&coords, &dimensions, vm)
+}
+
+/// Computes the scalar or array output for `ravel_multi_index`.
+fn ravel_multi_index_result(
+    coords: &[IndexInput],
+    dimensions: &[usize],
+    vm: &mut VM<'_, impl ResourceTracker>,
+) -> RunResult<Value> {
+    let array_shape = shared_index_array_shape(coords)?;
+    if let Some(shape) = array_shape {
+        let len = shape.iter().product::<usize>();
+        let mut data = Vec::with_capacity(len);
+        for offset in 0..len {
+            let mut coord_at_offset = Vec::with_capacity(coords.len());
+            for coord in coords {
+                coord_at_offset.push(index_input_value_at(coord, offset));
+            }
+            data.push(i64_to_f64(ravel_one_index(
+                &coord_at_offset,
+                dimensions,
+                "numpy.ravel_multi_index",
+            )?));
+        }
+        let arr = NdArray::new(data, shape, NdArrayDtype::Int64);
+        Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(arr))?))
+    } else {
+        let coord_at_offset = coords
+            .iter()
+            .map(|coord| index_input_value_at(coord, 0))
+            .collect::<Vec<_>>();
+        Ok(Value::Int(ravel_one_index(
+            &coord_at_offset,
+            dimensions,
+            "numpy.ravel_multi_index",
+        )?))
+    }
+}
+
+/// Extracts a scalar or integer array from an index-like value.
+fn index_input_info(value: &Value, name: &str, vm: &VM<'_, impl ResourceTracker>) -> RunResult<IndexInput> {
+    if let Ok((data, shape)) = integer_array_info(value, name, vm) {
+        Ok(IndexInput::Array {
+            data: data.into_iter().map(f64_to_i64).collect(),
+            shape,
+        })
+    } else {
+        integer_scalar_info(value, name).map(IndexInput::Scalar)
+    }
+}
+
+/// Returns the common array shape among index inputs, if any input is array-shaped.
+fn shared_index_array_shape(coords: &[IndexInput]) -> RunResult<Option<Vec<usize>>> {
+    let mut shape = None;
+    for coord in coords {
+        if let IndexInput::Array { shape: coord_shape, .. } = coord {
+            if let Some(existing) = &shape {
+                if existing != coord_shape {
+                    return Err(SimpleException::new_msg(
+                        ExcType::ValueError,
+                        "operands could not be broadcast together",
+                    )
+                    .into());
+                }
+            } else {
+                shape = Some(coord_shape.clone());
+            }
+        }
+    }
+    Ok(shape)
+}
+
+/// Reads the scalar or per-offset array coordinate from an index input.
+fn index_input_value_at(input: &IndexInput, offset: usize) -> i64 {
+    match input {
+        IndexInput::Scalar(value) => *value,
+        IndexInput::Array { data, .. } => data[offset],
+    }
+}
+
+/// Converts one flat index into row-major coordinates for `unravel_index`.
+fn unravel_one_index(index: i64, dimensions: &[usize], total: usize, name: &str) -> RunResult<Vec<i64>> {
+    let mut index = nonnegative_index_in_bounds(index, total, name)?;
+    let mut coords = vec![0; dimensions.len()];
+    for axis in (0..dimensions.len()).rev() {
+        let dim = dimensions[axis];
+        if dim == 0 {
+            return Err(
+                SimpleException::new_msg(ExcType::ValueError, "cannot unravel if shape has zero entries").into(),
+            );
+        }
+        coords[axis] = usize_to_i64(index % dim)?;
+        index /= dim;
+    }
+    Ok(coords)
+}
+
+/// Converts one coordinate tuple into a row-major flat index.
+fn ravel_one_index(coords: &[i64], dimensions: &[usize], name: &str) -> RunResult<i64> {
+    let mut flat = 0usize;
+    for (&coord, &dim) in coords.iter().zip(dimensions.iter()) {
+        let coord = nonnegative_index_in_bounds(coord, dim, name)?;
+        flat = flat
+            .checked_mul(dim)
+            .and_then(|value| value.checked_add(coord))
+            .ok_or_else(|| SimpleException::new_msg(ExcType::ValueError, "index dimensions overflow"))?;
+    }
+    usize_to_i64(flat)
+}
+
+/// Checks an index is non-negative and inside a dimension or total-size bound.
+fn nonnegative_index_in_bounds(index: i64, upper: usize, name: &str) -> RunResult<usize> {
+    let index = i64_to_nonnegative_usize(index, name, "index")?;
+    if index >= upper {
+        Err(SimpleException::new_msg(ExcType::ValueError, "invalid entry in coordinates array").into())
+    } else {
+        Ok(index)
+    }
+}
+
+/// Extracts list/tuple items from a value by cloning references safely.
+fn sequence_items(value: &Value, name: &str, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<Vec<Value>> {
+    match value {
+        Value::Ref(id) => match vm.heap.get(*id) {
+            HeapData::List(list) => Ok(list.as_slice().iter().map(|value| value.clone_with_heap(vm)).collect()),
+            HeapData::Tuple(tuple) => Ok(tuple.as_slice().iter().map(|value| value.clone_with_heap(vm)).collect()),
+            _ => Err(ExcType::type_error(format!("{name}() requires a sequence argument"))),
+        },
+        _ => Err(ExcType::type_error(format!("{name}() requires a sequence argument"))),
+    }
+}
+
+/// Allocates a tuple of integer ndarrays using a shared result shape.
+fn tuple_from_index_vectors(
+    vm: &mut VM<'_, impl ResourceTracker>,
+    vectors: Vec<Vec<f64>>,
+    shape: &[usize],
+) -> RunResult<Value> {
+    let mut values: SmallVec<[Value; 3]> = SmallVec::new();
+    for data in vectors {
+        let arr = NdArray::new(data, shape.to_vec(), NdArrayDtype::Int64);
+        values.push(Value::Ref(vm.heap.allocate(HeapData::NdArray(arr))?));
+    }
+    allocate_tuple(values, vm.heap).map_err(Into::into)
+}
+
+/// Computes a shape product with a NumPy-style overflow error.
+fn checked_shape_product(shape: &[usize], name: &str) -> RunResult<usize> {
+    shape
+        .iter()
+        .try_fold(1usize, |acc, &dim| acc.checked_mul(dim))
+        .ok_or_else(|| SimpleException::new_msg(ExcType::ValueError, format!("{name}() dimensions overflow")).into())
+}
+
+/// Converts an integer `Value` into a non-negative usize argument.
+fn value_to_nonnegative_usize(value: &Value, name: &str, arg_name: &str) -> RunResult<usize> {
+    let value = value_to_i64_arg(value, name, arg_name)?;
+    i64_to_nonnegative_usize(value, name, arg_name)
+}
+
+/// Converts an integer `Value` into an i64 argument.
+fn value_to_i64_arg(value: &Value, name: &str, arg_name: &str) -> RunResult<i64> {
+    match value {
+        Value::Int(value) => Ok(*value),
+        _ => Err(ExcType::type_error(format!("{name}() {arg_name} must be an integer"))),
+    }
+}
+
+/// Converts a non-negative i64 into usize with a targeted ValueError.
+fn i64_to_nonnegative_usize(value: i64, name: &str, arg_name: &str) -> RunResult<usize> {
+    if value < 0 {
+        Err(SimpleException::new_msg(ExcType::ValueError, format!("{name}() {arg_name} must be non-negative")).into())
+    } else {
+        usize::try_from(value).map_err(|_| {
+            SimpleException::new_msg(ExcType::ValueError, format!("{name}() {arg_name} is too large")).into()
+        })
+    }
+}
+
+/// Converts a usize index into i64 for Python integer outputs.
+fn usize_to_i64(value: usize) -> RunResult<i64> {
+    i64::try_from(value).map_err(|_| SimpleException::new_msg(ExcType::ValueError, "index is too large").into())
+}
+
+/// Converts a usize index into ndarray f64 backing storage.
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "integer ndarray values are stored as f64 in Monty's current ndarray model"
+)]
+fn usize_to_f64(value: usize) -> f64 {
+    value as f64
 }
 
 /// Shared implementation for unary NumPy functions that return two results.
