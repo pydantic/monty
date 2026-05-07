@@ -170,6 +170,34 @@ assert np.ravel_multi_index(([1, 2], [1, 3]), (3, 4)).tolist() == [5, 11], 'rave
 assert np.ravel_multi_index((1, 1), (3, 4)) == 5, 'ravel_multi_index scalar'
 
 
+# === integer and boolean bitwise helpers ===
+assert np.bitwise_and(6, 3) == 2, 'bitwise_and scalar'
+assert np.bitwise_and(True, False) == False, 'bitwise_and bool scalar'
+assert np.bitwise_and([1, 2, 3], [3, 1, 2]).tolist() == [1, 0, 2], 'bitwise_and lists'
+bool_and = np.bitwise_and(np.array([True, False]), True)
+assert bool_and.tolist() == [True, False], 'bitwise_and bool array'
+assert str(bool_and.dtype) == 'bool', 'bitwise_and bool dtype'
+
+assert np.bitwise_or([1, 2, 4], 1).tolist() == [1, 3, 5], 'bitwise_or list scalar'
+assert np.bitwise_xor(7, [1, 2, 4]).tolist() == [6, 5, 3], 'bitwise_xor scalar list'
+assert np.bitwise_not([0, 1, -2]).tolist() == [-1, -2, 1], 'bitwise_not list'
+assert np.bitwise_invert([0, 1]).tolist() == [-1, -2], 'bitwise_invert alias'
+inverted_bools = np.invert(np.array([True, False]))
+assert inverted_bools.tolist() == [False, True], 'invert bool array'
+assert str(inverted_bools.dtype) == 'bool', 'invert bool dtype'
+
+assert np.left_shift([1, 2, 3], 2).tolist() == [4, 8, 12], 'left_shift list scalar'
+assert np.bitwise_left_shift(1, 3) == 8, 'bitwise_left_shift alias'
+assert np.right_shift([8, -8], 1).tolist() == [4, -4], 'right_shift list scalar'
+assert np.bitwise_right_shift(-8, 1) == -4, 'bitwise_right_shift alias'
+assert np.bitwise_count(7) == 3, 'bitwise_count scalar'
+assert np.bitwise_count([-1, -2, -3]).tolist() == [1, 1, 2], 'bitwise_count negative list'
+
+packed = np.packbits([1, 0, 1, 1, 0, 0, 1, 0])
+assert packed.tolist() == [178], 'packbits byte'
+assert np.unpackbits(packed).tolist() == [1, 0, 1, 1, 0, 0, 1, 0], 'unpackbits roundtrip'
+
+
 # === real-only aliases and introspection helpers ===
 real_values = np.array([-2, 0, 3])
 assert np.conj(-5) == -5, 'conj scalar keeps real value'

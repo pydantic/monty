@@ -902,6 +902,45 @@ pub enum StaticStrings {
     /// `numpy.divmod()` function.
     #[strum(serialize = "divmod")]
     NpDivmod,
+    /// `numpy.bitwise_and()` integer/boolean bitwise AND.
+    #[strum(serialize = "bitwise_and")]
+    NpBitwiseAnd,
+    /// `numpy.bitwise_or()` integer/boolean bitwise OR.
+    #[strum(serialize = "bitwise_or")]
+    NpBitwiseOr,
+    /// `numpy.bitwise_xor()` integer/boolean bitwise XOR.
+    #[strum(serialize = "bitwise_xor")]
+    NpBitwiseXor,
+    /// `numpy.bitwise_not()` integer/boolean bitwise inversion.
+    #[strum(serialize = "bitwise_not")]
+    NpBitwiseNot,
+    /// `numpy.bitwise_invert()` alias for integer/boolean bitwise inversion.
+    #[strum(serialize = "bitwise_invert")]
+    NpBitwiseInvert,
+    /// `numpy.invert()` alias for integer/boolean bitwise inversion.
+    #[strum(serialize = "invert")]
+    NpInvert,
+    /// `numpy.left_shift()` integer bit shift helper.
+    #[strum(serialize = "left_shift")]
+    NpLeftShift,
+    /// `numpy.right_shift()` integer bit shift helper.
+    #[strum(serialize = "right_shift")]
+    NpRightShift,
+    /// `numpy.bitwise_left_shift()` alias for left shift.
+    #[strum(serialize = "bitwise_left_shift")]
+    NpBitwiseLeftShift,
+    /// `numpy.bitwise_right_shift()` alias for right shift.
+    #[strum(serialize = "bitwise_right_shift")]
+    NpBitwiseRightShift,
+    /// `numpy.bitwise_count()` integer population count helper.
+    #[strum(serialize = "bitwise_count")]
+    NpBitwiseCount,
+    /// `numpy.packbits()` packs non-zero bits into bytes.
+    #[strum(serialize = "packbits")]
+    NpPackbits,
+    /// `numpy.unpackbits()` unpacks byte values into bit arrays.
+    #[strum(serialize = "unpackbits")]
+    NpUnpackbits,
     /// `numpy.conj()` real-valued conjugate helper.
     #[strum(serialize = "conj")]
     NpConj,

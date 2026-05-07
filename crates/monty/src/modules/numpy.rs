@@ -25,6 +25,8 @@
 //! - `numpy.power(base, exp)` — element-wise power
 //! - `numpy.copysign`, `numpy.frexp`, `numpy.modf`, `numpy.ldexp`, `numpy.gcd`, `numpy.lcm`
 //! - `numpy.logaddexp`, `numpy.nextafter`, `numpy.spacing`, `numpy.signbit`, `numpy.sinc`
+//! - `numpy.bitwise_and`, `numpy.invert`, `numpy.left_shift`, `numpy.bitwise_count`
+//! - `numpy.packbits`, `numpy.unpackbits`
 //! - `numpy.diff(a)` — discrete differences
 //! - `numpy.round(a, decimals)`, `numpy.clip(a, a_min, a_max)`
 //!
@@ -331,6 +333,24 @@ pub(crate) enum NumpyFunctions {
     FloatPower,
     /// `numpy.divmod(a, b)` — element-wise floor division and modulo pair.
     Divmod,
+    /// `numpy.bitwise_and(a, b)` — element-wise integer/boolean bitwise AND.
+    BitwiseAnd,
+    /// `numpy.bitwise_or(a, b)` — element-wise integer/boolean bitwise OR.
+    BitwiseOr,
+    /// `numpy.bitwise_xor(a, b)` — element-wise integer/boolean bitwise XOR.
+    BitwiseXor,
+    /// `numpy.bitwise_not(a)` / aliases — element-wise integer/boolean inversion.
+    BitwiseNot,
+    /// `numpy.left_shift(a, b)` — element-wise integer left shift.
+    LeftShift,
+    /// `numpy.right_shift(a, b)` — element-wise integer right shift.
+    RightShift,
+    /// `numpy.bitwise_count(a)` — count set bits in each integer's absolute value.
+    BitwiseCount,
+    /// `numpy.packbits(a)` — pack non-zero values into byte-sized integers.
+    Packbits,
+    /// `numpy.unpackbits(a)` — unpack byte-sized integers into bit arrays.
+    Unpackbits,
     /// `numpy.conj(a)` — return the real-valued conjugate.
     Conj,
     /// `numpy.real(a)` — return the real component.
@@ -722,6 +742,19 @@ const NUMPY_FUNCTIONS: &[(StaticStrings, NumpyFunctions)] = &[
     (StaticStrings::NpFix, NumpyFunctions::Fix),
     (StaticStrings::NpFloatPower, NumpyFunctions::FloatPower),
     (StaticStrings::NpDivmod, NumpyFunctions::Divmod),
+    (StaticStrings::NpBitwiseAnd, NumpyFunctions::BitwiseAnd),
+    (StaticStrings::NpBitwiseOr, NumpyFunctions::BitwiseOr),
+    (StaticStrings::NpBitwiseXor, NumpyFunctions::BitwiseXor),
+    (StaticStrings::NpBitwiseNot, NumpyFunctions::BitwiseNot),
+    (StaticStrings::NpBitwiseInvert, NumpyFunctions::BitwiseNot), // alias
+    (StaticStrings::NpInvert, NumpyFunctions::BitwiseNot),        // alias
+    (StaticStrings::NpLeftShift, NumpyFunctions::LeftShift),
+    (StaticStrings::NpBitwiseLeftShift, NumpyFunctions::LeftShift), // alias
+    (StaticStrings::NpRightShift, NumpyFunctions::RightShift),
+    (StaticStrings::NpBitwiseRightShift, NumpyFunctions::RightShift), // alias
+    (StaticStrings::NpBitwiseCount, NumpyFunctions::BitwiseCount),
+    (StaticStrings::NpPackbits, NumpyFunctions::Packbits),
+    (StaticStrings::NpUnpackbits, NumpyFunctions::Unpackbits),
     // Real-only aliases and introspection helpers
     (StaticStrings::NpConj, NumpyFunctions::Conj),
     (StaticStrings::NpConjugate, NumpyFunctions::Conj), // alias
@@ -1160,6 +1193,25 @@ pub(super) fn call(
             BinopResult::Promoted,
         )
         .map(CallResult::Value),
+        NumpyFunctions::BitwiseAnd => {
+            call_bitwise_binop(vm, args, IntegerBitwiseOp::And, "numpy.bitwise_and").map(CallResult::Value)
+        }
+        NumpyFunctions::BitwiseOr => {
+            call_bitwise_binop(vm, args, IntegerBitwiseOp::Or, "numpy.bitwise_or").map(CallResult::Value)
+        }
+        NumpyFunctions::BitwiseXor => {
+            call_bitwise_binop(vm, args, IntegerBitwiseOp::Xor, "numpy.bitwise_xor").map(CallResult::Value)
+        }
+        NumpyFunctions::BitwiseNot => call_bitwise_not(vm, args).map(CallResult::Value),
+        NumpyFunctions::LeftShift => {
+            call_bitwise_binop(vm, args, IntegerBitwiseOp::LeftShift, "numpy.left_shift").map(CallResult::Value)
+        }
+        NumpyFunctions::RightShift => {
+            call_bitwise_binop(vm, args, IntegerBitwiseOp::RightShift, "numpy.right_shift").map(CallResult::Value)
+        }
+        NumpyFunctions::BitwiseCount => call_bitwise_count(vm, args).map(CallResult::Value),
+        NumpyFunctions::Packbits => call_packbits(vm, args).map(CallResult::Value),
+        NumpyFunctions::Unpackbits => call_unpackbits(vm, args).map(CallResult::Value),
         NumpyFunctions::Conj => call_real_identity(vm, args, "numpy.conj").map(CallResult::Value),
         NumpyFunctions::Real => call_real_identity(vm, args, "numpy.real").map(CallResult::Value),
         NumpyFunctions::Imag => call_imag(vm, args).map(CallResult::Value),
@@ -3653,6 +3705,274 @@ fn call_integer_binop(
     }
 }
 
+/// Integer/boolean bitwise binary operation exposed as a NumPy ufunc.
+#[derive(Clone, Copy)]
+enum IntegerBitwiseOp {
+    /// Element-wise `a & b`.
+    And,
+    /// Element-wise `a | b`.
+    Or,
+    /// Element-wise `a ^ b`.
+    Xor,
+    /// Element-wise `a << b` using NumPy's fixed-width integer behavior.
+    LeftShift,
+    /// Element-wise `a >> b` using NumPy's fixed-width integer behavior.
+    RightShift,
+}
+
+/// Shared implementation for NumPy's integer-only bitwise binary ufuncs.
+///
+/// Float inputs are rejected, scalar broadcasting is supported, and boolean
+/// AND/OR/XOR preserves bool dtype when both operands are boolean-valued.
+fn call_bitwise_binop(
+    vm: &mut VM<'_, impl ResourceTracker>,
+    args: ArgValues,
+    op: IntegerBitwiseOp,
+    name: &str,
+) -> RunResult<Value> {
+    let (a_val, b_val) = args.get_two_args(name, vm.heap)?;
+    defer_drop!(a_val, vm);
+    defer_drop!(b_val, vm);
+
+    let a_info = integer_array_info_with_dtype(a_val, name, vm);
+    let b_info = integer_array_info_with_dtype(b_val, name, vm);
+
+    match (a_info, b_info) {
+        (Ok((a_data, a_shape, a_dtype)), Ok((b_data, b_shape, b_dtype))) => {
+            if a_shape != b_shape {
+                return Err(
+                    SimpleException::new_msg(ExcType::ValueError, "operands could not be broadcast together").into(),
+                );
+            }
+            let dtype = bitwise_binop_dtype(op, a_dtype, b_dtype);
+            let data = a_data
+                .iter()
+                .zip(b_data.iter())
+                .map(|(&a, &b)| i64_to_f64(apply_integer_bitwise_op(op, f64_to_i64(a), f64_to_i64(b))))
+                .collect();
+            let arr = NdArray::new(data, a_shape, dtype);
+            Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(arr))?))
+        }
+        (Ok((a_data, a_shape, a_dtype)), Err(_)) => {
+            let (scalar, scalar_dtype) = integer_scalar_info_with_dtype(b_val, name)?;
+            let dtype = bitwise_binop_dtype(op, a_dtype, scalar_dtype);
+            let data = a_data
+                .iter()
+                .map(|&a| i64_to_f64(apply_integer_bitwise_op(op, f64_to_i64(a), scalar)))
+                .collect();
+            let arr = NdArray::new(data, a_shape, dtype);
+            Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(arr))?))
+        }
+        (Err(_), Ok((b_data, b_shape, b_dtype))) => {
+            let (scalar, scalar_dtype) = integer_scalar_info_with_dtype(a_val, name)?;
+            let dtype = bitwise_binop_dtype(op, scalar_dtype, b_dtype);
+            let data = b_data
+                .iter()
+                .map(|&b| i64_to_f64(apply_integer_bitwise_op(op, scalar, f64_to_i64(b))))
+                .collect();
+            let arr = NdArray::new(data, b_shape, dtype);
+            Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(arr))?))
+        }
+        (Err(_), Err(_)) => {
+            let (a, a_dtype) = integer_scalar_info_with_dtype(a_val, name)?;
+            let (b, b_dtype) = integer_scalar_info_with_dtype(b_val, name)?;
+            let dtype = bitwise_binop_dtype(op, a_dtype, b_dtype);
+            Ok(scalar_from_integer_result(apply_integer_bitwise_op(op, a, b), dtype))
+        }
+    }
+}
+
+/// `numpy.bitwise_not()` / `numpy.invert()` over integer and boolean inputs.
+fn call_bitwise_not(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let arg = args.get_one_arg("numpy.bitwise_not", vm.heap)?;
+    defer_drop!(arg, vm);
+
+    if let Ok((data, shape, dtype)) = integer_array_info_with_dtype(arg, "numpy.bitwise_not", vm) {
+        let result_dtype = bitwise_not_dtype(dtype);
+        let data = data
+            .iter()
+            .map(|&value| i64_to_f64(bitwise_not_value(f64_to_i64(value), dtype)))
+            .collect();
+        let arr = NdArray::new(data, shape, result_dtype);
+        Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(arr))?))
+    } else {
+        let (value, dtype) = integer_scalar_info_with_dtype(arg, "numpy.bitwise_not")?;
+        let result_dtype = bitwise_not_dtype(dtype);
+        Ok(scalar_from_integer_result(
+            bitwise_not_value(value, dtype),
+            result_dtype,
+        ))
+    }
+}
+
+/// `numpy.bitwise_count()` — population count of each integer's absolute value.
+fn call_bitwise_count(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let arg = args.get_one_arg("numpy.bitwise_count", vm.heap)?;
+    defer_drop!(arg, vm);
+
+    if let Ok((data, shape, _)) = integer_array_info_with_dtype(arg, "numpy.bitwise_count", vm) {
+        let data = data
+            .iter()
+            .map(|&value| i64_to_f64(numpy_bitwise_count(f64_to_i64(value))))
+            .collect();
+        let arr = NdArray::new(data, shape, NdArrayDtype::Int64);
+        Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(arr))?))
+    } else {
+        let value = integer_scalar_info(arg, "numpy.bitwise_count")?;
+        Ok(Value::Int(numpy_bitwise_count(value)))
+    }
+}
+
+/// `numpy.packbits()` — pack flattened non-zero integer values into big-endian bytes.
+fn call_packbits(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let arg = args.get_one_arg("numpy.packbits", vm.heap)?;
+    defer_drop!(arg, vm);
+
+    let bits = if let Ok((data, _, _)) = integer_array_info_with_dtype(arg, "numpy.packbits", vm) {
+        data.into_iter().map(|value| f64_to_i64(value) != 0).collect()
+    } else {
+        vec![integer_scalar_info(arg, "numpy.packbits")? != 0]
+    };
+    let output_len = bits.len().div_ceil(8);
+    check_array_alloc_size(output_len, vm.heap.tracker())?;
+    let data = pack_big_endian_bits(&bits);
+    let arr = NdArray::new(data, vec![output_len], NdArrayDtype::Int64);
+    Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(arr))?))
+}
+
+/// `numpy.unpackbits()` — unpack flattened byte-sized integer values into bits.
+///
+/// Monty does not currently model `uint8`, so this accepts integer arrays whose
+/// values are in the byte range. That keeps `unpackbits(packbits(x))` useful
+/// while still rejecting floats and out-of-range values.
+fn call_unpackbits(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let arg = args.get_one_arg("numpy.unpackbits", vm.heap)?;
+    defer_drop!(arg, vm);
+    let (data, _, dtype) = integer_array_info_with_dtype(arg, "numpy.unpackbits", vm)?;
+    if dtype == NdArrayDtype::Bool {
+        return Err(unpackbits_type_error());
+    }
+    let output_len = data
+        .len()
+        .checked_mul(8)
+        .ok_or_else(|| SimpleException::new_msg(ExcType::ValueError, "numpy.unpackbits() output is too large"))?;
+    check_array_alloc_size(output_len, vm.heap.tracker())?;
+    let mut bits = Vec::with_capacity(output_len);
+    for value in data {
+        let byte = byte_from_integer_slot(value)?;
+        for bit in (0..8).rev() {
+            bits.push(f64::from((byte >> bit) & 1));
+        }
+    }
+    let arr = NdArray::new(bits, vec![output_len], NdArrayDtype::Int64);
+    Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(arr))?))
+}
+
+/// Determines the dtype for a bitwise binary ufunc.
+fn bitwise_binop_dtype(op: IntegerBitwiseOp, a: NdArrayDtype, b: NdArrayDtype) -> NdArrayDtype {
+    match op {
+        IntegerBitwiseOp::And | IntegerBitwiseOp::Or | IntegerBitwiseOp::Xor
+            if a == NdArrayDtype::Bool && b == NdArrayDtype::Bool =>
+        {
+            NdArrayDtype::Bool
+        }
+        IntegerBitwiseOp::And
+        | IntegerBitwiseOp::Or
+        | IntegerBitwiseOp::Xor
+        | IntegerBitwiseOp::LeftShift
+        | IntegerBitwiseOp::RightShift => NdArrayDtype::Int64,
+    }
+}
+
+/// Applies a single integer bitwise operation with NumPy-style shift edges.
+fn apply_integer_bitwise_op(op: IntegerBitwiseOp, a: i64, b: i64) -> i64 {
+    match op {
+        IntegerBitwiseOp::And => a & b,
+        IntegerBitwiseOp::Or => a | b,
+        IntegerBitwiseOp::Xor => a ^ b,
+        IntegerBitwiseOp::LeftShift => numpy_left_shift(a, b),
+        IntegerBitwiseOp::RightShift => numpy_right_shift(a, b),
+    }
+}
+
+/// NumPy-style fixed-width left shift for signed 64-bit integer loops.
+fn numpy_left_shift(value: i64, shift: i64) -> i64 {
+    if (0..64).contains(&shift) {
+        value.wrapping_shl(u32::try_from(shift).expect("shift count is in range"))
+    } else {
+        0
+    }
+}
+
+/// NumPy-style fixed-width arithmetic right shift for signed 64-bit integer loops.
+fn numpy_right_shift(value: i64, shift: i64) -> i64 {
+    if (0..64).contains(&shift) {
+        value >> u32::try_from(shift).expect("shift count is in range")
+    } else if value < 0 {
+        -1
+    } else {
+        0
+    }
+}
+
+/// Computes the scalar/container dtype for bitwise inversion.
+fn bitwise_not_dtype(dtype: NdArrayDtype) -> NdArrayDtype {
+    if dtype == NdArrayDtype::Bool {
+        NdArrayDtype::Bool
+    } else {
+        NdArrayDtype::Int64
+    }
+}
+
+/// Applies unary bitwise inversion to a bool or int slot.
+fn bitwise_not_value(value: i64, dtype: NdArrayDtype) -> i64 {
+    if dtype == NdArrayDtype::Bool {
+        i64::from(value == 0)
+    } else {
+        !value
+    }
+}
+
+/// Converts an integer ufunc result back to a scalar value with bool preservation.
+fn scalar_from_integer_result(value: i64, dtype: NdArrayDtype) -> Value {
+    if dtype == NdArrayDtype::Bool {
+        Value::Bool(value != 0)
+    } else {
+        Value::Int(value)
+    }
+}
+
+/// Population count matching `numpy.bitwise_count`, which counts `abs(x)`.
+fn numpy_bitwise_count(value: i64) -> i64 {
+    i64::from(value.unsigned_abs().count_ones())
+}
+
+/// Packs a flattened bit stream into byte values using NumPy's default big bit order.
+fn pack_big_endian_bits(bits: &[bool]) -> Vec<f64> {
+    let mut packed = Vec::with_capacity(bits.len().div_ceil(8));
+    for chunk in bits.chunks(8) {
+        let mut byte = 0u8;
+        for (index, bit) in chunk.iter().enumerate() {
+            if *bit {
+                byte |= 1 << (7 - index);
+            }
+        }
+        packed.push(f64::from(byte));
+    }
+    packed
+}
+
+/// Extracts one byte from Monty's integer ndarray storage for `unpackbits`.
+fn byte_from_integer_slot(value: f64) -> RunResult<u8> {
+    let value = f64_to_i64(value);
+    u8::try_from(value).map_err(|_| unpackbits_type_error())
+}
+
+/// TypeError used when `unpackbits` input cannot represent unsigned bytes.
+fn unpackbits_type_error() -> RunError {
+    SimpleException::new_msg(ExcType::TypeError, "Expected an input array of unsigned byte data type").into()
+}
+
 /// Shared implementation for binary NumPy functions that return two results.
 ///
 /// `numpy.divmod()` is the motivating case: each operand can be a scalar, list,
@@ -3765,9 +4085,14 @@ fn tuple_from_scalars(
 
 /// Extracts an integer scalar accepted by NumPy's integer-only ufunc loops.
 fn integer_scalar_info(value: &Value, name: &str) -> RunResult<i64> {
+    integer_scalar_info_with_dtype(value, name).map(|(value, _)| value)
+}
+
+/// Extracts an integer scalar plus the dtype NumPy would infer for it.
+fn integer_scalar_info_with_dtype(value: &Value, name: &str) -> RunResult<(i64, NdArrayDtype)> {
     match value {
-        Value::Int(n) => Ok(*n),
-        Value::Bool(b) => Ok(i64::from(*b)),
+        Value::Int(n) => Ok((*n, NdArrayDtype::Int64)),
+        Value::Bool(b) => Ok((i64::from(*b), NdArrayDtype::Bool)),
         _ => Err(integer_ufunc_type_error(name)),
     }
 }
@@ -3778,11 +4103,21 @@ fn integer_array_info(
     name: &str,
     vm: &VM<'_, impl ResourceTracker>,
 ) -> RunResult<(Vec<f64>, Vec<usize>)> {
+    let (data, shape, _) = integer_array_info_with_dtype(value, name, vm)?;
+    Ok((data, shape))
+}
+
+/// Extracts integer ndarray data and dtype, accepting lists and rejecting float dtypes.
+fn integer_array_info_with_dtype(
+    value: &Value,
+    name: &str,
+    vm: &VM<'_, impl ResourceTracker>,
+) -> RunResult<(Vec<f64>, Vec<usize>, NdArrayDtype)> {
     let (data, shape, dtype) = extract_ndarray_info(value, name, vm)?;
     if dtype == NdArrayDtype::Float64 {
         Err(integer_ufunc_type_error(name))
     } else {
-        Ok((data, shape))
+        Ok((data, shape, dtype))
     }
 }
 
