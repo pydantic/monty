@@ -1,16 +1,18 @@
-"""Tests for AbstractFileSystem implementation.
+"""Tests for custom `AbstractOS` implementations.
 
-These tests verify that AbstractFileSystem can be subclassed to provide
-a virtual filesystem that Monty code can interact with via Path methods.
+These tests verify that `AbstractOS` can be subclassed to provide a
+virtual filesystem plus other host-backed operations that Monty code can
+interact with through the `os=` callback surface.
 """
 
+import datetime
 from pathlib import PurePosixPath
 
 import pytest
 from inline_snapshot import snapshot
 
 import pydantic_monty
-from pydantic_monty import AbstractOS, StatResult
+from pydantic_monty import NOT_HANDLED, AbstractOS, StatResult
 
 
 class TestOS(AbstractOS):
@@ -178,14 +180,22 @@ class TestOS(AbstractOS):
             'HOME': '/test/home',
         }
 
+    def date_today(self) -> datetime.date:
+        return datetime.date(2024, 1, 15)
+
+    def datetime_now(self, tz: datetime.tzinfo | None = None) -> datetime.datetime:
+        if tz is None:
+            return datetime.datetime(2024, 1, 15, 10, 30, 5, 123456)
+        return datetime.datetime(2024, 1, 15, 10, 30, 5, 123456, tzinfo=tz)
+
 
 # =============================================================================
-# Basic AbstractFileSystem tests
+# Basic AbstractOS tests
 # =============================================================================
 
 
 def test_abstract_filesystem_exists():
-    """AbstractFileSystem.path_exists() works with os."""
+    """AbstractOS.path_exists() works with os."""
     fs = TestOS()
     fs.files['/test.txt'] = b'hello'
 
@@ -196,7 +206,7 @@ def test_abstract_filesystem_exists():
 
 
 def test_abstract_filesystem_exists_missing():
-    """AbstractFileSystem.path_exists() returns False for missing files."""
+    """AbstractOS.path_exists() returns False for missing files."""
     fs = TestOS()
 
     m = pydantic_monty.Monty('from pathlib import Path; Path("/missing.txt").exists()')
@@ -205,8 +215,83 @@ def test_abstract_filesystem_exists_missing():
     assert result is False
 
 
+def test_abstract_os_date_today():
+    """AbstractOS.date_today() is dispatched through the os callback."""
+    fs = TestOS()
+
+    m = pydantic_monty.Monty('from datetime import date; date.today()')
+    result = m.run(os=fs)
+
+    assert (type(result).__name__, repr(result)) == snapshot(('date', 'datetime.date(2024, 1, 15)'))
+
+
+def test_abstract_os_datetime_now_with_timezone():
+    """AbstractOS.datetime_now() receives the requested timezone."""
+    fs = TestOS()
+
+    m = pydantic_monty.Monty('from datetime import datetime, timezone; datetime.now(timezone.utc)')
+    result = m.run(os=fs)
+
+    assert (type(result).__name__, repr(result)) == snapshot(
+        (
+            'datetime',
+            'datetime.datetime(2024, 1, 15, 10, 30, 5, 123456, tzinfo=datetime.timezone.utc)',
+        )
+    )
+
+
+def test_abstract_os_dispatch():
+    """AbstractOS.dispatch() routes built-in OS operations to the matching method."""
+    fs = TestOS()
+    fs.files['/test.txt'] = b'hello'
+
+    result = fs.dispatch('Path.read_text', (PurePosixPath('/test.txt'),), {})
+    assert result == snapshot('hello')
+
+
+def test_abstract_os_dispatch_not_handled():
+    """AbstractOS.dispatch() returns NOT_HANDLED when a handler raises NotImplementedError."""
+
+    class PartialOS(TestOS):
+        def path_exists(self, path: PurePosixPath) -> bool:
+            raise NotImplementedError
+
+    fs = PartialOS()
+    result = fs('Path.exists', (PurePosixPath('/tmp'),), {})
+
+    assert result is NOT_HANDLED
+
+
+def test_abstract_os_dispatch_not_handled_falls_back_in_run():
+    """Returning NOT_HANDLED from dispatch() uses Monty's default fallback error."""
+
+    class PartialOS(TestOS):
+        def dispatch(
+            self,
+            function_name: pydantic_monty.OsFunction,
+            args: tuple[object, ...],
+            kwargs: dict[str, object] | None = None,
+        ) -> object:
+            if function_name == 'Path.exists':
+                return NOT_HANDLED
+            return super().dispatch(function_name, args, kwargs)
+
+    fs = PartialOS()
+    code = """
+from pathlib import Path
+message = None
+try:
+    Path('/tmp').exists()
+except PermissionError as exc:
+    message = str(exc)
+message
+"""
+    result = pydantic_monty.Monty(code).run(os=fs)
+    assert result == snapshot("Permission denied: '/tmp'")
+
+
 def test_abstract_filesystem_is_file():
-    """AbstractFileSystem.path_is_file() distinguishes files from directories."""
+    """AbstractOS.path_is_file() distinguishes files from directories."""
     fs = TestOS()
     fs.files['/file.txt'] = b'content'
     fs.directories.add('/mydir')
@@ -222,7 +307,7 @@ from pathlib import Path
 
 
 def test_abstract_filesystem_is_dir():
-    """AbstractFileSystem.path_is_dir() distinguishes directories from files."""
+    """AbstractOS.path_is_dir() distinguishes directories from files."""
     fs = TestOS()
     fs.files['/file.txt'] = b'content'
     fs.directories.add('/mydir')
@@ -238,7 +323,7 @@ from pathlib import Path
 
 
 def test_abstract_filesystem_read_text():
-    """AbstractFileSystem.path_read_text() returns file contents."""
+    """AbstractOS.path_read_text() returns file contents."""
     fs = TestOS()
     fs.files['/hello.txt'] = b'Hello, World!'
 
@@ -249,7 +334,7 @@ def test_abstract_filesystem_read_text():
 
 
 def test_abstract_filesystem_read_text_missing():
-    """AbstractFileSystem.path_read_text() raises FileNotFoundError for missing files."""
+    """AbstractOS.path_read_text() raises FileNotFoundError for missing files."""
     fs = TestOS()
 
     m = pydantic_monty.Monty('from pathlib import Path; Path("/missing.txt").read_text()')
@@ -260,7 +345,7 @@ def test_abstract_filesystem_read_text_missing():
 
 
 def test_abstract_filesystem_read_bytes():
-    """AbstractFileSystem.path_read_bytes() returns raw bytes."""
+    """AbstractOS.path_read_bytes() returns raw bytes."""
     fs = TestOS()
     fs.files['/data.bin'] = b'\x00\x01\x02\x03'
 
@@ -276,7 +361,7 @@ def test_abstract_filesystem_read_bytes():
 
 
 def test_abstract_filesystem_stat_file():
-    """AbstractFileSystem.path_stat() returns stat result for files."""
+    """AbstractOS.path_stat() returns stat result for files."""
     fs = TestOS()
     fs.files['/file.txt'] = b'hello world'
 
@@ -292,7 +377,7 @@ s = Path('/file.txt').stat()
 
 
 def test_abstract_filesystem_stat_directory():
-    """AbstractFileSystem.path_stat() returns stat result for directories."""
+    """AbstractOS.path_stat() returns stat result for directories."""
     fs = TestOS()
     fs.directories.add('/mydir')
 
@@ -308,7 +393,7 @@ s.st_mode
 
 
 def test_abstract_filesystem_stat_missing():
-    """AbstractFileSystem.path_stat() raises FileNotFoundError for missing paths."""
+    """AbstractOS.path_stat() raises FileNotFoundError for missing paths."""
     fs = TestOS()
 
     m = pydantic_monty.Monty('from pathlib import Path\nPath("/missing").stat()')
@@ -331,7 +416,7 @@ FileNotFoundError: No such file or directory: /missing\
 
 
 def test_abstract_filesystem_iterdir():
-    """AbstractFileSystem.path_iterdir() lists directory contents."""
+    """AbstractOS.path_iterdir() lists directory contents."""
     fs = TestOS()
     fs.directories.add('/mydir')
     fs.files['/mydir/a.txt'] = b'a'
@@ -352,7 +437,7 @@ list(Path('/mydir').iterdir())
 
 
 def test_abstract_filesystem_iterdir_empty():
-    """AbstractFileSystem.path_iterdir() returns empty list for empty directory."""
+    """AbstractOS.path_iterdir() returns empty list for empty directory."""
     fs = TestOS()
     fs.directories.add('/empty')
 
@@ -372,7 +457,7 @@ list(Path('/empty').iterdir())
 
 
 def test_abstract_filesystem_resolve():
-    """AbstractFileSystem.path_resolve() normalizes paths."""
+    """AbstractOS.path_resolve() normalizes paths."""
     fs = TestOS()
 
     code = """
@@ -386,7 +471,7 @@ str(Path('/foo/bar/../baz').resolve())
 
 
 def test_abstract_filesystem_absolute():
-    """AbstractFileSystem.path_absolute() returns absolute path."""
+    """AbstractOS.path_absolute() returns absolute path."""
     fs = TestOS()
 
     code = """
@@ -400,7 +485,7 @@ str(Path('/already/absolute').absolute())
 
 
 def test_abstract_filesystem_getenv():
-    """AbstractFileSystem.getenv() returns environment variable value."""
+    """AbstractOS.getenv() returns environment variable value."""
     fs = TestOS()
 
     code = """
@@ -414,7 +499,7 @@ os.getenv('TEST_VAR')
 
 
 def test_abstract_filesystem_getenv_missing():
-    """AbstractFileSystem.getenv() returns None for missing variable."""
+    """AbstractOS.getenv() returns None for missing variable."""
     fs = TestOS()
 
     code = """
@@ -428,7 +513,7 @@ os.getenv('NONEXISTENT')
 
 
 def test_abstract_filesystem_getenv_default():
-    """AbstractFileSystem.getenv() returns default for missing variable."""
+    """AbstractOS.getenv() returns default for missing variable."""
     fs = TestOS()
 
     code = """

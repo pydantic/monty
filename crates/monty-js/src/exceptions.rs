@@ -16,7 +16,7 @@
 
 use std::fmt;
 
-use monty::StackFrame;
+use monty::{ExcType, StackFrame};
 use monty_type_checking::TypeCheckingDiagnostics;
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
@@ -244,10 +244,10 @@ impl Frame {
     pub fn from_stack_frame(frame: &StackFrame) -> Self {
         Self {
             filename: frame.filename.clone(),
-            line: u32::from(frame.start.line),
-            column: u32::from(frame.start.column),
-            end_line: u32::from(frame.end.line),
-            end_column: u32::from(frame.end.column),
+            line: frame.start.line,
+            column: frame.start.column,
+            end_line: frame.end.line,
+            end_column: frame.end.column,
             function_name: frame.frame_name.clone(),
             source_line: frame.preview_line.clone(),
         }
@@ -262,8 +262,7 @@ pub fn exc_js_to_monty(js_err: napi::Error) -> ::monty::MontyException {
     ::monty::MontyException::new(exc, Some(arg))
 }
 
-fn js_err_to_exc_type(exc: napi::Status) -> ::monty::ExcType {
-    use ::monty::ExcType;
+fn js_err_to_exc_type(exc: napi::Status) -> ExcType {
     match exc {
         napi::Status::Ok => ExcType::Exception, // Should never happen
         napi::Status::InvalidArg => ExcType::TypeError,

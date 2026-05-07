@@ -359,3 +359,59 @@ assert list(zip([1, 2, 3])) == [(1,), (2,), (3,)], 'zip single iterable'
 # zip with empty
 assert list(zip([1, 2], [])) == [], 'zip with empty second'
 assert list(zip([], [1, 2])) == [], 'zip with empty first'
+
+# === zip(strict=True) ===
+# Equal length iterables succeed
+assert list(zip([1, 2], [3, 4], strict=True)) == [(1, 3), (2, 4)], 'zip strict equal lengths'
+assert list(zip([1], [2], [3], strict=True)) == [(1, 2, 3)], 'zip strict three single-element lists'
+assert list(zip([], [], strict=True)) == [], 'zip strict empty lists'
+assert list(zip(strict=True)) == [], 'zip strict no arguments'
+assert list(zip([1, 2, 3], strict=True)) == [(1,), (2,), (3,)], 'zip strict single iterable'
+
+# strict=False behaves like default
+assert list(zip([1, 2, 3], [4, 5], strict=False)) == [(1, 4), (2, 5)], 'zip strict=False truncates'
+
+# Falsy values are accepted
+assert list(zip([1, 2, 3], [4, 5], strict=0)) == [(1, 4), (2, 5)], 'zip strict=0 is falsy'
+
+# Second argument shorter
+try:
+    list(zip([1, 2, 3], [4, 5], strict=True))
+    assert False, 'zip strict should raise for shorter arg 2'
+except ValueError as e:
+    assert str(e) == 'zip() argument 2 is shorter than argument 1', 'zip strict shorter error'
+
+# Second argument longer
+try:
+    list(zip([1, 2], [4, 5, 6], strict=True))
+    assert False, 'zip strict should raise for longer arg 2'
+except ValueError as e:
+    assert str(e) == 'zip() argument 2 is longer than argument 1', 'zip strict longer error'
+
+# Third argument shorter with plural
+try:
+    list(zip([1, 2], [3, 4], [5], strict=True))
+    assert False, 'zip strict should raise for shorter arg 3'
+except ValueError as e:
+    assert str(e) == 'zip() argument 3 is shorter than arguments 1-2', 'zip strict shorter plural'
+
+# Fourth argument shorter
+try:
+    list(zip([1, 2], [3, 4], [5, 6], [7], strict=True))
+    assert False, 'zip strict should raise for shorter arg 4'
+except ValueError as e:
+    assert str(e) == 'zip() argument 4 is shorter than arguments 1-3', 'zip strict shorter 4 args'
+
+# Third argument longer than arguments 1-2 (both exhausted)
+try:
+    list(zip([1], [2], [3, 4], strict=True))
+    assert False, 'zip strict should raise for longer arg 3'
+except ValueError as e:
+    assert str(e) == 'zip() argument 3 is longer than arguments 1-2', 'zip strict longer plural'
+
+# Unexpected keyword argument
+try:
+    list(zip([1], foo=True))
+    assert False, 'zip unexpected kwarg should raise TypeError'
+except TypeError as e:
+    assert str(e) == "zip() got an unexpected keyword argument 'foo'", 'zip unexpected kwarg error'

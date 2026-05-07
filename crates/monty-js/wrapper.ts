@@ -4,20 +4,23 @@
 import type {
   ExceptionInfo,
   ExceptionInput,
+  FeedOptions as NativeFeedOptions,
   Frame,
   JsMontyObject,
+  MountDirOptions,
   MontyOptions,
   NameLookupLoadOptions,
   NameLookupResumeOptions,
   ResourceLimits,
   ResumeOptions,
-  RunOptions,
+  RunOptions as NativeRunOptions,
   SnapshotLoadOptions,
-  StartOptions,
+  StartOptions as NativeStartOptions,
 } from './index.js'
 
 import {
   Monty as NativeMonty,
+  MountDir,
   MontyRepl as NativeMontyRepl,
   MontySnapshot as NativeMontySnapshot,
   MontyNameLookup as NativeMontyNameLookup,
@@ -28,11 +31,10 @@ import {
 
 export type {
   MontyOptions,
-  RunOptions,
+  MountDirOptions,
   ResourceLimits,
   Frame,
   ExceptionInfo,
-  StartOptions,
   ResumeOptions,
   ExceptionInput,
   SnapshotLoadOptions,
@@ -40,6 +42,26 @@ export type {
   NameLookupLoadOptions,
   JsMontyObject,
 }
+
+/** Options for running code. */
+export interface RunOptions extends Omit<NativeRunOptions, 'mount'> {
+  /** Filesystem mount(s) for the sandbox. */
+  mount?: MountDir | MountDir[]
+}
+
+/** Options for starting execution. */
+export interface StartOptions extends Omit<NativeStartOptions, 'mount'> {
+  /** Filesystem mount(s) for the sandbox. */
+  mount?: MountDir | MountDir[]
+}
+
+/** Options for REPL feed(). */
+export interface FeedOptions extends Omit<NativeFeedOptions, 'mount'> {
+  /** Filesystem mount(s) for the sandbox. */
+  mount?: MountDir | MountDir[]
+}
+
+export { MountDir }
 
 /**
  * Alias for ResourceLimits (deprecated name).
@@ -387,11 +409,12 @@ export class MontyRepl {
    * Executes one incremental snippet.
    *
    * @param code - Snippet code to execute
+   * @param options - Optional feed options (mount)
    * @returns Snippet output
    * @throws {MontyRuntimeError} If execution raises an exception
    */
-  feed(code: string): JsMontyObject {
-    const result = this._native.feed(code)
+  feed(code: string, options?: FeedOptions): JsMontyObject {
+    const result = this._native.feed(code, options)
     if (result instanceof NativeMontyException) {
       throw new MontyRuntimeError(result)
     }
@@ -601,6 +624,8 @@ export interface RunMontyAsyncOptions {
   limits?: ResourceLimits
   /** Callback invoked on each print() call. The first argument is the stream name (always "stdout"), the second is the printed text. */
   printCallback?: (stream: string, text: string) => void
+  /** Filesystem mount(s) for the sandbox. */
+  mount?: MountDir | MountDir[]
 }
 
 /**
@@ -632,12 +657,13 @@ export interface RunMontyAsyncOptions {
  * });
  */
 export async function runMontyAsync(montyRunner: Monty, options: RunMontyAsyncOptions = {}): Promise<JsMontyObject> {
-  const { inputs, externalFunctions = {}, limits, printCallback } = options
+  const { inputs, externalFunctions = {}, limits, printCallback, mount } = options
 
   let progress: MontySnapshot | MontyNameLookup | MontyComplete = montyRunner.start({
     inputs,
     limits,
     printCallback,
+    mount,
   })
 
   while (!(progress instanceof MontyComplete)) {

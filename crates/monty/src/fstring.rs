@@ -6,7 +6,7 @@
 //! F-strings can contain literal text and interpolated expressions with optional
 //! conversion flags (`!s`, `!r`, `!a`) and format specifications.
 
-use std::str::FromStr;
+use std::{fmt, fmt::Write, iter, str::FromStr};
 
 use crate::{
     bytecode::VM,
@@ -239,8 +239,8 @@ pub enum FormatError {
     ValueError(String),
 }
 
-impl std::fmt::Display for FormatError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Display for FormatError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::InvalidAlignment(msg) | Self::Overflow(msg) | Self::ValueError(msg) => {
                 write!(f, "{msg}")
@@ -260,7 +260,7 @@ impl std::fmt::Display for FormatError {
 pub fn format_with_spec(
     value: &Value,
     spec: &ParsedFormatSpec,
-    vm: &VM<'_, '_, impl ResourceTracker>,
+    vm: &mut VM<'_, impl ResourceTracker>,
 ) -> Result<String, RunError> {
     let value_type = value.py_type(vm);
 
@@ -489,7 +489,7 @@ pub fn format_int(n: i64, spec: &ParsedFormatSpec) -> String {
         let total_len = sign.len() + abs_str.len();
         if spec.width > total_len {
             let padding = spec.width - total_len;
-            let pad_str: String = std::iter::repeat_n(fill, padding).collect();
+            let pad_str: String = iter::repeat_n(fill, padding).collect();
             format!("{sign}{pad_str}{abs_str}")
         } else {
             format!("{sign}{abs_str}")
@@ -568,7 +568,7 @@ pub fn format_float_f(f: f64, spec: &ParsedFormatSpec) -> String {
         let total_len = sign.len() + abs_str.len();
         if spec.width > total_len {
             let padding = spec.width - total_len;
-            let pad_str: String = std::iter::repeat_n(fill, padding).collect();
+            let pad_str: String = iter::repeat_n(fill, padding).collect();
             format!("{sign}{pad_str}{abs_str}")
         } else {
             format!("{sign}{abs_str}")
@@ -670,7 +670,6 @@ pub fn format_float_g(f: f64, spec: &ParsedFormatSpec) -> String {
 /// Used for the `!a` conversion flag in f-strings. Takes a string (typically a repr)
 /// and escapes all non-ASCII characters using `\xNN`, `\uNNNN`, or `\UNNNNNNNN`.
 pub fn ascii_escape(s: &str) -> String {
-    use std::fmt::Write;
     let mut result = String::new();
     for c in s.chars() {
         if c.is_ascii() {

@@ -9,11 +9,11 @@
 //! Custom serde serializes only the pattern string and flags, recompiling the regex
 //! on deserialization. This supports Monty's snapshot/restore feature.
 
-use std::{borrow::Cow, fmt::Write};
+use std::{borrow::Cow, fmt::Write, iter, mem, str};
 
 use ahash::AHashSet;
 use fancy_regex::Regex;
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 use smallvec::SmallVec;
 
 use crate::{
@@ -267,19 +267,19 @@ impl RePattern {
 }
 
 impl<'h> PyTrait<'h> for HeapRead<'h, RePattern> {
-    fn py_type(&self, _vm: &VM<'h, '_, impl ResourceTracker>) -> Type {
+    fn py_type(&self, _vm: &VM<'h, impl ResourceTracker>) -> Type {
         Type::RePattern
     }
 
-    fn py_len(&self, _vm: &VM<'h, '_, impl ResourceTracker>) -> Option<usize> {
+    fn py_len(&self, _vm: &VM<'h, impl ResourceTracker>) -> Option<usize> {
         None
     }
 
-    fn py_eq(&self, other: &Self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> Result<bool, ResourceError> {
+    fn py_eq(&self, other: &Self, vm: &mut VM<'h, impl ResourceTracker>) -> Result<bool, ResourceError> {
         Ok(self.get(vm.heap) == other.get(vm.heap))
     }
 
-    fn py_bool(&self, _vm: &mut VM<'h, '_, impl ResourceTracker>) -> bool {
+    fn py_bool(&self, _vm: &mut VM<'h, impl ResourceTracker>) -> bool {
         // Pattern objects are always truthy (matching CPython).
         true
     }
@@ -287,7 +287,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, RePattern> {
     fn py_repr_fmt(
         &self,
         f: &mut impl Write,
-        vm: &VM<'h, '_, impl ResourceTracker>,
+        vm: &mut VM<'h, impl ResourceTracker>,
         _heap_ids: &mut AHashSet<HeapId>,
     ) -> RunResult<()> {
         let this = self.get(vm.heap);
@@ -312,7 +312,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, RePattern> {
         Ok(write!(f, ")")?)
     }
 
-    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<Option<CallResult>> {
+    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<CallResult>> {
         match attr.static_string() {
             Some(StaticStrings::PatternAttr) => {
                 let s = Str::new(self.get(vm.heap).pattern.clone());
@@ -327,7 +327,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, RePattern> {
     fn py_call_attr(
         &mut self,
         _self_id: HeapId,
-        vm: &mut VM<'h, '_, impl ResourceTracker>,
+        vm: &mut VM<'h, impl ResourceTracker>,
         attr: &EitherStr,
         args: ArgValues,
     ) -> RunResult<CallResult> {
@@ -372,7 +372,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, RePattern> {
 
 impl HeapItem for RePattern {
     fn py_estimate_size(&self) -> usize {
-        std::mem::size_of::<Self>() + self.pattern.len()
+        mem::size_of::<Self>() + self.pattern.len()
     }
 
     fn py_dec_ref_ids(&mut self, _stack: &mut Vec<HeapId>) {
@@ -388,7 +388,7 @@ impl HeapItem for RePattern {
 fn call_pattern_sub<'h>(
     pattern: &HeapRead<'h, RePattern>,
     args: ArgValues,
-    vm: &mut VM<'h, '_, impl ResourceTracker>,
+    vm: &mut VM<'h, impl ResourceTracker>,
 ) -> RunResult<Value> {
     let (pos, kwargs) = args.into_parts();
     defer_drop_mut!(pos, vm);
@@ -479,7 +479,7 @@ fn call_pattern_sub<'h>(
 fn call_pattern_split<'h>(
     pattern: &HeapRead<'h, RePattern>,
     args: ArgValues,
-    vm: &mut VM<'h, '_, impl ResourceTracker>,
+    vm: &mut VM<'h, impl ResourceTracker>,
 ) -> RunResult<Value> {
     let (pos, kwargs) = args.into_parts();
     defer_drop_mut!(pos, vm);
@@ -534,7 +534,7 @@ fn call_pattern_split<'h>(
 /// Extracts a `maxsplit` value from an optional `Value`.
 ///
 /// Returns 0 if not provided. Negative values are treated as 0 (split all).
-fn extract_maxsplit(val: Option<Value>, vm: &mut VM<'_, '_, impl ResourceTracker>) -> RunResult<usize> {
+fn extract_maxsplit(val: Option<Value>, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<usize> {
     match val {
         None => Ok(0),
         Some(Value::Int(n)) if n <= 0 => Ok(0),
@@ -661,7 +661,7 @@ fn translate_replacement(repl: &str) -> Cow<'_, str> {
 /// Called after `\g` has been consumed. Reads `<name_or_number>` from the iterator
 /// and writes `${name_or_number}` to the result. If the syntax is malformed
 /// (missing `<` or `>`), the literal characters are written through unchanged.
-fn translate_g_backref(chars: &mut std::iter::Peekable<std::str::Chars<'_>>, result: &mut String) {
+fn translate_g_backref(chars: &mut iter::Peekable<str::Chars<'_>>, result: &mut String) {
     if chars.peek() != Some(&'<') {
         // Not \g<...>, just literal \g
         result.push('\\');
@@ -697,7 +697,7 @@ fn translate_g_backref(chars: &mut std::iter::Peekable<std::str::Chars<'_>>, res
 /// Extracts a string from a `Value`, supporting both interned and heap strings.
 ///
 /// Returns a `Cow<str>` to avoid unnecessary copies for interned strings.
-pub(crate) fn value_to_str<'a>(val: &'a Value, vm: &'a VM<'_, '_, impl ResourceTracker>) -> RunResult<Cow<'a, str>> {
+pub(crate) fn value_to_str<'a>(val: &'a Value, vm: &'a VM<'_, impl ResourceTracker>) -> RunResult<Cow<'a, str>> {
     match val {
         Value::InternString(string_id) => Ok(Cow::Borrowed(vm.interns.get_str(*string_id))),
         Value::Ref(heap_id) => match vm.heap.get(*heap_id) {
@@ -718,6 +718,6 @@ impl Serialize for RePattern {
 impl<'de> Deserialize<'de> for RePattern {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let (pattern, flags): (String, u16) = Deserialize::deserialize(deserializer)?;
-        Self::compile(pattern, flags).map_err(|e| serde::de::Error::custom(format!("{e:?}")))
+        Self::compile(pattern, flags).map_err(|e| de::Error::custom(format!("{e:?}")))
     }
 }

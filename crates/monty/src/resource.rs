@@ -1,5 +1,6 @@
 use std::{
     cell::Cell,
+    error::Error,
     fmt,
     mem::size_of,
     time::{Duration, Instant},
@@ -185,7 +186,7 @@ impl fmt::Display for ResourceError {
     }
 }
 
-impl std::error::Error for ResourceError {}
+impl Error for ResourceError {}
 
 impl ResourceError {
     /// Converts this resource error to a Python exception with optional stack frame.
@@ -303,6 +304,12 @@ pub trait ResourceTracker: fmt::Debug {
     /// # Arguments
     /// * `additional_bytes` - Approximate additional memory consumed by the growth
     fn on_grow(&self, additional_bytes: usize) -> Result<(), ResourceError>;
+
+    /// Returns the configured garbage collection interval, in GC-tracked allocations.
+    ///
+    /// Implementations that do not expose a configurable GC interval should return `None`,
+    /// which tells the heap to use its built-in default scheduling threshold.
+    fn gc_interval(&self) -> Option<usize>;
 }
 
 /// A resource tracker that imposes no limits except default recursion limit.
@@ -351,6 +358,11 @@ impl ResourceTracker for NoLimitTracker {
     fn check_large_result(&self, _estimated_bytes: usize) -> Result<(), ResourceError> {
         // No limit - always allow operations regardless of result size
         Ok(())
+    }
+
+    #[inline]
+    fn gc_interval(&self) -> Option<usize> {
+        None
     }
 }
 
@@ -608,5 +620,9 @@ impl ResourceTracker for LimitedTracker {
             }
         }
         Ok(())
+    }
+
+    fn gc_interval(&self) -> Option<usize> {
+        self.limits.gc_interval
     }
 }

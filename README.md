@@ -36,7 +36,7 @@ What Monty **can** do:
 - Control resource usage - Monty can track memory usage, allocations, stack depth, and execution time and cancel execution if it exceeds preset limits
 - Collect stdout and stderr and return it to the caller
 - Run async or sync code on the host via async or sync code on the host
-- Use a small subset of the standard library: `sys`, `os`, `typing`, `asyncio`, `re`, `datetime` (soon), `dataclasses` (soon), `json` (soon)
+- Use a small subset of the standard library: `sys`, `os`, `typing`, `asyncio`, `re`, `datetime`, `json`, `dataclasses` (soon)
 
 What Monty **cannot** do:
 
@@ -126,8 +126,7 @@ async def call_llm(prompt: str, messages: Messages) -> str | Messages:
 
 
 async def main():
-    output = await pydantic_monty.run_monty_async(
-        m,
+    output = await m.run_async(
         inputs={'prompt': 'testing'},
         external_functions={'call_llm': call_llm},
     )
@@ -167,7 +166,7 @@ print(result.args)
 #> ('https://example.com',)
 
 # Perform the actual fetch, then resume with the result
-result = result.resume(return_value='hello world')
+result = result.resume({'return_value': 'hello world'})
 
 print(type(result))
 #> <class 'pydantic_monty.MontyComplete'>
@@ -199,7 +198,7 @@ state = progress.dump()
 
 # Later, restore and resume (e.g., in a different process)
 progress2 = pydantic_monty.load_snapshot(state)
-result = progress2.resume(return_value='response data')
+result = progress2.resume({'return_value': 'response data'})
 print(result.output)
 #> response data
 ```
@@ -326,6 +325,10 @@ async def main():
 if __name__ == '__main__':
     asyncio.run(main())
 ```
+
+## Community Bindings
+
+- **Go**: [gomonty](https://github.com/ewhauser/gomonty/) - Go bindings for the Monty interpreter
 
 # Alternatives
 

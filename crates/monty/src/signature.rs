@@ -204,7 +204,7 @@ impl Signature {
         &self,
         args: ArgValues,
         defaults: &[Value],
-        vm: &mut VM<'_, '_, impl ResourceTracker>,
+        vm: &mut VM<'_, impl ResourceTracker>,
         func_name: Identifier,
         namespace: &mut Vec<Value>,
     ) -> RunResult<()> {

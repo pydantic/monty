@@ -106,6 +106,13 @@ assert 'hello'.find('') == 0, 'find empty string'
 assert 'hello'.find('l', 3) == 3, 'find with start'
 assert 'hello'.find('l', 0, 3) == 2, 'find with start and end'
 
+# find()/startswith() with i64::MIN start/end — regression: `-index` on i64::MIN used to panic
+_I64_MIN = -(2**63)
+assert 'hello'.find('h', _I64_MIN) == 0, 'find with i64::MIN start clamps to 0'
+assert 'hello'.find('h', 0, _I64_MIN) == -1, 'find with i64::MIN end clamps to 0'
+assert 'hello'.startswith('h', _I64_MIN) == True, 'startswith with i64::MIN start clamps to 0'
+assert 'hello'.startswith('h', _I64_MIN, _I64_MIN) == False, 'startswith with i64::MIN end'
+
 # rfind()
 assert 'hello'.rfind('l') == 3, 'rfind basic'
 assert 'hello'.rfind('x') == -1, 'rfind not found'

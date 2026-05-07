@@ -12,11 +12,14 @@ use crate::{
     value::Value,
 };
 
-impl<T: ResourceTracker> VM<'_, '_, T> {
+impl<T: ResourceTracker> VM<'_, T> {
     /// Returns the current frame's name for traceback generation.
     ///
     /// Returns the function name for user-defined functions, or `<module>` for
-    /// module-level code.
+    /// module-level code. The frame stack must be non-empty: callers in the
+    /// async path that may run with no active frame (e.g. just before a spawned
+    /// task's first frame is pushed) are expected to route errors through
+    /// `handle_task_failure` rather than the regular exception machinery.
     fn current_frame_name(&self) -> StringId {
         let frame = self.current_frame();
         match frame.function_id {
@@ -29,7 +32,11 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
     ///
     /// Used when raising exceptions to capture traceback information.
     fn make_stack_frame(&self) -> RawStackFrame {
-        RawStackFrame::new(self.current_position(), self.current_frame_name(), None)
+        RawStackFrame::new(
+            self.current_position().unwrap_or_default(),
+            self.current_frame_name(),
+            None,
+        )
     }
 
     /// Attaches initial frame information to an error if it doesn't have any.
@@ -91,7 +98,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
 
         // Create frame with appropriate hide_caret setting
         let frame = if is_raise {
-            RawStackFrame::from_raise(this.current_position(), this.current_frame_name())
+            RawStackFrame::from_raise(this.current_position().unwrap_or_default(), this.current_frame_name())
         } else {
             this.make_stack_frame()
         };

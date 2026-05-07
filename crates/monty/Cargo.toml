@@ -18,11 +18,13 @@ path = "src/lib.rs"
 
 [dependencies]
 ruff_python_parser = { workspace = true }
+ruff_python_stdlib = { workspace = true }
 ruff_python_ast = { workspace = true }
 ruff_text_size = { workspace = true }
 ahash = { version = "0.8.0", features = ["serde"] }
 indexmap = { workspace = true }
 serde = { workspace = true }
+serde_json = { workspace = true }
 postcard = { workspace = true }
 strum = { version = "0.27", features = ["derive"] }
 hashbrown = "0.16"
@@ -32,38 +34,28 @@ num-integer = { workspace = true }
 smallvec = { version = "1.13", features = ["serde"] }
 fancy-regex = "0.17.0"
 libm = "0.2"
+chrono = { version = "0.4", features = ["serde"] }
+speedate = "0.17.0"
 itertools = "0.14.0"
 bytemuck = { version = "1.25.0", features = ["derive"] }
+jiter = { version = "0.13.0", features = ["num-bigint"] }
 
 [features]
 # ref-count-return changes behavior to return information on reference counts to check they're correct
 # should be used for testing only
-ref-count-return = []
-# ref-count-panic enables a Drop implementation on Value which catches heap allocated values that are dropped
-# without being dereferenced.
+ref-count-return = ["test-hooks"]
+# memory-model-checks enables a Drop implementation on Value which catches heap allocated values that are dropped
+# without being dereferenced, and sets the default GC interval to 1 so garbage collection runs on every
+# GC-tracked allocation.
 # should be used for testing only
-ref-count-panic = []
+memory-model-checks = []
+# test-hooks exposes small internal helpers needed by integration tests that
+# exercise production behavior without duplicating implementation details.
+test-hooks = []
 
 [dev-dependencies]
-pyo3 = { version = "0.28", features = ["auto-initialize"] }
-# Use codspeed-criterion-compat for CI benchmarks, real criterion for local flamegraphs
-codspeed-criterion-compat = "4.2.1"
-criterion = "0.5"
-datatest-stable = "0.2"
-serde_json = "1.0"
-pprof = { version = "0.15", features = ["flamegraph", "criterion"] }
-similar = "2.7.0"
-
-[build-dependencies]
-pyo3-build-config = { version = "0.28", features = ["resolve-config"] }
-
-[[bench]]
-name = "main"
-harness = false
-
-[[test]]
-name = "datatest_runner"
-harness = false
+tempfile = "3"
+insta = { workspace = true }
 
 [lints]
 workspace = true

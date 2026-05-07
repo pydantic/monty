@@ -38,7 +38,7 @@ pub fn is_dataclass(value: &Bound<'_, PyAny>) -> bool {
 /// The `type_id` is set to `id(type(dc))` in Python, allowing registry lookups by type identity.
 /// The `dc_registry` is threaded through to `py_to_monty` so that nested dataclasses
 /// in field values are also auto-registered.
-pub fn dataclass_to_monty(value: &Bound<'_, PyAny>, dc_registry: &DcRegistry) -> PyResult<MontyObject> {
+pub fn dataclass_to_monty(value: &Bound<'_, PyAny>, dc_registry: &DcRegistry, depth: u8) -> PyResult<MontyObject> {
     let py = value.py();
 
     let dc_type = value.get_type();
@@ -73,8 +73,8 @@ pub fn dataclass_to_monty(value: &Bound<'_, PyAny>, dc_registry: &DcRegistry) ->
             }
 
             let field_value = value.getattr(field_name_obj.cast::<PyString>()?)?;
-            let field_name_monty = py_to_monty(&field_name_obj, dc_registry)?;
-            let field_value_monty = py_to_monty(&field_value, dc_registry)?;
+            let field_name_monty = py_to_monty(&field_name_obj, dc_registry, depth)?;
+            let field_value_monty = py_to_monty(&field_value, dc_registry, depth)?;
 
             field_names.push(field_name_str);
             attrs.push((field_name_monty, field_value_monty));

@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import datetime
 from abc import ABC, abstractmethod
 from pathlib import PurePosixPath
 from typing import TYPE_CHECKING, Any, Callable, Literal, NamedTuple, Protocol, Sequence, TypeAlias, TypeGuard
+
+from ._monty import NOT_HANDLED
 
 if TYPE_CHECKING:
     # Self is 3.11+, hence this
@@ -29,6 +32,8 @@ OsFunction = Literal[
     'Path.absolute',
     'os.getenv',
     'os.environ',
+    'date.today',
+    'datetime.now',
 ]
 
 
@@ -109,27 +114,45 @@ class StatResult(NamedTuple):
 
 
 class AbstractOS(ABC):
-    """Abstract base class for implementing virtual filesystems and OS access.
+    """Abstract base class for implementing virtual filesystems and host OS access.
 
     Subclass this and implement the abstract methods to provide a custom
-    filesystem that Monty code can interact with via Path methods.
+    filesystem and selected host-backed operations that Monty code can interact
+    with via `pathlib.Path`, `os`, `date.today()`, and `datetime.now()`.
 
     Pass an instance as the `os` parameter to `Monty.run()`.
     """
 
     def __call__(self, function_name: OsFunction, args: tuple[Any, ...], kwargs: dict[str, Any] | None = None) -> Any:
-        """Dispatch a filesystem operation to the appropriate method.
+        """Adapter used by Monty's `os=` callback surface.
 
-        This is called by Monty when Monty code invokes Path methods.
-        You typically don't need to override this method.
+        Monty calls `__call__` directly, so this method stays as the public
+        callable entrypoint. Override `dispatch()` when you want to customize
+        routing or return `NOT_HANDLED`.
+
+        Returns:
+            The OS operation result, or `NOT_HANDLED` to let Monty apply its
+            standard unhandled-operation behavior.
+        """
+        try:
+            return self.dispatch(function_name, args, kwargs)
+        except NotImplementedError:
+            return NOT_HANDLED
+
+    def dispatch(self, function_name: OsFunction, args: tuple[Any, ...], kwargs: dict[str, Any] | None = None) -> Any:
+        """Dispatch an OS operation to the appropriate method.
+
+        This handles Monty's built-in `pathlib.Path`, `os`, and host clock
+        operations. Subclasses can override it for custom behavior or return
+        `NOT_HANDLED` to delegate back to Monty's default fallback errors.
 
         Args:
-            function_name: The Path method being called (e.g., 'Path.exists').
+            function_name: The OS operation being called (e.g., 'Path.exists').
             args: The arguments passed to the method.
             kwargs: The keyword arguments passed to the method.
 
         Returns:
-            The result of the filesystem operation.
+            The result of the OS operation.
         """
         kwargs = kwargs or {}
         match function_name:
@@ -172,6 +195,12 @@ class AbstractOS(ABC):
                 return self.getenv(*args)
             case 'os.environ':
                 return self.get_environ()
+            case 'date.today':
+                return self.date_today()
+            case 'datetime.now':
+                return self.datetime_now(*args)
+            case _:  # pyright: ignore[reportUnnecessaryComparison]
+                raise NotImplementedError(f'Unknown OS function: {function_name}')
 
     @abstractmethod
     def path_exists(self, path: PurePosixPath) -> bool:
@@ -422,6 +451,23 @@ class AbstractOS(ABC):
         """
         raise NotImplementedError
 
+    def date_today(self) -> datetime.date:
+        """Return today's date for Monty's `date.today()` host callback.
+
+        Override this when the sandbox should observe a virtual or fixed clock.
+        The default implementation proxies to the host Python process.
+        """
+        return datetime.date.today()
+
+    def datetime_now(self, tz: datetime.tzinfo | None = None) -> datetime.datetime:
+        """Return the current datetime for Monty's `datetime.now(tz=...)` callback.
+
+        Override this when the sandbox should observe a virtual or fixed clock.
+        The default implementation proxies to the host Python process and passes
+        any provided timezone through to `datetime.datetime.now()`.
+        """
+        return datetime.datetime.now(tz=tz)
+
 
 class AbstractFile(Protocol):
     """Protocol defining the interface for files used with OSAccess.
@@ -645,7 +691,10 @@ class OSAccess(AbstractOS):
 
     OSAccess provides a complete virtual filesystem that Monty code can interact
     with via `pathlib.Path` methods. Files exist only in memory (when using
-    `MemoryFile`) and cannot access the real filesystem.
+    `MemoryFile`) and cannot access the real filesystem. Environment access is
+    isolated to the provided `environ` mapping. `date.today()` and
+    `datetime.now()` default to the host clock; override those methods in a
+    subclass if you need a deterministic or virtual clock.
 
     Security Model:
         When using `MemoryFile` objects, OSAccess is fully sandboxed:

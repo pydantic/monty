@@ -4,7 +4,12 @@
 //! (require `OsAccess` implementation). Pure methods are handled directly by the VM,
 //! while filesystem methods yield external function calls for the host to resolve.
 
-use std::fmt::Write;
+use std::{
+    collections::hash_map::DefaultHasher,
+    fmt::Write,
+    hash::{Hash, Hasher},
+    mem,
+};
 
 use ahash::AHashSet;
 use smallvec::SmallVec;
@@ -13,7 +18,7 @@ use crate::{
     args::{ArgValues, KwargsValues},
     bytecode::{CallResult, VM},
     defer_drop,
-    exception_private::{ExcType, RunResult},
+    exception_private::{ExcType, RunResult, SimpleException},
     heap::{DropWithHeap, Heap, HeapData, HeapId, HeapItem, HeapRead},
     intern::{Interns, StaticStrings},
     os::OsFunction,
@@ -261,7 +266,7 @@ impl Path {
     /// - `Path('a')` returns `Path('a')`
     /// - `Path('a', 'b', 'c')` returns `Path('a/b/c')`
     /// - If an absolute path appears, it replaces everything before it.
-    pub fn init(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    pub fn init(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
         let pos_args = args.into_pos_only("Path", vm.heap)?;
         defer_drop!(pos_args, vm);
 
@@ -284,7 +289,7 @@ impl Path {
 }
 
 /// Extracts a string from a Value for use as a path.
-fn extract_path_string<'a>(val: &Value, vm: &'a VM<'_, '_, impl ResourceTracker>) -> RunResult<&'a str> {
+fn extract_path_string<'a>(val: &Value, vm: &'a VM<'_, impl ResourceTracker>) -> RunResult<&'a str> {
     match val {
         Value::InternString(string_id) => Ok(vm.interns.get_str(*string_id)),
         Value::Ref(heap_id) => match vm.heap.get(*heap_id) {
@@ -302,7 +307,7 @@ fn extract_path_string<'a>(val: &Value, vm: &'a VM<'_, '_, impl ResourceTracker>
     }
 }
 
-fn fold_joinpath(mut path: Path, parts: &[Value], vm: &VM<'_, '_, impl ResourceTracker>) -> RunResult<Path> {
+fn fold_joinpath(mut path: Path, parts: &[Value], vm: &VM<'_, impl ResourceTracker>) -> RunResult<Path> {
     for part in parts {
         path = Path::new(path.joinpath(extract_path_string(part, vm)?));
     }
@@ -340,23 +345,53 @@ pub(crate) fn path_div(
     Ok(Some(Value::Ref(heap.allocate(HeapData::Path(Path::new(result)))?)))
 }
 
-/// Normalizes a path string to POSIX format.
+/// Normalizes a path string to POSIX format, matching CPython's `pathlib.PurePosixPath`.
 ///
 /// - Converts backslashes to forward slashes
+/// - Removes `.` components (e.g. `/a/./b` → `/a/b`)
+/// - Collapses consecutive slashes (e.g. `//a///b` → `/a/b`)
 /// - Removes trailing slashes (except for root "/")
-/// - Does NOT resolve `.` or `..` components (that requires I/O for symlinks)
+/// - Does NOT resolve `..` components (that requires I/O for symlinks)
 fn normalize_path(mut path: String) -> String {
     // Convert backslashes to forward slashes
     if path.contains('\\') {
         path = path.replace('\\', "/");
     }
 
-    // Remove trailing slashes, but keep root "/"
-    while path.len() > 1 && path.ends_with('/') {
-        path.pop();
+    // Fast path: no `.` component and no consecutive or trailing slashes
+    if !path.contains("/.") && !path.contains("//") && !path.starts_with("./") {
+        // Still strip trailing slashes
+        while path.len() > 1 && path.ends_with('/') {
+            path.pop();
+        }
+        return path;
     }
 
-    path
+    let is_absolute = path.starts_with('/');
+    let mut components: Vec<&str> = Vec::new();
+
+    for part in path.split('/') {
+        match part {
+            "" | "." => {} // skip empty segments (from consecutive/trailing slashes) and "."
+            other => components.push(other),
+        }
+    }
+
+    if components.is_empty() {
+        return if is_absolute { "/".to_owned() } else { ".".to_owned() };
+    }
+
+    let mut result = String::with_capacity(path.len());
+    if is_absolute {
+        result.push('/');
+    }
+    for (i, comp) in components.iter().enumerate() {
+        if i > 0 {
+            result.push('/');
+        }
+        result.push_str(comp);
+    }
+    result
 }
 
 /// Prepends the path string argument to existing arguments for OS calls.
@@ -444,20 +479,26 @@ impl Path {
 }
 
 impl<'h> PyTrait<'h> for HeapRead<'h, Path> {
-    fn py_type(&self, _vm: &VM<'h, '_, impl ResourceTracker>) -> Type {
+    fn py_type(&self, _vm: &VM<'h, impl ResourceTracker>) -> Type {
         Type::Path
     }
 
-    fn py_len(&self, _vm: &VM<'h, '_, impl ResourceTracker>) -> Option<usize> {
+    fn py_len(&self, _vm: &VM<'h, impl ResourceTracker>) -> Option<usize> {
         // Paths don't have a length in Python
         None
     }
 
-    fn py_eq(&self, other: &Self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> Result<bool, ResourceError> {
+    fn py_eq(&self, other: &Self, vm: &mut VM<'h, impl ResourceTracker>) -> Result<bool, ResourceError> {
         Ok(self.get(vm.heap).path == other.get(vm.heap).path)
     }
 
-    fn py_bool(&self, _vm: &mut VM<'h, '_, impl ResourceTracker>) -> bool {
+    fn py_hash(&self, _self_id: HeapId, vm: &mut VM<'h, impl ResourceTracker>) -> Result<Option<u64>, ResourceError> {
+        let mut hasher = DefaultHasher::new();
+        self.get(vm.heap).as_str().hash(&mut hasher);
+        Ok(Some(hasher.finish()))
+    }
+
+    fn py_bool(&self, _vm: &mut VM<'h, impl ResourceTracker>) -> bool {
         // Paths are always truthy (even empty paths)
         true
     }
@@ -465,7 +506,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Path> {
     fn py_repr_fmt(
         &self,
         f: &mut impl Write,
-        vm: &VM<'h, '_, impl ResourceTracker>,
+        vm: &mut VM<'h, impl ResourceTracker>,
         _heap_ids: &mut AHashSet<HeapId>,
     ) -> RunResult<()> {
         // Format like: PosixPath('/usr/bin')
@@ -481,7 +522,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Path> {
     fn py_call_attr(
         &mut self,
         self_id: HeapId,
-        vm: &mut VM<'h, '_, impl ResourceTracker>,
+        vm: &mut VM<'h, impl ResourceTracker>,
         attr: &EitherStr,
         args: ArgValues,
     ) -> RunResult<CallResult> {
@@ -517,7 +558,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Path> {
                 let result = self
                     .get(vm.heap)
                     .with_name(&name)
-                    .map_err(|e| crate::exception_private::SimpleException::new_msg(ExcType::ValueError, &e))?;
+                    .map_err(|e| SimpleException::new_msg(ExcType::ValueError, &e))?;
                 Ok(Value::Ref(vm.heap.allocate(HeapData::Path(Path::new(result)))?))
             }
             StaticStrings::WithStem => {
@@ -527,7 +568,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Path> {
                 let result = self
                     .get(vm.heap)
                     .with_stem(&stem)
-                    .map_err(|e| crate::exception_private::SimpleException::new_msg(ExcType::ValueError, &e))?;
+                    .map_err(|e| SimpleException::new_msg(ExcType::ValueError, &e))?;
                 Ok(Value::Ref(vm.heap.allocate(HeapData::Path(Path::new(result)))?))
             }
             StaticStrings::WithSuffix => {
@@ -537,7 +578,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Path> {
                 let result = self
                     .get(vm.heap)
                     .with_suffix(&suffix)
-                    .map_err(|e| crate::exception_private::SimpleException::new_msg(ExcType::ValueError, &e))?;
+                    .map_err(|e| SimpleException::new_msg(ExcType::ValueError, &e))?;
                 Ok(Value::Ref(vm.heap.allocate(HeapData::Path(Path::new(result)))?))
             }
             StaticStrings::AsPosix | StaticStrings::Fspath => {
@@ -554,7 +595,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Path> {
         value.map(CallResult::Value)
     }
 
-    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<Option<CallResult>> {
+    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<CallResult>> {
         // Fast path: interned strings can be matched by ID without string comparison
         if let Some(ss) = attr.static_string() {
             if let Some(v) = self.get(vm.heap).getattr_by_static(ss, vm.heap)? {
@@ -583,7 +624,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Path> {
 
 impl HeapItem for Path {
     fn py_estimate_size(&self) -> usize {
-        std::mem::size_of::<Self>() + self.path.capacity()
+        mem::size_of::<Self>() + self.path.capacity()
     }
 
     fn py_dec_ref_ids(&mut self, _stack: &mut Vec<HeapId>) {

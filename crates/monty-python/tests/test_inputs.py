@@ -1,3 +1,5 @@
+from typing import Any
+
 import pytest
 from inline_snapshot import snapshot
 
@@ -50,8 +52,8 @@ def test_no_inputs_declared_but_provided_raises():
     m = pydantic_monty.Monty('1 + 1')
     with pytest.raises(TypeError, match='No input variables declared but inputs dict was provided'):
         m.run(inputs={'x': 1})
-        with pytest.raises(TypeError, match='No input variables declared but inputs dict was provided'):
-            m.run(inputs={})
+
+    assert m.run(inputs={}) == 2
 
 
 def test_inputs_order_independent():
@@ -124,3 +126,39 @@ foo(10)
     m = pydantic_monty.Monty(code, inputs=['x'])
     # x=5 (input), foo(10) with y=10, returns x + y = 5 + 10 = 15
     assert m.run(inputs={'x': 5}) == snapshot(15)
+
+
+def test_input_cycle():
+    m = pydantic_monty.Monty('x', inputs=['x'])
+    x: list[Any] = []
+    x.append(x)
+    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
+        m.run(inputs={'x': x})
+    assert str(exc_info.value) == snapshot('RuntimeError: Max input depth exceeded')
+
+
+def test_input_deep():
+    m = pydantic_monty.Monty('x', inputs=['x'])
+    x: list[Any] = [1]
+    for _ in range(300):
+        x = [x]
+    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
+        m.run(inputs={'x': x})
+    assert str(exc_info.value) == snapshot('RuntimeError: Max input depth exceeded')
+
+
+def test_empty_inputs():
+    m = pydantic_monty.Monty('1 + 1', inputs=[])
+    assert m.run(inputs={}) == snapshot(2)
+
+
+def test_input_invalid_identifier():
+    with pytest.raises(pydantic_monty.MontySyntaxError) as exc_info:
+        pydantic_monty.Monty('x', inputs=['foo.bar'])
+    assert str(exc_info.value) == snapshot("Input name 'foo.bar' not a valid identifier")
+
+
+def test_input_is_keyword():
+    with pytest.raises(pydantic_monty.MontySyntaxError) as exc_info:
+        pydantic_monty.Monty('x', inputs=['class'])
+    assert str(exc_info.value) == snapshot("Input name 'class' not a valid identifier")

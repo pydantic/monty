@@ -28,6 +28,8 @@
 use std::{
     cmp::Ordering,
     fmt::{self, Write},
+    mem::size_of,
+    string::ToString,
 };
 
 use ahash::AHashSet;
@@ -36,11 +38,12 @@ use smallvec::{SmallVec, smallvec};
 use crate::{
     args::ArgValues,
     bytecode::{CallResult, VM},
+    defer_drop,
     exception_private::{ExcType, RunResult, SimpleException},
     heap::{DropWithHeap, Heap, HeapData, HeapId, HeapItem, HeapRead},
     intern::StaticStrings,
-    resource::{ResourceError, ResourceTracker},
-    types::{List, PyTrait, Str, Type, allocate_tuple},
+    resource::{ResourceError, ResourceTracker, check_array_alloc_size},
+    types::{List, PyTrait, Slice, Str, Type, allocate_tuple},
     value::{EitherStr, Value},
 };
 
@@ -193,41 +196,31 @@ impl NdArray {
     }
 
     /// Indexes by a Python slice object (e.g. `arr[1:3]`, `arr[::2]`, `arr[::-1]`).
-    pub fn getitem_slice(&self, slice: &crate::types::Slice, heap: &Heap<impl ResourceTracker>) -> RunResult<Value> {
+    pub fn getitem_slice(&self, slice: &Slice, heap: &Heap<impl ResourceTracker>) -> RunResult<Value> {
         let len = self.data.len();
-        let (start, stop, step) = slice
-            .indices(len)
-            .map_err(|()| SimpleException::new_msg(ExcType::ValueError, "slice step cannot be zero"))?;
+        let (start, stop, step) = slice.indices(len)?;
 
         let mut data = Vec::new();
         if step > 0 {
             let mut i = start;
-            #[expect(
-                clippy::cast_sign_loss,
-                clippy::cast_possible_truncation,
-                reason = "step is positive"
-            )]
-            let step_usize = step as usize;
             while i < stop {
-                data.push(self.data[i]);
-                i += step_usize;
-            }
-        } else {
-            // For negative step: start is a usize index, stop might be len+1 sentinel
-            #[expect(clippy::cast_possible_wrap, reason = "index fits in i64")]
-            let mut i = start as i64;
-            #[expect(clippy::cast_possible_wrap, reason = "stop fits in i64")]
-            let stop_i = if stop > len {
-                // Sentinel value meaning "go to before index 0"
-                -1_i64
-            } else {
-                stop as i64
-            };
-            while i > stop_i {
                 #[expect(
                     clippy::cast_sign_loss,
                     clippy::cast_possible_truncation,
-                    reason = "i is non-negative"
+                    reason = "positive-step slice indices are clamped to the array bounds"
+                )]
+                {
+                    data.push(self.data[i as usize]);
+                }
+                i += step;
+            }
+        } else {
+            let mut i = start;
+            while i > stop {
+                #[expect(
+                    clippy::cast_sign_loss,
+                    clippy::cast_possible_truncation,
+                    reason = "negative-step slice indices visited here are in bounds"
                 )]
                 {
                     data.push(self.data[i as usize]);
@@ -975,11 +968,7 @@ impl NdArray {
                 format!(
                     "cannot reshape array of size {} into shape ({})",
                     self.len(),
-                    new_shape
-                        .iter()
-                        .map(std::string::ToString::to_string)
-                        .collect::<Vec<_>>()
-                        .join(", ")
+                    new_shape.iter().map(ToString::to_string).collect::<Vec<_>>().join(", ")
                 ),
             )
             .into());
@@ -1177,7 +1166,7 @@ impl NdArray {
                 data.push(v);
             }
         }
-        crate::resource::check_array_alloc_size(data.len(), heap.tracker())?;
+        check_array_alloc_size(data.len(), heap.tracker())?;
         let len = data.len();
         let arr = Self::new(data, vec![len], self.dtype);
         Ok(Value::Ref(heap.allocate(HeapData::NdArray(arr))?))
@@ -1199,7 +1188,7 @@ impl NdArray {
             let len = indices.len();
             let arr = Self::new(indices, vec![len], NdArrayDtype::Int64);
             let arr_val = Value::Ref(heap.allocate(HeapData::NdArray(arr))?);
-            let tup = crate::types::tuple::allocate_tuple(smallvec![arr_val], heap)?;
+            let tup = allocate_tuple(smallvec![arr_val], heap)?;
             Ok(tup)
         } else if self.ndim() == 2 {
             let rows = self.shape[0];
@@ -1220,7 +1209,7 @@ impl NdArray {
             let col_arr = Self::new(col_indices, vec![clen], NdArrayDtype::Int64);
             let row_val = Value::Ref(heap.allocate(HeapData::NdArray(row_arr))?);
             let col_val = Value::Ref(heap.allocate(HeapData::NdArray(col_arr))?);
-            let tup = crate::types::tuple::allocate_tuple(smallvec![row_val, col_val], heap)?;
+            let tup = allocate_tuple(smallvec![row_val, col_val], heap)?;
             Ok(tup)
         } else {
             Err(ExcType::type_error("nonzero() not supported for arrays with ndim > 2"))
@@ -1446,23 +1435,23 @@ impl NdArray {
 // ===========================
 
 impl<'h> PyTrait<'h> for HeapRead<'h, NdArray> {
-    fn py_type(&self, _vm: &VM<'h, '_, impl ResourceTracker>) -> Type {
+    fn py_type(&self, _vm: &VM<'h, impl ResourceTracker>) -> Type {
         Type::NdArray
     }
 
-    fn py_len(&self, vm: &VM<'h, '_, impl ResourceTracker>) -> Option<usize> {
+    fn py_len(&self, vm: &VM<'h, impl ResourceTracker>) -> Option<usize> {
         // NumPy's len() returns the size of the first dimension, not total elements.
         let arr = self.get(vm.heap);
         Some(arr.shape().first().copied().unwrap_or(0))
     }
 
-    fn py_eq(&self, other: &Self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> Result<bool, ResourceError> {
+    fn py_eq(&self, other: &Self, vm: &mut VM<'h, impl ResourceTracker>) -> Result<bool, ResourceError> {
         let a = self.get(vm.heap);
         let b = other.get(vm.heap);
         Ok(a.shape == b.shape && a.data == b.data && a.dtype == b.dtype)
     }
 
-    fn py_bool(&self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> bool {
+    fn py_bool(&self, vm: &mut VM<'h, impl ResourceTracker>) -> bool {
         let arr = self.get(vm.heap);
         // NumPy only allows bool() on single-element arrays.
         // For 0 or >1 elements, NumPy raises ValueError — but the py_bool trait
@@ -1478,13 +1467,13 @@ impl<'h> PyTrait<'h> for HeapRead<'h, NdArray> {
     fn py_repr_fmt(
         &self,
         f: &mut impl Write,
-        vm: &VM<'h, '_, impl ResourceTracker>,
+        vm: &mut VM<'h, impl ResourceTracker>,
         _heap_ids: &mut AHashSet<HeapId>,
     ) -> RunResult<()> {
         Ok(self.get(vm.heap).py_repr_fmt_inner(f)?)
     }
 
-    fn py_getitem(&self, key: &Value, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<Value> {
+    fn py_getitem(&self, key: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Value> {
         let arr = self.get(vm.heap);
         match key {
             Value::Int(n) => arr.getitem_int(*n, vm.heap),
@@ -1511,9 +1500,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, NdArray> {
         }
     }
 
-    fn py_setitem(&mut self, key: Value, value: Value, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<()> {
-        use crate::defer_drop;
-
+    fn py_setitem(&mut self, key: Value, value: Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<()> {
         defer_drop!(key, vm);
         defer_drop!(value, vm);
 
@@ -1572,39 +1559,35 @@ impl<'h> PyTrait<'h> for HeapRead<'h, NdArray> {
                         };
                         let scalar = if rhs_data.is_none() { extract_f64(value) } else { 0.0 };
                         let len = self.get(vm.heap).data.len();
-                        let (start, stop, step) = slice
-                            .indices(len)
-                            .map_err(|()| SimpleException::new_msg(ExcType::ValueError, "slice step cannot be zero"))?;
+                        let (start, stop, step) = slice.indices(len)?;
                         let arr = self.get_mut(vm.heap);
                         if step > 0 {
                             let mut i = start;
                             let mut rhs_idx = 0usize;
-                            #[expect(
-                                clippy::cast_sign_loss,
-                                clippy::cast_possible_truncation,
-                                reason = "step is positive"
-                            )]
-                            let step_usize = step as usize;
                             while i < stop {
-                                arr.data[i] = if let Some(ref rhs) = rhs_data {
-                                    rhs.get(rhs_idx).copied().unwrap_or(scalar)
-                                } else {
-                                    scalar
-                                };
-                                rhs_idx += 1;
-                                i += step_usize;
-                            }
-                        } else {
-                            #[expect(clippy::cast_possible_wrap, reason = "index fits in i64")]
-                            let mut i = start as i64;
-                            let mut rhs_idx = 0usize;
-                            #[expect(clippy::cast_possible_wrap, reason = "stop fits in i64")]
-                            let stop_i = if stop > len { -1_i64 } else { stop as i64 };
-                            while i > stop_i {
                                 #[expect(
                                     clippy::cast_sign_loss,
                                     clippy::cast_possible_truncation,
-                                    reason = "i is non-negative"
+                                    reason = "positive-step slice indices are clamped to the array bounds"
+                                )]
+                                {
+                                    arr.data[i as usize] = if let Some(ref rhs) = rhs_data {
+                                        rhs.get(rhs_idx).copied().unwrap_or(scalar)
+                                    } else {
+                                        scalar
+                                    };
+                                }
+                                rhs_idx += 1;
+                                i += step;
+                            }
+                        } else {
+                            let mut i = start;
+                            let mut rhs_idx = 0usize;
+                            while i > stop {
+                                #[expect(
+                                    clippy::cast_sign_loss,
+                                    clippy::cast_possible_truncation,
+                                    reason = "negative-step slice indices visited here are in bounds"
                                 )]
                                 {
                                     arr.data[i as usize] = if let Some(ref rhs) = rhs_data {
@@ -1630,7 +1613,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, NdArray> {
         }
     }
 
-    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<Option<CallResult>> {
+    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<CallResult>> {
         let arr = self.get(vm.heap);
         let result = match attr.static_string() {
             Some(StaticStrings::NpShape) => arr.shape_tuple(vm.heap)?,
@@ -1663,7 +1646,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, NdArray> {
     fn py_call_attr(
         &mut self,
         _self_id: HeapId,
-        vm: &mut VM<'h, '_, impl ResourceTracker>,
+        vm: &mut VM<'h, impl ResourceTracker>,
         attr: &EitherStr,
         args: ArgValues,
     ) -> RunResult<CallResult> {
@@ -1913,9 +1896,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, NdArray> {
 
 impl HeapItem for NdArray {
     fn py_estimate_size(&self) -> usize {
-        std::mem::size_of::<Self>()
-            + self.data.capacity() * std::mem::size_of::<f64>()
-            + self.shape.capacity() * std::mem::size_of::<usize>()
+        size_of::<Self>() + self.data.capacity() * size_of::<f64>() + self.shape.capacity() * size_of::<usize>()
     }
 
     fn py_dec_ref_ids(&mut self, _stack: &mut Vec<HeapId>) {

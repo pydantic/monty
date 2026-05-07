@@ -1,16 +1,18 @@
 //! Comparison operation helpers for the VM.
 
+use std::cmp::Ordering;
+
 use super::VM;
 use crate::{
     defer_drop,
     exception_private::{ExcType, RunError, RunResult},
-    heap::HeapData,
+    heap::{Heap, HeapData},
     resource::ResourceTracker,
     types::{LongInt, NdArray, PyTrait},
     value::Value,
 };
 
-impl<T: ResourceTracker> VM<'_, '_, T> {
+impl<T: ResourceTracker> VM<'_, T> {
     /// Equality comparison.
     pub(super) fn compare_eq(&mut self) -> Result<(), RunError> {
         let this = self;
@@ -54,7 +56,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
     /// Ordering comparison with a predicate.
     pub(super) fn compare_ord<F>(&mut self, check: F) -> Result<(), RunError>
     where
-        F: Fn(std::cmp::Ordering) -> bool,
+        F: Fn(Ordering) -> bool,
     {
         let this = self;
 
@@ -196,10 +198,10 @@ fn value_to_f64(v: &Value) -> Option<(f64, bool)> {
 ///
 /// Tests the predicate with `Less`, `Equal`, and `Greater` to infer which
 /// comparison is being performed (e.g., `<`, `<=`, `>`, `>=`).
-fn ndarray_cmp_from_ord_check(check: &impl Fn(std::cmp::Ordering) -> bool) -> Option<NdArrayCmpOp> {
-    let lt = check(std::cmp::Ordering::Less);
-    let eq = check(std::cmp::Ordering::Equal);
-    let gt = check(std::cmp::Ordering::Greater);
+fn ndarray_cmp_from_ord_check(check: &impl Fn(Ordering) -> bool) -> Option<NdArrayCmpOp> {
+    let lt = check(Ordering::Less);
+    let eq = check(Ordering::Equal);
+    let gt = check(Ordering::Greater);
     match (lt, eq, gt) {
         (true, false, false) => Some(NdArrayCmpOp::Lt),
         (true, true, false) => Some(NdArrayCmpOp::Lte),
@@ -214,7 +216,7 @@ fn ndarray_scalar_cmp(
     arr: &NdArray,
     scalar: f64,
     op: NdArrayCmpOp,
-    heap: &crate::heap::Heap<impl ResourceTracker>,
+    heap: &Heap<impl ResourceTracker>,
 ) -> RunResult<Value> {
     match op {
         NdArrayCmpOp::Gt => arr.gt_scalar(scalar, heap),
@@ -231,7 +233,7 @@ fn ndarray_array_cmp(
     lhs: &NdArray,
     rhs: &NdArray,
     op: NdArrayCmpOp,
-    heap: &crate::heap::Heap<impl ResourceTracker>,
+    heap: &Heap<impl ResourceTracker>,
 ) -> RunResult<Value> {
     match op {
         NdArrayCmpOp::Gt => lhs.gt(rhs, heap),
@@ -250,7 +252,7 @@ fn try_ndarray_cmp(
     lhs: &Value,
     rhs: &Value,
     op: NdArrayCmpOp,
-    vm: &mut VM<'_, '_, impl ResourceTracker>,
+    vm: &mut VM<'_, impl ResourceTracker>,
 ) -> RunResult<Option<Value>> {
     let lhs_id = if let Value::Ref(id) = lhs { Some(*id) } else { None };
     let rhs_id = if let Value::Ref(id) = rhs { Some(*id) } else { None };

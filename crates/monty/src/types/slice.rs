@@ -3,7 +3,13 @@
 //! Provides a slice object representing start:stop:step indices for sequence slicing.
 //! Each field is optional (None in Python), where None means "use the default for that field".
 
-use std::fmt::Write;
+use std::{
+    collections::hash_map::DefaultHasher,
+    fmt,
+    fmt::Write,
+    hash::{Hash, Hasher},
+    mem,
+};
 
 use ahash::AHashSet;
 
@@ -52,7 +58,7 @@ impl Slice {
     /// - `slice(start, stop, step)` - slice with all three components
     ///
     /// Each argument can be None to indicate "use default".
-    pub fn init(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    pub fn init(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
         let heap = &mut *vm.heap;
         let pos_args = args.into_pos_only("slice", heap)?;
         defer_drop!(pos_args, heap);
@@ -98,10 +104,10 @@ impl Slice {
     /// For negative step:
     /// - start defaults to length-1, stop defaults to -1 (before beginning)
     /// - start is clamped to [-1, length-1], stop to [-1, length-1]
-    pub fn indices(&self, length: usize) -> Result<(usize, usize, i64), ()> {
+    pub fn indices(&self, length: usize) -> RunResult<(i64, i64, i64)> {
         let step = self.step.unwrap_or(1);
         if step == 0 {
-            return Err(());
+            return Err(ExcType::value_error_slice_step_zero());
         }
 
         let len = i64::try_from(length).unwrap_or(i64::MAX);
@@ -114,11 +120,7 @@ impl Slice {
             let start = self.start.map_or(default_start, |s| normalize_index(s, len, 0, len));
             let stop = self.stop.map_or(default_stop, |s| normalize_index(s, len, 0, len));
 
-            // Convert to usize, clamping to valid range
-            let start_usize = usize::try_from(start.max(0)).unwrap_or(0);
-            let stop_usize = usize::try_from(stop.max(0)).unwrap_or(0).min(length);
-
-            Ok((start_usize, stop_usize, step))
+            Ok((start, stop, step))
         } else {
             // Negative step: iterate backward
             // For negative step, we need different handling
@@ -130,28 +132,7 @@ impl Slice {
                 .map_or(default_start, |s| normalize_index(s, len, -1, len - 1));
             let stop = self.stop.map_or(default_stop, |s| normalize_index(s, len, -1, len - 1));
 
-            // The start can be at most len-1
-            let start_i64 = start.min(len - 1);
-            let stop_i64 = stop; // can be -1 to mean "go all the way to beginning"
-
-            // If start normalizes to < 0, it means the starting position is before index 0.
-            // For negative step iteration, this produces an empty slice.
-            // Return (0, 0, step) which makes the iteration condition `0 > 0` false immediately.
-            if start_i64 < 0 {
-                return Ok((0, 0, step));
-            }
-
-            let start_usize = usize::try_from(start_i64).unwrap_or(0);
-
-            // For stop, we encode it specially: if stop is -1, it means "stop before index 0"
-            // We'll use length + 1 as a sentinel to indicate "stop was None or evaluates to before 0"
-            let stop_usize = if stop_i64 < 0 {
-                length + 1 // sentinel value meaning "go all the way to the beginning"
-            } else {
-                usize::try_from(stop_i64).unwrap_or(0)
-            };
-
-            Ok((start_usize, stop_usize, step))
+            Ok((start, stop, step))
         }
     }
 }
@@ -179,22 +160,28 @@ fn normalize_index(index: i64, length: i64, lower: i64, upper: i64) -> i64 {
 }
 
 impl<'h> PyTrait<'h> for HeapRead<'h, Slice> {
-    fn py_type(&self, _vm: &VM<'h, '_, impl ResourceTracker>) -> Type {
+    fn py_type(&self, _vm: &VM<'h, impl ResourceTracker>) -> Type {
         Type::Slice
     }
 
-    fn py_len(&self, _vm: &VM<'h, '_, impl ResourceTracker>) -> Option<usize> {
+    fn py_len(&self, _vm: &VM<'h, impl ResourceTracker>) -> Option<usize> {
         // Slices don't have a length in Python
         None
     }
 
-    fn py_eq(&self, other: &Self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> Result<bool, ResourceError> {
+    fn py_eq(&self, other: &Self, vm: &mut VM<'h, impl ResourceTracker>) -> Result<bool, ResourceError> {
         let a = self.get(vm.heap);
         let b = other.get(vm.heap);
         Ok(a.start == b.start && a.stop == b.stop && a.step == b.step)
     }
 
-    fn py_bool(&self, _vm: &mut VM<'h, '_, impl ResourceTracker>) -> bool {
+    fn py_hash(&self, _self_id: HeapId, vm: &mut VM<'h, impl ResourceTracker>) -> Result<Option<u64>, ResourceError> {
+        let mut hasher = DefaultHasher::new();
+        self.get(vm.heap).hash(&mut hasher);
+        Ok(Some(hasher.finish()))
+    }
+
+    fn py_bool(&self, _vm: &mut VM<'h, impl ResourceTracker>) -> bool {
         // Slice always truthy
         true
     }
@@ -202,7 +189,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Slice> {
     fn py_repr_fmt(
         &self,
         f: &mut impl Write,
-        vm: &VM<'h, '_, impl ResourceTracker>,
+        vm: &mut VM<'h, impl ResourceTracker>,
         _heap_ids: &mut AHashSet<HeapId>,
     ) -> RunResult<()> {
         f.write_str("slice(")?;
@@ -214,7 +201,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Slice> {
         Ok(f.write_char(')')?)
     }
 
-    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<Option<CallResult>> {
+    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<CallResult>> {
         let this = self.get(vm.heap);
         // Fast path: interned strings can be matched by ID without string comparison
         if let Some(ss) = attr.static_string() {
@@ -237,7 +224,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Slice> {
 
 impl HeapItem for Slice {
     fn py_estimate_size(&self) -> usize {
-        std::mem::size_of::<Self>()
+        mem::size_of::<Self>()
     }
 
     fn py_dec_ref_ids(&mut self, _stack: &mut Vec<HeapId>) {
@@ -254,9 +241,81 @@ pub(crate) fn option_i64_to_value(opt: Option<i64>) -> Value {
 }
 
 /// Formats an Option<i64> for repr output (None or the integer).
-fn format_option_i64(f: &mut impl Write, value: Option<i64>) -> std::fmt::Result {
+fn format_option_i64(f: &mut impl Write, value: Option<i64>) -> fmt::Result {
     match value {
         Some(i) => write!(f, "{i}"),
         None => f.write_str("None"),
+    }
+}
+
+/// Applies a Python `slice` to an iterator and collects the result.
+///
+/// This is the shared back-end for `[start:stop:step]` indexing on every
+/// sequence type — `str`, `bytes`, `list`, `tuple` — that wants to evaluate
+/// the slice eagerly into a new container. (`range` is the exception: it
+/// composes the slice symbolically into a new `Range`, so it doesn't go
+/// through here.)
+///
+/// `collect_map` is applied **after** the slicing logic, so per-item work
+/// (e.g. `clone_with_heap` for heap-allocated `Value`s) only runs on items
+/// that survive the slice. Use `|x| x` when no transform is needed.
+pub(crate) fn slice_collect_iterator<Iter: DoubleEndedIterator + Clone, U, T: FromIterator<U>>(
+    vm: &VM<'_, impl ResourceTracker>,
+    slice: &Slice,
+    iter: Iter,
+    collect_map: impl Fn(Iter::Item) -> U,
+) -> RunResult<T> {
+    let length = iter.clone().count();
+    let (start, stop, step) = slice.indices(length)?;
+
+    let final_collect_op = |item| -> RunResult<U> {
+        vm.heap.check_time()?;
+        Ok(collect_map(item))
+    };
+
+    if step > 0 {
+        // saturate at usize::MAX - will take just the first item if step is too large for usize
+        let step: usize = step.try_into().unwrap_or(usize::MAX);
+        // with step > 0, slice.indices() guarantee 0 <= start/stop <= length
+        let start = start
+            .try_into()
+            .expect("slice.indices() guarantees start > 0 for step > 0");
+        let stop = stop
+            .try_into()
+            .expect("slice.indices() guarantees stop > 0 for step > 0");
+        iter.take(stop)
+            .skip(start)
+            .step_by(step)
+            .map(final_collect_op)
+            .collect()
+    } else {
+        // step < 0, iterate backward
+        let step: usize = step.unsigned_abs().try_into().unwrap_or(usize::MAX);
+
+        // the +1 is because when reverse iterating, at index 'start' we want to include the item at start,
+        // which means we need to skip 'length - start - 1' items from the end. Similar for stop.
+        //
+        // Both start and stop can be in the range [-1, length-1] for negative step, so after the +1 they are
+        // known to be positive and can convert to usize (saturating if needed)
+        let normalized_start = length.saturating_sub(start.saturating_add(1).try_into().unwrap_or(usize::MAX));
+        let normalized_stop = length.saturating_sub(stop.saturating_add(1).try_into().unwrap_or(usize::MAX));
+
+        iter.rev()
+            .take(normalized_stop)
+            .skip(normalized_start)
+            .step_by(step)
+            .map(final_collect_op)
+            .collect()
+    }
+}
+
+/// Normalizes a Python-style index (allowing negative indexing) by adding `length` if negative,
+/// and then clamping to the range [0, length].
+pub(crate) fn normalize_sequence_index(index: i64, len: usize) -> usize {
+    if index < 0 {
+        let abs_index = index.unsigned_abs().try_into().unwrap_or(usize::MAX);
+        len.saturating_sub(abs_index)
+    } else {
+        usize::try_from(index).unwrap_or(len).min(len)
     }
 }

@@ -6,8 +6,8 @@ use crate::{
     args::{ArgExprs, CallArg, CallKwarg},
     builtins::Builtins,
     expressions::{
-        Callable, CmpOperator, Comprehension, DictItem, Expr, ExprLoc, Identifier, Literal, NameScope, Node, Operator,
-        PreparedFunctionDef, PreparedNode, SequenceItem, UnpackTarget,
+        AssignTarget, Callable, CmpOperator, Comprehension, DictItem, Expr, ExprLoc, Identifier, ImportName, Literal,
+        NameScope, Node, Operator, PreparedFunctionDef, PreparedNode, SequenceItem, UnpackTarget,
     },
     fstring::{FStringPart, FormatSpec},
     intern::{InternerBuilder, StringId},
@@ -447,6 +447,17 @@ impl<'i> Prepare<'i> {
                         value,
                     });
                 }
+                Node::ChainAssign { targets, object } => {
+                    // Prepare the single shared right-hand side, then prepare each
+                    // target in left-to-right order so name-assignment tracking matches
+                    // the source order (`a = b = 1` assigns `a` then `b`).
+                    let object = self.prepare_expression(object)?;
+                    let targets = targets
+                        .into_iter()
+                        .map(|t| self.prepare_assign_target(t))
+                        .collect::<Result<Vec<_>, _>>()?;
+                    new_nodes.push(Node::ChainAssign { targets, object });
+                }
                 Node::For {
                     target,
                     iter,
@@ -580,13 +591,19 @@ impl<'i> Prepare<'i> {
                         finally,
                     }));
                 }
-                Node::Import { module_name, binding } => {
-                    // Resolve the binding identifier to get the namespace slot
-                    let (resolved_binding, _) = self.get_id(binding);
-                    new_nodes.push(Node::Import {
-                        module_name,
-                        binding: resolved_binding,
-                    });
+                Node::Import { names } => {
+                    // Resolve each binding identifier to get the namespace slot
+                    let resolved_names = names
+                        .into_iter()
+                        .map(|import_name| {
+                            let (resolved_binding, _) = self.get_id(import_name.binding);
+                            ImportName {
+                                module_name: import_name.module_name,
+                                binding: resolved_binding,
+                            }
+                        })
+                        .collect();
+                    new_nodes.push(Node::Import { names: resolved_names });
                 }
                 Node::ImportFrom {
                     module_name,
@@ -1024,6 +1041,51 @@ impl<'i> Prepare<'i> {
         self.unassigned_ref_names = saved_unassigned_ref_names;
 
         Ok((prepared_generators, prepared_elt, prepared_key_value))
+    }
+
+    /// Prepares an `AssignTarget` used by chained assignments.
+    ///
+    /// Resolves identifiers, sub-expressions and nested unpack patterns so that each
+    /// target is ready for the compiler. Name-targets are also recorded in
+    /// `names_assigned_in_order` just like single-target `Node::Assign` would, so the
+    /// observable scope behaviour of `a = b = 1` matches `a = 1; b = 1`.
+    fn prepare_assign_target(&mut self, target: AssignTarget) -> Result<AssignTarget, ParseError> {
+        match target {
+            AssignTarget::Name(ident) => {
+                self.names_assigned_in_order
+                    .insert(self.interner.get_str(ident.name_id).to_string());
+                let (ident, _) = self.get_id(ident);
+                Ok(AssignTarget::Name(ident))
+            }
+            AssignTarget::Subscript {
+                target,
+                index,
+                target_position,
+            } => Ok(AssignTarget::Subscript {
+                target: self.prepare_expression(target)?,
+                index: self.prepare_expression(index)?,
+                target_position,
+            }),
+            AssignTarget::Attr {
+                object,
+                attr,
+                target_position,
+            } => Ok(AssignTarget::Attr {
+                object: self.prepare_expression(object)?,
+                attr,
+                target_position,
+            }),
+            AssignTarget::Unpack {
+                targets,
+                targets_position,
+            } => {
+                let targets = targets.into_iter().map(|t| self.prepare_unpack_target(t)).collect();
+                Ok(AssignTarget::Unpack {
+                    targets,
+                    targets_position,
+                })
+            }
+        }
     }
 
     /// Prepares an unpack target by resolving identifiers recursively.
@@ -2005,6 +2067,14 @@ fn collect_scope_info_from_node(
             collect_assigned_names_from_expr(object, assigned_names, interner);
             collect_assigned_names_from_expr(value, assigned_names, interner);
         }
+        Node::ChainAssign { targets, object } => {
+            // Each target sees the same shared RHS; treat it like each per-target
+            // assignment would be treated individually.
+            for target in targets {
+                collect_assigned_names_from_assign_target(target, assigned_names, interner);
+            }
+            collect_assigned_names_from_expr(object, assigned_names, interner);
+        }
         Node::For {
             target,
             iter,
@@ -2076,9 +2146,11 @@ fn collect_scope_info_from_node(
                 collect_scope_info_from_node(n, global_names, nonlocal_names, assigned_names, interner);
             }
         }
-        // Import creates a binding for the module name (or alias)
-        Node::Import { binding, .. } => {
-            assigned_names.insert(interner.get_str(binding.name_id).to_string());
+        // Import creates bindings for each module name (or alias)
+        Node::Import { names, .. } => {
+            for import_name in names {
+                assigned_names.insert(interner.get_str(import_name.binding.name_id).to_string());
+            }
         }
         // ImportFrom creates bindings for each imported name (or alias)
         Node::ImportFrom { names, .. } => {
@@ -2416,6 +2488,12 @@ fn collect_cell_vars_from_node(
             collect_cell_vars_from_expr(object, our_locals, cell_vars, interner);
             collect_cell_vars_from_expr(value, our_locals, cell_vars, interner);
         }
+        Node::ChainAssign { targets, object } => {
+            for target in targets {
+                collect_cell_vars_from_assign_target(target, our_locals, cell_vars, interner);
+            }
+            collect_cell_vars_from_expr(object, our_locals, cell_vars, interner);
+        }
         // Other nodes don't contain nested function definitions or lambdas
         _ => {}
     }
@@ -2555,7 +2633,7 @@ fn collect_cell_vars_from_expr(
         }
         Expr::FString(parts) => {
             for part in parts {
-                if let crate::fstring::FStringPart::Interpolation { expr, .. } = part {
+                if let FStringPart::Interpolation { expr, .. } = part {
                     collect_cell_vars_from_expr(expr, our_locals, cell_vars, interner);
                 }
             }
@@ -2689,6 +2767,12 @@ fn collect_referenced_names_from_node(node: &ParseNode, referenced: &mut AHashSe
             collect_referenced_names_from_expr(object, referenced, interner);
             collect_referenced_names_from_expr(value, referenced, interner);
         }
+        Node::ChainAssign { targets, object } => {
+            for target in targets {
+                collect_referenced_names_from_assign_target(target, referenced, interner);
+            }
+            collect_referenced_names_from_expr(object, referenced, interner);
+        }
         Node::For {
             iter, body, or_else, ..
         } => {
@@ -2758,12 +2842,7 @@ fn collect_referenced_names_from_node(node: &ParseNode, referenced: &mut AHashSe
 }
 
 /// Collects all names referenced in an expression.
-fn collect_referenced_names_from_expr(
-    expr: &crate::expressions::ExprLoc,
-    referenced: &mut AHashSet<String>,
-    interner: &InternerBuilder,
-) {
-    use crate::expressions::Expr;
+fn collect_referenced_names_from_expr(expr: &ExprLoc, referenced: &mut AHashSet<String>, interner: &InternerBuilder) {
     match &expr.expr {
         Expr::Name(ident) => {
             referenced.insert(interner.get_str(ident.name_id).to_string());
@@ -3052,5 +3131,80 @@ fn collect_names_from_unpack_target(target: &UnpackTarget, names: &mut AHashSet<
                 collect_names_from_unpack_target(t, names, interner);
             }
         }
+    }
+}
+
+/// Collects newly-assigned names and walrus bindings introduced by a single chained-assign target.
+///
+/// Mirrors the per-shape logic in `collect_scope_info_from_node` for the non-chained
+/// assignment nodes: name/unpack targets bind new names, while subscript/attribute
+/// targets only scan their sub-expressions for walrus bindings since they mutate an
+/// existing container rather than introducing a new binding.
+fn collect_assigned_names_from_assign_target(
+    target: &AssignTarget,
+    assigned_names: &mut AHashSet<String>,
+    interner: &InternerBuilder,
+) {
+    match target {
+        AssignTarget::Name(ident) => {
+            assigned_names.insert(interner.get_str(ident.name_id).to_string());
+        }
+        AssignTarget::Subscript { target, index, .. } => {
+            collect_assigned_names_from_expr(target, assigned_names, interner);
+            collect_assigned_names_from_expr(index, assigned_names, interner);
+        }
+        AssignTarget::Attr { object, .. } => {
+            collect_assigned_names_from_expr(object, assigned_names, interner);
+        }
+        AssignTarget::Unpack { targets, .. } => {
+            for t in targets {
+                collect_names_from_unpack_target(t, assigned_names, interner);
+            }
+        }
+    }
+}
+
+/// Collects cell variables referenced by sub-expressions inside a chained-assign target.
+///
+/// Subscript and attribute targets embed arbitrary expressions that may contain lambdas
+/// capturing enclosing variables; pure name/unpack targets do not carry expressions and
+/// therefore contribute nothing to the cell-variable set.
+fn collect_cell_vars_from_assign_target(
+    target: &AssignTarget,
+    our_locals: &AHashSet<String>,
+    cell_vars: &mut AHashSet<String>,
+    interner: &InternerBuilder,
+) {
+    match target {
+        AssignTarget::Subscript { target, index, .. } => {
+            collect_cell_vars_from_expr(target, our_locals, cell_vars, interner);
+            collect_cell_vars_from_expr(index, our_locals, cell_vars, interner);
+        }
+        AssignTarget::Attr { object, .. } => {
+            collect_cell_vars_from_expr(object, our_locals, cell_vars, interner);
+        }
+        AssignTarget::Name(_) | AssignTarget::Unpack { .. } => {}
+    }
+}
+
+/// Collects names referenced (read) by sub-expressions inside a chained-assign target.
+///
+/// Only subscript and attribute targets read from surrounding state: the container or
+/// object expression must be evaluated at store time. Name and unpack targets do not
+/// reference any names on the read side.
+fn collect_referenced_names_from_assign_target(
+    target: &AssignTarget,
+    referenced: &mut AHashSet<String>,
+    interner: &InternerBuilder,
+) {
+    match target {
+        AssignTarget::Subscript { target, index, .. } => {
+            collect_referenced_names_from_expr(target, referenced, interner);
+            collect_referenced_names_from_expr(index, referenced, interner);
+        }
+        AssignTarget::Attr { object, .. } => {
+            collect_referenced_names_from_expr(object, referenced, interner);
+        }
+        AssignTarget::Name(_) | AssignTarget::Unpack { .. } => {}
     }
 }

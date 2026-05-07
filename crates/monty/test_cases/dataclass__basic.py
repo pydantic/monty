@@ -93,6 +93,62 @@ outer_aug.x = inner_aug
 outer_aug.x.y += 100
 assert inner_aug.y == 102, 'chained augmented attr assign'
 
+# === Chained attribute assignment (a.x = b.x = value) ===
+ca = make_mutable_point()
+cb = make_mutable_point()
+ca.x = cb.x = 77
+assert ca.x == 77, 'chained attr assign ca.x'
+assert cb.x == 77, 'chained attr assign cb.x'
+
+# === Chained mixed attribute/name/subscript assignment ===
+# Attribute in the *middle* of a chain, between a name and a subscript target.
+holder = [0]
+cm = make_mutable_point()
+val = cm.y = holder[0] = 321
+assert val == 321, 'chain name gets value'
+assert cm.y == 321, 'chain attribute gets value'
+assert holder[0] == 321, 'chain subscript gets value'
+
+# === Attribute as the *last* target of a chain ===
+attr_last_name_box = [0]
+attr_last_obj = make_mutable_point()
+attr_last_name = attr_last_name_box[0] = attr_last_obj.y = 555
+assert attr_last_name == 555, 'attr last: name'
+assert attr_last_name_box[0] == 555, 'attr last: subscript'
+assert attr_last_obj.y == 555, 'attr last: attribute'
+
+# === Attribute as the *first* (non-last) target of a chain ===
+attr_first_obj = make_mutable_point()
+attr_first_obj.x = attr_first_name = 556
+assert attr_first_obj.x == 556, 'attr first: attribute'
+assert attr_first_name == 556, 'attr first: name'
+
+# === Three attribute targets in one chain ===
+pa = make_mutable_point()
+pb = make_mutable_point()
+pc = make_mutable_point()
+pa.x = pb.x = pc.x = 999
+assert pa.x == 999, 'three-attr chain: pa'
+assert pb.x == 999, 'three-attr chain: pb'
+assert pc.x == 999, 'three-attr chain: pc'
+
+# === Nested attribute target as part of a chain ===
+nest_outer = make_mutable_point()
+nest_inner = make_mutable_point()
+nest_outer.x = nest_inner
+nested_chain_name = nest_outer.x.y = 444
+assert nested_chain_name == 444, 'nested attr chain: name'
+assert nest_inner.y == 444, 'nested attr chain: inner.y'
+assert nest_outer.x.y == 444, 'nested attr chain: outer.x.y'
+
+# === Chain with attribute + tuple unpack into attribute values ===
+# Each chain step must see the same RHS value.
+unpack_dst = make_mutable_point()
+(ua1, ua2) = unpack_dst.x = unpack_chain_name = (13, 14)
+assert ua1 == 13 and ua2 == 14, 'attr-unpack chain: unpack'
+assert unpack_dst.x == (13, 14), 'attr-unpack chain: attribute'
+assert unpack_chain_name == (13, 14), 'attr-unpack chain: name'
+
 # === Nested attribute access (chained get) ===
 # Create outer dataclass with inner dataclass as field
 outer = make_mutable_point()

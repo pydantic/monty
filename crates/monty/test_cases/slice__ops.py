@@ -147,3 +147,12 @@ assert 'hello'[-5::-1] == 'h', 'string exactly at first'
 # Tuple slicing with out-of-bounds negative start
 assert (0, 1, 2, 3, 4)[-10::-1] == (), 'tuple far negative start empty'
 assert (0, 1, 2, 3, 4)[-5::-1] == (0,), 'tuple exactly at first'
+
+# === Negative step at i64::MIN boundary ===
+# Regression: step = -(2**63) used to panic because Rust's `-step` on i64::MIN overflows.
+I64_MIN = -(2**63)
+assert 'hello'[::I64_MIN] == 'o', 'str slice with i64::MIN step returns last char'
+assert b'hello'[::I64_MIN] == b'o', 'bytes slice with i64::MIN step returns last byte'
+assert [0, 1, 2, 3, 4][::I64_MIN] == [4], 'list slice with i64::MIN step returns last element'
+assert (0, 1, 2, 3, 4)[::I64_MIN] == (4,), 'tuple slice with i64::MIN step returns last element'
+assert list(range(10)[::I64_MIN]) == [9], 'range slice with i64::MIN step returns last element'

@@ -11,8 +11,9 @@ use crate::{
     intern::{StaticStrings, StringId},
     resource::ResourceTracker,
     types::{
-        Bytes, Dict, FrozenSet, List, LongInt, MontyIter, Path, PyTrait, Range, Set, Slice, Str, Tuple,
-        bytes::bytes_fromhex, dict::dict_fromkeys, long_int::INT_MAX_STR_DIGITS, str::StringRepr,
+        AttrCallResult, Bytes, Dict, FrozenSet, List, LongInt, MontyIter, Path, PyTrait, Range, Set, Slice, Str,
+        TimeZone, Tuple, bytes::bytes_fromhex, date, datetime, dict::dict_fromkeys, long_int::INT_MAX_STR_DIGITS,
+        str::StringRepr, timedelta,
     },
     value::Value,
 };
@@ -34,6 +35,10 @@ pub enum Type {
     Float,
     Range,
     Slice,
+    Date,
+    DateTime,
+    TimeDelta,
+    TimeZone,
     Str,
     Bytes,
     List,
@@ -81,6 +86,10 @@ impl fmt::Display for Type {
             Self::Float => f.write_str("float"),
             Self::Range => f.write_str("range"),
             Self::Slice => f.write_str("slice"),
+            Self::Date => f.write_str("date"),
+            Self::DateTime => f.write_str("datetime.datetime"),
+            Self::TimeDelta => f.write_str("timedelta"),
+            Self::TimeZone => f.write_str("timezone"),
             Self::Str => f.write_str("str"),
             Self::Bytes => f.write_str("bytes"),
             Self::List => f.write_str("list"),
@@ -173,12 +182,16 @@ impl Type {
     ///
     /// This handles Python's subtype relationships:
     /// - `bool` is a subtype of `int` (so `isinstance(True, int)` returns True)
+    /// - `datetime` is a subtype of `date` (so `isinstance(datetime_obj, date)` returns True)
     #[must_use]
     pub fn is_instance_of(self, other: Self) -> bool {
         if self == other {
             true
         } else if self == Self::Bool && other == Self::Int {
             // bool is a subtype of int in Python
+            true
+        } else if self == Self::DateTime && other == Self::Date {
+            // datetime is a subtype of date in Python
             true
         } else {
             false
@@ -234,11 +247,42 @@ impl Type {
         }
     }
 
+    /// Dispatches classmethod calls on builtin type objects (e.g. `dict.fromkeys`).
+    ///
+    /// Keeps classmethod behavior centralized with type semantics instead of VM call plumbing.
+    pub(crate) fn call_class_method(
+        self,
+        method_id: StringId,
+        args: ArgValues,
+        vm: &mut VM<'_, impl ResourceTracker>,
+    ) -> RunResult<AttrCallResult> {
+        match (self, method_id) {
+            (Self::Dict, m) if m == StaticStrings::Fromkeys => dict_fromkeys(args, vm).map(AttrCallResult::Value),
+            (Self::Bytes, m) if m == StaticStrings::Fromhex => bytes_fromhex(args, vm).map(AttrCallResult::Value),
+            (Self::Date, m) if m == StaticStrings::Today => date::class_today(vm.heap, args),
+            (Self::Date, m) if m == StaticStrings::Fromisoformat => {
+                date::class_fromisoformat(vm.heap, args, vm.interns).map(AttrCallResult::Value)
+            }
+            (Self::DateTime, m) if m == StaticStrings::Now => datetime::class_now(vm.heap, args, vm.interns),
+            (Self::DateTime, m) if m == StaticStrings::Strptime => {
+                datetime::class_strptime(vm.heap, args, vm.interns).map(AttrCallResult::Value)
+            }
+            (Self::DateTime, m) if m == StaticStrings::Fromisoformat => {
+                datetime::class_fromisoformat(vm.heap, args, vm.interns).map(AttrCallResult::Value)
+            }
+            _ => {
+                let method_name = vm.interns.get_str(method_id);
+                args.drop_with_heap(vm.heap);
+                Err(ExcType::attribute_error(self, method_name))
+            }
+        }
+    }
+
     /// Calls this type as a constructor (e.g., `list(x)`, `int(x)`).
     ///
     /// Dispatches to the appropriate type's init method for container types,
     /// or handles primitive type conversions inline.
-    pub(crate) fn call(self, vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    pub(crate) fn call(self, vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
         match self {
             // Container types - delegate to init methods
             Self::List => List::init(vm, args),
@@ -250,6 +294,10 @@ impl Type {
             Self::Bytes => Bytes::init(vm, args),
             Self::Range => Range::init(vm, args),
             Self::Slice => Slice::init(vm, args),
+            Self::Date => date::init(vm.heap, args, vm.interns),
+            Self::DateTime => datetime::init(vm.heap, args, vm.interns),
+            Self::TimeDelta => timedelta::init(vm.heap, args, vm.interns),
+            Self::TimeZone => TimeZone::init(vm.heap, args, vm.interns),
             Self::Iterator => MontyIter::init(vm, args),
             Self::Path => Path::init(vm, args),
 
@@ -426,26 +474,4 @@ fn is_valid_int_underscores(s: &str) -> bool {
     let digits = s.strip_prefix(['+', '-']).unwrap_or(s);
     // No leading or trailing underscores, no consecutive underscores
     !digits.starts_with('_') && !digits.ends_with('_') && !digits.contains("__")
-}
-
-/// Dispatches a classmethod call on a type object.
-///
-/// Handles classmethods like `dict.fromkeys()` and `bytes.fromhex()` that are
-/// called on the type itself rather than on an instance.
-pub(crate) fn call_type_method(
-    t: Type,
-    method_id: StringId,
-    args: ArgValues,
-    vm: &mut VM<'_, '_, impl ResourceTracker>,
-) -> Result<Value, RunError> {
-    match (t, method_id) {
-        (Type::Dict, m) if m == StaticStrings::Fromkeys => return dict_fromkeys(args, vm),
-        (Type::Bytes, m) if m == StaticStrings::Fromhex => {
-            return bytes_fromhex(args, vm);
-        }
-        _ => {}
-    }
-    // Other types or unknown methods - report actual type name, not 'type'
-    args.drop_with_heap(vm);
-    Err(ExcType::attribute_error(t, vm.interns.get_str(method_id)))
 }

@@ -3,6 +3,7 @@
 //! The REPL session keeps heap/global namespace state between snippets and executes
 //! only the newly fed snippet each time.
 
+use insta::assert_snapshot;
 use monty::{
     ExtFunctionResult, MontyException, MontyObject, MontyRepl, NoLimitTracker, PrintWriter, ReplContinuationMode,
     ReplProgress, ReplStartError, ResourceTracker, detect_repl_continuation_mode,
@@ -126,6 +127,37 @@ fn repl_tracebacks_use_incrementing_python_input_filenames() {
     assert_eq!(second.traceback().len(), 1);
     assert_eq!(first.traceback()[0].filename, "<python-input-0>");
     assert_eq!(second.traceback()[0].filename, "<python-input-1>");
+}
+
+#[test]
+fn repl_cross_snippet_traceback_resolves_against_defining_source() {
+    // Tracebacks for a function defined in snippet 0 and called in snippet 1
+    // must resolve frame positions against the source of the snippet that
+    // actually produced the `CodeRange`, not the source of the snippet that
+    // triggered the exception. `CodeRange` stores raw byte offsets, so
+    // indexing snippet 0's offsets into snippet 1's source would give wrong
+    // line/column/preview-line data (or worse).
+    let (mut repl, _) = init_repl("");
+
+    feed_run_print(&mut repl, "def f():\n    raise ValueError('boom')").unwrap();
+    let err = feed_run_print(&mut repl, "f()").unwrap_err();
+
+    let tb = err.traceback();
+    assert_eq!(tb.len(), 2, "expected call-site + raise-site frames");
+
+    // Frame 0: the call site, snippet 1.
+    assert_eq!(tb[0].filename, "<python-input-1>");
+    assert_eq!(tb[0].start.line, 1);
+    assert_eq!(tb[0].preview_line.as_deref(), Some("f()"));
+
+    // Frame 1: the raise inside f(), defined in snippet 0.
+    assert_eq!(tb[1].filename, "<python-input-0>");
+    assert_eq!(tb[1].start.line, 2);
+    assert_eq!(
+        tb[1].preview_line.as_deref(),
+        Some("    raise ValueError('boom')"),
+        "preview line must come from the snippet that defined f, not the current snippet"
+    );
 }
 
 #[test]
@@ -341,4 +373,416 @@ fn repl_start_new_external_function_in_later_block() {
     // REPL state from before the external call is still intact.
     assert_eq!(feed_run_print(&mut repl, "x").unwrap(), MontyObject::Int(10));
     assert_eq!(feed_run_print(&mut repl, "y").unwrap(), MontyObject::Int(15));
+}
+
+// ===========================================================================
+// Function-call mode — calling Python functions from Rust
+// ===========================================================================
+
+/// Helper to create a REPL session pre-seeded with code for function calling.
+fn repl_with_code(code: &str) -> MontyRepl<NoLimitTracker> {
+    let mut repl = MontyRepl::new("session_test.py", NoLimitTracker);
+    repl.feed_run(code, vec![], PrintWriter::Stdout).unwrap();
+    repl
+}
+
+#[test]
+fn call_simple_function() {
+    let mut s = repl_with_code("def add(a, b): return a + b");
+    let result = s
+        .call_function(
+            "add",
+            vec![MontyObject::Int(2), MontyObject::Int(3)],
+            PrintWriter::Stdout,
+        )
+        .unwrap();
+    assert_eq!(result, MontyObject::Int(5));
+}
+
+#[test]
+fn call_function_no_args() {
+    let mut s = repl_with_code("def greet(): return 'hello'");
+    let result = s.call_function("greet", vec![], PrintWriter::Stdout).unwrap();
+    assert_eq!(result, MontyObject::String("hello".to_owned()));
+}
+
+#[test]
+fn call_function_returns_none() {
+    let mut s = repl_with_code("def noop(): pass");
+    let result = s.call_function("noop", vec![], PrintWriter::Stdout).unwrap();
+    assert_eq!(result, MontyObject::None);
+}
+
+#[test]
+fn call_function_one_arg() {
+    let mut s = repl_with_code("def double(x): return x * 2");
+    let result = s
+        .call_function("double", vec![MontyObject::Int(21)], PrintWriter::Stdout)
+        .unwrap();
+    assert_eq!(result, MontyObject::Int(42));
+}
+
+#[test]
+fn call_function_string_args() {
+    let mut s = repl_with_code("def concat(a, b): return a + b");
+    let result = s
+        .call_function(
+            "concat",
+            vec![
+                MontyObject::String("hello ".to_owned()),
+                MontyObject::String("world".to_owned()),
+            ],
+            PrintWriter::Stdout,
+        )
+        .unwrap();
+    assert_eq!(result, MontyObject::String("hello world".to_owned()));
+}
+
+#[test]
+fn call_function_multiple_times() {
+    let mut s = repl_with_code("def inc(x): return x + 1");
+    for i in 0..5 {
+        let result = s
+            .call_function("inc", vec![MontyObject::Int(i)], PrintWriter::Stdout)
+            .unwrap();
+        assert_eq!(result, MontyObject::Int(i + 1));
+    }
+}
+
+#[test]
+fn call_function_with_list() {
+    let mut s = repl_with_code("def length(lst): return len(lst)");
+    let result = s
+        .call_function(
+            "length",
+            vec![MontyObject::List(vec![
+                MontyObject::Int(1),
+                MontyObject::Int(2),
+                MontyObject::Int(3),
+            ])],
+            PrintWriter::Stdout,
+        )
+        .unwrap();
+    assert_eq!(result, MontyObject::Int(3));
+}
+
+#[test]
+fn call_function_retains_global_state() {
+    let mut s = repl_with_code(
+        "\
+counter = 0
+def increment():
+    global counter
+    counter = counter + 1
+    return counter
+",
+    );
+    assert_eq!(
+        s.call_function("increment", vec![], PrintWriter::Stdout).unwrap(),
+        MontyObject::Int(1)
+    );
+    assert_eq!(
+        s.call_function("increment", vec![], PrintWriter::Stdout).unwrap(),
+        MontyObject::Int(2)
+    );
+    assert_eq!(
+        s.call_function("increment", vec![], PrintWriter::Stdout).unwrap(),
+        MontyObject::Int(3)
+    );
+}
+
+#[test]
+fn call_function_multiple_functions() {
+    let mut s = repl_with_code(
+        "\
+def add(a, b): return a + b
+def mul(a, b): return a * b
+",
+    );
+    assert_eq!(
+        s.call_function(
+            "add",
+            vec![MontyObject::Int(3), MontyObject::Int(4)],
+            PrintWriter::Stdout
+        )
+        .unwrap(),
+        MontyObject::Int(7)
+    );
+    assert_eq!(
+        s.call_function(
+            "mul",
+            vec![MontyObject::Int(3), MontyObject::Int(4)],
+            PrintWriter::Stdout
+        )
+        .unwrap(),
+        MontyObject::Int(12)
+    );
+}
+
+#[test]
+fn call_function_calls_other_function() {
+    let mut s = repl_with_code(
+        "\
+def double(x): return x * 2
+def quadruple(x): return double(double(x))
+",
+    );
+    let result = s
+        .call_function("quadruple", vec![MontyObject::Int(5)], PrintWriter::Stdout)
+        .unwrap();
+    assert_eq!(result, MontyObject::Int(20));
+}
+
+#[test]
+fn call_function_with_defaults() {
+    let mut s = repl_with_code("def greet(name, greeting='Hello'): return greeting + ' ' + name");
+    let result = s
+        .call_function(
+            "greet",
+            vec![MontyObject::String("world".to_owned())],
+            PrintWriter::Stdout,
+        )
+        .unwrap();
+    assert_eq!(result, MontyObject::String("Hello world".to_owned()));
+}
+
+#[test]
+fn call_closure() {
+    let mut s = repl_with_code(
+        "\
+def make_adder(n):
+    def adder(x):
+        return x + n
+    return adder
+
+add5 = make_adder(5)
+",
+    );
+    let result = s
+        .call_function("add5", vec![MontyObject::Int(10)], PrintWriter::Stdout)
+        .unwrap();
+    assert_eq!(result, MontyObject::Int(15));
+}
+
+#[test]
+fn call_nonexistent_function() {
+    let mut s = repl_with_code("def foo(): return 1");
+    let err = s.call_function("bar", vec![], PrintWriter::Stdout).unwrap_err();
+    assert_snapshot!(err, @"NameError: name 'bar' is not defined");
+}
+
+#[test]
+fn call_non_callable() {
+    let mut s = repl_with_code("x = 42");
+    let err = s.call_function("x", vec![], PrintWriter::Stdout).unwrap_err();
+    assert_snapshot!(err, @"TypeError: 'int' object is not callable");
+}
+
+#[test]
+fn call_function_raises_exception() {
+    let mut s = repl_with_code("def boom(): raise ValueError('kaboom')");
+    let err = s.call_function("boom", vec![], PrintWriter::Stdout).unwrap_err();
+    assert_snapshot!(err, @r#"
+    Traceback (most recent call last):
+      File "<python-input-0>", line 1, in boom
+        def boom(): raise ValueError('kaboom')
+    ValueError: kaboom
+    "#);
+}
+
+#[test]
+fn call_function_wrong_arg_count() {
+    let mut s = repl_with_code("def add(a, b): return a + b");
+    let err = s
+        .call_function("add", vec![MontyObject::Int(1)], PrintWriter::Stdout)
+        .unwrap_err();
+    assert_snapshot!(err, @r#"
+    Traceback (most recent call last):
+      File "<python-input-0>", line 1, in <module>
+        def add(a, b): return a + b
+            ~~~
+    TypeError: add() missing 1 required positional argument: 'b'
+    "#);
+}
+
+#[test]
+fn function_names() {
+    let s = repl_with_code(
+        "\
+x = 42
+def foo(): pass
+def bar(): pass
+",
+    );
+    let mut names = s.function_names();
+    names.sort_unstable();
+    assert_eq!(names, vec!["bar", "foo"]);
+}
+
+#[test]
+fn has_function() {
+    let s = repl_with_code("def my_func(): pass\nx = 10");
+    assert!(s.has_function("my_func"));
+    assert!(!s.has_function("x")); // not callable
+    assert!(!s.has_function("nonexistent"));
+}
+
+#[test]
+fn call_function_captures_print() {
+    let mut s = repl_with_code("def say_hello(name): print('Hello ' + name)");
+    let mut output = String::new();
+    let result = s
+        .call_function(
+            "say_hello",
+            vec![MontyObject::String("world".to_owned())],
+            PrintWriter::CollectString(&mut output),
+        )
+        .unwrap();
+    assert_eq!(result, MontyObject::None);
+    assert_eq!(output, "Hello world\n");
+}
+
+#[test]
+fn call_function_returns_list() {
+    let mut s = repl_with_code("def make_list(n): return list(range(n))");
+    let result = s
+        .call_function("make_list", vec![MontyObject::Int(3)], PrintWriter::Stdout)
+        .unwrap();
+    assert_eq!(
+        result,
+        MontyObject::List(vec![MontyObject::Int(0), MontyObject::Int(1), MontyObject::Int(2)])
+    );
+}
+
+#[test]
+fn call_function_returns_dict() {
+    let mut s = repl_with_code(
+        "\
+def make_point(x, y):
+    return {'x': x, 'y': y}
+",
+    );
+    let result = s
+        .call_function(
+            "make_point",
+            vec![MontyObject::Int(1), MontyObject::Int(2)],
+            PrintWriter::Stdout,
+        )
+        .unwrap();
+    if let MontyObject::Dict(pairs) = result {
+        assert_eq!(pairs.into_iter().count(), 2);
+    } else {
+        panic!("expected dict, got: {result:?}");
+    }
+}
+
+#[test]
+fn call_function_many_args() {
+    let mut s = repl_with_code("def sum_all(a, b, c, d, e): return a + b + c + d + e");
+    let result = s
+        .call_function(
+            "sum_all",
+            vec![
+                MontyObject::Int(1),
+                MontyObject::Int(2),
+                MontyObject::Int(3),
+                MontyObject::Int(4),
+                MontyObject::Int(5),
+            ],
+            PrintWriter::Stdout,
+        )
+        .unwrap();
+    assert_eq!(result, MontyObject::Int(15));
+}
+
+#[test]
+fn call_function_that_calls_undefined_name_fails() {
+    let mut s = repl_with_code("def call_missing(): return unknown_func()");
+    let err = s
+        .call_function("call_missing", vec![], PrintWriter::Stdout)
+        .unwrap_err();
+    assert_snapshot!(err, @"NotImplementedError: MontyRepl::call_function: external functions are not yet supported in this context");
+}
+
+#[test]
+fn call_function_with_heap_defaults() {
+    let mut s = repl_with_code("def greet(name, greeting='Hi'): return greeting + ' ' + name");
+    let result = s
+        .call_function(
+            "greet",
+            vec![MontyObject::String("Alice".to_owned())],
+            PrintWriter::Stdout,
+        )
+        .unwrap();
+    assert_eq!(result, MontyObject::String("Hi Alice".to_owned()));
+}
+
+#[test]
+fn convert_args_single_repr_fails() {
+    let mut s = repl_with_code("def identity(x): return x");
+    let err = s
+        .call_function(
+            "identity",
+            vec![MontyObject::Repr("bad".to_owned())],
+            PrintWriter::Stdout,
+        )
+        .unwrap_err();
+    assert_snapshot!(err, @"RuntimeError: invalid argument type: 'Repr' is not a valid input value");
+}
+
+#[test]
+fn convert_args_two_second_repr_fails() {
+    let mut s = repl_with_code("def add(a, b): return a + b");
+    let err = s
+        .call_function(
+            "add",
+            vec![MontyObject::Int(1), MontyObject::Repr("bad".to_owned())],
+            PrintWriter::Stdout,
+        )
+        .unwrap_err();
+    assert_snapshot!(err, @"RuntimeError: invalid argument type: 'Repr' is not a valid input value");
+}
+
+#[test]
+fn convert_args_two_first_repr_fails() {
+    let mut s = repl_with_code("def add(a, b): return a + b");
+    let err = s
+        .call_function(
+            "add",
+            vec![MontyObject::Repr("bad".to_owned()), MontyObject::Int(1)],
+            PrintWriter::Stdout,
+        )
+        .unwrap_err();
+    assert_snapshot!(err, @"RuntimeError: invalid argument type: 'Repr' is not a valid input value");
+}
+
+#[test]
+fn convert_args_many_middle_repr_fails() {
+    let mut s = repl_with_code("def f(a, b, c, d): return a");
+    let err = s
+        .call_function(
+            "f",
+            vec![
+                MontyObject::Int(1),
+                MontyObject::Int(2),
+                MontyObject::Repr("bad".to_owned()),
+                MontyObject::Int(4),
+            ],
+            PrintWriter::Stdout,
+        )
+        .unwrap_err();
+    assert_snapshot!(err, @"RuntimeError: invalid argument type: 'Repr' is not a valid input value");
+}
+
+#[test]
+fn call_builtin_via_session() {
+    let mut s = repl_with_code("my_len = len");
+    let result = s
+        .call_function(
+            "my_len",
+            vec![MontyObject::List(vec![MontyObject::Int(1), MontyObject::Int(2)])],
+            PrintWriter::Stdout,
+        )
+        .unwrap();
+    assert_eq!(result, MontyObject::Int(2));
 }

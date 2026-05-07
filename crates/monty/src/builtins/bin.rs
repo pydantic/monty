@@ -18,7 +18,7 @@ use crate::{
 ///
 /// Converts an integer to a binary string prefixed with '0b'.
 /// Supports both i64 and BigInt integers.
-pub fn builtin_bin(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+pub fn builtin_bin(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     let value = args.get_one_arg("bin", vm.heap)?;
     defer_drop!(value, vm);
 
@@ -36,14 +36,10 @@ pub fn builtin_bin(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -
             let heap_id = vm.heap.allocate(HeapData::Str(Str::new(s.to_string())))?;
             Ok(Value::Ref(heap_id))
         }
-        Value::Ref(id) => {
-            if let HeapData::LongInt(li) = vm.heap.get(*id) {
-                let bin_str = format_bigint_bin(li.inner());
-                let heap_id = vm.heap.allocate(HeapData::Str(Str::new(bin_str)))?;
-                Ok(Value::Ref(heap_id))
-            } else {
-                Err(ExcType::type_error_not_integer(value.py_type(vm)))
-            }
+        Value::Ref(id) if let HeapData::LongInt(li) = vm.heap.get(*id) => {
+            let bin_str = format_bigint_bin(li.inner());
+            let heap_id = vm.heap.allocate(HeapData::Str(Str::new(bin_str)))?;
+            Ok(Value::Ref(heap_id))
         }
         _ => Err(ExcType::type_error_not_integer(value.py_type(vm))),
     }

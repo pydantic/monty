@@ -12,6 +12,7 @@ mod divmod;
 mod enumerate;
 mod filter;
 mod getattr;
+mod hasattr;
 mod hash;
 mod hex;
 mod id;
@@ -27,12 +28,13 @@ mod print;
 mod repr;
 mod reversed;
 mod round;
+mod setattr;
 mod sorted;
 mod sum;
 mod type_;
 mod zip;
 
-use std::{fmt::Write, str::FromStr};
+use std::{fmt, fmt::Write, str::FromStr};
 
 use strum::{Display, EnumString, FromRepr, IntoStaticStr};
 
@@ -61,7 +63,7 @@ pub(crate) enum Builtins {
 
 impl Builtins {
     /// Calls this builtin with the given arguments.
-    pub fn call(self, vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    pub fn call(self, vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
         match self {
             Self::Function(b) => b.call(vm, args),
             Self::ExcType(exc) => exc.call(vm, args),
@@ -70,7 +72,7 @@ impl Builtins {
     }
 
     /// Writes the Python repr() string for this callable to a formatter.
-    pub fn py_repr_fmt<W: Write>(self, f: &mut W) -> std::fmt::Result {
+    pub fn py_repr_fmt<W: Write>(self, f: &mut W) -> fmt::Result {
         match self {
             Self::Function(b) => write!(f, "<built-in function {b}>"),
             Self::ExcType(e) => write!(f, "<class '{e}'>"),
@@ -161,7 +163,7 @@ pub enum BuiltinsFunctions {
     // frozenset - handled by Type enum
     Getattr,
     // Globals,
-    // Hasattr,
+    Hasattr,
     Hash,
     // Help,
     Hex,
@@ -191,7 +193,7 @@ pub enum BuiltinsFunctions {
     Reversed,
     Round,
     // set - handled by Type enum
-    // Setattr,
+    Setattr,
     // Slice,
     Sorted,
     // Staticmethod,
@@ -210,7 +212,7 @@ impl BuiltinsFunctions {
     ///
     /// All builtins receive the full VM context, which provides access to the heap,
     /// interned strings, and print output.
-    pub(crate) fn call(self, vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    pub(crate) fn call(self, vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
         match self {
             Self::Abs => abs::builtin_abs(vm, args),
             Self::All => all::builtin_all(vm, args),
@@ -221,6 +223,7 @@ impl BuiltinsFunctions {
             Self::Enumerate => enumerate::builtin_enumerate(vm, args),
             Self::Filter => filter::builtin_filter(vm, args),
             Self::Getattr => getattr::builtin_getattr(vm, args),
+            Self::Hasattr => hasattr::builtin_hasattr(vm, args),
             Self::Hash => hash::builtin_hash(vm, args),
             Self::Hex => hex::builtin_hex(vm, args),
             Self::Id => id::builtin_id(vm, args),
@@ -237,6 +240,7 @@ impl BuiltinsFunctions {
             Self::Repr => repr::builtin_repr(vm, args),
             Self::Reversed => reversed::builtin_reversed(vm, args),
             Self::Round => round::builtin_round(vm, args),
+            Self::Setattr => setattr::builtin_setattr(vm, args),
             Self::Sorted => sorted::builtin_sorted(vm, args),
             Self::Sum => sum::builtin_sum(vm, args),
             Self::Type => type_::builtin_type(vm, args),

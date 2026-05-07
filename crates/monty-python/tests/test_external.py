@@ -365,3 +365,34 @@ finally_ran
 
     result = m.run(external_functions={'fail': fail})
     assert result == snapshot(True)
+
+
+def test_external_function_return_lone_surrogate_catchable_inside_monty():
+    """A callback returning a string with a lone surrogate surfaces inside
+    Monty as a `ValueError` that can be caught, not as a raw PyErr escaping
+    to the caller."""
+    code = """
+try:
+    get_str()
+    result = 'no error'
+except ValueError:
+    result = 'caught'
+result
+"""
+    m = pydantic_monty.Monty(code)
+    assert m.run(external_functions={'get_str': lambda: '\ud83d'}) == snapshot('caught')
+
+
+def test_external_function_return_unconvertible_catchable_inside_monty():
+    """A callback returning an unconvertible object surfaces inside Monty as a
+    `TypeError` that can be caught."""
+    code = """
+try:
+    get_thing()
+    result = 'no error'
+except TypeError:
+    result = 'caught'
+result
+"""
+    m = pydantic_monty.Monty(code)
+    assert m.run(external_functions={'get_thing': lambda: object()}) == snapshot('caught')

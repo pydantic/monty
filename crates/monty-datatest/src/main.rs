@@ -1,13 +1,16 @@
 use std::{
     cell::RefCell,
     collections::{HashMap, HashSet},
+    env::set_current_dir,
     error::Error,
     ffi::CString,
-    fs,
+    fmt,
+    fs::{self, canonicalize},
     panic::{self, AssertUnwindSafe},
-    path::Path,
+    path::{Path, PathBuf},
+    str,
     sync::{
-        OnceLock,
+        LazyLock, OnceLock,
         mpsc::{self, RecvTimeoutError},
     },
     thread,
@@ -15,12 +18,22 @@ use std::{
 };
 
 use ahash::AHashMap;
+use chrono::{Datelike, Timelike};
 use monty::{
-    ExcType, ExtFunctionResult, LimitedTracker, MontyException, MontyObject, MontyRun, NameLookupResult, OsFunction,
-    PrintWriter, ResourceLimits, RunProgress, dir_stat, file_stat,
+    ExcType, ExtFunctionResult, LimitedTracker, MontyDate, MontyDateTime, MontyException, MontyObject, MontyRun,
+    NameLookupResult, OsFunction, PrintWriter, ResourceLimits, RunProgress, dir_stat, file_stat,
+    fs::{MountMode, MountTable, OverlayState},
 };
 use pyo3::{prelude::*, types::PyDict};
 use similar::TextDiff;
+
+const SCRIPTS_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../scripts");
+const TEST_CASES_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../monty/test_cases");
+const WORKSPACE_ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../..");
+const TEST_CASES_RELATIVE_DIR: &str = "crates/monty/test_cases";
+
+static CANONICAL_WS_DIR: LazyLock<PathBuf> =
+    LazyLock::new(|| canonicalize(WORKSPACE_ROOT).expect("Failed to canonicalize workspace root"));
 
 /// Recursion limit for test execution.
 ///
@@ -32,6 +45,21 @@ use similar::TextDiff;
 /// * and, stack overflows in debug rust (if it's too high)
 const TEST_RECURSION_LIMIT: usize = 50;
 
+/// Builds the `ResourceLimits` used by each datatest run.
+///
+/// Applies the standard recursion-depth cap and, if the fixture specified
+/// `# gc-interval=<N>`, overrides the default GC interval. The underlying
+/// default is `DEFAULT_GC_INTERVAL` in `crates/monty/src/heap.rs`, which is 1
+/// under `memory-model-checks` and 100_000 otherwise — some tests need a
+/// larger value to stay within the test timeout.
+fn build_test_limits(gc_interval: Option<usize>) -> ResourceLimits {
+    let mut limits = ResourceLimits::new().max_recursion_depth(Some(TEST_RECURSION_LIMIT));
+    if let Some(interval) = gc_interval {
+        limits = limits.gc_interval(interval);
+    }
+    limits
+}
+
 /// Test configuration parsed from directive comments.
 ///
 /// Parsed from an optional first-line comment like `# xfail=monty,cpython` or `# call-external`.
@@ -40,6 +68,11 @@ const TEST_RECURSION_LIMIT: usize = 50;
 /// ## Xfail Semantics (Strict)
 /// - `xfail=monty` - Test is expected to fail on Monty; if it passes, that's an error
 /// - `xfail=cpython` - Test is expected to fail on CPython; if it passes, that's an error
+///
+/// ## Platform-Specific Skips
+/// - `skip-cpython-windows` - Skip CPython test on Windows (Monty test still runs).
+///   Used for tests that rely on POSIX path semantics which Monty's sandbox always
+///   provides but Windows CPython does not.
 /// - `xfail=monty,cpython` - Expected to fail on both interpreters
 #[derive(Debug, Clone, Default)]
 #[expect(clippy::struct_excessive_bools)]
@@ -54,8 +87,24 @@ struct TestConfig {
     /// Used for tests with top-level await which Monty supports but CPython doesn't.
     async_mode: bool,
     /// When true, skip running this test on CPython.
-    /// Used for tests that require packages not available in the pyo3 environment (e.g. numpy).
+    /// Used for tests that require modules not available in the CPython test harness.
     skip_cpython: bool,
+    /// When true, create a temporary directory with a known structure and mount it.
+    /// For Monty: mounted at `/mnt` with `OverlayMemory` mode.
+    /// For CPython: passed as real path. `root` variable injected into both.
+    mount_fs: bool,
+    /// When true, skip CPython test on Windows. Used for tests that rely on POSIX
+    /// path semantics (e.g. pathlib tests using `/` paths) which are correct for
+    /// Monty's always-POSIX sandbox but behave differently on Windows CPython.
+    skip_cpython_windows: bool,
+    /// When set, overrides the default GC allocation interval used when constructing
+    /// `ResourceLimits` for this test. Parsed from `# gc-interval=<N>`.
+    ///
+    /// The underlying default is `DEFAULT_GC_INTERVAL` (1 under `memory-model-checks`,
+    /// 100_000 otherwise). Some tests — especially recursive ones — run very slowly
+    /// under a gc_interval of 1, so this directive lets them opt into a larger value
+    /// to stay within the test timeout. Only the Monty runner reads this.
+    gc_interval: Option<usize>,
 }
 
 /// Represents the expected outcome of a test fixture
@@ -126,10 +175,15 @@ fn parse_fixture(content: &str) -> (String, Expectation, TestConfig) {
         .map(|line| line.trim_start_matches('#').trim())
         .collect::<Vec<_>>();
 
+    let mount_fs = comment_lines.iter().any(|line| line.starts_with("mount-fs"));
     let mut config = TestConfig {
-        iter_mode: comment_lines.iter().any(|line| line.starts_with("call-external")),
+        iter_mode: comment_lines.iter().any(|line| line.starts_with("call-external")) || mount_fs,
         async_mode: comment_lines.iter().any(|line| line.starts_with("run-async")),
         skip_cpython: comment_lines.iter().any(|line| line.starts_with("skip-cpython")),
+        mount_fs,
+        skip_cpython_windows: comment_lines
+            .iter()
+            .any(|line| line.starts_with("skip-cpython-windows")),
         ..Default::default()
     };
     // Check for "xfail=" directive
@@ -139,6 +193,19 @@ fn parse_fixture(content: &str) -> (String, Expectation, TestConfig) {
         let xfail_str = &xfail_line[..xfail_end];
         config.xfail_monty = xfail_str.contains("monty");
         config.xfail_cpython = xfail_str.contains("cpython");
+    }
+
+    // Check for "gc-interval=<N>" directive. Overrides the default GC allocation
+    // interval for this test only. Parse until whitespace or end of line so that
+    // trailing comment text like "# gc-interval=100  recursive test" works.
+    if let Some(&gc_line) = comment_lines.iter().find(|line| line.starts_with("gc-interval=")) {
+        let value = &gc_line["gc-interval=".len()..];
+        let value_end = value.find(|c: char| c.is_whitespace()).unwrap_or(value.len());
+        let value_str = value[..value_end].trim();
+        let parsed: usize = value_str
+            .parse()
+            .unwrap_or_else(|e| panic!("invalid gc-interval directive {value_str:?}: {e}"));
+        config.gc_interval = Some(parsed);
     }
 
     // Check for TRACEBACK expectation (triple-quoted string at end of file)
@@ -184,8 +251,11 @@ fn parse_fixture(content: &str) -> (String, Expectation, TestConfig) {
 /// The traceback string should contain the full expected output including the
 /// "Traceback (most recent call last):" header and the exception line.
 fn parse_traceback_expectation(content: &str) -> Option<(String, String)> {
-    // Format: """\nTRACEBACK:\n...\n"""
     const MARKER: &str = "\"\"\"\nTRACEBACK:\n";
+
+    // Normalize \r\n to \n so this works on Windows where git may check out
+    // files with CRLF line endings.
+    let content = content.replace("\r\n", "\n");
 
     // Find the TRACEBACK marker
     let marker_pos = content.find(MARKER)?;
@@ -240,6 +310,35 @@ fn parse_ref_counts(s: &str) -> AHashMap<String, usize> {
 /// This is loaded from `scripts/iter_test_methods.py` which is also imported by
 /// `scripts/run_traceback.py` to ensure consistency.
 const ITER_EXT_FUNCTIONS_PYTHON: &str = include_str!("../../../scripts/iter_test_methods.py");
+
+/// Creates a temporary directory with a known structure for `# mount-fs` tests.
+///
+/// The directory layout is:
+/// ```text
+/// tmpdir/
+///   hello.txt          -> "hello world\n"
+///   empty.txt          -> ""
+///   data.bin           -> b"\x00\x01\x02\x03"
+///   subdir/
+///     nested.txt       -> "nested content"
+///     deep/
+///       file.txt       -> "deep file"
+///   readonly.txt       -> "readonly content"
+/// ```
+fn create_mount_fs_tempdir() -> tempfile::TempDir {
+    let dir = tempfile::TempDir::new().expect("failed to create temp dir for mount-fs test");
+    let p = dir.path();
+
+    fs::write(p.join("hello.txt"), "hello world\n").unwrap();
+    fs::write(p.join("empty.txt"), "").unwrap();
+    fs::write(p.join("data.bin"), b"\x00\x01\x02\x03").unwrap();
+    fs::create_dir_all(p.join("subdir/deep")).unwrap();
+    fs::write(p.join("subdir/nested.txt"), "nested content").unwrap();
+    fs::write(p.join("subdir/deep/file.txt"), "deep file").unwrap();
+    fs::write(p.join("readonly.txt"), "readonly content").unwrap();
+
+    dir
+}
 
 /// Pre-imports Python modules that can cause race conditions during parallel test execution.
 ///
@@ -784,6 +883,24 @@ fn dispatch_os_call(
     args: &[MontyObject],
     kwargs: &[(MontyObject, MontyObject)],
 ) -> ExtFunctionResult {
+    // Handle DateToday — return deterministic fixture date (local date at UTC+02:00).
+    // Deterministic timestamp: 1_700_000_000 UTC = 2023-11-14 22:13:20 UTC.
+    // With local offset +7200 (UTC+02:00), local date is 2023-11-15.
+    if function == OsFunction::DateToday {
+        return MontyObject::Date(MontyDate {
+            year: 2023,
+            month: 11,
+            day: 15,
+        })
+        .into();
+    }
+
+    // Handle DateTimeNow — return deterministic fixture datetime.
+    // The `tz` arg (args[0]) determines naive vs aware.
+    if function == OsFunction::DateTimeNow {
+        return dispatch_datetime_now(args).into();
+    }
+
     // Handle GetEnviron first as it takes no path argument
     if function == OsFunction::GetEnviron {
         // Return the virtual environment as a dict
@@ -812,7 +929,7 @@ fn dispatch_os_call(
     };
 
     match function {
-        OsFunction::GetEnviron => unreachable!("handled above"),
+        OsFunction::GetEnviron | OsFunction::DateToday | OsFunction::DateTimeNow => unreachable!("handled above"),
         OsFunction::Exists => {
             let exists = get_virtual_file(&path).is_some() || is_virtual_dir(&path);
             MontyObject::Bool(exists).into()
@@ -831,7 +948,7 @@ fn dispatch_os_call(
         }
         OsFunction::ReadText => {
             if let Some(file) = get_virtual_file(&path) {
-                match std::str::from_utf8(&file.content) {
+                match str::from_utf8(&file.content) {
                     Ok(text) => MontyObject::String(text.to_owned()).into(),
                     Err(_) => MontyException::new(
                         ExcType::UnicodeDecodeError,
@@ -952,7 +1069,7 @@ fn dispatch_os_call(
             }
 
             // Check parent directory
-            let parent = std::path::Path::new(&path)
+            let parent = Path::new(&path)
                 .parent()
                 .map(|p| p.to_string_lossy().to_string())
                 .unwrap_or_default();
@@ -1047,13 +1164,60 @@ fn dispatch_os_call(
     }
 }
 
+/// Deterministic UTC timestamp for datetime test fixtures (2023-11-14 22:13:20 UTC).
+const DATETIME_FIXTURE_TIMESTAMP: i64 = 1_700_000_000;
+
+/// Dispatches a `DateTimeNow` OS call, returning a deterministic `MontyDateTime`.
+///
+/// The `tz` argument (args[0]) determines whether a naive or aware datetime is
+/// returned. The deterministic timestamp is 1_700_000_000 UTC (2023-11-14 22:13:20 UTC).
+/// For naive datetimes the virtual local offset is UTC+02:00.
+fn dispatch_datetime_now(args: &[MontyObject]) -> MontyObject {
+    let tz = args.first().expect("DateTimeNow requires a tz argument");
+    match tz {
+        MontyObject::None => {
+            // Naive datetime: apply local offset to get local wall-clock time
+            // 1_700_000_000 UTC + 7200 = 2023-11-15 00:13:20 local
+            MontyObject::DateTime(MontyDateTime {
+                year: 2023,
+                month: 11,
+                day: 15,
+                hour: 0,
+                minute: 13,
+                second: 20,
+                microsecond: 0,
+                offset_seconds: None,
+                timezone_name: None,
+            })
+        }
+        MontyObject::TimeZone(tz) => {
+            // Aware datetime: convert UTC timestamp to the requested timezone
+            let offset_delta = chrono::TimeDelta::try_seconds(i64::from(tz.offset_seconds)).expect("valid offset");
+            let utc = chrono::DateTime::from_timestamp(DATETIME_FIXTURE_TIMESTAMP, 0).expect("valid timestamp");
+            let local = (utc + offset_delta).naive_utc();
+            MontyObject::DateTime(MontyDateTime {
+                year: local.year(),
+                month: u8::try_from(local.month()).expect("month fits u8"),
+                day: u8::try_from(local.day()).expect("day fits u8"),
+                hour: u8::try_from(local.hour()).expect("hour fits u8"),
+                minute: u8::try_from(local.minute()).expect("minute fits u8"),
+                second: u8::try_from(local.second()).expect("second fits u8"),
+                microsecond: 0,
+                offset_seconds: Some(tz.offset_seconds),
+                timezone_name: tz.name.clone(),
+            })
+        }
+        _ => panic!("DateTimeNow: tz argument must be None or TimeZone, got {tz:?}"),
+    }
+}
+
 /// Helper to create parent directories recursively.
 fn create_parent_dirs(path: &str) {
     if is_virtual_dir(path) {
         return;
     }
     // Create parent first
-    if let Some(parent) = std::path::Path::new(path).parent() {
+    if let Some(parent) = Path::new(path).parent() {
         let parent_str = parent.to_string_lossy().to_string();
         if !parent_str.is_empty() {
             create_parent_dirs(&parent_str);
@@ -1075,8 +1239,8 @@ struct TestFailure {
     actual: String,
 }
 
-impl std::fmt::Display for TestFailure {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Display for TestFailure {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         writeln!(
             f,
             "[{}] {} mismatch\ngot {:?}\ndiff:",
@@ -1094,8 +1258,17 @@ impl std::fmt::Display for TestFailure {
 ///
 /// This function executes Python code via the MontyRun and validates the result
 /// against the expected outcome specified in the fixture.
-fn try_run_test(path: &Path, code: &str, expectation: &Expectation) -> Result<(), TestFailure> {
-    let test_name = path.strip_prefix("test_cases/").unwrap_or(path).display().to_string();
+fn try_run_test(
+    path: &Path,
+    code: &str,
+    expectation: &Expectation,
+    gc_interval: Option<usize>,
+) -> Result<(), TestFailure> {
+    let test_name = path
+        .strip_prefix(TEST_CASES_RELATIVE_DIR)
+        .unwrap_or(path)
+        .display()
+        .to_string();
 
     // Reset the mutable VFS for each test
     reset_mutable_vfs();
@@ -1155,7 +1328,7 @@ fn try_run_test(path: &Path, code: &str, expectation: &Expectation) -> Result<()
 
     match MontyRun::new(code.to_owned(), &test_name, vec![]) {
         Ok(ex) => {
-            let limits = ResourceLimits::new().max_recursion_depth(Some(TEST_RECURSION_LIMIT));
+            let limits = build_test_limits(gc_interval);
             let result = ex.run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout);
             match result {
                 Ok(obj) => match expectation {
@@ -1280,8 +1453,17 @@ fn try_run_test(path: &Path, code: &str, expectation: &Expectation) -> Result<()
 ///
 /// This function handles tests marked with `# call-external` directive by using the
 /// iterative executor API and providing implementations for predefined external functions.
-fn try_run_iter_test(path: &Path, code: &str, expectation: &Expectation) -> Result<(), TestFailure> {
-    let test_name = path.strip_prefix("test_cases/").unwrap_or(path).display().to_string();
+fn try_run_iter_test(
+    path: &Path,
+    code: &str,
+    expectation: &Expectation,
+    gc_interval: Option<usize>,
+) -> Result<(), TestFailure> {
+    let test_name = path
+        .strip_prefix(TEST_CASES_RELATIVE_DIR)
+        .unwrap_or(path)
+        .display()
+        .to_string();
 
     // Reset the mutable VFS for each test
     reset_mutable_vfs();
@@ -1333,7 +1515,7 @@ fn try_run_iter_test(path: &Path, code: &str, expectation: &Expectation) -> Resu
     };
 
     // Run execution loop, handling external function calls until complete
-    let result = run_iter_loop(exec);
+    let result = run_iter_loop(exec, gc_interval);
 
     match result {
         Ok(obj) => match expectation {
@@ -1418,26 +1600,158 @@ fn try_run_iter_test(path: &Path, code: &str, expectation: &Expectation) -> Resu
     Ok(())
 }
 
+/// Runs a `# mount-fs` test: creates a temp directory, mounts it via `MountTable`,
+/// and dispatches OS calls through the mount table instead of the virtual filesystem.
+fn try_run_mount_fs_test(
+    path: &Path,
+    code: &str,
+    expectation: &Expectation,
+    gc_interval: Option<usize>,
+) -> Result<(), TestFailure> {
+    let test_name = path
+        .strip_prefix(TEST_CASES_RELATIVE_DIR)
+        .unwrap_or(path)
+        .display()
+        .to_string();
+
+    let tmpdir = create_mount_fs_tempdir();
+    let mut mount_table = MountTable::new();
+    mount_table
+        .mount(
+            "/mnt",
+            tmpdir.path(),
+            MountMode::OverlayMemory(OverlayState::new()),
+            None,
+        )
+        .expect("failed to mount temp dir for mount-fs test");
+
+    let exec = match MontyRun::new(code.to_owned(), &test_name, vec![]) {
+        Ok(e) => e,
+        Err(parse_err) => {
+            return Err(TestFailure {
+                test_name,
+                kind: "Unexpected parse error".to_string(),
+                expected: "success".to_string(),
+                actual: parse_err.to_string(),
+            });
+        }
+    };
+
+    let result = run_mount_fs_iter_loop(exec, &mut mount_table, gc_interval);
+
+    match result {
+        Ok(_) => match expectation {
+            Expectation::NoException => {}
+            Expectation::Raise(expected) | Expectation::Traceback(expected) => {
+                return Err(TestFailure {
+                    test_name,
+                    kind: "Exception".to_string(),
+                    expected: expected.clone(),
+                    actual: "no exception raised".to_string(),
+                });
+            }
+            _ => {}
+        },
+        Err(e) => {
+            if let Expectation::Raise(expected) = expectation {
+                let output = e.py_repr();
+                if output != *expected {
+                    return Err(TestFailure {
+                        test_name,
+                        kind: "Exception".to_string(),
+                        expected: expected.clone(),
+                        actual: output,
+                    });
+                }
+            } else if let Expectation::Traceback(expected) = expectation {
+                let output = e.to_string();
+                if output != *expected {
+                    return Err(TestFailure {
+                        test_name,
+                        kind: "Traceback".to_string(),
+                        expected: expected.clone(),
+                        actual: output,
+                    });
+                }
+            } else {
+                return Err(TestFailure {
+                    test_name,
+                    kind: "Unexpected error".to_string(),
+                    expected: "success".to_string(),
+                    actual: e.to_string(),
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Execution loop for `# mount-fs` tests.
+///
+/// Dispatches OS calls through the mount table. Name lookups resolve `root`
+/// to `Path('/mnt')` so Python code can access the mounted directory.
+fn run_mount_fs_iter_loop(
+    exec: MontyRun,
+    mount_table: &mut MountTable,
+    gc_interval: Option<usize>,
+) -> Result<MontyObject, MontyException> {
+    let limits = build_test_limits(gc_interval);
+    let mut progress = exec.start(vec![], LimitedTracker::new(limits), PrintWriter::Stdout)?;
+
+    loop {
+        match progress {
+            RunProgress::Complete(result) => return Ok(result),
+            RunProgress::FunctionCall(call) => {
+                // No external function calls expected in mount-fs tests.
+                panic!("unexpected FunctionCall in mount-fs test: {}", call.function_name);
+            }
+            RunProgress::ResolveFutures(_) => {
+                panic!("unexpected ResolveFutures in mount-fs test");
+            }
+            RunProgress::NameLookup(lookup) => {
+                let result = match lookup.name.as_str() {
+                    "root" => NameLookupResult::Value(MontyObject::Path("/mnt".to_owned())),
+                    _ => NameLookupResult::Undefined,
+                };
+                progress = lookup.resume(result, PrintWriter::Stdout)?;
+            }
+            RunProgress::OsCall(call) => {
+                // Dispatch through the mount table first.
+                let result = mount_table.handle_os_call(call.function, &call.args, &call.kwargs);
+                let ext_result = match result {
+                    Some(Ok(obj)) => ExtFunctionResult::Return(obj),
+                    Some(Err(err)) => ExtFunctionResult::Error(err.into_exception()),
+                    None => {
+                        // Non-filesystem operation — dispatch to the regular handler.
+                        dispatch_os_call(call.function, &call.args, &call.kwargs)
+                    }
+                };
+                progress = call.resume(ext_result, PrintWriter::Stdout)?;
+            }
+        }
+    }
+}
+
 /// Execute the iter loop, dispatching external function calls until complete.
 ///
-/// When `ref-count-panic` feature is NOT enabled, this function also tests
+/// When `memory-model-checks` feature is NOT enabled, this function also tests
 /// serialization round-trips by dumping and loading the execution state at
 /// each external function call boundary.
 ///
 /// Supports both synchronous and asynchronous external functions:
 /// - Sync functions: result is passed immediately via `state.run()`
 /// - Async functions: `state.run_pending()` creates a future, resolved via `ResolveFutures`
-fn run_iter_loop(exec: MontyRun) -> Result<MontyObject, MontyException> {
-    let limits = ResourceLimits::new().max_recursion_depth(Some(TEST_RECURSION_LIMIT));
+fn run_iter_loop(exec: MontyRun, gc_interval: Option<usize>) -> Result<MontyObject, MontyException> {
+    let limits = build_test_limits(gc_interval);
     let mut progress = exec.start(vec![], LimitedTracker::new(limits), PrintWriter::Stdout)?;
 
     // Track pending async calls: (call_id, result_value)
     let mut pending_results: Vec<(u32, MontyObject)> = Vec::new();
 
     loop {
-        // Test serialization round-trip at each step (skip when ref-count-panic is enabled
+        // Test serialization round-trip at each step (skip when memory-model-checks is enabled
         // since the old RunProgress would panic on drop without proper cleanup)
-        #[cfg(not(feature = "ref-count-panic"))]
+        #[cfg(not(feature = "memory-model-checks"))]
         {
             let bytes = progress.dump().expect("failed to dump RunProgress");
             progress = RunProgress::load(&bytes).expect("failed to load RunProgress");
@@ -1673,11 +1987,11 @@ fn format_traceback(py: Python<'_>, exc: &PyErr) -> String {
 
 /// Import the run_traceback module
 fn import_run_traceback(py: Python<'_>) -> Bound<'_, PyModule> {
-    // Add scripts directory to sys.path (tests run from crates/monty/)
+    // Add scripts directory to sys.path (binary is expected to be run from project root)
     let sys = py.import("sys").expect("Failed to import sys");
     let sys_path = sys.getattr("path").expect("Failed to get sys.path");
     sys_path
-        .call_method1("insert", (0, "../../scripts"))
+        .call_method1("insert", (0, SCRIPTS_DIR))
         .expect("Failed to add scripts to sys.path");
 
     // Import the run_traceback module
@@ -1711,6 +2025,7 @@ fn try_run_cpython_test(
     expectation: &Expectation,
     iter_mode: bool,
     async_mode: bool,
+    mount_fs: bool,
 ) -> Result<(), TestFailure> {
     // Ensure Python modules are imported before parallel tests access them.
     // This prevents race conditions during module initialization.
@@ -1721,7 +2036,11 @@ fn try_run_cpython_test(
         return Ok(());
     }
 
-    let test_name = path.strip_prefix("test_cases/").unwrap_or(path).display().to_string();
+    let test_name = path
+        .strip_prefix(TEST_CASES_RELATIVE_DIR)
+        .unwrap_or(path)
+        .display()
+        .to_string();
 
     // Traceback tests use the external script for reliable caret line support
     if let Expectation::Traceback(expected) = expectation {
@@ -1736,6 +2055,21 @@ fn try_run_cpython_test(
         }
         return Ok(());
     }
+
+    // For mount-fs tests, create a fresh temp directory and inject `root` as a real Path.
+    // The TempDir must outlive the test execution so the directory isn't cleaned up early.
+    let mount_tmpdir = if mount_fs {
+        Some(create_mount_fs_tempdir())
+    } else {
+        None
+    };
+    let mount_root_setup: Option<String> = mount_tmpdir.as_ref().map(|tmpdir| {
+        let tmpdir_path = tmpdir.path().to_string_lossy().to_string();
+        format!(
+            "from pathlib import Path as _Path; root = _Path('{}')",
+            tmpdir_path.replace('\\', "\\\\").replace('\'', "\\'")
+        )
+    });
 
     let need_return_value = matches!(
         expectation,
@@ -1753,8 +2087,15 @@ fn try_run_cpython_test(
         // Execute statements at module level
         let globals = PyDict::new(py);
 
+        // For mount-fs tests, inject `root` variable pointing to real temp directory.
+        if let Some(ref setup_code) = mount_root_setup {
+            let setup_cstr = CString::new(setup_code.as_str()).expect("Invalid C string in mount-fs setup");
+            py.run(&setup_cstr, Some(&globals), None)
+                .expect("Failed to set up mount-fs root for CPython");
+        }
+
         // For iter mode tests, inject external function implementations into globals
-        if iter_mode {
+        if iter_mode && !mount_fs {
             let ext_funcs_cstr = CString::new(ITER_EXT_FUNCTIONS_PYTHON).expect("Invalid C string in ext funcs");
             py.run(&ext_funcs_cstr, Some(&globals), None)
                 .expect("Failed to define external functions for iter mode");
@@ -1891,7 +2232,7 @@ fn format_cpython_exception(py: Python<'_>, e: &PyErr) -> String {
 /// and will fail with a timeout error. Disabled under miri since the interpreter
 /// overhead makes normal tests exceed the 2s limit.
 const TEST_TIMEOUT: Duration = if cfg!(miri) {
-    Duration::from_secs(600)
+    Duration::from_mins(10)
 } else {
     Duration::from_secs(2)
 };
@@ -1959,19 +2300,32 @@ where
 /// Handles xfail with strict semantics: if a test is marked `xfail=monty`, it must fail.
 /// If an xfail test passes unexpectedly, that's an error.
 fn run_test_cases_monty(path: &Path) -> Result<(), Box<dyn Error>> {
+    set_current_dir(CANONICAL_WS_DIR.as_path())?;
+
+    let path = path.canonicalize()?;
+    let path = path.strip_prefix(CANONICAL_WS_DIR.as_path())?;
+
     let content = fs::read_to_string(path)?;
     let (code, expectation, config) = parse_fixture(&content);
-    let test_name = path.strip_prefix("test_cases/").unwrap_or(path).display().to_string();
+    let test_name = path
+        .strip_prefix(TEST_CASES_RELATIVE_DIR)
+        .unwrap_or(path)
+        .display()
+        .to_string();
 
     // Move data into the closure since it needs 'static lifetime
     let path_owned = path.to_owned();
     let iter_mode = config.iter_mode;
+    let mount_fs = config.mount_fs;
+    let gc_interval = config.gc_interval;
 
     let result = run_with_timeout(TEST_TIMEOUT, move || {
-        if iter_mode {
-            try_run_iter_test(&path_owned, &code, &expectation)
+        if mount_fs {
+            try_run_mount_fs_test(&path_owned, &code, &expectation, gc_interval)
+        } else if iter_mode {
+            try_run_iter_test(&path_owned, &code, &expectation, gc_interval)
         } else {
-            try_run_test(&path_owned, &code, &expectation)
+            try_run_test(&path_owned, &code, &expectation, gc_interval)
         }
     });
 
@@ -2009,15 +2363,36 @@ fn run_test_cases_monty(path: &Path) -> Result<(), Box<dyn Error>> {
 /// Handles xfail with strict semantics: if a test is marked `xfail=cpython`, it must fail.
 /// If an xfail test passes unexpectedly, that's an error.
 fn run_test_cases_cpython(path: &Path) -> Result<(), Box<dyn Error>> {
+    set_current_dir(CANONICAL_WS_DIR.as_path())?;
+
+    let path = path.canonicalize()?;
+    let path = path.strip_prefix(CANONICAL_WS_DIR.as_path())?;
+
     let content = fs::read_to_string(path)?;
     let (code, expectation, config) = parse_fixture(&content);
-    let test_name = path.strip_prefix("test_cases/").unwrap_or(path).display().to_string();
+    let test_name = path
+        .strip_prefix(TEST_CASES_RELATIVE_DIR)
+        .unwrap_or(path)
+        .display()
+        .to_string();
 
     if config.skip_cpython {
         return Ok(());
     }
 
-    let result = try_run_cpython_test(path, &code, &expectation, config.iter_mode, config.async_mode);
+    // Skip CPython tests that rely on POSIX path semantics when running on Windows
+    if cfg!(windows) && config.skip_cpython_windows {
+        return Ok(());
+    }
+
+    let result = try_run_cpython_test(
+        path,
+        &code,
+        &expectation,
+        config.iter_mode,
+        config.async_mode,
+        config.mount_fs,
+    );
 
     if config.xfail_cpython {
         // Strict xfail: test must fail; if it passed, xfail should be removed
@@ -2034,9 +2409,9 @@ fn run_test_cases_cpython(path: &Path) -> Result<(), Box<dyn Error>> {
 // Generate tests for all fixture files using datatest-stable harness macro
 datatest_stable::harness!(
     run_test_cases_monty,
-    "test_cases",
+    TEST_CASES_DIR,
     r"^.*\.py$",
     run_test_cases_cpython,
-    "test_cases",
+    TEST_CASES_DIR,
     r"^.*\.py$",
 );

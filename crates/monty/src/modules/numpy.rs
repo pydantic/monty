@@ -50,6 +50,11 @@
 //! ## Search & index
 //! - `numpy.nonzero(a)`, `numpy.argwhere(a)`
 
+use std::{
+    cmp::Ordering,
+    f64::consts::{E, PI},
+};
+
 use smallvec::SmallVec;
 
 use crate::{
@@ -63,8 +68,8 @@ use crate::{
     modules::ModuleFunctions,
     resource::{ResourceError, ResourceTracker, check_array_alloc_size},
     types::{
-        Module, NdArray, PyTrait, allocate_tuple,
-        ndarray::{NdArrayDtype, promote_dtype},
+        List, Module, NdArray, PyTrait, allocate_tuple,
+        ndarray::{NdArrayDtype, nan_last_cmp, ndarray_from_list, promote_dtype, promote_dtype_with_scalar},
     },
     value::Value,
 };
@@ -417,7 +422,7 @@ pub(crate) enum NumpyFunctions {
 /// Creates the `numpy` module and allocates it on the heap.
 ///
 /// Registers all numpy functions as module attributes.
-pub fn create_module(vm: &mut VM<'_, '_, impl ResourceTracker>) -> Result<HeapId, ResourceError> {
+pub fn create_module(vm: &mut VM<'_, impl ResourceTracker>) -> Result<HeapId, ResourceError> {
     let mut module = Module::new(StaticStrings::Numpy);
 
     for (name, func) in NUMPY_FUNCTIONS {
@@ -425,8 +430,8 @@ pub fn create_module(vm: &mut VM<'_, '_, impl ResourceTracker>) -> Result<HeapId
     }
 
     // Module-level constants
-    module.set_attr(StaticStrings::Pi, Value::Float(std::f64::consts::PI), vm);
-    module.set_attr(StaticStrings::MathE, Value::Float(std::f64::consts::E), vm);
+    module.set_attr(StaticStrings::Pi, Value::Float(PI), vm);
+    module.set_attr(StaticStrings::MathE, Value::Float(E), vm);
     module.set_attr(StaticStrings::MathInf, Value::Float(f64::INFINITY), vm);
     module.set_attr(StaticStrings::MathNan, Value::Float(f64::NAN), vm);
     module.set_attr(StaticStrings::Newaxis, Value::None, vm);
@@ -639,7 +644,7 @@ const NUMPY_FUNCTIONS: &[(StaticStrings, NumpyFunctions)] = &[
 
 /// Dispatches a call to a `numpy` module function.
 pub(super) fn call(
-    vm: &mut VM<'_, '_, impl ResourceTracker>,
+    vm: &mut VM<'_, impl ResourceTracker>,
     function: NumpyFunctions,
     args: ArgValues,
 ) -> RunResult<CallResult> {
@@ -934,17 +939,17 @@ pub(super) fn call(
 // ===========================
 
 /// `numpy.array(data)` — create an ndarray from a list or nested list.
-fn call_array(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+fn call_array(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     let arg = args.get_one_arg("numpy.array", vm.heap)?;
     defer_drop!(arg, vm);
-    let arr = crate::types::ndarray::ndarray_from_list(arg, vm.heap)?;
+    let arr = ndarray_from_list(arg, vm.heap)?;
     Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(arr))?))
 }
 
 /// `numpy.zeros(shape)` — create an array of zeros with the given shape.
 ///
 /// Accepts an integer for 1D or a tuple/list for multi-dimensional shapes.
-fn call_zeros(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+fn call_zeros(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     let arg = args.get_one_arg("numpy.zeros", vm.heap)?;
     let shape = extract_shape(arg, "numpy.zeros", vm)?;
     let total: usize = shape.iter().product();
@@ -956,7 +961,7 @@ fn call_zeros(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> Run
 /// `numpy.ones(shape)` — create an array of ones with the given shape.
 ///
 /// Accepts an integer for 1D or a tuple/list for multi-dimensional shapes.
-fn call_ones(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+fn call_ones(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     let arg = args.get_one_arg("numpy.ones", vm.heap)?;
     let shape = extract_shape(arg, "numpy.ones", vm)?;
     let total: usize = shape.iter().product();
@@ -971,7 +976,7 @@ fn call_ones(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunR
 /// - `arange(stop)` — values from 0 to stop with step 1
 /// - `arange(start, stop)` — values from start to stop with step 1
 /// - `arange(start, stop, step)` — values from start to stop with given step
-fn call_arange(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+fn call_arange(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     let pos = args.into_pos_only("numpy.arange", vm.heap)?;
     defer_drop_mut!(pos, vm);
 
@@ -1043,7 +1048,7 @@ fn call_arange(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> Ru
 /// `numpy.linspace(start, stop, num)` — evenly spaced values over an interval.
 ///
 /// Returns `num` values including both endpoints.
-fn call_linspace(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+fn call_linspace(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     let pos = args.into_pos_only("numpy.linspace", vm.heap)?;
     defer_drop_mut!(pos, vm);
 
@@ -1112,7 +1117,7 @@ fn call_linspace(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> 
 /// Accepts both ndarray and plain list arguments — lists are auto-converted to
 /// a temporary NdArray, matching real NumPy's behavior of `np.mean([1,2,3])`.
 fn call_aggregate(
-    vm: &mut VM<'_, '_, impl ResourceTracker>,
+    vm: &mut VM<'_, impl ResourceTracker>,
     args: ArgValues,
     f: fn(&NdArray) -> f64,
     name: &str,
@@ -1140,7 +1145,7 @@ fn call_aggregate(
 ///
 /// Accepts both ndarray and plain list arguments — lists are auto-converted.
 fn call_aggregate_result(
-    vm: &mut VM<'_, '_, impl ResourceTracker>,
+    vm: &mut VM<'_, impl ResourceTracker>,
     args: ArgValues,
     f: fn(&NdArray) -> RunResult<f64>,
     name: &str,
@@ -1168,7 +1173,7 @@ fn call_aggregate_result(
 ///
 /// Used by aggregate functions to accept plain lists like `np.mean([1, 2, 3])`
 /// in addition to ndarray arguments.
-fn list_to_ndarray(list: &crate::types::List, name: &str) -> RunResult<NdArray> {
+fn list_to_ndarray(list: &List, name: &str) -> RunResult<NdArray> {
     let data: Vec<f64> = list
         .as_slice()
         .iter()
@@ -1191,7 +1196,7 @@ fn list_to_ndarray(list: &crate::types::List, name: &str) -> RunResult<NdArray> 
 /// Accepts both ndarray and plain list arguments — lists are auto-converted to
 /// a temporary NdArray, matching real NumPy's behavior of `np.abs([1, -2, 3])`.
 fn call_elementwise(
-    vm: &mut VM<'_, '_, impl ResourceTracker>,
+    vm: &mut VM<'_, impl ResourceTracker>,
     args: ArgValues,
     f: fn(f64) -> f64,
     name: &str,
@@ -1229,7 +1234,7 @@ fn call_elementwise(
 }
 
 /// `numpy.round(a, decimals=0)` — element-wise rounding.
-fn call_round(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+fn call_round(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     let (arr_val, decimals_val) = args.get_one_two_args("numpy.round", vm.heap)?;
     defer_drop!(arr_val, vm);
 
@@ -1257,7 +1262,7 @@ fn call_round(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> Run
 }
 
 /// `numpy.clip(a, a_min, a_max)` — clip (limit) array values to a range.
-fn call_clip(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+fn call_clip(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     let pos = args.into_pos_only("numpy.clip", vm.heap)?;
     defer_drop_mut!(pos, vm);
 
@@ -1301,7 +1306,7 @@ fn call_clip(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunR
 }
 
 /// `numpy.where(condition, x, y)` — conditional element selection.
-fn call_where(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+fn call_where(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     let pos = args.into_pos_only("numpy.where", vm.heap)?;
     defer_drop_mut!(pos, vm);
 
@@ -1359,7 +1364,7 @@ fn call_where(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> Run
 /// When the value is an ndarray, its length is validated against `len` so that the
 /// caller never builds an output with mismatched shape/data — matching NumPy's
 /// broadcasting error on incompatible shapes.
-fn extract_array_or_scalar(val: &Value, len: usize, vm: &VM<'_, '_, impl ResourceTracker>) -> RunResult<Vec<f64>> {
+fn extract_array_or_scalar(val: &Value, len: usize, vm: &VM<'_, impl ResourceTracker>) -> RunResult<Vec<f64>> {
     match val {
         Value::Ref(heap_id) => {
             if let HeapData::NdArray(arr) = vm.heap.get(*heap_id) {
@@ -1392,7 +1397,7 @@ fn extract_array_or_scalar(val: &Value, len: usize, vm: &VM<'_, '_, impl Resourc
 
 /// Helper for element-wise binary functions like `numpy.maximum(a, b)`.
 fn call_pairwise(
-    vm: &mut VM<'_, '_, impl ResourceTracker>,
+    vm: &mut VM<'_, impl ResourceTracker>,
     args: ArgValues,
     f: fn(f64, f64) -> f64,
     name: &str,
@@ -1441,7 +1446,7 @@ fn call_pairwise(
 // ===========================
 
 /// `numpy.sort(a)` — return a sorted copy of the array.
-fn call_sort(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+fn call_sort(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     let arg = args.get_one_arg("numpy.sort", vm.heap)?;
     defer_drop!(arg, vm);
     let Value::Ref(heap_id) = arg else {
@@ -1454,13 +1459,13 @@ fn call_sort(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunR
     let mut data = arr.data().to_vec();
     let dtype = arr.dtype();
     let shape = arr.shape().to_vec();
-    data.sort_by(crate::types::ndarray::nan_last_cmp);
+    data.sort_by(nan_last_cmp);
     let new_arr = NdArray::new(data, shape, dtype);
     Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(new_arr))?))
 }
 
 /// `numpy.unique(a)` — return the sorted unique elements of an array.
-fn call_unique(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+fn call_unique(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     let arg = args.get_one_arg("numpy.unique", vm.heap)?;
     defer_drop!(arg, vm);
     let Value::Ref(heap_id) = arg else {
@@ -1472,7 +1477,7 @@ fn call_unique(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> Ru
 
     let mut data = arr.data().to_vec();
     let dtype = arr.dtype();
-    data.sort_by(crate::types::ndarray::nan_last_cmp);
+    data.sort_by(nan_last_cmp);
     data.dedup();
     let len = data.len();
     let new_arr = NdArray::new(data, vec![len], dtype);
@@ -1480,7 +1485,7 @@ fn call_unique(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> Ru
 }
 
 /// `numpy.concatenate(arrays)` — join a sequence of arrays along the first axis.
-fn call_concatenate(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+fn call_concatenate(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     let arg = args.get_one_arg("numpy.concatenate", vm.heap)?;
     defer_drop!(arg, vm);
 
@@ -1532,7 +1537,7 @@ fn call_concatenate(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) 
 }
 
 /// `numpy.cumsum(a)` — return the cumulative sum of array elements.
-fn call_cumsum(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+fn call_cumsum(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     let arg = args.get_one_arg("numpy.cumsum", vm.heap)?;
     defer_drop!(arg, vm);
     let Value::Ref(heap_id) = arg else {
@@ -1556,7 +1561,7 @@ fn call_cumsum(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> Ru
 }
 
 /// `numpy.dot(a, b)` — dot product of two 1D arrays.
-fn call_dot(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+fn call_dot(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     let (a_val, b_val) = args.get_two_args("numpy.dot", vm.heap)?;
     defer_drop!(a_val, vm);
 
@@ -1606,7 +1611,7 @@ fn call_dot(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunRe
 /// `numpy.matmul(a, b)` — matrix multiplication (like `a @ b`).
 ///
 /// Supports 1D-1D (dot product), 2D-2D (matrix multiply), 2D-1D and 1D-2D products.
-fn call_matmul(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+fn call_matmul(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     let (a_val, b_val) = args.get_two_args("numpy.matmul", vm.heap)?;
     defer_drop!(a_val, vm);
 
@@ -1642,7 +1647,7 @@ fn call_matmul(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> Ru
 /// `numpy.power(a, b)` — element-wise power (like `a ** b`).
 ///
 /// Supports array-array, array-scalar, and scalar-array combinations.
-fn call_power(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+fn call_power(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     let (a_val, b_val) = args.get_two_args("numpy.power", vm.heap)?;
     defer_drop!(a_val, vm);
     defer_drop!(b_val, vm);
@@ -1668,7 +1673,7 @@ fn call_power(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> Run
             let scalar = to_f64(b_val, vm)?;
             let is_float = matches!(b_val, Value::Float(_));
             let data: Vec<f64> = a_data.iter().map(|&a| a.powf(scalar)).collect();
-            let dtype = crate::types::ndarray::promote_dtype_with_scalar(a_dtype, is_float);
+            let dtype = promote_dtype_with_scalar(a_dtype, is_float);
             let arr = NdArray::new(data, a_shape, dtype);
             Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(arr))?))
         }
@@ -1677,7 +1682,7 @@ fn call_power(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> Run
             let scalar = to_f64(a_val, vm)?;
             let is_float = matches!(a_val, Value::Float(_));
             let data: Vec<f64> = b_data.iter().map(|&b| scalar.powf(b)).collect();
-            let dtype = crate::types::ndarray::promote_dtype_with_scalar(b_dtype, is_float);
+            let dtype = promote_dtype_with_scalar(b_dtype, is_float);
             let arr = NdArray::new(data, b_shape, dtype);
             Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(arr))?))
         }
@@ -1687,7 +1692,7 @@ fn call_power(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> Run
 }
 
 /// `numpy.diff(a)` — first-order discrete difference: `a[1:] - a[:-1]`.
-fn call_diff(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+fn call_diff(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     let arg = args.get_one_arg("numpy.diff", vm.heap)?;
     defer_drop!(arg, vm);
     let arr = ndarray_from_value(arg, "numpy.diff", vm)?;
@@ -1702,7 +1707,7 @@ fn call_diff(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunR
 }
 
 /// `numpy.full(shape, fill_value)` — create an array filled with a constant.
-fn call_full(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+fn call_full(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     let (shape_val, fill_val) = args.get_two_args("numpy.full", vm.heap)?;
     defer_drop!(shape_val, vm);
     let shape = extract_shape(shape_val.clone_immediate(), "numpy.full", vm)?;
@@ -1722,7 +1727,7 @@ fn call_full(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunR
 }
 
 /// `numpy.eye(n)` — create an n×n identity matrix (Float64).
-fn call_eye(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+fn call_eye(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     let arg = args.get_one_arg("numpy.eye", vm.heap)?;
     let n = extract_size(arg, "numpy.eye", vm)?;
     check_array_alloc_size(n * n, vm.heap.tracker())?;
@@ -1735,7 +1740,7 @@ fn call_eye(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunRe
 }
 
 /// `numpy.copy(a)` — return a copy of the array, also accepts plain lists.
-fn call_copy(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+fn call_copy(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     let arg = args.get_one_arg("numpy.copy", vm.heap)?;
     defer_drop!(arg, vm);
     let Value::Ref(heap_id) = arg else {
@@ -1745,7 +1750,7 @@ fn call_copy(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunR
         HeapData::NdArray(arr) => NdArray::new(arr.data().to_vec(), arr.shape().to_vec(), arr.dtype()),
         HeapData::List(_) => {
             // Use ndarray_from_list which handles proper dtype tracking
-            crate::types::ndarray::ndarray_from_list(arg, vm.heap)?
+            ndarray_from_list(arg, vm.heap)?
         }
         _ => return Err(ExcType::type_error("numpy.copy() requires an array or list")),
     };
@@ -1753,7 +1758,7 @@ fn call_copy(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunR
 }
 
 /// `numpy.empty(shape)` — create an uninitialized array (returns zeros in Monty).
-fn call_empty(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+fn call_empty(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     let arg = args.get_one_arg("numpy.empty", vm.heap)?;
     let shape = extract_shape(arg, "numpy.empty", vm)?;
     let total: usize = shape.iter().product();
@@ -1763,7 +1768,7 @@ fn call_empty(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> Run
 }
 
 /// Helper for `numpy.zeros_like(a)` and `numpy.ones_like(a)`.
-fn call_like(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues, fill: f64, name: &str) -> RunResult<Value> {
+fn call_like(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues, fill: f64, name: &str) -> RunResult<Value> {
     let arg = args.get_one_arg(name, vm.heap)?;
     defer_drop!(arg, vm);
     let arr = ndarray_from_value(arg, name, vm)?;
@@ -1776,7 +1781,7 @@ fn call_like(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues, fill: f
 ///
 /// Applies the predicate to each element and returns a Bool dtype array.
 fn call_bool_test(
-    vm: &mut VM<'_, '_, impl ResourceTracker>,
+    vm: &mut VM<'_, impl ResourceTracker>,
     args: ArgValues,
     pred: fn(f64) -> bool,
     name: &str,
@@ -1792,7 +1797,7 @@ fn call_bool_test(
 /// `numpy.array_equal(a, b)` — true if two arrays have same shape and elements.
 ///
 /// Uses direct f64 equality, so `NaN != NaN` — matching NumPy's behavior.
-fn call_array_equal(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+fn call_array_equal(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     let (a_val, b_val) = args.get_two_args("numpy.array_equal", vm.heap)?;
     defer_drop!(a_val, vm);
     defer_drop!(b_val, vm);
@@ -1805,7 +1810,7 @@ fn call_array_equal(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) 
 }
 
 /// `numpy.count_nonzero(a)` — count non-zero elements.
-fn call_count_nonzero(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+fn call_count_nonzero(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     let arg = args.get_one_arg("numpy.count_nonzero", vm.heap)?;
     defer_drop!(arg, vm);
     let arr = ndarray_from_value(arg, "numpy.count_nonzero", vm)?;
@@ -1815,7 +1820,7 @@ fn call_count_nonzero(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues
 }
 
 /// `numpy.all(a)` — true if all elements are truthy (module-level wrapper).
-fn call_all(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+fn call_all(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     let arg = args.get_one_arg("numpy.all", vm.heap)?;
     defer_drop!(arg, vm);
     let arr = ndarray_from_value(arg, "numpy.all", vm)?;
@@ -1823,7 +1828,7 @@ fn call_all(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunRe
 }
 
 /// `numpy.any(a)` — true if any element is truthy (module-level wrapper).
-fn call_any(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+fn call_any(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     let arg = args.get_one_arg("numpy.any", vm.heap)?;
     defer_drop!(arg, vm);
     let arr = ndarray_from_value(arg, "numpy.any", vm)?;
@@ -1831,7 +1836,7 @@ fn call_any(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunRe
 }
 
 /// `numpy.prod(a)` — product of array elements.
-fn call_prod(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+fn call_prod(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     let arg = args.get_one_arg("numpy.prod", vm.heap)?;
     defer_drop!(arg, vm);
     let arr = ndarray_from_value(arg, "numpy.prod", vm)?;
@@ -1847,7 +1852,7 @@ fn call_prod(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunR
 }
 
 /// `numpy.median(a)` — median of array elements.
-fn call_median(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+fn call_median(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     let arg = args.get_one_arg("numpy.median", vm.heap)?;
     defer_drop!(arg, vm);
     let arr = ndarray_from_value(arg, "numpy.median", vm)?;
@@ -1855,7 +1860,7 @@ fn call_median(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> Ru
         return Err(SimpleException::new_msg(ExcType::ValueError, "zero-size array has no median").into());
     }
     let mut sorted = arr.data().to_vec();
-    sorted.sort_by(crate::types::ndarray::nan_last_cmp);
+    sorted.sort_by(nan_last_cmp);
     let mid = sorted.len() / 2;
     let median = if sorted.len() % 2 == 0 {
         f64::midpoint(sorted[mid - 1], sorted[mid])
@@ -1866,7 +1871,7 @@ fn call_median(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> Ru
 }
 
 /// `numpy.argmin(a)` — index of minimum element (module-level wrapper).
-fn call_argmin_mod(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+fn call_argmin_mod(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     let arg = args.get_one_arg("numpy.argmin", vm.heap)?;
     defer_drop!(arg, vm);
     let arr = ndarray_from_value(arg, "numpy.argmin", vm)?;
@@ -1875,7 +1880,7 @@ fn call_argmin_mod(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -
 }
 
 /// `numpy.argmax(a)` — index of maximum element (module-level wrapper).
-fn call_argmax_mod(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+fn call_argmax_mod(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     let arg = args.get_one_arg("numpy.argmax", vm.heap)?;
     defer_drop!(arg, vm);
     let arr = ndarray_from_value(arg, "numpy.argmax", vm)?;
@@ -1884,7 +1889,7 @@ fn call_argmax_mod(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -
 }
 
 /// `numpy.reshape(a, shape)` — reshape an array (module-level wrapper).
-fn call_reshape_mod(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+fn call_reshape_mod(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     let pos = args.into_pos_only("numpy.reshape", vm.heap)?;
     defer_drop_mut!(pos, vm);
 
@@ -1908,7 +1913,7 @@ fn call_reshape_mod(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) 
 }
 
 /// `numpy.transpose(a)` — transpose an array (module-level wrapper).
-fn call_transpose_mod(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+fn call_transpose_mod(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     let arg = args.get_one_arg("numpy.transpose", vm.heap)?;
     defer_drop!(arg, vm);
     let arr = ndarray_from_value(arg, "numpy.transpose", vm)?;
@@ -1916,7 +1921,7 @@ fn call_transpose_mod(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues
 }
 
 /// `numpy.append(a, values)` — append values to end of array (flattened).
-fn call_append(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+fn call_append(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     let (a_val, b_val) = args.get_two_args("numpy.append", vm.heap)?;
     defer_drop!(a_val, vm);
     defer_drop!(b_val, vm);
@@ -1934,7 +1939,7 @@ fn call_append(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> Ru
 }
 
 /// `numpy.vstack(arrays)` / `numpy.stack(arrays)` — stack 1D arrays as rows of a 2D array.
-fn call_vstack(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+fn call_vstack(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     let arg = args.get_one_arg("numpy.vstack", vm.heap)?;
     defer_drop!(arg, vm);
 
@@ -1999,12 +2004,12 @@ fn call_vstack(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> Ru
 /// For 1D arrays, hstack is equivalent to concatenate (the LLM-common case).
 /// For 2D+ arrays, hstack should concatenate along axis=1 — this is not yet
 /// implemented and will incorrectly concatenate along axis=0 instead.
-fn call_hstack(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+fn call_hstack(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     call_concatenate(vm, args)
 }
 
 /// `numpy.nonzero(a)` — indices of non-zero elements, returned as a tuple of arrays.
-fn call_nonzero(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+fn call_nonzero(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     let arg = args.get_one_arg("numpy.nonzero", vm.heap)?;
     defer_drop!(arg, vm);
     let arr = ndarray_from_value(arg, "numpy.nonzero", vm)?;
@@ -2029,7 +2034,7 @@ fn call_nonzero(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> R
 }
 
 /// `numpy.argwhere(a)` — indices where elements are non-zero, as 2D array.
-fn call_argwhere(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+fn call_argwhere(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     let arg = args.get_one_arg("numpy.argwhere", vm.heap)?;
     defer_drop!(arg, vm);
     let arr = ndarray_from_value(arg, "numpy.argwhere", vm)?;
@@ -2049,7 +2054,7 @@ fn call_argwhere(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> 
 }
 
 /// `numpy.tile(a, reps)` — construct array by repeating `a` `reps` times.
-fn call_tile(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+fn call_tile(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     let (arr_val, reps_val) = args.get_two_args("numpy.tile", vm.heap)?;
     defer_drop!(arr_val, vm);
 
@@ -2082,7 +2087,7 @@ fn call_tile(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunR
 }
 
 /// `numpy.repeat(a, repeats)` — repeat each element `repeats` times.
-fn call_repeat(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+fn call_repeat(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     let (arr_val, reps_val) = args.get_two_args("numpy.repeat", vm.heap)?;
     defer_drop!(arr_val, vm);
 
@@ -2123,7 +2128,7 @@ fn call_repeat(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> Ru
 ///
 /// If the second argument is an integer, splits into that many equal parts.
 /// If it's a list/array, splits at the given indices.
-fn call_split(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+fn call_split(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     let (arr_val, idx_val) = args.get_two_args("numpy.split", vm.heap)?;
     defer_drop!(arr_val, vm);
 
@@ -2209,7 +2214,7 @@ fn call_split(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> Run
         dtype,
     )))?));
 
-    let list = crate::types::List::new(parts);
+    let list = List::new(parts);
     Ok(Value::Ref(vm.heap.allocate(HeapData::List(list))?))
 }
 
@@ -2224,13 +2229,13 @@ fn call_split(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> Run
 fn extract_ndarray_info(
     value: &Value,
     name: &str,
-    vm: &VM<'_, '_, impl ResourceTracker>,
+    vm: &VM<'_, impl ResourceTracker>,
 ) -> RunResult<(Vec<f64>, Vec<usize>, NdArrayDtype)> {
     match value {
         Value::Ref(heap_id) => match vm.heap.get(*heap_id) {
             HeapData::NdArray(arr) => Ok((arr.data().to_vec(), arr.shape().to_vec(), arr.dtype())),
             HeapData::List(_) => {
-                let tmp = crate::types::ndarray::ndarray_from_list(value, vm.heap)?;
+                let tmp = ndarray_from_list(value, vm.heap)?;
                 Ok((tmp.data().to_vec(), tmp.shape().to_vec(), tmp.dtype()))
             }
             _ => Err(ExcType::type_error(format!(
@@ -2244,13 +2249,13 @@ fn extract_ndarray_info(
 }
 
 /// Convenience wrapper that returns an NdArray (owned).
-fn ndarray_from_value(value: &Value, name: &str, vm: &VM<'_, '_, impl ResourceTracker>) -> RunResult<NdArray> {
+fn ndarray_from_value(value: &Value, name: &str, vm: &VM<'_, impl ResourceTracker>) -> RunResult<NdArray> {
     let (data, shape, dtype) = extract_ndarray_info(value, name, vm)?;
     Ok(NdArray::new(data, shape, dtype))
 }
 
 /// Extracts a shape from a Value — supports int (1D), list, or tuple.
-fn extract_shape(value: Value, func_name: &str, vm: &mut VM<'_, '_, impl ResourceTracker>) -> RunResult<Vec<usize>> {
+fn extract_shape(value: Value, func_name: &str, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<Vec<usize>> {
     match &value {
         Value::Int(_) => {
             let n = extract_size(value, func_name, vm)?;
@@ -2283,7 +2288,7 @@ fn extract_shape(value: Value, func_name: &str, vm: &mut VM<'_, '_, impl Resourc
 fn extract_shape_from_value(
     value: &Value,
     func_name: &str,
-    vm: &VM<'_, '_, impl ResourceTracker>,
+    vm: &VM<'_, impl ResourceTracker>,
 ) -> RunResult<Vec<usize>> {
     match value {
         #[expect(clippy::cast_sign_loss, clippy::cast_possible_truncation, reason = "shape from user")]
@@ -2316,7 +2321,7 @@ fn extract_shape_from_items(items: &[Value], func_name: &str) -> RunResult<Vec<u
 }
 
 /// Extracts an integer size from a Value for array creation functions.
-fn extract_size(value: Value, func_name: &str, vm: &mut VM<'_, '_, impl ResourceTracker>) -> RunResult<usize> {
+fn extract_size(value: Value, func_name: &str, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<usize> {
     match value {
         #[expect(
             clippy::cast_possible_truncation,
@@ -2339,7 +2344,7 @@ fn extract_size(value: Value, func_name: &str, vm: &mut VM<'_, '_, impl Resource
 }
 
 /// Converts a Value to f64 for numeric operations.
-fn to_f64(value: &Value, vm: &VM<'_, '_, impl ResourceTracker>) -> RunResult<f64> {
+fn to_f64(value: &Value, vm: &VM<'_, impl ResourceTracker>) -> RunResult<f64> {
     match value {
         Value::Int(n) => Ok(*n as f64),
         Value::Float(f) => Ok(*f),
@@ -2357,7 +2362,7 @@ fn to_f64(value: &Value, vm: &VM<'_, '_, impl ResourceTracker>) -> RunResult<f64
 // ===========================
 
 /// `numpy.nan_to_num(a)` — replace NaN with 0, inf with large finite, -inf with -large finite.
-fn call_nan_to_num(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+fn call_nan_to_num(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     let arg = args.get_one_arg("numpy.nan_to_num", vm.heap)?;
     defer_drop!(arg, vm);
     let arr = ndarray_from_value(arg, "numpy.nan_to_num", vm)?;
@@ -2425,7 +2430,7 @@ fn nan_median(data: &[f64]) -> f64 {
     if clean.is_empty() {
         return f64::NAN;
     }
-    clean.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    clean.sort_by(|a, b| a.partial_cmp(b).unwrap_or(Ordering::Equal));
     let n = clean.len();
     if n % 2 == 1 {
         clean[n / 2]
@@ -2436,7 +2441,7 @@ fn nan_median(data: &[f64]) -> f64 {
 
 /// Generic NaN-aware aggregation: extract array, filter NaN, apply function, return float.
 fn call_nan_aggregate(
-    vm: &mut VM<'_, '_, impl ResourceTracker>,
+    vm: &mut VM<'_, impl ResourceTracker>,
     args: ArgValues,
     f: fn(&[f64]) -> f64,
     name: &str,
@@ -2452,7 +2457,7 @@ fn call_nan_aggregate(
     clippy::cast_possible_wrap,
     reason = "array indices are small enough that these casts are safe"
 )]
-fn call_nan_argmin(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+fn call_nan_argmin(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     let arg = args.get_one_arg("numpy.nanargmin", vm.heap)?;
     defer_drop!(arg, vm);
     let arr = ndarray_from_value(arg, "numpy.nanargmin", vm)?;
@@ -2472,7 +2477,7 @@ fn call_nan_argmin(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -
     clippy::cast_possible_wrap,
     reason = "array indices are small enough that these casts are safe"
 )]
-fn call_nan_argmax(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+fn call_nan_argmax(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     let arg = args.get_one_arg("numpy.nanargmax", vm.heap)?;
     defer_drop!(arg, vm);
     let arr = ndarray_from_value(arg, "numpy.nanargmax", vm)?;
@@ -2488,7 +2493,7 @@ fn call_nan_argmax(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -
 }
 
 /// `numpy.percentile(a, q)` — q-th percentile (q in 0..100).
-fn call_percentile(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+fn call_percentile(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     let (arr_val, q_val) = args.get_two_args("numpy.percentile", vm.heap)?;
     defer_drop!(arr_val, vm);
     let arr = ndarray_from_value(arr_val, "numpy.percentile", vm)?;
@@ -2498,7 +2503,7 @@ fn call_percentile(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -
 }
 
 /// `numpy.quantile(a, q)` — q-th quantile (q in 0..1).
-fn call_quantile(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+fn call_quantile(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     let (arr_val, q_val) = args.get_two_args("numpy.quantile", vm.heap)?;
     defer_drop!(arr_val, vm);
     let arr = ndarray_from_value(arr_val, "numpy.quantile", vm)?;
@@ -2518,7 +2523,7 @@ fn percentile_impl(data: &[f64], q: f64) -> f64 {
         return f64::NAN;
     }
     let mut sorted: Vec<f64> = data.to_vec();
-    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(Ordering::Equal));
     let n = sorted.len();
     if n == 1 {
         return sorted[0];
@@ -2534,7 +2539,7 @@ fn percentile_impl(data: &[f64], q: f64) -> f64 {
 }
 
 /// `numpy.ptp(a)` — peak-to-peak: max(a) - min(a).
-fn call_ptp(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+fn call_ptp(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     let arg = args.get_one_arg("numpy.ptp", vm.heap)?;
     defer_drop!(arg, vm);
     let arr = ndarray_from_value(arg, "numpy.ptp", vm)?;
@@ -2548,7 +2553,7 @@ fn call_ptp(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunRe
 }
 
 /// `numpy.cumprod(a)` — cumulative product.
-fn call_cumprod(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+fn call_cumprod(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     let arg = args.get_one_arg("numpy.cumprod", vm.heap)?;
     defer_drop!(arg, vm);
     let arr = ndarray_from_value(arg, "numpy.cumprod", vm)?;
@@ -2567,12 +2572,7 @@ fn call_cumprod(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> R
 }
 
 /// `numpy.nancumsum` / `numpy.nancumprod` — cumulative ops treating NaN as identity.
-fn call_nancumop(
-    vm: &mut VM<'_, '_, impl ResourceTracker>,
-    args: ArgValues,
-    is_sum: bool,
-    name: &str,
-) -> RunResult<Value> {
+fn call_nancumop(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues, is_sum: bool, name: &str) -> RunResult<Value> {
     let arg = args.get_one_arg(name, vm.heap)?;
     defer_drop!(arg, vm);
     let arr = ndarray_from_value(arg, name, vm)?;
@@ -2600,7 +2600,7 @@ fn call_nancumop(
 
 /// Generic logical binary operation on two arrays → Bool result.
 fn call_logical_binop(
-    vm: &mut VM<'_, '_, impl ResourceTracker>,
+    vm: &mut VM<'_, impl ResourceTracker>,
     args: ArgValues,
     op: fn(bool, bool) -> bool,
     name: &str,
@@ -2622,7 +2622,7 @@ fn call_logical_binop(
 }
 
 /// `numpy.logical_not(a)` — element-wise logical NOT.
-fn call_logical_not(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+fn call_logical_not(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     let arg = args.get_one_arg("numpy.logical_not", vm.heap)?;
     defer_drop!(arg, vm);
     let arr = ndarray_from_value(arg, "numpy.logical_not", vm)?;
@@ -2633,7 +2633,7 @@ fn call_logical_not(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) 
 }
 
 /// `numpy.allclose(a, b, rtol=1e-5, atol=1e-8)` — true if all elements are close.
-fn call_allclose(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+fn call_allclose(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     let pos = args.into_pos_only("numpy.allclose", vm.heap)?;
     defer_drop_mut!(pos, vm);
     let a_val = pos
@@ -2676,7 +2676,7 @@ fn call_allclose(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> 
 }
 
 /// `numpy.isclose(a, b, rtol=1e-5, atol=1e-8)` — element-wise closeness test.
-fn call_isclose(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+fn call_isclose(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     let pos = args.into_pos_only("numpy.isclose", vm.heap)?;
     defer_drop_mut!(pos, vm);
     let a_val = pos
@@ -2728,7 +2728,7 @@ fn call_isclose(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> R
 }
 
 /// `numpy.isin(element, test_elements)` — test membership.
-fn call_isin(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+fn call_isin(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     let (elem_val, test_val) = args.get_two_args("numpy.isin", vm.heap)?;
     defer_drop!(elem_val, vm);
     defer_drop!(test_val, vm);
@@ -2748,7 +2748,7 @@ fn call_isin(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunR
 // --- Phase 6: Manipulation and shape ---
 
 /// `numpy.flip(a)` — reverse array elements.
-fn call_flip(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+fn call_flip(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     let arg = args.get_one_arg("numpy.flip", vm.heap)?;
     defer_drop!(arg, vm);
     let arr = ndarray_from_value(arg, "numpy.flip", vm)?;
@@ -2759,7 +2759,7 @@ fn call_flip(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunR
 }
 
 /// `numpy.fliplr(a)` — flip left-right. For 2D: reverse each row.
-fn call_fliplr(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+fn call_fliplr(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     let arg = args.get_one_arg("numpy.fliplr", vm.heap)?;
     defer_drop!(arg, vm);
     let arr = ndarray_from_value(arg, "numpy.fliplr", vm)?;
@@ -2776,7 +2776,7 @@ fn call_fliplr(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> Ru
 }
 
 /// `numpy.flipud(a)` — flip up-down. For 2D: reverse row order.
-fn call_flipud(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+fn call_flipud(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     let arg = args.get_one_arg("numpy.flipud", vm.heap)?;
     defer_drop!(arg, vm);
     let arr = ndarray_from_value(arg, "numpy.flipud", vm)?;
@@ -2802,7 +2802,7 @@ fn call_flipud(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> Ru
     clippy::cast_sign_loss,
     reason = "array indices are small enough that these casts are safe"
 )]
-fn call_roll(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+fn call_roll(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     let (arr_val, shift_val) = args.get_two_args("numpy.roll", vm.heap)?;
     defer_drop!(arr_val, vm);
     let arr = ndarray_from_value(arr_val, "numpy.roll", vm)?;
@@ -2833,7 +2833,7 @@ fn call_roll(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunR
     clippy::cast_sign_loss,
     reason = "array indices are small enough that these casts are safe"
 )]
-fn call_expand_dims(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+fn call_expand_dims(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     let (arr_val, axis_val) = args.get_two_args("numpy.expand_dims", vm.heap)?;
     defer_drop!(arr_val, vm);
     let arr = ndarray_from_value(arr_val, "numpy.expand_dims", vm)?;
@@ -2856,7 +2856,7 @@ fn call_expand_dims(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) 
 }
 
 /// `numpy.squeeze(a)` — remove length-1 axes.
-fn call_squeeze(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+fn call_squeeze(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     let arg = args.get_one_arg("numpy.squeeze", vm.heap)?;
     defer_drop!(arg, vm);
     let arr = ndarray_from_value(arg, "numpy.squeeze", vm)?;
@@ -2867,7 +2867,7 @@ fn call_squeeze(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> R
 }
 
 /// `numpy.ravel(a)` — module-level flatten.
-fn call_ravel_mod(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+fn call_ravel_mod(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     let arg = args.get_one_arg("numpy.ravel", vm.heap)?;
     defer_drop!(arg, vm);
     let arr = ndarray_from_value(arg, "numpy.ravel", vm)?;
@@ -2883,7 +2883,7 @@ fn call_ravel_mod(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) ->
     clippy::cast_sign_loss,
     reason = "array indices are small enough that these casts are safe"
 )]
-fn call_delete(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+fn call_delete(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     let (arr_val, idx_val) = args.get_two_args("numpy.delete", vm.heap)?;
     defer_drop!(arr_val, vm);
     defer_drop!(idx_val, vm);
@@ -2919,7 +2919,7 @@ fn call_delete(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> Ru
     clippy::cast_sign_loss,
     reason = "array indices are small enough that these casts are safe"
 )]
-fn call_insert(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+fn call_insert(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     let pos = args.into_pos_only("numpy.insert", vm.heap)?;
     defer_drop_mut!(pos, vm);
     let arr_val = pos
@@ -2963,7 +2963,7 @@ fn call_insert(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> Ru
 }
 
 /// `numpy.diag(v)` — for 1D input: create diagonal matrix. For 2D input: extract diagonal.
-fn call_diag(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+fn call_diag(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     let arg = args.get_one_arg("numpy.diag", vm.heap)?;
     defer_drop!(arg, vm);
     let arr = ndarray_from_value(arg, "numpy.diag", vm)?;
@@ -2989,13 +2989,13 @@ fn call_diag(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunR
 }
 
 /// `numpy.diagonal(a)` — extract diagonal of 2D array.
-fn call_diagonal(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+fn call_diagonal(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     // For our purposes, same as diag on 2D
     call_diag(vm, args)
 }
 
 /// `numpy.trace(a)` — sum of diagonal elements.
-fn call_trace(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+fn call_trace(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     let arg = args.get_one_arg("numpy.trace", vm.heap)?;
     defer_drop!(arg, vm);
     let arr = ndarray_from_value(arg, "numpy.trace", vm)?;
@@ -3009,7 +3009,7 @@ fn call_trace(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> Run
 }
 
 /// `numpy.flatnonzero(a)` — indices of non-zero elements in flattened array.
-fn call_flatnonzero(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+fn call_flatnonzero(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     let arg = args.get_one_arg("numpy.flatnonzero", vm.heap)?;
     defer_drop!(arg, vm);
     let arr = ndarray_from_value(arg, "numpy.flatnonzero", vm)?;
@@ -3026,13 +3026,13 @@ fn call_flatnonzero(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) 
 }
 
 /// `numpy.asarray(a)` — convert to array. If already ndarray, return as-is (copy for now).
-fn call_asarray(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+fn call_asarray(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     // Same as np.array for our purposes
     call_array(vm, args)
 }
 
 /// `numpy.column_stack(arrays)` — stack 1D arrays as columns into 2D.
-fn call_column_stack(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+fn call_column_stack(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     let list_val = args.get_one_arg("numpy.column_stack", vm.heap)?;
     defer_drop!(list_val, vm);
     let list_items = match list_val {
@@ -3074,18 +3074,18 @@ fn call_column_stack(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues)
 }
 
 /// `numpy.hsplit(a, n)` — split horizontally (for 1D: split into n parts).
-fn call_hsplit(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+fn call_hsplit(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     // For 1D, hsplit is same as split
     call_split(vm, args)
 }
 
 /// `numpy.vsplit(a, n)` — split vertically.
-fn call_vsplit(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+fn call_vsplit(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     call_split(vm, args)
 }
 
 /// `numpy.array_split(a, n)` — split into possibly unequal parts.
-fn call_array_split(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+fn call_array_split(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     let (arr_val, n_val) = args.get_two_args("numpy.array_split", vm.heap)?;
     defer_drop!(arr_val, vm);
     let arr = ndarray_from_value(arr_val, "numpy.array_split", vm)?;
@@ -3121,12 +3121,12 @@ fn call_array_split(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) 
         )))?));
         offset += size;
     }
-    let list = crate::types::List::new(parts);
+    let list = List::new(parts);
     Ok(Value::Ref(vm.heap.allocate(HeapData::List(list))?))
 }
 
 /// `numpy.full_like(a, fill_value)` — array of same shape filled with value.
-fn call_full_like(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+fn call_full_like(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     let (arr_val, fill_val) = args.get_two_args("numpy.full_like", vm.heap)?;
     defer_drop!(arr_val, vm);
     let arr = ndarray_from_value(arr_val, "numpy.full_like", vm)?;
@@ -3148,7 +3148,7 @@ fn call_full_like(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) ->
 // --- Phase 7: Sorting, searching, set ops ---
 
 /// `numpy.argsort(a)` — module-level argsort.
-fn call_argsort_mod(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+fn call_argsort_mod(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     let arg = args.get_one_arg("numpy.argsort", vm.heap)?;
     defer_drop!(arg, vm);
     let arr = ndarray_from_value(arg, "numpy.argsort", vm)?;
@@ -3159,11 +3159,11 @@ fn call_argsort_mod(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) 
         let vb = data[b];
         va.partial_cmp(&vb).unwrap_or_else(|| {
             if va.is_nan() && vb.is_nan() {
-                std::cmp::Ordering::Equal
+                Ordering::Equal
             } else if va.is_nan() {
-                std::cmp::Ordering::Greater
+                Ordering::Greater
             } else {
-                std::cmp::Ordering::Less
+                Ordering::Less
             }
         })
     });
@@ -3178,7 +3178,7 @@ fn call_argsort_mod(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) 
     clippy::cast_possible_wrap,
     reason = "array indices are small enough that these casts are safe"
 )]
-fn call_searchsorted(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+fn call_searchsorted(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     let (a_val, v_val) = args.get_two_args("numpy.searchsorted", vm.heap)?;
     defer_drop!(a_val, vm);
     defer_drop!(v_val, vm);
@@ -3210,7 +3210,7 @@ fn call_searchsorted(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues)
 }
 
 /// `numpy.extract(condition, arr)` — extract elements where condition is True.
-fn call_extract(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+fn call_extract(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     let (cond_val, arr_val) = args.get_two_args("numpy.extract", vm.heap)?;
     defer_drop!(cond_val, vm);
     defer_drop!(arr_val, vm);
@@ -3238,7 +3238,7 @@ enum SetOp {
 }
 
 /// Generic set operation on two sorted-unique arrays.
-fn call_set_op(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues, op: SetOp, name: &str) -> RunResult<Value> {
+fn call_set_op(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues, op: SetOp, name: &str) -> RunResult<Value> {
     let (a_val, b_val) = args.get_two_args(name, vm.heap)?;
     defer_drop!(a_val, vm);
     defer_drop!(b_val, vm);
@@ -3246,9 +3246,9 @@ fn call_set_op(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues, op: S
     let b_arr = ndarray_from_value(b_val, name, vm)?;
     let mut a: Vec<f64> = a_arr.data().to_vec();
     let mut b: Vec<f64> = b_arr.data().to_vec();
-    a.sort_by(|x, y| x.partial_cmp(y).unwrap_or(std::cmp::Ordering::Equal));
+    a.sort_by(|x, y| x.partial_cmp(y).unwrap_or(Ordering::Equal));
     a.dedup();
-    b.sort_by(|x, y| x.partial_cmp(y).unwrap_or(std::cmp::Ordering::Equal));
+    b.sort_by(|x, y| x.partial_cmp(y).unwrap_or(Ordering::Equal));
     b.dedup();
     let data: Vec<f64> = match op {
         SetOp::Intersect => a.iter().filter(|v| b.contains(v)).copied().collect(),
@@ -3259,14 +3259,14 @@ fn call_set_op(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues, op: S
                     u.push(*v);
                 }
             }
-            u.sort_by(|x, y| x.partial_cmp(y).unwrap_or(std::cmp::Ordering::Equal));
+            u.sort_by(|x, y| x.partial_cmp(y).unwrap_or(Ordering::Equal));
             u
         }
         SetOp::Diff => a.iter().filter(|v| !b.contains(v)).copied().collect(),
         SetOp::Xor => {
             let mut r: Vec<f64> = a.iter().filter(|v| !b.contains(v)).copied().collect();
             r.extend(b.iter().filter(|v| !a.contains(v)));
-            r.sort_by(|x, y| x.partial_cmp(y).unwrap_or(std::cmp::Ordering::Equal));
+            r.sort_by(|x, y| x.partial_cmp(y).unwrap_or(Ordering::Equal));
             r
         }
     };
@@ -3277,7 +3277,7 @@ fn call_set_op(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues, op: S
 }
 
 /// `numpy.bincount(a)` — count occurrences of each non-negative integer value.
-fn call_bincount(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+fn call_bincount(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     let arg = args.get_one_arg("numpy.bincount", vm.heap)?;
     defer_drop!(arg, vm);
     let arr = ndarray_from_value(arg, "numpy.bincount", vm)?;
@@ -3302,7 +3302,7 @@ fn call_bincount(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> 
 }
 
 /// `numpy.digitize(x, bins)` — indices of bins to which each value belongs.
-fn call_digitize(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+fn call_digitize(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     let (x_val, bins_val) = args.get_two_args("numpy.digitize", vm.heap)?;
     defer_drop!(x_val, vm);
     defer_drop!(bins_val, vm);
@@ -3322,7 +3322,7 @@ fn call_digitize(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> 
 // --- Phase 8: Linear algebra ---
 
 /// `numpy.outer(a, b)` — outer product of two vectors.
-fn call_outer(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+fn call_outer(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     let (a_val, b_val) = args.get_two_args("numpy.outer", vm.heap)?;
     defer_drop!(a_val, vm);
     defer_drop!(b_val, vm);
@@ -3343,7 +3343,7 @@ fn call_outer(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> Run
 }
 
 /// `numpy.cross(a, b)` — cross product of 3-element vectors.
-fn call_cross(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+fn call_cross(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     let (a_val, b_val) = args.get_two_args("numpy.cross", vm.heap)?;
     defer_drop!(a_val, vm);
     defer_drop!(b_val, vm);
@@ -3368,7 +3368,7 @@ fn call_cross(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> Run
     clippy::cast_sign_loss,
     reason = "array indices are small enough that these casts are safe"
 )]
-fn call_logspace(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+fn call_logspace(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     let pos = args.into_pos_only("numpy.logspace", vm.heap)?;
     defer_drop_mut!(pos, vm);
     let start_val = pos
@@ -3413,7 +3413,7 @@ fn call_logspace(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> 
     clippy::cast_sign_loss,
     reason = "array indices are small enough that these casts are safe"
 )]
-fn call_geomspace(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+fn call_geomspace(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     let pos = args.into_pos_only("numpy.geomspace", vm.heap)?;
     defer_drop_mut!(pos, vm);
     let start_val = pos
@@ -3454,7 +3454,7 @@ fn call_geomspace(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) ->
 }
 
 /// `numpy.tri(N)` — NxN array with ones at and below diagonal.
-fn call_tri(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+fn call_tri(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     let arg = args.get_one_arg("numpy.tri", vm.heap)?;
     let n = extract_size(arg, "numpy.tri", vm)?;
     check_array_alloc_size(n * n, vm.heap.tracker())?;
@@ -3469,7 +3469,7 @@ fn call_tri(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunRe
 }
 
 /// `numpy.tril(m)` — lower triangle of array.
-fn call_tril(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+fn call_tril(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     let arg = args.get_one_arg("numpy.tril", vm.heap)?;
     defer_drop!(arg, vm);
     let arr = ndarray_from_value(arg, "numpy.tril", vm)?;
@@ -3489,7 +3489,7 @@ fn call_tril(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunR
 }
 
 /// `numpy.triu(m)` — upper triangle of array.
-fn call_triu(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+fn call_triu(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     let arg = args.get_one_arg("numpy.triu", vm.heap)?;
     defer_drop!(arg, vm);
     let arr = ndarray_from_value(arg, "numpy.triu", vm)?;
@@ -3509,7 +3509,7 @@ fn call_triu(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunR
 }
 
 /// `numpy.meshgrid(*xi)` — coordinate matrices from coordinate vectors.
-fn call_meshgrid(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+fn call_meshgrid(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     let pos = args.into_pos_only("numpy.meshgrid", vm.heap)?;
     defer_drop_mut!(pos, vm);
     let mut arrays: Vec<NdArray> = Vec::new();
@@ -3550,7 +3550,7 @@ fn call_meshgrid(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> 
 }
 
 /// `numpy.gradient(f)` — numerical gradient using central differences.
-fn call_gradient(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+fn call_gradient(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     let arg = args.get_one_arg("numpy.gradient", vm.heap)?;
     defer_drop!(arg, vm);
     let arr = ndarray_from_value(arg, "numpy.gradient", vm)?;
@@ -3574,7 +3574,7 @@ fn call_gradient(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> 
 }
 
 /// `numpy.convolve(a, v)` — discrete linear convolution (mode='full').
-fn call_convolve(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+fn call_convolve(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     let (a_val, v_val) = args.get_two_args("numpy.convolve", vm.heap)?;
     defer_drop!(a_val, vm);
     defer_drop!(v_val, vm);
@@ -3595,7 +3595,7 @@ fn call_convolve(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> 
 }
 
 /// `numpy.correlate(a, v)` — cross-correlation (mode='valid').
-fn call_correlate(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+fn call_correlate(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     let (a_val, v_val) = args.get_two_args("numpy.correlate", vm.heap)?;
     defer_drop!(a_val, vm);
     defer_drop!(v_val, vm);
@@ -3617,7 +3617,7 @@ fn call_correlate(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) ->
 }
 
 /// `numpy.interp(x, xp, fp)` — 1D linear interpolation.
-fn call_interp(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+fn call_interp(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     let pos = args.into_pos_only("numpy.interp", vm.heap)?;
     defer_drop_mut!(pos, vm);
     let x_val = pos
@@ -3667,7 +3667,7 @@ fn call_interp(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> Ru
 }
 
 /// `numpy.select(condlist, choicelist, default=0)` — conditional selection.
-fn call_select(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+fn call_select(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     let pos = args.into_pos_only("numpy.select", vm.heap)?;
     defer_drop_mut!(pos, vm);
     let condlist_val = pos

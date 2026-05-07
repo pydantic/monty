@@ -97,8 +97,7 @@ m = pydantic_monty.Monty(
 
 
 async def main():
-    output = await pydantic_monty.run_monty_async(
-        m,
+    output = await m.run_async(
         inputs={'prompt': 'testing'},
         external_functions={
             'get_team_members': data.get_team_members,

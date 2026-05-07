@@ -6,8 +6,8 @@ use std::ffi::CString;
 use codspeed_criterion_compat::{Bencher, Criterion, black_box, criterion_group, criterion_main};
 #[cfg(not(codspeed))]
 use criterion::{Bencher, Criterion, black_box, criterion_group, criterion_main};
-use monty::MontyRun;
-#[cfg(not(codspeed))]
+use monty::{MontyObject, MontyRun};
+#[cfg(all(not(codspeed), unix))]
 use pprof::criterion::{Output, PProfProfiler};
 // CPython benchmarks are only run locally, not on CodSpeed CI (requires Python + pyo3 setup)
 #[cfg(not(codspeed))]
@@ -23,6 +23,22 @@ fn run_monty(bench: &mut Bencher, code: &str, expected: i64) {
 
     bench.iter(|| {
         let r = ex.run_no_limits(vec![]).unwrap();
+        let int_value: i64 = r.as_ref().try_into().unwrap();
+        black_box(int_value);
+    });
+}
+
+/// Runs a benchmark using the Monty interpreter with a single string input bound to `DATA`.
+/// Parses once, then benchmarks repeated execution with the same input.
+fn run_monty_with_data(bench: &mut Bencher, code: &str, data: &str, expected: i64) {
+    let ex = MontyRun::new(code.to_owned(), "test.py", vec!["DATA".to_owned()]).unwrap();
+    let make_input = || vec![MontyObject::String(data.to_owned())];
+    let r = ex.run_no_limits(make_input()).unwrap();
+    let int_value: i64 = r.as_ref().try_into().unwrap();
+    assert_eq!(int_value, expected);
+
+    bench.iter(|| {
+        let r = ex.run_no_limits(make_input()).unwrap();
         let int_value: i64 = r.as_ref().try_into().unwrap();
         black_box(int_value);
     });
@@ -51,6 +67,39 @@ fn run_cpython(bench: &mut Bencher, code: &str, expected: i64) {
             black_box(r);
         });
     });
+}
+
+/// Runs a benchmark using CPython with a single string argument bound to `DATA`.
+/// Wraps code in `def main(DATA):`, parses once, then benchmarks repeated execution.
+#[cfg(not(codspeed))]
+fn run_cpython_with_data(bench: &mut Bencher, code: &str, data: &str, expected: i64) {
+    Python::attach(|py| {
+        let wrapped = wrap_for_cpython_with_param(code, "DATA");
+        let code_cstr = CString::new(wrapped).expect("Invalid C string in code");
+        let fun: Py<PyAny> = PyModule::from_code(py, &code_cstr, c"test.py", c"main")
+            .unwrap()
+            .getattr("main")
+            .unwrap()
+            .into();
+
+        let r_py = fun.call1(py, (data,)).unwrap();
+        let r: i64 = r_py.extract(py).unwrap();
+        assert_eq!(r, expected);
+
+        bench.iter(|| {
+            let r_py = fun.call1(py, (data,)).unwrap();
+            let r: i64 = r_py.extract(py).unwrap();
+            black_box(r);
+        });
+    });
+}
+
+/// Like [`wrap_for_cpython`] but produces `def main(<param>):` so a single argument can be passed.
+#[cfg(not(codspeed))]
+fn wrap_for_cpython_with_param(code: &str, param: &str) -> String {
+    let base = wrap_for_cpython(code);
+    // Replace the first "def main():" header with one that takes `param`.
+    base.replacen("def main():", &format!("def main({param}):"), 1)
 }
 
 /// Wraps code in a main() function for CPython execution.
@@ -99,7 +148,7 @@ len(v)
 
 /// Comprehensive benchmark exercising most supported Python features.
 /// Code is shared with test_cases/bench__kitchen_sink.py
-const KITCHEN_SINK: &str = include_str!("../test_cases/bench__kitchen_sink.py");
+const KITCHEN_SINK: &str = include_str!("../../monty/test_cases/bench__kitchen_sink.py");
 
 const FUNC_CALL_KWARGS: &str = "
 def add(a, b=2):
@@ -143,6 +192,52 @@ const EMPTY_TUPLES: &str = "len([() for _ in range(100_000)])";
 /// 2-tuple creation benchmark - creates 100,000 2-tuples in a list.
 const PAIR_TUPLES: &str = "len([(i, i + 1) for i in range(100_000)])";
 
+/// Single-collection latency benchmark.
+///
+/// 50,000 self-referencing lists (each `a; a.append(a)` forms a cycle that ref
+/// counting alone cannot free).
+///
+/// The trailing `0` exists so the runner's `i64` extraction sees a known value:
+/// Monty's `gc.collect()` always returns `0` but CPython returns the count of
+/// unreachable objects collected, which we don't care to assert on.
+const GC_COLLECT: &str = "
+import gc
+gc.disable()
+for _ in range(50_000):
+    a = []
+    a.append(a)
+gc.collect()
+0
+";
+
+/// JSON payload used by the `json_loads` / `json_dumps` benchmarks.
+/// Sourced from `medium_response.json` (a jiter bench fixture).
+const JSON_MEDIUM: &str = include_str!("medium_response.json");
+
+/// Parses a ~2 KB JSON document into a Python object 1,000 times per Monty run.
+/// Looping inside Monty amortises per-call VM/import/input-binding overhead so the
+/// measurement reflects steady-state parse cost rather than startup.
+/// Returns the number of top-level keys (2) as the verification value.
+const JSON_LOADS: &str = "
+import json
+r = 0
+for _ in range(1_000):
+    r = len(json.loads(DATA))
+r
+";
+
+/// Parses JSON then serialises it back to a string 1,000 times per Monty run.
+/// Loop sits inside Monty for the same reason as `JSON_LOADS`.
+/// Returns the length of the final serialised output so the result can be verified.
+const JSON_DUMPS: &str = "
+import json
+obj = json.loads(DATA)
+r = 0
+for _ in range(1_000):
+    r = len(json.dumps(obj))
+r
+";
+
 /// Benchmarks end-to-end execution (parsing + running) using Monty.
 /// This is different from other benchmarks as it includes parsing in the loop.
 fn end_to_end_monty(bench: &mut Bencher) {
@@ -151,6 +246,18 @@ fn end_to_end_monty(bench: &mut Bencher) {
         let r = ex.run_no_limits(vec![]).unwrap();
         let int_value: i64 = r.as_ref().try_into().unwrap();
         black_box(int_value);
+    });
+}
+
+/// Parses 1,000 repetitions of `x = 1` to track the cost of Monty's Ruff-AST → Monty-AST
+/// conversion pass on many trivial statements. A scaled-down version of the `latency.py`
+/// workload (which uses 100,000 lines) — kept small enough for criterion while still
+/// large enough that per-statement conversion cost dominates fixed overhead.
+fn parse_1k_assigns(bench: &mut Bencher) {
+    let code: String = "x = 1\n".repeat(1_000);
+    bench.iter(|| {
+        let ex = MontyRun::new(black_box(code.clone()), "test.py", vec![]).unwrap();
+        black_box(ex);
     });
 }
 
@@ -188,6 +295,7 @@ fn criterion_benchmark(c: &mut Criterion) {
     c.bench_function("loop_mod_13__cpython", |b| run_cpython(b, LOOP_MOD_13, 77));
 
     c.bench_function("end_to_end__monty", end_to_end_monty);
+    c.bench_function("parse_1k_assigns__monty", parse_1k_assigns);
     #[cfg(not(codspeed))]
     c.bench_function("end_to_end__cpython", end_to_end_cpython);
 
@@ -230,18 +338,38 @@ fn criterion_benchmark(c: &mut Criterion) {
     c.bench_function("pair_tuples__monty", |b| run_monty(b, PAIR_TUPLES, 100_000));
     #[cfg(not(codspeed))]
     c.bench_function("pair_tuples__cpython", |b| run_cpython(b, PAIR_TUPLES, 100_000));
+
+    c.bench_function("json_loads__monty", |b| {
+        run_monty_with_data(b, JSON_LOADS, JSON_MEDIUM, 2);
+    });
+    #[cfg(not(codspeed))]
+    c.bench_function("json_loads__cpython", |b| {
+        run_cpython_with_data(b, JSON_LOADS, JSON_MEDIUM, 2);
+    });
+
+    c.bench_function("json_dumps__monty", |b| {
+        run_monty_with_data(b, JSON_DUMPS, JSON_MEDIUM, 1815);
+    });
+    #[cfg(not(codspeed))]
+    c.bench_function("json_dumps__cpython", |b| {
+        run_cpython_with_data(b, JSON_DUMPS, JSON_MEDIUM, 1815);
+    });
+
+    c.bench_function("gc_collect__monty", |b| run_monty(b, GC_COLLECT, 0));
+    #[cfg(not(codspeed))]
+    c.bench_function("gc_collect__cpython", |b| run_cpython(b, GC_COLLECT, 0));
 }
 
-// Use pprof flamegraph profiler when running locally (not on CodSpeed)
-#[cfg(not(codspeed))]
+// Use pprof flamegraph profiler when running locally on Unix (not on CodSpeed or Windows)
+#[cfg(all(not(codspeed), unix))]
 criterion_group!(
     name = benches;
     config = Criterion::default().with_profiler(PProfProfiler::new(100, Output::Flamegraph(None)));
     targets = criterion_benchmark
 );
 
-// Use default config when running on CodSpeed (pprof's Profiler trait is incompatible)
-#[cfg(codspeed)]
+// Use default config on CodSpeed or Windows (pprof is Unix-only)
+#[cfg(any(codspeed, not(unix)))]
 criterion_group!(benches, criterion_benchmark);
 
 criterion_main!(benches);

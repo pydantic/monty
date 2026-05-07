@@ -63,7 +63,7 @@ result
 
     let output = ex.run_ref_counts(vec![]).expect("should succeed");
 
-    // GC_INTERVAL is 100,000. With 200,001 iterations creating dict cycles,
+    // DEFAULT_GC_INTERVAL is 100,000. With 200,001 iterations creating dict cycles,
     // GC must have run at least once, resetting allocations_since_gc.
     // If may_have_cycles was never set (has_refs() disabled), GC never runs
     // and allocations_since_gc would be ~400k (2 dicts per iteration).
@@ -114,7 +114,7 @@ len(result)
 
     let output = ex.run_ref_counts(vec![]).expect("should succeed");
 
-    // GC_INTERVAL is 100,000. With 200,001 iterations creating list cycles,
+    // DEFAULT_GC_INTERVAL is 100,000. With 200,001 iterations creating list cycles,
     // GC must have run at least twice, resetting allocations_since_gc.
     assert!(
         output.allocations_since_gc < 100_000,
@@ -258,6 +258,20 @@ result
 }
 
 #[test]
+fn memory_limit_zero() {
+    let code = "x = 1 + 2\nx";
+    let ex = MontyRun::new(code.to_owned(), "test.py", vec![]).unwrap();
+    // Set zero memory limit - should fail immediately
+    let limits = ResourceLimits::new().max_memory(0);
+    let result = ex.run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout);
+
+    assert!(
+        result.is_ok(),
+        "should allow zero memory for simple operations that don't allocate"
+    );
+}
+
+#[test]
 fn combined_limits() {
     // Test multiple limits together
     let code = "x = 1 + 2\nx";
@@ -289,29 +303,76 @@ len(result)
 }
 
 #[test]
+#[cfg(feature = "ref-count-return")]
 fn gc_interval_triggers_collection() {
-    // This test verifies that GC can run without crashing
-    // We can't easily verify that GC actually collected anything without
-    // adding more introspection, but we can verify it runs
+    // This test verifies that the built-in GC interval still triggers collection
+    // on real reference cycles even when no custom tracker interval is supplied.
+    // A sufficiently large number of cycles should force collection here.
     let code = r"
-result = []
-for i in range(100):
-    temp = [1, 2, 3]
-    result.append(i)
-len(result)
+result = 'done'
+for i in range(210000):
+    a = []
+    a.append(a)
+result
 ";
     let ex = MontyRun::new(code.to_owned(), "test.py", vec![]).unwrap();
 
-    // Set GC to run every 10 allocations
-    let limits = ResourceLimits::new().gc_interval(10);
-    let result = ex.run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout);
+    let output = ex
+        .run_ref_counts(vec![])
+        .expect("should succeed with GC enabled on cycles");
 
-    assert!(result.is_ok(), "should succeed with GC enabled");
+    assert_eq!(output.py_object, MontyObject::String("done".to_owned()));
+    assert!(
+        output.allocations_since_gc < 100_000,
+        "default GC interval should have triggered collection: allocations_since_gc = {}",
+        output.allocations_since_gc
+    );
+    // Expected remaining cycles × 2, with a little slack.
+    assert!(
+        output.heap_count <= 20_000,
+        "GC should collect most unreachable list cycles: {} heap objects",
+        output.heap_count
+    );
+}
+
+#[test]
+#[cfg(feature = "ref-count-return")]
+fn gc_interval_limit_is_respected() {
+    // This test verifies that a custom GC interval is actually used instead of
+    // the built-in default. We create self-referencing list cycles so GC is
+    // eligible to run, then assert that a small configured interval causes a
+    // collection before the default 100,000 allocation threshold.
+    let code = r"
+for i in range(25):
+    a = []
+    a.append(a)
+result = 'done'
+result
+";
+    let ex = MontyRun::new(code.to_owned(), "test.py", vec![]).unwrap();
+
+    let limits = ResourceLimits::new().gc_interval(10);
+    let output = ex
+        .run_ref_counts_with_tracker(vec![], LimitedTracker::new(limits))
+        .expect("should succeed with custom GC interval");
+
+    assert_eq!(output.py_object, MontyObject::String("done".to_owned()));
+    assert!(
+        output.allocations_since_gc < 10,
+        "configured GC interval should trigger collections before the default; allocations_since_gc = {}",
+        output.allocations_since_gc
+    );
+    // Expected remaining cycles × 2, with a little slack.
+    assert!(
+        output.heap_count <= 10,
+        "GC should collect most unreachable list cycles: {} heap objects",
+        output.heap_count
+    );
 }
 
 #[test]
 #[cfg_attr(
-    feature = "ref-count-panic",
+    feature = "memory-model-checks",
     ignore = "resource exhaustion doesn't guarantee heap state consistency"
 )]
 fn executor_iter_resource_limit_on_resume() {
@@ -347,7 +408,7 @@ fn executor_iter_resource_limit_on_resume() {
 
 #[test]
 #[cfg_attr(
-    feature = "ref-count-panic",
+    feature = "memory-model-checks",
     ignore = "resource exhaustion doesn't guarantee heap state consistency"
 )]
 fn executor_iter_resource_limit_before_function_call() {
@@ -372,7 +433,7 @@ fn executor_iter_resource_limit_before_function_call() {
 
 #[test]
 #[cfg_attr(
-    feature = "ref-count-panic",
+    feature = "memory-model-checks",
     ignore = "resource exhaustion doesn't guarantee heap state consistency"
 )]
 fn char_f_string_not_allocated() {
@@ -436,7 +497,7 @@ fn executor_iter_resource_limit_multiple_function_calls() {
 /// the memory limit.
 #[test]
 #[cfg_attr(
-    feature = "ref-count-panic",
+    feature = "memory-model-checks",
     ignore = "resource exhaustion doesn't guarantee heap state consistency"
 )]
 fn recursion_respects_memory_limit() {
@@ -468,7 +529,7 @@ recurse(1000)
 /// Test that recursion depth limit returns an error.
 #[test]
 #[cfg_attr(
-    feature = "ref-count-panic",
+    feature = "memory-model-checks",
     ignore = "resource exhaustion doesn't guarantee heap state consistency"
 )]
 fn recursion_depth_limit_exceeded() {
@@ -603,7 +664,7 @@ fn pow_intermediate_allocation_multiplier() {
     // 2 bits * 500000 = 125KB final, × 4 = 500072 bytes (includes base memory offset)
     assert_eq!(
         exc.message(),
-        Some("memory limit exceeded: 500072 bytes > 200000 bytes")
+        Some("memory limit exceeded: 500000 bytes > 200000 bytes")
     );
 }
 
@@ -648,7 +709,7 @@ fn pow_fuzzer_oom_chained_exponentiation() {
     // 2 bits * 3661666 = 915KB final, × 4 = 3661740 bytes
     assert_eq!(
         exc.message(),
-        Some("memory limit exceeded: 3661740 bytes > 1048576 bytes")
+        Some("memory limit exceeded: 3661668 bytes > 1048576 bytes")
     );
 }
 
@@ -671,7 +732,7 @@ fn pow_fuzzer_oom_full_input() {
     // so estimate = 2 * 3661666 bits = 915KB. With 4× multiplier: 3661740 bytes > 1MB.
     assert_eq!(
         exc.message(),
-        Some("memory limit exceeded: 3661740 bytes > 1048576 bytes")
+        Some("memory limit exceeded: 3661668 bytes > 1048576 bytes")
     );
 }
 
@@ -815,7 +876,7 @@ fn bigint_rejected_before_allocation() {
     assert_eq!(exc.exc_type(), ExcType::MemoryError);
     assert_eq!(
         exc.message(),
-        Some("memory limit exceeded: 1000072 bytes > 100000 bytes")
+        Some("memory limit exceeded: 1000000 bytes > 100000 bytes")
     );
 }
 
@@ -966,9 +1027,9 @@ fn list_mult_within_limit() {
 
 /// Test that `int * bytes` (int on left) is also rejected by the pre-check.
 ///
-/// This catches a bug where interned bytes/strings bypassed the `mult_sequence`
-/// pre-check because `py_mult` handled `InternBytes * Int` inline without
-/// checking resource limits.
+/// This catches a bug where interned bytes/strings bypassed the sequence-repetition
+/// pre-check in `py_mult` because the `InternBytes * Int` arm was handled inline
+/// without checking resource limits.
 #[test]
 fn int_times_bytes_memory_limit() {
     // int on left side: 1000000 * b'x' = 1MB
@@ -1071,7 +1132,7 @@ fn assert_timeout_in_builtin(code: &str, label: &str) {
     let ex = MontyRun::new(code.to_owned(), "test.py", vec![]).unwrap();
 
     let limits = ResourceLimits::new().max_duration(Duration::from_millis(100));
-    let start = std::time::Instant::now();
+    let start = Instant::now();
     let result = ex.run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout);
     let elapsed = start.elapsed();
 
@@ -1143,7 +1204,7 @@ fn timeout_in_all_builtin() {
 /// `enumerate()` creates tuples on each iteration via `for_next()`.
 #[test]
 #[cfg_attr(
-    feature = "ref-count-panic",
+    feature = "memory-model-checks",
     ignore = "resource exhaustion doesn't guarantee heap state consistency"
 )]
 fn timeout_in_any_builtin() {
@@ -1177,7 +1238,7 @@ fn timeout_in_str_join() {
 /// The sort comparison loop has an explicit `heap.check_time()` call.
 #[test]
 #[cfg_attr(
-    feature = "ref-count-panic",
+    feature = "memory-model-checks",
     ignore = "resource exhaustion doesn't guarantee heap state consistency"
 )]
 fn timeout_in_sorted_comparison_loop() {
@@ -1192,11 +1253,11 @@ sorted(x)
 
 /// Test that `[1] * 10_000_000` (list repetition) respects the time limit.
 ///
-/// The `mult_sequence()` copy loop now calls `heap.check_time()` on each
-/// repetition to prevent large sequence multiplications from bypassing timeout.
+/// The sequence-repetition copy loop in `py_mult` now calls `heap.check_time()`
+/// on each repetition to prevent large sequence multiplications from bypassing timeout.
 #[test]
 #[cfg_attr(
-    feature = "ref-count-panic",
+    feature = "memory-model-checks",
     ignore = "resource exhaustion doesn't guarantee heap state consistency"
 )]
 fn timeout_in_list_repetition() {
@@ -1205,11 +1266,11 @@ fn timeout_in_list_repetition() {
 
 /// Test that `(1,) * 10_000_000` (tuple repetition) respects the time limit.
 ///
-/// Same as list repetition but for tuples — both paths in `mult_sequence()`
-/// now check the time limit.
+/// Same as list repetition but for tuples — both sequence-repetition paths in
+/// `py_mult` now check the time limit.
 #[test]
 #[cfg_attr(
-    feature = "ref-count-panic",
+    feature = "memory-model-checks",
     ignore = "resource exhaustion doesn't guarantee heap state consistency"
 )]
 fn timeout_in_tuple_repetition() {
@@ -1222,7 +1283,7 @@ fn timeout_in_tuple_repetition() {
 /// it must compare every element before returning True.
 #[test]
 #[cfg_attr(
-    feature = "ref-count-panic",
+    feature = "memory-model-checks",
     ignore = "resource exhaustion doesn't guarantee heap state consistency"
 )]
 fn timeout_in_list_equality() {
@@ -1240,7 +1301,7 @@ a == b
 /// dicts, it must check every entry before returning True.
 #[test]
 #[cfg_attr(
-    feature = "ref-count-panic",
+    feature = "memory-model-checks",
     ignore = "resource exhaustion doesn't guarantee heap state consistency"
 )]
 fn timeout_in_dict_equality() {
@@ -1258,7 +1319,7 @@ a == b
 /// that now calls `heap.check_time()` on each iteration.
 #[test]
 #[cfg_attr(
-    feature = "ref-count-panic",
+    feature = "memory-model-checks",
     ignore = "resource exhaustion doesn't guarantee heap state consistency"
 )]
 fn timeout_in_str_splitlines() {
@@ -1274,7 +1335,7 @@ s.splitlines()
 /// `bytes_splitlines()` scans bytes for line endings and now checks the time limit.
 #[test]
 #[cfg_attr(
-    feature = "ref-count-panic",
+    feature = "memory-model-checks",
     ignore = "resource exhaustion doesn't guarantee heap state consistency"
 )]
 fn timeout_in_bytes_splitlines() {
@@ -1342,7 +1403,7 @@ fn assert_repr_timeout(code: &str, label: &str) {
 /// to trigger the timeout.
 #[test]
 #[cfg_attr(
-    feature = "ref-count-panic",
+    feature = "memory-model-checks",
     ignore = "resource exhaustion doesn't guarantee heap state consistency"
 )]
 fn timeout_truncation_in_list_repr() {
@@ -1360,7 +1421,7 @@ repr(x)
 /// making repr formatting slow enough to trigger the timeout.
 #[test]
 #[cfg_attr(
-    feature = "ref-count-panic",
+    feature = "memory-model-checks",
     ignore = "resource exhaustion doesn't guarantee heap state consistency"
 )]
 fn timeout_truncation_in_dict_repr() {
@@ -1378,7 +1439,7 @@ repr(x)
 /// to trigger the timeout.
 #[test]
 #[cfg_attr(
-    feature = "ref-count-panic",
+    feature = "memory-model-checks",
     ignore = "resource exhaustion doesn't guarantee heap state consistency"
 )]
 fn timeout_truncation_in_set_repr() {

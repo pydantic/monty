@@ -4,13 +4,13 @@ use super::VM;
 use crate::{
     defer_drop,
     exception_private::{ExcType, RunError, RunResult},
-    heap::{HeapData, HeapGuard, HeapReadOutput},
+    heap::{Heap, HeapData, HeapGuard, HeapReadOutput},
     resource::ResourceTracker,
-    types::{NdArray, PyTrait, Set, dict_view::collect_iterable_to_set, set::SetBinaryOp},
+    types::{NdArray, PyTrait, Set, dict_view::collect_iterable_to_set, ndarray::NdArrayDtype, set::SetBinaryOp},
     value::{BitwiseOp, Value},
 };
 
-impl<T: ResourceTracker> VM<'_, '_, T> {
+impl<T: ResourceTracker> VM<'_, T> {
     /// Binary addition with proper refcount handling.
     ///
     /// Uses lazy type capture: only calls `py_type()` in error paths to avoid
@@ -499,18 +499,18 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
     /// caller should continue with ordinary numeric or pure-set dispatch.
     fn binary_dict_view_op(
         &mut self,
-        lhs: &crate::value::Value,
-        rhs: &crate::value::Value,
+        lhs: &Value,
+        rhs: &Value,
         op: DictViewBinaryOp,
-    ) -> Result<Option<crate::value::Value>, RunError> {
+    ) -> Result<Option<Value>, RunError> {
         let this = self;
-        let crate::value::Value::Ref(lhs_id) = lhs else {
+        let Value::Ref(lhs_id) = lhs else {
             return Ok(None);
         };
 
-        let lhs_set = match this.heap.get(*lhs_id) {
-            HeapData::DictKeysView(view) => view.to_set(this)?,
-            HeapData::DictItemsView(view) => view.to_set(this)?,
+        let lhs_set = match this.heap.read(*lhs_id) {
+            HeapReadOutput::DictKeysView(view) => view.to_set(this)?,
+            HeapReadOutput::DictItemsView(view) => view.to_set(this)?,
             _ => return Ok(None),
         };
         defer_drop!(lhs_set, this);
@@ -521,21 +521,16 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
         let result = apply_dict_view_binary_op(lhs_set, rhs_set, op, this)?;
 
         let result_id = this.heap.allocate(HeapData::Set(result))?;
-        Ok(Some(crate::value::Value::Ref(result_id)))
+        Ok(Some(Value::Ref(result_id)))
     }
 
     /// Implements pure set/frozenset binary operators with strict operand checks.
     ///
     /// Method forms accept arbitrary iterables, but the operator forms handled here
     /// must reject non-set operands so Monty matches CPython's `TypeError` behavior.
-    fn binary_set_op(
-        &mut self,
-        lhs: &crate::value::Value,
-        rhs: &crate::value::Value,
-        op: SetBinaryOp,
-    ) -> Result<Option<crate::value::Value>, RunError> {
+    fn binary_set_op(&mut self, lhs: &Value, rhs: &Value, op: SetBinaryOp) -> Result<Option<Value>, RunError> {
         let this = self;
-        let crate::value::Value::Ref(lhs_id) = lhs else {
+        let Value::Ref(lhs_id) = lhs else {
             return Ok(None);
         };
 
@@ -550,7 +545,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
             return Ok(None);
         };
         let result_id = this.heap.allocate(result)?;
-        Ok(Some(crate::value::Value::Ref(result_id)))
+        Ok(Some(Value::Ref(result_id)))
     }
 }
 
@@ -568,7 +563,7 @@ fn apply_dict_view_binary_op(
     lhs: &Set,
     rhs: &Set,
     op: DictViewBinaryOp,
-    vm: &mut VM<'_, '_, impl ResourceTracker>,
+    vm: &mut VM<'_, impl ResourceTracker>,
 ) -> Result<Set, RunError> {
     let mut result = match op {
         DictViewBinaryOp::And => Set::with_capacity(lhs.len().min(rhs.len())),
@@ -651,7 +646,7 @@ fn ndarray_scalar_op(
     scalar_is_float: bool,
     op: NdArrayBinaryOp,
     scalar_on_left: bool,
-    heap: &crate::heap::Heap<impl ResourceTracker>,
+    heap: &Heap<impl ResourceTracker>,
 ) -> RunResult<Value> {
     match (op, scalar_on_left) {
         // Commutative operations — direction doesn't matter
@@ -677,7 +672,7 @@ fn ndarray_array_op(
     lhs: &NdArray,
     rhs: &NdArray,
     op: NdArrayBinaryOp,
-    heap: &crate::heap::Heap<impl ResourceTracker>,
+    heap: &Heap<impl ResourceTracker>,
 ) -> RunResult<Value> {
     match op {
         NdArrayBinaryOp::Add => lhs.add(rhs, heap),
@@ -699,7 +694,7 @@ fn try_ndarray_binary(
     lhs: &Value,
     rhs: &Value,
     op: NdArrayBinaryOp,
-    vm: &mut VM<'_, '_, impl ResourceTracker>,
+    vm: &mut VM<'_, impl ResourceTracker>,
 ) -> RunResult<Option<Value>> {
     // Both operands must involve at least one ndarray
     let lhs_id = if let Value::Ref(id) = lhs { Some(*id) } else { None };
@@ -767,7 +762,7 @@ fn try_ndarray_bitwise(
     lhs: &Value,
     rhs: &Value,
     op: NdArrayBitwiseOp,
-    vm: &mut VM<'_, '_, impl ResourceTracker>,
+    vm: &mut VM<'_, impl ResourceTracker>,
 ) -> RunResult<Option<Value>> {
     let lhs_id = if let Value::Ref(id) = lhs { Some(*id) } else { None };
     let rhs_id = if let Value::Ref(id) = rhs { Some(*id) } else { None };
@@ -841,7 +836,7 @@ enum NdArrayInplaceOp {
 ///
 /// Returns `Ok(false)` if neither operand is an ndarray, leaving the stack unchanged
 /// so the caller can fall through to the normal binary operation.
-fn try_ndarray_inplace(vm: &mut VM<'_, '_, impl ResourceTracker>, op: NdArrayInplaceOp) -> bool {
+fn try_ndarray_inplace(vm: &mut VM<'_, impl ResourceTracker>, op: NdArrayInplaceOp) -> bool {
     // Peek at the two top-of-stack values without popping
     let lhs_ref = vm.peek_at(1);
 
@@ -935,7 +930,7 @@ fn apply_inplace_scalar(arr: &mut NdArray, scalar: f64, op: NdArrayInplaceOp) {
             }
         }
         NdArrayInplaceOp::Div => {
-            arr.dtype = crate::types::ndarray::NdArrayDtype::Float64;
+            arr.dtype = NdArrayDtype::Float64;
             for v in &mut arr.data {
                 *v /= scalar;
             }
@@ -977,7 +972,7 @@ fn apply_inplace_array(arr: &mut NdArray, rhs_data: &[f64], op: NdArrayInplaceOp
             }
         }
         NdArrayInplaceOp::Div => {
-            arr.dtype = crate::types::ndarray::NdArrayDtype::Float64;
+            arr.dtype = NdArrayDtype::Float64;
             for (v, rv) in arr.data.iter_mut().zip(rhs_data.iter()) {
                 *v /= rv;
             }

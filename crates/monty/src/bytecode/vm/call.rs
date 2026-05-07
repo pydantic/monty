@@ -4,6 +4,8 @@
 //! functions for executing function calls. The main entry points are the `exec_*`
 //! methods which are called from the VM's main dispatch loop.
 
+use std::mem;
+
 use super::{CallFrame, VM};
 use crate::{
     args::{ArgValues, KwargsValues},
@@ -17,7 +19,7 @@ use crate::{
     intern::{FunctionId, StringId},
     os::OsFunction,
     resource::ResourceTracker,
-    types::{Dict, PyTrait, Type, bytes::call_bytes_method, str::call_str_method, r#type::call_type_method},
+    types::{Dict, PyTrait, Type, bytes::call_bytes_method, str::call_str_method},
     value::{EitherStr, Value},
 };
 
@@ -56,7 +58,7 @@ pub(crate) enum CallResult {
     AwaitValue(Value),
 }
 
-impl<T: ResourceTracker> VM<'_, '_, T> {
+impl<T: ResourceTracker> VM<'_, T> {
     // ========================================================================
     // Call Opcode Executors
     // ========================================================================
@@ -283,7 +285,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
             }
             Value::Builtin(Builtins::Type(t)) => {
                 // Handle classmethods on type objects like dict.fromkeys()
-                call_type_method(t, name_id, args, this).map(CallResult::Value)
+                t.call_class_method(name_id, args, this).map(Into::into)
             }
             _ => {
                 // Non-heap values without method support
@@ -308,7 +310,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
         args: ArgValues,
     ) -> Result<Value, RunError> {
         match self.call_function(callable, args)? {
-            CallResult::Value(v) => Ok(v),
+            CallResult::Value(v) => return Ok(v),
             CallResult::FramePushed => {
                 // A new frame was pushed for a defined function call - we need to run it
                 // to completion.
@@ -316,32 +318,30 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
                 // Mark the frame as an exit point from the `run()` loop
                 self.current_frame_mut().should_return = true;
                 match self.run()? {
-                    FrameExit::Return(v) => Ok(v),
+                    FrameExit::Return(v) => return Ok(v),
                     FrameExit::ResolveFutures(_)
                     | FrameExit::ExternalCall { .. }
                     | FrameExit::OsCall { .. }
                     | FrameExit::MethodCall { .. }
                     | FrameExit::NameLookup { .. } => {
                         // Pop frames off the stack from this failed evaluation
-                        while self.frames.len() > stack_depth {
+                        // (including the one just pushed)
+                        while self.frames.len() >= stack_depth {
                             self.pop_frame();
                         }
-                        Err(RunError::internal(format!(
-                            "{ctx}: external functions are not yet supported in this context"
-                        )))
                     }
                 }
             }
             CallResult::External(_, _)
             | CallResult::OsCall(_, _)
             | CallResult::MethodCall(_, _)
-            | CallResult::AwaitValue(_) => {
-                // External calls are not supported in this context since the caller doesn't support suspending
-                Err(RunError::internal(format!(
-                    "{ctx}: external functions are not yet supported in this context"
-                )))
-            }
+            | CallResult::AwaitValue(_) => {}
         }
+
+        Err(ExcType::not_implemented(format!(
+            "{ctx}: external functions are not yet supported in this context"
+        ))
+        .into())
     }
 
     /// Calls a callable value with the given arguments.
@@ -687,6 +687,10 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
     /// Locals are built directly on the VM stack using a [`StackGuard`] that
     /// automatically rolls back on error. The frame's `stack_base` points to
     /// the start of this locals region, and operands are pushed above it.
+    ///
+    /// The call position is captured from [`current_position`](Self::current_position),
+    /// which returns `None` when no frames are on the stack (e.g. host-initiated
+    /// calls via [`MontyRepl`](crate::MontyRepl)).
     fn call_sync_function(
         &mut self,
         func_id: FunctionId,
@@ -702,7 +706,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
         let locals_count = u16::try_from(namespace_size).expect("function namespace size exceeds u16");
 
         // Track memory for this frame's locals
-        let size = namespace_size * std::mem::size_of::<Value>();
+        let size = namespace_size * mem::size_of::<Value>();
         self.heap.tracker_mut().on_allocate(|| size)?;
 
         // 1. Create namespace for the frame in a temporary vec, will extend to stack later
@@ -759,7 +763,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
             stack_base,
             locals_count,
             func_id,
-            Some(call_position),
+            call_position,
         ))?;
 
         Ok(CallResult::FramePushed)

@@ -83,3 +83,56 @@ assert result == [], f'gather with empty *args: {result}'
 coro_tuple = (a(), b())
 result = await asyncio.gather(*coro_tuple)  # pyright: ignore
 assert result == ['a', 'b'], f'gather with *tuple unpacking: {result}'
+
+
+# === gather with the same coroutine passed twice ===
+dup_runs = [0]
+
+
+async def dup():
+    dup_runs[0] += 1
+    return 1
+
+
+dup_coro = dup()
+result = await asyncio.gather(dup_coro, dup_coro)  # pyright: ignore
+assert result == [1, 1], f'expected [1, 1], got {result}'
+assert dup_runs[0] == 1, f'coroutine body should run once, ran {dup_runs[0]} times'
+
+
+# Three duplicates and a mix of duplicates with a unique coroutine.
+async def dup3():
+    return 'x'
+
+
+dup3_coro = dup3()
+result = await asyncio.gather(dup3_coro, dup3_coro, dup3_coro)  # pyright: ignore
+assert result == ['x', 'x', 'x'], f'expected three xs, got {result}'
+
+
+async def alpha():
+    return 'a'
+
+
+async def beta():
+    return 'b'
+
+
+a_coro = alpha()
+b_coro = beta()
+result = await asyncio.gather(a_coro, b_coro, a_coro)  # pyright: ignore
+assert result == ['a', 'b', 'a'], f'mixed dedup: expected [a, b, a], got {result}'
+
+
+# === gather with an already-awaited coroutine raises RuntimeError ===
+async def already():
+    return 1
+
+
+already_coro = already()
+await already_coro  # pyright: ignore
+try:
+    await asyncio.gather(already_coro)  # pyright: ignore
+    assert False, 'should have raised RuntimeError'
+except RuntimeError as e:
+    assert str(e) == 'cannot reuse already awaited coroutine', f'unexpected error: {e}'

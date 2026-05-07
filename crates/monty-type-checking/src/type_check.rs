@@ -1,24 +1,23 @@
 use std::{
-    fmt::{self, Display},
+    fmt,
     sync::{Arc, Mutex},
 };
 
 use ruff_db::{
-    Db as SourceDb,
     diagnostic::{
         Annotation, Diagnostic, DiagnosticFormat, DiagnosticId, DisplayDiagnosticConfig, DisplayDiagnostics,
         UnifiedFile,
     },
-    files::{File, FileRootKind, system_path_to_file},
-    system::{DbWithWritableSystem as _, SystemPathBuf},
+    files::File,
+    system::SystemPathBuf,
 };
 use ruff_text_size::{TextRange, TextSize};
-use ty_module_resolver::SearchPathSettings;
-use ty_python_semantic::{
-    Program, ProgramSettings, PythonPlatform, PythonVersionSource, PythonVersionWithSource, types::check_types,
-};
+use ty_python_semantic::types::check_types;
 
-use crate::db::MemoryDb;
+use crate::{
+    db::SRC_ROOT,
+    pool::{PooledMemoryDb, to_string},
+};
 
 /// Definition of a source file.
 pub struct SourceFile<'a> {
@@ -50,42 +49,20 @@ pub fn type_check(
     python_source: &SourceFile<'_>,
     stubs_file: Option<&SourceFile<'_>>,
 ) -> Result<Option<TypeCheckingDiagnostics>, String> {
-    let mut db = MemoryDb::new();
+    // Check out a pre-configured db from the global pool. The `Drop` impl on
+    // `PooledMemoryDb` scrubs every file (and now also every parent directory) we
+    // write below and returns the db to the pool when the lease is no longer
+    // reachable — either at the end of this function (clean run) or when the
+    // returned `TypeCheckingDiagnostics` is dropped.
+    let mut pooled_db = PooledMemoryDb::checkout()?;
 
-    // Files must be written under a directory that's registered as a search path for module
-    // resolution to work. We use "/" as the root directory so paths appear without a prefix.
-    let src_root = SystemPathBuf::from("/");
-
-    // Register the source root for Salsa tracking - required for module resolution
-    db.files().try_add_root(&db, &src_root, FileRootKind::Project);
-
-    let search_paths = SearchPathSettings::new(vec![src_root.clone()])
-        .to_search_paths(db.system(), db.vendored())
-        .map_err(to_string)?;
-
-    // The API is confusing here - we have to load the "program" here like this, otherwise we get unwrap
-    // panics when calling `check_types`
-    Program::from_settings(
-        &db,
-        ProgramSettings {
-            python_version: PythonVersionWithSource {
-                version: db.python_version(),
-                source: PythonVersionSource::default(),
-            },
-            python_platform: PythonPlatform::default(),
-            search_paths,
-        },
-    );
-
-    // Build absolute paths for files under /
+    let src_root = SystemPathBuf::from(SRC_ROOT);
     let main_path = src_root.join(python_source.path);
     let main_source = python_source.source_code;
 
-    let code_offset: u32 = if let Some(stubs_file) = stubs_file {
+    let (main_file, code_offset): (File, u32) = if let Some(stubs_file) = stubs_file {
         let stubs_path = src_root.join(stubs_file.path);
-
-        // write the stub file
-        db.write_file(&stubs_path, stubs_file.source_code).map_err(to_string)?;
+        pooled_db.write_root_file(&stubs_path, stubs_file.source_code)?;
 
         // prepend the stub import to the main source code
         let stub_stem = stubs_file
@@ -96,18 +73,15 @@ pub fn type_check(
         let offset = u32::try_from(new_source.len()).map_err(to_string)?;
         new_source.push_str(main_source);
 
-        // write the main source code
-        db.write_file(&main_path, &new_source).map_err(to_string)?;
+        let main_file = pooled_db.write_root_file(&main_path, &new_source)?;
         // one line offset for errors vs. the original source code since we injected the stub import
-        offset
+        (main_file, offset)
     } else {
-        // write just the main source code
-        db.write_file(&main_path, main_source).map_err(to_string)?;
-        0
+        let main_file = pooled_db.write_root_file(&main_path, main_source)?;
+        (main_file, 0)
     };
 
-    let main_file = system_path_to_file(&db, &main_path).map_err(to_string)?;
-    let mut diagnostics = check_types(&db, main_file);
+    let mut diagnostics = check_types(pooled_db.db(), main_file);
     diagnostics.retain(filter_diagnostics);
 
     if diagnostics.is_empty() {
@@ -116,7 +90,7 @@ pub fn type_check(
         // without all this errors would appear on the wrong line because we injected `from type_stubs import *`
 
         // if we injected the stubs import, we need to write the actual source back to the file in the database
-        db.write_file(&main_path, main_source).map_err(to_string)?;
+        pooled_db.rewrite_root_file(&main_path, main_source)?;
         // and then adjust each span in the error message to account for the injected stubs import
         if code_offset > 0 {
             let offset = TextSize::new(code_offset);
@@ -134,14 +108,11 @@ pub fn type_check(
             }
         }
         // Sort diagnostics by line number
-        diagnostics.sort_by(|a, b| a.rendering_sort_key(&db).cmp(&b.rendering_sort_key(&db)));
+        let db = pooled_db.db();
+        diagnostics.sort_by(|a, b| a.rendering_sort_key(db).cmp(&b.rendering_sort_key(db)));
 
-        Ok(Some(TypeCheckingDiagnostics::new(diagnostics, db)))
+        Ok(Some(TypeCheckingDiagnostics::new(diagnostics, pooled_db)))
     }
-}
-
-fn to_string(err: impl Display) -> String {
-    err.to_string()
 }
 
 /// Adjust the span of an annotation by subtracting the given offset.
@@ -163,12 +134,21 @@ fn adjust_annotation_span(ann: &mut Annotation, main_file: File, offset: TextSiz
 }
 
 /// Represents diagnostic details when type checking fails.
+///
+/// The pooled database is held inside an `Arc<Mutex<...>>` so that:
+/// 1. Diagnostic rendering can borrow the db lazily on every `Display`/`Debug` call,
+///    avoiding eager pre-rendering of every output format.
+/// 2. The `MontyTypingError` Python exception that wraps this type stays `Send + Sync`.
+/// 3. The `PooledMemoryDb` is released back to the pool exactly when the last clone
+///    of this `Arc` is dropped — RAII via `PooledMemoryDb`'s `Drop` impl.
 #[derive(Clone)]
 pub struct TypeCheckingDiagnostics {
     /// The actual diagnostic message
     diagnostics: Vec<Diagnostic>,
-    /// db used to display diagnostics, wrapped in Mutex for Sync so MontyTypingError is sendable
-    db: Arc<Mutex<MemoryDb>>,
+    /// Pooled db used to display diagnostics. Wrapped in `Mutex` for `Sync` so
+    /// `MontyTypingError` is sendable; the inner `Drop` impl releases the db when
+    /// the last `Arc` clone is dropped.
+    pooled_db: Arc<Mutex<PooledMemoryDb>>,
     /// How to format the output
     format: DiagnosticFormat,
     /// Whether to highlight the output with ansi colors
@@ -181,11 +161,11 @@ pub struct TypeCheckingDiagnostics {
 impl fmt::Debug for TypeCheckingDiagnostics {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let config = self.config();
-        let db = self.db.lock().unwrap();
+        let pooled_db = self.pooled_db.lock().unwrap();
         write!(
             f,
             "TypeCheckingDiagnostics:\n{}",
-            DisplayDiagnostics::new(&*db, &config, &self.diagnostics)
+            DisplayDiagnostics::new(pooled_db.db(), &config, &self.diagnostics)
         )
     }
 }
@@ -195,23 +175,23 @@ impl fmt::Debug for TypeCheckingDiagnostics {
 #[expect(dead_code)]
 pub struct DebugTypeCheckingDiagnostics<'a> {
     diagnostics: &'a [Diagnostic],
-    db: Arc<Mutex<MemoryDb>>,
+    pooled_db: Arc<Mutex<PooledMemoryDb>>,
     format: DiagnosticFormat,
     color: bool,
 }
 
 impl fmt::Display for TypeCheckingDiagnostics {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let db = self.db.lock().unwrap();
-        DisplayDiagnostics::new(&*db, &self.config(), &self.diagnostics).fmt(f)
+        let pooled_db = self.pooled_db.lock().unwrap();
+        DisplayDiagnostics::new(pooled_db.db(), &self.config(), &self.diagnostics).fmt(f)
     }
 }
 
 impl TypeCheckingDiagnostics {
-    fn new(diagnostics: Vec<Diagnostic>, db: MemoryDb) -> Self {
+    fn new(diagnostics: Vec<Diagnostic>, pooled_db: PooledMemoryDb) -> Self {
         Self {
             diagnostics,
-            db: Arc::new(Mutex::new(db)),
+            pooled_db: Arc::new(Mutex::new(pooled_db)),
             format: DiagnosticFormat::Full,
             color: false,
         }
@@ -228,7 +208,7 @@ impl TypeCheckingDiagnostics {
     pub fn debug_details(&self) -> DebugTypeCheckingDiagnostics<'_> {
         DebugTypeCheckingDiagnostics {
             diagnostics: &self.diagnostics,
-            db: self.db.clone(),
+            pooled_db: self.pooled_db.clone(),
             format: self.format,
             color: self.color,
         }

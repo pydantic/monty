@@ -10,6 +10,7 @@ mod bytecode;
 mod exception_private;
 mod exception_public;
 mod expressions;
+pub mod fs;
 mod fstring;
 mod function;
 mod heap_data;
@@ -18,6 +19,7 @@ mod io;
 mod modules;
 mod namespace;
 mod object;
+mod object_json;
 mod os;
 mod parse;
 mod prepare;
@@ -35,8 +37,9 @@ pub use crate::run::RefCountOutput;
 pub use crate::{
     exception_private::ExcType,
     exception_public::{CodeLoc, MontyException, StackFrame},
-    io::{PrintWriter, PrintWriterCallback},
-    object::{DictPairs, InvalidInputError, MontyObject},
+    io::{PrintStream, PrintWriter, PrintWriterCallback},
+    object::{DictPairs, InvalidInputError, MontyDate, MontyDateTime, MontyObject, MontyTimeDelta, MontyTimeZone},
+    object_json::{JsonMontyArray, JsonMontyObject, JsonMontyPairs},
     os::{OsFunction, dir_stat, file_stat, stat_result, symlink_stat},
     repl::{
         MontyRepl, ReplContinuationMode, ReplFunctionCall, ReplNameLookup, ReplOsCall, ReplProgress,

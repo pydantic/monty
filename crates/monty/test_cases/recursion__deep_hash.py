@@ -1,3 +1,5 @@
+# gc-interval=200
+
 # Test that hashing deeply nested containers raises RecursionError instead
 # of crashing with a Rust stack overflow.
 

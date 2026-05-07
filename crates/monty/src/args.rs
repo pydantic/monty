@@ -1,4 +1,4 @@
-use std::vec::IntoIter;
+use std::{mem, slice, vec::IntoIter};
 
 use crate::{
     MontyObject, ResourceTracker,
@@ -6,7 +6,7 @@ use crate::{
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, RunError, RunResult, SimpleException},
     expressions::{ExprLoc, Identifier},
-    heap::{ContainsHeap, DropWithHeap, Heap, HeapGuard},
+    heap::{ContainsHeap, DropWithHeap, Heap, HeapGuard, HeapId},
     intern::{Interns, StringId},
     parse::ParseError,
     types::{Dict, dict::DictIntoIter},
@@ -312,7 +312,7 @@ impl ArgValues {
     /// This is used when passing arguments to external functions.
     pub fn into_py_objects(
         self,
-        vm: &mut VM<'_, '_, impl ResourceTracker>,
+        vm: &mut VM<'_, impl ResourceTracker>,
     ) -> (Vec<MontyObject>, Vec<(MontyObject, MontyObject)>) {
         match self {
             Self::Empty => (vec![], vec![]),
@@ -323,6 +323,26 @@ impl ArgValues {
                 args.into_iter().map(|v| MontyObject::new(v, vm)).collect(),
                 kwargs.into_py_objects(vm),
             ),
+        }
+    }
+
+    /// Appends every heap reference held by these arguments to `roots`.
+    ///
+    /// This is used by the async scheduler's GC root walk when arguments outlive
+    /// the active VM stack, such as values parked in pending external-call state.
+    pub(crate) fn extend_gc_roots(&self, roots: &mut Vec<HeapId>) {
+        match self {
+            Self::Empty => {}
+            Self::One(value) => roots.extend(value.ref_id()),
+            Self::Two(value1, value2) => {
+                roots.extend(value1.ref_id());
+                roots.extend(value2.ref_id());
+            }
+            Self::Kwargs(kwargs) => kwargs.extend_gc_roots(roots),
+            Self::ArgsKargs { args, kwargs } => {
+                roots.extend(args.iter().filter_map(Value::ref_id));
+                kwargs.extend_gc_roots(roots);
+            }
         }
     }
 
@@ -380,7 +400,7 @@ impl ArgPosIter {
     pub fn as_slice(&self) -> &[Value] {
         match self {
             Self::Empty => &[],
-            Self::One(v) => std::slice::from_ref(v),
+            Self::One(v) => slice::from_ref(v),
             Self::Two(array) => array.as_slice(),
             Self::Vec(iter) => iter.as_slice(),
         }
@@ -395,13 +415,13 @@ impl Iterator for ArgPosIter {
         match self {
             Self::Empty => None,
             Self::One(_) => {
-                let Self::One(v) = std::mem::replace(self, Self::Empty) else {
+                let Self::One(v) = mem::replace(self, Self::Empty) else {
                     unreachable!()
                 };
                 Some(v)
             }
             Self::Two(_) => {
-                let Self::Two([v1, v2]) = std::mem::replace(self, Self::Empty) else {
+                let Self::Two([v1, v2]) = mem::replace(self, Self::Empty) else {
                     unreachable!()
                 };
                 *self = Self::One(v2);
@@ -466,7 +486,7 @@ impl KwargsValues {
     /// Converts the arguments into a Vec of MontyObjects.
     ///
     /// This is used when passing arguments to external functions.
-    fn into_py_objects(self, vm: &mut VM<'_, '_, impl ResourceTracker>) -> Vec<(MontyObject, MontyObject)> {
+    fn into_py_objects(self, vm: &mut VM<'_, impl ResourceTracker>) -> Vec<(MontyObject, MontyObject)> {
         match self {
             Self::Empty => vec![],
             Self::Inline(kvs) => kvs
@@ -495,6 +515,25 @@ impl KwargsValues {
                 format!("{method_name}() does not support keyword arguments yet"),
             )
             .into())
+        }
+    }
+
+    /// Appends every heap reference held by these keyword arguments to `roots`.
+    ///
+    /// Inline kwargs only need to walk their values because keys are interned
+    /// strings. Dict-backed kwargs can hold heap-backed keys and values, so both
+    /// sides of each entry must be rooted.
+    pub(crate) fn extend_gc_roots(&self, roots: &mut Vec<HeapId>) {
+        match self {
+            Self::Empty => {}
+            Self::Inline(kvs) => roots.extend(kvs.iter().filter_map(|(_, value)| value.ref_id())),
+            Self::Dict(dict) => {
+                roots.extend(
+                    dict.iter()
+                        .flat_map(|(key, value)| [key.ref_id(), value.ref_id()])
+                        .flatten(),
+                );
+            }
         }
     }
 
@@ -757,7 +796,7 @@ impl ArgExprs {
         mut f: impl FnMut(ExprLoc) -> Result<ExprLoc, ParseError>,
     ) -> Result<(), ParseError> {
         // Swap self with Empty to take ownership, then rebuild
-        let taken = std::mem::replace(self, Self::Empty);
+        let taken = mem::replace(self, Self::Empty);
         *self = match taken {
             Self::Empty => Self::Empty,
             Self::One(arg) => Self::One(f(arg)?),

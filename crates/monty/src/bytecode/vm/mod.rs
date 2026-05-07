@@ -13,7 +13,7 @@ mod exceptions;
 mod format;
 mod scheduler;
 
-use std::cmp::Ordering;
+use std::{cmp::Ordering, mem};
 
 pub(crate) use call::CallResult;
 use scheduler::Scheduler;
@@ -22,17 +22,20 @@ use crate::{
     MontyObject,
     args::ArgValues,
     asyncio::{CallId, TaskId},
-    bytecode::{code::Code, op::Opcode},
+    bytecode::{
+        code::{Code, LocationEntry},
+        op::Opcode,
+    },
     exception_private::{ExcType, RunError, RunResult, SimpleException},
     heap::{ContainsHeap, DropWithHeap, Heap, HeapData, HeapGuard, HeapId, HeapReadOutput, HeapReader},
     heap_data::{Closure, FunctionDefaults},
     intern::{FunctionId, Interns, StringId},
     io::PrintWriter,
-    modules::BuiltinModule,
+    modules::{StandardLib, json::JsonStringCache},
     os::OsFunction,
     parse::CodeRange,
     resource::ResourceTracker,
-    types::{LongInt, MontyIter, PyTrait},
+    types::{LongInt, MontyIter, PyTrait, timedelta},
     value::{BitwiseOp, EitherStr, Value},
 };
 
@@ -515,11 +518,7 @@ pub struct VMSnapshot {
 /// Executes compiled bytecode using a stack-based execution model.
 /// The instruction pointer (IP) lives in each `CallFrame`, not here,
 /// to avoid sync bugs on call/return.
-///
-/// # Lifetimes
-/// * `'a` - Lifetime of the heap, namespaces, and interns
-/// * `'p` - Lifetime of the print writer's internal references
-pub struct VM<'h, 'a, T: ResourceTracker> {
+pub struct VM<'h, T: ResourceTracker> {
     /// Operand stack — locals and operands interleaved per frame.
     ///
     /// Each function frame's locals occupy `stack[frame.stack_base..frame.stack_base + frame.locals_count]`,
@@ -535,16 +534,16 @@ pub struct VM<'h, 'a, T: ResourceTracker> {
     pub(crate) globals: Vec<Value>,
 
     /// Call stack — function frames (each frame has its own IP).
-    frames: Vec<CallFrame<'a>>,
+    frames: Vec<CallFrame<'h>>,
 
     /// Heap for reference-counted objects.
     pub(crate) heap: &'h mut HeapReader<'h, T>,
 
     /// Interned strings/bytes.
-    pub(crate) interns: &'a Interns,
+    pub(crate) interns: &'h Interns,
 
     /// Print output writer, borrowed so callers retain access to collected output.
-    pub(crate) print_writer: PrintWriter<'a>,
+    pub(crate) print_writer: PrintWriter<'h>,
 
     /// Stack of exceptions being handled for nested except blocks.
     ///
@@ -571,7 +570,7 @@ pub struct VM<'h, 'a, T: ResourceTracker> {
     ///
     /// Stored here because the main task's frames have `function_id: None` and
     /// need a reference to the module code when being restored after task switching.
-    module_code: Option<&'a Code>,
+    module_code: Option<&'h Code>,
 
     /// Bytecode IP of the most recent `LoadGlobalCallable`/`LoadLocalCallable` that
     /// pushed an `ExtFunction` for an undefined name.
@@ -580,15 +579,22 @@ pub struct VM<'h, 'a, T: ResourceTracker> {
     /// back to a `NameError`, so the traceback points to the name reference rather than
     /// the call expression.
     ext_function_load_ip: Option<usize>,
+
+    /// Per-run string cache for `json.loads()`.
+    ///
+    /// Deduplicates heap allocations for repeated strings (especially dict keys)
+    /// across multiple `json.loads()` calls within a single execution. Lazily
+    /// initialized on first use, cleaned up when the VM is dropped.
+    pub(crate) json_string_cache: JsonStringCache,
 }
 
-impl<'h, 'a, T: ResourceTracker> VM<'h, 'a, T> {
+impl<'h, T: ResourceTracker> VM<'h, T> {
     /// Creates a new VM with the given runtime context.
     pub fn new(
         globals: Vec<Value>,
         heap: &'h mut HeapReader<'h, T>,
-        interns: &'a Interns,
-        print_writer: PrintWriter<'a>,
+        interns: &'h Interns,
+        print_writer: PrintWriter<'h>,
     ) -> Self {
         Self {
             stack: Vec::with_capacity(64),
@@ -602,6 +608,7 @@ impl<'h, 'a, T: ResourceTracker> VM<'h, 'a, T> {
             scheduler: Scheduler::new(),
             ext_function_load_ip: None, // Set by LoadGlobalCallable/LoadLocalCallable
             module_code: None,
+            json_string_cache: JsonStringCache::default(),
         }
     }
 
@@ -619,10 +626,10 @@ impl<'h, 'a, T: ResourceTracker> VM<'h, 'a, T> {
     /// * `print_writer` - Writer for print output
     pub fn restore(
         snapshot: VMSnapshot,
-        module_code: &'a Code,
+        module_code: &'h Code,
         heap: &'h mut HeapReader<'h, T>,
-        interns: &'a Interns,
-        print_writer: PrintWriter<'a>,
+        interns: &'h Interns,
+        print_writer: PrintWriter<'h>,
     ) -> Self {
         // Reconstruct call frames from serialized form
         let frames: Vec<CallFrame<'_>> = snapshot
@@ -663,8 +670,10 @@ impl<'h, 'a, T: ResourceTracker> VM<'h, 'a, T> {
             scheduler: snapshot.scheduler,
             module_code: Some(module_code),
             ext_function_load_ip: None,
+            json_string_cache: JsonStringCache::default(),
         }
     }
+
     /// Consumes the VM and creates a snapshot for pause/resume.
     ///
     /// **Ownership transfer:** This method takes `self` by value, consuming the VM.
@@ -673,39 +682,29 @@ impl<'h, 'a, T: ResourceTracker> VM<'h, 'a, T> {
     ///
     /// This is NOT a clone - it's a transfer. After calling this, the original VM
     /// is gone and only the snapshot (+ serialized heap/namespaces) represents the state.
-    pub fn snapshot(self) -> VMSnapshot {
+    pub fn snapshot(mut self) -> VMSnapshot {
+        // Drop cached JSON strings before consuming the VM — they are not
+        // included in the snapshot and their refcounts must be decremented.
+        self.json_string_cache.drop_all(self.heap);
+
         VMSnapshot {
             // Move values directly — no clone, no refcount increment needed
             // (the VM owned them, now the snapshot owns them)
-            stack: self.stack,
-            globals: self.globals,
-            frames: self.frames.into_iter().map(|f| f.serialize()).collect(),
-            exception_stack: self.exception_stack,
+            stack: mem::take(&mut self.stack),
+            globals: mem::take(&mut self.globals),
+            frames: self.frames.iter().map(CallFrame::serialize).collect(),
+            exception_stack: mem::take(&mut self.exception_stack),
             instruction_ip: self.instruction_ip,
-            scheduler: self.scheduler,
+            scheduler: mem::take(&mut self.scheduler),
         }
     }
 
     /// Pushes an initial frame for module-level code and runs the VM.
-    pub fn run_module(&mut self, code: &'a Code) -> Result<FrameExit, RunError> {
+    pub fn run_module(&mut self, code: &'h Code) -> Result<FrameExit, RunError> {
         // Store module code for restoring main task frames during task switching
         self.module_code = Some(code);
         self.push_frame(CallFrame::new_module(code))?;
         self.run()
-    }
-
-    /// Cleans up VM state before the VM is dropped.
-    ///
-    /// This method must be called before the VM goes out of scope to ensure
-    /// proper reference counting cleanup for any exception values and scheduler state.
-    pub fn cleanup(&mut self) {
-        // Drop all exceptions in the exception stack
-        self.exception_stack.drain(..).drop_with_heap(self.heap);
-        // Clean up current task's stack values and frame cell references
-        self.cleanup_current_task();
-        // Clean up scheduler state (task stacks, pending calls, resolved values, frame cells)
-        self.scheduler.cleanup(self.heap);
-        self.globals.drain(..).drop_with_heap(self.heap);
     }
 
     /// Returns the `stack_base` of the current (topmost) call frame.
@@ -721,10 +720,11 @@ impl<'h, 'a, T: ResourceTracker> VM<'h, 'a, T> {
 
     /// Takes ownership of the globals vector, replacing it with an empty vec.
     ///
-    /// Used by the REPL to reclaim globals after VM execution completes,
-    /// before calling `cleanup()` (which would destroy them in ref-count-panic mode).
+    /// Used by the REPL to reclaim globals after VM execution completes.
+    /// Must be called before the VM is dropped, since `Drop` will clean up
+    /// any remaining globals with `drop_with_heap`.
     pub fn take_globals(&mut self) -> Vec<Value> {
-        std::mem::take(&mut self.globals)
+        mem::take(&mut self.globals)
     }
 
     /// Allocates a new `CallId` for an external function call.
@@ -752,8 +752,8 @@ impl<'h, 'a, T: ResourceTracker> VM<'h, 'a, T> {
     /// is reloaded after any operation that modifies the frame stack.
     pub fn run(&mut self) -> Result<FrameExit, RunError> {
         // Cache frame state locally to avoid repeated frames.last_mut() calls.
-        // The Code reference has lifetime 'a (lives in Interns), independent of frame borrow.
-        let mut cached_frame: CachedFrame<'a> = self.new_cached_frame();
+        // The Code reference has lifetime 'h (lives in Interns), independent of frame borrow.
+        let mut cached_frame: CachedFrame<'h> = self.new_cached_frame();
 
         loop {
             // Check time limit and trigger GC if needed at each instruction.
@@ -974,6 +974,17 @@ impl<'h, 'a, T: ResourceTracker> VM<'h, 'a, T> {
                                     catch_sync!(self, cached_frame, e);
                                 }
                             },
+                            HeapData::TimeDelta(td) => {
+                                let negated = timedelta::from_total_microseconds(-timedelta::total_microseconds(td));
+                                value.drop_with_heap(self);
+                                match negated {
+                                    Ok(delta) => match self.heap.allocate(HeapData::TimeDelta(delta)) {
+                                        Ok(id) => self.push(Value::Ref(id)),
+                                        Err(e) => catch_sync!(self, cached_frame, RunError::from(e)),
+                                    },
+                                    Err(e) => catch_sync!(self, cached_frame, e),
+                                }
+                            }
                             _ => {
                                 let value_type = value.py_type(self);
                                 value.drop_with_heap(self);
@@ -1390,8 +1401,8 @@ impl<'h, 'a, T: ResourceTracker> VM<'h, 'a, T> {
                     // We use individual pops which reverses order, so we need to reverse back
                     let mut cells = Vec::with_capacity(cell_count);
                     for _ in 0..cell_count {
-                        // mut needed for dec_ref_forget when ref-count-panic feature is enabled
-                        #[cfg_attr(not(feature = "ref-count-panic"), expect(unused_mut))]
+                        // mut needed for dec_ref_forget when memory-model-checks feature is enabled
+                        #[cfg_attr(not(feature = "memory-model-checks"), expect(unused_mut))]
                         let mut cell_val = self.pop();
                         match &cell_val {
                             Value::Ref(heap_id) => {
@@ -1400,7 +1411,7 @@ impl<'h, 'a, T: ResourceTracker> VM<'h, 'a, T> {
                                 // Mark the Value as dereferenced since Closure takes ownership
                                 // of the reference count (we don't call drop_with_heap because
                                 // we're not decrementing the refcount, just transferring it)
-                                #[cfg(feature = "ref-count-panic")]
+                                #[cfg(feature = "memory-model-checks")]
                                 cell_val.dec_ref_forget();
                             }
                             _ => {
@@ -1556,7 +1567,7 @@ impl<'h, 'a, T: ResourceTracker> VM<'h, 'a, T> {
 
     /// Loads a built-in module and pushes it onto the stack.
     fn load_module(&mut self, module_id: u8) -> RunResult<()> {
-        let module = BuiltinModule::from_repr(module_id).expect("unknown module id");
+        let module = StandardLib::from_repr(module_id).expect("unknown module id");
 
         // Create the module on the heap using pre-interned strings
         let heap_id = module.create(self)?;
@@ -1643,26 +1654,26 @@ impl<'h, 'a, T: ResourceTracker> VM<'h, 'a, T> {
 
     /// Returns a reference to the current (topmost) call frame.
     #[inline]
-    pub(crate) fn current_frame(&self) -> &CallFrame<'a> {
+    pub(crate) fn current_frame(&self) -> &CallFrame<'h> {
         self.frames.last().expect("no active frame")
     }
 
     /// Creates a new cached frame from the current frame.
     #[inline]
-    pub(super) fn new_cached_frame(&self) -> CachedFrame<'a> {
+    pub(super) fn new_cached_frame(&self) -> CachedFrame<'h> {
         self.current_frame().into()
     }
 
     /// Returns a mutable reference to the current call frame.
     #[inline]
-    pub(super) fn current_frame_mut(&mut self) -> &mut CallFrame<'a> {
+    pub(super) fn current_frame_mut(&mut self) -> &mut CallFrame<'h> {
         self.frames.last_mut().expect("no active frame")
     }
 
     /// Pushes the given frame onto the call stack.
     ///
     /// Returns an error if the recursion depth limit is exceeded by pushing this frame.
-    pub(super) fn push_frame(&mut self, frame: CallFrame<'a>) -> RunResult<()> {
+    pub(super) fn push_frame(&mut self, frame: CallFrame<'h>) -> RunResult<()> {
         // root frame doesn't count towards recursion depth, so only check if there's already a frame on the stack
         if !self.frames.is_empty()
             && let Err(e) = self.heap.incr_recursion_depth()
@@ -1707,7 +1718,7 @@ impl<'h, 'a, T: ResourceTracker> VM<'h, 'a, T> {
 
         // Track freed memory for locals
         if frame.locals_count > 0 {
-            let size = frame.locals_count as usize * std::mem::size_of::<Value>();
+            let size = frame.locals_count as usize * mem::size_of::<Value>();
             self.heap.tracker_mut().on_free(|| size);
         }
     }
@@ -1722,34 +1733,56 @@ impl<'h, 'a, T: ResourceTracker> VM<'h, 'a, T> {
         self.frames.clear();
     }
 
-    /// Runs garbage collection with proper GC roots.
+    /// Collects every heap root currently reachable from the VM and scheduler.
     ///
-    /// GC roots include values in the stack (locals + operands), globals, and exception stack.
-    fn run_gc(&mut self) {
-        // Collect roots from all reachable values
-        let stack_roots = self.stack.iter().filter_map(Value::ref_id);
-        let globals_roots = self.globals.iter().filter_map(Value::ref_id);
-        let exc_roots = self.exception_stack.iter().filter_map(Value::ref_id);
-
-        // Collect all roots into a vec to avoid lifetime issues
-        let roots: Vec<HeapId> = stack_roots.chain(globals_roots).chain(exc_roots).collect();
-
-        self.heap.collect_garbage(roots);
+    /// The active VM only owns the current task's stack. Async scheduler state
+    /// stores additional reachable values for suspended tasks, completed task
+    /// results, gather bookkeeping, and resolved futures, so those roots must be
+    /// included here as well.
+    fn gc_roots(&self) -> Vec<HeapId> {
+        let mut roots: Vec<HeapId> = self.stack.iter().filter_map(Value::ref_id).collect();
+        roots.extend(self.globals.iter().filter_map(Value::ref_id));
+        roots.extend(self.exception_stack.iter().filter_map(Value::ref_id));
+        roots.extend(self.json_string_cache.gc_roots());
+        self.scheduler.extend_gc_roots(&mut roots);
+        roots
     }
 
-    /// Returns the current source position for traceback generation.
+    /// Runs garbage collection with the VM's complete root set.
+    ///
+    /// Returns the number of unreachable heap entries freed during the sweep.
+    fn run_gc(&mut self) -> usize {
+        let roots = self.gc_roots();
+        self.heap.collect_garbage(roots)
+    }
+
+    /// Forces a GC cycle using the production root walk and returns the freed
+    /// count.
+    ///
+    /// This is only compiled for tests so integration tests can reproduce GC
+    /// bugs deterministically without reimplementing the root-set logic.
+    #[cfg(feature = "test-hooks")]
+    pub(crate) fn __force_gc_for_tests(&mut self) -> usize {
+        self.run_gc()
+    }
+
+    /// Returns the current source position for traceback generation, or `None`
+    /// when no frames are on the stack (e.g. host-initiated calls via
+    /// [`MontyRepl`](crate::MontyRepl)).
     ///
     /// Uses `instruction_ip` which is set at the start of each instruction in the run loop,
     /// ensuring accurate position tracking even when using cached IP for bytecode fetching.
-    pub(super) fn current_position(&self) -> CodeRange {
-        let frame = self.current_frame();
+    pub(super) fn current_position(&self) -> Option<CodeRange> {
+        let frame = self.frames.last()?;
         // Use instruction_ip which points to the start of the current instruction
         // (set at the beginning of each loop iteration in run())
-        frame
-            .code
-            .location_for_offset(self.instruction_ip)
-            .map(crate::bytecode::code::LocationEntry::range)
-            .unwrap_or_default()
+        Some(
+            frame
+                .code
+                .location_for_offset(self.instruction_ip)
+                .map(LocationEntry::range)
+                .unwrap_or_default(),
+        )
     }
 
     // ========================================================================
@@ -1764,7 +1797,7 @@ impl<'h, 'a, T: ResourceTracker> VM<'h, 'a, T> {
     ///
     /// Returns `Ok(None)` for normal loads, `Ok(Some(FrameExit::NameLookup))` when
     /// the host needs to resolve an unknown name, or `Err` for true unbound locals.
-    fn load_local(&mut self, cached_frame: &CachedFrame<'a>, slot: u16) -> Result<Option<FrameExit>, RunError> {
+    fn load_local(&mut self, cached_frame: &CachedFrame<'h>, slot: u16) -> Result<Option<FrameExit>, RunError> {
         let value = &self.stack[cached_frame.stack_base + slot as usize];
 
         // Check for undefined value — raise appropriate error based on whether
@@ -1793,7 +1826,7 @@ impl<'h, 'a, T: ResourceTracker> VM<'h, 'a, T> {
     /// Unlike `load_local`, this never yields `NameLookup`. When the variable is undefined
     /// (a `LocalUnassigned` name), it pushes `Value::ExtFunction(name_id)` so that the
     /// subsequent `CallFunction` opcode can yield `FunctionCall` instead.
-    fn load_local_callable(&mut self, cached_frame: &CachedFrame<'a>, slot: u16, name_id: StringId) {
+    fn load_local_callable(&mut self, cached_frame: &CachedFrame<'h>, slot: u16, name_id: StringId) {
         let value = &self.stack[cached_frame.stack_base + slot as usize];
 
         if matches!(value, Value::Undefined) {
@@ -1841,17 +1874,17 @@ impl<'h, 'a, T: ResourceTracker> VM<'h, 'a, T> {
     }
 
     /// Pops the top of stack and stores it in a local variable.
-    fn store_local(&mut self, cached_frame: &CachedFrame<'a>, slot: u16) {
+    fn store_local(&mut self, cached_frame: &CachedFrame<'h>, slot: u16) {
         let value = self.pop();
         let target = &mut self.stack[cached_frame.stack_base + slot as usize];
-        let old_value = std::mem::replace(target, value);
+        let old_value = mem::replace(target, value);
         old_value.drop_with_heap(self);
     }
 
     /// Deletes a local variable (sets it to Undefined).
-    fn delete_local(&mut self, cached_frame: &CachedFrame<'a>, slot: u16) {
+    fn delete_local(&mut self, cached_frame: &CachedFrame<'h>, slot: u16) {
         let target = &mut self.stack[cached_frame.stack_base + slot as usize];
-        let old_value = std::mem::replace(target, Value::Undefined);
+        let old_value = mem::replace(target, Value::Undefined);
         old_value.drop_with_heap(self);
     }
 
@@ -1892,13 +1925,13 @@ impl<'h, 'a, T: ResourceTracker> VM<'h, 'a, T> {
     /// Pops the top of stack and stores it in a global variable.
     fn store_global(&mut self, slot: u16) {
         let value = self.pop();
-        let old_value = std::mem::replace(&mut self.globals[slot as usize], value);
+        let old_value = mem::replace(&mut self.globals[slot as usize], value);
         old_value.drop_with_heap(self);
     }
 
     /// Deletes a global variable (sets it to Undefined).
     fn delete_global(&mut self, slot: u16) {
-        let old_value = std::mem::replace(&mut self.globals[slot as usize], Value::Undefined);
+        let old_value = mem::replace(&mut self.globals[slot as usize], Value::Undefined);
         old_value.drop_with_heap(self);
     }
 
@@ -1907,7 +1940,7 @@ impl<'h, 'a, T: ResourceTracker> VM<'h, 'a, T> {
     /// The cell `HeapId` is read from the frame's local variable slot on the stack
     /// (cells are stored as `Value::Ref(cell_id)` at known positions in the locals region).
     /// Returns a `NameError` if the cell value is undefined (free variable not bound).
-    fn load_cell(&mut self, cached_frame: &CachedFrame<'a>, slot: u16) -> RunResult<()> {
+    fn load_cell(&mut self, cached_frame: &CachedFrame<'h>, slot: u16) -> RunResult<()> {
         let cell_id = self.cell_id_from_local(cached_frame, slot);
         let value = match self.heap.get(cell_id) {
             HeapData::Cell(c) => c.0.clone_with_heap(self),
@@ -1957,17 +1990,33 @@ impl<'h, 'a, T: ResourceTracker> VM<'h, 'a, T> {
         let HeapReadOutput::Cell(mut cell) = this.heap.read(cell_id) else {
             panic!("StoreCell: entry is not a Cell")
         };
-        std::mem::swap(&mut cell.get_mut(this.heap).0, value);
+        mem::swap(&mut cell.get_mut(this.heap).0, value);
     }
 }
 
 // `heap` is not a public field on VM, so this implementation needs to go here rather than in `heap.rs`
-impl<T: ResourceTracker> ContainsHeap for VM<'_, '_, T> {
+impl<T: ResourceTracker> ContainsHeap for VM<'_, T> {
     type ResourceTracker = T;
     fn heap(&self) -> &Heap<T> {
         self.heap
     }
     fn heap_mut(&mut self) -> &mut Heap<T> {
         self.heap
+    }
+}
+
+/// Ensures proper reference-counting cleanup when the VM goes out of scope.
+///
+/// Drains exception stack, operand stack, globals, scheduler state, and JSON
+/// string cache — all of which may hold heap references that need their
+/// ref-counts decremented. Fields that were already emptied (e.g. by
+/// `take_globals`) are harmlessly drained as empty.
+impl<T: ResourceTracker> Drop for VM<'_, T> {
+    fn drop(&mut self) {
+        self.exception_stack.drain(..).drop_with_heap(self.heap);
+        self.cleanup_current_task();
+        self.scheduler.cleanup(self.heap);
+        self.globals.drain(..).drop_with_heap(self.heap);
+        self.json_string_cache.drop_all(self.heap);
     }
 }

@@ -1,3 +1,5 @@
+# gc-interval=200
+
 # Test that dropping deeply nested containers doesn't crash (stack overflow).
 # Heap::dec_ref recurses in Rust when freeing child references, so deeply
 # nested containers can overflow the Rust call stack during cleanup.

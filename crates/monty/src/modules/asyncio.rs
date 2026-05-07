@@ -39,7 +39,7 @@ pub(crate) enum AsyncioFunctions {
 ///
 /// # Panics
 /// Panics if the required strings have not been pre-interned during prepare phase.
-pub fn create_module(vm: &mut VM<'_, '_, impl ResourceTracker>) -> Result<HeapId, ResourceError> {
+pub fn create_module(vm: &mut VM<'_, impl ResourceTracker>) -> Result<HeapId, ResourceError> {
     let mut module = Module::new(StaticStrings::Asyncio);
 
     module.set_attr(
@@ -109,14 +109,14 @@ pub(crate) fn gather(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> 
     let mut items = Vec::new();
     let mut coroutine_ids_to_cleanup: Vec<HeapId> = Vec::new();
 
-    #[cfg_attr(not(feature = "ref-count-panic"), expect(unused_mut))]
+    #[cfg_attr(not(feature = "memory-model-checks"), expect(unused_mut))]
     for mut arg in pos_args {
         match &arg {
             Value::Ref(id) if heap.get(*id).is_coroutine() => {
                 coroutine_ids_to_cleanup.push(*id);
                 items.push(GatherItem::Coroutine(*id));
                 // Transfer ownership to GatherFuture - mark Value as consumed without dec_ref
-                #[cfg(feature = "ref-count-panic")]
+                #[cfg(feature = "memory-model-checks")]
                 arg.dec_ref_forget();
             }
             Value::ExternalFuture(call_id) => {
