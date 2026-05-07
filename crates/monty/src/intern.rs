@@ -833,6 +833,90 @@ pub enum StaticStrings {
     /// `numpy.int32` dtype alias (maps to int64 internally)
     #[strum(serialize = "int32")]
     NpInt32,
+    /// `numpy.bool` dtype alias (maps to bool_ internally)
+    #[strum(serialize = "bool")]
+    NpBool,
+    /// `numpy.int_` dtype alias (maps to int64 internally)
+    #[strum(serialize = "int_")]
+    NpInt_,
+    /// `numpy.intc` dtype alias (maps to int32 internally)
+    #[strum(serialize = "intc")]
+    NpIntc,
+    /// `numpy.intp` dtype alias (maps to int64 internally)
+    #[strum(serialize = "intp")]
+    NpIntp,
+    /// `numpy.long` dtype alias (maps to int64 internally)
+    #[strum(serialize = "long")]
+    NpLong,
+    /// `numpy.longlong` dtype alias (maps to int64 internally)
+    #[strum(serialize = "longlong")]
+    NpLonglong,
+    /// `numpy.byte` dtype alias (maps to int64 internally)
+    #[strum(serialize = "byte")]
+    NpByte,
+    /// `numpy.short` dtype alias (maps to int64 internally)
+    #[strum(serialize = "short")]
+    NpShort,
+    /// `numpy.int8` dtype alias (maps to int64 internally)
+    #[strum(serialize = "int8")]
+    NpInt8,
+    /// `numpy.int16` dtype alias (maps to int64 internally)
+    #[strum(serialize = "int16")]
+    NpInt16,
+    /// `numpy.uint` dtype alias (maps to int64 internally)
+    #[strum(serialize = "uint")]
+    NpUint,
+    /// `numpy.uintc` dtype alias (maps to int32 internally)
+    #[strum(serialize = "uintc")]
+    NpUintc,
+    /// `numpy.uintp` dtype alias (maps to int64 internally)
+    #[strum(serialize = "uintp")]
+    NpUintp,
+    /// `numpy.ubyte` dtype alias (maps to int64 internally)
+    #[strum(serialize = "ubyte")]
+    NpUbyte,
+    /// `numpy.ushort` dtype alias (maps to int64 internally)
+    #[strum(serialize = "ushort")]
+    NpUshort,
+    /// `numpy.uint8` dtype alias (maps to int64 internally)
+    #[strum(serialize = "uint8")]
+    NpUint8,
+    /// `numpy.uint16` dtype alias (maps to int64 internally)
+    #[strum(serialize = "uint16")]
+    NpUint16,
+    /// `numpy.uint32` dtype alias (maps to int64 internally)
+    #[strum(serialize = "uint32")]
+    NpUint32,
+    /// `numpy.uint64` dtype alias (maps to int64 internally)
+    #[strum(serialize = "uint64")]
+    NpUint64,
+    /// `numpy.ulong` dtype alias (maps to int64 internally)
+    #[strum(serialize = "ulong")]
+    NpUlong,
+    /// `numpy.ulonglong` dtype alias (maps to int64 internally)
+    #[strum(serialize = "ulonglong")]
+    NpUlonglong,
+    /// `numpy.float16` dtype alias (maps to float32 internally)
+    #[strum(serialize = "float16")]
+    NpFloat16,
+    /// `numpy.half` dtype alias (maps to float32 internally)
+    #[strum(serialize = "half")]
+    NpHalf,
+    /// `numpy.single` dtype alias (maps to float32 internally)
+    #[strum(serialize = "single")]
+    NpSingle,
+    /// `numpy.double` dtype alias (maps to float64 internally)
+    #[strum(serialize = "double")]
+    NpDouble,
+    /// `numpy.longdouble` dtype alias (maps to float64 internally)
+    #[strum(serialize = "longdouble")]
+    NpLongdouble,
+    /// `numpy.little_endian` constant
+    #[strum(serialize = "little_endian")]
+    NpLittleEndian,
+    /// `numpy.euler_gamma` constant
+    #[strum(serialize = "euler_gamma")]
+    NpEulerGamma,
     /// `numpy.arcsin()` / `numpy.asin()` function
     #[strum(serialize = "arcsin")]
     NpArcsin,

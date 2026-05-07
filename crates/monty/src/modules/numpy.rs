@@ -641,37 +641,61 @@ pub fn create_module(vm: &mut VM<'_, impl ResourceTracker>) -> Result<HeapId, Re
     module.set_attr(StaticStrings::MathInf, Value::Float(f64::INFINITY), vm);
     module.set_attr(StaticStrings::MathNan, Value::Float(f64::NAN), vm);
     module.set_attr(StaticStrings::Newaxis, Value::None, vm);
+    module.set_attr(
+        StaticStrings::NpLittleEndian,
+        Value::Bool(cfg!(target_endian = "little")),
+        vm,
+    );
+    module.set_attr(StaticStrings::NpEulerGamma, Value::Float(0.577_215_664_901_532_9), vm);
 
     // Dtype type objects — stored as interned strings that astype() recognizes.
     // These allow `arr.astype(np.float64)` to work alongside `arr.astype('float64')`.
-    module.set_attr(
-        StaticStrings::NpFloat64,
-        Value::InternString(StaticStrings::NpFloat64.into()),
-        vm,
-    );
-    module.set_attr(
-        StaticStrings::NpInt64,
-        Value::InternString(StaticStrings::NpInt64.into()),
-        vm,
-    );
-    module.set_attr(
-        StaticStrings::NpBool_,
-        Value::InternString(StaticStrings::NpBool_.into()),
-        vm,
-    );
-    module.set_attr(
-        StaticStrings::NpFloat32,
-        Value::InternString(StaticStrings::NpFloat32.into()),
-        vm,
-    );
-    module.set_attr(
-        StaticStrings::NpInt32,
-        Value::InternString(StaticStrings::NpInt32.into()),
-        vm,
-    );
+    for (name, target) in NUMPY_DTYPE_ALIASES {
+        module.set_attr(*name, Value::InternString((*target).into()), vm);
+    }
 
     vm.heap.allocate(HeapData::Module(module))
 }
+
+/// NumPy dtype attributes supported by Monty's compact numeric ndarray model.
+///
+/// Many NumPy dtype names are aliases for platform-sized or narrower integer
+/// and floating point types. Monty currently stores only bool, int64, and
+/// float64 arrays, so aliases are mapped to the closest dtype marker that
+/// existing `astype()` understands instead of introducing new storage formats.
+const NUMPY_DTYPE_ALIASES: &[(StaticStrings, StaticStrings)] = &[
+    (StaticStrings::NpFloat64, StaticStrings::NpFloat64),
+    (StaticStrings::NpDouble, StaticStrings::NpFloat64),
+    (StaticStrings::NpLongdouble, StaticStrings::NpFloat64),
+    (StaticStrings::NpFloat32, StaticStrings::NpFloat32),
+    (StaticStrings::NpFloat16, StaticStrings::NpFloat32),
+    (StaticStrings::NpHalf, StaticStrings::NpFloat32),
+    (StaticStrings::NpSingle, StaticStrings::NpFloat32),
+    (StaticStrings::NpInt64, StaticStrings::NpInt64),
+    (StaticStrings::NpInt_, StaticStrings::NpInt64),
+    (StaticStrings::NpIntp, StaticStrings::NpInt64),
+    (StaticStrings::NpLong, StaticStrings::NpInt64),
+    (StaticStrings::NpLonglong, StaticStrings::NpInt64),
+    (StaticStrings::NpByte, StaticStrings::NpInt64),
+    (StaticStrings::NpShort, StaticStrings::NpInt64),
+    (StaticStrings::NpInt8, StaticStrings::NpInt64),
+    (StaticStrings::NpInt16, StaticStrings::NpInt64),
+    (StaticStrings::NpUint, StaticStrings::NpInt64),
+    (StaticStrings::NpUintp, StaticStrings::NpInt64),
+    (StaticStrings::NpUbyte, StaticStrings::NpInt64),
+    (StaticStrings::NpUshort, StaticStrings::NpInt64),
+    (StaticStrings::NpUint8, StaticStrings::NpInt64),
+    (StaticStrings::NpUint16, StaticStrings::NpInt64),
+    (StaticStrings::NpUint32, StaticStrings::NpInt64),
+    (StaticStrings::NpUint64, StaticStrings::NpInt64),
+    (StaticStrings::NpUlong, StaticStrings::NpInt64),
+    (StaticStrings::NpUlonglong, StaticStrings::NpInt64),
+    (StaticStrings::NpInt32, StaticStrings::NpInt32),
+    (StaticStrings::NpIntc, StaticStrings::NpInt32),
+    (StaticStrings::NpUintc, StaticStrings::NpInt32),
+    (StaticStrings::NpBool_, StaticStrings::NpBool_),
+    (StaticStrings::NpBool, StaticStrings::NpBool_),
+];
 
 /// Static mapping of attribute names to numpy functions for module creation.
 const NUMPY_FUNCTIONS: &[(StaticStrings, NumpyFunctions)] = &[

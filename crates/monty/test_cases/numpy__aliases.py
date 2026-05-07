@@ -323,3 +323,15 @@ assert np.iterable((1, 2)) == True, 'iterable tuple true'
 assert np.iterable('text') == True, 'iterable string true'
 assert np.iterable(np.array([1, 2])) == True, 'iterable ndarray true'
 assert np.iterable(1) == False, 'iterable int false'
+
+
+# === dtype aliases and scalar constants ===
+assert np.array([1.2, -2.8]).astype(np.int_).tolist() == [1, -2], 'int_ dtype alias'
+assert np.array([1.2, -2.8]).astype(np.intc).tolist() == [1, -2], 'intc dtype alias'
+assert np.array([1.2, 2.8]).astype(np.uint8).tolist() == [1, 2], 'uint8 dtype alias'
+assert np.array([1, 0, -2]).astype(np.bool).tolist() == [True, False, True], 'bool dtype alias'
+assert np.array([1, 2]).astype(np.double).tolist() == [1.0, 2.0], 'double dtype alias'
+assert np.array([1, 2]).astype(np.float16).tolist() == [1.0, 2.0], 'float16 dtype alias'
+assert np.array([1, 2]).astype(np.longdouble).tolist() == [1.0, 2.0], 'longdouble dtype alias'
+assert np.little_endian == True, 'little_endian constant'
+assert abs(np.euler_gamma - 0.5772156649015329) < 1e-15, 'euler_gamma constant'

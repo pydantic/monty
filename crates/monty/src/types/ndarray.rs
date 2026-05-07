@@ -1251,12 +1251,12 @@ impl NdArray {
 
     /// `astype(dtype_str)` — cast array to a new dtype.
     ///
-    /// Accepts aliases: "int32" → Int64, "float32" → Float64 (Monty only has 64-bit types).
+    /// Accepts NumPy dtype aliases that Monty maps onto its compact dtype set.
     pub fn astype(&self, dtype_str: &str, heap: &Heap<impl ResourceTracker>) -> RunResult<Value> {
         let new_dtype = match dtype_str {
             "int64" | "int" | "int32" => NdArrayDtype::Int64,
             "float64" | "float" | "float32" => NdArrayDtype::Float64,
-            "bool" => NdArrayDtype::Bool,
+            "bool" | "bool_" => NdArrayDtype::Bool,
             _ => {
                 return Err(
                     SimpleException::new_msg(ExcType::TypeError, format!("unsupported dtype: {dtype_str}")).into(),
