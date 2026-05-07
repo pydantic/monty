@@ -79,7 +79,7 @@ use crate::{
     modules::ModuleFunctions,
     resource::{ResourceError, ResourceTracker, check_array_alloc_size},
     types::{
-        List, Module, NdArray, PyTrait, allocate_tuple,
+        List, Module, NamedTuple, NdArray, PyTrait, allocate_tuple,
         ndarray::{NdArrayDtype, nan_last_cmp, ndarray_from_list, promote_dtype, promote_dtype_with_scalar},
         str::allocate_string,
     },
@@ -132,6 +132,14 @@ pub(crate) enum NumpyFunctions {
     Sort,
     /// `numpy.unique(a)` — return sorted unique elements.
     Unique,
+    /// `numpy.unique_values(a)` — return unique values.
+    UniqueValues,
+    /// `numpy.unique_counts(a)` — return unique values and counts.
+    UniqueCounts,
+    /// `numpy.unique_inverse(a)` — return unique values and inverse indices.
+    UniqueInverse,
+    /// `numpy.unique_all(a)` — return unique values, first indices, inverse indices, and counts.
+    UniqueAll,
     /// `numpy.concatenate(arrays)` — join arrays along axis.
     Concatenate,
     /// `numpy.cumsum(a)` — cumulative sum.
@@ -706,6 +714,10 @@ const NUMPY_FUNCTIONS: &[(StaticStrings, NumpyFunctions)] = &[
     (StaticStrings::Minimum, NumpyFunctions::Minimum),
     (StaticStrings::Sort, NumpyFunctions::Sort),
     (StaticStrings::Unique, NumpyFunctions::Unique),
+    (StaticStrings::NpUniqueValues, NumpyFunctions::UniqueValues),
+    (StaticStrings::NpUniqueCounts, NumpyFunctions::UniqueCounts),
+    (StaticStrings::NpUniqueInverse, NumpyFunctions::UniqueInverse),
+    (StaticStrings::NpUniqueAll, NumpyFunctions::UniqueAll),
     (StaticStrings::Concatenate, NumpyFunctions::Concatenate),
     (StaticStrings::NpConcat, NumpyFunctions::Concatenate), // alias
     (StaticStrings::Cumsum, NumpyFunctions::Cumsum),
@@ -999,6 +1011,10 @@ pub(super) fn call(
         NumpyFunctions::Minimum => call_pairwise(vm, args, f64::min, "numpy.minimum").map(CallResult::Value),
         NumpyFunctions::Sort => call_sort(vm, args).map(CallResult::Value),
         NumpyFunctions::Unique => call_unique(vm, args).map(CallResult::Value),
+        NumpyFunctions::UniqueValues => call_unique_result(vm, args, UniqueResultKind::Values).map(CallResult::Value),
+        NumpyFunctions::UniqueCounts => call_unique_result(vm, args, UniqueResultKind::Counts).map(CallResult::Value),
+        NumpyFunctions::UniqueInverse => call_unique_result(vm, args, UniqueResultKind::Inverse).map(CallResult::Value),
+        NumpyFunctions::UniqueAll => call_unique_result(vm, args, UniqueResultKind::All).map(CallResult::Value),
         NumpyFunctions::Concatenate => call_concatenate(vm, args).map(CallResult::Value),
         NumpyFunctions::Cumsum => call_cumsum(vm, args).map(CallResult::Value),
         NumpyFunctions::Dot => call_dot(vm, args).map(CallResult::Value),
@@ -2138,6 +2154,148 @@ fn call_unique(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunRes
     let len = data.len();
     let new_arr = NdArray::new(data, vec![len], dtype);
     Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(new_arr))?))
+}
+
+/// Return shape for the Array API style `unique_*` helpers.
+#[derive(Clone, Copy)]
+enum UniqueResultKind {
+    /// `unique_values(x)` returns only the unique values ndarray.
+    Values,
+    /// `unique_counts(x)` returns values plus occurrence counts.
+    Counts,
+    /// `unique_inverse(x)` returns values plus inverse indices.
+    Inverse,
+    /// `unique_all(x)` returns values, first indices, inverse indices, and counts.
+    All,
+}
+
+/// Precomputed unique-result arrays shared by the `unique_*` wrappers.
+struct UniqueAnalysis {
+    /// Sorted unique values.
+    values: Vec<f64>,
+    /// First original index for each unique value.
+    first_indices: Vec<usize>,
+    /// Inverse index for each input element.
+    inverse_indices: Vec<usize>,
+    /// Occurrence count for each unique value.
+    counts: Vec<usize>,
+}
+
+/// Shared implementation for NumPy's Array API `unique_*` helpers.
+fn call_unique_result(
+    vm: &mut VM<'_, impl ResourceTracker>,
+    args: ArgValues,
+    kind: UniqueResultKind,
+) -> RunResult<Value> {
+    let name = match kind {
+        UniqueResultKind::Values => "numpy.unique_values",
+        UniqueResultKind::Counts => "numpy.unique_counts",
+        UniqueResultKind::Inverse => "numpy.unique_inverse",
+        UniqueResultKind::All => "numpy.unique_all",
+    };
+    let arg = args.get_one_arg(name, vm.heap)?;
+    defer_drop!(arg, vm);
+    let arr = ndarray_from_value(arg, name, vm)?;
+    let analysis = unique_analysis(&arr);
+
+    match kind {
+        UniqueResultKind::Values => allocate_unique_values_array(&analysis, arr.dtype(), vm.heap),
+        UniqueResultKind::Counts => {
+            let values = allocate_unique_values_array(&analysis, arr.dtype(), vm.heap)?;
+            let counts = allocate_usize_array(&analysis.counts, vec![analysis.counts.len()], vm.heap)?;
+            allocate_namedtuple_result("UniqueCountsResult", &["values", "counts"], vec![values, counts], vm)
+        }
+        UniqueResultKind::Inverse => {
+            let values = allocate_unique_values_array(&analysis, arr.dtype(), vm.heap)?;
+            let inverse_indices = allocate_usize_array(&analysis.inverse_indices, arr.shape().to_vec(), vm.heap)?;
+            allocate_namedtuple_result(
+                "UniqueInverseResult",
+                &["values", "inverse_indices"],
+                vec![values, inverse_indices],
+                vm,
+            )
+        }
+        UniqueResultKind::All => {
+            let values = allocate_unique_values_array(&analysis, arr.dtype(), vm.heap)?;
+            let indices = allocate_usize_array(&analysis.first_indices, vec![analysis.first_indices.len()], vm.heap)?;
+            let inverse_indices = allocate_usize_array(&analysis.inverse_indices, arr.shape().to_vec(), vm.heap)?;
+            let counts = allocate_usize_array(&analysis.counts, vec![analysis.counts.len()], vm.heap)?;
+            allocate_namedtuple_result(
+                "UniqueAllResult",
+                &["values", "indices", "inverse_indices", "counts"],
+                vec![values, indices, inverse_indices, counts],
+                vm,
+            )
+        }
+    }
+}
+
+/// Computes sorted unique values, first indices, inverse indices, and counts.
+fn unique_analysis(arr: &NdArray) -> UniqueAnalysis {
+    let mut pairs: Vec<(f64, usize)> = arr
+        .data()
+        .iter()
+        .copied()
+        .enumerate()
+        .map(|(index, value)| (value, index))
+        .collect();
+    pairs.sort_by(|(left, _), (right, _)| nan_last_cmp(left, right));
+
+    let mut values = Vec::new();
+    let mut first_indices = Vec::new();
+    let mut inverse_indices = vec![0; arr.len()];
+    let mut counts = Vec::new();
+
+    for (value, original_index) in pairs {
+        let group = if values.last().is_some_and(|last| f64_exact_equal(*last, value)) {
+            values.len() - 1
+        } else {
+            values.push(value);
+            first_indices.push(original_index);
+            counts.push(0);
+            values.len() - 1
+        };
+        first_indices[group] = first_indices[group].min(original_index);
+        counts[group] += 1;
+        inverse_indices[original_index] = group;
+    }
+
+    UniqueAnalysis {
+        values,
+        first_indices,
+        inverse_indices,
+        counts,
+    }
+}
+
+/// Allocates the unique values ndarray.
+fn allocate_unique_values_array(
+    analysis: &UniqueAnalysis,
+    dtype: NdArrayDtype,
+    heap: &Heap<impl ResourceTracker>,
+) -> RunResult<Value> {
+    let values = analysis.values.clone();
+    let result = NdArray::new(values, vec![analysis.values.len()], dtype);
+    Ok(Value::Ref(heap.allocate(HeapData::NdArray(result))?))
+}
+
+/// Allocates an int64 ndarray from usize values.
+fn allocate_usize_array(values: &[usize], shape: Vec<usize>, heap: &Heap<impl ResourceTracker>) -> RunResult<Value> {
+    let data = values.iter().copied().map(usize_to_f64).collect();
+    let result = NdArray::new(data, shape, NdArrayDtype::Int64);
+    Ok(Value::Ref(heap.allocate(HeapData::NdArray(result))?))
+}
+
+/// Allocates a namedtuple-style result object for `unique_*` helpers.
+fn allocate_namedtuple_result(
+    type_name: &str,
+    fields: &[&str],
+    values: Vec<Value>,
+    vm: &mut VM<'_, impl ResourceTracker>,
+) -> RunResult<Value> {
+    let field_names = fields.iter().map(|field| (*field).to_owned().into()).collect();
+    let result = NamedTuple::new(type_name.to_owned(), field_names, values);
+    Ok(Value::Ref(vm.heap.allocate(HeapData::NamedTuple(result))?))
 }
 
 /// `numpy.concatenate(arrays)` — join a sequence of arrays along the first axis.

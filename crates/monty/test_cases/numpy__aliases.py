@@ -216,6 +216,20 @@ assert np.vander(np.array([1, 2, 3]), 3, True).tolist() == [
     [1, 3, 9],
 ], 'vander increasing'
 
+unique_input = np.array([3, 1, 3, 2, 1, 3])
+assert np.sort(np.unique_values(unique_input)).tolist() == [1, 2, 3], 'unique_values sorted contents'
+unique_counts = np.unique_counts(unique_input)
+assert unique_counts.values.tolist() == [1, 2, 3], 'unique_counts values'
+assert unique_counts.counts.tolist() == [2, 1, 3], 'unique_counts counts'
+unique_inverse = np.unique_inverse(unique_input)
+assert unique_inverse.values.tolist() == [1, 2, 3], 'unique_inverse values'
+assert unique_inverse.inverse_indices.tolist() == [2, 0, 2, 1, 0, 2], 'unique_inverse indices'
+unique_all = np.unique_all(unique_input)
+assert unique_all.values.tolist() == [1, 2, 3], 'unique_all values'
+assert unique_all.indices.tolist() == [1, 3, 0], 'unique_all first indices'
+assert unique_all.inverse_indices.tolist() == [2, 0, 2, 1, 0, 2], 'unique_all inverse indices'
+assert unique_all.counts.tolist() == [2, 1, 3], 'unique_all counts'
+
 
 # === integer and boolean bitwise helpers ===
 assert np.bitwise_and(6, 3) == 2, 'bitwise_and scalar'

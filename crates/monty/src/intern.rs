@@ -650,6 +650,18 @@ pub enum StaticStrings {
     Minimum,
     /// `numpy.unique()` function
     Unique,
+    /// `numpy.unique_values()` function
+    #[strum(serialize = "unique_values")]
+    NpUniqueValues,
+    /// `numpy.unique_counts()` function
+    #[strum(serialize = "unique_counts")]
+    NpUniqueCounts,
+    /// `numpy.unique_inverse()` function
+    #[strum(serialize = "unique_inverse")]
+    NpUniqueInverse,
+    /// `numpy.unique_all()` function
+    #[strum(serialize = "unique_all")]
+    NpUniqueAll,
     /// `numpy.concatenate()` function
     Concatenate,
     /// `numpy.concat()` alias for `numpy.concatenate()`.
