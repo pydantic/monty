@@ -146,3 +146,35 @@ assert remainder.tolist() == [1, 1], 'divmod remainder array'
 scalar_quotient, scalar_remainder = np.divmod(7, 3)
 assert scalar_quotient == 2, 'divmod scalar quotient'
 assert scalar_remainder == 1, 'divmod scalar remainder'
+
+
+# === window generators and Bessel i0 ===
+assert np.bartlett(0).tolist() == [], 'bartlett zero length'
+assert np.bartlett(-3).tolist() == [], 'bartlett negative length'
+assert np.bartlett(1).tolist() == [1.0], 'bartlett singleton'
+assert np.bartlett(5).tolist() == [0.0, 0.5, 1.0, 0.5, 0.0], 'bartlett values'
+
+blackman = np.blackman(5)
+assert abs(blackman[0]) < 1e-12, 'blackman first'
+assert abs(blackman[1] - 0.34) < 1e-12, 'blackman second'
+assert abs(blackman[2] - 1.0) < 1e-12, 'blackman center'
+
+hamming = np.hamming(5)
+assert abs(hamming[0] - 0.08) < 1e-12, 'hamming first'
+assert abs(hamming[1] - 0.54) < 1e-12, 'hamming second'
+assert hamming[2] == 1.0, 'hamming center'
+hanning = np.hanning(5)
+assert abs(hanning[0]) < 1e-12, 'hanning first'
+assert abs(hanning[1] - 0.5) < 1e-12, 'hanning second'
+assert hanning[2] == 1.0, 'hanning center'
+assert abs(hanning[3] - 0.5) < 1e-12, 'hanning fourth'
+assert abs(hanning[4]) < 1e-12, 'hanning last'
+
+kaiser = np.kaiser(5, 2.0)
+assert abs(kaiser[0] - 0.4386762798370488) < 1e-7, 'kaiser first'
+assert abs(kaiser[1] - 0.8347614334011666) < 1e-7, 'kaiser second'
+assert kaiser[2] == 1.0, 'kaiser center'
+
+assert np.i0(0.0) == 1.0, 'i0 zero'
+assert abs(np.i0(1.0) - 1.2660658777520082) < 1e-7, 'i0 scalar'
+assert abs(np.i0([0.0, 2.0])[1] - 2.279585302336067) < 1e-7, 'i0 list'

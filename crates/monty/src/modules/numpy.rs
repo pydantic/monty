@@ -27,6 +27,7 @@
 //! - `numpy.logaddexp`, `numpy.nextafter`, `numpy.spacing`, `numpy.signbit`, `numpy.sinc`
 //! - `numpy.bitwise_and`, `numpy.invert`, `numpy.left_shift`, `numpy.bitwise_count`
 //! - `numpy.packbits`, `numpy.unpackbits`
+//! - `numpy.i0`, `numpy.bartlett`, `numpy.blackman`, `numpy.hamming`, `numpy.hanning`, `numpy.kaiser`
 //! - `numpy.diff(a)` — discrete differences
 //! - `numpy.round(a, decimals)`, `numpy.clip(a, a_min, a_max)`
 //!
@@ -351,6 +352,18 @@ pub(crate) enum NumpyFunctions {
     Packbits,
     /// `numpy.unpackbits(a)` — unpack byte-sized integers into bit arrays.
     Unpackbits,
+    /// `numpy.bartlett(M)` — Bartlett triangular window.
+    Bartlett,
+    /// `numpy.blackman(M)` — Blackman taper window.
+    Blackman,
+    /// `numpy.hamming(M)` — Hamming window.
+    Hamming,
+    /// `numpy.hanning(M)` — Hann window using NumPy's legacy spelling.
+    Hanning,
+    /// `numpy.kaiser(M, beta)` — Kaiser window.
+    Kaiser,
+    /// `numpy.i0(x)` — modified Bessel function of the first kind, order 0.
+    I0,
     /// `numpy.conj(a)` — return the real-valued conjugate.
     Conj,
     /// `numpy.real(a)` — return the real component.
@@ -755,6 +768,12 @@ const NUMPY_FUNCTIONS: &[(StaticStrings, NumpyFunctions)] = &[
     (StaticStrings::NpBitwiseCount, NumpyFunctions::BitwiseCount),
     (StaticStrings::NpPackbits, NumpyFunctions::Packbits),
     (StaticStrings::NpUnpackbits, NumpyFunctions::Unpackbits),
+    (StaticStrings::NpBartlett, NumpyFunctions::Bartlett),
+    (StaticStrings::NpBlackman, NumpyFunctions::Blackman),
+    (StaticStrings::NpHamming, NumpyFunctions::Hamming),
+    (StaticStrings::NpHanning, NumpyFunctions::Hanning),
+    (StaticStrings::NpKaiser, NumpyFunctions::Kaiser),
+    (StaticStrings::NpI0, NumpyFunctions::I0),
     // Real-only aliases and introspection helpers
     (StaticStrings::NpConj, NumpyFunctions::Conj),
     (StaticStrings::NpConjugate, NumpyFunctions::Conj), // alias
@@ -1212,6 +1231,18 @@ pub(super) fn call(
         NumpyFunctions::BitwiseCount => call_bitwise_count(vm, args).map(CallResult::Value),
         NumpyFunctions::Packbits => call_packbits(vm, args).map(CallResult::Value),
         NumpyFunctions::Unpackbits => call_unpackbits(vm, args).map(CallResult::Value),
+        NumpyFunctions::Bartlett => {
+            call_window(vm, args, WindowKind::Bartlett, "numpy.bartlett").map(CallResult::Value)
+        }
+        NumpyFunctions::Blackman => {
+            call_window(vm, args, WindowKind::Blackman, "numpy.blackman").map(CallResult::Value)
+        }
+        NumpyFunctions::Hamming => call_window(vm, args, WindowKind::Hamming, "numpy.hamming").map(CallResult::Value),
+        NumpyFunctions::Hanning => call_window(vm, args, WindowKind::Hanning, "numpy.hanning").map(CallResult::Value),
+        NumpyFunctions::Kaiser => call_kaiser(vm, args).map(CallResult::Value),
+        NumpyFunctions::I0 => {
+            call_elementwise(vm, args, numpy_i0, "numpy.i0", Some(NdArrayDtype::Float64)).map(CallResult::Value)
+        }
         NumpyFunctions::Conj => call_real_identity(vm, args, "numpy.conj").map(CallResult::Value),
         NumpyFunctions::Real => call_real_identity(vm, args, "numpy.real").map(CallResult::Value),
         NumpyFunctions::Imag => call_imag(vm, args).map(CallResult::Value),
@@ -3973,6 +4004,103 @@ fn unpackbits_type_error() -> RunError {
     SimpleException::new_msg(ExcType::TypeError, "Expected an input array of unsigned byte data type").into()
 }
 
+/// Supported one-argument NumPy window generators.
+#[derive(Clone, Copy)]
+enum WindowKind {
+    /// Bartlett triangular window.
+    Bartlett,
+    /// Blackman taper window.
+    Blackman,
+    /// Hamming raised-cosine window.
+    Hamming,
+    /// Hann raised-cosine window using NumPy's `hanning` spelling.
+    Hanning,
+}
+
+/// Shared implementation for NumPy's simple floating-point window generators.
+fn call_window(
+    vm: &mut VM<'_, impl ResourceTracker>,
+    args: ArgValues,
+    kind: WindowKind,
+    name: &str,
+) -> RunResult<Value> {
+    let arg = args.get_one_arg(name, vm.heap)?;
+    defer_drop!(arg, vm);
+    let len = window_len(arg, name)?;
+    check_array_alloc_size(len, vm.heap.tracker())?;
+    let data = window_values(len, kind);
+    let arr = NdArray::new(data, vec![len], NdArrayDtype::Float64);
+    Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(arr))?))
+}
+
+/// `numpy.kaiser(M, beta)` — Kaiser window using the supported real-valued subset.
+fn call_kaiser(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let (m_val, beta_val) = args.get_two_args("numpy.kaiser", vm.heap)?;
+    defer_drop!(m_val, vm);
+    defer_drop!(beta_val, vm);
+    let len = window_len(m_val, "numpy.kaiser")?;
+    let (beta, _) = numeric_scalar_info(beta_val, "numpy.kaiser", vm)?;
+    check_array_alloc_size(len, vm.heap.tracker())?;
+    let data = kaiser_values(len, beta);
+    let arr = NdArray::new(data, vec![len], NdArrayDtype::Float64);
+    Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(arr))?))
+}
+
+/// Parses a NumPy window length, where non-positive lengths produce an empty array.
+fn window_len(value: &Value, name: &str) -> RunResult<usize> {
+    match value {
+        Value::Int(m) if *m <= 0 => Ok(0),
+        Value::Int(m) => usize::try_from(*m).map_err(|_| {
+            SimpleException::new_msg(ExcType::ValueError, format!("{name}() window length is too large")).into()
+        }),
+        _ => Err(ExcType::type_error(format!(
+            "{name}() window length must be an integer"
+        ))),
+    }
+}
+
+/// Generates values for one of NumPy's one-argument real windows.
+fn window_values(len: usize, kind: WindowKind) -> Vec<f64> {
+    match len {
+        0 => Vec::new(),
+        1 => vec![1.0],
+        _ => {
+            let denom = usize_to_f64(len - 1);
+            (0..len)
+                .map(|index| {
+                    let n = usize_to_f64(index);
+                    let phase = 2.0 * PI * n / denom;
+                    match kind {
+                        WindowKind::Bartlett => 1.0 - ((n - denom / 2.0) / (denom / 2.0)).abs(),
+                        WindowKind::Blackman => 0.42 - 0.5 * phase.cos() + 0.08 * (2.0 * phase).cos(),
+                        WindowKind::Hamming => 0.54 - 0.46 * phase.cos(),
+                        WindowKind::Hanning => 0.5 - 0.5 * phase.cos(),
+                    }
+                })
+                .collect()
+        }
+    }
+}
+
+/// Generates a Kaiser window using the order-0 modified Bessel approximation.
+fn kaiser_values(len: usize, beta: f64) -> Vec<f64> {
+    match len {
+        0 => Vec::new(),
+        1 => vec![1.0],
+        _ => {
+            let alpha = usize_to_f64(len - 1) / 2.0;
+            let denom = numpy_i0(beta);
+            (0..len)
+                .map(|index| {
+                    let ratio = (usize_to_f64(index) - alpha) / alpha;
+                    let inner = (1.0 - ratio * ratio).max(0.0).sqrt();
+                    numpy_i0(beta * inner) / denom
+                })
+                .collect()
+        }
+    }
+}
+
 /// Shared implementation for binary NumPy functions that return two results.
 ///
 /// `numpy.divmod()` is the motivating case: each operand can be a scalar, list,
@@ -4147,6 +4275,30 @@ fn f64_to_i64(value: f64) -> i64 {
 )]
 fn i64_to_f64(value: i64) -> f64 {
     value as f64
+}
+
+/// Approximation for `numpy.i0()`, the modified Bessel function I0.
+///
+/// This uses the classic Cephes polynomial split, which is accurate enough for
+/// NumPy-compatible window generation while avoiding a new special-functions
+/// dependency in the sandbox runtime.
+fn numpy_i0(value: f64) -> f64 {
+    let x = value.abs();
+    if x <= 3.75 {
+        let y = (x / 3.75).powi(2);
+        1.0 + y
+            * (3.515_622_9
+                + y * (3.089_942_4 + y * (1.206_749_2 + y * (0.265_973_2 + y * (0.036_076_8 + y * 0.004_581_3)))))
+    } else {
+        let y = 3.75 / x;
+        (x.exp() / x.sqrt())
+            * (0.398_942_28
+                + y * (0.013_285_92
+                    + y * (0.002_253_19
+                        + y * (-0.001_575_65
+                            + y * (0.009_162_81
+                                + y * (-0.020_577_06 + y * (0.026_355_37 + y * (-0.016_476_33 + y * 0.003_923_77))))))))
+    }
 }
 
 /// `numpy.frexp()` scalar kernel returning exponent as an integer-valued float.

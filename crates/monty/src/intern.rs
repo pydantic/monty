@@ -941,6 +941,24 @@ pub enum StaticStrings {
     /// `numpy.unpackbits()` unpacks byte values into bit arrays.
     #[strum(serialize = "unpackbits")]
     NpUnpackbits,
+    /// `numpy.bartlett()` window generator.
+    #[strum(serialize = "bartlett")]
+    NpBartlett,
+    /// `numpy.blackman()` window generator.
+    #[strum(serialize = "blackman")]
+    NpBlackman,
+    /// `numpy.hamming()` window generator.
+    #[strum(serialize = "hamming")]
+    NpHamming,
+    /// `numpy.hanning()` window generator.
+    #[strum(serialize = "hanning")]
+    NpHanning,
+    /// `numpy.kaiser()` window generator.
+    #[strum(serialize = "kaiser")]
+    NpKaiser,
+    /// `numpy.i0()` modified Bessel function helper.
+    #[strum(serialize = "i0")]
+    NpI0,
     /// `numpy.conj()` real-valued conjugate helper.
     #[strum(serialize = "conj")]
     NpConj,
