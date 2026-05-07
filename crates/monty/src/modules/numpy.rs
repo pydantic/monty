@@ -73,7 +73,7 @@ use crate::{
     bytecode::{CallResult, VM},
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, RunError, RunResult, SimpleException},
-    heap::{Heap, HeapData, HeapId},
+    heap::{Heap, HeapData, HeapId, HeapReadOutput},
     heap_traits::DropWithHeap,
     intern::StaticStrings,
     modules::ModuleFunctions,
@@ -531,6 +531,16 @@ pub(crate) enum NumpyFunctions {
     Diag,
     /// `numpy.diagflat(v, k=0)` — create a diagonal matrix from flattened input.
     Diagflat,
+    /// `numpy.fill_diagonal(a, val)` — fill an array diagonal in place.
+    FillDiagonal,
+    /// `numpy.put(a, ind, v)` — assign flattened positions in place.
+    Put,
+    /// `numpy.copyto(dst, src)` — copy values into an array in place.
+    Copyto,
+    /// `numpy.putmask(a, mask, values)` — assign positions where a mask is true.
+    Putmask,
+    /// `numpy.place(a, mask, values)` — place values sequentially where a mask is true.
+    Place,
     /// `numpy.diagonal(a)` — return diagonal of array.
     Diagonal,
     /// `numpy.trace(a)` — sum of diagonal elements.
@@ -825,6 +835,11 @@ const NUMPY_FUNCTIONS: &[(StaticStrings, NumpyFunctions)] = &[
     (StaticStrings::NpMoveaxis, NumpyFunctions::Moveaxis),
     (StaticStrings::NpRollaxis, NumpyFunctions::Rollaxis),
     (StaticStrings::NpRot90, NumpyFunctions::Rot90),
+    (StaticStrings::NpFillDiagonal, NumpyFunctions::FillDiagonal),
+    (StaticStrings::NpPut, NumpyFunctions::Put),
+    (StaticStrings::NpCopyto, NumpyFunctions::Copyto),
+    (StaticStrings::NpPutmask, NumpyFunctions::Putmask),
+    (StaticStrings::NpPlace, NumpyFunctions::Place),
     (StaticStrings::Append, NumpyFunctions::Append),
     (StaticStrings::NpVstack, NumpyFunctions::Vstack),
     (StaticStrings::NpHstack, NumpyFunctions::Hstack),
@@ -1141,6 +1156,11 @@ pub(super) fn call(
         NumpyFunctions::Moveaxis => call_moveaxis(vm, args).map(CallResult::Value),
         NumpyFunctions::Rollaxis => call_rollaxis(vm, args).map(CallResult::Value),
         NumpyFunctions::Rot90 => call_rot90(vm, args).map(CallResult::Value),
+        NumpyFunctions::FillDiagonal => call_fill_diagonal(vm, args).map(CallResult::Value),
+        NumpyFunctions::Put => call_put(vm, args).map(CallResult::Value),
+        NumpyFunctions::Copyto => call_copyto(vm, args).map(CallResult::Value),
+        NumpyFunctions::Putmask => call_putmask(vm, args).map(CallResult::Value),
+        NumpyFunctions::Place => call_place(vm, args).map(CallResult::Value),
         NumpyFunctions::Append => call_append(vm, args).map(CallResult::Value),
         NumpyFunctions::Vstack => call_vstack(vm, args).map(CallResult::Value),
         NumpyFunctions::Hstack => call_hstack(vm, args).map(CallResult::Value),
@@ -3481,6 +3501,354 @@ fn rot90_ndarray(arr: &NdArray, k: i64, axes: [usize; 2], heap: &Heap<impl Resou
         let result = NdArray::new(data, shape, arr.dtype());
         Ok(Value::Ref(heap.allocate(HeapData::NdArray(result))?))
     }
+}
+
+/// `numpy.fill_diagonal(a, val)` — fill an ndarray diagonal in place.
+fn call_fill_diagonal(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let pos = args.into_pos_only("numpy.fill_diagonal", vm.heap)?;
+    defer_drop_mut!(pos, vm);
+
+    let arr_val = pos
+        .next()
+        .ok_or_else(|| ExcType::type_error_at_least("numpy.fill_diagonal", 2, 0))?;
+    defer_drop!(arr_val, vm);
+    let fill_val = pos
+        .next()
+        .ok_or_else(|| ExcType::type_error_at_least("numpy.fill_diagonal", 2, 1))?;
+    defer_drop!(fill_val, vm);
+    let wrap = if let Some(wrap_val) = pos.next() {
+        defer_drop!(wrap_val, vm);
+        bool_scalar_from_value(wrap_val, "numpy.fill_diagonal", "wrap")?
+    } else {
+        false
+    };
+    if let Some(extra) = pos.next() {
+        extra.drop_with_heap(vm);
+        return Err(ExcType::type_error_at_most("numpy.fill_diagonal", 3, 4));
+    }
+
+    let arr_id = mutable_ndarray_id(arr_val, "numpy.fill_diagonal", vm)?;
+    let values = mutation_values_from_value(fill_val, "numpy.fill_diagonal", vm)?;
+    let HeapReadOutput::NdArray(mut arr_read) = vm.heap.read(arr_id) else {
+        unreachable!()
+    };
+    let arr = arr_read.get_mut(vm.heap);
+    let indices = fill_diagonal_flat_indices(arr.shape(), wrap)?;
+    assign_cycled_values(&mut arr.data, &indices, &values)?;
+    drop(arr_read);
+    Ok(Value::None)
+}
+
+/// `numpy.put(a, ind, v)` — assign flattened positions in place.
+fn call_put(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let pos = args.into_pos_only("numpy.put", vm.heap)?;
+    defer_drop_mut!(pos, vm);
+
+    let arr_val = pos
+        .next()
+        .ok_or_else(|| ExcType::type_error_at_least("numpy.put", 3, 0))?;
+    defer_drop!(arr_val, vm);
+    let indices_val = pos
+        .next()
+        .ok_or_else(|| ExcType::type_error_at_least("numpy.put", 3, 1))?;
+    defer_drop!(indices_val, vm);
+    let values_val = pos
+        .next()
+        .ok_or_else(|| ExcType::type_error_at_least("numpy.put", 3, 2))?;
+    defer_drop!(values_val, vm);
+    if let Some(extra) = pos.next() {
+        extra.drop_with_heap(vm);
+        return Err(ExcType::type_error_at_most("numpy.put", 3, 4));
+    }
+
+    let arr_id = mutable_ndarray_id(arr_val, "numpy.put", vm)?;
+    let len = ndarray_len_by_id(arr_id, "numpy.put", vm)?;
+    let indices = flat_indices_from_value(indices_val, len, "numpy.put", vm)?;
+    let values = mutation_values_from_value(values_val, "numpy.put", vm)?;
+    let HeapReadOutput::NdArray(mut arr_read) = vm.heap.read(arr_id) else {
+        unreachable!()
+    };
+    assign_cycled_values(&mut arr_read.get_mut(vm.heap).data, &indices, &values)?;
+    drop(arr_read);
+    Ok(Value::None)
+}
+
+/// `numpy.copyto(dst, src, where=True)` — copy values into an ndarray in place.
+fn call_copyto(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let (pos, kwargs) = args.into_parts();
+    defer_drop_mut!(pos, vm);
+    let kwargs_iter = kwargs.into_iter();
+    defer_drop_mut!(kwargs_iter, vm);
+
+    let dst_val = pos
+        .next()
+        .ok_or_else(|| ExcType::type_error_at_least("numpy.copyto", 2, 0))?;
+    defer_drop!(dst_val, vm);
+    let src_val = pos
+        .next()
+        .ok_or_else(|| ExcType::type_error_at_least("numpy.copyto", 2, 1))?;
+    defer_drop!(src_val, vm);
+    if pos.len() != 0 {
+        return Err(ExcType::type_error_at_most("numpy.copyto", 2, 3));
+    }
+
+    let where_value = None;
+    defer_drop_mut!(where_value, vm);
+    for (key, value) in kwargs_iter {
+        defer_drop!(key, vm);
+        let Some(keyword_name) = key.as_either_str(vm.heap) else {
+            value.drop_with_heap(vm);
+            return Err(ExcType::type_error_kwargs_nonstring_key());
+        };
+        if let Some(StaticStrings::NpWhere) = keyword_name.static_string() {
+            if where_value.is_some() {
+                value.drop_with_heap(vm);
+                return Err(ExcType::type_error_duplicate_arg(
+                    "copyto",
+                    keyword_name.as_str(vm.interns),
+                ));
+            }
+            *where_value = Some(value);
+        } else {
+            value.drop_with_heap(vm);
+            return Err(ExcType::type_error_unexpected_keyword(
+                "copyto",
+                keyword_name.as_str(vm.interns),
+            ));
+        }
+    }
+
+    let arr_id = mutable_ndarray_id(dst_val, "numpy.copyto", vm)?;
+    let len = ndarray_len_by_id(arr_id, "numpy.copyto", vm)?;
+    let source = mutation_values_from_value(src_val, "numpy.copyto", vm)?;
+    validate_broadcast_values(&source, len, "numpy.copyto")?;
+    let where_mask = if let Some(value) = where_value.as_ref() {
+        Some(bool_mask_from_value(value, len, "numpy.copyto", true, vm)?)
+    } else {
+        None
+    };
+
+    let HeapReadOutput::NdArray(mut arr_read) = vm.heap.read(arr_id) else {
+        unreachable!()
+    };
+    let arr = arr_read.get_mut(vm.heap);
+    for (index, slot) in arr.data.iter_mut().enumerate() {
+        if where_mask.as_ref().is_none_or(|mask| mask[index]) {
+            *slot = broadcast_value_at(&source, index);
+        }
+    }
+    drop(arr_read);
+    Ok(Value::None)
+}
+
+/// `numpy.putmask(a, mask, values)` — assign by flat mask positions in place.
+fn call_putmask(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let (arr_id, mask, values) = masked_mutation_args(args, "numpy.putmask", false, vm)?;
+    let HeapReadOutput::NdArray(mut arr_read) = vm.heap.read(arr_id) else {
+        unreachable!()
+    };
+    let arr = arr_read.get_mut(vm.heap);
+    for (index, slot) in arr.data.iter_mut().enumerate() {
+        if mask[index] {
+            *slot = values[index % values.len()];
+        }
+    }
+    drop(arr_read);
+    Ok(Value::None)
+}
+
+/// `numpy.place(a, mask, values)` — place values sequentially where a mask is true.
+fn call_place(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let (arr_id, mask, values) = masked_mutation_args(args, "numpy.place", false, vm)?;
+    let HeapReadOutput::NdArray(mut arr_read) = vm.heap.read(arr_id) else {
+        unreachable!()
+    };
+    let arr = arr_read.get_mut(vm.heap);
+    let mut value_index = 0usize;
+    for (index, slot) in arr.data.iter_mut().enumerate() {
+        if mask[index] {
+            *slot = values[value_index % values.len()];
+            value_index += 1;
+        }
+    }
+    drop(arr_read);
+    Ok(Value::None)
+}
+
+/// Parses the shared `(a, mask, values)` arguments for masked mutation helpers.
+fn masked_mutation_args(
+    args: ArgValues,
+    name: &str,
+    allow_scalar_mask: bool,
+    vm: &mut VM<'_, impl ResourceTracker>,
+) -> RunResult<(HeapId, Vec<bool>, Vec<f64>)> {
+    let pos = args.into_pos_only(name, vm.heap)?;
+    defer_drop_mut!(pos, vm);
+
+    let arr_val = pos.next().ok_or_else(|| ExcType::type_error_at_least(name, 3, 0))?;
+    defer_drop!(arr_val, vm);
+    let mask_val = pos.next().ok_or_else(|| ExcType::type_error_at_least(name, 3, 1))?;
+    defer_drop!(mask_val, vm);
+    let values_val = pos.next().ok_or_else(|| ExcType::type_error_at_least(name, 3, 2))?;
+    defer_drop!(values_val, vm);
+    if let Some(extra) = pos.next() {
+        extra.drop_with_heap(vm);
+        return Err(ExcType::type_error_at_most(name, 3, 4));
+    }
+
+    let arr_id = mutable_ndarray_id(arr_val, name, vm)?;
+    let len = ndarray_len_by_id(arr_id, name, vm)?;
+    let mask = bool_mask_from_value(mask_val, len, name, allow_scalar_mask, vm)?;
+    let values = mutation_values_from_value(values_val, name, vm)?;
+    ensure_nonempty_values(&values, name)?;
+    Ok((arr_id, mask, values))
+}
+
+/// Returns a mutable ndarray heap id after validating that the target is an ndarray.
+fn mutable_ndarray_id(value: &Value, name: &str, vm: &VM<'_, impl ResourceTracker>) -> RunResult<HeapId> {
+    match value {
+        Value::Ref(id) if matches!(vm.heap.get(*id), HeapData::NdArray(_)) => Ok(*id),
+        _ => Err(ExcType::type_error(format!("{name}() target must be an ndarray"))),
+    }
+}
+
+/// Returns the flat length for a validated ndarray heap id.
+fn ndarray_len_by_id(id: HeapId, name: &str, vm: &VM<'_, impl ResourceTracker>) -> RunResult<usize> {
+    match vm.heap.get(id) {
+        HeapData::NdArray(arr) => Ok(arr.len()),
+        _ => Err(ExcType::type_error(format!("{name}() target must be an ndarray"))),
+    }
+}
+
+/// Converts one scalar or array-like mutation value into flat f64 storage.
+fn mutation_values_from_value(value: &Value, name: &str, vm: &VM<'_, impl ResourceTracker>) -> RunResult<Vec<f64>> {
+    if let Ok((scalar, _)) = numeric_scalar_info(value, name, vm) {
+        Ok(vec![scalar])
+    } else {
+        let arr = ndarray_from_value(value, name, vm)?;
+        ensure_nonempty_values(arr.data(), name)?;
+        Ok(arr.data().to_vec())
+    }
+}
+
+/// Rejects empty mutation value arrays, which cannot supply cycled assignments.
+fn ensure_nonempty_values(values: &[f64], name: &str) -> RunResult<()> {
+    if values.is_empty() {
+        Err(SimpleException::new_msg(ExcType::ValueError, format!("{name}() values must not be empty")).into())
+    } else {
+        Ok(())
+    }
+}
+
+/// Converts an integer or array-like value into resolved flattened indices.
+fn flat_indices_from_value(
+    value: &Value,
+    len: usize,
+    name: &str,
+    vm: &VM<'_, impl ResourceTracker>,
+) -> RunResult<Vec<usize>> {
+    if let Value::Int(index) = value {
+        Ok(vec![resolve_flat_index(*index, len)?])
+    } else {
+        let indices = ndarray_from_value(value, name, vm)?;
+        indices
+            .data()
+            .iter()
+            .map(|&index| {
+                #[expect(clippy::cast_possible_truncation, reason = "index from numeric ndarray")]
+                {
+                    resolve_flat_index(index as i64, len)
+                }
+            })
+            .collect()
+    }
+}
+
+/// Converts a bool-like scalar or array-like value into a flat mask.
+fn bool_mask_from_value(
+    value: &Value,
+    len: usize,
+    name: &str,
+    allow_scalar: bool,
+    vm: &VM<'_, impl ResourceTracker>,
+) -> RunResult<Vec<bool>> {
+    match value {
+        Value::Bool(value) if allow_scalar => Ok(vec![*value; len]),
+        Value::Int(value) if allow_scalar => Ok(vec![*value != 0; len]),
+        Value::Float(value) if allow_scalar => Ok(vec![*value != 0.0; len]),
+        _ => {
+            let mask = ndarray_from_value(value, name, vm)?;
+            if mask.len() == len {
+                Ok(mask.data().iter().map(|&value| value != 0.0).collect())
+            } else {
+                Err(
+                    SimpleException::new_msg(ExcType::ValueError, format!("{name}() mask must match array size"))
+                        .into(),
+                )
+            }
+        }
+    }
+}
+
+/// Converts a bool-like scalar argument.
+fn bool_scalar_from_value(value: &Value, name: &str, arg_name: &str) -> RunResult<bool> {
+    match value {
+        Value::Bool(value) => Ok(*value),
+        Value::Int(value) => Ok(*value != 0),
+        Value::Float(value) => Ok(*value != 0.0),
+        _ => Err(ExcType::type_error(format!("{name}() {arg_name} must be a boolean"))),
+    }
+}
+
+/// Computes the flat row-major offsets that participate in `fill_diagonal`.
+fn fill_diagonal_flat_indices(shape: &[usize], wrap: bool) -> RunResult<Vec<usize>> {
+    if shape.len() < 2 {
+        return Err(SimpleException::new_msg(ExcType::ValueError, "array must be at least 2-d").into());
+    }
+    if shape.len() == 2 {
+        let rows = shape[0];
+        let cols = shape[1];
+        if wrap {
+            let total = rows.saturating_mul(cols);
+            let step = cols.saturating_add(1);
+            Ok((0..total).step_by(step.max(1)).collect())
+        } else {
+            Ok((0..rows.min(cols)).map(|index| index * cols + index).collect())
+        }
+    } else if shape.iter().all(|&dim| dim == shape[0]) {
+        let diagonal_stride = row_major_strides(shape).iter().sum::<usize>();
+        Ok((0..shape[0]).map(|index| index * diagonal_stride).collect())
+    } else {
+        Err(SimpleException::new_msg(ExcType::ValueError, "All dimensions of input must be of equal length").into())
+    }
+}
+
+/// Assigns cycled values into pre-resolved flat positions.
+fn assign_cycled_values(target: &mut [f64], indices: &[usize], values: &[f64]) -> RunResult<()> {
+    ensure_nonempty_values(values, "numpy assignment")?;
+    for (value_index, &target_index) in indices.iter().enumerate() {
+        target[target_index] = values[value_index % values.len()];
+    }
+    Ok(())
+}
+
+/// Validates source values for `copyto` scalar or equal-size broadcasting.
+fn validate_broadcast_values(values: &[f64], len: usize, name: &str) -> RunResult<()> {
+    ensure_nonempty_values(values, name)?;
+    if values.len() == 1 || values.len() == len {
+        Ok(())
+    } else {
+        Err(SimpleException::new_msg(
+            ExcType::ValueError,
+            format!("{name}() source must be scalar or same size"),
+        )
+        .into())
+    }
+}
+
+/// Returns the value for a scalar-broadcast or same-size source buffer.
+fn broadcast_value_at(values: &[f64], index: usize) -> f64 {
+    values[if values.len() == 1 { 0 } else { index }]
 }
 
 /// `numpy.append(a, values)` — append values to end of array (flattened).

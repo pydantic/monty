@@ -263,6 +263,29 @@ assert unstack_scalar0 == 1, 'unstack 1d first scalar'
 assert unstack_scalar1 == 2, 'unstack 1d second scalar'
 assert unstack_scalar2 == 3, 'unstack 1d third scalar'
 
+diag_mut = np.arange(9).reshape(3, 3)
+assert np.fill_diagonal(diag_mut, 7) is None, 'fill_diagonal return'
+assert diag_mut.tolist() == [[7, 1, 2], [3, 7, 5], [6, 7, 7]], 'fill_diagonal 2d values'
+
+put_mut = np.array([0, 1, 2, 3, 4])
+assert np.put(put_mut, [0, -1, 2], [10, 20]) is None, 'put return'
+assert put_mut.tolist() == [10, 1, 10, 3, 20], 'put cycles values by index list'
+
+copy_mut = np.array([0, 1, 2])
+assert np.copyto(copy_mut, 5) is None, 'copyto scalar return'
+assert copy_mut.tolist() == [5, 5, 5], 'copyto scalar broadcast'
+copy_where = np.array([0, 1, 2])
+assert np.copyto(copy_where, [7, 8, 9], where=[True, False, True]) is None, 'copyto where return'
+assert copy_where.tolist() == [7, 1, 9], 'copyto where mask'
+
+putmask_mut = np.array([0, 1, 2, 3, 4])
+assert np.putmask(putmask_mut, [True, False, True, False, True], [9, 8]) is None, 'putmask return'
+assert putmask_mut.tolist() == [9, 1, 9, 3, 9], 'putmask uses flat index cycling'
+
+place_mut = np.array([0, 1, 2, 3, 4])
+assert np.place(place_mut, [True, False, True, False, True], [5, 6]) is None, 'place return'
+assert place_mut.tolist() == [5, 1, 6, 3, 5], 'place uses selected-position cycling'
+
 
 # === linear algebra and numeric wrappers ===
 assert np.vecdot(np.array([1, 2, 3]), np.array([4, 5, 6])) == 32, 'vecdot 1d'

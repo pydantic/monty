@@ -788,6 +788,21 @@ pub enum StaticStrings {
     /// `numpy.ediff1d()` flattened first-difference helper.
     #[strum(serialize = "ediff1d")]
     NpEdiff1d,
+    /// `numpy.fill_diagonal()` in-place diagonal fill helper.
+    #[strum(serialize = "fill_diagonal")]
+    NpFillDiagonal,
+    /// `numpy.put()` in-place flattened index assignment helper.
+    #[strum(serialize = "put")]
+    NpPut,
+    /// `numpy.copyto()` in-place copy helper.
+    #[strum(serialize = "copyto")]
+    NpCopyto,
+    /// `numpy.putmask()` in-place masked assignment helper.
+    #[strum(serialize = "putmask")]
+    NpPutmask,
+    /// `numpy.place()` in-place masked placement helper.
+    #[strum(serialize = "place")]
+    NpPlace,
     // Note: numpy.append reuses list's Append variant
     /// `numpy.vstack()` function
     #[strum(serialize = "vstack")]
