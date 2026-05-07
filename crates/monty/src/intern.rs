@@ -998,6 +998,12 @@ pub enum StaticStrings {
     /// `numpy.isdtype()` compact dtype kind predicate.
     #[strum(serialize = "isdtype")]
     NpIsdtype,
+    /// `numpy.finfo()` floating dtype limit metadata.
+    #[strum(serialize = "finfo")]
+    NpFinfo,
+    /// `numpy.iinfo()` integer dtype limit metadata.
+    #[strum(serialize = "iinfo")]
+    NpIinfo,
     /// `numpy.geterr()` floating-point error config helper.
     #[strum(serialize = "geterr")]
     NpGeterr,

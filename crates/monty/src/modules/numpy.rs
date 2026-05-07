@@ -42,6 +42,7 @@
 //! - `numpy.isnan(a)`, `numpy.isinf(a)`, `numpy.isfinite(a)`
 //! - `numpy.array_equal(a, b)`
 //! - `numpy.array2string(a)`, `numpy.array_repr(a)`, `numpy.array_str(a)`
+//! - `numpy.finfo(dtype)`, `numpy.iinfo(dtype)`
 //! - `numpy.all(a)`, `numpy.any(a)`
 //!
 //! ## Selection & sorting
@@ -69,10 +70,12 @@ use std::{
     num::FpCategory,
 };
 
+use num_bigint::BigInt;
 use smallvec::SmallVec;
 
 use crate::{
     args::ArgValues,
+    builtins::Builtins,
     bytecode::{CallResult, VM},
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, RunError, RunResult, SimpleException},
@@ -82,7 +85,7 @@ use crate::{
     modules::ModuleFunctions,
     resource::{ResourceError, ResourceTracker, check_array_alloc_size},
     types::{
-        Dict, List, Module, NamedTuple, NdArray, PyTrait, allocate_tuple,
+        Dict, List, LongInt, Module, NamedTuple, NdArray, PyTrait, Type, allocate_tuple,
         ndarray::{NdArrayDtype, nan_last_cmp, ndarray_from_list, promote_dtype, promote_dtype_with_scalar},
         str::{Str, allocate_string},
     },
@@ -464,6 +467,10 @@ pub(crate) enum NumpyFunctions {
     Issubdtype,
     /// `numpy.isdtype(dtype, kind)` — compact dtype kind predicate.
     Isdtype,
+    /// `numpy.finfo(dtype)` — floating dtype limit metadata.
+    Finfo,
+    /// `numpy.iinfo(dtype)` — integer dtype limit metadata.
+    Iinfo,
     /// `numpy.geterr()` — floating-point error config snapshot.
     Geterr,
     /// `numpy.seterr(...)` — accepted no-op floating-point error config update.
@@ -1092,6 +1099,8 @@ const NUMPY_FUNCTIONS: &[(StaticStrings, NumpyFunctions)] = &[
     (StaticStrings::NpTypename, NumpyFunctions::Typename),
     (StaticStrings::NpIssubdtype, NumpyFunctions::Issubdtype),
     (StaticStrings::NpIsdtype, NumpyFunctions::Isdtype),
+    (StaticStrings::NpFinfo, NumpyFunctions::Finfo),
+    (StaticStrings::NpIinfo, NumpyFunctions::Iinfo),
     (StaticStrings::NpGeterr, NumpyFunctions::Geterr),
     (StaticStrings::NpSeterr, NumpyFunctions::Seterr),
     (StaticStrings::NpGeterrcall, NumpyFunctions::Geterrcall),
@@ -1659,6 +1668,8 @@ pub(super) fn call(
         NumpyFunctions::Typename => call_typename(vm, args).map(CallResult::Value),
         NumpyFunctions::Issubdtype => call_issubdtype(vm, args).map(CallResult::Value),
         NumpyFunctions::Isdtype => call_isdtype(vm, args).map(CallResult::Value),
+        NumpyFunctions::Finfo => call_finfo(vm, args).map(CallResult::Value),
+        NumpyFunctions::Iinfo => call_iinfo(vm, args).map(CallResult::Value),
         NumpyFunctions::Geterr => call_geterr(vm, args).map(CallResult::Value),
         NumpyFunctions::Seterr => call_seterr(vm, args).map(CallResult::Value),
         NumpyFunctions::Geterrcall => call_geterrcall(vm, args).map(CallResult::Value),
@@ -5383,6 +5394,69 @@ fn call_isdtype(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunRe
     Ok(Value::Bool(is_dtype_kind(dtype, kind)))
 }
 
+/// `numpy.finfo(dtype)` — floating dtype machine-limit metadata.
+fn call_finfo(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let arg = args.get_one_arg("numpy.finfo", vm.heap)?;
+    defer_drop!(arg, vm);
+    let info = float_info_from_value(arg, vm)?;
+    allocate_namedtuple_result(
+        "finfo",
+        &[
+            "bits",
+            "eps",
+            "epsneg",
+            "max",
+            "min",
+            "tiny",
+            "smallest_normal",
+            "smallest_subnormal",
+            "resolution",
+            "precision",
+            "nmant",
+            "iexp",
+            "machep",
+            "negep",
+            "dtype",
+        ],
+        vec![
+            Value::Int(info.bits),
+            Value::Float(info.eps),
+            Value::Float(info.epsneg),
+            Value::Float(info.max),
+            Value::Float(info.min),
+            Value::Float(info.tiny),
+            Value::Float(info.tiny),
+            Value::Float(info.smallest_subnormal),
+            Value::Float(info.resolution),
+            Value::Int(info.precision),
+            Value::Int(info.nmant),
+            Value::Int(info.iexp),
+            Value::Int(info.machep),
+            Value::Int(info.negep),
+            Value::InternString(info.dtype_marker.into()),
+        ],
+        vm,
+    )
+}
+
+/// `numpy.iinfo(dtype)` — integer dtype machine-limit metadata.
+fn call_iinfo(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let arg = args.get_one_arg("numpy.iinfo", vm.heap)?;
+    defer_drop!(arg, vm);
+    let info = integer_info_from_value(arg, vm)?;
+    allocate_namedtuple_result(
+        "iinfo",
+        &["min", "max", "bits", "dtype"],
+        vec![
+            integer_limit_to_value(info.min, vm.heap)?,
+            integer_limit_to_value(info.max, vm.heap)?,
+            Value::Int(info.bits),
+            Value::InternString(info.dtype_marker.into()),
+        ],
+        vm,
+    )
+}
+
 /// `numpy.geterr()` — return Monty's fixed floating-point error policy.
 fn call_geterr(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     args.check_zero_args("numpy.geterr", vm.heap)?;
@@ -5565,6 +5639,59 @@ enum IsdtypeKind {
     Never,
 }
 
+/// Machine-limit metadata returned by Monty's `numpy.finfo()` subset.
+struct FloatInfo {
+    /// Interned dtype name marker, such as `float32` or `float64`.
+    dtype_marker: StaticStrings,
+    /// Number of storage bits for the dtype.
+    bits: i64,
+    /// Difference between 1.0 and the next representable value above it.
+    eps: f64,
+    /// Difference between 1.0 and the next representable value below it.
+    epsneg: f64,
+    /// Largest finite representable value.
+    max: f64,
+    /// Most negative finite representable value.
+    min: f64,
+    /// Smallest positive normal representable value.
+    tiny: f64,
+    /// Smallest positive subnormal representable value.
+    smallest_subnormal: f64,
+    /// Decimal resolution reported by NumPy.
+    resolution: f64,
+    /// Approximate decimal precision.
+    precision: i64,
+    /// Number of mantissa bits reported by NumPy.
+    nmant: i64,
+    /// Number of exponent bits reported by NumPy.
+    iexp: i64,
+    /// Exponent of `eps`.
+    machep: i64,
+    /// Exponent of `epsneg`.
+    negep: i64,
+}
+
+/// Machine-limit metadata returned by Monty's `numpy.iinfo()` subset.
+struct IntegerInfo {
+    /// Interned dtype name marker, such as `int16` or `uint32`.
+    dtype_marker: StaticStrings,
+    /// Number of storage bits for the dtype.
+    bits: i64,
+    /// Minimum representable integer.
+    min: IntegerLimit,
+    /// Maximum representable integer.
+    max: IntegerLimit,
+}
+
+/// Signed or unsigned integer boundary that can exceed Monty's fast `i64` path.
+#[derive(Clone, Copy)]
+enum IntegerLimit {
+    /// Signed integer bound, including all supported signed minima.
+    Signed(i128),
+    /// Unsigned integer bound, used for `uint64::max`.
+    Unsigned(u128),
+}
+
 /// Parses a dtype argument such as `np.float64` or `'int64'`.
 fn dtype_meta_from_dtype_value(
     value: &Value,
@@ -5615,6 +5742,189 @@ fn dtype_meta_from_value(value: &Value, name: &str, vm: &VM<'_, impl ResourceTra
         let arr = ndarray_from_value(value, name, vm)?;
         Ok(dtype_meta_from_ndarray_dtype(arr.dtype()))
     }
+}
+
+/// Resolves the dtype-like input accepted by Monty's `numpy.finfo()` subset.
+fn float_info_from_value(value: &Value, vm: &VM<'_, impl ResourceTracker>) -> RunResult<FloatInfo> {
+    match value {
+        Value::Float(_) | Value::Builtin(Builtins::Type(Type::Float)) => {
+            Ok(float_info_from_kind(FloatInfoKind::Float64))
+        }
+        Value::Int(_) | Value::Bool(_) | Value::Builtin(Builtins::Type(Type::Int | Type::Bool)) => {
+            Err(finfo_not_inexact_error("int64"))
+        }
+        _ => {
+            let text = string_from_value(value, "numpy.finfo", vm)?;
+            float_info_from_str(&text).ok_or_else(|| finfo_not_inexact_error(&text))
+        }
+    }
+}
+
+/// Resolves the dtype-like input accepted by Monty's `numpy.iinfo()` subset.
+fn integer_info_from_value(value: &Value, vm: &VM<'_, impl ResourceTracker>) -> RunResult<IntegerInfo> {
+    match value {
+        Value::Int(_) | Value::Builtin(Builtins::Type(Type::Int)) => {
+            Ok(integer_info_signed(64, StaticStrings::NpInt64))
+        }
+        Value::Bool(_) | Value::Builtin(Builtins::Type(Type::Bool)) => Err(invalid_integer_dtype_error("b")),
+        Value::Float(_) | Value::Builtin(Builtins::Type(Type::Float)) => Err(invalid_integer_dtype_error("f")),
+        _ => {
+            let text = string_from_value(value, "numpy.iinfo", vm)?;
+            integer_info_from_str(&text).ok_or_else(|| invalid_integer_dtype_from_text(&text))
+        }
+    }
+}
+
+/// Supported floating metadata widths for `finfo()`.
+#[derive(Clone, Copy)]
+enum FloatInfoKind {
+    /// IEEE-754 binary16 metadata.
+    Float16,
+    /// IEEE-754 binary32 metadata.
+    Float32,
+    /// IEEE-754 binary64 metadata, also used for Monty's `longdouble` alias.
+    Float64,
+}
+
+/// Parses supported floating dtype names for `finfo()`.
+fn float_info_from_str(text: &str) -> Option<FloatInfo> {
+    let kind = match text {
+        "float16" | "half" | "e" => FloatInfoKind::Float16,
+        "float32" | "single" | "f" => FloatInfoKind::Float32,
+        "float64" | "double" | "longdouble" | "float" | "d" | "g" => FloatInfoKind::Float64,
+        _ => return None,
+    };
+    Some(float_info_from_kind(kind))
+}
+
+/// Returns static `finfo()` metadata for the selected supported float width.
+fn float_info_from_kind(kind: FloatInfoKind) -> FloatInfo {
+    match kind {
+        FloatInfoKind::Float16 => FloatInfo {
+            dtype_marker: StaticStrings::NpFloat16,
+            bits: 16,
+            eps: 0.000_976_562_5,
+            epsneg: 0.000_488_281_25,
+            max: 65_504.0,
+            min: -65_504.0,
+            tiny: 0.000_061_035_156_25,
+            smallest_subnormal: 0.000_000_059_604_644_775_390_63,
+            resolution: 0.001,
+            precision: 3,
+            nmant: 10,
+            iexp: 5,
+            machep: -10,
+            negep: -11,
+        },
+        FloatInfoKind::Float32 => FloatInfo {
+            dtype_marker: StaticStrings::NpFloat32,
+            bits: 32,
+            eps: 0.000_000_119_209_289_550_781_25,
+            epsneg: 0.000_000_059_604_644_775_390_63,
+            max: 3.402_823_466_385_288_6e38,
+            min: -3.402_823_466_385_288_6e38,
+            tiny: 1.175_494_350_822_287_5e-38,
+            smallest_subnormal: 1.401_298_464_324_817e-45,
+            resolution: 0.000_001,
+            precision: 6,
+            nmant: 23,
+            iexp: 8,
+            machep: -23,
+            negep: -24,
+        },
+        FloatInfoKind::Float64 => FloatInfo {
+            dtype_marker: StaticStrings::NpFloat64,
+            bits: 64,
+            eps: f64::EPSILON,
+            epsneg: f64::EPSILON / 2.0,
+            max: f64::MAX,
+            min: -f64::MAX,
+            tiny: f64::MIN_POSITIVE,
+            smallest_subnormal: 5e-324,
+            resolution: 1e-15,
+            precision: 15,
+            nmant: 52,
+            iexp: 11,
+            machep: -52,
+            negep: -53,
+        },
+    }
+}
+
+/// Parses supported integer dtype names for `iinfo()`.
+fn integer_info_from_str(text: &str) -> Option<IntegerInfo> {
+    match text {
+        "int8" | "byte" | "b" => Some(integer_info_signed(8, StaticStrings::NpInt8)),
+        "int16" | "short" | "h" => Some(integer_info_signed(16, StaticStrings::NpInt16)),
+        "int32" | "intc" | "i" => Some(integer_info_signed(32, StaticStrings::NpInt32)),
+        "int64" | "int_" | "intp" | "long" | "longlong" | "l" | "q" => {
+            Some(integer_info_signed(64, StaticStrings::NpInt64))
+        }
+        "uint8" | "ubyte" | "B" => Some(integer_info_unsigned(8, StaticStrings::NpUint8)),
+        "uint16" | "ushort" | "H" => Some(integer_info_unsigned(16, StaticStrings::NpUint16)),
+        "uint32" | "uintc" | "I" => Some(integer_info_unsigned(32, StaticStrings::NpUint32)),
+        "uint64" | "uint" | "uintp" | "ulong" | "ulonglong" | "L" | "Q" => {
+            Some(integer_info_unsigned(64, StaticStrings::NpUint64))
+        }
+        _ => None,
+    }
+}
+
+/// Builds signed integer metadata for a fixed-width two's-complement dtype.
+fn integer_info_signed(bits: u32, dtype_marker: StaticStrings) -> IntegerInfo {
+    let max = (1_i128 << (bits - 1)) - 1;
+    let min = -(1_i128 << (bits - 1));
+    IntegerInfo {
+        dtype_marker,
+        bits: i64::from(bits),
+        min: IntegerLimit::Signed(min),
+        max: IntegerLimit::Signed(max),
+    }
+}
+
+/// Builds unsigned integer metadata for a fixed-width dtype.
+fn integer_info_unsigned(bits: u32, dtype_marker: StaticStrings) -> IntegerInfo {
+    let max = (1_u128 << bits) - 1;
+    IntegerInfo {
+        dtype_marker,
+        bits: i64::from(bits),
+        min: IntegerLimit::Unsigned(0),
+        max: IntegerLimit::Unsigned(max),
+    }
+}
+
+/// Converts an integer metadata boundary into Monty's fast or arbitrary-precision int value.
+fn integer_limit_to_value(limit: IntegerLimit, heap: &Heap<impl ResourceTracker>) -> RunResult<Value> {
+    let value = match limit {
+        IntegerLimit::Signed(value) => BigInt::from(value),
+        IntegerLimit::Unsigned(value) => BigInt::from(value),
+    };
+    Ok(LongInt::new(value).into_value(heap)?)
+}
+
+/// Creates NumPy-style `finfo()` errors for non-floating dtype inputs.
+fn finfo_not_inexact_error(text: &str) -> RunError {
+    SimpleException::new_msg(
+        ExcType::ValueError,
+        format!("data type <class 'numpy.{text}'> not inexact"),
+    )
+    .into()
+}
+
+/// Creates NumPy-style `iinfo()` errors for non-integer dtype inputs.
+fn invalid_integer_dtype_error(kind: &str) -> RunError {
+    SimpleException::new_msg(ExcType::ValueError, format!("Invalid integer data type '{kind}'.")).into()
+}
+
+/// Maps unsupported dtype text onto a compact `iinfo()` error category.
+fn invalid_integer_dtype_from_text(text: &str) -> RunError {
+    let kind = match text {
+        "bool" | "bool_" | "?" => "b",
+        "float16" | "float32" | "float64" | "half" | "single" | "double" | "longdouble" | "float" | "e" | "f" | "d"
+        | "g" => "f",
+        _ => text,
+    };
+    invalid_integer_dtype_error(kind)
 }
 
 /// Maps dtype text onto Monty's compact dtype categories.
