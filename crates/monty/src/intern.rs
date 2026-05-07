@@ -605,6 +605,9 @@ pub enum StaticStrings {
     /// `numpy.fromiter()` iterable numeric-array constructor.
     #[strum(serialize = "fromiter")]
     NpFromiter,
+    /// `numpy.fromstring()` text-mode numeric-array constructor.
+    #[strum(serialize = "fromstring")]
+    NpFromstring,
     /// `numpy.asanyarray()` alias for `numpy.asarray()` in Monty's ndarray-only subset.
     #[strum(serialize = "asanyarray")]
     NpAsanyarray,

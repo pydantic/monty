@@ -111,6 +111,8 @@ pub(crate) enum NumpyFunctions {
     Fromfunction,
     /// `numpy.fromiter(iter, dtype, count=-1)` — create a 1-D numeric array from an iterable.
     Fromiter,
+    /// `numpy.fromstring(string, dtype=float, count=-1, sep='')` — parse text into a 1-D numeric array.
+    Fromstring,
     /// `numpy.zeros(shape)` — create an array filled with zeros.
     Zeros,
     /// `numpy.ones(shape)` — create an array filled with ones.
@@ -944,6 +946,7 @@ const NUMPY_FUNCTIONS: &[(StaticStrings, NumpyFunctions)] = &[
     (StaticStrings::NpArrayStr, NumpyFunctions::ArrayStr),
     (StaticStrings::NpFromfunction, NumpyFunctions::Fromfunction),
     (StaticStrings::NpFromiter, NumpyFunctions::Fromiter),
+    (StaticStrings::NpFromstring, NumpyFunctions::Fromstring),
     (StaticStrings::NpAsanyarray, NumpyFunctions::Asarray),
     (StaticStrings::NpZeros, NumpyFunctions::Zeros),
     (StaticStrings::NpOnes, NumpyFunctions::Ones),
@@ -1317,6 +1320,7 @@ pub(super) fn call(
         NumpyFunctions::ArrayStr => call_array_str(vm, args).map(CallResult::Value),
         NumpyFunctions::Fromfunction => call_fromfunction(vm, args).map(CallResult::Value),
         NumpyFunctions::Fromiter => call_fromiter(vm, args).map(CallResult::Value),
+        NumpyFunctions::Fromstring => call_fromstring(vm, args).map(CallResult::Value),
         NumpyFunctions::Zeros => call_zeros(vm, args).map(CallResult::Value),
         NumpyFunctions::Ones => call_ones(vm, args).map(CallResult::Value),
         NumpyFunctions::Arange => call_arange(vm, args).map(CallResult::Value),
@@ -2158,6 +2162,200 @@ fn collect_fromiter_data(
         }
     }
     Ok(data)
+}
+
+/// `numpy.fromstring(string, dtype=float, count=-1, sep='')` — parse separated text into a 1-D array.
+fn call_fromstring(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let (mut pos, kwargs) = args.into_parts();
+    let Some(string_value) = pos.next() else {
+        pos.drop_with_heap(vm);
+        kwargs.drop_with_heap(vm);
+        return Err(ExcType::type_error_at_least("numpy.fromstring", 1, 0));
+    };
+    defer_drop!(string_value, vm);
+    let dtype_pos = pos.next();
+    defer_drop_mut!(dtype_pos, vm);
+    let count_pos = pos.next();
+    defer_drop_mut!(count_pos, vm);
+    let sep_pos = pos.next();
+    defer_drop_mut!(sep_pos, vm);
+    if let Some(extra) = pos.next() {
+        extra.drop_with_heap(vm);
+        pos.drop_with_heap(vm);
+        kwargs.drop_with_heap(vm);
+        return Err(ExcType::type_error_at_most("numpy.fromstring", 1, 4));
+    }
+    pos.drop_with_heap(vm);
+
+    let parsed = parse_fromstring_kwargs(kwargs, vm)?;
+    let dtype = match (dtype_pos.as_ref(), parsed.dtype) {
+        (Some(_), Some(_)) => return Err(ExcType::type_error_multiple_values("numpy.fromstring", "dtype")),
+        (Some(value), None) => dtype_meta_from_optional_dtype_value(value, "numpy.fromstring", vm)?,
+        (None, Some(dtype)) => dtype,
+        (None, None) => CompactDtype::Float64,
+    };
+    let count = match (count_pos.as_ref(), parsed.count) {
+        (Some(_), Some(_)) => return Err(ExcType::type_error_multiple_values("numpy.fromstring", "count")),
+        (Some(value), None) => value_to_i64_arg(value, "numpy.fromstring", "count")?,
+        (None, Some(count)) => count,
+        (None, None) => -1,
+    };
+    let sep = match (sep_pos.as_ref(), parsed.sep) {
+        (Some(_), Some(_)) => return Err(ExcType::type_error_multiple_values("numpy.fromstring", "sep")),
+        (Some(value), None) => string_from_value(value, "numpy.fromstring", vm)?,
+        (None, Some(sep)) => sep,
+        (None, None) => String::new(),
+    };
+    if sep.is_empty() {
+        return Err(SimpleException::new_msg(
+            ExcType::ValueError,
+            "The binary mode of fromstring is removed, use frombuffer instead",
+        )
+        .into());
+    }
+
+    let text = string_from_value(string_value, "numpy.fromstring", vm)?;
+    let limit = fromstring_count_limit(count, "numpy.fromstring")?;
+    if let Some(limit) = limit {
+        check_array_alloc_size(limit, vm.heap.tracker())?;
+    }
+    let data = parse_fromstring_data(&text, dtype, limit, &sep)?;
+    if limit.is_none() {
+        check_array_alloc_size(data.len(), vm.heap.tracker())?;
+    }
+    let len = data.len();
+    let arr = NdArray::new(data, vec![len], ndarray_dtype_from_compact(dtype));
+    Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(arr))?))
+}
+
+/// Parsed keyword state for `fromstring()`.
+struct ParsedFromStringKwargs {
+    /// Optional dtype parsed from `dtype=`.
+    dtype: Option<CompactDtype>,
+    /// Optional element limit parsed from `count=`.
+    count: Option<i64>,
+    /// Optional text separator parsed from `sep=`.
+    sep: Option<String>,
+}
+
+/// Parses the compact keyword surface supported by `fromstring()`.
+fn parse_fromstring_kwargs(
+    kwargs: KwargsValues,
+    vm: &mut VM<'_, impl ResourceTracker>,
+) -> RunResult<ParsedFromStringKwargs> {
+    let kwargs_iter = kwargs.into_iter();
+    defer_drop_mut!(kwargs_iter, vm);
+
+    let mut dtype = None;
+    let mut count = None;
+    let mut sep = None;
+    let mut like_seen = false;
+    for (key, value) in kwargs_iter {
+        let Some(keyword_name) = key.as_either_str(vm.heap) else {
+            key.drop_with_heap(vm);
+            value.drop_with_heap(vm);
+            return Err(ExcType::type_error_kwargs_nonstring_key());
+        };
+        let key_str = keyword_name.as_str(vm.interns);
+        if key_str == "dtype" {
+            key.drop_with_heap(vm);
+            defer_drop!(value, vm);
+            if dtype.is_some() {
+                return Err(ExcType::type_error_multiple_values("numpy.fromstring", "dtype"));
+            }
+            dtype = Some(dtype_meta_from_optional_dtype_value(value, "numpy.fromstring", vm)?);
+        } else if key_str == "count" {
+            key.drop_with_heap(vm);
+            defer_drop!(value, vm);
+            if count.is_some() {
+                return Err(ExcType::type_error_multiple_values("numpy.fromstring", "count"));
+            }
+            count = Some(value_to_i64_arg(value, "numpy.fromstring", "count")?);
+        } else if key_str == "sep" {
+            key.drop_with_heap(vm);
+            defer_drop!(value, vm);
+            if sep.is_some() {
+                return Err(ExcType::type_error_multiple_values("numpy.fromstring", "sep"));
+            }
+            sep = Some(string_from_value(value, "numpy.fromstring", vm)?);
+        } else if key_str == "like" {
+            key.drop_with_heap(vm);
+            value.drop_with_heap(vm);
+            if like_seen {
+                return Err(ExcType::type_error_multiple_values("numpy.fromstring", "like"));
+            }
+            like_seen = true;
+        } else {
+            key.drop_with_heap(vm);
+            value.drop_with_heap(vm);
+            return Err(ExcType::type_error(format!(
+                "'{key_str}' is an invalid keyword argument for numpy.fromstring()"
+            )));
+        }
+    }
+
+    Ok(ParsedFromStringKwargs { dtype, count, sep })
+}
+
+/// Converts NumPy's `count` argument into an optional text-token limit.
+fn fromstring_count_limit(count: i64, name: &str) -> RunResult<Option<usize>> {
+    if count < 0 {
+        Ok(None)
+    } else {
+        Ok(Some(i64_to_nonnegative_usize(count, name, "count")?))
+    }
+}
+
+/// Parses separated text tokens into Monty's compact ndarray backing values.
+fn parse_fromstring_data(text: &str, dtype: CompactDtype, limit: Option<usize>, sep: &str) -> RunResult<Vec<f64>> {
+    let mut data = Vec::with_capacity(limit.unwrap_or(0));
+    if limit == Some(0) {
+        return Ok(data);
+    }
+
+    if sep.chars().all(char::is_whitespace) {
+        for token in text.split_whitespace() {
+            data.push(parse_fromstring_token(token, dtype)?);
+            if Some(data.len()) == limit {
+                break;
+            }
+        }
+    } else {
+        let mut parts = text.split(sep).peekable();
+        while let Some(part) = parts.next() {
+            if Some(data.len()) == limit {
+                break;
+            }
+            let token = part.trim();
+            if token.is_empty() {
+                if text.trim().is_empty() || parts.peek().is_none() && text.ends_with(sep) {
+                    break;
+                }
+                return Err(fromstring_unmatched_data_error());
+            }
+            data.push(parse_fromstring_token(token, dtype)?);
+        }
+    }
+    Ok(data)
+}
+
+/// Parses one numeric text token using the requested compact dtype.
+fn parse_fromstring_token(token: &str, dtype: CompactDtype) -> RunResult<f64> {
+    let value = token.parse::<f64>().map_err(|_| fromstring_unmatched_data_error())?;
+    match dtype {
+        CompactDtype::Bool => Ok(if value == 0.0 { 0.0 } else { 1.0 }),
+        CompactDtype::Int => Ok(i64_to_f64(f64_to_i64(value))),
+        CompactDtype::Float32 | CompactDtype::Float64 => Ok(value),
+    }
+}
+
+/// Error used when text-mode `fromstring()` cannot consume the next token.
+fn fromstring_unmatched_data_error() -> RunError {
+    SimpleException::new_msg(
+        ExcType::ValueError,
+        "string or file could not be read to its end due to unmatched data",
+    )
+    .into()
 }
 
 /// Builds the coordinate arrays passed as positional arguments to `fromfunction()`.

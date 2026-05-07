@@ -542,6 +542,14 @@ assert np.fromiter([1, 2.5, 3], float).tolist() == [1.0, 2.5, 3.0], 'fromiter fl
 assert np.fromiter([1, 2, 3], np.int64, count=2).tolist() == [1, 2], 'fromiter count keyword'
 assert np.fromiter([True, False], bool).tolist() == [True, False], 'fromiter bool dtype'
 assert np.fromiter([1, 2], None).tolist() == [1.0, 2.0], 'fromiter dtype none default'
+assert np.fromstring('1 2 3', dtype=int, sep=' ').tolist() == [1, 2, 3], 'fromstring int whitespace'
+assert np.fromstring('1, 2, 3', dtype=float, sep=',').tolist() == [
+    1.0,
+    2.0,
+    3.0,
+], 'fromstring float comma'
+assert np.fromstring('1,2,3', dtype=np.int64, count=2, sep=',').tolist() == [1, 2], 'fromstring count'
+assert np.fromstring('1 0 2', dtype=bool, sep=' ').tolist() == [True, False, True], 'fromstring bool'
 assert np.mintypecode(['i', 'f']) == 'f', 'mintypecode int float'
 assert np.typename('i') == 'integer', 'typename integer code'
 assert np.typename('d') == 'double precision', 'typename double code'
