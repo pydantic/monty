@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, AsyncIterator, Literal
+from typing import TYPE_CHECKING, AsyncGenerator, Literal
 
 from playwright.async_api import Browser as PwBrowser, Page as PwPage, async_playwright
 
@@ -13,7 +13,7 @@ pw_pages: dict[int, PwPage] = {}
 
 
 @asynccontextmanager
-async def start_browser() -> AsyncIterator[Browser]:
+async def start_browser() -> AsyncGenerator[Browser]:
     async with async_playwright() as p:
         b = await p.chromium.launch()
         yield Browser(b)

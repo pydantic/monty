@@ -205,6 +205,36 @@ pub(crate) enum NumpyFunctions {
     Repeat,
     /// `numpy.split(a, indices_or_sections)` — split array into sub-arrays.
     Split,
+    /// `numpy.add(a, b)` — element-wise addition.
+    Add,
+    /// `numpy.subtract(a, b)` — element-wise subtraction.
+    Subtract,
+    /// `numpy.multiply(a, b)` — element-wise multiplication.
+    Multiply,
+    /// `numpy.divide(a, b)` / `numpy.true_divide(a, b)` — element-wise true division.
+    Divide,
+    /// `numpy.floor_divide(a, b)` — element-wise floor division.
+    FloorDivide,
+    /// `numpy.mod(a, b)` / `numpy.remainder(a, b)` — element-wise Python modulo.
+    Mod,
+    /// `numpy.equal(a, b)` — element-wise equality comparison.
+    Equal,
+    /// `numpy.not_equal(a, b)` — element-wise inequality comparison.
+    NotEqual,
+    /// `numpy.greater(a, b)` — element-wise greater-than comparison.
+    Greater,
+    /// `numpy.greater_equal(a, b)` — element-wise greater-or-equal comparison.
+    GreaterEqual,
+    /// `numpy.less(a, b)` — element-wise less-than comparison.
+    Less,
+    /// `numpy.less_equal(a, b)` — element-wise less-or-equal comparison.
+    LessEqual,
+    /// `numpy.shape(a)` — tuple of dimensions.
+    Shape,
+    /// `numpy.size(a)` — total number of elements.
+    Size,
+    /// `numpy.ndim(a)` — number of dimensions.
+    Ndim,
 
     // --- Phase 3: Inverse trig, hyperbolic, remaining math ---
     /// `numpy.arcsin(a)` — element-wise inverse sine.
@@ -470,19 +500,38 @@ pub fn create_module(vm: &mut VM<'_, impl ResourceTracker>) -> Result<HeapId, Re
 /// Static mapping of attribute names to numpy functions for module creation.
 const NUMPY_FUNCTIONS: &[(StaticStrings, NumpyFunctions)] = &[
     (StaticStrings::NpArray, NumpyFunctions::Array),
+    (StaticStrings::NpAsanyarray, NumpyFunctions::Asarray),
     (StaticStrings::NpZeros, NumpyFunctions::Zeros),
     (StaticStrings::NpOnes, NumpyFunctions::Ones),
+    (StaticStrings::Add, NumpyFunctions::Add),
+    (StaticStrings::NpSubtract, NumpyFunctions::Subtract),
+    (StaticStrings::NpMultiply, NumpyFunctions::Multiply),
+    (StaticStrings::NpDivide, NumpyFunctions::Divide),
+    (StaticStrings::NpTrueDivide, NumpyFunctions::Divide), // alias
+    (StaticStrings::NpFloorDivide, NumpyFunctions::FloorDivide),
+    (StaticStrings::NpMod, NumpyFunctions::Mod),
+    (StaticStrings::Remainder, NumpyFunctions::Mod), // alias
+    (StaticStrings::NpEqual, NumpyFunctions::Equal),
+    (StaticStrings::NpNotEqual, NumpyFunctions::NotEqual),
+    (StaticStrings::NpGreater, NumpyFunctions::Greater),
+    (StaticStrings::NpGreaterEqual, NumpyFunctions::GreaterEqual),
+    (StaticStrings::NpLess, NumpyFunctions::Less),
+    (StaticStrings::NpLessEqual, NumpyFunctions::LessEqual),
     (StaticStrings::NpArange, NumpyFunctions::Arange),
     (StaticStrings::NpLinspace, NumpyFunctions::Linspace),
     (StaticStrings::NpSum, NumpyFunctions::Sum),
     (StaticStrings::Mean, NumpyFunctions::Mean),
     (StaticStrings::NpMin, NumpyFunctions::Min),
+    (StaticStrings::NpAmin, NumpyFunctions::Min), // alias
     (StaticStrings::NpMax, NumpyFunctions::Max),
+    (StaticStrings::NpAmax, NumpyFunctions::Max), // alias
     (StaticStrings::Abs, NumpyFunctions::Abs),
+    (StaticStrings::Absolute, NumpyFunctions::Abs), // alias
     (StaticStrings::Sqrt, NumpyFunctions::Sqrt),
     (StaticStrings::Log, NumpyFunctions::Log),
     (StaticStrings::Exp, NumpyFunctions::Exp),
     (StaticStrings::Round, NumpyFunctions::Round),
+    (StaticStrings::NpAround, NumpyFunctions::Round), // alias
     (StaticStrings::Clip, NumpyFunctions::Clip),
     (StaticStrings::NpWhere, NumpyFunctions::Where),
     (StaticStrings::Maximum, NumpyFunctions::Maximum),
@@ -490,7 +539,9 @@ const NUMPY_FUNCTIONS: &[(StaticStrings, NumpyFunctions)] = &[
     (StaticStrings::Sort, NumpyFunctions::Sort),
     (StaticStrings::Unique, NumpyFunctions::Unique),
     (StaticStrings::Concatenate, NumpyFunctions::Concatenate),
+    (StaticStrings::NpConcat, NumpyFunctions::Concatenate), // alias
     (StaticStrings::Cumsum, NumpyFunctions::Cumsum),
+    (StaticStrings::NpCumulativeSum, NumpyFunctions::Cumsum), // alias
     (StaticStrings::Dot, NumpyFunctions::Dot),
     (StaticStrings::Ceil, NumpyFunctions::Ceil),
     (StaticStrings::Floor, NumpyFunctions::Floor),
@@ -501,6 +552,7 @@ const NUMPY_FUNCTIONS: &[(StaticStrings, NumpyFunctions)] = &[
     (StaticStrings::Tan, NumpyFunctions::Tan),
     (StaticStrings::Log2, NumpyFunctions::Log2),
     (StaticStrings::NpPower, NumpyFunctions::Power),
+    (StaticStrings::Pow, NumpyFunctions::Power), // alias
     (StaticStrings::NpDiff, NumpyFunctions::Diff),
     (StaticStrings::NpFull, NumpyFunctions::Full),
     (StaticStrings::NpEye, NumpyFunctions::Eye),
@@ -532,17 +584,27 @@ const NUMPY_FUNCTIONS: &[(StaticStrings, NumpyFunctions)] = &[
     (StaticStrings::NpTile, NumpyFunctions::Tile),
     (StaticStrings::NpRepeat, NumpyFunctions::Repeat),
     (StaticStrings::Split, NumpyFunctions::Split),
+    (StaticStrings::NpShape, NumpyFunctions::Shape),
+    (StaticStrings::NpSize, NumpyFunctions::Size),
+    (StaticStrings::NpNdim, NumpyFunctions::Ndim),
     // Phase 3: Inverse trig, hyperbolic, remaining math
     (StaticStrings::NpArcsin, NumpyFunctions::Arcsin),
+    (StaticStrings::Asin, NumpyFunctions::Arcsin), // alias
     (StaticStrings::NpArccos, NumpyFunctions::Arccos),
+    (StaticStrings::Acos, NumpyFunctions::Arccos), // alias
     (StaticStrings::NpArctan, NumpyFunctions::Arctan),
+    (StaticStrings::Atan, NumpyFunctions::Arctan), // alias
     (StaticStrings::NpArctan2, NumpyFunctions::Arctan2),
+    (StaticStrings::Atan2, NumpyFunctions::Arctan2), // alias
     (StaticStrings::Sinh, NumpyFunctions::Sinh),
     (StaticStrings::Cosh, NumpyFunctions::Cosh),
     (StaticStrings::Tanh, NumpyFunctions::Tanh),
     (StaticStrings::NpArcsinh, NumpyFunctions::Arcsinh),
+    (StaticStrings::Asinh, NumpyFunctions::Arcsinh), // alias
     (StaticStrings::NpArccosh, NumpyFunctions::Arccosh),
+    (StaticStrings::Acosh, NumpyFunctions::Arccosh), // alias
     (StaticStrings::NpArctanh, NumpyFunctions::Arctanh),
+    (StaticStrings::Atanh, NumpyFunctions::Arctanh), // alias
     (StaticStrings::NpSign, NumpyFunctions::Sign),
     (StaticStrings::NpSquare, NumpyFunctions::Square),
     (StaticStrings::Cbrt, NumpyFunctions::Cbrt),
@@ -579,6 +641,7 @@ const NUMPY_FUNCTIONS: &[(StaticStrings, NumpyFunctions)] = &[
     (StaticStrings::NpQuantile, NumpyFunctions::Quantile),
     (StaticStrings::NpPtp, NumpyFunctions::Ptp),
     (StaticStrings::NpCumprod, NumpyFunctions::Cumprod),
+    (StaticStrings::NpCumulativeProd, NumpyFunctions::Cumprod), // alias
     (StaticStrings::NpNancumsum, NumpyFunctions::Nancumsum),
     (StaticStrings::NpNancumprod, NumpyFunctions::Nancumprod),
     // Phase 5: Logical and testing
@@ -735,6 +798,70 @@ pub(super) fn call(
         NumpyFunctions::Tile => call_tile(vm, args).map(CallResult::Value),
         NumpyFunctions::Repeat => call_repeat(vm, args).map(CallResult::Value),
         NumpyFunctions::Split => call_split(vm, args).map(CallResult::Value),
+        NumpyFunctions::Add => {
+            call_numeric_binop(vm, args, |a, b| a + b, "numpy.add", BinopResult::Promoted).map(CallResult::Value)
+        }
+        NumpyFunctions::Subtract => {
+            call_numeric_binop(vm, args, |a, b| a - b, "numpy.subtract", BinopResult::Promoted).map(CallResult::Value)
+        }
+        NumpyFunctions::Multiply => {
+            call_numeric_binop(vm, args, |a, b| a * b, "numpy.multiply", BinopResult::Promoted).map(CallResult::Value)
+        }
+        NumpyFunctions::Divide => {
+            call_numeric_binop(vm, args, |a, b| a / b, "numpy.divide", BinopResult::Float).map(CallResult::Value)
+        }
+        NumpyFunctions::FloorDivide => call_numeric_binop(
+            vm,
+            args,
+            |a, b| (a / b).floor(),
+            "numpy.floor_divide",
+            BinopResult::Promoted,
+        )
+        .map(CallResult::Value),
+        NumpyFunctions::Mod => {
+            call_numeric_binop(vm, args, py_mod, "numpy.mod", BinopResult::Promoted).map(CallResult::Value)
+        }
+        NumpyFunctions::Equal => {
+            call_numeric_binop(vm, args, eq_to_f64, "numpy.equal", BinopResult::Bool).map(CallResult::Value)
+        }
+        NumpyFunctions::NotEqual => {
+            call_numeric_binop(vm, args, ne_to_f64, "numpy.not_equal", BinopResult::Bool).map(CallResult::Value)
+        }
+        NumpyFunctions::Greater => call_numeric_binop(
+            vm,
+            args,
+            |a, b| if a > b { 1.0 } else { 0.0 },
+            "numpy.greater",
+            BinopResult::Bool,
+        )
+        .map(CallResult::Value),
+        NumpyFunctions::GreaterEqual => call_numeric_binop(
+            vm,
+            args,
+            |a, b| if a >= b { 1.0 } else { 0.0 },
+            "numpy.greater_equal",
+            BinopResult::Bool,
+        )
+        .map(CallResult::Value),
+        NumpyFunctions::Less => call_numeric_binop(
+            vm,
+            args,
+            |a, b| if a < b { 1.0 } else { 0.0 },
+            "numpy.less",
+            BinopResult::Bool,
+        )
+        .map(CallResult::Value),
+        NumpyFunctions::LessEqual => call_numeric_binop(
+            vm,
+            args,
+            |a, b| if a <= b { 1.0 } else { 0.0 },
+            "numpy.less_equal",
+            BinopResult::Bool,
+        )
+        .map(CallResult::Value),
+        NumpyFunctions::Shape => call_shape(vm, args).map(CallResult::Value),
+        NumpyFunctions::Size => call_size(vm, args).map(CallResult::Value),
+        NumpyFunctions::Ndim => call_ndim(vm, args).map(CallResult::Value),
         // Phase 3: Inverse trig, hyperbolic, remaining math
         NumpyFunctions::Arcsin => {
             call_elementwise(vm, args, f64::asin, "numpy.arcsin", Some(NdArrayDtype::Float64)).map(CallResult::Value)
@@ -745,7 +872,9 @@ pub(super) fn call(
         NumpyFunctions::Arctan => {
             call_elementwise(vm, args, f64::atan, "numpy.arctan", Some(NdArrayDtype::Float64)).map(CallResult::Value)
         }
-        NumpyFunctions::Arctan2 => call_pairwise(vm, args, f64::atan2, "numpy.arctan2").map(CallResult::Value),
+        NumpyFunctions::Arctan2 => {
+            call_numeric_binop(vm, args, f64::atan2, "numpy.arctan2", BinopResult::Float).map(CallResult::Value)
+        }
         NumpyFunctions::Sinh => {
             call_elementwise(vm, args, f64::sinh, "numpy.sinh", Some(NdArrayDtype::Float64)).map(CallResult::Value)
         }
@@ -1153,9 +1282,12 @@ fn call_aggregate_result(
     let arg = args.get_one_arg(name, vm.heap)?;
     defer_drop!(arg, vm);
     let Value::Ref(heap_id) = arg else {
-        return Err(ExcType::type_error(format!(
-            "{name}() requires an array or list argument"
-        )));
+        return match arg {
+            Value::Bool(_) | Value::Int(_) | Value::Float(_) => Ok(arg.clone_immediate()),
+            _ => Err(ExcType::type_error(format!(
+                "{name}() requires an array, list, or scalar argument"
+            ))),
+        };
     };
     match vm.heap.get(*heap_id) {
         HeapData::NdArray(arr) => Ok(Value::Float(f(arr)?)),
@@ -1205,9 +1337,9 @@ fn call_elementwise(
     let arg = args.get_one_arg(name, vm.heap)?;
     defer_drop!(arg, vm);
     let Value::Ref(heap_id) = arg else {
-        return Err(ExcType::type_error(format!(
-            "{name}() requires an array or list argument"
-        )));
+        let (value, source_dtype) = numeric_scalar_info(arg, name, vm)?;
+        let dtype = result_dtype.unwrap_or(source_dtype);
+        return Ok(scalar_from_f64(f(value), dtype));
     };
     let (data, shape, source_dtype) = match vm.heap.get(*heap_id) {
         HeapData::NdArray(arr) => (
@@ -1248,16 +1380,37 @@ fn call_round(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResu
         None => 0,
     };
 
+    let factor = 10f64.powi(decimals);
     let Value::Ref(heap_id) = arr_val else {
-        return Err(ExcType::type_error("numpy.round() requires an ndarray argument"));
+        let (value, _) = numeric_scalar_info(arr_val, "numpy.round", vm)?;
+        return Ok(Value::Float(round_to_decimals(value, factor)));
     };
-    let HeapData::NdArray(arr) = vm.heap.get(*heap_id) else {
-        return Err(ExcType::type_error("numpy.round() requires an ndarray argument"));
+    let (data, shape) = match vm.heap.get(*heap_id) {
+        HeapData::NdArray(arr) => (
+            arr.data()
+                .iter()
+                .map(|&v| round_to_decimals(v, factor))
+                .collect::<Vec<_>>(),
+            arr.shape().to_vec(),
+        ),
+        HeapData::List(_) => {
+            let arr = ndarray_from_list(arr_val, vm.heap)?;
+            (
+                arr.data()
+                    .iter()
+                    .map(|&v| round_to_decimals(v, factor))
+                    .collect::<Vec<_>>(),
+                arr.shape().to_vec(),
+            )
+        }
+        _ => {
+            return Err(ExcType::type_error(
+                "numpy.round() requires an array, list, or scalar argument",
+            ));
+        }
     };
 
-    let factor = 10f64.powi(decimals);
-    let data: Vec<f64> = arr.data().iter().map(|&v| (v * factor).round() / factor).collect();
-    let new_arr = NdArray::new(data, arr.shape().to_vec(), NdArrayDtype::Float64);
+    let new_arr = NdArray::new(data, shape, NdArrayDtype::Float64);
     Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(new_arr))?))
 }
 
@@ -1439,6 +1592,104 @@ fn call_pairwise(
 
     let new_arr = NdArray::new(data, a_shape, result_dtype);
     Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(new_arr))?))
+}
+
+/// Result dtype policy for NumPy binary ufunc-style helpers.
+#[derive(Clone, Copy)]
+enum BinopResult {
+    /// Preserve NumPy-like int/float promotion for arithmetic operations.
+    Promoted,
+    /// Force float output, as true division does.
+    Float,
+    /// Force boolean output for comparison ufuncs.
+    Bool,
+}
+
+/// Shared implementation for common binary NumPy ufuncs.
+///
+/// Supports ndarray, list, and scalar inputs. Full NumPy broadcasting is out of
+/// scope for Monty's current ndarray model, but scalar broadcasting and equal
+/// shaped arrays cover the common LLM-generated snippets these wrappers target.
+fn call_numeric_binop(
+    vm: &mut VM<'_, impl ResourceTracker>,
+    args: ArgValues,
+    f: fn(f64, f64) -> f64,
+    name: &str,
+    result: BinopResult,
+) -> RunResult<Value> {
+    let (a_val, b_val) = args.get_two_args(name, vm.heap)?;
+    defer_drop!(a_val, vm);
+    defer_drop!(b_val, vm);
+
+    let a_info = extract_ndarray_info(a_val, name, vm);
+    let b_info = extract_ndarray_info(b_val, name, vm);
+
+    match (a_info, b_info) {
+        (Ok((a_data, a_shape, a_dtype)), Ok((b_data, b_shape, b_dtype))) => {
+            if a_shape != b_shape {
+                return Err(
+                    SimpleException::new_msg(ExcType::ValueError, "operands could not be broadcast together").into(),
+                );
+            }
+            let data: Vec<f64> = a_data.iter().zip(b_data.iter()).map(|(&a, &b)| f(a, b)).collect();
+            let dtype = binop_dtype(result, a_dtype, b_dtype);
+            let arr = NdArray::new(data, a_shape, dtype);
+            Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(arr))?))
+        }
+        (Ok((a_data, a_shape, a_dtype)), Err(_)) => {
+            let (scalar, scalar_dtype) = numeric_scalar_info(b_val, name, vm)?;
+            let data: Vec<f64> = a_data.iter().map(|&a| f(a, scalar)).collect();
+            let dtype = binop_dtype(result, a_dtype, scalar_dtype);
+            let arr = NdArray::new(data, a_shape, dtype);
+            Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(arr))?))
+        }
+        (Err(_), Ok((b_data, b_shape, b_dtype))) => {
+            let (scalar, scalar_dtype) = numeric_scalar_info(a_val, name, vm)?;
+            let data: Vec<f64> = b_data.iter().map(|&b| f(scalar, b)).collect();
+            let dtype = binop_dtype(result, scalar_dtype, b_dtype);
+            let arr = NdArray::new(data, b_shape, dtype);
+            Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(arr))?))
+        }
+        (Err(_), Err(_)) => {
+            let (a, a_dtype) = numeric_scalar_info(a_val, name, vm)?;
+            let (b, b_dtype) = numeric_scalar_info(b_val, name, vm)?;
+            let dtype = binop_dtype(result, a_dtype, b_dtype);
+            Ok(scalar_from_f64(f(a, b), dtype))
+        }
+    }
+}
+
+/// Computes the dtype for a binary ufunc result from the operation policy.
+fn binop_dtype(result: BinopResult, a: NdArrayDtype, b: NdArrayDtype) -> NdArrayDtype {
+    match result {
+        BinopResult::Promoted => promote_dtype(a, b),
+        BinopResult::Float => NdArrayDtype::Float64,
+        BinopResult::Bool => NdArrayDtype::Bool,
+    }
+}
+
+/// Python-compatible modulo: result has the same sign as the divisor.
+fn py_mod(a: f64, b: f64) -> f64 {
+    let r = a % b;
+    if r != 0.0 && ((r > 0.0) != (b > 0.0)) { r + b } else { r }
+}
+
+/// Converts a boolean comparison result to the f64 backing value for bool arrays.
+fn bool_to_f64(value: bool) -> f64 {
+    if value { 1.0 } else { 0.0 }
+}
+
+/// Equality comparison for NumPy-style numeric ufuncs.
+///
+/// `partial_cmp` preserves NumPy's NaN behavior without using direct float
+/// equality: NaN does not compare equal to itself.
+fn eq_to_f64(a: f64, b: f64) -> f64 {
+    bool_to_f64(a.partial_cmp(&b) == Some(Ordering::Equal))
+}
+
+/// Inequality comparison for NumPy-style numeric ufuncs.
+fn ne_to_f64(a: f64, b: f64) -> f64 {
+    bool_to_f64(a.partial_cmp(&b) != Some(Ordering::Equal))
 }
 
 // ===========================
@@ -2218,6 +2469,45 @@ fn call_split(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResu
     Ok(Value::Ref(vm.heap.allocate(HeapData::List(list))?))
 }
 
+/// `numpy.shape(a)` — return the dimensions of an array-like value.
+fn call_shape(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let arg = args.get_one_arg("numpy.shape", vm.heap)?;
+    defer_drop!(arg, vm);
+    let shape = array_like_shape(arg, "numpy.shape", vm)?;
+    #[expect(clippy::cast_possible_wrap, reason = "shape dimensions won't exceed i64::MAX")]
+    let values: SmallVec<[Value; 3]> = shape.iter().map(|&d| Value::Int(d as i64)).collect();
+    allocate_tuple(values, vm.heap).map_err(Into::into)
+}
+
+/// `numpy.size(a)` — return the total number of elements in an array-like value.
+fn call_size(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let arg = args.get_one_arg("numpy.size", vm.heap)?;
+    defer_drop!(arg, vm);
+    let shape = array_like_shape(arg, "numpy.size", vm)?;
+    let size = shape.iter().product::<usize>();
+    #[expect(clippy::cast_possible_wrap, reason = "array sizes are resource-limited")]
+    Ok(Value::Int(size as i64))
+}
+
+/// `numpy.ndim(a)` — return the number of dimensions in an array-like value.
+fn call_ndim(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let arg = args.get_one_arg("numpy.ndim", vm.heap)?;
+    defer_drop!(arg, vm);
+    let shape = array_like_shape(arg, "numpy.ndim", vm)?;
+    #[expect(clippy::cast_possible_wrap, reason = "ndim is always small")]
+    Ok(Value::Int(shape.len() as i64))
+}
+
+/// Returns the shape for ndarray/list inputs and the scalar shape for numbers.
+fn array_like_shape(value: &Value, name: &str, vm: &VM<'_, impl ResourceTracker>) -> RunResult<Vec<usize>> {
+    if let Ok((_, shape, _)) = extract_ndarray_info(value, name, vm) {
+        Ok(shape)
+    } else {
+        numeric_scalar_info(value, name, vm)?;
+        Ok(Vec::new())
+    }
+}
+
 // ===========================
 // Utility helpers
 // ===========================
@@ -2354,6 +2644,45 @@ fn to_f64(value: &Value, vm: &VM<'_, impl ResourceTracker>) -> RunResult<f64> {
             value.py_type(vm)
         ))),
     }
+}
+
+/// Converts a Python numeric scalar to the internal f64 value plus NumPy dtype.
+///
+/// This is used by scalar-compatible ufunc-style helpers, where real NumPy
+/// accepts both arrays and scalars. Non-numeric values still raise the same
+/// Monty type error style as the array path.
+fn numeric_scalar_info(value: &Value, name: &str, vm: &VM<'_, impl ResourceTracker>) -> RunResult<(f64, NdArrayDtype)> {
+    match value {
+        Value::Int(n) => Ok((*n as f64, NdArrayDtype::Int64)),
+        Value::Float(f) => Ok((*f, NdArrayDtype::Float64)),
+        Value::Bool(b) => Ok((if *b { 1.0 } else { 0.0 }, NdArrayDtype::Bool)),
+        _ => Err(ExcType::type_error(format!(
+            "{name}() requires an array, list, or scalar argument, not '{}'",
+            value.py_type(vm)
+        ))),
+    }
+}
+
+/// Converts an internal f64 result back to the best scalar value for a dtype.
+///
+/// Integer and boolean scalar results mirror Monty's existing ndarray display
+/// conversion: the f64 backing value is truncated for integer dtypes and
+/// non-zero values are truthy for boolean dtypes.
+fn scalar_from_f64(value: f64, dtype: NdArrayDtype) -> Value {
+    match dtype {
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "scalar conversion follows ndarray integer element conversion"
+        )]
+        NdArrayDtype::Int64 => Value::Int(value as i64),
+        NdArrayDtype::Float64 => Value::Float(value),
+        NdArrayDtype::Bool => Value::Bool(value != 0.0),
+    }
+}
+
+/// Rounds a scalar using the factor computed from NumPy's `decimals` argument.
+fn round_to_decimals(value: f64, factor: f64) -> f64 {
+    (value * factor).round() / factor
 }
 
 // ===========================
@@ -3025,10 +3354,16 @@ fn call_flatnonzero(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> R
     Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(result))?))
 }
 
-/// `numpy.asarray(a)` — convert to array. If already ndarray, return as-is (copy for now).
+/// `numpy.asarray(a)` — convert a list or ndarray to an ndarray.
+///
+/// Monty does not currently model NumPy views, so ndarray input is copied rather
+/// than returned as the identical object. The observable numeric contents, shape,
+/// and dtype are preserved for the safe ndarray subset.
 fn call_asarray(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
-    // Same as np.array for our purposes
-    call_array(vm, args)
+    let arg = args.get_one_arg("numpy.asarray", vm.heap)?;
+    defer_drop!(arg, vm);
+    let arr = ndarray_from_value(arg, "numpy.asarray", vm)?;
+    Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(arr))?))
 }
 
 /// `numpy.column_stack(arrays)` — stack 1D arrays as columns into 2D.

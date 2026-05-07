@@ -271,6 +271,27 @@ fn memory_limit_zero() {
     );
 }
 
+/// Test that NumPy array constructors pre-check requested allocation size.
+#[test]
+fn numpy_zeros_respects_memory_limit() {
+    let code = r"
+import numpy as np
+np.zeros(200000)
+";
+    let ex = MontyRun::new(code.to_owned(), "test.py", vec![]).unwrap();
+
+    let limits = ResourceLimits::new().max_memory(100_000);
+    let result = ex.run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout);
+
+    assert!(result.is_err(), "large NumPy allocation should exceed memory limit");
+    let exc = result.unwrap_err();
+    assert_eq!(exc.exc_type(), ExcType::MemoryError);
+    assert_eq!(
+        exc.message(),
+        Some("memory limit exceeded: 1613320 bytes > 100000 bytes")
+    );
+}
+
 #[test]
 fn combined_limits() {
     // Test multiple limits together

@@ -590,12 +590,51 @@ pub enum StaticStrings {
     /// `numpy.array()` function
     #[strum(serialize = "array")]
     NpArray,
+    /// `numpy.asanyarray()` alias for `numpy.asarray()` in Monty's ndarray-only subset.
+    #[strum(serialize = "asanyarray")]
+    NpAsanyarray,
     /// `numpy.zeros()` function
     #[strum(serialize = "zeros")]
     NpZeros,
     /// `numpy.ones()` function
     #[strum(serialize = "ones")]
     NpOnes,
+    /// `numpy.subtract()` function
+    #[strum(serialize = "subtract")]
+    NpSubtract,
+    /// `numpy.multiply()` function
+    #[strum(serialize = "multiply")]
+    NpMultiply,
+    /// `numpy.divide()` function
+    #[strum(serialize = "divide")]
+    NpDivide,
+    /// `numpy.true_divide()` function
+    #[strum(serialize = "true_divide")]
+    NpTrueDivide,
+    /// `numpy.floor_divide()` function
+    #[strum(serialize = "floor_divide")]
+    NpFloorDivide,
+    /// `numpy.mod()` function
+    #[strum(serialize = "mod")]
+    NpMod,
+    /// `numpy.equal()` function
+    #[strum(serialize = "equal")]
+    NpEqual,
+    /// `numpy.not_equal()` function
+    #[strum(serialize = "not_equal")]
+    NpNotEqual,
+    /// `numpy.greater()` function
+    #[strum(serialize = "greater")]
+    NpGreater,
+    /// `numpy.greater_equal()` function
+    #[strum(serialize = "greater_equal")]
+    NpGreaterEqual,
+    /// `numpy.less()` function
+    #[strum(serialize = "less")]
+    NpLess,
+    /// `numpy.less_equal()` function
+    #[strum(serialize = "less_equal")]
+    NpLessEqual,
     /// `numpy.arange()` function
     #[strum(serialize = "arange")]
     NpArange,
@@ -613,6 +652,9 @@ pub enum StaticStrings {
     Unique,
     /// `numpy.concatenate()` function
     Concatenate,
+    /// `numpy.concat()` alias for `numpy.concatenate()`.
+    #[strum(serialize = "concat")]
+    NpConcat,
     /// Shared: `mean()` method/function
     Mean,
     /// Shared: `std()` method/function
@@ -664,9 +706,15 @@ pub enum StaticStrings {
     /// `ndarray.min()` / `numpy.min()` — shared with builtins
     #[strum(serialize = "min")]
     NpMin,
+    /// `numpy.amin()` alias for `numpy.min()`.
+    #[strum(serialize = "amin")]
+    NpAmin,
     /// `ndarray.max()` / `numpy.max()` — shared with builtins
     #[strum(serialize = "max")]
     NpMax,
+    /// `numpy.amax()` alias for `numpy.max()`.
+    #[strum(serialize = "amax")]
+    NpAmax,
     /// `ndarray.sum()` / `numpy.sum()` — shared with builtins
     #[strum(serialize = "sum")]
     NpSum,
@@ -676,6 +724,9 @@ pub enum StaticStrings {
     /// `numpy.cumsum()` function / `ndarray.cumsum()` method
     #[strum(serialize = "cumsum")]
     Cumsum,
+    /// `numpy.cumulative_sum()` alias for `numpy.cumsum()`.
+    #[strum(serialize = "cumulative_sum")]
+    NpCumulativeSum,
     /// `numpy.clip()` function / `ndarray.clip()` method
     #[strum(serialize = "clip")]
     Clip,
@@ -815,6 +866,9 @@ pub enum StaticStrings {
     /// `numpy.rint()` function — round to nearest integer
     #[strum(serialize = "rint")]
     NpRint,
+    /// `numpy.around()` alias for `numpy.round()`.
+    #[strum(serialize = "around")]
+    NpAround,
     /// `numpy.positive()` function — unary +
     #[strum(serialize = "positive")]
     NpPositive,
@@ -866,6 +920,9 @@ pub enum StaticStrings {
     /// `numpy.cumprod()` function
     #[strum(serialize = "cumprod")]
     NpCumprod,
+    /// `numpy.cumulative_prod()` alias for `numpy.cumprod()`.
+    #[strum(serialize = "cumulative_prod")]
+    NpCumulativeProd,
     /// `numpy.logical_and()` function
     #[strum(serialize = "logical_and")]
     NpLogicalAnd,
