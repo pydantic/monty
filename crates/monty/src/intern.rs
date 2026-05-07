@@ -998,6 +998,12 @@ pub enum StaticStrings {
     /// `numpy.typecodes` legacy dtype character mapping.
     #[strum(serialize = "typecodes")]
     NpTypecodes,
+    /// `numpy.sctypeDict` legacy scalar dtype mapping.
+    #[strum(serialize = "sctypeDict")]
+    NpSctypeDict,
+    /// `numpy.info()` documentation helper placeholder.
+    #[strum(serialize = "info")]
+    NpInfo,
     /// `numpy.issubdtype()` compact dtype category predicate.
     #[strum(serialize = "issubdtype")]
     NpIssubdtype,

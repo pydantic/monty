@@ -468,6 +468,8 @@ pub(crate) enum NumpyFunctions {
     Mintypecode,
     /// `numpy.typename(char)` — legacy dtype character name helper.
     Typename,
+    /// `numpy.info(object=None, ...)` — accepted no-op documentation helper.
+    Info,
     /// `numpy.issubdtype(arg1, arg2)` — compact dtype hierarchy predicate.
     Issubdtype,
     /// `numpy.isdtype(dtype, kind)` — compact dtype kind predicate.
@@ -818,6 +820,7 @@ pub fn create_module(vm: &mut VM<'_, impl ResourceTracker>) -> Result<HeapId, Re
         vm,
     );
     module.set_attr(StaticStrings::NpTypecodes, numpy_typecodes_dict(vm)?, vm);
+    module.set_attr(StaticStrings::NpSctypeDict, numpy_sctype_dict(vm)?, vm);
 
     vm.heap.allocate(HeapData::Module(module))
 }
@@ -843,6 +846,20 @@ fn numpy_typecodes_dict(vm: &mut VM<'_, impl ResourceTracker>) -> Result<Value, 
     })
     .collect::<Result<Vec<_>, ResourceError>>()?;
     let dict = Dict::from_pairs(pairs, vm).expect("numpy.typecodes uses hashable string literal keys");
+    Ok(Value::Ref(vm.heap.allocate(HeapData::Dict(dict))?))
+}
+
+/// Builds NumPy's legacy scalar-type dictionary for Monty's compact dtype aliases.
+fn numpy_sctype_dict(vm: &mut VM<'_, impl ResourceTracker>) -> Result<Value, ResourceError> {
+    let pairs = NUMPY_SCTYPE_DICT
+        .iter()
+        .map(|(key, value)| {
+            let key = Value::Ref(vm.heap.allocate(HeapData::Str(Str::new((*key).to_string())))?);
+            let value = Value::InternString((*value).into());
+            Ok((key, value))
+        })
+        .collect::<Result<Vec<_>, ResourceError>>()?;
+    let dict = Dict::from_pairs(pairs, vm).expect("numpy.sctypeDict uses hashable string literal keys");
     Ok(Value::Ref(vm.heap.allocate(HeapData::Dict(dict))?))
 }
 
@@ -884,6 +901,39 @@ const NUMPY_DTYPE_ALIASES: &[(StaticStrings, StaticStrings)] = &[
     (StaticStrings::NpUintc, StaticStrings::NpInt32),
     (StaticStrings::NpBool_, StaticStrings::NpBool_),
     (StaticStrings::NpBool, StaticStrings::NpBool_),
+];
+
+/// Name-to-dtype aliases exposed through `numpy.sctypeDict`.
+const NUMPY_SCTYPE_DICT: &[(&str, StaticStrings)] = &[
+    ("bool", StaticStrings::NpBool_),
+    ("bool_", StaticStrings::NpBool_),
+    ("int", StaticStrings::NpInt64),
+    ("int_", StaticStrings::NpInt64),
+    ("int8", StaticStrings::NpInt64),
+    ("int16", StaticStrings::NpInt64),
+    ("int32", StaticStrings::NpInt32),
+    ("int64", StaticStrings::NpInt64),
+    ("uint", StaticStrings::NpInt64),
+    ("uint8", StaticStrings::NpInt64),
+    ("uint16", StaticStrings::NpInt64),
+    ("uint32", StaticStrings::NpInt64),
+    ("uint64", StaticStrings::NpInt64),
+    ("float", StaticStrings::NpFloat64),
+    ("float16", StaticStrings::NpFloat32),
+    ("float32", StaticStrings::NpFloat32),
+    ("float64", StaticStrings::NpFloat64),
+    ("half", StaticStrings::NpFloat32),
+    ("single", StaticStrings::NpFloat32),
+    ("double", StaticStrings::NpFloat64),
+    ("longdouble", StaticStrings::NpFloat64),
+    ("byte", StaticStrings::NpInt64),
+    ("short", StaticStrings::NpInt64),
+    ("long", StaticStrings::NpInt64),
+    ("longlong", StaticStrings::NpInt64),
+    ("ubyte", StaticStrings::NpInt64),
+    ("ushort", StaticStrings::NpInt64),
+    ("ulong", StaticStrings::NpInt64),
+    ("ulonglong", StaticStrings::NpInt64),
 ];
 
 /// Static mapping of attribute names to numpy functions for module creation.
@@ -1104,6 +1154,7 @@ const NUMPY_FUNCTIONS: &[(StaticStrings, NumpyFunctions)] = &[
     (StaticStrings::NpMinScalarType, NumpyFunctions::MinScalarType),
     (StaticStrings::NpMintypecode, NumpyFunctions::Mintypecode),
     (StaticStrings::NpTypename, NumpyFunctions::Typename),
+    (StaticStrings::NpInfo, NumpyFunctions::Info),
     (StaticStrings::NpIssubdtype, NumpyFunctions::Issubdtype),
     (StaticStrings::NpIsdtype, NumpyFunctions::Isdtype),
     (StaticStrings::NpFinfo, NumpyFunctions::Finfo),
@@ -1675,6 +1726,7 @@ pub(super) fn call(
         NumpyFunctions::MinScalarType => call_min_scalar_type(vm, args).map(CallResult::Value),
         NumpyFunctions::Mintypecode => call_mintypecode(vm, args).map(CallResult::Value),
         NumpyFunctions::Typename => call_typename(vm, args).map(CallResult::Value),
+        NumpyFunctions::Info => Ok(CallResult::Value(call_info(vm, args))),
         NumpyFunctions::Issubdtype => call_issubdtype(vm, args).map(CallResult::Value),
         NumpyFunctions::Isdtype => call_isdtype(vm, args).map(CallResult::Value),
         NumpyFunctions::Finfo => call_finfo(vm, args).map(CallResult::Value),
@@ -5755,6 +5807,12 @@ fn call_typename(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunR
         }
     };
     allocate_string(name.to_string(), vm.heap)
+}
+
+/// `numpy.info(object=None, ...)` — accept documentation queries without host introspection.
+fn call_info(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> Value {
+    args.drop_with_heap(vm);
+    Value::None
 }
 
 /// `numpy.issubdtype(arg1, arg2)` — check Monty's compact dtype hierarchy.
