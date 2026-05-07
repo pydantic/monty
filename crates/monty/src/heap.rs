@@ -632,7 +632,7 @@ pub struct HeapEntry {
     /// pending-collection state; dropping the color on restore would leak
     /// any cycle that became unreachable just before the snapshot.
     #[serde(default)]
-    color: Cell<CcColor>,
+    color: CcColor,
 }
 
 /// This wrapper containing `UnsafeCell` exists to allow for data inside of `HeapValue`
@@ -837,7 +837,7 @@ impl<T: ResourceTracker> Heap<T> {
             readers: Cell::new(0),
             data: UnsafeHeapData(UnsafeCell::new(empty_tuple)),
             hash_state: Cell::new(hash_state),
-            color: Cell::new(CcColor::Black),
+            color: CcColor::Black,
         };
 
         let empty_tuple = this.entries.allocate(new_entry);
@@ -964,7 +964,7 @@ impl<T: ResourceTracker> Heap<T> {
             readers: Cell::new(0),
             data: UnsafeHeapData(UnsafeCell::new(data)),
             hash_state: Cell::new(hash_state),
-            color: Cell::new(CcColor::Black),
+            color: CcColor::Black,
         };
 
         let id = self.entries.allocate(new_entry);
@@ -1041,14 +1041,11 @@ impl<T: ResourceTracker> Heap<T> {
             if heap_entry.refcount.get() > 1 {
                 heap_entry.refcount.update(|r| r - 1);
 
-                // SAFETY: only `&mut self` paths reach here, so reading the
-                // discriminant of `data` cannot race with mutation.
-                let is_gc_tracked = unsafe { &*heap_entry.data.0.get() }.is_gc_tracked();
-                if is_gc_tracked && heap_entry.color.get() != CcColor::Purple {
-                    // The refcount survived — this entry is the only place a
-                    // newly unreachable cycle could now be hiding. Flag it as
-                    // a candidate for the next `collect_cycles`.
-                    heap_entry.color.set(CcColor::Purple);
+                let is_gc_tracked = heap_entry.data.0.get_mut().is_gc_tracked();
+                if is_gc_tracked && heap_entry.color != CcColor::Purple {
+                    // The refcount survived — a newly unreachable cycle could
+                    // now be hiding. Flag it as a candidate for the next `collect_cycles`.
+                    heap_entry.color = CcColor::Purple;
                     self.purple_count += 1;
                 }
             } else {
@@ -1065,8 +1062,7 @@ impl<T: ResourceTracker> Heap<T> {
                 // If the entry was a pending cycle candidate, decrement
                 // `purple_count` to reflect that it is leaving the heap before
                 // the collector reaches it.
-                if heap_entry.color.get() == CcColor::Purple {
-                    debug_assert!(self.purple_count > 0);
+                if heap_entry.color == CcColor::Purple {
                     self.purple_count -= 1;
                 }
                 let mut value = entry.free();
@@ -1247,24 +1243,24 @@ impl<T: ResourceTracker> Heap<T> {
         // 1. Discover roots by finding Purple entries. Mark each root (and its subtree) Gray.
         for i in 0..self.entries.len() {
             let id = HeapId(i);
-            let Some(mut entry) = self.entries.entry(id) else {
+            let Some(entry) = self.entries.get_mut(id) else {
                 continue;
             };
-            if entry.get().color.get() != CcColor::Purple {
+            if entry.color != CcColor::Purple {
                 continue;
             }
-            if entry.get().readers.get() > 0 {
+            if entry.readers.get() > 0 {
                 // This entry cannot possibly be a root since it has active readers; reset
                 // to Black so it won't be a candidate in the next cycle.
-                entry.get().color.set(CcColor::Black);
+                entry.color = CcColor::Black;
                 continue;
             }
             roots.push(id);
-            entry.get().color.set(CcColor::Gray);
+            entry.color = CcColor::Gray;
 
             // Mark the subtree reachable from this root as gray and decrement refcounts
             // during edge traversal
-            collect_child_ids(entry.get_mut().data.0.get_mut(), &mut work_stack);
+            collect_child_ids(entry.data.0.get_mut(), &mut work_stack);
             self.mark_gray(&mut work_stack);
         }
 
@@ -1292,20 +1288,18 @@ impl<T: ResourceTracker> Heap<T> {
     /// alive/condemned.
     fn mark_gray(&mut self, work_stack: &mut Vec<HeapId>) {
         while let Some(id) = work_stack.pop() {
-            let mut entry = self.entries.entry(id).expect("mark_gray: entry already freed");
+            let entry = self.entries.get_mut(id).expect("mark_gray: entry already freed");
 
-            debug_assert!(
-                entry.get().refcount.get() > 0,
-                "mark_gray: refcount underflow at {id:?}"
-            );
-            entry.get().refcount.update(|r| r - 1);
+            debug_assert!(entry.refcount.get() > 0, "mark_gray: refcount underflow at {id:?}");
+            entry.refcount.update(|r| r - 1);
 
-            if entry.get().color.replace(CcColor::Gray) == CcColor::Gray {
+            if entry.color == CcColor::Gray {
                 // Already marked via another edge
                 continue;
             }
 
-            collect_child_ids(entry.get_mut().data.0.get_mut(), work_stack);
+            entry.color = CcColor::Gray;
+            collect_child_ids(entry.data.0.get_mut(), work_stack);
         }
     }
 
@@ -1315,26 +1309,26 @@ impl<T: ResourceTracker> Heap<T> {
     fn scan(&mut self, work_stack: &mut Vec<HeapId>) {
         let mut black_work_stack = Vec::new();
         while let Some(id) = work_stack.pop() {
-            let mut entry_handle = self.entries.entry(id).expect("scan: entry already freed");
-            let entry = entry_handle.get_mut();
-            if entry.color.get() != CcColor::Gray {
+            let entry = self.entries.get_mut(id).expect("scan: entry already freed");
+            if entry.color != CcColor::Gray {
                 // Already processed via another edge
                 continue;
             }
 
             if entry.refcount.get() == 0 && entry.readers.get() == 0 {
-                entry.color.set(CcColor::White);
+                entry.color = CcColor::White;
                 collect_child_ids(entry.data.0.get_mut(), work_stack);
-                continue;
-            }
+            } else {
+                // External reference exists (either a refcount we couldn't
+                // account for inside the candidate set, or a live `HeapRead`
+                // pointing into the entry). Resurrect this entry and its
+                // transitive Gray children back to Black via `scan_black`.
+                entry.color = CcColor::Black;
 
-            // External reference exists (either a refcount we couldn't
-            // account for inside the candidate set, or a live `HeapRead`
-            // pointing into the entry). Resurrect this entry and its
-            // transitive Gray children back to Black via `scan_black`.
-            collect_child_ids(entry.data.0.get_mut(), &mut black_work_stack);
-            entry.color.set(CcColor::Black);
-            self.mark_black(&mut black_work_stack);
+                collect_child_ids(entry.data.0.get_mut(), &mut black_work_stack);
+                self.mark_black(&mut black_work_stack);
+                debug_assert!(black_work_stack.is_empty());
+            }
         }
     }
 
@@ -1350,12 +1344,15 @@ impl<T: ResourceTracker> Heap<T> {
     fn mark_black(&mut self, work_stack: &mut Vec<HeapId>) {
         while let Some(id) = work_stack.pop() {
             let mut entry = self.entries.entry(id).expect("scan_black: entry already freed");
+
             entry.refcount.update(|r| r + 1);
-            if entry.color.replace(CcColor::Black) == CcColor::Black {
+
+            if entry.color == CcColor::Black {
                 // Already marked via another edge
                 continue;
             }
 
+            entry.color = CcColor::Black;
             collect_child_ids(entry.data.0.get_mut(), work_stack);
         }
     }
@@ -1368,7 +1365,7 @@ impl<T: ResourceTracker> Heap<T> {
                 continue;
             };
             let heap_entry = entry.get_mut();
-            if heap_entry.color.get() != CcColor::White {
+            if heap_entry.color != CcColor::White {
                 // Either resurrected to Black by `Scan` or never visited
                 // (still Black/Gray from somewhere). Don't free.
                 continue;
@@ -1805,8 +1802,7 @@ mod tests {
         // unreachable except via its self-pointer. dec_ref flags Purple.
         heap.dec_ref(id); // rc 2 → 1
         assert_eq!(heap.purple_count, 1);
-        let pre_color = heap.entries.get(id).color.get();
-        assert_eq!(pre_color, CcColor::Purple);
+        assert_eq!(heap.entries.get(id).color, CcColor::Purple);
 
         // Round-trip through postcard.
         let bytes = postcard::to_allocvec(&heap).expect("serialize");
@@ -1814,7 +1810,7 @@ mod tests {
 
         // `purple_count` and the per-entry color must round-trip.
         assert_eq!(restored.purple_count, 1);
-        assert_eq!(restored.entries.get(id).color.get(), CcColor::Purple);
+        assert_eq!(restored.entries.get(id).color, CcColor::Purple);
 
         // Run the collector on the restored heap; the cycle is unreachable
         // and must be reclaimed.

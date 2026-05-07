@@ -101,6 +101,21 @@ impl<T> StableHeap<T> {
         unsafe { self.slot_at(id) }.expect("HeapEntries::get - data already freed")
     }
 
+    /// Returns a mutable reference to the entry at `index`.
+    ///
+    /// # Panics
+    /// Panics if `index >= len`.
+    #[inline]
+    #[track_caller]
+    pub fn get_mut(&mut self, id: HeapId) -> Option<&mut T> {
+        assert!(id.index() < self.len.get(), "StableHeap::entry - {id:?} out of bounds");
+        let (page_idx, slot_idx) = Self::page_slot_indices(id);
+        let pages = self.pages.get_mut();
+        let slot = &mut pages[page_idx][slot_idx];
+        // SAFETY: [DH] - all slots at indices < self.len have been initialized via `allocate`.
+        unsafe { slot.assume_init_mut() }.as_mut()
+    }
+
     /// Returns a mutable reference to the entry at `index`. Entries can also be
     /// freed via the returned `StableHeapEntry`'s `free` method.
     ///
@@ -109,9 +124,12 @@ impl<T> StableHeap<T> {
     #[inline]
     #[track_caller]
     pub fn entry(&mut self, id: HeapId) -> Option<StableHeapEntry<'_, T>> {
+        // NB: cannot reuse logic from get_mut because of the additional free list reference - would
+        // create a borrow
         assert!(id.index() < self.len.get(), "StableHeap::entry - {id:?} out of bounds");
         let (page_idx, slot_idx) = Self::page_slot_indices(id);
-        let slot = &mut self.pages.get_mut()[page_idx][slot_idx];
+        let pages = self.pages.get_mut();
+        let slot = &mut pages[page_idx][slot_idx];
         // SAFETY: [DH] - all slots at indices < self.len have been initialized via `allocate`.
         let value = unsafe { slot.assume_init_mut() };
         StableHeapEntry::new(id, value, &mut self.free_list)
