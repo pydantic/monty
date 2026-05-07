@@ -456,5 +456,20 @@ assert np.mintypecode(['i', 'f']) == 'f', 'mintypecode int float'
 assert np.typename('i') == 'integer', 'typename integer code'
 assert np.typename('d') == 'double precision', 'typename double code'
 assert np.typecodes['Float'] == 'efdg', 'typecodes float family'
+err_policy = np.geterr()
+assert err_policy['divide'] == 'warn', 'geterr divide policy'
+assert err_policy['under'] == 'ignore', 'geterr under policy'
+seterr_previous = np.seterr(divide='ignore')
+assert seterr_previous['divide'] == 'warn', 'seterr returns previous policy'
+np.seterr(divide='warn')
+print_options = np.get_printoptions()
+assert print_options['threshold'] == 1000, 'get_printoptions threshold'
+assert print_options['precision'] == 8, 'get_printoptions precision'
+assert np.set_printoptions(threshold=10) is None, 'set_printoptions return'
+np.set_printoptions(threshold=1000)
+assert np.getbufsize() == 8192, 'getbufsize default'
+assert np.setbufsize(8192) == 8192, 'setbufsize previous size'
+assert np.errstate(divide='ignore') is not None, 'errstate placeholder'
+assert np.printoptions(threshold=10) is not None, 'printoptions placeholder'
 assert np.little_endian == True, 'little_endian constant'
 assert abs(np.euler_gamma - 0.5772156649015329) < 1e-15, 'euler_gamma constant'

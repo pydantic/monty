@@ -959,6 +959,30 @@ pub enum StaticStrings {
     /// `numpy.typecodes` legacy dtype character mapping.
     #[strum(serialize = "typecodes")]
     NpTypecodes,
+    /// `numpy.geterr()` floating-point error config helper.
+    #[strum(serialize = "geterr")]
+    NpGeterr,
+    /// `numpy.seterr()` floating-point error config helper.
+    #[strum(serialize = "seterr")]
+    NpSeterr,
+    /// `numpy.errstate()` floating-point error context helper.
+    #[strum(serialize = "errstate")]
+    NpErrstate,
+    /// `numpy.get_printoptions()` print config helper.
+    #[strum(serialize = "get_printoptions")]
+    NpGetPrintoptions,
+    /// `numpy.set_printoptions()` print config helper.
+    #[strum(serialize = "set_printoptions")]
+    NpSetPrintoptions,
+    /// `numpy.printoptions()` print config context helper.
+    #[strum(serialize = "printoptions")]
+    NpPrintoptions,
+    /// `numpy.getbufsize()` legacy buffer-size helper.
+    #[strum(serialize = "getbufsize")]
+    NpGetbufsize,
+    /// `numpy.setbufsize()` legacy buffer-size helper.
+    #[strum(serialize = "setbufsize")]
+    NpSetbufsize,
     /// `numpy.little_endian` constant
     #[strum(serialize = "little_endian")]
     NpLittleEndian,

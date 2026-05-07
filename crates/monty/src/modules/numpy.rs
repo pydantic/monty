@@ -445,6 +445,22 @@ pub(crate) enum NumpyFunctions {
     Mintypecode,
     /// `numpy.typename(char)` — legacy dtype character name helper.
     Typename,
+    /// `numpy.geterr()` — floating-point error config snapshot.
+    Geterr,
+    /// `numpy.seterr(...)` — accepted no-op floating-point error config update.
+    Seterr,
+    /// `numpy.errstate(...)` — lightweight floating-point error context placeholder.
+    Errstate,
+    /// `numpy.get_printoptions()` — print config snapshot.
+    GetPrintoptions,
+    /// `numpy.set_printoptions(...)` — accepted no-op print config update.
+    SetPrintoptions,
+    /// `numpy.printoptions(...)` — lightweight print config context placeholder.
+    Printoptions,
+    /// `numpy.getbufsize()` — legacy buffer size query.
+    Getbufsize,
+    /// `numpy.setbufsize(size)` — accepted no-op buffer size update.
+    Setbufsize,
     /// `numpy.atleast_1d(*arrays)` — view inputs as arrays with at least one dimension.
     Atleast1d,
     /// `numpy.atleast_2d(*arrays)` — view inputs as arrays with at least two dimensions.
@@ -989,6 +1005,14 @@ const NUMPY_FUNCTIONS: &[(StaticStrings, NumpyFunctions)] = &[
     (StaticStrings::NpMinScalarType, NumpyFunctions::MinScalarType),
     (StaticStrings::NpMintypecode, NumpyFunctions::Mintypecode),
     (StaticStrings::NpTypename, NumpyFunctions::Typename),
+    (StaticStrings::NpGeterr, NumpyFunctions::Geterr),
+    (StaticStrings::NpSeterr, NumpyFunctions::Seterr),
+    (StaticStrings::NpErrstate, NumpyFunctions::Errstate),
+    (StaticStrings::NpGetPrintoptions, NumpyFunctions::GetPrintoptions),
+    (StaticStrings::NpSetPrintoptions, NumpyFunctions::SetPrintoptions),
+    (StaticStrings::NpPrintoptions, NumpyFunctions::Printoptions),
+    (StaticStrings::NpGetbufsize, NumpyFunctions::Getbufsize),
+    (StaticStrings::NpSetbufsize, NumpyFunctions::Setbufsize),
     (StaticStrings::NpAtleast1d, NumpyFunctions::Atleast1d),
     (StaticStrings::NpAtleast2d, NumpyFunctions::Atleast2d),
     (StaticStrings::NpAtleast3d, NumpyFunctions::Atleast3d),
@@ -1518,6 +1542,14 @@ pub(super) fn call(
         NumpyFunctions::MinScalarType => call_min_scalar_type(vm, args).map(CallResult::Value),
         NumpyFunctions::Mintypecode => call_mintypecode(vm, args).map(CallResult::Value),
         NumpyFunctions::Typename => call_typename(vm, args).map(CallResult::Value),
+        NumpyFunctions::Geterr => call_geterr(vm, args).map(CallResult::Value),
+        NumpyFunctions::Seterr => call_seterr(vm, args).map(CallResult::Value),
+        NumpyFunctions::Errstate => call_errstate(vm, args).map(CallResult::Value),
+        NumpyFunctions::GetPrintoptions => call_get_printoptions(vm, args).map(CallResult::Value),
+        NumpyFunctions::SetPrintoptions => Ok(CallResult::Value(call_set_printoptions(vm, args))),
+        NumpyFunctions::Printoptions => call_printoptions(vm, args).map(CallResult::Value),
+        NumpyFunctions::Getbufsize => call_getbufsize(vm, args).map(CallResult::Value),
+        NumpyFunctions::Setbufsize => call_setbufsize(vm, args).map(CallResult::Value),
         NumpyFunctions::Atleast1d => call_atleast_nd(vm, args, 1, "numpy.atleast_1d").map(CallResult::Value),
         NumpyFunctions::Atleast2d => call_atleast_nd(vm, args, 2, "numpy.atleast_2d").map(CallResult::Value),
         NumpyFunctions::Atleast3d => call_atleast_nd(vm, args, 3, "numpy.atleast_3d").map(CallResult::Value),
@@ -4831,6 +4863,115 @@ fn call_typename(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunR
         }
     };
     allocate_string(name.to_string(), vm.heap)
+}
+
+/// `numpy.geterr()` — return Monty's fixed floating-point error policy.
+fn call_geterr(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    args.check_zero_args("numpy.geterr", vm.heap)?;
+    numpy_error_policy_dict(vm)
+}
+
+/// `numpy.seterr(...)` — accept error-policy options and return the previous policy.
+fn call_seterr(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    args.drop_with_heap(vm);
+    numpy_error_policy_dict(vm)
+}
+
+/// `numpy.errstate(...)` — lightweight placeholder for context-manager-style code.
+fn call_errstate(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    args.drop_with_heap(vm);
+    numpy_error_policy_dict(vm)
+}
+
+/// `numpy.get_printoptions()` — return Monty's fixed print-option snapshot.
+fn call_get_printoptions(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    args.check_zero_args("numpy.get_printoptions", vm.heap)?;
+    numpy_print_options_dict(vm)
+}
+
+/// `numpy.set_printoptions(...)` — accept print options as a no-op.
+fn call_set_printoptions(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> Value {
+    args.drop_with_heap(vm);
+    Value::None
+}
+
+/// `numpy.printoptions(...)` — lightweight placeholder for context-manager-style code.
+fn call_printoptions(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    args.drop_with_heap(vm);
+    numpy_print_options_dict(vm)
+}
+
+/// `numpy.getbufsize()` — return NumPy's legacy default buffer size.
+fn call_getbufsize(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    args.check_zero_args("numpy.getbufsize", vm.heap)?;
+    Ok(Value::Int(8192))
+}
+
+/// `numpy.setbufsize(size)` — accept a buffer size as a no-op and return the previous size.
+fn call_setbufsize(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let arg = args.get_one_arg("numpy.setbufsize", vm.heap)?;
+    arg.drop_with_heap(vm);
+    Ok(Value::Int(8192))
+}
+
+/// Builds the fixed floating-point error-policy dictionary.
+fn numpy_error_policy_dict(vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<Value> {
+    string_dict_from_pairs(
+        &[
+            ("divide", "warn"),
+            ("over", "warn"),
+            ("under", "ignore"),
+            ("invalid", "warn"),
+        ],
+        vm,
+    )
+}
+
+/// Builds the fixed print-options dictionary for Monty's ndarray representation.
+fn numpy_print_options_dict(vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<Value> {
+    let pairs = vec![
+        (allocate_string("edgeitems".to_string(), vm.heap)?, Value::Int(3)),
+        (allocate_string("threshold".to_string(), vm.heap)?, Value::Int(1000)),
+        (allocate_string("linewidth".to_string(), vm.heap)?, Value::Int(75)),
+        (allocate_string("precision".to_string(), vm.heap)?, Value::Int(8)),
+        (allocate_string("suppress".to_string(), vm.heap)?, Value::Bool(false)),
+        (
+            allocate_string("nanstr".to_string(), vm.heap)?,
+            allocate_string("nan".to_string(), vm.heap)?,
+        ),
+        (
+            allocate_string("infstr".to_string(), vm.heap)?,
+            allocate_string("inf".to_string(), vm.heap)?,
+        ),
+        (
+            allocate_string("sign".to_string(), vm.heap)?,
+            allocate_string("-".to_string(), vm.heap)?,
+        ),
+        (
+            allocate_string("floatmode".to_string(), vm.heap)?,
+            allocate_string("maxprec".to_string(), vm.heap)?,
+        ),
+        (allocate_string("legacy".to_string(), vm.heap)?, Value::None),
+    ];
+    dict_from_pairs(pairs, vm)
+}
+
+/// Allocates a Python dict from string key/value pairs.
+fn string_dict_from_pairs(pairs: &[(&str, &str)], vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<Value> {
+    let mut values = Vec::with_capacity(pairs.len());
+    for (key, value) in pairs {
+        values.push((
+            allocate_string((*key).to_string(), vm.heap)?,
+            allocate_string((*value).to_string(), vm.heap)?,
+        ));
+    }
+    dict_from_pairs(values, vm)
+}
+
+/// Allocates a Python dict from already-owned key/value pairs.
+fn dict_from_pairs(pairs: Vec<(Value, Value)>, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<Value> {
+    let dict = Dict::from_pairs(pairs, vm)?;
+    Ok(Value::Ref(vm.heap.allocate(HeapData::Dict(dict))?))
 }
 
 /// Compact dtype categories that fit Monty's bool/int/float ndarray storage model.
