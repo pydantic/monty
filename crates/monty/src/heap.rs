@@ -18,7 +18,8 @@ pub(crate) use crate::heap_traits::{ContainsHeap, DropWithHeap, HeapGuard, HeapI
 use crate::{
     asyncio::{Coroutine, GatherFuture, GatherItem},
     bytecode::VM,
-    exception_private::SimpleException,
+    exception_private::{RunResult, SimpleException},
+    hash::HashValue,
     heap_data::{CellValue, Closure, FunctionDefaults},
     resource::{ResourceError, ResourceTracker},
     types::{
@@ -60,7 +61,7 @@ enum HashState {
     /// Hash has not yet been computed but the value might be hashable.
     Unknown,
     /// Cached hash value for immutable types that have been hashed at least once.
-    Cached(u64),
+    Cached(HashValue),
     /// Value is unhashable (mutable types or tuples containing unhashables).
     Unhashable,
 }
@@ -1010,7 +1011,7 @@ impl<T: ResourceTracker> Heap<T> {
     ///
     /// # Panics
     /// Panics if the value ID is invalid or the value has already been freed.
-    pub fn get_or_compute_hash(vm: &mut VM<'_, T>, id: HeapId) -> Result<Option<u64>, ResourceError> {
+    pub fn get_or_compute_hash(vm: &mut VM<'_, T>, id: HeapId) -> RunResult<Option<HashValue>> {
         // TODO: it should be possible to refactor the triple lookup to just one, probably by having an
         // internal `vm.heap.read_entry` method which can then derive the `HeapReadOutput` for `py_hash`
         // later, and can live without a VM borrow to allow reading / writing the hash.

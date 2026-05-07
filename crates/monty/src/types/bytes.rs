@@ -65,14 +65,7 @@
 /// - `expandtabs(tabsize=8)` - Tab expansion
 /// - `translate(table[, delete])` - Character translation
 /// - `maketrans(frm, to)` - Create translation table (staticmethod)
-use std::{
-    cmp::Ordering,
-    collections::hash_map::DefaultHasher,
-    fmt,
-    fmt::Write,
-    hash::{Hash, Hasher},
-    mem, ops, str,
-};
+use std::{cmp::Ordering, fmt, fmt::Write, mem, ops, str};
 
 use ahash::AHashSet;
 use smallvec::smallvec;
@@ -83,6 +76,7 @@ use crate::{
     bytecode::{CallResult, VM},
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, RunResult, SimpleException},
+    hash::{HashValue, hash_python_bytes},
     heap::{DropWithHeap, Heap, HeapData, HeapGuard, HeapId, HeapItem, HeapRead, heap_read_ref_as_field},
     intern::{StaticStrings, StringId},
     resource::{ResourceError, ResourceTracker, check_repeat_size, check_replace_size},
@@ -242,12 +236,8 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Bytes> {
         Ok(self.get(vm.heap).0 == other.get(vm.heap).0)
     }
 
-    fn py_hash(&self, _self_id: HeapId, vm: &mut VM<'h, impl ResourceTracker>) -> Result<Option<u64>, ResourceError> {
-        // Must match `Value::InternBytes` so the same content hashes equally
-        // regardless of whether the bytes live on the heap or in the intern table.
-        let mut hasher = DefaultHasher::new();
-        self.get(vm.heap).as_slice().hash(&mut hasher);
-        Ok(Some(hasher.finish()))
+    fn py_hash(&self, _self_id: HeapId, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<HashValue>> {
+        Ok(Some(hash_python_bytes(self.get(vm.heap).as_slice())))
     }
 
     fn py_cmp(&self, other: &Self, vm: &mut VM<'h, impl ResourceTracker>) -> Result<Option<Ordering>, ResourceError> {

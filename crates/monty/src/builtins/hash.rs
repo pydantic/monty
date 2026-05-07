@@ -20,8 +20,7 @@ pub fn builtin_hash(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> R
     match value.py_hash(vm)? {
         Some(hash) => {
             // Python's hash() returns a signed integer; reinterpret bits for large values
-            let hash_i64 = i64::from_ne_bytes(hash.to_ne_bytes());
-            Ok(Value::Int(hash_i64))
+            Ok(Value::Int(hash.raw().cast_signed()))
         }
         None => Err(ExcType::type_error_unhashable(value.py_type(vm))),
     }

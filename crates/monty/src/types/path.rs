@@ -19,6 +19,7 @@ use crate::{
     bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{ExcType, RunResult, SimpleException},
+    hash::HashValue,
     heap::{DropWithHeap, Heap, HeapData, HeapId, HeapItem, HeapRead},
     intern::{Interns, StaticStrings},
     os::OsFunction,
@@ -492,10 +493,10 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Path> {
         Ok(self.get(vm.heap).path == other.get(vm.heap).path)
     }
 
-    fn py_hash(&self, _self_id: HeapId, vm: &mut VM<'h, impl ResourceTracker>) -> Result<Option<u64>, ResourceError> {
+    fn py_hash(&self, _self_id: HeapId, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<HashValue>> {
         let mut hasher = DefaultHasher::new();
         self.get(vm.heap).as_str().hash(&mut hasher);
-        Ok(Some(hasher.finish()))
+        Ok(Some(HashValue::new(hasher.finish())))
     }
 
     fn py_bool(&self, _vm: &mut VM<'h, impl ResourceTracker>) -> bool {

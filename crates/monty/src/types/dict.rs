@@ -148,7 +148,10 @@ impl Dict {
             self.contains_refs = true;
         }
 
-        let hash = key.py_hash(vm)?.expect("json object keys are always hashable strings");
+        let hash = key
+            .py_hash(vm)?
+            .expect("json object keys are always hashable strings")
+            .raw();
         let opt_index = self.find_json_string_key_index(hash, &key, vm.heap, vm.interns);
 
         let entry = DictEntry { key, value, hash };
@@ -447,7 +450,8 @@ impl<'h> HeapRead<'h, Dict> {
     fn find_index_hash(&self, key: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<(Option<usize>, u64)> {
         let hash = key
             .py_hash(vm)?
-            .ok_or_else(|| ExcType::type_error_unhashable_dict_key(key.py_type(vm)))?;
+            .ok_or_else(|| ExcType::type_error_unhashable_dict_key(key.py_type(vm)))?
+            .raw();
 
         // Dict keys are typically shallow (strings, ints, tuples of primitives),
         // so recursion errors are unlikely. If one occurs, treat it as "not equal" -

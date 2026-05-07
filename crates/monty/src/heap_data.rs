@@ -11,11 +11,12 @@ use ahash::AHashSet;
 use num_integer::Integer;
 
 use crate::{
-    ExcType, ResourceError, ResourceTracker,
+    ExcType, ResourceTracker,
     args::ArgValues,
     asyncio::{CallId, Coroutine, GatherFuture, GatherItem},
     bytecode::{CallResult, VM},
     exception_private::{RunError, RunResult, SimpleException},
+    hash::HashValue,
     heap::{DropWithHeap, HeapId, HeapItem, HeapReadOutput},
     intern::FunctionId,
     types::{
@@ -644,7 +645,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
     /// `FunctionDefaults`, `Cell`, `LongInt`, `ExtFunction`), the hash is
     /// computed inline here. Variants left in the catch-all `_ => Ok(None)`
     /// arm are unhashable.
-    fn py_hash(&self, self_id: HeapId, vm: &mut VM<'h, impl ResourceTracker>) -> Result<Option<u64>, ResourceError> {
+    fn py_hash(&self, self_id: HeapId, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<HashValue>> {
         match self {
             Self::Str(s) => s.py_hash(self_id, vm),
             Self::Bytes(b) => b.py_hash(self_id, vm),
@@ -664,18 +665,18 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             Self::Closure(c) => {
                 let mut hasher = DefaultHasher::new();
                 c.get(vm.heap).func_id.hash(&mut hasher);
-                Ok(Some(hasher.finish()))
+                Ok(Some(HashValue::new(hasher.finish())))
             }
             Self::FunctionDefaults(fd) => {
                 let mut hasher = DefaultHasher::new();
                 fd.get(vm.heap).func_id.hash(&mut hasher);
-                Ok(Some(hasher.finish()))
+                Ok(Some(HashValue::new(hasher.finish())))
             }
             // Cell uses identity hashing (matches Python's default for cell objects).
             Self::Cell(_) => {
                 let mut hasher = DefaultHasher::new();
                 self_id.hash(&mut hasher);
-                Ok(Some(hasher.finish()))
+                Ok(Some(HashValue::new(hasher.finish())))
             }
             // LongInt's hash matches `Value::InternLongInt`'s, since they are
             // both Python `int` values and must hash equally when equal.
@@ -683,7 +684,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             Self::ExtFunction(name) => {
                 let mut hasher = DefaultHasher::new();
                 name.get(vm.heap).hash(&mut hasher);
-                Ok(Some(hasher.finish()))
+                Ok(Some(HashValue::new(hasher.finish())))
             }
             // Unhashable: List, Dict, Set, the dict views, Iter, Module,
             // Exception, Coroutine, GatherFuture, RePattern, ReMatch.

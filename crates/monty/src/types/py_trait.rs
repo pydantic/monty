@@ -20,6 +20,7 @@ use crate::{
     args::ArgValues,
     bytecode::{CallResult, VM},
     exception_private::{ExcType, RunResult, SimpleException},
+    hash::HashValue,
     heap::{DropWithHeap, HeapId},
     intern::StringId,
     os::OsFunction,
@@ -110,7 +111,7 @@ pub trait PyTrait<'h> {
     /// `Cell` that hash by identity. Most implementations ignore it.
     ///
     /// The default implementation returns `Ok(None)` (unhashable).
-    fn py_hash(&self, _self_id: HeapId, _vm: &mut VM<'h, impl ResourceTracker>) -> Result<Option<u64>, ResourceError> {
+    fn py_hash(&self, _self_id: HeapId, _vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<HashValue>> {
         Ok(None)
     }
 

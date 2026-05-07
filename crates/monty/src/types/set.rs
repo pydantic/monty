@@ -11,6 +11,7 @@ use crate::{
     bytecode::{CallResult, VM},
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, RunResult},
+    hash::HashValue,
     heap::{ContainsHeap, DropWithHeap, HeapData, HeapGuard, HeapId, HeapItem, HeapRead, HeapReadOutput},
     intern::StaticStrings,
     resource::{ResourceError, ResourceTracker},
@@ -102,18 +103,9 @@ impl SetStorage {
     /// The caller transfers ownership of `value`. If the value is already in
     /// the set, it will be dropped.
     fn add(&mut self, value: Value, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<bool> {
-        let hash = match value.py_hash(vm) {
-            Ok(Some(h)) => h,
-            Ok(None) => {
-                let err = ExcType::type_error_unhashable_set_element(value.py_type(vm));
-                value.drop_with_heap(vm);
-                return Err(err);
-            }
-            Err(e) => {
-                value.drop_with_heap(vm);
-                return Err(e.into());
-            }
-        };
+        let mut value_guard = HeapGuard::new(value, vm);
+        let (value, vm) = value_guard.as_parts_mut();
+        let hash = set_element_hash(value, vm)?;
 
         // Check if value already exists.
         let existing = self
@@ -121,14 +113,13 @@ impl SetStorage {
             .find(hash, |&idx| value.py_eq(&self.entries[idx].value, vm).unwrap_or(false));
 
         if existing.is_some() {
-            // Value already in set, drop the new value
-            value.drop_with_heap(vm);
             Ok(false)
         } else {
             // Track memory growth before adding the new entry.
             // Growth unit matches SetStorage::estimate_size which uses size_of::<SetEntry>().
             vm.heap.track_growth(mem::size_of::<SetEntry>())?;
             let index = self.entries.len();
+            let value = value_guard.into_inner();
             self.entries.push(SetEntry { value, hash });
             self.indices.insert_unique(hash, index, |&idx| self.entries[idx].hash);
             Ok(true)
@@ -142,9 +133,7 @@ impl<'h> HeapRead<'h, SetStorage> {
     /// Returns `Ok(true)` if the element was removed, `Ok(false)` if not found.
     /// Returns `Err` if the key is unhashable.
     fn remove(&mut self, value: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<bool> {
-        let hash = value
-            .py_hash(vm)?
-            .ok_or_else(|| ExcType::type_error_unhashable_set_element(value.py_type(vm)))?;
+        let hash = set_element_hash(value, vm)?;
 
         // Collect candidates by hash
         let mut candidates: SmallVec<[usize; 2]> = SmallVec::new();
@@ -241,9 +230,7 @@ impl SetStorage {
 impl<'h> HeapRead<'h, SetStorage> {
     /// Checks if the set contains a value.
     pub fn contains(&self, value: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<bool> {
-        let hash = value
-            .py_hash(vm)?
-            .ok_or_else(|| ExcType::type_error_unhashable_set_element(value.py_type(vm)))?;
+        let hash = set_element_hash(value, vm)?;
 
         // Collect candidates by hash
         let mut candidates: SmallVec<[usize; 2]> = SmallVec::new();
@@ -654,18 +641,9 @@ impl<'h> HeapRead<'h, Set> {
     /// Uses a two-phase lookup (collect candidates, then compare) to avoid
     /// holding a borrow on the set storage during `py_eq` calls.
     pub fn add(&mut self, value: Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<bool> {
-        let hash = match value.py_hash(vm) {
-            Ok(Some(h)) => h,
-            Ok(None) => {
-                let err = ExcType::type_error_unhashable_set_element(value.py_type(vm));
-                value.drop_with_heap(vm);
-                return Err(err);
-            }
-            Err(e) => {
-                value.drop_with_heap(vm);
-                return Err(e.into());
-            }
-        };
+        let mut value_guard = HeapGuard::new(value, vm);
+        let (value, vm) = value_guard.as_parts();
+        let hash = set_element_hash(value, vm)?;
 
         // Collect candidate indices to avoid borrow conflict between set storage and py_eq
         let mut candidates: SmallVec<[usize; 2]> = SmallVec::new();
@@ -681,8 +659,6 @@ impl<'h> HeapRead<'h, Set> {
             let candidate_value = self.get(vm.heap).0.entries[candidate_index].value.clone_with_heap(vm);
             defer_drop!(candidate_value, vm);
             if value.py_eq(candidate_value, vm)? {
-                // Value already in set, drop the new value
-                value.drop_with_heap(vm);
                 return Ok(false);
             }
         }
@@ -692,6 +668,7 @@ impl<'h> HeapRead<'h, Set> {
         vm.heap.track_growth(mem::size_of::<SetEntry>())?;
 
         // Add new entry
+        let (value, vm) = value_guard.into_parts();
         let storage = &mut self.get_mut(vm.heap).0;
         let index = storage.entries.len();
         storage.entries.push(SetEntry { value, hash });
@@ -833,7 +810,8 @@ impl<'h> HeapRead<'h, FrozenSet> {
     pub(crate) fn contains(&self, value: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<bool> {
         let hash = value
             .py_hash(vm)?
-            .ok_or_else(|| ExcType::type_error_unhashable_set_element(value.py_type(vm)))?;
+            .ok_or_else(|| ExcType::type_error_unhashable_set_element(value.py_type(vm)))?
+            .raw();
 
         // Collect candidate indices (hash match only) via shared borrow
         let mut candidates: SmallVec<[usize; 2]> = SmallVec::new();
@@ -1211,7 +1189,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, FrozenSet> {
     ///
     /// XOR is commutative, so the hash is independent of insertion order — two
     /// frozensets with the same members hash equally regardless of how they were built.
-    fn py_hash(&self, _self_id: HeapId, vm: &mut VM<'h, impl ResourceTracker>) -> Result<Option<u64>, ResourceError> {
+    fn py_hash(&self, _self_id: HeapId, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<HashValue>> {
         let token = vm.heap.incr_recursion_depth()?;
         defer_drop!(token, vm);
         let mut hash: u64 = 0;
@@ -1219,13 +1197,9 @@ impl<'h> PyTrait<'h> for HeapRead<'h, FrozenSet> {
         for idx in 0..len {
             let item = self.get(vm.heap).0.entries[idx].value.clone_with_heap(vm);
             defer_drop!(item, vm);
-            // All elements must be hashable (enforced at construction)
-            match item.py_hash(vm)? {
-                Some(h) => hash ^= h,
-                None => return Ok(None),
-            }
+            hash ^= set_element_hash(item, vm)?;
         }
-        Ok(Some(hash))
+        Ok(Some(HashValue::new(hash)))
     }
 
     fn py_bool(&self, vm: &mut VM<'h, impl ResourceTracker>) -> bool {
@@ -1376,5 +1350,12 @@ impl serde::Serialize for FrozenSet {
 impl<'de> serde::Deserialize<'de> for FrozenSet {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         Ok(Self(SetStorage::deserialize(deserializer)?))
+    }
+}
+
+fn set_element_hash(value: &Value, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<u64> {
+    match value.py_hash(vm)? {
+        Some(h) => Ok(h.raw()),
+        None => Err(ExcType::type_error_unhashable_set_element(value.py_type(vm))),
     }
 }

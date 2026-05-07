@@ -2,15 +2,7 @@
 ///
 /// This type provides Python string semantics. Currently supports basic
 /// operations like length and equality comparison.
-use std::{
-    borrow::Cow,
-    cmp::Ordering,
-    collections::hash_map::DefaultHasher,
-    fmt,
-    fmt::Write,
-    hash::{Hash, Hasher},
-    mem, ops,
-};
+use std::{borrow::Cow, cmp::Ordering, fmt, fmt::Write, mem, ops};
 
 use ahash::AHashSet;
 use smallvec::smallvec;
@@ -21,6 +13,7 @@ use crate::{
     bytecode::{CallResult, VM},
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, RunResult},
+    hash::{HashValue, hash_python_str},
     heap::{DropWithHeap, Heap, HeapData, HeapGuard, HeapId, HeapItem, HeapRead, heap_read_ref_as_field},
     intern::{StaticStrings, StringId},
     resource::{ResourceError, ResourceTracker, check_repeat_size, check_replace_size},
@@ -198,12 +191,8 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Str> {
         Ok(self.get(vm.heap).0 == other.get(vm.heap).0)
     }
 
-    fn py_hash(&self, _self_id: HeapId, vm: &mut VM<'h, impl ResourceTracker>) -> Result<Option<u64>, ResourceError> {
-        // Must match `Value::InternString` so the same characters hash equally
-        // regardless of whether the string lives on the heap or in the intern table.
-        let mut hasher = DefaultHasher::new();
-        self.get(vm.heap).as_str().hash(&mut hasher);
-        Ok(Some(hasher.finish()))
+    fn py_hash(&self, _self_id: HeapId, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<HashValue>> {
+        Ok(Some(hash_python_str(self.get(vm.heap).as_str())))
     }
 
     fn py_bool(&self, vm: &mut VM<'h, impl ResourceTracker>) -> bool {

@@ -31,6 +31,7 @@ use crate::{
     bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{ExcType, RunResult},
+    hash::HashValue,
     heap::{DropWithHeap, Heap, HeapData, HeapId, HeapItem, HeapRead},
     intern::StaticStrings,
     resource::{ResourceError, ResourceTracker},
@@ -237,7 +238,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Tuple> {
     /// Identical to `NamedTuple::py_hash`, so a `Tuple` and a `NamedTuple` with
     /// the same elements hash equally — required because they compare equal
     /// (matching CPython, where `NamedTuple` is a `tuple` subclass).
-    fn py_hash(&self, _self_id: HeapId, vm: &mut VM<'h, impl ResourceTracker>) -> Result<Option<u64>, ResourceError> {
+    fn py_hash(&self, _self_id: HeapId, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<HashValue>> {
         let token = vm.heap.incr_recursion_depth()?;
         defer_drop!(token, vm);
         let len = self.get(vm.heap).items.len();
@@ -250,7 +251,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Tuple> {
                 None => return Ok(None),
             }
         }
-        Ok(Some(hasher.finish()))
+        Ok(Some(HashValue::new(hasher.finish())))
     }
 
     /// Lexicographic comparison for tuples.

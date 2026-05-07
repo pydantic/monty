@@ -13,6 +13,7 @@ use crate::{
     bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{ExcType, RunResult, SimpleException},
+    hash::HashValue,
     heap::{
         BorrowedHeapRead, BorrowedHeapReadMut, HeapId, HeapItem, HeapRead, heap_read_ref_as_field,
         heap_read_ref_as_field_mut,
@@ -181,7 +182,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Dataclass> {
     /// Hashes a frozen dataclass by its class name and the values of declared fields.
     ///
     /// Mutable (non-frozen) dataclasses return `None` (unhashable).
-    fn py_hash(&self, _self_id: HeapId, vm: &mut VM<'h, impl ResourceTracker>) -> Result<Option<u64>, ResourceError> {
+    fn py_hash(&self, _self_id: HeapId, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<HashValue>> {
         // Only frozen (immutable) dataclasses are hashable
         if !self.get(vm.heap).frozen {
             return Ok(None);
@@ -205,7 +206,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Dataclass> {
                 }
             }
         }
-        Ok(Some(hasher.finish()))
+        Ok(Some(HashValue::new(hasher.finish())))
     }
 
     fn py_bool(&self, _vm: &mut VM<'h, impl ResourceTracker>) -> bool {

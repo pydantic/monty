@@ -9,9 +9,7 @@
 //! having freestanding functions scattered across the codebase.
 
 use std::{
-    collections::hash_map::DefaultHasher,
     fmt::{self, Display},
-    hash::{Hash, Hasher},
     mem,
     ops::{Add, Mul, Neg, Sub},
     sync::OnceLock,
@@ -22,6 +20,7 @@ use num_traits::{Signed, ToPrimitive, Zero};
 
 use crate::{
     exception_private::{ExcType, RunResult},
+    hash::{HashValue, hash_python_long_int},
     heap::{Heap, HeapData},
     resource::{ResourceError, ResourceTracker},
     value::Value,
@@ -80,20 +79,10 @@ impl LongInt {
     ///
     /// Critical: For values that fit in i64, this must return the same hash as
     /// hashing the i64 directly. This ensures dict key consistency - e.g.,
-    /// `hash(5)` must equal `hash(LongInt(5))`.
-    pub fn hash(&self) -> u64 {
-        // If the LongInt fits in i64, hash as i64 for consistency
-        if let Some(i) = self.0.to_i64() {
-            i.cast_unsigned()
-        } else {
-            // For LongInts outside i64 range, use byte representation
-            let mut hasher = DefaultHasher::new();
-            // Use a unique discriminant for LongInt (we use the LongInt's sign and bytes)
-            let (sign, bytes) = self.0.to_bytes_le();
-            sign.hash(&mut hasher);
-            bytes.hash(&mut hasher);
-            hasher.finish()
-        }
+    /// `hash(5)` must equal `hash(LongInt(5))`. Delegates to the canonical
+    /// helper so that interned and heap `int` values hash identically.
+    pub fn hash(&self) -> HashValue {
+        hash_python_long_int(&self.0)
     }
 
     /// Estimates memory size in bytes.
