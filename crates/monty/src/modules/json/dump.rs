@@ -15,7 +15,7 @@ use crate::{
     exception_private::{ExcType, RunResult},
     heap::{DropWithHeap, HeapData, HeapGuard, HeapId, HeapReadOutput},
     intern::StaticStrings,
-    resource::ResourceTracker,
+    resource::{ResourceError, ResourceTracker},
     sorting::{apply_permutation, sort_indices},
     types::{PyTrait, long_int::check_bigint_str_digits_limit, str::allocate_string},
     value::Value,
@@ -367,6 +367,15 @@ fn json_separator_to_string(value: &Value, role: &str, vm: &VM<'_, impl Resource
     }
 }
 
+/// Maximum nesting depth accepted by `json.dumps()`.
+///
+/// Mirrors `JSON_RECURSION_LIMIT` on the `json.loads()` side: serialization is
+/// mutually recursive across `serialize_value`/`serialize_sequence`/`serialize_dict`
+/// and would otherwise overflow the host's native stack on a deep (acyclic)
+/// structure that the cycle detector cannot catch. CPython raises a catchable
+/// `RecursionError` here; we map the depth-limit `ResourceError` to the same.
+const JSON_DUMP_RECURSION_LIMIT: usize = 200;
+
 /// Serializes a Monty value into JSON text.
 ///
 /// The function handles immediate primitives directly and delegates to
@@ -379,6 +388,13 @@ fn serialize_value(
     active_containers: &mut Vec<HeapId>,
     vm: &mut VM<'_, impl ResourceTracker>,
 ) -> RunResult<()> {
+    if depth > JSON_DUMP_RECURSION_LIMIT {
+        return Err(ResourceError::Recursion {
+            limit: JSON_DUMP_RECURSION_LIMIT,
+            depth,
+        }
+        .into());
+    }
     match value {
         Value::None => {
             out.push_str("null");

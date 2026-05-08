@@ -2039,3 +2039,48 @@ len(x) + len(d) + len(s)
     );
     assert_eq!(result.unwrap(), MontyObject::Int(300));
 }
+
+// === json.dumps resource-limit tests ===
+
+/// Test that serializing a deeply-nested (acyclic) structure raises a catchable
+/// `RecursionError` rather than overflowing the host's native stack.
+///
+/// `json.dumps` is mutually recursive across the value/sequence/dict serializers
+/// and runs entirely inside one bytecode instruction, so the per-instruction
+/// recursion-depth check never fires. The serializer must enforce its own depth
+/// ceiling, mirroring the one applied by `json.loads`.
+#[test]
+fn json_dumps_deep_nesting_recursion_limit() {
+    let code = r"
+import json
+x = []
+for _ in range(500):
+    x = [x]
+try:
+    json.dumps(x)
+    out = 'no error'
+except RecursionError:
+    out = 'recursion error'
+out
+";
+    let ex = MontyRun::new(code.to_owned(), "test.py", vec![]).unwrap();
+    let result = ex.run_no_limits(vec![]);
+    assert!(result.is_ok(), "{result:?}");
+    assert_eq!(result.unwrap(), MontyObject::String("recursion error".to_owned()));
+}
+
+/// Test that moderate nesting in `json.dumps` succeeds.
+#[test]
+fn json_dumps_moderate_nesting_within_limit() {
+    let code = r"
+import json
+x = []
+for _ in range(50):
+    x = [x]
+json.dumps(x)[:5]
+";
+    let ex = MontyRun::new(code.to_owned(), "test.py", vec![]).unwrap();
+    let result = ex.run_no_limits(vec![]);
+    assert!(result.is_ok(), "{result:?}");
+    assert_eq!(result.unwrap(), MontyObject::String("[[[[[".to_owned()));
+}
