@@ -508,6 +508,7 @@ impl IterValue {
             Value::InternString(string_id) => Some(Self::from_str(vm.interns.get_str(*string_id))),
             Value::InternBytes(bytes_id) => Some(Self::from_intern_bytes(*bytes_id, vm.interns)),
             Value::Ref(heap_id) => Self::from_heap_data(*heap_id, vm.heap),
+            Value::FlatIter(heap_id) => Self::from_heap_data(*heap_id, vm.heap),
             _ => None,
         }
     }

@@ -73,6 +73,10 @@ pub enum Type {
     ReMatch,
     /// A numpy ndarray - displays as "numpy.ndarray"
     NdArray,
+    /// NumPy's public flat iterator type object for `ndarray.flat` results.
+    FlatIter,
+    /// NumPy's public ufunc type object for implemented ufunc-like callables.
+    Ufunc,
 }
 
 impl fmt::Display for Type {
@@ -116,6 +120,8 @@ impl fmt::Display for Type {
             Self::RePattern => f.write_str("re.Pattern"),
             Self::ReMatch => f.write_str("re.Match"),
             Self::NdArray => f.write_str("ndarray"),
+            Self::FlatIter => f.write_str("flatiter"),
+            Self::Ufunc => f.write_str("ufunc"),
         }
     }
 }

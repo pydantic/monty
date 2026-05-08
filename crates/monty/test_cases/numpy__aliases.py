@@ -541,6 +541,18 @@ assert np.astype(np.array([1, 0, -2]), bool).tolist() == [True, False, True], 'm
 assert np.astype(np.array([1, 2]), np.float64).tolist() == [1.0, 2.0], 'module astype float dtype'
 assert isinstance(np.array([1, 2]), np.ndarray) == True, 'ndarray type object matches arrays'
 assert np.ndarray.__name__ == 'ndarray', 'ndarray type object name'
+flat_marker = np.array([[1, 2], [3, 4]]).flat
+assert isinstance(flat_marker, np.flatiter) == True, 'flatiter marker matches ndarray flat result'
+assert isinstance(np.array([1, 2, 3]), np.flatiter) == False, 'plain ndarray is not flatiter'
+assert np.flatiter.__name__ == 'flatiter', 'flatiter type object name'
+assert type(flat_marker).__name__ == 'flatiter', 'flatiter result type name'
+assert flat_marker.tolist() == [1, 2, 3, 4], 'flatiter marker backed by flat data'
+assert list(flat_marker) == [1, 2, 3, 4], 'flatiter iteration follows flat data'
+assert isinstance(np.add, np.ufunc) == True, 'add is public ufunc-like callable'
+assert isinstance(np.sin, np.ufunc) == True, 'sin is public ufunc-like callable'
+assert isinstance(np.array, np.ufunc) == False, 'array constructor is not a ufunc'
+assert type(np.add).__name__ == 'ufunc', 'ufunc callable type name'
+assert np.ufunc.__name__ == 'ufunc', 'ufunc type object name'
 assert np.can_cast(np.int8, np.int16) == True, 'can_cast integer aliases'
 assert np.can_cast(np.float64, np.int64) == False, 'can_cast float to int is unsafe'
 assert np.promote_types(np.int8, np.float32) == np.float32, 'promote_types int float32'
@@ -694,6 +706,69 @@ assert np.take_along_axis(take_axis_arr, np.array([[1, 0, 1]]), axis=0).tolist()
 put_axis_arr = np.array([[10, 20, 30], [40, 50, 60]])
 assert np.put_along_axis(put_axis_arr, take_axis_idx, [[99, 88], [77, 66]], axis=1) is None, 'put_along_axis return'
 assert put_axis_arr.tolist() == [[10, 88, 99], [77, 50, 66]], 'put_along_axis axis 1'
+
+
+# === axis and subarray helpers ===
+axis_arr = np.array([[1, 2, 3], [4, 5, 6]])
+
+
+def apply_row_summary(row):
+    return np.array([row[0], row[-1], row.sum()])
+
+
+def apply_column_product(col):
+    return col[0] * col[-1]
+
+
+def apply_offset(row, offset=0):
+    return row + offset
+
+
+assert np.apply_along_axis(apply_row_summary, 1, axis_arr).tolist() == [
+    [1, 3, 6],
+    [4, 6, 15],
+], 'apply_along_axis inserts vector result at iterated axis'
+assert np.apply_along_axis(apply_column_product, 0, axis_arr).tolist() == [4, 10, 18], 'apply_along_axis scalar result'
+assert np.apply_along_axis(apply_offset, -1, axis_arr, offset=10).tolist() == [
+    [11, 12, 13],
+    [14, 15, 16],
+], 'apply_along_axis forwards callable kwargs'
+assert np.apply_over_axes(np.sum, axis_arr, [0]).tolist() == [[5, 7, 9]], 'apply_over_axes sum axis 0'
+assert np.apply_over_axes(np.sum, axis_arr, [0, 1]).tolist() == [[21]], 'apply_over_axes sum axes 0 and 1'
+assert np.apply_over_axes(np.prod, axis_arr, (1,)).tolist() == [[6], [120]], 'apply_over_axes prod axis 1'
+piecewise_x = np.array([0, 1, 2, 3])
+assert np.piecewise(
+    piecewise_x,
+    [np.array([True, False, False, False]), np.array([False, True, True, False])],
+    [10, lambda x: x + 20, 99],
+).tolist() == [10, 21, 22, 99], 'piecewise scalar callable and default'
+assert np.piecewise(axis_arr, [axis_arr > 3], [lambda x: x * 10, -1]).tolist() == [
+    [-1, -1, -1],
+    [40, 50, 60],
+], 'piecewise broadcasts condition over array'
+assert np.piecewise(
+    np.array([1, 2, 3]),
+    [np.array([True, True, False]), np.array([True, False, True])],
+    [10, 20, 0],
+).tolist() == [20, 10, 20], 'piecewise later conditions overwrite earlier matches'
+assert np.pad(axis_arr, 1, mode='constant', constant_values=9).tolist() == [
+    [9, 9, 9, 9, 9],
+    [9, 1, 2, 3, 9],
+    [9, 4, 5, 6, 9],
+    [9, 9, 9, 9, 9],
+], 'pad constant scalar width and value'
+assert np.pad(axis_arr, ((1, 0), (2, 1)), mode='constant', constant_values=((7, 8), (9, 10))).tolist() == [
+    [9, 9, 7, 7, 7, 10],
+    [9, 9, 1, 2, 3, 10],
+    [9, 9, 4, 5, 6, 10],
+], 'pad constant per-axis widths and values'
+assert np.pad(axis_arr, ((1, 1), (2, 1)), mode='edge').tolist() == [
+    [1, 1, 1, 2, 3, 3],
+    [1, 1, 1, 2, 3, 3],
+    [4, 4, 4, 5, 6, 6],
+    [4, 4, 4, 5, 6, 6],
+], 'pad edge mode'
+assert np.pad([1, 2, 3], 2, mode='reflect').tolist() == [3, 2, 1, 2, 3, 2, 1], 'pad reflect mode'
 assert np.nanquantile([1.0, float('nan'), 3.0], 0.5) == 2.0, 'nanquantile median'
 assert np.nanpercentile([1.0, float('nan'), 3.0], 50) == 2.0, 'nanpercentile median'
 hist_counts, hist_edges = np.histogram([0, 1, 1, 2, 3], bins=3)

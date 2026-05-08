@@ -1910,7 +1910,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, NdArray> {
             Some(StaticStrings::NpItemsize) => Value::Int(8),
             Some(StaticStrings::NpFlat) => {
                 let flat = NdArray::new(arr.data.clone(), vec![arr.data.len()], arr.dtype);
-                Value::Ref(vm.heap.allocate(HeapData::NdArray(flat))?)
+                Value::FlatIter(vm.heap.allocate(HeapData::NdArray(flat))?)
             }
             Some(StaticStrings::NpT) => arr.transpose(vm.heap)?,
             _ => {

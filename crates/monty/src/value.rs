@@ -98,6 +98,11 @@ pub(crate) enum Value {
 
     // Heap-allocated values (stored in arena)
     Ref(HeapId),
+    /// A NumPy `flatiter` compatibility wrapper backed by a materialized 1-D ndarray.
+    ///
+    /// Keeping the wrapper at the `Value` layer avoids adding another heap storage
+    /// variant while still giving `ndarray.flat` a distinct Python type.
+    FlatIter(HeapId),
 
     /// Sentinel value indicating this Value was properly cleaned up via `drop_with_heap`.
     /// Only exists when `memory-model-checks` feature is enabled. Used to verify reference counting
@@ -119,8 +124,18 @@ pub(crate) const VALUE_SIZE: usize = mem::size_of::<Value>();
 #[cfg(feature = "memory-model-checks")]
 impl Drop for Value {
     fn drop(&mut self) {
-        if let Self::Ref(id) = self {
-            panic!("Value::Ref({id:?}) dropped without calling drop_with_heap() - this is a reference counting bug");
+        match self {
+            Self::Ref(id) => {
+                panic!(
+                    "Value::Ref({id:?}) dropped without calling drop_with_heap() - this is a reference counting bug"
+                );
+            }
+            Self::FlatIter(id) => {
+                panic!(
+                    "Value::FlatIter({id:?}) dropped without calling drop_with_heap() - this is a reference counting bug"
+                );
+            }
+            _ => {}
         }
     }
 }
@@ -143,12 +158,14 @@ impl PyTrait<'_> for Value {
             Self::InternString(_) => Type::Str,
             Self::InternBytes(_) => Type::Bytes,
             Self::Builtin(c) => c.py_type(),
+            Self::ModuleFunction(ModuleFunctions::Numpy(function)) if function.is_ufunc_like() => Type::Ufunc,
             Self::ModuleFunction(_) => Type::BuiltinFunction,
             Self::DefFunction(_) | Self::ExtFunction(_) => Type::Function,
             Self::Marker(m) => m.py_type(),
             Self::Property(_) => Type::Property,
             Self::ExternalFuture(_) => Type::Coroutine,
             Self::Ref(id) => vm.heap.read(*id).py_type(vm),
+            Self::FlatIter(_) => Type::FlatIter,
             #[cfg(feature = "memory-model-checks")]
             Self::Dereferenced => panic!("Cannot access Dereferenced object"),
         }
@@ -160,6 +177,7 @@ impl PyTrait<'_> for Value {
             Self::InternString(string_id) => Some(vm.interns.get_str(*string_id).chars().count()),
             Self::InternBytes(bytes_id) => Some(vm.interns.get_bytes(*bytes_id).len()),
             Self::Ref(id) => vm.heap.read(*id).py_len(vm),
+            Self::FlatIter(id) => vm.heap.read(*id).py_len(vm),
             _ => None,
         }
     }
@@ -216,6 +234,11 @@ impl PyTrait<'_> for Value {
                 if *id1 == *id2 {
                     return Ok(true);
                 }
+                let left = vm.heap.read(*id1);
+                let right = vm.heap.read(*id2);
+                left.py_eq(&right, vm)
+            }
+            (Self::FlatIter(id1), Self::FlatIter(id2)) => {
                 let left = vm.heap.read(*id1);
                 let right = vm.heap.read(*id2);
                 left.py_eq(&right, vm)
@@ -307,6 +330,7 @@ impl PyTrait<'_> for Value {
             Self::ExternalFuture(_) => true,                    // ExternalFutures are always truthy
             Self::InternString(string_id) => !vm.interns.get_str(*string_id).is_empty(),
             Self::InternBytes(bytes_id) => !vm.interns.get_bytes(*bytes_id).is_empty(),
+            Self::FlatIter(_) => true,
             Self::Ref(id) => vm.heap.read(*id).py_bool(vm),
             #[cfg(feature = "memory-model-checks")]
             Self::Dereferenced => panic!("Cannot access Dereferenced object"),
@@ -349,6 +373,7 @@ impl PyTrait<'_> for Value {
             Self::Marker(m) => Ok(m.py_repr_fmt(f)?),
             Self::Property(p) => Ok(write!(f, "<property {p:?}>")?),
             Self::ExternalFuture(call_id) => Ok(write!(f, "<coroutine external_future({})>", call_id.raw())?),
+            Self::FlatIter(_) => Ok(write!(f, "<numpy.flatiter object at 0x{:x}>", self.id())?),
             Self::Ref(id) => {
                 if heap_ids.contains(id) {
                     // Cycle detected - write type-specific placeholder following Python semantics
@@ -1337,6 +1362,7 @@ impl PyTrait<'_> for Value {
         let interns = vm.interns;
         match self {
             Self::Ref(id) => vm.heap.read(*id).py_getitem(key, vm),
+            Self::FlatIter(id) => vm.heap.read(*id).py_getitem(key, vm),
             Self::InternString(string_id) => {
                 // Check for slice first
                 if let Self::Ref(key_id) = key
@@ -1418,6 +1444,7 @@ impl Value {
             Self::Property(_) => Type::Property,
             Self::ExternalFuture(_) => Type::Coroutine,
             Self::Ref(_) => Type::NoneType, // callers should resolve Ref via HeapData::py_type()
+            Self::FlatIter(_) => Type::FlatIter,
             #[cfg(feature = "memory-model-checks")]
             Self::Dereferenced => Type::NoneType,
         }
@@ -1455,6 +1482,7 @@ impl Value {
             }
             // Already heap-allocated (includes Range and Exception), return id within a dedicated tag range
             Self::Ref(id) => heap_tagged_id(*id),
+            Self::FlatIter(id) => heap_tagged_id(*id),
             // Value-based IDs for immediate types (no heap allocation!)
             Self::Int(v) => int_value_id(*v),
             Self::Float(v) => float_value_id(*v),
@@ -1477,6 +1505,7 @@ impl Value {
     pub fn ref_id(&self) -> Option<HeapId> {
         match self {
             Self::Ref(id) => Some(*id),
+            Self::FlatIter(id) => Some(*id),
             _ => None,
         }
     }
@@ -1533,6 +1562,7 @@ impl Value {
             }
             // For heap-allocated values (includes Range and Exception), compute hash lazily and cache it
             Self::Ref(id) => return Heap::get_or_compute_hash(vm, *id),
+            Self::FlatIter(id) => heap_tagged_id(*id).hash(&mut hasher),
             // Singleton values can be hashed directly
             Self::Undefined | Self::Ellipsis | Self::None => discriminant(self).hash(&mut hasher),
             Self::Builtin(b) => b.hash(&mut hasher),
@@ -1718,6 +1748,11 @@ impl Value {
     pub fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<CallResult> {
         match self {
             Self::Ref(heap_id) => {
+                if let Some(call_result) = vm.heap.read(*heap_id).py_getattr(attr, vm)? {
+                    return Ok(call_result);
+                }
+            }
+            Self::FlatIter(heap_id) => {
                 if let Some(call_result) = vm.heap.read(*heap_id).py_getattr(attr, vm)? {
                     return Ok(call_result);
                 }
@@ -1929,6 +1964,10 @@ impl Value {
                 heap.heap().inc_ref(*id);
                 Self::Ref(*id)
             }
+            Self::FlatIter(id) => {
+                heap.heap().inc_ref(*id);
+                Self::FlatIter(*id)
+            }
             // Immediate values can be copied without heap interaction
             other => other.clone_immediate(),
         }
@@ -1951,8 +1990,9 @@ impl Value {
     #[cfg(not(feature = "memory-model-checks"))]
     #[inline]
     pub fn drop_with_heap(self, heap: &mut impl ContainsHeap) {
-        if let Self::Ref(id) = self {
-            heap.heap_mut().dec_ref(id);
+        match self {
+            Self::Ref(id) | Self::FlatIter(id) => heap.heap_mut().dec_ref(id),
+            _ => {}
         }
     }
     /// With `memory-model-checks` enabled, `Ref` variants are replaced with `Dereferenced` and
@@ -1961,9 +2001,12 @@ impl Value {
     #[cfg(feature = "memory-model-checks")]
     pub fn drop_with_heap(mut self, heap: &mut impl ContainsHeap) {
         let old = mem::replace(&mut self, Self::Dereferenced);
-        if let Self::Ref(id) = &old {
-            heap.heap_mut().dec_ref(*id);
-            mem::forget(old);
+        match &old {
+            Self::Ref(id) | Self::FlatIter(id) => {
+                heap.heap_mut().dec_ref(*id);
+                mem::forget(old);
+            }
+            _ => {}
         }
     }
 
@@ -1990,6 +2033,7 @@ impl Value {
             Self::Property(p) => Self::Property(*p),
             Self::ExternalFuture(call_id) => Self::ExternalFuture(*call_id),
             Self::Ref(_) => panic!("Ref clones must go through clone_with_heap to maintain refcounts"),
+            Self::FlatIter(_) => panic!("FlatIter clones must go through clone_with_heap to maintain refcounts"),
             #[cfg(feature = "memory-model-checks")]
             Self::Dereferenced => panic!("Cannot copy Dereferenced object"),
         }
@@ -2010,10 +2054,13 @@ impl Value {
     /// refcount can be decremented. When `memory-model-checks` is enabled, also marks
     /// this value as `Dereferenced` to prevent Drop panics.
     pub fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
-        if let Self::Ref(id) = self {
-            stack.push(*id);
-            #[cfg(feature = "memory-model-checks")]
-            self.dec_ref_forget();
+        match self {
+            Self::Ref(id) | Self::FlatIter(id) => {
+                stack.push(*id);
+                #[cfg(feature = "memory-model-checks")]
+                self.dec_ref_forget();
+            }
+            _ => {}
         }
     }
 

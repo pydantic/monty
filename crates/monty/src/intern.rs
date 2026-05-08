@@ -712,6 +712,9 @@ pub enum StaticStrings {
     /// `ndarray.flat` attribute — returns flattened 1D view of the array.
     #[strum(serialize = "flat")]
     NpFlat,
+    /// `numpy.flatiter` public flat-iterator type object.
+    #[strum(serialize = "flatiter")]
+    NpFlatiter,
     /// `ndarray.flatten()` method
     Flatten,
     /// `ndarray.tolist()` method
@@ -740,6 +743,9 @@ pub enum StaticStrings {
     /// `numpy.ndarray` type object.
     #[strum(serialize = "ndarray")]
     NpNdarray,
+    /// `numpy.ufunc` public ufunc type object.
+    #[strum(serialize = "ufunc")]
+    NpUfunc,
     /// `numpy.format_float_positional()` function.
     #[strum(serialize = "format_float_positional")]
     NpFormatFloatPositional,
@@ -882,6 +888,18 @@ pub enum StaticStrings {
     /// `numpy.block()` nested block assembly helper.
     #[strum(serialize = "block")]
     NpBlock,
+    /// `numpy.apply_along_axis()` callable 1-D slice helper.
+    #[strum(serialize = "apply_along_axis")]
+    NpApplyAlongAxis,
+    /// `numpy.apply_over_axes()` repeated axis-reduction helper.
+    #[strum(serialize = "apply_over_axes")]
+    NpApplyOverAxes,
+    /// `numpy.piecewise()` condition-list selection helper.
+    #[strum(serialize = "piecewise")]
+    NpPiecewise,
+    /// `numpy.pad()` array padding helper.
+    #[strum(serialize = "pad")]
+    NpPad,
     /// `numpy.unstack()` function
     #[strum(serialize = "unstack")]
     NpUnstack,

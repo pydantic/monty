@@ -274,6 +274,14 @@ pub(crate) enum NumpyFunctions {
     Stack,
     /// `numpy.block(arrays)` — assemble nested numeric blocks.
     Block,
+    /// `numpy.apply_along_axis(func1d, axis, arr)` — call a function over 1-D slices.
+    ApplyAlongAxis,
+    /// `numpy.apply_over_axes(func, a, axes)` — repeatedly reduce while preserving axes.
+    ApplyOverAxes,
+    /// `numpy.piecewise(x, condlist, funclist)` — condition-list numeric selection.
+    Piecewise,
+    /// `numpy.pad(array, pad_width, mode='constant')` — materialized array padding subset.
+    Pad,
     /// `numpy.unstack(a, axis=0)` — split an array into a tuple along an axis.
     Unstack,
     /// `numpy.nonzero(a)` — indices of non-zero elements.
@@ -835,6 +843,12 @@ pub fn create_module(vm: &mut VM<'_, impl ResourceTracker>) -> Result<HeapId, Re
         Value::Builtin(Builtins::Type(Type::NdArray)),
         vm,
     );
+    module.set_attr(
+        StaticStrings::NpFlatiter,
+        Value::Builtin(Builtins::Type(Type::FlatIter)),
+        vm,
+    );
+    module.set_attr(StaticStrings::NpUfunc, Value::Builtin(Builtins::Type(Type::Ufunc)), vm);
 
     // Dtype type objects — stored as interned strings that astype() recognizes.
     // These allow `arr.astype(np.float64)` to work alongside `arr.astype('float64')`.
@@ -860,6 +874,106 @@ pub fn create_module(vm: &mut VM<'_, impl ResourceTracker>) -> Result<HeapId, Re
     module.set_attr(StaticStrings::NpSctypeDict, numpy_sctype_dict(vm)?, vm);
 
     vm.heap.allocate(HeapData::Module(module))
+}
+
+impl NumpyFunctions {
+    /// Returns whether this module function behaves like a NumPy ufunc.
+    ///
+    /// Monty does not expose a separate callable object wrapper for ufuncs; the
+    /// implemented ufunc surface is represented by the real module functions
+    /// that already perform elementwise broadcasting and dtype-aware scalar
+    /// conversion. This predicate backs `isinstance(np.add, np.ufunc)` without
+    /// claiming non-ufunc helpers such as `np.array` have ufunc semantics.
+    pub(crate) const fn is_ufunc_like(self) -> bool {
+        matches!(
+            self,
+            Self::Add
+                | Self::Subtract
+                | Self::Multiply
+                | Self::Divide
+                | Self::FloorDivide
+                | Self::Mod
+                | Self::Equal
+                | Self::NotEqual
+                | Self::Greater
+                | Self::GreaterEqual
+                | Self::Less
+                | Self::LessEqual
+                | Self::Abs
+                | Self::Sqrt
+                | Self::Log
+                | Self::Exp
+                | Self::Maximum
+                | Self::Minimum
+                | Self::Ceil
+                | Self::Floor
+                | Self::Log10
+                | Self::Sin
+                | Self::Cos
+                | Self::Tan
+                | Self::Log2
+                | Self::Power
+                | Self::Isnan
+                | Self::Isinf
+                | Self::Isposinf
+                | Self::Isneginf
+                | Self::Isfinite
+                | Self::Arcsin
+                | Self::Arccos
+                | Self::Arctan
+                | Self::Arctan2
+                | Self::Sinh
+                | Self::Cosh
+                | Self::Tanh
+                | Self::Arcsinh
+                | Self::Arccosh
+                | Self::Arctanh
+                | Self::Sign
+                | Self::Square
+                | Self::Cbrt
+                | Self::Reciprocal
+                | Self::Log1p
+                | Self::Exp2
+                | Self::Expm1
+                | Self::Deg2rad
+                | Self::Rad2deg
+                | Self::Hypot
+                | Self::Fmin
+                | Self::Fmax
+                | Self::Fmod
+                | Self::Rint
+                | Self::Fabs
+                | Self::Positive
+                | Self::Negative
+                | Self::Copysign
+                | Self::Frexp
+                | Self::Modf
+                | Self::Ldexp
+                | Self::Gcd
+                | Self::Lcm
+                | Self::Logaddexp
+                | Self::Logaddexp2
+                | Self::Nextafter
+                | Self::Spacing
+                | Self::Signbit
+                | Self::Heaviside
+                | Self::Trunc
+                | Self::Fix
+                | Self::FloatPower
+                | Self::Divmod
+                | Self::BitwiseAnd
+                | Self::BitwiseOr
+                | Self::BitwiseXor
+                | Self::BitwiseNot
+                | Self::LeftShift
+                | Self::RightShift
+                | Self::BitwiseCount
+                | Self::LogicalAnd
+                | Self::LogicalOr
+                | Self::LogicalNot
+                | Self::LogicalXor
+        )
+    }
 }
 
 /// Builds NumPy's legacy `typecodes` dictionary for code that inspects dtype families.
@@ -1088,6 +1202,10 @@ const NUMPY_FUNCTIONS: &[(StaticStrings, NumpyFunctions)] = &[
     (StaticStrings::NpDstack, NumpyFunctions::Dstack),
     (StaticStrings::NpStack, NumpyFunctions::Stack),
     (StaticStrings::NpBlock, NumpyFunctions::Block),
+    (StaticStrings::NpApplyAlongAxis, NumpyFunctions::ApplyAlongAxis),
+    (StaticStrings::NpApplyOverAxes, NumpyFunctions::ApplyOverAxes),
+    (StaticStrings::NpPiecewise, NumpyFunctions::Piecewise),
+    (StaticStrings::NpPad, NumpyFunctions::Pad),
     (StaticStrings::NpUnstack, NumpyFunctions::Unstack),
     (StaticStrings::NpNonzero, NumpyFunctions::Nonzero),
     (StaticStrings::NpArgwhere, NumpyFunctions::Argwhere),
@@ -1481,6 +1599,10 @@ pub(super) fn call(
         // We only support the 1D case which is the LLM-common pattern.
         NumpyFunctions::Stack => call_vstack(vm, args).map(CallResult::Value),
         NumpyFunctions::Block => call_block(vm, args).map(CallResult::Value),
+        NumpyFunctions::ApplyAlongAxis => call_apply_along_axis(vm, args).map(CallResult::Value),
+        NumpyFunctions::ApplyOverAxes => call_apply_over_axes(vm, args).map(CallResult::Value),
+        NumpyFunctions::Piecewise => call_piecewise(vm, args).map(CallResult::Value),
+        NumpyFunctions::Pad => call_pad(vm, args).map(CallResult::Value),
         NumpyFunctions::Unstack => call_unstack(vm, args).map(CallResult::Value),
         NumpyFunctions::Nonzero => call_nonzero(vm, args).map(CallResult::Value),
         NumpyFunctions::Argwhere => call_argwhere(vm, args).map(CallResult::Value),
@@ -5669,6 +5791,1061 @@ fn slice_ndarray_along_axis(arr: &NdArray, axis: usize, start_axis: usize, end_a
         data.extend_from_slice(&arr.data()[block_start..block_end]);
     }
     data
+}
+
+/// `numpy.apply_along_axis(func1d, axis, arr, *args, **kwargs)` over materialized 1-D slices.
+fn call_apply_along_axis(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let (mut pos, kwargs) = args.into_parts();
+    let Some(function) = pos.next() else {
+        pos.drop_with_heap(vm);
+        kwargs.drop_with_heap(vm);
+        return Err(ExcType::type_error_at_least("numpy.apply_along_axis", 3, 0));
+    };
+    defer_drop!(function, vm);
+    let Some(axis_val) = pos.next() else {
+        pos.drop_with_heap(vm);
+        kwargs.drop_with_heap(vm);
+        return Err(ExcType::type_error_at_least("numpy.apply_along_axis", 3, 1));
+    };
+    defer_drop!(axis_val, vm);
+    let Some(arr_val) = pos.next() else {
+        pos.drop_with_heap(vm);
+        kwargs.drop_with_heap(vm);
+        return Err(ExcType::type_error_at_least("numpy.apply_along_axis", 3, 2));
+    };
+    defer_drop!(arr_val, vm);
+
+    let extra_args = pos.collect::<Vec<_>>();
+    defer_drop_mut!(extra_args, vm);
+    let kwargs_pairs = owned_kwargs_pairs(kwargs, vm)?;
+    defer_drop_mut!(kwargs_pairs, vm);
+
+    let arr = ndarray_from_value(arr_val, "numpy.apply_along_axis", vm)?;
+    let axis = normalize_axis(
+        value_to_i64_arg(axis_val, "numpy.apply_along_axis", "axis")?,
+        arr.ndim(),
+        "numpy.apply_along_axis",
+    )?;
+    let result = apply_along_axis_array(function, extra_args, kwargs_pairs, &arr, axis, vm)?;
+    Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(result))?))
+}
+
+/// Executes `apply_along_axis` after arguments have been normalized.
+fn apply_along_axis_array(
+    function: &Value,
+    extra_args: &[Value],
+    kwargs_pairs: &[(Value, Value)],
+    arr: &NdArray,
+    axis: usize,
+    vm: &mut VM<'_, impl ResourceTracker>,
+) -> RunResult<NdArray> {
+    let iteration_shape = shape_without_axis(arr.shape(), axis);
+    if iteration_shape.contains(&0) {
+        return Err(SimpleException::new_msg(
+            ExcType::ValueError,
+            "Cannot apply_along_axis when any iteration dimensions are 0",
+        )
+        .into());
+    }
+
+    let iteration_count = checked_shape_product(&iteration_shape, "numpy.apply_along_axis")?;
+    let mut output_shape = None::<Vec<usize>>;
+    let mut output_dtype = None::<NdArrayDtype>;
+    let mut output_data = Vec::<f64>::new();
+
+    for iteration_flat in 0..iteration_count {
+        let slice = apply_along_axis_slice(arr, axis, iteration_flat, &iteration_shape);
+        let slice_value = Value::Ref(vm.heap.allocate(HeapData::NdArray(slice))?);
+        let result_value = call_user_function(
+            "numpy.apply_along_axis",
+            function,
+            vec![slice_value],
+            extra_args,
+            kwargs_pairs,
+            vm,
+        )?;
+        let result = value_to_owned_array_result(result_value, "numpy.apply_along_axis", vm)?;
+
+        let expected_shape =
+            output_shape.get_or_insert_with(|| apply_along_axis_output_shape(arr.shape(), axis, result.shape()));
+        if expected_shape.as_slice() != apply_along_axis_output_shape(arr.shape(), axis, result.shape()).as_slice() {
+            return Err(SimpleException::new_msg(
+                ExcType::ValueError,
+                "numpy.apply_along_axis() function returned inconsistent shapes",
+            )
+            .into());
+        }
+        let current_dtype = output_dtype.unwrap_or(result.dtype());
+        output_dtype = Some(promote_dtype(current_dtype, result.dtype()));
+        if output_data.is_empty() {
+            let output_len = checked_shape_product(expected_shape, "numpy.apply_along_axis")?;
+            check_array_alloc_size(output_len, vm.heap.tracker())?;
+            output_data.resize(output_len, 0.0);
+        }
+        fill_apply_along_axis_output(
+            &mut output_data,
+            expected_shape,
+            axis,
+            iteration_flat,
+            &iteration_shape,
+            &result,
+        );
+    }
+
+    Ok(NdArray::new(
+        output_data,
+        output_shape.unwrap_or_default(),
+        output_dtype.unwrap_or(arr.dtype()),
+    ))
+}
+
+/// Builds one 1-D ndarray slice for a fixed coordinate outside the selected axis.
+fn apply_along_axis_slice(arr: &NdArray, axis: usize, iteration_flat: usize, iteration_shape: &[usize]) -> NdArray {
+    let base_coords = flat_index_to_coords(iteration_flat, iteration_shape);
+    let axis_len = arr.shape()[axis];
+    let mut data = Vec::with_capacity(axis_len);
+    for axis_coord in 0..axis_len {
+        let coords = full_coords_with_axis(axis, axis_coord, &base_coords, arr.ndim());
+        let index = coords_to_flat_index(&coords, arr.shape());
+        data.push(arr.data()[index]);
+    }
+    NdArray::new(data, vec![axis_len], arr.dtype())
+}
+
+/// Computes the result shape, replacing the iterated axis with the callable's result shape.
+fn apply_along_axis_output_shape(input_shape: &[usize], axis: usize, result_shape: &[usize]) -> Vec<usize> {
+    let mut shape = Vec::with_capacity(input_shape.len().saturating_sub(1) + result_shape.len());
+    shape.extend_from_slice(&input_shape[..axis]);
+    shape.extend_from_slice(result_shape);
+    shape.extend_from_slice(&input_shape[axis + 1..]);
+    shape
+}
+
+/// Writes one callable result into the final `apply_along_axis` row-major output.
+fn fill_apply_along_axis_output(
+    output_data: &mut [f64],
+    output_shape: &[usize],
+    axis: usize,
+    iteration_flat: usize,
+    iteration_shape: &[usize],
+    result: &NdArray,
+) {
+    let base_coords = flat_index_to_coords(iteration_flat, iteration_shape);
+    let before = &base_coords[..axis];
+    let after = &base_coords[axis..];
+    for (result_flat, &value) in result.data().iter().enumerate() {
+        let result_coords = flat_index_to_coords(result_flat, result.shape());
+        let mut output_coords = Vec::with_capacity(output_shape.len());
+        output_coords.extend_from_slice(before);
+        output_coords.extend_from_slice(&result_coords);
+        output_coords.extend_from_slice(after);
+        let output_index = coords_to_flat_index(&output_coords, output_shape);
+        output_data[output_index] = value;
+    }
+}
+
+/// Reconstructs full coordinates from coordinates with one axis removed.
+fn full_coords_with_axis(axis: usize, axis_coord: usize, base_coords: &[usize], ndim: usize) -> Vec<usize> {
+    let mut coords = Vec::with_capacity(ndim);
+    coords.extend_from_slice(&base_coords[..axis]);
+    coords.push(axis_coord);
+    coords.extend_from_slice(&base_coords[axis..]);
+    coords
+}
+
+/// `numpy.apply_over_axes(func, a, axes)` using kept-dimension reductions.
+fn call_apply_over_axes(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let pos = args.into_pos_only("numpy.apply_over_axes", vm.heap)?;
+    defer_drop_mut!(pos, vm);
+    let function = pos
+        .next()
+        .ok_or_else(|| ExcType::type_error_at_least("numpy.apply_over_axes", 3, 0))?;
+    defer_drop!(function, vm);
+    let arr_val = pos
+        .next()
+        .ok_or_else(|| ExcType::type_error_at_least("numpy.apply_over_axes", 3, 1))?;
+    defer_drop!(arr_val, vm);
+    let axes_val = pos
+        .next()
+        .ok_or_else(|| ExcType::type_error_at_least("numpy.apply_over_axes", 3, 2))?;
+    defer_drop!(axes_val, vm);
+    if let Some(extra) = pos.next() {
+        extra.drop_with_heap(vm);
+        for extra in pos {
+            extra.drop_with_heap(vm);
+        }
+        return Err(ExcType::type_error_at_most("numpy.apply_over_axes", 3, 4));
+    }
+
+    let mut current = ndarray_from_value(arr_val, "numpy.apply_over_axes", vm)?;
+    let axes = apply_over_axes_axis_list(axes_val, current.ndim(), vm)?;
+    for axis in axes {
+        current = apply_over_axes_one(function, &current, axis, vm)?;
+    }
+    Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(current))?))
+}
+
+/// Parses the scalar-or-sequence axes accepted by `apply_over_axes`.
+fn apply_over_axes_axis_list(value: &Value, ndim: usize, vm: &VM<'_, impl ResourceTracker>) -> RunResult<Vec<usize>> {
+    match value {
+        Value::Int(axis) => Ok(vec![normalize_axis(*axis, ndim, "numpy.apply_over_axes")?]),
+        Value::Ref(heap_id) => match vm.heap.get(*heap_id) {
+            HeapData::List(items) => axis_sequence_from_items(items.as_slice(), ndim, "numpy.apply_over_axes", "axes"),
+            HeapData::Tuple(items) => axis_sequence_from_items(items.as_slice(), ndim, "numpy.apply_over_axes", "axes"),
+            _ => Err(ExcType::type_error(
+                "numpy.apply_over_axes() axes must be an integer or sequence",
+            )),
+        },
+        _ => Err(ExcType::type_error(
+            "numpy.apply_over_axes() axes must be an integer or sequence",
+        )),
+    }
+}
+
+/// Applies one kept-axis reduction, using native reductions for known NumPy callables.
+fn apply_over_axes_one(
+    function: &Value,
+    arr: &NdArray,
+    axis: usize,
+    vm: &mut VM<'_, impl ResourceTracker>,
+) -> RunResult<NdArray> {
+    if let Some(reduction) = axis_reduction_from_callable(function) {
+        reduce_ndarray_axis(arr, axis, reduction, "numpy.apply_over_axes", vm.heap.tracker())
+    } else {
+        let arr_value = Value::Ref(vm.heap.allocate(HeapData::NdArray(arr.clone()))?);
+        let result_value = vm.evaluate_function(
+            "numpy.apply_over_axes",
+            function,
+            ArgValues::Two(arr_value, Value::Int(usize_to_i64(axis)?)),
+        )?;
+        let result = value_to_owned_array_result(result_value, "numpy.apply_over_axes", vm)?;
+        apply_over_axes_keep_axis(result, arr.ndim(), axis)
+    }
+}
+
+/// Reductions that can be performed without routing back through a module call.
+#[derive(Debug, Clone, Copy)]
+enum AxisReduction {
+    Sum,
+    Prod,
+    Mean,
+    Min,
+    Max,
+    All,
+    Any,
+}
+
+/// Maps public NumPy reduction functions to the kept-axis reduction core.
+fn axis_reduction_from_callable(function: &Value) -> Option<AxisReduction> {
+    match function {
+        Value::ModuleFunction(ModuleFunctions::Numpy(NumpyFunctions::Sum)) => Some(AxisReduction::Sum),
+        Value::ModuleFunction(ModuleFunctions::Numpy(NumpyFunctions::Prod)) => Some(AxisReduction::Prod),
+        Value::ModuleFunction(ModuleFunctions::Numpy(NumpyFunctions::Mean)) => Some(AxisReduction::Mean),
+        Value::ModuleFunction(ModuleFunctions::Numpy(NumpyFunctions::Min)) => Some(AxisReduction::Min),
+        Value::ModuleFunction(ModuleFunctions::Numpy(NumpyFunctions::Max)) => Some(AxisReduction::Max),
+        Value::ModuleFunction(ModuleFunctions::Numpy(NumpyFunctions::All)) => Some(AxisReduction::All),
+        Value::ModuleFunction(ModuleFunctions::Numpy(NumpyFunctions::Any)) => Some(AxisReduction::Any),
+        _ => None,
+    }
+}
+
+/// Reduces an ndarray along one axis while retaining that axis with length one.
+fn reduce_ndarray_axis(
+    arr: &NdArray,
+    axis: usize,
+    reduction: AxisReduction,
+    name: &str,
+    tracker: &impl ResourceTracker,
+) -> RunResult<NdArray> {
+    let mut output_shape = arr.shape().to_vec();
+    let axis_len = output_shape[axis];
+    output_shape[axis] = 1;
+    let output_len = checked_shape_product(&output_shape, name)?;
+    check_array_alloc_size(output_len, tracker)?;
+    let mut data = Vec::with_capacity(output_len);
+    for output_flat in 0..output_len {
+        let mut coords = flat_index_to_coords(output_flat, &output_shape);
+        data.push(reduce_axis_cell(arr, axis, axis_len, reduction, &mut coords)?);
+    }
+    let dtype = match reduction {
+        AxisReduction::Mean => NdArrayDtype::Float64,
+        AxisReduction::All | AxisReduction::Any => NdArrayDtype::Bool,
+        AxisReduction::Sum | AxisReduction::Prod | AxisReduction::Min | AxisReduction::Max => arr.dtype(),
+    };
+    Ok(NdArray::new(data, output_shape, dtype))
+}
+
+/// Computes one kept-axis reduction cell by walking the removed coordinates.
+fn reduce_axis_cell(
+    arr: &NdArray,
+    axis: usize,
+    axis_len: usize,
+    reduction: AxisReduction,
+    coords: &mut [usize],
+) -> RunResult<f64> {
+    match reduction {
+        AxisReduction::Sum | AxisReduction::Mean => {
+            let mut total = 0.0;
+            for axis_coord in 0..axis_len {
+                coords[axis] = axis_coord;
+                total += arr.data()[coords_to_flat_index(coords, arr.shape())];
+            }
+            if matches!(reduction, AxisReduction::Mean) {
+                Ok(total / axis_len as f64)
+            } else {
+                Ok(total)
+            }
+        }
+        AxisReduction::Prod => {
+            let mut product = 1.0;
+            for axis_coord in 0..axis_len {
+                coords[axis] = axis_coord;
+                product *= arr.data()[coords_to_flat_index(coords, arr.shape())];
+            }
+            Ok(product)
+        }
+        AxisReduction::Min | AxisReduction::Max => reduce_axis_min_max(arr, axis, axis_len, reduction, coords),
+        AxisReduction::All => {
+            for axis_coord in 0..axis_len {
+                coords[axis] = axis_coord;
+                if arr.data()[coords_to_flat_index(coords, arr.shape())] == 0.0 {
+                    return Ok(0.0);
+                }
+            }
+            Ok(1.0)
+        }
+        AxisReduction::Any => {
+            for axis_coord in 0..axis_len {
+                coords[axis] = axis_coord;
+                if arr.data()[coords_to_flat_index(coords, arr.shape())] != 0.0 {
+                    return Ok(1.0);
+                }
+            }
+            Ok(0.0)
+        }
+    }
+}
+
+/// Handles min/max reductions, which have no identity for empty axes.
+fn reduce_axis_min_max(
+    arr: &NdArray,
+    axis: usize,
+    axis_len: usize,
+    reduction: AxisReduction,
+    coords: &mut [usize],
+) -> RunResult<f64> {
+    if axis_len == 0 {
+        return Err(SimpleException::new_msg(ExcType::ValueError, "zero-size array to reduction operation").into());
+    }
+    coords[axis] = 0;
+    let mut best = arr.data()[coords_to_flat_index(coords, arr.shape())];
+    for axis_coord in 1..axis_len {
+        coords[axis] = axis_coord;
+        let value = arr.data()[coords_to_flat_index(coords, arr.shape())];
+        best = if matches!(reduction, AxisReduction::Min) {
+            best.min(value)
+        } else {
+            best.max(value)
+        };
+    }
+    Ok(best)
+}
+
+/// Ensures a generic callable result preserves the reduced axis as NumPy expects.
+fn apply_over_axes_keep_axis(result: NdArray, target_ndim: usize, axis: usize) -> RunResult<NdArray> {
+    if result.ndim() == target_ndim {
+        if result.shape()[axis] == 1 {
+            Ok(result)
+        } else {
+            Err(SimpleException::new_msg(
+                ExcType::ValueError,
+                "function is not returning an array of the correct shape",
+            )
+            .into())
+        }
+    } else if result.ndim() + 1 == target_ndim {
+        let mut shape = result.shape().to_vec();
+        shape.insert(axis, 1);
+        Ok(NdArray::new(result.data().to_vec(), shape, result.dtype()))
+    } else {
+        Err(SimpleException::new_msg(
+            ExcType::ValueError,
+            "function is not returning an array of the correct shape",
+        )
+        .into())
+    }
+}
+
+/// `numpy.piecewise(x, condlist, funclist, *args, **kwargs)` for numeric arrays.
+fn call_piecewise(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let (mut pos, kwargs) = args.into_parts();
+    let Some(x_val) = pos.next() else {
+        pos.drop_with_heap(vm);
+        kwargs.drop_with_heap(vm);
+        return Err(ExcType::type_error_at_least("numpy.piecewise", 3, 0));
+    };
+    defer_drop!(x_val, vm);
+    let Some(condlist_val) = pos.next() else {
+        pos.drop_with_heap(vm);
+        kwargs.drop_with_heap(vm);
+        return Err(ExcType::type_error_at_least("numpy.piecewise", 3, 1));
+    };
+    defer_drop!(condlist_val, vm);
+    let Some(funclist_val) = pos.next() else {
+        pos.drop_with_heap(vm);
+        kwargs.drop_with_heap(vm);
+        return Err(ExcType::type_error_at_least("numpy.piecewise", 3, 2));
+    };
+    defer_drop!(funclist_val, vm);
+    let extra_args = pos.collect::<Vec<_>>();
+    defer_drop_mut!(extra_args, vm);
+    let kwargs_pairs = owned_kwargs_pairs(kwargs, vm)?;
+    defer_drop_mut!(kwargs_pairs, vm);
+
+    let x = ndarray_or_scalar_from_value(x_val, "numpy.piecewise", vm)?;
+    let cond_values = piecewise_values(condlist_val, "numpy.piecewise", vm)?;
+    defer_drop_mut!(cond_values, vm);
+    let fun_values = piecewise_values(funclist_val, "numpy.piecewise", vm)?;
+    defer_drop_mut!(fun_values, vm);
+
+    let result = piecewise_array(&x, cond_values, fun_values, extra_args, kwargs_pairs, vm)?;
+    Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(result))?))
+}
+
+/// Extracts list/tuple values for `piecewise`, or wraps a single value as a one-item list.
+fn piecewise_values(value: &Value, name: &str, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<Vec<Value>> {
+    match value {
+        Value::Ref(heap_id) => match vm.heap.get(*heap_id) {
+            HeapData::List(_) | HeapData::Tuple(_) => sequence_items(value, name, vm),
+            _ => Ok(vec![value.clone_with_heap(vm)]),
+        },
+        _ => Ok(vec![value.clone_with_heap(vm)]),
+    }
+}
+
+/// Replays the extra positional and keyword arguments passed to callable `piecewise` branches.
+struct CallableReplay<'a> {
+    extra_args: &'a [Value],
+    kwargs_pairs: &'a [(Value, Value)],
+}
+
+/// Applies condition/function pairs to produce a numeric `piecewise` result.
+fn piecewise_array(
+    x: &NdArray,
+    cond_values: &[Value],
+    fun_values: &[Value],
+    extra_args: &[Value],
+    kwargs_pairs: &[(Value, Value)],
+    vm: &mut VM<'_, impl ResourceTracker>,
+) -> RunResult<NdArray> {
+    if fun_values.len() != cond_values.len() && fun_values.len() != cond_values.len() + 1 {
+        return Err(SimpleException::new_msg(
+            ExcType::ValueError,
+            "with 1 condition(s), either 1 or 2 functions are expected",
+        )
+        .into());
+    }
+
+    let callable = CallableReplay {
+        extra_args,
+        kwargs_pairs,
+    };
+    let mut data = vec![0.0; x.len()];
+    let mut matched = vec![false; x.len()];
+    let mut dtype = x.dtype();
+    for (cond_value, fun_value) in cond_values.iter().zip(fun_values.iter()) {
+        let cond = piecewise_condition(cond_value, x.shape(), vm)?;
+        let selected = cond
+            .data()
+            .iter()
+            .enumerate()
+            .filter_map(|(index, &condition)| (condition != 0.0).then_some(index))
+            .collect::<Vec<_>>();
+        for &index in &selected {
+            matched[index] = true;
+        }
+        dtype = piecewise_write_selection(&mut data, dtype, x, &selected, fun_value, &callable, vm)?;
+    }
+
+    if let Some(default_value) = fun_values.get(cond_values.len()) {
+        let selected = matched
+            .iter()
+            .enumerate()
+            .filter_map(|(index, &is_matched)| (!is_matched).then_some(index))
+            .collect::<Vec<_>>();
+        dtype = piecewise_write_selection(&mut data, dtype, x, &selected, default_value, &callable, vm)?;
+    }
+
+    Ok(NdArray::new(data, x.shape().to_vec(), dtype))
+}
+
+/// Converts and broadcasts a `piecewise` condition to the input shape.
+fn piecewise_condition(value: &Value, shape: &[usize], vm: &VM<'_, impl ResourceTracker>) -> RunResult<NdArray> {
+    let condition = ndarray_or_scalar_from_value(value, "numpy.piecewise", vm)?;
+    let data = broadcast_array_data(
+        condition.data(),
+        condition.shape(),
+        shape,
+        "numpy.piecewise",
+        vm.heap.tracker(),
+    )?;
+    Ok(NdArray::new(data, shape.to_vec(), NdArrayDtype::Bool))
+}
+
+/// Writes scalar, array, or callable output into selected positions.
+fn piecewise_write_selection(
+    output: &mut [f64],
+    current_dtype: NdArrayDtype,
+    x: &NdArray,
+    selected: &[usize],
+    fun_value: &Value,
+    callable: &CallableReplay<'_>,
+    vm: &mut VM<'_, impl ResourceTracker>,
+) -> RunResult<NdArrayDtype> {
+    if selected.is_empty() {
+        Ok(current_dtype)
+    } else if is_callable_value(fun_value, vm) {
+        let values = selected.iter().map(|&index| x.data()[index]).collect::<Vec<_>>();
+        let selected_arr = NdArray::new(values, vec![selected.len()], x.dtype());
+        let selected_value = Value::Ref(vm.heap.allocate(HeapData::NdArray(selected_arr))?);
+        let result_value = call_user_function(
+            "numpy.piecewise",
+            fun_value,
+            vec![selected_value],
+            callable.extra_args,
+            callable.kwargs_pairs,
+            vm,
+        )?;
+        let result = value_to_owned_array_result(result_value, "numpy.piecewise", vm)?;
+        let values = piecewise_result_values(&result, selected.len())?;
+        for (&index, value) in selected.iter().zip(values.iter()) {
+            output[index] = *value;
+        }
+        Ok(promote_dtype(current_dtype, result.dtype()))
+    } else {
+        let choice = ndarray_or_scalar_from_value(fun_value, "numpy.piecewise", vm)?;
+        let choice_data = broadcast_array_data(
+            choice.data(),
+            choice.shape(),
+            x.shape(),
+            "numpy.piecewise",
+            vm.heap.tracker(),
+        )?;
+        for &index in selected {
+            output[index] = choice_data[index];
+        }
+        Ok(promote_dtype(current_dtype, choice.dtype()))
+    }
+}
+
+/// Normalizes callable results for assignment to selected `piecewise` slots.
+fn piecewise_result_values(result: &NdArray, selected_len: usize) -> RunResult<Vec<f64>> {
+    if result.shape().is_empty() {
+        Ok(vec![result.data()[0]; selected_len])
+    } else if result.len() == selected_len {
+        Ok(result.data().to_vec())
+    } else {
+        Err(SimpleException::new_msg(
+            ExcType::ValueError,
+            "NumPy boolean array indexing assignment cannot assign input values to selected output values",
+        )
+        .into())
+    }
+}
+
+/// `numpy.pad(array, pad_width, mode='constant', **kwargs)` materialized for common safe modes.
+fn call_pad(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let (mut pos, kwargs) = args.into_parts();
+    let Some(array_val) = pos.next() else {
+        pos.drop_with_heap(vm);
+        kwargs.drop_with_heap(vm);
+        return Err(ExcType::type_error_at_least("numpy.pad", 2, 0));
+    };
+    defer_drop!(array_val, vm);
+    let Some(pad_width_val) = pos.next() else {
+        pos.drop_with_heap(vm);
+        kwargs.drop_with_heap(vm);
+        return Err(ExcType::type_error_at_least("numpy.pad", 2, 1));
+    };
+    defer_drop!(pad_width_val, vm);
+    let mode_pos = pos.next();
+    defer_drop_mut!(mode_pos, vm);
+    if let Some(extra) = pos.next() {
+        extra.drop_with_heap(vm);
+        pos.drop_with_heap(vm);
+        kwargs.drop_with_heap(vm);
+        return Err(ExcType::type_error_at_most("numpy.pad", 3, 4));
+    }
+    pos.drop_with_heap(vm);
+
+    let arr = ndarray_or_scalar_from_value(array_val, "numpy.pad", vm)?;
+    let pad_width = parse_pad_width(pad_width_val, arr.ndim(), "numpy.pad", vm)?;
+    let options = parse_pad_options(mode_pos.as_ref(), kwargs, arr.ndim(), vm)?;
+    let result = pad_array(&arr, &pad_width, &options, vm.heap.tracker())?;
+    Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(result))?))
+}
+
+/// One axis of pad widths or constant values.
+#[derive(Debug, Clone, Copy)]
+struct PadPair<T> {
+    /// Values inserted before the original axis.
+    before: T,
+    /// Values inserted after the original axis.
+    after: T,
+}
+
+/// Supported pure padding modes that fit Monty's owned ndarray model.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PadMode {
+    Constant,
+    Edge,
+    Reflect,
+    Symmetric,
+    Wrap,
+}
+
+/// Parsed `pad()` options.
+struct PadOptions {
+    mode: PadMode,
+    constant_values: Vec<PadPair<f64>>,
+    constant_dtype: NdArrayDtype,
+}
+
+/// Parses `pad()` keyword arguments and validates the supported option surface.
+fn parse_pad_options(
+    mode_pos: Option<&Value>,
+    kwargs: KwargsValues,
+    ndim: usize,
+    vm: &mut VM<'_, impl ResourceTracker>,
+) -> RunResult<PadOptions> {
+    let mut mode = None::<PadMode>;
+    if let Some(value) = mode_pos {
+        mode = Some(parse_pad_mode(value, vm)?);
+    }
+    let mut constant_values = None::<(Vec<PadPair<f64>>, NdArrayDtype)>;
+    let kwargs_iter = kwargs.into_iter();
+    defer_drop_mut!(kwargs_iter, vm);
+    for (key, value) in kwargs_iter {
+        let Some(keyword_name) = key.as_either_str(vm.heap) else {
+            key.drop_with_heap(vm);
+            value.drop_with_heap(vm);
+            return Err(ExcType::type_error_kwargs_nonstring_key());
+        };
+        let key_str = keyword_name.as_str(vm.interns).to_string();
+        defer_drop!(key, vm);
+        let mut value = HeapGuard::new(value, vm);
+        if key_str == "mode" {
+            if mode.is_some() {
+                return Err(ExcType::type_error_multiple_values("numpy.pad", "mode"));
+            }
+            let (value, vm) = value.as_parts();
+            mode = Some(parse_pad_mode(value, vm)?);
+        } else if key_str == "constant_values" {
+            if constant_values.is_some() {
+                return Err(ExcType::type_error_multiple_values("numpy.pad", "constant_values"));
+            }
+            let (value, vm) = value.as_parts();
+            constant_values = Some(parse_pad_numeric_pairs(value, ndim, "numpy.pad", vm)?);
+        } else {
+            return Err(ExcType::type_error_unexpected_keyword("numpy.pad", &key_str));
+        }
+    }
+
+    let mode = mode.unwrap_or(PadMode::Constant);
+    let (constant_values, constant_dtype) = constant_values.unwrap_or_else(|| {
+        (
+            vec![
+                PadPair {
+                    before: 0.0,
+                    after: 0.0,
+                };
+                ndim
+            ],
+            NdArrayDtype::Int64,
+        )
+    });
+    Ok(PadOptions {
+        mode,
+        constant_values,
+        constant_dtype,
+    })
+}
+
+/// Parses one supported `mode=` value.
+fn parse_pad_mode(value: &Value, vm: &VM<'_, impl ResourceTracker>) -> RunResult<PadMode> {
+    let Some(mode) = value.as_either_str(vm.heap) else {
+        return Err(ExcType::type_error("numpy.pad() mode must be a string"));
+    };
+    match mode.as_str(vm.interns) {
+        "constant" => Ok(PadMode::Constant),
+        "edge" => Ok(PadMode::Edge),
+        "reflect" => Ok(PadMode::Reflect),
+        "symmetric" => Ok(PadMode::Symmetric),
+        "wrap" => Ok(PadMode::Wrap),
+        other => Err(SimpleException::new_msg(ExcType::ValueError, format!("mode '{other}' is not supported")).into()),
+    }
+}
+
+/// Parses integer pad widths in NumPy's scalar, pair, or per-axis pair forms.
+fn parse_pad_width(
+    value: &Value,
+    ndim: usize,
+    name: &str,
+    vm: &VM<'_, impl ResourceTracker>,
+) -> RunResult<Vec<PadPair<usize>>> {
+    match value {
+        Value::Int(width) => {
+            let width = i64_to_nonnegative_usize(*width, name, "pad_width")?;
+            Ok(vec![
+                PadPair {
+                    before: width,
+                    after: width,
+                };
+                ndim
+            ])
+        }
+        Value::Ref(heap_id) => match vm.heap.get(*heap_id) {
+            HeapData::List(items) => parse_pad_width_items(items.as_slice(), ndim, name, vm),
+            HeapData::Tuple(items) => parse_pad_width_items(items.as_slice(), ndim, name, vm),
+            _ => Err(ExcType::type_error(
+                "numpy.pad() pad_width must be an integer or sequence",
+            )),
+        },
+        _ => Err(ExcType::type_error(
+            "numpy.pad() pad_width must be an integer or sequence",
+        )),
+    }
+}
+
+/// Parses numeric constant values in NumPy's scalar, pair, or per-axis pair forms.
+fn parse_pad_numeric_pairs(
+    value: &Value,
+    ndim: usize,
+    name: &str,
+    vm: &VM<'_, impl ResourceTracker>,
+) -> RunResult<(Vec<PadPair<f64>>, NdArrayDtype)> {
+    if let Ok((value, dtype)) = numeric_scalar_info(value, name, vm) {
+        return Ok((
+            vec![
+                PadPair {
+                    before: value,
+                    after: value,
+                };
+                ndim
+            ],
+            dtype,
+        ));
+    }
+    let Value::Ref(heap_id) = value else {
+        return Err(ExcType::type_error("numpy.pad() constant_values must be numeric"));
+    };
+    match vm.heap.get(*heap_id) {
+        HeapData::List(items) => parse_pad_numeric_items(items.as_slice(), ndim, name, vm),
+        HeapData::Tuple(items) => parse_pad_numeric_items(items.as_slice(), ndim, name, vm),
+        _ => Err(ExcType::type_error("numpy.pad() constant_values must be numeric")),
+    }
+}
+
+/// Parses sequence pad-width forms.
+fn parse_pad_width_items(
+    items: &[Value],
+    ndim: usize,
+    name: &str,
+    vm: &VM<'_, impl ResourceTracker>,
+) -> RunResult<Vec<PadPair<usize>>> {
+    if items.len() == 2 && items.iter().all(|item| matches!(item, Value::Int(_))) {
+        let pair = PadPair {
+            before: value_to_nonnegative_usize(&items[0], name, "pad_width")?,
+            after: value_to_nonnegative_usize(&items[1], name, "pad_width")?,
+        };
+        Ok(vec![pair; ndim])
+    } else if items.len() == ndim {
+        items
+            .iter()
+            .map(|item| parse_one_pad_width_item(item, name, vm))
+            .collect()
+    } else {
+        Err(SimpleException::new_msg(ExcType::ValueError, "operands could not be broadcast together").into())
+    }
+}
+
+/// Parses one per-axis pad-width item.
+fn parse_one_pad_width_item(value: &Value, name: &str, vm: &VM<'_, impl ResourceTracker>) -> RunResult<PadPair<usize>> {
+    match value {
+        Value::Int(width) => {
+            let width = i64_to_nonnegative_usize(*width, name, "pad_width")?;
+            Ok(PadPair {
+                before: width,
+                after: width,
+            })
+        }
+        Value::Ref(heap_id) => match vm.heap.get(*heap_id) {
+            HeapData::List(items) => parse_one_pad_width_pair(items.as_slice(), name),
+            HeapData::Tuple(items) => parse_one_pad_width_pair(items.as_slice(), name),
+            _ => Err(ExcType::type_error("numpy.pad() pad_width must contain integers")),
+        },
+        _ => Err(ExcType::type_error("numpy.pad() pad_width must contain integers")),
+    }
+}
+
+/// Parses one two-item pad-width pair.
+fn parse_one_pad_width_pair(items: &[Value], name: &str) -> RunResult<PadPair<usize>> {
+    match items {
+        [before, after] => Ok(PadPair {
+            before: value_to_nonnegative_usize(before, name, "pad_width")?,
+            after: value_to_nonnegative_usize(after, name, "pad_width")?,
+        }),
+        _ => Err(SimpleException::new_msg(ExcType::ValueError, "operands could not be broadcast together").into()),
+    }
+}
+
+/// Parses sequence constant-value forms and tracks their compact dtype.
+fn parse_pad_numeric_items(
+    items: &[Value],
+    ndim: usize,
+    name: &str,
+    vm: &VM<'_, impl ResourceTracker>,
+) -> RunResult<(Vec<PadPair<f64>>, NdArrayDtype)> {
+    if items.len() == 2 && items.iter().all(|item| numeric_scalar_info(item, name, vm).is_ok()) {
+        let (before, before_dtype) = numeric_scalar_info(&items[0], name, vm)?;
+        let (after, after_dtype) = numeric_scalar_info(&items[1], name, vm)?;
+        let dtype = promote_dtype(before_dtype, after_dtype);
+        Ok((vec![PadPair { before, after }; ndim], dtype))
+    } else if items.len() == ndim {
+        let mut dtype = NdArrayDtype::Int64;
+        let pairs = items
+            .iter()
+            .map(|item| {
+                let (pair, pair_dtype) = parse_one_pad_numeric_item(item, name, vm)?;
+                dtype = promote_dtype(dtype, pair_dtype);
+                Ok(pair)
+            })
+            .collect::<RunResult<Vec<_>>>()?;
+        Ok((pairs, dtype))
+    } else {
+        Err(SimpleException::new_msg(ExcType::ValueError, "operands could not be broadcast together").into())
+    }
+}
+
+/// Parses one per-axis constant-value item.
+fn parse_one_pad_numeric_item(
+    value: &Value,
+    name: &str,
+    vm: &VM<'_, impl ResourceTracker>,
+) -> RunResult<(PadPair<f64>, NdArrayDtype)> {
+    if let Ok((value, dtype)) = numeric_scalar_info(value, name, vm) {
+        Ok((
+            PadPair {
+                before: value,
+                after: value,
+            },
+            dtype,
+        ))
+    } else {
+        let Value::Ref(heap_id) = value else {
+            return Err(ExcType::type_error("numpy.pad() constant_values must contain numbers"));
+        };
+        match vm.heap.get(*heap_id) {
+            HeapData::List(items) => parse_one_pad_numeric_pair(items.as_slice(), name, vm),
+            HeapData::Tuple(items) => parse_one_pad_numeric_pair(items.as_slice(), name, vm),
+            _ => Err(ExcType::type_error("numpy.pad() constant_values must contain numbers")),
+        }
+    }
+}
+
+/// Parses one two-item constant-value pair.
+fn parse_one_pad_numeric_pair(
+    items: &[Value],
+    name: &str,
+    vm: &VM<'_, impl ResourceTracker>,
+) -> RunResult<(PadPair<f64>, NdArrayDtype)> {
+    match items {
+        [before, after] => {
+            let (before, before_dtype) = numeric_scalar_info(before, name, vm)?;
+            let (after, after_dtype) = numeric_scalar_info(after, name, vm)?;
+            Ok((PadPair { before, after }, promote_dtype(before_dtype, after_dtype)))
+        }
+        _ => Err(SimpleException::new_msg(ExcType::ValueError, "operands could not be broadcast together").into()),
+    }
+}
+
+/// Pads an ndarray by materializing the requested output array.
+fn pad_array(
+    arr: &NdArray,
+    pad_width: &[PadPair<usize>],
+    options: &PadOptions,
+    tracker: &impl ResourceTracker,
+) -> RunResult<NdArray> {
+    let output_shape = padded_shape(arr.shape(), pad_width)?;
+    let output_len = checked_shape_product(&output_shape, "numpy.pad")?;
+    check_array_alloc_size(output_len, tracker)?;
+
+    if options.mode != PadMode::Constant && arr.shape().contains(&0) {
+        return Err(SimpleException::new_msg(
+            ExcType::ValueError,
+            "can't extend empty axis using modes other than 'constant'",
+        )
+        .into());
+    }
+
+    let mut data = Vec::with_capacity(output_len);
+    for output_flat in 0..output_len {
+        let output_coords = flat_index_to_coords(output_flat, &output_shape);
+        data.push(pad_value_at(arr, pad_width, options, &output_coords)?);
+    }
+    let dtype = if options.mode == PadMode::Constant {
+        promote_dtype(arr.dtype(), options.constant_dtype)
+    } else {
+        arr.dtype()
+    };
+    Ok(NdArray::new(data, output_shape, dtype))
+}
+
+/// Computes a checked padded shape.
+fn padded_shape(shape: &[usize], pad_width: &[PadPair<usize>]) -> RunResult<Vec<usize>> {
+    shape
+        .iter()
+        .zip(pad_width.iter())
+        .map(|(&dimension, pad)| {
+            dimension
+                .checked_add(pad.before)
+                .and_then(|value| value.checked_add(pad.after))
+                .ok_or_else(|| SimpleException::new_msg(ExcType::ValueError, "numpy.pad() dimensions overflow").into())
+        })
+        .collect()
+}
+
+/// Returns one padded value, either from the source array or from a constant edge.
+fn pad_value_at(
+    arr: &NdArray,
+    pad_width: &[PadPair<usize>],
+    options: &PadOptions,
+    output_coords: &[usize],
+) -> RunResult<f64> {
+    let mut input_coords = Vec::with_capacity(arr.ndim());
+    let mut constant = None::<f64>;
+    for (axis, (&coord, (&dimension, pad))) in output_coords
+        .iter()
+        .zip(arr.shape().iter().zip(pad_width.iter()))
+        .enumerate()
+    {
+        let raw = usize_to_i64(coord)? - usize_to_i64(pad.before)?;
+        let dimension_i64 = usize_to_i64(dimension)?;
+        if options.mode == PadMode::Constant && raw < 0 {
+            constant = Some(options.constant_values[axis].before);
+            input_coords.push(0);
+        } else if options.mode == PadMode::Constant && raw >= dimension_i64 {
+            constant = Some(options.constant_values[axis].after);
+            input_coords.push(dimension.saturating_sub(1));
+        } else {
+            input_coords.push(padded_source_index(raw, dimension, options.mode)?);
+        }
+    }
+    Ok(constant.unwrap_or_else(|| arr.data()[coords_to_flat_index(&input_coords, arr.shape())]))
+}
+
+/// Maps one padded coordinate back into the source axis for non-constant modes.
+fn padded_source_index(raw: i64, len: usize, mode: PadMode) -> RunResult<usize> {
+    if len <= 1 {
+        Ok(0)
+    } else {
+        let len_i64 = usize_to_i64(len)?;
+        match mode {
+            PadMode::Constant | PadMode::Edge => i64_to_pad_index(raw.clamp(0, len_i64 - 1)),
+            PadMode::Reflect => reflected_index(raw, len, false),
+            PadMode::Symmetric => reflected_index(raw, len, true),
+            PadMode::Wrap => i64_to_pad_index(raw.rem_euclid(len_i64)),
+        }
+    }
+}
+
+/// Maps an integer coordinate through NumPy-style reflect or symmetric padding.
+fn reflected_index(raw: i64, len: usize, symmetric: bool) -> RunResult<usize> {
+    let len = usize_to_i64(len)?;
+    let period = if symmetric { len * 2 } else { len * 2 - 2 };
+    let coord = raw.rem_euclid(period);
+    if symmetric {
+        if coord >= len {
+            i64_to_pad_index(period - coord - 1)
+        } else {
+            i64_to_pad_index(coord)
+        }
+    } else if coord >= len {
+        i64_to_pad_index(period - coord)
+    } else {
+        i64_to_pad_index(coord)
+    }
+}
+
+/// Converts an internal pad coordinate into a checked source-array index.
+fn i64_to_pad_index(value: i64) -> RunResult<usize> {
+    usize::try_from(value)
+        .map_err(|_| SimpleException::new_msg(ExcType::ValueError, "numpy.pad() index is too large").into())
+}
+
+/// Collects owned keyword pairs so callable helpers can replay them for each call.
+fn owned_kwargs_pairs(kwargs: KwargsValues, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<Vec<(Value, Value)>> {
+    let kwargs_iter = kwargs.into_iter();
+    defer_drop_mut!(kwargs_iter, vm);
+    let pairs = Vec::<(Value, Value)>::new();
+    let mut pairs_guard = HeapGuard::new(pairs, vm);
+    let (pairs, vm) = pairs_guard.as_parts_mut();
+    for (key, value) in kwargs_iter {
+        if key.as_either_str(vm.heap).is_none() {
+            key.drop_with_heap(vm);
+            value.drop_with_heap(vm);
+            return Err(ExcType::type_error_kwargs_nonstring_key());
+        }
+        pairs.push((key, value));
+    }
+    Ok(pairs_guard.into_inner())
+}
+
+/// Calls a user function with a freshly cloned argument and keyword list.
+fn call_user_function(
+    ctx: &'static str,
+    function: &Value,
+    mut args: Vec<Value>,
+    extra_args: &[Value],
+    kwargs_pairs: &[(Value, Value)],
+    vm: &mut VM<'_, impl ResourceTracker>,
+) -> RunResult<Value> {
+    for arg in extra_args {
+        args.push(arg.clone_with_heap(vm));
+    }
+    let kwargs = cloned_kwargs_from_pairs(kwargs_pairs, vm)?;
+    vm.evaluate_function(ctx, function, args_from_vec_and_kwargs(args, kwargs))
+}
+
+/// Recreates keyword arguments for one callable invocation.
+fn cloned_kwargs_from_pairs(
+    pairs: &[(Value, Value)],
+    vm: &mut VM<'_, impl ResourceTracker>,
+) -> RunResult<KwargsValues> {
+    let cloned = pairs
+        .iter()
+        .map(|(key, value)| (key.clone_with_heap(vm), value.clone_with_heap(vm)))
+        .collect::<Vec<_>>();
+    kwargs_from_pairs(cloned, vm)
+}
+
+/// Converts a callable return value into an owned ndarray and drops the original value.
+fn value_to_owned_array_result(value: Value, name: &str, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<NdArray> {
+    let value = Some(value);
+    defer_drop_mut!(value, vm);
+    ndarray_or_scalar_from_value(value.as_ref().expect("call result is present"), name, vm)
+}
+
+/// Returns whether a value can be called by Monty's function-call machinery.
+fn is_callable_value(value: &Value, vm: &VM<'_, impl ResourceTracker>) -> bool {
+    match value {
+        Value::DefFunction(_) | Value::Builtin(_) | Value::ExtFunction(_) | Value::ModuleFunction(_) => true,
+        Value::Ref(heap_id) => matches!(
+            vm.heap.get(*heap_id),
+            HeapData::Closure(_) | HeapData::FunctionDefaults(_) | HeapData::ExtFunction(_)
+        ),
+        _ => false,
+    }
 }
 
 /// Computes a small shape product for already-validated ndarray dimensions.
