@@ -166,6 +166,12 @@ impl Bytes {
                     return Err(ExcType::value_error_negative_bytes_count());
                 }
                 let size = usize::try_from(*n).expect("bytes count validated non-negative");
+                // Pre-check the requested size against resource limits before
+                // touching the global allocator. Without this, `bytes(n)` for a
+                // very large `n` would attempt the native allocation directly
+                // and abort the host on failure rather than raising MemoryError.
+                // Mirrors the guard already used by `bytes.ljust`/`zfill`/`*`.
+                check_repeat_size(size, 1, vm.heap.tracker())?;
                 vec![0u8; size]
             }
             Some(Value::InternString(string_id)) => {
