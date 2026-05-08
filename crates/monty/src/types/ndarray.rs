@@ -92,6 +92,13 @@ pub(crate) struct NdArray {
     pub(crate) shape: Vec<usize>,
     /// Element type, controlling display format and type promotion.
     pub(crate) dtype: NdArrayDtype,
+    /// Whether this array is the materialized backing object for `ndarray.flat`.
+    ///
+    /// Monty represents `flatiter` with the existing ndarray storage so the hot
+    /// `Value::Ref` path remains unchanged for non-NumPy workloads. This marker
+    /// only affects the reported Python type.
+    #[serde(default)]
+    is_flatiter: bool,
 }
 
 // ===========================
@@ -108,7 +115,23 @@ impl NdArray {
             shape.iter().product::<usize>(),
             "data length must match shape product"
         );
-        Self { data, shape, dtype }
+        Self {
+            data,
+            shape,
+            dtype,
+            is_flatiter: false,
+        }
+    }
+
+    /// Marks a materialized one-dimensional array as the public `numpy.flatiter` result.
+    ///
+    /// The backing behavior intentionally stays ndarray-like because Monty does not
+    /// yet have view objects, but `type(arr.flat)` and `isinstance(arr.flat,
+    /// np.flatiter)` can distinguish it from a normal ndarray.
+    #[must_use]
+    pub fn into_flatiter(mut self) -> Self {
+        self.is_flatiter = true;
+        self
     }
 
     /// Returns the total number of elements in the array.
@@ -1718,8 +1741,12 @@ impl NdArray {
 // ===========================
 
 impl<'h> PyTrait<'h> for HeapRead<'h, NdArray> {
-    fn py_type(&self, _vm: &VM<'h, impl ResourceTracker>) -> Type {
-        Type::NdArray
+    fn py_type(&self, vm: &VM<'h, impl ResourceTracker>) -> Type {
+        if self.get(vm.heap).is_flatiter {
+            Type::FlatIter
+        } else {
+            Type::NdArray
+        }
     }
 
     fn py_len(&self, vm: &VM<'h, impl ResourceTracker>) -> Option<usize> {
@@ -1909,8 +1936,8 @@ impl<'h> PyTrait<'h> for HeapRead<'h, NdArray> {
             Some(StaticStrings::NpNbytes) => Value::Int((arr.len() * 8) as i64),
             Some(StaticStrings::NpItemsize) => Value::Int(8),
             Some(StaticStrings::NpFlat) => {
-                let flat = NdArray::new(arr.data.clone(), vec![arr.data.len()], arr.dtype);
-                Value::FlatIter(vm.heap.allocate(HeapData::NdArray(flat))?)
+                let flat = NdArray::new(arr.data.clone(), vec![arr.data.len()], arr.dtype).into_flatiter();
+                Value::Ref(vm.heap.allocate(HeapData::NdArray(flat))?)
             }
             Some(StaticStrings::NpT) => arr.transpose(vm.heap)?,
             _ => {

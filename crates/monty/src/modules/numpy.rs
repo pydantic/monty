@@ -5641,7 +5641,7 @@ fn block_leaf_array(value: &Value, target_ndim: usize, vm: &VM<'_, impl Resource
     if arr.ndim() >= target_ndim {
         Ok(arr)
     } else {
-        let NdArray { data, shape, dtype } = arr;
+        let NdArray { data, shape, dtype, .. } = arr;
         let mut promoted_shape = vec![1; target_ndim - shape.len()];
         promoted_shape.extend(shape);
         Ok(NdArray::new(data, promoted_shape, dtype))
@@ -5698,7 +5698,7 @@ fn call_unstack(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunRe
 
 /// Reshapes one dstack input according to NumPy's `atleast_3d` promotion rules.
 fn dstack_promoted_array(arr: NdArray) -> NdArray {
-    let NdArray { data, shape, dtype } = arr;
+    let NdArray { data, shape, dtype, .. } = arr;
     let shape = match shape.as_slice() {
         [len] => vec![1, *len, 1],
         [rows, cols] => vec![*rows, *cols, 1],

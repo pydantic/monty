@@ -273,10 +273,6 @@ impl<T: ResourceTracker> VM<'_, T> {
                 defer_drop!(obj, this);
                 this.heap.read(heap_id).py_call_attr(heap_id, this, &attr, args)
             }
-            Value::FlatIter(heap_id) => {
-                defer_drop!(obj, this);
-                this.heap.read(heap_id).py_call_attr(heap_id, this, &attr, args)
-            }
             Value::InternString(string_id) => {
                 // Call string method on interned string literal using the unified dispatcher
                 let s = this.interns.get_str(string_id);
