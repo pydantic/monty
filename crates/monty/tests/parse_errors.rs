@@ -499,3 +499,59 @@ fn for_loop_attribute_target_has_clean_message() {
     assert_eq!(exc.exc_type(), ExcType::SyntaxError);
     assert_snapshot!(exc.message().expect("has message"), @"invalid unpacking target: attribute");
 }
+
+#[test]
+fn many_elif_clauses_exceed_limit() {
+    // A long flat chain of `elif` clauses folds into a deeply right-nested
+    // `Node::If` tree that the prepare and compile phases walk recursively.
+    // Each clause is counted against the parser's nesting-depth budget so the
+    // result is a SyntaxError rather than a native stack overflow downstream.
+    let mut code = "if 0:\n    pass\n".to_owned();
+    for _ in 0..400 {
+        code.push_str("elif 0:\n    pass\n");
+    }
+    let result = MontyRun::new(code, "test.py", vec![]);
+    let err = result.expect_err("expected parse error");
+    assert_eq!(err.exc_type(), ExcType::SyntaxError);
+    assert_eq!(
+        err.message(),
+        Some("too many nested parentheses"),
+        "error message should match CPython, got: {:?}",
+        err.message()
+    );
+}
+
+#[test]
+fn moderate_elif_chain_within_limit() {
+    let mut code = "if 0:\n    pass\n".to_owned();
+    for _ in 0..20 {
+        code.push_str("elif 0:\n    pass\n");
+    }
+    code.push_str("else:\n    pass\n");
+    let result = MontyRun::new(code, "test.py", vec![]);
+    assert!(result.is_ok(), "moderate elif chain should succeed: {result:?}");
+}
+
+#[test]
+fn many_bool_op_operands_exceed_limit() {
+    // A long chain of `and`/`or` operands folds into a deeply right-nested
+    // `Expr::Op` tree. Each fold step is counted against the parser's
+    // nesting-depth budget.
+    let mut code = "x = 1".to_owned();
+    for _ in 0..400 {
+        code.push_str(" and 1");
+    }
+    let result = MontyRun::new(code, "test.py", vec![]);
+    let err = result.expect_err("expected parse error");
+    assert_eq!(err.exc_type(), ExcType::SyntaxError);
+}
+
+#[test]
+fn moderate_bool_op_chain_within_limit() {
+    let mut code = "1".to_owned();
+    for _ in 0..20 {
+        code.push_str(" and 1");
+    }
+    let result = MontyRun::new(code, "test.py", vec![]);
+    assert!(result.is_ok(), "moderate bool-op chain should succeed: {result:?}");
+}
