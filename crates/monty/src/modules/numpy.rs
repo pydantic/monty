@@ -89,14 +89,14 @@ use crate::{
     modules::ModuleFunctions,
     resource::{ResourceError, ResourceTracker, check_array_alloc_size},
     types::{
-        Dict, List, LongInt, Module, MontyIter, NamedTuple, NdArray, PyTrait, Type, allocate_tuple,
+        Dict, List, LongInt, Module, MontyIter, NamedTuple, NdArray, PyTrait, Slice, Type, allocate_tuple,
         ndarray::{
             NdArrayDtype, broadcast_array_data, broadcast_pair_data, broadcast_shape, nan_last_cmp, ndarray_from_list,
             promote_dtype,
         },
         str::{Str, allocate_string},
     },
-    value::Value,
+    value::{Marker, Value},
 };
 
 /// Functions exposed by the `numpy` module.
@@ -838,6 +838,8 @@ pub fn create_module(vm: &mut VM<'_, impl ResourceTracker>) -> Result<HeapId, Re
         vm,
     );
     module.set_attr(StaticStrings::NpEulerGamma, Value::Float(0.577_215_664_901_532_9), vm);
+    module.set_attr(StaticStrings::NpFalseScalar, Value::Bool(false), vm);
+    module.set_attr(StaticStrings::NpTrueScalar, Value::Bool(true), vm);
     module.set_attr(
         StaticStrings::NpNdarray,
         Value::Builtin(Builtins::Type(Type::NdArray)),
@@ -870,6 +872,51 @@ pub fn create_module(vm: &mut VM<'_, impl ResourceTracker>) -> Result<HeapId, Re
         Value::InternString(StaticStrings::NpInexactCategoryMarker.into()),
         vm,
     );
+    module.set_attr(
+        StaticStrings::NpGeneric,
+        Value::InternString(StaticStrings::NpGenericCategoryMarker.into()),
+        vm,
+    );
+    module.set_attr(
+        StaticStrings::NpNumber,
+        Value::InternString(StaticStrings::NpNumberCategoryMarker.into()),
+        vm,
+    );
+    module.set_attr(
+        StaticStrings::NpSignedInteger,
+        Value::InternString(StaticStrings::NpSignedIntegerCategoryMarker.into()),
+        vm,
+    );
+    module.set_attr(
+        StaticStrings::NpUnsignedInteger,
+        Value::InternString(StaticStrings::NpUnsignedIntegerCategoryMarker.into()),
+        vm,
+    );
+    module.set_attr(
+        StaticStrings::NpComplexFloating,
+        Value::InternString(StaticStrings::NpComplexFloatingCategoryMarker.into()),
+        vm,
+    );
+    module.set_attr(
+        StaticStrings::NpFlexible,
+        Value::InternString(StaticStrings::NpFlexibleCategoryMarker.into()),
+        vm,
+    );
+    module.set_attr(
+        StaticStrings::NpCharacter,
+        Value::InternString(StaticStrings::NpCharacterCategoryMarker.into()),
+        vm,
+    );
+    for name in [
+        StaticStrings::NpIndexExp,
+        StaticStrings::NpSIndex,
+        StaticStrings::NpMgrid,
+        StaticStrings::NpOgrid,
+        StaticStrings::NpRIndex,
+        StaticStrings::NpCIndex,
+    ] {
+        module.set_attr(name, Value::Marker(Marker(name)), vm);
+    }
     module.set_attr(StaticStrings::NpTypecodes, numpy_typecodes_dict(vm)?, vm);
     module.set_attr(StaticStrings::NpSctypeDict, numpy_sctype_dict(vm)?, vm);
 
@@ -976,6 +1023,324 @@ impl NumpyFunctions {
     }
 }
 
+/// Handles subscription on NumPy compatibility marker objects such as `np.s_`.
+///
+/// NumPy exposes several index-trick attributes as stateful Python objects with
+/// custom `__getitem__` methods. Monty represents those attributes as immediate
+/// marker values so we can support the useful subscription behavior without
+/// adding a new heap object kind or touching the heap safety boundary.
+pub(crate) fn numpy_marker_getitem(
+    marker: StaticStrings,
+    key: &Value,
+    vm: &mut VM<'_, impl ResourceTracker>,
+) -> RunResult<Option<Value>> {
+    let value = match marker {
+        StaticStrings::NpIndexExp | StaticStrings::NpSIndex => key.clone_with_heap(vm),
+        StaticStrings::NpMgrid => numpy_mgrid_getitem(key, vm)?,
+        StaticStrings::NpOgrid => numpy_ogrid_getitem(key, vm)?,
+        StaticStrings::NpRIndex => numpy_r_index_getitem(key, vm)?,
+        StaticStrings::NpCIndex => numpy_c_index_getitem(key, vm)?,
+        _ => return Ok(None),
+    };
+    Ok(Some(value))
+}
+
+/// Owned numeric item parsed from an index-trick subscription key.
+struct IndexTrickInput {
+    /// Flattened numeric data represented by this key item.
+    data: Vec<f64>,
+    /// Shape associated with `data`, using Monty's row-major ndarray layout.
+    shape: Vec<usize>,
+    /// Numeric dtype inferred for this item.
+    dtype: NdArrayDtype,
+    /// Whether this item came from slice syntax such as `0:3`.
+    is_slice_range: bool,
+}
+
+/// `numpy.mgrid[...]` — dense coordinate grids from numeric slice syntax.
+fn numpy_mgrid_getitem(key: &Value, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<Value> {
+    let ranges = collect_grid_ranges(key, "numpy.mgrid", vm)?;
+    if ranges.len() == 1 {
+        let range = ranges.into_iter().next().expect("one range");
+        return allocate_ndarray_from_data(range.data, range.shape, range.dtype, vm);
+    }
+
+    let axis_lengths: Vec<usize> = ranges.iter().map(|range| range.data.len()).collect();
+    let grid_len = checked_shape_product(&axis_lengths, "numpy.mgrid")?;
+    let ndim = ranges.len();
+    let total = grid_len
+        .checked_mul(ndim)
+        .ok_or_else(|| SimpleException::new_msg(ExcType::ValueError, "numpy.mgrid() result is too large"))?;
+    check_array_alloc_size(total, vm.heap.tracker())?;
+
+    let mut shape = Vec::with_capacity(ndim + 1);
+    shape.push(ndim);
+    shape.extend(axis_lengths.iter().copied());
+
+    let strides = row_major_strides_for_shape(&axis_lengths);
+    let mut data = Vec::with_capacity(total);
+    for axis in 0..ndim {
+        let values = &ranges[axis].data;
+        for flat_index in 0..grid_len {
+            let coord = if axis_lengths[axis] == 0 {
+                0
+            } else {
+                (flat_index / strides[axis]) % axis_lengths[axis]
+            };
+            data.push(values[coord]);
+        }
+    }
+    allocate_ndarray_from_data(data, shape, NdArrayDtype::Int64, vm)
+}
+
+/// `numpy.ogrid[...]` — sparse/open coordinate grids from numeric slice syntax.
+fn numpy_ogrid_getitem(key: &Value, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<Value> {
+    let ranges = collect_grid_ranges(key, "numpy.ogrid", vm)?;
+    if ranges.len() == 1 {
+        let range = ranges.into_iter().next().expect("one range");
+        return allocate_ndarray_from_data(range.data, range.shape, range.dtype, vm);
+    }
+
+    let ndim = ranges.len();
+    let mut values: SmallVec<[Value; 3]> = SmallVec::new();
+    for (axis, range) in ranges.into_iter().enumerate() {
+        check_array_alloc_size(range.data.len(), vm.heap.tracker())?;
+        let mut shape = vec![1; ndim];
+        shape[axis] = range.data.len();
+        values.push(allocate_ndarray_from_data(range.data, shape, range.dtype, vm)?);
+    }
+    allocate_tuple(values, vm.heap).map_err(Into::into)
+}
+
+/// `numpy.r_[...]` — concatenate numeric slices/scalars/arrays into one vector.
+fn numpy_r_index_getitem(key: &Value, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<Value> {
+    let inputs = collect_index_trick_inputs(key, "numpy.r_", vm)?;
+    let total = inputs
+        .iter()
+        .try_fold(0usize, |acc, input| acc.checked_add(input.data.len()))
+        .ok_or_else(|| SimpleException::new_msg(ExcType::ValueError, "numpy.r_() result is too large"))?;
+    check_array_alloc_size(total, vm.heap.tracker())?;
+
+    let dtype = inputs
+        .iter()
+        .fold(NdArrayDtype::Bool, |dtype, input| promote_dtype(dtype, input.dtype));
+    let mut data = Vec::with_capacity(total);
+    for input in inputs {
+        data.extend(input.data);
+    }
+    allocate_ndarray_from_data(data, vec![total], dtype, vm)
+}
+
+/// `numpy.c_[...]` — column-stack numeric slices/scalars/arrays.
+fn numpy_c_index_getitem(key: &Value, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<Value> {
+    let inputs = collect_index_trick_inputs(key, "numpy.c_", vm)?;
+    let columns = inputs
+        .into_iter()
+        .map(column_block_from_input)
+        .collect::<RunResult<Vec<_>>>()?;
+    let Some(first) = columns.first() else {
+        return allocate_ndarray_from_data(Vec::new(), vec![0, 0], NdArrayDtype::Float64, vm);
+    };
+    let rows = first.rows;
+    let total_cols = columns
+        .iter()
+        .try_fold(0usize, |acc, block| {
+            if block.rows == rows {
+                acc.checked_add(block.cols)
+            } else {
+                None
+            }
+        })
+        .ok_or_else(|| SimpleException::new_msg(ExcType::ValueError, "numpy.c_() input dimensions must match"))?;
+    let total = rows
+        .checked_mul(total_cols)
+        .ok_or_else(|| SimpleException::new_msg(ExcType::ValueError, "numpy.c_() result is too large"))?;
+    check_array_alloc_size(total, vm.heap.tracker())?;
+
+    let dtype = columns
+        .iter()
+        .fold(NdArrayDtype::Bool, |dtype, block| promote_dtype(dtype, block.dtype));
+    let mut data = Vec::with_capacity(total);
+    for row in 0..rows {
+        for block in &columns {
+            let start = row * block.cols;
+            data.extend_from_slice(&block.data[start..start + block.cols]);
+        }
+    }
+    allocate_ndarray_from_data(data, vec![rows, total_cols], dtype, vm)
+}
+
+/// A row-major block used by `numpy.c_` column stacking.
+struct ColumnBlock {
+    /// Row-major data for this block.
+    data: Vec<f64>,
+    /// Number of rows in the block.
+    rows: usize,
+    /// Number of columns contributed by the block.
+    cols: usize,
+    /// Numeric dtype inferred for the block.
+    dtype: NdArrayDtype,
+}
+
+/// Converts one parsed index-trick item into a 2-D block for `numpy.c_`.
+fn column_block_from_input(input: IndexTrickInput) -> RunResult<ColumnBlock> {
+    match input.shape.as_slice() {
+        [] => Ok(ColumnBlock {
+            data: input.data,
+            rows: 1,
+            cols: 1,
+            dtype: input.dtype,
+        }),
+        [rows] => Ok(ColumnBlock {
+            data: input.data,
+            rows: *rows,
+            cols: 1,
+            dtype: input.dtype,
+        }),
+        [rows, cols] => Ok(ColumnBlock {
+            data: input.data,
+            rows: *rows,
+            cols: *cols,
+            dtype: input.dtype,
+        }),
+        _ => Err(ExcType::type_error(
+            "numpy.c_() only supports scalar, 1-D, or 2-D inputs",
+        )),
+    }
+}
+
+/// Collects the key items supplied to an index-trick subscription.
+fn collect_index_trick_inputs(
+    key: &Value,
+    name: &str,
+    vm: &VM<'_, impl ResourceTracker>,
+) -> RunResult<Vec<IndexTrickInput>> {
+    if let Value::Ref(id) = key
+        && let HeapData::Tuple(tuple) = vm.heap.get(*id)
+    {
+        return tuple
+            .as_slice()
+            .iter()
+            .map(|item| index_trick_input_from_value(item, name, vm))
+            .collect();
+    }
+    Ok(vec![index_trick_input_from_value(key, name, vm)?])
+}
+
+/// Collects only slice-derived ranges for `mgrid` and `ogrid`.
+fn collect_grid_ranges(key: &Value, name: &str, vm: &VM<'_, impl ResourceTracker>) -> RunResult<Vec<IndexTrickInput>> {
+    let ranges = collect_index_trick_inputs(key, name, vm)?;
+    if ranges.iter().all(|range| range.is_slice_range) {
+        Ok(ranges)
+    } else {
+        Err(ExcType::type_error(format!("{name} requires integer slice ranges")))
+    }
+}
+
+/// Parses one item from a NumPy index-trick subscription key.
+fn index_trick_input_from_value(
+    value: &Value,
+    name: &str,
+    vm: &VM<'_, impl ResourceTracker>,
+) -> RunResult<IndexTrickInput> {
+    if let Value::Ref(id) = value
+        && let HeapData::Slice(slice) = vm.heap.get(*id)
+    {
+        return range_from_index_slice(slice, name, vm.heap.tracker());
+    }
+    if let Ok(arr) = ndarray_from_value(value, name, vm) {
+        Ok(IndexTrickInput {
+            data: arr.data().to_vec(),
+            shape: arr.shape().to_vec(),
+            dtype: arr.dtype(),
+            is_slice_range: false,
+        })
+    } else {
+        let (value, dtype) = numeric_scalar_info(value, name, vm)?;
+        Ok(IndexTrickInput {
+            data: vec![value],
+            shape: Vec::new(),
+            dtype,
+            is_slice_range: false,
+        })
+    }
+}
+
+/// Converts a Python slice into the integer range used by NumPy index tricks.
+fn range_from_index_slice(slice: &Slice, name: &str, tracker: &impl ResourceTracker) -> RunResult<IndexTrickInput> {
+    let start = slice.start.unwrap_or(0);
+    let stop = slice
+        .stop
+        .ok_or_else(|| ExcType::type_error(format!("{name} slice stop is required")))?;
+    let step = slice.step.unwrap_or(1);
+    if step == 0 {
+        return Err(ExcType::value_error_slice_step_zero());
+    }
+    let len = index_slice_len(start, stop, step)?;
+    check_array_alloc_size(len, tracker)?;
+    let mut data = Vec::with_capacity(len);
+    let mut value = start;
+    if step > 0 {
+        while value < stop {
+            data.push(i64_to_f64(value));
+            value = value.saturating_add(step);
+        }
+    } else {
+        while value > stop {
+            data.push(i64_to_f64(value));
+            value = value.saturating_add(step);
+        }
+    }
+    Ok(IndexTrickInput {
+        data,
+        shape: vec![len],
+        dtype: NdArrayDtype::Int64,
+        is_slice_range: true,
+    })
+}
+
+/// Computes the number of elements produced by an index-trick integer slice.
+fn index_slice_len(start: i64, stop: i64, step: i64) -> RunResult<usize> {
+    let start = i128::from(start);
+    let stop = i128::from(stop);
+    let step = i128::from(step);
+    let len = if step > 0 {
+        if start >= stop {
+            0
+        } else {
+            ((stop - start - 1) / step) + 1
+        }
+    } else if start <= stop {
+        0
+    } else {
+        ((start - stop - 1) / -step) + 1
+    };
+    usize::try_from(len).map_err(|_| SimpleException::new_msg(ExcType::ValueError, "index range is too large").into())
+}
+
+/// Returns row-major strides for coordinate generation.
+fn row_major_strides_for_shape(shape: &[usize]) -> Vec<usize> {
+    let mut strides = vec![1usize; shape.len()];
+    for axis in (0..shape.len()).rev() {
+        if axis + 1 < shape.len() {
+            strides[axis] = strides[axis + 1].saturating_mul(shape[axis + 1]);
+        }
+    }
+    strides
+}
+
+/// Allocates an ndarray value from already-owned numeric data.
+fn allocate_ndarray_from_data(
+    data: Vec<f64>,
+    shape: Vec<usize>,
+    dtype: NdArrayDtype,
+    vm: &mut VM<'_, impl ResourceTracker>,
+) -> RunResult<Value> {
+    Ok(Value::Ref(
+        vm.heap.allocate(HeapData::NdArray(NdArray::new(data, shape, dtype)))?,
+    ))
+}
+
 /// Builds NumPy's legacy `typecodes` dictionary for code that inspects dtype families.
 fn numpy_typecodes_dict(vm: &mut VM<'_, impl ResourceTracker>) -> Result<Value, ResourceError> {
     let pairs = [
@@ -1018,8 +1383,9 @@ fn numpy_sctype_dict(vm: &mut VM<'_, impl ResourceTracker>) -> Result<Value, Res
 ///
 /// Many NumPy dtype names are aliases for platform-sized or narrower integer
 /// and floating point types. Monty currently stores only bool, int64, and
-/// float64 arrays, so aliases are mapped to the closest dtype marker that
-/// existing `astype()` understands instead of introducing new storage formats.
+/// float64 arrays, but narrow integer aliases still keep their public marker
+/// names so hierarchy predicates such as `issubdtype(np.uint64,
+/// np.unsignedinteger)` can preserve NumPy's type-family distinction.
 const NUMPY_DTYPE_ALIASES: &[(StaticStrings, StaticStrings)] = &[
     (StaticStrings::NpFloat64, StaticStrings::NpFloat64),
     (StaticStrings::NpDouble, StaticStrings::NpFloat64),
@@ -1033,23 +1399,23 @@ const NUMPY_DTYPE_ALIASES: &[(StaticStrings, StaticStrings)] = &[
     (StaticStrings::NpIntp, StaticStrings::NpInt64),
     (StaticStrings::NpLong, StaticStrings::NpInt64),
     (StaticStrings::NpLonglong, StaticStrings::NpInt64),
-    (StaticStrings::NpByte, StaticStrings::NpInt64),
-    (StaticStrings::NpShort, StaticStrings::NpInt64),
-    (StaticStrings::NpInt8, StaticStrings::NpInt64),
-    (StaticStrings::NpInt16, StaticStrings::NpInt64),
-    (StaticStrings::NpUint, StaticStrings::NpInt64),
-    (StaticStrings::NpUintp, StaticStrings::NpInt64),
-    (StaticStrings::NpUbyte, StaticStrings::NpInt64),
-    (StaticStrings::NpUshort, StaticStrings::NpInt64),
-    (StaticStrings::NpUint8, StaticStrings::NpInt64),
-    (StaticStrings::NpUint16, StaticStrings::NpInt64),
-    (StaticStrings::NpUint32, StaticStrings::NpInt64),
-    (StaticStrings::NpUint64, StaticStrings::NpInt64),
-    (StaticStrings::NpUlong, StaticStrings::NpInt64),
-    (StaticStrings::NpUlonglong, StaticStrings::NpInt64),
+    (StaticStrings::NpByte, StaticStrings::NpByte),
+    (StaticStrings::NpShort, StaticStrings::NpShort),
+    (StaticStrings::NpInt8, StaticStrings::NpInt8),
+    (StaticStrings::NpInt16, StaticStrings::NpInt16),
+    (StaticStrings::NpUint, StaticStrings::NpUint),
+    (StaticStrings::NpUintp, StaticStrings::NpUintp),
+    (StaticStrings::NpUbyte, StaticStrings::NpUbyte),
+    (StaticStrings::NpUshort, StaticStrings::NpUshort),
+    (StaticStrings::NpUint8, StaticStrings::NpUint8),
+    (StaticStrings::NpUint16, StaticStrings::NpUint16),
+    (StaticStrings::NpUint32, StaticStrings::NpUint32),
+    (StaticStrings::NpUint64, StaticStrings::NpUint64),
+    (StaticStrings::NpUlong, StaticStrings::NpUlong),
+    (StaticStrings::NpUlonglong, StaticStrings::NpUlonglong),
     (StaticStrings::NpInt32, StaticStrings::NpInt32),
     (StaticStrings::NpIntc, StaticStrings::NpInt32),
-    (StaticStrings::NpUintc, StaticStrings::NpInt32),
+    (StaticStrings::NpUintc, StaticStrings::NpUintc),
     (StaticStrings::NpBool_, StaticStrings::NpBool_),
     (StaticStrings::NpBool, StaticStrings::NpBool_),
 ];
@@ -7688,11 +8054,35 @@ fn call_common_type(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> R
 fn call_min_scalar_type(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     let arg = args.get_one_arg("numpy.min_scalar_type", vm.heap)?;
     defer_drop!(arg, vm);
-    Ok(dtype_meta_value(dtype_meta_from_value(
-        arg,
-        "numpy.min_scalar_type",
-        vm,
-    )?))
+    let value = if let Value::Int(value) = arg {
+        Value::InternString(min_integer_scalar_marker(*value).into())
+    } else {
+        dtype_meta_value(dtype_meta_from_value(arg, "numpy.min_scalar_type", vm)?)
+    };
+    Ok(value)
+}
+
+/// Returns the narrow integer marker NumPy would choose for a Python int scalar.
+fn min_integer_scalar_marker(value: i64) -> StaticStrings {
+    if value < 0 {
+        if value >= i64::from(i8::MIN) {
+            StaticStrings::NpInt8
+        } else if value >= i64::from(i16::MIN) {
+            StaticStrings::NpInt16
+        } else if value >= i64::from(i32::MIN) {
+            StaticStrings::NpInt32
+        } else {
+            StaticStrings::NpInt64
+        }
+    } else if value <= i64::from(u8::MAX) {
+        StaticStrings::NpUint8
+    } else if value <= i64::from(u16::MAX) {
+        StaticStrings::NpUint16
+    } else if value <= i64::from(u32::MAX) {
+        StaticStrings::NpUint32
+    } else {
+        StaticStrings::NpUint64
+    }
 }
 
 /// `numpy.mintypecode(typechars, typeset='GDFgdf', default='d')` — legacy dtype code helper.
@@ -7996,23 +8386,48 @@ enum CompactDtype {
 /// Dtype category markers exposed for hierarchy-style predicates.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum DtypeCategory {
+    /// Generic category containing every dtype Monty can currently recognize.
+    Generic,
     /// Boolean dtype category.
     Bool,
-    /// Integer dtype category.
+    /// Signed or unsigned integer dtype category.
     Integer,
+    /// Signed integer dtype category.
+    SignedInteger,
+    /// Unsigned integer dtype category.
+    UnsignedInteger,
     /// Floating dtype category.
     Floating,
     /// Inexact numeric category; complex is unsupported, so this means floating.
     Inexact,
     /// Numeric category for integer and floating dtypes.
-    Numeric,
+    Number,
+    /// Complex category marker, currently empty for Monty's concrete dtypes.
+    ComplexFloating,
+    /// Flexible-width category marker, currently empty for Monty's concrete dtypes.
+    Flexible,
+    /// Character category marker, currently empty for Monty's concrete dtypes.
+    Character,
+}
+
+/// Concrete dtype family used by `issubdtype`.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum DtypeConcrete {
+    /// Boolean dtype.
+    Bool,
+    /// Signed integer dtype.
+    SignedInteger,
+    /// Unsigned integer dtype.
+    UnsignedInteger,
+    /// Real floating dtype.
+    Floating,
 }
 
 /// Parsed dtype hierarchy operand for `issubdtype`.
 #[derive(Clone, Copy)]
 enum DtypeKind {
     /// Concrete compact dtype such as `np.int64`.
-    Concrete(CompactDtype),
+    Concrete(DtypeConcrete),
     /// Category marker such as `np.integer`.
     Category(DtypeCategory),
 }
@@ -8097,7 +8512,7 @@ fn dtype_kind_from_value(value: &Value, name: &str, vm: &VM<'_, impl ResourceTra
     if let Some(category) = dtype_category_from_marker_text(&text) {
         Ok(DtypeKind::Category(category))
     } else {
-        Ok(DtypeKind::Concrete(dtype_meta_from_str(&text, name)?))
+        Ok(DtypeKind::Concrete(dtype_concrete_from_str(&text, name)?))
     }
 }
 
@@ -8329,6 +8744,20 @@ fn dtype_meta_from_str(text: &str, name: &str) -> RunResult<CompactDtype> {
     }
 }
 
+/// Maps dtype text onto the concrete family used by hierarchy predicates.
+fn dtype_concrete_from_str(text: &str, name: &str) -> RunResult<DtypeConcrete> {
+    match text {
+        "bool" | "bool_" | "?" => Ok(DtypeConcrete::Bool),
+        "int8" | "int16" | "int32" | "int64" | "int_" | "intc" | "intp" | "long" | "longlong" | "byte" | "short"
+        | "i" | "l" | "q" | "b" | "h" => Ok(DtypeConcrete::SignedInteger),
+        "uint8" | "uint16" | "uint32" | "uint64" | "uint" | "uintc" | "uintp" | "ubyte" | "ushort" | "ulong"
+        | "ulonglong" | "B" | "H" | "I" | "L" | "Q" => Ok(DtypeConcrete::UnsignedInteger),
+        "float16" | "float32" | "float64" | "half" | "single" | "double" | "longdouble" | "float" | "f" | "e" | "d"
+        | "g" => Ok(DtypeConcrete::Floating),
+        _ => Err(ExcType::type_error(format!("{name}() unsupported dtype: {text}"))),
+    }
+}
+
 /// Converts an ndarray dtype into a compact dtype category.
 fn dtype_meta_from_ndarray_dtype(dtype: NdArrayDtype) -> CompactDtype {
     match dtype {
@@ -8383,7 +8812,7 @@ fn is_subdtype_kind(first: DtypeKind, second: DtypeKind) -> bool {
 fn is_dtype_kind(dtype: CompactDtype, kind: IsdtypeKind) -> bool {
     match kind {
         IsdtypeKind::Concrete(kind_dtype) => dtype == kind_dtype,
-        IsdtypeKind::Category(category) => dtype_category_contains_dtype(category, dtype),
+        IsdtypeKind::Category(category) => dtype_category_contains_compact(category, dtype),
         IsdtypeKind::Never => false,
     }
 }
@@ -8391,9 +8820,16 @@ fn is_dtype_kind(dtype: CompactDtype, kind: IsdtypeKind) -> bool {
 /// Maps Monty's hidden category marker strings back to dtype categories.
 fn dtype_category_from_marker_text(text: &str) -> Option<DtypeCategory> {
     match text {
+        "__monty_numpy_generic_category" => Some(DtypeCategory::Generic),
         "__monty_numpy_integer_category" => Some(DtypeCategory::Integer),
+        "__monty_numpy_signedinteger_category" => Some(DtypeCategory::SignedInteger),
+        "__monty_numpy_unsignedinteger_category" => Some(DtypeCategory::UnsignedInteger),
         "__monty_numpy_floating_category" => Some(DtypeCategory::Floating),
         "__monty_numpy_inexact_category" => Some(DtypeCategory::Inexact),
+        "__monty_numpy_number_category" => Some(DtypeCategory::Number),
+        "__monty_numpy_complexfloating_category" => Some(DtypeCategory::ComplexFloating),
+        "__monty_numpy_flexible_category" => Some(DtypeCategory::Flexible),
+        "__monty_numpy_character_category" => Some(DtypeCategory::Character),
         _ => None,
     }
 }
@@ -8404,34 +8840,69 @@ fn isdtype_category_from_name(text: &str) -> Option<DtypeCategory> {
         "bool" => Some(DtypeCategory::Bool),
         "integral" | "signed integer" => Some(DtypeCategory::Integer),
         "real floating" => Some(DtypeCategory::Floating),
-        "numeric" => Some(DtypeCategory::Numeric),
+        "numeric" => Some(DtypeCategory::Number),
         _ => None,
     }
 }
 
 /// Returns whether a dtype category includes a concrete compact dtype.
-fn dtype_category_contains_dtype(category: DtypeCategory, dtype: CompactDtype) -> bool {
+fn dtype_category_contains_dtype(category: DtypeCategory, dtype: DtypeConcrete) -> bool {
     match category {
-        DtypeCategory::Bool => dtype == CompactDtype::Bool,
-        DtypeCategory::Integer => dtype == CompactDtype::Int,
-        DtypeCategory::Floating | DtypeCategory::Inexact => {
-            matches!(dtype, CompactDtype::Float32 | CompactDtype::Float64)
+        DtypeCategory::Generic => true,
+        DtypeCategory::Bool => matches!(dtype, DtypeConcrete::Bool),
+        DtypeCategory::Integer => matches!(dtype, DtypeConcrete::SignedInteger | DtypeConcrete::UnsignedInteger),
+        DtypeCategory::SignedInteger => matches!(dtype, DtypeConcrete::SignedInteger),
+        DtypeCategory::UnsignedInteger => matches!(dtype, DtypeConcrete::UnsignedInteger),
+        DtypeCategory::Floating | DtypeCategory::Inexact => matches!(dtype, DtypeConcrete::Floating),
+        DtypeCategory::Number => {
+            matches!(
+                dtype,
+                DtypeConcrete::SignedInteger | DtypeConcrete::UnsignedInteger | DtypeConcrete::Floating
+            )
         }
-        DtypeCategory::Numeric => matches!(dtype, CompactDtype::Int | CompactDtype::Float32 | CompactDtype::Float64),
+        DtypeCategory::ComplexFloating | DtypeCategory::Flexible | DtypeCategory::Character => false,
     }
+}
+
+/// Returns whether a dtype category includes one of Monty's compact storage dtypes.
+fn dtype_category_contains_compact(category: DtypeCategory, dtype: CompactDtype) -> bool {
+    let dtype = match dtype {
+        CompactDtype::Bool => DtypeConcrete::Bool,
+        CompactDtype::Int => DtypeConcrete::SignedInteger,
+        CompactDtype::Float32 | CompactDtype::Float64 => DtypeConcrete::Floating,
+    };
+    dtype_category_contains_dtype(category, dtype)
 }
 
 /// Returns whether a dtype category includes another category.
 fn dtype_category_contains_category(container: DtypeCategory, member: DtypeCategory) -> bool {
     match container {
+        DtypeCategory::Generic => true,
         DtypeCategory::Bool => member == DtypeCategory::Bool,
-        DtypeCategory::Integer => member == DtypeCategory::Integer,
-        DtypeCategory::Floating => member == DtypeCategory::Floating,
-        DtypeCategory::Inexact => matches!(member, DtypeCategory::Floating | DtypeCategory::Inexact),
-        DtypeCategory::Numeric => matches!(
+        DtypeCategory::Integer => matches!(
             member,
-            DtypeCategory::Integer | DtypeCategory::Floating | DtypeCategory::Inexact | DtypeCategory::Numeric
+            DtypeCategory::Integer | DtypeCategory::SignedInteger | DtypeCategory::UnsignedInteger
         ),
+        DtypeCategory::SignedInteger => member == DtypeCategory::SignedInteger,
+        DtypeCategory::UnsignedInteger => member == DtypeCategory::UnsignedInteger,
+        DtypeCategory::Floating => member == DtypeCategory::Floating,
+        DtypeCategory::Inexact => matches!(
+            member,
+            DtypeCategory::Floating | DtypeCategory::ComplexFloating | DtypeCategory::Inexact
+        ),
+        DtypeCategory::Number => matches!(
+            member,
+            DtypeCategory::Integer
+                | DtypeCategory::SignedInteger
+                | DtypeCategory::UnsignedInteger
+                | DtypeCategory::Floating
+                | DtypeCategory::Inexact
+                | DtypeCategory::ComplexFloating
+                | DtypeCategory::Number
+        ),
+        DtypeCategory::ComplexFloating => member == DtypeCategory::ComplexFloating,
+        DtypeCategory::Flexible => matches!(member, DtypeCategory::Flexible | DtypeCategory::Character),
+        DtypeCategory::Character => member == DtypeCategory::Character,
     }
 }
 

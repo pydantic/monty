@@ -22,7 +22,7 @@ use crate::{
     hash::HashValue,
     heap::{ContainsHeap, DropWithHeap, Heap, HeapData, HeapGuard, HeapId, HeapReadOutput},
     intern::{BytesId, FunctionId, Interns, LongIntId, StaticStrings, StringId},
-    modules::ModuleFunctions,
+    modules::{ModuleFunctions, numpy::numpy_marker_getitem},
     resource::{
         ResourceError, ResourceTracker, check_div_size, check_lshift_size, check_mult_size, check_pow_size,
         check_repeat_size,
@@ -1338,6 +1338,13 @@ impl PyTrait<'_> for Value {
         let interns = vm.interns;
         match self {
             Self::Ref(id) => vm.heap.read(*id).py_getitem(key, vm),
+            Self::Marker(marker) => {
+                if let Some(value) = numpy_marker_getitem(marker.0, key, vm)? {
+                    Ok(value)
+                } else {
+                    Err(ExcType::type_error_not_sub(self.py_type(vm)))
+                }
+            }
             Self::InternString(string_id) => {
                 // Check for slice first
                 if let Self::Ref(key_id) = key
@@ -2155,6 +2162,8 @@ impl BitwiseOp {
 ///   provide functionality in the sandboxed environment
 /// - Typing constructs from the `typing` module that are imported for type hints but
 ///   don't need runtime functionality
+/// - NumPy index-trick sentinels that provide subscription behavior without adding
+///   heap object kinds
 ///
 /// Wraps a `StaticStrings` variant to leverage its string conversion capabilities.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
@@ -2165,7 +2174,7 @@ impl Marker {
     ///
     /// System markers (stdout, stderr) are `TextIOWrapper`.
     /// `typing.Union` has type `type` (matching CPython).
-    /// Other typing markers (Any, Optional, etc.) are `_SpecialForm`.
+    /// Other typing markers (Any, Optional, etc.) and NumPy index-trick markers are `_SpecialForm`.
     pub(crate) fn py_type(self) -> Type {
         match self.0 {
             StaticStrings::Stdout | StaticStrings::Stderr => Type::TextIOWrapper,
@@ -2178,13 +2187,20 @@ impl Marker {
     ///
     /// System markers have special repr formats ("<stdout>", "<stderr>").
     /// `typing.Union` uses `<class 'typing.Union'>` format (matching CPython).
-    /// Other typing markers are prefixed with "typing." (e.g., "typing.Any").
+    /// Other typing markers are prefixed with "typing." (e.g., "typing.Any");
+    /// NumPy index-trick markers are prefixed with "numpy.".
     pub(crate) fn py_repr_fmt(self, f: &mut impl Write) -> fmt::Result {
         let s: &'static str = self.0.into();
         match self.0 {
             StaticStrings::Stdout => f.write_str("<stdout>")?,
             StaticStrings::Stderr => f.write_str("<stderr>")?,
             StaticStrings::UnionType => f.write_str("<class 'typing.Union'>")?,
+            StaticStrings::NpIndexExp
+            | StaticStrings::NpSIndex
+            | StaticStrings::NpMgrid
+            | StaticStrings::NpOgrid
+            | StaticStrings::NpRIndex
+            | StaticStrings::NpCIndex => write!(f, "numpy.{s}")?,
             _ => write!(f, "typing.{s}")?,
         }
         Ok(())

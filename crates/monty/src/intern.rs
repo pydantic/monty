@@ -1734,6 +1734,76 @@ pub enum StaticStrings {
     Disable,
     /// `gc.enable()` function.
     Enable,
+
+    // ==========================
+    // Late-added NumPy compatibility attributes. These intentionally live at
+    // the end of the enum so existing static string IDs stay stable.
+    /// `numpy.False_` value-compatible bool scalar constant.
+    #[strum(serialize = "False_")]
+    NpFalseScalar,
+    /// `numpy.True_` value-compatible bool scalar constant.
+    #[strum(serialize = "True_")]
+    NpTrueScalar,
+    /// `numpy.generic` dtype category marker.
+    #[strum(serialize = "generic")]
+    NpGeneric,
+    /// `numpy.number` dtype category marker.
+    #[strum(serialize = "number")]
+    NpNumber,
+    /// `numpy.signedinteger` dtype category marker.
+    #[strum(serialize = "signedinteger")]
+    NpSignedInteger,
+    /// `numpy.unsignedinteger` dtype category marker.
+    #[strum(serialize = "unsignedinteger")]
+    NpUnsignedInteger,
+    /// `numpy.complexfloating` dtype category marker.
+    #[strum(serialize = "complexfloating")]
+    NpComplexFloating,
+    /// `numpy.flexible` dtype category marker.
+    #[strum(serialize = "flexible")]
+    NpFlexible,
+    /// `numpy.character` dtype category marker.
+    #[strum(serialize = "character")]
+    NpCharacter,
+    /// Internal marker value for `numpy.generic`.
+    #[strum(serialize = "__monty_numpy_generic_category")]
+    NpGenericCategoryMarker,
+    /// Internal marker value for `numpy.number`.
+    #[strum(serialize = "__monty_numpy_number_category")]
+    NpNumberCategoryMarker,
+    /// Internal marker value for `numpy.signedinteger`.
+    #[strum(serialize = "__monty_numpy_signedinteger_category")]
+    NpSignedIntegerCategoryMarker,
+    /// Internal marker value for `numpy.unsignedinteger`.
+    #[strum(serialize = "__monty_numpy_unsignedinteger_category")]
+    NpUnsignedIntegerCategoryMarker,
+    /// Internal marker value for `numpy.complexfloating`.
+    #[strum(serialize = "__monty_numpy_complexfloating_category")]
+    NpComplexFloatingCategoryMarker,
+    /// Internal marker value for `numpy.flexible`.
+    #[strum(serialize = "__monty_numpy_flexible_category")]
+    NpFlexibleCategoryMarker,
+    /// Internal marker value for `numpy.character`.
+    #[strum(serialize = "__monty_numpy_character_category")]
+    NpCharacterCategoryMarker,
+    /// `numpy.index_exp` index-expression helper.
+    #[strum(serialize = "index_exp")]
+    NpIndexExp,
+    /// `numpy.s_` index-expression helper.
+    #[strum(serialize = "s_")]
+    NpSIndex,
+    /// `numpy.mgrid` dense grid index helper.
+    #[strum(serialize = "mgrid")]
+    NpMgrid,
+    /// `numpy.ogrid` open grid index helper.
+    #[strum(serialize = "ogrid")]
+    NpOgrid,
+    /// `numpy.r_` row-concatenation index helper.
+    #[strum(serialize = "r_")]
+    NpRIndex,
+    /// `numpy.c_` column-concatenation index helper.
+    #[strum(serialize = "c_")]
+    NpCIndex,
 }
 
 impl StaticStrings {

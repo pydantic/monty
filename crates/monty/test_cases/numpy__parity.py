@@ -2820,3 +2820,44 @@ assert a.repeat(1).tolist() == [1, 2, 3], 'repeat method 1x'
 a = np.array([0, 1, 0, 3, 5])
 nz = a.nonzero()
 assert nz[0].tolist() == [1, 3, 4], 'nonzero method 1d'
+
+# === Section 47: NumPy scalar constants, dtype markers, and index tricks ===
+assert np.False_ == False, 'False_ matches False'
+assert np.True_ == True, 'True_ matches True'
+assert np.issubdtype(np.bool_, np.generic) == True, 'bool is generic'
+assert np.issubdtype(np.int64, np.generic) == True, 'int64 is generic'
+assert np.issubdtype(np.float64, np.generic) == True, 'float64 is generic'
+assert np.issubdtype(np.bool_, np.number) == False, 'bool is not number'
+assert np.issubdtype(np.int64, np.number) == True, 'int64 is number'
+assert np.issubdtype(np.float64, np.number) == True, 'float64 is number'
+assert np.issubdtype(np.int64, np.signedinteger) == True, 'int64 is signedinteger'
+assert np.issubdtype(np.uint64, np.unsignedinteger) == True, 'uint64 is unsignedinteger'
+assert np.issubdtype(np.uint64, np.signedinteger) == False, 'uint64 is not signedinteger'
+assert np.issubdtype(np.int64, np.unsignedinteger) == False, 'int64 is not unsignedinteger'
+assert np.issubdtype(np.float64, np.complexfloating) == False, 'float64 is not complexfloating'
+assert np.issubdtype(np.float64, np.flexible) == False, 'float64 is not flexible'
+assert np.issubdtype(np.float64, np.character) == False, 'float64 is not character'
+assert np.issubdtype(np.character, np.flexible) == True, 'character is flexible'
+assert np.issubdtype(np.complexfloating, np.inexact) == True, 'complexfloating is inexact'
+
+idx = np.s_[1:5:2]
+assert idx.start == 1, 's_ slice start'
+assert idx.stop == 5, 's_ slice stop'
+assert idx.step == 2, 's_ slice step'
+idx = np.index_exp[1:5:2, None]
+assert len(idx) == 2, 'index_exp tuple length'
+assert idx[0].start == 1, 'index_exp slice start'
+assert idx[0].stop == 5, 'index_exp slice stop'
+assert idx[0].step == 2, 'index_exp slice step'
+assert idx[1] is None, 'index_exp preserves None'
+assert np.array([10, 20, 30, 40])[np.s_[1:3]].tolist() == [20, 30], 's_ slices arrays'
+
+assert np.mgrid[0:3].tolist() == [0, 1, 2], 'mgrid one range'
+assert np.mgrid[0:3, 0:2].tolist() == [[[0, 0], [1, 1], [2, 2]], [[0, 1], [0, 1], [0, 1]]], 'mgrid dense grids'
+og = np.ogrid[0:3, 0:2]
+assert og[0].tolist() == [[0], [1], [2]], 'ogrid first sparse grid'
+assert og[1].tolist() == [[0, 1]], 'ogrid second sparse grid'
+assert np.r_[1, 2, 3].tolist() == [1, 2, 3], 'r_ scalar concatenation'
+assert np.r_[1:4, [10, 20]].tolist() == [1, 2, 3, 10, 20], 'r_ range and list'
+assert np.c_[[1, 2], [3, 4]].tolist() == [[1, 3], [2, 4]], 'c_ column stack vectors'
+assert np.c_[[1, 2, 3]].tolist() == [[1], [2], [3]], 'c_ single vector column'
