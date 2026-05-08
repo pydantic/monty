@@ -3257,17 +3257,39 @@ fn call_aggregate_result(
 /// Used by aggregate functions to accept plain lists like `np.mean([1, 2, 3])`
 /// in addition to ndarray arguments.
 fn list_to_ndarray(list: &List, name: &str) -> RunResult<NdArray> {
+    let mut has_float = false;
+    let mut has_int = false;
+    let mut has_bool = false;
     let data: Vec<f64> = list
         .as_slice()
         .iter()
         .map(|v| match v {
-            Value::Int(i) => Ok(*i as f64),
-            Value::Float(f) => Ok(*f),
+            Value::Int(i) => {
+                has_int = true;
+                Ok(*i as f64)
+            }
+            Value::Float(f) => {
+                has_float = true;
+                Ok(*f)
+            }
+            Value::Bool(b) => {
+                has_bool = true;
+                Ok(if *b { 1.0 } else { 0.0 })
+            }
             _ => Err(ExcType::type_error(format!("{name}() list elements must be numeric"))),
         })
         .collect::<RunResult<Vec<_>>>()?;
     let len = data.len();
-    Ok(NdArray::new(data, vec![len], NdArrayDtype::Float64))
+    let dtype = if has_float {
+        NdArrayDtype::Float64
+    } else if has_int {
+        NdArrayDtype::Int64
+    } else if has_bool {
+        NdArrayDtype::Bool
+    } else {
+        NdArrayDtype::Float64
+    };
+    Ok(NdArray::new(data, vec![len], dtype))
 }
 
 // ===========================

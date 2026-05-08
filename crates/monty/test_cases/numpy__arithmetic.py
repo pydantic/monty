@@ -72,5 +72,5 @@ assert sub_scalar[2] == 2, 'scalar sub third'
 
 # === In-place addition (+=) ===
 iadd = np.array([1, 2, 3])
-iadd = iadd + np.array([10, 20, 30])
+iadd += np.array([10, 20, 30])
 assert iadd.tolist() == [11, 22, 33], 'iadd arrays'

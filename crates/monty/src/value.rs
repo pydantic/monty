@@ -31,6 +31,7 @@ use crate::{
         Bytes, List, LongInt, Property, PyTrait, Str, Type, allocate_tuple,
         bytes::{bytes_repr_fmt, get_byte_at_index},
         long_int::check_bits_str_digits_limit,
+        ndarray::NdArrayDtype,
         path,
         slice::slice_collect_iterator,
         str::{allocate_char, get_char_at_index, string_repr_fmt},
@@ -1650,17 +1651,10 @@ impl Value {
                     HeapReadOutput::Set(set) => set.contains(item, vm),
                     HeapReadOutput::FrozenSet(fset) => fset.contains(item, vm),
                     HeapReadOutput::NdArray(arr) => {
-                        // Element-wise containment check: convert item to f64 and search
-                        let needle = match item {
-                            Self::Int(i) => Some(*i as f64),
-                            Self::Float(f) => Some(*f),
-                            Self::Bool(b) => Some(if *b { 1.0 } else { 0.0 }),
-                            _ => None,
-                        };
-                        match needle {
-                            Some(n) => Ok(arr.get(vm.heap).data().contains(&n)),
-                            None => Ok(false),
-                        }
+                        let arr = arr.get(vm.heap);
+                        let dtype = arr.dtype();
+                        let needle = ndarray_contains_needle(item, dtype, vm);
+                        Ok(needle.is_some_and(|n| arr.data().contains(&n)))
                     }
                     HeapReadOutput::Str(s) => {
                         let s_str = s.get(vm.heap).as_str();
@@ -2413,6 +2407,34 @@ fn extract_bigint(value: &Value, heap: &Heap<impl ResourceTracker>) -> Option<Bi
                 Some(li.inner().clone())
             } else {
                 None
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Converts a membership probe into the scalar representation used by an ndarray.
+///
+/// Monty stores ndarray elements as `f64` with a dtype tag controlling Python
+/// scalar behavior. Membership should therefore accept normal numeric probes and
+/// LongInt values that can be represented in the array's dtype, instead of
+/// returning false simply because the probe is heap-backed.
+fn ndarray_contains_needle(item: &Value, dtype: NdArrayDtype, vm: &VM<'_, impl ResourceTracker>) -> Option<f64> {
+    match item {
+        Value::Int(i) => Some(*i as f64),
+        Value::Float(f) => Some(*f),
+        Value::Bool(b) => Some(if *b { 1.0 } else { 0.0 }),
+        Value::Ref(id) => {
+            let HeapData::LongInt(li) = vm.heap.get(*id) else {
+                return None;
+            };
+            match dtype {
+                NdArrayDtype::Float64 => li.inner().to_f64(),
+                NdArrayDtype::Int64 => li.to_i64().map(|i| i as f64),
+                NdArrayDtype::Bool => li.to_i64().and_then(|i| match i {
+                    0 | 1 => Some(i as f64),
+                    _ => None,
+                }),
             }
         }
         _ => None,

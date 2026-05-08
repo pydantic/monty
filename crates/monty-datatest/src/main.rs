@@ -175,15 +175,18 @@ fn parse_fixture(content: &str) -> (String, Expectation, TestConfig) {
         .map(|line| line.trim_start_matches('#').trim())
         .collect::<Vec<_>>();
 
-    let mount_fs = comment_lines.iter().any(|line| line.starts_with("mount-fs"));
-    let mut config = TestConfig {
-        iter_mode: comment_lines.iter().any(|line| line.starts_with("call-external")) || mount_fs,
-        async_mode: comment_lines.iter().any(|line| line.starts_with("run-async")),
-        skip_cpython: comment_lines.iter().any(|line| line.starts_with("skip-cpython")),
-        mount_fs,
-        skip_cpython_windows: comment_lines
+    let has_marker = |marker| {
+        comment_lines
             .iter()
-            .any(|line| line.starts_with("skip-cpython-windows")),
+            .any(|line| line.split_whitespace().next() == Some(marker))
+    };
+    let mount_fs = has_marker("mount-fs");
+    let mut config = TestConfig {
+        iter_mode: has_marker("call-external") || mount_fs,
+        async_mode: has_marker("run-async"),
+        skip_cpython: has_marker("skip-cpython"),
+        mount_fs,
+        skip_cpython_windows: has_marker("skip-cpython-windows"),
         ..Default::default()
     };
     // Check for "xfail=" directive

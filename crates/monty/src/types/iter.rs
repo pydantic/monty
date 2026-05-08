@@ -80,6 +80,13 @@ impl MontyIter {
     /// For strings, copies the string content for byte-offset based iteration.
     /// For ranges, the data is copied so the heap reference is dropped immediately.
     pub fn new(mut value: Value, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<Self> {
+        if let Value::Ref(heap_id) = &value
+            && let HeapData::NdArray(arr) = vm.heap.get(*heap_id)
+            && arr.shape().is_empty()
+        {
+            value.drop_with_heap(vm);
+            return Err(ExcType::type_error("iteration over a 0-d array"));
+        }
         if let Some(iter_value) = IterValue::new(&value, vm) {
             // For Range, we copy next/step/len into ForIterValue::Range, so we don't need
             // to keep the heap object alive during iteration. Drop it immediately to avoid
@@ -599,11 +606,17 @@ impl IterValue {
                 checks_mutation: true,
             }),
             // NdArray: iterate over first dimension (scalars for 1D, sub-arrays otherwise)
-            HeapData::NdArray(arr) => Some(Self::HeapRef {
-                heap_id,
-                len: Some(arr.shape().first().copied().unwrap_or(0)),
-                checks_mutation: false,
-            }),
+            HeapData::NdArray(arr) => {
+                if arr.shape().is_empty() {
+                    None
+                } else {
+                    Some(Self::HeapRef {
+                        heap_id,
+                        len: Some(arr.shape()[0]),
+                        checks_mutation: false,
+                    })
+                }
+            }
             // String: copy content for iteration
             HeapData::Str(s) => Some(Self::from_str(s.as_str())),
             // Range: copy values for iteration

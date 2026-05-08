@@ -383,7 +383,7 @@ impl<T: ResourceTracker> VM<'_, T> {
     /// operation, we need to push `lhs` back onto the stack rather than drop it.
     pub(super) fn inplace_add(&mut self) -> Result<(), RunError> {
         // NdArray in-place fast path — try before popping so we can fall through
-        if try_ndarray_inplace(self, NdArrayInplaceOp::Add) {
+        if try_ndarray_inplace(self, NdArrayInplaceOp::Add)? {
             return Ok(());
         }
 
@@ -447,7 +447,7 @@ impl<T: ResourceTracker> VM<'_, T> {
 
     /// In-place subtraction for ndarray. Falls back to binary subtraction for other types.
     pub(super) fn inplace_sub(&mut self) -> Result<(), RunError> {
-        if try_ndarray_inplace(self, NdArrayInplaceOp::Sub) {
+        if try_ndarray_inplace(self, NdArrayInplaceOp::Sub)? {
             return Ok(());
         }
         self.binary_sub()
@@ -455,7 +455,7 @@ impl<T: ResourceTracker> VM<'_, T> {
 
     /// In-place multiplication for ndarray. Falls back to binary multiplication for other types.
     pub(super) fn inplace_mul(&mut self) -> Result<(), RunError> {
-        if try_ndarray_inplace(self, NdArrayInplaceOp::Mul) {
+        if try_ndarray_inplace(self, NdArrayInplaceOp::Mul)? {
             return Ok(());
         }
         self.binary_mult()
@@ -463,7 +463,7 @@ impl<T: ResourceTracker> VM<'_, T> {
 
     /// In-place division for ndarray. Falls back to binary division for other types.
     pub(super) fn inplace_div(&mut self) -> Result<(), RunError> {
-        if try_ndarray_inplace(self, NdArrayInplaceOp::Div) {
+        if try_ndarray_inplace(self, NdArrayInplaceOp::Div)? {
             return Ok(());
         }
         self.binary_div()
@@ -471,7 +471,7 @@ impl<T: ResourceTracker> VM<'_, T> {
 
     /// In-place floor division for ndarray. Falls back to binary floor division for other types.
     pub(super) fn inplace_floordiv(&mut self) -> Result<(), RunError> {
-        if try_ndarray_inplace(self, NdArrayInplaceOp::FloorDiv) {
+        if try_ndarray_inplace(self, NdArrayInplaceOp::FloorDiv)? {
             return Ok(());
         }
         self.binary_floordiv()
@@ -479,7 +479,7 @@ impl<T: ResourceTracker> VM<'_, T> {
 
     /// In-place modulo for ndarray. Falls back to binary modulo for other types.
     pub(super) fn inplace_mod(&mut self) -> Result<(), RunError> {
-        if try_ndarray_inplace(self, NdArrayInplaceOp::Mod) {
+        if try_ndarray_inplace(self, NdArrayInplaceOp::Mod)? {
             return Ok(());
         }
         self.binary_mod()
@@ -487,7 +487,7 @@ impl<T: ResourceTracker> VM<'_, T> {
 
     /// In-place power for ndarray. Falls back to binary power for other types.
     pub(super) fn inplace_pow(&mut self) -> Result<(), RunError> {
-        if try_ndarray_inplace(self, NdArrayInplaceOp::Pow) {
+        if try_ndarray_inplace(self, NdArrayInplaceOp::Pow)? {
             return Ok(());
         }
         self.binary_pow()
@@ -817,7 +817,7 @@ fn try_ndarray_bitwise(
 }
 
 /// Supported ndarray in-place operations.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum NdArrayInplaceOp {
     Add,
     Sub,
@@ -836,16 +836,16 @@ enum NdArrayInplaceOp {
 ///
 /// Returns `Ok(false)` if neither operand is an ndarray, leaving the stack unchanged
 /// so the caller can fall through to the normal binary operation.
-fn try_ndarray_inplace(vm: &mut VM<'_, impl ResourceTracker>, op: NdArrayInplaceOp) -> bool {
+fn try_ndarray_inplace(vm: &mut VM<'_, impl ResourceTracker>, op: NdArrayInplaceOp) -> RunResult<bool> {
     // Peek at the two top-of-stack values without popping
     let lhs_ref = vm.peek_at(1);
 
     // Only proceed if lhs is an NdArray
     let Value::Ref(lid) = lhs_ref else {
-        return false;
+        return Ok(false);
     };
     if !matches!(vm.heap.get(*lid), HeapData::NdArray(_)) {
-        return false;
+        return Ok(false);
     }
 
     let lid = *lid;
@@ -855,7 +855,20 @@ fn try_ndarray_inplace(vm: &mut VM<'_, impl ResourceTracker>, op: NdArrayInplace
     let (rhs, vm_ref) = rhs_guard.as_parts_mut();
 
     // Try scalar rhs
-    if let Some((scalar, _is_float)) = value_to_f64(rhs) {
+    if let Some((scalar, scalar_is_float)) = value_to_f64(rhs) {
+        let lhs_dtype = {
+            let HeapData::NdArray(l) = vm_ref.heap.get(lid) else {
+                unreachable!()
+            };
+            l.dtype()
+        };
+        let rhs_dtype = if scalar_is_float {
+            NdArrayDtype::Float64
+        } else {
+            NdArrayDtype::Int64
+        };
+        validate_inplace_cast(lhs_dtype, rhs_dtype, &[scalar], op)?;
+
         // Consume the guard — scalar types (Int/Float/Bool) don't need heap cleanup
         let (rhs, vm) = rhs_guard.into_parts();
         rhs.drop_with_heap(vm);
@@ -864,55 +877,64 @@ fn try_ndarray_inplace(vm: &mut VM<'_, impl ResourceTracker>, op: NdArrayInplace
         let HeapReadOutput::NdArray(mut arr_read) = vm.heap.read(lid) else {
             unreachable!()
         };
-        apply_inplace_scalar(arr_read.get_mut(vm.heap), scalar, op);
+        apply_inplace_scalar(arr_read.get_mut(vm.heap), scalar, scalar_is_float, op);
         drop(arr_read);
         vm.push(lhs);
-        return true;
+        return Ok(true);
     }
 
     // Try ndarray rhs
     if let Value::Ref(rid) = rhs {
         let rid = *rid;
-        let len_matches = {
+        let shape_matches = {
             let HeapData::NdArray(r) = vm_ref.heap.get(rid) else {
                 // rhs is a Ref but not an NdArray — put it back
                 let (rhs, vm) = rhs_guard.into_parts();
                 vm.push(rhs);
-                return false;
+                return Ok(false);
             };
             let HeapData::NdArray(l) = vm_ref.heap.get(lid) else {
                 unreachable!()
             };
-            r.data().len() == l.data().len()
+            r.shape() == l.shape()
         };
-        if len_matches {
-            let rhs_data: Vec<f64> = {
+        if shape_matches {
+            let (rhs_data, rhs_dtype): (Vec<f64>, NdArrayDtype) = {
                 let HeapData::NdArray(r) = vm_ref.heap.get(rid) else {
                     unreachable!()
                 };
-                r.data().to_vec()
+                (r.data().to_vec(), r.dtype())
             };
+            let lhs_dtype = {
+                let HeapData::NdArray(l) = vm_ref.heap.get(lid) else {
+                    unreachable!()
+                };
+                l.dtype()
+            };
+            validate_inplace_cast(lhs_dtype, rhs_dtype, &rhs_data, op)?;
+
             let (rhs, vm) = rhs_guard.into_parts();
             rhs.drop_with_heap(vm);
             let lhs = vm.pop();
             let HeapReadOutput::NdArray(mut arr_read) = vm.heap.read(lid) else {
                 unreachable!()
             };
-            apply_inplace_array(arr_read.get_mut(vm.heap), &rhs_data, op);
+            apply_inplace_array(arr_read.get_mut(vm.heap), &rhs_data, rhs_dtype, op);
             drop(arr_read);
             vm.push(lhs);
-            return true;
+            return Ok(true);
         }
     }
 
     // Not a compatible ndarray operation — put rhs back on the stack
     let (rhs, vm) = rhs_guard.into_parts();
     vm.push(rhs);
-    false
+    Ok(false)
 }
 
 /// Applies an in-place scalar operation to an ndarray's data.
-fn apply_inplace_scalar(arr: &mut NdArray, scalar: f64, op: NdArrayInplaceOp) {
+fn apply_inplace_scalar(arr: &mut NdArray, scalar: f64, scalar_is_float: bool, op: NdArrayInplaceOp) {
+    arr.dtype = inplace_scalar_result_dtype(arr.dtype, scalar_is_float, op);
     match op {
         NdArrayInplaceOp::Add => {
             for v in &mut arr.data {
@@ -930,7 +952,6 @@ fn apply_inplace_scalar(arr: &mut NdArray, scalar: f64, op: NdArrayInplaceOp) {
             }
         }
         NdArrayInplaceOp::Div => {
-            arr.dtype = NdArrayDtype::Float64;
             for v in &mut arr.data {
                 *v /= scalar;
             }
@@ -954,7 +975,8 @@ fn apply_inplace_scalar(arr: &mut NdArray, scalar: f64, op: NdArrayInplaceOp) {
 }
 
 /// Applies an in-place array-to-array operation to an ndarray's data.
-fn apply_inplace_array(arr: &mut NdArray, rhs_data: &[f64], op: NdArrayInplaceOp) {
+fn apply_inplace_array(arr: &mut NdArray, rhs_data: &[f64], rhs_dtype: NdArrayDtype, op: NdArrayInplaceOp) {
+    arr.dtype = inplace_array_result_dtype(arr.dtype, rhs_dtype, op);
     match op {
         NdArrayInplaceOp::Add => {
             for (v, rv) in arr.data.iter_mut().zip(rhs_data.iter()) {
@@ -972,7 +994,6 @@ fn apply_inplace_array(arr: &mut NdArray, rhs_data: &[f64], op: NdArrayInplaceOp
             }
         }
         NdArrayInplaceOp::Div => {
-            arr.dtype = NdArrayDtype::Float64;
             for (v, rv) in arr.data.iter_mut().zip(rhs_data.iter()) {
                 *v /= rv;
             }
@@ -991,6 +1012,100 @@ fn apply_inplace_array(arr: &mut NdArray, rhs_data: &[f64], op: NdArrayInplaceOp
             for (v, rv) in arr.data.iter_mut().zip(rhs_data.iter()) {
                 *v = v.powf(*rv);
             }
+        }
+    }
+}
+
+/// Validates NumPy-style casting rules before mutating an ndarray in place.
+///
+/// Unlike regular binary ndarray operations, NumPy in-place ufuncs do not
+/// silently promote the left-hand array dtype. If the ufunc output cannot be
+/// cast back to the existing dtype using NumPy's same-kind rule, Monty raises
+/// before changing either the data or dtype.
+fn validate_inplace_cast(
+    lhs_dtype: NdArrayDtype,
+    rhs_dtype: NdArrayDtype,
+    rhs_data: &[f64],
+    op: NdArrayInplaceOp,
+) -> RunResult<()> {
+    if lhs_dtype != NdArrayDtype::Float64
+        && op == NdArrayInplaceOp::Pow
+        && rhs_dtype != NdArrayDtype::Float64
+        && rhs_data.iter().any(|&value| value < 0.0)
+    {
+        return Err(ExcType::value_error(
+            "Integers to negative integer powers are not allowed.",
+        ));
+    }
+
+    let output_dtype = inplace_array_result_dtype(lhs_dtype, rhs_dtype, op);
+    if output_dtype == lhs_dtype {
+        Ok(())
+    } else {
+        Err(ExcType::type_error(format!(
+            "Cannot cast ufunc '{}' output from dtype('{}') to dtype('{}') with casting rule 'same_kind'",
+            op.ufunc_name(),
+            output_dtype,
+            lhs_dtype
+        )))
+    }
+}
+
+/// Determines the dtype after a mutating scalar ndarray operation.
+///
+/// Monty's ndarray storage is f64-backed, so in-place operations that can produce
+/// fractional values must update the dtype instead of leaving fractional storage
+/// behind an integer or boolean display contract.
+fn inplace_scalar_result_dtype(lhs_dtype: NdArrayDtype, scalar_is_float: bool, op: NdArrayInplaceOp) -> NdArrayDtype {
+    match op {
+        NdArrayInplaceOp::Div => NdArrayDtype::Float64,
+        NdArrayInplaceOp::Add
+        | NdArrayInplaceOp::Sub
+        | NdArrayInplaceOp::Mul
+        | NdArrayInplaceOp::FloorDiv
+        | NdArrayInplaceOp::Mod
+        | NdArrayInplaceOp::Pow => {
+            if lhs_dtype == NdArrayDtype::Float64 || scalar_is_float {
+                NdArrayDtype::Float64
+            } else if lhs_dtype == NdArrayDtype::Bool {
+                NdArrayDtype::Int64
+            } else {
+                lhs_dtype
+            }
+        }
+    }
+}
+
+/// Determines the dtype after a mutating array-to-array ndarray operation.
+fn inplace_array_result_dtype(lhs_dtype: NdArrayDtype, rhs_dtype: NdArrayDtype, op: NdArrayInplaceOp) -> NdArrayDtype {
+    match op {
+        NdArrayInplaceOp::Div => NdArrayDtype::Float64,
+        NdArrayInplaceOp::Add
+        | NdArrayInplaceOp::Sub
+        | NdArrayInplaceOp::Mul
+        | NdArrayInplaceOp::FloorDiv
+        | NdArrayInplaceOp::Mod
+        | NdArrayInplaceOp::Pow => {
+            if lhs_dtype == NdArrayDtype::Float64 || rhs_dtype == NdArrayDtype::Float64 {
+                NdArrayDtype::Float64
+            } else {
+                NdArrayDtype::Int64
+            }
+        }
+    }
+}
+
+impl NdArrayInplaceOp {
+    /// Returns the NumPy ufunc name used in casting errors for this in-place operation.
+    fn ufunc_name(self) -> &'static str {
+        match self {
+            Self::Add => "add",
+            Self::Sub => "subtract",
+            Self::Mul => "multiply",
+            Self::Div => "divide",
+            Self::FloorDiv => "floor_divide",
+            Self::Mod => "remainder",
+            Self::Pow => "power",
         }
     }
 }

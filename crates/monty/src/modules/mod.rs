@@ -34,25 +34,28 @@ pub(crate) mod typing;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, FromRepr)]
 pub(crate) enum StandardLib {
     /// The `sys` module providing system-specific parameters and functions.
-    Sys,
+    Sys = 0,
     /// The `typing` module providing type hints support.
-    Typing,
+    Typing = 1,
     /// The `asyncio` module providing async/await support (only `gather()` implemented).
-    Asyncio,
+    Asyncio = 2,
     /// The `pathlib` module providing object-oriented filesystem paths.
-    Pathlib,
+    Pathlib = 3,
     /// The `os` module providing operating system interface (only `getenv()` implemented).
-    Os,
+    Os = 4,
     /// The `math` module providing mathematical functions and constants.
-    Math,
+    Math = 5,
     /// The `json` module providing JSON parsing and serialization.
-    Json,
+    Json = 6,
     /// The `re` module providing regular expression matching.
-    Re,
-    /// The `numpy` module providing ndarray operations.
-    Numpy,
+    Re = 7,
     /// The `datetime` module providing date and time types.
-    Datetime,
+    Datetime = 8,
+    /// The `numpy` module providing ndarray operations.
+    ///
+    /// This is explicitly numbered after the pre-existing modules so adding it
+    /// does not alter serialized bytecode module IDs.
+    Numpy = 9,
     /// The `gc` module exposing a single `collect()` for tests. Only present
     /// under the `test-hooks` feature so production sandboxes never see it.
     ///
@@ -61,7 +64,7 @@ pub(crate) enum StandardLib {
     /// builds. Because it's the last variant, gating it has no effect on the
     /// numeric discriminants of any other module.
     #[cfg(feature = "test-hooks")]
-    Gc,
+    Gc = 10,
 }
 
 impl StandardLib {

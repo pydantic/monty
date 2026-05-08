@@ -59,7 +59,7 @@ neg = np.array([-1, 2, -3])
 assert np.abs(neg).tolist() == [1, 2, 3], 'np.abs function'
 
 # === np.abs / np.sqrt / np.exp / np.ceil / np.floor on plain lists ===
-assert np.abs([-1, 2, -3]).tolist() == [1.0, 2.0, 3.0], 'np.abs(list)'
+assert np.abs([-1, 2, -3]).tolist() == [1, 2, 3], 'np.abs(list)'
 assert np.sqrt([1.0, 4.0, 9.0]).tolist() == [1.0, 2.0, 3.0], 'np.sqrt(list)'
 assert np.exp([0.0]).tolist() == [1.0], 'np.exp(list)'
 assert np.ceil([1.2, 2.7]).tolist() == [2.0, 3.0], 'np.ceil(list)'

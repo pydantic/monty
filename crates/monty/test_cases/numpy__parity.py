@@ -1203,6 +1203,13 @@ a = np.array([10, 20, 30, 40, 50])
 idx = np.array([0, 2, 4])
 assert repr(a[idx]) == 'array([10, 30, 50])', 'fancy idx'
 assert repr(a[np.array([4, 3, 2, 1, 0])]) == 'array([50, 40, 30, 20, 10])', 'fancy idx reverse'
+matrix = np.array([[10, 11], [20, 21], [30, 31]])
+assert matrix[np.array([2, 0])].tolist() == [[30, 31], [10, 11]], 'fancy idx selects rows'
+try:
+    a[np.array([0.0])]
+    assert False, 'expected float fancy index to fail'
+except IndexError as exc:
+    assert str(exc) == 'arrays used as indices must be of integer (or boolean) type', 'float fancy idx error'
 
 # === Slice indexing ===
 a = np.array([10, 20, 30, 40, 50])
@@ -1989,6 +1996,38 @@ a = np.array([1, 2, 3, 4, 5])
 a[::2] = 0
 assert a.tolist() == [0, 2, 0, 4, 0], 'setitem slice step 2'
 
+a = np.array([0, 1, 2, 3])
+a[1:3] = np.array([9])
+assert a.tolist() == [0, 9, 9, 3], 'setitem slice broadcasts single-element array'
+
+a = np.array([0, 1, 2, 3])
+a[3:0:-1] = np.array([9])
+assert a.tolist() == [0, 9, 9, 9], 'setitem negative slice broadcasts single-element array'
+
+a = np.array([0, 1, 2, 3])
+a[1:1] = np.array([9])
+assert a.tolist() == [0, 1, 2, 3], 'setitem empty slice with ndarray is no-op'
+
+try:
+    a[0] = 'bad'
+    assert False, 'expected non-numeric setitem to fail'
+except TypeError as exc:
+    assert str(exc) == 'ndarray numeric argument must be int, float, or bool', 'setitem rejects non-numeric value'
+
+try:
+    a[1:3] = np.array([7, 8, 9])
+    assert False, 'expected longer ndarray slice assignment to fail'
+except ValueError as exc:
+    assert str(exc) == 'could not broadcast input array from shape (3,) into shape (2,)', 'setitem long slice rhs error'
+
+try:
+    a[1:3] = np.array([])
+    assert False, 'expected empty ndarray slice assignment into non-empty target to fail'
+except ValueError as exc:
+    assert str(exc) == 'could not broadcast input array from shape (0,) into shape (2,)', (
+        'setitem empty slice rhs error'
+    )
+
 # === 2.3 __iter__ — for x in arr ===
 
 # 1D array yields scalars
@@ -2009,12 +2048,20 @@ assert items == [1.5, 2.5, 3.5], 'iter 1D float yields scalars'
 a = np.array([1, 2, 3])
 assert list(a) == [1, 2, 3], 'list(ndarray) via iter'
 
+try:
+    list(np.array(7))
+    assert False, 'expected iterating 0d ndarray to fail'
+except TypeError as exc:
+    assert str(exc) == 'iteration over a 0-d array', '0d ndarray iteration error'
+
 # === 2.4 __contains__ — val in arr ===
 
 a = np.array([1, 2, 3, 4, 5])
 assert 3 in a, 'int in array'
 assert 6 not in a, 'int not in array'
 assert 1.0 in np.array([1.0, 2.0, 3.0]), 'float in array'
+assert 9223372036854775808 in np.array([9.223372036854776e18]), 'LongInt in float array'
+assert 9223372036854775808 not in np.array([1.0]), 'LongInt not in unrelated float array'
 
 # Bool check
 a = np.array([0, 1, 0])
@@ -2028,11 +2075,41 @@ a = np.array([1, 2, 3])
 a += 10
 assert a.tolist() == [11, 12, 13], 'iadd scalar'
 
+try:
+    a = np.array([1, 2, 3])
+    a += 0.5
+    assert False, 'expected int iadd float scalar to fail'
+except TypeError as exc:
+    assert str(exc) == (
+        "Cannot cast ufunc 'add' output from dtype('float64') to dtype('int64') with casting rule 'same_kind'"
+    ), 'iadd float scalar cast error'
+
+a = np.array([1.0, 2.0, 3.0])
+a += 0.5
+assert a.tolist() == [1.5, 2.5, 3.5], 'float iadd float scalar values'
+assert a.dtype == 'float64', 'float iadd float scalar dtype'
+
 # += array
 a = np.array([1, 2, 3])
 b = np.array([10, 20, 30])
 a += b
 assert a.tolist() == [11, 22, 33], 'iadd array'
+
+try:
+    a = np.array([1, 2, 3])
+    a += np.array([0.5, 0.5, 0.5])
+    assert False, 'expected int iadd float array to fail'
+except TypeError as exc:
+    assert str(exc) == (
+        "Cannot cast ufunc 'add' output from dtype('float64') to dtype('int64') with casting rule 'same_kind'"
+    ), 'iadd float array cast error'
+
+try:
+    a = np.array([[1, 2], [3, 4]])
+    a += np.array([10, 20, 30, 40])
+    assert False, 'expected same-length different-shape iadd to fail'
+except TypeError as exc:
+    assert str(exc) == "unsupported operand type(s) for +=: 'ndarray' and 'ndarray'", 'iadd shape mismatch error'
 
 # -= scalar
 a = np.array([10, 20, 30])
@@ -2706,6 +2783,12 @@ assert a.tolist() == [1, 1, 0], 'imod scalar'
 a = np.array([2.0, 3.0, 4.0])
 a **= 2
 assert a.tolist() == [4.0, 9.0, 16.0], 'ipow scalar'
+try:
+    a = np.array([2, 4])
+    a **= -1
+    assert False, 'expected int ipow negative exponent to fail'
+except ValueError as exc:
+    assert str(exc) == 'Integers to negative integer powers are not allowed.', 'ipow negative int exponent error'
 # Array rhs
 a = np.array([10, 20, 30])
 a //= np.array([3, 7, 4])
@@ -2716,6 +2799,12 @@ assert a.tolist() == [1, 6, 2], 'imod array'
 a = np.array([2.0, 3.0, 4.0])
 a **= np.array([3.0, 2.0, 0.5])
 assert a.tolist() == [8.0, 9.0, 2.0], 'ipow array'
+try:
+    a = np.array([2, 4])
+    a **= np.array([-1, -2])
+    assert False, 'expected int ipow negative exponent array to fail'
+except ValueError as exc:
+    assert str(exc) == 'Integers to negative integer powers are not allowed.', 'ipow negative int array error'
 
 # === Section 45: .flat attribute ===
 a = np.array([[1, 2], [3, 4]])

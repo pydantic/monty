@@ -71,7 +71,7 @@ pub enum Type {
     RePattern,
     /// A regex match result from `re.match()` / `re.search()` etc. - displays as "re.Match"
     ReMatch,
-    /// A numpy ndarray - displays as "numpy.ndarray"
+    /// A NumPy ndarray - displays as "ndarray" for `__name__`.
     NdArray,
     /// NumPy's public flat iterator type object for `ndarray.flat` results.
     FlatIter,

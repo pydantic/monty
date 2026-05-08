@@ -414,7 +414,9 @@ assert unique_all.counts.tolist() == [2, 1, 3], 'unique_all counts'
 partition_input = np.array([3, 1, 2])
 assert np.partition(partition_input, 1).tolist() == [1, 2, 3], 'partition 1d deterministic sorted subset'
 assert np.argpartition(partition_input, 1).tolist() == [1, 2, 0], 'argpartition 1d deterministic argsort subset'
-assert np.partition(partition_input, -1).tolist() == [1, 2, 3], 'partition negative kth'
+partition_neg = np.partition(partition_input, -1).tolist()
+assert partition_neg[-1] == 3, 'partition negative kth places max'
+assert sorted(partition_neg) == [1, 2, 3], 'partition negative kth preserves values'
 lex_row = np.lexsort(([2, 1, 2, 1], [0, 1, 0, 0]))
 assert lex_row.tolist() == [3, 0, 2, 1], 'lexsort two keys'
 assert np.lexsort(([3, 1, 2],)).tolist() == [1, 2, 0], 'lexsort one key'

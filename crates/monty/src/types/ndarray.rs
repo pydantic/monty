@@ -242,7 +242,10 @@ pub(crate) fn broadcast_pair_data(
 ) -> RunResult<(Vec<f64>, Vec<f64>, Vec<usize>)> {
     let shape = broadcast_shape(&[left_shape, right_shape], name)?;
     let total = checked_shape_product(&shape)?;
-    check_array_alloc_size(total.saturating_mul(2), tracker)?;
+    // Monty materializes both broadcast operands and the final result as owned
+    // vectors, so the pre-check needs to cover peak storage rather than just
+    // the two expanded inputs.
+    check_array_alloc_size(total.saturating_mul(3), tracker)?;
     let left = broadcast_array_data(left_data, left_shape, &shape, name, tracker)?;
     let right = broadcast_array_data(right_data, right_shape, &shape, name, tracker)?;
     Ok((left, right, shape))
@@ -360,15 +363,43 @@ impl NdArray {
 
     /// Indexes by an integer ndarray (fancy indexing), gathering elements at the specified indices.
     pub fn getitem_int_array(&self, idx_arr: &Self, heap: &Heap<impl ResourceTracker>) -> RunResult<Value> {
-        let mut data = Vec::with_capacity(idx_arr.len());
+        if idx_arr.dtype() != NdArrayDtype::Int64 {
+            return Err(SimpleException::new_msg(
+                ExcType::IndexError,
+                "arrays used as indices must be of integer (or boolean) type",
+            )
+            .into());
+        }
+        if self.shape.is_empty() {
+            return Err(SimpleException::new_msg(
+                ExcType::IndexError,
+                "too many indices for array: array is 0-dimensional, but 1 were indexed",
+            )
+            .into());
+        }
+
+        if self.ndim() == 1 && idx_arr.shape().is_empty() {
+            #[expect(clippy::cast_possible_truncation, reason = "integer ndarray stores indices as f64")]
+            let idx = idx_arr.data()[0] as i64;
+            let resolved = resolve_index(idx, self.shape[0])?;
+            return Ok(self.element_to_value(self.data[resolved]));
+        }
+
+        let row_size = self.shape[1..].iter().product::<usize>();
+        let mut result_shape = idx_arr.shape().to_vec();
+        result_shape.extend_from_slice(&self.shape[1..]);
+        let result_len = checked_shape_product(&result_shape)?;
+        check_array_alloc_size(result_len, heap.tracker())?;
+        let mut data = Vec::with_capacity(result_len);
         for &idx_f in idx_arr.data() {
             #[expect(clippy::cast_possible_truncation, reason = "index from f64")]
             let idx = idx_f as i64;
-            let resolved = resolve_index(idx, self.data.len())?;
-            data.push(self.data[resolved]);
+            let resolved = resolve_index(idx, self.shape[0])?;
+            let start = resolved * row_size;
+            let end = start + row_size;
+            data.extend_from_slice(&self.data[start..end]);
         }
-        let len = data.len();
-        let result = Self::new(data, vec![len], self.dtype);
+        let result = Self::new(data, result_shape, self.dtype);
         Ok(Value::Ref(heap.allocate(HeapData::NdArray(result))?))
     }
 
@@ -459,6 +490,7 @@ impl NdArray {
         result_dtype: NdArrayDtype,
         heap: &Heap<impl ResourceTracker>,
     ) -> RunResult<Value> {
+        check_array_alloc_size(self.len(), heap.tracker())?;
         let data: Vec<f64> = self.data.iter().map(|&a| op(a, scalar)).collect();
         let arr = Self::new(data, self.shape.clone(), result_dtype);
         Ok(Value::Ref(heap.allocate(HeapData::NdArray(arr))?))
@@ -474,6 +506,7 @@ impl NdArray {
         result_dtype: NdArrayDtype,
         heap: &Heap<impl ResourceTracker>,
     ) -> RunResult<Value> {
+        check_array_alloc_size(self.len(), heap.tracker())?;
         let data: Vec<f64> = self.data.iter().map(|&a| op(scalar, a)).collect();
         let arr = Self::new(data, self.shape.clone(), result_dtype);
         Ok(Value::Ref(heap.allocate(HeapData::NdArray(arr))?))
@@ -510,6 +543,7 @@ impl NdArray {
         cmp: fn(f64, f64) -> bool,
         heap: &Heap<impl ResourceTracker>,
     ) -> RunResult<Value> {
+        check_array_alloc_size(self.len(), heap.tracker())?;
         let data: Vec<f64> = self
             .data
             .iter()
@@ -730,6 +764,7 @@ impl NdArray {
         } else {
             NdArrayDtype::Int64
         };
+        check_array_alloc_size(self.len(), heap.tracker())?;
         let data: Vec<f64> = self.data.iter().map(|&a| (a as i64 & scalar) as f64).collect();
         let arr = Self::new(data, self.shape.clone(), result_dtype);
         Ok(Value::Ref(heap.allocate(HeapData::NdArray(arr))?))
@@ -781,6 +816,7 @@ impl NdArray {
         } else {
             NdArrayDtype::Int64
         };
+        check_array_alloc_size(self.len(), heap.tracker())?;
         let data: Vec<f64> = self.data.iter().map(|&a| (a as i64 | scalar) as f64).collect();
         let arr = Self::new(data, self.shape.clone(), result_dtype);
         Ok(Value::Ref(heap.allocate(HeapData::NdArray(arr))?))
@@ -832,6 +868,7 @@ impl NdArray {
         } else {
             NdArrayDtype::Int64
         };
+        check_array_alloc_size(self.len(), heap.tracker())?;
         let data: Vec<f64> = self.data.iter().map(|&a| (a as i64 ^ scalar) as f64).collect();
         let arr = Self::new(data, self.shape.clone(), result_dtype);
         Ok(Value::Ref(heap.allocate(HeapData::NdArray(arr))?))
@@ -1351,14 +1388,18 @@ impl NdArray {
 
     /// `repeat(n)` — repeat each element `n` times, returning a 1D array.
     pub fn repeat_array(&self, n: usize, heap: &Heap<impl ResourceTracker>) -> RunResult<Value> {
-        let mut data = Vec::with_capacity(self.data.len() * n);
+        let len = self
+            .data
+            .len()
+            .checked_mul(n)
+            .ok_or_else(|| SimpleException::new_msg(ExcType::ValueError, "array dimensions overflow"))?;
+        check_array_alloc_size(len, heap.tracker())?;
+        let mut data = Vec::with_capacity(len);
         for &v in &self.data {
             for _ in 0..n {
                 data.push(v);
             }
         }
-        check_array_alloc_size(data.len(), heap.tracker())?;
-        let len = data.len();
         let arr = Self::new(data, vec![len], self.dtype);
         Ok(Value::Ref(heap.allocate(HeapData::NdArray(arr))?))
     }
@@ -1817,7 +1858,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, NdArray> {
         match *key {
             // arr[int] = val — set a single element by integer index
             Value::Int(idx) => {
-                let scalar = extract_f64(value);
+                let scalar = extract_f64(value)?;
                 let arr = self.get_mut(vm.heap);
                 if arr.ndim() != 1 {
                     return Err(ExcType::type_error("only 1D array integer assignment is supported"));
@@ -1827,7 +1868,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, NdArray> {
                 Ok(())
             }
             Value::Bool(b) => {
-                let scalar = extract_f64(value);
+                let scalar = extract_f64(value)?;
                 let arr = self.get_mut(vm.heap);
                 if arr.ndim() != 1 {
                     return Err(ExcType::type_error("only 1D array integer assignment is supported"));
@@ -1841,7 +1882,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, NdArray> {
                     // arr[bool_mask] = val — set elements where mask is True
                     HeapData::NdArray(mask) if mask.dtype() == NdArrayDtype::Bool => {
                         let mask_data: Vec<bool> = mask.data().iter().map(|&v| v != 0.0).collect();
-                        let scalar = extract_f64(value);
+                        let scalar = extract_f64(value)?;
                         let arr = self.get_mut(vm.heap);
                         if mask_data.len() != arr.data.len() {
                             return Err(SimpleException::new_msg(
@@ -1867,9 +1908,13 @@ impl<'h> PyTrait<'h> for HeapRead<'h, NdArray> {
                             },
                             _ => None,
                         };
-                        let scalar = if rhs_data.is_none() { extract_f64(value) } else { 0.0 };
                         let len = self.get(vm.heap).data.len();
                         let (start, stop, step) = slice.indices(len)?;
+                        let target_len = slice_assignment_len(start, stop, step);
+                        if let Some(ref rhs) = rhs_data {
+                            validate_slice_assignment_length(rhs.len(), target_len)?;
+                        }
+                        let scalar = if rhs_data.is_none() { extract_f64(value)? } else { 0.0 };
                         let arr = self.get_mut(vm.heap);
                         if step > 0 {
                             let mut i = start;
@@ -1882,7 +1927,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, NdArray> {
                                 )]
                                 {
                                     arr.data[i as usize] = if let Some(ref rhs) = rhs_data {
-                                        rhs.get(rhs_idx).copied().unwrap_or(scalar)
+                                        rhs[if rhs.len() == 1 { 0 } else { rhs_idx }]
                                     } else {
                                         scalar
                                     };
@@ -1901,7 +1946,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, NdArray> {
                                 )]
                                 {
                                     arr.data[i as usize] = if let Some(ref rhs) = rhs_data {
-                                        rhs.get(rhs_idx).copied().unwrap_or(scalar)
+                                        rhs[if rhs.len() == 1 { 0 } else { rhs_idx }]
                                     } else {
                                         scalar
                                     };
@@ -2046,9 +2091,10 @@ impl<'h> PyTrait<'h> for HeapRead<'h, NdArray> {
             Some(StaticStrings::Clip) => {
                 let pos = args.into_pos_only("ndarray.clip", vm.heap)?;
                 let result = if pos.as_slice().len() >= 2 {
-                    let min_val = extract_f64(&pos.as_slice()[0]);
-                    let max_val = extract_f64(&pos.as_slice()[1]);
-                    self.get(vm.heap).clip_array(min_val, max_val, vm.heap)
+                    match (extract_f64(&pos.as_slice()[0]), extract_f64(&pos.as_slice()[1])) {
+                        (Ok(min_val), Ok(max_val)) => self.get(vm.heap).clip_array(min_val, max_val, vm.heap),
+                        (Err(err), _) | (_, Err(err)) => Err(err),
+                    }
                 } else {
                     Err(ExcType::type_error("clip() requires min and max arguments"))
                 };
@@ -2143,8 +2189,9 @@ impl<'h> PyTrait<'h> for HeapRead<'h, NdArray> {
             }
             Some(StaticStrings::NpFill) => {
                 let arg = args.get_one_arg("ndarray.fill", vm.heap)?;
-                let val = extract_f64(&arg);
+                let result = extract_f64(&arg);
                 arg.drop_with_heap(vm);
+                let val = result?;
                 self.get_mut(vm.heap).fill(val);
                 Ok(Value::None)
             }
@@ -2165,13 +2212,14 @@ impl<'h> PyTrait<'h> for HeapRead<'h, NdArray> {
             }
             Some(StaticStrings::NpRepeat) => {
                 let arg = args.get_one_arg("ndarray.repeat", vm.heap)?;
+                let result = extract_f64(&arg);
+                arg.drop_with_heap(vm);
                 #[expect(
                     clippy::cast_possible_truncation,
                     clippy::cast_sign_loss,
                     reason = "repeat count from user"
                 )]
-                let n = extract_f64(&arg) as usize;
-                arg.drop_with_heap(vm);
+                let n = result? as usize;
                 self.get(vm.heap).repeat_array(n, vm.heap)
             }
             Some(StaticStrings::NpNonzero) => {
@@ -2181,10 +2229,18 @@ impl<'h> PyTrait<'h> for HeapRead<'h, NdArray> {
             Some(StaticStrings::NpSwapaxes) => {
                 let pos = args.into_pos_only("ndarray.swapaxes", vm.heap)?;
                 let result = if pos.as_slice().len() >= 2 {
-                    let a = extract_f64(&pos.as_slice()[0]);
-                    let b = extract_f64(&pos.as_slice()[1]);
-                    #[expect(clippy::cast_possible_truncation, clippy::cast_sign_loss, reason = "axis from user")]
-                    self.get(vm.heap).swapaxes(a as usize, b as usize, vm.heap)
+                    match (extract_f64(&pos.as_slice()[0]), extract_f64(&pos.as_slice()[1])) {
+                        (Ok(a), Ok(b)) =>
+                        {
+                            #[expect(
+                                clippy::cast_possible_truncation,
+                                clippy::cast_sign_loss,
+                                reason = "axis from user"
+                            )]
+                            self.get(vm.heap).swapaxes(a as usize, b as usize, vm.heap)
+                        }
+                        (Err(err), _) | (_, Err(err)) => Err(err),
+                    }
                 } else {
                     Err(ExcType::type_error("swapaxes() requires two arguments"))
                 };
@@ -2275,19 +2331,22 @@ fn call_reshape(arr: &NdArray, args: &[Value], heap: &Heap<impl ResourceTracker>
     arr.reshape(new_shape, heap)
 }
 
-/// Extracts an f64 from a Value, returning 0.0 for unsupported types.
+/// Extracts an f64 from a Python numeric value.
 ///
 /// Used by ndarray methods (like `clip`) that accept numeric arguments from Python.
-fn extract_f64(value: &Value) -> f64 {
+fn extract_f64(value: &Value) -> RunResult<f64> {
     match value {
         #[expect(
             clippy::cast_precision_loss,
             reason = "i64 to f64 precision loss acceptable for numeric args"
         )]
-        Value::Int(n) => *n as f64,
-        Value::Float(f) => *f,
-        Value::Bool(true) => 1.0,
-        _ => 0.0,
+        Value::Int(n) => Ok(*n as f64),
+        Value::Float(f) => Ok(*f),
+        Value::Bool(true) => Ok(1.0),
+        Value::Bool(false) => Ok(0.0),
+        _ => Err(ExcType::type_error(
+            "ndarray numeric argument must be int, float, or bool",
+        )),
     }
 }
 
@@ -2340,6 +2399,47 @@ fn resolve_index(index: i64, axis_len: usize) -> RunResult<usize> {
         return Err(SimpleException::new_msg(ExcType::IndexError, "index out of range").into());
     }
     Ok(resolved)
+}
+
+/// Returns how many positions a normalized slice assignment will touch.
+///
+/// `Slice::indices()` already clamps `start` and `stop` to the array bounds.
+/// This helper mirrors the iteration loops in `py_setitem()` so RHS validation
+/// rejects only assignments that would actually write a non-broadcastable shape.
+fn slice_assignment_len(start: i64, stop: i64, step: i64) -> usize {
+    let len = if step > 0 {
+        if start >= stop {
+            0
+        } else {
+            ((stop - start - 1) / step) + 1
+        }
+    } else if start <= stop {
+        0
+    } else {
+        ((start - stop - 1) / -step) + 1
+    };
+    usize::try_from(len).expect("normalized slice length cannot be negative")
+}
+
+/// Validates ndarray RHS length for assignment into a one-dimensional slice.
+///
+/// NumPy allows an ndarray RHS when it exactly matches the target length, when a
+/// single element can broadcast across a non-empty target, or when the target is
+/// empty and the assignment is therefore a no-op.
+fn validate_slice_assignment_length(rhs_len: usize, target_len: usize) -> RunResult<()> {
+    if target_len == 0 || rhs_len == target_len || rhs_len == 1 {
+        Ok(())
+    } else {
+        Err(SimpleException::new_msg(
+            ExcType::ValueError,
+            format!(
+                "could not broadcast input array from shape {} into shape {}",
+                format_broadcast_shape(&[rhs_len]),
+                format_broadcast_shape(&[target_len])
+            ),
+        )
+        .into())
+    }
 }
 
 /// Creates an ndarray from a Python list Value (potentially nested).
