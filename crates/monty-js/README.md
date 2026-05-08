@@ -25,6 +25,26 @@ const m = new Monty('x + y', { inputs: ['x', 'y'] })
 const result = m.run({ inputs: { x: 10, y: 20 } }) // returns 30
 ```
 
+## Built-in NumPy Support
+
+Monty includes a built-in `numpy` module for pure numeric array workloads inside the sandbox. User code can import NumPy-style APIs without loading CPython's C-backed NumPy package or exposing host files, external memory, network access, or other host-boundary features.
+
+```ts
+const m = new Monty(`
+import numpy as np
+
+scores = np.array([[1, 2, 3], [4, 5, 6]])
+weights = np.array([10, 20, 30])
+weighted = scores * weights
+
+weighted.tolist()
+`)
+
+const result = m.run() // returns [[10, 40, 90], [40, 100, 180]]
+```
+
+Supported NumPy behavior focuses on Monty's sandbox-safe numeric core: `ndarray`, supported numeric dtypes, broadcasting, ufunc-style math and predicates, reductions, indexing, shape helpers, sorting/selection helpers, formatting helpers, and common construction/manipulation routines. Host-boundary APIs, external-memory APIs, object/string/complex/datetime arrays, and full submodule families such as `linalg`, `fft`, `random`, `ma`, `testing`, and `typing` are intentionally outside this built-in subset.
+
 ## External Functions
 
 For synchronous external functions, pass them directly to `run()`:

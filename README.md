@@ -30,6 +30,7 @@ What Monty **can** do:
 - Completely block access to the host environment: filesystem, env variables and network access are all implemented via external function calls the developer can control
 - Call functions on the host - only functions you give it access to
 - Run typechecking - monty supports full modern python type hints and comes with [ty](https://docs.astral.sh/ty/) included in a single binary to run typechecking
+- Run many `import numpy as np` numeric array workloads with built-in NumPy support for arrays, dtypes, broadcasting, ufunc-style math, reductions, indexing, shape manipulation and common numeric helpers
 - Be snapshotted to bytes at external function calls, meaning you can store the interpreter state in a file or database, and resume later
 - Startup extremely fast (<1μs to go from code to execution result), and has runtime performance that is similar to CPython (generally between 5x faster and 5x slower)
 - Be called from Rust, Python, or Javascript - because Monty has no dependencies on cpython, you can use it anywhere you can run Rust
@@ -41,7 +42,7 @@ What Monty **can** do:
 What Monty **cannot** do:
 
 - Use the rest of the standard library
-- Use third party libraries (like Pydantic), support for external python library is not a goal
+- Load arbitrary third party libraries (like Pydantic). NumPy support is built into Monty; it is not general package import support
 - define classes (support should come soon)
 - use match statements (again, support should come soon)
 
@@ -65,6 +66,30 @@ In very simple terms, the idea of all the above is that LLMs can work faster, ch
 ## Usage
 
 Monty can be called from Python, JavaScript/TypeScript or Rust.
+
+### Built-in NumPy support
+
+Monty includes a built-in `numpy` module for safe numeric array workloads. This is implemented inside the sandbox, so user code can write ordinary `import numpy as np` snippets without loading CPython's C-backed NumPy package or gaining host access.
+
+```python
+import pydantic_monty
+
+code = """
+import numpy as np
+
+scores = np.array([[1, 2, 3], [4, 5, 6]])
+weights = np.array([10, 20, 30])
+weighted = scores * weights
+
+(weighted.tolist(), weighted.sum(), scores.mean(), str(scores.astype('float').dtype))
+"""
+
+m = pydantic_monty.Monty(code)
+print(m.run())
+#> ([[10, 40, 90], [40, 100, 180]], 460, 3.5, 'float64')
+```
+
+The supported NumPy surface is the pure, sandbox-safe numeric core: `ndarray`, supported numeric dtypes, broadcasting, ufunc-style math and predicates, reductions, indexing, shape helpers, sorting/selection helpers, formatting helpers, and common construction/manipulation routines. Monty intentionally does not expose host-boundary or external-memory APIs such as file loaders/savers, `memmap`, DLPack, `ctypeslib`, or include-path discovery, and it does not aim to implement full submodule families such as `linalg`, `fft`, `random`, `ma`, `testing`, or `typing`.
 
 ### Python
 

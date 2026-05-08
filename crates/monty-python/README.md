@@ -36,6 +36,30 @@ print(m.run(inputs={'x': 10, 'y': 5}))
 #> 50
 ```
 
+### Built-in NumPy Support
+
+Monty includes a built-in `numpy` module for pure numeric array workloads inside the sandbox. This lets user code import NumPy-style APIs without loading CPython's C-backed NumPy package or exposing host files, external memory, network access, or other host-boundary features.
+
+```python
+import pydantic_monty
+
+code = """
+import numpy as np
+
+scores = np.array([[1, 2, 3], [4, 5, 6]])
+weights = np.array([10, 20, 30])
+weighted = scores * weights
+
+(weighted.tolist(), weighted.sum(), scores.mean(), str(scores.astype('float').dtype))
+"""
+
+m = pydantic_monty.Monty(code)
+print(m.run())
+#> ([[10, 40, 90], [40, 100, 180]], 460, 3.5, 'float64')
+```
+
+Supported NumPy behavior focuses on Monty's sandbox-safe numeric core: `ndarray`, supported numeric dtypes, broadcasting, ufunc-style math and predicates, reductions, indexing, shape helpers, sorting/selection helpers, formatting helpers, and common construction/manipulation routines. Host-boundary APIs, external-memory APIs, object/string/complex/datetime arrays, and full submodule families such as `linalg`, `fft`, `random`, `ma`, `testing`, and `typing` are intentionally outside this built-in subset.
+
 ### Resource Limits
 
 ```python
