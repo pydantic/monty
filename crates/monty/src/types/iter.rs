@@ -22,7 +22,7 @@ use crate::{
     exception_private::{ExcType, RunResult},
     heap::{ContainsHeap, DropWithHeap, Heap, HeapData, HeapGuard, HeapId, HeapItem, HeapRead, HeapReadOutput},
     intern::{BytesId, Interns},
-    resource::ResourceTracker,
+    resource::{ResourceError, ResourceTracker, check_estimated_size},
     types::{PyTrait, Range, dict_view::DictView, str::allocate_char},
     value::Value,
 };
@@ -209,6 +209,37 @@ impl MontyIter {
             }
         };
         len.saturating_sub(self.index)
+    }
+
+    /// Returns a capacity hint that is safe to pass to `with_capacity` and friends.
+    ///
+    /// `size_hint()` reports the exact remaining length of the iterable, which for
+    /// `range(huge)` can be astronomically large. Passing that straight to a
+    /// container constructor calls the global allocator before the resource tracker
+    /// can reject it; the allocator either aborts the process on failure (which is
+    /// not catchable) or succeeds and the host is OOM-killed when the pages are
+    /// touched. Both outcomes bypass the configured memory limit entirely.
+    ///
+    /// This helper validates the requested allocation against the resource tracker
+    /// (raising `MemoryError` if it would exceed the budget) and clamps the result
+    /// to a small fixed bound. The clamp makes the pre-allocation defensively safe
+    /// even when no limits are configured: the container still grows naturally as
+    /// elements are appended, with each element tracked individually, so the hint
+    /// only matters for performance, never for correctness.
+    pub fn preallocation_hint(
+        &self,
+        elem_size: usize,
+        vm: &VM<'_, impl ResourceTracker>,
+    ) -> Result<usize, ResourceError> {
+        /// Upper bound on the number of slots we are willing to reserve up front.
+        ///
+        /// Chosen so the worst-case pre-allocation (a few MiB) is small relative
+        /// to any realistic memory budget, while still avoiding repeated
+        /// reallocations for the common case of building moderate containers.
+        const MAX_PREALLOCATION_HINT: usize = 65_536;
+        let hint = self.size_hint(vm.heap);
+        check_estimated_size(hint.saturating_mul(elem_size), vm.heap.tracker())?;
+        Ok(hint.min(MAX_PREALLOCATION_HINT))
     }
 
     /// Collects all remaining items from the iterator into a Vec.

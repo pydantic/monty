@@ -575,7 +575,11 @@ pub(crate) fn collect_iterable_to_set(value: Value, vm: &mut VM<'_, impl Resourc
     let (value, vm) = value_guard.into_parts();
     let iter = MontyIter::new(value, vm)?;
     defer_drop_mut!(iter, vm);
-    let mut set_guard = HeapGuard::new(Set::with_capacity(iter.size_hint(vm.heap)), vm);
+    // `preallocation_hint` validates the requested capacity against the
+    // resource tracker and clamps it so an attacker-controlled iterable length
+    // cannot drive an unbounded native pre-allocation.
+    let cap = iter.preallocation_hint(mem::size_of::<Value>() * 2, vm)?;
+    let mut set_guard = HeapGuard::new(Set::with_capacity(cap), vm);
     let (set, vm) = set_guard.as_parts_mut();
     while let Some(item) = iter.for_next(vm)? {
         set.add(item, vm)?;

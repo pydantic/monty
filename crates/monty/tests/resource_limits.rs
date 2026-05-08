@@ -2039,3 +2039,63 @@ len(x) + len(d) + len(s)
     );
     assert_eq!(result.unwrap(), MontyObject::Int(300));
 }
+
+// === Iterator pre-allocation resource-limit tests ===
+
+/// Test that constructing a set from a huge `range` is bounded by the memory limit.
+///
+/// `range` reports its full remaining length as the iterator size hint. Container
+/// constructors that pre-allocate from the hint must validate it against the
+/// resource tracker before reaching for the global allocator, since an allocation
+/// failure aborts the host instead of raising MemoryError.
+#[test]
+fn set_from_huge_range_memory_limit() {
+    let code = "set(range(10 ** 9))";
+    let ex = MontyRun::new(code.to_owned(), "test.py", vec![]).unwrap();
+
+    let limits = ResourceLimits::new().max_memory(100_000);
+    let result = ex.run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout);
+
+    assert!(result.is_err(), "huge set pre-allocation should be rejected");
+    let exc = result.unwrap_err();
+    assert_eq!(exc.exc_type(), ExcType::MemoryError);
+}
+
+/// Test that `frozenset` from a huge `range` is bounded by the memory limit.
+#[test]
+fn frozenset_from_huge_range_memory_limit() {
+    let code = "frozenset(range(10 ** 9))";
+    let ex = MontyRun::new(code.to_owned(), "test.py", vec![]).unwrap();
+
+    let limits = ResourceLimits::new().max_memory(100_000);
+    let result = ex.run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout);
+
+    assert!(result.is_err(), "huge frozenset pre-allocation should be rejected");
+    assert_eq!(result.unwrap_err().exc_type(), ExcType::MemoryError);
+}
+
+/// Test that `map()` over a huge `range` is bounded by the memory limit.
+#[test]
+fn map_over_huge_range_memory_limit() {
+    let code = "list(map(str, range(10 ** 9)))";
+    let ex = MontyRun::new(code.to_owned(), "test.py", vec![]).unwrap();
+
+    let limits = ResourceLimits::new().max_memory(100_000);
+    let result = ex.run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout);
+
+    assert!(result.is_err(), "huge map pre-allocation should be rejected");
+    assert_eq!(result.unwrap_err().exc_type(), ExcType::MemoryError);
+}
+
+/// Test that small set/map construction still succeeds within limits.
+#[test]
+fn set_from_range_within_limit() {
+    let code = "len(set(range(50))) + len(list(map(str, range(20))))";
+    let ex = MontyRun::new(code.to_owned(), "test.py", vec![]).unwrap();
+
+    let limits = ResourceLimits::new().max_memory(100_000);
+    let result = ex.run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout);
+
+    assert!(result.is_ok(), "small set/map construction should succeed: {result:?}");
+    assert_eq!(result.unwrap(), MontyObject::Int(70));
+}
