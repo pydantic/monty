@@ -879,6 +879,9 @@ pub enum StaticStrings {
     /// `numpy.stack()` function
     #[strum(serialize = "stack")]
     NpStack,
+    /// `numpy.block()` nested block assembly helper.
+    #[strum(serialize = "block")]
+    NpBlock,
     /// `numpy.unstack()` function
     #[strum(serialize = "unstack")]
     NpUnstack,

@@ -58,7 +58,7 @@
 //! - `numpy.split(a, sections_or_indices)`, `numpy.cumsum(a)`, `numpy.dot(a, b)`
 //! - `numpy.take`, `numpy.compress`, `numpy.swapaxes`, `numpy.permute_dims`
 //! - `numpy.matrix_transpose`, `numpy.moveaxis`, `numpy.rollaxis`, `numpy.rot90`
-//! - `numpy.vecdot`, `numpy.matvec`, `numpy.vecmat`, `numpy.trapezoid`, `numpy.vander`
+//! - `numpy.block`, `numpy.vecdot`, `numpy.matvec`, `numpy.vecmat`, `numpy.trapezoid`, `numpy.vander`
 //!
 //! ## Search & index
 //! - `numpy.nonzero(a)`, `numpy.argwhere(a)`
@@ -272,6 +272,8 @@ pub(crate) enum NumpyFunctions {
     Dstack,
     /// `numpy.stack(arrays)` — stack arrays along new axis.
     Stack,
+    /// `numpy.block(arrays)` — assemble nested numeric blocks.
+    Block,
     /// `numpy.unstack(a, axis=0)` — split an array into a tuple along an axis.
     Unstack,
     /// `numpy.nonzero(a)` — indices of non-zero elements.
@@ -1085,6 +1087,7 @@ const NUMPY_FUNCTIONS: &[(StaticStrings, NumpyFunctions)] = &[
     (StaticStrings::NpHstack, NumpyFunctions::Hstack),
     (StaticStrings::NpDstack, NumpyFunctions::Dstack),
     (StaticStrings::NpStack, NumpyFunctions::Stack),
+    (StaticStrings::NpBlock, NumpyFunctions::Block),
     (StaticStrings::NpUnstack, NumpyFunctions::Unstack),
     (StaticStrings::NpNonzero, NumpyFunctions::Nonzero),
     (StaticStrings::NpArgwhere, NumpyFunctions::Argwhere),
@@ -1477,6 +1480,7 @@ pub(super) fn call(
         // For 2D+ inputs, np.stack creates a new axis, which differs from vstack.
         // We only support the 1D case which is the LLM-common pattern.
         NumpyFunctions::Stack => call_vstack(vm, args).map(CallResult::Value),
+        NumpyFunctions::Block => call_block(vm, args).map(CallResult::Value),
         NumpyFunctions::Unstack => call_unstack(vm, args).map(CallResult::Value),
         NumpyFunctions::Nonzero => call_nonzero(vm, args).map(CallResult::Value),
         NumpyFunctions::Argwhere => call_argwhere(vm, args).map(CallResult::Value),
@@ -5386,6 +5390,152 @@ fn call_dstack(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunRes
     }
     let result = concatenate_ndarrays_along_axis(&arrays, 2, "numpy.dstack", vm.heap.tracker())?;
     Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(result))?))
+}
+
+/// `numpy.block(arrays)` — assemble nested numeric arrays and scalars.
+fn call_block(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let arg = args.get_one_arg("numpy.block", vm.heap)?;
+    defer_drop!(arg, vm);
+
+    let analysis = block_layout_analysis(arg, "arrays".to_string(), vm)?;
+    let target_ndim = analysis.list_depth.max(analysis.max_leaf_ndim);
+    let result = block_array_from_value(arg, &analysis, target_ndim, 0, vm)?;
+    Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(result))?))
+}
+
+/// Shape summary for NumPy's recursive `block()` layout.
+struct BlockAnalysis {
+    /// Number of list levels used to arrange blocks.
+    list_depth: usize,
+    /// Largest ndarray rank among leaf values.
+    max_leaf_ndim: usize,
+    /// Path to the first leaf, used in mismatch diagnostics.
+    first_leaf_path: String,
+}
+
+/// Analyzes `block()` list nesting and leaf ranks before allocating output data.
+fn block_layout_analysis(value: &Value, path: String, vm: &VM<'_, impl ResourceTracker>) -> RunResult<BlockAnalysis> {
+    match value {
+        Value::Ref(heap_id) => match vm.heap.get(*heap_id) {
+            HeapData::List(items) => block_list_analysis(items.as_slice(), &path, vm),
+            HeapData::Tuple(_) => Err(block_tuple_type_error(&path)),
+            HeapData::NdArray(arr) => Ok(BlockAnalysis {
+                list_depth: 0,
+                max_leaf_ndim: arr.ndim(),
+                first_leaf_path: path,
+            }),
+            _ => block_scalar_analysis(value, path, vm),
+        },
+        _ => block_scalar_analysis(value, path, vm),
+    }
+}
+
+/// Analyzes one list level and rejects ragged nesting before assembly starts.
+fn block_list_analysis(items: &[Value], path: &str, vm: &VM<'_, impl ResourceTracker>) -> RunResult<BlockAnalysis> {
+    if items.is_empty() {
+        return Err(SimpleException::new_msg(ExcType::ValueError, format!("List at {path} cannot be empty")).into());
+    }
+
+    let first = block_layout_analysis(&items[0], block_child_path(path, 0), vm)?;
+    let expected_depth = first.list_depth + 1;
+    let mut max_leaf_ndim = first.max_leaf_ndim;
+    let first_leaf_path = first.first_leaf_path;
+    for (index, item) in items.iter().enumerate().skip(1) {
+        let child = block_layout_analysis(item, block_child_path(path, index), vm)?;
+        let found_depth = child.list_depth + 1;
+        if found_depth != expected_depth {
+            return Err(SimpleException::new_msg(
+                ExcType::ValueError,
+                format!(
+                    "List depths are mismatched. First element was at depth {expected_depth}, but there is an element at depth {found_depth} ({})",
+                    child.first_leaf_path
+                ),
+            )
+            .into());
+        }
+        max_leaf_ndim = max_leaf_ndim.max(child.max_leaf_ndim);
+    }
+
+    Ok(BlockAnalysis {
+        list_depth: expected_depth,
+        max_leaf_ndim,
+        first_leaf_path,
+    })
+}
+
+/// Treats a non-list `block()` leaf as a numeric scalar.
+fn block_scalar_analysis(value: &Value, path: String, vm: &VM<'_, impl ResourceTracker>) -> RunResult<BlockAnalysis> {
+    numeric_scalar_info(value, "numpy.block", vm)?;
+    Ok(BlockAnalysis {
+        list_depth: 0,
+        max_leaf_ndim: 0,
+        first_leaf_path: path,
+    })
+}
+
+/// Recursively assembles a `block()` value once its nesting has been validated.
+fn block_array_from_value(
+    value: &Value,
+    analysis: &BlockAnalysis,
+    target_ndim: usize,
+    current_depth: usize,
+    vm: &VM<'_, impl ResourceTracker>,
+) -> RunResult<NdArray> {
+    match value {
+        Value::Ref(heap_id) => match vm.heap.get(*heap_id) {
+            HeapData::List(items) => block_array_from_items(items.as_slice(), analysis, target_ndim, current_depth, vm),
+            HeapData::Tuple(_) => Err(block_tuple_type_error("arrays")),
+            _ => block_leaf_array(value, target_ndim, vm),
+        },
+        _ => block_leaf_array(value, target_ndim, vm),
+    }
+}
+
+/// Assembles one list level by concatenating child blocks along NumPy's axis for that depth.
+fn block_array_from_items(
+    items: &[Value],
+    analysis: &BlockAnalysis,
+    target_ndim: usize,
+    current_depth: usize,
+    vm: &VM<'_, impl ResourceTracker>,
+) -> RunResult<NdArray> {
+    let mut arrays = Vec::with_capacity(items.len());
+    for item in items {
+        arrays.push(block_array_from_value(
+            item,
+            analysis,
+            target_ndim,
+            current_depth + 1,
+            vm,
+        )?);
+    }
+    let axis = target_ndim - (analysis.list_depth - current_depth);
+    concatenate_ndarrays_along_axis(&arrays, axis, "numpy.block", vm.heap.tracker())
+}
+
+/// Converts one `block()` leaf and prepends singleton axes when list depth requires it.
+fn block_leaf_array(value: &Value, target_ndim: usize, vm: &VM<'_, impl ResourceTracker>) -> RunResult<NdArray> {
+    let arr = ndarray_or_scalar_from_value(value, "numpy.block", vm)?;
+    if arr.ndim() >= target_ndim {
+        Ok(arr)
+    } else {
+        let NdArray { data, shape, dtype } = arr;
+        let mut promoted_shape = vec![1; target_ndim - shape.len()];
+        promoted_shape.extend(shape);
+        Ok(NdArray::new(data, promoted_shape, dtype))
+    }
+}
+
+/// Builds the path NumPy displays in `block()` nesting diagnostics.
+fn block_child_path(path: &str, index: usize) -> String {
+    format!("{path}[{index}]")
+}
+
+/// Builds NumPy's tuple-specific `block()` error for unsupported implicit conversion.
+fn block_tuple_type_error(path: &str) -> RunError {
+    ExcType::type_error(format!(
+        "{path} is a tuple. Only lists can be used to arrange blocks, and np.block does not allow implicit conversion from tuple to ndarray."
+    ))
 }
 
 /// `numpy.unstack(a, axis=0)` — split an array into a tuple with one axis removed.

@@ -1465,8 +1465,9 @@ impl NdArray {
 
     /// Converts the array to a (possibly nested) Python list.
     ///
-    /// For 1D arrays, returns a flat list. For 2D+ arrays, returns nested lists
-    /// matching the shape, e.g. shape `(2, 3)` → `[[1, 2, 3], [4, 5, 6]]`.
+    /// For zero-dimensional arrays, returns the scalar value. For 1D arrays,
+    /// returns a flat list. For 2D+ arrays, returns nested lists matching the
+    /// shape, e.g. shape `(2, 3)` → `[[1, 2, 3], [4, 5, 6]]`.
     pub fn tolist(&self, heap: &Heap<impl ResourceTracker>) -> RunResult<Value> {
         self.tolist_recursive(&self.shape, 0, heap)
     }
@@ -1478,7 +1479,9 @@ impl NdArray {
         offset: usize,
         heap: &Heap<impl ResourceTracker>,
     ) -> RunResult<Value> {
-        if remaining_shape.len() == 1 {
+        if remaining_shape.is_empty() {
+            Ok(self.element_to_value(self.data[offset]))
+        } else if remaining_shape.len() == 1 {
             // Leaf dimension: flat list of scalars
             let len = remaining_shape[0];
             let values: Vec<Value> = (0..len).map(|i| self.element_to_value(self.data[offset + i])).collect();

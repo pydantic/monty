@@ -252,6 +252,35 @@ assert dstack_1d.tolist() == [[[1, 3], [2, 4]]], 'dstack 1d values'
 dstack_2d = np.dstack(([[1, 2], [3, 4]], [[5, 6], [7, 8]]))
 assert dstack_2d.shape == (2, 2, 2), 'dstack 2d shape'
 assert dstack_2d.tolist() == [[[1, 5], [2, 6]], [[3, 7], [4, 8]]], 'dstack 2d values'
+block_scalar = np.block(1)
+assert block_scalar.shape == (), 'block scalar shape'
+assert block_scalar.tolist() == 1, 'block scalar value'
+assert np.block(np.array([1, 2])).tolist() == [1, 2], 'block array leaf'
+assert np.block([1, 2, 3]).tolist() == [1, 2, 3], 'block flat scalars'
+assert np.block([[1, 2], [3, 4]]).tolist() == [[1, 2], [3, 4]], 'block nested scalars'
+assert np.block([np.array([1, 2]), np.array([3, 4])]).tolist() == [1, 2, 3, 4], 'block flat arrays'
+assert np.block([np.array([[1, 2]]), np.array([[3, 4]])]).tolist() == [[1, 2, 3, 4]], 'block flat matrices'
+assert np.block(
+    [
+        [np.array([[1, 2]]), np.array([[3]])],
+        [np.array([[4, 5]]), np.array([[6]])],
+    ]
+).tolist() == [[1, 2, 3], [4, 5, 6]], 'block matrix assembly'
+try:
+    np.block((1, 2))
+    assert False, 'expected tuple block layout to fail'
+except TypeError as exc:
+    assert str(exc) == (
+        'arrays is a tuple. Only lists can be used to arrange blocks, and np.block does not allow implicit conversion '
+        'from tuple to ndarray.'
+    ), 'block tuple layout error'
+try:
+    np.block([1, [2, 3]])
+    assert False, 'expected mismatched block depth to fail'
+except ValueError as exc:
+    assert str(exc) == (
+        'List depths are mismatched. First element was at depth 1, but there is an element at depth 2 (arrays[1][0])'
+    ), 'block depth mismatch error'
 
 depth_parts = np.dsplit(cube, 2)
 assert len(depth_parts) == 2, 'dsplit equal section count'
