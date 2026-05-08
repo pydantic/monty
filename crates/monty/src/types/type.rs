@@ -71,7 +71,7 @@ pub enum Type {
     RePattern,
     /// A regex match result from `re.match()` / `re.search()` etc. - displays as "re.Match"
     ReMatch,
-    /// A NumPy ndarray - displays as "ndarray" for `__name__`.
+    /// A NumPy ndarray - displays as "numpy.ndarray" while `__name__` remains "ndarray".
     NdArray,
     /// NumPy's public flat iterator type object for `ndarray.flat` results.
     FlatIter,
@@ -119,7 +119,7 @@ impl fmt::Display for Type {
             Self::Property => f.write_str("property"),
             Self::RePattern => f.write_str("re.Pattern"),
             Self::ReMatch => f.write_str("re.Match"),
-            Self::NdArray => f.write_str("ndarray"),
+            Self::NdArray => f.write_str("numpy.ndarray"),
             Self::FlatIter => f.write_str("flatiter"),
             Self::Ufunc => f.write_str("ufunc"),
         }
@@ -127,6 +127,19 @@ impl fmt::Display for Type {
 }
 
 impl Type {
+    /// Returns the value exposed by a type object's `__name__` attribute.
+    ///
+    /// Most Monty type displays are already unqualified names, but NumPy's
+    /// ndarray type needs a qualified display string for repr/error messages
+    /// while keeping the CPython-compatible `ndarray` type name.
+    #[must_use]
+    pub(crate) fn dunder_name(self) -> String {
+        match self {
+            Self::NdArray => "ndarray".to_string(),
+            _ => self.to_string(),
+        }
+    }
+
     /// Returns the Python source-level name for builtin types that can be called directly.
     ///
     /// This differs from `Display` for internal representation-only names such as

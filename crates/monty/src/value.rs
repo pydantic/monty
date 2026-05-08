@@ -1730,7 +1730,7 @@ impl Value {
                     |ss| ss == StaticStrings::DunderName,
                 );
                 if is_dunder_name {
-                    let name_str = t.to_string();
+                    let name_str = t.dunder_name();
                     let str_id = vm.heap.allocate(HeapData::Str(Str::from(name_str)))?;
                     return Ok(CallResult::Value(Self::Ref(str_id)));
                 }

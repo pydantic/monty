@@ -543,6 +543,7 @@ assert np.astype(np.array([1, 0, -2]), bool).tolist() == [True, False, True], 'm
 assert np.astype(np.array([1, 2]), np.float64).tolist() == [1.0, 2.0], 'module astype float dtype'
 assert isinstance(np.array([1, 2]), np.ndarray) == True, 'ndarray type object matches arrays'
 assert np.ndarray.__name__ == 'ndarray', 'ndarray type object name'
+assert repr(np.ndarray) == "<class 'numpy.ndarray'>", 'ndarray type object repr'
 flat_marker = np.array([[1, 2], [3, 4]]).flat
 assert isinstance(flat_marker, np.flatiter) == True, 'flatiter marker matches ndarray flat result'
 assert isinstance(np.array([1, 2, 3]), np.flatiter) == False, 'plain ndarray is not flatiter'

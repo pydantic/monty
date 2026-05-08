@@ -2109,7 +2109,9 @@ try:
     a += np.array([10, 20, 30, 40])
     assert False, 'expected same-length different-shape iadd to fail'
 except TypeError as exc:
-    assert str(exc) == "unsupported operand type(s) for +=: 'ndarray' and 'ndarray'", 'iadd shape mismatch error'
+    assert str(exc) == "unsupported operand type(s) for +=: 'numpy.ndarray' and 'numpy.ndarray'", (
+        'iadd shape mismatch error'
+    )
 
 # -= scalar
 a = np.array([10, 20, 30])
