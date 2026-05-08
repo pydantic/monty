@@ -15,7 +15,7 @@ use crate::{
     exception_private::{ExcType, RunResult},
     heap::{DropWithHeap, HeapData, HeapGuard, HeapId, HeapReadOutput},
     intern::StaticStrings,
-    resource::ResourceTracker,
+    resource::{ResourceTracker, check_repeat_size},
     sorting::{apply_permutation, sort_indices},
     types::{PyTrait, long_int::check_bigint_str_digits_limit, str::allocate_string},
     value::Value,
@@ -251,13 +251,14 @@ fn parse_indent_value(value: Value, vm: &mut VM<'_, impl ResourceTracker>) -> Ru
     match value {
         Value::None => Ok(None),
         Value::Bool(flag) => Ok(Some(" ".repeat(usize::from(*flag)))),
-        Value::Int(count) => spaces_from_indent_count(*count),
+        Value::Int(count) => spaces_from_indent_count(*count, vm.heap.tracker()),
         Value::InternString(string_id) => Ok(Some(vm.interns.get_str(*string_id).to_owned())),
         Value::Ref(heap_id) => match vm.heap.read(*heap_id) {
             HeapReadOutput::Str(string) => Ok(Some(string.get(vm.heap).as_str().to_owned())),
-            HeapReadOutput::LongInt(long_int) => {
-                spaces_from_indent_count(long_int.get(vm.heap).to_i64().ok_or_else(ExcType::overflow_c_ssize_t)?)
-            }
+            HeapReadOutput::LongInt(long_int) => spaces_from_indent_count(
+                long_int.get(vm.heap).to_i64().ok_or_else(ExcType::overflow_c_ssize_t)?,
+                vm.heap.tracker(),
+            ),
             _ => Err(ExcType::type_error("indent must be None, an integer or a string")),
         },
         _ => Err(ExcType::type_error("indent must be None, an integer or a string")),
@@ -268,12 +269,20 @@ fn parse_indent_value(value: Value, vm: &mut VM<'_, impl ResourceTracker>) -> Ru
 ///
 /// Zero and negative values return an empty indent string, which keeps pretty
 /// printing enabled while omitting leading spaces on each line like CPython.
-fn spaces_from_indent_count(count: i64) -> RunResult<Option<String>> {
+///
+/// The requested count is validated against the resource tracker before the
+/// repeat is materialized: the indent string is built on the native heap and
+/// then repeated once per nesting level by `write_indent`, so an unbounded
+/// count would otherwise allocate well past the configured memory limit.
+fn spaces_from_indent_count(count: i64, tracker: &impl ResourceTracker) -> RunResult<Option<String>> {
     if count <= 0 {
         Ok(Some(String::new()))
     } else {
         match usize::try_from(count) {
-            Ok(count) => Ok(Some(" ".repeat(count))),
+            Ok(count) => {
+                check_repeat_size(count, 1, tracker)?;
+                Ok(Some(" ".repeat(count)))
+            }
             Err(_) => Err(ExcType::overflow_c_ssize_t()),
         }
     }

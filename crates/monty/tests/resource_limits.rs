@@ -2039,3 +2039,37 @@ len(x) + len(d) + len(s)
     );
     assert_eq!(result.unwrap(), MontyObject::Int(300));
 }
+
+// === json.dumps resource-limit tests ===
+
+/// Test that `json.dumps(..., indent=N)` is rejected before allocation when the
+/// requested indent string would exceed the configured memory limit.
+#[test]
+fn json_dumps_indent_memory_limit() {
+    let code = "import json\njson.dumps([1], indent=1000000)";
+    let ex = MontyRun::new(code.to_owned(), "test.py", vec![]).unwrap();
+
+    let limits = ResourceLimits::new().max_memory(100_000);
+    let result = ex.run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout);
+
+    assert!(result.is_err(), "large indent should be rejected before allocation");
+    let exc = result.unwrap_err();
+    assert_eq!(exc.exc_type(), ExcType::MemoryError);
+    assert!(
+        exc.message().is_some_and(|m| m.contains("memory limit exceeded")),
+        "expected memory limit error, got: {exc}"
+    );
+}
+
+/// Test that small `json.dumps(..., indent=N)` works within limits.
+#[test]
+fn json_dumps_indent_within_limit() {
+    let code = "import json\njson.dumps([1, 2], indent=2)";
+    let ex = MontyRun::new(code.to_owned(), "test.py", vec![]).unwrap();
+
+    let limits = ResourceLimits::new().max_memory(100_000);
+    let result = ex.run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout);
+
+    assert!(result.is_ok(), "small indent should succeed");
+    assert_eq!(result.unwrap(), MontyObject::String("[\n  1,\n  2\n]".to_owned()));
+}
