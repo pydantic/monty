@@ -304,6 +304,32 @@ assert place_mut.tolist() == [5, 1, 6, 3, 5], 'place uses selected-position cycl
 assert np.vecdot(np.array([1, 2, 3]), np.array([4, 5, 6])) == 32, 'vecdot 1d'
 assert np.matvec(np.array([[1, 2], [3, 4]]), np.array([10, 20])).tolist() == [50, 110], 'matvec 2d 1d'
 assert np.vecmat(np.array([10, 20]), np.array([[1, 2], [3, 4]])).tolist() == [70, 100], 'vecmat 1d 2d'
+assert np.tensordot(np.array([1, 2]), np.array([3, 4]), axes=0).tolist() == [[3, 4], [6, 8]], 'tensordot outer'
+assert np.tensordot(np.array([1, 2]), np.array([3, 4]), axes=1) == 11, 'tensordot vector scalar'
+assert np.tensordot(np.array([[1, 2], [3, 4]]), np.array([10, 20]), axes=1).tolist() == [
+    50,
+    110,
+], 'tensordot matrix vector'
+assert np.tensordot(
+    np.array([[[1, 2], [3, 4]], [[5, 6], [7, 8]]]),
+    np.array([[10, 20], [30, 40]]),
+    ([1, 2], [0, 1]),
+).tolist() == [300, 700], 'tensordot explicit axes'
+assert np.einsum('i,i->', np.array([1, 2]), np.array([3, 4])) == 11, 'einsum dot'
+assert np.einsum('ij,j->i', np.array([[1, 2], [3, 4]]), np.array([10, 20])).tolist() == [
+    50,
+    110,
+], 'einsum matrix vector'
+assert np.einsum('ij,jk->ik', np.array([[1, 2], [3, 4]]), np.array([[10, 20], [30, 40]])).tolist() == [
+    [70, 100],
+    [150, 220],
+], 'einsum matrix multiply'
+assert np.einsum('ij->ji', np.array([[1, 2], [3, 4]])).tolist() == [[1, 3], [2, 4]], 'einsum transpose'
+assert np.einsum('ii->i', np.array([[1, 2], [3, 4]])).tolist() == [1, 4], 'einsum diagonal'
+assert np.einsum('i,j->ij', np.array([1, 2]), np.array([3, 4])).tolist() == [[3, 4], [6, 8]], 'einsum outer'
+einsum_path, einsum_path_details = np.einsum_path('ij,jk->ik', np.array([[1, 2]]), np.array([[3], [4]]))
+assert einsum_path == ['einsum_path', (0, 1)], 'einsum_path simple path'
+assert len(einsum_path_details) > 0, 'einsum_path details are nonempty'
 assert np.trapezoid(np.array([1, 2, 3])) == 4.0, 'trapezoid unit spacing'
 assert np.trapezoid(np.array([1, 2, 3]), np.array([0, 1, 3])) == 6.5, 'trapezoid x coordinates'
 assert np.trapezoid(np.array([1, 2, 3]), None, 2.0) == 8.0, 'trapezoid dx'

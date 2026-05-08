@@ -1571,6 +1571,15 @@ pub enum StaticStrings {
     /// `numpy.kron()` Kronecker product helper.
     #[strum(serialize = "kron")]
     NpKron,
+    /// `numpy.tensordot()` generalized tensor contraction helper.
+    #[strum(serialize = "tensordot")]
+    NpTensordot,
+    /// `numpy.einsum()` explicit-subscript contraction helper.
+    #[strum(serialize = "einsum")]
+    NpEinsum,
+    /// `numpy.einsum_path()` simple contraction planner helper.
+    #[strum(serialize = "einsum_path")]
+    NpEinsumPath,
     /// `numpy.trapezoid()` function
     #[strum(serialize = "trapezoid")]
     NpTrapezoid,

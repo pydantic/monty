@@ -68,6 +68,7 @@
 
 use std::{
     cmp::Ordering,
+    collections::BTreeMap,
     f64::consts::{E, PI},
     mem,
     num::FpCategory,
@@ -751,6 +752,12 @@ pub(crate) enum NumpyFunctions {
     Cross,
     /// `numpy.kron(a, b)` — Kronecker product.
     Kron,
+    /// `numpy.tensordot(a, b, axes=2)` — generalized real-valued tensor contraction.
+    Tensordot,
+    /// `numpy.einsum(subscripts, *operands)` — explicit-subscript real-valued contraction.
+    Einsum,
+    /// `numpy.einsum_path(subscripts, *operands)` — simple path for supported contractions.
+    EinsumPath,
     /// `numpy.trapezoid(y, x=None, dx=1.0)` — composite trapezoidal integral.
     Trapezoid,
     /// `numpy.vander(x, N=None, increasing=False)` — Vandermonde matrix.
@@ -1322,6 +1329,9 @@ const NUMPY_FUNCTIONS: &[(StaticStrings, NumpyFunctions)] = &[
     (StaticStrings::NpVecmat, NumpyFunctions::Vecmat),
     (StaticStrings::NpCross, NumpyFunctions::Cross),
     (StaticStrings::NpKron, NumpyFunctions::Kron),
+    (StaticStrings::NpTensordot, NumpyFunctions::Tensordot),
+    (StaticStrings::NpEinsum, NumpyFunctions::Einsum),
+    (StaticStrings::NpEinsumPath, NumpyFunctions::EinsumPath),
     (StaticStrings::NpTrapezoid, NumpyFunctions::Trapezoid),
     (StaticStrings::NpVander, NumpyFunctions::Vander),
     (StaticStrings::NpPoly, NumpyFunctions::Poly),
@@ -1919,6 +1929,9 @@ pub(super) fn call(
         NumpyFunctions::Matvec | NumpyFunctions::Vecmat => call_matmul(vm, args).map(CallResult::Value),
         NumpyFunctions::Cross => call_cross(vm, args).map(CallResult::Value),
         NumpyFunctions::Kron => call_kron(vm, args).map(CallResult::Value),
+        NumpyFunctions::Tensordot => call_tensordot(vm, args).map(CallResult::Value),
+        NumpyFunctions::Einsum => call_einsum(vm, args).map(CallResult::Value),
+        NumpyFunctions::EinsumPath => call_einsum_path(vm, args).map(CallResult::Value),
         NumpyFunctions::Trapezoid => call_trapezoid(vm, args).map(CallResult::Value),
         NumpyFunctions::Vander => call_vander(vm, args).map(CallResult::Value),
         NumpyFunctions::Poly => call_poly(vm, args).map(CallResult::Value),
@@ -10646,6 +10659,530 @@ fn call_kron(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResul
     let b = ndarray_from_value(b_val, "numpy.kron", vm)?;
     let result = kron_arrays(&a, &b, vm.heap.tracker())?;
     Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(result))?))
+}
+
+/// `numpy.tensordot(a, b, axes=2)` — generalized real-valued tensor contraction.
+fn call_tensordot(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let (pos, kwargs) = args.into_parts();
+    defer_drop_mut!(pos, vm);
+
+    let a_val = pos
+        .next()
+        .ok_or_else(|| ExcType::type_error_at_least("numpy.tensordot", 2, 0))?;
+    defer_drop!(a_val, vm);
+    let b_val = pos
+        .next()
+        .ok_or_else(|| ExcType::type_error_at_least("numpy.tensordot", 2, 1))?;
+    defer_drop!(b_val, vm);
+    let axes_pos = pos.next();
+    defer_drop_mut!(axes_pos, vm);
+    if pos.len() != 0 {
+        return Err(ExcType::type_error_at_most("numpy.tensordot", 3, 3 + pos.len()));
+    }
+
+    let a = ndarray_or_scalar_from_value(a_val, "numpy.tensordot", vm)?;
+    let b = ndarray_or_scalar_from_value(b_val, "numpy.tensordot", vm)?;
+    let mut axes = if let Some(value) = axes_pos.as_ref() {
+        Some(tensordot_axes_from_value(value, a.ndim(), b.ndim(), vm)?)
+    } else {
+        None
+    };
+
+    let kwargs = kwargs.into_iter();
+    defer_drop_mut!(kwargs, vm);
+    for (key, value) in kwargs {
+        defer_drop!(key, vm);
+        defer_drop!(value, vm);
+        let Some(keyword_name) = key.as_either_str(vm.heap) else {
+            return Err(ExcType::type_error_kwargs_nonstring_key());
+        };
+        let key_str = keyword_name.as_str(vm.interns);
+        match key_str {
+            "axes" => {
+                if axes.is_some() {
+                    return Err(ExcType::type_error_multiple_values("numpy.tensordot", "axes"));
+                }
+                axes = Some(tensordot_axes_from_value(value, a.ndim(), b.ndim(), vm)?);
+            }
+            _ => return Err(ExcType::type_error_unexpected_keyword("numpy.tensordot", key_str)),
+        }
+    }
+
+    let axes = if let Some(axes) = axes {
+        axes
+    } else {
+        tensordot_axes_from_count(2, a.ndim(), b.ndim(), "numpy.tensordot")?
+    };
+    let result = tensordot_arrays(&a, &b, &axes, vm.heap.tracker())?;
+    if result.shape().is_empty() {
+        Ok(scalar_from_f64(result.data()[0], result.dtype()))
+    } else {
+        Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(result))?))
+    }
+}
+
+/// Axis mapping for a `tensordot` contraction.
+struct TensordotAxes {
+    /// Axes in the left input to contract.
+    left: Vec<usize>,
+    /// Axes in the right input to contract.
+    right: Vec<usize>,
+}
+
+/// Parses NumPy's `tensordot(axes=...)` argument.
+fn tensordot_axes_from_value(
+    value: &Value,
+    left_ndim: usize,
+    right_ndim: usize,
+    vm: &VM<'_, impl ResourceTracker>,
+) -> RunResult<TensordotAxes> {
+    match value {
+        Value::Int(count) => {
+            let count = i64_to_nonnegative_usize(*count, "numpy.tensordot", "axes")?;
+            tensordot_axes_from_count(count, left_ndim, right_ndim, "numpy.tensordot")
+        }
+        Value::Ref(heap_id) => match vm.heap.get(*heap_id) {
+            HeapData::List(items) => tensordot_axes_from_pair(items.as_slice(), left_ndim, right_ndim, vm),
+            HeapData::Tuple(items) => tensordot_axes_from_pair(items.as_slice(), left_ndim, right_ndim, vm),
+            _ => Err(ExcType::type_error(
+                "numpy.tensordot() axes must be an integer or pair of axis lists",
+            )),
+        },
+        _ => Err(ExcType::type_error(
+            "numpy.tensordot() axes must be an integer or pair of axis lists",
+        )),
+    }
+}
+
+/// Builds the default integer-axis contraction used by `tensordot`.
+fn tensordot_axes_from_count(
+    count: usize,
+    left_ndim: usize,
+    right_ndim: usize,
+    name: &str,
+) -> RunResult<TensordotAxes> {
+    if count > left_ndim || count > right_ndim {
+        Err(SimpleException::new_msg(ExcType::IndexError, "tuple index out of range").into())
+    } else {
+        Ok(TensordotAxes {
+            left: (left_ndim - count..left_ndim).collect(),
+            right: (0..count).collect(),
+        })
+    }
+    .and_then(|axes| validate_tensordot_axes(axes, left_ndim, right_ndim, name))
+}
+
+/// Parses the two axis specifications accepted by `tensordot`.
+fn tensordot_axes_from_pair(
+    items: &[Value],
+    left_ndim: usize,
+    right_ndim: usize,
+    vm: &VM<'_, impl ResourceTracker>,
+) -> RunResult<TensordotAxes> {
+    if items.len() != 2 {
+        return Err(ExcType::type_error(
+            "numpy.tensordot() axes pair must contain two entries",
+        ));
+    }
+    let axes = TensordotAxes {
+        left: tensordot_axis_vector_from_value(&items[0], left_ndim, "numpy.tensordot", vm)?,
+        right: tensordot_axis_vector_from_value(&items[1], right_ndim, "numpy.tensordot", vm)?,
+    };
+    validate_tensordot_axes(axes, left_ndim, right_ndim, "numpy.tensordot")
+}
+
+/// Parses one side of a `tensordot` axis pair.
+fn tensordot_axis_vector_from_value(
+    value: &Value,
+    ndim: usize,
+    name: &str,
+    vm: &VM<'_, impl ResourceTracker>,
+) -> RunResult<Vec<usize>> {
+    match value {
+        Value::Int(axis) => Ok(vec![normalize_axis(*axis, ndim, name)?]),
+        Value::Ref(heap_id) => match vm.heap.get(*heap_id) {
+            HeapData::List(items) => axis_sequence_from_items(items.as_slice(), ndim, name, "axes"),
+            HeapData::Tuple(items) => axis_sequence_from_items(items.as_slice(), ndim, name, "axes"),
+            _ => Err(ExcType::type_error(
+                "numpy.tensordot() axes entries must be integers or integer sequences",
+            )),
+        },
+        _ => Err(ExcType::type_error(
+            "numpy.tensordot() axes entries must be integers or integer sequences",
+        )),
+    }
+}
+
+/// Validates `tensordot` axis arity, uniqueness, and bounds.
+fn validate_tensordot_axes(
+    axes: TensordotAxes,
+    left_ndim: usize,
+    right_ndim: usize,
+    name: &str,
+) -> RunResult<TensordotAxes> {
+    if axes.left.len() != axes.right.len() {
+        return Err(SimpleException::new_msg(ExcType::ValueError, "shape-mismatch for sum").into());
+    }
+    ensure_unique_axes(&axes.left, name)?;
+    ensure_unique_axes(&axes.right, name)?;
+    if axes.left.iter().any(|&axis| axis >= left_ndim) || axes.right.iter().any(|&axis| axis >= right_ndim) {
+        Err(SimpleException::new_msg(ExcType::IndexError, "tuple index out of range").into())
+    } else {
+        Ok(axes)
+    }
+}
+
+/// Computes the real-valued `tensordot` contraction using row-major ndarray storage.
+fn tensordot_arrays(
+    left: &NdArray,
+    right: &NdArray,
+    axes: &TensordotAxes,
+    tracker: &impl ResourceTracker,
+) -> RunResult<NdArray> {
+    for (&left_axis, &right_axis) in axes.left.iter().zip(axes.right.iter()) {
+        if left.shape()[left_axis] != right.shape()[right_axis] {
+            return Err(SimpleException::new_msg(ExcType::ValueError, "shape-mismatch for sum").into());
+        }
+    }
+
+    let left_outer_axes = complement_axes(left.ndim(), &axes.left);
+    let right_outer_axes = complement_axes(right.ndim(), &axes.right);
+    let contract_shape = axes.left.iter().map(|&axis| left.shape()[axis]).collect::<Vec<_>>();
+    let output_shape = left_outer_axes
+        .iter()
+        .map(|&axis| left.shape()[axis])
+        .chain(right_outer_axes.iter().map(|&axis| right.shape()[axis]))
+        .collect::<Vec<_>>();
+
+    let output_len = checked_shape_product(&output_shape, "numpy.tensordot")?;
+    let contract_len = checked_shape_product(&contract_shape, "numpy.tensordot")?;
+    check_array_alloc_size(output_len, tracker)?;
+
+    let mut data = Vec::with_capacity(output_len);
+    for output_flat in 0..output_len {
+        let output_coords = flat_index_to_coords(output_flat, &output_shape);
+        let (left_outer_coords, right_outer_coords) = output_coords.split_at(left_outer_axes.len());
+        let mut total = 0.0;
+        for contract_flat in 0..contract_len {
+            let contract_coords = flat_index_to_coords(contract_flat, &contract_shape);
+            let left_index = tensordot_input_index(
+                left.shape(),
+                &left_outer_axes,
+                left_outer_coords,
+                &axes.left,
+                &contract_coords,
+            );
+            let right_index = tensordot_input_index(
+                right.shape(),
+                &right_outer_axes,
+                right_outer_coords,
+                &axes.right,
+                &contract_coords,
+            );
+            total += left.data()[left_index] * right.data()[right_index];
+        }
+        data.push(total);
+    }
+
+    Ok(NdArray::new(
+        data,
+        output_shape,
+        promote_dtype(left.dtype(), right.dtype()),
+    ))
+}
+
+/// Returns all axes not selected for contraction, preserving axis order.
+fn complement_axes(ndim: usize, selected: &[usize]) -> Vec<usize> {
+    (0..ndim).filter(|axis| !selected.contains(axis)).collect()
+}
+
+/// Builds one row-major flat index from outer and contracted coordinate components.
+fn tensordot_input_index(
+    shape: &[usize],
+    outer_axes: &[usize],
+    outer_coords: &[usize],
+    contract_axes: &[usize],
+    contract_coords: &[usize],
+) -> usize {
+    let mut coords = vec![0; shape.len()];
+    for (&axis, &coord) in outer_axes.iter().zip(outer_coords.iter()) {
+        coords[axis] = coord;
+    }
+    for (&axis, &coord) in contract_axes.iter().zip(contract_coords.iter()) {
+        coords[axis] = coord;
+    }
+    coords_to_flat_index(&coords, shape)
+}
+
+/// `numpy.einsum(subscripts, *operands)` — explicit-subscript real-valued contraction.
+fn call_einsum(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let (subscripts, operands) = parse_einsum_operands(args, "numpy.einsum", vm)?;
+    let spec = parse_einsum_spec(&subscripts, &operands, "numpy.einsum")?;
+    let result = einsum_arrays(&operands, &spec, vm.heap.tracker())?;
+    if result.shape().is_empty() {
+        Ok(scalar_from_f64(result.data()[0], result.dtype()))
+    } else {
+        Ok(Value::Ref(vm.heap.allocate(HeapData::NdArray(result))?))
+    }
+}
+
+/// `numpy.einsum_path(subscripts, *operands)` — simple compatible path result.
+fn call_einsum_path(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let (subscripts, operands) = parse_einsum_operands(args, "numpy.einsum_path", vm)?;
+    let spec = parse_einsum_spec(&subscripts, &operands, "numpy.einsum_path")?;
+    let path = simple_einsum_path(operands.len(), vm)?;
+    let details = format!(
+        "  Complete contraction:  {subscripts}\n  Monty contraction path:  simple left-to-right\n  Result shape:  {:?}",
+        spec.output_shape()
+    );
+    let details = allocate_string(details, vm.heap)?;
+    allocate_tuple(SmallVec::from_vec(vec![path, details]), vm.heap).map_err(Into::into)
+}
+
+/// Parsed representation of the supported `einsum` subscript subset.
+struct EinsumSpec {
+    /// Label sequence for each input operand.
+    inputs: Vec<Vec<char>>,
+    /// Output label sequence.
+    output: Vec<char>,
+    /// Dimension associated with each label.
+    label_dims: BTreeMap<char, usize>,
+    /// Labels reduced by summation.
+    contracted: Vec<char>,
+}
+
+impl EinsumSpec {
+    /// Returns the output ndarray shape implied by the output labels.
+    fn output_shape(&self) -> Vec<usize> {
+        self.output.iter().map(|label| self.label_dims[label]).collect()
+    }
+
+    /// Returns the shape iterated by the contraction labels.
+    fn contracted_shape(&self) -> Vec<usize> {
+        self.contracted.iter().map(|label| self.label_dims[label]).collect()
+    }
+}
+
+/// Parses the common `einsum` call form and accepts but ignores `optimize`.
+fn parse_einsum_operands(
+    args: ArgValues,
+    name: &'static str,
+    vm: &mut VM<'_, impl ResourceTracker>,
+) -> RunResult<(String, Vec<NdArray>)> {
+    let (pos, kwargs) = args.into_parts();
+    defer_drop_mut!(pos, vm);
+    let subscripts_val = pos.next().ok_or_else(|| ExcType::type_error_at_least(name, 1, 0))?;
+    defer_drop!(subscripts_val, vm);
+    let subscripts = string_from_value(subscripts_val, name, vm)?;
+
+    let mut operands = Vec::new();
+    for value in pos {
+        defer_drop!(value, vm);
+        operands.push(ndarray_or_scalar_from_value(value, name, vm)?);
+    }
+
+    let kwargs = kwargs.into_iter();
+    defer_drop_mut!(kwargs, vm);
+    for (key, value) in kwargs {
+        defer_drop!(key, vm);
+        defer_drop!(value, vm);
+        let Some(keyword_name) = key.as_either_str(vm.heap) else {
+            return Err(ExcType::type_error_kwargs_nonstring_key());
+        };
+        let key_str = keyword_name.as_str(vm.interns);
+        if key_str != "optimize" {
+            return Err(ExcType::type_error_unexpected_keyword(name, key_str));
+        }
+    }
+
+    Ok((subscripts, operands))
+}
+
+/// Parses labels for Monty's no-ellipsis `einsum` subset.
+fn parse_einsum_spec(subscripts: &str, operands: &[NdArray], name: &str) -> RunResult<EinsumSpec> {
+    let cleaned = subscripts.chars().filter(|ch| !ch.is_whitespace()).collect::<String>();
+    if cleaned.contains("...") {
+        return Err(SimpleException::new_msg(ExcType::NotImplementedError, "einsum ellipsis is not supported").into());
+    }
+
+    let parts = cleaned.split("->").collect::<Vec<_>>();
+    if parts.len() > 2 {
+        return Err(SimpleException::new_msg(ExcType::ValueError, "invalid einsum subscript").into());
+    }
+    let input_specs = parts[0].split(',').collect::<Vec<_>>();
+    if input_specs.len() != operands.len() {
+        return Err(SimpleException::new_msg(
+            ExcType::ValueError,
+            "number of subscripts must match number of operands",
+        )
+        .into());
+    }
+
+    let mut inputs = Vec::with_capacity(input_specs.len());
+    let mut label_dims = BTreeMap::new();
+    let mut label_counts: BTreeMap<char, usize> = BTreeMap::new();
+    for (spec, operand) in input_specs.iter().zip(operands.iter()) {
+        let labels = parse_einsum_labels(spec, name)?;
+        if labels.len() != operand.ndim() {
+            return Err(SimpleException::new_msg(
+                ExcType::ValueError,
+                "operand has more dimensions than subscripts given in einstein sum",
+            )
+            .into());
+        }
+        for (&label, &dim) in labels.iter().zip(operand.shape().iter()) {
+            match label_dims.get(&label) {
+                Some(&existing) if existing != dim => {
+                    return Err(SimpleException::new_msg(ExcType::ValueError, "shape-mismatch for sum").into());
+                }
+                Some(_) => {}
+                None => {
+                    label_dims.insert(label, dim);
+                }
+            }
+            *label_counts.entry(label).or_default() += 1;
+        }
+        inputs.push(labels);
+    }
+
+    let output = if parts.len() == 2 {
+        let labels = parse_einsum_labels(parts[1], name)?;
+        ensure_unique_einsum_labels(&labels)?;
+        for label in &labels {
+            if !label_dims.contains_key(label) {
+                return Err(SimpleException::new_msg(
+                    ExcType::ValueError,
+                    "einstein sum subscripts string included output subscript never seen in an input",
+                )
+                .into());
+            }
+        }
+        labels
+    } else {
+        label_counts
+            .iter()
+            .filter_map(|(&label, &count)| (count == 1).then_some(label))
+            .collect()
+    };
+    let contracted = label_dims
+        .keys()
+        .copied()
+        .filter(|label| !output.contains(label))
+        .collect();
+    Ok(EinsumSpec {
+        inputs,
+        output,
+        label_dims,
+        contracted,
+    })
+}
+
+/// Parses one comma-separated `einsum` label component.
+fn parse_einsum_labels(spec: &str, name: &str) -> RunResult<Vec<char>> {
+    spec.chars()
+        .map(|ch| {
+            if ch.is_ascii_alphabetic() {
+                Ok(ch)
+            } else {
+                Err(SimpleException::new_msg(
+                    ExcType::ValueError,
+                    format!("{name}() subscripts must use ASCII letters"),
+                )
+                .into())
+            }
+        })
+        .collect()
+}
+
+/// Rejects repeated explicit output labels.
+fn ensure_unique_einsum_labels(labels: &[char]) -> RunResult<()> {
+    for (index, label) in labels.iter().enumerate() {
+        if labels[..index].contains(label) {
+            return Err(SimpleException::new_msg(
+                ExcType::ValueError,
+                "einstein sum subscripts string includes output subscript multiple times",
+            )
+            .into());
+        }
+    }
+    Ok(())
+}
+
+/// Executes the supported real-valued `einsum` contraction.
+fn einsum_arrays(operands: &[NdArray], spec: &EinsumSpec, tracker: &impl ResourceTracker) -> RunResult<NdArray> {
+    let output_shape = spec.output_shape();
+    let contracted_shape = spec.contracted_shape();
+    let output_len = checked_shape_product(&output_shape, "numpy.einsum")?;
+    let contracted_len = checked_shape_product(&contracted_shape, "numpy.einsum")?;
+    check_array_alloc_size(output_len, tracker)?;
+    let dtype = operands
+        .iter()
+        .map(NdArray::dtype)
+        .reduce(promote_dtype)
+        .unwrap_or(NdArrayDtype::Float64);
+
+    let mut data = Vec::with_capacity(output_len);
+    for output_flat in 0..output_len {
+        let output_coords = flat_index_to_coords(output_flat, &output_shape);
+        let mut total = 0.0;
+        for contracted_flat in 0..contracted_len {
+            let contracted_coords = flat_index_to_coords(contracted_flat, &contracted_shape);
+            let mut product = 1.0;
+            for (operand, labels) in operands.iter().zip(spec.inputs.iter()) {
+                let index = einsum_operand_index(
+                    operand.shape(),
+                    labels,
+                    &spec.output,
+                    &output_coords,
+                    &spec.contracted,
+                    &contracted_coords,
+                );
+                product *= operand.data()[index];
+            }
+            total += product;
+        }
+        data.push(total);
+    }
+    Ok(NdArray::new(data, output_shape, dtype))
+}
+
+/// Builds one operand index by combining output and contracted label coordinates.
+fn einsum_operand_index(
+    shape: &[usize],
+    labels: &[char],
+    output_labels: &[char],
+    output_coords: &[usize],
+    contracted_labels: &[char],
+    contracted_coords: &[usize],
+) -> usize {
+    let coords = labels
+        .iter()
+        .map(|label| {
+            output_labels
+                .iter()
+                .position(|output| output == label)
+                .map(|index| output_coords[index])
+                .or_else(|| {
+                    contracted_labels
+                        .iter()
+                        .position(|contracted| contracted == label)
+                        .map(|index| contracted_coords[index])
+                })
+                .unwrap_or(0)
+        })
+        .collect::<Vec<_>>();
+    coords_to_flat_index(&coords, shape)
+}
+
+/// Builds a simple left-to-right path list compatible with `numpy.einsum_path`.
+fn simple_einsum_path(operand_count: usize, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<Value> {
+    let mut items = Vec::new();
+    items.push(allocate_string("einsum_path".to_string(), vm.heap)?);
+    for _ in 1..operand_count {
+        let pair = SmallVec::from_vec(vec![Value::Int(0), Value::Int(1)]);
+        items.push(allocate_tuple(pair, vm.heap)?);
+    }
+    Ok(Value::Ref(vm.heap.allocate(HeapData::List(List::new(items)))?))
 }
 
 /// Computes the Kronecker product using NumPy's left-padded shape alignment.
