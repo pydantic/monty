@@ -276,6 +276,13 @@ impl<T: ResourceTracker> VM<'_, T> {
     }
 
     /// Inner recursive helper for check_exc_match that handles tuples.
+    ///
+    /// Bounded by the heap's recursion-depth tracker: tuples handed to `except`
+    /// are constructed at runtime, so they can be nested arbitrarily deeply
+    /// regardless of source nesting limits. Without the bound, deeply-nested
+    /// tuples would overflow the host's native stack inside a single bytecode
+    /// instruction. Time is also checked per tuple to bound shared-substructure
+    /// (DAG) traversals that fan out without growing the depth.
     fn check_exc_match_inner(&self, exc_type_enum: Type, exc_type: &Value) -> Result<bool, RunError> {
         match exc_type {
             // Valid exception type
@@ -286,12 +293,23 @@ impl<T: ResourceTracker> VM<'_, T> {
             // Tuple of exception types
             Value::Ref(id) => {
                 if let HeapData::Tuple(tuple) = self.heap.get(*id) {
+                    self.heap.check_time()?;
+                    // `RecursionToken` has no `Drop` impl, so it must be paired
+                    // with an explicit `decr_recursion_depth()` call. `defer_drop!`
+                    // is unavailable here because this method only has `&self`.
+                    let _token = self.heap.incr_recursion_depth()?;
+                    let mut matched = Ok(false);
                     for v in tuple.as_slice() {
-                        if self.check_exc_match_inner(exc_type_enum, v)? {
-                            return Ok(true);
+                        match self.check_exc_match_inner(exc_type_enum, v) {
+                            Ok(false) => {}
+                            other => {
+                                matched = other;
+                                break;
+                            }
                         }
                     }
-                    Ok(false)
+                    self.heap.decr_recursion_depth();
+                    matched
                 } else {
                     // Not a tuple - invalid exception type
                     Err(ExcType::except_invalid_type_error())
