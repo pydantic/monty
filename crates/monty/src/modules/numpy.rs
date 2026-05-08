@@ -857,6 +857,10 @@ pub fn create_module(vm: &mut VM<'_, impl ResourceTracker>) -> Result<HeapId, Re
     for (name, target) in NUMPY_DTYPE_ALIASES {
         module.set_attr(*name, Value::InternString((*target).into()), vm);
     }
+    for (name, target) in NUMPY_MARKER_ONLY_DTYPE_ALIASES {
+        module.set_attr(*name, Value::InternString((*target).into()), vm);
+    }
+    module.set_attr(StaticStrings::NpScalarType, numpy_scalar_type_tuple(vm)?, vm);
     module.set_attr(
         StaticStrings::NpInteger,
         Value::InternString(StaticStrings::NpIntegerCategoryMarker.into()),
@@ -1379,6 +1383,25 @@ fn numpy_sctype_dict(vm: &mut VM<'_, impl ResourceTracker>) -> Result<Value, Res
     Ok(Value::Ref(vm.heap.allocate(HeapData::Dict(dict))?))
 }
 
+/// Builds NumPy's `ScalarType` tuple for scalar constructors Monty can expose safely.
+///
+/// CPython NumPy includes every NumPy scalar class here. Monty only has real
+/// Python scalar constructors plus metadata-only dtype markers, so this tuple
+/// intentionally contains only actual callable type objects that `isinstance`
+/// can evaluate without pretending marker strings are runtime scalar classes.
+fn numpy_scalar_type_tuple(vm: &VM<'_, impl ResourceTracker>) -> Result<Value, ResourceError> {
+    allocate_tuple(
+        SmallVec::from_vec(vec![
+            Value::Builtin(Builtins::Type(Type::Int)),
+            Value::Builtin(Builtins::Type(Type::Float)),
+            Value::Builtin(Builtins::Type(Type::Bool)),
+            Value::Builtin(Builtins::Type(Type::Bytes)),
+            Value::Builtin(Builtins::Type(Type::Str)),
+        ]),
+        vm.heap,
+    )
+}
+
 /// NumPy dtype attributes supported by Monty's compact numeric ndarray model.
 ///
 /// Many NumPy dtype names are aliases for platform-sized or narrower integer
@@ -1420,6 +1443,26 @@ const NUMPY_DTYPE_ALIASES: &[(StaticStrings, StaticStrings)] = &[
     (StaticStrings::NpBool, StaticStrings::NpBool_),
 ];
 
+/// Metadata-only dtype attributes that do not imply ndarray storage support.
+///
+/// These public names let dtype predicates and promotion helpers recognize
+/// NumPy scalar families such as complex, string, object, and datetime. They
+/// are deliberately kept out of [`NUMPY_DTYPE_ALIASES`] so constructors and
+/// `astype()` continue to reject storage dtypes Monty does not implement.
+const NUMPY_MARKER_ONLY_DTYPE_ALIASES: &[(StaticStrings, StaticStrings)] = &[
+    (StaticStrings::NpComplex64, StaticStrings::NpComplex64),
+    (StaticStrings::NpComplex128, StaticStrings::NpComplex128),
+    (StaticStrings::NpCdouble, StaticStrings::NpComplex128),
+    (StaticStrings::NpCsingle, StaticStrings::NpComplex64),
+    (StaticStrings::NpClongdouble, StaticStrings::NpClongdouble),
+    (StaticStrings::NpStr_, StaticStrings::NpStr_),
+    (StaticStrings::NpBytes_, StaticStrings::NpBytes_),
+    (StaticStrings::NpVoid, StaticStrings::NpVoid),
+    (StaticStrings::NpObject_, StaticStrings::NpObject_),
+    (StaticStrings::NpDatetime64, StaticStrings::NpDatetime64),
+    (StaticStrings::NpTimedelta64, StaticStrings::NpTimedelta64),
+];
+
 /// Name-to-dtype aliases exposed through `numpy.sctypeDict`.
 const NUMPY_SCTYPE_DICT: &[(&str, StaticStrings)] = &[
     ("bool", StaticStrings::NpBool_),
@@ -1451,6 +1494,20 @@ const NUMPY_SCTYPE_DICT: &[(&str, StaticStrings)] = &[
     ("ushort", StaticStrings::NpInt64),
     ("ulong", StaticStrings::NpInt64),
     ("ulonglong", StaticStrings::NpInt64),
+    ("complex64", StaticStrings::NpComplex64),
+    ("complex128", StaticStrings::NpComplex128),
+    ("cdouble", StaticStrings::NpComplex128),
+    ("csingle", StaticStrings::NpComplex64),
+    ("clongdouble", StaticStrings::NpClongdouble),
+    ("str", StaticStrings::NpStr_),
+    ("str_", StaticStrings::NpStr_),
+    ("bytes", StaticStrings::NpBytes_),
+    ("bytes_", StaticStrings::NpBytes_),
+    ("void", StaticStrings::NpVoid),
+    ("object", StaticStrings::NpObject_),
+    ("object_", StaticStrings::NpObject_),
+    ("datetime64", StaticStrings::NpDatetime64),
+    ("timedelta64", StaticStrings::NpTimedelta64),
 ];
 
 /// Static mapping of attribute names to numpy functions for module creation.
@@ -7977,7 +8034,7 @@ fn call_iterable(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunR
 fn call_dtype(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     let arg = args.get_one_arg("numpy.dtype", vm.heap)?;
     defer_drop!(arg, vm);
-    Ok(dtype_meta_value(dtype_meta_from_optional_dtype_value(
+    Ok(dtype_token_value(dtype_token_from_optional_dtype_value(
         arg,
         "numpy.dtype",
         vm,
@@ -8004,9 +8061,9 @@ fn call_can_cast(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunR
     let (from_val, to_val) = args.get_two_args("numpy.can_cast", vm.heap)?;
     defer_drop!(from_val, vm);
     defer_drop!(to_val, vm);
-    let from = dtype_meta_from_dtype_value(from_val, "numpy.can_cast", vm)?;
-    let to = dtype_meta_from_dtype_value(to_val, "numpy.can_cast", vm)?;
-    Ok(Value::Bool(can_cast_dtype_meta(from, to)))
+    let from = dtype_token_from_dtype_value(from_val, "numpy.can_cast", vm)?;
+    let to = dtype_token_from_dtype_value(to_val, "numpy.can_cast", vm)?;
+    Ok(Value::Bool(can_cast_dtype_token(from, to)))
 }
 
 /// `numpy.promote_types(type1, type2)` — promoted dtype marker.
@@ -8014,9 +8071,13 @@ fn call_promote_types(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) ->
     let (first_val, second_val) = args.get_two_args("numpy.promote_types", vm.heap)?;
     defer_drop!(first_val, vm);
     defer_drop!(second_val, vm);
-    let first = dtype_meta_from_dtype_value(first_val, "numpy.promote_types", vm)?;
-    let second = dtype_meta_from_dtype_value(second_val, "numpy.promote_types", vm)?;
-    Ok(dtype_meta_value(promote_dtype_meta(first, second)))
+    let first = dtype_token_from_dtype_value(first_val, "numpy.promote_types", vm)?;
+    let second = dtype_token_from_dtype_value(second_val, "numpy.promote_types", vm)?;
+    Ok(dtype_token_value(promote_dtype_token(
+        first,
+        second,
+        "numpy.promote_types",
+    )?))
 }
 
 /// `numpy.result_type(*arrays_and_dtypes)` — result dtype marker for real numeric inputs.
@@ -8027,12 +8088,13 @@ fn call_result_type(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> R
         return Err(ExcType::type_error_at_least("numpy.result_type", 1, 0));
     }
 
-    let mut result = CompactDtype::Bool;
+    let mut result = DtypeToken::Compact(CompactDtype::Bool);
     for arg in pos.by_ref() {
         defer_drop!(arg, vm);
-        result = promote_dtype_meta(result, dtype_meta_from_value(arg, "numpy.result_type", vm)?);
+        let token = dtype_token_from_value(arg, "numpy.result_type", vm)?;
+        result = promote_dtype_token(result, token, "numpy.result_type")?;
     }
-    Ok(dtype_meta_value(result))
+    Ok(dtype_token_value(result))
 }
 
 /// `numpy.common_type(*arrays)` — common real dtype marker, with float64 as minimum.
@@ -8168,9 +8230,9 @@ fn call_isdtype(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunRe
     let (dtype_val, kind_val) = args.get_two_args("numpy.isdtype", vm.heap)?;
     defer_drop!(dtype_val, vm);
     defer_drop!(kind_val, vm);
-    let dtype = dtype_meta_from_dtype_value(dtype_val, "numpy.isdtype", vm)?;
+    let dtype = dtype_token_from_dtype_value(dtype_val, "numpy.isdtype", vm)?;
     let kind = isdtype_kind_from_value(kind_val, "numpy.isdtype", vm)?;
-    Ok(Value::Bool(is_dtype_kind(dtype, kind)))
+    Ok(Value::Bool(is_dtype_token_kind(dtype, kind)))
 }
 
 /// `numpy.finfo(dtype)` — floating dtype machine-limit metadata.
@@ -8383,6 +8445,29 @@ enum CompactDtype {
     Float64,
 }
 
+/// Dtype marker metadata recognized without necessarily supporting array storage.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum DtypeToken {
+    /// A dtype backed by Monty's compact bool/int/float ndarray storage.
+    Compact(CompactDtype),
+    /// Complex single-precision metadata marker.
+    Complex64,
+    /// Complex double-precision metadata marker.
+    Complex128,
+    /// Unicode string metadata marker.
+    Str,
+    /// Byte-string metadata marker.
+    Bytes,
+    /// Void/flexible record metadata marker.
+    Void,
+    /// Python object metadata marker.
+    Object,
+    /// Datetime metadata marker.
+    DateTime64,
+    /// Timedelta metadata marker.
+    Timedelta64,
+}
+
 /// Dtype category markers exposed for hierarchy-style predicates.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum DtypeCategory {
@@ -8421,6 +8506,18 @@ enum DtypeConcrete {
     UnsignedInteger,
     /// Real floating dtype.
     Floating,
+    /// Complex floating dtype.
+    ComplexFloating,
+    /// String/bytes dtype.
+    Character,
+    /// Flexible non-character dtype such as `void`.
+    FlexibleVoid,
+    /// Object dtype.
+    Object,
+    /// Datetime dtype.
+    DateTime64,
+    /// Timedelta dtype.
+    Timedelta64,
 }
 
 /// Parsed dtype hierarchy operand for `issubdtype`.
@@ -8506,6 +8603,27 @@ fn dtype_meta_from_dtype_value(
     dtype_meta_from_str(&text, name)
 }
 
+/// Parses dtype metadata, including marker-only names that have no ndarray storage.
+fn dtype_token_from_dtype_value(value: &Value, name: &str, vm: &VM<'_, impl ResourceTracker>) -> RunResult<DtypeToken> {
+    let text = string_from_value(value, name, vm)?;
+    dtype_token_from_str(&text, name)
+}
+
+/// Parses dtype metadata from APIs that accept Python type constructors and `None`.
+fn dtype_token_from_optional_dtype_value(
+    value: &Value,
+    name: &str,
+    vm: &VM<'_, impl ResourceTracker>,
+) -> RunResult<DtypeToken> {
+    match value {
+        Value::None => Ok(DtypeToken::Compact(CompactDtype::Float64)),
+        Value::Builtin(Builtins::Type(Type::Bool)) => Ok(DtypeToken::Compact(CompactDtype::Bool)),
+        Value::Builtin(Builtins::Type(Type::Int)) => Ok(DtypeToken::Compact(CompactDtype::Int)),
+        Value::Builtin(Builtins::Type(Type::Float)) => Ok(DtypeToken::Compact(CompactDtype::Float64)),
+        _ => dtype_token_from_dtype_value(value, name, vm),
+    }
+}
+
 /// Parses a concrete dtype or Monty category marker for `issubdtype`.
 fn dtype_kind_from_value(value: &Value, name: &str, vm: &VM<'_, impl ResourceTracker>) -> RunResult<DtypeKind> {
     let text = string_from_value(value, name, vm)?;
@@ -8523,7 +8641,7 @@ fn isdtype_kind_from_value(value: &Value, name: &str, vm: &VM<'_, impl ResourceT
         Ok(IsdtypeKind::Never)
     } else if let Some(category) = isdtype_category_from_name(&text) {
         Ok(IsdtypeKind::Category(category))
-    } else if matches!(text.as_str(), "complex floating" | "unsigned integer") {
+    } else if matches!(text.as_str(), "unsigned integer") {
         Ok(IsdtypeKind::Never)
     } else if let Ok(dtype) = dtype_meta_from_str(&text, name) {
         Ok(IsdtypeKind::Concrete(dtype))
@@ -8545,6 +8663,18 @@ fn dtype_meta_from_value(value: &Value, name: &str, vm: &VM<'_, impl ResourceTra
     } else {
         let arr = ndarray_from_value(value, name, vm)?;
         Ok(dtype_meta_from_ndarray_dtype(arr.dtype()))
+    }
+}
+
+/// Infers dtype metadata for dtype markers, scalar values, ndarrays, or lists.
+fn dtype_token_from_value(value: &Value, name: &str, vm: &VM<'_, impl ResourceTracker>) -> RunResult<DtypeToken> {
+    if let Ok(text) = string_from_value(value, name, vm) {
+        dtype_token_from_str(&text, name)
+    } else if let Ok((_, dtype)) = numeric_scalar_info(value, name, vm) {
+        Ok(DtypeToken::Compact(dtype_meta_from_ndarray_dtype(dtype)))
+    } else {
+        let arr = ndarray_from_value(value, name, vm)?;
+        Ok(DtypeToken::Compact(dtype_meta_from_ndarray_dtype(arr.dtype())))
     }
 }
 
@@ -8744,6 +8874,26 @@ fn dtype_meta_from_str(text: &str, name: &str) -> RunResult<CompactDtype> {
     }
 }
 
+/// Maps dtype text onto metadata tokens, including unsupported-storage markers.
+fn dtype_token_from_str(text: &str, name: &str) -> RunResult<DtypeToken> {
+    if let Ok(dtype) = dtype_meta_from_str(text, name) {
+        Ok(DtypeToken::Compact(dtype))
+    } else {
+        match text {
+            "complex64" | "csingle" | "F" => Ok(DtypeToken::Complex64),
+            "complex128" | "cdouble" | "complex" | "D" => Ok(DtypeToken::Complex128),
+            "clongdouble" | "G" => Ok(DtypeToken::Complex128),
+            "str" | "str_" | "U" => Ok(DtypeToken::Str),
+            "bytes" | "bytes_" | "S" => Ok(DtypeToken::Bytes),
+            "void" | "V" => Ok(DtypeToken::Void),
+            "object" | "object_" | "O" => Ok(DtypeToken::Object),
+            "datetime64" | "M" => Ok(DtypeToken::DateTime64),
+            "timedelta64" | "m" => Ok(DtypeToken::Timedelta64),
+            _ => Err(ExcType::type_error(format!("{name}() unsupported dtype: {text}"))),
+        }
+    }
+}
+
 /// Maps dtype text onto the concrete family used by hierarchy predicates.
 fn dtype_concrete_from_str(text: &str, name: &str) -> RunResult<DtypeConcrete> {
     match text {
@@ -8754,6 +8904,14 @@ fn dtype_concrete_from_str(text: &str, name: &str) -> RunResult<DtypeConcrete> {
         | "ulonglong" | "B" | "H" | "I" | "L" | "Q" => Ok(DtypeConcrete::UnsignedInteger),
         "float16" | "float32" | "float64" | "half" | "single" | "double" | "longdouble" | "float" | "f" | "e" | "d"
         | "g" => Ok(DtypeConcrete::Floating),
+        "complex64" | "complex128" | "cdouble" | "csingle" | "clongdouble" | "complex" | "F" | "D" | "G" => {
+            Ok(DtypeConcrete::ComplexFloating)
+        }
+        "str" | "str_" | "bytes" | "bytes_" | "U" | "S" => Ok(DtypeConcrete::Character),
+        "void" | "V" => Ok(DtypeConcrete::FlexibleVoid),
+        "object" | "object_" | "O" => Ok(DtypeConcrete::Object),
+        "datetime64" | "M" => Ok(DtypeConcrete::DateTime64),
+        "timedelta64" | "m" => Ok(DtypeConcrete::Timedelta64),
         _ => Err(ExcType::type_error(format!("{name}() unsupported dtype: {text}"))),
     }
 }
@@ -8778,6 +8936,24 @@ fn dtype_meta_value(dtype: CompactDtype) -> Value {
     Value::InternString(marker.into())
 }
 
+/// Returns an interned dtype marker for metadata-only dtype parsing.
+fn dtype_token_value(dtype: DtypeToken) -> Value {
+    let marker = match dtype {
+        DtypeToken::Compact(dtype) => {
+            return dtype_meta_value(dtype);
+        }
+        DtypeToken::Complex64 => StaticStrings::NpComplex64,
+        DtypeToken::Complex128 => StaticStrings::NpComplex128,
+        DtypeToken::Str => StaticStrings::NpStr_,
+        DtypeToken::Bytes => StaticStrings::NpBytes_,
+        DtypeToken::Void => StaticStrings::NpVoid,
+        DtypeToken::Object => StaticStrings::NpObject_,
+        DtypeToken::DateTime64 => StaticStrings::NpDatetime64,
+        DtypeToken::Timedelta64 => StaticStrings::NpTimedelta64,
+    };
+    Value::InternString(marker.into())
+}
+
 /// Returns the canonical dtype text accepted by `NdArray::astype()`.
 fn compact_dtype_name(dtype: CompactDtype) -> &'static str {
     match dtype {
@@ -8798,6 +8974,61 @@ fn can_cast_dtype_meta(from: CompactDtype, to: CompactDtype) -> bool {
     from <= to
 }
 
+/// Returns whether NumPy metadata-only casting is safe for supported markers.
+fn can_cast_dtype_token(from: DtypeToken, to: DtypeToken) -> bool {
+    match (from, to) {
+        (DtypeToken::Compact(from), DtypeToken::Compact(to)) => can_cast_dtype_meta(from, to),
+        (_, DtypeToken::Object) => true,
+        (DtypeToken::Object, _) => false,
+        (DtypeToken::Compact(_), DtypeToken::Complex64 | DtypeToken::Complex128) => true,
+        (DtypeToken::Compact(_), DtypeToken::Str | DtypeToken::Bytes) => true,
+        (DtypeToken::Complex64, DtypeToken::Complex64 | DtypeToken::Complex128 | DtypeToken::Str) => true,
+        (DtypeToken::Complex128, DtypeToken::Complex128 | DtypeToken::Str) => true,
+        (DtypeToken::Str, DtypeToken::Str) | (DtypeToken::Bytes, DtypeToken::Bytes | DtypeToken::Str) => true,
+        (DtypeToken::Void, DtypeToken::Void)
+        | (DtypeToken::DateTime64, DtypeToken::DateTime64)
+        | (DtypeToken::Timedelta64, DtypeToken::Timedelta64) => true,
+        _ => false,
+    }
+}
+
+/// Promotes dtype metadata tokens without enabling unsupported ndarray storage.
+fn promote_dtype_token(first: DtypeToken, second: DtypeToken, name: &str) -> RunResult<DtypeToken> {
+    let promoted = match (first, second) {
+        (DtypeToken::Compact(first), DtypeToken::Compact(second)) => {
+            DtypeToken::Compact(promote_dtype_meta(first, second))
+        }
+        (DtypeToken::Object, _) | (_, DtypeToken::Object) => DtypeToken::Object,
+        (DtypeToken::Complex128, _) | (_, DtypeToken::Complex128) => DtypeToken::Complex128,
+        (
+            DtypeToken::Complex64,
+            DtypeToken::Compact(CompactDtype::Float32 | CompactDtype::Bool) | DtypeToken::Complex64,
+        )
+        | (DtypeToken::Compact(CompactDtype::Float32 | CompactDtype::Bool), DtypeToken::Complex64) => {
+            DtypeToken::Complex64
+        }
+        (DtypeToken::Complex64, DtypeToken::Compact(_)) | (DtypeToken::Compact(_), DtypeToken::Complex64) => {
+            DtypeToken::Complex128
+        }
+        (DtypeToken::Str, _) | (_, DtypeToken::Str) => DtypeToken::Str,
+        (DtypeToken::Bytes, _) | (_, DtypeToken::Bytes) => DtypeToken::Bytes,
+        (
+            DtypeToken::Timedelta64,
+            DtypeToken::Compact(CompactDtype::Bool | CompactDtype::Int) | DtypeToken::Timedelta64,
+        )
+        | (DtypeToken::Compact(CompactDtype::Bool | CompactDtype::Int), DtypeToken::Timedelta64) => {
+            DtypeToken::Timedelta64
+        }
+        (left, right) if left == right => left,
+        _ => {
+            return Err(ExcType::type_error(format!(
+                "{name}() unsupported dtype promotion for metadata-only dtypes"
+            )));
+        }
+    };
+    Ok(promoted)
+}
+
 /// Returns true when the first dtype/category is included in the second.
 fn is_subdtype_kind(first: DtypeKind, second: DtypeKind) -> bool {
     match (first, second) {
@@ -8814,6 +9045,25 @@ fn is_dtype_kind(dtype: CompactDtype, kind: IsdtypeKind) -> bool {
         IsdtypeKind::Concrete(kind_dtype) => dtype == kind_dtype,
         IsdtypeKind::Category(category) => dtype_category_contains_compact(category, dtype),
         IsdtypeKind::Never => false,
+    }
+}
+
+/// Returns true when a dtype metadata marker matches an `isdtype` kind operand.
+fn is_dtype_token_kind(dtype: DtypeToken, kind: IsdtypeKind) -> bool {
+    match dtype {
+        DtypeToken::Compact(dtype) => is_dtype_kind(dtype, kind),
+        DtypeToken::Complex64 | DtypeToken::Complex128 => {
+            matches!(
+                kind,
+                IsdtypeKind::Category(DtypeCategory::ComplexFloating | DtypeCategory::Number)
+            )
+        }
+        DtypeToken::Str
+        | DtypeToken::Bytes
+        | DtypeToken::Void
+        | DtypeToken::Object
+        | DtypeToken::DateTime64
+        | DtypeToken::Timedelta64 => false,
     }
 }
 
@@ -8840,6 +9090,7 @@ fn isdtype_category_from_name(text: &str) -> Option<DtypeCategory> {
         "bool" => Some(DtypeCategory::Bool),
         "integral" | "signed integer" => Some(DtypeCategory::Integer),
         "real floating" => Some(DtypeCategory::Floating),
+        "complex floating" => Some(DtypeCategory::ComplexFloating),
         "numeric" => Some(DtypeCategory::Number),
         _ => None,
     }
@@ -8853,14 +9104,21 @@ fn dtype_category_contains_dtype(category: DtypeCategory, dtype: DtypeConcrete) 
         DtypeCategory::Integer => matches!(dtype, DtypeConcrete::SignedInteger | DtypeConcrete::UnsignedInteger),
         DtypeCategory::SignedInteger => matches!(dtype, DtypeConcrete::SignedInteger),
         DtypeCategory::UnsignedInteger => matches!(dtype, DtypeConcrete::UnsignedInteger),
-        DtypeCategory::Floating | DtypeCategory::Inexact => matches!(dtype, DtypeConcrete::Floating),
+        DtypeCategory::Floating => matches!(dtype, DtypeConcrete::Floating),
+        DtypeCategory::Inexact => matches!(dtype, DtypeConcrete::Floating | DtypeConcrete::ComplexFloating),
+        DtypeCategory::ComplexFloating => matches!(dtype, DtypeConcrete::ComplexFloating),
+        DtypeCategory::Flexible => matches!(dtype, DtypeConcrete::Character | DtypeConcrete::FlexibleVoid),
+        DtypeCategory::Character => matches!(dtype, DtypeConcrete::Character),
         DtypeCategory::Number => {
             matches!(
                 dtype,
-                DtypeConcrete::SignedInteger | DtypeConcrete::UnsignedInteger | DtypeConcrete::Floating
+                DtypeConcrete::SignedInteger
+                    | DtypeConcrete::UnsignedInteger
+                    | DtypeConcrete::Floating
+                    | DtypeConcrete::ComplexFloating
+                    | DtypeConcrete::Timedelta64
             )
         }
-        DtypeCategory::ComplexFloating | DtypeCategory::Flexible | DtypeCategory::Character => false,
     }
 }
 

@@ -1804,6 +1804,42 @@ pub enum StaticStrings {
     /// `numpy.c_` column-concatenation index helper.
     #[strum(serialize = "c_")]
     NpCIndex,
+    /// `numpy.complex64` dtype metadata marker.
+    #[strum(serialize = "complex64")]
+    NpComplex64,
+    /// `numpy.complex128` dtype metadata marker.
+    #[strum(serialize = "complex128")]
+    NpComplex128,
+    /// `numpy.cdouble` dtype metadata alias for `complex128`.
+    #[strum(serialize = "cdouble")]
+    NpCdouble,
+    /// `numpy.csingle` dtype metadata alias for `complex64`.
+    #[strum(serialize = "csingle")]
+    NpCsingle,
+    /// `numpy.clongdouble` dtype metadata marker.
+    #[strum(serialize = "clongdouble")]
+    NpClongdouble,
+    /// `numpy.str_` dtype metadata marker.
+    #[strum(serialize = "str_")]
+    NpStr_,
+    /// `numpy.bytes_` dtype metadata marker.
+    #[strum(serialize = "bytes_")]
+    NpBytes_,
+    /// `numpy.void` dtype metadata marker.
+    #[strum(serialize = "void")]
+    NpVoid,
+    /// `numpy.object_` dtype metadata marker.
+    #[strum(serialize = "object_")]
+    NpObject_,
+    /// `numpy.datetime64` dtype metadata marker.
+    #[strum(serialize = "datetime64")]
+    NpDatetime64,
+    /// `numpy.timedelta64` dtype metadata marker.
+    #[strum(serialize = "timedelta64")]
+    NpTimedelta64,
+    /// `numpy.ScalarType` tuple for Monty's supported scalar constructors.
+    #[strum(serialize = "ScalarType")]
+    NpScalarType,
 }
 
 impl StaticStrings {
