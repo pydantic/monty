@@ -369,13 +369,19 @@ fn ensure_python_modules_imported() {
 /// Result from dispatching an external function call.
 ///
 /// Distinguishes between synchronous calls (return immediately) and
-/// asynchronous calls (return a future that needs later resolution).
+/// asynchronous calls (return a future that needs later resolution), and
+/// further splits async calls into success and failure variants so the
+/// harness can exercise both `ExtFunctionResult::Return` and
+/// `ExtFunctionResult::Error` resolution paths for external futures.
 enum DispatchResult {
     /// Synchronous result - pass directly to `state.run()`.
     Sync(ExtFunctionResult),
-    /// Asynchronous call - use `state.run_pending()` and resolve later.
-    /// Contains the value to resolve the future with.
+    /// Asynchronous call - use `state.run_pending()` and resolve later
+    /// with `ExtFunctionResult::Return(value)`.
     Async(MontyObject),
+    /// Asynchronous call that fails - use `state.run_pending()` and
+    /// resolve later with `ExtFunctionResult::Error(exception)`.
+    AsyncFail(MontyException),
 }
 
 /// Dispatches an external function call to the appropriate test implementation.
@@ -501,6 +507,21 @@ fn dispatch_external_call(name: &str, args: Vec<MontyObject>) -> DispatchResult 
             // This is an async function - use run_pending() and resolve later
             assert!(args.len() == 1, "async_call requires 1 argument");
             DispatchResult::Async(args.into_iter().next().unwrap())
+        }
+        "async_fail" => {
+            // async_fail(exc_type: str, message: str) -> coroutine that raises.
+            // Mirrors `raise_error` for the async path.
+            assert!(args.len() == 2, "async_fail requires 2 arguments");
+            let exc_type_str = String::try_from(&args[0]).expect("async_fail: first arg must be str");
+            let message = String::try_from(&args[1]).expect("async_fail: second arg must be str");
+            let exc_type = match exc_type_str.as_str() {
+                "ValueError" => ExcType::ValueError,
+                "TypeError" => ExcType::TypeError,
+                "KeyError" => ExcType::KeyError,
+                "RuntimeError" => ExcType::RuntimeError,
+                _ => panic!("async_fail: unsupported exception type: {exc_type_str}"),
+            };
+            DispatchResult::AsyncFail(MontyException::new(exc_type, Some(message)))
         }
         _ => panic!("Unknown external function: {name}"),
     }
@@ -1741,8 +1762,11 @@ fn run_iter_loop(exec: MontyRun, gc_interval: Option<usize>) -> Result<MontyObje
     let limits = build_test_limits(gc_interval);
     let mut progress = exec.start(vec![], LimitedTracker::new(limits), PrintWriter::Stdout)?;
 
-    // Track pending async calls: (call_id, result_value)
-    let mut pending_results: Vec<(u32, MontyObject)> = Vec::new();
+    // Track pending async calls: (call_id, pre-built ExtFunctionResult).
+    // Successful async calls produce `Return(value)`; `async_fail` produces
+    // `Error(exception)`. The pre-built result is handed back verbatim at
+    // `ResolveFutures` so the harness exercises both resolution branches.
+    let mut pending_results: Vec<(u32, ExtFunctionResult)> = Vec::new();
 
     loop {
         // Test serialization round-trip at each step (skip when memory-model-checks is enabled
@@ -1769,23 +1793,29 @@ fn run_iter_loop(exec: MontyRun, gc_interval: Option<usize>) -> Result<MontyObje
                         progress = call.resume(return_value, PrintWriter::Stdout)?;
                     }
                     DispatchResult::Async(result_value) => {
-                        // Store the result for later resolution
-                        pending_results.push((call.call_id, result_value));
+                        // Store the success result for later resolution
+                        pending_results.push((call.call_id, ExtFunctionResult::Return(result_value)));
                         // Continue execution with a pending future
+                        progress = call.resume_pending(PrintWriter::Stdout)?;
+                    }
+                    DispatchResult::AsyncFail(exception) => {
+                        // Store the error for later resolution
+                        pending_results.push((call.call_id, ExtFunctionResult::Error(exception)));
                         progress = call.resume_pending(PrintWriter::Stdout)?;
                     }
                 }
             }
             RunProgress::ResolveFutures(state) => {
-                // Resolve all pending futures that we have results for
+                // Hand back each pending result verbatim (Return or Error) so
+                // `ResolveFutures::resume` sees both success and failure cases.
                 let results: Vec<(u32, ExtFunctionResult)> = state
                     .pending_call_ids()
                     .iter()
                     .filter_map(|p| {
-                        pending_results.iter().position(|(id, _)| id == p).map(|idx| {
-                            let (call_id, value) = pending_results.remove(idx);
-                            (call_id, ExtFunctionResult::Return(value))
-                        })
+                        pending_results
+                            .iter()
+                            .position(|(id, _)| id == p)
+                            .map(|idx| pending_results.remove(idx))
                     })
                     .collect();
 
@@ -1801,7 +1831,7 @@ fn run_iter_loop(exec: MontyRun, gc_interval: Option<usize>) -> Result<MontyObje
                 let result = match lookup.name.as_str() {
                     // External functions — resolved as callable Function objects
                     "add_ints" | "concat_strings" | "return_value" | "get_list" | "raise_error" | "make_point"
-                    | "make_mutable_point" | "make_user" | "make_empty" | "async_call" => {
+                    | "make_mutable_point" | "make_user" | "make_empty" | "async_call" | "async_fail" => {
                         NameLookupResult::Value(MontyObject::Function {
                             name: lookup.name.clone(),
                             docstring: None,
