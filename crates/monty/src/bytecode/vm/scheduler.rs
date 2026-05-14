@@ -124,6 +124,9 @@ pub(crate) struct SerializedTaskFrame {
     pub stack_base: usize,
     /// Number of local variable slots (0 for module-level frames).
     pub locals_count: u16,
+    /// Base index into the VM-wide `exception_stack` for this frame.
+    /// See `CallFrame.exception_stack_base`.
+    pub exception_stack_base: usize,
     /// Call site position (for tracebacks).
     pub call_position: Option<CodeRange>,
 }

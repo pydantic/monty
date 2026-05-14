@@ -276,17 +276,30 @@ pub struct ExceptionEntry {
     /// The VM pops values until the stack reaches this depth, then
     /// pushes the exception value.
     stack_depth: u16,
+
+    /// Number of THIS frame's exceptions that should be on `exception_stack`
+    /// when execution is inside this try region — i.e., the
+    /// `except_handler_depth` recorded by the compiler at the try-region
+    /// entry. Used by the VM during exception unwind to pop entries left
+    /// behind by handlers that the new exception is propagating past
+    /// (e.g. `try: raise; except: raise NewError` — the inner except's
+    /// entry needs to be dropped because the inner handler is abandoned
+    /// even though its trailer is dead code). Without this, a later bare
+    /// `raise` could resurrect an exception whose handler had been
+    /// abandoned via `raise`/`return`/`break`/`continue`.
+    exception_stack_count: u16,
 }
 
 impl ExceptionEntry {
     /// Creates a new exception table entry.
     #[must_use]
-    pub fn new(start: u32, end: u32, handler: u32, stack_depth: u16) -> Self {
+    pub fn new(start: u32, end: u32, handler: u32, stack_depth: u16, exception_stack_count: u16) -> Self {
         Self {
             start,
             end,
             handler,
             stack_depth,
+            exception_stack_count,
         }
     }
 
@@ -300,6 +313,13 @@ impl ExceptionEntry {
     #[must_use]
     pub fn stack_depth(&self) -> u16 {
         self.stack_depth
+    }
+
+    /// Returns the number of this-frame `exception_stack` entries expected
+    /// at the try region — see the field docs.
+    #[must_use]
+    pub fn exception_stack_count(&self) -> u16 {
+        self.exception_stack_count
     }
 
     /// Returns true if the given bytecode offset is within this entry's protected range.

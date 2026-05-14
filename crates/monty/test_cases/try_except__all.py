@@ -470,3 +470,227 @@ try:
 except (ValueError, BaseException):
     caught_by_tuple_with_base = True
 assert caught_by_tuple_with_base, 'tuple with BaseException should catch KeyboardInterrupt'
+
+
+# === Exception state cleared on `return` from inside an except handler ===
+# When `return` exits an except clause, the exception is cleared from the
+# active-exception state before any surrounding finally runs and before
+# control returns to the caller. A bare `raise` inside that finally (or
+# in subsequent code in the caller) must therefore see `RuntimeError(
+# "No active exception to reraise")` rather than re-raising the exception
+# the except clause had just been handling.
+
+
+# Bare raise inside a try/except inside a finally that runs after
+# return-from-except: should be caught as RuntimeError, not ValueError.
+def _return_from_except_then_bare_raise_in_finally() -> None:
+    try:
+        try:
+            raise ValueError('original')
+        except ValueError:
+            return
+    finally:
+        try:
+            raise  # bare reraise — exception should already be cleared
+        except ValueError:
+            assert False, '`return` from except must clear the exception before finally runs'
+        except RuntimeError as exc:
+            assert str(exc) == 'No active exception to reraise'
+
+
+_return_from_except_then_bare_raise_in_finally()
+
+
+# Return from a doubly-nested except handler should clear EVERY enclosing
+# handler's exception state, not just the innermost.
+def _return_from_doubly_nested_except() -> None:
+    try:
+        try:
+            try:
+                raise ValueError('inner')
+            except ValueError:
+                raise TypeError('middle')
+        except TypeError:
+            return
+    finally:
+        try:
+            raise
+        except (ValueError, TypeError):
+            assert False, "`return` from doubly-nested except must clear every handler's exception state"
+        except RuntimeError as exc:
+            assert str(exc) == 'No active exception to reraise'
+
+
+_return_from_doubly_nested_except()
+
+
+# After a function returns from inside an except clause, the caller's
+# active-exception state should NOT contain that function's exception.
+def _returns_from_except_no_finally() -> str:
+    try:
+        raise ValueError('original')
+    except ValueError:
+        return 'returned'
+
+
+assert _returns_from_except_no_finally() == 'returned'
+try:
+    raise  # bare raise in caller — no exception should be active here
+except ValueError:
+    assert False, "caller should not see inner function's exception as current"
+except RuntimeError as exc:
+    assert str(exc) == 'No active exception to reraise'
+
+
+# === Exception state cleared when an exception propagates past handlers ===
+# When an exception is raised from inside an except clause and is caught
+# by a sibling/outer handler, the inner (abandoned) handler's exception
+# must be cleared from the active-exception state — its trailer that
+# would normally pop it is dead code (the handler body terminated via
+# raise rather than falling through). Without this, a bare `raise` later
+# resurrects the abandoned exception instead of producing
+# `RuntimeError("No active exception to reraise")`.
+
+# Triple-nested: `raise X` → `raise Y` → `raise Z`, then bare raise outside.
+# Each abandoned handler should be cleared.
+try:
+    try:
+        try:
+            raise ValueError('first')
+        except ValueError:
+            raise TypeError('second')
+    except TypeError:
+        raise KeyError('third')
+except KeyError as third:
+    assert str(third) == "'third'"
+
+try:
+    raise
+except RuntimeError as exc:
+    assert str(exc) == 'No active exception to reraise'
+
+
+# Raising from a NESTED try body inside an except clause must NOT clear
+# the surrounding handler's exception — the inner raise is caught locally
+# and the outer handler is still active. After the inner try-except
+# completes, a bare `raise` in the outer handler should re-raise the
+# outer's original exception, not produce RuntimeError.
+try:
+    raise ValueError('outer')
+except ValueError as caught:
+    try:
+        raise KeyError('inner')
+    except KeyError:
+        pass  # inner caught locally; outer's ValueError should remain active
+
+    # Bare raise here should re-raise the outer's ValueError.
+    try:
+        raise
+    except ValueError as bare:
+        assert str(bare) == 'outer', 'bare raise should re-raise outer exception, not be cleared by inner raise'
+
+
+# Function-call boundary: an exception raised and caught inside a callee
+# must not leak active-exception state back to the caller. Probe via bare
+# `raise` in the caller after the callee returns.
+def _callee_raises_and_handles():
+    try:
+        raise ValueError('callee internal')
+    except ValueError:
+        pass
+
+
+_callee_raises_and_handles()
+try:
+    raise
+except RuntimeError as exc:
+    assert str(exc) == 'No active exception to reraise'
+
+
+# === Return through inner try-finally inside an except keeps outer exception ===
+# When `return` is inside a try-finally nested inside an except handler,
+# the inner finally must run with the OUTER except's exception still
+# active — a bare `raise` inside the inner finally should re-raise the
+# outer exception, not produce RuntimeError. The active-exception cleanup
+# for the outer except must be deferred until after the inner finally
+# completes.
+
+_return_through_inner_finally_log: list[tuple[str, str]] = []
+
+
+def _return_through_inner_finally() -> str:
+    try:
+        raise ValueError('outer')
+    except ValueError:
+        try:
+            return 'done'
+        finally:
+            try:
+                raise  # outer ValueError should still be the active exception
+            except ValueError as caught:
+                _return_through_inner_finally_log.append(('ValueError', str(caught)))
+            except RuntimeError as e:
+                _return_through_inner_finally_log.append(('RuntimeError', str(e)))
+    return 'unreachable'
+
+
+assert _return_through_inner_finally() == 'done'
+assert _return_through_inner_finally_log == [('ValueError', 'outer')], (
+    f'expected outer ValueError to remain active inside inner finally, got {_return_through_inner_finally_log!r}'
+)
+
+
+# After the function returns, the caller's active-exception state must
+# still be clean — the outer except's exception was cleared on return.
+try:
+    raise
+except RuntimeError as exc:
+    assert str(exc) == 'No active exception to reraise'
+
+
+# === Return through TWO nested finallys inside two excepts ===
+# Each finally runs with the textually-active exception still on top
+# of `exception_stack` — the inner finally sees the inner except's
+# exception, the outer finally sees the outer except's exception.
+# This exercises both the per-finally cleanup boundary in
+# `emit_return_routing` and the clone-not-pop behavior of bare `raise`
+# (without which the inner finally's locally-caught reraise would
+# strand the outer except's entry).
+
+_two_finally_log: list[tuple[str, str, str]] = []
+
+
+def _return_through_two_finallys() -> str:
+    try:
+        raise ValueError('A')
+    except ValueError:
+        try:  # outer try has finally
+            try:
+                raise TypeError('B')
+            except TypeError:
+                try:  # inner try has finally
+                    return 'done'
+                finally:
+                    try:
+                        raise  # outer=A and inner=B both active; reraises B
+                    except TypeError as t:
+                        _two_finally_log.append(('inner_finally', 'TypeError', str(t)))
+                    except ValueError as v:
+                        _two_finally_log.append(('inner_finally', 'ValueError', str(v)))
+        finally:
+            try:
+                raise  # only A is still active here; B was bound to the inner except that we exited
+            except ValueError as v:
+                _two_finally_log.append(('outer_finally', 'ValueError', str(v)))
+            except TypeError as t:
+                _two_finally_log.append(('outer_finally', 'TypeError', str(t)))
+            except RuntimeError as r:
+                _two_finally_log.append(('outer_finally', 'RuntimeError', str(r)))
+    return 'fallback'
+
+
+assert _return_through_two_finallys() == 'done'
+assert _two_finally_log == [
+    ('inner_finally', 'TypeError', 'B'),
+    ('outer_finally', 'ValueError', 'A'),
+], f'unexpected log {_two_finally_log!r}'
