@@ -196,7 +196,7 @@ Avoid manual `drop_with_heap` whenever there are multiple code paths (branching,
 
 ## Dev Commands
 
-**IMPORTANT**: before running `cago build` or `cargo run`, it is likely necessary to run `make install-py` to ensure that the Python virtual environment is available for build.
+**IMPORTANT**: before running `cargo build` or `cargo run`, it is likely necessary to run `make install-py` to ensure that the Python virtual environment is available for build.
 
 Instead use the following `make` commands:
 
