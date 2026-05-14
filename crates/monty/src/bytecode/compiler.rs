@@ -77,8 +77,11 @@ pub struct Compiler<'a> {
     /// Tracks nesting depth inside exception handlers.
     ///
     /// When break/continue/return is inside an except handler, we need to
-    /// clear the current exception (`ClearException`) and pop the exception
-    /// value from the stack before jumping to the finally path or loop target.
+    /// emit one `ClearException` per enclosing handler to drain the per-handler
+    /// `exception_stack` entries before jumping to the finally path or loop
+    /// target. The exception *value* is already off the operand stack — it's
+    /// consumed eagerly at handler entry (stored to the `as` binding or
+    /// popped) — so no operand-stack Pop is needed here.
     except_handler_depth: usize,
 
     /// Whether the compiler is currently compiling module-level code.
@@ -2213,12 +2216,10 @@ impl<'a> Compiler<'a> {
 
         let target_loop_depth = self.loop_stack.len() - 1;
 
-        // If inside except handlers, clean up ALL exception states
-        // Each nested except handler has pushed an exception onto the stack,
-        // so we need to clear/pop each one when breaking out
+        // If inside except handlers, clear each enclosing exception_stack
+        // entry.
         for _ in 0..self.except_handler_depth {
             self.code.emit(Opcode::ClearException);
-            self.code.emit(Opcode::Pop); // Pop the exception value
         }
 
         // Pop the iterator only for `for` loops (has iterator on stack)
@@ -2261,12 +2262,10 @@ impl<'a> Compiler<'a> {
 
         let target_loop_depth = self.loop_stack.len() - 1;
 
-        // If inside except handlers, clean up ALL exception states
-        // Each nested except handler has pushed an exception onto the stack,
-        // so we need to clear/pop each one when continuing
+        // If inside except handlers, clear each enclosing exception_stack
+        // entry.
         for _ in 0..self.except_handler_depth {
             self.code.emit(Opcode::ClearException);
-            self.code.emit(Opcode::Pop); // Pop the exception value
         }
 
         // Check if we need to go through any finally blocks
@@ -2990,121 +2989,43 @@ impl<'a> Compiler<'a> {
         // the exception value pushed by the VM on entry to the handler dispatch
         self.code.new_code_region(stack_depth + 1);
 
-        // Track jumps from non-matching handlers to next handler
-        let mut next_handler_jumps: Vec<JumpLabel> = Vec::new();
+        for handler in handlers {
+            let no_match_jump = if let Some(exc_type) = &handler.exc_type {
+                // Typed handler: `except ExcType:` or `except ExcType as e:`.
+                // Stack on entry: [exception]. `CheckExcMatch` peeks the
+                // exception (doesn't pop it), so [exception] stays on the
+                // stack across the check on both match and no-match paths.
+                self.compile_expr(exc_type)?;
+                self.code.emit(Opcode::CheckExcMatch);
+                Some(self.code.emit_jump(Opcode::JumpIfFalse))
+            } else {
+                // Bare `except:` (must be the last handler per Python rules).
+                None
+            };
 
-        for (i, handler) in handlers.iter().enumerate() {
-            let is_last = i == handlers.len() - 1;
-
-            // Patch jumps from previous handler's non-match to here
-            // If jumping from a previous handler's no-match, stack has [exc, exc] (duplicate)
-            // We need to pop the duplicate before starting this handler's check
-            if !next_handler_jumps.is_empty() {
-                for jump in next_handler_jumps.drain(..) {
-                    self.code.patch_jump(jump);
-                }
-                // Pop the duplicate from previous handler's check
+            // Match path: consume exception from the stack and store
+            // to target if present.
+            if let Some(name) = &handler.name {
+                self.compile_store(name);
+            } else {
                 self.code.emit(Opcode::Pop);
             }
 
-            if let Some(exc_type) = &handler.exc_type {
-                // Typed handler: except ExcType: or except ExcType as e:
-                // Stack: [exception]
+            self.except_handler_depth += 1;
+            self.compile_block(&handler.body)?;
+            self.except_handler_depth -= 1;
 
-                // Duplicate exception for type check
-                self.code.emit(Opcode::Dup);
-                // Stack: [exception, exception]
+            if let Some(name) = &handler.name {
+                self.compile_delete(name);
+            }
 
-                // Load the exception type to match against
-                self.compile_expr(exc_type)?;
-                // Stack: [exception, exception, exc_type]
+            self.code.emit(Opcode::ClearException);
+            finally_jumps.push(self.code.emit_jump(Opcode::Jump));
 
-                // Check if exception matches the type
-                // This validates exc_type is a valid exception type and performs the match
-                // CheckExcMatch pops exc_type, peeks exception, pushes bool
-                self.code.emit(Opcode::CheckExcMatch);
-                // Stack: [exception, exception, bool]
-
-                // Jump to next handler if match returned False
-                // JumpIfFalse pops the bool, leaving [exception, exception]
-                let no_match_jump = self.code.emit_jump(Opcode::JumpIfFalse);
-
-                if is_last {
-                    // Last handler - if no match, reraise
-                    // But first we need to handle the exception var cleanup
-                } else {
-                    next_handler_jumps.push(no_match_jump);
-                }
-
-                // After JumpIfFalse (match succeeded), stack is [exception, exception]
-                // Pop the duplicate that was used for the type check
-                self.code.emit(Opcode::Pop);
-                // Stack: [exception]
-
-                // Exception matched! Bind to variable if needed
-                if let Some(name) = &handler.name {
-                    // Stack: [exception]
-                    // Store to variable (don't pop - we still need it for current_exception)
-                    self.code.emit(Opcode::Dup);
-                    self.compile_store(name);
-                }
-
-                // Track that we're inside an except handler (for break/continue cleanup)
-                self.except_handler_depth += 1;
-
-                // Compile handler body
-                self.compile_block(&handler.body)?;
-
-                // Exit except handler context
-                self.except_handler_depth -= 1;
-
-                // Delete exception variable (Python 3 behavior)
-                if let Some(name) = &handler.name {
-                    self.compile_delete(name);
-                }
-                self.code.emit(Opcode::ClearException);
-                self.code.emit(Opcode::Pop);
-                finally_jumps.push(self.code.emit_jump(Opcode::Jump));
-
-                // If this was last handler and no match, we need to reraise
-                if is_last {
-                    self.code.patch_jump(no_match_jump);
-                    // We need to pop the duplicate before reraising
-                    self.code.emit(Opcode::Pop);
-                }
-            } else {
-                // Bare except: catches everything
-                // Stack: [exception]
-
-                // Bind to variable if needed
-                if let Some(name) = &handler.name {
-                    self.code.emit(Opcode::Dup);
-                    self.compile_store(name);
-                }
-
-                // Track that we're inside an except handler (for break/continue cleanup)
-                self.except_handler_depth += 1;
-
-                // Compile handler body
-                self.compile_block(&handler.body)?;
-
-                // Exit except handler context
-                self.except_handler_depth -= 1;
-
-                // Delete exception variable
-                if let Some(name) = &handler.name {
-                    self.compile_delete(name);
-                }
-
-                // Clear current_exception
-                self.code.emit(Opcode::ClearException);
-
-                // Pop the exception from stack
-                self.code.emit(Opcode::Pop);
-
-                // Jump to finally
-                finally_jumps.push(self.code.emit_jump(Opcode::Jump));
-                return Ok(());
+            if let Some(no_match_jump) = no_match_jump {
+                // No-match landing: stack is [exception]. Falls through into
+                // the next handler's check (or the post-loop `Reraise`).
+                self.code.patch_jump(no_match_jump);
             }
         }
 
