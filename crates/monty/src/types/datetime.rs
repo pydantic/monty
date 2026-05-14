@@ -26,8 +26,9 @@ use crate::{
     os::OsFunction,
     resource::{ResourceError, ResourceTracker},
     types::{
-        AttrCallResult, PyTrait, TimeDelta, TimeZone, Type, date, str, str::StringRepr, timedelta, timezone,
-        value_to_i32,
+        AttrCallResult, PyTrait, TimeDelta, TimeZone, Type, date,
+        str::{StringRepr, allocate_string, allocate_string_no_interning},
+        timedelta, timezone, value_to_i32,
     },
     value::{EitherStr, Value},
 };
@@ -1089,16 +1090,12 @@ impl<'h> PyTrait<'h> for HeapRead<'h, DateTime> {
             Some(id) if id == StaticStrings::Isoformat => {
                 args.check_zero_args("datetime.isoformat", vm.heap)?;
                 let s = format_isoformat(&dt, 'T');
-                Ok(CallResult::Value(Value::Ref(
-                    vm.heap.allocate(HeapData::Str(str::Str::new(s)))?,
-                )))
+                Ok(CallResult::Value(allocate_string_no_interning(s, vm.heap)?))
             }
             Some(id) if id == StaticStrings::Strftime => {
                 let fmt = date::extract_strftime_arg(args, "datetime.strftime", vm.heap, vm.interns)?;
                 let formatted = dt.naive.format(&fmt).to_string();
-                Ok(CallResult::Value(Value::Ref(
-                    vm.heap.allocate(HeapData::Str(str::Str::new(formatted)))?,
-                )))
+                Ok(CallResult::Value(allocate_string(formatted, vm.heap)?))
             }
             Some(id) if id == StaticStrings::Replace => {
                 let result = extract_datetime_replace_kwargs(args, &dt, vm.heap, vm.interns)?;

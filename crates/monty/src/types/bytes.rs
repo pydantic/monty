@@ -70,7 +70,7 @@ use std::{cell::Cell, cmp::Ordering, fmt, fmt::Write, mem, ops, str};
 use ahash::AHashSet;
 use smallvec::smallvec;
 
-use super::{MontyIter, PyTrait, Type, str::Str};
+use super::{MontyIter, PyTrait, Type};
 use crate::{
     args::ArgValues,
     bytecode::{CallResult, VM},
@@ -502,10 +502,7 @@ fn bytes_decode<'h>(
 
     // Decode as UTF-8
     match str::from_utf8(bytes.get(vm.heap)) {
-        Ok(s) => {
-            let heap_id = vm.heap.allocate(HeapData::Str(Str::from(s.to_owned())))?;
-            Ok(Value::Ref(heap_id))
-        }
+        Ok(s) => Ok(super::str::allocate_string(s, vm.heap)?),
         Err(_) => Err(ExcType::unicode_decode_error_invalid_utf8()),
     }
 }
@@ -2136,7 +2133,7 @@ fn bytes_hex<'h>(
         hex_chars.iter().collect()
     };
 
-    super::str::allocate_string(result, vm.heap)
+    Ok(super::str::allocate_string(result, vm.heap)?)
 }
 
 /// Parses arguments for bytes.hex method.

@@ -25,7 +25,7 @@ use crate::{
     intern::{Interns, StaticStrings},
     os::OsFunction,
     resource::{ResourceError, ResourceTracker},
-    types::{PyTrait, Str, Type, allocate_tuple},
+    types::{PyTrait, Type, allocate_tuple, str::allocate_string},
     value::{EitherStr, Value},
 };
 
@@ -445,10 +445,7 @@ impl Path {
         heap: &Heap<impl ResourceTracker>,
     ) -> RunResult<Option<Value>> {
         let v = match ss {
-            StaticStrings::Name => {
-                let name = self.name();
-                Value::Ref(heap.allocate(HeapData::Str(Str::new(name.to_owned())))?)
-            }
+            StaticStrings::Name => allocate_string(self.name(), heap)?,
             StaticStrings::Parent => {
                 if let Some(parent) = self.parent() {
                     let parent_path = Self::new(parent.to_owned());
@@ -459,22 +456,15 @@ impl Path {
                     Value::Ref(heap.allocate(HeapData::Path(same_path))?)
                 }
             }
-            StaticStrings::Stem => {
-                let stem = self.stem();
-                Value::Ref(heap.allocate(HeapData::Str(Str::new(stem.to_owned())))?)
-            }
-            StaticStrings::Suffix => {
-                let suffix = self.suffix();
-                Value::Ref(heap.allocate(HeapData::Str(Str::new(suffix.to_owned())))?)
-            }
+            StaticStrings::Stem => allocate_string(self.stem(), heap)?,
+            StaticStrings::Suffix => allocate_string(self.suffix(), heap)?,
             StaticStrings::Suffixes => {
                 use crate::types::List;
 
                 let suffixes = self.suffixes();
                 let mut items = Vec::with_capacity(suffixes.len());
                 for suffix in suffixes {
-                    let str_id = heap.allocate(HeapData::Str(Str::new(suffix.to_owned())))?;
-                    items.push(Value::Ref(str_id));
+                    items.push(allocate_string(suffix, heap)?);
                 }
                 Value::Ref(heap.allocate(HeapData::List(List::new(items)))?)
             }
@@ -482,8 +472,7 @@ impl Path {
                 let parts = self.parts();
                 let mut items = SmallVec::with_capacity(parts.len());
                 for part in parts {
-                    let str_id = heap.allocate(HeapData::Str(Str::new(part.to_owned())))?;
-                    items.push(Value::Ref(str_id));
+                    items.push(allocate_string(part, heap)?);
                 }
                 allocate_tuple(items, heap)?
             }
@@ -604,9 +593,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Path> {
             }
             StaticStrings::AsPosix | StaticStrings::Fspath => {
                 args.check_zero_args(method.into(), vm.heap)?;
-                Ok(Value::Ref(vm.heap.allocate(HeapData::Str(Str::new(
-                    self.get(vm.heap).as_posix().to_owned(),
-                )))?))
+                Ok(allocate_string(self.get(vm.heap).as_posix(), vm.heap)?)
             }
             _ => {
                 args.drop_with_heap(vm);

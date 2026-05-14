@@ -22,7 +22,7 @@ use crate::{
     types::{
         Bytes, Dataclass, Dict, DictItemsView, DictKeysView, DictValuesView, FrozenSet, List, LongInt, Module,
         MontyIter, NamedTuple, Path, PyTrait, Range, ReMatch, RePattern, Set, Slice, Str, Tuple, Type, date, datetime,
-        timedelta, timezone,
+        str::allocate_string, timedelta, timezone,
     },
     value::{EitherStr, Value},
 };
@@ -738,7 +738,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
         match (self, other) {
             (HeapReadOutput::Str(a), HeapReadOutput::Str(b)) => {
                 let concat = format!("{}{}", a.get(vm.heap).as_str(), b.get(vm.heap).as_str());
-                Ok(Some(Value::Ref(vm.heap.allocate(HeapData::Str(concat.into()))?)))
+                Ok(Some(allocate_string(concat, vm.heap)?))
             }
             (HeapReadOutput::Bytes(a), HeapReadOutput::Bytes(b)) => {
                 let a_bytes = a.get(vm.heap).as_slice();

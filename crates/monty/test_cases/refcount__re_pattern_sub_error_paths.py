@@ -24,14 +24,24 @@ try:
 except TypeError:
     pass
 
-# Exercise negative count path (early return)
-result = p.sub('repl', 'hello', -1)
-assert result == 'hello', 'negative count returns input unchanged'
+# Negative count path with an INTERNED input: the negative-count short-circuit
+# returns the value untouched (refcount-bumped), so an interned input stays
+# interned — no heap allocation, no entry in the refcount map.
+interned_result = p.sub('repl', 'hello', -1)
+assert interned_result == 'hello', 'negative count returns interned input unchanged'
+
+# Negative count path with a HEAP-allocated input: the short-circuit shares the
+# same heap object back to the caller, so input_str and result alias each other.
+# (Concatenation at runtime defeats compile-time literal interning.)
+input_str = 'hel' + 'lo'
+result = p.sub('repl', input_str, -1)
+assert result == 'hello', 'negative count returns heap input unchanged'
 
 # repl_list: 1 (variable)
 # input_list: 1 (variable)
 # p: 1 (variable)
 # re: 1 (module)
-# result: 2 (variable + final expression)
+# interned_result: not heap-allocated, absent from the map
+# input_str and result reference the same heap string: 2 vars + final expr = 3
 result
-# ref-counts={'repl_list': 1, 'input_list': 1, 'p': 1, 're': 1, 'result': 2}
+# ref-counts={'repl_list': 1, 'input_list': 1, 'p': 1, 're': 1, 'input_str': 3, 'result': 3}
