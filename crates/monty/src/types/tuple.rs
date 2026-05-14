@@ -348,9 +348,16 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Tuple> {
 
         if len == 1 {
             // Special case for single-element tuples: include the trailing comma
+            //
+            // Match `repr_sequence_fmt`'s depth handling so nested one-element
+            // tuples can't bypass `max_recursion_depth` and overflow the stack.
+            let Ok(token) = vm.heap.incr_recursion_depth() else {
+                return Ok(f.write_str("...")?);
+            };
+            defer_drop!(token, vm);
+            write!(f, "(")?;
             let item = self.clone_item(0, vm);
             defer_drop!(item, vm);
-            write!(f, "(")?;
             item.py_repr_fmt(f, vm, heap_ids)?;
             write!(f, ",)")?;
             return Ok(());
