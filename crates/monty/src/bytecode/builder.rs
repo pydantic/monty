@@ -46,6 +46,43 @@ impl Default for TrackerState {
     }
 }
 
+/// Operand bundle paired with an opcode at emit time.
+///
+/// Every linear (non-jump) emit funnels through `emit_with_operand(op, operand)`,
+/// which writes the bytes for `operand` and consults `stack_effect_for(op, &operand)`
+/// for the stack adjustment. Carrying the operand through this enum makes
+/// stack-effect computation a single, exhaustive match — variable-effect
+/// opcodes without an explicit arm panic instead of silently drifting.
+#[derive(Debug)]
+enum Operand<'a> {
+    /// No operand bytes (e.g. `Pop`, `BinaryAdd`).
+    None,
+    /// Single u8 operand (e.g. `LoadLocal`, `CallFunction`).
+    U8(u8),
+    /// Single i8 operand.
+    I8(i8),
+    /// Single u16 operand, little-endian (e.g. `LoadConst`, `BuildList`).
+    U16(u16),
+    /// Two u8 operands (e.g. `UnpackEx`, `CallBuiltinFunction`).
+    U8U8(u8, u8),
+    /// u8 then u16 little-endian (e.g. `LoadLocalCallable`).
+    U8U16(u8, u16),
+    /// u16 little-endian then u8 (e.g. `MakeFunction`, `CallAttr`).
+    U16U8(u16, u8),
+    /// Two u16 little-endian (e.g. `LoadLocalCallableW`, `LoadGlobalCallable`).
+    U16U16(u16, u16),
+    /// u16 then two u8s (e.g. `MakeClosure`).
+    U16U8U8(u16, u8, u8),
+    /// `CallFunctionKw` shape: pos_count (u8), kw_count (u8), kw_count * name_id (u16 each).
+    CallKw { pos_count: u8, kwname_ids: &'a [u16] },
+    /// `CallAttrKw` shape: attr_name_id (u16), pos_count (u8), kw_count (u8), kw_count * name_id (u16 each).
+    CallAttrKw {
+        attr_name_id: u16,
+        pos_count: u8,
+        kwname_ids: &'a [u16],
+    },
+}
+
 /// Builder for emitting bytecode during compilation.
 ///
 /// Handles encoding opcodes and operands into raw bytes, managing forward jumps
@@ -120,209 +157,83 @@ impl CodeBuilder {
     }
 
     /// Emits a no-operand instruction and updates stack depth tracking.
-    ///
-    /// All variable-effect opcodes (where `Opcode::stack_effect()` returns
-    /// `None`) take operands, so calling this with one is a compiler bug —
-    /// hence the panic on `None` rather than silently defaulting to `0`.
-    ///
-    /// Terminator opcodes (`ReturnValue`, `Raise`, `Reraise`) transition the
-    /// tracker to `Dead` after emission so subsequent fall-through emits
-    /// don't disturb live tracking.
     pub fn emit(&mut self, op: Opcode) {
-        self.record_location();
-        self.bytecode.push(op as u8);
-        let effect = op.stack_effect().unwrap_or_else(|| {
-            panic!("variable-effect opcode {op:?} emitted via emit (no operand) — variable-effect ops require an operand-aware emit helper")
-        });
-        self.adjust_stack(effect);
-        if matches!(op, Opcode::ReturnValue | Opcode::Raise | Opcode::Reraise) {
-            self.mark_dead();
-        }
+        self.emit_with_operand(op, &Operand::None);
     }
 
-    /// Emits an instruction with a u8 operand and updates stack depth tracking.
+    /// Emits an instruction with a u8 operand.
     pub fn emit_u8(&mut self, op: Opcode, operand: u8) {
-        self.record_location();
-        self.bytecode.push(op as u8);
-        self.bytecode.push(operand);
-        // Track stack effect - some need operand-based calculation
-        self.track_stack_effect_u8(op, operand);
+        self.emit_with_operand(op, &Operand::U8(operand));
     }
 
-    /// Emits an instruction with an i8 operand and updates stack depth tracking.
+    /// Emits an instruction with an i8 operand.
     pub fn emit_i8(&mut self, op: Opcode, operand: i8) {
-        self.record_location();
-        self.bytecode.push(op as u8);
-        // Reinterpret i8 as u8 for bytecode encoding
-        self.bytecode.push(operand.to_ne_bytes()[0]);
-        let effect = op.stack_effect().unwrap_or_else(|| {
-            panic!("variable-effect opcode {op:?} emitted via emit_i8 without a stack-effect override")
-        });
-        self.adjust_stack(effect);
+        self.emit_with_operand(op, &Operand::I8(operand));
     }
 
-    /// Emits an instruction with two u8 operands and updates stack depth tracking.
+    /// Emits an instruction with two u8 operands.
     ///
-    /// Used for UnpackEx: before_count (u8) + after_count (u8)
+    /// Used for `UnpackEx`: before_count + after_count.
     pub fn emit_u8_u8(&mut self, op: Opcode, operand1: u8, operand2: u8) {
-        self.record_location();
-        self.bytecode.push(op as u8);
-        self.bytecode.push(operand1);
-        self.bytecode.push(operand2);
-        // UnpackEx: pops 1, pushes (before + 1 + after) = before + after + 1
-        // Net effect: before + after
-        if op == Opcode::UnpackEx {
-            self.adjust_stack(i16::from(operand1) + i16::from(operand2));
-        } else {
-            let effect = op.stack_effect().unwrap_or_else(|| {
-                panic!("variable-effect opcode {op:?} emitted via emit_u8_u8 without a stack-effect override")
-            });
-            self.adjust_stack(effect);
-        }
+        self.emit_with_operand(op, &Operand::U8U8(operand1, operand2));
     }
 
-    /// Emits an instruction with a u16 operand (little-endian) and updates stack depth tracking.
+    /// Emits an instruction with a u16 operand (little-endian).
     pub fn emit_u16(&mut self, op: Opcode, operand: u16) {
-        self.record_location();
-        self.bytecode.push(op as u8);
-        self.bytecode.extend_from_slice(&operand.to_le_bytes());
-        // Track stack effect - some need operand-based calculation
-        self.track_stack_effect_u16(op, operand);
+        self.emit_with_operand(op, &Operand::U16(operand));
     }
 
     /// Emits an instruction with a u16 operand followed by a u8 operand.
     ///
-    /// Used for MakeFunction: func_id (u16) + defaults_count (u8)
-    /// Used for CallAttr: attr_name_id (u16) + arg_count (u8)
+    /// Used for `MakeFunction`, `CallAttr`, `CallAttrExtended`.
     pub fn emit_u16_u8(&mut self, op: Opcode, operand1: u16, operand2: u8) {
-        self.record_location();
-        self.bytecode.push(op as u8);
-        self.bytecode.extend_from_slice(&operand1.to_le_bytes());
-        self.bytecode.push(operand2);
-        // Track stack effects based on opcode. Variable-effect opcodes that
-        // aren't enumerated below will hit the panic in the fallback rather
-        // than silently defaulting to `0` (which would drift the tracker).
-        match op {
-            Opcode::MakeFunction => {
-                // pops defaults_count defaults, pushes function: 1 - defaults_count
-                self.adjust_stack(1 - i16::from(operand2));
-            }
-            Opcode::CallAttr => {
-                // pops obj + args, pushes result: 1 - (1 + arg_count) = -arg_count
-                self.adjust_stack(-i16::from(operand2));
-            }
-            Opcode::CallAttrExtended => {
-                // pops receiver + args_tuple (+ kwargs_dict if flag bit 0),
-                // pushes result. operand2 is the u8 flags: 0 or 1.
-                // Effect: -(1 + has_kwargs).
-                self.adjust_stack(-(1 + i16::from(operand2 & 0x01)));
-            }
-            _ => {
-                let effect = op.stack_effect().unwrap_or_else(|| {
-                    panic!("variable-effect opcode {op:?} emitted via emit_u16_u8 without a stack-effect override")
-                });
-                self.adjust_stack(effect);
-            }
-        }
+        self.emit_with_operand(op, &Operand::U16U8(operand1, operand2));
     }
 
     /// Emits an instruction with a u16 operand followed by two u8 operands.
     ///
-    /// Used for MakeClosure: func_id (u16) + defaults_count (u8) + cell_count (u8)
+    /// Used for `MakeClosure`: func_id + defaults_count + cell_count.
     pub fn emit_u16_u8_u8(&mut self, op: Opcode, operand1: u16, operand2: u8, operand3: u8) {
-        self.record_location();
-        self.bytecode.push(op as u8);
-        self.bytecode.extend_from_slice(&operand1.to_le_bytes());
-        self.bytecode.push(operand2);
-        self.bytecode.push(operand3);
-        // MakeClosure: pops defaults_count defaults, pushes closure
-        // Cell values are captured from locals, not popped from stack
-        // Stack effect: 1 - defaults_count
-        if op == Opcode::MakeClosure {
-            self.adjust_stack(1 - i16::from(operand2));
-        } else {
-            let effect = op.stack_effect().unwrap_or_else(|| {
-                panic!("variable-effect opcode {op:?} emitted via emit_u16_u8_u8 without a stack-effect override")
-            });
-            self.adjust_stack(effect);
-        }
+        self.emit_with_operand(op, &Operand::U16U8U8(operand1, operand2, operand3));
     }
 
-    /// Emits `CallBuiltinFunction` instruction.
-    ///
-    /// Operands: builtin_id (u8) + arg_count (u8)
+    /// Emits `CallBuiltinFunction`: builtin_id (u8) + arg_count (u8).
     ///
     /// The builtin_id is the `#[repr(u8)]` discriminant of `BuiltinsFunctions`.
     /// This is an optimization that avoids constant pool lookup and stack manipulation.
     pub fn emit_call_builtin_function(&mut self, builtin_id: u8, arg_count: u8) {
-        self.record_location();
-        self.bytecode.push(Opcode::CallBuiltinFunction as u8);
-        self.bytecode.push(builtin_id);
-        self.bytecode.push(arg_count);
-        // CallBuiltinFunction: pops args, pushes result. No callable on stack.
-        // Stack effect: 1 - arg_count
-        self.adjust_stack(1 - i16::from(arg_count));
+        self.emit_with_operand(Opcode::CallBuiltinFunction, &Operand::U8U8(builtin_id, arg_count));
     }
 
-    /// Emits `CallBuiltinType` instruction.
-    ///
-    /// Operands: type_id (u8) + arg_count (u8)
+    /// Emits `CallBuiltinType`: type_id (u8) + arg_count (u8).
     ///
     /// The type_id is the `#[repr(u8)]` discriminant of `BuiltinsTypes`.
     /// This is an optimization for type constructors like `list()`, `int()`, `str()`.
     pub fn emit_call_builtin_type(&mut self, type_id: u8, arg_count: u8) {
-        self.record_location();
-        self.bytecode.push(Opcode::CallBuiltinType as u8);
-        self.bytecode.push(type_id);
-        self.bytecode.push(arg_count);
-        // CallBuiltinType: pops args, pushes result. No callable on stack.
-        // Stack effect: 1 - arg_count
-        self.adjust_stack(1 - i16::from(arg_count));
+        self.emit_with_operand(Opcode::CallBuiltinType, &Operand::U8U8(type_id, arg_count));
     }
 
-    /// Emits CallFunctionKw with inline keyword names.
+    /// Emits `CallFunctionKw` with inline keyword names.
     ///
-    /// Operands: pos_count (u8) + kw_count (u8) + kw_count * name_id (u16 each)
-    ///
-    /// The kwname_ids slice contains StringId indices for each keyword argument
-    /// name, in order matching how the values were pushed to the stack.
+    /// Operands: pos_count (u8) + kw_count (u8) + kw_count * name_id (u16 each).
+    /// `kwname_ids` is the StringId for each keyword argument, in the order
+    /// the values were pushed onto the operand stack.
     pub fn emit_call_function_kw(&mut self, pos_count: u8, kwname_ids: &[u16]) {
-        self.record_location();
-        self.bytecode.push(Opcode::CallFunctionKw as u8);
-        self.bytecode.push(pos_count);
-        self.bytecode
-            .push(u8::try_from(kwname_ids.len()).expect("keyword count exceeds u8"));
-        for &name_id in kwname_ids {
-            self.bytecode.extend_from_slice(&name_id.to_le_bytes());
-        }
-        // CallFunctionKw: pops callable + pos_args + kw_args, pushes result
-        // Stack effect: 1 - (1 + pos_count + kw_count) = -pos_count - kw_count
-        let kw_count = i16::try_from(kwname_ids.len()).expect("keyword count exceeds i16");
-        let total_args = i16::from(pos_count) + kw_count;
-        self.adjust_stack(-total_args);
+        self.emit_with_operand(Opcode::CallFunctionKw, &Operand::CallKw { pos_count, kwname_ids });
     }
 
-    /// Emits CallAttrKw with inline keyword names.
+    /// Emits `CallAttrKw` with inline keyword names.
     ///
-    /// Operands: attr_name_id (u16) + pos_count (u8) + kw_count (u8) + kw_count * name_id (u16 each)
-    ///
-    /// The kwname_ids slice contains StringId indices for each keyword argument
-    /// name, in order matching how the values were pushed to the stack.
+    /// Operands: attr_name_id (u16) + pos_count (u8) + kw_count (u8) + kw_count * name_id (u16 each).
     pub fn emit_call_attr_kw(&mut self, attr_name_id: u16, pos_count: u8, kwname_ids: &[u16]) {
-        self.record_location();
-        self.bytecode.push(Opcode::CallAttrKw as u8);
-        self.bytecode.extend_from_slice(&attr_name_id.to_le_bytes());
-        self.bytecode.push(pos_count);
-        self.bytecode
-            .push(u8::try_from(kwname_ids.len()).expect("keyword count exceeds u8"));
-        for &name_id in kwname_ids {
-            self.bytecode.extend_from_slice(&name_id.to_le_bytes());
-        }
-        // CallAttrKw: pops obj + pos_args + kw_args, pushes result
-        // Stack effect: 1 - (1 + pos_count + kw_count) = -pos_count - kw_count
-        let kw_count = i16::try_from(kwname_ids.len()).expect("keyword count exceeds i16");
-        let total_args = i16::from(pos_count) + kw_count;
-        self.adjust_stack(-total_args);
+        self.emit_with_operand(
+            Opcode::CallAttrKw,
+            &Operand::CallAttrKw {
+                attr_name_id,
+                pos_count,
+                kwname_ids,
+            },
+        );
     }
 
     /// Emits a forward jump instruction, returning a label to patch later.
@@ -523,19 +434,9 @@ impl CodeBuilder {
     pub fn emit_load_local_callable(&mut self, slot: u16, name_id: StringId) {
         let name_id_u16 = u16::try_from(name_id.index()).expect("name_id exceeds u16");
         if let Ok(s) = u8::try_from(slot) {
-            // Emit LoadLocalCallable with u8 slot + u16 name_id
-            self.record_location();
-            self.bytecode.push(Opcode::LoadLocalCallable as u8);
-            self.bytecode.push(s);
-            self.bytecode.extend_from_slice(&name_id_u16.to_le_bytes());
-            self.adjust_stack(1);
+            self.emit_with_operand(Opcode::LoadLocalCallable, &Operand::U8U16(s, name_id_u16));
         } else {
-            // Emit LoadLocalCallableW with u16 slot + u16 name_id
-            self.record_location();
-            self.bytecode.push(Opcode::LoadLocalCallableW as u8);
-            self.bytecode.extend_from_slice(&slot.to_le_bytes());
-            self.bytecode.extend_from_slice(&name_id_u16.to_le_bytes());
-            self.adjust_stack(1);
+            self.emit_with_operand(Opcode::LoadLocalCallableW, &Operand::U16U16(slot, name_id_u16));
         }
     }
 
@@ -546,11 +447,7 @@ impl CodeBuilder {
     /// and local slots use different namespaces).
     pub fn emit_load_global_callable(&mut self, slot: u16, name_id: StringId) {
         let name_id_u16 = u16::try_from(name_id.index()).expect("name_id exceeds u16");
-        self.record_location();
-        self.bytecode.push(Opcode::LoadGlobalCallable as u8);
-        self.bytecode.extend_from_slice(&slot.to_le_bytes());
-        self.bytecode.extend_from_slice(&name_id_u16.to_le_bytes());
-        self.adjust_stack(1);
+        self.emit_with_operand(Opcode::LoadGlobalCallable, &Operand::U16U16(slot, name_id_u16));
     }
 
     /// Emits `StoreLocal`, using wide variant for slots > 255.
@@ -684,68 +581,141 @@ impl CodeBuilder {
         self.tracker = TrackerState::Dead;
     }
 
-    /// Tracks stack effect for opcodes with u8 operand.
+    /// Single-source-of-truth emit path: records location, writes opcode +
+    /// operand bytes, applies the stack-effect computed by `stack_effect_for`,
+    /// and transitions the tracker to `Dead` for unconditional terminators
+    /// (`ReturnValue`, `Raise`, `Reraise`).
     ///
-    /// For opcodes with variable effects (like `CallFunction`, `BuildList`),
-    /// calculates the effect based on the operand. For variable-effect opcodes
-    /// not enumerated here, falling through to `op.stack_effect()` would
-    /// silently default to `0` for `None` returns and drift the tracker — so
-    /// the fallback panics instead.
-    fn track_stack_effect_u8(&mut self, op: Opcode, operand: u8) {
-        let effect: i16 = match op {
-            // CallFunction pops (callable + args), pushes result: -(1 + arg_count) + 1 = -arg_count
-            Opcode::CallFunction => -i16::from(operand),
-            // CallFunctionExtended pops callable + args_tuple (+ kwargs_dict if flag bit 0),
-            // pushes result. flags is 0 (no kwargs) or 1 (has kwargs). Effect: -(1 + has_kwargs).
-            Opcode::CallFunctionExtended => -(1 + i16::from(operand & 0x01)),
-            // FormatValue: bit 2 (0x04) of flags indicates a format spec on stack.
-            // Without spec: pop value, push result = 0. With spec: pop value + spec,
-            // push result = -1.
-            Opcode::FormatValue => {
-                if operand & 0x04 != 0 {
-                    -1
-                } else {
-                    0
+    /// `emit_jump` and `emit_jump_to` do *not* go through this path — they
+    /// have branch-dependent effects and target-depth bookkeeping that don't
+    /// fit the linear-emit shape.
+    fn emit_with_operand(&mut self, op: Opcode, operand: &Operand<'_>) {
+        self.record_location();
+        self.bytecode.push(op as u8);
+        match operand {
+            Operand::None => {}
+            Operand::U8(b) => self.bytecode.push(*b),
+            Operand::I8(b) => self.bytecode.push(b.to_ne_bytes()[0]),
+            Operand::U16(w) => self.bytecode.extend_from_slice(&w.to_le_bytes()),
+            Operand::U8U8(a, b) => {
+                self.bytecode.push(*a);
+                self.bytecode.push(*b);
+            }
+            Operand::U8U16(a, w) => {
+                self.bytecode.push(*a);
+                self.bytecode.extend_from_slice(&w.to_le_bytes());
+            }
+            Operand::U16U8(w, b) => {
+                self.bytecode.extend_from_slice(&w.to_le_bytes());
+                self.bytecode.push(*b);
+            }
+            Operand::U16U16(w1, w2) => {
+                self.bytecode.extend_from_slice(&w1.to_le_bytes());
+                self.bytecode.extend_from_slice(&w2.to_le_bytes());
+            }
+            Operand::U16U8U8(w, b1, b2) => {
+                self.bytecode.extend_from_slice(&w.to_le_bytes());
+                self.bytecode.push(*b1);
+                self.bytecode.push(*b2);
+            }
+            Operand::CallKw { pos_count, kwname_ids } => {
+                self.bytecode.push(*pos_count);
+                self.bytecode
+                    .push(u8::try_from(kwname_ids.len()).expect("keyword count exceeds u8"));
+                for &name_id in *kwname_ids {
+                    self.bytecode.extend_from_slice(&name_id.to_le_bytes());
                 }
             }
-            // UnpackSequence pops 1, pushes n: n - 1
-            Opcode::UnpackSequence => i16::from(operand) - 1,
-            // ListAppend/SetAdd pop value: -1 (depth operand doesn't affect stack count)
-            Opcode::ListAppend | Opcode::SetAdd => -1,
-            // DictSetItem pops key and value: -2
-            Opcode::DictSetItem => -2,
-            // Default: use fixed effect; panic if the opcode declares a
-            // variable effect (`stack_effect()` returns `None`) but isn't
-            // handled above — this is a forcing function so new variable-effect
-            // opcodes can't silently drift the tracker.
-            _ => op
-                .stack_effect()
-                .unwrap_or_else(|| panic!("variable-effect opcode {op:?} emitted via emit_u8 without a stack-effect override in track_stack_effect_u8")),
-        };
-        self.adjust_stack(effect);
+            Operand::CallAttrKw {
+                attr_name_id,
+                pos_count,
+                kwname_ids,
+            } => {
+                self.bytecode.extend_from_slice(&attr_name_id.to_le_bytes());
+                self.bytecode.push(*pos_count);
+                self.bytecode
+                    .push(u8::try_from(kwname_ids.len()).expect("keyword count exceeds u8"));
+                for &name_id in *kwname_ids {
+                    self.bytecode.extend_from_slice(&name_id.to_le_bytes());
+                }
+            }
+        }
+        self.adjust_stack(stack_effect_for(op, operand));
+        if matches!(op, Opcode::ReturnValue | Opcode::Raise | Opcode::Reraise) {
+            self.mark_dead();
+        }
     }
+}
 
-    /// Tracks stack effect for opcodes with u16 operand.
-    ///
-    /// For opcodes with variable effects (like `BuildList`, `BuildTuple`),
-    /// calculates the effect based on the operand. Variable-effect opcodes
-    /// not enumerated here trigger a panic in the fallback rather than
-    /// silently defaulting to `0`.
-    fn track_stack_effect_u16(&mut self, op: Opcode, operand: u16) {
-        // Safe cast: operand won't exceed i16::MAX in practice (would be a huge list)
-        let operand_i16 = operand.cast_signed();
-        let effect: i16 = match op {
-            // BuildList/BuildTuple/BuildSet: pop n, push 1: -(n - 1) = 1 - n
-            Opcode::BuildList | Opcode::BuildTuple | Opcode::BuildSet => 1 - operand_i16,
-            // BuildDict: pop 2n (key-value pairs), push 1: 1 - 2n
-            Opcode::BuildDict => 1 - 2 * operand_i16,
-            // BuildFString: pop n parts, push 1: 1 - n
-            Opcode::BuildFString => 1 - operand_i16,
-            _ => op.stack_effect().unwrap_or_else(|| {
-                panic!("variable-effect opcode {op:?} emitted via emit_u16 without a stack-effect override in track_stack_effect_u16")
-            }),
-        };
-        self.adjust_stack(effect);
+/// Computes the operand-stack effect of `op` paired with `operand`.
+///
+/// All variable-effect opcodes get an explicit match arm. Fixed-effect opcodes
+/// fall through to `op.stack_effect()`, which is `Some(_)` for them. A
+/// variable-effect opcode that reaches the fallback (because its operand
+/// shape doesn't match any enumerated arm) panics — preventing silent drift
+/// when a new variable-effect opcode is added.
+///
+/// `MakeFunction`/`MakeClosure` have explicit arms even though `stack_effect()`
+/// returns `Some(1)` for them — that fixed value is only correct with zero
+/// defaults, so we override with `1 - defaults_count` for the general case.
+fn stack_effect_for(op: Opcode, operand: &Operand<'_>) -> i16 {
+    match (op, operand) {
+        // === U8 operand, variable effect ===
+        (Opcode::CallFunction, &Operand::U8(arg_count)) => -i16::from(arg_count),
+        (Opcode::CallFunctionExtended, &Operand::U8(flags)) => -(1 + i16::from(flags & 0x01)),
+        (Opcode::FormatValue, &Operand::U8(flags)) => {
+            if flags & 0x04 != 0 {
+                -1
+            } else {
+                0
+            }
+        }
+        (Opcode::UnpackSequence, &Operand::U8(n)) => i16::from(n) - 1,
+
+        // === U16 operand, variable effect ===
+        (Opcode::BuildList | Opcode::BuildTuple | Opcode::BuildSet | Opcode::BuildFString, &Operand::U16(n)) => {
+            1 - n.cast_signed()
+        }
+        (Opcode::BuildDict, &Operand::U16(n)) => 1 - 2 * n.cast_signed(),
+
+        // === U8U8 operand, variable effect ===
+        // UnpackEx: pops 1, pushes (before + 1 + after) → before + after.
+        (Opcode::UnpackEx, &Operand::U8U8(before, after)) => i16::from(before) + i16::from(after),
+        // Builtin calls: no callable on stack, pops args, pushes result → 1 - arg_count.
+        (Opcode::CallBuiltinFunction | Opcode::CallBuiltinType, &Operand::U8U8(_, arg_count)) => {
+            1 - i16::from(arg_count)
+        }
+
+        // === U16U8 operand, variable effect ===
+        (Opcode::MakeFunction, &Operand::U16U8(_, defaults)) => 1 - i16::from(defaults),
+        (Opcode::CallAttr, &Operand::U16U8(_, arg_count)) => -i16::from(arg_count),
+        (Opcode::CallAttrExtended, &Operand::U16U8(_, flags)) => -(1 + i16::from(flags & 0x01)),
+
+        // === U16U8U8 operand, variable effect ===
+        (Opcode::MakeClosure, &Operand::U16U8U8(_, defaults, _)) => 1 - i16::from(defaults),
+
+        // === Variable-length kw operands ===
+        // pops callable + pos_args + kw_args, pushes result → -(pos_count + kw_count).
+        (Opcode::CallFunctionKw, Operand::CallKw { pos_count, kwname_ids }) => {
+            let kw_count = i16::try_from(kwname_ids.len()).expect("keyword count exceeds i16");
+            -(i16::from(*pos_count) + kw_count)
+        }
+        (
+            Opcode::CallAttrKw,
+            Operand::CallAttrKw {
+                pos_count, kwname_ids, ..
+            },
+        ) => {
+            let kw_count = i16::try_from(kwname_ids.len()).expect("keyword count exceeds i16");
+            -(i16::from(*pos_count) + kw_count)
+        }
+
+        // Fixed-effect fallback. Variable-effect opcodes (where stack_effect()
+        // returns None) without an arm above hit the panic — keeps the tracker
+        // honest if a new variable-effect opcode is added.
+        (op, _) => op.stack_effect().unwrap_or_else(|| {
+            panic!("stack_effect_for: variable-effect opcode {op:?} has no handler for operand variant {operand:?}")
+        }),
     }
 }
 
