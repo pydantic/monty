@@ -627,20 +627,26 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
     pub fn resolve_future(&mut self, call_id: u32, value: Value) -> RunResult<()> {
         let mut value_guard = HeapGuard::new(value, self);
         let this = value_guard.heap();
-
         let call_id = CallId::new(call_id);
-        // Check if the creator task has been cancelled/failed
-        if let Some(creator_task) = this.scheduler.get_pending_call_creator(call_id)
-            && this.scheduler.is_task_failed(creator_task)
-        {
-            // Task was cancelled - silently ignore the result
+
+        // Pop the pending entry. A `None` here means the gather that was
+        // routing this call has been torn down (`HeapRead::fail` clears its
+        // pending entries) — drop the value, since `mark_consumed` was set
+        // when the gather awaited so no future `await` of the same call can
+        // pick it up. (Pre-refactor stored these in `resolved`; the value
+        // was unreachable and only released at `Scheduler::cleanup`.)
+        let Some(pending) = this.scheduler.take_pending_call(call_id) else {
+            return Ok(());
+        };
+
+        // If the creator task of a non-gather call has failed, also drop the
+        // result. (Gather-routed calls don't reach here in the failure case —
+        // teardown removes the pending entry first.)
+        if pending.gather.is_none() && this.scheduler.is_task_failed(pending.creator_task) {
             return Ok(());
         }
 
-        // Check if this call is gather-routed. `take_gather_for_call` removes
-        // the pending entry; the gather's own `pending_calls` map carries the
-        // slot indices `resolve_child` looks up below.
-        if let Some(gather_id) = this.scheduler.take_gather_for_call(call_id) {
+        if let Some(gather_id) = pending.gather {
             let value = value_guard.into_inner();
             let HeapReadOutput::GatherFuture(mut gather) = self.heap.read(gather_id) else {
                 panic!("gather_id doesn't point to a GatherFuture")
@@ -673,9 +679,15 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
                 }
             }
         } else {
-            // Normal resolution for single awaiter
+            // Normal resolution for a single awaiter.
             let value = value_guard.into_inner();
-            self.scheduler.resolve(call_id, value);
+            self.scheduler.record_resolved(call_id, value);
+            // Unblock the waiting task, if it's still waiting.
+            let task = self.scheduler.get_task_mut(pending.creator_task);
+            if matches!(task.state, TaskState::BlockedOnCall(cid) if cid == call_id) {
+                task.unblocked_by = Some(call_id);
+            }
+            self.scheduler.make_ready(pending.creator_task, self.heap);
         }
         Ok(())
     }
@@ -962,10 +974,11 @@ impl<'h> HeapRead<'h, GatherFuture> {
         results.drop_with_heap(heap);
 
         // Drop pending-call routing so late host-side resolutions don't reach
-        // a stale gather entry. `remove_pending_call` is a no-op when the
-        // entry has already been cleared (e.g. by `take_gather_for_call`).
+        // a stale gather entry. `take_pending_call` is a no-op when the entry
+        // has already been cleared (e.g. by `Scheduler::fail_for_call` having
+        // already removed the entry it was driving).
         for cid in pending_calls.into_keys() {
-            scheduler.remove_pending_call(cid);
+            scheduler.take_pending_call(cid);
         }
 
         // Release all tasks owned by this gather.
