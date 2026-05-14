@@ -123,6 +123,20 @@ async def async_call(x: object) -> object:
     return x
 
 
+async def async_fail(exc_type: str, message: str) -> None:
+    """Async function that raises the requested exception.
+
+    Mirrors `raise_error` for the async path.
+    """
+    exc_types: dict[str, type[Exception]] = {
+        'ValueError': ValueError,
+        'TypeError': TypeError,
+        'KeyError': KeyError,
+        'RuntimeError': RuntimeError,
+    }
+    raise exc_types[exc_type](message)
+
+
 # =============================================================================
 # Virtual Filesystem for OS Call Tests
 # =============================================================================
@@ -546,4 +560,5 @@ ITER_MODE_GLOBALS: dict[str, object] = {
     'make_user': make_user,
     'make_empty': make_empty,
     'async_call': async_call,
+    'async_fail': async_fail,
 }

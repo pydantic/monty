@@ -20,13 +20,15 @@ use crate::{
     bytecode::{CallResult, VM},
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, RunResult, SimpleException},
+    hash::HashValue,
     heap::{Heap, HeapData, HeapId, HeapItem, HeapRead},
     intern::{Interns, StaticStrings},
     os::OsFunction,
     resource::{ResourceError, ResourceTracker},
     types::{
-        AttrCallResult, PyTrait, TimeDelta, TimeZone, Type, date, str, str::StringRepr, timedelta, timezone,
-        value_to_i32,
+        AttrCallResult, PyTrait, TimeDelta, TimeZone, Type, date,
+        str::{StringRepr, allocate_string, allocate_string_no_interning},
+        timedelta, timezone, value_to_i32,
     },
     value::{EitherStr, Value},
 };
@@ -1004,10 +1006,10 @@ impl<'h> PyTrait<'h> for HeapRead<'h, DateTime> {
         Ok(local_micros(a) == local_micros(b))
     }
 
-    fn py_hash(&self, _self_id: HeapId, vm: &mut VM<'h, impl ResourceTracker>) -> Result<Option<u64>, ResourceError> {
+    fn py_hash(&self, _self_id: HeapId, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<HashValue>> {
         let mut hasher = DefaultHasher::new();
         self.get(vm.heap).hash(&mut hasher);
-        Ok(Some(hasher.finish()))
+        Ok(Some(HashValue::new(hasher.finish())))
     }
 
     fn py_cmp(&self, other: &Self, vm: &mut VM<'h, impl ResourceTracker>) -> Result<Option<Ordering>, ResourceError> {
@@ -1088,16 +1090,12 @@ impl<'h> PyTrait<'h> for HeapRead<'h, DateTime> {
             Some(id) if id == StaticStrings::Isoformat => {
                 args.check_zero_args("datetime.isoformat", vm.heap)?;
                 let s = format_isoformat(&dt, 'T');
-                Ok(CallResult::Value(Value::Ref(
-                    vm.heap.allocate(HeapData::Str(str::Str::new(s)))?,
-                )))
+                Ok(CallResult::Value(allocate_string_no_interning(s, vm.heap)?))
             }
             Some(id) if id == StaticStrings::Strftime => {
                 let fmt = date::extract_strftime_arg(args, "datetime.strftime", vm.heap, vm.interns)?;
                 let formatted = dt.naive.format(&fmt).to_string();
-                Ok(CallResult::Value(Value::Ref(
-                    vm.heap.allocate(HeapData::Str(str::Str::new(formatted)))?,
-                )))
+                Ok(CallResult::Value(allocate_string(formatted, vm.heap)?))
             }
             Some(id) if id == StaticStrings::Replace => {
                 let result = extract_datetime_replace_kwargs(args, &dt, vm.heap, vm.interns)?;

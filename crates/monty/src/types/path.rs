@@ -5,6 +5,7 @@
 //! while filesystem methods yield external function calls for the host to resolve.
 
 use std::{
+    cell::Cell,
     collections::hash_map::DefaultHasher,
     fmt::Write,
     hash::{Hash, Hasher},
@@ -19,11 +20,12 @@ use crate::{
     bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{ExcType, RunResult, SimpleException},
+    hash::HashValue,
     heap::{DropWithHeap, Heap, HeapData, HeapId, HeapItem, HeapRead},
     intern::{Interns, StaticStrings},
     os::OsFunction,
     resource::{ResourceError, ResourceTracker},
-    types::{PyTrait, Str, Type, allocate_tuple},
+    types::{PyTrait, Type, allocate_tuple, str::allocate_string},
     value::{EitherStr, Value},
 };
 
@@ -34,10 +36,22 @@ use crate::{
 ///
 /// The path is immutable - all operations that would modify the path return
 /// new `Path` objects or strings.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) struct Path {
     /// The normalized path string.
     path: String,
+    /// Lazily-computed Python hash. Paths are immutable (all "modifying"
+    /// operations return new `Path` objects). Skipped on serde — see
+    /// [`super::Str::cached_hash`] for the rationale.
+    #[serde(skip)]
+    cached_hash: Cell<Option<HashValue>>,
+}
+
+impl PartialEq for Path {
+    /// Compares only the path string — `cached_hash` is a pure optimisation.
+    fn eq(&self, other: &Self) -> bool {
+        self.path == other.path
+    }
 }
 
 impl Path {
@@ -50,6 +64,7 @@ impl Path {
     pub fn new(path: String) -> Self {
         Self {
             path: normalize_path(path),
+            cached_hash: Cell::new(None),
         }
     }
 
@@ -430,10 +445,7 @@ impl Path {
         heap: &Heap<impl ResourceTracker>,
     ) -> RunResult<Option<Value>> {
         let v = match ss {
-            StaticStrings::Name => {
-                let name = self.name();
-                Value::Ref(heap.allocate(HeapData::Str(Str::new(name.to_owned())))?)
-            }
+            StaticStrings::Name => allocate_string(self.name(), heap)?,
             StaticStrings::Parent => {
                 if let Some(parent) = self.parent() {
                     let parent_path = Self::new(parent.to_owned());
@@ -444,22 +456,15 @@ impl Path {
                     Value::Ref(heap.allocate(HeapData::Path(same_path))?)
                 }
             }
-            StaticStrings::Stem => {
-                let stem = self.stem();
-                Value::Ref(heap.allocate(HeapData::Str(Str::new(stem.to_owned())))?)
-            }
-            StaticStrings::Suffix => {
-                let suffix = self.suffix();
-                Value::Ref(heap.allocate(HeapData::Str(Str::new(suffix.to_owned())))?)
-            }
+            StaticStrings::Stem => allocate_string(self.stem(), heap)?,
+            StaticStrings::Suffix => allocate_string(self.suffix(), heap)?,
             StaticStrings::Suffixes => {
                 use crate::types::List;
 
                 let suffixes = self.suffixes();
                 let mut items = Vec::with_capacity(suffixes.len());
                 for suffix in suffixes {
-                    let str_id = heap.allocate(HeapData::Str(Str::new(suffix.to_owned())))?;
-                    items.push(Value::Ref(str_id));
+                    items.push(allocate_string(suffix, heap)?);
                 }
                 Value::Ref(heap.allocate(HeapData::List(List::new(items)))?)
             }
@@ -467,8 +472,7 @@ impl Path {
                 let parts = self.parts();
                 let mut items = SmallVec::with_capacity(parts.len());
                 for part in parts {
-                    let str_id = heap.allocate(HeapData::Str(Str::new(part.to_owned())))?;
-                    items.push(Value::Ref(str_id));
+                    items.push(allocate_string(part, heap)?);
                 }
                 allocate_tuple(items, heap)?
             }
@@ -492,10 +496,16 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Path> {
         Ok(self.get(vm.heap).path == other.get(vm.heap).path)
     }
 
-    fn py_hash(&self, _self_id: HeapId, vm: &mut VM<'h, impl ResourceTracker>) -> Result<Option<u64>, ResourceError> {
+    fn py_hash(&self, _self_id: HeapId, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<HashValue>> {
+        let p = self.get(vm.heap);
+        if let Some(cached) = p.cached_hash.get() {
+            return Ok(Some(cached));
+        }
         let mut hasher = DefaultHasher::new();
-        self.get(vm.heap).as_str().hash(&mut hasher);
-        Ok(Some(hasher.finish()))
+        p.as_str().hash(&mut hasher);
+        let hash = HashValue::new(hasher.finish());
+        p.cached_hash.set(Some(hash));
+        Ok(Some(hash))
     }
 
     fn py_bool(&self, _vm: &mut VM<'h, impl ResourceTracker>) -> bool {
@@ -583,9 +593,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Path> {
             }
             StaticStrings::AsPosix | StaticStrings::Fspath => {
                 args.check_zero_args(method.into(), vm.heap)?;
-                Ok(Value::Ref(vm.heap.allocate(HeapData::Str(Str::new(
-                    self.get(vm.heap).as_posix().to_owned(),
-                )))?))
+                Ok(allocate_string(self.get(vm.heap).as_posix(), vm.heap)?)
             }
             _ => {
                 args.drop_with_heap(vm);

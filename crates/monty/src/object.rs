@@ -27,7 +27,7 @@ use crate::{
         dict::Dict,
         list::List,
         set::{FrozenSet, Set},
-        str::{Str, StringRepr, string_repr_fmt},
+        str::{StringRepr, allocate_string, string_repr_fmt},
         timedelta as timedelta_type, timezone as timezone_type,
     },
     value::{EitherStr, Value},
@@ -380,7 +380,7 @@ impl MontyObject {
             Self::Int(i) => Ok(Value::Int(i)),
             Self::BigInt(bi) => Ok(LongInt::new(bi).into_value(vm.heap)?),
             Self::Float(f) => Ok(Value::Float(f)),
-            Self::String(s) => Ok(Value::Ref(vm.heap.allocate(HeapData::Str(Str::new(s)))?)),
+            Self::String(s) => Ok(allocate_string(s, vm.heap)?),
             Self::Bytes(b) => Ok(Value::Ref(vm.heap.allocate(HeapData::Bytes(Bytes::new(b)))?)),
             Self::List(items) => {
                 let values: Vec<Value> = items

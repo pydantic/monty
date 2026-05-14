@@ -9,6 +9,8 @@
 //! `heap_reader_compile_fail_tests` cfg (plus a per-test cfg) is set.
 
 use super::*;
+#[cfg(heap_reader_compile_fail_test_heap_mutation_while_reading)]
+use crate::types::str::allocate_string;
 
 /// Must not compile: allocating on the heap while holding a reference derived from `HeapRead::get`.
 ///
@@ -25,7 +27,7 @@ fn heap_mutation_while_reading(list_id: HeapId, heap: &mut Heap<impl ResourceTra
             _ => unreachable!(),
         };
         let slice = a.get(heap).as_slice();
-        let _ = heap.heap_mut().allocate(HeapData::Str(Str::new("boom".into())));
+        let _ = allocate_string("boom", heap.heap_mut());
         let _ = slice.len();
     });
 }

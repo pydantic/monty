@@ -101,6 +101,21 @@ impl<T> StableHeap<T> {
         unsafe { self.slot_at(id) }.expect("HeapEntries::get - data already freed")
     }
 
+    /// Returns a mutable reference to the entry at `index`.
+    ///
+    /// # Panics
+    /// Panics if `index >= len`.
+    #[inline]
+    #[track_caller]
+    pub fn get_mut(&mut self, id: HeapId) -> Option<&mut T> {
+        assert!(id.index() < self.len.get(), "StableHeap::entry - {id:?} out of bounds");
+        let (page_idx, slot_idx) = Self::page_slot_indices(id);
+        let pages = self.pages.get_mut();
+        let slot = &mut pages[page_idx][slot_idx];
+        // SAFETY: [DH] - all slots at indices < self.len have been initialized via `allocate`.
+        unsafe { slot.assume_init_mut() }.as_mut()
+    }
+
     /// Returns a mutable reference to the entry at `index`. Entries can also be
     /// freed via the returned `StableHeapEntry`'s `free` method.
     ///
@@ -109,24 +124,15 @@ impl<T> StableHeap<T> {
     #[inline]
     #[track_caller]
     pub fn entry(&mut self, id: HeapId) -> Option<StableHeapEntry<'_, T>> {
+        // NB: cannot reuse logic from get_mut because of the additional free list reference - would
+        // create a borrow
         assert!(id.index() < self.len.get(), "StableHeap::entry - {id:?} out of bounds");
         let (page_idx, slot_idx) = Self::page_slot_indices(id);
-        let slot = &mut self.pages.get_mut()[page_idx][slot_idx];
+        let pages = self.pages.get_mut();
+        let slot = &mut pages[page_idx][slot_idx];
         // SAFETY: [DH] - all slots at indices < self.len have been initialized via `allocate`.
         let value = unsafe { slot.assume_init_mut() };
         StableHeapEntry::new(id, value, &mut self.free_list)
-    }
-
-    /// Retain only values satisfying the predicate, freeing the rest.
-    pub fn retain(&mut self, mut predicate: impl FnMut(usize, &mut T) -> bool) {
-        let len = self.len.get();
-        for i in 0..len {
-            if let Some(mut entry) = self.entry(HeapId::from_index(i))
-                && !predicate(i, entry.get())
-            {
-                entry.free();
-            }
-        }
     }
 
     /// Allocates a slot — reusing from the free list or appending — and returns its ID.
@@ -187,6 +193,7 @@ impl<T> StableHeap<T> {
     }
 
     /// Iterates the live values
+    #[cfg(any(feature = "ref-count-return", test))]
     pub fn iter(&self) -> impl Iterator<Item = (HeapId, &T)> {
         // SAFETY: [DH] - iterating only the live entries ensures that caller
         // can never observe `None` entries which could be invalidated by
@@ -217,13 +224,6 @@ impl<T> StableHeap<T> {
         let index = id.index();
         (index / PAGE_SIZE, index % PAGE_SIZE)
     }
-
-    /// Tests whether the value at index i is allocated. Panics if `i >= self.len()`
-    #[cfg(test)]
-    fn is_allocated(&self, id: HeapId) -> bool {
-        // SAFETY: [DH] - call does not expose borrowed data
-        unsafe { self.slot_at(id) }.is_some()
-    }
 }
 
 /// Allocates a new page of uninitialized slots directly on the heap.
@@ -237,6 +237,8 @@ fn create_page<T>() -> Box<[Slot<T>; PAGE_SIZE]> {
 
 /// Submodule for `StableHeapEntry` to help enforce a safety boundary around the `new` constructor.
 mod stable_heap_entry {
+    use std::ops::{Deref, DerefMut};
+
     use crate::heap::{HeapId, free_list::FreeList};
 
     pub struct StableHeapEntry<'a, T> {
@@ -258,10 +260,30 @@ mod stable_heap_entry {
             unsafe { self.value.take().unwrap_unchecked() }
         }
 
-        pub fn get(&mut self) -> &mut T {
+        pub fn get(&self) -> &T {
+            // SAFETY: [DH] - impossible to get a `StableHeapEntry` with `None` slot - `new`
+            // is the only constructor
+            unsafe { self.value.as_ref().unwrap_unchecked() }
+        }
+
+        pub fn get_mut(&mut self) -> &mut T {
             // SAFETY: [DH] - impossible to get a `StableHeapEntry` with `None` slot - `new`
             // is the only constructor
             unsafe { self.value.as_mut().unwrap_unchecked() }
+        }
+    }
+
+    impl<T> Deref for StableHeapEntry<'_, T> {
+        type Target = T;
+
+        fn deref(&self) -> &Self::Target {
+            self.get()
+        }
+    }
+
+    impl<T> DerefMut for StableHeapEntry<'_, T> {
+        fn deref_mut(&mut self) -> &mut Self::Target {
+            self.get_mut()
         }
     }
 }
@@ -371,7 +393,6 @@ mod iter {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashSet;
 
     use super::*;
 
@@ -490,42 +511,6 @@ mod tests {
         // Live references must still see the original value.
         for r in &live_refs {
             assert_eq!(**r, "original");
-        }
-    }
-
-    #[test]
-    fn retain_then_allocate_reuses_freed_slots() {
-        // Use retain to free slots, then allocate into the freed slots.
-        let mut entries = StableHeap::with_capacity(16);
-
-        for _ in 0..6 {
-            entries.allocate("v");
-        }
-
-        // Retain only even-indexed entries.
-        entries.retain(|i, _| i % 2 == 0);
-
-        // Odd slots should now be None.
-        for i in [1, 3, 5] {
-            assert!(!entries.is_allocated(HeapId::from_index(i)));
-        }
-
-        // Allocate should reuse freed slots.
-        let r1 = entries.allocate("new-1");
-        let r2 = entries.allocate("new-2");
-        let r3 = entries.allocate("new-3");
-
-        // The reused IDs should be the ones that were freed.
-        let reused: HashSet<usize> = [r1, r2, r3].iter().map(|id| id.index()).collect();
-        assert!(reused.contains(&1) || reused.contains(&3) || reused.contains(&5));
-        assert_eq!(reused.len(), 3);
-
-        // All slots should now be occupied.
-        for i in 0..6 {
-            assert!(
-                entries.is_allocated(HeapId::from_index(i)),
-                "slot {i} should be occupied"
-            );
         }
     }
 }

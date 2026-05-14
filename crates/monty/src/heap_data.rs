@@ -11,17 +11,18 @@ use ahash::AHashSet;
 use num_integer::Integer;
 
 use crate::{
-    ExcType, ResourceError, ResourceTracker,
+    ExcType, ResourceTracker,
     args::ArgValues,
     asyncio::{CallId, Coroutine, GatherFuture, GatherItem},
     bytecode::{CallResult, VM},
     exception_private::{RunError, RunResult, SimpleException},
+    hash::HashValue,
     heap::{DropWithHeap, HeapId, HeapItem, HeapReadOutput},
     intern::FunctionId,
     types::{
         Bytes, Dataclass, Dict, DictItemsView, DictKeysView, DictValuesView, FrozenSet, List, LongInt, Module,
         MontyIter, NamedTuple, Path, PyTrait, Range, ReMatch, RePattern, Set, Slice, Str, Tuple, Type, date, datetime,
-        timedelta, timezone,
+        str::allocate_string, timedelta, timezone,
     },
     value::{EitherStr, Value},
 };
@@ -163,47 +164,6 @@ impl HeapData {
                 | Self::Coroutine(_)
                 | Self::GatherFuture(_)
         )
-    }
-
-    /// Returns whether this heap data currently contains any heap references (`Value::Ref`).
-    ///
-    /// Used during allocation to determine if this data could create reference cycles.
-    /// When true, `mark_potential_cycle()` should be called to enable GC.
-    ///
-    /// Note: This is separate from `is_gc_tracked()` - a container may be GC-tracked
-    /// (capable of holding refs) but not currently contain any refs.
-    #[inline]
-    pub(crate) fn has_refs(&self) -> bool {
-        match self {
-            Self::List(list) => list.contains_refs(),
-            Self::Tuple(tuple) => tuple.contains_refs(),
-            Self::NamedTuple(nt) => nt.contains_refs(),
-            Self::Dict(dict) => dict.has_refs(),
-            Self::DictKeysView(_) | Self::DictItemsView(_) | Self::DictValuesView(_) => true,
-            Self::Set(set) => set.has_refs(),
-            Self::FrozenSet(fset) => fset.has_refs(),
-            // Closures always have refs when they have captured cells (HeapIds)
-            Self::Closure(closure) => {
-                !closure.cells.is_empty() || closure.defaults.iter().any(|v| matches!(v, Value::Ref(_)))
-            }
-            Self::FunctionDefaults(fd) => fd.defaults.iter().any(|v| matches!(v, Value::Ref(_))),
-            Self::Cell(cell) => matches!(&cell.0, Value::Ref(_)),
-            Self::Dataclass(dc) => dc.has_refs(),
-            Self::Iter(iter) => iter.has_refs(),
-            Self::Module(m) => m.has_refs(),
-            // Coroutines have refs from namespace values (params, cell/free vars)
-            Self::Coroutine(coro) => coro.namespace.iter().any(|v| matches!(v, Value::Ref(_))),
-            // GatherFutures have refs from coroutine items and results
-            Self::GatherFuture(gather) => {
-                gather.items.iter().any(|item| matches!(item, GatherItem::Coroutine(_)))
-                    || gather
-                        .results
-                        .iter()
-                        .any(|r| r.as_ref().is_some_and(|v| matches!(v, Value::Ref(_))))
-            }
-            // Leaf types cannot have refs
-            _ => false,
-        }
     }
 
     /// Returns true if this heap data is a coroutine.
@@ -644,7 +604,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
     /// `FunctionDefaults`, `Cell`, `LongInt`, `ExtFunction`), the hash is
     /// computed inline here. Variants left in the catch-all `_ => Ok(None)`
     /// arm are unhashable.
-    fn py_hash(&self, self_id: HeapId, vm: &mut VM<'h, impl ResourceTracker>) -> Result<Option<u64>, ResourceError> {
+    fn py_hash(&self, self_id: HeapId, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<HashValue>> {
         match self {
             Self::Str(s) => s.py_hash(self_id, vm),
             Self::Bytes(b) => b.py_hash(self_id, vm),
@@ -664,18 +624,18 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             Self::Closure(c) => {
                 let mut hasher = DefaultHasher::new();
                 c.get(vm.heap).func_id.hash(&mut hasher);
-                Ok(Some(hasher.finish()))
+                Ok(Some(HashValue::new(hasher.finish())))
             }
             Self::FunctionDefaults(fd) => {
                 let mut hasher = DefaultHasher::new();
                 fd.get(vm.heap).func_id.hash(&mut hasher);
-                Ok(Some(hasher.finish()))
+                Ok(Some(HashValue::new(hasher.finish())))
             }
             // Cell uses identity hashing (matches Python's default for cell objects).
             Self::Cell(_) => {
                 let mut hasher = DefaultHasher::new();
                 self_id.hash(&mut hasher);
-                Ok(Some(hasher.finish()))
+                Ok(Some(HashValue::new(hasher.finish())))
             }
             // LongInt's hash matches `Value::InternLongInt`'s, since they are
             // both Python `int` values and must hash equally when equal.
@@ -683,7 +643,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             Self::ExtFunction(name) => {
                 let mut hasher = DefaultHasher::new();
                 name.get(vm.heap).hash(&mut hasher);
-                Ok(Some(hasher.finish()))
+                Ok(Some(HashValue::new(hasher.finish())))
             }
             // Unhashable: List, Dict, Set, the dict views, Iter, Module,
             // Exception, Coroutine, GatherFuture, RePattern, ReMatch.
@@ -778,7 +738,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
         match (self, other) {
             (HeapReadOutput::Str(a), HeapReadOutput::Str(b)) => {
                 let concat = format!("{}{}", a.get(vm.heap).as_str(), b.get(vm.heap).as_str());
-                Ok(Some(Value::Ref(vm.heap.allocate(HeapData::Str(concat.into()))?)))
+                Ok(Some(allocate_string(concat, vm.heap)?))
             }
             (HeapReadOutput::Bytes(a), HeapReadOutput::Bytes(b)) => {
                 let a_bytes = a.get(vm.heap).as_slice();

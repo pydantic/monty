@@ -12,17 +12,18 @@
 //! lazily initialized so programs that never call `json.loads()` pay zero cost.
 //!
 //! The cache lives on the [`VM`] and is scoped to a single execution run. It
-//! is cleaned up when the VM is dropped and its entries are registered as GC
-//! roots in [`VM::run_gc()`].
+//! is cleaned up when the VM is dropped; cached values stay alive across cycle
+//! collections because each `Value::Ref` keeps the entry's refcount above zero,
+//! and trial deletion treats non-zero refcount as proof of liveness.
 
 use std::iter;
 
 use ahash::RandomState;
 
 use crate::{
-    heap::{ContainsHeap, HeapData, HeapId, HeapReader},
+    heap::{ContainsHeap, HeapReader},
     resource::{ResourceError, ResourceTracker},
-    types::str::Str,
+    types::str::{allocate_string, allocate_string_no_interning},
     value::Value,
 };
 
@@ -57,7 +58,9 @@ type CacheEntry = Option<(u64, Box<str>, Value)>;
 ///   eligible string (2–64 bytes).
 /// - Persists across multiple `json.loads()` calls within the same run.
 /// - Cleaned up when the VM is dropped via [`drop_all`](Self::drop_all).
-/// - Cached values are reported as GC roots via [`gc_roots`](Self::gc_roots).
+/// - Cached values keep themselves alive via the refcount on each cached
+///   `Value::Ref`; the trial-deletion cycle collector treats any non-zero
+///   refcount as proof of liveness, so no explicit root walk is required.
 #[derive(Default)]
 pub(crate) struct JsonStringCache {
     inner: Option<CacheInner>,
@@ -85,8 +88,7 @@ impl JsonStringCache {
     ) -> Result<Value, ResourceError> {
         let len = s.len();
         if !(MIN_LEN..=MAX_LEN).contains(&len) {
-            let heap_id = heap.heap().allocate(HeapData::Str(Str::new(s)))?;
-            return Ok(Value::Ref(heap_id));
+            return allocate_string(s, heap.heap());
         }
 
         let inner = self.inner.get_or_insert_with(CacheInner::new);
@@ -104,17 +106,6 @@ impl JsonStringCache {
                 }
             }
         }
-    }
-
-    /// Yields the `HeapId` of every cached value so the GC treats them as roots.
-    ///
-    /// Without this, a GC cycle could free a heap string that the cache still
-    /// references, leading to a use-after-free on the next cache hit.
-    pub fn gc_roots(&self) -> impl Iterator<Item = HeapId> + '_ {
-        self.inner
-            .iter()
-            .flat_map(|inner| inner.entries.iter())
-            .filter_map(|entry| entry.as_ref().and_then(|(_, _, value)| value.ref_id()))
     }
 }
 
@@ -164,8 +155,8 @@ impl CacheInner {
             }
         }
         // All 5 probe slots occupied — allocate without caching.
-        let heap_id = heap.heap().allocate(HeapData::Str(Str::new(s)))?;
-        Ok(Value::Ref(heap_id))
+        // Length is in [MIN_LEN..=MAX_LEN] here so interning would never apply.
+        allocate_string_no_interning(s, heap.heap())
     }
 
     /// Allocates `s` on the heap, stores a clone in `entries[index]`, and
@@ -178,8 +169,8 @@ impl CacheInner {
         heap: &HeapReader<'_, impl ResourceTracker>,
     ) -> Result<Value, ResourceError> {
         let key = s.clone().into_boxed_str();
-        let heap_id = heap.heap().allocate(HeapData::Str(Str::new(s)))?;
-        let value = Value::Ref(heap_id);
+        // Length is in [MIN_LEN..=MAX_LEN] here so interning would never apply.
+        let value = allocate_string_no_interning(s, heap.heap())?;
         let cached = value.clone_with_heap(heap);
         self.entries[index] = Some((hash, key, cached));
         Ok(value)

@@ -65,24 +65,18 @@
 /// - `expandtabs(tabsize=8)` - Tab expansion
 /// - `translate(table[, delete])` - Character translation
 /// - `maketrans(frm, to)` - Create translation table (staticmethod)
-use std::{
-    cmp::Ordering,
-    collections::hash_map::DefaultHasher,
-    fmt,
-    fmt::Write,
-    hash::{Hash, Hasher},
-    mem, ops, str,
-};
+use std::{cell::Cell, cmp::Ordering, fmt, fmt::Write, mem, ops, str};
 
 use ahash::AHashSet;
 use smallvec::smallvec;
 
-use super::{MontyIter, PyTrait, Type, str::Str};
+use super::{MontyIter, PyTrait, Type};
 use crate::{
     args::ArgValues,
     bytecode::{CallResult, VM},
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, RunResult, SimpleException},
+    hash::{HashValue, hash_python_bytes},
     heap::{DropWithHeap, Heap, HeapData, HeapGuard, HeapId, HeapItem, HeapRead, heap_read_ref_as_field},
     intern::{StaticStrings, StringId},
     resource::{ResourceError, ResourceTracker, check_repeat_size, check_replace_size},
@@ -127,14 +121,25 @@ pub fn get_byte_at_index(bytes: &[u8], index: i64) -> Option<u8> {
 ///
 /// Wraps a `Vec<u8>` and provides Python-compatible operations.
 /// See the module-level documentation for implemented and unimplemented methods.
-#[derive(Debug, Clone, PartialEq, Default, serde::Serialize, serde::Deserialize)]
-pub(crate) struct Bytes(Vec<u8>);
+///
+/// Carries an inline `cached_hash` field (skipped on serde) so a `Bytes` only
+/// computes its Python hash once. See [`super::Str`] for the same pattern.
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[serde(transparent)]
+pub(crate) struct Bytes(Vec<u8>, #[serde(skip)] Cell<Option<HashValue>>);
+
+impl PartialEq for Bytes {
+    /// Compares only the byte content — `cached_hash` is a pure optimisation.
+    fn eq(&self, other: &Self) -> bool {
+        self.0 == other.0
+    }
+}
 
 impl Bytes {
     /// Creates a new Bytes from a byte vector.
     #[must_use]
     pub fn new(bytes: Vec<u8>) -> Self {
-        Self(bytes)
+        Self(bytes, Cell::new(None))
     }
 
     /// Returns a reference to the inner byte slice.
@@ -185,13 +190,13 @@ impl Bytes {
 
 impl From<Vec<u8>> for Bytes {
     fn from(bytes: Vec<u8>) -> Self {
-        Self(bytes)
+        Self::new(bytes)
     }
 }
 
 impl From<&[u8]> for Bytes {
     fn from(bytes: &[u8]) -> Self {
-        Self(bytes.to_vec())
+        Self::new(bytes.to_vec())
     }
 }
 
@@ -242,12 +247,17 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Bytes> {
         Ok(self.get(vm.heap).0 == other.get(vm.heap).0)
     }
 
-    fn py_hash(&self, _self_id: HeapId, vm: &mut VM<'h, impl ResourceTracker>) -> Result<Option<u64>, ResourceError> {
-        // Must match `Value::InternBytes` so the same content hashes equally
-        // regardless of whether the bytes live on the heap or in the intern table.
-        let mut hasher = DefaultHasher::new();
-        self.get(vm.heap).as_slice().hash(&mut hasher);
-        Ok(Some(hasher.finish()))
+    fn py_hash(&self, _self_id: HeapId, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<HashValue>> {
+        let b = self.get(vm.heap);
+        if let Some(cached) = b.1.get() {
+            return Ok(Some(cached));
+        }
+        // Delegates to the canonical helper used by both heap and intern paths;
+        // an interned `b"foo"` and a heap `b"foo"` must hash identically for
+        // dict lookup to work.
+        let hash = hash_python_bytes(b.as_slice());
+        b.1.set(Some(hash));
+        Ok(Some(hash))
     }
 
     fn py_cmp(&self, other: &Self, vm: &mut VM<'h, impl ResourceTracker>) -> Result<Option<Ordering>, ResourceError> {
@@ -492,10 +502,7 @@ fn bytes_decode<'h>(
 
     // Decode as UTF-8
     match str::from_utf8(bytes.get(vm.heap)) {
-        Ok(s) => {
-            let heap_id = vm.heap.allocate(HeapData::Str(Str::from(s.to_owned())))?;
-            Ok(Value::Ref(heap_id))
-        }
+        Ok(s) => Ok(super::str::allocate_string(s, vm.heap)?),
         Err(_) => Err(ExcType::unicode_decode_error_invalid_utf8()),
     }
 }
@@ -2126,7 +2133,7 @@ fn bytes_hex<'h>(
         hex_chars.iter().collect()
     };
 
-    super::str::allocate_string(result, vm.heap)
+    Ok(super::str::allocate_string(result, vm.heap)?)
 }
 
 /// Parses arguments for bytes.hex method.

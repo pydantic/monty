@@ -196,7 +196,7 @@ Avoid manual `drop_with_heap` whenever there are multiple code paths (branching,
 
 ## Dev Commands
 
-DO NOT run `cargo build` or `cargo run`, it will fail because of issues with Python bindings.
+**IMPORTANT**: before running `cargo build` or `cargo run`, it is likely necessary to run `make install-py` to ensure that the Python virtual environment is available for build.
 
 Instead use the following `make` commands:
 
@@ -558,6 +558,11 @@ Heap-allocated values (`Value::Ref`) use manual reference counting. Key rules:
 - **Dropping**: Call `drop_with_heap(heap)` when discarding an `Value` that may be a `Ref`.
 
 Container types (`List`, `Tuple`, `Dict`) also have `clone_with_heap()` methods.
+
+### Cycle collection — Bacon–Rajan trial deletion
+
+Reference counting alone cannot reclaim cycles. Monty uses **Bacon–Rajan trial deletion**
+(`Heap::collect_cycles` in `crates/monty/src/heap.rs`).
 
 **Resource limits**: When resource limits (allocations, memory, time) are exceeded, execution terminates with a `ResourceError`. No guarantees are made about the state of the heap or reference counts after a resource limit is exceeded. The heap may contain orphaned objects with incorrect refcounts. This is acceptable because resource exhaustion is a terminal error - the execution context should be discarded.
 
