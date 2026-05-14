@@ -2087,6 +2087,37 @@ fn map_over_huge_range_memory_limit() {
     assert_eq!(result.unwrap_err().exc_type(), ExcType::MemoryError);
 }
 
+/// Test that dict-view set operations over a huge iterable are bounded by the
+/// memory limit.
+///
+/// `dict.keys().isdisjoint(...)` collects the right-hand iterable into a
+/// temporary set with capacity drawn from the iterator's size hint, which goes
+/// through the same pre-allocation guard as `set()`.
+#[test]
+fn dict_view_isdisjoint_huge_range_memory_limit() {
+    let code = "{1: 1}.keys().isdisjoint(range(10 ** 9))";
+    let ex = MontyRun::new(code.to_owned(), "test.py", vec![]).unwrap();
+
+    let limits = ResourceLimits::new().max_memory(100_000);
+    let result = ex.run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout);
+
+    assert!(result.is_err(), "huge dict-view pre-allocation should be rejected");
+    assert_eq!(result.unwrap_err().exc_type(), ExcType::MemoryError);
+}
+
+/// Test that small dict-view `isdisjoint` over an iterable still succeeds.
+#[test]
+fn dict_view_isdisjoint_within_limit() {
+    let code = "{1: 1}.keys().isdisjoint(range(2, 5))";
+    let ex = MontyRun::new(code.to_owned(), "test.py", vec![]).unwrap();
+
+    let limits = ResourceLimits::new().max_memory(100_000);
+    let result = ex.run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout);
+
+    assert!(result.is_ok(), "small dict-view isdisjoint should succeed: {result:?}");
+    assert_eq!(result.unwrap(), MontyObject::Bool(true));
+}
+
 /// Test that small set/map construction still succeeds within limits.
 #[test]
 fn set_from_range_within_limit() {
