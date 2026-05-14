@@ -243,12 +243,7 @@ impl<'a> Compiler<'a> {
                 self.code.emit(Opcode::Pop); // Discard result
             }
             Node::Return(expr) => {
-                self.compile_expr(expr)?;
-                self.compile_return();
-            }
-            Node::ReturnNone => {
-                self.code.emit(Opcode::LoadNone);
-                self.compile_return();
+                self.compile_return(expr.as_ref())?;
             }
             Node::Assign { target, object } => {
                 self.compile_expr(object)?;
@@ -380,6 +375,9 @@ impl<'a> Compiler<'a> {
                     self.compile_expr(exc)?;
                     self.code.emit(Opcode::Raise);
                 } else {
+                    // Bare `raise`: re-raise the current exception (top
+                    // of the VM's exception_stack), or RuntimeError if
+                    // no active exception.
                     self.code.emit(Opcode::Reraise);
                 }
             }
@@ -2223,12 +2221,12 @@ impl<'a> Compiler<'a> {
         let dead_code_depth = self.code.stack_depth();
         let target_loop_depth = self.loop_stack.len() - 1;
 
-        // If inside except handlers, clean up ALL exception states
-        // Each nested except handler has pushed an exception onto the stack,
-        // so we need to clear/pop each one when breaking out
+        // If inside except handlers, clean up ALL exception states.
+        // Each enclosing except handler has pushed an exception onto
+        // exception_stack and the operand stack — pair them up and pop.
         for _ in 0..self.except_handler_depth {
             self.code.emit(Opcode::ClearException);
-            self.code.emit(Opcode::Pop); // Pop the exception value
+            self.code.emit(Opcode::Pop);
         }
 
         // Pop the iterator only for `for` loops (has iterator on stack)
@@ -2278,12 +2276,10 @@ impl<'a> Compiler<'a> {
         let dead_code_depth = self.code.stack_depth();
         let target_loop_depth = self.loop_stack.len() - 1;
 
-        // If inside except handlers, clean up ALL exception states
-        // Each nested except handler has pushed an exception onto the stack,
-        // so we need to clear/pop each one when continuing
+        // If inside except handlers, clean up ALL exception states.
         for _ in 0..self.except_handler_depth {
             self.code.emit(Opcode::ClearException);
-            self.code.emit(Opcode::Pop); // Pop the exception value
+            self.code.emit(Opcode::Pop);
         }
 
         // Check if we need to go through any finally blocks
@@ -2778,19 +2774,59 @@ impl<'a> Compiler<'a> {
     // Exception Handling Compilation
     // ========================================================================
 
-    /// Compiles a return statement, handling finally blocks properly.
+    /// Compiles a return statement, handling exception cleanup and finally blocks.
     ///
-    /// If we're inside a try-finally block, the return value is kept on the stack
-    /// and we jump to a "finally with return" section that runs finally then returns.
-    /// Otherwise, we emit a direct `ReturnValue`.
-    fn compile_return(&mut self) {
+    /// `expr` is the expression after `return` (`None` for a bare `return`).
+    ///
+    /// CPython clears the active-exception state when control transfers out
+    /// of an except clause via `return` (so a surrounding finally — or the
+    /// caller after this function returns — sees no active exception). We
+    /// match that by emitting `ClearException + Pop` for each enclosing
+    /// except handler before evaluating the return value:
+    ///
+    /// 1. For each enclosing handler: pop its `exception_stack` entry
+    ///    (`ClearException`) and its operand-stack exception value (`Pop`).
+    ///    Doing this BEFORE evaluating the return expression means the
+    ///    final operand-stack state is just `[return_value]`, no leaked
+    ///    exception values underneath.
+    /// 2. Push the return value (or `LoadNone` for bare `return`).
+    /// 3. Route: jump to enclosing finally-with-return path, or
+    ///    `ReturnValue` directly.
+    fn compile_return(&mut self, expr: Option<&ExprLoc>) -> Result<(), CompileError> {
+        // `return` never falls through; preserve the statement-entry depth
+        // for any unreachable code that follows in the same block.
+        let dead_code_depth = self.code.stack_depth();
+
+        for _ in 0..self.except_handler_depth {
+            self.code.emit(Opcode::ClearException);
+            self.code.emit(Opcode::Pop);
+        }
+
+        if let Some(expr) = expr {
+            self.compile_expr(expr)?;
+        } else {
+            self.code.emit(Opcode::LoadNone);
+        }
+
+        self.emit_return_routing();
+        self.code.set_stack_depth(dead_code_depth);
+        Ok(())
+    }
+
+    /// Emits the routing portion of a return — jump into the enclosing
+    /// finally-with-return path if any, otherwise emit `ReturnValue`.
+    ///
+    /// Assumes the return value is already on top of the stack and that any
+    /// active exception cleanup (for enclosing except handlers) has already
+    /// happened. Used by `compile_return` and by the tail of a
+    /// finally-with-return path, which arrives with the value on the stack
+    /// from the upstream `return` and needs to pass it to either an outer
+    /// finally or back to the caller.
+    fn emit_return_routing(&mut self) {
         if let Some(finally_target) = self.finally_targets.last_mut() {
-            // Inside a try-finally: jump to finally, then return
-            // Return value is already on stack
             let jump = self.code.emit_jump(Opcode::Jump);
             finally_target.return_jumps.push(jump);
         } else {
-            // Normal return
             self.code.emit(Opcode::ReturnValue);
         }
     }
@@ -2835,6 +2871,11 @@ impl<'a> Compiler<'a> {
 
         // Record stack depth at try entry (for unwinding on exception)
         let stack_depth = self.code.stack_depth();
+        // Record `except_handler_depth` at try entry — the count of this
+        // frame's exception_stack entries that should be active inside the
+        // try body. The VM uses this on unwind to drain entries left
+        // behind by abandoned-but-trailer-skipped handlers.
+        let try_exc_stack_count = u16::try_from(self.except_handler_depth).expect("except_handler_depth exceeds u16");
 
         // If there's a finally block, track returns/break/continue inside try/handlers/else
         if has_finally {
@@ -2884,19 +2925,22 @@ impl<'a> Compiler<'a> {
         let handler_dispatch_end = self.code.current_offset();
 
         // === Finally cleanup handler (for exceptions during handler dispatch) ===
-        // This catches exceptions from RERAISE (and any other exceptions in handlers)
-        // and ensures finally runs before the exception propagates.
+        // This catches exceptions from `Raise` (when the last handler didn't
+        // match) and any other exceptions raised in handler bodies, runs the
+        // finally block, then re-raises. The exception lives in an anonymous
+        // local slot for the duration of the finally body — same slot
+        // mechanism as a regular except handler — so a bare `raise` inside
+        // the finally body resolves to the in-flight exception.
         let finally_cleanup_start = if has_finally {
             let cleanup_start = self.code.current_offset();
             // Exception value is on stack (pushed by VM), so stack = stack_depth + 1
             self.code.set_stack_depth(stack_depth + 1);
-            // We need to pop it, run finally, then reraise
-            // But we can't easily save the exception, so we use a different approach:
+            // We need to pop it, run finally, then reraise.
             // The exception is already on the exception_stack from handle_exception,
-            // so we can just pop from operand stack, run finally, then reraise.
-            self.code.emit(Opcode::Pop); // Pop exception from operand stack
+            // so we just pop from operand stack, run finally, then Reraise.
+            self.code.emit(Opcode::Pop);
             self.compile_block(&try_block.finally)?;
-            self.code.emit(Opcode::Reraise); // Re-raise from exception_stack
+            self.code.emit(Opcode::Reraise);
             Some(cleanup_start)
         } else {
             None
@@ -2918,7 +2962,9 @@ impl<'a> Compiler<'a> {
                 // Return value is on stack, stack = stack_depth + 1
                 self.code.set_stack_depth(stack_depth + 1);
                 self.compile_block(&try_block.finally)?;
-                self.compile_return();
+                // Return value is already on stack from the upstream Jump.
+                // Route through any outer finally, or emit ReturnValue.
+                self.emit_return_routing();
                 Some(start)
             };
 
@@ -2980,46 +3026,57 @@ impl<'a> Compiler<'a> {
         // === Add exception table entries ===
         // Order matters: entries are searched in order, so inner entries must come first.
 
-        // Entry 1: Try body -> handler dispatch
+        // Entry 1: Try body -> handler dispatch.
+        // exception_stack_count = try_exc_stack_count: entering the try body
+        // adds no handler entries.
         if has_handlers || has_finally {
             self.code.add_exception_entry(ExceptionEntry::new(
                 u32::try_from(try_start).expect("bytecode offset exceeds u32"),
                 u32::try_from(try_end).expect("bytecode offset exceeds u32") + 3, // +3 to include the JUMP instruction
                 u32::try_from(handler_start).expect("bytecode offset exceeds u32"),
                 stack_depth,
+                try_exc_stack_count,
             ));
         }
 
-        // Entry 2: Handler dispatch -> finally cleanup (only if has_finally)
-        // This ensures finally runs when RERAISE is executed or any exception occurs in handlers
+        // Entry 2: Handler dispatch -> finally cleanup (only if has_finally).
+        // exception_stack_count = try_exc_stack_count + 1: the original
+        // exception was pushed onto exception_stack by entry 1's catch and
+        // is still active throughout handler dispatch.
         if let Some(cleanup_start) = finally_cleanup_start {
             self.code.add_exception_entry(ExceptionEntry::new(
                 u32::try_from(handler_start).expect("bytecode offset exceeds u32"),
                 u32::try_from(handler_dispatch_end).expect("bytecode offset exceeds u32"),
                 u32::try_from(cleanup_start).expect("bytecode offset exceeds u32"),
                 stack_depth,
+                try_exc_stack_count + 1,
             ));
         }
 
-        // Entry 3: Finally with return -> finally cleanup
-        // If an exception occurs while running finally (in the return path), catch it
+        // Entry 3: Finally with return -> finally cleanup.
+        // Reached via Jump from compile_return, which already emitted
+        // ClearException for each enclosing handler — so on entry the
+        // exception_stack count is back to try_exc_stack_count.
         if let (Some(return_start), Some(cleanup_start)) = (finally_with_return_start, finally_cleanup_start) {
             self.code.add_exception_entry(ExceptionEntry::new(
                 u32::try_from(return_start).expect("bytecode offset exceeds u32"),
-                u32::try_from(else_start).expect("bytecode offset exceeds u32"), // End at else_start (before else block)
+                u32::try_from(else_start).expect("bytecode offset exceeds u32"),
                 u32::try_from(cleanup_start).expect("bytecode offset exceeds u32"),
                 stack_depth,
+                try_exc_stack_count,
             ));
         }
 
-        // Entry 4: Else block -> finally cleanup (only if has_finally and has_else)
-        // Exceptions in else block should go through finally
+        // Entry 4: Else block -> finally cleanup (only if has_finally and
+        // has_else). Else runs when no exception was raised, so no handler
+        // pushed an entry: exception_stack_count = try_exc_stack_count.
         if has_else && let Some(cleanup_start) = finally_cleanup_start {
             self.code.add_exception_entry(ExceptionEntry::new(
                 u32::try_from(else_start).expect("bytecode offset exceeds u32"),
                 u32::try_from(else_end).expect("bytecode offset exceeds u32"),
                 u32::try_from(cleanup_start).expect("bytecode offset exceeds u32"),
                 stack_depth,
+                try_exc_stack_count,
             ));
         }
 
@@ -3071,7 +3128,6 @@ impl<'a> Compiler<'a> {
                 // Stack: [exception, exception, exc_type]
 
                 // Check if exception matches the type
-                // This validates exc_type is a valid exception type and performs the match
                 // CheckExcMatch pops exc_type, peeks exception, pushes bool
                 self.code.emit(Opcode::CheckExcMatch);
                 // Stack: [exception, exception, bool]
@@ -3080,10 +3136,7 @@ impl<'a> Compiler<'a> {
                 // JumpIfFalse pops the bool, leaving [exception, exception]
                 let no_match_jump = self.code.emit_jump(Opcode::JumpIfFalse);
 
-                if is_last {
-                    // Last handler - if no match, reraise
-                    // But first we need to handle the exception var cleanup
-                } else {
+                if !is_last {
                     next_handler_jumps.push(no_match_jump);
                 }
 
@@ -3127,7 +3180,6 @@ impl<'a> Compiler<'a> {
                 if is_last {
                     self.code.patch_jump(no_match_jump);
                     // Coming from JumpIfFalse no-match path, stack has [exception, exception]
-                    // Reset stack depth for jump target
                     self.code.set_stack_depth(handler_entry_depth + 1);
                     // We need to pop the duplicate before reraising
                     self.code.emit(Opcode::Pop);

@@ -538,8 +538,8 @@ impl Opcode {
 
             // Exception handling
             Raise => -1,         // pop exception
-            Reraise => 0,        // no stack change (reads from exception_stack)
-            ClearException => 0, // clears exception_stack, no operand stack change
+            Reraise => 0,        // raises RuntimeError("No active exception to reraise")
+            ClearException => 0, // vestigial, no-op (kept for back-compat with serialized bytecode)
             CheckExcMatch => 0,  // pop exc_type, push bool (net 0, but exc stays)
 
             // Return

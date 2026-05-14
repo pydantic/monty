@@ -69,7 +69,10 @@ pub(crate) struct Task {
     /// Operand stack for this task.
     /// Empty for the main task (which uses VM's stack directly).
     pub stack: Vec<Value>,
-    /// Exception stack for nested except blocks.
+    /// Stack of currently-being-handled exceptions for this task.
+    /// Pushed when an except handler is entered, popped when it exits;
+    /// bare `raise` re-raises the top, and the VM consults the top to
+    /// set `__context__` on newly-created exceptions.
     pub exception_stack: Vec<Value>,
     /// VM-level instruction_ip (for exception table lookup).
     pub instruction_ip: usize,
@@ -124,6 +127,9 @@ pub(crate) struct SerializedTaskFrame {
     pub stack_base: usize,
     /// Number of local variable slots (0 for module-level frames).
     pub locals_count: u16,
+    /// Base index into the VM-wide `exception_stack` for this frame.
+    /// See `CallFrame.exception_stack_base`.
+    pub exception_stack_base: usize,
     /// Call site position (for tracebacks).
     pub call_position: Option<CodeRange>,
 }

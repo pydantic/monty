@@ -352,6 +352,19 @@ pub struct CallFrame<'code> {
     /// For function frames, this equals `func.namespace_size`.
     locals_count: u16,
 
+    /// Base index into the VM-wide `exception_stack` for this frame.
+    ///
+    /// Entries pushed by `except` handlers in this frame live at
+    /// `exception_stack[exception_stack_base..]`, while
+    /// `exception_stack[..exception_stack_base]` belongs to caller frames.
+    /// `ExceptionEntry.exception_stack_count` is relative to this base —
+    /// on exception unwind, the VM drains entries down to
+    /// `exception_stack_base + entry.exception_stack_count()` so that
+    /// handlers abandoned by the propagating exception (whose
+    /// fall-through trailers are dead code) don't leave residue that a
+    /// later bare `raise` would resurrect.
+    exception_stack_base: usize,
+
     /// Function ID (for tracebacks). None for module-level code.
     function_id: Option<FunctionId>,
 
@@ -368,12 +381,13 @@ impl<'code> CallFrame<'code> {
     ///
     /// Module frames have `locals_count = 0` because module-level variables
     /// are stored in the VM's `globals` vec, not in the stack.
-    pub fn new_module(code: &'code Code) -> Self {
+    pub fn new_module(code: &'code Code, exception_stack_base: usize) -> Self {
         Self {
             code,
             ip: 0,
             stack_base: 0,
             locals_count: 0,
+            exception_stack_base,
             function_id: None,
             call_position: None,
             should_return: false,
@@ -388,6 +402,7 @@ impl<'code> CallFrame<'code> {
         code: &'code Code,
         stack_base: usize,
         locals_count: u16,
+        exception_stack_base: usize,
         function_id: FunctionId,
         call_position: Option<CodeRange>,
     ) -> Self {
@@ -396,6 +411,7 @@ impl<'code> CallFrame<'code> {
             ip: 0,
             stack_base,
             locals_count,
+            exception_stack_base,
             function_id: Some(function_id),
             call_position,
             should_return: false,
@@ -447,6 +463,10 @@ pub struct SerializedFrame {
     /// Number of local variable slots (0 for module-level frames).
     locals_count: u16,
 
+    /// Base index into the VM-wide `exception_stack` for this frame.
+    /// See `CallFrame.exception_stack_base`.
+    exception_stack_base: usize,
+
     /// Call site position (for tracebacks).
     call_position: Option<CodeRange>,
 }
@@ -463,6 +483,7 @@ impl CallFrame<'_> {
             ip: self.ip,
             stack_base: self.stack_base,
             locals_count: self.locals_count,
+            exception_stack_base: self.exception_stack_base,
             call_position: self.call_position,
         }
     }
@@ -493,11 +514,7 @@ pub struct VMSnapshot {
     /// Call frames (serializable form — stores FunctionId, not &Code).
     frames: Vec<SerializedFrame>,
 
-    /// Stack of exceptions being handled for nested except blocks.
-    ///
-    /// When entering an except handler, the exception is pushed onto this stack.
-    /// When exiting via `ClearException`, the top is popped. This allows nested
-    /// except handlers to restore the outer exception context.
+    /// Stack of currently-being-handled exceptions (see VM field for full docs).
     exception_stack: Vec<Value>,
 
     /// IP of the instruction that caused the pause (for exception handling).
@@ -545,12 +562,20 @@ pub struct VM<'h, T: ResourceTracker> {
     /// Print output writer, borrowed so callers retain access to collected output.
     pub(crate) print_writer: PrintWriter<'h>,
 
-    /// Stack of exceptions being handled for nested except blocks.
+    /// Stack of currently-being-handled exceptions for the running task.
     ///
-    /// Used by bare `raise` to re-raise the current exception.
-    /// When entering an except handler, the exception is pushed onto this stack.
-    /// When exiting via `ClearException`, the top is popped. This allows nested
-    /// except handlers to restore the outer exception context.
+    /// Each `except` handler entry pushes the caught exception onto this
+    /// stack; each handler exit (`ClearException` from the handler trailer
+    /// or break/continue/return cleanup) pops it. Bare `raise` re-raises
+    /// the top. The VM also reads the top when *creating* a new exception
+    /// to set its `__context__` attribute, matching CPython's exception
+    /// chaining semantics.
+    ///
+    /// Every entry is owned (refcount already incremented at handler entry).
+    /// Drained by frame teardown / task cleanup. On exception unwind, the
+    /// VM drains entries down to the new handler's recorded depth so that
+    /// handlers abandoned by the propagating exception (whose trailer
+    /// would have popped them but is dead code) don't leave residue.
     exception_stack: Vec<Value>,
 
     /// IP of the instruction being executed (for exception table lookup).
@@ -645,6 +670,7 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
                     ip: sf.ip,
                     stack_base: sf.stack_base,
                     locals_count: sf.locals_count,
+                    exception_stack_base: sf.exception_stack_base,
                     function_id: sf.function_id,
                     call_position: sf.call_position,
                     should_return: false,
@@ -703,7 +729,8 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
     pub fn run_module(&mut self, code: &'h Code) -> Result<FrameExit, RunError> {
         // Store module code for restoring main task frames during task switching
         self.module_code = Some(code);
-        self.push_frame(CallFrame::new_module(code))?;
+        let exc_stack_base = self.exception_stack.len();
+        self.push_frame(CallFrame::new_module(code, exc_stack_base))?;
         self.run()
     }
 
@@ -1417,8 +1444,8 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
                     catch_sync!(self, cached_frame, error);
                 }
                 Opcode::Reraise => {
-                    // Pop the current exception from the stack to re-raise it
-                    // If caught, handle_exception will push it back
+                    // Pop the current exception from the chain and raise it.
+                    // If caught, handle_exception will push it back.
                     let error = if let Some(exc) = self.exception_stack.pop() {
                         self.make_exception(exc, true) // is_raise=true for reraise
                     } else {
@@ -1428,8 +1455,7 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
                     catch_sync!(self, cached_frame, error);
                 }
                 Opcode::ClearException => {
-                    // Pop the current exception from the stack
-                    // This restores the previous exception context (if any)
+                    // Pop the current exception from the chain.
                     if let Some(exc) = self.exception_stack.pop() {
                         exc.drop_with_heap(self);
                     }

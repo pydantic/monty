@@ -501,8 +501,8 @@ pub enum Node<F> {
     /// No-op statement. Only present in parsed form, filtered out during prepare.
     Pass,
     Expr(ExprLoc),
-    Return(ExprLoc),
-    ReturnNone,
+    /// `return [expr]`. `None` for a bare `return` (yields `None`).
+    Return(Option<ExprLoc>),
     Raise(Option<ExprLoc>),
     Assert {
         test: ExprLoc,

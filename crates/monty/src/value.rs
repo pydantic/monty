@@ -21,6 +21,7 @@ use crate::{
     exception_private::{ExcType, RunError, RunResult, SimpleException},
     hash::HashValue,
     heap::{ContainsHeap, DropWithHeap, Heap, HeapData, HeapGuard, HeapId, HeapReadOutput},
+    heap_traits::CloneWithHeap,
     intern::{BytesId, FunctionId, Interns, LongIntId, StaticStrings, StringId},
     modules::ModuleFunctions,
     resource::{
@@ -2029,6 +2030,12 @@ impl Value {
             Self::Ref(heap_id) => matches!(heap.get(*heap_id), HeapData::Str(_)),
             _ => false,
         }
+    }
+}
+
+impl CloneWithHeap for Value {
+    fn clone_with_heap<H: ContainsHeap>(&self, heap: &H) -> Self {
+        self.clone_with_heap(heap.heap())
     }
 }
 

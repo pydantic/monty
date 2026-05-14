@@ -283,10 +283,12 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
         self.stack.extend(namespace_values);
 
         // Push frame to execute the coroutine
+        let exc_stack_base = self.exception_stack.len();
         self.push_frame(CallFrame::new_function(
             &func.code,
             stack_base,
             locals_count,
+            exc_stack_base,
             func_id,
             call_position,
         ))?;
@@ -541,8 +543,8 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
 
     /// Saves the current VM context into the given task in the scheduler.
     ///
-    /// Serializes frames, moves stack/exception_stack, stores instruction_ip,
-    /// and adjusts the global recursion depth counter.
+    /// Serializes frames, moves the operand stack and exception stack,
+    /// stores instruction_ip, and adjusts the global recursion depth counter.
     fn save_task_context(&mut self, task_id: TaskId) {
         let frames: Vec<SerializedTaskFrame> = self
             .frames
@@ -552,6 +554,7 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
                 ip: f.ip,
                 stack_base: f.stack_base,
                 locals_count: f.locals_count,
+                exception_stack_base: f.exception_stack_base,
                 call_position: f.call_position,
             })
             .collect();
@@ -614,6 +617,7 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
                         ip: sf.ip,
                         stack_base: sf.stack_base,
                         locals_count: sf.locals_count,
+                        exception_stack_base: sf.exception_stack_base,
                         function_id: sf.function_id,
                         call_position: sf.call_position,
                         should_return: false,
@@ -694,10 +698,12 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
         let stack_base = self.stack.len();
         self.stack.extend(namespace_values);
 
+        let exc_stack_base = self.exception_stack.len();
         self.push_frame(CallFrame::new_function(
             &func.code,
             stack_base,
             locals_count,
+            exc_stack_base,
             func_id,
             None, // No call position — this is the root frame for a spawned task
         ))?;

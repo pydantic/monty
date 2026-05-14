@@ -6,6 +6,7 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, ExceptionRaise, RawStackFrame, RunError, SimpleException},
     heap::{HeapData, HeapGuard},
+    heap_traits::CloneWithHeap,
     intern::{StaticStrings, StringId},
     resource::ResourceTracker,
     types::{PyTrait, Type},
@@ -80,14 +81,8 @@ impl<T: ResourceTracker> VM<'_, T> {
 
         let simple_exc = match exc_value {
             // Exception instance on heap
-            Value::Ref(heap_id) => {
-                if let HeapData::Exception(exc) = this.heap.get(*heap_id) {
-                    // Clone the exception (guard handles cleanup at scope exit)
-                    exc.clone()
-                } else {
-                    // Not an exception type
-                    SimpleException::new_msg(ExcType::TypeError, "exceptions must derive from BaseException")
-                }
+            Value::Ref(heap_id) if let HeapData::Exception(exc) = this.heap.get(*heap_id) => {
+                exc.clone_with_heap(this.heap)
             }
             // Exception type (e.g., `raise ValueError` instead of `raise ValueError()`)
             // Instantiate with no message
@@ -124,29 +119,28 @@ impl<T: ResourceTracker> VM<'_, T> {
     pub(super) fn handle_exception(&mut self, mut error: RunError) -> Option<RunError> {
         // Ensure exception has initial frame info
         error = self.attach_frame_to_error(error);
+        let mut error_guard = HeapGuard::new(error, self);
+        let (error, this) = error_guard.as_parts_mut();
 
         // For uncatchable exceptions (ResourceError like RecursionError),
         // we still need to unwind the stack to collect all frames for the traceback
-        if matches!(error, RunError::UncatchableExc(_) | RunError::Internal(_)) {
-            return Some(self.unwind_for_traceback(error));
-        }
-
-        // Only catchable exceptions can be handled
-        let exc_info = match &error {
-            RunError::Exc(exc) => exc.clone(),
-            RunError::UncatchableExc(_) | RunError::Internal(_) => unreachable!(),
+        let exc_info = match error {
+            RunError::Exc(exc) => exc,
+            RunError::UncatchableExc(_) | RunError::Internal(_) => {
+                let error = error_guard.into_inner();
+                return Some(self.unwind_for_traceback(error));
+            }
         };
 
         // Create exception value to push on stack
-        let exc_value = self.create_exception_value(&exc_info);
-        let exc_value = match exc_value {
+        let exc_value = match this.create_exception_value(exc_info) {
             Ok(v) => v,
             Err(e) => return Some(e),
         };
 
         // Use HeapGuard because exc_value is conditionally consumed (pushed onto
         // exception_stack when handler found) or dropped (when no handler found)
-        let mut exc_guard = HeapGuard::new(exc_value, self);
+        let mut exc_guard = HeapGuard::new(exc_value, this);
 
         // Search for handler in current and outer frames
         loop {
@@ -159,10 +153,22 @@ impl<T: ResourceTracker> VM<'_, T> {
                 // Found a handler! Unwind stack and jump to it.
                 let handler_offset = usize::try_from(entry.handler()).expect("handler offset exceeds usize");
                 let target_stack_depth = frame.stack_base + frame.locals_count as usize + entry.stack_depth() as usize;
+                let target_exc_stack_depth = frame.exception_stack_base + entry.exception_stack_count() as usize;
 
                 // Unwind stack to target depth (drop excess values)
                 while this.stack.len() > target_stack_depth {
                     let value = this.stack.pop().unwrap();
+                    value.drop_with_heap(this);
+                }
+
+                // Drop any `exception_stack` entries left behind by handlers
+                // the propagating exception is bypassing — without this, a
+                // handler whose body terminated via `raise`/`return`/`break`/
+                // `continue` (so its trailer's `ClearException` is dead code)
+                // would leak its exception onto `exception_stack`, where a
+                // later bare `raise` could resurrect it.
+                while this.exception_stack.len() > target_exc_stack_depth {
+                    let value = this.exception_stack.pop().unwrap();
                     value.drop_with_heap(this);
                 }
 
@@ -174,7 +180,7 @@ impl<T: ResourceTracker> VM<'_, T> {
                 let (exc_value, this) = exc_guard.into_parts();
 
                 // Push exception onto the exception_stack for bare raise
-                // This allows nested except handlers to restore outer exception context
+                // and for `__context__` lookup on subsequent exceptions.
                 this.exception_stack.push(exc_value);
 
                 // Jump to handler
@@ -193,6 +199,7 @@ impl<T: ResourceTracker> VM<'_, T> {
 
                 // For spawned tasks, fail the task instead of propagating
                 if is_spawned {
+                    let error = error_guard.into_inner();
                     match self.handle_task_failure(error) {
                         Ok(()) => {
                             // Switched to next task - continue execution
@@ -205,7 +212,7 @@ impl<T: ResourceTracker> VM<'_, T> {
                     }
                 }
 
-                return Some(error);
+                return Some(error_guard.into_inner());
             }
 
             // Get the call site position before popping frame
@@ -216,17 +223,14 @@ impl<T: ResourceTracker> VM<'_, T> {
             if this.pop_frame() {
                 // The frame indicated evaluation should stop - e.g. inside `evaluate_function` - return the error
                 // now to stop unwinding.
-                return Some(error);
+                drop(exc_guard); // To release borrow on `this`
+                return Some(error_guard.into_inner());
             }
 
             // Add caller frame info to traceback (if we have call position)
             if let Some(pos) = call_position {
                 let frame_name = this.current_frame_name();
-                match &mut error {
-                    RunError::Exc(exc) => exc.add_caller_frame(pos, frame_name),
-                    RunError::UncatchableExc(exc) => exc.add_caller_frame(pos, frame_name),
-                    RunError::Internal(_) => {}
-                }
+                exc_info.add_caller_frame(pos, frame_name);
             }
         }
     }
@@ -260,8 +264,27 @@ impl<T: ResourceTracker> VM<'_, T> {
     /// Creates an exception Value from exception info.
     ///
     /// Allocates an Exception on the heap and returns a Value::Ref to it.
+    /// Also sets the new exception's implicit `__context__` chain to the
+    /// previously-being-handled exception (top of `exception_stack`),
+    /// matching CPython's behavior — when an exception is raised inside
+    /// an `except` (or `finally`) handler, its `__context__` points at
+    /// the exception the handler was processing.
     fn create_exception_value(&mut self, exc: &ExceptionRaise) -> Result<Value, RunError> {
-        let exception = exc.exc.clone();
+        // `clone_with_heap` inc_refs the context HeapId, transferring an
+        // owning ref into the local `exception`. Moving `exception` into
+        // `HeapData::Exception` below transfers that ref to the heap
+        // entry (balanced by `py_dec_ref_ids_for_data` when freed).
+        let mut exception = exc.exc.clone_with_heap(self.heap);
+        let new_context = self.exception_stack.last().and_then(|v| match v {
+            Value::Ref(heap_id) => Some(*heap_id),
+            _ => None,
+        });
+        if let Some(ctx_id) = new_context {
+            // Take a fresh ref on the new context, then `replace_context`
+            // drops the previously-cloned context ref (if any).
+            self.heap.inc_ref(ctx_id);
+            exception.replace_context(self.heap, Some(ctx_id));
+        }
         let heap_id = self.heap.allocate(HeapData::Exception(exception))?;
         Ok(Value::Ref(heap_id))
     }

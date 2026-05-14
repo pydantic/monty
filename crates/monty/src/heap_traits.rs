@@ -286,3 +286,26 @@ macro_rules! defer_drop_mut {
         let ($value, $heap) = _guard.as_parts_mut();
     };
 }
+
+/// Reverse of `DropWithHeap` for cloning data which contains heap references.
+///
+/// Not all types implement both these traits, e.g. to discourage cloning complex structures like `Set`
+/// where it's probably better to inc-ref the existing heap allocation rather than clone it.
+pub(crate) trait CloneWithHeap: Sized {
+    fn clone_with_heap<H: ContainsHeap>(&self, heap: &H) -> Self;
+}
+
+impl CloneWithHeap for HeapId {
+    #[inline]
+    fn clone_with_heap<H: ContainsHeap>(&self, heap: &H) -> Self {
+        heap.heap().inc_ref(*self);
+        *self
+    }
+}
+
+impl<T: CloneWithHeap> CloneWithHeap for Option<T> {
+    #[inline]
+    fn clone_with_heap<H: ContainsHeap>(&self, heap: &H) -> Self {
+        self.as_ref().map(|value| value.clone_with_heap(heap))
+    }
+}

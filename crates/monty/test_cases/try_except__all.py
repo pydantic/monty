@@ -470,3 +470,183 @@ try:
 except (ValueError, BaseException):
     caught_by_tuple_with_base = True
 assert caught_by_tuple_with_base, 'tuple with BaseException should catch KeyboardInterrupt'
+
+
+# === Exception state cleared on `return` from inside an except handler ===
+# When `return` exits an except clause, the exception is cleared from the
+# active-exception state before any surrounding finally runs and before
+# control returns to the caller. A bare `raise` inside that finally (or
+# in subsequent code in the caller) must therefore see `RuntimeError(
+# "No active exception to reraise")` rather than re-raising the exception
+# the except clause had just been handling.
+
+
+# Bare raise inside a try/except inside a finally that runs after
+# return-from-except: should be caught as RuntimeError, not ValueError.
+def _return_from_except_then_bare_raise_in_finally() -> None:
+    try:
+        try:
+            raise ValueError('original')
+        except ValueError:
+            return
+    finally:
+        try:
+            raise  # bare reraise — exception should already be cleared
+        except ValueError:
+            assert False, '`return` from except must clear the exception before finally runs'
+        except RuntimeError as exc:
+            assert str(exc) == 'No active exception to reraise'
+
+
+_return_from_except_then_bare_raise_in_finally()
+
+
+# Return from a doubly-nested except handler should clear EVERY enclosing
+# handler's exception state, not just the innermost.
+def _return_from_doubly_nested_except() -> None:
+    try:
+        try:
+            try:
+                raise ValueError('inner')
+            except ValueError:
+                raise TypeError('middle')
+        except TypeError:
+            return
+    finally:
+        try:
+            raise
+        except (ValueError, TypeError):
+            assert False, "`return` from doubly-nested except must clear every handler's exception state"
+        except RuntimeError as exc:
+            assert str(exc) == 'No active exception to reraise'
+
+
+_return_from_doubly_nested_except()
+
+
+# After a function returns from inside an except clause, the caller's
+# active-exception state should NOT contain that function's exception.
+def _returns_from_except_no_finally() -> str:
+    try:
+        raise ValueError('original')
+    except ValueError:
+        return 'returned'
+
+
+assert _returns_from_except_no_finally() == 'returned'
+try:
+    raise  # bare raise in caller — no exception should be active here
+except ValueError:
+    assert False, "caller should not see inner function's exception as current"
+except RuntimeError as exc:
+    assert str(exc) == 'No active exception to reraise'
+
+
+# === Exception state cleared when an exception propagates past handlers ===
+# When an exception is raised from inside an except clause and is caught
+# by a sibling/outer handler, the inner (abandoned) handler's exception
+# must be cleared from the active-exception state — its trailer that
+# would normally pop it is dead code (the handler body terminated via
+# raise rather than falling through). Without this, a bare `raise` later
+# resurrects the abandoned exception instead of producing
+# `RuntimeError("No active exception to reraise")`.
+
+# Triple-nested: `raise X` → `raise Y` → `raise Z`, then bare raise outside.
+# Each abandoned handler should be cleared.
+try:
+    try:
+        try:
+            raise ValueError('first')
+        except ValueError:
+            raise TypeError('second')
+    except TypeError:
+        raise KeyError('third')
+except KeyError as third:
+    assert str(third) == "'third'"
+    second = third.__context__
+    assert second is not None and repr(second) == "TypeError('second')"
+    first = second.__context__
+    assert repr(first) == "ValueError('first')"
+
+try:
+    raise
+except RuntimeError as exc:
+    assert str(exc) == 'No active exception to reraise'
+
+
+# Raising from a NESTED try body inside an except clause must NOT clear
+# the surrounding handler's exception — the inner raise is caught locally
+# and the outer handler is still active. After the inner try-except
+# completes, a bare `raise` in the outer handler should re-raise the
+# outer's original exception, not produce RuntimeError.
+try:
+    raise ValueError('outer')
+except ValueError as caught:
+    try:
+        raise KeyError('inner')
+    except KeyError:
+        pass  # inner caught locally; outer's ValueError should remain active
+
+    # Bare raise here should re-raise the outer's ValueError.
+    try:
+        raise
+    except ValueError as bare:
+        assert str(bare) == 'outer', 'bare raise should re-raise outer exception, not be cleared by inner raise'
+
+
+# Function-call boundary: an exception raised and caught inside a callee
+# must not leak active-exception state back to the caller. Probe via bare
+# `raise` in the caller after the callee returns.
+def _callee_raises_and_handles():
+    try:
+        raise ValueError('callee internal')
+    except ValueError:
+        pass
+
+
+_callee_raises_and_handles()
+try:
+    raise
+except RuntimeError as exc:
+    assert str(exc) == 'No active exception to reraise'
+
+
+# === Implicit __context__ chaining ===
+
+
+# Chain via implicit raise (1/0) inside a handler — the ZeroDivisionError
+# should chain to the outer exception just like an explicit raise does.
+try:
+    try:
+        raise ValueError('outer')
+    except ValueError:
+        _ = 1 / 0  # implicit ZeroDivisionError
+except ZeroDivisionError as e:
+    outer = e.__context__
+    assert outer is not None and repr(outer) == "ValueError('outer')"
+
+
+# Chain across a function-call boundary: callee raises while caller's
+# except handler is active. The new exception's __context__ is still the
+# caller's outer exception, even though the raise happened in the callee.
+def _callee_raises():
+    raise TypeError('from callee')
+
+
+try:
+    try:
+        raise ValueError('caller-side')
+    except ValueError:
+        _callee_raises()
+except TypeError as e:
+    context = e.__context__
+    assert context is not None and repr(context) == "ValueError('caller-side')"
+
+
+# Chain ONLY when an exception is being handled — a fresh raise inside a
+# `try:` body (with no enclosing handler running) has __context__ = None.
+#
+try:
+    raise ValueError()
+except ValueError as e:
+    assert e.__context__ is None

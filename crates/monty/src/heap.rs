@@ -1453,6 +1453,14 @@ fn collect_child_ids(data: &HeapData, work_list: &mut Vec<HeapId>) {
                 work_list.push(tz_id);
             }
         }
+        HeapData::Exception(exc) => {
+            // Follow the implicit `__context__` chain so chained exceptions
+            // aren't swept while their causally-prior exception is still
+            // reachable through the chain.
+            if let Some(ctx_id) = exc.context() {
+                work_list.push(ctx_id);
+            }
+        }
         // Leaf types with no heap references
         _ => {}
     }
@@ -1512,6 +1520,15 @@ fn py_dec_ref_ids_for_data(data: &mut HeapData, stack: &mut Vec<HeapId>) {
             // also drop the retained tzinfo reference so its refcount is balanced.
             if let Some(tz_id) = dt.tzinfo_ref() {
                 stack.push(tz_id);
+            }
+        }
+        HeapData::Exception(exc) => {
+            // Drop the implicit `__context__` chain reference so the chained
+            // exception's refcount is balanced. The heap entry owned one
+            // ref on its context (set when the exception was caught — see
+            // `create_exception_value`).
+            if let Some(ctx_id) = exc.context() {
+                stack.push(ctx_id);
             }
         }
         // other types have no nested heap references
