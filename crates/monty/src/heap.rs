@@ -14,7 +14,7 @@ use serde::ser::SerializeStruct;
 pub(crate) use crate::heap_data::HeapData;
 pub(crate) use crate::heap_traits::{ContainsHeap, DropWithHeap, HeapGuard, HeapItem};
 use crate::{
-    asyncio::{Coroutine, GatherFuture, GatherItem},
+    asyncio::{Coroutine, GatherFuture, GatherItem, GatherState},
     exception_private::SimpleException,
     heap_data::{CellValue, Closure, FunctionDefaults},
     resource::{ResourceError, ResourceTracker},
@@ -1431,17 +1431,27 @@ fn collect_child_ids(data: &HeapData, work_list: &mut Vec<HeapId>) {
             }
         }
         HeapData::GatherFuture(gather) => {
-            // Add coroutine HeapIds to work list
+            // Add coroutine HeapIds to work list. `items` carries the gather's
+            // owning inc_ref on each unique coroutine and is populated for the
+            // entire lifecycle.
             for item in &gather.items {
                 if let GatherItem::Coroutine(coro_id) = item {
                     work_list.push(*coro_id);
                 }
             }
-            // Add result values that are heap references
-            for result in gather.results.iter().flatten() {
-                if let Value::Ref(id) = result {
-                    work_list.push(*id);
+            // Walk per-state heap refs: in-flight slot results, or the cached
+            // result list once the gather has completed successfully. `Pending`
+            // and `Failed` carry no heap refs.
+            match &gather.state {
+                GatherState::Awaited(awaited) => {
+                    for result in awaited.results.iter().flatten() {
+                        if let Value::Ref(id) = result {
+                            work_list.push(*id);
+                        }
+                    }
                 }
+                GatherState::Completed(list_id) => work_list.push(*list_id),
+                GatherState::Pending | GatherState::Failed(_) => {}
             }
         }
         HeapData::DateTime(dt) => {
@@ -1496,15 +1506,23 @@ fn py_dec_ref_ids_for_data(data: &mut HeapData, stack: &mut Vec<HeapId>) {
             }
         }
         HeapData::GatherFuture(gather) => {
-            // Decrement ref count for coroutine HeapIds
+            // Decrement ref count for coroutine HeapIds (always present in `items`).
             for item in &gather.items {
                 if let GatherItem::Coroutine(id) = item {
                     stack.push(*id);
                 }
             }
-            // Decrement ref count for result values that are heap references
-            for result in gather.results.iter_mut().flatten() {
-                result.py_dec_ref_ids(stack);
+            // Release per-state heap refs: in-flight slot results, or the
+            // cached result list once the gather has completed successfully.
+            // `Pending` and `Failed` carry no heap refs.
+            match &mut gather.state {
+                GatherState::Awaited(awaited) => {
+                    for result in awaited.results.iter_mut().flatten() {
+                        result.py_dec_ref_ids(stack);
+                    }
+                }
+                GatherState::Completed(list_id) => stack.push(*list_id),
+                GatherState::Pending | GatherState::Failed(_) => {}
             }
         }
         HeapData::DateTime(dt) => {

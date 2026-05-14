@@ -4,7 +4,9 @@
 //! and task identifiers. The host acts as the event loop - external function
 //! calls return `ExternalFuture` objects that can be awaited.
 
-use crate::{heap::HeapId, intern::FunctionId, value::Value};
+use ahash::AHashMap;
+
+use crate::{exception_private::RunError, heap::HeapId, intern::FunctionId, value::Value};
 
 /// Unique identifier for external function calls.
 ///
@@ -123,30 +125,92 @@ pub(crate) enum GatherItem {
 ///
 /// # Lifecycle
 ///
-/// 1. **Creation**: `gather(coro1, coro2, ...)` stores coroutine HeapIds and external CallIds
-/// 2. **Await**: `await gather_future` spawns tasks and blocks the current task
-/// 3. **Completion**: As tasks/futures complete, results are stored in order
-/// 4. **Return**: When all items complete, returns list of results
+/// The lifecycle is encoded in [`GatherState`]:
 ///
-/// # Error Handling
+/// 1. **`Pending`** — created by `gather(coro1, coro2, ...)` but not yet awaited.
+///    Only `items` carries data; the per-await bookkeeping does not yet exist.
+/// 2. **`Awaited(AwaitedGather)`** — entered by the `Await` opcode. Spawned task
+///    ids, the waiter, the per-slot results, and any external futures still
+///    being waited on all live inside the [`AwaitedGather`] payload. Tasks and
+///    external resolutions write into `results` slots while in this state.
+/// 3. **`Completed(list_id)`** — all children completed successfully. The
+///    `list_id` is an inc_ref'd `HeapData::List` holding the gathered results;
+///    re-awaiting the gather returns this same list, matching CPython's
+///    behavior of caching a Future's result.
+/// 4. **`Failed(error)`** — a child task or external future raised. The error
+///    was propagated to the original waiter on first await, and is cached here
+///    so re-awaits re-raise the same exception (again matching CPython).
 ///
-/// On any task failure, sibling tasks are cancelled and the exception propagates
-/// to the task that awaited the gather.
+/// Encoding the phases as a `match`-able enum lets every site that touches a
+/// gather state-transition explicitly, instead of inferring "have we been
+/// awaited?" / "are we done?" from emptiness checks across several `Vec`s.
+///
+/// # Re-await semantics
+///
+/// `Completed` and `Failed` gathers can be awaited any number of times — each
+/// await yields the same cached result or exception. Re-awaiting a gather that
+/// is still in `Awaited` state (in-flight, the original waiter has not finished
+/// driving it to completion) is currently rejected; supporting that would
+/// require a list of waiters and is left as future work.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub(crate) struct GatherFuture {
     /// Items to gather (coroutines or external futures).
+    ///
+    /// Set once at construction and never mutated. The gather inc_refs each
+    /// unique `GatherItem::Coroutine` HeapId and is the owner until drop, so
+    /// GC must always walk this vector regardless of `state`.
     pub items: Vec<GatherItem>,
-    /// TaskIds of spawned tasks (only for coroutine items, set when awaited).
-    /// Length matches the number of Coroutine items.
-    pub task_ids: Vec<TaskId>,
-    /// Results from each item, in order (filled as items complete).
-    /// Indices align with `items`.
+    /// Phase of the gather lifecycle. See [`GatherState`].
+    pub state: GatherState,
+}
+
+/// Lifecycle phase of a [`GatherFuture`].
+///
+/// See the `GatherFuture` docs for the transition rules.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub(crate) enum GatherState {
+    /// Created but never awaited. No spawned tasks, no results, no waiter.
+    Pending,
+    /// Currently being awaited. `AwaitedGather` carries every per-await field.
+    Awaited(AwaitedGather),
+    /// All children completed successfully. The contained `HeapId` is an
+    /// inc_ref'd `HeapData::List` of results; the gather is its owner and
+    /// dec_refs it on drop. Re-awaiting the gather inc_refs this list and
+    /// returns it.
+    Completed(HeapId),
+    /// A child task failed (or an external future was rejected). The error
+    /// is cached so subsequent awaits re-raise it. `RunError` is not `Clone`
+    /// by default; use [`crate::exception_private::RunError::duplicate`] when
+    /// transitioning into this state.
+    Failed(RunError),
+}
+
+/// Per-await bookkeeping for a [`GatherFuture`] in the `Awaited` phase.
+///
+/// All fields are populated when the gather is first awaited (in
+/// `await_gather_future`) and progressively consumed as children resolve.
+///
+/// The gather is the single source of truth for "what awaitables I'm waiting
+/// on and where their values go". Both maps follow the same lifecycle: each
+/// entry is removed as the corresponding child resolves, and the gather is
+/// done when both maps are empty.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub(crate) struct AwaitedGather {
+    /// Task that called `await` on the enclosing gather. Always present in this
+    /// phase — there is no "awaited but no waiter" sub-state.
+    pub waiter: TaskId,
+    /// Spawned tasks → slots they fill in `results`. One entry per *unique*
+    /// coroutine in `items` (duplicates collapse to a single task with
+    /// multiple slot indices). Entries are removed as the corresponding
+    /// task completes; the task is then immediately cancelled from the
+    /// scheduler so refcounts get released eagerly.
+    pub pending_tasks: AHashMap<TaskId, Vec<usize>>,
+    /// External futures → slots they fill in `results`. Entries are removed
+    /// as `resolve_future` resolves each call.
+    pub pending_calls: AHashMap<CallId, Vec<usize>>,
+    /// Results from each gather item, in order. Indices align with
+    /// `GatherFuture::items`. Filled as tasks complete and externals resolve.
     pub results: Vec<Option<Value>>,
-    /// Task waiting on this gather (set when awaited).
-    pub waiter: Option<TaskId>,
-    /// CallIds of external futures we're waiting on.
-    /// Used to check if all external futures have resolved.
-    pub pending_calls: Vec<CallId>,
 }
 
 impl GatherFuture {
@@ -155,13 +219,9 @@ impl GatherFuture {
     /// # Arguments
     /// * `items` - Coroutines or external futures to run concurrently
     pub fn new(items: Vec<GatherItem>) -> Self {
-        let count = items.len();
         Self {
             items,
-            task_ids: Vec::new(),
-            results: (0..count).map(|_| None).collect(),
-            waiter: None,
-            pending_calls: Vec::new(),
+            state: GatherState::Pending,
         }
     }
 
@@ -169,5 +229,25 @@ impl GatherFuture {
     #[inline]
     pub fn item_count(&self) -> usize {
         self.items.len()
+    }
+
+    /// Returns the per-await bookkeeping if the gather is in the `Awaited`
+    /// phase. Convenience for read-only inspection sites that don't need to
+    /// distinguish the other phases from one another.
+    #[inline]
+    pub fn as_awaited(&self) -> Option<&AwaitedGather> {
+        match &self.state {
+            GatherState::Awaited(awaited) => Some(awaited),
+            GatherState::Pending | GatherState::Completed(_) | GatherState::Failed(_) => None,
+        }
+    }
+
+    /// Mutable counterpart to [`Self::as_awaited`].
+    #[inline]
+    pub fn as_awaited_mut(&mut self) -> Option<&mut AwaitedGather> {
+        match &mut self.state {
+            GatherState::Awaited(awaited) => Some(awaited),
+            GatherState::Pending | GatherState::Completed(_) | GatherState::Failed(_) => None,
+        }
     }
 }

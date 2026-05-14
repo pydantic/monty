@@ -13,7 +13,7 @@ use num_integer::Integer;
 use crate::{
     ExcType, ResourceTracker,
     args::ArgValues,
-    asyncio::{CallId, Coroutine, GatherFuture, GatherItem},
+    asyncio::{CallId, Coroutine, GatherFuture, GatherItem, GatherState, TaskId},
     bytecode::{CallResult, VM},
     exception_private::{RunError, RunResult, SimpleException},
     hash::HashValue,
@@ -367,22 +367,40 @@ impl HeapItem for Coroutine {
 
 impl HeapItem for GatherFuture {
     fn py_estimate_size(&self) -> usize {
-        mem::size_of::<Self>()
-            + self.items.len() * mem::size_of::<GatherItem>()
-            + self.results.len() * mem::size_of::<Option<Value>>()
-            + self.pending_calls.len() * mem::size_of::<CallId>()
+        let state_size = match &self.state {
+            GatherState::Awaited(awaited) => {
+                // Rough sizing — entry slots plus per-entry storage. The map's
+                // bucket array overhead is intentionally elided; we only
+                // estimate dynamically-allocated content tied to user code.
+                let pending_tasks_size =
+                    awaited.pending_tasks.len() * (mem::size_of::<TaskId>() + mem::size_of::<Vec<usize>>());
+                let pending_calls_size =
+                    awaited.pending_calls.len() * (mem::size_of::<CallId>() + mem::size_of::<Vec<usize>>());
+                awaited.results.len() * mem::size_of::<Option<Value>>() + pending_tasks_size + pending_calls_size
+            }
+            GatherState::Pending | GatherState::Completed(_) | GatherState::Failed(_) => 0,
+        };
+        mem::size_of::<Self>() + self.items.len() * mem::size_of::<GatherItem>() + state_size
     }
 
     fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
-        // Decrement ref count for coroutine HeapIds
+        // Decrement ref count for coroutine HeapIds (always present in `items`).
         for item in &self.items {
             if let GatherItem::Coroutine(id) = item {
                 stack.push(*id);
             }
         }
-        // Decrement ref count for result values that are heap references
-        for result in self.results.iter_mut().flatten() {
-            result.py_dec_ref_ids(stack);
+        // Release per-state heap refs: in-flight slot results, or the cached
+        // result list once the gather has completed successfully. `Pending` and
+        // `Failed` carry no heap refs.
+        match &mut self.state {
+            GatherState::Awaited(awaited) => {
+                for result in awaited.results.iter_mut().flatten() {
+                    result.py_dec_ref_ids(stack);
+                }
+            }
+            GatherState::Completed(list_id) => stack.push(*list_id),
+            GatherState::Pending | GatherState::Failed(_) => {}
         }
     }
 }

@@ -1686,7 +1686,12 @@ impl RawStackFrame {
 /// - `Internal`: Bug in interpreter implementation (static message)
 /// - `Exc`: Python exception that can be caught by try/except (when implemented)
 /// - `UncatchableExc`: Python exception from resource limits that CANNOT be caught
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
+///
+/// `Clone` is implemented so an error can be cached for later re-raising
+/// (e.g. a failed `GatherFuture` replaying the same exception on every
+/// re-await). Inner data is shallow-clonable: `Cow<'static, str>` is cheap,
+/// and `ExceptionRaise` already derives `Clone`.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) enum RunError {
     /// Internal interpreter error - indicates a bug in Monty, not user code.
     Internal(Cow<'static, str>),

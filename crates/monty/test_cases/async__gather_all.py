@@ -136,3 +136,60 @@ try:
     assert False, 'should have raised RuntimeError'
 except RuntimeError as e:
     assert str(e) == 'cannot reuse already awaited coroutine', f'unexpected error: {e}'
+
+
+# === Re-awaiting a completed gather returns the cached result list ===
+# CPython's _GatheringFuture is a Future that stores its result; every await
+# returns the same list. Monty caches the result on the GatherFuture so this
+# matches.
+
+
+async def reawait_member():
+    return 7
+
+
+g = asyncio.gather(reawait_member(), reawait_member())
+first = await g  # pyright: ignore
+second = await g  # pyright: ignore
+third = await g  # pyright: ignore
+assert first == [7, 7], f'first await: {first}'
+assert second == [7, 7], f'second await: {second}'
+assert third == [7, 7], f'third await: {third}'
+# Identity: every re-await yields the same list object (CPython behavior).
+assert first is second, 're-await should return the cached list, not a new one'
+assert second is third, 're-await should return the same list every time'
+
+
+# === Re-awaiting an empty gather returns the same empty list ===
+g_empty = asyncio.gather()
+e1 = await g_empty  # pyright: ignore
+e2 = await g_empty  # pyright: ignore
+assert e1 == [] and e2 == [], 'empty gather re-await: both empty'
+assert e1 is e2, 'empty gather re-await should yield the same list'
+
+
+# === Re-awaiting a failed gather re-raises the same exception ===
+
+
+async def boom():
+    raise ValueError('detonate')
+
+
+g_fail = asyncio.gather(boom())
+try:
+    await g_fail  # pyright: ignore
+    assert False, 'first await should have raised'
+except ValueError as e:
+    assert str(e) == 'detonate', f'first await message: {e}'
+
+try:
+    await g_fail  # pyright: ignore
+    assert False, 'second await should have raised'
+except ValueError as e:
+    assert str(e) == 'detonate', f'second await message: {e}'
+
+try:
+    await g_fail  # pyright: ignore
+    assert False, 'third await should have raised'
+except ValueError as e:
+    assert str(e) == 'detonate', f'third await message: {e}'
