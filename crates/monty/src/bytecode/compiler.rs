@@ -11,7 +11,7 @@
 use std::{borrow::Cow, mem};
 
 use super::{
-    builder::{CodeBuilder, JumpLabel},
+    builder::{CodeBuilder, JumpLabel, JumpTarget},
     code::{Code, ExceptionEntry},
     op::Opcode,
 };
@@ -100,9 +100,12 @@ pub struct Compiler<'a> {
 /// - `has_iterator_on_stack`: whether this loop has an iterator on the stack that
 ///   needs to be popped on break (true for `for` loops, false for `while` loops)
 struct LoopInfo {
-    /// Bytecode offset of loop start (for continue).
-    start: usize,
+    /// Bytecode position + stack depth at loop start (for continue).
+    /// `emit_jump_to` uses the depth to enforce the backward-jump merge invariant.
+    start: JumpTarget,
     /// Jump labels that need patching to loop end (for break).
+    /// Entries from breaks emitted in dead state are no-op labels — `patch_jump`
+    /// ignores them silently.
     break_jumps: Vec<JumpLabel>,
     /// Whether this loop has an iterator on the stack.
     /// True for `for` loops, false for `while` loops.
@@ -115,7 +118,8 @@ struct LoopInfo {
 /// before executing the break/continue. This struct tracks the jump and which
 /// loop it targets.
 struct BreakContinueThruFinally {
-    /// The jump instruction that needs to be patched.
+    /// The jump instruction that needs to be patched. A no-op label if the
+    /// break/continue was emitted from dead state; `patch_jump` ignores it.
     jump: JumpLabel,
     /// The loop depth (index in loop_stack) being targeted.
     target_loop_depth: usize,
@@ -148,8 +152,10 @@ pub struct CompileResult {
 impl<'a> Compiler<'a> {
     /// Creates a new compiler with access to the string interner.
     fn new(interns: &'a Interns, functions: Vec<Function>) -> Self {
+        let mut code = CodeBuilder::new();
+        code.new_code_region(0);
         Self {
-            code: CodeBuilder::new(),
+            code,
             interns,
             functions,
             loop_stack: Vec::new(),
@@ -188,14 +194,9 @@ impl<'a> Compiler<'a> {
         compiler.is_module_scope = true;
         compiler.compile_block(nodes)?;
 
-        // Module returns None if no explicit return. Skip the implicit
-        // return when the body already terminates (e.g. ends with raise) —
-        // the tracker is `Dead` and emitting more would just produce dead
-        // bytes.
-        if !compiler.code.is_dead() {
-            compiler.code.emit(Opcode::LoadNone);
-            compiler.code.emit(Opcode::ReturnValue);
-        }
+        // Module returns None if no explicit return
+        compiler.code.emit(Opcode::LoadNone);
+        compiler.code.emit(Opcode::ReturnValue);
 
         Ok(CompileResult {
             code: compiler.code.build(num_locals),
@@ -220,29 +221,18 @@ impl<'a> Compiler<'a> {
         let mut compiler = Compiler::new(interns, functions);
         compiler.compile_block(body)?;
 
-        // Implicit `return None` if the body doesn't already terminate.
-        if !compiler.code.is_dead() {
-            compiler.code.emit(Opcode::LoadNone);
-            compiler.code.emit(Opcode::ReturnValue);
-        }
+        // Implicit return None if no explicit return
+        compiler.code.emit(Opcode::LoadNone);
+        compiler.code.emit(Opcode::ReturnValue);
 
         Ok((compiler.code.build(num_locals), compiler.functions))
     }
 
     /// Compiles a block of statements.
-    /// Compiles a sequence of statements, stopping at the first one that
-    /// transitions the tracker to `Dead` (i.e. an unconditional terminator
-    /// such as `return`, `break`, `continue`, `raise`).
-    ///
-    /// Anything in `nodes` after a terminator is dead code — emitting it
-    /// would produce unreachable bytecode and force every emit helper to
-    /// special-case the dead state. Stopping here is the same dead-code
-    /// elimination CPython performs and removes the need for callers to
-    /// save/restore depth around terminating statements (see PR #268's
-    /// `Stack depth went negative` regression).
     fn compile_block(&mut self, nodes: &[PreparedNode]) -> Result<(), CompileError> {
         for node in nodes {
             if self.code.is_dead() {
+                // Don't bother compiling dead code
                 break;
             }
             self.compile_stmt(node)?;
@@ -1201,11 +1191,7 @@ impl<'a> Compiler<'a> {
             }
         }
 
-        // Jump past cleanup (result already on stack). After this Jump the
-        // tracker is `Dead`; the first cleanup `patch_jump` below will
-        // transition it back to `Live(base_depth + 2)` from the label
-        // (`JumpIfFalseOrPop` keeps the False result on the stack, so the
-        // jump-taken arrival depth is base_depth + 2).
+        // Jump past cleanup (result already on stack).
         let end_jump = self.code.emit_jump(Opcode::Jump);
 
         // Cleanup: remove the saved intermediate value, keep False result.
@@ -1213,11 +1199,9 @@ impl<'a> Compiler<'a> {
             self.code.patch_jump(jump);
         }
         self.code.emit(Opcode::Rot2); // [False, intermediate]
-        self.code.emit(Opcode::Pop); // [False] — tracker now base_depth + 1
+        self.code.emit(Opcode::Pop); // [False]
 
         self.code.patch_jump(end_jump);
-        // Final result is on stack at base_depth + 1.
-
         Ok(())
     }
 
@@ -1226,12 +1210,6 @@ impl<'a> Compiler<'a> {
     // ========================================================================
 
     /// Compiles an if/else statement.
-    ///
-    /// The bridge `Jump` past the else branch is only emitted when the body
-    /// falls through. If the body terminates (e.g. ends with `return`), the
-    /// bridge would be unreachable bytecode, so we skip it — and `patch_jump`
-    /// for `else_jump` re-establishes the live tracker for the orelse branch
-    /// from the label.
     fn compile_if(
         &mut self,
         test: &ExprLoc,
@@ -1241,28 +1219,23 @@ impl<'a> Compiler<'a> {
         self.compile_expr(test)?;
 
         if or_else.is_empty() {
+            // Simple if without else
             let end_jump = self.code.emit_jump(Opcode::JumpIfFalse);
             self.compile_block(body)?;
             self.code.patch_jump(end_jump);
         } else {
+            // If with else
             let else_jump = self.code.emit_jump(Opcode::JumpIfFalse);
             self.compile_block(body)?;
-            let end_jump = (!self.code.is_dead()).then(|| self.code.emit_jump(Opcode::Jump));
+            let end_jump = self.code.emit_jump(Opcode::Jump);
             self.code.patch_jump(else_jump);
             self.compile_block(or_else)?;
-            if let Some(end_jump) = end_jump {
-                self.code.patch_jump(end_jump);
-            }
+            self.code.patch_jump(end_jump);
         }
         Ok(())
     }
 
     /// Compiles a ternary conditional expression.
-    ///
-    /// After `emit_jump(Jump)` for `end_jump` the tracker is `Dead`, so the
-    /// body branch's push doesn't poison the orelse branch. The first
-    /// `patch_jump(else_jump)` re-establishes `Live` at the else-branch
-    /// entry depth from the label.
     fn compile_if_else_expr(&mut self, test: &ExprLoc, body: &ExprLoc, orelse: &ExprLoc) -> Result<(), CompileError> {
         self.compile_expr(test)?;
         let else_jump = self.code.emit_jump(Opcode::JumpIfFalse);
@@ -2126,7 +2099,7 @@ impl<'a> Compiler<'a> {
         self.code.emit(Opcode::GetIter);
 
         // Loop start
-        let loop_start = self.code.current_offset();
+        let loop_start = self.code.current_jump_target();
 
         // Push loop info for break/continue
         self.loop_stack.push(LoopInfo {
@@ -2144,12 +2117,9 @@ impl<'a> Compiler<'a> {
         // Compile body
         self.compile_block(body)?;
 
-        // Jump back to loop start, unless the body terminated (in which case
-        // a backward jump would be unreachable). `patch_jump(end_jump)`
-        // transitions Dead → Live(loop_exit_depth) from the `ForIter` label.
-        if !self.code.is_dead() {
-            self.code.emit_jump_to(Opcode::Jump, loop_start);
-        }
+        // Jump back to loop start
+        self.code.emit_jump_to(Opcode::Jump, loop_start);
+        // End of loop - ForIter jumps here when iterator is exhausted
         self.code.patch_jump(end_jump);
 
         // Pop loop info before compiling else block
@@ -2193,7 +2163,7 @@ impl<'a> Compiler<'a> {
         body: &[PreparedNode],
         or_else: &[PreparedNode],
     ) -> Result<(), CompileError> {
-        let loop_start = self.code.current_offset();
+        let loop_start = self.code.current_jump_target();
 
         self.loop_stack.push(LoopInfo {
             start: loop_start,
@@ -2205,10 +2175,7 @@ impl<'a> Compiler<'a> {
         let end_jump = self.code.emit_jump(Opcode::JumpIfFalse);
 
         self.compile_block(body)?;
-        // Skip the backward jump if body terminated — it would be unreachable.
-        if !self.code.is_dead() {
-            self.code.emit_jump_to(Opcode::Jump, loop_start);
-        }
+        self.code.emit_jump_to(Opcode::Jump, loop_start);
 
         self.code.patch_jump(end_jump);
         let loop_info = self.loop_stack.pop().expect("loop stack underflow");
@@ -2260,21 +2227,24 @@ impl<'a> Compiler<'a> {
             self.code.emit(Opcode::Pop);
         }
 
-        // Emit the Jump (auto-marks the tracker `Dead`, so subsequent
-        // statements in the enclosing block are skipped by `compile_block`).
-        // If breaking out of a try-finally, route through the finally path.
+        // Check if we need to go through any finally blocks
+        // We need to run finally if break crosses the try boundary, i.e., if
+        // we're breaking from a loop that existed before the try started.
         if let Some(finally_target) = self.finally_targets.last_mut()
             && target_loop_depth < finally_target.loop_depth_at_entry
         {
+            // Breaking from a loop that's outside (or at the start of) this try-finally,
+            // so finally must run before the break
             let jump = self.code.emit_jump(Opcode::Jump);
             finally_target.break_jumps.push(BreakContinueThruFinally {
                 jump,
                 target_loop_depth,
             });
-        } else {
-            let jump = self.code.emit_jump(Opcode::Jump);
-            self.loop_stack[target_loop_depth].break_jumps.push(jump);
+            return Ok(());
         }
+        // No finally to go through, jump directly to loop end
+        let jump = self.code.emit_jump(Opcode::Jump);
+        self.loop_stack[target_loop_depth].break_jumps.push(jump);
 
         Ok(())
     }
@@ -2299,21 +2269,23 @@ impl<'a> Compiler<'a> {
             self.code.emit(Opcode::Pop); // Pop the exception value
         }
 
-        // Emit the Jump (auto-marks the tracker `Dead`, so subsequent
-        // statements in the enclosing block are skipped by `compile_block`).
+        // Check if we need to go through any finally blocks
+        // We need to run finally if continue crosses the try boundary
         if let Some(finally_target) = self.finally_targets.last_mut()
             && target_loop_depth < finally_target.loop_depth_at_entry
         {
-            // Continue out of a try-finally — route through the finally path.
+            // Continuing a loop that's outside (or at the start of) this try-finally,
+            // so finally must run before the continue
             let jump = self.code.emit_jump(Opcode::Jump);
             finally_target.continue_jumps.push(BreakContinueThruFinally {
                 jump,
                 target_loop_depth,
             });
-        } else {
-            let loop_start = self.loop_stack[target_loop_depth].start;
-            self.code.emit_jump_to(Opcode::Jump, loop_start);
         }
+
+        // No finally to go through, jump directly to loop start
+        let loop_start = self.loop_stack[target_loop_depth].start;
+        self.code.emit_jump_to(Opcode::Jump, loop_start);
 
         Ok(())
     }
@@ -2328,11 +2300,6 @@ impl<'a> Compiler<'a> {
     /// have the same starting point. After finally runs, we need to route each
     /// to its target loop, potentially through more finally blocks.
     fn compile_control_flow_after_finally(&mut self, items: &[BreakContinueThruFinally], is_break: bool) {
-        // If the finally body terminated, the post-finally control-flow
-        // dispatch is unreachable — skip the emission entirely.
-        if self.code.is_dead() {
-            return;
-        }
         // All items went through the same finally, now we need to dispatch to
         // potentially different loops. For simplicity, we assume all items in
         // a single finally target the same loop (the innermost one at the time).
@@ -2471,7 +2438,7 @@ impl<'a> Compiler<'a> {
         self.code.emit(Opcode::GetIter);
 
         // Loop start
-        let loop_start = self.code.current_offset();
+        let loop_start = self.code.current_jump_target();
 
         // FOR_ITER: advance iterator or jump to end
         let end_jump = self.code.emit_jump(Opcode::ForIter);
@@ -2495,9 +2462,7 @@ impl<'a> Compiler<'a> {
             body_fn(self)?;
         }
 
-        // Jump back to loop start. The tracker becomes `Dead`; the
-        // `patch_jump(end_jump)` below transitions to
-        // `Live(loop_exit_depth)` via the ForIter label.
+        // Jump back to loop start
         self.code.emit_jump_to(Opcode::Jump, loop_start);
         self.code.patch_jump(end_jump);
 
@@ -2790,12 +2755,6 @@ impl<'a> Compiler<'a> {
     /// and we jump to a "finally with return" section that runs finally then returns.
     /// Otherwise, we emit a direct `ReturnValue`.
     fn compile_return(&mut self) {
-        // Callers like the try-finally return-path emit `compile_return`
-        // after a finally block that may itself have terminated; skip
-        // emission in that case.
-        if self.code.is_dead() {
-            return;
-        }
         if let Some(finally_target) = self.finally_targets.last_mut() {
             // Inside a try-finally: jump to finally, then return
             // Return value is already on stack
@@ -2862,10 +2821,8 @@ impl<'a> Compiler<'a> {
         let try_start = self.code.current_offset();
         self.compile_block(&try_block.body)?;
 
-        // Jump to else/finally if no exception (skip handlers). If the body
-        // terminated (e.g. ends with `return`), there's no fall-through to
-        // skip — emitting the Jump would just produce dead bytes.
-        let after_try_jump = (!self.code.is_dead()).then(|| self.code.emit_jump(Opcode::Jump));
+        // Jump to else/finally if no exception (skip handlers)
+        let after_try_jump = self.code.emit_jump(Opcode::Jump);
         // End of the try-body region for the exception table. This is past
         // the `after_try_jump` if it was emitted, so an exception that fires
         // up to and including that Jump still routes to the handler.
@@ -2874,21 +2831,10 @@ impl<'a> Compiler<'a> {
         // === Handler dispatch starts here ===
         let handler_start = self.code.current_offset();
 
-        // The handler is reached via the exception table (not via fall-through
-        // from the try body's after_try_jump, which is unconditional and
-        // marked the tracker Dead). The VM pushes the exception onto the
-        // stack before jumping here, so set the tracker to Live(stack_depth + 1).
-        self.code.set_stack_depth(stack_depth + 1);
-
         // Track jumps that go to finally (for patching later)
         let mut finally_jumps: Vec<JumpLabel> = Vec::new();
 
-        if has_handlers {
-            self.compile_exception_handlers(&try_block.handlers, &mut finally_jumps)?;
-        } else {
-            // No handlers - just reraise (this only happens with try-finally)
-            self.code.emit(Opcode::Reraise);
-        }
+        self.compile_exception_handlers(stack_depth, &try_block.handlers, &mut finally_jumps)?;
 
         // After handler dispatch, each handler path either:
         // 1. Matched and popped the exception (via Pop), then jumped to finally
@@ -2905,7 +2851,7 @@ impl<'a> Compiler<'a> {
         let finally_cleanup_start = if has_finally {
             let cleanup_start = self.code.current_offset();
             // Exception value is on stack (pushed by VM), so stack = stack_depth + 1
-            self.code.set_stack_depth(stack_depth + 1);
+            self.code.new_code_region(stack_depth + 1);
             // We need to pop it, run finally, then reraise
             // But we can't easily save the exception, so we use a different approach:
             // The exception is already on the exception_stack from handle_exception,
@@ -2924,10 +2870,6 @@ impl<'a> Compiler<'a> {
             let finally_target = self.finally_targets.pop().expect("finally_targets should not be empty");
 
             // === Finally with return path ===
-            // Each return jump arrives with the return value on stack
-            // (depth = stack_depth + 1). The first `patch_jump` transitions
-            // the tracker from `Dead` (left by the prior section's
-            // terminator) to `Live(stack_depth + 1)` via the label.
             let return_start = if finally_target.return_jumps.is_empty() {
                 None
             } else {
@@ -2944,10 +2886,6 @@ impl<'a> Compiler<'a> {
             // For each break, run finally then either:
             // - Jump to outer finally's break path (if there's an outer finally between us and the loop)
             // - Jump directly to the loop's break target
-            //
-            // Break already popped the iterator (depth at jump-emit was
-            // stack_depth - 1); `patch_jump` transitions Dead → Live(that)
-            // from the label.
             if !finally_target.break_jumps.is_empty() {
                 for break_info in &finally_target.break_jumps {
                     self.code.patch_jump(break_info.jump);
@@ -2958,8 +2896,6 @@ impl<'a> Compiler<'a> {
             }
 
             // === Finally with continue path ===
-            // Continue doesn't pop the iterator; depth at jump-emit was
-            // stack_depth, restored by `patch_jump`.
             if !finally_target.continue_jumps.is_empty() {
                 for continue_info in &finally_target.continue_jumps {
                     self.code.patch_jump(continue_info.jump);
@@ -2975,14 +2911,7 @@ impl<'a> Compiler<'a> {
         };
 
         // === Else block (runs if no exception) ===
-        // `after_try_jump` was only emitted when the body falls through. If
-        // it exists, patching it transitions Dead → Live(stack_depth) for
-        // the else branch; if not, the else block is unreachable and
-        // `compile_block` will skip it (the tracker is still Dead from the
-        // handler section's terminator).
-        if let Some(after_try_jump) = after_try_jump {
-            self.code.patch_jump(after_try_jump);
-        }
+        self.code.patch_jump(after_try_jump);
         let else_start = self.code.current_offset();
         if has_else {
             self.compile_block(&try_block.or_else)?;
@@ -2990,12 +2919,7 @@ impl<'a> Compiler<'a> {
         let else_end = self.code.current_offset();
 
         // === Normal finally path (no exception pending, no return) ===
-        // Patch all jumps from handlers to go here. Each handler popped the
-        // exception before its Jump, so the labels carry
-        // `target_depth = stack_depth`. The first live-sourced patch
-        // transitions Dead → Live(stack_depth); the else-block's
-        // fall-through (when reachable) already left the tracker there, so
-        // either way the merge invariant holds.
+        // Patch all jumps from handlers to go here
         for jump in finally_jumps {
             self.code.patch_jump(jump);
         }
@@ -3007,26 +2931,19 @@ impl<'a> Compiler<'a> {
         // === Add exception table entries ===
         // Order matters: entries are searched in order, so inner entries must come first.
 
-        // Entry 1: Try body -> handler dispatch.
-        // `try_end` already includes the `after_try_jump` Jump instruction
-        // when one was emitted, so the exception range covers the body and
-        // (if reachable) the bridge Jump.
+        // Entry 1: Try body -> handler dispatch
         if has_handlers || has_finally {
-            self.code.add_exception_entry(ExceptionEntry::new(
-                u32::try_from(try_start).expect("bytecode offset exceeds u32"),
-                u32::try_from(try_end).expect("bytecode offset exceeds u32"),
-                u32::try_from(handler_start).expect("bytecode offset exceeds u32"),
-                stack_depth,
-            ));
+            self.code
+                .add_exception_entry(ExceptionEntry::new(try_start, try_end, handler_start, stack_depth));
         }
 
         // Entry 2: Handler dispatch -> finally cleanup (only if has_finally)
         // This ensures finally runs when RERAISE is executed or any exception occurs in handlers
         if let Some(cleanup_start) = finally_cleanup_start {
             self.code.add_exception_entry(ExceptionEntry::new(
-                u32::try_from(handler_start).expect("bytecode offset exceeds u32"),
-                u32::try_from(handler_dispatch_end).expect("bytecode offset exceeds u32"),
-                u32::try_from(cleanup_start).expect("bytecode offset exceeds u32"),
+                handler_start,
+                handler_dispatch_end,
+                cleanup_start,
                 stack_depth,
             ));
         }
@@ -3034,10 +2951,11 @@ impl<'a> Compiler<'a> {
         // Entry 3: Finally with return -> finally cleanup
         // If an exception occurs while running finally (in the return path), catch it
         if let (Some(return_start), Some(cleanup_start)) = (finally_with_return_start, finally_cleanup_start) {
+            // End at else_start (before else block).
             self.code.add_exception_entry(ExceptionEntry::new(
-                u32::try_from(return_start).expect("bytecode offset exceeds u32"),
-                u32::try_from(else_start).expect("bytecode offset exceeds u32"), // End at else_start (before else block)
-                u32::try_from(cleanup_start).expect("bytecode offset exceeds u32"),
+                return_start,
+                else_start,
+                cleanup_start,
                 stack_depth,
             ));
         }
@@ -3045,12 +2963,8 @@ impl<'a> Compiler<'a> {
         // Entry 4: Else block -> finally cleanup (only if has_finally and has_else)
         // Exceptions in else block should go through finally
         if has_else && let Some(cleanup_start) = finally_cleanup_start {
-            self.code.add_exception_entry(ExceptionEntry::new(
-                u32::try_from(else_start).expect("bytecode offset exceeds u32"),
-                u32::try_from(else_end).expect("bytecode offset exceeds u32"),
-                u32::try_from(cleanup_start).expect("bytecode offset exceeds u32"),
-                stack_depth,
-            ));
+            self.code
+                .add_exception_entry(ExceptionEntry::new(else_start, else_end, cleanup_start, stack_depth));
         }
 
         Ok(())
@@ -3061,26 +2975,30 @@ impl<'a> Compiler<'a> {
     /// Each handler checks if the exception matches its type, and if so,
     /// executes the handler body. If no handler matches, the exception is re-raised.
     ///
-    /// The caller is responsible for calling `set_stack_depth(stack_depth + 1)`
-    /// before invoking this — the entry point is reached via the exception
-    /// table, not fall-through, so the tracker needs an explicit Live state
-    /// reflecting the exception value the VM has pushed.
+    /// The caller is responsible for calling this from a dead-code region; otherwise
+    /// the attempt to create a new code region will panic.
+    ///
+    /// The region is closed at the end of this function, so the caller will need
+    /// to start a new code region for any code that follows the handlers.
     fn compile_exception_handlers(
         &mut self,
+        stack_depth: u16,
         handlers: &[ExceptHandler<PreparedNode>],
         finally_jumps: &mut Vec<JumpLabel>,
     ) -> Result<(), CompileError> {
+        // Start a new code region for the exception handlers, +1 for
+        // the exception value pushed by the VM on entry to the handler dispatch
+        self.code.new_code_region(stack_depth + 1);
+
         // Track jumps from non-matching handlers to next handler
         let mut next_handler_jumps: Vec<JumpLabel> = Vec::new();
 
         for (i, handler) in handlers.iter().enumerate() {
             let is_last = i == handlers.len() - 1;
 
-            // Patch jumps from previous handler's non-match to here.
-            // The previous handler ended with `emit_jump(Jump)` to finally,
-            // marking the tracker `Dead`. The jump-taken arrival here
-            // (from JumpIfFalse no-match) leaves [exc, exc] on stack;
-            // `patch_jump` transitions Dead → Live(that depth) from the label.
+            // Patch jumps from previous handler's non-match to here
+            // If jumping from a previous handler's no-match, stack has [exc, exc] (duplicate)
+            // We need to pop the duplicate before starting this handler's check
             if !next_handler_jumps.is_empty() {
                 for jump in next_handler_jumps.drain(..) {
                     self.code.patch_jump(jump);
@@ -3140,30 +3058,19 @@ impl<'a> Compiler<'a> {
                 // Exit except handler context
                 self.except_handler_depth -= 1;
 
-                // If the handler body terminated (e.g. ends with `return`),
-                // the cleanup trailer below is unreachable — skip it.
-                if !self.code.is_dead() {
-                    // Delete exception variable (Python 3 behavior)
-                    if let Some(name) = &handler.name {
-                        self.compile_delete(name);
-                    }
-                    // Clear current_exception, pop the exception from stack,
-                    // and jump to the finally / merge point.
-                    self.code.emit(Opcode::ClearException);
-                    self.code.emit(Opcode::Pop);
-                    finally_jumps.push(self.code.emit_jump(Opcode::Jump));
+                // Delete exception variable (Python 3 behavior)
+                if let Some(name) = &handler.name {
+                    self.compile_delete(name);
                 }
+                self.code.emit(Opcode::ClearException);
+                self.code.emit(Opcode::Pop);
+                finally_jumps.push(self.code.emit_jump(Opcode::Jump));
 
-                // If this was the last handler and no match, we need to
-                // reraise. The patch target is reached only via JumpIfFalse's
-                // no-match path (stack [exception, exception]); fall-through
-                // is dead because of the `emit_jump(Jump)` to finally above.
-                // `patch_jump` transitions Dead → Live from the label.
+                // If this was last handler and no match, we need to reraise
                 if is_last {
                     self.code.patch_jump(no_match_jump);
                     // We need to pop the duplicate before reraising
                     self.code.emit(Opcode::Pop);
-                    self.code.emit(Opcode::Reraise);
                 }
             } else {
                 // Bare except: catches everything
@@ -3184,17 +3091,25 @@ impl<'a> Compiler<'a> {
                 // Exit except handler context
                 self.except_handler_depth -= 1;
 
-                // Skip the cleanup trailer if the handler body terminated.
-                if !self.code.is_dead() {
-                    if let Some(name) = &handler.name {
-                        self.compile_delete(name);
-                    }
-                    self.code.emit(Opcode::ClearException);
-                    self.code.emit(Opcode::Pop);
-                    finally_jumps.push(self.code.emit_jump(Opcode::Jump));
+                // Delete exception variable
+                if let Some(name) = &handler.name {
+                    self.compile_delete(name);
                 }
+
+                // Clear current_exception
+                self.code.emit(Opcode::ClearException);
+
+                // Pop the exception from stack
+                self.code.emit(Opcode::Pop);
+
+                // Jump to finally
+                finally_jumps.push(self.code.emit_jump(Opcode::Jump));
+                return Ok(());
             }
         }
+
+        // No handler matched - reraise the exception
+        self.code.emit(Opcode::Reraise);
 
         Ok(())
     }

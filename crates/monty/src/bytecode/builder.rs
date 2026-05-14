@@ -7,91 +7,23 @@ use std::collections::HashSet;
 
 use super::{
     code::{Code, ConstPool, ExceptionEntry, LocationEntry},
-    op::Opcode,
+    op::{Opcode, Operand},
 };
 use crate::{intern::StringId, parse::CodeRange, value::Value};
-
-/// State of the abstract operand-stack tracker as the builder emits bytecode.
-///
-/// The compiler tracks "what the operand stack looks like at the point we're
-/// about to emit the next opcode" so that it can record correct stack depths
-/// in `ExceptionEntry` and check the merge invariant at jump patches. Control
-/// flow makes that tracker into a small state machine:
-///
-/// * `Live(depth)` — the most recently emitted opcode falls through to the
-///   next byte. `depth` is the operand-stack height there. `adjust_stack`
-///   updates `depth`; `set_stack_depth` overrides it absolutely.
-/// * `Dead` — the most recently emitted opcode unconditionally diverts
-///   control flow (`Jump`, `ReturnValue`, `Raise`, `Reraise`), so subsequent
-///   bytes are unreachable via fall-through. The depth has no meaningful
-///   value until something re-establishes it: a `patch_jump` whose label
-///   carries the jump-taken target depth, or an explicit `set_stack_depth`
-///   for code reached via the exception table (handler entries).
-///
-/// Modeling this explicitly removes the need for compilers to manually save
-/// and restore `dead_code_depth` around terminating statements — emit-of-
-/// terminator transitions to `Dead`, and `patch_jump` transitions back to
-/// `Live` from the label's recorded target depth. Stack-effect adjustments
-/// in `Dead` are no-ops, so dead code can compile freely without poisoning
-/// the tracker.
-#[derive(Debug, Clone, Copy)]
-enum TrackerState {
-    Live(u16),
-    Dead,
-}
-
-impl Default for TrackerState {
-    fn default() -> Self {
-        Self::Live(0)
-    }
-}
-
-/// Operand bundle paired with an opcode at emit time.
-///
-/// Every linear (non-jump) emit funnels through `emit_with_operand(op, operand)`,
-/// which writes the bytes for `operand` and consults `stack_effect_for(op, &operand)`
-/// for the stack adjustment. Carrying the operand through this enum makes
-/// stack-effect computation a single, exhaustive match — variable-effect
-/// opcodes without an explicit arm panic instead of silently drifting.
-#[derive(Debug)]
-enum Operand<'a> {
-    /// No operand bytes (e.g. `Pop`, `BinaryAdd`).
-    None,
-    /// Single u8 operand (e.g. `LoadLocal`, `CallFunction`).
-    U8(u8),
-    /// Single i8 operand.
-    I8(i8),
-    /// Single u16 operand, little-endian (e.g. `LoadConst`, `BuildList`).
-    U16(u16),
-    /// Two u8 operands (e.g. `UnpackEx`, `CallBuiltinFunction`).
-    U8U8(u8, u8),
-    /// u8 then u16 little-endian (e.g. `LoadLocalCallable`).
-    U8U16(u8, u16),
-    /// u16 little-endian then u8 (e.g. `MakeFunction`, `CallAttr`).
-    U16U8(u16, u8),
-    /// Two u16 little-endian (e.g. `LoadLocalCallableW`, `LoadGlobalCallable`).
-    U16U16(u16, u16),
-    /// u16 then two u8s (e.g. `MakeClosure`).
-    U16U8U8(u16, u8, u8),
-    /// `CallFunctionKw` shape: pos_count (u8), kw_count (u8), kw_count * name_id (u16 each).
-    CallKw { pos_count: u8, kwname_ids: &'a [u16] },
-    /// `CallAttrKw` shape: attr_name_id (u16), pos_count (u8), kw_count (u8), kw_count * name_id (u16 each).
-    CallAttrKw {
-        attr_name_id: u16,
-        pos_count: u8,
-        kwname_ids: &'a [u16],
-    },
-}
 
 /// Builder for emitting bytecode during compilation.
 ///
 /// Handles encoding opcodes and operands into raw bytes, managing forward jumps
 /// that need patching, and tracking source locations for traceback generation.
 ///
+/// The builder maintains an internal "dead code" state; during dead code emission
+/// no bytes are written and no work is done.
+///
 /// # Usage
 ///
 /// ```ignore
 /// let mut builder = CodeBuilder::new();
+/// builder.enter_region(0); // open the initial region at depth 0
 /// builder.set_location(some_range, None);
 /// builder.emit(Opcode::LoadNone);
 /// builder.emit_u8(Opcode::LoadLocal, 0);
@@ -120,8 +52,12 @@ pub struct CodeBuilder {
     /// Current focus location within the source range.
     current_focus: Option<CodeRange>,
 
-    /// Current operand-stack tracker state — see `TrackerState`.
-    tracker: TrackerState,
+    /// Operand-stack depth at the point the next opcode will be emitted, or
+    /// `None` if not emitting a code region.
+    ///
+    /// Unconditional terminators (`Jump`, `ReturnValue`, `Raise`, `Reraise`)
+    /// finish code regions, transitioning the builder to the dead-code state.
+    current_stack_depth: Option<u16>,
 
     /// Maximum stack depth seen during compilation.
     max_stack_depth: u16,
@@ -140,7 +76,9 @@ pub struct CodeBuilder {
 }
 
 impl CodeBuilder {
-    /// Creates a new empty CodeBuilder.
+    /// Creates a new empty `CodeBuilder` in the dead-code state — no region
+    /// is open yet. Call `enter_region(0)` (or another depth, for an
+    /// exception-table-reached region) before emitting.
     #[must_use]
     pub fn new() -> Self {
         Self::default()
@@ -158,77 +96,85 @@ impl CodeBuilder {
 
     /// Emits a no-operand instruction and updates stack depth tracking.
     pub fn emit(&mut self, op: Opcode) {
-        self.emit_with_operand(op, &Operand::None);
+        self.emit_with_operand(op, Operand::None);
     }
 
-    /// Emits an instruction with a u8 operand.
+    /// Emits an instruction with a u8 operand and updates stack depth tracking.
     pub fn emit_u8(&mut self, op: Opcode, operand: u8) {
-        self.emit_with_operand(op, &Operand::U8(operand));
+        self.emit_with_operand(op, Operand::U8(operand));
     }
 
-    /// Emits an instruction with an i8 operand.
+    /// Emits an instruction with an i8 operand and updates stack depth tracking.
     pub fn emit_i8(&mut self, op: Opcode, operand: i8) {
-        self.emit_with_operand(op, &Operand::I8(operand));
+        self.emit_with_operand(op, Operand::I8(operand));
     }
 
-    /// Emits an instruction with two u8 operands.
+    /// Emits an instruction with two u8 operands and updates stack depth tracking.
     ///
-    /// Used for `UnpackEx`: before_count + after_count.
+    /// Used for UnpackEx: before_count (u8) + after_count (u8)
     pub fn emit_u8_u8(&mut self, op: Opcode, operand1: u8, operand2: u8) {
-        self.emit_with_operand(op, &Operand::U8U8(operand1, operand2));
+        self.emit_with_operand(op, Operand::U8U8(operand1, operand2));
     }
 
-    /// Emits an instruction with a u16 operand (little-endian).
+    /// Emits an instruction with a u16 operand (little-endian) and updates stack depth tracking.
     pub fn emit_u16(&mut self, op: Opcode, operand: u16) {
-        self.emit_with_operand(op, &Operand::U16(operand));
+        self.emit_with_operand(op, Operand::U16(operand));
     }
 
     /// Emits an instruction with a u16 operand followed by a u8 operand.
     ///
     /// Used for `MakeFunction`, `CallAttr`, `CallAttrExtended`.
     pub fn emit_u16_u8(&mut self, op: Opcode, operand1: u16, operand2: u8) {
-        self.emit_with_operand(op, &Operand::U16U8(operand1, operand2));
+        self.emit_with_operand(op, Operand::U16U8(operand1, operand2));
     }
 
     /// Emits an instruction with a u16 operand followed by two u8 operands.
     ///
-    /// Used for `MakeClosure`: func_id + defaults_count + cell_count.
+    /// Used for MakeClosure: func_id (u16) + defaults_count (u8) + cell_count (u8)
     pub fn emit_u16_u8_u8(&mut self, op: Opcode, operand1: u16, operand2: u8, operand3: u8) {
-        self.emit_with_operand(op, &Operand::U16U8U8(operand1, operand2, operand3));
+        self.emit_with_operand(op, Operand::U16U8U8(operand1, operand2, operand3));
     }
 
-    /// Emits `CallBuiltinFunction`: builtin_id (u8) + arg_count (u8).
+    /// Emits `CallBuiltinFunction` instruction.
+    ///
+    /// Operands: builtin_id (u8) + arg_count (u8)
     ///
     /// The builtin_id is the `#[repr(u8)]` discriminant of `BuiltinsFunctions`.
     /// This is an optimization that avoids constant pool lookup and stack manipulation.
     pub fn emit_call_builtin_function(&mut self, builtin_id: u8, arg_count: u8) {
-        self.emit_with_operand(Opcode::CallBuiltinFunction, &Operand::U8U8(builtin_id, arg_count));
+        self.emit_with_operand(Opcode::CallBuiltinFunction, Operand::U8U8(builtin_id, arg_count));
     }
 
-    /// Emits `CallBuiltinType`: type_id (u8) + arg_count (u8).
+    /// Emits `CallBuiltinType` instruction.
+    ///
+    /// Operands: type_id (u8) + arg_count (u8)
     ///
     /// The type_id is the `#[repr(u8)]` discriminant of `BuiltinsTypes`.
     /// This is an optimization for type constructors like `list()`, `int()`, `str()`.
     pub fn emit_call_builtin_type(&mut self, type_id: u8, arg_count: u8) {
-        self.emit_with_operand(Opcode::CallBuiltinType, &Operand::U8U8(type_id, arg_count));
+        self.emit_with_operand(Opcode::CallBuiltinType, Operand::U8U8(type_id, arg_count));
     }
 
-    /// Emits `CallFunctionKw` with inline keyword names.
+    /// Emits CallFunctionKw with inline keyword names.
     ///
-    /// Operands: pos_count (u8) + kw_count (u8) + kw_count * name_id (u16 each).
-    /// `kwname_ids` is the StringId for each keyword argument, in the order
-    /// the values were pushed onto the operand stack.
+    /// Operands: pos_count (u8) + kw_count (u8) + kw_count * name_id (u16 each)
+    ///
+    /// The kwname_ids slice contains StringId indices for each keyword argument
+    /// name, in order matching how the values were pushed to the stack.
     pub fn emit_call_function_kw(&mut self, pos_count: u8, kwname_ids: &[u16]) {
-        self.emit_with_operand(Opcode::CallFunctionKw, &Operand::CallKw { pos_count, kwname_ids });
+        self.emit_with_operand(Opcode::CallFunctionKw, Operand::CallKw { pos_count, kwname_ids });
     }
 
-    /// Emits `CallAttrKw` with inline keyword names.
+    /// Emits CallAttrKw with inline keyword names.
     ///
-    /// Operands: attr_name_id (u16) + pos_count (u8) + kw_count (u8) + kw_count * name_id (u16 each).
+    /// Operands: attr_name_id (u16) + pos_count (u8) + kw_count (u8) + kw_count * name_id (u16 each)
+    ///
+    /// The kwname_ids slice contains StringId indices for each keyword argument
+    /// name, in order matching how the values were pushed to the stack.
     pub fn emit_call_attr_kw(&mut self, attr_name_id: u16, pos_count: u8, kwname_ids: &[u16]) {
         self.emit_with_operand(
             Opcode::CallAttrKw,
-            &Operand::CallAttrKw {
+            Operand::CallAttrKw {
                 attr_name_id,
                 pos_count,
                 kwname_ids,
@@ -238,144 +184,133 @@ impl CodeBuilder {
 
     /// Emits a forward jump instruction, returning a label to patch later.
     ///
-    /// The jump offset is initially set to 0 and must be patched with
-    /// `patch_jump()` once the target location is known.
-    ///
-    /// The returned label carries the bytecode offset to patch and the stack
-    /// depth that the *jump-taken* path leaves on the stack at the patch
-    /// target. `patch_jump` uses that depth to enforce the merge invariant
-    /// (every branch arriving at the patch point agrees on stack depth) and
-    /// to transition the tracker out of `Dead` when fall-through is
-    /// unreachable. Forward jumps differ in how they affect the two paths:
-    ///
-    /// | Opcode                                 | fall-through effect | jump-taken target depth |
-    /// |----------------------------------------|---------------------|-------------------------|
-    /// | `Jump`                                 | n/a (dead)          | unchanged from pre-emit |
-    /// | `JumpIfTrue` / `JumpIfFalse`           | `-1` (cond popped)  | pre-emit `- 1`          |
-    /// | `JumpIfTrueOrPop` / `JumpIfFalseOrPop` | `-1` (cond popped)  | pre-emit (cond kept)    |
-    /// | `ForIter`                              | `+1` (value pushed) | pre-emit `- 1` (iter popped) |
-    ///
-    /// After `Jump` the tracker becomes `Dead` (it's unconditional). All
-    /// other jumps continue to fall through.
+    /// After `Jump` the tracker transitions to dead (it's unconditional).
+    /// All other jumps continue to fall through.
     ///
     /// # Panics
     ///
-    /// Panics if called from the `Dead` state — emitting a jump in dead code
-    /// produces unreachable bytecode and obscures the merge invariant.
-    /// Callers must guard with `is_dead()` if they may reach this from a
-    /// terminating block (see e.g. `compile_if`'s if-else bridge).
+    /// - Panics if the jump-taken target depth (current depth + `op.jump_taken_stack_effect()`)
+    ///   exceeds u16 range, which indicates a compiler bug in stack effect annotations or an
+    ///   unreasonably large function.
+    /// - Panics on non-jump opcodes.
     #[must_use]
     pub fn emit_jump(&mut self, op: Opcode) -> JumpLabel {
-        let TrackerState::Live(pre_depth) = self.tracker else {
-            panic!("emit_jump({op:?}) called from Dead state — guard with is_dead() at the call site")
+        let Some(pre_depth) = self.current_stack_depth else {
+            return JumpLabel { inner: None };
         };
-
-        self.record_location();
-        let offset = self.bytecode.len();
-        self.bytecode.push(op as u8);
-        // Placeholder for i16 offset (will be patched)
-        self.bytecode.extend_from_slice(&0i16.to_le_bytes());
-
-        let (fallthrough_effect, target_depth): (i16, u16) = match op {
-            Opcode::Jump => (0, pre_depth),
-            Opcode::JumpIfTrue | Opcode::JumpIfFalse => (-1, pre_depth.saturating_sub(1)),
-            Opcode::JumpIfTrueOrPop | Opcode::JumpIfFalseOrPop => (-1, pre_depth),
-            Opcode::ForIter => (1, pre_depth.saturating_sub(1)),
-            _ => panic!("emit_jump called with non-jump opcode {op:?}"),
-        };
-        self.adjust_stack(fallthrough_effect);
-
-        if op == Opcode::Jump {
-            self.mark_dead();
+        // Capture the opcode position (where patch_jump will overwrite the i16)
+        // before `emit_with_operand` pushes the bytes.
+        let offset = self.current_offset();
+        // Jump-taken target depth. `jump_taken_delta` panics for non-jumps.
+        let target_depth = u16::try_from(i32::from(pre_depth) + i32::from(op.jump_taken_stack_effect()))
+            .expect("jump target depth out of u16 range");
+        // Use the current position as a self-referential placeholder target.
+        // `patch_jump` will overwrite the encoded bytes with the real target
+        // once it's known; `#[must_use]` on the returned `JumpLabel` ensures
+        // the caller can't silently skip patching.
+        self.emit_with_operand(op, Operand::Offset(offset));
+        JumpLabel {
+            inner: Some(JumpLabelInner { offset, target_depth }),
         }
-
-        JumpLabel { offset, target_depth }
     }
 
     /// Patches a forward jump to point to the current bytecode location.
     ///
-    /// The offset is calculated relative to the position after the jump
-    /// instruction's operand (i.e., where execution would continue if
-    /// the jump is not taken).
-    ///
-    /// Tracker state transitions: if the tracker is `Dead` (because the
-    /// last live emission was a terminator), `patch_jump` re-establishes
-    /// `Live(label.target_depth)` from the label. If the tracker is already
-    /// `Live`, it asserts agreement — the merge invariant.
+    /// State transitions: if the builder is emitting dead code, `patch_jump`
+    /// re-establishes the live depth from `label.target_depth`. If the code
+    /// is live, it asserts the current stack depth matches the jump label
+    /// stack depth.
     ///
     /// # Panics
     ///
-    /// - In debug builds, panics if the tracker is `Live` and disagrees with
-    ///   `label.target_depth` — this means two reachable paths arrive at the
-    ///   patch point with different stack heights.
+    /// - In debug builds, panics if the tracker is live and disagrees with
+    ///   the label's target depth — this means two reachable paths arrive at
+    ///   the patch point with different stack heights.
     /// - Always panics if the jump offset exceeds i16 range (-32768..32767),
     ///   which indicates the function is too large. This is a compile-time
     ///   error rather than silent truncation.
     pub fn patch_jump(&mut self, label: JumpLabel) {
+        // If the emit_jump ran from dead code, nothing to patch.
+        let Some(label) = label.inner else { return };
         let target = self.bytecode.len();
         // Offset is relative to position after the jump instruction (opcode + i16 = 3 bytes)
         let target_i64 = i64::try_from(target).expect("bytecode target exceeds i64");
-        let label_i64 = i64::try_from(label.offset).expect("bytecode label exceeds i64");
+        let label_i64 = i64::try_from(label.offset.0).expect("bytecode label exceeds i64");
         let raw_offset = target_i64 - label_i64 - 3;
         let offset =
             i16::try_from(raw_offset).expect("jump offset exceeds i16 range (-32768..32767); function too large");
         let bytes = offset.to_le_bytes();
-        self.bytecode[label.offset + 1] = bytes[0];
-        self.bytecode[label.offset + 2] = bytes[1];
+        self.bytecode[label.offset.0 + 1] = bytes[0];
+        self.bytecode[label.offset.0 + 2] = bytes[1];
 
-        match self.tracker {
-            TrackerState::Live(d) => debug_assert_eq!(
+        match self.current_stack_depth {
+            Some(d) => debug_assert_eq!(
                 d, label.target_depth,
                 "stack-depth mismatch at jump merge: builder tracker is {d} but jump label expects {}; \
                  branches reaching this merge point disagree on stack state",
                 label.target_depth,
             ),
-            TrackerState::Dead => self.set_stack_depth(label.target_depth),
+            None => self.new_code_region(label.target_depth),
         }
     }
 
-    /// Emits a backward jump to a known target offset.
+    /// Emits a backward jump to a known target. Any jump opcode is accepted;
+    /// `Opcode::jump_taken_delta` is the shared source of truth for the
+    /// jump-taken stack effect (and panics for non-jump opcodes).
     ///
-    /// Unlike forward jumps, backward jumps have a known target at emit time,
-    /// so no patching is needed. Only fixed-effect opcodes are supported here
-    /// (in practice, just `Jump` and the conditional jumps used for
-    /// comprehension filters); branch-dependent jumps like `ForIter` or the
-    /// `OrPop` variants would need per-branch target depths that this
-    /// label-less path can't carry — panic if misused.
-    ///
-    /// After `Jump` (unconditional), the tracker transitions to `Dead`.
-    /// Panics if called from `Dead` — emitting a backward jump in dead code
-    /// produces unreachable bytecode and is always a compiler bug.
-    pub fn emit_jump_to(&mut self, op: Opcode, target: usize) {
-        assert!(
-            !self.is_dead(),
-            "emit_jump_to({op:?}) called from Dead state — guard with is_dead() at the call site"
-        );
-        self.record_location();
-        let current = self.bytecode.len();
-        // Offset is relative to position after this instruction (current + 3)
-        let target_i64 = i64::try_from(target).expect("bytecode target exceeds i64");
-        let current_i64 = i64::try_from(current).expect("bytecode offset exceeds i64");
-        let raw_offset = target_i64 - (current_i64 + 3);
-        let offset =
-            i16::try_from(raw_offset).expect("jump offset exceeds i16 range (-32768..32767); function too large");
-        self.bytecode.push(op as u8);
-        self.bytecode.extend_from_slice(&offset.to_le_bytes());
-        let effect = op.stack_effect().unwrap_or_else(|| {
-            panic!("variable-effect opcode {op:?} emitted via emit_jump_to — only fixed-effect jumps are supported on the backward-jump path")
-        });
-        self.adjust_stack(effect);
-        if op == Opcode::Jump {
-            self.mark_dead();
+    /// # Panics
+    /// - Panics if the jump target was emitted in dead code, and the current
+    ///   code is live.
+    /// - In debug builds, panics if the current stack depth plus the jump's stack
+    ///   effect do not match the jump target stack depth.
+    /// - Panics on non-jump opcodes.
+    pub fn emit_jump_to(&mut self, op: Opcode, target: JumpTarget) {
+        let Some(target) = target.inner else {
+            // Target was captured in the dead-code state. If we're also dead
+            // here, this is a benign no-op (nothing would be emitted anyway).
+            // If we're live, this is a compiler bug — we'd be jumping into a
+            // region whose bytes weren't emitted because they were dead at
+            // capture time.
+            assert!(
+                self.is_dead(),
+                "emit_jump_to: cannot jump from live code into a target captured in the dead-code state"
+            );
+            return;
+        };
+        // Backward-jump merge invariant: the jump-taken arrival depth must
+        // equal the depth at the target. Skip the check in the dead-code
+        // state — `emit_with_operand` will no-op the emission anyway.
+        if let Some(current) = self.current_stack_depth {
+            let arrival = i32::from(current) + i32::from(op.jump_taken_stack_effect());
+            debug_assert_eq!(
+                arrival,
+                i32::from(target.depth),
+                "backward jump merge: arriving at depth {arrival} but target captured depth {}",
+                target.depth,
+            );
         }
+        self.emit_with_operand(op, Operand::Offset(target.offset));
     }
 
-    /// Returns the current bytecode offset.
+    /// Returns the current bytecode position as an opaque `Offset`.
     ///
-    /// Use this to record loop start positions for backward jumps.
+    /// Use this to capture the bounds of try/except/finally regions for
+    /// `ExceptionEntry::new`.
     #[must_use]
-    pub fn current_offset(&self) -> usize {
-        self.bytecode.len()
+    pub fn current_offset(&self) -> Offset {
+        Offset(self.bytecode.len())
+    }
+
+    /// Returns a `JumpTarget` capturing both the current bytecode position and
+    /// the stack depth at that position.
+    #[must_use]
+    pub fn current_jump_target(&self) -> JumpTarget {
+        JumpTarget {
+            inner: self.current_stack_depth.map(|depth| JumpTargetInner {
+                offset: self.current_offset(),
+                depth,
+            }),
+        }
     }
 
     /// Emits `LoadLocal`, using specialized opcodes for slots 0-3.
@@ -434,9 +369,9 @@ impl CodeBuilder {
     pub fn emit_load_local_callable(&mut self, slot: u16, name_id: StringId) {
         let name_id_u16 = u16::try_from(name_id.index()).expect("name_id exceeds u16");
         if let Ok(s) = u8::try_from(slot) {
-            self.emit_with_operand(Opcode::LoadLocalCallable, &Operand::U8U16(s, name_id_u16));
+            self.emit_with_operand(Opcode::LoadLocalCallable, Operand::U8U16(s, name_id_u16));
         } else {
-            self.emit_with_operand(Opcode::LoadLocalCallableW, &Operand::U16U16(slot, name_id_u16));
+            self.emit_with_operand(Opcode::LoadLocalCallableW, Operand::U16U16(slot, name_id_u16));
         }
     }
 
@@ -447,7 +382,7 @@ impl CodeBuilder {
     /// and local slots use different namespaces).
     pub fn emit_load_global_callable(&mut self, slot: u16, name_id: StringId) {
         let name_id_u16 = u16::try_from(name_id.index()).expect("name_id exceeds u16");
-        self.emit_with_operand(Opcode::LoadGlobalCallable, &Operand::U16U16(slot, name_id_u16));
+        self.emit_with_operand(Opcode::LoadGlobalCallable, Operand::U16U16(slot, name_id_u16));
     }
 
     /// Emits `StoreLocal`, using wide variant for slots > 255.
@@ -484,18 +419,14 @@ impl CodeBuilder {
     ///
     /// # Panics
     ///
-    /// Panics if the tracker is in the `Dead` state. Callers that capture
+    /// Panics if the tracker is in the dead-code state. Callers that capture
     /// depth (e.g. `compile_for`'s `loop_exit_depth`) only ever do so from
-    /// reachable code, so being `Dead` here indicates a compiler bug.
+    /// reachable code, so being dead here indicates a compiler bug.
     #[must_use]
     pub fn stack_depth(&self) -> u16 {
-        match self.tracker {
-            TrackerState::Live(d) => d,
-            TrackerState::Dead => panic!(
-                "stack_depth() called while tracker is in Dead state — \
-                 callers should only read depth from reachable code"
-            ),
-        }
+        self.current_stack_depth.expect(
+            "stack_depth() called while in dead-code state — callers should only read depth from reachable code",
+        )
     }
 
     /// Reports whether the tracker is in the dead-code state.
@@ -504,7 +435,7 @@ impl CodeBuilder {
     /// helpers to decide whether to bother computing live target depths.
     #[must_use]
     pub fn is_dead(&self) -> bool {
-        matches!(self.tracker, TrackerState::Dead)
+        self.current_stack_depth.is_none()
     }
 
     /// Builds the final Code object.
@@ -538,28 +469,34 @@ impl CodeBuilder {
         }
     }
 
-    /// Sets the current stack depth to an absolute value, transitioning to
-    /// `Live` regardless of prior state.
+    /// Opens a new code region at the given stack depth.
     ///
-    /// Use this for points reached via the exception table (handler entries,
-    /// finally cleanup) where the depth comes from outside the fall-through
-    /// graph. For ordinary forward-jump merges, `patch_jump` is enough — it
-    /// transitions `Dead → Live` automatically using the label's recorded
-    /// target depth.
-    pub fn set_stack_depth(&mut self, depth: u16) {
-        self.tracker = TrackerState::Live(depth);
+    /// Use this:
+    /// - After `CodeBuilder::new()`, with `depth = 0`, to start the initial
+    ///   region (the top of a function or module body).
+    /// - For points reached via the exception table (handler entries with the
+    ///   exception on stack at `base + 1`, finally cleanup) where the depth
+    ///   comes from outside the fall-through graph.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the builder is currently emitting live code.
+    pub fn new_code_region(&mut self, depth: u16) {
+        assert!(
+            self.is_dead(),
+            "enter_region: must be called from the dead-code state — use `patch_jump` to merge a forward jump's depth into live code",
+        );
+        self.current_stack_depth = Some(depth);
         self.max_stack_depth = self.max_stack_depth.max(depth);
     }
 
     /// Adjusts the stack depth by the given delta.
     ///
     /// Positive values indicate pushes, negative values indicate pops.
-    /// In the `Dead` state this is a no-op: dead code can be emitted freely
-    /// without poisoning the tracker, since the depth there is meaningless
-    /// until re-established by a patch or `set_stack_depth`. Updates
-    /// `max_stack_depth` if the new live depth exceeds it.
+    /// In the dead-code state this is a no-op: dead code can be emitted
+    /// freely.
     fn adjust_stack(&mut self, delta: i16) {
-        let TrackerState::Live(depth) = self.tracker else {
+        let Some(depth) = self.current_stack_depth else {
             return;
         };
         let new_depth = i32::from(depth) + i32::from(delta);
@@ -567,47 +504,57 @@ impl CodeBuilder {
         debug_assert!(new_depth >= 0, "Stack depth went negative: {new_depth}");
         // Safe cast: new_depth is non-negative and stack won't exceed u16::MAX in practice
         let new_depth = u16::try_from(new_depth.max(0)).unwrap_or(u16::MAX);
-        self.tracker = TrackerState::Live(new_depth);
+        self.current_stack_depth = Some(new_depth);
         self.max_stack_depth = self.max_stack_depth.max(new_depth);
     }
 
-    /// Transitions the tracker to the `Dead` state.
+    /// Single-source-of-truth emit path for all bytecode emission: records
+    /// location, writes opcode + operand bytes, applies the stack-effect
+    /// computed by `Opcode::stack_effect`, and transitions the tracker to
+    /// dead for unconditional terminators (`Jump`, `ReturnValue`, `Raise`,
+    /// `Reraise`).
     ///
-    /// Called internally after emitting unconditional terminators (`Jump`,
-    /// `ReturnValue`, `Raise`, `Reraise`). Subsequent emits will not affect
-    /// `current_stack_depth` until `patch_jump` or `set_stack_depth`
-    /// re-establishes a live arrival depth.
-    fn mark_dead(&mut self) {
-        self.tracker = TrackerState::Dead;
-    }
-
-    /// Single-source-of-truth emit path: records location, writes opcode +
-    /// operand bytes, applies the stack-effect computed by `stack_effect_for`,
-    /// and transitions the tracker to `Dead` for unconditional terminators
-    /// (`ReturnValue`, `Raise`, `Reraise`).
+    /// In the dead-code state the method silently no-ops. This lets the
+    /// compiler drive emission uniformly without gating individual emits
+    /// on reachability — dead trailers, epilogues, and orphaned cleanup
+    /// pairs all vanish naturally.
     ///
-    /// `emit_jump` and `emit_jump_to` do *not* go through this path — they
-    /// have branch-dependent effects and target-depth bookkeeping that don't
-    /// fit the linear-emit shape.
-    fn emit_with_operand(&mut self, op: Opcode, operand: &Operand<'_>) {
+    /// `emit_jump` and `emit_jump_to` route their byte emission through here;
+    /// `emit_jump` additionally captures the pre-emit offset and computes the
+    /// jump-taken target depth for the returned `JumpLabel`.
+    fn emit_with_operand(&mut self, op: Opcode, operand: Operand<'_>) {
+        if self.is_dead() {
+            return;
+        }
         self.record_location();
+        let opcode_pos = self.bytecode.len();
         self.bytecode.push(op as u8);
         match operand {
             Operand::None => {}
-            Operand::U8(b) => self.bytecode.push(*b),
+            Operand::U8(b) => self.bytecode.push(b),
             Operand::I8(b) => self.bytecode.push(b.to_ne_bytes()[0]),
             Operand::U16(w) => self.bytecode.extend_from_slice(&w.to_le_bytes()),
+            Operand::Offset(target) => {
+                // Encode as a signed i16 relative to the position after the
+                // jump's 3-byte instruction (opcode + i16).
+                let target_i64 = i64::try_from(target.0).expect("bytecode target exceeds i64");
+                let after_jump_i64 = i64::try_from(opcode_pos + 3).expect("bytecode position exceeds i64");
+                let raw_offset = target_i64 - after_jump_i64;
+                let relative = i16::try_from(raw_offset)
+                    .expect("jump offset exceeds i16 range (-32768..32767); function too large");
+                self.bytecode.extend_from_slice(&relative.to_le_bytes());
+            }
             Operand::U8U8(a, b) => {
-                self.bytecode.push(*a);
-                self.bytecode.push(*b);
+                self.bytecode.push(a);
+                self.bytecode.push(b);
             }
             Operand::U8U16(a, w) => {
-                self.bytecode.push(*a);
+                self.bytecode.push(a);
                 self.bytecode.extend_from_slice(&w.to_le_bytes());
             }
             Operand::U16U8(w, b) => {
                 self.bytecode.extend_from_slice(&w.to_le_bytes());
-                self.bytecode.push(*b);
+                self.bytecode.push(b);
             }
             Operand::U16U16(w1, w2) => {
                 self.bytecode.extend_from_slice(&w1.to_le_bytes());
@@ -615,14 +562,14 @@ impl CodeBuilder {
             }
             Operand::U16U8U8(w, b1, b2) => {
                 self.bytecode.extend_from_slice(&w.to_le_bytes());
-                self.bytecode.push(*b1);
-                self.bytecode.push(*b2);
+                self.bytecode.push(b1);
+                self.bytecode.push(b2);
             }
             Operand::CallKw { pos_count, kwname_ids } => {
-                self.bytecode.push(*pos_count);
+                self.bytecode.push(pos_count);
                 self.bytecode
                     .push(u8::try_from(kwname_ids.len()).expect("keyword count exceeds u8"));
-                for &name_id in *kwname_ids {
+                for &name_id in kwname_ids {
                     self.bytecode.extend_from_slice(&name_id.to_le_bytes());
                 }
             }
@@ -632,106 +579,82 @@ impl CodeBuilder {
                 kwname_ids,
             } => {
                 self.bytecode.extend_from_slice(&attr_name_id.to_le_bytes());
-                self.bytecode.push(*pos_count);
+                self.bytecode.push(pos_count);
                 self.bytecode
                     .push(u8::try_from(kwname_ids.len()).expect("keyword count exceeds u8"));
-                for &name_id in *kwname_ids {
+                for &name_id in kwname_ids {
                     self.bytecode.extend_from_slice(&name_id.to_le_bytes());
                 }
             }
         }
-        self.adjust_stack(stack_effect_for(op, operand));
-        if matches!(op, Opcode::ReturnValue | Opcode::Raise | Opcode::Reraise) {
-            self.mark_dead();
+        self.adjust_stack(op.stack_effect(operand));
+        if matches!(op, Opcode::ReturnValue | Opcode::Raise | Opcode::Reraise | Opcode::Jump) {
+            self.current_stack_depth = None;
         }
-    }
-}
-
-/// Computes the operand-stack effect of `op` paired with `operand`.
-///
-/// All variable-effect opcodes get an explicit match arm. Fixed-effect opcodes
-/// fall through to `op.stack_effect()`, which is `Some(_)` for them. A
-/// variable-effect opcode that reaches the fallback (because its operand
-/// shape doesn't match any enumerated arm) panics — preventing silent drift
-/// when a new variable-effect opcode is added.
-///
-/// `MakeFunction`/`MakeClosure` have explicit arms even though `stack_effect()`
-/// returns `Some(1)` for them — that fixed value is only correct with zero
-/// defaults, so we override with `1 - defaults_count` for the general case.
-fn stack_effect_for(op: Opcode, operand: &Operand<'_>) -> i16 {
-    match (op, operand) {
-        // === U8 operand, variable effect ===
-        (Opcode::CallFunction, &Operand::U8(arg_count)) => -i16::from(arg_count),
-        (Opcode::CallFunctionExtended, &Operand::U8(flags)) => -(1 + i16::from(flags & 0x01)),
-        (Opcode::FormatValue, &Operand::U8(flags)) => {
-            if flags & 0x04 != 0 {
-                -1
-            } else {
-                0
-            }
-        }
-        (Opcode::UnpackSequence, &Operand::U8(n)) => i16::from(n) - 1,
-
-        // === U16 operand, variable effect ===
-        (Opcode::BuildList | Opcode::BuildTuple | Opcode::BuildSet | Opcode::BuildFString, &Operand::U16(n)) => {
-            1 - n.cast_signed()
-        }
-        (Opcode::BuildDict, &Operand::U16(n)) => 1 - 2 * n.cast_signed(),
-
-        // === U8U8 operand, variable effect ===
-        // UnpackEx: pops 1, pushes (before + 1 + after) → before + after.
-        (Opcode::UnpackEx, &Operand::U8U8(before, after)) => i16::from(before) + i16::from(after),
-        // Builtin calls: no callable on stack, pops args, pushes result → 1 - arg_count.
-        (Opcode::CallBuiltinFunction | Opcode::CallBuiltinType, &Operand::U8U8(_, arg_count)) => {
-            1 - i16::from(arg_count)
-        }
-
-        // === U16U8 operand, variable effect ===
-        (Opcode::MakeFunction, &Operand::U16U8(_, defaults)) => 1 - i16::from(defaults),
-        (Opcode::CallAttr, &Operand::U16U8(_, arg_count)) => -i16::from(arg_count),
-        (Opcode::CallAttrExtended, &Operand::U16U8(_, flags)) => -(1 + i16::from(flags & 0x01)),
-
-        // === U16U8U8 operand, variable effect ===
-        (Opcode::MakeClosure, &Operand::U16U8U8(_, defaults, _)) => 1 - i16::from(defaults),
-
-        // === Variable-length kw operands ===
-        // pops callable + pos_args + kw_args, pushes result → -(pos_count + kw_count).
-        (Opcode::CallFunctionKw, Operand::CallKw { pos_count, kwname_ids }) => {
-            let kw_count = i16::try_from(kwname_ids.len()).expect("keyword count exceeds i16");
-            -(i16::from(*pos_count) + kw_count)
-        }
-        (
-            Opcode::CallAttrKw,
-            Operand::CallAttrKw {
-                pos_count, kwname_ids, ..
-            },
-        ) => {
-            let kw_count = i16::try_from(kwname_ids.len()).expect("keyword count exceeds i16");
-            -(i16::from(*pos_count) + kw_count)
-        }
-
-        // Fixed-effect fallback. Variable-effect opcodes (where stack_effect()
-        // returns None) without an arm above hit the panic — keeps the tracker
-        // honest if a new variable-effect opcode is added.
-        (op, _) => op.stack_effect().unwrap_or_else(|| {
-            panic!("stack_effect_for: variable-effect opcode {op:?} has no handler for operand variant {operand:?}")
-        }),
     }
 }
 
 /// Label for a forward jump that needs patching.
-///
-/// Carries the bytecode offset where the jump instruction was emitted, plus
-/// the stack depth that the jump-taken path leaves on the stack at the patch
-/// target. `emit_jump` only runs in the live tracker state (panicking
-/// otherwise), so this depth is always known when the label is constructed.
-/// `patch_jump` uses it to enforce the merge invariant and to transition the
-/// tracker back to `Live` when fall-through to the patch point is
-/// unreachable.
 #[derive(Debug, Clone, Copy)]
 pub struct JumpLabel {
-    offset: usize,
+    /// `Option` is none to allow for the dead code case, in which case
+    /// the jump is unreachable and patch_jump needs do no work.
+    inner: Option<JumpLabelInner>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct JumpLabelInner {
+    /// Position of the jump's opcode byte. `patch_jump` writes the relative
+    /// i16 at `offset.0 + 1`.
+    offset: Offset,
+    /// The stack depth that the jump-taken path leaves on the stack
+    /// when the jump is taken to the target.
+    ///
+    /// This is used by `patch_jump` to enforce the merge invariant (all paths
+    /// arriving at the jump label must agree on the stack depth).
     target_depth: u16,
+}
+
+/// A position in the bytecode stream.
+///
+/// Returned by `CodeBuilder::current_offset` and consumed by `emit_jump_to`
+/// (as a backward-jump target) and `ExceptionEntry::new` (as the bounds of
+/// try/except/finally regions). The wrapped `usize` is intentionally private:
+/// `Offset` values can only originate from the builder, which prevents
+/// arbitrary integers from being used in places where the bytecode position
+/// is a load-bearing invariant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Offset(usize);
+
+impl Offset {
+    /// Returns the offset as a `u32` — the serialized form used by
+    /// `ExceptionEntry` and `LocationEntry`.
+    ///
+    /// Panics if the bytecode position exceeds `u32::MAX`, which would mean
+    /// the compiled function is unreasonably large.
+    #[must_use]
+    pub fn as_u32(self) -> u32 {
+        u32::try_from(self.0).expect("bytecode offset exceeds u32")
+    }
+}
+
+/// Target for a backward jump — bundles a bytecode position with the stack
+/// depth at that position, so `emit_jump_to` can enforce the merge invariant
+/// (the jump-taken arrival depth must equal the depth recorded at the target).
+///
+/// Returned by `CodeBuilder::current_jump_target`. In the dead-code state the
+/// returned `JumpTarget` is a no-op placeholder (`inner: None`): valid to use
+/// from another dead-code call site, but a compiler bug if used from live
+/// code (would jump into bytes that were never emitted).
+#[derive(Debug, Clone, Copy)]
+pub struct JumpTarget {
+    inner: Option<JumpTargetInner>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct JumpTargetInner {
+    offset: Offset,
+    depth: u16,
 }
 
 #[cfg(test)]
@@ -741,6 +664,7 @@ mod tests {
     #[test]
     fn test_emit_basic() {
         let mut builder = CodeBuilder::new();
+        builder.new_code_region(0);
         builder.emit(Opcode::LoadNone);
         builder.emit(Opcode::Pop);
 
@@ -751,6 +675,7 @@ mod tests {
     #[test]
     fn test_emit_u8_operand() {
         let mut builder = CodeBuilder::new();
+        builder.new_code_region(0);
         builder.emit_u8(Opcode::LoadLocal, 42);
 
         let code = builder.build(0);
@@ -760,6 +685,7 @@ mod tests {
     #[test]
     fn test_emit_u16_operand() {
         let mut builder = CodeBuilder::new();
+        builder.new_code_region(0);
         builder.emit_u16(Opcode::LoadConst, 0x1234);
 
         let code = builder.build(0);
@@ -769,29 +695,27 @@ mod tests {
     #[test]
     fn test_forward_jump() {
         let mut builder = CodeBuilder::new();
+        builder.new_code_region(0);
         let jump = builder.emit_jump(Opcode::Jump);
         // The two LoadNones below are dead code (unconditional Jump above);
-        // adjust_stack is a no-op in the Dead state, so they don't poison
-        // tracking. patch_jump transitions the tracker back to Live using
-        // the label's recorded target depth (0 here, unchanged from before
-        // the Jump).
-        builder.emit(Opcode::LoadNone); // 1 byte, skipped by jump
-        builder.emit(Opcode::LoadNone); // 1 byte, skipped by jump
+        // `emit_with_operand` no-ops in the Dead state, so they don't get
+        // written to bytecode. `patch_jump` then transitions the tracker back
+        // to live from the label's recorded target depth (0 here).
+        builder.emit(Opcode::LoadNone); // dead, skipped
+        builder.emit(Opcode::LoadNone); // dead, skipped
         builder.patch_jump(jump);
         builder.emit(Opcode::LoadNone); // Return value
         builder.emit(Opcode::ReturnValue);
 
         let code = builder.build(0);
-        // Jump at offset 0, target at offset 5 (after 2x LoadNone)
-        // Offset = 5 - 0 - 3 = 2
+        // Jump at offset 0, target at offset 3 (immediately after Jump's bytes).
+        // Offset = 3 - 0 - 3 = 0.
         assert_eq!(
             code.bytecode(),
             &[
                 Opcode::Jump as u8,
-                2,
-                0, // i16 little-endian = 2
-                Opcode::LoadNone as u8,
-                Opcode::LoadNone as u8,
+                0,
+                0, // i16 little-endian = 0
                 Opcode::LoadNone as u8,
                 Opcode::ReturnValue as u8,
             ]
@@ -801,7 +725,8 @@ mod tests {
     #[test]
     fn test_backward_jump() {
         let mut builder = CodeBuilder::new();
-        let loop_start = builder.current_offset();
+        builder.new_code_region(0);
+        let loop_start = builder.current_jump_target();
         builder.emit(Opcode::LoadNone); // offset 0, 1 byte
         builder.emit(Opcode::Pop); // offset 1, 1 byte
         builder.emit_jump_to(Opcode::Jump, loop_start); // offset 2, target 0
@@ -825,6 +750,7 @@ mod tests {
     #[test]
     fn test_load_local_specialization() {
         let mut builder = CodeBuilder::new();
+        builder.new_code_region(0);
         builder.emit_load_local(0);
         builder.emit_load_local(1);
         builder.emit_load_local(2);
@@ -852,6 +778,7 @@ mod tests {
     #[test]
     fn test_add_const() {
         let mut builder = CodeBuilder::new();
+        builder.new_code_region(0);
         let idx1 = builder.add_const(Value::Int(42));
         let idx2 = builder.add_const(Value::None);
 
