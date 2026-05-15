@@ -14,11 +14,11 @@
 //! - `MontyTypingError`: Wraps `TypeCheckingDiagnostics` for static type checking errors.
 //!   This is separate because type errors come from static analysis, not Python execution.
 
-use std::fmt;
+use std::{collections::HashMap, fmt, sync::Arc};
 
-use monty::{ExcType, StackFrame};
+use monty::ExcType;
 use monty_type_checking::TypeCheckingDiagnostics;
-use napi::bindgen_prelude::*;
+use napi::{bindgen_prelude::*, JsString};
 use napi_derive::napi;
 use serde::{Deserialize, Serialize};
 
@@ -66,9 +66,43 @@ impl JsMontyException {
     ///
     /// For syntax errors, this will be an empty array.
     /// For runtime errors, this contains the stack frames where the error occurred.
+    ///
+    /// `Frame.source_line` is built as a `JsString` shared across frames that
+    /// resolve to the same source line. For deep recursion where every frame
+    /// points at the same line this creates a single V8 string referenced by
+    /// every frame, instead of one copy per frame.
     #[napi]
-    pub fn traceback(&self) -> Vec<Frame> {
-        self.0.traceback().iter().map(Frame::from_stack_frame).collect()
+    pub fn traceback<'env>(&self, env: &'env Env) -> Result<Vec<Frame<'env>>> {
+        let stack_frames = self.0.traceback();
+        let mut line_cache: HashMap<usize, JsString<'env>> = HashMap::new();
+        stack_frames
+            .iter()
+            .map(|f| {
+                let source_line = f
+                    .preview_line
+                    .as_ref()
+                    .map(|arc| -> Result<JsString<'env>> {
+                        let key = Arc::as_ptr(arc).cast::<()>() as usize;
+                        if let Some(s) = line_cache.get(&key) {
+                            Ok(*s)
+                        } else {
+                            let s = env.create_string(arc)?;
+                            line_cache.insert(key, s);
+                            Ok(s)
+                        }
+                    })
+                    .transpose()?;
+                Ok(Frame {
+                    filename: f.filename.clone(),
+                    line: f.start.line,
+                    column: f.start.column,
+                    end_line: f.end.line,
+                    end_column: f.end.column,
+                    function_name: f.frame_name.clone(),
+                    source_line,
+                })
+            })
+            .collect()
     }
 
     /// Returns formatted exception string.
@@ -219,9 +253,14 @@ pub struct ExceptionInfo {
 ///
 /// Contains all the information needed to display a traceback line:
 /// the file location, function name, and optional source code preview.
+///
+/// `source_line` is a `JsString` borrowed from the env scope of the
+/// `traceback()` call that produced this frame. Frames produced by the same
+/// `traceback()` call that resolve to the same source location share one V8
+/// string allocation. The lifetime parameter ties the frame to that env
+/// scope, since `JsString<'env>` is a non-owning handle.
 #[napi(object)]
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Frame {
+pub struct Frame<'env> {
     /// The filename where the code is located.
     pub filename: String,
     /// Line number (1-based).
@@ -235,23 +274,7 @@ pub struct Frame {
     /// The name of the function, or null for module-level code.
     pub function_name: Option<String>,
     /// The source code line for preview in the traceback.
-    pub source_line: Option<String>,
-}
-
-impl Frame {
-    /// Creates a `Frame` from Monty's `StackFrame`.
-    #[must_use]
-    pub fn from_stack_frame(frame: &StackFrame) -> Self {
-        Self {
-            filename: frame.filename.clone(),
-            line: frame.start.line,
-            column: frame.start.column,
-            end_line: frame.end.line,
-            end_column: frame.end.column,
-            function_name: frame.frame_name.clone(),
-            source_line: frame.preview_line.clone(),
-        }
-    }
+    pub source_line: Option<JsString<'env>>,
 }
 
 /// Converts a javascript error into a MontyException.

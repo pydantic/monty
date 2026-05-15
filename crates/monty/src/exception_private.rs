@@ -1618,7 +1618,7 @@ impl ExceptionRaise {
                         cache.push((fname_id, SourceMap::new(src)));
                         cache.len() - 1
                     };
-                    frames.push(StackFrame::from_raw(f, interns, &cache[sm_idx].1));
+                    frames.push(StackFrame::from_raw(f, interns, &mut cache[sm_idx].1));
                     current = f.parent.as_deref();
                 }
                 // Reverse so outermost frame is first (Python's "most recent call last" ordering)

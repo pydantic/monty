@@ -1775,27 +1775,31 @@ impl ParseError {
 
 impl ParseError {
     pub fn into_python_exc(self, filename: &str, source: &str) -> MontyException {
-        let source_map = SourceMap::new(source);
+        let mut source_map = SourceMap::new(source);
         match self {
             Self::Syntax { msg, position } => MontyException::new_full(
                 ExcType::SyntaxError,
                 Some(msg.into_owned()),
-                vec![StackFrame::from_position_syntax_error(position, filename, &source_map)],
+                vec![StackFrame::from_position_syntax_error(
+                    position,
+                    filename,
+                    &mut source_map,
+                )],
             ),
             Self::NotImplemented { msg, position } => MontyException::new_full(
                 ExcType::NotImplementedError,
                 Some(format!("The monty syntax parser does not yet support {msg}")),
-                vec![StackFrame::from_position(position, filename, &source_map)],
+                vec![StackFrame::from_position(position, filename, &mut source_map)],
             ),
             Self::NotSupported { msg, position } => MontyException::new_full(
                 ExcType::NotImplementedError,
                 Some(msg.into_owned()),
-                vec![StackFrame::from_position(position, filename, &source_map)],
+                vec![StackFrame::from_position(position, filename, &mut source_map)],
             ),
             Self::Import { msg, position } => MontyException::new_full(
                 ExcType::ImportError,
                 Some(msg.into_owned()),
-                vec![StackFrame::from_position_no_caret(position, filename, &source_map)],
+                vec![StackFrame::from_position_no_caret(position, filename, &mut source_map)],
             ),
         }
     }

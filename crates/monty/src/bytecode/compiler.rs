@@ -3163,12 +3163,12 @@ impl CompileError {
     /// - SyntaxError: hides the `, in <module>` part (CPython's format)
     /// - ModuleNotFoundError: hides caret markers (CPython doesn't show them)
     pub fn into_python_exc(self, filename: &str, source: &str) -> MontyException {
-        let source_map = SourceMap::new(source);
+        let mut source_map = SourceMap::new(source);
         let mut frame = if self.exc_type == ExcType::SyntaxError {
             // SyntaxError uses different format: no `, in <module>`
-            StackFrame::from_position_syntax_error(self.position, filename, &source_map)
+            StackFrame::from_position_syntax_error(self.position, filename, &mut source_map)
         } else {
-            StackFrame::from_position(self.position, filename, &source_map)
+            StackFrame::from_position(self.position, filename, &mut source_map)
         };
         // CPython doesn't show carets for module not found errors
         if self.exc_type == ExcType::ModuleNotFoundError {
