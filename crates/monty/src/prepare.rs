@@ -1280,11 +1280,7 @@ impl<'i> Prepare<'i> {
         // Register the function name in the current scope
         let (name, _) = self.get_id(name);
 
-        // Extract param names from the parsed signature for scope analysis.
-        // Duplicate names (`def f(x, x)`) are rejected inside `new_function`
-        // when it builds the namespace `name_map`, since duplicates would
-        // desynchronize `name_map.len()` from the positional `NamespaceId`
-        // and later panic `load_local` at runtime.
+        // Extract param names from the parsed signature for scope analysis
         let param_names: Vec<StringId> = parsed_sig.param_names().collect();
 
         // Pass 1: Collect scope information from the function body
@@ -1501,8 +1497,7 @@ impl<'i> Prepare<'i> {
         let body_as_node: ParseNode = Node::Return(body.clone());
         let body_nodes = vec![body_as_node];
 
-        // Extract param names from the parsed signature for scope analysis.
-        // Duplicates are rejected inside `new_function` (see its doc).
+        // Extract param names from the parsed signature for scope analysis
         let param_names: Vec<StringId> = parsed_sig.param_names().collect();
 
         // Pass 1: Collect scope information from the lambda body
