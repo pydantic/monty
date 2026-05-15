@@ -56,7 +56,7 @@ pub(crate) fn prepare(parse_result: ParseResult, input_names: Vec<String>) -> Re
     {
         let new_expr_loc = expr_loc.clone();
         prepared_nodes.pop();
-        prepared_nodes.push(Node::Return(new_expr_loc));
+        prepared_nodes.push(Node::Return(Some(new_expr_loc)));
     }
 
     Ok(PrepareResult {
@@ -85,7 +85,7 @@ pub(crate) fn prepare_with_existing_names(
     {
         let new_expr_loc = expr_loc.clone();
         prepared_nodes.pop();
-        prepared_nodes.push(Node::Return(new_expr_loc));
+        prepared_nodes.push(Node::Return(Some(new_expr_loc)));
     }
 
     Ok(PrepareResult {
@@ -314,8 +314,10 @@ impl<'i> Prepare<'i> {
             match node {
                 Node::Pass => (),
                 Node::Expr(expr) => new_nodes.push(Node::Expr(self.prepare_expression(expr)?)),
-                Node::Return(expr) => new_nodes.push(Node::Return(self.prepare_expression(expr)?)),
-                Node::ReturnNone => new_nodes.push(Node::ReturnNone),
+                Node::Return(expr) => new_nodes.push(Node::Return(match expr {
+                    Some(expr) => Some(self.prepare_expression(expr)?),
+                    None => None,
+                })),
                 Node::Raise(exc) => {
                     let expr = match exc {
                         Some(expr) => {
@@ -1480,7 +1482,7 @@ impl<'i> Prepare<'i> {
         );
 
         // Wrap the body expression as a return statement for scope analysis
-        let body_as_node: ParseNode = Node::Return(body.clone());
+        let body_as_node: ParseNode = Node::Return(Some(body.clone()));
         let body_nodes = vec![body_as_node];
 
         // Extract param names from the parsed signature for scope analysis
@@ -2159,10 +2161,7 @@ fn collect_scope_info_from_node(
             }
         }
         // Statements with expressions that may contain walrus operators
-        Node::Expr(expr) | Node::Return(expr) => {
-            collect_assigned_names_from_expr(expr, assigned_names, interner);
-        }
-        Node::Raise(Some(expr)) => {
+        Node::Expr(expr) | Node::Return(Some(expr)) | Node::Raise(Some(expr)) => {
             collect_assigned_names_from_expr(expr, assigned_names, interner);
         }
         Node::Assert { test, msg } => {
@@ -2172,7 +2171,7 @@ fn collect_scope_info_from_node(
             }
         }
         // These don't create new names
-        Node::Pass | Node::ReturnNone | Node::Raise(None) | Node::Break { .. } | Node::Continue { .. } => {}
+        Node::Pass | Node::Return(None) | Node::Raise(None) | Node::Break { .. } | Node::Continue { .. } => {}
     }
 }
 
@@ -2457,9 +2456,10 @@ fn collect_cell_vars_from_node(
             }
         }
         // Handle expressions that may contain lambdas
-        Node::Expr(expr) | Node::Return(expr) => {
+        Node::Expr(expr) | Node::Return(Some(expr)) => {
             collect_cell_vars_from_expr(expr, our_locals, cell_vars, interner);
         }
+        Node::Return(None) => {}
         Node::Assign { object, .. } | Node::UnpackAssign { object, .. } => {
             collect_cell_vars_from_expr(object, our_locals, cell_vars, interner);
         }
@@ -2724,10 +2724,10 @@ fn collect_cell_vars_from_args(
 /// This is used to find what names a nested function references from enclosing scopes.
 fn collect_referenced_names_from_node(node: &ParseNode, referenced: &mut AHashSet<String>, interner: &InternerBuilder) {
     match node {
-        Node::Expr(expr) => collect_referenced_names_from_expr(expr, referenced, interner),
-        Node::Return(expr) => collect_referenced_names_from_expr(expr, referenced, interner),
-        Node::Raise(Some(expr)) => collect_referenced_names_from_expr(expr, referenced, interner),
-        Node::Raise(None) => {}
+        Node::Expr(expr) | Node::Return(Some(expr)) | Node::Raise(Some(expr)) => {
+            collect_referenced_names_from_expr(expr, referenced, interner);
+        }
+        Node::Return(None) | Node::Raise(None) => {}
         Node::Assert { test, msg } => {
             collect_referenced_names_from_expr(test, referenced, interner);
             if let Some(m) = msg {
@@ -2832,12 +2832,7 @@ fn collect_referenced_names_from_node(node: &ParseNode, referenced: &mut AHashSe
         }
         // Imports create bindings but don't reference names
         Node::Import { .. } | Node::ImportFrom { .. } => {}
-        Node::Pass
-        | Node::ReturnNone
-        | Node::Global { .. }
-        | Node::Nonlocal { .. }
-        | Node::Break { .. }
-        | Node::Continue { .. } => {}
+        Node::Pass | Node::Global { .. } | Node::Nonlocal { .. } | Node::Break { .. } | Node::Continue { .. } => {}
     }
 }
 

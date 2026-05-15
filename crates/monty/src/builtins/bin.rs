@@ -10,7 +10,7 @@ use crate::{
     exception_private::{ExcType, RunResult},
     heap::HeapData,
     resource::ResourceTracker,
-    types::{PyTrait, Str},
+    types::{PyTrait, str::allocate_string_no_interning},
     value::Value,
 };
 
@@ -26,20 +26,15 @@ pub fn builtin_bin(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> Ru
         Value::Int(n) => {
             let abs_digits = format!("{:b}", n.unsigned_abs());
             let prefix = if *n < 0 { "-0b" } else { "0b" };
-            let heap_id = vm
-                .heap
-                .allocate(HeapData::Str(Str::new(format!("{prefix}{abs_digits}"))))?;
-            Ok(Value::Ref(heap_id))
+            Ok(allocate_string_no_interning(format!("{prefix}{abs_digits}"), vm.heap)?)
         }
         Value::Bool(b) => {
             let s = if *b { "0b1" } else { "0b0" };
-            let heap_id = vm.heap.allocate(HeapData::Str(Str::new(s.to_string())))?;
-            Ok(Value::Ref(heap_id))
+            Ok(allocate_string_no_interning(s.to_string(), vm.heap)?)
         }
         Value::Ref(id) if let HeapData::LongInt(li) = vm.heap.get(*id) => {
             let bin_str = format_bigint_bin(li.inner());
-            let heap_id = vm.heap.allocate(HeapData::Str(Str::new(bin_str)))?;
-            Ok(Value::Ref(heap_id))
+            Ok(allocate_string_no_interning(bin_str, vm.heap)?)
         }
         _ => Err(ExcType::type_error_not_integer(value.py_type(vm))),
     }

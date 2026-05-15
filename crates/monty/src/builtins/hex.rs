@@ -10,7 +10,7 @@ use crate::{
     exception_private::{ExcType, RunResult},
     heap::HeapData,
     resource::ResourceTracker,
-    types::{PyTrait, Str},
+    types::{PyTrait, str::allocate_string_no_interning},
     value::Value,
 };
 
@@ -27,18 +27,15 @@ pub fn builtin_hex(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> Ru
         Value::Int(n) => {
             let abs_digits = format!("{:x}", n.unsigned_abs());
             let prefix = if *n < 0 { "-0x" } else { "0x" };
-            let heap_id = heap.allocate(HeapData::Str(Str::new(format!("{prefix}{abs_digits}"))))?;
-            Ok(Value::Ref(heap_id))
+            Ok(allocate_string_no_interning(format!("{prefix}{abs_digits}"), heap)?)
         }
         Value::Bool(b) => {
             let s = if *b { "0x1" } else { "0x0" };
-            let heap_id = heap.allocate(HeapData::Str(Str::new(s.to_string())))?;
-            Ok(Value::Ref(heap_id))
+            Ok(allocate_string_no_interning(s.to_string(), heap)?)
         }
         Value::Ref(id) if let HeapData::LongInt(li) = heap.get(*id) => {
             let hex_str = format_bigint_hex(li.inner());
-            let heap_id = heap.allocate(HeapData::Str(Str::new(hex_str)))?;
-            Ok(Value::Ref(heap_id))
+            Ok(allocate_string_no_interning(hex_str, heap)?)
         }
         _ => Err(ExcType::type_error_not_integer(value.py_type(vm))),
     }

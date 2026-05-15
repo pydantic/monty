@@ -28,12 +28,12 @@ use crate::{
         check_repeat_size,
     },
     types::{
-        Bytes, List, LongInt, Property, PyTrait, Str, Type, allocate_tuple,
+        Bytes, List, LongInt, Property, PyTrait, Type, allocate_tuple,
         bytes::{bytes_repr_fmt, get_byte_at_index},
         long_int::check_bits_str_digits_limit,
         path,
         slice::slice_collect_iterator,
-        str::{allocate_char, get_char_at_index, string_repr_fmt},
+        str::{allocate_char, allocate_string, get_char_at_index, string_repr_fmt},
         timedelta,
     },
 };
@@ -410,16 +410,16 @@ impl PyTrait<'_> for Value {
             }
             (Self::InternString(s1), Self::InternString(s2)) => {
                 let concat = format!("{}{}", interns.get_str(*s1), interns.get_str(*s2));
-                Ok(Some(Self::Ref(vm.heap.allocate(HeapData::Str(concat.into()))?)))
+                Ok(Some(allocate_string(concat, vm.heap)?))
             }
             // for strings we need to account for the fact they might be either interned or not
             (Self::InternString(string_id), Self::Ref(id2)) if let HeapData::Str(s2) = vm.heap.get(*id2) => {
                 let concat = format!("{}{}", interns.get_str(*string_id), s2.as_str());
-                Ok(Some(Self::Ref(vm.heap.allocate(HeapData::Str(concat.into()))?)))
+                Ok(Some(allocate_string(concat, vm.heap)?))
             }
             (Self::Ref(id1), Self::InternString(string_id)) if let HeapData::Str(s1) = vm.heap.get(*id1) => {
                 let concat = format!("{}{}", s1.as_str(), interns.get_str(*string_id));
-                Ok(Some(Self::Ref(vm.heap.allocate(HeapData::Str(concat.into()))?)))
+                Ok(Some(allocate_string(concat, vm.heap)?))
             }
             // same for bytes
             (Self::InternBytes(b1), Self::InternBytes(b2)) => {
@@ -589,13 +589,13 @@ impl PyTrait<'_> for Value {
             }
             (Self::InternString(s1), Self::InternString(s2)) => {
                 let concat = format!("{}{}", interns.get_str(*s1), interns.get_str(*s2));
-                *self = Self::Ref(vm.heap.allocate(HeapData::Str(concat.into()))?);
+                *self = allocate_string(concat, vm.heap)?;
                 Ok(true)
             }
             (Self::InternString(string_id), Self::Ref(id2)) => {
                 let result = if let HeapData::Str(s2) = vm.heap.get(*id2) {
                     let concat = format!("{}{}", interns.get_str(*string_id), s2.as_str());
-                    *self = Self::Ref(vm.heap.allocate(HeapData::Str(concat.into()))?);
+                    *self = allocate_string(concat, vm.heap)?;
                     true
                 } else {
                     false
@@ -664,9 +664,8 @@ impl PyTrait<'_> for Value {
                 HeapData::Str(s) => {
                     let count = i64_to_repeat_count(*n)?;
                     check_repeat_size(s.len(), count, vm.heap.tracker())?;
-                    Ok(Some(Self::Ref(
-                        vm.heap.allocate(HeapData::Str(s.as_str().repeat(count).into()))?,
-                    )))
+                    let repeated = s.as_str().repeat(count);
+                    Ok(Some(allocate_string(repeated, vm.heap)?))
                 }
                 HeapData::Bytes(b) => {
                     let count = i64_to_repeat_count(*n)?;
@@ -725,9 +724,8 @@ impl PyTrait<'_> for Value {
                 match vm.heap.get(seq_id) {
                     HeapData::Str(s) => {
                         check_repeat_size(s.len(), count, vm.heap.tracker())?;
-                        Ok(Some(Self::Ref(
-                            vm.heap.allocate(HeapData::Str(s.as_str().repeat(count).into()))?,
-                        )))
+                        let repeated = s.as_str().repeat(count);
+                        Ok(Some(allocate_string(repeated, vm.heap)?))
                     }
                     HeapData::Bytes(b) => {
                         check_repeat_size(b.len(), count, vm.heap.tracker())?;
@@ -800,7 +798,7 @@ impl PyTrait<'_> for Value {
                 let str_ref = interns.get_str(*s);
                 check_repeat_size(str_ref.len(), count, vm.heap.tracker())?;
                 let result = str_ref.repeat(count);
-                Ok(Some(Self::Ref(vm.heap.allocate(HeapData::Str(result.into()))?)))
+                Ok(Some(allocate_string(result, vm.heap)?))
             }
 
             // Bytes repetition: b"ab" * 3 or 3 * b"ab"
@@ -820,7 +818,7 @@ impl PyTrait<'_> for Value {
                 let str_ref = interns.get_str(*s);
                 check_repeat_size(str_ref.len(), count, vm.heap.tracker())?;
                 let result = str_ref.repeat(count);
-                Ok(Some(Self::Ref(vm.heap.allocate(HeapData::Str(result.into()))?)))
+                Ok(Some(allocate_string(result, vm.heap)?))
             }
 
             // Bytes repetition with LongInt: b"ab" * bigint or bigint * b"ab"
@@ -1343,9 +1341,8 @@ impl PyTrait<'_> for Value {
                     && let HeapData::Slice(slice_obj) = vm.heap.get(*key_id)
                 {
                     let s = interns.get_str(*string_id);
-                    let result_str = slice_collect_iterator(vm, slice_obj, s.chars(), |c| c)?;
-                    let heap_id = vm.heap.allocate(HeapData::Str(Str::from_boxed(result_str)))?;
-                    return Ok(Self::Ref(heap_id));
+                    let result_str: Box<str> = slice_collect_iterator(vm, slice_obj, s.chars(), |c| c)?;
+                    return Ok(allocate_string(result_str, vm.heap)?);
                 }
 
                 // Handle interned string indexing, accepting Int and Bool
@@ -1720,8 +1717,7 @@ impl Value {
                 );
                 if is_dunder_name {
                     let name_str = t.to_string();
-                    let str_id = vm.heap.allocate(HeapData::Str(Str::from(name_str)))?;
-                    return Ok(CallResult::Value(Self::Ref(str_id)));
+                    return Ok(CallResult::Value(allocate_string(name_str, vm.heap)?));
                 }
                 if *t == Type::TimeZone && attr.as_str(vm.interns) == "utc" {
                     return Ok(CallResult::Value(vm.heap.get_timezone_utc()?));
@@ -1748,7 +1744,7 @@ impl Value {
                         EitherStr::Interned(string_id) => Self::InternString(*string_id),
                         // TODO: should avoid needing to clone String via `EitherStr` - maybe
                         // `EitherStr` should store a `HeapRead<Str>`?
-                        EitherStr::Heap(s) => Self::Ref(vm.heap.allocate(HeapData::Str(Str::from(s.to_owned())))?),
+                        EitherStr::Heap(s) => allocate_string(s.as_str(), vm.heap)?,
                     };
                     let old_value = dc.set_attr(name_value, value, vm)?;
                     old_value.drop_with_heap(vm);

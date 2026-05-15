@@ -159,10 +159,22 @@ impl<T: ResourceTracker> VM<'_, T> {
                 // Found a handler! Unwind stack and jump to it.
                 let handler_offset = usize::try_from(entry.handler()).expect("handler offset exceeds usize");
                 let target_stack_depth = frame.stack_base + frame.locals_count as usize + entry.stack_depth() as usize;
+                let target_exc_stack_depth = frame.exception_stack_base + entry.exception_stack_count() as usize;
 
                 // Unwind stack to target depth (drop excess values)
                 while this.stack.len() > target_stack_depth {
                     let value = this.stack.pop().unwrap();
+                    value.drop_with_heap(this);
+                }
+
+                // Drop any `exception_stack` entries left behind by handlers
+                // the propagating exception is bypassing — without this, a
+                // handler whose body terminated via `raise`/`return`/`break`/
+                // `continue` (so its trailer's `ClearException` is dead code)
+                // would leak its exception onto `exception_stack`, where a
+                // later bare `raise` could resurrect it.
+                while this.exception_stack.len() > target_exc_stack_depth {
+                    let value = this.exception_stack.pop().unwrap();
                     value.drop_with_heap(this);
                 }
 
@@ -173,8 +185,9 @@ impl<T: ResourceTracker> VM<'_, T> {
                 // Reclaim exc_value from guard - it's being pushed onto exception_stack
                 let (exc_value, this) = exc_guard.into_parts();
 
-                // Push exception onto the exception_stack for bare raise
-                // This allows nested except handlers to restore outer exception context
+                // Push exception onto the exception_stack for bare raise.
+                // This allows nested except handlers to restore outer
+                // exception context.
                 this.exception_stack.push(exc_value);
 
                 // Jump to handler

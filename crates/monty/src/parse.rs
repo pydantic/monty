@@ -283,10 +283,10 @@ impl<'a> Parser<'a> {
                 "class definitions",
                 self.convert_range(c.range),
             )),
-            Stmt::Return(ast::StmtReturn { value, .. }) => match value {
-                Some(value) => Ok(Node::Return(self.parse_expression(*value)?)),
-                None => Ok(Node::ReturnNone),
-            },
+            Stmt::Return(ast::StmtReturn { value, .. }) => Ok(Node::Return(match value {
+                Some(value) => Some(self.parse_expression(*value)?),
+                None => None,
+            })),
             Stmt::Delete(d) => Err(ParseError::not_implemented(
                 "the 'del' statement",
                 self.convert_range(d.range),

@@ -44,16 +44,12 @@ impl PartialEq for Str {
 }
 
 impl Str {
-    /// Creates a new Str from a Rust String.
+    /// Creates a new Str from anything convertible into a `Box<str>`.
+    ///
+    /// Private — use [`allocate_string`] or [`allocate_string_no_interning`] instead.
     #[must_use]
-    pub fn new(s: String) -> Self {
+    fn new(s: impl Into<Box<str>>) -> Self {
         Self(s.into(), Cell::new(None))
-    }
-
-    /// Creates a new Str from a Rust Box<str>.
-    #[must_use]
-    pub fn from_boxed(s: Box<str>) -> Self {
-        Self(s, Cell::new(None))
     }
 
     /// Returns a reference to the inner string.
@@ -73,7 +69,7 @@ impl Str {
             Some(v) => {
                 defer_drop!(v, vm);
                 let s = v.py_str(vm)?.into_owned();
-                allocate_string(s, vm.heap)
+                Ok(allocate_string(s, vm.heap)?)
             }
         }
     }
@@ -83,26 +79,7 @@ impl Str {
     /// Returns a new string containing the selected characters (Unicode-aware).
     fn getitem_slice(&self, vm: &VM<'_, impl ResourceTracker>, slice: &super::Slice) -> RunResult<Value> {
         let result_str: Box<str> = slice_collect_iterator(vm, slice, self.0.chars(), |c| c)?;
-        let heap_id = vm.heap.allocate(HeapData::Str(Self::from_boxed(result_str)))?;
-        Ok(Value::Ref(heap_id))
-    }
-}
-
-impl From<String> for Str {
-    fn from(s: String) -> Self {
-        Self::new(s)
-    }
-}
-
-impl From<&str> for Str {
-    fn from(s: &str) -> Self {
-        Self::from_boxed(s.into())
-    }
-}
-
-impl From<Str> for String {
-    fn from(value: Str) -> Self {
-        value.0.into_string()
+        Ok(allocate_string(result_str, vm.heap)?)
     }
 }
 
@@ -114,20 +91,44 @@ impl From<Str> for String {
 /// - Other strings are allocated on the heap
 ///
 /// This avoids heap allocation for common cases like results from `strip()`,
-/// `split()`, string iteration, etc.
-pub fn allocate_string(s: String, heap: &Heap<impl ResourceTracker>) -> RunResult<Value> {
-    match s.len() {
+/// `split()`, string iteration, etc. Prefer this over manual `Str` construction
+/// so callsites consistently benefit from interning. When the caller can prove
+/// the string is longer than one byte, [`allocate_string_no_interning`] avoids
+/// the length branch.
+///
+/// The dual bound `AsRef<str> + Into<Box<str>>` lets the function peek the
+/// length via the borrow before committing to a conversion. Callers with an
+/// owned `String`/`Box<str>` move the value in (consumed only on the heap
+/// path), and borrowed `&str` callers avoid an upfront `to_owned()` —
+/// allocation happens only when the string actually needs heap storage.
+///
+/// Returns `Result<_, ResourceError>` so the function composes with
+/// `RunResult` and other error types that implement `From<ResourceError>`.
+pub fn allocate_string(
+    s: impl AsRef<str> + Into<Box<str>>,
+    heap: &Heap<impl ResourceTracker>,
+) -> Result<Value, ResourceError> {
+    let bytes = s.as_ref().as_bytes();
+    match bytes.len() {
         0 => Ok(Value::InternString(StaticStrings::EmptyString.into())),
-        1 => {
-            // Single byte means single ASCII character
-            let byte = s.as_bytes()[0];
-            Ok(Value::InternString(StringId::from_ascii(byte)))
-        }
-        _ => {
-            let heap_id = heap.allocate(HeapData::Str(Str::new(s)))?;
-            Ok(Value::Ref(heap_id))
-        }
+        1 => Ok(Value::InternString(StringId::from_ascii(bytes[0]))),
+        _ => allocate_string_no_interning(s, heap),
     }
+}
+
+/// Allocates a string directly on the heap, skipping the intern check.
+///
+/// Use this only when the caller can guarantee the string is longer than one
+/// byte (e.g. always contains a fixed prefix like `"0x"`, `"0o"`, or a
+/// formatted date). For inputs of unknown length, use [`allocate_string`].
+///
+/// Accepts `impl Into<Box<str>>` for the same reasons as [`allocate_string`].
+pub fn allocate_string_no_interning(
+    s: impl Into<Box<str>>,
+    heap: &Heap<impl ResourceTracker>,
+) -> Result<Value, ResourceError> {
+    let heap_id = heap.allocate(HeapData::Str(Str::new(s)))?;
+    Ok(Value::Ref(heap_id))
 }
 
 /// Allocates a single character as a string value.
@@ -241,8 +242,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Str> {
         let self_str = self.get(vm.heap).0.clone();
         let other_str = other.get(vm.heap).0.clone();
         let result = format!("{self_str}{other_str}");
-        let id = vm.heap.allocate(HeapData::Str(result.into()))?;
-        Ok(Some(Value::Ref(id)))
+        Ok(Some(allocate_string(result, vm.heap)?))
     }
 
     fn py_call_attr(
@@ -484,7 +484,7 @@ fn str_join<'h>(
     }
 
     // Allocate result (uses interned empty string if result is empty)
-    allocate_string(result, vm.heap)
+    Ok(allocate_string(result, vm.heap)?)
 }
 
 /// Writes a Python repr() string for a given string slice to a formatter.
@@ -542,12 +542,12 @@ impl fmt::Display for StringRepr<'_> {
 
 /// Implements Python's `str.lower()` method.
 fn str_lower(s: &str, vm: &VM<'_, impl ResourceTracker>) -> RunResult<Value> {
-    allocate_string(s.to_lowercase(), vm.heap)
+    Ok(allocate_string(s.to_lowercase(), vm.heap)?)
 }
 
 /// Implements Python's `str.upper()` method.
 fn str_upper(s: &str, vm: &VM<'_, impl ResourceTracker>) -> RunResult<Value> {
-    allocate_string(s.to_uppercase(), vm.heap)
+    Ok(allocate_string(s.to_uppercase(), vm.heap)?)
 }
 
 /// Implements Python's `str.capitalize()` method.
@@ -565,7 +565,7 @@ fn str_capitalize(s: &str, vm: &VM<'_, impl ResourceTracker>) -> RunResult<Value
             result
         }
     };
-    allocate_string(result, vm.heap)
+    Ok(allocate_string(result, vm.heap)?)
 }
 
 /// Implements Python's `str.title()` method.
@@ -585,7 +585,7 @@ fn str_title(s: &str, vm: &VM<'_, impl ResourceTracker>) -> RunResult<Value> {
         prev_is_cased = c.is_alphabetic();
     }
 
-    allocate_string(result, vm.heap)
+    Ok(allocate_string(result, vm.heap)?)
 }
 
 /// Implements Python's `str.swapcase()` method.
@@ -604,7 +604,7 @@ fn str_swapcase(s: &str, vm: &VM<'_, impl ResourceTracker>) -> RunResult<Value> 
         }
     }
 
-    allocate_string(result, vm.heap)
+    Ok(allocate_string(result, vm.heap)?)
 }
 
 /// Implements Python's `str.casefold()` method.
@@ -613,7 +613,7 @@ fn str_swapcase(s: &str, vm: &VM<'_, impl ResourceTracker>) -> RunResult<Value> 
 /// but more aggressive because it is intended for caseless string matching.
 fn str_casefold(s: &str, vm: &VM<'_, impl ResourceTracker>) -> RunResult<Value> {
     // Rust's to_lowercase() is equivalent to Unicode casefolding for most purposes
-    allocate_string(s.to_lowercase(), vm.heap)
+    Ok(allocate_string(s.to_lowercase(), vm.heap)?)
 }
 
 // =============================================================================
@@ -1184,7 +1184,7 @@ fn str_strip<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h, impl Re
         Some(c) => s.trim_matches(|ch| c.contains(ch)).to_owned(),
         None => s.trim().to_owned(),
     };
-    allocate_string(result, vm.heap)
+    Ok(allocate_string(result, vm.heap)?)
 }
 
 /// Implements Python's `str.lstrip(chars?)` method.
@@ -1197,7 +1197,7 @@ fn str_lstrip<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h, impl R
         Some(c) => s.trim_start_matches(|ch| c.contains(ch)).to_owned(),
         None => s.trim_start().to_owned(),
     };
-    allocate_string(result, vm.heap)
+    Ok(allocate_string(result, vm.heap)?)
 }
 
 /// Implements Python's `str.rstrip(chars?)` method.
@@ -1210,7 +1210,7 @@ fn str_rstrip<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h, impl R
         Some(c) => s.trim_end_matches(|ch| c.contains(ch)).to_owned(),
         None => s.trim_end().to_owned(),
     };
-    allocate_string(result, vm.heap)
+    Ok(allocate_string(result, vm.heap)?)
 }
 
 /// Parses the optional chars argument for strip methods.
@@ -1244,7 +1244,7 @@ fn str_removeprefix<'h>(
 
     let s = s.get(vm.heap);
     let result = s.strip_prefix(&prefix).unwrap_or(s).to_owned();
-    allocate_string(result, vm.heap)
+    Ok(allocate_string(result, vm.heap)?)
 }
 
 /// Implements Python's `str.removesuffix(suffix)` method.
@@ -1262,7 +1262,7 @@ fn str_removesuffix<'h>(
 
     let s = s.get(vm.heap);
     let result = s.strip_suffix(&suffix).unwrap_or(s).to_owned();
-    allocate_string(result, vm.heap)
+    Ok(allocate_string(result, vm.heap)?)
 }
 
 // =============================================================================
@@ -1306,7 +1306,7 @@ fn str_split<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h, impl Re
     let mut list_items = Vec::with_capacity(parts.len());
     for part in parts {
         vm.heap.check_time()?;
-        list_items.push(allocate_string(part.to_owned(), vm.heap)?);
+        list_items.push(allocate_string(part, vm.heap)?);
     }
 
     let list = super::List::new(list_items);
@@ -1354,7 +1354,7 @@ fn str_rsplit<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h, impl R
     let mut list_items = Vec::with_capacity(parts.len());
     for part in parts {
         vm.heap.check_time()?;
-        list_items.push(allocate_string(part.to_owned(), vm.heap)?);
+        list_items.push(allocate_string(part, vm.heap)?);
     }
 
     let list = super::List::new(list_items);
@@ -1545,7 +1545,7 @@ fn str_splitlines<'h>(
 
         let line = if keepends { &s[start..end] } else { &s[start..line_end] };
 
-        lines.push(allocate_string(line.to_owned(), vm.heap)?);
+        lines.push(allocate_string(line, vm.heap)?);
 
         start = end;
     }
@@ -1603,9 +1603,9 @@ fn str_partition<'h>(
         None => (s, "", ""),
     };
 
-    let before_val = allocate_string(before.to_owned(), vm.heap)?;
-    let sep_val = allocate_string(sep_found.to_owned(), vm.heap)?;
-    let after_val = allocate_string(after.to_owned(), vm.heap)?;
+    let before_val = allocate_string(before, vm.heap)?;
+    let sep_val = allocate_string(sep_found, vm.heap)?;
+    let after_val = allocate_string(after, vm.heap)?;
 
     Ok(super::allocate_tuple(
         smallvec![before_val, sep_val, after_val],
@@ -1636,9 +1636,9 @@ fn str_rpartition<'h>(
         None => ("", "", s),
     };
 
-    let before_val = allocate_string(before.to_owned(), vm.heap)?;
-    let sep_val = allocate_string(sep_found.to_owned(), vm.heap)?;
-    let after_val = allocate_string(after.to_owned(), vm.heap)?;
+    let before_val = allocate_string(before, vm.heap)?;
+    let sep_val = allocate_string(sep_found, vm.heap)?;
+    let after_val = allocate_string(after, vm.heap)?;
 
     Ok(super::allocate_tuple(
         smallvec![before_val, sep_val, after_val],
@@ -1668,7 +1668,7 @@ fn str_replace<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h, impl 
         s.replacen(&old, &new, n)
     };
 
-    allocate_string(result, vm.heap)
+    Ok(allocate_string(result, vm.heap)?)
 }
 
 /// Parses arguments for the replace method.
@@ -1767,7 +1767,7 @@ fn str_center<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h, impl R
         result
     };
 
-    allocate_string(result, vm.heap)
+    Ok(allocate_string(result, vm.heap)?)
 }
 
 /// Implements Python's `str.ljust(width, fillchar?)` method.
@@ -1791,7 +1791,7 @@ fn str_ljust<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h, impl Re
         result
     };
 
-    allocate_string(result, vm.heap)
+    Ok(allocate_string(result, vm.heap)?)
 }
 
 /// Implements Python's `str.rjust(width, fillchar?)` method.
@@ -1815,7 +1815,7 @@ fn str_rjust<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h, impl Re
         result
     };
 
-    allocate_string(result, vm.heap)
+    Ok(allocate_string(result, vm.heap)?)
 }
 
 /// Parses arguments for justify methods (center, ljust, rjust).
@@ -1900,7 +1900,7 @@ fn str_zfill<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h, impl Re
         result
     };
 
-    allocate_string(result, vm.heap)
+    Ok(allocate_string(result, vm.heap)?)
 }
 
 /// Implements Python's `str.expandtabs(tabsize=8)` method.
@@ -1949,7 +1949,7 @@ fn str_expandtabs<'h>(
         }
     }
 
-    allocate_string(result, vm.heap)
+    Ok(allocate_string(result, vm.heap)?)
 }
 
 /// Implements Python's `str.encode(encoding='utf-8', errors='strict')` method.

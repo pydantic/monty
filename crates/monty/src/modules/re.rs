@@ -36,7 +36,7 @@ use crate::{
     intern::StaticStrings,
     modules::ModuleFunctions,
     resource::{ResourceError, ResourceTracker},
-    types::{Module, PyTrait, RePattern, Str, Type, re_pattern::value_to_str},
+    types::{Module, PyTrait, RePattern, Type, re_pattern::value_to_str, str::allocate_string},
     value::Value,
 };
 
@@ -331,11 +331,14 @@ fn call_sub(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult
         Some(Value::Int(n)) if n >= 0 => n as usize,
         Some(Value::Bool(b)) => usize::from(b),
         Some(Value::Int(_)) => {
-            // Negative count — return original string unchanged
+            // Negative count — re.sub returns the input string unchanged, so
+            // just typecheck and bump the refcount; no need to re-allocate.
             let _flags = extract_flags(flags_val, vm)?;
-            let text = value_to_str(string_val, vm)?.into_owned();
-            let s = Str::new(text);
-            return Ok(Value::Ref(vm.heap.allocate(HeapData::Str(s))?));
+            if !string_val.is_str(vm.heap) {
+                let t = string_val.py_type(vm);
+                return Err(ExcType::type_error(format!("expected string, not {t}")));
+            }
+            return Ok(string_val.clone_with_heap(vm.heap));
         }
         Some(other) => {
             let t = other.py_type(vm);
@@ -470,8 +473,7 @@ fn call_escape(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunRes
         result.push(c);
     }
 
-    let s = Str::new(result);
-    Ok(Value::Ref(vm.heap.allocate(HeapData::Str(s))?))
+    Ok(allocate_string(result, vm.heap)?)
 }
 
 /// Returns whether a character should be escaped by `re.escape()`.

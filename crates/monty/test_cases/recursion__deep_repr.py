@@ -1,12 +1,26 @@
-# Test that deeply nested lists don't crash during repr()
-# Monty truncates with "..." at depth limit, CPython handles in C code
+# max-recursion-depth=10
+
+# Test that deeply nested lists don't crash during repr().
+# The `max-recursion-depth` directive caps Monty's limit at 10, so any input
+# deeper than that exercises the truncation path. CPython has its own (much
+# higher) default limit and produces a full repr — the assertion accepts
+# both shapes.
 x = []
-for _ in range(200):
+for _ in range(20):
     x = [x]
 
-# Should not crash - either returns full repr or truncated with "..."
 result = repr(x)
 assert isinstance(result, str), 'repr should return a string'
 assert result.startswith('['), 'repr should start with ['
-# Either full repr or truncated
 assert result.endswith(']') or '...' in result, 'repr should end with ] or contain ...'
+
+# Deeply nested one-element tuples must hit the same depth guard, otherwise
+# `repr()` recurses unbounded and overflows the host Rust stack.
+t = (0,)
+for _ in range(20):
+    t = (t,)
+
+result2 = repr(t)
+assert isinstance(result2, str), 'tuple repr should return a string'
+assert result2.startswith('('), 'tuple repr should start with ('
+assert result2.endswith(')') or '...' in result2, 'tuple repr should end with ) or contain ...'

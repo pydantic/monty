@@ -21,7 +21,10 @@ use crate::{
     heap::{Heap, HeapData, HeapId, HeapItem, HeapRead},
     intern::StaticStrings,
     resource::{ResourceError, ResourceTracker},
-    types::{Dict, PyTrait, Str, Type, allocate_tuple, str::string_repr_fmt},
+    types::{
+        Dict, PyTrait, Type, allocate_tuple,
+        str::{allocate_string, string_repr_fmt},
+    },
     value::{EitherStr, Value},
 };
 
@@ -133,10 +136,7 @@ impl ReMatch {
     /// Raises `IndexError` for invalid group numbers.
     fn get_group(&self, n: i64, heap: &Heap<impl ResourceTracker>) -> RunResult<Value> {
         match n.cmp(&0) {
-            Ordering::Equal => {
-                let s = Str::new(self.full_match.clone());
-                Ok(Value::Ref(heap.allocate(HeapData::Str(s))?))
-            }
+            Ordering::Equal => Ok(allocate_string(self.full_match.as_str(), heap)?),
             Ordering::Less => Err(ExcType::re_match_group_index_error()),
             Ordering::Greater => {
                 let idx = group_index(n);
@@ -144,10 +144,7 @@ impl ReMatch {
                     return Err(ExcType::re_match_group_index_error());
                 }
                 match &self.groups[idx] {
-                    Some(s) => {
-                        let s = Str::new(s.clone());
-                        Ok(Value::Ref(heap.allocate(HeapData::Str(s))?))
-                    }
+                    Some(s) => Ok(allocate_string(s.as_str(), heap)?),
                     None => Ok(Value::None),
                 }
             }
@@ -178,15 +175,11 @@ impl<'h> HeapRead<'h, ReMatch> {
         let this = self.get(vm.heap);
         let mut pairs = Vec::with_capacity(this.named_groups.len());
         for (name, idx) in &this.named_groups {
-            let key_str = Str::new(name.clone());
-            let key = Value::Ref(vm.heap.allocate(HeapData::Str(key_str))?);
+            let key = allocate_string(name.as_str(), vm.heap)?;
             // idx is 1-based, groups vec is 0-based (index 0 = group 1)
             let value = if *idx > 0 && (*idx - 1) < this.groups.len() {
                 match &this.groups[*idx - 1] {
-                    Some(s) => {
-                        let s = Str::new(s.clone());
-                        Value::Ref(vm.heap.allocate(HeapData::Str(s))?)
-                    }
+                    Some(s) => allocate_string(s.as_str(), vm.heap)?,
                     None => default.clone_with_heap(vm),
                 }
             } else {
@@ -207,10 +200,7 @@ impl ReMatch {
         let mut elements = smallvec![];
         for group in &self.groups {
             match group {
-                Some(s) => {
-                    let s = Str::new(s.clone());
-                    elements.push(Value::Ref(heap.allocate(HeapData::Str(s))?));
-                }
+                Some(s) => elements.push(allocate_string(s.as_str(), heap)?),
                 None => elements.push(Value::None),
             }
         }
@@ -319,8 +309,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, ReMatch> {
     fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<CallResult>> {
         match attr.static_string() {
             Some(StaticStrings::StringAttr) => {
-                let s = Str::new(self.get(vm.heap).input_string.clone());
-                let v = Value::Ref(vm.heap.allocate(HeapData::Str(s))?);
+                let v = allocate_string(self.get(vm.heap).input_string.as_str(), vm.heap)?;
                 Ok(Some(CallResult::Value(v)))
             }
             _ => Err(ExcType::attribute_error(Type::ReMatch, attr.as_str(vm.interns))),
