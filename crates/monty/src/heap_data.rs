@@ -374,15 +374,15 @@ impl HeapItem for GatherFuture {
                 // estimate dynamically-allocated content tied to user code.
                 let pending_tasks_size = awaited
                     .pending_tasks
-                    .iter()
-                    .map(|(_, slots)| {
+                    .values()
+                    .map(|slots| {
                         mem::size_of::<TaskId>() + mem::size_of::<Vec<usize>>() + slots.len() * mem::size_of::<usize>()
                     })
                     .sum::<usize>();
                 let pending_calls_size = awaited
                     .pending_calls
-                    .iter()
-                    .map(|(_, slots)| {
+                    .values()
+                    .map(|slots| {
                         mem::size_of::<CallId>() + mem::size_of::<Vec<usize>>() + slots.len() * mem::size_of::<usize>()
                     })
                     .sum::<usize>();

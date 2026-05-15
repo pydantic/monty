@@ -482,9 +482,23 @@ impl Scheduler {
             return;
         };
 
+        // If we're cancelling the current task, clear `current_task` so callers
+        // don't try to look up a task that's about to be dropped (e.g.
+        // `resume_with_resolved_futures` after `fail_for_call` tore down the
+        // gather containing the previously-current task).
+        if self.current_task == Some(task_id) {
+            self.current_task = None;
+        }
+
         if !task.is_finished() {
             // Remove from ready queue if present (do this before getting mutable task reference)
             self.ready_queue.retain(|&id| id != task_id);
+
+            // Drop any external calls this task was the creator of. The host
+            // may still respond to them later; with the entry gone,
+            // `take_pending_call` returns `None` and `resolve_future` drops
+            // the resolved value instead of trying to wake a removed task.
+            self.pending_calls.retain(|_, data| data.creator_task != task_id);
 
             // If blocked on a nested gather, recursively cancel inner tasks first.
             // Only an `Awaited` gather has spawned tasks — a `Pending` gather
@@ -508,14 +522,21 @@ impl Scheduler {
     }
 
     /// Fails the task blocked on a specific CallId with an error.
+    ///
+    /// For a gather-routed call, tears the gather down eagerly via
+    /// [`HeapRead::fail`]. For an "indirect" failure (the call was made by a
+    /// task that's a child of a gather), just sets the creator task's state
+    /// to `Failed`; the failure is then surfaced when a sibling completes
+    /// and `HeapRead::resolve_child`'s completion scan finds the Failed
+    /// task. (The two-phase pattern keeps gather teardown anchored in the
+    /// run-loop side, where exception propagation through the waiter's
+    /// frame is straightforward.)
     pub fn fail_for_call(&mut self, call_id: CallId, error: RunError, heap: &mut HeapReader<'_, impl ResourceTracker>) {
         let Some(pending) = self.pending_calls.remove(&call_id) else {
             // Typically means the call was already resolved or cancelled; no task to fail.
             return;
         };
         if let Some(gather_id) = pending.gather {
-            // Gather-routed failure: tear the whole gather down via `fail`,
-            // then fail its waiter with the original error.
             let HeapReadOutput::GatherFuture(mut gather) = heap.read(gather_id) else {
                 panic!("gather_id doesn't point to a GatherFuture")
             };
