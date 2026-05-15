@@ -100,6 +100,58 @@ fn invalid_fstring_format_spec_str_returns_syntax_error() {
     assert_eq!(get_exc_type(result), ExcType::SyntaxError);
 }
 
+/// `#` (alternate form) is valid in Python but unsupported in Monty; the
+/// parser rejects it with a message that names the flag so the failure
+/// can't be confused with a malformed-spec error.
+#[test]
+fn format_spec_alternate_form_returns_unsupported_flag_error() {
+    let result = MontyRun::new("f'{255:#x}'".to_owned(), "test.py", vec![]);
+    let exc = result.expect_err("expected parse error");
+    assert_eq!(exc.exc_type(), ExcType::SyntaxError);
+    assert!(
+        exc.message()
+            .is_some_and(|m| m.contains("'#'") && m.contains("alternate form")),
+        "message should mention '#' and alternate form, got: {exc}"
+    );
+}
+
+#[test]
+fn format_spec_comma_grouping_returns_unsupported_flag_error() {
+    let result = MontyRun::new("f'{1000:,d}'".to_owned(), "test.py", vec![]);
+    let exc = result.expect_err("expected parse error");
+    assert_eq!(exc.exc_type(), ExcType::SyntaxError);
+    assert!(
+        exc.message()
+            .is_some_and(|m| m.contains("','") && m.contains("thousands separator")),
+        "message should mention ',' and thousands separator, got: {exc}"
+    );
+}
+
+#[test]
+fn format_spec_underscore_grouping_returns_unsupported_flag_error() {
+    let result = MontyRun::new("f'{1000:_d}'".to_owned(), "test.py", vec![]);
+    let exc = result.expect_err("expected parse error");
+    assert_eq!(exc.exc_type(), ExcType::SyntaxError);
+    assert!(
+        exc.message()
+            .is_some_and(|m| m.contains("'_'") && m.contains("thousands separator")),
+        "message should mention '_' and thousands separator, got: {exc}"
+    );
+}
+
+#[test]
+fn format_spec_width_overflow_returns_syntax_error() {
+    // 22 nines overflows usize; verify the parser surfaces this rather than
+    // silently clamping to 0.
+    let result = MontyRun::new("f'{42:9999999999999999999999d}'".to_owned(), "test.py", vec![]);
+    let exc = result.expect_err("expected parse error");
+    assert_eq!(exc.exc_type(), ExcType::SyntaxError);
+    assert!(
+        exc.message().is_some_and(|m| m.contains("overflows usize")),
+        "message should mention overflow, got: {exc}"
+    );
+}
+
 #[test]
 fn syntax_error_display_format() {
     let result = MontyRun::new("f'{1:10xyz}'".to_owned(), "test.py", vec![]);

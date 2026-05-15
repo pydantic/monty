@@ -220,6 +220,12 @@ assert len(f'{42:65536d}') == 65536, 'static width 65536'
 assert len(f'{42:1048576d}') == 1048576, 'static width past compact encoding'
 assert len(f'{1.5:.2097151f}') == 2097153, 'static precision past compact encoding'
 
+# Fill characters above Latin-1 (codepoint > 0xFF) don't fit the 8-bit
+# fill slot of the compact encoding either — they must also round-trip
+# through the dynamic-spec fallback rather than corrupting the encoded form.
+assert f'{"hi":日^10}' == '日日日日hi日日日日', 'non-latin-1 fill char (CJK)'
+assert f'{42:🐍>5d}' == '🐍🐍🐍42', 'non-latin-1 fill char (emoji)'
+
 # === Integer with float format types ===
 # Python allows formatting integers with float types
 assert f'{42:f}' == '42.000000', 'int as :f'

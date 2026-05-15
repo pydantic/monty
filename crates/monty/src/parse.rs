@@ -19,7 +19,7 @@ use crate::{
         AssignTarget, Callable, CmpOperator, Comprehension, DictItem, Expr, ExprLoc, Identifier, ImportName, Literal,
         Node, Operator, SequenceItem, UnpackTarget,
     },
-    fstring::{ConversionFlag, FStringPart, FormatSpec, ParsedFormatSpec, encode_format_spec},
+    fstring::{ConversionFlag, FStringPart, FormatSpec, ParseFormatSpecError, ParsedFormatSpec, encode_format_spec},
     intern::{InternerBuilder, StringId},
     types::long_int::INT_MAX_STR_DIGITS,
     value::EitherStr,
@@ -1566,11 +1566,8 @@ impl<'a> Parser<'a> {
                     InterpolatedStringElement::Interpolation(_) => None,
                 })
                 .collect();
-            let parsed: ParsedFormatSpec = static_spec.parse().map_err(|spec_str| {
-                ParseError::syntax(
-                    format!("Invalid format specifier '{spec_str}'"),
-                    self.convert_range(spec.range),
-                )
+            let parsed: ParsedFormatSpec = static_spec.parse().map_err(|err: ParseFormatSpecError| {
+                ParseError::syntax(err.to_string(), self.convert_range(spec.range))
             })?;
             if let Some(encoded) = encode_format_spec(&parsed) {
                 Ok(FormatSpec::Static(encoded))

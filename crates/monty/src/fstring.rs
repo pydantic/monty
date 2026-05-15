@@ -6,7 +6,7 @@
 //! F-strings can contain literal text and interpolated expressions with optional
 //! conversion flags (`!s`, `!r`, `!a`) and format specifications.
 
-use std::{fmt, fmt::Write, iter, str::FromStr};
+use std::{fmt, fmt::Write, iter, iter::Peekable, str::FromStr};
 
 use crate::{
     bytecode::VM,
@@ -96,6 +96,152 @@ pub enum FormatSpec {
     Dynamic(Vec<FStringPart>),
 }
 
+/// Alignment specifier for the format mini-language.
+///
+/// `Align::SignAware` (`=`) is only valid on numeric formats; the others
+/// apply to any value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum Align {
+    /// `<` — left-align the value, pad on the right.
+    Left,
+    /// `>` — right-align the value, pad on the left.
+    Right,
+    /// `^` — center the value, pad on both sides.
+    Center,
+    /// `=` — sign-aware: pad between sign and digits (numbers only).
+    SignAware,
+}
+
+/// Sign handling specifier for numeric formats.
+///
+/// `Sign::Minus` is Python's default (sign shown only for negative values),
+/// and is also what an absent specifier means at runtime — so the parser
+/// stores it as `Option<Sign>::None` to keep "no spec given" distinct from
+/// the explicit `-` form for round-tripping.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum Sign {
+    /// `+` — always emit a sign (`+` for positives, `-` for negatives).
+    Plus,
+    /// `-` — sign shown only for negatives (Python default).
+    Minus,
+    /// ` ` (space) — space for positives, `-` for negatives.
+    Space,
+}
+
+/// Type character for the format mini-language.
+///
+/// Selects between formatting families (integer base, float notation,
+/// string). Values that don't appear here (e.g. `i`, `r`) are rejected at
+/// parse time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum TypeChar {
+    /// `b` — binary integer.
+    B,
+    /// `c` — integer codepoint as a single character.
+    C,
+    /// `d` — decimal integer.
+    D,
+    /// `e` — lowercase exponential float.
+    E,
+    /// `E` — uppercase exponential float.
+    EUpper,
+    /// `f` — fixed-point float.
+    F,
+    /// `F` — fixed-point float (uppercase NaN/inf).
+    FUpper,
+    /// `g` — general-format float (chooses between fixed and exponential).
+    G,
+    /// `G` — general-format float (uppercase exponent).
+    GUpper,
+    /// `n` — locale-aware integer (currently unimplemented; rejected at runtime).
+    N,
+    /// `o` — octal integer.
+    O,
+    /// `s` — string.
+    S,
+    /// `x` — lowercase hex integer.
+    X,
+    /// `X` — uppercase hex integer.
+    XUpper,
+    /// `%` — percentage float (multiplies by 100 and appends `%`).
+    Percent,
+}
+
+impl Align {
+    /// Parses a format-spec alignment character into the corresponding variant.
+    pub fn from_char(c: char) -> Option<Self> {
+        match c {
+            '<' => Some(Self::Left),
+            '>' => Some(Self::Right),
+            '^' => Some(Self::Center),
+            '=' => Some(Self::SignAware),
+            _ => None,
+        }
+    }
+}
+
+impl Sign {
+    /// Parses a format-spec sign character into the corresponding variant.
+    pub fn from_char(c: char) -> Option<Self> {
+        match c {
+            '+' => Some(Self::Plus),
+            '-' => Some(Self::Minus),
+            ' ' => Some(Self::Space),
+            _ => None,
+        }
+    }
+}
+
+impl TypeChar {
+    /// Parses a format-spec type character into the corresponding variant.
+    ///
+    /// Returns `None` for characters that aren't part of the format
+    /// mini-language type set — used by [`ParsedFormatSpec::from_str`] to
+    /// decide whether the trailing character is a type spec or an error.
+    pub fn from_char(c: char) -> Option<Self> {
+        match c {
+            'b' => Some(Self::B),
+            'c' => Some(Self::C),
+            'd' => Some(Self::D),
+            'e' => Some(Self::E),
+            'E' => Some(Self::EUpper),
+            'f' => Some(Self::F),
+            'F' => Some(Self::FUpper),
+            'g' => Some(Self::G),
+            'G' => Some(Self::GUpper),
+            'n' => Some(Self::N),
+            'o' => Some(Self::O),
+            's' => Some(Self::S),
+            'x' => Some(Self::X),
+            'X' => Some(Self::XUpper),
+            '%' => Some(Self::Percent),
+            _ => None,
+        }
+    }
+
+    /// Renders the type character back into its source form. Used for
+    /// error messages like "Unknown format code 'X' for object of type 'T'".
+    pub fn as_char(self) -> char {
+        match self {
+            Self::B => 'b',
+            Self::C => 'c',
+            Self::D => 'd',
+            Self::E => 'e',
+            Self::EUpper => 'E',
+            Self::F => 'f',
+            Self::FUpper => 'F',
+            Self::G => 'g',
+            Self::GUpper => 'G',
+            Self::N => 'n',
+            Self::O => 'o',
+            Self::S => 's',
+            Self::X => 'x',
+            Self::XUpper => 'X',
+            Self::Percent => '%',
+        }
+    }
+}
+
 /// Parsed format specification following Python's format mini-language.
 ///
 /// Format: `[[fill]align][sign][z][#][0][width][grouping_option][.precision][type]`
@@ -104,29 +250,105 @@ pub enum FormatSpec {
 /// string parsing. For dynamic format specs, parsing happens after evaluation.
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct ParsedFormatSpec {
-    /// Fill character for padding (default: space)
+    /// Fill character for padding (default: space).
     pub fill: char,
-    /// Alignment: '<' (left), '>' (right), '^' (center), '=' (sign-aware)
-    pub align: Option<char>,
-    /// Sign handling: '+' (always), '-' (negative only), ' ' (space for positive)
-    pub sign: Option<char>,
-    /// Whether to zero-pad numbers
+    /// Alignment, or `None` if not specified.
+    pub align: Option<Align>,
+    /// Sign handling, or `None` if not specified (treated as [`Sign::Minus`]).
+    pub sign: Option<Sign>,
+    /// Whether to zero-pad numbers.
     pub zero_pad: bool,
-    /// Minimum field width
+    /// Minimum field width.
     pub width: usize,
-    /// Precision for floats or max width for strings
+    /// Precision for floats or max width for strings.
     pub precision: Option<usize>,
-    /// Type character: 's', 'd', 'f', 'e', 'g', etc.
-    pub type_char: Option<char>,
+    /// Type character, or `None` if not specified (defaults are type-dependent).
+    pub type_char: Option<TypeChar>,
+}
+
+/// Reason a [`ParsedFormatSpec`] couldn't be built from its source text.
+///
+/// Lets callers distinguish CPython-style invalid specs ([`Self::Malformed`])
+/// from specs that are syntactically valid in Python but use features Monty
+/// hasn't implemented yet ([`Self::UnsupportedFlag`]), and from specs whose
+/// width or precision exceeds [`usize`] ([`Self::NumberOverflow`]). The
+/// `Display` impl on [`ParseFormatSpecError`] turns each variant into a
+/// human-readable message; runtime callers append `" for object of type
+/// 'T'"` to mirror CPython's error style.
+#[derive(Debug, Clone)]
+pub enum ParseFormatSpecReason {
+    /// Spec doesn't match the format mini-language grammar — what CPython
+    /// itself raises `ValueError: Invalid format specifier` for.
+    Malformed,
+    /// Spec uses a flag character that's part of Python's mini-language
+    /// (`#` alternate form, `,` or `_` thousands separator) but isn't yet
+    /// implemented. Carries the flag char so callers can report it.
+    UnsupportedFlag(char),
+    /// A width or precision decimal integer overflows [`usize`] (e.g.
+    /// 22 nines in a row). Without this we'd silently truncate to 0 — see
+    /// [`consume_decimal_usize`].
+    NumberOverflow,
+}
+
+/// Error returned by [`ParsedFormatSpec::from_str`].
+///
+/// Holds the original spec text plus a [`ParseFormatSpecReason`] so the
+/// runtime and compile-time error wrappers can choose between
+/// CPython-matching messages and Monty-specific ones.
+#[derive(Debug, Clone)]
+pub struct ParseFormatSpecError {
+    /// The full spec text that failed to parse.
+    pub spec: String,
+    /// Why parsing failed.
+    pub reason: ParseFormatSpecReason,
+}
+
+impl ParseFormatSpecError {
+    fn new(spec: &str, reason: ParseFormatSpecReason) -> Self {
+        Self {
+            spec: spec.to_owned(),
+            reason,
+        }
+    }
+}
+
+impl fmt::Display for ParseFormatSpecError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "Invalid format specifier '{}'", self.spec)?;
+        match &self.reason {
+            ParseFormatSpecReason::Malformed => Ok(()),
+            ParseFormatSpecReason::UnsupportedFlag(c) => write!(
+                f,
+                ": '{c}' ({}) is not yet supported in Monty",
+                unsupported_flag_name(*c),
+            ),
+            ParseFormatSpecReason::NumberOverflow => {
+                write!(f, ": width or precision overflows usize")
+            }
+        }
+    }
+}
+
+/// Maps an unsupported flag character to a short human-readable name for
+/// error messages — keeps the [`fmt::Display`] impl on
+/// [`ParseFormatSpecError`] terse and lets us extend the list in one place.
+fn unsupported_flag_name(c: char) -> &'static str {
+    match c {
+        '#' => "alternate form",
+        ',' => "comma thousands separator",
+        '_' => "underscore thousands separator",
+        _ => "format flag",
+    }
 }
 
 impl FromStr for ParsedFormatSpec {
-    type Err = String;
+    type Err = ParseFormatSpecError;
 
     /// Parses a format specification string into its components.
     ///
-    /// Returns an error if the specifier contains invalid or unrecognized characters.
-    /// The error includes the original specifier for use in error messages.
+    /// Returns a [`ParseFormatSpecError`] for malformed specs, specs that
+    /// rely on flags Monty doesn't implement yet (`#`, `,`, `_`), or specs
+    /// whose width/precision overflows [`usize`].
     fn from_str(spec: &str) -> Result<Self, Self::Err> {
         if spec.is_empty() {
             return Ok(Self {
@@ -142,88 +364,59 @@ impl FromStr for ParsedFormatSpec {
         let mut chars = spec.chars().peekable();
 
         // Parse fill and align: [[fill]align]
-        let first = chars.peek().copied();
-        let second_pos = spec.chars().nth(1);
-
-        if let Some(second) = second_pos {
-            if matches!(second, '<' | '>' | '^' | '=') {
-                // First char is fill, second is align
-                result.fill = first.unwrap_or(' ');
-                chars.next();
-                result.align = chars.next();
-            } else if matches!(first, Some('<' | '>' | '^' | '=')) {
-                result.align = chars.next();
-            }
-        } else if matches!(first, Some('<' | '>' | '^' | '=')) {
-            result.align = chars.next();
-        }
-
-        // Parse sign: +, -, or space
-        if matches!(chars.peek(), Some('+' | '-' | ' ')) {
-            result.sign = chars.next();
-        }
-
-        // Skip '#' (alternate form) for now
-        if chars.peek() == Some(&'#') {
+        // If the second char is an align marker, the first is the fill; otherwise
+        // the first char (if any) may itself be the align.
+        if let Some(align) = spec.chars().nth(1).and_then(Align::from_char) {
+            result.fill = chars.next().unwrap_or(' ');
             chars.next();
+            result.align = Some(align);
+        } else {
+            result.align = chars.next_if_map(|c| Align::from_char(c).ok_or(c));
+        }
+
+        result.sign = chars.next_if_map(|c| Sign::from_char(c).ok_or(c));
+
+        // `#` (alternate form): part of Python's format mini-language but not
+        // yet implemented in Monty — reject loudly rather than silently
+        // dropping the flag.
+        if chars.next_if_eq(&'#').is_some() {
+            return Err(ParseFormatSpecError::new(
+                spec,
+                ParseFormatSpecReason::UnsupportedFlag('#'),
+            ));
         }
 
         // Parse zero-padding flag (must come before width)
-        if chars.peek() == Some(&'0') {
+        if chars.next_if_eq(&'0').is_some() {
             result.zero_pad = true;
-            chars.next();
         }
 
         // Parse width
-        let mut width_str = String::new();
-        while let Some(&c) = chars.peek() {
-            if c.is_ascii_digit() {
-                width_str.push(c);
-                chars.next();
-            } else {
-                break;
-            }
-        }
-        if !width_str.is_empty() {
-            result.width = width_str.parse().unwrap_or(0);
-        }
+        result.width = consume_decimal_usize(&mut chars)
+            .map_err(|()| ParseFormatSpecError::new(spec, ParseFormatSpecReason::NumberOverflow))?
+            .unwrap_or(0);
 
-        // Skip grouping option (comma or underscore)
-        if matches!(chars.peek(), Some(',' | '_')) {
-            chars.next();
+        // Grouping option (`,` or `_` thousands separator): both are valid
+        // Python flags that Monty doesn't implement yet — same rejection
+        // policy as `#`.
+        if let Some(g) = chars.next_if(|c| matches!(c, ',' | '_')) {
+            return Err(ParseFormatSpecError::new(
+                spec,
+                ParseFormatSpecReason::UnsupportedFlag(g),
+            ));
         }
 
         // Parse precision: .N
-        if chars.peek() == Some(&'.') {
-            chars.next();
-            let mut prec_str = String::new();
-            while let Some(&c) = chars.peek() {
-                if c.is_ascii_digit() {
-                    prec_str.push(c);
-                    chars.next();
-                } else {
-                    break;
-                }
-            }
-            if !prec_str.is_empty() {
-                result.precision = Some(prec_str.parse().unwrap_or(0));
-            }
+        if chars.next_if_eq(&'.').is_some() {
+            result.precision = consume_decimal_usize(&mut chars)
+                .map_err(|()| ParseFormatSpecError::new(spec, ParseFormatSpecReason::NumberOverflow))?;
         }
 
-        // Parse type character: s, d, f, e, g, etc.
-        if let Some(&c) = chars.peek()
-            && matches!(
-                c,
-                's' | 'd' | 'f' | 'F' | 'e' | 'E' | 'g' | 'G' | 'n' | '%' | 'b' | 'o' | 'x' | 'X' | 'c'
-            )
-        {
-            result.type_char = Some(c);
-            chars.next();
-        }
+        result.type_char = chars.next_if_map(|c| TypeChar::from_char(c).ok_or(c));
 
         // Error if there are any unconsumed characters
         if chars.peek().is_some() {
-            return Err(spec.to_owned());
+            return Err(ParseFormatSpecError::new(spec, ParseFormatSpecReason::Malformed));
         }
 
         Ok(result)
@@ -275,35 +468,35 @@ pub fn format_with_spec(
 
     match (value, spec.type_char) {
         // Integer formatting
-        (Value::Int(n), None | Some('d')) => Ok(format_int(*n, spec)),
-        (Value::Int(n), Some('b')) => Ok(format_int_base(*n, 2, spec)?),
-        (Value::Int(n), Some('o')) => Ok(format_int_base(*n, 8, spec)?),
-        (Value::Int(n), Some('x')) => Ok(format_int_base(*n, 16, spec)?),
-        (Value::Int(n), Some('X')) => Ok(format_int_base(*n, 16, spec)?.to_uppercase()),
-        (Value::Int(n), Some('c')) => Ok(format_char(*n, spec)?),
+        (Value::Int(n), None | Some(TypeChar::D)) => Ok(format_int(*n, spec)),
+        (Value::Int(n), Some(TypeChar::B)) => Ok(format_int_base(*n, 2, spec)?),
+        (Value::Int(n), Some(TypeChar::O)) => Ok(format_int_base(*n, 8, spec)?),
+        (Value::Int(n), Some(TypeChar::X)) => Ok(format_int_base(*n, 16, spec)?),
+        (Value::Int(n), Some(TypeChar::XUpper)) => Ok(format_int_base(*n, 16, spec)?.to_uppercase()),
+        (Value::Int(n), Some(TypeChar::C)) => Ok(format_char(*n, spec)?),
 
         // Float formatting
-        (Value::Float(f), None | Some('g' | 'G')) => Ok(format_float_g(*f, spec)),
-        (Value::Float(f), Some('f' | 'F')) => Ok(format_float_f(*f, spec)),
-        (Value::Float(f), Some('e')) => Ok(format_float_e(*f, spec, false)),
-        (Value::Float(f), Some('E')) => Ok(format_float_e(*f, spec, true)),
-        (Value::Float(f), Some('%')) => Ok(format_float_percent(*f, spec)),
+        (Value::Float(f), None | Some(TypeChar::G | TypeChar::GUpper)) => Ok(format_float_g(*f, spec)),
+        (Value::Float(f), Some(TypeChar::F | TypeChar::FUpper)) => Ok(format_float_f(*f, spec)),
+        (Value::Float(f), Some(TypeChar::E)) => Ok(format_float_e(*f, spec, false)),
+        (Value::Float(f), Some(TypeChar::EUpper)) => Ok(format_float_e(*f, spec, true)),
+        (Value::Float(f), Some(TypeChar::Percent)) => Ok(format_float_percent(*f, spec)),
 
         // Int to float formatting (Python allows this)
-        (Value::Int(n), Some('f' | 'F')) => Ok(format_float_f(*n as f64, spec)),
-        (Value::Int(n), Some('e')) => Ok(format_float_e(*n as f64, spec, false)),
-        (Value::Int(n), Some('E')) => Ok(format_float_e(*n as f64, spec, true)),
-        (Value::Int(n), Some('g' | 'G')) => Ok(format_float_g(*n as f64, spec)),
-        (Value::Int(n), Some('%')) => Ok(format_float_percent(*n as f64, spec)),
+        (Value::Int(n), Some(TypeChar::F | TypeChar::FUpper)) => Ok(format_float_f(*n as f64, spec)),
+        (Value::Int(n), Some(TypeChar::E)) => Ok(format_float_e(*n as f64, spec, false)),
+        (Value::Int(n), Some(TypeChar::EUpper)) => Ok(format_float_e(*n as f64, spec, true)),
+        (Value::Int(n), Some(TypeChar::G | TypeChar::GUpper)) => Ok(format_float_g(*n as f64, spec)),
+        (Value::Int(n), Some(TypeChar::Percent)) => Ok(format_float_percent(*n as f64, spec)),
 
         // String formatting (including InternString and heap strings)
-        (_, None | Some('s')) if value_type == Type::Str => {
+        (_, None | Some(TypeChar::S)) if value_type == Type::Str => {
             let s = value.py_str(vm)?;
             Ok(format_string(&s, spec)?)
         }
 
         // Bool as int
-        (Value::Bool(b), Some('d')) => Ok(format_int(i64::from(*b), spec)),
+        (Value::Bool(b), Some(TypeChar::D)) => Ok(format_int(i64::from(*b), spec)),
 
         // No type specifier: convert to string and format
         (_, None) => {
@@ -314,11 +507,20 @@ pub fn format_with_spec(
         // Type mismatch errors
         (_, Some(c)) => Err(SimpleException::new_msg(
             ExcType::ValueError,
-            format!("Unknown format code '{c}' for object of type '{value_type}'"),
+            format!(
+                "Unknown format code '{}' for object of type '{value_type}'",
+                c.as_char()
+            ),
         )
         .into()),
     }
 }
+
+/// Maximum fill codepoint that fits in the 8-bit fill field of the encoded
+/// format spec. Latin-1 covers the common cases (`*`, `_`, `-`, `.`, plus
+/// any single-byte char); higher codepoints (CJK, emoji, etc.) fall back to
+/// a dynamic spec so the VM re-parses at runtime.
+pub const MAX_ENCODED_FILL: u32 = 0xFF;
 
 /// Maximum width that fits in the 20-bit width field of the encoded format spec.
 pub const MAX_ENCODED_WIDTH: usize = (1 << 20) - 1;
@@ -335,14 +537,18 @@ pub const MAX_ENCODED_PRECISION: usize = (1 << 21) - 2;
 ///
 /// Encoding layout (occupies bits 0-59; the sign bit is always 0, so the
 /// result is a non-negative `i64`):
-/// - bits 0-7: fill character (as ASCII, default space=32)
-/// - bits 8-10: align (0=none, 1='<', 2='>', 3='^', 4='=')
-/// - bits 11-12: sign (0=none, 1='+', 2='-', 3=' ')
+/// - bits 0-7: fill codepoint (Latin-1; max [`MAX_ENCODED_FILL`], default space=32)
+/// - bits 8-10: [`Align`] (0=none, 1=Left, 2=Right, 3=Center, 4=SignAware)
+/// - bits 11-12: [`Sign`] (0=none, 1=Plus, 2=Minus, 3=Space)
 /// - bit 13: zero_pad
 /// - bits 14-33: width (20 bits, max [`MAX_ENCODED_WIDTH`])
 /// - bits 34-54: precision+1 (21 bits; 0 = no precision)
-/// - bits 55-59: type_char (0=none, 1-15=explicit type mapping: b,c,d,e,E,f,F,g,G,n,o,s,x,X,%)
+/// - bits 55-59: [`TypeChar`] (0=none, 1-15=B/C/D/E/EUpper/F/FUpper/G/GUpper/N/O/S/X/XUpper/Percent)
 pub fn encode_format_spec(spec: &ParsedFormatSpec) -> Option<i64> {
+    let fill_code = u32::from(spec.fill);
+    if fill_code > MAX_ENCODED_FILL {
+        return None;
+    }
     if spec.width > MAX_ENCODED_WIDTH {
         return None;
     }
@@ -352,52 +558,47 @@ pub fn encode_format_spec(spec: &ParsedFormatSpec) -> Option<i64> {
         return None;
     }
 
-    let fill = spec.fill as u64;
-    let align = match spec.align {
-        None => 0u64,
-        Some('<') => 1,
-        Some('>') => 2,
-        Some('^') => 3,
-        Some('=') => 4,
-        Some(_) => 0,
-    };
-    let sign = match spec.sign {
-        None => 0u64,
-        Some('+') => 1,
-        Some('-') => 2,
-        Some(' ') => 3,
-        Some(_) => 0,
-    };
-    let zero_pad = u64::from(spec.zero_pad);
-    let width = spec.width as u64;
+    let fill = i64::from(fill_code);
+    let align: i64 = spec.align.map_or(0, |a| match a {
+        Align::Left => 1,
+        Align::Right => 2,
+        Align::Center => 3,
+        Align::SignAware => 4,
+    });
+    let sign: i64 = spec.sign.map_or(0, |s| match s {
+        Sign::Plus => 1,
+        Sign::Minus => 2,
+        Sign::Space => 3,
+    });
+    let zero_pad = i64::from(spec.zero_pad);
+    // `try_from` is infallible after the bounds checks above; the expects
+    // document the invariant that keeps clippy's wrap-on-64-bit lint at bay.
+    let width = i64::try_from(spec.width).expect("width bounds-checked by MAX_ENCODED_WIDTH");
     // Store precision as `p + 1`, reserving 0 for the "no precision" marker.
-    // `p + 1` fits in u64 because `p <= MAX_ENCODED_PRECISION` was checked above.
-    let precision = spec.precision.map_or(0u64, |p| p as u64 + 1);
-    let type_char = spec.type_char.map_or(0u64, |c| match c {
-        'b' => 1,
-        'c' => 2,
-        'd' => 3,
-        'e' => 4,
-        'E' => 5,
-        'f' => 6,
-        'F' => 7,
-        'g' => 8,
-        'G' => 9,
-        'n' => 10,
-        'o' => 11,
-        's' => 12,
-        'x' => 13,
-        'X' => 14,
-        '%' => 15,
-        _ => 0,
+    let precision: i64 = spec.precision.map_or(0, |p| {
+        i64::try_from(p).expect("precision bounds-checked by MAX_ENCODED_PRECISION") + 1
+    });
+    let type_char: i64 = spec.type_char.map_or(0, |c| match c {
+        TypeChar::B => 1,
+        TypeChar::C => 2,
+        TypeChar::D => 3,
+        TypeChar::E => 4,
+        TypeChar::EUpper => 5,
+        TypeChar::F => 6,
+        TypeChar::FUpper => 7,
+        TypeChar::G => 8,
+        TypeChar::GUpper => 9,
+        TypeChar::N => 10,
+        TypeChar::O => 11,
+        TypeChar::S => 12,
+        TypeChar::X => 13,
+        TypeChar::XUpper => 14,
+        TypeChar::Percent => 15,
     });
 
-    // Cast is lossless: every field occupies bits 0..60, so the sign bit is
-    // always 0 and `cast_signed` round-trips exactly.
-    Some(
-        (fill | (align << 8) | (sign << 11) | (zero_pad << 13) | (width << 14) | (precision << 34) | (type_char << 55))
-            .cast_signed(),
-    )
+    // Every field occupies bits 0..60, so the sign bit is never set and the
+    // shifts/ORs stay within well-defined i64 territory.
+    Some(fill | (align << 8) | (sign << 11) | (zero_pad << 13) | (width << 14) | (precision << 34) | (type_char << 55))
 }
 
 /// Decodes an [`i64`] back into a [`ParsedFormatSpec`].
@@ -418,17 +619,17 @@ pub fn decode_format_spec(encoded: i64) -> ParsedFormatSpec {
     let type_bits = ((encoded >> 55) & 0x1F) as u8;
 
     let align = match align_bits {
-        1 => Some('<'),
-        2 => Some('>'),
-        3 => Some('^'),
-        4 => Some('='),
+        1 => Some(Align::Left),
+        2 => Some(Align::Right),
+        3 => Some(Align::Center),
+        4 => Some(Align::SignAware),
         _ => None,
     };
 
     let sign = match sign_bits {
-        1 => Some('+'),
-        2 => Some('-'),
-        3 => Some(' '),
+        1 => Some(Sign::Plus),
+        2 => Some(Sign::Minus),
+        3 => Some(Sign::Space),
         _ => None,
     };
 
@@ -440,21 +641,21 @@ pub fn decode_format_spec(encoded: i64) -> ParsedFormatSpec {
     };
 
     let type_char = match type_bits {
-        1 => Some('b'),
-        2 => Some('c'),
-        3 => Some('d'),
-        4 => Some('e'),
-        5 => Some('E'),
-        6 => Some('f'),
-        7 => Some('F'),
-        8 => Some('g'),
-        9 => Some('G'),
-        10 => Some('n'),
-        11 => Some('o'),
-        12 => Some('s'),
-        13 => Some('x'),
-        14 => Some('X'),
-        15 => Some('%'),
+        1 => Some(TypeChar::B),
+        2 => Some(TypeChar::C),
+        3 => Some(TypeChar::D),
+        4 => Some(TypeChar::E),
+        5 => Some(TypeChar::EUpper),
+        6 => Some(TypeChar::F),
+        7 => Some(TypeChar::FUpper),
+        8 => Some(TypeChar::G),
+        9 => Some(TypeChar::GUpper),
+        10 => Some(TypeChar::N),
+        11 => Some(TypeChar::O),
+        12 => Some(TypeChar::S),
+        13 => Some(TypeChar::X),
+        14 => Some(TypeChar::XUpper),
+        15 => Some(TypeChar::Percent),
         _ => None,
     };
 
@@ -489,14 +690,14 @@ pub fn format_string(value: &str, spec: &ParsedFormatSpec) -> Result<String, For
     };
 
     // Validate alignment for strings (= is only for numbers)
-    if spec.align == Some('=') {
+    if spec.align == Some(Align::SignAware) {
         return Err(FormatError::InvalidAlignment(
             "'=' alignment not allowed in string format specifier".to_owned(),
         ));
     }
 
-    // Default alignment for strings is left ('<')
-    let align = spec.align.unwrap_or('<');
+    // Default alignment for strings is left
+    let align = spec.align.unwrap_or(Align::Left);
     Ok(pad_string(&value, spec.width, align, spec.fill))
 }
 
@@ -511,22 +712,15 @@ pub fn format_int(n: i64, spec: &ParsedFormatSpec) -> String {
     // Use unsigned_abs() to avoid overflow panic on i64::MIN
     let abs_str = n.unsigned_abs().to_string();
 
-    // Build the sign prefix
     let sign = if is_negative {
         "-"
     } else {
-        match spec.sign {
-            Some('+') => "+",
-            Some(' ') => " ",
-            _ => "",
-        }
+        positive_sign_prefix(spec.sign)
     };
-
-    // Default alignment for numbers is right ('>')
-    let align = spec.align.unwrap_or('>');
+    let align = spec.align.unwrap_or(Align::Right);
 
     // Handle sign-aware zero-padding or regular padding
-    if spec.zero_pad || align == '=' {
+    if spec.zero_pad || align == Align::SignAware {
         let fill = if spec.zero_pad { '0' } else { spec.fill };
         let total_len = sign.len() + abs_str.len();
         if spec.width > total_len {
@@ -561,7 +755,7 @@ pub fn format_int_base(n: i64, base: u32, spec: &ParsedFormatSpec) -> Result<Str
     let sign = if is_negative { "-" } else { "" };
     let value = format!("{sign}{abs_str}");
 
-    let align = spec.align.unwrap_or('>');
+    let align = spec.align.unwrap_or(Align::Right);
     Ok(pad_string(&value, spec.width, align, spec.fill))
 }
 
@@ -577,7 +771,7 @@ pub fn format_char(n: i64, spec: &ParsedFormatSpec) -> Result<String, FormatErro
     let n_u32 = u32::try_from(n).expect("format_char n validated in 0..=0x10FFFF range");
     let c = char::from_u32(n_u32).ok_or_else(|| FormatError::ValueError("Invalid Unicode code point".to_owned()))?;
     let value = c.to_string();
-    let align = spec.align.unwrap_or('<');
+    let align = spec.align.unwrap_or(Align::Left);
     Ok(pad_string(&value, spec.width, align, spec.fill))
 }
 
@@ -596,16 +790,11 @@ pub fn format_float_f(f: f64, spec: &ParsedFormatSpec) -> String {
     let sign = if is_negative {
         "-"
     } else {
-        match spec.sign {
-            Some('+') => "+",
-            Some(' ') => " ",
-            _ => "",
-        }
+        positive_sign_prefix(spec.sign)
     };
+    let align = spec.align.unwrap_or(Align::Right);
 
-    let align = spec.align.unwrap_or('>');
-
-    if spec.zero_pad || align == '=' {
+    if spec.zero_pad || align == Align::SignAware {
         let fill = if spec.zero_pad { '0' } else { spec.fill };
         let total_len = sign.len() + abs_str.len();
         if spec.width > total_len {
@@ -639,15 +828,11 @@ pub fn format_float_e(f: f64, spec: &ParsedFormatSpec, uppercase: bool) -> Strin
     let sign = if is_negative {
         "-"
     } else {
-        match spec.sign {
-            Some('+') => "+",
-            Some(' ') => " ",
-            _ => "",
-        }
+        positive_sign_prefix(spec.sign)
     };
 
     let value = format!("{sign}{abs_str}");
-    let align = spec.align.unwrap_or('>');
+    let align = spec.align.unwrap_or(Align::Right);
     pad_string(&value, spec.width, align, spec.fill)
 }
 
@@ -694,15 +879,11 @@ pub fn format_float_g(f: f64, spec: &ParsedFormatSpec) -> String {
     let sign = if is_negative {
         "-"
     } else {
-        match spec.sign {
-            Some('+') => "+",
-            Some(' ') => " ",
-            _ => "",
-        }
+        positive_sign_prefix(spec.sign)
     };
 
     let value = format!("{sign}{abs_str}");
-    let align = spec.align.unwrap_or('>');
+    let align = spec.align.unwrap_or(Align::Right);
     pad_string(&value, spec.width, align, spec.fill)
 }
 
@@ -745,21 +926,55 @@ pub fn format_float_percent(f: f64, spec: &ParsedFormatSpec) -> String {
     let sign = if is_negative {
         "-"
     } else {
-        match spec.sign {
-            Some('+') => "+",
-            Some(' ') => " ",
-            _ => "",
-        }
+        positive_sign_prefix(spec.sign)
     };
 
     let value = format!("{sign}{abs_str}");
-    let align = spec.align.unwrap_or('>');
+    let align = spec.align.unwrap_or(Align::Right);
     pad_string(&value, spec.width, align, spec.fill)
 }
 
 // ============================================================================
 // Helper functions
 // ============================================================================
+
+/// Renders the sign prefix that precedes a non-negative number's digits.
+///
+/// Centralizes the `+`/space/empty decision that every numeric formatter
+/// (`format_int`, `format_float_*`, etc.) needs when the value isn't
+/// negative. Returns `""` for `None` and for `Some(Sign::Minus)` since both
+/// mean "no leading mark on positives".
+fn positive_sign_prefix(sign: Option<Sign>) -> &'static str {
+    match sign {
+        Some(Sign::Plus) => "+",
+        Some(Sign::Space) => " ",
+        None | Some(Sign::Minus) => "",
+    }
+}
+
+/// Consumes a run of ASCII digits and folds them into a decimal [`usize`].
+///
+/// Returns `Ok(None)` when no digit is present, `Ok(Some(n))` for a parsed
+/// number, and `Err(())` if accumulating would overflow [`usize`]. Used for
+/// the width and precision fields of the format mini-language — both are
+/// decimal integers terminated by the next non-digit.
+///
+/// Folding digits inline avoids the intermediate `String` that
+/// `.parse::<usize>()` would need, and surfaces overflow so the caller
+/// can bail with a parse error rather than silently clamping to 0.
+fn consume_decimal_usize(chars: &mut Peekable<impl Iterator<Item = char>>) -> Result<Option<usize>, ()> {
+    let mut value: Option<usize> = None;
+    while let Some(c) = chars.next_if(char::is_ascii_digit) {
+        let digit = c.to_digit(10).expect("char::is_ascii_digit guarantees a 0-9 digit") as usize;
+        let next = value
+            .unwrap_or(0)
+            .checked_mul(10)
+            .and_then(|n| n.checked_add(digit))
+            .ok_or(())?;
+        value = Some(next);
+    }
+    Ok(value)
+}
 
 /// Maximum precision Rust's `format!` accepts for fixed-point float formatting
 /// before it panics with "Formatting argument out of range" (i.e. `u16::MAX`).
@@ -821,11 +1036,11 @@ fn fmt_float_exp(abs_val: f64, precision: usize, uppercase: bool) -> String {
 
 /// Pads a string to a given width with alignment.
 ///
-/// Alignment options:
-/// - '<': left-align (pad on right)
-/// - '>': right-align (pad on left)
-/// - '^': center (pad both sides)
-fn pad_string(value: &str, width: usize, align: char, fill: char) -> String {
+/// `Align::SignAware` is treated as no-op padding here — numeric formatters
+/// handle `=` themselves by inserting fill between sign and digits before
+/// calling `pad_string`, so when `=` reaches here the value is already at
+/// or above `width` and the function falls through.
+fn pad_string(value: &str, width: usize, align: Align, fill: char) -> String {
     let value_len = value.chars().count();
     if width <= value_len {
         return value.to_owned();
@@ -834,14 +1049,14 @@ fn pad_string(value: &str, width: usize, align: char, fill: char) -> String {
     let padding = width - value_len;
 
     match align {
-        '<' => {
+        Align::Left => {
             let mut s = value.to_owned();
             for _ in 0..padding {
                 s.push(fill);
             }
             s
         }
-        '>' => {
+        Align::Right => {
             let mut s = String::new();
             for _ in 0..padding {
                 s.push(fill);
@@ -849,7 +1064,7 @@ fn pad_string(value: &str, width: usize, align: char, fill: char) -> String {
             s.push_str(value);
             s
         }
-        '^' => {
+        Align::Center => {
             let left_pad = padding / 2;
             let right_pad = padding - left_pad;
             let mut s = String::new();
@@ -862,7 +1077,7 @@ fn pad_string(value: &str, width: usize, align: char, fill: char) -> String {
             }
             s
         }
-        _ => value.to_owned(),
+        Align::SignAware => value.to_owned(),
     }
 }
 

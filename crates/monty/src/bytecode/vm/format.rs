@@ -126,14 +126,11 @@ impl<T: ResourceTracker> VM<'_, T> {
             Ok(decode_format_spec(*encoded))
         } else {
             let spec_str = spec_value.py_str(self)?;
-            spec_str.parse::<ParsedFormatSpec>().map_err(|invalid| {
+            spec_str.parse::<ParsedFormatSpec>().map_err(|err| {
                 let value_type = value_for_error.py_type(self);
                 RunError::Exc(
-                    SimpleException::new_msg(
-                        ExcType::ValueError,
-                        format!("Invalid format specifier '{invalid}' for object of type '{value_type}'"),
-                    )
-                    .into(),
+                    SimpleException::new_msg(ExcType::ValueError, format!("{err} for object of type '{value_type}'"))
+                        .into(),
                 )
             })
         }
