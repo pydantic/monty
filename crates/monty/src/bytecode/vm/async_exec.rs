@@ -872,19 +872,6 @@ pub(crate) enum ChildSource {
     ExternalCall(CallId),
 }
 
-/// Internal enum used by [`HeapRead::resolve_child`] to thread the
-/// completion-analysis result out from a borrow-scoped block.
-enum ResolvePhase {
-    /// At least one child is still in flight (pending external call or task
-    /// not yet completed).
-    NotDone,
-    /// A sibling task is in `TaskState::Failed` — the gather should be torn
-    /// down and the cached error replayed via the waiter.
-    FailedSibling { tid: TaskId },
-    /// Every child has completed successfully — finalize as `Completed`.
-    Done { waiter_id: TaskId },
-}
-
 impl<'h> HeapRead<'h, GatherFuture> {
     /// Caches `list_id` as the gather's successful result.
     ///
@@ -941,79 +928,63 @@ impl<'h> HeapRead<'h, GatherFuture> {
             }
         };
 
-        // Fan the value out into a local Vec, before borrowing the gather
-        // mutably for the writes — `clone_with_heap` needs `&mut HeapReader`,
-        // which would otherwise conflict with the awaited-mut borrow.
-        let writes: Vec<(usize, Value)> = if let Some((last, init)) = indices.split_last() {
-            let mut writes = Vec::with_capacity(indices.len());
-            for &idx in init {
-                writes.push((idx, value.clone_with_heap(vm.heap)));
-            }
-            writes.push((*last, value));
-            writes
-        } else {
-            value.drop_with_heap(vm.heap);
-            Vec::new()
-        };
-
-        // Commit the writes, then look for a Failed sibling or check completion.
-        let phase = {
-            let awaited = self
+        // Take `results` out so the writes can do their clones (which need
+        // `&Heap` access) without fighting the `&mut`-chain that
+        // `as_awaited_mut` requires. We put it back into the gather right
+        // after, before the completion scan.
+        let mut results = mem::take(
+            &mut self
                 .get_mut(vm.heap)
                 .as_awaited_mut()
-                .expect("gather still Awaited after recording child resolution");
-            for (idx, v) in writes {
-                awaited.results[idx] = Some(v);
+                .expect("resolve_child called on non-Awaited gather")
+                .results,
+        );
+        if let Some((last, init)) = indices.split_last() {
+            for &idx in init {
+                results[idx] = Some(value.clone_with_heap(vm.heap));
             }
-            if !awaited.pending_calls.is_empty() {
-                ResolvePhase::NotDone
-            } else if let Some(&tid) = awaited
-                .pending_tasks
-                .keys()
-                .find(|tid| matches!(vm.scheduler.get_task(**tid).state, TaskState::Failed(_)))
-            {
-                ResolvePhase::FailedSibling { tid }
-            } else if !awaited.pending_tasks.is_empty() {
-                ResolvePhase::NotDone
-            } else {
-                ResolvePhase::Done {
-                    waiter_id: awaited.waiter,
-                }
-            }
-        };
-
-        match phase {
-            ResolvePhase::NotDone => Ok(None),
-            ResolvePhase::FailedSibling { tid } => {
-                // Take the error out of the failed task's state, then tear
-                // the gather down. `self.fail` cancels every remaining
-                // child (including `tid` itself) and caches the error on
-                // the gather for replay on re-await.
-                let task = vm.scheduler.get_task_mut(tid);
-                let TaskState::Failed(error) = mem::replace(&mut task.state, TaskState::Ready) else {
-                    unreachable!("scanned Failed above")
-                };
-                let waiter_id = self.fail(&mut vm.scheduler, vm.heap, &error);
-                Ok(Some(GatherResolution::Failure { error, waiter_id }))
-            }
-            ResolvePhase::Done { waiter_id } => {
-                // All children resolved successfully — build the result list.
-                let results = mem::take(
-                    &mut self
-                        .get_mut(vm.heap)
-                        .as_awaited_mut()
-                        .expect("checked Awaited above")
-                        .results,
-                );
-                let results: Vec<Value> = results
-                    .into_iter()
-                    .map(|r| r.expect("all results filled when gather is complete"))
-                    .collect();
-                let list_id = vm.heap.allocate(HeapData::List(List::new(results)))?;
-                self.cache_result(vm.heap, list_id);
-                Ok(Some(GatherResolution::Success { list_id, waiter_id }))
-            }
+            results[*last] = Some(value);
+        } else {
+            value.drop_with_heap(vm.heap);
         }
+
+        // Restore results and look for a Failed sibling or check completion.
+        let awaited = self
+            .get_mut(vm.heap)
+            .as_awaited_mut()
+            .expect("gather still Awaited after recording child resolution");
+        awaited.results = results;
+
+        // Check for failed siblings after recording the result.
+        if let Some(&tid) = awaited
+            .pending_tasks
+            .keys()
+            .find(|tid| matches!(vm.scheduler.get_task(**tid).state, TaskState::Failed(_)))
+        {
+            // Take the error out of the failed task's state, then tear
+            // the gather down. `self.fail` cancels every remaining
+            // child (including `tid` itself) and caches the error on
+            // the gather for replay on re-await.
+            let task = vm.scheduler.get_task_mut(tid);
+            let TaskState::Failed(error) = mem::replace(&mut task.state, TaskState::Ready) else {
+                unreachable!("scanned Failed above")
+            };
+            let waiter_id = self.fail(&mut vm.scheduler, vm.heap, &error);
+            return Ok(Some(GatherResolution::Failure { error, waiter_id }));
+        } else if !awaited.pending_tasks.is_empty() || !awaited.pending_calls.is_empty() {
+            return Ok(None);
+        }
+
+        // All children resolved successfully — build the result list.
+        let results = mem::take(&mut awaited.results);
+        let waiter_id = awaited.waiter;
+        let results: Vec<Value> = results
+            .into_iter()
+            .map(|r| r.expect("all results filled when gather is complete"))
+            .collect();
+        let list_id = vm.heap.allocate(HeapData::List(List::new(results)))?;
+        self.cache_result(vm.heap, list_id);
+        Ok(Some(GatherResolution::Success { list_id, waiter_id }))
     }
 
     /// Tear the gather down with `error` and return its waiter.

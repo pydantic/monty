@@ -494,11 +494,23 @@ impl Scheduler {
             // Remove from ready queue if present (do this before getting mutable task reference)
             self.ready_queue.retain(|&id| id != task_id);
 
-            // Drop any external calls this task was the creator of. The host
-            // may still respond to them later; with the entry gone,
-            // `take_pending_call` returns `None` and `resolve_future` drops
-            // the resolved value instead of trying to wake a removed task.
-            self.pending_calls.retain(|_, data| data.creator_task != task_id);
+            // Drop any *non-gather-routed* external calls this task was the
+            // creator of. The host may still respond to them later; with the
+            // entry gone, `take_pending_call` returns `None` and
+            // `resolve_future` drops the resolved value instead of trying
+            // to wake a removed task.
+            //
+            // Gather-routed entries are kept: even though `task_id` made the
+            // call, ownership effectively transferred to the gather when
+            // `register_gather_for_call` set `data.gather`. Dropping them
+            // would orphan the gather (its own `pending_calls` map still
+            // references the CallId, so it would wait forever for a
+            // resolution that we'd silently drop). Gather-routed entries are
+            // cleaned up either by the gather completing successfully
+            // (`resolve_child` removes them on resolution) or by the gather
+            // failing (`HeapRead::fail` drains them on tear-down).
+            self.pending_calls
+                .retain(|_, data| data.creator_task != task_id || data.gather.is_some());
 
             // If blocked on a nested gather, recursively cancel inner tasks first.
             // Only an `Awaited` gather has spawned tasks — a `Pending` gather
