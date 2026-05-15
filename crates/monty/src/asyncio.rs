@@ -43,12 +43,6 @@ impl TaskId {
         Self(id)
     }
 
-    /// Returns the raw u32 value.
-    #[inline]
-    pub fn raw(self) -> u32 {
-        self.0
-    }
-
     /// Returns true if this is the main task (task 0).
     #[inline]
     pub fn is_main(self) -> bool {

@@ -14,6 +14,8 @@ use std::{error, fmt};
 
 use strum::FromRepr;
 
+use super::builder::Offset;
+
 /// Opcode discriminant - just identifies the instruction type.
 ///
 /// Operands (if any) follow in the bytecode stream and are fetched separately.
@@ -450,117 +452,238 @@ impl TryFrom<u8> for Opcode {
     }
 }
 
+/// Operand bundle, to be paired with an `Opcode` at emit time.
+///
+/// `Opcode::stack_effect` consumes this to compute the operand-stack delta in
+/// a single exhaustive match. The variants describe the *byte shape* of the
+/// in-stream operand — `emit_with_operand` writes the bytes for each variant
+/// and the same enum drives stack-effect computation, so byte emission and
+/// stack tracking can't drift apart.
+///
+/// `Operand` is `Copy` (largest variant is ~24 bytes), so it's passed by value
+/// throughout.
+#[derive(Debug, Clone, Copy)]
+pub enum Operand<'a> {
+    /// No operand bytes (e.g. `Pop`, `BinaryAdd`).
+    None,
+    /// Single u8 operand (e.g. `LoadLocal`, `CallFunction`).
+    U8(u8),
+    /// Single i8 operand.
+    I8(i8),
+    /// Single u16 operand, little-endian (e.g. `LoadConst`, `BuildList`).
+    U16(u16),
+    /// Absolute jump target. `emit_with_operand` computes the signed i16
+    /// relative offset (`target - (jump_start + 3)`) and writes it to bytecode
+    /// as a little-endian i16. Required for jump opcodes: `Jump`, `JumpIfTrue`,
+    /// `JumpIfFalse`, `JumpIfTrueOrPop`, `JumpIfFalseOrPop`, `ForIter`.
+    ///
+    /// Forward jumps pass `current_offset()` as a self-referential placeholder
+    /// (yielding a -3 relative offset); `patch_jump` overwrites it once the
+    /// real target is known. The placeholder is harmless because `#[must_use]`
+    /// on `JumpLabel` catches the "forgot to patch" case at compile time.
+    Offset(Offset),
+    /// Two u8 operands (e.g. `UnpackEx`, `CallBuiltinFunction`).
+    U8U8(u8, u8),
+    /// u8 then u16 little-endian (e.g. `LoadLocalCallable`).
+    U8U16(u8, u16),
+    /// u16 little-endian then u8 (e.g. `MakeFunction`, `CallAttr`).
+    U16U8(u16, u8),
+    /// Two u16 little-endian (e.g. `LoadLocalCallableW`, `LoadGlobalCallable`).
+    U16U16(u16, u16),
+    /// u16 then two u8s (e.g. `MakeClosure`).
+    U16U8U8(u16, u8, u8),
+    /// `CallFunctionKw` shape: pos_count (u8), kw_count (u8), kw_count * name_id (u16 each).
+    CallKw { pos_count: u8, kwname_ids: &'a [u16] },
+    /// `CallAttrKw` shape: attr_name_id (u16), pos_count (u8), kw_count (u8), kw_count * name_id (u16 each).
+    CallAttrKw {
+        attr_name_id: u16,
+        pos_count: u8,
+        kwname_ids: &'a [u16],
+    },
+}
+
 impl Opcode {
-    /// Returns the stack effect of this opcode (positive = push, negative = pop).
+    /// Returns the operand-stack effect of this opcode paired with `operand`
+    /// (positive = push, negative = pop).
     ///
-    /// Some opcodes have variable effects (e.g., `BuildList` depends on its operand).
-    /// For those, this returns `None` and the caller must compute the effect.
+    /// Variable-effect opcodes have explicit `(opcode, operand-variant)` arms;
+    /// fixed-effect opcodes match on the opcode alone and ignore the operand
+    /// variant. A variable-effect opcode whose operand variant doesn't match
+    /// any enumerated arm hits the catch-all panic — this keeps the tracker
+    /// honest when a new variable-effect opcode is added without a matching
+    /// arm.
     ///
-    /// For opcodes that have known, fixed stack effects, returns `Some(i16)`.
+    /// `MakeFunction`/`MakeClosure` have explicit variable arms even though
+    /// the "push the function" effect is +1 — the actual effect is
+    /// `1 - defaults_count` because defaults are popped from the stack, which
+    /// only equals +1 when no defaults are present.
+    ///
+    /// `emit_jump_to`'s backward-jump path computes its own effect inline
+    /// because it doesn't have an `Operand` to pass (the operand is a raw
+    /// i16 offset, not a stack-effect-bearing shape).
     #[must_use]
-    pub const fn stack_effect(self) -> Option<i16> {
+    pub fn stack_effect(self, operand: Operand<'_>) -> i16 {
         #![expect(clippy::allow_attributes, reason = "expect seems broken with enum_glob_use")]
         #[allow(clippy::enum_glob_use, reason = "simplifies churn")]
-        use Opcode::*;
-        Some(match self {
-            // Stack operations
-            Pop => -1,
-            Dup => 1,
-            Dup2 => 2,
-            Rot2 | Rot3 => 0, // reorder, no net change
+        use Opcode::*; // allow local import
+        match (self, operand) {
+            // === Variable-effect: U8 operand ===
+            (CallFunction, Operand::U8(arg_count)) => -i16::from(arg_count),
+            (CallFunctionExtended, Operand::U8(flags)) => -(1 + i16::from(flags & 0x01)),
+            (FormatValue, Operand::U8(flags)) => {
+                if flags & 0x04 != 0 {
+                    -1
+                } else {
+                    0
+                }
+            }
+            (UnpackSequence, Operand::U8(n)) => i16::from(n) - 1,
 
-            // Constants & Literals (all push 1)
-            LoadConst | LoadNone | LoadTrue | LoadFalse | LoadSmallInt => 1,
+            // === Variable-effect: U16 operand ===
+            (BuildList | BuildTuple | BuildSet | BuildFString, Operand::U16(n)) => 1 - n.cast_signed(),
+            (BuildDict, Operand::U16(n)) => 1 - 2 * n.cast_signed(),
 
-            // Variables - loads push, stores pop
-            LoadLocal0 | LoadLocal1 | LoadLocal2 | LoadLocal3 => 1,
-            LoadLocal | LoadLocalW | LoadLocalCallable | LoadLocalCallableW | LoadGlobal | LoadGlobalCallable
-            | LoadCell => 1,
-            StoreLocal | StoreLocalW | StoreGlobal | StoreCell => -1,
-            DeleteLocal | DeleteGlobal => 0, // doesn't affect stack
+            // === Variable-effect: U8U8 operand ===
+            // UnpackEx: pops 1, pushes (before + 1 + after) → before + after.
+            (UnpackEx, Operand::U8U8(before, after)) => i16::from(before) + i16::from(after),
+            // Builtin calls: no callable on stack, pops args, pushes result → 1 - arg_count.
+            (CallBuiltinFunction | CallBuiltinType, Operand::U8U8(_, arg_count)) => 1 - i16::from(arg_count),
 
-            // Binary operations: pop 2, push 1 = -1
-            BinaryAdd | BinarySub | BinaryMul | BinaryDiv | BinaryFloorDiv | BinaryMod | BinaryPow | BinaryAnd
-            | BinaryOr | BinaryXor | BinaryLShift | BinaryRShift | BinaryMatMul => -1,
+            // === Variable-effect: U16U8 operand ===
+            (MakeFunction, Operand::U16U8(_, defaults)) => 1 - i16::from(defaults),
+            (CallAttr, Operand::U16U8(_, arg_count)) => -i16::from(arg_count),
+            (CallAttrExtended, Operand::U16U8(_, flags)) => -(1 + i16::from(flags & 0x01)),
 
-            // Comparisons: pop 2, push 1 = -1
-            CompareEq | CompareNe | CompareLt | CompareLe | CompareGt | CompareGe | CompareIs | CompareIsNot
-            | CompareIn | CompareNotIn | CompareModEq => -1,
+            // === Variable-effect: U16U8U8 operand ===
+            // MakeClosure: pops `cell_count` cells AND `defaults_count` defaults,
+            // pushes the closure → 1 - defaults - cells.
+            (MakeClosure, Operand::U16U8U8(_, defaults, cells)) => 1 - i16::from(defaults) - i16::from(cells),
 
-            // Unary operations: pop 1, push 1 = 0
-            UnaryNot | UnaryNeg | UnaryPos | UnaryInvert => 0,
+            // === Variable-effect: variable-length kw operands ===
+            // pops callable + pos_args + kw_args, pushes result → -(pos_count + kw_count).
+            (CallFunctionKw, Operand::CallKw { pos_count, kwname_ids }) => {
+                let kw_count = i16::try_from(kwname_ids.len()).expect("keyword count exceeds i16");
+                -(i16::from(pos_count) + kw_count)
+            }
+            (
+                CallAttrKw,
+                Operand::CallAttrKw {
+                    pos_count, kwname_ids, ..
+                },
+            ) => {
+                let kw_count = i16::try_from(kwname_ids.len()).expect("keyword count exceeds i16");
+                -(i16::from(pos_count) + kw_count)
+            }
 
-            // In-place operations: pop 1 (rhs), leave target on stack = -1
-            InplaceAdd | InplaceSub | InplaceMul | InplaceDiv | InplaceFloorDiv | InplaceMod | InplacePow
-            | InplaceAnd | InplaceOr | InplaceXor | InplaceLShift | InplaceRShift => -1,
+            // === Fixed-effect, no operand ===
+            (Pop, Operand::None) => -1,
+            (Dup, Operand::None) => 1,
+            (Dup2, Operand::None) => 2,
+            (Rot2 | Rot3, Operand::None) => 0,
+            (LoadNone | LoadTrue | LoadFalse, Operand::None) => 1,
+            (LoadLocal0 | LoadLocal1 | LoadLocal2 | LoadLocal3, Operand::None) => 1,
+            (
+                BinaryAdd | BinarySub | BinaryMul | BinaryDiv | BinaryFloorDiv | BinaryMod | BinaryPow | BinaryAnd
+                | BinaryOr | BinaryXor | BinaryLShift | BinaryRShift | BinaryMatMul,
+                Operand::None,
+            ) => -1,
+            (
+                CompareEq | CompareNe | CompareLt | CompareLe | CompareGt | CompareGe | CompareIs | CompareIsNot
+                | CompareIn | CompareNotIn,
+                Operand::None,
+            ) => -1,
+            (UnaryNot | UnaryNeg | UnaryPos | UnaryInvert, Operand::None) => 0,
+            (
+                InplaceAdd | InplaceSub | InplaceMul | InplaceDiv | InplaceFloorDiv | InplaceMod | InplacePow
+                | InplaceAnd | InplaceOr | InplaceXor | InplaceLShift | InplaceRShift,
+                Operand::None,
+            ) => -1,
+            (BuildSlice, Operand::None) => -2,
+            (ListExtend, Operand::None) => -1,
+            (ListToTuple, Operand::None) => 0,
+            (BinarySubscr, Operand::None) => -1,
+            (StoreSubscr, Operand::None) => -3,
+            (GetIter | Await, Operand::None) => 0,
+            (Raise, Operand::None) => -1,
+            (Reraise | ClearException | CheckExcMatch, Operand::None) => 0,
+            (ReturnValue, Operand::None) => -1,
+            (Nop, Operand::None) => 0,
 
-            // Collection building - depends on operand, return None
-            BuildList | BuildTuple | BuildDict | BuildSet | BuildFString => return None,
-            // FormatValue: pops 1 value (+ optional fmt_spec), pushes 1. Variable.
-            FormatValue => return None,
-            // BuildSlice: pop 3, push 1 = -2
-            BuildSlice => -2,
-            // ListExtend: pop 2 (iterable + list), push 1 (list) = -1
-            ListExtend => -1,
-            // ListToTuple: pop 1, push 1 = 0
-            ListToTuple => 0,
-            // DictMerge: pop 2, push 1 = -1
-            DictMerge => -1,
+            // === Fixed-effect, I8 operand ===
+            (LoadSmallInt, Operand::I8(_)) => 1,
 
-            // Comprehension building - pops value, no push (stores in collection below)
-            ListAppend | SetAdd => -1,
-            DictSetItem => -2, // pops key and value
+            // === Fixed-effect, U8 operand ===
+            (LoadLocal | LoadModule, Operand::U8(_)) => 1,
+            (StoreLocal, Operand::U8(_)) => -1,
+            (DeleteLocal, Operand::U8(_)) => 0,
+            // `ListAppend`/`SetAdd`/`DictSetItem` carry a u8 stack-depth operand
+            // that names which collection below TOS to extend; the stack
+            // effect itself is fixed.
+            (ListAppend | SetAdd, Operand::U8(_)) => -1,
+            (DictSetItem, Operand::U8(_)) => -2,
+            // `DictUpdate`/`SetExtend` also take a u8 stack-depth operand.
+            (DictUpdate | SetExtend, Operand::U8(_)) => -1,
 
-            // Subscript & Attribute
-            BinarySubscr => -1,             // pop 2, push 1
-            StoreSubscr => -3,              // pop 3, push 0
-            LoadAttr | LoadAttrImport => 0, // pop 1, push 1
-            StoreAttr => -2,                // pop 2, push 0
+            // === Fixed-effect, U16 operand ===
+            (LoadConst, Operand::U16(_)) => 1,
+            (LoadLocalW | LoadGlobal | LoadCell, Operand::U16(_)) => 1,
+            (StoreLocalW | StoreGlobal | StoreCell, Operand::U16(_)) => -1,
+            (DeleteGlobal, Operand::U16(_)) => 0,
+            (CompareModEq, Operand::U16(_)) => -1,
+            (LoadAttr | LoadAttrImport, Operand::U16(_)) => 0,
+            (StoreAttr, Operand::U16(_)) => -2,
+            // `DictMerge` takes a u16 operand carrying the func_name_id for
+            // the duplicate-key TypeError message.
+            (DictMerge, Operand::U16(_)) => -1,
+            // `RaiseImportError` takes a u16 const_id naming the missing module.
+            (RaiseImportError, Operand::U16(_)) => 0,
 
-            // Function calls - depend on arg count
-            CallFunction | CallBuiltinFunction | CallBuiltinType | CallFunctionKw | CallAttr | CallAttrKw
-            | CallFunctionExtended | CallAttrExtended => return None,
+            // === Fixed-effect, U8U16 operand ===
+            (LoadLocalCallable, Operand::U8U16(..)) => 1,
 
-            // Control flow - no stack effect (jumps don't push/pop)
-            Jump => 0,
-            JumpIfTrue | JumpIfFalse => -1,                    // always pop condition
-            JumpIfTrueOrPop | JumpIfFalseOrPop => return None, // variable (0 or -1)
+            // === Fixed-effect, U16U16 operand ===
+            (LoadLocalCallableW | LoadGlobalCallable, Operand::U16U16(..)) => 1,
 
-            // Iteration
-            GetIter => 0,           // pop iterable, push iterator
-            ForIter => return None, // pushes value or jumps (variable)
+            // === Jumps: fall-through effect (what the tracker absorbs after the bytes are written).
+            // Use `Offset` arguments to sanity check that jumps are correctly paired with offsets. ===
 
-            // Async/await
-            Await => 0, // pop awaitable, push result
+            // `Jump` is unconditional and makes the code dead; the 0 here is correct for
+            // the moment before that transition.
+            (Jump, Operand::Offset(_)) => 0,
+            // Conditional jumps pop the condition on either path, so the tracker absorbs the pop immediately.
+            (JumpIfTrue | JumpIfFalse | JumpIfTrueOrPop | JumpIfFalseOrPop, Operand::Offset(_)) => -1,
+            // `ForIter` adds the the value yielded by the iterator to the stack.
+            (ForIter, Operand::Offset(_)) => 1,
 
-            // Function definition - push 1 (the function/closure)
-            MakeFunction | MakeClosure => 1,
+            // Catch-all: opcode emitted with the wrong operand variant, or a
+            // new opcode added without an arm above. Every opcode has exactly
+            // one valid operand shape; pairing them up here means the wrong
+            // emit_* helper for a given opcode is caught at stack-effect time
+            // rather than producing nonsense bytecode.
+            (op, _) => panic!(
+                "Opcode::stack_effect: opcode {op:?} paired with wrong operand variant {operand:?} (or missing arm)"
+            ),
+        }
+    }
 
-            // Exception handling
-            Raise => -1,         // pop exception
-            Reraise => 0,        // no stack change (reads from exception_stack)
-            ClearException => 0, // clears exception_stack, no operand stack change
-            CheckExcMatch => 0,  // pop exc_type, push bool (net 0, but exc stays)
-
-            // Return
-            ReturnValue => -1,
-
-            // Unpacking - depends on operand
-            UnpackSequence | UnpackEx => return None,
-
-            // Dict/set literal extensions (PEP 448):
-            // DictUpdate: pop mapping, silently merge into dict below = -1
-            DictUpdate => -1,
-            // SetExtend: pop iterable, add all items to set below = -1
-            SetExtend => -1,
-
-            // Special
-            Nop => 0,
-
-            // Module
-            LoadModule => 1,       // push module
-            RaiseImportError => 0, // raises exception, no stack change before that
-        })
+    /// Returns the operand-stack delta applied when *this jump opcode is
+    /// taken*, i.e. the difference between the pre-emit depth and the depth
+    /// that execution arrives at on the jump-taken path.
+    ///
+    /// Panics for non-jump opcodes.
+    #[must_use]
+    pub fn jump_taken_stack_effect(self) -> i16 {
+        match self {
+            // Unconditional jump: stack unchanged on jump-taken.
+            Self::Jump => 0,
+            // Pop condition on either path.
+            Self::JumpIfTrue | Self::JumpIfFalse => -1,
+            // Pop condition on fall-through, keep it on jump-taken.
+            Self::JumpIfTrueOrPop | Self::JumpIfFalseOrPop => 0,
+            // Pop iterator on jump-taken (no value pushed).
+            Self::ForIter => -1,
+            _ => panic!("Opcode::jump_taken_delta: {self:?} is not a jump opcode"),
+        }
     }
 }
 

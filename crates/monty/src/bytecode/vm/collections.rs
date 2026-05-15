@@ -11,7 +11,7 @@ use crate::{
     value::{VALUE_SIZE, Value},
 };
 
-impl<T: ResourceTracker> VM<'_, '_, T> {
+impl<T: ResourceTracker> VM<'_, T> {
     /// Builds a list from the top n stack values.
     pub(super) fn build_list(&mut self, count: usize) -> Result<(), RunError> {
         let items = self.pop_n(count);
@@ -155,11 +155,6 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
                 list.set_contains_refs();
             }
             list.as_vec_mut().extend(copied_items);
-        }
-
-        // Mark potential cycle after the mutable borrow ends
-        if has_refs {
-            this.heap.mark_potential_cycle();
         }
 
         // Push list_ref back on the stack (don't drop it)

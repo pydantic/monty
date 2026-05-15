@@ -20,9 +20,12 @@ full_str = m2.group(0)
 assert full_str == 'hello', 'fullmatch group(0) returns matched text'
 
 # findall returns a list — keep individual elements in variables
-# so strict matching passes (all heap objects must be reachable)
-results = p.findall('a b c')
-assert results == ['a', 'b', 'c'], 'findall returns list of matches'
+# so strict matching passes (all heap objects must be reachable).
+# Use multi-char tokens so each result is heap-allocated; single-ASCII results
+# would be interned (see allocate_string), and interned values don't appear in
+# the ref-counts map.
+results = p.findall('aa bb cc')
+assert results == ['aa', 'bb', 'cc'], 'findall returns list of matches'
 r0 = results[0]
 r1 = results[1]
 r2 = results[2]

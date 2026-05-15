@@ -43,7 +43,7 @@
 //! console.log('Final result:', progress.output);
 //! ```
 
-use std::{borrow::Cow, mem, ptr, result};
+use std::{borrow::Cow, fmt::Write, mem, ptr, result};
 
 use monty::{
     fs::MountTable, ExcType, ExtFunctionResult, FunctionCall, LimitedTracker, MontyException, MontyObject,
@@ -226,7 +226,7 @@ impl Monty {
         }
 
         let result = if let Some(limits) = options.limits {
-            let tracker = LimitedTracker::new(limits.into());
+            let tracker = LimitedTracker::new(limits.try_into()?);
             self.runner.run(input_values, tracker, print_writer)
         } else {
             let tracker = NoLimitTracker;
@@ -334,8 +334,14 @@ impl Monty {
             }};
         }
 
-        if let Some(limits) = limits {
-            let tracker = LimitedTracker::new(limits.into());
+        if let Some(resource_limits) = limits {
+            let tracker = match resource_limits.try_into() {
+                Ok(r) => LimitedTracker::new(r),
+                Err(err) => {
+                    put_back(mount_table);
+                    return Err(err);
+                }
+            };
             run_loop!(tracker)
         } else {
             run_loop!(NoLimitTracker)
@@ -383,8 +389,14 @@ impl Monty {
         let print_callback_ref = options.print_callback.as_ref().map(Function::create_ref).transpose()?;
 
         // Start execution with appropriate tracker
-        if let Some(limits) = options.limits {
-            let tracker = LimitedTracker::new(limits.into());
+        if let Some(resource_limits) = options.limits {
+            let tracker = match resource_limits.try_into() {
+                Ok(r) => LimitedTracker::new(r),
+                Err(err) => {
+                    put_back_mount_state(mount_state);
+                    return Err(err);
+                }
+            };
             let progress = match runner.start(input_values, tracker, print_writer) {
                 Ok(p) => p,
                 Err(exc) => {
@@ -455,7 +467,6 @@ impl Monty {
     /// Returns a string representation of the Monty instance.
     #[napi]
     pub fn repr(&self) -> String {
-        use std::fmt::Write;
         let lines = self.runner.code().lines().count();
         let mut s = format!(
             "Monty(<{} line{} of code>, scriptName='{}'",
@@ -548,22 +559,21 @@ impl MontyRepl {
     ///
     /// @param options - Optional configuration (scriptName, limits)
     #[napi(constructor)]
-    #[must_use]
-    pub fn new(options: Option<MontyReplOptions>) -> Self {
+    pub fn new(options: Option<MontyReplOptions>) -> Result<Self> {
         let options = options.unwrap_or_default();
         let script_name = options.script_name.unwrap_or_else(|| "main.py".to_string());
 
         let repl = if let Some(limits) = options.limits {
-            let tracker = LimitedTracker::new(limits.into());
+            let tracker = LimitedTracker::new(limits.try_into()?);
             EitherRepl::Limited(CoreMontyRepl::new(&script_name, tracker))
         } else {
             EitherRepl::NoLimit(CoreMontyRepl::new(&script_name, NoLimitTracker))
         };
 
-        Self {
+        Ok(Self {
             repl: Some(repl),
             script_name,
-        }
+        })
     }
 
     /// Returns the script name for this REPL session.

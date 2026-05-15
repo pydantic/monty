@@ -1,5 +1,6 @@
 use std::fmt::Write;
 
+use insta::assert_snapshot;
 use monty::{ExcType, MontyException, MontyRun};
 
 /// Helper to extract the exception type from a parse error.
@@ -449,4 +450,108 @@ fn long_source_line_does_not_overflow_column() {
     let run = MontyRun::new(code, "test.py", vec![]).expect("long line should parse without panicking");
     let result = run.run_no_limits(vec![]);
     assert!(result.is_ok(), "long line should run: {result:?}");
+}
+
+// === Parse error messages must not leak ruff_python_ast Debug formatting ===
+//
+// These snapshot the full error message for each trigger so any future
+// regression that reintroduces Debug formatting of AST nodes (struct
+// names, `node_index`, `range`, `ctx: Store`, etc.) fails the snapshot
+// diff loudly.
+
+#[test]
+fn starred_name_target_has_clean_message() {
+    // `*a = [1, 2]`: Ruff parses the LHS as a bare starred target, which
+    // Monty rejects at `parse_identifier`.
+    let result = MontyRun::new("*a = [1, 2]".to_owned(), "test.py", vec![]);
+    let exc = result.expect_err("expected parse error");
+    assert_eq!(exc.exc_type(), ExcType::SyntaxError);
+    assert_snapshot!(exc.message().expect("has message"), @"Expected name, got starred expression");
+}
+
+#[test]
+fn starred_attribute_target_has_clean_message() {
+    // `*x.y = 1`: starred target wrapping an attribute. Same rejection
+    // path, different inner node shape.
+    let result = MontyRun::new("*x.y = 1".to_owned(), "test.py", vec![]);
+    let exc = result.expect_err("expected parse error");
+    assert_eq!(exc.exc_type(), ExcType::SyntaxError);
+    assert_snapshot!(exc.message().expect("has message"), @"Expected name, got starred expression");
+}
+
+#[test]
+fn starred_subscript_target_has_clean_message() {
+    // `*x[0] = 1`: starred target wrapping a subscript.
+    let result = MontyRun::new("*x[0] = 1".to_owned(), "test.py", vec![]);
+    let exc = result.expect_err("expected parse error");
+    assert_eq!(exc.exc_type(), ExcType::SyntaxError);
+    assert_snapshot!(exc.message().expect("has message"), @"Expected name, got starred expression");
+}
+
+#[test]
+fn for_loop_attribute_target_has_clean_message() {
+    // `for x.y in [1]: pass`: attribute as a for-loop target. CPython
+    // accepts this; Monty currently rejects at `parse_unpack_target_impl`.
+    // That rejection of valid Python is a separate issue; this test locks
+    // only that the error message does not leak `ExprAttribute` Debug.
+    let result = MontyRun::new("for x.y in [1]: pass".to_owned(), "test.py", vec![]);
+    let exc = result.expect_err("expected parse error");
+    assert_eq!(exc.exc_type(), ExcType::SyntaxError);
+    assert_snapshot!(exc.message().expect("has message"), @"invalid unpacking target: attribute");
+}
+
+#[test]
+fn many_elif_clauses_exceed_limit() {
+    // A long flat chain of `elif` clauses folds into a deeply right-nested
+    // `Node::If` tree that the prepare and compile phases walk recursively.
+    // Each clause is counted against the parser's nesting-depth budget so the
+    // result is a SyntaxError rather than a native stack overflow downstream.
+    let mut code = "if 0:\n    pass\n".to_owned();
+    for _ in 0..400 {
+        code.push_str("elif 0:\n    pass\n");
+    }
+    let result = MontyRun::new(code, "test.py", vec![]);
+    let err = result.expect_err("expected parse error");
+    assert_eq!(err.exc_type(), ExcType::SyntaxError);
+    assert_eq!(
+        err.message(),
+        Some("too many nested parentheses"),
+        "error message should match CPython, got: {:?}",
+        err.message()
+    );
+}
+
+#[test]
+fn moderate_elif_chain_within_limit() {
+    let mut code = "if 0:\n    pass\n".to_owned();
+    for _ in 0..20 {
+        code.push_str("elif 0:\n    pass\n");
+    }
+    code.push_str("else:\n    pass\n");
+    let result = MontyRun::new(code, "test.py", vec![]);
+    assert!(result.is_ok(), "moderate elif chain should succeed: {result:?}");
+}
+
+#[test]
+fn many_bool_op_operands_exceed_limit() {
+    // A long chain of `and`/`or` operands folds into a deeply right-nested
+    // `Expr::Op` tree. Each fold step is counted against the parser's
+    // nesting-depth budget.
+    let mut code = "x = 1".to_owned();
+    for _ in 0..400 {
+        code.push_str(" and 1");
+    }
+    let result = MontyRun::new(code, "test.py", vec![]);
+    let err = result.expect_err("expected parse error");
+    assert_eq!(err.exc_type(), ExcType::SyntaxError);
+}
+
+#[test]
+fn moderate_bool_op_chain_within_limit() {
+    let mut code = "1".to_owned();
+    for _ in 0..20 {
+        code.push_str(" and 1");
+    }
+    let result = MontyRun::new(code, "test.py", vec![]);
+    assert!(result.is_ok(), "moderate bool-op chain should succeed: {result:?}");
 }

@@ -1,4 +1,11 @@
-use std::{borrow::Cow, fmt::Write, mem, ops::Deref};
+use std::{
+    borrow::Cow,
+    collections::hash_map::DefaultHasher,
+    fmt::Write,
+    hash::{Hash, Hasher},
+    mem,
+    ops::Deref,
+};
 
 use ahash::AHashSet;
 use num_integer::Integer;
@@ -9,12 +16,13 @@ use crate::{
     asyncio::{CallId, Coroutine, GatherFuture, GatherItem},
     bytecode::{CallResult, VM},
     exception_private::{RunError, RunResult, SimpleException},
+    hash::HashValue,
     heap::{DropWithHeap, HeapId, HeapItem, HeapReadOutput},
     intern::FunctionId,
     types::{
         Bytes, Dataclass, Dict, DictItemsView, DictKeysView, DictValuesView, FrozenSet, List, LongInt, Module,
         MontyIter, NamedTuple, Path, PyTrait, Range, ReMatch, RePattern, Set, Slice, Str, Tuple, Type, date, datetime,
-        dict_view::DictView, timedelta, timezone,
+        str::allocate_string, timedelta, timezone,
     },
     value::{EitherStr, Value},
 };
@@ -156,47 +164,6 @@ impl HeapData {
                 | Self::Coroutine(_)
                 | Self::GatherFuture(_)
         )
-    }
-
-    /// Returns whether this heap data currently contains any heap references (`Value::Ref`).
-    ///
-    /// Used during allocation to determine if this data could create reference cycles.
-    /// When true, `mark_potential_cycle()` should be called to enable GC.
-    ///
-    /// Note: This is separate from `is_gc_tracked()` - a container may be GC-tracked
-    /// (capable of holding refs) but not currently contain any refs.
-    #[inline]
-    pub(crate) fn has_refs(&self) -> bool {
-        match self {
-            Self::List(list) => list.contains_refs(),
-            Self::Tuple(tuple) => tuple.contains_refs(),
-            Self::NamedTuple(nt) => nt.contains_refs(),
-            Self::Dict(dict) => dict.has_refs(),
-            Self::DictKeysView(_) | Self::DictItemsView(_) | Self::DictValuesView(_) => true,
-            Self::Set(set) => set.has_refs(),
-            Self::FrozenSet(fset) => fset.has_refs(),
-            // Closures always have refs when they have captured cells (HeapIds)
-            Self::Closure(closure) => {
-                !closure.cells.is_empty() || closure.defaults.iter().any(|v| matches!(v, Value::Ref(_)))
-            }
-            Self::FunctionDefaults(fd) => fd.defaults.iter().any(|v| matches!(v, Value::Ref(_))),
-            Self::Cell(cell) => matches!(&cell.0, Value::Ref(_)),
-            Self::Dataclass(dc) => dc.has_refs(),
-            Self::Iter(iter) => iter.has_refs(),
-            Self::Module(m) => m.has_refs(),
-            // Coroutines have refs from namespace values (params, cell/free vars)
-            Self::Coroutine(coro) => coro.namespace.iter().any(|v| matches!(v, Value::Ref(_))),
-            // GatherFutures have refs from coroutine items and results
-            Self::GatherFuture(gather) => {
-                gather.items.iter().any(|item| matches!(item, GatherItem::Coroutine(_)))
-                    || gather
-                        .results
-                        .iter()
-                        .any(|r| r.as_ref().is_some_and(|v| matches!(v, Value::Ref(_))))
-            }
-            // Leaf types cannot have refs
-            _ => false,
-        }
     }
 
     /// Returns true if this heap data is a coroutine.
@@ -421,7 +388,7 @@ impl HeapItem for GatherFuture {
 }
 
 impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
-    fn py_bool(&self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> bool {
+    fn py_bool(&self, vm: &mut VM<'h, impl ResourceTracker>) -> bool {
         match self {
             Self::Str(s) => s.py_bool(vm),
             Self::Bytes(b) => b.py_bool(vm),
@@ -456,7 +423,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
     fn py_call_attr(
         &mut self,
         self_id: HeapId,
-        vm: &mut VM<'h, '_, impl ResourceTracker>,
+        vm: &mut VM<'h, impl ResourceTracker>,
         attr: &EitherStr,
         args: ArgValues,
     ) -> Result<CallResult, RunError> {
@@ -488,7 +455,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
         }
     }
 
-    fn py_type(&self, vm: &VM<'h, '_, impl ResourceTracker>) -> Type {
+    fn py_type(&self, vm: &VM<'h, impl ResourceTracker>) -> Type {
         match self {
             Self::Str(s) => s.py_type(vm),
             Self::Bytes(b) => b.py_type(vm),
@@ -521,7 +488,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
         }
     }
 
-    fn py_len(&self, vm: &VM<'h, '_, impl ResourceTracker>) -> Option<usize> {
+    fn py_len(&self, vm: &VM<'h, impl ResourceTracker>) -> Option<usize> {
         match self {
             Self::Str(s) => s.py_len(vm),
             Self::Bytes(b) => b.py_len(vm),
@@ -544,7 +511,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
         }
     }
 
-    fn py_eq(&self, other: &Self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> Result<bool, crate::ResourceError> {
+    fn py_eq(&self, other: &Self, vm: &mut VM<'h, impl ResourceTracker>) -> Result<bool, crate::ResourceError> {
         match (self, other) {
             // Simple types: compare with shared borrows (no &mut VM needed)
             (HeapReadOutput::Str(a), HeapReadOutput::Str(b)) => Ok(a.get(vm.heap).as_str() == b.get(vm.heap).as_str()),
@@ -586,50 +553,18 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             // NamedTuple/Tuple cross-type comparison
             (HeapReadOutput::NamedTuple(nt), HeapReadOutput::Tuple(t))
             | (HeapReadOutput::Tuple(t), HeapReadOutput::NamedTuple(nt)) => nt.eq_tuple(t, vm),
-            // DictKeysView comparisons — copy view to local, pass HeapRead directly
-            (HeapReadOutput::DictKeysView(a), HeapReadOutput::DictKeysView(b)) => {
-                let a_view = DictKeysView::new(a.get(vm.heap).dict_id());
-                let b_view = DictKeysView::new(b.get(vm.heap).dict_id());
-                a_view.eq_view(b_view, vm)
-            }
-            (HeapReadOutput::DictKeysView(a), HeapReadOutput::Set(b)) => {
-                let view = DictKeysView::new(a.get(vm.heap).dict_id());
-                view.eq_set(b, vm)
-            }
-            (HeapReadOutput::Set(b), HeapReadOutput::DictKeysView(a)) => {
-                let view = DictKeysView::new(a.get(vm.heap).dict_id());
-                view.eq_set(b, vm)
-            }
-            (HeapReadOutput::DictKeysView(a), HeapReadOutput::FrozenSet(b)) => {
-                let view = DictKeysView::new(a.get(vm.heap).dict_id());
-                view.eq_frozenset(b, vm)
-            }
-            (HeapReadOutput::FrozenSet(b), HeapReadOutput::DictKeysView(a)) => {
-                let view = DictKeysView::new(a.get(vm.heap).dict_id());
-                view.eq_frozenset(b, vm)
-            }
+            // DictKeysView comparisons
+            (HeapReadOutput::DictKeysView(a), HeapReadOutput::DictKeysView(b)) => a.py_eq(b, vm),
+            (HeapReadOutput::DictKeysView(a), HeapReadOutput::Set(b)) => a.eq_set(b, vm),
+            (HeapReadOutput::Set(b), HeapReadOutput::DictKeysView(a)) => a.eq_set(b, vm),
+            (HeapReadOutput::DictKeysView(a), HeapReadOutput::FrozenSet(b)) => a.eq_frozenset(b, vm),
+            (HeapReadOutput::FrozenSet(b), HeapReadOutput::DictKeysView(a)) => a.eq_frozenset(b, vm),
             // DictItemsView comparisons
-            (HeapReadOutput::DictItemsView(a), HeapReadOutput::DictItemsView(b)) => {
-                let a_view = DictItemsView::new(a.get(vm.heap).dict_id());
-                let b_view = DictItemsView::new(b.get(vm.heap).dict_id());
-                a_view.eq_view(b_view, vm)
-            }
-            (HeapReadOutput::DictItemsView(a), HeapReadOutput::Set(b)) => {
-                let view = DictItemsView::new(a.get(vm.heap).dict_id());
-                view.eq_set(b, vm)
-            }
-            (HeapReadOutput::Set(b), HeapReadOutput::DictItemsView(a)) => {
-                let view = DictItemsView::new(a.get(vm.heap).dict_id());
-                view.eq_set(b, vm)
-            }
-            (HeapReadOutput::DictItemsView(a), HeapReadOutput::FrozenSet(b)) => {
-                let view = DictItemsView::new(a.get(vm.heap).dict_id());
-                view.eq_frozenset(b, vm)
-            }
-            (HeapReadOutput::FrozenSet(b), HeapReadOutput::DictItemsView(a)) => {
-                let view = DictItemsView::new(a.get(vm.heap).dict_id());
-                view.eq_frozenset(b, vm)
-            }
+            (HeapReadOutput::DictItemsView(a), HeapReadOutput::DictItemsView(b)) => a.py_eq(b, vm),
+            (HeapReadOutput::DictItemsView(a), HeapReadOutput::Set(b)) => a.eq_set(b, vm),
+            (HeapReadOutput::Set(b), HeapReadOutput::DictItemsView(a)) => a.eq_set(b, vm),
+            (HeapReadOutput::DictItemsView(a), HeapReadOutput::FrozenSet(b)) => a.eq_frozenset(b, vm),
+            (HeapReadOutput::FrozenSet(b), HeapReadOutput::DictItemsView(a)) => a.eq_frozenset(b, vm),
             (HeapReadOutput::Dataclass(a), HeapReadOutput::Dataclass(b)) => {
                 if a.get(vm.heap).name(vm.interns) != b.get(vm.heap).name(vm.interns) {
                     return Ok(false);
@@ -663,10 +598,63 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
         }
     }
 
+    /// Dispatches `py_hash` to the variant's per-type `PyTrait` implementation.
+    ///
+    /// For types that lack a dedicated `HeapRead` trait impl (`Closure`,
+    /// `FunctionDefaults`, `Cell`, `LongInt`, `ExtFunction`), the hash is
+    /// computed inline here. Variants left in the catch-all `_ => Ok(None)`
+    /// arm are unhashable.
+    fn py_hash(&self, self_id: HeapId, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<HashValue>> {
+        match self {
+            Self::Str(s) => s.py_hash(self_id, vm),
+            Self::Bytes(b) => b.py_hash(self_id, vm),
+            Self::Tuple(t) => t.py_hash(self_id, vm),
+            Self::NamedTuple(nt) => nt.py_hash(self_id, vm),
+            Self::FrozenSet(fs) => fs.py_hash(self_id, vm),
+            Self::Dataclass(dc) => dc.py_hash(self_id, vm),
+            Self::Range(r) => r.py_hash(self_id, vm),
+            Self::Slice(s) => s.py_hash(self_id, vm),
+            Self::Path(p) => p.py_hash(self_id, vm),
+            Self::Date(d) => d.py_hash(self_id, vm),
+            Self::DateTime(d) => d.py_hash(self_id, vm),
+            Self::TimeDelta(d) => d.py_hash(self_id, vm),
+            Self::TimeZone(d) => d.py_hash(self_id, vm),
+            // Closure / FunctionDefaults: hash by function ID. Two equal
+            // closures share the same `func_id`, so this is sufficient.
+            Self::Closure(c) => {
+                let mut hasher = DefaultHasher::new();
+                c.get(vm.heap).func_id.hash(&mut hasher);
+                Ok(Some(HashValue::new(hasher.finish())))
+            }
+            Self::FunctionDefaults(fd) => {
+                let mut hasher = DefaultHasher::new();
+                fd.get(vm.heap).func_id.hash(&mut hasher);
+                Ok(Some(HashValue::new(hasher.finish())))
+            }
+            // Cell uses identity hashing (matches Python's default for cell objects).
+            Self::Cell(_) => {
+                let mut hasher = DefaultHasher::new();
+                self_id.hash(&mut hasher);
+                Ok(Some(HashValue::new(hasher.finish())))
+            }
+            // LongInt's hash matches `Value::InternLongInt`'s, since they are
+            // both Python `int` values and must hash equally when equal.
+            Self::LongInt(li) => Ok(Some(li.get(vm.heap).hash())),
+            Self::ExtFunction(name) => {
+                let mut hasher = DefaultHasher::new();
+                name.get(vm.heap).hash(&mut hasher);
+                Ok(Some(HashValue::new(hasher.finish())))
+            }
+            // Unhashable: List, Dict, Set, the dict views, Iter, Module,
+            // Exception, Coroutine, GatherFuture, RePattern, ReMatch.
+            _ => Ok(None),
+        }
+    }
+
     fn py_repr_fmt(
         &self,
         f: &mut impl Write,
-        vm: &VM<'h, '_, impl ResourceTracker>,
+        vm: &mut VM<'h, impl ResourceTracker>,
         heap_ids: &mut AHashSet<HeapId>,
     ) -> RunResult<()> {
         match self {
@@ -718,7 +706,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
         }
     }
 
-    fn py_str(&self, vm: &VM<'h, '_, impl ResourceTracker>) -> RunResult<Cow<'static, str>> {
+    fn py_str(&self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Cow<'static, str>> {
         match self {
             // Strings return their value directly without quotes
             Self::Str(s) => Ok(Cow::Owned(s.get(vm.heap).as_str().to_owned())),
@@ -745,12 +733,12 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
     fn py_add(
         &self,
         other: &Self,
-        vm: &mut VM<'h, '_, impl ResourceTracker>,
+        vm: &mut VM<'h, impl ResourceTracker>,
     ) -> Result<Option<Value>, crate::ResourceError> {
         match (self, other) {
             (HeapReadOutput::Str(a), HeapReadOutput::Str(b)) => {
                 let concat = format!("{}{}", a.get(vm.heap).as_str(), b.get(vm.heap).as_str());
-                Ok(Some(Value::Ref(vm.heap.allocate(HeapData::Str(concat.into()))?)))
+                Ok(Some(allocate_string(concat, vm.heap)?))
             }
             (HeapReadOutput::Bytes(a), HeapReadOutput::Bytes(b)) => {
                 let a_bytes = a.get(vm.heap).as_slice();
@@ -795,7 +783,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
     fn py_sub(
         &self,
         other: &Self,
-        vm: &mut VM<'h, '_, impl ResourceTracker>,
+        vm: &mut VM<'h, impl ResourceTracker>,
     ) -> Result<Option<Value>, crate::ResourceError> {
         match (self, other) {
             (HeapReadOutput::LongInt(a), HeapReadOutput::LongInt(b)) => {
@@ -837,7 +825,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
         }
     }
 
-    fn py_mod(&self, other: &Self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<Option<Value>> {
+    fn py_mod(&self, other: &Self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<Value>> {
         match (self, other) {
             (HeapReadOutput::LongInt(a), HeapReadOutput::LongInt(b)) => {
                 if b.get(vm.heap).is_zero() {
@@ -854,7 +842,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
     fn py_iadd(
         &mut self,
         other: &Value,
-        vm: &mut VM<'h, '_, impl ResourceTracker>,
+        vm: &mut VM<'h, impl ResourceTracker>,
         self_id: Option<HeapId>,
     ) -> Result<bool, crate::ResourceError> {
         match self {
@@ -863,7 +851,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
         }
     }
 
-    fn py_getitem(&self, key: &Value, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<Value> {
+    fn py_getitem(&self, key: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Value> {
         match self {
             Self::Str(s) => s.py_getitem(key, vm),
             Self::Bytes(b) => b.py_getitem(key, vm),
@@ -877,7 +865,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
         }
     }
 
-    fn py_setitem(&mut self, key: Value, value: Value, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<()> {
+    fn py_setitem(&mut self, key: Value, value: Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<()> {
         match self {
             Self::List(l) => l.py_setitem(key, value, vm),
             Self::Dict(d) => d.py_setitem(key, value, vm),
@@ -889,7 +877,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
         }
     }
 
-    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<Option<CallResult>> {
+    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<CallResult>> {
         match self {
             Self::Str(s) => s.py_getattr(attr, vm),
             Self::Bytes(b) => b.py_getattr(attr, vm),

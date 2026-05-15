@@ -336,20 +336,6 @@ name = "bytemuck"
 version = "1.25.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c8efb64bd706a16a1bdde310ae86b351e4d21550d98d056f22f8a7f7a2183fec"
-dependencies = [
- "bytemuck_derive",
-]
-
-[[package]]
-name = "bytemuck_derive"
-version = "1.10.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f9abbd1bc6865053c427f7198e6af43bfdedc55ab791faed4fbd361d789575ff"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn",
-]
 
 [[package]]
 name = "byteorder"
@@ -635,6 +621,17 @@ dependencies = [
  "rustversion",
  "ryu",
  "static_assertions",
+]
+
+[[package]]
+name = "console"
+version = "0.16.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d64e8af5551369d19cf50138de61f1c42074ab970f74e99be916646777f8fc87"
+dependencies = [
+ "encode_unicode",
+ "libc",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -955,6 +952,12 @@ name = "embedded-io"
 version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "edd0f118536f44f5ccd48bcb8b111bdc3de888b58c74639dfb034a357d0f206d"
+
+[[package]]
+name = "encode_unicode"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "34aa73646ffb006b8f5147f3dc182bd4bcb190227ce861fc4a4844bf8e3cb2c0"
 
 [[package]]
 name = "endian-type"
@@ -1458,6 +1461,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "insta"
+version = "1.47.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7b4a6248eb93a4401ed2f37dfe8ea592d3cf05b7cf4f8efa867b6895af7e094e"
+dependencies = [
+ "console",
+ "once_cell",
+ "similar",
+ "tempfile",
+]
+
+[[package]]
 name = "interpolator"
 version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1756,14 +1771,14 @@ dependencies = [
 
 [[package]]
 name = "monty"
-version = "0.0.16"
+version = "0.0.17"
 dependencies = [
  "ahash",
- "bytemuck",
  "chrono",
  "fancy-regex 0.17.0",
  "hashbrown 0.16.1",
  "indexmap",
+ "insta",
  "itertools 0.14.0",
  "jiter",
  "libm",
@@ -1785,7 +1800,7 @@ dependencies = [
 
 [[package]]
 name = "monty-bench"
-version = "0.0.16"
+version = "0.0.17"
 dependencies = [
  "codspeed-criterion-compat",
  "criterion",
@@ -1797,7 +1812,7 @@ dependencies = [
 
 [[package]]
 name = "monty-cli"
-version = "0.0.16"
+version = "0.0.17"
 dependencies = [
  "clap",
  "monty",
@@ -1808,7 +1823,7 @@ dependencies = [
 
 [[package]]
 name = "monty-datatest"
-version = "0.0.16"
+version = "0.0.17"
 dependencies = [
  "ahash",
  "chrono",
@@ -1822,7 +1837,7 @@ dependencies = [
 
 [[package]]
 name = "monty-fuzz"
-version = "0.0.16"
+version = "0.0.17"
 dependencies = [
  "arbitrary",
  "libfuzzer-sys",
@@ -1831,7 +1846,7 @@ dependencies = [
 
 [[package]]
 name = "monty-js"
-version = "0.0.16"
+version = "0.0.17"
 dependencies = [
  "monty",
  "monty_type_checking",
@@ -1845,10 +1860,11 @@ dependencies = [
 
 [[package]]
 name = "monty_type_checking"
-version = "0.0.16"
+version = "0.0.17"
 dependencies = [
  "codspeed-criterion-compat",
  "criterion",
+ "insta",
  "monty_typeshed",
  "pprof",
  "pretty_assertions",
@@ -1862,7 +1878,7 @@ dependencies = [
 
 [[package]]
 name = "monty_typeshed"
-version = "0.0.16"
+version = "0.0.17"
 dependencies = [
  "path-slash",
  "ruff_db",
@@ -2289,7 +2305,7 @@ dependencies = [
 
 [[package]]
 name = "pydantic-monty"
-version = "0.0.16"
+version = "0.0.17"
 dependencies = [
  "indexmap",
  "monty",

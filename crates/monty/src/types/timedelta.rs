@@ -4,7 +4,14 @@
 //! normalized `(days, seconds, microseconds)` semantics for constructors, arithmetic,
 //! and formatting.
 
-use std::{borrow::Cow, cmp::Ordering, fmt::Write, mem};
+use std::{
+    borrow::Cow,
+    cmp::Ordering,
+    collections::hash_map::DefaultHasher,
+    fmt::Write,
+    hash::{Hash, Hasher},
+    mem,
+};
 
 use ahash::AHashSet;
 use chrono::TimeDelta as ChronoTimeDelta;
@@ -14,6 +21,7 @@ use crate::{
     bytecode::{CallResult, VM},
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, RunResult, SimpleException},
+    hash::HashValue,
     heap::{Heap, HeapData, HeapId, HeapItem, HeapRead},
     intern::{Interns, StaticStrings},
     resource::{ResourceError, ResourceTracker},
@@ -322,41 +330,43 @@ impl HeapItem for TimeDelta {
 /// `HeapRead`-based dispatch for `TimeDelta`, enabling the `HeapReadOutput` enum to
 /// delegate `PyTrait` calls to heap-resident timedeltas.
 impl<'h> PyTrait<'h> for HeapRead<'h, TimeDelta> {
-    fn py_type(&self, _vm: &VM<'h, '_, impl ResourceTracker>) -> Type {
+    fn py_type(&self, _vm: &VM<'h, impl ResourceTracker>) -> Type {
         Type::TimeDelta
     }
 
-    fn py_len(&self, _vm: &VM<'h, '_, impl ResourceTracker>) -> Option<usize> {
+    fn py_len(&self, _vm: &VM<'h, impl ResourceTracker>) -> Option<usize> {
         None
     }
 
-    fn py_eq(&self, other: &Self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> Result<bool, ResourceError> {
+    fn py_eq(&self, other: &Self, vm: &mut VM<'h, impl ResourceTracker>) -> Result<bool, ResourceError> {
         Ok(total_microseconds(self.get(vm.heap)) == total_microseconds(other.get(vm.heap)))
     }
 
-    fn py_cmp(
-        &self,
-        other: &Self,
-        vm: &mut VM<'h, '_, impl ResourceTracker>,
-    ) -> Result<Option<Ordering>, ResourceError> {
+    fn py_hash(&self, _self_id: HeapId, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<HashValue>> {
+        let mut hasher = DefaultHasher::new();
+        self.get(vm.heap).hash(&mut hasher);
+        Ok(Some(HashValue::new(hasher.finish())))
+    }
+
+    fn py_cmp(&self, other: &Self, vm: &mut VM<'h, impl ResourceTracker>) -> Result<Option<Ordering>, ResourceError> {
         Ok(total_microseconds(self.get(vm.heap)).partial_cmp(&total_microseconds(other.get(vm.heap))))
     }
 
-    fn py_bool(&self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> bool {
+    fn py_bool(&self, vm: &mut VM<'h, impl ResourceTracker>) -> bool {
         total_microseconds(self.get(vm.heap)) != 0
     }
 
     fn py_repr_fmt(
         &self,
         f: &mut impl Write,
-        vm: &VM<'h, '_, impl ResourceTracker>,
+        vm: &mut VM<'h, impl ResourceTracker>,
         _heap_ids: &mut AHashSet<HeapId>,
     ) -> RunResult<()> {
         f.write_str(&format_repr(self.get(vm.heap)))?;
         Ok(())
     }
 
-    fn py_str(&self, vm: &VM<'h, '_, impl ResourceTracker>) -> RunResult<Cow<'static, str>> {
+    fn py_str(&self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Cow<'static, str>> {
         let (days, seconds, microseconds) = components(self.get(vm.heap));
         let hours = seconds / SECONDS_PER_HOUR;
         let minutes = (seconds % SECONDS_PER_HOUR) / SECONDS_PER_MINUTE;
@@ -378,7 +388,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, TimeDelta> {
     fn py_call_attr(
         &mut self,
         _self_id: HeapId,
-        vm: &mut VM<'h, '_, impl ResourceTracker>,
+        vm: &mut VM<'h, impl ResourceTracker>,
         attr: &EitherStr,
         args: ArgValues,
     ) -> RunResult<CallResult> {
@@ -391,7 +401,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, TimeDelta> {
         Err(ExcType::attribute_error(Type::TimeDelta, attr.as_str(vm.interns)))
     }
 
-    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<Option<CallResult>> {
+    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<CallResult>> {
         let (days, seconds, microseconds) = components(self.get(vm.heap));
         match attr.string_id() {
             Some(id) if id == StaticStrings::Days => Ok(Some(CallResult::Value(Value::Int(i64::from(days))))),

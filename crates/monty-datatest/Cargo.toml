@@ -22,7 +22,7 @@ pyo3-build-config = { version = "0.28", features = ["resolve-config"] }
 
 [features]
 ref-count-return = ["monty/ref-count-return"]
-ref-count-panic = ["monty/ref-count-panic"]
+memory-model-checks = ["monty/memory-model-checks"]
 
 [lints]
 workspace = true

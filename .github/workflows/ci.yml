@@ -50,11 +50,6 @@ jobs:
 
       - run: uv sync --all-packages --only-dev
 
-      - uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4  # zizmor: ignore[cache-poisoning] -- Job does not produce release artifacts and does not have sensitive permissions
-        with:
-          path: ~/.cache/pre-commit
-          key: pre-commit|${{ env.UV_PYTHON }}|${{ hashFiles('.pre-commit-config.yaml') }}
-
       - name: Setup node
         uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0 # zizmor: ignore[cache-poisoning] -- Job does not produce release artifacts and does not have sensitive permissions
         with:
@@ -62,17 +57,14 @@ jobs:
           cache: npm
           cache-dependency-path: crates/monty-js/package-lock.json
 
-      - name: Install dependencies
+      - name: Install node dependencies
         run: npm install
         working-directory: crates/monty-js
 
-      - run: uvx pre-commit run --color=always --all-files --verbose
+      - name: Run prek
+        uses: j178/prek-action@cbc2f23eb5539cf20d82d1aabd0d0ecbcc56f4e3 # v2.2
         env:
           SKIP: no-commit-to-branch
-
-      - name: Show diff on failure
-        if: failure()
-        run: git diff
 
   test-rust:
     runs-on: ubuntu-latest
@@ -112,9 +104,9 @@ jobs:
       # coverage for `make test-no-features`
       - run: cargo llvm-cov --no-report -p monty
       - run: cargo llvm-cov run --no-report -p monty-datatest
-      # coverage for `make test-ref-count-panic`
-      - run: cargo llvm-cov --no-report -p monty --features ref-count-panic
-      - run: cargo llvm-cov run --no-report -p monty-datatest --features ref-count-panic
+      # coverage for `make test-memory-model-checks`
+      - run: cargo llvm-cov --no-report -p monty --features memory-model-checks
+      - run: cargo llvm-cov run --no-report -p monty-datatest --features memory-model-checks
       # coverage for `make test-ref-count-return`
       - run: cargo llvm-cov --no-report -p monty --features ref-count-return
       - run: cargo llvm-cov run --no-report -p monty-datatest --features ref-count-return
@@ -307,8 +299,8 @@ jobs:
         if: runner.os == 'Windows'
         run: Remove-Item .cargo/config.toml
 
-      - run: cargo test -p monty --features ref-count-panic
-      - run: cargo run -p monty-datatest --features ref-count-panic
+      - run: cargo test -p monty --features memory-model-checks
+      - run: cargo run -p monty-datatest --features memory-model-checks
 
   bench-test:
     runs-on: ubuntu-latest

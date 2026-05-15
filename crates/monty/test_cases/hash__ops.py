@@ -151,3 +151,12 @@ td[ValueError] = 'value_error'
 assert td[int] == 'int_type', 'int type as dict key'
 assert td[str] == 'str_type', 'str type as dict key'
 assert td[ValueError] == 'value_error', 'exception type as dict key'
+
+# Types which compare equal should hash the same
+assert hash(1) == hash(True) and 1 == True, 'int 1 and bool True hash and compare equal'
+assert hash(0) == hash(False) and 0 == False, 'int 0 and bool False hash and compare equal'
+assert hash(-0.0) == hash(0.0) and -0.0 == 0.0, 'float -0.0 and 0.0 hash and compare equal'
+assert hash(1) == hash(1.0) and 1 == 1.0, 'int 1 and float 1.0 hash and compare equal'
+assert hash(0) == hash(0.0) and 0 == 0.0, 'int 0 and float 0.0 hash and compare equal'
+assert hash(0.0) == hash(False) and 0.0 == False, 'float 0.0 and bool False hash and compare equal'
+assert hash(1.0) == hash(True) and 1.0 == True, 'float 1.0 and bool True hash and compare equal'

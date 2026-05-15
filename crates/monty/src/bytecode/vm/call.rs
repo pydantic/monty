@@ -58,7 +58,7 @@ pub(crate) enum CallResult {
     AwaitValue(Value),
 }
 
-impl<T: ResourceTracker> VM<'_, '_, T> {
+impl<T: ResourceTracker> VM<'_, T> {
     // ========================================================================
     // Call Opcode Executors
     // ========================================================================
@@ -758,10 +758,12 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
         let (namespace, this) = namespace_guard.into_parts();
         this.stack.extend(namespace);
 
+        let exc_stack_base = this.exception_stack.len();
         this.push_frame(CallFrame::new_function(
             code,
             stack_base,
             locals_count,
+            exc_stack_base,
             func_id,
             call_position,
         ))?;

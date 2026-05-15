@@ -13,6 +13,7 @@ mod expressions;
 pub mod fs;
 mod fstring;
 mod function;
+mod hash;
 mod heap_data;
 mod intern;
 mod io;

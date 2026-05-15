@@ -37,20 +37,24 @@ libm = "0.2"
 chrono = { version = "0.4", features = ["serde"] }
 speedate = "0.17.0"
 itertools = "0.14.0"
-bytemuck = { version = "1.25.0", features = ["derive"] }
 jiter = { version = "0.13.0", features = ["num-bigint"] }
 
 [features]
 # ref-count-return changes behavior to return information on reference counts to check they're correct
 # should be used for testing only
-ref-count-return = []
-# ref-count-panic enables a Drop implementation on Value which catches heap allocated values that are dropped
-# without being dereferenced.
+ref-count-return = ["test-hooks"]
+# memory-model-checks enables a Drop implementation on Value which catches heap allocated values that are dropped
+# without being dereferenced, and sets the default GC interval to 1 so garbage collection runs on every
+# GC-tracked allocation.
 # should be used for testing only
-ref-count-panic = []
+memory-model-checks = []
+# test-hooks exposes small internal helpers needed by integration tests that
+# exercise production behavior without duplicating implementation details.
+test-hooks = []
 
 [dev-dependencies]
 tempfile = "3"
+insta = { workspace = true }
 
 [lints]
 workspace = true

@@ -6,11 +6,7 @@
 //! F-strings can contain literal text and interpolated expressions with optional
 //! conversion flags (`!s`, `!r`, `!a`) and format specifications.
 
-use std::{
-    fmt::{self, Write as _},
-    iter,
-    str::FromStr,
-};
+use std::{fmt, fmt::Write, iter, str::FromStr};
 
 use crate::{
     bytecode::VM,
@@ -298,7 +294,7 @@ impl fmt::Display for FormatError {
 pub fn format_with_spec(
     value: &Value,
     spec: &ParsedFormatSpec,
-    vm: &VM<'_, '_, impl ResourceTracker>,
+    vm: &mut VM<'_, impl ResourceTracker>,
 ) -> Result<String, RunError> {
     let value_type = value.py_type(vm);
 

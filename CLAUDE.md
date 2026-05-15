@@ -27,7 +27,7 @@ Key rules:
 - Avoid `#[cfg(unix)]`-only code in the main crate — all features must work on all platforms
 - Tests in `crates/monty/tests/` should be cross-platform; use helper functions for
   OS-specific APIs like symlink creation (see `symlink_file`/`symlink_dir` in `fs_security.rs`)
-- CI runs `cargo test -p monty --features ref-count-panic` on Linux, macOS, and Windows
+- CI runs `cargo test -p monty --features memory-model-checks` on Linux, macOS, and Windows
 
 ## Important Security Notice
 
@@ -85,15 +85,20 @@ All heap-allocated Python objects (lists, dicts, strings, etc.) are stored in a 
 
 #### Core concepts
 
-- **`HeapReader<'a, T>`** — A scoped borrow of the heap that produces `HeapRead` handles. Created exclusively via `HeapReader::with(heap, |heap| { ... })`. The `for<'a>` closure bound makes the lifetime `'a` universally quantified, so `HeapRead` pointers cannot escape the closure.
+- **`HeapReader<'a, T>`** — A scoped borrow of the heap that produces `HeapRead` handles. Created exclusively via `HeapReader::with`, which takes a `for<'a>` closure bound makes the lifetime `'a` universally quantified, so `HeapRead` pointers cannot escape the closure.
 - **`HeapRead<'a, T>`** — A typed handle to a specific heap entry. Created by `heap.read(id)` which returns a `HeapReadOutput<'a>` enum that you match on. Tracks a reader count that prevents the entry from being freed while the handle exists.
 - **`HeapReadOutput<'a>`** — Enum over all `HeapRead<'a, T>` variants (one per `HeapData` variant). Pattern match to get the typed handle.
 
 #### Reading and mutating heap data
 
 ```rust
-// Scoped heap access
-HeapReader::with(heap, |heap| {
+// Scoped heap access.
+// The second argument allows for extra data to be
+// passed into the closure, will be rebranded as
+// `&'a mut ...` to match the `'a` lifetime of the
+// `HeapRead` handle, so the closure can have additional
+// context while still having the `for <'a>` safety guarantee.
+HeapReader::with(heap, &mut (), |heap, ()| {
     let output = heap.read(some_id);  // returns HeapReadOutput<'a>
     match output {
         HeapReadOutput::List(list) => {
@@ -118,7 +123,7 @@ Type methods are implemented as `impl<'h> HeapRead<'h, T>` blocks. The `PyTrait<
 ```rust
 // Methods on a heap type
 impl<'h> HeapRead<'h, List> {
-    pub fn append(&mut self, vm: &mut VM<'h, '_, impl ResourceTracker>, item: Value) -> RunResult<()> {
+    pub fn append(&mut self, vm: &mut VM<'h, impl ResourceTracker>, item: Value) -> RunResult<()> {
         self.get_mut(vm.heap).items.push(item);
         Ok(())
     }
@@ -126,8 +131,8 @@ impl<'h> HeapRead<'h, List> {
 
 // PyTrait implementation
 impl<'h> PyTrait<'h> for HeapRead<'h, List> {
-    fn py_type(&self, vm: &VM<'h, '_, impl ResourceTracker>) -> Type { Type::List }
-    fn py_len(&self, vm: &VM<'h, '_, impl ResourceTracker>) -> Option<usize> {
+    fn py_type(&self, vm: &VM<'h, impl ResourceTracker>) -> Type { Type::List }
+    fn py_len(&self, vm: &VM<'h, impl ResourceTracker>) -> Option<usize> {
         Some(self.get(vm.heap).items.len())
     }
     // ...
@@ -191,7 +196,7 @@ Avoid manual `drop_with_heap` whenever there are multiple code paths (branching,
 
 ## Dev Commands
 
-DO NOT run `cargo build` or `cargo run`, it will fail because of issues with Python bindings.
+**IMPORTANT**: before running `cargo build` or `cargo run`, it is likely necessary to run `make install-py` to ensure that the Python virtual environment is available for build.
 
 Instead use the following `make` commands:
 
@@ -217,7 +222,7 @@ make lint                 Lint the code with ruff and clippy
 make format-lint-rs       Format and lint Rust code with fmt and clippy
 make format-lint-py       Format and lint Python code with ruff
 make test-no-features     Run rust tests without any features enabled
-make test-ref-count-panic Run rust tests with ref-count-panic enabled
+make test-memory-model-checks Run rust tests with memory-model-checks enabled
 make test-ref-count-return Run rust tests with ref-count-return enabled
 make test-cases           Run tests cases only
 make test-type-checking   Run rust tests on monty_type_checking
@@ -322,15 +327,15 @@ Commands:
 # Build the project
 cargo build
 
-# Run tests (this is the best way to run all tests as it enables the ref-count-panic feature)
-make test-ref-count-panic
+# Run tests (this is the best way to run all tests as it enables the memory-model-checks feature)
+make test-memory-model-checks
 
 # Run crates/monty/test_cases tests only
 make test-cases
 
 # Run a specific test
-cargo test -p monty --test TEST --features ref-count-panic str__ops
-cargo run -p monty-datatest --features ref-count-panic str__ops
+cargo test -p monty --test TEST --features memory-model-checks str__ops
+cargo run -p monty-datatest --features memory-model-checks str__ops
 
 # Run the interpreter on a Python file
 cargo run -- <file.py>
@@ -480,6 +485,14 @@ All these markers must be at the start of comment lines to be recognized.
 - Use `make complete-tests` to fill in blank expectations
 - Regression tests run via `datatest-stable` harness in `crates/monty-datatest/src/main.rs`, use `make test-cases` to run them
 
+### Rust integration tests and `insta` snapshots
+
+In `crates/*/tests/*.rs` (but **not** `crates/monty/test_cases/`), use [`insta`](https://insta.rs) `assert_snapshot!` for multi-line strings, serialized output, error messages otherwise fuzz-checked via `.contains(...)`, and any fixture currently compared via a hand-rolled `UPDATE_EXPECT` helper (use external snapshots under `tests/snapshots/`).
+
+Keep `assert_eq!` for scalars, enums, and structural values (`MontyObject`, `Vec`, etc.), and for principled membership checks like `vec.contains(...)`.
+
+Workflow: write `assert_snapshot!(value, @"");`, then `cargo insta test --accept` to populate (plain `INSTA_UPDATE=always` does **not** update inline `@"..."` snapshots — you need the `cargo insta` subcommand, installed via `cargo install cargo-insta`). Add `insta = { workspace = true }` to `[dev-dependencies]` when introducing it to a new crate.
+
 ## Python Package (`pydantic-monty`)
 
 The Python package provides Python bindings for the Monty interpreter, located in `crates/monty-python/`.
@@ -545,6 +558,11 @@ Heap-allocated values (`Value::Ref`) use manual reference counting. Key rules:
 - **Dropping**: Call `drop_with_heap(heap)` when discarding an `Value` that may be a `Ref`.
 
 Container types (`List`, `Tuple`, `Dict`) also have `clone_with_heap()` methods.
+
+### Cycle collection — Bacon–Rajan trial deletion
+
+Reference counting alone cannot reclaim cycles. Monty uses **Bacon–Rajan trial deletion**
+(`Heap::collect_cycles` in `crates/monty/src/heap.rs`).
 
 **Resource limits**: When resource limits (allocations, memory, time) are exceeded, execution terminates with a `ResourceError`. No guarantees are made about the state of the heap or reference counts after a resource limit is exceeded. The heap may contain orphaned objects with incorrect refcounts. This is acceptable because resource exhaustion is a terminal error - the execution context should be discarded.
 

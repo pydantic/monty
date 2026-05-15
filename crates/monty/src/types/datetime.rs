@@ -6,6 +6,7 @@
 use std::{
     borrow::Cow,
     cmp::Ordering,
+    collections::hash_map::DefaultHasher,
     fmt::Write,
     hash::{Hash, Hasher},
     mem,
@@ -19,13 +20,15 @@ use crate::{
     bytecode::{CallResult, VM},
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, RunResult, SimpleException},
+    hash::HashValue,
     heap::{Heap, HeapData, HeapId, HeapItem, HeapRead},
     intern::{Interns, StaticStrings},
     os::OsFunction,
     resource::{ResourceError, ResourceTracker},
     types::{
-        AttrCallResult, PyTrait, TimeDelta, TimeZone, Type, date, str, str::StringRepr, timedelta, timezone,
-        value_to_i32,
+        AttrCallResult, PyTrait, TimeDelta, TimeZone, Type, date,
+        str::{StringRepr, allocate_string, allocate_string_no_interning},
+        timedelta, timezone, value_to_i32,
     },
     value::{EitherStr, Value},
 };
@@ -47,6 +50,18 @@ pub(crate) struct DateTime {
     /// allocating a new timezone each time.
     #[serde(default)]
     tzinfo_ref: Option<HeapId>,
+}
+
+impl DateTime {
+    /// Returns the retained `tzinfo` heap reference, if this datetime is timezone-aware.
+    ///
+    /// Used by GC traversal (`collect_child_ids`) and ref-count cascade
+    /// (`py_dec_ref_ids_for_data`) so that the timezone object stays alive as long
+    /// as the datetime references it. Without this, `gc.collect` cannot reach the
+    /// tzinfo and may sweep it while the datetime still points at the freed slot.
+    pub(crate) fn tzinfo_ref(&self) -> Option<HeapId> {
+        self.tzinfo_ref
+    }
 }
 
 impl Hash for DateTime {
@@ -971,15 +986,15 @@ impl HeapItem for DateTime {
 /// `HeapRead`-based dispatch for `DateTime`, enabling the `HeapReadOutput` enum to
 /// delegate `PyTrait` calls to heap-resident datetimes.
 impl<'h> PyTrait<'h> for HeapRead<'h, DateTime> {
-    fn py_type(&self, _vm: &VM<'h, '_, impl ResourceTracker>) -> Type {
+    fn py_type(&self, _vm: &VM<'h, impl ResourceTracker>) -> Type {
         Type::DateTime
     }
 
-    fn py_len(&self, _vm: &VM<'h, '_, impl ResourceTracker>) -> Option<usize> {
+    fn py_len(&self, _vm: &VM<'h, impl ResourceTracker>) -> Option<usize> {
         None
     }
 
-    fn py_eq(&self, other: &Self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> Result<bool, ResourceError> {
+    fn py_eq(&self, other: &Self, vm: &mut VM<'h, impl ResourceTracker>) -> Result<bool, ResourceError> {
         let a = self.get(vm.heap);
         let b = other.get(vm.heap);
         if is_aware(a) != is_aware(b) {
@@ -991,11 +1006,13 @@ impl<'h> PyTrait<'h> for HeapRead<'h, DateTime> {
         Ok(local_micros(a) == local_micros(b))
     }
 
-    fn py_cmp(
-        &self,
-        other: &Self,
-        vm: &mut VM<'h, '_, impl ResourceTracker>,
-    ) -> Result<Option<Ordering>, ResourceError> {
+    fn py_hash(&self, _self_id: HeapId, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<HashValue>> {
+        let mut hasher = DefaultHasher::new();
+        self.get(vm.heap).hash(&mut hasher);
+        Ok(Some(HashValue::new(hasher.finish())))
+    }
+
+    fn py_cmp(&self, other: &Self, vm: &mut VM<'h, impl ResourceTracker>) -> Result<Option<Ordering>, ResourceError> {
         let a = self.get(vm.heap);
         let b = other.get(vm.heap);
         if is_aware(a) != is_aware(b) {
@@ -1007,14 +1024,14 @@ impl<'h> PyTrait<'h> for HeapRead<'h, DateTime> {
         Ok(local_micros(a).partial_cmp(&local_micros(b)))
     }
 
-    fn py_bool(&self, _vm: &mut VM<'h, '_, impl ResourceTracker>) -> bool {
+    fn py_bool(&self, _vm: &mut VM<'h, impl ResourceTracker>) -> bool {
         true
     }
 
     fn py_repr_fmt(
         &self,
         f: &mut impl Write,
-        vm: &VM<'h, '_, impl ResourceTracker>,
+        vm: &mut VM<'h, impl ResourceTracker>,
         _heap_ids: &mut AHashSet<HeapId>,
     ) -> RunResult<()> {
         let dt = self.get(vm.heap);
@@ -1046,7 +1063,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, DateTime> {
         Ok(())
     }
 
-    fn py_str(&self, vm: &VM<'h, '_, impl ResourceTracker>) -> RunResult<Cow<'static, str>> {
+    fn py_str(&self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Cow<'static, str>> {
         let dt = self.get(vm.heap);
         let Some((year, month, day, hour, minute, second, microsecond)) = to_components(dt) else {
             return Ok(Cow::Borrowed("<out of range>"));
@@ -1064,7 +1081,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, DateTime> {
     fn py_call_attr(
         &mut self,
         _self_id: HeapId,
-        vm: &mut VM<'h, '_, impl ResourceTracker>,
+        vm: &mut VM<'h, impl ResourceTracker>,
         attr: &EitherStr,
         args: ArgValues,
     ) -> RunResult<CallResult> {
@@ -1073,16 +1090,12 @@ impl<'h> PyTrait<'h> for HeapRead<'h, DateTime> {
             Some(id) if id == StaticStrings::Isoformat => {
                 args.check_zero_args("datetime.isoformat", vm.heap)?;
                 let s = format_isoformat(&dt, 'T');
-                Ok(CallResult::Value(Value::Ref(
-                    vm.heap.allocate(HeapData::Str(str::Str::new(s)))?,
-                )))
+                Ok(CallResult::Value(allocate_string_no_interning(s, vm.heap)?))
             }
             Some(id) if id == StaticStrings::Strftime => {
                 let fmt = date::extract_strftime_arg(args, "datetime.strftime", vm.heap, vm.interns)?;
                 let formatted = dt.naive.format(&fmt).to_string();
-                Ok(CallResult::Value(Value::Ref(
-                    vm.heap.allocate(HeapData::Str(str::Str::new(formatted)))?,
-                )))
+                Ok(CallResult::Value(allocate_string(formatted, vm.heap)?))
             }
             Some(id) if id == StaticStrings::Replace => {
                 let result = extract_datetime_replace_kwargs(args, &dt, vm.heap, vm.interns)?;
@@ -1118,7 +1131,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, DateTime> {
         }
     }
 
-    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<Option<CallResult>> {
+    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<CallResult>> {
         // Clone to release the HeapRead borrow before accessing attributes
         // that may need to allocate (e.g. tzinfo).
         let dt = self.get(vm.heap).clone();

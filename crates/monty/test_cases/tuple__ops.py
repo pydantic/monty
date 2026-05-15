@@ -131,3 +131,9 @@ assert not () < (), 'empty tuples not lt'
 assert () <= (), 'empty tuples le'
 assert () >= (), 'empty tuples ge'
 assert not () > (), 'empty tuples not gt'
+
+# === Tuple reprs ===
+assert repr(()) == '()', 'empty tuple repr'
+assert repr((1,)) == '(1,)', 'single element tuple repr'
+assert repr((1, 2)) == '(1, 2)', 'multi element tuple repr'
+assert repr((1, (2, 3))) == '(1, (2, 3))', 'nested tuple repr'

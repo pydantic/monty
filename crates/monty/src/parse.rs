@@ -196,22 +196,40 @@ impl<'a> Parser<'a> {
         Ok(out)
     }
 
+    /// Folds a flat list of `elif`/`else` clauses into a right-nested `Node::If` tree.
+    ///
+    /// Ruff hands us the clauses as a flat `Vec`, but the prepared AST and the
+    /// bytecode compiler both walk the resulting tree recursively. Each `elif`
+    /// clause is therefore counted against the same depth budget that bounds
+    /// explicitly nested source constructs — without this, a long flat chain
+    /// would produce an AST far deeper than [`MAX_NESTING_DEPTH`] and overflow
+    /// the host's native stack during the prepare or compile phases.
+    ///
+    /// The depth budget consumed during the fold is restored on success so
+    /// sibling statements are not penalized. On parse errors the budget is
+    /// left decremented; this is harmless because the parser aborts entirely
+    /// and `depth_remaining` is never consulted again.
     fn parse_elif_else_clauses(&mut self, clauses: Vec<ElifElseClause>) -> Result<Vec<ParseNode>, ParseError> {
         let mut tail: Vec<ParseNode> = Vec::new();
+        let mut levels: u16 = 0;
         for clause in clauses.into_iter().rev() {
             match clause.test {
                 Some(test) => {
+                    // Account for the extra nesting level this clause adds to
+                    // the result tree.
+                    self.decr_depth_remaining(|| test.range())?;
+                    levels += 1;
                     let test = self.parse_expression(test)?;
                     let body = self.parse_statements(clause.body)?;
                     let or_else = tail;
-                    let nested = Node::If { test, body, or_else };
-                    tail = vec![nested];
+                    tail = vec![Node::If { test, body, or_else }];
                 }
                 None => {
                     tail = self.parse_statements(clause.body)?;
                 }
             }
         }
+        self.depth_remaining += levels;
         Ok(tail)
     }
 
@@ -283,10 +301,10 @@ impl<'a> Parser<'a> {
                 "class definitions",
                 self.convert_range(c.range),
             )),
-            Stmt::Return(ast::StmtReturn { value, .. }) => match value {
-                Some(value) => Ok(Node::Return(self.parse_expression(*value)?)),
-                None => Ok(Node::ReturnNone),
-            },
+            Stmt::Return(ast::StmtReturn { value, .. }) => Ok(Node::Return(match value {
+                Some(value) => Some(self.parse_expression(*value)?),
+                None => None,
+            })),
             Stmt::Delete(d) => Err(ParseError::not_implemented(
                 "the 'del' statement",
                 self.convert_range(d.range),
@@ -682,7 +700,14 @@ impl<'a> Parser<'a> {
         match expression {
             AstExpr::BoolOp(ast::ExprBoolOp { op, values, range, .. }) => {
                 // Handle chained boolean operations like `a and b and c` by right-folding
-                // into nested binary operations: `a and (b and c)`
+                // into nested binary operations: `a and (b and c)`.
+                //
+                // Ruff hands the operands over as a flat `Vec`, but the fold
+                // produces a right-nested `Expr::Op` tree that the prepare and
+                // compile phases walk recursively. Count each fold step against
+                // the same depth budget that bounds explicitly nested source so
+                // a long flat chain cannot overflow the host's native stack
+                // downstream. The budget is restored once the fold completes.
                 let rust_op = convert_bool_op(op);
                 let position = self.convert_range(range);
                 let mut values_iter = values.into_iter().rev();
@@ -692,7 +717,10 @@ impl<'a> Parser<'a> {
                 let mut result = self.parse_expression(last_value)?;
 
                 // Fold from right to left
+                let mut levels: u16 = 0;
                 for value in values_iter {
+                    self.decr_depth_remaining(|| value.range())?;
+                    levels += 1;
                     let left = Box::new(self.parse_expression(value)?);
                     result = ExprLoc::new(
                         position,
@@ -703,6 +731,7 @@ impl<'a> Parser<'a> {
                         },
                     );
                 }
+                self.depth_remaining += levels;
                 Ok(result)
             }
             AstExpr::Named(ast::ExprNamed {
@@ -1250,7 +1279,7 @@ impl<'a> Parser<'a> {
         match ast {
             AstExpr::Name(ast::ExprName { id, range, .. }) => Ok(self.identifier(&id, range)),
             other => Err(ParseError::syntax(
-                format!("Expected name, got {other:?}"),
+                format!("Expected name, got {}", describe_expr_kind(&other)),
                 self.convert_range(other.range()),
             )),
         }
@@ -1351,7 +1380,7 @@ impl<'a> Parser<'a> {
                 Ok(UnpackTarget::Tuple { targets, position })
             }
             other => Err(ParseError::syntax(
-                format!("invalid unpacking target: {other:?}"),
+                format!("invalid unpacking target: {}", describe_expr_kind(&other)),
                 self.convert_range(other.range()),
             )),
         }
@@ -1608,6 +1637,48 @@ fn convert_conversion_flag(flag: RuffConversionFlag) -> ConversionFlag {
         RuffConversionFlag::Str => ConversionFlag::Str,
         RuffConversionFlag::Repr => ConversionFlag::Repr,
         RuffConversionFlag::Ascii => ConversionFlag::Ascii,
+    }
+}
+
+/// Short human-readable name for an `AstExpr` variant, for use in
+/// user-facing parse errors. Avoids the Rust `Debug` formatting of the
+/// node, which would leak internal field names, ranges, and struct
+/// layout of `ruff_python_ast` into the error message.
+fn describe_expr_kind(expr: &AstExpr) -> &'static str {
+    match expr {
+        AstExpr::Name(_) => "name",
+        AstExpr::Starred(_) => "starred expression",
+        AstExpr::Attribute(_) => "attribute",
+        AstExpr::Subscript(_) => "subscript",
+        AstExpr::Call(_) => "function call",
+        AstExpr::Tuple(_) => "tuple",
+        AstExpr::List(_) => "list",
+        AstExpr::Set(_) => "set",
+        AstExpr::Dict(_) => "dict",
+        AstExpr::NumberLiteral(_) => "number literal",
+        AstExpr::StringLiteral(_) => "string literal",
+        AstExpr::BytesLiteral(_) => "bytes literal",
+        AstExpr::BooleanLiteral(_) => "boolean literal",
+        AstExpr::NoneLiteral(_) => "None",
+        AstExpr::EllipsisLiteral(_) => "...",
+        AstExpr::FString(_) => "f-string",
+        AstExpr::TString(_) => "t-string",
+        AstExpr::Lambda(_) => "lambda",
+        AstExpr::If(_) => "conditional expression",
+        AstExpr::BoolOp(_) => "boolean expression",
+        AstExpr::BinOp(_) => "binary expression",
+        AstExpr::UnaryOp(_) => "unary expression",
+        AstExpr::Compare(_) => "comparison",
+        AstExpr::Named(_) => "named expression",
+        AstExpr::Yield(_) => "yield expression",
+        AstExpr::YieldFrom(_) => "yield from expression",
+        AstExpr::Await(_) => "await expression",
+        AstExpr::ListComp(_) => "list comprehension",
+        AstExpr::SetComp(_) => "set comprehension",
+        AstExpr::DictComp(_) => "dict comprehension",
+        AstExpr::Generator(_) => "generator expression",
+        AstExpr::Slice(_) => "slice",
+        AstExpr::IpyEscapeCommand(_) => "IPython escape command",
     }
 }
 

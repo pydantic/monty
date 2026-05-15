@@ -329,6 +329,7 @@ if __name__ == '__main__':
 ## Community Bindings
 
 - **Go**: [gomonty](https://github.com/ewhauser/gomonty/) - Go bindings for the Monty interpreter
+- **Dart/Flutter**: dart_monty [(github)](https://github.com/runyaga/dart_monty) [(pub.dev)](https://pub.dev/packages/dart_monty)- Dart/Flutter bindings for Monty
 
 # Alternatives
 

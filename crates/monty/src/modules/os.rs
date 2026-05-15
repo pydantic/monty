@@ -41,7 +41,7 @@ pub(crate) enum OsFunctions {
 ///
 /// # Panics
 /// Panics if the required strings have not been pre-interned during prepare phase.
-pub fn create_module(vm: &mut VM<'_, '_, impl ResourceTracker>) -> Result<HeapId, ResourceError> {
+pub fn create_module(vm: &mut VM<'_, impl ResourceTracker>) -> Result<HeapId, ResourceError> {
     let mut module = Module::new(StaticStrings::Os);
 
     // os.getenv - function to get a single environment variable
@@ -66,7 +66,7 @@ pub fn create_module(vm: &mut VM<'_, '_, impl ResourceTracker>) -> Result<HeapId
 /// Returns `CallResult::OsCall` for functions that need host involvement,
 /// or `CallResult::Value` for functions that can be computed immediately.
 pub(super) fn call(
-    vm: &mut VM<'_, '_, impl ResourceTracker>,
+    vm: &mut VM<'_, impl ResourceTracker>,
     functions: OsFunctions,
     args: ArgValues,
 ) -> RunResult<CallResult> {
@@ -93,7 +93,7 @@ pub(super) fn call(
 /// - No arguments are provided
 /// - More than 2 arguments are provided
 /// - `key` is not a string
-fn getenv(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<CallResult> {
+fn getenv(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<CallResult> {
     // getenv(key, default=None) - accepts 1 or 2 positional arguments
     let (key, default) = args.get_one_two_args("os.getenv", vm.heap)?;
 

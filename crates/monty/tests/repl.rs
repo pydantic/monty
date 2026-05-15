@@ -3,6 +3,7 @@
 //! The REPL session keeps heap/global namespace state between snippets and executes
 //! only the newly fed snippet each time.
 
+use insta::assert_snapshot;
 use monty::{
     ExtFunctionResult, MontyException, MontyObject, MontyRepl, NoLimitTracker, PrintWriter, ReplContinuationMode,
     ReplProgress, ReplStartError, ResourceTracker, detect_repl_continuation_mode,
@@ -567,21 +568,26 @@ add5 = make_adder(5)
 fn call_nonexistent_function() {
     let mut s = repl_with_code("def foo(): return 1");
     let err = s.call_function("bar", vec![], PrintWriter::Stdout).unwrap_err();
-    assert!(err.to_string().contains("name 'bar' is not defined"), "got: {err}");
+    assert_snapshot!(err, @"NameError: name 'bar' is not defined");
 }
 
 #[test]
 fn call_non_callable() {
     let mut s = repl_with_code("x = 42");
     let err = s.call_function("x", vec![], PrintWriter::Stdout).unwrap_err();
-    assert!(err.to_string().contains("not callable"), "got: {err}");
+    assert_snapshot!(err, @"TypeError: 'int' object is not callable");
 }
 
 #[test]
 fn call_function_raises_exception() {
     let mut s = repl_with_code("def boom(): raise ValueError('kaboom')");
     let err = s.call_function("boom", vec![], PrintWriter::Stdout).unwrap_err();
-    assert!(err.to_string().contains("kaboom"), "got: {err}");
+    assert_snapshot!(err, @r#"
+    Traceback (most recent call last):
+      File "<python-input-0>", line 1, in boom
+        def boom(): raise ValueError('kaboom')
+    ValueError: kaboom
+    "#);
 }
 
 #[test]
@@ -590,7 +596,13 @@ fn call_function_wrong_arg_count() {
     let err = s
         .call_function("add", vec![MontyObject::Int(1)], PrintWriter::Stdout)
         .unwrap_err();
-    assert!(err.to_string().contains("argument"), "got: {err}");
+    assert_snapshot!(err, @r#"
+    Traceback (most recent call last):
+      File "<python-input-0>", line 1, in <module>
+        def add(a, b): return a + b
+            ~~~
+    TypeError: add() missing 1 required positional argument: 'b'
+    "#);
 }
 
 #[test]
@@ -689,10 +701,7 @@ fn call_function_that_calls_undefined_name_fails() {
     let err = s
         .call_function("call_missing", vec![], PrintWriter::Stdout)
         .unwrap_err();
-    assert!(
-        err.to_string().contains("external functions are not yet supported"),
-        "got: {err}"
-    );
+    assert_snapshot!(err, @"NotImplementedError: MontyRepl::call_function: external functions are not yet supported in this context");
 }
 
 #[test]
@@ -718,7 +727,7 @@ fn convert_args_single_repr_fails() {
             PrintWriter::Stdout,
         )
         .unwrap_err();
-    assert!(err.to_string().contains("invalid argument type"), "got: {err}");
+    assert_snapshot!(err, @"RuntimeError: invalid argument type: 'Repr' is not a valid input value");
 }
 
 #[test]
@@ -731,7 +740,7 @@ fn convert_args_two_second_repr_fails() {
             PrintWriter::Stdout,
         )
         .unwrap_err();
-    assert!(err.to_string().contains("invalid argument type"), "got: {err}");
+    assert_snapshot!(err, @"RuntimeError: invalid argument type: 'Repr' is not a valid input value");
 }
 
 #[test]
@@ -744,7 +753,7 @@ fn convert_args_two_first_repr_fails() {
             PrintWriter::Stdout,
         )
         .unwrap_err();
-    assert!(err.to_string().contains("invalid argument type"), "got: {err}");
+    assert_snapshot!(err, @"RuntimeError: invalid argument type: 'Repr' is not a valid input value");
 }
 
 #[test]
@@ -762,7 +771,7 @@ fn convert_args_many_middle_repr_fails() {
             PrintWriter::Stdout,
         )
         .unwrap_err();
-    assert!(err.to_string().contains("invalid argument type"), "got: {err}");
+    assert_snapshot!(err, @"RuntimeError: invalid argument type: 'Repr' is not a valid input value");
 }
 
 #[test]

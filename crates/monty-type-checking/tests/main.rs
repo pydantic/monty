@@ -1,7 +1,7 @@
-use std::{env, fs, thread};
+use std::thread;
 
+use insta::assert_snapshot;
 use monty_type_checking::{SourceFile, type_check};
-use pretty_assertions::assert_eq;
 use ruff_db::diagnostic::DiagnosticFormat;
 
 #[test]
@@ -27,30 +27,25 @@ result = add(1, '2')
     ";
 
     let result = type_check(&SourceFile::new(code, "main.py"), None).unwrap();
-    assert!(result.is_some());
-
-    let error_diagnostics = result.unwrap().to_string();
-    assert_eq!(
-        error_diagnostics,
-        r#"error[invalid-argument-type]: Argument to function `add` is incorrect
- --> main.py:4:17
-  |
-2 |     return x + y
-3 |
-4 | result = add(1, '2')
-  |                 ^^^ Expected `int`, found `Literal["2"]`
-  |
-info: Function defined here
- --> main.py:1:5
-  |
-1 | def add(x: int, y: int) -> int:
-  |     ^^^         ------ Parameter declared here
-2 |     return x + y
-  |
-info: rule `invalid-argument-type` is enabled by default
-
-"#
-    );
+    let error_diagnostics = result.expect("expected type errors").to_string();
+    assert_snapshot!(error_diagnostics, @r#"
+    error[invalid-argument-type]: Argument to function `add` is incorrect
+     --> main.py:4:17
+      |
+    2 |     return x + y
+    3 |
+    4 | result = add(1, '2')
+      |                 ^^^ Expected `int`, found `Literal["2"]`
+      |
+    info: Function defined here
+     --> main.py:1:5
+      |
+    1 | def add(x: int, y: int) -> int:
+      |     ^^^         ------ Parameter declared here
+    2 |     return x + y
+      |
+    info: rule `invalid-argument-type` is enabled by default
+    "#);
 }
 
 #[test]
@@ -75,28 +70,25 @@ result = add(1, '2')";
     )
     .unwrap();
 
-    let error_diagnostics = result.unwrap();
-    assert_eq!(
-        error_diagnostics.to_string(),
-        r#"error[invalid-argument-type]: Argument to function `add` is incorrect
- --> main.py:4:17
-  |
-2 |     return x + y
-3 |
-4 | result = add(1, '2')
-  |                 ^^^ Expected `int`, found `Literal["2"]`
-  |
-info: Function defined here
- --> main.py:1:5
-  |
-1 | def add(x: int, y: int) -> int:
-  |     ^^^         ------ Parameter declared here
-2 |     return x + y
-  |
-info: rule `invalid-argument-type` is enabled by default
-
-"#
-    );
+    let error_diagnostics = result.expect("expected type errors").to_string();
+    assert_snapshot!(error_diagnostics, @r#"
+    error[invalid-argument-type]: Argument to function `add` is incorrect
+     --> main.py:4:17
+      |
+    2 |     return x + y
+    3 |
+    4 | result = add(1, '2')
+      |                 ^^^ Expected `int`, found `Literal["2"]`
+      |
+    info: Function defined here
+     --> main.py:1:5
+      |
+    1 | def add(x: int, y: int) -> int:
+      |     ^^^         ------ Parameter declared here
+    2 |     return x + y
+      |
+    info: rule `invalid-argument-type` is enabled by default
+    "#);
 }
 
 #[test]
@@ -109,13 +101,10 @@ result = add(1, '2')
     ";
 
     let result = type_check(&SourceFile::new(code, "main.py"), None).unwrap();
-    assert!(result.is_some());
-
-    let failure = result.unwrap().format(DiagnosticFormat::Concise);
-    let error_diagnostics = failure.to_string();
-    assert_eq!(
-        error_diagnostics,
-        "main.py:5:17: error[invalid-argument-type] Argument to function `add` is incorrect: Expected `int`, found `Literal[\"2\"]`\n"
+    let failure = result.expect("expected type errors").format(DiagnosticFormat::Concise);
+    assert_snapshot!(
+        failure.to_string(),
+        @r#"main.py:5:17: error[invalid-argument-type] Argument to function `add` is incorrect: Expected `int`, found `Literal["2"]`"#
     );
     let color_failure = failure.color(true).to_string();
     assert!(color_failure.starts_with('\u{1b}'));
@@ -139,36 +128,10 @@ fn type_good_types() {
     assert!(result.is_none(), "Expected no type errors, got: {result:#?}");
 }
 
-fn check_file_content(file_name: &str, mut actual: &str) {
-    let expected_path = format!("{}/tests/{}", env!("CARGO_MANIFEST_DIR"), file_name);
-    let expected = if fs::exists(&expected_path).unwrap() {
-        fs::read_to_string(&expected_path).unwrap()
-    } else {
-        fs::write(&expected_path, actual).unwrap();
-        panic!("{file_name} did not exist, file created.")
-    };
-
-    let expected = expected.as_str().trim();
-    actual = actual.trim();
-
-    if actual == expected {
-        println!("File content matches expected.");
-        return;
-    }
-
-    let status = if env::var("UPDATE_EXPECT").is_ok() {
-        fs::write(&expected_path, actual).unwrap();
-        "FILE UPDATE"
-    } else {
-        "file not updated, run with UPDATE_EXPECT=1 to update"
-    };
-
-    panic!("Type errors don't match expected.\n\nEXPECTED:\n{expected}\n\nACTUAL:\n{actual}\n\n{status}.");
-}
-
 /// Test that bad_types.py produces the expected type errors.
 ///
-/// Set `UPDATE_EXPECT=1` to update the expected errors file.
+/// Snapshot stored in `tests/snapshots/main__type_bad_types.snap`.
+/// Run `cargo insta review` (or `cargo insta test --accept`) to update.
 #[test]
 fn type_bad_types() {
     let code = include_str!("bad_types.py");
@@ -177,7 +140,7 @@ fn type_bad_types() {
     let failure = result.expect("Expected type errors in bad_types.py");
     let actual = failure.format(DiagnosticFormat::Concise).to_string();
 
-    check_file_content("bad_types_output.txt", &actual);
+    assert_snapshot!(actual);
 }
 
 /// Security-critical: verify the reusable `MemoryDb` pool never exposes files,
@@ -199,10 +162,9 @@ fn pooled_db_no_cross_run_module_leak() {
     let r2 = type_check(&SourceFile::new(second, "main.py"), None)
         .unwrap()
         .expect("second run must raise unresolved-import for the stale module");
-    let msg = r2.format(DiagnosticFormat::Concise).to_string();
-    assert_eq!(
-        msg,
-        "main.py:1:6: error[unresolved-import] Cannot resolve imported module `leaky`\n",
+    assert_snapshot!(
+        r2.format(DiagnosticFormat::Concise).to_string(),
+        @"main.py:1:6: error[unresolved-import] Cannot resolve imported module `leaky`"
     );
 }
 
@@ -223,10 +185,9 @@ fn pooled_db_no_cross_run_same_path_leak() {
     let r2 = type_check(&SourceFile::new(second, "main.py"), None)
         .unwrap()
         .expect("second run must error — `GOOD` was only defined in the first run");
-    let msg = r2.format(DiagnosticFormat::Concise).to_string();
-    assert_eq!(
-        msg,
-        "main.py:1:10: error[unresolved-reference] Name `GOOD` used when not defined\n",
+    assert_snapshot!(
+        r2.format(DiagnosticFormat::Concise).to_string(),
+        @"main.py:1:10: error[unresolved-reference] Name `GOOD` used when not defined"
     );
 }
 
@@ -249,10 +210,9 @@ fn pooled_db_no_cross_run_stubs_leak() {
     let r2 = type_check(&SourceFile::new(second, "main.py"), None)
         .unwrap()
         .expect("second run must error — `type_stubs` was only provided in the first run");
-    let msg = r2.format(DiagnosticFormat::Concise).to_string();
-    assert_eq!(
-        msg,
-        "main.py:1:6: error[unresolved-import] Cannot resolve imported module `type_stubs`\n",
+    assert_snapshot!(
+        r2.format(DiagnosticFormat::Concise).to_string(),
+        @"main.py:1:6: error[unresolved-import] Cannot resolve imported module `type_stubs`"
     );
 }
 
@@ -311,10 +271,9 @@ fn pooled_db_nested_paths_are_cleaned_up() {
     let r2 = type_check(&SourceFile::new("x: int = LEAKY\n", "sub_dir/leaky.py"), None)
         .unwrap()
         .expect("nested-path leak probe must error — `LEAKY` must not survive into the next run");
-    let msg = r2.format(DiagnosticFormat::Concise).to_string();
-    assert_eq!(
-        msg,
-        "sub_dir/leaky.py:1:10: error[unresolved-reference] Name `LEAKY` used when not defined\n",
+    assert_snapshot!(
+        r2.format(DiagnosticFormat::Concise).to_string(),
+        @"sub_dir/leaky.py:1:10: error[unresolved-reference] Name `LEAKY` used when not defined"
     );
 
     // Third run from a *different* nested path importing the previous module must
@@ -322,13 +281,14 @@ fn pooled_db_nested_paths_are_cleaned_up() {
     let r3 = type_check(&SourceFile::new("from sub_dir.leaky import LEAKY\n", "other.py"), None)
         .unwrap()
         .expect("third run must error — sub_dir/leaky.py was deleted on cleanup");
-    let msg = r3.format(DiagnosticFormat::Concise).to_string();
-    assert_eq!(
-        msg,
-        "other.py:1:6: error[unresolved-import] Cannot resolve imported module `sub_dir.leaky`\n",
+    assert_snapshot!(
+        r3.format(DiagnosticFormat::Concise).to_string(),
+        @"other.py:1:6: error[unresolved-import] Cannot resolve imported module `sub_dir.leaky`"
     );
 }
 
+/// Snapshot stored in `tests/snapshots/main__reveal_types.snap`.
+/// Run `cargo insta review` (or `cargo insta test --accept`) to update.
 #[test]
 fn test_reveal_types() {
     let code = include_str!("reveal_types.py");
@@ -337,5 +297,5 @@ fn test_reveal_types() {
     let failure = result.expect("Expected type errors in reveal_types.py");
     let actual = failure.format(DiagnosticFormat::Concise).to_string();
 
-    check_file_content("reveal_types_output.txt", &actual);
+    assert_snapshot!(actual);
 }
