@@ -372,10 +372,20 @@ impl HeapItem for GatherFuture {
                 // Rough sizing — entry slots plus per-entry storage. The map's
                 // bucket array overhead is intentionally elided; we only
                 // estimate dynamically-allocated content tied to user code.
-                let pending_tasks_size =
-                    awaited.pending_tasks.len() * (mem::size_of::<TaskId>() + mem::size_of::<Vec<usize>>());
-                let pending_calls_size =
-                    awaited.pending_calls.len() * (mem::size_of::<CallId>() + mem::size_of::<Vec<usize>>());
+                let pending_tasks_size = awaited
+                    .pending_tasks
+                    .iter()
+                    .map(|(_, slots)| {
+                        mem::size_of::<TaskId>() + mem::size_of::<Vec<usize>>() + slots.len() * mem::size_of::<usize>()
+                    })
+                    .sum::<usize>();
+                let pending_calls_size = awaited
+                    .pending_calls
+                    .iter()
+                    .map(|(_, slots)| {
+                        mem::size_of::<CallId>() + mem::size_of::<Vec<usize>>() + slots.len() * mem::size_of::<usize>()
+                    })
+                    .sum::<usize>();
                 awaited.results.len() * mem::size_of::<Option<Value>>() + pending_tasks_size + pending_calls_size
             }
             GatherState::Pending | GatherState::Completed(_) | GatherState::Failed(_) => 0,

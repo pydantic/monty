@@ -179,9 +179,8 @@ pub(crate) enum GatherState {
     /// returns it.
     Completed(HeapId),
     /// A child task failed (or an external future was rejected). The error
-    /// is cached so subsequent awaits re-raise it. `RunError` is not `Clone`
-    /// by default; use [`crate::exception_private::RunError::duplicate`] when
-    /// transitioning into this state.
+    /// is cached so subsequent awaits re-raise it. `RunError` implements
+    /// `Clone`; clone the error when transitioning into this state.
     Failed(RunError),
 }
 
