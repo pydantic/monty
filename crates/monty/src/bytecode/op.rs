@@ -555,7 +555,9 @@ impl Opcode {
             (CallAttrExtended, Operand::U16U8(_, flags)) => -(1 + i16::from(flags & 0x01)),
 
             // === Variable-effect: U16U8U8 operand ===
-            (MakeClosure, Operand::U16U8U8(_, defaults, _)) => 1 - i16::from(defaults),
+            // MakeClosure: pops `cell_count` cells AND `defaults_count` defaults,
+            // pushes the closure → 1 - defaults - cells.
+            (MakeClosure, Operand::U16U8U8(_, defaults, cells)) => 1 - i16::from(defaults) - i16::from(cells),
 
             // === Variable-effect: variable-length kw operands ===
             // pops callable + pos_args + kw_args, pushes result → -(pos_count + kw_count).
