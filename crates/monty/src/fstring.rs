@@ -711,29 +711,12 @@ pub fn format_int(n: i64, spec: &ParsedFormatSpec) -> String {
     let is_negative = n < 0;
     // Use unsigned_abs() to avoid overflow panic on i64::MIN
     let abs_str = n.unsigned_abs().to_string();
-
     let sign = if is_negative {
         "-"
     } else {
         positive_sign_prefix(spec.sign)
     };
-    let align = spec.align.unwrap_or(Align::Right);
-
-    // Handle sign-aware zero-padding or regular padding
-    if spec.zero_pad || align == Align::SignAware {
-        let fill = if spec.zero_pad { '0' } else { spec.fill };
-        let total_len = sign.len() + abs_str.len();
-        if spec.width > total_len {
-            let padding = spec.width - total_len;
-            let pad_str: String = iter::repeat_n(fill, padding).collect();
-            format!("{sign}{pad_str}{abs_str}")
-        } else {
-            format!("{sign}{abs_str}")
-        }
-    } else {
-        let value = format!("{sign}{abs_str}");
-        pad_string(&value, spec.width, align, spec.fill)
-    }
+    pad_signed_numeric(sign, &abs_str, spec)
 }
 
 /// Formats an integer in binary (base 2), octal (base 8), or hexadecimal (base 16).
@@ -752,11 +735,12 @@ pub fn format_int_base(n: i64, base: u32, spec: &ParsedFormatSpec) -> Result<Str
         _ => return Err(FormatError::ValueError("Invalid base".to_owned())),
     };
 
-    let sign = if is_negative { "-" } else { "" };
-    let value = format!("{sign}{abs_str}");
-
-    let align = spec.align.unwrap_or(Align::Right);
-    Ok(pad_string(&value, spec.width, align, spec.fill))
+    let sign = if is_negative {
+        "-"
+    } else {
+        positive_sign_prefix(spec.sign)
+    };
+    Ok(pad_signed_numeric(sign, &abs_str, spec))
 }
 
 /// Formats an integer as a Unicode character (format type `c`).
@@ -771,7 +755,13 @@ pub fn format_char(n: i64, spec: &ParsedFormatSpec) -> Result<String, FormatErro
     let n_u32 = u32::try_from(n).expect("format_char n validated in 0..=0x10FFFF range");
     let c = char::from_u32(n_u32).ok_or_else(|| FormatError::ValueError("Invalid Unicode code point".to_owned()))?;
     let value = c.to_string();
-    let align = spec.align.unwrap_or(Align::Left);
+    // `=` (SignAware) on `:c` is accepted by CPython but degenerates to right-align
+    // because there's no sign component to pad between. Map it now so `pad_string`
+    // (which treats SignAware as a no-op) does the right thing.
+    let align = match spec.align.unwrap_or(Align::Left) {
+        Align::SignAware => Align::Right,
+        other => other,
+    };
     Ok(pad_string(&value, spec.width, align, spec.fill))
 }
 
@@ -784,30 +774,13 @@ pub fn format_float_f(f: f64, spec: &ParsedFormatSpec) -> String {
     let precision = spec.precision.unwrap_or(6);
     let is_negative = f.is_sign_negative() && !f.is_nan();
     let abs_val = f.abs();
-
     let abs_str = fmt_float_fixed(abs_val, precision);
-
     let sign = if is_negative {
         "-"
     } else {
         positive_sign_prefix(spec.sign)
     };
-    let align = spec.align.unwrap_or(Align::Right);
-
-    if spec.zero_pad || align == Align::SignAware {
-        let fill = if spec.zero_pad { '0' } else { spec.fill };
-        let total_len = sign.len() + abs_str.len();
-        if spec.width > total_len {
-            let padding = spec.width - total_len;
-            let pad_str: String = iter::repeat_n(fill, padding).collect();
-            format!("{sign}{pad_str}{abs_str}")
-        } else {
-            format!("{sign}{abs_str}")
-        }
-    } else {
-        let value = format!("{sign}{abs_str}");
-        pad_string(&value, spec.width, align, spec.fill)
-    }
+    pad_signed_numeric(sign, &abs_str, spec)
 }
 
 /// Formats a float in exponential/scientific notation (format types `e` and `E`).
@@ -819,21 +792,15 @@ pub fn format_float_e(f: f64, spec: &ParsedFormatSpec, uppercase: bool) -> Strin
     let precision = spec.precision.unwrap_or(6);
     let is_negative = f.is_sign_negative() && !f.is_nan();
     let abs_val = f.abs();
-
     let abs_str = fmt_float_exp(abs_val, precision, uppercase);
-
     // Fix exponent format to match Python (e+03 not e3)
     let abs_str = fix_exp_format(&abs_str);
-
     let sign = if is_negative {
         "-"
     } else {
         positive_sign_prefix(spec.sign)
     };
-
-    let value = format!("{sign}{abs_str}");
-    let align = spec.align.unwrap_or(Align::Right);
-    pad_string(&value, spec.width, align, spec.fill)
+    pad_signed_numeric(sign, &abs_str, spec)
 }
 
 /// Formats a float in "general" format (format types `g` and `G`).
@@ -881,10 +848,7 @@ pub fn format_float_g(f: f64, spec: &ParsedFormatSpec) -> String {
     } else {
         positive_sign_prefix(spec.sign)
     };
-
-    let value = format!("{sign}{abs_str}");
-    let align = spec.align.unwrap_or(Align::Right);
-    pad_string(&value, spec.width, align, spec.fill)
+    pad_signed_numeric(sign, &abs_str, spec)
 }
 
 /// Applies ASCII conversion to a string (escapes non-ASCII characters).
@@ -922,16 +886,12 @@ pub fn format_float_percent(f: f64, spec: &ParsedFormatSpec) -> String {
     let abs_val = percent_val.abs();
 
     let abs_str = format!("{}%", fmt_float_fixed(abs_val, precision));
-
     let sign = if is_negative {
         "-"
     } else {
         positive_sign_prefix(spec.sign)
     };
-
-    let value = format!("{sign}{abs_str}");
-    let align = spec.align.unwrap_or(Align::Right);
-    pad_string(&value, spec.width, align, spec.fill)
+    pad_signed_numeric(sign, &abs_str, spec)
 }
 
 // ============================================================================
@@ -949,6 +909,40 @@ fn positive_sign_prefix(sign: Option<Sign>) -> &'static str {
         Some(Sign::Plus) => "+",
         Some(Sign::Space) => " ",
         None | Some(Sign::Minus) => "",
+    }
+}
+
+/// Pads `sign + abs_str` to `spec.width` with the right alignment semantics
+/// for a signed numeric value.
+///
+/// Numeric formatters all share three padding modes:
+/// - `zero_pad` (`0` flag): insert `'0'` between the sign and the digits.
+/// - `Align::SignAware` (`=`): insert `spec.fill` between the sign and the
+///   digits.
+/// - Anything else: glue `sign` + `abs_str` together and let [`pad_string`]
+///   place fill outside the value.
+///
+/// Without this helper each formatter that wants sign-aware behaviour had
+/// to inline the same conditional, and the ones that *didn't* (the
+/// non-decimal integer bases, all the float formats except `:f`) silently
+/// dropped width for `=` — see `parse_errors.rs::format_spec_…` tests.
+/// Default alignment is right because all callers are numeric formats;
+/// `format_char` (default left, no sign) needs separate handling.
+fn pad_signed_numeric(sign: &str, abs_str: &str, spec: &ParsedFormatSpec) -> String {
+    let align = spec.align.unwrap_or(Align::Right);
+    if spec.zero_pad || align == Align::SignAware {
+        let fill = if spec.zero_pad { '0' } else { spec.fill };
+        let total_len = sign.len() + abs_str.len();
+        if spec.width > total_len {
+            let padding = spec.width - total_len;
+            let pad_str: String = iter::repeat_n(fill, padding).collect();
+            format!("{sign}{pad_str}{abs_str}")
+        } else {
+            format!("{sign}{abs_str}")
+        }
+    } else {
+        let value = format!("{sign}{abs_str}");
+        pad_string(&value, spec.width, align, spec.fill)
     }
 }
 
@@ -1036,11 +1030,18 @@ fn fmt_float_exp(abs_val: f64, precision: usize, uppercase: bool) -> String {
 
 /// Pads a string to a given width with alignment.
 ///
-/// `Align::SignAware` is treated as no-op padding here — numeric formatters
-/// handle `=` themselves by inserting fill between sign and digits before
-/// calling `pad_string`, so when `=` reaches here the value is already at
-/// or above `width` and the function falls through.
+/// `Align::SignAware` must not reach this function — numeric formatters
+/// handle `=` via [`pad_signed_numeric`] (which inserts fill between sign
+/// and digits before any call to `pad_string`), and [`format_char`] maps
+/// `=` to right-align since chars have no sign. Routing a SignAware value
+/// here would silently drop width, which `debug_assert!` catches in test
+/// builds; release builds degrade to no-op padding as a safety net.
 fn pad_string(value: &str, width: usize, align: Align, fill: char) -> String {
+    debug_assert!(
+        align != Align::SignAware,
+        "pad_string received Align::SignAware; callers must handle `=` themselves \
+         (numeric formatters via pad_signed_numeric, format_char by mapping to Right)"
+    );
     let value_len = value.chars().count();
     if width <= value_len {
         return value.to_owned();

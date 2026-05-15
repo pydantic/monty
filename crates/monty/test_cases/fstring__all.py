@@ -122,6 +122,25 @@ assert f'{-8:o}' == '-10', 'octal negative'
 assert f'{255:x}' == 'ff', 'hex lowercase'
 assert f'{-255:x}' == '-ff', 'hex lowercase negative'
 assert f'{255:X}' == 'FF', 'hex uppercase'
+
+# === Sign-aware (`=`) padding applies to every numeric format, not just :d/:f ===
+# Previously pad_string's SignAware arm fell through, so width was silently
+# dropped for hex/oct/bin/exponential/general/percent.
+assert f'{255:=10x}' == '        ff', 'sign-aware width on :x positive'
+assert f'{-255:=10x}' == '-       ff', 'sign-aware width on :x negative'
+assert f'{8:=8b}' == '    1000', 'sign-aware width on :b'
+assert f'{8:=8o}' == '      10', 'sign-aware width on :o'
+assert f'{3.14:=10g}' == '      3.14', 'sign-aware width on :g'
+assert f'{-3.14:=10g}' == '-     3.14', 'sign-aware width on :g negative'
+assert f'{0.5:=12.2%}' == '      50.00%', 'sign-aware width on :%'
+# format_char has no sign; CPython accepts `=` here and degrades to right-align.
+assert f'{65:=10c}' == '         A', 'sign-aware width on :c (no sign -> right-align)'
+
+# === Sign prefix (`+`, ` `) applies to non-decimal integer bases too ===
+# format_int_base previously ignored spec.sign and only emitted '-' for negatives.
+assert f'{255:+x}' == '+ff', 'plus sign on :x positive'
+assert f'{255: x}' == ' ff', 'space sign on :x positive'
+assert f'{8:+b}' == '+1000', 'plus sign on :b positive'
 assert f'{-255:X}' == '-FF', 'hex uppercase negative'
 
 # === Integer as Unicode character (:c) ===
