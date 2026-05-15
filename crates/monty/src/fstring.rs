@@ -72,15 +72,24 @@ pub enum FStringPart {
 ///
 /// Can be either a pre-parsed static spec or contain nested interpolations.
 /// For example:
-/// - `f"{value:>10}"` has `FormatSpec::Static(ParsedFormatSpec { ... })`
+/// - `f"{value:>10}"` has `FormatSpec::Static(encoded)` where `encoded` is the
+///   bit-packed form produced by [`encode_format_spec`]
 /// - `f"{value:{width}}"` has `FormatSpec::Dynamic` with the `width` variable
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum FormatSpec {
-    /// Pre-parsed static format spec (e.g., ">10s", ".2f")
+    /// Pre-parsed and pre-encoded static format spec (e.g., ">10s", ".2f").
     ///
-    /// Parsing happens at parse time to avoid runtime string parsing overhead.
-    /// Invalid specs cause a parse error immediately.
-    Static(ParsedFormatSpec),
+    /// Parsing and encoding both happen at parse time so the compiler can
+    /// stamp this value straight into the bytecode constant pool as a
+    /// `Value::Int` — no further work, no fallible conversions. The VM
+    /// recognises it via the `FORMAT_VALUE_STATIC_SPEC` flag on the
+    /// emitted `FormatValue` opcode (not by inspecting the `Value`
+    /// variant) and decodes in-place.
+    ///
+    /// Specs whose width or precision exceed the encoding's capacity (see
+    /// [`MAX_ENCODED_WIDTH`]/[`MAX_ENCODED_PRECISION`]) are emitted as
+    /// `Dynamic` instead so the VM can re-parse them at runtime.
+    Static(i64),
     /// Dynamic format spec with nested f-string parts
     ///
     /// These must be evaluated at runtime, then parsed into a `ParsedFormatSpec`.
@@ -109,40 +118,6 @@ pub struct ParsedFormatSpec {
     pub precision: Option<usize>,
     /// Type character: 's', 'd', 'f', 'e', 'g', etc.
     pub type_char: Option<char>,
-}
-
-impl fmt::Display for ParsedFormatSpec {
-    /// Renders the spec back into the string form `from_str` would parse.
-    ///
-    /// Used as a fallback when `encode_format_spec` can't fit the spec into the
-    /// compact bytecode constant encoding (e.g. precision or width larger than
-    /// the encoding reserves): we serialize the spec to a string constant and
-    /// let the VM parse it dynamically.
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if let Some(align) = self.align {
-            // Only emit fill when it's non-default; otherwise ambiguity with sign chars.
-            if self.fill != ' ' {
-                f.write_char(self.fill)?;
-            }
-            f.write_char(align)?;
-        }
-        if let Some(sign) = self.sign {
-            f.write_char(sign)?;
-        }
-        if self.zero_pad {
-            f.write_char('0')?;
-        }
-        if self.width > 0 {
-            write!(f, "{}", self.width)?;
-        }
-        if let Some(precision) = self.precision {
-            write!(f, ".{precision}")?;
-        }
-        if let Some(type_char) = self.type_char {
-            f.write_char(type_char)?;
-        }
-        Ok(())
-    }
 }
 
 impl FromStr for ParsedFormatSpec {
@@ -353,20 +328,21 @@ pub const MAX_ENCODED_WIDTH: usize = (1 << 20) - 1;
 /// usable range for an explicit precision is `0..=MAX_ENCODED_PRECISION`.
 pub const MAX_ENCODED_PRECISION: usize = (1 << 21) - 2;
 
-/// Encodes a ParsedFormatSpec into a u64 for storage in bytecode constants.
+/// Encodes a [`ParsedFormatSpec`] into an `i64` for storage in bytecode constants.
 ///
 /// Returns `None` if any field exceeds the encoding's capacity — the caller
 /// should fall back to a dynamic (string-based) format spec in that case.
 ///
-/// Encoding layout (fits in 60 bits, so the result round-trips through `i64`):
+/// Encoding layout (occupies bits 0-59; the sign bit is always 0, so the
+/// result is a non-negative `i64`):
 /// - bits 0-7: fill character (as ASCII, default space=32)
 /// - bits 8-10: align (0=none, 1='<', 2='>', 3='^', 4='=')
 /// - bits 11-12: sign (0=none, 1='+', 2='-', 3=' ')
 /// - bit 13: zero_pad
-/// - bits 14-33: width (20 bits, max `MAX_ENCODED_WIDTH`)
+/// - bits 14-33: width (20 bits, max [`MAX_ENCODED_WIDTH`])
 /// - bits 34-54: precision+1 (21 bits; 0 = no precision)
 /// - bits 55-59: type_char (0=none, 1-15=explicit type mapping: b,c,d,e,E,f,F,g,G,n,o,s,x,X,%)
-pub fn encode_format_spec(spec: &ParsedFormatSpec) -> Option<u64> {
+pub fn encode_format_spec(spec: &ParsedFormatSpec) -> Option<i64> {
     if spec.width > MAX_ENCODED_WIDTH {
         return None;
     }
@@ -416,15 +392,23 @@ pub fn encode_format_spec(spec: &ParsedFormatSpec) -> Option<u64> {
         _ => 0,
     });
 
-    Some(fill | (align << 8) | (sign << 11) | (zero_pad << 13) | (width << 14) | (precision << 34) | (type_char << 55))
+    // Cast is lossless: every field occupies bits 0..60, so the sign bit is
+    // always 0 and `cast_signed` round-trips exactly.
+    Some(
+        (fill | (align << 8) | (sign << 11) | (zero_pad << 13) | (width << 14) | (precision << 34) | (type_char << 55))
+            .cast_signed(),
+    )
 }
 
-/// Decodes a u64 back into a ParsedFormatSpec.
+/// Decodes an [`i64`] back into a [`ParsedFormatSpec`].
 ///
-/// Reverses the bit-packing done by `encode_format_spec`. Used by the VM
-/// when executing `FormatValue` to retrieve the format specification from
-/// the constant pool (where it's stored as a negative integer marker).
-pub fn decode_format_spec(encoded: u64) -> ParsedFormatSpec {
+/// Reverses the bit-packing done by [`encode_format_spec`]. Used by the VM
+/// when executing `FormatValue` with the `FORMAT_VALUE_STATIC_SPEC` flag to
+/// recover the pre-parsed spec from the constant pool entry.
+pub fn decode_format_spec(encoded: i64) -> ParsedFormatSpec {
+    // The valid encoding sits in bits 0..60 so `cast_unsigned` is a no-op
+    // reinterpret — the sign bit is always 0 here.
+    let encoded = encoded.cast_unsigned();
     let fill = (encoded & 0xFF) as u8 as char;
     let align_bits = (encoded >> 8) & 0x07;
     let sign_bits = (encoded >> 11) & 0x03;

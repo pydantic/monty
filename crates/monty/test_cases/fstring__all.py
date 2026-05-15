@@ -206,12 +206,19 @@ assert f'{1e-10:.{10**6}g}' == '1.0000000000000000364321973154977415791655470655
 )
 
 # === Large static width/precision ===
-# Static format specs are parsed at parse time and packed into 16 bits for
-# width and precision; values >= 65536 (or 65535 for precision, which is
-# reserved as the "no precision" marker) must still round-trip correctly.
+# Static format specs are parsed at parse time and packed into a compact
+# bytecode constant; values around the previous u16 boundary must still
+# round-trip correctly.
 assert len(f'{1.5:.65535f}') == 65537, 'static precision 65535'
 assert len(f'{1.5:.65536f}') == 65538, 'static precision 65536'
 assert len(f'{42:65536d}') == 65536, 'static width 65536'
+
+# Specs whose width or precision exceed the compact bytecode encoding
+# (MAX_ENCODED_WIDTH = 2**20 - 1, MAX_ENCODED_PRECISION = 2**21 - 2)
+# must still compile — the parser falls back to a dynamic spec so the
+# VM re-parses at runtime.
+assert len(f'{42:1048576d}') == 1048576, 'static width past compact encoding'
+assert len(f'{1.5:.2097151f}') == 2097153, 'static precision past compact encoding'
 
 # === Integer with float format types ===
 # Python allows formatting integers with float types

@@ -16,6 +16,17 @@ use strum::FromRepr;
 
 use super::builder::Offset;
 
+/// `FormatValue` flag: a format spec was pushed onto the stack ahead of the
+/// value. When set, the VM pops the spec before the value. See `Opcode::FormatValue`.
+pub const FORMAT_VALUE_HAS_SPEC: u8 = 0x04;
+
+/// `FormatValue` flag: the on-stack format spec is the pre-encoded `Int` form
+/// produced by [`crate::fstring::encode_format_spec`], not a string to be
+/// parsed at runtime. Only meaningful when [`FORMAT_VALUE_HAS_SPEC`] is also
+/// set. The compiler pairs this bit with a `LoadConst` of `Value::Int(encoded)`
+/// emitted before the value.
+pub const FORMAT_VALUE_STATIC_SPEC: u8 = 0x08;
+
 /// Opcode discriminant - just identifies the instruction type.
 ///
 /// Operands (if any) follow in the bytecode stream and are fetched separately.
@@ -204,10 +215,13 @@ pub enum Opcode {
     BuildSet,
     /// Format a value for f-string interpolation. Operand: u8 flags.
     ///
-    /// Flags encoding:
+    /// Flags encoding (see [`FORMAT_VALUE_HAS_SPEC`]/[`FORMAT_VALUE_STATIC_SPEC`]):
     /// - bits 0-1: conversion (0=none, 1=str, 2=repr, 3=ascii)
-    /// - bit 2: has format spec on stack (pop fmt_spec first, then value)
-    /// - bit 3: has static format spec (operand includes u16 const_id after flags)
+    /// - bit 2 ([`FORMAT_VALUE_HAS_SPEC`]): a format spec was pushed before
+    ///   the value
+    /// - bit 3 ([`FORMAT_VALUE_STATIC_SPEC`]): the on-stack spec is the
+    ///   pre-encoded `Int` form rather than a string. Only meaningful when
+    ///   bit 2 is set
     ///
     /// Pops the value (and optionally format spec), pushes the formatted string.
     FormatValue,
@@ -531,11 +545,10 @@ impl Opcode {
             (CallFunction, Operand::U8(arg_count)) => -i16::from(arg_count),
             (CallFunctionExtended, Operand::U8(flags)) => -(1 + i16::from(flags & 0x01)),
             (FormatValue, Operand::U8(flags)) => {
-                if flags & 0x04 != 0 {
-                    -1
-                } else {
-                    0
-                }
+                // Spec is on the stack iff `FORMAT_VALUE_HAS_SPEC` is set —
+                // the static/dynamic discriminator (`FORMAT_VALUE_STATIC_SPEC`)
+                // doesn't change the pop count.
+                if flags & FORMAT_VALUE_HAS_SPEC != 0 { -1 } else { 0 }
             }
             (UnpackSequence, Operand::U8(n)) => i16::from(n) - 1,
 

@@ -13,7 +13,7 @@ use std::{borrow::Cow, mem};
 use super::{
     builder::{CodeBuilder, JumpLabel, JumpTarget},
     code::{Code, ExceptionEntry},
-    op::Opcode,
+    op::{FORMAT_VALUE_HAS_SPEC, FORMAT_VALUE_STATIC_SPEC, Opcode},
 };
 use crate::{
     args::{ArgExprs, CallArg, CallKwarg, Kwarg},
@@ -24,10 +24,7 @@ use crate::{
         AssignTarget, Callable, CmpOperator, Comprehension, DictItem, Expr, ExprLoc, Identifier, Literal, NameScope,
         Node, Operator, PreparedFunctionDef, PreparedNode, SequenceItem, UnpackTarget,
     },
-    fstring::{
-        ConversionFlag, FStringPart, FormatSpec, MAX_ENCODED_PRECISION, MAX_ENCODED_WIDTH, ParsedFormatSpec,
-        encode_format_spec,
-    },
+    fstring::{ConversionFlag, FStringPart, FormatSpec},
     function::Function,
     intern::{Interns, StringId},
     modules::StandardLib,
@@ -2699,8 +2696,11 @@ impl<'a> Compiler<'a> {
 
     /// Compiles format value flags and optionally pushes format spec to stack.
     ///
-    /// Returns the flags byte encoding conversion and format spec presence.
-    /// If a format spec is present, it's pushed to the stack before the value.
+    /// Returns the flags byte encoding conversion, spec presence, and (for
+    /// static specs) that the on-stack spec is the encoded `Int` form rather
+    /// than a string. See [`FORMAT_VALUE_HAS_SPEC`]/[`FORMAT_VALUE_STATIC_SPEC`]
+    /// for the bit layout. If a format spec is present it's pushed to the
+    /// stack before the value.
     fn compile_format_value(
         &mut self,
         conversion: ConversionFlag,
@@ -2716,13 +2716,13 @@ impl<'a> Compiler<'a> {
 
         match format_spec {
             None => Ok(conv_bits),
-            Some(FormatSpec::Static(parsed)) => {
-                // Static format spec - push a marker constant with the parsed spec info
-                // We store this as a special format spec value in the constant pool
-                // The VM will recognize this and use the pre-parsed spec
-                let const_idx = self.add_format_spec_const(parsed)?;
+            Some(FormatSpec::Static(encoded)) => {
+                // Push the raw encoded form; the static-spec flag tells the
+                // VM to read it back via decode_format_spec without inspecting
+                // the Value variant.
+                let const_idx = self.code.add_const(Value::Int(*encoded));
                 self.code.emit_u16(Opcode::LoadConst, const_idx);
-                Ok(conv_bits | 0x04) // has format spec on stack
+                Ok(conv_bits | FORMAT_VALUE_HAS_SPEC | FORMAT_VALUE_STATIC_SPEC)
             }
             Some(FormatSpec::Dynamic(dynamic_parts)) => {
                 // Compile dynamic format spec parts to build a format spec string
@@ -2732,31 +2732,9 @@ impl<'a> Compiler<'a> {
                     self.code.emit_u16(Opcode::BuildFString, part_count);
                 }
                 // Format spec string is now on stack
-                Ok(conv_bits | 0x04) // has format spec on stack
+                Ok(conv_bits | FORMAT_VALUE_HAS_SPEC)
             }
         }
-    }
-
-    /// Adds a format spec to the constant pool as an encoded integer.
-    ///
-    /// Uses the encoding from `fstring::encode_format_spec` and stores it as
-    /// a negative integer to distinguish from regular ints. Returns a
-    /// `CompileError` if the width or precision is larger than the compact
-    /// encoding can represent — far beyond any realistic format spec.
-    fn add_format_spec_const(&mut self, spec: &ParsedFormatSpec) -> Result<u16, CompileError> {
-        let encoded = encode_format_spec(spec).ok_or_else(|| {
-            CompileError::new(
-                format!(
-                    "format specifier width or precision exceeds supported limits (max width {MAX_ENCODED_WIDTH}, max precision {MAX_ENCODED_PRECISION})"
-                ),
-                CodeRange::default(),
-            )
-        })?;
-        // Use negative to distinguish from regular ints (format spec marker)
-        // We negate and subtract 1 to ensure it's negative and recoverable
-        let encoded_i64 = i64::try_from(encoded).expect("format spec encoding exceeds i64::MAX");
-        let marker = -(encoded_i64 + 1);
-        Ok(self.code.add_const(Value::Int(marker)))
     }
 
     // ========================================================================

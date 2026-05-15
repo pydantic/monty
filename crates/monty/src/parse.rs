@@ -19,7 +19,7 @@ use crate::{
         AssignTarget, Callable, CmpOperator, Comprehension, DictItem, Expr, ExprLoc, Identifier, ImportName, Literal,
         Node, Operator, SequenceItem, UnpackTarget,
     },
-    fstring::{ConversionFlag, FStringPart, FormatSpec},
+    fstring::{ConversionFlag, FStringPart, FormatSpec, ParsedFormatSpec, encode_format_spec},
     intern::{InternerBuilder, StringId},
     types::long_int::INT_MAX_STR_DIGITS,
     value::EitherStr,
@@ -1515,57 +1515,69 @@ impl<'a> Parser<'a> {
 
     /// Parses a format specification, which may contain nested interpolations.
     ///
-    /// For static specs (no interpolations), parses the format string into a
-    /// `ParsedFormatSpec` at parse time to avoid runtime parsing overhead.
+    /// Specs with no interpolations take the fast path: their literal text is
+    /// concatenated, parsed, and bit-packed into a single `u64` carried inside
+    /// `FormatSpec::Static`. The compiler then drops this straight into the
+    /// constant pool with no further work, and no per-segment interning is
+    /// performed (the parsed spec is the only thing the bytecode needs).
+    ///
+    /// Two cases force a `FormatSpec::Dynamic`:
+    /// 1. Any nested interpolation (e.g. `f"{x:{width}}"`) — the spec must be
+    ///    materialized at runtime.
+    /// 2. Valid but extreme specs whose width or precision exceed the compact
+    ///    encoding (e.g. `f"{x:>1048576}"`). The concatenated literal text is
+    ///    interned and emitted as a single-literal dynamic spec so the VM
+    ///    re-parses it at runtime.
     fn parse_format_spec(&mut self, spec: &ast::InterpolatedStringFormatSpec) -> Result<FormatSpec, ParseError> {
-        let mut parts = Vec::new();
-        let mut has_interpolation = false;
-
-        for element in &spec.elements {
-            match element {
-                InterpolatedStringElement::Literal(lit) => {
-                    // Intern the literal string
-                    let processed = lit.value.to_string();
-                    let string_id = self.interner.intern(&processed);
-                    parts.push(FStringPart::Literal(string_id));
-                }
-                InterpolatedStringElement::Interpolation(interp) => {
-                    has_interpolation = true;
-                    let expr = Box::new(self.parse_expression((*interp.expression).clone())?);
-                    let conversion = convert_conversion_flag(interp.conversion);
-                    // Format specs within format specs are not allowed in Python,
-                    // and debug_prefix doesn't apply to nested interpolations
-                    parts.push(FStringPart::Interpolation {
-                        expr,
-                        conversion,
-                        format_spec: None,
-                        debug_prefix: None,
-                    });
-                }
-            }
-        }
+        let has_interpolation = spec
+            .elements
+            .iter()
+            .any(|e| matches!(e, InterpolatedStringElement::Interpolation(_)));
 
         if has_interpolation {
+            let mut parts = Vec::with_capacity(spec.elements.len());
+            for element in &spec.elements {
+                match element {
+                    InterpolatedStringElement::Literal(lit) => {
+                        let string_id = self.interner.intern(&lit.value);
+                        parts.push(FStringPart::Literal(string_id));
+                    }
+                    InterpolatedStringElement::Interpolation(interp) => {
+                        let expr = Box::new(self.parse_expression((*interp.expression).clone())?);
+                        let conversion = convert_conversion_flag(interp.conversion);
+                        // Format specs within format specs are not allowed in Python,
+                        // and debug_prefix doesn't apply to nested interpolations
+                        parts.push(FStringPart::Interpolation {
+                            expr,
+                            conversion,
+                            format_spec: None,
+                            debug_prefix: None,
+                        });
+                    }
+                }
+            }
             Ok(FormatSpec::Dynamic(parts))
         } else {
-            // Combine all literal parts into a single static string and parse at parse time
-            let static_spec: String = parts
-                .into_iter()
-                .filter_map(|p| {
-                    if let FStringPart::Literal(string_id) = p {
-                        Some(self.interner.get_str(string_id).to_owned())
-                    } else {
-                        None
-                    }
+            let static_spec: String = spec
+                .elements
+                .iter()
+                .filter_map(|e| match e {
+                    InterpolatedStringElement::Literal(lit) => Some(&*lit.value),
+                    InterpolatedStringElement::Interpolation(_) => None,
                 })
                 .collect();
-            let parsed = static_spec.parse().map_err(|spec_str| {
+            let parsed: ParsedFormatSpec = static_spec.parse().map_err(|spec_str| {
                 ParseError::syntax(
                     format!("Invalid format specifier '{spec_str}'"),
                     self.convert_range(spec.range),
                 )
             })?;
-            Ok(FormatSpec::Static(parsed))
+            if let Some(encoded) = encode_format_spec(&parsed) {
+                Ok(FormatSpec::Static(encoded))
+            } else {
+                let string_id = self.interner.intern(&static_spec);
+                Ok(FormatSpec::Dynamic(vec![FStringPart::Literal(string_id)]))
+            }
         }
     }
 
