@@ -588,7 +588,10 @@ impl CodeBuilder {
             }
         }
         self.adjust_stack(op.stack_effect(operand));
-        if matches!(op, Opcode::ReturnValue | Opcode::Raise | Opcode::Reraise | Opcode::Jump) {
+        if matches!(
+            op,
+            Opcode::ReturnValue | Opcode::Raise | Opcode::Reraise | Opcode::RaiseImportError | Opcode::Jump
+        ) {
             self.current_stack_depth = None;
         }
     }
