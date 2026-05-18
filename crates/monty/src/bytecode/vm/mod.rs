@@ -88,49 +88,6 @@ macro_rules! catch_sync {
     }};
 }
 
-/// Fetches a byte from bytecode using cached code/ip, advancing ip.
-///
-/// Used in the run loop for fast operand fetching without frame access.
-macro_rules! fetch_byte {
-    ($cached_frame:expr) => {{
-        let byte = $cached_frame.code.bytecode()[$cached_frame.ip];
-        $cached_frame.ip += 1;
-        byte
-    }};
-}
-
-/// Fetches a u8 operand using cached code/ip.
-macro_rules! fetch_u8 {
-    ($cached_frame:expr) => {
-        fetch_byte!($cached_frame)
-    };
-}
-
-/// Fetches an i8 operand using cached code/ip.
-macro_rules! fetch_i8 {
-    ($cached_frame:expr) => {{ i8::from_ne_bytes([fetch_byte!($cached_frame)]) }};
-}
-
-/// Fetches a u16 operand (little-endian) using cached code/ip.
-macro_rules! fetch_u16 {
-    ($cached_frame:expr) => {{
-        let lo = $cached_frame.code.bytecode()[$cached_frame.ip];
-        let hi = $cached_frame.code.bytecode()[$cached_frame.ip + 1];
-        $cached_frame.ip += 2;
-        u16::from_le_bytes([lo, hi])
-    }};
-}
-
-/// Fetches an i16 operand (little-endian) using cached code/ip.
-macro_rules! fetch_i16 {
-    ($cached_frame:expr) => {{
-        let lo = $cached_frame.code.bytecode()[$cached_frame.ip];
-        let hi = $cached_frame.code.bytecode()[$cached_frame.ip + 1];
-        $cached_frame.ip += 2;
-        i16::from_le_bytes([lo, hi])
-    }};
-}
-
 /// Reloads cached frame state from the current frame.
 ///
 /// Call this after any operation that modifies the frame stack (calls, returns,
@@ -442,6 +399,93 @@ impl<'code> From<&CallFrame<'code>> for CachedFrame<'code> {
             ip: frame.ip,
             stack_base: frame.stack_base,
         }
+    }
+}
+
+impl CachedFrame<'_> {
+    /// Fetches `N` bytes from bytecode at the current IP, advancing IP by `N`.
+    ///
+    /// Performs a single bounds check covering all `N` bytes. All typed fetch
+    /// helpers are built on top of this so each fetched operand — even
+    /// multi-byte combinations like `u16 + u8 + u8` — costs exactly one
+    /// bounds check.
+    #[inline]
+    fn fetch_array<const N: usize>(&mut self) -> [u8; N] {
+        let Some(bytes) = self.code.bytecode().get(self.ip..).and_then(<[u8]>::first_chunk::<N>) else {
+            unreachable!("cached instruction IP is out of bounds of the bytecode")
+        };
+        self.ip += N;
+        *bytes
+    }
+
+    /// Fetches a `u8` operand at the current IP.
+    #[inline]
+    fn fetch_u8(&mut self) -> u8 {
+        self.fetch_array::<1>()[0]
+    }
+
+    /// Fetches an `i8` operand at the current IP.
+    #[inline]
+    fn fetch_i8(&mut self) -> i8 {
+        self.fetch_u8().cast_signed()
+    }
+
+    /// Fetches a little-endian `u16` operand at the current IP.
+    #[inline]
+    fn fetch_u16(&mut self) -> u16 {
+        u16::from_le_bytes(self.fetch_array())
+    }
+
+    /// Fetches a little-endian `i16` operand at the current IP.
+    #[inline]
+    fn fetch_i16(&mut self) -> i16 {
+        self.fetch_u16().cast_signed()
+    }
+
+    /// Fetches two consecutive `u8` operands in a single bounds check.
+    ///
+    /// Mirrors `CodeBuilder::emit_u8_u8` on the encode side.
+    #[inline]
+    fn fetch_u8_u8(&mut self) -> (u8, u8) {
+        let [a, b] = self.fetch_array();
+        (a, b)
+    }
+
+    /// Fetches a little-endian `u16` followed by a `u8`, in a single bounds check.
+    ///
+    /// Mirrors `CodeBuilder::emit_u16_u8` on the encode side.
+    #[inline]
+    fn fetch_u16_u8(&mut self) -> (u16, u8) {
+        let [a, b, c] = self.fetch_array();
+        (u16::from_le_bytes([a, b]), c)
+    }
+
+    /// Fetches a `u8` followed by a little-endian `u16`, in a single bounds check.
+    ///
+    /// Mirrors the `Operand::U8U16` encoding (e.g. `LoadLocalCallable`).
+    #[inline]
+    fn fetch_u8_u16(&mut self) -> (u8, u16) {
+        let [a, b, c] = self.fetch_array();
+        (a, u16::from_le_bytes([b, c]))
+    }
+
+    /// Fetches two consecutive little-endian `u16`s, in a single bounds check.
+    ///
+    /// Mirrors the `Operand::U16U16` encoding (e.g. `LoadLocalCallableW`,
+    /// `LoadGlobalCallable`).
+    #[inline]
+    fn fetch_u16_u16(&mut self) -> (u16, u16) {
+        let [a, b, c, d] = self.fetch_array();
+        (u16::from_le_bytes([a, b]), u16::from_le_bytes([c, d]))
+    }
+
+    /// Fetches a little-endian `u16` followed by two `u8`s, in a single bounds check.
+    ///
+    /// Mirrors `CodeBuilder::emit_u16_u8_u8` on the encode side.
+    #[inline]
+    fn fetch_u16_u8_u8(&mut self) -> (u16, u8, u8) {
+        let [a, b, c, d] = self.fetch_array();
+        (u16::from_le_bytes([a, b]), c, d)
     }
 }
 
@@ -833,7 +877,7 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
                 }
                 // Constants & Literals
                 Opcode::LoadConst => {
-                    let idx = fetch_u16!(cached_frame);
+                    let idx = cached_frame.fetch_u16();
                     let value = cached_frame.code.constants().get(idx);
                     // Handle InternLongInt specially - convert to heap-allocated LongInt
                     if let Value::InternLongInt(long_int_id) = value {
@@ -850,7 +894,7 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
                 Opcode::LoadTrue => self.push(Value::Bool(true)),
                 Opcode::LoadFalse => self.push(Value::Bool(false)),
                 Opcode::LoadSmallInt => {
-                    let n = fetch_i8!(cached_frame);
+                    let n = cached_frame.fetch_i8();
                     self.push(Value::Int(i64::from(n)));
                 }
                 // Variables - Specialized Local Loads (no operand)
@@ -860,61 +904,61 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
                 Opcode::LoadLocal3 => handle_load_result!(self, cached_frame, self.load_local(&cached_frame, 3)),
                 // Variables - General Local Operations
                 Opcode::LoadLocal => {
-                    let slot = u16::from(fetch_u8!(cached_frame));
+                    let slot = u16::from(cached_frame.fetch_u8());
                     handle_load_result!(self, cached_frame, self.load_local(&cached_frame, slot));
                 }
                 Opcode::LoadLocalW => {
-                    let slot = fetch_u16!(cached_frame);
+                    let slot = cached_frame.fetch_u16();
                     handle_load_result!(self, cached_frame, self.load_local(&cached_frame, slot));
                 }
                 Opcode::StoreLocal => {
-                    let slot = u16::from(fetch_u8!(cached_frame));
+                    let slot = u16::from(cached_frame.fetch_u8());
                     self.store_local(&cached_frame, slot);
                 }
                 Opcode::StoreLocalW => {
-                    let slot = fetch_u16!(cached_frame);
+                    let slot = cached_frame.fetch_u16();
                     self.store_local(&cached_frame, slot);
                 }
                 Opcode::DeleteLocal => {
-                    let slot = u16::from(fetch_u8!(cached_frame));
+                    let slot = u16::from(cached_frame.fetch_u8());
                     self.delete_local(&cached_frame, slot);
                 }
                 Opcode::DeleteGlobal => {
-                    let slot = fetch_u16!(cached_frame);
+                    let slot = cached_frame.fetch_u16();
                     self.delete_global(slot);
                 }
                 // Variables - Callable-context Local Loads
                 Opcode::LoadLocalCallable => {
-                    let slot = u16::from(fetch_u8!(cached_frame));
-                    let name_id = StringId::from_index(fetch_u16!(cached_frame));
-                    self.load_local_callable(&cached_frame, slot, name_id);
+                    let (slot, name_idx) = cached_frame.fetch_u8_u16();
+                    let name_id = StringId::from_index(name_idx);
+                    self.load_local_callable(&cached_frame, u16::from(slot), name_id);
                 }
                 Opcode::LoadLocalCallableW => {
-                    let slot = fetch_u16!(cached_frame);
-                    let name_id = StringId::from_index(fetch_u16!(cached_frame));
+                    let (slot, name_idx) = cached_frame.fetch_u16_u16();
+                    let name_id = StringId::from_index(name_idx);
                     self.load_local_callable(&cached_frame, slot, name_id);
                 }
                 // Variables - Global Operations
                 Opcode::LoadGlobal => {
-                    let slot = fetch_u16!(cached_frame);
+                    let slot = cached_frame.fetch_u16();
                     handle_load_result!(self, cached_frame, self.load_global(slot));
                 }
                 Opcode::LoadGlobalCallable => {
-                    let slot = fetch_u16!(cached_frame);
-                    let name_id = StringId::from_index(fetch_u16!(cached_frame));
+                    let (slot, name_idx) = cached_frame.fetch_u16_u16();
+                    let name_id = StringId::from_index(name_idx);
                     self.load_global_callable(slot, name_id);
                 }
                 Opcode::StoreGlobal => {
-                    let slot = fetch_u16!(cached_frame);
+                    let slot = cached_frame.fetch_u16();
                     self.store_global(slot);
                 }
                 // Variables - Cell Operations (closures)
                 Opcode::LoadCell => {
-                    let slot = fetch_u16!(cached_frame);
+                    let slot = cached_frame.fetch_u16();
                     try_catch_sync!(self, cached_frame, self.load_cell(&cached_frame, slot));
                 }
                 Opcode::StoreCell => {
-                    let slot = fetch_u16!(cached_frame);
+                    let slot = cached_frame.fetch_u16();
                     self.store_cell(&cached_frame, slot);
                 }
                 // Binary Operations - route through exception handling for tracebacks
@@ -948,7 +992,7 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
                 Opcode::CompareIn => try_catch_sync!(self, cached_frame, self.compare_in(false)),
                 Opcode::CompareNotIn => try_catch_sync!(self, cached_frame, self.compare_in(true)),
                 Opcode::CompareModEq => {
-                    let const_idx = fetch_u16!(cached_frame);
+                    let const_idx = cached_frame.fetch_u16();
                     let k = cached_frame.code.constants().get(const_idx);
                     try_catch_sync!(self, cached_frame, self.compare_mod_eq(k));
                 }
@@ -1086,27 +1130,27 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
                 }
                 // Collection Building - route through exception handling
                 Opcode::BuildList => {
-                    let count = fetch_u16!(cached_frame) as usize;
+                    let count = cached_frame.fetch_u16() as usize;
                     try_catch_sync!(self, cached_frame, self.build_list(count));
                 }
                 Opcode::BuildTuple => {
-                    let count = fetch_u16!(cached_frame) as usize;
+                    let count = cached_frame.fetch_u16() as usize;
                     try_catch_sync!(self, cached_frame, self.build_tuple(count));
                 }
                 Opcode::BuildDict => {
-                    let count = fetch_u16!(cached_frame) as usize;
+                    let count = cached_frame.fetch_u16() as usize;
                     try_catch_sync!(self, cached_frame, self.build_dict(count));
                 }
                 Opcode::BuildSet => {
-                    let count = fetch_u16!(cached_frame) as usize;
+                    let count = cached_frame.fetch_u16() as usize;
                     try_catch_sync!(self, cached_frame, self.build_set(count));
                 }
                 Opcode::FormatValue => {
-                    let flags = fetch_u8!(cached_frame);
+                    let flags = cached_frame.fetch_u8();
                     try_catch_sync!(self, cached_frame, self.format_value(flags));
                 }
                 Opcode::BuildFString => {
-                    let count = fetch_u16!(cached_frame) as usize;
+                    let count = cached_frame.fetch_u16() as usize;
                     try_catch_sync!(self, cached_frame, self.build_fstring(count));
                 }
                 Opcode::BuildSlice => {
@@ -1119,29 +1163,29 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
                     try_catch_sync!(self, cached_frame, self.list_to_tuple());
                 }
                 Opcode::DictMerge => {
-                    let func_name_id = fetch_u16!(cached_frame);
+                    let func_name_id = cached_frame.fetch_u16();
                     try_catch_sync!(self, cached_frame, self.dict_merge(func_name_id));
                 }
                 // PEP 448 literal building
                 Opcode::DictUpdate => {
-                    let depth = fetch_u8!(cached_frame) as usize;
+                    let depth = cached_frame.fetch_u8() as usize;
                     try_catch_sync!(self, cached_frame, self.dict_update(depth));
                 }
                 Opcode::SetExtend => {
-                    let depth = fetch_u8!(cached_frame) as usize;
+                    let depth = cached_frame.fetch_u8() as usize;
                     try_catch_sync!(self, cached_frame, self.set_extend(depth));
                 }
                 // Comprehension Building - append/add/set items during iteration
                 Opcode::ListAppend => {
-                    let depth = fetch_u8!(cached_frame) as usize;
+                    let depth = cached_frame.fetch_u8() as usize;
                     try_catch_sync!(self, cached_frame, self.list_append(depth));
                 }
                 Opcode::SetAdd => {
-                    let depth = fetch_u8!(cached_frame) as usize;
+                    let depth = cached_frame.fetch_u8() as usize;
                     try_catch_sync!(self, cached_frame, self.set_add(depth));
                 }
                 Opcode::DictSetItem => {
-                    let depth = fetch_u8!(cached_frame) as usize;
+                    let depth = cached_frame.fetch_u8() as usize;
                     try_catch_sync!(self, cached_frame, self.dict_set_item(depth));
                 }
                 // Subscript & Attribute - route through exception handling
@@ -1168,27 +1212,27 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
                     }
                 }
                 Opcode::LoadAttr => {
-                    let name_idx = fetch_u16!(cached_frame);
+                    let name_idx = cached_frame.fetch_u16();
                     let name_id = StringId::from_index(name_idx);
                     handle_call_result!(self, cached_frame, self.load_attr(name_id));
                 }
                 Opcode::LoadAttrImport => {
-                    let name_idx = fetch_u16!(cached_frame);
+                    let name_idx = cached_frame.fetch_u16();
                     let name_id = StringId::from_index(name_idx);
                     handle_call_result!(self, cached_frame, self.load_attr_import(name_id));
                 }
                 Opcode::StoreAttr => {
-                    let name_idx = fetch_u16!(cached_frame);
+                    let name_idx = cached_frame.fetch_u16();
                     let name_id = StringId::from_index(name_idx);
                     try_catch_sync!(self, cached_frame, self.store_attr(name_id));
                 }
                 // Control Flow - use cached_frame.ip directly for jumps
                 Opcode::Jump => {
-                    let offset = fetch_i16!(cached_frame);
+                    let offset = cached_frame.fetch_i16();
                     jump_relative!(cached_frame.ip, offset);
                 }
                 Opcode::JumpIfTrue => {
-                    let offset = fetch_i16!(cached_frame);
+                    let offset = cached_frame.fetch_i16();
                     let cond = self.pop();
                     if cond.py_bool(self) {
                         jump_relative!(cached_frame.ip, offset);
@@ -1196,7 +1240,7 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
                     cond.drop_with_heap(self);
                 }
                 Opcode::JumpIfFalse => {
-                    let offset = fetch_i16!(cached_frame);
+                    let offset = cached_frame.fetch_i16();
                     let cond = self.pop();
                     if !cond.py_bool(self) {
                         jump_relative!(cached_frame.ip, offset);
@@ -1204,7 +1248,7 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
                     cond.drop_with_heap(self);
                 }
                 Opcode::JumpIfTrueOrPop => {
-                    let offset = fetch_i16!(cached_frame);
+                    let offset = cached_frame.fetch_i16();
                     let value = self.pop();
                     if value.py_bool(self) {
                         self.push(value);
@@ -1214,7 +1258,7 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
                     }
                 }
                 Opcode::JumpIfFalseOrPop => {
-                    let offset = fetch_i16!(cached_frame);
+                    let offset = cached_frame.fetch_i16();
                     let value = self.pop();
                     if value.py_bool(self) {
                         value.drop_with_heap(self);
@@ -1236,7 +1280,7 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
                     }
                 }
                 Opcode::ForIter => {
-                    let offset = fetch_i16!(cached_frame);
+                    let offset = cached_frame.fetch_i16();
                     // Peek at the iterator on TOS and extract heap_id
                     let Value::Ref(heap_id) = *self.peek() else {
                         return Err(RunError::internal("ForIter: expected iterator ref on stack"));
@@ -1267,7 +1311,7 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
                 }
                 // Function Calls - sync IP before call, reload cache after frame changes
                 Opcode::CallFunction => {
-                    let arg_count = fetch_u8!(cached_frame) as usize;
+                    let arg_count = cached_frame.fetch_u8() as usize;
 
                     // Sync IP before call (call_function may access frame for traceback)
                     self.current_frame_mut().ip = cached_frame.ip;
@@ -1275,9 +1319,8 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
                     handle_call_result!(self, cached_frame, self.exec_call_function(arg_count));
                 }
                 Opcode::CallBuiltinFunction => {
-                    // Fetch operands: builtin_id (u8) + arg_count (u8)
-                    let builtin_id = fetch_u8!(cached_frame);
-                    let arg_count = fetch_u8!(cached_frame) as usize;
+                    let (builtin_id, arg_count) = cached_frame.fetch_u8_u8();
+                    let arg_count = arg_count as usize;
 
                     // Sync IP before call (builtins like map() may call evaluate_function
                     // which pushes frames and runs a nested run() loop)
@@ -1289,9 +1332,8 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
                     }
                 }
                 Opcode::CallBuiltinType => {
-                    // Fetch operands: type_id (u8) + arg_count (u8)
-                    let type_id = fetch_u8!(cached_frame);
-                    let arg_count = fetch_u8!(cached_frame) as usize;
+                    let (type_id, arg_count) = cached_frame.fetch_u8_u8();
+                    let arg_count = arg_count as usize;
 
                     match self.exec_call_builtin_type(type_id, arg_count) {
                         Ok(result) => self.push(result),
@@ -1301,13 +1343,13 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
                 }
                 Opcode::CallFunctionKw => {
                     // Fetch operands: pos_count, kw_count, then kw_count name indices
-                    let pos_count = fetch_u8!(cached_frame) as usize;
-                    let kw_count = fetch_u8!(cached_frame) as usize;
+                    let (pos_count, kw_count) = cached_frame.fetch_u8_u8();
+                    let (pos_count, kw_count) = (pos_count as usize, kw_count as usize);
 
                     // Read keyword name StringIds
                     let mut kwname_ids = Vec::with_capacity(kw_count);
                     for _ in 0..kw_count {
-                        kwname_ids.push(StringId::from_index(fetch_u16!(cached_frame)));
+                        kwname_ids.push(StringId::from_index(cached_frame.fetch_u16()));
                     }
 
                     // Sync IP before call (call_function may access frame for traceback)
@@ -1318,9 +1360,9 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
                 Opcode::CallAttr => {
                     // CallAttr: u16 name_id, u8 arg_count
                     // Stack: [obj, arg1, arg2, ..., argN] -> [result]
-                    let name_idx = fetch_u16!(cached_frame);
-                    let arg_count = fetch_u8!(cached_frame) as usize;
+                    let (name_idx, arg_count) = cached_frame.fetch_u16_u8();
                     let name_id = StringId::from_index(name_idx);
+                    let arg_count = arg_count as usize;
 
                     // Sync IP before call (may yield to host for OS/external calls)
                     self.current_frame_mut().ip = cached_frame.ip;
@@ -1330,15 +1372,14 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
                 Opcode::CallAttrKw => {
                     // CallAttrKw: u16 name_id, u8 pos_count, u8 kw_count, then kw_count u16 name indices
                     // Stack: [obj, pos_args..., kw_values...] -> [result]
-                    let name_idx = fetch_u16!(cached_frame);
-                    let pos_count = fetch_u8!(cached_frame) as usize;
-                    let kw_count = fetch_u8!(cached_frame) as usize;
+                    let (name_idx, pos_count, kw_count) = cached_frame.fetch_u16_u8_u8();
                     let name_id = StringId::from_index(name_idx);
+                    let (pos_count, kw_count) = (pos_count as usize, kw_count as usize);
 
                     // Read keyword name StringIds
                     let mut kwname_ids = Vec::with_capacity(kw_count);
                     for _ in 0..kw_count {
-                        kwname_ids.push(StringId::from_index(fetch_u16!(cached_frame)));
+                        kwname_ids.push(StringId::from_index(cached_frame.fetch_u16()));
                     }
 
                     // Sync IP before call (may yield to host for OS/external calls)
@@ -1351,7 +1392,7 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
                     );
                 }
                 Opcode::CallFunctionExtended => {
-                    let flags = fetch_u8!(cached_frame);
+                    let flags = cached_frame.fetch_u8();
                     let has_kwargs = (flags & 0x01) != 0;
 
                     // Sync IP before call
@@ -1360,8 +1401,7 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
                     handle_call_result!(self, cached_frame, self.exec_call_function_extended(has_kwargs));
                 }
                 Opcode::CallAttrExtended => {
-                    let name_idx = fetch_u16!(cached_frame);
-                    let flags = fetch_u8!(cached_frame);
+                    let (name_idx, flags) = cached_frame.fetch_u16_u8();
                     let name_id = StringId::from_index(name_idx);
                     let has_kwargs = (flags & 0x01) != 0;
 
@@ -1372,9 +1412,9 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
                 }
                 // Function Definition
                 Opcode::MakeFunction => {
-                    let func_idx = fetch_u16!(cached_frame);
-                    let defaults_count = fetch_u8!(cached_frame) as usize;
+                    let (func_idx, defaults_count) = cached_frame.fetch_u16_u8();
                     let func_id = FunctionId::from_index(func_idx);
+                    let defaults_count = defaults_count as usize;
 
                     if defaults_count == 0 {
                         // No defaults - use inline Value::Function (no heap allocation)
@@ -1391,10 +1431,9 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
                     }
                 }
                 Opcode::MakeClosure => {
-                    let func_idx = fetch_u16!(cached_frame);
-                    let defaults_count = fetch_u8!(cached_frame) as usize;
-                    let cell_count = fetch_u8!(cached_frame) as usize;
+                    let (func_idx, defaults_count, cell_count) = cached_frame.fetch_u16_u8_u8();
                     let func_id = FunctionId::from_index(func_idx);
+                    let (defaults_count, cell_count) = (defaults_count as usize, cell_count as usize);
 
                     // Pop cells from stack (pushed after defaults, so on top)
                     // Cells are Value::Ref pointing to HeapData::Cell
@@ -1540,13 +1579,12 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
                 }
                 // Unpacking - route through exception handling
                 Opcode::UnpackSequence => {
-                    let count = fetch_u8!(cached_frame) as usize;
+                    let count = cached_frame.fetch_u8() as usize;
                     try_catch_sync!(self, cached_frame, self.unpack_sequence(count));
                 }
                 Opcode::UnpackEx => {
-                    let before = fetch_u8!(cached_frame) as usize;
-                    let after = fetch_u8!(cached_frame) as usize;
-                    try_catch_sync!(self, cached_frame, self.unpack_ex(before, after));
+                    let (before, after) = cached_frame.fetch_u8_u8();
+                    try_catch_sync!(self, cached_frame, self.unpack_ex(before as usize, after as usize));
                 }
                 // Special
                 Opcode::Nop => {
@@ -1554,12 +1592,12 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
                 }
                 // Module Operations
                 Opcode::LoadModule => {
-                    let module_id = fetch_u8!(cached_frame);
+                    let module_id = cached_frame.fetch_u8();
                     try_catch_sync!(self, cached_frame, self.load_module(module_id));
                 }
                 Opcode::RaiseImportError => {
                     // Fetch the module name from the constant pool and raise ModuleNotFoundError
-                    let const_idx = fetch_u16!(cached_frame);
+                    let const_idx = cached_frame.fetch_u16();
                     let module_name = cached_frame.code.constants().get(const_idx);
                     // The constant should be an InternString from compile_import/compile_import_from
                     let name_str = match module_name {
