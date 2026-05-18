@@ -925,9 +925,10 @@ impl<T: ResourceTracker> ReplSnapshot<T> {
                     ExtFunctionResult::Error(exc) => vm.resume_with_exception(exc.into()),
                     ExtFunctionResult::Future(raw_call_id) => {
                         let call_id = CallId::new(raw_call_id);
-                        vm.add_pending_call(call_id);
-                        vm.push(Value::ExternalFuture(call_id));
-                        vm.run()
+                        match vm.add_pending_call(call_id) {
+                            Ok(()) => vm.run(),
+                            Err(err) => vm.resume_with_exception(err),
+                        }
                     }
                     ExtFunctionResult::NotFound(function_name) => {
                         vm.resume_with_exception(ExtFunctionResult::not_found_exc(&function_name))

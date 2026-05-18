@@ -13,7 +13,7 @@ use num_integer::Integer;
 use crate::{
     ExcType, ResourceTracker,
     args::ArgValues,
-    asyncio::{CallId, Coroutine, GatherFuture, GatherItem, GatherState, TaskId},
+    asyncio::{Awaiter, Coroutine, ExternalFuture, ExternalFutureState, GatherFuture, GatherState},
     bytecode::{CallResult, VM},
     exception_private::{RunError, RunResult, SimpleException},
     hash::HashValue,
@@ -100,6 +100,12 @@ pub(crate) enum HeapData {
     ///
     /// Created by asyncio.gather() and spawns tasks when awaited.
     GatherFuture(GatherFuture),
+    /// An external future driven by the host.
+    ///
+    /// Created when the host returns `ExtFunctionResult::Future(call_id)`.
+    /// Holds its own state machine (`Pending`/`Resolved`/`Failed`) so
+    /// re-await yields cached results, matching CPython's Future semantics.
+    ExternalFuture(ExternalFuture),
     /// A filesystem path from `pathlib.Path`.
     ///
     /// Stored on the heap to provide Python-compatible path operations.
@@ -163,13 +169,8 @@ impl HeapData {
                 | Self::Module(_)
                 | Self::Coroutine(_)
                 | Self::GatherFuture(_)
+                | Self::ExternalFuture(_)
         )
-    }
-
-    /// Returns true if this heap data is a coroutine.
-    #[inline]
-    pub fn is_coroutine(&self) -> bool {
-        matches!(self, Self::Coroutine(_))
     }
 
     /// Returns the Python `Type` for this heap data without requiring VM access.
@@ -199,7 +200,7 @@ impl HeapData {
             Self::Iter(_) => Type::Iterator,
             Self::LongInt(_) => Type::Int,
             Self::Module(_) => Type::Module,
-            Self::Coroutine(_) | Self::GatherFuture(_) => Type::Coroutine,
+            Self::Coroutine(_) | Self::GatherFuture(_) | Self::ExternalFuture(_) => Type::Coroutine,
             Self::Path(_) => Type::Path,
             Self::RePattern(_) => Type::RePattern,
             Self::ReMatch(_) => Type::ReMatch,
@@ -235,6 +236,7 @@ impl HeapData {
             Self::Module(m) => m.py_estimate_size(),
             Self::Coroutine(coro) => coro.py_estimate_size(),
             Self::GatherFuture(gather) => gather.py_estimate_size(),
+            Self::ExternalFuture(fut) => fut.py_estimate_size(),
             Self::Path(p) => p.py_estimate_size(),
             Self::ReMatch(m) => m.py_estimate_size(),
             Self::RePattern(p) => p.py_estimate_size(),
@@ -369,48 +371,68 @@ impl HeapItem for GatherFuture {
     fn py_estimate_size(&self) -> usize {
         let state_size = match &self.state {
             GatherState::Awaited(awaited) => {
-                // Rough sizing — entry slots plus per-entry storage. The map's
-                // bucket array overhead is intentionally elided; we only
-                // estimate dynamically-allocated content tied to user code.
-                let pending_tasks_size = awaited
-                    .pending_tasks
+                // Rough sizing — per-entry storage in `pending_children` plus
+                // the result-slot vector. The map's bucket overhead and the
+                // SmallVec inline buffer are elided; we only estimate
+                // dynamically-allocated content tied to user code.
+                let pending_size: usize = awaited
+                    .pending_children
                     .values()
                     .map(|slots| {
-                        mem::size_of::<TaskId>() + mem::size_of::<Vec<usize>>() + slots.len() * mem::size_of::<usize>()
+                        // Spilled SmallVec entries (beyond the inline 1) are heap-allocated.
+                        let spilled = slots.len().saturating_sub(1);
+                        mem::size_of::<HeapId>() + spilled * mem::size_of::<usize>()
                     })
                     .sum::<usize>();
-                let pending_calls_size = awaited
-                    .pending_calls
-                    .values()
-                    .map(|slots| {
-                        mem::size_of::<CallId>() + mem::size_of::<Vec<usize>>() + slots.len() * mem::size_of::<usize>()
-                    })
-                    .sum::<usize>();
-                awaited.results.len() * mem::size_of::<Option<Value>>() + pending_tasks_size + pending_calls_size
+                awaited.results.len() * mem::size_of::<Option<Value>>() + pending_size
             }
             GatherState::Pending | GatherState::Completed(_) | GatherState::Failed(_) => 0,
         };
-        mem::size_of::<Self>() + self.items.len() * mem::size_of::<GatherItem>() + state_size
+        mem::size_of::<Self>() + self.items.len() * mem::size_of::<HeapId>() + state_size
     }
 
     fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
-        // Decrement ref count for coroutine HeapIds (always present in `items`).
-        for item in &self.items {
-            if let GatherItem::Coroutine(id) = item {
-                stack.push(*id);
-            }
-        }
-        // Release per-state heap refs: in-flight slot results, or the cached
-        // result list once the gather has completed successfully. `Pending` and
-        // `Failed` carry no heap refs.
+        // Decrement ref count for items the gather owns (every entry in
+        // `items` is inc_ref'd at construction time).
+        stack.extend(self.items.iter().copied());
+        // Release per-state heap refs: in-flight slot results plus this
+        // gather's own awaiter (if `GatherSlot`, it owns an inc_ref on the
+        // outer gather), or the cached result list once the gather has
+        // completed successfully. `Pending` and `Failed` carry no heap refs.
         match &mut self.state {
             GatherState::Awaited(awaited) => {
+                if let Awaiter::GatherSlot { gather, .. } = &awaited.awaiter {
+                    stack.push(*gather);
+                }
                 for result in awaited.results.iter_mut().flatten() {
                     result.py_dec_ref_ids(stack);
                 }
             }
-            GatherState::Completed(list_id) => stack.push(*list_id),
-            GatherState::Pending | GatherState::Failed(_) => {}
+            GatherState::Completed(Value::Ref(id)) => stack.push(*id),
+            GatherState::Pending | GatherState::Failed(_) | GatherState::Completed(_) => {}
+        }
+    }
+}
+
+impl HeapItem for ExternalFuture {
+    fn py_estimate_size(&self) -> usize {
+        mem::size_of::<Self>()
+    }
+
+    fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
+        // `Pending { awaiter: Some(Awaiter::GatherSlot { gather, .. }) }`
+        // owns an inc_ref on `gather` — release it when this entry is
+        // freed. `Awaiter::Task` and `None` own nothing. `Resolved` owns
+        // the cached value; `Failed` carries no heap refs.
+        match &mut self.state {
+            ExternalFutureState::Resolved(value) => value.py_dec_ref_ids(stack),
+            ExternalFutureState::Pending {
+                awaiter: Some(Awaiter::GatherSlot { gather, .. }),
+            } => stack.push(*gather),
+            ExternalFutureState::Pending {
+                awaiter: None | Some(Awaiter::Task(_)),
+            }
+            | ExternalFutureState::Failed(_) => {}
         }
     }
 }
@@ -440,6 +462,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             Self::Module(_) => true,
             Self::Coroutine(_) => true,
             Self::GatherFuture(_) => true,
+            Self::ExternalFuture(_) => true,
             Self::Path(p) => p.py_bool(vm),
             Self::ReMatch(m) => m.py_bool(vm),
             Self::RePattern(p) => p.py_bool(vm),
@@ -505,7 +528,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             Self::Iter(_) => Type::Iterator,
             Self::LongInt(_) => Type::Int,
             Self::Module(_) => Type::Module,
-            Self::Coroutine(_) | Self::GatherFuture(_) => Type::Coroutine,
+            Self::Coroutine(_) | Self::GatherFuture(_) | Self::ExternalFuture(_) => Type::Coroutine,
             Self::Path(p) => p.py_type(vm),
             Self::ReMatch(re) => re.py_type(vm),
             Self::RePattern(p) => p.py_type(vm),
@@ -723,6 +746,11 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
                 Ok(write!(f, "<coroutine object {name}>")?)
             }
             Self::GatherFuture(gather) => Ok(write!(f, "<gather({})>", gather.get(vm.heap).item_count())?),
+            Self::ExternalFuture(fut) => Ok(write!(
+                f,
+                "<coroutine external_future({})>",
+                fut.get(vm.heap).call_id.raw()
+            )?),
             Self::Path(p) => p.py_repr_fmt(f, vm, heap_ids),
             Self::ReMatch(m) => m.py_repr_fmt(f, vm, heap_ids),
             Self::RePattern(p) => p.py_repr_fmt(f, vm, heap_ids),

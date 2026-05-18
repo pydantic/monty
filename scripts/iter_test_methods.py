@@ -11,6 +11,7 @@ This module is shared between:
 
 from __future__ import annotations
 
+import asyncio
 import os
 import stat as stat_module
 from dataclasses import dataclass
@@ -114,19 +115,27 @@ CONST_LIST = [1, 2, 3]
 CONST_NONE = None
 
 
-async def async_call(x: object) -> object:
-    """Async function that returns its argument.
+def async_call(x: object) -> 'asyncio.Future[object]':
+    """Returns a resolved `asyncio.Future` of the given value.
 
-    This is a coroutine - it returns a future that resolves to the given value.
-    Used for testing async external function calls.
+    Mirrors Monty's host-managed `ExternalFuture`: awaiting returns `x` and
+    re-awaiting returns the same cached `x` (matching `Future` semantics in
+    both runtimes). Implemented as a `Future` rather than `async def` so
+    callers can re-await without raising "cannot reuse already awaited
+    coroutine".
     """
-    return x
+    fut: asyncio.Future[object] = asyncio.get_running_loop().create_future()
+    fut.set_result(x)
+    return fut
 
 
-async def async_fail(exc_type: str, message: str) -> None:
-    """Async function that raises the requested exception.
+def async_fail(exc_type: str, message: str) -> 'asyncio.Future[None]':
+    """Returns a Future that raises `exc_type(message)` when awaited.
 
-    Mirrors `raise_error` for the async path.
+    Mirrors `raise_error` for the async path. Returning a Future (rather
+    than a coroutine raising the exception in its body) lets re-await
+    replay the cached exception, matching Monty's `ExternalFuture::Failed`
+    behaviour.
     """
     exc_types: dict[str, type[Exception]] = {
         'ValueError': ValueError,
@@ -134,7 +143,9 @@ async def async_fail(exc_type: str, message: str) -> None:
         'KeyError': KeyError,
         'RuntimeError': RuntimeError,
     }
-    raise exc_types[exc_type](message)
+    fut: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+    fut.set_exception(exc_types[exc_type](message))
+    return fut
 
 
 # =============================================================================
