@@ -254,10 +254,8 @@ pub(crate) enum GatherState {
     Pending,
     /// Currently being awaited. `AwaitedGather` carries every per-await field.
     Awaited(AwaitedGather),
-    /// All children completed successfully. The contained `HeapId` is an
-    /// inc_ref'd `HeapData::List` of results; the gather is its owner and
-    /// dec_refs it on drop. Re-awaiting the gather inc_refs this list and
-    /// returns it.
+    /// All children completed successfully. Re-awaiting the gather inc_refs this
+    /// value and returns it.
     Completed(Value),
     /// A child task failed (or an external future was rejected). The error
     /// is cached so subsequent awaits re-raise it. `RunError` implements
