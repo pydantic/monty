@@ -302,6 +302,44 @@ fn collect_constructors_bounded_during_collection() {
     }
 }
 
+/// Regression: an f-string with a large *dynamic* field width must be
+/// rejected by the memory limit before the padding string is materialized.
+///
+/// A literal width is clamped to 16 bits by the bytecode encoding, but a
+/// runtime width (`f"{v:>{w}}"`) is not. `pad_string`/`iter::repeat_n` build
+/// the padding in a native `String` invisible to the tracker until the
+/// finished string reaches the heap, so before the guard `w = 10**11` would
+/// allocate ~100 GB before any check, OOM-ing or aborting the host.
+#[test]
+fn fstring_dynamic_width_memory_bounded() {
+    for code in [
+        "w = 999_999_999\nf'{0:>{w}}'",
+        "w = 999_999_999\nf'{0:0>{w}}'",
+        "w = 999_999_999\nf'{1.5:^{w}}'",
+        "w = 999_999_999\nf'{\"x\":<{w}}'",
+    ] {
+        let ex = MontyRun::new(code.to_owned(), "test.py", vec![]).unwrap();
+        let limits = ResourceLimits::new()
+            .max_memory(1_048_576)
+            .max_duration(Duration::from_secs(30));
+        let result = ex.run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout);
+
+        let exc = result
+            .err()
+            .unwrap_or_else(|| panic!("{code:?}: should exceed the memory limit"));
+        assert_eq!(exc.exc_type(), ExcType::MemoryError, "{code:?}: wrong exc type");
+    }
+
+    // A small dynamic width is unaffected and still formats correctly.
+    let ex = MontyRun::new("w = 5\nf'{42:>{w}}'".to_owned(), "test.py", vec![]).unwrap();
+    let limits = ResourceLimits::new().max_memory(1_048_576);
+    let result = ex.run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout);
+    assert_eq!(
+        result.expect("small dynamic width should succeed"),
+        MontyObject::String("   42".to_owned())
+    );
+}
+
 #[test]
 fn memory_limit_zero() {
     let code = "x = 1 + 2\nx";
