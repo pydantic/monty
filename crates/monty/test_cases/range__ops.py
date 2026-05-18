@@ -244,3 +244,13 @@ assert True not in range(0), 'True not in empty range'
 # Large ranges which can hit monty's range i64 limits should not panic
 assert range(-(2**63), 2**63 - 1)[0] == -(2**63), 'range with len exceeding i64::MAX get first item'
 assert range(-(2**63), 2**63 - 1, 2**63 - 1)[2] == 2**63 - 2, 'range with step exceeding i64::MAX get last item'
+
+# === Check that containment doesn't overflow i64 calculation ===
+assert 100 in range(-(2**63), 2**63 - 1, 3), '100 in range across full i64 span step 3'
+assert 101 not in range(-(2**63), 2**63 - 1, 3), '101 not in range across full i64 span step 3'
+assert -(2**63) in range(-(2**63), 2**63 - 1, 1), 'i64::MIN in range(i64::MIN, i64::MAX)'
+assert (2**63 - 2) in range(-(2**63), 2**63 - 1, 1), 'last element in range(i64::MIN, i64::MAX)'
+assert (2**63 - 1) not in range(-(2**63), 2**63 - 1, 1), 'stop excluded from range(i64::MIN, i64::MAX)'
+assert -1 in range(2**63 - 1, -(2**63), -1), '-1 in backward span'
+assert (2**63 - 1) in range(2**63 - 1, -(2**63), -1), 'start in backward span'
+assert -(2**63) not in range(2**63 - 1, -(2**63), -1), 'stop excluded from backward span'

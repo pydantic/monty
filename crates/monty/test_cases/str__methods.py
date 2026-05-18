@@ -186,6 +186,10 @@ assert 'hello'.split('x') == ['hello'], 'split not found'
 assert 'a b c'.rsplit() == ['a', 'b', 'c'], 'rsplit whitespace'
 assert 'a,b,c'.rsplit(',') == ['a', 'b', 'c'], 'rsplit comma'
 assert 'a,b,c'.rsplit(',', 1) == ['a,b', 'c'], 'rsplit maxsplit'
+# Multi-byte whitespace must not panic on UTF-8 boundary (U+00A0, U+3000).
+assert 'hello world'.rsplit(maxsplit=1) == ['hello', 'world'], 'rsplit maxsplit nbsp'
+assert 'a　b　c'.rsplit(maxsplit=1) == ['a　b', 'c'], 'rsplit maxsplit ideographic space'
+assert 'a b c'.rsplit(maxsplit=2) == ['a', 'b', 'c'], 'rsplit maxsplit=2 nbsp'
 
 # splitlines()
 assert 'a\nb\nc'.splitlines() == ['a', 'b', 'c'], 'splitlines basic'

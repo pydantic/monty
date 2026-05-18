@@ -95,21 +95,21 @@ impl Range {
     ///
     /// A value is contained if it falls within the range bounds and is aligned
     /// with the step (i.e., `(n - start) % step == 0`).
+    ///
+    /// The subtraction is widened to `i128` because `n - self.start` would
+    /// overflow `i64` for ranges spanning the full integer span (e.g.
+    /// `range(i64::MIN, i64::MAX, k)` checked against any positive `n`).
     #[must_use]
     pub fn contains(&self, n: i64) -> bool {
-        if self.step > 0 {
-            // Forward range: start <= n < stop
-            if n < self.start || n >= self.stop {
-                return false;
-            }
+        let in_bounds = if self.step > 0 {
+            n >= self.start && n < self.stop
         } else {
-            // Backward range: stop < n <= start
-            if n > self.start || n <= self.stop {
-                return false;
-            }
+            n <= self.start && n > self.stop
+        };
+        if !in_bounds {
+            return false;
         }
-        // Check if n is on the step grid
-        (n - self.start) % self.step == 0
+        (i128::from(n) - i128::from(self.start)) % i128::from(self.step) == 0
     }
 
     /// Creates a range from the `range()` constructor call.
@@ -156,21 +156,26 @@ impl Range {
         let range_len = self.len();
         let (start, stop, step) = slice.indices(range_len)?;
 
-        // Calculate the new range parameters
-        // new_start = self.start + start * self.step
-        // new_step = self.step * slice_step
-        // new_stop needs to be computed based on the number of elements
+        // All intermediate arithmetic is done in `i128` to avoid saturating during
+        // calculation. If any of the resulting `start`, `stop`, or `step`
+        // values do not fit in `i64`, we raise `OverflowError` — Monty's `Range`
+        // stores `i64`, so unlike CPython we cannot represent a range whose
+        // parameters exceed that span.
+        let self_step = i128::from(self.step);
+        let self_start = i128::from(self.start);
+        let slice_step = i128::from(step);
 
-        let new_step = self.step.saturating_mul(step);
-        let new_start = self.start.saturating_add(start.saturating_mul(self.step));
+        let new_step_i128 = self_step * slice_step;
+        let new_start_i128 = self_start + i128::from(start) * self_step;
 
-        // Calculate the number of elements in the sliced range
-        // The guarantee on slice.indices will be that stop and start can at most be range_len apart,
-        // so the subtraction won't overflow.
-        let num_elements = div_ceil(stop - start, step);
+        // The guarantee on `slice.indices` is that `stop` and `start` are at most
+        // `range_len` apart, so the subtraction won't overflow.
+        let num_elements = div_ceil(i128::from(stop) - i128::from(start), slice_step);
+        let new_stop_i128 = new_start_i128 + num_elements * new_step_i128;
 
-        // new_stop = new_start + num_elements * new_step
-        let new_stop = new_start.saturating_add(num_elements.saturating_mul(new_step));
+        let new_step = i64::try_from(new_step_i128).map_err(|_| ExcType::overflow_c_ssize_t())?;
+        let new_start = i64::try_from(new_start_i128).map_err(|_| ExcType::overflow_c_ssize_t())?;
+        let new_stop = i64::try_from(new_stop_i128).map_err(|_| ExcType::overflow_c_ssize_t())?;
 
         let new_range = Self::new(new_start, new_stop, new_step);
         Ok(Value::Ref(heap.allocate(HeapData::Range(new_range))?))
@@ -218,11 +223,14 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Range> {
             return Err(ExcType::range_index_error());
         }
 
-        // Calculate: start + normalized * step
+        // Calculate: start + normalized * step.
+        //
+        // Mathematically `offset` falls within `[min(start, stop), max(start, stop))`
+        // — within i64 — when the `Range` invariant holds (every element is a valid
+        // i64). The fallible conversion below is defence-in-depth so that an invariant
+        // violation surfaces as a Python `OverflowError` rather than a host panic.
         let offset = i128::from(range.start) + (normalized * i128::from(range.step));
-
-        // because start / stop / step are i64, the result must always fit in i64 as well
-        let offset_i64 = offset.try_into().expect("calculated range index should fit in i64");
+        let offset_i64 = i64::try_from(offset).map_err(|_| ExcType::overflow_c_ssize_t())?;
         Ok(Value::Int(offset_i64))
     }
 

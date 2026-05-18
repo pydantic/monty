@@ -1087,6 +1087,15 @@ impl ExcType {
         SimpleException::new_msg(Self::OverflowError, "Python int too large to convert to C ssize_t").into()
     }
 
+    /// Creates an OverflowError when a Python int doesn't fit into a C `int` (i32).
+    ///
+    /// Matches CPython's format: `OverflowError: Python int too large to convert to C int`
+    /// Used by builtins (e.g. `bytes.hex`) that parse arguments via the `i` format code.
+    #[must_use]
+    pub(crate) fn overflow_c_int() -> RunError {
+        SimpleException::new_msg(Self::OverflowError, "Python int too large to convert to C int").into()
+    }
+
     /// Creates a TypeError for unsupported binary operations.
     ///
     /// For `+` or `+=` with str/list on the left side, uses CPython's special format:
