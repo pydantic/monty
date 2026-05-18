@@ -1440,8 +1440,16 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
                     let exception = self.peek();
                     let result = self.check_exc_match(exception, &exc_type);
                     exc_type.drop_with_heap(self);
-                    let result = result?;
-                    self.push(Value::Bool(result));
+                    match result {
+                        Ok(matched) => self.push(Value::Bool(matched)),
+                        // An invalid `except` type (e.g. `except 123:` or a
+                        // nested tuple) raises a `TypeError`. As in CPython this
+                        // is an ordinary exception raised while evaluating the
+                        // clause: it propagates out of the whole `try` and may be
+                        // caught by an enclosing handler, so route it through the
+                        // exception machinery rather than aborting the run.
+                        Err(err) => catch_sync!(self, cached_frame, err),
+                    }
                 }
                 // Return - reload cache after popping frame
                 Opcode::ReturnValue => {
