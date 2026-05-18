@@ -147,9 +147,9 @@ macro_rules! reload_cache {
 /// jump would result in a negative or overflowing instruction pointer.
 macro_rules! jump_relative {
     ($ip:expr, $offset:expr) => {{
-        let ip_i64 = i64::try_from($ip).expect("instruction pointer exceeds i64");
-        let new_ip = ip_i64 + i64::from($offset);
-        $ip = usize::try_from(new_ip).expect("jump resulted in negative or overflowing IP");
+        $ip = $ip
+            .checked_add_signed($offset.into())
+            .expect("jump resulted in negative or overflowing IP");
     }};
 }
 

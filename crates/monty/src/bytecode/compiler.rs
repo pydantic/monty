@@ -2836,7 +2836,11 @@ impl<'a> Compiler<'a> {
         let has_else = !try_block.or_else.is_empty();
 
         // Record stack depth at try entry (for unwinding on exception)
-        let stack_depth = self.code.stack_depth();
+        let Some(stack_depth) = self.code.stack_depth() else {
+            // Compiling dead code, don't need to emit anything
+            return Ok(());
+        };
+
         // Record `except_handler_depth` at try entry — the count of this
         // frame's exception_stack entries that should be active inside the
         // try body. The VM uses this on unwind to drain entries left
