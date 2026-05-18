@@ -190,6 +190,11 @@ assert 'a,b,c'.rsplit(',', 1) == ['a,b', 'c'], 'rsplit maxsplit'
 assert 'hello world'.rsplit(maxsplit=1) == ['hello', 'world'], 'rsplit maxsplit nbsp'
 assert 'a　b　c'.rsplit(maxsplit=1) == ['a　b', 'c'], 'rsplit maxsplit ideographic space'
 assert 'a b c'.rsplit(maxsplit=2) == ['a', 'b', 'c'], 'rsplit maxsplit=2 nbsp'
+assert 'a b c'.rsplit(maxsplit=0) == ['a b c'], 'rsplit maxsplit=0 does no splits'
+# Runs of whitespace count as one separator.
+assert 'a  b'.rsplit(maxsplit=2) == ['a', 'b'], 'rsplit consecutive ascii whitespace'
+assert 'a\xa0\xa0b'.rsplit(maxsplit=2) == ['a', 'b'], 'rsplit consecutive nbsp'
+assert '  a  b  '.rsplit(maxsplit=1) == ['  a', 'b'], 'rsplit trailing whitespace trimmed'
 
 # splitlines()
 assert 'a\nb\nc'.splitlines() == ['a', 'b', 'c'], 'splitlines basic'

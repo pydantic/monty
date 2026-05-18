@@ -1,5 +1,7 @@
 //! Implementation of the pow() builtin function.
 
+use std::num::NonZero;
+
 use num_bigint::BigInt;
 use num_traits::{Signed, ToPrimitive, Zero};
 
@@ -36,16 +38,20 @@ pub fn builtin_pow(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> Ru
             // Three-argument pow: modular exponentiation
             match (base, exp, m) {
                 (Value::Int(b), Value::Int(e), Value::Int(m_val)) => {
-                    if let Ok(e) = u64::try_from(*e) {
-                        Ok(Value::Int(mod_pow(*b, e, *m_val)?))
-                    } else {
+                    let Some(m_nz) = NonZero::new(*m_val) else {
+                        return Err(
+                            SimpleException::new_msg(ExcType::ValueError, "pow() 3rd argument cannot be 0").into(),
+                        );
+                    };
+                    let Ok(e) = u64::try_from(*e) else {
                         debug_assert!(*e < 0, "i64 -> u64 succeeds for all non-negative values");
-                        Err(SimpleException::new_msg(
+                        return Err(SimpleException::new_msg(
                             ExcType::ValueError,
                             "pow() 2nd argument cannot be negative when 3rd argument specified",
                         )
-                        .into())
-                    }
+                        .into());
+                    };
+                    Ok(Value::Int(mod_pow(*b, e, m_nz)))
                 }
                 _ => Err(SimpleException::new_msg(
                     ExcType::TypeError,
@@ -78,23 +84,19 @@ fn normalize_bool(value: &Value) -> &Value {
 
 /// Computes (base^exp) % modulo using binary exponentiation.
 ///
-/// Handles negative bases correctly using Python's modulo semantics, and
-/// matches CPython's behavior for the trivial modulus cases:
-///
-/// * `modulo == 0` raises `ValueError` (zero division for `pow`).
-/// * `|modulo| == 1` always yields `0`, including `exp == 0` where the loop
-///   below would otherwise leave `result` at `1`.
-fn mod_pow(base: i64, exp: u64, modulo: i64) -> RunResult<i64> {
-    if modulo == 0 {
-        return Err(SimpleException::new_msg(ExcType::ValueError, "pow() 3rd argument cannot be 0").into());
-    }
+/// Matches CPython for `|modulo| == 1`: the result is always `0`, including
+/// the `exp == 0` corner case where the loop would otherwise leave
+/// `result` at `1`.
+fn mod_pow(base: i64, exp: u64, modulo: NonZero<i64>) -> i64 {
+    let modulo = modulo.get();
 
     // The `|modulo| == 1` short-circuit is also load-bearing for panic safety:
     // without it, `base.rem_euclid(modulo)` panics when `base == i64::MIN` and
     // `modulo == -1` (the intermediate `i64::MIN / -1` overflows). Filtering
-    // `modulo ∈ {-1, 0, 1}` up front guarantees `rem_euclid` cannot panic.
+    // `modulo ∈ {-1, 1}` up front (combined with the `NonZero` guarantee)
+    // ensures `rem_euclid` cannot panic.
     if modulo == 1 || modulo == -1 {
-        return Ok(0);
+        return 0;
     }
 
     // `modulo` is now neither 0 nor ±1, so `rem_euclid` cannot panic and
@@ -115,9 +117,9 @@ fn mod_pow(base: i64, exp: u64, modulo: i64) -> RunResult<i64> {
     // `result < modulo_u <= 2^63`, so the conversion to i64 always succeeds.
     let result_i64 = i64::try_from(result).expect("mod_pow result exceeds i64::MAX");
     if modulo < 0 && result_i64 > 0 {
-        Ok(result_i64 + modulo)
+        result_i64 + modulo
     } else {
-        Ok(result_i64)
+        result_i64
     }
 }
 

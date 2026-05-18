@@ -1478,15 +1478,14 @@ fn rsplit_whitespace_n(s: &str, maxsplit: usize) -> Vec<&str> {
     let mut remaining = s.trim_end();
     let mut count = 0;
 
-    for (idx, c) in remaining.char_indices().rev() {
-        if c.is_whitespace() {
-            let ws_len = c.len_utf8();
-            parts.push(&remaining[idx + ws_len..]);
-            remaining = remaining[..idx].trim_end();
+    while !remaining.is_empty() && count < maxsplit {
+        if let Some(start) = remaining.rfind(|c: char| c.is_whitespace()) {
+            let ws_len = remaining[start..].chars().next().unwrap().len_utf8();
+            parts.push(&remaining[start + ws_len..]);
+            remaining = remaining[..start].trim_end();
             count += 1;
-            if count >= maxsplit {
-                break;
-            }
+        } else {
+            break;
         }
     }
 
