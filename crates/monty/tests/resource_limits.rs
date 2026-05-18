@@ -252,6 +252,56 @@ result
     );
 }
 
+/// Regression: materializing a cheap-to-represent but enormous lazy iterable
+/// via `list()`/`tuple()`/`sorted()`/`reversed()` (and generator collection)
+/// must be rejected *during* collection, near the configured memory limit —
+/// not after the entire native buffer has been built.
+///
+/// `MontyIter::collect` builds the result in a native `Vec` that is invisible
+/// to the resource tracker until the finished object reaches the heap. Before
+/// the incremental check, `range(10**9)` would allocate ~16 GiB of native
+/// buffer before any limit check, OOM-killing or aborting the host (an
+/// uncatchable sandbox escape). The fix estimates the projected size after
+/// each element, so the limit fires while the buffer is still tiny.
+#[test]
+fn collect_constructors_bounded_during_collection() {
+    for code in [
+        "list(range(10**9))",
+        "tuple(range(10**9))",
+        "sorted(range(10**9))",
+        "reversed(range(10**9))",
+        "list(x for x in range(10**9))",
+    ] {
+        let ex = MontyRun::new(code.to_owned(), "test.py", vec![]).unwrap();
+        // 1 MiB memory budget; a generous time limit so a timeout cannot mask
+        // a missing memory check.
+        let limits = ResourceLimits::new()
+            .max_memory(1_048_576)
+            .max_duration(Duration::from_secs(30));
+        let result = ex.run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout);
+
+        let exc = result
+            .err()
+            .unwrap_or_else(|| panic!("{code}: should exceed the memory limit"));
+        assert_eq!(exc.exc_type(), ExcType::MemoryError, "{code}: wrong exc type");
+
+        // Parse "memory limit exceeded: <used> bytes > <limit> bytes". The fix
+        // must trip while the buffer is still small; before the fix `used` was
+        // the full materialized size (~16 GB for range(10**9)).
+        let msg = exc.message().expect("memory error carries a message");
+        let used: usize = msg
+            .strip_prefix("memory limit exceeded: ")
+            .and_then(|m| m.split(" bytes").next())
+            .and_then(|n| n.parse().ok())
+            .unwrap_or_else(|| panic!("{code}: unexpected message {msg:?}"));
+        assert!(
+            used < 16 * 1_048_576,
+            "{code}: rejected at {used} bytes — collection is not bounded \
+             incrementally (expected to trip near the 1 MiB limit)"
+        );
+    }
+}
+
 #[test]
 fn memory_limit_zero() {
     let code = "x = 1 + 2\nx";
