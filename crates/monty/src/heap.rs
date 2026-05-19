@@ -1231,7 +1231,8 @@ impl<T: ResourceTracker> Heap<T> {
         HeapReader::with(self, &mut (), |reader, ()| reader.collect_cycles_inner())
     }
 
-    fn collect_white(&mut self, work_stack: &mut Vec<HeapId>) -> usize {
+    fn collect_white(&mut self, roots: Vec<HeapId>) -> usize {
+        let mut work_stack = roots;
         let mut freed = 0;
         while let Some(id) = work_stack.pop() {
             let Some(mut entry) = self.entries.entry(id) else {
@@ -1259,7 +1260,7 @@ impl<T: ResourceTracker> Heap<T> {
             // pushed child IDs feed the work stack so we recursively walk
             // White grandchildren — we do *not* `dec_ref` these children
             // (`MarkGray`/`ScanBlack` already balanced their refcounts).
-            py_dec_ref_ids_for_data(value.data.0.get_mut(), work_stack);
+            py_dec_ref_ids_for_data(value.data.0.get_mut(), &mut work_stack);
         }
         freed
     }
@@ -1308,28 +1309,21 @@ impl<'a, T: ResourceTracker> HeapReader<'a, T> {
                 continue;
             }
             roots.push(id);
-            entry.color.set(CcColor::Gray);
-            for_each_child_id(ptr.data(self), |child_id| {
-                let child_ptr = self.read_ptr(child_id);
-                work_stack.push(child_ptr);
-            });
-            self.mark_gray(&mut work_stack);
+            self.mark_gray(ptr, &mut work_stack);
+            debug_assert!(work_stack.is_empty(), "mark_gray must drain its work stack");
         }
 
         // 2. For each root, scan and resurrect if alive (refcount > 0 or active readers).
         //    Roots were live at Phase 1 and nothing has freed them between then and
         //    now, so `entry_ptr` returning `None` would indicate a bug.
-        for &id in &roots {
-            let ptr = self.read_ptr(id);
-            work_stack.push(ptr);
-        }
+        work_stack.extend(roots.iter().map(|&id| self.read_ptr(id)));
         self.scan(&mut work_stack);
         debug_assert!(work_stack.is_empty(), "scan must drain its work stack");
 
         // 3. Collect each root's White children as unreachable garbage. This phase
         //    keeps working in HeapId-space because `entry.free()` pushes to the
         //    free list, which is keyed by id.
-        let freed = self.heap.collect_white(&mut roots);
+        let freed = self.heap.collect_white(roots);
 
         // After this pass no Purple entries remain in the heap; zero the
         // counter so the next `dec_ref` event re-seeds from a clean baseline,
@@ -1346,20 +1340,24 @@ impl<'a, T: ResourceTracker> HeapReader<'a, T> {
     /// the count of *external* references into it (refs originating outside
     /// the candidate subgraph). `Scan` uses that property to decide
     /// alive/condemned.
-    fn mark_gray(&mut self, work_stack: &mut Vec<HeapPtr<'a>>) {
-        while let Some(ptr) = work_stack.pop() {
-            let entry = ptr.entry(self);
-            debug_assert!(entry.refcount.get() > 0, "mark_gray: refcount underflow");
-            entry.refcount.update(|r| r - 1);
-            if entry.color.get() == CcColor::Gray {
-                // Already marked via another edge
-                continue;
-            }
-            entry.color.set(CcColor::Gray);
+    fn mark_gray(&mut self, mut ptr: HeapPtr<'a>, work_stack: &mut Vec<HeapPtr<'a>>) {
+        ptr.entry(self).color.set(CcColor::Gray);
+        loop {
             for_each_child_id(ptr.data(self), |child_id| {
                 let child_ptr = self.read_ptr(child_id);
+                let entry = child_ptr.entry(self);
+                debug_assert!(entry.refcount.get() > 0, "mark_gray: refcount underflow");
+                entry.refcount.update(|r| r - 1);
+                if entry.color.replace(CcColor::Gray) == CcColor::Gray {
+                    // Already marked via another edge, don't push again
+                    return;
+                }
                 work_stack.push(child_ptr);
             });
+            let Some(next_ptr) = work_stack.pop() else {
+                break;
+            };
+            ptr = next_ptr;
         }
     }
 
@@ -1378,6 +1376,11 @@ impl<'a, T: ResourceTracker> HeapReader<'a, T> {
                 entry.color.set(CcColor::White);
                 for_each_child_id(ptr.data(self), |child_id| {
                     let child_ptr = self.read_ptr(child_id);
+                    let entry = child_ptr.entry(self);
+                    if entry.color.get() != CcColor::Gray {
+                        // Already processed via another edge
+                        return;
+                    }
                     work_stack.push(child_ptr);
                 });
             } else {
@@ -1385,12 +1388,7 @@ impl<'a, T: ResourceTracker> HeapReader<'a, T> {
                 // account for inside the candidate set, or a live `HeapRead`
                 // pointing into the entry). Resurrect this entry and its
                 // transitive Gray children back to Black via `mark_black`.
-                entry.color.set(CcColor::Black);
-                for_each_child_id(ptr.data(self), |child_id| {
-                    let child_ptr = self.read_ptr(child_id);
-                    black_work_stack.push(child_ptr);
-                });
-                self.mark_black(&mut black_work_stack);
+                self.mark_black(ptr, &mut black_work_stack);
                 debug_assert!(black_work_stack.is_empty());
             }
         }
@@ -1405,19 +1403,23 @@ impl<'a, T: ResourceTracker> HeapReader<'a, T> {
     /// from two parents in the resurrected subtree) balance the matching
     /// per-edge decrements `MarkGray` performed. Recursion only descends into
     /// non-Black children so each entry is processed at most once.
-    fn mark_black(&mut self, work_stack: &mut Vec<HeapPtr<'a>>) {
-        while let Some(ptr) = work_stack.pop() {
-            let entry = ptr.entry(self);
-            entry.refcount.update(|r| r + 1);
-            if entry.color.get() == CcColor::Black {
-                // Already marked via another edge
-                continue;
-            }
-            entry.color.set(CcColor::Black);
+    fn mark_black(&mut self, mut ptr: HeapPtr<'a>, work_stack: &mut Vec<HeapPtr<'a>>) {
+        ptr.entry(self).color.set(CcColor::Black);
+        loop {
             for_each_child_id(ptr.data(self), |child_id| {
                 let child_ptr = self.read_ptr(child_id);
+                let entry = child_ptr.entry(self);
+                entry.refcount.update(|r| r + 1);
+                if entry.color.replace(CcColor::Black) == CcColor::Black {
+                    // Already marked via another edge
+                    return;
+                }
                 work_stack.push(child_ptr);
             });
+            let Some(next_ptr) = work_stack.pop() else {
+                break;
+            };
+            ptr = next_ptr;
         }
     }
 }
@@ -1729,6 +1731,50 @@ mod tests {
         id
     }
 
+    /// Allocates a two-element cycle where one direction has multiplicity 3:
+    /// `P → [A, A, A]` and `A → [P]`. Returns `(p_id, a_id)`.
+    ///
+    /// Final refcounts: `P.rc = 2` (alloc + one edge from A), `A.rc = 4`
+    /// (alloc + three edges from P). The caller "owns" one of each — both
+    /// can be dropped via `dec_ref` to isolate the cycle.
+    ///
+    /// Exercises the duplicate-edges-within-one-element shape that
+    /// `mark_gray`/`mark_black` must handle correctly: each edge from P
+    /// to A is one independent decrement (or increment), but the work
+    /// stack must not grow with edge multiplicity — otherwise the outer
+    /// pop processes A's children multiple times and over-counts.
+    fn alloc_dup_child_cycle(heap: &Heap<NoLimitTracker>) -> (HeapId, HeapId) {
+        let p_id = heap.allocate(HeapData::List(List::new(vec![]))).unwrap();
+        let a_id = heap.allocate(HeapData::List(List::new(vec![]))).unwrap();
+
+        let push_refs = |target: HeapId, refs: &[HeapId]| {
+            let entry = heap
+                .entries
+                .iter()
+                .find(|(other, _)| *other == target)
+                .map(|(_, e)| e)
+                .expect("entry just allocated");
+            // SAFETY: no other borrow into this entry's data exists during the test.
+            let data = unsafe { &mut *entry.data.0.get() };
+            match data {
+                HeapData::List(list) => {
+                    list.set_contains_refs();
+                    for r in refs {
+                        list.as_vec_mut().push(Value::Ref(*r));
+                    }
+                }
+                _ => unreachable!(),
+            }
+            for r in refs {
+                heap.inc_ref(*r);
+            }
+        };
+
+        push_refs(p_id, &[a_id, a_id, a_id]);
+        push_refs(a_id, &[p_id]);
+        (p_id, a_id)
+    }
+
     #[test]
     fn cstack_only_cycle_survives_collection() {
         let mut heap = Heap::<NoLimitTracker>::new(16, NoLimitTracker);
@@ -1855,5 +1901,78 @@ mod tests {
         restored.collect_cycles();
         assert!(!is_alive(&restored, id));
         assert_eq!(restored.purple_count, 0);
+    }
+
+    #[test]
+    fn isolated_cycle_with_duplicate_child_refs_is_collected() {
+        // Regression: an unreachable cycle where one element references its
+        // sibling multiple times within its child list. The mark phase must
+        // (a) decrement the sibling's refcount once per edge, and (b) push
+        // the sibling onto the work stack at most once, even when many
+        // edges from the same parent target it.
+        //
+        // Without (b), the outer pop walks the sibling's children once per
+        // duplicate edge, over-decrementing the *sibling's* children's
+        // refcounts. In debug builds this trips `mark_gray`'s
+        // refcount-underflow `debug_assert`; in release it wraps the
+        // refcount to `usize::MAX` and `scan` resurrects the cycle —
+        // either way, the cycle is not collected.
+        let mut heap = Heap::<NoLimitTracker>::new(16, NoLimitTracker);
+        let (p_id, a_id) = alloc_dup_child_cycle(&heap);
+        // After construction: P.rc = 2, A.rc = 4.
+
+        // Drop the caller's refs; the cycle is now genuinely unreachable.
+        heap.dec_ref(p_id); // P.rc 2 → 1, flagged Purple
+        heap.dec_ref(a_id); // A.rc 4 → 3, flagged Purple
+        assert_eq!(heap.purple_count, 2);
+
+        heap.collect_cycles();
+
+        assert!(!is_alive(&heap, p_id), "P should be collected");
+        assert!(!is_alive(&heap, a_id), "A should be collected");
+        assert_eq!(heap.purple_count, 0);
+    }
+
+    #[test]
+    fn cstack_rooted_cycle_with_duplicate_child_refs_collects_after_pin_dropped() {
+        // Regression: when `scan` resurrects a Purple cycle via `mark_black`,
+        // the per-edge refcount *increment* must mirror `mark_gray`'s
+        // per-edge decrement. Duplicate edges from one element to its
+        // sibling must not over-increment via repeated outer pops of the
+        // sibling.
+        //
+        // We pin P externally (extra inc_ref) so `scan` is forced to take
+        // the resurrect path through `mark_black`. After collection the
+        // refcounts must be exactly the pre-collection values — verified by
+        // dropping the pin and confirming the next `collect_cycles` reclaims
+        // the cycle. If `mark_black` over-incremented during resurrection,
+        // dropping the pin leaves the refcounts artificially high and the
+        // cycle leaks.
+        let mut heap = Heap::<NoLimitTracker>::new(16, NoLimitTracker);
+        let (p_id, a_id) = alloc_dup_child_cycle(&heap);
+        // After construction: P.rc = 2, A.rc = 4.
+
+        // Pin P externally. After the inc_ref + dec_ref pair, P is Purple
+        // but its refcount still includes one unit not accounted for by
+        // any in-cycle edge — `scan` must resurrect via `mark_black`.
+        heap.inc_ref(p_id); // P.rc = 3 (alloc + from A + pin)
+        heap.dec_ref(p_id); // P.rc = 2, flagged Purple
+        heap.dec_ref(a_id); // A.rc = 3, flagged Purple
+
+        heap.collect_cycles();
+
+        // First pass: cycle survives because of P's external pin.
+        assert!(is_alive(&heap, p_id), "P should survive (external pin)");
+        assert!(is_alive(&heap, a_id), "A should survive (reachable via P)");
+
+        // Drop the pin. If `mark_black` correctly restored refcounts during
+        // resurrection, the cycle is now isolated and the next collection
+        // reclaims it. Over-incrementing in `mark_black` leaves P's
+        // refcount artificially high so `scan` resurrects it again.
+        heap.dec_ref(p_id);
+        heap.collect_cycles();
+
+        assert!(!is_alive(&heap, p_id), "P should be collected after pin dropped");
+        assert!(!is_alive(&heap, a_id), "A should be collected after pin dropped");
     }
 }
