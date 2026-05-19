@@ -175,7 +175,7 @@ fn name_index_too_large(position: CodeRange) -> CompileError {
     CompileError::new(
         format!(
             "module has too many distinct names; the bytecode format supports up to {} interned strings",
-            u16::MAX
+            usize::from(u16::MAX) + 1,
         ),
         position,
     )

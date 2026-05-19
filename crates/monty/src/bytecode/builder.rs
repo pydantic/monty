@@ -214,6 +214,10 @@ impl CodeBuilder {
         // Capture the opcode position (where patch_jump will overwrite the i16)
         // before `emit_with_operand` pushes the bytes.
         let offset = self.current_offset();
+        // Capture the source location now so any later `patch_jump` overflow
+        // anchors the diagnostic at this jump site rather than the (often
+        // unrelated) statement where the patch happens to resolve.
+        let source_position = self.current_location.unwrap_or_default();
         // Jump-taken target depth. `jump_taken_delta` panics for non-jumps.
         let target_depth = u16::try_from(i32::from(pre_depth) + i32::from(op.jump_taken_stack_effect()))
             .map_err(|_| self.stack_too_large())?;
@@ -223,6 +227,7 @@ impl CodeBuilder {
             inner: Some(JumpLabelInner {
                 offset,
                 stack_depth: target_depth,
+                source_position,
             }),
         })
     }
@@ -257,7 +262,7 @@ impl CodeBuilder {
         };
 
         let offset = calculate_jump_offset(label, target)
-            .ok_or_else(|| self.jump_too_large())?
+            .ok_or_else(|| jump_too_large_at(label.source_position))?
             .as_i16();
         let bytes = offset.to_le_bytes();
         self.bytecode[label.offset.0 + 1] = bytes[0];
@@ -289,6 +294,10 @@ impl CodeBuilder {
             stack_depth: target_depth
                 .checked_add_signed(op.jump_taken_stack_effect())
                 .ok_or_else(|| self.stack_too_large())?,
+            // Backward jumps are emitted and resolved at the same spot, so
+            // there's no patch-time/emit-time split; either position is the
+            // same statement.
+            source_position: self.current_location.unwrap_or_default(),
         };
         let Some(target) = target.0 else {
             // Target is dead code
@@ -608,22 +617,23 @@ impl CodeBuilder {
     #[cold]
     #[inline(never)]
     fn jump_too_large(&self) -> CompileError {
-        CompileError::new(
-            "function too large: jump offset exceeds i16 range",
-            self.current_location.unwrap_or_default(),
-        )
+        jump_too_large_at(self.current_location.unwrap_or_default())
     }
 
     /// Builds the `CompileError` for a `StringId` that doesn't fit in the
     /// `u16` operand of a name-bearing opcode. Used by emit helpers that
     /// inline the name id directly (e.g. `LoadLocalCallable`).
+    ///
+    /// The count is `u16::MAX + 1` (`65 536`) because a `u16` operand can
+    /// address indices `0..=u16::MAX`, so the format can name that many
+    /// distinct interned strings before overflowing.
     #[cold]
     #[inline(never)]
     fn name_id_too_large(&self) -> CompileError {
         CompileError::new(
             format!(
-                "module has too many distinct names; the bytecode format supports up to {}",
-                u16::MAX
+                "module has too many distinct names; the bytecode format supports up to {} interned strings",
+                usize::from(u16::MAX) + 1,
             ),
             self.current_location.unwrap_or_default(),
         )
@@ -643,12 +653,16 @@ impl CodeBuilder {
 
     /// Builds the `CompileError` for a `add_const` that would overflow the
     /// per-`Code` constant pool's `u16` index. One function/module body can
-    /// hold at most `u16::MAX + 1` distinct constants.
+    /// hold at most `u16::MAX + 1` distinct constants (the check fires when
+    /// the pool already holds `u16::MAX + 1` entries — indices `0..=u16::MAX`).
     #[cold]
     #[inline(never)]
     fn constant_pool_full(&self) -> CompileError {
         CompileError::new(
-            format!("function has too many constants; maximum is {} per function", u16::MAX),
+            format!(
+                "function has too many constants; maximum is {} per function",
+                usize::from(u16::MAX) + 1,
+            ),
             self.current_location.unwrap_or_default(),
         )
     }
@@ -671,14 +685,30 @@ impl CodeBuilder {
     /// position doesn't fit in the `u32` field of `LocationEntry`. Practically
     /// unreachable because the `i16` jump-offset cap kicks in at ~32 KB of
     /// bytecode, but kept defensive in case future opcodes loosen that limit.
+    /// The count is `u32::MAX + 1` because the check happens on the pre-push
+    /// length and the next byte makes it that many bytes total.
     #[cold]
     #[inline(never)]
     fn bytecode_too_large(&self) -> CompileError {
         CompileError::new(
-            format!("function bytecode too large; maximum is {} bytes", u32::MAX),
+            format!(
+                "function bytecode too large; maximum is {} bytes",
+                u64::from(u32::MAX) + 1,
+            ),
             self.current_location.unwrap_or_default(),
         )
     }
+}
+
+/// Builds the `CompileError` for a jump offset that doesn't fit in `i16`,
+/// anchored to an explicit source position rather than the builder's current
+/// location. Used by `patch_jump` so a forward-jump overflow is reported at
+/// the original `emit_jump` site (captured in `JumpLabelInner::source_position`)
+/// rather than the unrelated statement where the patch happens to resolve.
+#[cold]
+#[inline(never)]
+fn jump_too_large_at(position: CodeRange) -> CompileError {
+    CompileError::new("function too large: jump offset exceeds i16 range", position)
 }
 
 /// Label for a forward jump that needs patching.
@@ -699,6 +729,12 @@ struct JumpLabelInner {
     /// to enforce the invariant that all paths arriving at a given bytecode
     /// position have the same stack depth.
     stack_depth: u16,
+    /// Source location of the jump itself (the statement that emitted it),
+    /// captured at `emit_jump` time. Used by `patch_jump` so an offset
+    /// overflow anchors the diagnostic at the jump site rather than at the
+    /// patch site, which is usually a different (and less informative)
+    /// statement.
+    source_position: CodeRange,
 }
 
 /// A position in the bytecode stream.

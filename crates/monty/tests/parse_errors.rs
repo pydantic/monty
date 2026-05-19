@@ -706,7 +706,7 @@ fn module_with_too_many_interned_strings_returns_syntax_error() {
     assert_eq!(err.exc_type(), ExcType::SyntaxError);
     assert_eq!(
         err.message(),
-        Some("module has too many distinct names; the bytecode format supports up to 65535 interned strings"),
+        Some("module has too many distinct names; the bytecode format supports up to 65536 interned strings"),
     );
 }
 
