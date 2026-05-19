@@ -1057,55 +1057,62 @@ impl<T: ResourceTracker> Heap<T> {
     /// Panics if the value ID is invalid, the value has already been freed, or
     /// the refcount would reach zero while active `HeapRead` readers exist.
     pub fn dec_ref(&mut self, id: HeapId) {
-        let mut current_id = id;
-        let mut work_stack = Vec::new();
-        loop {
-            let mut entry = self
-                .entries
-                .entry(current_id)
-                .expect("Heap::dec_ref: value already freed");
-            let heap_entry = entry.get_mut();
-            if heap_entry.refcount.get() > 1 {
-                heap_entry.refcount.update(|r| r - 1);
+        HeapReader::with(self, &mut (), |reader, ()| {
+            let mut current_id = id;
+            let mut work_stack = Vec::new();
+            loop {
+                // Using `HeapPtr` avoids the possibility of aliasing with live borrows
+                // held by `HeapRead` handles.
+                let ptr = reader.read_ptr(current_id);
+                let heap_entry = ptr.entry(reader);
+                if heap_entry.refcount.get() > 1 {
+                    heap_entry.refcount.update(|r| r - 1);
 
-                let is_gc_tracked = heap_entry.data.0.get_mut().is_gc_tracked();
-                if is_gc_tracked && heap_entry.color.get() != CcColor::Purple {
-                    // The refcount survived — a newly unreachable cycle could
-                    // now be hiding. Flag it as a candidate for the next `collect_cycles`.
-                    heap_entry.color.set(CcColor::Purple);
-                    self.purple_count += 1;
+                    let is_gc_tracked = ptr.data(reader).is_gc_tracked();
+                    if is_gc_tracked && heap_entry.color.get() != CcColor::Purple {
+                        // The refcount survived — a newly unreachable cycle could
+                        // now be hiding. Flag it as a candidate for the next `collect_cycles`.
+                        heap_entry.color.set(CcColor::Purple);
+                        reader.heap.purple_count += 1;
+                    }
+                } else {
+                    debug_assert!(
+                        current_id != EMPTY_TUPLE_ID,
+                        "Heap::dec_ref: empty-tuple singleton's heap-owned refcount must never reach zero",
+                    );
+                    assert!(
+                        heap_entry.readers.get() == 0,
+                        "Heap::dec_ref: cannot free HeapId({}) with {} active reader(s)",
+                        current_id.index(),
+                        heap_entry.readers.get(),
+                    );
+                    // If the entry was a pending cycle candidate, decrement
+                    // `purple_count` to reflect that it is leaving the heap before
+                    // the collector reaches it.
+                    if heap_entry.color.get() == CcColor::Purple {
+                        reader.heap.purple_count -= 1;
+                    }
+                    // It is not possible to free from `HeapPtr` because it is created through
+                    // a &self borrow on `StableHeap`. At least this repeated lookup is already
+                    // on the slow path.
+                    let mut value = reader.heap.entries.entry(current_id).expect("already looked up").free();
+
+                    // Notify tracker of freed memory
+                    reader
+                        .heap
+                        .tracker
+                        .on_free(|| value.data.0.get_mut().py_estimate_size());
+
+                    // Collect child IDs and push onto work stack for iterative processing
+                    py_dec_ref_ids_for_data(value.data.0.get_mut(), &mut work_stack);
                 }
-            } else {
-                debug_assert!(
-                    current_id != EMPTY_TUPLE_ID,
-                    "Heap::dec_ref: empty-tuple singleton's heap-owned refcount must never reach zero",
-                );
-                assert!(
-                    heap_entry.readers.get() == 0,
-                    "Heap::dec_ref: cannot free HeapId({}) with {} active reader(s)",
-                    current_id.index(),
-                    heap_entry.readers.get(),
-                );
-                // If the entry was a pending cycle candidate, decrement
-                // `purple_count` to reflect that it is leaving the heap before
-                // the collector reaches it.
-                if heap_entry.color.get() == CcColor::Purple {
-                    self.purple_count -= 1;
-                }
-                let mut value = entry.free();
 
-                // Notify tracker of freed memory
-                self.tracker.on_free(|| value.data.0.get_mut().py_estimate_size());
-
-                // Collect child IDs and push onto work stack for iterative processing
-                py_dec_ref_ids_for_data(value.data.0.get_mut(), &mut work_stack);
+                let Some(next_id) = work_stack.pop() else {
+                    break;
+                };
+                current_id = next_id;
             }
-
-            let Some(next_id) = work_stack.pop() else {
-                break;
-            };
-            current_id = next_id;
-        }
+        });
     }
 
     /// Returns an immutable reference to the heap data stored at the given ID.
@@ -1887,6 +1894,46 @@ mod tests {
         // self-pointer after freeing the entry). `Heap::drop` walks every
         // slot and tears them down regardless of refcount, so leaking
         // here is safe for the duration of the test.
+    }
+
+    /// Regression test for a soundness gap in [`Heap::dec_ref`]'s trial-deletion
+    /// candidate-enrollment path.
+    ///
+    /// The surviving-refcount branch calls `heap_entry.data.0.get_mut()` to
+    /// check `is_gc_tracked`, even though [`HeapData::is_gc_tracked`] only
+    /// needs `&self`. That `UnsafeCell::get_mut()` is a fresh `&mut HeapData`
+    /// (Unique) retag of the same allocation the live `HeapRead` is already
+    /// pointing into via a `SharedReadWrite` raw pointer, so it invalidates
+    /// the prior pointer under Stacked / Tree Borrows.
+    ///
+    /// Pure `cargo test` cannot observe this — the pointer arithmetic still
+    /// reads valid bytes — but `cargo +nightly miri test` flags the access.
+    /// The branch is reachable from normal Monty code (e.g. `list.remove`
+    /// on a self-referential list holds a `HeapRead<List>`, clones the
+    /// matching element, and the deferred drop of that clone calls
+    /// `dec_ref` on the same `HeapId` while the list reader is still live).
+    #[test]
+    fn dec_ref_must_not_invalidate_live_heap_read() {
+        let mut heap = Heap::<NoLimitTracker>::new(16, NoLimitTracker);
+        let id = heap.allocate(HeapData::List(List::new(vec![]))).unwrap();
+        // Bump refcount so `dec_ref` enters the non-freeing branch where
+        // the offending `data.0.get_mut()` lives. `List` is GC-tracked, so
+        // `is_gc_tracked` returns true and the branch is fully exercised.
+        heap.inc_ref(id);
+
+        HeapReader::with(&mut heap, &mut (), |heap, ()| {
+            let HeapReadOutput::List(list) = heap.read(id) else {
+                unreachable!()
+            };
+            // Holding `list` does NOT borrow the heap — only `list.get(heap)`
+            // does. That is what lets the borrow checker accept this
+            // sequence, while the underlying raw-pointer aliasing is
+            // nevertheless violated by the next call.
+            heap.dec_ref(id);
+            // Read through the now-invalidated `SharedReadWrite` raw pointer.
+            // Miri's aliasing model fails here.
+            let _ = list.get(heap).as_slice().len();
+        });
     }
 
     #[test]
