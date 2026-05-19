@@ -20,7 +20,7 @@ use crate::{
     exception_private::{ExcType, RunResult},
     hash::HashValue,
     heap::{Heap, HeapData, HeapId, HeapItem, HeapRead},
-    resource::{ResourceError, ResourceTracker},
+    resource::ResourceTracker,
     types::{PyTrait, Type},
     value::Value,
 };
@@ -226,7 +226,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Range> {
         Ok(Value::Int(offset_i64))
     }
 
-    fn py_eq(&self, other: &Self, vm: &mut VM<'h, impl ResourceTracker>) -> Result<bool, ResourceError> {
+    fn py_eq(&self, other: &Self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<bool> {
         let a = self.get(vm.heap);
         let b = other.get(vm.heap);
         // Compare ranges by their actual sequences, not parameters.

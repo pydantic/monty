@@ -24,7 +24,7 @@ use crate::{
     hash::HashValue,
     heap::{Heap, HeapData, HeapId, HeapItem, HeapRead},
     intern::{Interns, StaticStrings},
-    resource::{ResourceError, ResourceTracker},
+    resource::ResourceTracker,
     types::{PyTrait, Type},
     value::{EitherStr, Value},
 };
@@ -338,7 +338,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, TimeDelta> {
         None
     }
 
-    fn py_eq(&self, other: &Self, vm: &mut VM<'h, impl ResourceTracker>) -> Result<bool, ResourceError> {
+    fn py_eq(&self, other: &Self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<bool> {
         Ok(total_microseconds(self.get(vm.heap)) == total_microseconds(other.get(vm.heap)))
     }
 
@@ -348,7 +348,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, TimeDelta> {
         Ok(Some(HashValue::new(hasher.finish())))
     }
 
-    fn py_cmp(&self, other: &Self, vm: &mut VM<'h, impl ResourceTracker>) -> Result<Option<Ordering>, ResourceError> {
+    fn py_cmp(&self, other: &Self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<Ordering>> {
         Ok(total_microseconds(self.get(vm.heap)).partial_cmp(&total_microseconds(other.get(vm.heap))))
     }
 

@@ -24,7 +24,7 @@ use crate::{
     heap::{DropWithHeap, Heap, HeapData, HeapId, HeapItem, HeapRead},
     intern::StaticStrings,
     modules::re::{ASCII, DOTALL, IGNORECASE, MULTILINE},
-    resource::{ResourceError, ResourceTracker, check_estimated_size},
+    resource::{ResourceTracker, check_estimated_size},
     types::{
         List, PyTrait, ReMatch, Type, allocate_tuple,
         str::{allocate_string, string_repr_fmt},
@@ -274,7 +274,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, RePattern> {
         None
     }
 
-    fn py_eq(&self, other: &Self, vm: &mut VM<'h, impl ResourceTracker>) -> Result<bool, ResourceError> {
+    fn py_eq(&self, other: &Self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<bool> {
         Ok(self.get(vm.heap) == other.get(vm.heap))
     }
 

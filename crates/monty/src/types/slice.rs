@@ -21,7 +21,7 @@ use crate::{
     hash::HashValue,
     heap::{HeapData, HeapId, HeapItem, HeapRead},
     intern::StaticStrings,
-    resource::{ResourceError, ResourceTracker},
+    resource::ResourceTracker,
     types::{PyTrait, Type},
     value::{EitherStr, Value},
 };
@@ -170,7 +170,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Slice> {
         None
     }
 
-    fn py_eq(&self, other: &Self, vm: &mut VM<'h, impl ResourceTracker>) -> Result<bool, ResourceError> {
+    fn py_eq(&self, other: &Self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<bool> {
         let a = self.get(vm.heap);
         let b = other.get(vm.heap);
         Ok(a.start == b.start && a.stop == b.stop && a.step == b.step)

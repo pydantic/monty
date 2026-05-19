@@ -261,7 +261,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Date> {
         None
     }
 
-    fn py_eq(&self, other: &Self, vm: &mut VM<'h, impl ResourceTracker>) -> Result<bool, ResourceError> {
+    fn py_eq(&self, other: &Self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<bool> {
         Ok(*self.get(vm.heap) == *other.get(vm.heap))
     }
 
@@ -271,7 +271,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Date> {
         Ok(Some(HashValue::new(hasher.finish())))
     }
 
-    fn py_cmp(&self, other: &Self, vm: &mut VM<'h, impl ResourceTracker>) -> Result<Option<Ordering>, ResourceError> {
+    fn py_cmp(&self, other: &Self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<Ordering>> {
         Ok(self.get(vm.heap).partial_cmp(other.get(vm.heap)))
     }
 

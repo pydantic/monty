@@ -16,7 +16,6 @@ use ahash::AHashSet;
 
 use super::Type;
 use crate::{
-    ResourceError,
     args::ArgValues,
     bytecode::{CallResult, VM},
     exception_private::{ExcType, RunResult, SimpleException},
@@ -24,7 +23,7 @@ use crate::{
     heap::{DropWithHeap, HeapId},
     intern::StringId,
     os::OsFunction,
-    resource::ResourceTracker,
+    resource::{ResourceError, ResourceTracker},
     value::{EitherStr, Value},
 };
 
@@ -124,7 +123,7 @@ pub trait PyTrait<'h> {
     ///
     /// Returns `Ok(true)` if equal, `Ok(false)` if not equal, or
     /// `Err(ResourceError::Recursion)` if maximum depth is exceeded.
-    fn py_eq(&self, other: &Self, vm: &mut VM<'h, impl ResourceTracker>) -> Result<bool, ResourceError>;
+    fn py_eq(&self, other: &Self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<bool>;
 
     /// Python comparison (`<`, `>`, etc.).
     ///
@@ -136,7 +135,7 @@ pub trait PyTrait<'h> {
     ///
     /// Returns `Ok(Some(Ordering))` for comparable values, `Ok(None)` if not comparable,
     /// or `Err(ResourceError::Recursion)` if maximum depth is exceeded.
-    fn py_cmp(&self, _other: &Self, _vm: &mut VM<'h, impl ResourceTracker>) -> Result<Option<Ordering>, ResourceError> {
+    fn py_cmp(&self, _other: &Self, _vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<Ordering>> {
         Ok(None)
     }
 

@@ -125,7 +125,7 @@ fn compare_values(
             a.py_type(vm),
             b.py_type(vm)
         )),
-        Err(e) => e.into(),
+        Err(e) => e,
     };
     *sort_result = Err(err);
     Ordering::Equal

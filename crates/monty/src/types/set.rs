@@ -13,10 +13,10 @@ use crate::{
     hash::HashValue,
     heap::{
         BorrowedHeapRead, BorrowedHeapReadMut, ContainsHeap, DropWithHeap, HeapData, HeapGuard, HeapId, HeapItem,
-        HeapRead, HeapReadOutput, heap_read_ref_as_field, heap_read_ref_as_field_mut,
+        HeapRead, HeapReadOutput, RecursionToken, heap_read_ref_as_field, heap_read_ref_as_field_mut,
     },
     intern::StaticStrings,
-    resource::{ResourceError, ResourceTracker},
+    resource::ResourceTracker,
     types::Type,
     value::{EitherStr, Value},
 };
@@ -276,22 +276,106 @@ impl SetStorage {
 
 impl<'h> HeapRead<'h, SetStorage> {
     /// Compares two sets for equality.
-    fn eq(&self, other: &Self, vm: &mut VM<'h, impl ResourceTracker>) -> Result<bool, ResourceError> {
+    fn eq(&self, other: &Self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<bool> {
         if self.get(vm.heap).len() != other.get(vm.heap).len() {
             return Ok(false);
         }
-        let token = vm.heap.incr_recursion_depth()?;
-        defer_drop!(token, vm);
-        // Check that every element in self is in other
-        let len = self.get(vm.heap).entries.len();
-        for i in 0..len {
-            let elem = self.get(vm.heap).entries[i].value.clone_with_heap(vm);
-            defer_drop!(elem, vm);
+        let iter = self.iter(vm)?;
+        defer_drop_mut!(iter, vm);
+        while let Some(elem) = iter.next(vm)? {
             if !matches!(other.contains(elem, vm), Ok(true)) {
                 return Ok(false);
             }
         }
         Ok(true)
+    }
+
+    /// Returns a stack-borrowed lending iterator over the set's elements in
+    /// insertion order, holding a recursion-depth token for its lifetime.
+    ///
+    /// Named `iter` despite returning a non-stdlib lending iterator (see
+    /// [`SetIter`]) because that's the obvious entry point for "iterate
+    /// this container".
+    #[expect(clippy::iter_not_returning_iterator)]
+    pub(crate) fn iter<R: ResourceTracker>(&self, vm: &mut VM<'h, R>) -> RunResult<SetIter<'_, 'h>> {
+        SetIter::new(self, vm)
+    }
+}
+
+/// Stack-borrowed lending iterator over a heap-allocated set's elements in
+/// insertion order.
+///
+/// Borrows a [`HeapRead`] for its lifetime, so the heap entry is pinned by
+/// the reader count for the duration of iteration.
+///
+/// **Lending shape.** [`next`](Self::next) returns `Option<&Value>`. The
+/// iterator itself owns the most-recently-yielded element (using
+/// [`Value::Undefined`] as the empty sentinel) and drops the previous
+/// element at the start of each `next` call, so call sites do **not** need
+/// a per-item `defer_drop!`.
+///
+/// **Recursion guard.** Acquires a [`RecursionToken`] at construction and
+/// releases it via [`DropWithHeap`]. The iterator MUST be wrapped in
+/// [`defer_drop_mut!`] so the token (and any in-flight element) is released
+/// on every exit path — set iteration usually feeds into `py_eq` /
+/// `py_hash` / membership checks which recurse on cyclic structures (e.g.
+/// frozensets of frozensets).
+///
+/// **Mutation policy.** The initial length is captured at construction. If
+/// the set's size changes between [`next`](Self::next) calls, the next step
+/// returns `RuntimeError: Set changed size during iteration` (matching
+/// CPython and [`MontyIter`]'s set behavior).
+pub(crate) struct SetIter<'a, 'h> {
+    storage: &'a HeapRead<'h, SetStorage>,
+    index: usize,
+    expected_len: usize,
+    token: RecursionToken,
+    /// Most-recently-yielded element. `Value::Undefined` when nothing is
+    /// held — drops on that variant are no-ops, so `next` can
+    /// unconditionally release the previous slot before fetching the next.
+    current: Value,
+}
+
+impl<'a, 'h> SetIter<'a, 'h> {
+    fn new<R: ResourceTracker>(storage: &'a HeapRead<'h, SetStorage>, vm: &mut VM<'h, R>) -> RunResult<Self> {
+        let expected_len = storage.get(vm.heap).entries.len();
+        let token = vm.heap.incr_recursion_depth()?;
+        Ok(Self {
+            storage,
+            index: 0,
+            expected_len,
+            token,
+            current: Value::Undefined,
+        })
+    }
+
+    /// Advances the iterator and returns a borrow of the next element, or
+    /// `Ok(None)` on exhaustion. The returned reference is valid until the
+    /// next call to `next` (or until the iterator is dropped).
+    ///
+    /// Returns `Err(RuntimeError)` if the set's size has changed since
+    /// construction.
+    pub(crate) fn next<'i, R: ResourceTracker>(&'i mut self, vm: &mut VM<'h, R>) -> RunResult<Option<&'i Value>> {
+        // Drop the previously-yielded element (no-op when `current` is `Undefined`).
+        mem::replace(&mut self.current, Value::Undefined).drop_with_heap(vm.heap);
+        vm.heap.check_time()?;
+        let current = self.storage.get(vm.heap);
+        if current.entries.len() != self.expected_len {
+            return Err(ExcType::runtime_error_set_changed_size());
+        }
+        if self.index >= self.expected_len {
+            return Ok(None);
+        }
+        self.current = current.entries[self.index].value.clone_with_heap(vm.heap);
+        self.index += 1;
+        Ok(Some(&self.current))
+    }
+}
+
+impl DropWithHeap for SetIter<'_, '_> {
+    fn drop_with_heap<H: ContainsHeap>(self, heap: &mut H) {
+        self.current.drop_with_heap(heap);
+        self.token.drop_with_heap(heap);
     }
 }
 
@@ -899,7 +983,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Set> {
         Some(self.get(vm.heap).len())
     }
 
-    fn py_eq(&self, other: &Self, vm: &mut VM<'h, impl ResourceTracker>) -> Result<bool, ResourceError> {
+    fn py_eq(&self, other: &Self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<bool> {
         self.storage().eq(&other.storage(), vm)
     }
 
@@ -1162,7 +1246,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, FrozenSet> {
         Some(self.get(vm.heap).len())
     }
 
-    fn py_eq(&self, other: &Self, vm: &mut VM<'h, impl ResourceTracker>) -> Result<bool, ResourceError> {
+    fn py_eq(&self, other: &Self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<bool> {
         self.storage().eq(&other.storage(), vm)
     }
 

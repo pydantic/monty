@@ -16,9 +16,12 @@ use crate::{
     bytecode::{CallResult, VM},
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, RunResult},
-    heap::{ContainsHeap, DropWithHeap, Heap, HeapData, HeapGuard, HeapId, HeapItem, HeapRead, HeapReadOutput},
+    heap::{
+        ContainsHeap, DropWithHeap, Heap, HeapData, HeapGuard, HeapId, HeapItem, HeapRead, HeapReadOutput,
+        RecursionToken,
+    },
     intern::{Interns, StaticStrings},
-    resource::{ResourceError, ResourceTracker},
+    resource::ResourceTracker,
     types::Type,
     value::{EitherStr, VALUE_SIZE, Value},
 };
@@ -376,7 +379,7 @@ impl Dict {
     }
 
     /// Returns an iterator over references to (key, value) pairs.
-    pub fn iter(&self) -> DictIter<'_> {
+    pub fn iter(&self) -> DictEntriesIter<'_> {
         self.into_iter()
     }
 
@@ -484,6 +487,18 @@ impl<'h> HeapRead<'h, Dict> {
         Ok(opt_index.is_some())
     }
 
+    /// Returns a stack-borrowed lending iterator over the dict's
+    /// `(key, value)` entries in insertion order, holding a recursion-depth
+    /// token for its lifetime.
+    ///
+    /// Named `iter` despite returning a non-stdlib lending iterator (see
+    /// [`DictIter`]) because that's the obvious entry point for "iterate
+    /// this container".
+    #[expect(clippy::iter_not_returning_iterator)]
+    pub(crate) fn iter<R: ResourceTracker>(&self, vm: &mut VM<'h, R>) -> RunResult<DictIter<'_, 'h>> {
+        DictIter::new(self, vm)
+    }
+
     /// Merges key-value pairs from a dict or iterable-of-pairs into self via HeapRead.
     ///
     /// For dict sources, uses HeapReader::read() to access the source dict through
@@ -494,11 +509,12 @@ impl<'h> HeapRead<'h, Dict> {
         if let Value::Ref(id) = other_value {
             let src_id = *id;
             if let HeapReadOutput::Dict(src) = vm.heap.read(src_id) {
-                let len = src.get(vm.heap).entries.len();
-                for i in 0..len {
-                    let entry = &src.get(vm.heap).entries[i];
-                    let key = entry.key.clone_with_heap(vm);
-                    let value = entry.value.clone_with_heap(vm);
+                let iter = src.iter(vm)?;
+                defer_drop_mut!(iter, vm);
+                while let Some((k, v)) = iter.next(vm)? {
+                    // `set` consumes its args, so clone the borrowed pair.
+                    let key = k.clone_with_heap(vm);
+                    let value = v.clone_with_heap(vm);
                     let old_value = self.set(key, value, vm)?;
                     old_value.drop_with_heap(vm);
                 }
@@ -567,9 +583,9 @@ impl<'h> HeapRead<'h, Dict> {
 }
 
 /// Iterator over borrowed (key, value) pairs in a dict.
-pub(crate) struct DictIter<'a>(slice::Iter<'a, DictEntry>);
+pub(crate) struct DictEntriesIter<'a>(slice::Iter<'a, DictEntry>);
 
-impl<'a> Iterator for DictIter<'a> {
+impl<'a> Iterator for DictEntriesIter<'a> {
     type Item = (&'a Value, &'a Value);
     fn next(&mut self) -> Option<Self::Item> {
         self.0.next().map(|e| (&e.key, &e.value))
@@ -578,9 +594,9 @@ impl<'a> Iterator for DictIter<'a> {
 
 impl<'a> IntoIterator for &'a Dict {
     type Item = (&'a Value, &'a Value);
-    type IntoIter = DictIter<'a>;
+    type IntoIter = DictEntriesIter<'a>;
     fn into_iter(self) -> Self::IntoIter {
-        DictIter(self.entries.iter())
+        DictEntriesIter(self.entries.iter())
     }
 }
 
@@ -609,6 +625,95 @@ impl IntoIterator for Dict {
     }
 }
 
+/// Stack-borrowed lending iterator over a heap-allocated [`Dict`]'s
+/// `(key, value)` entries in insertion order.
+///
+/// Borrows a [`HeapRead`] for its lifetime, so the heap entry is pinned by
+/// the reader count for the duration of iteration.
+///
+/// **Lending shape.** [`next`](Self::next) returns
+/// `Option<(&Value, &Value)>`. The iterator itself owns the
+/// most-recently-yielded pair (using [`Value::Undefined`] as the empty
+/// sentinel) and drops the previous pair at the start of each `next` call,
+/// so call sites do **not** need a per-item `defer_drop!`. Callers that
+/// need owned values (e.g. to feed into [`HeapRead::set`]) must
+/// `clone_with_heap` the borrowed pair themselves.
+///
+/// **Recursion guard.** Acquires a [`RecursionToken`] at construction and
+/// releases it via [`DropWithHeap`]. The iterator MUST be wrapped in
+/// [`defer_drop_mut!`] so the token (and any in-flight pair) is released on
+/// every exit path — dict iteration almost always calls back into
+/// `py_eq` / `py_hash` (membership lookups, comparison) which recurse on
+/// cyclic structures.
+///
+/// **Mutation policy.** The initial length is captured at construction. If
+/// the dict's size changes between [`next`](Self::next) calls, the next
+/// step returns `RuntimeError: dictionary changed size during iteration`
+/// (matching CPython and [`MontyIter`]'s dict behavior). Same-size updates
+/// (replacing a value at an existing key) are allowed and observable.
+pub(crate) struct DictIter<'a, 'h> {
+    dict: &'a HeapRead<'h, Dict>,
+    index: usize,
+    expected_len: usize,
+    token: RecursionToken,
+    /// Most-recently-yielded pair. Both fields are `Value::Undefined` when
+    /// nothing is held — drops on that variant are no-ops, so `next` can
+    /// unconditionally release the previous slot before fetching the next.
+    current_key: Value,
+    current_value: Value,
+}
+
+impl<'a, 'h> DictIter<'a, 'h> {
+    fn new<R: ResourceTracker>(dict: &'a HeapRead<'h, Dict>, vm: &mut VM<'h, R>) -> RunResult<Self> {
+        let expected_len = dict.get(vm.heap).entries.len();
+        let token = vm.heap.incr_recursion_depth()?;
+        Ok(Self {
+            dict,
+            index: 0,
+            expected_len,
+            token,
+            current_key: Value::Undefined,
+            current_value: Value::Undefined,
+        })
+    }
+
+    /// Advances the iterator and returns borrows of the next `(key, value)`
+    /// pair, or `Ok(None)` on exhaustion. The returned references are valid
+    /// until the next call to `next` (or until the iterator is dropped).
+    ///
+    /// Returns `Err(RuntimeError)` if the dict's size has changed since
+    /// construction.
+    pub(crate) fn next<'i, R: ResourceTracker>(
+        &'i mut self,
+        vm: &mut VM<'h, R>,
+    ) -> RunResult<Option<(&'i Value, &'i Value)>> {
+        // Drop the previously-yielded pair (no-op when each slot is `Undefined`).
+        mem::replace(&mut self.current_key, Value::Undefined).drop_with_heap(vm.heap);
+        mem::replace(&mut self.current_value, Value::Undefined).drop_with_heap(vm.heap);
+        vm.heap.check_time()?;
+        let current = self.dict.get(vm.heap);
+        if current.entries.len() != self.expected_len {
+            return Err(ExcType::runtime_error_dict_changed_size());
+        }
+        if self.index >= self.expected_len {
+            return Ok(None);
+        }
+        let entry = &current.entries[self.index];
+        self.current_key = entry.key.clone_with_heap(vm.heap);
+        self.current_value = entry.value.clone_with_heap(vm.heap);
+        self.index += 1;
+        Ok(Some((&self.current_key, &self.current_value)))
+    }
+}
+
+impl DropWithHeap for DictIter<'_, '_> {
+    fn drop_with_heap<H: ContainsHeap>(self, heap: &mut H) {
+        self.current_key.drop_with_heap(heap);
+        self.current_value.drop_with_heap(heap);
+        self.token.drop_with_heap(heap);
+    }
+}
+
 /// `PyTrait` implementation for `HeapRead<'h, Dict>`.
 ///
 /// All methods access the dict data through short-lived borrows from the heap via
@@ -623,7 +728,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Dict> {
         Some(self.get(vm.heap).len())
     }
 
-    fn py_eq(&self, other: &Self, vm: &mut VM<'h, impl ResourceTracker>) -> Result<bool, ResourceError> {
+    fn py_eq(&self, other: &Self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<bool> {
         if self.get(vm.heap).len() != other.get(vm.heap).len() {
             return Ok(false);
         }

@@ -33,7 +33,7 @@ use crate::{
     hash::HashValue,
     heap::{HeapId, HeapItem, HeapRead},
     intern::{Interns, StringId},
-    resource::{ResourceError, ResourceTracker},
+    resource::ResourceTracker,
     types::Type,
     value::{EitherStr, Value},
 };
@@ -173,7 +173,7 @@ impl<'h> HeapRead<'h, NamedTuple> {
         &self,
         other: &HeapRead<'h, super::Tuple>,
         vm: &mut VM<'h, impl ResourceTracker>,
-    ) -> Result<bool, ResourceError> {
+    ) -> RunResult<bool> {
         let a_len = self.get(vm.heap).len();
         if a_len != other.get(vm.heap).as_slice().len() {
             return Ok(false);
@@ -220,7 +220,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, NamedTuple> {
         }
     }
 
-    fn py_eq(&self, other: &Self, vm: &mut VM<'h, impl ResourceTracker>) -> Result<bool, ResourceError> {
+    fn py_eq(&self, other: &Self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<bool> {
         let a_len = self.get(vm.heap).len();
         if a_len != other.get(vm.heap).len() {
             return Ok(false);

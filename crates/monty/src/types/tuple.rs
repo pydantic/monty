@@ -223,7 +223,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Tuple> {
         Ok(self.clone_item(idx, vm))
     }
 
-    fn py_eq(&self, other: &Self, vm: &mut VM<'h, impl ResourceTracker>) -> Result<bool, ResourceError> {
+    fn py_eq(&self, other: &Self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<bool> {
         let a_len = self.get(vm.heap).items.len();
         if a_len != other.get(vm.heap).items.len() {
             return Ok(false);
@@ -282,7 +282,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Tuple> {
     /// `(1, 2) < (1, 2, 3)` is `True`.
     ///
     /// Returns `None` if any element pair is incomparable (e.g. `int` vs `str`).
-    fn py_cmp(&self, other: &Self, vm: &mut VM<'h, impl ResourceTracker>) -> Result<Option<Ordering>, ResourceError> {
+    fn py_cmp(&self, other: &Self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<Ordering>> {
         let a_len = self.get(vm.heap).items.len();
         let b_len = other.get(vm.heap).items.len();
         let min_len = a_len.min(b_len);

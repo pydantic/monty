@@ -200,7 +200,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Str> {
         Ok(allocate_char(c, vm.heap)?)
     }
 
-    fn py_eq(&self, other: &Self, vm: &mut VM<'h, impl ResourceTracker>) -> Result<bool, ResourceError> {
+    fn py_eq(&self, other: &Self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<bool> {
         Ok(self.get(vm.heap).0 == other.get(vm.heap).0)
     }
 
@@ -221,7 +221,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Str> {
         !self.get(vm.heap).0.is_empty()
     }
 
-    fn py_cmp(&self, other: &Self, vm: &mut VM<'h, impl ResourceTracker>) -> Result<Option<Ordering>, ResourceError> {
+    fn py_cmp(&self, other: &Self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<Ordering>> {
         Ok(Some(self.get(vm.heap).0.cmp(&other.get(vm.heap).0)))
     }
 

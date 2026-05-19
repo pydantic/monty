@@ -20,7 +20,7 @@ use crate::{
     exception_private::{ExcType, RunResult},
     heap::{Heap, HeapData, HeapId, HeapItem, HeapRead},
     intern::StaticStrings,
-    resource::{ResourceError, ResourceTracker},
+    resource::ResourceTracker,
     types::{
         Dict, PyTrait, Type, allocate_tuple,
         str::{allocate_string, string_repr_fmt},
@@ -284,7 +284,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, ReMatch> {
         None
     }
 
-    fn py_eq(&self, _other: &Self, _vm: &mut VM<'h, impl ResourceTracker>) -> Result<bool, ResourceError> {
+    fn py_eq(&self, _other: &Self, _vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<bool> {
         // Match objects are not comparable
         Ok(false)
     }

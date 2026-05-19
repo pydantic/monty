@@ -20,7 +20,7 @@ use crate::{
     hash::HashValue,
     heap::{Heap, HeapData, HeapId, HeapItem, HeapRead},
     intern::{Interns, StaticStrings},
-    resource::{ResourceError, ResourceTracker},
+    resource::ResourceTracker,
     types::{
         PyTrait, Type,
         str::StringRepr,
@@ -258,7 +258,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, TimeZone> {
         None
     }
 
-    fn py_eq(&self, other: &Self, vm: &mut VM<'h, impl ResourceTracker>) -> Result<bool, ResourceError> {
+    fn py_eq(&self, other: &Self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<bool> {
         Ok(self.get(vm.heap).offset_seconds == other.get(vm.heap).offset_seconds)
     }
 

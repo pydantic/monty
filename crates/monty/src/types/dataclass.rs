@@ -19,7 +19,7 @@ use crate::{
         heap_read_ref_as_field_mut,
     },
     intern::Interns,
-    resource::{ResourceError, ResourceTracker},
+    resource::ResourceTracker,
     types::Type,
     value::{EitherStr, Value},
 };
@@ -165,7 +165,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Dataclass> {
         None
     }
 
-    fn py_eq(&self, other: &Self, vm: &mut VM<'h, impl ResourceTracker>) -> Result<bool, ResourceError> {
+    fn py_eq(&self, other: &Self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<bool> {
         // Dataclasses are equal if they have the same name and equal attrs
         Ok(self.get(vm.heap).name == other.get(vm.heap).name && self.attrs().py_eq(&other.attrs(), vm)?)
     }

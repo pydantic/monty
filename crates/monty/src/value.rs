@@ -164,7 +164,7 @@ impl PyTrait<'_> for Value {
         }
     }
 
-    fn py_eq(&self, other: &Self, vm: &mut VM<'_, impl ResourceTracker>) -> Result<bool, ResourceError> {
+    fn py_eq(&self, other: &Self, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<bool> {
         let interns = vm.interns;
         match (self, other) {
             (Self::Undefined, _) => Ok(false),
@@ -235,7 +235,7 @@ impl PyTrait<'_> for Value {
         }
     }
 
-    fn py_cmp(&self, other: &Self, vm: &mut VM<'_, impl ResourceTracker>) -> Result<Option<Ordering>, ResourceError> {
+    fn py_cmp(&self, other: &Self, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<Option<Ordering>> {
         let interns = vm.interns;
         // py_cmp handles numbers, strings, bytes, and tuples.
         // Recursion depth tracking for tuples is handled in Tuple::py_cmp.
@@ -1614,7 +1614,7 @@ impl Value {
                             Ok(Some(existing_value)) => {
                                 let result = value.py_eq(&existing_value, vm);
                                 existing_value.drop_with_heap(vm);
-                                result.map_err(RunError::from)
+                                result
                             }
                             Ok(None) => Ok(false),
                             Err(e) => Err(e),
