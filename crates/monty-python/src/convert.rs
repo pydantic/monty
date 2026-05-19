@@ -182,6 +182,26 @@ pub fn py_to_monty(obj: &Bound<'_, PyAny>, dc_registry: &DcRegistry, mut depth: 
 /// an instance of the original Python type is created (so `isinstance()` works).
 /// Otherwise, falls back to `PyMontyDataclass`.
 pub fn monty_to_py(py: Python<'_>, obj: &MontyObject, dc_registry: &DcRegistry) -> PyResult<Py<PyAny>> {
+    monty_to_py_inner(py, obj, dc_registry, 0)
+}
+
+/// Recursive worker for [`monty_to_py`] that threads a native-stack depth counter.
+///
+/// `depth` is the current nesting level on entry; the function bumps it before
+/// processing and raises `RuntimeError` once it exceeds [`MAX_DEPTH`]. This
+/// prevents adversarial input — e.g. deeply nested tuples built in a `for`
+/// loop that never push a Python call frame — from overflowing the Rust call
+/// stack and aborting the host process.
+pub(crate) fn monty_to_py_inner(
+    py: Python<'_>,
+    obj: &MontyObject,
+    dc_registry: &DcRegistry,
+    mut depth: u8,
+) -> PyResult<Py<PyAny>> {
+    depth += 1;
+    if depth > MAX_DEPTH {
+        return Err(PyRuntimeError::new_err("Max output depth exceeded"));
+    }
     match obj {
         MontyObject::None => Ok(py.None()),
         MontyObject::Ellipsis => Ok(py.Ellipsis()),
@@ -192,13 +212,17 @@ pub fn monty_to_py(py: Python<'_>, obj: &MontyObject, dc_registry: &DcRegistry) 
         MontyObject::String(s) => Ok(PyString::new(py, s).into_any().unbind()),
         MontyObject::Bytes(b) => Ok(PyBytes::new(py, b).into_any().unbind()),
         MontyObject::List(items) => {
-            let py_items: PyResult<Vec<Py<PyAny>>> =
-                items.iter().map(|item| monty_to_py(py, item, dc_registry)).collect();
+            let py_items: PyResult<Vec<Py<PyAny>>> = items
+                .iter()
+                .map(|item| monty_to_py_inner(py, item, dc_registry, depth))
+                .collect();
             Ok(PyList::new(py, py_items?)?.into_any().unbind())
         }
         MontyObject::Tuple(items) => {
-            let py_items: PyResult<Vec<Py<PyAny>>> =
-                items.iter().map(|item| monty_to_py(py, item, dc_registry)).collect();
+            let py_items: PyResult<Vec<Py<PyAny>>> = items
+                .iter()
+                .map(|item| monty_to_py_inner(py, item, dc_registry, depth))
+                .collect();
             Ok(PyTuple::new(py, py_items?)?.into_any().unbind())
         }
         // NamedTuple - create a proper Python namedtuple using collections.namedtuple
@@ -230,28 +254,35 @@ pub fn monty_to_py(py: Python<'_>, obj: &MontyObject, dc_registry: &DcRegistry) 
             // Convert values and instantiate using _make() which accepts an iterable
             // note `_make` might start with an underscore, but it's a public documented method
             // https://docs.python.org/3/library/collections.html#collections.somenamedtuple._make
-            let py_values: PyResult<Vec<Py<PyAny>>> =
-                values.iter().map(|item| monty_to_py(py, item, dc_registry)).collect();
+            let py_values: PyResult<Vec<Py<PyAny>>> = values
+                .iter()
+                .map(|item| monty_to_py_inner(py, item, dc_registry, depth))
+                .collect();
             let instance = nt_type.call_method1("_make", (py_values?,))?;
             Ok(instance.into_any().unbind())
         }
         MontyObject::Dict(map) => {
             let dict = PyDict::new(py);
             for (k, v) in map {
-                dict.set_item(monty_to_py(py, k, dc_registry)?, monty_to_py(py, v, dc_registry)?)?;
+                dict.set_item(
+                    monty_to_py_inner(py, k, dc_registry, depth)?,
+                    monty_to_py_inner(py, v, dc_registry, depth)?,
+                )?;
             }
             Ok(dict.into_any().unbind())
         }
         MontyObject::Set(items) => {
             let set = PySet::empty(py)?;
             for item in items {
-                set.add(monty_to_py(py, item, dc_registry)?)?;
+                set.add(monty_to_py_inner(py, item, dc_registry, depth)?)?;
             }
             Ok(set.into_any().unbind())
         }
         MontyObject::FrozenSet(items) => {
-            let py_items: PyResult<Vec<Py<PyAny>>> =
-                items.iter().map(|item| monty_to_py(py, item, dc_registry)).collect();
+            let py_items: PyResult<Vec<Py<PyAny>>> = items
+                .iter()
+                .map(|item| monty_to_py_inner(py, item, dc_registry, depth))
+                .collect();
             Ok(PyFrozenSet::new(py, &py_items?)?.into_any().unbind())
         }
         // Return the exception instance as a value (not raised)
@@ -277,7 +308,7 @@ pub fn monty_to_py(py: Python<'_>, obj: &MontyObject, dc_registry: &DcRegistry) 
             field_names,
             attrs,
             frozen,
-        } => dataclass_to_py(py, name, *type_id, field_names, attrs, *frozen, dc_registry),
+        } => dataclass_to_py(py, name, *type_id, field_names, attrs, *frozen, dc_registry, depth),
         // Path - convert to Python pathlib.Path
         MontyObject::Path(p) => {
             let pure_posix_path = get_pure_posix_path(py)?;
