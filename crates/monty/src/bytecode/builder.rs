@@ -204,54 +204,48 @@ impl CodeBuilder {
         // Jump-taken target depth. `jump_taken_delta` panics for non-jumps.
         let target_depth = u16::try_from(i32::from(pre_depth) + i32::from(op.jump_taken_stack_effect()))
             .expect("jump target depth out of u16 range");
-        // Use the current position as a self-referential placeholder target.
-        // `patch_jump` will overwrite the encoded bytes with the real target
-        // once it's known; `#[must_use]` on the returned `JumpLabel` ensures
-        // the caller can't silently skip patching.
-        self.emit_with_operand(op, Operand::Offset(offset));
+        // Emit jump with dummy offset; patch_jump is required to fill in the real offset later.
+        self.emit_with_operand(op, Operand::Offset(RelativeOffset(0)));
         JumpLabel {
-            inner: Some(JumpLabelInner { offset, target_depth }),
+            inner: Some(JumpLabelInner {
+                offset,
+                stack_depth: target_depth,
+            }),
         }
     }
 
     /// Patches a forward jump to point to the current bytecode location.
     ///
     /// State transitions: if the builder is emitting dead code, `patch_jump`
-    /// re-establishes the live depth from `label.target_depth`. If the code
-    /// is live, it asserts the current stack depth matches the jump label
-    /// stack depth.
+    /// re-establishes the live depth from `label.target_depth`.
     ///
     /// # Panics
     ///
-    /// - In debug builds, panics if the tracker is live and disagrees with
-    ///   the label's target depth — this means two reachable paths arrive at
-    ///   the patch point with different stack heights.
+    /// - In debug builds, panics if the jump label has a different stack depth
+    ///   compared to the current depth (if live).
     /// - Always panics if the jump offset exceeds i16 range (-32768..32767),
     ///   which indicates the function is too large. This is a compile-time
     ///   error rather than silent truncation.
     pub fn patch_jump(&mut self, label: JumpLabel) {
-        // If the emit_jump ran from dead code, nothing to patch.
-        let Some(label) = label.inner else { return };
-        let target = self.bytecode.len();
-        // Offset is relative to position after the jump instruction (opcode + i16 = 3 bytes)
-        let target_i64 = i64::try_from(target).expect("bytecode target exceeds i64");
-        let label_i64 = i64::try_from(label.offset.0).expect("bytecode label exceeds i64");
-        let raw_offset = target_i64 - label_i64 - 3;
-        let offset =
-            i16::try_from(raw_offset).expect("jump offset exceeds i16 range (-32768..32767); function too large");
+        let Some(label) = label.inner else {
+            // emit_jump was dead code, nothing to do
+            return;
+        };
+
+        let stack_depth = self.current_stack_depth.unwrap_or_else(|| {
+            self.new_code_region(label.stack_depth);
+            label.stack_depth
+        });
+
+        let target = JumpTargetInner {
+            offset: self.current_offset(),
+            stack_depth,
+        };
+
+        let offset = calculate_jump_offset(label, target).as_i16();
         let bytes = offset.to_le_bytes();
         self.bytecode[label.offset.0 + 1] = bytes[0];
         self.bytecode[label.offset.0 + 2] = bytes[1];
-
-        match self.current_stack_depth {
-            Some(d) => debug_assert_eq!(
-                d, label.target_depth,
-                "stack-depth mismatch at jump merge: builder tracker is {d} but jump label expects {}; \
-                 branches reaching this merge point disagree on stack state",
-                label.target_depth,
-            ),
-            None => self.new_code_region(label.target_depth),
-        }
     }
 
     /// Emits a backward jump to a known target. Any jump opcode is accepted;
@@ -265,31 +259,23 @@ impl CodeBuilder {
     ///   effect do not match the jump target stack depth.
     /// - Panics on non-jump opcodes.
     pub fn emit_jump_to(&mut self, op: Opcode, target: JumpTarget) {
-        let Some(target) = target.inner else {
-            // Target was captured in the dead-code state. If we're also dead
-            // here, this is a benign no-op (nothing would be emitted anyway).
-            // If we're live, this is a compiler bug — we'd be jumping into a
-            // region whose bytes weren't emitted because they were dead at
-            // capture time.
-            assert!(
-                self.is_dead(),
-                "emit_jump_to: cannot jump from live code into a target captured in the dead-code state"
-            );
+        let Some(target_depth) = self.current_stack_depth else {
+            // Emitting dead code, do no work
             return;
         };
-        // Backward-jump merge invariant: the jump-taken arrival depth must
-        // equal the depth at the target. Skip the check in the dead-code
-        // state — `emit_with_operand` will no-op the emission anyway.
-        if let Some(current) = self.current_stack_depth {
-            let arrival = i32::from(current) + i32::from(op.jump_taken_stack_effect());
-            debug_assert_eq!(
-                arrival,
-                i32::from(target.depth),
-                "backward jump merge: arriving at depth {arrival} but target captured depth {}",
-                target.depth,
-            );
-        }
-        self.emit_with_operand(op, Operand::Offset(target.offset));
+
+        let label = JumpLabelInner {
+            offset: self.current_offset(),
+            stack_depth: target_depth
+                .checked_add_signed(op.jump_taken_stack_effect())
+                .expect("stack overflow"),
+        };
+        let Some(target) = target.0 else {
+            // Target is dead code
+            unreachable!("emit_jump_to: cannot jump from live code to dead code");
+        };
+
+        self.emit_with_operand(op, Operand::Offset(calculate_jump_offset(label, target)));
     }
 
     /// Returns the current bytecode position as an opaque `Offset`.
@@ -305,12 +291,10 @@ impl CodeBuilder {
     /// the stack depth at that position.
     #[must_use]
     pub fn current_jump_target(&self) -> JumpTarget {
-        JumpTarget {
-            inner: self.current_stack_depth.map(|depth| JumpTargetInner {
-                offset: self.current_offset(),
-                depth,
-            }),
-        }
+        JumpTarget(self.current_stack_depth.map(|depth| JumpTargetInner {
+            offset: self.current_offset(),
+            stack_depth: depth,
+        }))
     }
 
     /// Emits `LoadLocal`, using specialized opcodes for slots 0-3.
@@ -415,18 +399,10 @@ impl CodeBuilder {
         self.exception_table.push(entry);
     }
 
-    /// Returns the current tracked stack depth.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the tracker is in the dead-code state. Callers that capture
-    /// depth (e.g. `compile_for`'s `loop_exit_depth`) only ever do so from
-    /// reachable code, so being dead here indicates a compiler bug.
+    /// Returns the current stack depth, or `None` if not currently emitting a code region.
     #[must_use]
-    pub fn stack_depth(&self) -> u16 {
-        self.current_stack_depth.expect(
-            "stack_depth() called while in dead-code state — callers should only read depth from reachable code",
-        )
+    pub fn stack_depth(&self) -> Option<u16> {
+        self.current_stack_depth
     }
 
     /// Reports whether the tracker is in the dead-code state.
@@ -482,11 +458,12 @@ impl CodeBuilder {
     ///
     /// Panics if the builder is currently emitting live code.
     pub fn new_code_region(&mut self, depth: u16) {
-        assert!(
-            self.is_dead(),
-            "enter_region: must be called from the dead-code state — use `patch_jump` to merge a forward jump's depth into live code",
-        );
-        self.current_stack_depth = Some(depth);
+        match self.current_stack_depth {
+            Some(d) => {
+                panic!("enter_region: cannot start new code region at depth {depth} while currently at live depth {d}")
+            }
+            None => self.current_stack_depth = Some(depth),
+        }
         self.max_stack_depth = self.max_stack_depth.max(depth);
     }
 
@@ -527,41 +504,31 @@ impl CodeBuilder {
             return;
         }
         self.record_location();
-        let opcode_pos = self.bytecode.len();
         self.bytecode.push(op as u8);
         match operand {
             Operand::None => {}
             Operand::U8(b) => self.bytecode.push(b),
             Operand::I8(b) => self.bytecode.push(b.to_ne_bytes()[0]),
-            Operand::U16(w) => self.bytecode.extend_from_slice(&w.to_le_bytes()),
-            Operand::Offset(target) => {
-                // Encode as a signed i16 relative to the position after the
-                // jump's 3-byte instruction (opcode + i16).
-                let target_i64 = i64::try_from(target.0).expect("bytecode target exceeds i64");
-                let after_jump_i64 = i64::try_from(opcode_pos + 3).expect("bytecode position exceeds i64");
-                let raw_offset = target_i64 - after_jump_i64;
-                let relative = i16::try_from(raw_offset)
-                    .expect("jump offset exceeds i16 range (-32768..32767); function too large");
-                self.bytecode.extend_from_slice(&relative.to_le_bytes());
-            }
+            Operand::U16(w) => self.bytecode.extend(w.to_le_bytes()),
+            Operand::Offset(relative) => self.bytecode.extend(relative.0.to_le_bytes()),
             Operand::U8U8(a, b) => {
                 self.bytecode.push(a);
                 self.bytecode.push(b);
             }
             Operand::U8U16(a, w) => {
                 self.bytecode.push(a);
-                self.bytecode.extend_from_slice(&w.to_le_bytes());
+                self.bytecode.extend(w.to_le_bytes());
             }
             Operand::U16U8(w, b) => {
-                self.bytecode.extend_from_slice(&w.to_le_bytes());
+                self.bytecode.extend(w.to_le_bytes());
                 self.bytecode.push(b);
             }
             Operand::U16U16(w1, w2) => {
-                self.bytecode.extend_from_slice(&w1.to_le_bytes());
-                self.bytecode.extend_from_slice(&w2.to_le_bytes());
+                self.bytecode.extend(w1.to_le_bytes());
+                self.bytecode.extend(w2.to_le_bytes());
             }
             Operand::U16U8U8(w, b1, b2) => {
-                self.bytecode.extend_from_slice(&w.to_le_bytes());
+                self.bytecode.extend(w.to_le_bytes());
                 self.bytecode.push(b1);
                 self.bytecode.push(b2);
             }
@@ -570,7 +537,7 @@ impl CodeBuilder {
                 self.bytecode
                     .push(u8::try_from(kwname_ids.len()).expect("keyword count exceeds u8"));
                 for &name_id in kwname_ids {
-                    self.bytecode.extend_from_slice(&name_id.to_le_bytes());
+                    self.bytecode.extend(name_id.to_le_bytes());
                 }
             }
             Operand::CallAttrKw {
@@ -578,12 +545,12 @@ impl CodeBuilder {
                 pos_count,
                 kwname_ids,
             } => {
-                self.bytecode.extend_from_slice(&attr_name_id.to_le_bytes());
+                self.bytecode.extend(attr_name_id.to_le_bytes());
                 self.bytecode.push(pos_count);
                 self.bytecode
                     .push(u8::try_from(kwname_ids.len()).expect("keyword count exceeds u8"));
                 for &name_id in kwname_ids {
-                    self.bytecode.extend_from_slice(&name_id.to_le_bytes());
+                    self.bytecode.extend(name_id.to_le_bytes());
                 }
             }
         }
@@ -611,11 +578,10 @@ struct JumpLabelInner {
     /// i16 at `offset.0 + 1`.
     offset: Offset,
     /// The stack depth that the jump-taken path leaves on the stack
-    /// when the jump is taken to the target.
-    ///
-    /// This is used by `patch_jump` to enforce the merge invariant (all paths
-    /// arriving at the jump label must agree on the stack depth).
-    target_depth: u16,
+    /// when the jump is taken to the target. Used in `calculate_jump_offset`
+    /// to enforce the invariant that all paths arriving at a given bytecode
+    /// position have the same stack depth.
+    stack_depth: u16,
 }
 
 /// A position in the bytecode stream.
@@ -641,23 +607,56 @@ impl Offset {
     }
 }
 
-/// Target for a backward jump — bundles a bytecode position with the stack
-/// depth at that position, so `emit_jump_to` can enforce the merge invariant
-/// (the jump-taken arrival depth must equal the depth recorded at the target).
+/// Relative offset used as jump operand.
 ///
-/// Returned by `CodeBuilder::current_jump_target`. In the dead-code state the
-/// returned `JumpTarget` is a no-op placeholder (`inner: None`): valid to use
-/// from another dead-code call site, but a compiler bug if used from live
-/// code (would jump into bytes that were never emitted).
-#[derive(Debug, Clone, Copy)]
-pub struct JumpTarget {
-    inner: Option<JumpTargetInner>,
+/// Jumps are computed as per x86 convention: the offset is relative to the position
+/// immediately after the jump instruction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RelativeOffset(i16);
+
+impl RelativeOffset {
+    #[must_use]
+    pub fn as_i16(self) -> i16 {
+        self.0
+    }
 }
+
+/// Calculate the jump offset from a jump instruction at `from` to a target at `to`.
+///
+/// Panics if the jump offset exceeds i16 range (-32768..32767), which indicates the function is too large to compile.
+fn calculate_jump_offset(from: JumpLabelInner, to: JumpTargetInner) -> RelativeOffset {
+    // All jumps are currently 3 byte instructions: opcode + i16 offset
+    const JUMP_BYTECODE_SIZE: usize = size_of::<Opcode>() + size_of::<RelativeOffset>();
+
+    // Jumps are calculated from after the jump instruction; the label is the position of the jump itself
+    let from_i64 = i64::try_from(from.offset.0 + JUMP_BYTECODE_SIZE).expect("bytecode offset exceeds i64");
+    let to_i64 = i64::try_from(to.offset.0).expect("bytecode offset exceeds i64");
+
+    // stack depth must match at merge point - if this fails, it indicates the builder
+    // is not tracking stack effect correctly for some instructions
+    debug_assert_eq!(
+        from.stack_depth, to.stack_depth,
+        "jump merge: arriving with depth {} but jump target has depth {}",
+        from.stack_depth, to.stack_depth,
+    );
+
+    let raw_offset = to_i64 - from_i64;
+    RelativeOffset(
+        // FIXME: replace panic with a compile-time error for functions that are too large to compile?
+        i16::try_from(raw_offset).expect("jump offset exceeds i16 range (-32768..32767); function too large"),
+    )
+}
+
+/// Target for a backward jump.
+#[derive(Debug, Clone, Copy)]
+pub struct JumpTarget(Option<JumpTargetInner>);
 
 #[derive(Debug, Clone, Copy)]
 struct JumpTargetInner {
     offset: Offset,
-    depth: u16,
+    /// The stack depth that at this position. Used in `calculate_jump_offset`
+    /// to enforce the invariant that all paths arriving at a given bytecode.
+    stack_depth: u16,
 }
 
 #[cfg(test)]
@@ -700,25 +699,22 @@ mod tests {
         let mut builder = CodeBuilder::new();
         builder.new_code_region(0);
         let jump = builder.emit_jump(Opcode::Jump);
-        // The two LoadNones below are dead code (unconditional Jump above);
-        // `emit_with_operand` no-ops in the Dead state, so they don't get
-        // written to bytecode. `patch_jump` then transitions the tracker back
-        // to live from the label's recorded target depth (0 here).
-        builder.emit(Opcode::LoadNone); // dead, skipped
-        builder.emit(Opcode::LoadNone); // dead, skipped
+        builder.new_code_region(0);
+        builder.emit(Opcode::LoadNone);
+        builder.emit(Opcode::Pop);
         builder.patch_jump(jump);
         builder.emit(Opcode::LoadNone); // Return value
         builder.emit(Opcode::ReturnValue);
 
         let code = builder.build(0);
-        // Jump at offset 0, target at offset 3 (immediately after Jump's bytes).
-        // Offset = 3 - 0 - 3 = 0.
         assert_eq!(
             code.bytecode(),
             &[
                 Opcode::Jump as u8,
-                0,
-                0, // i16 little-endian = 0
+                2i16.to_le_bytes()[0],
+                2i16.to_le_bytes()[1], // 2 bytes to jump from the end of the jump instruction to the LoadNone after the patch
+                Opcode::LoadNone as u8,
+                Opcode::Pop as u8,
                 Opcode::LoadNone as u8,
                 Opcode::ReturnValue as u8,
             ]

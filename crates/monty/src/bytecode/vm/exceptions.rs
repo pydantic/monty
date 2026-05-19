@@ -278,39 +278,71 @@ impl<T: ResourceTracker> VM<'_, T> {
         Ok(Value::Ref(heap_id))
     }
 
-    /// Checks if an exception matches an exception type for except clause matching.
+    /// Checks if an exception matches an `except` clause's exception type.
     ///
-    /// Validates that `exc_type` is a valid exception type (ExcType or tuple of ExcTypes).
-    /// Returns `Ok(true)` if exception matches, `Ok(false)` if not, or `Err` if exc_type is invalid.
+    /// `exc_type` must be either a single exception class, or a *flat* tuple of
+    /// exception classes. Returns `Ok(true)` if the exception matches, `Ok(false)`
+    /// if it doesn't, or `Err` if `exc_type` is not a valid exception type.
+    ///
+    /// This deliberately does **not** recurse into nested tuples. The exception
+    /// type handed to `except` is constructed at runtime, so a tuple could be
+    /// nested arbitrarily deeply regardless of source nesting limits; a recursive
+    /// matcher would overflow the host's native stack inside this single bytecode
+    /// instruction. Mirroring CPython's `check_except_type_valid` (the
+    /// `CHECK_EXC_MATCH` opcode), only one level of tuple is accepted: a nested
+    /// tuple element — or any non-exception value — raises
+    /// `TypeError: catching classes that do not inherit from BaseException is not
+    /// allowed`. Removing the recursion both keeps parity with CPython and
+    /// eliminates the unbounded-recursion footgun entirely, so no recursion-depth
+    /// or time bound is needed here.
+    ///
+    /// Like CPython, the *whole* tuple is validated rather than short-circuiting
+    /// on the first match: an invalid element raises the `TypeError` even when an
+    /// earlier element already matched (e.g. `except (TypeError, (ValueError,))`
+    /// raising `TypeError` still raises the `TypeError` about catching classes).
     pub(super) fn check_exc_match(&self, exception: &Value, exc_type: &Value) -> Result<bool, RunError> {
         let exc_type_enum = exception.py_type(self);
-        self.check_exc_match_inner(exc_type_enum, exc_type)
-    }
-
-    /// Inner recursive helper for check_exc_match that handles tuples.
-    fn check_exc_match_inner(&self, exc_type_enum: Type, exc_type: &Value) -> Result<bool, RunError> {
         match exc_type {
-            // Valid exception type
+            // Single exception class.
             Value::Builtin(Builtins::ExcType(handler_type)) => {
-                // Check if exception is an instance of handler_type
-                Ok(matches!(exc_type_enum, Type::Exception(et) if et.is_subclass_of(*handler_type)))
+                Ok(Self::exc_matches_handler(exc_type_enum, *handler_type))
             }
-            // Tuple of exception types
+            // Flat tuple of exception classes. CPython does not descend into
+            // nested tuples in this position, so neither do we.
             Value::Ref(id) => {
                 if let HeapData::Tuple(tuple) = self.heap.get(*id) {
+                    let mut matched = false;
                     for v in tuple.as_slice() {
-                        if self.check_exc_match_inner(exc_type_enum, v)? {
-                            return Ok(true);
+                        match v {
+                            Value::Builtin(Builtins::ExcType(handler_type)) => {
+                                if !matched && Self::exc_matches_handler(exc_type_enum, *handler_type) {
+                                    matched = true;
+                                }
+                            }
+                            // A nested tuple or any non-exception value is
+                            // rejected exactly as CPython rejects it, even if a
+                            // previous element already matched.
+                            _ => return Err(ExcType::except_invalid_type_error()),
                         }
                     }
-                    Ok(false)
+                    Ok(matched)
                 } else {
-                    // Not a tuple - invalid exception type
+                    // A non-tuple heap value (e.g. an exception instance) is not
+                    // a valid exception type for an `except` clause.
                     Err(ExcType::except_invalid_type_error())
                 }
             }
-            // Any other type is invalid for except clause
+            // Any other value is invalid for an `except` clause.
             _ => Err(ExcType::except_invalid_type_error()),
         }
+    }
+
+    /// Returns whether a raised exception's type is caught by `handler_type`.
+    ///
+    /// Helper shared by the single-class and flat-tuple arms of
+    /// [`check_exc_match`]; the raised value only matches when its type is an
+    /// exception that is a subclass of the handler's class.
+    fn exc_matches_handler(exc_type_enum: Type, handler_type: ExcType) -> bool {
+        matches!(exc_type_enum, Type::Exception(et) if et.is_subclass_of(handler_type))
     }
 }

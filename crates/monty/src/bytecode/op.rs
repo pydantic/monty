@@ -14,7 +14,7 @@ use std::{error, fmt};
 
 use strum::FromRepr;
 
-use super::builder::Offset;
+use crate::bytecode::builder::RelativeOffset;
 
 /// `FormatValue` flag: a format spec was pushed onto the stack ahead of the
 /// value. When set, the VM pops the spec before the value. See `Opcode::FormatValue`.
@@ -495,7 +495,7 @@ pub enum Operand<'a> {
     /// (yielding a -3 relative offset); `patch_jump` overwrites it once the
     /// real target is known. The placeholder is harmless because `#[must_use]`
     /// on `JumpLabel` catches the "forgot to patch" case at compile time.
-    Offset(Offset),
+    Offset(RelativeOffset),
     /// Two u8 operands (e.g. `UnpackEx`, `CallBuiltinFunction`).
     U8U8(u8, u8),
     /// u8 then u16 little-endian (e.g. `LoadLocalCallable`).

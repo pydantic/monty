@@ -13,7 +13,7 @@ use crate::{
     exception_private::{ExcType, RunError, SimpleException},
     expressions::ExprLoc,
     intern::StringId,
-    resource::ResourceTracker,
+    resource::{ResourceTracker, check_repeat_size},
     types::{PyTrait, Type},
     value::Value,
 };
@@ -465,6 +465,18 @@ pub fn format_with_spec(
     vm: &mut VM<'_, impl ResourceTracker>,
 ) -> Result<String, RunError> {
     let value_type = value.py_type(vm);
+
+    // `spec.width` is the minimum field width; every formatter below pads the
+    // value out to it with `spec.fill` via `pad_string`/`iter::repeat_n`, which
+    // build a native `String` through the global allocator — invisible to the
+    // resource tracker until the finished string reaches the heap. A literal
+    // width is clamped to 16 bits by the bytecode encoding, but a *dynamic*
+    // width (`f"{v:>{w}}"`, `w` a runtime value) is not, so an over-large `w`
+    // would materialize gigabytes of padding before the post-construction
+    // check, OOM-ing or aborting the host. Reject an over-budget width here,
+    // up front, using the same guard sequence repeats and `str.ljust`/`zfill`
+    // already use. The check is free below `LARGE_RESULT_THRESHOLD`.
+    check_repeat_size(spec.fill.len_utf8(), spec.width, vm.heap.tracker())?;
 
     match (value, spec.type_char) {
         // Integer formatting

@@ -14,7 +14,7 @@ use serde::ser::SerializeStruct;
 pub(crate) use crate::heap_data::HeapData;
 pub(crate) use crate::heap_traits::{ContainsHeap, DropWithHeap, HeapGuard, HeapItem};
 use crate::{
-    asyncio::{Coroutine, GatherFuture, GatherItem, GatherState},
+    asyncio::{Awaiter, Coroutine, ExternalFuture, ExternalFutureState, GatherFuture, GatherState},
     exception_private::SimpleException,
     heap_data::{CellValue, Closure, FunctionDefaults},
     resource::{ResourceError, ResourceTracker},
@@ -218,6 +218,9 @@ impl<'a, T: ResourceTracker> HeapReader<'a, T> {
             HeapData::GatherFuture(gather_future) => {
                 HeapReadOutput::GatherFuture(heap_read(base, gather_future, readers))
             }
+            HeapData::ExternalFuture(external_future) => {
+                HeapReadOutput::ExternalFuture(heap_read(base, external_future, readers))
+            }
             HeapData::Path(path) => HeapReadOutput::Path(heap_read(base, path, readers)),
             HeapData::RePattern(re_pattern) => HeapReadOutput::RePattern(heap_read_boxed(re_pattern, readers)),
             HeapData::ReMatch(re_match) => HeapReadOutput::ReMatch(heap_read(base, re_match, readers)),
@@ -303,6 +306,7 @@ pub enum HeapReadOutput<'a> {
     Module(HeapRead<'a, Module>),
     Coroutine(HeapRead<'a, Coroutine>),
     GatherFuture(HeapRead<'a, GatherFuture>),
+    ExternalFuture(HeapRead<'a, ExternalFuture>),
     Path(HeapRead<'a, Path>),
     RePattern(HeapRead<'a, RePattern>),
     ReMatch(HeapRead<'a, ReMatch>),
@@ -1431,27 +1435,40 @@ fn collect_child_ids(data: &HeapData, work_list: &mut Vec<HeapId>) {
             }
         }
         HeapData::GatherFuture(gather) => {
-            // Add coroutine HeapIds to work list. `items` carries the gather's
-            // owning inc_ref on each unique coroutine and is populated for the
-            // entire lifecycle.
-            for item in &gather.items {
-                if let GatherItem::Coroutine(coro_id) = item {
-                    work_list.push(*coro_id);
-                }
-            }
-            // Walk per-state heap refs: in-flight slot results, or the cached
-            // result list once the gather has completed successfully. `Pending`
-            // and `Failed` carry no heap refs.
+            // Add inc_ref'd item HeapIds to the work list. Both coroutines
+            // and external futures are owned by the gather for its entire
+            // lifecycle.
+            work_list.extend(gather.items.iter().copied());
+            // Walk per-state heap refs: in-flight slot results plus this
+            // gather's own awaiter (if `GatherSlot`, it owns an inc_ref on
+            // the outer gather), or the cached result list once the gather
+            // has completed successfully. `Pending` and `Failed` carry no
+            // heap refs.
             match &gather.state {
                 GatherState::Awaited(awaited) => {
+                    if let Awaiter::GatherSlot { gather, .. } = &awaited.awaiter {
+                        work_list.push(*gather);
+                    }
                     for result in awaited.results.iter().flatten() {
                         if let Value::Ref(id) = result {
                             work_list.push(*id);
                         }
                     }
                 }
-                GatherState::Completed(list_id) => work_list.push(*list_id),
-                GatherState::Pending | GatherState::Failed(_) => {}
+                GatherState::Completed(Value::Ref(id)) => work_list.push(*id),
+                GatherState::Pending | GatherState::Failed(_) | GatherState::Completed(_) => {}
+            }
+        }
+        HeapData::ExternalFuture(fut) => {
+            // `Pending { awaiter: Some(GatherSlot { gather, .. }) }` owns an
+            // inc_ref on `gather`. `Awaiter::Task` / `None` and the `Failed`
+            // state carry no heap refs. `Resolved` owns the cached value.
+            match &fut.state {
+                ExternalFutureState::Resolved(Value::Ref(id)) => work_list.push(*id),
+                ExternalFutureState::Pending {
+                    awaiter: Some(Awaiter::GatherSlot { gather, .. }),
+                } => work_list.push(*gather),
+                _ => {}
             }
         }
         HeapData::DateTime(dt) => {
@@ -1506,25 +1523,37 @@ fn py_dec_ref_ids_for_data(data: &mut HeapData, stack: &mut Vec<HeapId>) {
             }
         }
         HeapData::GatherFuture(gather) => {
-            // Decrement ref count for coroutine HeapIds (always present in `items`).
-            for item in &gather.items {
-                if let GatherItem::Coroutine(id) = item {
-                    stack.push(*id);
-                }
-            }
-            // Release per-state heap refs: in-flight slot results, or the
-            // cached result list once the gather has completed successfully.
-            // `Pending` and `Failed` carry no heap refs.
+            // Decrement ref count for owned item HeapIds (coroutines and
+            // external futures are both owned by the gather).
+            stack.extend(gather.items.iter().copied());
+            // Release per-state heap refs: in-flight slot results plus this
+            // gather's own awaiter (if `GatherSlot`, it owns an inc_ref on
+            // the outer gather), or the cached result list once the gather
+            // has completed successfully. `Pending` and `Failed` carry no
+            // heap refs.
             match &mut gather.state {
                 GatherState::Awaited(awaited) => {
+                    if let Awaiter::GatherSlot { gather, .. } = &awaited.awaiter {
+                        stack.push(*gather);
+                    }
                     for result in awaited.results.iter_mut().flatten() {
                         result.py_dec_ref_ids(stack);
                     }
                 }
-                GatherState::Completed(list_id) => stack.push(*list_id),
+                GatherState::Completed(value) => value.py_dec_ref_ids(stack),
                 GatherState::Pending | GatherState::Failed(_) => {}
             }
         }
+        HeapData::ExternalFuture(fut) => match &mut fut.state {
+            ExternalFutureState::Resolved(value) => value.py_dec_ref_ids(stack),
+            ExternalFutureState::Pending {
+                awaiter: Some(Awaiter::GatherSlot { gather, .. }),
+            } => stack.push(*gather),
+            ExternalFutureState::Pending {
+                awaiter: None | Some(Awaiter::Task(_)),
+            }
+            | ExternalFutureState::Failed(_) => {}
+        },
         HeapData::DateTime(dt) => {
             // Mirror `collect_child_ids`: when an aware datetime is freed we must
             // also drop the retained tzinfo reference so its refcount is balanced.

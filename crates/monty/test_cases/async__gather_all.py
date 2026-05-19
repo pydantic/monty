@@ -193,3 +193,11 @@ try:
     assert False, 'third await should have raised'
 except ValueError as e:
     assert str(e) == 'detonate', f'third await message: {e}'
+
+
+# === Nested gather ===
+
+nested_1 = asyncio.gather(task1(), task1())
+nested_2 = asyncio.gather(nested_1, nested_1)
+
+assert await nested_2 == [[1, 1], [1, 1]], 'nested gather should return results correctly'  # pyright: ignore

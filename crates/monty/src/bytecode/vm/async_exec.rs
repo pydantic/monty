@@ -6,16 +6,19 @@
 //! - Task completion and failure handling
 //! - External future resolution
 
-use std::mem;
+use std::{collections::hash_map::Entry, mem, task::Poll};
 
 use ahash::AHashMap;
+use smallvec::{SmallVec, smallvec};
 
 use super::{AwaitResult, CallFrame, FrameExit, VM};
 use crate::{
     MontyException,
-    args::ArgValues,
-    asyncio::{AwaitedGather, CallId, Coroutine, CoroutineState, GatherFuture, GatherItem, GatherState, TaskId},
-    bytecode::vm::scheduler::{PendingCallData, Scheduler, SerializedTaskFrame, TaskState},
+    asyncio::{
+        AwaitedGather, Awaiter, CallId, Coroutine, CoroutineState, ExternalFuture, ExternalFutureState, GatherFuture,
+        GatherState, TaskId,
+    },
+    bytecode::vm::scheduler::{Scheduler, SerializedTaskFrame, TaskState},
     defer_drop,
     exception_private::{ExcType, RunError, RunResult, SimpleException},
     heap::{DropWithHeap, HeapData, HeapGuard, HeapId, HeapRead, HeapReadOutput, HeapReader},
@@ -40,16 +43,29 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
         let awaitable = this.pop();
         defer_drop!(awaitable, this);
 
+        let awaiter = Awaiter::Task(
+            this.scheduler
+                .current_task_id()
+                .expect("exec_get_awaitable called without a current task"),
+        );
+
         match awaitable {
             Value::Ref(heap_id) => {
                 let heap_id = *heap_id;
-                match this.heap.read(heap_id) {
-                    HeapReadOutput::Coroutine(coro) => this.await_coroutine(coro),
-                    HeapReadOutput::GatherFuture(gather) => this.await_gather_future(heap_id, gather),
-                    _ => Err(ExcType::object_not_awaitable(awaitable.py_type(this))),
+                let poll = match this.heap.read(heap_id) {
+                    HeapReadOutput::Coroutine(coro) => return this.await_coroutine(coro),
+                    HeapReadOutput::GatherFuture(gather) => this.await_gather_future(heap_id, gather, awaiter)?,
+                    HeapReadOutput::ExternalFuture(mut fut) => this.await_external_future(&mut fut, awaiter)?,
+                    _ => return Err(ExcType::object_not_awaitable(awaitable.py_type(this))),
+                };
+                match poll {
+                    Poll::Ready(value) => Ok(AwaitResult::ValueReady(value)),
+                    Poll::Pending => {
+                        this.scheduler.block_current_on(heap_id, this.heap);
+                        this.switch_or_yield()
+                    }
                 }
             }
-            &Value::ExternalFuture(call_id) => this.await_external_future(call_id),
             _ => Err(ExcType::object_not_awaitable(awaitable.py_type(this))),
         }
     }
@@ -84,29 +100,24 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
         Ok(AwaitResult::FramePushed)
     }
 
-    /// Awaits a gather future by spawning tasks for coroutines and tracking external futures.
-    ///
-    /// For each item in the gather:
-    /// - Coroutines are spawned as tasks
-    /// - External futures are checked for resolution or registered for tracking
-    ///
-    /// If all items are already resolved, returns immediately. Otherwise blocks
-    /// the current task and switches to a ready task or yields to the host.
+    /// Awaits a gather future from the user's `await gather` site.
     fn await_gather_future(
         &mut self,
-        heap_id: HeapId,
+        gather_id: HeapId,
         mut gather: HeapRead<'h, GatherFuture>,
-    ) -> Result<AwaitResult, RunError> {
-        // Re-await fast paths
-        match &gather.get(self.heap).state {
+        awaiter: Awaiter,
+    ) -> Result<Poll<Value>, RunError> {
+        let mut awaiter_guard = HeapGuard::new(awaiter, self);
+        let this = awaiter_guard.heap();
+        match &gather.get(this.heap).state {
             GatherState::Pending => {}
-            GatherState::Completed(list_id) => {
-                let id = *list_id;
-                self.heap.inc_ref(id);
-                return Ok(AwaitResult::ValueReady(Value::Ref(id)));
+            GatherState::Completed(value) => {
+                return Ok(Poll::Ready(value.clone_with_heap(this.heap)));
             }
-            GatherState::Failed(err) => return Err(err.clone()),
-            // TODO: needs proper support for this case, CPython allows it
+            GatherState::Failed(err) => {
+                return Err(err.clone());
+            }
+            // TODO: support concurrent re-await (CPython does).
             GatherState::Awaited(_) => {
                 return Err(SimpleException::new_msg(
                     ExcType::RuntimeError,
@@ -117,138 +128,121 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
         }
 
         // Empty gather shortcut. Allocate the empty list, store it as the
-        // cached `Completed` result, and return an inc_ref'd reference. Future
-        // awaits will hit the `Completed` fast path above.
-        let item_count = gather.get(self.heap).item_count();
+        // cached `Completed` result, and return an inc_ref'd reference.
+        let item_count = gather.get(this.heap).item_count();
         if item_count == 0 {
-            let list_id = self.heap.allocate(HeapData::List(List::new(vec![])))?;
-            gather.cache_result(self.heap, list_id);
-            return Ok(AwaitResult::ValueReady(Value::Ref(list_id)));
+            let list_id = this.heap.allocate(HeapData::List(List::new(vec![])))?;
+            gather.cache_result(this.heap, list_id);
+            return Ok(Poll::Ready(Value::Ref(list_id)));
         }
 
-        // Reject any external future that has already been awaited (directly or
-        // via another gather). Without this check, sibling gathers sharing a
-        // future would silently overwrite each other in the pending-call gather
-        // routing, leaving the first gather permanently blocked on a CallId
-        // that has already been resolved or is registered against a different
-        // gather. This mirrors the existing `is_consumed` check in
-        // `await_external_future` so direct double-await and gather-mediated
-        // double-await behave consistently. The dedup pass below ensures
-        // intra-gather duplicates (`gather(f, f)`) are not flagged: each unique
-        // CallId is only marked consumed once, so the first await of a freshly
-        // created future passes even when it appears in multiple slots.
-        for item in &gather.get(self.heap).items {
-            if let GatherItem::ExternalFuture(call_id) = item
-                && self.scheduler.is_consumed(*call_id)
-            {
-                return Err(
-                    SimpleException::new_msg(ExcType::RuntimeError, "cannot reuse already awaited future").into(),
-                );
-            }
-        }
+        // Await all items, storing already resolved state and tracking the rest in `pending_children`.
 
-        let current_task = self
-            .scheduler
-            .current_task_id()
-            .expect("await_gather_future called without a current task");
+        let mut pending_children: AHashMap<HeapId, SmallVec<[usize; 1]>> = AHashMap::new();
+        let results: Vec<Option<Value>> = (0..item_count).map(|_| None).collect();
+        let mut results_guard = HeapGuard::new(results, this);
+        let (results, this) = results_guard.as_parts_mut();
 
-        // Single pass over items: spawn / register / write resolved values
-        // into `results` directly. Dedup by identity so `gather(c, c)` runs
-        // the coroutine once and fans its result out to every matching slot.
-        let mut pending_tasks: AHashMap<TaskId, Vec<usize>> = AHashMap::new();
-        let mut coro_to_task: AHashMap<HeapId, TaskId> = AHashMap::new();
-        let mut pending_calls: AHashMap<CallId, Vec<usize>> = AHashMap::new();
-        // For an external that resolved synchronously, remember the first
-        // slot that received the moved-in value; later duplicate slots clone
-        // from there.
-        let mut resolved_first_slot: AHashMap<CallId, usize> = AHashMap::new();
-        let mut results: Vec<Option<Value>> = (0..item_count).map(|_| None).collect();
-
-        for (idx, item) in gather.get(self.heap).items.iter().enumerate() {
-            match *item {
-                GatherItem::Coroutine(coro_id) => {
-                    let task_id = *coro_to_task
-                        .entry(coro_id)
-                        .or_insert_with(|| self.scheduler.spawn(self.heap, coro_id, Some(heap_id)));
-                    pending_tasks.entry(task_id).or_default().push(idx);
+        for (idx, result) in results.iter_mut().enumerate() {
+            let item_id = gather.get(this.heap).items[idx];
+            let vacant_entry = match pending_children.entry(item_id) {
+                Entry::Occupied(occ) => {
+                    // Dedup: We've already registered this item in this commit pass —
+                    // this is a duplicate item (e.g. `gather(coro, coro)`). Just
+                    // append the new slot index to the existing entry.
+                    occ.into_mut().push(idx);
+                    continue;
                 }
-                GatherItem::ExternalFuture(call_id) => {
-                    if let Some(indices) = pending_calls.get_mut(&call_id) {
-                        // Duplicate of a still-pending external — append.
-                        indices.push(idx);
-                    } else if let Some(&first_idx) = resolved_first_slot.get(&call_id) {
-                        // Duplicate of an already-resolved external — clone
-                        // from the slot that owns the original.
-                        let cloned = results[first_idx]
-                            .as_ref()
-                            .expect("first occurrence holds the resolved value")
-                            .clone_with_heap(self.heap);
-                        results[idx] = Some(cloned);
-                    } else {
-                        // First time seeing this CallId.
-                        self.scheduler.mark_consumed(call_id);
-                        if let Some(value) = self.scheduler.take_resolved(call_id) {
-                            results[idx] = Some(value);
-                            resolved_first_slot.insert(call_id, idx);
-                        } else {
-                            self.scheduler.register_gather_for_call(call_id, heap_id);
-                            pending_calls.insert(call_id, vec![idx]);
-                        }
-                    }
+                Entry::Vacant(vacant) => vacant,
+            };
+
+            let poll = match this.heap.read(item_id) {
+                HeapReadOutput::Coroutine(_) => {
+                    this.scheduler.spawn(this.heap, item_id, Some(gather_id));
+                    Poll::Pending
+                }
+                HeapReadOutput::ExternalFuture(mut fut) => {
+                    this.heap.inc_ref(gather_id);
+                    let sub_awaiter = Awaiter::GatherSlot {
+                        gather: gather_id,
+                        source: item_id,
+                    };
+                    this.await_external_future(&mut fut, sub_awaiter)?
+                }
+                HeapReadOutput::GatherFuture(child_gather) => {
+                    this.heap.inc_ref(gather_id);
+                    let sub_awaiter = Awaiter::GatherSlot {
+                        gather: gather_id,
+                        source: item_id,
+                    };
+                    this.await_gather_future(item_id, child_gather, sub_awaiter)?
+                }
+                _ => panic!("gather item is not a Coroutine, ExternalFuture, or GatherFuture"),
+            };
+
+            match poll {
+                Poll::Ready(value) => {
+                    *result = Some(value);
+                }
+                Poll::Pending => {
+                    vacant_entry.insert(smallvec![idx]);
                 }
             }
         }
 
-        // Synchronous-completion shortcut: external-only gather where every
-        // call was already resolved. Allocate the result list and cache it on
-        // the gather (Pending → Completed) so re-awaits replay the same list.
-        if pending_tasks.is_empty() && pending_calls.is_empty() {
+        if pending_children.is_empty() {
+            // All items resolved synchronously — skip straight to Completed with the result list.
+            let (results, this) = results_guard.into_parts();
             let results: Vec<Value> = results
                 .into_iter()
                 .map(|r| r.expect("all results filled for synchronous gather completion"))
                 .collect();
-            let list_id = self.heap.allocate(HeapData::List(List::new(results)))?;
-            gather.cache_result(self.heap, list_id);
-            return Ok(AwaitResult::ValueReady(Value::Ref(list_id)));
+            let list_id = this.heap.allocate(HeapData::List(List::new(results)))?;
+            gather.cache_result(this.heap, list_id);
+            return Ok(Poll::Ready(Value::Ref(list_id)));
         }
 
-        // Transition Pending → Awaited.
-        gather.get_mut(self.heap).state = GatherState::Awaited(AwaitedGather {
-            waiter: current_task,
-            pending_tasks,
-            pending_calls,
+        let results = results_guard.into_inner();
+        let (awaiter, this) = awaiter_guard.into_parts();
+        gather.get_mut(this.heap).state = GatherState::Awaited(AwaitedGather {
+            awaiter,
+            pending_children,
             results,
         });
-        drop(gather);
 
-        // Block current task on this gather, then switch to a spawned task or
-        // yield to the host for external futures.
-        self.scheduler.block_current_on_gather(heap_id, self.heap);
-        self.switch_or_yield()
+        Ok(Poll::Pending)
     }
 
-    /// Awaits an external future by blocking until it's resolved.
+    /// Awaits an external future by inspecting its heap state.
     ///
-    /// If the future is already resolved, returns the value immediately.
-    /// Otherwise blocks the current task and switches to a ready task or yields to the host.
-    fn await_external_future(&mut self, call_id: CallId) -> Result<AwaitResult, RunError> {
-        // Check if already consumed (double-await error)
-        if self.scheduler.is_consumed(call_id) {
-            return Err(SimpleException::new_msg(ExcType::RuntimeError, "cannot reuse already awaited future").into());
-        }
-
-        // Mark as consumed
-        self.scheduler.mark_consumed(call_id);
-
-        // Check if the future is already resolved
-        if let Some(value) = self.scheduler.take_resolved(call_id) {
-            Ok(AwaitResult::ValueReady(value))
-        } else {
-            // Block current task on this call
-            self.scheduler.block_current_on_call(call_id);
-
-            // Switch to next ready task or yield to host
-            self.switch_or_yield()
+    /// - `Resolved(v)` returns a clone of `v` immediately.
+    /// - `Failed(e)` re-raises a clone of `e`.
+    /// - `Pending { awaiter: None }` installs the current task as the awaiter,
+    ///   and returns `Poll::Pending`.
+    /// - `Pending { awaiter: Some(_) }` is rejected as a double-await — a
+    ///   single-awaiter restriction we keep until multi-awaiter wake/raise
+    ///   plumbing lands.
+    fn await_external_future(
+        &mut self,
+        fut: &mut HeapRead<'h, ExternalFuture>,
+        awaiter: Awaiter,
+    ) -> Result<Poll<Value>, RunError> {
+        let mut awaiter_guard = HeapGuard::new(awaiter, self);
+        let this = awaiter_guard.heap();
+        match &fut.get(this.heap).state {
+            ExternalFutureState::Resolved(value) => {
+                let value = value.clone_with_heap(this);
+                Ok(Poll::Ready(value))
+            }
+            ExternalFutureState::Failed(err) => Err(err.clone()),
+            ExternalFutureState::Pending { awaiter: Some(_) } => {
+                Err(SimpleException::new_msg(ExcType::RuntimeError, "cannot reuse already awaited future").into())
+            }
+            ExternalFutureState::Pending { awaiter: None } => {
+                let awaiter = awaiter_guard.into_inner();
+                fut.get_mut(self.heap).state = ExternalFutureState::Pending { awaiter: Some(awaiter) };
+                Ok(Poll::Pending)
+            }
         }
     }
 
@@ -335,28 +329,31 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
         let gid = task
             .gather_id
             .expect("handle_task_completion: spawned task without a gather");
-        let coroutine_id = task.coroutine_id;
+        let coroutine_id = task
+            .coroutine_id
+            .expect("handle_task_completion: spawned task without a coroutine");
 
         // Mark the coroutine as Completed before the task is cancelled —
         // direct `await` of this coroutine elsewhere needs to see the new
         // state, not the `Running` it had until now.
-        if let Some(coro_id) = coroutine_id {
-            let HeapReadOutput::Coroutine(mut coro) = self.heap.read(coro_id) else {
-                panic!("task coroutine_id doesn't point to a Coroutine")
-            };
-            coro.get_mut(self.heap).state = CoroutineState::Completed;
-        }
+        let HeapReadOutput::Coroutine(mut coro) = self.heap.read(coroutine_id) else {
+            panic!("task coroutine_id doesn't point to a Coroutine")
+        };
+        coro.get_mut(self.heap).state = CoroutineState::Completed;
+        drop(coro);
 
         // Record the result on the gather and check whether it's now complete.
         // `resolve_child` does the fan-out for duplicate slots (`gather(c, c)`)
         // and the final state transition; it must run BEFORE we release any
         // inc_refs the gather is holding (cancelling children, dropping the
-        // waiter's `BlockedOnGather`) — otherwise the gather can be freed
-        // while we're still about to write its cached state.
+        // waiter's `Blocked` ref) — otherwise the gather can be freed while
+        // we're still about to write its cached state. The gather keys by
+        // item HeapId, so we pass the coroutine's id rather than the
+        // (kind-specific) task id.
         let HeapReadOutput::GatherFuture(mut gather) = self.heap.read(gid) else {
             panic!("task gather_id doesn't point to a GatherFuture")
         };
-        let resolution = gather.resolve_child(self, ChildSource::Task(task_id), result)?;
+        let resolution = gather.resolve_child(self, coroutine_id, result)?;
         drop(gather);
 
         // The just-completed task is no longer in the gather's
@@ -364,43 +361,30 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
         // coroutine and gather; otherwise it would linger in the scheduler.
         self.scheduler.cancel_task(task_id, self.heap);
 
-        match resolution {
-            Some(GatherResolution::Success { list_id, waiter_id }) => {
-                // Make waiter ready but don't add to ready queue — we're
-                // switching directly into its context. Replacing
-                // `BlockedOnGather` here releases the last gather inc_ref;
-                // the cached state is what keeps the result list alive.
-                self.scheduler.set_state(waiter_id, TaskState::Ready, self.heap);
-                self.cleanup_current_task();
-                self.scheduler.set_current_task(Some(waiter_id));
-                self.load_or_init_task(waiter_id)?;
-                self.push(Value::Ref(list_id));
-                Ok(AwaitResult::FramePushed)
-            }
-            Some(GatherResolution::Failure { error, waiter_id }) => {
-                // Switch into the waiter's frame and surface the error
-                // there. The run loop's `catch_sync!` will dispatch through
-                // the waiter's exception table — this is how a sibling's
-                // failure ends up at the user's `try` / `except` around the
-                // gather await.
-                self.scheduler.set_state(waiter_id, TaskState::Ready, self.heap);
-                self.cleanup_current_task();
-                self.scheduler.set_current_task(Some(waiter_id));
-                self.load_or_init_task(waiter_id)?;
-                Err(error)
-            }
-            None => {
-                // Gather not complete — switch to next ready task.
-                self.cleanup_current_task();
-                self.scheduler.set_current_task(None);
-                if let Some(next_task_id) = self.scheduler.next_ready_task() {
-                    self.scheduler.set_current_task(Some(next_task_id));
-                    self.load_or_init_task(next_task_id)?;
-                    Ok(AwaitResult::FramePushed)
-                } else {
-                    Ok(AwaitResult::Yield(self.scheduler.pending_call_ids()))
-                }
-            }
+        let delivery = match resolution {
+            Some(success) => self.deliver_awaiter_success(success.awaiter, Value::Ref(success.list_id))?,
+            None => None,
+        };
+
+        let next_task_id = if let Some(waiter_id) = delivery {
+            // `deliver_awaiter_success` already pushed the result onto the
+            // waiter's stack and queued it Ready. Switch directly into the
+            // waiter — `remove_from_ready_queue` cancels the queue entry
+            // since we're not going through the run loop's scheduler pop.
+            self.scheduler.remove_from_ready_queue(waiter_id);
+            Some(waiter_id)
+        } else {
+            self.scheduler.next_ready_task()
+        };
+
+        self.cleanup_current_task();
+
+        if let Some(next_id) = next_task_id {
+            self.scheduler.set_current_task(Some(next_id));
+            self.load_or_init_task(next_id)?;
+            Ok(AwaitResult::FramePushed)
+        } else {
+            Ok(AwaitResult::Yield(self.scheduler.pending_call_ids()))
         }
     }
 
@@ -438,19 +422,26 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
         let gather_id = self.scheduler.get_task(task_id).gather_id;
 
         // If part of a gather, tear the gather down (caches the error,
-        // cancels siblings, clears pending external routing) and switch into
-        // the waiter to propagate the error.
+        // cancels siblings, clears pending external routing) and walk the
+        // awaiter chain (which may go through outer nested gathers) to reach
+        // the task that should resume with the exception.
         if let Some(gid) = gather_id {
             let HeapReadOutput::GatherFuture(mut gather) = self.heap.read(gid) else {
                 panic!("task gather_id doesn't point to a GatherFuture")
             };
-            let waiter_id = gather.fail(&mut self.scheduler, self.heap, &error);
+            let awaiter = gather.fail(&mut self.scheduler, self.heap, &error);
             drop(gather);
-
-            self.scheduler.set_state(waiter_id, TaskState::Ready, self.heap);
-            self.cleanup_current_task();
-            self.scheduler.set_current_task(Some(waiter_id));
-            self.load_or_init_task(waiter_id)?;
+            if let Some(waiter_id) = self.deliver_awaiter_failure(awaiter, error.clone()) {
+                // `deliver_awaiter_failure` set the waiter to `Failed`, but
+                // we propagate the exception via `Err` (the run loop's
+                // `handle_exception` raises in the waiter's frame), so the
+                // task should be running. Override to `Ready` before
+                // switching in.
+                self.scheduler.set_state(waiter_id, TaskState::Ready, self.heap);
+                self.cleanup_current_task();
+                self.scheduler.set_current_task(Some(waiter_id));
+                self.load_or_init_task(waiter_id)?;
+            }
             return Err(error);
         }
 
@@ -573,13 +564,10 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
             panic!("task has no frames and no coroutine_id");
         }
 
-        // If this task was unblocked by a resolved external future, push the
-        // resolved value onto the stack. The AWAIT opcode already advanced the IP
-        // past itself before the task was saved, so execution will continue with
-        // the resolved value on top of the stack.
-        if let Some(value) = self.scheduler.take_resolved_for_task(task_id) {
-            self.push(value);
-        }
+        // Resolutions that landed while this task was parked already pushed
+        // their value onto `task.stack` (via `deliver_value_to_task` or
+        // `handle_task_completion`'s waiter-handoff branch), so the restored
+        // stack above is already in the post-AWAIT shape.
 
         Ok(())
     }
@@ -639,122 +627,181 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
 
     /// Resolves an external future with a value.
     ///
-    /// Called by the host when an async external call completes.
-    /// Stores the result in the scheduler, which will unblock any task
-    /// waiting on this CallId.
-    ///
-    /// If the task that created this call has been cancelled or failed,
-    /// the result is silently ignored and the value is dropped.
+    /// Called by the host when an async external call completes. Looks up
+    /// the `ExternalFuture` heap entry for `call_id`, transitions it to
+    /// `Resolved(value)`, and delivers `value` to the awaiter (if any).
     pub fn resolve_future(&mut self, call_id: u32, value: Value) -> RunResult<()> {
-        let mut value_guard = HeapGuard::new(value, self);
-        let this = value_guard.heap();
         let call_id = CallId::new(call_id);
 
-        // Pop the pending entry. A `None` here means the gather that was
-        // routing this call has been torn down (`HeapRead::fail` clears its
-        // pending entries) — drop the value, since `mark_consumed` was set
-        // when the gather awaited so no future `await` of the same call can
-        // pick it up. (Pre-refactor stored these in `resolved`; the value
-        // was unreachable and only released at `Scheduler::cleanup`.)
-        let Some(pending) = this.scheduler.take_pending_call(call_id) else {
+        let Some(future_id) = self.scheduler.take_pending_external(call_id) else {
+            value.drop_with_heap(self);
             return Ok(());
         };
 
-        // If the creator task of a non-gather call has failed, also drop the
-        // result. (Gather-routed calls don't reach here in the failure case —
-        // teardown removes the pending entry first.)
-        if pending.gather.is_none() && this.scheduler.is_task_failed(pending.creator_task) {
-            return Ok(());
+        // Ensure future cleaned up on all paths
+        let fut_val = Value::Ref(future_id);
+        let this = self;
+        defer_drop!(fut_val, this);
+
+        let mut value_guard = HeapGuard::new(value, this);
+        let (value, this) = value_guard.as_parts_mut();
+
+        let HeapReadOutput::ExternalFuture(mut fut) = this.heap.read(future_id) else {
+            panic!("pending_externals entry doesn't point to an ExternalFuture")
+        };
+
+        let awaiter_and_value = match &mut fut.get_mut(this.heap).state {
+            ExternalFutureState::Pending { awaiter } => awaiter.take().map(|a| (a, value.clone_with_heap(this.heap))),
+            ExternalFutureState::Resolved(_) | ExternalFutureState::Failed(_) => {
+                panic!("resolve_future: future was already resolved")
+            }
+        };
+
+        let (value, this) = value_guard.into_parts();
+        fut.get_mut(this.heap).state = ExternalFutureState::Resolved(value);
+
+        if let Some((awaiter, value)) = awaiter_and_value {
+            this.deliver_awaiter_success(awaiter, value)?;
         }
 
-        if let Some(gather_id) = pending.gather {
-            let value = value_guard.into_inner();
-            let HeapReadOutput::GatherFuture(mut gather) = self.heap.read(gather_id) else {
-                panic!("gather_id doesn't point to a GatherFuture")
-            };
+        Ok(())
+    }
 
-            // Record the resolution on the gather. `resolve_child` fans out to
-            // duplicate slots, clears the resolved CallId from `pending_calls`,
-            // and finalizes the gather (Success or Failure) if it's now done.
-            match gather.resolve_child(self, ChildSource::ExternalCall(call_id), value)? {
-                Some(GatherResolution::Success { list_id, waiter_id }) => {
-                    drop(gather);
+    /// Pushes `value` onto `task_id`'s stack and marks it ready. If the task
+    /// has already been cancelled (no longer in the scheduler) or failed,
+    /// drops `value` instead — the resolution still gets cached on the future,
+    /// but the (now-gone) awaiter doesn't receive it.
+    fn deliver_value_to_task(&mut self, task_id: TaskId, value: Value) {
+        if !self.scheduler.has_task(task_id) || self.scheduler.is_task_failed(task_id) {
+            value.drop_with_heap(self);
+            return;
+        }
 
-                    // External-future resolution can fire while either the
-                    // waiter is itself the current task (frames live in the
-                    // VM — e.g. external-only gather where the waiter never
-                    // switched away) or the waiter's context is parked. We
-                    // pick the right push target based on that.
-                    let waiter_context_in_vm =
-                        self.scheduler.current_task_id() == Some(waiter_id) && !self.frames.is_empty();
+        let task_is_current = self.scheduler.current_task_id() == Some(task_id) && !self.frames.is_empty();
+        if task_is_current {
+            self.stack.push(value);
+        } else {
+            self.scheduler.get_task_mut(task_id).stack.push(value);
+        }
+        self.scheduler.make_ready(task_id, self.heap);
+    }
 
-                    if waiter_context_in_vm {
-                        self.stack.push(Value::Ref(list_id));
-                        self.scheduler.set_state(waiter_id, TaskState::Ready, self.heap);
-                    } else {
-                        self.scheduler.get_task_mut(waiter_id).stack.push(Value::Ref(list_id));
-                        self.scheduler.make_ready(waiter_id, self.heap);
+    /// Delivers `value` along the awaiter chain starting at `awaiter`.
+    ///
+    /// At each `Awaiter::GatherSlot` link, the value is fanned into the
+    /// outer gather via [`HeapRead::resolve_child`]; if that completes the
+    /// outer, the chain continues with the outer's own awaiter and result
+    /// list. At an `Awaiter::Task` terminal, the value is delivered via
+    /// [`Self::deliver_value_to_task`] (push to the task's stack, transition
+    /// to `Ready`, push to ready-queue).
+    ///
+    /// Returns:
+    /// - `Some(task_id)` if delivery reached a live task — the caller may
+    ///   optionally switch VM context into `task_id` (calling
+    ///   `remove_from_ready_queue` first since `deliver_value_to_task`
+    ///   already queued it).
+    /// - `None` if the chain was consumed by an intermediate gather that's
+    ///   still in flight, or if the terminal task is gone (in which case
+    ///   the value is dropped).
+    fn deliver_awaiter_success(&mut self, mut awaiter: Awaiter, mut value: Value) -> RunResult<Option<TaskId>> {
+        let this = self;
+        loop {
+            match awaiter {
+                Awaiter::Task(t) => {
+                    this.deliver_value_to_task(t, value);
+                    return Ok(Some(t));
+                }
+                Awaiter::GatherSlot { gather, source } => {
+                    let gather_val = Value::Ref(gather);
+                    defer_drop!(gather_val, this);
+                    let HeapReadOutput::GatherFuture(mut outer) = this.heap.read(gather) else {
+                        panic!("Awaiter::GatherSlot gather id is not a GatherFuture")
+                    };
+                    let next = outer.resolve_child(this, source, value)?;
+                    match next {
+                        Some(success) => {
+                            awaiter = success.awaiter;
+                            value = Value::Ref(success.list_id);
+                        }
+                        None => return Ok(None),
                     }
                 }
-                Some(GatherResolution::Failure { error, waiter_id }) => {
-                    drop(gather);
-
-                    // Switch VM context into the waiter so the post-loop check
-                    // in `resume_with_resolved_futures` sees `current=waiter`
-                    // with state `Failed`, then calls `resume_with_exception`
-                    // — which raises in the waiter's frame and lets the
-                    // user's `try` / `except` catch it.
-                    self.cleanup_current_task();
-                    self.scheduler.set_current_task(Some(waiter_id));
-                    self.load_or_init_task(waiter_id)?;
-                    self.scheduler.set_state(waiter_id, TaskState::Failed(error), self.heap);
-                }
-                None => {}
             }
-        } else {
-            // Normal resolution for a single awaiter.
-            let value = value_guard.into_inner();
-            self.scheduler.record_resolved(call_id, value);
-            // Unblock the waiting task, if it's still waiting.
-            let task = self.scheduler.get_task_mut(pending.creator_task);
-            if matches!(task.state, TaskState::BlockedOnCall(cid) if cid == call_id) {
-                task.unblocked_by = Some(call_id);
-            }
-            self.scheduler.make_ready(pending.creator_task, self.heap);
         }
-        Ok(())
+    }
+
+    /// Walks the awaiter chain starting at `awaiter`, tearing each
+    /// intermediate gather down with `error`, and fails the terminal task.
+    ///
+    /// Returns:
+    /// - `Some(task_id)` if failure reached a live task — the caller may
+    ///   optionally switch VM context into it; the task's state is already
+    ///   `Failed(error)` so `resume_with_resolved_futures`'s post-loop check
+    ///   will raise the exception when control returns. (Callers that need
+    ///   the task in `Ready` instead — `handle_task_failure` — should
+    ///   `set_state(t, Ready)` before switching, since the exception is
+    ///   propagated by the `Err` return rather than the state check.)
+    /// - `None` if the terminal task is gone.
+    fn deliver_awaiter_failure(&mut self, mut awaiter: Awaiter, error: RunError) -> Option<TaskId> {
+        let target = loop {
+            match awaiter {
+                Awaiter::Task(t) => break t,
+                Awaiter::GatherSlot { gather, .. } => {
+                    let HeapReadOutput::GatherFuture(mut outer) = self.heap.read(gather) else {
+                        panic!("Awaiter::GatherSlot gather id is not a GatherFuture")
+                    };
+                    let next = outer.fail(&mut self.scheduler, self.heap, &error);
+                    drop(outer);
+                    // Release the inc_ref the destructured awaiter owned on
+                    // `gather`; reassign to the next link in the chain.
+                    self.heap.dec_ref(gather);
+                    awaiter = next;
+                }
+            }
+        };
+        if !self.scheduler.has_task(target) {
+            return None;
+        }
+        self.scheduler.fail_task(target, error, self.heap);
+        Some(target)
     }
 
     /// Fails an external future with an error.
     ///
-    /// Called by the host when an async external call fails with an exception.
-    /// Finds the task blocked on this CallId and fails it with the error.
-    /// If the task is part of a gather, cancels sibling tasks.
-    pub fn fail_future(&mut self, call_id: u32, error: RunError) {
+    /// Called by the host when an async external call fails with an
+    /// exception. Asks the scheduler for the awaiter that should receive
+    /// the failure (see `Scheduler::fail_for_call`), walks it via
+    /// [`Self::deliver_awaiter_failure`] (which fails the terminal task),
+    /// and switches VM context into that task if it isn't already current —
+    /// `resume_with_resolved_futures`'s post-loop check then surfaces the
+    /// error through its frame.
+    pub fn fail_future(&mut self, call_id: u32, error: RunError) -> RunResult<()> {
         let call_id = CallId::new(call_id);
-
-        self.scheduler.fail_for_call(call_id, error, self.heap);
+        if let Some(awaiter) = self.scheduler.fail_for_call(call_id, &error, self.heap)
+            && let Some(waiter_id) = self.deliver_awaiter_failure(awaiter, error)
+            && self.scheduler.current_task_id() != Some(waiter_id)
+        {
+            self.cleanup_current_task();
+            self.scheduler.set_current_task(Some(waiter_id));
+            self.load_or_init_task(waiter_id)?;
+        }
+        Ok(())
     }
 
-    /// Adds pending call data for an external function call.
+    /// Allocates an `ExternalFuture` for `call_id` and pushes a `Value::Ref`
+    /// to it on the VM stack.
     ///
-    /// Called by `run_pending()` when the host chooses async resolution.
-    /// This stores the call data in the scheduler so we can:
-    /// 1. Track which task created the call (to ignore results if cancelled)
-    /// 2. Return pending call info when all tasks are blocked
-    ///
-    /// Note: The args are empty because the host already has them from the
-    /// `FunctionCall` return value. We only need to track the creator task.
-    pub fn add_pending_call(&mut self, call_id: CallId) {
-        let current_task = self.scheduler.current_task_id().unwrap_or_default();
-        self.scheduler.add_pending_call(
-            call_id,
-            PendingCallData {
-                args: ArgValues::Empty,
-                creator_task: current_task,
-                gather: None,
-            },
-        );
+    /// The scheduler indexes `call_id -> future_id` (with its own inc_ref) so
+    /// host resolutions can find the heap entry; the `Value::Ref` pushed onto
+    /// the stack is the user's reference, which travels with the value until
+    /// it's awaited or dropped.
+    pub fn add_pending_call(&mut self, call_id: CallId) -> RunResult<()> {
+        let future_id = self
+            .heap
+            .allocate(HeapData::ExternalFuture(ExternalFuture::new_pending(call_id)))?;
+        self.scheduler.add_pending_external(call_id, future_id, self.heap);
+        self.push(Value::Ref(future_id));
+        Ok(())
     }
 
     /// Gets the pending call IDs from the scheduler.
@@ -780,10 +827,10 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
                     })?;
                     self.resolve_future(call_id, value)?;
                 }
-                ExtFunctionResult::Error(exc) => self.fail_future(call_id, RunError::from(exc)),
+                ExtFunctionResult::Error(exc) => self.fail_future(call_id, RunError::from(exc))?,
                 ExtFunctionResult::Future(_) => {}
                 ExtFunctionResult::NotFound(function_name) => {
-                    self.fail_future(call_id, ExtFunctionResult::not_found_exc(&function_name));
+                    self.fail_future(call_id, ExtFunctionResult::not_found_exc(&function_name))?;
                 }
             }
         }
@@ -800,13 +847,10 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
                     };
                     return self.resume_with_exception(err);
                 }
-                TaskState::BlockedOnCall(_) | TaskState::BlockedOnGather(_) => {
+                TaskState::Blocked(_) => {
                     // Current task is still blocked on unresolved futures.
                 }
                 TaskState::Ready => {
-                    if let Some(value) = self.scheduler.take_resolved_for_task(current_task_id) {
-                        self.push(value);
-                    }
                     self.scheduler.remove_from_ready_queue(current_task_id);
                     return self.run();
                 }
@@ -843,33 +887,13 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
 }
 
 /// Outcome of [`HeapRead::resolve_child`] when a gather has finished driving
-/// its children.
+/// its children successfully.
 ///
-/// - `Success`: every child resolved with a value. `list_id` is the cached
-///   result list to hand back; `waiter_id` is the task that awaited the
-///   gather.
-/// - `Failure`: a sibling task ended up `TaskState::Failed` (typically
-///   because an external it was waiting on was rejected by the host —
-///   `Scheduler::fail_for_call`'s "indirect" branch sets that state). The
-///   gather has been torn down via [`HeapRead::fail`]; the caller is
-///   responsible for switching VM context to `waiter_id` and propagating
-///   `error` through its frame's exception handler.
-pub(crate) enum GatherResolution {
-    Success { list_id: HeapId, waiter_id: TaskId },
-    Failure { error: RunError, waiter_id: TaskId },
-}
-
-/// Identifies which child of a gather just produced a value.
-///
-/// Used by [`HeapRead::resolve_child`] to look up the child's slot indices
-/// from the gather's own `pending_tasks` / `pending_calls` maps and, in the
-/// external-future case, to clear the resolved entry.
-#[derive(Clone, Copy)]
-pub(crate) enum ChildSource {
-    /// A spawned coroutine task completed with a value.
-    Task(TaskId),
-    /// An external future was resolved with a value by the host.
-    ExternalCall(CallId),
+/// `list_id` is the cached result list to hand back; `waiter` is the
+/// downstream that should receive it.
+pub(crate) struct GatherSuccess {
+    pub list_id: HeapId,
+    pub awaiter: Awaiter,
 }
 
 impl<'h> HeapRead<'h, GatherFuture> {
@@ -883,50 +907,38 @@ impl<'h> HeapRead<'h, GatherFuture> {
     /// transition happens inside [`Self::resolve_child`].
     pub(crate) fn cache_result(&mut self, heap: &mut HeapReader<'h, impl ResourceTracker>, list_id: HeapId) {
         heap.inc_ref(list_id);
-        self.get_mut(heap).state = GatherState::Completed(list_id);
+        self.get_mut(heap).state = GatherState::Completed(Value::Ref(list_id));
     }
 
     /// Records one child's resolution on this gather and, if everything has
-    /// now settled, transitions the gather to `Completed` (success) or
-    /// `Failed` (sibling failure detected).
+    /// now settled, transitions the gather to `Completed`.
     ///
-    /// The child's slot-index mapping is removed from the gather's own
-    /// `pending_tasks` / `pending_calls` map. Membership in those maps is
-    /// the "still in flight" signal.
+    /// The child's slot-index mapping is removed from the gather's
+    /// `pending_children` map. Membership in that map is the "still in
+    /// flight" signal.
     ///
-    /// Failure detection: a child task can end up in `TaskState::Failed`
-    /// without the gather being torn down — this happens when an external
-    /// call inside a gather child raises (`Scheduler::fail_for_call`'s
-    /// indirect branch). Such Failed siblings linger in `pending_tasks`
-    /// until *another* child completes and brings us through this scan,
-    /// which then propagates via `self.fail`.
+    /// Failure cases never reach this method — sibling failures are routed
+    /// through [`HeapRead::fail`] at the failure site
+    /// (`Scheduler::fail_for_call` for external rejections,
+    /// `VM::handle_task_failure` for in-frame exceptions). Both eagerly tear
+    /// the gather down before any other sibling has a chance to resolve.
     ///
     /// Returns `None` while children are still in flight; otherwise
-    /// `Some(GatherResolution::Success | Failure)`. In both cases the
-    /// gather has been transitioned to a terminal state.
+    /// `Some(GatherResolution::Success)` with the cached result list.
     fn resolve_child(
         &mut self,
         vm: &mut VM<'h, impl ResourceTracker>,
-        source: ChildSource,
+        child_id: HeapId,
         value: Value,
-    ) -> RunResult<Option<GatherResolution>> {
+    ) -> RunResult<Option<GatherSuccess>> {
         // Remove this child's slot-index mapping.
-        let indices: Vec<usize> = {
-            let awaited = self
-                .get_mut(vm.heap)
-                .as_awaited_mut()
-                .expect("resolve_child called on non-Awaited gather");
-            match source {
-                ChildSource::Task(tid) => awaited
-                    .pending_tasks
-                    .remove(&tid)
-                    .expect("resolve_child: task not registered with this gather"),
-                ChildSource::ExternalCall(cid) => awaited
-                    .pending_calls
-                    .remove(&cid)
-                    .expect("resolve_child: external call not registered with this gather"),
-            }
-        };
+        let indices: SmallVec<[usize; 1]> = self
+            .get_mut(vm.heap)
+            .as_awaited_mut()
+            .expect("resolve_child called on non-Awaited gather")
+            .pending_children
+            .remove(&child_id)
+            .expect("resolve_child: child not registered with this gather");
 
         // Take `results` out so the writes can do their clones (which need
         // `&Heap` access) without fighting the `&mut`-chain that
@@ -948,43 +960,32 @@ impl<'h> HeapRead<'h, GatherFuture> {
             value.drop_with_heap(vm.heap);
         }
 
-        // Restore results and look for a Failed sibling or check completion.
+        // Restore results and check completion.
         let awaited = self
             .get_mut(vm.heap)
             .as_awaited_mut()
             .expect("gather still Awaited after recording child resolution");
         awaited.results = results;
 
-        // Check for failed siblings after recording the result.
-        if let Some(&tid) = awaited
-            .pending_tasks
-            .keys()
-            .find(|tid| matches!(vm.scheduler.get_task(**tid).state, TaskState::Failed(_)))
-        {
-            // Take the error out of the failed task's state, then tear
-            // the gather down. `self.fail` cancels every remaining
-            // child (including `tid` itself) and caches the error on
-            // the gather for replay on re-await.
-            let task = vm.scheduler.get_task_mut(tid);
-            let TaskState::Failed(error) = mem::replace(&mut task.state, TaskState::Ready) else {
-                unreachable!("scanned Failed above")
-            };
-            let waiter_id = self.fail(&mut vm.scheduler, vm.heap, &error);
-            return Ok(Some(GatherResolution::Failure { error, waiter_id }));
-        } else if !awaited.pending_tasks.is_empty() || !awaited.pending_calls.is_empty() {
+        if !awaited.pending_children.is_empty() {
             return Ok(None);
         }
 
         // All children resolved successfully — build the result list.
+        // Extract this gather's awaiter (transferred into the returned
+        // `GatherSuccess`); the `Awaited` state remains in place until
+        // `cache_result` overwrites it, but its `awaiter` field is now the
+        // placeholder so dropping the `Awaited` payload won't double-drop
+        // the owned `Awaiter`.
         let results = mem::take(&mut awaited.results);
-        let waiter_id = awaited.waiter;
+        let awaiter = mem::replace(&mut awaited.awaiter, Awaiter::Task(TaskId::default()));
         let results: Vec<Value> = results
             .into_iter()
             .map(|r| r.expect("all results filled when gather is complete"))
             .collect();
         let list_id = vm.heap.allocate(HeapData::List(List::new(results)))?;
         self.cache_result(vm.heap, list_id);
-        Ok(Some(GatherResolution::Success { list_id, waiter_id }))
+        Ok(Some(GatherSuccess { list_id, awaiter }))
     }
 
     /// Tear the gather down with `error` and return its waiter.
@@ -998,18 +999,19 @@ impl<'h> HeapRead<'h, GatherFuture> {
         scheduler: &mut Scheduler,
         heap: &mut HeapReader<'h, impl ResourceTracker>,
         error: &RunError,
-    ) -> TaskId {
-        // Take the Awaited bookkeeping. The state stays `Awaited` (with empty
-        // fields) until the state replace below commits the transition.
-        let (waiter_id, pending_tasks, pending_calls, results) = {
+    ) -> Awaiter {
+        // Take the Awaited bookkeeping. The state stays `Awaited` (with
+        // placeholder fields) until the state replace below commits the
+        // transition. The extracted `awaiter` is transferred to the caller
+        // — it owns any `GatherSlot` inc_ref it carried.
+        let (waiter, pending_children, results) = {
             let awaited = self
                 .get_mut(heap)
                 .as_awaited_mut()
                 .expect("fail called on non-Awaited gather");
             (
-                awaited.waiter,
-                mem::take(&mut awaited.pending_tasks),
-                mem::take(&mut awaited.pending_calls),
+                mem::replace(&mut awaited.awaiter, Awaiter::Task(TaskId::default())),
+                mem::take(&mut awaited.pending_children),
                 mem::take(&mut awaited.results),
             )
         };
@@ -1020,19 +1022,45 @@ impl<'h> HeapRead<'h, GatherFuture> {
         // Drop fanned-out result Values that won't reach the waiter.
         results.drop_with_heap(heap);
 
-        // Drop pending-call routing so late host-side resolutions don't reach
-        // a stale gather entry. `take_pending_call` is a no-op when the entry
-        // has already been cleared (e.g. by `Scheduler::fail_for_call` having
-        // already removed the entry it was driving).
-        for cid in pending_calls.into_keys() {
-            scheduler.take_pending_call(cid);
+        // Walk every child the gather was waiting on and clean it up
+        // appropriately. `heap.read(id)` recovers the kind:
+        // - Coroutine: find its driving task via the scheduler's
+        //   `task_for_coroutine` index and cancel it, releasing the task's
+        //   inc_refs on the gather and coroutine.
+        // - ExternalFuture: clear the awaiter slot so a late host resolution
+        //   doesn't fan into the now-failed gather. The future stays in
+        //   `pending_externals` and a `Pending { awaiter: None }` resolution
+        //   simply caches the value (and a re-await replays it).
+        // - GatherFuture (nested): recurse — tear it down with the same
+        //   error so its own tasks/externals/gathers are cleaned up too.
+        for child_id in pending_children.into_keys() {
+            match heap.read(child_id) {
+                HeapReadOutput::Coroutine(_) => {
+                    if let Some(tid) = scheduler.task_for_coroutine(child_id) {
+                        scheduler.cancel_task(tid, heap);
+                    }
+                }
+                HeapReadOutput::ExternalFuture(mut fut) => {
+                    // Take the awaiter out so the inc_ref it holds on this
+                    // (failing) gather is released.
+                    if let ExternalFutureState::Pending { awaiter } = &mut fut.get_mut(heap).state
+                        && let Some(old) = awaiter.take()
+                    {
+                        old.drop_with_heap(heap);
+                    }
+                }
+                HeapReadOutput::GatherFuture(mut nested) => {
+                    // The nested gather's waiter is `Awaiter::GatherSlot {
+                    // gather: self, .. }` — we own its routing and are now
+                    // gone, so drop the returned awaiter (releasing its
+                    // inc_ref back on us) rather than forwarding the chain.
+                    let nested_awaiter = nested.fail(scheduler, heap, error);
+                    nested_awaiter.drop_with_heap(heap);
+                }
+                _ => panic!("gather pending_children key is not a Coroutine, ExternalFuture, or GatherFuture"),
+            }
         }
 
-        // Release all tasks owned by this gather.
-        for tid in pending_tasks.into_keys() {
-            scheduler.cancel_task(tid, heap);
-        }
-
-        waiter_id
+        waiter
     }
 }

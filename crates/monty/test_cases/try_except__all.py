@@ -471,6 +471,104 @@ except (ValueError, BaseException):
     caught_by_tuple_with_base = True
 assert caught_by_tuple_with_base, 'tuple with BaseException should catch KeyboardInterrupt'
 
+# === Nested tuples in except are rejected (CPython parity) ===
+# CPython only accepts a single level of tuple in an `except` clause. A nested
+# tuple element is not a class inheriting from BaseException, so matching against
+# it raises TypeError rather than descending into the sub-tuple. This also bounds
+# the matcher: the except type is built at runtime and could otherwise be nested
+# arbitrarily deeply, overflowing the host stack inside one bytecode instruction.
+#
+# The TypeError is raised while evaluating the `except` clause itself, so it
+# propagates out of the whole `try` (later `except` clauses of the *same* try are
+# not tried against it) and must be caught by an enclosing `try`.
+_msg = 'catching classes that do not inherit from BaseException is not allowed'
+
+# Single-element tuple wrapping a tuple.
+_rejected = False
+try:
+    try:
+        raise TypeError()
+    except ((ValueError,),):
+        assert False, 'nested tuple should not be descended into'
+except TypeError as exc:
+    _rejected = True
+    assert str(exc) == _msg, f'unexpected message: {exc}'
+assert _rejected, 'single-element nested tuple should raise TypeError'
+
+# Tuple of tuples.
+_rejected = False
+try:
+    try:
+        raise TypeError()
+    except ((ValueError,), (KeyError, TypeError)):
+        assert False, 'tuple of tuples should not match'
+except TypeError as exc:
+    _rejected = True
+    assert str(exc) == _msg, f'unexpected message: {exc}'
+assert _rejected, 'tuple of tuples should raise TypeError'
+
+# The whole tuple is validated, so an invalid element raises even when an
+# earlier element already matched the raised exception.
+_rejected = False
+try:
+    try:
+        raise TypeError()
+    except (TypeError, (ValueError,)):
+        assert False, 'must validate whole tuple, not short-circuit on match'
+except TypeError as exc:
+    _rejected = True
+    assert str(exc) == _msg, f'unexpected message: {exc}'
+assert _rejected, 'invalid element after a match should still raise TypeError'
+
+# Invalid element appears before a valid match.
+_rejected = False
+try:
+    try:
+        raise TypeError()
+    except ((ValueError,), TypeError):
+        assert False, 'leading nested tuple should be rejected'
+except TypeError as exc:
+    _rejected = True
+    assert str(exc) == _msg, f'unexpected message: {exc}'
+assert _rejected, 'leading nested tuple should raise TypeError'
+
+# Deeply nested, runtime-constructed tuple: rejected with TypeError, not a host
+# stack overflow and not a RecursionError.
+deep = (ValueError,)
+for _ in range(1000):
+    deep = (deep,)
+_rejected = False
+try:
+    try:
+        raise TypeError()
+    except deep:
+        assert False, 'deeply nested tuple should not be descended into'
+except TypeError as exc:
+    _rejected = True
+    assert str(exc) == _msg, f'unexpected message: {exc}'
+assert _rejected, 'deeply nested runtime tuple should raise TypeError'
+
+# An empty tuple is valid (never matches): the original exception propagates
+# unchanged rather than raising the "catching classes" TypeError.
+caught_empty_tuple = False
+try:
+    try:
+        raise TypeError('propagate')
+    except ():
+        assert False, 'empty tuple never matches'
+except TypeError as exc:
+    caught_empty_tuple = True
+    assert str(exc) == 'propagate', f'unexpected message: {exc}'
+assert caught_empty_tuple, 'empty except tuple should let exception propagate'
+
+# A large flat tuple built at runtime still matches normally.
+big_flat = tuple([ValueError] * 5000 + [TypeError])
+caught_big_flat = False
+try:
+    raise TypeError()
+except big_flat:
+    caught_big_flat = True
+assert caught_big_flat, 'large flat runtime tuple should still match'
 
 # === Exception state cleared on `return` from inside an except handler ===
 # When `return` exits an except clause, the exception is cleared from the

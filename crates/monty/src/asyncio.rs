@@ -5,8 +5,14 @@
 //! calls return `ExternalFuture` objects that can be awaited.
 
 use ahash::AHashMap;
+use smallvec::SmallVec;
 
-use crate::{exception_private::RunError, heap::HeapId, intern::FunctionId, value::Value};
+use crate::{
+    exception_private::RunError,
+    heap::{ContainsHeap, DropWithHeap, HeapId},
+    intern::FunctionId,
+    value::Value,
+};
 
 /// Unique identifier for external function calls.
 ///
@@ -109,13 +115,86 @@ impl Coroutine {
     }
 }
 
-/// An item that can be gathered - either a coroutine or an external future.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub(crate) enum GatherItem {
-    /// A coroutine to spawn as a task.
-    Coroutine(HeapId),
-    /// An external future to wait for resolution.
-    ExternalFuture(CallId),
+/// An external future driven by the host.
+///
+/// Created when the host returns `ExtFunctionResult::Future(call_id)` in
+/// response to a function call yield. The future starts in `Pending`, and
+/// transitions to `Resolved` (host returned a value) or `Failed` (host
+/// returned an error) when [`VM::resolve_future`] / [`VM::fail_future`]
+/// fires.
+///
+/// # Re-await semantics
+///
+/// `Resolved` / `Failed` futures can be awaited any number of times — each
+/// await yields a clone of the cached value or replays the cached exception,
+/// matching CPython's Future semantics. `Pending` futures still support only
+/// a single in-flight awaiter (the `awaiter: Option<Awaiter>` slot);
+/// multi-awaiter on `Pending` is a planned follow-up that needs the same
+/// wake/raise plumbing as multi-waiter gathers.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub(crate) struct ExternalFuture {
+    /// Host-side identifier. Used by the scheduler's `CallId -> HeapId`
+    /// index so host resolutions can find the heap entry.
+    pub call_id: CallId,
+    /// Current state.
+    pub state: ExternalFutureState,
+}
+
+/// State machine for [`ExternalFuture`].
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub(crate) enum ExternalFutureState {
+    /// Awaiting host resolution. `awaiter` is the downstream that should be
+    /// notified on resolution; `None` until someone awaits, `Some(...)` for
+    /// the lifetime of the await.
+    Pending { awaiter: Option<Awaiter> },
+    /// Resolved with a value. Re-awaits clone this Value.
+    Resolved(Value),
+    /// Rejected with an error. Re-awaits replay (clone) this error.
+    Failed(RunError),
+}
+
+impl ExternalFuture {
+    /// Creates a new `ExternalFuture` in the `Pending` state with no awaiter.
+    pub fn new_pending(call_id: CallId) -> Self {
+        Self {
+            call_id,
+            state: ExternalFutureState::Pending { awaiter: None },
+        }
+    }
+}
+
+/// Where the result/error of a completing awaitable should be routed.
+///
+/// Stored as the "downstream" of an awaitable.
+///
+/// - `Task` wakes the named task by setting it `Ready` and pushing the value
+///   (or routing the error through its frame's exception handler). `TaskId`
+///   is just a scheduler-side identifier, not a heap reference, so the
+///   variant owns no inc_ref.
+/// - `GatherSlot` fans the value into the gather at `gather`, looking up the
+///   slot indices it should fill via the awaitable's own `HeapId` (`source`).
+///   The wrapper **owns an inc_ref on `gather`**: storing the awaiter on an
+///   awaitable keeps the gather alive for the in-flight window, so the
+///   awaitable's resolution path can dispatch to it safely without
+///   additional cleanup elsewhere. Drop the owned `Awaiter` via
+///   [`DropWithHeap`] (and clone via [`Self::clone_with_heap`]) so the
+///   `gather` ref count stays balanced.
+///
+/// Not `Copy` / `Clone` on purpose — the inc_ref discipline requires every
+/// duplication to go through `clone_with_heap` and every discard to go
+/// through `drop_with_heap`.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub(crate) enum Awaiter {
+    Task(TaskId),
+    GatherSlot { gather: HeapId, source: HeapId },
+}
+
+impl DropWithHeap for Awaiter {
+    fn drop_with_heap<H: ContainsHeap>(self, heap: &mut H) {
+        if let Self::GatherSlot { gather, .. } = self {
+            heap.heap_mut().dec_ref(gather);
+        }
+    }
 }
 
 /// A gather() result tracking multiple coroutines/tasks and external futures.
@@ -154,12 +233,14 @@ pub(crate) enum GatherItem {
 /// require a list of waiters and is left as future work.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub(crate) struct GatherFuture {
-    /// Items to gather (coroutines or external futures).
+    /// Heap ids of items to gather. Each id points to an awaitable
+    /// `HeapData` entry (currently `Coroutine` or `ExternalFuture`); the
+    /// kind is recovered with `heap.read(id)` at gather-await time.
     ///
     /// Set once at construction and never mutated. The gather inc_refs each
-    /// unique `GatherItem::Coroutine` HeapId and is the owner until drop, so
-    /// GC must always walk this vector regardless of `state`.
-    pub items: Vec<GatherItem>,
+    /// id and is the owner until drop, so GC must always walk this vector
+    /// regardless of `state`.
+    pub items: Vec<HeapId>,
     /// Phase of the gather lifecycle. See [`GatherState`].
     pub state: GatherState,
 }
@@ -173,11 +254,9 @@ pub(crate) enum GatherState {
     Pending,
     /// Currently being awaited. `AwaitedGather` carries every per-await field.
     Awaited(AwaitedGather),
-    /// All children completed successfully. The contained `HeapId` is an
-    /// inc_ref'd `HeapData::List` of results; the gather is its owner and
-    /// dec_refs it on drop. Re-awaiting the gather inc_refs this list and
-    /// returns it.
-    Completed(HeapId),
+    /// All children completed successfully. Re-awaiting the gather inc_refs this
+    /// value and returns it.
+    Completed(Value),
     /// A child task failed (or an external future was rejected). The error
     /// is cached so subsequent awaits re-raise it. `RunError` implements
     /// `Clone`; clone the error when transitioning into this state.
@@ -195,29 +274,32 @@ pub(crate) enum GatherState {
 /// done when both maps are empty.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub(crate) struct AwaitedGather {
-    /// Task that called `await` on the enclosing gather. Always present in this
-    /// phase — there is no "awaited but no waiter" sub-state.
-    pub waiter: TaskId,
-    /// Spawned tasks → slots they fill in `results`. One entry per *unique*
-    /// coroutine in `items` (duplicates collapse to a single task with
-    /// multiple slot indices). Entries are removed as the corresponding
-    /// task completes; the task is then immediately cancelled from the
-    /// scheduler so refcounts get released eagerly.
-    pub pending_tasks: AHashMap<TaskId, Vec<usize>>,
-    /// External futures → slots they fill in `results`. Entries are removed
-    /// as `resolve_future` resolves each call.
-    pub pending_calls: AHashMap<CallId, Vec<usize>>,
+    /// Downstream the gather should notify on completion. `Awaiter::Task(t)`
+    /// is the user-level `await gather` case (waker is the task that ran
+    /// the `await`); `Awaiter::GatherSlot { .. }` is the nested-gather case
+    /// (this gather is an item of an outer gather, and its result list
+    /// fans into the outer's slot). Single-waiter for now; the multi-waiter
+    /// form is a planned follow-up.
+    pub awaiter: Awaiter,
+    /// Children → slots they fill in `results`. Keyed by each child's own
+    /// `HeapId` (coroutine or external future). Duplicates from
+    /// `gather(c, c)` produce a single entry whose value is a `SmallVec` of
+    /// multiple indices.
+    ///
+    /// Entries are removed as the corresponding child resolves. The gather
+    /// is done when this map is empty.
+    pub pending_children: AHashMap<HeapId, SmallVec<[usize; 1]>>,
     /// Results from each gather item, in order. Indices align with
     /// `GatherFuture::items`. Filled as tasks complete and externals resolve.
     pub results: Vec<Option<Value>>,
 }
 
 impl GatherFuture {
-    /// Creates a new GatherFuture with the given items.
+    /// Creates a new GatherFuture with the given item heap ids.
     ///
     /// # Arguments
-    /// * `items` - Coroutines or external futures to run concurrently
-    pub fn new(items: Vec<GatherItem>) -> Self {
+    /// * `items` - Heap ids of awaitables (coroutines or external futures)
+    pub fn new(items: Vec<HeapId>) -> Self {
         Self {
             items,
             state: GatherState::Pending,
