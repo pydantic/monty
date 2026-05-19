@@ -6,6 +6,7 @@
 
 use std::collections::HashSet;
 
+use super::builder::Offset;
 use crate::{intern::StringId, parse::CodeRange, value::Value};
 
 /// Compiled bytecode for a function or module.
@@ -292,12 +293,16 @@ pub struct ExceptionEntry {
 
 impl ExceptionEntry {
     /// Creates a new exception table entry.
+    ///
+    /// Takes `Offset` values produced by `CodeBuilder::current_offset` so that
+    /// the bounds of try / handler / cleanup regions can't be confused with
+    /// arbitrary integers.
     #[must_use]
-    pub fn new(start: u32, end: u32, handler: u32, stack_depth: u16, exception_stack_count: u16) -> Self {
+    pub fn new(start: Offset, end: Offset, handler: Offset, stack_depth: u16, exception_stack_count: u16) -> Self {
         Self {
-            start,
-            end,
-            handler,
+            start: start.as_u32(),
+            end: end.as_u32(),
+            handler: handler.as_u32(),
             stack_depth,
             exception_stack_count,
         }

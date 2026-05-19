@@ -230,6 +230,7 @@ impl<'i> Prepare<'i> {
     fn new_function(
         capacity: usize,
         params: &[StringId],
+        position: CodeRange,
         assigned_names: AHashSet<String>,
         global_names: AHashSet<String>,
         nonlocal_names: AHashSet<String>,
@@ -238,10 +239,22 @@ impl<'i> Prepare<'i> {
         enclosing_locals: Option<AHashSet<String>>,
         cell_var_names: AHashSet<String>,
         interner: &'i InternerBuilder,
-    ) -> Self {
+    ) -> Result<Self, ParseError> {
+        // Reject duplicate parameter names while building the name_map.
+        // Ruff's parser accepts `def f(x, x)` that CPython rejects at compile
+        // time; without this check, `name_map` is deduplicated by HashMap
+        // semantics but each `NamespaceId` comes from the positional index,
+        // so the duplicate slot lands past the allocated stack region and
+        // panics `load_local` at runtime.
         let mut name_map = AHashMap::with_capacity(capacity);
         for (index, string_id) in params.iter().enumerate() {
-            name_map.insert(interner.get_str(*string_id).to_string(), NamespaceId::new(index));
+            let name_str = interner.get_str(*string_id);
+            if name_map.insert(name_str.to_string(), NamespaceId::new(index)).is_some() {
+                return Err(ParseError::syntax(
+                    format!("duplicate argument '{name_str}' in function definition"),
+                    position,
+                ));
+            }
         }
         let namespace_size = name_map.len();
 
@@ -281,7 +294,7 @@ impl<'i> Prepare<'i> {
             free_var_map.insert(name, NamespaceId::new(slot));
         }
 
-        Self {
+        Ok(Self {
             interner,
             name_map,
             namespace_size,
@@ -294,7 +307,7 @@ impl<'i> Prepare<'i> {
             free_var_map,
             cell_var_map,
             unassigned_ref_names: AHashSet::new(),
-        }
+        })
     }
 
     /// Recursively prepares a sequence of AST nodes by resolving names and transforming expressions.
@@ -1312,6 +1325,7 @@ impl<'i> Prepare<'i> {
         let mut inner_prepare = Prepare::new_function(
             body.len(),
             &param_names,
+            name.position,
             scope_info.assigned_names,
             scope_info.global_names,
             scope_info.nonlocal_names,
@@ -1320,7 +1334,7 @@ impl<'i> Prepare<'i> {
             Some(enclosing_locals),
             scope_info.cell_var_names,
             self.interner,
-        );
+        )?;
 
         // Prepare the function body
         let prepared_body = inner_prepare.prepare_nodes(body)?;
@@ -1526,6 +1540,7 @@ impl<'i> Prepare<'i> {
         let mut inner_prepare = Prepare::new_function(
             body_nodes.len(),
             &param_names,
+            position,
             scope_info.assigned_names,
             scope_info.global_names,
             scope_info.nonlocal_names,
@@ -1534,7 +1549,7 @@ impl<'i> Prepare<'i> {
             Some(enclosing_locals),
             scope_info.cell_var_names,
             self.interner,
-        );
+        )?;
 
         // Prepare the lambda body
         let prepared_body = inner_prepare.prepare_nodes(body_nodes)?;

@@ -1087,6 +1087,15 @@ impl ExcType {
         SimpleException::new_msg(Self::OverflowError, "Python int too large to convert to C ssize_t").into()
     }
 
+    /// Creates an OverflowError when a Python int doesn't fit into a C `int` (i32).
+    ///
+    /// Matches CPython's format: `OverflowError: Python int too large to convert to C int`
+    /// Used by builtins (e.g. `bytes.hex`) that parse arguments via the `i` format code.
+    #[must_use]
+    pub(crate) fn overflow_c_int() -> RunError {
+        SimpleException::new_msg(Self::OverflowError, "Python int too large to convert to C int").into()
+    }
+
     /// Creates a TypeError for unsupported binary operations.
     ///
     /// For `+` or `+=` with str/list on the left side, uses CPython's special format:
@@ -1618,7 +1627,7 @@ impl ExceptionRaise {
                         cache.push((fname_id, SourceMap::new(src)));
                         cache.len() - 1
                     };
-                    frames.push(StackFrame::from_raw(f, interns, &cache[sm_idx].1));
+                    frames.push(StackFrame::from_raw(f, interns, &mut cache[sm_idx].1));
                     current = f.parent.as_deref();
                 }
                 // Reverse so outermost frame is first (Python's "most recent call last" ordering)
@@ -1685,7 +1694,12 @@ impl RawStackFrame {
 /// - `Internal`: Bug in interpreter implementation (static message)
 /// - `Exc`: Python exception that can be caught by try/except (when implemented)
 /// - `UncatchableExc`: Python exception from resource limits that CANNOT be caught
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
+///
+/// `Clone` is implemented so an error can be cached for later re-raising
+/// (e.g. a failed `GatherFuture` replaying the same exception on every
+/// re-await). Inner data is shallow-clonable: `Cow<'static, str>` is cheap,
+/// and `ExceptionRaise` already derives `Clone`.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) enum RunError {
     /// Internal interpreter error - indicates a bug in Monty, not user code.
     Internal(Cow<'static, str>),

@@ -282,6 +282,20 @@ assert b'\x01\x02\x03'.hex(':', 2) == '01:0203', 'hex +2 three bytes'
 # Test negative bytes_per_sep (partial group at end)
 assert b'\x01\x02\x03\x04\x05'.hex(':', -2) == '0102:0304:05', 'hex -2 odd bytes'
 assert b'\x01\x02\x03'.hex(':', -2) == '0102:03', 'hex -2 three bytes'
+# bytes_per_sep is parsed as a C int by CPython; out-of-range values raise OverflowError.
+try:
+    b'A'.hex(':', -9223372036854775808)
+    assert False, 'expected OverflowError for i64::MIN'
+except OverflowError as exc:
+    assert str(exc) == 'Python int too large to convert to C int', 'overflow message i64::MIN'
+try:
+    b'A'.hex(':', 2147483648)
+    assert False, 'expected OverflowError for i32::MAX + 1'
+except OverflowError as exc:
+    assert str(exc) == 'Python int too large to convert to C int', 'overflow message i32::MAX+1'
+# Values at the i32 boundary are still accepted and processed as a single chunk.
+assert b'\x01\x02\x03'.hex(':', -2147483648) == '010203', 'hex i32::MIN three bytes'
+assert b'\x01\x02\x03'.hex(':', 2147483647) == '010203', 'hex i32::MAX three bytes'
 
 # === bytes.fromhex() ===
 assert bytes.fromhex('deadbeef') == b'\xde\xad\xbe\xef', 'fromhex basic'

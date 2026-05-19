@@ -14,7 +14,7 @@ use serde::ser::SerializeStruct;
 pub(crate) use crate::heap_data::HeapData;
 pub(crate) use crate::heap_traits::{ContainsHeap, DropWithHeap, HeapGuard, HeapItem};
 use crate::{
-    asyncio::{Coroutine, GatherFuture, GatherItem},
+    asyncio::{Awaiter, Coroutine, ExternalFuture, ExternalFutureState, GatherFuture, GatherState},
     exception_private::SimpleException,
     heap_data::{CellValue, Closure, FunctionDefaults},
     resource::{ResourceError, ResourceTracker},
@@ -226,6 +226,7 @@ pub enum HeapReadOutput<'a> {
     Module(HeapRead<'a, Module>),
     Coroutine(HeapRead<'a, Coroutine>),
     GatherFuture(HeapRead<'a, GatherFuture>),
+    ExternalFuture(HeapRead<'a, ExternalFuture>),
     Path(HeapRead<'a, Path>),
     RePattern(HeapRead<'a, RePattern>),
     ReMatch(HeapRead<'a, ReMatch>),
@@ -611,6 +612,9 @@ impl<'a> HeapPtr<'a> {
             HeapData::Coroutine(coroutine) => HeapReadOutput::Coroutine(heap_read(base, coroutine, readers)),
             HeapData::GatherFuture(gather_future) => {
                 HeapReadOutput::GatherFuture(heap_read(base, gather_future, readers))
+            }
+            HeapData::ExternalFuture(external_future) => {
+                HeapReadOutput::ExternalFuture(heap_read(base, external_future, readers))
             }
             HeapData::Path(path) => HeapReadOutput::Path(heap_read(base, path, readers)),
             HeapData::RePattern(re_pattern) => HeapReadOutput::RePattern(heap_read_boxed(re_pattern, readers)),
@@ -1585,17 +1589,41 @@ fn for_each_child_id<F: FnMut(HeapId)>(data: &HeapData, mut on_child: F) {
             }
         }
         HeapData::GatherFuture(gather) => {
-            // Add coroutine HeapIds to work list
+            // Add inc_ref'd item HeapIds. Both coroutines and external
+            // futures are owned by the gather for its entire lifecycle.
             for item in &gather.items {
-                if let GatherItem::Coroutine(coro_id) = item {
-                    on_child(*coro_id);
-                }
+                on_child(*item);
             }
-            // Add result values that are heap references
-            for result in gather.results.iter().flatten() {
-                if let Value::Ref(id) = result {
-                    on_child(*id);
+            // Walk per-state heap refs: in-flight slot results plus this
+            // gather's own awaiter (if `GatherSlot`, it owns an inc_ref on
+            // the outer gather), or the cached result list once the gather
+            // has completed successfully. `Pending` and `Failed` carry no
+            // heap refs.
+            match &gather.state {
+                GatherState::Awaited(awaited) => {
+                    if let Awaiter::GatherSlot { gather, .. } = &awaited.awaiter {
+                        on_child(*gather);
+                    }
+                    for result in awaited.results.iter().flatten() {
+                        if let Value::Ref(id) = result {
+                            on_child(*id);
+                        }
+                    }
                 }
+                GatherState::Completed(Value::Ref(id)) => on_child(*id),
+                GatherState::Pending | GatherState::Failed(_) | GatherState::Completed(_) => {}
+            }
+        }
+        HeapData::ExternalFuture(fut) => {
+            // `Pending { awaiter: Some(GatherSlot { gather, .. }) }` owns an
+            // inc_ref on `gather`. `Awaiter::Task` / `None` and the `Failed`
+            // state carry no heap refs. `Resolved` owns the cached value.
+            match &fut.state {
+                ExternalFutureState::Resolved(Value::Ref(id)) => on_child(*id),
+                ExternalFutureState::Pending {
+                    awaiter: Some(Awaiter::GatherSlot { gather, .. }),
+                } => on_child(*gather),
+                _ => {}
             }
         }
         HeapData::DateTime(dt) => {
@@ -1650,17 +1678,37 @@ fn py_dec_ref_ids_for_data(data: &mut HeapData, stack: &mut Vec<HeapId>) {
             }
         }
         HeapData::GatherFuture(gather) => {
-            // Decrement ref count for coroutine HeapIds
-            for item in &gather.items {
-                if let GatherItem::Coroutine(id) = item {
-                    stack.push(*id);
+            // Decrement ref count for owned item HeapIds (coroutines and
+            // external futures are both owned by the gather).
+            stack.extend(gather.items.iter().copied());
+            // Release per-state heap refs: in-flight slot results plus this
+            // gather's own awaiter (if `GatherSlot`, it owns an inc_ref on
+            // the outer gather), or the cached result list once the gather
+            // has completed successfully. `Pending` and `Failed` carry no
+            // heap refs.
+            match &mut gather.state {
+                GatherState::Awaited(awaited) => {
+                    if let Awaiter::GatherSlot { gather, .. } = &awaited.awaiter {
+                        stack.push(*gather);
+                    }
+                    for result in awaited.results.iter_mut().flatten() {
+                        result.py_dec_ref_ids(stack);
+                    }
                 }
-            }
-            // Decrement ref count for result values that are heap references
-            for result in gather.results.iter_mut().flatten() {
-                result.py_dec_ref_ids(stack);
+                GatherState::Completed(value) => value.py_dec_ref_ids(stack),
+                GatherState::Pending | GatherState::Failed(_) => {}
             }
         }
+        HeapData::ExternalFuture(fut) => match &mut fut.state {
+            ExternalFutureState::Resolved(value) => value.py_dec_ref_ids(stack),
+            ExternalFutureState::Pending {
+                awaiter: Some(Awaiter::GatherSlot { gather, .. }),
+            } => stack.push(*gather),
+            ExternalFutureState::Pending {
+                awaiter: None | Some(Awaiter::Task(_)),
+            }
+            | ExternalFutureState::Failed(_) => {}
+        },
         HeapData::DateTime(dt) => {
             // Mirror `for_each_child_id`: when an aware datetime is freed we must
             // also drop the retained tzinfo reference so its refcount is balanced.

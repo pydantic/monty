@@ -262,3 +262,18 @@ try:
 except ValueError as e:
     gathered_coro_caught = str(e)
 assert gathered_coro_caught == 'async boom', f'gathered child exception caught at gather: {gathered_coro_caught}'
+
+
+# === Re-awaiting a failed external future re-raises the cached error ===
+
+reawait_fail = async_fail('ValueError', 'cached failure')
+errors = []
+for _ in range(3):
+    try:
+        await reawait_fail  # pyright: ignore
+        assert False, 'await of failed future should raise'
+    except ValueError as e:
+        errors.append(str(e))
+assert errors == ['cached failure', 'cached failure', 'cached failure'], (
+    f'each re-await of a failed future replays the cached error: {errors}'
+)

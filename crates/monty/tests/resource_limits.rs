@@ -252,6 +252,94 @@ result
     );
 }
 
+/// Regression: materializing a cheap-to-represent but enormous lazy iterable
+/// via `list()`/`tuple()`/`sorted()`/`reversed()` (and generator collection)
+/// must be rejected *during* collection, near the configured memory limit —
+/// not after the entire native buffer has been built.
+///
+/// `MontyIter::collect` builds the result in a native `Vec` that is invisible
+/// to the resource tracker until the finished object reaches the heap. Before
+/// the incremental check, `range(10**9)` would allocate ~16 GiB of native
+/// buffer before any limit check, OOM-killing or aborting the host (an
+/// uncatchable sandbox escape). The fix estimates the projected size after
+/// each element, so the limit fires while the buffer is still tiny.
+#[test]
+fn collect_constructors_bounded_during_collection() {
+    for code in [
+        "list(range(10**9))",
+        "tuple(range(10**9))",
+        "sorted(range(10**9))",
+        "reversed(range(10**9))",
+        "list(x for x in range(10**9))",
+    ] {
+        let ex = MontyRun::new(code.to_owned(), "test.py", vec![]).unwrap();
+        // 1 MiB memory budget; a generous time limit so a timeout cannot mask
+        // a missing memory check.
+        let limits = ResourceLimits::new()
+            .max_memory(1_048_576)
+            .max_duration(Duration::from_secs(30));
+        let result = ex.run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout);
+
+        let exc = result
+            .err()
+            .unwrap_or_else(|| panic!("{code}: should exceed the memory limit"));
+        assert_eq!(exc.exc_type(), ExcType::MemoryError, "{code}: wrong exc type");
+
+        // Parse "memory limit exceeded: <used> bytes > <limit> bytes". The fix
+        // must trip while the buffer is still small; before the fix `used` was
+        // the full materialized size (~16 GB for range(10**9)).
+        let msg = exc.message().expect("memory error carries a message");
+        let used: usize = msg
+            .strip_prefix("memory limit exceeded: ")
+            .and_then(|m| m.split(" bytes").next())
+            .and_then(|n| n.parse().ok())
+            .unwrap_or_else(|| panic!("{code}: unexpected message {msg:?}"));
+        assert!(
+            used < 16 * 1_048_576,
+            "{code}: rejected at {used} bytes — collection is not bounded \
+             incrementally (expected to trip near the 1 MiB limit)"
+        );
+    }
+}
+
+/// Regression: an f-string with a large *dynamic* field width must be
+/// rejected by the memory limit before the padding string is materialized.
+///
+/// A literal width is clamped to 16 bits by the bytecode encoding, but a
+/// runtime width (`f"{v:>{w}}"`) is not. `pad_string`/`iter::repeat_n` build
+/// the padding in a native `String` invisible to the tracker until the
+/// finished string reaches the heap, so before the guard `w = 10**11` would
+/// allocate ~100 GB before any check, OOM-ing or aborting the host.
+#[test]
+fn fstring_dynamic_width_memory_bounded() {
+    for code in [
+        "w = 999_999_999\nf'{0:>{w}}'",
+        "w = 999_999_999\nf'{0:0>{w}}'",
+        "w = 999_999_999\nf'{1.5:^{w}}'",
+        "w = 999_999_999\nf'{\"x\":<{w}}'",
+    ] {
+        let ex = MontyRun::new(code.to_owned(), "test.py", vec![]).unwrap();
+        let limits = ResourceLimits::new()
+            .max_memory(1_048_576)
+            .max_duration(Duration::from_secs(30));
+        let result = ex.run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout);
+
+        let exc = result
+            .err()
+            .unwrap_or_else(|| panic!("{code:?}: should exceed the memory limit"));
+        assert_eq!(exc.exc_type(), ExcType::MemoryError, "{code:?}: wrong exc type");
+    }
+
+    // A small dynamic width is unaffected and still formats correctly.
+    let ex = MontyRun::new("w = 5\nf'{42:>{w}}'".to_owned(), "test.py", vec![]).unwrap();
+    let limits = ResourceLimits::new().max_memory(1_048_576);
+    let result = ex.run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout);
+    assert_eq!(
+        result.expect("small dynamic width should succeed"),
+        MontyObject::String("   42".to_owned())
+    );
+}
+
 #[test]
 fn memory_limit_zero() {
     let code = "x = 1 + 2\nx";
@@ -2072,4 +2160,95 @@ len(x) + len(d) + len(s)
         "moderate operations should succeed within generous limit"
     );
     assert_eq!(result.unwrap(), MontyObject::Int(300));
+}
+
+// === Iterator pre-allocation resource-limit tests ===
+
+/// Test that constructing a set from a huge `range` is bounded by the memory limit.
+///
+/// `range` reports its full remaining length as the iterator size hint. Container
+/// constructors that pre-allocate from the hint must validate it against the
+/// resource tracker before reaching for the global allocator, since an allocation
+/// failure aborts the host instead of raising MemoryError.
+#[test]
+fn set_from_huge_range_memory_limit() {
+    let code = "set(range(10 ** 9))";
+    let ex = MontyRun::new(code.to_owned(), "test.py", vec![]).unwrap();
+
+    let limits = ResourceLimits::new().max_memory(100_000);
+    let result = ex.run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout);
+
+    assert!(result.is_err(), "huge set pre-allocation should be rejected");
+    let exc = result.unwrap_err();
+    assert_eq!(exc.exc_type(), ExcType::MemoryError);
+}
+
+/// Test that `frozenset` from a huge `range` is bounded by the memory limit.
+#[test]
+fn frozenset_from_huge_range_memory_limit() {
+    let code = "frozenset(range(10 ** 9))";
+    let ex = MontyRun::new(code.to_owned(), "test.py", vec![]).unwrap();
+
+    let limits = ResourceLimits::new().max_memory(100_000);
+    let result = ex.run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout);
+
+    assert!(result.is_err(), "huge frozenset pre-allocation should be rejected");
+    assert_eq!(result.unwrap_err().exc_type(), ExcType::MemoryError);
+}
+
+/// Test that `map()` over a huge `range` is bounded by the memory limit.
+#[test]
+fn map_over_huge_range_memory_limit() {
+    let code = "list(map(str, range(10 ** 9)))";
+    let ex = MontyRun::new(code.to_owned(), "test.py", vec![]).unwrap();
+
+    let limits = ResourceLimits::new().max_memory(100_000);
+    let result = ex.run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout);
+
+    assert!(result.is_err(), "huge map pre-allocation should be rejected");
+    assert_eq!(result.unwrap_err().exc_type(), ExcType::MemoryError);
+}
+
+/// Test that dict-view set operations over a huge iterable are bounded by the
+/// memory limit.
+///
+/// `dict.keys().isdisjoint(...)` collects the right-hand iterable into a
+/// temporary set with capacity drawn from the iterator's size hint, which goes
+/// through the same pre-allocation guard as `set()`.
+#[test]
+fn dict_view_isdisjoint_huge_range_memory_limit() {
+    let code = "{1: 1}.keys().isdisjoint(range(10 ** 9))";
+    let ex = MontyRun::new(code.to_owned(), "test.py", vec![]).unwrap();
+
+    let limits = ResourceLimits::new().max_memory(100_000);
+    let result = ex.run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout);
+
+    assert!(result.is_err(), "huge dict-view pre-allocation should be rejected");
+    assert_eq!(result.unwrap_err().exc_type(), ExcType::MemoryError);
+}
+
+/// Test that small dict-view `isdisjoint` over an iterable still succeeds.
+#[test]
+fn dict_view_isdisjoint_within_limit() {
+    let code = "{1: 1}.keys().isdisjoint(range(2, 5))";
+    let ex = MontyRun::new(code.to_owned(), "test.py", vec![]).unwrap();
+
+    let limits = ResourceLimits::new().max_memory(100_000);
+    let result = ex.run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout);
+
+    assert!(result.is_ok(), "small dict-view isdisjoint should succeed: {result:?}");
+    assert_eq!(result.unwrap(), MontyObject::Bool(true));
+}
+
+/// Test that small set/map construction still succeeds within limits.
+#[test]
+fn set_from_range_within_limit() {
+    let code = "len(set(range(50))) + len(list(map(str, range(20))))";
+    let ex = MontyRun::new(code.to_owned(), "test.py", vec![]).unwrap();
+
+    let limits = ResourceLimits::new().max_memory(100_000);
+    let result = ex.run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout);
+
+    assert!(result.is_ok(), "small set/map construction should succeed: {result:?}");
+    assert_eq!(result.unwrap(), MontyObject::Int(70));
 }

@@ -1,6 +1,6 @@
 //! Implementation of the map() builtin function.
 
-use std::iter;
+use std::{iter, mem};
 
 use crate::{
     args::{ArgValues, KwargsValues},
@@ -51,7 +51,10 @@ pub fn builtin_map(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> Ru
         extra_iterators.push(MontyIter::new(iterable, vm)?);
     }
 
-    let mut out = Vec::with_capacity(first_iter.size_hint(vm.heap));
+    // `preallocation_hint` validates the requested capacity against the
+    // resource tracker and clamps it so an attacker-controlled iterable length
+    // cannot drive an unbounded native pre-allocation.
+    let mut out = Vec::with_capacity(first_iter.preallocation_hint(mem::size_of::<Value>(), vm)?);
 
     // map function over iterables until the shortest iter is exhausted
     match extra_iterators.as_mut_slice() {
