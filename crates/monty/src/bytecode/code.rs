@@ -6,7 +6,6 @@
 
 use std::collections::HashSet;
 
-use super::builder::Offset;
 use crate::{intern::StringId, parse::CodeRange, value::Value};
 
 /// Compiled bytecode for a function or module.
@@ -127,13 +126,15 @@ impl Code {
     /// Location entries are recorded at instruction boundaries. This method finds
     /// the most recent entry at or before the given offset.
     ///
-    /// Returns `None` if the location table is empty or the offset is before
-    /// the first recorded location.
+    /// Returns `None` if the location table is empty, the offset is before
+    /// the first recorded location, or the offset exceeds `u32::MAX` (an
+    /// invariant violation; we degrade gracefully rather than panic since
+    /// this is on the traceback hot path).
     #[must_use]
     pub fn location_for_offset(&self, offset: usize) -> Option<&LocationEntry> {
+        let offset_u32 = u32::try_from(offset).ok()?;
         // Location entries are in order by bytecode offset.
         // Find the last entry where bytecode_offset <= offset.
-        let offset_u32 = u32::try_from(offset).expect("bytecode offset exceeds u32");
         self.location_table
             .iter()
             .rev()
@@ -293,16 +294,12 @@ pub struct ExceptionEntry {
 
 impl ExceptionEntry {
     /// Creates a new exception table entry.
-    ///
-    /// Takes `Offset` values produced by `CodeBuilder::current_offset` so that
-    /// the bounds of try / handler / cleanup regions can't be confused with
-    /// arbitrary integers.
     #[must_use]
-    pub fn new(start: Offset, end: Offset, handler: Offset, stack_depth: u16, exception_stack_count: u16) -> Self {
+    pub fn new(start: u32, end: u32, handler: u32, stack_depth: u16, exception_stack_count: u16) -> Self {
         Self {
-            start: start.as_u32(),
-            end: end.as_u32(),
-            handler: handler.as_u32(),
+            start,
+            end,
+            handler,
             stack_depth,
             exception_stack_count,
         }
