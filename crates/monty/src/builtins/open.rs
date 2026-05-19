@@ -82,8 +82,15 @@ fn parse_open_args(args: ArgValues, vm: &mut VM<'_, impl ResourceTracker>) -> Ru
                 mode_was_provided = true;
             }
             "buffering" | "encoding" | "errors" | "newline" => {
-                let (value, vm) = value.as_parts();
-                validate_ignored_open_kwarg(&keyword, value, vm)?;
+                let result = {
+                    let (value, vm) = value.as_parts();
+                    validate_ignored_open_kwarg(&keyword, value, vm)
+                };
+                if let Err(err) = result {
+                    file.drop_with_heap(value.heap());
+                    mode.drop_with_heap(value.heap());
+                    return Err(err);
+                }
             }
             other => {
                 file.drop_with_heap(value.heap());

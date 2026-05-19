@@ -69,6 +69,24 @@ try:
 except ValueError as exc:
     assert str(exc) == 'I/O operation on closed file.', f'unexpected closed-file message: {exc}'
 
+# write() to a closed file must not leak its (heap-allocated) data argument
+closed_writer = open(root / 'open_closed.txt', 'w')
+closed_writer.close()
+try:
+    closed_writer.write('payload' + str(1))
+    assert False, 'expected write after close to fail'
+except ValueError as exc:
+    assert str(exc) == 'I/O operation on closed file.', f'unexpected closed-write message: {exc}'
+
+# an invalid ignored-kwarg type must not leak the file/mode arguments
+try:
+    open(root / 'hello.txt', encoding=123)
+    assert False, 'expected non-str encoding to fail'
+except TypeError as exc:
+    assert str(exc) == "open() argument 'encoding' must be str or None, not int", (
+        f'unexpected encoding type message: {exc}'
+    )
+
 try:
     open(root / 'hello.txt', 'r').write('x')
     assert False, 'expected writing to read-only file to fail'

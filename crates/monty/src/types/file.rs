@@ -354,9 +354,12 @@ impl<'h> HeapRead<'h, OpenFile> {
             data.drop_with_heap(vm);
             return Err(err);
         }
+        if let Err(err) = self.get(vm.heap).ensure_open() {
+            data.drop_with_heap(vm);
+            return Err(err);
+        }
         let (path, function) = {
             let file = self.get_mut(vm.heap);
-            file.ensure_open()?;
             if !file.access.writable() {
                 let message = if file.binary { "write" } else { "not writable" };
                 data.drop_with_heap(vm);
