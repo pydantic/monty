@@ -1560,8 +1560,9 @@ checksum = "92ecc6618181def0457392ccd0ee51198e065e016d1d527a7ac1b6dc7c1f09d2"
 
 [[package]]
 name = "jiter"
-version = "0.14.0"
-source = "git+https://github.com/pydantic/jiter.git?rev=c023b5d72a747fe911283a6603bf7c9200a4533e#c023b5d72a747fe911283a6603bf7c9200a4533e"
+version = "0.15.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7866f284df68dbc242796251ed9768bde2b58ebc4d7d32cc07cc7fd993e3ed6c"
 dependencies = [
  "ahash",
  "bitvec",

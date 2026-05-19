@@ -67,12 +67,6 @@ sha2 = "0.10"
 pretty_assertions = "1.4"
 insta = "1.47"
 
-# TEMP: pinned to the jiter branch that exposes `parse_number_bytes` /
-# `known_number_bytes` (https://github.com/pydantic/jiter/pull/250).
-# Remove once that PR lands and the resulting release is published.
-[patch.crates-io]
-jiter = { git = "https://github.com/pydantic/jiter.git", package = "jiter", rev = "c023b5d72a747fe911283a6603bf7c9200a4533e" }
-
 [workspace.lints.rust]
 # codspeed cfg is set by codspeed-criterion-compat when running in CodSpeed environment
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(codspeed)', 'cfg(heap_reader_compile_fail_tests)', 'cfg(heap_reader_compile_fail_test_read_while_ref_alive)', 'cfg(heap_reader_compile_fail_test_dec_ref_while_reading)', 'cfg(heap_reader_compile_fail_test_smuggle_heap_read)', 'cfg(heap_reader_compile_fail_test_double_get_mut)', 'cfg(heap_reader_compile_fail_test_heap_mutation_while_reading)', 'cfg(heap_reader_compile_fail_test_mutation_in_map_closure)', 'cfg(heap_reader_compile_fail_test_smuggle_vm)', 'cfg(heap_reader_compile_fail_test_smuggle_and_swap_reader)'] }

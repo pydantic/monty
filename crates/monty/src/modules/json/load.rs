@@ -5,7 +5,7 @@
 
 use std::{borrow::Cow, mem};
 
-use jiter::{Jiter, JiterError, JiterErrorType, JsonErrorType, NumberAny, NumberInt, Peek, parse_number_bytes};
+use jiter::{Jiter, JiterError, JiterErrorType, JsonErrorType, NumberAny, NumberInt, Peek};
 
 use super::JsonStringCache;
 use crate::{
@@ -218,11 +218,11 @@ fn parse_json_number(peek: Peek, jiter: &mut Jiter<'_>, vm: &mut VM<'_, impl Res
         let digit_count = decimal_digit_count_ascii(token);
         check_decimal_digit_count(digit_count).map_err(JsonLoadError::Run)?;
     }
-    // `known_number_bytes` already validated the token, so `parse_number_bytes`
+    // `known_number_bytes` already validated the token, so `NumberAny::from_bytes`
     // only re-parses the same byte range. Errors here are mapped back into the
     // outer document's coordinate space so `json_error_to_run_error` reports
     // the correct line/column.
-    let number = parse_number_bytes(token, true).map_err(|error| {
+    let number = NumberAny::from_bytes(token, true).map_err(|error| {
         JsonLoadError::Parse(JiterError {
             error_type: JiterErrorType::JsonError(error.error_type),
             index: start + error.index,
