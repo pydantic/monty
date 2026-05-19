@@ -21,9 +21,9 @@ use std::iter;
 use ahash::RandomState;
 
 use crate::{
-    heap::{ContainsHeap, HeapData, HeapReader},
+    heap::{ContainsHeap, HeapReader},
     resource::{ResourceError, ResourceTracker},
-    types::str::Str,
+    types::str::{allocate_string, allocate_string_no_interning},
     value::Value,
 };
 
@@ -88,8 +88,7 @@ impl JsonStringCache {
     ) -> Result<Value, ResourceError> {
         let len = s.len();
         if !(MIN_LEN..=MAX_LEN).contains(&len) {
-            let heap_id = heap.heap().allocate(HeapData::Str(Str::new(s)))?;
-            return Ok(Value::Ref(heap_id));
+            return allocate_string(s, heap.heap());
         }
 
         let inner = self.inner.get_or_insert_with(CacheInner::new);
@@ -156,8 +155,8 @@ impl CacheInner {
             }
         }
         // All 5 probe slots occupied — allocate without caching.
-        let heap_id = heap.heap().allocate(HeapData::Str(Str::new(s)))?;
-        Ok(Value::Ref(heap_id))
+        // Length is in [MIN_LEN..=MAX_LEN] here so interning would never apply.
+        allocate_string_no_interning(s, heap.heap())
     }
 
     /// Allocates `s` on the heap, stores a clone in `entries[index]`, and
@@ -170,8 +169,8 @@ impl CacheInner {
         heap: &HeapReader<'_, impl ResourceTracker>,
     ) -> Result<Value, ResourceError> {
         let key = s.clone().into_boxed_str();
-        let heap_id = heap.heap().allocate(HeapData::Str(Str::new(s)))?;
-        let value = Value::Ref(heap_id);
+        // Length is in [MIN_LEN..=MAX_LEN] here so interning would never apply.
+        let value = allocate_string_no_interning(s, heap.heap())?;
         let cached = value.clone_with_heap(heap);
         self.entries[index] = Some((hash, key, cached));
         Ok(value)

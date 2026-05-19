@@ -13,12 +13,15 @@
 //! └── MontyTypingError         # Raised when type checking finds errors in the code
 //! ```
 
-use ::monty::{ExcType, MontyException, StackFrame};
+use std::{collections::HashMap, sync::Arc};
+
+use ::monty::{ExcType, MontyException};
 use monty_type_checking::TypeCheckingDiagnostics;
 use pyo3::{
     PyClassInitializer, PyTypeCheck,
     exceptions::{self},
     prelude::*,
+    py_format,
     sync::PyOnceLock,
     types::{PyDict, PyList, PyString},
 };
@@ -206,33 +209,32 @@ impl MontyTypingError {
 ///
 /// Inherits from `MontyError`. Additionally provides `traceback()` to access
 /// the Monty stack frames where the error occurred.
+///
+/// `PyFrame` objects are materialized lazily on the first `traceback()` call
+/// rather than at exception-construction time. This bounds the cost of
+/// exception propagation: an attacker submitting deeply recursive code
+/// referencing a very long line cannot force the embedder to allocate
+/// `O(depth × line_len)` bytes simply by triggering the exception — the cost
+/// is paid only if the embedder explicitly walks the traceback. The result
+/// is cached so subsequent calls reuse the same `Frame` and source-line
+/// objects, matching the stable-object semantics of CPython's
+/// `exc.__traceback__`.
 #[pyclass(extends=MontyError, module="pydantic_monty")]
 pub struct MontyRuntimeError {
-    /// The traceback frames where the error occurred (pre-converted to Python objects).
-    frames: Vec<Py<PyFrame>>,
+    traceback: PyOnceLock<Py<PyList>>,
 }
 
 impl MontyRuntimeError {
     /// Creates a new `MontyRuntimeError` from the given exception data.
+    ///
+    /// This is O(1) — the underlying `MontyException` is stored on the base
+    /// class and frames are built on demand by `traceback()`.
     #[must_use]
     pub fn new_err(py: Python<'_>, exc: MontyException) -> PyErr {
-        // Convert stack frames to PyFrame objects
-        let frames_result: PyResult<Vec<Py<PyFrame>>> = exc
-            .traceback()
-            .iter()
-            .map(|f| Py::new(py, PyFrame::from_stack_frame(f)))
-            .collect();
-
-        let frames = match frames_result {
-            Ok(frames) => frames,
-            Err(e) => return e,
-        };
-
         let base_error = MontyError::new(exc);
-        // Create the MontyRuntimeError with proper initialization
-        let runtime_error = Self { frames };
-
-        let init = pyo3::PyClassInitializer::from(base_error).add_subclass(runtime_error);
+        let init = PyClassInitializer::from(base_error).add_subclass(Self {
+            traceback: PyOnceLock::new(),
+        });
         match Py::new(py, init) {
             Ok(err) => PyErr::from_value(err.into_bound(py).into_any()),
             Err(e) => e,
@@ -243,10 +245,46 @@ impl MontyRuntimeError {
 #[pymethods]
 impl MontyRuntimeError {
     /// Returns the Monty traceback as a list of Frame objects.
-    fn traceback(&self, py: Python<'_>) -> Py<PyList> {
-        PyList::new(py, &self.frames)
-            .expect("failed to create frames list")
-            .unbind()
+    ///
+    /// `Frame.source_line` is backed by a `Py<PyString>` that is deduplicated
+    /// across frames resolving to the same source line. For deep recursion
+    /// where every frame points at the same line, this allocates one
+    /// `PyString` instead of one per frame.
+    ///
+    /// The list is built on the first call and cached, so repeated calls
+    /// return the same list, frame, and source-line objects.
+    #[expect(clippy::needless_pass_by_value, reason = "required by macro")]
+    fn traceback(slf: PyRef<'_, Self>, py: Python<'_>) -> PyResult<Py<PyList>> {
+        let list = slf.traceback.get_or_try_init(py, || {
+            let stack_frames = slf.as_super().exc.traceback();
+            let mut line_cache: HashMap<usize, Py<PyString>> = HashMap::new();
+            let frames: Vec<Py<PyFrame>> = stack_frames
+                .iter()
+                .map(|f| {
+                    let source_line = f.preview_line.as_ref().map(|arc| {
+                        let key = Arc::as_ptr(arc).cast::<()>() as usize;
+                        line_cache
+                            .entry(key)
+                            .or_insert_with(|| PyString::new(py, arc).unbind())
+                            .clone_ref(py)
+                    });
+                    Py::new(
+                        py,
+                        PyFrame {
+                            filename: f.filename.clone(),
+                            line: f.start.line,
+                            column: f.start.column,
+                            end_line: f.end.line,
+                            end_column: f.end.column,
+                            function_name: f.frame_name.clone(),
+                            source_line,
+                        },
+                    )
+                })
+                .collect::<PyResult<_>>()?;
+            Ok::<_, PyErr>(PyList::new(py, &frames)?.unbind())
+        })?;
+        Ok(list.clone_ref(py))
     }
 
     /// Returns formatted exception string.
@@ -294,8 +332,13 @@ impl MontyRuntimeError {
 ///
 /// Contains all the information needed to display a traceback line:
 /// the file location, function name, and optional source code preview.
+///
+/// `source_line` is stored as `Py<PyString>` so that frames built from the
+/// same underlying source line in a single `traceback()` call share one
+/// Python string object. For a recursion with a long preview line this turns
+/// what would be `O(depth × line_len)` peak memory into a single allocation.
 #[pyclass(name = "Frame", module = "pydantic_monty", frozen, skip_from_py_object)]
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct PyFrame {
     /// The filename where the code is located.
     #[pyo3(get)]
@@ -317,45 +360,34 @@ pub struct PyFrame {
     pub function_name: Option<String>,
     /// The source code line for preview in the traceback.
     #[pyo3(get)]
-    pub source_line: Option<String>,
+    pub source_line: Option<Py<PyString>>,
 }
 
 #[pymethods]
 impl PyFrame {
-    fn dict(&self, py: Python<'_>) -> Py<PyDict> {
+    fn dict<'py>(&self, py: Python<'py>) -> Bound<'py, PyDict> {
         let dict = PyDict::new(py);
-        dict.set_item("filename", self.filename.clone()).unwrap();
+        dict.set_item("filename", &self.filename).unwrap();
         dict.set_item("line", self.line).unwrap();
         dict.set_item("column", self.column).unwrap();
         dict.set_item("end_line", self.end_line).unwrap();
         dict.set_item("end_column", self.end_column).unwrap();
-        dict.set_item("function_name", self.function_name.clone()).unwrap();
-        dict.set_item("source_line", self.source_line.clone()).unwrap();
-        dict.unbind()
+        dict.set_item("function_name", self.function_name.as_ref()).unwrap();
+
+        dict.set_item("source_line", self.source_line.as_ref()).unwrap();
+        dict
     }
 
-    fn __repr__(&self) -> String {
-        let func = self.function_name.as_ref().map_or("<module>".to_string(), Clone::clone);
-        format!(
+    fn __repr__<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyString>> {
+        let func = self.function_name.as_deref().unwrap_or("<module>");
+        py_format!(
+            py,
             "Frame(filename='{}', line={}, column={}, function_name='{}')",
-            self.filename, self.line, self.column, func
+            self.filename,
+            self.line,
+            self.column,
+            func
         )
-    }
-}
-
-impl PyFrame {
-    /// Creates a `PyFrame` from Monty's `StackFrame`.
-    #[must_use]
-    pub fn from_stack_frame(frame: &StackFrame) -> Self {
-        Self {
-            filename: frame.filename.clone(),
-            line: frame.start.line,
-            column: frame.start.column,
-            end_line: frame.end.line,
-            end_column: frame.end.column,
-            function_name: frame.frame_name.clone(),
-            source_line: frame.preview_line.clone(),
-        }
     }
 }
 

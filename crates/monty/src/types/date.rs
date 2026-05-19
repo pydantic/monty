@@ -25,7 +25,11 @@ use crate::{
     intern::{Interns, StaticStrings},
     os::OsFunction,
     resource::{ResourceError, ResourceTracker},
-    types::{AttrCallResult, PyTrait, TimeDelta, Type, str::Str, timedelta, value_to_i32},
+    types::{
+        AttrCallResult, PyTrait, TimeDelta, Type,
+        str::{allocate_string, allocate_string_no_interning},
+        timedelta, value_to_i32,
+    },
     value::{EitherStr, Value},
 };
 
@@ -303,16 +307,15 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Date> {
             Some(id) if id == StaticStrings::Isoformat => {
                 args.check_zero_args("date.isoformat", vm.heap)?;
                 let (year, month, day) = to_ymd(date);
-                Ok(CallResult::Value(Value::Ref(vm.heap.allocate(HeapData::Str(
-                    Str::new(format!("{year:04}-{month:02}-{day:02}")),
-                ))?)))
+                Ok(CallResult::Value(allocate_string_no_interning(
+                    format!("{year:04}-{month:02}-{day:02}"),
+                    vm.heap,
+                )?))
             }
             Some(id) if id == StaticStrings::Strftime => {
                 let fmt = extract_strftime_arg(args, "date.strftime", vm.heap, vm.interns)?;
                 let formatted = date.0.format(&fmt).to_string();
-                Ok(CallResult::Value(Value::Ref(
-                    vm.heap.allocate(HeapData::Str(Str::new(formatted)))?,
-                )))
+                Ok(CallResult::Value(allocate_string(formatted, vm.heap)?))
             }
             Some(id) if id == StaticStrings::Replace => {
                 let (year, month, day) = to_ymd(date);

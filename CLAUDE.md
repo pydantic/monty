@@ -196,7 +196,7 @@ Avoid manual `drop_with_heap` whenever there are multiple code paths (branching,
 
 ## Dev Commands
 
-DO NOT run `cargo build` or `cargo run`, it will fail because of issues with Python bindings.
+**IMPORTANT**: before running `cargo build` or `cargo run`, it is likely necessary to run `make install-py` to ensure that the Python virtual environment is available for build.
 
 Instead use the following `make` commands:
 
@@ -558,6 +558,14 @@ Heap-allocated values (`Value::Ref`) use manual reference counting. Key rules:
 - **Dropping**: Call `drop_with_heap(heap)` when discarding an `Value` that may be a `Ref`.
 
 Container types (`List`, `Tuple`, `Dict`) also have `clone_with_heap()` methods.
+
+**Mutability of the heap parameter is asymmetric** — do not assume the two methods take the same kind of borrow:
+
+- `clone_with_heap` takes `&impl ContainsHeap` (immutable). The refcount field lives behind interior mutability, so `inc_ref` is `&self` on `Heap`. This means you can call `clone_with_heap` while other immutable borrows of the heap (e.g. a `HeapRead` handle obtained via `.get(heap)`) are still live.
+- `Heap::allocate` is also `&self` for the same reason — entry storage and the allocation tracker are behind interior mutability. New heap entries can be created without a `&mut Heap`.
+- `drop_with_heap` takes `&mut impl ContainsHeap`, because dropping may free entries and run destructors, which mutates the heap.
+
+If you find yourself fighting the borrow checker around `clone_with_heap` or `allocate`, the fix is almost never `&mut` — it is more likely that you are passing the wrong receiver (e.g. `vm` instead of `vm.heap`) or holding a `&mut` borrow elsewhere that should be `&`.
 
 ### Cycle collection — Bacon–Rajan trial deletion
 

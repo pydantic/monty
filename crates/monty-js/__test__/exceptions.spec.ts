@@ -231,6 +231,36 @@ outer()
   t.true(display.includes('ValueError: error'))
 })
 
+test('traceback() on deep recursion with long preview line is memory-bounded', (t) => {
+  // Frames produced by a single traceback() call that resolve to the same
+  // source line must share one V8 string allocation. Without sharing, a 1 MiB
+  // preview line on a recursive call site with depth=200 would put ~200 MiB
+  // of strings on the heap; with sharing it should stay around 1 MiB plus
+  // the Frame objects themselves. Verify by walking 200 frames with a long
+  // preview and asserting heap growth stays well below the unbounded worst
+  // case.
+  const pad = 'A'.repeat(1024 * 1024)
+  const code = `def recurse(n):\n    return recurse(n - 1)  # ${pad}\nrecurse(2000)\n`
+  const m = new Monty(code)
+  const error = t.throws(() => m.run({ limits: { maxRecursionDepth: 200 } }), isRuntimeError)
+
+  if (global.gc) global.gc()
+  const before = process.memoryUsage().heapUsed
+  const frames = error.traceback()
+  if (global.gc) global.gc()
+  const after = process.memoryUsage().heapUsed
+
+  const recurseFrames = frames.filter((f) => f.functionName === 'recurse')
+  t.true(recurseFrames.length >= 100, `expected many recursive frames, got ${recurseFrames.length}`)
+  t.true(recurseFrames[0].sourceLine!.includes(pad), 'preview line should include the padding')
+
+  // Unbounded worst case for depth=200 with a 1 MiB line is ~200 MiB. A
+  // generous ceiling of 20 MiB still proves the amplification is gone while
+  // tolerating GC slack and the unavoidable ~1 MiB shared string itself.
+  const growth = after - before
+  t.true(growth < 20 * 1024 * 1024, `heap grew by ${growth} bytes; expected <20 MiB`)
+})
+
 // =============================================================================
 // MontyError base class tests
 // =============================================================================

@@ -235,7 +235,7 @@ pub(super) fn call_dumps(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues)
 
     let (obj, vm) = obj_guard.into_parts();
     obj.drop_with_heap(vm);
-    allocate_string(output, vm.heap)
+    Ok(allocate_string(output, vm.heap)?)
 }
 
 /// Parses the `indent=` value for `json.dumps()`.

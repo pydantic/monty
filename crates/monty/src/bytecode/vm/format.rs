@@ -2,6 +2,7 @@
 
 use super::VM;
 use crate::{
+    bytecode::op::{FORMAT_VALUE_HAS_SPEC, FORMAT_VALUE_STATIC_SPEC},
     defer_drop,
     exception_private::{ExcType, RunError, SimpleException},
     fstring::{ParsedFormatSpec, ascii_escape, decode_format_spec, format_string, format_with_spec},
@@ -30,9 +31,7 @@ impl<T: ResourceTracker> VM<'_, T> {
 
     /// Formats a value for f-string interpolation.
     ///
-    /// Flags encoding:
-    /// - bits 0-1: conversion (0=none, 1=str, 2=repr, 3=ascii)
-    /// - bit 2: has format spec on stack
+    /// See `Opcode::FormatValue` for the flag layout.
     ///
     /// Python f-string formatting order:
     /// 1. Apply format spec to original value (type-specific formatting)
@@ -47,7 +46,8 @@ impl<T: ResourceTracker> VM<'_, T> {
     pub(super) fn format_value(&mut self, flags: u8) -> Result<(), RunError> {
         let this = self;
         let conversion = flags & 0x03;
-        let has_format_spec = (flags & 0x04) != 0;
+        let has_format_spec = (flags & FORMAT_VALUE_HAS_SPEC) != 0;
+        let static_spec = (flags & FORMAT_VALUE_STATIC_SPEC) != 0;
 
         // Pop format spec if present (pushed before value, so popped after)
         let format_spec = if has_format_spec { Some(this.pop()) } else { None };
@@ -59,7 +59,7 @@ impl<T: ResourceTracker> VM<'_, T> {
         let formatted = if let Some(spec_value) = format_spec {
             defer_drop!(spec_value, this);
 
-            let spec = this.get_format_spec(spec_value, value)?;
+            let spec = this.get_format_spec(spec_value, value, static_spec)?;
 
             // Pre-check: reject format specs with huge width before pad_string
             // allocates an untracked Rust String.
@@ -101,32 +101,38 @@ impl<T: ResourceTracker> VM<'_, T> {
         Ok(())
     }
 
-    /// Gets a ParsedFormatSpec from a format spec value.
+    /// Resolves a format spec value pushed by `compile_format_value` into a
+    /// [`ParsedFormatSpec`].
     ///
-    /// The `value_for_error` parameter is used to include the value type in error messages.
-    /// Uses lazy type capture: only calls `py_type()` in error paths.
-    fn get_format_spec(&mut self, spec_value: &Value, value_for_error: &Value) -> Result<ParsedFormatSpec, RunError> {
-        match spec_value {
-            Value::Int(n) if *n < 0 => {
-                // Decode the encoded format spec; n < 0 ensures (-n - 1) >= 0
-                let encoded = u64::try_from((-*n) - 1).expect("format spec encoding validated non-negative");
-                Ok(decode_format_spec(encoded))
-            }
-            _ => {
-                // Dynamic format spec - parse the string
-                let spec_str = spec_value.py_str(self)?;
-                spec_str.parse::<ParsedFormatSpec>().map_err(|invalid| {
-                    // Only fetch type in error path
-                    let value_type = value_for_error.py_type(self);
-                    RunError::Exc(
-                        SimpleException::new_msg(
-                            ExcType::ValueError,
-                            format!("Invalid format specifier '{invalid}' for object of type '{value_type}'"),
-                        )
+    /// `static_spec` is the discriminator from the `FormatValue` flags
+    /// ([`FORMAT_VALUE_STATIC_SPEC`]): when set, the compiler emitted the
+    /// spec as `Value::Int(encoded)` and we just decode the bit-packed form;
+    /// otherwise the spec was constructed at runtime and we parse its string
+    /// representation. `value_for_error` is used to include the formatted
+    /// value's type in the parse-error message; we only fetch `py_type()`
+    /// on the error path.
+    fn get_format_spec(
+        &mut self,
+        spec_value: &Value,
+        value_for_error: &Value,
+        static_spec: bool,
+    ) -> Result<ParsedFormatSpec, RunError> {
+        if static_spec {
+            // Compiler invariant: the static-spec flag is only emitted
+            // alongside a LoadConst of Value::Int(encoded).
+            let Value::Int(encoded) = spec_value else {
+                unreachable!("FORMAT_VALUE_STATIC_SPEC flag without Value::Int on stack");
+            };
+            Ok(decode_format_spec(*encoded))
+        } else {
+            let spec_str = spec_value.py_str(self)?;
+            spec_str.parse::<ParsedFormatSpec>().map_err(|err| {
+                let value_type = value_for_error.py_type(self);
+                RunError::Exc(
+                    SimpleException::new_msg(ExcType::ValueError, format!("{err} for object of type '{value_type}'"))
                         .into(),
-                    )
-                })
-            }
+                )
+            })
         }
     }
 }

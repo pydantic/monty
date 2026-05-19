@@ -1,8 +1,13 @@
 //! Implementation of the repr() builtin function.
 
 use crate::{
-    args::ArgValues, bytecode::VM, defer_drop, exception_private::RunResult, heap::HeapData, resource::ResourceTracker,
-    types::PyTrait, value::Value,
+    args::ArgValues,
+    bytecode::VM,
+    defer_drop,
+    exception_private::RunResult,
+    resource::ResourceTracker,
+    types::{PyTrait, str::allocate_string},
+    value::Value,
 };
 
 /// Implementation of the repr() builtin function.
@@ -12,6 +17,5 @@ pub fn builtin_repr(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> R
     let value = args.get_one_arg("repr", vm.heap)?;
     defer_drop!(value, vm);
     let s = value.py_repr(vm)?.into_owned();
-    let heap_id = vm.heap.allocate(HeapData::Str(s.into()))?;
-    Ok(Value::Ref(heap_id))
+    Ok(allocate_string(s, vm.heap)?)
 }

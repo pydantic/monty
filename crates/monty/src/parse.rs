@@ -19,7 +19,7 @@ use crate::{
         AssignTarget, Callable, CmpOperator, Comprehension, DictItem, Expr, ExprLoc, Identifier, ImportName, Literal,
         Node, Operator, SequenceItem, UnpackTarget,
     },
-    fstring::{ConversionFlag, FStringPart, FormatSpec},
+    fstring::{ConversionFlag, FStringPart, FormatSpec, ParseFormatSpecError, ParsedFormatSpec, encode_format_spec},
     intern::{InternerBuilder, StringId},
     types::long_int::INT_MAX_STR_DIGITS,
     value::EitherStr,
@@ -196,22 +196,40 @@ impl<'a> Parser<'a> {
         Ok(out)
     }
 
+    /// Folds a flat list of `elif`/`else` clauses into a right-nested `Node::If` tree.
+    ///
+    /// Ruff hands us the clauses as a flat `Vec`, but the prepared AST and the
+    /// bytecode compiler both walk the resulting tree recursively. Each `elif`
+    /// clause is therefore counted against the same depth budget that bounds
+    /// explicitly nested source constructs — without this, a long flat chain
+    /// would produce an AST far deeper than [`MAX_NESTING_DEPTH`] and overflow
+    /// the host's native stack during the prepare or compile phases.
+    ///
+    /// The depth budget consumed during the fold is restored on success so
+    /// sibling statements are not penalized. On parse errors the budget is
+    /// left decremented; this is harmless because the parser aborts entirely
+    /// and `depth_remaining` is never consulted again.
     fn parse_elif_else_clauses(&mut self, clauses: Vec<ElifElseClause>) -> Result<Vec<ParseNode>, ParseError> {
         let mut tail: Vec<ParseNode> = Vec::new();
+        let mut levels: u16 = 0;
         for clause in clauses.into_iter().rev() {
             match clause.test {
                 Some(test) => {
+                    // Account for the extra nesting level this clause adds to
+                    // the result tree.
+                    self.decr_depth_remaining(|| test.range())?;
+                    levels += 1;
                     let test = self.parse_expression(test)?;
                     let body = self.parse_statements(clause.body)?;
                     let or_else = tail;
-                    let nested = Node::If { test, body, or_else };
-                    tail = vec![nested];
+                    tail = vec![Node::If { test, body, or_else }];
                 }
                 None => {
                     tail = self.parse_statements(clause.body)?;
                 }
             }
         }
+        self.depth_remaining += levels;
         Ok(tail)
     }
 
@@ -283,10 +301,10 @@ impl<'a> Parser<'a> {
                 "class definitions",
                 self.convert_range(c.range),
             )),
-            Stmt::Return(ast::StmtReturn { value, .. }) => match value {
-                Some(value) => Ok(Node::Return(self.parse_expression(*value)?)),
-                None => Ok(Node::ReturnNone),
-            },
+            Stmt::Return(ast::StmtReturn { value, .. }) => Ok(Node::Return(match value {
+                Some(value) => Some(self.parse_expression(*value)?),
+                None => None,
+            })),
             Stmt::Delete(d) => Err(ParseError::not_implemented(
                 "the 'del' statement",
                 self.convert_range(d.range),
@@ -682,7 +700,14 @@ impl<'a> Parser<'a> {
         match expression {
             AstExpr::BoolOp(ast::ExprBoolOp { op, values, range, .. }) => {
                 // Handle chained boolean operations like `a and b and c` by right-folding
-                // into nested binary operations: `a and (b and c)`
+                // into nested binary operations: `a and (b and c)`.
+                //
+                // Ruff hands the operands over as a flat `Vec`, but the fold
+                // produces a right-nested `Expr::Op` tree that the prepare and
+                // compile phases walk recursively. Count each fold step against
+                // the same depth budget that bounds explicitly nested source so
+                // a long flat chain cannot overflow the host's native stack
+                // downstream. The budget is restored once the fold completes.
                 let rust_op = convert_bool_op(op);
                 let position = self.convert_range(range);
                 let mut values_iter = values.into_iter().rev();
@@ -692,7 +717,10 @@ impl<'a> Parser<'a> {
                 let mut result = self.parse_expression(last_value)?;
 
                 // Fold from right to left
+                let mut levels: u16 = 0;
                 for value in values_iter {
+                    self.decr_depth_remaining(|| value.range())?;
+                    levels += 1;
                     let left = Box::new(self.parse_expression(value)?);
                     result = ExprLoc::new(
                         position,
@@ -703,6 +731,7 @@ impl<'a> Parser<'a> {
                         },
                     );
                 }
+                self.depth_remaining += levels;
                 Ok(result)
             }
             AstExpr::Named(ast::ExprNamed {
@@ -1486,57 +1515,66 @@ impl<'a> Parser<'a> {
 
     /// Parses a format specification, which may contain nested interpolations.
     ///
-    /// For static specs (no interpolations), parses the format string into a
-    /// `ParsedFormatSpec` at parse time to avoid runtime parsing overhead.
+    /// Specs with no interpolations take the fast path: their literal text is
+    /// concatenated, parsed, and bit-packed into a single `u64` carried inside
+    /// `FormatSpec::Static`. The compiler then drops this straight into the
+    /// constant pool with no further work, and no per-segment interning is
+    /// performed (the parsed spec is the only thing the bytecode needs).
+    ///
+    /// Two cases force a `FormatSpec::Dynamic`:
+    /// 1. Any nested interpolation (e.g. `f"{x:{width}}"`) — the spec must be
+    ///    materialized at runtime.
+    /// 2. Valid but extreme specs whose width or precision exceed the compact
+    ///    encoding (e.g. `f"{x:>1048576}"`). The concatenated literal text is
+    ///    interned and emitted as a single-literal dynamic spec so the VM
+    ///    re-parses it at runtime.
     fn parse_format_spec(&mut self, spec: &ast::InterpolatedStringFormatSpec) -> Result<FormatSpec, ParseError> {
-        let mut parts = Vec::new();
-        let mut has_interpolation = false;
-
-        for element in &spec.elements {
-            match element {
-                InterpolatedStringElement::Literal(lit) => {
-                    // Intern the literal string
-                    let processed = lit.value.to_string();
-                    let string_id = self.interner.intern(&processed);
-                    parts.push(FStringPart::Literal(string_id));
-                }
-                InterpolatedStringElement::Interpolation(interp) => {
-                    has_interpolation = true;
-                    let expr = Box::new(self.parse_expression((*interp.expression).clone())?);
-                    let conversion = convert_conversion_flag(interp.conversion);
-                    // Format specs within format specs are not allowed in Python,
-                    // and debug_prefix doesn't apply to nested interpolations
-                    parts.push(FStringPart::Interpolation {
-                        expr,
-                        conversion,
-                        format_spec: None,
-                        debug_prefix: None,
-                    });
-                }
-            }
-        }
+        let has_interpolation = spec
+            .elements
+            .iter()
+            .any(|e| matches!(e, InterpolatedStringElement::Interpolation(_)));
 
         if has_interpolation {
+            let mut parts = Vec::with_capacity(spec.elements.len());
+            for element in &spec.elements {
+                match element {
+                    InterpolatedStringElement::Literal(lit) => {
+                        let string_id = self.interner.intern(&lit.value);
+                        parts.push(FStringPart::Literal(string_id));
+                    }
+                    InterpolatedStringElement::Interpolation(interp) => {
+                        let expr = Box::new(self.parse_expression((*interp.expression).clone())?);
+                        let conversion = convert_conversion_flag(interp.conversion);
+                        // Format specs within format specs are not allowed in Python,
+                        // and debug_prefix doesn't apply to nested interpolations
+                        parts.push(FStringPart::Interpolation {
+                            expr,
+                            conversion,
+                            format_spec: None,
+                            debug_prefix: None,
+                        });
+                    }
+                }
+            }
             Ok(FormatSpec::Dynamic(parts))
         } else {
-            // Combine all literal parts into a single static string and parse at parse time
-            let static_spec: String = parts
-                .into_iter()
-                .filter_map(|p| {
-                    if let FStringPart::Literal(string_id) = p {
-                        Some(self.interner.get_str(string_id).to_owned())
-                    } else {
-                        None
-                    }
+            let static_spec: String = spec
+                .elements
+                .iter()
+                .filter_map(|e| match e {
+                    InterpolatedStringElement::Literal(lit) => Some(&*lit.value),
+                    InterpolatedStringElement::Interpolation(_) => None,
                 })
                 .collect();
-            let parsed = static_spec.parse().map_err(|spec_str| {
-                ParseError::syntax(
-                    format!("Invalid format specifier '{spec_str}'"),
-                    self.convert_range(spec.range),
-                )
+            let parsed: ParsedFormatSpec = static_spec.parse().map_err(|err: ParseFormatSpecError| {
+                ParseError::syntax(err.to_string(), self.convert_range(spec.range))
             })?;
-            Ok(FormatSpec::Static(parsed))
+            if let Some(encoded) = encode_format_spec(&parsed) {
+                Ok(FormatSpec::Static(encoded))
+            } else {
+                let string_id = self.interner.intern(&static_spec);
+                Ok(FormatSpec::Dynamic(vec![FStringPart::Literal(string_id)]))
+            }
         }
     }
 
@@ -1746,27 +1784,31 @@ impl ParseError {
 
 impl ParseError {
     pub fn into_python_exc(self, filename: &str, source: &str) -> MontyException {
-        let source_map = SourceMap::new(source);
+        let mut source_map = SourceMap::new(source);
         match self {
             Self::Syntax { msg, position } => MontyException::new_full(
                 ExcType::SyntaxError,
                 Some(msg.into_owned()),
-                vec![StackFrame::from_position_syntax_error(position, filename, &source_map)],
+                vec![StackFrame::from_position_syntax_error(
+                    position,
+                    filename,
+                    &mut source_map,
+                )],
             ),
             Self::NotImplemented { msg, position } => MontyException::new_full(
                 ExcType::NotImplementedError,
                 Some(format!("The monty syntax parser does not yet support {msg}")),
-                vec![StackFrame::from_position(position, filename, &source_map)],
+                vec![StackFrame::from_position(position, filename, &mut source_map)],
             ),
             Self::NotSupported { msg, position } => MontyException::new_full(
                 ExcType::NotImplementedError,
                 Some(msg.into_owned()),
-                vec![StackFrame::from_position(position, filename, &source_map)],
+                vec![StackFrame::from_position(position, filename, &mut source_map)],
             ),
             Self::Import { msg, position } => MontyException::new_full(
                 ExcType::ImportError,
                 Some(msg.into_owned()),
-                vec![StackFrame::from_position_no_caret(position, filename, &source_map)],
+                vec![StackFrame::from_position_no_caret(position, filename, &mut source_map)],
             ),
         }
     }

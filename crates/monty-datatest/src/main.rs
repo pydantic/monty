@@ -45,19 +45,16 @@ static CANONICAL_WS_DIR: LazyLock<PathBuf> =
 /// * and, stack overflows in debug rust (if it's too high)
 const TEST_RECURSION_LIMIT: usize = 50;
 
-/// Builds the `ResourceLimits` used by each datatest run.
+/// The `ResourceLimits` applied to every datatest run when the fixture omits
+/// `# gc-interval=` / `# max-recursion-depth=` directives.
 ///
-/// Applies the standard recursion-depth cap and, if the fixture specified
-/// `# gc-interval=<N>`, overrides the default GC interval. The underlying
-/// default is `DEFAULT_GC_INTERVAL` in `crates/monty/src/heap.rs`, which is 1
-/// under `memory-model-checks` and 100_000 otherwise — some tests need a
-/// larger value to stay within the test timeout.
-fn build_test_limits(gc_interval: Option<usize>) -> ResourceLimits {
-    let mut limits = ResourceLimits::new().max_recursion_depth(Some(TEST_RECURSION_LIMIT));
-    if let Some(interval) = gc_interval {
-        limits = limits.gc_interval(interval);
-    }
-    limits
+/// Caps recursion at `TEST_RECURSION_LIMIT` and otherwise leaves limits at their
+/// builder defaults. The underlying default GC interval is `DEFAULT_GC_INTERVAL`
+/// in `crates/monty/src/heap.rs`, which is 1 under `memory-model-checks` and
+/// 100_000 otherwise — tests that need a larger value to stay within the
+/// timeout opt into it via `# gc-interval=<N>`.
+fn default_test_limits() -> ResourceLimits {
+    ResourceLimits::new().max_recursion_depth(Some(TEST_RECURSION_LIMIT))
 }
 
 /// Test configuration parsed from directive comments.
@@ -74,7 +71,7 @@ fn build_test_limits(gc_interval: Option<usize>) -> ResourceLimits {
 ///   Used for tests that rely on POSIX path semantics which Monty's sandbox always
 ///   provides but Windows CPython does not.
 /// - `xfail=monty,cpython` - Expected to fail on both interpreters
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 #[expect(clippy::struct_excessive_bools)]
 struct TestConfig {
     /// When true, test is expected to fail on Monty (strict xfail).
@@ -94,14 +91,26 @@ struct TestConfig {
     /// path semantics (e.g. pathlib tests using `/` paths) which are correct for
     /// Monty's always-POSIX sandbox but behave differently on Windows CPython.
     skip_cpython_windows: bool,
-    /// When set, overrides the default GC allocation interval used when constructing
-    /// `ResourceLimits` for this test. Parsed from `# gc-interval=<N>`.
-    ///
-    /// The underlying default is `DEFAULT_GC_INTERVAL` (1 under `memory-model-checks`,
-    /// 100_000 otherwise). Some tests — especially recursive ones — run very slowly
-    /// under a gc_interval of 1, so this directive lets them opt into a larger value
-    /// to stay within the test timeout. Only the Monty runner reads this.
-    gc_interval: Option<usize>,
+    /// Resource limits applied to this test's Monty run. Defaults to
+    /// `default_test_limits()`; directives like `# gc-interval=<N>` and
+    /// `# max-recursion-depth=<N>` mutate this in `parse_fixture`. Only the
+    /// Monty runner reads this; CPython continues to use its own default
+    /// limits.
+    limits: ResourceLimits,
+}
+
+impl Default for TestConfig {
+    fn default() -> Self {
+        Self {
+            xfail_monty: false,
+            xfail_cpython: false,
+            iter_mode: false,
+            async_mode: false,
+            mount_fs: false,
+            skip_cpython_windows: false,
+            limits: default_test_limits(),
+        }
+    }
 }
 
 /// Represents the expected outcome of a test fixture
@@ -191,17 +200,14 @@ fn parse_fixture(content: &str) -> (String, Expectation, TestConfig) {
         config.xfail_cpython = xfail_str.contains("cpython");
     }
 
-    // Check for "gc-interval=<N>" directive. Overrides the default GC allocation
-    // interval for this test only. Parse until whitespace or end of line so that
-    // trailing comment text like "# gc-interval=100  recursive test" works.
-    if let Some(&gc_line) = comment_lines.iter().find(|line| line.starts_with("gc-interval=")) {
-        let value = &gc_line["gc-interval=".len()..];
-        let value_end = value.find(|c: char| c.is_whitespace()).unwrap_or(value.len());
-        let value_str = value[..value_end].trim();
-        let parsed: usize = value_str
-            .parse()
-            .unwrap_or_else(|e| panic!("invalid gc-interval directive {value_str:?}: {e}"));
-        config.gc_interval = Some(parsed);
+    // Parse resource-limit directives. `config.limits` starts as
+    // `default_test_limits()`; each directive overrides one field, preserving
+    // the standard test recursion cap unless explicitly overridden.
+    if let Some(interval) = parse_usize_directive(&comment_lines, "gc-interval=") {
+        config.limits.gc_interval = Some(interval);
+    }
+    if let Some(depth) = parse_usize_directive(&comment_lines, "max-recursion-depth=") {
+        config.limits.max_recursion_depth = Some(depth);
     }
 
     // Check for TRACEBACK expectation (triple-quoted string at end of file)
@@ -237,6 +243,24 @@ fn parse_fixture(content: &str) -> (String, Expectation, TestConfig) {
     let code = code_lines.join("\n");
 
     (code, expectation, config)
+}
+
+/// Parses a `# <prefix><usize>` directive, ignoring trailing whitespace and
+/// trailing comment text so `# gc-interval=100  recursive test` works.
+///
+/// Panics if a directive is present but the value isn't a valid `usize` — these
+/// are author-controlled, so a malformed directive is a test bug, not a runtime
+/// error to be surfaced gracefully.
+fn parse_usize_directive(comment_lines: &[&str], prefix: &str) -> Option<usize> {
+    let line = comment_lines.iter().find(|line| line.starts_with(prefix))?;
+    let value = &line[prefix.len()..];
+    let value_end = value.find(|c: char| c.is_whitespace()).unwrap_or(value.len());
+    let value_str = value[..value_end].trim();
+    Some(
+        value_str
+            .parse()
+            .unwrap_or_else(|e| panic!("invalid {prefix}{value_str:?} directive: {e}")),
+    )
 }
 
 /// Parses a TRACEBACK expectation from the end of a fixture file.
@@ -369,13 +393,19 @@ fn ensure_python_modules_imported() {
 /// Result from dispatching an external function call.
 ///
 /// Distinguishes between synchronous calls (return immediately) and
-/// asynchronous calls (return a future that needs later resolution).
+/// asynchronous calls (return a future that needs later resolution), and
+/// further splits async calls into success and failure variants so the
+/// harness can exercise both `ExtFunctionResult::Return` and
+/// `ExtFunctionResult::Error` resolution paths for external futures.
 enum DispatchResult {
     /// Synchronous result - pass directly to `state.run()`.
     Sync(ExtFunctionResult),
-    /// Asynchronous call - use `state.run_pending()` and resolve later.
-    /// Contains the value to resolve the future with.
+    /// Asynchronous call - use `state.run_pending()` and resolve later
+    /// with `ExtFunctionResult::Return(value)`.
     Async(MontyObject),
+    /// Asynchronous call that fails - use `state.run_pending()` and
+    /// resolve later with `ExtFunctionResult::Error(exception)`.
+    AsyncFail(MontyException),
 }
 
 /// Dispatches an external function call to the appropriate test implementation.
@@ -501,6 +531,21 @@ fn dispatch_external_call(name: &str, args: Vec<MontyObject>) -> DispatchResult 
             // This is an async function - use run_pending() and resolve later
             assert!(args.len() == 1, "async_call requires 1 argument");
             DispatchResult::Async(args.into_iter().next().unwrap())
+        }
+        "async_fail" => {
+            // async_fail(exc_type: str, message: str) -> coroutine that raises.
+            // Mirrors `raise_error` for the async path.
+            assert!(args.len() == 2, "async_fail requires 2 arguments");
+            let exc_type_str = String::try_from(&args[0]).expect("async_fail: first arg must be str");
+            let message = String::try_from(&args[1]).expect("async_fail: second arg must be str");
+            let exc_type = match exc_type_str.as_str() {
+                "ValueError" => ExcType::ValueError,
+                "TypeError" => ExcType::TypeError,
+                "KeyError" => ExcType::KeyError,
+                "RuntimeError" => ExcType::RuntimeError,
+                _ => panic!("async_fail: unsupported exception type: {exc_type_str}"),
+            };
+            DispatchResult::AsyncFail(MontyException::new(exc_type, Some(message)))
         }
         _ => panic!("Unknown external function: {name}"),
     }
@@ -1254,12 +1299,7 @@ impl fmt::Display for TestFailure {
 ///
 /// This function executes Python code via the MontyRun and validates the result
 /// against the expected outcome specified in the fixture.
-fn try_run_test(
-    path: &Path,
-    code: &str,
-    expectation: &Expectation,
-    gc_interval: Option<usize>,
-) -> Result<(), TestFailure> {
+fn try_run_test(path: &Path, code: &str, expectation: &Expectation, limits: ResourceLimits) -> Result<(), TestFailure> {
     let test_name = path
         .strip_prefix(TEST_CASES_RELATIVE_DIR)
         .unwrap_or(path)
@@ -1324,7 +1364,6 @@ fn try_run_test(
 
     match MontyRun::new(code.to_owned(), &test_name, vec![]) {
         Ok(ex) => {
-            let limits = build_test_limits(gc_interval);
             let result = ex.run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout);
             match result {
                 Ok(obj) => match expectation {
@@ -1453,7 +1492,7 @@ fn try_run_iter_test(
     path: &Path,
     code: &str,
     expectation: &Expectation,
-    gc_interval: Option<usize>,
+    limits: ResourceLimits,
 ) -> Result<(), TestFailure> {
     let test_name = path
         .strip_prefix(TEST_CASES_RELATIVE_DIR)
@@ -1511,7 +1550,7 @@ fn try_run_iter_test(
     };
 
     // Run execution loop, handling external function calls until complete
-    let result = run_iter_loop(exec, gc_interval);
+    let result = run_iter_loop(exec, limits);
 
     match result {
         Ok(obj) => match expectation {
@@ -1602,7 +1641,7 @@ fn try_run_mount_fs_test(
     path: &Path,
     code: &str,
     expectation: &Expectation,
-    gc_interval: Option<usize>,
+    limits: ResourceLimits,
 ) -> Result<(), TestFailure> {
     let test_name = path
         .strip_prefix(TEST_CASES_RELATIVE_DIR)
@@ -1633,7 +1672,7 @@ fn try_run_mount_fs_test(
         }
     };
 
-    let result = run_mount_fs_iter_loop(exec, &mut mount_table, gc_interval);
+    let result = run_mount_fs_iter_loop(exec, &mut mount_table, limits);
 
     match result {
         Ok(_) => match expectation {
@@ -1689,9 +1728,8 @@ fn try_run_mount_fs_test(
 fn run_mount_fs_iter_loop(
     exec: MontyRun,
     mount_table: &mut MountTable,
-    gc_interval: Option<usize>,
+    limits: ResourceLimits,
 ) -> Result<MontyObject, MontyException> {
-    let limits = build_test_limits(gc_interval);
     let mut progress = exec.start(vec![], LimitedTracker::new(limits), PrintWriter::Stdout)?;
 
     loop {
@@ -1737,12 +1775,14 @@ fn run_mount_fs_iter_loop(
 /// Supports both synchronous and asynchronous external functions:
 /// - Sync functions: result is passed immediately via `state.run()`
 /// - Async functions: `state.run_pending()` creates a future, resolved via `ResolveFutures`
-fn run_iter_loop(exec: MontyRun, gc_interval: Option<usize>) -> Result<MontyObject, MontyException> {
-    let limits = build_test_limits(gc_interval);
+fn run_iter_loop(exec: MontyRun, limits: ResourceLimits) -> Result<MontyObject, MontyException> {
     let mut progress = exec.start(vec![], LimitedTracker::new(limits), PrintWriter::Stdout)?;
 
-    // Track pending async calls: (call_id, result_value)
-    let mut pending_results: Vec<(u32, MontyObject)> = Vec::new();
+    // Track pending async calls: (call_id, pre-built ExtFunctionResult).
+    // Successful async calls produce `Return(value)`; `async_fail` produces
+    // `Error(exception)`. The pre-built result is handed back verbatim at
+    // `ResolveFutures` so the harness exercises both resolution branches.
+    let mut pending_results: Vec<(u32, ExtFunctionResult)> = Vec::new();
 
     loop {
         // Test serialization round-trip at each step (skip when memory-model-checks is enabled
@@ -1769,23 +1809,29 @@ fn run_iter_loop(exec: MontyRun, gc_interval: Option<usize>) -> Result<MontyObje
                         progress = call.resume(return_value, PrintWriter::Stdout)?;
                     }
                     DispatchResult::Async(result_value) => {
-                        // Store the result for later resolution
-                        pending_results.push((call.call_id, result_value));
+                        // Store the success result for later resolution
+                        pending_results.push((call.call_id, ExtFunctionResult::Return(result_value)));
                         // Continue execution with a pending future
+                        progress = call.resume_pending(PrintWriter::Stdout)?;
+                    }
+                    DispatchResult::AsyncFail(exception) => {
+                        // Store the error for later resolution
+                        pending_results.push((call.call_id, ExtFunctionResult::Error(exception)));
                         progress = call.resume_pending(PrintWriter::Stdout)?;
                     }
                 }
             }
             RunProgress::ResolveFutures(state) => {
-                // Resolve all pending futures that we have results for
+                // Hand back each pending result verbatim (Return or Error) so
+                // `ResolveFutures::resume` sees both success and failure cases.
                 let results: Vec<(u32, ExtFunctionResult)> = state
                     .pending_call_ids()
                     .iter()
                     .filter_map(|p| {
-                        pending_results.iter().position(|(id, _)| id == p).map(|idx| {
-                            let (call_id, value) = pending_results.remove(idx);
-                            (call_id, ExtFunctionResult::Return(value))
-                        })
+                        pending_results
+                            .iter()
+                            .position(|(id, _)| id == p)
+                            .map(|idx| pending_results.remove(idx))
                     })
                     .collect();
 
@@ -1801,7 +1847,7 @@ fn run_iter_loop(exec: MontyRun, gc_interval: Option<usize>) -> Result<MontyObje
                 let result = match lookup.name.as_str() {
                     // External functions — resolved as callable Function objects
                     "add_ints" | "concat_strings" | "return_value" | "get_list" | "raise_error" | "make_point"
-                    | "make_mutable_point" | "make_user" | "make_empty" | "async_call" => {
+                    | "make_mutable_point" | "make_user" | "make_empty" | "async_call" | "async_fail" => {
                         NameLookupResult::Value(MontyObject::Function {
                             name: lookup.name.clone(),
                             docstring: None,
@@ -2313,15 +2359,15 @@ fn run_test_cases_monty(path: &Path) -> Result<(), Box<dyn Error>> {
     let path_owned = path.to_owned();
     let iter_mode = config.iter_mode;
     let mount_fs = config.mount_fs;
-    let gc_interval = config.gc_interval;
+    let limits = config.limits;
 
     let result = run_with_timeout(TEST_TIMEOUT, move || {
         if mount_fs {
-            try_run_mount_fs_test(&path_owned, &code, &expectation, gc_interval)
+            try_run_mount_fs_test(&path_owned, &code, &expectation, limits)
         } else if iter_mode {
-            try_run_iter_test(&path_owned, &code, &expectation, gc_interval)
+            try_run_iter_test(&path_owned, &code, &expectation, limits)
         } else {
-            try_run_test(&path_owned, &code, &expectation, gc_interval)
+            try_run_test(&path_owned, &code, &expectation, limits)
         }
     });
 

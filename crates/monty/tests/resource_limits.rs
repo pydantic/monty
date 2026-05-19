@@ -946,6 +946,40 @@ fn bytes_mult_within_limit() {
     assert_eq!(result.unwrap(), MontyObject::Bool(true));
 }
 
+/// Test that `bytes(n)` is rejected before allocation when `n` exceeds the memory limit.
+///
+/// The integer constructor allocates a zero-filled buffer; the requested size must
+/// be validated against the resource tracker before the native allocation occurs.
+#[test]
+fn bytes_int_constructor_memory_limit() {
+    let code = "bytes(1000000)";
+    let ex = MontyRun::new(code.to_owned(), "test.py", vec![]).unwrap();
+
+    let limits = ResourceLimits::new().max_memory(100_000);
+    let result = ex.run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout);
+
+    assert!(result.is_err(), "large bytes(n) should be rejected");
+    let exc = result.unwrap_err();
+    assert_eq!(exc.exc_type(), ExcType::MemoryError);
+    assert!(
+        exc.message().is_some_and(|m| m.contains("memory limit exceeded")),
+        "expected memory limit error, got: {exc}"
+    );
+}
+
+/// Test that small `bytes(n)` works within limits.
+#[test]
+fn bytes_int_constructor_within_limit() {
+    let code = "len(bytes(100))";
+    let ex = MontyRun::new(code.to_owned(), "test.py", vec![]).unwrap();
+
+    let limits = ResourceLimits::new().max_memory(100_000);
+    let result = ex.run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout);
+
+    assert!(result.is_ok(), "small bytes(n) should succeed");
+    assert_eq!(result.unwrap(), MontyObject::Int(100));
+}
+
 /// Test that string multiplication is rejected before allocation via check_large_result.
 #[test]
 fn string_mult_rejected_before_allocation() {

@@ -25,7 +25,10 @@ use crate::{
     intern::StaticStrings,
     modules::re::{ASCII, DOTALL, IGNORECASE, MULTILINE},
     resource::{ResourceError, ResourceTracker, check_estimated_size},
-    types::{List, PyTrait, ReMatch, Str, Type, allocate_tuple, str::string_repr_fmt},
+    types::{
+        List, PyTrait, ReMatch, Type, allocate_tuple,
+        str::{allocate_string, string_repr_fmt},
+    },
     value::{EitherStr, Value},
 };
 
@@ -155,17 +158,16 @@ impl RePattern {
             // No capture groups — return list of full match strings
             0 | 1 => {
                 for m in self.compiled.find_iter(text) {
-                    let s = Str::new(m.map_err(ExcType::re_pattern_error)?.as_str().to_owned());
-                    results.push(Value::Ref(heap.allocate(HeapData::Str(s))?));
+                    let val = m.map_err(ExcType::re_pattern_error)?.as_str();
+                    results.push(allocate_string(val, heap)?);
                 }
             }
             // One capture group — return list of the group's strings
             2 => {
                 for caps in self.compiled.captures_iter(text) {
                     let caps = caps.map_err(ExcType::re_pattern_error)?;
-                    let val = caps.get(1).map(|m| m.as_str().to_owned()).unwrap_or_default();
-                    let s = Str::new(val);
-                    results.push(Value::Ref(heap.allocate(HeapData::Str(s))?));
+                    let val = caps.get(1).map_or("", |m| m.as_str());
+                    results.push(allocate_string(val, heap)?);
                 }
             }
             // Multiple capture groups — return list of tuples
@@ -174,9 +176,8 @@ impl RePattern {
                     let caps = caps.map_err(ExcType::re_pattern_error)?;
                     let mut elements: SmallVec<[Value; 3]> = SmallVec::with_capacity(cap_count - 1);
                     for cap in caps.iter().skip(1) {
-                        let val = cap.map(|m| m.as_str().to_owned()).unwrap_or_default();
-                        let s = Str::new(val);
-                        elements.push(Value::Ref(heap.allocate(HeapData::Str(s))?));
+                        let val = cap.map_or("", |m| m.as_str());
+                        elements.push(allocate_string(val, heap)?);
                     }
                     results.push(allocate_tuple(elements, heap)?);
                 }
@@ -217,8 +218,7 @@ impl RePattern {
         }
 
         result.push_str(&text[last_end..]);
-        let s = Str::new(result);
-        Ok(Value::Ref(heap.allocate(HeapData::Str(s))?))
+        Ok(allocate_string(result, heap)?)
     }
 
     /// `pattern.split(string, maxsplit=0)` — split string by pattern occurrences.
@@ -240,8 +240,7 @@ impl RePattern {
 
         let mut results = Vec::with_capacity(pieces.len());
         for piece in pieces {
-            let s = Str::new(piece.to_owned());
-            results.push(Value::Ref(heap.allocate(HeapData::Str(s))?));
+            results.push(allocate_string(piece, heap)?);
         }
 
         let list = List::new(results);
@@ -315,8 +314,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, RePattern> {
     fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<CallResult>> {
         match attr.static_string() {
             Some(StaticStrings::PatternAttr) => {
-                let s = Str::new(self.get(vm.heap).pattern.clone());
-                let v = Value::Ref(vm.heap.allocate(HeapData::Str(s))?);
+                let v = allocate_string(self.get(vm.heap).pattern.as_str(), vm.heap)?;
                 Ok(Some(CallResult::Value(v)))
             }
             Some(StaticStrings::Flags) => Ok(Some(CallResult::Value(Value::Int(i64::from(self.get(vm.heap).flags))))),
@@ -450,9 +448,13 @@ fn call_pattern_sub<'h>(
         Some(Value::Int(n)) if n >= 0 => n as usize,
         Some(Value::Bool(b)) => usize::from(b),
         Some(Value::Int(_)) => {
-            let text = value_to_str(string_val, vm)?.into_owned();
-            let s = Str::new(text);
-            return Ok(Value::Ref(vm.heap.allocate(HeapData::Str(s))?));
+            // Negative count — Pattern.sub returns the input string unchanged,
+            // so just typecheck and bump the refcount; no need to re-allocate.
+            if !string_val.is_str(vm.heap) {
+                let t = string_val.py_type(vm);
+                return Err(ExcType::type_error(format!("expected string, not {t}")));
+            }
+            return Ok(string_val.clone_with_heap(vm.heap));
         }
         Some(other) => {
             let t = other.py_type(vm);

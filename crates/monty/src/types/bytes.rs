@@ -65,12 +65,18 @@
 /// - `expandtabs(tabsize=8)` - Tab expansion
 /// - `translate(table[, delete])` - Character translation
 /// - `maketrans(frm, to)` - Create translation table (staticmethod)
-use std::{cell::Cell, cmp::Ordering, fmt, fmt::Write, mem, ops, str};
+use std::{
+    cell::Cell,
+    cmp::Ordering,
+    ffi::c_int,
+    fmt::{self, Write},
+    mem, ops, str,
+};
 
 use ahash::AHashSet;
 use smallvec::smallvec;
 
-use super::{MontyIter, PyTrait, Type, str::Str};
+use super::{MontyIter, PyTrait, Type};
 use crate::{
     args::ArgValues,
     bytecode::{CallResult, VM},
@@ -166,6 +172,12 @@ impl Bytes {
                     return Err(ExcType::value_error_negative_bytes_count());
                 }
                 let size = usize::try_from(*n).expect("bytes count validated non-negative");
+                // Pre-check the requested size against resource limits before
+                // touching the global allocator. Without this, `bytes(n)` for a
+                // very large `n` would attempt the native allocation directly
+                // and abort the host on failure rather than raising MemoryError.
+                // Mirrors the guard already used by `bytes.ljust`/`zfill`/`*`.
+                check_repeat_size(size, 1, vm.heap.tracker())?;
                 vec![0u8; size]
             }
             Some(Value::InternString(string_id)) => {
@@ -502,10 +514,7 @@ fn bytes_decode<'h>(
 
     // Decode as UTF-8
     match str::from_utf8(bytes.get(vm.heap)) {
-        Ok(s) => {
-            let heap_id = vm.heap.allocate(HeapData::Str(Str::from(s.to_owned())))?;
-            Ok(Value::Ref(heap_id))
-        }
+        Ok(s) => Ok(super::str::allocate_string(s, vm.heap)?),
         Err(_) => Err(ExcType::unicode_decode_error_invalid_utf8()),
     }
 }
@@ -2102,8 +2111,13 @@ fn bytes_hex<'h>(
         if bytes_per_sep == 0 || bytes.is_empty() {
             hex_chars.iter().collect()
         } else {
-            // Insert separator every `bytes_per_sep` bytes (2*bytes_per_sep hex chars)
-            let chars_per_group = usize::try_from(bytes_per_sep.unsigned_abs()).unwrap_or(usize::MAX) * 2;
+            // Insert separator every `bytes_per_sep` bytes (2*bytes_per_sep hex chars).
+            // `saturating_mul` guards against overflow when `bytes_per_sep == i64::MIN`,
+            // whose `unsigned_abs()` is `2^63` and would wrap `* 2` to zero, triggering
+            // a panic in `chunks(0)` below.
+            let chars_per_group = usize::try_from(bytes_per_sep.unsigned_abs())
+                .unwrap_or(usize::MAX)
+                .saturating_mul(2);
             let mut result = String::new();
 
             if bytes_per_sep > 0 {
@@ -2136,7 +2150,7 @@ fn bytes_hex<'h>(
         hex_chars.iter().collect()
     };
 
-    super::str::allocate_string(result, vm.heap)
+    Ok(super::str::allocate_string(result, vm.heap)?)
 }
 
 /// Parses arguments for bytes.hex method.
@@ -2168,7 +2182,10 @@ fn parse_bytes_hex_args(args: ArgValues, vm: &mut VM<'_, impl ResourceTracker>) 
     };
 
     let bytes_per_sep = if let Some(bps_value) = bps_value {
-        bps_value.as_int(vm)?
+        // CPython parses `bytes_per_sep` with the `i` format (C int), so values outside
+        // c_int range raise OverflowError before any computation happens.
+        let raw = bps_value.as_int(vm)?;
+        c_int::try_from(raw).map_err(|_| ExcType::overflow_c_int())?.into()
     } else {
         1
     };
