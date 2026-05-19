@@ -97,11 +97,13 @@ impl<'h> HeapRead<'h, DictKeysView> {
     /// and for `isdisjoint(...)`.
     pub(crate) fn to_set(&self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Set> {
         let dict = self.dict(vm);
-        let len = dict.get(vm.heap).len();
-        let mut result = Set::with_capacity(len);
-        for i in 0..len {
-            let key = dict.get(vm.heap).key_at(i).unwrap().clone_with_heap(vm);
-            result.add(key, vm)?;
+        let mut result = Set::with_capacity(dict.get(vm.heap).len());
+        let iter = dict.iter(vm)?;
+        defer_drop_mut!(iter, vm);
+        while let Some((key, _value)) = iter.next(vm)? {
+            // `Set::add` takes ownership; clone the borrowed key.
+            let key_owned = key.clone_with_heap(vm.heap);
+            result.add(key_owned, vm)?;
         }
         Ok(result)
     }
@@ -251,11 +253,14 @@ impl<'h> HeapRead<'h, DictItemsView> {
     /// membership checks observe standard Python tuple semantics.
     pub(crate) fn to_set(&self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Set> {
         let dict = self.dict(vm);
-        let len = dict.get(vm.heap).len();
-        let mut result = Set::with_capacity(len);
-        for i in 0..len {
-            let (key, value) = dict.get(vm.heap).item_at(i).unwrap();
-            let item = allocate_tuple(smallvec![key.clone_with_heap(vm), value.clone_with_heap(vm)], vm.heap)?;
+        let mut result = Set::with_capacity(dict.get(vm.heap).len());
+        let iter = dict.iter(vm)?;
+        defer_drop_mut!(iter, vm);
+        while let Some((key, value)) = iter.next(vm)? {
+            let item = allocate_tuple(
+                smallvec![key.clone_with_heap(vm.heap), value.clone_with_heap(vm.heap)],
+                vm.heap,
+            )?;
             result.add(item, vm)?;
         }
         Ok(result)
@@ -471,17 +476,14 @@ fn write_dict_keys_contents<'h>(
     vm: &mut VM<'h, impl ResourceTracker>,
     heap_ids: &mut AHashSet<HeapId>,
 ) -> RunResult<()> {
-    let len = dict.get(vm.heap).len();
-    for i in 0..len {
-        if i > 0 {
+    let iter = dict.iter(vm)?;
+    defer_drop_mut!(iter, vm);
+    let mut first = true;
+    while let Some((key, _value)) = iter.next(vm)? {
+        if !first {
             f.write_str(", ")?;
         }
-        let key = dict
-            .get(vm.heap)
-            .key_at(i)
-            .expect("index in range")
-            .clone_with_heap(vm.heap);
-        defer_drop!(key, vm);
+        first = false;
         key.py_repr_fmt(f, vm, heap_ids)?;
     }
     Ok(())
@@ -494,26 +496,17 @@ fn write_dict_items_contents<'h>(
     vm: &mut VM<'h, impl ResourceTracker>,
     heap_ids: &mut AHashSet<HeapId>,
 ) -> RunResult<()> {
-    let len = dict.get(vm.heap).len();
-    for i in 0..len {
-        if i > 0 {
+    let iter = dict.iter(vm)?;
+    defer_drop_mut!(iter, vm);
+    let mut first = true;
+    while let Some((key, value)) = iter.next(vm)? {
+        if !first {
             f.write_str(", ")?;
         }
+        first = false;
         f.write_char('(')?;
-        let key = dict
-            .get(vm.heap)
-            .key_at(i)
-            .expect("index in range")
-            .clone_with_heap(vm.heap);
-        defer_drop!(key, vm);
         key.py_repr_fmt(f, vm, heap_ids)?;
         f.write_str(", ")?;
-        let value = dict
-            .get(vm.heap)
-            .value_at(i)
-            .expect("index in range")
-            .clone_with_heap(vm.heap);
-        defer_drop!(value, vm);
         value.py_repr_fmt(f, vm, heap_ids)?;
         f.write_char(')')?;
     }
@@ -527,17 +520,14 @@ fn write_dict_values_contents<'h>(
     vm: &mut VM<'h, impl ResourceTracker>,
     heap_ids: &mut AHashSet<HeapId>,
 ) -> RunResult<()> {
-    let len = dict.get(vm.heap).len();
-    for i in 0..len {
-        if i > 0 {
+    let iter = dict.iter(vm)?;
+    defer_drop_mut!(iter, vm);
+    let mut first = true;
+    while let Some((_key, value)) = iter.next(vm)? {
+        if !first {
             f.write_str(", ")?;
         }
-        let value = dict
-            .get(vm.heap)
-            .value_at(i)
-            .expect("index in range")
-            .clone_with_heap(vm.heap);
-        defer_drop!(value, vm);
+        first = false;
         value.py_repr_fmt(f, vm, heap_ids)?;
     }
     Ok(())

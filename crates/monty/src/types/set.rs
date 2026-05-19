@@ -1262,13 +1262,11 @@ impl<'h> PyTrait<'h> for HeapRead<'h, FrozenSet> {
         if let Some(cached) = self.get(vm.heap).cached_hash.get() {
             return Ok(Some(cached));
         }
-        let token = vm.heap.incr_recursion_depth()?;
-        defer_drop!(token, vm);
         let mut hash: u64 = 0;
-        let len = self.get(vm.heap).storage.entries.len();
-        for idx in 0..len {
-            let item = self.get(vm.heap).storage.entries[idx].value.clone_with_heap(vm);
-            defer_drop!(item, vm);
+        let storage = self.storage();
+        let iter = storage.iter(vm)?;
+        defer_drop_mut!(iter, vm);
+        while let Some(item) = iter.next(vm)? {
             hash ^= set_element_hash(item, vm)?;
         }
         let hash = HashValue::new(hash);

@@ -30,10 +30,10 @@ use super::{MontyIter, PyTrait};
 use crate::{
     args::ArgValues,
     bytecode::{CallResult, VM},
-    defer_drop,
+    defer_drop, defer_drop_mut,
     exception_private::{ExcType, RunResult},
     hash::HashValue,
-    heap::{DropWithHeap, Heap, HeapData, HeapId, HeapItem, HeapRead},
+    heap::{ContainsHeap, DropWithHeap, Heap, HeapData, HeapId, HeapItem, HeapRead, RecursionToken},
     intern::StaticStrings,
     resource::{ResourceError, ResourceTracker},
     types::{
@@ -188,6 +188,102 @@ impl<'h> HeapRead<'h, Tuple> {
         }
         result
     }
+
+    /// Returns a stack-borrowed lending iterator over the tuple's items,
+    /// holding a recursion-depth token for its entire lifetime.
+    ///
+    /// Named `iter` despite returning a non-stdlib lending iterator (see
+    /// [`TupleIter`]) because that's the obvious entry point for "iterate
+    /// this container".
+    #[expect(clippy::iter_not_returning_iterator)]
+    pub(crate) fn iter<R: ResourceTracker>(&self, vm: &mut VM<'h, R>) -> RunResult<TupleIter<'_, 'h>> {
+        TupleIter::new(self, vm)
+    }
+}
+
+/// Stack-borrowed lending iterator over a [`Tuple`]'s items.
+///
+/// Borrows a [`HeapRead`] for its lifetime, so the heap entry is pinned by
+/// the reader count for the duration of iteration — no extra refcount on
+/// the container is needed.
+///
+/// **Lending shape.** [`next`](Self::next) returns `Option<&Value>`. The
+/// iterator itself owns the most-recently-yielded item in its `current`
+/// slot (using [`Value::Undefined`] as the empty sentinel) and drops the
+/// previous item at the start of each `next` call, so call sites do **not**
+/// need a per-item `defer_drop!`. The held item is also dropped when the
+/// iterator is released via [`DropWithHeap`].
+///
+/// **Recursion guard.** Acquires a [`RecursionToken`] at construction and
+/// releases it via [`DropWithHeap`]. The iterator MUST be wrapped in
+/// [`defer_drop_mut!`] so the token (and any in-flight item) is released
+/// on every exit path. Unlike list / dict / set iteration, tuples are
+/// immutable so size never changes during iteration, but the token still
+/// belongs here — tuple iteration almost always feeds into operations that
+/// recurse (`py_eq`, `py_hash`, `py_repr`, JSON serialization), and the
+/// token bounds the otherwise-unprotected native stack depth.
+pub(crate) struct TupleIter<'a, 'h> {
+    tuple: &'a HeapRead<'h, Tuple>,
+    index: usize,
+    token: RecursionToken,
+    /// Most-recently-yielded item. `Value::Undefined` when nothing is held —
+    /// drops on that variant are no-ops, so `next` can unconditionally drop
+    /// the previous slot before fetching the new one.
+    current: Value,
+}
+
+impl<'a, 'h> TupleIter<'a, 'h> {
+    fn new<R: ResourceTracker>(tuple: &'a HeapRead<'h, Tuple>, vm: &mut VM<'h, R>) -> RunResult<Self> {
+        let token = vm.heap.incr_recursion_depth()?;
+        Ok(Self {
+            tuple,
+            index: 0,
+            token,
+            current: Value::Undefined,
+        })
+    }
+
+    /// Advances the iterator and returns a borrow of the next item, or
+    /// `Ok(None)` when the tuple is exhausted.
+    ///
+    /// The returned reference is valid until the next call to `next` (or
+    /// until the iterator itself is dropped), at which point the held item
+    /// is released.
+    ///
+    /// Performs a [`check_time`](Heap::check_time) on every call so long
+    /// Rust-side loops cannot bypass the configured timeout.
+    pub(crate) fn next<'i, R: ResourceTracker>(&'i mut self, vm: &mut VM<'h, R>) -> RunResult<Option<&'i Value>> {
+        // Drop the previously-yielded item (no-op when `current` is `Undefined`).
+        mem::replace(&mut self.current, Value::Undefined).drop_with_heap(vm.heap);
+        vm.heap.check_time()?;
+        let items = &self.tuple.get(vm.heap).items;
+        if self.index >= items.len() {
+            return Ok(None);
+        }
+        self.current = items[self.index].clone_with_heap(vm.heap);
+        self.index += 1;
+        Ok(Some(&self.current))
+    }
+
+    /// Like [`next`](Self::next), but also returns the 0-based position of the
+    /// yielded item — useful for `zip`-style sibling-container access (e.g.
+    /// element-wise comparison against another tuple) and for search methods
+    /// that return the match position.
+    pub(crate) fn next_with_index<'i, R: ResourceTracker>(
+        &'i mut self,
+        vm: &mut VM<'h, R>,
+    ) -> RunResult<Option<(usize, &'i Value)>> {
+        // Capture before `next` increments `self.index`.
+        let position = self.index;
+        Ok(self.next(vm)?.map(|item| (position, item)))
+    }
+}
+
+impl DropWithHeap for TupleIter<'_, '_> {
+    fn drop_with_heap<H: ContainsHeap>(self, heap: &mut H) {
+        self.current.drop_with_heap(heap);
+        self.token.drop_with_heap(heap);
+    }
 }
 
 impl<'h> PyTrait<'h> for HeapRead<'h, Tuple> {
@@ -224,20 +320,15 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Tuple> {
     }
 
     fn py_eq(&self, other: &Self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<bool> {
-        let a_len = self.get(vm.heap).items.len();
-        if a_len != other.get(vm.heap).items.len() {
+        if self.get(vm.heap).items.len() != other.get(vm.heap).items.len() {
             return Ok(false);
         }
-        let token = vm.heap.incr_recursion_depth()?;
-        defer_drop!(token, vm);
-        for i in 0..a_len {
-            vm.heap.check_time()?;
-            let a_val = self.clone_item(i, vm);
-            let b_val = other.clone_item(i, vm);
-            let result = a_val.py_eq(&b_val, vm);
-            a_val.drop_with_heap(vm);
-            b_val.drop_with_heap(vm);
-            if !result? {
+        let iter = self.iter(vm)?;
+        defer_drop_mut!(iter, vm);
+        while let Some((i, a)) = iter.next_with_index(vm)? {
+            let b = other.clone_item(i, vm);
+            defer_drop!(b, vm);
+            if !a.py_eq(b, vm)? {
                 return Ok(false);
             }
         }
@@ -257,13 +348,10 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Tuple> {
         if let Some(cached) = self.get(vm.heap).cached_hash.get() {
             return Ok(Some(cached));
         }
-        let token = vm.heap.incr_recursion_depth()?;
-        defer_drop!(token, vm);
-        let len = self.get(vm.heap).items.len();
         let mut hasher = DefaultHasher::new();
-        for i in 0..len {
-            let item = self.clone_item(i, vm);
-            defer_drop!(item, vm);
+        let iter = self.iter(vm)?;
+        defer_drop_mut!(iter, vm);
+        while let Some(item) = iter.next(vm)? {
             match item.py_hash(vm)? {
                 Some(h) => h.hash(&mut hasher),
                 None => return Ok(None),
@@ -286,13 +374,15 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Tuple> {
         let a_len = self.get(vm.heap).items.len();
         let b_len = other.get(vm.heap).items.len();
         let min_len = a_len.min(b_len);
-        let token = vm.heap.incr_recursion_depth()?;
-        defer_drop!(token, vm);
-        for i in 0..min_len {
-            vm.heap.check_time()?;
-            let av = self.clone_item(i, vm);
+        let iter = self.iter(vm)?;
+        defer_drop_mut!(iter, vm);
+        while let Some((i, av)) = iter.next_with_index(vm)? {
+            if i >= min_len {
+                // `self` was longer than `other`; remaining items don't
+                // participate in element-wise comparison.
+                break;
+            }
             let bv = other.clone_item(i, vm);
-            defer_drop!(av, vm);
             defer_drop!(bv, vm);
             match av.py_cmp(bv, vm)? {
                 Some(Ordering::Equal) => {}
@@ -419,12 +509,16 @@ fn tuple_index<'h>(
         other => return Err(ExcType::type_error_at_most("tuple.index", 3, other.len())),
     };
 
-    for i in start..end {
-        let item = tuple.clone_item(i, vm);
-        defer_drop!(item, vm);
-        if value.py_eq(item, vm)? {
-            let idx = i64::try_from(i).expect("index exceeds i64::MAX");
-            return Ok(Value::Int(idx));
+    let iter = tuple.iter(vm)?;
+    defer_drop_mut!(iter, vm);
+    while let Some((idx, item)) = iter.next_with_index(vm)? {
+        if idx >= end {
+            // No further matches possible inside [start, end).
+            break;
+        }
+        if idx >= start && value.py_eq(item, vm)? {
+            let idx_i64 = i64::try_from(idx).expect("index exceeds i64::MAX");
+            return Ok(Value::Int(idx_i64));
         }
     }
 
@@ -442,11 +536,10 @@ fn tuple_count<'h>(
     let value = args.get_one_arg("tuple.count", vm.heap)?;
     defer_drop!(value, vm);
 
-    let len = tuple.get(vm.heap).as_slice().len();
     let mut count = 0usize;
-    for i in 0..len {
-        let item = tuple.clone_item(i, vm);
-        defer_drop!(item, vm);
+    let iter = tuple.iter(vm)?;
+    defer_drop_mut!(iter, vm);
+    while let Some(item) = iter.next(vm)? {
         if value.py_eq(item, vm)? {
             count += 1;
         }

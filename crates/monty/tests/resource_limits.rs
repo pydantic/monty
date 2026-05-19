@@ -658,6 +658,90 @@ recurse(5)
     assert!(result.is_ok(), "should not exceed recursion depth limit");
 }
 
+/// Regression: `json.dumps()` of a deeply nested non-cyclic structure must raise
+/// `RecursionError`, not panic via native-stack exhaustion. The exploit shape is
+/// from the security report: a `for` loop iteratively wraps a container so the
+/// nesting depth bypasses the Python-level frame limit, then the structure is
+/// fed to a recursive Rust serializer.
+///
+/// Each container type is covered separately because the three serialization
+/// branches (list, tuple, dict) hold their recursion tokens in different ways
+/// (list / tuple via the live `ListIter` / `TupleIter`; dict via a token
+/// acquired explicitly after `collect_dict_entries` releases the `DictIter`).
+#[test]
+#[cfg_attr(
+    feature = "memory-model-checks",
+    ignore = "resource exhaustion doesn't guarantee heap state consistency"
+)]
+fn json_dumps_deep_list_raises_recursion_error() {
+    let code = r"
+import json
+x = [1]
+for _ in range(50):
+    x = [x]
+json.dumps(x)
+";
+    let ex = MontyRun::new(code.to_owned(), "test.py", vec![]).unwrap();
+    // Limit < nesting depth so we hit RecursionError before exhausting native stack.
+    let limits = ResourceLimits::new().max_recursion_depth(Some(20));
+    let result = ex.run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout);
+    assert_eq!(result.unwrap_err().exc_type(), ExcType::RecursionError);
+}
+
+#[test]
+#[cfg_attr(
+    feature = "memory-model-checks",
+    ignore = "resource exhaustion doesn't guarantee heap state consistency"
+)]
+fn json_dumps_deep_tuple_raises_recursion_error() {
+    let code = r"
+import json
+x = (1,)
+for _ in range(50):
+    x = (x,)
+json.dumps(x)
+";
+    let ex = MontyRun::new(code.to_owned(), "test.py", vec![]).unwrap();
+    let limits = ResourceLimits::new().max_recursion_depth(Some(20));
+    let result = ex.run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout);
+    assert_eq!(result.unwrap_err().exc_type(), ExcType::RecursionError);
+}
+
+#[test]
+#[cfg_attr(
+    feature = "memory-model-checks",
+    ignore = "resource exhaustion doesn't guarantee heap state consistency"
+)]
+fn json_dumps_deep_dict_raises_recursion_error() {
+    let code = r"
+import json
+d = {'x': 1}
+for _ in range(50):
+    d = {'x': d}
+json.dumps(d)
+";
+    let ex = MontyRun::new(code.to_owned(), "test.py", vec![]).unwrap();
+    let limits = ResourceLimits::new().max_recursion_depth(Some(20));
+    let result = ex.run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout);
+    assert_eq!(result.unwrap_err().exc_type(), ExcType::RecursionError);
+}
+
+#[test]
+fn json_dumps_shallow_nesting_succeeds() {
+    // Sanity: shallow nesting must still serialize cleanly under the same limit
+    // — confirms we're catching the right thing, not just rejecting all nesting.
+    let code = r"
+import json
+x = [1, [2, [3, [4, [5]]]]]
+result = json.dumps(x)
+assert result == '[1, [2, [3, [4, [5]]]]]'
+";
+    let ex = MontyRun::new(code.to_owned(), "test.py", vec![]).unwrap();
+    let limits = ResourceLimits::new().max_recursion_depth(Some(20));
+    let result = ex.run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout);
+    assert!(result.is_ok(), "shallow nesting must serialize: {result:?}");
+}
+
 // === BigInt large result pre-check tests ===
 // These tests verify that operations that would produce very large BigInt results
 // are rejected before the computation begins, preventing DoS attacks.

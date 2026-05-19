@@ -732,22 +732,15 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Dict> {
         if self.get(vm.heap).len() != other.get(vm.heap).len() {
             return Ok(false);
         }
-        let token = vm.heap.incr_recursion_depth()?;
-        defer_drop!(token, vm);
-        let len = self.get(vm.heap).len();
-        for i in 0..len {
-            vm.heap.check_time()?;
-            let key = self.get(vm.heap).key_at(i).expect("index valid").clone_with_heap(vm);
-            defer_drop!(key, vm);
-            if let Ok(Some(other_value)) = other.dict_get(key, vm) {
-                let self_value = self.get(vm.heap).value_at(i).expect("index valid").clone_with_heap(vm);
-                let eq = self_value.py_eq(&other_value, vm);
-                self_value.drop_with_heap(vm);
-                other_value.drop_with_heap(vm);
-                if !eq? {
-                    return Ok(false);
-                }
-            } else {
+        let iter = self.iter(vm)?;
+        defer_drop_mut!(iter, vm);
+        while let Some((key, value)) = iter.next(vm)? {
+            let Ok(Some(other_value)) = other.dict_get(key, vm) else {
+                return Ok(false);
+            };
+            let eq = value.py_eq(&other_value, vm);
+            other_value.drop_with_heap(vm);
+            if !eq? {
                 return Ok(false);
             }
         }

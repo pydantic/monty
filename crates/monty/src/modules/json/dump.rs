@@ -13,11 +13,11 @@ use crate::{
     bytecode::VM,
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, RunResult},
-    heap::{DropWithHeap, HeapData, HeapGuard, HeapId, HeapReadOutput},
+    heap::{ContainsHeap, DropWithHeap, Heap, HeapData, HeapGuard, HeapId, HeapRead, HeapReadOutput},
     intern::StaticStrings,
     resource::ResourceTracker,
     sorting::{apply_permutation, sort_indices},
-    types::{PyTrait, long_int::check_bigint_str_digits_limit, str::allocate_string},
+    types::{Dict, PyTrait, long_int::check_bigint_str_digits_limit, str::allocate_string},
     value::Value,
 };
 
@@ -230,7 +230,13 @@ pub(super) fn call_dumps(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues)
     let mut active_containers = Vec::new();
     {
         let (obj, vm) = obj_guard.as_parts_mut();
-        serialize_value(obj, &mut output, &config, 0, &mut active_containers, vm)?;
+        let mut encoder = Encoder {
+            out: &mut output,
+            config: &config,
+            active_containers: &mut active_containers,
+            vm,
+        };
+        encoder.serialize_value(obj, 0)?;
     }
 
     let (obj, vm) = obj_guard.into_parts();
@@ -367,183 +373,268 @@ fn json_separator_to_string(value: &Value, role: &str, vm: &VM<'_, impl Resource
     }
 }
 
-/// Serializes a Monty value into JSON text.
+/// Mutable serialization context shared across the recursive `serialize_*`
+/// methods.
 ///
-/// The function handles immediate primitives directly and delegates to
-/// heap-specific helpers for strings, long integers, lists, tuples, and dicts.
-fn serialize_value(
-    value: &Value,
-    out: &mut String,
-    config: &JsonDumpsConfig,
-    depth: usize,
-    active_containers: &mut Vec<HeapId>,
-    vm: &mut VM<'_, impl ResourceTracker>,
-) -> RunResult<()> {
-    match value {
-        Value::None => {
-            out.push_str("null");
-            Ok(())
-        }
-        Value::Bool(true) => {
-            out.push_str("true");
-            Ok(())
-        }
-        Value::Bool(false) => {
-            out.push_str("false");
-            Ok(())
-        }
-        Value::Int(value) => {
-            write!(out, "{value}").expect("writing to String cannot fail");
-            Ok(())
-        }
-        Value::Float(value) => serialize_float(*value, out, config),
-        Value::InternString(string_id) => {
-            write_json_string(vm.interns.get_str(*string_id), out, config.ensure_ascii());
-            Ok(())
-        }
-        Value::InternLongInt(long_int_id) => {
-            let value = vm.interns.get_long_int(*long_int_id);
-            check_bigint_str_digits_limit(value)?;
-            write!(out, "{value}").expect("writing to String cannot fail");
-            Ok(())
-        }
-        Value::Ref(heap_id) => match vm.heap.read(*heap_id) {
-            HeapReadOutput::Str(string) => {
-                write_json_string(string.get(vm.heap).as_str(), out, config.ensure_ascii());
-                Ok(())
-            }
-            HeapReadOutput::LongInt(long_int) => {
-                long_int.get(vm.heap).check_str_digits_limit()?;
-                write!(out, "{}", long_int.get(vm.heap).inner()).expect("writing to String cannot fail");
-                Ok(())
-            }
-            HeapReadOutput::List(list) => {
-                let items: Vec<Value> = list
-                    .get(vm.heap)
-                    .as_slice()
-                    .iter()
-                    .map(|value| value.clone_with_heap(vm))
-                    .collect();
-                let mut items_guard = HeapGuard::new(items, vm);
-                let (items, vm) = items_guard.as_parts_mut();
-                with_entered_container(active_containers, *heap_id, |active_containers| {
-                    serialize_sequence(items.as_slice(), out, config, depth, active_containers, vm)
-                })
-            }
-            HeapReadOutput::Tuple(tuple) => {
-                let items: Vec<Value> = tuple
-                    .get(vm.heap)
-                    .as_slice()
-                    .iter()
-                    .map(|value| value.clone_with_heap(vm))
-                    .collect();
-                let mut items_guard = HeapGuard::new(items, vm);
-                let (items, vm) = items_guard.as_parts_mut();
-                with_entered_container(active_containers, *heap_id, |active_containers| {
-                    serialize_sequence(items.as_slice(), out, config, depth, active_containers, vm)
-                })
-            }
-            HeapReadOutput::Dict(dict) => {
-                let entries: Vec<(Value, Value)> = dict
-                    .get(vm.heap)
-                    .iter()
-                    .map(|(key, value)| (key.clone_with_heap(vm), value.clone_with_heap(vm)))
-                    .collect();
-                let mut entries_guard = HeapGuard::new(entries, vm);
-                let (entries, vm) = entries_guard.as_parts_mut();
-                with_entered_container(active_containers, *heap_id, |active_containers| {
-                    serialize_dict(entries, out, config, depth, active_containers, vm)
-                })
-            }
-            _ => Err(ExcType::json_not_serializable_error(value.py_type(vm))),
-        },
-        _ => Err(ExcType::json_not_serializable_error(value.py_type(vm))),
+/// Groups the four pieces of per-call state that every recursive level needs
+/// — the JSON output buffer, the encoder configuration, the cycle-detection
+/// stack, and the VM (heap + interns) — so the recursive methods can be
+/// invoked as `encoder.serialize_value(value, depth)` rather than threading
+/// five separate parameters through every signature.
+///
+/// `depth` is intentionally **not** a field of this struct: every recursive
+/// call needs to bump it by one for the descent and restore it on return,
+/// which is exactly what a stack-passed parameter does for free.
+struct Encoder<'a, 'h, R: ResourceTracker> {
+    out: &'a mut String,
+    config: &'a JsonDumpsConfig,
+    active_containers: &'a mut Vec<HeapId>,
+    vm: &'a mut VM<'h, R>,
+}
+
+/// Lets the encoder participate in the [`HeapGuard`] / [`defer_drop_mut!`]
+/// pattern: passing the encoder as the "heap" argument re-borrows the whole
+/// encoder (including its `vm`) into the guard, which is exactly what we need
+/// so the rebound iter and the rebound encoder share a lifetime.
+impl<R: ResourceTracker> ContainsHeap for Encoder<'_, '_, R> {
+    type ResourceTracker = R;
+
+    fn heap(&self) -> &Heap<R> {
+        self.vm.heap()
+    }
+
+    fn heap_mut(&mut self) -> &mut Heap<R> {
+        self.vm.heap_mut()
     }
 }
 
-/// Serializes a list or tuple as a JSON array.
-///
-/// Sequence formatting is shared because JSON does not distinguish tuples from
-/// lists, but circular-reference tracking still happens at the container level
-/// before this helper is called.
-fn serialize_sequence(
-    items: &[Value],
-    out: &mut String,
-    config: &JsonDumpsConfig,
-    depth: usize,
-    active_containers: &mut Vec<HeapId>,
-    vm: &mut VM<'_, impl ResourceTracker>,
-) -> RunResult<()> {
-    out.push('[');
-    if items.is_empty() {
-        out.push(']');
-        return Ok(());
-    }
-
-    let pretty = config.indent.is_some();
-    for (index, item) in items.iter().enumerate() {
-        if index != 0 {
-            out.push_str(&config.item_separator);
+impl<'h, R: ResourceTracker> Encoder<'_, 'h, R> {
+    /// Serializes a Monty value into JSON text.
+    ///
+    /// Handles immediate primitives directly and delegates to type-specific
+    /// helpers for strings, long integers, lists, tuples, and dicts.
+    fn serialize_value(&mut self, value: &Value, depth: usize) -> RunResult<()> {
+        match value {
+            Value::None => {
+                self.out.push_str("null");
+                Ok(())
+            }
+            Value::Bool(true) => {
+                self.out.push_str("true");
+                Ok(())
+            }
+            Value::Bool(false) => {
+                self.out.push_str("false");
+                Ok(())
+            }
+            Value::Int(value) => {
+                write!(self.out, "{value}").expect("writing to String cannot fail");
+                Ok(())
+            }
+            Value::Float(value) => serialize_float(*value, self.out, self.config),
+            Value::InternString(string_id) => {
+                write_json_string(
+                    self.vm.interns.get_str(*string_id),
+                    self.out,
+                    self.config.ensure_ascii(),
+                );
+                Ok(())
+            }
+            Value::InternLongInt(long_int_id) => {
+                let value = self.vm.interns.get_long_int(*long_int_id);
+                check_bigint_str_digits_limit(value)?;
+                write!(self.out, "{value}").expect("writing to String cannot fail");
+                Ok(())
+            }
+            Value::Ref(heap_id) => match self.vm.heap.read(*heap_id) {
+                HeapReadOutput::Str(string) => {
+                    write_json_string(string.get(self.vm.heap).as_str(), self.out, self.config.ensure_ascii());
+                    Ok(())
+                }
+                HeapReadOutput::LongInt(long_int) => {
+                    long_int.get(self.vm.heap).check_str_digits_limit()?;
+                    write!(self.out, "{}", long_int.get(self.vm.heap).inner()).expect("writing to String cannot fail");
+                    Ok(())
+                }
+                HeapReadOutput::List(list) => self.with_entered_container(*heap_id, |enc| {
+                    let iter = list.iter(enc.vm)?;
+                    defer_drop_mut!(iter, enc);
+                    enc.serialize_array(depth, |enc, depth| {
+                        if let Some(item) = iter.next(enc.vm)? {
+                            enc.serialize_value(item, depth)?;
+                            Ok(true)
+                        } else {
+                            Ok(false)
+                        }
+                    })
+                }),
+                HeapReadOutput::Tuple(tuple) => self.with_entered_container(*heap_id, |enc| {
+                    let iter = tuple.iter(enc.vm)?;
+                    defer_drop_mut!(iter, enc);
+                    enc.serialize_array(depth, |enc, depth| {
+                        if let Some(item) = iter.next(enc.vm)? {
+                            enc.serialize_value(item, depth)?;
+                            Ok(true)
+                        } else {
+                            Ok(false)
+                        }
+                    })
+                }),
+                HeapReadOutput::Dict(dict) => {
+                    // Dict pre-materializes entries because `sort_keys` and
+                    // `skipkeys` need to mutate the entries vector before
+                    // output. `collect_dict_entries` acquires/releases a
+                    // `DictIter` token during the copy, but that's not enough
+                    // on its own — the recursive descent into `serialize_value`
+                    // (for each entry's value) happens *after* the iter is
+                    // dropped. Hold a dedicated recursion token across the
+                    // whole `serialize_dict` call so nested-dict depth
+                    // accumulates the same way nested list/tuple depth does
+                    // (where the list/tuple iter is alive across the descent).
+                    let entries = self.collect_dict_entries(&dict)?;
+                    let this = self;
+                    defer_drop_mut!(entries, this);
+                    let token = this.vm.heap.incr_recursion_depth()?;
+                    defer_drop!(token, this);
+                    this.with_entered_container(*heap_id, |enc| enc.serialize_dict(entries, depth))
+                }
+                _ => Err(ExcType::json_not_serializable_error(value.py_type(self.vm))),
+            },
+            _ => Err(ExcType::json_not_serializable_error(value.py_type(self.vm))),
         }
-        if pretty {
-            out.push('\n');
-            write_indent(out, config, depth + 1);
+    }
+
+    /// Streams items from a list or tuple into a JSON array, formatting
+    /// separators and indentation between calls to `write_next`.
+    ///
+    /// `write_next` is invoked once per item slot and should write the JSON
+    /// for the next item, returning `Ok(true)` if it wrote one or `Ok(false)`
+    /// when the underlying iterator is exhausted. This shape lets the caller
+    /// plug in either a [`ListIter`](crate::types::list::ListIter) or a
+    /// [`TupleIter`](crate::types::tuple::TupleIter) without having to unify
+    /// their lending-iterator types.
+    ///
+    /// Circular-reference tracking still happens at the container level (via
+    /// [`with_entered_container`](Self::with_entered_container)) before this
+    /// helper is called; the recursion-depth bound is enforced by the
+    /// iterator's `RecursionToken`.
+    fn serialize_array(
+        &mut self,
+        depth: usize,
+        mut write_next: impl FnMut(&mut Self, usize) -> RunResult<bool>,
+    ) -> RunResult<()> {
+        self.out.push('[');
+        let pretty = self.config.indent.is_some();
+        let mut wrote_any = false;
+        loop {
+            // Reserve the separator + indent BEFORE we know whether the next
+            // item exists; if `write_next` reports exhaustion we roll the
+            // cursor back.
+            let prefix_start = self.out.len();
+            if wrote_any {
+                self.out.push_str(&self.config.item_separator);
+            }
+            if pretty {
+                self.out.push('\n');
+                write_indent(self.out, self.config, depth + 1);
+            }
+            let body_start = self.out.len();
+            if !write_next(self, depth + 1)? {
+                self.out.truncate(prefix_start);
+                break;
+            }
+            debug_assert!(
+                self.out.len() > body_start,
+                "write_next reported true but wrote nothing"
+            );
+            wrote_any = true;
         }
-        serialize_value(item, out, config, depth + 1, active_containers, vm)?;
-    }
-    if pretty {
-        out.push('\n');
-        write_indent(out, config, depth);
-    }
-    out.push(']');
-    Ok(())
-}
-
-/// Serializes a dict as a JSON object.
-///
-/// Dict keys are validated and optionally skipped before serialization. When
-/// `sort_keys=True`, entries are sorted using Python comparison semantics on the
-/// original keys so mixed incomparable key types raise the same style of
-/// `TypeError` as CPython.
-fn serialize_dict(
-    entries: &mut Vec<(Value, Value)>,
-    out: &mut String,
-    config: &JsonDumpsConfig,
-    depth: usize,
-    active_containers: &mut Vec<HeapId>,
-    vm: &mut VM<'_, impl ResourceTracker>,
-) -> RunResult<()> {
-    if config.skipkeys() {
-        skip_disallowed_dict_keys(entries, vm);
-    } else if let Some((key, _)) = entries.iter().find(|(key, _)| !is_json_key_allowed(key, vm)) {
-        return Err(ExcType::json_invalid_key_error(key.py_type(vm)));
-    }
-
-    if config.sort_keys() {
-        sort_dict_entries(entries, vm)?;
-    }
-
-    out.push('{');
-
-    let pretty = config.indent.is_some();
-    for (index, (key, value)) in entries.iter().enumerate() {
-        if index != 0 {
-            out.push_str(&config.item_separator);
+        if pretty && wrote_any {
+            self.out.push('\n');
+            write_indent(self.out, self.config, depth);
         }
-        if pretty {
-            out.push('\n');
-            write_indent(out, config, depth + 1);
+        self.out.push(']');
+        Ok(())
+    }
+
+    /// Copies a dict's `(key, value)` pairs into an owned `Vec` via
+    /// [`DictIter`](crate::types::dict::DictIter), so subsequent passes
+    /// (`skipkeys`, `sort_keys`) can mutate the buffer in place. The
+    /// `DictIter`'s recursion token is acquired and released during the
+    /// copy, bounding the depth of the *enclosing* `serialize_value` call.
+    fn collect_dict_entries(&mut self, dict: &HeapRead<'h, Dict>) -> RunResult<Vec<(Value, Value)>> {
+        let mut entries = Vec::with_capacity(dict.get(self.vm.heap).len());
+        let iter = dict.iter(self.vm)?;
+        // `defer_drop_mut!` rebinds the heap arg by name, so re-alias `self`
+        // before handing it to the macro (it can't match `self` directly).
+        let this = self;
+        defer_drop_mut!(iter, this);
+        while let Some((k, v)) = iter.next(this.vm)? {
+            entries.push((k.clone_with_heap(this.vm.heap), v.clone_with_heap(this.vm.heap)));
         }
-        write_json_key(key, out, config, vm)?;
-        out.push_str(&config.key_separator);
-        serialize_value(value, out, config, depth + 1, active_containers, vm)?;
+        Ok(entries)
     }
-    if pretty && !entries.is_empty() {
-        out.push('\n');
-        write_indent(out, config, depth);
+
+    /// Serializes a dict as a JSON object.
+    ///
+    /// Dict keys are validated and optionally skipped before serialization.
+    /// When `sort_keys=True`, entries are sorted using Python comparison
+    /// semantics on the original keys so mixed incomparable key types raise
+    /// the same style of `TypeError` as CPython.
+    fn serialize_dict(&mut self, entries: &mut Vec<(Value, Value)>, depth: usize) -> RunResult<()> {
+        if self.config.skipkeys() {
+            skip_disallowed_dict_keys(entries, self.vm);
+        } else if let Some((key, _)) = entries.iter().find(|(key, _)| !is_json_key_allowed(key, self.vm)) {
+            return Err(ExcType::json_invalid_key_error(key.py_type(self.vm)));
+        }
+
+        if self.config.sort_keys() {
+            sort_dict_entries(entries, self.vm)?;
+        }
+
+        self.out.push('{');
+
+        let pretty = self.config.indent.is_some();
+        for (index, (key, value)) in entries.iter().enumerate() {
+            if index != 0 {
+                self.out.push_str(&self.config.item_separator);
+            }
+            if pretty {
+                self.out.push('\n');
+                write_indent(self.out, self.config, depth + 1);
+            }
+            write_json_key(key, self.out, self.config, self.vm)?;
+            self.out.push_str(&self.config.key_separator);
+            self.serialize_value(value, depth + 1)?;
+        }
+        if pretty && !entries.is_empty() {
+            self.out.push('\n');
+            write_indent(self.out, self.config, depth);
+        }
+        self.out.push('}');
+        Ok(())
     }
-    out.push('}');
-    Ok(())
+
+    /// Runs `f` while `heap_id` is marked active for cycle detection.
+    ///
+    /// Centralizes the push/pop bookkeeping so every serialization path pops
+    /// the container again regardless of whether recursive serialization
+    /// succeeds or returns early with an error.
+    fn with_entered_container<T>(
+        &mut self,
+        heap_id: HeapId,
+        f: impl FnOnce(&mut Self) -> RunResult<T>,
+    ) -> RunResult<T> {
+        if self.active_containers.contains(&heap_id) {
+            return Err(ExcType::json_circular_reference_error());
+        }
+        self.active_containers.push(heap_id);
+        let result = f(self);
+        self.active_containers
+            .pop()
+            .expect("entered container missing from JSON serialization stack");
+        result
+    }
 }
 
 /// Sorts dict entries in-place using Python comparison semantics on the keys.
@@ -758,27 +849,6 @@ fn write_indent(out: &mut String, config: &JsonDumpsConfig, depth: usize) {
             out.push_str(indent);
         }
     }
-}
-
-/// Runs a closure while a container is marked active for cycle detection.
-///
-/// The helper centralizes the push/pop bookkeeping so every serialization path
-/// pops the container again regardless of whether recursive serialization
-/// succeeds or returns early with an error.
-fn with_entered_container<R>(
-    stack: &mut Vec<HeapId>,
-    heap_id: HeapId,
-    f: impl FnOnce(&mut Vec<HeapId>) -> RunResult<R>,
-) -> RunResult<R> {
-    if stack.contains(&heap_id) {
-        return Err(ExcType::json_circular_reference_error());
-    }
-    stack.push(heap_id);
-    let result = f(stack);
-    stack
-        .pop()
-        .expect("entered container missing from JSON serialization stack");
-    result
 }
 
 /// Writes a Rust string as a JSON string token.
