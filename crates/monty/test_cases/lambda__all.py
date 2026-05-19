@@ -127,7 +127,7 @@ assert (lambda *a, **k: (a, k))(1, 2, x=3) == ((1, 2), {'x': 3}), 'lambda mixed 
 def make_shadowing_lambda():
     x = 10
     # inner lambda has param x, so outer lambda should NOT capture x from make_shadowing_lambda
-    return lambda: (lambda x: x + 1)
+    return lambda: lambda x: x + 1
 
 
 outer_fn = make_shadowing_lambda()
@@ -138,7 +138,7 @@ assert inner_fn(5) == 6, 'inner lambda takes x as param'
 def test_inner_lambda_capture():
     y = 5
     # outer lambda binds y as param, inner lambda captures from outer lambda, not test_inner_lambda_capture
-    g = lambda y: (lambda: y)
+    g = lambda y: lambda: y
     return g(7)()
 
 

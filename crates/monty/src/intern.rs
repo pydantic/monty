@@ -364,10 +364,29 @@ pub enum StaticStrings {
     // Path write methods (require OsAccess - yield external calls)
     WriteText,
     WriteBytes,
+    AppendText,
+    AppendBytes,
     Mkdir,
     Unlink,
     Rmdir,
     Rename,
+
+    // ==========================
+    // File object methods and attributes
+    Read,
+    Write,
+    Close,
+    Flush,
+    Readable,
+    Writable,
+    Seekable,
+    Closed,
+    Mode,
+    Encoding,
+    File,
+    Buffering,
+    Errors,
+    Newline,
 
     // Slice attributes
     Start,

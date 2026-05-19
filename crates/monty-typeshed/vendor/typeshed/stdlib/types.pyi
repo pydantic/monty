@@ -680,6 +680,7 @@ _P = ParamSpec('_P')
 def coroutine(func: Callable[_P, Generator[Any, Any, _R]]) -> Callable[_P, Awaitable[_R]]: ...
 @overload
 def coroutine(func: _Fn) -> _Fn: ...
+
 @disjoint_base
 class GenericAlias:
     @property

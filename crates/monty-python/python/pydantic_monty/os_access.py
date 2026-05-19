@@ -22,6 +22,8 @@ OsFunction = Literal[
     'Path.read_bytes',
     'Path.write_text',
     'Path.write_bytes',
+    'Path.append_text',
+    'Path.append_bytes',
     'Path.mkdir',
     'Path.unlink',
     'Path.rmdir',
@@ -172,6 +174,10 @@ class AbstractOS(ABC):
                 return self.path_write_text(*args)
             case 'Path.write_bytes':
                 return self.path_write_bytes(*args)
+            case 'Path.append_text':
+                return self.path_append_text(*args)
+            case 'Path.append_bytes':
+                return self.path_append_bytes(*args)
             case 'Path.mkdir':
                 assert len(kwargs) <= 2, f'Unexpected keyword arguments: {kwargs}'
                 parents = kwargs.get('parents', False)
@@ -314,6 +320,14 @@ class AbstractOS(ABC):
             FileNotFoundError: If the parent directory does not exist.
             IsADirectoryError: If the path is a directory.
         """
+        raise NotImplementedError
+
+    def path_append_text(self, path: PurePosixPath, data: str) -> int:
+        """Append text data to a file and return the number of characters written."""
+        raise NotImplementedError
+
+    def path_append_bytes(self, path: PurePosixPath, data: bytes) -> int:
+        """Append binary data to a file and return the number of bytes written."""
         raise NotImplementedError
 
     @abstractmethod
@@ -793,6 +807,14 @@ class OSAccess(AbstractOS):
         self._write_file(path, data)
         return len(data)
 
+    def path_append_text(self, path: PurePosixPath, data: str) -> int:
+        self._append_file(path, data)
+        return len(data)
+
+    def path_append_bytes(self, path: PurePosixPath, data: bytes) -> int:
+        self._append_file(path, data)
+        return len(data)
+
     def _write_file(self, path: PurePosixPath, data: bytes | str) -> None:
         entry = self._get_entry(path)
         if _is_file(entry):
@@ -809,6 +831,20 @@ class OSAccess(AbstractOS):
             self.files.append(new_file)
         else:
             raise FileNotFoundError(f'[Errno 2] No such file or directory: {str(path)!r}')
+
+    def _append_file(self, path: PurePosixPath, data: bytes | str) -> None:
+        entry = self._get_entry(path)
+        if _is_file(entry):
+            content = entry.read_content()
+            if isinstance(content, bytes):
+                entry.write_content(content + (data if isinstance(data, bytes) else data.encode()))
+            else:
+                entry.write_content(content + (data.decode() if isinstance(data, bytes) else data))
+            return
+        elif _is_dir(entry):
+            raise IsADirectoryError(f'[Errno 21] Is a directory: {str(path)!r}')
+
+        self._write_file(path, data)
 
     def path_mkdir(self, path: PurePosixPath, parents: bool, exist_ok: bool) -> None:
         entry = self._get_entry(path)

@@ -51,6 +51,8 @@ pub(super) fn execute(
         FsRequest::ReadBytes { path } => read_bytes(state, &relative_path(path, ctx)?, ctx, path),
         FsRequest::WriteText { path, data } => write_text(state, path, data, ctx),
         FsRequest::WriteBytes { path, data } => write_bytes(state, path, data, ctx),
+        FsRequest::AppendText { path, data } => append_text(state, path, data, ctx),
+        FsRequest::AppendBytes { path, data } => append_bytes(state, path, data, ctx),
         FsRequest::Mkdir {
             path,
             parents,
@@ -228,6 +230,72 @@ fn write_bytes(
 
     commit_write_bytes(data.len(), ctx);
     Ok(MontyObject::Int(i64::try_from(data.len()).unwrap_or(i64::MAX)))
+}
+
+/// Appends text in the overlay without leaving a host file handle open.
+fn append_text(
+    state: &mut OverlayState,
+    vpath: &str,
+    data: &str,
+    ctx: &mut MountContext<'_>,
+) -> Result<MontyObject, MountError> {
+    append_bytes(state, vpath, data.as_bytes(), ctx)?;
+    Ok(MontyObject::Int(
+        i64::try_from(data.chars().count()).unwrap_or(i64::MAX),
+    ))
+}
+
+/// Appends bytes in the overlay, copying through real mounted content if needed.
+fn append_bytes(
+    state: &mut OverlayState,
+    vpath: &str,
+    data: &[u8],
+    ctx: &mut MountContext<'_>,
+) -> Result<MontyObject, MountError> {
+    check_write_limit(data.len(), ctx)?;
+    let relative = relative_path(vpath, ctx)?;
+    ensure_parent_exists(state, &relative, ctx, vpath)?;
+    reject_directory_target(state, &relative, ctx, vpath)?;
+
+    let mut content = existing_file_bytes(state, &relative, ctx, vpath)?;
+    content.extend_from_slice(data);
+    state.insert(
+        relative,
+        OverlayEntry::File(OverlayFile {
+            content,
+            mtime: current_timestamp(),
+        }),
+    );
+
+    commit_write_bytes(data.len(), ctx);
+    Ok(MontyObject::Int(i64::try_from(data.len()).unwrap_or(i64::MAX)))
+}
+
+/// Loads the current visible file content for append operations.
+fn existing_file_bytes(
+    state: &OverlayState,
+    relative: &str,
+    ctx: &MountContext<'_>,
+    vpath: &str,
+) -> Result<Vec<u8>, MountError> {
+    match state.get(relative) {
+        Some(OverlayEntry::File(file)) => Ok(file.content.clone()),
+        Some(OverlayEntry::Deleted) => Ok(Vec::new()),
+        Some(OverlayEntry::RealFileRef(file_ref)) => match read_bytes_fs(&file_ref.host_path, vpath)? {
+            MontyObject::Bytes(bytes) => Ok(bytes),
+            _ => unreachable!("read_bytes_fs should return bytes"),
+        },
+        Some(OverlayEntry::Directory { .. }) => {
+            Err(MountError::io_err(ErrorKind::IsADirectory, "Is a directory", vpath))
+        }
+        None => match resolve_real_path_state(vpath, ctx, ResolveMode::Existing)? {
+            RealPathState::Present(host_path) => match read_bytes_fs(&host_path, vpath)? {
+                MontyObject::Bytes(bytes) => Ok(bytes),
+                _ => unreachable!("read_bytes_fs should return bytes"),
+            },
+            RealPathState::Missing => Ok(Vec::new()),
+        },
+    }
 }
 
 /// Rejects writes when the target path is an existing directory.

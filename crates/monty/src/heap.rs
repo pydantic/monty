@@ -20,8 +20,8 @@ use crate::{
     resource::{ResourceError, ResourceTracker},
     types::{
         Bytes, Dataclass, Dict, DictItemsView, DictKeysView, DictValuesView, FrozenSet, List, LongInt, Module,
-        MontyIter, NamedTuple, Path, Range, ReMatch, RePattern, Set, Slice, Str, TimeZone, Tuple, date, datetime,
-        timedelta, timezone,
+        MontyIter, NamedTuple, OpenFile, Path, Range, ReMatch, RePattern, Set, Slice, Str, TimeZone, Tuple, date,
+        datetime, timedelta, timezone,
     },
     value::Value,
 };
@@ -228,6 +228,7 @@ pub enum HeapReadOutput<'a> {
     GatherFuture(HeapRead<'a, GatherFuture>),
     ExternalFuture(HeapRead<'a, ExternalFuture>),
     Path(HeapRead<'a, Path>),
+    OpenFile(HeapRead<'a, OpenFile>),
     RePattern(HeapRead<'a, RePattern>),
     ReMatch(HeapRead<'a, ReMatch>),
     Date(HeapRead<'a, date::Date>),
@@ -617,6 +618,7 @@ impl<'a> HeapPtr<'a> {
                 HeapReadOutput::ExternalFuture(heap_read(base, external_future, readers))
             }
             HeapData::Path(path) => HeapReadOutput::Path(heap_read(base, path, readers)),
+            HeapData::OpenFile(file) => HeapReadOutput::OpenFile(heap_read(base, file, readers)),
             HeapData::RePattern(re_pattern) => HeapReadOutput::RePattern(heap_read_boxed(re_pattern, readers)),
             HeapData::ReMatch(re_match) => HeapReadOutput::ReMatch(heap_read(base, re_match, readers)),
             HeapData::Date(d) => HeapReadOutput::Date(heap_read(base, d, readers)),

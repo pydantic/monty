@@ -7,8 +7,8 @@ use std::{fs, path::PathBuf};
 
 use super::{
     common::{
-        MountContext, check_write_limit, commit_write_bytes, iterdir_fs, mkdir_fs, read_bytes_fs, read_text_fs,
-        rmdir_fs, stat_fs, unlink_fs, write_bytes_fs, write_text_fs,
+        MountContext, append_bytes_fs, append_text_fs, check_write_limit, commit_write_bytes, iterdir_fs, mkdir_fs,
+        read_bytes_fs, read_text_fs, rmdir_fs, stat_fs, unlink_fs, write_bytes_fs, write_text_fs,
     },
     dispatch::FsRequest,
     error::MountError,
@@ -41,6 +41,8 @@ pub(super) fn execute(request: FsRequest<'_>, ctx: &mut MountContext<'_>) -> Res
         }
         FsRequest::WriteText { path, data } => write_text(path, data, ctx),
         FsRequest::WriteBytes { path, data } => write_bytes(path, data, ctx),
+        FsRequest::AppendText { path, data } => append_text(path, data, ctx),
+        FsRequest::AppendBytes { path, data } => append_bytes(path, data, ctx),
         FsRequest::Mkdir {
             path,
             parents,
@@ -113,6 +115,24 @@ fn write_bytes(path: &str, data: &[u8], ctx: &mut MountContext<'_>) -> Result<Mo
     check_write_limit(data.len(), ctx)?;
     let resolved = resolve_path(path, ctx.mount_virtual, ctx.mount_host, ResolveMode::Creation)?;
     let result = write_bytes_fs(&resolved.host_path, data, path)?;
+    commit_write_bytes(data.len(), ctx);
+    Ok(result)
+}
+
+/// Appends text after validating quota and creation-path security.
+fn append_text(path: &str, data: &str, ctx: &mut MountContext<'_>) -> Result<MontyObject, MountError> {
+    check_write_limit(data.len(), ctx)?;
+    let resolved = resolve_path(path, ctx.mount_virtual, ctx.mount_host, ResolveMode::Creation)?;
+    let result = append_text_fs(&resolved.host_path, data, path)?;
+    commit_write_bytes(data.len(), ctx);
+    Ok(result)
+}
+
+/// Appends bytes after validating quota and creation-path security.
+fn append_bytes(path: &str, data: &[u8], ctx: &mut MountContext<'_>) -> Result<MontyObject, MountError> {
+    check_write_limit(data.len(), ctx)?;
+    let resolved = resolve_path(path, ctx.mount_virtual, ctx.mount_host, ResolveMode::Creation)?;
+    let result = append_bytes_fs(&resolved.host_path, data, path)?;
     commit_write_bytes(data.len(), ctx);
     Ok(result)
 }

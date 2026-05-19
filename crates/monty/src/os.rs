@@ -51,6 +51,12 @@ pub enum OsFunction {
     /// Write bytes to file
     #[strum(serialize = "Path.write_bytes")]
     WriteBytes,
+    /// Append text to file
+    #[strum(serialize = "Path.append_text")]
+    AppendText,
+    /// Append bytes to file
+    #[strum(serialize = "Path.append_bytes")]
+    AppendBytes,
     /// Create directory
     #[strum(serialize = "Path.mkdir")]
     Mkdir,
@@ -115,7 +121,14 @@ impl OsFunction {
     pub fn is_write(&self) -> bool {
         matches!(
             self,
-            Self::WriteText | Self::WriteBytes | Self::Mkdir | Self::Unlink | Self::Rmdir | Self::Rename
+            Self::WriteText
+                | Self::WriteBytes
+                | Self::AppendText
+                | Self::AppendBytes
+                | Self::Mkdir
+                | Self::Unlink
+                | Self::Rmdir
+                | Self::Rename
         )
     }
 
@@ -176,6 +189,8 @@ impl TryFrom<StaticStrings> for OsFunction {
             // Write operations
             StaticStrings::WriteText => Ok(Self::WriteText),
             StaticStrings::WriteBytes => Ok(Self::WriteBytes),
+            StaticStrings::AppendText => Ok(Self::AppendText),
+            StaticStrings::AppendBytes => Ok(Self::AppendBytes),
             StaticStrings::Mkdir => Ok(Self::Mkdir),
             StaticStrings::Unlink => Ok(Self::Unlink),
             StaticStrings::Rmdir => Ok(Self::Rmdir),

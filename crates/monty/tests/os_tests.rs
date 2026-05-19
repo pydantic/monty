@@ -32,6 +32,8 @@ fn run_to_oscall(code: &str) -> (OsFunction, Vec<MontyObject>) {
                 OsFunction::Iterdir => MontyObject::List(vec![]),
                 OsFunction::WriteText
                 | OsFunction::WriteBytes
+                | OsFunction::AppendText
+                | OsFunction::AppendBytes
                 | OsFunction::Mkdir
                 | OsFunction::Unlink
                 | OsFunction::Rmdir

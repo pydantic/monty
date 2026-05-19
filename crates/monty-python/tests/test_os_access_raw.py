@@ -68,6 +68,18 @@ class TestOS(AbstractOS):
         self.files[p] = data
         return len(data)
 
+    def path_append_text(self, path: PurePosixPath, data: str) -> int:
+        p = str(path)
+        self._ensure_parent_exists(p)
+        self.files[p] = self.files.get(p, b'') + data.encode('utf-8')
+        return len(data)
+
+    def path_append_bytes(self, path: PurePosixPath, data: bytes) -> int:
+        p = str(path)
+        self._ensure_parent_exists(p)
+        self.files[p] = self.files.get(p, b'') + data
+        return len(data)
+
     def path_mkdir(self, path: PurePosixPath, parents: bool, exist_ok: bool) -> None:
         p = str(path)
         if p in self.directories:

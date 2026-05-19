@@ -1096,6 +1096,31 @@ fn dispatch_os_call(
             // write_bytes returns the number of bytes written
             MontyObject::Int(byte_count as i64).into()
         }
+        OsFunction::AppendText => {
+            let text = String::try_from(&args[1]).expect("append_text: second arg must be string");
+            let char_count = text.chars().count();
+            MUTABLE_VFS.with(|vfs| {
+                let mut vfs = vfs.borrow_mut();
+                let entry = vfs.files.entry(path.clone()).or_insert_with(|| (Vec::new(), 0o644));
+                entry.0.extend_from_slice(text.as_bytes());
+                vfs.deleted_files.remove(&path);
+            });
+            MontyObject::Int(char_count as i64).into()
+        }
+        OsFunction::AppendBytes => {
+            let bytes = match &args[1] {
+                MontyObject::Bytes(b) => b.clone(),
+                other => panic!("append_bytes: second arg must be bytes, got {other:?}"),
+            };
+            let byte_count = bytes.len();
+            MUTABLE_VFS.with(|vfs| {
+                let mut vfs = vfs.borrow_mut();
+                let entry = vfs.files.entry(path.clone()).or_insert_with(|| (Vec::new(), 0o644));
+                entry.0.extend_from_slice(&bytes);
+                vfs.deleted_files.remove(&path);
+            });
+            MontyObject::Int(byte_count as i64).into()
+        }
         OsFunction::Mkdir => {
             // Check for parents and exist_ok in kwargs (e.g., mkdir(parents=True, exist_ok=True))
             let parents = get_kwarg_bool(kwargs, "parents");

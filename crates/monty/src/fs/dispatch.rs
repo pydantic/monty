@@ -26,6 +26,10 @@ pub(super) enum FsRequest<'a> {
     WriteText { path: &'a str, data: &'a str },
     /// `Path.write_bytes(data)`
     WriteBytes { path: &'a str, data: &'a [u8] },
+    /// `Path.append_text(data)`
+    AppendText { path: &'a str, data: &'a str },
+    /// `Path.append_bytes(data)`
+    AppendBytes { path: &'a str, data: &'a [u8] },
     /// `Path.mkdir(parents=..., exist_ok=...)`
     Mkdir {
         /// Target path.
@@ -64,6 +68,8 @@ impl<'a> FsRequest<'a> {
             | Self::ReadBytes { path }
             | Self::WriteText { path, .. }
             | Self::WriteBytes { path, .. }
+            | Self::AppendText { path, .. }
+            | Self::AppendBytes { path, .. }
             | Self::Mkdir { path, .. }
             | Self::Unlink { path }
             | Self::Rmdir { path }
@@ -91,6 +97,8 @@ impl<'a> FsRequest<'a> {
             self,
             Self::WriteText { .. }
                 | Self::WriteBytes { .. }
+                | Self::AppendText { .. }
+                | Self::AppendBytes { .. }
                 | Self::Mkdir { .. }
                 | Self::Unlink { .. }
                 | Self::Rmdir { .. }
@@ -125,6 +133,14 @@ pub(super) fn parse_fs_request<'a>(
         OsFunction::WriteBytes => Ok(FsRequest::WriteBytes {
             path,
             data: parse_bytes_data(extra_args, "write_bytes")?,
+        }),
+        OsFunction::AppendText => Ok(FsRequest::AppendText {
+            path,
+            data: parse_string_data(extra_args, "append_text")?,
+        }),
+        OsFunction::AppendBytes => Ok(FsRequest::AppendBytes {
+            path,
+            data: parse_bytes_data(extra_args, "append_bytes")?,
         }),
         OsFunction::Mkdir => {
             let (parents, exist_ok) = parse_mkdir_kwargs(kwargs);

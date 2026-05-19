@@ -22,6 +22,7 @@ mod map;
 mod min_max; // min and max share implementation
 mod next;
 mod oct;
+mod open;
 mod ord;
 mod pow;
 mod print;
@@ -183,7 +184,7 @@ pub enum BuiltinsFunctions {
     Next,
     // object - handled by Type enum
     Oct,
-    // Open,
+    Open,
     Ord,
     Pow,
     Print,
@@ -234,6 +235,7 @@ impl BuiltinsFunctions {
             Self::Min => min_max::builtin_min(vm, args),
             Self::Next => next::builtin_next(vm, args),
             Self::Oct => oct::builtin_oct(vm, args),
+            Self::Open => open::builtin_open(vm, args),
             Self::Ord => ord::builtin_ord(vm, args),
             Self::Pow => pow::builtin_pow(vm, args),
             Self::Print => print::builtin_print(vm, args),

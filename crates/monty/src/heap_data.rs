@@ -21,8 +21,8 @@ use crate::{
     intern::FunctionId,
     types::{
         Bytes, Dataclass, Dict, DictItemsView, DictKeysView, DictValuesView, FrozenSet, List, LongInt, Module,
-        MontyIter, NamedTuple, Path, PyTrait, Range, ReMatch, RePattern, Set, Slice, Str, Tuple, Type, date, datetime,
-        str::allocate_string, timedelta, timezone,
+        MontyIter, NamedTuple, OpenFile, Path, PyTrait, Range, ReMatch, RePattern, Set, Slice, Str, Tuple, Type, date,
+        datetime, str::allocate_string, timedelta, timezone,
     },
     value::{EitherStr, Value},
 };
@@ -112,6 +112,11 @@ pub(crate) enum HeapData {
     /// Pure methods (name, parent, etc.) are handled directly by the VM.
     /// I/O methods (exists, read_text, etc.) yield external function calls.
     Path(Path),
+    /// A path-backed file object returned by the `open()` builtin.
+    ///
+    /// The object stores only virtual path and mode state.  Reads and writes are
+    /// full-file OS calls; no native file descriptor is kept while Monty runs.
+    OpenFile(OpenFile),
     /// A compiled regex pattern from `re.compile()`.
     ///
     /// Contains the original pattern string, flags, and compiled regex engine.
@@ -202,6 +207,7 @@ impl HeapData {
             Self::Module(_) => Type::Module,
             Self::Coroutine(_) | Self::GatherFuture(_) | Self::ExternalFuture(_) => Type::Coroutine,
             Self::Path(_) => Type::Path,
+            Self::OpenFile(file) => file.file_type(),
             Self::RePattern(_) => Type::RePattern,
             Self::ReMatch(_) => Type::ReMatch,
             Self::Date(_) => Type::Date,
@@ -238,6 +244,7 @@ impl HeapData {
             Self::GatherFuture(gather) => gather.py_estimate_size(),
             Self::ExternalFuture(fut) => fut.py_estimate_size(),
             Self::Path(p) => p.py_estimate_size(),
+            Self::OpenFile(file) => file.py_estimate_size(),
             Self::ReMatch(m) => m.py_estimate_size(),
             Self::RePattern(p) => p.py_estimate_size(),
             Self::ExtFunction(s) => mem::size_of::<String>() + s.len(),
@@ -464,6 +471,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             Self::GatherFuture(_) => true,
             Self::ExternalFuture(_) => true,
             Self::Path(p) => p.py_bool(vm),
+            Self::OpenFile(file) => file.py_bool(vm),
             Self::ReMatch(m) => m.py_bool(vm),
             Self::RePattern(p) => p.py_bool(vm),
             Self::TimeDelta(td) => td.py_bool(vm),
@@ -491,6 +499,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             HeapReadOutput::FrozenSet(fs) => Ok(fs.py_call_attr(self_id, vm, attr, args)?),
             HeapReadOutput::Dataclass(dc) => Ok(dc.py_call_attr(self_id, vm, attr, args)?),
             HeapReadOutput::Path(p) => Ok(p.py_call_attr(self_id, vm, attr, args)?),
+            HeapReadOutput::OpenFile(file) => Ok(file.py_call_attr(self_id, vm, attr, args)?),
             HeapReadOutput::Module(m) => Ok(m.py_call_attr(self_id, vm, attr, args)?),
             HeapReadOutput::ReMatch(m) => Ok(m.py_call_attr(self_id, vm, attr, args)?),
             HeapReadOutput::RePattern(p) => Ok(p.py_call_attr(self_id, vm, attr, args)?),
@@ -530,6 +539,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             Self::Module(_) => Type::Module,
             Self::Coroutine(_) | Self::GatherFuture(_) | Self::ExternalFuture(_) => Type::Coroutine,
             Self::Path(p) => p.py_type(vm),
+            Self::OpenFile(file) => file.py_type(vm),
             Self::ReMatch(re) => re.py_type(vm),
             Self::RePattern(p) => p.py_type(vm),
             Self::Date(d) => d.py_type(vm),
@@ -755,6 +765,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             Self::ReMatch(m) => m.py_repr_fmt(f, vm, heap_ids),
             Self::RePattern(p) => p.py_repr_fmt(f, vm, heap_ids),
             Self::ExtFunction(name) => Ok(write!(f, "<function '{}' external>", name.get(vm.heap))?),
+            Self::OpenFile(file) => file.py_repr_fmt(f, vm, heap_ids),
             Self::Date(d) => d.py_repr_fmt(f, vm, heap_ids),
             Self::DateTime(d) => d.py_repr_fmt(f, vm, heap_ids),
             Self::TimeDelta(d) => d.py_repr_fmt(f, vm, heap_ids),
@@ -954,6 +965,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             Self::Module(m) => Ok(m.py_getattr(attr, vm)),
             Self::Exception(e) => e.py_getattr(attr, vm),
             Self::Path(p) => p.py_getattr(attr, vm),
+            Self::OpenFile(file) => file.py_getattr(attr, vm),
             Self::Date(d) => d.py_getattr(attr, vm),
             Self::DateTime(dt) => dt.py_getattr(attr, vm),
             Self::TimeDelta(td) => td.py_getattr(attr, vm),

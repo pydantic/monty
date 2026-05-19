@@ -164,6 +164,7 @@ class _Final:
     __slots__ = ('__weakref__',)
 
 def final(f: _T) -> _T: ...
+
 @final
 class TypeVar:
     @property
@@ -479,6 +480,7 @@ class _ProtocolMeta(ABCMeta):
 # Abstract base classes.
 
 def runtime_checkable(cls: _TC) -> _TC: ...
+
 @runtime_checkable
 class SupportsInt(Protocol, metaclass=ABCMeta):
     __slots__ = ()
