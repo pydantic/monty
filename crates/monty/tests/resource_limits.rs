@@ -1661,6 +1661,24 @@ fn bytes_zfill_memory_limit() {
     assert_eq!(exc.exc_type(), ExcType::MemoryError);
 }
 
+/// Test that `str.expandtabs` with a huge tabsize is rejected before expansion.
+///
+/// Regression test for an unbounded-allocation bypass: `tabsize` saturates to
+/// `usize::MAX`, and without a pre-check each tab would expand into ~`tabsize`
+/// spaces on the Rust heap before `allocate_string` consulted the tracker.
+#[test]
+fn str_expandtabs_memory_limit() {
+    let code = "'\\t'.expandtabs(10**9)";
+    let ex = MontyRun::new(code.to_owned(), "test.py", vec![]).unwrap();
+
+    let limits = ResourceLimits::new().max_memory(100_000);
+    let result = ex.run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout);
+
+    assert!(result.is_err(), "str.expandtabs with huge tabsize should be rejected");
+    let exc = result.unwrap_err();
+    assert_eq!(exc.exc_type(), ExcType::MemoryError);
+}
+
 /// Test that f-string formatting with huge width is rejected before allocation.
 #[test]
 fn fstring_dynamic_width_memory_limit() {

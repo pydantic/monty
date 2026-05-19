@@ -194,6 +194,29 @@ iter.drop_with_heap(self); // single path, no branching
 
 Avoid manual `drop_with_heap` whenever there are multiple code paths (branching, `?`, `continue`, early returns) between acquiring and releasing the value — that is exactly where `defer_drop!` or `HeapGuard` prevent leaks by guaranteeing cleanup on every path.
 
+### Resource-tracked string construction (`StringBuilder`)
+
+Any code that builds a `String` whose final size is not already bounded by an already-tracked input **must** use `StringBuilder` (in `crates/monty/src/string_builder.rs`) rather than `String::with_capacity(...).push(...)`. Intermediate `String`s live on the Rust heap *outside* the `ResourceTracker`, so a loop-built string can OOM the host before `allocate_string` ever consults the tracker — this is exactly the class of bug that hit `str.expandtabs` (huge `tabsize` amplifying a single tab into a multi-gigabyte allocation).
+
+`StringBuilder` actively *reserves* bytes with the tracker (via `on_grow`) as it grows, not just previews. This matters for nested builds: a `str.join` that invokes user-defined `__str__` methods, an f-string spec that evaluates an inner expression, etc. With a preview-only check, each builder would only see the *committed* memory and miss the outer's in-progress buffer — together they could exceed the limit. Reservations are released on `Drop` (cleanup on `?` / early-return paths) or in `finish(heap)` (which folds the handoff to `allocate_string` into the builder so the final size is re-added via `on_allocate` exactly once). Growth is amortized via 2× doubling:
+
+```rust
+// Bounded size known up front (padding to a given width):
+let mut builder = StringBuilder::with_capacity(width * fillchar.len_utf8(), vm.heap.tracker())?;
+builder.push_str(s)?;
+for _ in 0..pad { builder.push(fillchar)?; }
+builder.finish(vm.heap)
+
+// Size not bounded up front (e.g. attacker-controlled multiplier):
+let mut builder = StringBuilder::new(vm.heap.tracker());
+for c in input.chars() { builder.push(c)?; }
+builder.finish(vm.heap)
+```
+
+`StringBuilder` also implements `fmt::Write`, so `write!(builder, ...)`, `format_args!`, and the existing `py_repr_fmt(f, ...)` machinery work against a tracker-protected buffer. `fmt::Error` is payload-free, so any `ResourceError` raised by a write is stashed on the builder and surfaced by `finish(heap)` — callers using `write!` don't need to thread the tracker error themselves.
+
+When the input *is* already bounded (e.g. `s.to_lowercase()`, slicing, `to_owned()` of an existing tracked string), passing a plain `String` / `&str` to `allocate_string` is fine — the result is bounded by a known multiple of an already-tracked input, so no amplification is possible.
+
 ## Dev Commands
 
 **IMPORTANT**: before running `cargo build` or `cargo run`, it is likely necessary to run `make install-py` to ensure that the Python virtual environment is available for build.

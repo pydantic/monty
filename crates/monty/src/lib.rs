@@ -30,6 +30,7 @@ mod run;
 mod run_progress;
 mod signature;
 mod sorting;
+mod string_builder;
 mod types;
 mod value;
 

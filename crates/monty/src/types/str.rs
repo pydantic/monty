@@ -16,7 +16,8 @@ use crate::{
     hash::{HashValue, hash_python_str},
     heap::{DropWithHeap, Heap, HeapData, HeapGuard, HeapId, HeapItem, HeapRead, heap_read_ref_as_field},
     intern::{StaticStrings, StringId},
-    resource::{ResourceError, ResourceTracker, check_repeat_size, check_replace_size},
+    resource::{ResourceError, ResourceTracker, check_replace_size},
+    string_builder::StringBuilder,
     types::{
         Type,
         slice::{normalize_sequence_index, slice_collect_iterator},
@@ -1749,25 +1750,27 @@ fn str_center<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h, impl R
     let s = s.get(vm.heap);
     let len = s.chars().count();
 
-    let result = if width <= len {
-        s.to_owned()
+    if width <= len {
+        Ok(allocate_string(s, vm.heap)?)
     } else {
-        check_repeat_size(width, fillchar.len_utf8(), vm.heap.tracker())?;
+        // Upper bound on result bytes: `width` characters of at most
+        // `fillchar.len_utf8()` bytes each. Pre-approving with the builder is
+        // tighter than `s.len() + pad * fillchar.len_utf8()` and matches the
+        // bound used by `ljust` / `rjust`.
+        let capacity = width.saturating_mul(fillchar.len_utf8());
+        let mut builder = StringBuilder::with_capacity(capacity, vm.heap.tracker())?;
         let total_pad = width - len;
         let left_pad = total_pad / 2;
         let right_pad = total_pad - left_pad;
-        let mut result = String::with_capacity(width);
         for _ in 0..left_pad {
-            result.push(fillchar);
+            builder.push(fillchar)?;
         }
-        result.push_str(s);
+        builder.push_str(s)?;
         for _ in 0..right_pad {
-            result.push(fillchar);
+            builder.push(fillchar)?;
         }
-        result
-    };
-
-    Ok(allocate_string(result, vm.heap)?)
+        builder.finish(vm.heap)
+    }
 }
 
 /// Implements Python's `str.ljust(width, fillchar?)` method.
@@ -1778,20 +1781,18 @@ fn str_ljust<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h, impl Re
     let s = s.get(vm.heap);
     let len = s.chars().count();
 
-    let result = if width <= len {
-        s.to_owned()
+    if width <= len {
+        Ok(allocate_string(s, vm.heap)?)
     } else {
-        check_repeat_size(width, fillchar.len_utf8(), vm.heap.tracker())?;
+        let capacity = width.saturating_mul(fillchar.len_utf8());
+        let mut builder = StringBuilder::with_capacity(capacity, vm.heap.tracker())?;
         let pad = width - len;
-        let mut result = String::with_capacity(width);
-        result.push_str(s);
+        builder.push_str(s)?;
         for _ in 0..pad {
-            result.push(fillchar);
+            builder.push(fillchar)?;
         }
-        result
-    };
-
-    Ok(allocate_string(result, vm.heap)?)
+        builder.finish(vm.heap)
+    }
 }
 
 /// Implements Python's `str.rjust(width, fillchar?)` method.
@@ -1802,20 +1803,18 @@ fn str_rjust<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h, impl Re
     let s = s.get(vm.heap);
     let len = s.chars().count();
 
-    let result = if width <= len {
-        s.to_owned()
+    if width <= len {
+        Ok(allocate_string(s, vm.heap)?)
     } else {
-        check_repeat_size(width, fillchar.len_utf8(), vm.heap.tracker())?;
+        let capacity = width.saturating_mul(fillchar.len_utf8());
+        let mut builder = StringBuilder::with_capacity(capacity, vm.heap.tracker())?;
         let pad = width - len;
-        let mut result = String::with_capacity(width);
         for _ in 0..pad {
-            result.push(fillchar);
+            builder.push(fillchar)?;
         }
-        result.push_str(s);
-        result
-    };
-
-    Ok(allocate_string(result, vm.heap)?)
+        builder.push_str(s)?;
+        builder.finish(vm.heap)
+    }
 }
 
 /// Parses arguments for justify methods (center, ljust, rjust).
@@ -1873,34 +1872,32 @@ fn str_zfill<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h, impl Re
     let s = s.get(vm.heap);
     let len = s.chars().count();
 
-    let result = if width <= len {
-        s.to_owned()
+    if width <= len {
+        Ok(allocate_string(s, vm.heap)?)
     } else {
-        // zfill always pads with ASCII '0' (1 byte)
-        check_repeat_size(width, 1, vm.heap.tracker())?;
+        // zfill always pads with ASCII '0' (1 byte) and the result is exactly
+        // `width` bytes, so a single up-front approval covers every push.
+        let mut builder = StringBuilder::with_capacity(width, vm.heap.tracker())?;
         let pad = width - len;
         let mut chars = s.chars();
         let first = chars.next();
 
-        let mut result = String::with_capacity(width);
-
-        // Handle sign prefix
         if matches!(first, Some('+' | '-')) {
-            result.push(first.unwrap());
+            builder.push(first.unwrap())?;
             for _ in 0..pad {
-                result.push('0');
+                builder.push('0')?;
             }
-            result.extend(chars);
+            for c in chars {
+                builder.push(c)?;
+            }
         } else {
             for _ in 0..pad {
-                result.push('0');
+                builder.push('0')?;
             }
-            result.push_str(s);
+            builder.push_str(s)?;
         }
-        result
-    };
-
-    Ok(allocate_string(result, vm.heap)?)
+        builder.finish(vm.heap)
+    }
 }
 
 /// Implements Python's `str.expandtabs(tabsize=8)` method.
@@ -1927,20 +1924,25 @@ fn str_expandtabs<'h>(
         }
     };
 
-    let mut result = String::with_capacity(s.get(vm.heap).len());
+    let s = s.get(vm.heap);
+    // `tabsize` is attacker-controlled (saturates to `usize::MAX`) and we don't
+    // know the result size up front, so use the unbounded builder — its 2×
+    // growth policy rejects the build at the first push that would exceed the
+    // memory limit, capping wasted intermediate allocation to `O(limit)`.
+    let mut builder = StringBuilder::new(vm.heap.tracker());
     let mut column = 0;
 
-    for c in s.get(vm.heap).chars() {
+    for c in s.chars() {
         if c == '\t' {
             if tabsize > 0 {
                 let spaces = tabsize - (column % tabsize);
                 for _ in 0..spaces {
-                    result.push(' ');
+                    builder.push(' ')?;
                 }
                 column += spaces;
             }
         } else {
-            result.push(c);
+            builder.push(c)?;
             if c == '\n' || c == '\r' {
                 column = 0;
             } else {
@@ -1949,7 +1951,7 @@ fn str_expandtabs<'h>(
         }
     }
 
-    Ok(allocate_string(result, vm.heap)?)
+    builder.finish(vm.heap)
 }
 
 /// Implements Python's `str.encode(encoding='utf-8', errors='strict')` method.
