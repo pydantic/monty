@@ -147,6 +147,8 @@ reportDeprecated = false
 reportWildcardImportFromLibrary = false
 # some test cases intentionally exercise invalid index assignment/runtime error paths
 reportIndexIssue = false
+# some test cases intentionally call values that may be None to verify TypeError
+reportOptionalCall = false
 
 [[tool.pyright.executionEnvironments]]
 root = "crates/monty-type-checking"
