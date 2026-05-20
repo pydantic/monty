@@ -15,7 +15,7 @@ use crate::{
     exception_private::{ExcType, RunResult, SimpleException},
     hash::HashValue,
     heap::{
-        BorrowedHeapRead, BorrowedHeapReadMut, HeapId, HeapItem, HeapRead, heap_read_ref_as_field,
+        BorrowedHeapRead, BorrowedHeapReadMut, DropWithHeap, HeapId, HeapItem, HeapRead, heap_read_ref_as_field,
         heap_read_ref_as_field_mut,
     },
     intern::Interns,
@@ -253,8 +253,11 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Dataclass> {
     ///
     /// If the attribute is a public name (no leading underscore) not found in the
     /// dataclass's attrs dict, returns `MethodCall` so the VM yields to the host.
-    /// Otherwise handles the call directly:
-    /// - Attributes that exist in attrs but aren't callable produce `TypeError`
+    /// Otherwise the call is handled directly:
+    /// - Attributes that exist in attrs are field values: the value is loaded and
+    ///   called, exactly as `tmp = dc.attr; tmp(args)` would. Callable field values
+    ///   (functions, external functions) are invoked; non-callable field values
+    ///   produce `TypeError` via the normal call path.
     /// - Private/dunder attributes that aren't in attrs produce `AttributeError`
     fn py_call_attr(
         &mut self,
@@ -279,16 +282,20 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Dataclass> {
             let args_with_self = args.prepend(self_arg);
             Ok(CallResult::MethodCall(attr.clone(), args_with_self))
         } else {
-            // Not a method call — handle directly
+            // Attribute is present in attrs (or is a private/dunder name): treat it
+            // as a field value, not a host method. Load the value and call it, so
+            // `dc.attr(args)` behaves like `tmp = dc.attr; tmp(args)`. `call_function`
+            // invokes callable field values and raises the correct `TypeError` for
+            // non-callable ones, so no separate callability check is needed here.
             let method_name = attr.as_str(vm.interns);
-            defer_drop!(args, vm);
-
-            // If the attribute exists in attrs, it's a data value (not callable)
             if let Some(value) = self.get(vm.heap).attrs.get_by_str(method_name, vm.heap, vm.interns) {
-                let type_name = value.py_type(vm);
-                Err(ExcType::type_error_not_callable_object(type_name))
+                let value = value.clone_with_heap(vm.heap);
+                let result = vm.call_function(&value, args);
+                value.drop_with_heap(vm.heap);
+                result
             } else {
                 // Attribute doesn't exist — use the class name (e.g., "Point") not "Dataclass"
+                args.drop_with_heap(vm);
                 Err(ExcType::attribute_error(
                     self.get(vm.heap).name(vm.interns),
                     method_name,

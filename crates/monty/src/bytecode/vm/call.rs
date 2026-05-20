@@ -397,8 +397,11 @@ impl<T: ResourceTracker> VM<'_, T> {
                 return Ok(CallResult::External(EitherStr::Heap(name), args));
             }
             _ => {
+                // A non-callable heap object (list, dict, set, ...); name its type
+                // so the message matches CPython's `'<type>' object is not callable`.
+                let type_name = Value::Ref(heap_id).py_type(self);
                 args.drop_with_heap(self);
-                return Err(ExcType::type_error("object is not callable"));
+                return Err(ExcType::type_error_not_callable_object(type_name));
             }
         };
 

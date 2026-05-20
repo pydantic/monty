@@ -104,6 +104,16 @@ def make_empty() -> Empty:
     return Empty()
 
 
+@dataclass(frozen=True)
+class CallableBox:
+    foo: object
+    data: int
+
+
+def make_callable_box() -> CallableBox:
+    return CallableBox(foo=add_ints, data=7)
+
+
 # Non-function constants for NameLookup tests.
 # These mirror the values in the Rust test runner's NameLookup handler.
 CONST_INT = 42
@@ -559,6 +569,7 @@ ITER_MODE_GLOBALS: dict[str, object] = {
     'make_mutable_point': make_mutable_point,
     'make_user': make_user,
     'make_empty': make_empty,
+    'make_callable_box': make_callable_box,
     'async_call': async_call,
     'async_fail': async_fail,
 }

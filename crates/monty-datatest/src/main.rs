@@ -526,6 +526,34 @@ fn dispatch_external_call(name: &str, args: Vec<MontyObject>) -> DispatchResult 
                 .into(),
             )
         }
+        "make_callable_box" => {
+            assert!(args.is_empty(), "make_callable_box requires no arguments");
+            // Return an immutable dataclass with a callable-valued field (`foo`,
+            // bound to the `add_ints` external function) and a non-callable field
+            // (`data`). Used to test attr-call dispatch on callable dataclass
+            // fields (issue #352).
+            DispatchResult::Sync(
+                MontyObject::Dataclass {
+                    name: "CallableBox".to_string(),
+                    type_id: 0, // Test fixture has no real Python type
+                    field_names: vec!["foo".to_string(), "data".to_string()],
+                    attrs: vec![
+                        (
+                            MontyObject::String("foo".to_string()),
+                            MontyObject::Function {
+                                name: "add_ints".to_string(),
+                                docstring: None,
+                            },
+                        ),
+                        (MontyObject::String("data".to_string()), MontyObject::Int(7)),
+                    ]
+                    .into(),
+
+                    frozen: true,
+                }
+                .into(),
+            )
+        }
         "async_call" => {
             // async_call(x) -> coroutine that returns x
             // This is an async function - use run_pending() and resolve later
@@ -1847,12 +1875,11 @@ fn run_iter_loop(exec: MontyRun, limits: ResourceLimits) -> Result<MontyObject, 
                 let result = match lookup.name.as_str() {
                     // External functions — resolved as callable Function objects
                     "add_ints" | "concat_strings" | "return_value" | "get_list" | "raise_error" | "make_point"
-                    | "make_mutable_point" | "make_user" | "make_empty" | "async_call" | "async_fail" => {
-                        NameLookupResult::Value(MontyObject::Function {
-                            name: lookup.name.clone(),
-                            docstring: None,
-                        })
-                    }
+                    | "make_mutable_point" | "make_user" | "make_empty" | "make_callable_box" | "async_call"
+                    | "async_fail" => NameLookupResult::Value(MontyObject::Function {
+                        name: lookup.name.clone(),
+                        docstring: None,
+                    }),
                     // Non-function constants — resolved as plain values
                     "CONST_INT" => NameLookupResult::Value(MontyObject::Int(42)),
                     "CONST_STR" => NameLookupResult::Value(MontyObject::String("hello".to_string())),
