@@ -18,7 +18,7 @@ use crate::{
     builtins::Builtins,
     bytecode::{CallResult, VM},
     exception_private::{ExcType, RunError, RunResult, SimpleException},
-    hash::HashValue,
+    hash::{HashValue, hash_python_str},
     heap::{ContainsHeap, DropWithHeap, Heap, HeapData, HeapGuard, HeapId, HeapReadOutput},
     intern::{BytesId, FunctionId, Interns, LongIntId, StaticStrings, StringId},
     modules::ModuleFunctions,
@@ -215,6 +215,19 @@ impl PyTrait<'_> for Value {
             // Module functions equality
             (Self::ModuleFunction(mf1), Self::ModuleFunction(mf2)) => Ok(mf1 == mf2),
             (Self::DefFunction(f1), Self::DefFunction(f2)) => Ok(f1 == f2),
+            // External function equality is name-based: two ExtFunction values
+            // (any combination of inline `Value::ExtFunction(StringId)` and heap
+            // `HeapData::ExtFunction(String)`) compare equal iff they reference
+            // the same function name. Interned StringIds are deduped, so equal
+            // StringId ⇔ equal string; the cross-representation arms read the
+            // heap string directly. (#347)
+            (Self::ExtFunction(s1), Self::ExtFunction(s2)) => Ok(s1 == s2),
+            (Self::ExtFunction(s), Self::Ref(id)) if let HeapData::ExtFunction(n) = vm.heap.get(*id) => {
+                Ok(interns.get_str(*s) == n.as_str())
+            }
+            (Self::Ref(id), Self::ExtFunction(s)) if let HeapData::ExtFunction(n) = vm.heap.get(*id) => {
+                Ok(n.as_str() == interns.get_str(*s))
+            }
             // Markers compare equal if they're the same variant
             (Self::Marker(m1), Self::Marker(m2)) => Ok(m1 == m2),
             // Properties compare equal if they're the same variant
@@ -329,8 +342,8 @@ impl PyTrait<'_> for Value {
                 }
             }
             Self::Builtin(b) => Ok(b.py_repr_fmt(f)?),
-            Self::ModuleFunction(mf) => Ok(mf.py_repr_fmt(f, self.id())?),
-            Self::DefFunction(f_id) => Ok(interns.get_function(*f_id).py_repr_fmt(f, interns, self.id())?),
+            Self::ModuleFunction(mf) => Ok(mf.py_repr_fmt(f, self.id(vm))?),
+            Self::DefFunction(f_id) => Ok(interns.get_function(*f_id).py_repr_fmt(f, interns, self.id(vm))?),
             Self::ExtFunction(name_id) => Ok(write!(f, "<function '{}' external>", interns.get_str(*name_id))?),
             Self::InternString(string_id) => Ok(string_repr_fmt(interns.get_str(*string_id), f)?),
             Self::InternBytes(bytes_id) => Ok(bytes_repr_fmt(interns.get_bytes(*bytes_id), f)?),
@@ -1406,9 +1419,14 @@ impl Value {
         }
     }
 
-    /// Returns a stable, unique identifier for this value.
+    /// Returns the Python-visible `id()` for this value.
     ///
-    /// Should match Python's `id()` function conceptually.
+    /// `ExtFunction` values (inline `Value::ExtFunction` or heap
+    /// `HeapData::ExtFunction`) get a name-derived id so that two external
+    /// function values with the same name always satisfy CPython's invariant
+    /// `a is b ⇒ id(a) == id(b)` — needed because `MontyObject::Function`
+    /// conversion has discarded host object identity. All other variants use
+    /// a representation-based id.
     ///
     /// For immediate values (Int, Float, Builtins), this computes a deterministic ID
     /// based on the value's hash, avoiding heap allocation. This means `id(5) == id(5)` will
@@ -1416,9 +1434,16 @@ impl Value {
     ///
     /// Singletons (None, True, False, etc.) return IDs from a dedicated tagged range.
     /// Interned strings/bytes use their interner index for stable identity.
-    /// Heap-allocated values (Ref) reuse their `HeapId` inside the heap-tagged range.
-    pub fn id(&self) -> usize {
+    /// Heap-allocated values (Ref) reuse their `HeapId` inside the heap-tagged range,
+    /// except for heap `ExtFunction` which uses the name-derived id described above.
+    pub fn id(&self, vm: &VM<'_, impl ResourceTracker>) -> usize {
         match self {
+            // ExtFunction id is name-derived so the inline and heap representations
+            // agree; this also keeps `is(a, b) ⇒ id(a) == id(b)`. The guarded `Ref`
+            // arm must precede the bare `Ref` arm below — match evaluation is
+            // top-to-bottom.
+            Self::ExtFunction(name_id) => ext_function_value_id(vm.interns.get_str(*name_id)),
+            Self::Ref(id) if let HeapData::ExtFunction(name) = vm.heap.get(*id) => ext_function_value_id(name.as_str()),
             // Singletons have fixed tagged IDs
             Self::Undefined => singleton_id(SingletonSlot::Undefined),
             Self::Ellipsis => singleton_id(SingletonSlot::Ellipsis),
@@ -1444,7 +1469,6 @@ impl Value {
             Self::Builtin(c) => builtin_value_id(*c),
             Self::ModuleFunction(mf) => module_function_value_id(*mf),
             Self::DefFunction(f_id) => function_value_id(*f_id),
-            Self::ExtFunction(name_id) => ext_function_value_id(*name_id),
             // Markers get deterministic IDs based on discriminant
             Self::Marker(m) => marker_value_id(*m),
             // Properties get deterministic IDs based on discriminant
@@ -1475,11 +1499,11 @@ impl Value {
         }
     }
 
-    /// Equivalent of Python's `is` operator.
-    ///
-    /// Compares value identity by comparing their IDs.
-    pub fn is(&self, other: &Self) -> bool {
-        self.id() == other.id()
+    /// Python-visible `is` operator. Identity is name-based for `ExtFunction`
+    /// values via [`Value::id`], so two callables with the same `__name__`
+    /// compare identical regardless of representation.
+    pub fn is(&self, other: &Self, vm: &VM<'_, impl ResourceTracker>) -> bool {
+        self.id(vm) == other.id(vm)
     }
 
     /// Computes the hash value for this value, used for dict keys.
@@ -1523,7 +1547,11 @@ impl Value {
             Self::ModuleFunction(mf) => mf.hash(&mut hasher),
             // Hash functions based on function ID
             Self::DefFunction(f_id) => f_id.hash(&mut hasher),
-            Self::ExtFunction(name_id) => name_id.hash(&mut hasher),
+            // Hash the function name's string contents so the inline path
+            // agrees with the heap `HeapData::ExtFunction` arm in `heap_data.rs`.
+            // Required so cross-representation equality (added in the same fix
+            // series) preserves the dict invariant `a == b ⇒ hash(a) == hash(b)`.
+            Self::ExtFunction(name_id) => return Ok(Some(hash_python_str(vm.interns.get_str(*name_id)))),
             // Markers are hashable based on their discriminant (already included above)
             Self::Marker(m) => m.hash(&mut hasher),
             // Properties are hashable based on their OS function discriminant
@@ -2297,10 +2325,21 @@ fn function_value_id(f_id: FunctionId) -> usize {
     FUNCTION_ID_TAG | (f_id.index() & FUNCTION_ID_MASK)
 }
 
-/// Computes a deterministic ID for an external function based on its interned name.
+/// Computes a deterministic ID for an external function from its name string.
+///
+/// Used by [`Value::id`] so that inline `Value::ExtFunction` and heap
+/// `HeapData::ExtFunction` values referring to the same function name share
+/// the same Python-visible `id()` — required by CPython's
+/// `a is b ⇒ id(a) == id(b)` invariant. Collisions across distinct names are
+/// possible (the masked hash space is finite) but acceptable: Python's `id()`
+/// is allowed to collide across distinct objects.
 #[inline]
-fn ext_function_value_id(name_id: StringId) -> usize {
-    EXTFUNCTION_ID_TAG | (name_id.index() & EXTFUNCTION_ID_MASK)
+fn ext_function_value_id(name: &str) -> usize {
+    let hash_u64 = hash_python_str(name).raw();
+    // Mask to usize range before conversion to handle 32-bit platforms.
+    let masked = hash_u64 & (usize::MAX as u64);
+    let hash_usize = usize::try_from(masked).expect("masked value fits in usize");
+    EXTFUNCTION_ID_TAG | (hash_usize & EXTFUNCTION_ID_MASK)
 }
 
 /// Computes a deterministic ID for a marker value based on its discriminant.

@@ -58,14 +58,6 @@ impl<T: ResourceTracker> VM<'_, T> {
     }
 
     /// Identity comparison (is/is not).
-    ///
-    /// Compares identity using `Value::is()` which compares IDs.
-    ///
-    /// Identity is determined by `Value::id()` which uses:
-    /// - Fixed IDs for singletons (None, True, False, Ellipsis)
-    /// - Interned string/bytes index for InternString/InternBytes
-    /// - HeapId for heap-allocated values (Ref)
-    /// - Value-based hashing for immediate types (Int, Float, Function, etc.)
     pub(super) fn compare_is(&mut self, negate: bool) {
         let this = self;
 
@@ -74,7 +66,7 @@ impl<T: ResourceTracker> VM<'_, T> {
         let lhs = this.pop();
         defer_drop!(lhs, this);
 
-        let result = lhs.is(rhs);
+        let result = lhs.is(rhs, this);
         this.push(Value::Bool(if negate { !result } else { result }));
     }
 
