@@ -20,8 +20,8 @@ use std::{
 use ahash::AHashMap;
 use chrono::{Datelike, Timelike};
 use monty::{
-    ExcType, ExtFunctionResult, FileMode, LimitedTracker, MontyDate, MontyDateTime, MontyException, MontyObject,
-    MontyRun, NameLookupResult, OpenAction, OsFunction, PrintWriter, ResourceLimits, RunProgress, dir_stat, file_stat,
+    ExcType, ExtFunctionResult, FileAccess, FileMode, LimitedTracker, MontyDate, MontyDateTime, MontyException,
+    MontyObject, MontyRun, NameLookupResult, OsFunction, PrintWriter, ResourceLimits, RunProgress, dir_stat, file_stat,
     fs::{MountMode, MountTable, OverlayState},
 };
 use pyo3::{prelude::*, types::PyDict};
@@ -1053,10 +1053,10 @@ fn dispatch_os_call(
             let mode_str = String::try_from(&args[1]).expect("open: second arg must be mode string");
             let file_mode = match FileMode::parse(&mode_str) {
                 Ok(m) => m,
-                Err(e) => return MontyException::new(ExcType::ValueError, Some(e.message)).into(),
+                Err(e) => return MontyException::new(ExcType::ValueError, Some(e.to_string())).into(),
             };
-            match file_mode.action {
-                OpenAction::Read => {
+            match file_mode.access {
+                FileAccess::Read | FileAccess::ReadUpdate => {
                     if get_virtual_file(&path).is_none() {
                         return if is_virtual_dir(&path) {
                             MontyException::new(
@@ -1074,13 +1074,13 @@ fn dispatch_os_call(
                     }
                 }
                 // `w`/`w+`: truncate to empty (creating if missing).
-                OpenAction::Write => MUTABLE_VFS.with(|vfs| {
+                FileAccess::Write | FileAccess::WriteUpdate => MUTABLE_VFS.with(|vfs| {
                     let mut vfs = vfs.borrow_mut();
                     vfs.files.insert(path.clone(), (Vec::new(), 0o644));
                     vfs.deleted_files.remove(&path);
                 }),
                 // `a`/`a+`: create if missing, preserving existing content.
-                OpenAction::Append => MUTABLE_VFS.with(|vfs| {
+                FileAccess::Append | FileAccess::AppendUpdate => MUTABLE_VFS.with(|vfs| {
                     let mut vfs = vfs.borrow_mut();
                     vfs.files.entry(path.clone()).or_insert_with(|| (Vec::new(), 0o644));
                     vfs.deleted_files.remove(&path);

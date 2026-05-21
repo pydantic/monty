@@ -16,7 +16,7 @@ use super::{
 };
 use crate::{
     MontyObject,
-    object::{FileMode, OpenAction},
+    object::{FileAccess, FileMode},
 };
 
 /// Internal result used for existence-style queries where "missing" is not an error.
@@ -74,25 +74,25 @@ pub(super) fn execute(request: FsRequest<'_>, ctx: &mut MountContext<'_>) -> Res
 
 /// Performs the open-time effect for `open()` and returns the file handle.
 ///
-/// The effect depends on the mode's [`OpenAction`]: `Read` only checks the
+/// The effect depends on the mode's [`FileAccess`]: read modes only check the
 /// file exists (the `resolve_path` failure for a missing file surfaces as
-/// `FileNotFoundError`); `Write` truncates or creates an empty file; `Append`
-/// creates the file if missing without disturbing existing content. The host
-/// keeps no handle open — this single call opens, acts, and closes.
+/// `FileNotFoundError`); write modes truncate or create an empty file; append
+/// modes create the file if missing without disturbing existing content. The
+/// host keeps no handle open — this single call opens, acts, and closes.
 fn open(path: &str, mode: &str, ctx: &mut MountContext<'_>) -> Result<MontyObject, MountError> {
-    let file_mode = FileMode::parse(mode).map_err(|e| MountError::InvalidMount(e.message))?;
-    match file_mode.action {
-        OpenAction::Read => {
+    let file_mode = FileMode::parse(mode).map_err(|e| MountError::InvalidMount(e.to_string()))?;
+    match file_mode.access {
+        FileAccess::Read | FileAccess::ReadUpdate => {
             let resolved = resolve_path(path, ctx.mount_virtual, ctx.mount_host, ResolveMode::Existing)?;
             reject_directory(&resolved.host_path, path)?;
         }
-        OpenAction::Write => {
+        FileAccess::Write | FileAccess::WriteUpdate => {
             check_write_limit(0, ctx)?;
             let resolved = resolve_path(path, ctx.mount_virtual, ctx.mount_host, ResolveMode::Creation)?;
             write_text_fs(&resolved.host_path, "", path)?;
             commit_write_bytes(0, ctx);
         }
-        OpenAction::Append => {
+        FileAccess::Append | FileAccess::AppendUpdate => {
             let resolved = resolve_path(path, ctx.mount_virtual, ctx.mount_host, ResolveMode::Creation)?;
             append_bytes_fs(&resolved.host_path, &[], path)?;
         }

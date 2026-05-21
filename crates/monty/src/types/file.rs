@@ -237,7 +237,7 @@ impl<'h> HeapRead<'h, OpenFile> {
         let binary = {
             let file = self.get(vm.heap);
             file.ensure_open()?;
-            if !file.mode.access.readable() {
+            if !file.mode.readable() {
                 return Err(unsupported_operation("not readable"));
             }
             file.mode.binary
@@ -274,7 +274,7 @@ impl<'h> HeapRead<'h, OpenFile> {
         }
         let function = {
             let file = self.get_mut(vm.heap);
-            if !file.mode.access.writable() {
+            if !file.mode.writable() {
                 let message = if file.mode.binary { "write" } else { "not writable" };
                 data.drop_with_heap(vm);
                 return Err(unsupported_operation(message));
@@ -317,7 +317,7 @@ impl<'h> HeapRead<'h, OpenFile> {
         args.check_zero_args("readable", vm.heap)?;
         let file = self.get(vm.heap);
         file.ensure_open()?;
-        Ok(CallResult::Value(Value::Bool(file.mode.access.readable())))
+        Ok(CallResult::Value(Value::Bool(file.mode.readable())))
     }
 
     /// Returns whether this file object supports `write()`.
@@ -325,7 +325,7 @@ impl<'h> HeapRead<'h, OpenFile> {
         args.check_zero_args("writable", vm.heap)?;
         let file = self.get(vm.heap);
         file.ensure_open()?;
-        Ok(CallResult::Value(Value::Bool(file.mode.access.writable())))
+        Ok(CallResult::Value(Value::Bool(file.mode.writable())))
     }
 
     /// Returns `False`; Monty's file wrappers currently expose no seek state.

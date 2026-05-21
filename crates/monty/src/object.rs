@@ -187,57 +187,29 @@ fn monty_datetime_naive(datetime: &MontyDateTime) -> Option<NaiveDateTime> {
     Some(date.and_time(time))
 }
 
-/// The concrete `_io` wrapper type a file object presents as.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
-pub enum FileKind {
-    /// Text-mode files, including read, write, and append modes.
-    Text,
-    /// Binary read-only files opened with modes such as `"rb"`.
-    BufferedReader,
-    /// Binary write or append files opened with modes such as `"wb"` or `"ab"`.
-    BufferedWriter,
-    /// Binary read/write files opened with modes such as `"r+b"`.
-    BufferedRandom,
-}
-
-/// Read/write capability granted by an `open()` mode string.
+/// The access pattern selected by an `open()` mode string.
+///
+/// This single enum combines three concepts that were previously separate
+/// (`r`/`w`/`a` action, the `+` update flag, and the resulting read/write
+/// capability) because they are fully interdependent: the six combinations of
+/// action and update flag are the only states that matter. Every other fact
+/// about a mode — the open-time effect, `readable()`/`writable()`, and the
+/// concrete `_io` wrapper type — is derived from this plus the binary flag, so
+/// no further enum is needed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum FileAccess {
-    /// Read-only mode.
+    /// `r`: read-only; the file must already exist.
     Read,
-    /// Write-only mode.
+    /// `r+`: read and write an existing file; nothing happens at open time.
+    ReadUpdate,
+    /// `w`: write-only; truncate the file (creating it if missing) on open.
     Write,
-    /// Read/write update mode.
-    ReadWrite,
-}
-
-impl FileAccess {
-    /// Returns whether `read()` is allowed by this access mode.
-    #[must_use]
-    pub const fn readable(self) -> bool {
-        matches!(self, Self::Read | Self::ReadWrite)
-    }
-
-    /// Returns whether `write()` is allowed by this access mode.
-    #[must_use]
-    pub const fn writable(self) -> bool {
-        matches!(self, Self::Write | Self::ReadWrite)
-    }
-}
-
-/// The primary open action selected by the `r`/`w`/`a` mode character.
-///
-/// This drives the open-time filesystem behaviour, which CPython performs on
-/// open rather than on first write: `Write` truncates (or creates), `Append`
-/// creates without disturbing existing content, and `Read` touches nothing.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
-pub enum OpenAction {
-    /// `r`/`r+`: the file must already exist; nothing happens at open time.
-    Read,
-    /// `w`/`w+`: truncate the file to empty (creating it if missing) on open.
-    Write,
-    /// `a`/`a+`: create the file if missing on open, preserving any content.
+    /// `w+`: read and write; truncate the file (creating it if missing) on open.
+    WriteUpdate,
+    /// `a`: write-only appending; create the file if missing, preserving content.
     Append,
+    /// `a+`: read and append; create the file if missing, preserving content.
+    AppendUpdate,
 }
 
 /// A parsed `open()` mode and the behaviour Monty exposes for it.
@@ -250,27 +222,45 @@ pub enum OpenAction {
 pub struct FileMode {
     /// The original mode string, preserved for the file object's `mode` attribute.
     pub mode: String,
-    /// The concrete `_io` wrapper type.
-    pub kind: FileKind,
-    /// Whether the mode allows reading, writing, or both.
+    /// The access pattern (`r`/`w`/`a` and the `+` update flag).
     pub access: FileAccess,
-    /// The primary open action (`r`/`w`/`a`), driving open-time behaviour.
-    pub action: OpenAction,
     /// Whether the file expects bytes instead of text.
     pub binary: bool,
 }
 
 impl FileMode {
+    /// Whether `read()` is allowed by this mode.
+    #[must_use]
+    pub fn readable(&self) -> bool {
+        matches!(
+            self.access,
+            FileAccess::Read | FileAccess::ReadUpdate | FileAccess::WriteUpdate | FileAccess::AppendUpdate
+        )
+    }
+
+    /// Whether `write()` is allowed by this mode.
+    #[must_use]
+    pub fn writable(&self) -> bool {
+        matches!(
+            self.access,
+            FileAccess::Write
+                | FileAccess::WriteUpdate
+                | FileAccess::Append
+                | FileAccess::AppendUpdate
+                | FileAccess::ReadUpdate
+        )
+    }
+
     /// Whether writes should always append (`a`/`a+`).
     #[must_use]
     pub fn append(&self) -> bool {
-        matches!(self.action, OpenAction::Append)
+        matches!(self.access, FileAccess::Append | FileAccess::AppendUpdate)
     }
 
     /// Whether `open()` must truncate the file to empty immediately (`w`/`w+`).
     #[must_use]
     pub fn truncate(&self) -> bool {
-        matches!(self.action, OpenAction::Write)
+        matches!(self.access, FileAccess::Write | FileAccess::WriteUpdate)
     }
 
     /// Whether `open()` must create the file immediately if missing.
@@ -279,28 +269,31 @@ impl FileMode {
     /// not disturb existing content.
     #[must_use]
     pub fn create(&self) -> bool {
-        matches!(self.action, OpenAction::Write | OpenAction::Append)
+        matches!(
+            self.access,
+            FileAccess::Write | FileAccess::WriteUpdate | FileAccess::Append | FileAccess::AppendUpdate
+        )
     }
 
     /// Returns the `_io` wrapper type a file opened with this mode presents as.
     #[must_use]
     pub fn file_type(&self) -> Type {
-        match self.kind {
-            FileKind::Text => Type::TextIOWrapper,
-            FileKind::BufferedReader => Type::BufferedReader,
-            FileKind::BufferedWriter => Type::BufferedWriter,
-            FileKind::BufferedRandom => Type::BufferedRandom,
+        match (self.binary, self.access) {
+            (false, _) => Type::TextIOWrapper,
+            (true, FileAccess::ReadUpdate | FileAccess::WriteUpdate | FileAccess::AppendUpdate) => Type::BufferedRandom,
+            (true, FileAccess::Read) => Type::BufferedReader,
+            (true, FileAccess::Write | FileAccess::Append) => Type::BufferedWriter,
         }
     }
 
     /// Returns the bare Python type name (`type(f).__name__`) for this mode.
     #[must_use]
     pub fn type_name(&self) -> &'static str {
-        match self.kind {
-            FileKind::Text => "TextIOWrapper",
-            FileKind::BufferedReader => "BufferedReader",
-            FileKind::BufferedWriter => "BufferedWriter",
-            FileKind::BufferedRandom => "BufferedRandom",
+        match (self.binary, self.access) {
+            (false, _) => "TextIOWrapper",
+            (true, FileAccess::ReadUpdate | FileAccess::WriteUpdate | FileAccess::AppendUpdate) => "BufferedRandom",
+            (true, FileAccess::Read) => "BufferedReader",
+            (true, FileAccess::Write | FileAccess::Append) => "BufferedWriter",
         }
     }
 
@@ -313,9 +306,9 @@ impl FileMode {
     /// # Errors
     /// Returns a [`FileModeError`] (whose message matches CPython's) when the
     /// mode string is empty, malformed, or contains an unsupported combination.
-    pub fn parse(mode: &str) -> Result<Self, FileModeError> {
+    pub fn parse(mode: &str) -> Result<Self, Cow<'static, str>> {
         if mode.is_empty() {
-            return Err(FileModeError::invalid_mode(mode));
+            return Err("Invalid mode: empty".into());
         }
 
         let mut action = None;
@@ -327,105 +320,52 @@ impl FileMode {
             match ch {
                 'r' | 'w' | 'a' => {
                     if action.replace(ch).is_some() {
-                        return Err(FileModeError::new(
-                            "must have exactly one of create/read/write/append mode",
-                        ));
+                        return Err("must have exactly one of create/read/write/append mode".into());
                     }
                 }
-                'x' => return Err(FileModeError::new("exclusive creation mode is not supported")),
+                'x' => return Err("exclusive creation mode is not supported".into()),
                 'b' => {
                     if binary {
-                        return Err(FileModeError::invalid_mode(mode));
+                        return Err("invalid mode: binary mode specified twice".into());
                     }
                     binary = true;
                 }
                 't' => {
                     if text {
-                        return Err(FileModeError::invalid_mode(mode));
+                        return Err("invalid mode: text mode specified twice".into());
                     }
                     text = true;
                 }
                 '+' => {
                     if updating {
-                        return Err(FileModeError::invalid_mode(mode));
+                        return Err("invalid mode: update mode specified twice".into());
                     }
                     updating = true;
                 }
-                _ => return Err(FileModeError::invalid_mode(mode)),
+                _ => return Err(format!("invalid mode: unknown mode character {ch:?}").into()),
             }
         }
 
         if binary && text {
-            return Err(FileModeError::new("can't have text and binary mode at once"));
+            return Err("can't have text and binary mode at once".into());
         }
 
-        let action_char = action.unwrap_or('r');
-        let access = if updating {
-            FileAccess::ReadWrite
-        } else if action_char == 'r' {
-            FileAccess::Read
-        } else {
-            FileAccess::Write
-        };
-        let action = match action_char {
-            'w' => OpenAction::Write,
-            'a' => OpenAction::Append,
-            _ => OpenAction::Read,
-        };
-        let kind = if binary {
-            if updating {
-                FileKind::BufferedRandom
-            } else if access.readable() {
-                FileKind::BufferedReader
-            } else {
-                FileKind::BufferedWriter
-            }
-        } else {
-            FileKind::Text
+        let access = match (action.unwrap_or('r'), updating) {
+            ('w', false) => FileAccess::Write,
+            ('w', true) => FileAccess::WriteUpdate,
+            ('a', false) => FileAccess::Append,
+            ('a', true) => FileAccess::AppendUpdate,
+            (_, false) => FileAccess::Read,
+            (_, true) => FileAccess::ReadUpdate,
         };
 
         Ok(Self {
             mode: mode.to_owned(),
-            kind,
             access,
-            action,
             binary,
         })
     }
 }
-
-/// Error returned by [`FileMode::parse`] for an invalid `open()` mode string.
-///
-/// The message matches CPython's so callers can surface it verbatim as the
-/// argument of a `ValueError`.
-#[derive(Debug, Clone)]
-pub struct FileModeError {
-    /// Human-readable message describing why the mode is invalid.
-    pub message: String,
-}
-
-impl FileModeError {
-    /// Creates an error with the given message.
-    fn new(message: impl Into<String>) -> Self {
-        Self {
-            message: message.into(),
-        }
-    }
-
-    /// Creates the `invalid mode: '<mode>'` error CPython raises for a
-    /// malformed mode string.
-    fn invalid_mode(mode: &str) -> Self {
-        Self::new(format!("invalid mode: {mode:?}"))
-    }
-}
-
-impl fmt::Display for FileModeError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.message)
-    }
-}
-
-impl Error for FileModeError {}
 
 /// A Python value that can be passed to or returned from the interpreter.
 ///

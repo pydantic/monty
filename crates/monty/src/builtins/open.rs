@@ -39,8 +39,8 @@ pub(crate) fn builtin_open(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValue
     let mode_str = extract_mode_string(mode, vm)?;
     // Parse here purely to reject malformed modes before the OS round-trip;
     // the file wrapper itself is built from the host's returned FileHandle.
-    let file_mode = FileMode::parse(mode_str)
-        .map_err(|e| RunError::from(SimpleException::new_msg(ExcType::ValueError, e.message)))?;
+    let file_mode =
+        FileMode::parse(mode_str).map_err(|e| RunError::from(SimpleException::new_msg(ExcType::ValueError, e)))?;
 
     let path_value = allocate_string(path, vm.heap)?;
     let mode_value = allocate_string(file_mode.mode, vm.heap)?;
