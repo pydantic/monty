@@ -35,7 +35,7 @@ pub(crate) use bytes::Bytes;
 pub(crate) use dataclass::Dataclass;
 pub(crate) use dict::Dict;
 pub(crate) use dict_view::{DictItemsView, DictKeysView, DictValuesView};
-pub(crate) use file::{OpenFile, OpenMode};
+pub(crate) use file::OpenFile;
 pub(crate) use iter::MontyIter;
 pub(crate) use list::List;
 pub(crate) use long_int::LongInt;

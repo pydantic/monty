@@ -17,49 +17,12 @@ use crate::{
     exception_private::{ExcType, RunError, RunResult, SimpleException},
     heap::{DropWithHeap, Heap, HeapData, HeapId, HeapItem, HeapRead},
     intern::StaticStrings,
+    object::FileMode,
     os::OsFunction,
     resource::{ResourceError, ResourceTracker},
     types::str::StringRepr,
     value::{EitherStr, Value},
 };
-
-/// The concrete `_io` wrapper type exposed by `type(open(...))`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub(crate) enum FileKind {
-    /// Text-mode files, including read, write, and append modes.
-    Text,
-    /// Binary read-only files opened with modes such as `"rb"`.
-    BufferedReader,
-    /// Binary write or append files opened with modes such as `"wb"` or `"ab"`.
-    BufferedWriter,
-    /// Binary read/write files opened with modes such as `"r+b"`.
-    BufferedRandom,
-}
-
-/// Read/write capability granted by an `open()` mode string.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub(crate) enum FileAccess {
-    /// Read-only mode.
-    Read,
-    /// Write-only mode.
-    Write,
-    /// Read/write update mode.
-    ReadWrite,
-}
-
-impl FileAccess {
-    /// Returns whether `read()` is allowed by this access mode.
-    #[must_use]
-    pub const fn readable(self) -> bool {
-        matches!(self, Self::Read | Self::ReadWrite)
-    }
-
-    /// Returns whether `write()` is allowed by this access mode.
-    #[must_use]
-    pub const fn writable(self) -> bool {
-        matches!(self, Self::Write | Self::ReadWrite)
-    }
-}
 
 /// Whether a write-mode file has already issued its initial truncating write.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -79,136 +42,56 @@ enum FileState {
     Closed,
 }
 
-/// Parsed `open()` mode and the behavior Monty should expose for it.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct OpenMode {
-    /// The mode string preserved for the file object's `mode` attribute.
-    pub mode: String,
-    /// The concrete heap type to allocate.
-    pub kind: FileKind,
-    /// Whether the mode allows reading, writing, or both.
-    pub access: FileAccess,
-    /// Whether writes should always append.
-    pub append: bool,
-    /// Whether the file expects bytes instead of text.
-    pub binary: bool,
-}
-
-impl OpenMode {
-    /// Parses the Python `open()` mode string for Monty's supported file modes.
-    ///
-    /// Monty currently supports the common read, write, append, and update
-    /// combinations in text or binary form. Exclusive creation (`x`) is rejected
-    /// for now because it needs a dedicated mount-table operation to be race-free.
-    pub fn parse(mode: &str) -> RunResult<Self> {
-        if mode.is_empty() {
-            return Err(invalid_mode(mode));
-        }
-
-        let mut action = None;
-        let mut binary = false;
-        let mut text = false;
-        let mut updating = false;
-
-        for ch in mode.chars() {
-            match ch {
-                'r' | 'w' | 'a' => {
-                    if action.replace(ch).is_some() {
-                        return Err(one_action_mode_error());
-                    }
-                }
-                'x' => {
-                    return Err(SimpleException::new_msg(
-                        ExcType::ValueError,
-                        "exclusive creation mode is not supported",
-                    )
-                    .into());
-                }
-                'b' => {
-                    if binary {
-                        return Err(invalid_mode(mode));
-                    }
-                    binary = true;
-                }
-                't' => {
-                    if text {
-                        return Err(invalid_mode(mode));
-                    }
-                    text = true;
-                }
-                '+' => {
-                    if updating {
-                        return Err(invalid_mode(mode));
-                    }
-                    updating = true;
-                }
-                _ => return Err(invalid_mode(mode)),
-            }
-        }
-
-        if binary && text {
-            return Err(
-                SimpleException::new_msg(ExcType::ValueError, "can't have text and binary mode at once").into(),
-            );
-        }
-
-        let action = action.unwrap_or('r');
-        let access = if updating {
-            FileAccess::ReadWrite
-        } else if action == 'r' {
-            FileAccess::Read
-        } else {
-            FileAccess::Write
-        };
-        let append = action == 'a';
-        let kind = if binary {
-            if updating {
-                FileKind::BufferedRandom
-            } else if access.readable() {
-                FileKind::BufferedReader
-            } else {
-                FileKind::BufferedWriter
-            }
-        } else {
-            FileKind::Text
-        };
-
-        Ok(Self {
-            mode: mode.to_owned(),
-            kind,
-            access,
-            append,
-            binary,
-        })
-    }
-}
-
 /// A Python file object that stores path and mode state, but no native handle.
+///
+/// Monty keeps no live OS file descriptor: every `read()`/`write()` is a
+/// complete one-shot OS call that the host opens, performs, and closes. All
+/// state needed to make those calls reproducible across a snapshot/resume —
+/// `path`, `mode`, `position`, `id` — lives here and is serialized.
+///
+/// `position` is the byte offset future seek-aware reads (`readline`,
+/// `read(size)`, `seek`) will operate from; it is plumbed end-to-end but no
+/// current operation mutates it.
+///
+/// TODO(perf): a host may assign an `id` (otherwise `None`). A future
+/// optimization could let the host cache a real OS handle keyed by that `id`,
+/// seeking it to `position`, instead of re-opening the file on every call. The
+/// stateless (re-open every call) model must remain the default so snapshots
+/// never depend on host state.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) struct OpenFile {
     path: String,
-    mode: String,
-    kind: FileKind,
-    access: FileAccess,
-    append: bool,
-    binary: bool,
+    mode: FileMode,
     write_state: WriteState,
     state: FileState,
+    /// Byte offset for seek-aware reads (currently never mutated).
+    position: u64,
+    /// Optional host-assigned id for this open file (Monty never sets it).
+    id: Option<u64>,
 }
 
 impl OpenFile {
-    /// Creates a new path-backed file wrapper from a parsed `open()` mode.
+    /// Creates a path-backed file wrapper from a parsed `open()` mode and the
+    /// `position`/`id` carried across the host boundary by a
+    /// [`MontyObject::FileHandle`](crate::MontyObject::FileHandle).
+    ///
+    /// Truncating modes (`w`/`w+`) have already had the file emptied by the
+    /// host at `open()` time, so the wrapper starts in [`WriteState::Written`]:
+    /// the first user `write()` should append rather than truncate again.
     #[must_use]
-    pub fn new(path: String, mode: OpenMode) -> Self {
+    pub fn with_state(path: String, mode: FileMode, position: u64, id: Option<u64>) -> Self {
+        let write_state = if mode.truncate() {
+            WriteState::Written
+        } else {
+            WriteState::Fresh
+        };
         Self {
             path,
-            mode: mode.mode,
-            kind: mode.kind,
-            access: mode.access,
-            append: mode.append,
-            binary: mode.binary,
-            write_state: WriteState::Fresh,
+            mode,
+            write_state,
             state: FileState::Open,
+            position,
+            id,
         }
     }
 
@@ -221,24 +104,37 @@ impl OpenFile {
     /// Returns the mode string shown to Python code.
     #[must_use]
     pub fn mode(&self) -> &str {
+        &self.mode.mode
+    }
+
+    /// Returns the parsed `open()` mode.
+    #[must_use]
+    pub fn file_mode(&self) -> &FileMode {
         &self.mode
+    }
+
+    /// Returns the byte offset for seek-aware reads.
+    #[must_use]
+    pub fn position(&self) -> u64 {
+        self.position
+    }
+
+    /// Returns the optional host-assigned id for this open file.
+    #[must_use]
+    pub fn id(&self) -> Option<u64> {
+        self.id
     }
 
     /// Returns the type represented by this file wrapper.
     #[must_use]
     pub fn file_type(&self) -> Type {
-        match self.kind {
-            FileKind::Text => Type::TextIOWrapper,
-            FileKind::BufferedReader => Type::BufferedReader,
-            FileKind::BufferedWriter => Type::BufferedWriter,
-            FileKind::BufferedRandom => Type::BufferedRandom,
-        }
+        self.mode.file_type()
     }
 }
 
 impl HeapItem for OpenFile {
     fn py_estimate_size(&self) -> usize {
-        mem::size_of::<Self>() + self.path.len() + self.mode.len()
+        mem::size_of::<Self>() + self.path.len() + self.mode.mode.len()
     }
 
     fn py_dec_ref_ids(&mut self, _stack: &mut Vec<HeapId>) {
@@ -282,7 +178,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, OpenFile> {
 
     fn py_call_attr(
         &mut self,
-        _self_id: HeapId,
+        self_id: HeapId,
         vm: &mut VM<'h, impl ResourceTracker>,
         attr: &EitherStr,
         args: ArgValues,
@@ -293,8 +189,8 @@ impl<'h> PyTrait<'h> for HeapRead<'h, OpenFile> {
         };
 
         match method {
-            StaticStrings::Read => self.read(vm, args),
-            StaticStrings::Write => self.write(vm, args),
+            StaticStrings::Read => self.read(self_id, vm, args),
+            StaticStrings::Write => self.write(self_id, vm, args),
             StaticStrings::Close => self.close(vm, args),
             StaticStrings::Flush => self.flush(vm, args),
             StaticStrings::Readable => self.readable(vm, args),
@@ -315,9 +211,9 @@ impl<'h> PyTrait<'h> for HeapRead<'h, OpenFile> {
         let file = self.get(vm.heap);
         let value = match method {
             StaticStrings::Name => allocate_string(file.path.clone(), vm.heap)?,
-            StaticStrings::Mode => allocate_string(file.mode.clone(), vm.heap)?,
+            StaticStrings::Mode => allocate_string(file.mode.mode.clone(), vm.heap)?,
             StaticStrings::Closed => Value::Bool(matches!(file.state, FileState::Closed)),
-            StaticStrings::Encoding if !file.binary => allocate_string("utf-8", vm.heap)?,
+            StaticStrings::Encoding if !file.mode.binary => allocate_string("utf-8", vm.heap)?,
             _ => return Err(ExcType::attribute_error(self.py_type(vm), attr.as_str(vm.interns))),
         };
         Ok(Some(CallResult::Value(value)))
@@ -326,30 +222,48 @@ impl<'h> PyTrait<'h> for HeapRead<'h, OpenFile> {
 
 impl<'h> HeapRead<'h, OpenFile> {
     /// Implements `file.read()` as a full-file OS read.
-    fn read(&mut self, vm: &mut VM<'h, impl ResourceTracker>, args: ArgValues) -> RunResult<CallResult> {
+    ///
+    /// The OS call's first argument is the file object itself
+    /// (`Value::Ref(self_id)`); the host boundary converts it to a
+    /// [`MontyObject::FileHandle`](crate::MontyObject::FileHandle), so the host
+    /// receives the path, mode, position, and id needed to service the read.
+    fn read(
+        &mut self,
+        self_id: HeapId,
+        vm: &mut VM<'h, impl ResourceTracker>,
+        args: ArgValues,
+    ) -> RunResult<CallResult> {
         args.check_zero_args("read", vm.heap)?;
-        let (path, binary) = {
+        let binary = {
             let file = self.get(vm.heap);
             file.ensure_open()?;
-            if !file.access.readable() {
+            if !file.mode.access.readable() {
                 return Err(unsupported_operation("not readable"));
             }
-            (file.path.clone(), file.binary)
+            file.mode.binary
         };
 
-        let path_value = allocate_string(path, vm.heap)?;
         let function = if binary {
             OsFunction::ReadBytes
         } else {
             OsFunction::ReadText
         };
-        Ok(CallResult::OsCall(function, ArgValues::One(path_value)))
+        vm.heap.inc_ref(self_id);
+        Ok(CallResult::OsCall(function, ArgValues::One(Value::Ref(self_id))))
     }
 
     /// Implements `file.write(data)` as a one-shot OS write or append.
-    fn write(&mut self, vm: &mut VM<'h, impl ResourceTracker>, args: ArgValues) -> RunResult<CallResult> {
+    ///
+    /// As with [`Self::read`], the first OS-call argument is the file object
+    /// itself, delivered to the host as a `MontyObject::FileHandle`.
+    fn write(
+        &mut self,
+        self_id: HeapId,
+        vm: &mut VM<'h, impl ResourceTracker>,
+        args: ArgValues,
+    ) -> RunResult<CallResult> {
         let data = args.get_one_arg("write", vm.heap)?;
-        let binary = self.get(vm.heap).binary;
+        let binary = self.get(vm.heap).mode.binary;
         if let Err(err) = validate_write_data(&data, binary, vm) {
             data.drop_with_heap(vm);
             return Err(err);
@@ -358,30 +272,30 @@ impl<'h> HeapRead<'h, OpenFile> {
             data.drop_with_heap(vm);
             return Err(err);
         }
-        let (path, function) = {
+        let function = {
             let file = self.get_mut(vm.heap);
-            if !file.access.writable() {
-                let message = if file.binary { "write" } else { "not writable" };
+            if !file.mode.access.writable() {
+                let message = if file.mode.binary { "write" } else { "not writable" };
                 data.drop_with_heap(vm);
                 return Err(unsupported_operation(message));
             }
-            let function = if file.binary {
-                if file.append || matches!(file.write_state, WriteState::Written) {
+            let function = if file.mode.binary {
+                if file.mode.append() || matches!(file.write_state, WriteState::Written) {
                     OsFunction::AppendBytes
                 } else {
                     OsFunction::WriteBytes
                 }
-            } else if file.append || matches!(file.write_state, WriteState::Written) {
+            } else if file.mode.append() || matches!(file.write_state, WriteState::Written) {
                 OsFunction::AppendText
             } else {
                 OsFunction::WriteText
             };
             file.write_state = WriteState::Written;
-            (file.path.clone(), function)
+            function
         };
 
-        let path_value = allocate_string(path, vm.heap)?;
-        Ok(CallResult::OsCall(function, ArgValues::Two(path_value, data)))
+        vm.heap.inc_ref(self_id);
+        Ok(CallResult::OsCall(function, ArgValues::Two(Value::Ref(self_id), data)))
     }
 
     /// Marks the file wrapper as closed.
@@ -403,7 +317,7 @@ impl<'h> HeapRead<'h, OpenFile> {
         args.check_zero_args("readable", vm.heap)?;
         let file = self.get(vm.heap);
         file.ensure_open()?;
-        Ok(CallResult::Value(Value::Bool(file.access.readable())))
+        Ok(CallResult::Value(Value::Bool(file.mode.access.readable())))
     }
 
     /// Returns whether this file object supports `write()`.
@@ -411,7 +325,7 @@ impl<'h> HeapRead<'h, OpenFile> {
         args.check_zero_args("writable", vm.heap)?;
         let file = self.get(vm.heap);
         file.ensure_open()?;
-        Ok(CallResult::Value(Value::Bool(file.access.writable())))
+        Ok(CallResult::Value(Value::Bool(file.mode.access.writable())))
     }
 
     /// Returns `False`; Monty's file wrappers currently expose no seek state.
@@ -461,20 +375,6 @@ fn is_bytes(data: &Value, heap: &Heap<impl ResourceTracker>) -> bool {
         Value::Ref(id) => matches!(heap.get(*id), HeapData::Bytes(_)),
         _ => false,
     }
-}
-
-/// Builds the `ValueError` used for malformed `open()` modes.
-fn invalid_mode(mode: &str) -> RunError {
-    SimpleException::new_msg(ExcType::ValueError, format!("invalid mode: {mode:?}")).into()
-}
-
-/// Builds the CPython error for modes with multiple open actions.
-fn one_action_mode_error() -> RunError {
-    SimpleException::new_msg(
-        ExcType::ValueError,
-        "must have exactly one of create/read/write/append mode",
-    )
-    .into()
 }
 
 /// Builds the OSError used for unsupported file operations.

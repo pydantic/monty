@@ -17,7 +17,7 @@ use super::{
         MountContext, bytes_to_utf8, check_write_limit, commit_write_bytes, current_timestamp, dir_mtime,
         format_child_path, list_visible_real_dir_entry_names, read_bytes_fs, read_text_fs, stat_fs,
     },
-    dispatch::FsRequest,
+    dispatch::{FsRequest, file_handle_result},
     error::MountError,
     overlay_state::{OverlayEntry, OverlayFile, OverlayFileRef, OverlayState},
     path_security::{
@@ -25,7 +25,10 @@ use super::{
         strip_mount_prefix,
     },
 };
-use crate::{MontyObject, dir_stat, file_stat};
+use crate::{
+    MontyObject, dir_stat, file_stat,
+    object::{FileMode, OpenAction},
+};
 
 /// Resolves a virtual path to the mount-relative overlay key.
 fn relative_path(path: &str, ctx: &MountContext<'_>) -> Result<String, MountError> {
@@ -66,7 +69,51 @@ pub(super) fn execute(
         FsRequest::Resolve { path } | FsRequest::Absolute { path } => {
             Ok(MontyObject::Path(normalize_virtual_path(path)))
         }
+        FsRequest::Open { path, mode } => open(state, path, mode, ctx),
     }
+}
+
+/// Performs the open-time effect for `open()` against overlay state.
+///
+/// `Read` checks the file exists (in the overlay or via real-filesystem
+/// fallthrough); `Write` truncates by inserting an empty overlay file;
+/// `Append` creates the file if missing while preserving existing content.
+/// All writes stay in the overlay — the real mounted directory is untouched.
+fn open(
+    state: &mut OverlayState,
+    path: &str,
+    mode: &str,
+    ctx: &mut MountContext<'_>,
+) -> Result<MontyObject, MountError> {
+    let file_mode = FileMode::parse(mode).map_err(|e| MountError::InvalidMount(e.message))?;
+    match file_mode.action {
+        OpenAction::Read => {
+            let relative = relative_path(path, ctx)?;
+            match state.get(&relative) {
+                Some(OverlayEntry::File(_) | OverlayEntry::RealFileRef(_)) => {}
+                Some(OverlayEntry::Directory { .. }) => {
+                    return Err(MountError::io_err(ErrorKind::IsADirectory, "Is a directory", path));
+                }
+                Some(OverlayEntry::Deleted) => return Err(MountError::not_found(path)),
+                None => match resolve_real_path_state(path, ctx, ResolveMode::Existing)? {
+                    RealPathState::Present(host_path) if host_path.is_dir() => {
+                        return Err(MountError::io_err(ErrorKind::IsADirectory, "Is a directory", path));
+                    }
+                    RealPathState::Present(_) => {}
+                    RealPathState::Missing => return Err(MountError::not_found(path)),
+                },
+            }
+        }
+        // `write_text`/`append_text` with empty data give exactly the
+        // truncate / create-preserving semantics `open()` needs.
+        OpenAction::Write => {
+            write_text(state, path, "", ctx)?;
+        }
+        OpenAction::Append => {
+            append_text(state, path, "", ctx)?;
+        }
+    }
+    Ok(file_handle_result(path, file_mode))
 }
 
 /// Implements `Path.exists()` against overlay state plus real filesystem fallback.

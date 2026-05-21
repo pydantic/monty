@@ -21,7 +21,7 @@ use crate::{
     heap::{HeapData, HeapId, HeapReadOutput},
     resource::{ResourceError, ResourceTracker},
     types::{
-        Dataclass, LongInt, NamedTuple, Path, PyTrait, TimeZone, Type, allocate_tuple,
+        Dataclass, LongInt, NamedTuple, OpenFile, Path, PyTrait, TimeZone, Type, allocate_tuple,
         bytes::{Bytes, bytes_repr},
         date as date_type, datetime as datetime_type,
         dict::Dict,
@@ -187,6 +187,246 @@ fn monty_datetime_naive(datetime: &MontyDateTime) -> Option<NaiveDateTime> {
     Some(date.and_time(time))
 }
 
+/// The concrete `_io` wrapper type a file object presents as.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub enum FileKind {
+    /// Text-mode files, including read, write, and append modes.
+    Text,
+    /// Binary read-only files opened with modes such as `"rb"`.
+    BufferedReader,
+    /// Binary write or append files opened with modes such as `"wb"` or `"ab"`.
+    BufferedWriter,
+    /// Binary read/write files opened with modes such as `"r+b"`.
+    BufferedRandom,
+}
+
+/// Read/write capability granted by an `open()` mode string.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub enum FileAccess {
+    /// Read-only mode.
+    Read,
+    /// Write-only mode.
+    Write,
+    /// Read/write update mode.
+    ReadWrite,
+}
+
+impl FileAccess {
+    /// Returns whether `read()` is allowed by this access mode.
+    #[must_use]
+    pub const fn readable(self) -> bool {
+        matches!(self, Self::Read | Self::ReadWrite)
+    }
+
+    /// Returns whether `write()` is allowed by this access mode.
+    #[must_use]
+    pub const fn writable(self) -> bool {
+        matches!(self, Self::Write | Self::ReadWrite)
+    }
+}
+
+/// The primary open action selected by the `r`/`w`/`a` mode character.
+///
+/// This drives the open-time filesystem behaviour, which CPython performs on
+/// open rather than on first write: `Write` truncates (or creates), `Append`
+/// creates without disturbing existing content, and `Read` touches nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub enum OpenAction {
+    /// `r`/`r+`: the file must already exist; nothing happens at open time.
+    Read,
+    /// `w`/`w+`: truncate the file to empty (creating it if missing) on open.
+    Write,
+    /// `a`/`a+`: create the file if missing on open, preserving any content.
+    Append,
+}
+
+/// A parsed `open()` mode and the behaviour Monty exposes for it.
+///
+/// This is the structured form of an `open()` mode string. It is carried
+/// publicly by [`MontyObject::FileHandle`] so a host servicing file operations
+/// can inspect the mode without re-parsing the raw string. Construct one with
+/// [`FileMode::parse`].
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct FileMode {
+    /// The original mode string, preserved for the file object's `mode` attribute.
+    pub mode: String,
+    /// The concrete `_io` wrapper type.
+    pub kind: FileKind,
+    /// Whether the mode allows reading, writing, or both.
+    pub access: FileAccess,
+    /// The primary open action (`r`/`w`/`a`), driving open-time behaviour.
+    pub action: OpenAction,
+    /// Whether the file expects bytes instead of text.
+    pub binary: bool,
+}
+
+impl FileMode {
+    /// Whether writes should always append (`a`/`a+`).
+    #[must_use]
+    pub fn append(&self) -> bool {
+        matches!(self.action, OpenAction::Append)
+    }
+
+    /// Whether `open()` must truncate the file to empty immediately (`w`/`w+`).
+    #[must_use]
+    pub fn truncate(&self) -> bool {
+        matches!(self.action, OpenAction::Write)
+    }
+
+    /// Whether `open()` must create the file immediately if missing.
+    ///
+    /// True for the `w`/`w+` and `a`/`a+` families. For append modes this must
+    /// not disturb existing content.
+    #[must_use]
+    pub fn create(&self) -> bool {
+        matches!(self.action, OpenAction::Write | OpenAction::Append)
+    }
+
+    /// Returns the `_io` wrapper type a file opened with this mode presents as.
+    #[must_use]
+    pub fn file_type(&self) -> Type {
+        match self.kind {
+            FileKind::Text => Type::TextIOWrapper,
+            FileKind::BufferedReader => Type::BufferedReader,
+            FileKind::BufferedWriter => Type::BufferedWriter,
+            FileKind::BufferedRandom => Type::BufferedRandom,
+        }
+    }
+
+    /// Returns the bare Python type name (`type(f).__name__`) for this mode.
+    #[must_use]
+    pub fn type_name(&self) -> &'static str {
+        match self.kind {
+            FileKind::Text => "TextIOWrapper",
+            FileKind::BufferedReader => "BufferedReader",
+            FileKind::BufferedWriter => "BufferedWriter",
+            FileKind::BufferedRandom => "BufferedRandom",
+        }
+    }
+
+    /// Parses a Python `open()` mode string into a [`FileMode`].
+    ///
+    /// Monty supports the common read, write, append, and update combinations
+    /// in text or binary form. Exclusive creation (`x`) is rejected for now
+    /// because it needs a dedicated mount-table operation to be race-free.
+    ///
+    /// # Errors
+    /// Returns a [`FileModeError`] (whose message matches CPython's) when the
+    /// mode string is empty, malformed, or contains an unsupported combination.
+    pub fn parse(mode: &str) -> Result<Self, FileModeError> {
+        if mode.is_empty() {
+            return Err(FileModeError::invalid_mode(mode));
+        }
+
+        let mut action = None;
+        let mut binary = false;
+        let mut text = false;
+        let mut updating = false;
+
+        for ch in mode.chars() {
+            match ch {
+                'r' | 'w' | 'a' => {
+                    if action.replace(ch).is_some() {
+                        return Err(FileModeError::new(
+                            "must have exactly one of create/read/write/append mode",
+                        ));
+                    }
+                }
+                'x' => return Err(FileModeError::new("exclusive creation mode is not supported")),
+                'b' => {
+                    if binary {
+                        return Err(FileModeError::invalid_mode(mode));
+                    }
+                    binary = true;
+                }
+                't' => {
+                    if text {
+                        return Err(FileModeError::invalid_mode(mode));
+                    }
+                    text = true;
+                }
+                '+' => {
+                    if updating {
+                        return Err(FileModeError::invalid_mode(mode));
+                    }
+                    updating = true;
+                }
+                _ => return Err(FileModeError::invalid_mode(mode)),
+            }
+        }
+
+        if binary && text {
+            return Err(FileModeError::new("can't have text and binary mode at once"));
+        }
+
+        let action_char = action.unwrap_or('r');
+        let access = if updating {
+            FileAccess::ReadWrite
+        } else if action_char == 'r' {
+            FileAccess::Read
+        } else {
+            FileAccess::Write
+        };
+        let action = match action_char {
+            'w' => OpenAction::Write,
+            'a' => OpenAction::Append,
+            _ => OpenAction::Read,
+        };
+        let kind = if binary {
+            if updating {
+                FileKind::BufferedRandom
+            } else if access.readable() {
+                FileKind::BufferedReader
+            } else {
+                FileKind::BufferedWriter
+            }
+        } else {
+            FileKind::Text
+        };
+
+        Ok(Self {
+            mode: mode.to_owned(),
+            kind,
+            access,
+            action,
+            binary,
+        })
+    }
+}
+
+/// Error returned by [`FileMode::parse`] for an invalid `open()` mode string.
+///
+/// The message matches CPython's so callers can surface it verbatim as the
+/// argument of a `ValueError`.
+#[derive(Debug, Clone)]
+pub struct FileModeError {
+    /// Human-readable message describing why the mode is invalid.
+    pub message: String,
+}
+
+impl FileModeError {
+    /// Creates an error with the given message.
+    fn new(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+        }
+    }
+
+    /// Creates the `invalid mode: '<mode>'` error CPython raises for a
+    /// malformed mode string.
+    fn invalid_mode(mode: &str) -> Self {
+        Self::new(format!("invalid mode: {mode:?}"))
+    }
+}
+
+impl fmt::Display for FileModeError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl Error for FileModeError {}
+
 /// A Python value that can be passed to or returned from the interpreter.
 ///
 /// This is the public-facing type for Python values. It owns all its data and can be
@@ -290,6 +530,32 @@ pub enum MontyObject {
     ///
     /// Represents a filesystem path. Can be used both as input (from host) and output.
     Path(String),
+    /// An open file object (the result of `open()`).
+    ///
+    /// This is the boundary representation of Monty's heap [`OpenFile`](crate::types::OpenFile)
+    /// wrapper. It carries everything needed to service a file operation from a
+    /// host that holds no live OS handle: the virtual `path`, the `mode`, and
+    /// the byte `position` for seek-aware reads.
+    ///
+    /// The host produces a `FileHandle` as the result of an
+    /// [`OsFunction::Open`](crate::os::OsFunction::Open) call; `to_value` then
+    /// builds the `OpenFile` heap wrapper from it. Conversely, a heap file
+    /// object passed as an argument to a `read`/`write` OS call is converted
+    /// back to a `FileHandle` so the host receives this state.
+    FileHandle {
+        /// The virtual (sandbox) path of the file. Never a host path.
+        path: String,
+        /// The parsed `open()` mode.
+        mode: FileMode,
+        /// Byte offset for seek-aware reads (currently always 0).
+        position: u64,
+        /// Optional host-assigned id for this open file.
+        ///
+        /// Monty never generates this. A host may set it (e.g. to key a
+        /// cache of real OS file handles); otherwise it is `None` and carries
+        /// no meaning to the interpreter.
+        id: Option<u64>,
+    },
     /// A dataclass instance with class name, field names, attributes, and mutability.
     ///
     /// Method calls are detected lazily at runtime: when `call_attr` is invoked
@@ -515,6 +781,15 @@ impl MontyObject {
                 Ok(Value::Ref(vm.heap.allocate(HeapData::Dataclass(dc))?))
             }
             Self::Path(s) => Ok(Value::Ref(vm.heap.allocate(HeapData::Path(Path::new(s)))?)),
+            Self::FileHandle {
+                path,
+                mode,
+                position,
+                id,
+            } => {
+                let file = OpenFile::with_state(path, mode, position, id);
+                Ok(Value::Ref(vm.heap.allocate(HeapData::OpenFile(file))?))
+            }
             Self::Type(t) => Ok(Value::Builtin(Builtins::Type(t))),
             Self::BuiltinFunction(f) => Ok(Value::Builtin(Builtins::Function(f))),
             Self::Function { name, .. } => {
@@ -791,6 +1066,18 @@ impl MontyObject {
                         Self::Repr(format!("<gather({})>", gather.get(vm.heap).item_count()))
                     }
                     HeapReadOutput::Path(path) => Self::Path(path.get(vm.heap).as_str().to_owned()),
+                    // File objects carry no heap refs (leaf type) — no recursion.
+                    // This is how `file.read()`/`write()` deliver the open file
+                    // to the host as the first OS-call argument.
+                    HeapReadOutput::OpenFile(file) => {
+                        let file = file.get(vm.heap);
+                        Self::FileHandle {
+                            path: file.path().to_owned(),
+                            mode: file.file_mode().clone(),
+                            position: file.position(),
+                            id: file.id(),
+                        }
+                    }
                     HeapReadOutput::ExtFunction(name) => Self::Function {
                         name: name.get(vm.heap).clone(),
                         docstring: None,
@@ -1051,6 +1338,13 @@ impl MontyObject {
                 f.write_char(')')
             }
             Self::Path(p) => write!(f, "PosixPath('{p}')"),
+            Self::FileHandle { path, mode, .. } => write!(
+                f,
+                "<{} name={} mode={}>",
+                mode.file_type(),
+                StringRepr(path),
+                StringRepr(&mode.mode)
+            ),
             Self::Type(t) => write!(f, "<class '{t}'>"),
             Self::BuiltinFunction(func) => write!(f, "<built-in function {func}>"),
             Self::Function { name, .. } => write!(f, "<function '{name}' external>"),
@@ -1090,8 +1384,9 @@ impl MontyObject {
             Self::TimeDelta(delta) => delta.days != 0 || delta.seconds != 0 || delta.microseconds != 0,
             Self::TimeZone(_) => true,
             Self::Exception { .. } => true,
-            Self::Path(_) => true,          // Path instances are always truthy
-            Self::Dataclass { .. } => true, // Dataclass instances are always truthy
+            Self::Path(_) => true,           // Path instances are always truthy
+            Self::FileHandle { .. } => true, // File objects are always truthy
+            Self::Dataclass { .. } => true,  // Dataclass instances are always truthy
             Self::Type(_) | Self::BuiltinFunction(_) | Self::Function { .. } | Self::Repr(_) | Self::Cycle(_, _) => {
                 true
             }
@@ -1123,6 +1418,7 @@ impl MontyObject {
             Self::TimeZone(_) => "timezone",
             Self::Exception { .. } => "Exception",
             Self::Path(_) => "PosixPath",
+            Self::FileHandle { mode, .. } => mode.type_name(),
             Self::Dataclass { .. } => "dataclass",
             Self::Type(_) => "type",
             Self::BuiltinFunction(_) => "builtin_function_or_method",
@@ -1165,6 +1461,17 @@ impl Hash for MontyObject {
             Self::TimeDelta(delta) => delta.hash(state),
             Self::TimeZone(timezone) => timezone.hash(state),
             Self::Path(path) => path.hash(state),
+            Self::FileHandle {
+                path,
+                mode,
+                position,
+                id,
+            } => {
+                path.hash(state);
+                mode.mode.hash(state);
+                position.hash(state);
+                id.hash(state);
+            }
             Self::Type(t) => t.to_string().hash(state),
             Self::Cycle(_, _) => panic!("cycle values are not hashable"),
             _ => panic!("{} python values are not hashable", self.type_name()),
@@ -1244,6 +1551,20 @@ impl PartialEq for MontyObject {
                     && a_frozen == b_frozen
             }
             (Self::Path(a), Self::Path(b)) => a == b,
+            (
+                Self::FileHandle {
+                    path: a_path,
+                    mode: a_mode,
+                    position: a_pos,
+                    id: a_id,
+                },
+                Self::FileHandle {
+                    path: b_path,
+                    mode: b_mode,
+                    position: b_pos,
+                    id: b_id,
+                },
+            ) => a_path == b_path && a_mode == b_mode && a_pos == b_pos && a_id == b_id,
             (
                 Self::Function {
                     name: a_name,

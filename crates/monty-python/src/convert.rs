@@ -284,6 +284,9 @@ pub fn monty_to_py(py: Python<'_>, obj: &MontyObject, dc_registry: &DcRegistry) 
             let path_obj = pure_posix_path.call1((p,))?;
             Ok(path_obj.into_any().unbind())
         }
+        // A Monty file object has no faithful host-Python representation
+        // (it is not a real OS file): expose its repr string.
+        MontyObject::FileHandle { .. } => Ok(PyString::new(py, &obj.py_repr()).into_any().unbind()),
         // Output-only types - convert to string representation
         MontyObject::Repr(s) => Ok(PyString::new(py, s).into_any().unbind()),
         MontyObject::Cycle(_, placeholder) => Ok(PyString::new(py, placeholder).into_any().unbind()),

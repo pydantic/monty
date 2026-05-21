@@ -32,36 +32,46 @@ error. Regression test added to `open__fs.py` (closed-file write of a
 heap-allocated string), verified to fail under `memory-model-checks` before the
 fix and pass after.
 
-### 3. Deferred truncation / `open(path, 'w')` semantics — WON'T FIX (documented divergence)
+### 3. Deferred truncation / `open(path, 'w')` semantics — DONE
 
-**Decision:** Left as a documented, known CPython divergence. A faithful fix was
-scoped (see blocker below) and judged too invasive relative to the benefit; the
-lighter close()/flush() mitigation was also declined. `#1`/`#2` remain fixed.
+`open()` performs the open-time effect immediately, matching CPython
+(truncate/create on open, existence check for read modes), via a dedicated
+`OsFunction::Open` and a new `MontyObject::FileHandle` boundary type.
 
+What was implemented:
 
-`open(path, 'w')` in CPython truncates/creates the file immediately on open.
-Monty defers the truncating write until the first `write()` call. Divergences:
+- **`OsFunction::Open` + `MontyObject::FileHandle`.** `builtin_open` allocates
+  no heap object: it validates args, allocates a unique file id, and returns
+  `CallResult::OsCall(OsFunction::Open, [path, mode, id])`. The host performs
+  the open-time effect and returns a `MontyObject::FileHandle`; the generic
+  resume path converts it to the `OpenFile` heap wrapper. `open()` therefore
+  needs **no** special resume handling — the OS result genuinely *is* the
+  value `open()` evaluates to.
+- **`FileMode`** (with `FileKind`/`FileAccess`/`OpenAction`) is now a public
+  type in `object.rs`, carried structured by `FileHandle`. `OpenFile` stores a
+  `FileMode` plus `position`/`id`. Replaced the four mode bools.
+- **Host `Open` handler** (`MountTable` direct + overlay backends, and the
+  datatest VFS): `w`/`w+` truncate-or-create, `a`/`a+` create-preserving,
+  `r`/`r+` existence-check (raising `FileNotFoundError`/`IsADirectoryError`).
+  The read-only-mount gate (`FsRequest::is_write`) is mode-aware for `Open`.
+- **`Scheduler::pending_open_result` and all its plumbing are deleted** —
+  no substitution slot, no `resume`/`resume_with_exception`/`cleanup`
+  special-casing. `read()`/`write()` pass the file object itself; the boundary
+  converts `OpenFile` ⇄ `FileHandle`.
+- Truncating wrappers start in `WriteState::Written` so the first user
+  `write()` appends to the freshly-emptied file instead of truncating again.
 
-- `open(existing, 'w').close()` (no write) leaves the old content; CPython empties it.
-- `open(newfile, 'w').close()` does not create the file; CPython creates an empty file.
+This also fixed the leftover read-mode-existence divergence: `open(missing,
+'r')` now raises `FileNotFoundError` and `open(<dir>, 'r')` raises
+`IsADirectoryError` at open time, matching CPython.
 
-**Blocker:** a faithful fix requires performing a filesystem write at `open()`
-time. Filesystem access is only possible via `CallResult::OsCall`, which is
-returned from the *method-call* path (`py_call_attr`). The `open()` builtin goes
-through `BuiltinsFunctions::call`, which returns `RunResult<Value>` and **cannot
-yield an `OsCall`** (see `bytecode/vm/call.rs`: `Value::Builtin` →
-`builtin.call(...)?` → `CallResult::Value`). Truncating at open time therefore
-needs `Open` to become a special builtin that returns a `CallResult` plus a
-continuation producing the file object after the OS write completes — a
-substantial, regression-prone refactor of the builtin dispatch.
-
-Beyond the builtin-dispatch change, a faithful fix also requires the VM to
-substitute the pre-built file object for the OS call's return value on resume —
-new `call_id`-keyed VM state that must thread through `VM::resume`, the async
-future-delivery paths, **and** be serialized in `VMSnapshot`. That is core
-resume + snapshot + async surface in a security-sensitive sandbox.
-
-Items #4–#11 below are likewise unfixed (documented only).
+Verified: new assertions in `open__fs.py` (open-time truncation/creation,
+append preservation, binary, and the `r`-mode existence errors) pass on **both**
+Monty and CPython under `memory-model-checks`; new `fs_security` tests cover
+`open()` path-traversal and symlink-escape rejection. Full suite green: 948
+datatest cases + all `monty` integration tests (`fs`, `fs_security`,
+`os_tests`, `repl`/resume), 1044 Python + 344 JS binding tests, `lint-rs`,
+`lint-py`.
 
 ## Behaviour divergence from CPython (not yet fixed)
 

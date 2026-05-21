@@ -1,31 +1,53 @@
 //! Implementation of the `open()` builtin.
 //!
-//! The returned object is a Monty heap wrapper, not a host file descriptor.  It
-//! stores the virtual path and mode, then delegates `read()`/`write()` to
-//! full-file OS calls so all filesystem access remains behind `OsFunction`.
+//! `open()` itself allocates no heap object. It validates its arguments and
+//! yields an [`OsFunction::Open`] OS call; the host performs the open-time
+//! effect (truncate / create / existence-check) and returns a
+//! [`MontyObject::FileHandle`](crate::MontyObject::FileHandle), which the
+//! generic resume path converts into the heap [`OpenFile`](crate::types::OpenFile)
+//! wrapper. `read()`/`write()` then delegate to full-file OS calls, so all
+//! filesystem access remains behind `OsFunction`.
 
 use crate::{
     args::ArgValues,
-    bytecode::VM,
+    bytecode::{CallResult, VM},
     defer_drop, defer_drop_mut,
-    exception_private::{ExcType, RunError, RunResult},
+    exception_private::{ExcType, RunError, RunResult, SimpleException},
     heap::{DropWithHeap, HeapData, HeapGuard},
     intern::StringId,
+    object::FileMode,
+    os::OsFunction,
     resource::ResourceTracker,
-    types::{OpenFile, OpenMode, PyTrait},
+    types::{PyTrait, str::allocate_string},
     value::Value,
 };
 
-/// Creates a path-backed file object for reading, writing, or appending.
-pub(crate) fn builtin_open(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+/// Opens a file for reading, writing, or appending.
+///
+/// `open()` validates its arguments and the mode string, then returns a
+/// [`CallResult::OsCall`] for [`OsFunction::Open`] with arguments
+/// `[path, mode]`. The host performs the open-time effect — truncate for
+/// `w`/`w+`, create-if-missing for `a`/`a+`, existence check (raising
+/// `FileNotFoundError`) for `r`/`r+` — and returns a `MontyObject::FileHandle`.
+/// The generic resume path converts that into the `OpenFile` heap wrapper, so
+/// `open()` needs no special resume handling.
+pub(crate) fn builtin_open(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<CallResult> {
     let OpenArgs { file, mode } = parse_open_args(args, vm)?;
     defer_drop!(file, vm);
     defer_drop!(mode, vm);
     let path = extract_path_string(file, vm)?.to_owned();
     let mode_str = extract_mode_string(mode, vm)?;
-    let open_mode = OpenMode::parse(mode_str)?;
-    let file_obj = OpenFile::new(path, open_mode);
-    Ok(Value::Ref(vm.heap.allocate(HeapData::OpenFile(file_obj))?))
+    // Parse here purely to reject malformed modes before the OS round-trip;
+    // the file wrapper itself is built from the host's returned FileHandle.
+    let file_mode = FileMode::parse(mode_str)
+        .map_err(|e| RunError::from(SimpleException::new_msg(ExcType::ValueError, e.message)))?;
+
+    let path_value = allocate_string(path, vm.heap)?;
+    let mode_value = allocate_string(file_mode.mode, vm.heap)?;
+    Ok(CallResult::OsCall(
+        OsFunction::Open,
+        ArgValues::Two(path_value, mode_value),
+    ))
 }
 
 /// Owned `open()` arguments after positional/keyword parsing.

@@ -143,6 +143,21 @@ impl Serialize for JsonMontyObject<'_> {
                 )
             }
             MontyObject::Path(p) => serialize_tagged(serializer, "$path", p),
+            MontyObject::FileHandle {
+                path,
+                mode,
+                position,
+                id,
+            } => serialize_tagged(
+                serializer,
+                "$file",
+                &FileHandleBody {
+                    path,
+                    mode: &mode.mode,
+                    position: *position,
+                    id: *id,
+                },
+            ),
             MontyObject::Dataclass { name, attrs, .. } => {
                 serialize_named(serializer, "$dataclass", &AttrsBody(attrs), name)
             }
@@ -352,6 +367,16 @@ struct ExceptionBody<'a> {
     exc_type: &'a str,
     #[serde(skip_serializing_if = "Option::is_none")]
     arg: Option<&'a str>,
+}
+
+/// Body of a `$file` tag — the open file's path, mode, position, and id.
+#[derive(Serialize)]
+struct FileHandleBody<'a> {
+    path: &'a str,
+    mode: &'a str,
+    position: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    id: Option<u64>,
 }
 
 /// Wraps a `Type` so it serializes as its `Display` string (e.g. `"int"`).

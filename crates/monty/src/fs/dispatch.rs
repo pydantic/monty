@@ -4,8 +4,11 @@
 //! into [`FsRequest`]. From that point onward the backends operate on semantic
 //! requests instead of indexing into `MontyObject` arrays or re-parsing kwargs.
 
-use super::{common::MountContext, direct, error::MountError, mount_mode::MountMode, overlay};
-use crate::{MontyObject, os::OsFunction};
+use super::{
+    common::MountContext, direct, error::MountError, mount_mode::MountMode, overlay,
+    path_security::normalize_virtual_path,
+};
+use crate::{MontyObject, object::FileMode, os::OsFunction};
 
 /// Parsed filesystem request passed to the direct or overlay backend.
 #[derive(Clone, Copy, Debug)]
@@ -53,6 +56,14 @@ pub(super) enum FsRequest<'a> {
     Resolve { path: &'a str },
     /// `Path.absolute()`
     Absolute { path: &'a str },
+    /// `open(path, mode)` — performs the open-time effect and returns a
+    /// [`MontyObject::FileHandle`]. `mode` is the raw `open()` mode string.
+    Open {
+        /// Target path.
+        path: &'a str,
+        /// Raw `open()` mode string.
+        mode: &'a str,
+    },
 }
 
 impl<'a> FsRequest<'a> {
@@ -77,6 +88,7 @@ impl<'a> FsRequest<'a> {
             | Self::Stat { path }
             | Self::Resolve { path }
             | Self::Absolute { path }
+            | Self::Open { path, .. }
             | Self::Rename { src: path, .. } => path,
         }
     }
@@ -91,19 +103,26 @@ impl<'a> FsRequest<'a> {
     }
 
     /// Returns whether the request mutates filesystem state.
+    ///
+    /// This is the read-only-mount gate (see [`execute`]). For `Open` it is
+    /// mode-aware: `w`/`w+`/`a`/`a+` write (truncate or create), while pure
+    /// `r`/`r+` only need read access. A malformed mode is treated as
+    /// non-write — the `Open` handler re-parses and rejects it with the
+    /// proper error regardless.
     #[must_use]
     pub fn is_write(self) -> bool {
-        matches!(
-            self,
+        match self {
             Self::WriteText { .. }
-                | Self::WriteBytes { .. }
-                | Self::AppendText { .. }
-                | Self::AppendBytes { .. }
-                | Self::Mkdir { .. }
-                | Self::Unlink { .. }
-                | Self::Rmdir { .. }
-                | Self::Rename { .. }
-        )
+            | Self::WriteBytes { .. }
+            | Self::AppendText { .. }
+            | Self::AppendBytes { .. }
+            | Self::Mkdir { .. }
+            | Self::Unlink { .. }
+            | Self::Rmdir { .. }
+            | Self::Rename { .. } => true,
+            Self::Open { mode, .. } => FileMode::parse(mode).is_ok_and(|m| m.create()),
+            _ => false,
+        }
     }
 }
 
@@ -160,6 +179,10 @@ pub(super) fn parse_fs_request<'a>(
         }),
         OsFunction::Resolve => Ok(FsRequest::Resolve { path }),
         OsFunction::Absolute => Ok(FsRequest::Absolute { path }),
+        OsFunction::Open => Ok(FsRequest::Open {
+            path,
+            mode: parse_mode_arg(extra_args)?,
+        }),
         _ => unreachable!("non-filesystem OS function reached filesystem parser"),
     }
 }
@@ -181,10 +204,15 @@ pub(super) fn execute(
 }
 
 /// Extracts the first path argument from a raw OS call.
+///
+/// `read`/`write` on an open file pass the file object itself, which arrives
+/// as a [`MontyObject::FileHandle`]; its virtual `path` is used for routing
+/// and resolution exactly like a bare path argument.
 fn parse_primary_path(args: &[MontyObject]) -> Result<&str, MountError> {
     match args.first() {
         Some(MontyObject::Path(path)) => Ok(path.as_str()),
         Some(MontyObject::String(path)) => Ok(path.as_str()),
+        Some(MontyObject::FileHandle { path, .. }) => Ok(path.as_str()),
         _ => Err(MountError::InvalidMount(
             "filesystem operation missing path argument".to_owned(),
         )),
@@ -225,6 +253,28 @@ fn parse_path_arg<'a>(extra_args: &'a [MontyObject], op_name: &str) -> Result<&'
         Some(MontyObject::Path(path)) => Ok(path.as_str()),
         Some(MontyObject::String(path)) => Ok(path.as_str()),
         _ => Err(MountError::InvalidMount(format!("{op_name}: expected path argument"))),
+    }
+}
+
+/// Builds the [`MontyObject::FileHandle`] an `Open` request resolves to.
+///
+/// The handle carries the **virtual** (sandbox) path — never a host path — so
+/// subsequent `read`/`write` calls re-resolve it through `resolve_path`. The
+/// `MountTable` keeps no live OS handle, so it assigns no `id`.
+pub(super) fn file_handle_result(path: &str, mode: FileMode) -> MontyObject {
+    MontyObject::FileHandle {
+        path: normalize_virtual_path(path),
+        mode,
+        position: 0,
+        id: None,
+    }
+}
+
+/// Extracts the `open()` mode string (second positional argument).
+fn parse_mode_arg(extra_args: &[MontyObject]) -> Result<&str, MountError> {
+    match extra_args.first() {
+        Some(MontyObject::String(mode)) => Ok(mode.as_str()),
+        _ => Err(MountError::InvalidMount("open() missing mode argument".to_owned())),
     }
 }
 

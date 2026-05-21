@@ -1326,10 +1326,8 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
                     // which pushes frames and runs a nested run() loop)
                     self.current_frame_mut().ip = cached_frame.ip;
 
-                    match self.exec_call_builtin_function(builtin_id, arg_count) {
-                        Ok(result) => self.push(result),
-                        Err(err) => catch_sync!(self, cached_frame, err),
-                    }
+                    let result = self.exec_call_builtin_function(builtin_id, arg_count);
+                    handle_call_result!(self, cached_frame, result);
                 }
                 Opcode::CallBuiltinType => {
                     let (type_id, arg_count) = cached_frame.fetch_u8_u8();

@@ -89,6 +89,20 @@ fn assert_write_blocked(mt: &mut MountTable, func: OsFunction, path: &str) {
     }
 }
 
+/// Asserts that `open(path, mode)` is blocked at open time.
+fn assert_open_blocked(mt: &mut MountTable, path: &str, mode: &str) {
+    let result = mt.handle_os_call(
+        OsFunction::Open,
+        &[MontyObject::Path(path.to_owned()), MontyObject::String(mode.to_owned())],
+        &[],
+    );
+    match result {
+        Some(Err(MountError::PathEscape { .. } | MountError::NoMountPoint(_) | MountError::Io(_, _))) | None => {}
+        Some(Ok(val)) => panic!("expected open blocked, got Ok({val:?}) for path: {path} mode: {mode}"),
+        Some(Err(other)) => panic!("unexpected error variant for open of {path}: {other}"),
+    }
+}
+
 /// All mount modes to test against.
 fn all_modes() -> Vec<(&'static str, MountMode)> {
     vec![
@@ -171,6 +185,20 @@ fn traversal_dotdot_write_bytes() {
         let dir = create_test_dir();
         let mut mt = mount_at_mnt(&dir, mode);
         assert_write_blocked(&mut mt, OsFunction::WriteBytes, "/mnt/../escape.bin");
+        eprintln!("  {label}: passed");
+    }
+}
+
+#[test]
+fn traversal_dotdot_open() {
+    for (label, mode) in all_modes() {
+        let dir = create_test_dir();
+        let mut mt = mount_at_mnt(&dir, mode);
+        // `w`/`a` open performs an out-of-mount write at open time; `r` would
+        // read an out-of-mount file. All must be blocked.
+        assert_open_blocked(&mut mt, "/mnt/../open_escape.txt", "w");
+        assert_open_blocked(&mut mt, "/mnt/../open_escape.txt", "a");
+        assert_open_blocked(&mut mt, "/mnt/../../etc/passwd", "r");
         eprintln!("  {label}: passed");
     }
 }
@@ -307,6 +335,22 @@ mod symlink_tests {
 
         let mut mt = mount_at_mnt(&dir, MountMode::ReadWrite);
         assert_blocked(&mut mt, OsFunction::ReadText, "/mnt/link_to_file");
+    }
+
+    #[test]
+    fn symlink_open_escape() {
+        // `open()` on a path that escapes the mount via a symlink must be
+        // rejected — for read (would read an outside file) and for write
+        // (the open-time truncate would write outside the mount).
+        let dir = create_test_dir();
+        let outside = TempDir::new().unwrap();
+        fs::write(outside.path().join("secret.txt"), "secret").unwrap();
+        symlink_dir(outside.path(), dir.path().join("escape_link"));
+
+        let mut mt = mount_at_mnt(&dir, MountMode::ReadWrite);
+        assert_open_blocked(&mut mt, "/mnt/escape_link/secret.txt", "r");
+        assert_open_blocked(&mut mt, "/mnt/escape_link/new.txt", "w");
+        assert_open_blocked(&mut mt, "/mnt/escape_link/new.txt", "a");
     }
 
     #[test]

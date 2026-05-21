@@ -20,8 +20,8 @@ use std::{
 use ahash::AHashMap;
 use chrono::{Datelike, Timelike};
 use monty::{
-    ExcType, ExtFunctionResult, LimitedTracker, MontyDate, MontyDateTime, MontyException, MontyObject, MontyRun,
-    NameLookupResult, OsFunction, PrintWriter, ResourceLimits, RunProgress, dir_stat, file_stat,
+    ExcType, ExtFunctionResult, FileMode, LimitedTracker, MontyDate, MontyDateTime, MontyException, MontyObject,
+    MontyRun, NameLookupResult, OpenAction, OsFunction, PrintWriter, ResourceLimits, RunProgress, dir_stat, file_stat,
     fs::{MountMode, MountTable, OverlayState},
 };
 use pyo3::{prelude::*, types::PyDict};
@@ -962,10 +962,12 @@ fn dispatch_os_call(
         return MontyObject::Dict(env_dict.into()).into();
     }
 
-    // Extract path from MontyObject::Path (or String for backwards compatibility)
+    // Extract path. Most calls pass a Path/String; `read`/`write` on an open
+    // file pass the file object itself as a `FileHandle`.
     let path = match &args[0] {
         MontyObject::Path(p) => p.clone(),
         MontyObject::String(s) => s.clone(),
+        MontyObject::FileHandle { path, .. } => path.clone(),
         other => panic!("OS call: first arg must be path, got {other:?}"),
     };
 
@@ -1045,6 +1047,52 @@ fn dispatch_os_call(
         OsFunction::Resolve | OsFunction::Absolute => {
             // For virtual paths, return as-is (they're already absolute)
             MontyObject::String(path).into()
+        }
+        OsFunction::Open => {
+            // args[0] is path, args[1] is the mode string.
+            let mode_str = String::try_from(&args[1]).expect("open: second arg must be mode string");
+            let file_mode = match FileMode::parse(&mode_str) {
+                Ok(m) => m,
+                Err(e) => return MontyException::new(ExcType::ValueError, Some(e.message)).into(),
+            };
+            match file_mode.action {
+                OpenAction::Read => {
+                    if get_virtual_file(&path).is_none() {
+                        return if is_virtual_dir(&path) {
+                            MontyException::new(
+                                ExcType::IsADirectoryError,
+                                Some(format!("[Errno 21] Is a directory: '{path}'")),
+                            )
+                            .into()
+                        } else {
+                            MontyException::new(
+                                ExcType::FileNotFoundError,
+                                Some(format!("[Errno 2] No such file or directory: '{path}'")),
+                            )
+                            .into()
+                        };
+                    }
+                }
+                // `w`/`w+`: truncate to empty (creating if missing).
+                OpenAction::Write => MUTABLE_VFS.with(|vfs| {
+                    let mut vfs = vfs.borrow_mut();
+                    vfs.files.insert(path.clone(), (Vec::new(), 0o644));
+                    vfs.deleted_files.remove(&path);
+                }),
+                // `a`/`a+`: create if missing, preserving existing content.
+                OpenAction::Append => MUTABLE_VFS.with(|vfs| {
+                    let mut vfs = vfs.borrow_mut();
+                    vfs.files.entry(path.clone()).or_insert_with(|| (Vec::new(), 0o644));
+                    vfs.deleted_files.remove(&path);
+                }),
+            }
+            MontyObject::FileHandle {
+                path,
+                mode: file_mode,
+                position: 0,
+                id: None,
+            }
+            .into()
         }
         OsFunction::Getenv => {
             // Virtual environment for testing os.getenv()

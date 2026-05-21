@@ -1,4 +1,8 @@
 # mount-fs
+import sys
+
+is_monty = sys.platform == 'monty'
+is_windows = sys.platform == 'win32'
 
 # === Text read ===
 text_file = open(root / 'hello.txt')
@@ -61,6 +65,73 @@ binary_random.close()
 keyword_file = open(file=root / 'hello.txt', mode='r', encoding='utf-8')
 assert keyword_file.read() == 'hello world\n', 'open accepts file/mode/encoding keywords'
 keyword_file.close()
+
+# === Open-time truncation / creation (CPython truncates/creates on open) ===
+# w truncates an existing file immediately, before (and even without) any write
+(root / 'open_trunc.txt').write_text('previous contents')
+trunc = open(root / 'open_trunc.txt', 'w')
+assert (root / 'open_trunc.txt').read_text() == '', 'open(w) truncates immediately, before any write'
+trunc.close()
+assert (root / 'open_trunc.txt').read_text() == '', 'file stays empty after closing an unused w handle'
+
+# w creates a missing file immediately, even with no write
+opened_w = open(root / 'open_created_w.txt', 'w')
+opened_w.close()
+assert (root / 'open_created_w.txt').read_text() == '', 'open(w) creates the file immediately'
+
+# a creates a missing file immediately, even with no write
+opened_a = open(root / 'open_created_a.txt', 'a')
+opened_a.close()
+assert (root / 'open_created_a.txt').read_text() == '', 'open(a) creates the file immediately'
+
+# a must NOT truncate existing content on open
+(root / 'open_keep_a.txt').write_text('keep me')
+keep = open(root / 'open_keep_a.txt', 'a')
+assert (root / 'open_keep_a.txt').read_text() == 'keep me', 'open(a) does not truncate existing content'
+keep.write('!')
+keep.close()
+assert (root / 'open_keep_a.txt').read_text() == 'keep me!', 'append writes after existing content'
+
+# binary w truncates on open too
+(root / 'open_trunc.bin').write_bytes(b'\xff\xfe')
+btrunc = open(root / 'open_trunc.bin', 'wb')
+assert (root / 'open_trunc.bin').read_bytes() == b'', 'open(wb) truncates immediately'
+btrunc.close()
+
+# === Open-time existence checks for read modes ===
+# r on a missing file raises FileNotFoundError at open time (not on first read)
+try:
+    open(root / 'open_missing.txt', 'r')
+    assert False, 'expected FileNotFoundError opening a missing file for read'
+except FileNotFoundError as exc:
+    if is_monty:
+        assert str(exc) == "[Errno 2] No such file or directory: '/mnt/open_missing.txt'", (
+            f'unexpected missing-file message: {exc}'
+        )
+    elif not is_windows:
+        assert str(exc).startswith("[Errno 2] No such file or directory: '"), f'exc message: {exc}'
+
+# r+ on a missing file likewise raises at open time
+try:
+    open(root / 'open_missing_rplus.txt', 'r+')
+    assert False, 'expected FileNotFoundError opening a missing file for r+'
+except FileNotFoundError as exc:
+    if is_monty:
+        assert str(exc) == "[Errno 2] No such file or directory: '/mnt/open_missing_rplus.txt'", (
+            f'unexpected missing-file message: {exc}'
+        )
+    elif not is_windows:
+        assert str(exc).startswith("[Errno 2] No such file or directory: '"), f'exc message: {exc}'
+
+# opening a directory for read raises IsADirectoryError at open time
+try:
+    open(root, 'r')
+    assert False, 'expected IsADirectoryError opening a directory for read'
+except IsADirectoryError as exc:
+    if is_monty:
+        assert str(exc) == "[Errno 21] Is a directory: '/mnt'", f'unexpected is-a-directory message: {exc}'
+    elif not is_windows:
+        assert str(exc).startswith('[Errno 21] Is a directory: '), f'exc message: {exc}'
 
 # === Operation errors ===
 try:

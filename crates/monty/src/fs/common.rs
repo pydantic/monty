@@ -257,7 +257,7 @@ pub(super) fn dir_mtime(path: &Path) -> f64 {
 /// `ErrorKind::PermissionDenied` instead of `ErrorKind::IsADirectory`.
 /// This helper normalises the behaviour across platforms so callers get
 /// the correct Python exception regardless of host OS.
-fn reject_directory(path: &Path, vpath: &str) -> Result<(), MountError> {
+pub(super) fn reject_directory(path: &Path, vpath: &str) -> Result<(), MountError> {
     if path.is_dir() {
         return Err(MountError::io_err(ErrorKind::IsADirectory, "Is a directory", vpath));
     }
