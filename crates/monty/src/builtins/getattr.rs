@@ -5,7 +5,7 @@ use crate::{
     args::ArgValues,
     bytecode::{CallResult, VM},
     defer_drop,
-    exception_private::{RunResult, SimpleException},
+    exception_private::{RunError, RunResult, SimpleException},
     resource::ResourceTracker,
     types::PyTrait,
     value::Value,
@@ -54,12 +54,12 @@ pub fn builtin_getattr(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -
             // TODO: might need to support this case?
             Err(SimpleException::new_msg(ExcType::TypeError, "getattr(): attribute is not a simple value").into())
         }
-        Err(e) => {
-            if let Some(d) = default {
-                Ok(d.clone_with_heap(vm))
-            } else {
-                Err(e)
-            }
+        Err(RunError::Exc(e))
+            if let Some(d) = default
+                && e.exc.exc_type() == ExcType::AttributeError =>
+        {
+            Ok(d.clone_with_heap(vm))
         }
+        Err(e) => Err(e),
     }
 }

@@ -31,6 +31,7 @@ include = [
 ]
 # Exclude files with intentional syntax errors or special formatting requirements
 extend-exclude = [
+    "crates/monty/test_cases/function__err_duplicate_param.py",
     "crates/monty/test_cases/nonlocal__error_module_level.py",
     "crates/monty/test_cases/traceback__nonlocal_module_scope.py",
     # These files test specific quote styles in error messages and must not be reformatted
@@ -96,6 +97,8 @@ include = ["scripts", "crates/monty/test_cases", "crates/monty-python", "crates/
 exclude = [
     "crates/monty-type-checking/tests/bad_types.py",
     "crates/monty-type-checking/tests/reveal_types.py",
+    # duplicate parameter name test intentionally has a syntax error
+    "crates/monty/test_cases/function__err_duplicate_param.py",
     # break/continue outside loop tests intentionally test error handling
     "crates/monty/test_cases/loop__break_outside_error.py",
     "crates/monty/test_cases/loop__continue_outside_error.py",

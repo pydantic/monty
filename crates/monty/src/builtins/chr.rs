@@ -22,7 +22,16 @@ pub fn builtin_chr(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> Ru
         Value::Int(n) => {
             if *n < 0 || *n > 0x0010_FFFF {
                 Err(SimpleException::new_msg(ExcType::ValueError, "chr() arg not in range(0x110000)").into())
-            } else if let Some(c) = char::from_u32(u32::try_from(*n).expect("chr() range check failed")) {
+            } else if let Some(c) = char::from_u32(
+                #[expect(
+                    clippy::cast_possible_truncation,
+                    clippy::cast_sign_loss,
+                    reason = "range of n already validated in the first if condition"
+                )]
+                {
+                    *n as u32
+                },
+            ) {
                 Ok(allocate_char(c, vm.heap)?)
             } else {
                 // This shouldn't happen for valid Unicode range, but handle it

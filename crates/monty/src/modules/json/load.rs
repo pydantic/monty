@@ -209,20 +209,29 @@ fn allocate_cached_string(
 
 /// Parses a JSON number into the corresponding Monty numeric value.
 ///
-/// Integer tokens are counted directly from the source bytes so
-/// `INT_MAX_STR_DIGITS` errors report the same digit count as CPython without
-/// first allocating an oversized decimal string.
+/// Oversized integers that exceed Monty's digit limit are rejected with a `ValueError`
 fn parse_json_number(peek: Peek, jiter: &mut Jiter<'_>, vm: &mut VM<'_, impl ResourceTracker>) -> ParseResult<Value> {
     let start = jiter.current_index();
-    match jiter.known_number(peek) {
-        Ok(NumberAny::Int(NumberInt::Int(value))) => Ok(Value::Int(value)),
-        Ok(NumberAny::Int(NumberInt::BigInt(value))) => {
-            let digit_count = decimal_digit_count_ascii(jiter.slice_to_current(start));
-            check_decimal_digit_count(digit_count).map_err(JsonLoadError::Run)?;
-            Ok(LongInt::new(value).into_value(vm.heap)?)
-        }
-        Ok(NumberAny::Float(value)) => Ok(Value::Float(value)),
-        Err(error) => Err(error.into()),
+    // Parse to bytes so that we can check the digit count before any BigInt allocation occurs.
+    let token = jiter.known_number_bytes(peek)?;
+    if is_json_integer_token(token) {
+        let digit_count = decimal_digit_count_ascii(token);
+        check_decimal_digit_count(digit_count).map_err(JsonLoadError::Run)?;
+    }
+    // `known_number_bytes` already validated the token, so `NumberAny::from_bytes`
+    // only re-parses the same byte range. Errors here are mapped back into the
+    // outer document's coordinate space so `json_error_to_run_error` reports
+    // the correct line/column.
+    let number = NumberAny::from_bytes(token, true).map_err(|error| {
+        JsonLoadError::Parse(JiterError {
+            error_type: JiterErrorType::JsonError(error.error_type),
+            index: start + error.index,
+        })
+    })?;
+    match number {
+        NumberAny::Int(NumberInt::Int(value)) => Ok(Value::Int(value)),
+        NumberAny::Int(NumberInt::BigInt(value)) => Ok(LongInt::new(value).into_value(vm.heap)?),
+        NumberAny::Float(value) => Ok(Value::Float(value)),
     }
 }
 

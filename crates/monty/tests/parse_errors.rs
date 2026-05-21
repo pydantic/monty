@@ -100,6 +100,58 @@ fn invalid_fstring_format_spec_str_returns_syntax_error() {
     assert_eq!(get_exc_type(result), ExcType::SyntaxError);
 }
 
+/// `#` (alternate form) is valid in Python but unsupported in Monty; the
+/// parser rejects it with a message that names the flag so the failure
+/// can't be confused with a malformed-spec error.
+#[test]
+fn format_spec_alternate_form_returns_unsupported_flag_error() {
+    let result = MontyRun::new("f'{255:#x}'".to_owned(), "test.py", vec![]);
+    let exc = result.expect_err("expected parse error");
+    assert_eq!(exc.exc_type(), ExcType::SyntaxError);
+    assert!(
+        exc.message()
+            .is_some_and(|m| m.contains("'#'") && m.contains("alternate form")),
+        "message should mention '#' and alternate form, got: {exc}"
+    );
+}
+
+#[test]
+fn format_spec_comma_grouping_returns_unsupported_flag_error() {
+    let result = MontyRun::new("f'{1000:,d}'".to_owned(), "test.py", vec![]);
+    let exc = result.expect_err("expected parse error");
+    assert_eq!(exc.exc_type(), ExcType::SyntaxError);
+    assert!(
+        exc.message()
+            .is_some_and(|m| m.contains("','") && m.contains("thousands separator")),
+        "message should mention ',' and thousands separator, got: {exc}"
+    );
+}
+
+#[test]
+fn format_spec_underscore_grouping_returns_unsupported_flag_error() {
+    let result = MontyRun::new("f'{1000:_d}'".to_owned(), "test.py", vec![]);
+    let exc = result.expect_err("expected parse error");
+    assert_eq!(exc.exc_type(), ExcType::SyntaxError);
+    assert!(
+        exc.message()
+            .is_some_and(|m| m.contains("'_'") && m.contains("thousands separator")),
+        "message should mention '_' and thousands separator, got: {exc}"
+    );
+}
+
+#[test]
+fn format_spec_width_overflow_returns_syntax_error() {
+    // 22 nines overflows usize; verify the parser surfaces this rather than
+    // silently clamping to 0.
+    let result = MontyRun::new("f'{42:9999999999999999999999d}'".to_owned(), "test.py", vec![]);
+    let exc = result.expect_err("expected parse error");
+    assert_eq!(exc.exc_type(), ExcType::SyntaxError);
+    assert!(
+        exc.message().is_some_and(|m| m.contains("overflows usize")),
+        "message should mention overflow, got: {exc}"
+    );
+}
+
 #[test]
 fn syntax_error_display_format() {
     let result = MontyRun::new("f'{1:10xyz}'".to_owned(), "test.py", vec![]);
@@ -442,6 +494,45 @@ fn del_statement_returns_not_implemented_error() {
 }
 
 #[test]
+fn duplicate_positional_parameter_returns_syntax_error() {
+    // https://github.com/pydantic/monty/issues/377
+    //
+    // Ruff's parser accepts `def f(x, x)` though CPython rejects it at compile time.
+    // Without an explicit check, `Prepare::new_function` would size the frame from
+    // the unique-name count (HashMap::len) while resolving the duplicate to a
+    // positional NamespaceId that points past the allocated stack region, panicking
+    // `load_local` at call time.
+    let result = MontyRun::new("def f(x, x): return x\nf(1, 2)".to_owned(), "test.py", vec![]);
+    let exc = result.expect_err("expected compile error");
+    assert_eq!(exc.exc_type(), ExcType::SyntaxError);
+    assert_eq!(exc.message(), Some("duplicate argument 'x' in function definition"));
+}
+
+#[test]
+fn duplicate_keyword_only_parameter_returns_syntax_error() {
+    let result = MontyRun::new("def f(*, x, x): return x".to_owned(), "test.py", vec![]);
+    let exc = result.expect_err("expected compile error");
+    assert_eq!(exc.exc_type(), ExcType::SyntaxError);
+    assert_eq!(exc.message(), Some("duplicate argument 'x' in function definition"));
+}
+
+#[test]
+fn duplicate_mixed_positional_and_keyword_only_parameter_returns_syntax_error() {
+    let result = MontyRun::new("def f(x, *, x=1): return x".to_owned(), "test.py", vec![]);
+    let exc = result.expect_err("expected compile error");
+    assert_eq!(exc.exc_type(), ExcType::SyntaxError);
+    assert_eq!(exc.message(), Some("duplicate argument 'x' in function definition"));
+}
+
+#[test]
+fn duplicate_lambda_parameter_returns_syntax_error() {
+    let result = MontyRun::new("f = lambda x, x: x".to_owned(), "test.py", vec![]);
+    let exc = result.expect_err("expected compile error");
+    assert_eq!(exc.exc_type(), ExcType::SyntaxError);
+    assert_eq!(exc.message(), Some("duplicate argument 'x' in function definition"));
+}
+
+#[test]
 fn long_source_line_does_not_overflow_column() {
     // https://github.com/pydantic/monty/issues/341
     //
@@ -498,4 +589,191 @@ fn for_loop_attribute_target_has_clean_message() {
     let exc = result.expect_err("expected parse error");
     assert_eq!(exc.exc_type(), ExcType::SyntaxError);
     assert_snapshot!(exc.message().expect("has message"), @"invalid unpacking target: attribute");
+}
+
+#[test]
+fn many_elif_clauses_exceed_limit() {
+    // A long flat chain of `elif` clauses folds into a deeply right-nested
+    // `Node::If` tree that the prepare and compile phases walk recursively.
+    // Each clause is counted against the parser's nesting-depth budget so the
+    // result is a SyntaxError rather than a native stack overflow downstream.
+    let mut code = "if 0:\n    pass\n".to_owned();
+    for _ in 0..400 {
+        code.push_str("elif 0:\n    pass\n");
+    }
+    let result = MontyRun::new(code, "test.py", vec![]);
+    let err = result.expect_err("expected parse error");
+    assert_eq!(err.exc_type(), ExcType::SyntaxError);
+    assert_eq!(
+        err.message(),
+        Some("too many nested parentheses"),
+        "error message should match CPython, got: {:?}",
+        err.message()
+    );
+}
+
+#[test]
+fn moderate_elif_chain_within_limit() {
+    let mut code = "if 0:\n    pass\n".to_owned();
+    for _ in 0..20 {
+        code.push_str("elif 0:\n    pass\n");
+    }
+    code.push_str("else:\n    pass\n");
+    let result = MontyRun::new(code, "test.py", vec![]);
+    assert!(result.is_ok(), "moderate elif chain should succeed: {result:?}");
+}
+
+#[test]
+fn many_bool_op_operands_exceed_limit() {
+    // A long chain of `and`/`or` operands folds into a deeply right-nested
+    // `Expr::Op` tree. Each fold step is counted against the parser's
+    // nesting-depth budget.
+    let mut code = "x = 1".to_owned();
+    for _ in 0..400 {
+        code.push_str(" and 1");
+    }
+    let result = MontyRun::new(code, "test.py", vec![]);
+    let err = result.expect_err("expected parse error");
+    assert_eq!(err.exc_type(), ExcType::SyntaxError);
+}
+
+#[test]
+fn moderate_bool_op_chain_within_limit() {
+    let mut code = "1".to_owned();
+    for _ in 0..20 {
+        code.push_str(" and 1");
+    }
+    let result = MontyRun::new(code, "test.py", vec![]);
+    assert!(result.is_ok(), "moderate bool-op chain should succeed: {result:?}");
+}
+
+#[test]
+fn function_with_too_many_locals_and_except_as_returns_syntax_error() {
+    let mut code = "def f():\n".to_owned();
+    for i in 0..256 {
+        writeln!(code, "    l{i} = 0").unwrap();
+    }
+    code.push_str("    try:\n        1/0\n    except Exception as e:\n        pass\n");
+    let result = MontyRun::new(code, "test.py", vec![]);
+    let err = result.expect_err("expected compile error");
+    assert_eq!(err.exc_type(), ExcType::SyntaxError);
+    assert_eq!(
+        err.message(),
+        Some("cannot delete local variable in function with more than 256 locals (slot 256)"),
+    );
+}
+
+#[test]
+fn function_with_oversized_jump_offset_returns_syntax_error() {
+    let mut code = "def f(x):\n    if x:\n".to_owned();
+    for i in 0..20_000 {
+        writeln!(code, "        a{i} = 1").unwrap();
+    }
+    code.push_str("    return 0\n");
+    let result = MontyRun::new(code, "test.py", vec![]);
+    let err = result.expect_err("expected compile error");
+    assert_eq!(err.exc_type(), ExcType::SyntaxError);
+    assert_eq!(err.message(), Some("function too large: jump offset exceeds i16 range"));
+}
+
+#[test]
+fn module_with_too_many_names_returns_syntax_error() {
+    // 70 000 distinct top-level names is enough to overflow u16 even after
+    // any future small per-module reservations.
+    let mut code = String::with_capacity(700_000);
+    for i in 0..70_000 {
+        writeln!(code, "a{i} = 1").unwrap();
+    }
+    let result = MontyRun::new(code, "test.py", vec![]);
+    let err = result.expect_err("expected compile error");
+    assert_eq!(err.exc_type(), ExcType::SyntaxError);
+    assert_eq!(
+        err.message(),
+        Some("too many distinct names in scope; maximum is 65535 per scope"),
+    );
+}
+
+#[test]
+fn module_with_too_many_interned_strings_returns_syntax_error() {
+    // 60 000 distinct attribute references push the user-intern pool past its
+    // `u16::MAX - INTERN_STRING_ID_OFFSET` cap.
+    let mut code = "x = None\n".to_owned();
+    for i in 0..60_000 {
+        writeln!(code, "x.a{i}").unwrap();
+    }
+    let result = MontyRun::new(code, "test.py", vec![]);
+    let err = result.expect_err("expected compile error");
+    assert_eq!(err.exc_type(), ExcType::SyntaxError);
+    assert_eq!(
+        err.message(),
+        Some("module has too many distinct names; the bytecode format supports up to 65536 interned strings"),
+    );
+}
+
+#[test]
+fn oversized_tuple_literal_returns_syntax_error() {
+    let mut code = "x = (".to_owned();
+    for _ in 0..70_000 {
+        code.push_str("1, ");
+    }
+    code.push_str(")\n");
+    let result = MontyRun::new(code, "test.py", vec![]);
+    let err = result.expect_err("expected compile error");
+    assert_eq!(err.exc_type(), ExcType::SyntaxError);
+    assert_eq!(
+        err.message(),
+        Some("function too large: required stack exceeds u16::MAX")
+    );
+}
+
+#[test]
+fn oversized_unpacking_call_returns_syntax_error() {
+    let mut code = "def f(*args): return 0\nxs = ()\nf(".to_owned();
+    for _ in 0..70_000 {
+        code.push_str("1, ");
+    }
+    code.push_str("*xs)\n");
+    let result = MontyRun::new(code, "test.py", vec![]);
+    let err = result.expect_err("expected compile error");
+    assert_eq!(err.exc_type(), ExcType::SyntaxError);
+    assert_eq!(
+        err.message(),
+        Some("function too large: required stack exceeds u16::MAX")
+    );
+}
+
+#[test]
+fn function_with_too_many_defaults_returns_syntax_error() {
+    let mut code = "def f(".to_owned();
+    for i in 0..256 {
+        if i > 0 {
+            code.push_str(", ");
+        }
+        write!(code, "a{i}=0").unwrap();
+    }
+    code.push_str("): pass\n");
+    let result = MontyRun::new(code, "test.py", vec![]);
+    let err = result.expect_err("expected compile error");
+    assert_eq!(err.exc_type(), ExcType::SyntaxError);
+    assert_eq!(err.message(), Some("more than 255 default parameter values (256)"));
+}
+
+#[test]
+fn function_with_too_many_closure_variables_returns_syntax_error() {
+    // Each `xN` reference in `inner` captures the enclosing local as a free
+    // variable, so 256 distinct references push `MakeClosure`'s cell-count
+    // operand past `u8`. Flat per-statement references avoid hitting the
+    // parser's nested-parens depth limit before the closure-count limit.
+    let mut code = "def outer():\n".to_owned();
+    for i in 0..256 {
+        writeln!(code, "    x{i} = 0").unwrap();
+    }
+    code.push_str("    def inner():\n");
+    for i in 0..256 {
+        writeln!(code, "        _ = x{i}").unwrap();
+    }
+    let result = MontyRun::new(code, "test.py", vec![]);
+    let err = result.expect_err("expected compile error");
+    assert_eq!(err.exc_type(), ExcType::SyntaxError);
+    assert_eq!(err.message(), Some("more than 255 closure variables (256)"));
 }

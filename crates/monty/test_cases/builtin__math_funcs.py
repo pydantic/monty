@@ -134,6 +134,16 @@ assert pow(7, 256, 13) == 9, 'pow modular large exp'
 # Modular exponentiation edge cases
 assert pow(2, 0, 5) == 1, 'pow x^0 mod n'
 assert pow(0, 5, 3) == 0, 'pow 0^n mod m'
+
+# |modulo| == 1 always returns 0, including the exp == 0 corner case
+assert pow(5, 3, 1) == 0, 'pow n mod 1 is always 0'
+assert pow(5, 3, -1) == 0, 'pow n mod -1 is always 0'
+assert pow(5, 0, 1) == 0, 'pow x^0 mod 1 is 0, not 1'
+assert pow(5, 0, -1) == 0, 'pow x^0 mod -1 is 0, not 1'
+
+# i64::MIN base with modulo == -1 used to panic via rem_euclid overflow
+assert pow(-9223372036854775808, 1, -1) == 0, 'pow i64::MIN mod -1 does not panic'
+assert pow(-9223372036854775808, 7, -1) == 0, 'pow i64::MIN^n mod -1 does not panic'
 assert pow(True, 2) == 1, 'pow handles bool base'
 assert pow(2, True) == 2, 'pow handles bool exponent'
 assert pow(True, True) == 1, 'pow handles bool base and exponent'

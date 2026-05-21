@@ -126,13 +126,15 @@ impl Code {
     /// Location entries are recorded at instruction boundaries. This method finds
     /// the most recent entry at or before the given offset.
     ///
-    /// Returns `None` if the location table is empty or the offset is before
-    /// the first recorded location.
+    /// Returns `None` if the location table is empty, the offset is before
+    /// the first recorded location, or the offset exceeds `u32::MAX` (an
+    /// invariant violation; we degrade gracefully rather than panic since
+    /// this is on the traceback hot path).
     #[must_use]
     pub fn location_for_offset(&self, offset: usize) -> Option<&LocationEntry> {
+        let offset_u32 = u32::try_from(offset).ok()?;
         // Location entries are in order by bytecode offset.
         // Find the last entry where bytecode_offset <= offset.
-        let offset_u32 = u32::try_from(offset).expect("bytecode offset exceeds u32");
         self.location_table
             .iter()
             .rev()

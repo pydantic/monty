@@ -605,7 +605,10 @@ impl Set {
     /// each element individually to handle duplicates and compute hashes.
     fn from_iterator(iter: MontyIter, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<Self> {
         defer_drop_mut!(iter, vm);
-        let mut set = Self::with_capacity(iter.size_hint(vm.heap));
+        // `preallocation_hint` validates the requested capacity against the
+        // resource tracker and clamps it so an attacker-controlled iterable
+        // length cannot drive an unbounded native pre-allocation.
+        let mut set = Self::with_capacity(iter.preallocation_hint(mem::size_of::<SetEntry>(), vm)?);
         while let Some(item) = iter.for_next(vm)? {
             set.add(item, vm)?;
         }

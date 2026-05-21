@@ -9,7 +9,7 @@
 
 use crate::{
     args::ArgValues,
-    asyncio::{GatherFuture, GatherItem},
+    asyncio::GatherFuture,
     bytecode::{CallResult, VM},
     defer_drop_mut,
     exception_private::{ExcType, RunResult},
@@ -105,39 +105,42 @@ pub(crate) fn gather(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> 
     // TODO: support keyword arguments (e.g. return_exceptions)
     kwargs.not_supported_yet("gather", heap)?;
 
-    // Validate all positional args are awaitable and collect them
-    let mut items = Vec::new();
-    let mut coroutine_ids_to_cleanup: Vec<HeapId> = Vec::new();
+    // Validate all positional args are awaitable and collect their heap ids.
+    // Both coroutines and external futures live on the heap; transfer
+    // ownership of each arg's HeapId into `items` and forget the `Value` so
+    // its `Drop` doesn't dec_ref the entry we just handed to the gather.
+    let mut items: Vec<HeapId> = Vec::new();
 
     #[cfg_attr(not(feature = "memory-model-checks"), expect(unused_mut))]
     for mut arg in pos_args {
-        match &arg {
-            Value::Ref(id) if heap.get(*id).is_coroutine() => {
-                coroutine_ids_to_cleanup.push(*id);
-                items.push(GatherItem::Coroutine(*id));
-                // Transfer ownership to GatherFuture - mark Value as consumed without dec_ref
-                #[cfg(feature = "memory-model-checks")]
-                arg.dec_ref_forget();
+        let id = match &arg {
+            Value::Ref(id)
+                if matches!(
+                    heap.get(*id),
+                    HeapData::Coroutine(_) | HeapData::ExternalFuture(_) | HeapData::GatherFuture(_)
+                ) =>
+            {
+                Some(*id)
             }
-            Value::ExternalFuture(call_id) => {
-                items.push(GatherItem::ExternalFuture(*call_id));
-                // ExternalFuture is Copy, no refcount to manage
+            _ => None,
+        };
+
+        if let Some(id) = id {
+            items.push(id);
+            // Transfer ownership of the heap ref to the gather.
+            #[cfg(feature = "memory-model-checks")]
+            arg.dec_ref_forget();
+        } else {
+            arg.drop_with_heap(heap);
+            for id in items {
+                heap.dec_ref(id);
             }
-            _ => {
-                // Not awaitable - clean up and error
-                arg.drop_with_heap(heap);
-                // Drop already-collected coroutine refs
-                for cid in coroutine_ids_to_cleanup {
-                    heap.dec_ref(cid);
-                }
-                return Err(ExcType::type_error(
-                    "An asyncio.Future, a coroutine or an awaitable is required",
-                ));
-            }
+            return Err(ExcType::type_error(
+                "An asyncio.Future, a coroutine or an awaitable is required",
+            ));
         }
     }
 
-    // Create GatherFuture on heap
     let gather_future = GatherFuture::new(items);
     let id = heap.allocate(HeapData::GatherFuture(gather_future))?;
     Ok(Value::Ref(id))

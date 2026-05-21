@@ -13,7 +13,7 @@ use crate::{
     io::PrintWriter,
     namespace::NamespaceId,
     object::MontyObject,
-    parse::{parse, parse_with_interner},
+    parse::{CodeRange, ParseError, parse, parse_with_interner},
     prepare::{prepare, prepare_with_existing_names},
     resource::{NoLimitTracker, ResourceTracker},
     run_progress::{RunProgress, build_run_progress, check_snapshot_from_converted, convert_frame_exit},
@@ -234,9 +234,10 @@ impl Executor {
         // Create interns with empty functions (functions will be set after compilation)
         let mut interns = Interns::new(prepared.interner, Vec::new());
 
-        // Compile the module to bytecode, which also compiles all nested functions
-        let namespace_size_u16 = u16::try_from(prepared.namespace_size).expect("module namespace size exceeds u16");
-        let compile_result = Compiler::compile_module(&prepared.nodes, &interns, namespace_size_u16)
+        // Compile the module to bytecode, which also compiles all nested functions.
+        // The compiler enforces the bytecode-format namespace-size limit and reports
+        // it as a `SyntaxError` rather than panicking on the `u16` cast.
+        let compile_result = Compiler::compile_module(&prepared.nodes, &interns, prepared.namespace_size)
             .map_err(|e| e.into_python_exc(script_name, &code))?;
 
         // Set the compiled functions in the interns
@@ -272,11 +273,22 @@ impl Executor {
     ) -> Result<Self, MontyException> {
         check_identifier(&input_names)?;
         // Pre-register input names so they get stable slots before preparation.
+        // Surfaced via the standard parse/prepare error path; if the embedder
+        // hands over more than `u16::MAX + 1` names the bytecode encoding
+        // can't represent them all.
         for name in &input_names {
+            if existing_name_map.contains_key(name) {
+                continue;
+            }
             let next_slot = existing_name_map.len();
-            existing_name_map
-                .entry(name.clone())
-                .or_insert_with(|| NamespaceId::new(next_slot));
+            let slot = NamespaceId::new(next_slot).ok_or_else(|| {
+                ParseError::syntax(
+                    format!("too many distinct names in scope; maximum is {} per scope", u16::MAX),
+                    CodeRange::default(),
+                )
+                .into_python_exc(script_name, &code)
+            })?;
+            existing_name_map.insert(name.clone(), slot);
         }
 
         let seeded_interner = InternerBuilder::from_interns(existing_interns, &code);
@@ -287,10 +299,13 @@ impl Executor {
 
         let existing_functions = existing_interns.functions_clone();
         let mut interns = Interns::new(prepared.interner, Vec::new());
-        let namespace_size_u16 = u16::try_from(prepared.namespace_size).expect("module namespace size exceeds u16");
-        let compile_result =
-            Compiler::compile_module_with_functions(&prepared.nodes, &interns, namespace_size_u16, existing_functions)
-                .map_err(|e| e.into_python_exc(script_name, &code))?;
+        let compile_result = Compiler::compile_module_with_functions(
+            &prepared.nodes,
+            &interns,
+            prepared.namespace_size,
+            existing_functions,
+        )
+        .map_err(|e| e.into_python_exc(script_name, &code))?;
         interns.set_functions(compile_result.functions);
 
         Ok(Self {

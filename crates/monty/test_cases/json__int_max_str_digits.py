@@ -14,6 +14,20 @@ except ValueError as exc:
         f'loads digit-limit error message mismatch: {msg}'
     )
 
+# === loads rejects multi-million-digit integers without growing a BigInt ===
+# Regression test: the parser must reject by digit count before any BigInt
+# allocation, so this completes in milliseconds rather than spending CPU/memory
+# proportional to the input size.
+huge = '1' * 1_000_000
+try:
+    json.loads(huge)
+    assert False, 'loads should reject multi-million-digit integers'
+except ValueError as exc:
+    msg = str(exc)
+    assert msg.startswith('Exceeds the limit (4300 digits) for integer string conversion: value has 1000000 digits'), (
+        f'loads huge-int error message mismatch: {msg}'
+    )
+
 # === dumps accepts integers at the digit limit ===
 dump_ok = 10**4299
 assert json.dumps(dump_ok) == str(dump_ok), 'dumps should accept 4300-digit integers'

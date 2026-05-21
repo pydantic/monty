@@ -15,7 +15,6 @@ use num_traits::{ToPrimitive, Zero};
 use smallvec::SmallVec;
 
 use crate::{
-    asyncio::CallId,
     builtins::Builtins,
     bytecode::{CallResult, VM},
     exception_private::{ExcType, RunError, RunResult, SimpleException},
@@ -86,15 +85,6 @@ pub(crate) enum Value {
     /// A property descriptor that computes its value when accessed.
     /// When retrieved via `py_getattr`, the property's getter is invoked.
     Property(Property),
-    /// A pending external function call result.
-    ///
-    /// Created when the host calls `run_pending()` instead of `run(result)` for an
-    /// external function call. The CallId correlates with the call that created it.
-    /// When awaited, blocks the task until the host provides a result via `resume()`.
-    ///
-    /// ExternalFutures follow single-shot semantics like coroutines - awaiting an
-    /// already-awaited ExternalFuture raises RuntimeError.
-    ExternalFuture(CallId),
 
     // Heap-allocated values (stored in arena)
     Ref(HeapId),
@@ -147,7 +137,6 @@ impl PyTrait<'_> for Value {
             Self::DefFunction(_) | Self::ExtFunction(_) => Type::Function,
             Self::Marker(m) => m.py_type(),
             Self::Property(_) => Type::Property,
-            Self::ExternalFuture(_) => Type::Coroutine,
             Self::Ref(id) => vm.heap.read(*id).py_type(vm),
             #[cfg(feature = "memory-model-checks")]
             Self::Dereferenced => panic!("Cannot access Dereferenced object"),
@@ -304,7 +293,6 @@ impl PyTrait<'_> for Value {
             Self::DefFunction(_) | Self::ExtFunction(_) => true, // Functions are always truthy
             Self::Marker(_) => true,                            // Markers are always truthy
             Self::Property(_) => true,                          // Properties are always truthy
-            Self::ExternalFuture(_) => true,                    // ExternalFutures are always truthy
             Self::InternString(string_id) => !vm.interns.get_str(*string_id).is_empty(),
             Self::InternBytes(bytes_id) => !vm.interns.get_bytes(*bytes_id).is_empty(),
             Self::Ref(id) => vm.heap.read(*id).py_bool(vm),
@@ -348,7 +336,6 @@ impl PyTrait<'_> for Value {
             Self::InternBytes(bytes_id) => Ok(bytes_repr_fmt(interns.get_bytes(*bytes_id), f)?),
             Self::Marker(m) => Ok(m.py_repr_fmt(f)?),
             Self::Property(p) => Ok(write!(f, "<property {p:?}>")?),
-            Self::ExternalFuture(call_id) => Ok(write!(f, "<coroutine external_future({})>", call_id.raw())?),
             Self::Ref(id) => {
                 if heap_ids.contains(id) {
                     // Cycle detected - write type-specific placeholder following Python semantics
@@ -1413,7 +1400,6 @@ impl Value {
             Self::ModuleFunction(_) | Self::DefFunction(_) | Self::ExtFunction(_) => Type::Function,
             Self::Marker(_) => Type::SpecialForm,
             Self::Property(_) => Type::Property,
-            Self::ExternalFuture(_) => Type::Coroutine,
             Self::Ref(_) => Type::NoneType, // callers should resolve Ref via HeapData::py_type()
             #[cfg(feature = "memory-model-checks")]
             Self::Dereferenced => Type::NoneType,
@@ -1463,8 +1449,6 @@ impl Value {
             Self::Marker(m) => marker_value_id(*m),
             // Properties get deterministic IDs based on discriminant
             Self::Property(p) => property_value_id(*p),
-            // ExternalFutures get IDs based on their call_id
-            Self::ExternalFuture(call_id) => external_future_value_id(*call_id),
             #[cfg(feature = "memory-model-checks")]
             Self::Dereferenced => panic!("Cannot get id of Dereferenced object"),
         }
@@ -1544,8 +1528,6 @@ impl Value {
             Self::Marker(m) => m.hash(&mut hasher),
             // Properties are hashable based on their OS function discriminant
             Self::Property(p) => p.hash(&mut hasher),
-            // ExternalFutures are hashable based on their call ID
-            Self::ExternalFuture(call_id) => call_id.raw().hash(&mut hasher),
             #[cfg(feature = "memory-model-checks")]
             Self::Dereferenced => panic!("Cannot access Dereferenced object"),
         }
@@ -1974,7 +1956,6 @@ impl Value {
             Self::InternLongInt(bi) => Self::InternLongInt(*bi),
             Self::Marker(m) => Self::Marker(*m),
             Self::Property(p) => Self::Property(*p),
-            Self::ExternalFuture(call_id) => Self::ExternalFuture(*call_id),
             Self::Ref(_) => panic!("Ref clones must go through clone_with_heap to maintain refcounts"),
             #[cfg(feature = "memory-model-checks")]
             Self::Dereferenced => panic!("Cannot copy Dereferenced object"),
@@ -2213,8 +2194,6 @@ const FUNCTION_ID_TAG: usize = 1usize << (usize::BITS - 8);
 const EXTFUNCTION_ID_TAG: usize = 1usize << (usize::BITS - 9);
 /// High-bit tag for Marker value-based IDs (stdout, stderr, etc.).
 const MARKER_ID_TAG: usize = 1usize << (usize::BITS - 10);
-/// High-bit tag for ExternalFuture value-based IDs.
-const EXTERNAL_FUTURE_ID_TAG: usize = 1usize << (usize::BITS - 11);
 /// High-bit tag for ModuleFunction value-based IDs.
 const MODULE_FUNCTION_ID_TAG: usize = 1usize << (usize::BITS - 12);
 /// High-bit tag for interned LongInt `id()` values.
@@ -2229,7 +2208,6 @@ const BUILTIN_ID_MASK: usize = BUILTIN_ID_TAG - 1;
 const FUNCTION_ID_MASK: usize = FUNCTION_ID_TAG - 1;
 const EXTFUNCTION_ID_MASK: usize = EXTFUNCTION_ID_TAG - 1;
 const MARKER_ID_MASK: usize = MARKER_ID_TAG - 1;
-const EXTERNAL_FUTURE_ID_MASK: usize = EXTERNAL_FUTURE_ID_TAG - 1;
 const MODULE_FUNCTION_ID_MASK: usize = MODULE_FUNCTION_ID_TAG - 1;
 const INTERN_LONG_INT_ID_MASK: usize = INTERN_LONG_INT_ID_TAG - 1;
 const PROPERTY_ID_MASK: usize = PROPERTY_ID_TAG - 1;
@@ -2338,12 +2316,6 @@ fn property_value_id(p: Property) -> usize {
         Property::Os(os_fn) => os_fn as usize,
     };
     PROPERTY_ID_TAG | (discriminant & PROPERTY_ID_MASK)
-}
-
-/// Computes a deterministic ID for an external future based on its call ID.
-#[inline]
-fn external_future_value_id(call_id: CallId) -> usize {
-    EXTERNAL_FUTURE_ID_TAG | ((call_id.raw() as usize) & EXTERNAL_FUTURE_ID_MASK)
 }
 
 /// Computes a deterministic ID for a module function based on its discriminant.

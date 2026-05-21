@@ -559,6 +559,14 @@ Heap-allocated values (`Value::Ref`) use manual reference counting. Key rules:
 
 Container types (`List`, `Tuple`, `Dict`) also have `clone_with_heap()` methods.
 
+**Mutability of the heap parameter is asymmetric** — do not assume the two methods take the same kind of borrow:
+
+- `clone_with_heap` takes `&impl ContainsHeap` (immutable). The refcount field lives behind interior mutability, so `inc_ref` is `&self` on `Heap`. This means you can call `clone_with_heap` while other immutable borrows of the heap (e.g. a `HeapRead` handle obtained via `.get(heap)`) are still live.
+- `Heap::allocate` is also `&self` for the same reason — entry storage and the allocation tracker are behind interior mutability. New heap entries can be created without a `&mut Heap`.
+- `drop_with_heap` takes `&mut impl ContainsHeap`, because dropping may free entries and run destructors, which mutates the heap.
+
+If you find yourself fighting the borrow checker around `clone_with_heap` or `allocate`, the fix is almost never `&mut` — it is more likely that you are passing the wrong receiver (e.g. `vm` instead of `vm.heap`) or holding a `&mut` borrow elsewhere that should be `&`.
+
 ### Cycle collection — Bacon–Rajan trial deletion
 
 Reference counting alone cannot reclaim cycles. Monty uses **Bacon–Rajan trial deletion**
