@@ -22,6 +22,7 @@ __all__ = [
     'MontySyntaxError',
     'MontyRuntimeError',
     'MontyTypingError',
+    'MontyFileHandle',
     'MountDir',
     'Frame',
     'load_snapshot',
@@ -48,6 +49,31 @@ class CollectString:
     @property
     def output(self) -> str:
         """Collected output so far."""
+
+@final
+class MontyFileHandle:
+    """Host-side handle to a file opened inside a Monty sandbox.
+
+    Plain data holder — Monty never gives the host a live OS file descriptor.
+    Exposed to callbacks (e.g. as the first argument of an `Open` result or
+    a `read`/`write` request) so they can route on `path`/`id` and branch on
+    `mode`/`binary`/`readable`/`writable` without re-parsing the mode string.
+    """
+
+    @property
+    def path(self) -> str: ...
+    @property
+    def mode(self) -> str: ...
+    @property
+    def position(self) -> int: ...
+    @property
+    def id(self) -> int | None: ...
+    @property
+    def binary(self) -> bool: ...
+    @property
+    def readable(self) -> bool: ...
+    @property
+    def writable(self) -> bool: ...
 
 @final
 class MountDir:

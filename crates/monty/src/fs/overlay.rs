@@ -25,10 +25,7 @@ use super::{
         strip_mount_prefix,
     },
 };
-use crate::{
-    MontyObject, dir_stat, file_stat,
-    object::{FileAccess, FileMode},
-};
+use crate::{MontyObject, dir_stat, file_stat, object::FileMode};
 
 /// Resolves a virtual path to the mount-relative overlay key.
 fn relative_path(path: &str, ctx: &MountContext<'_>) -> Result<String, MountError> {
@@ -85,9 +82,11 @@ fn open(
     mode: &str,
     ctx: &mut MountContext<'_>,
 ) -> Result<MontyObject, MountError> {
-    let file_mode = FileMode::parse(mode).map_err(|e| MountError::InvalidMount(e.to_string()))?;
-    match file_mode.access {
-        FileAccess::Read | FileAccess::ReadUpdate => {
+    let file_mode = mode
+        .parse::<FileMode>()
+        .map_err(|e| MountError::InvalidMount(e.to_string()))?;
+    match file_mode {
+        FileMode::Read(_) | FileMode::ReadUpdate(_) => {
             let relative = relative_path(path, ctx)?;
             match state.get(&relative) {
                 Some(OverlayEntry::File(_) | OverlayEntry::RealFileRef(_)) => {}
@@ -106,10 +105,10 @@ fn open(
         }
         // `write_text`/`append_text` with empty data give exactly the
         // truncate / create-preserving semantics `open()` needs.
-        FileAccess::Write | FileAccess::WriteUpdate => {
+        FileMode::Write(_) | FileMode::WriteUpdate(_) => {
             write_text(state, path, "", ctx)?;
         }
-        FileAccess::Append | FileAccess::AppendUpdate => {
+        FileMode::Append(_) | FileMode::AppendUpdate(_) => {
             append_text(state, path, "", ctx)?;
         }
     }

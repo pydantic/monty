@@ -808,11 +808,18 @@ class OSAccess(AbstractOS):
         return len(data)
 
     def path_append_text(self, path: PurePosixPath, data: str) -> int:
-        self._append_file(path, data)
-        return len(data)
+        return self.path_append_bytes(path, data.encode())
 
     def path_append_bytes(self, path: PurePosixPath, data: bytes) -> int:
-        self._append_file(path, data)
+        entry = self._get_entry(path)
+        if _is_file(entry):
+            content = entry.read_content()
+            content_bytes = content if isinstance(content, bytes) else content.encode()
+            entry.write_content(content_bytes + data)
+        elif _is_dir(entry):
+            raise IsADirectoryError(f'[Errno 21] Is a directory: {str(path)!r}')
+        else:
+            self._write_file(path, data)
         return len(data)
 
     def _write_file(self, path: PurePosixPath, data: bytes | str) -> None:
@@ -831,20 +838,6 @@ class OSAccess(AbstractOS):
             self.files.append(new_file)
         else:
             raise FileNotFoundError(f'[Errno 2] No such file or directory: {str(path)!r}')
-
-    def _append_file(self, path: PurePosixPath, data: bytes | str) -> None:
-        entry = self._get_entry(path)
-        if _is_file(entry):
-            content = entry.read_content()
-            if isinstance(content, bytes):
-                entry.write_content(content + (data if isinstance(data, bytes) else data.encode()))
-            else:
-                entry.write_content(content + (data.decode() if isinstance(data, bytes) else data))
-            return
-        elif _is_dir(entry):
-            raise IsADirectoryError(f'[Errno 21] Is a directory: {str(path)!r}')
-
-        self._write_file(path, data)
 
     def path_mkdir(self, path: PurePosixPath, parents: bool, exist_ok: bool) -> None:
         entry = self._get_entry(path)

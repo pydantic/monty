@@ -4,6 +4,7 @@ use std::{
     fmt::{self, Write},
     hash::{Hash, Hasher},
     mem, slice,
+    str::FromStr,
     vec::IntoIter,
 };
 
@@ -187,54 +188,82 @@ fn monty_datetime_naive(datetime: &MontyDateTime) -> Option<NaiveDateTime> {
     Some(date.and_time(time))
 }
 
-/// The access pattern selected by an `open()` mode string.
+/// A parsed Python `open()` mode.
 ///
-/// This single enum combines three concepts that were previously separate
-/// (`r`/`w`/`a` action, the `+` update flag, and the resulting read/write
-/// capability) because they are fully interdependent: the six combinations of
-/// action and update flag are the only states that matter. Every other fact
-/// about a mode — the open-time effect, `readable()`/`writable()`, and the
-/// concrete `_io` wrapper type — is derived from this plus the binary flag, so
-/// no further enum is needed.
+/// This single enum captures everything that matters about how a file was
+/// opened: the access pattern (`r`/`w`/`a` and the `+` update flag) and
+/// whether the file is binary. The variant name encodes the access pattern;
+/// the `bool` payload is `true` for binary and `false` for text — i.e.
+/// `Read(true)` is `'rb'` and `Read(false)` is `'r'`.
+///
+/// Construct one with the [`FromStr`] impl (`mode_str.parse::<FileMode>()`).
+/// The original input string is
+/// intentionally not preserved; [`FileMode::as_str`] rebuilds the canonical
+/// CPython form (`'r'`, `'rb+'`, `'wb'`, …), matching how CPython itself
+/// normalizes input like `'rt'` → `'r'` and `'r+b'` → `'rb+'`.
+///
+/// Carried publicly by [`MontyObject::FileHandle`] so a host servicing file
+/// operations can inspect the mode without re-parsing the raw string.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
-pub enum FileAccess {
-    /// `r`: read-only; the file must already exist.
-    Read,
-    /// `r+`: read and write an existing file; nothing happens at open time.
-    ReadUpdate,
-    /// `w`: write-only; truncate the file (creating it if missing) on open.
-    Write,
-    /// `w+`: read and write; truncate the file (creating it if missing) on open.
-    WriteUpdate,
-    /// `a`: write-only appending; create the file if missing, preserving content.
-    Append,
-    /// `a+`: read and append; create the file if missing, preserving content.
-    AppendUpdate,
-}
-
-/// A parsed `open()` mode and the behaviour Monty exposes for it.
-///
-/// This is the structured form of an `open()` mode string. It is carried
-/// publicly by [`MontyObject::FileHandle`] so a host servicing file operations
-/// can inspect the mode without re-parsing the raw string. Construct one with
-/// [`FileMode::parse`].
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct FileMode {
-    /// The original mode string, preserved for the file object's `mode` attribute.
-    pub mode: String,
-    /// The access pattern (`r`/`w`/`a` and the `+` update flag).
-    pub access: FileAccess,
-    /// Whether the file expects bytes instead of text.
-    pub binary: bool,
+pub enum FileMode {
+    /// `r` / `rb`: read-only; the file must already exist.
+    Read(bool),
+    /// `r+` / `rb+`: read and write an existing file; nothing happens at open time.
+    ReadUpdate(bool),
+    /// `w` / `wb`: write-only; truncate the file (creating it if missing) on open.
+    Write(bool),
+    /// `w+` / `wb+`: read and write; truncate the file (creating it if missing) on open.
+    WriteUpdate(bool),
+    /// `a` / `ab`: write-only appending; create the file if missing, preserving content.
+    Append(bool),
+    /// `a+` / `ab+`: read and append; create the file if missing, preserving content.
+    AppendUpdate(bool),
 }
 
 impl FileMode {
+    /// Returns the canonical Python `open()` mode string for this mode,
+    /// matching what CPython exposes via `file.mode`.
+    ///
+    /// The result is always one of the 12 well-formed mode strings (`r`, `rb`,
+    /// `r+`, `rb+`, `w`, `wb`, `w+`, `wb+`, `a`, `ab`, `a+`, `ab+`). This is
+    /// the canonical form CPython itself normalizes user input into — e.g.
+    /// `'rt'` → `'r'`, `'r+b'` → `'rb+'`, `'br'` → `'rb'`.
+    #[must_use]
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Read(false) => "r",
+            Self::Read(true) => "rb",
+            Self::ReadUpdate(false) => "r+",
+            Self::ReadUpdate(true) => "rb+",
+            Self::Write(false) => "w",
+            Self::Write(true) => "wb",
+            Self::WriteUpdate(false) => "w+",
+            Self::WriteUpdate(true) => "wb+",
+            Self::Append(false) => "a",
+            Self::Append(true) => "ab",
+            Self::AppendUpdate(false) => "a+",
+            Self::AppendUpdate(true) => "ab+",
+        }
+    }
+
+    /// Whether the file is binary (`'rb'`, `'wb'`, …) rather than text.
+    #[must_use]
+    pub fn is_binary(&self) -> bool {
+        let (Self::Read(b)
+        | Self::ReadUpdate(b)
+        | Self::Write(b)
+        | Self::WriteUpdate(b)
+        | Self::Append(b)
+        | Self::AppendUpdate(b)) = self;
+        *b
+    }
+
     /// Whether `read()` is allowed by this mode.
     #[must_use]
     pub fn readable(&self) -> bool {
         matches!(
-            self.access,
-            FileAccess::Read | FileAccess::ReadUpdate | FileAccess::WriteUpdate | FileAccess::AppendUpdate
+            self,
+            Self::Read(_) | Self::ReadUpdate(_) | Self::WriteUpdate(_) | Self::AppendUpdate(_)
         )
     }
 
@@ -242,25 +271,21 @@ impl FileMode {
     #[must_use]
     pub fn writable(&self) -> bool {
         matches!(
-            self.access,
-            FileAccess::Write
-                | FileAccess::WriteUpdate
-                | FileAccess::Append
-                | FileAccess::AppendUpdate
-                | FileAccess::ReadUpdate
+            self,
+            Self::Write(_) | Self::WriteUpdate(_) | Self::Append(_) | Self::AppendUpdate(_) | Self::ReadUpdate(_)
         )
     }
 
     /// Whether writes should always append (`a`/`a+`).
     #[must_use]
-    pub fn append(&self) -> bool {
-        matches!(self.access, FileAccess::Append | FileAccess::AppendUpdate)
+    pub fn is_append(&self) -> bool {
+        matches!(self, Self::Append(_) | Self::AppendUpdate(_))
     }
 
     /// Whether `open()` must truncate the file to empty immediately (`w`/`w+`).
     #[must_use]
     pub fn truncate(&self) -> bool {
-        matches!(self.access, FileAccess::Write | FileAccess::WriteUpdate)
+        matches!(self, Self::Write(_) | Self::WriteUpdate(_))
     }
 
     /// Whether `open()` must create the file immediately if missing.
@@ -270,43 +295,47 @@ impl FileMode {
     #[must_use]
     pub fn create(&self) -> bool {
         matches!(
-            self.access,
-            FileAccess::Write | FileAccess::WriteUpdate | FileAccess::Append | FileAccess::AppendUpdate
+            self,
+            Self::Write(_) | Self::WriteUpdate(_) | Self::Append(_) | Self::AppendUpdate(_)
         )
     }
 
     /// Returns the `_io` wrapper type a file opened with this mode presents as.
     #[must_use]
     pub fn file_type(&self) -> Type {
-        match (self.binary, self.access) {
-            (false, _) => Type::TextIOWrapper,
-            (true, FileAccess::ReadUpdate | FileAccess::WriteUpdate | FileAccess::AppendUpdate) => Type::BufferedRandom,
-            (true, FileAccess::Read) => Type::BufferedReader,
-            (true, FileAccess::Write | FileAccess::Append) => Type::BufferedWriter,
+        match self {
+            _ if !self.is_binary() => Type::TextIOWrapper,
+            Self::ReadUpdate(_) | Self::WriteUpdate(_) | Self::AppendUpdate(_) => Type::BufferedRandom,
+            Self::Read(_) => Type::BufferedReader,
+            Self::Write(_) | Self::Append(_) => Type::BufferedWriter,
         }
     }
 
     /// Returns the bare Python type name (`type(f).__name__`) for this mode.
     #[must_use]
     pub fn type_name(&self) -> &'static str {
-        match (self.binary, self.access) {
-            (false, _) => "TextIOWrapper",
-            (true, FileAccess::ReadUpdate | FileAccess::WriteUpdate | FileAccess::AppendUpdate) => "BufferedRandom",
-            (true, FileAccess::Read) => "BufferedReader",
-            (true, FileAccess::Write | FileAccess::Append) => "BufferedWriter",
+        match self {
+            _ if !self.is_binary() => "TextIOWrapper",
+            Self::ReadUpdate(_) | Self::WriteUpdate(_) | Self::AppendUpdate(_) => "BufferedRandom",
+            Self::Read(_) => "BufferedReader",
+            Self::Write(_) | Self::Append(_) => "BufferedWriter",
         }
     }
+}
 
-    /// Parses a Python `open()` mode string into a [`FileMode`].
-    ///
-    /// Monty supports the common read, write, append, and update combinations
-    /// in text or binary form. Exclusive creation (`x`) is rejected for now
-    /// because it needs a dedicated mount-table operation to be race-free.
-    ///
-    /// # Errors
-    /// Returns a [`FileModeError`] (whose message matches CPython's) when the
-    /// mode string is empty, malformed, or contains an unsupported combination.
-    pub fn parse(mode: &str) -> Result<Self, Cow<'static, str>> {
+/// Parses a Python `open()` mode string into a [`FileMode`].
+///
+/// Monty supports the common read, write, append, and update combinations in
+/// text or binary form. Exclusive creation (`x`) is rejected for now because
+/// it needs a dedicated mount-table operation to be race-free.
+///
+/// The `Err` payload is a CPython-matched message — empty input, an unknown
+/// mode character, duplicated `b`/`t`/`+`, conflicting binary+text flags, or
+/// more than one of the `r`/`w`/`a` actions.
+impl FromStr for FileMode {
+    type Err = Cow<'static, str>;
+
+    fn from_str(mode: &str) -> Result<Self, Self::Err> {
         if mode.is_empty() {
             return Err("Invalid mode: empty".into());
         }
@@ -350,19 +379,13 @@ impl FileMode {
             return Err("can't have text and binary mode at once".into());
         }
 
-        let access = match (action.unwrap_or('r'), updating) {
-            ('w', false) => FileAccess::Write,
-            ('w', true) => FileAccess::WriteUpdate,
-            ('a', false) => FileAccess::Append,
-            ('a', true) => FileAccess::AppendUpdate,
-            (_, false) => FileAccess::Read,
-            (_, true) => FileAccess::ReadUpdate,
-        };
-
-        Ok(Self {
-            mode: mode.to_owned(),
-            access,
-            binary,
+        Ok(match (action.unwrap_or('r'), updating) {
+            ('w', false) => Self::Write(binary),
+            ('w', true) => Self::WriteUpdate(binary),
+            ('a', false) => Self::Append(binary),
+            ('a', true) => Self::AppendUpdate(binary),
+            (_, false) => Self::Read(binary),
+            (_, true) => Self::ReadUpdate(binary),
         })
     }
 }
@@ -1013,7 +1036,7 @@ impl MontyObject {
                         let file = file.get(vm.heap);
                         Self::FileHandle {
                             path: file.path().to_owned(),
-                            mode: file.file_mode().clone(),
+                            mode: *file.file_mode(),
                             position: file.position(),
                             id: file.id(),
                         }
@@ -1283,7 +1306,7 @@ impl MontyObject {
                 "<{} name={} mode={}>",
                 mode.file_type(),
                 StringRepr(path),
-                StringRepr(&mode.mode)
+                StringRepr(mode.as_str())
             ),
             Self::Type(t) => write!(f, "<class '{t}'>"),
             Self::BuiltinFunction(func) => write!(f, "<built-in function {func}>"),
@@ -1408,7 +1431,7 @@ impl Hash for MontyObject {
                 id,
             } => {
                 path.hash(state);
-                mode.mode.hash(state);
+                mode.as_str().hash(state);
                 position.hash(state);
                 id.hash(state);
             }

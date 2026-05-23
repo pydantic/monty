@@ -41,7 +41,7 @@ fn run_to_oscall(code: &str) -> (OsFunction, Vec<MontyObject>) {
                 | OsFunction::Rename => MontyObject::None,
                 OsFunction::Open => MontyObject::FileHandle {
                     path: "mock".to_owned(),
-                    mode: FileMode::parse("r").unwrap(),
+                    mode: "r".parse::<FileMode>().unwrap(),
                     position: 0,
                     id: None,
                 },

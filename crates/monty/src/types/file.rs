@@ -101,10 +101,10 @@ impl OpenFile {
         &self.path
     }
 
-    /// Returns the mode string shown to Python code.
+    /// Returns the canonical mode string shown to Python code.
     #[must_use]
-    pub fn mode(&self) -> &str {
-        &self.mode.mode
+    pub fn mode(&self) -> &'static str {
+        self.mode.as_str()
     }
 
     /// Returns the parsed `open()` mode.
@@ -134,7 +134,7 @@ impl OpenFile {
 
 impl HeapItem for OpenFile {
     fn py_estimate_size(&self) -> usize {
-        mem::size_of::<Self>() + self.path.len() + self.mode.mode.len()
+        mem::size_of::<Self>() + self.path.len()
     }
 
     fn py_dec_ref_ids(&mut self, _stack: &mut Vec<HeapId>) {
@@ -211,9 +211,9 @@ impl<'h> PyTrait<'h> for HeapRead<'h, OpenFile> {
         let file = self.get(vm.heap);
         let value = match method {
             StaticStrings::Name => allocate_string(file.path.clone(), vm.heap)?,
-            StaticStrings::Mode => allocate_string(file.mode.mode.clone(), vm.heap)?,
+            StaticStrings::Mode => allocate_string(file.mode.as_str().to_owned(), vm.heap)?,
             StaticStrings::Closed => Value::Bool(matches!(file.state, FileState::Closed)),
-            StaticStrings::Encoding if !file.mode.binary => allocate_string("utf-8", vm.heap)?,
+            StaticStrings::Encoding if !file.mode.is_binary() => allocate_string("utf-8", vm.heap)?,
             _ => return Err(ExcType::attribute_error(self.py_type(vm), attr.as_str(vm.interns))),
         };
         Ok(Some(CallResult::Value(value)))
@@ -240,7 +240,7 @@ impl<'h> HeapRead<'h, OpenFile> {
             if !file.mode.readable() {
                 return Err(unsupported_operation("not readable"));
             }
-            file.mode.binary
+            file.mode.is_binary()
         };
 
         let function = if binary {
@@ -263,7 +263,7 @@ impl<'h> HeapRead<'h, OpenFile> {
         args: ArgValues,
     ) -> RunResult<CallResult> {
         let data = args.get_one_arg("write", vm.heap)?;
-        let binary = self.get(vm.heap).mode.binary;
+        let binary = self.get(vm.heap).mode.is_binary();
         if let Err(err) = validate_write_data(&data, binary, vm) {
             data.drop_with_heap(vm);
             return Err(err);
@@ -275,17 +275,17 @@ impl<'h> HeapRead<'h, OpenFile> {
         let function = {
             let file = self.get_mut(vm.heap);
             if !file.mode.writable() {
-                let message = if file.mode.binary { "write" } else { "not writable" };
+                let message = if file.mode.is_binary() { "write" } else { "not writable" };
                 data.drop_with_heap(vm);
                 return Err(unsupported_operation(message));
             }
-            let function = if file.mode.binary {
-                if file.mode.append() || matches!(file.write_state, WriteState::Written) {
+            let function = if file.mode.is_binary() {
+                if file.mode.is_append() || matches!(file.write_state, WriteState::Written) {
                     OsFunction::AppendBytes
                 } else {
                     OsFunction::WriteBytes
                 }
-            } else if file.mode.append() || matches!(file.write_state, WriteState::Written) {
+            } else if file.mode.is_append() || matches!(file.write_state, WriteState::Written) {
                 OsFunction::AppendText
             } else {
                 OsFunction::WriteText

@@ -153,7 +153,7 @@ impl Serialize for JsonMontyObject<'_> {
                 "$file",
                 &FileHandleBody {
                     path,
-                    mode: &mode.mode,
+                    mode: mode.as_str(),
                     position: *position,
                     id: *id,
                 },

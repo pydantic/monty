@@ -120,7 +120,7 @@ impl<'a> FsRequest<'a> {
             | Self::Unlink { .. }
             | Self::Rmdir { .. }
             | Self::Rename { .. } => true,
-            Self::Open { mode, .. } => FileMode::parse(mode).is_ok_and(|m| m.create()),
+            Self::Open { mode, .. } => mode.parse::<FileMode>().is_ok_and(|m| m.create()),
             _ => false,
         }
     }
