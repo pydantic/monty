@@ -5,8 +5,8 @@
 //! and that return values are correctly used by Python code.
 
 use monty::{
-    FileMode, MontyDate, MontyDateTime, MontyObject, MontyRun, NoLimitTracker, OsFunction, PrintWriter, RunProgress,
-    file_stat,
+    FileMode, MontyDate, MontyDateTime, MontyFileHandle, MontyObject, MontyRun, NoLimitTracker, OsFunction,
+    PrintWriter, RunProgress, file_stat,
 };
 
 /// Helper to run code and extract the OsCall progress.
@@ -39,12 +39,12 @@ fn run_to_oscall(code: &str) -> (OsFunction, Vec<MontyObject>) {
                 | OsFunction::Unlink
                 | OsFunction::Rmdir
                 | OsFunction::Rename => MontyObject::None,
-                OsFunction::Open => MontyObject::FileHandle {
+                OsFunction::Open => MontyObject::FileHandle(MontyFileHandle {
                     path: "mock".to_owned(),
                     mode: "r".parse::<FileMode>().unwrap(),
                     position: 0,
                     id: None,
-                },
+                }),
                 OsFunction::Getenv => MontyObject::String("mock_env_value".to_owned()),
                 OsFunction::GetEnviron => MontyObject::Dict(vec![].into()),
                 OsFunction::DateToday => MontyObject::Date(MontyDate {

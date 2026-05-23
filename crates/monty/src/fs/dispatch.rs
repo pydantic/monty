@@ -8,7 +8,7 @@ use super::{
     common::MountContext, direct, error::MountError, mount_mode::MountMode, overlay,
     path_security::normalize_virtual_path,
 };
-use crate::{MontyObject, os::OsFunction, types::file::FileMode};
+use crate::{MontyFileHandle, MontyObject, os::OsFunction, types::file::FileMode};
 
 /// Parsed filesystem request passed to the direct or overlay backend.
 #[derive(Clone, Copy, Debug)]
@@ -212,7 +212,7 @@ fn parse_primary_path(args: &[MontyObject]) -> Result<&str, MountError> {
     match args.first() {
         Some(MontyObject::Path(path)) => Ok(path.as_str()),
         Some(MontyObject::String(path)) => Ok(path.as_str()),
-        Some(MontyObject::FileHandle { path, .. }) => Ok(path.as_str()),
+        Some(MontyObject::FileHandle(handle)) => Ok(handle.path.as_str()),
         _ => Err(MountError::InvalidMount(
             "filesystem operation missing path argument".to_owned(),
         )),
@@ -262,12 +262,12 @@ fn parse_path_arg<'a>(extra_args: &'a [MontyObject], op_name: &str) -> Result<&'
 /// subsequent `read`/`write` calls re-resolve it through `resolve_path`. The
 /// `MountTable` keeps no live OS handle, so it assigns no `id`.
 pub(super) fn file_handle_result(path: &str, mode: FileMode) -> MontyObject {
-    MontyObject::FileHandle {
+    MontyObject::FileHandle(MontyFileHandle {
         path: normalize_virtual_path(path),
         mode,
         position: 0,
         id: None,
-    }
+    })
 }
 
 /// Extracts the `open()` mode string (second positional argument).

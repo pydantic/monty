@@ -44,7 +44,7 @@ use serde::{
 };
 
 use crate::{
-    object::{DictPairs, MontyObject},
+    object::{DictPairs, MontyFileHandle, MontyObject},
     types::Type,
 };
 
@@ -143,12 +143,12 @@ impl Serialize for JsonMontyObject<'_> {
                 )
             }
             MontyObject::Path(p) => serialize_tagged(serializer, "$path", p),
-            MontyObject::FileHandle {
+            MontyObject::FileHandle(MontyFileHandle {
                 path,
                 mode,
                 position,
                 id,
-            } => serialize_tagged(
+            }) => serialize_tagged(
                 serializer,
                 "$file",
                 &FileHandleBody {

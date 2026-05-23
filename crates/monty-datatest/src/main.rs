@@ -20,8 +20,8 @@ use std::{
 use ahash::AHashMap;
 use chrono::{Datelike, Timelike};
 use monty::{
-    ExcType, ExtFunctionResult, FileMode, LimitedTracker, MontyDate, MontyDateTime, MontyException, MontyObject,
-    MontyRun, NameLookupResult, OsFunction, PrintWriter, ResourceLimits, RunProgress, dir_stat, file_stat,
+    ExcType, ExtFunctionResult, FileMode, LimitedTracker, MontyDate, MontyDateTime, MontyException, MontyFileHandle,
+    MontyObject, MontyRun, NameLookupResult, OsFunction, PrintWriter, ResourceLimits, RunProgress, dir_stat, file_stat,
     fs::{MountMode, MountTable, OverlayState},
 };
 use pyo3::{prelude::*, types::PyDict};
@@ -967,7 +967,7 @@ fn dispatch_os_call(
     let path = match &args[0] {
         MontyObject::Path(p) => p.clone(),
         MontyObject::String(s) => s.clone(),
-        MontyObject::FileHandle { path, .. } => path.clone(),
+        MontyObject::FileHandle(handle) => handle.path.clone(),
         other => panic!("OS call: first arg must be path, got {other:?}"),
     };
 
@@ -1086,12 +1086,12 @@ fn dispatch_os_call(
                     vfs.deleted_files.remove(&path);
                 }),
             }
-            MontyObject::FileHandle {
+            MontyObject::FileHandle(MontyFileHandle {
                 path,
                 mode: file_mode,
                 position: 0,
                 id: None,
-            }
+            })
             .into()
         }
         OsFunction::Getenv => {

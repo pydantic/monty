@@ -292,31 +292,7 @@ pub enum MontyObject {
     /// Represents a filesystem path. Can be used both as input (from host) and output.
     Path(String),
     /// An open file object (the result of `open()`).
-    ///
-    /// This is the boundary representation of Monty's heap [`OpenFile`](crate::types::OpenFile)
-    /// wrapper. It carries everything needed to service a file operation from a
-    /// host that holds no live OS handle: the virtual `path`, the `mode`, and
-    /// the byte `position` for seek-aware reads.
-    ///
-    /// The host produces a `FileHandle` as the result of an
-    /// [`OsFunction::Open`](crate::os::OsFunction::Open) call; `to_value` then
-    /// builds the `OpenFile` heap wrapper from it. Conversely, a heap file
-    /// object passed as an argument to a `read`/`write` OS call is converted
-    /// back to a `FileHandle` so the host receives this state.
-    FileHandle {
-        /// The virtual (sandbox) path of the file. Never a host path.
-        path: String,
-        /// The parsed `open()` mode.
-        mode: FileMode,
-        /// Byte offset for seek-aware reads (currently always 0).
-        position: u64,
-        /// Optional host-assigned id for this open file.
-        ///
-        /// Monty never generates this. A host may set it (e.g. to key a
-        /// cache of real OS file handles); otherwise it is `None` and carries
-        /// no meaning to the interpreter.
-        id: Option<u64>,
-    },
+    FileHandle(MontyFileHandle),
     /// A dataclass instance with class name, field names, attributes, and mutability.
     ///
     /// Method calls are detected lazily at runtime: when `call_attr` is invoked
@@ -542,13 +518,8 @@ impl MontyObject {
                 Ok(Value::Ref(vm.heap.allocate(HeapData::Dataclass(dc))?))
             }
             Self::Path(s) => Ok(Value::Ref(vm.heap.allocate(HeapData::Path(Path::new(s)))?)),
-            Self::FileHandle {
-                path,
-                mode,
-                position,
-                id,
-            } => {
-                let file = OpenFile::with_state(path, mode, position, id);
+            Self::FileHandle(handle) => {
+                let file = OpenFile::with_state(handle.path, handle.mode, handle.position, handle.id);
                 Ok(Value::Ref(vm.heap.allocate(HeapData::OpenFile(file))?))
             }
             Self::Type(t) => Ok(Value::Builtin(Builtins::Type(t))),
@@ -832,12 +803,12 @@ impl MontyObject {
                     // to the host as the first OS-call argument.
                     HeapReadOutput::OpenFile(file) => {
                         let file = file.get(vm.heap);
-                        Self::FileHandle {
+                        Self::FileHandle(MontyFileHandle {
                             path: file.path().to_owned(),
                             mode: *file.file_mode(),
                             position: file.position(),
                             id: file.id(),
-                        }
+                        })
                     }
                     HeapReadOutput::ExtFunction(name) => Self::Function {
                         name: name.get(vm.heap).clone(),
@@ -1099,13 +1070,7 @@ impl MontyObject {
                 f.write_char(')')
             }
             Self::Path(p) => write!(f, "PosixPath('{p}')"),
-            Self::FileHandle { path, mode, .. } => write!(
-                f,
-                "<{} name={} mode={}>",
-                mode.file_type(),
-                StringRepr(path),
-                StringRepr(mode.as_str())
-            ),
+            Self::FileHandle(handle) => write!(f, "{handle}"),
             Self::Type(t) => write!(f, "<class '{t}'>"),
             Self::BuiltinFunction(func) => write!(f, "<built-in function {func}>"),
             Self::Function { name, .. } => write!(f, "<function '{name}' external>"),
@@ -1179,7 +1144,7 @@ impl MontyObject {
             Self::TimeZone(_) => "timezone",
             Self::Exception { .. } => "Exception",
             Self::Path(_) => "PosixPath",
-            Self::FileHandle { mode, .. } => mode.type_name(),
+            Self::FileHandle(handle) => handle.mode.type_name(),
             Self::Dataclass { .. } => "dataclass",
             Self::Type(_) => "type",
             Self::BuiltinFunction(_) => "builtin_function_or_method",
@@ -1222,12 +1187,12 @@ impl Hash for MontyObject {
             Self::TimeDelta(delta) => delta.hash(state),
             Self::TimeZone(timezone) => timezone.hash(state),
             Self::Path(path) => path.hash(state),
-            Self::FileHandle {
+            Self::FileHandle(MontyFileHandle {
                 path,
                 mode,
                 position,
                 id,
-            } => {
+            }) => {
                 path.hash(state);
                 mode.as_str().hash(state);
                 position.hash(state);
@@ -1313,18 +1278,18 @@ impl PartialEq for MontyObject {
             }
             (Self::Path(a), Self::Path(b)) => a == b,
             (
-                Self::FileHandle {
+                Self::FileHandle(MontyFileHandle {
                     path: a_path,
                     mode: a_mode,
                     position: a_pos,
                     id: a_id,
-                },
-                Self::FileHandle {
+                }),
+                Self::FileHandle(MontyFileHandle {
                     path: b_path,
                     mode: b_mode,
                     position: b_pos,
                     id: b_id,
-                },
+                }),
             ) => a_path == b_path && a_mode == b_mode && a_pos == b_pos && a_id == b_id,
             (
                 Self::Function {
@@ -1538,5 +1503,45 @@ impl DictPairs {
 
     fn iter(&self) -> impl Iterator<Item = &(MontyObject, MontyObject)> {
         self.0.iter()
+    }
+}
+
+/// An open file object (the result of `open()`).
+///
+/// This is the boundary representation of Monty's heap [`OpenFile`](crate::types::OpenFile)
+/// wrapper. It carries everything needed to service a file operation from a
+/// host that holds no live OS handle: the virtual `path`, the `mode`, and
+/// the byte `position` for seek-aware reads.
+///
+/// The host produces a `FileHandle` as the result of an
+/// [`OsFunction::Open`](crate::os::OsFunction::Open) call; `to_value` then
+/// builds the `OpenFile` heap wrapper from it. Conversely, a heap file
+/// object passed as an argument to a `read`/`write` OS call is converted
+/// back to a `FileHandle` so the host receives this state.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct MontyFileHandle {
+    /// The virtual (sandbox) path of the file. Never a host path.
+    pub path: String,
+    /// The parsed `open()` mode.
+    pub mode: FileMode,
+    /// Byte offset for seek-aware reads (currently always 0).
+    pub position: u64,
+    /// Optional host-assigned id for this open file.
+    ///
+    /// Monty never generates this. A host may set it (e.g. to key a
+    /// cache of real OS file handles); otherwise it is `None` and carries
+    /// no meaning to the interpreter.
+    pub id: Option<u64>,
+}
+
+impl fmt::Display for MontyFileHandle {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "<{} name={} mode={}>",
+            self.mode.file_type(),
+            StringRepr(&self.path),
+            StringRepr(self.mode.as_str())
+        )
     }
 }
