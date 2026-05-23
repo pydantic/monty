@@ -5,7 +5,7 @@ from abc import ABC, abstractmethod
 from pathlib import PurePosixPath
 from typing import TYPE_CHECKING, Any, Callable, Literal, NamedTuple, Protocol, Sequence, TypeAlias, TypeGuard
 
-from ._monty import NOT_HANDLED
+from ._monty import NOT_HANDLED, MontyFileHandle
 
 if TYPE_CHECKING:
     # Self is 3.11+, hence this
@@ -18,6 +18,7 @@ OsFunction = Literal[
     'Path.is_file',
     'Path.is_dir',
     'Path.is_symlink',
+    'Open',
     'Path.read_text',
     'Path.read_bytes',
     'Path.write_text',
@@ -157,6 +158,13 @@ class AbstractOS(ABC):
             The result of the OS operation.
         """
         kwargs = kwargs or {}
+        # Normalize a `MontyFileHandle` first argument to its `PurePosixPath`
+        # so subclasses can keep implementing simple path-based handlers. After
+        # `open()`, Monty issues the subsequent read/write/append OS calls with
+        # the handle as the first argument; we hide that detail here. Override
+        # `dispatch` if you need the full handle (e.g. for `id`-keyed caches).
+        if args and isinstance(args[0], MontyFileHandle):
+            args = (PurePosixPath(args[0].path), *args[1:])
         match function_name:
             case 'Path.exists':
                 return self.path_exists(*args)
@@ -166,6 +174,8 @@ class AbstractOS(ABC):
                 return self.path_is_dir(*args)
             case 'Path.is_symlink':
                 return self.path_is_symlink(*args)
+            case 'Open':
+                return self.path_open(*args)
             case 'Path.read_text':
                 return self.path_read_text(*args)
             case 'Path.read_bytes':
@@ -253,6 +263,27 @@ class AbstractOS(ABC):
 
         Returns:
             True if the path is a symbolic link, False otherwise.
+        """
+        raise NotImplementedError
+
+    def path_open(self, path: PurePosixPath, mode: str) -> MontyFileHandle:
+        """Perform the open-time effect for `open(path, mode)`.
+
+        Monty issues this OS call from the `open()` builtin. The handler is
+        responsible for the side-effect that matches `mode` and for returning
+        a `MontyFileHandle` Monty can wrap into an `_io.*` file object:
+
+        - `'r'` / `'r+'` (text/binary): verify the file exists and is not a
+          directory; raise `FileNotFoundError` / `IsADirectoryError` if not.
+        - `'w'` / `'w+'`: truncate the file (creating it if missing).
+        - `'a'` / `'a+'`: create the file if missing, leaving existing
+          content untouched.
+
+        The returned `MontyFileHandle` becomes the first argument of any
+        subsequent `Path.read_text` / `Path.write_text` / `Path.append_text`
+        (and bytes variants) OS calls; `dispatch()` normalizes it back to the
+        underlying `PurePosixPath` so the existing `path_*` handlers continue
+        to work without modification.
         """
         raise NotImplementedError
 
@@ -789,6 +820,34 @@ class OSAccess(AbstractOS):
     def path_is_symlink(self, path: PurePosixPath) -> bool:
         return False
 
+    def path_open(self, path: PurePosixPath, mode: str) -> MontyFileHandle:
+        # Mode arrives in CPython's canonical form (e.g. 'r', 'rb+', 'a').
+        # 'b'/'+' are orthogonal to the open-time effect — only the leading
+        # action ('r', 'w', 'a') matters here. Binary/text choice only
+        # affects what type the empty seed is and whether truncation/creation
+        # below stores bytes or str.
+        action = mode[0]
+        binary = 'b' in mode
+        empty: bytes | str = b'' if binary else ''
+        if action == 'r':
+            entry = self._get_entry(path)
+            if entry is None:
+                raise FileNotFoundError(f'[Errno 2] No such file or directory: {str(path)!r}')
+            if _is_dir(entry):
+                raise IsADirectoryError(f'[Errno 21] Is a directory: {str(path)!r}')
+        elif action == 'w':
+            # Truncate (or create empty). _write_file handles both cases.
+            self._write_file(path, empty)
+        elif action == 'a':
+            # Append: create if missing, leave existing content untouched.
+            if self._get_entry(path) is None:
+                self._write_file(path, empty)
+            elif _is_dir(self._get_entry(path)):
+                raise IsADirectoryError(f'[Errno 21] Is a directory: {str(path)!r}')
+        else:
+            raise ValueError(f'invalid mode: {mode!r}')
+        return MontyFileHandle(str(path), mode)
+
     def path_read_text(self, path: PurePosixPath) -> str:
         file = self._get_file(path)
         content = file.read_content()
@@ -808,7 +867,8 @@ class OSAccess(AbstractOS):
         return len(data)
 
     def path_append_text(self, path: PurePosixPath, data: str) -> int:
-        return self.path_append_bytes(path, data.encode())
+        self.path_append_bytes(path, data.encode())
+        return len(data)
 
     def path_append_bytes(self, path: PurePosixPath, data: bytes) -> int:
         entry = self._get_entry(path)

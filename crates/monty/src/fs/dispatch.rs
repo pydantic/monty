@@ -8,7 +8,7 @@ use super::{
     common::MountContext, direct, error::MountError, mount_mode::MountMode, overlay,
     path_security::normalize_virtual_path,
 };
-use crate::{MontyObject, object::FileMode, os::OsFunction};
+use crate::{MontyObject, os::OsFunction, types::file::FileMode};
 
 /// Parsed filesystem request passed to the direct or overlay backend.
 #[derive(Clone, Copy, Debug)]

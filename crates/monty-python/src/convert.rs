@@ -4,11 +4,13 @@
 //! - `py_to_monty`: Convert Python objects to Monty's `MontyObject` for input
 //! - `monty_to_py`: Convert Monty's `MontyObject` back to Python objects for output
 
+use std::borrow::Cow;
+
 use ::monty::{FileMode, MontyDate, MontyDateTime, MontyObject, MontyTimeDelta, MontyTimeZone};
 use monty::MontyException;
 use num_bigint::BigInt;
 use pyo3::{
-    exceptions::{PyBaseException, PyRuntimeError, PyTypeError},
+    exceptions::{PyBaseException, PyRuntimeError, PyTypeError, PyValueError},
     intern,
     prelude::*,
     sync::PyOnceLock,
@@ -159,6 +161,21 @@ pub fn py_to_monty(obj: &Bound<'_, PyAny>, dc_registry: &DcRegistry, mut depth: 
         // Handle pathlib.PurePosixPath and thereby pathlib.PosixPath objects
         let path_str: String = obj.str()?.extract()?;
         Ok(MontyObject::Path(path_str))
+    } else if let Ok(handle) = obj.cast::<PyMontyFileHandle>() {
+        // Round-trip a `MontyFileHandle` returned from Python (e.g. as the
+        // result of an `Open` OS callback) back into `MontyObject::FileHandle`.
+        // The mode string was canonicalized at construction time, so this
+        // re-parse always succeeds.
+        let handle = handle.borrow();
+        let parsed = handle.mode.parse::<FileMode>().map_err(|e: Cow<'static, str>| {
+            PyTypeError::new_err(format!("MontyFileHandle has invalid mode {:?}: {}", handle.mode, e))
+        })?;
+        Ok(MontyObject::FileHandle {
+            path: handle.path.clone(),
+            mode: parsed,
+            position: handle.position,
+            id: handle.id,
+        })
     } else if obj.is_callable() {
         // Callable check is last since many Python types (classes, etc.) are technically callable,
         // and we want to match more specific types first (e.g. dataclasses).
@@ -556,6 +573,21 @@ impl PyMontyFileHandle {
 
 #[pymethods]
 impl PyMontyFileHandle {
+    /// Constructs a `MontyFileHandle` from Python.
+    ///
+    /// `mode` is parsed via [`FileMode::from_str`] and rewritten to its
+    /// canonical form, so `MontyFileHandle('/x', 'rt').mode == 'r'`. This
+    /// is the path Python callbacks use to return file handles from the
+    /// `Open` OS function.
+    #[new]
+    #[pyo3(signature = (path, mode, *, position = 0, id = None))]
+    fn py_new(path: String, mode: &str, position: u64, id: Option<u64>) -> PyResult<Self> {
+        let parsed: FileMode = mode
+            .parse()
+            .map_err(|e: Cow<'static, str>| PyValueError::new_err(e.to_string()))?;
+        Ok(Self::from_parts(path, parsed, position, id))
+    }
+
     fn __repr__(&self) -> String {
         format!("MontyFileHandle(path={:?}, mode={:?})", self.path, self.mode)
     }

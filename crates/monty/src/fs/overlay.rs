@@ -25,7 +25,7 @@ use super::{
         strip_mount_prefix,
     },
 };
-use crate::{MontyObject, dir_stat, file_stat, object::FileMode};
+use crate::{MontyObject, dir_stat, file_stat, types::file::FileMode};
 
 /// Resolves a virtual path to the mount-relative overlay key.
 fn relative_path(path: &str, ctx: &MountContext<'_>) -> Result<String, MountError> {

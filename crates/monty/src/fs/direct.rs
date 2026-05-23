@@ -14,7 +14,7 @@ use super::{
     error::MountError,
     path_security::{ResolveMode, resolve_path},
 };
-use crate::{MontyObject, object::FileMode};
+use crate::{MontyObject, types::file::FileMode};
 
 /// Internal result used for existence-style queries where "missing" is not an error.
 enum ResolvedPathState {

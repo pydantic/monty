@@ -39,9 +39,7 @@ pub use crate::{
     exception_private::ExcType,
     exception_public::{CodeLoc, MontyException, StackFrame},
     io::{PrintStream, PrintWriter, PrintWriterCallback},
-    object::{
-        DictPairs, FileMode, InvalidInputError, MontyDate, MontyDateTime, MontyObject, MontyTimeDelta, MontyTimeZone,
-    },
+    object::{DictPairs, InvalidInputError, MontyDate, MontyDateTime, MontyObject, MontyTimeDelta, MontyTimeZone},
     object_json::{JsonMontyArray, JsonMontyObject, JsonMontyPairs},
     os::{OsFunction, dir_stat, file_stat, stat_result, symlink_stat},
     repl::{
@@ -55,4 +53,5 @@ pub use crate::{
     run_progress::{
         ExtFunctionResult, FunctionCall, NameLookup, NameLookupResult, OsCall, ResolveFutures, RunProgress,
     },
+    types::file::FileMode,
 };

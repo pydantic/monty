@@ -6,7 +6,7 @@
 //! one-shot [`OsFunction`](crate::os::OsFunction) operation, so host filesystem
 //! access remains mediated by the same boundary used by `pathlib.Path`.
 
-use std::{fmt::Write, mem};
+use std::{borrow::Cow, fmt::Write, mem, str::FromStr};
 
 use ahash::AHashSet;
 
@@ -17,12 +17,213 @@ use crate::{
     exception_private::{ExcType, RunError, RunResult, SimpleException},
     heap::{DropWithHeap, Heap, HeapData, HeapId, HeapItem, HeapRead},
     intern::StaticStrings,
-    object::FileMode,
     os::OsFunction,
     resource::{ResourceError, ResourceTracker},
     types::str::StringRepr,
     value::{EitherStr, Value},
 };
+
+/// A parsed Python `open()` mode.
+///
+/// This single enum captures everything that matters about how a file was
+/// opened: the access pattern (`r`/`w`/`a` and the `+` update flag) and
+/// whether the file is binary. The variant name encodes the access pattern;
+/// the `bool` payload is `true` for binary and `false` for text — i.e.
+/// `Read(true)` is `'rb'` and `Read(false)` is `'r'`.
+///
+/// Construct one with the [`FromStr`] impl (`mode_str.parse::<FileMode>()`).
+/// The original input string is
+/// intentionally not preserved; [`FileMode::as_str`] rebuilds the canonical
+/// CPython form (`'r'`, `'rb+'`, `'wb'`, …), matching how CPython itself
+/// normalizes input like `'rt'` → `'r'` and `'r+b'` → `'rb+'`.
+///
+/// Carried publicly by [`MontyObject::FileHandle`] so a host servicing file
+/// operations can inspect the mode without re-parsing the raw string.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub enum FileMode {
+    /// `r` / `rb`: read-only; the file must already exist.
+    Read(bool),
+    /// `r+` / `rb+`: read and write an existing file; nothing happens at open time.
+    ReadUpdate(bool),
+    /// `w` / `wb`: write-only; truncate the file (creating it if missing) on open.
+    Write(bool),
+    /// `w+` / `wb+`: read and write; truncate the file (creating it if missing) on open.
+    WriteUpdate(bool),
+    /// `a` / `ab`: write-only appending; create the file if missing, preserving content.
+    Append(bool),
+    /// `a+` / `ab+`: read and append; create the file if missing, preserving content.
+    AppendUpdate(bool),
+}
+
+impl FileMode {
+    /// Returns the canonical Python `open()` mode string for this mode,
+    /// matching what CPython exposes via `file.mode`.
+    ///
+    /// The result is always one of the 12 well-formed mode strings (`r`, `rb`,
+    /// `r+`, `rb+`, `w`, `wb`, `w+`, `wb+`, `a`, `ab`, `a+`, `ab+`). This is
+    /// the canonical form CPython itself normalizes user input into — e.g.
+    /// `'rt'` → `'r'`, `'r+b'` → `'rb+'`, `'br'` → `'rb'`.
+    #[must_use]
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Read(false) => "r",
+            Self::Read(true) => "rb",
+            Self::ReadUpdate(false) => "r+",
+            Self::ReadUpdate(true) => "rb+",
+            Self::Write(false) => "w",
+            Self::Write(true) => "wb",
+            Self::WriteUpdate(false) => "w+",
+            Self::WriteUpdate(true) => "wb+",
+            Self::Append(false) => "a",
+            Self::Append(true) => "ab",
+            Self::AppendUpdate(false) => "a+",
+            Self::AppendUpdate(true) => "ab+",
+        }
+    }
+
+    /// Whether the file is binary (`'rb'`, `'wb'`, …) rather than text.
+    #[must_use]
+    pub fn is_binary(&self) -> bool {
+        let (Self::Read(b)
+        | Self::ReadUpdate(b)
+        | Self::Write(b)
+        | Self::WriteUpdate(b)
+        | Self::Append(b)
+        | Self::AppendUpdate(b)) = self;
+        *b
+    }
+
+    /// Whether `read()` is allowed by this mode.
+    #[must_use]
+    pub fn readable(&self) -> bool {
+        matches!(
+            self,
+            Self::Read(_) | Self::ReadUpdate(_) | Self::WriteUpdate(_) | Self::AppendUpdate(_)
+        )
+    }
+
+    /// Whether `write()` is allowed by this mode.
+    #[must_use]
+    pub fn writable(&self) -> bool {
+        matches!(
+            self,
+            Self::Write(_) | Self::WriteUpdate(_) | Self::Append(_) | Self::AppendUpdate(_) | Self::ReadUpdate(_)
+        )
+    }
+
+    /// Whether writes should always append (`a`/`a+`).
+    #[must_use]
+    pub fn is_append(&self) -> bool {
+        matches!(self, Self::Append(_) | Self::AppendUpdate(_))
+    }
+
+    /// Whether `open()` must truncate the file to empty immediately (`w`/`w+`).
+    #[must_use]
+    pub fn truncate(&self) -> bool {
+        matches!(self, Self::Write(_) | Self::WriteUpdate(_))
+    }
+
+    /// Whether `open()` must create the file immediately if missing.
+    ///
+    /// True for the `w`/`w+` and `a`/`a+` families. For append modes this must
+    /// not disturb existing content.
+    #[must_use]
+    pub fn create(&self) -> bool {
+        matches!(
+            self,
+            Self::Write(_) | Self::WriteUpdate(_) | Self::Append(_) | Self::AppendUpdate(_)
+        )
+    }
+
+    /// Returns the `_io` wrapper type a file opened with this mode presents as.
+    #[must_use]
+    pub fn file_type(&self) -> Type {
+        match self {
+            _ if !self.is_binary() => Type::TextIOWrapper,
+            Self::ReadUpdate(_) | Self::WriteUpdate(_) | Self::AppendUpdate(_) => Type::BufferedRandom,
+            Self::Read(_) => Type::BufferedReader,
+            Self::Write(_) | Self::Append(_) => Type::BufferedWriter,
+        }
+    }
+
+    /// Returns the bare Python type name (`type(f).__name__`) for this mode.
+    #[must_use]
+    pub fn type_name(&self) -> &'static str {
+        match self {
+            _ if !self.is_binary() => "TextIOWrapper",
+            Self::ReadUpdate(_) | Self::WriteUpdate(_) | Self::AppendUpdate(_) => "BufferedRandom",
+            Self::Read(_) => "BufferedReader",
+            Self::Write(_) | Self::Append(_) => "BufferedWriter",
+        }
+    }
+}
+
+/// Parses a Python `open()` mode string into a [`FileMode`].
+///
+/// Monty supports the common read, write, append, and update combinations in
+/// text or binary form. Exclusive creation (`x`) is rejected for now because
+/// it needs a dedicated mount-table operation to be race-free.
+///
+/// The `Err` payload is a CPython-matched message — empty input, an unknown
+/// mode character, duplicated `b`/`t`/`+`, conflicting binary+text flags, or
+/// more than one of the `r`/`w`/`a` actions.
+impl FromStr for FileMode {
+    type Err = Cow<'static, str>;
+
+    fn from_str(mode: &str) -> Result<Self, Self::Err> {
+        if mode.is_empty() {
+            return Err("Invalid mode: empty".into());
+        }
+
+        let mut action = None;
+        let mut binary = false;
+        let mut text = false;
+        let mut updating = false;
+
+        for ch in mode.chars() {
+            match ch {
+                'r' | 'w' | 'a' => {
+                    if action.replace(ch).is_some() {
+                        return Err("must have exactly one of create/read/write/append mode".into());
+                    }
+                }
+                'x' => return Err("exclusive creation mode is not supported".into()),
+                'b' => {
+                    if binary {
+                        return Err("invalid mode: binary mode specified twice".into());
+                    }
+                    binary = true;
+                }
+                't' => {
+                    if text {
+                        return Err("invalid mode: text mode specified twice".into());
+                    }
+                    text = true;
+                }
+                '+' => {
+                    if updating {
+                        return Err("invalid mode: update mode specified twice".into());
+                    }
+                    updating = true;
+                }
+                _ => return Err(format!("invalid mode: unknown mode character {ch:?}").into()),
+            }
+        }
+
+        if binary && text {
+            return Err("can't have text and binary mode at once".into());
+        }
+
+        Ok(match (action.unwrap_or('r'), updating) {
+            ('w', false) => Self::Write(binary),
+            ('w', true) => Self::WriteUpdate(binary),
+            ('a', false) => Self::Append(binary),
+            ('a', true) => Self::AppendUpdate(binary),
+            (_, false) => Self::Read(binary),
+            (_, true) => Self::ReadUpdate(binary),
+        })
+    }
+}
 
 /// Whether a write-mode file has already issued its initial truncating write.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]

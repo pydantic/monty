@@ -15,10 +15,9 @@ use crate::{
     exception_private::{ExcType, RunError, RunResult, SimpleException},
     heap::{DropWithHeap, HeapData, HeapGuard},
     intern::StringId,
-    object::FileMode,
     os::OsFunction,
     resource::ResourceTracker,
-    types::{PyTrait, str::allocate_string},
+    types::{PyTrait, file::FileMode, str::allocate_string},
     value::Value,
 };
 
