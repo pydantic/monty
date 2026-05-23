@@ -182,7 +182,10 @@ impl FromStr for FileMode {
 
     fn from_str(mode: &str) -> Result<Self, Self::Err> {
         if mode.is_empty() {
-            return Err(EMPTY_MODE_ERROR.into());
+            // CPython's empty-mode error message, mirrored verbatim. Note: the
+            // duplicate-action message is different (lowercase, no `... and at most one
+            // plus` suffix) — see the `'r' | 'w' | 'a'` arm.
+            return Err("Must have exactly one of create/read/write/append mode and at most one plus".into());
         }
 
         let mut action = None;
@@ -231,44 +234,6 @@ impl FromStr for FileMode {
     }
 }
 
-/// CPython's empty-mode error message, mirrored verbatim. Note: the
-/// duplicate-action message is different (lowercase, no `... and at most one
-/// plus` suffix) — see the `'r' | 'w' | 'a'` arm above.
-const EMPTY_MODE_ERROR: &str = "Must have exactly one of create/read/write/append mode and at most one plus";
-
-/// Whether a write-mode file has already issued its initial truncating write.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-enum WriteState {
-    /// No write has been issued yet.
-    Fresh,
-    /// At least one write has been issued.
-    Written,
-}
-
-/// Whether a read-mode file has already returned its content.
-///
-/// Monty has no read-position state, so each `read()` is a full-file OS call.
-/// Without this flag a second `read()` would return the same content twice,
-/// while CPython returns an empty string after EOF. We mark the file
-/// `Consumed` before issuing the OS call; subsequent `read()`s short-circuit
-/// to an empty `str`/`bytes` value without touching the host.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-enum ReadState {
-    /// `read()` has not been called yet.
-    Fresh,
-    /// `read()` has been dispatched at least once; further reads return empty.
-    Consumed,
-}
-
-/// Whether a file wrapper should accept further operations.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-enum FileState {
-    /// The wrapper is open.
-    Open,
-    /// The wrapper has been closed.
-    Closed,
-}
-
 /// A Python file object that stores path and mode state, but no native handle.
 ///
 /// Monty keeps no live OS file descriptor: every `read()`/`write()` is a
@@ -289,9 +254,19 @@ enum FileState {
 pub(crate) struct OpenFile {
     path: String,
     mode: FileMode,
-    write_state: WriteState,
-    read_state: ReadState,
-    state: FileState,
+    /// Whether at least one write has been issued. For `w`/`wb` mode this
+    /// switches subsequent writes from truncating to appending so write #2
+    /// doesn't clobber write #1. Truncating modes start `true` because the
+    /// host already emptied the file at `open()` time.
+    first_write_done: bool,
+    /// Whether `read()` has been dispatched at least once. Monty has no
+    /// read-position state, so each `read()` is a full-file OS call; further
+    /// reads short-circuit to empty `str`/`bytes` to match CPython's EOF
+    /// behavior without a host round-trip.
+    read_consumed: bool,
+    /// Whether `close()` has been called. Operations on a closed file raise
+    /// `ValueError`.
+    closed: bool,
     /// Byte offset for seek-aware reads (currently never mutated).
     position: u64,
     /// Optional host-assigned id for this open file (Monty never sets it).
@@ -304,24 +279,18 @@ impl OpenFile {
     /// [`MontyObject::FileHandle`](crate::MontyObject::FileHandle).
     ///
     /// Truncating modes (`w`/`w+`) have already had the file emptied by the
-    /// host at `open()` time, so the wrapper starts in [`WriteState::Written`]:
-    /// the first user `write()` should append rather than truncate again.
-    /// `read_state` always starts [`ReadState::Fresh`] regardless of mode —
-    /// it is only consulted on `read()` and only mutates after a read is
-    /// dispatched.
+    /// host at `open()` time, so the wrapper starts with `first_write_done`
+    /// set: the first user `write()` should append rather than truncate again.
+    /// `read_consumed` always starts `false` regardless of mode — it is only
+    /// consulted on `read()` and only flips after a read is dispatched.
     #[must_use]
     pub fn with_state(path: String, mode: FileMode, position: u64, id: Option<u64>) -> Self {
-        let write_state = if mode.truncate() {
-            WriteState::Written
-        } else {
-            WriteState::Fresh
-        };
         Self {
             path,
             mode,
-            write_state,
-            read_state: ReadState::Fresh,
-            state: FileState::Open,
+            first_write_done: mode.truncate(),
+            read_consumed: false,
+            closed: false,
             position,
             id,
         }
@@ -444,7 +413,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, OpenFile> {
         let value = match method {
             StaticStrings::Name => allocate_string(file.path.clone(), vm.heap)?,
             StaticStrings::Mode => allocate_string(file.mode.as_str().to_owned(), vm.heap)?,
-            StaticStrings::Closed => Value::Bool(matches!(file.state, FileState::Closed)),
+            StaticStrings::Closed => Value::Bool(file.closed),
             StaticStrings::Encoding if !file.mode.is_binary() => allocate_string("utf-8", vm.heap)?,
             _ => return Err(ExcType::attribute_error(self.py_type(vm), attr.as_str(vm.interns))),
         };
@@ -460,10 +429,10 @@ impl<'h> HeapRead<'h, OpenFile> {
     /// [`MontyObject::FileHandle`](crate::MontyObject::FileHandle), so the host
     /// receives the path, mode, position, and id needed to service the read.
     ///
-    /// Because Monty has no read-position state, a successful `read()` marks
-    /// the file [`ReadState::Consumed`] and any subsequent `read()` returns an
-    /// empty `str`/`bytes` value without round-tripping to the host. This
-    /// matches CPython's EOF behavior for a sequential read.
+    /// Because Monty has no read-position state, a successful `read()` sets
+    /// `read_consumed` and any subsequent `read()` returns an empty
+    /// `str`/`bytes` value without round-tripping to the host. This matches
+    /// CPython's EOF behavior for a sequential read.
     fn read(
         &mut self,
         self_id: HeapId,
@@ -477,7 +446,7 @@ impl<'h> HeapRead<'h, OpenFile> {
             if !file.mode.readable() {
                 return Err(unsupported_operation("not readable"));
             }
-            (file.mode.is_binary(), matches!(file.read_state, ReadState::Consumed))
+            (file.mode.is_binary(), file.read_consumed)
         };
 
         if already_consumed {
@@ -489,11 +458,11 @@ impl<'h> HeapRead<'h, OpenFile> {
             return Ok(CallResult::Value(empty));
         }
 
-        // Mark Consumed BEFORE dispatching the OS call (mirrors how `write`
-        // updates `write_state` before its dispatch). If the host raises,
-        // the wrapper is still marked Consumed — a retry would return empty,
-        // not re-read; matches CPython's stateless-EOF behavior.
-        self.get_mut(vm.heap).read_state = ReadState::Consumed;
+        // Set `read_consumed` BEFORE dispatching the OS call (mirrors how
+        // `write` updates `first_write_done` before its dispatch). If the host
+        // raises, the wrapper is still marked consumed — a retry would return
+        // empty, not re-read; matches CPython's stateless-EOF behavior.
+        self.get_mut(vm.heap).read_consumed = true;
 
         let function = if binary {
             OsFunction::ReadBytes
@@ -531,18 +500,19 @@ impl<'h> HeapRead<'h, OpenFile> {
                 data.drop_with_heap(vm);
                 return Err(unsupported_operation(message));
             }
+            let append = file.mode.is_append() || file.first_write_done;
             let function = if file.mode.is_binary() {
-                if file.mode.is_append() || matches!(file.write_state, WriteState::Written) {
+                if append {
                     OsFunction::AppendBytes
                 } else {
                     OsFunction::WriteBytes
                 }
-            } else if file.mode.is_append() || matches!(file.write_state, WriteState::Written) {
+            } else if append {
                 OsFunction::AppendText
             } else {
                 OsFunction::WriteText
             };
-            file.write_state = WriteState::Written;
+            file.first_write_done = true;
             function
         };
 
@@ -553,7 +523,7 @@ impl<'h> HeapRead<'h, OpenFile> {
     /// Marks the file wrapper as closed.
     fn close(&mut self, vm: &mut VM<'h, impl ResourceTracker>, args: ArgValues) -> RunResult<CallResult> {
         args.check_zero_args("close", vm.heap)?;
-        self.get_mut(vm.heap).state = FileState::Closed;
+        self.get_mut(vm.heap).closed = true;
         Ok(CallResult::Value(Value::None))
     }
 
@@ -594,7 +564,7 @@ impl<'h> HeapRead<'h, OpenFile> {
 impl OpenFile {
     /// Raises the CPython-style error used for operations after `close()`.
     fn ensure_open(&self) -> RunResult<()> {
-        if matches!(self.state, FileState::Closed) {
+        if self.closed {
             Err(SimpleException::new_msg(ExcType::ValueError, "I/O operation on closed file.").into())
         } else {
             Ok(())
