@@ -5,6 +5,36 @@
 //! state such as `closed`.  Each `read()` or `write()` call is a complete
 //! one-shot [`OsFunction`](crate::os::OsFunction) operation, so host filesystem
 //! access remains mediated by the same boundary used by `pathlib.Path`.
+//!
+//! # Unsupported / diverging behavior
+//!
+//! The current implementation is a deliberate subset of CPython's file API.
+//! Code that relies on the following will not behave the same way as on
+//! CPython:
+//!
+//! - `read(size)` is rejected; `read()` only accepts zero arguments and
+//!   always returns the full file content. A `read()` that raises in the
+//!   host still marks the file consumed, so a user-caught failure followed
+//!   by a retry returns empty rather than re-reading; CPython would retry.
+//! - `readline()`, `readlines()`, file iteration, `seek()`, and `tell()`
+//!   are not implemented. `seekable()` reports `False` (instead of
+//!   CPython's `True` for regular files) so the
+//!   `if f.seekable(): f.seek(0)` idiom routes to the non-seekable arm.
+//! - The context-manager protocol (`with open(...) as f:`) is not yet
+//!   wired up; `__enter__` / `__exit__` raise `AttributeError`.
+//! - `+` update modes (`r+`, `w+`, `a+`, and their `b` variants) are
+//!   rejected at parse time because Monty has no read-position tracking;
+//!   without it a write after a read would silently truncate the file via
+//!   the one-shot OS write.
+//! - The `encoding`, `errors`, and `newline` arguments to `open()` are
+//!   accepted only at their CPython defaults (with `encoding="utf-8"` as
+//!   a documented no-op). Text I/O is whole-file UTF-8 with no error
+//!   handlers or newline translation.
+//! - Bytes paths are decoded as UTF-8 instead of using CPython's
+//!   `os.fsdecode` / filesystem-encoding behavior.
+//!
+//! Any code path that needs one of these should be added explicitly
+//! rather than relying on CPython parity.
 
 use std::{borrow::Cow, fmt::Write, mem, str::FromStr};
 
@@ -433,6 +463,13 @@ impl<'h> HeapRead<'h, OpenFile> {
     /// `read_consumed` and any subsequent `read()` returns an empty
     /// `str`/`bytes` value without round-tripping to the host. This matches
     /// CPython's EOF behavior for a sequential read.
+    ///
+    /// `read_consumed` is set *before* dispatch, not after, so a host that
+    /// raises during the read still leaves the file marked consumed — a
+    /// user-caught failure followed by a retry returns empty instead of
+    /// re-reading. That divergence from CPython is documented in the
+    /// module-level comment; tracking the success/failure outcome would
+    /// require per-call state plumbed through the snapshot/resume cycle.
     fn read(
         &mut self,
         self_id: HeapId,
@@ -458,10 +495,6 @@ impl<'h> HeapRead<'h, OpenFile> {
             return Ok(CallResult::Value(empty));
         }
 
-        // Set `read_consumed` BEFORE dispatching the OS call (mirrors how
-        // `write` updates `first_write_done` before its dispatch). If the host
-        // raises, the wrapper is still marked consumed — a retry would return
-        // empty, not re-read; matches CPython's stateless-EOF behavior.
         self.get_mut(vm.heap).read_consumed = true;
 
         let function = if binary {
@@ -550,14 +583,16 @@ impl<'h> HeapRead<'h, OpenFile> {
         Ok(CallResult::Value(Value::Bool(file.mode.writable())))
     }
 
-    /// Returns `True`, matching CPython for regular files. `seek()` itself is
-    /// not yet implemented — calling it will raise `AttributeError` — but
-    /// `seekable()` advertises the capability so code branching on
-    /// `if f.seekable(): ...` reaches the same arm it would in CPython.
+    /// Returns `False` until `seek()`/`tell()` are implemented. Reporting
+    /// `True` would advertise a capability that does not exist: the common
+    /// `if f.seekable(): f.seek(0)` pattern would take the CPython-compatible
+    /// branch and then crash with `AttributeError` on the `seek()` call.
+    /// Returning `False` here routes that pattern to the non-seekable arm,
+    /// which is at least consistent.
     fn seekable(&mut self, vm: &mut VM<'h, impl ResourceTracker>, args: ArgValues) -> RunResult<CallResult> {
         args.check_zero_args("seekable", vm.heap)?;
         self.get(vm.heap).ensure_open()?;
-        Ok(CallResult::Value(Value::Bool(true)))
+        Ok(CallResult::Value(Value::Bool(false)))
     }
 }
 
@@ -604,8 +639,8 @@ fn is_bytes(data: &Value, heap: &Heap<impl ResourceTracker>) -> bool {
 
 /// Builds the `io.UnsupportedOperation` used for file operations that the
 /// open mode forbids (e.g. `read()` on `'w'`, `write()` on `'r'`). In CPython
-/// this is a subclass of both `OSError` and `ValueError`; Monty models only
-/// the `OSError` parent (see [`ExcType::UnsupportedOperation`]).
+/// this is a subclass of both `OSError` and `ValueError`; Monty matches both
+/// in `try`/`except` matching via [`ExcType::is_subclass_of`].
 fn unsupported_operation(message: &'static str) -> RunError {
     SimpleException::new_msg(ExcType::UnsupportedOperation, message).into()
 }

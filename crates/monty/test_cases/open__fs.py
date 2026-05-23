@@ -16,7 +16,10 @@ assert text_file.read() == 'hello world\n', 'text read returns full file'
 # Second sequential read should be empty (CPython EOF semantics)
 assert text_file.read() == '', 'second text read returns empty after EOF'
 assert text_file.read() == '', 'third text read still empty'
-assert text_file.seekable() == True, 'regular text files are seekable'
+# Monty returns False because seek() / tell() are not yet implemented; CPython
+# returns True for regular files because they support seeking natively.
+expected_seekable = not is_monty
+assert text_file.seekable() == expected_seekable, 'seekable() reflects whether seek() is actually implemented'
 text_file.close()
 assert text_file.closed == True, 'close sets closed'
 
@@ -94,15 +97,35 @@ bytes_path_file = open(hello_bytes)
 assert bytes_path_file.read() == 'hello world\n', 'open accepts bytes paths via UTF-8 decode'
 bytes_path_file.close()
 
-# === All eight positional args accepted (CPython signature parity) ===
-# buffering/encoding/errors/newline/closefd/opener are validated but ignored.
+# === All eight positional args accepted at CPython defaults ===
+# Monty only honors `file` and `mode`; the other six must be at their CPython
+# defaults (encoding='utf-8' is also accepted as a documented no-op since
+# Monty already uses UTF-8).
 positional = open(root / 'hello.txt', 'r', -1, 'utf-8', None, None, True, None)
-assert positional.read() == 'hello world\n', 'open accepts all eight positional args'
+assert positional.read() == 'hello world\n', 'open accepts default positional args + utf-8 encoding'
 positional.close()
 
-# closefd and opener also accepted as kwargs
+# closefd and opener also accepted as kwargs at their defaults
 kw_closefd = open(root / 'hello.txt', closefd=True, opener=None)
 kw_closefd.close()
+
+# Non-default values for ignored kwargs are rejected on Monty (CPython
+# silently honors them).
+if is_monty:
+    for kwarg_name, kwarg_value in (
+        ('buffering', 0),
+        ('encoding', 'latin-1'),
+        ('errors', 'strict'),
+        ('newline', ''),
+        ('closefd', False),
+    ):
+        try:
+            open(root / 'hello.txt', **{kwarg_name: kwarg_value})
+            assert False, f'expected non-default {kwarg_name}={kwarg_value!r} to fail'
+        except TypeError as exc:
+            assert str(exc) == f"'{kwarg_name}' argument is not yet supported", (
+                f'unexpected message for {kwarg_name}={kwarg_value!r}: {exc}'
+            )
 
 # === Open-time truncation / creation (CPython truncates/creates on open) ===
 # w truncates an existing file immediately, before (and even without) any write
@@ -206,6 +229,14 @@ try:
     open(root / 'hello.txt', 'w').read()
     assert False, 'expected reading from write-only file to fail'
 except OSError as exc:
+    assert str(exc) == 'not readable', f'unexpected not-readable message: {exc}'
+
+# io.UnsupportedOperation also inherits from ValueError in CPython; Monty
+# matches that behaviour so `except ValueError:` also catches mode violations.
+try:
+    open(root / 'hello.txt', 'w').read()
+    assert False, 'expected reading from write-only file to fail'
+except ValueError as exc:
     assert str(exc) == 'not readable', f'unexpected not-readable message: {exc}'
 
 try:

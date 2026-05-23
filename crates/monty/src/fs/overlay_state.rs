@@ -39,6 +39,12 @@ impl OverlayState {
         self.entries.get(relative_path)
     }
 
+    /// Mutable lookup, used by in-place updates like overlay `append_bytes`
+    /// that would otherwise have to clone, mutate, and re-insert the entry.
+    pub(super) fn get_mut(&mut self, relative_path: &str) -> Option<&mut OverlayEntry> {
+        self.entries.get_mut(relative_path)
+    }
+
     /// Removes and returns the entry for `relative_path`.
     pub(super) fn remove(&mut self, relative_path: &str) -> Option<OverlayEntry> {
         self.entries.remove(relative_path)

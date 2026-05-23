@@ -76,11 +76,8 @@ pub(super) fn execute(request: FsRequest<'_>, ctx: &mut MountContext<'_>) -> Res
 /// `FileNotFoundError`); write modes truncate or create an empty file; append
 /// modes create the file if missing without disturbing existing content. The
 /// host keeps no handle open — this single call opens, acts, and closes.
-fn open(path: &str, mode: &str, ctx: &mut MountContext<'_>) -> Result<MontyObject, MountError> {
-    let file_mode = mode
-        .parse::<FileMode>()
-        .map_err(|e| MountError::InvalidMount(e.to_string()))?;
-    match file_mode {
+fn open(path: &str, mode: FileMode, ctx: &mut MountContext<'_>) -> Result<MontyObject, MountError> {
+    match mode {
         FileMode::Read(_) | FileMode::ReadUpdate(_) => {
             let resolved = resolve_path(path, ctx.mount_virtual, ctx.mount_host, ResolveMode::Existing)?;
             reject_directory(&resolved.host_path, path)?;
@@ -96,7 +93,7 @@ fn open(path: &str, mode: &str, ctx: &mut MountContext<'_>) -> Result<MontyObjec
             append_bytes_fs(&resolved.host_path, &[], path)?;
         }
     }
-    Ok(file_handle_result(path, file_mode))
+    Ok(file_handle_result(path, mode))
 }
 
 /// Implements `Path.exists()` without leaking path-resolution details.

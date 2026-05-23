@@ -57,12 +57,13 @@ pub(super) enum FsRequest<'a> {
     /// `Path.absolute()`
     Absolute { path: &'a str },
     /// `open(path, mode)` — performs the open-time effect and returns a
-    /// [`MontyObject::FileHandle`]. `mode` is the raw `open()` mode string.
+    /// [`MontyObject::FileHandle`]. The mode is parsed once during dispatch
+    /// so backends never re-parse the raw string.
     Open {
         /// Target path.
         path: &'a str,
-        /// Raw `open()` mode string.
-        mode: &'a str,
+        /// Parsed `open()` mode.
+        mode: FileMode,
     },
 }
 
@@ -106,9 +107,7 @@ impl<'a> FsRequest<'a> {
     ///
     /// This is the read-only-mount gate (see [`execute`]). For `Open` it is
     /// mode-aware: `w`/`w+`/`a`/`a+` write (truncate or create), while pure
-    /// `r`/`r+` only need read access. A malformed mode is treated as
-    /// non-write — the `Open` handler re-parses and rejects it with the
-    /// proper error regardless.
+    /// `r`/`r+` only need read access.
     #[must_use]
     pub fn is_write(self) -> bool {
         match self {
@@ -120,7 +119,7 @@ impl<'a> FsRequest<'a> {
             | Self::Unlink { .. }
             | Self::Rmdir { .. }
             | Self::Rename { .. } => true,
-            Self::Open { mode, .. } => mode.parse::<FileMode>().is_ok_and(|m| m.create()),
+            Self::Open { mode, .. } => mode.create(),
             _ => false,
         }
     }
@@ -270,10 +269,20 @@ pub(super) fn file_handle_result(path: &str, mode: FileMode) -> MontyObject {
     })
 }
 
-/// Extracts the `open()` mode string (second positional argument).
-fn parse_mode_arg(extra_args: &[MontyObject]) -> Result<&str, MountError> {
+/// Extracts the `open()` mode (second positional argument) and parses it.
+///
+/// `builtin_open` already parses and validates the mode before it ever
+/// reaches the dispatcher, so an unparsable mode here is an internal
+/// inconsistency rather than a user error. We re-parse anyway because the
+/// mount table can also be reached by the host (e.g. tests), so any
+/// malformed mode is surfaced as a clear error instead of being silently
+/// treated as `r`.
+fn parse_mode_arg(extra_args: &[MontyObject]) -> Result<FileMode, MountError> {
     match extra_args.first() {
-        Some(MontyObject::String(mode)) => Ok(mode.as_str()),
+        Some(MontyObject::String(mode)) => mode
+            .as_str()
+            .parse::<FileMode>()
+            .map_err(|e| MountError::InvalidMount(e.to_string())),
         _ => Err(MountError::InvalidMount("open() missing mode argument".to_owned())),
     }
 }

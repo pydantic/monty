@@ -107,10 +107,11 @@ pub enum ExcType {
     /// `io.UnsupportedOperation` - raised by file objects when a requested
     /// operation isn't allowed by the open mode (e.g. `read()` on `'w'`).
     ///
-    /// In CPython this inherits from both `OSError` and `ValueError`. Monty
-    /// models single inheritance only, and matches CPython's MRO order by
-    /// treating it as an `OSError` subclass — `except ValueError:` will not
-    /// catch it, which is a documented limitation.
+    /// In CPython this inherits from both `OSError` and `ValueError`. Monty's
+    /// `ExcType` enum models single parents, but [`Self::is_subclass_of`]
+    /// matches `UnsupportedOperation` against both `OSError` and `ValueError`
+    /// so `except ValueError:` and `except OSError:` both catch it as in
+    /// CPython.
     #[strum(serialize = "io.UnsupportedOperation")]
     UnsupportedOperation,
 
@@ -168,8 +169,12 @@ impl ExcType {
             Self::AttributeError => matches!(self, Self::FrozenInstanceError),
             // NameError catches UnboundLocalError
             Self::NameError => matches!(self, Self::UnboundLocalError),
-            // ValueError catches UnicodeDecodeError and json.JSONDecodeError
-            Self::ValueError => matches!(self, Self::UnicodeDecodeError | Self::JsonDecodeError),
+            // ValueError catches UnicodeDecodeError, json.JSONDecodeError, and
+            // io.UnsupportedOperation (which in CPython has dual OSError + ValueError parentage)
+            Self::ValueError => matches!(
+                self,
+                Self::UnicodeDecodeError | Self::JsonDecodeError | Self::UnsupportedOperation
+            ),
             // ImportError catches ModuleNotFoundError
             Self::ImportError => matches!(self, Self::ModuleNotFoundError),
             // OSError catches FileNotFoundError, FileExistsError, IsADirectoryError,

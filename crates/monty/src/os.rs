@@ -171,6 +171,10 @@ impl OsFunction {
             let path = args.first().map_or("<unknown>", |a| match a {
                 MontyObject::Path(p) => p.as_str(),
                 MontyObject::String(s) => s.as_str(),
+                // File read/write/append operations pass the open file as the
+                // first argument; preserve the virtual path so unhandled
+                // errors are reported against the file the user opened.
+                MontyObject::FileHandle(handle) => handle.path.as_str(),
                 _ => "<unknown>",
             });
             MontyException::new(

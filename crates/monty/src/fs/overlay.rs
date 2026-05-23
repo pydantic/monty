@@ -79,12 +79,9 @@ pub(super) fn execute(
 fn open(
     state: &mut OverlayState,
     path: &str,
-    mode: &str,
+    file_mode: FileMode,
     ctx: &mut MountContext<'_>,
 ) -> Result<MontyObject, MountError> {
-    let file_mode = mode
-        .parse::<FileMode>()
-        .map_err(|e| MountError::InvalidMount(e.to_string()))?;
     match file_mode {
         FileMode::Read(_) | FileMode::ReadUpdate(_) => {
             let relative = relative_path(path, ctx)?;
@@ -103,16 +100,71 @@ fn open(
                 },
             }
         }
-        // `write_text`/`append_text` with empty data give exactly the
-        // truncate / create-preserving semantics `open()` needs.
+        // `write_text` with empty data gives exactly the truncating
+        // create-or-clobber semantics `open(w)` needs.
         FileMode::Write(_) | FileMode::WriteUpdate(_) => {
             write_text(state, path, "", ctx)?;
         }
+        // `open(a)` only needs the file to exist — it must NOT pull the real
+        // file's content into the overlay, because that would O(file_size)
+        // copy on every `open(..., 'a')` even when the handle is closed
+        // without writing. Just create-if-missing; the append-time bytes
+        // pull only happens if user code actually writes.
         FileMode::Append(_) | FileMode::AppendUpdate(_) => {
-            append_text(state, path, "", ctx)?;
+            ensure_append_target_exists(state, path, ctx)?;
         }
     }
     Ok(file_handle_result(path, file_mode))
+}
+
+/// Ensures the append target exists without pulling real-file content into
+/// the overlay.
+///
+/// Used by `open(path, 'a')` so that opening an append handle on a 1GB real
+/// file does not copy 1GB of bytes into the overlay just to satisfy "create
+/// if missing" semantics. If the file already exists (either in overlay or
+/// on the real backing store) this is a no-op; if it does not, an empty
+/// overlay file is inserted.
+fn ensure_append_target_exists(
+    state: &mut OverlayState,
+    vpath: &str,
+    ctx: &mut MountContext<'_>,
+) -> Result<(), MountError> {
+    let relative = relative_path(vpath, ctx)?;
+    match state.get(&relative) {
+        Some(OverlayEntry::File(_) | OverlayEntry::RealFileRef(_)) => Ok(()),
+        Some(OverlayEntry::Directory { .. }) => {
+            Err(MountError::io_err(ErrorKind::IsADirectory, "Is a directory", vpath))
+        }
+        Some(OverlayEntry::Deleted) => {
+            ensure_parent_exists(state, &relative, ctx, vpath)?;
+            state.insert(
+                relative,
+                OverlayEntry::File(OverlayFile {
+                    content: Vec::new(),
+                    mtime: current_timestamp(),
+                }),
+            );
+            Ok(())
+        }
+        None => match resolve_real_path_state(vpath, ctx, ResolveMode::Existing)? {
+            RealPathState::Present(host_path) if host_path.is_dir() => {
+                Err(MountError::io_err(ErrorKind::IsADirectory, "Is a directory", vpath))
+            }
+            RealPathState::Present(_) => Ok(()),
+            RealPathState::Missing => {
+                ensure_parent_exists(state, &relative, ctx, vpath)?;
+                state.insert(
+                    relative,
+                    OverlayEntry::File(OverlayFile {
+                        content: Vec::new(),
+                        mtime: current_timestamp(),
+                    }),
+                );
+                Ok(())
+            }
+        },
+    }
 }
 
 /// Implements `Path.exists()` against overlay state plus real filesystem fallback.
@@ -292,6 +344,13 @@ fn append_text(
 }
 
 /// Appends bytes in the overlay, copying through real mounted content if needed.
+///
+/// If the target already lives in the overlay as an `OverlayEntry::File`,
+/// the new bytes are appended *in place* — `state.get_mut(...)` lets us
+/// `extend_from_slice` directly into the existing `Vec<u8>` instead of
+/// cloning the whole content, re-inserting, and freeing the old buffer.
+/// Without this, repeated `append_bytes(...)` calls on the same file are
+/// O(total_size) per call and O(n²) overall.
 fn append_bytes(
     state: &mut OverlayState,
     vpath: &str,
@@ -303,15 +362,20 @@ fn append_bytes(
     ensure_parent_exists(state, &relative, ctx, vpath)?;
     reject_directory_target(state, &relative, ctx, vpath)?;
 
-    let mut content = existing_file_bytes(state, &relative, ctx, vpath)?;
-    content.extend_from_slice(data);
-    state.insert(
-        relative,
-        OverlayEntry::File(OverlayFile {
-            content,
-            mtime: current_timestamp(),
-        }),
-    );
+    if let Some(OverlayEntry::File(file)) = state.get_mut(&relative) {
+        file.content.extend_from_slice(data);
+        file.mtime = current_timestamp();
+    } else {
+        let mut content = existing_file_bytes(state, &relative, ctx, vpath)?;
+        content.extend_from_slice(data);
+        state.insert(
+            relative,
+            OverlayEntry::File(OverlayFile {
+                content,
+                mtime: current_timestamp(),
+            }),
+        );
+    }
 
     commit_write_bytes(data.len(), ctx);
     Ok(MontyObject::Int(i64::try_from(data.len()).unwrap_or(i64::MAX)))

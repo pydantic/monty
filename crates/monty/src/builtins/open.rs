@@ -199,22 +199,71 @@ fn extract_mode_string<'a>(value: &Value, vm: &'a VM<'_, impl ResourceTracker>) 
 /// from 0 = "buffering" (the 3rd positional) through 5 = "opener" (the 8th).
 const POSITIONAL_KWARG_NAMES: [&str; 6] = ["buffering", "encoding", "errors", "newline", "closefd", "opener"];
 
-/// Validates `open()` kwargs that Monty accepts but does not otherwise model.
+/// Validates `open()` kwargs that Monty does not actually honor.
 ///
-/// `buffering`, `closefd`, and `opener` are accepted with any value (the
-/// surface area where CPython rejects specific values — e.g. `closefd=False`
-/// without an int fd, or a non-callable `opener` — is not modelled because
-/// Monty has no int-fd or custom-open mechanism for those refinements to
-/// interact with).
+/// Monty only models the `file` and `mode` arguments. Any other argument set
+/// to a non-default value would silently be ignored if accepted, hiding bugs
+/// in user code that passes (for example) `buffering=0` expecting an
+/// unbuffered file or `opener=my_opener` expecting a custom open hook. To
+/// avoid that, the only accepted values are the CPython defaults plus, for
+/// `encoding`, the literal `"utf-8"` — which is what Monty already uses.
+///
+/// Non-default values raise `TypeError` ("'<name>' argument is not yet
+/// supported"). A wrong *type* (e.g. `encoding=123`) is reported as a
+/// dedicated type error so it remains diagnosable.
 fn validate_ignored_open_kwarg(name: &str, value: &Value, vm: &VM<'_, impl ResourceTracker>) -> Result<(), RunError> {
-    match name {
-        "buffering" | "closefd" | "opener" => Ok(()),
-        "encoding" | "errors" | "newline" if matches!(value, Value::None) || value.is_str(vm.heap) => Ok(()),
-        "encoding" | "errors" | "newline" => Err(ExcType::type_error(format!(
-            "open() argument '{name}' must be str or None, not {}",
-            value.py_type(vm)
-        ))),
+    let is_default = match name {
+        // CPython default is -1 (sentinel for "interpreter picks the
+        // buffer size"). Monty has no buffering layer to tune.
+        "buffering" => matches!(value, Value::Int(-1)),
+        // None is the CPython default; "utf-8" is the encoding Monty
+        // already uses, so accept it as a documented no-op.
+        "encoding" => {
+            if matches!(value, Value::None) {
+                true
+            } else if value.is_str(vm.heap) {
+                let s = match value {
+                    Value::InternString(id) => vm.interns.get_str(*id),
+                    Value::Ref(id) => match vm.heap.get(*id) {
+                        HeapData::Str(s) => s.as_str(),
+                        _ => "",
+                    },
+                    _ => "",
+                };
+                s.eq_ignore_ascii_case("utf-8") || s.eq_ignore_ascii_case("utf8")
+            } else {
+                return Err(ExcType::type_error(format!(
+                    "open() argument '{name}' must be str or None, not {}",
+                    value.py_type(vm)
+                )));
+            }
+        }
+        // `errors` and `newline` accept str or None in CPython; only the
+        // default (None) is honored by Monty.
+        "errors" | "newline" => {
+            if matches!(value, Value::None) {
+                true
+            } else if value.is_str(vm.heap) {
+                false
+            } else {
+                return Err(ExcType::type_error(format!(
+                    "open() argument '{name}' must be str or None, not {}",
+                    value.py_type(vm)
+                )));
+            }
+        }
+        // CPython default is True; False requires int-fd open semantics
+        // Monty does not model.
+        "closefd" => matches!(value, Value::Bool(true)),
+        // CPython default is None; a custom opener would run host-side code
+        // outside the sandbox boundary, which Monty does not support.
+        "opener" => matches!(value, Value::None),
         _ => unreachable!("validated open keyword name"),
+    };
+    if is_default {
+        Ok(())
+    } else {
+        Err(ExcType::type_error(format!("'{name}' argument is not yet supported")))
     }
 }
 

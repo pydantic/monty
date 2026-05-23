@@ -867,20 +867,37 @@ class OSAccess(AbstractOS):
         return len(data)
 
     def path_append_text(self, path: PurePosixPath, data: str) -> int:
-        self.path_append_bytes(path, data.encode())
+        # Append text to whatever the file currently holds without changing
+        # its storage type. A text-backed MemoryFile keeps str content; a
+        # bytes-backed file (e.g. a CallbackFile that returned bytes) gets
+        # appended bytes. Routing through path_append_bytes would convert
+        # text storage to bytes, which would surprise the direct API and any
+        # custom AbstractFile.write_content implementation.
+        self._append(path, data)
         return len(data)
 
     def path_append_bytes(self, path: PurePosixPath, data: bytes) -> int:
+        self._append(path, data)
+        return len(data)
+
+    def _append(self, path: PurePosixPath, data: bytes | str) -> None:
         entry = self._get_entry(path)
         if _is_file(entry):
             content = entry.read_content()
-            content_bytes = content if isinstance(content, bytes) else content.encode()
-            entry.write_content(content_bytes + data)
+            if isinstance(data, str):
+                # path_append_text: write back str so a text-backed file
+                # stays text-backed. Bytes-backed files are decoded first
+                # so the storage type tracks the most recent write rather
+                # than silently converting all writes to bytes.
+                text_content = content if isinstance(content, str) else content.decode()
+                entry.write_content(text_content + data)
+            else:
+                bytes_content = content if isinstance(content, bytes) else content.encode()
+                entry.write_content(bytes_content + data)
         elif _is_dir(entry):
             raise IsADirectoryError(f'[Errno 21] Is a directory: {str(path)!r}')
         else:
             self._write_file(path, data)
-        return len(data)
 
     def _write_file(self, path: PurePosixPath, data: bytes | str) -> None:
         entry = self._get_entry(path)
