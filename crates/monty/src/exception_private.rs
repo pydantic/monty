@@ -104,6 +104,15 @@ pub enum ExcType {
     /// Subclass of OSError - for when an operation is not permitted (e.g., writing
     /// to a read-only mount, or attempting to access a path outside a mounted directory).
     PermissionError,
+    /// `io.UnsupportedOperation` - raised by file objects when a requested
+    /// operation isn't allowed by the open mode (e.g. `read()` on `'w'`).
+    ///
+    /// In CPython this inherits from both `OSError` and `ValueError`. Monty
+    /// models single inheritance only, and matches CPython's MRO order by
+    /// treating it as an `OSError` subclass — `except ValueError:` will not
+    /// catch it, which is a documented limitation.
+    #[strum(serialize = "io.UnsupportedOperation")]
+    UnsupportedOperation,
 
     // --- Standalone exception types ---
     AssertionError,
@@ -163,7 +172,8 @@ impl ExcType {
             Self::ValueError => matches!(self, Self::UnicodeDecodeError | Self::JsonDecodeError),
             // ImportError catches ModuleNotFoundError
             Self::ImportError => matches!(self, Self::ModuleNotFoundError),
-            // OSError catches FileNotFoundError, FileExistsError, IsADirectoryError, NotADirectoryError, PermissionError
+            // OSError catches FileNotFoundError, FileExistsError, IsADirectoryError,
+            // NotADirectoryError, PermissionError, and io.UnsupportedOperation
             Self::OSError => matches!(
                 self,
                 Self::FileNotFoundError
@@ -171,6 +181,7 @@ impl ExcType {
                     | Self::IsADirectoryError
                     | Self::NotADirectoryError
                     | Self::PermissionError
+                    | Self::UnsupportedOperation
             ),
             // All other types only match exactly (handled by self == handler_type above)
             _ => false,

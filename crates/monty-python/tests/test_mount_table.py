@@ -557,7 +557,7 @@ def test_open_returns_monty_file_handle(test_dir: Path):
     assert f.position == snapshot(0)
     assert f.id is None
     assert (f.binary, f.readable, f.writable) == snapshot((False, True, False))
-    assert repr(f) == snapshot('MontyFileHandle(path="/data/hello.txt", mode="r")')
+    assert repr(f) == snapshot("MontyFileHandle(path='/data/hello.txt', mode='r')")
 
 
 def test_open_binary_write_handle_attrs(test_dir: Path):

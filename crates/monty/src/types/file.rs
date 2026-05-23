@@ -10,7 +10,7 @@ use std::{borrow::Cow, fmt::Write, mem, str::FromStr};
 
 use ahash::AHashSet;
 
-use super::{PyTrait, Type, str::allocate_string};
+use super::{PyTrait, Type, bytes::Bytes, str::allocate_string};
 use crate::{
     args::ArgValues,
     bytecode::{CallResult, VM},
@@ -37,21 +37,31 @@ use crate::{
 /// CPython form (`'r'`, `'rb+'`, `'wb'`, …), matching how CPython itself
 /// normalizes input like `'rt'` → `'r'` and `'r+b'` → `'rb+'`.
 ///
+/// `+` update modes (`ReadUpdate`/`WriteUpdate`/`AppendUpdate`) are reserved
+/// in the enum so the mode space is fully represented, but [`FromStr`]
+/// currently rejects them — properly modelling them needs read-position
+/// tracking that the file wrapper does not yet implement. Treat the `Update`
+/// variants as unreachable at runtime; do not pattern-match against them as
+/// if they were a valid result of parsing user input.
+///
 /// Carried publicly by [`MontyObject::FileHandle`] so a host servicing file
 /// operations can inspect the mode without re-parsing the raw string.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum FileMode {
     /// `r` / `rb`: read-only; the file must already exist.
     Read(bool),
-    /// `r+` / `rb+`: read and write an existing file; nothing happens at open time.
+    /// `r+` / `rb+`: read and write an existing file. Reserved; not yet
+    /// produced by [`FromStr`].
     ReadUpdate(bool),
     /// `w` / `wb`: write-only; truncate the file (creating it if missing) on open.
     Write(bool),
-    /// `w+` / `wb+`: read and write; truncate the file (creating it if missing) on open.
+    /// `w+` / `wb+`: read and write; truncate the file (creating it if missing).
+    /// Reserved; not yet produced by [`FromStr`].
     WriteUpdate(bool),
     /// `a` / `ab`: write-only appending; create the file if missing, preserving content.
     Append(bool),
     /// `a+` / `ab+`: read and append; create the file if missing, preserving content.
+    /// Reserved; not yet produced by [`FromStr`].
     AppendUpdate(bool),
 }
 
@@ -172,13 +182,12 @@ impl FromStr for FileMode {
 
     fn from_str(mode: &str) -> Result<Self, Self::Err> {
         if mode.is_empty() {
-            return Err("Invalid mode: empty".into());
+            return Err(EMPTY_MODE_ERROR.into());
         }
 
         let mut action = None;
         let mut binary = false;
         let mut text = false;
-        let mut updating = false;
 
         for ch in mode.chars() {
             match ch {
@@ -200,13 +209,13 @@ impl FromStr for FileMode {
                     }
                     text = true;
                 }
-                '+' => {
-                    if updating {
-                        return Err("invalid mode: update mode specified twice".into());
-                    }
-                    updating = true;
-                }
-                _ => return Err(format!("invalid mode: unknown mode character {ch:?}").into()),
+                // `+` modes (`r+`, `w+`, `a+`, and their `b` variants) need
+                // read-position tracking that Monty does not yet implement.
+                // Reject them outright rather than silently truncating on the
+                // first write (which would happen because the OS-level read
+                // and write ops are full-file one-shots).
+                '+' => return Err("update modes ('+') are not yet supported".into()),
+                _ => return Err(format!("invalid mode: {ch:?}").into()),
             }
         }
 
@@ -214,16 +223,18 @@ impl FromStr for FileMode {
             return Err("can't have text and binary mode at once".into());
         }
 
-        Ok(match (action.unwrap_or('r'), updating) {
-            ('w', false) => Self::Write(binary),
-            ('w', true) => Self::WriteUpdate(binary),
-            ('a', false) => Self::Append(binary),
-            ('a', true) => Self::AppendUpdate(binary),
-            (_, false) => Self::Read(binary),
-            (_, true) => Self::ReadUpdate(binary),
+        Ok(match action.unwrap_or('r') {
+            'w' => Self::Write(binary),
+            'a' => Self::Append(binary),
+            _ => Self::Read(binary),
         })
     }
 }
+
+/// CPython's empty-mode error message, mirrored verbatim. Note: the
+/// duplicate-action message is different (lowercase, no `... and at most one
+/// plus` suffix) — see the `'r' | 'w' | 'a'` arm above.
+const EMPTY_MODE_ERROR: &str = "Must have exactly one of create/read/write/append mode and at most one plus";
 
 /// Whether a write-mode file has already issued its initial truncating write.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -232,6 +243,21 @@ enum WriteState {
     Fresh,
     /// At least one write has been issued.
     Written,
+}
+
+/// Whether a read-mode file has already returned its content.
+///
+/// Monty has no read-position state, so each `read()` is a full-file OS call.
+/// Without this flag a second `read()` would return the same content twice,
+/// while CPython returns an empty string after EOF. We mark the file
+/// `Consumed` before issuing the OS call; subsequent `read()`s short-circuit
+/// to an empty `str`/`bytes` value without touching the host.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+enum ReadState {
+    /// `read()` has not been called yet.
+    Fresh,
+    /// `read()` has been dispatched at least once; further reads return empty.
+    Consumed,
 }
 
 /// Whether a file wrapper should accept further operations.
@@ -264,6 +290,7 @@ pub(crate) struct OpenFile {
     path: String,
     mode: FileMode,
     write_state: WriteState,
+    read_state: ReadState,
     state: FileState,
     /// Byte offset for seek-aware reads (currently never mutated).
     position: u64,
@@ -279,6 +306,9 @@ impl OpenFile {
     /// Truncating modes (`w`/`w+`) have already had the file emptied by the
     /// host at `open()` time, so the wrapper starts in [`WriteState::Written`]:
     /// the first user `write()` should append rather than truncate again.
+    /// `read_state` always starts [`ReadState::Fresh`] regardless of mode —
+    /// it is only consulted on `read()` and only mutates after a read is
+    /// dispatched.
     #[must_use]
     pub fn with_state(path: String, mode: FileMode, position: u64, id: Option<u64>) -> Self {
         let write_state = if mode.truncate() {
@@ -290,6 +320,7 @@ impl OpenFile {
             path,
             mode,
             write_state,
+            read_state: ReadState::Fresh,
             state: FileState::Open,
             position,
             id,
@@ -428,6 +459,11 @@ impl<'h> HeapRead<'h, OpenFile> {
     /// (`Value::Ref(self_id)`); the host boundary converts it to a
     /// [`MontyObject::FileHandle`](crate::MontyObject::FileHandle), so the host
     /// receives the path, mode, position, and id needed to service the read.
+    ///
+    /// Because Monty has no read-position state, a successful `read()` marks
+    /// the file [`ReadState::Consumed`] and any subsequent `read()` returns an
+    /// empty `str`/`bytes` value without round-tripping to the host. This
+    /// matches CPython's EOF behavior for a sequential read.
     fn read(
         &mut self,
         self_id: HeapId,
@@ -435,14 +471,29 @@ impl<'h> HeapRead<'h, OpenFile> {
         args: ArgValues,
     ) -> RunResult<CallResult> {
         args.check_zero_args("read", vm.heap)?;
-        let binary = {
+        let (binary, already_consumed) = {
             let file = self.get(vm.heap);
             file.ensure_open()?;
             if !file.mode.readable() {
                 return Err(unsupported_operation("not readable"));
             }
-            file.mode.is_binary()
+            (file.mode.is_binary(), matches!(file.read_state, ReadState::Consumed))
         };
+
+        if already_consumed {
+            let empty = if binary {
+                Value::Ref(vm.heap.allocate(HeapData::Bytes(Bytes::new(Vec::new())))?)
+            } else {
+                allocate_string("", vm.heap)?
+            };
+            return Ok(CallResult::Value(empty));
+        }
+
+        // Mark Consumed BEFORE dispatching the OS call (mirrors how `write`
+        // updates `write_state` before its dispatch). If the host raises,
+        // the wrapper is still marked Consumed — a retry would return empty,
+        // not re-read; matches CPython's stateless-EOF behavior.
+        self.get_mut(vm.heap).read_state = ReadState::Consumed;
 
         let function = if binary {
             OsFunction::ReadBytes
@@ -529,11 +580,14 @@ impl<'h> HeapRead<'h, OpenFile> {
         Ok(CallResult::Value(Value::Bool(file.mode.writable())))
     }
 
-    /// Returns `False`; Monty's file wrappers currently expose no seek state.
+    /// Returns `True`, matching CPython for regular files. `seek()` itself is
+    /// not yet implemented — calling it will raise `AttributeError` — but
+    /// `seekable()` advertises the capability so code branching on
+    /// `if f.seekable(): ...` reaches the same arm it would in CPython.
     fn seekable(&mut self, vm: &mut VM<'h, impl ResourceTracker>, args: ArgValues) -> RunResult<CallResult> {
         args.check_zero_args("seekable", vm.heap)?;
         self.get(vm.heap).ensure_open()?;
-        Ok(CallResult::Value(Value::Bool(false)))
+        Ok(CallResult::Value(Value::Bool(true)))
     }
 }
 
@@ -578,7 +632,10 @@ fn is_bytes(data: &Value, heap: &Heap<impl ResourceTracker>) -> bool {
     }
 }
 
-/// Builds the OSError used for unsupported file operations.
+/// Builds the `io.UnsupportedOperation` used for file operations that the
+/// open mode forbids (e.g. `read()` on `'w'`, `write()` on `'r'`). In CPython
+/// this is a subclass of both `OSError` and `ValueError`; Monty models only
+/// the `OSError` parent (see [`ExcType::UnsupportedOperation`]).
 fn unsupported_operation(message: &'static str) -> RunError {
-    SimpleException::new_msg(ExcType::OSError, message).into()
+    SimpleException::new_msg(ExcType::UnsupportedOperation, message).into()
 }

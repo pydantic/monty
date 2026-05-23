@@ -13,6 +13,10 @@ assert text_file.mode == 'r', 'default mode is r'
 assert text_file.readable() == True, 'default text file is readable'
 assert text_file.writable() == False, 'default text file is not writable'
 assert text_file.read() == 'hello world\n', 'text read returns full file'
+# Second sequential read should be empty (CPython EOF semantics)
+assert text_file.read() == '', 'second text read returns empty after EOF'
+assert text_file.read() == '', 'third text read still empty'
+assert text_file.seekable() == True, 'regular text files are seekable'
 text_file.close()
 assert text_file.closed == True, 'close sets closed'
 
@@ -21,6 +25,7 @@ binary_file = open(root / 'data.bin', 'rb')
 assert str(type(binary_file)) == "<class '_io.BufferedReader'>", 'rb open returns BufferedReader'
 assert binary_file.mode == 'rb', 'binary mode is preserved'
 assert binary_file.read() == b'\x00\x01\x02\x03', 'binary read returns bytes'
+assert binary_file.read() == b'', 'second binary read returns empty after EOF'
 binary_file.close()
 
 # === Text write ===
@@ -58,15 +63,46 @@ assert binary_append.write(b'\x13') == 1, 'binary append returns byte count'
 binary_append.close()
 assert (root / 'open_bytes.bin').read_bytes() == b'\x10\x11\x12\x13', 'binary append extends file'
 
-binary_random = open(root / 'open_bytes.bin', 'r+b')
-assert str(type(binary_random)) == "<class '_io.BufferedRandom'>", 'r+b open returns BufferedRandom'
-assert binary_random.read() == b'\x10\x11\x12\x13', 'binary random can read'
-binary_random.close()
+# === Identity comparison: a file is equal to itself but not to a distinct handle ===
+f = open(root / 'hello.txt')
+assert f == f, 'file is equal to itself'
+g = open(root / 'hello.txt')
+assert f != g, 'two distinct handles to the same path are not equal'
+f.close()
+g.close()
+
+# === '+' modes rejected on Monty (CPython accepts them; Monty's wrapper lacks
+# read-position tracking so they would silently destroy data on first write) ===
+if is_monty:
+    for mode in ('r+', 'rb+', 'r+b', 'w+', 'wb+', 'a+', 'ab+'):
+        try:
+            open(root / 'open_bytes.bin', mode)
+            assert False, f'expected ValueError for + mode {mode!r}'
+        except ValueError as exc:
+            assert str(exc) == "update modes ('+') are not yet supported", (
+                f'unexpected + mode rejection for {mode!r}: {exc}'
+            )
 
 # === Keyword arguments ===
 keyword_file = open(file=root / 'hello.txt', mode='r', encoding='utf-8')
 assert keyword_file.read() == 'hello world\n', 'open accepts file/mode/encoding keywords'
 keyword_file.close()
+
+# === bytes path accepted (matches CPython os.fsdecode semantics) ===
+hello_bytes = str(root / 'hello.txt').encode('utf-8')
+bytes_path_file = open(hello_bytes)
+assert bytes_path_file.read() == 'hello world\n', 'open accepts bytes paths via UTF-8 decode'
+bytes_path_file.close()
+
+# === All eight positional args accepted (CPython signature parity) ===
+# buffering/encoding/errors/newline/closefd/opener are validated but ignored.
+positional = open(root / 'hello.txt', 'r', -1, 'utf-8', None, None, True, None)
+assert positional.read() == 'hello world\n', 'open accepts all eight positional args'
+positional.close()
+
+# closefd and opener also accepted as kwargs
+kw_closefd = open(root / 'hello.txt', closefd=True, opener=None)
+kw_closefd.close()
 
 # === Open-time truncation / creation (CPython truncates/creates on open) ===
 # w truncates an existing file immediately, before (and even without) any write
@@ -113,18 +149,6 @@ except FileNotFoundError as exc:
     elif not is_windows:
         assert str(exc).startswith("[Errno 2] No such file or directory: '"), f'exc message: {exc}'
 
-# r+ on a missing file likewise raises at open time
-try:
-    open(root / 'open_missing_rplus.txt', 'r+')
-    assert False, 'expected FileNotFoundError opening a missing file for r+'
-except FileNotFoundError as exc:
-    if is_monty:
-        assert str(exc) == "[Errno 2] No such file or directory: '/mnt/open_missing_rplus.txt'", (
-            f'unexpected missing-file message: {exc}'
-        )
-    elif not is_windows:
-        assert str(exc).startswith("[Errno 2] No such file or directory: '"), f'exc message: {exc}'
-
 # opening a directory for read raises IsADirectoryError at open time
 try:
     open(root, 'r')
@@ -165,6 +189,12 @@ try:
     assert False, 'expected writing to read-only file to fail'
 except OSError as exc:
     assert str(exc) == 'not writable', f'unexpected not-writable message: {exc}'
+    # Mode-violation errors must surface as io.UnsupportedOperation, not bare
+    # OSError. CPython exposes the class as `io.UnsupportedOperation` whose
+    # `__name__` is the bare `UnsupportedOperation`; Monty uses the qualified
+    # `io.UnsupportedOperation` as its single type identifier.
+    expected_name = 'io.UnsupportedOperation' if is_monty else 'UnsupportedOperation'
+    assert type(exc).__name__ == expected_name, f'expected {expected_name}, got {type(exc).__name__}'
 
 try:
     open(root / 'hello.txt', 'rb').write(b'x')
@@ -197,3 +227,18 @@ except ValueError as exc:
     assert str(exc) == 'must have exactly one of create/read/write/append mode', (
         f'unexpected invalid mode message: {exc}'
     )
+
+# === Empty mode and unknown-character mode parse errors ===
+try:
+    open(root / 'hello.txt', '')
+    assert False, 'expected empty mode to fail'
+except ValueError as exc:
+    assert str(exc) == 'Must have exactly one of create/read/write/append mode and at most one plus', (
+        f'unexpected empty mode message: {exc}'
+    )
+
+try:
+    open(root / 'hello.txt', 'z')
+    assert False, 'expected unknown mode character to fail'
+except ValueError as exc:
+    assert str(exc) == "invalid mode: 'z'", f'unexpected unknown mode message: {exc}'

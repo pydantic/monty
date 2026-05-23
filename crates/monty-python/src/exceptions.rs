@@ -451,6 +451,16 @@ pub fn exc_monty_to_py(py: Python<'_>, exc: MontyException) -> PyErr {
         ExcType::IsADirectoryError => exceptions::PyIsADirectoryError::new_err(msg),
         ExcType::NotADirectoryError => exceptions::PyNotADirectoryError::new_err(msg),
         ExcType::PermissionError => exceptions::PyPermissionError::new_err(msg),
+        ExcType::UnsupportedOperation => {
+            if let Ok(exc_cls) = get_unsupported_operation(py)
+                && let Ok(exc_instance) = exc_cls.call1((PyString::new(py, &msg),))
+            {
+                PyErr::from_value(exc_instance)
+            } else {
+                // Fall back to OSError — the parent we model in `is_subclass_of`.
+                exceptions::PyOSError::new_err(msg)
+            }
+        }
         ExcType::RePatternError => {
             if let Ok(re_pattern_error) = get_re_pattern_error(py)
                 && let Ok(exc_instance) = re_pattern_error.call1((PyString::new(py, &msg),))
@@ -558,6 +568,8 @@ fn py_err_to_exc_type(exc: &Bound<'_, exceptions::PyBaseException>) -> ExcType {
                 ExcType::NotADirectoryError
             } else if exceptions::PyPermissionError::type_check(exc) {
                 ExcType::PermissionError
+            } else if is_unsupported_operation(exc) {
+                ExcType::UnsupportedOperation
             } else {
                 ExcType::OSError
             }
@@ -621,4 +633,25 @@ fn get_re_pattern_error(py: Python<'_>) -> PyResult<&Bound<'_, PyAny>> {
 fn get_json_decode_error(py: Python<'_>) -> PyResult<&Bound<'_, PyAny>> {
     static JSON_DECODE_ERROR: PyOnceLock<Py<PyAny>> = PyOnceLock::new();
     JSON_DECODE_ERROR.import(py, "json", "JSONDecodeError")
+}
+
+/// Returns the cached `io.UnsupportedOperation` class.
+///
+/// Lives in Python's standard library (not in PyO3's built-in wrappers) and
+/// is a subclass of both `OSError` and `ValueError` in CPython. Monty raises
+/// the real CPython class here so user code can `isinstance(e,
+/// io.UnsupportedOperation)`; the OSError-side of the inheritance still
+/// works via `is_subclass_of`, but the ValueError side is not modelled.
+fn get_unsupported_operation(py: Python<'_>) -> PyResult<&Bound<'_, PyAny>> {
+    static UNSUPPORTED_OPERATION: PyOnceLock<Py<PyAny>> = PyOnceLock::new();
+    UNSUPPORTED_OPERATION.import(py, "io", "UnsupportedOperation")
+}
+
+/// Checks if an exception is an instance of `io.UnsupportedOperation`.
+fn is_unsupported_operation(exc: &Bound<'_, exceptions::PyBaseException>) -> bool {
+    if let Ok(cls) = get_unsupported_operation(exc.py()) {
+        exc.is_instance(cls).unwrap_or(false)
+    } else {
+        false
+    }
 }
