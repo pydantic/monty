@@ -4,6 +4,23 @@ Monty's `open()` builtin returns a file wrapper that supports a deliberate
 subset of CPython's file API. The list below tracks every known difference
 from CPython.
 
+## Design note: no live host file descriptors
+
+Monty **never** keeps a native file handle alive between OS or external
+calls. `open()` itself yields an `OsFunction::Open` round-trip whose effect
+(create / truncate / existence-check) the host performs and immediately
+closes; every subsequent `read()`/`write()`/`append()` is a separate
+one-shot OS call that the host opens, acts on, and closes again. The Monty
+heap stores only path, mode, and small Python-visible state — no OS
+handle, no buffered data, no descriptor number.
+
+This is the property that makes snapshotting safe: a `MontySnapshot` can
+be serialized at any pause point and resumed later (potentially in a
+different process or on a different host) without dangling references to
+host resources. It also means external processes can observe partial state
+between calls, and that there is no protection against the underlying file
+being changed or removed between calls — both documented further down.
+
 ## Mode strings
 
 - `+` update modes (`r+`, `w+`, `a+`, and their `b` variants) are rejected at
@@ -94,11 +111,11 @@ Everything else raises `AttributeError`, including: `read(size)`,
   catch purposes — `except OSError:` and `except ValueError:` both work as
   in CPython. Monty's class name is the qualified `io.UnsupportedOperation`
   whereas CPython's `__name__` is the bare `UnsupportedOperation`.
-- Opening a file does *not* keep a host file descriptor alive: every
-  `read()`/`write()` is a one-shot host-mediated OS call. The host opens,
-  acts, and closes for each call. This means external processes can observe
-  partial state between writes and that there is no protection against the
-  underlying file being changed or removed between calls.
+- No host file descriptor is held between calls (see "Design note: no
+  live host file descriptors" above). The user-visible consequence is
+  that external processes can observe partial state between writes, and
+  Monty offers no protection against the underlying file being changed
+  or removed between calls.
 
 ## Open-time effects
 
