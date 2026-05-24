@@ -11,7 +11,16 @@ if TYPE_CHECKING:
     # Self is 3.11+, hence this
     from typing import Self
 
-__all__ = 'OsFunction', 'AbstractOS', 'AbstractFile', 'MemoryFile', 'CallbackFile', 'OSAccess', 'StatResult'
+__all__ = (
+    'OsFunction',
+    'AbstractOS',
+    'AbstractFile',
+    'MemoryFile',
+    'CallbackFile',
+    'OSAccess',
+    'StatResult',
+    'path_from_arg',
+)
 
 OsFunction = Literal[
     'Path.exists',
@@ -158,13 +167,12 @@ class AbstractOS(ABC):
             The result of the OS operation.
         """
         kwargs = kwargs or {}
-        # Normalize a `MontyFileHandle` first argument to its `PurePosixPath`
-        # so subclasses can keep implementing simple path-based handlers. After
-        # `open()`, Monty issues the subsequent read/write/append OS calls with
-        # the handle as the first argument; we hide that detail here. Override
-        # `dispatch` if you need the full handle (e.g. for `id`-keyed caches).
-        if args and isinstance(args[0], MontyFileHandle):
-            args = (PurePosixPath(args[0].path), *args[1:])
+        # `read`/`write`/`append` handlers receive either a `PurePosixPath`
+        # (from `pathlib.Path` methods) or a `MontyFileHandle` (from a file
+        # opened via `open()`). Each handler is responsible for coercing
+        # its argument — `path_from_arg()` is the canonical one-liner;
+        # subclasses that want the full `MontyFileHandle` (e.g. for
+        # `id`-keyed caches) inspect the argument type directly instead.
         match function_name:
             case 'Path.exists':
                 return self.path_exists(*args)
@@ -288,11 +296,15 @@ class AbstractOS(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def path_read_text(self, path: PurePosixPath) -> str:
+    def path_read_text(self, path: PurePosixPath | MontyFileHandle) -> str:
         """Read the contents of a file as text.
 
         Args:
-            path: The path to the file.
+            path: The path to the file, either as a `PurePosixPath` (from
+                `pathlib.Path` methods) or a `MontyFileHandle` (after the
+                file was opened via `open()`). Use `path_from_arg()` to
+                collapse both shapes if you don't need the extra handle
+                metadata.
 
         Returns:
             The file contents as a string.
@@ -304,11 +316,15 @@ class AbstractOS(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def path_read_bytes(self, path: PurePosixPath) -> bytes:
+    def path_read_bytes(self, path: PurePosixPath | MontyFileHandle) -> bytes:
         """Read the contents of a file as bytes.
 
         Args:
-            path: The path to the file.
+            path: The path to the file, either as a `PurePosixPath` (from
+                `pathlib.Path` methods) or a `MontyFileHandle` (after the
+                file was opened via `open()`). Use `path_from_arg()` to
+                collapse both shapes if you don't need the extra handle
+                metadata.
 
         Returns:
             The file contents as bytes.
@@ -320,11 +336,15 @@ class AbstractOS(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def path_write_text(self, path: PurePosixPath, data: str) -> int:
+    def path_write_text(self, path: PurePosixPath | MontyFileHandle, data: str) -> int:
         """Write text data to a file.
 
         Args:
-            path: The path to the file.
+            path: The path to the file, either as a `PurePosixPath` (from
+                `pathlib.Path` methods) or a `MontyFileHandle` (after the
+                file was opened via `open()`). Use `path_from_arg()` to
+                collapse both shapes if you don't need the extra handle
+                metadata.
             data: The text content to write.
 
         Returns:
@@ -337,11 +357,15 @@ class AbstractOS(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def path_write_bytes(self, path: PurePosixPath, data: bytes) -> int:
+    def path_write_bytes(self, path: PurePosixPath | MontyFileHandle, data: bytes) -> int:
         """Write binary data to a file.
 
         Args:
-            path: The path to the file.
+            path: The path to the file, either as a `PurePosixPath` (from
+                `pathlib.Path` methods) or a `MontyFileHandle` (after the
+                file was opened via `open()`). Use `path_from_arg()` to
+                collapse both shapes if you don't need the extra handle
+                metadata.
             data: The binary content to write.
 
         Returns:
@@ -353,12 +377,20 @@ class AbstractOS(ABC):
         """
         raise NotImplementedError
 
-    def path_append_text(self, path: PurePosixPath, data: str) -> int:
-        """Append text data to a file and return the number of characters written."""
+    def path_append_text(self, path: PurePosixPath | MontyFileHandle, data: str) -> int:
+        """Append text data to a file and return the number of characters written.
+
+        Accepts either a `PurePosixPath` or a `MontyFileHandle` (see
+        `path_read_text` for details).
+        """
         raise NotImplementedError
 
-    def path_append_bytes(self, path: PurePosixPath, data: bytes) -> int:
-        """Append binary data to a file and return the number of bytes written."""
+    def path_append_bytes(self, path: PurePosixPath | MontyFileHandle, data: bytes) -> int:
+        """Append binary data to a file and return the number of bytes written.
+
+        Accepts either a `PurePosixPath` or a `MontyFileHandle` (see
+        `path_read_text` for details).
+        """
         raise NotImplementedError
 
     @abstractmethod
@@ -821,13 +853,27 @@ class OSAccess(AbstractOS):
         return False
 
     def path_open(self, path: PurePosixPath, mode: str) -> MontyFileHandle:
-        # Build the handle FIRST so a malformed mode raises `ValueError` before
-        # any side effect. Direct callers (not routed through Monty, which
-        # pre-validates) could otherwise pass e.g. `'wxyz'` and trigger the
-        # truncate/create branch below before the eventual mode-parse failure.
-        # `MontyFileHandle` returns the canonical form (`'rt'` → `'r'`,
-        # `'r+b'` → `'rb+'`), so we drive the open-time effect off `handle.mode`
-        # rather than the raw user input.
+        """Perform the `open(path, mode)` open-time effect against the in-memory tree.
+
+        - `'r'` / `'rb'`: verify the file exists and is not a directory;
+          raise `FileNotFoundError` / `IsADirectoryError` if not.
+        - `'w'` / `'wb'`: truncate (or create empty) via `_write_file`.
+        - `'a'` / `'ab'`: create the file if missing; leave existing
+          content untouched. Raises `IsADirectoryError` if the path is a
+          directory.
+
+        The returned `MontyFileHandle` carries the canonicalized mode
+        (`'rt'` → `'r'`, `'r+b'` → `'rb+'`) and becomes the first argument
+        of any subsequent read/write/append OS calls Monty issues for this
+        file.
+
+        The handle is constructed **before** any side effect so that a
+        malformed `mode` raises `ValueError` without touching the
+        filesystem. Direct callers (not routed through Monty, which
+        pre-validates) could otherwise pass e.g. `'wxyz'` and silently
+        trigger the truncate/create branch before the eventual mode-parse
+        failure.
+        """
         handle = MontyFileHandle(str(path), mode)
         canonical = handle.mode
         # `b`/`+` are orthogonal to the open-time effect — only the leading
@@ -855,36 +901,36 @@ class OSAccess(AbstractOS):
                 raise IsADirectoryError(f'[Errno 21] Is a directory: {str(path)!r}')
         return handle
 
-    def path_read_text(self, path: PurePosixPath) -> str:
-        file = self._get_file(path)
+    def path_read_text(self, path: PurePosixPath | MontyFileHandle) -> str:
+        file = self._get_file(path_from_arg(path))
         content = file.read_content()
         return content if isinstance(content, str) else content.decode()
 
-    def path_read_bytes(self, path: PurePosixPath) -> bytes:
-        file = self._get_file(path)
+    def path_read_bytes(self, path: PurePosixPath | MontyFileHandle) -> bytes:
+        file = self._get_file(path_from_arg(path))
         content = file.read_content()
         return content if isinstance(content, bytes) else content.encode()
 
-    def path_write_text(self, path: PurePosixPath, data: str) -> int:
-        self._write_file(path, data)
+    def path_write_text(self, path: PurePosixPath | MontyFileHandle, data: str) -> int:
+        self._write_file(path_from_arg(path), data)
         return len(data)
 
-    def path_write_bytes(self, path: PurePosixPath, data: bytes) -> int:
-        self._write_file(path, data)
+    def path_write_bytes(self, path: PurePosixPath | MontyFileHandle, data: bytes) -> int:
+        self._write_file(path_from_arg(path), data)
         return len(data)
 
-    def path_append_text(self, path: PurePosixPath, data: str) -> int:
+    def path_append_text(self, path: PurePosixPath | MontyFileHandle, data: str) -> int:
         # Append text to whatever the file currently holds without changing
         # its storage type. A text-backed MemoryFile keeps str content; a
         # bytes-backed file (e.g. a CallbackFile that returned bytes) gets
         # appended bytes. Routing through path_append_bytes would convert
         # text storage to bytes, which would surprise the direct API and any
         # custom AbstractFile.write_content implementation.
-        self._append(path, data)
+        self._append(path_from_arg(path), data)
         return len(data)
 
-    def path_append_bytes(self, path: PurePosixPath, data: bytes) -> int:
-        self._append(path, data)
+    def path_append_bytes(self, path: PurePosixPath | MontyFileHandle, data: bytes) -> int:
+        self._append(path_from_arg(path), data)
         return len(data)
 
     def _append(self, path: PurePosixPath, data: bytes | str) -> None:
@@ -1093,3 +1139,11 @@ class OSAccess(AbstractOS):
                 entry.path = new_prefix / relative
             elif _is_dir(entry):
                 self._update_paths_recursive(entry, old_prefix, new_prefix)
+
+
+def path_from_arg(arg: PurePosixPath | MontyFileHandle) -> PurePosixPath:
+    """Coerce a read/write/append argument to a virtual `PurePosixPath`."""
+    if isinstance(arg, MontyFileHandle):
+        return PurePosixPath(arg.path)
+    else:
+        return arg
