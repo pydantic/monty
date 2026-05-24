@@ -7,6 +7,12 @@
 # on every text `open()` so it runs identically on POSIX and Windows CPython.
 # `Path.read_text` is avoided because it has no encoding kwarg in Monty and
 # would silently decode as cp1252 on Windows CPython.
+#
+# `\n` characters are also avoided in text-mode writes: Windows CPython's
+# default universal-newline translation rewrites `\n` to `\r\n` on write,
+# whereas Monty performs no newline translation (see limitations/open.md).
+# Monty rejects `newline=''` as a non-default kwarg, so we can't opt out;
+# the test data is shaped to keep both interpreters byte-identical.
 
 # === Text write with explicit utf-8 encoding ===
 writer = open(root / 'open_write.txt', 'w', encoding='utf-8')
@@ -14,12 +20,12 @@ assert str(type(writer)) == "<class '_io.TextIOWrapper'>", 'text write returns T
 assert writer.readable() == False, 'w text file is not readable'
 assert writer.writable() == True, 'w text file is writable'
 assert writer.write('alpha') == 5, 'text write returns character count'
-assert writer.write('\nβ') == 2, 'second text write appends after initial truncate'
+assert writer.write('β') == 1, 'second text write appends after initial truncate'
 writer.flush()
 writer.close()
 
 reader = open(root / 'open_write.txt', 'r', encoding='utf-8')
-assert reader.read() == 'alpha\nβ', 'text writes are committed'
+assert reader.read() == 'alphaβ', 'text writes are committed'
 reader.close()
 
 # === Text append with explicit utf-8 encoding ===
@@ -28,10 +34,10 @@ assert append_writer.write('!') == 1, 'append text returns character count'
 append_writer.close()
 
 reader = open(root / 'open_write.txt', 'r', encoding='utf-8')
-assert reader.read() == 'alpha\nβ!', 'text append extends file'
+assert reader.read() == 'alphaβ!', 'text append extends file'
 reader.close()
 
 # === Bytes on disk match utf-8 encoding of β ===
 # β encodes as 0xCE 0xB2 in UTF-8 — verifies the file really was written as UTF-8
 # rather than the host's default text encoding.
-assert (root / 'open_write.txt').read_bytes() == b'alpha\n\xce\xb2!', 'file bytes are utf-8 encoded'
+assert (root / 'open_write.txt').read_bytes() == b'alpha\xce\xb2!', 'file bytes are utf-8 encoded'
