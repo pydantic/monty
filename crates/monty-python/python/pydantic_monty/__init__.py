@@ -177,6 +177,7 @@ ExcType = Literal[
     'IsADirectoryError',
     'NotADirectoryError',
     'PermissionError',
+    'io.UnsupportedOperation',
     'AssertionError',
     'MemoryError',
     'StopIteration',

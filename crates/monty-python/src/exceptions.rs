@@ -508,6 +508,9 @@ fn py_err_to_exc_type(exc: &Bound<'_, exceptions::PyBaseException>) -> ExcType {
                 ExcType::JsonDecodeError
             } else if exceptions::PyUnicodeDecodeError::type_check(exc) {
                 ExcType::UnicodeDecodeError
+            } else if is_unsupported_operation(exc) {
+                // `io.UnsupportedOperation` inherits from both `OSError` and `ValueError`
+                ExcType::UnsupportedOperation
             } else {
                 ExcType::ValueError
             }
@@ -556,7 +559,7 @@ fn py_err_to_exc_type(exc: &Bound<'_, exceptions::PyBaseException>) -> ExcType {
             } else {
                 ExcType::NameError
             }
-        // OSError hierarchy (check specific subclasses first)
+        // `io.UnsupportedOperation` inherits from `OSError` but is covered above
         } else if exceptions::PyOSError::type_check(exc) {
             if exceptions::PyFileNotFoundError::type_check(exc) {
                 ExcType::FileNotFoundError
@@ -568,8 +571,6 @@ fn py_err_to_exc_type(exc: &Bound<'_, exceptions::PyBaseException>) -> ExcType {
                 ExcType::NotADirectoryError
             } else if exceptions::PyPermissionError::type_check(exc) {
                 ExcType::PermissionError
-            } else if is_unsupported_operation(exc) {
-                ExcType::UnsupportedOperation
             } else {
                 ExcType::OSError
             }
@@ -640,8 +641,9 @@ fn get_json_decode_error(py: Python<'_>) -> PyResult<&Bound<'_, PyAny>> {
 /// Lives in Python's standard library (not in PyO3's built-in wrappers) and
 /// is a subclass of both `OSError` and `ValueError` in CPython. Monty raises
 /// the real CPython class here so user code can `isinstance(e,
-/// io.UnsupportedOperation)`; the OSError-side of the inheritance still
-/// works via `is_subclass_of`, but the ValueError side is not modelled.
+/// io.UnsupportedOperation)`; both parents are modelled by
+/// [`ExcType::is_subclass_of`], so `except OSError:` and `except ValueError:`
+/// catch it just like in CPython.
 fn get_unsupported_operation(py: Python<'_>) -> PyResult<&Bound<'_, PyAny>> {
     static UNSUPPORTED_OPERATION: PyOnceLock<Py<PyAny>> = PyOnceLock::new();
     UNSUPPORTED_OPERATION.import(py, "io", "UnsupportedOperation")

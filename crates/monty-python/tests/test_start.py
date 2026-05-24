@@ -1,3 +1,4 @@
+import io
 import re
 import sys
 import tempfile
@@ -449,6 +450,47 @@ caught
     result = progress.resume({'exc_type': 'json.JSONDecodeError', 'message': 'bad json'})
     assert isinstance(result, pydantic_monty.MontyComplete)
     assert result.output == snapshot('bad json')
+
+
+@pytest.mark.parametrize('parent', ['OSError', 'ValueError'])
+def test_resume_with_exc_type_data_unsupported_operation(parent: str):
+    """`io.UnsupportedOperation` resumed by name is caught by EITHER parent.
+
+    Regression: this exception has dual `OSError`/`ValueError` inheritance in
+    CPython, and `ExcType::is_subclass_of` models both. The
+    `ExternalExceptionData(exc_type='io.UnsupportedOperation', ...)` path must
+    therefore resolve to the dedicated `ExcType::UnsupportedOperation` rather
+    than getting collapsed into a single-parent variant.
+    """
+    code = f"""
+try:
+    external_func()
+except {parent} as e:
+    caught = ('{parent}', str(e))
+caught
+"""
+    m = pydantic_monty.Monty(code)
+    progress = m.start()
+    assert isinstance(progress, pydantic_monty.FunctionSnapshot)
+    result = progress.resume({'exc_type': 'io.UnsupportedOperation', 'message': 'not readable'})
+    assert isinstance(result, pydantic_monty.MontyComplete)
+    assert result.output == (parent, 'not readable')
+
+
+def test_resume_with_exc_type_data_unsupported_operation_propagates():
+    """An uncaught `io.UnsupportedOperation` resumed by name reaches the host
+    as a real `io.UnsupportedOperation` instance, not a plain `OSError`."""
+    m = pydantic_monty.Monty('external_func()')
+    progress = m.start()
+    assert isinstance(progress, pydantic_monty.FunctionSnapshot)
+    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
+        progress.resume({'exc_type': 'io.UnsupportedOperation', 'message': 'boom'})
+    inner = exc_info.value.exception()
+    assert type(inner) is io.UnsupportedOperation
+    # Confirm the dual parentage survives the round-trip on the Python side too.
+    assert isinstance(inner, OSError)
+    assert isinstance(inner, ValueError)
+    assert inner.args[0] == snapshot('boom')
 
 
 def test_resume_with_unknown_exc_type():
