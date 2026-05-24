@@ -174,7 +174,33 @@ fn extract_path_string<'a>(value: &Value, vm: &'a VM<'_, impl ResourceTracker>) 
     opt.ok_or_else(|| path_type_error(value, vm))
 }
 
-/// Decodes a byte path to UTF-8, raising a CPython-shaped error on invalid input.
+/// Decodes a byte path as strict UTF-8, raising `UnicodeDecodeError` on
+/// invalid input.
+///
+/// # Divergence from CPython
+///
+/// CPython routes `bytes` paths through `os.fsdecode`, which on most hosts
+/// uses UTF-8 with PEP 383 `surrogateescape` — invalid bytes become lone
+/// surrogates `U+DC80`–`U+DCFF` so they round-trip back to the original
+/// byte sequence. Monty rejects non-UTF-8 paths outright instead.
+///
+/// The choice is deliberate, not a "not yet implemented" gap:
+///
+/// 1. **Rust's `String` is strictly valid UTF-8.** Lone surrogates are not
+///    Unicode scalar values, so they cannot live in a `String` without
+///    `unsafe` code (or a parallel `Vec<u8>` path representation, which
+///    would require refactoring `Path`, mount dispatch, and the host
+///    boundary — see `crates/monty/src/types/path.rs`).
+/// 2. **Monty paths are virtual POSIX strings**, not host-OS filenames.
+///    The mount table maps them to real host paths only at the boundary;
+///    there is no meaningful "filesystem encoding" to apply inside the
+///    sandbox.
+/// 3. **Hard rejection is predictable.** A lossy fallback (e.g.
+///    `from_utf8_lossy`'s `U+FFFD` replacement) would not round-trip and
+///    could silently re-route an `open()` call to a different file than
+///    the caller asked for.
+///
+/// See `limitations/open.md` for the user-facing description.
 fn decode_utf8_path(bytes: &[u8]) -> RunResult<Option<&str>> {
     match str::from_utf8(bytes) {
         Ok(s) => Ok(Some(s)),

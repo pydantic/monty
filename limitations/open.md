@@ -32,9 +32,22 @@ Two exceptions:
   raises a typed `TypeError: open() argument '<name>' must be str or None,
   not <type>` rather than the generic "not yet supported" message.
 
-Bytes paths are accepted but decoded as UTF-8 — not via CPython's
-`os.fsdecode` / filesystem-encoding behavior. A non-UTF-8 bytes path raises
-`UnicodeDecodeError: can't decode bytes path as UTF-8`.
+Bytes paths are accepted but decoded as **strict** UTF-8 — not via CPython's
+`os.fsdecode` / PEP 383 `surrogateescape` behavior. A non-UTF-8 bytes path
+raises `UnicodeDecodeError: can't decode bytes path as UTF-8`.
+
+This is a deliberate divergence, not a "not yet implemented" gap. PEP 383
+relies on representing invalid bytes as lone surrogates (`U+DC80`–`U+DCFF`)
+inside the resulting `str`. Rust's `String` is strictly valid UTF-8 and
+cannot hold lone surrogates without `unsafe` code or a parallel `Vec<u8>`
+path storage type — neither of which is justified given that Monty paths
+are virtual POSIX strings, not host-OS filenames. A lossy `U+FFFD`
+replacement was also rejected because it would silently re-route an
+`open()` call to a different (wrong) file rather than failing loudly.
+
+If you have non-UTF-8 bytes you need to pass as a path, decode them
+explicitly on the caller side (e.g. via `os.fsdecode` outside the sandbox)
+before handing them to Monty.
 
 ## File object surface
 

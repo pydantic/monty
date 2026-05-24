@@ -614,6 +614,21 @@ def test_path_open_r_missing_raises():
     assert str(exc_info.value) == snapshot("[Errno 2] No such file or directory: '/missing.txt'")
 
 
+def test_path_open_invalid_mode_does_not_truncate():
+    """Regression: a malformed mode that starts with `w`/`a` must reject the
+    open BEFORE the truncate/create side effect, otherwise direct callers can
+    destroy data by passing e.g. `'wxyz'` to `path_open`."""
+    fs = OSAccess([MemoryFile('/data/file.txt', content='precious')])
+    for mode in ('wxyz', 'axyz', 'w!', 'a?'):
+        with pytest.raises(ValueError):
+            fs.path_open(P('/data/file.txt'), mode)
+        # The file must still hold its original content — the bad mode must
+        # not have triggered the `w`/`a` open-time effect.
+        assert fs.path_read_text(P('/data/file.txt')) == 'precious', (
+            f'mode {mode!r} truncated/touched the file before validation'
+        )
+
+
 # =============================================================================
 # Directory Operations - mkdir (via Monty)
 # =============================================================================

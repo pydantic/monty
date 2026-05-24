@@ -821,14 +821,20 @@ class OSAccess(AbstractOS):
         return False
 
     def path_open(self, path: PurePosixPath, mode: str) -> MontyFileHandle:
-        # Mode arrives in CPython's canonical form (e.g. 'r', 'rb+', 'a').
-        # 'b'/'+' are orthogonal to the open-time effect — only the leading
-        # action ('r', 'w', 'a') matters here. Binary/text choice only
-        # affects what type the empty seed is and whether truncation/creation
-        # below stores bytes or str.
-        action = mode[0]
-        binary = 'b' in mode
-        empty: bytes | str = b'' if binary else ''
+        # Build the handle FIRST so a malformed mode raises `ValueError` before
+        # any side effect. Direct callers (not routed through Monty, which
+        # pre-validates) could otherwise pass e.g. `'wxyz'` and trigger the
+        # truncate/create branch below before the eventual mode-parse failure.
+        # `MontyFileHandle` returns the canonical form (`'rt'` → `'r'`,
+        # `'r+b'` → `'rb+'`), so we drive the open-time effect off `handle.mode`
+        # rather than the raw user input.
+        handle = MontyFileHandle(str(path), mode)
+        canonical = handle.mode
+        # `b`/`+` are orthogonal to the open-time effect — only the leading
+        # action (`r`/`w`/`a`) matters here. The binary flag only decides
+        # whether the empty seed is `b''` or `''`.
+        action = canonical[0]
+        empty: bytes | str = b'' if handle.binary else ''
         if action == 'r':
             entry = self._get_entry(path)
             if entry is None:
@@ -838,15 +844,16 @@ class OSAccess(AbstractOS):
         elif action == 'w':
             # Truncate (or create empty). _write_file handles both cases.
             self._write_file(path, empty)
-        elif action == 'a':
-            # Append: create if missing, leave existing content untouched.
+        else:
+            # `a`: create if missing, leave existing content untouched. Any
+            # other action character is unreachable because `MontyFileHandle`
+            # already rejected it above.
+            assert action == 'a', f'unexpected canonical mode action: {canonical!r}'
             if self._get_entry(path) is None:
                 self._write_file(path, empty)
             elif _is_dir(self._get_entry(path)):
                 raise IsADirectoryError(f'[Errno 21] Is a directory: {str(path)!r}')
-        else:
-            raise ValueError(f'invalid mode: {mode!r}')
-        return MontyFileHandle(str(path), mode)
+        return handle
 
     def path_read_text(self, path: PurePosixPath) -> str:
         file = self._get_file(path)
