@@ -71,7 +71,7 @@ impl<'h> HeapRead<'h, DictKeysView> {
         dict_keys_eq_set_like(
             &self.dict(vm),
             other.get(vm.heap).len(),
-            |key, vm| matches!(other.contains(key, vm), Ok(true)),
+            |key, vm| other.contains(key, vm),
             vm,
         )
     }
@@ -85,7 +85,7 @@ impl<'h> HeapRead<'h, DictKeysView> {
         dict_keys_eq_set_like(
             &self.dict(vm),
             other.get(vm.heap).len(),
-            |key, vm| matches!(other.contains(key, vm), Ok(true)),
+            |key, vm| other.contains(key, vm),
             vm,
         )
     }
@@ -146,7 +146,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, DictKeysView> {
         dict_keys_eq_set_like(
             &left,
             right.get(vm.heap).len(),
-            |key, vm| matches!(right.contains_key(key, vm), Ok(true)),
+            |key, vm| right.contains_key(key, vm),
             vm,
         )
     }
@@ -227,7 +227,7 @@ impl<'h> HeapRead<'h, DictItemsView> {
         dict_items_eq_set_like(
             &self.dict(vm),
             other.get(vm.heap).len(),
-            |item, vm| matches!(other.contains(item, vm), Ok(true)),
+            |item, vm| other.contains(item, vm),
             vm,
         )
     }
@@ -241,7 +241,7 @@ impl<'h> HeapRead<'h, DictItemsView> {
         dict_items_eq_set_like(
             &self.dict(vm),
             other.get(vm.heap).len(),
-            |item, vm| matches!(other.contains(item, vm), Ok(true)),
+            |item, vm| other.contains(item, vm),
             vm,
         )
     }
@@ -418,7 +418,7 @@ impl HeapItem for DictValuesView {
 fn dict_keys_eq_set_like<'h, T: ResourceTracker>(
     dict: &HeapRead<'h, Dict>,
     other_len: usize,
-    mut contains: impl FnMut(&Value, &mut VM<'h, T>) -> bool,
+    mut contains: impl FnMut(&Value, &mut VM<'h, T>) -> RunResult<bool>,
     vm: &mut VM<'h, T>,
 ) -> RunResult<bool> {
     if dict.get(vm.heap).len() != other_len {
@@ -432,7 +432,7 @@ fn dict_keys_eq_set_like<'h, T: ResourceTracker>(
         vm.heap.check_time()?;
         let key = dict.get(vm.heap).key_at(i).unwrap().clone_with_heap(vm);
         defer_drop!(key, vm);
-        if !contains(key, vm) {
+        if !contains(key, vm)? {
             return Ok(false);
         }
     }
@@ -443,7 +443,7 @@ fn dict_keys_eq_set_like<'h, T: ResourceTracker>(
 fn dict_items_eq_set_like<'h, T: ResourceTracker>(
     dict: &HeapRead<'h, Dict>,
     other_len: usize,
-    mut contains: impl FnMut(&Value, &mut VM<'h, T>) -> bool,
+    mut contains: impl FnMut(&Value, &mut VM<'h, T>) -> RunResult<bool>,
     vm: &mut VM<'h, T>,
 ) -> RunResult<bool> {
     if dict.get(vm.heap).len() != other_len {
@@ -458,7 +458,7 @@ fn dict_items_eq_set_like<'h, T: ResourceTracker>(
         let (key, value) = dict.get(vm.heap).item_at(i).unwrap();
         let item = allocate_tuple(smallvec![key.clone_with_heap(vm), value.clone_with_heap(vm)], vm.heap)?;
         defer_drop!(item, vm);
-        if !contains(item, vm) {
+        if !contains(item, vm)? {
             return Ok(false);
         }
     }

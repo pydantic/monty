@@ -283,7 +283,7 @@ impl<'h> HeapRead<'h, SetStorage> {
         let iter = self.iter(vm)?;
         defer_drop_mut!(iter, vm);
         while let Some(elem) = iter.next(vm)? {
-            if !matches!(other.contains(elem, vm), Ok(true)) {
+            if !other.contains(elem, vm)? {
                 return Ok(false);
             }
         }
