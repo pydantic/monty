@@ -2035,6 +2035,25 @@ impl Value {
             _ => false,
         }
     }
+
+    /// Extracts an `i32` from a `Value`, accepting `Bool` and `Int`.
+    ///
+    /// Used by `date`, `datetime`, and other constructors that expect
+    /// integer arguments matching CPython's `int` coercion rules.
+    pub fn to_i32(&self) -> RunResult<i32> {
+        let int_value = match self {
+            Self::Bool(b) => i64::from(*b),
+            Self::Int(i) => *i,
+            _ => {
+                return Err(
+                    SimpleException::new_msg(ExcType::TypeError, "an integer is required (got type float)").into(),
+                );
+            }
+        };
+        i32::try_from(int_value).map_err(|_| {
+            SimpleException::new_msg(ExcType::OverflowError, "signed integer is greater than maximum").into()
+        })
+    }
 }
 
 /// Interned or heap-owned string identifier.

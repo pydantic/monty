@@ -257,6 +257,27 @@ Wherever you see an Exception with a repeated message, create a dedicated method
 
 When writing exception messages, always check `src/exceptions.rs` for existing methods to generate that message.
 
+## Procedural macros (`crates/monty-macros/`)
+
+`crates/monty-macros/` is a proc-macro crate that generates boilerplate
+for the main `monty` crate. The macros are re-exported from `monty` (e.g.
+`monty::args::FromArgs`); never depend on `monty-macros` directly from
+other crates.
+
+Currently provides:
+
+- `#[derive(FromArgs)]` — turns a struct declaration into an
+  `ArgValues` → `Self` extractor for builtins, type constructors, and
+  `OsFunction` handlers. Generated code handles positional and keyword
+  dispatch, conflict detection, defaults, and refcount cleanup on every
+  error path. See [`crates/monty-macros/README.md`](crates/monty-macros/README.md)
+  for the full attribute surface, migration guidance, and how to extend
+  the macro with new attributes or `FromValue` impls.
+
+When adding a Rust-side function or constructor that takes more than two
+arguments — especially with defaults or kwargs — prefer
+`#[derive(FromArgs)]` over hand-written `args.into_parts()` loops.
+
 ## Code style
 
 Avoid local imports, unless there's a very good reason, all imports should be at the top of the file.

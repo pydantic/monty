@@ -16,7 +16,7 @@ use ahash::AHashSet;
 use chrono::{Datelike, FixedOffset, NaiveDateTime, NaiveTime, TimeDelta as ChronoTimeDelta, Timelike};
 
 use crate::{
-    args::ArgValues,
+    args::{ArgValues, FromArgs},
     bytecode::{CallResult, VM},
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, RunResult, SimpleException},
@@ -27,7 +27,7 @@ use crate::{
     resource::{ResourceError, ResourceTracker},
     types::{
         AttrCallResult, PyTrait, TimeDelta, TimeZone, Type,
-        date::{self, value_to_i32},
+        date::{self},
         str::{StringRepr, allocate_string, allocate_string_no_interning},
         timedelta, timezone,
     },
@@ -197,153 +197,7 @@ pub(crate) fn to_components(datetime: &DateTime) -> Option<(i32, u8, u8, u8, u8,
 
 /// Constructor for `datetime(...)`.
 pub(crate) fn init(heap: &mut Heap<impl ResourceTracker>, args: ArgValues, interns: &Interns) -> RunResult<Value> {
-    let (pos, kwargs) = args.into_parts();
-    defer_drop_mut!(pos, heap);
-    let kwargs = kwargs.into_iter();
-    defer_drop_mut!(kwargs, heap);
-    // Keep the provided tzinfo object alive across argument parsing so we can
-    // safely retain its identity in the constructed datetime.
-    let retained_tzinfo = Value::None;
-    defer_drop_mut!(retained_tzinfo, heap);
-
-    let mut year: Option<i32> = None;
-    let mut month: Option<i32> = None;
-    let mut day: Option<i32> = None;
-    let mut hour: i32 = 0;
-    let mut minute: i32 = 0;
-    let mut second: i32 = 0;
-    let mut microsecond: i32 = 0;
-    let mut tzinfo: Option<TimeZone> = None;
-    let mut tzinfo_ref: Option<HeapId> = None;
-    let mut seen_hour = false;
-    let mut seen_minute = false;
-    let mut seen_second = false;
-    let mut seen_microsecond = false;
-    let mut seen_tzinfo = false;
-
-    for (index, arg) in pos.by_ref().enumerate() {
-        defer_drop!(arg, heap);
-        match index {
-            0 => year = Some(value_to_i32(arg)?),
-            1 => month = Some(value_to_i32(arg)?),
-            2 => day = Some(value_to_i32(arg)?),
-            3 => {
-                hour = value_to_i32(arg)?;
-                seen_hour = true;
-            }
-            4 => {
-                minute = value_to_i32(arg)?;
-                seen_minute = true;
-            }
-            5 => {
-                second = value_to_i32(arg)?;
-                seen_second = true;
-            }
-            6 => {
-                microsecond = value_to_i32(arg)?;
-                seen_microsecond = true;
-            }
-            7 => {
-                let (value_tzinfo, value_tzinfo_ref) = tzinfo_from_value(arg, heap)?;
-                update_retained_tzinfo(retained_tzinfo, value_tzinfo_ref, heap);
-                tzinfo = value_tzinfo;
-                tzinfo_ref = value_tzinfo_ref;
-                seen_tzinfo = true;
-            }
-            _ => {
-                return Err(SimpleException::new_msg(
-                    ExcType::TypeError,
-                    format!("function takes at most 8 positional arguments ({} given)", index + 1),
-                )
-                .into());
-            }
-        }
-    }
-
-    for (key, value) in kwargs {
-        defer_drop!(key, heap);
-        defer_drop!(value, heap);
-        let Some(key_name) = key.as_either_str(heap) else {
-            return Err(ExcType::type_error_kwargs_nonstring_key());
-        };
-        match key_name.string_id() {
-            Some(id) if id == StaticStrings::Year => {
-                if year.is_some() {
-                    return Err(ExcType::type_error_positional_keyword_conflict("function", "year", 1));
-                }
-                year = Some(value_to_i32(value)?);
-            }
-            Some(id) if id == StaticStrings::Month => {
-                if month.is_some() {
-                    return Err(ExcType::type_error_positional_keyword_conflict("function", "month", 2));
-                }
-                month = Some(value_to_i32(value)?);
-            }
-            Some(id) if id == StaticStrings::Day => {
-                if day.is_some() {
-                    return Err(ExcType::type_error_positional_keyword_conflict("function", "day", 3));
-                }
-                day = Some(value_to_i32(value)?);
-            }
-            Some(id) if id == StaticStrings::Hour => {
-                if seen_hour {
-                    return Err(ExcType::type_error_positional_keyword_conflict("function", "hour", 4));
-                }
-                hour = value_to_i32(value)?;
-                seen_hour = true;
-            }
-            Some(id) if id == StaticStrings::Minute => {
-                if seen_minute {
-                    return Err(ExcType::type_error_positional_keyword_conflict("function", "minute", 5));
-                }
-                minute = value_to_i32(value)?;
-                seen_minute = true;
-            }
-            Some(id) if id == StaticStrings::Second => {
-                if seen_second {
-                    return Err(ExcType::type_error_positional_keyword_conflict("function", "second", 6));
-                }
-                second = value_to_i32(value)?;
-                seen_second = true;
-            }
-            Some(id) if id == StaticStrings::Microsecond => {
-                if seen_microsecond {
-                    return Err(ExcType::type_error_positional_keyword_conflict(
-                        "function",
-                        "microsecond",
-                        7,
-                    ));
-                }
-                microsecond = value_to_i32(value)?;
-                seen_microsecond = true;
-            }
-            Some(id) if id == StaticStrings::Tzinfo => {
-                if seen_tzinfo {
-                    return Err(ExcType::type_error_positional_keyword_conflict("function", "tzinfo", 8));
-                }
-                let (value_tzinfo, value_tzinfo_ref) = tzinfo_from_value(value, heap)?;
-                update_retained_tzinfo(retained_tzinfo, value_tzinfo_ref, heap);
-                tzinfo = value_tzinfo;
-                tzinfo_ref = value_tzinfo_ref;
-                seen_tzinfo = true;
-            }
-            _ => {
-                return Err(ExcType::type_error_c_unexpected_keyword(key_name.as_str(interns)));
-            }
-        }
-    }
-
-    let Some(year) = year else {
-        return Err(ExcType::type_error_c_missing_required("year", 1));
-    };
-    let Some(month) = month else {
-        return Err(ExcType::type_error_c_missing_required("month", 2));
-    };
-    let Some(day) = day else {
-        return Err(ExcType::type_error_c_missing_required("day", 3));
-    };
-
-    let dt = from_components(
+    let DatetimeInitArgs {
         year,
         month,
         day,
@@ -352,10 +206,40 @@ pub(crate) fn init(heap: &mut Heap<impl ResourceTracker>, args: ArgValues, inter
         second,
         microsecond,
         tzinfo,
-        tzinfo_ref,
-        heap,
-    )?;
+    } = DatetimeInitArgs::from_args(args, heap, interns)?;
+    // `tzinfo` owns the input ref; keep it alive across `tzinfo_from_value` and
+    // `from_components` so the heap-allocated TimeZone (if any) is not freed
+    // before `attach_or_allocate_tzinfo_ref` takes its own reference.
+    defer_drop_mut!(tzinfo, heap);
+
+    let (tz, tz_ref) = tzinfo_from_value(tzinfo, heap)?;
+    let dt = from_components(year, month, day, hour, minute, second, microsecond, tz, tz_ref, heap)?;
     Ok(Value::Ref(heap.allocate(HeapData::DateTime(dt))?))
+}
+
+/// Argument shape for `datetime(year, month, day, hour=0, minute=0, second=0, microsecond=0, tzinfo=None)`.
+///
+/// CPython emits two distinct wordings here: too-many-positional says
+/// "function takes at most 8 *positional* arguments", while
+/// positional/keyword conflict messages reference `"function"` as the
+/// descriptor — hence the `at_most_positional` plus `name = "function"`
+/// combination.
+#[derive(FromArgs)]
+#[from_args(name = "function", at_most_positional)]
+struct DatetimeInitArgs {
+    year: i32,
+    month: i32,
+    day: i32,
+    #[from_args(default = 0)]
+    hour: i32,
+    #[from_args(default = 0)]
+    minute: i32,
+    #[from_args(default = 0)]
+    second: i32,
+    #[from_args(default = 0)]
+    microsecond: i32,
+    #[from_args(default = Value::None)]
+    tzinfo: Value,
 }
 
 /// Classmethod implementation for `datetime.now(tz=None)`.
@@ -935,13 +819,13 @@ fn extract_datetime_replace_kwargs(
             return Err(ExcType::type_error_kwargs_nonstring_key());
         };
         match key_name.string_id() {
-            Some(id) if id == StaticStrings::Year => year = value_to_i32(value)?,
-            Some(id) if id == StaticStrings::Month => month = value_to_i32(value)?,
-            Some(id) if id == StaticStrings::Day => day = value_to_i32(value)?,
-            Some(id) if id == StaticStrings::Hour => hour = value_to_i32(value)?,
-            Some(id) if id == StaticStrings::Minute => minute = value_to_i32(value)?,
-            Some(id) if id == StaticStrings::Second => second = value_to_i32(value)?,
-            Some(id) if id == StaticStrings::Microsecond => microsecond = value_to_i32(value)?,
+            Some(id) if id == StaticStrings::Year => year = value.to_i32()?,
+            Some(id) if id == StaticStrings::Month => month = value.to_i32()?,
+            Some(id) if id == StaticStrings::Day => day = value.to_i32()?,
+            Some(id) if id == StaticStrings::Hour => hour = value.to_i32()?,
+            Some(id) if id == StaticStrings::Minute => minute = value.to_i32()?,
+            Some(id) if id == StaticStrings::Second => second = value.to_i32()?,
+            Some(id) if id == StaticStrings::Microsecond => microsecond = value.to_i32()?,
             Some(id) if id == StaticStrings::Tzinfo => {
                 let (value_tzinfo, value_tzinfo_ref) = tzinfo_from_value(value, heap)?;
                 update_retained_tzinfo(retained_tzinfo, value_tzinfo_ref, heap);

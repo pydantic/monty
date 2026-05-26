@@ -1896,6 +1896,7 @@ dependencies = [
  "itertools 0.14.0",
  "jiter",
  "libm",
+ "monty-macros",
  "num-bigint",
  "num-integer",
  "num-traits",
@@ -1970,6 +1971,15 @@ dependencies = [
  "num-bigint",
  "postcard",
  "serde",
+]
+
+[[package]]
+name = "monty-macros"
+version = "0.0.17"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
 ]
 
 [[package]]

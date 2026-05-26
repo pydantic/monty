@@ -38,6 +38,7 @@ chrono = { version = "0.4", features = ["serde"] }
 speedate = "0.17.0"
 itertools = "0.14.0"
 jiter = { version = "0.15.0", features = ["num-bigint"] }
+monty-macros = { path = "../monty-macros" }
 
 [features]
 # ref-count-return changes behavior to return information on reference counts to check they're correct

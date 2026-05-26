@@ -629,6 +629,18 @@ impl ExcType {
         .into()
     }
 
+    /// Variant of [`type_error_c_at_most`] used by C constructors that explicitly
+    /// say "positional arguments" (e.g. `datetime`):
+    /// `function takes at most {max} positional arguments ({actual} given)`
+    #[must_use]
+    pub(crate) fn type_error_c_at_most_positional(max: usize, actual: usize) -> RunError {
+        SimpleException::new_msg(
+            Self::TypeError,
+            format!("function takes at most {max} positional arguments ({actual} given)"),
+        )
+        .into()
+    }
+
     /// Creates a TypeError for a missing required argument in a C-implemented type.
     ///
     /// Matches CPython's `PyArg_ParseTupleAndKeywords` format:

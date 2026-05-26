@@ -138,9 +138,9 @@ pub(crate) fn init(heap: &mut Heap<impl ResourceTracker>, args: ArgValues, inter
     for (index, arg) in pos.by_ref().enumerate() {
         defer_drop!(arg, heap);
         match index {
-            0 => year = Some(value_to_i32(arg)?),
-            1 => month = Some(value_to_i32(arg)?),
-            2 => day = Some(value_to_i32(arg)?),
+            0 => year = Some(arg.to_i32()?),
+            1 => month = Some(arg.to_i32()?),
+            2 => day = Some(arg.to_i32()?),
             _ => unreachable!("total_args check above prevents this"),
         }
     }
@@ -157,19 +157,19 @@ pub(crate) fn init(heap: &mut Heap<impl ResourceTracker>, args: ArgValues, inter
                 if year.is_some() {
                     return Err(ExcType::type_error_multiple_values("date", "year"));
                 }
-                year = Some(value_to_i32(value)?);
+                year = Some(value.to_i32()?);
             }
             Some(id) if id == StaticStrings::Month => {
                 if month.is_some() {
                     return Err(ExcType::type_error_multiple_values("date", "month"));
                 }
-                month = Some(value_to_i32(value)?);
+                month = Some(value.to_i32()?);
             }
             Some(id) if id == StaticStrings::Day => {
                 if day.is_some() {
                     return Err(ExcType::type_error_multiple_values("date", "day"));
                 }
-                day = Some(value_to_i32(value)?);
+                day = Some(value.to_i32()?);
             }
             _ => return Err(ExcType::type_error_unexpected_keyword("date", key_name.as_str(interns))),
         }
@@ -465,9 +465,9 @@ fn extract_date_replace_kwargs(
             return Err(ExcType::type_error_kwargs_nonstring_key());
         };
         match key_name.string_id() {
-            Some(id) if id == StaticStrings::Year => new_year = value_to_i32(value)?,
-            Some(id) if id == StaticStrings::Month => new_month = value_to_i32(value)?,
-            Some(id) if id == StaticStrings::Day => new_day = value_to_i32(value)?,
+            Some(id) if id == StaticStrings::Year => new_year = value.to_i32()?,
+            Some(id) if id == StaticStrings::Month => new_month = value.to_i32()?,
+            Some(id) if id == StaticStrings::Day => new_day = value.to_i32()?,
             _ => {
                 return Err(ExcType::type_error_unexpected_keyword(
                     "replace",
@@ -478,20 +478,4 @@ fn extract_date_replace_kwargs(
     }
 
     Ok((new_year, new_month, new_day))
-}
-
-/// Extracts an `i32` from a `Value`, accepting `Bool` and `Int`.
-///
-/// Used by `date`, `datetime`, and other constructors that expect
-/// integer arguments matching CPython's `int` coercion rules.
-pub(crate) fn value_to_i32(value: &Value) -> RunResult<i32> {
-    let int_value = match value {
-        Value::Bool(b) => i64::from(*b),
-        Value::Int(i) => *i,
-        _ => {
-            return Err(SimpleException::new_msg(ExcType::TypeError, "an integer is required (got type float)").into());
-        }
-    };
-    i32::try_from(int_value)
-        .map_err(|_| SimpleException::new_msg(ExcType::OverflowError, "signed integer is greater than maximum").into())
 }

@@ -1,4 +1,9 @@
+mod from_value;
+
 use std::{mem, slice, vec::IntoIter};
+
+pub(crate) use from_value::FromValue;
+pub(crate) use monty_macros::FromArgs;
 
 use crate::{
     MontyObject, ResourceTracker,
