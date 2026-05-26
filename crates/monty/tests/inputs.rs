@@ -418,3 +418,17 @@ double(2)
     let result = ex.run_no_limits(vec![MontyObject::Int(7)]).unwrap();
     assert_eq!(result, MontyObject::Int(4));
 }
+
+#[test]
+fn invalid_identifier() {
+    let err = MontyRun::new("x".to_owned(), "test.py", vec!["foo.bar".to_owned()]).unwrap_err();
+    assert_eq!(err.exc_type(), ExcType::SyntaxError);
+    assert_eq!(err.message(), Some("Input name 'foo.bar' not a valid identifier"));
+}
+
+#[test]
+fn invalid_is_keyword() {
+    let err = MontyRun::new("x".to_owned(), "test.py", vec!["async".to_owned()]).unwrap_err();
+    assert_eq!(err.exc_type(), ExcType::SyntaxError);
+    assert_eq!(err.message(), Some("Input name 'async' not a valid identifier"));
+}

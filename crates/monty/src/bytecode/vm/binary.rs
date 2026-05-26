@@ -10,7 +10,7 @@ use crate::{
     value::{BitwiseOp, Value},
 };
 
-impl<T: ResourceTracker> VM<'_, '_, T> {
+impl<T: ResourceTracker> VM<'_, T> {
     /// Binary addition with proper refcount handling.
     ///
     /// Uses lazy type capture: only calls `py_type()` in error paths to avoid
@@ -375,9 +375,9 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
             return Ok(None);
         };
 
-        let lhs_set = match this.heap.get(*lhs_id) {
-            HeapData::DictKeysView(view) => view.to_set(this)?,
-            HeapData::DictItemsView(view) => view.to_set(this)?,
+        let lhs_set = match this.heap.read(*lhs_id) {
+            HeapReadOutput::DictKeysView(view) => view.to_set(this)?,
+            HeapReadOutput::DictItemsView(view) => view.to_set(this)?,
             _ => return Ok(None),
         };
         defer_drop!(lhs_set, this);
@@ -430,7 +430,7 @@ fn apply_dict_view_binary_op(
     lhs: &Set,
     rhs: &Set,
     op: DictViewBinaryOp,
-    vm: &mut VM<'_, '_, impl ResourceTracker>,
+    vm: &mut VM<'_, impl ResourceTracker>,
 ) -> Result<Set, RunError> {
     let mut result = match op {
         DictViewBinaryOp::And => Set::with_capacity(lhs.len().min(rhs.len())),

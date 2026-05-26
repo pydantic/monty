@@ -83,3 +83,121 @@ assert result == [], f'gather with empty *args: {result}'
 coro_tuple = (a(), b())
 result = await asyncio.gather(*coro_tuple)  # pyright: ignore
 assert result == ['a', 'b'], f'gather with *tuple unpacking: {result}'
+
+
+# === gather with the same coroutine passed twice ===
+dup_runs = [0]
+
+
+async def dup():
+    dup_runs[0] += 1
+    return 1
+
+
+dup_coro = dup()
+result = await asyncio.gather(dup_coro, dup_coro)  # pyright: ignore
+assert result == [1, 1], f'expected [1, 1], got {result}'
+assert dup_runs[0] == 1, f'coroutine body should run once, ran {dup_runs[0]} times'
+
+
+# Three duplicates and a mix of duplicates with a unique coroutine.
+async def dup3():
+    return 'x'
+
+
+dup3_coro = dup3()
+result = await asyncio.gather(dup3_coro, dup3_coro, dup3_coro)  # pyright: ignore
+assert result == ['x', 'x', 'x'], f'expected three xs, got {result}'
+
+
+async def alpha():
+    return 'a'
+
+
+async def beta():
+    return 'b'
+
+
+a_coro = alpha()
+b_coro = beta()
+result = await asyncio.gather(a_coro, b_coro, a_coro)  # pyright: ignore
+assert result == ['a', 'b', 'a'], f'mixed dedup: expected [a, b, a], got {result}'
+
+
+# === gather with an already-awaited coroutine raises RuntimeError ===
+async def already():
+    return 1
+
+
+already_coro = already()
+await already_coro  # pyright: ignore
+try:
+    await asyncio.gather(already_coro)  # pyright: ignore
+    assert False, 'should have raised RuntimeError'
+except RuntimeError as e:
+    assert str(e) == 'cannot reuse already awaited coroutine', f'unexpected error: {e}'
+
+
+# === Re-awaiting a completed gather returns the cached result list ===
+# CPython's _GatheringFuture is a Future that stores its result; every await
+# returns the same list. Monty caches the result on the GatherFuture so this
+# matches.
+
+
+async def reawait_member():
+    return 7
+
+
+g = asyncio.gather(reawait_member(), reawait_member())
+first = await g  # pyright: ignore
+second = await g  # pyright: ignore
+third = await g  # pyright: ignore
+assert first == [7, 7], f'first await: {first}'
+assert second == [7, 7], f'second await: {second}'
+assert third == [7, 7], f'third await: {third}'
+# Identity: every re-await yields the same list object (CPython behavior).
+assert first is second, 're-await should return the cached list, not a new one'
+assert second is third, 're-await should return the same list every time'
+
+
+# === Re-awaiting an empty gather returns the same empty list ===
+g_empty = asyncio.gather()
+e1 = await g_empty  # pyright: ignore
+e2 = await g_empty  # pyright: ignore
+assert e1 == [] and e2 == [], 'empty gather re-await: both empty'
+assert e1 is e2, 'empty gather re-await should yield the same list'
+
+
+# === Re-awaiting a failed gather re-raises the same exception ===
+
+
+async def boom():
+    raise ValueError('detonate')
+
+
+g_fail = asyncio.gather(boom())
+try:
+    await g_fail  # pyright: ignore
+    assert False, 'first await should have raised'
+except ValueError as e:
+    assert str(e) == 'detonate', f'first await message: {e}'
+
+try:
+    await g_fail  # pyright: ignore
+    assert False, 'second await should have raised'
+except ValueError as e:
+    assert str(e) == 'detonate', f'second await message: {e}'
+
+try:
+    await g_fail  # pyright: ignore
+    assert False, 'third await should have raised'
+except ValueError as e:
+    assert str(e) == 'detonate', f'third await message: {e}'
+
+
+# === Nested gather ===
+
+nested_1 = asyncio.gather(task1(), task1())
+nested_2 = asyncio.gather(nested_1, nested_1)
+
+assert await nested_2 == [[1, 1], [1, 1]], 'nested gather should return results correctly'  # pyright: ignore

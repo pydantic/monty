@@ -166,7 +166,7 @@ print(result.args)
 #> ('https://example.com',)
 
 # Perform the actual fetch, then resume with the result
-result = result.resume(return_value='hello world')
+result = result.resume({'return_value': 'hello world'})
 
 print(type(result))
 #> <class 'pydantic_monty.MontyComplete'>
@@ -198,7 +198,7 @@ state = progress.dump()
 
 # Later, restore and resume (e.g., in a different process)
 progress2 = pydantic_monty.load_snapshot(state)
-result = progress2.resume(return_value='response data')
+result = progress2.resume({'return_value': 'response data'})
 print(result.output)
 #> response data
 ```
@@ -329,6 +329,7 @@ if __name__ == '__main__':
 ## Community Bindings
 
 - **Go**: [gomonty](https://github.com/ewhauser/gomonty/) - Go bindings for the Monty interpreter
+- **Dart/Flutter**: dart_monty [(github)](https://github.com/runyaga/dart_monty) [(pub.dev)](https://pub.dev/packages/dart_monty)- Dart/Flutter bindings for Monty
 
 # Alternatives
 

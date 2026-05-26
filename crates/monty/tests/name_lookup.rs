@@ -480,3 +480,24 @@ fn resolve_function_with_non_interned_name() {
     let result = call.resume(MontyObject::Int(42), PrintWriter::Stdout).unwrap();
     assert_eq!(result.into_complete().unwrap(), MontyObject::Int(42));
 }
+
+#[test]
+fn name_lookup_not_possible_inside_sort_callback() {
+    // `sorted([1], key=lambda x: missing)` cannot yet yield for external functions
+    // to resolve missing, should raise NotImplementedError
+    let code = "
+try:
+    sorted([1], key=lambda x: missing)
+except NotImplementedError as e:
+    assert str(e) == 'sorted() key argument: external functions are not yet supported in this context'
+else:
+    assert False
+
+# sanity check that evaluation recovers properly after the failed NameLookup
+sorted([1], key=lambda x: x+1)
+        "
+    .to_owned();
+    let runner = MontyRun::new(code, "test.py", vec![]).unwrap();
+    let value = runner.run_no_limits(vec![]).unwrap();
+    assert_eq!(value, MontyObject::List(vec![MontyObject::Int(1)]));
+}

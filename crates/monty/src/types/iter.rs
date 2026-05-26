@@ -22,9 +22,9 @@ use crate::{
     exception_private::{ExcType, RunResult},
     heap::{ContainsHeap, DropWithHeap, Heap, HeapData, HeapGuard, HeapId, HeapItem, HeapRead, HeapReadOutput},
     intern::{BytesId, Interns},
-    resource::ResourceTracker,
+    resource::{ResourceError, ResourceTracker, check_estimated_size},
     types::{PyTrait, Range, dict_view::DictView, str::allocate_char},
-    value::Value,
+    value::{VALUE_SIZE, Value},
 };
 
 /// Iterator state for Python for loops.
@@ -49,7 +49,7 @@ impl MontyIter {
     /// - `iter(iterable)` - Returns an iterator for the iterable. If the argument is
     ///   already an iterator, returns the same object.
     /// - `iter(callable, sentinel)` - Not yet supported.
-    pub fn init(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    pub fn init(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
         let (iterable, sentinel) = args.get_one_two_args("iter", vm.heap)?;
 
         if let Some(s) = sentinel {
@@ -79,7 +79,7 @@ impl MontyIter {
     /// Returns an error if the value is not iterable.
     /// For strings, copies the string content for byte-offset based iteration.
     /// For ranges, the data is copied so the heap reference is dropped immediately.
-    pub fn new(mut value: Value, vm: &mut VM<'_, '_, impl ResourceTracker>) -> RunResult<Self> {
+    pub fn new(mut value: Value, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<Self> {
         if let Some(iter_value) = IterValue::new(&value, vm) {
             // For Range, we copy next/step/len into ForIterValue::Range, so we don't need
             // to keep the heap object alive during iteration. Drop it immediately to avoid
@@ -111,15 +111,6 @@ impl MontyIter {
         self.value.py_dec_ref_ids(stack);
     }
 
-    /// Returns whether this iterator holds a heap reference (`Value::Ref`).
-    ///
-    /// Used during allocation to determine if this container could create cycles.
-    #[inline]
-    #[must_use]
-    pub fn has_refs(&self) -> bool {
-        matches!(self.value, Value::Ref(_))
-    }
-
     /// Returns a reference to the underlying value being iterated.
     ///
     /// Used by GC to traverse heap references held by the iterator.
@@ -132,7 +123,7 @@ impl MontyIter {
     /// Returns `Ok(None)` when the iterator is exhausted.
     /// Returns `Err` if allocation fails (for string character iteration) or if
     /// a dict/set changes size during iteration (RuntimeError).
-    pub fn for_next(&mut self, vm: &mut VM<'_, '_, impl ResourceTracker>) -> RunResult<Option<Value>> {
+    pub fn for_next(&mut self, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<Option<Value>> {
         // Check timeout on every iteration step. For NoLimitTracker this is
         // inlined as a no-op. For LimitTracker it ensures that Rust-side loops
         // (sum, sorted, min, max, etc.) cannot bypass the VM's per-instruction
@@ -220,30 +211,122 @@ impl MontyIter {
         len.saturating_sub(self.index)
     }
 
-    /// Collects all remaining items from the iterator into a Vec.
+    /// Returns a capacity hint that is safe to pass to `with_capacity` and friends.
+    ///
+    /// `size_hint()` reports the exact remaining length of the iterable, which for
+    /// `range(huge)` can be astronomically large. Passing that straight to a
+    /// container constructor calls the global allocator before the resource tracker
+    /// can reject it; the allocator either aborts the process on failure (which is
+    /// not catchable) or succeeds and the host is OOM-killed when the pages are
+    /// touched. Both outcomes bypass the configured memory limit entirely.
+    ///
+    /// This helper validates the requested allocation against the resource tracker
+    /// (raising `MemoryError` if it would exceed the budget) and clamps the result
+    /// to a small fixed bound. The clamp makes the pre-allocation defensively safe
+    /// even when no limits are configured: the container still grows naturally as
+    /// elements are appended, with each element tracked individually, so the hint
+    /// only matters for performance, never for correctness.
+    pub fn preallocation_hint(
+        &self,
+        elem_size: usize,
+        vm: &VM<'_, impl ResourceTracker>,
+    ) -> Result<usize, ResourceError> {
+        /// Upper bound on the number of slots we are willing to reserve up front.
+        ///
+        /// Chosen so the worst-case pre-allocation (a few MiB) is small relative
+        /// to any realistic memory budget, while still avoiding repeated
+        /// reallocations for the common case of building moderate containers.
+        const MAX_PREALLOCATION_HINT: usize = 65_536;
+        let hint = self.size_hint(vm.heap);
+        check_estimated_size(hint.saturating_mul(elem_size), vm.heap.tracker())?;
+        Ok(hint.min(MAX_PREALLOCATION_HINT))
+    }
+
+    /// Materializes all remaining items into a `T` (typically `Vec<Value>`).
     ///
     /// Consumes the iterator and returns all items. Used by `list()`, `tuple()`,
-    /// and similar constructors that need to materialize all items.
+    /// `sorted()`, `reversed()`, and similar constructors that need every item.
     ///
-    /// Pre-allocates capacity based on `size_hint()` for better performance.
-    pub fn collect<T: FromIterator<Value>>(self, vm: &mut VM<'_, '_, impl ResourceTracker>) -> RunResult<T> {
+    /// # Resource safety
+    ///
+    /// The destination `T` is backed by the global Rust allocator, *outside*
+    /// Monty's resource tracker. The tracker would otherwise only see the
+    /// finished buffer when it is wrapped into a heap object — far too late for
+    /// a cheap-to-represent but enormous iterable like `list(range(10**12))` or
+    /// `tuple(x for x in ...)`, where the whole native buffer is built first and
+    /// the host is driven to OOM or a capacity-overflow abort before that
+    /// post-construction check ever runs (an uncatchable sandbox escape).
+    ///
+    /// [`HeapedMontyIter`] therefore re-estimates the projected buffer size
+    /// after every element and runs it through the tracker, so an over-budget
+    /// collection fails *during* accumulation, near the configured limit,
+    /// rather than after full materialization. This is the only sanctioned way
+    /// to drain a `MontyIter` into a native container — `MontyIter`
+    /// deliberately does not implement [`Iterator`] so callers cannot bypass
+    /// this check with a plain `.collect()`.
+    pub fn collect<T: FromIterator<Value>>(self, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<T> {
         let mut guard = HeapGuard::new(self, vm);
         let (this, vm) = guard.as_parts_mut();
-        HeapedMontyIter(this, vm).collect()
+        HeapedMontyIter {
+            iter: this,
+            vm,
+            yielded: 0,
+        }
+        .collect()
     }
 }
 
-struct HeapedMontyIter<'this, 'a, 'p, T: ResourceTracker>(&'this mut MontyIter, &'this mut VM<'a, 'p, T>);
+/// Adapter that drives a [`MontyIter`] as a standard [`Iterator`] so it can be
+/// fed to `collect()`, while enforcing the memory budget *incrementally*.
+///
+/// `collect()` builds a native `Vec`/`SmallVec` whose backing storage is
+/// allocated by the global Rust allocator and is invisible to Monty's resource
+/// tracker until the finished object is handed to the heap. Each [`next`] call
+/// therefore re-estimates the projected buffer size (`yielded * VALUE_SIZE`)
+/// and validates it against the tracker via [`check_estimated_size`], so a
+/// runaway collection is rejected near the limit instead of after it has
+/// already exhausted host memory. The check is free below
+/// `LARGE_RESULT_THRESHOLD` (a single multiply and comparison), matching the
+/// policy used by [`MontyIter::preallocation_hint`].
+///
+/// [`next`]: Iterator::next
+struct HeapedMontyIter<'this, 'h, T: ResourceTracker> {
+    /// The underlying iterator being drained.
+    iter: &'this mut MontyIter,
+    /// VM handle, needed both to advance `iter` and to reach the tracker.
+    vm: &'this mut VM<'h, T>,
+    /// Count of elements yielded so far; drives the running size estimate.
+    yielded: usize,
+}
 
-impl<T: ResourceTracker> Iterator for HeapedMontyIter<'_, '_, '_, T> {
+impl<T: ResourceTracker> Iterator for HeapedMontyIter<'_, '_, T> {
     type Item = RunResult<Value>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        self.0.for_next(self.1).transpose()
+        match self.iter.for_next(self.vm) {
+            Ok(None) => None,
+            Err(e) => Some(Err(e)),
+            Ok(Some(value)) => {
+                self.yielded += 1;
+                let estimated = self.yielded.saturating_mul(VALUE_SIZE);
+                // Borrow order matters: `for_next` took `&mut vm` above and has
+                // already returned, so the immutable tracker borrow here is fine.
+                match check_estimated_size(estimated, self.vm.heap.tracker()) {
+                    Ok(()) => Some(Ok(value)),
+                    // Over budget mid-collection. The partially built buffer is
+                    // dropped without `drop_with_heap`, leaking the refcounts of
+                    // `value` and the already-collected items. This is the
+                    // existing, explicitly sanctioned behaviour for resource
+                    // errors (terminal; heap state is discarded — see CLAUDE.md
+                    // and the `Heap` resource-limit docs).
+                    Err(e) => Some(Err(e.into())),
+                }
+            }
+        }
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
-        let remaining = self.0.size_hint(self.1.heap);
+        let remaining = self.iter.size_hint(self.vm.heap);
         (remaining, Some(remaining))
     }
 }
@@ -253,7 +336,7 @@ impl<'h> HeapRead<'h, MontyIter> {
     ///
     /// Returns `Ok(None)` when the iterator is exhausted.
     /// Returns `Err` for dict/set size changes or allocation failures.
-    pub(crate) fn advance(&mut self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<Option<Value>> {
+    pub(crate) fn advance(&mut self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<Value>> {
         let this = self.get_mut(vm.heap);
         match &mut this.iter_value {
             IterValue::Range { next, step, len } => {
@@ -326,7 +409,7 @@ impl<'h> HeapRead<'h, MontyIter> {
 /// Returns `Ok(None)` if the index is out of bounds (for lists that shrunk during iteration).
 /// Returns `Err` if a dict/set changed size during iteration (RuntimeError).
 fn get_heap_item(
-    vm: &VM<'_, '_, impl ResourceTracker>,
+    vm: &VM<'_, impl ResourceTracker>,
     heap_id: HeapId,
     index: usize,
     expected_len: Option<usize>,
@@ -432,7 +515,7 @@ fn get_heap_item(
 pub fn iterator_next(
     iter_value: &Value,
     default: Option<Value>,
-    vm: &mut VM<'_, '_, impl ResourceTracker>,
+    vm: &mut VM<'_, impl ResourceTracker>,
 ) -> RunResult<Value> {
     let mut default_guard = HeapGuard::new(default, vm);
     let vm = default_guard.heap();
@@ -507,7 +590,7 @@ enum IterValue {
 }
 
 impl IterValue {
-    fn new(value: &Value, vm: &mut VM<'_, '_, impl ResourceTracker>) -> Option<Self> {
+    fn new(value: &Value, vm: &mut VM<'_, impl ResourceTracker>) -> Option<Self> {
         match &value {
             Value::InternString(string_id) => Some(Self::from_str(vm.interns.get_str(*string_id))),
             Value::InternBytes(bytes_id) => Some(Self::from_intern_bytes(*bytes_id, vm.interns)),

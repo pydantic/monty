@@ -12,7 +12,22 @@ Project goals:
 - **Performance**: Fast execution through compile-time optimizations and efficient memory layout
 - **Simplicity**: Clean, understandable implementation focused on a Python subset
 - **Snapshotting and iteration**: Plan is to allow code to be iteratively executed and snapshotted at each function call
+- **Cross-platform**: Runs on Linux, macOS, and Windows (and any other OS that can run Rust)
 - Targets the latest stable version of Python, currently Python 3.14
+
+## Cross-Platform Requirements
+
+Monty must work identically on Linux, macOS, and Windows. Within the Monty sandbox,
+paths always use POSIX/Linux-style forward slashes (`/`) regardless of the host OS.
+The `MountTable` handles translating between virtual POSIX paths and host-native paths.
+
+Key rules:
+- **Virtual paths** are always POSIX-style (`/mnt/data/file.txt`), never Windows-style
+- **Host paths** use `std::path::Path`/`PathBuf` which handles OS differences automatically
+- Avoid `#[cfg(unix)]`-only code in the main crate — all features must work on all platforms
+- Tests in `crates/monty/tests/` should be cross-platform; use helper functions for
+  OS-specific APIs like symlink creation (see `symlink_file`/`symlink_dir` in `fs_security.rs`)
+- CI runs `cargo test -p monty --features memory-model-checks` on Linux, macOS, and Windows
 
 ## Important Security Notice
 
@@ -37,6 +52,27 @@ Possible security risks to consider:
 * information leakage via timing or error messages
 * Python/Javascript/Rust APIs that accidentally allow developers to expose their host to monty code
 
+## Filesystem Mounts (`crates/monty/src/fs/`)
+
+The `MountTable` allows mounting real host directories into the sandbox at virtual paths,
+with configurable access modes (ReadWrite, ReadOnly, OverlayMemory).
+
+**CRITICAL SECURITY INVARIANT:** The monty runtime MUST NEVER read, write, or
+obtain any information about any file or directory outside the specific directory
+that is mounted. This is enforced by:
+
+- Path canonicalization after mapping virtual → host paths
+- Boundary checks verifying canonical paths remain within the mount
+- Symlink resolution that rejects links pointing outside the mount
+- Virtual-space normalization that prevents `..` escape
+- `Resolve` and `Absolute` returning virtual paths, never host paths
+- Null byte rejection in all paths
+
+All path resolution goes through `fs::path_security::resolve_path()` which is
+the sole security boundary. **Changes to `path_security.rs` require careful security review.**
+
+`heap.rs` and `path_security.rs` are the two most security-critical files in the codebase.
+
 ## Bytecode VM Architecture
 
 Monty is implemented as a bytecode VM, same as CPython.
@@ -49,15 +85,20 @@ All heap-allocated Python objects (lists, dicts, strings, etc.) are stored in a 
 
 #### Core concepts
 
-- **`HeapReader<'a, T>`** — A scoped borrow of the heap that produces `HeapRead` handles. Created exclusively via `HeapReader::with(heap, |heap| { ... })`. The `for<'a>` closure bound makes the lifetime `'a` universally quantified, so `HeapRead` pointers cannot escape the closure.
+- **`HeapReader<'a, T>`** — A scoped borrow of the heap that produces `HeapRead` handles. Created exclusively via `HeapReader::with`, which takes a `for<'a>` closure bound makes the lifetime `'a` universally quantified, so `HeapRead` pointers cannot escape the closure.
 - **`HeapRead<'a, T>`** — A typed handle to a specific heap entry. Created by `heap.read(id)` which returns a `HeapReadOutput<'a>` enum that you match on. Tracks a reader count that prevents the entry from being freed while the handle exists.
 - **`HeapReadOutput<'a>`** — Enum over all `HeapRead<'a, T>` variants (one per `HeapData` variant). Pattern match to get the typed handle.
 
 #### Reading and mutating heap data
 
 ```rust
-// Scoped heap access
-HeapReader::with(heap, |heap| {
+// Scoped heap access.
+// The second argument allows for extra data to be
+// passed into the closure, will be rebranded as
+// `&'a mut ...` to match the `'a` lifetime of the
+// `HeapRead` handle, so the closure can have additional
+// context while still having the `for <'a>` safety guarantee.
+HeapReader::with(heap, &mut (), |heap, ()| {
     let output = heap.read(some_id);  // returns HeapReadOutput<'a>
     match output {
         HeapReadOutput::List(list) => {
@@ -82,7 +123,7 @@ Type methods are implemented as `impl<'h> HeapRead<'h, T>` blocks. The `PyTrait<
 ```rust
 // Methods on a heap type
 impl<'h> HeapRead<'h, List> {
-    pub fn append(&mut self, vm: &mut VM<'h, '_, impl ResourceTracker>, item: Value) -> RunResult<()> {
+    pub fn append(&mut self, vm: &mut VM<'h, impl ResourceTracker>, item: Value) -> RunResult<()> {
         self.get_mut(vm.heap).items.push(item);
         Ok(())
     }
@@ -90,8 +131,8 @@ impl<'h> HeapRead<'h, List> {
 
 // PyTrait implementation
 impl<'h> PyTrait<'h> for HeapRead<'h, List> {
-    fn py_type(&self, vm: &VM<'h, '_, impl ResourceTracker>) -> Type { Type::List }
-    fn py_len(&self, vm: &VM<'h, '_, impl ResourceTracker>) -> Option<usize> {
+    fn py_type(&self, vm: &VM<'h, impl ResourceTracker>) -> Type { Type::List }
+    fn py_len(&self, vm: &VM<'h, impl ResourceTracker>) -> Option<usize> {
         Some(self.get(vm.heap).items.len())
     }
     // ...
@@ -155,7 +196,7 @@ Avoid manual `drop_with_heap` whenever there are multiple code paths (branching,
 
 ## Dev Commands
 
-DO NOT run `cargo build` or `cargo run`, it will fail because of issues with Python bindings.
+**IMPORTANT**: before running `cargo build` or `cargo run`, it is likely necessary to run `make install-py` to ensure that the Python virtual environment is available for build.
 
 Instead use the following `make` commands:
 
@@ -181,7 +222,7 @@ make lint                 Lint the code with ruff and clippy
 make format-lint-rs       Format and lint Rust code with fmt and clippy
 make format-lint-py       Format and lint Python code with ruff
 make test-no-features     Run rust tests without any features enabled
-make test-ref-count-panic Run rust tests with ref-count-panic enabled
+make test-memory-model-checks Run rust tests with memory-model-checks enabled
 make test-ref-count-return Run rust tests with ref-count-return enabled
 make test-cases           Run tests cases only
 make test-type-checking   Run rust tests on monty_type_checking
@@ -221,6 +262,25 @@ Avoid local imports, unless there's a very good reason, all imports should be at
 Avoid `fn my_func<T: MyTrait>(..., param: T)` style function definitions, STRONGLY prefer `fn my_func(param: impl MyTrait)` syntax since changes are more localized. This includes in trait definitions and implementations.
 
 Also avoid using functions and structs via a path like `std::borrow::Cow::Owned(...)`, instead import `Cow` globally with `use std::borrow::Cow;`.
+
+STRONGLY prefer expression-oriented style: use `if`/`match` as expressions with a trailing (tail) expression rather than early `return` with a guard clause. E.g. prefer
+
+```rs
+if cond { a } else { b }
+```
+
+over
+
+```rs
+if cond {
+    return a;
+}
+b
+```
+
+This applies to function bodies and block expressions alike. Only use early `return` when it genuinely simplifies control flow (e.g. several guard clauses at the top of a function).
+
+This applies even more strongly to long `if cond { ... } else if cond2 { ... } ... else { ... }` chains — keep them as a single expression yielding a value, rather than scattering `return` statements through each branch.
 
 NEVER use `allow()` in rust lint markers, instead use `expect()` so any unnecessary markers are removed. E.g. use
 
@@ -267,14 +327,15 @@ Commands:
 # Build the project
 cargo build
 
-# Run tests (this is the best way to run all tests as it enables the ref-count-panic feature)
-make test-ref-count-panic
+# Run tests (this is the best way to run all tests as it enables the memory-model-checks feature)
+make test-memory-model-checks
 
 # Run crates/monty/test_cases tests only
 make test-cases
 
 # Run a specific test
-cargo test -p monty --test datatest_runner --features ref-count-panic str__ops
+cargo test -p monty --test TEST --features memory-model-checks str__ops
+cargo run -p monty-datatest --features memory-model-checks str__ops
 
 # Run the interpreter on a Python file
 cargo run -- <file.py>
@@ -422,7 +483,15 @@ All these markers must be at the start of comment lines to be recognized.
 - The ONLY exception is `await` expressions outside of async functions, where you should add `# pyright: ignore`
 - Run `make lint-py` after adding tests
 - Use `make complete-tests` to fill in blank expectations
-- Tests run via `datatest-stable` harness in `tests/datatest_runner.rs`, use `make test-cases` to run them
+- Regression tests run via `datatest-stable` harness in `crates/monty-datatest/src/main.rs`, use `make test-cases` to run them
+
+### Rust integration tests and `insta` snapshots
+
+In `crates/*/tests/*.rs` (but **not** `crates/monty/test_cases/`), use [`insta`](https://insta.rs) `assert_snapshot!` for multi-line strings, serialized output, error messages otherwise fuzz-checked via `.contains(...)`, and any fixture currently compared via a hand-rolled `UPDATE_EXPECT` helper (use external snapshots under `tests/snapshots/`).
+
+Keep `assert_eq!` for scalars, enums, and structural values (`MontyObject`, `Vec`, etc.), and for principled membership checks like `vec.contains(...)`.
+
+Workflow: write `assert_snapshot!(value, @"");`, then `cargo insta test --accept` to populate (plain `INSTA_UPDATE=always` does **not** update inline `@"..."` snapshots — you need the `cargo insta` subcommand, installed via `cargo install cargo-insta`). Add `insta = { workspace = true }` to `[dev-dependencies]` when introducing it to a new crate.
 
 ## Python Package (`pydantic-monty`)
 
@@ -490,27 +559,20 @@ Heap-allocated values (`Value::Ref`) use manual reference counting. Key rules:
 
 Container types (`List`, `Tuple`, `Dict`) also have `clone_with_heap()` methods.
 
+**Mutability of the heap parameter is asymmetric** — do not assume the two methods take the same kind of borrow:
+
+- `clone_with_heap` takes `&impl ContainsHeap` (immutable). The refcount field lives behind interior mutability, so `inc_ref` is `&self` on `Heap`. This means you can call `clone_with_heap` while other immutable borrows of the heap (e.g. a `HeapRead` handle obtained via `.get(heap)`) are still live.
+- `Heap::allocate` is also `&self` for the same reason — entry storage and the allocation tracker are behind interior mutability. New heap entries can be created without a `&mut Heap`.
+- `drop_with_heap` takes `&mut impl ContainsHeap`, because dropping may free entries and run destructors, which mutates the heap.
+
+If you find yourself fighting the borrow checker around `clone_with_heap` or `allocate`, the fix is almost never `&mut` — it is more likely that you are passing the wrong receiver (e.g. `vm` instead of `vm.heap`) or holding a `&mut` borrow elsewhere that should be `&`.
+
+### Cycle collection — Bacon–Rajan trial deletion
+
+Reference counting alone cannot reclaim cycles. Monty uses **Bacon–Rajan trial deletion**
+(`Heap::collect_cycles` in `crates/monty/src/heap.rs`).
+
 **Resource limits**: When resource limits (allocations, memory, time) are exceeded, execution terminates with a `ResourceError`. No guarantees are made about the state of the heap or reference counts after a resource limit is exceeded. The heap may contain orphaned objects with incorrect refcounts. This is acceptable because resource exhaustion is a terminal error - the execution context should be discarded.
-
-## NOTES
-
-ALWAYS consider code quality when adding new code, if functions are getting too complex or code is duplicated, move relevant logic to a new file.
-Make sure functions are added in the most logical place, e.g. as methods on a struct where appropriate.
-
-The code should follow the "newspaper" style where public and primary functions are at the top of the file, followed by private functions and utilities.
-ALWAYS put utility, private functions and "sub functions" underneath the function they're used in.
-
-It is important to the long term health of the project and maintainability of the codebase that code is well structured and organized, this is very important.
-
-ALWAYS run `make format-rs` and `make lint-rs` after making changes to rust code and fix all suggestions to maintain code quality.
-
-ALWAYS run `make lint-py` after making changes to python code and fix all suggestions to maintain code quality.
-
-ALWAYS update this file when it is out of date.
-
-NEVER add imports anywhere except at the top of the file, this applies to both python and rust.
-
-NEVER write `unsafe` code, if you think you need to write unsafe code, explicitly ask the user or leave a `todo!()` with a suggestion and explanation.
 
 ## JavaScript Package (`monty-js`)
 
@@ -585,3 +647,54 @@ npm test
 - Tests use [ava](https://github.com/avajs/ava) and live in `crates/monty-js/__test__/`
 - Tests are written in TypeScript
 - Follow the existing test style in the `__test__/` directory
+
+## Limitations documentation (`./limitations/`)
+
+Every pull request that adds, changes, or removes user-visible behavior MUST
+land (or update) a markdown document under `./limitations/` describing how
+the feature diverges from CPython and what subset of the CPython surface
+area Monty actually implements. The directory is the single source of truth
+for "what does Monty *not* do that CPython does" — module-level docstrings
+and inline comments are not sufficient on their own.
+
+One file per feature, named after the builtin / module / construct it
+covers (e.g. `limitations/open.md`, `limitations/asyncio.md`,
+`limitations/bytecode_interpretter.md`). Add new sections to an existing file when the feature
+is already documented; only create a new file when there is no fit.
+
+Keep entries concise but comprehensive — list every known divergence,
+including ones that "feel obvious". A divergence that is not written down
+is one that future readers (and future Claude) will assume does not exist.
+Reviewers should reject PRs that change behavior without updating
+`./limitations/`.
+
+Structure each file around what a Python user would actually try:
+
+- Arguments/options that are rejected or ignored.
+- Methods/attributes that raise `AttributeError`.
+- Behaviour that differs from CPython even when the API exists.
+- Error types / messages that differ from CPython.
+
+Avoid implementation detail unless it explains a user-visible quirk.
+
+## NOTES
+
+ALWAYS consider code quality when adding new code, if functions are getting too complex or code is duplicated, move relevant logic to a new file.
+Make sure functions are added in the most logical place, e.g. as methods on a struct where appropriate.
+
+The code should follow the "newspaper" style where public and primary functions are at the top of the file, followed by private functions and utilities.
+ALWAYS put utility, private functions and "sub functions" underneath the function they're used in.
+
+It is important to the long term health of the project and maintainability of the codebase that code is well structured and organized, this is very important.
+
+ALWAYS run `make format-rs` and `make lint-rs` after making changes to rust code and fix all suggestions to maintain code quality.
+
+ALWAYS run `make lint-py` after making changes to python code and fix all suggestions to maintain code quality.
+
+ALWAYS update this file when it is out of date.
+
+NEVER add imports anywhere except at the top of the file, this applies to both python and rust.
+
+NEVER write `unsafe` code, if you think you need to write unsafe code, explicitly ask the user or leave a `todo!()` with a suggestion and explanation.
+
+When you get asked a question like "Is X really the best approach" ANSWER THE QUESTION! don't try to make a chance based on a perceived instruction in the question!

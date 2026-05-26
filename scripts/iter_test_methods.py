@@ -11,6 +11,7 @@ This module is shared between:
 
 from __future__ import annotations
 
+import asyncio
 import os
 import stat as stat_module
 from dataclasses import dataclass
@@ -114,13 +115,37 @@ CONST_LIST = [1, 2, 3]
 CONST_NONE = None
 
 
-async def async_call(x: object) -> object:
-    """Async function that returns its argument.
+def async_call(x: object) -> 'asyncio.Future[object]':
+    """Returns a resolved `asyncio.Future` of the given value.
 
-    This is a coroutine - it returns a future that resolves to the given value.
-    Used for testing async external function calls.
+    Mirrors Monty's host-managed `ExternalFuture`: awaiting returns `x` and
+    re-awaiting returns the same cached `x` (matching `Future` semantics in
+    both runtimes). Implemented as a `Future` rather than `async def` so
+    callers can re-await without raising "cannot reuse already awaited
+    coroutine".
     """
-    return x
+    fut: asyncio.Future[object] = asyncio.get_running_loop().create_future()
+    fut.set_result(x)
+    return fut
+
+
+def async_fail(exc_type: str, message: str) -> 'asyncio.Future[None]':
+    """Returns a Future that raises `exc_type(message)` when awaited.
+
+    Mirrors `raise_error` for the async path. Returning a Future (rather
+    than a coroutine raising the exception in its body) lets re-await
+    replay the cached exception, matching Monty's `ExternalFuture::Failed`
+    behaviour.
+    """
+    exc_types: dict[str, type[Exception]] = {
+        'ValueError': ValueError,
+        'TypeError': TypeError,
+        'KeyError': KeyError,
+        'RuntimeError': RuntimeError,
+    }
+    fut: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+    fut.set_exception(exc_types[exc_type](message))
+    return fut
 
 
 # =============================================================================
@@ -407,17 +432,26 @@ def _remove_from_parent_dir(path_str: str) -> None:
 _original_path_new = Path.__new__
 
 
-def _virtual_path_new(cls: type, *args: object, **kwargs: object) -> Path:
+def _virtual_path_new(cls: type[Path], *args: object, **kwargs: object) -> Path:
     """Custom __new__ that returns VirtualPath for paths starting with /virtual or /nonexistent.
 
     Only virtual paths get the VirtualPath treatment. All other paths use the
     standard pathlib behavior (PosixPath/WindowsPath).
+
+    We must also handle ``cls is VirtualPath`` (not just ``cls is Path``)
+    because pathlib internally calls ``type(self)(*pathsegments)`` from
+    methods like ``with_segments`` / ``parent``, which re-enters this
+    patched ``__new__`` with the subclass as *cls*.  Without this guard
+    the fallback to ``_original_path_new`` triggers infinite recursion in
+    Python 3.14+.
     """
-    if cls is Path and args and isinstance(args[0], str):
+    if args and isinstance(args[0], str):
         path_str = args[0]
         if path_str.startswith('/virtual') or path_str.startswith('/nonexistent'):
             return object.__new__(VirtualPath)
-    return _original_path_new(cls, *args, **kwargs)  # pyright: ignore[reportUnknownVariableType,reportArgumentType]
+    if issubclass(cls, VirtualPath):
+        return object.__new__(VirtualPath)
+    return _original_path_new(cls, *args, **kwargs)  # pyright: ignore[reportArgumentType]
 
 
 # Apply the monkey-patch
@@ -537,4 +571,5 @@ ITER_MODE_GLOBALS: dict[str, object] = {
     'make_user': make_user,
     'make_empty': make_empty,
     'async_call': async_call,
+    'async_fail': async_fail,
 }

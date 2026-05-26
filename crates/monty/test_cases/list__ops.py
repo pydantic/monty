@@ -215,6 +215,11 @@ assert lst.index(3) == 2, 'index finds element'
 assert lst.index(2, 2) == 3, 'index with start'
 assert lst.index(2, 1, 4) == 1, 'index with start and end'
 
+# Regression: `-index` on i64::MIN used to panic when normalising start/end
+_I64_MIN = -(2**63)
+assert lst.index(1, _I64_MIN) == 0, 'list.index with i64::MIN start clamps to 0'
+assert lst.index(2, _I64_MIN, 4) == 1, 'list.index with i64::MIN start + explicit end'
+
 # === list.count() ===
 lst = [1, 2, 2, 3, 2]
 assert lst.count(2) == 3, 'count multiple occurrences'
@@ -318,6 +323,40 @@ try:
     lst.sort(key=last_char)
 except IndexError:
     pass  # expected since last_char('') raises IndexError
+
+
+# === list.sort() reentrant mutation by key callback (issue #411) ===
+# CPython detaches the list during sort so reentrant access sees an empty
+# list. If the user re-populates the live list, sort raises ValueError after
+# restoring the detached (sorted) buffer.
+
+# Key callback observes empty list during sort
+xs1 = [3, 2, 1]
+
+
+def empty_key(value):
+    assert len(xs1) == 0
+    return value
+
+
+xs1.sort(key=empty_key)
+assert xs1 == [1, 2, 3], 'sort with key that observes empty list still produces sorted output'
+
+# Repopulating the list during sort must raise ValueError
+xs2 = [3, 2, 1]
+
+
+def repopulate_key(value):
+    xs2.append(99)
+    return value
+
+
+try:
+    xs2.sort(key=repopulate_key)
+    assert False, 'expected ValueError when key callback repopulates the list'
+except ValueError as exc:
+    assert str(exc) == 'list modified during sort', 'sort raises ValueError when list is modified'
+assert xs2 == [1, 2, 3], 'list is restored to sorted state after ValueError'
 
 
 # === List assignment (setitem) ===

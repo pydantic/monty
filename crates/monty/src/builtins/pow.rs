@@ -1,5 +1,7 @@
 //! Implementation of the pow() builtin function.
 
+use std::num::NonZero;
+
 use num_bigint::BigInt;
 use num_traits::{Signed, ToPrimitive, Zero};
 
@@ -18,7 +20,7 @@ use crate::{
 ///
 /// Returns base to the power exp. With three arguments, returns (base ** exp) % mod.
 /// Handles negative exponents by returning a float.
-pub fn builtin_pow(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+pub fn builtin_pow(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     // pow() accepts 2 or 3 arguments
     let positional = args.into_pos_only("pow", vm.heap)?;
     defer_drop!(positional, vm);
@@ -36,23 +38,20 @@ pub fn builtin_pow(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -
             // Three-argument pow: modular exponentiation
             match (base, exp, m) {
                 (Value::Int(b), Value::Int(e), Value::Int(m_val)) => {
-                    if *m_val == 0 {
-                        Err(SimpleException::new_msg(ExcType::ValueError, "pow() 3rd argument cannot be 0").into())
-                    } else if *e < 0 {
-                        Err(SimpleException::new_msg(
+                    let Some(m_nz) = NonZero::new(*m_val) else {
+                        return Err(
+                            SimpleException::new_msg(ExcType::ValueError, "pow() 3rd argument cannot be 0").into(),
+                        );
+                    };
+                    let Ok(e) = u64::try_from(*e) else {
+                        debug_assert!(*e < 0, "i64 -> u64 succeeds for all non-negative values");
+                        return Err(SimpleException::new_msg(
                             ExcType::ValueError,
                             "pow() 2nd argument cannot be negative when 3rd argument specified",
                         )
-                        .into())
-                    } else {
-                        // Use modular exponentiation
-                        let result = mod_pow(
-                            *b,
-                            u64::try_from(*e).expect("pow exponent >= 0 but failed u64 conversion"),
-                            *m_val,
-                        );
-                        Ok(Value::Int(result))
-                    }
+                        .into());
+                    };
+                    Ok(Value::Int(mod_pow(*b, e, m_nz)))
                 }
                 _ => Err(SimpleException::new_msg(
                     ExcType::TypeError,
@@ -85,12 +84,23 @@ fn normalize_bool(value: &Value) -> &Value {
 
 /// Computes (base^exp) % modulo using binary exponentiation.
 ///
-/// Handles negative bases correctly using Python's modulo semantics.
-fn mod_pow(base: i64, exp: u64, modulo: i64) -> i64 {
-    if modulo == 1 {
+/// Matches CPython for `|modulo| == 1`: the result is always `0`, including
+/// the `exp == 0` corner case where the loop would otherwise leave
+/// `result` at `1`.
+fn mod_pow(base: i64, exp: u64, modulo: NonZero<i64>) -> i64 {
+    let modulo = modulo.get();
+
+    // The `|modulo| == 1` short-circuit is also load-bearing for panic safety:
+    // without it, `base.rem_euclid(modulo)` panics when `base == i64::MIN` and
+    // `modulo == -1` (the intermediate `i64::MIN / -1` overflows). Filtering
+    // `modulo ∈ {-1, 1}` up front (combined with the `NonZero` guarantee)
+    // ensures `rem_euclid` cannot panic.
+    if modulo == 1 || modulo == -1 {
         return 0;
     }
 
+    // `modulo` is now neither 0 nor ±1, so `rem_euclid` cannot panic and
+    // `modulo_u` is in `2..=2^63`.
     let modulo_u = u128::from(modulo.unsigned_abs());
     let mut result: u128 = 1;
     let mut b = base.rem_euclid(modulo) as u128;
@@ -104,8 +114,7 @@ fn mod_pow(base: i64, exp: u64, modulo: i64) -> i64 {
         b = (b * b) % modulo_u;
     }
 
-    // Convert back to signed, handling negative modulo
-    // result < modulo_u <= i64::MAX as u128, so this conversion is safe
+    // `result < modulo_u <= 2^63`, so the conversion to i64 always succeeds.
     let result_i64 = i64::try_from(result).expect("mod_pow result exceeds i64::MAX");
     if modulo < 0 && result_i64 > 0 {
         result_i64 + modulo
@@ -133,56 +142,20 @@ fn checked_pow_i64(mut base: i64, mut exp: u32) -> Option<i64> {
 /// Implements two-argument pow with LongInt support.
 ///
 /// On overflow, promotes to LongInt instead of returning an error.
-fn two_arg_pow(base: &Value, exp: &Value, vm: &mut VM<'_, '_, impl ResourceTracker>) -> RunResult<Value> {
+fn two_arg_pow(base: &Value, exp: &Value, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<Value> {
     match (base, exp) {
         (Value::Int(b), Value::Int(e)) => int_pow_int(*b, *e, vm.heap),
-        (Value::Int(b), Value::Ref(id)) => {
-            // Clone to avoid borrow conflict with heap mutation
-            let e_bi = if let HeapData::LongInt(li) = vm.heap.get(*id) {
-                li.inner().clone()
-            } else {
-                return Err(ExcType::binary_type_error(
-                    "** or pow()",
-                    base.py_type(vm),
-                    exp.py_type(vm),
-                ));
-            };
-            int_pow_longint(*b, &e_bi, vm.heap)
+        (Value::Int(b), Value::Ref(id)) if let HeapData::LongInt(li) = vm.heap.get(*id) => {
+            int_pow_longint(*b, li.inner(), vm.heap)
         }
-        (Value::Ref(id), Value::Int(e)) => {
-            // Clone to avoid borrow conflict with heap mutation
-            let b_bi = if let HeapData::LongInt(li) = vm.heap.get(*id) {
-                li.inner().clone()
-            } else {
-                return Err(ExcType::binary_type_error(
-                    "** or pow()",
-                    base.py_type(vm),
-                    exp.py_type(vm),
-                ));
-            };
-            longint_pow_int(&b_bi, *e, vm.heap)
+        (Value::Ref(id), Value::Int(e)) if let HeapData::LongInt(li) = vm.heap.get(*id) => {
+            longint_pow_int(li.inner(), *e, vm.heap)
         }
-        (Value::Ref(id1), Value::Ref(id2)) => {
-            // Clone both to avoid borrow conflict with heap mutation
-            let b_bi = if let HeapData::LongInt(li) = vm.heap.get(*id1) {
-                li.inner().clone()
-            } else {
-                return Err(ExcType::binary_type_error(
-                    "** or pow()",
-                    base.py_type(vm),
-                    exp.py_type(vm),
-                ));
-            };
-            let e_bi = if let HeapData::LongInt(li) = vm.heap.get(*id2) {
-                li.inner().clone()
-            } else {
-                return Err(ExcType::binary_type_error(
-                    "** or pow()",
-                    base.py_type(vm),
-                    exp.py_type(vm),
-                ));
-            };
-            longint_pow_longint(&b_bi, &e_bi, vm.heap)
+        (Value::Ref(id1), Value::Ref(id2))
+            if let HeapData::LongInt(b_li) = vm.heap.get(*id1)
+                && let HeapData::LongInt(e_li) = vm.heap.get(*id2) =>
+        {
+            longint_pow_longint(b_li.inner(), e_li.inner(), vm.heap)
         }
         (Value::Float(b), Value::Float(e)) => {
             if *b == 0.0 && *e < 0.0 {
@@ -247,7 +220,7 @@ fn int_pow_int(b: i64, e: i64, heap: &mut Heap<impl ResourceTracker>) -> RunResu
 }
 
 /// int ** LongInt with LongInt result.
-fn int_pow_longint(b: i64, e: &BigInt, heap: &mut Heap<impl ResourceTracker>) -> RunResult<Value> {
+fn int_pow_longint(b: i64, e: &BigInt, heap: &Heap<impl ResourceTracker>) -> RunResult<Value> {
     if b == 0 && e.is_negative() {
         return Err(ExcType::zero_negative_power());
     }
@@ -281,7 +254,7 @@ fn int_pow_longint(b: i64, e: &BigInt, heap: &mut Heap<impl ResourceTracker>) ->
 }
 
 /// LongInt ** int with LongInt result.
-fn longint_pow_int(b: &BigInt, e: i64, heap: &mut Heap<impl ResourceTracker>) -> RunResult<Value> {
+fn longint_pow_int(b: &BigInt, e: i64, heap: &Heap<impl ResourceTracker>) -> RunResult<Value> {
     if b.is_zero() && e < 0 {
         return Err(ExcType::zero_negative_power());
     }
@@ -310,7 +283,7 @@ fn longint_pow_int(b: &BigInt, e: i64, heap: &mut Heap<impl ResourceTracker>) ->
 }
 
 /// LongInt ** LongInt with LongInt result.
-fn longint_pow_longint(b: &BigInt, e: &BigInt, heap: &mut Heap<impl ResourceTracker>) -> RunResult<Value> {
+fn longint_pow_longint(b: &BigInt, e: &BigInt, heap: &Heap<impl ResourceTracker>) -> RunResult<Value> {
     if b.is_zero() && e.is_negative() {
         return Err(ExcType::zero_negative_power());
     }

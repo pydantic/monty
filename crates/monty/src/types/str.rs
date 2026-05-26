@@ -2,7 +2,7 @@
 ///
 /// This type provides Python string semantics. Currently supports basic
 /// operations like length and equality comparison.
-use std::{borrow::Cow, cmp::Ordering, fmt, fmt::Write, mem, ops};
+use std::{borrow::Cow, cell::Cell, cmp::Ordering, fmt, fmt::Write, mem, ops};
 
 use ahash::AHashSet;
 use smallvec::smallvec;
@@ -13,10 +13,14 @@ use crate::{
     bytecode::{CallResult, VM},
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, RunResult},
+    hash::{HashValue, hash_python_str},
     heap::{DropWithHeap, Heap, HeapData, HeapGuard, HeapId, HeapItem, HeapRead, heap_read_ref_as_field},
     intern::{StaticStrings, StringId},
     resource::{ResourceError, ResourceTracker, check_repeat_size, check_replace_size},
-    types::Type,
+    types::{
+        Type,
+        slice::{normalize_sequence_index, slice_collect_iterator},
+    },
     value::{EitherStr, Value},
 };
 
@@ -24,14 +28,28 @@ use crate::{
 ///
 /// Wraps a Rust `String` and provides Python-compatible operations.
 /// `len()` returns the number of Unicode codepoints (characters), matching Python semantics.
-#[derive(Debug, Clone, PartialEq, Default, serde::Serialize, serde::Deserialize)]
-pub(crate) struct Str(Box<str>);
+///
+/// Carries an inline `cached_hash` field so a `Str` only computes its Python
+/// hash once.
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[serde(transparent)]
+pub(crate) struct Str(Box<str>, #[serde(skip)] Cell<Option<HashValue>>);
+
+impl PartialEq for Str {
+    /// Compares only the string content — the `cached_hash` field is a pure
+    /// optimisation and must not affect equality.
+    fn eq(&self, other: &Self) -> bool {
+        self.0 == other.0
+    }
+}
 
 impl Str {
-    /// Creates a new Str from a Rust String.
+    /// Creates a new Str from anything convertible into a `Box<str>`.
+    ///
+    /// Private — use [`allocate_string`] or [`allocate_string_no_interning`] instead.
     #[must_use]
-    pub fn new(s: String) -> Self {
-        Self(s.into())
+    fn new(s: impl Into<Box<str>>) -> Self {
+        Self(s.into(), Cell::new(None))
     }
 
     /// Returns a reference to the inner string.
@@ -44,14 +62,14 @@ impl Str {
     ///
     /// - `str()` with no args returns an empty string
     /// - `str(x)` converts x to its string representation using `py_str`
-    pub fn init(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    pub fn init(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
         let value = args.get_zero_one_named_arg("str", StaticStrings::Object, vm.heap, vm.interns)?;
         match value {
             None => Ok(Value::InternString(StaticStrings::EmptyString.into())),
             Some(v) => {
                 defer_drop!(v, vm);
                 let s = v.py_str(vm)?.into_owned();
-                allocate_string(s, vm.heap)
+                Ok(allocate_string(s, vm.heap)?)
             }
         }
     }
@@ -59,33 +77,9 @@ impl Str {
     /// Handles slice-based indexing for strings.
     ///
     /// Returns a new string containing the selected characters (Unicode-aware).
-    fn getitem_slice(&self, slice: &super::Slice, heap: &Heap<impl ResourceTracker>) -> RunResult<Value> {
-        let char_count = self.0.chars().count();
-        let (start, stop, step) = slice
-            .indices(char_count)
-            .map_err(|()| ExcType::value_error_slice_step_zero())?;
-
-        let result_str = get_str_slice(&self.0, start, stop, step);
-        let heap_id = heap.allocate(HeapData::Str(Self::from(result_str)))?;
-        Ok(Value::Ref(heap_id))
-    }
-}
-
-impl From<String> for Str {
-    fn from(s: String) -> Self {
-        Self(s.into())
-    }
-}
-
-impl From<&str> for Str {
-    fn from(s: &str) -> Self {
-        Self(s.into())
-    }
-}
-
-impl From<Str> for String {
-    fn from(value: Str) -> Self {
-        value.0.into_string()
+    fn getitem_slice(&self, vm: &VM<'_, impl ResourceTracker>, slice: &super::Slice) -> RunResult<Value> {
+        let result_str: Box<str> = slice_collect_iterator(vm, slice, self.0.chars(), |c| c)?;
+        Ok(allocate_string(result_str, vm.heap)?)
     }
 }
 
@@ -97,20 +91,44 @@ impl From<Str> for String {
 /// - Other strings are allocated on the heap
 ///
 /// This avoids heap allocation for common cases like results from `strip()`,
-/// `split()`, string iteration, etc.
-pub fn allocate_string(s: String, heap: &Heap<impl ResourceTracker>) -> RunResult<Value> {
-    match s.len() {
+/// `split()`, string iteration, etc. Prefer this over manual `Str` construction
+/// so callsites consistently benefit from interning. When the caller can prove
+/// the string is longer than one byte, [`allocate_string_no_interning`] avoids
+/// the length branch.
+///
+/// The dual bound `AsRef<str> + Into<Box<str>>` lets the function peek the
+/// length via the borrow before committing to a conversion. Callers with an
+/// owned `String`/`Box<str>` move the value in (consumed only on the heap
+/// path), and borrowed `&str` callers avoid an upfront `to_owned()` —
+/// allocation happens only when the string actually needs heap storage.
+///
+/// Returns `Result<_, ResourceError>` so the function composes with
+/// `RunResult` and other error types that implement `From<ResourceError>`.
+pub fn allocate_string(
+    s: impl AsRef<str> + Into<Box<str>>,
+    heap: &Heap<impl ResourceTracker>,
+) -> Result<Value, ResourceError> {
+    let bytes = s.as_ref().as_bytes();
+    match bytes.len() {
         0 => Ok(Value::InternString(StaticStrings::EmptyString.into())),
-        1 => {
-            // Single byte means single ASCII character
-            let byte = s.as_bytes()[0];
-            Ok(Value::InternString(StringId::from_ascii(byte)))
-        }
-        _ => {
-            let heap_id = heap.allocate(HeapData::Str(Str::new(s)))?;
-            Ok(Value::Ref(heap_id))
-        }
+        1 => Ok(Value::InternString(StringId::from_ascii(bytes[0]))),
+        _ => allocate_string_no_interning(s, heap),
     }
+}
+
+/// Allocates a string directly on the heap, skipping the intern check.
+///
+/// Use this only when the caller can guarantee the string is longer than one
+/// byte (e.g. always contains a fixed prefix like `"0x"`, `"0o"`, or a
+/// formatted date). For inputs of unknown length, use [`allocate_string`].
+///
+/// Accepts `impl Into<Box<str>>` for the same reasons as [`allocate_string`].
+pub fn allocate_string_no_interning(
+    s: impl Into<Box<str>>,
+    heap: &Heap<impl ResourceTracker>,
+) -> Result<Value, ResourceError> {
+    let heap_id = heap.allocate(HeapData::Str(Str::new(s)))?;
+    Ok(Value::Ref(heap_id))
 }
 
 /// Allocates a single character as a string value.
@@ -147,52 +165,6 @@ pub fn get_char_at_index(s: &str, index: i64) -> Option<char> {
     s.chars().nth(idx)
 }
 
-/// Extracts a slice of a string (Unicode-aware).
-///
-/// Handles both positive and negative step values. For negative step,
-/// iterates backward from start down to (but not including) stop.
-/// The `stop` parameter uses a sentinel value of `len + 1` for negative
-/// step to indicate "go to the beginning".
-///
-/// Note: step must be non-zero (callers should validate this via `slice.indices()`).
-pub(crate) fn get_str_slice(s: &str, start: usize, stop: usize, step: i64) -> String {
-    let chars: Vec<char> = s.chars().collect();
-    let mut result = String::new();
-
-    // try_from succeeds for non-negative step; step==0 rejected upstream by slice.indices()
-    if let Ok(step_usize) = usize::try_from(step) {
-        // Positive step: iterate forward
-        let mut i = start;
-        while i < stop && i < chars.len() {
-            result.push(chars[i]);
-            i += step_usize;
-        }
-    } else {
-        // Negative step: iterate backward
-        // start is the highest index, stop is the sentinel
-        // stop > chars.len() means "go to the beginning"
-        let step_abs = usize::try_from(-step).expect("step is negative so -step is positive");
-        let step_abs_i64 = i64::try_from(step_abs).expect("step magnitude fits in i64");
-        let mut i = i64::try_from(start).expect("start index fits in i64");
-        // stop > chars.len() is sentinel meaning "go to beginning", use -1
-        let stop_i64 = if stop > chars.len() {
-            -1
-        } else {
-            i64::try_from(stop).expect("stop bounded by chars.len() fits in i64")
-        };
-
-        while let Ok(i_usize) = usize::try_from(i) {
-            if i_usize >= chars.len() || i <= stop_i64 {
-                break;
-            }
-            result.push(chars[i_usize]);
-            i -= step_abs_i64;
-        }
-    }
-
-    result
-}
-
 impl ops::Deref for Str {
     type Target = str;
 
@@ -202,21 +174,21 @@ impl ops::Deref for Str {
 }
 
 impl<'h> PyTrait<'h> for HeapRead<'h, Str> {
-    fn py_type(&self, _vm: &VM<'h, '_, impl ResourceTracker>) -> Type {
+    fn py_type(&self, _vm: &VM<'h, impl ResourceTracker>) -> Type {
         Type::Str
     }
 
-    fn py_len(&self, vm: &VM<'h, '_, impl ResourceTracker>) -> Option<usize> {
+    fn py_len(&self, vm: &VM<'h, impl ResourceTracker>) -> Option<usize> {
         // Count Unicode characters, not bytes, to match Python semantics
         Some(self.get(vm.heap).0.chars().count())
     }
 
-    fn py_getitem(&self, key: &Value, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<Value> {
+    fn py_getitem(&self, key: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Value> {
         // Check for slice first (Value::Ref pointing to HeapData::Slice)
         if let Value::Ref(id) = key
             && let HeapData::Slice(slice) = vm.heap.get(*id)
         {
-            return self.get(vm.heap).getitem_slice(slice, vm.heap);
+            return self.get(vm.heap).getitem_slice(vm, slice);
         }
 
         // Extract integer index, accepting Int, Bool (True=1, False=0), and LongInt
@@ -228,47 +200,55 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Str> {
         Ok(allocate_char(c, vm.heap)?)
     }
 
-    fn py_eq(&self, other: &Self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> Result<bool, ResourceError> {
+    fn py_eq(&self, other: &Self, vm: &mut VM<'h, impl ResourceTracker>) -> Result<bool, ResourceError> {
         Ok(self.get(vm.heap).0 == other.get(vm.heap).0)
     }
 
-    fn py_bool(&self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> bool {
+    fn py_hash(&self, _self_id: HeapId, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<HashValue>> {
+        let s = self.get(vm.heap);
+        if let Some(cached) = s.1.get() {
+            return Ok(Some(cached));
+        }
+        // Delegates to the canonical helper used by both heap and intern paths;
+        // an interned `"foo"` and a heap `"foo"` must hash identically for dict
+        // lookup to work.
+        let hash = hash_python_str(s.as_str());
+        s.1.set(Some(hash));
+        Ok(Some(hash))
+    }
+
+    fn py_bool(&self, vm: &mut VM<'h, impl ResourceTracker>) -> bool {
         !self.get(vm.heap).0.is_empty()
     }
 
-    fn py_cmp(
-        &self,
-        other: &Self,
-        vm: &mut VM<'h, '_, impl ResourceTracker>,
-    ) -> Result<Option<Ordering>, ResourceError> {
+    fn py_cmp(&self, other: &Self, vm: &mut VM<'h, impl ResourceTracker>) -> Result<Option<Ordering>, ResourceError> {
         Ok(Some(self.get(vm.heap).0.cmp(&other.get(vm.heap).0)))
     }
 
     fn py_repr_fmt(
         &self,
         f: &mut impl Write,
-        vm: &VM<'h, '_, impl ResourceTracker>,
+        vm: &mut VM<'h, impl ResourceTracker>,
         _heap_ids: &mut AHashSet<HeapId>,
     ) -> RunResult<()> {
         Ok(string_repr_fmt(&self.get(vm.heap).0, f)?)
     }
 
-    fn py_str(&self, vm: &VM<'h, '_, impl ResourceTracker>) -> RunResult<Cow<'static, str>> {
+    fn py_str(&self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Cow<'static, str>> {
         Ok(self.get(vm.heap).0.clone().into_string().into())
     }
 
-    fn py_add(&self, other: &Self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> Result<Option<Value>, ResourceError> {
+    fn py_add(&self, other: &Self, vm: &mut VM<'h, impl ResourceTracker>) -> Result<Option<Value>, ResourceError> {
         let self_str = self.get(vm.heap).0.clone();
         let other_str = other.get(vm.heap).0.clone();
         let result = format!("{self_str}{other_str}");
-        let id = vm.heap.allocate(HeapData::Str(result.into()))?;
-        Ok(Some(Value::Ref(id)))
+        Ok(Some(allocate_string(result, vm.heap)?))
     }
 
     fn py_call_attr(
         &mut self,
         _self_id: HeapId,
-        vm: &mut VM<'h, '_, impl ResourceTracker>,
+        vm: &mut VM<'h, impl ResourceTracker>,
         attr: &EitherStr,
         args: ArgValues,
     ) -> RunResult<CallResult> {
@@ -301,7 +281,7 @@ pub fn call_str_method(
     s: &str,
     method_id: StringId,
     args: ArgValues,
-    vm: &mut VM<'_, '_, impl ResourceTracker>,
+    vm: &mut VM<'_, impl ResourceTracker>,
 ) -> RunResult<Value> {
     let args_guard = HeapGuard::new(args, vm.heap);
     let Some(method) = StaticStrings::from_string_id(method_id) else {
@@ -334,7 +314,7 @@ fn call_str_method_impl<'h>(
     s: &HeapRead<'h, str>,
     method: StaticStrings,
     args: ArgValues,
-    vm: &mut VM<'h, '_, impl ResourceTracker>,
+    vm: &mut VM<'h, impl ResourceTracker>,
 ) -> RunResult<Value> {
     match method {
         // Simple transformations (no arguments)
@@ -464,7 +444,7 @@ fn call_str_method_impl<'h>(
 fn str_join<'h>(
     separator: &HeapRead<'h, str>,
     iterable: Value,
-    vm: &mut VM<'h, '_, impl ResourceTracker>,
+    vm: &mut VM<'h, impl ResourceTracker>,
 ) -> RunResult<Value> {
     // Create MontyIter from the iterable, with join-specific error message
     let Ok(iter) = MontyIter::new(iterable, vm) else {
@@ -504,7 +484,7 @@ fn str_join<'h>(
     }
 
     // Allocate result (uses interned empty string if result is empty)
-    allocate_string(result, vm.heap)
+    Ok(allocate_string(result, vm.heap)?)
 }
 
 /// Writes a Python repr() string for a given string slice to a formatter.
@@ -561,19 +541,19 @@ impl fmt::Display for StringRepr<'_> {
 // =============================================================================
 
 /// Implements Python's `str.lower()` method.
-fn str_lower(s: &str, vm: &VM<'_, '_, impl ResourceTracker>) -> RunResult<Value> {
-    allocate_string(s.to_lowercase(), vm.heap)
+fn str_lower(s: &str, vm: &VM<'_, impl ResourceTracker>) -> RunResult<Value> {
+    Ok(allocate_string(s.to_lowercase(), vm.heap)?)
 }
 
 /// Implements Python's `str.upper()` method.
-fn str_upper(s: &str, vm: &VM<'_, '_, impl ResourceTracker>) -> RunResult<Value> {
-    allocate_string(s.to_uppercase(), vm.heap)
+fn str_upper(s: &str, vm: &VM<'_, impl ResourceTracker>) -> RunResult<Value> {
+    Ok(allocate_string(s.to_uppercase(), vm.heap)?)
 }
 
 /// Implements Python's `str.capitalize()` method.
 ///
 /// Returns a copy of the string with its first character capitalized and the rest lowercased.
-fn str_capitalize(s: &str, vm: &VM<'_, '_, impl ResourceTracker>) -> RunResult<Value> {
+fn str_capitalize(s: &str, vm: &VM<'_, impl ResourceTracker>) -> RunResult<Value> {
     let mut chars = s.chars();
     let result = match chars.next() {
         None => String::new(),
@@ -585,14 +565,14 @@ fn str_capitalize(s: &str, vm: &VM<'_, '_, impl ResourceTracker>) -> RunResult<V
             result
         }
     };
-    allocate_string(result, vm.heap)
+    Ok(allocate_string(result, vm.heap)?)
 }
 
 /// Implements Python's `str.title()` method.
 ///
 /// Returns a titlecased version of the string where words start with an uppercase
 /// character and the remaining characters are lowercase.
-fn str_title(s: &str, vm: &VM<'_, '_, impl ResourceTracker>) -> RunResult<Value> {
+fn str_title(s: &str, vm: &VM<'_, impl ResourceTracker>) -> RunResult<Value> {
     let mut result = String::with_capacity(s.len());
     let mut prev_is_cased = false;
 
@@ -605,13 +585,13 @@ fn str_title(s: &str, vm: &VM<'_, '_, impl ResourceTracker>) -> RunResult<Value>
         prev_is_cased = c.is_alphabetic();
     }
 
-    allocate_string(result, vm.heap)
+    Ok(allocate_string(result, vm.heap)?)
 }
 
 /// Implements Python's `str.swapcase()` method.
 ///
 /// Returns a copy of the string with uppercase characters converted to lowercase and vice versa.
-fn str_swapcase(s: &str, vm: &VM<'_, '_, impl ResourceTracker>) -> RunResult<Value> {
+fn str_swapcase(s: &str, vm: &VM<'_, impl ResourceTracker>) -> RunResult<Value> {
     let mut result = String::with_capacity(s.len());
 
     for c in s.chars() {
@@ -624,16 +604,16 @@ fn str_swapcase(s: &str, vm: &VM<'_, '_, impl ResourceTracker>) -> RunResult<Val
         }
     }
 
-    allocate_string(result, vm.heap)
+    Ok(allocate_string(result, vm.heap)?)
 }
 
 /// Implements Python's `str.casefold()` method.
 ///
 /// Returns a casefolded copy of the string. Casefolding is similar to lowercasing
 /// but more aggressive because it is intended for caseless string matching.
-fn str_casefold(s: &str, vm: &VM<'_, '_, impl ResourceTracker>) -> RunResult<Value> {
+fn str_casefold(s: &str, vm: &VM<'_, impl ResourceTracker>) -> RunResult<Value> {
     // Rust's to_lowercase() is equivalent to Unicode casefolding for most purposes
-    allocate_string(s.to_lowercase(), vm.heap)
+    Ok(allocate_string(s.to_lowercase(), vm.heap)?)
 }
 
 // =============================================================================
@@ -896,7 +876,7 @@ fn is_unicode_digit(c: char) -> bool {
 ///
 /// Returns the lowest index in the string where substring sub is found within
 /// the slice s[start:end]. Returns -1 if sub is not found.
-fn str_find<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<Value> {
+fn str_find<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Value> {
     let str_len = s.get(vm.heap).chars().count();
     let (sub, start, end) = parse_search_args("str.find", str_len, args, vm)?;
     let s = s.get(vm.heap);
@@ -916,11 +896,7 @@ fn str_find<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h, '_, impl
 ///
 /// Returns the highest index in the string where substring sub is found within
 /// the slice s[start:end]. Returns -1 if sub is not found.
-fn str_rfind<'h>(
-    s: &HeapRead<'h, str>,
-    args: ArgValues,
-    vm: &mut VM<'h, '_, impl ResourceTracker>,
-) -> RunResult<Value> {
+fn str_rfind<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Value> {
     let str_len = s.get(vm.heap).chars().count();
     let (sub, start, end) = parse_search_args("str.rfind", str_len, args, vm)?;
     let s = s.get(vm.heap);
@@ -939,11 +915,7 @@ fn str_rfind<'h>(
 /// Implements Python's `str.index(sub, start?, end?)` method.
 ///
 /// Like find(), but raises ValueError when the substring is not found.
-fn str_index<'h>(
-    s: &HeapRead<'h, str>,
-    args: ArgValues,
-    vm: &mut VM<'h, '_, impl ResourceTracker>,
-) -> RunResult<Value> {
+fn str_index<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Value> {
     let str_len = s.get(vm.heap).chars().count();
     let (sub, start, end) = parse_search_args("str.index", str_len, args, vm)?;
     let s = s.get(vm.heap);
@@ -961,11 +933,7 @@ fn str_index<'h>(
 /// Implements Python's `str.rindex(sub, start?, end?)` method.
 ///
 /// Like rfind(), but raises ValueError when the substring is not found.
-fn str_rindex<'h>(
-    s: &HeapRead<'h, str>,
-    args: ArgValues,
-    vm: &mut VM<'h, '_, impl ResourceTracker>,
-) -> RunResult<Value> {
+fn str_rindex<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Value> {
     let str_len = s.get(vm.heap).chars().count();
     let (sub, start, end) = parse_search_args("str.rindex", str_len, args, vm)?;
     let s = s.get(vm.heap);
@@ -984,11 +952,7 @@ fn str_rindex<'h>(
 ///
 /// Returns the number of non-overlapping occurrences of substring sub in
 /// the string s[start:end].
-fn str_count<'h>(
-    s: &HeapRead<'h, str>,
-    args: ArgValues,
-    vm: &mut VM<'h, '_, impl ResourceTracker>,
-) -> RunResult<Value> {
+fn str_count<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Value> {
     let str_len = s.get(vm.heap).chars().count();
     let (sub, start, end) = parse_search_args("str.count", str_len, args, vm)?;
     let s = s.get(vm.heap);
@@ -1010,7 +974,7 @@ fn str_count<'h>(
 fn str_startswith<'h>(
     s: &HeapRead<'h, str>,
     args: ArgValues,
-    vm: &mut VM<'h, '_, impl ResourceTracker>,
+    vm: &mut VM<'h, impl ResourceTracker>,
 ) -> RunResult<Value> {
     let str_len = s.get(vm.heap).chars().count();
     let (prefixes, start, end) = parse_prefix_suffix_args("str.startswith", str_len, args, vm)?;
@@ -1024,11 +988,7 @@ fn str_startswith<'h>(
 ///
 /// Returns True if the string ends with the suffix, otherwise returns False.
 /// The suffix argument can be a string or a tuple of strings.
-fn str_endswith<'h>(
-    s: &HeapRead<'h, str>,
-    args: ArgValues,
-    vm: &mut VM<'h, '_, impl ResourceTracker>,
-) -> RunResult<Value> {
+fn str_endswith<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Value> {
     let str_len = s.get(vm.heap).chars().count();
     let (suffixes, start, end) = parse_prefix_suffix_args("str.endswith", str_len, args, vm)?;
     let s = s.get(vm.heap);
@@ -1044,7 +1004,7 @@ fn parse_search_args(
     method: &str,
     str_len: usize,
     args: ArgValues,
-    vm: &mut VM<'_, '_, impl ResourceTracker>,
+    vm: &mut VM<'_, impl ResourceTracker>,
 ) -> RunResult<(String, usize, usize)> {
     let pos = args.into_pos_only(method, vm.heap)?;
     defer_drop!(pos, vm);
@@ -1077,7 +1037,7 @@ fn parse_prefix_suffix_args(
     method: &str,
     str_len: usize,
     args: ArgValues,
-    vm: &mut VM<'_, '_, impl ResourceTracker>,
+    vm: &mut VM<'_, impl ResourceTracker>,
 ) -> RunResult<(Vec<String>, usize, usize)> {
     let pos = args.into_pos_only(method, vm.heap)?;
     defer_drop!(pos, vm);
@@ -1106,7 +1066,7 @@ fn parse_prefix_suffix_args(
 ///
 /// Returns a Vec of strings - a single-element Vec if given a string,
 /// or multiple elements if given a tuple of strings.
-fn extract_str_or_tuple_of_str(value: &Value, vm: &mut VM<'_, '_, impl ResourceTracker>) -> RunResult<Vec<String>> {
+fn extract_str_or_tuple_of_str(value: &Value, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<Vec<String>> {
     match value {
         Value::InternString(id) => Ok(vec![vm.interns.get_str(*id).to_owned()]),
         Value::Ref(heap_id) => match vm.heap.get(*heap_id) {
@@ -1140,7 +1100,7 @@ fn extract_str_or_tuple_of_str(value: &Value, vm: &mut VM<'_, '_, impl ResourceT
 }
 
 /// Extracts a string from a Value, returning an error if not a string.
-fn extract_string_arg(value: &Value, vm: &mut VM<'_, '_, impl ResourceTracker>) -> RunResult<String> {
+fn extract_string_arg(value: &Value, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<String> {
     match value {
         Value::InternString(id) => Ok(vm.interns.get_str(*id).to_owned()),
         Value::Ref(heap_id) => {
@@ -1155,7 +1115,7 @@ fn extract_string_arg(value: &Value, vm: &mut VM<'_, '_, impl ResourceTracker>) 
 }
 
 /// Extracts an integer from a Value, returning an error if not an integer.
-fn extract_int_arg(value: &Value, vm: &mut VM<'_, '_, impl ResourceTracker>) -> RunResult<i64> {
+fn extract_int_arg(value: &Value, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<i64> {
     match value {
         Value::Int(i) => Ok(*i),
         Value::Ref(heap_id) => {
@@ -1170,20 +1130,6 @@ fn extract_int_arg(value: &Value, vm: &mut VM<'_, '_, impl ResourceTracker>) -> 
     }
 }
 
-/// Normalizes a Python-style index to a valid index in range [0, len].
-fn normalize_index(index: i64, len: usize) -> usize {
-    if index < 0 {
-        // Safe cast: we've checked index is negative, so -index is positive
-        // For very large negative numbers that don't fit in usize, saturate to usize::MAX
-        let abs_index = usize::try_from(-index).unwrap_or(usize::MAX);
-        len.saturating_sub(abs_index)
-    } else {
-        // Safe cast: we've checked index is non-negative
-        // For values > usize::MAX, saturate to len
-        usize::try_from(index).unwrap_or(len).min(len)
-    }
-}
-
 /// Extracts an optional index from a `Value`, treating `None` as `default`.
 ///
 /// Used by argument parsers where `None` means "use the default index" and
@@ -1192,12 +1138,12 @@ fn optional_index(
     value: &Value,
     default: usize,
     str_len: usize,
-    vm: &mut VM<'_, '_, impl ResourceTracker>,
+    vm: &mut VM<'_, impl ResourceTracker>,
 ) -> RunResult<usize> {
     if matches!(value, Value::None) {
         Ok(default)
     } else {
-        Ok(normalize_index(extract_int_arg(value, vm)?, str_len))
+        Ok(normalize_sequence_index(extract_int_arg(value, vm)?, str_len))
     }
 }
 
@@ -1231,62 +1177,46 @@ fn slice_string(s: &str, start: usize, end: usize) -> &str {
 ///
 /// Returns a copy of the string with leading and trailing characters removed.
 /// If chars is not specified, whitespace characters are removed.
-fn str_strip<'h>(
-    s: &HeapRead<'h, str>,
-    args: ArgValues,
-    vm: &mut VM<'h, '_, impl ResourceTracker>,
-) -> RunResult<Value> {
+fn str_strip<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Value> {
     let chars = parse_strip_arg("str.strip", args, vm)?;
     let s = s.get(vm.heap);
     let result = match &chars {
         Some(c) => s.trim_matches(|ch| c.contains(ch)).to_owned(),
         None => s.trim().to_owned(),
     };
-    allocate_string(result, vm.heap)
+    Ok(allocate_string(result, vm.heap)?)
 }
 
 /// Implements Python's `str.lstrip(chars?)` method.
 ///
 /// Returns a copy of the string with leading characters removed.
-fn str_lstrip<'h>(
-    s: &HeapRead<'h, str>,
-    args: ArgValues,
-    vm: &mut VM<'h, '_, impl ResourceTracker>,
-) -> RunResult<Value> {
+fn str_lstrip<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Value> {
     let chars = parse_strip_arg("str.lstrip", args, vm)?;
     let s = s.get(vm.heap);
     let result = match &chars {
         Some(c) => s.trim_start_matches(|ch| c.contains(ch)).to_owned(),
         None => s.trim_start().to_owned(),
     };
-    allocate_string(result, vm.heap)
+    Ok(allocate_string(result, vm.heap)?)
 }
 
 /// Implements Python's `str.rstrip(chars?)` method.
 ///
 /// Returns a copy of the string with trailing characters removed.
-fn str_rstrip<'h>(
-    s: &HeapRead<'h, str>,
-    args: ArgValues,
-    vm: &mut VM<'h, '_, impl ResourceTracker>,
-) -> RunResult<Value> {
+fn str_rstrip<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Value> {
     let chars = parse_strip_arg("str.rstrip", args, vm)?;
     let s = s.get(vm.heap);
     let result = match &chars {
         Some(c) => s.trim_end_matches(|ch| c.contains(ch)).to_owned(),
         None => s.trim_end().to_owned(),
     };
-    allocate_string(result, vm.heap)
+    Ok(allocate_string(result, vm.heap)?)
 }
 
 /// Parses the optional chars argument for strip methods.
 ///
 /// Accepts None as a value meaning "use default whitespace stripping".
-fn parse_strip_arg(
-    method: &str,
-    args: ArgValues,
-    vm: &mut VM<'_, '_, impl ResourceTracker>,
-) -> RunResult<Option<String>> {
+fn parse_strip_arg(method: &str, args: ArgValues, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<Option<String>> {
     let value = args.get_zero_one_arg(method, vm.heap)?;
     match value {
         None => Ok(None),
@@ -1306,7 +1236,7 @@ fn parse_strip_arg(
 fn str_removeprefix<'h>(
     s: &HeapRead<'h, str>,
     args: ArgValues,
-    vm: &mut VM<'h, '_, impl ResourceTracker>,
+    vm: &mut VM<'h, impl ResourceTracker>,
 ) -> RunResult<Value> {
     let prefix_value = args.get_one_arg("str.removeprefix", vm.heap)?;
     defer_drop!(prefix_value, vm);
@@ -1314,7 +1244,7 @@ fn str_removeprefix<'h>(
 
     let s = s.get(vm.heap);
     let result = s.strip_prefix(&prefix).unwrap_or(s).to_owned();
-    allocate_string(result, vm.heap)
+    Ok(allocate_string(result, vm.heap)?)
 }
 
 /// Implements Python's `str.removesuffix(suffix)` method.
@@ -1324,7 +1254,7 @@ fn str_removeprefix<'h>(
 fn str_removesuffix<'h>(
     s: &HeapRead<'h, str>,
     args: ArgValues,
-    vm: &mut VM<'h, '_, impl ResourceTracker>,
+    vm: &mut VM<'h, impl ResourceTracker>,
 ) -> RunResult<Value> {
     let suffix_value = args.get_one_arg("str.removesuffix", vm.heap)?;
     defer_drop!(suffix_value, vm);
@@ -1332,7 +1262,7 @@ fn str_removesuffix<'h>(
 
     let s = s.get(vm.heap);
     let result = s.strip_suffix(&suffix).unwrap_or(s).to_owned();
-    allocate_string(result, vm.heap)
+    Ok(allocate_string(result, vm.heap)?)
 }
 
 // =============================================================================
@@ -1342,11 +1272,7 @@ fn str_removesuffix<'h>(
 /// Implements Python's `str.split(sep?, maxsplit?)` method.
 ///
 /// Returns a list of the words in the string, using sep as the delimiter string.
-fn str_split<'h>(
-    s: &HeapRead<'h, str>,
-    args: ArgValues,
-    vm: &mut VM<'h, '_, impl ResourceTracker>,
-) -> RunResult<Value> {
+fn str_split<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Value> {
     let (sep, maxsplit) = parse_split_args("str.split", args, vm)?;
     let s = s.get(vm.heap);
 
@@ -1380,7 +1306,7 @@ fn str_split<'h>(
     let mut list_items = Vec::with_capacity(parts.len());
     for part in parts {
         vm.heap.check_time()?;
-        list_items.push(allocate_string(part.to_owned(), vm.heap)?);
+        list_items.push(allocate_string(part, vm.heap)?);
     }
 
     let list = super::List::new(list_items);
@@ -1392,11 +1318,7 @@ fn str_split<'h>(
 ///
 /// Returns a list of the words in the string, using sep as the delimiter string,
 /// splitting from the right.
-fn str_rsplit<'h>(
-    s: &HeapRead<'h, str>,
-    args: ArgValues,
-    vm: &mut VM<'h, '_, impl ResourceTracker>,
-) -> RunResult<Value> {
+fn str_rsplit<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Value> {
     let (sep, maxsplit) = parse_split_args("str.rsplit", args, vm)?;
     let s = s.get(vm.heap);
 
@@ -1432,7 +1354,7 @@ fn str_rsplit<'h>(
     let mut list_items = Vec::with_capacity(parts.len());
     for part in parts {
         vm.heap.check_time()?;
-        list_items.push(allocate_string(part.to_owned(), vm.heap)?);
+        list_items.push(allocate_string(part, vm.heap)?);
     }
 
     let list = super::List::new(list_items);
@@ -1446,7 +1368,7 @@ fn str_rsplit<'h>(
 fn parse_split_args(
     method: &str,
     args: ArgValues,
-    vm: &mut VM<'_, '_, impl ResourceTracker>,
+    vm: &mut VM<'_, impl ResourceTracker>,
 ) -> RunResult<(Option<String>, i64)> {
     let (pos, kwargs) = args.into_parts();
     let kwargs_iter = kwargs.into_iter();
@@ -1558,7 +1480,8 @@ fn rsplit_whitespace_n(s: &str, maxsplit: usize) -> Vec<&str> {
 
     while !remaining.is_empty() && count < maxsplit {
         if let Some(start) = remaining.rfind(|c: char| c.is_whitespace()) {
-            parts.push(&remaining[start + 1..]);
+            let ws_len = remaining[start..].chars().next().unwrap().len_utf8();
+            parts.push(&remaining[start + ws_len..]);
             remaining = remaining[..start].trim_end();
             count += 1;
         } else {
@@ -1581,7 +1504,7 @@ fn rsplit_whitespace_n(s: &str, maxsplit: usize) -> Vec<&str> {
 fn str_splitlines<'h>(
     s: &HeapRead<'h, str>,
     args: ArgValues,
-    vm: &mut VM<'h, '_, impl ResourceTracker>,
+    vm: &mut VM<'h, impl ResourceTracker>,
 ) -> RunResult<Value> {
     let keepends = parse_splitlines_args(args, vm)?;
     let s = s.get(vm.heap);
@@ -1623,7 +1546,7 @@ fn str_splitlines<'h>(
 
         let line = if keepends { &s[start..end] } else { &s[start..line_end] };
 
-        lines.push(allocate_string(line.to_owned(), vm.heap)?);
+        lines.push(allocate_string(line, vm.heap)?);
 
         start = end;
     }
@@ -1636,7 +1559,7 @@ fn str_splitlines<'h>(
 /// Parses arguments for splitlines method.
 ///
 /// Supports both positional and keyword arguments for keepends.
-fn parse_splitlines_args(args: ArgValues, vm: &mut VM<'_, '_, impl ResourceTracker>) -> RunResult<bool> {
+fn parse_splitlines_args(args: ArgValues, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<bool> {
     let val = args.get_zero_one_named_arg("str.splitlines", StaticStrings::Keepends, vm.heap, vm.interns)?;
     let keepends = if let Some(v) = val {
         let result = value_is_truthy(&v);
@@ -1665,7 +1588,7 @@ fn value_is_truthy(v: &Value) -> bool {
 fn str_partition<'h>(
     s: &HeapRead<'h, str>,
     args: ArgValues,
-    vm: &mut VM<'h, '_, impl ResourceTracker>,
+    vm: &mut VM<'h, impl ResourceTracker>,
 ) -> RunResult<Value> {
     let sep_value = args.get_one_arg("str.partition", vm.heap)?;
     defer_drop!(sep_value, vm);
@@ -1681,9 +1604,9 @@ fn str_partition<'h>(
         None => (s, "", ""),
     };
 
-    let before_val = allocate_string(before.to_owned(), vm.heap)?;
-    let sep_val = allocate_string(sep_found.to_owned(), vm.heap)?;
-    let after_val = allocate_string(after.to_owned(), vm.heap)?;
+    let before_val = allocate_string(before, vm.heap)?;
+    let sep_val = allocate_string(sep_found, vm.heap)?;
+    let after_val = allocate_string(after, vm.heap)?;
 
     Ok(super::allocate_tuple(
         smallvec![before_val, sep_val, after_val],
@@ -1698,7 +1621,7 @@ fn str_partition<'h>(
 fn str_rpartition<'h>(
     s: &HeapRead<'h, str>,
     args: ArgValues,
-    vm: &mut VM<'h, '_, impl ResourceTracker>,
+    vm: &mut VM<'h, impl ResourceTracker>,
 ) -> RunResult<Value> {
     let sep_value = args.get_one_arg("str.rpartition", vm.heap)?;
     defer_drop!(sep_value, vm);
@@ -1714,9 +1637,9 @@ fn str_rpartition<'h>(
         None => ("", "", s),
     };
 
-    let before_val = allocate_string(before.to_owned(), vm.heap)?;
-    let sep_val = allocate_string(sep_found.to_owned(), vm.heap)?;
-    let after_val = allocate_string(after.to_owned(), vm.heap)?;
+    let before_val = allocate_string(before, vm.heap)?;
+    let sep_val = allocate_string(sep_found, vm.heap)?;
+    let after_val = allocate_string(after, vm.heap)?;
 
     Ok(super::allocate_tuple(
         smallvec![before_val, sep_val, after_val],
@@ -1732,11 +1655,7 @@ fn str_rpartition<'h>(
 ///
 /// Returns a copy with all occurrences of substring old replaced by new.
 /// If count is given, only the first count occurrences are replaced.
-fn str_replace<'h>(
-    s: &HeapRead<'h, str>,
-    args: ArgValues,
-    vm: &mut VM<'h, '_, impl ResourceTracker>,
-) -> RunResult<Value> {
+fn str_replace<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Value> {
     let (old, new, count) = parse_replace_args("str.replace", args, vm)?;
     let s = s.get(vm.heap);
 
@@ -1750,7 +1669,7 @@ fn str_replace<'h>(
         s.replacen(&old, &new, n)
     };
 
-    allocate_string(result, vm.heap)
+    Ok(allocate_string(result, vm.heap)?)
 }
 
 /// Parses arguments for the replace method.
@@ -1759,7 +1678,7 @@ fn str_replace<'h>(
 fn parse_replace_args(
     method: &str,
     args: ArgValues,
-    vm: &mut VM<'_, '_, impl ResourceTracker>,
+    vm: &mut VM<'_, impl ResourceTracker>,
 ) -> RunResult<(String, String, i64)> {
     let (pos, kwargs) = args.into_parts();
     let kwargs_iter = kwargs.into_iter();
@@ -1826,11 +1745,7 @@ fn parse_replace_args(
 ///
 /// Returns centered in a string of length width. Padding is done using the
 /// specified fill character (default is a space).
-fn str_center<'h>(
-    s: &HeapRead<'h, str>,
-    args: ArgValues,
-    vm: &mut VM<'h, '_, impl ResourceTracker>,
-) -> RunResult<Value> {
+fn str_center<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Value> {
     let (width, fillchar) = parse_justify_args("str.center", args, vm)?;
     let s = s.get(vm.heap);
     let len = s.chars().count();
@@ -1853,17 +1768,13 @@ fn str_center<'h>(
         result
     };
 
-    allocate_string(result, vm.heap)
+    Ok(allocate_string(result, vm.heap)?)
 }
 
 /// Implements Python's `str.ljust(width, fillchar?)` method.
 ///
 /// Returns left-justified in a string of length width.
-fn str_ljust<'h>(
-    s: &HeapRead<'h, str>,
-    args: ArgValues,
-    vm: &mut VM<'h, '_, impl ResourceTracker>,
-) -> RunResult<Value> {
+fn str_ljust<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Value> {
     let (width, fillchar) = parse_justify_args("str.ljust", args, vm)?;
     let s = s.get(vm.heap);
     let len = s.chars().count();
@@ -1881,17 +1792,13 @@ fn str_ljust<'h>(
         result
     };
 
-    allocate_string(result, vm.heap)
+    Ok(allocate_string(result, vm.heap)?)
 }
 
 /// Implements Python's `str.rjust(width, fillchar?)` method.
 ///
 /// Returns right-justified in a string of length width.
-fn str_rjust<'h>(
-    s: &HeapRead<'h, str>,
-    args: ArgValues,
-    vm: &mut VM<'h, '_, impl ResourceTracker>,
-) -> RunResult<Value> {
+fn str_rjust<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Value> {
     let (width, fillchar) = parse_justify_args("str.rjust", args, vm)?;
     let s = s.get(vm.heap);
     let len = s.chars().count();
@@ -1909,14 +1816,14 @@ fn str_rjust<'h>(
         result
     };
 
-    allocate_string(result, vm.heap)
+    Ok(allocate_string(result, vm.heap)?)
 }
 
 /// Parses arguments for justify methods (center, ljust, rjust).
 fn parse_justify_args(
     method: &str,
     args: ArgValues,
-    vm: &mut VM<'_, '_, impl ResourceTracker>,
+    vm: &mut VM<'_, impl ResourceTracker>,
 ) -> RunResult<(usize, char)> {
     let pos = args.into_pos_only(method, vm.heap)?;
     defer_drop!(pos, vm);
@@ -1953,11 +1860,7 @@ fn parse_justify_args(
 ///
 /// Returns a copy of the string left filled with ASCII '0' digits to make a
 /// string of length width. A sign prefix is handled correctly.
-fn str_zfill<'h>(
-    s: &HeapRead<'h, str>,
-    args: ArgValues,
-    vm: &mut VM<'h, '_, impl ResourceTracker>,
-) -> RunResult<Value> {
+fn str_zfill<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Value> {
     let width_value = args.get_one_arg("str.zfill", vm.heap)?;
     defer_drop!(width_value, vm);
     let width_i64 = extract_int_arg(width_value, vm)?;
@@ -1998,7 +1901,7 @@ fn str_zfill<'h>(
         result
     };
 
-    allocate_string(result, vm.heap)
+    Ok(allocate_string(result, vm.heap)?)
 }
 
 /// Implements Python's `str.expandtabs(tabsize=8)` method.
@@ -2008,7 +1911,7 @@ fn str_zfill<'h>(
 fn str_expandtabs<'h>(
     s: &HeapRead<'h, str>,
     args: ArgValues,
-    vm: &mut VM<'h, '_, impl ResourceTracker>,
+    vm: &mut VM<'h, impl ResourceTracker>,
 ) -> RunResult<Value> {
     let tabsize_val = args.get_zero_one_named_arg("str.expandtabs", StaticStrings::Tabsize, vm.heap, vm.interns)?;
 
@@ -2047,18 +1950,14 @@ fn str_expandtabs<'h>(
         }
     }
 
-    allocate_string(result, vm.heap)
+    Ok(allocate_string(result, vm.heap)?)
 }
 
 /// Implements Python's `str.encode(encoding='utf-8', errors='strict')` method.
 ///
 /// Returns an encoded version of the string as a bytes object. Only supports
 /// UTF-8 encoding (the native encoding for Rust strings).
-fn str_encode<'h>(
-    s: &HeapRead<'h, str>,
-    args: ArgValues,
-    vm: &mut VM<'h, '_, impl ResourceTracker>,
-) -> RunResult<Value> {
+fn str_encode<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Value> {
     let (encoding, errors) = parse_encode_args(args, vm)?;
 
     // Only UTF-8 is supported - Rust strings are always valid UTF-8
@@ -2081,7 +1980,7 @@ fn str_encode<'h>(
 /// Parses arguments for `str.encode()`.
 ///
 /// Returns (encoding, errors) with defaults "utf-8" and "strict".
-fn parse_encode_args(args: ArgValues, vm: &mut VM<'_, '_, impl ResourceTracker>) -> RunResult<(String, String)> {
+fn parse_encode_args(args: ArgValues, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<(String, String)> {
     let (first, second) = args.get_zero_one_two_args("str.encode", vm.heap)?;
 
     let encoding = if let Some(v) = first {

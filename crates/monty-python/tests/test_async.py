@@ -1,4 +1,5 @@
 import asyncio
+import threading
 
 import pytest
 from dirty_equals import IsList
@@ -15,7 +16,7 @@ def test_async():
     assert progress.function_name == snapshot('foobar')
     assert progress.args == snapshot((1, 2))
     call_id = progress.call_id
-    progress = progress.resume(future=...)
+    progress = progress.resume({'future': ...})
     assert isinstance(progress, pydantic_monty.FutureSnapshot)
     assert progress.pending_call_ids == snapshot([call_id])
     progress = progress.resume({call_id: {'return_value': 3}})
@@ -36,12 +37,12 @@ await asyncio.gather(foo(1), bar(2))
     assert progress.args == snapshot((1,))
     foo_call_ids = progress.call_id
 
-    progress = progress.resume(future=...)
+    progress = progress.resume({'future': ...})
     assert isinstance(progress, pydantic_monty.FunctionSnapshot)
     assert progress.function_name == snapshot('bar')
     assert progress.args == snapshot((2,))
     bar_call_ids = progress.call_id
-    progress = progress.resume(future=...)
+    progress = progress.resume({'future': ...})
 
     assert isinstance(progress, pydantic_monty.FutureSnapshot)
     dump_progress = progress.dump()
@@ -314,6 +315,39 @@ Path('/test.txt').exists()
     assert 'not implemented' in inner.args[0]
 
 
+async def test_run_monty_async_os_callback_not_handled():
+    """`NOT_HANDLED` from the async os callback falls through to default unhandled behavior.
+
+    Mirrors the sync `Monty.run(os=...)` semantics — without this, the sentinel
+    object would be passed through `py_to_monty` and surface as a TypeError.
+    """
+
+    def os_cb(func: object, args: tuple[object, ...], kwargs: dict[str, object]) -> object:
+        return pydantic_monty.NOT_HANDLED
+
+    m = pydantic_monty.Monty("from pathlib import Path; Path('/foo.txt').exists()")
+    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
+        await m.run_async(os=os_cb)  # pyright: ignore[reportArgumentType]
+    inner = exc_info.value.exception()
+    assert isinstance(inner, PermissionError)
+
+
+async def test_repl_feed_run_async_os_callback_not_handled():
+    """Same as above but for `MontyRepl.feed_run_async`."""
+
+    def os_cb(func: object, args: tuple[object, ...], kwargs: dict[str, object]) -> object:
+        return pydantic_monty.NOT_HANDLED
+
+    repl = pydantic_monty.MontyRepl()
+    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
+        await repl.feed_run_async(
+            "from pathlib import Path; Path('/foo.txt').exists()",
+            os=os_cb,  # pyright: ignore[reportArgumentType]
+        )
+    inner = exc_info.value.exception()
+    assert isinstance(inner, PermissionError)
+
+
 async def test_run_monty_async_nested_gather_with_external_functions():
     """Test nested asyncio.gather with spawned tasks and external async functions.
 
@@ -422,11 +456,11 @@ await asyncio.gather(foo(1), bar(2))
     assert progress.function_name == snapshot('foo')
     foo_call_id = progress.call_id
 
-    progress = progress.resume(future=...)
+    progress = progress.resume({'future': ...})
     assert isinstance(progress, pydantic_monty.FunctionSnapshot)
     assert progress.function_name == snapshot('bar')
     bar_call_id = progress.call_id
-    progress = progress.resume(future=...)
+    progress = progress.resume({'future': ...})
 
     assert isinstance(progress, pydantic_monty.FutureSnapshot)
     from dirty_equals import IsList
@@ -451,7 +485,7 @@ def test_repl_feed_start_async_state_persistence():
     assert progress.args == snapshot((10,))
     call_id = progress.call_id
 
-    progress = progress.resume(future=...)
+    progress = progress.resume({'future': ...})
     assert isinstance(progress, pydantic_monty.FutureSnapshot)
     progress = progress.resume({call_id: {'return_value': 'fetched'}})
     assert isinstance(progress, pydantic_monty.MontyComplete)
@@ -1321,6 +1355,56 @@ while True:
     assert result == snapshot(100)
 
 
+async def test_run_repl_feed_run_and_dump_gather_do_not_deadlock():
+    """Concurrent sync `feed_run()` and `dump()` finish without deadlocking."""
+    repl = pydantic_monty.MontyRepl(limits={'max_duration_secs': 0.1})
+    started = threading.Event()
+
+    def run_busy_snippet():
+        started.set()
+        return repl.feed_run(
+            """\
+while True:
+    pass
+"""
+        )
+
+    async def busy_task():
+        with pytest.raises(pydantic_monty.MontyRuntimeError):
+            await asyncio.to_thread(run_busy_snippet)
+
+    async def dump_task():
+        await asyncio.to_thread(started.wait)
+        await asyncio.sleep(0.01)
+        with pytest.raises(RuntimeError, match='currently executing'):
+            await asyncio.to_thread(repl.dump)
+
+    await asyncio.wait_for(asyncio.gather(busy_task(), dump_task()), 1.0)
+
+
+async def test_run_repl_type_checked_feed_runs_gather_do_not_deadlock():
+    """Concurrent type-checked sync `feed_run()` calls finish without deadlocking."""
+    type_check_stubs = '\n'.join(f'value_{i}: int' for i in range(1_500))
+    repl = pydantic_monty.MontyRepl(type_check=True, type_check_stubs=type_check_stubs)
+    started = threading.Event()
+
+    def run_bad_snippet():
+        started.set()
+        return repl.feed_run("bad_value: int = 'oops'")
+
+    async def bad_task():
+        with pytest.raises(pydantic_monty.MontyTypingError):
+            await asyncio.to_thread(run_bad_snippet)
+
+    async def good_task():
+        await asyncio.to_thread(started.wait)
+        await asyncio.sleep(0.01)
+        result = await asyncio.to_thread(repl.feed_run, '1 + 1')
+        assert result == snapshot(2)
+
+    await asyncio.wait_for(asyncio.gather(bad_task(), good_task()), 2.0)
+
+
 # === Tests for async error + REPL restoration ===
 
 
@@ -1358,3 +1442,79 @@ async def test_run_repl_async_os_not_callable():
 
     with pytest.raises(TypeError, match='not callable'):
         await repl.feed_run_async('1 + 1', os=42)  # pyright: ignore[reportArgumentType]
+
+
+async def test_run_async_sync_external_return_lone_surrogate():
+    """A sync callback returning a lone-surrogate string surfaces inside Monty
+    as a catchable ValueError via the async dispatch path."""
+    code = """
+try:
+    get_str()
+    result = 'no error'
+except ValueError:
+    result = 'caught'
+result
+"""
+    m = pydantic_monty.Monty(code)
+    result = await m.run_async(external_functions={'get_str': lambda: '\ud83d'})
+    assert result == snapshot('caught')
+
+
+async def test_run_async_async_external_return_lone_surrogate():
+    """An async callback returning a lone-surrogate string surfaces as
+    `MontyRuntimeError(ValueError)` rather than a raw `UnicodeEncodeError`.
+
+    Note: coroutine exceptions currently propagate out of the dispatch loop
+    rather than being caught by an in-Monty `try/except` at the `await` site
+    (a pre-existing asymmetry vs. the sync path), so we only assert the
+    top-level exception shape here.
+    """
+
+    async def get_str() -> str:
+        return '\ud83d'
+
+    m = pydantic_monty.Monty('await get_str()')
+    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
+        await m.run_async(external_functions={'get_str': get_str})
+    assert isinstance(exc_info.value.exception(), ValueError)
+
+
+# === Tests for Monty.acreate (async constructor) ===
+
+
+async def test_acreate_basic():
+    """`Monty.acreate` returns a usable Monty instance and `run` works."""
+    m = await pydantic_monty.Monty.acreate('1 + 2')
+    assert isinstance(m, pydantic_monty.Monty)
+    assert m.run() == snapshot(3)
+
+
+async def test_acreate_with_inputs():
+    """`Monty.acreate` accepts inputs and the resulting Monty runs with them."""
+    m = await pydantic_monty.Monty.acreate('x * y', inputs=['x', 'y'])
+    assert await m.run_async(inputs={'x': 6, 'y': 7}) == snapshot(42)
+
+
+async def test_acreate_syntax_error():
+    """A parse failure surfaces as `MontySyntaxError` from the awaitable."""
+    with pytest.raises(pydantic_monty.MontySyntaxError):
+        await pydantic_monty.Monty.acreate('def foo(:')
+
+
+async def test_acreate_type_check_failure():
+    """Type errors with `type_check=True` surface as `MontyTypingError`."""
+    with pytest.raises(pydantic_monty.MontyTypingError):
+        await pydantic_monty.Monty.acreate('"hello" + 1', type_check=True)
+
+
+async def test_acreate_type_check_success():
+    """Successful type check returns a usable Monty instance."""
+    m = await pydantic_monty.Monty.acreate('x: int = 1\nx + 2', type_check=True)
+    assert m.run() == snapshot(3)
+
+
+async def test_acreate_stubs_lone_surrogate():
+    """Invalid UTF-8 in `type_check_stubs` surfaces as `MontySyntaxError`."""
+    with pytest.raises(pydantic_monty.MontySyntaxError) as exc_info:
+        await pydantic_monty.Monty.acreate('1', type_check=True, type_check_stubs='\ud83d')
+    assert str(exc_info.value) == snapshot('type_check_stubs is not valid UTF-8')

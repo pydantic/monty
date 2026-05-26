@@ -1,4 +1,11 @@
-use std::{borrow::Cow, fmt::Write, mem, ops::Deref};
+use std::{
+    borrow::Cow,
+    collections::hash_map::DefaultHasher,
+    fmt::Write,
+    hash::{Hash, Hasher},
+    mem,
+    ops::Deref,
+};
 
 use ahash::AHashSet;
 use num_integer::Integer;
@@ -6,15 +13,16 @@ use num_integer::Integer;
 use crate::{
     ExcType, ResourceTracker,
     args::ArgValues,
-    asyncio::{CallId, Coroutine, GatherFuture, GatherItem},
+    asyncio::{Awaiter, Coroutine, ExternalFuture, ExternalFutureState, GatherFuture, GatherState},
     bytecode::{CallResult, VM},
     exception_private::{RunError, RunResult, SimpleException},
+    hash::HashValue,
     heap::{DropWithHeap, HeapId, HeapItem, HeapReadOutput},
     intern::FunctionId,
     types::{
         Bytes, Dataclass, Dict, DictItemsView, DictKeysView, DictValuesView, FrozenSet, List, LongInt, Module,
-        MontyIter, NamedTuple, Path, PyTrait, Range, ReMatch, RePattern, Set, Slice, Str, Tuple, Type, date, datetime,
-        dict_view::DictView, timedelta, timezone,
+        MontyIter, NamedTuple, OpenFile, Path, PyTrait, Range, ReMatch, RePattern, Set, Slice, Str, Tuple, Type, date,
+        datetime, str::allocate_string, timedelta, timezone,
     },
     value::{EitherStr, Value},
 };
@@ -92,12 +100,23 @@ pub(crate) enum HeapData {
     ///
     /// Created by asyncio.gather() and spawns tasks when awaited.
     GatherFuture(GatherFuture),
+    /// An external future driven by the host.
+    ///
+    /// Created when the host returns `ExtFunctionResult::Future(call_id)`.
+    /// Holds its own state machine (`Pending`/`Resolved`/`Failed`) so
+    /// re-await yields cached results, matching CPython's Future semantics.
+    ExternalFuture(ExternalFuture),
     /// A filesystem path from `pathlib.Path`.
     ///
     /// Stored on the heap to provide Python-compatible path operations.
     /// Pure methods (name, parent, etc.) are handled directly by the VM.
     /// I/O methods (exists, read_text, etc.) yield external function calls.
     Path(Path),
+    /// A path-backed file object returned by the `open()` builtin.
+    ///
+    /// The object stores only virtual path and mode state.  Reads and writes are
+    /// full-file OS calls; no native file descriptor is kept while Monty runs.
+    OpenFile(OpenFile),
     /// A compiled regex pattern from `re.compile()`.
     ///
     /// Contains the original pattern string, flags, and compiled regex engine.
@@ -155,54 +174,8 @@ impl HeapData {
                 | Self::Module(_)
                 | Self::Coroutine(_)
                 | Self::GatherFuture(_)
+                | Self::ExternalFuture(_)
         )
-    }
-
-    /// Returns whether this heap data currently contains any heap references (`Value::Ref`).
-    ///
-    /// Used during allocation to determine if this data could create reference cycles.
-    /// When true, `mark_potential_cycle()` should be called to enable GC.
-    ///
-    /// Note: This is separate from `is_gc_tracked()` - a container may be GC-tracked
-    /// (capable of holding refs) but not currently contain any refs.
-    #[inline]
-    pub(crate) fn has_refs(&self) -> bool {
-        match self {
-            Self::List(list) => list.contains_refs(),
-            Self::Tuple(tuple) => tuple.contains_refs(),
-            Self::NamedTuple(nt) => nt.contains_refs(),
-            Self::Dict(dict) => dict.has_refs(),
-            Self::DictKeysView(_) | Self::DictItemsView(_) | Self::DictValuesView(_) => true,
-            Self::Set(set) => set.has_refs(),
-            Self::FrozenSet(fset) => fset.has_refs(),
-            // Closures always have refs when they have captured cells (HeapIds)
-            Self::Closure(closure) => {
-                !closure.cells.is_empty() || closure.defaults.iter().any(|v| matches!(v, Value::Ref(_)))
-            }
-            Self::FunctionDefaults(fd) => fd.defaults.iter().any(|v| matches!(v, Value::Ref(_))),
-            Self::Cell(cell) => matches!(&cell.0, Value::Ref(_)),
-            Self::Dataclass(dc) => dc.has_refs(),
-            Self::Iter(iter) => iter.has_refs(),
-            Self::Module(m) => m.has_refs(),
-            // Coroutines have refs from namespace values (params, cell/free vars)
-            Self::Coroutine(coro) => coro.namespace.iter().any(|v| matches!(v, Value::Ref(_))),
-            // GatherFutures have refs from coroutine items and results
-            Self::GatherFuture(gather) => {
-                gather.items.iter().any(|item| matches!(item, GatherItem::Coroutine(_)))
-                    || gather
-                        .results
-                        .iter()
-                        .any(|r| r.as_ref().is_some_and(|v| matches!(v, Value::Ref(_))))
-            }
-            // Leaf types cannot have refs
-            _ => false,
-        }
-    }
-
-    /// Returns true if this heap data is a coroutine.
-    #[inline]
-    pub fn is_coroutine(&self) -> bool {
-        matches!(self, Self::Coroutine(_))
     }
 
     /// Returns the Python `Type` for this heap data without requiring VM access.
@@ -232,8 +205,9 @@ impl HeapData {
             Self::Iter(_) => Type::Iterator,
             Self::LongInt(_) => Type::Int,
             Self::Module(_) => Type::Module,
-            Self::Coroutine(_) | Self::GatherFuture(_) => Type::Coroutine,
+            Self::Coroutine(_) | Self::GatherFuture(_) | Self::ExternalFuture(_) => Type::Coroutine,
             Self::Path(_) => Type::Path,
+            Self::OpenFile(file) => file.file_type(),
             Self::RePattern(_) => Type::RePattern,
             Self::ReMatch(_) => Type::ReMatch,
             Self::Date(_) => Type::Date,
@@ -268,7 +242,9 @@ impl HeapData {
             Self::Module(m) => m.py_estimate_size(),
             Self::Coroutine(coro) => coro.py_estimate_size(),
             Self::GatherFuture(gather) => gather.py_estimate_size(),
+            Self::ExternalFuture(fut) => fut.py_estimate_size(),
             Self::Path(p) => p.py_estimate_size(),
+            Self::OpenFile(file) => file.py_estimate_size(),
             Self::ReMatch(m) => m.py_estimate_size(),
             Self::RePattern(p) => p.py_estimate_size(),
             Self::ExtFunction(s) => mem::size_of::<String>() + s.len(),
@@ -400,28 +376,76 @@ impl HeapItem for Coroutine {
 
 impl HeapItem for GatherFuture {
     fn py_estimate_size(&self) -> usize {
-        mem::size_of::<Self>()
-            + self.items.len() * mem::size_of::<GatherItem>()
-            + self.results.len() * mem::size_of::<Option<Value>>()
-            + self.pending_calls.len() * mem::size_of::<CallId>()
+        let state_size = match &self.state {
+            GatherState::Awaited(awaited) => {
+                // Rough sizing — per-entry storage in `pending_children` plus
+                // the result-slot vector. The map's bucket overhead and the
+                // SmallVec inline buffer are elided; we only estimate
+                // dynamically-allocated content tied to user code.
+                let pending_size: usize = awaited
+                    .pending_children
+                    .values()
+                    .map(|slots| {
+                        // Spilled SmallVec entries (beyond the inline 1) are heap-allocated.
+                        let spilled = slots.len().saturating_sub(1);
+                        mem::size_of::<HeapId>() + spilled * mem::size_of::<usize>()
+                    })
+                    .sum::<usize>();
+                awaited.results.len() * mem::size_of::<Option<Value>>() + pending_size
+            }
+            GatherState::Pending | GatherState::Completed(_) | GatherState::Failed(_) => 0,
+        };
+        mem::size_of::<Self>() + self.items.len() * mem::size_of::<HeapId>() + state_size
     }
 
     fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
-        // Decrement ref count for coroutine HeapIds
-        for item in &self.items {
-            if let GatherItem::Coroutine(id) = item {
-                stack.push(*id);
+        // Decrement ref count for items the gather owns (every entry in
+        // `items` is inc_ref'd at construction time).
+        stack.extend(self.items.iter().copied());
+        // Release per-state heap refs: in-flight slot results plus this
+        // gather's own awaiter (if `GatherSlot`, it owns an inc_ref on the
+        // outer gather), or the cached result list once the gather has
+        // completed successfully. `Pending` and `Failed` carry no heap refs.
+        match &mut self.state {
+            GatherState::Awaited(awaited) => {
+                if let Awaiter::GatherSlot { gather, .. } = &awaited.awaiter {
+                    stack.push(*gather);
+                }
+                for result in awaited.results.iter_mut().flatten() {
+                    result.py_dec_ref_ids(stack);
+                }
             }
+            GatherState::Completed(Value::Ref(id)) => stack.push(*id),
+            GatherState::Pending | GatherState::Failed(_) | GatherState::Completed(_) => {}
         }
-        // Decrement ref count for result values that are heap references
-        for result in self.results.iter_mut().flatten() {
-            result.py_dec_ref_ids(stack);
+    }
+}
+
+impl HeapItem for ExternalFuture {
+    fn py_estimate_size(&self) -> usize {
+        mem::size_of::<Self>()
+    }
+
+    fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
+        // `Pending { awaiter: Some(Awaiter::GatherSlot { gather, .. }) }`
+        // owns an inc_ref on `gather` — release it when this entry is
+        // freed. `Awaiter::Task` and `None` own nothing. `Resolved` owns
+        // the cached value; `Failed` carries no heap refs.
+        match &mut self.state {
+            ExternalFutureState::Resolved(value) => value.py_dec_ref_ids(stack),
+            ExternalFutureState::Pending {
+                awaiter: Some(Awaiter::GatherSlot { gather, .. }),
+            } => stack.push(*gather),
+            ExternalFutureState::Pending {
+                awaiter: None | Some(Awaiter::Task(_)),
+            }
+            | ExternalFutureState::Failed(_) => {}
         }
     }
 }
 
 impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
-    fn py_bool(&self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> bool {
+    fn py_bool(&self, vm: &mut VM<'h, impl ResourceTracker>) -> bool {
         match self {
             Self::Str(s) => s.py_bool(vm),
             Self::Bytes(b) => b.py_bool(vm),
@@ -445,7 +469,9 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             Self::Module(_) => true,
             Self::Coroutine(_) => true,
             Self::GatherFuture(_) => true,
+            Self::ExternalFuture(_) => true,
             Self::Path(p) => p.py_bool(vm),
+            Self::OpenFile(file) => file.py_bool(vm),
             Self::ReMatch(m) => m.py_bool(vm),
             Self::RePattern(p) => p.py_bool(vm),
             Self::TimeDelta(td) => td.py_bool(vm),
@@ -456,7 +482,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
     fn py_call_attr(
         &mut self,
         self_id: HeapId,
-        vm: &mut VM<'h, '_, impl ResourceTracker>,
+        vm: &mut VM<'h, impl ResourceTracker>,
         attr: &EitherStr,
         args: ArgValues,
     ) -> Result<CallResult, RunError> {
@@ -473,6 +499,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             HeapReadOutput::FrozenSet(fs) => Ok(fs.py_call_attr(self_id, vm, attr, args)?),
             HeapReadOutput::Dataclass(dc) => Ok(dc.py_call_attr(self_id, vm, attr, args)?),
             HeapReadOutput::Path(p) => Ok(p.py_call_attr(self_id, vm, attr, args)?),
+            HeapReadOutput::OpenFile(file) => Ok(file.py_call_attr(self_id, vm, attr, args)?),
             HeapReadOutput::Module(m) => Ok(m.py_call_attr(self_id, vm, attr, args)?),
             HeapReadOutput::ReMatch(m) => Ok(m.py_call_attr(self_id, vm, attr, args)?),
             HeapReadOutput::RePattern(p) => Ok(p.py_call_attr(self_id, vm, attr, args)?),
@@ -488,7 +515,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
         }
     }
 
-    fn py_type(&self, vm: &VM<'h, '_, impl ResourceTracker>) -> Type {
+    fn py_type(&self, vm: &VM<'h, impl ResourceTracker>) -> Type {
         match self {
             Self::Str(s) => s.py_type(vm),
             Self::Bytes(b) => b.py_type(vm),
@@ -510,8 +537,9 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             Self::Iter(_) => Type::Iterator,
             Self::LongInt(_) => Type::Int,
             Self::Module(_) => Type::Module,
-            Self::Coroutine(_) | Self::GatherFuture(_) => Type::Coroutine,
+            Self::Coroutine(_) | Self::GatherFuture(_) | Self::ExternalFuture(_) => Type::Coroutine,
             Self::Path(p) => p.py_type(vm),
+            Self::OpenFile(file) => file.py_type(vm),
             Self::ReMatch(re) => re.py_type(vm),
             Self::RePattern(p) => p.py_type(vm),
             Self::Date(d) => d.py_type(vm),
@@ -521,7 +549,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
         }
     }
 
-    fn py_len(&self, vm: &VM<'h, '_, impl ResourceTracker>) -> Option<usize> {
+    fn py_len(&self, vm: &VM<'h, impl ResourceTracker>) -> Option<usize> {
         match self {
             Self::Str(s) => s.py_len(vm),
             Self::Bytes(b) => b.py_len(vm),
@@ -544,7 +572,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
         }
     }
 
-    fn py_eq(&self, other: &Self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> Result<bool, crate::ResourceError> {
+    fn py_eq(&self, other: &Self, vm: &mut VM<'h, impl ResourceTracker>) -> Result<bool, crate::ResourceError> {
         match (self, other) {
             // Simple types: compare with shared borrows (no &mut VM needed)
             (HeapReadOutput::Str(a), HeapReadOutput::Str(b)) => Ok(a.get(vm.heap).as_str() == b.get(vm.heap).as_str()),
@@ -586,50 +614,18 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             // NamedTuple/Tuple cross-type comparison
             (HeapReadOutput::NamedTuple(nt), HeapReadOutput::Tuple(t))
             | (HeapReadOutput::Tuple(t), HeapReadOutput::NamedTuple(nt)) => nt.eq_tuple(t, vm),
-            // DictKeysView comparisons — copy view to local, pass HeapRead directly
-            (HeapReadOutput::DictKeysView(a), HeapReadOutput::DictKeysView(b)) => {
-                let a_view = DictKeysView::new(a.get(vm.heap).dict_id());
-                let b_view = DictKeysView::new(b.get(vm.heap).dict_id());
-                a_view.eq_view(b_view, vm)
-            }
-            (HeapReadOutput::DictKeysView(a), HeapReadOutput::Set(b)) => {
-                let view = DictKeysView::new(a.get(vm.heap).dict_id());
-                view.eq_set(b, vm)
-            }
-            (HeapReadOutput::Set(b), HeapReadOutput::DictKeysView(a)) => {
-                let view = DictKeysView::new(a.get(vm.heap).dict_id());
-                view.eq_set(b, vm)
-            }
-            (HeapReadOutput::DictKeysView(a), HeapReadOutput::FrozenSet(b)) => {
-                let view = DictKeysView::new(a.get(vm.heap).dict_id());
-                view.eq_frozenset(b, vm)
-            }
-            (HeapReadOutput::FrozenSet(b), HeapReadOutput::DictKeysView(a)) => {
-                let view = DictKeysView::new(a.get(vm.heap).dict_id());
-                view.eq_frozenset(b, vm)
-            }
+            // DictKeysView comparisons
+            (HeapReadOutput::DictKeysView(a), HeapReadOutput::DictKeysView(b)) => a.py_eq(b, vm),
+            (HeapReadOutput::DictKeysView(a), HeapReadOutput::Set(b)) => a.eq_set(b, vm),
+            (HeapReadOutput::Set(b), HeapReadOutput::DictKeysView(a)) => a.eq_set(b, vm),
+            (HeapReadOutput::DictKeysView(a), HeapReadOutput::FrozenSet(b)) => a.eq_frozenset(b, vm),
+            (HeapReadOutput::FrozenSet(b), HeapReadOutput::DictKeysView(a)) => a.eq_frozenset(b, vm),
             // DictItemsView comparisons
-            (HeapReadOutput::DictItemsView(a), HeapReadOutput::DictItemsView(b)) => {
-                let a_view = DictItemsView::new(a.get(vm.heap).dict_id());
-                let b_view = DictItemsView::new(b.get(vm.heap).dict_id());
-                a_view.eq_view(b_view, vm)
-            }
-            (HeapReadOutput::DictItemsView(a), HeapReadOutput::Set(b)) => {
-                let view = DictItemsView::new(a.get(vm.heap).dict_id());
-                view.eq_set(b, vm)
-            }
-            (HeapReadOutput::Set(b), HeapReadOutput::DictItemsView(a)) => {
-                let view = DictItemsView::new(a.get(vm.heap).dict_id());
-                view.eq_set(b, vm)
-            }
-            (HeapReadOutput::DictItemsView(a), HeapReadOutput::FrozenSet(b)) => {
-                let view = DictItemsView::new(a.get(vm.heap).dict_id());
-                view.eq_frozenset(b, vm)
-            }
-            (HeapReadOutput::FrozenSet(b), HeapReadOutput::DictItemsView(a)) => {
-                let view = DictItemsView::new(a.get(vm.heap).dict_id());
-                view.eq_frozenset(b, vm)
-            }
+            (HeapReadOutput::DictItemsView(a), HeapReadOutput::DictItemsView(b)) => a.py_eq(b, vm),
+            (HeapReadOutput::DictItemsView(a), HeapReadOutput::Set(b)) => a.eq_set(b, vm),
+            (HeapReadOutput::Set(b), HeapReadOutput::DictItemsView(a)) => a.eq_set(b, vm),
+            (HeapReadOutput::DictItemsView(a), HeapReadOutput::FrozenSet(b)) => a.eq_frozenset(b, vm),
+            (HeapReadOutput::FrozenSet(b), HeapReadOutput::DictItemsView(a)) => a.eq_frozenset(b, vm),
             (HeapReadOutput::Dataclass(a), HeapReadOutput::Dataclass(b)) => {
                 if a.get(vm.heap).name(vm.interns) != b.get(vm.heap).name(vm.interns) {
                     return Ok(false);
@@ -663,10 +659,63 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
         }
     }
 
+    /// Dispatches `py_hash` to the variant's per-type `PyTrait` implementation.
+    ///
+    /// For types that lack a dedicated `HeapRead` trait impl (`Closure`,
+    /// `FunctionDefaults`, `Cell`, `LongInt`, `ExtFunction`), the hash is
+    /// computed inline here. Variants left in the catch-all `_ => Ok(None)`
+    /// arm are unhashable.
+    fn py_hash(&self, self_id: HeapId, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<HashValue>> {
+        match self {
+            Self::Str(s) => s.py_hash(self_id, vm),
+            Self::Bytes(b) => b.py_hash(self_id, vm),
+            Self::Tuple(t) => t.py_hash(self_id, vm),
+            Self::NamedTuple(nt) => nt.py_hash(self_id, vm),
+            Self::FrozenSet(fs) => fs.py_hash(self_id, vm),
+            Self::Dataclass(dc) => dc.py_hash(self_id, vm),
+            Self::Range(r) => r.py_hash(self_id, vm),
+            Self::Slice(s) => s.py_hash(self_id, vm),
+            Self::Path(p) => p.py_hash(self_id, vm),
+            Self::Date(d) => d.py_hash(self_id, vm),
+            Self::DateTime(d) => d.py_hash(self_id, vm),
+            Self::TimeDelta(d) => d.py_hash(self_id, vm),
+            Self::TimeZone(d) => d.py_hash(self_id, vm),
+            // Closure / FunctionDefaults: hash by function ID. Two equal
+            // closures share the same `func_id`, so this is sufficient.
+            Self::Closure(c) => {
+                let mut hasher = DefaultHasher::new();
+                c.get(vm.heap).func_id.hash(&mut hasher);
+                Ok(Some(HashValue::new(hasher.finish())))
+            }
+            Self::FunctionDefaults(fd) => {
+                let mut hasher = DefaultHasher::new();
+                fd.get(vm.heap).func_id.hash(&mut hasher);
+                Ok(Some(HashValue::new(hasher.finish())))
+            }
+            // Cell uses identity hashing (matches Python's default for cell objects).
+            Self::Cell(_) => {
+                let mut hasher = DefaultHasher::new();
+                self_id.hash(&mut hasher);
+                Ok(Some(HashValue::new(hasher.finish())))
+            }
+            // LongInt's hash matches `Value::InternLongInt`'s, since they are
+            // both Python `int` values and must hash equally when equal.
+            Self::LongInt(li) => Ok(Some(li.get(vm.heap).hash())),
+            Self::ExtFunction(name) => {
+                let mut hasher = DefaultHasher::new();
+                name.get(vm.heap).hash(&mut hasher);
+                Ok(Some(HashValue::new(hasher.finish())))
+            }
+            // Unhashable: List, Dict, Set, the dict views, Iter, Module,
+            // Exception, Coroutine, GatherFuture, RePattern, ReMatch.
+            _ => Ok(None),
+        }
+    }
+
     fn py_repr_fmt(
         &self,
         f: &mut impl Write,
-        vm: &VM<'h, '_, impl ResourceTracker>,
+        vm: &mut VM<'h, impl ResourceTracker>,
         heap_ids: &mut AHashSet<HeapId>,
     ) -> RunResult<()> {
         match self {
@@ -707,10 +756,16 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
                 Ok(write!(f, "<coroutine object {name}>")?)
             }
             Self::GatherFuture(gather) => Ok(write!(f, "<gather({})>", gather.get(vm.heap).item_count())?),
+            Self::ExternalFuture(fut) => Ok(write!(
+                f,
+                "<coroutine external_future({})>",
+                fut.get(vm.heap).call_id.raw()
+            )?),
             Self::Path(p) => p.py_repr_fmt(f, vm, heap_ids),
             Self::ReMatch(m) => m.py_repr_fmt(f, vm, heap_ids),
             Self::RePattern(p) => p.py_repr_fmt(f, vm, heap_ids),
             Self::ExtFunction(name) => Ok(write!(f, "<function '{}' external>", name.get(vm.heap))?),
+            Self::OpenFile(file) => file.py_repr_fmt(f, vm, heap_ids),
             Self::Date(d) => d.py_repr_fmt(f, vm, heap_ids),
             Self::DateTime(d) => d.py_repr_fmt(f, vm, heap_ids),
             Self::TimeDelta(d) => d.py_repr_fmt(f, vm, heap_ids),
@@ -718,7 +773,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
         }
     }
 
-    fn py_str(&self, vm: &VM<'h, '_, impl ResourceTracker>) -> RunResult<Cow<'static, str>> {
+    fn py_str(&self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Cow<'static, str>> {
         match self {
             // Strings return their value directly without quotes
             Self::Str(s) => Ok(Cow::Owned(s.get(vm.heap).as_str().to_owned())),
@@ -745,12 +800,12 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
     fn py_add(
         &self,
         other: &Self,
-        vm: &mut VM<'h, '_, impl ResourceTracker>,
+        vm: &mut VM<'h, impl ResourceTracker>,
     ) -> Result<Option<Value>, crate::ResourceError> {
         match (self, other) {
             (HeapReadOutput::Str(a), HeapReadOutput::Str(b)) => {
                 let concat = format!("{}{}", a.get(vm.heap).as_str(), b.get(vm.heap).as_str());
-                Ok(Some(Value::Ref(vm.heap.allocate(HeapData::Str(concat.into()))?)))
+                Ok(Some(allocate_string(concat, vm.heap)?))
             }
             (HeapReadOutput::Bytes(a), HeapReadOutput::Bytes(b)) => {
                 let a_bytes = a.get(vm.heap).as_slice();
@@ -795,7 +850,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
     fn py_sub(
         &self,
         other: &Self,
-        vm: &mut VM<'h, '_, impl ResourceTracker>,
+        vm: &mut VM<'h, impl ResourceTracker>,
     ) -> Result<Option<Value>, crate::ResourceError> {
         match (self, other) {
             (HeapReadOutput::LongInt(a), HeapReadOutput::LongInt(b)) => {
@@ -837,7 +892,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
         }
     }
 
-    fn py_mod(&self, other: &Self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<Option<Value>> {
+    fn py_mod(&self, other: &Self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<Value>> {
         match (self, other) {
             (HeapReadOutput::LongInt(a), HeapReadOutput::LongInt(b)) => {
                 if b.get(vm.heap).is_zero() {
@@ -854,7 +909,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
     fn py_iadd(
         &mut self,
         other: &Value,
-        vm: &mut VM<'h, '_, impl ResourceTracker>,
+        vm: &mut VM<'h, impl ResourceTracker>,
         self_id: Option<HeapId>,
     ) -> Result<bool, crate::ResourceError> {
         match self {
@@ -863,7 +918,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
         }
     }
 
-    fn py_getitem(&self, key: &Value, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<Value> {
+    fn py_getitem(&self, key: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Value> {
         match self {
             Self::Str(s) => s.py_getitem(key, vm),
             Self::Bytes(b) => b.py_getitem(key, vm),
@@ -877,7 +932,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
         }
     }
 
-    fn py_setitem(&mut self, key: Value, value: Value, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<()> {
+    fn py_setitem(&mut self, key: Value, value: Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<()> {
         match self {
             Self::List(l) => l.py_setitem(key, value, vm),
             Self::Dict(d) => d.py_setitem(key, value, vm),
@@ -889,7 +944,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
         }
     }
 
-    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<Option<CallResult>> {
+    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<CallResult>> {
         match self {
             Self::Str(s) => s.py_getattr(attr, vm),
             Self::Bytes(b) => b.py_getattr(attr, vm),
@@ -910,6 +965,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             Self::Module(m) => Ok(m.py_getattr(attr, vm)),
             Self::Exception(e) => e.py_getattr(attr, vm),
             Self::Path(p) => p.py_getattr(attr, vm),
+            Self::OpenFile(file) => file.py_getattr(attr, vm),
             Self::Date(d) => d.py_getattr(attr, vm),
             Self::DateTime(dt) => dt.py_getattr(attr, vm),
             Self::TimeDelta(td) => td.py_getattr(attr, vm),

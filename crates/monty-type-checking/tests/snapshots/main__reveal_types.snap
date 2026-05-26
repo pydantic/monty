@@ -1,3 +1,7 @@
+---
+source: crates/monty-type-checking/tests/main.rs
+expression: actual
+---
 reveal_types.py:4:13: info[revealed-type] Revealed type: `None`
 reveal_types.py:5:13: info[revealed-type] Revealed type: `object`
 reveal_types.py:6:13: info[revealed-type] Revealed type: `<class 'int'>`

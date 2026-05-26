@@ -3,7 +3,14 @@
 //! Monty stores dates with `chrono::NaiveDate` and keeps CPython-compatible
 //! constructor validation and arithmetic behavior.
 
-use std::{borrow::Cow, cmp::Ordering, fmt::Write, mem};
+use std::{
+    borrow::Cow,
+    cmp::Ordering,
+    collections::hash_map::DefaultHasher,
+    fmt::Write,
+    hash::{Hash, Hasher},
+    mem,
+};
 
 use ahash::AHashSet;
 use chrono::{Datelike, NaiveDate};
@@ -13,11 +20,16 @@ use crate::{
     bytecode::{CallResult, VM},
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, RunError, RunResult, SimpleException},
+    hash::HashValue,
     heap::{Heap, HeapData, HeapId, HeapItem, HeapRead},
     intern::{Interns, StaticStrings},
     os::OsFunction,
     resource::{ResourceError, ResourceTracker},
-    types::{AttrCallResult, PyTrait, TimeDelta, Type, str::Str, timedelta, value_to_i32},
+    types::{
+        AttrCallResult, PyTrait, TimeDelta, Type,
+        str::{allocate_string, allocate_string_no_interning},
+        timedelta, value_to_i32,
+    },
     value::{EitherStr, Value},
 };
 
@@ -241,34 +253,36 @@ impl HeapItem for Date {
 /// `HeapRead`-based dispatch for `Date`, enabling the `HeapReadOutput` enum to
 /// delegate `PyTrait` calls to heap-resident dates.
 impl<'h> PyTrait<'h> for HeapRead<'h, Date> {
-    fn py_type(&self, _vm: &VM<'h, '_, impl ResourceTracker>) -> Type {
+    fn py_type(&self, _vm: &VM<'h, impl ResourceTracker>) -> Type {
         Type::Date
     }
 
-    fn py_len(&self, _vm: &VM<'h, '_, impl ResourceTracker>) -> Option<usize> {
+    fn py_len(&self, _vm: &VM<'h, impl ResourceTracker>) -> Option<usize> {
         None
     }
 
-    fn py_eq(&self, other: &Self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> Result<bool, ResourceError> {
+    fn py_eq(&self, other: &Self, vm: &mut VM<'h, impl ResourceTracker>) -> Result<bool, ResourceError> {
         Ok(*self.get(vm.heap) == *other.get(vm.heap))
     }
 
-    fn py_cmp(
-        &self,
-        other: &Self,
-        vm: &mut VM<'h, '_, impl ResourceTracker>,
-    ) -> Result<Option<Ordering>, ResourceError> {
+    fn py_hash(&self, _self_id: HeapId, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<HashValue>> {
+        let mut hasher = DefaultHasher::new();
+        self.get(vm.heap).hash(&mut hasher);
+        Ok(Some(HashValue::new(hasher.finish())))
+    }
+
+    fn py_cmp(&self, other: &Self, vm: &mut VM<'h, impl ResourceTracker>) -> Result<Option<Ordering>, ResourceError> {
         Ok(self.get(vm.heap).partial_cmp(other.get(vm.heap)))
     }
 
-    fn py_bool(&self, _vm: &mut VM<'h, '_, impl ResourceTracker>) -> bool {
+    fn py_bool(&self, _vm: &mut VM<'h, impl ResourceTracker>) -> bool {
         true
     }
 
     fn py_repr_fmt(
         &self,
         f: &mut impl Write,
-        vm: &VM<'h, '_, impl ResourceTracker>,
+        vm: &mut VM<'h, impl ResourceTracker>,
         _heap_ids: &mut AHashSet<HeapId>,
     ) -> RunResult<()> {
         let (year, month, day) = to_ymd(*self.get(vm.heap));
@@ -276,7 +290,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Date> {
         Ok(())
     }
 
-    fn py_str(&self, vm: &VM<'h, '_, impl ResourceTracker>) -> RunResult<Cow<'static, str>> {
+    fn py_str(&self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Cow<'static, str>> {
         let (year, month, day) = to_ymd(*self.get(vm.heap));
         Ok(Cow::Owned(format!("{year:04}-{month:02}-{day:02}")))
     }
@@ -284,7 +298,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Date> {
     fn py_call_attr(
         &mut self,
         _self_id: HeapId,
-        vm: &mut VM<'h, '_, impl ResourceTracker>,
+        vm: &mut VM<'h, impl ResourceTracker>,
         attr: &EitherStr,
         args: ArgValues,
     ) -> RunResult<CallResult> {
@@ -293,16 +307,15 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Date> {
             Some(id) if id == StaticStrings::Isoformat => {
                 args.check_zero_args("date.isoformat", vm.heap)?;
                 let (year, month, day) = to_ymd(date);
-                Ok(CallResult::Value(Value::Ref(vm.heap.allocate(HeapData::Str(
-                    Str::new(format!("{year:04}-{month:02}-{day:02}")),
-                ))?)))
+                Ok(CallResult::Value(allocate_string_no_interning(
+                    format!("{year:04}-{month:02}-{day:02}"),
+                    vm.heap,
+                )?))
             }
             Some(id) if id == StaticStrings::Strftime => {
                 let fmt = extract_strftime_arg(args, "date.strftime", vm.heap, vm.interns)?;
                 let formatted = date.0.format(&fmt).to_string();
-                Ok(CallResult::Value(Value::Ref(
-                    vm.heap.allocate(HeapData::Str(Str::new(formatted)))?,
-                )))
+                Ok(CallResult::Value(allocate_string(formatted, vm.heap)?))
             }
             Some(id) if id == StaticStrings::Replace => {
                 let (year, month, day) = to_ymd(date);
@@ -329,7 +342,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Date> {
         }
     }
 
-    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<Option<CallResult>> {
+    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<CallResult>> {
         let (year, month, day) = to_ymd(*self.get(vm.heap));
         match attr.string_id() {
             Some(id) if id == StaticStrings::Year => Ok(Some(CallResult::Value(Value::Int(i64::from(year))))),

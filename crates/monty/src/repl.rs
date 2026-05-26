@@ -13,10 +13,13 @@ use serde::de::DeserializeOwned;
 
 use crate::{
     ExcType, MontyException,
+    args::{ArgValues, KwargsValues},
     asyncio::CallId,
     bytecode::{VM, VMSnapshot},
+    defer_drop,
     exception_private::RunError,
     heap::{DropWithHeap, Heap, HeapReader},
+    heap_data::HeapData,
     intern::{InternerBuilder, Interns},
     io::PrintWriter,
     namespace::NamespaceId,
@@ -47,6 +50,16 @@ pub struct MontyRepl<T: ResourceTracker> {
     global_name_map: AHashMap<String, NamespaceId>,
     /// Persistent intern table across snippets so intern/function IDs remain valid.
     interns: Interns,
+    /// Source text of every snippet that has been fed, keyed by its
+    /// generated script name (`<python-input-N>`).
+    ///
+    /// Required because a traceback raised in snippet N can include frames
+    /// from functions defined in snippet M < N. Those frames carry
+    /// `CodeRange` byte offsets that index into snippet M's source, so the
+    /// diagnostic pass must be able to look that source up by filename —
+    /// the current snippet's `Executor.code` is not sufficient.
+    #[serde(default)]
+    sources: AHashMap<String, String>,
     /// Persistent heap across snippets.
     heap: Heap<T>,
     /// Persistent global variable values across snippets.
@@ -71,6 +84,7 @@ impl<T: ResourceTracker> MontyRepl<T> {
             next_input_id: 0,
             global_name_map: AHashMap::new(),
             interns: Interns::new(InternerBuilder::default(), Vec::new()),
+            sources: AHashMap::new(),
             heap,
             globals: Vec::new(),
         }
@@ -113,7 +127,7 @@ impl<T: ResourceTracker> MontyRepl<T> {
         self,
         code: &str,
         inputs: Vec<(String, MontyObject)>,
-        mut print: PrintWriter<'_>,
+        print: PrintWriter<'_>,
     ) -> Result<ReplProgress<T>, Box<ReplStartError<T>>> {
         let mut this = self;
         if code.is_empty() {
@@ -126,6 +140,8 @@ impl<T: ResourceTracker> MontyRepl<T> {
         let (input_names, input_values): (Vec<_>, Vec<_>) = inputs.into_iter().unzip();
 
         let input_script_name = this.next_input_script_name();
+        // Preserve this snippet's source (see `feed_run` for rationale).
+        this.sources.insert(input_script_name.clone(), code.to_owned());
         let executor = match Executor::new_repl_snippet(
             code.to_owned(),
             &input_script_name,
@@ -139,13 +155,17 @@ impl<T: ResourceTracker> MontyRepl<T> {
 
         this.ensure_globals_size(executor.namespace_size);
 
-        match HeapReader::with(&mut this.heap, |heap| {
-            let mut vm = VM::new(mem::take(&mut this.globals), heap, &executor.interns, print.reborrow());
+        match HeapReader::with(&mut this.heap, &mut (&executor, print), |reader, (executor, print)| {
+            let mut vm = VM::new(
+                mem::take(&mut this.globals),
+                reader,
+                &executor.interns,
+                print.reborrow(),
+            );
 
             // Inject inputs with VM alive
-            if let Err(error) = inject_inputs_into_vm(&executor, input_values, &mut vm) {
+            if let Err(error) = inject_inputs_into_vm(executor, input_values, &mut vm) {
                 this.globals = vm.take_globals();
-                vm.cleanup();
                 return Err(error);
             }
 
@@ -157,7 +177,6 @@ impl<T: ResourceTracker> MontyRepl<T> {
                 Some(vm.snapshot())
             } else {
                 this.globals = vm.take_globals();
-                vm.cleanup();
                 None
             };
             Ok((converted, vm_state))
@@ -181,7 +200,7 @@ impl<T: ResourceTracker> MontyRepl<T> {
         &mut self,
         code: &str,
         inputs: Vec<(String, MontyObject)>,
-        mut print: PrintWriter<'_>,
+        print: PrintWriter<'_>,
     ) -> Result<MontyObject, MontyException> {
         if code.is_empty() {
             return Ok(MontyObject::None);
@@ -190,6 +209,11 @@ impl<T: ResourceTracker> MontyRepl<T> {
         let (input_names, input_values): (Vec<_>, Vec<_>) = inputs.into_iter().unzip();
 
         let input_script_name = self.next_input_script_name();
+        // Preserve this snippet's source before anything can fail, so later
+        // tracebacks with frames from this snippet can still resolve line/
+        // column/preview information — `Executor.code` only survives until
+        // the next feed.
+        self.sources.insert(input_script_name.clone(), code.to_owned());
         let executor = Executor::new_repl_snippet(
             code.to_owned(),
             &input_script_name,
@@ -200,12 +224,16 @@ impl<T: ResourceTracker> MontyRepl<T> {
 
         self.ensure_globals_size(executor.namespace_size);
 
-        let result = HeapReader::with(&mut self.heap, |heap| {
-            let mut vm = VM::new(mem::take(&mut self.globals), heap, &executor.interns, print.reborrow());
+        let result = HeapReader::with(&mut self.heap, &mut (&executor, print), |reader, (executor, print)| {
+            let mut vm = VM::new(
+                mem::take(&mut self.globals),
+                reader,
+                &executor.interns,
+                print.reborrow(),
+            );
 
-            if let Err(e) = inject_inputs_into_vm(&executor, input_values, &mut vm) {
+            if let Err(e) = inject_inputs_into_vm(executor, input_values, &mut vm) {
                 self.globals = vm.take_globals();
-                vm.cleanup();
                 return Err(e);
             }
 
@@ -213,23 +241,97 @@ impl<T: ResourceTracker> MontyRepl<T> {
 
             // Reclaim globals before cleanup.
             self.globals = vm.take_globals();
-            vm.cleanup();
             Ok(result)
         })?;
 
         // Commit compiler metadata even on runtime errors.
         // Snippets can mutate globals before raising, and those values may contain
         // FunctionId/StringId values that must be interpreted with the updated tables.
-        let Executor {
-            name_map,
-            interns,
-            code,
-            ..
-        } = executor;
+        let Executor { name_map, interns, .. } = executor;
         self.global_name_map = name_map;
         self.interns = interns;
 
-        result.map_err(|e| e.into_python_exception(&self.interns, &code))
+        // Resolve every traceback frame against the source of the snippet that
+        // produced it — frames from earlier snippets live in `self.sources`.
+        result.map_err(|e| e.into_python_exception(&self.interns, |fname| self.sources.get(fname).map(String::as_str)))
+    }
+
+    /// Calls a Python function defined in the session by name.
+    ///
+    /// Looks up the function in the global namespace, converts the arguments,
+    /// executes the function, and converts the result back.
+    ///
+    /// # Errors
+    /// Returns `MontyException` if the function is not found, not callable,
+    /// raises an exception, or encounters an external function call.
+    pub fn call_function(
+        &mut self,
+        name: &str,
+        args: Vec<MontyObject>,
+        print: PrintWriter<'_>,
+    ) -> Result<MontyObject, MontyException> {
+        let Some(slot_idx) = self.global_name_map.get(name) else {
+            return Err(RunError::from(ExcType::name_error(name))
+                .into_python_exception(&self.interns, |fname| self.sources.get(fname).map(String::as_str)));
+        };
+
+        HeapReader::with(
+            &mut self.heap,
+            &mut (&self.interns, print),
+            |reader, (interns, print)| {
+                let vm = &mut VM::new(mem::take(&mut self.globals), reader, interns, print.reborrow());
+
+                let callable = vm.globals[slot_idx.index()].clone_with_heap(vm);
+                defer_drop!(callable, vm);
+
+                let arg_values = match convert_args(args, vm) {
+                    Ok(av) => av,
+                    Err(e) => {
+                        self.globals = vm.take_globals();
+                        return Err(e);
+                    }
+                };
+
+                let result = match vm.evaluate_function("MontyRepl::call_function", callable, arg_values) {
+                    Ok(value) => Ok(MontyObject::new(value, vm)),
+                    Err(e) => {
+                        Err(e.into_python_exception(&self.interns, |fname| self.sources.get(fname).map(String::as_str)))
+                    }
+                };
+
+                self.globals = vm.take_globals();
+
+                result
+            },
+        )
+    }
+
+    /// Returns a list of all callable function names defined in the session.
+    ///
+    /// Includes functions, closures, and functions with default arguments.
+    /// Does not include builtins or external functions.
+    #[must_use]
+    pub fn function_names(&self) -> Vec<&str> {
+        self.global_name_map
+            .iter()
+            .filter_map(|(name, ns_id)| {
+                let idx = ns_id.index();
+                if idx < self.globals.len() && is_callable(&self.globals[idx], &self.heap) {
+                    Some(name.as_str())
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
+    /// Returns whether a function with the given name exists in the session.
+    #[must_use]
+    pub fn has_function(&self, name: &str) -> bool {
+        self.global_name_map.get(name).is_some_and(|ns_id| {
+            let idx = ns_id.index();
+            idx < self.globals.len() && is_callable(&self.globals[idx], &self.heap)
+        })
     }
 
     /// Grows the globals vector to at least `size` slots.
@@ -533,7 +635,7 @@ impl<T: ResourceTracker> ReplNameLookup<T> {
     pub fn resume(
         self,
         result: NameLookupResult,
-        mut print: PrintWriter<'_>,
+        print: PrintWriter<'_>,
     ) -> Result<ReplProgress<T>, Box<ReplStartError<T>>> {
         let Self {
             name,
@@ -548,12 +650,12 @@ impl<T: ResourceTracker> ReplNameLookup<T> {
             vm_state,
         } = snapshot;
 
-        match HeapReader::with(&mut repl.heap, |heap| {
+        match HeapReader::with(&mut repl.heap, &mut (&executor, print), |reader, (executor, print)| {
             // Restore the VM first, then convert inside its lifetime
             let mut vm = VM::restore(
                 vm_state,
                 &executor.module_code,
-                heap,
+                reader,
                 &executor.interns,
                 print.reborrow(),
             );
@@ -565,7 +667,6 @@ impl<T: ResourceTracker> ReplNameLookup<T> {
                         Ok(v) => v,
                         Err(e) => {
                             repl.globals = vm.take_globals();
-                            vm.cleanup();
                             return Err(MontyException::runtime_error(format!(
                                 "invalid name lookup result: {e}"
                             )));
@@ -600,7 +701,6 @@ impl<T: ResourceTracker> ReplNameLookup<T> {
                 Some(vm.snapshot())
             } else {
                 repl.globals = vm.take_globals();
-                vm.cleanup();
                 None
             };
             Ok((converted, vm_state))
@@ -662,7 +762,7 @@ impl<T: ResourceTracker> ReplResolveFutures<T> {
     pub fn resume(
         self,
         results: Vec<(u32, ExtFunctionResult)>,
-        mut print: PrintWriter<'_>,
+        print: PrintWriter<'_>,
     ) -> Result<ReplProgress<T>, Box<ReplStartError<T>>> {
         let Self {
             mut repl,
@@ -676,69 +776,23 @@ impl<T: ResourceTracker> ReplResolveFutures<T> {
             .find(|(call_id, _)| !pending_call_ids.contains(call_id))
             .map(|(call_id, _)| *call_id);
 
-        match HeapReader::with(&mut repl.heap, |heap| {
+        match HeapReader::with(&mut repl.heap, &mut (&executor, print), |reader, (executor, print)| {
             let mut vm = VM::restore(
                 vm_state,
                 &executor.module_code,
-                heap,
+                reader,
                 &executor.interns,
                 print.reborrow(),
             );
 
             if let Some(call_id) = invalid_call_id {
                 repl.globals = vm.take_globals();
-                vm.cleanup();
                 return Err(MontyException::runtime_error(format!(
                     "unknown call_id {call_id}, expected one of: {pending_call_ids:?}"
                 )));
             }
 
-            for (call_id, ext_result) in results {
-                match ext_result {
-                    ExtFunctionResult::Return(obj) => {
-                        if let Err(e) = vm.resolve_future(call_id, obj) {
-                            repl.globals = vm.take_globals();
-                            vm.cleanup();
-                            return Err(MontyException::runtime_error(format!(
-                                "Invalid return type for call {call_id}: {e}"
-                            )));
-                        }
-                    }
-                    ExtFunctionResult::Error(exc) => vm.fail_future(call_id, RunError::from(exc)),
-                    ExtFunctionResult::Future(_) => {}
-                    ExtFunctionResult::NotFound(function_name) => {
-                        vm.fail_future(call_id, ExtFunctionResult::not_found_exc(&function_name));
-                    }
-                }
-            }
-
-            if let Some(error) = vm.take_failed_task_error() {
-                repl.globals = vm.take_globals();
-                vm.cleanup();
-                return Err(error.into_python_exception(&executor.interns, &executor.code));
-            }
-
-            let main_task_ready = vm.prepare_current_task_after_resolve();
-
-            let loaded_task = match vm.load_ready_task_if_needed() {
-                Ok(loaded) => loaded,
-                Err(e) => {
-                    repl.globals = vm.take_globals();
-                    vm.cleanup();
-                    return Err(e.into_python_exception(&executor.interns, &executor.code));
-                }
-            };
-
-            if !main_task_ready && !loaded_task {
-                let pending_call_ids = vm.get_pending_call_ids();
-                if !pending_call_ids.is_empty() {
-                    let vm_state = vm.snapshot();
-                    let pending_call_ids: Vec<u32> = pending_call_ids.iter().map(|id| id.raw()).collect();
-                    return Ok((ConvertedExit::ResolveFutures(pending_call_ids), Some(vm_state)));
-                }
-            }
-
-            let vm_result = vm.run();
+            let vm_result = vm.resume_with_resolved_futures(results);
 
             // Convert while VM alive, then snapshot or reclaim globals
             let converted = convert_frame_exit(vm_result, &mut vm);
@@ -746,7 +800,6 @@ impl<T: ResourceTracker> ReplResolveFutures<T> {
                 Some(vm.snapshot())
             } else {
                 repl.globals = vm.take_globals();
-                vm.cleanup();
                 None
             };
             Ok((converted, vm_state))
@@ -847,7 +900,7 @@ impl<T: ResourceTracker> ReplSnapshot<T> {
     fn run(
         self,
         result: impl Into<ExtFunctionResult>,
-        mut print: PrintWriter<'_>,
+        print: PrintWriter<'_>,
     ) -> Result<ReplProgress<T>, Box<ReplStartError<T>>> {
         let Self {
             mut repl,
@@ -857,40 +910,41 @@ impl<T: ResourceTracker> ReplSnapshot<T> {
 
         let ext_result = result.into();
 
-        let (converted, vm_state) = HeapReader::with(&mut repl.heap, |heap| {
-            let mut vm = VM::restore(
-                vm_state,
-                &executor.module_code,
-                heap,
-                &executor.interns,
-                print.reborrow(),
-            );
+        let (converted, vm_state) =
+            HeapReader::with(&mut repl.heap, &mut (&executor, print), |reader, (executor, print)| {
+                let mut vm = VM::restore(
+                    vm_state,
+                    &executor.module_code,
+                    reader,
+                    &executor.interns,
+                    print.reborrow(),
+                );
 
-            let vm_result = match ext_result {
-                ExtFunctionResult::Return(obj) => vm.resume(obj),
-                ExtFunctionResult::Error(exc) => vm.resume_with_exception(exc.into()),
-                ExtFunctionResult::Future(raw_call_id) => {
-                    let call_id = CallId::new(raw_call_id);
-                    vm.add_pending_call(call_id);
-                    vm.push(Value::ExternalFuture(call_id));
-                    vm.run()
-                }
-                ExtFunctionResult::NotFound(function_name) => {
-                    vm.resume_with_exception(ExtFunctionResult::not_found_exc(&function_name))
-                }
-            };
+                let vm_result = match ext_result {
+                    ExtFunctionResult::Return(obj) => vm.resume(obj),
+                    ExtFunctionResult::Error(exc) => vm.resume_with_exception(exc.into()),
+                    ExtFunctionResult::Future(raw_call_id) => {
+                        let call_id = CallId::new(raw_call_id);
+                        match vm.add_pending_call(call_id) {
+                            Ok(()) => vm.run(),
+                            Err(err) => vm.resume_with_exception(err),
+                        }
+                    }
+                    ExtFunctionResult::NotFound(function_name) => {
+                        vm.resume_with_exception(ExtFunctionResult::not_found_exc(&function_name))
+                    }
+                };
 
-            // Convert while VM alive, then snapshot or reclaim globals
-            let converted = convert_frame_exit(vm_result, &mut vm);
-            let vm_state = if converted.needs_snapshot() {
-                Some(vm.snapshot())
-            } else {
-                repl.globals = vm.take_globals();
-                vm.cleanup();
-                None
-            };
-            (converted, vm_state)
-        });
+                // Convert while VM alive, then snapshot or reclaim globals
+                let converted = convert_frame_exit(vm_result, &mut vm);
+                let vm_state = if converted.needs_snapshot() {
+                    Some(vm.snapshot())
+                } else {
+                    repl.globals = vm.take_globals();
+                    None
+                };
+                (converted, vm_state)
+            });
         build_repl_progress(converted, vm_state, executor, repl)
     }
 }
@@ -906,7 +960,7 @@ impl<T: ResourceTracker> ReplSnapshot<T> {
 fn inject_inputs_into_vm(
     executor: &Executor,
     input_values: Vec<MontyObject>,
-    vm: &mut VM<'_, '_, impl ResourceTracker>,
+    vm: &mut VM<'_, impl ResourceTracker>,
 ) -> Result<(), MontyException> {
     for (name, obj) in executor.input_names.iter().zip(input_values) {
         let slot = executor
@@ -994,7 +1048,13 @@ fn build_repl_progress<T: ResourceTracker>(
             snapshot: new_repl_snapshot!(),
         })),
         ConvertedExit::Error(err) => {
-            let error = err.into_python_exception(&executor.interns, &executor.code);
+            // Resolve traceback frames against every snippet the REPL has
+            // seen, not just the currently-executing one. `executor.interns`
+            // is still required because it holds the StringIds referenced by
+            // the in-flight frames; `repl.sources` holds every snippet's
+            // source text and is what owns any older snippets' sources.
+            let error =
+                err.into_python_exception(&executor.interns, |fname| repl.sources.get(fname).map(String::as_str));
             // Commit compiler metadata even on runtime errors, matching feed() behavior.
             // Snippets can create new variables or functions before raising, and those
             // values may reference FunctionId/StringId values from the new tables.
@@ -1003,5 +1063,68 @@ fn build_repl_progress<T: ResourceTracker>(
             repl.interns = interns;
             Err(Box::new(ReplStartError { repl, error }))
         }
+    }
+}
+
+/// Converts `Vec<MontyObject>` to internal `ArgValues` for function calls.
+fn convert_args(args: Vec<MontyObject>, vm: &mut VM<'_, impl ResourceTracker>) -> Result<ArgValues, MontyException> {
+    match args.len() {
+        0 => Ok(ArgValues::Empty),
+        1 => {
+            let value = args
+                .into_iter()
+                .next()
+                .expect("checked len")
+                .to_value(vm)
+                .map_err(|e| MontyException::runtime_error(format!("invalid argument type: {e}")))?;
+            Ok(ArgValues::One(value))
+        }
+        2 => {
+            let mut iter = args.into_iter();
+            let a = iter
+                .next()
+                .expect("checked len")
+                .to_value(vm)
+                .map_err(|e| MontyException::runtime_error(format!("invalid argument type: {e}")))?;
+            match iter.next().expect("checked len").to_value(vm) {
+                Ok(b) => Ok(ArgValues::Two(a, b)),
+                Err(e) => {
+                    a.drop_with_heap(&mut *vm);
+                    Err(MontyException::runtime_error(format!("invalid argument type: {e}")))
+                }
+            }
+        }
+        _ => {
+            let mut values = Vec::with_capacity(args.len());
+            for arg in args {
+                match arg.to_value(vm) {
+                    Ok(value) => values.push(value),
+                    Err(e) => {
+                        values.drain(..).drop_with_heap(&mut *vm);
+                        return Err(MontyException::runtime_error(format!("invalid argument type: {e}")));
+                    }
+                }
+            }
+            Ok(ArgValues::ArgsKargs {
+                args: values,
+                kwargs: KwargsValues::Empty,
+            })
+        }
+    }
+}
+
+/// Returns `true` if the value is a callable type.
+///
+/// For heap-allocated values (`Ref`), checks the actual `HeapData` variant
+/// rather than accepting all refs — only closures, functions with defaults,
+/// and heap-allocated external functions are callable.
+fn is_callable(value: &Value, heap: &Heap<impl ResourceTracker>) -> bool {
+    match value {
+        Value::DefFunction(_) | Value::Builtin(_) | Value::ExtFunction(_) | Value::ModuleFunction(_) => true,
+        Value::Ref(id) => matches!(
+            heap.get(*id),
+            HeapData::Closure(_) | HeapData::FunctionDefaults(_) | HeapData::ExtFunction(_)
+        ),
+        _ => false,
     }
 }

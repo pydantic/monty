@@ -129,6 +129,82 @@ def test_syntax_error_invalid_syntax():
     assert isinstance(inner, SyntaxError)
 
 
+def test_syntax_error_lone_surrogate():
+    # Lone surrogates cannot be encoded as UTF-8, so they are not valid Python
+    # source. We report this as MontySyntaxError rather than letting PyO3's raw
+    # UnicodeEncodeError bubble out.
+    with pytest.raises(pydantic_monty.MontySyntaxError) as exc_info:
+        pydantic_monty.Monty('\ud83d')
+    assert str(exc_info.value) == snapshot('source code is not valid UTF-8 (contains lone surrogates)')
+    inner = exc_info.value.exception()
+    assert isinstance(inner, SyntaxError)
+
+
+def test_input_name_lone_surrogate():
+    # An input *name* containing a lone surrogate cannot be encoded as UTF-8,
+    # so it cannot be a valid Python identifier. We surface this as
+    # `MontySyntaxError` (matching how invalid UTF-8 is handled for source
+    # code and type stubs) rather than letting PyO3's raw `UnicodeEncodeError`
+    # bubble up wrapped as a misleading `TypeError`.
+    with pytest.raises(pydantic_monty.MontySyntaxError) as exc_info:
+        pydantic_monty.Monty('1', inputs=['\ud83d'])
+    assert str(exc_info.value) == snapshot('inputs entry is not valid UTF-8 (contains lone surrogates)')
+    assert isinstance(exc_info.value.exception(), SyntaxError)
+
+
+def test_input_name_wrong_type():
+    # A non-string element in `inputs` still raises `TypeError` with the
+    # argument name so users can tell which argument is wrong.
+    with pytest.raises(TypeError) as exc_info:
+        pydantic_monty.Monty('1', inputs=[123])  # pyright: ignore[reportArgumentType]
+    assert str(exc_info.value) == snapshot("inputs: 'int' object is not an instance of 'str'")
+
+
+def test_syntax_error_stubs_lone_surrogate():
+    # Stubs are parsed as Python source, so invalid UTF-8 is not valid source
+    # text. We surface this as `MontySyntaxError` (matching the behavior for
+    # the main `code` argument) rather than letting PyO3's `UnicodeEncodeError`
+    # bubble up.
+    with pytest.raises(pydantic_monty.MontySyntaxError) as exc_info:
+        pydantic_monty.Monty('1', type_check=True, type_check_stubs='\ud83d')
+    assert str(exc_info.value) == snapshot('type_check_stubs is not valid UTF-8')
+    assert isinstance(exc_info.value.exception(), SyntaxError)
+
+
+def test_syntax_error_stubs_lone_surrogate_without_type_check():
+    # Stubs are validated even when `type_check=False` because the raw PyO3
+    # decode happens at argument extraction time; we want a consistent error
+    # regardless of whether the stubs would actually be used.
+    with pytest.raises(pydantic_monty.MontySyntaxError) as exc_info:
+        pydantic_monty.Monty('1', type_check_stubs='\ud83d')
+    assert str(exc_info.value) == snapshot('type_check_stubs is not valid UTF-8')
+
+
+def test_syntax_error_type_check_prefix_code_lone_surrogate():
+    # The standalone `Monty.type_check(prefix_code=...)` entry point shares the
+    # same extraction logic, so invalid UTF-8 in `prefix_code` is also raised
+    # as `MontySyntaxError`.
+    m = pydantic_monty.Monty('1')
+    with pytest.raises(pydantic_monty.MontySyntaxError) as exc_info:
+        m.type_check('\ud83d')
+    assert str(exc_info.value) == snapshot('type_check_stubs is not valid UTF-8')
+
+
+def test_runtime_error_input_value_lone_surrogate():
+    # An input string containing a lone surrogate fails UTF-8 conversion during
+    # `py_to_monty`. We wrap the resulting `UnicodeEncodeError` as a
+    # `MontyRuntimeError(ValueError)` so input-value failures surface the same
+    # way as failures when an external function returns such a string.
+    m = pydantic_monty.Monty('x', inputs=['x'])
+    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
+        m.run(inputs={'x': '\ud83d'})
+    assert str(exc_info.value) == snapshot(
+        "ValueError: 'utf-8' codec can't encode character '\\ud83d' in position 0: surrogates not allowed"
+    )
+    inner = exc_info.value.exception()
+    assert isinstance(inner, ValueError)
+
+
 # === Catching with base class ===
 
 
@@ -359,3 +435,28 @@ foo()
     frames = exc_info.value.traceback()
     frame = frames[0]
     assert repr(frame) == snapshot("Frame(filename='main.py', line=5, column=1, function_name='<module>')")
+
+
+def test_non_ascii_earlier_line_does_not_shift_columns():
+    # CodeRange stores raw byte offsets and the SourceMap expands them lazily,
+    # so a multi-byte character on an earlier line must not shift the column
+    # reported for a later line. Columns are characters, not bytes — the non-
+    # ASCII slow path in SourceMap::resolve_byte is the interesting code here.
+    code = "greeting = 'héllo'\nundefined_name\n"
+    m = pydantic_monty.Monty(code)
+    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
+        m.run()
+    frames = exc_info.value.traceback()
+    assert [f.dict() for f in frames] == snapshot(
+        [
+            {
+                'filename': 'main.py',
+                'line': 2,
+                'column': 1,
+                'end_line': 2,
+                'end_column': 15,
+                'function_name': '<module>',
+                'source_line': 'undefined_name',
+            }
+        ]
+    )

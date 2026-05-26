@@ -26,34 +26,28 @@ fn resolve_name_lookups<T: monty::ResourceTracker>(
     Ok(progress)
 }
 
-/// Test that GC properly collects dict cycles via the has_refs() check in allocate().
+/// Test that GC properly collects dict cycles.
 ///
-/// This test creates cycles using dict literals and dict setitem. Dict setitem
-/// does NOT call mark_potential_cycle(), so the ONLY way may_have_cycles gets
-/// set is through the has_refs() check when allocating a dict with refs.
-///
-/// If has_refs() is disabled, this test will FAIL because GC never runs.
+/// Each iteration creates a fresh `d1 <-> d2` cycle and the next iteration's
+/// reassignment leaves it unreachable. Trial deletion enrolls those entries
+/// as cycle-root candidates via `dec_ref`; the alloc-count interval is what
+/// actually fires the collector at a controlled rate.
 #[test]
 #[cfg(feature = "ref-count-return")]
 fn gc_collects_dict_cycles_via_has_refs() {
-    // Create 200,001 dict cycles. Each iteration:
-    // - Creates empty dict d1
-    // - Creates dict d2 = {'ref': d1} - d2 is allocated WITH a ref to d1
-    //   This triggers has_refs() which sets may_have_cycles = true
-    // - Sets d1['ref'] = d2 - creates cycle d1 <-> d2
-    //   Dict setitem does NOT call mark_potential_cycle()
-    // - On next iteration, both dicts are reassigned, making the cycle unreachable
+    // Create 200,001 dict cycles. Each iteration allocates two GC-tracked
+    // dicts and forms a cycle between them; on the next iteration, both are
+    // reassigned and the cycle is unreachable.
     //
-    // GC runs every 100,000 allocations. With 200,001 iterations:
-    // - GC runs at 100k (collects cycles 0-49,999 approximately)
-    // - GC runs at 200k (collects more cycles)
-    // After GC runs, only the final cycle should remain.
+    // GC fires every DEFAULT_GC_INTERVAL (100,000) GC-tracked allocations
+    // when there are pending cycle candidates. With ~400k allocations across
+    // 200,001 iterations, the collector must run at least once.
     let code = r"
 # Create many dict cycles
 for i in range(200001):
     d1 = {}
-    d2 = {'ref': d1}  # d2 allocated WITH ref - has_refs() must trigger here
-    d1['ref'] = d2    # Cycle formed - dict setitem does NOT call mark_potential_cycle
+    d2 = {'ref': d1}
+    d1['ref'] = d2    # Cycle formed; reassignment next iteration seeds the GC
 
 # Create final result (not a cycle)
 result = 'done'
@@ -63,13 +57,13 @@ result
 
     let output = ex.run_ref_counts(vec![]).expect("should succeed");
 
-    // GC_INTERVAL is 100,000. With 200,001 iterations creating dict cycles,
-    // GC must have run at least once, resetting allocations_since_gc.
-    // If may_have_cycles was never set (has_refs() disabled), GC never runs
-    // and allocations_since_gc would be ~400k (2 dicts per iteration).
+    // DEFAULT_GC_INTERVAL is 100,000. With 200,001 iterations creating dict
+    // cycles, GC must have run at least once, resetting allocations_since_gc.
+    // If the collector never ran, allocations_since_gc would be ~400k
+    // (2 dicts per iteration).
     assert!(
         output.allocations_since_gc < 100_000,
-        "GC should have run (has_refs() must set may_have_cycles): allocations_since_gc = {}",
+        "GC should have run: allocations_since_gc = {}",
         output.allocations_since_gc
     );
 
@@ -85,26 +79,27 @@ result
 
 /// Test that GC properly collects self-referencing list cycles.
 ///
-/// This test creates cycles using list.append(), which calls mark_potential_cycle().
-/// This tests the mutation-based cycle detection path.
+/// Each iteration's `a.append(a)` produces a self-referencing list; the next
+/// iteration's reassignment leaves the previous list unreachable. Trial
+/// deletion enrolls it as a candidate via `dec_ref`, and the alloc-count
+/// interval triggers the collector once enough have accumulated.
 #[test]
 #[cfg(feature = "ref-count-return")]
 fn gc_collects_list_cycles() {
     // Create 200,001 self-referencing list cycles. Each iteration:
     // - Creates empty list `a`
     // - Appends `a` to itself (creating a self-reference cycle)
-    //   This calls mark_potential_cycle() and sets may_have_cycles = true
     // - On next iteration, `a` is reassigned, making the cycle unreachable
     //
-    // GC runs every 100,000 allocations. With 200,001 iterations:
-    // - GC runs at 100k (collects cycles 0-99,999)
-    // - GC runs at 200k (collects cycles 100k-199,999)
-    // After GC runs, only the final cycle should remain.
+    // GC fires every DEFAULT_GC_INTERVAL (100,000) GC-tracked allocations
+    // when there are pending candidates. With 200,001 iterations the
+    // collector must run at least twice. After it runs, only the final
+    // cycle should remain.
     let code = r"
 # Create many self-referencing list cycles
 for i in range(200001):
     a = []
-    a.append(a)  # Creates cycle via list.append() which calls mark_potential_cycle()
+    a.append(a)  # Creates cycle; reassignment next iteration seeds the GC
 
 # Create final result (not a cycle)
 result = [1, 2, 3]
@@ -114,8 +109,8 @@ len(result)
 
     let output = ex.run_ref_counts(vec![]).expect("should succeed");
 
-    // GC_INTERVAL is 100,000. With 200,001 iterations creating list cycles,
-    // GC must have run at least twice, resetting allocations_since_gc.
+    // DEFAULT_GC_INTERVAL is 100,000. With 200,001 iterations creating list
+    // cycles, GC must have run at least twice, resetting allocations_since_gc.
     assert!(
         output.allocations_since_gc < 100_000,
         "GC should have run: allocations_since_gc = {}",
@@ -257,6 +252,108 @@ result
     );
 }
 
+/// Regression: materializing a cheap-to-represent but enormous lazy iterable
+/// via `list()`/`tuple()`/`sorted()`/`reversed()` (and generator collection)
+/// must be rejected *during* collection, near the configured memory limit —
+/// not after the entire native buffer has been built.
+///
+/// `MontyIter::collect` builds the result in a native `Vec` that is invisible
+/// to the resource tracker until the finished object reaches the heap. Before
+/// the incremental check, `range(10**9)` would allocate ~16 GiB of native
+/// buffer before any limit check, OOM-killing or aborting the host (an
+/// uncatchable sandbox escape). The fix estimates the projected size after
+/// each element, so the limit fires while the buffer is still tiny.
+#[test]
+fn collect_constructors_bounded_during_collection() {
+    for code in [
+        "list(range(10**9))",
+        "tuple(range(10**9))",
+        "sorted(range(10**9))",
+        "reversed(range(10**9))",
+        "list(x for x in range(10**9))",
+    ] {
+        let ex = MontyRun::new(code.to_owned(), "test.py", vec![]).unwrap();
+        // 1 MiB memory budget; a generous time limit so a timeout cannot mask
+        // a missing memory check.
+        let limits = ResourceLimits::new()
+            .max_memory(1_048_576)
+            .max_duration(Duration::from_secs(30));
+        let result = ex.run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout);
+
+        let exc = result
+            .err()
+            .unwrap_or_else(|| panic!("{code}: should exceed the memory limit"));
+        assert_eq!(exc.exc_type(), ExcType::MemoryError, "{code}: wrong exc type");
+
+        // Parse "memory limit exceeded: <used> bytes > <limit> bytes". The fix
+        // must trip while the buffer is still small; before the fix `used` was
+        // the full materialized size (~16 GB for range(10**9)).
+        let msg = exc.message().expect("memory error carries a message");
+        let used: usize = msg
+            .strip_prefix("memory limit exceeded: ")
+            .and_then(|m| m.split(" bytes").next())
+            .and_then(|n| n.parse().ok())
+            .unwrap_or_else(|| panic!("{code}: unexpected message {msg:?}"));
+        assert!(
+            used < 16 * 1_048_576,
+            "{code}: rejected at {used} bytes — collection is not bounded \
+             incrementally (expected to trip near the 1 MiB limit)"
+        );
+    }
+}
+
+/// Regression: an f-string with a large *dynamic* field width must be
+/// rejected by the memory limit before the padding string is materialized.
+///
+/// A literal width is clamped to 16 bits by the bytecode encoding, but a
+/// runtime width (`f"{v:>{w}}"`) is not. `pad_string`/`iter::repeat_n` build
+/// the padding in a native `String` invisible to the tracker until the
+/// finished string reaches the heap, so before the guard `w = 10**11` would
+/// allocate ~100 GB before any check, OOM-ing or aborting the host.
+#[test]
+fn fstring_dynamic_width_memory_bounded() {
+    for code in [
+        "w = 999_999_999\nf'{0:>{w}}'",
+        "w = 999_999_999\nf'{0:0>{w}}'",
+        "w = 999_999_999\nf'{1.5:^{w}}'",
+        "w = 999_999_999\nf'{\"x\":<{w}}'",
+    ] {
+        let ex = MontyRun::new(code.to_owned(), "test.py", vec![]).unwrap();
+        let limits = ResourceLimits::new()
+            .max_memory(1_048_576)
+            .max_duration(Duration::from_secs(30));
+        let result = ex.run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout);
+
+        let exc = result
+            .err()
+            .unwrap_or_else(|| panic!("{code:?}: should exceed the memory limit"));
+        assert_eq!(exc.exc_type(), ExcType::MemoryError, "{code:?}: wrong exc type");
+    }
+
+    // A small dynamic width is unaffected and still formats correctly.
+    let ex = MontyRun::new("w = 5\nf'{42:>{w}}'".to_owned(), "test.py", vec![]).unwrap();
+    let limits = ResourceLimits::new().max_memory(1_048_576);
+    let result = ex.run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout);
+    assert_eq!(
+        result.expect("small dynamic width should succeed"),
+        MontyObject::String("   42".to_owned())
+    );
+}
+
+#[test]
+fn memory_limit_zero() {
+    let code = "x = 1 + 2\nx";
+    let ex = MontyRun::new(code.to_owned(), "test.py", vec![]).unwrap();
+    // Set zero memory limit - should fail immediately
+    let limits = ResourceLimits::new().max_memory(0);
+    let result = ex.run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout);
+
+    assert!(
+        result.is_ok(),
+        "should allow zero memory for simple operations that don't allocate"
+    );
+}
+
 #[test]
 fn combined_limits() {
     // Test multiple limits together
@@ -289,29 +386,77 @@ len(result)
 }
 
 #[test]
+#[cfg(feature = "ref-count-return")]
 fn gc_interval_triggers_collection() {
-    // This test verifies that GC can run without crashing
-    // We can't easily verify that GC actually collected anything without
-    // adding more introspection, but we can verify it runs
+    // This test verifies that the built-in GC interval still triggers
+    // collection on real reference cycles even when no custom tracker
+    // interval is supplied. A sufficiently large number of cycles forces
+    // collection here.
     let code = r"
-result = []
-for i in range(100):
-    temp = [1, 2, 3]
-    result.append(i)
-len(result)
+result = 'done'
+for i in range(210000):
+    a = []
+    a.append(a)
+result
 ";
     let ex = MontyRun::new(code.to_owned(), "test.py", vec![]).unwrap();
 
-    // Set GC to run every 10 allocations
-    let limits = ResourceLimits::new().gc_interval(10);
-    let result = ex.run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout);
+    let output = ex
+        .run_ref_counts(vec![])
+        .expect("should succeed with GC enabled on cycles");
 
-    assert!(result.is_ok(), "should succeed with GC enabled");
+    assert_eq!(output.py_object, MontyObject::String("done".to_owned()));
+    assert!(
+        output.allocations_since_gc < 100_000,
+        "default GC interval should have triggered collection: allocations_since_gc = {}",
+        output.allocations_since_gc
+    );
+    // Expected remaining cycles × 2, with a little slack.
+    assert!(
+        output.heap_count <= 20_000,
+        "GC should collect most unreachable list cycles: {} heap objects",
+        output.heap_count
+    );
+}
+
+#[test]
+#[cfg(feature = "ref-count-return")]
+fn gc_interval_limit_is_respected() {
+    // This test verifies that a custom GC interval is actually used instead
+    // of the built-in default. We create self-referencing list cycles so GC
+    // is eligible to run, then assert that a small configured interval
+    // causes a collection before the default 100,000-allocation threshold.
+    let code = r"
+for i in range(25):
+    a = []
+    a.append(a)
+result = 'done'
+result
+";
+    let ex = MontyRun::new(code.to_owned(), "test.py", vec![]).unwrap();
+
+    let limits = ResourceLimits::new().gc_interval(10);
+    let output = ex
+        .run_ref_counts_with_tracker(vec![], LimitedTracker::new(limits))
+        .expect("should succeed with custom GC interval");
+
+    assert_eq!(output.py_object, MontyObject::String("done".to_owned()));
+    assert!(
+        output.allocations_since_gc < 10,
+        "configured GC interval should trigger collections before the default; allocations_since_gc = {}",
+        output.allocations_since_gc
+    );
+    // Expected remaining cycles × 2, with a little slack.
+    assert!(
+        output.heap_count <= 10,
+        "GC should collect most unreachable list cycles: {} heap objects",
+        output.heap_count
+    );
 }
 
 #[test]
 #[cfg_attr(
-    feature = "ref-count-panic",
+    feature = "memory-model-checks",
     ignore = "resource exhaustion doesn't guarantee heap state consistency"
 )]
 fn executor_iter_resource_limit_on_resume() {
@@ -347,7 +492,7 @@ fn executor_iter_resource_limit_on_resume() {
 
 #[test]
 #[cfg_attr(
-    feature = "ref-count-panic",
+    feature = "memory-model-checks",
     ignore = "resource exhaustion doesn't guarantee heap state consistency"
 )]
 fn executor_iter_resource_limit_before_function_call() {
@@ -372,7 +517,7 @@ fn executor_iter_resource_limit_before_function_call() {
 
 #[test]
 #[cfg_attr(
-    feature = "ref-count-panic",
+    feature = "memory-model-checks",
     ignore = "resource exhaustion doesn't guarantee heap state consistency"
 )]
 fn char_f_string_not_allocated() {
@@ -436,7 +581,7 @@ fn executor_iter_resource_limit_multiple_function_calls() {
 /// the memory limit.
 #[test]
 #[cfg_attr(
-    feature = "ref-count-panic",
+    feature = "memory-model-checks",
     ignore = "resource exhaustion doesn't guarantee heap state consistency"
 )]
 fn recursion_respects_memory_limit() {
@@ -468,7 +613,7 @@ recurse(1000)
 /// Test that recursion depth limit returns an error.
 #[test]
 #[cfg_attr(
-    feature = "ref-count-panic",
+    feature = "memory-model-checks",
     ignore = "resource exhaustion doesn't guarantee heap state consistency"
 )]
 fn recursion_depth_limit_exceeded() {
@@ -603,7 +748,7 @@ fn pow_intermediate_allocation_multiplier() {
     // 2 bits * 500000 = 125KB final, × 4 = 500072 bytes (includes base memory offset)
     assert_eq!(
         exc.message(),
-        Some("memory limit exceeded: 500072 bytes > 200000 bytes")
+        Some("memory limit exceeded: 500000 bytes > 200000 bytes")
     );
 }
 
@@ -648,7 +793,7 @@ fn pow_fuzzer_oom_chained_exponentiation() {
     // 2 bits * 3661666 = 915KB final, × 4 = 3661740 bytes
     assert_eq!(
         exc.message(),
-        Some("memory limit exceeded: 3661740 bytes > 1048576 bytes")
+        Some("memory limit exceeded: 3661668 bytes > 1048576 bytes")
     );
 }
 
@@ -671,7 +816,7 @@ fn pow_fuzzer_oom_full_input() {
     // so estimate = 2 * 3661666 bits = 915KB. With 4× multiplier: 3661740 bytes > 1MB.
     assert_eq!(
         exc.message(),
-        Some("memory limit exceeded: 3661740 bytes > 1048576 bytes")
+        Some("memory limit exceeded: 3661668 bytes > 1048576 bytes")
     );
 }
 
@@ -815,7 +960,7 @@ fn bigint_rejected_before_allocation() {
     assert_eq!(exc.exc_type(), ExcType::MemoryError);
     assert_eq!(
         exc.message(),
-        Some("memory limit exceeded: 1000072 bytes > 100000 bytes")
+        Some("memory limit exceeded: 1000000 bytes > 100000 bytes")
     );
 }
 
@@ -887,6 +1032,40 @@ fn bytes_mult_within_limit() {
 
     assert!(result.is_ok(), "small bytes mult should succeed");
     assert_eq!(result.unwrap(), MontyObject::Bool(true));
+}
+
+/// Test that `bytes(n)` is rejected before allocation when `n` exceeds the memory limit.
+///
+/// The integer constructor allocates a zero-filled buffer; the requested size must
+/// be validated against the resource tracker before the native allocation occurs.
+#[test]
+fn bytes_int_constructor_memory_limit() {
+    let code = "bytes(1000000)";
+    let ex = MontyRun::new(code.to_owned(), "test.py", vec![]).unwrap();
+
+    let limits = ResourceLimits::new().max_memory(100_000);
+    let result = ex.run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout);
+
+    assert!(result.is_err(), "large bytes(n) should be rejected");
+    let exc = result.unwrap_err();
+    assert_eq!(exc.exc_type(), ExcType::MemoryError);
+    assert!(
+        exc.message().is_some_and(|m| m.contains("memory limit exceeded")),
+        "expected memory limit error, got: {exc}"
+    );
+}
+
+/// Test that small `bytes(n)` works within limits.
+#[test]
+fn bytes_int_constructor_within_limit() {
+    let code = "len(bytes(100))";
+    let ex = MontyRun::new(code.to_owned(), "test.py", vec![]).unwrap();
+
+    let limits = ResourceLimits::new().max_memory(100_000);
+    let result = ex.run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout);
+
+    assert!(result.is_ok(), "small bytes(n) should succeed");
+    assert_eq!(result.unwrap(), MontyObject::Int(100));
 }
 
 /// Test that string multiplication is rejected before allocation via check_large_result.
@@ -966,9 +1145,9 @@ fn list_mult_within_limit() {
 
 /// Test that `int * bytes` (int on left) is also rejected by the pre-check.
 ///
-/// This catches a bug where interned bytes/strings bypassed the `mult_sequence`
-/// pre-check because `py_mult` handled `InternBytes * Int` inline without
-/// checking resource limits.
+/// This catches a bug where interned bytes/strings bypassed the sequence-repetition
+/// pre-check in `py_mult` because the `InternBytes * Int` arm was handled inline
+/// without checking resource limits.
 #[test]
 fn int_times_bytes_memory_limit() {
     // int on left side: 1000000 * b'x' = 1MB
@@ -1143,7 +1322,7 @@ fn timeout_in_all_builtin() {
 /// `enumerate()` creates tuples on each iteration via `for_next()`.
 #[test]
 #[cfg_attr(
-    feature = "ref-count-panic",
+    feature = "memory-model-checks",
     ignore = "resource exhaustion doesn't guarantee heap state consistency"
 )]
 fn timeout_in_any_builtin() {
@@ -1177,7 +1356,7 @@ fn timeout_in_str_join() {
 /// The sort comparison loop has an explicit `heap.check_time()` call.
 #[test]
 #[cfg_attr(
-    feature = "ref-count-panic",
+    feature = "memory-model-checks",
     ignore = "resource exhaustion doesn't guarantee heap state consistency"
 )]
 fn timeout_in_sorted_comparison_loop() {
@@ -1192,11 +1371,11 @@ sorted(x)
 
 /// Test that `[1] * 10_000_000` (list repetition) respects the time limit.
 ///
-/// The `mult_sequence()` copy loop now calls `heap.check_time()` on each
-/// repetition to prevent large sequence multiplications from bypassing timeout.
+/// The sequence-repetition copy loop in `py_mult` now calls `heap.check_time()`
+/// on each repetition to prevent large sequence multiplications from bypassing timeout.
 #[test]
 #[cfg_attr(
-    feature = "ref-count-panic",
+    feature = "memory-model-checks",
     ignore = "resource exhaustion doesn't guarantee heap state consistency"
 )]
 fn timeout_in_list_repetition() {
@@ -1205,11 +1384,11 @@ fn timeout_in_list_repetition() {
 
 /// Test that `(1,) * 10_000_000` (tuple repetition) respects the time limit.
 ///
-/// Same as list repetition but for tuples — both paths in `mult_sequence()`
-/// now check the time limit.
+/// Same as list repetition but for tuples — both sequence-repetition paths in
+/// `py_mult` now check the time limit.
 #[test]
 #[cfg_attr(
-    feature = "ref-count-panic",
+    feature = "memory-model-checks",
     ignore = "resource exhaustion doesn't guarantee heap state consistency"
 )]
 fn timeout_in_tuple_repetition() {
@@ -1222,7 +1401,7 @@ fn timeout_in_tuple_repetition() {
 /// it must compare every element before returning True.
 #[test]
 #[cfg_attr(
-    feature = "ref-count-panic",
+    feature = "memory-model-checks",
     ignore = "resource exhaustion doesn't guarantee heap state consistency"
 )]
 fn timeout_in_list_equality() {
@@ -1240,7 +1419,7 @@ a == b
 /// dicts, it must check every entry before returning True.
 #[test]
 #[cfg_attr(
-    feature = "ref-count-panic",
+    feature = "memory-model-checks",
     ignore = "resource exhaustion doesn't guarantee heap state consistency"
 )]
 fn timeout_in_dict_equality() {
@@ -1258,7 +1437,7 @@ a == b
 /// that now calls `heap.check_time()` on each iteration.
 #[test]
 #[cfg_attr(
-    feature = "ref-count-panic",
+    feature = "memory-model-checks",
     ignore = "resource exhaustion doesn't guarantee heap state consistency"
 )]
 fn timeout_in_str_splitlines() {
@@ -1274,7 +1453,7 @@ s.splitlines()
 /// `bytes_splitlines()` scans bytes for line endings and now checks the time limit.
 #[test]
 #[cfg_attr(
-    feature = "ref-count-panic",
+    feature = "memory-model-checks",
     ignore = "resource exhaustion doesn't guarantee heap state consistency"
 )]
 fn timeout_in_bytes_splitlines() {
@@ -1342,7 +1521,7 @@ fn assert_repr_timeout(code: &str, label: &str) {
 /// to trigger the timeout.
 #[test]
 #[cfg_attr(
-    feature = "ref-count-panic",
+    feature = "memory-model-checks",
     ignore = "resource exhaustion doesn't guarantee heap state consistency"
 )]
 fn timeout_truncation_in_list_repr() {
@@ -1360,7 +1539,7 @@ repr(x)
 /// making repr formatting slow enough to trigger the timeout.
 #[test]
 #[cfg_attr(
-    feature = "ref-count-panic",
+    feature = "memory-model-checks",
     ignore = "resource exhaustion doesn't guarantee heap state consistency"
 )]
 fn timeout_truncation_in_dict_repr() {
@@ -1378,7 +1557,7 @@ repr(x)
 /// to trigger the timeout.
 #[test]
 #[cfg_attr(
-    feature = "ref-count-panic",
+    feature = "memory-model-checks",
     ignore = "resource exhaustion doesn't guarantee heap state consistency"
 )]
 fn timeout_truncation_in_set_repr() {
@@ -1981,4 +2160,95 @@ len(x) + len(d) + len(s)
         "moderate operations should succeed within generous limit"
     );
     assert_eq!(result.unwrap(), MontyObject::Int(300));
+}
+
+// === Iterator pre-allocation resource-limit tests ===
+
+/// Test that constructing a set from a huge `range` is bounded by the memory limit.
+///
+/// `range` reports its full remaining length as the iterator size hint. Container
+/// constructors that pre-allocate from the hint must validate it against the
+/// resource tracker before reaching for the global allocator, since an allocation
+/// failure aborts the host instead of raising MemoryError.
+#[test]
+fn set_from_huge_range_memory_limit() {
+    let code = "set(range(10 ** 9))";
+    let ex = MontyRun::new(code.to_owned(), "test.py", vec![]).unwrap();
+
+    let limits = ResourceLimits::new().max_memory(100_000);
+    let result = ex.run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout);
+
+    assert!(result.is_err(), "huge set pre-allocation should be rejected");
+    let exc = result.unwrap_err();
+    assert_eq!(exc.exc_type(), ExcType::MemoryError);
+}
+
+/// Test that `frozenset` from a huge `range` is bounded by the memory limit.
+#[test]
+fn frozenset_from_huge_range_memory_limit() {
+    let code = "frozenset(range(10 ** 9))";
+    let ex = MontyRun::new(code.to_owned(), "test.py", vec![]).unwrap();
+
+    let limits = ResourceLimits::new().max_memory(100_000);
+    let result = ex.run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout);
+
+    assert!(result.is_err(), "huge frozenset pre-allocation should be rejected");
+    assert_eq!(result.unwrap_err().exc_type(), ExcType::MemoryError);
+}
+
+/// Test that `map()` over a huge `range` is bounded by the memory limit.
+#[test]
+fn map_over_huge_range_memory_limit() {
+    let code = "list(map(str, range(10 ** 9)))";
+    let ex = MontyRun::new(code.to_owned(), "test.py", vec![]).unwrap();
+
+    let limits = ResourceLimits::new().max_memory(100_000);
+    let result = ex.run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout);
+
+    assert!(result.is_err(), "huge map pre-allocation should be rejected");
+    assert_eq!(result.unwrap_err().exc_type(), ExcType::MemoryError);
+}
+
+/// Test that dict-view set operations over a huge iterable are bounded by the
+/// memory limit.
+///
+/// `dict.keys().isdisjoint(...)` collects the right-hand iterable into a
+/// temporary set with capacity drawn from the iterator's size hint, which goes
+/// through the same pre-allocation guard as `set()`.
+#[test]
+fn dict_view_isdisjoint_huge_range_memory_limit() {
+    let code = "{1: 1}.keys().isdisjoint(range(10 ** 9))";
+    let ex = MontyRun::new(code.to_owned(), "test.py", vec![]).unwrap();
+
+    let limits = ResourceLimits::new().max_memory(100_000);
+    let result = ex.run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout);
+
+    assert!(result.is_err(), "huge dict-view pre-allocation should be rejected");
+    assert_eq!(result.unwrap_err().exc_type(), ExcType::MemoryError);
+}
+
+/// Test that small dict-view `isdisjoint` over an iterable still succeeds.
+#[test]
+fn dict_view_isdisjoint_within_limit() {
+    let code = "{1: 1}.keys().isdisjoint(range(2, 5))";
+    let ex = MontyRun::new(code.to_owned(), "test.py", vec![]).unwrap();
+
+    let limits = ResourceLimits::new().max_memory(100_000);
+    let result = ex.run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout);
+
+    assert!(result.is_ok(), "small dict-view isdisjoint should succeed: {result:?}");
+    assert_eq!(result.unwrap(), MontyObject::Bool(true));
+}
+
+/// Test that small set/map construction still succeeds within limits.
+#[test]
+fn set_from_range_within_limit() {
+    let code = "len(set(range(50))) + len(list(map(str, range(20))))";
+    let ex = MontyRun::new(code.to_owned(), "test.py", vec![]).unwrap();
+
+    let limits = ResourceLimits::new().max_memory(100_000);
+    let result = ex.run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout);
+
+    assert!(result.is_ok(), "small set/map construction should succeed: {result:?}");
+    assert_eq!(result.unwrap(), MontyObject::Int(70));
 }

@@ -1,7 +1,6 @@
-use std::{fmt::Write, mem};
+use std::{cell::Cell, fmt::Write, mem};
 
 use ahash::AHashSet;
-use bytemuck::TransparentWrapper;
 use hashbrown::HashTable;
 use smallvec::SmallVec;
 
@@ -11,7 +10,11 @@ use crate::{
     bytecode::{CallResult, VM},
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, RunResult},
-    heap::{ContainsHeap, DropWithHeap, HeapData, HeapGuard, HeapId, HeapItem, HeapRead},
+    hash::HashValue,
+    heap::{
+        BorrowedHeapRead, BorrowedHeapReadMut, ContainsHeap, DropWithHeap, HeapData, HeapGuard, HeapId, HeapItem,
+        HeapRead, HeapReadOutput, heap_read_ref_as_field, heap_read_ref_as_field_mut,
+    },
     intern::StaticStrings,
     resource::{ResourceError, ResourceTracker},
     types::Type,
@@ -85,14 +88,6 @@ impl SetStorage {
         self.entries.is_empty()
     }
 
-    /// Returns whether this set contains any heap references (`Value::Ref`).
-    ///
-    /// Used during allocation to determine if this container could create cycles.
-    #[inline]
-    fn has_refs(&self) -> bool {
-        self.entries.iter().any(|e| matches!(e.value, Value::Ref(_)))
-    }
-
     /// Adds an element to the set, transferring ownership.
     ///
     /// Returns `Ok(true)` if the element was added (not already present),
@@ -101,19 +96,10 @@ impl SetStorage {
     ///
     /// The caller transfers ownership of `value`. If the value is already in
     /// the set, it will be dropped.
-    fn add(&mut self, value: Value, vm: &mut VM<'_, '_, impl ResourceTracker>) -> RunResult<bool> {
-        let hash = match value.py_hash(vm) {
-            Ok(Some(h)) => h,
-            Ok(None) => {
-                let err = ExcType::type_error_unhashable_set_element(value.py_type(vm));
-                value.drop_with_heap(vm);
-                return Err(err);
-            }
-            Err(e) => {
-                value.drop_with_heap(vm);
-                return Err(e.into());
-            }
-        };
+    fn add(&mut self, value: Value, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<bool> {
+        let mut value_guard = HeapGuard::new(value, vm);
+        let (value, vm) = value_guard.as_parts_mut();
+        let hash = set_element_hash(value, vm)?;
 
         // Check if value already exists.
         let existing = self
@@ -121,14 +107,13 @@ impl SetStorage {
             .find(hash, |&idx| value.py_eq(&self.entries[idx].value, vm).unwrap_or(false));
 
         if existing.is_some() {
-            // Value already in set, drop the new value
-            value.drop_with_heap(vm);
             Ok(false)
         } else {
             // Track memory growth before adding the new entry.
             // Growth unit matches SetStorage::estimate_size which uses size_of::<SetEntry>().
             vm.heap.track_growth(mem::size_of::<SetEntry>())?;
             let index = self.entries.len();
+            let value = value_guard.into_inner();
             self.entries.push(SetEntry { value, hash });
             self.indices.insert_unique(hash, index, |&idx| self.entries[idx].hash);
             Ok(true)
@@ -141,10 +126,8 @@ impl<'h> HeapRead<'h, SetStorage> {
     ///
     /// Returns `Ok(true)` if the element was removed, `Ok(false)` if not found.
     /// Returns `Err` if the key is unhashable.
-    fn remove(&mut self, value: &Value, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<bool> {
-        let hash = value
-            .py_hash(vm)?
-            .ok_or_else(|| ExcType::type_error_unhashable_set_element(value.py_type(vm)))?;
+    fn remove(&mut self, value: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<bool> {
+        let hash = set_element_hash(value, vm)?;
 
         // Collect candidates by hash
         let mut candidates: SmallVec<[usize; 2]> = SmallVec::new();
@@ -186,7 +169,7 @@ impl<'h> HeapRead<'h, SetStorage> {
     /// Removes an element from the set without raising an error if not found.
     ///
     /// Returns `Ok(())` always (unless the key is unhashable).
-    fn discard(&mut self, value: &Value, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<()> {
+    fn discard(&mut self, value: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<()> {
         self.remove(value, vm)?;
         Ok(())
     }
@@ -194,7 +177,7 @@ impl<'h> HeapRead<'h, SetStorage> {
     /// Removes and returns an arbitrary element from the set.
     ///
     /// Returns `Err(KeyError)` if the set is empty.
-    fn pop(&mut self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<Value> {
+    fn pop(&mut self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Value> {
         if self.get(vm.heap).is_empty() {
             return Err(ExcType::key_error_pop_empty_set());
         }
@@ -214,7 +197,7 @@ impl<'h> HeapRead<'h, SetStorage> {
     }
 
     /// Removes all elements from the set.
-    fn clear(&mut self, vm: &mut VM<'h, '_, impl ResourceTracker>) {
+    fn clear(&mut self, vm: &mut VM<'h, impl ResourceTracker>) {
         let entries: Vec<SetEntry> = self.get_mut(vm.heap).entries.drain(..).collect();
         self.get_mut(vm.heap).indices.clear();
         entries.drop_with_heap(vm);
@@ -240,10 +223,8 @@ impl SetStorage {
 
 impl<'h> HeapRead<'h, SetStorage> {
     /// Checks if the set contains a value.
-    pub fn contains(&self, value: &Value, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<bool> {
-        let hash = value
-            .py_hash(vm)?
-            .ok_or_else(|| ExcType::type_error_unhashable_set_element(value.py_type(vm)))?;
+    pub fn contains(&self, value: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<bool> {
+        let hash = set_element_hash(value, vm)?;
 
         // Collect candidates by hash
         let mut candidates: SmallVec<[usize; 2]> = SmallVec::new();
@@ -286,7 +267,7 @@ impl SetStorage {
         for entry in &mut self.entries {
             if let Value::Ref(id) = &entry.value {
                 stack.push(*id);
-                #[cfg(feature = "ref-count-panic")]
+                #[cfg(feature = "memory-model-checks")]
                 entry.value.dec_ref_forget();
             }
         }
@@ -295,7 +276,7 @@ impl SetStorage {
 
 impl<'h> HeapRead<'h, SetStorage> {
     /// Compares two sets for equality.
-    fn eq(&self, other: &Self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> Result<bool, ResourceError> {
+    fn eq(&self, other: &Self, vm: &mut VM<'h, impl ResourceTracker>) -> Result<bool, ResourceError> {
         if self.get(vm.heap).len() != other.get(vm.heap).len() {
             return Ok(false);
         }
@@ -316,7 +297,7 @@ impl<'h> HeapRead<'h, SetStorage> {
 
 impl SetStorage {
     /// Returns true if this set is a subset of other.
-    fn is_subset(&self, other: &Self, vm: &mut VM<'_, '_, impl ResourceTracker>) -> RunResult<bool> {
+    fn is_subset(&self, other: &Self, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<bool> {
         for entry in &self.entries {
             if !vm.heap.protect(other).contains(&entry.value, vm)? {
                 return Ok(false);
@@ -326,12 +307,12 @@ impl SetStorage {
     }
 
     /// Returns true if this set is a superset of other.
-    fn is_superset(&self, other: &Self, vm: &mut VM<'_, '_, impl ResourceTracker>) -> RunResult<bool> {
+    fn is_superset(&self, other: &Self, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<bool> {
         other.is_subset(self, vm)
     }
 
     /// Returns true if this set has no elements in common with other.
-    fn is_disjoint(&self, other: &Self, vm: &mut VM<'_, '_, impl ResourceTracker>) -> RunResult<bool> {
+    fn is_disjoint(&self, other: &Self, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<bool> {
         // Iterate over the smaller set for efficiency
         let (smaller, larger) = if self.len() <= other.len() {
             (self, other)
@@ -350,7 +331,7 @@ impl SetStorage {
 
 impl<'h> HeapRead<'h, SetStorage> {
     /// Returns a new set containing elements in either set (union).
-    fn union(&self, other: &Self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<SetStorage> {
+    fn union(&self, other: &Self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<SetStorage> {
         let mut result_guard = HeapGuard::new(self.get(vm.heap).clone_with_heap(vm), vm);
         let (result, vm) = result_guard.as_parts_mut();
         let len = other.get(vm.heap).len();
@@ -362,7 +343,7 @@ impl<'h> HeapRead<'h, SetStorage> {
     }
 
     /// Returns a new set containing elements in both sets (intersection).
-    fn intersection(&self, other: &Self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<SetStorage> {
+    fn intersection(&self, other: &Self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<SetStorage> {
         let mut result_guard = HeapGuard::new(SetStorage::new(), vm);
         let (result, vm) = result_guard.as_parts_mut();
         // Iterate over the smaller set for efficiency
@@ -386,7 +367,7 @@ impl<'h> HeapRead<'h, SetStorage> {
     }
 
     /// Returns a new set containing elements in self but not in other (difference).
-    fn difference(&self, other: &Self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<SetStorage> {
+    fn difference(&self, other: &Self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<SetStorage> {
         let mut result_guard = HeapGuard::new(SetStorage::new(), vm);
         let (result, vm) = result_guard.as_parts_mut();
         let len = self.get(vm.heap).len();
@@ -403,7 +384,7 @@ impl<'h> HeapRead<'h, SetStorage> {
     }
 
     /// Returns a new set containing elements in either set but not both (symmetric difference).
-    fn symmetric_difference(&self, other: &Self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<SetStorage> {
+    fn symmetric_difference(&self, other: &Self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<SetStorage> {
         let mut result_guard = HeapGuard::new(SetStorage::new(), vm);
         let (result, vm) = result_guard.as_parts_mut();
 
@@ -435,27 +416,25 @@ impl<'h> HeapRead<'h, SetStorage> {
     }
 }
 
-impl SetStorage {
+impl<'h> HeapRead<'h, SetStorage> {
     /// Writes the repr format to a formatter.
-    ///
-    /// For sets, outputs `{elem1, elem2, ...}` (no type prefix).
-    /// For frozensets, outputs `frozenset({elem1, elem2, ...})`.
-    fn repr_fmt(
+    fn repr_fmt<T: ResourceTracker>(
         &self,
         f: &mut impl Write,
-        vm: &VM<'_, '_, impl ResourceTracker>,
+        vm: &mut VM<'h, T>,
         heap_ids: &mut AHashSet<HeapId>,
         type_name: &str,
     ) -> RunResult<()> {
-        if self.is_empty() {
+        let len = self.get(vm.heap).len();
+        if len == 0 {
             return Ok(write!(f, "{type_name}()")?);
         }
 
         // Check depth limit before recursing
-        let Some(token) = vm.heap.incr_recursion_depth_for_repr() else {
+        let Ok(token) = vm.heap.incr_recursion_depth() else {
             return Ok(f.write_str("{...}")?);
         };
-        crate::defer_drop_immutable_heap!(token, vm);
+        defer_drop!(token, vm);
 
         // frozenset needs type prefix: frozenset({...}), but set doesn't: {...}
         let needs_prefix = type_name != "set";
@@ -464,17 +443,23 @@ impl SetStorage {
         }
 
         f.write_char('{')?;
-        let mut first = true;
-        for entry in &self.entries {
-            if !first {
+        for i in 0..len {
+            if i > 0 {
                 if vm.heap.check_time().is_err() {
                     f.write_str(", ...[timeout]")?;
                     break;
                 }
                 f.write_str(", ")?;
             }
-            first = false;
-            entry.value.py_repr_fmt(f, vm, heap_ids)?;
+            // Refcount-bump each element before recursing so a user-defined
+            // `__repr__` mutating the set can't free the entry mid-format.
+            let value = self
+                .get(vm.heap)
+                .value_at(i)
+                .expect("index in range")
+                .clone_with_heap(vm.heap);
+            defer_drop!(value, vm);
+            value.py_repr_fmt(f, vm, heap_ids)?;
         }
         f.write_char('}')?;
 
@@ -484,7 +469,9 @@ impl SetStorage {
 
         Ok(())
     }
+}
 
+impl SetStorage {
     /// Estimates the memory size of this storage.
     fn estimate_size(&self) -> usize {
         mem::size_of::<Self>() + self.len() * mem::size_of::<SetEntry>()
@@ -501,8 +488,7 @@ impl SetStorage {
 /// When values are added, their reference counts are NOT incremented by the set -
 /// the caller transfers ownership. When values are removed or the set is cleared,
 /// their reference counts are decremented.
-#[derive(Debug, Default, TransparentWrapper)]
-#[repr(transparent)]
+#[derive(Debug, Default)]
 pub(crate) struct Set(SetStorage);
 
 impl Set {
@@ -530,19 +516,10 @@ impl Set {
         self.0.is_empty()
     }
 
-    /// Returns whether this set contains any heap references (`Value::Ref`).
-    ///
-    /// Used during allocation to determine if this container could create cycles.
-    #[inline]
-    #[must_use]
-    pub fn has_refs(&self) -> bool {
-        self.0.has_refs()
-    }
-
     /// Adds an element to the set, transferring ownership.
     ///
     /// Returns `Ok(true)` if added, `Ok(false)` if already present.
-    pub fn add(&mut self, value: Value, vm: &mut VM<'_, '_, impl ResourceTracker>) -> RunResult<bool> {
+    pub fn add(&mut self, value: Value, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<bool> {
         self.0.add(value, vm)
     }
 }
@@ -551,8 +528,8 @@ impl<'h> HeapRead<'h, Set> {
     /// Removes an element from the set.
     ///
     /// Returns `Err(KeyError)` if the element is not present.
-    pub fn remove(&mut self, value: &Value, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<()> {
-        if self.peel_mut().remove(value, vm)? {
+    pub fn remove(&mut self, value: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<()> {
+        if self.storage_mut().remove(value, vm)? {
             Ok(())
         } else {
             Err(ExcType::key_error(value, vm))
@@ -562,26 +539,34 @@ impl<'h> HeapRead<'h, Set> {
     /// Removes an element from the set if present.
     ///
     /// Does not raise an error if the element is not found.
-    pub fn discard(&mut self, value: &Value, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<()> {
-        self.peel_mut().discard(value, vm)
+    pub fn discard(&mut self, value: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<()> {
+        self.storage_mut().discard(value, vm)
     }
 
     /// Removes and returns an arbitrary element from the set.
     ///
     /// Returns `Err(KeyError)` if the set is empty.
-    pub fn pop(&mut self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<Value> {
-        self.peel_mut().pop(vm)
+    pub fn pop(&mut self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Value> {
+        self.storage_mut().pop(vm)
     }
 
     /// Removes all elements from the set.
-    pub fn clear(&mut self, vm: &mut VM<'h, '_, impl ResourceTracker>) {
-        self.peel_mut().clear(vm);
+    pub fn clear(&mut self, vm: &mut VM<'h, impl ResourceTracker>) {
+        self.storage_mut().clear(vm);
     }
 
     /// Returns a shallow copy of the set.
     #[must_use]
-    pub fn copy(&self, vm: &VM<'h, '_, impl ResourceTracker>) -> Set {
+    pub fn copy(&self, vm: &VM<'h, impl ResourceTracker>) -> Set {
         Set(self.get(vm.heap).0.clone_with_heap(vm.heap))
+    }
+
+    fn storage(&self) -> BorrowedHeapRead<'_, 'h, SetStorage> {
+        heap_read_ref_as_field!(self, Set, 0)
+    }
+
+    fn storage_mut(&mut self) -> BorrowedHeapReadMut<'_, 'h, SetStorage> {
+        heap_read_ref_as_field_mut!(self, Set, 0)
     }
 }
 
@@ -604,7 +589,7 @@ impl Set {
     ///
     /// - `set()` with no args returns an empty set
     /// - `set(iterable)` creates a set from any iterable (list, tuple, set, dict, range, str, bytes)
-    pub fn init(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    pub fn init(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
         let value = args.get_zero_one_arg("set", vm.heap)?;
         let set = match value {
             None => Self::new(),
@@ -618,9 +603,12 @@ impl Set {
     ///
     /// Unlike list/tuple which can just collect into a Vec, sets need to add
     /// each element individually to handle duplicates and compute hashes.
-    fn from_iterator(iter: MontyIter, vm: &mut VM<'_, '_, impl ResourceTracker>) -> RunResult<Self> {
+    fn from_iterator(iter: MontyIter, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<Self> {
         defer_drop_mut!(iter, vm);
-        let mut set = Self::with_capacity(iter.size_hint(vm.heap));
+        // `preallocation_hint` validates the requested capacity against the
+        // resource tracker and clamps it so an attacker-controlled iterable
+        // length cannot drive an unbounded native pre-allocation.
+        let mut set = Self::with_capacity(iter.preallocation_hint(mem::size_of::<SetEntry>(), vm)?);
         while let Some(item) = iter.for_next(vm)? {
             set.add(item, vm)?;
         }
@@ -631,7 +619,7 @@ impl Set {
     ///
     /// This is a convenience method used by helper methods that need to convert
     /// arbitrary iterables to sets. It uses `MontyIter` internally.
-    fn from_iterable(iterable: Value, vm: &mut VM<'_, '_, impl ResourceTracker>) -> RunResult<Self> {
+    fn from_iterable(iterable: Value, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<Self> {
         let iter = MontyIter::new(iterable, vm)?;
         let set = Self::from_iterator(iter, vm)?;
         Ok(set)
@@ -647,19 +635,10 @@ impl<'h> HeapRead<'h, Set> {
     ///
     /// Uses a two-phase lookup (collect candidates, then compare) to avoid
     /// holding a borrow on the set storage during `py_eq` calls.
-    pub fn add(&mut self, value: Value, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<bool> {
-        let hash = match value.py_hash(vm) {
-            Ok(Some(h)) => h,
-            Ok(None) => {
-                let err = ExcType::type_error_unhashable_set_element(value.py_type(vm));
-                value.drop_with_heap(vm);
-                return Err(err);
-            }
-            Err(e) => {
-                value.drop_with_heap(vm);
-                return Err(e.into());
-            }
-        };
+    pub fn add(&mut self, value: Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<bool> {
+        let mut value_guard = HeapGuard::new(value, vm);
+        let (value, vm) = value_guard.as_parts();
+        let hash = set_element_hash(value, vm)?;
 
         // Collect candidate indices to avoid borrow conflict between set storage and py_eq
         let mut candidates: SmallVec<[usize; 2]> = SmallVec::new();
@@ -675,8 +654,6 @@ impl<'h> HeapRead<'h, Set> {
             let candidate_value = self.get(vm.heap).0.entries[candidate_index].value.clone_with_heap(vm);
             defer_drop!(candidate_value, vm);
             if value.py_eq(candidate_value, vm)? {
-                // Value already in set, drop the new value
-                value.drop_with_heap(vm);
                 return Ok(false);
             }
         }
@@ -686,6 +663,7 @@ impl<'h> HeapRead<'h, Set> {
         vm.heap.track_growth(mem::size_of::<SetEntry>())?;
 
         // Add new entry
+        let (value, vm) = value_guard.into_parts();
         let storage = &mut self.get_mut(vm.heap).0;
         let index = storage.entries.len();
         storage.entries.push(SetEntry { value, hash });
@@ -695,18 +673,18 @@ impl<'h> HeapRead<'h, Set> {
         Ok(true)
     }
 
-    pub(crate) fn contains(&self, value: &Value, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<bool> {
-        self.peel_ref().contains(value, vm)
+    pub(crate) fn contains(&self, value: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<bool> {
+        self.storage().contains(value, vm)
     }
 
     /// `set.update(iterable)` via HeapRead.
-    fn hr_update(&mut self, other: Value, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<()> {
+    fn hr_update(&mut self, other: Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<()> {
         // Try direct extraction from Set/FrozenSet
         let entries_opt = {
             match &other {
                 Value::Ref(id) => match vm.heap.get(*id) {
                     HeapData::Set(s) => Some(s.0.clone_entries(vm.heap)),
-                    HeapData::FrozenSet(fs) => Some(fs.0.clone_entries(vm.heap)),
+                    HeapData::FrozenSet(fs) => Some(fs.storage.clone_entries(vm.heap)),
                     _ => None,
                 },
                 _ => None,
@@ -733,16 +711,16 @@ impl<'h> HeapRead<'h, Set> {
     /// Set algebra operations (union, intersection, difference, symmetric_difference)
     /// via HeapRead. Clones self's storage once, then calls the existing `SetStorage`
     /// methods on the standalone copy.
-    fn set_algebra(&self, other: Value, op: SetAlgebra, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<Value> {
+    fn set_algebra(&self, other: Value, op: SetAlgebra, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Value> {
         let other_storage = Set::get_storage_from_value(other, vm)?;
         defer_drop!(other_storage, vm);
         let other_storage = vm.heap.protect(other_storage);
 
         let result = match op {
-            SetAlgebra::Union => self.peel_ref().union(&other_storage, vm)?,
-            SetAlgebra::Intersection => self.peel_ref().intersection(&other_storage, vm)?,
-            SetAlgebra::Difference => self.peel_ref().difference(&other_storage, vm)?,
-            SetAlgebra::SymmetricDifference => self.peel_ref().symmetric_difference(&other_storage, vm)?,
+            SetAlgebra::Union => self.storage().union(&other_storage, vm)?,
+            SetAlgebra::Intersection => self.storage().intersection(&other_storage, vm)?,
+            SetAlgebra::Difference => self.storage().difference(&other_storage, vm)?,
+            SetAlgebra::SymmetricDifference => self.storage().symmetric_difference(&other_storage, vm)?,
         };
 
         let heap_id = vm.heap.allocate(HeapData::Set(Set(result)))?;
@@ -755,13 +733,13 @@ impl<'h> HeapRead<'h, Set> {
         &self,
         other: &Value,
         op: SetComparison,
-        vm: &mut VM<'h, '_, impl ResourceTracker>,
+        vm: &mut VM<'h, impl ResourceTracker>,
     ) -> RunResult<bool> {
         // Get other's storage
         let entries_opt = match other {
             Value::Ref(id) => match vm.heap.get(*id) {
                 HeapData::Set(s) => Some(s.0.clone_entries(vm.heap)),
-                HeapData::FrozenSet(fs) => Some(fs.0.clone_entries(vm.heap)),
+                HeapData::FrozenSet(fs) => Some(fs.storage.clone_entries(vm.heap)),
                 _ => None,
             },
             _ => None,
@@ -817,37 +795,15 @@ impl DropWithHeap for SetStorage {
 
 impl DropWithHeap for FrozenSet {
     fn drop_with_heap<H: ContainsHeap>(self, heap: &mut H) {
-        self.0.drop_with_heap(heap);
+        self.storage.drop_with_heap(heap);
     }
 }
 
 impl<'h> HeapRead<'h, FrozenSet> {
     /// Checks if the frozenset contains a value, using the candidate collection pattern
     /// to avoid holding a borrow on the storage during `py_eq` calls.
-    pub(crate) fn contains(&self, value: &Value, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<bool> {
-        let hash = value
-            .py_hash(vm)?
-            .ok_or_else(|| ExcType::type_error_unhashable_set_element(value.py_type(vm)))?;
-
-        // Collect candidate indices (hash match only) via shared borrow
-        let mut candidates: SmallVec<[usize; 2]> = SmallVec::new();
-        let storage = &self.get(vm.heap).0;
-        storage.indices.find(hash, |&idx| {
-            if storage.entries[idx].hash == hash {
-                candidates.push(idx);
-            }
-            false
-        });
-
-        for candidate_index in candidates {
-            let candidate_value = self.get(vm.heap).0.entries[candidate_index].value.clone_with_heap(vm);
-            defer_drop!(candidate_value, vm);
-            if value.py_eq(candidate_value, vm)? {
-                return Ok(true);
-            }
-        }
-
-        Ok(false)
+    pub(crate) fn contains(&self, value: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<bool> {
+        self.storage().contains(value, vm)
     }
 
     /// Binary set operation via HeapRead. Creates a new frozenset from the result.
@@ -858,7 +814,7 @@ impl<'h> HeapRead<'h, FrozenSet> {
         &self,
         other: &Value,
         op: SetBinaryOp,
-        vm: &mut VM<'h, '_, impl ResourceTracker>,
+        vm: &mut VM<'h, impl ResourceTracker>,
     ) -> RunResult<Option<FrozenSet>> {
         let Some(other_storage) = get_storage_from_set_operand(other, vm)? else {
             return Ok(None);
@@ -867,28 +823,28 @@ impl<'h> HeapRead<'h, FrozenSet> {
         let other_storage = vm.heap.protect(other_storage);
 
         let result = match op {
-            SetBinaryOp::And => FrozenSet(self.peel_ref().intersection(&other_storage, vm)?),
-            SetBinaryOp::Or => FrozenSet(self.peel_ref().union(&other_storage, vm)?),
-            SetBinaryOp::Xor => FrozenSet(self.peel_ref().symmetric_difference(&other_storage, vm)?),
-            SetBinaryOp::Sub => FrozenSet(self.peel_ref().difference(&other_storage, vm)?),
+            SetBinaryOp::And => FrozenSet::wrap(self.storage().intersection(&other_storage, vm)?),
+            SetBinaryOp::Or => FrozenSet::wrap(self.storage().union(&other_storage, vm)?),
+            SetBinaryOp::Xor => FrozenSet::wrap(self.storage().symmetric_difference(&other_storage, vm)?),
+            SetBinaryOp::Sub => FrozenSet::wrap(self.storage().difference(&other_storage, vm)?),
         };
         Ok(Some(result))
     }
 
     /// Set algebra operations for frozenset via HeapRead.
-    fn set_algebra(&self, other: Value, op: SetAlgebra, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<Value> {
+    fn set_algebra(&self, other: Value, op: SetAlgebra, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Value> {
         let other_storage = Set::get_storage_from_value(other, vm)?;
         defer_drop!(other_storage, vm);
         let other_storage = vm.heap.protect(other_storage);
 
         let result = match op {
-            SetAlgebra::Union => self.peel_ref().union(&other_storage, vm)?,
-            SetAlgebra::Intersection => self.peel_ref().intersection(&other_storage, vm)?,
-            SetAlgebra::Difference => self.peel_ref().difference(&other_storage, vm)?,
-            SetAlgebra::SymmetricDifference => self.peel_ref().symmetric_difference(&other_storage, vm)?,
+            SetAlgebra::Union => self.storage().union(&other_storage, vm)?,
+            SetAlgebra::Intersection => self.storage().intersection(&other_storage, vm)?,
+            SetAlgebra::Difference => self.storage().difference(&other_storage, vm)?,
+            SetAlgebra::SymmetricDifference => self.storage().symmetric_difference(&other_storage, vm)?,
         };
 
-        let heap_id = vm.heap.allocate(HeapData::FrozenSet(FrozenSet(result)))?;
+        let heap_id = vm.heap.allocate(HeapData::FrozenSet(FrozenSet::wrap(result)))?;
         Ok(Value::Ref(heap_id))
     }
 
@@ -897,12 +853,12 @@ impl<'h> HeapRead<'h, FrozenSet> {
         &self,
         other: &Value,
         op: SetComparison,
-        vm: &mut VM<'h, '_, impl ResourceTracker>,
+        vm: &mut VM<'h, impl ResourceTracker>,
     ) -> RunResult<bool> {
         let entries_opt = match other {
             Value::Ref(id) => match vm.heap.get(*id) {
                 HeapData::Set(s) => Some(s.0.clone_entries(vm.heap)),
-                HeapData::FrozenSet(fs) => Some(fs.0.clone_entries(vm.heap)),
+                HeapData::FrozenSet(fs) => Some(fs.storage.clone_entries(vm.heap)),
                 _ => None,
             },
             _ => None,
@@ -916,7 +872,7 @@ impl<'h> HeapRead<'h, FrozenSet> {
         };
         defer_drop!(other_storage, vm);
 
-        let self_storage = self.get(vm.heap).0.clone_with_heap(vm.heap);
+        let self_storage = self.get(vm.heap).storage.clone_with_heap(vm.heap);
         defer_drop!(self_storage, vm);
 
         match op {
@@ -924,6 +880,10 @@ impl<'h> HeapRead<'h, FrozenSet> {
             SetComparison::Superset => self_storage.is_superset(other_storage, vm),
             SetComparison::Disjoint => self_storage.is_disjoint(other_storage, vm),
         }
+    }
+
+    fn storage(&self) -> BorrowedHeapRead<'_, 'h, SetStorage> {
+        heap_read_ref_as_field!(self, FrozenSet, storage)
     }
 }
 
@@ -934,35 +894,35 @@ impl DropWithHeap for SetEntry {
 }
 
 impl<'h> PyTrait<'h> for HeapRead<'h, Set> {
-    fn py_type(&self, _vm: &VM<'h, '_, impl ResourceTracker>) -> Type {
+    fn py_type(&self, _vm: &VM<'h, impl ResourceTracker>) -> Type {
         Type::Set
     }
 
-    fn py_len(&self, vm: &VM<'h, '_, impl ResourceTracker>) -> Option<usize> {
+    fn py_len(&self, vm: &VM<'h, impl ResourceTracker>) -> Option<usize> {
         Some(self.get(vm.heap).len())
     }
 
-    fn py_eq(&self, other: &Self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> Result<bool, ResourceError> {
-        self.peel_ref().eq(other.peel_ref(), vm)
+    fn py_eq(&self, other: &Self, vm: &mut VM<'h, impl ResourceTracker>) -> Result<bool, ResourceError> {
+        self.storage().eq(&other.storage(), vm)
     }
 
-    fn py_bool(&self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> bool {
+    fn py_bool(&self, vm: &mut VM<'h, impl ResourceTracker>) -> bool {
         !self.get(vm.heap).is_empty()
     }
 
     fn py_repr_fmt(
         &self,
         f: &mut impl Write,
-        vm: &VM<'h, '_, impl ResourceTracker>,
+        vm: &mut VM<'h, impl ResourceTracker>,
         heap_ids: &mut AHashSet<HeapId>,
     ) -> RunResult<()> {
-        self.get(vm.heap).0.repr_fmt(f, vm, heap_ids, "set")
+        self.storage().repr_fmt(f, vm, heap_ids, "set")
     }
 
     fn py_call_attr(
         &mut self,
         _self_id: HeapId,
-        vm: &mut VM<'h, '_, impl ResourceTracker>,
+        vm: &mut VM<'h, impl ResourceTracker>,
         attr: &EitherStr,
         args: ArgValues,
     ) -> RunResult<CallResult> {
@@ -1066,7 +1026,7 @@ impl<'h> HeapRead<'h, Set> {
         &self,
         other: &Value,
         op: SetBinaryOp,
-        vm: &mut VM<'h, '_, impl ResourceTracker>,
+        vm: &mut VM<'h, impl ResourceTracker>,
     ) -> RunResult<Option<Set>> {
         let Some(other_storage) = get_storage_from_set_operand(other, vm)? else {
             return Ok(None);
@@ -1075,10 +1035,10 @@ impl<'h> HeapRead<'h, Set> {
         let other_storage = vm.heap.protect(other_storage);
 
         let result = match op {
-            SetBinaryOp::And => Set(self.peel_ref().intersection(&other_storage, vm)?),
-            SetBinaryOp::Or => Set(self.peel_ref().union(&other_storage, vm)?),
-            SetBinaryOp::Xor => Set(self.peel_ref().symmetric_difference(&other_storage, vm)?),
-            SetBinaryOp::Sub => Set(self.peel_ref().difference(&other_storage, vm)?),
+            SetBinaryOp::And => Set(self.storage().intersection(&other_storage, vm)?),
+            SetBinaryOp::Or => Set(self.storage().union(&other_storage, vm)?),
+            SetBinaryOp::Xor => Set(self.storage().symmetric_difference(&other_storage, vm)?),
+            SetBinaryOp::Sub => Set(self.storage().difference(&other_storage, vm)?),
         };
         Ok(Some(result))
     }
@@ -1086,12 +1046,12 @@ impl<'h> HeapRead<'h, Set> {
 
 impl Set {
     /// Helper to get SetStorage from a Value (either directly or by conversion).
-    fn get_storage_from_value(value: Value, vm: &mut VM<'_, '_, impl ResourceTracker>) -> RunResult<SetStorage> {
+    fn get_storage_from_value(value: Value, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<SetStorage> {
         // Try to get entries from a Set/FrozenSet directly
         let entries_opt = match &value {
             Value::Ref(id) => match vm.heap.get(*id) {
                 HeapData::Set(set) => Some(set.0.clone_entries(vm.heap)),
-                HeapData::FrozenSet(set) => Some(set.0.clone_entries(vm.heap)),
+                HeapData::FrozenSet(set) => Some(set.storage.clone_entries(vm.heap)),
                 _ => None,
             },
             _ => None,
@@ -1126,64 +1086,49 @@ impl HeapItem for Set {
 /// # Hashability
 /// Unlike mutable sets, frozensets can be used as dict keys or set elements because
 /// they are immutable. The hash is computed as the XOR of element hashes (order-independent).
-#[derive(Debug, Default, TransparentWrapper)]
-#[repr(transparent)]
-pub(crate) struct FrozenSet(SetStorage);
+#[derive(Debug, Default)]
+pub(crate) struct FrozenSet {
+    storage: SetStorage,
+    /// Lazily-computed Python hash.
+    cached_hash: Cell<Option<HashValue>>,
+}
 
 impl FrozenSet {
+    /// Wraps an existing `SetStorage` as a frozenset.
+    ///
+    /// The freshly-wrapped frozenset starts with an empty hash cache; the
+    /// hash is computed lazily on first `py_hash` call. Inherited cache
+    /// state is *not* propagated from a source frozenset — each instance
+    /// manages its own cache.
+    #[must_use]
+    pub fn wrap(storage: SetStorage) -> Self {
+        Self {
+            storage,
+            cached_hash: Cell::new(None),
+        }
+    }
+
     /// Creates a new empty frozenset.
     #[must_use]
     pub fn new() -> Self {
-        Self(SetStorage::new())
+        Self::wrap(SetStorage::new())
     }
 
     /// Returns the number of elements in the frozenset.
     #[must_use]
     pub fn len(&self) -> usize {
-        self.0.len()
+        self.storage.len()
     }
 
     /// Returns true if the frozenset is empty.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.0.is_empty()
-    }
-
-    /// Returns whether this frozenset contains any heap references (`Value::Ref`).
-    ///
-    /// Used during allocation to determine if this container could create cycles.
-    #[inline]
-    #[must_use]
-    pub fn has_refs(&self) -> bool {
-        self.0.has_refs()
+        self.storage.is_empty()
     }
 
     /// Returns the internal storage.
     pub(crate) fn storage(&self) -> &SetStorage {
-        &self.0
-    }
-}
-
-impl<'h> HeapRead<'h, FrozenSet> {
-    /// Computes the hash of this frozenset.
-    ///
-    /// The hash is the XOR of all element hashes, making it order-independent.
-    /// Checks recursion depth before recursing into element hashes.
-    pub fn compute_hash(&self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> Result<Option<u64>, ResourceError> {
-        let token = vm.heap.incr_recursion_depth()?;
-        defer_drop!(token, vm);
-        let mut hash: u64 = 0;
-        let len = self.get(vm.heap).0.entries.len();
-        for idx in 0..len {
-            let item = self.get(vm.heap).0.entries[idx].value.clone_with_heap(vm);
-            defer_drop!(item, vm);
-            // All elements must be hashable (enforced at construction)
-            match item.py_hash(vm)? {
-                Some(h) => hash ^= h,
-                None => return Ok(None),
-            }
-        }
-        Ok(Some(hash))
+        &self.storage
     }
 }
 
@@ -1193,14 +1138,14 @@ impl FrozenSet {
     /// This is used when we need to convert a mutable set to an immutable frozenset
     /// without cloning.
     pub fn from_set(set: Set) -> Self {
-        Self(set.0)
+        Self::wrap(set.0)
     }
 
     /// Creates a frozenset from the `frozenset()` constructor call.
     ///
     /// - `frozenset()` with no args returns an empty frozenset
     /// - `frozenset(iterable)` creates a frozenset from any iterable (list, tuple, set, dict, range, str, bytes)
-    pub fn init(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    pub fn init(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
         let value = args.get_zero_one_arg("frozenset", vm.heap)?;
         let frozenset = match value {
             None => Self::new(),
@@ -1212,43 +1157,66 @@ impl FrozenSet {
 }
 
 impl<'h> PyTrait<'h> for HeapRead<'h, FrozenSet> {
-    fn py_type(&self, _vm: &VM<'h, '_, impl ResourceTracker>) -> Type {
+    fn py_type(&self, _vm: &VM<'h, impl ResourceTracker>) -> Type {
         Type::FrozenSet
     }
 
-    fn py_len(&self, vm: &VM<'h, '_, impl ResourceTracker>) -> Option<usize> {
+    fn py_len(&self, vm: &VM<'h, impl ResourceTracker>) -> Option<usize> {
         Some(self.get(vm.heap).len())
     }
 
-    fn py_eq(&self, other: &Self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> Result<bool, ResourceError> {
-        self.peel_ref().eq(other.peel_ref(), vm)
+    fn py_eq(&self, other: &Self, vm: &mut VM<'h, impl ResourceTracker>) -> Result<bool, ResourceError> {
+        self.storage().eq(&other.storage(), vm)
     }
 
-    fn py_bool(&self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> bool {
+    /// Hashes the frozenset by XORing all element hashes.
+    ///
+    /// XOR is commutative, so the hash is independent of insertion order — two
+    /// frozensets with the same members hash equally regardless of how they were built.
+    /// Caches the computed hash on first call (frozensets are immutable).
+    fn py_hash(&self, _self_id: HeapId, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<HashValue>> {
+        if let Some(cached) = self.get(vm.heap).cached_hash.get() {
+            return Ok(Some(cached));
+        }
+        let token = vm.heap.incr_recursion_depth()?;
+        defer_drop!(token, vm);
+        let mut hash: u64 = 0;
+        let len = self.get(vm.heap).storage.entries.len();
+        for idx in 0..len {
+            let item = self.get(vm.heap).storage.entries[idx].value.clone_with_heap(vm);
+            defer_drop!(item, vm);
+            hash ^= set_element_hash(item, vm)?;
+        }
+        let hash = HashValue::new(hash);
+        self.get(vm.heap).cached_hash.set(Some(hash));
+        Ok(Some(hash))
+    }
+
+    fn py_bool(&self, vm: &mut VM<'h, impl ResourceTracker>) -> bool {
         !self.get(vm.heap).is_empty()
     }
 
     fn py_repr_fmt(
         &self,
         f: &mut impl Write,
-        vm: &VM<'h, '_, impl ResourceTracker>,
+        vm: &mut VM<'h, impl ResourceTracker>,
         heap_ids: &mut AHashSet<HeapId>,
     ) -> RunResult<()> {
-        self.get(vm.heap).0.repr_fmt(f, vm, heap_ids, "frozenset")
+        self.storage().repr_fmt(f, vm, heap_ids, "frozenset")
     }
 
     fn py_call_attr(
         &mut self,
         _self_id: HeapId,
-        vm: &mut VM<'h, '_, impl ResourceTracker>,
+        vm: &mut VM<'h, impl ResourceTracker>,
         attr: &EitherStr,
         args: ArgValues,
     ) -> RunResult<CallResult> {
         let value = match attr.static_string() {
             Some(StaticStrings::Copy) => {
                 args.check_zero_args("frozenset.copy", vm.heap)?;
-                let cloned = self.get(vm.heap).0.clone_with_heap(vm.heap);
-                let heap_id = vm.heap.allocate(HeapData::FrozenSet(FrozenSet(cloned)))?;
+                let cloned = self.get(vm.heap).storage.clone_with_heap(vm.heap);
+                let heap_id = vm.heap.allocate(HeapData::FrozenSet(FrozenSet::wrap(cloned)))?;
                 Ok(Value::Ref(heap_id))
             }
             Some(StaticStrings::Union) => {
@@ -1293,11 +1261,11 @@ impl<'h> PyTrait<'h> for HeapRead<'h, FrozenSet> {
 
 impl HeapItem for FrozenSet {
     fn py_estimate_size(&self) -> usize {
-        self.0.estimate_size()
+        self.storage.estimate_size()
     }
 
     fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
-        self.0.collect_dec_ref_ids(stack);
+        self.storage.collect_dec_ref_ids(stack);
     }
 }
 
@@ -1306,24 +1274,23 @@ impl HeapItem for FrozenSet {
 /// This is stricter than `Set::get_storage_from_value(...)`: operator forms
 /// only accept CPython's set-like operands (`set`, `frozenset`, `dict_keys`,
 /// and `dict_items`), while method forms accept any iterable.
-fn get_storage_from_set_operand(
-    value: &Value,
-    vm: &mut VM<'_, '_, impl ResourceTracker>,
-) -> RunResult<Option<SetStorage>> {
+fn get_storage_from_set_operand(value: &Value, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<Option<SetStorage>> {
     let Value::Ref(id) = value else {
         return Ok(None);
     };
 
-    match vm.heap.get(*id) {
-        HeapData::Set(set) => Ok(Some(SetStorage::from_entries(set.0.clone_entries(vm.heap)))),
-        HeapData::FrozenSet(set) => Ok(Some(SetStorage::from_entries(set.0.clone_entries(vm.heap)))),
-        // Dict views are `Copy` — matched value is not borrowed from the heap,
-        // so `to_set` can take `&mut VM` below without conflict.
-        HeapData::DictKeysView(view) => {
+    match vm.heap.read(*id) {
+        HeapReadOutput::Set(set) => Ok(Some(SetStorage::from_entries(
+            set.get(vm.heap).0.clone_entries(vm.heap),
+        ))),
+        HeapReadOutput::FrozenSet(set) => Ok(Some(SetStorage::from_entries(
+            set.get(vm.heap).storage.clone_entries(vm.heap),
+        ))),
+        HeapReadOutput::DictKeysView(view) => {
             let Set(storage) = view.to_set(vm)?;
             Ok(Some(storage))
         }
-        HeapData::DictItemsView(view) => {
+        HeapReadOutput::DictItemsView(view) => {
             let Set(storage) = view.to_set(vm)?;
             Ok(Some(storage))
         }
@@ -1366,12 +1333,21 @@ impl<'de> serde::Deserialize<'de> for Set {
 
 impl serde::Serialize for FrozenSet {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        self.0.serialize(serializer)
+        // Skip `cached_hash` — it's recomputable from the entries and we
+        // don't want to lock the snapshot format to the current hash function.
+        self.storage.serialize(serializer)
     }
 }
 
 impl<'de> serde::Deserialize<'de> for FrozenSet {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        Ok(Self(SetStorage::deserialize(deserializer)?))
+        Ok(Self::wrap(SetStorage::deserialize(deserializer)?))
+    }
+}
+
+fn set_element_hash(value: &Value, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<u64> {
+    match value.py_hash(vm)? {
+        Some(h) => Ok(h.raw()),
+        None => Err(ExcType::type_error_unhashable_set_element(value.py_type(vm))),
     }
 }

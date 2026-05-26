@@ -1,13 +1,11 @@
-use std::collections::hash_map::Entry;
-
 use ahash::{AHashMap, AHashSet};
 
 use crate::{
     args::{ArgExprs, CallArg, CallKwarg},
     builtins::Builtins,
     expressions::{
-        Callable, CmpOperator, Comprehension, DictItem, Expr, ExprLoc, Identifier, ImportName, Literal, NameScope,
-        Node, Operator, PreparedFunctionDef, PreparedNode, SequenceItem, UnpackTarget,
+        AssignTarget, Callable, CmpOperator, Comprehension, DictItem, Expr, ExprLoc, Identifier, ImportName, Literal,
+        NameScope, Node, Operator, PreparedFunctionDef, PreparedNode, SequenceItem, UnpackTarget,
     },
     fstring::{FStringPart, FormatSpec},
     intern::{InternerBuilder, StringId},
@@ -15,6 +13,18 @@ use crate::{
     parse::{CodeRange, ExceptHandler, ParseError, ParseNode, ParseResult, ParsedSignature, RawFunctionDef, Try},
     signature::Signature,
 };
+
+/// Builds the `ParseError` raised when a scope's namespace would exceed
+/// `NamespaceId`'s `u16` capacity (the bytecode slot operand width).
+/// Hoisted so the cold error path stays out of inlined allocator calls.
+#[cold]
+#[inline(never)]
+fn namespace_overflow(position: CodeRange) -> ParseError {
+    ParseError::syntax(
+        format!("too many distinct names in scope; maximum is {} per scope", u16::MAX),
+        position,
+    )
+}
 
 /// Result of the prepare phase, containing everything needed to compile and execute code.
 ///
@@ -45,7 +55,7 @@ pub struct PrepareResult {
 /// At module level, the local namespace IS the global namespace.
 pub(crate) fn prepare(parse_result: ParseResult, input_names: Vec<String>) -> Result<PrepareResult, ParseError> {
     let ParseResult { nodes, interner } = parse_result;
-    let mut p = Prepare::new_module(input_names, &interner);
+    let mut p = Prepare::new_module(input_names, &interner)?;
     let mut prepared_nodes = p.prepare_nodes(nodes)?;
 
     // In the root frame, the last expression is implicitly returned
@@ -56,7 +66,7 @@ pub(crate) fn prepare(parse_result: ParseResult, input_names: Vec<String>) -> Re
     {
         let new_expr_loc = expr_loc.clone();
         prepared_nodes.pop();
-        prepared_nodes.push(Node::Return(new_expr_loc));
+        prepared_nodes.push(Node::Return(Some(new_expr_loc)));
     }
 
     Ok(PrepareResult {
@@ -85,7 +95,7 @@ pub(crate) fn prepare_with_existing_names(
     {
         let new_expr_loc = expr_loc.clone();
         prepared_nodes.pop();
-        prepared_nodes.push(Node::Return(new_expr_loc));
+        prepared_nodes.push(Node::Return(Some(new_expr_loc)));
     }
 
     Ok(PrepareResult {
@@ -159,16 +169,35 @@ impl<'i> Prepare<'i> {
     /// At module level, all variables are global. The `global` keyword is a no-op
     /// since all variables are already in the global namespace.
     ///
+    /// Allocates the next namespace slot, incrementing `namespace_size`.
+    ///
+    /// Wraps the recurring `let id = NamespaceId::new(self.namespace_size);
+    /// self.namespace_size += 1;` pattern and surfaces a clean `ParseError`
+    /// if the scope is about to grow past `NamespaceId`'s `u16` capacity.
+    /// Anchors the error to `position` so the traceback caret lands on the
+    /// statement that triggered the overflow.
+    fn alloc_slot(&mut self, position: CodeRange) -> Result<NamespaceId, ParseError> {
+        let id = NamespaceId::new(self.namespace_size).ok_or_else(|| namespace_overflow(position))?;
+        self.namespace_size += 1;
+        Ok(id)
+    }
+
     /// # Arguments
     /// * `input_names` - Names that should be pre-registered in the namespace (e.g., input variables)
     /// * `interner` - Reference to the string interner for looking up names
-    fn new_module(input_names: Vec<String>, interner: &'i InternerBuilder) -> Self {
+    ///
+    /// Returns a `ParseError` if more than `u16::MAX + 1` input names are
+    /// supplied — bytecode slot indices are `u16` so the namespace cannot grow
+    /// past that. Practically only reachable via misuse by the embedder, since
+    /// `input_names` is supplied programmatically, not from user source.
+    fn new_module(input_names: Vec<String>, interner: &'i InternerBuilder) -> Result<Self, ParseError> {
         let mut name_map = AHashMap::with_capacity(input_names.len());
         for (index, name) in input_names.into_iter().enumerate() {
-            name_map.insert(name, NamespaceId::new(index));
+            let slot = NamespaceId::new(index).ok_or_else(|| namespace_overflow(CodeRange::default()))?;
+            name_map.insert(name, slot);
         }
         let namespace_size = name_map.len();
-        Self {
+        Ok(Self {
             interner,
             name_map,
             namespace_size,
@@ -181,7 +210,7 @@ impl<'i> Prepare<'i> {
             free_var_map: AHashMap::new(),
             cell_var_map: AHashMap::new(),
             unassigned_ref_names: AHashSet::new(),
-        }
+        })
     }
 
     /// Creates a module-scope Prepare instance from an existing global name map.
@@ -230,6 +259,7 @@ impl<'i> Prepare<'i> {
     fn new_function(
         capacity: usize,
         params: &[StringId],
+        position: CodeRange,
         assigned_names: AHashSet<String>,
         global_names: AHashSet<String>,
         nonlocal_names: AHashSet<String>,
@@ -238,10 +268,23 @@ impl<'i> Prepare<'i> {
         enclosing_locals: Option<AHashSet<String>>,
         cell_var_names: AHashSet<String>,
         interner: &'i InternerBuilder,
-    ) -> Self {
+    ) -> Result<Self, ParseError> {
+        // Reject duplicate parameter names while building the name_map.
+        // Ruff's parser accepts `def f(x, x)` that CPython rejects at compile
+        // time; without this check, `name_map` is deduplicated by HashMap
+        // semantics but each `NamespaceId` comes from the positional index,
+        // so the duplicate slot lands past the allocated stack region and
+        // panics `load_local` at runtime.
         let mut name_map = AHashMap::with_capacity(capacity);
         for (index, string_id) in params.iter().enumerate() {
-            name_map.insert(interner.get_str(*string_id).to_string(), NamespaceId::new(index));
+            let name_str = interner.get_str(*string_id);
+            let slot = NamespaceId::new(index).ok_or_else(|| namespace_overflow(position))?;
+            if name_map.insert(name_str.to_string(), slot).is_some() {
+                return Err(ParseError::syntax(
+                    format!("duplicate argument '{name_str}' in function definition"),
+                    position,
+                ));
+            }
         }
         let namespace_size = name_map.len();
 
@@ -257,9 +300,9 @@ impl<'i> Prepare<'i> {
         let mut namespace_size = namespace_size;
         for name in cell_var_names {
             if !nonlocal_names.contains(&name) && !implicit_captures.contains(&name) {
-                let slot = namespace_size;
+                let slot = NamespaceId::new(namespace_size).ok_or_else(|| namespace_overflow(position))?;
                 namespace_size += 1;
-                cell_var_map.insert(name, NamespaceId::new(slot));
+                cell_var_map.insert(name, slot);
             }
         }
 
@@ -270,18 +313,18 @@ impl<'i> Prepare<'i> {
         let free_var_capacity = nonlocal_names.len() + implicit_captures.len();
         let mut free_var_map = AHashMap::with_capacity(free_var_capacity);
         for name in nonlocal_names {
-            let slot = namespace_size;
+            let slot = NamespaceId::new(namespace_size).ok_or_else(|| namespace_overflow(position))?;
             namespace_size += 1;
-            free_var_map.insert(name, NamespaceId::new(slot));
+            free_var_map.insert(name, slot);
         }
         // Implicit captures (variables accessed from enclosing scope without explicit nonlocal)
         for name in implicit_captures {
-            let slot = namespace_size;
+            let slot = NamespaceId::new(namespace_size).ok_or_else(|| namespace_overflow(position))?;
             namespace_size += 1;
-            free_var_map.insert(name, NamespaceId::new(slot));
+            free_var_map.insert(name, slot);
         }
 
-        Self {
+        Ok(Self {
             interner,
             name_map,
             namespace_size,
@@ -294,7 +337,7 @@ impl<'i> Prepare<'i> {
             free_var_map,
             cell_var_map,
             unassigned_ref_names: AHashSet::new(),
-        }
+        })
     }
 
     /// Recursively prepares a sequence of AST nodes by resolving names and transforming expressions.
@@ -314,8 +357,10 @@ impl<'i> Prepare<'i> {
             match node {
                 Node::Pass => (),
                 Node::Expr(expr) => new_nodes.push(Node::Expr(self.prepare_expression(expr)?)),
-                Node::Return(expr) => new_nodes.push(Node::Return(self.prepare_expression(expr)?)),
-                Node::ReturnNone => new_nodes.push(Node::ReturnNone),
+                Node::Return(expr) => new_nodes.push(Node::Return(match expr {
+                    Some(expr) => Some(self.prepare_expression(expr)?),
+                    None => None,
+                })),
                 Node::Raise(exc) => {
                     let expr = match exc {
                         Some(expr) => {
@@ -351,7 +396,7 @@ impl<'i> Prepare<'i> {
                     // Track that this name was assigned before we call get_id
                     self.names_assigned_in_order
                         .insert(self.interner.get_str(target.name_id).to_string());
-                    let (target, _) = self.get_id(target);
+                    let (target, _) = self.get_id(target)?;
                     new_nodes.push(Node::Assign { target, object });
                 }
                 Node::UnpackAssign {
@@ -364,7 +409,7 @@ impl<'i> Prepare<'i> {
                     let targets = targets
                         .into_iter()
                         .map(|target| self.prepare_unpack_target(target))
-                        .collect();
+                        .collect::<Result<_, _>>()?;
                     new_nodes.push(Node::UnpackAssign {
                         targets,
                         targets_position,
@@ -375,7 +420,7 @@ impl<'i> Prepare<'i> {
                     // Track that this name was assigned
                     self.names_assigned_in_order
                         .insert(self.interner.get_str(target.name_id).to_string());
-                    let target = self.get_id(target).0;
+                    let target = self.get_id(target)?.0;
                     let value = self.prepare_expression(value)?;
                     new_nodes.push(Node::OpAssign { target, op, value });
                 }
@@ -447,6 +492,17 @@ impl<'i> Prepare<'i> {
                         value,
                     });
                 }
+                Node::ChainAssign { targets, object } => {
+                    // Prepare the single shared right-hand side, then prepare each
+                    // target in left-to-right order so name-assignment tracking matches
+                    // the source order (`a = b = 1` assigns `a` then `b`).
+                    let object = self.prepare_expression(object)?;
+                    let targets = targets
+                        .into_iter()
+                        .map(|t| self.prepare_assign_target(t))
+                        .collect::<Result<Vec<_>, _>>()?;
+                    new_nodes.push(Node::ChainAssign { targets, object });
+                }
                 Node::For {
                     target,
                     iter,
@@ -454,7 +510,7 @@ impl<'i> Prepare<'i> {
                     or_else,
                 } => {
                     // Prepare target with normal scoping (not comprehension isolation)
-                    let target = self.prepare_unpack_target(target);
+                    let target = self.prepare_unpack_target(target)?;
                     new_nodes.push(Node::For {
                         target,
                         iter: self.prepare_expression(iter)?,
@@ -584,14 +640,14 @@ impl<'i> Prepare<'i> {
                     // Resolve each binding identifier to get the namespace slot
                     let resolved_names = names
                         .into_iter()
-                        .map(|import_name| {
-                            let (resolved_binding, _) = self.get_id(import_name.binding);
-                            ImportName {
+                        .map(|import_name| -> Result<_, ParseError> {
+                            let (resolved_binding, _) = self.get_id(import_name.binding)?;
+                            Ok(ImportName {
                                 module_name: import_name.module_name,
                                 binding: resolved_binding,
-                            }
+                            })
                         })
-                        .collect();
+                        .collect::<Result<_, _>>()?;
                     new_nodes.push(Node::Import { names: resolved_names });
                 }
                 Node::ImportFrom {
@@ -602,11 +658,11 @@ impl<'i> Prepare<'i> {
                     // Resolve each binding identifier to get namespace slots
                     let resolved_names = names
                         .into_iter()
-                        .map(|(import_name, binding)| {
-                            let (resolved_binding, _) = self.get_id(binding);
-                            (import_name, resolved_binding)
+                        .map(|(import_name, binding)| -> Result<_, ParseError> {
+                            let (resolved_binding, _) = self.get_id(binding)?;
+                            Ok((import_name, resolved_binding))
                         })
-                        .collect();
+                        .collect::<Result<_, _>>()?;
                     new_nodes.push(Node::ImportFrom {
                         module_name,
                         names: resolved_names,
@@ -635,7 +691,7 @@ impl<'i> Prepare<'i> {
                 // Track that this name was assigned
                 self.names_assigned_in_order
                     .insert(self.interner.get_str(ident.name_id).to_string());
-                Some(self.get_id(ident).0)
+                Some(self.get_id(ident)?.0)
             }
             None => None,
         };
@@ -660,7 +716,7 @@ impl<'i> Prepare<'i> {
         let expr = match expr {
             Expr::Literal(object) => Expr::Literal(object),
             Expr::Builtin(callable) => Expr::Builtin(callable),
-            Expr::Name(name) => self.resolve_name_or_builtin(name),
+            Expr::Name(name) => self.resolve_name_or_builtin(name)?,
             Expr::Op { left, op, right } => Expr::Op {
                 left: Box::new(self.prepare_expression(*left)?),
                 op,
@@ -684,7 +740,7 @@ impl<'i> Prepare<'i> {
                 // For Name callables, resolve the identifier in the namespace
                 // Don't error here if undefined - let runtime raise NameError with proper traceback
                 let callable = match callable {
-                    Callable::Name(ident) => match self.resolve_name_or_builtin(ident) {
+                    Callable::Name(ident) => match self.resolve_name_or_builtin(ident)? {
                         Expr::Builtin(b) => Callable::Builtin(b),
                         Expr::Name(resolved) => Callable::Name(resolved),
                         _ => unreachable!("resolve_name_or_builtin returns Name or Builtin"),
@@ -808,7 +864,7 @@ impl<'i> Prepare<'i> {
                 // Register the target as assigned in this scope
                 self.names_assigned_in_order
                     .insert(self.interner.get_str(target.name_id).to_string());
-                let (resolved_target, _) = self.get_id(target);
+                let (resolved_target, _) = self.get_id(target)?;
                 Expr::Named {
                     target: resolved_target,
                     value,
@@ -855,7 +911,7 @@ impl<'i> Prepare<'i> {
     /// We check before calling `get_id` to avoid allocating unnecessary namespace slots.
     /// At module level, a slot allocated for an unassigned builtin would leak into
     /// `global_name_map` for nested functions, causing incorrect resolution.
-    fn resolve_name_or_builtin(&mut self, name: Identifier) -> Expr {
+    fn resolve_name_or_builtin(&mut self, name: Identifier) -> Result<Expr, ParseError> {
         let name_str = self.interner.get_str(name.name_id);
 
         // Check if the name is assigned in the current scope. If so, it shadows
@@ -882,11 +938,11 @@ impl<'i> Prepare<'i> {
                     || self.global_name_map.as_ref().is_some_and(|m| m.contains_key(name_str)));
 
             if !is_otherwise_bound && let Ok(builtin) = name_str.parse::<Builtins>() {
-                return Expr::Builtin(builtin);
+                return Ok(Expr::Builtin(builtin));
             }
         }
 
-        Expr::Name(self.get_id(name).0)
+        Ok(Expr::Name(self.get_id(name)?.0))
     }
 
     /// Prepares a `SequenceItem` by recursively preparing its inner expression.
@@ -938,11 +994,14 @@ impl<'i> Prepare<'i> {
                 collect_assigned_names_from_expr(cond, &mut walrus_targets, self.interner);
             }
         }
-        // Pre-allocate slots for walrus targets in the enclosing scope
+        // Pre-allocate slots for walrus targets in the enclosing scope.
+        // Anchor any namespace-overflow error to the first generator's iter,
+        // since the walrus statements themselves can be scattered through the
+        // comprehension and don't have a single load-bearing position.
+        let comp_pos = generators.first().map(|g| g.iter.position).unwrap_or_default();
         for name in &walrus_targets {
             if !self.name_map.contains_key(name) {
-                let slot = NamespaceId::new(self.namespace_size);
-                self.namespace_size += 1;
+                let slot = self.alloc_slot(comp_pos)?;
                 self.name_map.insert(name.clone(), slot);
                 self.names_assigned_in_order.insert(name.clone());
             }
@@ -968,7 +1027,7 @@ impl<'i> Prepare<'i> {
         // We allocate slots but don't mark them as "assigned" yet - this causes
         // UnboundLocalError if a later generator's iter references an earlier-declared
         // but not-yet-assigned loop variable.
-        let first_target = self.prepare_unpack_target_for_comprehension(first_gen.target);
+        let first_target = self.prepare_unpack_target_for_comprehension(first_gen.target)?;
 
         // Collect remaining generators so we can pre-shadow their targets
         let remaining_gens: Vec<Comprehension> = generators_iter.collect();
@@ -978,7 +1037,7 @@ impl<'i> Prepare<'i> {
         // so referencing a later loop var in an earlier iter raises UnboundLocalError.
         let mut preshadowed_targets: Vec<UnpackTarget> = Vec::with_capacity(remaining_gens.len());
         for generator in &remaining_gens {
-            preshadowed_targets.push(self.prepare_unpack_target_shadow_only(generator.target.clone()));
+            preshadowed_targets.push(self.prepare_unpack_target_shadow_only(generator.target.clone())?);
         }
 
         // Prepare first generator's filters (can see first loop variable)
@@ -1032,30 +1091,78 @@ impl<'i> Prepare<'i> {
         Ok((prepared_generators, prepared_elt, prepared_key_value))
     }
 
+    /// Prepares an `AssignTarget` used by chained assignments.
+    ///
+    /// Resolves identifiers, sub-expressions and nested unpack patterns so that each
+    /// target is ready for the compiler. Name-targets are also recorded in
+    /// `names_assigned_in_order` just like single-target `Node::Assign` would, so the
+    /// observable scope behaviour of `a = b = 1` matches `a = 1; b = 1`.
+    fn prepare_assign_target(&mut self, target: AssignTarget) -> Result<AssignTarget, ParseError> {
+        match target {
+            AssignTarget::Name(ident) => {
+                self.names_assigned_in_order
+                    .insert(self.interner.get_str(ident.name_id).to_string());
+                let (ident, _) = self.get_id(ident)?;
+                Ok(AssignTarget::Name(ident))
+            }
+            AssignTarget::Subscript {
+                target,
+                index,
+                target_position,
+            } => Ok(AssignTarget::Subscript {
+                target: self.prepare_expression(target)?,
+                index: self.prepare_expression(index)?,
+                target_position,
+            }),
+            AssignTarget::Attr {
+                object,
+                attr,
+                target_position,
+            } => Ok(AssignTarget::Attr {
+                object: self.prepare_expression(object)?,
+                attr,
+                target_position,
+            }),
+            AssignTarget::Unpack {
+                targets,
+                targets_position,
+            } => {
+                let targets = targets
+                    .into_iter()
+                    .map(|t| self.prepare_unpack_target(t))
+                    .collect::<Result<_, _>>()?;
+                Ok(AssignTarget::Unpack {
+                    targets,
+                    targets_position,
+                })
+            }
+        }
+    }
+
     /// Prepares an unpack target by resolving identifiers recursively.
     ///
     /// Handles both single identifiers and nested tuples like `(a, b), c`.
-    fn prepare_unpack_target(&mut self, target: UnpackTarget) -> UnpackTarget {
+    fn prepare_unpack_target(&mut self, target: UnpackTarget) -> Result<UnpackTarget, ParseError> {
         match target {
             UnpackTarget::Name(ident) => {
                 self.names_assigned_in_order
                     .insert(self.interner.get_str(ident.name_id).to_string());
-                UnpackTarget::Name(self.get_id(ident).0)
+                Ok(UnpackTarget::Name(self.get_id(ident)?.0))
             }
             UnpackTarget::Starred(ident) => {
                 self.names_assigned_in_order
                     .insert(self.interner.get_str(ident.name_id).to_string());
-                UnpackTarget::Starred(self.get_id(ident).0)
+                Ok(UnpackTarget::Starred(self.get_id(ident)?.0))
             }
             UnpackTarget::Tuple { targets, position } => {
-                let resolved_targets: Vec<UnpackTarget> = targets
+                let resolved_targets = targets
                     .into_iter()
                     .map(|t| self.prepare_unpack_target(t)) // Recursive call
-                    .collect();
-                UnpackTarget::Tuple {
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(UnpackTarget::Tuple {
                     targets: resolved_targets,
                     position,
-                }
+                })
             }
         }
     }
@@ -1064,47 +1171,45 @@ impl<'i> Prepare<'i> {
     ///
     /// Unlike regular unpack targets, comprehension targets need new slots to shadow
     /// any existing bindings with the same name.
-    fn prepare_unpack_target_for_comprehension(&mut self, target: UnpackTarget) -> UnpackTarget {
+    fn prepare_unpack_target_for_comprehension(&mut self, target: UnpackTarget) -> Result<UnpackTarget, ParseError> {
         match target {
             UnpackTarget::Name(ident) => {
                 let name_str = self.interner.get_str(ident.name_id).to_string();
-                let comp_var_id = NamespaceId::new(self.namespace_size);
-                self.namespace_size += 1;
+                let comp_var_id = self.alloc_slot(ident.position)?;
 
                 // Shadow any existing binding
                 self.shadow_for_comprehension(&name_str, comp_var_id);
 
-                UnpackTarget::Name(Identifier::new_with_scope(
+                Ok(UnpackTarget::Name(Identifier::new_with_scope(
                     ident.name_id,
                     ident.position,
                     comp_var_id,
                     NameScope::Local,
-                ))
+                )))
             }
             UnpackTarget::Starred(ident) => {
                 let name_str = self.interner.get_str(ident.name_id).to_string();
-                let comp_var_id = NamespaceId::new(self.namespace_size);
-                self.namespace_size += 1;
+                let comp_var_id = self.alloc_slot(ident.position)?;
 
                 // Shadow any existing binding
                 self.shadow_for_comprehension(&name_str, comp_var_id);
 
-                UnpackTarget::Starred(Identifier::new_with_scope(
+                Ok(UnpackTarget::Starred(Identifier::new_with_scope(
                     ident.name_id,
                     ident.position,
                     comp_var_id,
                     NameScope::Local,
-                ))
+                )))
             }
             UnpackTarget::Tuple { targets, position } => {
-                let resolved_targets: Vec<UnpackTarget> = targets
+                let resolved_targets = targets
                     .into_iter()
                     .map(|t| self.prepare_unpack_target_for_comprehension(t)) // Recursive call
-                    .collect();
-                UnpackTarget::Tuple {
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(UnpackTarget::Tuple {
                     targets: resolved_targets,
                     position,
-                }
+                })
             }
         }
     }
@@ -1113,12 +1218,11 @@ impl<'i> Prepare<'i> {
     ///
     /// Allocates namespace slots without marking as assigned, causing UnboundLocalError
     /// if accessed before assignment.
-    fn prepare_unpack_target_shadow_only(&mut self, target: UnpackTarget) -> UnpackTarget {
+    fn prepare_unpack_target_shadow_only(&mut self, target: UnpackTarget) -> Result<UnpackTarget, ParseError> {
         match target {
             UnpackTarget::Name(ident) => {
                 let name_str = self.interner.get_str(ident.name_id).to_string();
-                let comp_var_id = NamespaceId::new(self.namespace_size);
-                self.namespace_size += 1;
+                let comp_var_id = self.alloc_slot(ident.position)?;
 
                 // Shadow but do NOT add to names_assigned_in_order yet
                 self.name_map.insert(name_str.clone(), comp_var_id);
@@ -1128,17 +1232,16 @@ impl<'i> Prepare<'i> {
                     enclosing.remove(&name_str);
                 }
 
-                UnpackTarget::Name(Identifier::new_with_scope(
+                Ok(UnpackTarget::Name(Identifier::new_with_scope(
                     ident.name_id,
                     ident.position,
                     comp_var_id,
                     NameScope::Local,
-                ))
+                )))
             }
             UnpackTarget::Starred(ident) => {
                 let name_str = self.interner.get_str(ident.name_id).to_string();
-                let comp_var_id = NamespaceId::new(self.namespace_size);
-                self.namespace_size += 1;
+                let comp_var_id = self.alloc_slot(ident.position)?;
 
                 // Shadow but do NOT add to names_assigned_in_order yet
                 self.name_map.insert(name_str.clone(), comp_var_id);
@@ -1148,22 +1251,22 @@ impl<'i> Prepare<'i> {
                     enclosing.remove(&name_str);
                 }
 
-                UnpackTarget::Starred(Identifier::new_with_scope(
+                Ok(UnpackTarget::Starred(Identifier::new_with_scope(
                     ident.name_id,
                     ident.position,
                     comp_var_id,
                     NameScope::Local,
-                ))
+                )))
             }
             UnpackTarget::Tuple { targets, position } => {
-                let resolved_targets: Vec<UnpackTarget> = targets
+                let resolved_targets = targets
                     .into_iter()
                     .map(|t| self.prepare_unpack_target_shadow_only(t)) // Recursive call
-                    .collect();
-                UnpackTarget::Tuple {
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(UnpackTarget::Tuple {
                     targets: resolved_targets,
                     position,
-                }
+                })
             }
         }
     }
@@ -1209,7 +1312,7 @@ impl<'i> Prepare<'i> {
         is_async: bool,
     ) -> Result<PreparedNode, ParseError> {
         // Register the function name in the current scope
-        let (name, _) = self.get_id(name);
+        let (name, _) = self.get_id(name)?;
 
         // Extract param names from the parsed signature for scope analysis
         let param_names: Vec<StringId> = parsed_sig.param_names().collect();
@@ -1254,6 +1357,7 @@ impl<'i> Prepare<'i> {
         let mut inner_prepare = Prepare::new_function(
             body.len(),
             &param_names,
+            name.position,
             scope_info.assigned_names,
             scope_info.global_names,
             scope_info.nonlocal_names,
@@ -1262,7 +1366,7 @@ impl<'i> Prepare<'i> {
             Some(enclosing_locals),
             scope_info.cell_var_names,
             self.interner,
-        );
+        )?;
 
         // Prepare the function body
         let prepared_body = inner_prepare.prepare_nodes(body)?;
@@ -1274,14 +1378,12 @@ impl<'i> Prepare<'i> {
             if !self.cell_var_map.contains_key(captured_name) && !self.free_var_map.contains_key(captured_name) {
                 // Only add to cell_var_map if not already a free_var (pass-through case)
                 // Allocate a namespace slot for the cell reference
-                let slot = match self.name_map.entry(captured_name.clone()) {
-                    Entry::Occupied(e) => *e.get(),
-                    Entry::Vacant(e) => {
-                        let slot = NamespaceId::new(self.namespace_size);
-                        self.namespace_size += 1;
-                        e.insert(slot);
-                        slot
-                    }
+                let slot = if let Some(existing) = self.name_map.get(captured_name) {
+                    *existing
+                } else {
+                    let slot = self.alloc_slot(name.position)?;
+                    self.name_map.insert(captured_name.clone(), slot);
+                    slot
                 };
                 self.cell_var_map.insert(captured_name.clone(), slot);
             }
@@ -1419,12 +1521,14 @@ impl<'i> Prepare<'i> {
         let lambda_name = Identifier::new_with_scope(
             lambda_name_id,
             position,
-            NamespaceId::new(0), // Placeholder, not actually used for storage
+            // Slot 0 is the trivial placeholder; the lambda name never lands
+            // in a namespace because lambdas don't have a binding name.
+            NamespaceId::new(0).expect("slot 0 fits in u16"),
             NameScope::Local,
         );
 
         // Wrap the body expression as a return statement for scope analysis
-        let body_as_node: ParseNode = Node::Return(body.clone());
+        let body_as_node: ParseNode = Node::Return(Some(body.clone()));
         let body_nodes = vec![body_as_node];
 
         // Extract param names from the parsed signature for scope analysis
@@ -1468,6 +1572,7 @@ impl<'i> Prepare<'i> {
         let mut inner_prepare = Prepare::new_function(
             body_nodes.len(),
             &param_names,
+            position,
             scope_info.assigned_names,
             scope_info.global_names,
             scope_info.nonlocal_names,
@@ -1476,7 +1581,7 @@ impl<'i> Prepare<'i> {
             Some(enclosing_locals),
             scope_info.cell_var_names,
             self.interner,
-        );
+        )?;
 
         // Prepare the lambda body
         let prepared_body = inner_prepare.prepare_nodes(body_nodes)?;
@@ -1484,14 +1589,12 @@ impl<'i> Prepare<'i> {
         // Mark variables that the inner function captures as our cell_vars
         for captured_name in inner_prepare.free_var_map.keys() {
             if !self.cell_var_map.contains_key(captured_name) && !self.free_var_map.contains_key(captured_name) {
-                let slot = match self.name_map.entry(captured_name.clone()) {
-                    Entry::Occupied(e) => *e.get(),
-                    Entry::Vacant(e) => {
-                        let slot = NamespaceId::new(self.namespace_size);
-                        self.namespace_size += 1;
-                        e.insert(slot);
-                        slot
-                    }
+                let slot = if let Some(existing) = self.name_map.get(captured_name) {
+                    *existing
+                } else {
+                    let slot = self.alloc_slot(position)?;
+                    self.name_map.insert(captured_name.clone(), slot);
+                    slot
                 };
                 self.cell_var_map.insert(captured_name.clone(), slot);
             }
@@ -1621,47 +1724,31 @@ impl<'i> Prepare<'i> {
     ///
     /// # Returns
     /// A tuple of (resolved Identifier with id and scope set, whether this is a new local name).
-    fn get_id(&mut self, ident: Identifier) -> (Identifier, bool) {
+    fn get_id(&mut self, ident: Identifier) -> Result<(Identifier, bool), ParseError> {
         let name_str = self.interner.get_str(ident.name_id);
+        let position = ident.position;
 
         // At module level, all names are local (which is also the global namespace).
         // The compiler emits global opcodes for these, so the VM reads/writes
         // directly from the globals array rather than the stack.
         if self.is_module_scope {
-            return match self.name_map.entry(name_str.to_string()) {
-                Entry::Occupied(e) => {
-                    // Name already exists (from prior reference or pre-registered).
-                    // Determine scope the same way as for vacant entries: if the name
-                    // has been assigned so far, it's a true local; otherwise it's an
-                    // unassigned reference that should yield NameLookup at runtime.
-                    let scope = if self.names_assigned_in_order.contains(name_str) {
-                        NameScope::Local
-                    } else {
-                        NameScope::LocalUnassigned
-                    };
-                    (
-                        Identifier::new_with_scope(ident.name_id, ident.position, *e.get(), scope),
-                        false,
-                    )
-                }
-                Entry::Vacant(e) => {
-                    let id = NamespaceId::new(self.namespace_size);
-                    self.namespace_size += 1;
-                    e.insert(id);
-                    // Determine scope: if the name is assigned somewhere (even later in the file),
-                    // it's a true local that will raise UnboundLocalError if accessed before assignment.
-                    // If the name is never assigned, it's an undefined reference that raises NameError.
-                    let scope = if self.names_assigned_in_order.contains(name_str) {
-                        NameScope::Local
-                    } else {
-                        NameScope::LocalUnassigned
-                    };
-                    (
-                        Identifier::new_with_scope(ident.name_id, ident.position, id, scope),
-                        true,
-                    )
-                }
+            // Determine scope: if the name is assigned somewhere (even later in the
+            // file), it's a true local that will raise UnboundLocalError if accessed
+            // before assignment. If the name is never assigned, it's an undefined
+            // reference that raises NameError.
+            let scope = if self.names_assigned_in_order.contains(name_str) {
+                NameScope::Local
+            } else {
+                NameScope::LocalUnassigned
             };
+            let (id, is_new) = if let Some(existing) = self.name_map.get(name_str).copied() {
+                (existing, false)
+            } else {
+                let id = self.alloc_slot(position)?;
+                self.name_map.insert(name_str.to_string(), id);
+                (id, true)
+            };
+            return Ok((Identifier::new_with_scope(ident.name_id, position, id, scope), is_new));
         }
 
         // In a function: determine scope based on global_names, nonlocal_names, assigned_names, global_name_map
@@ -1672,10 +1759,10 @@ impl<'i> Prepare<'i> {
                 && let Some(&global_id) = global_map.get(name_str)
             {
                 // Name exists in global namespace
-                return (
-                    Identifier::new_with_scope(ident.name_id, ident.position, global_id, NameScope::Global),
+                return Ok((
+                    Identifier::new_with_scope(ident.name_id, position, global_id, NameScope::Global),
                     false,
-                );
+                ));
             }
             // Declared global but doesn't exist yet - it will be created when assigned
             // For now, we still need a global index. We'll use a placeholder approach:
@@ -1684,30 +1771,28 @@ impl<'i> Prepare<'i> {
             // For our implementation, we'll resolve to global but the variable won't exist until assigned.
             // Return a "new" global - but we can't modify global_name_map here.
             // For simplicity, we'll resolve to local with Global scope - runtime will handle the lookup.
-            let (id, is_new) = match self.name_map.entry(name_str.to_string()) {
-                Entry::Occupied(e) => (*e.get(), false),
-                Entry::Vacant(e) => {
-                    let id = NamespaceId::new(self.namespace_size);
-                    self.namespace_size += 1;
-                    e.insert(id);
-                    (id, true)
-                }
+            let (id, is_new) = if let Some(existing) = self.name_map.get(name_str).copied() {
+                (existing, false)
+            } else {
+                let id = self.alloc_slot(position)?;
+                self.name_map.insert(name_str.to_string(), id);
+                (id, true)
             };
             // Mark as Global scope - runtime will need to handle this specially
-            return (
-                Identifier::new_with_scope(ident.name_id, ident.position, id, NameScope::Global),
+            return Ok((
+                Identifier::new_with_scope(ident.name_id, position, id, NameScope::Global),
                 is_new,
-            );
+            ));
         }
 
         // 2. Check if captured from enclosing scope (nonlocal declaration or implicit capture)
         // free_var_map stores namespace slot indices where the cell reference will be stored
         if let Some(&slot) = self.free_var_map.get(name_str) {
             // At runtime, the cell reference is in namespace[slot] as Value::Ref(cell_id)
-            return (
-                Identifier::new_with_scope(ident.name_id, ident.position, slot, NameScope::Cell),
+            return Ok((
+                Identifier::new_with_scope(ident.name_id, position, slot, NameScope::Cell),
                 false, // Not a new local - it's captured from enclosing scope
-            );
+            ));
         }
 
         // 3. Check if this is a cell variable (captured by nested functions)
@@ -1715,27 +1800,25 @@ impl<'i> Prepare<'i> {
         // At call time, a cell is created and stored as Value::Ref(cell_id) at this slot
         if let Some(&slot) = self.cell_var_map.get(name_str) {
             // The namespace slot was already allocated when cell_var_map was populated
-            return (
-                Identifier::new_with_scope(ident.name_id, ident.position, slot, NameScope::Cell),
+            return Ok((
+                Identifier::new_with_scope(ident.name_id, position, slot, NameScope::Cell),
                 false, // Not a "new" local - it's a cell variable
-            );
+            ));
         }
 
         // 4. Check if assigned in this function (local variable)
         if self.assigned_names.contains(name_str) {
-            let (id, is_new) = match self.name_map.entry(name_str.to_string()) {
-                Entry::Occupied(e) => (*e.get(), false),
-                Entry::Vacant(e) => {
-                    let id = NamespaceId::new(self.namespace_size);
-                    self.namespace_size += 1;
-                    e.insert(id);
-                    (id, true)
-                }
+            let (id, is_new) = if let Some(existing) = self.name_map.get(name_str).copied() {
+                (existing, false)
+            } else {
+                let id = self.alloc_slot(position)?;
+                self.name_map.insert(name_str.to_string(), id);
+                (id, true)
             };
-            return (
-                Identifier::new_with_scope(ident.name_id, ident.position, id, NameScope::Local),
+            return Ok((
+                Identifier::new_with_scope(ident.name_id, position, id, NameScope::Local),
                 is_new,
-            );
+            ));
         }
 
         // 5. Check if name was pre-populated in name_map (from function parameters)
@@ -1751,10 +1834,10 @@ impl<'i> Prepare<'i> {
         if !self.unassigned_ref_names.contains(name_str)
             && let Some(&id) = self.name_map.get(name_str)
         {
-            return (
-                Identifier::new_with_scope(ident.name_id, ident.position, id, NameScope::Local),
+            return Ok((
+                Identifier::new_with_scope(ident.name_id, position, id, NameScope::Local),
                 false, // Not new - was pre-populated from parameters
-            );
+            ));
         }
 
         // 6. Check if exists in enclosing scope (implicit closure capture)
@@ -1767,26 +1850,25 @@ impl<'i> Prepare<'i> {
                 existing_slot
             } else {
                 // Allocate a namespace slot for this free variable
-                let slot = NamespaceId::new(self.namespace_size);
-                self.namespace_size += 1;
+                let slot = self.alloc_slot(position)?;
                 self.name_map.insert(name_str.to_string(), slot);
                 self.free_var_map.insert(name_str.to_string(), slot);
                 slot
             };
-            return (
-                Identifier::new_with_scope(ident.name_id, ident.position, slot, NameScope::Cell),
+            return Ok((
+                Identifier::new_with_scope(ident.name_id, position, slot, NameScope::Cell),
                 false, // Not a new local - it's captured from enclosing scope
-            );
+            ));
         }
 
         // 7. Check if exists in global namespace (implicit global read)
         if let Some(ref global_map) = self.global_name_map
             && let Some(&global_id) = global_map.get(name_str)
         {
-            return (
-                Identifier::new_with_scope(ident.name_id, ident.position, global_id, NameScope::Global),
+            return Ok((
+                Identifier::new_with_scope(ident.name_id, position, global_id, NameScope::Global),
                 false,
-            );
+            ));
         }
 
         // 8. Name not found anywhere - allocate a local slot (will be NameError at runtime)
@@ -1796,19 +1878,17 @@ impl<'i> Prepare<'i> {
         // Track in `unassigned_ref_names` so step 6 doesn't treat subsequent references
         // as `Local` (parameters).
         self.unassigned_ref_names.insert(name_str.to_string());
-        let (id, is_new) = match self.name_map.entry(name_str.to_string()) {
-            Entry::Occupied(e) => (*e.get(), false),
-            Entry::Vacant(e) => {
-                let id = NamespaceId::new(self.namespace_size);
-                self.namespace_size += 1;
-                e.insert(id);
-                (id, true)
-            }
+        let (id, is_new) = if let Some(existing) = self.name_map.get(name_str).copied() {
+            (existing, false)
+        } else {
+            let id = self.alloc_slot(position)?;
+            self.name_map.insert(name_str.to_string(), id);
+            (id, true)
         };
-        (
-            Identifier::new_with_scope(ident.name_id, ident.position, id, NameScope::LocalUnassigned),
+        Ok((
+            Identifier::new_with_scope(ident.name_id, position, id, NameScope::LocalUnassigned),
             is_new,
-        )
+        ))
     }
 
     /// Prepares an f-string part by resolving names in interpolated expressions.
@@ -2011,6 +2091,14 @@ fn collect_scope_info_from_node(
             collect_assigned_names_from_expr(object, assigned_names, interner);
             collect_assigned_names_from_expr(value, assigned_names, interner);
         }
+        Node::ChainAssign { targets, object } => {
+            // Each target sees the same shared RHS; treat it like each per-target
+            // assignment would be treated individually.
+            for target in targets {
+                collect_assigned_names_from_assign_target(target, assigned_names, interner);
+            }
+            collect_assigned_names_from_expr(object, assigned_names, interner);
+        }
         Node::For {
             target,
             iter,
@@ -2095,10 +2183,7 @@ fn collect_scope_info_from_node(
             }
         }
         // Statements with expressions that may contain walrus operators
-        Node::Expr(expr) | Node::Return(expr) => {
-            collect_assigned_names_from_expr(expr, assigned_names, interner);
-        }
-        Node::Raise(Some(expr)) => {
+        Node::Expr(expr) | Node::Return(Some(expr)) | Node::Raise(Some(expr)) => {
             collect_assigned_names_from_expr(expr, assigned_names, interner);
         }
         Node::Assert { test, msg } => {
@@ -2108,7 +2193,7 @@ fn collect_scope_info_from_node(
             }
         }
         // These don't create new names
-        Node::Pass | Node::ReturnNone | Node::Raise(None) | Node::Break { .. } | Node::Continue { .. } => {}
+        Node::Pass | Node::Return(None) | Node::Raise(None) | Node::Break { .. } | Node::Continue { .. } => {}
     }
 }
 
@@ -2393,9 +2478,10 @@ fn collect_cell_vars_from_node(
             }
         }
         // Handle expressions that may contain lambdas
-        Node::Expr(expr) | Node::Return(expr) => {
+        Node::Expr(expr) | Node::Return(Some(expr)) => {
             collect_cell_vars_from_expr(expr, our_locals, cell_vars, interner);
         }
+        Node::Return(None) => {}
         Node::Assign { object, .. } | Node::UnpackAssign { object, .. } => {
             collect_cell_vars_from_expr(object, our_locals, cell_vars, interner);
         }
@@ -2423,6 +2509,12 @@ fn collect_cell_vars_from_node(
         Node::AttrAssign { object, value, .. } => {
             collect_cell_vars_from_expr(object, our_locals, cell_vars, interner);
             collect_cell_vars_from_expr(value, our_locals, cell_vars, interner);
+        }
+        Node::ChainAssign { targets, object } => {
+            for target in targets {
+                collect_cell_vars_from_assign_target(target, our_locals, cell_vars, interner);
+            }
+            collect_cell_vars_from_expr(object, our_locals, cell_vars, interner);
         }
         // Other nodes don't contain nested function definitions or lambdas
         _ => {}
@@ -2654,10 +2746,10 @@ fn collect_cell_vars_from_args(
 /// This is used to find what names a nested function references from enclosing scopes.
 fn collect_referenced_names_from_node(node: &ParseNode, referenced: &mut AHashSet<String>, interner: &InternerBuilder) {
     match node {
-        Node::Expr(expr) => collect_referenced_names_from_expr(expr, referenced, interner),
-        Node::Return(expr) => collect_referenced_names_from_expr(expr, referenced, interner),
-        Node::Raise(Some(expr)) => collect_referenced_names_from_expr(expr, referenced, interner),
-        Node::Raise(None) => {}
+        Node::Expr(expr) | Node::Return(Some(expr)) | Node::Raise(Some(expr)) => {
+            collect_referenced_names_from_expr(expr, referenced, interner);
+        }
+        Node::Return(None) | Node::Raise(None) => {}
         Node::Assert { test, msg } => {
             collect_referenced_names_from_expr(test, referenced, interner);
             if let Some(m) = msg {
@@ -2696,6 +2788,12 @@ fn collect_referenced_names_from_node(node: &ParseNode, referenced: &mut AHashSe
         Node::AttrAssign { object, value, .. } => {
             collect_referenced_names_from_expr(object, referenced, interner);
             collect_referenced_names_from_expr(value, referenced, interner);
+        }
+        Node::ChainAssign { targets, object } => {
+            for target in targets {
+                collect_referenced_names_from_assign_target(target, referenced, interner);
+            }
+            collect_referenced_names_from_expr(object, referenced, interner);
         }
         Node::For {
             iter, body, or_else, ..
@@ -2756,18 +2854,12 @@ fn collect_referenced_names_from_node(node: &ParseNode, referenced: &mut AHashSe
         }
         // Imports create bindings but don't reference names
         Node::Import { .. } | Node::ImportFrom { .. } => {}
-        Node::Pass
-        | Node::ReturnNone
-        | Node::Global { .. }
-        | Node::Nonlocal { .. }
-        | Node::Break { .. }
-        | Node::Continue { .. } => {}
+        Node::Pass | Node::Global { .. } | Node::Nonlocal { .. } | Node::Break { .. } | Node::Continue { .. } => {}
     }
 }
 
 /// Collects all names referenced in an expression.
 fn collect_referenced_names_from_expr(expr: &ExprLoc, referenced: &mut AHashSet<String>, interner: &InternerBuilder) {
-    use crate::expressions::Expr;
     match &expr.expr {
         Expr::Name(ident) => {
             referenced.insert(interner.get_str(ident.name_id).to_string());
@@ -3056,5 +3148,80 @@ fn collect_names_from_unpack_target(target: &UnpackTarget, names: &mut AHashSet<
                 collect_names_from_unpack_target(t, names, interner);
             }
         }
+    }
+}
+
+/// Collects newly-assigned names and walrus bindings introduced by a single chained-assign target.
+///
+/// Mirrors the per-shape logic in `collect_scope_info_from_node` for the non-chained
+/// assignment nodes: name/unpack targets bind new names, while subscript/attribute
+/// targets only scan their sub-expressions for walrus bindings since they mutate an
+/// existing container rather than introducing a new binding.
+fn collect_assigned_names_from_assign_target(
+    target: &AssignTarget,
+    assigned_names: &mut AHashSet<String>,
+    interner: &InternerBuilder,
+) {
+    match target {
+        AssignTarget::Name(ident) => {
+            assigned_names.insert(interner.get_str(ident.name_id).to_string());
+        }
+        AssignTarget::Subscript { target, index, .. } => {
+            collect_assigned_names_from_expr(target, assigned_names, interner);
+            collect_assigned_names_from_expr(index, assigned_names, interner);
+        }
+        AssignTarget::Attr { object, .. } => {
+            collect_assigned_names_from_expr(object, assigned_names, interner);
+        }
+        AssignTarget::Unpack { targets, .. } => {
+            for t in targets {
+                collect_names_from_unpack_target(t, assigned_names, interner);
+            }
+        }
+    }
+}
+
+/// Collects cell variables referenced by sub-expressions inside a chained-assign target.
+///
+/// Subscript and attribute targets embed arbitrary expressions that may contain lambdas
+/// capturing enclosing variables; pure name/unpack targets do not carry expressions and
+/// therefore contribute nothing to the cell-variable set.
+fn collect_cell_vars_from_assign_target(
+    target: &AssignTarget,
+    our_locals: &AHashSet<String>,
+    cell_vars: &mut AHashSet<String>,
+    interner: &InternerBuilder,
+) {
+    match target {
+        AssignTarget::Subscript { target, index, .. } => {
+            collect_cell_vars_from_expr(target, our_locals, cell_vars, interner);
+            collect_cell_vars_from_expr(index, our_locals, cell_vars, interner);
+        }
+        AssignTarget::Attr { object, .. } => {
+            collect_cell_vars_from_expr(object, our_locals, cell_vars, interner);
+        }
+        AssignTarget::Name(_) | AssignTarget::Unpack { .. } => {}
+    }
+}
+
+/// Collects names referenced (read) by sub-expressions inside a chained-assign target.
+///
+/// Only subscript and attribute targets read from surrounding state: the container or
+/// object expression must be evaluated at store time. Name and unpack targets do not
+/// reference any names on the read side.
+fn collect_referenced_names_from_assign_target(
+    target: &AssignTarget,
+    referenced: &mut AHashSet<String>,
+    interner: &InternerBuilder,
+) {
+    match target {
+        AssignTarget::Subscript { target, index, .. } => {
+            collect_referenced_names_from_expr(target, referenced, interner);
+            collect_referenced_names_from_expr(index, referenced, interner);
+        }
+        AssignTarget::Attr { object, .. } => {
+            collect_referenced_names_from_expr(object, referenced, interner);
+        }
+        AssignTarget::Name(_) | AssignTarget::Unpack { .. } => {}
     }
 }

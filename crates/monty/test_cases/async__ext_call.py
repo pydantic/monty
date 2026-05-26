@@ -71,3 +71,53 @@ async def triple_add(a, b, c):
 
 results = await asyncio.gather(triple_add(1, 2, 3), async_call(50))  # pyright: ignore
 assert results == [6, 50], 'gather should work with coroutine with multiple external awaits'
+
+
+# === Gather with the same external future passed twice ===
+f = async_call(7)
+results = await asyncio.gather(f, f)  # pyright: ignore
+assert results == [7, 7], f'duplicate external future dedup: {results}'
+
+# Mixed with unique external futures around the duplicate.
+g = async_call('dup')
+results = await asyncio.gather(async_call('a'), g, async_call('b'), g)  # pyright: ignore
+assert results == ['a', 'dup', 'b', 'dup'], f'mixed external future dedup: {results}'
+
+
+# === Same external future shared across sibling gathers ===
+# Two concurrent helpers each await their own gather around the SAME external
+# future. In Monty the future is still `Pending` at this point so the second
+# gather sees the awaiter slot already taken and raises RuntimeError. In
+# CPython the test harness now returns an already-resolved `asyncio.Future`,
+# which permits multi-await, so both gathers settle with `[99]`. Both
+# outcomes are accepted as they reflect a genuine semantic difference (Monty
+# rejects concurrent awaiters on a `Pending` future; multi-awaiter on
+# `Pending` is a planned follow-up).
+async def helper(future):
+    return await asyncio.gather(future)
+
+
+shared = async_call(99)
+try:
+    result = await asyncio.gather(helper(shared), helper(shared))  # pyright: ignore
+    assert result == [[99], [99]], f'CPython multi-await of resolved future: {result}'
+except RuntimeError as e:
+    assert str(e) == 'cannot reuse already awaited future', f'Monty rejection: {e}'
+
+
+# === Re-awaiting a resolved external future returns the cached value ===
+
+reawait_f = async_call('cached')
+first = await reawait_f  # pyright: ignore
+second = await reawait_f  # pyright: ignore
+third = await reawait_f  # pyright: ignore
+assert first == 'cached', f'first await: {first}'
+assert second == 'cached', f'second await: {second}'
+assert third == 'cached', f'third await: {third}'
+
+reawait_list = async_call([1, 2, 3])
+first_list = await reawait_list  # pyright: ignore
+second_list = await reawait_list  # pyright: ignore
+assert first_list is second_list, 're-await returns the same list reference'
+first_list.append(99)
+assert second_list == [1, 2, 3, 99], 'mutation through one re-await is visible through another'

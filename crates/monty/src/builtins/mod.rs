@@ -12,6 +12,7 @@ mod divmod;
 mod enumerate;
 mod filter;
 mod getattr;
+mod hasattr;
 mod hash;
 mod hex;
 mod id;
@@ -21,12 +22,14 @@ mod map;
 mod min_max; // min and max share implementation
 mod next;
 mod oct;
+mod open;
 mod ord;
 mod pow;
 mod print;
 mod repr;
 mod reversed;
 mod round;
+mod setattr;
 mod sorted;
 mod sum;
 mod type_;
@@ -38,11 +41,10 @@ use strum::{Display, EnumString, FromRepr, IntoStaticStr};
 
 use crate::{
     args::ArgValues,
-    bytecode::VM,
+    bytecode::{CallResult, VM},
     exception_private::{ExcType, RunResult},
     resource::ResourceTracker,
     types::Type,
-    value::Value,
 };
 
 /// Enumerates every interpreter-native Python builtins
@@ -60,12 +62,18 @@ pub(crate) enum Builtins {
 }
 
 impl Builtins {
-    /// Calls this builtin with the given arguments.
-    pub fn call(self, vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    /// Calls this builtin, allowing builtins that need host involvement to yield.
+    ///
+    /// Most builtins complete synchronously and produce a [`CallResult::Value`].
+    /// `open()` is the exception: it must touch the host filesystem at call
+    /// time to perform the open-time effect, so it returns a
+    /// [`CallResult::OsCall`] for [`crate::os::OsFunction::Open`] (see
+    /// [`crate::builtins::open`]).
+    pub fn call(self, vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<CallResult> {
         match self {
             Self::Function(b) => b.call(vm, args),
-            Self::ExcType(exc) => exc.call(vm, args),
-            Self::Type(t) => t.call(vm, args),
+            Self::ExcType(exc) => exc.call(vm, args).map(CallResult::Value),
+            Self::Type(t) => t.call(vm, args).map(CallResult::Value),
         }
     }
 
@@ -161,7 +169,7 @@ pub enum BuiltinsFunctions {
     // frozenset - handled by Type enum
     Getattr,
     // Globals,
-    // Hasattr,
+    Hasattr,
     Hash,
     // Help,
     Hex,
@@ -181,7 +189,7 @@ pub enum BuiltinsFunctions {
     Next,
     // object - handled by Type enum
     Oct,
-    // Open,
+    Open,
     Ord,
     Pow,
     Print,
@@ -191,7 +199,7 @@ pub enum BuiltinsFunctions {
     Reversed,
     Round,
     // set - handled by Type enum
-    // Setattr,
+    Setattr,
     // Slice,
     Sorted,
     // Staticmethod,
@@ -208,10 +216,15 @@ pub enum BuiltinsFunctions {
 impl BuiltinsFunctions {
     /// Executes the builtin with the provided arguments.
     ///
-    /// All builtins receive the full VM context, which provides access to the heap,
-    /// interned strings, and print output.
-    pub(crate) fn call(self, vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
-        match self {
+    /// All builtins receive the full VM context, which provides access to the
+    /// heap, interned strings, and print output.
+    ///
+    /// Almost every builtin completes synchronously and produces a
+    /// [`CallResult::Value`]. `open()` is the exception: it performs the
+    /// open-time file effect via a host filesystem round-trip, so it returns a
+    /// [`CallResult::OsCall`] directly.
+    pub(crate) fn call(self, vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<CallResult> {
+        let r = match self {
             Self::Abs => abs::builtin_abs(vm, args),
             Self::All => all::builtin_all(vm, args),
             Self::Any => any::builtin_any(vm, args),
@@ -221,6 +234,7 @@ impl BuiltinsFunctions {
             Self::Enumerate => enumerate::builtin_enumerate(vm, args),
             Self::Filter => filter::builtin_filter(vm, args),
             Self::Getattr => getattr::builtin_getattr(vm, args),
+            Self::Hasattr => hasattr::builtin_hasattr(vm, args),
             Self::Hash => hash::builtin_hash(vm, args),
             Self::Hex => hex::builtin_hex(vm, args),
             Self::Id => id::builtin_id(vm, args),
@@ -231,16 +245,20 @@ impl BuiltinsFunctions {
             Self::Min => min_max::builtin_min(vm, args),
             Self::Next => next::builtin_next(vm, args),
             Self::Oct => oct::builtin_oct(vm, args),
+            // `open()` yields an OS call rather than a plain value.
+            Self::Open => return open::builtin_open(vm, args),
             Self::Ord => ord::builtin_ord(vm, args),
             Self::Pow => pow::builtin_pow(vm, args),
             Self::Print => print::builtin_print(vm, args),
             Self::Repr => repr::builtin_repr(vm, args),
             Self::Reversed => reversed::builtin_reversed(vm, args),
             Self::Round => round::builtin_round(vm, args),
+            Self::Setattr => setattr::builtin_setattr(vm, args),
             Self::Sorted => sorted::builtin_sorted(vm, args),
             Self::Sum => sum::builtin_sum(vm, args),
             Self::Type => type_::builtin_type(vm, args),
             Self::Zip => zip::builtin_zip(vm, args),
-        }
+        };
+        r.map(CallResult::Value)
     }
 }

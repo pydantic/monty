@@ -68,6 +68,12 @@ assert b'hello'.count(b'l', 5, 2) == 0, 'count with start > end returns 0'
 assert not b'hello'.startswith(b'h', 5, 2), 'startswith with start > end is false'
 assert not b'hello'.endswith(b'o', 5, 2), 'endswith with start > end is false'
 
+# === Edge case: i64::MIN start/end — regression: `-index` on i64::MIN used to panic ===
+_I64_MIN = -(2**63)
+assert b'hello'.startswith(b'h', _I64_MIN), 'startswith with i64::MIN start clamps to 0'
+assert not b'hello'.startswith(b'h', 0, _I64_MIN), 'startswith with i64::MIN end clamps to 0'
+assert not b'hello'.endswith(b'o', _I64_MIN, _I64_MIN), 'endswith with i64::MIN bounds'
+
 # === bytes.lower() ===
 assert b'HELLO'.lower() == b'hello', 'lower basic'
 assert b'Hello World'.lower() == b'hello world', 'lower mixed case'
@@ -276,6 +282,20 @@ assert b'\x01\x02\x03'.hex(':', 2) == '01:0203', 'hex +2 three bytes'
 # Test negative bytes_per_sep (partial group at end)
 assert b'\x01\x02\x03\x04\x05'.hex(':', -2) == '0102:0304:05', 'hex -2 odd bytes'
 assert b'\x01\x02\x03'.hex(':', -2) == '0102:03', 'hex -2 three bytes'
+# bytes_per_sep is parsed as a C int by CPython; out-of-range values raise OverflowError.
+try:
+    b'A'.hex(':', -9223372036854775808)
+    assert False, 'expected OverflowError for i64::MIN'
+except OverflowError as exc:
+    assert str(exc) == 'Python int too large to convert to C int', 'overflow message i64::MIN'
+try:
+    b'A'.hex(':', 2147483648)
+    assert False, 'expected OverflowError for i32::MAX + 1'
+except OverflowError as exc:
+    assert str(exc) == 'Python int too large to convert to C int', 'overflow message i32::MAX+1'
+# Values at the i32 boundary are still accepted and processed as a single chunk.
+assert b'\x01\x02\x03'.hex(':', -2147483648) == '010203', 'hex i32::MIN three bytes'
+assert b'\x01\x02\x03'.hex(':', 2147483647) == '010203', 'hex i32::MAX three bytes'
 
 # === bytes.fromhex() ===
 assert bytes.fromhex('deadbeef') == b'\xde\xad\xbe\xef', 'fromhex basic'

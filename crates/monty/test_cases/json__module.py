@@ -23,6 +23,7 @@ assert json.loads(b'true') is True, 'loads bytes true'
 assert json.loads(b'false') is False, 'loads bytes false'
 assert json.loads(b'null') is None, 'loads bytes null'
 assert json.loads('"\\u2603"') == '☃', 'loads unicode escape'
+assert json.loads('{"a": 1, "a": 2}') == {'a': 2}, 'loads duplicate object keys with last value winning'
 
 # === loads big integers ===
 big = 1234567890123456789012345678901234567890

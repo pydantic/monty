@@ -1,3 +1,4 @@
+import io
 from typing import Any
 
 import pytest
@@ -207,6 +208,48 @@ def test_external_function_exception_type_preserved():
     assert inner.args[0] == snapshot('type error message')
 
 
+def test_external_function_unsupported_operation_preserves_type():
+    """`io.UnsupportedOperation` survives the host→Monty→host round-trip.
+
+    Regression: the exception inherits from both `OSError` and `ValueError`,
+    so a naive `py_err_to_exc_type` would hit the `ValueError` branch first
+    and downgrade it to plain `ExcType::ValueError`, losing the class identity.
+    """
+    m = pydantic_monty.Monty('fail()')
+
+    def fail(*args: Any, **kwargs: Any) -> None:
+        raise io.UnsupportedOperation('not readable')
+
+    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
+        m.run(external_functions={'fail': fail})
+    inner = exc_info.value.exception()
+    assert type(inner) is io.UnsupportedOperation
+    assert isinstance(inner, io.UnsupportedOperation)
+    # And the dual-parent catch behavior is preserved in Monty code too:
+    assert isinstance(inner, OSError)
+    assert isinstance(inner, ValueError)
+    assert inner.args[0] == snapshot('not readable')
+
+
+@pytest.mark.parametrize('parent', ['OSError', 'ValueError'])
+def test_external_unsupported_operation_caught_by_either_parent(parent: str):
+    """`except OSError:` and `except ValueError:` both catch a host-raised
+    `io.UnsupportedOperation`, matching CPython's dual inheritance."""
+    code = f"""
+try:
+    fail()
+except {parent}:
+    caught = '{parent}'
+caught
+"""
+    m = pydantic_monty.Monty(code)
+
+    def fail(*args: Any, **kwargs: Any) -> None:
+        raise io.UnsupportedOperation('boom')
+
+    assert m.run(external_functions={'fail': fail}) == parent
+
+
 @pytest.mark.parametrize(
     'exception_class,exception_name',
     [
@@ -365,3 +408,34 @@ finally_ran
 
     result = m.run(external_functions={'fail': fail})
     assert result == snapshot(True)
+
+
+def test_external_function_return_lone_surrogate_catchable_inside_monty():
+    """A callback returning a string with a lone surrogate surfaces inside
+    Monty as a `ValueError` that can be caught, not as a raw PyErr escaping
+    to the caller."""
+    code = """
+try:
+    get_str()
+    result = 'no error'
+except ValueError:
+    result = 'caught'
+result
+"""
+    m = pydantic_monty.Monty(code)
+    assert m.run(external_functions={'get_str': lambda: '\ud83d'}) == snapshot('caught')
+
+
+def test_external_function_return_unconvertible_catchable_inside_monty():
+    """A callback returning an unconvertible object surfaces inside Monty as a
+    `TypeError` that can be caught."""
+    code = """
+try:
+    get_thing()
+    result = 'no error'
+except TypeError:
+    result = 'caught'
+result
+"""
+    m = pydantic_monty.Monty(code)
+    assert m.run(external_functions={'get_thing': lambda: object()}) == snapshot('caught')

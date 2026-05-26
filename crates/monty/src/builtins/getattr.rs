@@ -5,7 +5,8 @@ use crate::{
     args::ArgValues,
     bytecode::{CallResult, VM},
     defer_drop,
-    exception_private::{RunResult, SimpleException},
+    exception_private::{RunError, RunResult, SimpleException},
+    heap::DropWithHeap,
     resource::ResourceTracker,
     types::PyTrait,
     value::Value,
@@ -27,7 +28,7 @@ use crate::{
 /// getattr(obj, 'y', None)       # Get obj.y or None if not found
 /// getattr(module, 'function')   # Get module.function
 /// ```
-pub fn builtin_getattr(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+pub fn builtin_getattr(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     let positional = args.into_pos_only("getattr", vm.heap)?;
     defer_drop!(positional, vm);
 
@@ -47,19 +48,20 @@ pub fn builtin_getattr(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValue
 
     match object.py_getattr(&attr, vm) {
         Ok(CallResult::Value(value)) => Ok(value),
-        Ok(_) => {
+        Ok(other) => {
+            other.drop_with_heap(vm);
             // getattr() only retrieves attribute values — OS calls, external calls,
             // method calls, and awaits are not supported here
             //
             // TODO: might need to support this case?
             Err(SimpleException::new_msg(ExcType::TypeError, "getattr(): attribute is not a simple value").into())
         }
-        Err(e) => {
-            if let Some(d) = default {
-                Ok(d.clone_with_heap(vm))
-            } else {
-                Err(e)
-            }
+        Err(RunError::Exc(e))
+            if let Some(d) = default
+                && e.exc.exc_type() == ExcType::AttributeError =>
+        {
+            Ok(d.clone_with_heap(vm))
         }
+        Err(e) => Err(e),
     }
 }

@@ -106,6 +106,13 @@ assert 'hello'.find('') == 0, 'find empty string'
 assert 'hello'.find('l', 3) == 3, 'find with start'
 assert 'hello'.find('l', 0, 3) == 2, 'find with start and end'
 
+# find()/startswith() with i64::MIN start/end — regression: `-index` on i64::MIN used to panic
+_I64_MIN = -(2**63)
+assert 'hello'.find('h', _I64_MIN) == 0, 'find with i64::MIN start clamps to 0'
+assert 'hello'.find('h', 0, _I64_MIN) == -1, 'find with i64::MIN end clamps to 0'
+assert 'hello'.startswith('h', _I64_MIN) == True, 'startswith with i64::MIN start clamps to 0'
+assert 'hello'.startswith('h', _I64_MIN, _I64_MIN) == False, 'startswith with i64::MIN end'
+
 # rfind()
 assert 'hello'.rfind('l') == 3, 'rfind basic'
 assert 'hello'.rfind('x') == -1, 'rfind not found'
@@ -179,6 +186,15 @@ assert 'hello'.split('x') == ['hello'], 'split not found'
 assert 'a b c'.rsplit() == ['a', 'b', 'c'], 'rsplit whitespace'
 assert 'a,b,c'.rsplit(',') == ['a', 'b', 'c'], 'rsplit comma'
 assert 'a,b,c'.rsplit(',', 1) == ['a,b', 'c'], 'rsplit maxsplit'
+# Multi-byte whitespace must not panic on UTF-8 boundary (U+00A0, U+3000).
+assert 'hello world'.rsplit(maxsplit=1) == ['hello', 'world'], 'rsplit maxsplit nbsp'
+assert 'a　b　c'.rsplit(maxsplit=1) == ['a　b', 'c'], 'rsplit maxsplit ideographic space'
+assert 'a b c'.rsplit(maxsplit=2) == ['a', 'b', 'c'], 'rsplit maxsplit=2 nbsp'
+assert 'a b c'.rsplit(maxsplit=0) == ['a b c'], 'rsplit maxsplit=0 does no splits'
+# Runs of whitespace count as one separator.
+assert 'a  b'.rsplit(maxsplit=2) == ['a', 'b'], 'rsplit consecutive ascii whitespace'
+assert 'a\xa0\xa0b'.rsplit(maxsplit=2) == ['a', 'b'], 'rsplit consecutive nbsp'
+assert '  a  b  '.rsplit(maxsplit=1) == ['  a', 'b'], 'rsplit trailing whitespace trimmed'
 
 # splitlines()
 assert 'a\nb\nc'.splitlines() == ['a', 'b', 'c'], 'splitlines basic'

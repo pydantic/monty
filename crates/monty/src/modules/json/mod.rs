@@ -12,6 +12,9 @@
 
 mod dump;
 mod load;
+mod string_cache;
+
+pub(crate) use string_cache::JsonStringCache;
 
 use super::ModuleFunctions;
 use crate::{
@@ -45,7 +48,7 @@ pub(crate) enum JsonFunctions {
 /// The module exposes `loads`, `dumps`, and `JSONDecodeError`. These are the
 /// most widely used parts of CPython's `json` module and are sufficient for
 /// common data interchange and round-tripping use cases inside the sandbox.
-pub fn create_module(vm: &mut VM<'_, '_, impl ResourceTracker>) -> Result<HeapId, ResourceError> {
+pub fn create_module(vm: &mut VM<'_, impl ResourceTracker>) -> Result<HeapId, ResourceError> {
     let mut module = Module::new(StaticStrings::Json);
     module.set_attr(
         StaticStrings::Loads,
@@ -70,7 +73,7 @@ pub fn create_module(vm: &mut VM<'_, '_, impl ResourceTracker>) -> Result<HeapId
 /// Both functions are pure computations that return ordinary Monty values and
 /// never need host involvement, so the dispatcher returns `Value` directly.
 pub(super) fn call(
-    vm: &mut VM<'_, '_, impl ResourceTracker>,
+    vm: &mut VM<'_, impl ResourceTracker>,
     function: JsonFunctions,
     args: ArgValues,
 ) -> RunResult<Value> {

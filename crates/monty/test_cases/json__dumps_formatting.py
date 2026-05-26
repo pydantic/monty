@@ -74,3 +74,8 @@ assert json.dumps('\x01') == '"\\u0001"', 'control char 0x01 is escaped'
 assert json.dumps('\x1f') == '"\\u001f"', 'control char 0x1f is escaped'
 assert json.dumps('\x7f') == '"\\u007f"', 'DEL char 0x7f is escaped with ensure_ascii'
 assert json.dumps('\x7f', ensure_ascii=False) == '"\x7f"', 'DEL char 0x7f is literal with ensure_ascii=False'
+assert json.dumps('😀') == '"\\ud83d\\ude00"', 'non-BMP unicode escapes as surrogate pair with ensure_ascii'
+assert json.dumps('😀', ensure_ascii=False) == '"😀"', 'non-BMP unicode stays literal with ensure_ascii=False'
+assert json.dumps('ascii😀"\\\x01z') == '"ascii\\ud83d\\ude00\\"\\\\\\u0001z"', (
+    'mixed string escapes flush correctly across ascii, unicode, quotes, backslashes, and control chars'
+)
