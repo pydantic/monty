@@ -10,6 +10,10 @@ use std::{
 use ahash::AHashSet;
 use num_integer::Integer;
 
+// Imported separately because `#[cfg]` cannot be applied to individual items
+// inside a brace-grouped `use`.
+#[cfg(feature = "test-hooks")]
+use crate::types::TestContextManager;
 use crate::{
     ExcType, ResourceTracker,
     args::ArgValues,
@@ -142,6 +146,12 @@ pub(crate) enum HeapData {
     TimeDelta(timedelta::TimeDelta),
     /// A fixed-offset `datetime.timezone` value.
     TimeZone(timezone::TimeZone),
+    /// Synthetic context manager used by tests to exercise `with` statement
+    /// code paths no production type currently reaches. See
+    /// [`crate::types::test_cm`] for the full rationale and removal plan.
+    /// Only present under the `test-hooks` cargo feature.
+    #[cfg(feature = "test-hooks")]
+    TestContextManager(TestContextManager),
 }
 
 impl HeapData {
@@ -214,6 +224,8 @@ impl HeapData {
             Self::DateTime(_) => Type::DateTime,
             Self::TimeDelta(_) => Type::TimeDelta,
             Self::TimeZone(_) => Type::TimeZone,
+            #[cfg(feature = "test-hooks")]
+            Self::TestContextManager(_) => Type::TestContextManager,
         }
     }
 
@@ -252,6 +264,8 @@ impl HeapData {
             Self::DateTime(d) => d.py_estimate_size(),
             Self::TimeDelta(d) => d.py_estimate_size(),
             Self::TimeZone(d) => d.py_estimate_size(),
+            #[cfg(feature = "test-hooks")]
+            Self::TestContextManager(cm) => cm.py_estimate_size(),
         }
     }
 }
@@ -476,6 +490,8 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             Self::RePattern(p) => p.py_bool(vm),
             Self::TimeDelta(td) => td.py_bool(vm),
             Self::Date(_) | Self::DateTime(_) | Self::TimeZone(_) => true,
+            #[cfg(feature = "test-hooks")]
+            Self::TestContextManager(cm) => cm.py_bool(vm),
         }
     }
 
@@ -506,6 +522,8 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             HeapReadOutput::TimeDelta(td) => Ok(td.py_call_attr(self_id, vm, attr, args)?),
             HeapReadOutput::Date(d) => Ok(d.py_call_attr(self_id, vm, attr, args)?),
             HeapReadOutput::DateTime(dt) => Ok(dt.py_call_attr(self_id, vm, attr, args)?),
+            #[cfg(feature = "test-hooks")]
+            HeapReadOutput::TestContextManager(cm) => cm.py_call_attr(self_id, vm, attr, args),
             // Types without methods — return AttributeError
             _ => {
                 args.drop_with_heap(vm);
@@ -521,6 +539,8 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
         // `py_call_attr` is structured.
         match self {
             HeapReadOutput::OpenFile(file) => file.py_enter(self_id, vm),
+            #[cfg(feature = "test-hooks")]
+            HeapReadOutput::TestContextManager(cm) => cm.py_enter(self_id, vm),
             _ => Err(ExcType::attribute_error(self.py_type(vm), "__enter__")),
         }
     }
@@ -533,6 +553,8 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
     ) -> RunResult<CallResult> {
         match self {
             HeapReadOutput::OpenFile(file) => file.py_exit(self_id, vm, exc),
+            #[cfg(feature = "test-hooks")]
+            HeapReadOutput::TestContextManager(cm) => cm.py_exit(self_id, vm, exc),
             _ => Err(ExcType::attribute_error(self.py_type(vm), "__exit__")),
         }
     }
@@ -568,6 +590,8 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             Self::DateTime(d) => d.py_type(vm),
             Self::TimeDelta(d) => d.py_type(vm),
             Self::TimeZone(d) => d.py_type(vm),
+            #[cfg(feature = "test-hooks")]
+            Self::TestContextManager(cm) => cm.py_type(vm),
         }
     }
 
@@ -792,6 +816,8 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             Self::DateTime(d) => d.py_repr_fmt(f, vm, heap_ids),
             Self::TimeDelta(d) => d.py_repr_fmt(f, vm, heap_ids),
             Self::TimeZone(d) => d.py_repr_fmt(f, vm, heap_ids),
+            #[cfg(feature = "test-hooks")]
+            Self::TestContextManager(cm) => cm.py_repr_fmt(f, vm, heap_ids),
         }
     }
 

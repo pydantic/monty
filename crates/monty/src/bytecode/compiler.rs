@@ -3209,13 +3209,21 @@ impl<'a> Compiler<'a> {
         // === Body (protected region) ===
         let try_start = self.code.current_offset();
         self.compile_block(body)?;
+        // Close the protected range BEFORE `WithExit` so the normal-exit
+        // cleanup is outside the body's exception-table entry. If
+        // `__exit__` raises here, the new exception should propagate to
+        // the outer frame's exception table (matching CPython, where an
+        // `__exit__` exception replaces any prior state). Routing it
+        // back to our own handler would invoke `__exit__` a second time
+        // with the ctx already popped, blowing up the stack-depth
+        // bookkeeping in the unwinder.
+        let try_end = self.code.current_offset();
 
         // Normal exit: __exit__(None, None, None); pop the (discarded) result;
         // skip the handler.
         self.code.emit(Opcode::WithExit)?;
         self.code.emit(Opcode::Pop)?;
         let after_body_jump = self.code.emit_jump(Opcode::Jump)?;
-        let try_end = self.code.current_offset();
 
         // === Exception handler ===
         let handler_start = self.code.current_offset();
