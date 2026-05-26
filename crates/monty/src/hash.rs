@@ -317,7 +317,9 @@ pub(crate) static ASCII_HASHES: LazyHashTable<128> = LazyHashTable::new();
 
 /// Per-slot lazy hashes for every [`StaticStrings`] variant.
 ///
-/// Indexed by the variant's discriminant (`StaticStrings as usize`). Each
-/// slot is filled on first access from the variant's `&'static str`
+/// Indexed by the variant's discriminant, minus the static strings offset
+/// (`StaticStrings as usize - STATIC_STRING_ID_OFFSET`).
+///
+/// Each slot is filled on first access from the variant's `&'static str`
 /// representation.
 pub(crate) static STATIC_HASHES: LazyHashTable<{ StaticStrings::COUNT }> = LazyHashTable::new();

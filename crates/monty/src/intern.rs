@@ -12,7 +12,7 @@
 //! * 1000 to count(StaticStrings) - strings StaticStrings
 //! * 10_000+ - strings interned per executor
 
-use std::{array, str::FromStr, sync::LazyLock};
+use std::{slice::from_ref, str::FromStr};
 
 use ahash::AHashMap;
 use num_bigint::BigInt;
@@ -55,27 +55,41 @@ impl StringId {
 }
 
 /// StringId offsets
-const STATIC_STRING_ID_OFFSET: u32 = 1000;
+const STATIC_STRING_ID_OFFSET: u16 = 1000;
 const INTERN_STRING_ID_OFFSET: usize = 10_000;
 
-/// Static strings for all 128 ASCII characters, built once on first access.
-///
-/// Uses `LazyLock` to build the array at runtime (once), leaking the strings to get
-/// `'static` lifetime. The leak is intentional and bounded (128 single-byte strings).
+/// Static strings for all 128 ASCII characters.
 ///
 /// Exposed `pub(crate)` so the [`crate::hash::ASCII_HASHES`] table can hash
 /// them in lockstep — both tables must agree on the same `&str` per byte.
-pub(crate) static ASCII_STRS: LazyLock<[&'static str; 128]> = LazyLock::new(|| {
-    array::from_fn(|i| {
-        // Safe: i is always 0-127 for a 128-element array
-        let s = char::from(u8::try_from(i).expect("index out of u8 range")).to_string();
-        // Leak to get 'static lifetime - this is intentional and bounded (128 bytes total)
-        // Reborrow as immutable since we won't mutate
-        &*Box::leak(s.into_boxed_str())
-    })
-});
+pub(crate) static ASCII_STRS: [&str; 128] = const {
+    // Initialize array of 128 bytes which will be used as the raw storage
+    const ASCII_BYTES: [u8; 128] = const {
+        let mut bytes: [u8; 128] = [0; 128];
+        let mut i: u8 = 0;
+        while i < 128 {
+            bytes[i as usize] = i;
+            i += 1;
+        }
+        bytes
+    };
+    // Index into the above array to build the `&'static str` forms
+    let mut strs: [&str; 128] = [""; 128];
+    let mut i = 0;
+    while i < 128 {
+        strs[i] = match str::from_utf8(from_ref(&ASCII_BYTES[i])) {
+            Ok(s) => s,
+            Err(_) => panic!("invalid ascii byte"),
+        };
+        i += 1;
+    }
+    strs
+};
 
 /// Static string values which are known at compile time and don't need to be interned.
+///
+/// Discriminant starts from STATIC_STRING_ID_OFFSET to make conversion to/from stringid
+/// cheap when within bounds.
 #[repr(u16)]
 #[derive(
     Debug,
@@ -94,7 +108,7 @@ pub(crate) static ASCII_STRS: LazyLock<[&'static str; 128]> = LazyLock::new(|| {
 #[strum(serialize_all = "snake_case")]
 pub enum StaticStrings {
     #[strum(serialize = "")]
-    EmptyString,
+    EmptyString = STATIC_STRING_ID_OFFSET,
     #[strum(serialize = "<module>")]
     Module,
     // ==========================
@@ -639,16 +653,14 @@ impl StaticStrings {
     /// Returns `None` if the `StringId` doesn't correspond to a static string
     /// (e.g., it's an ASCII char or a dynamically interned string).
     pub fn from_string_id(id: StringId) -> Option<Self> {
-        let enum_id = id.0.checked_sub(STATIC_STRING_ID_OFFSET)?;
-        u16::try_from(enum_id).ok().and_then(Self::from_repr)
+        u16::try_from(id.0).ok().and_then(Self::from_repr)
     }
 }
 
 /// Converts this static string variant to its corresponding `StringId`.
 impl From<StaticStrings> for StringId {
     fn from(value: StaticStrings) -> Self {
-        let string_id = value as u32;
-        Self(string_id + STATIC_STRING_ID_OFFSET)
+        Self(value as u32)
     }
 }
 
@@ -851,8 +863,8 @@ impl InternerBuilder {
 ///
 /// Panics if the `StringId` is invalid - not from this interner or ascii chars or StaticStrings.
 fn get_str(strings: &[WithHash<String>], id: StringId) -> &str {
-    if let Ok(c) = u8::try_from(id.0) {
-        ASCII_STRS[c as usize]
+    if let Some(ascii_str) = ASCII_STRS.get(id.index()) {
+        ascii_str
     } else if let Some(intern_index) = id.index().checked_sub(INTERN_STRING_ID_OFFSET) {
         strings[intern_index].value()
     } else {
@@ -950,13 +962,15 @@ impl Interns {
     /// Panics if the `StringId` is invalid (same as [`Self::get_str`]).
     #[inline]
     pub fn str_hash(&self, id: StringId) -> HashValue {
-        if let Ok(c) = u8::try_from(id.0) {
-            ASCII_HASHES.get_or_compute(c as usize, || hash_python_str(ASCII_STRS[c as usize]))
+        if id.index() < ASCII_STRS.len() {
+            ASCII_HASHES.get_or_compute(id.index(), || hash_python_str(ASCII_STRS[id.index()]))
         } else if let Some(intern_index) = id.index().checked_sub(INTERN_STRING_ID_OFFSET) {
             self.strings[intern_index].hash()
         } else {
             let static_str = StaticStrings::from_string_id(id).expect("Invalid static string ID");
-            STATIC_HASHES.get_or_compute(static_str as usize, || hash_python_str(static_str.into()))
+            STATIC_HASHES.get_or_compute((static_str as usize) - STATIC_STRING_ID_OFFSET as usize, || {
+                hash_python_str(static_str.into())
+            })
         }
     }
 
