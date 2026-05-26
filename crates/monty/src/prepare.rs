@@ -2432,7 +2432,10 @@ fn collect_cell_vars_from_node(
             }
         }
         // Recurse into control flow structures
-        Node::For { body, or_else, .. } => {
+        Node::For {
+            iter, body, or_else, ..
+        } => {
+            collect_cell_vars_from_expr(iter, our_locals, cell_vars, interner);
             for n in body {
                 collect_cell_vars_from_node(n, our_locals, cell_vars, interner);
             }
@@ -2440,7 +2443,8 @@ fn collect_cell_vars_from_node(
                 collect_cell_vars_from_node(n, our_locals, cell_vars, interner);
             }
         }
-        Node::While { body, or_else, .. } => {
+        Node::While { test, body, or_else } => {
+            collect_cell_vars_from_expr(test, our_locals, cell_vars, interner);
             for n in body {
                 collect_cell_vars_from_node(n, our_locals, cell_vars, interner);
             }
@@ -2448,7 +2452,8 @@ fn collect_cell_vars_from_node(
                 collect_cell_vars_from_node(n, our_locals, cell_vars, interner);
             }
         }
-        Node::If { body, or_else, .. } => {
+        Node::If { test, body, or_else } => {
+            collect_cell_vars_from_expr(test, our_locals, cell_vars, interner);
             for n in body {
                 collect_cell_vars_from_node(n, our_locals, cell_vars, interner);
             }

@@ -143,3 +143,69 @@ def test_inner_lambda_capture():
 
 
 assert test_inner_lambda_capture() == 7, 'inner lambda captures outer lambda param'
+
+
+# === Lambda captures in control-flow test expressions ===
+# Regression: the closure pre-scan must visit the test/iter expression of
+# while/if/for, otherwise a lambda buried there is discovered after `x` has
+# already been assigned a normal local slot. The late path then reuses that
+# local slot as a cell slot, breaking the contiguous cell layout the VM
+# assumes, and `LoadCell` indexes outside the frame's cell vector.
+
+
+def while_test_capture():
+    a = 0
+    x = 1
+    while False and (lambda: x)():
+        pass
+    return x
+
+
+assert while_test_capture() == 1, 'lambda capture in while-test'
+
+
+def if_test_capture():
+    a = 0
+    x = 2
+    if False and (lambda: x)():
+        pass
+    return x
+
+
+assert if_test_capture() == 2, 'lambda capture in if-test'
+
+
+def for_iter_capture():
+    a = 0
+    x = 3
+    for _ in [(lambda: x)()]:
+        pass
+    return x
+
+
+assert for_iter_capture() == 3, 'lambda capture in for-iter'
+
+
+# Same as above, but the lambda is actually invoked and must read the cell.
+def while_test_capture_runs():
+    a = 0
+    x = 7
+    count = 0
+    while (lambda: x == 7)() and count < 2:
+        count += 1
+    return (x, count)
+
+
+assert while_test_capture_runs() == (7, 2), 'lambda in while-test reads captured cell'
+
+
+def for_iter_capture_runs():
+    a = 0
+    x = 5
+    seen = []
+    for v in [(lambda: x)()]:
+        seen.append(v)
+    return (x, seen)
+
+
+assert for_iter_capture_runs() == (5, [5]), 'lambda in for-iter reads captured cell'
