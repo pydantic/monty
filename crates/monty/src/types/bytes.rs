@@ -1545,7 +1545,9 @@ fn bytes_splitlines<'h>(
 ) -> RunResult<Value> {
     let keepends = parse_bytes_splitlines_args(args, vm)?;
 
-    let mut lines = Vec::new();
+    let lines = Vec::new();
+    let mut lines_guard = HeapGuard::new(lines, vm);
+    let (lines, vm) = lines_guard.as_parts_mut();
     let mut start = 0;
     let bytes = bytes.get(vm.heap);
     let len = bytes.len();
@@ -1587,6 +1589,7 @@ fn bytes_splitlines<'h>(
         start = end;
     }
 
+    let (lines, vm) = lines_guard.into_parts();
     let list = List::new(lines);
     let heap_id = vm.heap.allocate(HeapData::List(list))?;
     Ok(Value::Ref(heap_id))

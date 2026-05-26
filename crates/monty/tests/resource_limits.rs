@@ -455,10 +455,6 @@ result
 }
 
 #[test]
-#[cfg_attr(
-    feature = "memory-model-checks",
-    ignore = "resource exhaustion doesn't guarantee heap state consistency"
-)]
 fn executor_iter_resource_limit_on_resume() {
     // Test that resource limits are enforced across function calls
     // First function call succeeds, but resumed execution exceeds limit
@@ -491,10 +487,6 @@ fn executor_iter_resource_limit_on_resume() {
 }
 
 #[test]
-#[cfg_attr(
-    feature = "memory-model-checks",
-    ignore = "resource exhaustion doesn't guarantee heap state consistency"
-)]
 fn executor_iter_resource_limit_before_function_call() {
     // Test that resource limits are enforced before first function call
 
@@ -516,10 +508,6 @@ fn executor_iter_resource_limit_before_function_call() {
 }
 
 #[test]
-#[cfg_attr(
-    feature = "memory-model-checks",
-    ignore = "resource exhaustion doesn't guarantee heap state consistency"
-)]
 fn char_f_string_not_allocated() {
     // Single character f-string interned not not allocated
 
@@ -580,10 +568,6 @@ fn executor_iter_resource_limit_multiple_function_calls() {
 /// Each recursive call creates a new namespace, which should count against
 /// the memory limit.
 #[test]
-#[cfg_attr(
-    feature = "memory-model-checks",
-    ignore = "resource exhaustion doesn't guarantee heap state consistency"
-)]
 fn recursion_respects_memory_limit() {
     // Recursive function that creates stack frames with local variables
     let code = r"
@@ -612,10 +596,6 @@ recurse(1000)
 
 /// Test that recursion depth limit returns an error.
 #[test]
-#[cfg_attr(
-    feature = "memory-model-checks",
-    ignore = "resource exhaustion doesn't guarantee heap state consistency"
-)]
 fn recursion_depth_limit_exceeded() {
     let code = r"
 def recurse(n):
@@ -669,10 +649,6 @@ recurse(5)
 /// (list / tuple via the live `ListIter` / `TupleIter`; dict via a token
 /// acquired explicitly after `collect_dict_entries` releases the `DictIter`).
 #[test]
-#[cfg_attr(
-    feature = "memory-model-checks",
-    ignore = "resource exhaustion doesn't guarantee heap state consistency"
-)]
 fn json_dumps_deep_list_raises_recursion_error() {
     let code = r"
 import json
@@ -689,10 +665,6 @@ json.dumps(x)
 }
 
 #[test]
-#[cfg_attr(
-    feature = "memory-model-checks",
-    ignore = "resource exhaustion doesn't guarantee heap state consistency"
-)]
 fn json_dumps_deep_tuple_raises_recursion_error() {
     let code = r"
 import json
@@ -708,10 +680,6 @@ json.dumps(x)
 }
 
 #[test]
-#[cfg_attr(
-    feature = "memory-model-checks",
-    ignore = "resource exhaustion doesn't guarantee heap state consistency"
-)]
 fn json_dumps_deep_dict_raises_recursion_error() {
     let code = r"
 import json
@@ -1405,10 +1373,6 @@ fn timeout_in_all_builtin() {
 ///
 /// `enumerate()` creates tuples on each iteration via `for_next()`.
 #[test]
-#[cfg_attr(
-    feature = "memory-model-checks",
-    ignore = "resource exhaustion doesn't guarantee heap state consistency"
-)]
 fn timeout_in_any_builtin() {
     // range(0, 1) repeated via a for loop calling any on each chunk isn't ideal,
     // but we can test with a large range starting from 0 where only first element is falsy
@@ -1439,10 +1403,6 @@ fn timeout_in_str_join() {
 /// Uses reverse-sorted data to trigger worst-case O(n^2) insertion sort behavior.
 /// The sort comparison loop has an explicit `heap.check_time()` call.
 #[test]
-#[cfg_attr(
-    feature = "memory-model-checks",
-    ignore = "resource exhaustion doesn't guarantee heap state consistency"
-)]
 fn timeout_in_sorted_comparison_loop() {
     // Build a reverse-sorted list, then sort it. Insertion sort on reverse-sorted
     // data is O(n^2).
@@ -1458,10 +1418,6 @@ sorted(x)
 /// The sequence-repetition copy loop in `py_mult` now calls `heap.check_time()`
 /// on each repetition to prevent large sequence multiplications from bypassing timeout.
 #[test]
-#[cfg_attr(
-    feature = "memory-model-checks",
-    ignore = "resource exhaustion doesn't guarantee heap state consistency"
-)]
 fn timeout_in_list_repetition() {
     assert_timeout_in_builtin("[1, 2, 3] * 10_000_000", "list repetition");
 }
@@ -1471,10 +1427,6 @@ fn timeout_in_list_repetition() {
 /// Same as list repetition but for tuples — both sequence-repetition paths in
 /// `py_mult` now check the time limit.
 #[test]
-#[cfg_attr(
-    feature = "memory-model-checks",
-    ignore = "resource exhaustion doesn't guarantee heap state consistency"
-)]
 fn timeout_in_tuple_repetition() {
     assert_timeout_in_builtin("(1, 2, 3) * 10_000_000", "tuple repetition");
 }
@@ -1484,10 +1436,6 @@ fn timeout_in_tuple_repetition() {
 /// `List::py_eq()` iterates element-wise comparing pairs. With large equal lists,
 /// it must compare every element before returning True.
 #[test]
-#[cfg_attr(
-    feature = "memory-model-checks",
-    ignore = "resource exhaustion doesn't guarantee heap state consistency"
-)]
 fn timeout_in_list_equality() {
     let code = r"
 a = list(range(10_000_000))
@@ -1502,10 +1450,6 @@ a == b
 /// `Dict::py_eq()` iterates all entries checking keys and values. With large equal
 /// dicts, it must check every entry before returning True.
 #[test]
-#[cfg_attr(
-    feature = "memory-model-checks",
-    ignore = "resource exhaustion doesn't guarantee heap state consistency"
-)]
 fn timeout_in_dict_equality() {
     let code = r"
 a = {i: i for i in range(10_000_000)}
@@ -1520,10 +1464,6 @@ a == b
 /// `str_splitlines()` scans the entire string for line endings in a while loop
 /// that now calls `heap.check_time()` on each iteration.
 #[test]
-#[cfg_attr(
-    feature = "memory-model-checks",
-    ignore = "resource exhaustion doesn't guarantee heap state consistency"
-)]
 fn timeout_in_str_splitlines() {
     let code = r"
 s = 'a\n' * 5_000_000
@@ -1536,10 +1476,6 @@ s.splitlines()
 ///
 /// `bytes_splitlines()` scans bytes for line endings and now checks the time limit.
 #[test]
-#[cfg_attr(
-    feature = "memory-model-checks",
-    ignore = "resource exhaustion doesn't guarantee heap state consistency"
-)]
 fn timeout_in_bytes_splitlines() {
     let code = r"
 s = b'a\n' * 5_000_000
@@ -1604,10 +1540,6 @@ fn assert_repr_timeout(code: &str, label: &str) {
 /// Uses a list of 100K short strings so that repr formatting is slow enough
 /// to trigger the timeout.
 #[test]
-#[cfg_attr(
-    feature = "memory-model-checks",
-    ignore = "resource exhaustion doesn't guarantee heap state consistency"
-)]
 fn timeout_truncation_in_list_repr() {
     let code = r"
 x = ['abcdefghij'] * 100_000
@@ -1622,10 +1554,6 @@ repr(x)
 /// Uses a dict with 100K entries where values are short strings,
 /// making repr formatting slow enough to trigger the timeout.
 #[test]
-#[cfg_attr(
-    feature = "memory-model-checks",
-    ignore = "resource exhaustion doesn't guarantee heap state consistency"
-)]
 fn timeout_truncation_in_dict_repr() {
     let code = r"
 x = {i: 'abcdefghij' for i in range(100_000)}
@@ -1640,10 +1568,6 @@ repr(x)
 /// Uses a set of 100K unique strings so that repr formatting is slow enough
 /// to trigger the timeout.
 #[test]
-#[cfg_attr(
-    feature = "memory-model-checks",
-    ignore = "resource exhaustion doesn't guarantee heap state consistency"
-)]
 fn timeout_truncation_in_set_repr() {
     let code = r"
 x = {str(i) for i in range(100_000)}

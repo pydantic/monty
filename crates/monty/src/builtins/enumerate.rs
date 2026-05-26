@@ -7,7 +7,7 @@ use crate::{
     bytecode::VM,
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, RunResult, SimpleException},
-    heap::HeapData,
+    heap::{HeapData, HeapGuard},
     resource::ResourceTracker,
     types::{List, MontyIter, PyTrait, allocate_tuple},
     value::Value,
@@ -38,7 +38,9 @@ pub fn builtin_enumerate(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues)
         None => 0,
     };
 
-    let mut result: Vec<Value> = Vec::new();
+    let result: Vec<Value> = Vec::new();
+    let mut result_guard = HeapGuard::new(result, vm);
+    let (result, vm) = result_guard.as_parts_mut();
 
     while let Some(item) = iter.for_next(vm)? {
         // Create tuple (index, item)
@@ -47,6 +49,7 @@ pub fn builtin_enumerate(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues)
         index += 1;
     }
 
+    let (result, vm) = result_guard.into_parts();
     let heap_id = vm.heap.allocate(HeapData::List(List::new(result)))?;
     Ok(Value::Ref(heap_id))
 }
