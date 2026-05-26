@@ -273,3 +273,68 @@ try:
     assert False, 'expected unknown mode character to fail'
 except ValueError as exc:
     assert str(exc) == "invalid mode: 'z'", f'unexpected unknown mode message: {exc}'
+
+# === Path.open() — same OsCall as builtin open() with `self` as the file ===
+# Mode/kwarg validation, open-time effects, returned wrapper types, and
+# context-manager semantics are all shared with `open()` above. The tests
+# here focus on what's specific to going through Path: that the implicit
+# `self` is used as the file argument, that positional and keyword `mode`
+# both work, and that validation still fires when called via Path.
+#
+# Each test uses its own dedicated file because earlier tests in this file
+# truncate `hello.txt` (`open(..., 'w').read()` truncates before raising).
+(root / 'path_open_text.txt').write_text('hello via Path.open\n')
+(root / 'path_open_bytes.bin').write_bytes(b'\x10\x20\x30')
+
+path_read = (root / 'path_open_text.txt').open()
+assert path_read.read() == 'hello via Path.open\n', 'Path.open() default-mode reads the file'
+path_read.close()
+
+# Positional mode reaches the same wrapper as `open(..., 'rb')`.
+binary_via_path = (root / 'path_open_bytes.bin').open('rb')
+assert str(type(binary_via_path)) == "<class '_io.BufferedReader'>", "Path.open('rb') returns BufferedReader"
+assert binary_via_path.read() == b'\x10\x20\x30', "Path.open('rb') reads bytes"
+binary_via_path.close()
+
+# Keyword-only mode works too (no positional arg).
+kw_mode = (root / 'path_open_text.txt').open(mode='r')
+assert kw_mode.read() == 'hello via Path.open\n', 'Path.open(mode=...) reads the file'
+kw_mode.close()
+
+# `encoding='utf-8'` accepted as the documented no-op (Monty always uses UTF-8).
+enc = (root / 'path_open_text.txt').open('r', encoding='utf-8')
+assert enc.read() == 'hello via Path.open\n', "Path.open('r', encoding='utf-8') accepted"
+enc.close()
+
+# Context manager works through Path.open() — closes on exit on both paths.
+with (root / 'path_open_text.txt').open() as f:
+    assert f.read() == 'hello via Path.open\n', 'Path.open() works as context manager'
+assert f.closed, 'context-manager exit closes the Path.open() file'
+
+# Write through Path.open() lands the same content as a direct open().
+(root / 'path_open_write.txt').open('w').write('written via Path.open\n')
+assert (root / 'path_open_write.txt').read_text() == 'written via Path.open\n', "Path.open('w') write committed"
+
+# Mode validation is shared — Monty rejects '+' modes; CPython would accept
+# them, so this is monty-only.
+if is_monty:
+    try:
+        (root / 'path_open_text.txt').open('r+')
+        assert False, "expected ValueError for Path.open('r+')"
+    except ValueError as exc:
+        assert str(exc) == "update modes ('+') are not yet supported", f'unexpected Path.open r+ rejection: {exc}'
+
+    try:
+        (root / 'path_open_text.txt').open(buffering=0)
+        assert False, 'expected TypeError for Path.open(buffering=0)'
+    except TypeError as exc:
+        assert str(exc) == "'buffering' argument is not yet supported", (
+            f'unexpected Path.open buffering rejection: {exc}'
+        )
+
+# Open-time existence check still fires when called via Path.open().
+try:
+    (root / 'path_open_missing.txt').open()
+    assert False, 'expected FileNotFoundError opening a missing file via Path.open'
+except FileNotFoundError as exc:
+    assert str(exc).startswith("[Errno 2] No such file or directory: '")

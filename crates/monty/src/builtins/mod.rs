@@ -22,7 +22,7 @@ mod map;
 mod min_max; // min and max share implementation
 mod next;
 mod oct;
-mod open;
+pub(crate) mod open;
 mod ord;
 mod pow;
 mod print;
