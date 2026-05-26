@@ -639,13 +639,22 @@ impl IntoIterator for Dict {
 /// Borrows a [`HeapRead`] for its lifetime, so the heap entry is pinned by
 /// the reader count for the duration of iteration.
 ///
-/// **Lending shape.** [`next`](Self::next) returns
-/// `Option<(&Value, &Value)>`. The iterator itself owns the
-/// most-recently-yielded pair (using [`Value::Undefined`] as the empty
-/// sentinel) and drops the previous pair at the start of each `next` call,
-/// so call sites do **not** need a per-item `defer_drop!`. Callers that
-/// need owned values (e.g. to feed into [`HeapRead::set`]) must
-/// `clone_with_heap` the borrowed pair themselves.
+/// **Two yield modes.** Pick the variant that matches the caller's natural
+/// pattern to avoid redundant `clone_with_heap` / `drop_with_heap` work:
+///
+/// - [`next`](Self::next) returns `Option<(&Value, &Value)>`. The iterator
+///   owns the most-recently-yielded pair (using [`Value::Undefined`] as the
+///   empty sentinel) and drops the previous pair at the start of each call,
+///   so "use and discard" call sites do **not** need a per-item
+///   `defer_drop!`.
+/// - [`next_owned`](Self::next_owned) returns `Option<(Value, Value)>` and
+///   clones straight into the return value, leaving the internal slot
+///   `Undefined`. Prefer this when feeding pairs into a sink that takes
+///   ownership (e.g. [`HeapRead::set`], `Set::add`) — going through `next`
+///   forces a second `clone_with_heap` per element.
+///
+/// Mixing the two modes is supported: every step drops whatever the slot
+/// held before doing its work.
 ///
 /// **Recursion guard.** Acquires a [`RecursionToken`] at construction and
 /// releases it via [`DropWithHeap`]. The iterator MUST be wrapped in
@@ -655,10 +664,10 @@ impl IntoIterator for Dict {
 /// cyclic structures.
 ///
 /// **Mutation policy.** The initial length is captured at construction. If
-/// the dict's size changes between [`next`](Self::next) calls, the next
-/// step returns `RuntimeError: dictionary changed size during iteration`
-/// (matching CPython and [`MontyIter`]'s dict behavior). Same-size updates
-/// (replacing a value at an existing key) are allowed and observable.
+/// the dict's size changes between steps, the next step returns
+/// `RuntimeError: dictionary changed size during iteration` (matching
+/// CPython and [`MontyIter`]'s dict behavior). Same-size updates (replacing
+/// a value at an existing key) are allowed and observable.
 pub(crate) struct DictIter<'a, 'h> {
     dict: &'a HeapRead<'h, Dict>,
     index: usize,
@@ -779,9 +788,8 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Dict> {
             let Ok(Some(other_value)) = other.dict_get(key, vm) else {
                 return Ok(false);
             };
-            let eq = value.py_eq(&other_value, vm);
-            other_value.drop_with_heap(vm);
-            if !eq? {
+            defer_drop!(other_value, vm);
+            if !value.py_eq(other_value, vm)? {
                 return Ok(false);
             }
         }
