@@ -436,6 +436,10 @@ impl<'h> PyTrait<'h> for HeapRead<'h, OpenFile> {
         }
     }
 
+    fn py_is_context_manager(&self) -> bool {
+        true
+    }
+
     fn py_enter(&mut self, self_id: HeapId, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<CallResult> {
         // Match CPython: entering on a closed file raises before the body runs.
         // (Reusing a closed file as a context manager is rare but the error

@@ -128,6 +128,10 @@ impl<'h> PyTrait<'h> for HeapRead<'h, TestContextManager> {
         Ok(())
     }
 
+    fn py_is_context_manager(&self) -> bool {
+        true
+    }
+
     fn py_enter(&mut self, self_id: HeapId, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<CallResult> {
         let cfg = self.get(vm.heap);
         if let Some(msg) = cfg.raise_on_enter.clone() {

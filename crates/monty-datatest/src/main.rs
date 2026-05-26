@@ -2235,9 +2235,6 @@ fn try_run_cpython_test(
             py.run(&setup_cstr, Some(&globals), None)
                 .expect("Failed to set up mount-fs root for CPython");
         }
-        // `iter_mode` doesn't influence CPython-side globals anymore — the
-        // shared `exported_globals` dict is installed unconditionally above.
-        let _ = iter_mode;
 
         // Run the statements
         let statements_cstr = CString::new(statements.as_str()).expect("Invalid C string in statements");

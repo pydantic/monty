@@ -826,13 +826,46 @@ fn dispatch_dunder<T: ResourceTracker>(
                 .and_then(|()| vm.heap.read(heap_id).py_enter(heap_id, vm))
         }
         StaticStrings::Exit => {
-            // `__exit__` accepts (typ, val, tb); we discard the values
-            // because direct invocation has no in-flight exception to
-            // forward.
             let args = args.take().expect("dispatch_dunder called with empty args slot");
-            args.drop_with_heap(vm);
-            vm.heap.read(heap_id).py_exit(heap_id, vm, None)
+            dispatch_exit(heap_id, vm, args)
         }
         _ => return None,
     })
+}
+
+/// Direct `obj.__exit__(typ, val, tb)` invocation.
+///
+/// Validates that exactly three positional arguments are passed (CPython
+/// raises `TypeError` for any other arity) and forwards `val` to
+/// [`PyTrait::py_exit`] as `Option<HeapId>`:
+///
+/// - `val is None` → `None`, treated as the "normal exit" path.
+/// - `val is a heap-allocated value` → `Some(heap_id)`. For built-in context
+///   managers this is the exception instance, matching the `with`-statement
+///   call shape.
+/// - `val is a scalar (Int, Bool, …)` → `None`. The trait abstraction can
+///   only carry `HeapId`s, so non-Ref values cannot be forwarded; in
+///   practice no supported context manager inspects a non-exception `val`,
+///   and CPython's behavior for such calls is implementation-defined per
+///   the user-provided `__exit__`.
+///
+/// `typ` and `tb` are discarded: every implementation we have re-derives the
+/// type from `val` and Monty has no traceback objects (see
+/// `limitations/with.md`).
+fn dispatch_exit<T: ResourceTracker>(
+    heap_id: HeapId,
+    vm: &mut VM<'_, T>,
+    args: ArgValues,
+) -> Result<CallResult, RunError> {
+    let positional = args.into_pos_only("__exit__", vm.heap)?;
+    defer_drop!(positional, vm);
+    let [typ, val, tb] = positional.as_slice() else {
+        return Err(ExcType::type_error_arg_count("__exit__", 3, positional.len()));
+    };
+    let _ = (typ, tb);
+    let exc = match val {
+        Value::Ref(id) => Some(*id),
+        _ => None,
+    };
+    vm.heap.read(heap_id).py_exit(heap_id, vm, exc)
 }

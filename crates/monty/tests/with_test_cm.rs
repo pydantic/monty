@@ -193,6 +193,51 @@ cm.__exit__(None, None, None)
 }
 
 #[test]
+fn direct_exit_call_with_exception_value_routes_to_exception_path() {
+    // Forwarding a non-None val to a `suppress`-configured manager should
+    // hit the exception branch of `__exit__` and return True. This pins the
+    // "val is forwarded to py_exit" fix in `dispatch_exit`.
+    let result = run_ok(
+        "
+cm = _test_cm('suppress')
+cm.__exit__(ValueError, ValueError('x'), None)
+",
+    );
+    assert_eq!(result, MontyObject::Bool(true));
+}
+
+#[test]
+fn direct_exit_call_wrong_arity_raises_type_error() {
+    // `cm.__exit__()` and `cm.__exit__(1, 2)` are both arity errors —
+    // CPython's `__exit__` is a 3-arg function and accepts nothing else.
+    let (exc_type, _) = run_err("_test_cm().__exit__()");
+    assert_eq!(exc_type, ExcType::TypeError);
+    let (exc_type, _) = run_err("_test_cm().__exit__(None, None)");
+    assert_eq!(exc_type, ExcType::TypeError);
+    let (exc_type, _) = run_err("_test_cm().__exit__(None, None, None, None)");
+    assert_eq!(exc_type, ExcType::TypeError);
+}
+
+#[test]
+fn unpack_failure_inside_with_calls_exit() {
+    // `with cm as (a, b):` where the unpack of `__enter__`'s result fails
+    // should still invoke `__exit__` — the unpack lives inside the
+    // protected region. `_test_cm()` returns self from `__enter__`, and
+    // `TestContextManager` is not iterable, so the unpack raises
+    // `TypeError`. A `raise_on_exit` manager makes `__exit__` raise its
+    // own `ValueError` that *replaces* the in-flight `TypeError`; if
+    // `__exit__` had not been called we'd see the bare `TypeError`.
+    let (exc_type, message) = run_err(
+        "
+with _test_cm('raise_on_exit', 'cleanup-called') as (a, b):
+    pass
+",
+    );
+    assert_eq!(exc_type, ExcType::ValueError);
+    assert_eq!(message.as_deref(), Some("cleanup-called"));
+}
+
+#[test]
 fn unknown_behavior_raises_type_error() {
     let (exc_type, message) = run_err("_test_cm('not-a-behavior')");
     assert_eq!(exc_type, ExcType::TypeError);

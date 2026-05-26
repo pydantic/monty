@@ -38,6 +38,14 @@ exception, `return`, `break`, `continue`), and a truthy return from
   behavior, but is called out here because some readers expect the original
   to be preserved as `__context__` — Monty does not currently track exception
   chaining.
+- Direct `obj.__exit__(typ, val, tb)` invocation forwards `val` to the
+  type's `py_exit` only when it is `None` or a heap-allocated value
+  (matching CPython for the `None` / exception-instance cases real callers
+  use). A non-`None` *scalar* `val` (e.g. `cm.__exit__(int, 5, None)`)
+  cannot be expressed through the internal `Option<HeapId>` abstraction
+  and is treated as if `val` were `None` — every built-in context manager
+  currently shipped ignores `val`'s content beyond `is None`, so this is
+  observable only with the test-only `_test_cm('suppress')` shim.
 
 ## Current implementers of the protocol
 
@@ -45,7 +53,18 @@ exception, `return`, `break`, `continue`), and a truthy return from
 | ----------- | ---------------------------------------------------------------- |
 | `open()`    | Closes the file on exit; see [`open.md`](open.md) for details.   |
 
-Adding a new context-manager-capable built-in is a matter of overriding
-`PyTrait::py_enter` / `PyTrait::py_exit` on the type's `HeapRead` impl, and
-threading the `Enter`/`Exit` static-string dispatch through that type's
-`py_call_attr` if direct `obj.__enter__()` invocation should also work.
+Adding a new context-manager-capable built-in requires three pieces on the
+type's `HeapRead` impl:
+
+1. Override `PyTrait::py_is_context_manager` to return `true` — this is
+   what the `BeforeWith` opcode checks to raise CPython's specific
+   `TypeError` for non-CM values, *before* `py_enter` runs.
+2. Override `PyTrait::py_enter` / `PyTrait::py_exit`.
+3. Add the type's arms in `HeapReadOutput::py_is_context_manager`,
+   `py_enter`, and `py_exit` (in `heap_data.rs`) so the dispatch
+   reaches the overridden methods.
+
+Direct `obj.__enter__()` / `obj.__exit__(...)` invocation is wired
+centrally in `VM::call_attr` via `dispatch_dunder`, so no per-type
+`StaticStrings::Enter` / `StaticStrings::Exit` arms are needed in the
+type's `py_call_attr`.

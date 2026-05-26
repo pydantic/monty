@@ -298,18 +298,41 @@ pub trait PyTrait<'h> {
         Err(ExcType::attribute_error(self.py_type(vm), attr.as_str(vm.interns)))
     }
 
+    /// Whether this type implements the context-manager protocol.
+    ///
+    /// The `BeforeWith` opcode calls this *before* invoking [`py_enter`] so it
+    /// can raise CPython's specific `TypeError` ("object does not support the
+    /// context manager protocol") on types that aren't context managers. We
+    /// cannot rely on translating the [`py_enter`] default's `AttributeError`,
+    /// because a real context manager whose `__enter__` itself raises
+    /// `AttributeError` would be misidentified — the distinction has to come
+    /// from a declarative check, not from sniffing exception messages.
+    ///
+    /// Default is `false`; types implementing the protocol override this
+    /// alongside [`py_enter`] / [`py_exit`].
+    ///
+    /// [`py_enter`]: PyTrait::py_enter
+    /// [`py_exit`]: PyTrait::py_exit
+    fn py_is_context_manager(&self) -> bool {
+        false
+    }
+
     /// Context-manager entry hook (`__enter__`).
     ///
-    /// Invoked by the `BeforeWith` opcode when execution enters a `with` block
-    /// whose context expression evaluates to this object. Returns the value bound
-    /// to the `as` target (or discarded if there is none). Typically a context
-    /// manager returns itself, but it may return any value.
+    /// Invoked by the `BeforeWith` opcode after [`py_is_context_manager`]
+    /// returns `true`. Returns the value bound to the `as` target (or discarded
+    /// if there is none). Typically a context manager returns itself, but it
+    /// may return any value.
     ///
     /// Returns `CallResult` so implementations can yield to the host (OS call,
     /// external function, etc.) before producing the entered value.
     ///
     /// The default implementation raises `AttributeError`, matching CPython's
-    /// behavior for objects that do not implement the context-manager protocol.
+    /// behavior for direct `obj.__enter__()` calls on objects that don't
+    /// implement the protocol. The `with` statement never reaches this default
+    /// because [`py_is_context_manager`] gates the invocation.
+    ///
+    /// [`py_is_context_manager`]: PyTrait::py_is_context_manager
     fn py_enter(&mut self, _self_id: HeapId, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<CallResult> {
         Err(ExcType::attribute_error(self.py_type(vm), "__enter__"))
     }
@@ -328,9 +351,11 @@ pub trait PyTrait<'h> {
     /// Returns `CallResult` so implementations can yield to the host (e.g. file
     /// close issues an `OsCall`).
     ///
-    /// The default implementation raises `AttributeError`. In practice a missing
-    /// `__exit__` is caught at the `BeforeWith` step (`py_enter` fails first), so
-    /// this path is reached only by direct invocation via `obj.__exit__(...)`.
+    /// The default implementation raises `AttributeError`. In practice the
+    /// `with` statement gates this on [`py_is_context_manager`], so this path
+    /// is reached only by direct invocation via `obj.__exit__(...)`.
+    ///
+    /// [`py_is_context_manager`]: PyTrait::py_is_context_manager
     fn py_exit(
         &mut self,
         _self_id: HeapId,

@@ -10,7 +10,7 @@
 use super::{CallResult, VM};
 use crate::{
     defer_drop,
-    exception_private::{ExcType, ExceptionRaise, RunError, RunResult, SimpleException},
+    exception_private::{ExcType, RunError, RunResult, SimpleException},
     resource::ResourceTracker,
     types::PyTrait,
     value::Value,
@@ -21,22 +21,21 @@ impl<T: ResourceTracker> VM<'_, T> {
     /// the result. The context manager stays on the stack across the body so the
     /// matching `WithExit` / `WithExceptStart` can find it.
     ///
-    /// When the value cannot act as a context manager, CPython raises a
-    /// `TypeError` with a specific message — not the generic `AttributeError`
-    /// that `__enter__()` would yield on direct invocation. We translate the
-    /// underlying `AttributeError` (raised by `PyTrait::py_enter`'s default
-    /// impl for types that don't implement the protocol) into the expected
-    /// `TypeError` here.
+    /// The CPython "object does not support the context manager protocol"
+    /// `TypeError` is gated on [`PyTrait::py_is_context_manager`] so we never
+    /// have to sniff exception messages — a real context manager whose
+    /// `__enter__` itself raises `AttributeError` propagates unchanged.
     pub(super) fn exec_before_with(&mut self) -> RunResult<CallResult> {
         // Pattern-matching `*self.peek()` is a place expression so it doesn't
-        // move the whole Value — Rust only copies the HeapId out.
+        // move the whole Value — Rust only copies the HeapId out. Non-Ref
+        // values (Int, Bool, None, …) never implement the protocol.
         let Value::Ref(ctx_id) = *self.peek() else {
             return Err(not_a_context_manager(self));
         };
-        match self.heap.read(ctx_id).py_enter(ctx_id, self) {
-            Err(err) if is_missing_attr(&err, "__enter__") => Err(not_a_context_manager(self)),
-            other => other,
+        if !self.heap.read(ctx_id).py_is_context_manager() {
+            return Err(not_a_context_manager(self));
         }
+        self.heap.read(ctx_id).py_enter(ctx_id, self)
     }
 
     /// `WithExit`: pop the context manager, call `__exit__(None, None, None)`,
@@ -48,10 +47,10 @@ impl<T: ResourceTracker> VM<'_, T> {
         let ctx = this.pop();
         let Value::Ref(ctx_id) = ctx else {
             // Unreachable in well-formed bytecode (BeforeWith would have rejected
-            // a non-Ref ctx), but guard rather than panic.
-            let ty = ctx.py_type(this);
+            // a non-Ref ctx), but guard rather than panic so a corrupt VM
+            // surfaces a clear internal error instead of an uncontrolled drop.
             ctx.drop_with_heap(this);
-            return Err(ExcType::attribute_error(ty, "__exit__"));
+            return Err(RunError::internal("WithExit: expected context-manager ref on stack"));
         };
         // Drop the ctx reference on every exit path of this function — whether
         // py_exit returns a value, yields, or errors. This matches the ref-count
@@ -88,8 +87,9 @@ impl<T: ResourceTracker> VM<'_, T> {
 /// `with` statement does not implement the context-manager protocol.
 ///
 /// CPython's message names the missing dunder (`__exit__` is what it checks
-/// for first); Monty checks `__enter__` first internally but uses the same
-/// user-visible text so traceback-equivalence tests pass.
+/// for first); Monty's [`PyTrait::py_is_context_manager`] gate is per-type
+/// rather than per-dunder, but the user-visible text matches CPython so
+/// traceback-equivalence tests pass.
 fn not_a_context_manager<T: ResourceTracker>(vm: &VM<'_, T>) -> RunError {
     let ty = vm.peek().py_type(vm);
     SimpleException::new_msg(
@@ -97,17 +97,4 @@ fn not_a_context_manager<T: ResourceTracker>(vm: &VM<'_, T>) -> RunError {
         format!("'{ty}' object does not support the context manager protocol (missed __exit__ method)"),
     )
     .into()
-}
-
-/// Returns true when the error is the `AttributeError` raised by `py_enter`
-/// / `py_exit`'s default impl — i.e. the type does not implement the
-/// context-manager protocol at all.
-fn is_missing_attr(err: &RunError, attr: &'static str) -> bool {
-    let RunError::Exc(ExceptionRaise { exc, .. }) = err else {
-        return false;
-    };
-    if exc.exc_type() != ExcType::AttributeError {
-        return false;
-    }
-    exc.arg().is_some_and(|m| m.contains(attr))
 }

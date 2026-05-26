@@ -533,6 +533,20 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
         }
     }
 
+    fn py_is_context_manager(&self) -> bool {
+        // Only types that implement the protocol return true; everything else
+        // inherits the default `false`. The `with` statement gates `py_enter`
+        // / `py_exit` on this check, so a real context manager whose
+        // `__enter__` happens to raise `AttributeError` is no longer
+        // misdiagnosed as "not a context manager".
+        match self {
+            HeapReadOutput::OpenFile(file) => file.py_is_context_manager(),
+            #[cfg(feature = "test-hooks")]
+            HeapReadOutput::TestContextManager(cm) => cm.py_is_context_manager(),
+            _ => false,
+        }
+    }
+
     fn py_enter(&mut self, self_id: HeapId, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<CallResult> {
         // Only types that override the trait default need explicit arms; all
         // others fall through to the catch-all `AttributeError`, matching how

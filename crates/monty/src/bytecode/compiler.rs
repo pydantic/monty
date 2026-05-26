@@ -3138,8 +3138,8 @@ impl<'a> Compiler<'a> {
     /// ```text
     /// <compile context expr>            ; [ctx]
     /// BEFORE_WITH                       ; [ctx, value]
-    /// <store target or POP>             ; [ctx]
     /// try_start:
+    ///   <store target or POP>           ; [ctx]
     ///   <compile body>                  ; [ctx]
     ///   WITH_EXIT                       ; []
     ///   JUMP end                        ; skip the exception handler
@@ -3160,6 +3160,13 @@ impl<'a> Compiler<'a> {
     ///  routing to the outer target>
     /// end:
     /// ```
+    ///
+    /// The `<store target or POP>` step lives *inside* the protected region so
+    /// `with f() as (a, b):` invokes `__exit__` when the unpack fails —
+    /// matching CPython, which similarly places `UNPACK_SEQUENCE` inside the
+    /// `BEFORE_WITH` exception-table entry. If the store raises, the unwinder
+    /// drops any partial unpack state down to the handler's expected depth
+    /// (`stack_depth + 1`) before pushing `exc` and entering `handler_start`.
     ///
     /// A single exception-table entry covers the body, routing exceptions to
     /// `handler_start` with stack depth `outer + 1` (the context manager). If
@@ -3186,15 +3193,9 @@ impl<'a> Compiler<'a> {
 
         let try_exc_stack_count = self.except_handler_depth;
 
-        // Evaluate context expr and invoke __enter__; bind the result to target
-        // (or discard).
+        // Evaluate context expr and invoke __enter__.
         self.compile_expr(context)?;
         self.code.emit(Opcode::BeforeWith)?;
-        if let Some(target) = target {
-            self.compile_unpack_target(target)?;
-        } else {
-            self.code.emit(Opcode::Pop)?;
-        }
 
         // Track early exits inside the body so we can call __exit__ before
         // they propagate. Mirrors the FinallyTarget push in `compile_try`.
@@ -3208,6 +3209,15 @@ impl<'a> Compiler<'a> {
 
         // === Body (protected region) ===
         let try_start = self.code.current_offset();
+        // Bind the __enter__ result to the `as` target (or discard it). This
+        // lives inside the protected region so `with f() as (a, b):` calls
+        // `__exit__` when the unpack fails — matching CPython, which similarly
+        // covers UNPACK_SEQUENCE with the with-block's exception table entry.
+        if let Some(target) = target {
+            self.compile_unpack_target(target)?;
+        } else {
+            self.code.emit(Opcode::Pop)?;
+        }
         self.compile_block(body)?;
         // Close the protected range BEFORE `WithExit` so the normal-exit
         // cleanup is outside the body's exception-table entry. If

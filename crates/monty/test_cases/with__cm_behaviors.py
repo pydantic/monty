@@ -77,11 +77,47 @@ cm = _test_cm()
 assert cm.__enter__() is cm, 'direct __enter__() works and returns self'
 assert cm.__exit__(None, None, None) is None, 'direct __exit__() returns None'
 
-# Suppress flag is exception-path-only — direct invocation has no
-# in-flight exception, so __exit__ returns None.
+# Suppress flag is exception-path-only — direct invocation with a None
+# value (no in-flight exception) returns None.
 assert _test_cm('suppress').__exit__(None, None, None) is None, (
     'direct __exit__(None, None, None) ignores the suppress flag'
 )
+
+# Forwarding a real exception instance to a `suppress`-configured manager
+# *should* trip the suppress branch and return True. Verifies that the
+# `val` argument of __exit__ is forwarded to py_exit, not silently dropped.
+assert _test_cm('suppress').__exit__(ValueError, ValueError('x'), None) is True, (
+    'direct __exit__ with an exception value routes to the suppress branch'
+)
+
+# Wrong arity — `__exit__` requires exactly 3 positional arguments.
+err = None
+try:
+    _test_cm().__exit__()
+except TypeError as e:
+    err = str(e)
+assert err is not None, '__exit__() with zero args should raise TypeError'
+
+err = None
+try:
+    _test_cm().__exit__(None, None, None, None)
+except TypeError as e:
+    err = str(e)
+assert err is not None, '__exit__() with four args should raise TypeError'
+
+# === Unpack failure inside the `with` body still invokes __exit__ ===
+# `TestContextManager` is not iterable, so `as (a, b):` fails during unpack.
+# The unpack lives inside the protected region, so __exit__ runs and its
+# ValueError replaces the in-flight TypeError.
+caught = None
+try:
+    with _test_cm('raise_on_exit', 'cleanup-from-unpack-fail') as (a, b):
+        pass
+except ValueError as e:
+    caught = str(e)
+except TypeError:
+    caught = 'unpack-error-uncaught'
+assert caught == 'cleanup-from-unpack-fail', '__exit__ runs when unpacking the as-target fails'
 
 # === Multi-item with: suppress on inner manager only swallows in inner scope ===
 # Outer manager sees the exception (because it's propagating after the
