@@ -99,23 +99,22 @@ iterator protocol (`__iter__`/`__next__`, including `for line in f:`).
 
 ## Behavioural divergences
 
-- All sized/line/seek reads share a single heap-resident buffer populated
-  on the first such call (or on the first `seek()`). The host serves only
-  one full-file `ReadText`/`ReadBytes` per file; everything after is sliced
-  in pure Monty. Memory cost: the whole file lives in the heap and counts
-  against the configured `max_memory`. The buffer is **never invalidated**
-  — external modifications to the underlying file after the first sized
-  read are not visible to subsequent buffered reads (bare `read()` on a
-  fresh file before any sized read still observes live content because no
-  buffer is populated yet).
-- A buffered read that *fails* in the host leaves the file in a
-  retry-safe state: `pending_read` is cleared, the buffer stays empty, and
-  `eof` is not flipped. A user-caught exception followed by a retry will
-  re-attempt the OS load. This matches CPython.
-- A bare `read()` (no args) that fails in the host still marks the file
-  consumed because the existing one-shot path sets `eof = true` before
-  dispatch. That divergence from CPython is preserved from the previous
-  implementation.
+- All reads (bare `read()`, sized `read(N)`, `readline`, `readlines`) and
+  `seek()` share a single heap-resident buffer populated on the first such
+  call. The host serves only one full-file `ReadText`/`ReadBytes` per
+  file; everything after is sliced in pure Monty. Memory cost: the whole
+  file lives in the heap and counts against the configured `max_memory`.
+  The buffer is **never invalidated** — external modifications to the
+  underlying file after the first read are not visible to subsequent
+  reads.
+- The buffer is held until the file object's Python-level refcount drops
+  to zero, not when `close()` is called. CPython releases buffers on
+  close; Monty does not.
+- A read that *fails* in the host leaves the file in a retry-safe state:
+  `pending_read` is cleared, the buffer stays empty, and `eof` is not
+  flipped. A user-caught exception followed by a retry will re-attempt
+  the OS load. This applies uniformly to bare `read()`, sized `read(N)`,
+  `readline()`, `readlines()`, and `seek()`, and matches CPython.
 - `seekable()` returns `True` for readable files (matches CPython), since
   `seek()`/`tell()` are now implemented. Write-only files still return
   `False`.
@@ -136,6 +135,9 @@ iterator protocol (`__iter__`/`__next__`, including `for line in f:`).
 - `read(N)` accepts only int or `None`. The `TypeError` message differs
   from CPython (CPython: `"argument should be integer or None, not 'str'"`;
   Monty: `"'str' object cannot be interpreted as an integer"`).
+- `readline(size)` and `readlines(hint)` are zero-argument only — passing
+  a size/hint argument raises `TypeError`. CPython accepts both and uses
+  them to cap the returned bytes/chars.
 - File iteration (`for line in f`) is NOT supported: it goes through the
   `GetIter` opcode which cannot yield to the host. Use `readlines()` and
   iterate the resulting list instead.

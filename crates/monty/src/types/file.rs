@@ -8,16 +8,23 @@
 //! filesystem access remains mediated by the same boundary used by
 //! `pathlib.Path`.
 //!
-//! # Sized read / seek buffering
+//! # Read / seek buffering
 //!
-//! Bare `read()` (no args) is still a one-shot full-file OS call that returns
-//! the content directly. The **first** sized read (`read(N)`), line read
-//! (`readline`/`readlines`), or `seek()` triggers an `OsFunction::ReadText` /
+//! The **first** read of any shape (bare `read()`, sized `read(N)`,
+//! `readline`/`readlines`) or `seek()` triggers an `OsFunction::ReadText` /
 //! `OsFunction::ReadBytes` call whose result is *stored* into the file's
-//! [`OpenFile::buffer`] field instead of being pushed to the operand stack;
-//! subsequent sized/line/seek operations slice that heap buffer in pure Monty
-//! with no further OS calls. The buffer lives in the heap and counts against
-//! the configured `max_memory`.
+//! [`OpenFile::buffer`] field instead of being pushed directly to the operand
+//! stack; the per-call slice (everything-from-position for bare `read()`, the
+//! requested N chars/bytes for sized reads, the next line for `readline`,
+//! etc.) is computed from the now-loaded buffer and pushed in its place.
+//! Subsequent reads and seeks slice that heap buffer in pure Monty with no
+//! further OS calls. The buffer lives in the heap and counts against the
+//! configured `max_memory`.
+//!
+//! A buffered read that *fails* in the host leaves the file in a retry-safe
+//! state — `pending_read` is cleared, `buffer` stays empty, and `eof` is not
+//! flipped — so user code that catches the exception and retries gets a
+//! fresh attempt.
 //!
 //! `position` is the **char offset** in text mode (so `f.read(5)` advances
 //! `position` by 5 chars regardless of byte width) and the **byte offset** in
@@ -813,20 +820,43 @@ fn consume_value(_v: Value) {}
 /// [`CallResult::OsCallStoreBuffer`](crate::bytecode::CallResult::OsCallStoreBuffer).
 ///
 /// Invariants on entry:
-/// - `result` is `Value::Ref(_)` pointing at either `HeapData::Str` (text
-///   mode) or `HeapData::Bytes` (binary mode). The host boundary guarantees
-///   this because we always emit `ReadText`/`ReadBytes` against the file.
-/// - `OpenFile::pending_read` is `Some(_)`. If it isn't (which would indicate
-///   a snapshot/restore mismatch or VM bug) we drop `result` and raise an
-///   internal `RuntimeError` rather than panic, so a host can recover.
+/// - `result` is `Value::Ref(_)` (or an interned `String`/`Bytes`) coming
+///   from `OsFunction::ReadText` / `ReadBytes`. The host boundary guarantees
+///   one of these for the OS functions we emit.
+/// - `OpenFile::pending_read` is `Some(_)`. If it isn't (snapshot/restore
+///   mismatch or VM bug) we raise an internal `RuntimeError` rather than
+///   panic, so a host can recover.
 ///
 /// The file owns one inc_ref on `result` for its `buffer` slot. The caller's
 /// inc_ref on `file_id` (held by the in-flight OS call) is released here.
+///
+/// **Error handling**: every error path here clears `pending_read` first
+/// (via the early `take`) so the file is left in a retry-safe state — a
+/// user-caught exception followed by a retry sees no stale slice spec.
 pub(crate) fn apply_buffer_store(
     file_id: HeapId,
     result: Value,
     vm: &mut VM<'_, impl ResourceTracker>,
 ) -> RunResult<Value> {
+    // Take the pending spec FIRST so every subsequent error path leaves the
+    // file with `pending_read = None`. The file's `buffer` slot is left alone
+    // here — installing the buffer happens later only on the success path.
+    let spec = {
+        let HeapReadOutput::OpenFile(mut file) = vm.heap.read(file_id) else {
+            result.drop_with_heap(vm);
+            vm.heap.dec_ref(file_id);
+            return Err(RunError::internal(
+                "apply_buffer_store: file_id does not point to an OpenFile",
+            ));
+        };
+        file.get_mut(vm.heap).pending_read.take()
+    };
+    let Some(spec) = spec else {
+        result.drop_with_heap(vm);
+        vm.heap.dec_ref(file_id);
+        return Err(RunError::internal("apply_buffer_store: OpenFile has no pending_read"));
+    };
+
     // Normalise the host-returned content to a heap-allocated `HeapId`.
     //
     // The OS boundary returns `MontyObject::String` / `MontyObject::Bytes`
@@ -862,11 +892,10 @@ pub(crate) fn apply_buffer_store(
     // captured). Forget intentionally; the heap entry stays live.
     consume_value(result);
 
-    // Take the pending spec off the file and install the buffer. The two
-    // mutations (taking the spec, swapping in the buffer) are batched inside
-    // one scoped `get_mut` so the heap borrow is released before we move on
-    // to the dec_ref / compute_slice steps.
-    let (spec, dec_result) = {
+    // Install the buffer. Defensive: if it was already populated (e.g. a
+    // racing snapshot/restore wedge), drop the new content and slice from
+    // the existing one instead of stomping it.
+    let dec_result = {
         let HeapReadOutput::OpenFile(mut file) = vm.heap.read(file_id) else {
             vm.heap.dec_ref(result_id);
             vm.heap.dec_ref(file_id);
@@ -875,25 +904,16 @@ pub(crate) fn apply_buffer_store(
             ));
         };
         let f = file.get_mut(vm.heap);
-        let spec = f.pending_read.take();
-        // Defensive: if the buffer was already populated, drop the new
-        // content and slice from the existing one instead of stomping it.
-        let dec_result = if f.buffer.is_some() {
+        if f.buffer.is_some() {
             true
         } else {
             f.buffer = Some(result_id);
             false
-        };
-        (spec, dec_result)
+        }
     };
     if dec_result {
         vm.heap.dec_ref(result_id);
     }
-
-    let Some(spec) = spec else {
-        vm.heap.dec_ref(file_id);
-        return Err(RunError::internal("apply_buffer_store: OpenFile has no pending_read"));
-    };
 
     // Compute the slice *before* releasing the pending_buffer_store pin —
     // otherwise `open(p).read(5)` (where no caller holds a separate
@@ -950,6 +970,11 @@ fn compute_slice_text(
         _ => return Err(RunError::internal("compute_slice_text: buffer is not a Str")),
     };
     let char_count = buffer.chars().count();
+    // `seek()` allows positioning past end-of-buffer; clamp here so the
+    // slice operations below stay valid. The clamp is per-call only — it
+    // is not written back to the file, so a `seek(0)` after this still
+    // sees the original semantics.
+    let position = position.min(char_count);
     let byte_start = nth_char_byte_offset(&buffer, position);
 
     match spec {
@@ -1021,6 +1046,11 @@ fn compute_slice_binary(
         _ => return Err(RunError::internal("compute_slice_binary: buffer is not Bytes")),
     };
     let len = buffer.len();
+    // `seek()` allows positioning past EOF; clamp here so the slice index
+    // operations below never panic when `position > len`. The cap is per-call
+    // (we don't write it back to the file) so a subsequent `seek(0)` still
+    // sees the original out-of-range position semantics on the seek path.
+    let position = position.min(len);
 
     match spec {
         ReadSpec::All => {
@@ -1064,6 +1094,8 @@ fn compute_slice_binary(
             Ok(Value::Ref(list_id))
         }
         ReadSpec::Seek { offset, whence } => {
+            // Seek resolves against the un-clamped buffer length so
+            // `seek(0, 2)` returns the real EOF, not the clamped position.
             let target = resolve_seek_target_usize(offset, whence, position, len)?;
             let target_usize = usize::try_from(target).map_err(|_| ExcType::overflow_c_ssize_t())?;
             update_position_eof(file_id, target_usize, target_usize >= len, vm);

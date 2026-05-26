@@ -434,6 +434,27 @@ try:
 except OSError as exc:
     assert str(exc) == 'not readable'
 
+# Regression: binary read after seek-past-end must not panic.
+(root / 'past_end.bin').write_bytes(b'12345')
+pe = open(root / 'past_end.bin', 'rb')
+assert pe.seek(100) == 100, 'seek past end returns target'
+assert pe.tell() == 100, 'tell after seek past end'
+assert pe.read(5) == b'', 'read(N) past end is empty'
+assert pe.read() == b'', 'bare read past end is empty'
+assert pe.readline() == b'', 'readline past end is empty'
+assert pe.readlines() == [], 'readlines past end is empty'
+pe.close()
+
+# Same regression in text mode.
+(root / 'past_end.txt').write_text('hello')
+pet = open(root / 'past_end.txt')
+assert pet.seek(100) == 100, 'text seek past end returns target'
+assert pet.read(5) == '', 'text read(N) past end is empty'
+assert pet.read() == '', 'text bare read past end is empty'
+assert pet.readline() == '', 'text readline past end is empty'
+assert pet.readlines() == [], 'text readlines past end is empty'
+pet.close()
+
 # read(N) with non-int arg raises TypeError (exact message diverges from CPython).
 nt = open(root / 'sized.txt')
 try:
@@ -444,6 +465,5 @@ except TypeError as exc:
     if is_monty:
         assert msg == "'str' object cannot be interpreted as an integer", f'unexpected message: {msg}'
     else:
-        # CPython: "argument should be integer or None, not 'str'"
-        assert 'int' in msg or 'integer' in msg, f'unexpected CPython message: {msg}'
+        assert msg == "argument should be integer or None, not 'str'", f'unexpected CPython message: {msg}'
 nt.close()
