@@ -10,9 +10,9 @@ Constructor: `date(year, month, day)`.
 Attributes: `year`, `month`, `day`.
 Methods: `isoformat`, `strftime`, `replace`, `weekday`, `isoweekday`.
 
-Class methods `today()`, `fromisoformat()`, `fromtimestamp()`,
-`fromordinal()` are not implemented. `today()` is missing because the
-sandbox has no access to the host clock.
+Class methods `today()`, `fromisoformat()`, `fromisocalendar()`,
+`fromtimestamp()`, `fromordinal()` are not implemented. `today()` is
+missing because the sandbox has no access to the host clock.
 
 ## `datetime`
 
@@ -28,7 +28,7 @@ Class methods supported: `now(tz=None)`, `strptime(date_string, format)`,
 
 - `now()` reaches the host for the current time (the only "live" datetime
   call); it yields an external call.
-- `utcnow()` and `today()` (the deprecated class method) are not
+- `utcnow()` (the deprecated class method) and `today()` are not
   implemented.
 - `combine()`, `fromtimestamp()`, `fromordinal()`, `utcfromtimestamp()`
   are not implemented.

@@ -13,10 +13,9 @@ a host Python.
 
 ## Implemented type constructors (also builtins)
 
-`bool`, `bytes`, `bytearray`-style construction is **not** available;
-`dict`, `float`, `frozenset`, `int`, `list`, `range`, `set`, `slice`-style
-construction is **not** available, `str`, `tuple`. Exception classes
-(`ValueError`, `TypeError`, etc.) are also names in the builtin namespace.
+`bool`, `bytes`, `dict`, `float`, `frozenset`, `int`, `list`, `range`,
+`set`, `slice`, `str`, `tuple`. Exception classes (`ValueError`,
+`TypeError`, etc.) are also names in the builtin namespace.
 
 ## Builtins that are NOT implemented
 
@@ -29,7 +28,7 @@ These raise `NameError`:
 - **Decorators / descriptors**: `classmethod`, `staticmethod`, `property`,
   `super`. (`@property` on functions is not recognized; use a method.)
 - **Construction / coercion**: `bytearray`, `complex`, `memoryview`,
-  `object`, `frozenset()`, `slice()`, `iter`, `format`, `ascii`.
+  `object`, `iter`, `format`, `ascii`.
 - **Other**: `callable`, `delattr`, `issubclass`, `aiter`, `anext`.
 
 `super()` is the biggest practical omission — combined with the lack of

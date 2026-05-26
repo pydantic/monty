@@ -7,9 +7,12 @@ any code runs.
 
 ## Statements rejected at parse time
 
-- **`class` definitions** — bare `class Foo: ...` is not supported. Use
-  `@dataclass`, `collections.namedtuple`, or a plain function instead. See
-  [classes.md](classes.md).
+- **`class` definitions** — bare `class Foo: ...` is not supported. There
+  is no in-sandbox class factory: `@dataclass`, `typing.NamedTuple`, and
+  `collections.namedtuple` are all unavailable inside the sandbox (and
+  `collections` is not importable). Host-supplied dataclass / namedtuple
+  values can be passed in and used; use a plain function or a host-defined
+  type for new structured data. See [classes.md](classes.md).
 - **`with` / `async with` statements** — no context manager protocol. This
   means no `with open(...) as f:` (call `f.close()` explicitly). See
   [open.md](open.md).

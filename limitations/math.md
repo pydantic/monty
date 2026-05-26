@@ -20,9 +20,8 @@ Wide coverage; behaviour matches CPython 3.14 for the implemented set.
 
 ## Not implemented
 
-`fsum`, `prod`, `hypot` (multi-arg), `dist`, `sumprod`, `degrees`-aware
-trig, `isqrt` for negative inputs (raises `ValueError` matching CPython
-— this is *not* a divergence), `nan` from arbitrary payloads.
+`fsum`, `prod`, `hypot`, `dist`, `sumprod`, `nan` from arbitrary
+payloads.
 
 ## Behavioural notes
 

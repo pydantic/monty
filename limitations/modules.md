@@ -10,7 +10,6 @@ and no way for sandboxed code to load additional modules.
 | ---------- | ------------------------------------ |
 | `asyncio`  | [asyncio.md](asyncio.md)             |
 | `datetime` | [datetime.md](datetime.md)           |
-| `gc`       | stub only; `gc.collect()` is a no-op |
 | `json`     | [json.md](json.md)                   |
 | `math`     | [math.md](math.md)                   |
 | `os`       | [os.md](os.md)                       |
@@ -18,6 +17,10 @@ and no way for sandboxed code to load additional modules.
 | `re`       | [re.md](re.md)                       |
 | `sys`      | [sys.md](sys.md)                     |
 | `typing`   | [typing.md](typing.md)               |
+
+A `gc` module exposing `collect()` / `enable()` / `disable()` is compiled
+in only under the `test-hooks` Cargo feature for use by Monty's own test
+suite; production sandboxes never see it.
 
 ## Notable modules NOT available
 

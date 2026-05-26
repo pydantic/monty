@@ -17,9 +17,14 @@ Not implemented (raise `AttributeError`):
 
 `create_task`, `sleep`, `wait`, `wait_for`, `shield`, `to_thread`,
 `new_event_loop`, `get_event_loop`, `get_running_loop`, `Queue`, `Lock`,
-`Semaphore`, `Event`, `Future`, `Task`, `TaskGroup`,
-`as_completed`, `iscoroutine`, `ensure_future`, the whole `asyncio.subprocess`
-/ `asyncio.streams` / `asyncio.protocols` surface.
+`Semaphore`, `Event`, `Future`, `Task`, `TaskGroup`, `timeout`,
+`timeout_at`, `Timeout`, `as_completed`, `iscoroutine`, `ensure_future`,
+the whole `asyncio.subprocess` / `asyncio.streams` / `asyncio.protocols`
+surface.
+
+`asyncio.timeout()` / `asyncio.timeout_at()` would in any case be
+unreachable: they are async context managers, and `async with` is rejected
+at parse time (see [language.md](language.md)).
 
 ## `async def` / `await`
 

@@ -21,7 +21,8 @@ are not implemented (no file-object protocol).
 - Nesting depth is capped at 200 levels; deeper inputs raise
   `json.JSONDecodeError`.
 - JSON integers that would exceed Monty's BigInt digit limit are rejected
-  with `JSONDecodeError` rather than being parsed and then erroring.
+  with `ValueError` (matching CPython's `int_max_str_digits` behaviour)
+  rather than `JSONDecodeError`.
 
 ## `json.dumps(obj, **kwargs)`
 
