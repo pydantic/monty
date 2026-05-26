@@ -5,6 +5,7 @@ import pytest
 from inline_snapshot import snapshot
 
 import pydantic_monty
+from pydantic_monty import MemoryFile, OSAccess
 
 
 def test_monty_dump_load_roundtrip():
@@ -282,3 +283,188 @@ def test_progress_dump_load_unknown_dataclass():
 
     # repr should indicate it's unknown
     assert repr(output) == snapshot("<Unknown Dataclass Person(name='Bob', age=25)>")
+
+
+# =============================================================================
+# Open-file buffer survives dump/load
+# =============================================================================
+#
+# These tests pin the snapshot/restore contract for buffered file I/O.
+# After `f.read(N)` loads the full-file buffer into a heap-resident `Str` /
+# `Bytes` entry, snapshotting and reloading must preserve:
+#   - the buffer contents (so subsequent reads don't re-trigger an OS call),
+#   - the file's `position` / `eof` state,
+#   - the cached `buffer_meta` (or rehydrate it lazily) so character
+#     indices keep matching byte indices for UTF-8 content.
+#
+# Each test uses an external function call (`checkpoint(...)`) to force a
+# `FunctionSnapshot` yield *after* the buffer is loaded; without that pause
+# the runtime would auto-dispatch all OS calls and run to completion before
+# we could observe the dump/load roundtrip.
+
+
+def test_snapshot_preserves_buffered_read_text():
+    """Buffered text read survives dump/load; the second read uses the
+    restored buffer instead of re-issuing a `ReadText` OS call."""
+    fs = OSAccess([MemoryFile('/data.txt', content='hello world!')])
+    code = """
+f = open('/data.txt')
+first = f.read(5)
+checkpoint(first)
+second = f.read()
+first + ' | ' + second
+"""
+    m = pydantic_monty.Monty(code)
+    progress = m.start(os=fs)
+    assert isinstance(progress, pydantic_monty.FunctionSnapshot)
+    assert progress.function_name == snapshot('checkpoint')
+    assert progress.args == snapshot(('hello',))
+
+    data = progress.dump()
+    progress2 = pydantic_monty.load_snapshot(data)
+    assert isinstance(progress2, pydantic_monty.FunctionSnapshot)
+
+    # Resume *without* `os=fs`: if the buffer wasn't preserved, the next
+    # `f.read()` would need another `ReadText` OS call, which would surface
+    # as a follow-up FunctionSnapshot instead of completing.
+    result = progress2.resume({'return_value': None})
+    assert isinstance(result, pydantic_monty.MontyComplete)
+    assert result.output == snapshot('hello |  world!')
+
+
+def test_snapshot_preserves_buffered_read_bytes():
+    """Same contract for binary mode — the `Bytes` heap entry survives."""
+    fs = OSAccess([MemoryFile('/data.bin', content=b'\x00\x01\x02\x03\x04\x05')])
+    code = """
+f = open('/data.bin', 'rb')
+first = f.read(3)
+checkpoint(first)
+second = f.read()
+first + second
+"""
+    progress = pydantic_monty.Monty(code).start(os=fs)
+    assert isinstance(progress, pydantic_monty.FunctionSnapshot)
+    assert progress.args == snapshot((b'\x00\x01\x02',))
+
+    progress2 = pydantic_monty.load_snapshot(progress.dump())
+    assert isinstance(progress2, pydantic_monty.FunctionSnapshot)
+    result = progress2.resume({'return_value': None})
+    assert isinstance(result, pydantic_monty.MontyComplete)
+    assert result.output == snapshot(b'\x00\x01\x02\x03\x04\x05')
+
+
+def test_snapshot_preserves_file_position_and_seek():
+    """`tell()` after restore matches the position at snapshot time, and
+    `seek()` on the restored file repositions within the cached buffer
+    without re-issuing an OS call."""
+    fs = OSAccess([MemoryFile('/data.txt', content='abcdefghij')])
+    code = """
+f = open('/data.txt')
+f.read(4)  # position -> 4
+pos_before = f.tell()
+checkpoint(pos_before)
+pos_after = f.tell()
+f.seek(0)
+re_read = f.read(3)
+(pos_before, pos_after, re_read)
+"""
+    progress = pydantic_monty.Monty(code).start(os=fs)
+    assert isinstance(progress, pydantic_monty.FunctionSnapshot)
+    assert progress.args == snapshot((4,))
+
+    progress2 = pydantic_monty.load_snapshot(progress.dump())
+    assert isinstance(progress2, pydantic_monty.FunctionSnapshot)
+    result = progress2.resume({'return_value': None})
+    assert isinstance(result, pydantic_monty.MontyComplete)
+    # pos_after must match pos_before (no implicit reset on load); the
+    # seek-and-reread must succeed with the restored buffer.
+    assert result.output == snapshot((4, 4, 'abc'))
+
+
+def test_snapshot_preserves_buffer_meta_for_utf8_text():
+    """UTF-8 multi-byte content stresses the cached `buffer_meta`
+    (`byte_position` ≠ `position`). After restore, sized reads must keep
+    advancing the char index in sync with the byte offset."""
+    # 'αβγδε' = 5 chars, 10 bytes (each is 2 UTF-8 bytes).
+    fs = OSAccess([MemoryFile('/greek.txt', content='αβγδε')])
+    code = """
+f = open('/greek.txt')
+first = f.read(2)   # 'αβ' — char-index now at 2, byte-index at 4
+checkpoint(first)
+second = f.read(2)  # 'γδ'
+third = f.read()    # 'ε'
+(first, second, third, f.tell())
+"""
+    progress = pydantic_monty.Monty(code).start(os=fs)
+    assert isinstance(progress, pydantic_monty.FunctionSnapshot)
+    assert progress.args == snapshot(('αβ',))
+
+    progress2 = pydantic_monty.load_snapshot(progress.dump())
+    assert isinstance(progress2, pydantic_monty.FunctionSnapshot)
+    result = progress2.resume({'return_value': None})
+    assert isinstance(result, pydantic_monty.MontyComplete)
+    # `tell()` in text mode is the char index; if buffer_meta failed to
+    # rehydrate, the subsequent reads would slice on the wrong byte boundary
+    # and produce mojibake or panic.
+    assert result.output == snapshot(('αβ', 'γδ', 'ε', 5))
+
+
+def test_snapshot_buffer_survives_double_roundtrip():
+    """Two dump/load roundtrips on the same buffered file — the buffer
+    entry must remain consistent across multiple serialisation passes."""
+    fs = OSAccess([MemoryFile('/data.txt', content='0123456789')])
+    code = """
+f = open('/data.txt')
+a = f.read(2)
+checkpoint(a)
+b = f.read(2)
+checkpoint(b)
+c = f.read()
+a + '-' + b + '-' + c
+"""
+    progress = pydantic_monty.Monty(code).start(os=fs)
+    assert isinstance(progress, pydantic_monty.FunctionSnapshot)
+    assert progress.args == snapshot(('01',))
+
+    # First roundtrip — resume past the first checkpoint.
+    progress2 = pydantic_monty.load_snapshot(progress.dump())
+    assert isinstance(progress2, pydantic_monty.FunctionSnapshot)
+    progress3 = progress2.resume({'return_value': None})
+    assert isinstance(progress3, pydantic_monty.FunctionSnapshot)
+    assert progress3.args == snapshot(('23',))
+
+    # Second roundtrip — buffer must still match the restored position.
+    progress4 = pydantic_monty.load_snapshot(progress3.dump())
+    assert isinstance(progress4, pydantic_monty.FunctionSnapshot)
+    result = progress4.resume({'return_value': None})
+    assert isinstance(result, pydantic_monty.MontyComplete)
+    assert result.output == snapshot('01-23-456789')
+
+
+def test_snapshot_after_close_does_not_repopulate_buffer():
+    """A file closed before snapshotting stays closed (and bufferless)
+    after restore — accidentally rehydrating its buffer would re-admit
+    memory the user asked us to release."""
+    fs = OSAccess([MemoryFile('/data.txt', content='hello')])
+    code = """
+f = open('/data.txt')
+data = f.read()
+f.close()
+checkpoint(data)
+# Touching `f` again must still raise — the close persisted across the snapshot.
+try:
+    f.read()
+    result = 'no error'
+except ValueError as e:
+    result = str(e)
+(data, result)
+"""
+    progress = pydantic_monty.Monty(code).start(os=fs)
+    assert isinstance(progress, pydantic_monty.FunctionSnapshot)
+    assert progress.args == snapshot(('hello',))
+
+    progress2 = pydantic_monty.load_snapshot(progress.dump())
+    assert isinstance(progress2, pydantic_monty.FunctionSnapshot)
+    result = progress2.resume({'return_value': None})
+    assert isinstance(result, pydantic_monty.MontyComplete)
+    assert result.output == snapshot(('hello', 'I/O operation on closed file.'))
