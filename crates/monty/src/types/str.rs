@@ -1397,7 +1397,7 @@ fn coerce_split_args(
 
 /// Argument shape for `str.split(sep=None, maxsplit=-1)`.
 #[derive(FromArgs)]
-#[from_args(name = "str.split")]
+#[from_args(name = "split")]
 struct SplitArgs {
     #[from_args(default = Value::None)]
     sep: Value,
@@ -1407,7 +1407,7 @@ struct SplitArgs {
 
 /// Argument shape for `str.rsplit(sep=None, maxsplit=-1)`.
 #[derive(FromArgs)]
-#[from_args(name = "str.rsplit")]
+#[from_args(name = "rsplit")]
 struct RsplitArgs {
     #[from_args(default = Value::None)]
     sep: Value,
@@ -1536,7 +1536,7 @@ fn parse_splitlines_args(args: ArgValues, vm: &mut VM<'_, impl ResourceTracker>)
 /// `keepends` for truthiness rather than strict-typing, so the field stays as
 /// a raw `Value` for `value_is_truthy` to inspect.
 #[derive(FromArgs)]
-#[from_args(name = "str.splitlines", at_most_total)]
+#[from_args(name = "splitlines", at_most_total)]
 struct SplitlinesArgs {
     #[from_args(default)]
     keepends: Option<Value>,
@@ -1667,7 +1667,7 @@ fn parse_replace_args(
 /// Python 3.13 promoted `count` from positional-only to positional-or-keyword,
 /// so the macro doesn't need `kw_only` here.
 #[derive(FromArgs)]
-#[from_args(name = "str.replace")]
+#[from_args(name = "replace", at_least_positional)]
 struct ReplaceArgs {
     old: Value,
     new: Value,
@@ -1891,7 +1891,7 @@ fn str_expandtabs<'h>(
 /// so callers can distinguish "absent" (default 8) from any explicit value
 /// without forcing the macro into a type-checked default.
 #[derive(FromArgs)]
-#[from_args(name = "str.expandtabs", at_most_total)]
+#[from_args(name = "expandtabs", at_most_total)]
 struct ExpandtabsArgs {
     #[from_args(default)]
     tabsize: Option<Value>,
@@ -1950,7 +1950,7 @@ fn parse_encode_args(args: ArgValues, vm: &mut VM<'_, impl ResourceTracker>) -> 
 /// fields stay as `Option<Value>` so the implementation can apply its own
 /// `"utf-8"` / `"strict"` defaults after the macro extraction.
 #[derive(FromArgs)]
-#[from_args(name = "str.encode")]
+#[from_args(name = "encode")]
 struct EncodeArgs {
     #[from_args(default)]
     encoding: Option<Value>,

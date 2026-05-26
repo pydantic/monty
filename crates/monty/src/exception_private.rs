@@ -419,7 +419,9 @@ impl ExcType {
 
     /// Creates a TypeError for when a function receives more arguments than allowed.
     ///
-    /// Matches CPython's format: `{name} expected at most {max} arguments, got {actual}`
+    /// Matches CPython's `PyArg_UnpackTuple` format:
+    /// - `{name} expected at most {max} argument, got {actual}` (singular when max=1)
+    /// - `{name} expected at most {max} arguments, got {actual}` (plural otherwise)
     ///
     /// # Arguments
     /// * `name` - The function name (e.g., "get", "pop")
@@ -427,10 +429,10 @@ impl ExcType {
     /// * `actual` - Number of arguments actually provided
     #[must_use]
     pub(crate) fn type_error_at_most(name: &str, max: usize, actual: usize) -> RunError {
-        // CPython: "get expected at most 2 arguments, got 3"
+        let plural = if max == 1 { "" } else { "s" };
         SimpleException::new_msg(
             Self::TypeError,
-            format!("{name} expected at most {max} arguments, got {actual}"),
+            format!("{name} expected at most {max} argument{plural}, got {actual}"),
         )
         .into()
     }
@@ -449,6 +451,56 @@ impl ExcType {
         SimpleException::new_msg(
             Self::TypeError,
             format!("{name}() takes at most {max} argument{plural} ({actual} given)"),
+        )
+        .into()
+    }
+
+    /// Creates a TypeError for too few positional arguments to a method-style call.
+    ///
+    /// Matches CPython's format used by methods like `str.replace`:
+    /// `{name}() takes at least {min} positional argument ({actual} given)` (singular when min=1)
+    /// `{name}() takes at least {min} positional arguments ({actual} given)` (plural otherwise)
+    ///
+    /// Distinct from [`type_error_at_least`] which uses CPython's
+    /// `PyArg_UnpackTuple` wording (no parens, no "positional"). Use this for
+    /// methods that opt into the macro's `at_least_positional` attribute.
+    #[must_use]
+    pub(crate) fn type_error_at_least_positional(name: &str, min: usize, actual: usize) -> RunError {
+        let plural = if min == 1 { "" } else { "s" };
+        SimpleException::new_msg(
+            Self::TypeError,
+            format!("{name}() takes at least {min} positional argument{plural} ({actual} given)"),
+        )
+        .into()
+    }
+
+    /// Creates the bespoke `map()` arity error that CPython hard-codes.
+    ///
+    /// CPython's `map()` uses a single fixed message regardless of whether
+    /// 0 or 1 args were given: `map() must have at least two arguments.`
+    /// (note the trailing period). We mirror it here so `map()` / `map(f)`
+    /// match byte-for-byte rather than falling through to the generic
+    /// "missing N required positional arguments" wording the macro would
+    /// otherwise emit.
+    #[must_use]
+    pub(crate) fn type_error_map_arity() -> RunError {
+        SimpleException::new_msg(Self::TypeError, "map() must have at least two arguments.".to_owned()).into()
+    }
+
+    /// Creates a TypeError for exact-arity functions reporting too many *or* too few.
+    ///
+    /// Matches CPython's `PyArg_UnpackTuple` wording for fixed-arity callables
+    /// (e.g. `sorted`):
+    /// `{name} expected {exact} argument, got {actual}` (singular when exact=1)
+    /// `{name} expected {exact} arguments, got {actual}` (plural otherwise)
+    ///
+    /// Use this for the macro's `expected_exact` attribute.
+    #[must_use]
+    pub(crate) fn type_error_expected_exact(name: &str, exact: usize, actual: usize) -> RunError {
+        let plural = if exact == 1 { "" } else { "s" };
+        SimpleException::new_msg(
+            Self::TypeError,
+            format!("{name} expected {exact} argument{plural}, got {actual}"),
         )
         .into()
     }

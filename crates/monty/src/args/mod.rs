@@ -204,7 +204,7 @@ impl ArgValues {
     /// Returns the number of positional arguments.
     ///
     /// For `Kwargs` returns 0, for `ArgsKargs` returns only the positional args count.
-    fn count(&self) -> usize {
+    pub(crate) fn count(&self) -> usize {
         match self {
             Self::Empty => 0,
             Self::One(_) => 1,

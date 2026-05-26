@@ -45,6 +45,27 @@ struct Signature {
     /// exclusive with `varargs`/`varkwargs` — the pre-count is meaningless
     /// when the signature accepts unbounded inputs.
     at_most_total: bool,
+    /// When set, the generated code pre-validates that *at least* the
+    /// required-positional count appears as positional args (kwargs do
+    /// not fill the quota). Emits CPython's method-style wording:
+    /// `{name}() takes at least M positional argument(s) (N given)` —
+    /// matches `str.replace` and similar C-implemented methods that
+    /// reject kwargs for the required positionals.
+    at_least_positional: bool,
+    /// When set, the macro replaces both the "too few" and "too many"
+    /// positional error paths with CPython's `PyArg_UnpackTuple` wording:
+    /// `{name} expected N argument(s), got M` (no parens, no "positional").
+    /// Used for exact-arity callables like `sorted()` whose required
+    /// positional count equals the maximum. Mutually exclusive with
+    /// `varargs`, `at_most_total`, and `at_least_positional`.
+    expected_exact: bool,
+    /// Optional override for the function name used in the
+    /// unknown-kwarg error (`{name}() got an unexpected keyword argument 'X'`).
+    /// Used by `sorted()` because CPython's sorted() delegates internally
+    /// to `list.sort` and surfaces sort()'s kwarg error wording, so the
+    /// kwarg-name error has to read `sort()` while arity errors keep
+    /// using the struct's primary `name = "sorted"`.
+    kwarg_error_name: Option<String>,
 }
 
 /// Which family of CPython error wordings the generated code should emit.
@@ -146,7 +167,15 @@ impl Signature {
             ));
         };
 
-        let (func_name, at_most_style, error_style, at_most_total) = parse_struct_attrs(attrs)?;
+        let StructAttrs {
+            name: func_name,
+            at_most_style,
+            error_style,
+            at_most_total,
+            at_least_positional,
+            expected_exact,
+            kwarg_error_name,
+        } = parse_struct_attrs(attrs)?;
 
         let mut fields = Vec::with_capacity(named.named.len());
         let mut varargs_idx = None;
@@ -244,6 +273,14 @@ impl Signature {
                  signatures with a fixed maximum",
             ));
         }
+        if expected_exact && (varargs_idx.is_some() || at_most_total || at_least_positional) {
+            return Err(syn::Error::new(
+                struct_ident.span(),
+                "`expected_exact` cannot be combined with `varargs`, `at_most_total`, \
+                 or `at_least_positional` — the exact-arity wording assumes a single \
+                 fixed required positional count",
+            ));
+        }
 
         Ok(Self {
             struct_ident: struct_ident.clone(),
@@ -254,6 +291,9 @@ impl Signature {
             at_most_style,
             error_style,
             at_most_total,
+            at_least_positional,
+            expected_exact,
+            kwarg_error_name,
         })
     }
 
@@ -275,8 +315,13 @@ impl Signature {
         let slot_decls = self.render_slot_decls(&slots);
         let cleanup_block = self.render_cleanup_block(&slots);
         let total_check = self.render_total_check(max_positional);
+        let exact_check = self.render_expected_exact_check();
+        let at_least_check = self.render_at_least_positional_check();
         let positional_loop = self.render_positional_loop(&slots, max_positional, has_varargs);
+        let unknown_decl = self.render_unknown_kwarg_decl();
         let kwarg_loop = self.render_kwarg_loop(&slots, has_varkwargs);
+        let missing_check = self.render_missing_required_check(&slots);
+        let unknown_check = self.render_unknown_kwarg_check();
         let build_struct = self.render_build_struct(&slots);
 
         quote! {
@@ -314,8 +359,13 @@ impl Signature {
                     }
 
                     #total_check
+                    #exact_check
+                    #at_least_check
+                    #unknown_decl
                     #positional_loop
                     #kwarg_loop
+                    #missing_check
+                    #unknown_check
 
                     #build_struct
                 }
@@ -371,6 +421,21 @@ impl Signature {
     /// for the runtime value (typically `__actual`).
     fn at_most_err_expr(&self, max_lit: usize, actual: &TokenStream) -> TokenStream {
         let func_name = self.func_name.as_str();
+        if self.expected_exact {
+            // Should be unreachable in practice (the pre-check fires first),
+            // but emit the matching wording for completeness.
+            return quote! {
+                crate::exception_private::ExcType::type_error_expected_exact(#func_name, #max_lit, #actual)
+            };
+        }
+        if self.at_least_positional {
+            // `at_least_positional` opts a struct into method-style
+            // "takes at most M argument(s) (N given)" for the too-many
+            // case, matching CPython's `replace() takes at most 3 …`.
+            return quote! {
+                crate::exception_private::ExcType::type_error_method_at_most(#func_name, #max_lit, #actual)
+            };
+        }
         match self.error_style {
             ErrorStyle::C => match self.at_most_style {
                 AtMostStyle::Standard => quote! {
@@ -396,6 +461,151 @@ impl Signature {
             .iter()
             .filter(|f| matches!(f.kind, FieldKind::PosOnly | FieldKind::PosOrKeyword))
             .count()
+    }
+
+    /// Counts positional-region fields that have no default (i.e. they must
+    /// either come in via positionals or, for `PosOrKeyword`, via a kwarg).
+    /// Used by `at_least_positional` and `expected_exact` to know how many
+    /// positionals must actually appear.
+    fn required_positional_count(&self) -> usize {
+        self.fields
+            .iter()
+            .filter(|f| matches!(f.kind, FieldKind::PosOnly | FieldKind::PosOrKeyword) && f.default.is_none())
+            .count()
+    }
+
+    /// Emit the `expected_exact` pre-check when set. Validates that the
+    /// positional iterator has exactly `required_positional_count()` items
+    /// (kwargs are ignored — CPython's `PyArg_UnpackTuple` style does not
+    /// let kwargs satisfy required positionals). Raises
+    /// `"{name} expected N argument(s), got M"` matching CPython's
+    /// `sorted expected 1 argument, got 0` wording.
+    fn render_expected_exact_check(&self) -> TokenStream {
+        if !self.expected_exact {
+            return TokenStream::new();
+        }
+        let func_name = self.func_name.as_str();
+        let required = self.required_positional_count();
+        quote! {
+            {
+                let __pos_actual = ::std::iter::ExactSizeIterator::len(&__pos_iter);
+                if __pos_actual != #required {
+                    __cleanup!(
+                        crate::exception_private::ExcType::type_error_expected_exact(
+                            #func_name, #required, __pos_actual,
+                        )
+                    );
+                }
+            }
+        }
+    }
+
+    /// Emit `let mut __unknown_kwarg: Option<String> = None;` when the
+    /// signature defers unknown-kwarg errors (C / NamedC styles). Returns
+    /// an empty stream for Python style, where unknowns error immediately.
+    fn render_unknown_kwarg_decl(&self) -> TokenStream {
+        if !self.defer_unknown_kwarg() || self.varkwargs_idx.is_some() {
+            return TokenStream::new();
+        }
+        quote! {
+            let mut __unknown_kwarg: ::std::option::Option<::std::string::String> =
+                ::std::option::Option::None;
+        }
+    }
+
+    /// Emit the deferred missing-required-positional check.
+    ///
+    /// Runs *after* the kwarg loop has had a chance to fill named slots
+    /// from kwargs. Walks every required pos_only / pos_or_keyword field;
+    /// if any are still `None`, raises the same missing-required error
+    /// that `render_build_struct` would otherwise produce — but earlier,
+    /// so unknown-kwarg reporting (which CPython does last) doesn't beat
+    /// the missing-required error.
+    fn render_missing_required_check(&self, slots: &[Ident]) -> TokenStream {
+        if !self.defer_unknown_kwarg() {
+            return TokenStream::new();
+        }
+        let func_name = self.func_name.as_str();
+        let checks = self.fields.iter().zip(slots).filter_map(|(field, slot)| {
+            if !matches!(field.kind, FieldKind::PosOnly | FieldKind::PosOrKeyword) || field.default.is_some() {
+                return None;
+            }
+            let field_name_lit = LitStr::new(&field.ident.to_string(), field.ident.span());
+            let pos = field.pos_index.unwrap_or(0);
+            let missing_expr = match self.error_style {
+                ErrorStyle::C => quote! {
+                    crate::exception_private::ExcType::type_error_c_missing_required(#field_name_lit, #pos)
+                },
+                ErrorStyle::NamedC => quote! {
+                    crate::exception_private::ExcType::type_error_c_missing_required_named(
+                        #func_name, #field_name_lit, #pos,
+                    )
+                },
+                ErrorStyle::Python => quote! {
+                    crate::exception_private::ExcType::type_error_missing_positional_with_names(
+                        #func_name, &[#field_name_lit],
+                    )
+                },
+            };
+            Some(quote! {
+                if #slot.is_none() {
+                    __cleanup!(#missing_expr);
+                }
+            })
+        });
+        quote! { #(#checks)* }
+    }
+
+    /// Emit the deferred-unknown-kwarg error check.
+    ///
+    /// Runs after both the kwarg loop and the missing-required check, so
+    /// it only fires when every required field was satisfied yet a kwarg
+    /// name didn't match anything. Matches CPython's
+    /// `PyArg_ParseTupleAndKeywords` ordering.
+    fn render_unknown_kwarg_check(&self) -> TokenStream {
+        if !self.defer_unknown_kwarg() || self.varkwargs_idx.is_some() {
+            return TokenStream::new();
+        }
+        let func_name = self.func_name.as_str();
+        let err_expr = match self.error_style {
+            ErrorStyle::C => quote! {
+                crate::exception_private::ExcType::type_error_c_unexpected_keyword(&__name)
+            },
+            ErrorStyle::Python | ErrorStyle::NamedC => quote! {
+                crate::exception_private::ExcType::type_error_unexpected_keyword(#func_name, &__name)
+            },
+        };
+        quote! {
+            if let ::std::option::Option::Some(__name) = __unknown_kwarg.take() {
+                __cleanup!(#err_expr);
+            }
+        }
+    }
+
+    /// Emit the `at_least_positional` pre-check when set. Validates that the
+    /// positional iterator has at least `required_positional_count()` items
+    /// (kwargs do not satisfy required positionals for methods that opt
+    /// into this style). Raises
+    /// `"{name}() takes at least M positional argument(s) (N given)"`
+    /// matching CPython's `replace() takes at least 2 positional arguments (1 given)`.
+    fn render_at_least_positional_check(&self) -> TokenStream {
+        if !self.at_least_positional {
+            return TokenStream::new();
+        }
+        let func_name = self.func_name.as_str();
+        let required = self.required_positional_count();
+        quote! {
+            {
+                let __pos_actual = ::std::iter::ExactSizeIterator::len(&__pos_iter);
+                if __pos_actual < #required {
+                    __cleanup!(
+                        crate::exception_private::ExcType::type_error_at_least_positional(
+                            #func_name, #required, __pos_actual,
+                        )
+                    );
+                }
+            }
+        }
     }
 
     fn render_slot_decls(&self, slots: &[Ident]) -> TokenStream {
@@ -545,6 +755,21 @@ impl Signature {
         }
     }
 
+    /// Returns true when unknown-kwarg errors should be deferred until after
+    /// the missing-required check, matching CPython's
+    /// `PyArg_ParseTupleAndKeywords` validation order.
+    ///
+    /// CPython behaviour (see playground probing):
+    /// - C / NamedC styles (date, datetime, timezone, …): missing-required
+    ///   wins, so a call like `date(2024, 1, foo=1)` reports
+    ///   "missing required argument 'day' (pos 3)" rather than
+    ///   "unexpected keyword argument 'foo'".
+    /// - Python style: unknown wins. `def f(x): f(foo=1)` →
+    ///   `f() got an unexpected keyword argument 'foo'`.
+    fn defer_unknown_kwarg(&self) -> bool {
+        matches!(self.error_style, ErrorStyle::C | ErrorStyle::NamedC)
+    }
+
     fn render_kwarg_loop(&self, slots: &[Ident], has_varkwargs: bool) -> TokenStream {
         // Build kwarg dispatch arms — only for fields that can be passed by name.
         let mut arms: Vec<TokenStream> = Vec::new();
@@ -556,6 +781,8 @@ impl Signature {
             };
             arms.push(arm);
         }
+
+        let defer_unknown = self.defer_unknown_kwarg();
 
         let unknown_arm = if let Some(varkwargs_idx) = self.varkwargs_idx {
             let varkwargs_slot = &slots[varkwargs_idx];
@@ -573,21 +800,29 @@ impl Signature {
                 __key.drop_with_heap(heap);
                 #varkwargs_slot.push((__id, __value));
             }
+        } else if defer_unknown {
+            // C / NamedC styles defer unknown-kwarg errors so missing-required
+            // checks can run first (matches CPython
+            // `PyArg_ParseTupleAndKeywords` order). Stash the *first* unknown
+            // key name and continue processing — the error is raised after
+            // the kwarg loop only if all required fields are filled.
+            quote! {
+                __value.drop_with_heap(heap);
+                if __unknown_kwarg.is_none() {
+                    __unknown_kwarg = ::std::option::Option::Some(__key_str.as_str(interns).to_owned());
+                }
+                __key.drop_with_heap(heap);
+            }
         } else {
-            let func_name = self.func_name.as_str();
-            let err_expr = match self.error_style {
-                ErrorStyle::C => quote! {
-                    crate::exception_private::ExcType::type_error_c_unexpected_keyword(&__unexpected)
-                },
-                ErrorStyle::Python | ErrorStyle::NamedC => quote! {
-                    crate::exception_private::ExcType::type_error_unexpected_keyword(#func_name, &__unexpected)
-                },
-            };
+            // `kwarg_error_name` overrides the function name used in
+            // unknown-kwarg errors (used by `sorted` to emit `sort()` here
+            // even though arity errors still say `sorted`).
+            let func_name = self.kwarg_error_name.as_deref().unwrap_or(self.func_name.as_str());
             quote! {
                 __value.drop_with_heap(heap);
                 let __unexpected = __key_str.as_str(interns).to_owned();
                 __key.drop_with_heap(heap);
-                __cleanup!(#err_expr);
+                __cleanup!(crate::exception_private::ExcType::type_error_unexpected_keyword(#func_name, &__unexpected));
             }
         };
         let _ = has_varkwargs;
@@ -848,13 +1083,31 @@ fn vec_element_ty(ty: &Type) -> Option<Type> {
     })
 }
 
+/// Parsed `#[from_args(...)]` attribute set attached to a struct.
+///
+/// Boxed up as a struct rather than a long tuple so adding new flags
+/// doesn't ripple through callsite signatures — the macro grew organically
+/// and the tuple was getting unwieldy.
+struct StructAttrs {
+    name: String,
+    at_most_style: AtMostStyle,
+    error_style: ErrorStyle,
+    at_most_total: bool,
+    at_least_positional: bool,
+    expected_exact: bool,
+    kwarg_error_name: Option<String>,
+}
+
 /// Parse the `#[from_args(...)]` attributes attached to the struct itself.
-fn parse_struct_attrs(attrs: &[syn::Attribute]) -> syn::Result<(String, AtMostStyle, ErrorStyle, bool)> {
+fn parse_struct_attrs(attrs: &[syn::Attribute]) -> syn::Result<StructAttrs> {
     let mut name: Option<String> = None;
     let mut at_most_style = AtMostStyle::Standard;
     let mut error_style = ErrorStyle::Python;
     let mut style_set = false;
     let mut at_most_total = false;
+    let mut at_least_positional = false;
+    let mut expected_exact = false;
+    let mut kwarg_error_name: Option<String> = None;
     for attr in attrs {
         if !attr.path().is_ident("from_args") {
             continue;
@@ -869,6 +1122,16 @@ fn parse_struct_attrs(attrs: &[syn::Attribute]) -> syn::Result<(String, AtMostSt
                 Ok(())
             } else if meta.path.is_ident("at_most_total") {
                 at_most_total = true;
+                Ok(())
+            } else if meta.path.is_ident("at_least_positional") {
+                at_least_positional = true;
+                Ok(())
+            } else if meta.path.is_ident("expected_exact") {
+                expected_exact = true;
+                Ok(())
+            } else if meta.path.is_ident("kwarg_error_name") {
+                let value: LitStr = meta.value()?.parse()?;
+                kwarg_error_name = Some(value.value());
                 Ok(())
             } else if meta.path.is_ident("c_error") {
                 if style_set {
@@ -886,7 +1149,7 @@ fn parse_struct_attrs(attrs: &[syn::Attribute]) -> syn::Result<(String, AtMostSt
                 Ok(())
             } else {
                 Err(meta.error(
-                    "unknown struct attribute; expected `name = \"...\"`, `at_most_positional`, `at_most_total`, `c_error`, or `c_error_named`",
+                    "unknown struct attribute; expected `name = \"...\"`, `at_most_positional`, `at_most_total`, `at_least_positional`, `expected_exact`, `kwarg_error_name = \"...\"`, `c_error`, or `c_error_named`",
                 ))
             }
         })?;
@@ -897,7 +1160,15 @@ fn parse_struct_attrs(attrs: &[syn::Attribute]) -> syn::Result<(String, AtMostSt
             "missing `#[from_args(name = \"...\")]` on the struct",
         )
     })?;
-    Ok((name, at_most_style, error_style, at_most_total))
+    Ok(StructAttrs {
+        name,
+        at_most_style,
+        error_style,
+        at_most_total,
+        at_least_positional,
+        expected_exact,
+        kwarg_error_name,
+    })
 }
 
 #[derive(Default)]

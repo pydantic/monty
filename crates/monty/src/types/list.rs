@@ -758,7 +758,7 @@ fn do_list_sort<'h>(
 /// `Value`s so the implementation can normalise `key=None` to "no key" and
 /// truthy-check `reverse` itself.
 #[derive(FromArgs)]
-#[from_args(name = "list.sort")]
+#[from_args(name = "sort")]
 struct ListSortArgs {
     #[from_args(kw_only, default)]
     key: Option<Value>,

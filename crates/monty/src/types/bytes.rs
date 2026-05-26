@@ -533,7 +533,7 @@ fn bytes_decode<'h>(
 /// fields are `Option<Value>` so the implementation can apply its own
 /// defaults and treat the `errors=` parameter as a no-op for now.
 #[derive(FromArgs)]
-#[from_args(name = "bytes.decode")]
+#[from_args(name = "decode")]
 struct BytesDecodeArgs {
     #[from_args(default)]
     encoding: Option<Value>,
@@ -1367,7 +1367,7 @@ fn coerce_bytes_split_args(
 
 /// Argument shape for `bytes.split(sep=None, maxsplit=-1)`.
 #[derive(FromArgs)]
-#[from_args(name = "bytes.split")]
+#[from_args(name = "split")]
 struct BytesSplitArgs {
     #[from_args(default = Value::None)]
     sep: Value,
@@ -1377,7 +1377,7 @@ struct BytesSplitArgs {
 
 /// Argument shape for `bytes.rsplit(sep=None, maxsplit=-1)`.
 #[derive(FromArgs)]
-#[from_args(name = "bytes.rsplit")]
+#[from_args(name = "rsplit")]
 struct BytesRsplitArgs {
     #[from_args(default = Value::None)]
     sep: Value,
@@ -1599,7 +1599,7 @@ fn parse_bytes_splitlines_args(args: ArgValues, vm: &mut VM<'_, impl ResourceTra
 /// `keepends` for truthiness rather than strict-typing, so the field stays as
 /// a raw `Value` for `py_bool` to inspect.
 #[derive(FromArgs)]
-#[from_args(name = "bytes.splitlines")]
+#[from_args(name = "splitlines")]
 struct BytesSplitlinesArgs {
     #[from_args(default)]
     keepends: Option<Value>,
@@ -1716,7 +1716,7 @@ fn parse_bytes_replace_args(
 
 /// Argument shape for `bytes.replace(old, new, count=-1)`.
 #[derive(FromArgs)]
-#[from_args(name = "bytes.replace")]
+#[from_args(name = "replace")]
 struct BytesReplaceArgs {
     old: Value,
     new: Value,

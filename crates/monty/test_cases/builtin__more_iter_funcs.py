@@ -260,19 +260,14 @@ assert sorted(range(5, 0, -1)) == [1, 2, 3, 4, 5], 'sorted range'
 try:
     sorted(1, 2)
     assert False, 'sorted() with too many positional arguments should raise TypeError'
-except TypeError:
-    # CPython: 'sorted expected 1 argument, got 2' (uses PyArg_UnpackTuple
-    # wording). Monty: 'sorted expected at most 1 arguments, got 2'.
-    pass
+except TypeError as e:
+    assert e.args == ('sorted expected 1 argument, got 2',), 'sorted() too many args matches CPython'
 
 try:
     sorted([1], nope=1)
     assert False, 'sorted() with invalid keyword should raise TypeError'
-except TypeError:
-    # CPython: "sort() got an unexpected keyword argument 'nope'" — sorted()
-    # internally calls list.sort, so its kwarg-name error references "sort".
-    # Monty: "sorted() got an unexpected keyword argument 'nope'".
-    pass
+except TypeError as e:
+    assert str(e) == "sort() got an unexpected keyword argument 'nope'", f'sorted unknown kw: {e}'
 
 # === sorted() with reverse ===
 assert sorted([3, 1, 2], reverse=True) == [3, 2, 1], 'sorted reverse=True'

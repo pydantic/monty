@@ -6,7 +6,7 @@ use crate::{
     args::{ArgValues, FromArgs, KwargsValues},
     bytecode::VM,
     defer_drop, defer_drop_mut,
-    exception_private::RunResult,
+    exception_private::{ExcType, RunResult},
     heap::{DropWithHeap, HeapData},
     resource::ResourceTracker,
     types::{List, MontyIter},
@@ -28,6 +28,15 @@ use crate::{
 /// map(str, [1, 2, 3])               # ['1', '2', '3']
 /// ```
 pub fn builtin_map(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    // CPython's map() uses a bespoke arity message
+    // (`map() must have at least two arguments.`) rather than the generic
+    // "missing N required positional arguments" wording the macro would
+    // otherwise produce. Pre-check before delegating to MapArgs so we
+    // match byte-for-byte; cleanup is handled by the early-return drop.
+    if args.count() < 2 {
+        args.drop_with_heap(vm.heap);
+        return Err(ExcType::type_error_map_arity());
+    }
     let MapArgs {
         function,
         first_iterable,

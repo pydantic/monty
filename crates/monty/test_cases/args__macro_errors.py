@@ -24,60 +24,48 @@ try:
     [1, 2].sort(bogus=1)
     assert False, 'list.sort with unknown kwarg should raise'
 except TypeError as e:
-    if _monty:
-        assert str(e) == "list.sort() got an unexpected keyword argument 'bogus'", f'py-unknown-kw: {e}'
-    else:
-        # CPython uses the bare method name for unbound-method error messages.
-        assert str(e) == "sort() got an unexpected keyword argument 'bogus'", f'py-unknown-kw: {e}'
+    assert str(e) == "sort() got an unexpected keyword argument 'bogus'", f'py-unknown-kw: {e}'
 
 try:
     sorted([1], bogus=1)
     assert False, 'sorted with unknown kwarg should raise'
 except TypeError as e:
-    if _monty:
-        assert str(e) == "sorted() got an unexpected keyword argument 'bogus'", f'py-unknown-kw-sorted: {e}'
-    else:
-        # CPython's sorted() delegates to list.sort and surfaces sort()'s error.
-        assert str(e) == "sort() got an unexpected keyword argument 'bogus'", f'py-unknown-kw-sorted: {e}'
+    # CPython's sorted() delegates internally to list.sort and surfaces
+    # sort()'s kwarg error. Monty matches via `kwarg_error_name = "sort"`.
+    assert str(e) == "sort() got an unexpected keyword argument 'bogus'", f'py-unknown-kw-sorted: {e}'
 
 # === Python: pos_or_keyword conflict ('multiple values for argument') ===
-# Monty's dict.update declares `source` as pos_or_keyword so the
-# positional + same-named kwarg is a binding conflict. CPython's
-# dict.update declares `other` as positional-only and absorbs `source`
-# into **kwargs — no error there. So this assertion is monty-only.
-if _monty:
-    d = {}
-    try:
-        d.update({1: 2}, source={3: 4})
-        assert False, 'dict.update with pos+kw conflict should raise'
-    except TypeError as e:
-        assert str(e) == "dict.update() got multiple values for argument 'source'", f'py-pos-kw: {e}'
+# `re.split(pattern, string, pattern=...)` is a pos_or_keyword conflict.
+# Monty's wording matches CPython's def-style here.
+try:
+    re.split('a', 'banana', pattern='b')
+    assert False, 're.split with pos+kw conflict should raise'
+except TypeError as e:
+    assert str(e) == "split() got multiple values for argument 'pattern'", f'py-pos-kw: {e}'
 
-# === Python: missing required positional ===
+# === Python: missing required positional (PyArg_UnpackTuple-style via at_least_positional) ===
 try:
     'abc'.replace('a')
     assert False, 'str.replace() missing arg should raise'
 except TypeError as e:
-    if _monty:
-        assert str(e) == "str.replace() missing 1 required positional argument: 'new'", f'py-missing-pos: {e}'
-    else:
-        assert str(e) == 'replace() takes at least 2 positional arguments (1 given)', f'py-missing-pos: {e}'
+    assert str(e) == 'replace() takes at least 2 positional arguments (1 given)', f'py-missing-pos: {e}'
 
 # === Python: too-many positional (per-arg fallback — no at_most_total) ===
 try:
     {}.update({1: 2}, {3: 4})
     assert False, 'dict.update too many should raise'
 except TypeError as e:
-    if _monty:
-        assert str(e) == 'dict.update expected at most 1 arguments, got 2', f'py-toomany-pos: {e}'
-    else:
-        assert str(e) == 'update expected at most 1 argument, got 2', f'py-toomany-pos: {e}'
+    assert str(e) == 'update expected at most 1 argument, got 2', f'py-toomany-pos: {e}'
 
 # === Python: duplicate kw_only via ** unpacking ===
 # When both kwarg sources name the same key, Python's call machinery
-# emits the duplicate error before the function is invoked. Monty
-# surfaces the bare attribute name (`sort()`) while CPython qualifies
-# it with the type (`list.sort()`).
+# emits the duplicate error before the function is invoked — this is
+# the bytecode-VM's `DictMerge` opcode in Monty's case, NOT FromArgs.
+# Monty surfaces the bare attribute name (`sort()`) while CPython
+# qualifies it with the type (`list.sort()`). Fixing this would require
+# a new MethodDictMerge opcode that peeks the receiver from the stack
+# and qualifies the method name with its type — see commit message for
+# rationale. Tracked as a known divergence outside the FromArgs scope.
 try:
     [1, 2].sort(key=int, **{'key': str})
     assert False, 'duplicate kw via ** should raise'
@@ -92,19 +80,13 @@ try:
     'hello'.expandtabs(4, tabsize=8)
     assert False, 'expandtabs pos+kw should raise via at_most_total pre-count'
 except TypeError as e:
-    if _monty:
-        assert str(e) == 'str.expandtabs() takes at most 1 argument (2 given)', f'py-atmost-total-1: {e}'
-    else:
-        assert str(e) == 'expandtabs() takes at most 1 argument (2 given)', f'py-atmost-total-1: {e}'
+    assert str(e) == 'expandtabs() takes at most 1 argument (2 given)', f'py-atmost-total-1: {e}'
 
 try:
     'hello'.splitlines(True, keepends=False)
     assert False, 'splitlines pos+kw should raise via at_most_total pre-count'
 except TypeError as e:
-    if _monty:
-        assert str(e) == 'str.splitlines() takes at most 1 argument (2 given)', f'py-atmost-total-2: {e}'
-    else:
-        assert str(e) == 'splitlines() takes at most 1 argument (2 given)', f'py-atmost-total-2: {e}'
+    assert str(e) == 'splitlines() takes at most 1 argument (2 given)', f'py-atmost-total-2: {e}'
 
 m = re.match(r'(?P<x>.)', 'a')
 assert m is not None
@@ -112,46 +94,32 @@ try:
     m.groupdict('N/A', default='N/A')
     assert False, 'groupdict pos+kw should raise via at_most_total pre-count'
 except TypeError as e:
-    if _monty:
-        assert str(e) == 're.Match.groupdict() takes at most 1 argument (2 given)', f'py-atmost-total-3: {e}'
-    else:
-        assert str(e) == 'groupdict() takes at most 1 argument (2 given)', f'py-atmost-total-3: {e}'
+    assert str(e) == 'groupdict() takes at most 1 argument (2 given)', f'py-atmost-total-3: {e}'
 
-# === Python: pos-only field passed as kwarg (no static_string override → falls through to unknown) ===
-# `sorted`'s `iterable` field is `pos_only` without an explicit
-# `static_string` override, so a kwarg of the same name is reported as
-# an unknown keyword rather than CPython's "positional-only arguments
-# passed as keyword arguments" wording.
+# === Python: pos-only field passed as kwarg (expected_exact fires first) ===
+# `sorted`'s `iterable` field is `pos_only` and the struct opts into
+# `expected_exact`, so the pre-check counts 0 positionals and emits
+# CPython's PyArg_UnpackTuple wording before the kwarg is even examined.
 try:
     sorted(iterable=[1, 2, 3])
     assert False, 'sorted iterable= kwarg should raise'
 except TypeError as e:
-    if _monty:
-        assert str(e) == "sorted() got an unexpected keyword argument 'iterable'", f'py-posonly-as-kw: {e}'
-    else:
-        assert str(e) == 'sorted expected 1 argument, got 0', f'py-posonly-as-kw: {e}'
+    assert str(e) == 'sorted expected 1 argument, got 0', f'py-posonly-as-kw: {e}'
 
 # === Python: missing required (multiple positionals) ===
+# map() has a CPython-specific bespoke message; Monty matches it via a
+# pre-check in builtin_map before delegating to FromArgs.
 try:
     map()
     assert False, 'map() should require args'
 except TypeError as e:
-    if _monty:
-        # Monty's macro raises on the first missing required field, so
-        # `map()` reports `function` (pos 1) only. CPython has a custom
-        # message for map() specifically.
-        assert str(e) == "map() missing 1 required positional argument: 'function'", f'py-missing-2: {e}'
-    else:
-        assert str(e) == 'map() must have at least two arguments.', f'py-missing-2: {e}'
+    assert str(e) == 'map() must have at least two arguments.', f'py-missing-2: {e}'
 
 try:
     map(int)
     assert False, 'map(fn) should require ≥2 args'
 except TypeError as e:
-    if _monty:
-        assert str(e) == "map() missing 1 required positional argument: 'first_iterable'", f'py-missing-1: {e}'
-    else:
-        assert str(e) == 'map() must have at least two arguments.', f'py-missing-1: {e}'
+    assert str(e) == 'map() must have at least two arguments.', f'py-missing-1: {e}'
 
 # =====================================================================
 # === C style (`c_error` — anonymous "function" wording)             ===
@@ -161,19 +129,30 @@ except TypeError as e:
 # `at_most_positional`). Error wording uses CPython's
 # PyArg_ParseTupleAndKeywords "function" literal.
 
-# === C: unknown kwarg (under at_most_total threshold) ===
+# === C: unknown kwarg under at_most_total threshold (missing-required wins) ===
 # 2 positional + 1 unknown kwarg = total 3, max 3 → at_most_total
-# does not fire; falls through to per-arg dispatch.
-# CPython processes positional first and reports missing `day`; Monty
-# processes positional then kwargs and reports the unknown kwarg first.
+# does not fire; the macro defers the unknown-kwarg error for C / NamedC
+# styles so that the missing-required check (matching CPython's
+# `PyArg_ParseTupleAndKeywords` order) fires first.
 try:
     datetime.date(2024, 1, foo=1)
     assert False, 'date unknown kwarg under at_most_total should raise'
 except TypeError as e:
-    if _monty:
-        assert str(e) == "this function got an unexpected keyword argument 'foo'", f'c-unknown-kw: {e}'
-    else:
-        assert str(e) == "function missing required argument 'day' (pos 3)", f'c-unknown-kw: {e}'
+    assert str(e) == "function missing required argument 'day' (pos 3)", f'c-unknown-kw: {e}'
+
+# === C: unknown kwarg with all required filled (unknown wins after missing check passes) ===
+try:
+    datetime.date(2024, day=3, month=2, foo=1)
+    assert False, 'date with extra unknown should raise'
+except TypeError as e:
+    # 1 pos + 3 kwargs = 4 total > 3 max → at_most_total fires first.
+    assert str(e) == 'function takes at most 3 arguments (4 given)', f'c-atmost-total-precheck: {e}'
+
+try:
+    datetime.date(2024, day=3, month=2)
+    assert datetime.date(2024, day=3, month=2).day == 3, 'date kwarg-filled required succeeds'
+except TypeError as e:
+    assert False, f'unexpected error: {e}'
 
 # === C: pos/kw conflict ===
 try:

@@ -66,16 +66,11 @@ except ValueError as e:
 try:
     map()
     assert False, 'map() should require arguments'
-except TypeError:
-    # CPython: 'map() must have at least two arguments.' (custom builtin
-    # message). Monty: "map() missing 2 required positional arguments:
-    # 'function' and 'first_iterable'" (generic macro message).
-    pass
+except TypeError as e:
+    assert str(e) == 'map() must have at least two arguments.', f'map() arity: {e}'
 
 try:
     map(None)
     assert False, 'map() with single arg should fail'
-except TypeError:
-    # CPython: 'map() must have at least two arguments.'. Monty:
-    # "map() missing 1 required positional argument: 'first_iterable'".
-    pass
+except TypeError as e:
+    assert str(e) == 'map() must have at least two arguments.', f'map(fn) arity: {e}'

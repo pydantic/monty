@@ -49,12 +49,12 @@ pub fn builtin_sorted(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) ->
 /// as `Value` so the caller can treat `key=None` as "no key function" and
 /// truthy-evaluate `reverse` without a strict-type check.
 #[derive(FromArgs)]
-#[from_args(name = "sorted")]
+#[from_args(name = "sorted", expected_exact, kwarg_error_name = "sort")]
 struct SortedArgs {
     #[from_args(pos_only)]
     iterable: Value,
-    #[from_args(default = Value::None)]
+    #[from_args(kw_only, default = Value::None)]
     key: Value,
-    #[from_args(default = Value::Bool(false))]
+    #[from_args(kw_only, default = Value::Bool(false))]
     reverse: Value,
 }

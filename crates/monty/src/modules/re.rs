@@ -346,7 +346,7 @@ fn call_split(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResu
 /// `match.string` attribute respectively). The actual interned string for
 /// dispatch is still `"pattern"` / `"string"` via those repurposed variants.
 #[derive(FromArgs)]
-#[from_args(name = "re.sub")]
+#[from_args(name = "sub")]
 struct ReSubArgs {
     #[from_args(static_string = "PatternAttr")]
     pattern: Value,
@@ -363,7 +363,7 @@ struct ReSubArgs {
 ///
 /// See `ReSubArgs` for why `pattern` / `string` use `static_string`.
 #[derive(FromArgs)]
-#[from_args(name = "re.split")]
+#[from_args(name = "split")]
 struct ReSplitArgs {
     #[from_args(static_string = "PatternAttr")]
     pattern: Value,

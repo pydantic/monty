@@ -450,7 +450,7 @@ impl Dict {
 #[derive(FromArgs)]
 #[from_args(name = "dict")]
 struct DictInitArgs {
-    #[from_args(default)]
+    #[from_args(pos_only, default)]
     source: Option<Value>,
     #[from_args(varkwargs)]
     extras: KwargsValues,
@@ -911,9 +911,9 @@ fn dict_update<'h>(
 /// Mirrors [`DictInitArgs`] — an optional positional source plus arbitrary
 /// kwargs that are merged into the dict after the source.
 #[derive(FromArgs)]
-#[from_args(name = "dict.update")]
+#[from_args(name = "update")]
 struct DictUpdateArgs {
-    #[from_args(default)]
+    #[from_args(pos_only, default)]
     source: Option<Value>,
     #[from_args(varkwargs)]
     extras: KwargsValues,
