@@ -175,6 +175,7 @@ impl HeapData {
                 | Self::Coroutine(_)
                 | Self::GatherFuture(_)
                 | Self::ExternalFuture(_)
+                | Self::OpenFile(_)
         )
     }
 

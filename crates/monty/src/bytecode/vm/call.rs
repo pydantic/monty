@@ -56,6 +56,21 @@ pub(crate) enum CallResult {
     /// Used by `asyncio.run()` to execute a coroutine without an explicit `await`.
     /// The VM will push the value onto the stack and execute `exec_get_awaitable`.
     AwaitValue(Value),
+    /// OS call whose result must be stored into a heap [`OpenFile`](crate::types::OpenFile)'s
+    /// buffer rather than pushed onto the operand stack.
+    ///
+    /// Used by `read(N)` / `readline()` / `readlines()` / `seek()` on the first
+    /// operation that needs the full file content. The host services the OS
+    /// call (always `ReadText` or `ReadBytes` against the file referenced by
+    /// `file_id`); on resume the VM stores the returned content into
+    /// `OpenFile::buffer` and then consumes the file's `pending_read`
+    /// [`ReadSpec`](crate::types::ReadSpec) to compute the slice that becomes
+    /// the call's return value.
+    ///
+    /// The OS-call args are always `ArgValues::One(Value::Ref(file_id))`. The
+    /// per-call slice spec lives on the `OpenFile` itself (in `pending_read`),
+    /// so this variant only needs to carry the file id and the OS function.
+    OsCallStoreBuffer { function: OsFunction, file_id: HeapId },
 }
 
 impl DropWithHeap for CallResult {
@@ -65,7 +80,7 @@ impl DropWithHeap for CallResult {
             Self::External(_, args) | Self::OsCall(_, args) | Self::MethodCall(_, args) => {
                 args.drop_with_heap(heap);
             }
-            Self::FramePushed => {}
+            Self::FramePushed | Self::OsCallStoreBuffer { .. } => {}
         }
     }
 }
