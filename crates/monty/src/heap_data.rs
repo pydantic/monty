@@ -175,8 +175,12 @@ impl HeapData {
                 | Self::Coroutine(_)
                 | Self::GatherFuture(_)
                 | Self::ExternalFuture(_)
-                | Self::OpenFile(_)
         )
+        // `OpenFile` is deliberately *not* listed here: its single heap
+        // reference (`buffer`) only ever points to `Str` / `Bytes`, neither of
+        // which is GC-tracked, so an `OpenFile` cannot participate in a
+        // reference cycle. Add it back if `OpenFile` ever gains a field that
+        // can hold a container value (e.g. a user-provided callback).
     }
 
     /// Returns the Python `Type` for this heap data without requiring VM access.

@@ -352,6 +352,14 @@ pub(crate) struct OpenFile {
     /// the first sized/line read or `seek()`. Always `HeapData::Str` for text
     /// mode and `HeapData::Bytes` for binary mode. `None` until populated.
     buffer: Option<HeapId>,
+    /// Cached metadata about the loaded buffer, populated in
+    /// [`apply_buffer_store`] when `buffer` is set. The cache turns each
+    /// sized-read / line-read / seek into O(work-actually-done) instead of
+    /// O(total-buffer): without it `compute_slice_text` would re-walk the
+    /// buffer from char 0 on every call (so a 10k-`readline()` loop on a
+    /// 1MB UTF-8 file is O(n²)). See [`BufferMeta`] for field semantics.
+    /// `None` while `buffer` is `None`; otherwise always `Some`.
+    buffer_meta: Option<BufferMeta>,
     /// Set between emitting the OS-call-with-store hook and the resume firing.
     /// Tells the resume path which slice to compute once the buffer is
     /// populated. Cleared by the post-resume hook (or by exception cleanup).
@@ -360,6 +368,30 @@ pub(crate) struct OpenFile {
     /// buffer's existence so bare `read()` (which today never populates the
     /// buffer) can also flag EOF without forcing a load.
     eof: bool,
+}
+
+/// Cached metadata about an [`OpenFile`]'s loaded buffer.
+///
+/// Both fields are derived from `position` + the heap-resident buffer and
+/// could be recomputed from them on demand; we cache them so the hot
+/// read/readline loops do not re-scan the buffer from char 0 on every call.
+/// Maintained incrementally by every operation that advances `position`.
+///
+/// Binary-mode files set `byte_position == min(position, buffer.len())` and
+/// `buffer_total == buffer.len()` — the cache is mostly redundant there, but
+/// kept identical to the text-mode layout so the surrounding code does not
+/// need to branch on mode.
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
+struct BufferMeta {
+    /// Byte offset into the buffer that matches `position`, clamped to
+    /// `buffer.len()`. For text mode this caches the
+    /// [`nth_char_byte_offset`] walk; for binary mode it equals
+    /// `min(position, buffer.len())`.
+    byte_position: u64,
+    /// Total length of the buffer in user-visible units — chars for text
+    /// (cached `chars().count()`), bytes for binary (`== buffer.len()`).
+    /// Constant once the buffer is loaded.
+    buffer_total: u64,
 }
 
 impl OpenFile {
@@ -381,6 +413,7 @@ impl OpenFile {
             closed: false,
             position,
             buffer: None,
+            buffer_meta: None,
             pending_read: None,
             eof: false,
         }
@@ -592,7 +625,7 @@ impl<'h> HeapRead<'h, OpenFile> {
     /// In text mode the value is a char index into the buffer (a documented
     /// divergence from CPython, which returns an opaque byte cookie); in
     /// binary mode it is a byte offset, which matches CPython.
-    fn tell(&mut self, vm: &mut VM<'h, impl ResourceTracker>, args: ArgValues) -> RunResult<CallResult> {
+    fn tell(&self, vm: &mut VM<'h, impl ResourceTracker>, args: ArgValues) -> RunResult<CallResult> {
         args.check_zero_args("tell", vm.heap)?;
         let file = self.get(vm.heap);
         file.ensure_open()?;
@@ -915,6 +948,15 @@ pub(crate) fn apply_buffer_store(
         vm.heap.dec_ref(result_id);
     }
 
+    // Populate the cached buffer metadata so the upcoming `compute_slice`
+    // call (and every later read) starts from a known byte position and
+    // buffer length without re-scanning the buffer from char 0. We do this
+    // unconditionally — even on the defensive path where we just dropped
+    // `result_id` and left the prior `buffer` in place — so a freshly-
+    // restored snapshot (which doesn't carry the cache) is rehydrated on
+    // its first buffered op.
+    populate_buffer_meta(file_id, vm)?;
+
     // Compute the slice *before* releasing the pending_buffer_store pin —
     // otherwise `open(p).read(5)` (where no caller holds a separate
     // reference) would dec_ref the file to 0 here and `compute_slice` would
@@ -936,7 +978,7 @@ pub(crate) fn apply_buffer_store(
 /// result. All buffer reads go through the heap so the slice content is fully
 /// snapshot-safe.
 fn compute_slice(file_id: HeapId, spec: ReadSpec, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<Value> {
-    let (binary, buffer_id, position) = {
+    let (binary, buffer_id, position, byte_position, buffer_total) = {
         let HeapReadOutput::OpenFile(file) = vm.heap.read(file_id) else {
             return Err(RunError::internal("compute_slice: not an OpenFile"));
         };
@@ -944,164 +986,193 @@ fn compute_slice(file_id: HeapId, spec: ReadSpec, vm: &mut VM<'_, impl ResourceT
         let buffer = f
             .buffer
             .ok_or_else(|| RunError::internal("compute_slice: buffer must be loaded"))?;
+        let meta = f
+            .buffer_meta
+            .ok_or_else(|| RunError::internal("compute_slice: buffer_meta must be loaded"))?;
         let position = usize::try_from(f.position).map_err(|_| ExcType::overflow_c_ssize_t())?;
-        (f.mode.is_binary(), buffer, position)
+        let byte_position = usize::try_from(meta.byte_position).map_err(|_| ExcType::overflow_c_ssize_t())?;
+        let buffer_total = usize::try_from(meta.buffer_total).map_err(|_| ExcType::overflow_c_ssize_t())?;
+        (f.mode.is_binary(), buffer, position, byte_position, buffer_total)
     };
 
     if binary {
-        compute_slice_binary(file_id, buffer_id, position, spec, vm)
+        compute_slice_binary(file_id, buffer_id, position, buffer_total, spec, vm)
     } else {
-        compute_slice_text(file_id, buffer_id, position, spec, vm)
+        compute_slice_text(file_id, buffer_id, position, byte_position, buffer_total, spec, vm)
     }
 }
 
-/// Text-mode slice computation. `position` is a char index into the buffer.
+/// Text-mode slice computation.
+///
+/// `position` is the user-visible char index, `byte_position` is the cached
+/// byte offset matching `position` clamped to `buffer.len()`, and
+/// `buffer_total` is the cached `chars().count()` of the buffer. The cache
+/// avoids an O(position) `nth_char_byte_offset` scan per call — the only
+/// per-call walks are now over the bytes actually returned (so an N-line
+/// `readline()` loop is O(N) total instead of O(N²)).
+///
+/// The buffer is read as a borrowed `&str` and the result is allocated while
+/// that borrow is still live; `Heap::allocate` is `&self` and the paged
+/// storage guarantees existing references stay valid across allocations, so
+/// the previous full-buffer `to_owned()` is gone.
 fn compute_slice_text(
     file_id: HeapId,
     buffer_id: HeapId,
     position: usize,
+    byte_position: usize,
+    buffer_total: usize,
     spec: ReadSpec,
     vm: &mut VM<'_, impl ResourceTracker>,
 ) -> RunResult<Value> {
-    // Read the buffer content into an owned String so we can compute the
-    // slice and release the heap borrow before allocating the result.
-    let buffer = match vm.heap.get(buffer_id) {
-        HeapData::Str(s) => s.as_str().to_owned(),
-        _ => return Err(RunError::internal("compute_slice_text: buffer is not a Str")),
-    };
-    let char_count = buffer.chars().count();
-    // `seek()` allows positioning past end-of-buffer; clamp here so the
-    // slice operations below stay valid. The clamp is per-call only — it
-    // is not written back to the file, so a `seek(0)` after this still
-    // sees the original semantics.
-    let position = position.min(char_count);
-    let byte_start = nth_char_byte_offset(&buffer, position);
+    // Phase 1: read the buffer through an immutable heap borrow, compute the
+    // slice, and allocate the result. `update_file_state` needs `&mut Heap`,
+    // so we cannot call it until this scope ends and the borrow is released.
+    let (value, new_position, new_byte_position, eof) = {
+        let buffer = match vm.heap.get(buffer_id) {
+            HeapData::Str(s) => s.as_str(),
+            _ => return Err(RunError::internal("compute_slice_text: buffer is not a Str")),
+        };
+        debug_assert!(byte_position <= buffer.len());
+        let tail = &buffer[byte_position..];
 
-    match spec {
-        ReadSpec::All => {
-            let slice = &buffer[byte_start..];
-            let value = allocate_string(slice.to_owned(), vm.heap)?;
-            update_position_eof(file_id, char_count, true, vm);
-            Ok(value)
-        }
-        ReadSpec::Size(n) => {
-            let take = char_count.saturating_sub(position).min(n);
-            let byte_end = nth_char_byte_offset(&buffer, position + take);
-            let slice = &buffer[byte_start..byte_end];
-            let value = allocate_string(slice.to_owned(), vm.heap)?;
-            let new_pos = position + take;
-            update_position_eof(file_id, new_pos, new_pos >= char_count, vm);
-            Ok(value)
-        }
-        ReadSpec::Line => {
-            // Scan from byte_start for the next `\n`; include it in the slice.
-            let tail = &buffer[byte_start..];
-            let (slice, chars_consumed) = match tail.find('\n') {
-                Some(rel) => {
-                    let line = &tail[..=rel];
-                    (line, line.chars().count())
-                }
-                None => (tail, tail.chars().count()),
-            };
-            let value = allocate_string(slice.to_owned(), vm.heap)?;
-            let new_pos = position + chars_consumed;
-            update_position_eof(file_id, new_pos, new_pos >= char_count, vm);
-            Ok(value)
-        }
-        ReadSpec::Lines => {
-            let tail = &buffer[byte_start..];
-            // Build a list of lines (with trailing newlines preserved).
-            let mut items: Vec<Value> = Vec::new();
-            let mut start = 0usize;
-            while start < tail.len() {
-                let rest = &tail[start..];
-                let end = rest.find('\n').map_or(rest.len(), |i| i + 1);
-                let line = &rest[..end];
-                items.push(allocate_string(line.to_owned(), vm.heap)?);
-                start += end;
+        match spec {
+            ReadSpec::All => {
+                let value = allocate_string(tail.to_owned(), vm.heap)?;
+                (value, buffer_total, buffer.len(), true)
             }
-            let list_id = vm.heap.allocate(HeapData::List(List::new(items)))?;
-            update_position_eof(file_id, char_count, true, vm);
-            Ok(Value::Ref(list_id))
+            ReadSpec::Size(n) => {
+                // Walk forward `n` chars (or however many remain) to find
+                // their combined byte length — O(chars-taken), not O(position).
+                let take = buffer_total.saturating_sub(position).min(n);
+                let bytes_taken = tail.char_indices().nth(take).map_or(tail.len(), |(i, _)| i);
+                let slice = &tail[..bytes_taken];
+                let value = allocate_string(slice.to_owned(), vm.heap)?;
+                let new_pos = position + take;
+                let new_byte_pos = byte_position + bytes_taken;
+                (value, new_pos, new_byte_pos, new_pos >= buffer_total)
+            }
+            ReadSpec::Line => {
+                let (slice, chars_consumed) = match tail.find('\n') {
+                    Some(rel) => {
+                        let line = &tail[..=rel];
+                        (line, line.chars().count())
+                    }
+                    None => (tail, tail.chars().count()),
+                };
+                let value = allocate_string(slice.to_owned(), vm.heap)?;
+                let new_pos = position + chars_consumed;
+                let new_byte_pos = byte_position + slice.len();
+                (value, new_pos, new_byte_pos, new_pos >= buffer_total)
+            }
+            ReadSpec::Lines => {
+                let mut items: Vec<Value> = Vec::new();
+                let mut start = 0usize;
+                while start < tail.len() {
+                    let rest = &tail[start..];
+                    let end = rest.find('\n').map_or(rest.len(), |i| i + 1);
+                    let line = &rest[..end];
+                    items.push(allocate_string(line.to_owned(), vm.heap)?);
+                    start += end;
+                }
+                let list_id = vm.heap.allocate(HeapData::List(List::new(items)))?;
+                (Value::Ref(list_id), buffer_total, buffer.len(), true)
+            }
+            ReadSpec::Seek { offset, whence } => {
+                let target = resolve_seek_target_usize(offset, whence, position, buffer_total)?;
+                let target_usize = usize::try_from(target).map_err(|_| ExcType::overflow_c_ssize_t())?;
+                // O(target) walk to refresh the byte cache. Seeks are rare
+                // relative to reads, so paying for the walk here keeps the
+                // per-read cost O(1) instead of O(position).
+                let target_clamped = target_usize.min(buffer_total);
+                let new_byte_pos = nth_char_byte_offset(buffer, target_clamped);
+                (
+                    Value::Int(target),
+                    target_usize,
+                    new_byte_pos,
+                    target_usize >= buffer_total,
+                )
+            }
         }
-        ReadSpec::Seek { offset, whence } => {
-            let target = resolve_seek_target_usize(offset, whence, position, char_count)?;
-            let target_usize = usize::try_from(target).map_err(|_| ExcType::overflow_c_ssize_t())?;
-            update_position_eof(file_id, target_usize, target_usize >= char_count, vm);
-            Ok(Value::Int(target))
-        }
-    }
+    };
+
+    update_file_state(file_id, new_position, new_byte_position, eof, vm);
+    Ok(value)
 }
 
-/// Binary-mode slice computation. `position` is a byte index into the buffer.
+/// Binary-mode slice computation.
+///
+/// `position` is the byte index, `buffer_total` is `buffer.len()` (cached
+/// from [`BufferMeta`]). The buffer is read as a borrowed `&[u8]` and the
+/// returned slice is the only bytes that get cloned (previously the *entire*
+/// buffer was cloned on every call so the heap borrow could be released
+/// before `update_position_eof`).
 fn compute_slice_binary(
     file_id: HeapId,
     buffer_id: HeapId,
     position: usize,
+    buffer_total: usize,
     spec: ReadSpec,
     vm: &mut VM<'_, impl ResourceTracker>,
 ) -> RunResult<Value> {
-    let buffer = match vm.heap.get(buffer_id) {
-        HeapData::Bytes(b) => b.as_slice().to_vec(),
-        _ => return Err(RunError::internal("compute_slice_binary: buffer is not Bytes")),
-    };
-    let len = buffer.len();
     // `seek()` allows positioning past EOF; clamp here so the slice index
     // operations below never panic when `position > len`. The cap is per-call
     // (we don't write it back to the file) so a subsequent `seek(0)` still
     // sees the original out-of-range position semantics on the seek path.
-    let position = position.min(len);
+    let clamped_position = position.min(buffer_total);
 
-    match spec {
-        ReadSpec::All => {
-            let slice = buffer[position..].to_vec();
-            let id = vm.heap.allocate(HeapData::Bytes(Bytes::new(slice)))?;
-            update_position_eof(file_id, len, true, vm);
-            Ok(Value::Ref(id))
-        }
-        ReadSpec::Size(n) => {
-            let take = len.saturating_sub(position).min(n);
-            let slice = buffer[position..position + take].to_vec();
-            let id = vm.heap.allocate(HeapData::Bytes(Bytes::new(slice)))?;
-            let new_pos = position + take;
-            update_position_eof(file_id, new_pos, new_pos >= len, vm);
-            Ok(Value::Ref(id))
-        }
-        ReadSpec::Line => {
-            // Find next `\n` (0x0A) starting at position.
-            let tail = &buffer[position..];
-            let end = tail.iter().position(|b| *b == b'\n').map_or(tail.len(), |i| i + 1);
-            let slice = tail[..end].to_vec();
-            let id = vm.heap.allocate(HeapData::Bytes(Bytes::new(slice)))?;
-            let new_pos = position + end;
-            update_position_eof(file_id, new_pos, new_pos >= len, vm);
-            Ok(Value::Ref(id))
-        }
-        ReadSpec::Lines => {
-            let tail = &buffer[position..];
-            let mut items: Vec<Value> = Vec::new();
-            let mut start = 0usize;
-            while start < tail.len() {
-                let rest = &tail[start..];
-                let end = rest.iter().position(|b| *b == b'\n').map_or(rest.len(), |i| i + 1);
-                let chunk = rest[..end].to_vec();
-                let id = vm.heap.allocate(HeapData::Bytes(Bytes::new(chunk)))?;
-                items.push(Value::Ref(id));
-                start += end;
+    let (value, new_position, eof) = {
+        let buffer = match vm.heap.get(buffer_id) {
+            HeapData::Bytes(b) => b.as_slice(),
+            _ => return Err(RunError::internal("compute_slice_binary: buffer is not Bytes")),
+        };
+        debug_assert_eq!(buffer.len(), buffer_total);
+        let tail = &buffer[clamped_position..];
+
+        match spec {
+            ReadSpec::All => {
+                let id = vm.heap.allocate(HeapData::Bytes(Bytes::new(tail.to_vec())))?;
+                (Value::Ref(id), buffer_total, true)
             }
-            let list_id = vm.heap.allocate(HeapData::List(List::new(items)))?;
-            update_position_eof(file_id, len, true, vm);
-            Ok(Value::Ref(list_id))
+            ReadSpec::Size(n) => {
+                let take = tail.len().min(n);
+                let id = vm.heap.allocate(HeapData::Bytes(Bytes::new(tail[..take].to_vec())))?;
+                let new_pos = clamped_position + take;
+                (Value::Ref(id), new_pos, new_pos >= buffer_total)
+            }
+            ReadSpec::Line => {
+                let end = tail.iter().position(|b| *b == b'\n').map_or(tail.len(), |i| i + 1);
+                let id = vm.heap.allocate(HeapData::Bytes(Bytes::new(tail[..end].to_vec())))?;
+                let new_pos = clamped_position + end;
+                (Value::Ref(id), new_pos, new_pos >= buffer_total)
+            }
+            ReadSpec::Lines => {
+                let mut items: Vec<Value> = Vec::new();
+                let mut start = 0usize;
+                while start < tail.len() {
+                    let rest = &tail[start..];
+                    let end = rest.iter().position(|b| *b == b'\n').map_or(rest.len(), |i| i + 1);
+                    let id = vm.heap.allocate(HeapData::Bytes(Bytes::new(rest[..end].to_vec())))?;
+                    items.push(Value::Ref(id));
+                    start += end;
+                }
+                let list_id = vm.heap.allocate(HeapData::List(List::new(items)))?;
+                (Value::Ref(list_id), buffer_total, true)
+            }
+            ReadSpec::Seek { offset, whence } => {
+                // Seek resolves against the un-clamped position so
+                // `seek(0, 1)` from a past-EOF position uses the user-visible
+                // target rather than the buffer-clamped one.
+                let target = resolve_seek_target_usize(offset, whence, position, buffer_total)?;
+                let target_usize = usize::try_from(target).map_err(|_| ExcType::overflow_c_ssize_t())?;
+                (Value::Int(target), target_usize, target_usize >= buffer_total)
+            }
         }
-        ReadSpec::Seek { offset, whence } => {
-            // Seek resolves against the un-clamped buffer length so
-            // `seek(0, 2)` returns the real EOF, not the clamped position.
-            let target = resolve_seek_target_usize(offset, whence, position, len)?;
-            let target_usize = usize::try_from(target).map_err(|_| ExcType::overflow_c_ssize_t())?;
-            update_position_eof(file_id, target_usize, target_usize >= len, vm);
-            Ok(Value::Int(target))
-        }
-    }
+    };
+
+    // Binary mode keeps `byte_position == min(position, buffer.len())` so
+    // the cache stays consistent with the text-mode invariant.
+    update_file_state(file_id, new_position, new_position.min(buffer_total), eof, vm);
+    Ok(value)
 }
 
 /// Convenience wrapper around [`resolve_seek_target`] that widens
@@ -1152,14 +1223,20 @@ fn nth_char_byte_offset(s: &str, nth: usize) -> usize {
     s.char_indices().nth(nth).map_or(s.len(), |(i, _)| i)
 }
 
-/// Writes `position` and `eof` back to the file. Done as a separate function
-/// so the immutable buffer borrow can be released before we acquire the
-/// mutable file borrow.
+/// Writes `position`, the cached `byte_position`, and `eof` back to the file.
 ///
-/// `new_position` is a `usize` (char index for text mode, byte index for
-/// binary) so callers don't need lossy `as u64` casts. We widen here at the
-/// single boundary instead.
-fn update_position_eof(file_id: HeapId, new_position: usize, eof: bool, vm: &mut VM<'_, impl ResourceTracker>) {
+/// Done as a separate function so the immutable buffer borrow used by the
+/// slice computation can be released before we acquire the mutable file
+/// borrow. All three values are `usize` for caller convenience; the widening
+/// to `u64` happens here at the single boundary so the slice code stays free
+/// of `as u64` casts that clippy would flag.
+fn update_file_state(
+    file_id: HeapId,
+    new_position: usize,
+    new_byte_position: usize,
+    eof: bool,
+    vm: &mut VM<'_, impl ResourceTracker>,
+) {
     let HeapReadOutput::OpenFile(mut file) = vm.heap.read(file_id) else {
         // Already validated by the caller; this branch is unreachable.
         return;
@@ -1167,6 +1244,82 @@ fn update_position_eof(file_id: HeapId, new_position: usize, eof: bool, vm: &mut
     let f = file.get_mut(vm.heap);
     f.position = new_position as u64;
     f.eof = eof;
+    // `buffer_meta` is guaranteed to be `Some` whenever a compute_slice path
+    // reaches this point (the function is only called after the buffer load
+    // populated the cache). Update it in place; if it was somehow `None`,
+    // initialise the cache from scratch using the values we already have.
+    let buffer_total = f
+        .buffer_meta
+        .as_ref()
+        .map_or(new_byte_position as u64, |m| m.buffer_total);
+    f.buffer_meta = Some(BufferMeta {
+        byte_position: new_byte_position as u64,
+        buffer_total,
+    });
+}
+
+/// Populates [`OpenFile::buffer_meta`] from the just-loaded buffer.
+///
+/// Called once by [`apply_buffer_store`] right after installing `buffer`.
+/// Text mode walks the buffer to count chars and to find the byte offset
+/// matching the current `position`; binary mode sets the cache to trivial
+/// values derived from `buffer.len()` and `position`. The walk is O(buffer)
+/// for text but happens exactly once per file (the cache is then maintained
+/// incrementally by [`update_file_state`]).
+fn populate_buffer_meta(file_id: HeapId, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<()> {
+    // Pull what we need out of the file under a short scoped borrow so we
+    // can call `heap.get(buffer_id)` and `file.get_mut` separately without
+    // overlapping borrows.
+    let (buffer_id, position, binary, already_populated) = {
+        let HeapReadOutput::OpenFile(file) = vm.heap.read(file_id) else {
+            return Err(RunError::internal(
+                "populate_buffer_meta: file_id does not point to an OpenFile",
+            ));
+        };
+        let f = file.get(vm.heap);
+        let Some(buffer_id) = f.buffer else {
+            return Err(RunError::internal("populate_buffer_meta: buffer must be loaded"));
+        };
+        (buffer_id, f.position, f.mode.is_binary(), f.buffer_meta.is_some())
+    };
+
+    if already_populated {
+        // The defensive branch in `apply_buffer_store` kept the prior buffer
+        // alive — its cache is already correct.
+        return Ok(());
+    }
+
+    let meta = match (vm.heap.get(buffer_id), binary) {
+        (HeapData::Bytes(b), true) => {
+            let len = b.as_slice().len() as u64;
+            BufferMeta {
+                byte_position: position.min(len),
+                buffer_total: len,
+            }
+        }
+        (HeapData::Str(s), false) => {
+            let s = s.as_str();
+            let char_count = s.chars().count();
+            let pos_clamped = usize::try_from(position).unwrap_or(usize::MAX).min(char_count);
+            BufferMeta {
+                byte_position: nth_char_byte_offset(s, pos_clamped) as u64,
+                buffer_total: char_count as u64,
+            }
+        }
+        _ => {
+            return Err(RunError::internal(
+                "populate_buffer_meta: buffer type does not match file mode",
+            ));
+        }
+    };
+
+    let HeapReadOutput::OpenFile(mut file) = vm.heap.read(file_id) else {
+        return Err(RunError::internal(
+            "populate_buffer_meta: file_id does not point to an OpenFile",
+        ));
+    };
+    file.get_mut(vm.heap).buffer_meta = Some(meta);
+    Ok(())
 }
 
 /// Parses `(offset: int, whence: int = 0)` for `file.seek()`. Mirrors
