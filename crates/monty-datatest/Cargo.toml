@@ -9,11 +9,6 @@ description = "Datatest harness for Monty — runs test cases against both Monty
 publish = false
 
 [dependencies]
-# `test-hooks` is enabled unconditionally because monty-datatest is a test
-# harness that exists to exercise Monty's behavior — production builds of
-# `monty` never depend on this crate, so there's no risk of leaking the
-# hooks into a user-facing sandbox. The `_test_cm()` builtin and `gc`
-# module live behind this gate; tests that consume them rely on it.
 monty = { path = "../monty", features = ["test-hooks"] }
 pyo3 = { version = "0.28", features = ["auto-initialize"] }
 ahash = "0.8.0"

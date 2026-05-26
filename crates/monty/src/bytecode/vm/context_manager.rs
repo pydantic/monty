@@ -32,10 +32,12 @@ impl<T: ResourceTracker> VM<'_, T> {
         let Value::Ref(ctx_id) = *self.peek() else {
             return Err(not_a_context_manager(self));
         };
-        if !self.heap.read(ctx_id).py_is_context_manager() {
-            return Err(not_a_context_manager(self));
+        let mut ctx = self.heap.read(ctx_id);
+        if ctx.py_is_context_manager() {
+            ctx.py_enter(ctx_id, self)
+        } else {
+            Err(not_a_context_manager(self))
         }
-        self.heap.read(ctx_id).py_enter(ctx_id, self)
     }
 
     /// `WithExit`: pop the context manager, call `__exit__(None, None, None)`,
