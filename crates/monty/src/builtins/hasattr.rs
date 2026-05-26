@@ -6,6 +6,7 @@ use crate::{
     bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{RunError, RunResult, SimpleException},
+    heap::DropWithHeap,
     resource::ResourceTracker,
     types::PyTrait,
     value::Value,
@@ -50,7 +51,8 @@ pub fn builtin_hasattr(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -
             value.drop_with_heap(vm);
             true
         }
-        Ok(_) => {
+        Ok(other) => {
+            other.drop_with_heap(vm);
             // hasattr() only tests attribute values — OS calls, external calls,
             // method calls, and awaits are not supported here
             //

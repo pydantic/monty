@@ -285,6 +285,18 @@ pub enum FrameExit {
     },
 }
 
+impl DropWithHeap for FrameExit {
+    fn drop_with_heap<H: ContainsHeap>(self, heap: &mut H) {
+        match self {
+            Self::Return(value) => value.drop_with_heap(heap),
+            Self::ExternalCall { args, .. } | Self::OsCall { args, .. } | Self::MethodCall { args, .. } => {
+                args.drop_with_heap(heap);
+            }
+            Self::ResolveFutures(_) | Self::NameLookup { .. } => {}
+        }
+    }
+}
+
 /// A single function activation record.
 ///
 /// Each frame represents one level in the call stack and owns its own

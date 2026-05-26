@@ -14,7 +14,7 @@ use crate::{
     bytecode::FrameExit,
     defer_drop,
     exception_private::{ExcType, RunError},
-    heap::{DropWithHeap, HeapData, HeapGuard, HeapId},
+    heap::{ContainsHeap, DropWithHeap, HeapData, HeapGuard, HeapId},
     heap_data::CellValue,
     intern::{FunctionId, StringId},
     os::OsFunction,
@@ -56,6 +56,18 @@ pub(crate) enum CallResult {
     /// Used by `asyncio.run()` to execute a coroutine without an explicit `await`.
     /// The VM will push the value onto the stack and execute `exec_get_awaitable`.
     AwaitValue(Value),
+}
+
+impl DropWithHeap for CallResult {
+    fn drop_with_heap<H: ContainsHeap>(self, heap: &mut H) {
+        match self {
+            Self::Value(value) | Self::AwaitValue(value) => value.drop_with_heap(heap),
+            Self::External(_, args) | Self::OsCall(_, args) | Self::MethodCall(_, args) => {
+                args.drop_with_heap(heap);
+            }
+            Self::FramePushed => {}
+        }
+    }
 }
 
 impl<T: ResourceTracker> VM<'_, T> {
@@ -319,11 +331,8 @@ impl<T: ResourceTracker> VM<'_, T> {
                 self.current_frame_mut().should_return = true;
                 match self.run()? {
                     FrameExit::Return(v) => return Ok(v),
-                    FrameExit::ResolveFutures(_)
-                    | FrameExit::ExternalCall { .. }
-                    | FrameExit::OsCall { .. }
-                    | FrameExit::MethodCall { .. }
-                    | FrameExit::NameLookup { .. } => {
+                    exit => {
+                        exit.drop_with_heap(self);
                         // Pop frames off the stack from this failed evaluation
                         // (including the one just pushed)
                         while self.frames.len() >= stack_depth {
@@ -332,10 +341,7 @@ impl<T: ResourceTracker> VM<'_, T> {
                     }
                 }
             }
-            CallResult::External(_, _)
-            | CallResult::OsCall(_, _)
-            | CallResult::MethodCall(_, _)
-            | CallResult::AwaitValue(_) => {}
+            other => other.drop_with_heap(self),
         }
 
         Err(ExcType::not_implemented(format!(

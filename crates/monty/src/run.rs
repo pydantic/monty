@@ -394,11 +394,9 @@ impl Executor {
                     let err = ExcType::name_error(name);
                     frame_exit_result = vm.resume_with_exception(err.into());
                 }
-                _ => break,
+                other => return frame_exit_to_object(other, vm),
             }
         }
-
-        frame_exit_to_object(frame_exit_result, vm)
     }
 
     /// Executes the code and returns both the result and reference count data, used for testing only.
