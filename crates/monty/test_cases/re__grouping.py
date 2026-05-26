@@ -265,6 +265,6 @@ try:
     assert False, 'groupdict pos + kwarg should raise'
 except TypeError as e:
     if _monty:
-        assert str(e) == "re.Match.groupdict() got multiple values for argument 'default'", f'dup: {e}'
+        assert str(e) == "re.Match.groupdict() got multiple values for keyword argument 'default'", f'dup: {e}'
     else:
         assert str(e) == 'groupdict() takes at most 1 argument (2 given)', f'dup: {e}'

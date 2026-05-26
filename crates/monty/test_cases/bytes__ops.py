@@ -109,6 +109,6 @@ try:
     assert False, 'bytes pos + kwarg should raise'
 except TypeError as e:
     if _monty:
-        assert str(e) == "bytes() got multiple values for argument 'source'", f'dup: {e}'
+        assert str(e) == "bytes() got multiple values for keyword argument 'source'", f'dup: {e}'
     else:
         assert str(e) == "argument for bytes() given by name ('source') and position (1)", f'dup: {e}'

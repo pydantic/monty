@@ -163,9 +163,9 @@ impl Bytes {
     ///
     /// Note: Full Python semantics for bytes() are more complex (encoding, errors params).
     pub fn init(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
-        let value = args.get_zero_one_named_arg("bytes", StaticStrings::Source, vm.heap, vm.interns)?;
-        defer_drop!(value, vm);
-        let new_data = match value {
+        let BytesInitArgs { source } = BytesInitArgs::from_args(args, vm.heap, vm.interns)?;
+        defer_drop!(source, vm);
+        let new_data = match source {
             None => Vec::new(),
             Some(Value::Int(n)) => {
                 if *n < 0 {
@@ -198,6 +198,16 @@ impl Bytes {
         let heap_id = vm.heap.allocate(HeapData::Bytes(Self::new(new_data)))?;
         Ok(Value::Ref(heap_id))
     }
+}
+
+/// Argument shape for `bytes(source=...)` — one optional pos-or-keyword arg
+/// (`source` is the CPython kwarg name) interpreted as the type-specific
+/// dispatch inside [`Bytes::init`].
+#[derive(FromArgs)]
+#[from_args(name = "bytes")]
+struct BytesInitArgs {
+    #[from_args(default)]
+    source: Option<Value>,
 }
 
 impl From<Vec<u8>> for Bytes {
@@ -496,7 +506,7 @@ fn bytes_decode<'h>(
     args: ArgValues,
     vm: &mut VM<'h, impl ResourceTracker>,
 ) -> RunResult<Value> {
-    let (encoding, errors) = args.get_zero_one_two_args("bytes.decode", vm.heap)?;
+    let BytesDecodeArgs { encoding, errors } = BytesDecodeArgs::from_args(args, vm.heap, vm.interns)?;
     defer_drop!(encoding, vm);
     defer_drop!(errors, vm); // NB we don't use errors argument yet
 
@@ -517,6 +527,18 @@ fn bytes_decode<'h>(
         Ok(s) => Ok(super::str::allocate_string(s, vm.heap)?),
         Err(_) => Err(ExcType::unicode_decode_error_invalid_utf8()),
     }
+}
+
+/// Argument shape for `bytes.decode(encoding='utf-8', errors='strict')`. Both
+/// fields are `Option<Value>` so the implementation can apply its own
+/// defaults and treat the `errors=` parameter as a no-op for now.
+#[derive(FromArgs)]
+#[from_args(name = "bytes.decode")]
+struct BytesDecodeArgs {
+    #[from_args(default)]
+    encoding: Option<Value>,
+    #[from_args(default)]
+    errors: Option<Value>,
 }
 
 /// Helper function to extract encoding string from a value.
@@ -1561,15 +1583,26 @@ fn bytes_splitlines<'h>(
 
 /// Parses arguments for bytes.splitlines method.
 fn parse_bytes_splitlines_args(args: ArgValues, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<bool> {
-    let val = args.get_zero_one_named_arg("bytes.splitlines", StaticStrings::Keepends, vm.heap, vm.interns)?;
-    let keepends = if let Some(v) = val {
-        let result = v.py_bool(vm);
-        v.drop_with_heap(vm.heap);
-        result
-    } else {
-        false
+    let BytesSplitlinesArgs { keepends } = BytesSplitlinesArgs::from_args(args, vm.heap, vm.interns)?;
+    let result = match keepends {
+        None => false,
+        Some(v) => {
+            let r = v.py_bool(vm);
+            v.drop_with_heap(vm.heap);
+            r
+        }
     };
-    Ok(keepends)
+    Ok(result)
+}
+
+/// Argument shape for `bytes.splitlines(keepends=False)`. CPython evaluates
+/// `keepends` for truthiness rather than strict-typing, so the field stays as
+/// a raw `Value` for `py_bool` to inspect.
+#[derive(FromArgs)]
+#[from_args(name = "bytes.splitlines")]
+struct BytesSplitlinesArgs {
+    #[from_args(default)]
+    keepends: Option<Value>,
 }
 
 /// Implements Python's `bytes.partition(sep)` method.

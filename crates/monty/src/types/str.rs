@@ -63,8 +63,8 @@ impl Str {
     /// - `str()` with no args returns an empty string
     /// - `str(x)` converts x to its string representation using `py_str`
     pub fn init(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
-        let value = args.get_zero_one_named_arg("str", StaticStrings::Object, vm.heap, vm.interns)?;
-        match value {
+        let StrInitArgs { object } = StrInitArgs::from_args(args, vm.heap, vm.interns)?;
+        match object {
             None => Ok(Value::InternString(StaticStrings::EmptyString.into())),
             Some(v) => {
                 defer_drop!(v, vm);
@@ -81,6 +81,15 @@ impl Str {
         let result_str: Box<str> = slice_collect_iterator(vm, slice, self.0.chars(), |c| c)?;
         Ok(allocate_string(result_str, vm.heap)?)
     }
+}
+
+/// Argument shape for `str(object='')` — accepts one optional pos-or-keyword
+/// `object` arg whose absence is the documented "return empty string" path.
+#[derive(FromArgs)]
+#[from_args(name = "str")]
+struct StrInitArgs {
+    #[from_args(default)]
+    object: Option<Value>,
 }
 
 /// Allocates a string, using interned versions when possible.
@@ -1517,15 +1526,20 @@ fn str_splitlines<'h>(
 ///
 /// Supports both positional and keyword arguments for keepends.
 fn parse_splitlines_args(args: ArgValues, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<bool> {
-    let val = args.get_zero_one_named_arg("str.splitlines", StaticStrings::Keepends, vm.heap, vm.interns)?;
-    let keepends = if let Some(v) = val {
-        let result = value_is_truthy(&v);
-        v.drop_with_heap(vm.heap);
-        result
-    } else {
-        false
-    };
-    Ok(keepends)
+    let SplitlinesArgs { keepends } = SplitlinesArgs::from_args(args, vm.heap, vm.interns)?;
+    let result = keepends.as_ref().is_some_and(value_is_truthy);
+    keepends.drop_with_heap(vm.heap);
+    Ok(result)
+}
+
+/// Argument shape for `str.splitlines(keepends=False)`. CPython evaluates
+/// `keepends` for truthiness rather than strict-typing, so the field stays as
+/// a raw `Value` for `value_is_truthy` to inspect.
+#[derive(FromArgs)]
+#[from_args(name = "str.splitlines")]
+struct SplitlinesArgs {
+    #[from_args(default)]
+    keepends: Option<Value>,
 }
 
 /// Checks if a value is truthy for bool conversion.
@@ -1833,9 +1847,9 @@ fn str_expandtabs<'h>(
     args: ArgValues,
     vm: &mut VM<'h, impl ResourceTracker>,
 ) -> RunResult<Value> {
-    let tabsize_val = args.get_zero_one_named_arg("str.expandtabs", StaticStrings::Tabsize, vm.heap, vm.interns)?;
+    let ExpandtabsArgs { tabsize } = ExpandtabsArgs::from_args(args, vm.heap, vm.interns)?;
 
-    let tabsize = match tabsize_val {
+    let tabsize = match tabsize {
         None => 8,
         Some(val) => {
             let result_int = extract_int_arg(&val, vm)?;
@@ -1873,6 +1887,16 @@ fn str_expandtabs<'h>(
     Ok(allocate_string(result, vm.heap)?)
 }
 
+/// Argument shape for `str.expandtabs(tabsize=8)`. `tabsize` is `Option<Value>`
+/// so callers can distinguish "absent" (default 8) from any explicit value
+/// without forcing the macro into a type-checked default.
+#[derive(FromArgs)]
+#[from_args(name = "str.expandtabs")]
+struct ExpandtabsArgs {
+    #[from_args(default)]
+    tabsize: Option<Value>,
+}
+
 /// Implements Python's `str.encode(encoding='utf-8', errors='strict')` method.
 ///
 /// Returns an encoded version of the string as a bytes object. Only supports
@@ -1901,23 +1925,37 @@ fn str_encode<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h, impl R
 ///
 /// Returns (encoding, errors) with defaults "utf-8" and "strict".
 fn parse_encode_args(args: ArgValues, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<(String, String)> {
-    let (first, second) = args.get_zero_one_two_args("str.encode", vm.heap)?;
+    let EncodeArgs { encoding, errors } = EncodeArgs::from_args(args, vm.heap, vm.interns)?;
 
-    let encoding = if let Some(v) = first {
-        defer_drop!(v, vm);
-        extract_string_arg(v, vm)?
-    } else {
-        "utf-8".to_owned()
+    let encoding = match encoding {
+        None => "utf-8".to_owned(),
+        Some(v) => {
+            defer_drop!(v, vm);
+            extract_string_arg(v, vm)?
+        }
     };
 
-    let errors = if let Some(v) = second {
-        defer_drop!(v, vm);
-        extract_string_arg(v, vm)?
-    } else {
-        "strict".to_owned()
+    let errors = match errors {
+        None => "strict".to_owned(),
+        Some(v) => {
+            defer_drop!(v, vm);
+            extract_string_arg(v, vm)?
+        }
     };
 
     Ok((encoding, errors))
+}
+
+/// Argument shape for `str.encode(encoding='utf-8', errors='strict')`. Both
+/// fields stay as `Option<Value>` so the implementation can apply its own
+/// `"utf-8"` / `"strict"` defaults after the macro extraction.
+#[derive(FromArgs)]
+#[from_args(name = "str.encode")]
+struct EncodeArgs {
+    #[from_args(default)]
+    encoding: Option<Value>,
+    #[from_args(default)]
+    errors: Option<Value>,
 }
 
 /// Implements Python's `str.isidentifier()` predicate.

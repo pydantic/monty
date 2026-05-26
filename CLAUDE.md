@@ -257,26 +257,31 @@ Wherever you see an Exception with a repeated message, create a dedicated method
 
 When writing exception messages, always check `src/exceptions.rs` for existing methods to generate that message.
 
-## Procedural macros (`crates/monty-macros/`)
+## Argument extraction — ALWAYS use `#[derive(FromArgs)]`
 
-`crates/monty-macros/` is a proc-macro crate that generates boilerplate
-for the main `monty` crate. The macros are re-exported from `monty` (e.g.
-`monty::args::FromArgs`); never depend on `monty-macros` directly from
-other crates.
+**Whenever you add or modify a Rust-side function, method, type
+constructor, or `OsFunction` handler that takes anything beyond the
+trivial 0/1/2-positional shapes already covered by
+`ArgValues::check_zero_args` / `get_one_arg` / `get_two_args` /
+`get_zero_one_arg` / `into_pos_only`, you MUST use
+`#[derive(FromArgs)]` (re-exported as `monty::args::FromArgs`).**
 
-Currently provides:
+Hand-written `args.into_parts()` loops are not acceptable for any
+signature that has multiple positionals with defaults, keyword
+arguments, `*args`, or `**kwargs` — they are a known source of
+reference-count leaks, divergent error messages, and duplicated
+boilerplate. `FromArgs` generates the dispatch, conflict detection,
+default handling, and refcount cleanup mechanically. See
+[`crates/monty-macros/README.md`](crates/monty-macros/README.md) for
+the full attribute surface (`c_error`, `c_error_named`, `pos_only`,
+`kw_only`, `varargs`, `varkwargs`, `default`, `static_string`, …) and
+how to extend the macro or add new `FromValue` impls.
 
-- `#[derive(FromArgs)]` — turns a struct declaration into an
-  `ArgValues` → `Self` extractor for builtins, type constructors, and
-  `OsFunction` handlers. Generated code handles positional and keyword
-  dispatch, conflict detection, defaults, and refcount cleanup on every
-  error path. See [`crates/monty-macros/README.md`](crates/monty-macros/README.md)
-  for the full attribute surface, migration guidance, and how to extend
-  the macro with new attributes or `FromValue` impls.
-
-When adding a Rust-side function or constructor that takes more than two
-arguments — especially with defaults or kwargs — prefer
-`#[derive(FromArgs)]` over hand-written `args.into_parts()` loops.
+If a callsite needs custom per-argument coercion (e.g. `value_to_float`
+for math, a `TimeDelta` type check, a `bytes`-or-`str` union), declare
+the field as `Value` and run the coercion in the function body *after*
+the `from_args` call — the macro still handles the parsing, your code
+just adds the final validation step.
 
 ## Code style
 

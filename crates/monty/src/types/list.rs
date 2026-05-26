@@ -5,7 +5,7 @@ use smallvec::SmallVec;
 
 use super::{MontyIter, PyTrait};
 use crate::{
-    args::ArgValues,
+    args::{ArgValues, FromArgs},
     bytecode::{CallResult, VM},
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, RunError, RunResult, SimpleException},
@@ -706,19 +706,21 @@ fn do_list_sort<'h>(
     vm: &mut VM<'h, impl ResourceTracker>,
 ) -> Result<(), RunError> {
     // Parse keyword-only arguments: key and reverse
-    let (key_arg, reverse_arg) = args.extract_keyword_only_pair("list.sort", "key", "reverse", vm.heap, vm.interns)?;
+    let ListSortArgs { key, reverse } = ListSortArgs::from_args(args, vm.heap, vm.interns)?;
 
-    // Convert reverse to bool (default false)
-    let reverse = if let Some(v) = reverse_arg {
-        let result = v.py_bool(vm);
-        v.drop_with_heap(vm);
-        result
-    } else {
-        false
+    // Convert reverse to bool (default false). CPython is truthy-checked,
+    // not strict-typed.
+    let reverse = match reverse {
+        None => false,
+        Some(v) => {
+            let result = v.py_bool(vm);
+            v.drop_with_heap(vm);
+            result
+        }
     };
 
     // Handle key function (None means no key function)
-    let key_fn = match key_arg {
+    let key_fn = match key {
         Some(v) if matches!(v, Value::None) => {
             v.drop_with_heap(vm);
             None
@@ -749,6 +751,19 @@ fn do_list_sort<'h>(
     } else {
         Err(SimpleException::new_msg(ExcType::ValueError, "list modified during sort").into())
     }
+}
+
+/// Argument shape for `list.sort(*, key=None, reverse=False)`. Both fields are
+/// keyword-only (CPython rejects positional `key`/`reverse`) and held as raw
+/// `Value`s so the implementation can normalise `key=None` to "no key" and
+/// truthy-check `reverse` itself.
+#[derive(FromArgs)]
+#[from_args(name = "list.sort")]
+struct ListSortArgs {
+    #[from_args(kw_only, default)]
+    key: Option<Value>,
+    #[from_args(kw_only, default)]
+    reverse: Option<Value>,
 }
 
 /// Writes a formatted sequence of values to a formatter.

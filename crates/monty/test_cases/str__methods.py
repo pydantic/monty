@@ -395,7 +395,7 @@ try:
     assert False, 'expandtabs pos + kwarg should raise'
 except TypeError as e:
     if _monty:
-        assert str(e) == "str.expandtabs() got multiple values for argument 'tabsize'", f'dup: {e}'
+        assert str(e) == "str.expandtabs() got multiple values for keyword argument 'tabsize'", f'dup: {e}'
     else:
         assert str(e) == 'expandtabs() takes at most 1 argument (2 given)', f'dup: {e}'
 
@@ -423,6 +423,6 @@ try:
     assert False, 'splitlines pos + kwarg should raise'
 except TypeError as e:
     if _monty:
-        assert str(e) == "str.splitlines() got multiple values for argument 'keepends'", f'dup: {e}'
+        assert str(e) == "str.splitlines() got multiple values for keyword argument 'keepends'", f'dup: {e}'
     else:
         assert str(e) == 'splitlines() takes at most 1 argument (2 given)', f'dup: {e}'

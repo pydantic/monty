@@ -184,6 +184,6 @@ try:
     assert False, 'str pos + kwarg should raise'
 except TypeError as e:
     if _monty:
-        assert str(e) == "str() got multiple values for argument 'object'", f'dup: {e}'
+        assert str(e) == "str() got multiple values for keyword argument 'object'", f'dup: {e}'
     else:
         assert str(e) == "argument for str() given by name ('object') and position (1)", f'dup: {e}'
