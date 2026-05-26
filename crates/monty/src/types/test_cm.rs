@@ -27,12 +27,11 @@ use ahash::AHashSet;
 
 use super::{PyTrait, Type};
 use crate::{
-    args::ArgValues,
     bytecode::{CallResult, VM},
     exception_private::{ExcType, RunResult, SimpleException},
-    heap::{DropWithHeap, HeapId, HeapItem, HeapRead},
+    heap::{HeapId, HeapItem, HeapRead},
     resource::{ResourceError, ResourceTracker},
-    value::{EitherStr, Value},
+    value::Value,
 };
 
 /// Configuration for a synthetic context manager.
@@ -163,39 +162,5 @@ impl<'h> PyTrait<'h> for HeapRead<'h, TestContextManager> {
             Value::None
         };
         Ok(CallResult::Value(value))
-    }
-
-    fn py_call_attr(
-        &mut self,
-        self_id: HeapId,
-        vm: &mut VM<'h, impl ResourceTracker>,
-        attr: &EitherStr,
-        args: ArgValues,
-    ) -> RunResult<CallResult> {
-        // Forward `obj.__enter__()` / `obj.__exit__(...)` direct calls so the
-        // synthetic manager can also exercise the attribute-access path that
-        // `OpenFile` covers in its py_call_attr.
-        use crate::intern::StaticStrings;
-        let Some(method) = attr.static_string() else {
-            args.drop_with_heap(vm);
-            return Err(ExcType::attribute_error(self.py_type(vm), attr.as_str(vm.interns)));
-        };
-        match method {
-            StaticStrings::Enter => {
-                args.check_zero_args("__enter__", vm.heap)?;
-                self.py_enter(self_id, vm)
-            }
-            StaticStrings::Exit => {
-                // Same flexibility as `OpenFile.__exit__`: accept any args
-                // and discard them; direct invocation has no in-flight
-                // exception so `py_exit` is called with `None`.
-                args.drop_with_heap(vm);
-                self.py_exit(self_id, vm, None)
-            }
-            _ => {
-                args.drop_with_heap(vm);
-                Err(ExcType::attribute_error(self.py_type(vm), attr.as_str(vm.interns)))
-            }
-        }
     }
 }

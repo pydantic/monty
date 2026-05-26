@@ -429,26 +429,6 @@ impl<'h> PyTrait<'h> for HeapRead<'h, OpenFile> {
             StaticStrings::Readable => self.readable(vm, args),
             StaticStrings::Writable => self.writable(vm, args),
             StaticStrings::Seekable => self.seekable(vm, args),
-            // Direct dunder calls dispatch to the context-manager protocol.
-            // `__enter__()` takes no args; `__exit__(typ, val, tb)` takes three
-            // (and Monty's `py_exit` ignores the passed-in typ/tb — see
-            // `limitations/with.md`). Argument arity checks happen here so
-            // CPython-style errors surface for `f.__enter__(1)` etc.
-            StaticStrings::Enter => {
-                args.check_zero_args("__enter__", vm.heap)?;
-                self.py_enter(self_id, vm)
-            }
-            StaticStrings::Exit => {
-                // `__exit__` accepts the (typ, val, tb) triple; we discard the
-                // values rather than threading them into `py_exit`, since when
-                // invoked as a normal call there is no in-flight exception. We
-                // accept any arg shape here for simplicity rather than strictly
-                // enforcing arity — direct invocation of `__exit__` is rare and
-                // CPython's TypeError message tree is not worth duplicating
-                // until a user complains.
-                args.drop_with_heap(vm);
-                self.py_exit(self_id, vm, None)
-            }
             _ => {
                 args.drop_with_heap(vm);
                 Err(ExcType::attribute_error(self.py_type(vm), attr.as_str(vm.interns)))

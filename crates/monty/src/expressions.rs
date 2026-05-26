@@ -667,8 +667,10 @@ pub enum Node<F> {
     /// `Name` variant since other unpack patterns are not yet exercised by
     /// any user.
     ///
-    /// Multi-item `with a() as x, b() as y:` is rejected at parse time; users
-    /// should nest `with` blocks instead. See `limitations/with.md`.
+    /// Multi-item `with a() as x, b() as y:` is desugared into nested `With`
+    /// nodes by the parser, so this variant only ever carries a single
+    /// context. See `parse.rs` for the lowering and `limitations/with.md`
+    /// for the user-facing semantics.
     With {
         context: ExprLoc,
         target: Option<UnpackTarget>,
