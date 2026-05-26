@@ -100,10 +100,9 @@ impl<'h> HeapRead<'h, DictKeysView> {
         let mut result = Set::with_capacity(dict.get(vm.heap).len());
         let iter = dict.iter(vm)?;
         defer_drop_mut!(iter, vm);
-        while let Some((key, _value)) = iter.next(vm)? {
-            // `Set::add` takes ownership; clone the borrowed key.
-            let key_owned = key.clone_with_heap(vm.heap);
-            result.add(key_owned, vm)?;
+        while let Some((key, value)) = iter.next_owned(vm)? {
+            value.drop_with_heap(vm);
+            result.add(key, vm)?;
         }
         Ok(result)
     }
@@ -256,11 +255,8 @@ impl<'h> HeapRead<'h, DictItemsView> {
         let mut result = Set::with_capacity(dict.get(vm.heap).len());
         let iter = dict.iter(vm)?;
         defer_drop_mut!(iter, vm);
-        while let Some((key, value)) = iter.next(vm)? {
-            let item = allocate_tuple(
-                smallvec![key.clone_with_heap(vm.heap), value.clone_with_heap(vm.heap)],
-                vm.heap,
-            )?;
+        while let Some((key, value)) = iter.next_owned(vm)? {
+            let item = allocate_tuple(smallvec![key, value], vm.heap)?;
             result.add(item, vm)?;
         }
         Ok(result)

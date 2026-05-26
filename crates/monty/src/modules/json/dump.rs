@@ -483,17 +483,12 @@ impl<'h, R: ResourceTracker> Encoder<'_, 'h, R> {
                 HeapReadOutput::Dict(dict) => {
                     // Dict pre-materializes entries because `sort_keys` and
                     // `skipkeys` need to mutate the entries vector before
-                    // output. `collect_dict_entries` acquires/releases a
-                    // `DictIter` token during the copy, but that's not enough
-                    // on its own — the recursive descent into `serialize_value`
-                    // (for each entry's value) happens *after* the iter is
-                    // dropped. Hold a dedicated recursion token across the
-                    // whole `serialize_dict` call so nested-dict depth
-                    // accumulates the same way nested list/tuple depth does
-                    // (where the list/tuple iter is alive across the descent).
-                    let entries = self.collect_dict_entries(&dict)?;
+                    // output.
+                    let entries = self.collect_dict_entries(&dict);
                     let this = self;
                     defer_drop_mut!(entries, this);
+                    // Need to explicitly acquire a recursion token for the dict as we don't go
+                    // via the default dict iterator.
                     let token = this.vm.heap.incr_recursion_depth()?;
                     defer_drop!(token, this);
                     this.with_entered_container(*heap_id, |enc| enc.serialize_dict(entries, depth))
@@ -562,17 +557,11 @@ impl<'h, R: ResourceTracker> Encoder<'_, 'h, R> {
     /// (`skipkeys`, `sort_keys`) can mutate the buffer in place. The
     /// `DictIter`'s recursion token is acquired and released during the
     /// copy, bounding the depth of the *enclosing* `serialize_value` call.
-    fn collect_dict_entries(&mut self, dict: &HeapRead<'h, Dict>) -> RunResult<Vec<(Value, Value)>> {
-        let mut entries = Vec::with_capacity(dict.get(self.vm.heap).len());
-        let iter = dict.iter(self.vm)?;
-        // `defer_drop_mut!` rebinds the heap arg by name, so re-alias `self`
-        // before handing it to the macro (it can't match `self` directly).
-        let this = self;
-        defer_drop_mut!(iter, this);
-        while let Some((k, v)) = iter.next(this.vm)? {
-            entries.push((k.clone_with_heap(this.vm.heap), v.clone_with_heap(this.vm.heap)));
-        }
-        Ok(entries)
+    fn collect_dict_entries(&mut self, dict: &HeapRead<'h, Dict>) -> Vec<(Value, Value)> {
+        dict.get(self.vm.heap)
+            .iter()
+            .map(|(k, v)| (k.clone_with_heap(self.vm.heap), v.clone_with_heap(self.vm.heap)))
+            .collect::<Vec<_>>()
     }
 
     /// Serializes a dict as a JSON object.

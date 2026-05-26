@@ -511,10 +511,7 @@ impl<'h> HeapRead<'h, Dict> {
             if let HeapReadOutput::Dict(src) = vm.heap.read(src_id) {
                 let iter = src.iter(vm)?;
                 defer_drop_mut!(iter, vm);
-                while let Some((k, v)) = iter.next(vm)? {
-                    // `set` consumes its args, so clone the borrowed pair.
-                    let key = k.clone_with_heap(vm);
-                    let value = v.clone_with_heap(vm);
+                while let Some((key, value)) = iter.next_owned(vm)? {
                     let old_value = self.set(key, value, vm)?;
                     old_value.drop_with_heap(vm);
                 }
@@ -589,6 +586,17 @@ impl<'a> Iterator for DictEntriesIter<'a> {
     type Item = (&'a Value, &'a Value);
     fn next(&mut self) -> Option<Self::Item> {
         self.0.next().map(|e| (&e.key, &e.value))
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.0.size_hint()
+    }
+
+    fn fold<B, F>(self, init: B, mut f: F) -> B
+    where
+        F: FnMut(B, Self::Item) -> B,
+    {
+        self.0.fold(init, |acc, e| f(acc, (&e.key, &e.value)))
     }
 }
 
@@ -687,7 +695,42 @@ impl<'a, 'h> DictIter<'a, 'h> {
         &'i mut self,
         vm: &mut VM<'h, R>,
     ) -> RunResult<Option<(&'i Value, &'i Value)>> {
-        // Drop the previously-yielded pair (no-op when each slot is `Undefined`).
+        let Some(entry_index) = self.advance(vm)? else {
+            return Ok(None);
+        };
+        let entry = &self.dict.get(vm.heap).entries[entry_index];
+        self.current_key = entry.key.clone_with_heap(vm.heap);
+        self.current_value = entry.value.clone_with_heap(vm.heap);
+        Ok(Some((&self.current_key, &self.current_value)))
+    }
+
+    /// Advances the iterator and returns the next `(key, value)` pair as
+    /// owned values, transferring ownership to the caller.
+    ///
+    /// Prefer this over [`next`](Self::next) when the call site immediately
+    /// needs owned values — e.g. to feed into a function that consumes a
+    /// `Value` like `Set::add` or `Dict::set`. Going through `next` instead
+    /// would clone the pair into the iterator's internal slot, then force the
+    /// caller to re-`clone_with_heap` it, doubling the refcount churn.
+    ///
+    /// The iterator's internal slot is left `Undefined` after this call, so
+    /// callers can freely mix `next` and `next_owned` on the same iterator.
+    pub(crate) fn next_owned<R: ResourceTracker>(&mut self, vm: &mut VM<'h, R>) -> RunResult<Option<(Value, Value)>> {
+        let Some(entry_index) = self.advance(vm)? else {
+            return Ok(None);
+        };
+        let entry = &self.dict.get(vm.heap).entries[entry_index];
+        let pair = (entry.key.clone_with_heap(vm.heap), entry.value.clone_with_heap(vm.heap));
+        Ok(Some(pair))
+    }
+
+    /// Shared step for [`next`](Self::next) / [`next_owned`](Self::next_owned).
+    ///
+    /// Releases the previously-yielded slot (no-op when each slot is
+    /// `Undefined`), runs the per-step time check and the dict mutation
+    /// guard, then returns the entry index to read at — or `Ok(None)` when
+    /// the iterator is exhausted. Bumps `self.index` on success.
+    fn advance<R: ResourceTracker>(&mut self, vm: &mut VM<'h, R>) -> RunResult<Option<usize>> {
         mem::replace(&mut self.current_key, Value::Undefined).drop_with_heap(vm.heap);
         mem::replace(&mut self.current_value, Value::Undefined).drop_with_heap(vm.heap);
         vm.heap.check_time()?;
@@ -698,11 +741,9 @@ impl<'a, 'h> DictIter<'a, 'h> {
         if self.index >= self.expected_len {
             return Ok(None);
         }
-        let entry = &current.entries[self.index];
-        self.current_key = entry.key.clone_with_heap(vm.heap);
-        self.current_value = entry.value.clone_with_heap(vm.heap);
+        let entry_index = self.index;
         self.index += 1;
-        Ok(Some((&self.current_key, &self.current_value)))
+        Ok(Some(entry_index))
     }
 }
 
