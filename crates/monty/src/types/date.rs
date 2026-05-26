@@ -28,7 +28,7 @@ use crate::{
     types::{
         AttrCallResult, PyTrait, TimeDelta, Type,
         str::{allocate_string, allocate_string_no_interning},
-        timedelta, value_to_i32,
+        timedelta,
     },
     value::{EitherStr, Value},
 };
@@ -478,4 +478,20 @@ fn extract_date_replace_kwargs(
     }
 
     Ok((new_year, new_month, new_day))
+}
+
+/// Extracts an `i32` from a `Value`, accepting `Bool` and `Int`.
+///
+/// Used by `date`, `datetime`, and other constructors that expect
+/// integer arguments matching CPython's `int` coercion rules.
+pub(crate) fn value_to_i32(value: &Value) -> RunResult<i32> {
+    let int_value = match value {
+        Value::Bool(b) => i64::from(*b),
+        Value::Int(i) => *i,
+        _ => {
+            return Err(SimpleException::new_msg(ExcType::TypeError, "an integer is required (got type float)").into());
+        }
+    };
+    i32::try_from(int_value)
+        .map_err(|_| SimpleException::new_msg(ExcType::OverflowError, "signed integer is greater than maximum").into())
 }
