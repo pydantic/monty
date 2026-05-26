@@ -375,6 +375,24 @@ assert fresh_seek.tell() == 11, 'tell after seek to end'
 assert fresh_seek.read(1) == '', 'read past end is empty'
 fresh_seek.close()
 
+# seek(offset, 1) — SEEK_CUR — adjusts position relative to current.
+# CPython's TextIOWrapper rejects nonzero cur-relative seeks, so the
+# text-mode case is restricted to seek(0, 1) (which is a no-op tell()).
+cur_t = open(root / 'sized.txt')
+assert cur_t.read(4) == 'hell', 'partial read to position 4'
+assert cur_t.seek(0, 1) == 4, 'text seek(0, 1) returns current position'
+assert cur_t.read(2) == 'o ', 'read continues from unchanged position'
+cur_t.close()
+
+# Binary SEEK_CUR supports nonzero offsets in both CPython and Monty.
+cur_b = open(root / 'sized.bin', 'rb')
+assert cur_b.read(2) == b'\x10\x11', 'binary partial read'
+assert cur_b.seek(1, 1) == 3, 'binary seek(1, 1) advances'
+assert cur_b.read(2) == b'\x13\x14', 'binary read after SEEK_CUR'
+assert cur_b.seek(-3, 1) == 2, 'binary seek backward via SEEK_CUR'
+assert cur_b.read(2) == b'\x12\x13', 'binary read after SEEK_CUR backward'
+cur_b.close()
+
 # Negative seek raises OSError in binary mode (matches CPython's BufferedReader).
 ns = open(root / 'sized.bin', 'rb')
 ns.read(0)  # no-op
@@ -453,6 +471,22 @@ try:
     assert False, 'expected read on w to fail'
 except OSError as exc:
     assert str(exc) == 'not readable'
+
+# read(0) on a write-only file: the open/readable check still happens first
+try:
+    open(root / 'open_write.txt', 'w').read(0)
+    assert False, 'expected read(0) on w to fail'
+except OSError as exc:
+    assert str(exc) == 'not readable'
+
+# read on a closed write-only file should hit ensure_open before mode check
+closed_w = open(root / 'open_write.txt', 'w')
+closed_w.close()
+try:
+    closed_w.read(0)
+    assert False, 'expected read(0) on closed file to fail'
+except ValueError as exc:
+    assert str(exc) == 'I/O operation on closed file.'
 
 # write-only files still expose logical tell/seek state.
 write_pos = open(root / 'write_position.txt', 'w')
