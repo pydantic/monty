@@ -1239,7 +1239,8 @@ fn bytes_split<'h>(
     args: ArgValues,
     vm: &mut VM<'h, impl ResourceTracker>,
 ) -> RunResult<Value> {
-    let (sep, maxsplit) = parse_bytes_split_args("bytes.split", args, vm)?;
+    let BytesSplitArgs { sep, maxsplit } = BytesSplitArgs::from_args(args, vm.heap, vm.interns)?;
+    let (sep, maxsplit) = coerce_bytes_split_args(sep, maxsplit, vm)?;
 
     let bytes = bytes.get(vm.heap);
     let parts: Vec<&[u8]> = match &sep {
@@ -1283,7 +1284,8 @@ fn bytes_rsplit<'h>(
     args: ArgValues,
     vm: &mut VM<'h, impl ResourceTracker>,
 ) -> RunResult<Value> {
-    let (sep, maxsplit) = parse_bytes_split_args("bytes.rsplit", args, vm)?;
+    let BytesRsplitArgs { sep, maxsplit } = BytesRsplitArgs::from_args(args, vm.heap, vm.interns)?;
+    let (sep, maxsplit) = coerce_bytes_split_args(sep, maxsplit, vm)?;
 
     let bytes = bytes.get(vm.heap);
     let parts: Vec<&[u8]> = match &sep {
@@ -1319,37 +1321,26 @@ fn bytes_rsplit<'h>(
     Ok(Value::Ref(heap_id))
 }
 
-/// Parses arguments for bytes split methods.
+/// Coerces extracted `sep` / `maxsplit` `Value`s into the runtime shape used
+/// by `bytes.split` / `bytes.rsplit`.
 ///
-/// The `method` parameter only selects between two `FromArgs`-derived structs
-/// (one for `bytes.split`, one for `bytes.rsplit`) so each carries its own
-/// function name into error messages.
-fn parse_bytes_split_args(
-    method: &str,
-    args: ArgValues,
+/// `sep = None` is the documented "no separator" sentinel (split on
+/// runs of whitespace); any other value must be a bytes-like via
+/// `extract_bytes_only`. `maxsplit` is read as an `i64`. Both arguments are
+/// dropped on every path so refcounts stay balanced.
+fn coerce_bytes_split_args(
+    sep: Value,
+    maxsplit: Value,
     vm: &mut VM<'_, impl ResourceTracker>,
 ) -> RunResult<(Option<Vec<u8>>, i64)> {
-    let (sep_value, maxsplit_value) = if method == "bytes.rsplit" {
-        let BytesRsplitArgs { sep, maxsplit } = BytesRsplitArgs::from_args(args, vm.heap, vm.interns)?;
-        (sep, maxsplit)
-    } else {
-        let BytesSplitArgs { sep, maxsplit } = BytesSplitArgs::from_args(args, vm.heap, vm.interns)?;
-        (sep, maxsplit)
+    defer_drop!(sep, vm);
+    let sep = match sep {
+        Value::None => None,
+        _ => Some(extract_bytes_only(sep, vm)?.to_owned()),
     };
-
-    let sep = if matches!(sep_value, Value::None) {
-        sep_value.drop_with_heap(vm);
-        None
-    } else {
-        let result = extract_bytes_only(&sep_value, vm).map(<[u8]>::to_owned);
-        sep_value.drop_with_heap(vm);
-        Some(result?)
-    };
-
-    let maxsplit = maxsplit_value.as_int(vm)?;
-    maxsplit_value.drop_with_heap(vm);
-
-    Ok((sep, maxsplit))
+    let maxsplit_int = maxsplit.as_int(vm)?;
+    maxsplit.drop_with_heap(vm);
+    Ok((sep, maxsplit_int))
 }
 
 /// Argument shape for `bytes.split(sep=None, maxsplit=-1)`.

@@ -1273,7 +1273,8 @@ fn str_removesuffix<'h>(
 ///
 /// Returns a list of the words in the string, using sep as the delimiter string.
 fn str_split<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Value> {
-    let (sep, maxsplit) = parse_split_args("str.split", args, vm)?;
+    let SplitArgs { sep, maxsplit } = SplitArgs::from_args(args, vm.heap, vm.interns)?;
+    let (sep, maxsplit) = coerce_split_args(sep, maxsplit, vm)?;
     let s = s.get(vm.heap);
 
     let parts: Vec<&str> = match &sep {
@@ -1319,7 +1320,8 @@ fn str_split<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h, impl Re
 /// Returns a list of the words in the string, using sep as the delimiter string,
 /// splitting from the right.
 fn str_rsplit<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Value> {
-    let (sep, maxsplit) = parse_split_args("str.rsplit", args, vm)?;
+    let RsplitArgs { sep, maxsplit } = RsplitArgs::from_args(args, vm.heap, vm.interns)?;
+    let (sep, maxsplit) = coerce_split_args(sep, maxsplit, vm)?;
     let s = s.get(vm.heap);
 
     let parts: Vec<&str> = match &sep {
@@ -1362,42 +1364,25 @@ fn str_rsplit<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h, impl R
     Ok(Value::Ref(heap_id))
 }
 
-/// Parses arguments for split methods.
+/// Coerces extracted `sep` / `maxsplit` `Value`s into the runtime shape used
+/// by the actual `split`/`rsplit` implementations.
 ///
-/// Supports both positional and keyword arguments for sep and maxsplit.
-/// The `method` parameter only selects between two `FromArgs`-derived structs
-/// (one for `str.split`, one for `str.rsplit`) so each can carry its own
-/// function name into error messages.
-fn parse_split_args(
-    method: &str,
-    args: ArgValues,
+/// `sep = None` is documented as "split on whitespace", so it is mapped to
+/// `Option::None`; any other value is run through `extract_string_arg`.
+/// `maxsplit` is always coerced to `i64` via `extract_int_arg`. Each argument
+/// is dropped on every path so refcounts stay balanced.
+fn coerce_split_args(
+    sep: Value,
+    maxsplit: Value,
     vm: &mut VM<'_, impl ResourceTracker>,
 ) -> RunResult<(Option<String>, i64)> {
-    // The macro-generated structs differ only in `#[from_args(name = ...)]`,
-    // so the extraction logic below is shared via the locally-owned
-    // `(sep, maxsplit)` Value pair.
-    let (sep_value, maxsplit_value) = if method == "str.rsplit" {
-        let RsplitArgs { sep, maxsplit } = RsplitArgs::from_args(args, vm.heap, vm.interns)?;
-        (sep, maxsplit)
-    } else {
-        let SplitArgs { sep, maxsplit } = SplitArgs::from_args(args, vm.heap, vm.interns)?;
-        (sep, maxsplit)
+    defer_drop!(sep, vm);
+    defer_drop!(maxsplit, vm);
+    let sep = match sep {
+        Value::None => None,
+        _ => Some(extract_string_arg(sep, vm)?),
     };
-
-    // sep=None is documented as "split on whitespace"; only a non-None value
-    // is coerced to a String.
-    let sep = if matches!(sep_value, Value::None) {
-        sep_value.drop_with_heap(vm);
-        None
-    } else {
-        let result = extract_string_arg(&sep_value, vm);
-        sep_value.drop_with_heap(vm);
-        Some(result?)
-    };
-
-    let maxsplit = extract_int_arg(&maxsplit_value, vm)?;
-    maxsplit_value.drop_with_heap(vm);
-
+    let maxsplit = extract_int_arg(maxsplit, vm)?;
     Ok((sep, maxsplit))
 }
 
