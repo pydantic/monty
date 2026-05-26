@@ -394,8 +394,10 @@ try:
     'hello'.expandtabs(4, tabsize=8)
     assert False, 'expandtabs pos + kwarg should raise'
 except TypeError as e:
+    # Monty prefixes the qualified `str.` method name; CPython uses the bare
+    # method name. Both use CPython's PyArg_ParseTupleAndKeywords wording.
     if _monty:
-        assert str(e) == "str.expandtabs() got multiple values for keyword argument 'tabsize'", f'dup: {e}'
+        assert str(e) == 'str.expandtabs() takes at most 1 argument (2 given)', f'dup: {e}'
     else:
         assert str(e) == 'expandtabs() takes at most 1 argument (2 given)', f'dup: {e}'
 
@@ -404,7 +406,7 @@ try:
     assert False, 'expandtabs too many args should raise'
 except TypeError as e:
     if _monty:
-        assert str(e) == 'str.expandtabs expected at most 1 arguments, got 2', f'toomany: {e}'
+        assert str(e) == 'str.expandtabs() takes at most 1 argument (2 given)', f'toomany: {e}'
     else:
         assert str(e) == 'expandtabs() takes at most 1 argument (2 given)', f'toomany: {e}'
 
@@ -423,6 +425,6 @@ try:
     assert False, 'splitlines pos + kwarg should raise'
 except TypeError as e:
     if _monty:
-        assert str(e) == "str.splitlines() got multiple values for keyword argument 'keepends'", f'dup: {e}'
+        assert str(e) == 'str.splitlines() takes at most 1 argument (2 given)', f'dup: {e}'
     else:
         assert str(e) == 'splitlines() takes at most 1 argument (2 given)', f'dup: {e}'

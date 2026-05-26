@@ -86,7 +86,7 @@ impl Str {
 /// Argument shape for `str(object='')` — accepts one optional pos-or-keyword
 /// `object` arg whose absence is the documented "return empty string" path.
 #[derive(FromArgs)]
-#[from_args(name = "str")]
+#[from_args(name = "str", c_error_named)]
 struct StrInitArgs {
     #[from_args(default)]
     object: Option<Value>,
@@ -1536,7 +1536,7 @@ fn parse_splitlines_args(args: ArgValues, vm: &mut VM<'_, impl ResourceTracker>)
 /// `keepends` for truthiness rather than strict-typing, so the field stays as
 /// a raw `Value` for `value_is_truthy` to inspect.
 #[derive(FromArgs)]
-#[from_args(name = "str.splitlines")]
+#[from_args(name = "str.splitlines", at_most_total)]
 struct SplitlinesArgs {
     #[from_args(default)]
     keepends: Option<Value>,
@@ -1891,7 +1891,7 @@ fn str_expandtabs<'h>(
 /// so callers can distinguish "absent" (default 8) from any explicit value
 /// without forcing the macro into a type-checked default.
 #[derive(FromArgs)]
-#[from_args(name = "str.expandtabs")]
+#[from_args(name = "str.expandtabs", at_most_total)]
 struct ExpandtabsArgs {
     #[from_args(default)]
     tabsize: Option<Value>,

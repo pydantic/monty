@@ -37,6 +37,14 @@ struct Signature {
     /// Selects the wording family used for argument-count / argument-name
     /// errors. See [`ErrorStyle`] for the three options.
     error_style: ErrorStyle,
+    /// When set, the generated code pre-counts `positional + kwarg` and
+    /// raises `"… takes at most M argument(s) (N given)"` *before* doing any
+    /// per-arg dispatch. Matches CPython's `PyArg_ParseTupleAndKeywords`
+    /// behaviour (e.g. `expandtabs(8, tabsize=4)` →
+    /// `expandtabs() takes at most 1 argument (2 given)`). Mutually
+    /// exclusive with `varargs`/`varkwargs` — the pre-count is meaningless
+    /// when the signature accepts unbounded inputs.
+    at_most_total: bool,
 }
 
 /// Which family of CPython error wordings the generated code should emit.
@@ -138,7 +146,7 @@ impl Signature {
             ));
         };
 
-        let (func_name, at_most_style, error_style) = parse_struct_attrs(attrs)?;
+        let (func_name, at_most_style, error_style, at_most_total) = parse_struct_attrs(attrs)?;
 
         let mut fields = Vec::with_capacity(named.named.len());
         let mut varargs_idx = None;
@@ -228,6 +236,15 @@ impl Signature {
             }
         }
 
+        if at_most_total && (varargs_idx.is_some() || varkwargs_idx.is_some()) {
+            return Err(syn::Error::new(
+                struct_ident.span(),
+                "`at_most_total` cannot be combined with `varargs` or `varkwargs` \
+                 — the up-front total-count check is only meaningful for \
+                 signatures with a fixed maximum",
+            ));
+        }
+
         Ok(Self {
             struct_ident: struct_ident.clone(),
             func_name,
@@ -236,6 +253,7 @@ impl Signature {
             varkwargs_idx,
             at_most_style,
             error_style,
+            at_most_total,
         })
     }
 
@@ -256,6 +274,7 @@ impl Signature {
 
         let slot_decls = self.render_slot_decls(&slots);
         let cleanup_block = self.render_cleanup_block(&slots);
+        let total_check = self.render_total_check(max_positional);
         let positional_loop = self.render_positional_loop(&slots, max_positional, has_varargs);
         let kwarg_loop = self.render_kwarg_loop(&slots, has_varkwargs);
         let build_struct = self.render_build_struct(&slots);
@@ -294,10 +313,52 @@ impl Signature {
                         }};
                     }
 
+                    #total_check
                     #positional_loop
                     #kwarg_loop
 
                     #build_struct
+                }
+            }
+        }
+    }
+
+    /// Emit the up-front total-count check when `#[from_args(at_most_total)]`
+    /// is set. Returns an empty token stream otherwise. Counts
+    /// `positional + kwarg` slots and raises before any extraction so that
+    /// the wording matches CPython's `PyArg_ParseTupleAndKeywords`:
+    /// `expandtabs() takes at most 1 argument (2 given)`.
+    fn render_total_check(&self, max_positional: usize) -> TokenStream {
+        if !self.at_most_total {
+            return TokenStream::new();
+        }
+        // The `at_most_total` pre-check uses CPython's
+        // `PyArg_ParseTupleAndKeywords` wording, which is *not* the same as
+        // the per-arg "at most" wording the styles fall back to. C style
+        // ("function") stays on the C helpers (so `date` reports
+        // `function takes at most 3 arguments (4 given)`); both Python and
+        // NamedC use the parenthesized method form so e.g. `expandtabs`
+        // reports `str.expandtabs() takes at most 1 argument (2 given)`.
+        let func_name = self.func_name.as_str();
+        let err_expr = match self.error_style {
+            ErrorStyle::C => match self.at_most_style {
+                AtMostStyle::Standard => quote! {
+                    crate::exception_private::ExcType::type_error_c_at_most(#max_positional, __total)
+                },
+                AtMostStyle::Positional => quote! {
+                    crate::exception_private::ExcType::type_error_c_at_most_positional(#max_positional, __total)
+                },
+            },
+            ErrorStyle::Python | ErrorStyle::NamedC => quote! {
+                crate::exception_private::ExcType::type_error_method_at_most(#func_name, #max_positional, __total)
+            },
+        };
+        quote! {
+            {
+                let __total = ::std::iter::ExactSizeIterator::len(&__pos_iter)
+                    + ::std::iter::ExactSizeIterator::len(&__kwargs_iter);
+                if __total > #max_positional {
+                    __cleanup!(#err_expr);
                 }
             }
         }
@@ -690,7 +751,7 @@ fn kwarg_arm_pos_or_kw(field: &Field, slot: &Ident, func_name: &str, error_style
             }
         }
         ErrorStyle::Python => quote! {
-            crate::exception_private::ExcType::type_error_multiple_values(#func_name, #field_name_lit)
+            crate::exception_private::ExcType::type_error_duplicate_arg(#func_name, #field_name_lit)
         },
     };
     quote! {
@@ -788,11 +849,12 @@ fn vec_element_ty(ty: &Type) -> Option<Type> {
 }
 
 /// Parse the `#[from_args(...)]` attributes attached to the struct itself.
-fn parse_struct_attrs(attrs: &[syn::Attribute]) -> syn::Result<(String, AtMostStyle, ErrorStyle)> {
+fn parse_struct_attrs(attrs: &[syn::Attribute]) -> syn::Result<(String, AtMostStyle, ErrorStyle, bool)> {
     let mut name: Option<String> = None;
     let mut at_most_style = AtMostStyle::Standard;
     let mut error_style = ErrorStyle::Python;
     let mut style_set = false;
+    let mut at_most_total = false;
     for attr in attrs {
         if !attr.path().is_ident("from_args") {
             continue;
@@ -804,6 +866,9 @@ fn parse_struct_attrs(attrs: &[syn::Attribute]) -> syn::Result<(String, AtMostSt
                 Ok(())
             } else if meta.path.is_ident("at_most_positional") {
                 at_most_style = AtMostStyle::Positional;
+                Ok(())
+            } else if meta.path.is_ident("at_most_total") {
+                at_most_total = true;
                 Ok(())
             } else if meta.path.is_ident("c_error") {
                 if style_set {
@@ -821,7 +886,7 @@ fn parse_struct_attrs(attrs: &[syn::Attribute]) -> syn::Result<(String, AtMostSt
                 Ok(())
             } else {
                 Err(meta.error(
-                    "unknown struct attribute; expected `name = \"...\"`, `at_most_positional`, `c_error`, or `c_error_named`",
+                    "unknown struct attribute; expected `name = \"...\"`, `at_most_positional`, `at_most_total`, `c_error`, or `c_error_named`",
                 ))
             }
         })?;
@@ -832,7 +897,7 @@ fn parse_struct_attrs(attrs: &[syn::Attribute]) -> syn::Result<(String, AtMostSt
             "missing `#[from_args(name = \"...\")]` on the struct",
         )
     })?;
-    Ok((name, at_most_style, error_style))
+    Ok((name, at_most_style, error_style, at_most_total))
 }
 
 #[derive(Default)]

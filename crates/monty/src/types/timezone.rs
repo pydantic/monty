@@ -110,7 +110,7 @@ impl TimeZone {
 /// own custom validation (`offset` must be a `timedelta`; `name` must be a
 /// `str`). The macro only handles arg-count/keyword dispatch.
 #[derive(FromArgs)]
-#[from_args(name = "timezone", c_error_named)]
+#[from_args(name = "timezone", c_error_named, at_most_total)]
 struct TimezoneInitArgs {
     offset: Value,
     #[from_args(default = Value::None)]

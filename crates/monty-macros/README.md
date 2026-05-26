@@ -110,6 +110,18 @@ new impl there if you need to extract a type that isn't covered.
   (N given)"` (matches `datetime`). Default is the plain `"function takes
   at most M arguments (N given)"` wording (matches `date`). The
   `c_error_named` and default Python styles ignore this flag.
+- `at_most_total` — pre-counts `positional + kwarg` and raises
+  `"… takes at most M argument(s) (N given)"` *before* per-arg dispatch.
+  Matches CPython's `PyArg_ParseTupleAndKeywords` semantics so e.g.
+  `'a'.expandtabs(8, tabsize=4)` reports
+  `"str.expandtabs() takes at most 1 argument (2 given)"` rather than
+  the per-arg pos/kw conflict wording. Set this on any struct that
+  models a CPython C function/method exposing this behaviour (`date`,
+  `timezone`, `expandtabs`, `splitlines`, `groupdict`, …). The wording
+  comes from `type_error_c_at_most[_positional]` (with `c_error`) or
+  `type_error_method_at_most` (with default / `c_error_named`).
+  Mutually exclusive with `varargs` / `varkwargs` — the pre-count is
+  meaningless for signatures with an unbounded maximum.
 
 #### Field-level (`#[from_args(...)]` on a field)
 

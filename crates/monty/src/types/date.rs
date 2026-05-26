@@ -131,7 +131,7 @@ pub(crate) fn init(heap: &mut Heap<impl ResourceTracker>, args: ArgValues, inter
 /// prefix "positional" in the at-most message, so we leave `at_most_positional`
 /// unset.
 #[derive(FromArgs)]
-#[from_args(name = "function", c_error)]
+#[from_args(name = "function", c_error, at_most_total)]
 struct DateInitArgs {
     year: i32,
     month: i32,

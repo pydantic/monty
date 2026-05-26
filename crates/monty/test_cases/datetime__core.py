@@ -211,12 +211,8 @@ except TypeError as e:
 try:
     datetime.timezone(datetime.timedelta(hours=1), 'A', name='B')
     assert False, 'timezone constructor should reject 3 arguments even when name is also provided by keyword'
-except TypeError:
-    # CPython: "timezone() takes at most 2 arguments (3 given)" (counts total
-    # args first). Monty: "argument for timezone() given by name ('name') and
-    # position (2)" (processes positional first, then catches the kwarg as a
-    # duplicate of position 2).
-    pass
+except TypeError as e:
+    assert str(e) == 'timezone() takes at most 2 arguments (3 given)', f'timezone 3-arg error: {e}'
 
 # TODO(datetime): restore once overflow paths are finalized without VM-specific binary fallback branches.
 # try:
@@ -508,11 +504,8 @@ except TypeError as e:
 try:
     datetime.date(2024, 1, 1, foo=1)
     assert False, 'date should reject unknown keyword arg'
-except TypeError:
-    # CPython: "function takes at most 3 arguments (4 given)" (pre-counts pos+kwargs).
-    # Monty: "this function got an unexpected keyword argument 'foo'" (processes
-    # positional first, then rejects the unknown kwarg).
-    pass
+except TypeError as e:
+    assert str(e) == 'function takes at most 3 arguments (4 given)', f'date unknown kwarg message: {e}'
 
 # === missing positional arguments for date ===
 
@@ -1037,10 +1030,8 @@ except ValueError as e:
 try:
     datetime.date(2024, 1, 1, foo=1)
     assert False, 'date with extra kwarg should raise TypeError'
-except TypeError:
-    # CPython pre-counts pos+kwargs; Monty processes pos then rejects unknown.
-    # See note above (line ~510) for full divergence.
-    pass
+except TypeError as e:
+    assert str(e) == 'function takes at most 3 arguments (4 given)', f'date too many args: {e}'
 
 # === date constructor: duplicate year kwarg (date.rs init) ===
 

@@ -204,7 +204,7 @@ impl Bytes {
 /// (`source` is the CPython kwarg name) interpreted as the type-specific
 /// dispatch inside [`Bytes::init`].
 #[derive(FromArgs)]
-#[from_args(name = "bytes")]
+#[from_args(name = "bytes", c_error_named)]
 struct BytesInitArgs {
     #[from_args(default)]
     source: Option<Value>,

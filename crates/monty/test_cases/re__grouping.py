@@ -264,7 +264,9 @@ try:
     m.groupdict('N/A', default='N/A')
     assert False, 'groupdict pos + kwarg should raise'
 except TypeError as e:
+    # Monty uses the qualified `re.Match.` prefix; CPython uses just
+    # `groupdict()`. Both share the PyArg_ParseTupleAndKeywords wording.
     if _monty:
-        assert str(e) == "re.Match.groupdict() got multiple values for keyword argument 'default'", f'dup: {e}'
+        assert str(e) == 're.Match.groupdict() takes at most 1 argument (2 given)', f'dup: {e}'
     else:
         assert str(e) == 'groupdict() takes at most 1 argument (2 given)', f'dup: {e}'
