@@ -54,10 +54,8 @@
 //!   cookie. Round-trips through `seek()` correctly.
 //! - `seek(N)` in text mode accepts any char-index offset, where CPython
 //!   restricts it to `seek(0)`, `seek(0, 2)`, or a cookie from `tell()`.
-//! - `for line in f:` iteration requires the buffer to be populated first
-//!   (e.g. by a prior `readlines()` / sized `read()`); a bare iteration on
-//!   a freshly opened file raises an error pointing the user at
-//!   `readlines()`. CPython iterates lazily.
+//! - `for line in f:` iteration is not implemented. Use `readlines()` and
+//!   iterate the resulting list instead.
 //!
 //! Any code path that needs one of these should be added explicitly
 //! rather than relying on CPython parity.
@@ -107,7 +105,30 @@ pub(crate) enum ReadSpec {
     /// `f.seek(offset, whence)` — buffer must be loaded so we can validate
     /// bounds and resolve `SEEK_END`. After the load, `compute_slice` updates
     /// `position`/`eof` and returns the new position as an int.
-    Seek { offset: i64, whence: u8 },
+    Seek { offset: i64, whence: i64 },
+}
+
+/// File-specific work to perform when a paused OS call resumes.
+///
+/// This generalizes the original buffered-read hook: both buffered reads and
+/// writes need to update [`OpenFile`] state only after the host reports a
+/// successful OS operation. Keeping them in one enum avoids adding another VM
+/// hook while preserving retry-safe exception behavior.
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
+pub(crate) enum PendingFileEffect {
+    /// Store a full-file read result into the file buffer, then compute the
+    /// pending read/seek slice.
+    BufferStore { file_id: HeapId },
+    /// Advance the file's logical position by the successful write result.
+    WritePosition {
+        /// File whose position is updated.
+        file_id: HeapId,
+        /// Position before the write was dispatched, used to restore state if
+        /// the host raises before returning a count.
+        previous_position: u64,
+        /// Known file length before dispatch, restored on host exception.
+        previous_length: u64,
+    },
 }
 
 /// A parsed Python `open()` mode.
@@ -368,6 +389,10 @@ pub(crate) struct OpenFile {
     /// buffer's existence so bare `read()` (which today never populates the
     /// buffer) can also flag EOF without forcing a load.
     eof: bool,
+    /// Logical length tracked for write-only files that never load a read
+    /// buffer. For read-capable files, the loaded buffer metadata remains the
+    /// source of truth for `SEEK_END`.
+    file_length: u64,
 }
 
 /// Cached metadata about an [`OpenFile`]'s loaded buffer.
@@ -416,6 +441,7 @@ impl OpenFile {
             buffer_meta: None,
             pending_read: None,
             eof: false,
+            file_length: position,
         }
     }
 
@@ -560,39 +586,22 @@ impl<'h> HeapRead<'h, OpenFile> {
         vm: &mut VM<'h, impl ResourceTracker>,
         args: ArgValues,
     ) -> RunResult<CallResult> {
-        let size_arg = args.get_zero_one_arg("read", vm.heap)?;
-
-        // Parse the optional size argument. `None` and a negative int both
-        // mean "everything remaining"; `0` short-circuits to empty.
-        let spec = match size_arg {
-            None => ReadSpec::All,
-            Some(v) => {
-                let n = v.as_int(vm)?;
-                if n < 0 {
-                    ReadSpec::All
-                } else {
-                    let Ok(n) = usize::try_from(n) else {
-                        return Err(ExcType::overflow_c_ssize_t());
-                    };
-                    if n == 0 {
-                        // `read(0)`: empty result without any OS call,
-                        // position unchanged. Open check still required.
-                        let binary = {
-                            let file = self.get(vm.heap);
-                            file.ensure_open()?;
-                            if !file.mode.readable() {
-                                return Err(unsupported_operation("not readable"));
-                            }
-                            file.mode.is_binary()
-                        };
-                        return Ok(CallResult::Value(empty_result(binary, vm.heap)?));
-                    }
-                    ReadSpec::Size(n)
+        let spec = parse_read_size_arg(args.get_zero_one_arg("read", vm.heap)?, vm)?;
+        if matches!(spec, ReadSpec::Size(0)) {
+            // `read(0)`: empty result without any OS call, position unchanged.
+            // Open/readable checks still happen to match CPython's error order.
+            let binary = {
+                let file = self.get(vm.heap);
+                file.ensure_open()?;
+                if !file.mode.readable() {
+                    return Err(unsupported_operation("not readable"));
                 }
-            }
-        };
-
-        self.read_with_spec(self_id, vm, spec)
+                file.mode.is_binary()
+            };
+            Ok(CallResult::Value(empty_result(binary, vm.heap)?))
+        } else {
+            self.read_with_spec(self_id, vm, spec)
+        }
     }
 
     /// Implements `file.readline()` — yields up to and including the next
@@ -648,7 +657,25 @@ impl<'h> HeapRead<'h, OpenFile> {
         args: ArgValues,
     ) -> RunResult<CallResult> {
         let (offset, whence) = parse_seek_args(args, vm)?;
-        self.read_with_spec(self_id, vm, ReadSpec::Seek { offset, whence })
+        if self.get(vm.heap).mode.readable() {
+            self.read_with_spec(self_id, vm, ReadSpec::Seek { offset, whence })
+        } else {
+            let (target, file_length) = {
+                let file = self.get(vm.heap);
+                file.ensure_open()?;
+                let position = i64::try_from(file.position).map_err(|_| ExcType::overflow_c_ssize_t())?;
+                let file_length = i64::try_from(file.file_length).map_err(|_| ExcType::overflow_c_ssize_t())?;
+                (
+                    resolve_seek_target(offset, whence, position, file_length)?,
+                    file.file_length,
+                )
+            };
+            let target_u64 = u64::try_from(target).map_err(|_| ExcType::overflow_c_ssize_t())?;
+            let file = self.get_mut(vm.heap);
+            file.position = target_u64;
+            file.eof = target_u64 >= file_length;
+            Ok(CallResult::Value(Value::Int(target)))
+        }
     }
 
     /// Shared dispatch for any operation that needs the buffer loaded
@@ -692,7 +719,7 @@ impl<'h> HeapRead<'h, OpenFile> {
         };
         // Two inc_refs: one for the OS call args (released when the host
         // boundary converts the args to MontyObject), one for the VM's
-        // `pending_buffer_store` slot (released in apply_buffer_store). The
+        // `pending_file_effect` slot (released in apply_buffer_store). The
         // latter is what keeps the file alive across the host yield even when
         // no caller is holding a separate reference (e.g. `open(p).read(5)`).
         vm.heap.inc_ref(self_id);
@@ -747,6 +774,12 @@ impl<'h> HeapRead<'h, OpenFile> {
         };
 
         vm.heap.inc_ref(self_id);
+        vm.heap.inc_ref(self_id);
+        vm.pending_file_effect = Some(PendingFileEffect::WritePosition {
+            file_id: self_id,
+            previous_position: self.get(vm.heap).position,
+            previous_length: self.get(vm.heap).file_length,
+        });
         Ok(CallResult::OsCall(function, ArgValues::Two(Value::Ref(self_id), data)))
     }
 
@@ -780,14 +813,13 @@ impl<'h> HeapRead<'h, OpenFile> {
         Ok(CallResult::Value(Value::Bool(file.mode.writable())))
     }
 
-    /// Returns `True` for readable files (the only mode where `seek()`/`tell()`
-    /// are now meaningful) and `False` for write-only files where the buffer
-    /// model does not apply.
+    /// Returns `True`: Monty file wrappers are modelled as regular files and
+    /// support logical `seek()` / `tell()` state even though actual host I/O is
+    /// still performed as one-shot calls.
     fn seekable(&mut self, vm: &mut VM<'h, impl ResourceTracker>, args: ArgValues) -> RunResult<CallResult> {
         args.check_zero_args("seekable", vm.heap)?;
-        let file = self.get(vm.heap);
-        file.ensure_open()?;
-        Ok(CallResult::Value(Value::Bool(file.mode.readable())))
+        self.get(vm.heap).ensure_open()?;
+        Ok(CallResult::Value(Value::Bool(true)))
     }
 }
 
@@ -808,6 +840,13 @@ impl OpenFile {
     /// spec hanging off the next operation, but also no spurious `eof` flag.
     pub(crate) fn clear_pending_read(&mut self) {
         self.pending_read = None;
+    }
+
+    /// Restores write-position state after a host-side write exception.
+    pub(crate) fn rollback_write_position(&mut self, previous_position: u64, previous_length: u64) {
+        self.position = previous_position;
+        self.file_length = previous_length;
+        self.eof = previous_position >= previous_length;
     }
 }
 
@@ -955,19 +994,71 @@ pub(crate) fn apply_buffer_store(
     // `result_id` and left the prior `buffer` in place — so a freshly-
     // restored snapshot (which doesn't carry the cache) is rehydrated on
     // its first buffered op.
-    populate_buffer_meta(file_id, vm)?;
+    if let Err(err) = populate_buffer_meta(file_id, vm) {
+        vm.heap.dec_ref(file_id);
+        return Err(err);
+    }
 
-    // Compute the slice *before* releasing the pending_buffer_store pin —
+    // Compute the slice *before* releasing the pending-file-effect pin —
     // otherwise `open(p).read(5)` (where no caller holds a separate
     // reference) would dec_ref the file to 0 here and `compute_slice` would
     // panic accessing freed memory.
     let slice = compute_slice(file_id, spec, vm);
-    // Release the pin held by `pending_buffer_store`. If this drops the
+    // Release the pin held by `pending_file_effect`. If this drops the
     // file's refcount to zero (no other holder), the file's `Drop` releases
     // the buffer — the slice we just allocated is a separate heap entry,
     // so the caller still receives a valid value.
     vm.heap.dec_ref(file_id);
     slice
+}
+
+/// Applies a successful host write result to an [`OpenFile`]'s logical
+/// position, then returns that same result to Python.
+///
+/// The host write result is expected to be the number of user-visible units
+/// written: chars for text files, bytes for binary files. That matches the
+/// values returned by Monty's filesystem backends and CPython's `write()`.
+pub(crate) fn apply_write_position(
+    file_id: HeapId,
+    result: Value,
+    vm: &mut VM<'_, impl ResourceTracker>,
+) -> RunResult<Value> {
+    let written = match result.as_int(vm) {
+        Ok(written) => written,
+        Err(err) => {
+            result.drop_with_heap(vm);
+            vm.heap.dec_ref(file_id);
+            return Err(err);
+        }
+    };
+    if written < 0 {
+        result.drop_with_heap(vm);
+        vm.heap.dec_ref(file_id);
+        return Err(RunError::internal(
+            "apply_write_position: write count cannot be negative",
+        ));
+    }
+    let written = u64::try_from(written).map_err(|_| ExcType::overflow_c_ssize_t())?;
+    let HeapReadOutput::OpenFile(mut file) = vm.heap.read(file_id) else {
+        result.drop_with_heap(vm);
+        vm.heap.dec_ref(file_id);
+        return Err(RunError::internal(
+            "apply_write_position: file_id does not point to an OpenFile",
+        ));
+    };
+    let f = file.get_mut(vm.heap);
+    let Some(new_position) = f.position.checked_add(written) else {
+        drop(file);
+        result.drop_with_heap(vm);
+        vm.heap.dec_ref(file_id);
+        return Err(ExcType::overflow_c_ssize_t());
+    };
+    f.position = new_position;
+    f.file_length = f.file_length.max(new_position);
+    f.eof = new_position >= f.file_length;
+    drop(file);
+    vm.heap.dec_ref(file_id);
+    Ok(result)
 }
 
 /// Computes the [`Value`] returned by a buffered file operation, given the
@@ -1037,7 +1128,12 @@ fn compute_slice_text(
 
         match spec {
             ReadSpec::All => {
-                let value = allocate_string(tail.to_owned(), vm.heap)?;
+                let value = if byte_position == 0 {
+                    vm.heap.inc_ref(buffer_id);
+                    Value::Ref(buffer_id)
+                } else {
+                    allocate_string(tail.to_owned(), vm.heap)?
+                };
                 (value, buffer_total, buffer.len(), true)
             }
             ReadSpec::Size(n) => {
@@ -1130,8 +1226,14 @@ fn compute_slice_binary(
 
         match spec {
             ReadSpec::All => {
-                let id = vm.heap.allocate(HeapData::Bytes(Bytes::new(tail.to_vec())))?;
-                (Value::Ref(id), buffer_total, true)
+                let value = if clamped_position == 0 {
+                    vm.heap.inc_ref(buffer_id);
+                    Value::Ref(buffer_id)
+                } else {
+                    let id = vm.heap.allocate(HeapData::Bytes(Bytes::new(tail.to_vec())))?;
+                    Value::Ref(id)
+                };
+                (value, buffer_total, true)
             }
             ReadSpec::Size(n) => {
                 let take = tail.len().min(n);
@@ -1182,7 +1284,7 @@ fn compute_slice_binary(
 /// only happen with a > 8 EiB buffer — outside the resource-tracker
 /// envelope. Centralising the conversion here keeps the call sites free of
 /// `as i64` casts that clippy would flag.
-fn resolve_seek_target_usize(offset: i64, whence: u8, position: usize, buffer_len: usize) -> RunResult<i64> {
+fn resolve_seek_target_usize(offset: i64, whence: i64, position: usize, buffer_len: usize) -> RunResult<i64> {
     let position = i64::try_from(position).map_err(|_| ExcType::overflow_c_ssize_t())?;
     let buffer_len = i64::try_from(buffer_len).map_err(|_| ExcType::overflow_c_ssize_t())?;
     resolve_seek_target(offset, whence, position, buffer_len)
@@ -1192,7 +1294,7 @@ fn resolve_seek_target_usize(offset: i64, whence: u8, position: usize, buffer_le
 /// `buffer_len` (in chars for text mode, bytes for binary). Returns the
 /// absolute non-negative target. Raises CPython-matched exceptions for
 /// invalid `whence` or negative result.
-fn resolve_seek_target(offset: i64, whence: u8, position: i64, buffer_len: i64) -> RunResult<i64> {
+fn resolve_seek_target(offset: i64, whence: i64, position: i64, buffer_len: i64) -> RunResult<i64> {
     let target = match whence {
         0 => offset,
         1 => position.checked_add(offset).ok_or_else(ExcType::overflow_c_ssize_t)?,
@@ -1256,6 +1358,7 @@ fn update_file_state(
         byte_position: new_byte_position as u64,
         buffer_total,
     });
+    f.file_length = buffer_total;
 }
 
 /// Populates [`OpenFile::buffer_meta`] from the just-loaded buffer.
@@ -1326,17 +1429,39 @@ fn populate_buffer_meta(file_id: HeapId, vm: &mut VM<'_, impl ResourceTracker>) 
 /// CPython's argument validation: missing `offset` raises `TypeError`,
 /// `whence` outside `{0, 1, 2}` is deferred to `compute_slice` so the error
 /// matches CPython's `invalid whence` message.
-fn parse_seek_args(args: ArgValues, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<(i64, u8)> {
+fn parse_seek_args(args: ArgValues, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<(i64, i64)> {
     let (offset, maybe_whence) = args.get_one_two_args("seek", vm.heap)?;
     let offset_int = offset.as_int(vm)?;
     let whence_int = match maybe_whence {
         Some(w) => w.as_int(vm)?,
         None => 0,
     };
-    // Out-of-range whence: store `u8::MAX` so `resolve_seek_target` rejects
-    // with the CPython invalid-whence error instead of crashing the cast.
-    let whence_u8 = u8::try_from(whence_int).unwrap_or(u8::MAX);
-    Ok((offset_int, whence_u8))
+    Ok((offset_int, whence_int))
+}
+
+/// Parses the optional `size` argument to `read()`.
+///
+/// CPython accepts `None` as "read all" and treats `bool` as an integer for
+/// this argument. Heap-backed integer arguments are explicitly dropped after
+/// conversion because `get_zero_one_arg` transfers ownership to the caller.
+fn parse_read_size_arg(size_arg: Option<Value>, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<ReadSpec> {
+    let Some(size) = size_arg else {
+        return Ok(ReadSpec::All);
+    };
+    let spec = match &size {
+        Value::None => Ok(ReadSpec::All),
+        Value::Bool(false) => Ok(ReadSpec::Size(0)),
+        Value::Bool(true) => Ok(ReadSpec::Size(1)),
+        _ => match size.as_int(vm) {
+            Ok(n) if n < 0 => Ok(ReadSpec::All),
+            Ok(n) => usize::try_from(n)
+                .map(ReadSpec::Size)
+                .map_err(|_| ExcType::overflow_c_ssize_t()),
+            Err(err) => Err(err),
+        },
+    };
+    size.drop_with_heap(vm);
+    spec
 }
 
 /// Returns the empty `str` / `bytes` short-circuit result.

@@ -80,7 +80,12 @@ impl DropWithHeap for CallResult {
             Self::External(_, args) | Self::OsCall(_, args) | Self::MethodCall(_, args) => {
                 args.drop_with_heap(heap);
             }
-            Self::FramePushed | Self::OsCallStoreBuffer { .. } => {}
+            Self::FramePushed => {}
+            Self::OsCallStoreBuffer { file_id, .. } => {
+                let heap = heap.heap_mut();
+                heap.dec_ref(file_id);
+                heap.dec_ref(file_id);
+            }
         }
     }
 }

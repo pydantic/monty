@@ -283,6 +283,16 @@ assert sized.read(1) == '', 'read past EOF returns empty'
 assert sized.read(0) == '', 'read(0) returns empty without advancing position'
 sized.close()
 
+read_none = open(root / 'sized.txt')
+assert read_none.read(None) == 'hello world', 'read(None) returns all remaining content'
+read_none.close()
+
+read_bool = open(root / 'sized.txt')
+assert read_bool.read(True) == 'h', 'read(True) behaves like read(1)'
+assert read_bool.read(False) == '', 'read(False) behaves like read(0)'
+assert read_bool.read(1) == 'e', 'read(False) does not advance position'
+read_bool.close()
+
 # read(-1) and read() (with buffer loaded) return the rest
 mixed = open(root / 'sized.txt')
 assert mixed.read(5) == 'hello', 'first sized read'
@@ -383,6 +393,16 @@ try:
     assert False, 'expected ValueError for invalid whence'
 except ValueError as exc:
     assert str(exc) == 'whence value 99 unsupported', f'unexpected invalid whence message: {exc}'
+try:
+    iw.seek(0, -1)
+    assert False, 'expected ValueError for negative whence'
+except ValueError as exc:
+    assert str(exc) == 'whence value -1 unsupported', f'unexpected negative whence message: {exc}'
+try:
+    iw.seek(0, 256)
+    assert False, 'expected ValueError for large whence'
+except ValueError as exc:
+    assert str(exc) == 'whence value 256 unsupported', f'unexpected large whence message: {exc}'
 iw.close()
 
 # tell / seek on a closed file
@@ -433,6 +453,22 @@ try:
     assert False, 'expected read on w to fail'
 except OSError as exc:
     assert str(exc) == 'not readable'
+
+# write-only files still expose logical tell/seek state.
+write_pos = open(root / 'write_position.txt', 'w')
+assert write_pos.seekable() == True, 'write-only file is logically seekable'
+assert write_pos.tell() == 0, 'fresh write file starts at position 0'
+assert write_pos.write('abc') == 3, 'text write returns chars written'
+assert write_pos.tell() == 3, 'tell advances after text write'
+assert write_pos.seek(0) == 0, 'write-only seek(0) works'
+assert write_pos.tell() == 0, 'tell reflects write-only seek'
+assert write_pos.seek(0, 2) == 3, 'write-only seek end uses tracked length'
+write_pos.close()
+
+write_pos_b = open(root / 'write_position.bin', 'wb')
+assert write_pos_b.write(b'\x00\x01\x02\x03') == 4, 'binary write returns bytes written'
+assert write_pos_b.tell() == 4, 'binary tell advances by bytes'
+write_pos_b.close()
 
 # Regression: binary read after seek-past-end must not panic.
 (root / 'past_end.bin').write_bytes(b'12345')

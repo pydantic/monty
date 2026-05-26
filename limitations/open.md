@@ -75,8 +75,9 @@ methods and attributes are:
 - `read()` / `read(-1)` — read everything remaining from the current
   position. On the first call this performs a full-file OS read into a
   heap-resident buffer; subsequent reads slice the buffer in pure Monty.
-- `read(N)` — read up to N chars (text) or bytes (binary) from the current
-  position. Same backing buffer as `read()`.
+- `read(N)` / `read(None)` — read up to N chars (text) or bytes (binary)
+  from the current position, or everything remaining for `None`. Same
+  backing buffer as `read()`.
 - `readline()` — read up to and including the next `\n`, or the remainder
   of the buffer if the final line has no newline. Returns `''`/`b''` at
   EOF.
@@ -85,8 +86,9 @@ methods and attributes are:
 - `tell()` — current position. **Text-mode divergence**: returns a
   char-index, not CPython's opaque byte cookie. Round-trips through
   `seek()` correctly.
-- `seek(offset, whence=0)` — reposition within the buffer (loading it on
-  demand). Returns the new absolute position.
+- `seek(offset, whence=0)` — reposition within the buffer for readable
+  files (loading it on demand), or within tracked logical write state for
+  write-only files. Returns the new absolute position.
 - `write(data)` — full-file or appending write.
 - `close()`, `flush()`, `readable()`, `writable()`, `seekable()`.
 - `name`, `mode`, `closed` attributes.
@@ -115,9 +117,8 @@ iterator protocol (`__iter__`/`__next__`, including `for line in f:`).
   flipped. A user-caught exception followed by a retry will re-attempt
   the OS load. This applies uniformly to bare `read()`, sized `read(N)`,
   `readline()`, `readlines()`, and `seek()`, and matches CPython.
-- `seekable()` returns `True` for readable files (matches CPython), since
-  `seek()`/`tell()` are now implemented. Write-only files still return
-  `False`.
+- `seekable()` returns `True` for all open Monty file wrappers, matching
+  regular CPython files.
 - Text-mode `tell()` returns a **char index** rather than CPython's opaque
   byte cookie. Round-trips through `seek()` work correctly (`pos = tell();
   seek(pos)` resumes the same position) but the raw integer differs from
@@ -135,6 +136,11 @@ iterator protocol (`__iter__`/`__next__`, including `for line in f:`).
 - `read(N)` accepts only int or `None`. The `TypeError` message differs
   from CPython (CPython: `"argument should be integer or None, not 'str'"`;
   Monty: `"'str' object cannot be interpreted as an integer"`).
+- Write-only `seek()`/`tell()` maintain logical position state, so common
+  `write(); tell()` and `seek(0, 2)` cases match CPython. However, writes
+  are still full-file or append one-shot host operations: seeking backwards
+  and then writing does **not** overwrite at that offset the way CPython's
+  live file descriptor would.
 - `readline(size)` and `readlines(hint)` are zero-argument only — passing
   a size/hint argument raises `TypeError`. CPython accepts both and uses
   them to cap the returned bytes/chars.

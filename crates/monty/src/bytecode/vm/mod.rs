@@ -35,7 +35,11 @@ use crate::{
     os::OsFunction,
     parse::CodeRange,
     resource::ResourceTracker,
-    types::{LongInt, MontyIter, PyTrait, file::apply_buffer_store, timedelta},
+    types::{
+        LongInt, MontyIter, PyTrait,
+        file::{PendingFileEffect, apply_buffer_store, apply_write_position},
+        timedelta,
+    },
     value::{BitwiseOp, EitherStr, Value},
 };
 
@@ -175,7 +179,7 @@ macro_rules! handle_call_result {
                 // Record the pending-buffer-store hook for this call so the
                 // matching resume routes the OS result into the file's buffer
                 // instead of pushing it onto the operand stack.
-                $self.pending_buffer_store = Some(file_id);
+                $self.pending_file_effect = Some(PendingFileEffect::BufferStore { file_id });
                 // Sync cached IP back to frame before snapshot for resume
                 $self.current_frame_mut().ip = $cached_frame.ip;
                 return Ok(FrameExit::OsCall {
@@ -600,9 +604,9 @@ pub struct VMSnapshot {
     scheduler: Scheduler,
 
     /// In-flight buffer-store target for the paused OS call, if any. See
-    /// [`VM::pending_buffer_store`].
+    /// [`VM::pending_file_effect`].
     #[serde(default)]
-    pending_buffer_store: Option<HeapId>,
+    pending_file_effect: Option<PendingFileEffect>,
 }
 
 // ============================================================================
@@ -683,19 +687,18 @@ pub struct VM<'h, T: ResourceTracker> {
     /// initialized on first use, cleaned up when the VM is dropped.
     pub(crate) json_string_cache: JsonStringCache,
 
-    /// File whose buffer should receive the next OS-call result, set when the
-    /// VM yields a [`CallResult::OsCallStoreBuffer`](crate::bytecode::CallResult::OsCallStoreBuffer).
+    /// File state update to apply when the next OS-call result resumes.
     ///
-    /// `Some(file_id)` between the yield to the host and the matching
-    /// `resume()`; `None` otherwise. Cleared on resume (after routing the
-    /// result into the file's buffer) or on exception cleanup before the
-    /// host-raised error is rethrown into Monty code.
+    /// `Some(effect)` between the yield to the host and the matching
+    /// `resume()`; `None` otherwise. Cleared on resume after applying the
+    /// file state effect, or on exception cleanup before the host-raised
+    /// error is rethrown into Monty code.
     ///
     /// At most one OS call can be in flight at a time for a given task — the
     /// VM is single-threaded and OS calls are strictly request/response — so a
     /// single `Option` is sufficient even with async tasks (which interleave
     /// between OS calls, not within one).
-    pub(crate) pending_buffer_store: Option<HeapId>,
+    pub(crate) pending_file_effect: Option<PendingFileEffect>,
 }
 
 impl<'h, T: ResourceTracker> VM<'h, T> {
@@ -719,7 +722,7 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
             ext_function_load_ip: None, // Set by LoadGlobalCallable/LoadLocalCallable
             module_code: None,
             json_string_cache: JsonStringCache::default(),
-            pending_buffer_store: None,
+            pending_file_effect: None,
         }
     }
 
@@ -783,7 +786,7 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
             module_code: Some(module_code),
             ext_function_load_ip: None,
             json_string_cache: JsonStringCache::default(),
-            pending_buffer_store: snapshot.pending_buffer_store,
+            pending_file_effect: snapshot.pending_file_effect,
         }
     }
 
@@ -809,7 +812,7 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
             exception_stack: mem::take(&mut self.exception_stack),
             instruction_ip: self.instruction_ip,
             scheduler: mem::take(&mut self.scheduler),
-            pending_buffer_store: self.pending_buffer_store.take(),
+            pending_file_effect: self.pending_file_effect.take(),
         }
     }
 
@@ -1679,19 +1682,21 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
     ///
     /// Pushes the return value onto the stack and continues execution.
     ///
-    /// If the paused OS call requested a buffer-store hook (see
-    /// [`CallResult::OsCallStoreBuffer`](crate::bytecode::CallResult::OsCallStoreBuffer)),
-    /// the result is instead routed to [`crate::types::file::apply_buffer_store`],
-    /// which stores the full content into the file's heap buffer and pushes the
-    /// per-call slice computed from the recorded [`crate::types::ReadSpec`].
+    /// If the paused OS call has a pending file effect, the result is routed
+    /// through the corresponding file-state helper before it is pushed back to
+    /// Python.
     pub fn resume(&mut self, obj: MontyObject) -> Result<FrameExit, RunError> {
         let value = obj
             .to_value(self)
             .map_err(|e| SimpleException::new(ExcType::RuntimeError, Some(format!("invalid return type: {e}"))))?;
-        if let Some(file_id) = self.pending_buffer_store.take() {
-            match apply_buffer_store(file_id, value, self) {
-                Ok(slice_value) => {
-                    self.push(slice_value);
+        if let Some(effect) = self.pending_file_effect.take() {
+            let result = match effect {
+                PendingFileEffect::BufferStore { file_id } => apply_buffer_store(file_id, value, self),
+                PendingFileEffect::WritePosition { file_id, .. } => apply_write_position(file_id, value, self),
+            };
+            match result {
+                Ok(value) => {
+                    self.push(value);
                     self.run()
                 }
                 Err(err) => self.resume_with_exception(err),
@@ -1716,20 +1721,31 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
     /// Uses the exception handling mechanism to try to catch the exception.
     /// If caught, continues execution at the handler. If not, propagates the error.
     ///
-    /// Also clears any pending buffer-store state — when the host raises
-    /// during a `read(N)`/`readline()`/`seek()` OS load, the file should be
-    /// left in a retry-safe state (buffer not stale-cached, `pending_read`
-    /// dropped) so user code that catches the exception and retries gets a
-    /// fresh attempt rather than seeing leftover in-flight state.
+    /// Also clears any pending file effect so user code that catches a
+    /// host-side OS exception can retry without stale in-flight state.
     pub fn resume_with_exception(&mut self, error: RunError) -> Result<FrameExit, RunError> {
-        // Clear any in-flight buffer-store hook and the corresponding
-        // pending_read marker on the file so a retry sees a clean slate.
-        if let Some(file_id) = self.pending_buffer_store.take()
-            && let HeapReadOutput::OpenFile(mut file) = self.heap.read(file_id)
-        {
-            file.get_mut(self.heap).clear_pending_read();
-            drop(file);
-            self.heap.dec_ref(file_id);
+        if let Some(effect) = self.pending_file_effect.take() {
+            match effect {
+                PendingFileEffect::BufferStore { file_id } => {
+                    if let HeapReadOutput::OpenFile(mut file) = self.heap.read(file_id) {
+                        file.get_mut(self.heap).clear_pending_read();
+                        drop(file);
+                    }
+                    self.heap.dec_ref(file_id);
+                }
+                PendingFileEffect::WritePosition {
+                    file_id,
+                    previous_position,
+                    previous_length,
+                } => {
+                    if let HeapReadOutput::OpenFile(mut file) = self.heap.read(file_id) {
+                        file.get_mut(self.heap)
+                            .rollback_write_position(previous_position, previous_length);
+                        drop(file);
+                    }
+                    self.heap.dec_ref(file_id);
+                }
+            }
         }
         // Use the normal exception handling mechanism
         // handle_exception returns None if caught, Some(error) if not caught
@@ -2122,6 +2138,14 @@ impl<T: ResourceTracker> ContainsHeap for VM<'_, T> {
 /// `take_globals`) are harmlessly drained as empty.
 impl<T: ResourceTracker> Drop for VM<'_, T> {
     fn drop(&mut self) {
+        if let Some(effect) = self.pending_file_effect.take() {
+            let file_id = match effect {
+                PendingFileEffect::BufferStore { file_id } | PendingFileEffect::WritePosition { file_id, .. } => {
+                    file_id
+                }
+            };
+            self.heap.dec_ref(file_id);
+        }
         self.exception_stack.drain(..).drop_with_heap(self.heap);
         self.cleanup_current_task();
         self.scheduler.cleanup(self.heap);
