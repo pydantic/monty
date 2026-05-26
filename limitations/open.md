@@ -4,6 +4,12 @@ Monty's `open()` builtin returns a file wrapper that supports a deliberate
 subset of CPython's file API. The list below tracks every known difference
 from CPython.
 
+`pathlib.Path.open()` is wired to the same machinery — it prepends `self`
+as the `file` argument and forwards to the same internal entry point, so
+every divergence listed below applies equally whether the caller uses
+`open(path, ...)` or `path.open(...)`. The only `Path.open()`-specific
+quirks are listed in [Path.open()](#pathopen) at the bottom.
+
 ## Design note: no live host file descriptors
 
 Monty **never** keeps a native file handle alive between OS or external
@@ -91,13 +97,14 @@ methods and attributes are:
   write-only files. Returns the new absolute position.
 - `write(data)` — full-file or appending write.
 - `close()`, `flush()`, `readable()`, `writable()`, `seekable()`.
+- `__enter__()` / `__exit__()` — `with open(...) as f:` works; see
+  [`with.md`](with.md) for the shared protocol divergences.
 - `name`, `mode`, `closed` attributes.
 - `encoding` attribute on text files (always `"utf-8"`).
 
 Everything else raises `AttributeError`, including: `truncate()`,
-`fileno()`, `isatty()`, `detach()`, `buffer`, `raw`,
-`__enter__`/`__exit__` (no `with open(...) as f:` support yet), and the
-iterator protocol (`__iter__`/`__next__`, including `for line in f:`).
+`fileno()`, `isatty()`, `detach()`, `buffer`, `raw`, and the iterator
+protocol (`__iter__`/`__next__`, including `for line in f:`).
 
 ## Behavioural divergences
 
@@ -176,3 +183,23 @@ These match CPython:
 - `'w'`/`'wb'` creates a missing file immediately, before any write.
 - `'a'`/`'ab'` creates a missing file immediately, preserving any existing
   content.
+
+## Path.open()
+
+`pathlib.Path.open(mode='r', ...)` forwards to the same `OsFunction::Open`
+round-trip as `open()` with `self` prepended as the `file` argument, so
+all the rules above (mode rejection, kwarg validation, returned wrapper
+types, open-time effects) apply identically. The only differences to be
+aware of:
+
+- CPython's `Path.open()` signature lists only `mode, buffering, encoding,
+  errors, newline` (no `closefd` / `opener`). Monty accepts `closefd=True`
+  and `opener=None` at their CPython `open()` defaults as documented
+  no-ops on this path too, and rejects non-default values with the same
+  `"'closefd' argument is not yet supported"` / `"'opener' argument is
+  not yet supported"` `TypeError` as `open()`. CPython would instead
+  raise `TypeError: open() got an unexpected keyword argument 'closefd'`.
+- Passing `file=...` as a keyword (which is meaningless on `Path.open()`
+  because `self` already supplies the file) raises Monty's "multiple
+  values for argument 'file'" `TypeError` rather than CPython's
+  "unexpected keyword argument 'file'". Real callers do not use this.

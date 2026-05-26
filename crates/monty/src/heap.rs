@@ -30,6 +30,11 @@ mod free_list;
 mod stable_heap;
 use stable_heap::StableHeap;
 
+// Imported separately because `#[cfg]` cannot be applied to individual items
+// inside a brace-grouped `use`.
+#[cfg(feature = "test-hooks")]
+use crate::types::TestContextManager;
+
 /// Unique identifier for values stored inside the heap arena.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct HeapId(usize);
@@ -235,6 +240,9 @@ pub enum HeapReadOutput<'a> {
     DateTime(HeapRead<'a, datetime::DateTime>),
     TimeDelta(HeapRead<'a, timedelta::TimeDelta>),
     TimeZone(HeapRead<'a, timezone::TimeZone>),
+    /// Synthetic context manager — only present under `test-hooks`.
+    #[cfg(feature = "test-hooks")]
+    TestContextManager(HeapRead<'a, TestContextManager>),
 }
 
 pub struct HeapRead<'a, T: ?Sized> {
@@ -625,6 +633,8 @@ impl<'a> HeapPtr<'a> {
             HeapData::DateTime(d) => HeapReadOutput::DateTime(heap_read(base, d, readers)),
             HeapData::TimeDelta(d) => HeapReadOutput::TimeDelta(heap_read(base, d, readers)),
             HeapData::TimeZone(d) => HeapReadOutput::TimeZone(heap_read(base, d, readers)),
+            #[cfg(feature = "test-hooks")]
+            HeapData::TestContextManager(cm) => HeapReadOutput::TestContextManager(heap_read(base, cm, readers)),
         }
     }
 }

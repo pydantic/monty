@@ -26,6 +26,13 @@ pub mod re_pattern;
 pub mod set;
 pub mod slice;
 pub mod str;
+/// Synthetic context manager used to exercise `with` statement codepaths that no
+/// production type currently reaches. **REMOVE** once a real context manager
+/// (suppressing or yielding from `__exit__`, returning a non-self value from
+/// `__enter__`, etc.) lands and tests can pivot to it. Gated behind `test-hooks`
+/// so it's never compiled into a production sandbox.
+#[cfg(feature = "test-hooks")]
+pub mod test_cm;
 pub mod timedelta;
 pub mod timezone;
 pub mod tuple;
@@ -50,6 +57,8 @@ pub(crate) use re_pattern::RePattern;
 pub(crate) use set::{FrozenSet, Set};
 pub(crate) use slice::Slice;
 pub(crate) use str::Str;
+#[cfg(feature = "test-hooks")]
+pub(crate) use test_cm::TestContextManager;
 pub(crate) use timedelta::TimeDelta;
 pub(crate) use timezone::TimeZone;
 pub(crate) use tuple::{Tuple, allocate_tuple};

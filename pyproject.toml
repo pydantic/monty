@@ -150,6 +150,9 @@ reportDeprecated = false
 reportWildcardImportFromLibrary = false
 # some test cases intentionally exercise invalid index assignment/runtime error paths
 reportIndexIssue = false
+# `break`/`return`/`continue` inside `with` tests bind through Optional outer
+# variables that pyright can't narrow.
+reportOptionalMemberAccess = false
 
 [[tool.pyright.executionEnvironments]]
 root = "crates/monty-type-checking"

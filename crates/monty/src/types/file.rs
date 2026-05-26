@@ -38,8 +38,10 @@
 //! Code that relies on the following will not behave the same way as on
 //! CPython:
 //!
-//! - The context-manager protocol (`with open(...) as f:`) is not yet
-//!   wired up; `__enter__` / `__exit__` raise `AttributeError`.
+//! - The context-manager protocol (`with open(...) as f:`) is supported but
+//!   `__exit__` always returns `None` — it cannot suppress an in-flight
+//!   exception. The file is closed on exit on both the success and exception
+//!   paths.
 //! - `+` update modes (`r+`, `w+`, `a+`, and their `b` variants) are
 //!   rejected at parse time because Monty has no read-position tracking;
 //!   without it a write after a read would silently truncate the file via
@@ -553,6 +555,39 @@ impl<'h> PyTrait<'h> for HeapRead<'h, OpenFile> {
                 Err(ExcType::attribute_error(self.py_type(vm), attr.as_str(vm.interns)))
             }
         }
+    }
+
+    fn py_is_context_manager(&self) -> bool {
+        true
+    }
+
+    fn py_enter(&mut self, self_id: HeapId, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<CallResult> {
+        // Match CPython: entering on a closed file raises before the body runs.
+        // (Reusing a closed file as a context manager is rare but the error
+        // message is part of the user contract.)
+        self.get(vm.heap).ensure_open()?;
+        // Return the file itself. Bumping the refcount here gives the new
+        // Value::Ref its own count — constructing a fresh Value::Ref without
+        // an inc_ref would let the Drop impl panic when an in-flight value
+        // is later discarded without a matching drop_with_heap.
+        vm.heap.inc_ref(self_id);
+        Ok(CallResult::Value(Value::Ref(self_id)))
+    }
+
+    fn py_exit(
+        &mut self,
+        _self_id: HeapId,
+        vm: &mut VM<'h, impl ResourceTracker>,
+        _exc: Option<HeapId>,
+    ) -> RunResult<CallResult> {
+        // `with open(...) as f:` always closes the file on exit, success or
+        // failure. We don't suppress exceptions: returning `None` is falsy, so
+        // any in-flight exception propagates as it would in CPython.
+        //
+        // `close()` on an already-closed file is idempotent (a no-op), matching
+        // CPython.
+        self.get_mut(vm.heap).closed = true;
+        Ok(CallResult::Value(Value::None))
     }
 
     fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<CallResult>> {
