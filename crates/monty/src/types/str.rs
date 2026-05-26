@@ -1753,13 +1753,12 @@ fn str_center<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h, impl R
     if width <= len {
         Ok(allocate_string(s, vm.heap)?)
     } else {
-        // Upper bound on result bytes: `width` characters of at most
-        // `fillchar.len_utf8()` bytes each. Pre-approving with the builder is
-        // tighter than `s.len() + pad * fillchar.len_utf8()` and matches the
-        // bound used by `ljust` / `rjust`.
-        let capacity = width.saturating_mul(fillchar.len_utf8());
-        let mut builder = StringBuilder::with_capacity(capacity, vm.heap.tracker())?;
+        // Exact byte capacity: the original string (`s.len()` bytes, possibly
+        // multibyte) plus `pad` fillchars of `fillchar.len_utf8()` bytes each.
+        // `width * fillchar.len_utf8()` would mis-charge the `s`-slot bytes.
         let total_pad = width - len;
+        let capacity = s.len().saturating_add(total_pad.saturating_mul(fillchar.len_utf8()));
+        let mut builder = StringBuilder::with_capacity(capacity, vm.heap.tracker())?;
         let left_pad = total_pad / 2;
         let right_pad = total_pad - left_pad;
         for _ in 0..left_pad {
@@ -1784,9 +1783,9 @@ fn str_ljust<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h, impl Re
     if width <= len {
         Ok(allocate_string(s, vm.heap)?)
     } else {
-        let capacity = width.saturating_mul(fillchar.len_utf8());
-        let mut builder = StringBuilder::with_capacity(capacity, vm.heap.tracker())?;
         let pad = width - len;
+        let capacity = s.len().saturating_add(pad.saturating_mul(fillchar.len_utf8()));
+        let mut builder = StringBuilder::with_capacity(capacity, vm.heap.tracker())?;
         builder.push_str(s)?;
         for _ in 0..pad {
             builder.push(fillchar)?;
@@ -1806,9 +1805,9 @@ fn str_rjust<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h, impl Re
     if width <= len {
         Ok(allocate_string(s, vm.heap)?)
     } else {
-        let capacity = width.saturating_mul(fillchar.len_utf8());
-        let mut builder = StringBuilder::with_capacity(capacity, vm.heap.tracker())?;
         let pad = width - len;
+        let capacity = s.len().saturating_add(pad.saturating_mul(fillchar.len_utf8()));
+        let mut builder = StringBuilder::with_capacity(capacity, vm.heap.tracker())?;
         for _ in 0..pad {
             builder.push(fillchar)?;
         }
@@ -1875,10 +1874,12 @@ fn str_zfill<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h, impl Re
     if width <= len {
         Ok(allocate_string(s, vm.heap)?)
     } else {
-        // zfill always pads with ASCII '0' (1 byte) and the result is exactly
-        // `width` bytes, so a single up-front approval covers every push.
-        let mut builder = StringBuilder::with_capacity(width, vm.heap.tracker())?;
+        // Exact byte capacity: zfill pads with ASCII '0' (1 byte each), so the
+        // result is `s.len() + pad` bytes — `s.len()` (possibly multibyte)
+        // rather than `width` (character count).
         let pad = width - len;
+        let capacity = s.len().saturating_add(pad);
+        let mut builder = StringBuilder::with_capacity(capacity, vm.heap.tracker())?;
         let mut chars = s.chars();
         let first = chars.next();
 
