@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 from inline_snapshot import snapshot
 
-from pydantic_monty import Monty, MontyRepl, MontyRuntimeError, MountDir
+from pydantic_monty import Monty, MontyFileHandle, MontyRepl, MontyRuntimeError, MountDir
 
 
 @pytest.fixture
@@ -545,3 +545,25 @@ def test_repl_feed_run_mount_and_repl_released_after_callback_marshalling_error(
     # REPL state must still be intact — `x` is visible in a later snippet.
     assert repl.feed_run('x') == snapshot(42)
     assert_mount_reusable(md)
+
+
+def test_open_returns_monty_file_handle(test_dir: Path):
+    """`open()` returned across the boundary surfaces as `MontyFileHandle`, not a stringified repr."""
+    md = MountDir('/data', str(test_dir), mode='read-only')
+    f = Monty("open('/data/hello.txt')").run(mount=md)
+    assert isinstance(f, MontyFileHandle)
+    assert f.path == snapshot('/data/hello.txt')
+    assert f.mode == snapshot('r')
+    assert f.position == snapshot(0)
+    assert f.id is None
+    assert (f.binary, f.readable, f.writable) == snapshot((False, True, False))
+    assert repr(f) == snapshot("MontyFileHandle(path='/data/hello.txt', mode='r')")
+
+
+def test_open_binary_write_handle_attrs(test_dir: Path):
+    """Mode-derived attributes reflect the open() mode string for binary/write opens."""
+    md = MountDir('/data', str(test_dir), mode='read-write')
+    f = Monty("open('/data/out.bin', 'wb')").run(mount=md)
+    assert isinstance(f, MontyFileHandle)
+    assert f.mode == snapshot('wb')
+    assert (f.binary, f.readable, f.writable) == snapshot((True, False, True))

@@ -22,6 +22,7 @@ __all__ = [
     'MontySyntaxError',
     'MontyRuntimeError',
     'MontyTypingError',
+    'MontyFileHandle',
     'MountDir',
     'Frame',
     'load_snapshot',
@@ -976,3 +977,65 @@ def load_repl_snapshot(
     Raises:
         ValueError: If deserialization fails.
     """
+
+@final
+class MontyFileHandle:
+    """Host-side handle to a file opened inside a Monty sandbox.
+
+    Plain data holder — Monty never gives the host a live OS file descriptor.
+    Exposed to callbacks (e.g. as the first argument of an `Open` result or
+    a `read`/`write` request) so they can route on `path`/`id` and branch on
+    `mode`/`binary`/`readable`/`writable` without re-parsing the mode string.
+
+    Construct one from a Python `Open` OS handler to return a handle back to
+    Monty: `MontyFileHandle('/data/foo.txt', 'r')`. The `mode` is canonicalized
+    at construction (`'rt'` → `'r'`, `'r+b'` → `'rb+'`).
+    """
+
+    def __new__(cls, path: str, mode: str, *, position: int = 0, id: int | None = None) -> MontyFileHandle:
+        """Construct a `MontyFileHandle` to return from an `Open` OS callback.
+
+        Arguments:
+            path: Virtual sandbox path of the opened file (POSIX-style).
+            mode: Python `open()` mode string. Parsed and canonicalized at
+                construction, so `'rt'` becomes `'r'` and `'r+b'` becomes
+                `'rb+'`. Raises `ValueError` for malformed or unsupported
+                modes (e.g. `'x'`).
+            position: Initial byte offset for seek-aware reads. Almost always
+                `0` for a freshly opened file.
+            id: Optional host-assigned identifier the host can use later (for
+                example to key a cache of real OS handles). Monty itself
+                never inspects this value.
+        """
+
+    @property
+    def path(self) -> str:
+        """Virtual sandbox path of the open file (always POSIX-style, never a host path)."""
+
+    @property
+    def mode(self) -> str:
+        """Canonical Python `open()` mode string for this file (e.g. `'r'`, `'rb+'`, `'w'`)."""
+
+    @property
+    def position(self) -> int:
+        """Current byte offset for seek-aware reads. `0` for a freshly opened file."""
+
+    @property
+    def id(self) -> int | None:
+        """Optional host-assigned identifier, or `None` if the host has not populated it.
+
+        Monty never sets this; a host may use it to key a cache of real OS handles
+        across the otherwise-stateless `Open` / `read` / `write` callbacks.
+        """
+
+    @property
+    def binary(self) -> bool:
+        """`True` if the mode opens the file in binary form (`'rb'`, `'wb'`, …)."""
+
+    @property
+    def readable(self) -> bool:
+        """`True` if the mode permits `read()` (`'r'`, `'r+'`, `'w+'`, `'a+'`, and binary variants)."""
+
+    @property
+    def writable(self) -> bool:
+        """`True` if the mode permits `write()` (`'w'`, `'a'`, `'r+'`, `'w+'`, `'a+'`, and binary variants)."""

@@ -646,3 +646,134 @@ fn moderate_bool_op_chain_within_limit() {
     let result = MontyRun::new(code, "test.py", vec![]);
     assert!(result.is_ok(), "moderate bool-op chain should succeed: {result:?}");
 }
+
+#[test]
+fn function_with_too_many_locals_and_except_as_returns_syntax_error() {
+    let mut code = "def f():\n".to_owned();
+    for i in 0..256 {
+        writeln!(code, "    l{i} = 0").unwrap();
+    }
+    code.push_str("    try:\n        1/0\n    except Exception as e:\n        pass\n");
+    let result = MontyRun::new(code, "test.py", vec![]);
+    let err = result.expect_err("expected compile error");
+    assert_eq!(err.exc_type(), ExcType::SyntaxError);
+    assert_eq!(
+        err.message(),
+        Some("cannot delete local variable in function with more than 256 locals (slot 256)"),
+    );
+}
+
+#[test]
+fn function_with_oversized_jump_offset_returns_syntax_error() {
+    let mut code = "def f(x):\n    if x:\n".to_owned();
+    for i in 0..20_000 {
+        writeln!(code, "        a{i} = 1").unwrap();
+    }
+    code.push_str("    return 0\n");
+    let result = MontyRun::new(code, "test.py", vec![]);
+    let err = result.expect_err("expected compile error");
+    assert_eq!(err.exc_type(), ExcType::SyntaxError);
+    assert_eq!(err.message(), Some("function too large: jump offset exceeds i16 range"));
+}
+
+#[test]
+fn module_with_too_many_names_returns_syntax_error() {
+    // 70 000 distinct top-level names is enough to overflow u16 even after
+    // any future small per-module reservations.
+    let mut code = String::with_capacity(700_000);
+    for i in 0..70_000 {
+        writeln!(code, "a{i} = 1").unwrap();
+    }
+    let result = MontyRun::new(code, "test.py", vec![]);
+    let err = result.expect_err("expected compile error");
+    assert_eq!(err.exc_type(), ExcType::SyntaxError);
+    assert_eq!(
+        err.message(),
+        Some("too many distinct names in scope; maximum is 65535 per scope"),
+    );
+}
+
+#[test]
+fn module_with_too_many_interned_strings_returns_syntax_error() {
+    // 60 000 distinct attribute references push the user-intern pool past its
+    // `u16::MAX - INTERN_STRING_ID_OFFSET` cap.
+    let mut code = "x = None\n".to_owned();
+    for i in 0..60_000 {
+        writeln!(code, "x.a{i}").unwrap();
+    }
+    let result = MontyRun::new(code, "test.py", vec![]);
+    let err = result.expect_err("expected compile error");
+    assert_eq!(err.exc_type(), ExcType::SyntaxError);
+    assert_eq!(
+        err.message(),
+        Some("module has too many distinct names; the bytecode format supports up to 65536 interned strings"),
+    );
+}
+
+#[test]
+fn oversized_tuple_literal_returns_syntax_error() {
+    let mut code = "x = (".to_owned();
+    for _ in 0..70_000 {
+        code.push_str("1, ");
+    }
+    code.push_str(")\n");
+    let result = MontyRun::new(code, "test.py", vec![]);
+    let err = result.expect_err("expected compile error");
+    assert_eq!(err.exc_type(), ExcType::SyntaxError);
+    assert_eq!(
+        err.message(),
+        Some("function too large: required stack exceeds u16::MAX")
+    );
+}
+
+#[test]
+fn oversized_unpacking_call_returns_syntax_error() {
+    let mut code = "def f(*args): return 0\nxs = ()\nf(".to_owned();
+    for _ in 0..70_000 {
+        code.push_str("1, ");
+    }
+    code.push_str("*xs)\n");
+    let result = MontyRun::new(code, "test.py", vec![]);
+    let err = result.expect_err("expected compile error");
+    assert_eq!(err.exc_type(), ExcType::SyntaxError);
+    assert_eq!(
+        err.message(),
+        Some("function too large: required stack exceeds u16::MAX")
+    );
+}
+
+#[test]
+fn function_with_too_many_defaults_returns_syntax_error() {
+    let mut code = "def f(".to_owned();
+    for i in 0..256 {
+        if i > 0 {
+            code.push_str(", ");
+        }
+        write!(code, "a{i}=0").unwrap();
+    }
+    code.push_str("): pass\n");
+    let result = MontyRun::new(code, "test.py", vec![]);
+    let err = result.expect_err("expected compile error");
+    assert_eq!(err.exc_type(), ExcType::SyntaxError);
+    assert_eq!(err.message(), Some("more than 255 default parameter values (256)"));
+}
+
+#[test]
+fn function_with_too_many_closure_variables_returns_syntax_error() {
+    // Each `xN` reference in `inner` captures the enclosing local as a free
+    // variable, so 256 distinct references push `MakeClosure`'s cell-count
+    // operand past `u8`. Flat per-statement references avoid hitting the
+    // parser's nested-parens depth limit before the closure-count limit.
+    let mut code = "def outer():\n".to_owned();
+    for i in 0..256 {
+        writeln!(code, "    x{i} = 0").unwrap();
+    }
+    code.push_str("    def inner():\n");
+    for i in 0..256 {
+        writeln!(code, "        _ = x{i}").unwrap();
+    }
+    let result = MontyRun::new(code, "test.py", vec![]);
+    let err = result.expect_err("expected compile error");
+    assert_eq!(err.exc_type(), ExcType::SyntaxError);
+    assert_eq!(err.message(), Some("more than 255 closure variables (256)"));
+}

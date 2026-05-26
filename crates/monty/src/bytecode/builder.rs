@@ -7,6 +7,7 @@ use std::collections::HashSet;
 
 use super::{
     code::{Code, ConstPool, ExceptionEntry, LocationEntry},
+    compiler::CompileError,
     op::{Opcode, Operand},
 };
 use crate::{intern::StringId, parse::CodeRange, value::Value};
@@ -95,44 +96,50 @@ impl CodeBuilder {
     }
 
     /// Emits a no-operand instruction and updates stack depth tracking.
-    pub fn emit(&mut self, op: Opcode) {
-        self.emit_with_operand(op, Operand::None);
+    pub fn emit(&mut self, op: Opcode) -> Result<(), CompileError> {
+        self.emit_with_operand(op, Operand::None)
     }
 
     /// Emits an instruction with a u8 operand and updates stack depth tracking.
-    pub fn emit_u8(&mut self, op: Opcode, operand: u8) {
-        self.emit_with_operand(op, Operand::U8(operand));
+    pub fn emit_u8(&mut self, op: Opcode, operand: u8) -> Result<(), CompileError> {
+        self.emit_with_operand(op, Operand::U8(operand))
     }
 
     /// Emits an instruction with an i8 operand and updates stack depth tracking.
-    pub fn emit_i8(&mut self, op: Opcode, operand: i8) {
-        self.emit_with_operand(op, Operand::I8(operand));
+    pub fn emit_i8(&mut self, op: Opcode, operand: i8) -> Result<(), CompileError> {
+        self.emit_with_operand(op, Operand::I8(operand))
     }
 
     /// Emits an instruction with two u8 operands and updates stack depth tracking.
     ///
     /// Used for UnpackEx: before_count (u8) + after_count (u8)
-    pub fn emit_u8_u8(&mut self, op: Opcode, operand1: u8, operand2: u8) {
-        self.emit_with_operand(op, Operand::U8U8(operand1, operand2));
+    pub fn emit_u8_u8(&mut self, op: Opcode, operand1: u8, operand2: u8) -> Result<(), CompileError> {
+        self.emit_with_operand(op, Operand::U8U8(operand1, operand2))
     }
 
     /// Emits an instruction with a u16 operand (little-endian) and updates stack depth tracking.
-    pub fn emit_u16(&mut self, op: Opcode, operand: u16) {
-        self.emit_with_operand(op, Operand::U16(operand));
+    pub fn emit_u16(&mut self, op: Opcode, operand: u16) -> Result<(), CompileError> {
+        self.emit_with_operand(op, Operand::U16(operand))
     }
 
     /// Emits an instruction with a u16 operand followed by a u8 operand.
     ///
     /// Used for `MakeFunction`, `CallAttr`, `CallAttrExtended`.
-    pub fn emit_u16_u8(&mut self, op: Opcode, operand1: u16, operand2: u8) {
-        self.emit_with_operand(op, Operand::U16U8(operand1, operand2));
+    pub fn emit_u16_u8(&mut self, op: Opcode, operand1: u16, operand2: u8) -> Result<(), CompileError> {
+        self.emit_with_operand(op, Operand::U16U8(operand1, operand2))
     }
 
     /// Emits an instruction with a u16 operand followed by two u8 operands.
     ///
     /// Used for MakeClosure: func_id (u16) + defaults_count (u8) + cell_count (u8)
-    pub fn emit_u16_u8_u8(&mut self, op: Opcode, operand1: u16, operand2: u8, operand3: u8) {
-        self.emit_with_operand(op, Operand::U16U8U8(operand1, operand2, operand3));
+    pub fn emit_u16_u8_u8(
+        &mut self,
+        op: Opcode,
+        operand1: u16,
+        operand2: u8,
+        operand3: u8,
+    ) -> Result<(), CompileError> {
+        self.emit_with_operand(op, Operand::U16U8U8(operand1, operand2, operand3))
     }
 
     /// Emits `CallBuiltinFunction` instruction.
@@ -141,8 +148,8 @@ impl CodeBuilder {
     ///
     /// The builtin_id is the `#[repr(u8)]` discriminant of `BuiltinsFunctions`.
     /// This is an optimization that avoids constant pool lookup and stack manipulation.
-    pub fn emit_call_builtin_function(&mut self, builtin_id: u8, arg_count: u8) {
-        self.emit_with_operand(Opcode::CallBuiltinFunction, Operand::U8U8(builtin_id, arg_count));
+    pub fn emit_call_builtin_function(&mut self, builtin_id: u8, arg_count: u8) -> Result<(), CompileError> {
+        self.emit_with_operand(Opcode::CallBuiltinFunction, Operand::U8U8(builtin_id, arg_count))
     }
 
     /// Emits `CallBuiltinType` instruction.
@@ -151,8 +158,8 @@ impl CodeBuilder {
     ///
     /// The type_id is the `#[repr(u8)]` discriminant of `BuiltinsTypes`.
     /// This is an optimization for type constructors like `list()`, `int()`, `str()`.
-    pub fn emit_call_builtin_type(&mut self, type_id: u8, arg_count: u8) {
-        self.emit_with_operand(Opcode::CallBuiltinType, Operand::U8U8(type_id, arg_count));
+    pub fn emit_call_builtin_type(&mut self, type_id: u8, arg_count: u8) -> Result<(), CompileError> {
+        self.emit_with_operand(Opcode::CallBuiltinType, Operand::U8U8(type_id, arg_count))
     }
 
     /// Emits CallFunctionKw with inline keyword names.
@@ -161,8 +168,8 @@ impl CodeBuilder {
     ///
     /// The kwname_ids slice contains StringId indices for each keyword argument
     /// name, in order matching how the values were pushed to the stack.
-    pub fn emit_call_function_kw(&mut self, pos_count: u8, kwname_ids: &[u16]) {
-        self.emit_with_operand(Opcode::CallFunctionKw, Operand::CallKw { pos_count, kwname_ids });
+    pub fn emit_call_function_kw(&mut self, pos_count: u8, kwname_ids: &[u16]) -> Result<(), CompileError> {
+        self.emit_with_operand(Opcode::CallFunctionKw, Operand::CallKw { pos_count, kwname_ids })
     }
 
     /// Emits CallAttrKw with inline keyword names.
@@ -171,7 +178,12 @@ impl CodeBuilder {
     ///
     /// The kwname_ids slice contains StringId indices for each keyword argument
     /// name, in order matching how the values were pushed to the stack.
-    pub fn emit_call_attr_kw(&mut self, attr_name_id: u16, pos_count: u8, kwname_ids: &[u16]) {
+    pub fn emit_call_attr_kw(
+        &mut self,
+        attr_name_id: u16,
+        pos_count: u8,
+        kwname_ids: &[u16],
+    ) -> Result<(), CompileError> {
         self.emit_with_operand(
             Opcode::CallAttrKw,
             Operand::CallAttrKw {
@@ -179,7 +191,7 @@ impl CodeBuilder {
                 pos_count,
                 kwname_ids,
             },
-        );
+        )
     }
 
     /// Emits a forward jump instruction, returning a label to patch later.
@@ -187,49 +199,56 @@ impl CodeBuilder {
     /// After `Jump` the tracker transitions to dead (it's unconditional).
     /// All other jumps continue to fall through.
     ///
+    /// Returns a `CompileError` if the jump-taken target depth doesn't fit
+    /// in `u16`, mirroring the same overflow case `adjust_stack` detects.
+    ///
     /// # Panics
     ///
-    /// - Panics if the jump-taken target depth (current depth + `op.jump_taken_stack_effect()`)
-    ///   exceeds u16 range, which indicates a compiler bug in stack effect annotations or an
-    ///   unreasonably large function.
-    /// - Panics on non-jump opcodes.
-    #[must_use]
-    pub fn emit_jump(&mut self, op: Opcode) -> JumpLabel {
+    /// Panics on non-jump opcodes (`op.jump_taken_stack_effect()` is the
+    /// shared invariant check).
+    pub fn emit_jump(&mut self, op: Opcode) -> Result<JumpLabel, CompileError> {
         let Some(pre_depth) = self.current_stack_depth else {
-            return JumpLabel { inner: None };
+            // Dead code, emit dummy jump label
+            return Ok(JumpLabel { inner: None });
         };
         // Capture the opcode position (where patch_jump will overwrite the i16)
         // before `emit_with_operand` pushes the bytes.
         let offset = self.current_offset();
+        // Capture the source location now so any later `patch_jump` overflow
+        // anchors the diagnostic at this jump site rather than the (often
+        // unrelated) statement where the patch happens to resolve.
+        let source_position = self.current_location.unwrap_or_default();
         // Jump-taken target depth. `jump_taken_delta` panics for non-jumps.
         let target_depth = u16::try_from(i32::from(pre_depth) + i32::from(op.jump_taken_stack_effect()))
-            .expect("jump target depth out of u16 range");
+            .map_err(|_| self.stack_too_large())?;
         // Emit jump with dummy offset; patch_jump is required to fill in the real offset later.
-        self.emit_with_operand(op, Operand::Offset(RelativeOffset(0)));
-        JumpLabel {
+        self.emit_with_operand(op, Operand::Offset(RelativeOffset(0)))?;
+        Ok(JumpLabel {
             inner: Some(JumpLabelInner {
                 offset,
                 stack_depth: target_depth,
+                source_position,
             }),
-        }
+        })
     }
 
     /// Patches a forward jump to point to the current bytecode location.
     ///
     /// State transitions: if the builder is emitting dead code, `patch_jump`
-    /// re-establishes the live depth from `label.target_depth`.
+    /// re-establishes the live depth from `label.stack_depth`.
+    ///
+    /// Returns a `CompileError` if the resolved jump offset doesn't fit in
+    /// `i16`, which means the function is too large for our bytecode encoding.
     ///
     /// # Panics
     ///
-    /// - In debug builds, panics if the jump label has a different stack depth
-    ///   compared to the current depth (if live).
-    /// - Always panics if the jump offset exceeds i16 range (-32768..32767),
-    ///   which indicates the function is too large. This is a compile-time
-    ///   error rather than silent truncation.
-    pub fn patch_jump(&mut self, label: JumpLabel) {
+    /// In debug builds, panics if the jump label has a different stack depth
+    /// compared to the current depth (if live) — this indicates a compiler bug
+    /// in stack-effect tracking rather than a user-input-driven overflow.
+    pub fn patch_jump(&mut self, label: JumpLabel) -> Result<(), CompileError> {
         let Some(label) = label.inner else {
             // emit_jump was dead code, nothing to do
-            return;
+            return Ok(());
         };
 
         let stack_depth = self.current_stack_depth.unwrap_or_else(|| {
@@ -242,15 +261,21 @@ impl CodeBuilder {
             stack_depth,
         };
 
-        let offset = calculate_jump_offset(label, target).as_i16();
+        let offset = calculate_jump_offset(label, target)
+            .ok_or_else(|| jump_too_large_at(label.source_position))?
+            .as_i16();
         let bytes = offset.to_le_bytes();
         self.bytecode[label.offset.0 + 1] = bytes[0];
         self.bytecode[label.offset.0 + 2] = bytes[1];
+        Ok(())
     }
 
     /// Emits a backward jump to a known target. Any jump opcode is accepted;
     /// `Opcode::jump_taken_delta` is the shared source of truth for the
     /// jump-taken stack effect (and panics for non-jump opcodes).
+    ///
+    /// Returns a `CompileError` if the jump offset doesn't fit in `i16`,
+    /// which means the function is too large for our bytecode encoding.
     ///
     /// # Panics
     /// - Panics if the jump target was emitted in dead code, and the current
@@ -258,24 +283,29 @@ impl CodeBuilder {
     /// - In debug builds, panics if the current stack depth plus the jump's stack
     ///   effect do not match the jump target stack depth.
     /// - Panics on non-jump opcodes.
-    pub fn emit_jump_to(&mut self, op: Opcode, target: JumpTarget) {
+    pub fn emit_jump_to(&mut self, op: Opcode, target: JumpTarget) -> Result<(), CompileError> {
         let Some(target_depth) = self.current_stack_depth else {
             // Emitting dead code, do no work
-            return;
+            return Ok(());
         };
 
         let label = JumpLabelInner {
             offset: self.current_offset(),
             stack_depth: target_depth
                 .checked_add_signed(op.jump_taken_stack_effect())
-                .expect("stack overflow"),
+                .ok_or_else(|| self.stack_too_large())?,
+            // Backward jumps are emitted and resolved at the same spot, so
+            // there's no patch-time/emit-time split; either position is the
+            // same statement.
+            source_position: self.current_location.unwrap_or_default(),
         };
         let Some(target) = target.0 else {
             // Target is dead code
             unreachable!("emit_jump_to: cannot jump from live code to dead code");
         };
 
-        self.emit_with_operand(op, Operand::Offset(calculate_jump_offset(label, target)));
+        let offset = calculate_jump_offset(label, target).ok_or_else(|| self.jump_too_large())?;
+        self.emit_with_operand(op, Operand::Offset(offset))
     }
 
     /// Returns the current bytecode position as an opaque `Offset`.
@@ -328,7 +358,7 @@ impl CodeBuilder {
     }
 
     /// Emits a `LoadLocal` instruction, using specialized variants for common slots.
-    pub fn emit_load_local(&mut self, slot: u16) {
+    pub fn emit_load_local(&mut self, slot: u16) -> Result<(), CompileError> {
         match slot {
             0 => self.emit(Opcode::LoadLocal0),
             1 => self.emit(Opcode::LoadLocal1),
@@ -336,9 +366,9 @@ impl CodeBuilder {
             3 => self.emit(Opcode::LoadLocal3),
             _ => {
                 if let Ok(s) = u8::try_from(slot) {
-                    self.emit_u8(Opcode::LoadLocal, s);
+                    self.emit_u8(Opcode::LoadLocal, s)
                 } else {
-                    self.emit_u16(Opcode::LoadLocalW, slot);
+                    self.emit_u16(Opcode::LoadLocalW, slot)
                 }
             }
         }
@@ -350,12 +380,12 @@ impl CodeBuilder {
     /// external function calls are rare enough that the optimization isn't worth
     /// the extra opcode slots. The `name_id` is encoded directly in the operand
     /// to avoid needing to look up the name from the code's local_names array.
-    pub fn emit_load_local_callable(&mut self, slot: u16, name_id: StringId) {
-        let name_id_u16 = u16::try_from(name_id.index()).expect("name_id exceeds u16");
+    pub fn emit_load_local_callable(&mut self, slot: u16, name_id: StringId) -> Result<(), CompileError> {
+        let name_id_u16 = u16::try_from(name_id.index()).map_err(|_| self.name_id_too_large())?;
         if let Ok(s) = u8::try_from(slot) {
-            self.emit_with_operand(Opcode::LoadLocalCallable, Operand::U8U16(s, name_id_u16));
+            self.emit_with_operand(Opcode::LoadLocalCallable, Operand::U8U16(s, name_id_u16))
         } else {
-            self.emit_with_operand(Opcode::LoadLocalCallableW, Operand::U16U16(slot, name_id_u16));
+            self.emit_with_operand(Opcode::LoadLocalCallableW, Operand::U16U16(slot, name_id_u16))
         }
     }
 
@@ -364,39 +394,52 @@ impl CodeBuilder {
     /// The `name_id` is encoded directly in the operand to avoid the ambiguity
     /// of looking up global names from a function's local_names array (global slots
     /// and local slots use different namespaces).
-    pub fn emit_load_global_callable(&mut self, slot: u16, name_id: StringId) {
-        let name_id_u16 = u16::try_from(name_id.index()).expect("name_id exceeds u16");
-        self.emit_with_operand(Opcode::LoadGlobalCallable, Operand::U16U16(slot, name_id_u16));
+    pub fn emit_load_global_callable(&mut self, slot: u16, name_id: StringId) -> Result<(), CompileError> {
+        let name_id_u16 = u16::try_from(name_id.index()).map_err(|_| self.name_id_too_large())?;
+        self.emit_with_operand(Opcode::LoadGlobalCallable, Operand::U16U16(slot, name_id_u16))
     }
 
     /// Emits `StoreLocal`, using wide variant for slots > 255.
-    pub fn emit_store_local(&mut self, slot: u16) {
+    pub fn emit_store_local(&mut self, slot: u16) -> Result<(), CompileError> {
         if let Ok(s) = u8::try_from(slot) {
-            self.emit_u8(Opcode::StoreLocal, s);
+            self.emit_u8(Opcode::StoreLocal, s)
         } else {
-            self.emit_u16(Opcode::StoreLocalW, slot);
+            self.emit_u16(Opcode::StoreLocalW, slot)
         }
     }
 
     /// Adds a constant to the pool, returning its index.
     ///
-    /// # Panics
-    ///
-    /// Panics if the constant pool exceeds 65535 entries. This is a compile-time
-    /// error indicating the function has too many constants.
-    #[must_use]
-    pub fn add_const(&mut self, value: Value) -> u16 {
-        let idx = self.constants.len();
-        let idx_u16 = u16::try_from(idx).expect("constant pool exceeds u16 range (65535); too many constants");
+    /// Returns a `CompileError` if the constant pool would exceed `u16::MAX`
+    /// entries — `LoadConst` and related opcodes encode the index in `u16`,
+    /// so any function with more than `65 536` distinct constants exceeds the
+    /// bytecode format.
+    pub fn add_const(&mut self, value: Value) -> Result<u16, CompileError> {
+        let idx_u16 = u16::try_from(self.constants.len()).map_err(|_| self.constant_pool_full())?;
         self.constants.push(value);
-        idx_u16
+        Ok(idx_u16)
     }
 
-    /// Adds an exception handler entry.
+    /// Adds an exception handler entry built from the given region bounds.
     ///
     /// Entries should be added in innermost-first order for nested try blocks.
-    pub fn add_exception_entry(&mut self, entry: ExceptionEntry) {
+    /// Returns a `CompileError` if any of the offsets exceeds the `u32` cap
+    /// in `ExceptionEntry` — practically unreachable given the i16 jump
+    /// limit, but kept honest for the same reason as `bytecode_too_large`.
+    pub fn add_exception_entry(
+        &mut self,
+        start: Offset,
+        end: Offset,
+        handler: Offset,
+        stack_depth: u16,
+        exception_stack_count: u16,
+    ) -> Result<(), CompileError> {
+        let start = start.as_u32().ok_or_else(|| self.bytecode_too_large())?;
+        let end = end.as_u32().ok_or_else(|| self.bytecode_too_large())?;
+        let handler = handler.as_u32().ok_or_else(|| self.bytecode_too_large())?;
+        let entry = ExceptionEntry::new(start, end, handler, stack_depth, exception_stack_count);
         self.exception_table.push(entry);
+        Ok(())
     }
 
     /// Returns the current stack depth, or `None` if not currently emitting a code region.
@@ -437,12 +480,18 @@ impl CodeBuilder {
     }
 
     /// Records the current location in the location table if set.
-    fn record_location(&mut self) {
+    ///
+    /// Returns a `CompileError` if the bytecode offset has grown past
+    /// `u32::MAX` — the i16 jump-offset cap means this is practically
+    /// unreachable, but `LocationEntry`'s offset is `u32` so we surface the
+    /// limit cleanly rather than panic.
+    fn record_location(&mut self) -> Result<(), CompileError> {
         if let Some(range) = self.current_location {
-            let offset = u32::try_from(self.bytecode.len()).expect("bytecode length exceeds u32");
+            let offset = u32::try_from(self.bytecode.len()).map_err(|_| self.bytecode_too_large())?;
             self.location_table
                 .push(LocationEntry::new(offset, range, self.current_focus));
         }
+        Ok(())
     }
 
     /// Opens a new code region at the given stack depth.
@@ -472,17 +521,17 @@ impl CodeBuilder {
     /// Positive values indicate pushes, negative values indicate pops.
     /// In the dead-code state this is a no-op: dead code can be emitted
     /// freely.
-    fn adjust_stack(&mut self, delta: i16) {
+    fn adjust_stack(&mut self, delta: i16) -> Result<(), CompileError> {
         let Some(depth) = self.current_stack_depth else {
-            return;
+            return Ok(());
         };
         let new_depth = i32::from(depth) + i32::from(delta);
         // Stack depth shouldn't go negative (indicates compiler bug)
         debug_assert!(new_depth >= 0, "Stack depth went negative: {new_depth}");
-        // Safe cast: new_depth is non-negative and stack won't exceed u16::MAX in practice
-        let new_depth = u16::try_from(new_depth.max(0)).unwrap_or(u16::MAX);
+        let new_depth = u16::try_from(new_depth.max(0)).map_err(|_| self.stack_too_large())?;
         self.current_stack_depth = Some(new_depth);
         self.max_stack_depth = self.max_stack_depth.max(new_depth);
+        Ok(())
     }
 
     /// Single-source-of-truth emit path for all bytecode emission: records
@@ -499,11 +548,11 @@ impl CodeBuilder {
     /// `emit_jump` and `emit_jump_to` route their byte emission through here;
     /// `emit_jump` additionally captures the pre-emit offset and computes the
     /// jump-taken target depth for the returned `JumpLabel`.
-    fn emit_with_operand(&mut self, op: Opcode, operand: Operand<'_>) {
+    fn emit_with_operand(&mut self, op: Opcode, operand: Operand<'_>) -> Result<(), CompileError> {
         if self.is_dead() {
-            return;
+            return Ok(());
         }
-        self.record_location();
+        self.record_location()?;
         self.bytecode.push(op as u8);
         match operand {
             Operand::None => {}
@@ -533,9 +582,9 @@ impl CodeBuilder {
                 self.bytecode.push(b2);
             }
             Operand::CallKw { pos_count, kwname_ids } => {
+                let kw_count = u8::try_from(kwname_ids.len()).map_err(|_| self.kw_count_too_large())?;
                 self.bytecode.push(pos_count);
-                self.bytecode
-                    .push(u8::try_from(kwname_ids.len()).expect("keyword count exceeds u8"));
+                self.bytecode.push(kw_count);
                 for &name_id in kwname_ids {
                     self.bytecode.extend(name_id.to_le_bytes());
                 }
@@ -545,23 +594,121 @@ impl CodeBuilder {
                 pos_count,
                 kwname_ids,
             } => {
+                let kw_count = u8::try_from(kwname_ids.len()).map_err(|_| self.kw_count_too_large())?;
                 self.bytecode.extend(attr_name_id.to_le_bytes());
                 self.bytecode.push(pos_count);
-                self.bytecode
-                    .push(u8::try_from(kwname_ids.len()).expect("keyword count exceeds u8"));
+                self.bytecode.push(kw_count);
                 for &name_id in kwname_ids {
                     self.bytecode.extend(name_id.to_le_bytes());
                 }
             }
         }
-        self.adjust_stack(op.stack_effect(operand));
+        self.adjust_stack(op.stack_effect(operand))?;
         if matches!(
             op,
             Opcode::ReturnValue | Opcode::Raise | Opcode::Reraise | Opcode::RaiseImportError | Opcode::Jump
         ) {
             self.current_stack_depth = None;
         }
+
+        Ok(())
     }
+
+    #[cold]
+    #[inline(never)]
+    fn jump_too_large(&self) -> CompileError {
+        jump_too_large_at(self.current_location.unwrap_or_default())
+    }
+
+    /// Builds the `CompileError` for a `StringId` that doesn't fit in the
+    /// `u16` operand of a name-bearing opcode. Used by emit helpers that
+    /// inline the name id directly (e.g. `LoadLocalCallable`).
+    ///
+    /// The count is `u16::MAX + 1` (`65 536`) because a `u16` operand can
+    /// address indices `0..=u16::MAX`, so the format can name that many
+    /// distinct interned strings before overflowing.
+    #[cold]
+    #[inline(never)]
+    fn name_id_too_large(&self) -> CompileError {
+        CompileError::new(
+            format!(
+                "module has too many distinct names; the bytecode format supports up to {} interned strings",
+                usize::from(u16::MAX) + 1,
+            ),
+            self.current_location.unwrap_or_default(),
+        )
+    }
+
+    /// Builds the `CompileError` for a `CallFunctionKw`/`CallAttrKw` keyword
+    /// count that doesn't fit in `u8`. Anchored to the builder's current
+    /// location (the call expression).
+    #[cold]
+    #[inline(never)]
+    fn kw_count_too_large(&self) -> CompileError {
+        CompileError::new(
+            format!("call has too many keyword arguments; maximum is {} per call", u8::MAX),
+            self.current_location.unwrap_or_default(),
+        )
+    }
+
+    /// Builds the `CompileError` for a `add_const` that would overflow the
+    /// per-`Code` constant pool's `u16` index. One function/module body can
+    /// hold at most `u16::MAX + 1` distinct constants (the check fires when
+    /// the pool already holds `u16::MAX + 1` entries — indices `0..=u16::MAX`).
+    #[cold]
+    #[inline(never)]
+    fn constant_pool_full(&self) -> CompileError {
+        CompileError::new(
+            format!(
+                "function has too many constants; maximum is {} per function",
+                usize::from(u16::MAX) + 1,
+            ),
+            self.current_location.unwrap_or_default(),
+        )
+    }
+
+    /// Builds the `CompileError` for an operand-stack depth or `emit_jump`
+    /// target depth that doesn't fit in `u16`. The same message is used by
+    /// `adjust_stack`, `emit_jump`, and `emit_jump_to` so the user sees one
+    /// consistent diagnostic for "too much stuff pushed" regardless of which
+    /// path detects it.
+    #[cold]
+    #[inline(never)]
+    fn stack_too_large(&self) -> CompileError {
+        CompileError::new(
+            "function too large: required stack exceeds u16::MAX",
+            self.current_location.unwrap_or_default(),
+        )
+    }
+
+    /// Builds the `CompileError` for a `record_location` whose bytecode
+    /// position doesn't fit in the `u32` field of `LocationEntry`. Practically
+    /// unreachable because the `i16` jump-offset cap kicks in at ~32 KB of
+    /// bytecode, but kept defensive in case future opcodes loosen that limit.
+    /// The count is `u32::MAX + 1` because the check happens on the pre-push
+    /// length and the next byte makes it that many bytes total.
+    #[cold]
+    #[inline(never)]
+    fn bytecode_too_large(&self) -> CompileError {
+        CompileError::new(
+            format!(
+                "function bytecode too large; maximum is {} bytes",
+                u64::from(u32::MAX) + 1,
+            ),
+            self.current_location.unwrap_or_default(),
+        )
+    }
+}
+
+/// Builds the `CompileError` for a jump offset that doesn't fit in `i16`,
+/// anchored to an explicit source position rather than the builder's current
+/// location. Used by `patch_jump` so a forward-jump overflow is reported at
+/// the original `emit_jump` site (captured in `JumpLabelInner::source_position`)
+/// rather than the unrelated statement where the patch happens to resolve.
+#[cold]
+#[inline(never)]
+fn jump_too_large_at(position: CodeRange) -> CompileError {
+    CompileError::new("function too large: jump offset exceeds i16 range", position)
 }
 
 /// Label for a forward jump that needs patching.
@@ -582,6 +729,12 @@ struct JumpLabelInner {
     /// to enforce the invariant that all paths arriving at a given bytecode
     /// position have the same stack depth.
     stack_depth: u16,
+    /// Source location of the jump itself (the statement that emitted it),
+    /// captured at `emit_jump` time. Used by `patch_jump` so an offset
+    /// overflow anchors the diagnostic at the jump site rather than at the
+    /// patch site, which is usually a different (and less informative)
+    /// statement.
+    source_position: CodeRange,
 }
 
 /// A position in the bytecode stream.
@@ -597,13 +750,17 @@ pub struct Offset(usize);
 
 impl Offset {
     /// Returns the offset as a `u32` — the serialized form used by
-    /// `ExceptionEntry` and `LocationEntry`.
+    /// `ExceptionEntry` and `LocationEntry` — or `None` if the bytecode
+    /// position exceeds `u32::MAX`.
     ///
-    /// Panics if the bytecode position exceeds `u32::MAX`, which would mean
-    /// the compiled function is unreasonably large.
+    /// Reachable only with > 4 GB of generated bytecode in a single function,
+    /// which the `i16` jump-offset cap already prevents in practice. Returns
+    /// `Option` rather than panicking so the rare overflow surfaces through
+    /// the caller's `CompileError` path (see `CodeBuilder::bytecode_too_large`)
+    /// alongside the other limit failures.
     #[must_use]
-    pub fn as_u32(self) -> u32 {
-        u32::try_from(self.0).expect("bytecode offset exceeds u32")
+    pub fn as_u32(self) -> Option<u32> {
+        u32::try_from(self.0).ok()
     }
 }
 
@@ -623,8 +780,10 @@ impl RelativeOffset {
 
 /// Calculate the jump offset from a jump instruction at `from` to a target at `to`.
 ///
-/// Panics if the jump offset exceeds i16 range (-32768..32767), which indicates the function is too large to compile.
-fn calculate_jump_offset(from: JumpLabelInner, to: JumpTargetInner) -> RelativeOffset {
+/// Returns `None` if the offset doesn't fit in `i16` — the caller (always
+/// `&mut self` on the builder) converts that into a `CompileError` anchored
+/// to the current source location via `jump_too_large`.
+fn calculate_jump_offset(from: JumpLabelInner, to: JumpTargetInner) -> Option<RelativeOffset> {
     // All jumps are currently 3 byte instructions: opcode + i16 offset
     const JUMP_BYTECODE_SIZE: usize = size_of::<Opcode>() + size_of::<RelativeOffset>();
 
@@ -641,10 +800,7 @@ fn calculate_jump_offset(from: JumpLabelInner, to: JumpTargetInner) -> RelativeO
     );
 
     let raw_offset = to_i64 - from_i64;
-    RelativeOffset(
-        // FIXME: replace panic with a compile-time error for functions that are too large to compile?
-        i16::try_from(raw_offset).expect("jump offset exceeds i16 range (-32768..32767); function too large"),
-    )
+    i16::try_from(raw_offset).ok().map(RelativeOffset)
 }
 
 /// Target for a backward jump.
@@ -667,8 +823,8 @@ mod tests {
     fn test_emit_basic() {
         let mut builder = CodeBuilder::new();
         builder.new_code_region(0);
-        builder.emit(Opcode::LoadNone);
-        builder.emit(Opcode::Pop);
+        builder.emit(Opcode::LoadNone).unwrap();
+        builder.emit(Opcode::Pop).unwrap();
 
         let code = builder.build(0);
         assert_eq!(code.bytecode(), &[Opcode::LoadNone as u8, Opcode::Pop as u8]);
@@ -678,7 +834,7 @@ mod tests {
     fn test_emit_u8_operand() {
         let mut builder = CodeBuilder::new();
         builder.new_code_region(0);
-        builder.emit_u8(Opcode::LoadLocal, 42);
+        builder.emit_u8(Opcode::LoadLocal, 42).unwrap();
 
         let code = builder.build(0);
         assert_eq!(code.bytecode(), &[Opcode::LoadLocal as u8, 42]);
@@ -688,7 +844,7 @@ mod tests {
     fn test_emit_u16_operand() {
         let mut builder = CodeBuilder::new();
         builder.new_code_region(0);
-        builder.emit_u16(Opcode::LoadConst, 0x1234);
+        builder.emit_u16(Opcode::LoadConst, 0x1234).unwrap();
 
         let code = builder.build(0);
         assert_eq!(code.bytecode(), &[Opcode::LoadConst as u8, 0x34, 0x12]);
@@ -698,13 +854,13 @@ mod tests {
     fn test_forward_jump() {
         let mut builder = CodeBuilder::new();
         builder.new_code_region(0);
-        let jump = builder.emit_jump(Opcode::Jump);
+        let jump = builder.emit_jump(Opcode::Jump).unwrap();
         builder.new_code_region(0);
-        builder.emit(Opcode::LoadNone);
-        builder.emit(Opcode::Pop);
-        builder.patch_jump(jump);
-        builder.emit(Opcode::LoadNone); // Return value
-        builder.emit(Opcode::ReturnValue);
+        builder.emit(Opcode::LoadNone).unwrap();
+        builder.emit(Opcode::Pop).unwrap();
+        builder.patch_jump(jump).unwrap();
+        builder.emit(Opcode::LoadNone).unwrap(); // Return value
+        builder.emit(Opcode::ReturnValue).unwrap();
 
         let code = builder.build(0);
         assert_eq!(
@@ -726,9 +882,9 @@ mod tests {
         let mut builder = CodeBuilder::new();
         builder.new_code_region(0);
         let loop_start = builder.current_jump_target();
-        builder.emit(Opcode::LoadNone); // offset 0, 1 byte
-        builder.emit(Opcode::Pop); // offset 1, 1 byte
-        builder.emit_jump_to(Opcode::Jump, loop_start); // offset 2, target 0
+        builder.emit(Opcode::LoadNone).unwrap(); // offset 0, 1 byte
+        builder.emit(Opcode::Pop).unwrap(); // offset 1, 1 byte
+        builder.emit_jump_to(Opcode::Jump, loop_start).unwrap(); // offset 2, target 0
 
         let code = builder.build(0);
         // Jump at offset 2, target at offset 0
@@ -750,12 +906,12 @@ mod tests {
     fn test_load_local_specialization() {
         let mut builder = CodeBuilder::new();
         builder.new_code_region(0);
-        builder.emit_load_local(0);
-        builder.emit_load_local(1);
-        builder.emit_load_local(2);
-        builder.emit_load_local(3);
-        builder.emit_load_local(4);
-        builder.emit_load_local(256);
+        builder.emit_load_local(0).unwrap();
+        builder.emit_load_local(1).unwrap();
+        builder.emit_load_local(2).unwrap();
+        builder.emit_load_local(3).unwrap();
+        builder.emit_load_local(4).unwrap();
+        builder.emit_load_local(256).unwrap();
 
         let code = builder.build(0);
         assert_eq!(
@@ -778,8 +934,8 @@ mod tests {
     fn test_add_const() {
         let mut builder = CodeBuilder::new();
         builder.new_code_region(0);
-        let idx1 = builder.add_const(Value::Int(42));
-        let idx2 = builder.add_const(Value::None);
+        let idx1 = builder.add_const(Value::Int(42)).unwrap();
+        let idx2 = builder.add_const(Value::None).unwrap();
 
         assert_eq!(idx1, 0);
         assert_eq!(idx2, 1);

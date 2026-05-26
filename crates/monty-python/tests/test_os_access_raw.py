@@ -12,7 +12,8 @@ import pytest
 from inline_snapshot import snapshot
 
 import pydantic_monty
-from pydantic_monty import NOT_HANDLED, AbstractOS, StatResult
+from pydantic_monty import NOT_HANDLED, AbstractOS, MontyFileHandle, StatResult
+from pydantic_monty.os_access import path_from_arg
 
 
 class TestOS(AbstractOS):
@@ -44,28 +45,40 @@ class TestOS(AbstractOS):
     def path_is_symlink(self, path: PurePosixPath) -> bool:
         return False  # No symlink support in this simple implementation
 
-    def path_read_text(self, path: PurePosixPath) -> str:
-        p = str(path)
+    def path_read_text(self, path: PurePosixPath | MontyFileHandle) -> str:
+        p = str(path_from_arg(path))
         if p not in self.files:
             raise FileNotFoundError(f'No such file: {p}')
         return self.files[p].decode('utf-8')
 
-    def path_read_bytes(self, path: PurePosixPath) -> bytes:
-        p = str(path)
+    def path_read_bytes(self, path: PurePosixPath | MontyFileHandle) -> bytes:
+        p = str(path_from_arg(path))
         if p not in self.files:
             raise FileNotFoundError(f'No such file: {p}')
         return self.files[p]
 
-    def path_write_text(self, path: PurePosixPath, data: str) -> int:
-        p = str(path)
+    def path_write_text(self, path: PurePosixPath | MontyFileHandle, data: str) -> int:
+        p = str(path_from_arg(path))
         self._ensure_parent_exists(p)
         self.files[p] = data.encode('utf-8')
         return len(data)
 
-    def path_write_bytes(self, path: PurePosixPath, data: bytes) -> int:
-        p = str(path)
+    def path_write_bytes(self, path: PurePosixPath | MontyFileHandle, data: bytes) -> int:
+        p = str(path_from_arg(path))
         self._ensure_parent_exists(p)
         self.files[p] = data
+        return len(data)
+
+    def path_append_text(self, path: PurePosixPath | MontyFileHandle, data: str) -> int:
+        p = str(path_from_arg(path))
+        self._ensure_parent_exists(p)
+        self.files[p] = self.files.get(p, b'') + data.encode('utf-8')
+        return len(data)
+
+    def path_append_bytes(self, path: PurePosixPath | MontyFileHandle, data: bytes) -> int:
+        p = str(path_from_arg(path))
+        self._ensure_parent_exists(p)
+        self.files[p] = self.files.get(p, b'') + data
         return len(data)
 
     def path_mkdir(self, path: PurePosixPath, parents: bool, exist_ok: bool) -> None:
@@ -353,6 +366,72 @@ def test_abstract_filesystem_read_bytes():
     result = m.run(os=fs)
 
     assert result == snapshot(b'\x00\x01\x02\x03')
+
+
+def test_abstract_filesystem_open_passes_montyfilehandle_to_handler():
+    """`AbstractOS.dispatch` no longer pre-converts `MontyFileHandle` to
+    `PurePosixPath` — each handler receives the raw handle and is expected
+    to coerce it (e.g. via `path_from_arg`). This regression test inspects
+    the argument type and the `mode`/`binary` fields directly to lock in
+    the new contract.
+    """
+
+    class HandleRecordingOS(TestOS):
+        def __init__(self) -> None:
+            super().__init__()
+            self.read_args: list[tuple[type, str, str, bool]] = []
+
+        def path_open(self, path: PurePosixPath, mode: str) -> MontyFileHandle:
+            # Minimal Open handler: verify read targets exist, then return a
+            # MontyFileHandle so subsequent read/write OS calls flow back
+            # into the handlers below with the handle as first arg.
+            if mode.startswith('r') and str(path) not in self.files:
+                raise FileNotFoundError(f'No such file: {path}')
+            return MontyFileHandle(str(path), mode)
+
+        def path_read_text(self, path: PurePosixPath | MontyFileHandle) -> str:
+            assert isinstance(path, MontyFileHandle), (
+                f'expected MontyFileHandle from open().read(), got {type(path).__name__}'
+            )
+            self.read_args.append((type(path), path.path, path.mode, path.binary))
+            return super().path_read_text(path)
+
+        def path_write_text(self, path: PurePosixPath | MontyFileHandle, data: str) -> int:
+            assert isinstance(path, MontyFileHandle), (
+                f'expected MontyFileHandle from open().write(), got {type(path).__name__}'
+            )
+            return super().path_write_text(path, data)
+
+    fs = HandleRecordingOS()
+    fs.files['/hello.txt'] = b'hi'
+
+    code = """
+f = open('/hello.txt')
+data = f.read()
+f.close()
+data
+"""
+    assert pydantic_monty.Monty(code).run(os=fs) == snapshot('hi')
+    assert fs.read_args == [(MontyFileHandle, '/hello.txt', 'r', False)]
+
+    # And `pathlib.Path.read_text` still passes a plain PurePosixPath —
+    # the handler must still accept both arrival shapes.
+    fs.read_args.clear()
+
+    class PathRecordingOS(TestOS):
+        def __init__(self) -> None:
+            super().__init__()
+            self.last_arg: object = None
+
+        def path_read_text(self, path: PurePosixPath | MontyFileHandle) -> str:
+            self.last_arg = path
+            return super().path_read_text(path)
+
+    path_fs = PathRecordingOS()
+    path_fs.files['/hello.txt'] = b'hi'
+    assert pydantic_monty.Monty('from pathlib import Path; Path("/hello.txt").read_text()').run(os=path_fs) == 'hi'
+    assert isinstance(path_fs.last_arg, PurePosixPath)
+    assert not isinstance(path_fs.last_arg, MontyFileHandle)
 
 
 # =============================================================================

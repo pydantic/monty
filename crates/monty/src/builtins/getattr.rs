@@ -6,6 +6,7 @@ use crate::{
     bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{RunError, RunResult, SimpleException},
+    heap::DropWithHeap,
     resource::ResourceTracker,
     types::PyTrait,
     value::Value,
@@ -47,7 +48,8 @@ pub fn builtin_getattr(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -
 
     match object.py_getattr(&attr, vm) {
         Ok(CallResult::Value(value)) => Ok(value),
-        Ok(_) => {
+        Ok(other) => {
+            other.drop_with_heap(vm);
             // getattr() only retrieves attribute values — OS calls, external calls,
             // method calls, and awaits are not supported here
             //

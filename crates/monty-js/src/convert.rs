@@ -99,6 +99,9 @@ pub fn monty_to_js<'e>(obj: &MontyObject, env: &'e Env) -> Result<JsMontyObject<
             frozen,
         } => create_js_dataclass(name, *type_id, field_names, attrs, *frozen, env)?,
         MontyObject::Path(p) => env.create_string(p)?.into_unknown(env)?,
+        // A Monty file object has no faithful JS representation (it is not a
+        // real OS file): expose its repr string.
+        MontyObject::FileHandle { .. } => env.create_string(obj.py_repr())?.into_unknown(env)?,
         MontyObject::Repr(s) | MontyObject::Cycle(_, s) => env.create_string(s)?.into_unknown(env)?,
         // Function objects are internal to the name lookup protocol and should not normally
         // appear as final output values. If they do, represent as a string with the function name.

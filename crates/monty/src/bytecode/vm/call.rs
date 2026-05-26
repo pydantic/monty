@@ -14,7 +14,7 @@ use crate::{
     bytecode::FrameExit,
     defer_drop,
     exception_private::{ExcType, RunError},
-    heap::{DropWithHeap, HeapData, HeapGuard, HeapId},
+    heap::{ContainsHeap, DropWithHeap, HeapData, HeapGuard, HeapId},
     heap_data::CellValue,
     intern::{FunctionId, StringId},
     os::OsFunction,
@@ -58,6 +58,18 @@ pub(crate) enum CallResult {
     AwaitValue(Value),
 }
 
+impl DropWithHeap for CallResult {
+    fn drop_with_heap<H: ContainsHeap>(self, heap: &mut H) {
+        match self {
+            Self::Value(value) | Self::AwaitValue(value) => value.drop_with_heap(heap),
+            Self::External(_, args) | Self::OsCall(_, args) | Self::MethodCall(_, args) => {
+                args.drop_with_heap(heap);
+            }
+            Self::FramePushed => {}
+        }
+    }
+}
+
 impl<T: ResourceTracker> VM<'_, T> {
     // ========================================================================
     // Call Opcode Executors
@@ -82,7 +94,11 @@ impl<T: ResourceTracker> VM<'_, T> {
     ///
     /// Calls a builtin function directly without stack manipulation for the callable.
     /// This is an optimization that avoids constant pool lookup and stack manipulation.
-    pub(super) fn exec_call_builtin_function(&mut self, builtin_id: u8, arg_count: usize) -> Result<Value, RunError> {
+    pub(super) fn exec_call_builtin_function(
+        &mut self,
+        builtin_id: u8,
+        arg_count: usize,
+    ) -> Result<CallResult, RunError> {
         // Convert u8 to BuiltinsFunctions via FromRepr
         if let Some(builtin) = BuiltinsFunctions::from_repr(builtin_id) {
             let args = self.pop_n_args(arg_count);
@@ -319,11 +335,8 @@ impl<T: ResourceTracker> VM<'_, T> {
                 self.current_frame_mut().should_return = true;
                 match self.run()? {
                     FrameExit::Return(v) => return Ok(v),
-                    FrameExit::ResolveFutures(_)
-                    | FrameExit::ExternalCall { .. }
-                    | FrameExit::OsCall { .. }
-                    | FrameExit::MethodCall { .. }
-                    | FrameExit::NameLookup { .. } => {
+                    exit => {
+                        exit.drop_with_heap(self);
                         // Pop frames off the stack from this failed evaluation
                         // (including the one just pushed)
                         while self.frames.len() >= stack_depth {
@@ -332,10 +345,7 @@ impl<T: ResourceTracker> VM<'_, T> {
                     }
                 }
             }
-            CallResult::External(_, _)
-            | CallResult::OsCall(_, _)
-            | CallResult::MethodCall(_, _)
-            | CallResult::AwaitValue(_) => {}
+            other => other.drop_with_heap(self),
         }
 
         Err(ExcType::not_implemented(format!(
@@ -354,10 +364,7 @@ impl<T: ResourceTracker> VM<'_, T> {
     /// - `Value::Ref`: checks for closure/function on heap
     pub(crate) fn call_function(&mut self, callable: &Value, args: ArgValues) -> Result<CallResult, RunError> {
         match callable {
-            Value::Builtin(builtin) => {
-                let result = builtin.call(self, args)?;
-                Ok(CallResult::Value(result))
-            }
+            Value::Builtin(builtin) => builtin.call(self, args),
             Value::ModuleFunction(mf) => mf.call(self, args),
             Value::ExtFunction(name_id) => {
                 // External function - return to caller to execute

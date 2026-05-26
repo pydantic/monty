@@ -21,10 +21,11 @@ use crate::{
     heap::{HeapData, HeapId, HeapReadOutput},
     resource::{ResourceError, ResourceTracker},
     types::{
-        Dataclass, LongInt, NamedTuple, Path, PyTrait, TimeZone, Type, allocate_tuple,
+        Dataclass, LongInt, NamedTuple, OpenFile, Path, PyTrait, TimeZone, Type, allocate_tuple,
         bytes::{Bytes, bytes_repr},
         date as date_type, datetime as datetime_type,
         dict::Dict,
+        file::FileMode,
         list::List,
         set::{FrozenSet, Set},
         str::{StringRepr, allocate_string, string_repr_fmt},
@@ -290,6 +291,8 @@ pub enum MontyObject {
     ///
     /// Represents a filesystem path. Can be used both as input (from host) and output.
     Path(String),
+    /// An open file object (the result of `open()`).
+    FileHandle(MontyFileHandle),
     /// A dataclass instance with class name, field names, attributes, and mutability.
     ///
     /// Method calls are detected lazily at runtime: when `call_attr` is invoked
@@ -515,6 +518,10 @@ impl MontyObject {
                 Ok(Value::Ref(vm.heap.allocate(HeapData::Dataclass(dc))?))
             }
             Self::Path(s) => Ok(Value::Ref(vm.heap.allocate(HeapData::Path(Path::new(s)))?)),
+            Self::FileHandle(handle) => {
+                let file = OpenFile::with_state(handle.path, handle.mode, handle.position, handle.id);
+                Ok(Value::Ref(vm.heap.allocate(HeapData::OpenFile(file))?))
+            }
             Self::Type(t) => Ok(Value::Builtin(Builtins::Type(t))),
             Self::BuiltinFunction(f) => Ok(Value::Builtin(Builtins::Function(f))),
             Self::Function { name, .. } => {
@@ -791,6 +798,18 @@ impl MontyObject {
                         Self::Repr(format!("<gather({})>", gather.get(vm.heap).item_count()))
                     }
                     HeapReadOutput::Path(path) => Self::Path(path.get(vm.heap).as_str().to_owned()),
+                    // File objects carry no heap refs (leaf type) — no recursion.
+                    // This is how `file.read()`/`write()` deliver the open file
+                    // to the host as the first OS-call argument.
+                    HeapReadOutput::OpenFile(file) => {
+                        let file = file.get(vm.heap);
+                        Self::FileHandle(MontyFileHandle {
+                            path: file.path().to_owned(),
+                            mode: *file.file_mode(),
+                            position: file.position(),
+                            id: file.id(),
+                        })
+                    }
                     HeapReadOutput::ExtFunction(name) => Self::Function {
                         name: name.get(vm.heap).clone(),
                         docstring: None,
@@ -1051,6 +1070,7 @@ impl MontyObject {
                 f.write_char(')')
             }
             Self::Path(p) => write!(f, "PosixPath('{p}')"),
+            Self::FileHandle(handle) => write!(f, "{handle}"),
             Self::Type(t) => write!(f, "<class '{t}'>"),
             Self::BuiltinFunction(func) => write!(f, "<built-in function {func}>"),
             Self::Function { name, .. } => write!(f, "<function '{name}' external>"),
@@ -1090,8 +1110,9 @@ impl MontyObject {
             Self::TimeDelta(delta) => delta.days != 0 || delta.seconds != 0 || delta.microseconds != 0,
             Self::TimeZone(_) => true,
             Self::Exception { .. } => true,
-            Self::Path(_) => true,          // Path instances are always truthy
-            Self::Dataclass { .. } => true, // Dataclass instances are always truthy
+            Self::Path(_) => true,           // Path instances are always truthy
+            Self::FileHandle { .. } => true, // File objects are always truthy
+            Self::Dataclass { .. } => true,  // Dataclass instances are always truthy
             Self::Type(_) | Self::BuiltinFunction(_) | Self::Function { .. } | Self::Repr(_) | Self::Cycle(_, _) => {
                 true
             }
@@ -1123,6 +1144,7 @@ impl MontyObject {
             Self::TimeZone(_) => "timezone",
             Self::Exception { .. } => "Exception",
             Self::Path(_) => "PosixPath",
+            Self::FileHandle(handle) => handle.mode.type_name(),
             Self::Dataclass { .. } => "dataclass",
             Self::Type(_) => "type",
             Self::BuiltinFunction(_) => "builtin_function_or_method",
@@ -1165,6 +1187,17 @@ impl Hash for MontyObject {
             Self::TimeDelta(delta) => delta.hash(state),
             Self::TimeZone(timezone) => timezone.hash(state),
             Self::Path(path) => path.hash(state),
+            Self::FileHandle(MontyFileHandle {
+                path,
+                mode,
+                position,
+                id,
+            }) => {
+                path.hash(state);
+                mode.as_str().hash(state);
+                position.hash(state);
+                id.hash(state);
+            }
             Self::Type(t) => t.to_string().hash(state),
             Self::Cycle(_, _) => panic!("cycle values are not hashable"),
             _ => panic!("{} python values are not hashable", self.type_name()),
@@ -1244,6 +1277,20 @@ impl PartialEq for MontyObject {
                     && a_frozen == b_frozen
             }
             (Self::Path(a), Self::Path(b)) => a == b,
+            (
+                Self::FileHandle(MontyFileHandle {
+                    path: a_path,
+                    mode: a_mode,
+                    position: a_pos,
+                    id: a_id,
+                }),
+                Self::FileHandle(MontyFileHandle {
+                    path: b_path,
+                    mode: b_mode,
+                    position: b_pos,
+                    id: b_id,
+                }),
+            ) => a_path == b_path && a_mode == b_mode && a_pos == b_pos && a_id == b_id,
             (
                 Self::Function {
                     name: a_name,
@@ -1456,5 +1503,45 @@ impl DictPairs {
 
     fn iter(&self) -> impl Iterator<Item = &(MontyObject, MontyObject)> {
         self.0.iter()
+    }
+}
+
+/// An open file object (the result of `open()`).
+///
+/// This is the boundary representation of Monty's heap [`OpenFile`](crate::types::OpenFile)
+/// wrapper. It carries everything needed to service a file operation from a
+/// host that holds no live OS handle: the virtual `path`, the `mode`, and
+/// the byte `position` for seek-aware reads.
+///
+/// The host produces a `FileHandle` as the result of an
+/// [`OsFunction::Open`](crate::os::OsFunction::Open) call; `to_value` then
+/// builds the `OpenFile` heap wrapper from it. Conversely, a heap file
+/// object passed as an argument to a `read`/`write` OS call is converted
+/// back to a `FileHandle` so the host receives this state.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct MontyFileHandle {
+    /// The virtual (sandbox) path of the file. Never a host path.
+    pub path: String,
+    /// The parsed `open()` mode.
+    pub mode: FileMode,
+    /// Byte offset for seek-aware reads (currently always 0).
+    pub position: u64,
+    /// Optional host-assigned id for this open file.
+    ///
+    /// Monty never generates this. A host may set it (e.g. to key a
+    /// cache of real OS file handles); otherwise it is `None` and carries
+    /// no meaning to the interpreter.
+    pub id: Option<u64>,
+}
+
+impl fmt::Display for MontyFileHandle {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "<{} name={} mode={}>",
+            self.mode.file_type(),
+            StringRepr(&self.path),
+            StringRepr(self.mode.as_str())
+        )
     }
 }

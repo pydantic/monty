@@ -7,14 +7,14 @@ use std::{fs, path::PathBuf};
 
 use super::{
     common::{
-        MountContext, check_write_limit, commit_write_bytes, iterdir_fs, mkdir_fs, read_bytes_fs, read_text_fs,
-        rmdir_fs, stat_fs, unlink_fs, write_bytes_fs, write_text_fs,
+        MountContext, append_bytes_fs, append_text_fs, check_write_limit, commit_write_bytes, iterdir_fs, mkdir_fs,
+        read_bytes_fs, read_text_fs, reject_directory, rmdir_fs, stat_fs, unlink_fs, write_bytes_fs, write_text_fs,
     },
-    dispatch::FsRequest,
+    dispatch::{FsRequest, file_handle_result},
     error::MountError,
     path_security::{ResolveMode, resolve_path},
 };
-use crate::MontyObject;
+use crate::{MontyObject, types::file::FileMode};
 
 /// Internal result used for existence-style queries where "missing" is not an error.
 enum ResolvedPathState {
@@ -41,6 +41,8 @@ pub(super) fn execute(request: FsRequest<'_>, ctx: &mut MountContext<'_>) -> Res
         }
         FsRequest::WriteText { path, data } => write_text(path, data, ctx),
         FsRequest::WriteBytes { path, data } => write_bytes(path, data, ctx),
+        FsRequest::AppendText { path, data } => append_text(path, data, ctx),
+        FsRequest::AppendBytes { path, data } => append_bytes(path, data, ctx),
         FsRequest::Mkdir {
             path,
             parents,
@@ -63,7 +65,35 @@ pub(super) fn execute(request: FsRequest<'_>, ctx: &mut MountContext<'_>) -> Res
         FsRequest::Resolve { path } | FsRequest::Absolute { path } => {
             Ok(MontyObject::Path(super::path_security::normalize_virtual_path(path)))
         }
+        FsRequest::Open { path, mode } => open(path, mode, ctx),
     }
+}
+
+/// Performs the open-time effect for `open()` and returns the file handle.
+///
+/// The effect depends on the [`FileMode`]: read modes only check the file
+/// exists (the `resolve_path` failure for a missing file surfaces as
+/// `FileNotFoundError`); write modes truncate or create an empty file; append
+/// modes create the file if missing without disturbing existing content. The
+/// host keeps no handle open — this single call opens, acts, and closes.
+fn open(path: &str, mode: FileMode, ctx: &mut MountContext<'_>) -> Result<MontyObject, MountError> {
+    match mode {
+        FileMode::Read(_) | FileMode::ReadUpdate(_) => {
+            let resolved = resolve_path(path, ctx.mount_virtual, ctx.mount_host, ResolveMode::Existing)?;
+            reject_directory(&resolved.host_path, path)?;
+        }
+        FileMode::Write(_) | FileMode::WriteUpdate(_) => {
+            check_write_limit(0, ctx)?;
+            let resolved = resolve_path(path, ctx.mount_virtual, ctx.mount_host, ResolveMode::Creation)?;
+            write_text_fs(&resolved.host_path, "", path)?;
+            commit_write_bytes(0, ctx);
+        }
+        FileMode::Append(_) | FileMode::AppendUpdate(_) => {
+            let resolved = resolve_path(path, ctx.mount_virtual, ctx.mount_host, ResolveMode::Creation)?;
+            append_bytes_fs(&resolved.host_path, &[], path)?;
+        }
+    }
+    Ok(file_handle_result(path, mode))
 }
 
 /// Implements `Path.exists()` without leaking path-resolution details.
@@ -113,6 +143,24 @@ fn write_bytes(path: &str, data: &[u8], ctx: &mut MountContext<'_>) -> Result<Mo
     check_write_limit(data.len(), ctx)?;
     let resolved = resolve_path(path, ctx.mount_virtual, ctx.mount_host, ResolveMode::Creation)?;
     let result = write_bytes_fs(&resolved.host_path, data, path)?;
+    commit_write_bytes(data.len(), ctx);
+    Ok(result)
+}
+
+/// Appends text after validating quota and creation-path security.
+fn append_text(path: &str, data: &str, ctx: &mut MountContext<'_>) -> Result<MontyObject, MountError> {
+    check_write_limit(data.len(), ctx)?;
+    let resolved = resolve_path(path, ctx.mount_virtual, ctx.mount_host, ResolveMode::Creation)?;
+    let result = append_text_fs(&resolved.host_path, data, path)?;
+    commit_write_bytes(data.len(), ctx);
+    Ok(result)
+}
+
+/// Appends bytes after validating quota and creation-path security.
+fn append_bytes(path: &str, data: &[u8], ctx: &mut MountContext<'_>) -> Result<MontyObject, MountError> {
+    check_write_limit(data.len(), ctx)?;
+    let resolved = resolve_path(path, ctx.mount_virtual, ctx.mount_host, ResolveMode::Creation)?;
+    let result = append_bytes_fs(&resolved.host_path, data, path)?;
     commit_write_bytes(data.len(), ctx);
     Ok(result)
 }

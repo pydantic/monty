@@ -12,7 +12,7 @@ use std::{borrow::Cow, mem};
 
 use super::{
     builder::{CodeBuilder, JumpLabel, JumpTarget},
-    code::{Code, ExceptionEntry},
+    code::Code,
     op::{FORMAT_VALUE_HAS_SPEC, FORMAT_VALUE_STATIC_SPEC, Opcode},
 };
 use crate::{
@@ -38,6 +38,162 @@ use crate::{
 /// use a u8 operand for the argument count, so max 255. Python itself has no
 /// such limit but we need one for our bytecode encoding.
 const MAX_CALL_ARGS: usize = 255;
+
+/// Maximum number of distinct names in a single namespace (module or function).
+///
+/// `LoadLocal`/`LoadGlobal`/`StoreLocal`/etc. encode the namespace slot in 16
+/// bits, so the slot index must fit in `u16`. CPython has no equivalent limit
+/// but this is intrinsic to our compact bytecode encoding — exceeding it
+/// surfaces to the user as a `SyntaxError`.
+const MAX_NAMESPACE_SIZE: usize = u16::MAX as usize;
+
+/// Maximum number of nested `for`/`if` clauses in a comprehension.
+///
+/// `ListAppend`/`SetAdd`/`DictSetItem` encode the comprehension depth in a
+/// `u8` so the runtime can pop the correct number of intermediate iterators
+/// when appending. 255 nested clauses is far past anything sensible Python
+/// can express, but a sufficiently large parser-generated payload could
+/// reach it.
+const MAX_COMP_GENERATORS: usize = 255;
+
+/// Maximum number of targets in a single tuple-unpacking pattern (e.g.
+/// `a, b, c = it` or the nested form `(a, b), c = it`).
+///
+/// `UnpackSequence` / `UnpackEx` encode the per-level target count in `u8`,
+/// so any individual unpacking level is capped at 255 targets (with
+/// `UnpackEx` splitting that count into before-star and after-star halves).
+const MAX_UNPACK_TARGETS: usize = 255;
+
+/// Converts a `usize` namespace size into the `u16` slot count expected by
+/// the bytecode, surfacing a `CompileError` if the limit is exceeded.
+///
+/// `kind` ("module", "function", or "lambda") is interpolated into the error
+/// message so the user can distinguish which scope hit the cap. The position
+/// is left as the default `CodeRange` because the relevant location is the
+/// whole compile unit — there is no single offending statement to highlight.
+fn check_namespace_size_u16(size: usize, kind: &'static str) -> Result<u16, CompileError> {
+    u16::try_from(size).map_err(|_| namespace_too_large(size, kind))
+}
+
+#[cold]
+#[inline(never)]
+fn namespace_too_large(size: usize, kind: &'static str) -> CompileError {
+    CompileError::new(
+        format!(
+            "{kind} uses too many distinct names ({size}); the bytecode format supports up to {MAX_NAMESPACE_SIZE}"
+        ),
+        CodeRange::default(),
+    )
+}
+
+/// Converts a comprehension's `for`/`if` clause count into the `u8` depth
+/// operand used by `ListAppend`/`SetAdd`/`DictSetItem`.
+///
+/// Anchored to the body expression's position because that's the comprehension's
+/// most stable location to point at in a traceback caret.
+fn check_comp_generators(count: usize, position: CodeRange) -> Result<u8, CompileError> {
+    u8::try_from(count).map_err(|_| too_many_comp_generators(count, position))
+}
+
+#[cold]
+#[inline(never)]
+fn too_many_comp_generators(count: usize, position: CodeRange) -> CompileError {
+    CompileError::new(
+        format!("comprehension has too many nested clauses ({count}); maximum is {MAX_COMP_GENERATORS}"),
+        position,
+    )
+}
+
+/// Converts a tuple-unpacking target count into the `u8` operand for
+/// `UnpackSequence` (or the before/after halves of `UnpackEx`).
+fn check_unpack_targets(count: usize, position: CodeRange) -> Result<u8, CompileError> {
+    u8::try_from(count).map_err(|_| too_many_unpack_targets(count, position))
+}
+
+#[cold]
+#[inline(never)]
+fn too_many_unpack_targets(count: usize, position: CodeRange) -> CompileError {
+    CompileError::new(
+        format!("too many targets in tuple unpacking ({count}); maximum is {MAX_UNPACK_TARGETS}"),
+        position,
+    )
+}
+
+/// Converts an in-memory collection length (list/tuple/dict/set literal element
+/// count, dict pair count) into the `u16` operand of `BuildList`/`BuildTuple`/
+/// `BuildDict`/`BuildSet`.
+fn check_collection_size_u16(count: usize, position: CodeRange) -> Result<u16, CompileError> {
+    u16::try_from(count).map_err(|_| collection_too_large(count, position))
+}
+
+#[cold]
+#[inline(never)]
+fn collection_too_large(count: usize, position: CodeRange) -> CompileError {
+    CompileError::new(
+        format!(
+            "collection literal has too many elements ({count}); maximum is {}",
+            u16::MAX
+        ),
+        position,
+    )
+}
+
+/// Converts the index of a newly-defined function into the `u16` operand used
+/// by `MakeFunction`/`MakeClosure`. The cap is the total number of
+/// `def`/`lambda`/comprehension function objects in the *whole module*, since
+/// `FunctionId`s are allocated linearly across nested scopes.
+fn check_function_count_u16(func_id: usize, position: CodeRange) -> Result<u16, CompileError> {
+    u16::try_from(func_id).map_err(|_| too_many_functions(func_id, position))
+}
+
+#[cold]
+#[inline(never)]
+fn too_many_functions(func_id: usize, position: CodeRange) -> CompileError {
+    CompileError::new(
+        format!(
+            "module defines too many functions/lambdas ({}); maximum is {}",
+            func_id + 1,
+            u16::MAX
+        ),
+        position,
+    )
+}
+
+/// Converts a `StringId` (intern pool index) into the `u16` operand used by
+/// every name-bearing opcode (`LoadAttr`, `StoreAttr`, `LoadGlobal`,
+/// `CallFunctionKw` keyword names, etc.). Called inline at every emission
+/// site — overflow only happens when the intern pool exceeded `u16::MAX`
+/// during parse/prepare, so the error construction is `#[cold]` and the
+/// success path inlines to a single `as u16`.
+fn check_name_index_u16(name_id: StringId, position: CodeRange) -> Result<u16, CompileError> {
+    u16::try_from(name_id.index()).map_err(|_| name_index_too_large(position))
+}
+
+#[cold]
+#[inline(never)]
+fn name_index_too_large(position: CodeRange) -> CompileError {
+    CompileError::new(
+        format!(
+            "module has too many distinct names; the bytecode format supports up to {} interned strings",
+            usize::from(u16::MAX) + 1,
+        ),
+        position,
+    )
+}
+
+/// Converts a call-related count (positional args, keyword args, defaults,
+/// closure cells) into the `u8` operand used by the corresponding opcodes.
+/// `kind` (e.g. "default parameter values") is interpolated into the error
+/// message so the diagnostic identifies which kind of count overflowed.
+fn check_call_args_u8(count: usize, kind: &'static str, position: CodeRange) -> Result<u8, CompileError> {
+    u8::try_from(count).map_err(|_| too_many_call_args(count, kind, position))
+}
+
+#[cold]
+#[inline(never)]
+fn too_many_call_args(count: usize, kind: &'static str, position: CodeRange) -> CompileError {
+    CompileError::new(format!("more than {MAX_CALL_ARGS} {kind} ({count})"), position)
+}
 
 /// Compiles prepared AST nodes to bytecode.
 ///
@@ -82,7 +238,7 @@ pub struct Compiler<'a> {
     /// target. The exception *value* is already off the operand stack — it's
     /// consumed eagerly at handler entry (stored to the `as` binding or
     /// popped) — so no operand-stack Pop is needed here.
-    except_handler_depth: usize,
+    except_handler_depth: u16,
 
     /// Whether the compiler is currently compiling module-level code.
     ///
@@ -149,7 +305,7 @@ struct FinallyTarget {
     /// finally body might reference them); cleanup of handlers between
     /// here and the next-outer finally is the responsibility of this
     /// finally's emit_return_routing trailer.
-    except_handler_depth_at_entry: usize,
+    except_handler_depth_at_entry: u16,
 }
 
 /// Result of module compilation: the module code and all compiled functions.
@@ -184,9 +340,9 @@ impl<'a> Compiler<'a> {
     pub fn compile_module(
         nodes: &[PreparedNode],
         interns: &Interns,
-        num_locals: u16,
+        namespace_size: usize,
     ) -> Result<CompileResult, CompileError> {
-        Self::compile_module_with_functions(nodes, interns, num_locals, Vec::new())
+        Self::compile_module_with_functions(nodes, interns, namespace_size, Vec::new())
     }
 
     /// Compiles module-level code while preserving an existing function table prefix.
@@ -197,17 +353,18 @@ impl<'a> Compiler<'a> {
     pub fn compile_module_with_functions(
         nodes: &[PreparedNode],
         interns: &Interns,
-        num_locals: u16,
+        namespace_size: usize,
         existing_functions: Vec<Function>,
     ) -> Result<CompileResult, CompileError> {
+        let num_locals = check_namespace_size_u16(namespace_size, "module")?;
         let mut compiler = Compiler::new(interns, Vec::new());
         compiler.functions = existing_functions;
         compiler.is_module_scope = true;
         compiler.compile_block(nodes)?;
 
         // Module returns None if no explicit return
-        compiler.code.emit(Opcode::LoadNone);
-        compiler.code.emit(Opcode::ReturnValue);
+        compiler.code.emit(Opcode::LoadNone)?;
+        compiler.code.emit(Opcode::ReturnValue)?;
 
         Ok(CompileResult {
             code: compiler.code.build(num_locals),
@@ -233,8 +390,8 @@ impl<'a> Compiler<'a> {
         compiler.compile_block(body)?;
 
         // Implicit return None if no explicit return
-        compiler.code.emit(Opcode::LoadNone);
-        compiler.code.emit(Opcode::ReturnValue);
+        compiler.code.emit(Opcode::LoadNone)?;
+        compiler.code.emit(Opcode::ReturnValue)?;
 
         Ok((compiler.code.build(num_locals), compiler.functions))
     }
@@ -261,14 +418,14 @@ impl<'a> Compiler<'a> {
         match node {
             Node::Expr(expr) => {
                 self.compile_expr(expr)?;
-                self.code.emit(Opcode::Pop); // Discard result
+                self.code.emit(Opcode::Pop)?; // Discard result
             }
             Node::Return(expr) => {
                 self.compile_return(expr.as_ref())?;
             }
             Node::Assign { target, object } => {
                 self.compile_expr(object)?;
-                self.compile_store(target);
+                self.compile_store(target)?;
             }
             Node::UnpackAssign {
                 targets,
@@ -276,7 +433,7 @@ impl<'a> Compiler<'a> {
                 object,
             } => {
                 self.compile_expr(object)?;
-                self.emit_unpack_store(targets, *targets_position);
+                self.emit_unpack_store(targets, *targets_position)?;
             }
             Node::OpAssign { target, op, value } => {
                 let Some(opcode) = operator_to_inplace_opcode(op) else {
@@ -285,10 +442,10 @@ impl<'a> Compiler<'a> {
                         target.position,
                     ));
                 };
-                self.compile_name(target);
+                self.compile_name(target)?;
                 self.compile_expr(value)?;
-                self.code.emit(opcode);
-                self.compile_store(target);
+                self.code.emit(opcode)?;
+                self.compile_store(target)?;
             }
             Node::SubscriptOpAssign {
                 target,
@@ -305,14 +462,14 @@ impl<'a> Compiler<'a> {
                 };
                 self.compile_expr(target)?;
                 self.compile_expr(index)?;
-                self.code.emit(Opcode::Dup2);
+                self.code.emit(Opcode::Dup2)?;
                 self.code.set_location(*target_position, None);
-                self.code.emit(Opcode::BinarySubscr);
+                self.code.emit(Opcode::BinarySubscr)?;
                 self.compile_expr(value)?;
-                self.code.emit(opcode);
-                self.code.emit(Opcode::Rot3);
+                self.code.emit(opcode)?;
+                self.code.emit(Opcode::Rot3)?;
                 self.code.set_location(*target_position, None);
-                self.code.emit(Opcode::StoreSubscr);
+                self.code.emit(Opcode::StoreSubscr)?;
             }
             Node::SubscriptAssign {
                 target,
@@ -337,17 +494,17 @@ impl<'a> Compiler<'a> {
                     ));
                 };
                 let name_id = attr.string_id().expect("LoadAttr requires interned attr name");
-                let name_idx = u16::try_from(name_id.index()).expect("name index exceeds u16");
+                let name_idx = check_name_index_u16(name_id, *target_position)?;
                 // Stack: compile object, dup for later store, load attr, apply op, rotate, store
                 self.compile_expr(object)?; // [obj]
-                self.code.emit(Opcode::Dup); // [obj, obj]
+                self.code.emit(Opcode::Dup)?; // [obj, obj]
                 self.code.set_location(*target_position, None);
-                self.code.emit_u16(Opcode::LoadAttr, name_idx); // [obj, attr_val]
+                self.code.emit_u16(Opcode::LoadAttr, name_idx)?; // [obj, attr_val]
                 self.compile_expr(value)?; // [obj, attr_val, rhs]
-                self.code.emit(opcode); // [obj, result]
-                self.code.emit(Opcode::Rot2); // [result, obj]
+                self.code.emit(opcode)?; // [obj, result]
+                self.code.emit(Opcode::Rot2)?; // [result, obj]
                 self.code.set_location(*target_position, None);
-                self.code.emit_u16(Opcode::StoreAttr, name_idx); // []
+                self.code.emit_u16(Opcode::StoreAttr, name_idx)?; // []
             }
             Node::AttrAssign {
                 object,
@@ -374,12 +531,12 @@ impl<'a> Compiler<'a> {
                 self.compile_expr(object)?;
                 if let Some((last, rest)) = targets.split_last() {
                     for target in rest {
-                        self.code.emit(Opcode::Dup);
+                        self.code.emit(Opcode::Dup)?;
                         self.compile_assign_target(target)?;
                     }
                     self.compile_assign_target(last)?;
                 } else {
-                    self.code.emit(Opcode::Pop);
+                    self.code.emit(Opcode::Pop)?;
                 }
             }
             Node::If { test, body, or_else } => self.compile_if(test, body, or_else)?,
@@ -394,23 +551,23 @@ impl<'a> Compiler<'a> {
             Node::Raise(expr) => {
                 if let Some(exc) = expr {
                     self.compile_expr(exc)?;
-                    self.code.emit(Opcode::Raise);
+                    self.code.emit(Opcode::Raise)?;
                 } else {
-                    self.code.emit(Opcode::Reraise);
+                    self.code.emit(Opcode::Reraise)?;
                 }
             }
             Node::FunctionDef(func_def) => self.compile_function_def(func_def)?,
             Node::Try(try_block) => self.compile_try(try_block)?,
             Node::Import { names } => {
                 for import_name in names {
-                    self.compile_import(import_name.module_name, &import_name.binding);
+                    self.compile_import(import_name.module_name, &import_name.binding)?;
                 }
             }
             Node::ImportFrom {
                 module_name,
                 names,
                 position,
-            } => self.compile_import_from(*module_name, names, *position),
+            } => self.compile_import_from(*module_name, names, *position)?,
             Node::Break { position } => self.compile_break(*position)?,
             Node::Continue { position } => self.compile_continue(*position)?,
             // These are handled during the prepare phase and produce no bytecode
@@ -429,24 +586,15 @@ impl<'a> Compiler<'a> {
     fn compile_function_def(&mut self, func_def: &PreparedFunctionDef) -> Result<(), CompileError> {
         let func_pos = func_def.name.position;
 
-        // Check bytecode operand limits
-        if func_def.default_exprs.len() > MAX_CALL_ARGS {
-            return Err(CompileError::new(
-                format!("more than {MAX_CALL_ARGS} default parameter values"),
-                func_pos,
-            ));
-        }
-        if func_def.free_var_enclosing_slots.len() > MAX_CALL_ARGS {
-            return Err(CompileError::new(
-                format!("more than {MAX_CALL_ARGS} closure variables"),
-                func_pos,
-            ));
-        }
+        // Bound the bytecode-operand counts before compiling — the `u8` casts
+        // below depend on these fitting in 255.
+        let defaults_count = check_call_args_u8(func_def.default_exprs.len(), "default parameter values", func_pos)?;
+        let cell_count = check_call_args_u8(func_def.free_var_enclosing_slots.len(), "closure variables", func_pos)?;
 
         // 1. Compile the function body recursively
         // Take ownership of functions for the recursive compile, then restore
         let functions = mem::take(&mut self.functions);
-        let namespace_size = u16::try_from(func_def.namespace_size).expect("function namespace size exceeds u16");
+        let namespace_size = check_namespace_size_u16(func_def.namespace_size, "function")?;
         let (body_code, mut functions) =
             Self::compile_function_body(&func_def.body, self.interns, functions, namespace_size)?;
 
@@ -472,30 +620,29 @@ impl<'a> Compiler<'a> {
         for default_expr in &func_def.default_exprs {
             self.compile_expr(default_expr)?;
         }
-        let defaults_count =
-            u8::try_from(func_def.default_exprs.len()).expect("function default argument count exceeds u8");
-        let func_id_u16 = u16::try_from(func_id).expect("function count exceeds u16");
+        let func_id_u16 = check_function_count_u16(func_id, func_pos)?;
 
         // 4. Emit MakeFunction or MakeClosure (if has free vars)
         if func_def.free_var_enclosing_slots.is_empty() {
             // MakeFunction: func_id (u16) + defaults_count (u8)
-            self.code.emit_u16_u8(Opcode::MakeFunction, func_id_u16, defaults_count);
+            self.code
+                .emit_u16_u8(Opcode::MakeFunction, func_id_u16, defaults_count)?;
         } else {
             // Push captured cells from enclosing scope
             for &slot in &func_def.free_var_enclosing_slots {
-                // Load the cell reference from the enclosing namespace
-                let slot_u16 = u16::try_from(slot.index()).expect("closure slot index exceeds u16");
-                self.code.emit_load_local(slot_u16);
+                // Load the cell reference from the enclosing namespace.
+                // `slot` is a `NamespaceId` bound by `check_namespace_size_u16`
+                // on the enclosing scope, so the conversion is an invariant
+                // rather than a user-input check (panic-on-failure is fine).
+                self.code.emit_load_local(slot.as_u16())?;
             }
-            let cell_count =
-                u8::try_from(func_def.free_var_enclosing_slots.len()).expect("closure cell count exceeds u8");
             // MakeClosure: func_id (u16) + defaults_count (u8) + cell_count (u8)
             self.code
-                .emit_u16_u8_u8(Opcode::MakeClosure, func_id_u16, defaults_count, cell_count);
+                .emit_u16_u8_u8(Opcode::MakeClosure, func_id_u16, defaults_count, cell_count)?;
         }
 
         // 5. Store the function object to its name slot
-        self.compile_store(&func_def.name);
+        self.compile_store(&func_def.name)?;
 
         Ok(())
     }
@@ -509,23 +656,14 @@ impl<'a> Compiler<'a> {
     fn compile_lambda(&mut self, func_def: &PreparedFunctionDef) -> Result<(), CompileError> {
         let func_pos = func_def.name.position;
 
-        // Check bytecode operand limits
-        if func_def.default_exprs.len() > MAX_CALL_ARGS {
-            return Err(CompileError::new(
-                format!("more than {MAX_CALL_ARGS} default parameter values"),
-                func_pos,
-            ));
-        }
-        if func_def.free_var_enclosing_slots.len() > MAX_CALL_ARGS {
-            return Err(CompileError::new(
-                format!("more than {MAX_CALL_ARGS} closure variables"),
-                func_pos,
-            ));
-        }
+        // Bound the bytecode-operand counts before compiling — the `u8` casts
+        // below depend on these fitting in 255.
+        let defaults_count = check_call_args_u8(func_def.default_exprs.len(), "default parameter values", func_pos)?;
+        let cell_count = check_call_args_u8(func_def.free_var_enclosing_slots.len(), "closure variables", func_pos)?;
 
         // 1. Compile the function body recursively
         let functions = mem::take(&mut self.functions);
-        let namespace_size = u16::try_from(func_def.namespace_size).expect("function namespace size exceeds u16");
+        let namespace_size = check_namespace_size_u16(func_def.namespace_size, "lambda")?;
         let (body_code, mut functions) =
             Self::compile_function_body(&func_def.body, self.interns, functions, namespace_size)?;
 
@@ -551,25 +689,23 @@ impl<'a> Compiler<'a> {
         for default_expr in &func_def.default_exprs {
             self.compile_expr(default_expr)?;
         }
-        let defaults_count =
-            u8::try_from(func_def.default_exprs.len()).expect("function default argument count exceeds u8");
-        let func_id_u16 = u16::try_from(func_id).expect("function count exceeds u16");
+        let func_id_u16 = check_function_count_u16(func_id, func_pos)?;
 
         // 4. Emit MakeFunction or MakeClosure (if has free vars)
         if func_def.free_var_enclosing_slots.is_empty() {
             // MakeFunction: func_id (u16) + defaults_count (u8)
-            self.code.emit_u16_u8(Opcode::MakeFunction, func_id_u16, defaults_count);
+            self.code
+                .emit_u16_u8(Opcode::MakeFunction, func_id_u16, defaults_count)?;
         } else {
-            // Push captured cells from enclosing scope
+            // Push captured cells from enclosing scope. `slot` is a
+            // `NamespaceId` from the enclosing scope, bounded by
+            // `check_namespace_size_u16`; the conversion is an invariant.
             for &slot in &func_def.free_var_enclosing_slots {
-                let slot_u16 = u16::try_from(slot.index()).expect("closure slot index exceeds u16");
-                self.code.emit_load_local(slot_u16);
+                self.code.emit_load_local(slot.as_u16())?;
             }
-            let cell_count =
-                u8::try_from(func_def.free_var_enclosing_slots.len()).expect("closure cell count exceeds u8");
             // MakeClosure: func_id (u16) + defaults_count (u8) + cell_count (u8)
             self.code
-                .emit_u16_u8_u8(Opcode::MakeClosure, func_id_u16, defaults_count, cell_count);
+                .emit_u16_u8_u8(Opcode::MakeClosure, func_id_u16, defaults_count, cell_count)?;
         }
 
         // NOTE: Unlike compile_function_def, we do NOT call compile_store here.
@@ -583,22 +719,23 @@ impl<'a> Compiler<'a> {
     /// Emits `LoadModule` to create the module, then stores it to the binding name.
     /// If the module is unknown, emits `RaiseImportError` to defer the error to runtime.
     /// This allows imports inside `if TYPE_CHECKING:` blocks to compile successfully.
-    fn compile_import(&mut self, module_name: StringId, binding: &Identifier) {
+    fn compile_import(&mut self, module_name: StringId, binding: &Identifier) -> Result<(), CompileError> {
         let position = binding.position;
         self.code.set_location(position, None);
 
         // Look up the module by name
         if let Some(builtin_module) = StandardLib::from_string_id(module_name) {
             // Known module - emit LoadModule
-            self.code.emit_u8(Opcode::LoadModule, builtin_module as u8);
+            self.code.emit_u8(Opcode::LoadModule, builtin_module as u8)?;
             // Store to the binding (respects Local/Global/Cell scope)
-            self.compile_store(binding);
+            self.compile_store(binding)?;
         } else {
             // Unknown module - defer error to runtime with RaiseImportError
             // This allows TYPE_CHECKING imports to compile without error
-            let name_const = self.code.add_const(Value::InternString(module_name));
-            self.code.emit_u16(Opcode::RaiseImportError, name_const);
+            let name_const = self.code.add_const(Value::InternString(module_name))?;
+            self.code.emit_u16(Opcode::RaiseImportError, name_const)?;
         }
+        Ok(())
     }
 
     /// Compiles a `from module import name, ...` statement.
@@ -607,34 +744,40 @@ impl<'a> Compiler<'a> {
     /// Invalid attribute names will raise `AttributeError` at runtime.
     /// If the module is unknown, emits `RaiseImportError` to defer the error to runtime.
     /// This allows imports inside `if TYPE_CHECKING:` blocks to compile successfully.
-    fn compile_import_from(&mut self, module_name: StringId, names: &[(StringId, Identifier)], position: CodeRange) {
+    fn compile_import_from(
+        &mut self,
+        module_name: StringId,
+        names: &[(StringId, Identifier)],
+        position: CodeRange,
+    ) -> Result<(), CompileError> {
         self.code.set_location(position, None);
 
         // Look up the module
         if let Some(builtin_module) = StandardLib::from_string_id(module_name) {
             // Known module - emit LoadModule
-            self.code.emit_u8(Opcode::LoadModule, builtin_module as u8);
+            self.code.emit_u8(Opcode::LoadModule, builtin_module as u8)?;
 
             // For each name to import
             for (i, (import_name, binding)) in names.iter().enumerate() {
                 // Dup the module if this isn't the last import (last one consumes the module)
                 if i < names.len() - 1 {
-                    self.code.emit(Opcode::Dup);
+                    self.code.emit(Opcode::Dup)?;
                 }
 
                 // Load the attribute from the module (raises ImportError if not found)
-                let name_idx = u16::try_from(import_name.index()).expect("name index exceeds u16");
-                self.code.emit_u16(Opcode::LoadAttrImport, name_idx);
+                let name_idx = check_name_index_u16(*import_name, position)?;
+                self.code.emit_u16(Opcode::LoadAttrImport, name_idx)?;
 
                 // Store to the binding
-                self.compile_store(binding);
+                self.compile_store(binding)?;
             }
         } else {
             // Unknown module - defer error to runtime with RaiseImportError
             // This allows TYPE_CHECKING imports to compile without error
-            let name_const = self.code.add_const(Value::InternString(module_name));
-            self.code.emit_u16(Opcode::RaiseImportError, name_const);
+            let name_const = self.code.add_const(Value::InternString(module_name))?;
+            self.code.emit_u16(Opcode::RaiseImportError, name_const)?;
         }
+        Ok(())
     }
 
     // ========================================================================
@@ -647,13 +790,13 @@ impl<'a> Compiler<'a> {
         self.code.set_location(expr_loc.position, None);
 
         match &expr_loc.expr {
-            Expr::Literal(lit) => self.compile_literal(lit),
+            Expr::Literal(lit) => self.compile_literal(lit)?,
 
-            Expr::Name(ident) => self.compile_name(ident),
+            Expr::Name(ident) => self.compile_name(ident)?,
 
             Expr::Builtin(builtin) => {
-                let idx = self.code.add_const(Value::Builtin(*builtin));
-                self.code.emit_u16(Opcode::LoadConst, idx);
+                let idx = self.code.add_const(Value::Builtin(*builtin))?;
+                self.code.emit_u16(Opcode::LoadConst, idx)?;
             }
 
             Expr::Op { left, op, right } => {
@@ -667,10 +810,10 @@ impl<'a> Compiler<'a> {
                 self.code.set_location(expr_loc.position, None);
                 // ModEq needs special handling - it has a constant operand
                 if let CmpOperator::ModEq(value) = op {
-                    let const_idx = self.code.add_const(Value::Int(*value));
-                    self.code.emit_u16(Opcode::CompareModEq, const_idx);
+                    let const_idx = self.code.add_const(Value::Int(*value))?;
+                    self.code.emit_u16(Opcode::CompareModEq, const_idx)?;
                 } else {
-                    self.code.emit(cmp_operator_to_opcode(op));
+                    self.code.emit(cmp_operator_to_opcode(op))?;
                 }
             }
 
@@ -682,43 +825,43 @@ impl<'a> Compiler<'a> {
                 self.compile_expr(operand)?;
                 // Restore the full expression's position for traceback caret range
                 self.code.set_location(expr_loc.position, None);
-                self.code.emit(Opcode::UnaryNot);
+                self.code.emit(Opcode::UnaryNot)?;
             }
 
             Expr::UnaryMinus(operand) => {
                 self.compile_expr(operand)?;
                 // Restore the full expression's position for traceback caret range
                 self.code.set_location(expr_loc.position, None);
-                self.code.emit(Opcode::UnaryNeg);
+                self.code.emit(Opcode::UnaryNeg)?;
             }
 
             Expr::UnaryPlus(operand) => {
                 self.compile_expr(operand)?;
                 // Restore the full expression's position for traceback caret range
                 self.code.set_location(expr_loc.position, None);
-                self.code.emit(Opcode::UnaryPos);
+                self.code.emit(Opcode::UnaryPos)?;
             }
 
             Expr::UnaryInvert(operand) => {
                 self.compile_expr(operand)?;
                 // Restore the full expression's position for traceback caret range
                 self.code.set_location(expr_loc.position, None);
-                self.code.emit(Opcode::UnaryInvert);
+                self.code.emit(Opcode::UnaryInvert)?;
             }
 
             Expr::List(elements) => {
                 if has_unpack_seq(elements) {
                     // Generalized path: build incrementally for PEP 448 *unpacks
-                    self.code.emit_u16(Opcode::BuildList, 0);
+                    self.code.emit_u16(Opcode::BuildList, 0)?;
                     for item in elements {
                         match item {
                             SequenceItem::Value(e) => {
                                 self.compile_expr(e)?;
-                                self.code.emit_u8(Opcode::ListAppend, 0);
+                                self.code.emit_u8(Opcode::ListAppend, 0)?;
                             }
                             SequenceItem::Unpack(e) => {
                                 self.compile_expr(e)?;
-                                self.code.emit(Opcode::ListExtend);
+                                self.code.emit(Opcode::ListExtend)?;
                             }
                         }
                     }
@@ -731,30 +874,28 @@ impl<'a> Compiler<'a> {
                         };
                         self.compile_expr(e)?;
                     }
-                    self.code.emit_u16(
-                        Opcode::BuildList,
-                        u16::try_from(elements.len()).expect("elements count exceeds u16"),
-                    );
+                    let count = check_collection_size_u16(elements.len(), expr_loc.position)?;
+                    self.code.emit_u16(Opcode::BuildList, count)?;
                 }
             }
 
             Expr::Tuple(elements) => {
                 if has_unpack_seq(elements) {
                     // Generalized path: build via list then convert for PEP 448 *unpacks
-                    self.code.emit_u16(Opcode::BuildList, 0);
+                    self.code.emit_u16(Opcode::BuildList, 0)?;
                     for item in elements {
                         match item {
                             SequenceItem::Value(e) => {
                                 self.compile_expr(e)?;
-                                self.code.emit_u8(Opcode::ListAppend, 0);
+                                self.code.emit_u8(Opcode::ListAppend, 0)?;
                             }
                             SequenceItem::Unpack(e) => {
                                 self.compile_expr(e)?;
-                                self.code.emit(Opcode::ListExtend);
+                                self.code.emit(Opcode::ListExtend)?;
                             }
                         }
                     }
-                    self.code.emit(Opcode::ListToTuple);
+                    self.code.emit(Opcode::ListToTuple)?;
                 } else {
                     // Fast path: all values, single BuildTuple.
                     // SAFETY: has_unpack_seq(elements) is false, so every item is Value.
@@ -764,29 +905,27 @@ impl<'a> Compiler<'a> {
                         };
                         self.compile_expr(e)?;
                     }
-                    self.code.emit_u16(
-                        Opcode::BuildTuple,
-                        u16::try_from(elements.len()).expect("elements count exceeds u16"),
-                    );
+                    let count = check_collection_size_u16(elements.len(), expr_loc.position)?;
+                    self.code.emit_u16(Opcode::BuildTuple, count)?;
                 }
             }
 
             Expr::Dict(dict_items) => {
                 if has_unpack_dict(dict_items) {
                     // Generalized path: build incrementally for PEP 448 **unpacks
-                    self.code.emit_u16(Opcode::BuildDict, 0);
+                    self.code.emit_u16(Opcode::BuildDict, 0)?;
                     for item in dict_items {
                         match item {
                             DictItem::Pair(key, value) => {
                                 self.compile_expr(key)?;
                                 self.compile_expr(value)?;
                                 // depth=0: dict is at TOS after key/value are popped
-                                self.code.emit_u8(Opcode::DictSetItem, 0);
+                                self.code.emit_u8(Opcode::DictSetItem, 0)?;
                             }
                             DictItem::Unpack(e) => {
                                 self.compile_expr(e)?;
                                 // depth=0: dict is directly below mapping on stack
-                                self.code.emit_u8(Opcode::DictUpdate, 0);
+                                self.code.emit_u8(Opcode::DictUpdate, 0)?;
                             }
                         }
                     }
@@ -800,26 +939,24 @@ impl<'a> Compiler<'a> {
                         self.compile_expr(key)?;
                         self.compile_expr(value)?;
                     }
-                    self.code.emit_u16(
-                        Opcode::BuildDict,
-                        u16::try_from(dict_items.len()).expect("pairs count exceeds u16"),
-                    );
+                    let count = check_collection_size_u16(dict_items.len(), expr_loc.position)?;
+                    self.code.emit_u16(Opcode::BuildDict, count)?;
                 }
             }
 
             Expr::Set(elements) => {
                 if has_unpack_seq(elements) {
                     // Generalized path: build incrementally for PEP 448 *unpacks
-                    self.code.emit_u16(Opcode::BuildSet, 0);
+                    self.code.emit_u16(Opcode::BuildSet, 0)?;
                     for item in elements {
                         match item {
                             SequenceItem::Value(e) => {
                                 self.compile_expr(e)?;
-                                self.code.emit_u8(Opcode::SetAdd, 0);
+                                self.code.emit_u8(Opcode::SetAdd, 0)?;
                             }
                             SequenceItem::Unpack(e) => {
                                 self.compile_expr(e)?;
-                                self.code.emit_u8(Opcode::SetExtend, 0);
+                                self.code.emit_u8(Opcode::SetExtend, 0)?;
                             }
                         }
                     }
@@ -832,10 +969,8 @@ impl<'a> Compiler<'a> {
                         };
                         self.compile_expr(e)?;
                     }
-                    self.code.emit_u16(
-                        Opcode::BuildSet,
-                        u16::try_from(elements.len()).expect("elements count exceeds u16"),
-                    );
+                    let count = check_collection_size_u16(elements.len(), expr_loc.position)?;
+                    self.code.emit_u16(Opcode::BuildSet, count)?;
                 }
             }
 
@@ -844,7 +979,7 @@ impl<'a> Compiler<'a> {
                 self.compile_expr(index)?;
                 // Restore the full subscript expression's position for traceback
                 self.code.set_location(expr_loc.position, None);
-                self.code.emit(Opcode::BinarySubscr);
+                self.code.emit(Opcode::BinarySubscr)?;
             }
 
             Expr::IfElse { test, body, orelse } => {
@@ -856,10 +991,8 @@ impl<'a> Compiler<'a> {
                 // Restore the full expression's position for traceback caret range
                 self.code.set_location(expr_loc.position, None);
                 let name_id = attr.string_id().expect("LoadAttr requires interned attr name");
-                self.code.emit_u16(
-                    Opcode::LoadAttr,
-                    u16::try_from(name_id.index()).expect("name index exceeds u16"),
-                );
+                let name_idx = check_name_index_u16(name_id, expr_loc.position)?;
+                self.code.emit_u16(Opcode::LoadAttr, name_idx)?;
             }
 
             Expr::Call { callable, args } => {
@@ -885,7 +1018,7 @@ impl<'a> Compiler<'a> {
             Expr::FString(parts) => {
                 // Compile each part and build the f-string
                 let part_count = self.compile_fstring_parts(parts)?;
-                self.code.emit_u16(Opcode::BuildFString, part_count);
+                self.code.emit_u16(Opcode::BuildFString, part_count)?;
             }
 
             Expr::ListComp { elt, generators } => {
@@ -915,7 +1048,7 @@ impl<'a> Compiler<'a> {
                 self.compile_expr(value)?;
                 // Restore the full expression's position for traceback caret range
                 self.code.set_location(expr_loc.position, None);
-                self.code.emit(Opcode::Await);
+                self.code.emit(Opcode::Await)?;
             }
 
             Expr::Slice { lower, upper, step } => {
@@ -923,28 +1056,28 @@ impl<'a> Compiler<'a> {
                 if let Some(lower) = lower {
                     self.compile_expr(lower)?;
                 } else {
-                    self.code.emit(Opcode::LoadNone);
+                    self.code.emit(Opcode::LoadNone)?;
                 }
                 if let Some(upper) = upper {
                     self.compile_expr(upper)?;
                 } else {
-                    self.code.emit(Opcode::LoadNone);
+                    self.code.emit(Opcode::LoadNone)?;
                 }
                 if let Some(step) = step {
                     self.compile_expr(step)?;
                 } else {
-                    self.code.emit(Opcode::LoadNone);
+                    self.code.emit(Opcode::LoadNone)?;
                 }
-                self.code.emit(Opcode::BuildSlice);
+                self.code.emit(Opcode::BuildSlice)?;
             }
 
             Expr::Named { target, value } => {
                 // Compile the value expression (leaves result on stack)
                 self.compile_expr(value)?;
                 // Duplicate so value remains after store
-                self.code.emit(Opcode::Dup);
+                self.code.emit(Opcode::Dup)?;
                 // Store to target (pops one copy)
-                self.compile_store(target);
+                self.compile_store(target)?;
             }
         }
         Ok(())
@@ -955,34 +1088,24 @@ impl<'a> Compiler<'a> {
     // ========================================================================
 
     /// Compiles a literal value.
-    fn compile_literal(&mut self, literal: &Literal) {
+    fn compile_literal(&mut self, literal: &Literal) -> Result<(), CompileError> {
         match literal {
-            Literal::None => {
-                self.code.emit(Opcode::LoadNone);
-            }
-
-            Literal::Bool(true) => {
-                self.code.emit(Opcode::LoadTrue);
-            }
-
-            Literal::Bool(false) => {
-                self.code.emit(Opcode::LoadFalse);
-            }
-
+            Literal::None => self.code.emit(Opcode::LoadNone),
+            Literal::Bool(true) => self.code.emit(Opcode::LoadTrue),
+            Literal::Bool(false) => self.code.emit(Opcode::LoadFalse),
             Literal::Int(n) => {
                 // Use LoadSmallInt for values that fit in i8
                 if let Ok(small) = i8::try_from(*n) {
-                    self.code.emit_i8(Opcode::LoadSmallInt, small);
+                    self.code.emit_i8(Opcode::LoadSmallInt, small)
                 } else {
-                    let idx = self.code.add_const(Value::from(*literal));
-                    self.code.emit_u16(Opcode::LoadConst, idx);
+                    let idx = self.code.add_const(Value::from(*literal))?;
+                    self.code.emit_u16(Opcode::LoadConst, idx)
                 }
             }
-
             // For Float, Str, Bytes, Ellipsis - use LoadConst with Value::from
             _ => {
-                let idx = self.code.add_const(Value::from(*literal));
-                self.code.emit_u16(Opcode::LoadConst, idx);
+                let idx = self.code.add_const(Value::from(*literal))?;
+                self.code.emit_u16(Opcode::LoadConst, idx)
             }
         }
     }
@@ -995,38 +1118,38 @@ impl<'a> Compiler<'a> {
     ///
     /// At module level, `Local` and `LocalUnassigned` scopes emit global opcodes
     /// because module-level locals live in the globals array.
-    fn compile_name(&mut self, ident: &Identifier) {
-        let slot = u16::try_from(ident.namespace_id().index()).expect("local slot exceeds u16");
+    fn compile_name(&mut self, ident: &Identifier) -> Result<(), CompileError> {
+        let slot = ident.namespace_id().as_u16();
         match ident.scope {
             NameScope::Local => {
                 // True local - register name and mark as assigned for UnboundLocalError
                 self.code.register_local_name(slot, ident.name_id);
                 self.code.register_assigned_local(slot);
                 if self.is_module_scope {
-                    self.code.emit_u16(Opcode::LoadGlobal, slot);
+                    self.code.emit_u16(Opcode::LoadGlobal, slot)
                 } else {
-                    self.code.emit_load_local(slot);
+                    self.code.emit_load_local(slot)
                 }
             }
             NameScope::LocalUnassigned => {
                 // Undefined reference - register name but NOT as assigned for NameError
                 self.code.register_local_name(slot, ident.name_id);
                 if self.is_module_scope {
-                    self.code.emit_u16(Opcode::LoadGlobal, slot);
+                    self.code.emit_u16(Opcode::LoadGlobal, slot)
                 } else {
-                    self.code.emit_load_local(slot);
+                    self.code.emit_load_local(slot)
                 }
             }
             NameScope::Global => {
                 // Register the name for NameError/NameLookup messages
                 self.code.register_local_name(slot, ident.name_id);
-                self.code.emit_u16(Opcode::LoadGlobal, slot);
+                self.code.emit_u16(Opcode::LoadGlobal, slot)
             }
             NameScope::Cell => {
                 // Register the name for NameError messages (unbound free variable)
                 self.code.register_local_name(slot, ident.name_id);
                 // Emit local slot index — the VM reads the cell HeapId from the stack
-                self.code.emit_u16(Opcode::LoadCell, slot);
+                self.code.emit_u16(Opcode::LoadCell, slot)
             }
         }
     }
@@ -1040,24 +1163,24 @@ impl<'a> Compiler<'a> {
     ///
     /// For `Local` and `Cell` scopes, delegates to `compile_name` since those can't
     /// be external functions (they're always defined locally or captured).
-    fn compile_name_callable(&mut self, ident: &Identifier) {
-        let slot = u16::try_from(ident.namespace_id().index()).expect("local slot exceeds u16");
+    fn compile_name_callable(&mut self, ident: &Identifier) -> Result<(), CompileError> {
+        let slot = ident.namespace_id().as_u16();
         match ident.scope {
             NameScope::LocalUnassigned => {
                 // Undefined reference in call context - use callable-aware load.
                 // At module level, use global callable since locals are in the globals array.
                 self.code.register_local_name(slot, ident.name_id);
                 if self.is_module_scope {
-                    self.code.emit_load_global_callable(slot, ident.name_id);
+                    self.code.emit_load_global_callable(slot, ident.name_id)
                 } else {
-                    self.code.emit_load_local_callable(slot, ident.name_id);
+                    self.code.emit_load_local_callable(slot, ident.name_id)
                 }
             }
             NameScope::Global => {
                 // Global scope - name_id is encoded in the operand because global slot
                 // indices are in a different namespace from local slots, so looking up
                 // the name from the current frame's local_names would be incorrect
-                self.code.emit_load_global_callable(slot, ident.name_id);
+                self.code.emit_load_global_callable(slot, ident.name_id)
             }
             // Local and Cell can't be external functions - use regular load
             NameScope::Local | NameScope::Cell => self.compile_name(ident),
@@ -1068,23 +1191,21 @@ impl<'a> Compiler<'a> {
     ///
     /// At module level, `Local` and `LocalUnassigned` scopes emit `StoreGlobal`
     /// because module-level locals live in the globals array.
-    fn compile_store(&mut self, target: &Identifier) {
-        let slot = u16::try_from(target.namespace_id().index()).expect("local slot exceeds u16");
+    fn compile_store(&mut self, target: &Identifier) -> Result<(), CompileError> {
+        let slot = target.namespace_id().as_u16();
         match target.scope {
             NameScope::Local | NameScope::LocalUnassigned => {
                 self.code.register_local_name(slot, target.name_id);
                 if self.is_module_scope {
-                    self.code.emit_u16(Opcode::StoreGlobal, slot);
+                    self.code.emit_u16(Opcode::StoreGlobal, slot)
                 } else {
-                    self.code.emit_store_local(slot);
+                    self.code.emit_store_local(slot)
                 }
             }
-            NameScope::Global => {
-                self.code.emit_u16(Opcode::StoreGlobal, slot);
-            }
+            NameScope::Global => self.code.emit_u16(Opcode::StoreGlobal, slot),
             NameScope::Cell => {
                 // Emit local slot index — the VM reads the cell HeapId from the stack
-                self.code.emit_u16(Opcode::StoreCell, slot);
+                self.code.emit_u16(Opcode::StoreCell, slot)
             }
         }
     }
@@ -1108,17 +1229,17 @@ impl<'a> Compiler<'a> {
             // Short-circuit AND: evaluate left, jump if falsy
             Operator::And => {
                 self.compile_expr(left)?;
-                let end_jump = self.code.emit_jump(Opcode::JumpIfFalseOrPop);
+                let end_jump = self.code.emit_jump(Opcode::JumpIfFalseOrPop)?;
                 self.compile_expr(right)?;
-                self.code.patch_jump(end_jump);
+                self.code.patch_jump(end_jump)?;
             }
 
             // Short-circuit OR: evaluate left, jump if truthy
             Operator::Or => {
                 self.compile_expr(left)?;
-                let end_jump = self.code.emit_jump(Opcode::JumpIfTrueOrPop);
+                let end_jump = self.code.emit_jump(Opcode::JumpIfTrueOrPop)?;
                 self.compile_expr(right)?;
-                self.code.patch_jump(end_jump);
+                self.code.patch_jump(end_jump)?;
             }
 
             // Regular binary operators
@@ -1127,7 +1248,7 @@ impl<'a> Compiler<'a> {
                 self.compile_expr(right)?;
                 // Restore the full expression's position for traceback caret range
                 self.code.set_location(parent_pos, None);
-                self.code.emit(operator_to_opcode(op));
+                self.code.emit(operator_to_opcode(op))?;
             }
         }
         Ok(())
@@ -1176,38 +1297,38 @@ impl<'a> Compiler<'a> {
 
             if !is_last {
                 // Keep a copy of the intermediate for the next comparison
-                self.code.emit(Opcode::Dup);
+                self.code.emit(Opcode::Dup)?;
                 // Reorder: [prev, curr, curr] -> [curr, prev, curr]
-                self.code.emit(Opcode::Rot3);
+                self.code.emit(Opcode::Rot3)?;
             }
 
             // Emit comparison
             self.code.set_location(position, None);
             if let CmpOperator::ModEq(value) = op {
-                let const_idx = self.code.add_const(Value::Int(*value));
-                self.code.emit_u16(Opcode::CompareModEq, const_idx);
+                let const_idx = self.code.add_const(Value::Int(*value))?;
+                self.code.emit_u16(Opcode::CompareModEq, const_idx)?;
             } else {
-                self.code.emit(cmp_operator_to_opcode(op));
+                self.code.emit(cmp_operator_to_opcode(op))?;
             }
 
             if !is_last {
                 // Short-circuit: if false, jump to cleanup
-                let jump = self.code.emit_jump(Opcode::JumpIfFalseOrPop);
+                let jump = self.code.emit_jump(Opcode::JumpIfFalseOrPop)?;
                 cleanup_jumps.push(jump);
             }
         }
 
         // Jump past cleanup (result already on stack).
-        let end_jump = self.code.emit_jump(Opcode::Jump);
+        let end_jump = self.code.emit_jump(Opcode::Jump)?;
 
         // Cleanup: remove the saved intermediate value, keep False result.
         for jump in cleanup_jumps {
-            self.code.patch_jump(jump);
+            self.code.patch_jump(jump)?;
         }
-        self.code.emit(Opcode::Rot2); // [False, intermediate]
-        self.code.emit(Opcode::Pop); // [False]
+        self.code.emit(Opcode::Rot2)?; // [False, intermediate]
+        self.code.emit(Opcode::Pop)?; // [False]
 
-        self.code.patch_jump(end_jump);
+        self.code.patch_jump(end_jump)?;
         Ok(())
     }
 
@@ -1226,17 +1347,17 @@ impl<'a> Compiler<'a> {
 
         if or_else.is_empty() {
             // Simple if without else
-            let end_jump = self.code.emit_jump(Opcode::JumpIfFalse);
+            let end_jump = self.code.emit_jump(Opcode::JumpIfFalse)?;
             self.compile_block(body)?;
-            self.code.patch_jump(end_jump);
+            self.code.patch_jump(end_jump)?;
         } else {
             // If with else
-            let else_jump = self.code.emit_jump(Opcode::JumpIfFalse);
+            let else_jump = self.code.emit_jump(Opcode::JumpIfFalse)?;
             self.compile_block(body)?;
-            let end_jump = self.code.emit_jump(Opcode::Jump);
-            self.code.patch_jump(else_jump);
+            let end_jump = self.code.emit_jump(Opcode::Jump)?;
+            self.code.patch_jump(else_jump)?;
             self.compile_block(or_else)?;
-            self.code.patch_jump(end_jump);
+            self.code.patch_jump(end_jump)?;
         }
         Ok(())
     }
@@ -1244,12 +1365,12 @@ impl<'a> Compiler<'a> {
     /// Compiles a ternary conditional expression.
     fn compile_if_else_expr(&mut self, test: &ExprLoc, body: &ExprLoc, orelse: &ExprLoc) -> Result<(), CompileError> {
         self.compile_expr(test)?;
-        let else_jump = self.code.emit_jump(Opcode::JumpIfFalse);
+        let else_jump = self.code.emit_jump(Opcode::JumpIfFalse)?;
         self.compile_expr(body)?;
-        let end_jump = self.code.emit_jump(Opcode::Jump);
-        self.code.patch_jump(else_jump);
+        let end_jump = self.code.emit_jump(Opcode::Jump)?;
+        self.code.patch_jump(else_jump)?;
         self.compile_expr(orelse)?;
-        self.code.patch_jump(end_jump);
+        self.code.patch_jump(end_jump)?;
         Ok(())
     }
 
@@ -1271,7 +1392,7 @@ impl<'a> Compiler<'a> {
         {
             // Optimization applied - CallBuiltinFunction emitted
             self.code.set_location(call_pos, None);
-            self.code.emit_call_builtin_function(*builtin_func as u8, arg_count);
+            self.code.emit_call_builtin_function(*builtin_func as u8, arg_count)?;
             return Ok(());
         }
         // Fall through to standard path for kwargs/unpacking
@@ -1285,7 +1406,7 @@ impl<'a> Compiler<'a> {
         {
             // Optimization applied - CallBuiltinType emitted
             self.code.set_location(call_pos, None);
-            self.code.emit_call_builtin_type(type_id, arg_count);
+            self.code.emit_call_builtin_type(type_id, arg_count)?;
             return Ok(());
         }
         // Fall through to standard path for kwargs/unpacking or non-callable types
@@ -1294,14 +1415,14 @@ impl<'a> Compiler<'a> {
         // Push the callable (use name position for NameError caret range)
         match callable {
             Callable::Builtin(builtin) => {
-                let idx = self.code.add_const(Value::Builtin(*builtin));
-                self.code.emit_u16(Opcode::LoadConst, idx);
+                let idx = self.code.add_const(Value::Builtin(*builtin))?;
+                self.code.emit_u16(Opcode::LoadConst, idx)?;
             }
             Callable::Name(ident) => {
                 // Use callable-aware load opcodes so undefined names produce ExtFunction
                 // instead of yielding NameLookup, allowing CallFunction to yield FunctionCall
                 self.code.set_location(ident.position, None);
-                self.compile_name_callable(ident);
+                self.compile_name_callable(ident)?;
             }
         }
 
@@ -1310,18 +1431,18 @@ impl<'a> Compiler<'a> {
         match args {
             ArgExprs::Empty => {
                 self.code.set_location(call_pos, None);
-                self.code.emit_u8(Opcode::CallFunction, 0);
+                self.code.emit_u8(Opcode::CallFunction, 0)?;
             }
             ArgExprs::One(arg) => {
                 self.compile_expr(arg)?;
                 self.code.set_location(call_pos, None);
-                self.code.emit_u8(Opcode::CallFunction, 1);
+                self.code.emit_u8(Opcode::CallFunction, 1)?;
             }
             ArgExprs::Two(arg1, arg2) => {
                 self.compile_expr(arg1)?;
                 self.compile_expr(arg2)?;
                 self.code.set_location(call_pos, None);
-                self.code.emit_u8(Opcode::CallFunction, 2);
+                self.code.emit_u8(Opcode::CallFunction, 2)?;
             }
             ArgExprs::Args(args) => {
                 // Check argument count limit before compiling
@@ -1336,7 +1457,7 @@ impl<'a> Compiler<'a> {
                 }
                 let arg_count = u8::try_from(args.len()).expect("argument count exceeds u8");
                 self.code.set_location(call_pos, None);
-                self.code.emit_u8(Opcode::CallFunction, arg_count);
+                self.code.emit_u8(Opcode::CallFunction, arg_count)?;
             }
             ArgExprs::Kwargs(kwargs) => {
                 // Check keyword argument count limit
@@ -1350,10 +1471,10 @@ impl<'a> Compiler<'a> {
                 let mut kwname_ids = Vec::with_capacity(kwargs.len());
                 for kwarg in kwargs {
                     self.compile_expr(&kwarg.value)?;
-                    kwname_ids.push(u16::try_from(kwarg.key.name_id.index()).expect("name index exceeds u16"));
+                    kwname_ids.push(check_name_index_u16(kwarg.key.name_id, call_pos)?);
                 }
                 self.code.set_location(call_pos, None);
-                self.code.emit_call_function_kw(0, &kwname_ids);
+                self.code.emit_call_function_kw(0, &kwname_ids)?;
             }
             ArgExprs::ArgsKargs {
                 args,
@@ -1404,7 +1525,7 @@ impl<'a> Compiler<'a> {
                     if let Some(kwargs) = kwargs {
                         for kwarg in kwargs {
                             self.compile_expr(&kwarg.value)?;
-                            kwname_ids.push(u16::try_from(kwarg.key.name_id.index()).expect("name index exceeds u16"));
+                            kwname_ids.push(check_name_index_u16(kwarg.key.name_id, call_pos)?);
                         }
                     }
 
@@ -1412,13 +1533,13 @@ impl<'a> Compiler<'a> {
                     self.code.emit_call_function_kw(
                         u8::try_from(pos_count).expect("positional arg count exceeds u8"),
                         &kwname_ids,
-                    );
+                    )?;
                 }
             }
             ArgExprs::GeneralizedCall { args, kwargs } => {
                 // PEP 448: generalized unpacking — multiple *args or **kwargs.
                 // Callable was already pushed above this match; delegate to the helper.
-                let func_name_id = self.get_callable_name_id(callable);
+                let func_name_id = self.get_callable_name_id(callable)?;
                 self.compile_generalized_call_body(args, kwargs, func_name_id, call_pos)?;
             }
         }
@@ -1433,18 +1554,18 @@ impl<'a> Compiler<'a> {
         match args {
             ArgExprs::Empty => {
                 self.code.set_location(call_pos, None);
-                self.code.emit_u8(Opcode::CallFunction, 0);
+                self.code.emit_u8(Opcode::CallFunction, 0)?;
             }
             ArgExprs::One(arg) => {
                 self.compile_expr(arg)?;
                 self.code.set_location(call_pos, None);
-                self.code.emit_u8(Opcode::CallFunction, 1);
+                self.code.emit_u8(Opcode::CallFunction, 1)?;
             }
             ArgExprs::Two(arg1, arg2) => {
                 self.compile_expr(arg1)?;
                 self.compile_expr(arg2)?;
                 self.code.set_location(call_pos, None);
-                self.code.emit_u8(Opcode::CallFunction, 2);
+                self.code.emit_u8(Opcode::CallFunction, 2)?;
             }
             ArgExprs::Args(args) => {
                 if args.len() > MAX_CALL_ARGS {
@@ -1458,7 +1579,7 @@ impl<'a> Compiler<'a> {
                 }
                 let arg_count = u8::try_from(args.len()).expect("argument count exceeds u8");
                 self.code.set_location(call_pos, None);
-                self.code.emit_u8(Opcode::CallFunction, arg_count);
+                self.code.emit_u8(Opcode::CallFunction, arg_count)?;
             }
             ArgExprs::Kwargs(kwargs) => {
                 if kwargs.len() > MAX_CALL_ARGS {
@@ -1470,10 +1591,10 @@ impl<'a> Compiler<'a> {
                 let mut kwname_ids = Vec::with_capacity(kwargs.len());
                 for kwarg in kwargs {
                     self.compile_expr(&kwarg.value)?;
-                    kwname_ids.push(u16::try_from(kwarg.key.name_id.index()).expect("name index exceeds u16"));
+                    kwname_ids.push(check_name_index_u16(kwarg.key.name_id, call_pos)?);
                 }
                 self.code.set_location(call_pos, None);
-                self.code.emit_call_function_kw(0, &kwname_ids);
+                self.code.emit_call_function_kw(0, &kwname_ids)?;
             }
             ArgExprs::ArgsKargs {
                 args,
@@ -1523,14 +1644,14 @@ impl<'a> Compiler<'a> {
                     let mut kwname_ids = Vec::with_capacity(kw_count);
                     for kwarg in kw_args {
                         self.compile_expr(&kwarg.value)?;
-                        kwname_ids.push(u16::try_from(kwarg.key.name_id.index()).expect("name index exceeds u16"));
+                        kwname_ids.push(check_name_index_u16(kwarg.key.name_id, call_pos)?);
                     }
 
                     self.code.set_location(call_pos, None);
                     self.code.emit_call_function_kw(
                         u8::try_from(pos_count).expect("positional arg count exceeds u8"),
                         &kwname_ids,
-                    );
+                    )?;
                 }
             }
             ArgExprs::GeneralizedCall { args, kwargs } => {
@@ -1564,19 +1685,17 @@ impl<'a> Compiler<'a> {
                 self.compile_expr(arg)?;
             }
         }
-        self.code.emit_u16(
-            Opcode::BuildList,
-            u16::try_from(pos_count).expect("positional arg count exceeds u16"),
-        );
+        let pos_count_u16 = check_collection_size_u16(pos_count, call_pos)?;
+        self.code.emit_u16(Opcode::BuildList, pos_count_u16)?;
 
         // Extend with *args if present
         if let Some(var_args_expr) = var_args {
             self.compile_expr(var_args_expr)?;
-            self.code.emit(Opcode::ListExtend);
+            self.code.emit(Opcode::ListExtend)?;
         }
 
         // Convert list to tuple
-        self.code.emit(Opcode::ListToTuple);
+        self.code.emit(Opcode::ListToTuple)?;
 
         // 2. Build kwargs dict (if we have kwargs or var_kwargs)
         let has_kwargs = kwargs.is_some() || var_kwargs.is_some();
@@ -1586,29 +1705,27 @@ impl<'a> Compiler<'a> {
             if let Some(kwargs) = kwargs {
                 for kwarg in kwargs {
                     // Push key as interned string constant
-                    let key_const = self.code.add_const(Value::InternString(kwarg.key.name_id));
-                    self.code.emit_u16(Opcode::LoadConst, key_const);
+                    let key_const = self.code.add_const(Value::InternString(kwarg.key.name_id))?;
+                    self.code.emit_u16(Opcode::LoadConst, key_const)?;
                     // Push value
                     self.compile_expr(&kwarg.value)?;
                 }
             }
-            self.code.emit_u16(
-                Opcode::BuildDict,
-                u16::try_from(kw_count).expect("keyword count exceeds u16"),
-            );
+            let kw_count_u16 = check_collection_size_u16(kw_count, call_pos)?;
+            self.code.emit_u16(Opcode::BuildDict, kw_count_u16)?;
 
             // Merge **kwargs if present
             // Use 0xFFFF for func_name_id (like builtins) since we don't have a name
             if let Some(var_kwargs_expr) = var_kwargs {
                 self.compile_expr(var_kwargs_expr)?;
-                self.code.emit_u16(Opcode::DictMerge, 0xFFFF);
+                self.code.emit_u16(Opcode::DictMerge, 0xFFFF)?;
             }
         }
 
         // 3. Call the function
         self.code.set_location(call_pos, None);
         let flags = u8::from(has_kwargs);
-        self.code.emit_u8(Opcode::CallFunctionExtended, flags);
+        self.code.emit_u8(Opcode::CallFunctionExtended, flags)?;
         Ok(())
     }
 
@@ -1667,7 +1784,7 @@ impl<'a> Compiler<'a> {
     ) -> Result<(), CompileError> {
         // Get function name for error messages. Builtins use their real interned name
         // so duplicate-kwargs errors from **unpacking match CPython.
-        let func_name_id = self.get_callable_name_id(callable);
+        let func_name_id = self.get_callable_name_id(callable)?;
 
         // 1. Build args tuple
         // Push regular positional args and build list
@@ -1677,19 +1794,17 @@ impl<'a> Compiler<'a> {
                 self.compile_expr(arg)?;
             }
         }
-        self.code.emit_u16(
-            Opcode::BuildList,
-            u16::try_from(pos_count).expect("positional arg count exceeds u16"),
-        );
+        let pos_count_u16 = check_collection_size_u16(pos_count, call_pos)?;
+        self.code.emit_u16(Opcode::BuildList, pos_count_u16)?;
 
         // Extend with *args if present
         if let Some(var_args_expr) = var_args {
             self.compile_expr(var_args_expr)?;
-            self.code.emit(Opcode::ListExtend);
+            self.code.emit(Opcode::ListExtend)?;
         }
 
         // Convert list to tuple
-        self.code.emit(Opcode::ListToTuple);
+        self.code.emit(Opcode::ListToTuple)?;
 
         // 2. Build kwargs dict (if we have kwargs or var_kwargs)
         let has_kwargs = kwargs.is_some() || var_kwargs.is_some();
@@ -1699,28 +1814,26 @@ impl<'a> Compiler<'a> {
             if let Some(kwargs) = kwargs {
                 for kwarg in kwargs {
                     // Push key as interned string constant
-                    let key_const = self.code.add_const(Value::InternString(kwarg.key.name_id));
-                    self.code.emit_u16(Opcode::LoadConst, key_const);
+                    let key_const = self.code.add_const(Value::InternString(kwarg.key.name_id))?;
+                    self.code.emit_u16(Opcode::LoadConst, key_const)?;
                     // Push value
                     self.compile_expr(&kwarg.value)?;
                 }
             }
-            self.code.emit_u16(
-                Opcode::BuildDict,
-                u16::try_from(kw_count).expect("keyword count exceeds u16"),
-            );
+            let kw_count_u16 = check_collection_size_u16(kw_count, call_pos)?;
+            self.code.emit_u16(Opcode::BuildDict, kw_count_u16)?;
 
             // Merge **kwargs if present
             if let Some(var_kwargs_expr) = var_kwargs {
                 self.compile_expr(var_kwargs_expr)?;
-                self.code.emit_u16(Opcode::DictMerge, func_name_id);
+                self.code.emit_u16(Opcode::DictMerge, func_name_id)?;
             }
         }
 
         // 3. Call the function
         self.code.set_location(call_pos, None);
         let flags = u8::from(has_kwargs);
-        self.code.emit_u8(Opcode::CallFunctionExtended, flags);
+        self.code.emit_u8(Opcode::CallFunctionExtended, flags)?;
         Ok(())
     }
 
@@ -1731,10 +1844,10 @@ impl<'a> Compiler<'a> {
     /// When the callable is not a named local/global, we still try to resolve
     /// builtin functions, builtin exception constructors, and builtin types to
     /// their interned public names.
-    fn get_callable_name_id(&self, callable: &Callable) -> u16 {
+    fn get_callable_name_id(&self, callable: &Callable) -> Result<u16, CompileError> {
         match callable {
-            Callable::Name(ident) => u16::try_from(ident.name_id.index()).expect("name index exceeds u16"),
-            Callable::Builtin(builtin) => self.get_builtin_name_id(*builtin).unwrap_or(0xFFFF),
+            Callable::Name(ident) => check_name_index_u16(ident.name_id, ident.position),
+            Callable::Builtin(builtin) => Ok(self.get_builtin_name_id(*builtin).unwrap_or(0xFFFF)),
         }
     }
 
@@ -1769,37 +1882,27 @@ impl<'a> Compiler<'a> {
         args: &ArgExprs,
         call_pos: CodeRange,
     ) -> Result<(), CompileError> {
-        // Get the interned attribute name
+        // Get the interned attribute name, converted up-front so the limit check
+        // happens once per method call rather than at every emit-site below.
         let name_id = attr.string_id().expect("CallAttr requires interned attr name");
+        let name_idx = check_name_index_u16(name_id, call_pos)?;
 
         // Compile arguments based on the argument type
         match args {
             ArgExprs::Empty => {
                 self.code.set_location(call_pos, None);
-                self.code.emit_u16_u8(
-                    Opcode::CallAttr,
-                    u16::try_from(name_id.index()).expect("name index exceeds u16"),
-                    0,
-                );
+                self.code.emit_u16_u8(Opcode::CallAttr, name_idx, 0)?;
             }
             ArgExprs::One(arg) => {
                 self.compile_expr(arg)?;
                 self.code.set_location(call_pos, None);
-                self.code.emit_u16_u8(
-                    Opcode::CallAttr,
-                    u16::try_from(name_id.index()).expect("name index exceeds u16"),
-                    1,
-                );
+                self.code.emit_u16_u8(Opcode::CallAttr, name_idx, 1)?;
             }
             ArgExprs::Two(arg1, arg2) => {
                 self.compile_expr(arg1)?;
                 self.compile_expr(arg2)?;
                 self.code.set_location(call_pos, None);
-                self.code.emit_u16_u8(
-                    Opcode::CallAttr,
-                    u16::try_from(name_id.index()).expect("name index exceeds u16"),
-                    2,
-                );
+                self.code.emit_u16_u8(Opcode::CallAttr, name_idx, 2)?;
             }
             ArgExprs::Args(args) => {
                 // Check argument count limit
@@ -1814,11 +1917,7 @@ impl<'a> Compiler<'a> {
                 }
                 let arg_count = u8::try_from(args.len()).expect("argument count exceeds u8");
                 self.code.set_location(call_pos, None);
-                self.code.emit_u16_u8(
-                    Opcode::CallAttr,
-                    u16::try_from(name_id.index()).expect("name index exceeds u16"),
-                    arg_count,
-                );
+                self.code.emit_u16_u8(Opcode::CallAttr, name_idx, arg_count)?;
             }
             ArgExprs::Kwargs(kwargs) => {
                 // Keyword-only method call
@@ -1832,14 +1931,10 @@ impl<'a> Compiler<'a> {
                 let mut kwname_ids = Vec::with_capacity(kwargs.len());
                 for kwarg in kwargs {
                     self.compile_expr(&kwarg.value)?;
-                    kwname_ids.push(u16::try_from(kwarg.key.name_id.index()).expect("name index exceeds u16"));
+                    kwname_ids.push(check_name_index_u16(kwarg.key.name_id, call_pos)?);
                 }
                 self.code.set_location(call_pos, None);
-                self.code.emit_call_attr_kw(
-                    u16::try_from(name_id.index()).expect("name index exceeds u16"),
-                    0, // no positional args
-                    &kwname_ids,
-                );
+                self.code.emit_call_attr_kw(name_idx, 0, &kwname_ids)?;
             }
             ArgExprs::ArgsKargs {
                 args,
@@ -1888,55 +1983,55 @@ impl<'a> Compiler<'a> {
                 if let Some(kwargs) = kwargs {
                     for kwarg in kwargs {
                         self.compile_expr(&kwarg.value)?;
-                        kwname_ids.push(u16::try_from(kwarg.key.name_id.index()).expect("name index exceeds u16"));
+                        kwname_ids.push(check_name_index_u16(kwarg.key.name_id, call_pos)?);
                     }
                 }
 
                 self.code.set_location(call_pos, None);
                 self.code.emit_call_attr_kw(
-                    u16::try_from(name_id.index()).expect("name index exceeds u16"),
+                    name_idx,
                     u8::try_from(pos_count).expect("positional arg count exceeds u8"),
                     &kwname_ids,
-                );
+                )?;
             }
             ArgExprs::GeneralizedCall { args, kwargs } => {
                 // PEP 448: generalized unpacking on a method call.
                 // Receiver is already on the stack; build args tuple and kwargs dict,
                 // then emit CallAttrExtended.
-                let func_name_id = u16::try_from(name_id.index()).expect("name index exceeds u16");
+                let func_name_id = name_idx;
                 let has_kwargs = !kwargs.is_empty();
 
                 // 1. Build args tuple
-                self.code.emit_u16(Opcode::BuildList, 0);
+                self.code.emit_u16(Opcode::BuildList, 0)?;
                 for arg in args {
                     match arg {
                         CallArg::Value(e) => {
                             self.compile_expr(e)?;
-                            self.code.emit_u8(Opcode::ListAppend, 0);
+                            self.code.emit_u8(Opcode::ListAppend, 0)?;
                         }
                         CallArg::Unpack(e) => {
                             self.compile_expr(e)?;
-                            self.code.emit(Opcode::ListExtend);
+                            self.code.emit(Opcode::ListExtend)?;
                         }
                     }
                 }
-                self.code.emit(Opcode::ListToTuple);
+                self.code.emit(Opcode::ListToTuple)?;
 
                 // 2. Build kwargs dict (if any)
                 if has_kwargs {
-                    self.code.emit_u16(Opcode::BuildDict, 0);
+                    self.code.emit_u16(Opcode::BuildDict, 0)?;
                     for kwarg in kwargs {
                         match kwarg {
                             CallKwarg::Named(kw) => {
-                                let key_const = self.code.add_const(Value::InternString(kw.key.name_id));
-                                self.code.emit_u16(Opcode::LoadConst, key_const);
+                                let key_const = self.code.add_const(Value::InternString(kw.key.name_id))?;
+                                self.code.emit_u16(Opcode::LoadConst, key_const)?;
                                 self.compile_expr(&kw.value)?;
-                                self.code.emit_u16(Opcode::BuildDict, 1);
-                                self.code.emit_u16(Opcode::DictMerge, func_name_id);
+                                self.code.emit_u16(Opcode::BuildDict, 1)?;
+                                self.code.emit_u16(Opcode::DictMerge, func_name_id)?;
                             }
                             CallKwarg::Unpack(e) => {
                                 self.compile_expr(e)?;
-                                self.code.emit_u16(Opcode::DictMerge, func_name_id);
+                                self.code.emit_u16(Opcode::DictMerge, func_name_id)?;
                             }
                         }
                     }
@@ -1945,7 +2040,7 @@ impl<'a> Compiler<'a> {
                 // 3. Emit CallAttrExtended
                 self.code.set_location(call_pos, None);
                 let flags = u8::from(has_kwargs);
-                self.code.emit_u16_u8(Opcode::CallAttrExtended, func_name_id, flags);
+                self.code.emit_u16_u8(Opcode::CallAttrExtended, func_name_id, flags)?;
             }
         }
         Ok(())
@@ -1964,6 +2059,10 @@ impl<'a> Compiler<'a> {
         var_kwargs: Option<&ExprLoc>,
         call_pos: CodeRange,
     ) -> Result<(), CompileError> {
+        // Convert the attribute name id up front so the overflow check happens
+        // once and both `DictMerge` (for error messages) and `CallAttrExtended`
+        // can reuse the converted value.
+        let name_idx = check_name_index_u16(name_id, call_pos)?;
         // 1. Build args tuple
         // Push regular positional args and build list
         let pos_count = args.map_or(0, Vec::len);
@@ -1972,19 +2071,17 @@ impl<'a> Compiler<'a> {
                 self.compile_expr(arg)?;
             }
         }
-        self.code.emit_u16(
-            Opcode::BuildList,
-            u16::try_from(pos_count).expect("positional arg count exceeds u16"),
-        );
+        let pos_count_u16 = check_collection_size_u16(pos_count, call_pos)?;
+        self.code.emit_u16(Opcode::BuildList, pos_count_u16)?;
 
         // Extend with *args if present
         if let Some(var_args_expr) = var_args {
             self.compile_expr(var_args_expr)?;
-            self.code.emit(Opcode::ListExtend);
+            self.code.emit(Opcode::ListExtend)?;
         }
 
         // Convert list to tuple
-        self.code.emit(Opcode::ListToTuple);
+        self.code.emit(Opcode::ListToTuple)?;
 
         // 2. Build kwargs dict (if we have kwargs or var_kwargs)
         let has_kwargs = kwargs.is_some() || var_kwargs.is_some();
@@ -1994,33 +2091,27 @@ impl<'a> Compiler<'a> {
             if let Some(kwargs) = kwargs {
                 for kwarg in kwargs {
                     // Push key as interned string constant
-                    let key_const = self.code.add_const(Value::InternString(kwarg.key.name_id));
-                    self.code.emit_u16(Opcode::LoadConst, key_const);
+                    let key_const = self.code.add_const(Value::InternString(kwarg.key.name_id))?;
+                    self.code.emit_u16(Opcode::LoadConst, key_const)?;
                     // Push value
                     self.compile_expr(&kwarg.value)?;
                 }
             }
-            self.code.emit_u16(
-                Opcode::BuildDict,
-                u16::try_from(kw_count).expect("keyword count exceeds u16"),
-            );
+            let kw_count_u16 = check_collection_size_u16(kw_count, call_pos)?;
+            self.code.emit_u16(Opcode::BuildDict, kw_count_u16)?;
 
             // Merge **kwargs if present
             if let Some(var_kwargs_expr) = var_kwargs {
                 self.compile_expr(var_kwargs_expr)?;
                 // Use the method name for error messages
-                self.code.emit_u16(
-                    Opcode::DictMerge,
-                    u16::try_from(name_id.index()).expect("name index exceeds u16"),
-                );
+                self.code.emit_u16(Opcode::DictMerge, name_idx)?;
             }
         }
 
         // 3. Call the method with CallAttrExtended
         self.code.set_location(call_pos, None);
-        let name_idx = u16::try_from(name_id.index()).expect("name index exceeds u16");
         let flags = u8::from(has_kwargs);
-        self.code.emit_u16_u8(Opcode::CallAttrExtended, name_idx, flags);
+        self.code.emit_u16_u8(Opcode::CallAttrExtended, name_idx, flags)?;
         Ok(())
     }
 
@@ -2045,40 +2136,40 @@ impl<'a> Compiler<'a> {
         call_pos: CodeRange,
     ) -> Result<(), CompileError> {
         // 1. Build args tuple
-        self.code.emit_u16(Opcode::BuildList, 0);
+        self.code.emit_u16(Opcode::BuildList, 0)?;
         for arg in args {
             match arg {
                 CallArg::Value(e) => {
                     self.compile_expr(e)?;
-                    self.code.emit_u8(Opcode::ListAppend, 0);
+                    self.code.emit_u8(Opcode::ListAppend, 0)?;
                 }
                 CallArg::Unpack(e) => {
                     self.compile_expr(e)?;
-                    self.code.emit(Opcode::ListExtend);
+                    self.code.emit(Opcode::ListExtend)?;
                 }
             }
         }
-        self.code.emit(Opcode::ListToTuple);
+        self.code.emit(Opcode::ListToTuple)?;
 
         // 2. Build kwargs dict (if any)
         let has_kwargs = !kwargs.is_empty();
         if has_kwargs {
             // Start with an empty dict, then merge each kwarg one at a time via DictMerge
             // so that duplicates (including Named+Unpack ordering) raise TypeError correctly.
-            self.code.emit_u16(Opcode::BuildDict, 0);
+            self.code.emit_u16(Opcode::BuildDict, 0)?;
             for kwarg in kwargs {
                 match kwarg {
                     CallKwarg::Named(kw) => {
                         // Wrap key+value in a single-item dict, then merge into kwargs dict.
-                        let key_const = self.code.add_const(Value::InternString(kw.key.name_id));
-                        self.code.emit_u16(Opcode::LoadConst, key_const);
+                        let key_const = self.code.add_const(Value::InternString(kw.key.name_id))?;
+                        self.code.emit_u16(Opcode::LoadConst, key_const)?;
                         self.compile_expr(&kw.value)?;
-                        self.code.emit_u16(Opcode::BuildDict, 1);
-                        self.code.emit_u16(Opcode::DictMerge, func_name_id);
+                        self.code.emit_u16(Opcode::BuildDict, 1)?;
+                        self.code.emit_u16(Opcode::DictMerge, func_name_id)?;
                     }
                     CallKwarg::Unpack(e) => {
                         self.compile_expr(e)?;
-                        self.code.emit_u16(Opcode::DictMerge, func_name_id);
+                        self.code.emit_u16(Opcode::DictMerge, func_name_id)?;
                     }
                 }
             }
@@ -2087,7 +2178,7 @@ impl<'a> Compiler<'a> {
         // 3. Emit the extended call
         self.code.set_location(call_pos, None);
         let flags = u8::from(has_kwargs);
-        self.code.emit_u8(Opcode::CallFunctionExtended, flags);
+        self.code.emit_u8(Opcode::CallFunctionExtended, flags)?;
         Ok(())
     }
 
@@ -2102,7 +2193,7 @@ impl<'a> Compiler<'a> {
         // Compile iterator expression
         self.compile_expr(iter)?;
         // Convert to iterator
-        self.code.emit(Opcode::GetIter);
+        self.code.emit(Opcode::GetIter)?;
 
         // Loop start
         let loop_start = self.code.current_jump_target();
@@ -2115,18 +2206,18 @@ impl<'a> Compiler<'a> {
         });
 
         // ForIter: advance iterator or jump to end
-        let end_jump = self.code.emit_jump(Opcode::ForIter);
+        let end_jump = self.code.emit_jump(Opcode::ForIter)?;
 
         // Store current value to target (handles both single identifiers and tuple unpacking)
-        self.compile_unpack_target(target);
+        self.compile_unpack_target(target)?;
 
         // Compile body
         self.compile_block(body)?;
 
         // Jump back to loop start
-        self.code.emit_jump_to(Opcode::Jump, loop_start);
+        self.code.emit_jump_to(Opcode::Jump, loop_start)?;
         // End of loop - ForIter jumps here when iterator is exhausted
-        self.code.patch_jump(end_jump);
+        self.code.patch_jump(end_jump)?;
 
         // Pop loop info before compiling else block
         let loop_info = self.loop_stack.pop().expect("loop stack underflow");
@@ -2138,7 +2229,7 @@ impl<'a> Compiler<'a> {
 
         // Patch break jumps to here - AFTER the else block so break skips else
         for break_jump in loop_info.break_jumps {
-            self.code.patch_jump(break_jump);
+            self.code.patch_jump(break_jump)?;
         }
 
         Ok(())
@@ -2178,12 +2269,12 @@ impl<'a> Compiler<'a> {
         });
 
         self.compile_expr(test)?;
-        let end_jump = self.code.emit_jump(Opcode::JumpIfFalse);
+        let end_jump = self.code.emit_jump(Opcode::JumpIfFalse)?;
 
         self.compile_block(body)?;
-        self.code.emit_jump_to(Opcode::Jump, loop_start);
+        self.code.emit_jump_to(Opcode::Jump, loop_start)?;
 
-        self.code.patch_jump(end_jump);
+        self.code.patch_jump(end_jump)?;
         let loop_info = self.loop_stack.pop().expect("loop stack underflow");
 
         if !or_else.is_empty() {
@@ -2191,7 +2282,7 @@ impl<'a> Compiler<'a> {
         }
 
         for break_jump in loop_info.break_jumps {
-            self.code.patch_jump(break_jump);
+            self.code.patch_jump(break_jump)?;
         }
 
         Ok(())
@@ -2222,13 +2313,13 @@ impl<'a> Compiler<'a> {
         // If inside except handlers, clear each enclosing exception_stack
         // entry.
         for _ in 0..self.except_handler_depth {
-            self.code.emit(Opcode::ClearException);
+            self.code.emit(Opcode::ClearException)?;
         }
 
         // Pop the iterator only for `for` loops (has iterator on stack)
         // `while` loops don't have an iterator to pop
         if self.loop_stack[target_loop_depth].has_iterator_on_stack {
-            self.code.emit(Opcode::Pop);
+            self.code.emit(Opcode::Pop)?;
         }
 
         // Check if we need to go through any finally blocks
@@ -2239,7 +2330,7 @@ impl<'a> Compiler<'a> {
         {
             // Breaking from a loop that's outside (or at the start of) this try-finally,
             // so finally must run before the break
-            let jump = self.code.emit_jump(Opcode::Jump);
+            let jump = self.code.emit_jump(Opcode::Jump)?;
             finally_target.break_jumps.push(BreakContinueThruFinally {
                 jump,
                 target_loop_depth,
@@ -2247,7 +2338,7 @@ impl<'a> Compiler<'a> {
             return Ok(());
         }
         // No finally to go through, jump directly to loop end
-        let jump = self.code.emit_jump(Opcode::Jump);
+        let jump = self.code.emit_jump(Opcode::Jump)?;
         self.loop_stack[target_loop_depth].break_jumps.push(jump);
 
         Ok(())
@@ -2268,7 +2359,7 @@ impl<'a> Compiler<'a> {
         // If inside except handlers, clear each enclosing exception_stack
         // entry.
         for _ in 0..self.except_handler_depth {
-            self.code.emit(Opcode::ClearException);
+            self.code.emit(Opcode::ClearException)?;
         }
 
         // Check if we need to go through any finally blocks
@@ -2278,7 +2369,7 @@ impl<'a> Compiler<'a> {
         {
             // Continuing a loop that's outside (or at the start of) this try-finally,
             // so finally must run before the continue
-            let jump = self.code.emit_jump(Opcode::Jump);
+            let jump = self.code.emit_jump(Opcode::Jump)?;
             finally_target.continue_jumps.push(BreakContinueThruFinally {
                 jump,
                 target_loop_depth,
@@ -2287,7 +2378,7 @@ impl<'a> Compiler<'a> {
 
         // No finally to go through, jump directly to loop start
         let loop_start = self.loop_stack[target_loop_depth].start;
-        self.code.emit_jump_to(Opcode::Jump, loop_start);
+        self.code.emit_jump_to(Opcode::Jump, loop_start)?;
 
         Ok(())
     }
@@ -2301,13 +2392,17 @@ impl<'a> Compiler<'a> {
     /// Note: All items in the list jumped to the same finally block, so they all
     /// have the same starting point. After finally runs, we need to route each
     /// to its target loop, potentially through more finally blocks.
-    fn compile_control_flow_after_finally(&mut self, items: &[BreakContinueThruFinally], is_break: bool) {
+    fn compile_control_flow_after_finally(
+        &mut self,
+        items: &[BreakContinueThruFinally],
+        is_break: bool,
+    ) -> Result<(), CompileError> {
         // All items went through the same finally, now we need to dispatch to
         // potentially different loops. For simplicity, we assume all items in
         // a single finally target the same loop (the innermost one at the time).
         // This is always true since break/continue only targets the innermost loop.
         let Some(first) = items.first() else {
-            return;
+            return Ok(());
         };
         let target_loop_depth = first.target_loop_depth;
 
@@ -2316,7 +2411,7 @@ impl<'a> Compiler<'a> {
             && target_loop_depth < finally_target.loop_depth_at_entry
         {
             // Need to go through another finally
-            let jump = self.code.emit_jump(Opcode::Jump);
+            let jump = self.code.emit_jump(Opcode::Jump)?;
             let jump_info = BreakContinueThruFinally {
                 jump,
                 target_loop_depth,
@@ -2327,18 +2422,19 @@ impl<'a> Compiler<'a> {
                 // else continue
                 finally_target.continue_jumps.push(jump_info);
             }
-            return;
+            return Ok(());
         }
 
         // No more finally blocks, jump directly to the loop target
         if is_break {
-            let jump = self.code.emit_jump(Opcode::Jump);
+            let jump = self.code.emit_jump(Opcode::Jump)?;
             self.loop_stack[target_loop_depth].break_jumps.push(jump);
         } else {
             // else continue
             let loop_start = self.loop_stack[target_loop_depth].start;
-            self.code.emit_jump_to(Opcode::Jump, loop_start);
+            self.code.emit_jump_to(Opcode::Jump, loop_start)?;
         }
+        Ok(())
     }
 
     // ========================================================================
@@ -2365,14 +2461,13 @@ impl<'a> Compiler<'a> {
     /// ```
     fn compile_list_comp(&mut self, elt: &ExprLoc, generators: &[Comprehension]) -> Result<(), CompileError> {
         // Build empty list
-        self.code.emit_u16(Opcode::BuildList, 0);
+        self.code.emit_u16(Opcode::BuildList, 0)?;
 
         // Compile the nested generators, which will eventually append to the list
-        let depth = u8::try_from(generators.len()).expect("too many generators in list comprehension");
+        let depth = check_comp_generators(generators.len(), elt.position)?;
         self.compile_comprehension_generators(generators, 0, |compiler| {
             compiler.compile_expr(elt)?;
-            compiler.code.emit_u8(Opcode::ListAppend, depth);
-            Ok(())
+            compiler.code.emit_u8(Opcode::ListAppend, depth)
         })?;
 
         Ok(())
@@ -2381,14 +2476,13 @@ impl<'a> Compiler<'a> {
     /// Compiles a set comprehension: `{elt for target in iter if cond...}`
     fn compile_set_comp(&mut self, elt: &ExprLoc, generators: &[Comprehension]) -> Result<(), CompileError> {
         // Build empty set
-        self.code.emit_u16(Opcode::BuildSet, 0);
+        self.code.emit_u16(Opcode::BuildSet, 0)?;
 
         // Compile the nested generators, which will eventually add to the set
-        let depth = u8::try_from(generators.len()).expect("too many generators in set comprehension");
+        let depth = check_comp_generators(generators.len(), elt.position)?;
         self.compile_comprehension_generators(generators, 0, |compiler| {
             compiler.compile_expr(elt)?;
-            compiler.code.emit_u8(Opcode::SetAdd, depth);
-            Ok(())
+            compiler.code.emit_u8(Opcode::SetAdd, depth)
         })?;
 
         Ok(())
@@ -2402,15 +2496,14 @@ impl<'a> Compiler<'a> {
         generators: &[Comprehension],
     ) -> Result<(), CompileError> {
         // Build empty dict
-        self.code.emit_u16(Opcode::BuildDict, 0);
+        self.code.emit_u16(Opcode::BuildDict, 0)?;
 
         // Compile the nested generators, which will eventually set items in the dict
-        let depth = u8::try_from(generators.len()).expect("too many generators in dict comprehension");
+        let depth = check_comp_generators(generators.len(), key.position)?;
         self.compile_comprehension_generators(generators, 0, |compiler| {
             compiler.compile_expr(key)?;
             compiler.compile_expr(value)?;
-            compiler.code.emit_u8(Opcode::DictSetItem, depth);
-            Ok(())
+            compiler.code.emit_u8(Opcode::DictSetItem, depth)
         })?;
 
         Ok(())
@@ -2437,22 +2530,22 @@ impl<'a> Compiler<'a> {
 
         // Compile iterator expression
         self.compile_expr(&generator.iter)?;
-        self.code.emit(Opcode::GetIter);
+        self.code.emit(Opcode::GetIter)?;
 
         // Loop start
         let loop_start = self.code.current_jump_target();
 
         // FOR_ITER: advance iterator or jump to end
-        let end_jump = self.code.emit_jump(Opcode::ForIter);
+        let end_jump = self.code.emit_jump(Opcode::ForIter)?;
 
         // Store current value to target (single variable or tuple unpacking)
-        self.compile_unpack_target(&generator.target);
+        self.compile_unpack_target(&generator.target)?;
 
         // Compile filter conditions - jump back to loop start if any fails
         for cond in &generator.ifs {
             self.compile_expr(cond)?;
             // If condition is false, skip to next iteration
-            self.code.emit_jump_to(Opcode::JumpIfFalse, loop_start);
+            self.code.emit_jump_to(Opcode::JumpIfFalse, loop_start)?;
         }
 
         // Either recurse for inner generator, or emit body
@@ -2465,8 +2558,8 @@ impl<'a> Compiler<'a> {
         }
 
         // Jump back to loop start
-        self.code.emit_jump_to(Opcode::Jump, loop_start);
-        self.code.patch_jump(end_jump);
+        self.code.emit_jump_to(Opcode::Jump, loop_start)?;
+        self.code.patch_jump(end_jump)?;
 
         Ok(())
     }
@@ -2476,16 +2569,16 @@ impl<'a> Compiler<'a> {
     /// For single identifiers: emits a simple store.
     /// For nested tuples: emits `UnpackSequence` (or `UnpackEx` with starred) and recursively
     /// handles each sub-target.
-    fn compile_unpack_target(&mut self, target: &UnpackTarget) {
+    fn compile_unpack_target(&mut self, target: &UnpackTarget) -> Result<(), CompileError> {
         match target {
             UnpackTarget::Name(ident) => {
                 // Single identifier - just store directly
-                self.compile_store(ident);
+                self.compile_store(ident)?;
             }
             UnpackTarget::Starred(ident) => {
                 // Starred target by itself (shouldn't happen at top level normally)
                 // Just store as if it were a name
-                self.compile_store(ident);
+                self.compile_store(ident)?;
             }
             UnpackTarget::Tuple { targets, position } => {
                 // Check if there's a starred target
@@ -2495,22 +2588,23 @@ impl<'a> Compiler<'a> {
 
                 if let Some(star_idx) = star_idx {
                     // Has starred target - use UnpackEx
-                    let before = u8::try_from(star_idx).expect("too many targets before star");
-                    let after = u8::try_from(targets.len() - star_idx - 1).expect("too many targets after star");
-                    self.code.emit_u8_u8(Opcode::UnpackEx, before, after);
+                    let before = check_unpack_targets(star_idx, *position)?;
+                    let after = check_unpack_targets(targets.len() - star_idx - 1, *position)?;
+                    self.code.emit_u8_u8(Opcode::UnpackEx, before, after)?;
                 } else {
                     // No starred target - use UnpackSequence
-                    let count = u8::try_from(targets.len()).expect("too many targets in nested unpack");
-                    self.code.emit_u8(Opcode::UnpackSequence, count);
+                    let count = check_unpack_targets(targets.len(), *position)?;
+                    self.code.emit_u8(Opcode::UnpackSequence, count)?;
                 }
 
                 // After UnpackSequence/UnpackEx, values are on stack with first item on top
                 // Store them in order, recursively handling further nesting
                 for target in targets {
-                    self.compile_unpack_target(target);
+                    self.compile_unpack_target(target)?;
                 }
             }
         }
+        Ok(())
     }
 
     /// Compiles a single assignment step, assuming the value to assign is on top of stack.
@@ -2522,7 +2616,7 @@ impl<'a> Compiler<'a> {
     /// chained forms.
     fn compile_assign_target(&mut self, target: &AssignTarget) -> Result<(), CompileError> {
         match target {
-            AssignTarget::Name(ident) => self.compile_store(ident),
+            AssignTarget::Name(ident) => self.compile_store(ident)?,
             AssignTarget::Subscript {
                 target,
                 index,
@@ -2536,7 +2630,7 @@ impl<'a> Compiler<'a> {
             AssignTarget::Unpack {
                 targets,
                 targets_position,
-            } => self.emit_unpack_store(targets, *targets_position),
+            } => self.emit_unpack_store(targets, *targets_position)?,
         }
         Ok(())
     }
@@ -2555,7 +2649,7 @@ impl<'a> Compiler<'a> {
         self.compile_expr(target)?;
         self.compile_expr(index)?;
         self.code.set_location(target_position, None);
-        self.code.emit(Opcode::StoreSubscr);
+        self.code.emit(Opcode::StoreSubscr)?;
         Ok(())
     }
 
@@ -2582,12 +2676,10 @@ impl<'a> Compiler<'a> {
                 target_position,
             ));
         };
+        let name_idx = check_name_index_u16(name_id, target_position)?;
         self.compile_expr(object)?;
         self.code.set_location(target_position, None);
-        self.code.emit_u16(
-            Opcode::StoreAttr,
-            u16::try_from(name_id.index()).expect("name index exceeds u16"),
-        );
+        self.code.emit_u16(Opcode::StoreAttr, name_idx)?;
         Ok(())
     }
 
@@ -2597,20 +2689,21 @@ impl<'a> Compiler<'a> {
     /// (no starred target) and `UnpackEx` (exactly one starred target), then stores the
     /// unpacked values into each sub-target — recursing through nested tuple patterns.
     /// Shared between `Node::UnpackAssign` and chained-assignment unpack steps.
-    fn emit_unpack_store(&mut self, targets: &[UnpackTarget], targets_position: CodeRange) {
+    fn emit_unpack_store(&mut self, targets: &[UnpackTarget], targets_position: CodeRange) -> Result<(), CompileError> {
         let star_idx = targets.iter().position(|t| matches!(t, UnpackTarget::Starred(_)));
         self.code.set_location(targets_position, None);
         if let Some(star_idx) = star_idx {
-            let before = u8::try_from(star_idx).expect("too many targets before star");
-            let after = u8::try_from(targets.len() - star_idx - 1).expect("too many targets after star");
-            self.code.emit_u8_u8(Opcode::UnpackEx, before, after);
+            let before = check_unpack_targets(star_idx, targets_position)?;
+            let after = check_unpack_targets(targets.len() - star_idx - 1, targets_position)?;
+            self.code.emit_u8_u8(Opcode::UnpackEx, before, after)?;
         } else {
-            let count = u8::try_from(targets.len()).expect("too many targets in unpack");
-            self.code.emit_u8(Opcode::UnpackSequence, count);
+            let count = check_unpack_targets(targets.len(), targets_position)?;
+            self.code.emit_u8(Opcode::UnpackSequence, count)?;
         }
         for t in targets {
-            self.compile_unpack_target(t);
+            self.compile_unpack_target(t)?;
         }
+        Ok(())
     }
 
     // ========================================================================
@@ -2622,25 +2715,25 @@ impl<'a> Compiler<'a> {
         // Compile test
         self.compile_expr(test)?;
         // Jump over raise if truthy
-        let skip_jump = self.code.emit_jump(Opcode::JumpIfTrue);
+        let skip_jump = self.code.emit_jump(Opcode::JumpIfTrue)?;
 
         // Raise AssertionError
         let exc_idx = self
             .code
-            .add_const(Value::Builtin(Builtins::ExcType(ExcType::AssertionError)));
-        self.code.emit_u16(Opcode::LoadConst, exc_idx);
+            .add_const(Value::Builtin(Builtins::ExcType(ExcType::AssertionError)))?;
+        self.code.emit_u16(Opcode::LoadConst, exc_idx)?;
 
         if let Some(msg_expr) = msg {
             // Call AssertionError(msg)
             self.compile_expr(msg_expr)?;
-            self.code.emit_u8(Opcode::CallFunction, 1);
+            self.code.emit_u8(Opcode::CallFunction, 1)?;
         } else {
             // Call AssertionError()
-            self.code.emit_u8(Opcode::CallFunction, 0);
+            self.code.emit_u8(Opcode::CallFunction, 0)?;
         }
 
-        self.code.emit(Opcode::Raise);
-        self.code.patch_jump(skip_jump);
+        self.code.emit(Opcode::Raise)?;
+        self.code.patch_jump(skip_jump)?;
         Ok(())
     }
 
@@ -2656,8 +2749,8 @@ impl<'a> Compiler<'a> {
             match part {
                 FStringPart::Literal(string_id) => {
                     // Push the interned string as a constant
-                    let const_idx = self.code.add_const(Value::InternString(*string_id));
-                    self.code.emit_u16(Opcode::LoadConst, const_idx);
+                    let const_idx = self.code.add_const(Value::InternString(*string_id))?;
+                    self.code.emit_u16(Opcode::LoadConst, const_idx)?;
                     count += 1;
                 }
                 FStringPart::Interpolation {
@@ -2668,8 +2761,8 @@ impl<'a> Compiler<'a> {
                 } => {
                     // If debug prefix present, push it first
                     if let Some(prefix_id) = debug_prefix {
-                        let const_idx = self.code.add_const(Value::InternString(*prefix_id));
-                        self.code.emit_u16(Opcode::LoadConst, const_idx);
+                        let const_idx = self.code.add_const(Value::InternString(*prefix_id))?;
+                        self.code.emit_u16(Opcode::LoadConst, const_idx)?;
                         count += 1;
                     }
 
@@ -2685,7 +2778,7 @@ impl<'a> Compiler<'a> {
 
                     // Emit FormatValue with appropriate flags
                     let flags = self.compile_format_value(effective_conversion, format_spec.as_ref())?;
-                    self.code.emit_u8(Opcode::FormatValue, flags);
+                    self.code.emit_u8(Opcode::FormatValue, flags)?;
                     count += 1;
                 }
             }
@@ -2720,8 +2813,8 @@ impl<'a> Compiler<'a> {
                 // Push the raw encoded form; the static-spec flag tells the
                 // VM to read it back via decode_format_spec without inspecting
                 // the Value variant.
-                let const_idx = self.code.add_const(Value::Int(*encoded));
-                self.code.emit_u16(Opcode::LoadConst, const_idx);
+                let const_idx = self.code.add_const(Value::Int(*encoded))?;
+                self.code.emit_u16(Opcode::LoadConst, const_idx)?;
                 Ok(conv_bits | FORMAT_VALUE_HAS_SPEC | FORMAT_VALUE_STATIC_SPEC)
             }
             Some(FormatSpec::Dynamic(dynamic_parts)) => {
@@ -2729,7 +2822,7 @@ impl<'a> Compiler<'a> {
                 // Then parse it at runtime
                 let part_count = self.compile_fstring_parts(dynamic_parts)?;
                 if part_count > 1 {
-                    self.code.emit_u16(Opcode::BuildFString, part_count);
+                    self.code.emit_u16(Opcode::BuildFString, part_count)?;
                 }
                 // Format spec string is now on stack
                 Ok(conv_bits | FORMAT_VALUE_HAS_SPEC)
@@ -2748,10 +2841,10 @@ impl<'a> Compiler<'a> {
         if let Some(expr) = expr {
             self.compile_expr(expr)?;
         } else {
-            self.code.emit(Opcode::LoadNone);
+            self.code.emit(Opcode::LoadNone)?;
         }
 
-        self.compile_return_routing();
+        self.compile_return_routing()?;
 
         Ok(())
     }
@@ -2779,22 +2872,24 @@ impl<'a> Compiler<'a> {
     ///
     /// The remaining handlers are cleared further out by the finally
     /// trailers in [`compile_try`] as control flows through them.
-    fn compile_return_routing(&mut self) {
+    fn compile_return_routing(&mut self) -> Result<(), CompileError> {
         let target_depth = self
             .finally_targets
             .last()
             .map_or(0, |t| t.except_handler_depth_at_entry);
 
         for _ in 0..(self.except_handler_depth - target_depth) {
-            self.code.emit(Opcode::ClearException);
+            self.code.emit(Opcode::ClearException)?;
         }
 
         if let Some(finally_target) = self.finally_targets.last_mut() {
-            let jump = self.code.emit_jump(Opcode::Jump);
+            let jump = self.code.emit_jump(Opcode::Jump)?;
             finally_target.return_jumps.push(jump);
         } else {
-            self.code.emit(Opcode::ReturnValue);
+            self.code.emit(Opcode::ReturnValue)?;
         }
+
+        Ok(())
     }
 
     /// Compiles a try/except/else/finally block.
@@ -2845,7 +2940,7 @@ impl<'a> Compiler<'a> {
         // frame's exception_stack entries that should be active inside the
         // try body. The VM uses this on unwind to drain entries left
         // behind by abandoned-but-trailer-skipped handlers.
-        let try_exc_stack_count = u16::try_from(self.except_handler_depth).expect("except_handler_depth exceeds u16");
+        let try_exc_stack_count = self.except_handler_depth;
 
         // If there's a finally block, track returns/break/continue inside try/handlers/else
         if has_finally {
@@ -2863,7 +2958,7 @@ impl<'a> Compiler<'a> {
         self.compile_block(&try_block.body)?;
 
         // Jump to else/finally if no exception (skip handlers)
-        let after_try_jump = self.code.emit_jump(Opcode::Jump);
+        let after_try_jump = self.code.emit_jump(Opcode::Jump)?;
         // End of the try-body region for the exception table. This is past
         // the `after_try_jump` if it was emitted, so an exception that fires
         // up to and including that Jump still routes to the handler.
@@ -2897,9 +2992,9 @@ impl<'a> Compiler<'a> {
             // But we can't easily save the exception, so we use a different approach:
             // The exception is already on the exception_stack from handle_exception,
             // so we can just pop from operand stack, run finally, then reraise.
-            self.code.emit(Opcode::Pop); // Pop exception from operand stack
+            self.code.emit(Opcode::Pop)?; // Pop exception from operand stack
             self.compile_block(&try_block.finally)?;
-            self.code.emit(Opcode::Reraise); // Re-raise from exception_stack
+            self.code.emit(Opcode::Reraise)?; // Re-raise from exception_stack
             Some(cleanup_start)
         } else {
             None
@@ -2916,10 +3011,10 @@ impl<'a> Compiler<'a> {
             } else {
                 let start = self.code.current_offset();
                 for jump in finally_target.return_jumps {
-                    self.code.patch_jump(jump);
+                    self.code.patch_jump(jump)?;
                 }
                 self.compile_block(&try_block.finally)?;
-                self.compile_return_routing();
+                self.compile_return_routing()?;
                 Some(start)
             };
 
@@ -2929,21 +3024,21 @@ impl<'a> Compiler<'a> {
             // - Jump directly to the loop's break target
             if !finally_target.break_jumps.is_empty() {
                 for break_info in &finally_target.break_jumps {
-                    self.code.patch_jump(break_info.jump);
+                    self.code.patch_jump(break_info.jump)?;
                 }
                 self.compile_block(&try_block.finally)?;
                 // After finally, compile the break again (handles nested finally or direct jump)
-                self.compile_control_flow_after_finally(&finally_target.break_jumps, true);
+                self.compile_control_flow_after_finally(&finally_target.break_jumps, true)?;
             }
 
             // === Finally with continue path ===
             if !finally_target.continue_jumps.is_empty() {
                 for continue_info in &finally_target.continue_jumps {
-                    self.code.patch_jump(continue_info.jump);
+                    self.code.patch_jump(continue_info.jump)?;
                 }
                 self.compile_block(&try_block.finally)?;
                 // After finally, compile the continue again (handles nested finally or direct jump)
-                self.compile_control_flow_after_finally(&finally_target.continue_jumps, false);
+                self.compile_control_flow_after_finally(&finally_target.continue_jumps, false)?;
             }
 
             return_start
@@ -2952,7 +3047,7 @@ impl<'a> Compiler<'a> {
         };
 
         // === Else block (runs if no exception) ===
-        self.code.patch_jump(after_try_jump);
+        self.code.patch_jump(after_try_jump)?;
         let else_start = self.code.current_offset();
         if has_else {
             self.compile_block(&try_block.or_else)?;
@@ -2962,7 +3057,7 @@ impl<'a> Compiler<'a> {
         // === Normal finally path (no exception pending, no return) ===
         // Patch all jumps from handlers to go here
         for jump in finally_jumps {
-            self.code.patch_jump(jump);
+            self.code.patch_jump(jump)?;
         }
 
         if has_finally {
@@ -2976,13 +3071,8 @@ impl<'a> Compiler<'a> {
         // exception_stack_count = try_exc_stack_count: entering the try body
         // adds no handler entries.
         if has_handlers || has_finally {
-            self.code.add_exception_entry(ExceptionEntry::new(
-                try_start,
-                try_end,
-                handler_start,
-                stack_depth,
-                try_exc_stack_count,
-            ));
+            self.code
+                .add_exception_entry(try_start, try_end, handler_start, stack_depth, try_exc_stack_count)?;
         }
 
         // Entry 2: Handler dispatch -> finally cleanup (only if has_finally).
@@ -2990,39 +3080,34 @@ impl<'a> Compiler<'a> {
         // exception was pushed onto exception_stack by entry 1's catch and
         // is still active throughout handler dispatch.
         if let Some(cleanup_start) = finally_cleanup_start {
-            self.code.add_exception_entry(ExceptionEntry::new(
+            self.code.add_exception_entry(
                 handler_start,
                 handler_dispatch_end,
                 cleanup_start,
                 stack_depth,
                 try_exc_stack_count + 1,
-            ));
+            )?;
         }
 
         // Entry 3: Finally with return -> finally cleanup
         // If an exception occurs while running finally (in the return path), catch it
         if let (Some(return_start), Some(cleanup_start)) = (finally_with_return_start, finally_cleanup_start) {
             // End at else_start (before else block).
-            self.code.add_exception_entry(ExceptionEntry::new(
+            self.code.add_exception_entry(
                 return_start,
                 else_start,
                 cleanup_start,
                 stack_depth,
                 try_exc_stack_count,
-            ));
+            )?;
         }
 
         // Entry 4: Else block -> finally cleanup (only if has_finally and
         // has_else). Else runs when no exception was raised, so no handler
         // pushed an entry: exception_stack_count = try_exc_stack_count.
         if has_else && let Some(cleanup_start) = finally_cleanup_start {
-            self.code.add_exception_entry(ExceptionEntry::new(
-                else_start,
-                else_end,
-                cleanup_start,
-                stack_depth,
-                try_exc_stack_count,
-            ));
+            self.code
+                .add_exception_entry(else_start, else_end, cleanup_start, stack_depth, try_exc_stack_count)?;
         }
 
         Ok(())
@@ -3055,8 +3140,8 @@ impl<'a> Compiler<'a> {
                 // exception (doesn't pop it), so [exception] stays on the
                 // stack across the check on both match and no-match paths.
                 self.compile_expr(exc_type)?;
-                self.code.emit(Opcode::CheckExcMatch);
-                Some(self.code.emit_jump(Opcode::JumpIfFalse))
+                self.code.emit(Opcode::CheckExcMatch)?;
+                Some(self.code.emit_jump(Opcode::JumpIfFalse)?)
             } else {
                 // Bare `except:` (must be the last handler per Python rules).
                 None
@@ -3065,9 +3150,9 @@ impl<'a> Compiler<'a> {
             // Match path: consume exception from the stack and store
             // to target if present.
             if let Some(name) = &handler.name {
-                self.compile_store(name);
+                self.compile_store(name)?;
             } else {
-                self.code.emit(Opcode::Pop);
+                self.code.emit(Opcode::Pop)?;
             }
 
             self.except_handler_depth += 1;
@@ -3075,21 +3160,21 @@ impl<'a> Compiler<'a> {
             self.except_handler_depth -= 1;
 
             if let Some(name) = &handler.name {
-                self.compile_delete(name);
+                self.compile_delete(name)?;
             }
 
-            self.code.emit(Opcode::ClearException);
-            finally_jumps.push(self.code.emit_jump(Opcode::Jump));
+            self.code.emit(Opcode::ClearException)?;
+            finally_jumps.push(self.code.emit_jump(Opcode::Jump)?);
 
             if let Some(no_match_jump) = no_match_jump {
                 // No-match landing: stack is [exception]. Falls through into
                 // the next handler's check (or the post-loop `Reraise`).
-                self.code.patch_jump(no_match_jump);
+                self.code.patch_jump(no_match_jump)?;
             }
         }
 
         // No handler matched - reraise the exception
-        self.code.emit(Opcode::Reraise);
+        self.code.emit(Opcode::Reraise)?;
 
         Ok(())
     }
@@ -3098,29 +3183,43 @@ impl<'a> Compiler<'a> {
     ///
     /// At module level, `Local` and `LocalUnassigned` scopes emit `DeleteGlobal`
     /// because module-level locals live in the globals array.
-    fn compile_delete(&mut self, target: &Identifier) {
-        let slot = u16::try_from(target.namespace_id().index()).expect("local slot exceeds u16");
+    ///
+    /// Function-scope `Local` deletes are limited to the first 256 slots
+    /// because the only available opcode (`DeleteLocal`) takes a `u8`
+    /// operand; a wide variant has not been added because slot-255 deletes
+    /// are essentially unreachable in real code (each `except ... as e`
+    /// implicitly emits a delete on the bound name, but functions with 256+
+    /// locals plus an `except as` are exotic enough that we surface a
+    /// `SyntaxError` rather than introduce a new opcode just for this).
+    fn compile_delete(&mut self, target: &Identifier) -> Result<(), CompileError> {
+        let slot = target.namespace_id().as_u16();
         match target.scope {
             NameScope::Local | NameScope::LocalUnassigned => {
                 if self.is_module_scope {
-                    self.code.emit_u16(Opcode::DeleteGlobal, slot);
+                    self.code.emit_u16(Opcode::DeleteGlobal, slot)?;
                 } else if let Ok(s) = u8::try_from(slot) {
-                    self.code.emit_u8(Opcode::DeleteLocal, s);
+                    self.code.emit_u8(Opcode::DeleteLocal, s)?;
                 } else {
-                    // Wide variant not implemented yet
-                    todo!("DeleteLocalW for slot > 255");
+                    return Err(CompileError::new(
+                        format!(
+                            "cannot delete local variable in function with more than {} locals (slot {slot})",
+                            u16::from(u8::MAX) + 1,
+                        ),
+                        target.position,
+                    ));
                 }
             }
             NameScope::Global => {
-                self.code.emit_u16(Opcode::DeleteGlobal, slot);
+                self.code.emit_u16(Opcode::DeleteGlobal, slot)?;
             }
             NameScope::Cell => {
                 // Delete cell not commonly needed
                 // For now, just store None
-                self.code.emit(Opcode::LoadNone);
-                self.compile_store(target);
+                self.code.emit(Opcode::LoadNone)?;
+                self.compile_store(target)?;
             }
         }
+        Ok(())
     }
 }
 
@@ -3143,7 +3242,7 @@ impl CompileError {
     /// Creates a new compile error with the given message and position.
     ///
     /// Defaults to `SyntaxError` exception type.
-    fn new(message: impl Into<Cow<'static, str>>, position: CodeRange) -> Self {
+    pub(super) fn new(message: impl Into<Cow<'static, str>>, position: CodeRange) -> Self {
         Self {
             message: message.into(),
             position,

@@ -357,6 +357,279 @@ def test_write_text_to_directory_direct():
 
 
 # =============================================================================
+# Appending Files
+# =============================================================================
+
+
+def test_append_text_non_ascii_returns_char_count():
+    """path_append_text returns the number of characters, not encoded bytes.
+
+    Regression: 'β' is 1 character but 2 UTF-8 bytes; the old implementation
+    forwarded its return through path_append_bytes which returns byte length,
+    so non-ASCII text appends reported the wrong count and diverged from
+    path_write_text's contract.
+    """
+    fs = OSAccess([MemoryFile('/test/file.txt', content='start ')])
+
+    # 'αβγ': 3 characters, 6 UTF-8 bytes — make sure we get 3, not 6.
+    assert fs.path_append_text(P('/test/file.txt'), 'αβγ') == snapshot(3)
+    assert fs.path_read_text(P('/test/file.txt')) == snapshot('start αβγ')
+
+
+def test_append_bytes_returns_byte_count():
+    """path_append_bytes returns the byte length (no UTF-8 transcoding involved)."""
+    fs = OSAccess([MemoryFile('/test/file.bin', content=b'start ')])
+
+    # 6 UTF-8 bytes of 'αβγ' — byte count, as documented.
+    assert fs.path_append_bytes(P('/test/file.bin'), 'αβγ'.encode()) == snapshot(6)
+    assert fs.path_read_bytes(P('/test/file.bin')) == snapshot('start αβγ'.encode())
+
+
+# =============================================================================
+# open() — via Monty (exercises Open + downstream read/write/append OS calls)
+# =============================================================================
+
+
+def test_open_read_text():
+    """open(path) returns a TextIOWrapper whose .read() yields the file contents."""
+    fs = OSAccess([MemoryFile('/data/hello.txt', content='hello world')])
+    code = """
+f = open('/data/hello.txt')
+data = f.read()
+f.close()
+data
+"""
+    assert Monty(code).run(os=fs) == snapshot('hello world')
+
+
+def test_open_read_bytes():
+    """open(path, 'rb') yields bytes regardless of the underlying file content type."""
+    fs = OSAccess([MemoryFile('/data/blob.bin', content=b'\x00\x01\x02')])
+    code = """
+f = open('/data/blob.bin', 'rb')
+data = f.read()
+f.close()
+data
+"""
+    assert Monty(code).run(os=fs) == snapshot(b'\x00\x01\x02')
+
+
+def test_open_missing_file_raises_file_not_found():
+    """open(missing) raises FileNotFoundError at open time, not on first read."""
+    fs = OSAccess()
+    code = """
+try:
+    open('/data/missing.txt')
+    result = 'no error'
+except FileNotFoundError as e:
+    result = str(e)
+result
+"""
+    assert Monty(code).run(os=fs) == snapshot("[Errno 2] No such file or directory: '/data/missing.txt'")
+
+
+def test_open_directory_raises_is_a_directory():
+    """open(dir) raises IsADirectoryError at open time."""
+    fs = OSAccess([MemoryFile('/data/inner/file.txt', content='x')])
+    code = """
+try:
+    open('/data/inner')
+    result = 'no error'
+except IsADirectoryError as e:
+    result = str(e)
+result
+"""
+    assert Monty(code).run(os=fs) == snapshot("[Errno 21] Is a directory: '/data/inner'")
+
+
+def test_open_write_truncates_existing():
+    """open(path, 'w') truncates immediately, even before any write."""
+    fs = OSAccess([MemoryFile('/data/file.txt', content='previous')])
+    code = """
+open('/data/file.txt', 'w').close()
+"""
+    Monty(code).run(os=fs)
+    assert fs.path_read_text(P('/data/file.txt')) == snapshot('')
+
+
+def test_open_write_creates_missing():
+    """open(path, 'w') creates the file even if no write happens."""
+    fs = OSAccess()
+    Monty("open('/created.txt', 'w').close()").run(os=fs)
+    assert fs.path_exists(P('/created.txt')) is True
+    assert fs.path_read_text(P('/created.txt')) == snapshot('')
+
+
+def test_open_write_then_write_data():
+    """open(path, 'w') followed by f.write() persists the new content."""
+    fs = OSAccess([MemoryFile('/data/file.txt', content='old')])
+    code = """
+f = open('/data/file.txt', 'w')
+n = f.write('new content')
+f.close()
+n
+"""
+    assert Monty(code).run(os=fs) == snapshot(11)
+    assert fs.path_read_text(P('/data/file.txt')) == snapshot('new content')
+
+
+def test_open_append_preserves_existing():
+    """open(path, 'a') does not truncate; the first write appends after existing bytes."""
+    fs = OSAccess([MemoryFile('/data/log.txt', content='keep me')])
+    code = """
+f = open('/data/log.txt', 'a')
+f.write('!')
+f.close()
+"""
+    Monty(code).run(os=fs)
+    assert fs.path_read_text(P('/data/log.txt')) == snapshot('keep me!')
+
+
+def test_open_append_creates_missing():
+    """open(path, 'a') creates the file when it doesn't exist yet."""
+    fs = OSAccess()
+    code = """
+f = open('/fresh.txt', 'a')
+f.write('seed')
+f.close()
+"""
+    Monty(code).run(os=fs)
+    assert fs.path_read_text(P('/fresh.txt')) == snapshot('seed')
+
+
+def test_open_append_text_non_ascii_returns_char_count():
+    """Regression: append text via open() returns character count, not bytes."""
+    fs = OSAccess([MemoryFile('/data/file.txt', content='start ')])
+    code = """
+f = open('/data/file.txt', 'a')
+n = f.write('αβγ')
+f.close()
+n
+"""
+    assert Monty(code).run(os=fs) == snapshot(3)
+    assert fs.path_read_text(P('/data/file.txt')) == snapshot('start αβγ')
+
+
+def test_open_binary_write_returns_byte_count():
+    """open(path, 'wb') write returns the byte count."""
+    fs = OSAccess()
+    code = """
+f = open('/out.bin', 'wb')
+n = f.write(b'\\x10\\x11\\x12')
+f.close()
+n
+"""
+    assert Monty(code).run(os=fs) == snapshot(3)
+    assert fs.path_read_bytes(P('/out.bin')) == snapshot(b'\x10\x11\x12')
+
+
+def test_open_write_to_read_only_raises():
+    """Writing to a file opened in read mode raises OSError('not writable')."""
+    fs = OSAccess([MemoryFile('/data/file.txt', content='x')])
+    code = """
+f = open('/data/file.txt', 'r')
+try:
+    f.write('y')
+    result = 'no error'
+except OSError as e:
+    result = str(e)
+result
+"""
+    assert Monty(code).run(os=fs) == snapshot('not writable')
+
+
+def test_open_read_from_write_only_raises():
+    """Reading from a file opened in write mode raises OSError('not readable')."""
+    fs = OSAccess([MemoryFile('/data/file.txt', content='x')])
+    code = """
+f = open('/data/file.txt', 'w')
+try:
+    f.read()
+    result = 'no error'
+except OSError as e:
+    result = str(e)
+result
+"""
+    assert Monty(code).run(os=fs) == snapshot('not readable')
+
+
+def test_open_keyword_args():
+    """open(file=..., mode=..., encoding=...) accepts and ignores benign kwargs."""
+    fs = OSAccess([MemoryFile('/data/hello.txt', content='hi')])
+    code = """
+f = open(file='/data/hello.txt', mode='r', encoding='utf-8')
+data = f.read()
+f.close()
+data
+"""
+    assert Monty(code).run(os=fs) == snapshot('hi')
+
+
+# =============================================================================
+# open() — via direct API on OSAccess
+# =============================================================================
+
+
+def test_path_open_returns_monty_file_handle():
+    """path_open returns a MontyFileHandle exposing the canonical mode."""
+    from pydantic_monty import MontyFileHandle
+
+    fs = OSAccess([MemoryFile('/data/file.txt', content='x')])
+    handle = fs.path_open(P('/data/file.txt'), 'r')
+    assert isinstance(handle, MontyFileHandle)
+    assert handle.path == snapshot('/data/file.txt')
+    assert handle.mode == snapshot('r')
+    assert (handle.binary, handle.readable, handle.writable) == snapshot((False, True, False))
+
+
+def test_path_open_normalizes_mode():
+    """`mode='rt'` is canonicalized to `'r'`. `+` modes are rejected (see
+    `test_path_open_rejects_plus_modes`)."""
+    fs = OSAccess([MemoryFile('/data/file.txt', content='x')])
+    assert fs.path_open(P('/data/file.txt'), 'rt').mode == snapshot('r')
+
+
+def test_path_open_rejects_plus_modes():
+    """`+` (update) modes are rejected — Monty's wrapper has no read-position
+    tracking, so honoring them would silently destroy data on the first write."""
+    fs = OSAccess([MemoryFile('/data/file.txt', content='x')])
+    for mode in ('r+', 'rb+', 'r+b', 'w+', 'wb+', 'a+', 'ab+'):
+        with pytest.raises(ValueError) as exc_info:
+            fs.path_open(P('/data/file.txt'), mode)
+        assert exc_info.value.args[0] == snapshot("update modes ('+') are not yet supported")
+
+
+def test_path_open_w_truncates_via_direct_api():
+    """path_open('w') truncates an existing file at open time."""
+    fs = OSAccess([MemoryFile('/data/file.txt', content='previous')])
+    fs.path_open(P('/data/file.txt'), 'w')
+    assert fs.path_read_text(P('/data/file.txt')) == snapshot('')
+
+
+def test_path_open_r_missing_raises():
+    """path_open('r') on a missing file raises FileNotFoundError."""
+    fs = OSAccess()
+    with pytest.raises(FileNotFoundError) as exc_info:
+        fs.path_open(P('/missing.txt'), 'r')
+    assert str(exc_info.value) == snapshot("[Errno 2] No such file or directory: '/missing.txt'")
+
+
+def test_path_open_invalid_mode_does_not_truncate():
+    """Regression: a malformed mode that starts with `w`/`a` must reject the
+    open BEFORE the truncate/create side effect, otherwise direct callers can
+    destroy data by passing e.g. `'wxyz'` to `path_open`."""
+    fs = OSAccess([MemoryFile('/data/file.txt', content='precious')])
+    for mode in ('wxyz', 'axyz', 'w!', 'a?'):
+        with pytest.raises(ValueError):
+            fs.path_open(P('/data/file.txt'), mode)
+        # The file must still hold its original content — the bad mode must
+        # not have triggered the `w`/`a` open-time effect.
+        assert fs.path_read_text(P('/data/file.txt')) == 'precious', (
+            f'mode {mode!r} truncated/touched the file before validation'
+        )
+
+
+# =============================================================================
 # Directory Operations - mkdir (via Monty)
 # =============================================================================
 

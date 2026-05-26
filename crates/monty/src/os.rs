@@ -39,6 +39,21 @@ pub enum OsFunction {
     /// Check if path is a symbolic link
     #[strum(serialize = "Path.is_symlink")]
     IsSymlink,
+    /// Open a file: perform the open-time effect for `open()`.
+    ///
+    /// Takes two arguments: the path and the mode string (`"r"`, `"w"`, `"a"`,
+    /// `"r+"`, `"rb"`, …). The host performs the open-time effect — truncate
+    /// for `w`/`w+`, create-if-missing for `a`/`a+`, and an existence check
+    /// (raising `FileNotFoundError`) for `r`/`r+` — then returns a
+    /// [`MontyObject::FileHandle`].
+    ///
+    /// The host never holds a live OS handle: it opens, performs the effect,
+    /// and closes the file within this single call. The same is true for the
+    /// subsequent `ReadText`/`WriteText`/… calls. A future optimization may
+    /// let the host optionally cache a real handle keyed by an `id` it assigns
+    /// on the returned `FileHandle` — see the TODO on
+    /// [`crate::types::OpenFile`].
+    Open,
     /// Read file contents as text
     #[strum(serialize = "Path.read_text")]
     ReadText,
@@ -51,6 +66,12 @@ pub enum OsFunction {
     /// Write bytes to file
     #[strum(serialize = "Path.write_bytes")]
     WriteBytes,
+    /// Append text to file
+    #[strum(serialize = "Path.append_text")]
+    AppendText,
+    /// Append bytes to file
+    #[strum(serialize = "Path.append_bytes")]
+    AppendBytes,
     /// Create directory
     #[strum(serialize = "Path.mkdir")]
     Mkdir,
@@ -110,12 +131,23 @@ impl OsFunction {
 
     /// Returns `true` if this is a write operation that modifies the filesystem.
     ///
-    /// Write operations are blocked in read-only mounts and redirected in overlay mounts.
+    /// NOTE: this is **not** the read-only-mount gate. The mount dispatcher
+    /// gates on [`crate::fs::FsRequest::is_write`], which is mode-aware — it
+    /// has to be, because `Open`'s write-ness depends on the mode (`w`/`a`
+    /// write, `r` does not) and an `OsFunction` carries no mode. `Open` is
+    /// therefore deliberately omitted here; do not add it.
     #[must_use]
     pub fn is_write(&self) -> bool {
         matches!(
             self,
-            Self::WriteText | Self::WriteBytes | Self::Mkdir | Self::Unlink | Self::Rmdir | Self::Rename
+            Self::WriteText
+                | Self::WriteBytes
+                | Self::AppendText
+                | Self::AppendBytes
+                | Self::Mkdir
+                | Self::Unlink
+                | Self::Rmdir
+                | Self::Rename
         )
     }
 
@@ -139,6 +171,10 @@ impl OsFunction {
             let path = args.first().map_or("<unknown>", |a| match a {
                 MontyObject::Path(p) => p.as_str(),
                 MontyObject::String(s) => s.as_str(),
+                // File read/write/append operations pass the open file as the
+                // first argument; preserve the virtual path so unhandled
+                // errors are reported against the file the user opened.
+                MontyObject::FileHandle(handle) => handle.path.as_str(),
                 _ => "<unknown>",
             });
             MontyException::new(
@@ -176,6 +212,8 @@ impl TryFrom<StaticStrings> for OsFunction {
             // Write operations
             StaticStrings::WriteText => Ok(Self::WriteText),
             StaticStrings::WriteBytes => Ok(Self::WriteBytes),
+            StaticStrings::AppendText => Ok(Self::AppendText),
+            StaticStrings::AppendBytes => Ok(Self::AppendBytes),
             StaticStrings::Mkdir => Ok(Self::Mkdir),
             StaticStrings::Unlink => Ok(Self::Unlink),
             StaticStrings::Rmdir => Ok(Self::Rmdir),

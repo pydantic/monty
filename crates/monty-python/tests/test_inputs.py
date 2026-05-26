@@ -147,6 +147,23 @@ def test_input_deep():
     assert str(exc_info.value) == snapshot('RuntimeError: Max input depth exceeded')
 
 
+def test_output_deep():
+    # Sandbox code that iteratively builds a deeply nested list bypasses the
+    # Python-level recursion limit (the `for` loop never pushes a call frame),
+    # so monty_to_py needs its own depth guard to avoid overflowing the host's
+    # native stack when converting the result back.
+    code = """
+x = [1]
+for _ in range(300):
+    x = [x]
+x
+"""
+    m = pydantic_monty.Monty(code)
+    with pytest.raises(RuntimeError) as exc_info:
+        m.run()
+    assert str(exc_info.value) == snapshot('Max output depth exceeded')
+
+
 def test_empty_inputs():
     m = pydantic_monty.Monty('1 + 1', inputs=[])
     assert m.run(inputs={}) == snapshot(2)

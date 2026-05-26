@@ -10,6 +10,7 @@ environ: dict[str, str]
 def getenv(key: str) -> str | None: ...
 @overload
 def getenv(key: str, default: _T) -> str | _T: ...
+
 @final
 class stat_result(structseq[float], tuple[int, int, int, int, int, int, int, float, float, float]):
     # The constructor of this class takes an iterable of variable length (though it must be at least 10).

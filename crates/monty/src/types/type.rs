@@ -61,6 +61,12 @@ pub enum Type {
     Module,
     /// Marker types like stdout/stderr - displays as "TextIOWrapper"
     TextIOWrapper,
+    /// Binary file object returned by `open(..., "rb")`.
+    BufferedReader,
+    /// Binary file object returned by write-only binary modes.
+    BufferedWriter,
+    /// Binary file object returned by read/write binary modes.
+    BufferedRandom,
     /// typing module special forms (Any, Optional, Union, etc.) - displays as "typing._SpecialForm"
     SpecialForm,
     /// A filesystem path from `pathlib.Path` - displays as "PosixPath"
@@ -108,6 +114,9 @@ impl fmt::Display for Type {
             Self::Coroutine => f.write_str("coroutine"),
             Self::Module => f.write_str("module"),
             Self::TextIOWrapper => f.write_str("_io.TextIOWrapper"),
+            Self::BufferedReader => f.write_str("_io.BufferedReader"),
+            Self::BufferedWriter => f.write_str("_io.BufferedWriter"),
+            Self::BufferedRandom => f.write_str("_io.BufferedRandom"),
             Self::SpecialForm => f.write_str("typing._SpecialForm"),
             Self::Path => f.write_str("PosixPath"),
             Self::Property => f.write_str("property"),

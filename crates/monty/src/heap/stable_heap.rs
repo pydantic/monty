@@ -98,34 +98,27 @@ impl<T> StableHeap<T> {
     pub fn get(&self, id: HeapId) -> &T {
         // SAFETY: [DH] - this call panics rather than expose free slots which could be invalidated
         // by calls to `.allocate()`.
-        unsafe { self.slot_at(id) }.expect("HeapEntries::get - data already freed")
-    }
-
-    /// Returns a mutable reference to the entry at `index`.
-    ///
-    /// # Panics
-    /// Panics if `index >= len`.
-    #[inline]
-    #[track_caller]
-    pub fn get_mut(&mut self, id: HeapId) -> Option<&mut T> {
-        assert!(id.index() < self.len.get(), "StableHeap::entry - {id:?} out of bounds");
-        let (page_idx, slot_idx) = Self::page_slot_indices(id);
-        let pages = self.pages.get_mut();
-        let slot = &mut pages[page_idx][slot_idx];
-        // SAFETY: [DH] - all slots at indices < self.len have been initialized via `allocate`.
-        unsafe { slot.assume_init_mut() }.as_mut()
+        let slot = unsafe { self.slot_at(id) };
+        let Some(entry) = slot else {
+            panic!("StableHeap::get - {id:?} out of bounds");
+        };
+        entry.as_ref().expect("HeapEntries::get - data already freed")
     }
 
     /// Returns a mutable reference to the entry at `index`. Entries can also be
     /// freed via the returned `StableHeapEntry`'s `free` method.
+    ///
+    /// Does *not* go through [`Self::entry_ptr`]: that path derives its pointer via
+    /// `&self` so it only carries Shared / SharedReadOnly provenance under SB/TB,
+    /// and dereferencing it as `&mut` is UB. Instead this method takes the safe
+    /// `&mut self` → `pages.get_mut()` route, producing a `&mut Option<T>` with
+    /// Unique provenance suitable for `StableHeapEntry::free`'s `value.take()`.
     ///
     /// # Panics
     /// Panics if `index >= len`.
     #[inline]
     #[track_caller]
     pub fn entry(&mut self, id: HeapId) -> Option<StableHeapEntry<'_, T>> {
-        // NB: cannot reuse logic from get_mut because of the additional free list reference - would
-        // create a borrow
         assert!(id.index() < self.len.get(), "StableHeap::entry - {id:?} out of bounds");
         let (page_idx, slot_idx) = Self::page_slot_indices(id);
         let pages = self.pages.get_mut();
@@ -201,14 +194,17 @@ impl<T> StableHeap<T> {
         unsafe { HeapEntriesIter::new(self) }.filter_map(|(idx, slot)| slot.map(|s| (HeapId::from_index(idx), s)))
     }
 
-    /// Accesses the slot at `id` with an immutable borrow on self.
+    /// Accesses the slot at `id` with an immutable borrow on self. Returns `None` if the slot
+    /// is out of bounds.
     ///
     /// # Safety:
-    /// - Caller must ensure that the `None` references returned do not overlap with any calls to `allocate()`,
+    /// - Caller must ensure that `Some(&None)` references do not overlap with any calls to `allocate()`,
     ///   as these will be invalidated by the reuse of freed slots.
     #[track_caller]
-    unsafe fn slot_at(&self, id: HeapId) -> Option<&T> {
-        assert!(id.index() < self.len.get(), "StableHeap::slot - {id:?} out of bounds");
+    pub unsafe fn slot_at(&self, id: HeapId) -> Option<&Option<T>> {
+        if id.index() >= self.len.get() {
+            return None;
+        }
         let (page_idx, slot_idx) = Self::page_slot_indices(id);
         // SAFETY: [DH] - modification to pages Vec only occur in allocate, which only writes to `None` entries
         // and doesn't cause reallocation of the boxed contents of existing pages, so temporary read of `pages` here is ok.
@@ -217,7 +213,7 @@ impl<T> StableHeap<T> {
         let pages = unsafe { self.pages.get().as_ref_unchecked() };
         let slot = &pages[page_idx][slot_idx];
         // SAFETY: [DH] - all slots at indices < self.len have been initialized via `allocate`.
-        unsafe { slot.assume_init_ref() }.as_ref()
+        Some(unsafe { slot.assume_init_ref() })
     }
 
     fn page_slot_indices(id: HeapId) -> (usize, usize) {
@@ -375,13 +371,10 @@ mod iter {
 
         fn next(&mut self) -> Option<Self::Item> {
             let current_index = self.index;
-            if current_index >= self.entries.len() {
-                return None;
-            }
-            self.index += 1;
             // SAFETY: [DH] - caller guaranteed no aliasing when calling `HeapEntriesIter::new`
-            let slot = unsafe { self.entries.slot_at(HeapId::from_index(current_index)) };
-            Some((current_index, slot))
+            let entry = unsafe { self.entries.slot_at(HeapId::from_index(current_index)) }?;
+            self.index += 1;
+            Some((current_index, entry.as_ref()))
         }
 
         fn size_hint(&self) -> (usize, Option<usize>) {

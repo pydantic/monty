@@ -20,6 +20,7 @@ mod serialization;
 use std::sync::OnceLock;
 
 // Use `::monty` to refer to the external crate (not the pymodule)
+pub use convert::PyMontyFileHandle;
 pub use exceptions::{MontyError, MontyRuntimeError, MontySyntaxError, MontyTypingError, PyFrame};
 pub use monty_cls::{PyFunctionSnapshot, PyFutureSnapshot, PyMonty, PyMontyComplete, PyNameLookupSnapshot};
 pub use mount::PyMountDir;
@@ -96,6 +97,8 @@ mod _monty {
     use super::PyMonty as Monty;
     #[pymodule_export]
     use super::PyMontyComplete as MontyComplete;
+    #[pymodule_export]
+    use super::PyMontyFileHandle as MontyFileHandle;
     #[pymodule_export]
     use super::PyMontyRepl as MontyRepl;
     #[pymodule_export]

@@ -20,7 +20,7 @@ use pyo3::{
     types::{PyDict, PyList, PyString, PyType},
 };
 
-use crate::convert::{monty_to_py, py_to_monty};
+use crate::convert::{monty_to_py_inner, py_to_monty};
 
 /// Checks if a Python object is a dataclass instance (not a type).
 ///
@@ -95,6 +95,11 @@ pub fn dataclass_to_monty(value: &Bound<'_, PyAny>, dc_registry: &DcRegistry, de
 /// If the `type_id` is found in the dc_registry, creates an instance of the original
 /// Python dataclass type (so `isinstance(result, OriginalClass)` works).
 /// Otherwise, falls back to creating a `PyUnknownDataclass`.
+///
+/// `depth` is the caller's current recursion depth; it is forwarded to
+/// `monty_to_py_inner` so nested dataclass fields continue to respect the
+/// output-depth limit and cannot trigger a native stack overflow.
+#[expect(clippy::too_many_arguments)]
 pub fn dataclass_to_py(
     py: Python<'_>,
     name: &str,
@@ -103,6 +108,7 @@ pub fn dataclass_to_py(
     attrs: &DictPairs,
     frozen: bool,
     dc_registry: &DcRegistry,
+    depth: u8,
 ) -> PyResult<Py<PyAny>> {
     // Try to use the original type from the dc_registry (keyed by type_id)
     if let Some(original_type_py) = dc_registry.get(py, type_id)? {
@@ -115,7 +121,7 @@ pub fn dataclass_to_py(
                 // Only include declared fields in constructor kwargs
                 let key_str = s.as_str();
                 if field_names.iter().any(|f| f.as_str() == key_str) {
-                    kwargs.set_item(key_str, monty_to_py(py, value, dc_registry)?)?;
+                    kwargs.set_item(key_str, monty_to_py_inner(py, value, dc_registry, depth)?)?;
                 }
             }
         }
@@ -124,7 +130,15 @@ pub fn dataclass_to_py(
         original_type.call((), Some(&kwargs)).map(Bound::unbind)
     } else {
         // Fall back to PyUnknownDataclass
-        let dc = PyUnknownDataclass::new(py, name.to_string(), field_names.to_vec(), attrs, frozen, dc_registry)?;
+        let dc = PyUnknownDataclass::new(
+            py,
+            name.to_string(),
+            field_names.to_vec(),
+            attrs,
+            frozen,
+            dc_registry,
+            depth,
+        )?;
         Ok(Py::new(py, dc)?.into_any())
     }
 }
@@ -401,6 +415,9 @@ impl PyUnknownDataclass {
 
 impl PyUnknownDataclass {
     /// Creates a new `PyUnknownDataclass` from `MontyObject` fields.
+    ///
+    /// `depth` is the caller's current recursion depth and is forwarded to
+    /// `monty_to_py_inner` so field conversion respects the output-depth limit.
     pub fn new<'a>(
         py: Python<'_>,
         name: String,
@@ -408,10 +425,14 @@ impl PyUnknownDataclass {
         attrs: impl IntoIterator<Item = &'a (MontyObject, MontyObject)>,
         frozen: bool,
         dc_registry: &DcRegistry,
+        depth: u8,
     ) -> PyResult<Self> {
         let dict = PyDict::new(py);
         for (k, v) in attrs {
-            dict.set_item(monty_to_py(py, k, dc_registry)?, monty_to_py(py, v, dc_registry)?)?;
+            dict.set_item(
+                monty_to_py_inner(py, k, dc_registry, depth)?,
+                monty_to_py_inner(py, v, dc_registry, depth)?,
+            )?;
         }
         Ok(Self {
             name,

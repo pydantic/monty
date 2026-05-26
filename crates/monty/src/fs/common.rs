@@ -4,7 +4,12 @@
 //! backend modules can focus on mount semantics rather than repeating the same
 //! byte decoding, stat conversion, and quota bookkeeping logic.
 
-use std::{fs, io::ErrorKind, path::Path, time::SystemTime};
+use std::{
+    fs::{self, OpenOptions},
+    io::{ErrorKind, Write},
+    path::Path,
+    time::SystemTime,
+};
 
 use super::error::MountError;
 use crate::{MontyObject, dir_stat, file_stat};
@@ -65,6 +70,37 @@ pub(super) fn write_bytes_fs(path: &Path, content: &[u8], vpath: &str) -> Result
     reject_directory(path, vpath)?;
     fs::write(path, content).map_err(|err| MountError::Io(err, vpath.to_owned()))?;
     Ok(MontyObject::Int(i64::try_from(content.len()).unwrap_or(i64::MAX)))
+}
+
+/// Appends text to a file and returns the number of characters written.
+///
+/// The host file is opened only for the duration of this call, preserving the
+/// sandbox invariant that Monty never keeps native file handles alive.
+pub(super) fn append_text_fs(path: &Path, content: &str, vpath: &str) -> Result<MontyObject, MountError> {
+    append_bytes_to_file(path, content.as_bytes(), vpath)?;
+    Ok(MontyObject::Int(
+        i64::try_from(content.chars().count()).unwrap_or(i64::MAX),
+    ))
+}
+
+/// Appends bytes to a file and returns the number of bytes written.
+///
+/// This is the binary counterpart of [`append_text_fs`].
+pub(super) fn append_bytes_fs(path: &Path, content: &[u8], vpath: &str) -> Result<MontyObject, MountError> {
+    append_bytes_to_file(path, content, vpath)?;
+    Ok(MontyObject::Int(i64::try_from(content.len()).unwrap_or(i64::MAX)))
+}
+
+/// Opens `path` in append mode, writes all bytes, and closes it before returning.
+fn append_bytes_to_file(path: &Path, content: &[u8], vpath: &str) -> Result<(), MountError> {
+    reject_directory(path, vpath)?;
+    let mut file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .map_err(|err| MountError::Io(err, vpath.to_owned()))?;
+    file.write_all(content)
+        .map_err(|err| MountError::Io(err, vpath.to_owned()))
 }
 
 /// Creates a directory, matching CPython `pathlib.Path.mkdir()` semantics:
@@ -221,7 +257,7 @@ pub(super) fn dir_mtime(path: &Path) -> f64 {
 /// `ErrorKind::PermissionDenied` instead of `ErrorKind::IsADirectory`.
 /// This helper normalises the behaviour across platforms so callers get
 /// the correct Python exception regardless of host OS.
-fn reject_directory(path: &Path, vpath: &str) -> Result<(), MountError> {
+pub(super) fn reject_directory(path: &Path, vpath: &str) -> Result<(), MountError> {
     if path.is_dir() {
         return Err(MountError::io_err(ErrorKind::IsADirectory, "Is a directory", vpath));
     }

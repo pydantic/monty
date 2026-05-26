@@ -104,6 +104,16 @@ pub enum ExcType {
     /// Subclass of OSError - for when an operation is not permitted (e.g., writing
     /// to a read-only mount, or attempting to access a path outside a mounted directory).
     PermissionError,
+    /// `io.UnsupportedOperation` - raised by file objects when a requested
+    /// operation isn't allowed by the open mode (e.g. `read()` on `'w'`).
+    ///
+    /// In CPython this inherits from both `OSError` and `ValueError`. Monty's
+    /// `ExcType` enum models single parents, but [`Self::is_subclass_of`]
+    /// matches `UnsupportedOperation` against both `OSError` and `ValueError`
+    /// so `except ValueError:` and `except OSError:` both catch it as in
+    /// CPython.
+    #[strum(serialize = "io.UnsupportedOperation")]
+    UnsupportedOperation,
 
     // --- Standalone exception types ---
     AssertionError,
@@ -159,11 +169,16 @@ impl ExcType {
             Self::AttributeError => matches!(self, Self::FrozenInstanceError),
             // NameError catches UnboundLocalError
             Self::NameError => matches!(self, Self::UnboundLocalError),
-            // ValueError catches UnicodeDecodeError and json.JSONDecodeError
-            Self::ValueError => matches!(self, Self::UnicodeDecodeError | Self::JsonDecodeError),
+            // ValueError catches UnicodeDecodeError, json.JSONDecodeError, and
+            // io.UnsupportedOperation (which in CPython has dual OSError + ValueError parentage)
+            Self::ValueError => matches!(
+                self,
+                Self::UnicodeDecodeError | Self::JsonDecodeError | Self::UnsupportedOperation
+            ),
             // ImportError catches ModuleNotFoundError
             Self::ImportError => matches!(self, Self::ModuleNotFoundError),
-            // OSError catches FileNotFoundError, FileExistsError, IsADirectoryError, NotADirectoryError, PermissionError
+            // OSError catches FileNotFoundError, FileExistsError, IsADirectoryError,
+            // NotADirectoryError, PermissionError, and io.UnsupportedOperation
             Self::OSError => matches!(
                 self,
                 Self::FileNotFoundError
@@ -171,6 +186,7 @@ impl ExcType {
                     | Self::IsADirectoryError
                     | Self::NotADirectoryError
                     | Self::PermissionError
+                    | Self::UnsupportedOperation
             ),
             // All other types only match exactly (handled by self == handler_type above)
             _ => false,

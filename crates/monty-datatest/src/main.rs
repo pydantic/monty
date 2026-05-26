@@ -20,8 +20,8 @@ use std::{
 use ahash::AHashMap;
 use chrono::{Datelike, Timelike};
 use monty::{
-    ExcType, ExtFunctionResult, LimitedTracker, MontyDate, MontyDateTime, MontyException, MontyObject, MontyRun,
-    NameLookupResult, OsFunction, PrintWriter, ResourceLimits, RunProgress, dir_stat, file_stat,
+    ExcType, ExtFunctionResult, FileMode, LimitedTracker, MontyDate, MontyDateTime, MontyException, MontyFileHandle,
+    MontyObject, MontyRun, NameLookupResult, OsFunction, PrintWriter, ResourceLimits, RunProgress, dir_stat, file_stat,
     fs::{MountMode, MountTable, OverlayState},
 };
 use pyo3::{prelude::*, types::PyDict};
@@ -962,10 +962,12 @@ fn dispatch_os_call(
         return MontyObject::Dict(env_dict.into()).into();
     }
 
-    // Extract path from MontyObject::Path (or String for backwards compatibility)
+    // Extract path. Most calls pass a Path/String; `read`/`write` on an open
+    // file pass the file object itself as a `FileHandle`.
     let path = match &args[0] {
         MontyObject::Path(p) => p.clone(),
         MontyObject::String(s) => s.clone(),
+        MontyObject::FileHandle(handle) => handle.path.clone(),
         other => panic!("OS call: first arg must be path, got {other:?}"),
     };
 
@@ -1046,6 +1048,52 @@ fn dispatch_os_call(
             // For virtual paths, return as-is (they're already absolute)
             MontyObject::String(path).into()
         }
+        OsFunction::Open => {
+            // args[0] is path, args[1] is the mode string.
+            let mode_str = String::try_from(&args[1]).expect("open: second arg must be mode string");
+            let file_mode = match mode_str.parse::<FileMode>() {
+                Ok(m) => m,
+                Err(e) => return MontyException::new(ExcType::ValueError, Some(e.to_string())).into(),
+            };
+            match file_mode {
+                FileMode::Read(_) | FileMode::ReadUpdate(_) => {
+                    if get_virtual_file(&path).is_none() {
+                        return if is_virtual_dir(&path) {
+                            MontyException::new(
+                                ExcType::IsADirectoryError,
+                                Some(format!("[Errno 21] Is a directory: '{path}'")),
+                            )
+                            .into()
+                        } else {
+                            MontyException::new(
+                                ExcType::FileNotFoundError,
+                                Some(format!("[Errno 2] No such file or directory: '{path}'")),
+                            )
+                            .into()
+                        };
+                    }
+                }
+                // `w`/`w+`: truncate to empty (creating if missing).
+                FileMode::Write(_) | FileMode::WriteUpdate(_) => MUTABLE_VFS.with(|vfs| {
+                    let mut vfs = vfs.borrow_mut();
+                    vfs.files.insert(path.clone(), (Vec::new(), 0o644));
+                    vfs.deleted_files.remove(&path);
+                }),
+                // `a`/`a+`: create if missing, preserving existing content.
+                FileMode::Append(_) | FileMode::AppendUpdate(_) => MUTABLE_VFS.with(|vfs| {
+                    let mut vfs = vfs.borrow_mut();
+                    vfs.files.entry(path.clone()).or_insert_with(|| (Vec::new(), 0o644));
+                    vfs.deleted_files.remove(&path);
+                }),
+            }
+            MontyObject::FileHandle(MontyFileHandle {
+                path,
+                mode: file_mode,
+                position: 0,
+                id: None,
+            })
+            .into()
+        }
         OsFunction::Getenv => {
             // Virtual environment for testing os.getenv()
             // args[0] is key, args[1] is default (may be None)
@@ -1094,6 +1142,31 @@ fn dispatch_os_call(
                 vfs.deleted_files.remove(&path);
             });
             // write_bytes returns the number of bytes written
+            MontyObject::Int(byte_count as i64).into()
+        }
+        OsFunction::AppendText => {
+            let text = String::try_from(&args[1]).expect("append_text: second arg must be string");
+            let char_count = text.chars().count();
+            MUTABLE_VFS.with(|vfs| {
+                let mut vfs = vfs.borrow_mut();
+                let entry = vfs.files.entry(path.clone()).or_insert_with(|| (Vec::new(), 0o644));
+                entry.0.extend_from_slice(text.as_bytes());
+                vfs.deleted_files.remove(&path);
+            });
+            MontyObject::Int(char_count as i64).into()
+        }
+        OsFunction::AppendBytes => {
+            let bytes = match &args[1] {
+                MontyObject::Bytes(b) => b.clone(),
+                other => panic!("append_bytes: second arg must be bytes, got {other:?}"),
+            };
+            let byte_count = bytes.len();
+            MUTABLE_VFS.with(|vfs| {
+                let mut vfs = vfs.borrow_mut();
+                let entry = vfs.files.entry(path.clone()).or_insert_with(|| (Vec::new(), 0o644));
+                entry.0.extend_from_slice(&bytes);
+                vfs.deleted_files.remove(&path);
+            });
             MontyObject::Int(byte_count as i64).into()
         }
         OsFunction::Mkdir => {

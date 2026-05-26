@@ -285,6 +285,18 @@ pub enum FrameExit {
     },
 }
 
+impl DropWithHeap for FrameExit {
+    fn drop_with_heap<H: ContainsHeap>(self, heap: &mut H) {
+        match self {
+            Self::Return(value) => value.drop_with_heap(heap),
+            Self::ExternalCall { args, .. } | Self::OsCall { args, .. } | Self::MethodCall { args, .. } => {
+                args.drop_with_heap(heap);
+            }
+            Self::ResolveFutures(_) | Self::NameLookup { .. } => {}
+        }
+    }
+}
+
 /// A single function activation record.
 ///
 /// Each frame represents one level in the call stack and owns its own
@@ -1326,10 +1338,8 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
                     // which pushes frames and runs a nested run() loop)
                     self.current_frame_mut().ip = cached_frame.ip;
 
-                    match self.exec_call_builtin_function(builtin_id, arg_count) {
-                        Ok(result) => self.push(result),
-                        Err(err) => catch_sync!(self, cached_frame, err),
-                    }
+                    let result = self.exec_call_builtin_function(builtin_id, arg_count);
+                    handle_call_result!(self, cached_frame, result);
                 }
                 Opcode::CallBuiltinType => {
                     let (type_id, arg_count) = cached_frame.fetch_u8_u8();
