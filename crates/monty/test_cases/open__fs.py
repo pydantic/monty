@@ -510,9 +510,13 @@ pe = open(root / 'past_end.bin', 'rb')
 assert pe.seek(100) == 100, 'seek past end returns target'
 assert pe.tell() == 100, 'tell after seek past end'
 assert pe.read(5) == b'', 'read(N) past end is empty'
-assert pe.read() == b'', 'bare read past end is empty'
+assert pe.tell() == 100, 'binary read(N) past end leaves position alone'
 assert pe.readline() == b'', 'readline past end is empty'
+assert pe.tell() == 100, 'binary readline past end leaves position alone'
 assert pe.readlines() == [], 'readlines past end is empty'
+assert pe.tell() == 100, 'binary readlines past end leaves position alone'
+assert pe.read() == b'', 'bare read past end is empty'
+assert pe.tell() == 100, 'binary bare read past end leaves position alone'
 pe.close()
 
 # Same regression in text mode.
@@ -520,9 +524,13 @@ pe.close()
 pet = open(root / 'past_end.txt')
 assert pet.seek(100) == 100, 'text seek past end returns target'
 assert pet.read(5) == '', 'text read(N) past end is empty'
-assert pet.read() == '', 'text bare read past end is empty'
+assert pet.tell() == 100, 'text read(N) past end leaves position alone'
 assert pet.readline() == '', 'text readline past end is empty'
+assert pet.tell() == 100, 'text readline past end leaves position alone'
 assert pet.readlines() == [], 'text readlines past end is empty'
+assert pet.tell() == 100, 'text readlines past end leaves position alone'
+assert pet.read() == '', 'text bare read past end is empty'
+assert pet.tell() == 100, 'text bare read past end leaves position alone'
 pet.close()
 
 # read(N) with non-int arg raises TypeError (exact message diverges from CPython).

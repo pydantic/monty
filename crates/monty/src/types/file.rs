@@ -1069,6 +1069,21 @@ pub(crate) fn apply_write_position(
 /// result. All buffer reads go through the heap so the slice content is fully
 /// snapshot-safe.
 fn compute_slice(file_id: HeapId, spec: ReadSpec, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<Value> {
+    // Defensive: if `buffer` is loaded but `buffer_meta` is missing (e.g. a
+    // restored snapshot from an older schema, or a future code path that
+    // sets `buffer` directly), reconstruct the cache before slicing instead
+    // of raising an internal error.
+    let needs_meta = {
+        let HeapReadOutput::OpenFile(file) = vm.heap.read(file_id) else {
+            return Err(RunError::internal("compute_slice: not an OpenFile"));
+        };
+        let f = file.get(vm.heap);
+        f.buffer.is_some() && f.buffer_meta.is_none()
+    };
+    if needs_meta {
+        populate_buffer_meta(file_id, vm)?;
+    }
+
     let (binary, buffer_id, position, byte_position, buffer_total) = {
         let HeapReadOutput::OpenFile(file) = vm.heap.read(file_id) else {
             return Err(RunError::internal("compute_slice: not an OpenFile"));
@@ -1134,7 +1149,10 @@ fn compute_slice_text(
                 } else {
                     allocate_string(tail.to_owned(), vm.heap)?
                 };
-                (value, buffer_total, buffer.len(), true)
+                // Preserve `position` if it was already past `buffer_total`
+                // (set there by `seek()`) — CPython's read-at-EOF leaves the
+                // file position unchanged.
+                (value, position.max(buffer_total), buffer.len(), true)
             }
             ReadSpec::Size(n) => {
                 // Walk forward `n` chars (or however many remain) to find
@@ -1171,7 +1189,8 @@ fn compute_slice_text(
                     start += end;
                 }
                 let list_id = vm.heap.allocate(HeapData::List(List::new(items)))?;
-                (Value::Ref(list_id), buffer_total, buffer.len(), true)
+                // Past-EOF preservation: matches `ReadSpec::All`.
+                (Value::Ref(list_id), position.max(buffer_total), buffer.len(), true)
             }
             ReadSpec::Seek { offset, whence } => {
                 let target = resolve_seek_target_usize(offset, whence, position, buffer_total)?;
@@ -1233,18 +1252,26 @@ fn compute_slice_binary(
                     let id = vm.heap.allocate(HeapData::Bytes(Bytes::new(tail.to_vec())))?;
                     Value::Ref(id)
                 };
-                (value, buffer_total, true)
+                // Preserve `position` if it was already past `buffer_total`
+                // (set there by `seek()`) — CPython's read-at-EOF leaves the
+                // file position unchanged.
+                (value, position.max(buffer_total), true)
             }
             ReadSpec::Size(n) => {
                 let take = tail.len().min(n);
                 let id = vm.heap.allocate(HeapData::Bytes(Bytes::new(tail[..take].to_vec())))?;
-                let new_pos = clamped_position + take;
+                // Advance from the un-clamped user position so a past-EOF
+                // `read(N)` (which yields no bytes) leaves `position` alone
+                // instead of snapping it back to `buffer_total`.
+                let new_pos = position + take;
                 (Value::Ref(id), new_pos, new_pos >= buffer_total)
             }
             ReadSpec::Line => {
                 let end = tail.iter().position(|b| *b == b'\n').map_or(tail.len(), |i| i + 1);
                 let id = vm.heap.allocate(HeapData::Bytes(Bytes::new(tail[..end].to_vec())))?;
-                let new_pos = clamped_position + end;
+                // See `Size` above — past-EOF `readline()` returns `b''`
+                // without rewinding `position`.
+                let new_pos = position + end;
                 (Value::Ref(id), new_pos, new_pos >= buffer_total)
             }
             ReadSpec::Lines => {
@@ -1258,7 +1285,8 @@ fn compute_slice_binary(
                     start += end;
                 }
                 let list_id = vm.heap.allocate(HeapData::List(List::new(items)))?;
-                (Value::Ref(list_id), buffer_total, true)
+                // Past-EOF preservation: matches `ReadSpec::All`.
+                (Value::Ref(list_id), position.max(buffer_total), true)
             }
             ReadSpec::Seek { offset, whence } => {
                 // Seek resolves against the un-clamped position so
