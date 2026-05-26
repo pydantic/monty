@@ -1,0 +1,54 @@
+# Resource limits
+
+Monty enforces hard limits on memory, time, allocations, and recursion to
+keep untrusted code bounded. When a limit is exceeded, execution
+terminates with a `ResourceError` (visible to the *host*, not catchable
+inside the sandbox).
+
+## Memory / size limits
+
+- Allocation tracking is global; the host sets the bytes budget when
+  constructing the VM.
+- Operations whose result is bounded by simple arithmetic on input sizes
+  are **pre-checked** before allocating: integer multiplication, left
+  shift, integer power, sequence repeat (`'x' * n`), padding (`str.ljust`,
+  `str.center`, `str.zfill`, `bytes.ljust`, …). The pre-check threshold is
+  100 KB — anything that would estimate above that is rejected with
+  `ResourceError` rather than attempting the allocation.
+- `bigint.pow(base, exp)` estimates result size as `bits(base) * exp` with
+  a 4× safety multiplier to cover repeated-squaring intermediate values.
+
+## Integer-specific caps
+
+- `pow(base, exp)` / `base ** exp` with an exponent larger than `u32::MAX`
+  (≈ 4.3 × 10⁹) raises `OverflowError: "exponent too large"`.
+- `pow(base, exp, mod)` requires all integer arguments and rejects negative
+  exponents (`ValueError`).
+- `int(str)` for very long decimal strings is rejected before the O(n²)
+  BigInt parse runs; the cut-off matches CPython's `sys.int_info.str_digits_check_threshold`.
+
+## Recursion
+
+- Python-level call depth is hardcoded at **1000 frames**. The 1001st
+  nested call raises `RecursionError`.
+- There is no `sys.getrecursionlimit()` / `setrecursionlimit()` — the
+  limit cannot be changed by sandboxed code.
+- Async stacks count toward the limit but each `await` boundary is treated
+  as one frame, so `await`-chains do not amplify depth.
+
+## Time
+
+- The host can set a wall-clock budget; if exceeded the VM stops on the
+  next bytecode boundary with `ResourceError`.
+- There is no in-sandbox way to observe the budget or remaining time.
+
+## JSON
+
+- `json.loads` rejects input nested deeper than 200 levels with
+  `json.JSONDecodeError` (independent of the Python recursion limit).
+
+## After a ResourceError
+
+When a resource limit fires, **no guarantees are made about heap state or
+reference counts**. The host should discard the VM rather than try to
+recover and continue running code in it.
