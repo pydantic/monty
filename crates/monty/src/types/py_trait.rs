@@ -298,6 +298,48 @@ pub trait PyTrait<'h> {
         Err(ExcType::attribute_error(self.py_type(vm), attr.as_str(vm.interns)))
     }
 
+    /// Context-manager entry hook (`__enter__`).
+    ///
+    /// Invoked by the `BeforeWith` opcode when execution enters a `with` block
+    /// whose context expression evaluates to this object. Returns the value bound
+    /// to the `as` target (or discarded if there is none). Typically a context
+    /// manager returns itself, but it may return any value.
+    ///
+    /// Returns `CallResult` so implementations can yield to the host (OS call,
+    /// external function, etc.) before producing the entered value.
+    ///
+    /// The default implementation raises `AttributeError`, matching CPython's
+    /// behavior for objects that do not implement the context-manager protocol.
+    fn py_enter(&mut self, _self_id: HeapId, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<CallResult> {
+        Err(ExcType::attribute_error(self.py_type(vm), "__enter__"))
+    }
+
+    /// Context-manager exit hook (`__exit__`).
+    ///
+    /// Invoked when execution leaves a `with` block. `exc` is `None` on a normal
+    /// exit and `Some(exc_id)` when an exception is propagating; on the exception
+    /// path the heap value at `exc_id` is the exception object itself, and a
+    /// truthy return value suppresses the exception.
+    ///
+    /// Monty does not have traceback objects, so the `__exit__(typ, val, tb)`
+    /// triple's traceback slot is effectively `None`. This is documented in
+    /// `limitations/with.md`.
+    ///
+    /// Returns `CallResult` so implementations can yield to the host (e.g. file
+    /// close issues an `OsCall`).
+    ///
+    /// The default implementation raises `AttributeError`. In practice a missing
+    /// `__exit__` is caught at the `BeforeWith` step (`py_enter` fails first), so
+    /// this path is reached only by direct invocation via `obj.__exit__(...)`.
+    fn py_exit(
+        &mut self,
+        _self_id: HeapId,
+        vm: &mut VM<'h, impl ResourceTracker>,
+        _exc: Option<HeapId>,
+    ) -> RunResult<CallResult> {
+        Err(ExcType::attribute_error(self.py_type(vm), "__exit__"))
+    }
+
     /// Python subscript get operation (`__getitem__`), e.g., `d[key]`.
     ///
     /// Returns the value associated with the key, or an error if the key doesn't exist

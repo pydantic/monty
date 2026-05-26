@@ -323,6 +323,10 @@ pub enum StaticStrings {
     // Type attributes
     #[strum(serialize = "__name__")]
     DunderName,
+    #[strum(serialize = "__enter__")]
+    Enter,
+    #[strum(serialize = "__exit__")]
+    Exit,
 
     // ==========================
     // pathlib module strings

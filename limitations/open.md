@@ -81,7 +81,22 @@ methods and attributes are:
 Everything else raises `AttributeError`, including: `read(size)`,
 `readline()`, `readlines()`, file iteration (`for line in f`), `seek()`,
 `tell()`, `truncate()`, `fileno()`, `isatty()`, `detach()`, `buffer`,
-`raw`, `__enter__`/`__exit__` (no `with open(...) as f:` support yet).
+`raw`.
+
+## Context manager
+
+`with open(...) as f:` is supported and closes the file on exit on both the
+success and exception paths. `__exit__` always returns `None`, so it cannot
+suppress an in-flight exception — any exception raised inside the body
+propagates as it would in CPython.
+
+`__enter__` raises `ValueError: I/O operation on closed file.` if the file
+was already closed (e.g. `with closed_file:` on a wrapper that already
+saw an explicit `close()`).
+
+See `limitations/with.md` for divergences shared by every context manager
+(no traceback object passed to `__exit__`, no multi-item `with`, no
+`async with`).
 
 ## Behavioural divergences
 

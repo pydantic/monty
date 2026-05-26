@@ -9,6 +9,7 @@ mod binary;
 mod call;
 mod collections;
 mod compare;
+mod context_manager;
 mod exceptions;
 mod format;
 mod scheduler;
@@ -1612,6 +1613,20 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
                     };
                     let error = ExcType::module_not_found_error(name_str);
                     catch_sync!(self, cached_frame, error);
+                }
+                // Context Managers
+                Opcode::BeforeWith => {
+                    // Sync IP before call (py_enter may yield to host).
+                    self.current_frame_mut().ip = cached_frame.ip;
+                    handle_call_result!(self, cached_frame, self.exec_before_with());
+                }
+                Opcode::WithExit => {
+                    self.current_frame_mut().ip = cached_frame.ip;
+                    handle_call_result!(self, cached_frame, self.exec_with_exit());
+                }
+                Opcode::WithExceptStart => {
+                    self.current_frame_mut().ip = cached_frame.ip;
+                    handle_call_result!(self, cached_frame, self.exec_with_except_start());
                 }
             }
         }

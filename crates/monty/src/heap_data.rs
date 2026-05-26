@@ -515,6 +515,28 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
         }
     }
 
+    fn py_enter(&mut self, self_id: HeapId, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<CallResult> {
+        // Only types that override the trait default need explicit arms; all
+        // others fall through to the catch-all `AttributeError`, matching how
+        // `py_call_attr` is structured.
+        match self {
+            HeapReadOutput::OpenFile(file) => file.py_enter(self_id, vm),
+            _ => Err(ExcType::attribute_error(self.py_type(vm), "__enter__")),
+        }
+    }
+
+    fn py_exit(
+        &mut self,
+        self_id: HeapId,
+        vm: &mut VM<'h, impl ResourceTracker>,
+        exc: Option<HeapId>,
+    ) -> RunResult<CallResult> {
+        match self {
+            HeapReadOutput::OpenFile(file) => file.py_exit(self_id, vm, exc),
+            _ => Err(ExcType::attribute_error(self.py_type(vm), "__exit__")),
+        }
+    }
+
     fn py_type(&self, vm: &VM<'h, impl ResourceTracker>) -> Type {
         match self {
             Self::Str(s) => s.py_type(vm),

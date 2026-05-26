@@ -20,8 +20,10 @@
 //!   are not implemented. `seekable()` reports `False` (instead of
 //!   CPython's `True` for regular files) so the
 //!   `if f.seekable(): f.seek(0)` idiom routes to the non-seekable arm.
-//! - The context-manager protocol (`with open(...) as f:`) is not yet
-//!   wired up; `__enter__` / `__exit__` raise `AttributeError`.
+//! - The context-manager protocol (`with open(...) as f:`) is supported but
+//!   `__exit__` always returns `None` — it cannot suppress an in-flight
+//!   exception. The file is closed on exit on both the success and exception
+//!   paths.
 //! - `+` update modes (`r+`, `w+`, `a+`, and their `b` variants) are
 //!   rejected at parse time because Monty has no read-position tracking;
 //!   without it a write after a read would silently truncate the file via
@@ -427,11 +429,60 @@ impl<'h> PyTrait<'h> for HeapRead<'h, OpenFile> {
             StaticStrings::Readable => self.readable(vm, args),
             StaticStrings::Writable => self.writable(vm, args),
             StaticStrings::Seekable => self.seekable(vm, args),
+            // Direct dunder calls dispatch to the context-manager protocol.
+            // `__enter__()` takes no args; `__exit__(typ, val, tb)` takes three
+            // (and Monty's `py_exit` ignores the passed-in typ/tb — see
+            // `limitations/with.md`). Argument arity checks happen here so
+            // CPython-style errors surface for `f.__enter__(1)` etc.
+            StaticStrings::Enter => {
+                args.check_zero_args("__enter__", vm.heap)?;
+                self.py_enter(self_id, vm)
+            }
+            StaticStrings::Exit => {
+                // `__exit__` accepts the (typ, val, tb) triple; we discard the
+                // values rather than threading them into `py_exit`, since when
+                // invoked as a normal call there is no in-flight exception. We
+                // accept any arg shape here for simplicity rather than strictly
+                // enforcing arity — direct invocation of `__exit__` is rare and
+                // CPython's TypeError message tree is not worth duplicating
+                // until a user complains.
+                args.drop_with_heap(vm);
+                self.py_exit(self_id, vm, None)
+            }
             _ => {
                 args.drop_with_heap(vm);
                 Err(ExcType::attribute_error(self.py_type(vm), attr.as_str(vm.interns)))
             }
         }
+    }
+
+    fn py_enter(&mut self, self_id: HeapId, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<CallResult> {
+        // Match CPython: entering on a closed file raises before the body runs.
+        // (Reusing a closed file as a context manager is rare but the error
+        // message is part of the user contract.)
+        self.get(vm.heap).ensure_open()?;
+        // Return the file itself. Bumping the refcount here gives the new
+        // Value::Ref its own count — constructing a fresh Value::Ref without
+        // an inc_ref would let the Drop impl panic when an in-flight value
+        // is later discarded without a matching drop_with_heap.
+        vm.heap.inc_ref(self_id);
+        Ok(CallResult::Value(Value::Ref(self_id)))
+    }
+
+    fn py_exit(
+        &mut self,
+        _self_id: HeapId,
+        vm: &mut VM<'h, impl ResourceTracker>,
+        _exc: Option<HeapId>,
+    ) -> RunResult<CallResult> {
+        // `with open(...) as f:` always closes the file on exit, success or
+        // failure. We don't suppress exceptions: returning `None` is falsy, so
+        // any in-flight exception propagates as it would in CPython.
+        //
+        // `close()` on an already-closed file is idempotent (a no-op), matching
+        // CPython.
+        self.get_mut(vm.heap).closed = true;
+        Ok(CallResult::Value(Value::None))
     }
 
     fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<CallResult>> {
