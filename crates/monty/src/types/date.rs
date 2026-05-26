@@ -16,7 +16,7 @@ use ahash::AHashSet;
 use chrono::{Datelike, NaiveDate};
 
 use crate::{
-    args::ArgValues,
+    args::{ArgValues, FromArgs},
     bytecode::{CallResult, VM},
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, RunError, RunResult, SimpleException},
@@ -319,9 +319,16 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Date> {
             }
             Some(id) if id == StaticStrings::Replace => {
                 let (year, month, day) = to_ymd(date);
-                let (new_year, new_month, new_day) =
-                    extract_date_replace_kwargs(args, year, month, day, vm.heap, vm.interns)?;
-                let new_date = from_ymd(new_year, new_month, new_day)?;
+                let DateReplaceArgs {
+                    year: new_year,
+                    month: new_month,
+                    day: new_day,
+                } = DateReplaceArgs::from_args(args, vm.heap, vm.interns)?;
+                let new_date = from_ymd(
+                    new_year.unwrap_or(year),
+                    new_month.unwrap_or(i32::try_from(month).expect("month in 1..=12")),
+                    new_day.unwrap_or(i32::try_from(day).expect("day in 1..=31")),
+                )?;
                 Ok(CallResult::Value(Value::Ref(
                     vm.heap.allocate(HeapData::Date(new_date))?,
                 )))
@@ -432,50 +439,15 @@ pub(crate) fn extract_strftime_arg(
     result
 }
 
-/// Parses keyword arguments for `date.replace()`.
-///
-/// Returns `(year, month, day)` with original values as defaults.
-fn extract_date_replace_kwargs(
-    args: ArgValues,
-    year: i32,
-    month: u32,
-    day: u32,
-    heap: &mut Heap<impl ResourceTracker>,
-    interns: &Interns,
-) -> RunResult<(i32, i32, i32)> {
-    let (pos, kwargs) = args.into_parts();
-    defer_drop_mut!(pos, heap);
-    let kwargs = kwargs.into_iter();
-    defer_drop_mut!(kwargs, heap);
-
-    let mut new_year = year;
-    let mut new_month = i32::try_from(month).expect("month is always in 1..=12");
-    let mut new_day = i32::try_from(day).expect("day is always in 1..=31");
-
-    // replace() takes no positional args
-    if let Some(arg) = pos.next() {
-        arg.drop_with_heap(heap);
-        return Err(ExcType::type_error("replace() takes 0 positional arguments".to_owned()));
-    }
-
-    for (key, value) in kwargs {
-        defer_drop!(key, heap);
-        defer_drop!(value, heap);
-        let Some(key_name) = key.as_either_str(heap) else {
-            return Err(ExcType::type_error_kwargs_nonstring_key());
-        };
-        match key_name.string_id() {
-            Some(id) if id == StaticStrings::Year => new_year = value.to_i32()?,
-            Some(id) if id == StaticStrings::Month => new_month = value.to_i32()?,
-            Some(id) if id == StaticStrings::Day => new_day = value.to_i32()?,
-            _ => {
-                return Err(ExcType::type_error_unexpected_keyword(
-                    "replace",
-                    key_name.as_str(interns),
-                ));
-            }
-        }
-    }
-
-    Ok((new_year, new_month, new_day))
+/// Keyword arguments for `date.replace()`. All keyword-only; absent fields
+/// inherit the original date's component via `unwrap_or` at the call site.
+#[derive(FromArgs)]
+#[from_args(name = "replace")]
+struct DateReplaceArgs {
+    #[from_args(kw_only, default)]
+    year: Option<i32>,
+    #[from_args(kw_only, default)]
+    month: Option<i32>,
+    #[from_args(kw_only, default)]
+    day: Option<i32>,
 }

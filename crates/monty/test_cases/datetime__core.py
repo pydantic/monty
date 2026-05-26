@@ -1099,6 +1099,78 @@ try:
 except TypeError:
     pass  # message differs between CPython and Monty
 
+# === FromArgs migration: invalid argument-type coverage ===
+# Covers each typed-field path in the FromArgs-derived structs introduced for
+# timedelta, datetime, datetime.replace, and date.replace. CPython routes
+# non-int arguments through component-specific error messages that name the
+# argument (e.g. `timedelta days component: str`), while Monty's `FromValue`
+# trait emits the generic "an integer is required" — the messages diverge but
+# both raise `TypeError`, so we only assert exception type here.
+
+# timedelta: positional days as wrong type
+try:
+    datetime.timedelta('x')
+    assert False, 'timedelta(non-int) should raise TypeError'
+except TypeError:
+    pass  # message differs between CPython and Monty
+
+# timedelta: kw_only milliseconds as wrong type — exercises the kw_only path
+try:
+    datetime.timedelta(milliseconds=[1, 2])
+    assert False, 'timedelta(milliseconds=non-int) should raise TypeError'
+except TypeError:
+    pass  # message differs between CPython and Monty
+
+# datetime.replace: kw_only year as wrong type
+base_dt = datetime.datetime(2024, 6, 15)
+try:
+    base_dt.replace(year='nope')
+    assert False, 'datetime.replace(year=str) should raise TypeError'
+except TypeError:
+    pass  # message differs between CPython and Monty
+
+# NOTE: CPython's datetime.replace() accepts positional args (year, month,
+# day, ...). Monty's existing implementation rejects all positional args for
+# replace(); that divergence pre-dates the FromArgs migration and is not
+# regression-tested here because it is CPython-incompatible.
+
+# date.replace: kw_only day as wrong type
+base_date = datetime.date(2024, 6, 15)
+try:
+    base_date.replace(day='last')
+    assert False, 'date.replace(day=str) should raise TypeError'
+except TypeError:
+    pass  # message differs between CPython and Monty
+
+# datetime constructor: missing required positional (yields a precise message,
+# shared with CPython's `PyArg_ParseTupleAndKeywords`)
+try:
+    datetime.datetime(year=2024, month=6)
+    assert False, 'datetime missing day should raise TypeError'
+except TypeError as e:
+    assert str(e) == "function missing required argument 'day' (pos 3)", f'dt missing day: {e}'
+
+# datetime constructor: wrong type for required positional
+try:
+    datetime.datetime('twenty-four', 6, 15)
+    assert False, 'datetime non-int year should raise TypeError'
+except TypeError:
+    pass  # message differs between CPython and Monty
+
+# datetime constructor: wrong type for optional positional (microsecond)
+try:
+    datetime.datetime(2024, 6, 15, 0, 0, 0, 'oops')
+    assert False, 'datetime non-int microsecond should raise TypeError'
+except TypeError:
+    pass  # message differs between CPython and Monty
+
+# datetime constructor: wrong type for kw-only-style microsecond (via kwarg path)
+try:
+    datetime.datetime(2024, 6, 15, microsecond='nope')
+    assert False, 'datetime non-int microsecond kwarg should raise TypeError'
+except TypeError:
+    pass  # message differs between CPython and Monty
+
 # === timedelta str with microseconds (timedelta.rs py_str) ===
 
 assert str(datetime.timedelta(seconds=1, microseconds=500)) == '0:00:01.000500', (

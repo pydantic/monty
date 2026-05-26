@@ -73,6 +73,21 @@ impl FromValue for i64 {
     }
 }
 
+/// Accepts `Int` and `Bool`; widens to `i128`. Used by constructors like
+/// `timedelta()` that hold their intermediate component values in `i128` so
+/// the overflow check on the normalisation step doesn't silently wrap.
+impl FromValue for i128 {
+    fn from_value(value: Value, heap: &mut Heap<impl ResourceTracker>, _interns: &Interns) -> RunResult<Self> {
+        let result = match value {
+            Value::Bool(b) => Ok(Self::from(b)),
+            Value::Int(i) => Ok(Self::from(i)),
+            _ => Err(type_error_integer_required()),
+        };
+        value.drop_with_heap(heap);
+        result
+    }
+}
+
 impl FromValue for bool {
     fn from_value(value: Value, heap: &mut Heap<impl ResourceTracker>, _interns: &Interns) -> RunResult<Self> {
         let result = match value {
@@ -95,16 +110,19 @@ impl FromValue for String {
     }
 }
 
-/// `Option<T>` — `None` only when the input value is `Value::None`. Distinct
-/// from "argument absent" (handled at the struct level via `default`).
+/// `Option<T>` is the natural way to spell "absent or present" arguments
+/// (e.g. `date.replace(year=…)` where the kwarg's default comes from the
+/// receiver, not from a static constant). Paired with `#[from_args(default)]`
+/// on the field, an absent argument resolves to `None` and a present one is
+/// delegated to `T::from_value` and wrapped in `Some`.
+///
+/// Note: an explicit `Value::None` passed by the caller is **not** treated as
+/// absent — it is forwarded to `T::from_value`, which will normally reject it.
+/// This matches CPython: `date.replace(year=None)` is a `TypeError`, not a
+/// no-op.
 impl<T: FromValue> FromValue for Option<T> {
     fn from_value(value: Value, heap: &mut Heap<impl ResourceTracker>, interns: &Interns) -> RunResult<Self> {
-        if matches!(value, Value::None) {
-            // Value::None is an immediate variant — no heap ref to release.
-            Ok(None)
-        } else {
-            T::from_value(value, heap, interns).map(Some)
-        }
+        T::from_value(value, heap, interns).map(Some)
     }
 
     fn drop_extracted(self, heap: &mut Heap<impl ResourceTracker>) {
@@ -115,7 +133,12 @@ impl<T: FromValue> FromValue for Option<T> {
 }
 
 fn type_error_integer_required() -> RunError {
-    SimpleException::new_msg(ExcType::TypeError, "an integer is required").into()
+    // Match the hardcoded message in `Value::to_i32` so callers that
+    // mix-and-match the macro and the hand-written extractor see the same
+    // error wording. The literal "(got type float)" is a known wart inherited
+    // from the original implementation — it is wrong for non-float inputs but
+    // matches what callers and tests already expect.
+    SimpleException::new_msg(ExcType::TypeError, "an integer is required (got type float)").into()
 }
 
 fn type_error_bool_required() -> RunError {

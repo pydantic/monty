@@ -36,7 +36,7 @@ use monty::args::{ArgValues, FromArgs};
 use monty::value::Value;
 
 #[derive(FromArgs)]
-#[from_args(name = "function", at_most_positional)]
+#[from_args(name = "function", c_error, at_most_positional)]
 struct DatetimeInitArgs {
     year: i32,
     month: i32,
@@ -58,6 +58,11 @@ let DatetimeInitArgs { year, month, day, hour, minute, second, microsecond, tzin
     DatetimeInitArgs::from_args(args, heap, interns)?;
 ```
 
+(`c_error` here opts into CPython's `PyArg_ParseTupleAndKeywords` wording —
+"function got an unexpected keyword argument 'X'" etc. — which is what
+C-implemented constructors like `datetime` use. Default is Python-method
+wording, used by most builtin methods and pure-Python functions.)
+
 The generated `from_args` method returns `RunResult<Self>` and is guaranteed
 to drop every `Value` it touches on every error path.
 
@@ -72,13 +77,28 @@ new impl there if you need to extract a type that isn't covered.
 
 #### Struct-level (`#[from_args(...)]` on the struct itself)
 
-- `name = "..."` (required) — function name embedded in error messages
-  (e.g. positional/keyword conflict). C-style constructors should pass
-  `"function"` to match CPython's wording.
-- `at_most_positional` — use the
-  `"function takes at most N positional arguments"` wording for the
-  too-many-args error (matches `datetime`). Default is the plain
-  `"function takes at most N arguments"` wording (matches `date`).
+- `name = "..."` (required) — function name embedded in error messages.
+  Used as the `{name}()` prefix in Python-method-style errors and (with
+  `c_error`) as the descriptor in the positional/keyword conflict
+  message. C-implemented constructors typically pass `"function"` here
+  to match CPython's wording.
+- `c_error` — use C-constructor error wording (matches CPython's
+  `PyArg_ParseTupleAndKeywords` — e.g. `datetime`):
+  - unknown kwarg: `this function got an unexpected keyword argument 'X'`
+  - pos/kw conflict: `argument for function given by name ('Y') and position (N)`
+  - missing required: `function missing required argument 'Y' (pos N)`
+  - too many positional: `function takes at most M arguments (N given)`
+
+  Default (no `c_error`) is Python-method wording, matching `def`-defined
+  functions and most builtin methods (`list.sort`, `datetime.replace`):
+  - unknown kwarg: `{name}() got an unexpected keyword argument 'X'`
+  - pos/kw conflict: `{name}() got multiple values for keyword argument 'Y'`
+  - missing required: `{name}() missing 1 required positional argument: 'Y'`
+  - too many positional: `{name} expected at most M arguments, got N`
+- `at_most_positional` — only meaningful with `c_error`. Switches the
+  too-many-args error to `"function takes at most M positional arguments
+  (N given)"` (matches `datetime`). Default is the plain `"function takes
+  at most M arguments (N given)"` wording (matches `date`).
 
 #### Field-level (`#[from_args(...)]` on a field)
 
