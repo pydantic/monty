@@ -95,10 +95,21 @@ new impl there if you need to extract a type that isn't covered.
   - pos/kw conflict: `{name}() got multiple values for keyword argument 'Y'`
   - missing required: `{name}() missing 1 required positional argument: 'Y'`
   - too many positional: `{name} expected at most M arguments, got N`
+- `c_error_named` — mutually exclusive with `c_error`. Use this for
+  C-implemented constructors that *do* embed the function name in their
+  error messages (matches CPython's `timezone`, the `re` module functions,
+  etc.):
+  - unknown kwarg: `{name}() got an unexpected keyword argument 'X'`
+    (same wording as the default Python style)
+  - pos/kw conflict: `argument for {name}() given by name ('Y') and position (N)`
+    (C wording with the name as the descriptor)
+  - missing required: `{name}() missing required argument 'Y' (pos N)`
+  - too many positional: `{name}() takes at most M arguments (N given)`
 - `at_most_positional` — only meaningful with `c_error`. Switches the
   too-many-args error to `"function takes at most M positional arguments
   (N given)"` (matches `datetime`). Default is the plain `"function takes
-  at most M arguments (N given)"` wording (matches `date`).
+  at most M arguments (N given)"` wording (matches `date`). The
+  `c_error_named` and default Python styles ignore this flag.
 
 #### Field-level (`#[from_args(...)]` on a field)
 
@@ -128,18 +139,31 @@ compile time with `compile_error!` messages:
 
 Within each region required fields must precede optional ones.
 
-### Kwarg dispatch uses `StaticStrings`
+### Kwarg dispatch via `EitherStr::matches`
 
-The generated code dispatches kwargs by `StringId` equality against
-`StaticStrings::PascalCase(field_ident)`. If a field's name has no
-matching `StaticStrings` variant, the *user-side* `rustc` build fails
-with `no variant <X> on enum StaticStrings`. Add the variant to
-[`crates/monty/src/intern.rs`](../monty/src/intern.rs) — this is the
-intended workflow and keeps dispatch as cheap as the hand-written paths.
+The generated code dispatches each kwarg by calling
+`EitherStr::matches(StaticStrings::PascalCase(field_ident).into(), interns)`.
+That helper accepts both an interned `StringId` (the fast path —
+`__id == target`) and a heap-allocated `Heap(String)` (which falls back
+to a byte-for-byte string comparison against the interned spelling). The
+latter is what makes `f(**{some_dynamic_name: ...})` work even though the
+dispatch dictionary is built around `StaticStrings`.
 
-If your field name doesn't fit the auto-derived pascalisation, use
+If a field name has no matching `StaticStrings` variant, the *user-side*
+`rustc` build fails with `no variant <X> on enum StaticStrings`. Add the
+variant to [`crates/monty/src/intern.rs`](../monty/src/intern.rs) — this
+is the intended workflow and keeps the fast path as cheap as the
+hand-written code.
+
+If your field name doesn't fit the auto-derived pascalisation (or
+collides with an existing variant used for an attribute name — for
+example `string` is taken by `match.string`), use
 `#[from_args(static_string = "Variant")]` to point at a different
-`StaticStrings` variant.
+`StaticStrings` variant. Pos-only fields can also use
+`#[from_args(static_string = "...")]` to *opt into* the
+"positional-only-argument-passed-as-keyword" rejection arm; without it
+the macro skips that arm and a kwarg matching the field name falls
+through to the generic "unexpected keyword" error.
 
 ### Refcount safety
 

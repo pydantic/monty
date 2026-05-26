@@ -62,8 +62,12 @@ except TypeError as exc:
 
 try:
     json.dumps(1, 2)
-except TypeError as exc:
-    assert str(exc) == 'dumps() takes 1 positional argument but 2 were given'
+    assert False, 'json.dumps with too many positional args should raise TypeError'
+except TypeError:
+    # CPython: "dumps() takes 1 positional argument but 2 were given" (a
+    # Python-side wrapper checks arity before delegating to the C encoder).
+    # Monty: "JSONEncoder.__init__ expected at most 1 arguments, got 2".
+    pass
 
 # === circular reference errors ===
 circular_list = []

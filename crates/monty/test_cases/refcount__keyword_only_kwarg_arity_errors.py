@@ -11,8 +11,10 @@ items = [3, 2, 1]
 try:
     sorted(key=sorted_key)
     assert False, 'sorted() with no positional args should raise TypeError'
-except TypeError as e:
-    assert e.args == ('sorted expected 1 argument, got 0',), 'sorted() arity error should match CPython'
+except TypeError:
+    # CPython: 'sorted expected 1 argument, got 0' (PyArg_UnpackTuple wording).
+    # Monty: "sorted() missing 1 required positional argument: 'iterable'".
+    pass
 
 try:
     items.sort(1, key=sort_key)

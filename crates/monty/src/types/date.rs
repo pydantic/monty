@@ -18,7 +18,6 @@ use chrono::{Datelike, NaiveDate};
 use crate::{
     args::{ArgValues, FromArgs},
     bytecode::{CallResult, VM},
-    defer_drop, defer_drop_mut,
     exception_private::{ExcType, RunError, RunResult, SimpleException},
     hash::HashValue,
     heap::{Heap, HeapData, HeapId, HeapItem, HeapRead},
@@ -119,74 +118,24 @@ pub(crate) fn to_ymd(date: Date) -> (i32, u32, u32) {
 
 /// Constructor for `date(year, month, day)`.
 pub(crate) fn init(heap: &mut Heap<impl ResourceTracker>, args: ArgValues, interns: &Interns) -> RunResult<Value> {
-    let (pos, kwargs) = args.into_parts();
-    // CPython's date() is C-implemented and counts total args (pos + kwargs).
-    // Any total > 3 is rejected before checking individual args.
-    let total_args = pos.len() + kwargs.len();
-    defer_drop_mut!(pos, heap);
-    let kwargs = kwargs.into_iter();
-    defer_drop_mut!(kwargs, heap);
-
-    if total_args > 3 {
-        return Err(ExcType::type_error_c_at_most(3, total_args));
-    }
-
-    let mut year: Option<i32> = None;
-    let mut month: Option<i32> = None;
-    let mut day: Option<i32> = None;
-
-    for (index, arg) in pos.by_ref().enumerate() {
-        defer_drop!(arg, heap);
-        match index {
-            0 => year = Some(arg.to_i32()?),
-            1 => month = Some(arg.to_i32()?),
-            2 => day = Some(arg.to_i32()?),
-            _ => unreachable!("total_args check above prevents this"),
-        }
-    }
-
-    for (key, value) in kwargs {
-        defer_drop!(key, heap);
-        defer_drop!(value, heap);
-
-        let Some(key_name) = key.as_either_str(heap) else {
-            return Err(ExcType::type_error_kwargs_nonstring_key());
-        };
-        match key_name.string_id() {
-            Some(id) if id == StaticStrings::Year => {
-                if year.is_some() {
-                    return Err(ExcType::type_error_multiple_values("date", "year"));
-                }
-                year = Some(value.to_i32()?);
-            }
-            Some(id) if id == StaticStrings::Month => {
-                if month.is_some() {
-                    return Err(ExcType::type_error_multiple_values("date", "month"));
-                }
-                month = Some(value.to_i32()?);
-            }
-            Some(id) if id == StaticStrings::Day => {
-                if day.is_some() {
-                    return Err(ExcType::type_error_multiple_values("date", "day"));
-                }
-                day = Some(value.to_i32()?);
-            }
-            _ => return Err(ExcType::type_error_unexpected_keyword("date", key_name.as_str(interns))),
-        }
-    }
-
-    let Some(year) = year else {
-        return Err(ExcType::type_error_c_missing_required("year", 1));
-    };
-    let Some(month) = month else {
-        return Err(ExcType::type_error_c_missing_required("month", 2));
-    };
-    let Some(day) = day else {
-        return Err(ExcType::type_error_c_missing_required("day", 3));
-    };
-
+    let DateInitArgs { year, month, day } = DateInitArgs::from_args(args, heap, interns)?;
     let date = from_ymd(year, month, day)?;
     Ok(Value::Ref(heap.allocate(HeapData::Date(date))?))
+}
+
+/// Argument shape for `date(year, month, day)`.
+///
+/// CPython's `date()` is C-implemented (`PyArg_ParseTupleAndKeywords`) and uses
+/// `c_error` wording — "function takes at most N arguments", "function missing
+/// required argument 'X' (pos N)", etc. Unlike `datetime()` it does **not**
+/// prefix "positional" in the at-most message, so we leave `at_most_positional`
+/// unset.
+#[derive(FromArgs)]
+#[from_args(name = "function", c_error)]
+struct DateInitArgs {
+    year: i32,
+    month: i32,
+    day: i32,
 }
 
 /// Classmethod implementation for `date.today()`.

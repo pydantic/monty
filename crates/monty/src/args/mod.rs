@@ -9,7 +9,7 @@ use crate::{
     MontyObject, ResourceTracker,
     bytecode::VM,
     defer_drop, defer_drop_mut,
-    exception_private::{ExcType, RunError, RunResult, SimpleException},
+    exception_private::{ExcType, RunError, RunResult},
     expressions::{ExprLoc, Identifier},
     heap::{ContainsHeap, DropWithHeap, Heap, HeapGuard},
     intern::{Interns, StringId},
@@ -486,20 +486,6 @@ impl KwargsValues {
                 .into_iter()
                 .map(|(k, v)| (MontyObject::new(k, vm), MontyObject::new(v, vm)))
                 .collect(),
-        }
-    }
-
-    /// Helper for functions which do not yet support kwargs, returns an `Err` if there are kwargs.
-    pub fn not_supported_yet(self, method_name: &str, heap: &mut Heap<impl ResourceTracker>) -> RunResult<()> {
-        if self.is_empty() {
-            Ok(())
-        } else {
-            self.drop_with_heap(heap);
-            Err(SimpleException::new_msg(
-                ExcType::TypeError,
-                format!("{method_name}() does not support keyword arguments yet"),
-            )
-            .into())
         }
     }
 

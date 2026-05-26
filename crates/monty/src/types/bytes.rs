@@ -78,12 +78,12 @@ use smallvec::smallvec;
 
 use super::{MontyIter, PyTrait, Type};
 use crate::{
-    args::ArgValues,
+    args::{ArgValues, FromArgs},
     bytecode::{CallResult, VM},
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, RunResult, SimpleException},
     hash::{HashValue, hash_python_bytes},
-    heap::{DropWithHeap, Heap, HeapData, HeapGuard, HeapId, HeapItem, HeapRead, heap_read_ref_as_field},
+    heap::{DropWithHeap, Heap, HeapData, HeapId, HeapItem, HeapRead, heap_read_ref_as_field},
     intern::{StaticStrings, StringId},
     resource::{ResourceError, ResourceTracker, check_repeat_size, check_replace_size},
     types::{
@@ -1320,80 +1320,56 @@ fn bytes_rsplit<'h>(
 }
 
 /// Parses arguments for bytes split methods.
+///
+/// The `method` parameter only selects between two `FromArgs`-derived structs
+/// (one for `bytes.split`, one for `bytes.rsplit`) so each carries its own
+/// function name into error messages.
 fn parse_bytes_split_args(
     method: &str,
     args: ArgValues,
     vm: &mut VM<'_, impl ResourceTracker>,
 ) -> RunResult<(Option<Vec<u8>>, i64)> {
-    let (pos_iter, kwargs) = args.into_parts();
-    defer_drop_mut!(pos_iter, vm);
-    let kwargs_iter = kwargs.into_iter();
-    defer_drop_mut!(kwargs_iter, vm);
-
-    let sep_value = pos_iter.next();
-    defer_drop_mut!(sep_value, vm);
-    let maxsplit_value = pos_iter.next();
-    defer_drop_mut!(maxsplit_value, vm);
-
-    // Check no extra positional arguments
-    if pos_iter.len() != 0 {
-        return Err(ExcType::type_error_at_most(method, 2, 3));
-    }
-
-    // Process keyword arguments
-    for (key, value) in kwargs_iter {
-        defer_drop!(key, vm);
-        let mut value_guard = HeapGuard::new(value, vm);
-
-        let Some(keyword_name) = key.as_either_str(value_guard.heap().heap) else {
-            return Err(ExcType::type_error("keywords must be strings"));
-        };
-
-        let key_str = keyword_name.as_str(value_guard.heap().interns);
-        match key_str {
-            "sep" => {
-                if let Some(previous_value) = sep_value.replace(value_guard.into_inner()) {
-                    previous_value.drop_with_heap(vm);
-                    return Err(ExcType::type_error(format!(
-                        "{method}() got multiple values for argument 'sep'"
-                    )));
-                }
-            }
-            "maxsplit" => {
-                if let Some(previous_value) = maxsplit_value.replace(value_guard.into_inner()) {
-                    previous_value.drop_with_heap(vm);
-                    return Err(ExcType::type_error(format!(
-                        "{method}() got multiple values for argument 'maxsplit'"
-                    )));
-                }
-            }
-            _ => {
-                return Err(ExcType::type_error(format!(
-                    "'{key_str}' is an invalid keyword argument for {method}()"
-                )));
-            }
-        }
-    }
-
-    // Extract sep (default None)
-    let sep = if let Some(v) = sep_value {
-        if matches!(v, Value::None) {
-            None
-        } else {
-            Some(extract_bytes_only(v, vm)?.to_owned())
-        }
+    let (sep_value, maxsplit_value) = if method == "bytes.rsplit" {
+        let BytesRsplitArgs { sep, maxsplit } = BytesRsplitArgs::from_args(args, vm.heap, vm.interns)?;
+        (sep, maxsplit)
     } else {
+        let BytesSplitArgs { sep, maxsplit } = BytesSplitArgs::from_args(args, vm.heap, vm.interns)?;
+        (sep, maxsplit)
+    };
+
+    let sep = if matches!(sep_value, Value::None) {
+        sep_value.drop_with_heap(vm);
         None
+    } else {
+        let result = extract_bytes_only(&sep_value, vm).map(<[u8]>::to_owned);
+        sep_value.drop_with_heap(vm);
+        Some(result?)
     };
 
-    // Extract maxsplit (default -1)
-    let maxsplit = if let Some(v) = maxsplit_value {
-        v.as_int(vm)?
-    } else {
-        -1
-    };
+    let maxsplit = maxsplit_value.as_int(vm)?;
+    maxsplit_value.drop_with_heap(vm);
 
     Ok((sep, maxsplit))
+}
+
+/// Argument shape for `bytes.split(sep=None, maxsplit=-1)`.
+#[derive(FromArgs)]
+#[from_args(name = "bytes.split")]
+struct BytesSplitArgs {
+    #[from_args(default = Value::None)]
+    sep: Value,
+    #[from_args(default = Value::Int(-1))]
+    maxsplit: Value,
+}
+
+/// Argument shape for `bytes.rsplit(sep=None, maxsplit=-1)`.
+#[derive(FromArgs)]
+#[from_args(name = "bytes.rsplit")]
+struct BytesRsplitArgs {
+    #[from_args(default = Value::None)]
+    sep: Value,
+    #[from_args(default = Value::Int(-1))]
+    maxsplit: Value,
 }
 
 /// Splits bytes by a separator sequence.
@@ -1699,70 +1675,29 @@ fn bytes_replace<'h>(
 
 /// Parses arguments for bytes.replace method.
 fn parse_bytes_replace_args(
-    method: &str,
+    _method: &str,
     args: ArgValues,
     vm: &mut VM<'_, impl ResourceTracker>,
 ) -> RunResult<(Vec<u8>, Vec<u8>, i64)> {
-    let (pos_iter, kwargs) = args.into_parts();
-    defer_drop_mut!(pos_iter, vm);
-    let kwargs_iter = kwargs.into_iter();
-    defer_drop_mut!(kwargs_iter, vm);
+    let BytesReplaceArgs { old, new, count } = BytesReplaceArgs::from_args(args, vm.heap, vm.interns)?;
+    defer_drop!(old, vm);
+    defer_drop!(new, vm);
+    defer_drop!(count, vm);
 
-    let Some(old_value) = pos_iter.next() else {
-        return Err(ExcType::type_error_at_least(method, 2, 0));
-    };
-    defer_drop!(old_value, vm);
+    let old_b = extract_bytes_only(old, vm)?.to_owned();
+    let new_b = extract_bytes_only(new, vm)?.to_owned();
+    let count_i = count.as_int(vm)?;
+    Ok((old_b, new_b, count_i))
+}
 
-    let Some(new_value) = pos_iter.next() else {
-        return Err(ExcType::type_error_at_least(method, 2, 1));
-    };
-    defer_drop!(new_value, vm);
-
-    let count_value = pos_iter.next();
-    defer_drop_mut!(count_value, vm);
-
-    // Check no extra positional arguments
-    if pos_iter.len() != 0 {
-        return Err(ExcType::type_error_at_most(method, 3, pos_iter.len() + 3));
-    }
-
-    // Process keyword arguments
-    for (key, value) in kwargs_iter {
-        defer_drop!(key, vm);
-        let mut value_guard = HeapGuard::new(value, vm);
-
-        let Some(keyword_name) = key.as_either_str(value_guard.heap().heap) else {
-            return Err(ExcType::type_error("keywords must be strings"));
-        };
-
-        let key_str = keyword_name.as_str(value_guard.heap().interns);
-        match key_str {
-            "count" => {
-                if let Some(previous_value) = count_value.replace(value_guard.into_inner()) {
-                    previous_value.drop_with_heap(vm);
-                    return Err(ExcType::type_error(format!(
-                        "{method}() got multiple values for argument 'count'"
-                    )));
-                }
-            }
-            _ => {
-                return Err(ExcType::type_error(format!(
-                    "'{key_str}' is an invalid keyword argument for {method}()"
-                )));
-            }
-        }
-    }
-
-    // Extract old bytes
-    let old = extract_bytes_only(old_value, vm)?.to_owned();
-
-    // Extract new bytes
-    let new = extract_bytes_only(new_value, vm)?.to_owned();
-
-    // Extract count (default -1)
-    let count = if let Some(v) = count_value { v.as_int(vm)? } else { -1 };
-
-    Ok((old, new, count))
+/// Argument shape for `bytes.replace(old, new, count=-1)`.
+#[derive(FromArgs)]
+#[from_args(name = "bytes.replace")]
+struct BytesReplaceArgs {
+    old: Value,
+    new: Value,
+    #[from_args(default = Value::Int(-1))]
+    count: Value,
 }
 
 /// Replaces all occurrences of `old` with `new` in bytes.

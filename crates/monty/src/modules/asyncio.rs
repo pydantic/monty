@@ -99,11 +99,11 @@ fn run(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> RunResult<Call
 /// # Errors
 /// Returns `TypeError` if any argument is not awaitable.
 pub(crate) fn gather(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
-    let (pos_args, kwargs) = args.into_parts();
+    // TODO: support keyword arguments (e.g. return_exceptions); for now any
+    // kwarg is rejected by `into_pos_only` with the standard
+    // "gather() does not support keyword arguments" TypeError.
+    let pos_args = args.into_pos_only("gather", heap)?;
     defer_drop_mut!(pos_args, heap);
-
-    // TODO: support keyword arguments (e.g. return_exceptions)
-    kwargs.not_supported_yet("gather", heap)?;
 
     // Validate all positional args are awaitable and collect their heap ids.
     // Both coroutines and external futures live on the heap; transfer

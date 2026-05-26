@@ -415,6 +415,11 @@ pub enum StaticStrings {
     Buffering,
     Errors,
     Newline,
+    Closefd,
+    Opener,
+    Repl,
+    Old,
+    New,
 
     // Slice attributes
     Start,

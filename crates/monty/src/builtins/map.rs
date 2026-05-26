@@ -3,10 +3,10 @@
 use std::{iter, mem};
 
 use crate::{
-    args::{ArgValues, KwargsValues},
+    args::{ArgValues, FromArgs, KwargsValues},
     bytecode::VM,
     defer_drop, defer_drop_mut,
-    exception_private::{ExcType, RunResult, SimpleException},
+    exception_private::RunResult,
     heap::{DropWithHeap, HeapData},
     resource::ResourceTracker,
     types::{List, MontyIter},
@@ -28,26 +28,20 @@ use crate::{
 /// map(str, [1, 2, 3])               # ['1', '2', '3']
 /// ```
 pub fn builtin_map(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
-    let (positional, kwargs) = args.into_parts();
-    defer_drop_mut!(positional, vm);
-
-    kwargs.not_supported_yet("map", vm.heap)?;
-
-    if positional.len() < 2 {
-        return Err(SimpleException::new_msg(ExcType::TypeError, "map() must have at least two arguments.").into());
-    }
-
-    let function = positional.next().unwrap();
+    let MapArgs {
+        function,
+        first_iterable,
+        extra_iterables,
+    } = MapArgs::from_args(args, vm.heap, vm.interns)?;
     defer_drop!(function, vm);
 
-    let first_iterable = positional.next().expect("checked length above");
     let first_iter = MontyIter::new(first_iterable, vm)?;
     defer_drop_mut!(first_iter, vm);
 
-    let extra_iterators: Vec<MontyIter> = Vec::with_capacity(positional.len());
+    let extra_iterators: Vec<MontyIter> = Vec::with_capacity(extra_iterables.len());
     defer_drop_mut!(extra_iterators, vm);
 
-    for iterable in positional {
+    for iterable in extra_iterables {
         extra_iterators.push(MontyIter::new(iterable, vm)?);
     }
 
@@ -100,4 +94,20 @@ pub fn builtin_map(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> Ru
 
     let heap_id = vm.heap.allocate(HeapData::List(List::new(out)))?;
     Ok(Value::Ref(heap_id))
+}
+
+/// Argument shape for `map(function, iterable, *iterables)`.
+///
+/// `function` and the first `iterable` are required; any further iterables
+/// are collected by `extra_iterables`. `map` doesn't accept kwargs, so the
+/// macro's default unknown-kwarg error path is exactly what we want.
+#[derive(FromArgs)]
+#[from_args(name = "map")]
+struct MapArgs {
+    #[from_args(pos_only)]
+    function: Value,
+    #[from_args(pos_only)]
+    first_iterable: Value,
+    #[from_args(varargs)]
+    extra_iterables: Vec<Value>,
 }

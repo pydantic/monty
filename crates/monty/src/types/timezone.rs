@@ -13,13 +13,13 @@ use std::{
 use ahash::AHashSet;
 
 use crate::{
-    args::ArgValues,
+    args::{ArgValues, FromArgs},
     bytecode::VM,
-    defer_drop, defer_drop_mut,
+    defer_drop,
     exception_private::{ExcType, RunResult, SimpleException},
     hash::HashValue,
     heap::{Heap, HeapData, HeapId, HeapItem, HeapRead},
-    intern::{Interns, StaticStrings},
+    intern::Interns,
     resource::{ResourceError, ResourceTracker},
     types::{
         PyTrait, Type,
@@ -70,82 +70,26 @@ impl TimeZone {
 
     /// Parses timezone constructor arguments.
     pub fn init(heap: &mut Heap<impl ResourceTracker>, args: ArgValues, interns: &Interns) -> RunResult<Value> {
-        let (pos, kwargs) = args.into_parts();
-        // CPython's timezone() is C-implemented and counts total args (pos + kwargs).
-        // Any total > 2 is rejected before checking individual args.
-        let total_args = pos.len() + kwargs.len();
-        defer_drop_mut!(pos, heap);
-        let kwargs = kwargs.into_iter();
-        defer_drop_mut!(kwargs, heap);
-
-        if total_args > 2 {
-            return Err(ExcType::type_error_method_at_most("timezone", 2, total_args));
-        }
-
-        let mut offset_seconds: Option<i32> = None;
-        let mut name: Option<Option<String>> = None;
-        let mut seen_offset = false;
-        let mut seen_name = false;
-
-        for (index, arg) in pos.by_ref().enumerate() {
-            defer_drop!(arg, heap);
-            match index {
-                0 => {
-                    offset_seconds = Some(extract_offset_seconds(arg, heap)?);
-                    seen_offset = true;
-                }
-                1 => {
-                    name = Some(extract_name(arg, heap, interns)?);
-                    seen_name = true;
-                }
-                _ => return Err(ExcType::type_error_method_at_most("timezone", 2, index + 1)),
-            }
-        }
-
-        for (key, value) in kwargs {
-            defer_drop!(key, heap);
-            defer_drop!(value, heap);
-
-            let Some(key_name) = key.as_either_str(heap) else {
-                return Err(ExcType::type_error_kwargs_nonstring_key());
-            };
-            match key_name.string_id() {
-                Some(id) if id == StaticStrings::Offset => {
-                    if seen_offset {
-                        return Err(ExcType::type_error_positional_keyword_conflict(
-                            "timezone()",
-                            "offset",
-                            1,
-                        ));
-                    }
-                    offset_seconds = Some(extract_offset_seconds(value, heap)?);
-                    seen_offset = true;
-                }
-                Some(id) if id == StaticStrings::Name => {
-                    if seen_name {
-                        return Err(ExcType::type_error_positional_keyword_conflict("timezone()", "name", 2));
-                    }
-                    name = Some(extract_name(value, heap, interns)?);
-                    seen_name = true;
-                }
-                _ => {
-                    return Err(ExcType::type_error_unexpected_keyword(
-                        "timezone",
-                        key_name.as_str(interns),
-                    ));
-                }
-            }
-        }
-
-        let Some(offset_seconds) = offset_seconds else {
-            return Err(ExcType::type_error_c_missing_required_named("timezone", "offset", 1));
+        let TimezoneInitArgs { offset, name } = TimezoneInitArgs::from_args(args, heap, interns)?;
+        // Keep `offset` and `name` alive across the validation helpers — they
+        // own the heap refs (TimeDelta / Str) we're reading from.
+        defer_drop!(offset, heap);
+        defer_drop!(name, heap);
+        let offset_seconds = extract_offset_seconds(offset, heap)?;
+        // `name` defaults to `Value::None` (absent → no name). Anything else
+        // must be a `str`; `extract_name` enforces that and returns the
+        // string. The `Option<String>` shape matches `TimeZone::new`'s
+        // expected argument.
+        let name_str: Option<String> = match name {
+            Value::None => None,
+            _ => extract_name(name, heap, interns)?,
         };
-        let name = name.unwrap_or(None);
-        if offset_seconds == 0 && name.is_none() {
+
+        if offset_seconds == 0 && name_str.is_none() {
             return heap.get_timezone_utc().map_err(Into::into);
         }
 
-        let tz = Self::new(offset_seconds, name)?;
+        let tz = Self::new(offset_seconds, name_str)?;
         Ok(Value::Ref(heap.allocate(HeapData::TimeZone(tz))?))
     }
 
@@ -154,6 +98,23 @@ impl TimeZone {
     pub fn format_utc_offset(&self) -> String {
         format_offset_hms(self.offset_seconds)
     }
+}
+
+/// Argument shape for `timezone(offset, name=None)`.
+///
+/// `timezone` is a C-implemented constructor that emits its function name in
+/// error messages (unlike `datetime`, which uses the bare `"function"`
+/// label). Hence the `c_error_named` style.
+///
+/// Both `offset` and `name` are held as `Value` so the inner code can do its
+/// own custom validation (`offset` must be a `timedelta`; `name` must be a
+/// `str`). The macro only handles arg-count/keyword dispatch.
+#[derive(FromArgs)]
+#[from_args(name = "timezone", c_error_named)]
+struct TimezoneInitArgs {
+    offset: Value,
+    #[from_args(default = Value::None)]
+    name: Value,
 }
 
 impl PartialEq for TimeZone {

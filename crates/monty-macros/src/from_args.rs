@@ -31,23 +31,40 @@ struct Signature {
     /// Index of the `**kwargs` field (if any).
     varkwargs_idx: Option<usize>,
     /// Which `type_error_c_at_most*` helper to emit when too many positional
-    /// arguments are passed. Matches CPython's per-constructor wording.
+    /// arguments are passed. Only meaningful in [`ErrorStyle::C`] — the named
+    /// styles always emit the `{name}() takes at most …` helper.
     at_most_style: AtMostStyle,
-    /// When `true`, emit C-constructor error wording (matches CPython's
-    /// `PyArg_ParseTupleAndKeywords` — used by C-implemented type constructors
-    /// like `datetime`). When `false` (the default), use Python-method wording
-    /// — matches `def`-defined functions and most builtin methods.
-    ///
-    /// Concrete differences:
-    /// - unknown kwarg: `this function got an unexpected keyword argument 'X'`
-    ///   vs `{name}() got an unexpected keyword argument 'X'`.
-    /// - pos/kw conflict: `argument for function given by name ('Y') and position (N)`
-    ///   vs `{name}() got multiple values for keyword argument 'Y'`.
-    /// - missing required (positional): `function missing required argument 'Y' (pos N)`
-    ///   vs `{name}() missing 1 required positional argument: 'Y'`.
-    /// - too many positional: `function takes at most M arguments (N given)`
-    ///   vs `{name} expected at most M arguments, got N`.
-    c_error: bool,
+    /// Selects the wording family used for argument-count / argument-name
+    /// errors. See [`ErrorStyle`] for the three options.
+    error_style: ErrorStyle,
+}
+
+/// Which family of CPython error wordings the generated code should emit.
+///
+/// CPython exposes three distinct phrasings depending on whether the function
+/// was defined in pure Python, in a C extension via
+/// `PyArg_ParseTupleAndKeywords` with the anonymous "function" label
+/// (e.g. `datetime`), or in a C extension with the function's own name in the
+/// message (e.g. `timezone`). The macro picks helpers from
+/// `exception_private` to match.
+#[derive(Clone, Copy)]
+enum ErrorStyle {
+    /// Pure-Python / Python-method wording. Default. Matches `def`-defined
+    /// functions and most builtin methods. Example unknowns:
+    /// `{name}() got an unexpected keyword argument 'X'`.
+    Python,
+    /// Anonymous C-constructor wording. Matches CPython's `datetime` and other
+    /// `PyArg_ParseTupleAndKeywords` callers that use the generic
+    /// `"function"` label. Example unknowns:
+    /// `this function got an unexpected keyword argument 'X'`.
+    C,
+    /// Named C-constructor wording. Matches CPython types like `timezone`
+    /// where messages embed the constructor name. Example unknowns:
+    /// `{name}() got an unexpected keyword argument 'X'` (same wording as
+    /// Python-method), but conflict / missing-positional / at-most use the
+    /// C phrasings prefixed with the name (e.g.
+    /// `argument for {name}() given by name ('X') and position (N)`).
+    NamedC,
 }
 
 /// Selects the wording of the "too many positional args" `TypeError` message.
@@ -121,7 +138,7 @@ impl Signature {
             ));
         };
 
-        let (func_name, at_most_style, c_error) = parse_struct_attrs(attrs)?;
+        let (func_name, at_most_style, error_style) = parse_struct_attrs(attrs)?;
 
         let mut fields = Vec::with_capacity(named.named.len());
         let mut varargs_idx = None;
@@ -218,7 +235,7 @@ impl Signature {
             varargs_idx,
             varkwargs_idx,
             at_most_style,
-            c_error,
+            error_style,
         })
     }
 
@@ -283,6 +300,33 @@ impl Signature {
                     #build_struct
                 }
             }
+        }
+    }
+
+    /// Emit the `type_error_*_at_most*` call for "too many positional args".
+    ///
+    /// Centralises the per-style choice so the positional loop and its
+    /// zero-positional special case stay in sync. `actual` is a token stream
+    /// for the runtime value (typically `__actual`).
+    fn at_most_err_expr(&self, max_lit: usize, actual: &TokenStream) -> TokenStream {
+        let func_name = self.func_name.as_str();
+        match self.error_style {
+            ErrorStyle::C => match self.at_most_style {
+                AtMostStyle::Standard => quote! {
+                    crate::exception_private::ExcType::type_error_c_at_most(#max_lit, #actual)
+                },
+                AtMostStyle::Positional => quote! {
+                    crate::exception_private::ExcType::type_error_c_at_most_positional(#max_lit, #actual)
+                },
+            },
+            // CPython's named-C types (e.g. timezone) emit
+            // `{name}() takes at most M arguments (N given)`.
+            ErrorStyle::NamedC => quote! {
+                crate::exception_private::ExcType::type_error_method_at_most(#func_name, #max_lit, #actual)
+            },
+            ErrorStyle::Python => quote! {
+                crate::exception_private::ExcType::type_error_at_most(#func_name, #max_lit, #actual)
+            },
         }
     }
 
@@ -388,21 +432,7 @@ impl Signature {
         // the full while/match here would trigger an `unreachable_code`
         // warning because `__pos_count += 1` is dead in that shape.
         if max_positional == 0 && !has_varargs {
-            let err_expr = if self.c_error {
-                match self.at_most_style {
-                    AtMostStyle::Standard => quote! {
-                        crate::exception_private::ExcType::type_error_c_at_most(0, __actual)
-                    },
-                    AtMostStyle::Positional => quote! {
-                        crate::exception_private::ExcType::type_error_c_at_most_positional(0, __actual)
-                    },
-                }
-            } else {
-                let func_name = self.func_name.as_str();
-                quote! {
-                    crate::exception_private::ExcType::type_error_at_most(#func_name, 0, __actual)
-                }
-            };
+            let err_expr = self.at_most_err_expr(0, &quote!(__actual));
             return quote! {
                 if let ::std::option::Option::Some(__arg) = ::std::iter::Iterator::next(&mut __pos_iter) {
                     __arg.drop_with_heap(heap);
@@ -430,22 +460,7 @@ impl Signature {
                 }
             }
         } else {
-            let max_lit = max_positional;
-            let err_expr = if self.c_error {
-                match self.at_most_style {
-                    AtMostStyle::Standard => quote! {
-                        crate::exception_private::ExcType::type_error_c_at_most(#max_lit, __actual)
-                    },
-                    AtMostStyle::Positional => quote! {
-                        crate::exception_private::ExcType::type_error_c_at_most_positional(#max_lit, __actual)
-                    },
-                }
-            } else {
-                let func_name = self.func_name.as_str();
-                quote! {
-                    crate::exception_private::ExcType::type_error_at_most(#func_name, #max_lit, __actual)
-                }
-            };
+            let err_expr = self.at_most_err_expr(max_positional, &quote!(__actual));
             quote! {
                 _ => {
                     // The argument itself has not yet been consumed by from_value,
@@ -456,7 +471,6 @@ impl Signature {
                 }
             }
         };
-        let _ = has_varargs;
 
         quote! {
             let mut __pos_count: usize = 0;
@@ -476,7 +490,7 @@ impl Signature {
         for (field, slot) in self.fields.iter().zip(slots) {
             let arm = match field.kind {
                 FieldKind::PosOnly | FieldKind::Varargs | FieldKind::Varkwargs => continue,
-                FieldKind::PosOrKeyword => kwarg_arm_pos_or_kw(field, slot, &self.func_name, self.c_error),
+                FieldKind::PosOrKeyword => kwarg_arm_pos_or_kw(field, slot, &self.func_name, self.error_style),
                 FieldKind::KwOnly => kwarg_arm_kw_only(field, slot, &self.func_name),
             };
             arms.push(arm);
@@ -485,60 +499,69 @@ impl Signature {
         let unknown_arm = if let Some(varkwargs_idx) = self.varkwargs_idx {
             let varkwargs_slot = &slots[varkwargs_idx];
             quote! {
-                _ => {
-                    // Preserve the key — we need to retain its string id alongside
-                    // the value in the varkwargs accumulator.
-                    let Some(__id) = __key_str.string_id() else {
-                        // Heap string key — intern it so we can carry a StringId.
-                        // For now, reject heap-string keys passed to **kwargs.
-                        // (TODO: support by allocating a StringId via Interns.)
-                        __value.drop_with_heap(heap);
-                        __key.drop_with_heap(heap);
-                        __cleanup!(crate::exception_private::ExcType::type_error_kwargs_nonstring_key());
-                    };
+                // Preserve the key — we need to retain its string id alongside
+                // the value in the varkwargs accumulator.
+                let Some(__id) = __key_str.string_id() else {
+                    // Heap string key — intern it so we can carry a StringId.
+                    // For now, reject heap-string keys passed to **kwargs.
+                    // (TODO: support by allocating a StringId via Interns.)
+                    __value.drop_with_heap(heap);
                     __key.drop_with_heap(heap);
-                    #varkwargs_slot.push((__id, __value));
-                }
+                    __cleanup!(crate::exception_private::ExcType::type_error_kwargs_nonstring_key());
+                };
+                __key.drop_with_heap(heap);
+                #varkwargs_slot.push((__id, __value));
             }
         } else {
-            let err_expr = if self.c_error {
-                quote! {
+            let func_name = self.func_name.as_str();
+            let err_expr = match self.error_style {
+                ErrorStyle::C => quote! {
                     crate::exception_private::ExcType::type_error_c_unexpected_keyword(&__unexpected)
-                }
-            } else {
-                let func_name = self.func_name.as_str();
-                quote! {
+                },
+                ErrorStyle::Python | ErrorStyle::NamedC => quote! {
                     crate::exception_private::ExcType::type_error_unexpected_keyword(#func_name, &__unexpected)
-                }
+                },
             };
             quote! {
-                _ => {
-                    __value.drop_with_heap(heap);
-                    let __unexpected = __key_str.as_str(interns).to_owned();
-                    __key.drop_with_heap(heap);
-                    __cleanup!(#err_expr);
-                }
+                __value.drop_with_heap(heap);
+                let __unexpected = __key_str.as_str(interns).to_owned();
+                __key.drop_with_heap(heap);
+                __cleanup!(#err_expr);
             }
         };
         let _ = has_varkwargs;
 
-        // Build pos-only kwarg rejection arms (CPython error message style).
+        // Build pos-only kwarg rejection arms — but only when the user has
+        // explicitly supplied a `#[from_args(static_string = "…")]` override
+        // pinning the kwarg name to a known `StaticStrings` variant. Without
+        // an override we can't generate a sound runtime dispatch (the
+        // auto-derived `StaticStrings::PascalCase(ident)` variant might not
+        // exist), so we fall through to the generic "unexpected keyword"
+        // error instead of the CPython-specific "positional-only arguments
+        // passed as keyword arguments" wording.
         let mut pos_only_arms: Vec<TokenStream> = Vec::new();
         for field in &self.fields {
-            if matches!(field.kind, FieldKind::PosOnly) {
+            if matches!(field.kind, FieldKind::PosOnly) && field.static_string.is_some() {
                 let static_string_ident = field.static_string_variant();
                 let field_name_lit = LitStr::new(&field.ident.to_string(), field.ident.span());
                 let func_name = &self.func_name;
                 pos_only_arms.push(quote! {
-                    ::std::option::Option::Some(__id) if __id == crate::intern::StaticStrings::#static_string_ident => {
+                    if __key_str.matches(
+                        crate::intern::StringId::from(crate::intern::StaticStrings::#static_string_ident),
+                        interns,
+                    ) {
                         __value.drop_with_heap(heap);
                         __key.drop_with_heap(heap);
                         __cleanup!(crate::exception_private::ExcType::type_error_positional_only(#func_name, #field_name_lit));
-                    }
+                    } else
                 });
             }
         }
 
+        // Glue the if/else chain together. Each arm in `arms` and
+        // `pos_only_arms` ends with a trailing `else` so the next arm chains
+        // cleanly; the final `else` block handles unknown kwargs or
+        // **varkwargs collection.
         quote! {
             while let ::std::option::Option::Some((__key, __value)) = ::std::iter::Iterator::next(&mut __kwargs_iter) {
                 let ::std::option::Option::Some(__key_str) = __key.as_either_str(heap) else {
@@ -546,9 +569,9 @@ impl Signature {
                     __key.drop_with_heap(heap);
                     __cleanup!(crate::exception_private::ExcType::type_error_kwargs_nonstring_key());
                 };
-                match __key_str.string_id() {
-                    #(#pos_only_arms)*
-                    #(#arms)*
+                #(#pos_only_arms)*
+                #(#arms)*
+                {
                     #unknown_arm
                 }
             }
@@ -582,20 +605,26 @@ impl Signature {
                         let field_name_lit = LitStr::new(&field.ident.to_string(), field.ident.span());
                         let pos = field.pos_index.unwrap_or(0);
                         if field.pos_index.is_some() {
-                            let missing_expr = if self.c_error {
-                                quote! {
+                            let missing_expr = match self.error_style {
+                                ErrorStyle::C => quote! {
                                     crate::exception_private::ExcType::type_error_c_missing_required(#field_name_lit, #pos)
-                                }
-                            } else {
-                                quote! {
+                                },
+                                ErrorStyle::NamedC => quote! {
+                                    crate::exception_private::ExcType::type_error_c_missing_required_named(
+                                        #func_name,
+                                        #field_name_lit,
+                                        #pos,
+                                    )
+                                },
+                                ErrorStyle::Python => quote! {
                                     crate::exception_private::ExcType::type_error_missing_positional_with_names(
                                         #func_name,
                                         &[#field_name_lit],
                                     )
-                                }
+                                },
                             };
                             quote! {
-                                #ident: match #slot {
+                                #ident: match #slot.take() {
                                     ::std::option::Option::Some(__v) => __v,
                                     ::std::option::Option::None => {
                                         __cleanup!(#missing_expr);
@@ -605,7 +634,7 @@ impl Signature {
                         } else {
                             // Required keyword-only argument.
                             quote! {
-                                #ident: match #slot {
+                                #ident: match #slot.take() {
                                     ::std::option::Option::Some(__v) => __v,
                                     ::std::option::Option::None => {
                                         __cleanup!(crate::exception_private::ExcType::type_error_missing_kwonly_with_names(
@@ -618,10 +647,10 @@ impl Signature {
                         }
                     }
                     Some(DefaultExpr::DefaultTrait) => quote! {
-                        #ident: #slot.unwrap_or_default(),
+                        #ident: #slot.take().unwrap_or_default(),
                     },
                     Some(DefaultExpr::Explicit(expr)) => quote! {
-                        #ident: #slot.unwrap_or_else(|| { #expr }),
+                        #ident: #slot.take().unwrap_or_else(|| { #expr }),
                     },
                 },
             }
@@ -634,26 +663,41 @@ impl Signature {
     }
 }
 
-fn kwarg_arm_pos_or_kw(field: &Field, slot: &Ident, func_name: &str, c_error: bool) -> TokenStream {
+fn kwarg_arm_pos_or_kw(field: &Field, slot: &Ident, func_name: &str, error_style: ErrorStyle) -> TokenStream {
     let static_string_ident = field.static_string_variant();
     let ty = &field.ty;
     let field_name_lit = LitStr::new(&field.ident.to_string(), field.ident.span());
     let pos = field.pos_index.unwrap_or(0);
-    let conflict_expr = if c_error {
-        quote! {
+    let conflict_expr = match error_style {
+        ErrorStyle::C => quote! {
             crate::exception_private::ExcType::type_error_positional_keyword_conflict(
                 #func_name,
                 #field_name_lit,
                 #pos,
             )
+        },
+        ErrorStyle::NamedC => {
+            // Embed `{name}()` as the func_descriptor so the conflict message
+            // is e.g. `argument for timezone() given by name ('offset') and
+            // position (1)` (matches CPython's `timezone`).
+            let descriptor = format!("{func_name}()");
+            quote! {
+                crate::exception_private::ExcType::type_error_positional_keyword_conflict(
+                    #descriptor,
+                    #field_name_lit,
+                    #pos,
+                )
+            }
         }
-    } else {
-        quote! {
+        ErrorStyle::Python => quote! {
             crate::exception_private::ExcType::type_error_multiple_values(#func_name, #field_name_lit)
-        }
+        },
     };
     quote! {
-        ::std::option::Option::Some(__id) if __id == crate::intern::StaticStrings::#static_string_ident => {
+        if __key_str.matches(
+            crate::intern::StringId::from(crate::intern::StaticStrings::#static_string_ident),
+            interns,
+        ) {
             __key.drop_with_heap(heap);
             if #slot.is_some() {
                 __value.drop_with_heap(heap);
@@ -667,7 +711,7 @@ fn kwarg_arm_pos_or_kw(field: &Field, slot: &Ident, func_name: &str, c_error: bo
                     __cleanup!(__e);
                 }
             }
-        }
+        } else
     }
 }
 
@@ -676,7 +720,10 @@ fn kwarg_arm_kw_only(field: &Field, slot: &Ident, func_name: &str) -> TokenStrea
     let ty = &field.ty;
     let field_name_lit = LitStr::new(&field.ident.to_string(), field.ident.span());
     quote! {
-        ::std::option::Option::Some(__id) if __id == crate::intern::StaticStrings::#static_string_ident => {
+        if __key_str.matches(
+            crate::intern::StringId::from(crate::intern::StaticStrings::#static_string_ident),
+            interns,
+        ) {
             __key.drop_with_heap(heap);
             if #slot.is_some() {
                 __value.drop_with_heap(heap);
@@ -693,7 +740,7 @@ fn kwarg_arm_kw_only(field: &Field, slot: &Ident, func_name: &str) -> TokenStrea
                     __cleanup!(__e);
                 }
             }
-        }
+        } else
     }
 }
 
@@ -741,10 +788,11 @@ fn vec_element_ty(ty: &Type) -> Option<Type> {
 }
 
 /// Parse the `#[from_args(...)]` attributes attached to the struct itself.
-fn parse_struct_attrs(attrs: &[syn::Attribute]) -> syn::Result<(String, AtMostStyle, bool)> {
+fn parse_struct_attrs(attrs: &[syn::Attribute]) -> syn::Result<(String, AtMostStyle, ErrorStyle)> {
     let mut name: Option<String> = None;
     let mut at_most_style = AtMostStyle::Standard;
-    let mut c_error = false;
+    let mut error_style = ErrorStyle::Python;
+    let mut style_set = false;
     for attr in attrs {
         if !attr.path().is_ident("from_args") {
             continue;
@@ -758,11 +806,23 @@ fn parse_struct_attrs(attrs: &[syn::Attribute]) -> syn::Result<(String, AtMostSt
                 at_most_style = AtMostStyle::Positional;
                 Ok(())
             } else if meta.path.is_ident("c_error") {
-                c_error = true;
+                if style_set {
+                    return Err(meta.error("`c_error` and `c_error_named` are mutually exclusive"));
+                }
+                error_style = ErrorStyle::C;
+                style_set = true;
+                Ok(())
+            } else if meta.path.is_ident("c_error_named") {
+                if style_set {
+                    return Err(meta.error("`c_error` and `c_error_named` are mutually exclusive"));
+                }
+                error_style = ErrorStyle::NamedC;
+                style_set = true;
                 Ok(())
             } else {
-                Err(meta
-                    .error("unknown struct attribute; expected `name = \"...\"`, `at_most_positional`, or `c_error`"))
+                Err(meta.error(
+                    "unknown struct attribute; expected `name = \"...\"`, `at_most_positional`, `c_error`, or `c_error_named`",
+                ))
             }
         })?;
     }
@@ -772,7 +832,7 @@ fn parse_struct_attrs(attrs: &[syn::Attribute]) -> syn::Result<(String, AtMostSt
             "missing `#[from_args(name = \"...\")]` on the struct",
         )
     })?;
-    Ok((name, at_most_style, c_error))
+    Ok((name, at_most_style, error_style))
 }
 
 #[derive(Default)]
