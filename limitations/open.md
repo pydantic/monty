@@ -105,13 +105,15 @@ iterator protocol (`__iter__`/`__next__`, including `for line in f:`).
   `seek()` share a single heap-resident buffer populated on the first such
   call. The host serves only one full-file `ReadText`/`ReadBytes` per
   file; everything after is sliced in pure Monty. Memory cost: the whole
-  file lives in the heap and counts against the configured `max_memory`.
-  The buffer is **never invalidated** — external modifications to the
-  underlying file after the first read are not visible to subsequent
+  file lives in the heap and counts against the configured `max_memory`
+  via `heap.allocate` tracking — the same path every other heap entry
+  takes. The buffer is **never invalidated** — external modifications to
+  the underlying file after the first read are not visible to subsequent
   reads.
-- The buffer is held until the file object's Python-level refcount drops
-  to zero, not when `close()` is called. CPython releases buffers on
-  close; Monty does not.
+- `close()` releases the cached buffer (matching CPython), so
+  `current_memory()` drops by the buffer size as soon as `close()`
+  returns. Other holders of the buffer (e.g. a `data = f.read()`
+  reference) keep it alive via their own refcounts.
 - A read that *fails* in the host leaves the file in a retry-safe state:
   `pending_read` is cleared, the buffer stays empty, and `eof` is not
   flipped. A user-caught exception followed by a retry will re-attempt

@@ -776,10 +776,35 @@ impl<'h> HeapRead<'h, OpenFile> {
         Ok(CallResult::OsCall(function, ArgValues::Two(Value::Ref(self_id), data)))
     }
 
-    /// Marks the file wrapper as closed.
+    /// Marks the file wrapper as closed and releases the cached read buffer.
+    ///
+    /// Releasing the buffer matters for **resource accounting**: the
+    /// full-file buffer is a separate heap entry whose `py_estimate_size`
+    /// counts against `max_memory`. Without an explicit release here a
+    /// closed file would keep its (potentially large) buffer alive until
+    /// the file object's Python-level refcount drops to zero — long after
+    /// the user has signalled they're done with it. By `dec_ref`ing the
+    /// buffer here, `current_memory()` drops by the buffer size as soon as
+    /// `close()` returns, matching CPython's behaviour and giving the user
+    /// a deterministic way to free file-cache memory.
+    ///
+    /// Other holders (e.g. a `data = f.read()` reference) keep the entry
+    /// alive via their own refcounts, so this release is safe — it only
+    /// frees the buffer if nothing else points at it.
     fn close(&mut self, vm: &mut VM<'h, impl ResourceTracker>, args: ArgValues) -> RunResult<CallResult> {
         args.check_zero_args("close", vm.heap)?;
-        self.get_mut(vm.heap).closed = true;
+        let buffer_id = {
+            let file = self.get_mut(vm.heap);
+            file.closed = true;
+            // Wipe the cached metadata alongside the buffer slot so a later
+            // (erroneous) `compute_slice` doesn't see a `buffer_meta` that
+            // points to a freed entry. Idempotent across repeat `close()` calls.
+            file.buffer_meta = None;
+            file.buffer.take()
+        };
+        if let Some(buffer_id) = buffer_id {
+            vm.heap.dec_ref(buffer_id);
+        }
         Ok(CallResult::Value(Value::None))
     }
 

@@ -32,6 +32,7 @@ use crate::{
     intern::{FunctionId, Interns, StringId},
     io::PrintWriter,
     modules::{StandardLib, json::JsonStringCache},
+    object::InvalidInputError,
     os::OsFunction,
     parse::CodeRange,
     resource::ResourceTracker,
@@ -1686,9 +1687,17 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
     /// through the corresponding file-state helper before it is pushed back to
     /// Python.
     pub fn resume(&mut self, obj: MontyObject) -> Result<FrameExit, RunError> {
-        let value = obj
-            .to_value(self)
-            .map_err(|e| SimpleException::new(ExcType::RuntimeError, Some(format!("invalid return type: {e}"))))?;
+        // Surface resource-exhaustion failures from `to_value` (e.g. a host
+        // string whose `heap.allocate` trips `max_memory`) as the same
+        // `RunError::Resource` that pure-Monty allocations produce, so the
+        // user sees `MemoryError` instead of `RuntimeError: invalid return
+        // type`. Other input errors stay as `RuntimeError`.
+        let value = obj.to_value(self).map_err(|e| match e {
+            InvalidInputError::Resource(err) => RunError::from(err),
+            other @ InvalidInputError::InvalidType(_) => {
+                SimpleException::new(ExcType::RuntimeError, Some(format!("invalid return type: {other}"))).into()
+            }
+        })?;
         if let Some(effect) = self.pending_file_effect.take() {
             let result = match effect {
                 PendingFileEffect::BufferStore { file_id } => apply_buffer_store(file_id, value, self),
