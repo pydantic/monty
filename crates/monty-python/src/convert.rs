@@ -575,17 +575,12 @@ impl PyMontyFileHandle {
     /// is the path Python callbacks use to return file handles from the
     /// `Open` OS function.
     #[new]
-    #[pyo3(signature = (path, mode, *, position = 0, id = None))]
-    fn py_new(path: String, mode: &str, position: u64, id: Option<u64>) -> PyResult<Self> {
+    #[pyo3(signature = (path, mode, *, position = 0))]
+    fn py_new(path: String, mode: &str, position: u64) -> PyResult<Self> {
         let mode: FileMode = mode
             .parse()
             .map_err(|e: Cow<'static, str>| PyValueError::new_err(e.to_string()))?;
-        Ok(Self::from_inner(MontyFileHandle {
-            path,
-            mode,
-            position,
-            id,
-        }))
+        Ok(Self::from_inner(MontyFileHandle { path, mode, position }))
     }
 
     /// Virtual sandbox path of the open file. Always POSIX-style; never a host path.
@@ -600,18 +595,11 @@ impl PyMontyFileHandle {
         self.0.mode.as_str()
     }
 
-    /// Byte offset for seek-aware reads. `0` for freshly opened files.
+    /// Current position for sized/line/seek operations: char index in text
+    /// mode, byte index in binary mode. `0` for freshly opened files.
     #[getter]
     fn position(&self) -> u64 {
         self.0.position
-    }
-
-    /// Optional host-assigned identifier, or `None` if the host has not populated it.
-    ///
-    /// Monty never sets this; a host may use it to key a cache of real OS handles.
-    #[getter]
-    fn id(&self) -> Option<u64> {
-        self.0.id
     }
 
     /// `True` if the underlying mode opens the file in binary form (`'rb'`, `'wb'`, …).

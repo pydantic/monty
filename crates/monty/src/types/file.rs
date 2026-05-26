@@ -324,12 +324,6 @@ impl FromStr for FileMode {
 ///
 /// `position` semantics depend on mode (documented on the field). It is the
 /// offset future sized/line/seek operations operate against the heap buffer.
-///
-/// TODO(perf): a host may assign an `id` (otherwise `None`). A future
-/// optimization could let the host cache a real OS handle keyed by that `id`,
-/// seeking it to `position`, instead of re-opening the file on every call. The
-/// stateless (re-open every call) model must remain the default so snapshots
-/// never depend on host state.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) struct OpenFile {
     path: String,
@@ -347,8 +341,6 @@ pub(crate) struct OpenFile {
     /// binary mode. Starts at 0; advanced by bare `read()` (by the length of
     /// the returned content), sized reads, line reads, and `seek()`.
     position: u64,
-    /// Optional host-assigned id for this open file (Monty never sets it).
-    id: Option<u64>,
     /// Heap reference to the cached full-file content, populated lazily on
     /// the first sized/line read or `seek()`. Always `HeapData::Str` for text
     /// mode and `HeapData::Bytes` for binary mode. `None` until populated.
@@ -365,7 +357,7 @@ pub(crate) struct OpenFile {
 
 impl OpenFile {
     /// Creates a path-backed file wrapper from a parsed `open()` mode and the
-    /// `position`/`id` carried across the host boundary by a
+    /// `position` carried across the host boundary by a
     /// [`MontyObject::FileHandle`](crate::MontyObject::FileHandle).
     ///
     /// Truncating modes (`w`/`w+`) have already had the file emptied by the
@@ -374,14 +366,13 @@ impl OpenFile {
     /// `buffer`/`pending_read`/`eof` all start unset — the buffer is populated
     /// lazily on the first sized/line read or `seek()`.
     #[must_use]
-    pub fn with_state(path: String, mode: FileMode, position: u64, id: Option<u64>) -> Self {
+    pub fn with_state(path: String, mode: FileMode, position: u64) -> Self {
         Self {
             path,
             mode,
             first_write_done: mode.truncate(),
             closed: false,
             position,
-            id,
             buffer: None,
             pending_read: None,
             eof: false,
@@ -410,12 +401,6 @@ impl OpenFile {
     #[must_use]
     pub fn position(&self) -> u64 {
         self.position
-    }
-
-    /// Returns the optional host-assigned id for this open file.
-    #[must_use]
-    pub fn id(&self) -> Option<u64> {
-        self.id
     }
 
     /// Returns the type represented by this file wrapper.

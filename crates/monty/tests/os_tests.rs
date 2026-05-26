@@ -43,7 +43,6 @@ fn run_to_oscall(code: &str) -> (OsFunction, Vec<MontyObject>) {
                     path: "mock".to_owned(),
                     mode: "r".parse::<FileMode>().unwrap(),
                     position: 0,
-                    id: None,
                 }),
                 OsFunction::Getenv => MontyObject::String("mock_env_value".to_owned()),
                 OsFunction::GetEnviron => MontyObject::Dict(vec![].into()),

@@ -258,14 +258,12 @@ fn parse_path_arg<'a>(extra_args: &'a [MontyObject], op_name: &str) -> Result<&'
 /// Builds the [`MontyObject::FileHandle`] an `Open` request resolves to.
 ///
 /// The handle carries the **virtual** (sandbox) path — never a host path — so
-/// subsequent `read`/`write` calls re-resolve it through `resolve_path`. The
-/// `MountTable` keeps no live OS handle, so it assigns no `id`.
+/// subsequent `read`/`write` calls re-resolve it through `resolve_path`.
 pub(super) fn file_handle_result(path: &str, mode: FileMode) -> MontyObject {
     MontyObject::FileHandle(MontyFileHandle {
         path: normalize_virtual_path(path),
         mode,
         position: 0,
-        id: None,
     })
 }
 

@@ -1090,7 +1090,6 @@ fn dispatch_os_call(
                 path,
                 mode: file_mode,
                 position: 0,
-                id: None,
             })
             .into()
         }
