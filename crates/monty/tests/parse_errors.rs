@@ -48,7 +48,8 @@ fn async_with_statement_returns_not_implemented_error() {
         "test.py",
         vec![],
     );
-    assert_eq!(get_exc_type(result), ExcType::NotImplementedError);
+    let err = result.expect_err("expected parse error");
+    assert_eq!(err.exc_type(), ExcType::NotImplementedError);
 }
 
 #[test]

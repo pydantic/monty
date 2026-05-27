@@ -2440,6 +2440,7 @@ dependencies = [
 name = "pydantic-monty"
 version = "0.0.17"
 dependencies = [
+ "ahash",
  "indexmap",
  "monty",
  "monty_type_checking",

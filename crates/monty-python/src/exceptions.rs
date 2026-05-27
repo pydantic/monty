@@ -13,9 +13,10 @@
 //! └── MontyTypingError         # Raised when type checking finds errors in the code
 //! ```
 
-use std::{collections::HashMap, sync::Arc};
+use std::sync::Arc;
 
 use ::monty::{ExcType, MontyException};
+use ahash::AHashMap;
 use monty_type_checking::TypeCheckingDiagnostics;
 use pyo3::{
     PyClassInitializer, PyTypeCheck,
@@ -152,23 +153,22 @@ impl MontyTypingError {
 /// Raised when Python code has syntax errors or cannot be parsed by Monty.
 ///
 /// Inherits from `MontyError`. The inner exception is always a `SyntaxError`.
+///
+/// As with [`MontyRuntimeError`], the traceback `PyFrame` list is materialized
+/// lazily on the first `traceback()` call and cached for subsequent calls.
 #[pyclass(extends=MontyError, module="pydantic_monty", skip_from_py_object)]
 pub struct MontySyntaxError {
-    traceback: Traceback,
+    traceback: PyOnceLock<Py<PyList>>,
 }
 
 impl MontySyntaxError {
     /// Creates a new `MontySyntaxError` with the given message.
     #[must_use]
     pub fn new_err(py: Python<'_>, exc: MontyException) -> PyErr {
-        let traceback = match Traceback::new(py, &exc) {
-            Ok(frames) => frames,
-            Err(e) => return e,
-        };
-
         let base_error = MontyError::new(exc);
-        let syntax_error = Self { traceback };
-        let init = PyClassInitializer::from(base_error).add_subclass(syntax_error);
+        let init = PyClassInitializer::from(base_error).add_subclass(Self {
+            traceback: PyOnceLock::new(),
+        });
         match Py::new(py, init) {
             Ok(err) => PyErr::from_value(err.into_bound(py).into_any()),
             Err(e) => e,
@@ -179,8 +179,16 @@ impl MontySyntaxError {
 #[pymethods]
 impl MontySyntaxError {
     /// Returns the Monty traceback as a list of Frame objects.
-    fn traceback(&self, py: Python<'_>) -> Py<PyList> {
-        self.traceback.py_list(py)
+    ///
+    /// Built on the first call and cached, so repeated calls return the same
+    /// list and frame objects. See [`build_traceback_list`] for the
+    /// source-line dedup details.
+    #[expect(clippy::needless_pass_by_value, reason = "required by macro")]
+    fn traceback(slf: PyRef<'_, Self>, py: Python<'_>) -> PyResult<Py<PyList>> {
+        let list = slf
+            .traceback
+            .get_or_try_init(py, || build_traceback_list(py, &slf.as_super().exc))?;
+        Ok(list.clone_ref(py))
     }
 
     /// Returns formatted exception string.
@@ -254,44 +262,14 @@ impl MontyRuntimeError {
 impl MontyRuntimeError {
     /// Returns the Monty traceback as a list of Frame objects.
     ///
-    /// `Frame.source_line` is backed by a `Py<PyString>` that is deduplicated
-    /// across frames resolving to the same source line. For deep recursion
-    /// where every frame points at the same line, this allocates one
-    /// `PyString` instead of one per frame.
-    ///
-    /// The list is built on the first call and cached, so repeated calls
-    /// return the same list, frame, and source-line objects.
+    /// Built on the first call and cached, so repeated calls return the same
+    /// list and frame objects. See [`build_traceback_list`] for the
+    /// source-line dedup details.
     #[expect(clippy::needless_pass_by_value, reason = "required by macro")]
     fn traceback(slf: PyRef<'_, Self>, py: Python<'_>) -> PyResult<Py<PyList>> {
-        let list = slf.traceback.get_or_try_init(py, || {
-            let stack_frames = slf.as_super().exc.traceback();
-            let mut line_cache: HashMap<usize, Py<PyString>> = HashMap::new();
-            let frames: Vec<Py<PyFrame>> = stack_frames
-                .iter()
-                .map(|f| {
-                    let source_line = f.preview_line.as_ref().map(|arc| {
-                        let key = Arc::as_ptr(arc).cast::<()>() as usize;
-                        line_cache
-                            .entry(key)
-                            .or_insert_with(|| PyString::new(py, arc).unbind())
-                            .clone_ref(py)
-                    });
-                    Py::new(
-                        py,
-                        PyFrame {
-                            filename: f.filename.clone(),
-                            line: f.start.line,
-                            column: f.start.column,
-                            end_line: f.end.line,
-                            end_column: f.end.column,
-                            function_name: f.frame_name.clone(),
-                            source_line,
-                        },
-                    )
-                })
-                .collect::<PyResult<_>>()?;
-            Ok::<_, PyErr>(PyList::new(py, &frames)?.unbind())
-        })?;
+        let list = slf
+            .traceback
+            .get_or_try_init(py, || build_traceback_list(py, &slf.as_super().exc))?;
         Ok(list.clone_ref(py))
     }
 
@@ -334,36 +312,40 @@ impl MontyRuntimeError {
     }
 }
 
-/// The traceback frames where the error occurred (pre-converted to Python objects).
-struct Traceback(Vec<Py<PyFrame>>);
-
-impl Traceback {
-    fn new(py: Python<'_>, exc: &MontyException) -> PyResult<Self> {
-        // Convert stack frames to PyFrame objects
-        exc.traceback()
-            .iter()
-            .map(|f| {
-                let source_line = f.preview_line.as_ref().map(|arc| PyString::new(py, arc).unbind());
-                Py::new(
-                    py,
-                    PyFrame {
-                        filename: f.filename.clone(),
-                        line: f.start.line,
-                        column: f.start.column,
-                        end_line: f.end.line,
-                        end_column: f.end.column,
-                        function_name: f.frame_name.clone(),
-                        source_line,
-                    },
-                )
-            })
-            .collect::<PyResult<Vec<Py<PyFrame>>>>()
-            .map(Self)
-    }
-
-    fn py_list(&self, py: Python<'_>) -> Py<PyList> {
-        PyList::new(py, &self.0).expect("failed to create frames list").unbind()
-    }
+/// Builds the `PyList` of `PyFrame` objects for a `MontyException`'s traceback.
+///
+/// `Frame.source_line` is backed by a `Py<PyString>` that is deduplicated
+/// across frames resolving to the same underlying `Arc<str>` preview line.
+/// For deep recursion where every frame points at the same line, this
+/// allocates one `PyString` instead of one per frame.
+fn build_traceback_list(py: Python<'_>, exc: &MontyException) -> PyResult<Py<PyList>> {
+    let mut line_cache: AHashMap<usize, Py<PyString>> = AHashMap::new();
+    let frames: Vec<Py<PyFrame>> = exc
+        .traceback()
+        .iter()
+        .map(|f| {
+            let source_line = f.preview_line.as_ref().map(|arc| {
+                let key = Arc::as_ptr(arc).cast::<()>() as usize;
+                line_cache
+                    .entry(key)
+                    .or_insert_with(|| PyString::new(py, arc).unbind())
+                    .clone_ref(py)
+            });
+            Py::new(
+                py,
+                PyFrame {
+                    filename: f.filename.clone(),
+                    line: f.start.line,
+                    column: f.start.column,
+                    end_line: f.end.line,
+                    end_column: f.end.column,
+                    function_name: f.frame_name.clone(),
+                    source_line,
+                },
+            )
+        })
+        .collect::<PyResult<_>>()?;
+    Ok(PyList::new(py, &frames)?.unbind())
 }
 
 /// A single frame in a Monty traceback.

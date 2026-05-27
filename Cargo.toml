@@ -60,6 +60,7 @@ num-bigint = { version = "0.4", features = ["serde"] }
 num-traits = "0.2"
 num-integer = "0.1"
 # others
+ahash = { version = "0.8.0", features = ["serde"] }
 indexmap = { version = "2.9", features = ["serde"] }
 serde = { version = "1.0", features = ["derive", "rc"] }
 serde_json = { version = "1.0", features = ["arbitrary_precision"] }

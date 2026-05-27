@@ -21,7 +21,7 @@ ruff_python_parser = { workspace = true }
 ruff_python_stdlib = { workspace = true }
 ruff_python_ast = { workspace = true }
 ruff_text_size = { workspace = true }
-ahash = { version = "0.8.0", features = ["serde"] }
+ahash = { workspace = true }
 indexmap = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
