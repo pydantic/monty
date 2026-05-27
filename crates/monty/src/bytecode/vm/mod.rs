@@ -365,8 +365,12 @@ impl<'code> CallFrame<'code> {
 
     /// Creates a new call frame for a function call.
     ///
-    /// The frame's locals occupy `stack[stack_base..stack_base + locals_count]`.
-    /// Operands are pushed above the locals region.
+    /// The frame's layout on the VM stack is
+    /// `[locals (locals_count) | operand stack ...]`. `stack_base` points at
+    /// the start of the locals region; comprehension variables are pushed
+    /// onto the operand stack at each comprehension's entry and popped at
+    /// its exit, so they share the same address space as ordinary operand
+    /// values (no separate per-frame region).
     pub fn new_function(
         code: &'code Code,
         stack_base: usize,
@@ -584,43 +588,6 @@ pub struct VMSnapshot {
     ///
     /// Contains call ID counter, task state, pending calls, and resolved futures.
     scheduler: Scheduler,
-
-    /// Saved comprehension slots that must survive pause/resume.
-    ///
-    /// Inlined comprehensions temporarily clear their synthetic local/global slots so
-    /// loop-variable state cannot leak after the comprehension exits. If execution pauses
-    /// mid-comprehension, these saved values must be serialized so resume can restore them
-    /// in the correct order.
-    saved_comprehension_slots: Vec<SavedComprehensionSlot>,
-}
-
-/// Storage class for a saved comprehension slot.
-///
-/// Monty models inlined comprehensions with synthetic namespace slots. Saving whether a
-/// slot lives in function locals or module globals lets the VM restore it correctly on the
-/// normal path, during unwinding, and after snapshot restore.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-enum SavedComprehensionStorage {
-    /// Slot lives in the current frame's locals region on the operand stack.
-    Local,
-    /// Slot lives in the VM's persistent globals array.
-    Global,
-}
-
-/// Saved value for a comprehension-local slot that has been temporarily cleared.
-///
-/// The `frame_depth` tracks which frame owns the saved slot so the VM can restore pending
-/// comprehension state automatically when a frame returns or unwinds with an exception.
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-struct SavedComprehensionSlot {
-    /// Zero-based depth of the frame that owns this saved slot.
-    frame_depth: usize,
-    /// Which storage area the slot belongs to.
-    storage: SavedComprehensionStorage,
-    /// Slot index within the storage area.
-    slot: u16,
-    /// Value that was present before the comprehension cleared the slot.
-    saved_value: Value,
 }
 
 // ============================================================================
@@ -694,13 +661,6 @@ pub struct VM<'h, T: ResourceTracker> {
     /// the call expression.
     ext_function_load_ip: Option<usize>,
 
-    /// Saved comprehension-local slots waiting to be restored.
-    ///
-    /// This mirrors CPython's save/restore behavior from PEP 709 for Monty's inlined
-    /// comprehensions. Values are restored explicitly by bytecode on the happy path, and
-    /// automatically when a frame exits early so temporary loop variables never leak.
-    saved_comprehension_slots: Vec<SavedComprehensionSlot>,
-
     /// Per-run string cache for `json.loads()`.
     ///
     /// Deduplicates heap allocations for repeated strings (especially dict keys)
@@ -729,7 +689,6 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
             scheduler: Scheduler::new(),
             ext_function_load_ip: None, // Set by LoadGlobalCallable/LoadLocalCallable
             module_code: None,
-            saved_comprehension_slots: Vec::new(),
             json_string_cache: JsonStringCache::default(),
         }
     }
@@ -793,7 +752,6 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
             scheduler: snapshot.scheduler,
             module_code: Some(module_code),
             ext_function_load_ip: None,
-            saved_comprehension_slots: snapshot.saved_comprehension_slots,
             json_string_cache: JsonStringCache::default(),
         }
     }
@@ -820,7 +778,6 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
             exception_stack: mem::take(&mut self.exception_stack),
             instruction_ip: self.instruction_ip,
             scheduler: mem::take(&mut self.scheduler),
-            saved_comprehension_slots: mem::take(&mut self.saved_comprehension_slots),
         }
     }
 
@@ -829,6 +786,11 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
         // Store module code for restoring main task frames during task switching
         self.module_code = Some(code);
         let exc_stack_base = self.exception_stack.len();
+        // Module frames have locals_count = 0 (globals live in self.globals)
+        // and no frame-level comprehension region — comp targets are pushed
+        // onto the operand stack at each comprehension's entry and popped
+        // at its exit, so they share the same address space as ordinary
+        // operand values.
         self.push_frame(CallFrame::new_module(code, exc_stack_base))?;
         self.run()
     }
@@ -978,13 +940,19 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
                     let slot = cached_frame.fetch_u16();
                     self.store_local(&cached_frame, slot);
                 }
-                Opcode::SaveLocalAndClear => {
-                    let slot = cached_frame.fetch_u16();
-                    self.save_local_and_clear(&cached_frame, slot);
+                Opcode::LiftToTop => {
+                    let n = cached_frame.fetch_u8();
+                    // Move the item at TOS - n to TOS, shifting items in
+                    // between down by one. Single `rotate_left(1)` on the
+                    // affected slice does exactly that.
+                    let len = self.stack.len();
+                    let src_idx = len - 1 - n as usize;
+                    self.stack[src_idx..].rotate_left(1);
                 }
-                Opcode::RestoreLocal => {
-                    let slot = cached_frame.fetch_u16();
-                    self.restore_local(&cached_frame, slot);
+                Opcode::RaiseUnboundLocal => {
+                    let name_idx = cached_frame.fetch_u16();
+                    let name_id = StringId::from_index(name_idx);
+                    catch_sync!(self, cached_frame, self.unbound_local_error(0, Some(name_id)));
                 }
                 Opcode::DeleteLocal => {
                     let slot = u16::from(cached_frame.fetch_u8());
@@ -1018,14 +986,6 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
                 Opcode::StoreGlobal => {
                     let slot = cached_frame.fetch_u16();
                     self.store_global(slot);
-                }
-                Opcode::SaveGlobalAndClear => {
-                    let slot = cached_frame.fetch_u16();
-                    self.save_global_and_clear(slot);
-                }
-                Opcode::RestoreGlobal => {
-                    let slot = cached_frame.fetch_u16();
-                    self.restore_global(slot);
                 }
                 // Variables - Cell Operations (closures)
                 Opcode::LoadCell => {
@@ -1600,7 +1560,6 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
                     if self.frames.len() == 1 {
                         // Last frame - check if this is main task or spawned task
                         let is_main_task = self.is_main_task();
-                        self.restore_saved_comprehension_slots_for_frame(self.frames.len() - 1);
 
                         if is_main_task {
                             // Module-level return - we're done
@@ -1811,7 +1770,6 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
     ///
     /// Returns `true` if this frame indicated evaluation should stop when popped.
     pub(super) fn pop_frame(&mut self) -> bool {
-        self.restore_saved_comprehension_slots_for_frame(self.frames.len() - 1);
         let frame = self.frames.pop().expect("no frame to pop");
         self.cleanup_frame_state(&frame);
         // Sync instruction_ip to the parent frame so exception table lookups
@@ -1827,16 +1785,18 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
     }
 
     fn cleanup_frame_state(&mut self, frame: &CallFrame<'_>) {
-        // Clean up frame's stack region (locals + operands).
-        // Locals occupy stack[frame.stack_base..frame.stack_base + frame.locals_count],
-        // operands are above that. Draining from stack_base covers both.
+        // Clean up frame's stack region (locals + operand stack, which now
+        // includes any in-flight comprehension variables — the operand-stack
+        // drain naturally covers them).
         self.stack
             .drain(frame.stack_base..)
             .for_each(|value| value.drop_with_heap(&mut *self.heap));
 
-        // Track freed memory for locals
+        // Track freed memory for the locals region. Matches the `on_allocate`
+        // at each frame-entry site (sync function, module, sync coroutine,
+        // spawned coroutine).
         if frame.locals_count > 0 {
-            let size = frame.locals_count as usize * mem::size_of::<Value>();
+            let size = usize::from(frame.locals_count) * mem::size_of::<Value>();
             self.heap.tracker_mut().on_free(|| size);
         }
     }
@@ -1847,7 +1807,6 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
     /// Drains the stack with proper `drop_with_heap` for each value (since locals
     /// are inlined on the stack), then cleans up each frame's cell references.
     pub(super) fn cleanup_current_task(&mut self) {
-        self.restore_all_saved_comprehension_slots();
         self.stack.drain(..).drop_with_heap(self.heap);
         self.frames.clear();
     }
@@ -2041,122 +2000,6 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
     fn delete_global(&mut self, slot: u16) {
         let old_value = mem::replace(&mut self.globals[slot as usize], Value::Undefined);
         old_value.drop_with_heap(self);
-    }
-
-    /// Saves a local slot for the current comprehension scope and clears it.
-    ///
-    /// The saved value is tracked outside the operand stack so Monty can keep its current
-    /// comprehension bytecode shape while still restoring temporary slots if execution exits
-    /// the comprehension early.
-    fn save_local_and_clear(&mut self, cached_frame: &CachedFrame<'h>, slot: u16) {
-        let frame_depth = self.frames.len() - 1;
-        let target = &mut self.stack[cached_frame.stack_base + slot as usize];
-        let saved_value = mem::replace(target, Value::Undefined);
-        self.saved_comprehension_slots.push(SavedComprehensionSlot {
-            frame_depth,
-            storage: SavedComprehensionStorage::Local,
-            slot,
-            saved_value,
-        });
-    }
-
-    /// Restores the most recently saved local comprehension slot.
-    fn restore_local(&mut self, cached_frame: &CachedFrame<'h>, slot: u16) {
-        let saved = self
-            .saved_comprehension_slots
-            .pop()
-            .expect("RestoreLocal without matching SaveLocalAndClear");
-        assert_eq!(
-            saved.frame_depth,
-            self.frames.len() - 1,
-            "RestoreLocal frame depth mismatch"
-        );
-        assert_eq!(
-            saved.storage,
-            SavedComprehensionStorage::Local,
-            "RestoreLocal storage mismatch"
-        );
-        assert_eq!(saved.slot, slot, "RestoreLocal slot mismatch");
-
-        let target = &mut self.stack[cached_frame.stack_base + slot as usize];
-        let old_value = mem::replace(target, saved.saved_value);
-        old_value.drop_with_heap(self);
-    }
-
-    /// Saves a global slot for the current comprehension scope and clears it.
-    fn save_global_and_clear(&mut self, slot: u16) {
-        let frame_depth = self.frames.len() - 1;
-        let target = &mut self.globals[slot as usize];
-        let saved_value = mem::replace(target, Value::Undefined);
-        self.saved_comprehension_slots.push(SavedComprehensionSlot {
-            frame_depth,
-            storage: SavedComprehensionStorage::Global,
-            slot,
-            saved_value,
-        });
-    }
-
-    /// Restores the most recently saved global comprehension slot.
-    fn restore_global(&mut self, slot: u16) {
-        let saved = self
-            .saved_comprehension_slots
-            .pop()
-            .expect("RestoreGlobal without matching SaveGlobalAndClear");
-        assert_eq!(
-            saved.frame_depth,
-            self.frames.len() - 1,
-            "RestoreGlobal frame depth mismatch"
-        );
-        assert_eq!(
-            saved.storage,
-            SavedComprehensionStorage::Global,
-            "RestoreGlobal storage mismatch"
-        );
-        assert_eq!(saved.slot, slot, "RestoreGlobal slot mismatch");
-
-        let target = &mut self.globals[slot as usize];
-        let old_value = mem::replace(target, saved.saved_value);
-        old_value.drop_with_heap(self);
-    }
-
-    /// Restores any comprehension slots still active for the given frame depth.
-    ///
-    /// This is the fallback that makes early returns, uncaught exceptions, and task cleanup
-    /// leave no synthetic comprehension values behind.
-    fn restore_saved_comprehension_slots_for_frame(&mut self, frame_depth: usize) {
-        while self
-            .saved_comprehension_slots
-            .last()
-            .is_some_and(|saved| saved.frame_depth == frame_depth)
-        {
-            let saved = self.saved_comprehension_slots.pop().expect("checked above");
-            self.restore_saved_comprehension_slot(saved, frame_depth);
-        }
-    }
-
-    /// Restores all saved comprehension slots, regardless of frame depth.
-    fn restore_all_saved_comprehension_slots(&mut self) {
-        while let Some(saved) = self.saved_comprehension_slots.pop() {
-            let frame_depth = saved.frame_depth;
-            self.restore_saved_comprehension_slot(saved, frame_depth);
-        }
-    }
-
-    /// Restores one saved comprehension slot into its original storage location.
-    fn restore_saved_comprehension_slot(&mut self, saved: SavedComprehensionSlot, frame_depth: usize) {
-        match saved.storage {
-            SavedComprehensionStorage::Local => {
-                let frame = &self.frames[frame_depth];
-                let target = &mut self.stack[frame.stack_base + saved.slot as usize];
-                let old_value = mem::replace(target, saved.saved_value);
-                old_value.drop_with_heap(self);
-            }
-            SavedComprehensionStorage::Global => {
-                let target = &mut self.globals[saved.slot as usize];
-                let old_value = mem::replace(target, saved.saved_value);
-                old_value.drop_with_heap(self);
-            }
-        }
     }
 
     /// Loads from a closure cell and pushes onto the stack.

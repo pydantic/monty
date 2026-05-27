@@ -456,26 +456,28 @@ pub enum Opcode {
     /// Pops iterable (TOS), adds each item to set at stack position `len - 2 - depth`.
     /// Raises `TypeError` if iterable is not iterable.
     SetExtend,
-    /// Save a local slot to the VM's comprehension-save stack, then clear it.
-    /// Operand: u16 slot.
+    /// Move the value at `TOS - n` to TOS, shifting items above it down by one.
+    /// Operand: u8 n.
     ///
-    /// Used by inlined comprehensions to give their synthetic loop-variable slots the
-    /// same temporary lifetime as CPython's `LOAD_FAST_AND_CLEAR` behavior, without
-    /// exposing the saved value on the operand stack.
-    SaveLocalAndClear,
-    /// Restore the most recently saved local slot from the comprehension-save stack.
-    /// Operand: u16 slot.
-    RestoreLocal,
-    /// Save a global slot to the VM's comprehension-save stack, then clear it.
-    /// Operand: u16 slot.
+    /// Used by the comprehension compiler to bring a nested-tuple sub-target
+    /// up to TOS so it can be `UnpackSequence`-d (UnpackSequence only operates
+    /// on TOS). `n = 0` is a no-op.
     ///
-    /// Module-scope comprehensions use global slots in Monty's runtime model, so they
-    /// need an explicit save/restore pair to avoid leaking temporary loop values across
-    /// REPL turns and other incremental execution boundaries.
-    SaveGlobalAndClear,
-    /// Restore the most recently saved global slot from the comprehension-save stack.
-    /// Operand: u16 slot.
-    RestoreGlobal,
+    /// At runtime, implemented as a single `Vec::rotate_left(1)` over the
+    /// affected slice, so cost is O(n) shifts but n is bounded by the
+    /// comprehension's nesting depth (almost always tiny).
+    LiftToTop,
+    /// Raise `UnboundLocalError: cannot access local variable 'NAME' where
+    /// it is not associated with a value`. Operand: u16 name_id.
+    ///
+    /// Emitted by the comprehension compiler at sites where static analysis
+    /// proves a comp-target read happens before the corresponding `for`
+    /// assigns it — e.g. `[x for x in [1] for _ in [late] for late in [[2]]]`
+    /// where `late` is read in an earlier generator's iter expression.
+    /// The opcode carries the target's name inline so sibling comprehensions
+    /// that reuse comp-var slots still report the right variable name in the
+    /// error.
+    RaiseUnboundLocal,
 }
 
 impl TryFrom<u8> for Opcode {
@@ -656,15 +658,14 @@ impl Opcode {
             (DictSetItem, Operand::U8(_)) => -2,
             // `DictUpdate`/`SetExtend` also take a u8 stack-depth operand.
             (DictUpdate | SetExtend, Operand::U8(_)) => -1,
+            // `LiftToTop(n)` reorders the stack — net effect 0.
+            (LiftToTop, Operand::U8(_)) => 0,
 
             // === Fixed-effect, U16 operand ===
             (LoadConst, Operand::U16(_)) => 1,
             (LoadLocalW | LoadGlobal | LoadCell, Operand::U16(_)) => 1,
             (StoreLocalW | StoreGlobal | StoreCell, Operand::U16(_)) => -1,
             (DeleteGlobal, Operand::U16(_)) => 0,
-            // Comprehension slot save/restore: move values between a slot and the VM's
-            // comprehension-save stack without touching the operand stack.
-            (SaveLocalAndClear | RestoreLocal | SaveGlobalAndClear | RestoreGlobal, Operand::U16(_)) => 0,
             (CompareModEq, Operand::U16(_)) => -1,
             (LoadAttr | LoadAttrImport, Operand::U16(_)) => 0,
             (StoreAttr, Operand::U16(_)) => -2,
@@ -673,6 +674,10 @@ impl Opcode {
             (DictMerge, Operand::U16(_)) => -1,
             // `RaiseImportError` takes a u16 const_id naming the missing module.
             (RaiseImportError, Operand::U16(_)) => 0,
+            // `RaiseUnboundLocal(name_id)` always raises — fall-through is dead
+            // code, but the tracker absorbs the bytes with effect 0 before the
+            // following region starts.
+            (RaiseUnboundLocal, Operand::U16(_)) => 0,
 
             // === Fixed-effect, U8U16 operand ===
             (LoadLocalCallable, Operand::U8U16(..)) => 1,
@@ -743,8 +748,8 @@ mod tests {
 
     #[test]
     fn test_opcode_roundtrip() {
-        // Verify that all opcodes from 0 to RestoreGlobal (last opcode) can be converted to u8 and back.
-        for byte in 0..=Opcode::RestoreGlobal as u8 {
+        // Verify that all opcodes from 0 to RaiseUnboundLocal (last opcode) can be converted to u8 and back.
+        for byte in 0..=Opcode::RaiseUnboundLocal as u8 {
             let opcode = Opcode::try_from(byte).unwrap();
             assert_eq!(opcode as u8, byte, "opcode {opcode:?} has wrong discriminant");
         }
@@ -760,16 +765,14 @@ mod tests {
         assert_eq!(Opcode::DeleteGlobal as u8, 112);
         assert_eq!(Opcode::DictUpdate as u8, 113);
         assert_eq!(Opcode::SetExtend as u8, 114);
-        assert_eq!(Opcode::SaveLocalAndClear as u8, 115);
-        assert_eq!(Opcode::RestoreLocal as u8, 116);
-        assert_eq!(Opcode::SaveGlobalAndClear as u8, 117);
-        assert_eq!(Opcode::RestoreGlobal as u8, 118);
+        assert_eq!(Opcode::LiftToTop as u8, 115);
+        assert_eq!(Opcode::RaiseUnboundLocal as u8, 116);
     }
 
     #[test]
     fn test_invalid_opcode() {
         // Byte just after the last valid opcode should fail
-        let result = Opcode::try_from(Opcode::RestoreGlobal as u8 + 1);
+        let result = Opcode::try_from(Opcode::RaiseUnboundLocal as u8 + 1);
         assert!(result.is_err());
         // 255 should also fail
         let result = Opcode::try_from(255u8);

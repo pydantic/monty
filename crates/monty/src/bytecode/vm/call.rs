@@ -712,7 +712,10 @@ impl<T: ResourceTracker> VM<'_, T> {
         let namespace_size = func.namespace_size;
         let locals_count = u16::try_from(namespace_size).expect("function namespace size exceeds u16");
 
-        // Track memory for this frame's locals
+        // Track memory for this frame's locals. Symmetric with
+        // `cleanup_frame_state`. Comprehension variables live on the operand
+        // stack (pushed per-comp), not in any frame-level region, so they
+        // don't enter this accounting.
         let size = namespace_size * mem::size_of::<Value>();
         self.heap.tracker_mut().on_allocate(|| size)?;
 
@@ -761,7 +764,10 @@ impl<T: ResourceTracker> VM<'_, T> {
 
         let code = &func.code;
 
-        // 6. Commit the guard (no rollback) and push the frame
+        // 6. Commit the guard (no rollback) and push the frame. The operand
+        // stack starts immediately above the locals region — any
+        // comprehensions emit their own push/pop bytecode at entry/exit, so
+        // no frame-level region is reserved here.
         let (namespace, this) = namespace_guard.into_parts();
         this.stack.extend(namespace);
 
