@@ -1,10 +1,11 @@
-# max-recursion-depth=10
-
 # Test that deeply nested lists don't crash during repr().
-# The `max-recursion-depth` directive caps Monty's limit at 10, so any input
-# deeper than that exercises the truncation path. CPython has its own (much
-# higher) default limit and produces a full repr — the assertion accepts
-# both shapes.
+# `sys.setrecursionlimit(10)` caps both Monty and CPython at depth 10, so any
+# input deeper than that exercises the truncation / RecursionError paths.
+
+import sys
+
+sys.setrecursionlimit(10)
+
 x = []
 for _ in range(20):
     x = [x]

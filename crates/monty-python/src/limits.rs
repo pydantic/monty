@@ -233,4 +233,9 @@ impl<T: ResourceTracker> ResourceTracker for PySignalTracker<T> {
     fn gc_interval(&self) -> Option<usize> {
         self.inner.gc_interval()
     }
+
+    #[cfg(feature = "test-hooks")]
+    fn lower_recursion_limit(&self, new_limit: usize) -> Result<(), Option<usize>> {
+        self.inner.lower_recursion_limit(new_limit)
+    }
 }

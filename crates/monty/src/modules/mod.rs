@@ -116,6 +116,12 @@ pub(crate) enum ModuleFunctions {
     /// See [`gc`] for why we keep this gated rather than always-on.
     #[cfg(feature = "test-hooks")]
     Gc(gc::GcFunctions),
+    /// `sys` module functions — only present under the `test-hooks` feature.
+    /// Production `sys` is attribute-only; the test feature adds callables
+    /// like `setrecursionlimit` that fixtures use to align behavior with
+    /// CPython. See [`sys`] for the rationale.
+    #[cfg(feature = "test-hooks")]
+    Sys(sys::SysFunctions),
 }
 
 impl fmt::Display for ModuleFunctions {
@@ -128,6 +134,8 @@ impl fmt::Display for ModuleFunctions {
             Self::Re(func) => write!(f, "{func}"),
             #[cfg(feature = "test-hooks")]
             Self::Gc(func) => write!(f, "{func}"),
+            #[cfg(feature = "test-hooks")]
+            Self::Sys(func) => write!(f, "{func}"),
         }
     }
 }
@@ -146,6 +154,8 @@ impl ModuleFunctions {
             Self::Re(functions) => re::call(vm, functions, args),
             #[cfg(feature = "test-hooks")]
             Self::Gc(functions) => gc::call(vm, functions, args).map(CallResult::Value),
+            #[cfg(feature = "test-hooks")]
+            Self::Sys(functions) => sys::call(vm, functions, args).map(CallResult::Value),
         }
     }
 

@@ -645,6 +645,12 @@ pub enum StaticStrings {
     Disable,
     /// `gc.enable()` function.
     Enable,
+
+    // ==========================
+    // sys module test-hook strings (kept interned unconditionally for the
+    // same StringId-stability reason as the gc entries above).
+    /// `sys.setrecursionlimit()` function (only callable under `test-hooks`).
+    Setrecursionlimit,
 }
 
 impl StaticStrings {

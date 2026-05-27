@@ -307,6 +307,28 @@ pub trait ResourceTracker: fmt::Debug {
     /// return `None`, which tells the heap to use its built-in default
     /// scheduling threshold.
     fn gc_interval(&self) -> Option<usize>;
+
+    /// Lowers the active recursion-depth limit to `new_limit`.
+    ///
+    /// Exposed under the `test-hooks` feature so `sys.setrecursionlimit` can
+    /// tighten the depth ceiling from inside fixture code. Implementations
+    /// MUST refuse to *raise* the limit above whatever ceiling the host
+    /// configured at construction time — that would let sandboxed code
+    /// escape the host-imposed safety bound.
+    ///
+    /// Returns `Ok(())` when the requested limit was applied (including the
+    /// no-op case `new_limit == current`). Returns `Err(current)` when the
+    /// request would raise the limit, where `current` is the active limit
+    /// (or `None` if the tracker has no settable limit at all). Callers
+    /// surface this as a `ValueError` in the Python layer.
+    ///
+    /// The default implementation rejects all requests, so wrapper trackers
+    /// that should expose this capability must explicitly delegate to their
+    /// inner tracker.
+    #[cfg(feature = "test-hooks")]
+    fn lower_recursion_limit(&self, _new_limit: usize) -> Result<(), Option<usize>> {
+        Err(None)
+    }
 }
 
 /// A resource tracker that imposes no limits except default recursion limit.
@@ -471,6 +493,12 @@ pub struct LimitedTracker {
     current_memory: Cell<usize>,
     /// Counter for rate-limiting `Instant::elapsed()` calls in `check_time`.
     check_counter: Cell<u16>,
+    /// Live recursion-depth ceiling. Seeded from `limits.max_recursion_depth`
+    /// at construction; under `test-hooks` may be lowered (never raised) via
+    /// [`lower_recursion_limit`](ResourceTracker::lower_recursion_limit) so
+    /// `sys.setrecursionlimit` can tighten the bound from Python code without
+    /// escaping the host-imposed ceiling.
+    current_recursion_limit: Cell<Option<usize>>,
 }
 
 impl LimitedTracker {
@@ -480,12 +508,14 @@ impl LimitedTracker {
     /// it immediately before starting execution.
     #[must_use]
     pub fn new(limits: ResourceLimits) -> Self {
+        let current_recursion_limit = Cell::new(limits.max_recursion_depth);
         Self {
             limits,
             start_time: Instant::now(),
             allocation_count: Cell::new(0),
             current_memory: Cell::new(0),
             check_counter: Cell::new(0),
+            current_recursion_limit,
         }
     }
 
@@ -593,7 +623,7 @@ impl ResourceTracker for LimitedTracker {
     }
 
     fn check_recursion_depth(&self, current_depth: usize) -> Result<(), ResourceError> {
-        if let Some(max) = self.limits.max_recursion_depth {
+        if let Some(max) = self.current_recursion_limit.get() {
             // current_depth is before push, so new depth would be current_depth + 1
             if current_depth >= max {
                 return Err(ResourceError::Recursion {
@@ -621,5 +651,23 @@ impl ResourceTracker for LimitedTracker {
 
     fn gc_interval(&self) -> Option<usize> {
         self.limits.gc_interval
+    }
+
+    /// Lowers the live recursion ceiling to `new_limit`, refusing to raise it.
+    ///
+    /// The constructed limit (`limits.max_recursion_depth`) acts as the hard
+    /// upper bound — `sys.setrecursionlimit` may only tighten it, never relax
+    /// it. Crossing from "no limit configured" to a concrete value counts as
+    /// lowering (infinity → finite); going from `Some(N)` to `Some(K)` with
+    /// `K > N` is rejected.
+    #[cfg(feature = "test-hooks")]
+    fn lower_recursion_limit(&self, new_limit: usize) -> Result<(), Option<usize>> {
+        if let Some(current) = self.current_recursion_limit.get()
+            && new_limit > current
+        {
+            return Err(Some(current));
+        }
+        self.current_recursion_limit.set(Some(new_limit));
+        Ok(())
     }
 }

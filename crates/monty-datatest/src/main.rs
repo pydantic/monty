@@ -10,7 +10,7 @@ use std::{
     path::{Path, PathBuf},
     str,
     sync::{
-        LazyLock, OnceLock,
+        LazyLock, Mutex, OnceLock, PoisonError,
         mpsc::{self, RecvTimeoutError},
     },
     thread,
@@ -46,11 +46,15 @@ static CANONICAL_WS_DIR: LazyLock<PathBuf> =
 const TEST_RECURSION_LIMIT: usize = 50;
 
 /// The `ResourceLimits` applied to every datatest run when the fixture omits
-/// `# gc-interval=` / `# max-recursion-depth=` directives.
+/// the `# gc-interval=` directive.
 ///
 /// Caps recursion at `TEST_RECURSION_LIMIT` and otherwise leaves limits at their
-/// builder defaults. The underlying default GC interval is `DEFAULT_GC_INTERVAL`
-/// in `crates/monty/src/heap.rs`, which is 1 under `memory-model-checks` and
+/// builder defaults. Fixtures that need a tighter recursion ceiling call
+/// `sys.setrecursionlimit(N)` at the top — that hook is available on both
+/// Monty (under `test-hooks`) and CPython, so it works symmetrically.
+///
+/// The underlying default GC interval is `DEFAULT_GC_INTERVAL` in
+/// `crates/monty/src/heap.rs`, which is 1 under `memory-model-checks` and
 /// 100_000 otherwise — tests that need a larger value to stay within the
 /// timeout opt into it via `# gc-interval=<N>`.
 fn default_test_limits() -> ResourceLimits {
@@ -92,10 +96,11 @@ struct TestConfig {
     /// Monty's always-POSIX sandbox but behave differently on Windows CPython.
     skip_cpython_windows: bool,
     /// Resource limits applied to this test's Monty run. Defaults to
-    /// `default_test_limits()`; directives like `# gc-interval=<N>` and
-    /// `# max-recursion-depth=<N>` mutate this in `parse_fixture`. Only the
-    /// Monty runner reads this; CPython continues to use its own default
-    /// limits.
+    /// `default_test_limits()`; the `# gc-interval=<N>` directive mutates
+    /// this in `parse_fixture`. The recursion ceiling is tightened from the
+    /// fixture itself via `sys.setrecursionlimit(N)` (works on both Monty
+    /// under `test-hooks` and CPython), so neither runner needs a special
+    /// directive for it.
     limits: ResourceLimits,
 }
 
@@ -202,12 +207,11 @@ fn parse_fixture(content: &str) -> (String, Expectation, TestConfig) {
 
     // Parse resource-limit directives. `config.limits` starts as
     // `default_test_limits()`; each directive overrides one field, preserving
-    // the standard test recursion cap unless explicitly overridden.
+    // the standard test recursion cap unless explicitly overridden. The
+    // recursion ceiling is tightened from Python instead, via
+    // `sys.setrecursionlimit(N)`.
     if let Some(interval) = parse_usize_directive(&comment_lines, "gc-interval=") {
         config.limits.gc_interval = Some(interval);
-    }
-    if let Some(depth) = parse_usize_directive(&comment_lines, "max-recursion-depth=") {
-        config.limits.max_recursion_depth = Some(depth);
     }
 
     // Check for TRACEBACK expectation (triple-quoted string at end of file)
@@ -2063,7 +2067,10 @@ fn wrap_code_for_async(code: &str, need_return_value: bool) -> (String, Option<S
 ///
 /// When `async_mode` is true, code is wrapped in an async context before execution.
 fn run_traceback_script(path: &Path, iter_mode: bool, async_mode: bool) -> String {
+    // Serialize CPython work across the whole process; see [`CPYTHON_TEST_LOCK`].
+    let _cpython_guard = CPYTHON_TEST_LOCK.lock().unwrap_or_else(PoisonError::into_inner);
     Python::attach(|py| {
+        let _recursion_guard = RecursionLimitGuard::new(py);
         let run_traceback = import_run_traceback(py);
 
         // Get absolute path for the test file
@@ -2098,6 +2105,56 @@ fn format_traceback(py: Python<'_>, exc: &PyErr) -> String {
     return_value
         .extract()
         .expect("failed to extract string from return value of format_full_traceback")
+}
+
+/// Process-wide mutex serializing CPython test execution.
+///
+/// CPython 3.13+ free-threaded builds (which this harness targets via the
+/// `cpython-3.14.X+freethreaded-...` Python install) drop the GIL, so
+/// `Python::attach` no longer serializes by itself. That's a problem for any
+/// fixture that mutates *process-global* interpreter state — most notably
+/// `sys.setrecursionlimit`, used by `recursion__*` and `json__dumps_recursion`
+/// to align CPython's recursion budget with Monty's. Without this lock, two
+/// fixtures running in parallel can interleave save/set/restore around the
+/// shared limit and either clobber each other's restore or leak a low limit
+/// into unrelated tests, where the next recursive Python operation (regex
+/// parse, traceback formatting, ...) blows up.
+///
+/// The lock is held for the entire CPython side of each fixture: setup,
+/// user code execution, and any post-mortem formatting. Monty's runner is
+/// not affected and continues to run concurrently with other Monty cases.
+static CPYTHON_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+/// RAII guard that snapshots `sys.getrecursionlimit()` on construction and
+/// restores it on drop.
+///
+/// Combined with [`CPYTHON_TEST_LOCK`], this gives each CPython fixture a
+/// clean recursion limit on entry and ensures whatever it sets is rolled
+/// back before any other fixture observes it.
+struct RecursionLimitGuard<'py> {
+    sys: Bound<'py, PyModule>,
+    saved: usize,
+}
+
+impl<'py> RecursionLimitGuard<'py> {
+    fn new(py: Python<'py>) -> Self {
+        let sys = py.import("sys").expect("Failed to import sys");
+        let saved = sys
+            .call_method0("getrecursionlimit")
+            .expect("Failed to call sys.getrecursionlimit")
+            .extract()
+            .expect("Failed to extract sys.getrecursionlimit");
+        Self { sys, saved }
+    }
+}
+
+impl Drop for RecursionLimitGuard<'_> {
+    fn drop(&mut self) {
+        // Best-effort restore; if this somehow fails we let the test that
+        // mutated the limit stand, since panicking from Drop would obscure
+        // the original test outcome.
+        let _ = self.sys.call_method1("setrecursionlimit", (self.saved,));
+    }
 }
 
 /// Import the run_traceback module
@@ -2198,7 +2255,10 @@ fn try_run_cpython_test(
         split_code_for_module(code, need_return_value)
     };
 
+    // Serialize CPython work across the whole process; see [`CPYTHON_TEST_LOCK`].
+    let _cpython_guard = CPYTHON_TEST_LOCK.lock().unwrap_or_else(PoisonError::into_inner);
     let result: CpythonResult = Python::attach(|py| {
+        let _recursion_guard = RecursionLimitGuard::new(py);
         // Execute statements at module level
         let globals = PyDict::new(py);
 
