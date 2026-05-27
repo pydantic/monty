@@ -636,6 +636,25 @@ impl<'i> Prepare<'i> {
                         finally,
                     }));
                 }
+                Node::With {
+                    context,
+                    target,
+                    body,
+                    position,
+                } => {
+                    let context = self.prepare_expression(context)?;
+                    let target = match target {
+                        Some(t) => Some(self.prepare_unpack_target(t)?),
+                        None => None,
+                    };
+                    let body = self.prepare_nodes(body)?;
+                    new_nodes.push(Node::With {
+                        context,
+                        target,
+                        body,
+                        position,
+                    });
+                }
                 Node::Import { names } => {
                     // Resolve each binding identifier to get the namespace slot
                     let resolved_names = names
@@ -2170,6 +2189,19 @@ fn collect_scope_info_from_node(
                 collect_scope_info_from_node(n, global_names, nonlocal_names, assigned_names, interner);
             }
         }
+        Node::With {
+            context, target, body, ..
+        } => {
+            // The `as TARGET` binds names like a for-loop target does.
+            if let Some(t) = target {
+                collect_names_from_unpack_target(t, assigned_names, interner);
+            }
+            // Scan the context expression for walrus operators.
+            collect_assigned_names_from_expr(context, assigned_names, interner);
+            for n in body {
+                collect_scope_info_from_node(n, global_names, nonlocal_names, assigned_names, interner);
+            }
+        }
         // Import creates bindings for each module name (or alias)
         Node::Import { names, .. } => {
             for import_name in names {
@@ -2479,6 +2511,12 @@ fn collect_cell_vars_from_node(
                 collect_cell_vars_from_node(n, our_locals, cell_vars, interner);
             }
             for n in finally {
+                collect_cell_vars_from_node(n, our_locals, cell_vars, interner);
+            }
+        }
+        Node::With { context, body, .. } => {
+            collect_cell_vars_from_expr(context, our_locals, cell_vars, interner);
+            for n in body {
                 collect_cell_vars_from_node(n, our_locals, cell_vars, interner);
             }
         }
@@ -2854,6 +2892,12 @@ fn collect_referenced_names_from_node(node: &ParseNode, referenced: &mut AHashSe
                 collect_referenced_names_from_node(n, referenced, interner);
             }
             for n in finally {
+                collect_referenced_names_from_node(n, referenced, interner);
+            }
+        }
+        Node::With { context, body, .. } => {
+            collect_referenced_names_from_expr(context, referenced, interner);
+            for n in body {
                 collect_referenced_names_from_node(n, referenced, interner);
             }
         }

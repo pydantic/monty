@@ -558,6 +558,9 @@ impl<'a> Compiler<'a> {
             }
             Node::FunctionDef(func_def) => self.compile_function_def(func_def)?,
             Node::Try(try_block) => self.compile_try(try_block)?,
+            Node::With {
+                context, target, body, ..
+            } => self.compile_with(context, target.as_ref(), body)?,
             Node::Import { names } => {
                 for import_name in names {
                     self.compile_import(import_name.module_name, &import_name.binding)?;
@@ -2316,30 +2319,38 @@ impl<'a> Compiler<'a> {
             self.code.emit(Opcode::ClearException)?;
         }
 
-        // Pop the iterator only for `for` loops (has iterator on stack)
-        // `while` loops don't have an iterator to pop
-        if self.loop_stack[target_loop_depth].has_iterator_on_stack {
-            self.code.emit(Opcode::Pop)?;
-        }
-
         // Check if we need to go through any finally blocks
         // We need to run finally if break crosses the try boundary, i.e., if
         // we're breaking from a loop that existed before the try started.
-        if let Some(finally_target) = self.finally_targets.last_mut()
-            && target_loop_depth < finally_target.loop_depth_at_entry
-        {
-            // Breaking from a loop that's outside (or at the start of) this try-finally,
-            // so finally must run before the break
+        let routes_through_finally = self
+            .finally_targets
+            .last()
+            .is_some_and(|ft| target_loop_depth < ft.loop_depth_at_entry);
+
+        if routes_through_finally {
+            // Routed path: leave the iterator on the stack — the chain of
+            // finally trailers may have its own per-block stack contributions
+            // (e.g. a `with` block sits on top of the iterator), and popping
+            // the iterator here would pop the wrong slot. The outermost
+            // trailer (`compile_control_flow_after_finally`) pops the
+            // iterator just before jumping to the loop's break target.
             let jump = self.code.emit_jump(Opcode::Jump)?;
-            finally_target.break_jumps.push(BreakContinueThruFinally {
-                jump,
-                target_loop_depth,
-            });
-            return Ok(());
+            self.finally_targets
+                .last_mut()
+                .expect("checked above")
+                .break_jumps
+                .push(BreakContinueThruFinally {
+                    jump,
+                    target_loop_depth,
+                });
+        } else {
+            // Direct path: pop the iterator (if any) and jump to loop end.
+            if self.loop_stack[target_loop_depth].has_iterator_on_stack {
+                self.code.emit(Opcode::Pop)?;
+            }
+            let jump = self.code.emit_jump(Opcode::Jump)?;
+            self.loop_stack[target_loop_depth].break_jumps.push(jump);
         }
-        // No finally to go through, jump directly to loop end
-        let jump = self.code.emit_jump(Opcode::Jump)?;
-        self.loop_stack[target_loop_depth].break_jumps.push(jump);
 
         Ok(())
     }
@@ -2425,8 +2436,16 @@ impl<'a> Compiler<'a> {
             return Ok(());
         }
 
-        // No more finally blocks, jump directly to the loop target
+        // No more finally blocks, jump directly to the loop target. For
+        // break paths we pop the for-loop iterator here (rather than at the
+        // break statement) so that intervening per-block stack contributions
+        // — e.g. a `with` block sitting on top of the iterator — get to clean
+        // themselves up in their own trailers first. Continue paths leave the
+        // iterator on top because the loop start (`ForIter`) expects it.
         if is_break {
+            if self.loop_stack[target_loop_depth].has_iterator_on_stack {
+                self.code.emit(Opcode::Pop)?;
+            }
             let jump = self.code.emit_jump(Opcode::Jump)?;
             self.loop_stack[target_loop_depth].break_jumps.push(jump);
         } else {
@@ -3109,6 +3128,184 @@ impl<'a> Compiler<'a> {
             self.code
                 .add_exception_entry(else_start, else_end, cleanup_start, stack_depth, try_exc_stack_count)?;
         }
+
+        Ok(())
+    }
+
+    /// Compiles a `with` statement: `with EXPR [as TARGET]: BODY`.
+    ///
+    /// The bytecode shape is:
+    /// ```text
+    /// <compile context expr>            ; [ctx]
+    /// BEFORE_WITH                       ; [ctx, value]
+    /// try_start:
+    ///   <store target or POP>           ; [ctx]
+    ///   <compile body>                  ; [ctx]
+    ///   WITH_EXIT                       ; []
+    ///   JUMP end                        ; skip the exception handler
+    /// try_end:
+    /// handler_start:
+    ///   ; VM pushes the exception: stack is [ctx, exc]
+    ///   WITH_EXCEPT_START               ; [ctx, exc, suppress]
+    ///   JUMP_IF_TRUE swallow            ; pops suppress; falsy = continue
+    ///   POP                             ; [ctx]
+    ///   POP                             ; []
+    ///   RERAISE                         ; propagate
+    /// swallow:                          ; [ctx, exc]
+    ///   POP                             ; [ctx]
+    ///   POP                             ; []
+    ///   CLEAR_EXCEPTION
+    ///   JUMP end
+    /// <return / break / continue trailers, each running WITH_EXIT before
+    ///  routing to the outer target>
+    /// end:
+    /// ```
+    ///
+    /// The `<store target or POP>` step lives *inside* the protected region so
+    /// `with f() as (a, b):` invokes `__exit__` when the unpack fails —
+    /// matching CPython, which similarly places `UNPACK_SEQUENCE` inside the
+    /// `BEFORE_WITH` exception-table entry. If the store raises, the unwinder
+    /// drops any partial unpack state down to the handler's expected depth
+    /// (`stack_depth + 1`) before pushing `exc` and entering `handler_start`.
+    ///
+    /// A single exception-table entry covers the body, routing exceptions to
+    /// `handler_start` with stack depth `outer + 1` (the context manager). If
+    /// the cleanup itself (`__exit__` invocation) raises, the new exception
+    /// replaces the original one and propagates via the surrounding frame's
+    /// exception table — this matches CPython's behavior.
+    ///
+    /// `return`/`break`/`continue` inside the body are routed through this
+    /// method's trailers (analogous to `try`/`finally`) so `__exit__` is called
+    /// before propagating the early exit. The `return` trailer uses `Rot2` to
+    /// preserve the return value while invoking `WithExit` on the context
+    /// manager underneath.
+    fn compile_with(
+        &mut self,
+        context: &ExprLoc,
+        target: Option<&UnpackTarget>,
+        body: &[PreparedNode],
+    ) -> Result<(), CompileError> {
+        // Record outer stack depth for the exception-table entry. If we are in
+        // dead-code state there's nothing to emit.
+        let Some(stack_depth) = self.code.stack_depth() else {
+            return Ok(());
+        };
+
+        let try_exc_stack_count = self.except_handler_depth;
+
+        // Evaluate context expr and invoke __enter__.
+        self.compile_expr(context)?;
+        self.code.emit(Opcode::BeforeWith)?;
+
+        // Track early exits inside the body so we can call __exit__ before
+        // they propagate. Mirrors the FinallyTarget push in `compile_try`.
+        self.finally_targets.push(FinallyTarget {
+            return_jumps: Vec::new(),
+            break_jumps: Vec::new(),
+            continue_jumps: Vec::new(),
+            loop_depth_at_entry: self.loop_stack.len(),
+            except_handler_depth_at_entry: self.except_handler_depth,
+        });
+
+        // === Body (protected region) ===
+        let try_start = self.code.current_offset();
+        // Bind the __enter__ result to the `as` target (or discard it). This
+        // lives inside the protected region so `with f() as (a, b):` calls
+        // `__exit__` when the unpack fails — matching CPython, which similarly
+        // covers UNPACK_SEQUENCE with the with-block's exception table entry.
+        if let Some(target) = target {
+            self.compile_unpack_target(target)?;
+        } else {
+            self.code.emit(Opcode::Pop)?;
+        }
+        self.compile_block(body)?;
+        // Close the protected range BEFORE `WithExit` so the normal-exit
+        // cleanup is outside the body's exception-table entry. If
+        // `__exit__` raises here, the new exception should propagate to
+        // the outer frame's exception table (matching CPython, where an
+        // `__exit__` exception replaces any prior state). Routing it
+        // back to our own handler would invoke `__exit__` a second time
+        // with the ctx already popped, blowing up the stack-depth
+        // bookkeeping in the unwinder.
+        let try_end = self.code.current_offset();
+
+        // Normal exit: __exit__(None, None, None); pop the (discarded) result;
+        // skip the handler.
+        self.code.emit(Opcode::WithExit)?;
+        self.code.emit(Opcode::Pop)?;
+        let after_body_jump = self.code.emit_jump(Opcode::Jump)?;
+
+        // === Exception handler ===
+        let handler_start = self.code.current_offset();
+        // VM unwinds to `stack_depth + 1` (the ctx) and then pushes the exception
+        // value itself, so we enter at depth `stack_depth + 2` with [ctx, exc].
+        self.code.new_code_region(stack_depth + 2);
+
+        self.code.emit(Opcode::WithExceptStart)?;
+        // Stack: [ctx, exc, suppress]
+        let swallow_jump = self.code.emit_jump(Opcode::JumpIfTrue)?;
+        // Falsy path: stack = [ctx, exc]. Drop both and re-raise.
+        self.code.emit(Opcode::Pop)?;
+        self.code.emit(Opcode::Pop)?;
+        self.code.emit(Opcode::Reraise)?;
+
+        // Swallow path: stack = [ctx, exc]. Drop both, clear current exception,
+        // jump to end.
+        self.code.patch_jump(swallow_jump)?;
+        self.code.emit(Opcode::Pop)?;
+        self.code.emit(Opcode::Pop)?;
+        self.code.emit(Opcode::ClearException)?;
+        let after_swallow_jump = self.code.emit_jump(Opcode::Jump)?;
+
+        // === Early-exit trailers (return/break/continue inside body) ===
+        let finally_target = self.finally_targets.pop().expect("finally_targets should not be empty");
+
+        // === Return path ===
+        // Stack at patch site: [ctx, return_value]. Swap so ctx is on top for
+        // WithExit, discard its result, then route the (preserved) return value.
+        if !finally_target.return_jumps.is_empty() {
+            for jump in finally_target.return_jumps {
+                self.code.patch_jump(jump)?;
+            }
+            self.code.emit(Opcode::Rot2)?;
+            self.code.emit(Opcode::WithExit)?;
+            self.code.emit(Opcode::Pop)?;
+            self.compile_return_routing()?;
+        }
+
+        // === Break path ===
+        // Stack at patch site: [ctx] (compile_break already popped any for-loop
+        // iterator). Call __exit__, discard its result, then route to the break target.
+        if !finally_target.break_jumps.is_empty() {
+            for break_info in &finally_target.break_jumps {
+                self.code.patch_jump(break_info.jump)?;
+            }
+            self.code.emit(Opcode::WithExit)?;
+            self.code.emit(Opcode::Pop)?;
+            self.compile_control_flow_after_finally(&finally_target.break_jumps, true)?;
+        }
+
+        // === Continue path ===
+        // Stack at patch site: [ctx]. Same shape as the break path.
+        if !finally_target.continue_jumps.is_empty() {
+            for continue_info in &finally_target.continue_jumps {
+                self.code.patch_jump(continue_info.jump)?;
+            }
+            self.code.emit(Opcode::WithExit)?;
+            self.code.emit(Opcode::Pop)?;
+            self.compile_control_flow_after_finally(&finally_target.continue_jumps, false)?;
+        }
+
+        // === Merge point for the normal-exit and swallowed-exception paths ===
+        self.code.patch_jump(after_body_jump)?;
+        self.code.patch_jump(after_swallow_jump)?;
+
+        // === Exception-table entry: body -> handler ===
+        // `stack_depth + 1` accounts for the ctx left on the stack; the VM
+        // pushes the exception value itself on top of that. `exception_stack_count`
+        // is unchanged because the with-block does not push to exception_stack.
+        self.code
+            .add_exception_entry(try_start, try_end, handler_start, stack_depth + 1, try_exc_stack_count)?;
 
         Ok(())
     }

@@ -654,6 +654,29 @@ pub enum Node<F> {
     /// Executes body, catches matching exceptions with handlers, runs else if no exception,
     /// and always runs finally.
     Try(Try<Self>),
+    /// `with EXPR [as TARGET]: BODY` — runs BODY with a context manager.
+    ///
+    /// Semantics match CPython: `EXPR` is evaluated, `__enter__` is called on
+    /// the result and bound to `TARGET` (if present), then `BODY` runs. On a
+    /// normal exit `__exit__(None, None, None)` is called; on exception,
+    /// `__exit__(type, value, None)` is called (Monty has no traceback objects),
+    /// and a truthy return value suppresses the exception.
+    ///
+    /// `target` is `Option<UnpackTarget>` to permit `with foo() as (a, b):`
+    /// shapes uniformly with [`Node::For`]; today the parser only emits the
+    /// `Name` variant since other unpack patterns are not yet exercised by
+    /// any user.
+    ///
+    /// Multi-item `with a() as x, b() as y:` is desugared into nested `With`
+    /// nodes by the parser, so this variant only ever carries a single
+    /// context. See `parse.rs` for the lowering and `limitations/with.md`
+    /// for the user-facing semantics.
+    With {
+        context: ExprLoc,
+        target: Option<UnpackTarget>,
+        body: Vec<Self>,
+        position: CodeRange,
+    },
     /// Import statement (e.g., `import sys`, `import sys, os`, `import sys as s`).
     ///
     /// Loads one or more modules and binds them to names in the current namespace.

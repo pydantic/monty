@@ -326,14 +326,11 @@ fn parse_ref_counts(s: &str) -> AHashMap<String, usize> {
     counts
 }
 
-/// Python implementations of external functions for running iter mode tests in CPython.
-///
-/// These implementations mirror the behavior of `dispatch_external_call` so that
-/// iter mode tests produce identical results in both Monty and CPython.
-///
-/// This is loaded from `scripts/iter_test_methods.py` which is also imported by
-/// `scripts/run_traceback.py` to ensure consistency.
-const ITER_EXT_FUNCTIONS_PYTHON: &str = include_str!("../../../scripts/iter_test_methods.py");
+// Shared CPython-side fixtures (external function implementations for iter
+// mode tests, plus the `_test_cm` synthetic context-manager shim) live in
+// `scripts/test_fixtures.py`. The module is imported once via pyo3
+// (cached in `sys.modules`) and its `exported_globals` dict is merged into
+// each CPython test's globals — see `import_shared_test_globals`.
 
 /// Creates a temporary directory with a known structure for `# mount-fs` tests.
 ///
@@ -376,7 +373,7 @@ fn ensure_python_modules_imported() {
     static INIT: OnceLock<()> = OnceLock::new();
     INIT.get_or_init(|| {
         Python::attach(|py| {
-            // Import modules that are used by iter_test_methods.py and can cause race conditions.
+            // Import modules that are used by test_fixtures.py and can cause race conditions.
             // The order matters: import dependencies first.
             py.import("typing").expect("Failed to import typing");
             py.import("dataclasses").expect("Failed to import dataclasses");
@@ -385,11 +382,12 @@ fn ensure_python_modules_imported() {
             py.import("asyncio").expect("Failed to import asyncio");
             py.import("traceback").expect("Failed to import traceback");
 
-            // Also pre-execute the iter_test_methods code once to ensure all its
-            // module-level code (dataclass definitions, monkey-patches) is initialized
-            let ext_funcs_cstr = CString::new(ITER_EXT_FUNCTIONS_PYTHON).expect("Invalid C string");
-            py.run(&ext_funcs_cstr, None, None)
-                .expect("Failed to pre-initialize iter_test_methods");
+            // Also pre-import `test_fixtures` once so its module-level
+            // code (dataclass definitions, `os.environ` monkey-patch) runs
+            // before any test thread races on it. Per-test injection then
+            // just reads the cached `exported_globals` attribute — see
+            // `import_shared_test_globals`.
+            import_shared_test_globals(py);
         });
     });
 }
@@ -558,7 +556,7 @@ fn dispatch_external_call(name: &str, args: Vec<MontyObject>) -> DispatchResult 
 /// Dispatches a dataclass method call to the appropriate test implementation.
 ///
 /// The first argument is always the dataclass instance (`self`). Known methods
-/// are implemented to mirror the Python dataclass methods in `iter_test_methods.py`.
+/// are implemented to mirror the Python dataclass methods in `test_fixtures.py`.
 /// Unknown methods return `AttributeError`.
 fn dispatch_method_call(
     method_name: &str,
@@ -1094,7 +1092,6 @@ fn dispatch_os_call(
                 path,
                 mode: file_mode,
                 position: 0,
-                id: None,
             })
             .into()
         }
@@ -2170,6 +2167,22 @@ fn import_run_traceback(py: Python<'_>) -> Bound<'_, PyModule> {
     py.import("run_traceback").expect("Failed to import run_traceback")
 }
 
+/// Import `test_fixtures` (lazily, cached by pyo3) and return the module.
+///
+/// Every CPython test pulls the `exported_globals` dict out of this module
+/// to populate its globals. `ensure_python_modules_imported` calls this
+/// once to run the module's top-level code (dataclass definitions and the
+/// `os.environ` monkey-patch) before any test thread races on it; later
+/// calls return the cached `sys.modules` entry.
+fn import_shared_test_globals(py: Python<'_>) -> Bound<'_, PyModule> {
+    let sys = py.import("sys").expect("Failed to import sys");
+    let sys_path = sys.getattr("path").expect("Failed to get sys.path");
+    sys_path
+        .call_method1("insert", (0, SCRIPTS_DIR))
+        .expect("Failed to add scripts to sys.path");
+    py.import("test_fixtures").expect("Failed to import test_fixtures")
+}
+
 /// Result from CPython execution - either a value to compare, or an early return.
 enum CpythonResult {
     /// Value to compare against expectation
@@ -2262,18 +2275,24 @@ fn try_run_cpython_test(
         // Execute statements at module level
         let globals = PyDict::new(py);
 
+        // Inject the shared CPython-side fixtures (iter-mode external
+        // functions and `_test_cm`) into every test's globals from the
+        // single `exported_globals` dict in `test_fixtures.py`. The
+        // module is imported once and cached, so this is just an
+        // `update()` of a small dict — no re-exec per test.
+        let shared = import_shared_test_globals(py);
+        let exported = shared
+            .getattr("exported_globals")
+            .expect("test_fixtures.exported_globals missing");
+        globals
+            .call_method1("update", (exported,))
+            .expect("Failed to merge shared test globals");
+
         // For mount-fs tests, inject `root` variable pointing to real temp directory.
         if let Some(ref setup_code) = mount_root_setup {
             let setup_cstr = CString::new(setup_code.as_str()).expect("Invalid C string in mount-fs setup");
             py.run(&setup_cstr, Some(&globals), None)
                 .expect("Failed to set up mount-fs root for CPython");
-        }
-
-        // For iter mode tests, inject external function implementations into globals
-        if iter_mode && !mount_fs {
-            let ext_funcs_cstr = CString::new(ITER_EXT_FUNCTIONS_PYTHON).expect("Invalid C string in ext funcs");
-            py.run(&ext_funcs_cstr, Some(&globals), None)
-                .expect("Failed to define external functions for iter mode");
         }
 
         // Run the statements

@@ -9,6 +9,7 @@ mod binary;
 mod call;
 mod collections;
 mod compare;
+mod context_manager;
 mod exceptions;
 mod format;
 mod scheduler;
@@ -32,10 +33,15 @@ use crate::{
     intern::{FunctionId, Interns, StringId},
     io::PrintWriter,
     modules::{StandardLib, json::JsonStringCache},
+    object::InvalidInputError,
     os::OsFunction,
     parse::CodeRange,
     resource::ResourceTracker,
-    types::{LongInt, MontyIter, PyTrait, timedelta},
+    types::{
+        LongInt, MontyIter, PyTrait,
+        file::{PendingFileEffect, apply_buffer_store, apply_write_position},
+        timedelta,
+    },
     value::{BitwiseOp, EitherStr, Value},
 };
 
@@ -160,13 +166,27 @@ macro_rules! handle_call_result {
                     name_load_ip,
                 });
             }
-            Ok(CallResult::OsCall(func, args)) => {
+            Ok(CallResult::OsCall(function, args)) => {
                 let call_id = $self.allocate_call_id();
                 // Sync cached IP back to frame before snapshot for resume
                 $self.current_frame_mut().ip = $cached_frame.ip;
                 return Ok(FrameExit::OsCall {
-                    function: func,
+                    function,
                     args,
+                    call_id,
+                });
+            }
+            Ok(CallResult::OsCallStoreBuffer { function, file_id }) => {
+                let call_id = $self.allocate_call_id();
+                // Record the pending-buffer-store hook for this call so the
+                // matching resume routes the OS result into the file's buffer
+                // instead of pushing it onto the operand stack.
+                $self.pending_file_effect = Some(PendingFileEffect::BufferStore { file_id });
+                // Sync cached IP back to frame before snapshot for resume
+                $self.current_frame_mut().ip = $cached_frame.ip;
+                return Ok(FrameExit::OsCall {
+                    function,
+                    args: ArgValues::One(Value::Ref(file_id)),
                     call_id,
                 });
             }
@@ -584,6 +604,11 @@ pub struct VMSnapshot {
     ///
     /// Contains call ID counter, task state, pending calls, and resolved futures.
     scheduler: Scheduler,
+
+    /// In-flight buffer-store target for the paused OS call, if any. See
+    /// [`VM::pending_file_effect`].
+    #[serde(default)]
+    pending_file_effect: Option<PendingFileEffect>,
 }
 
 // ============================================================================
@@ -663,6 +688,19 @@ pub struct VM<'h, T: ResourceTracker> {
     /// across multiple `json.loads()` calls within a single execution. Lazily
     /// initialized on first use, cleaned up when the VM is dropped.
     pub(crate) json_string_cache: JsonStringCache,
+
+    /// File state update to apply when the next OS-call result resumes.
+    ///
+    /// `Some(effect)` between the yield to the host and the matching
+    /// `resume()`; `None` otherwise. Cleared on resume after applying the
+    /// file state effect, or on exception cleanup before the host-raised
+    /// error is rethrown into Monty code.
+    ///
+    /// At most one OS call can be in flight at a time for a given task — the
+    /// VM is single-threaded and OS calls are strictly request/response — so a
+    /// single `Option` is sufficient even with async tasks (which interleave
+    /// between OS calls, not within one).
+    pub(crate) pending_file_effect: Option<PendingFileEffect>,
 }
 
 impl<'h, T: ResourceTracker> VM<'h, T> {
@@ -686,6 +724,7 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
             ext_function_load_ip: None, // Set by LoadGlobalCallable/LoadLocalCallable
             module_code: None,
             json_string_cache: JsonStringCache::default(),
+            pending_file_effect: None,
         }
     }
 
@@ -749,6 +788,7 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
             module_code: Some(module_code),
             ext_function_load_ip: None,
             json_string_cache: JsonStringCache::default(),
+            pending_file_effect: snapshot.pending_file_effect,
         }
     }
 
@@ -774,6 +814,7 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
             exception_stack: mem::take(&mut self.exception_stack),
             instruction_ip: self.instruction_ip,
             scheduler: mem::take(&mut self.scheduler),
+            pending_file_effect: self.pending_file_effect.take(),
         }
     }
 
@@ -1625,6 +1666,20 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
                     let error = ExcType::module_not_found_error(name_str);
                     catch_sync!(self, cached_frame, error);
                 }
+                // Context Managers
+                Opcode::BeforeWith => {
+                    // Sync IP before call (py_enter may yield to host).
+                    self.current_frame_mut().ip = cached_frame.ip;
+                    handle_call_result!(self, cached_frame, self.exec_before_with());
+                }
+                Opcode::WithExit => {
+                    self.current_frame_mut().ip = cached_frame.ip;
+                    handle_call_result!(self, cached_frame, self.exec_with_exit());
+                }
+                Opcode::WithExceptStart => {
+                    self.current_frame_mut().ip = cached_frame.ip;
+                    handle_call_result!(self, cached_frame, self.exec_with_except_start());
+                }
             }
         }
     }
@@ -1642,12 +1697,38 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
     /// Resumes execution after an external call completes.
     ///
     /// Pushes the return value onto the stack and continues execution.
+    ///
+    /// If the paused OS call has a pending file effect, the result is routed
+    /// through the corresponding file-state helper before it is pushed back to
+    /// Python.
     pub fn resume(&mut self, obj: MontyObject) -> Result<FrameExit, RunError> {
-        let value = obj
-            .to_value(self)
-            .map_err(|e| SimpleException::new(ExcType::RuntimeError, Some(format!("invalid return type: {e}"))))?;
-        self.push(value);
-        self.run()
+        // Surface resource-exhaustion failures from `to_value` (e.g. a host
+        // string whose `heap.allocate` trips `max_memory`) as the same
+        // `RunError::Resource` that pure-Monty allocations produce, so the
+        // user sees `MemoryError` instead of `RuntimeError: invalid return
+        // type`. Other input errors stay as `RuntimeError`.
+        let value = obj.to_value(self).map_err(|e| match e {
+            InvalidInputError::Resource(err) => RunError::from(err),
+            other @ InvalidInputError::InvalidType(_) => {
+                SimpleException::new(ExcType::RuntimeError, Some(format!("invalid return type: {other}"))).into()
+            }
+        })?;
+        if let Some(effect) = self.pending_file_effect.take() {
+            let result = match effect {
+                PendingFileEffect::BufferStore { file_id } => apply_buffer_store(file_id, value, self),
+                PendingFileEffect::WritePosition { file_id, .. } => apply_write_position(file_id, value, self),
+            };
+            match result {
+                Ok(value) => {
+                    self.push(value);
+                    self.run()
+                }
+                Err(err) => self.resume_with_exception(err),
+            }
+        } else {
+            self.push(value);
+            self.run()
+        }
     }
 
     /// Sets the instruction IP used for exception table lookup and traceback generation.
@@ -1663,7 +1744,33 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
     ///
     /// Uses the exception handling mechanism to try to catch the exception.
     /// If caught, continues execution at the handler. If not, propagates the error.
+    ///
+    /// Also clears any pending file effect so user code that catches a
+    /// host-side OS exception can retry without stale in-flight state.
     pub fn resume_with_exception(&mut self, error: RunError) -> Result<FrameExit, RunError> {
+        if let Some(effect) = self.pending_file_effect.take() {
+            match effect {
+                PendingFileEffect::BufferStore { file_id } => {
+                    if let HeapReadOutput::OpenFile(mut file) = self.heap.read(file_id) {
+                        file.get_mut(self.heap).clear_pending_read();
+                        drop(file);
+                    }
+                    self.heap.dec_ref(file_id);
+                }
+                PendingFileEffect::WritePosition {
+                    file_id,
+                    previous_position,
+                    previous_length,
+                } => {
+                    if let HeapReadOutput::OpenFile(mut file) = self.heap.read(file_id) {
+                        file.get_mut(self.heap)
+                            .rollback_write_position(previous_position, previous_length);
+                        drop(file);
+                    }
+                    self.heap.dec_ref(file_id);
+                }
+            }
+        }
         // Use the normal exception handling mechanism
         // handle_exception returns None if caught, Some(error) if not caught
         if let Some(uncaught_error) = self.handle_exception(error) {
@@ -2055,6 +2162,14 @@ impl<T: ResourceTracker> ContainsHeap for VM<'_, T> {
 /// `take_globals`) are harmlessly drained as empty.
 impl<T: ResourceTracker> Drop for VM<'_, T> {
     fn drop(&mut self) {
+        if let Some(effect) = self.pending_file_effect.take() {
+            let file_id = match effect {
+                PendingFileEffect::BufferStore { file_id } | PendingFileEffect::WritePosition { file_id, .. } => {
+                    file_id
+                }
+            };
+            self.heap.dec_ref(file_id);
+        }
         self.exception_stack.drain(..).drop_with_heap(self.heap);
         self.cleanup_current_task();
         self.scheduler.cleanup(self.heap);

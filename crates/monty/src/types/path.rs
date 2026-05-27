@@ -17,6 +17,7 @@ use smallvec::SmallVec;
 
 use crate::{
     args::{ArgValues, KwargsValues},
+    builtins::open::builtin_open,
     bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{ExcType, RunResult, SimpleException},
@@ -594,6 +595,20 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Path> {
             StaticStrings::AsPosix | StaticStrings::Fspath => {
                 args.check_zero_args(method.into(), vm.heap)?;
                 Ok(allocate_string(self.get(vm.heap).as_posix(), vm.heap)?)
+            }
+            StaticStrings::Open => {
+                // `Path.open(mode='r', ...)` is `open(self, mode, ...)` with
+                // `self` prepended as the implicit `file` argument. Reuses
+                // `builtin_open`'s mode/kwarg validation (including rejection
+                // of `+`/`x` modes and non-default `buffering`/`encoding`/
+                // `errors`/`newline`) so the two entry points stay in sync.
+                //
+                // The `inc_ref` is required because the prepended `Value::Ref`
+                // is dropped by `builtin_open` via `defer_drop!` once the path
+                // string has been extracted, balancing the refcount.
+                vm.heap.inc_ref(self_id);
+                let args = args.prepend(Value::Ref(self_id));
+                return builtin_open(vm, args);
             }
             _ => {
                 args.drop_with_heap(vm);

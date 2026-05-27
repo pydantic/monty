@@ -9,9 +9,6 @@ description = "Datatest harness for Monty — runs test cases against both Monty
 publish = false
 
 [dependencies]
-# `test-hooks` is always on for the datatest harness so fixtures can call
-# test-only callables (e.g. `gc.collect()`, `sys.setrecursionlimit()`) that
-# production sandbox builds keep hidden.
 monty = { path = "../monty", features = ["test-hooks"] }
 pyo3 = { version = "0.28", features = ["auto-initialize"] }
 ahash = "0.8.0"

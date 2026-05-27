@@ -16,10 +16,9 @@ assert text_file.read() == 'hello world\n', 'text read returns full file'
 # Second sequential read should be empty (CPython EOF semantics)
 assert text_file.read() == '', 'second text read returns empty after EOF'
 assert text_file.read() == '', 'third text read still empty'
-# Monty returns False because seek() / tell() are not yet implemented; CPython
-# returns True for regular files because they support seeking natively.
-expected_seekable = not is_monty
-assert text_file.seekable() == expected_seekable, 'seekable() reflects whether seek() is actually implemented'
+# Both CPython and Monty report readable files as seekable now that Monty
+# implements seek()/tell() via on-demand buffering.
+assert text_file.seekable() == True, 'readable file is seekable'
 text_file.close()
 assert text_file.closed == True, 'close sets closed'
 
@@ -273,3 +272,341 @@ try:
     assert False, 'expected unknown mode character to fail'
 except ValueError as exc:
     assert str(exc) == "invalid mode: 'z'", f'unexpected unknown mode message: {exc}'
+
+# === Sized read ===
+# Set up a multi-line text fixture for the rest of these tests.
+(root / 'sized.txt').write_text('hello world')
+sized = open(root / 'sized.txt')
+assert sized.read(5) == 'hello', 'read(5) returns first 5 chars'
+assert sized.read(100) == ' world', 'read(N) clamps at EOF'
+assert sized.read(1) == '', 'read past EOF returns empty'
+assert sized.read(0) == '', 'read(0) returns empty without advancing position'
+sized.close()
+
+read_none = open(root / 'sized.txt')
+assert read_none.read(None) == 'hello world', 'read(None) returns all remaining content'
+read_none.close()
+
+read_bool = open(root / 'sized.txt')
+assert read_bool.read(True) == 'h', 'read(True) behaves like read(1)'
+assert read_bool.read(False) == '', 'read(False) behaves like read(0)'
+assert read_bool.read(1) == 'e', 'read(False) does not advance position'
+read_bool.close()
+
+# read(-1) and read() (with buffer loaded) return the rest
+mixed = open(root / 'sized.txt')
+assert mixed.read(5) == 'hello', 'first sized read'
+assert mixed.read(-1) == ' world', 'read(-1) returns rest'
+mixed.close()
+
+mixed2 = open(root / 'sized.txt')
+assert mixed2.read(5) == 'hello', 'first sized read'
+assert mixed2.read() == ' world', 'bare read() after sized read returns rest'
+mixed2.close()
+
+# read(0) without prior reads short-circuits without loading
+zero = open(root / 'sized.txt')
+assert zero.read(0) == '', 'read(0) on fresh file returns empty'
+assert zero.read(5) == 'hello', 'subsequent sized read still works'
+zero.close()
+
+# Binary sized read
+(root / 'sized.bin').write_bytes(b'\x10\x11\x12\x13\x14')
+sized_b = open(root / 'sized.bin', 'rb')
+assert sized_b.read(3) == b'\x10\x11\x12', 'binary read(3)'
+assert sized_b.read(10) == b'\x13\x14', 'binary read(N) clamps at EOF'
+assert sized_b.read(1) == b'', 'binary read past EOF'
+sized_b.close()
+
+# === readline / readlines / tell / seek ===
+(root / 'lines.txt').write_text('first\nsecond\nthird')
+lf = open(root / 'lines.txt')
+assert lf.readline() == 'first\n', 'first readline includes newline'
+assert lf.readline() == 'second\n', 'second readline includes newline'
+assert lf.readline() == 'third', 'last line without trailing newline'
+assert lf.readline() == '', 'readline at EOF returns empty'
+lf.close()
+
+# readline on an empty file
+(root / 'empty_lines.txt').write_text('')
+empty_lf = open(root / 'empty_lines.txt')
+assert empty_lf.readline() == '', 'readline on empty file returns empty'
+empty_lf.close()
+
+# readlines
+all_lines = open(root / 'lines.txt')
+assert all_lines.readlines() == ['first\n', 'second\n', 'third'], 'readlines returns list'
+assert all_lines.readlines() == [], 'second readlines returns empty list at EOF'
+all_lines.close()
+
+# Binary readline / readlines
+(root / 'lines.bin').write_bytes(b'a\nb\nc')
+bin_lf = open(root / 'lines.bin', 'rb')
+assert bin_lf.readline() == b'a\n', 'binary readline includes newline'
+assert bin_lf.readlines() == [b'b\n', b'c'], 'binary readlines returns rest'
+bin_lf.close()
+
+# tell()
+t = open(root / 'sized.txt')
+assert t.tell() == 0, 'fresh file tell is 0'
+t.read(5)
+assert t.tell() == 5, 'tell after read(5) advances by 5'
+t.read(2)
+assert t.tell() == 7, 'tell after second sized read'
+t.close()
+
+# seek()
+s = open(root / 'sized.txt')
+assert s.read(11) == 'hello world', 'read everything'
+assert s.tell() == 11, 'position at EOF'
+assert s.seek(0) == 0, 'seek(0) returns 0'
+assert s.tell() == 0, 'seek(0) resets position'
+assert s.read(5) == 'hello', 'read after seek(0)'
+assert s.seek(0, 2) == 11, 'seek(0, 2) returns buffer length'
+assert s.read(1) == '', 'read after seek to end'
+assert s.seek(6) == 6, 'seek(6) returns 6'
+assert s.read(5) == 'world', 'read after explicit seek'
+s.close()
+
+# seek() with no prior reads triggers the buffer load
+fresh_seek = open(root / 'sized.txt')
+assert fresh_seek.seek(0, 2) == 11, 'seek end on fresh file loads buffer'
+assert fresh_seek.tell() == 11, 'tell after seek to end'
+assert fresh_seek.read(1) == '', 'read past end is empty'
+fresh_seek.close()
+
+# seek(offset, 1) — SEEK_CUR — adjusts position relative to current.
+# CPython's TextIOWrapper rejects nonzero cur-relative seeks, so the
+# text-mode case is restricted to seek(0, 1) (which is a no-op tell()).
+cur_t = open(root / 'sized.txt')
+assert cur_t.read(4) == 'hell', 'partial read to position 4'
+assert cur_t.seek(0, 1) == 4, 'text seek(0, 1) returns current position'
+assert cur_t.read(2) == 'o ', 'read continues from unchanged position'
+cur_t.close()
+
+# Binary SEEK_CUR supports nonzero offsets in both CPython and Monty.
+cur_b = open(root / 'sized.bin', 'rb')
+assert cur_b.read(2) == b'\x10\x11', 'binary partial read'
+assert cur_b.seek(1, 1) == 3, 'binary seek(1, 1) advances'
+assert cur_b.read(2) == b'\x13\x14', 'binary read after SEEK_CUR'
+assert cur_b.seek(-3, 1) == 2, 'binary seek backward via SEEK_CUR'
+assert cur_b.read(2) == b'\x12\x13', 'binary read after SEEK_CUR backward'
+cur_b.close()
+
+# Negative seek raises OSError in binary mode (matches CPython's BufferedReader).
+ns = open(root / 'sized.bin', 'rb')
+ns.read(0)  # no-op
+try:
+    ns.seek(-1)
+    assert False, 'expected OSError for negative seek'
+except OSError as exc:
+    assert str(exc) == '[Errno 22] Invalid argument', f'unexpected negative seek message: {exc}'
+ns.close()
+
+# Invalid whence
+iw = open(root / 'sized.bin', 'rb')
+iw.read(0)
+try:
+    iw.seek(0, 99)
+    assert False, 'expected ValueError for invalid whence'
+except ValueError as exc:
+    assert str(exc) == 'whence value 99 unsupported', f'unexpected invalid whence message: {exc}'
+try:
+    iw.seek(0, -1)
+    assert False, 'expected ValueError for negative whence'
+except ValueError as exc:
+    assert str(exc) == 'whence value -1 unsupported', f'unexpected negative whence message: {exc}'
+try:
+    iw.seek(0, 256)
+    assert False, 'expected ValueError for large whence'
+except ValueError as exc:
+    assert str(exc) == 'whence value 256 unsupported', f'unexpected large whence message: {exc}'
+iw.close()
+
+# tell / seek on a closed file
+closed_t = open(root / 'sized.txt')
+closed_t.close()
+try:
+    closed_t.tell()
+    assert False, 'expected tell on closed file to fail'
+except ValueError as exc:
+    assert str(exc) == 'I/O operation on closed file.'
+try:
+    closed_t.seek(0)
+    assert False, 'expected seek on closed file to fail'
+except ValueError as exc:
+    assert str(exc) == 'I/O operation on closed file.'
+
+# UTF-8 multi-byte handling: 'β' is 2 bytes, 1 char.
+(root / 'utf8.txt').write_text('aβc')
+utf = open(root / 'utf8.txt')
+assert utf.read(2) == 'aβ', 'read(2) returns 2 chars including multi-byte'
+# Monty's text-mode tell() is a char index (diverges from CPython's opaque
+# byte cookie); see limitations/open.md.
+if is_monty:
+    assert utf.tell() == 2, 'monty text tell is char-index'
+assert utf.read(1) == 'c', 'remaining char'
+utf.close()
+
+# tell/seek round-trip
+rt = open(root / 'lines.txt')
+rt.read(3)
+captured = rt.tell()
+assert captured == 3, 'capture position 3'
+rt.read(5)
+assert rt.seek(captured) == 3, 'seek back to captured position'
+assert rt.read(2) == 'st', 'read after seek matches position-3 content'
+rt.close()
+
+# Mixed read() / readline()
+mixed_rl = open(root / 'lines.txt')
+assert mixed_rl.read(2) == 'fi', 'partial read'
+assert mixed_rl.readline() == 'rst\n', 'readline continues from position'
+assert mixed_rl.read() == 'second\nthird', 'rest of file'
+mixed_rl.close()
+
+# read on a 'w' file
+try:
+    open(root / 'open_write.txt', 'w').read(5)
+    assert False, 'expected read on w to fail'
+except OSError as exc:
+    assert str(exc) == 'not readable'
+
+# read(0) on a write-only file: the open/readable check still happens first
+try:
+    open(root / 'open_write.txt', 'w').read(0)
+    assert False, 'expected read(0) on w to fail'
+except OSError as exc:
+    assert str(exc) == 'not readable'
+
+# read on a closed write-only file should hit ensure_open before mode check
+closed_w = open(root / 'open_write.txt', 'w')
+closed_w.close()
+try:
+    closed_w.read(0)
+    assert False, 'expected read(0) on closed file to fail'
+except ValueError as exc:
+    assert str(exc) == 'I/O operation on closed file.'
+
+# write-only files still expose logical tell/seek state.
+write_pos = open(root / 'write_position.txt', 'w')
+assert write_pos.seekable() == True, 'write-only file is logically seekable'
+assert write_pos.tell() == 0, 'fresh write file starts at position 0'
+assert write_pos.write('abc') == 3, 'text write returns chars written'
+assert write_pos.tell() == 3, 'tell advances after text write'
+assert write_pos.seek(0) == 0, 'write-only seek(0) works'
+assert write_pos.tell() == 0, 'tell reflects write-only seek'
+assert write_pos.seek(0, 2) == 3, 'write-only seek end uses tracked length'
+write_pos.close()
+
+write_pos_b = open(root / 'write_position.bin', 'wb')
+assert write_pos_b.write(b'\x00\x01\x02\x03') == 4, 'binary write returns bytes written'
+assert write_pos_b.tell() == 4, 'binary tell advances by bytes'
+write_pos_b.close()
+
+# Regression: binary read after seek-past-end must not panic.
+(root / 'past_end.bin').write_bytes(b'12345')
+pe = open(root / 'past_end.bin', 'rb')
+assert pe.seek(100) == 100, 'seek past end returns target'
+assert pe.tell() == 100, 'tell after seek past end'
+assert pe.read(5) == b'', 'read(N) past end is empty'
+assert pe.tell() == 100, 'binary read(N) past end leaves position alone'
+assert pe.readline() == b'', 'readline past end is empty'
+assert pe.tell() == 100, 'binary readline past end leaves position alone'
+assert pe.readlines() == [], 'readlines past end is empty'
+assert pe.tell() == 100, 'binary readlines past end leaves position alone'
+assert pe.read() == b'', 'bare read past end is empty'
+assert pe.tell() == 100, 'binary bare read past end leaves position alone'
+pe.close()
+
+# Same regression in text mode.
+(root / 'past_end.txt').write_text('hello')
+pet = open(root / 'past_end.txt')
+assert pet.seek(100) == 100, 'text seek past end returns target'
+assert pet.read(5) == '', 'text read(N) past end is empty'
+assert pet.tell() == 100, 'text read(N) past end leaves position alone'
+assert pet.readline() == '', 'text readline past end is empty'
+assert pet.tell() == 100, 'text readline past end leaves position alone'
+assert pet.readlines() == [], 'text readlines past end is empty'
+assert pet.tell() == 100, 'text readlines past end leaves position alone'
+assert pet.read() == '', 'text bare read past end is empty'
+assert pet.tell() == 100, 'text bare read past end leaves position alone'
+pet.close()
+
+# read(N) with non-int arg raises TypeError (exact message diverges from CPython).
+nt = open(root / 'sized.txt')
+try:
+    nt.read('5')
+    assert False, 'expected TypeError for non-int read size'
+except TypeError as exc:
+    msg = str(exc)
+    if is_monty:
+        assert msg == "'str' object cannot be interpreted as an integer", f'unexpected message: {msg}'
+    else:
+        assert msg == "argument should be integer or None, not 'str'", f'unexpected CPython message: {msg}'
+nt.close()
+
+# === Path.open() — same OsCall as builtin open() with `self` as the file ===
+# Mode/kwarg validation, open-time effects, returned wrapper types, and
+# context-manager semantics are all shared with `open()` above. The tests
+# here focus on what's specific to going through Path: that the implicit
+# `self` is used as the file argument, that positional and keyword `mode`
+# both work, and that validation still fires when called via Path.
+#
+# Each test uses its own dedicated file because earlier tests in this file
+# truncate `hello.txt` (`open(..., 'w').read()` truncates before raising).
+(root / 'path_open_text.txt').write_text('hello via Path.open\n')
+(root / 'path_open_bytes.bin').write_bytes(b'\x10\x20\x30')
+
+path_read = (root / 'path_open_text.txt').open()
+assert path_read.read() == 'hello via Path.open\n', 'Path.open() default-mode reads the file'
+path_read.close()
+
+# Positional mode reaches the same wrapper as `open(..., 'rb')`.
+binary_via_path = (root / 'path_open_bytes.bin').open('rb')
+assert str(type(binary_via_path)) == "<class '_io.BufferedReader'>", "Path.open('rb') returns BufferedReader"
+assert binary_via_path.read() == b'\x10\x20\x30', "Path.open('rb') reads bytes"
+binary_via_path.close()
+
+# Keyword-only mode works too (no positional arg).
+kw_mode = (root / 'path_open_text.txt').open(mode='r')
+assert kw_mode.read() == 'hello via Path.open\n', 'Path.open(mode=...) reads the file'
+kw_mode.close()
+
+# `encoding='utf-8'` accepted as the documented no-op (Monty always uses UTF-8).
+enc = (root / 'path_open_text.txt').open('r', encoding='utf-8')
+assert enc.read() == 'hello via Path.open\n', "Path.open('r', encoding='utf-8') accepted"
+enc.close()
+
+# Context manager works through Path.open() — closes on exit on both paths.
+with (root / 'path_open_text.txt').open() as f:
+    assert f.read() == 'hello via Path.open\n', 'Path.open() works as context manager'
+assert f.closed, 'context-manager exit closes the Path.open() file'
+
+# Write through Path.open() lands the same content as a direct open().
+(root / 'path_open_write.txt').open('w').write('written via Path.open\n')
+assert (root / 'path_open_write.txt').read_text() == 'written via Path.open\n', "Path.open('w') write committed"
+
+# Mode validation is shared — Monty rejects '+' modes; CPython would accept
+# them, so this is monty-only.
+if is_monty:
+    try:
+        (root / 'path_open_text.txt').open('r+')
+        assert False, "expected ValueError for Path.open('r+')"
+    except ValueError as exc:
+        assert str(exc) == "update modes ('+') are not yet supported", f'unexpected Path.open r+ rejection: {exc}'
+
+    try:
+        (root / 'path_open_text.txt').open(buffering=0)
+        assert False, 'expected TypeError for Path.open(buffering=0)'
+    except TypeError as exc:
+        assert str(exc) == "'buffering' argument is not yet supported", (
+            f'unexpected Path.open buffering rejection: {exc}'
+        )
+
+# Open-time existence check still fires when called via Path.open().
+try:
+    (root / 'path_open_missing.txt').open()
+    assert False, 'expected FileNotFoundError opening a missing file via Path.open'
+except FileNotFoundError as exc:
+    assert str(exc).startswith("[Errno 2] No such file or directory: '")

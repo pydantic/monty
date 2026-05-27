@@ -456,6 +456,43 @@ pub enum Opcode {
     /// Pops iterable (TOS), adds each item to set at stack position `len - 2 - depth`.
     /// Raises `TypeError` if iterable is not iterable.
     SetExtend,
+
+    // === Context Managers ===
+    /// Enter a context manager: call `__enter__` on TOS, push the result, keep
+    /// the context manager underneath for the eventual `__exit__` call.
+    ///
+    /// Stack: [..., ctx] -> [..., ctx, value]
+    ///
+    /// Emitted by the compiler at the head of a `with` block. The context
+    /// manager stays on the stack across the body so the matching `WithExit`
+    /// or `WithExceptStart` can find it. Calls `py_enter` on the heap object,
+    /// raising `AttributeError` for objects that don't implement the protocol.
+    /// Appended at the end to preserve the serialized byte values of all older opcodes.
+    BeforeWith,
+    /// Normal exit from a `with` block: call `__exit__(None, None, None)` on TOS,
+    /// pop the context manager, and push the result of the call.
+    ///
+    /// Stack: [..., ctx] -> [..., result]
+    ///
+    /// The compiler emits a trailing `Pop` to discard the result — splitting the
+    /// "call + discard" into two opcodes keeps the call shape compatible with
+    /// `__exit__` implementations that yield `OsCall`/`External`/`MethodCall`
+    /// (the host's resume push lands as the `result`, which `Pop` then drops).
+    /// Appended at the end to preserve the serialized byte values of all older opcodes.
+    WithExit,
+    /// Exception path of a `with` block: call `__exit__(type(exc), exc, None)`
+    /// and push the truthiness of the result so the compiler can branch on
+    /// whether to suppress the exception.
+    ///
+    /// Stack: [..., ctx, exc] -> [..., ctx, exc, suppress]
+    ///
+    /// The exception is the value pushed onto the operand stack on entry to
+    /// the with-block's exception handler region (analogous to `Try`). The
+    /// compiler-emitted control flow following this opcode pops both `ctx` and
+    /// `exc` and either swallows (via `ClearException`) or `Reraise`s based on
+    /// the `suppress` bool.
+    /// Appended at the end to preserve the serialized byte values of all older opcodes.
+    WithExceptStart,
 }
 
 impl TryFrom<u8> for Opcode {
@@ -637,6 +674,16 @@ impl Opcode {
             // `DictUpdate`/`SetExtend` also take a u8 stack-depth operand.
             (DictUpdate | SetExtend, Operand::U8(_)) => -1,
 
+            // === Fixed-effect, no operand (context managers) ===
+            // `BeforeWith` pushes the `__enter__` result on top of the existing ctx.
+            (BeforeWith, Operand::None) => 1,
+            // `WithExit` pops ctx and pushes the `__exit__` return value; compiler
+            // emits a trailing `Pop` to discard.
+            (WithExit, Operand::None) => 0,
+            // `WithExceptStart` pushes the raw `__exit__` return value above the
+            // existing [ctx, exc]; compiler uses `JumpIfTrue` to act on its truthiness.
+            (WithExceptStart, Operand::None) => 1,
+
             // === Fixed-effect, U16 operand ===
             (LoadConst, Operand::U16(_)) => 1,
             (LoadLocalW | LoadGlobal | LoadCell, Operand::U16(_)) => 1,
@@ -720,8 +767,8 @@ mod tests {
 
     #[test]
     fn test_opcode_roundtrip() {
-        // Verify that all opcodes from 0 to DeleteGlobal (last opcode) can be converted to u8 and back.
-        for byte in 0..=Opcode::DeleteGlobal as u8 {
+        // Verify that all opcodes from 0 to the last opcode can be converted to u8 and back.
+        for byte in 0..=Opcode::WithExceptStart as u8 {
             let opcode = Opcode::try_from(byte).unwrap();
             assert_eq!(opcode as u8, byte, "opcode {opcode:?} has wrong discriminant");
         }
@@ -737,12 +784,16 @@ mod tests {
         assert_eq!(Opcode::DeleteGlobal as u8, 112);
         assert_eq!(Opcode::DictUpdate as u8, 113);
         assert_eq!(Opcode::SetExtend as u8, 114);
+        // Context-manager opcodes added with the `with` statement support.
+        assert_eq!(Opcode::BeforeWith as u8, 115);
+        assert_eq!(Opcode::WithExit as u8, 116);
+        assert_eq!(Opcode::WithExceptStart as u8, 117);
     }
 
     #[test]
     fn test_invalid_opcode() {
         // Byte just after the last valid opcode should fail
-        let result = Opcode::try_from(Opcode::SetExtend as u8 + 1);
+        let result = Opcode::try_from(Opcode::WithExceptStart as u8 + 1);
         assert!(result.is_err());
         // 255 should also fail
         let result = Opcode::try_from(255u8);

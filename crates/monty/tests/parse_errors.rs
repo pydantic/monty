@@ -54,8 +54,14 @@ fn unknown_imports_compile_successfully_error_deferred_to_runtime() {
 }
 
 #[test]
-fn with_statement_returns_not_implemented_error() {
-    let result = MontyRun::new("with open('f') as f: pass".to_owned(), "test.py", vec![]);
+fn async_with_statement_returns_not_implemented_error() {
+    // Plain `with` is supported (see `test_cases/with__all.py`); only `async with`
+    // is still rejected at parse time.
+    let result = MontyRun::new(
+        "async def f():\n    async with open('f') as g: pass\n".to_owned(),
+        "test.py",
+        vec![],
+    );
     assert_eq!(get_exc_type(result), ExcType::NotImplementedError);
 }
 

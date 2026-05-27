@@ -77,6 +77,12 @@ pub enum Type {
     RePattern,
     /// A regex match result from `re.match()` / `re.search()` etc. - displays as "re.Match"
     ReMatch,
+    /// Synthetic context manager exposed via the `_test_cm` builtin. Only
+    /// reachable under the `test-hooks` cargo feature; intentionally a
+    /// distinct `Type` variant rather than one of the existing ones so a
+    /// production sandbox can't get confused with it via stale snapshots.
+    #[cfg(feature = "test-hooks")]
+    TestContextManager,
 }
 
 impl fmt::Display for Type {
@@ -122,6 +128,8 @@ impl fmt::Display for Type {
             Self::Property => f.write_str("property"),
             Self::RePattern => f.write_str("re.Pattern"),
             Self::ReMatch => f.write_str("re.Match"),
+            #[cfg(feature = "test-hooks")]
+            Self::TestContextManager => f.write_str("_test_cm"),
         }
     }
 }

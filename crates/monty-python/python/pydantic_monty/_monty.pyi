@@ -984,7 +984,7 @@ class MontyFileHandle:
 
     Plain data holder — Monty never gives the host a live OS file descriptor.
     Exposed to callbacks (e.g. as the first argument of an `Open` result or
-    a `read`/`write` request) so they can route on `path`/`id` and branch on
+    a `read`/`write` request) so they can route on `path` and branch on
     `mode`/`binary`/`readable`/`writable` without re-parsing the mode string.
 
     Construct one from a Python `Open` OS handler to return a handle back to
@@ -992,7 +992,7 @@ class MontyFileHandle:
     at construction (`'rt'` → `'r'`, `'r+b'` → `'rb+'`).
     """
 
-    def __new__(cls, path: str, mode: str, *, position: int = 0, id: int | None = None) -> MontyFileHandle:
+    def __new__(cls, path: str, mode: str, *, position: int = 0) -> MontyFileHandle:
         """Construct a `MontyFileHandle` to return from an `Open` OS callback.
 
         Arguments:
@@ -1001,11 +1001,9 @@ class MontyFileHandle:
                 construction, so `'rt'` becomes `'r'` and `'r+b'` becomes
                 `'rb+'`. Raises `ValueError` for malformed or unsupported
                 modes (e.g. `'x'`).
-            position: Initial byte offset for seek-aware reads. Almost always
+            position: Initial position for sized/line/seek operations (char
+                index in text mode, byte index in binary mode). Almost always
                 `0` for a freshly opened file.
-            id: Optional host-assigned identifier the host can use later (for
-                example to key a cache of real OS handles). Monty itself
-                never inspects this value.
         """
 
     @property
@@ -1018,14 +1016,10 @@ class MontyFileHandle:
 
     @property
     def position(self) -> int:
-        """Current byte offset for seek-aware reads. `0` for a freshly opened file."""
+        """Current position for sized/line/seek operations.
 
-    @property
-    def id(self) -> int | None:
-        """Optional host-assigned identifier, or `None` if the host has not populated it.
-
-        Monty never sets this; a host may use it to key a cache of real OS handles
-        across the otherwise-stateless `Open` / `read` / `write` callbacks.
+        Char index in text mode, byte index in binary mode. `0` for a freshly
+        opened file.
         """
 
     @property
