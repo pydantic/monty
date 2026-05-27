@@ -848,7 +848,8 @@ class MontySyntaxError(MontyError):
         """Returns formatted exception string.
 
         Args:
-            format: 'type-msg' - 'ExceptionType: message' format
+            format: 'traceback' - full traceback with exception
+                  'type-msg' - 'ExceptionType: message' format
                   'msg' - just the message
         """
 
