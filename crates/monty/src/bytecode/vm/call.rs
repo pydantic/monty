@@ -16,7 +16,7 @@ use crate::{
     exception_private::{ExcType, RunError},
     heap::{ContainsHeap, DropWithHeap, HeapData, HeapGuard, HeapId},
     heap_data::CellValue,
-    intern::{FunctionId, StringId},
+    intern::{FunctionId, StaticStrings, StringId},
     os::OsFunction,
     resource::ResourceTracker,
     types::{Dict, PyTrait, Type, bytes::call_bytes_method, str::call_str_method},
@@ -56,6 +56,21 @@ pub(crate) enum CallResult {
     /// Used by `asyncio.run()` to execute a coroutine without an explicit `await`.
     /// The VM will push the value onto the stack and execute `exec_get_awaitable`.
     AwaitValue(Value),
+    /// OS call whose result must be stored into a heap [`OpenFile`](crate::types::OpenFile)'s
+    /// buffer rather than pushed onto the operand stack.
+    ///
+    /// Used by `read(N)` / `readline()` / `readlines()` / `seek()` on the first
+    /// operation that needs the full file content. The host services the OS
+    /// call (always `ReadText` or `ReadBytes` against the file referenced by
+    /// `file_id`); on resume the VM stores the returned content into
+    /// `OpenFile::buffer` and then consumes the file's `pending_read`
+    /// [`ReadSpec`](crate::types::ReadSpec) to compute the slice that becomes
+    /// the call's return value.
+    ///
+    /// The OS-call args are always `ArgValues::One(Value::Ref(file_id))`. The
+    /// per-call slice spec lives on the `OpenFile` itself (in `pending_read`),
+    /// so this variant only needs to carry the file id and the OS function.
+    OsCallStoreBuffer { function: OsFunction, file_id: HeapId },
 }
 
 impl DropWithHeap for CallResult {
@@ -66,6 +81,11 @@ impl DropWithHeap for CallResult {
                 args.drop_with_heap(heap);
             }
             Self::FramePushed => {}
+            Self::OsCallStoreBuffer { file_id, .. } => {
+                let heap = heap.heap_mut();
+                heap.dec_ref(file_id);
+                heap.dec_ref(file_id);
+            }
         }
     }
 }
@@ -280,9 +300,32 @@ impl<T: ResourceTracker> VM<'_, T> {
     ///
     /// For interned strings (`Value::InternString`), uses the unified `call_str_method`.
     /// For interned bytes (`Value::InternBytes`), uses the unified `call_bytes_method`.
+    ///
+    /// **Dunder dispatch**: before reaching the type-specific dispatcher, this
+    /// method intercepts known dunder names (`__enter__`, `__exit__`, …) and
+    /// routes them to the corresponding [`PyTrait`] method
+    /// (`py_enter` / `py_exit` / …). The default trait impls return
+    /// `AttributeError`, so types that don't override the dunder behave
+    /// identically to a generic "no such method" lookup; types that *do*
+    /// override only need a single trait impl, not parallel `StaticStrings::Foo`
+    /// arms in their `py_call_attr` body. New dunder methods plug into the
+    /// dispatch table here without touching individual types.
     fn call_attr(&mut self, obj: Value, name_id: StringId, args: ArgValues) -> Result<CallResult, RunError> {
         let this = self;
         let attr = EitherStr::Interned(name_id);
+
+        // Centralised dunder dispatch — see `dispatch_dunder`. Wrap `args`
+        // in an `Option` so the helper can `take()` it only when it
+        // actually matches a dunder; on the fall-through path the
+        // original `args` is still owned here and goes into `py_call_attr`.
+        let mut args_slot = Some(args);
+        if let Value::Ref(heap_id) = obj
+            && let Some(result) = dispatch_dunder(name_id, heap_id, this, &mut args_slot)
+        {
+            defer_drop!(obj, this);
+            return result;
+        }
+        let args = args_slot.expect("dispatch_dunder returned None without taking args");
 
         match obj {
             Value::Ref(heap_id) => {
@@ -783,4 +826,78 @@ impl<T: ResourceTracker> VM<'_, T> {
 
         Ok(CallResult::FramePushed)
     }
+}
+
+/// Centralised dunder dispatch for `__enter__` / `__exit__` (and, when added,
+/// any other dunder that maps to a [`PyTrait`] method).
+///
+/// Returns `Some(result)` when `name_id` names a recognised dunder — `args`
+/// is taken out of the slot and consumed. Returns `None` when it isn't —
+/// `args` is left untouched in the slot so the caller can hand it off to
+/// the regular `py_call_attr` dispatch.
+///
+/// The `&mut Option<ArgValues>` shape is what keeps "all the recognition
+/// and dispatch logic in one function" honest: `args` is non-`Copy` and
+/// has a `Drop` impl that panics on stray `Ref` values, so it can only be
+/// passed by value once we know we'll consume it.
+///
+/// Adding a new dunder is just a new arm in the inner `match`; type
+/// implementations only need to override the corresponding `PyTrait`
+/// method, never a `StaticStrings::Foo` arm in their `py_call_attr`.
+fn dispatch_dunder<T: ResourceTracker>(
+    name_id: StringId,
+    heap_id: HeapId,
+    vm: &mut VM<'_, T>,
+    args: &mut Option<ArgValues>,
+) -> Option<Result<CallResult, RunError>> {
+    let static_str = StaticStrings::from_string_id(name_id)?;
+    Some(match static_str {
+        StaticStrings::Enter => {
+            let args = args.take().expect("dispatch_dunder called with empty args slot");
+            args.check_zero_args("__enter__", vm.heap)
+                .and_then(|()| vm.heap.read(heap_id).py_enter(heap_id, vm))
+        }
+        StaticStrings::Exit => {
+            let args = args.take().expect("dispatch_dunder called with empty args slot");
+            dispatch_exit(heap_id, vm, args)
+        }
+        _ => return None,
+    })
+}
+
+/// Direct `obj.__exit__(typ, val, tb)` invocation.
+///
+/// Validates that exactly three positional arguments are passed (CPython
+/// raises `TypeError` for any other arity) and forwards `val` to
+/// [`PyTrait::py_exit`] as `Option<HeapId>`:
+///
+/// - `val is None` → `None`, treated as the "normal exit" path.
+/// - `val is a heap-allocated value` → `Some(heap_id)`. For built-in context
+///   managers this is the exception instance, matching the `with`-statement
+///   call shape.
+/// - `val is a scalar (Int, Bool, …)` → `None`. The trait abstraction can
+///   only carry `HeapId`s, so non-Ref values cannot be forwarded; in
+///   practice no supported context manager inspects a non-exception `val`,
+///   and CPython's behavior for such calls is implementation-defined per
+///   the user-provided `__exit__`.
+///
+/// `typ` and `tb` are discarded: every implementation we have re-derives the
+/// type from `val` and Monty has no traceback objects (see
+/// `limitations/with.md`).
+fn dispatch_exit<T: ResourceTracker>(
+    heap_id: HeapId,
+    vm: &mut VM<'_, T>,
+    args: ArgValues,
+) -> Result<CallResult, RunError> {
+    let positional = args.into_pos_only("__exit__", vm.heap)?;
+    defer_drop!(positional, vm);
+    let [typ, val, tb] = positional.as_slice() else {
+        return Err(ExcType::type_error_arg_count("__exit__", 3, positional.len()));
+    };
+    let _ = (typ, tb);
+    let exc = match val {
+        Value::Ref(id) => Some(*id),
+        _ => None,
+    };
+    vm.heap.read(heap_id).py_exit(heap_id, vm, exc)
 }

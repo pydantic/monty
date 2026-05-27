@@ -22,7 +22,7 @@ mod map;
 mod min_max; // min and max share implementation
 mod next;
 mod oct;
-mod open;
+pub(crate) mod open;
 mod ord;
 mod pow;
 mod print;
@@ -32,6 +32,10 @@ mod round;
 mod setattr;
 mod sorted;
 mod sum;
+/// Test-only `_test_cm` builtin — see [`test_cm`] and `types/test_cm.rs`.
+/// **REMOVE** once a real context manager covers the test paths.
+#[cfg(feature = "test-hooks")]
+mod test_cm;
 mod type_;
 mod zip;
 
@@ -211,6 +215,11 @@ pub enum BuiltinsFunctions {
     // Vars,
     Zip,
     // __import__ - not planned
+    /// Test-only synthetic context manager constructor. Only present
+    /// under the `test-hooks` feature; see `crates/monty/src/builtins/test_cm.rs`.
+    #[cfg(feature = "test-hooks")]
+    #[strum(serialize = "_test_cm")]
+    TestCm,
 }
 
 impl BuiltinsFunctions {
@@ -258,6 +267,8 @@ impl BuiltinsFunctions {
             Self::Sum => sum::builtin_sum(vm, args),
             Self::Type => type_::builtin_type(vm, args),
             Self::Zip => zip::builtin_zip(vm, args),
+            #[cfg(feature = "test-hooks")]
+            Self::TestCm => test_cm::builtin_test_cm(vm, args),
         };
         r.map(CallResult::Value)
     }

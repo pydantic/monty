@@ -49,10 +49,7 @@ pub enum OsFunction {
     ///
     /// The host never holds a live OS handle: it opens, performs the effect,
     /// and closes the file within this single call. The same is true for the
-    /// subsequent `ReadText`/`WriteText`/… calls. A future optimization may
-    /// let the host optionally cache a real handle keyed by an `id` it assigns
-    /// on the returned `FileHandle` — see the TODO on
-    /// [`crate::types::OpenFile`].
+    /// subsequent `ReadText`/`WriteText`/… calls.
     Open,
     /// Read file contents as text
     #[strum(serialize = "Path.read_text")]

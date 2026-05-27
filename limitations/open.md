@@ -4,6 +4,12 @@ Monty's `open()` builtin returns a file wrapper that supports a deliberate
 subset of CPython's file API. The list below tracks every known difference
 from CPython.
 
+`pathlib.Path.open()` is wired to the same machinery — it prepends `self`
+as the `file` argument and forwards to the same internal entry point, so
+every divergence listed below applies equally whether the caller uses
+`open(path, ...)` or `path.open(...)`. The only `Path.open()`-specific
+quirks are listed in [Path.open()](#pathopen) at the bottom.
+
 ## Design note: no live host file descriptors
 
 Monty **never** keeps a native file handle alive between OS or external
@@ -72,34 +78,84 @@ The returned object is one of `TextIOWrapper`, `BufferedReader`,
 `BufferedWriter`, or `BufferedRandom` depending on mode. The supported
 methods and attributes are:
 
-- `read()` — full-file read (see caveats below).
+- `read()` / `read(-1)` — read everything remaining from the current
+  position. On the first call this performs a full-file OS read into a
+  heap-resident buffer; subsequent reads slice the buffer in pure Monty.
+- `read(N)` / `read(None)` — read up to N chars (text) or bytes (binary)
+  from the current position, or everything remaining for `None`. Same
+  backing buffer as `read()`.
+- `readline()` — read up to and including the next `\n`, or the remainder
+  of the buffer if the final line has no newline. Returns `''`/`b''` at
+  EOF.
+- `readlines()` — return a `list` of all remaining lines (each ending with
+  `\n` except possibly the last).
+- `tell()` — current position. **Text-mode divergence**: returns a
+  char-index, not CPython's opaque byte cookie. Round-trips through
+  `seek()` correctly.
+- `seek(offset, whence=0)` — reposition within the buffer for readable
+  files (loading it on demand), or within tracked logical write state for
+  write-only files. Returns the new absolute position.
 - `write(data)` — full-file or appending write.
 - `close()`, `flush()`, `readable()`, `writable()`, `seekable()`.
+- `__enter__()` / `__exit__()` — `with open(...) as f:` works; see
+  [`with.md`](with.md) for the shared protocol divergences.
 - `name`, `mode`, `closed` attributes.
 - `encoding` attribute on text files (always `"utf-8"`).
 
-Everything else raises `AttributeError`, including: `read(size)`,
-`readline()`, `readlines()`, file iteration (`for line in f`), `seek()`,
-`tell()`, `truncate()`, `fileno()`, `isatty()`, `detach()`, `buffer`,
-`raw`, `__enter__`/`__exit__` (no `with open(...) as f:` support yet).
+Everything else raises `AttributeError`, including: `truncate()`,
+`fileno()`, `isatty()`, `detach()`, `buffer`, `raw`, and the iterator
+protocol (`__iter__`/`__next__`, including `for line in f:`).
 
 ## Behavioural divergences
 
-- `read()` accepts zero args only; `read(size)` is rejected. It always
-  returns the entire remaining file content. After the first `read()` the
-  file is marked consumed and subsequent `read()` calls short-circuit to
-  empty `str`/`bytes` (matching CPython's EOF behavior for sequential
-  reads).
-- A `read()` that *fails* in the host still marks the file consumed. If
-  user code catches the exception and calls `read()` again it gets empty
-  output rather than re-reading. CPython would retry. Tracking
-  success/failure outcomes would require per-call state plumbed through
-  Monty's snapshot/resume cycle, which is not worth the complexity for a
-  rarely-hit corner.
-- `seekable()` returns `False`. CPython returns `True` for regular files
-  because they support `seek()`/`tell()`; Monty does not implement either,
-  so reporting `True` would crash the `if f.seekable(): f.seek(0)` idiom
-  on the supposedly safe branch.
+- All reads (bare `read()`, sized `read(N)`, `readline`, `readlines`) and
+  `seek()` share a single heap-resident buffer populated on the first such
+  call. The host serves only one full-file `ReadText`/`ReadBytes` per
+  file; everything after is sliced in pure Monty. Memory cost: the whole
+  file lives in the heap and counts against the configured `max_memory`
+  via `heap.allocate` tracking — the same path every other heap entry
+  takes. The buffer is **never invalidated** — external modifications to
+  the underlying file after the first read are not visible to subsequent
+  reads.
+- `close()` releases the cached buffer (matching CPython), so
+  `current_memory()` drops by the buffer size as soon as `close()`
+  returns. Other holders of the buffer (e.g. a `data = f.read()`
+  reference) keep it alive via their own refcounts.
+- A read that *fails* in the host leaves the file in a retry-safe state:
+  `pending_read` is cleared, the buffer stays empty, and `eof` is not
+  flipped. A user-caught exception followed by a retry will re-attempt
+  the OS load. This applies uniformly to bare `read()`, sized `read(N)`,
+  `readline()`, `readlines()`, and `seek()`, and matches CPython.
+- `seekable()` returns `True` for all open Monty file wrappers, matching
+  regular CPython files.
+- Text-mode `tell()` returns a **char index** rather than CPython's opaque
+  byte cookie. Round-trips through `seek()` work correctly (`pos = tell();
+  seek(pos)` resumes the same position) but the raw integer differs from
+  what CPython returns for non-ASCII content.
+- Text-mode `seek(N)` accepts any non-negative char-index. CPython
+  restricts `TextIOWrapper.seek` to `seek(0)`, `seek(0, 2)`, and cookies
+  from `tell()`. Monty is more permissive here.
+- `seek(-1)` raises `OSError("[Errno 22] Invalid argument")` matching
+  CPython's `BufferedReader.seek`. Note that CPython's `TextIOWrapper`
+  raises `ValueError("negative seek position -1")` instead — Monty uses the
+  binary-mode message in both modes for consistency.
+- `seek(0, 99)` raises `ValueError("whence value 99 unsupported")`
+  matching CPython's `BufferedReader`. CPython's `TextIOWrapper` uses a
+  different `"invalid whence ..."` message; Monty does not.
+- `read(N)` accepts only int or `None`. The `TypeError` message differs
+  from CPython (CPython: `"argument should be integer or None, not 'str'"`;
+  Monty: `"'str' object cannot be interpreted as an integer"`).
+- Write-only `seek()`/`tell()` maintain logical position state, so common
+  `write(); tell()` and `seek(0, 2)` cases match CPython. However, writes
+  are still full-file or append one-shot host operations: seeking backwards
+  and then writing does **not** overwrite at that offset the way CPython's
+  live file descriptor would.
+- `readline(size)` and `readlines(hint)` are zero-argument only — passing
+  a size/hint argument raises `TypeError`. CPython accepts both and uses
+  them to cap the returned bytes/chars.
+- File iteration (`for line in f`) is NOT supported: it goes through the
+  `GetIter` opcode which cannot yield to the host. Use `readlines()` and
+  iterate the resulting list instead.
 - `write()` to a text file requires `str`; to a binary file requires
   `bytes`. The error messages match CPython
   (`a bytes-like object is required, not '<type>'` /
@@ -127,3 +183,23 @@ These match CPython:
 - `'w'`/`'wb'` creates a missing file immediately, before any write.
 - `'a'`/`'ab'` creates a missing file immediately, preserving any existing
   content.
+
+## Path.open()
+
+`pathlib.Path.open(mode='r', ...)` forwards to the same `OsFunction::Open`
+round-trip as `open()` with `self` prepended as the `file` argument, so
+all the rules above (mode rejection, kwarg validation, returned wrapper
+types, open-time effects) apply identically. The only differences to be
+aware of:
+
+- CPython's `Path.open()` signature lists only `mode, buffering, encoding,
+  errors, newline` (no `closefd` / `opener`). Monty accepts `closefd=True`
+  and `opener=None` at their CPython `open()` defaults as documented
+  no-ops on this path too, and rejects non-default values with the same
+  `"'closefd' argument is not yet supported"` / `"'opener' argument is
+  not yet supported"` `TypeError` as `open()`. CPython would instead
+  raise `TypeError: open() got an unexpected keyword argument 'closefd'`.
+- Passing `file=...` as a keyword (which is meaningless on `Path.open()`
+  because `self` already supplies the file) raises Monty's "multiple
+  values for argument 'file'" `TypeError` rather than CPython's
+  "unexpected keyword argument 'file'". Real callers do not use this.

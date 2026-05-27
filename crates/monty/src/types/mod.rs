@@ -26,6 +26,13 @@ pub mod re_pattern;
 pub mod set;
 pub mod slice;
 pub mod str;
+/// Synthetic context manager used to exercise `with` statement codepaths that no
+/// production type currently reaches. **REMOVE** once a real context manager
+/// (suppressing or yielding from `__exit__`, returning a non-self value from
+/// `__enter__`, etc.) lands and tests can pivot to it. Gated behind `test-hooks`
+/// so it's never compiled into a production sandbox.
+#[cfg(feature = "test-hooks")]
+pub mod test_cm;
 pub mod timedelta;
 pub mod timezone;
 pub mod tuple;
@@ -50,28 +57,9 @@ pub(crate) use re_pattern::RePattern;
 pub(crate) use set::{FrozenSet, Set};
 pub(crate) use slice::Slice;
 pub(crate) use str::Str;
+#[cfg(feature = "test-hooks")]
+pub(crate) use test_cm::TestContextManager;
 pub(crate) use timedelta::TimeDelta;
 pub(crate) use timezone::TimeZone;
 pub(crate) use tuple::{Tuple, allocate_tuple};
 pub(crate) use r#type::Type;
-
-use crate::{
-    exception_private::{ExcType, RunResult, SimpleException},
-    value::Value,
-};
-
-/// Extracts an `i32` from a `Value`, accepting `Bool` and `Int`.
-///
-/// Used by `date`, `datetime`, and other constructors that expect
-/// integer arguments matching CPython's `int` coercion rules.
-pub(crate) fn value_to_i32(value: &Value) -> RunResult<i32> {
-    let int_value = match value {
-        Value::Bool(b) => i64::from(*b),
-        Value::Int(i) => *i,
-        _ => {
-            return Err(SimpleException::new_msg(ExcType::TypeError, "an integer is required (got type float)").into());
-        }
-    };
-    i32::try_from(int_value)
-        .map_err(|_| SimpleException::new_msg(ExcType::OverflowError, "signed integer is greater than maximum").into())
-}

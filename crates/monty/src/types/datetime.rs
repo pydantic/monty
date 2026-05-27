@@ -26,9 +26,10 @@ use crate::{
     os::OsFunction,
     resource::{ResourceError, ResourceTracker},
     types::{
-        AttrCallResult, PyTrait, TimeDelta, TimeZone, Type, date,
+        AttrCallResult, PyTrait, TimeDelta, TimeZone, Type,
+        date::{self, value_to_i32},
         str::{StringRepr, allocate_string, allocate_string_no_interning},
-        timedelta, timezone, value_to_i32,
+        timedelta, timezone,
     },
     value::{EitherStr, Value},
 };

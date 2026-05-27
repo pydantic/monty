@@ -14,7 +14,7 @@ import tempfile
 import traceback
 from threading import Lock
 
-from iter_test_methods import ITER_MODE_GLOBALS
+from test_fixtures import exported_globals
 
 lock = Lock()
 
@@ -68,8 +68,13 @@ def run_file_and_get_traceback(
         if recursion_limit is not None:
             sys.setrecursionlimit(recursion_limit + 5)
 
-        # Prepare init_globals for iter mode tests
-        init_globals = dict(ITER_MODE_GLOBALS) if iter_mode else None
+        # Inject the shared CPython-side fixtures for every test. The
+        # single `exported_globals` dict in `test_fixtures.py`
+        # carries both the iter helpers and the `_test_cm` synthetic
+        # context manager; non-iter tests don't reference the iter names
+        # so installing them unconditionally has no behavioral cost.
+        # `iter_mode` is still consulted by the frame-skipping logic
+        # further down so we keep the parameter rather than deleting it.
 
         # Use delete=False so the file can be opened by runpy on Windows,
         # where NamedTemporaryFile holds an exclusive lock while open.
@@ -80,7 +85,7 @@ def run_file_and_get_traceback(
             file_path = tmp_file.name
 
             try:
-                runpy.run_path(file_path, init_globals=init_globals, run_name='__main__')
+                runpy.run_path(file_path, init_globals=exported_globals, run_name='__main__')
             except SystemExit:
                 pass  # don't error on ctrl+c
             except BaseException as e:
@@ -101,13 +106,19 @@ def run_file_and_get_traceback(
                     elif '/asyncio/' in frame or '\\asyncio\\' in frame:
                         # Skip asyncio internal frames (forward slash on Unix, backslash on Windows)
                         continue
-                    elif iter_mode:
-                        # In iter mode, skip frames from helper modules
-                        if 'iter_test_methods.py", ' in frame:
-                            continue
+                    elif 'test_fixtures.py", ' in frame:
+                        # The CPython shim file (`scripts/test_fixtures.py`)
+                        # appears in tracebacks whenever an exception passes
+                        # through one of its helpers — `_test_cm.__enter__`
+                        # / `__exit__`, the iter-mode dataclass methods,
+                        # the virtual-path overrides, etc. Monty has no
+                        # equivalent intermediate frame, so filtering these
+                        # everywhere (not just in iter mode) keeps
+                        # CPython/Monty traceback parity.
+                        continue
+                    elif iter_mode and frame.startswith('  File "<string>"'):
                         # python's doing something weird and show the file as <string> for dataclass exceptions
-                        if frame.startswith('  File "<string>"'):
-                            continue
+                        continue
 
                     # Skip until we see our test file
                     if not found_user_code and frame.startswith(f'  File "{file_path}"'):

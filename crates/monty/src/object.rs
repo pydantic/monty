@@ -519,7 +519,7 @@ impl MontyObject {
             }
             Self::Path(s) => Ok(Value::Ref(vm.heap.allocate(HeapData::Path(Path::new(s)))?)),
             Self::FileHandle(handle) => {
-                let file = OpenFile::with_state(handle.path, handle.mode, handle.position, handle.id);
+                let file = OpenFile::with_state(handle.path, handle.mode, handle.position);
                 Ok(Value::Ref(vm.heap.allocate(HeapData::OpenFile(file))?))
             }
             Self::Type(t) => Ok(Value::Builtin(Builtins::Type(t))),
@@ -807,7 +807,6 @@ impl MontyObject {
                             path: file.path().to_owned(),
                             mode: *file.file_mode(),
                             position: file.position(),
-                            id: file.id(),
                         })
                     }
                     HeapReadOutput::ExtFunction(name) => Self::Function {
@@ -1187,16 +1186,10 @@ impl Hash for MontyObject {
             Self::TimeDelta(delta) => delta.hash(state),
             Self::TimeZone(timezone) => timezone.hash(state),
             Self::Path(path) => path.hash(state),
-            Self::FileHandle(MontyFileHandle {
-                path,
-                mode,
-                position,
-                id,
-            }) => {
+            Self::FileHandle(MontyFileHandle { path, mode, position }) => {
                 path.hash(state);
                 mode.as_str().hash(state);
                 position.hash(state);
-                id.hash(state);
             }
             Self::Type(t) => t.to_string().hash(state),
             Self::Cycle(_, _) => panic!("cycle values are not hashable"),
@@ -1282,15 +1275,13 @@ impl PartialEq for MontyObject {
                     path: a_path,
                     mode: a_mode,
                     position: a_pos,
-                    id: a_id,
                 }),
                 Self::FileHandle(MontyFileHandle {
                     path: b_path,
                     mode: b_mode,
                     position: b_pos,
-                    id: b_id,
                 }),
-            ) => a_path == b_path && a_mode == b_mode && a_pos == b_pos && a_id == b_id,
+            ) => a_path == b_path && a_mode == b_mode && a_pos == b_pos,
             (
                 Self::Function {
                     name: a_name,
@@ -1524,14 +1515,9 @@ pub struct MontyFileHandle {
     pub path: String,
     /// The parsed `open()` mode.
     pub mode: FileMode,
-    /// Byte offset for seek-aware reads (currently always 0).
+    /// Position for sized/line/seek operations: char index in text mode,
+    /// byte index in binary mode. `0` for a freshly opened file.
     pub position: u64,
-    /// Optional host-assigned id for this open file.
-    ///
-    /// Monty never generates this. A host may set it (e.g. to key a
-    /// cache of real OS file handles); otherwise it is `None` and carries
-    /// no meaning to the interpreter.
-    pub id: Option<u64>,
 }
 
 impl fmt::Display for MontyFileHandle {

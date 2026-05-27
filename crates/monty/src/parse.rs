@@ -409,18 +409,63 @@ impl<'a> Parser<'a> {
                 let or_else = self.parse_elif_else_clauses(elif_else_clauses)?;
                 Ok(Node::If { test, body, or_else })
             }
-            Stmt::With(ast::StmtWith { is_async, range, .. }) => {
+            Stmt::With(ast::StmtWith {
+                is_async,
+                items,
+                body,
+                range,
+                ..
+            }) => {
                 if is_async {
-                    Err(ParseError::not_implemented(
+                    return Err(ParseError::not_implemented(
                         "async context managers (async with)",
                         self.convert_range(range),
-                    ))
-                } else {
-                    Err(ParseError::not_implemented(
-                        "context managers (with statements)",
-                        self.convert_range(range),
-                    ))
+                    ));
                 }
+                if items.is_empty() {
+                    return Err(ParseError::syntax(
+                        "with statement requires at least one context manager",
+                        self.convert_range(range),
+                    ));
+                }
+                // Multi-item `with a() as x, b() as y:` is desugared into nested
+                // `with` blocks at parse time: the outer `with` runs `a()` and
+                // wraps an inner `with` running `b()`, which wraps the user body.
+                // CPython evaluates context exprs left-to-right and exits them
+                // right-to-left, which is exactly the nested-block semantics —
+                // so the lowering is faithful and avoids needing multi-context
+                // support in the compiler / VM.
+                let position = self.convert_range(range);
+                let body = self.parse_statements(body)?;
+                let mut parsed_items: Vec<(ExprLoc, Option<UnpackTarget>)> = items
+                    .into_iter()
+                    .map(|item| -> Result<_, ParseError> {
+                        let context = self.parse_expression(item.context_expr)?;
+                        let target = match item.optional_vars {
+                            Some(expr) => Some(self.parse_unpack_target(*expr)?),
+                            None => None,
+                        };
+                        Ok((context, target))
+                    })
+                    .collect::<Result<_, _>>()?;
+                // Fold from the innermost outward: the last item wraps the user
+                // body; each outer item wraps the freshly-built inner `with`.
+                let (last_context, last_target) = parsed_items.pop().expect("checked non-empty above");
+                let mut node = Node::With {
+                    context: last_context,
+                    target: last_target,
+                    body,
+                    position,
+                };
+                while let Some((context, target)) = parsed_items.pop() {
+                    node = Node::With {
+                        context,
+                        target,
+                        body: vec![node],
+                        position,
+                    };
+                }
+                Ok(node)
             }
             Stmt::Match(m) => Err(ParseError::not_implemented(
                 "pattern matching (match statements)",

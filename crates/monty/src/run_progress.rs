@@ -264,6 +264,15 @@ impl<T: ResourceTracker> OsCall<T> {
     ) -> Result<RunProgress<T>, MontyException> {
         self.snapshot.run(result.into(), print)
     }
+
+    /// Returns a reference to the resource tracker.
+    ///
+    /// Useful for assertions in tests that need to verify
+    /// memory/allocation accounting between OS-call resumes (e.g. that a
+    /// `read()` correctly counts the file buffer against `max_memory`).
+    pub fn tracker(&self) -> &T {
+        self.snapshot.heap.tracker()
+    }
 }
 
 // ---------------------------------------------------------------------------
