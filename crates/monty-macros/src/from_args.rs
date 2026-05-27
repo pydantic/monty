@@ -19,6 +19,7 @@ pub(crate) fn expand(input: &DeriveInput) -> syn::Result<TokenStream> {
 }
 
 /// Parsed, validated signature for a single struct deriving `FromArgs`.
+#[expect(clippy::struct_excessive_bools)]
 struct Signature {
     /// The struct's identifier (used as `Self`).
     struct_ident: Ident,
@@ -66,6 +67,17 @@ struct Signature {
     /// kwarg-name error has to read `sort()` while arity errors keep
     /// using the struct's primary `name = "sorted"`.
     kwarg_error_name: Option<String>,
+    /// When set, every typed positional / pos-or-keyword field whose
+    /// `FromValue::EXPECTED_TYPE_NAME` is `Some(_)` is wrapped so that a
+    /// failed conversion produces CPython's `_PyArg_BadArgument`
+    /// positional-style wording: `{name}() argument {pos} must be
+    /// {expected}, not {got}` — including the special `None` rendering for
+    /// `NoneType` values via [`Type::cpython_arg_name`]. Replaces the inner
+    /// `FromValue` error (e.g. the generic `"a str is required"`) so
+    /// migrating a C-extension function to the macro keeps the original
+    /// wording. Only applies when `EXPECTED_TYPE_NAME` is `Some(_)`; the
+    /// identity `Value` impl falls through to its native error.
+    bad_arg: bool,
 }
 
 /// Which family of CPython error wordings the generated code should emit.
@@ -175,6 +187,7 @@ impl Signature {
             at_least_positional,
             expected_exact,
             kwarg_error_name,
+            bad_arg,
         } = parse_struct_attrs(attrs)?;
 
         let mut fields = Vec::with_capacity(named.named.len());
@@ -294,6 +307,7 @@ impl Signature {
             at_least_positional,
             expected_exact,
             kwarg_error_name,
+            bad_arg,
         })
     }
 
@@ -683,17 +697,10 @@ impl Signature {
             }
             let ty = &field.ty;
             let arm_idx_lit = arm_idx;
+            let arg_ident = format_ident!("__arg");
+            let extract = self.render_from_value_call(ty, slot, field.pos_index.unwrap_or(arm_idx + 1), &arg_ident);
             arms.push(quote! {
-                #arm_idx_lit => {
-                    match <#ty as crate::args::FromValue>::from_value(__arg, heap, interns) {
-                        ::std::result::Result::Ok(__v) => {
-                            #slot = ::std::option::Option::Some(__v);
-                        }
-                        ::std::result::Result::Err(__e) => {
-                            __cleanup!(__e);
-                        }
-                    }
-                }
+                #arm_idx_lit => { #extract }
             });
             arm_idx += 1;
         }
@@ -755,6 +762,72 @@ impl Signature {
         }
     }
 
+    /// Renders the `FromValue::from_value(<value_var>, ...)` call that fills
+    /// `slot`, including the optional `bad_arg` wrapping that converts the
+    /// inner `FromValue` error into CPython's
+    /// `{name}() argument {pos} must be {expected}, not {got}` wording.
+    ///
+    /// Used by both the positional dispatch loop (passing `__arg`) and the
+    /// kwarg dispatch arms (passing `__value`) — so that `strftime(format=42)`
+    /// and `strftime(42)` produce identical errors, matching CPython. When
+    /// `bad_arg` is unset, falls back to the trivial extract-or-bubble-error
+    /// form.
+    fn render_from_value_call(&self, ty: &Type, slot: &Ident, pos: usize, value_var: &Ident) -> TokenStream {
+        if self.bad_arg {
+            let func_name = self.func_name.as_str();
+            quote! {
+                {
+                    // Capture the value's type *before* `from_value` consumes
+                    // it — on the error path the value is already dropped
+                    // and we can't peek at it. The const-conditional ensures
+                    // we only pay for the lookup when this field's type has
+                    // a CPython-style label to report.
+                    let __got_type =
+                        if <#ty as crate::args::FromValue>::EXPECTED_TYPE_NAME.is_some() {
+                            ::std::option::Option::Some(#value_var.py_type_heap(heap))
+                        } else {
+                            ::std::option::Option::None
+                        };
+                    match <#ty as crate::args::FromValue>::from_value(#value_var, heap, interns) {
+                        ::std::result::Result::Ok(__v) => {
+                            #slot = ::std::option::Option::Some(__v);
+                        }
+                        ::std::result::Result::Err(__e) => {
+                            match (
+                                <#ty as crate::args::FromValue>::EXPECTED_TYPE_NAME,
+                                __got_type,
+                            ) {
+                                (
+                                    ::std::option::Option::Some(__expected),
+                                    ::std::option::Option::Some(__got),
+                                ) => __cleanup!(
+                                    crate::exception_private::ExcType::type_error_bad_arg_pos(
+                                        #func_name,
+                                        #pos,
+                                        __expected,
+                                        __got.cpython_arg_name(),
+                                    )
+                                ),
+                                _ => __cleanup!(__e),
+                            }
+                        }
+                    }
+                }
+            }
+        } else {
+            quote! {
+                match <#ty as crate::args::FromValue>::from_value(#value_var, heap, interns) {
+                    ::std::result::Result::Ok(__v) => {
+                        #slot = ::std::option::Option::Some(__v);
+                    }
+                    ::std::result::Result::Err(__e) => {
+                        __cleanup!(__e);
+                    }
+                }
+            }
+        }
+    }
+
     /// Returns true when unknown-kwarg errors should be deferred until after
     /// the missing-required check, matching CPython's
     /// `PyArg_ParseTupleAndKeywords` validation order.
@@ -776,8 +849,8 @@ impl Signature {
         for (field, slot) in self.fields.iter().zip(slots) {
             let arm = match field.kind {
                 FieldKind::PosOnly | FieldKind::Varargs | FieldKind::Varkwargs => continue,
-                FieldKind::PosOrKeyword => kwarg_arm_pos_or_kw(field, slot, &self.func_name, self.error_style),
-                FieldKind::KwOnly => kwarg_arm_kw_only(field, slot, &self.func_name),
+                FieldKind::PosOrKeyword => self.kwarg_arm_pos_or_kw(field, slot),
+                FieldKind::KwOnly => self.kwarg_arm_kw_only(field, slot),
             };
             arms.push(arm);
         }
@@ -959,84 +1032,82 @@ impl Signature {
     }
 }
 
-fn kwarg_arm_pos_or_kw(field: &Field, slot: &Ident, func_name: &str, error_style: ErrorStyle) -> TokenStream {
-    let static_string_ident = field.static_string_variant();
-    let ty = &field.ty;
-    let field_name_lit = LitStr::new(&field.ident.to_string(), field.ident.span());
-    let pos = field.pos_index.unwrap_or(0);
-    let conflict_expr = match error_style {
-        ErrorStyle::C => quote! {
-            crate::exception_private::ExcType::type_error_positional_keyword_conflict(
-                #func_name,
-                #field_name_lit,
-                #pos,
-            )
-        },
-        ErrorStyle::NamedC => {
-            // Embed `{name}()` as the func_descriptor so the conflict message
-            // is e.g. `argument for timezone() given by name ('offset') and
-            // position (1)` (matches CPython's `timezone`).
-            let descriptor = format!("{func_name}()");
-            quote! {
+impl Signature {
+    fn kwarg_arm_pos_or_kw(&self, field: &Field, slot: &Ident) -> TokenStream {
+        let func_name = self.func_name.as_str();
+        let static_string_ident = field.static_string_variant();
+        let ty = &field.ty;
+        let field_name_lit = LitStr::new(&field.ident.to_string(), field.ident.span());
+        let pos = field.pos_index.unwrap_or(0);
+        let conflict_expr = match self.error_style {
+            ErrorStyle::C => quote! {
                 crate::exception_private::ExcType::type_error_positional_keyword_conflict(
-                    #descriptor,
+                    #func_name,
                     #field_name_lit,
                     #pos,
                 )
+            },
+            ErrorStyle::NamedC => {
+                // Embed `{name}()` as the func_descriptor so the conflict message
+                // is e.g. `argument for timezone() given by name ('offset') and
+                // position (1)` (matches CPython's `timezone`).
+                let descriptor = format!("{func_name}()");
+                quote! {
+                    crate::exception_private::ExcType::type_error_positional_keyword_conflict(
+                        #descriptor,
+                        #field_name_lit,
+                        #pos,
+                    )
+                }
             }
+            ErrorStyle::Python => quote! {
+                crate::exception_private::ExcType::type_error_duplicate_arg(#func_name, #field_name_lit)
+            },
+        };
+        let value_ident = format_ident!("__value");
+        let extract = self.render_from_value_call(ty, slot, pos, &value_ident);
+        quote! {
+            if __key_str.matches(
+                crate::intern::StringId::from(crate::intern::StaticStrings::#static_string_ident),
+                interns,
+            ) {
+                __key.drop_with_heap(heap);
+                if #slot.is_some() {
+                    __value.drop_with_heap(heap);
+                    __cleanup!(#conflict_expr);
+                }
+                #extract
+            } else
         }
-        ErrorStyle::Python => quote! {
-            crate::exception_private::ExcType::type_error_duplicate_arg(#func_name, #field_name_lit)
-        },
-    };
-    quote! {
-        if __key_str.matches(
-            crate::intern::StringId::from(crate::intern::StaticStrings::#static_string_ident),
-            interns,
-        ) {
-            __key.drop_with_heap(heap);
-            if #slot.is_some() {
-                __value.drop_with_heap(heap);
-                __cleanup!(#conflict_expr);
-            }
-            match <#ty as crate::args::FromValue>::from_value(__value, heap, interns) {
-                ::std::result::Result::Ok(__v) => {
-                    #slot = ::std::option::Option::Some(__v);
-                }
-                ::std::result::Result::Err(__e) => {
-                    __cleanup!(__e);
-                }
-            }
-        } else
     }
-}
 
-fn kwarg_arm_kw_only(field: &Field, slot: &Ident, func_name: &str) -> TokenStream {
-    let static_string_ident = field.static_string_variant();
-    let ty = &field.ty;
-    let field_name_lit = LitStr::new(&field.ident.to_string(), field.ident.span());
-    quote! {
-        if __key_str.matches(
-            crate::intern::StringId::from(crate::intern::StaticStrings::#static_string_ident),
-            interns,
-        ) {
-            __key.drop_with_heap(heap);
-            if #slot.is_some() {
-                __value.drop_with_heap(heap);
-                __cleanup!(crate::exception_private::ExcType::type_error_multiple_values(
-                    #func_name,
-                    #field_name_lit,
-                ));
-            }
-            match <#ty as crate::args::FromValue>::from_value(__value, heap, interns) {
-                ::std::result::Result::Ok(__v) => {
-                    #slot = ::std::option::Option::Some(__v);
+    fn kwarg_arm_kw_only(&self, field: &Field, slot: &Ident) -> TokenStream {
+        let func_name = self.func_name.as_str();
+        let static_string_ident = field.static_string_variant();
+        let ty = &field.ty;
+        let field_name_lit = LitStr::new(&field.ident.to_string(), field.ident.span());
+        let value_ident = format_ident!("__value");
+        // kw_only fields don't have a positional index; pass 0 — only the
+        // `bad_arg` path uses it, and kw_only fields rarely combine with
+        // `bad_arg` (the CPython `_PyArg_BadArgument` callers don't expose
+        // their args as kw_only).
+        let extract = self.render_from_value_call(ty, slot, 0, &value_ident);
+        quote! {
+            if __key_str.matches(
+                crate::intern::StringId::from(crate::intern::StaticStrings::#static_string_ident),
+                interns,
+            ) {
+                __key.drop_with_heap(heap);
+                if #slot.is_some() {
+                    __value.drop_with_heap(heap);
+                    __cleanup!(crate::exception_private::ExcType::type_error_multiple_values(
+                        #func_name,
+                        #field_name_lit,
+                    ));
                 }
-                ::std::result::Result::Err(__e) => {
-                    __cleanup!(__e);
-                }
-            }
-        } else
+                #extract
+            } else
+        }
     }
 }
 
@@ -1088,6 +1159,7 @@ fn vec_element_ty(ty: &Type) -> Option<Type> {
 /// Boxed up as a struct rather than a long tuple so adding new flags
 /// doesn't ripple through callsite signatures — the macro grew organically
 /// and the tuple was getting unwieldy.
+#[expect(clippy::struct_excessive_bools)]
 struct StructAttrs {
     name: String,
     at_most_style: AtMostStyle,
@@ -1096,6 +1168,7 @@ struct StructAttrs {
     at_least_positional: bool,
     expected_exact: bool,
     kwarg_error_name: Option<String>,
+    bad_arg: bool,
 }
 
 /// Parse the `#[from_args(...)]` attributes attached to the struct itself.
@@ -1108,6 +1181,7 @@ fn parse_struct_attrs(attrs: &[syn::Attribute]) -> syn::Result<StructAttrs> {
     let mut at_least_positional = false;
     let mut expected_exact = false;
     let mut kwarg_error_name: Option<String> = None;
+    let mut bad_arg = false;
     for attr in attrs {
         if !attr.path().is_ident("from_args") {
             continue;
@@ -1133,6 +1207,9 @@ fn parse_struct_attrs(attrs: &[syn::Attribute]) -> syn::Result<StructAttrs> {
                 let value: LitStr = meta.value()?.parse()?;
                 kwarg_error_name = Some(value.value());
                 Ok(())
+            } else if meta.path.is_ident("bad_arg") {
+                bad_arg = true;
+                Ok(())
             } else if meta.path.is_ident("c_error") {
                 if style_set {
                     return Err(meta.error("`c_error` and `c_error_named` are mutually exclusive"));
@@ -1149,7 +1226,7 @@ fn parse_struct_attrs(attrs: &[syn::Attribute]) -> syn::Result<StructAttrs> {
                 Ok(())
             } else {
                 Err(meta.error(
-                    "unknown struct attribute; expected `name = \"...\"`, `at_most_positional`, `at_most_total`, `at_least_positional`, `expected_exact`, `kwarg_error_name = \"...\"`, `c_error`, or `c_error_named`",
+                    "unknown struct attribute; expected `name = \"...\"`, `at_most_positional`, `at_most_total`, `at_least_positional`, `expected_exact`, `kwarg_error_name = \"...\"`, `bad_arg`, `c_error`, or `c_error_named`",
                 ))
             }
         })?;
@@ -1168,6 +1245,7 @@ fn parse_struct_attrs(attrs: &[syn::Attribute]) -> syn::Result<StructAttrs> {
         at_least_positional,
         expected_exact,
         kwarg_error_name,
+        bad_arg,
     })
 }
 

@@ -122,6 +122,17 @@ new impl there if you need to extract a type that isn't covered.
   `type_error_method_at_most` (with default / `c_error_named`).
   Mutually exclusive with `varargs` / `varkwargs` — the pre-count is
   meaningless for signatures with an unbounded maximum.
+- `bad_arg` — wraps each typed positional / pos-or-keyword field whose
+  `FromValue::EXPECTED_TYPE_NAME` is `Some(_)` so a failed conversion
+  produces CPython's `_PyArg_BadArgument` positional-style wording:
+  `{name}() argument {pos} must be {expected}, not {got}` (e.g.
+  `strftime() argument 1 must be str, not int`). The `{got}` portion uses
+  [`Type::cpython_arg_name`](../monty/src/types/type.rs), which renders
+  `NoneType` as `"None"` to match CPython's `arg == Py_None ? "None" :
+  Py_TYPE(arg)->tp_name` special case. When unset, the bare `FromValue`
+  error wording is used (e.g. `"a str is required"`). Migrate a
+  C-extension function to the macro by adding `bad_arg` to keep the
+  original wording instead of regressing to the generic form.
 
 #### Field-level (`#[from_args(...)]` on a field)
 

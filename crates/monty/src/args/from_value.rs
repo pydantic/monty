@@ -26,6 +26,20 @@ use crate::{
 /// `String`, then drop). The identity impl for `Value` is the only exception:
 /// it transfers ownership of the value into `Self` instead of dropping it.
 pub(crate) trait FromValue: Sized {
+    /// CPython "must be X" type label used by `_PyArg_BadArgument`-style
+    /// error messages ("argument N must be {EXPECTED_TYPE_NAME}, not {Y}").
+    ///
+    /// `Some("str")`, `Some("int")`, etc. for impls that constrain their input;
+    /// `None` for the identity `Value` impl (which accepts any value). The
+    /// `#[derive(FromArgs)]` macro reads this via the trait so it can emit
+    /// CPython-matching errors when [`bad_arg`](../../monty_macros/struct.FromArgs.html)
+    /// is set on the struct — see `crates/monty-macros/README.md`.
+    ///
+    /// Impls that wrap another `FromValue` (e.g. `Option<T>`) forward this
+    /// from the inner type by default; override if you need different wording
+    /// (e.g. `"str or None"`).
+    const EXPECTED_TYPE_NAME: Option<&'static str> = None;
+
     /// Convert a `Value` into `Self`. On error, the input value must have
     /// been dropped before returning.
     fn from_value(value: Value, heap: &mut Heap<impl ResourceTracker>, interns: &Interns) -> RunResult<Self>;
@@ -54,6 +68,8 @@ impl FromValue for Value {
 }
 
 impl FromValue for i32 {
+    const EXPECTED_TYPE_NAME: Option<&'static str> = Some("int");
+
     fn from_value(value: Value, heap: &mut Heap<impl ResourceTracker>, _interns: &Interns) -> RunResult<Self> {
         let result = value.to_i32();
         value.drop_with_heap(heap);
@@ -62,6 +78,8 @@ impl FromValue for i32 {
 }
 
 impl FromValue for i64 {
+    const EXPECTED_TYPE_NAME: Option<&'static str> = Some("int");
+
     fn from_value(value: Value, heap: &mut Heap<impl ResourceTracker>, _interns: &Interns) -> RunResult<Self> {
         let result = match value {
             Value::Bool(b) => Ok(Self::from(b)),
@@ -77,6 +95,8 @@ impl FromValue for i64 {
 /// `timedelta()` that hold their intermediate component values in `i128` so
 /// the overflow check on the normalisation step doesn't silently wrap.
 impl FromValue for i128 {
+    const EXPECTED_TYPE_NAME: Option<&'static str> = Some("int");
+
     fn from_value(value: Value, heap: &mut Heap<impl ResourceTracker>, _interns: &Interns) -> RunResult<Self> {
         let result = match value {
             Value::Bool(b) => Ok(Self::from(b)),
@@ -89,6 +109,8 @@ impl FromValue for i128 {
 }
 
 impl FromValue for bool {
+    const EXPECTED_TYPE_NAME: Option<&'static str> = Some("bool");
+
     fn from_value(value: Value, heap: &mut Heap<impl ResourceTracker>, _interns: &Interns) -> RunResult<Self> {
         let result = match value {
             Value::Bool(b) => Ok(b),
@@ -100,6 +122,8 @@ impl FromValue for bool {
 }
 
 impl FromValue for String {
+    const EXPECTED_TYPE_NAME: Option<&'static str> = Some("str");
+
     fn from_value(value: Value, heap: &mut Heap<impl ResourceTracker>, interns: &Interns) -> RunResult<Self> {
         let result = match value.as_either_str(heap) {
             Some(either) => Ok(either.as_str(interns).to_owned()),
@@ -121,6 +145,13 @@ impl FromValue for String {
 /// This matches CPython: `date.replace(year=None)` is a `TypeError`, not a
 /// no-op.
 impl<T: FromValue> FromValue for Option<T> {
+    // Forward the inner type's label — `Option<String>` reports "str" in
+    // bad-arg errors, matching CPython for fields where absence is signalled
+    // by `Option::None` rather than by passing `None`. Functions that accept
+    // a literal `None` value (e.g. open()'s `encoding=None`) need
+    // `"str or None"` wording and should override at the field level.
+    const EXPECTED_TYPE_NAME: Option<&'static str> = T::EXPECTED_TYPE_NAME;
+
     fn from_value(value: Value, heap: &mut Heap<impl ResourceTracker>, interns: &Interns) -> RunResult<Self> {
         T::from_value(value, heap, interns).map(Some)
     }

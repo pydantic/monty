@@ -1394,6 +1394,21 @@ impl PyTrait<'_> for Value {
 }
 
 impl Value {
+    /// Returns the Python `Type` for this value using only `&Heap` (no full VM borrow).
+    ///
+    /// Wraps [`py_type_shallow`](Self::py_type_shallow) for immediate values and
+    /// delegates to [`HeapData::py_type`] for `Value::Ref`. Useful in code paths
+    /// that need a type label (e.g. CPython-style "argument N must be X, not Y"
+    /// errors) but don't have a `&VM` handy — notably the macro-generated
+    /// `from_args` bodies, which are passed `heap` + `interns` rather than a VM.
+    #[must_use]
+    pub(crate) fn py_type_heap(&self, heap: &Heap<impl ResourceTracker>) -> Type {
+        match self {
+            Self::Ref(id) => heap.get(*id).py_type(),
+            _ => self.py_type_shallow(),
+        }
+    }
+
     /// Returns the Python `Type` for immediate (non-heap) values without VM access.
     ///
     /// For `Value::Ref` variants this cannot determine the concrete type (that requires

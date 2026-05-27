@@ -720,6 +720,29 @@ impl ExcType {
         .into()
     }
 
+    /// Creates a TypeError matching CPython's `_PyArg_BadArgument`
+    /// positional-style wording: `{name}() argument {pos} must be
+    /// {expected}, not {got}`.
+    ///
+    /// Used by the `#[derive(FromArgs)]` macro when the struct opts into
+    /// `bad_arg` errors — emitted in place of the inner [`FromValue`]
+    /// failure so the caller sees the same wording as CPython's C-implemented
+    /// functions (e.g. `strftime() argument 1 must be str, not None`).
+    ///
+    /// The `got` type label should come from [`Type::cpython_arg_name`] so
+    /// that `NoneType` becomes `"None"` to match CPython's special case.
+    ///
+    /// [`FromValue`]: crate::args::FromValue
+    /// [`Type::cpython_arg_name`]: crate::types::Type::cpython_arg_name
+    #[must_use]
+    pub(crate) fn type_error_bad_arg_pos(name: &str, pos: usize, expected: &str, got: impl fmt::Display) -> RunError {
+        SimpleException::new_msg(
+            Self::TypeError,
+            format!("{name}() argument {pos} must be {expected}, not {got}"),
+        )
+        .into()
+    }
+
     /// Creates a TypeError for **kwargs argument that is not a mapping.
     ///
     /// Matches CPython's format: `{name}() argument after ** must be a mapping, not {type_name}`

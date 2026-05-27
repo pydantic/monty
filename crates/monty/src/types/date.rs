@@ -262,8 +262,8 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Date> {
                 )?))
             }
             Some(id) if id == StaticStrings::Strftime => {
-                let fmt = extract_strftime_arg(args, "date.strftime", vm.heap, vm.interns)?;
-                let formatted = date.0.format(&fmt).to_string();
+                let StrftimeArgs { format } = StrftimeArgs::from_args(args, vm.heap, vm.interns)?;
+                let formatted = date.0.format(&format).to_string();
                 Ok(CallResult::Value(allocate_string(formatted, vm.heap)?))
             }
             Some(id) if id == StaticStrings::Replace => {
@@ -362,30 +362,22 @@ pub(crate) fn py_sub_timedelta(
     }
 }
 
-/// Extracts the format string argument for `strftime()`.
+/// Argument shape for `date.strftime(format)` and `datetime.strftime(format)`.
 ///
-/// Accepts exactly one positional string argument.
-pub(crate) fn extract_strftime_arg(
-    args: ArgValues,
-    method_name: &str,
-    heap: &mut Heap<impl ResourceTracker>,
-    interns: &Interns,
-) -> RunResult<String> {
-    let value = args.get_one_arg(method_name, heap)?;
-    let result = match &value {
-        Value::InternString(string_id) => Ok(interns.get_str(*string_id).to_owned()),
-        Value::Ref(heap_id) => match heap.get(*heap_id) {
-            HeapData::Str(s) => Ok(s.as_str().to_owned()),
-            _ => Err(ExcType::type_error(
-                "descriptor 'strftime' requires a 'str' object but received a non-str type".to_owned(),
-            )),
-        },
-        _ => Err(ExcType::type_error(
-            "descriptor 'strftime' requires a 'str' object but received a non-str type".to_owned(),
-        )),
-    };
-    value.drop_with_heap(heap);
-    result
+/// CPython implements `strftime` as a C method and reports errors with the
+/// bare method name (no class prefix), so we use `c_error_named` + the
+/// `"strftime"` descriptor — matching wordings like
+/// `strftime() missing required argument 'format' (pos 1)` and
+/// `strftime() takes at most 1 argument (2 given)`.
+///
+/// `bad_arg` opts the wrong-type wording into CPython's `_PyArg_BadArgument`
+/// form (`strftime() argument 1 must be str, not <type>`), including the
+/// `None`-vs-`NoneType` special case — so the type-check logic lives in
+/// the derive rather than a hand-written extract helper.
+#[derive(FromArgs)]
+#[from_args(name = "strftime", c_error_named, at_most_total, bad_arg)]
+pub(crate) struct StrftimeArgs {
+    pub(crate) format: String,
 }
 
 /// Keyword arguments for `date.replace()`. All keyword-only; absent fields

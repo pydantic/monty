@@ -684,6 +684,8 @@ pub enum StaticStrings {
     RelTol,
     /// Kwarg name `abs_tol` — `math.isclose(abs_tol=...)`.
     AbsTol,
+    /// Kwarg name `format` — `date.strftime(format=...)`, `datetime.strftime(format=...)`.
+    Format,
 }
 
 impl StaticStrings {

@@ -27,7 +27,7 @@ use crate::{
     resource::{ResourceError, ResourceTracker},
     types::{
         AttrCallResult, PyTrait, TimeDelta, TimeZone, Type,
-        date::{self},
+        date::{self, StrftimeArgs},
         str::{StringRepr, allocate_string, allocate_string_no_interning},
         timedelta, timezone,
     },
@@ -956,8 +956,8 @@ impl<'h> PyTrait<'h> for HeapRead<'h, DateTime> {
                 Ok(CallResult::Value(allocate_string_no_interning(s, vm.heap)?))
             }
             Some(id) if id == StaticStrings::Strftime => {
-                let fmt = date::extract_strftime_arg(args, "datetime.strftime", vm.heap, vm.interns)?;
-                let formatted = dt.naive.format(&fmt).to_string();
+                let StrftimeArgs { format } = StrftimeArgs::from_args(args, vm.heap, vm.interns)?;
+                let formatted = dt.naive.format(&format).to_string();
                 Ok(CallResult::Value(allocate_string(formatted, vm.heap)?))
             }
             Some(id) if id == StaticStrings::Replace => {
