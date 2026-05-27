@@ -183,15 +183,22 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn parse_statements(&mut self, statements: Vec<Stmt>) -> Result<Vec<ParseNode>, ParseError> {
+    fn parse_statements(
+        &mut self,
+        statements: impl IntoIterator<Item = Stmt, IntoIter: ExactSizeIterator>,
+    ) -> Result<Vec<ParseNode>, ParseError> {
         // Explicit pre-allocation matters here — `.map(..).collect::<Result<Vec<_>, _>>()`
         // does NOT pre-size the output. Collecting into `Result<Vec<_>, _>` runs the
         // iterator through `iter::try_process`'s `Shunt` adapter (so an `Err` can
         // short-circuit), and `Shunt`'s `size_hint` lower bound is 0 — which loses
         // the `TrustedLen` specialization that would otherwise forward the source
-        // `Vec`'s length. Each `Stmt` maps to exactly one `ParseNode`.
-        let mut out = Vec::with_capacity(statements.len());
-        for stmt in statements {
+        // iterator's length. Each `Stmt` maps to exactly one `ParseNode`.
+        //
+        // Accepting `IntoIterator<Item = Stmt, IntoIter: ExactSizeIterator>` lets callers
+        // pass either `Vec<Stmt>` or ruff's `ThinVec<Stmt>` without an intermediate copy.
+        let iter = statements.into_iter();
+        let mut out = Vec::with_capacity(iter.len());
+        for stmt in iter {
             out.push(self.parse_statement(stmt)?);
         }
         Ok(out)
@@ -942,6 +949,17 @@ impl<'a> Parser<'a> {
                 range,
                 ..
             }) => {
+                // Ruff models the key as `Option<Box<Expr>>` to represent the
+                // invalid `{**v for ...}` form during error recovery. Real Python
+                // forbids dict unpacking in a comprehension, so ruff also emits a
+                // syntax error for that case; treat `None` here as the same syntax
+                // error to keep behavior consistent if it ever leaks through.
+                let key = key.ok_or_else(|| {
+                    ParseError::syntax(
+                        "dict unpacking is not allowed in dict comprehension".to_string(),
+                        self.convert_range(range),
+                    )
+                })?;
                 let key = Box::new(self.parse_expression(*key)?);
                 let value = Box::new(self.parse_expression(*value)?);
                 let generators = self.parse_comprehension_generators(generators)?;
@@ -1547,7 +1565,7 @@ impl<'a> Parser<'a> {
                 let debug_prefix = interp.debug_text.as_ref().map(|dt| {
                     let expr_text = &self.code[interp.expression.range()];
                     self.interner
-                        .intern(&format!("{}{}{}", dt.leading, expr_text, dt.trailing))
+                        .intern(&format!("{}{}{}", dt.leading(), expr_text, dt.trailing()))
                 });
                 Ok(FStringPart::Interpolation {
                     expr,
