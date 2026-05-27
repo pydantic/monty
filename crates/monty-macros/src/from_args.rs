@@ -19,7 +19,6 @@ pub(crate) fn expand(input: &DeriveInput) -> syn::Result<TokenStream> {
 }
 
 /// Parsed, validated signature for a single struct deriving `FromArgs`.
-#[expect(clippy::struct_excessive_bools)]
 struct Signature {
     /// The struct's identifier (used as `Self`).
     struct_ident: Ident,
@@ -69,15 +68,33 @@ struct Signature {
     kwarg_error_name: Option<String>,
     /// When set, every typed positional / pos-or-keyword field whose
     /// `FromValue::EXPECTED_TYPE_NAME` is `Some(_)` is wrapped so that a
-    /// failed conversion produces CPython's `_PyArg_BadArgument`
-    /// positional-style wording: `{name}() argument {pos} must be
-    /// {expected}, not {got}` — including the special `None` rendering for
-    /// `NoneType` values via [`Type::cpython_arg_name`]. Replaces the inner
-    /// `FromValue` error (e.g. the generic `"a str is required"`) so
-    /// migrating a C-extension function to the macro keeps the original
-    /// wording. Only applies when `EXPECTED_TYPE_NAME` is `Some(_)`; the
+    /// failed conversion produces CPython's `_PyArg_BadArgument` wording
+    /// (`{name}() argument {pos|'name'} must be {expected}, not {got}`),
+    /// including the special `None` rendering for `NoneType` values via
+    /// [`Type::cpython_arg_name`]. Replaces the inner `FromValue` error
+    /// (e.g. the generic `"a str is required"`) so migrating a C-extension
+    /// function to the macro keeps the original wording. The variant
+    /// chooses between CPython's positional (`argument N`) and named
+    /// (`argument 'X'`) phrasings; CPython picks one or the other per
+    /// function (`strftime` uses positional, `open`/`encode`/`decode` use
+    /// named). Only fires when `EXPECTED_TYPE_NAME` is `Some(_)`; the
     /// identity `Value` impl falls through to its native error.
-    bad_arg: bool,
+    bad_arg: Option<BadArgStyle>,
+}
+
+/// Variant of `_PyArg_BadArgument`-style error wording.
+///
+/// CPython renders bad-argument type errors in two shapes depending on which
+/// internal helper produced them. `strftime` and other `_PyArg_ParseTuple`
+/// callers use the positional form, while functions registered with named
+/// argument tables (e.g. `open`, `str.encode`, `bytes.decode`) use the named
+/// form.
+#[derive(Clone, Copy)]
+enum BadArgStyle {
+    /// `{name}() argument {pos} must be {expected}, not {got}`.
+    Positional,
+    /// `{name}() argument '{arg_name}' must be {expected}, not {got}`.
+    Named,
 }
 
 /// Which family of CPython error wordings the generated code should emit.
@@ -698,7 +715,9 @@ impl Signature {
             let ty = &field.ty;
             let arm_idx_lit = arm_idx;
             let arg_ident = format_ident!("__arg");
-            let extract = self.render_from_value_call(ty, slot, field.pos_index.unwrap_or(arm_idx + 1), &arg_ident);
+            let pos = field.pos_index.unwrap_or(arm_idx + 1);
+            let arg_name = field.ident.to_string();
+            let extract = self.render_from_value_call(ty, slot, pos, &arg_name, &arg_ident);
             arms.push(quote! {
                 #arm_idx_lit => { #extract }
             });
@@ -765,63 +784,85 @@ impl Signature {
     /// Renders the `FromValue::from_value(<value_var>, ...)` call that fills
     /// `slot`, including the optional `bad_arg` wrapping that converts the
     /// inner `FromValue` error into CPython's
-    /// `{name}() argument {pos} must be {expected}, not {got}` wording.
+    /// `{name}() argument {pos|'arg_name'} must be {expected}, not {got}`
+    /// wording.
     ///
     /// Used by both the positional dispatch loop (passing `__arg`) and the
-    /// kwarg dispatch arms (passing `__value`) — so that `strftime(format=42)`
-    /// and `strftime(42)` produce identical errors, matching CPython. When
+    /// kwarg dispatch arms (passing `__value`) — so that `encode(encoding=42)`
+    /// and `encode(42)` produce identical errors, matching CPython. When
     /// `bad_arg` is unset, falls back to the trivial extract-or-bubble-error
     /// form.
-    fn render_from_value_call(&self, ty: &Type, slot: &Ident, pos: usize, value_var: &Ident) -> TokenStream {
-        if self.bad_arg {
-            let func_name = self.func_name.as_str();
-            quote! {
-                {
-                    // Capture the value's type *before* `from_value` consumes
-                    // it — on the error path the value is already dropped
-                    // and we can't peek at it. The const-conditional ensures
-                    // we only pay for the lookup when this field's type has
-                    // a CPython-style label to report.
-                    let __got_type =
-                        if <#ty as crate::args::FromValue>::EXPECTED_TYPE_NAME.is_some() {
-                            ::std::option::Option::Some(#value_var.py_type_heap(heap))
-                        } else {
-                            ::std::option::Option::None
-                        };
-                    match <#ty as crate::args::FromValue>::from_value(#value_var, heap, interns) {
-                        ::std::result::Result::Ok(__v) => {
-                            #slot = ::std::option::Option::Some(__v);
-                        }
-                        ::std::result::Result::Err(__e) => {
-                            match (
-                                <#ty as crate::args::FromValue>::EXPECTED_TYPE_NAME,
-                                __got_type,
-                            ) {
-                                (
-                                    ::std::option::Option::Some(__expected),
-                                    ::std::option::Option::Some(__got),
-                                ) => __cleanup!(
-                                    crate::exception_private::ExcType::type_error_bad_arg_pos(
-                                        #func_name,
-                                        #pos,
-                                        __expected,
-                                        __got.cpython_arg_name(),
-                                    )
-                                ),
-                                _ => __cleanup!(__e),
-                            }
-                        }
-                    }
-                }
-            }
-        } else {
-            quote! {
+    ///
+    /// `arg_name` is the field identifier as a literal (for named-style
+    /// wording); `pos` is the 1-indexed positional slot (for positional-style
+    /// wording).
+    fn render_from_value_call(
+        &self,
+        ty: &Type,
+        slot: &Ident,
+        pos: usize,
+        arg_name: &str,
+        value_var: &Ident,
+    ) -> TokenStream {
+        let Some(style) = self.bad_arg else {
+            return quote! {
                 match <#ty as crate::args::FromValue>::from_value(#value_var, heap, interns) {
                     ::std::result::Result::Ok(__v) => {
                         #slot = ::std::option::Option::Some(__v);
                     }
                     ::std::result::Result::Err(__e) => {
                         __cleanup!(__e);
+                    }
+                }
+            };
+        };
+        let func_name = self.func_name.as_str();
+        let bad_arg_err = match style {
+            BadArgStyle::Positional => quote! {
+                crate::exception_private::ExcType::type_error_bad_arg_pos(
+                    #func_name,
+                    #pos,
+                    __expected,
+                    __got.cpython_arg_name(),
+                )
+            },
+            BadArgStyle::Named => quote! {
+                crate::exception_private::ExcType::type_error_bad_arg_named(
+                    #func_name,
+                    #arg_name,
+                    __expected,
+                    __got.cpython_arg_name(),
+                )
+            },
+        };
+        quote! {
+            {
+                // Capture the value's type *before* `from_value` consumes it
+                // — on the error path the value is already dropped and we
+                // can't peek at it. The const-conditional ensures we only pay
+                // for the lookup when this field's type has a CPython-style
+                // label to report.
+                let __got_type =
+                    if <#ty as crate::args::FromValue>::EXPECTED_TYPE_NAME.is_some() {
+                        ::std::option::Option::Some(#value_var.py_type_heap(heap))
+                    } else {
+                        ::std::option::Option::None
+                    };
+                match <#ty as crate::args::FromValue>::from_value(#value_var, heap, interns) {
+                    ::std::result::Result::Ok(__v) => {
+                        #slot = ::std::option::Option::Some(__v);
+                    }
+                    ::std::result::Result::Err(__e) => {
+                        match (
+                            <#ty as crate::args::FromValue>::EXPECTED_TYPE_NAME,
+                            __got_type,
+                        ) {
+                            (
+                                ::std::option::Option::Some(__expected),
+                                ::std::option::Option::Some(__got),
+                            ) => __cleanup!(#bad_arg_err),
+                            _ => __cleanup!(__e),
+                        }
                     }
                 }
             }
@@ -1065,7 +1106,8 @@ impl Signature {
             },
         };
         let value_ident = format_ident!("__value");
-        let extract = self.render_from_value_call(ty, slot, pos, &value_ident);
+        let arg_name = field.ident.to_string();
+        let extract = self.render_from_value_call(ty, slot, pos, &arg_name, &value_ident);
         quote! {
             if __key_str.matches(
                 crate::intern::StringId::from(crate::intern::StaticStrings::#static_string_ident),
@@ -1091,7 +1133,8 @@ impl Signature {
         // `bad_arg` path uses it, and kw_only fields rarely combine with
         // `bad_arg` (the CPython `_PyArg_BadArgument` callers don't expose
         // their args as kw_only).
-        let extract = self.render_from_value_call(ty, slot, 0, &value_ident);
+        let arg_name = field.ident.to_string();
+        let extract = self.render_from_value_call(ty, slot, 0, &arg_name, &value_ident);
         quote! {
             if __key_str.matches(
                 crate::intern::StringId::from(crate::intern::StaticStrings::#static_string_ident),
@@ -1159,7 +1202,6 @@ fn vec_element_ty(ty: &Type) -> Option<Type> {
 /// Boxed up as a struct rather than a long tuple so adding new flags
 /// doesn't ripple through callsite signatures — the macro grew organically
 /// and the tuple was getting unwieldy.
-#[expect(clippy::struct_excessive_bools)]
 struct StructAttrs {
     name: String,
     at_most_style: AtMostStyle,
@@ -1168,7 +1210,7 @@ struct StructAttrs {
     at_least_positional: bool,
     expected_exact: bool,
     kwarg_error_name: Option<String>,
-    bad_arg: bool,
+    bad_arg: Option<BadArgStyle>,
 }
 
 /// Parse the `#[from_args(...)]` attributes attached to the struct itself.
@@ -1181,7 +1223,7 @@ fn parse_struct_attrs(attrs: &[syn::Attribute]) -> syn::Result<StructAttrs> {
     let mut at_least_positional = false;
     let mut expected_exact = false;
     let mut kwarg_error_name: Option<String> = None;
-    let mut bad_arg = false;
+    let mut bad_arg: Option<BadArgStyle> = None;
     for attr in attrs {
         if !attr.path().is_ident("from_args") {
             continue;
@@ -1208,7 +1250,16 @@ fn parse_struct_attrs(attrs: &[syn::Attribute]) -> syn::Result<StructAttrs> {
                 kwarg_error_name = Some(value.value());
                 Ok(())
             } else if meta.path.is_ident("bad_arg") {
-                bad_arg = true;
+                if bad_arg.is_some() {
+                    return Err(meta.error("`bad_arg` and `bad_arg_named` are mutually exclusive"));
+                }
+                bad_arg = Some(BadArgStyle::Positional);
+                Ok(())
+            } else if meta.path.is_ident("bad_arg_named") {
+                if bad_arg.is_some() {
+                    return Err(meta.error("`bad_arg` and `bad_arg_named` are mutually exclusive"));
+                }
+                bad_arg = Some(BadArgStyle::Named);
                 Ok(())
             } else if meta.path.is_ident("c_error") {
                 if style_set {
@@ -1226,7 +1277,7 @@ fn parse_struct_attrs(attrs: &[syn::Attribute]) -> syn::Result<StructAttrs> {
                 Ok(())
             } else {
                 Err(meta.error(
-                    "unknown struct attribute; expected `name = \"...\"`, `at_most_positional`, `at_most_total`, `at_least_positional`, `expected_exact`, `kwarg_error_name = \"...\"`, `bad_arg`, `c_error`, or `c_error_named`",
+                    "unknown struct attribute; expected `name = \"...\"`, `at_most_positional`, `at_most_total`, `at_least_positional`, `expected_exact`, `kwarg_error_name = \"...\"`, `bad_arg`, `bad_arg_named`, `c_error`, or `c_error_named`",
                 ))
             }
         })?;

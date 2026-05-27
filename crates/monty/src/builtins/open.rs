@@ -16,7 +16,6 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, RunError, RunResult, SimpleException},
     heap::{HeapData, HeapGuard},
-    intern::StringId,
     os::OsFunction,
     resource::ResourceTracker,
     types::{PyTrait, file::FileMode, str::allocate_string},
@@ -44,12 +43,10 @@ pub(crate) fn builtin_open(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValue
         opener,
     } = OpenArgs::from_args(args, vm.heap, vm.interns)?;
 
-    // Wrap every owned value in a guard so any error path below releases the
-    // refs without manual bookkeeping.
+    // `mode` is already a `String` from the macro (default `"r"`); `file`
+    // and the unsupported kwargs are still raw `Value`s and need cleanup.
     let mut file = HeapGuard::new(file, vm);
     let (file, vm) = file.as_parts_mut();
-    let mut mode = HeapGuard::new(mode, vm);
-    let (mode, vm) = mode.as_parts_mut();
     defer_drop!(buffering, vm);
     defer_drop!(encoding, vm);
     defer_drop!(errors, vm);
@@ -67,10 +64,9 @@ pub(crate) fn builtin_open(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValue
     validate_ignored_open_kwarg("opener", opener, vm)?;
 
     let path = extract_path_string(file, vm)?.to_owned();
-    let mode_str = extract_mode_string(mode, vm)?;
     // Parse here purely to reject malformed modes before the OS round-trip;
     // the file wrapper itself is built from the host's returned FileHandle.
-    let file_mode = mode_str
+    let file_mode = mode
         .parse::<FileMode>()
         .map_err(|e| RunError::from(SimpleException::new_msg(ExcType::ValueError, e)))?;
 
@@ -85,18 +81,21 @@ pub(crate) fn builtin_open(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValue
 /// Argument shape for `open(file, mode='r', buffering=-1, encoding=None,
 /// errors=None, newline=None, closefd=True, opener=None)`.
 ///
-/// Every kwarg is held as a raw `Value` so the implementation can:
-/// 1. apply path/mode coercions (`extract_path_string`, `extract_mode_string`)
-///    that the macro doesn't model, and
-/// 2. reject any *non-default* value for the unsupported kwargs
-///    (`buffering`/`encoding`/…) via `validate_ignored_open_kwarg` so caller
-///    code can't silently rely on semantics Monty doesn't honor.
+/// `mode` is taken as `String` so wrong-type errors flow through the macro's
+/// `bad_arg_named` path and match CPython's `open() argument 'mode' must be
+/// str, not …` wording verbatim. The other kwargs stay as raw `Value`
+/// because they have monty-specific validation (`validate_ignored_open_kwarg`)
+/// that the macro doesn't model — Monty rejects any *non-default* value to
+/// avoid silently dropping semantics it doesn't honour (e.g. `buffering=0`,
+/// `opener=my_opener`). `file` is also raw because `open()`'s file-path
+/// error wording (`expected str, bytes or os.PathLike object, not …`) doesn't
+/// follow the `_PyArg_BadArgument` shape that `bad_arg_named` emits.
 #[derive(FromArgs)]
-#[from_args(name = "open")]
+#[from_args(name = "open", bad_arg_named)]
 struct OpenArgs {
     file: Value,
-    #[from_args(default = Value::InternString(StringId::from_ascii(b'r')))]
-    mode: Value,
+    #[from_args(default = "r".to_owned())]
+    mode: String,
     #[from_args(default = Value::Int(-1))]
     buffering: Value,
     #[from_args(default = Value::None)]
@@ -166,19 +165,6 @@ fn decode_utf8_path(bytes: &[u8]) -> RunResult<Option<&str>> {
     }
 }
 
-/// Extracts the optional mode string.
-fn extract_mode_string<'a>(value: &Value, vm: &'a VM<'_, impl ResourceTracker>) -> RunResult<&'a str> {
-    let opt = match value {
-        Value::InternString(string_id) => Some(vm.interns.get_str(*string_id)),
-        Value::Ref(id) => match vm.heap.get(*id) {
-            HeapData::Str(s) => Some(s.as_str()),
-            _ => None,
-        },
-        _ => None,
-    };
-    opt.ok_or_else(|| ExcType::type_error(format!("open() argument 'mode' must be str, not {}", value.py_type(vm))))
-}
-
 /// Validates `open()` kwargs that Monty does not actually honor.
 ///
 /// Monty only models the `file` and `mode` arguments. Any other argument set
@@ -214,7 +200,7 @@ fn validate_ignored_open_kwarg(name: &str, value: &Value, vm: &VM<'_, impl Resou
             } else {
                 return Err(ExcType::type_error(format!(
                     "open() argument '{name}' must be str or None, not {}",
-                    value.py_type(vm)
+                    value.py_type(vm).cpython_arg_name()
                 )));
             }
         }
@@ -228,7 +214,7 @@ fn validate_ignored_open_kwarg(name: &str, value: &Value, vm: &VM<'_, impl Resou
             } else {
                 return Err(ExcType::type_error(format!(
                     "open() argument '{name}' must be str or None, not {}",
-                    value.py_type(vm)
+                    value.py_type(vm).cpython_arg_name()
                 )));
             }
         }

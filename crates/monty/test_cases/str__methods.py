@@ -298,6 +298,25 @@ assert 'hello'.encode('UTF-8') == b'hello', 'encode UTF-8 case insensitive'
 assert ''.encode() == b'', 'encode empty'
 assert 'hello'.encode('utf-8', 'strict') == b'hello', 'encode with errors'
 
+# Wrong-type encoding/errors → CPython's `_PyArg_BadArgument` named wording.
+# Routed through `bad_arg_named` on `EncodeArgs`; matches CPython exactly,
+# including `None`-vs-`NoneType` (lone `None` reads as `"not None"`).
+for bad, expected_type in ((42, 'int'), (None, 'None'), (b'utf-8', 'bytes')):
+    try:
+        'hello'.encode(bad)
+        assert False, f'encode({bad!r}) should error'
+    except TypeError as e:
+        assert str(e) == f"encode() argument 'encoding' must be str, not {expected_type}", (
+            f'encode({bad!r}) wrong type: {e}'
+        )
+    try:
+        'hello'.encode('utf-8', bad)
+        assert False, f'encode(errors={bad!r}) should error'
+    except TypeError as e:
+        assert str(e) == f"encode() argument 'errors' must be str, not {expected_type}", (
+            f'encode(errors={bad!r}) wrong type: {e}'
+        )
+
 # isidentifier()
 assert 'hello'.isidentifier() == True, 'isidentifier basic'
 assert '_hello'.isidentifier() == True, 'isidentifier underscore'

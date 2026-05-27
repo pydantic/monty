@@ -206,6 +206,25 @@ except TypeError as exc:
         f'unexpected encoding type message: {exc}'
     )
 
+# === Wrong-type `mode` matches CPython's `_PyArg_BadArgument` wording ===
+# Driven by `bad_arg_named` on `OpenArgs`. The `None`-vs-`NoneType` special
+# case must apply (lone `None` reads as `"not None"`).
+for bad, expected_type in ((42, 'int'), (None, 'None'), (b'r', 'bytes')):
+    try:
+        open(root / 'hello.txt', bad)
+        assert False, f'open(mode={bad!r}) should error'
+    except TypeError as exc:
+        assert str(exc) == f"open() argument 'mode' must be str, not {expected_type}", (
+            f'open(mode={bad!r}) wrong type: {exc}'
+        )
+    try:
+        open(root / 'hello.txt', mode=bad)
+        assert False, f'open(mode={bad!r} kwarg) should error'
+    except TypeError as exc:
+        assert str(exc) == f"open() argument 'mode' must be str, not {expected_type}", (
+            f'open(mode={bad!r} kwarg) wrong type: {exc}'
+        )
+
 try:
     open(root / 'hello.txt', 'r').write('x')
     assert False, 'expected writing to read-only file to fail'

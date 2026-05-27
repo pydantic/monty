@@ -397,13 +397,33 @@ assert b'hello'.decode('utf-8', 'strict') == 'hello', 'decode with strict errors
 assert b'hello'.decode('utf-8', 'ignore') == 'hello', 'decode with ignore errors'
 assert b'hello'.decode('utf-8', 'replace') == 'hello', 'decode with replace errors'
 
-# TODO: errors argument type validation - CPython raises TypeError for non-string errors
-# This is not implemented yet
-# try:
-#     b'hello'.decode('utf-8', 123)
-#     assert False, 'decode with non-string errors should error'
-# except TypeError as e:
-#     assert 'str' in str(e), f'decode errors type error should mention str, error: {e}'
+# === bytes.decode() type-error wording (CPython `_PyArg_BadArgument`) ===
+# Wrong-type encoding / errors must produce the named bad-arg wording
+# (`decode() argument '<name>' must be str, not <type>`) including the
+# `None`-vs-`NoneType` special case. Driven by `bad_arg_named` on
+# `BytesDecodeArgs`.
+for bad, expected_type in ((42, 'int'), (None, 'None'), (b'utf-8', 'bytes')):
+    try:
+        b'hello'.decode(bad)
+        assert False, f'decode({bad!r}) should error'
+    except TypeError as e:
+        assert str(e) == f"decode() argument 'encoding' must be str, not {expected_type}", (
+            f'decode({bad!r}) wrong type: {e}'
+        )
+    try:
+        b'hello'.decode(encoding=bad)
+        assert False, f'decode(encoding={bad!r}) should error'
+    except TypeError as e:
+        assert str(e) == f"decode() argument 'encoding' must be str, not {expected_type}", (
+            f'decode(encoding={bad!r}) wrong type: {e}'
+        )
+    try:
+        b'hello'.decode('utf-8', bad)
+        assert False, f'decode(errors={bad!r}) should error'
+    except TypeError as e:
+        assert str(e) == f"decode() argument 'errors' must be str, not {expected_type}", (
+            f'decode(errors={bad!r}) wrong type: {e}'
+        )
 
 # === Error message for unknown classmethod ===
 # Error message should say 'bytes' not 'type'

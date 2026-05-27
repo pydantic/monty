@@ -507,15 +507,11 @@ fn bytes_decode<'h>(
     vm: &mut VM<'h, impl ResourceTracker>,
 ) -> RunResult<Value> {
     let BytesDecodeArgs { encoding, errors } = BytesDecodeArgs::from_args(args, vm.heap, vm.interns)?;
-    defer_drop!(encoding, vm);
-    defer_drop!(errors, vm); // NB we don't use errors argument yet
-
-    // Check encoding (default UTF-8)
-    let encoding = if let Some(enc) = encoding {
-        get_encoding_str(enc, vm)?.to_ascii_lowercase()
-    } else {
-        "utf-8".to_owned()
-    };
+    // `errors` is accepted for parity but ignored — UTF-8 decoding of valid
+    // bytes has nothing to handle, and `lookup_error_unknown_error_handler`
+    // would be the next layer once non-UTF-8 codecs land.
+    let _ = errors;
+    let encoding = encoding.map_or_else(|| "utf-8".to_owned(), |e| e.to_ascii_lowercase());
 
     // Only support UTF-8 family
     if !matches!(encoding.as_str(), "utf-8" | "utf8" | "utf_8") {
@@ -529,31 +525,21 @@ fn bytes_decode<'h>(
     }
 }
 
-/// Argument shape for `bytes.decode(encoding='utf-8', errors='strict')`. Both
-/// fields are `Option<Value>` so the implementation can apply its own
-/// defaults and treat the `errors=` parameter as a no-op for now.
+/// Argument shape for `bytes.decode(encoding='utf-8', errors='strict')`.
+///
+/// `bad_arg_named` opts in to CPython's `_PyArg_BadArgument` named wording
+/// (`decode() argument 'encoding' must be str, not <type>`) so wrong-type
+/// errors match the C implementation. Both fields default to absent;
+/// CPython rejects explicit `None` here with the bad-arg error, which falls
+/// out naturally because `Option<String>::from_value` delegates to
+/// `String::from_value` and rejects `Value::None`.
 #[derive(FromArgs)]
-#[from_args(name = "decode")]
+#[from_args(name = "decode", bad_arg_named)]
 struct BytesDecodeArgs {
     #[from_args(default)]
-    encoding: Option<Value>,
+    encoding: Option<String>,
     #[from_args(default)]
-    errors: Option<Value>,
-}
-
-/// Helper function to extract encoding string from a value.
-fn get_encoding_str<'a>(encoding: &Value, vm: &'a VM<'_, impl ResourceTracker>) -> RunResult<&'a str> {
-    match encoding {
-        Value::InternString(id) => Ok(vm.interns.get_str(*id)),
-        Value::Ref(id) => match vm.heap.get(*id) {
-            HeapData::Str(s) => Ok(s.as_str()),
-            _ => Err(ExcType::type_error(
-                "decode() argument 'encoding' must be str, not bytes",
-            )),
-        },
-        // FIXME: should use proper encoding.py_type() here
-        _ => Err(ExcType::type_error("decode() argument 'encoding' must be str, not int")),
-    }
+    errors: Option<String>,
 }
 
 /// Implements Python's `bytes.count(sub[, start[, end]])` method.

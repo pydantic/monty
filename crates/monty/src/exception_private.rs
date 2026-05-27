@@ -743,6 +743,28 @@ impl ExcType {
         .into()
     }
 
+    /// Creates a TypeError matching CPython's `_PyArg_BadArgument`
+    /// named-style wording: `{name}() argument '{arg_name}' must be
+    /// {expected}, not {got}`.
+    ///
+    /// CPython uses this form for C-implemented functions that register
+    /// their arguments by name (`open`, `str.encode`, `bytes.decode`, …).
+    /// Sibling to [`type_error_bad_arg_pos`]; pick the variant matching the
+    /// CPython output for the function being modelled.
+    #[must_use]
+    pub(crate) fn type_error_bad_arg_named(
+        name: &str,
+        arg_name: &str,
+        expected: &str,
+        got: impl fmt::Display,
+    ) -> RunError {
+        SimpleException::new_msg(
+            Self::TypeError,
+            format!("{name}() argument '{arg_name}' must be {expected}, not {got}"),
+        )
+        .into()
+    }
+
     /// Creates a TypeError for **kwargs argument that is not a mapping.
     ///
     /// Matches CPython's format: `{name}() argument after ** must be a mapping, not {type_name}`

@@ -1902,7 +1902,9 @@ struct ExpandtabsArgs {
 /// Returns an encoded version of the string as a bytes object. Only supports
 /// UTF-8 encoding (the native encoding for Rust strings).
 fn str_encode<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Value> {
-    let (encoding, errors) = parse_encode_args(args, vm)?;
+    let EncodeArgs { encoding, errors } = EncodeArgs::from_args(args, vm.heap, vm.interns)?;
+    let encoding = encoding.unwrap_or_else(|| "utf-8".to_owned());
+    let errors = errors.unwrap_or_else(|| "strict".to_owned());
 
     // Only UTF-8 is supported - Rust strings are always valid UTF-8
     let encoding_lower = encoding.to_ascii_lowercase();
@@ -1921,41 +1923,22 @@ fn str_encode<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h, impl R
     Ok(Value::Ref(heap_id))
 }
 
-/// Parses arguments for `str.encode()`.
+/// Argument shape for `str.encode(encoding='utf-8', errors='strict')`.
 ///
-/// Returns (encoding, errors) with defaults "utf-8" and "strict".
-fn parse_encode_args(args: ArgValues, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<(String, String)> {
-    let EncodeArgs { encoding, errors } = EncodeArgs::from_args(args, vm.heap, vm.interns)?;
-
-    let encoding = match encoding {
-        None => "utf-8".to_owned(),
-        Some(v) => {
-            defer_drop!(v, vm);
-            extract_string_arg(v, vm)?
-        }
-    };
-
-    let errors = match errors {
-        None => "strict".to_owned(),
-        Some(v) => {
-            defer_drop!(v, vm);
-            extract_string_arg(v, vm)?
-        }
-    };
-
-    Ok((encoding, errors))
-}
-
-/// Argument shape for `str.encode(encoding='utf-8', errors='strict')`. Both
-/// fields stay as `Option<Value>` so the implementation can apply its own
-/// `"utf-8"` / `"strict"` defaults after the macro extraction.
+/// `bad_arg_named` opts in to CPython's `_PyArg_BadArgument` named wording
+/// (`encode() argument 'encoding' must be str, not <type>`) so wrong-type
+/// errors match the C implementation. Both fields default to `None` (absent)
+/// and the implementation supplies `"utf-8"` / `"strict"` after extraction;
+/// CPython rejects explicit `None` here with the bad-arg error, which falls
+/// out naturally because `Option<String>::from_value` delegates to
+/// `String::from_value` and rejects `Value::None`.
 #[derive(FromArgs)]
-#[from_args(name = "encode")]
+#[from_args(name = "encode", bad_arg_named)]
 struct EncodeArgs {
     #[from_args(default)]
-    encoding: Option<Value>,
+    encoding: Option<String>,
     #[from_args(default)]
-    errors: Option<Value>,
+    errors: Option<String>,
 }
 
 /// Implements Python's `str.isidentifier()` predicate.
