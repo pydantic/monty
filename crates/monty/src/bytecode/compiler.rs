@@ -1178,10 +1178,10 @@ impl<'a> Compiler<'a> {
     /// At module level, `Local` and `LocalUnassigned` scopes emit global opcodes
     /// because module-level locals live in the globals array.
     fn compile_name(&mut self, ident: &Identifier) -> Result<(), CompileError> {
-        let slot = ident.namespace_id().as_u16();
         match ident.scope {
             NameScope::Local => {
                 // True local - register name and mark as assigned for UnboundLocalError
+                let slot = ident.namespace_id().as_u16();
                 self.code.register_local_name(slot, ident.name_id);
                 self.code.register_assigned_local(slot);
                 if self.is_module_scope {
@@ -1190,22 +1190,22 @@ impl<'a> Compiler<'a> {
                     self.code.emit_load_local(slot)
                 }
             }
-            NameScope::LocalUnassigned => {
-                // Undefined reference - register name but NOT as assigned for NameError
-                self.code.register_local_name(slot, ident.name_id);
-                if self.is_module_scope {
+            NameScope::Global => {
+                if let Some(slot) = ident.namespace_id_opt() {
+                    // Slot known at compile time — fast slot-based load.
+                    let slot = slot.as_u16();
+                    self.code.register_local_name(slot, ident.name_id);
                     self.code.emit_u16(Opcode::LoadGlobal, slot)
                 } else {
-                    self.code.emit_load_local(slot)
+                    // Slot unknown at compile time — emit by-name opcode and let the VM
+                    // resolve via `Interns::global_slot` at dispatch time.
+                    let name_id_u16 = u16::try_from(ident.name_id.index()).expect("name_id exceeds u16");
+                    self.code.emit_u16(Opcode::LoadGlobalByName, name_id_u16)
                 }
-            }
-            NameScope::Global => {
-                // Register the name for NameError/NameLookup messages
-                self.code.register_local_name(slot, ident.name_id);
-                self.code.emit_u16(Opcode::LoadGlobal, slot)
             }
             NameScope::Cell => {
                 // Register the name for NameError messages (unbound free variable)
+                let slot = ident.namespace_id().as_u16();
                 self.code.register_local_name(slot, ident.name_id);
                 // Emit local slot index — the VM reads the cell HeapId from the stack
                 self.code.emit_u16(Opcode::LoadCell, slot)
@@ -1226,6 +1226,7 @@ impl<'a> Compiler<'a> {
                 //   `RaiseUnboundLocal(name_id)`; the name lives in the
                 //   opcode so sibling comps with different unbound targets
                 //   each report the correct variable.
+                let slot = ident.namespace_id().as_u16();
                 if self.bound_comp_slots.contains(&slot) {
                     let absolute = self.slot_offsets[slot as usize];
                     self.code.emit_load_local(absolute)
@@ -1246,23 +1247,18 @@ impl<'a> Compiler<'a> {
     /// For `Local` and `Cell` scopes, delegates to `compile_name` since those can't
     /// be external functions (they're always defined locally or captured).
     fn compile_name_callable(&mut self, ident: &Identifier) -> Result<(), CompileError> {
-        let slot = ident.namespace_id().as_u16();
         match ident.scope {
-            NameScope::LocalUnassigned => {
-                // Undefined reference in call context - use callable-aware load.
-                // At module level, use global callable since locals are in the globals array.
-                self.code.register_local_name(slot, ident.name_id);
-                if self.is_module_scope {
-                    self.code.emit_load_global_callable(slot, ident.name_id)
-                } else {
-                    self.code.emit_load_local_callable(slot, ident.name_id)
-                }
-            }
             NameScope::Global => {
-                // Global scope - name_id is encoded in the operand because global slot
-                // indices are in a different namespace from local slots, so looking up
-                // the name from the current frame's local_names would be incorrect
-                self.code.emit_load_global_callable(slot, ident.name_id)
+                if let Some(slot) = ident.namespace_id_opt() {
+                    // Slot known at compile time. `name_id` rides in the operand
+                    // because global and local slot spaces don't share the same
+                    // `local_names` table — looking up by slot in the current
+                    // frame would name the wrong thing.
+                    self.code.emit_load_global_callable(slot.as_u16(), ident.name_id)
+                } else {
+                    let name_id_u16 = u16::try_from(ident.name_id.index()).expect("name_id exceeds u16");
+                    self.code.emit_u16(Opcode::LoadGlobalByNameCallable, name_id_u16)
+                }
             }
             // Local, Cell, and CompVar can't be external functions - use regular load
             NameScope::Local | NameScope::Cell | NameScope::CompVar => self.compile_name(ident),
@@ -1274,9 +1270,9 @@ impl<'a> Compiler<'a> {
     /// At module level, `Local` and `LocalUnassigned` scopes emit `StoreGlobal`
     /// because module-level locals live in the globals array.
     fn compile_store(&mut self, target: &Identifier) -> Result<(), CompileError> {
-        let slot = target.namespace_id().as_u16();
         match target.scope {
-            NameScope::Local | NameScope::LocalUnassigned => {
+            NameScope::Local => {
+                let slot = target.namespace_id().as_u16();
                 self.code.register_local_name(slot, target.name_id);
                 if self.is_module_scope {
                     self.code.emit_u16(Opcode::StoreGlobal, slot)
@@ -1284,9 +1280,17 @@ impl<'a> Compiler<'a> {
                     self.code.emit_store_local(slot)
                 }
             }
-            NameScope::Global => self.code.emit_u16(Opcode::StoreGlobal, slot),
+            NameScope::Global => {
+                if let Some(slot) = target.namespace_id_opt() {
+                    self.code.emit_u16(Opcode::StoreGlobal, slot.as_u16())
+                } else {
+                    let name_id_u16 = u16::try_from(target.name_id.index()).expect("name_id exceeds u16");
+                    self.code.emit_u16(Opcode::StoreGlobalByName, name_id_u16)
+                }
+            }
             NameScope::Cell => {
                 // Emit local slot index — the VM reads the cell HeapId from the stack
+                let slot = target.namespace_id().as_u16();
                 self.code.emit_u16(Opcode::StoreCell, slot)
             }
             NameScope::CompVar => {
@@ -3701,9 +3705,9 @@ impl<'a> Compiler<'a> {
     /// locals plus an `except as` are exotic enough that we surface a
     /// `SyntaxError` rather than introduce a new opcode just for this).
     fn compile_delete(&mut self, target: &Identifier) -> Result<(), CompileError> {
-        let slot = target.namespace_id().as_u16();
         match target.scope {
-            NameScope::Local | NameScope::LocalUnassigned => {
+            NameScope::Local => {
+                let slot = target.namespace_id().as_u16();
                 if self.is_module_scope {
                     self.code.emit_u16(Opcode::DeleteGlobal, slot)?;
                 } else if let Ok(s) = u8::try_from(slot) {
@@ -3719,7 +3723,12 @@ impl<'a> Compiler<'a> {
                 }
             }
             NameScope::Global => {
-                self.code.emit_u16(Opcode::DeleteGlobal, slot)?;
+                if let Some(slot) = target.namespace_id_opt() {
+                    self.code.emit_u16(Opcode::DeleteGlobal, slot.as_u16())?;
+                } else {
+                    let name_id_u16 = u16::try_from(target.name_id.index()).expect("name_id exceeds u16");
+                    self.code.emit_u16(Opcode::DeleteGlobalByName, name_id_u16)?;
+                }
             }
             NameScope::Cell => {
                 // Delete cell not commonly needed

@@ -224,10 +224,16 @@ fn resolved_name_is_cached() {
     assert_eq!(call_count, 2, "should get FunctionCall for each ext() call");
 }
 
-/// A non-function constant resolved once is also cached.
+/// A non-function constant referenced multiple times is resolved each time.
+///
+/// `X` is never assigned, so module-scope name resolution emits a slot-less
+/// `Global` identifier and the compiler routes through `LoadGlobalByName`.
+/// Without a module slot to cache into, the host gets asked once per reference
+/// — matching CPython's non-inline-cached `LOAD_GLOBAL` behaviour. (If we ever
+/// add inline caching this could be reduced to one lookup; see [`Option C`] in
+/// the design notes for `prepare::resolve_name_or_builtin`.)
 #[test]
-fn resolved_constant_is_cached() {
-    // Use the same constant twice — should only yield one NameLookup
+fn resolved_constant_is_not_cached_without_slot() {
     let code = "X + X".to_owned();
     let runner = MontyRun::new(code, "test.py", vec![]).unwrap();
     let mut progress = runner.start(vec![], NoLimitTracker, PrintWriter::Stdout).unwrap();
@@ -247,7 +253,7 @@ fn resolved_constant_is_cached() {
             other => panic!("unexpected progress: {other:?}"),
         }
     }
-    assert_eq!(lookup_count, 1, "constant should be cached after first lookup");
+    assert_eq!(lookup_count, 2, "no slot to cache into → one lookup per reference");
 }
 
 // ---------------------------------------------------------------------------
@@ -500,4 +506,93 @@ sorted([1], key=lambda x: x+1)
     let runner = MontyRun::new(code, "test.py", vec![]).unwrap();
     let value = runner.run_no_limits(vec![]).unwrap();
     assert_eq!(value, MontyObject::List(vec![MontyObject::Int(1)]));
+}
+
+/// A function-scope reference to a name with no module slot must not let the
+/// host's `NameLookupResult::Value` write into `globals[0]`.
+///
+/// Regression: `LoadGlobalByName` for a missing name used to yield
+/// `NameLookup` with `namespace_slot = 0` as a placeholder, and the resume
+/// path would dutifully `mem::replace(&mut vm.globals[0], …)`, silently
+/// overwriting the first module global. The fix is to thread the slot as
+/// `Option<u16>` so the resume path can skip the writeback entirely when no
+/// slot was reserved.
+///
+/// We pick a script where the module's first global (`real_value` → slot 0)
+/// is exactly what would be clobbered, and assert it survives the host
+/// supplying a string for `mystery`.
+#[test]
+fn name_lookup_with_no_module_slot_does_not_clobber_globals() {
+    // Layout:
+    //   slot 0: real_value (= 'preserved' before f() runs)
+    //   slot 1: f
+    //   slot 2: result
+    //  `mystery` is never bound at module scope and isn't a builtin, so the
+    //  function-level reference compiles to `LoadGlobalByName(mystery)` with
+    //  no module slot — the dangerous case.
+    let code = "real_value = 'preserved'
+def f():
+    return mystery
+result = f()
+(real_value, result)"
+        .to_owned();
+    let runner = MontyRun::new(code, "test.py", vec![]).unwrap();
+    let mut progress = runner.start(vec![], NoLimitTracker, PrintWriter::Stdout).unwrap();
+
+    let mut lookup_count = 0;
+    loop {
+        match progress {
+            RunProgress::NameLookup(lookup) => {
+                assert_eq!(lookup.name, "mystery");
+                lookup_count += 1;
+                progress = lookup
+                    .resume(MontyObject::String("from_host".to_string()), PrintWriter::Stdout)
+                    .unwrap();
+            }
+            RunProgress::Complete(result) => {
+                assert_eq!(
+                    result,
+                    MontyObject::Tuple(vec![
+                        MontyObject::String("preserved".to_string()),
+                        MontyObject::String("from_host".to_string()),
+                    ]),
+                    "real_value (module slot 0) must not have been clobbered by the NameLookup resume",
+                );
+                break;
+            }
+            other => panic!("unexpected progress: {other:?}"),
+        }
+    }
+    // Without a slot to cache into we don't try to cache; the host gets called
+    // exactly once because the function is only called once here.
+    assert_eq!(lookup_count, 1);
+}
+
+/// Companion to the previous test: repeated calls to the same function each
+/// re-trigger `NameLookup` because there's no slot to cache the answer into.
+/// This documents the cost of the by-name slow path so it's visible if/when
+/// inline caching lands.
+#[test]
+fn name_lookup_with_no_module_slot_does_not_cache_across_calls() {
+    let code = "def f():
+    return mystery
+f()
+f()"
+    .to_owned();
+    let runner = MontyRun::new(code, "test.py", vec![]).unwrap();
+    let mut progress = runner.start(vec![], NoLimitTracker, PrintWriter::Stdout).unwrap();
+
+    let mut lookup_count = 0;
+    loop {
+        match progress {
+            RunProgress::NameLookup(lookup) => {
+                assert_eq!(lookup.name, "mystery");
+                lookup_count += 1;
+                progress = lookup.resume(MontyObject::Int(7), PrintWriter::Stdout).unwrap();
+            }
+            RunProgress::Complete(_) => break,
+            other => panic!("unexpected progress: {other:?}"),
+        }
+    }
+    assert_eq!(lookup_count, 2, "no caching means every call asks the host again");
 }

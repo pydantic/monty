@@ -519,6 +519,40 @@ pub enum Opcode {
     /// error.
     /// Appended at the end to preserve the serialized byte values of all older opcodes.
     RaiseUnboundLocal,
+
+    // === By-name globals ===
+    /// Push the value of a module global, resolved by name at runtime. Operand: u16 name_id.
+    ///
+    /// Emitted for function-level `NameScope::Global` identifiers whose module slot
+    /// was not known at compile time — typically because the name is declared
+    /// `global` for a name that has no module-level reference yet, or because the
+    /// function references a name that's only bound later in the program (forward
+    /// reference / late binding / a name that exists only as a builtin). The VM
+    /// looks the name up in the module's name→slot map. If found, behaves like
+    /// `LoadGlobal`; if missing or the slot is `Undefined`, falls back to
+    /// `builtin_for_name`, then yields `NameLookup` so the host can resolve it.
+    LoadGlobalByName,
+    /// Pop the top of stack and store it in a module global, resolved by name at runtime.
+    /// Operand: u16 name_id.
+    ///
+    /// Counterpart to [`LoadGlobalByName`]. If the name has no slot in the module's
+    /// name→slot map, panics — `prepare::prepare_function_def` bubbles every nested
+    /// `global X` declaration up to the module preparer, which allocates a module
+    /// slot via `materialize_globals` so this lookup always finds one.
+    StoreGlobalByName,
+    /// Delete a module global (set to `Undefined`), resolved by name at runtime.
+    /// Operand: u16 name_id.
+    ///
+    /// Counterpart to [`LoadGlobalByName`]. If the name has no slot in the module's
+    /// name→slot map, raises `NameError` (can't delete what was never defined).
+    DeleteGlobalByName,
+    /// Load a module global in call context, resolved by name at runtime.
+    /// Operand: u16 name_id.
+    ///
+    /// Like [`LoadGlobalByName`] but pushes `Value::ExtFunction(name_id)` for undefined
+    /// names instead of yielding `NameLookup`, so the subsequent `CallFunction` yields
+    /// `FunctionCall` and the host can supply an external function implementation.
+    LoadGlobalByNameCallable,
 }
 
 impl TryFrom<u8> for Opcode {
@@ -561,8 +595,6 @@ pub enum Operand<'a> {
     Offset(RelativeOffset),
     /// Two u8 operands (e.g. `UnpackEx`, `CallBuiltinFunction`).
     U8U8(u8, u8),
-    /// u8 then u16 little-endian (e.g. `LoadLocalCallable`).
-    U8U16(u8, u16),
     /// u16 little-endian then u8 (e.g. `MakeFunction`, `CallAttr`).
     U16U8(u16, u8),
     /// Two u16 little-endian (e.g. `LoadLocalCallableW`, `LoadGlobalCallable`).
@@ -714,9 +746,9 @@ impl Opcode {
 
             // === Fixed-effect, U16 operand ===
             (LoadConst, Operand::U16(_)) => 1,
-            (LoadLocalW | LoadGlobal | LoadCell, Operand::U16(_)) => 1,
-            (StoreLocalW | StoreGlobal | StoreCell, Operand::U16(_)) => -1,
-            (DeleteGlobal, Operand::U16(_)) => 0,
+            (LoadLocalW | LoadGlobal | LoadCell | LoadGlobalByName | LoadGlobalByNameCallable, Operand::U16(_)) => 1,
+            (StoreLocalW | StoreGlobal | StoreCell | StoreGlobalByName, Operand::U16(_)) => -1,
+            (DeleteGlobal | DeleteGlobalByName, Operand::U16(_)) => 0,
             (CompareModEq, Operand::U16(_)) => -1,
             (LoadAttr | LoadAttrImport, Operand::U16(_)) => 0,
             (StoreAttr, Operand::U16(_)) => -2,
@@ -730,11 +762,15 @@ impl Opcode {
             // following region starts.
             (RaiseUnboundLocal, Operand::U16(_)) => 0,
 
-            // === Fixed-effect, U8U16 operand ===
-            (LoadLocalCallable, Operand::U8U16(..)) => 1,
-
             // === Fixed-effect, U16U16 operand ===
-            (LoadLocalCallableW | LoadGlobalCallable, Operand::U16U16(..)) => 1,
+            //
+            // `LoadLocalCallable`/`LoadLocalCallableW` are preserved in the opcode
+            // enum for snapshot-decode compatibility, but the compiler no longer
+            // emits them — every callable-context unresolved reference now goes
+            // through `LoadGlobalByNameCallable` (function scope) or
+            // `LoadGlobalCallable` (module scope). So only the wide form needs a
+            // stack-effect arm here, and only for `LoadGlobalCallable`.
+            (LoadGlobalCallable, Operand::U16U16(..)) => 1,
 
             // === Jumps: fall-through effect (what the tracker absorbs after the bytes are written).
             // Use `Offset` arguments to sanity check that jumps are correctly paired with offsets. ===
@@ -800,7 +836,7 @@ mod tests {
     #[test]
     fn test_opcode_roundtrip() {
         // Verify that all opcodes from 0 to the last opcode can be converted to u8 and back.
-        for byte in 0..=Opcode::RaiseUnboundLocal as u8 {
+        for byte in 0..=Opcode::LoadGlobalByNameCallable as u8 {
             let opcode = Opcode::try_from(byte).unwrap();
             assert_eq!(opcode as u8, byte, "opcode {opcode:?} has wrong discriminant");
         }
@@ -823,12 +859,17 @@ mod tests {
         // Comprehension-support opcodes appended after the context-manager opcodes.
         assert_eq!(Opcode::LiftToTop as u8, 118);
         assert_eq!(Opcode::RaiseUnboundLocal as u8, 119);
+        // By-name global opcodes appended after the comprehension helpers.
+        assert_eq!(Opcode::LoadGlobalByName as u8, 120);
+        assert_eq!(Opcode::StoreGlobalByName as u8, 121);
+        assert_eq!(Opcode::DeleteGlobalByName as u8, 122);
+        assert_eq!(Opcode::LoadGlobalByNameCallable as u8, 123);
     }
 
     #[test]
     fn test_invalid_opcode() {
         // Byte just after the last valid opcode should fail
-        let result = Opcode::try_from(Opcode::RaiseUnboundLocal as u8 + 1);
+        let result = Opcode::try_from(Opcode::LoadGlobalByNameCallable as u8 + 1);
         assert!(result.is_err());
         // 255 should also fail
         let result = Opcode::try_from(255u8);

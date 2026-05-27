@@ -161,3 +161,125 @@ def shadow_unchanged():
 
 assert shadow_unchanged() == 99, 'shadowing returns local'
 assert x7 == 10, 'global unchanged after shadowing'
+
+
+# === `global X` for a name that doesn't yet exist at module level ===
+# Regression: previously the prepare phase allocated a function-local slot for
+# `ghost` here but tagged it `NameScope::Global`, so the compiler emitted a
+# `LoadGlobal/StoreGlobal` with an operand that indexed past the module globals
+# array — at best a NameError on an unrelated slot, at worst an OOB panic.
+# Fixed by bubbling nested `global X` declarations up to the module name_map
+# and emitting `LoadGlobalByName`/`StoreGlobalByName` for unresolved cases.
+
+
+def declare_then_write():
+    global ghost1
+    ghost1 = 5
+
+
+declare_then_write()
+assert ghost1 == 5, 'global declaration then write makes name visible at module level'
+
+
+def declare_then_read():
+    global ghost2
+    return ghost2
+
+
+try:
+    declare_then_read()
+    raise AssertionError('expected NameError for never-assigned global')
+except NameError as exc:
+    assert str(exc) == "name 'ghost2' is not defined", 'NameError message for unassigned global'
+
+
+# === Forward reference to a later module-level binding ===
+# `late_value` is read inside `read_late_value` before being assigned at module
+# level. The function-level reference compiles to `LoadGlobalByName`, which at
+# runtime looks up the name in the module's name map — by the time the function
+# runs, the later `late_value = 'bound'` has already allocated and populated a
+# module slot for that name.
+
+
+def read_late_value():
+    return late_value
+
+
+late_value = 'bound'
+assert read_late_value() == 'bound', 'function sees later module-level binding'
+
+
+# === Late binding overrides parse-time builtin resolution ===
+# Both calls must work as written. The first call uses the builtin (via the
+# runtime `builtin_for_name` fallback when the module slot is undefined). The
+# `def min` between the calls overwrites the module slot, so the second call
+# picks up the user-defined version.
+
+
+def call_min():
+    return min([3, 1, 2])
+
+
+assert call_min() == 1, 'first call resolves to builtin min'
+
+
+def min(*args):
+    return 'shadowed'
+
+
+assert call_min() == 'shadowed', 'second call resolves to user-defined min'
+
+
+# === Module-scope late binding (script form of the REPL case) ===
+# Parse-time builtin substitution at module scope must not fire for a name
+# the script has already bound earlier. Once `def max` lands in name_map,
+# subsequent `max(...)` references at module scope go through the slot, not
+# the baked-in builtin.
+
+assert max(1, 2) == 2, 'pre-binding: module-scope max resolves to builtin'
+
+
+def max(*args):
+    return 'shadowed-max'
+
+
+assert max(1, 2) == 'shadowed-max', 'post-binding: module-scope max sees user-defined version'
+
+
+# === `global` declared via lambda → nested function ===
+# A lambda can't itself declare `global`, but it can call a function that does.
+# The bubble-up mechanism in `prepare_function_def` materializes the inner
+# function's `global ghost3` decl all the way to the module name_map.
+
+ghost3 = 1
+
+
+def lambda_set(v):
+    (lambda x: __set_ghost3(x))(v)
+
+
+def __set_ghost3(v):
+    global ghost3
+    ghost3 = v
+
+
+lambda_set(99)
+assert ghost3 == 99, '`global X` inside a function reachable via lambda still rebinds the module slot'
+
+
+# === Deeply nested `global X` — bubble-up across multiple function levels ===
+# The `global x` declaration inside `inner` is two scopes away from the module
+# (outer → inner). The bubble-up mechanism must propagate it through both
+# levels so the module slot for `x` exists when `inner` runs.
+
+
+def deep_outer():
+    def deep_inner():
+        global deep_x
+        deep_x = 'reached-module'
+
+    deep_inner()
+
+
+deep_outer()
+assert deep_x == 'reached-module', 'global X bubbles up from doubly-nested function'

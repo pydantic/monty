@@ -24,12 +24,20 @@ pub enum NameScope {
     /// If accessed before assignment, raises `UnboundLocalError`.
     #[default]
     Local,
-    /// Variable reference that doesn't exist in any scope.
+    /// Variable is in the module-level global namespace.
     ///
-    /// A local slot is allocated but never assigned. Accessing raises `NameError`
-    /// (not `UnboundLocalError`) because the name was never defined anywhere.
-    LocalUnassigned,
-    /// Variable is in the module-level global namespace
+    /// The accompanying `Identifier` may or may not carry a resolved
+    /// `NamespaceId` — check `Identifier::namespace_id_opt()`:
+    /// - `Some(slot)`: slot is known at compile time. Compiler emits a
+    ///   slot-based opcode (`LoadGlobal`/`StoreGlobal`/...) which the VM
+    ///   indexes directly into the globals array.
+    /// - `None`: slot is unknown at compile time (e.g. `global X` declared
+    ///   inside a function for a name not yet seen at module scope). Compiler
+    ///   emits a by-name opcode (`LoadGlobalByName`/`StoreGlobalByName`/...)
+    ///   and the VM looks the slot up via `Interns::global_slot` at dispatch
+    ///   time. This is also what prevents the historical OOB exploit where the
+    ///   prepare phase invented a function-local slot for an unresolved
+    ///   `global X` reference — there is no slot to invent.
     Global,
     /// Variable accessed through a cell (heap-allocated container).
     ///
@@ -87,9 +95,38 @@ impl Identifier {
         }
     }
 
+    /// Creates a Global-scoped identifier with no resolved slot.
+    ///
+    /// Used when a function-level reference (case 1 `global X` for an
+    /// otherwise-unmentioned name, or step 8 fallback for any unresolved
+    /// reference) can't be resolved to a module slot at compile time. The
+    /// compiler will emit a by-name opcode using `name_id`.
+    pub fn new_global_unresolved(name_id: StringId, position: CodeRange) -> Self {
+        Self {
+            name_id,
+            position,
+            opt_namespace_id: None,
+            scope: NameScope::Global,
+        }
+    }
+
+    /// Returns the resolved namespace slot, panicking if none was set.
+    ///
+    /// Safe to call on every scope EXCEPT a `NameScope::Global` identifier
+    /// that came from a by-name (slot-unresolved) compile path — for that case
+    /// use [`namespace_id_opt`] and branch on the result.
     pub fn namespace_id(&self) -> NamespaceId {
         self.opt_namespace_id
             .expect("Identifier not prepared with namespace_id")
+    }
+
+    /// Returns the resolved namespace slot if one was set.
+    ///
+    /// `None` for `NameScope::Global` identifiers whose slot wasn't known at
+    /// compile time; the compiler emits the by-name opcode family in that case
+    /// and the runtime resolves the slot via `Interns::global_slot`.
+    pub fn namespace_id_opt(&self) -> Option<NamespaceId> {
+        self.opt_namespace_id
     }
 }
 

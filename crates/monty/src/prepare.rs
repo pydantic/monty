@@ -180,6 +180,22 @@ struct Prepare<'i> {
     /// this stack (see [`Prepare::get_id_for_store_target`]) so PEP 572 binding
     /// semantics are preserved.
     comp_name_scopes: Vec<AHashMap<String, u16>>,
+    /// `global X` declarations discovered in nested function bodies during preparation.
+    ///
+    /// Each function preparer collects the `global` declarations from its own body
+    /// (via `scope_info.global_names`) plus any declarations bubbled up from nested
+    /// functions it prepared. When the module-level preparer drains this set, it
+    /// allocates a module slot for each name so the runtime `StoreGlobalByName` /
+    /// `LoadGlobalByName` opcodes the inner functions emitted can find a slot in
+    /// `interns.global_slots`.
+    ///
+    /// This is what lets `def f(): global ghost; ghost = 5` work even when `ghost`
+    /// has no other reference at module scope: bubble-up reaches the module
+    /// preparer with `ghost` in tow, a slot is allocated, and the runtime
+    /// `StoreGlobalByName` resolves to it. An earlier iteration of this code used
+    /// a separate AST walker to do the same job; bubble-up replaces it because the
+    /// information we need is already in each `FunctionScopeInfo::global_names`.
+    discovered_globals: AHashSet<String>,
 }
 
 impl<'i> Prepare<'i> {
@@ -199,6 +215,28 @@ impl<'i> Prepare<'i> {
         let id = NamespaceId::new(self.namespace_size).ok_or_else(|| namespace_overflow(position))?;
         self.namespace_size += 1;
         Ok(id)
+    }
+
+    /// Allocates a module-scope slot for each name that does not already have one.
+    ///
+    /// Called only on the module-level preparer (panics otherwise). The bubble-up
+    /// chain from nested `prepare_function_def` calls eventually reaches the
+    /// module preparer with the union of every `global X` declaration anywhere in
+    /// the program; materializing them here makes the slots visible to
+    /// `interns.global_slots`, which the runtime uses to resolve
+    /// `LoadGlobalByName` / `StoreGlobalByName` operands.
+    fn materialize_globals(&mut self, names: impl IntoIterator<Item = String>) -> Result<(), ParseError> {
+        debug_assert!(
+            self.is_module_scope,
+            "materialize_globals must be called on the module preparer"
+        );
+        for name in names {
+            if !self.name_map.contains_key(&name) {
+                let slot = self.alloc_slot(CodeRange::default())?;
+                self.name_map.insert(name, slot);
+            }
+        }
+        Ok(())
     }
 
     /// # Arguments
@@ -231,6 +269,7 @@ impl<'i> Prepare<'i> {
             unassigned_ref_names: AHashSet::new(),
             comp_var_depth: 0,
             comp_name_scopes: Vec::new(),
+            discovered_globals: AHashSet::new(),
         })
     }
 
@@ -259,6 +298,7 @@ impl<'i> Prepare<'i> {
             unassigned_ref_names: AHashSet::new(),
             comp_var_depth: 0,
             comp_name_scopes: Vec::new(),
+            discovered_globals: AHashSet::new(),
         }
     }
 
@@ -362,6 +402,7 @@ impl<'i> Prepare<'i> {
             unassigned_ref_names: AHashSet::new(),
             comp_var_depth: 0,
             comp_name_scopes: Vec::new(),
+            discovered_globals: AHashSet::new(),
         })
     }
 
@@ -681,10 +722,15 @@ impl<'i> Prepare<'i> {
                     });
                 }
                 Node::Import { names } => {
-                    // Resolve each binding identifier to get the namespace slot
+                    // Each `import foo [as bar]` binds the alias (or module name)
+                    // in the current scope — track it as an assignment before
+                    // calling `get_id` so module-scope name resolution allocates
+                    // a slot instead of routing through `LoadGlobalByName`.
                     let resolved_names = names
                         .into_iter()
                         .map(|import_name| -> Result<_, ParseError> {
+                            self.names_assigned_in_order
+                                .insert(self.interner.get_str(import_name.binding.name_id).to_string());
                             let (resolved_binding, _) = self.get_id(import_name.binding)?;
                             Ok(ImportName {
                                 module_name: import_name.module_name,
@@ -699,10 +745,13 @@ impl<'i> Prepare<'i> {
                     names,
                     position,
                 } => {
-                    // Resolve each binding identifier to get namespace slots
+                    // Each imported name (or `as` alias) binds in the current scope.
+                    // Same rationale as `Node::Import`: track it before `get_id`.
                     let resolved_names = names
                         .into_iter()
                         .map(|(import_name, binding)| -> Result<_, ParseError> {
+                            self.names_assigned_in_order
+                                .insert(self.interner.get_str(binding.name_id).to_string());
                             let (resolved_binding, _) = self.get_id(binding)?;
                             Ok((import_name, resolved_binding))
                         })
@@ -961,30 +1010,25 @@ impl<'i> Prepare<'i> {
     fn resolve_name_or_builtin(&mut self, name: Identifier) -> Result<Expr, ParseError> {
         let name_str = self.interner.get_str(name.name_id);
 
-        // Check if the name is assigned in the current scope. If so, it shadows
-        // any builtin with the same name.
-        let is_locally_assigned = if self.is_module_scope {
-            // Module scope: sequential — only names assigned SO FAR shadow builtins
-            self.names_assigned_in_order.contains(name_str)
-        } else {
-            // Function scope: lexical — ANY assignment in the function body makes
-            // the name local for the entire function
-            self.assigned_names.contains(name_str)
-        };
-
-        if !is_locally_assigned {
-            // In function scope, also check if the name is bound by other mechanisms
-            // (global declaration, parameter, closure capture, enclosing/global scope).
-            // Only fall back to builtins if the name is truly unresolved.
-            let is_otherwise_bound = !self.is_module_scope
-                && (self.global_names.contains(name_str)
-                    || self.free_var_map.contains_key(name_str)
-                    || self.cell_var_map.contains_key(name_str)
-                    || self.name_map.contains_key(name_str)
-                    || self.enclosing_locals.as_ref().is_some_and(|l| l.contains(name_str))
-                    || self.global_name_map.as_ref().is_some_and(|m| m.contains_key(name_str)));
-
-            if !is_otherwise_bound && let Ok(builtin) = name_str.parse::<Builtins>() {
+        // Parse-time builtin substitution is a module-scope-only optimization: turning
+        // `len(x)` into `CallBuiltinFunction(Len)` skips a `LoadGlobal` round-trip,
+        // but it's only safe when we are CERTAIN nothing will rebind the name later.
+        //
+        // At MODULE scope we have that certainty as long as no prior statement (this
+        // snippet) and no prior REPL snippet (the seeded `name_map`) has bound the
+        // name. Once either has, we have to defer to runtime so a later read sees the
+        // user value.
+        //
+        // At FUNCTION scope we never have that certainty: the module can rebind a name
+        // after the function is compiled (e.g. `def call_sum(): return sum(...)`
+        // followed later by `def sum(...)`), and in REPL the rebinding can happen in a
+        // future snippet that the current compile can't see. So at function scope we
+        // always go through `get_id` and the VM's `LoadGlobalByName(Callable)` path,
+        // whose runtime `builtin_for_name` fallback yields the same builtin when the
+        // module slot is empty — but picks up a later rebinding correctly.
+        if self.is_module_scope {
+            let already_bound = self.names_assigned_in_order.contains(name_str) || self.name_map.contains_key(name_str);
+            if !already_bound && let Ok(builtin) = name_str.parse::<Builtins>() {
                 return Ok(Expr::Builtin(builtin));
             }
         }
@@ -1309,7 +1353,14 @@ impl<'i> Prepare<'i> {
         body: Vec<ParseNode>,
         is_async: bool,
     ) -> Result<PreparedNode, ParseError> {
-        // Register the function name in the current scope
+        // Register the function name in the current scope. `def` binds the name,
+        // so track it as an assignment before calling `get_id`; otherwise the
+        // module-scope branch of `get_id` would see an unbound name and emit a
+        // slot-less `Global`, which would compile the subsequent `MakeFunction` /
+        // `StoreGlobal` for this def to a `StoreGlobalByName` whose runtime lookup
+        // would have nothing to resolve to.
+        self.names_assigned_in_order
+            .insert(self.interner.get_str(name.name_id).to_string());
         let (name, _) = self.get_id(name)?;
 
         // Extract param names from the parsed signature for scope analysis
@@ -1317,6 +1368,21 @@ impl<'i> Prepare<'i> {
 
         // Pass 1: Collect scope information from the function body
         let scope_info = collect_function_scope_info(&body, &param_names, self.interner);
+
+        // Propagate this function's `global X` declarations toward the module
+        // scope. The module preparer materializes them into `name_map` so that
+        // `interns.global_slots` ends up with a slot for every name a function
+        // ever names as global — runtime `StoreGlobalByName` then never panics
+        // for a missing slot. Doing this BEFORE the snapshot is built means the
+        // inner preparer's case-1 / case-7 lookups can resolve to a real slot
+        // for direct-from-module nested functions (the fast path); deeper
+        // nesting bubbles up after prepare_nodes and falls through to the
+        // by-name slow path, which is still correct.
+        if self.is_module_scope {
+            self.materialize_globals(scope_info.global_names.iter().cloned())?;
+        } else {
+            self.discovered_globals.extend(scope_info.global_names.iter().cloned());
+        }
 
         // Get the global name map to pass to the function preparer
         // At module level, use our own name_map; otherwise use the inherited global_name_map
@@ -1368,6 +1434,21 @@ impl<'i> Prepare<'i> {
 
         // Prepare the function body
         let prepared_body = inner_prepare.prepare_nodes(body)?;
+
+        // Continue bubbling up any `global X` declarations discovered inside
+        // the function bodies we just prepared (nested functions of the
+        // function we are preparing). These are materialized late, so the
+        // inner preparer's references to them already went out as
+        // `LoadGlobalByName`/`StoreGlobalByName`; that's fine because the
+        // runtime by-name path looks up the FINAL module `name_map`, which
+        // will contain the slot we are about to allocate at the module
+        // preparer.
+        let inner_globals = mem::take(&mut inner_prepare.discovered_globals);
+        if self.is_module_scope {
+            self.materialize_globals(inner_globals)?;
+        } else {
+            self.discovered_globals.extend(inner_globals);
+        }
 
         // Mark variables that the inner function captures as our cell_vars
         // These are the names that appear in inner_prepare.free_var_map
@@ -1762,27 +1843,43 @@ impl<'i> Prepare<'i> {
             }
         }
 
-        // At module level, all names are local (which is also the global namespace).
-        // The compiler emits global opcodes for these, so the VM reads/writes
-        // directly from the globals array rather than the stack.
+        // At module scope every name is a global — the module's local namespace
+        // IS the global namespace, and Python module scope has no
+        // `UnboundLocalError`, only `NameError`. So every resolved identifier
+        // gets `NameScope::Global`:
+        //
+        // - If the name is already known (in `name_map` from an earlier statement,
+        //   a prior REPL snippet, or REPL input): emit `Global` with the existing
+        //   slot. Compiler emits the fast slot-based opcode.
+        // - If the name is being bound by this very statement
+        //   (`names_assigned_in_order` was extended just before this call by an
+        //   `Assign` / `Import` / `def` / etc.): allocate a fresh slot, emit
+        //   `Global` with it. Compiler emits the fast slot-based opcode.
+        // - Otherwise (read of a never-bound name — typo, builtin reference,
+        //   external function): emit slot-less `Global`. Compiler emits the by-name
+        //   opcode and the runtime falls back through builtins to `NameLookup`.
+        //
+        // Comprehensions don't reach this branch: their loop variables are now
+        // in their own `NameScope::CompVar` namespace handled by the comp-name
+        // scope lookup at the top of this function, so the historical
+        // `Local`/`LocalUnassigned` split (which existed only to force
+        // `register_assigned_local` for pre-shadowed comp vars) is gone.
         if self.is_module_scope {
-            // Determine scope: if the name is assigned somewhere (even later in the
-            // file), it's a true local that will raise UnboundLocalError if accessed
-            // before assignment. If the name is never assigned, it's an undefined
-            // reference that raises NameError.
-            let scope = if self.names_assigned_in_order.contains(name_str) {
-                NameScope::Local
-            } else {
-                NameScope::LocalUnassigned
-            };
-            let (id, is_new) = if let Some(existing) = self.name_map.get(name_str).copied() {
-                (existing, false)
-            } else {
+            if let Some(existing) = self.name_map.get(name_str).copied() {
+                return Ok((
+                    Identifier::new_with_scope(ident.name_id, position, existing, NameScope::Global),
+                    false,
+                ));
+            }
+            if self.names_assigned_in_order.contains(name_str) {
                 let id = self.alloc_slot(position)?;
                 self.name_map.insert(name_str.to_string(), id);
-                (id, true)
-            };
-            return Ok((Identifier::new_with_scope(ident.name_id, position, id, scope), is_new));
+                return Ok((
+                    Identifier::new_with_scope(ident.name_id, position, id, NameScope::Global),
+                    true,
+                ));
+            }
+            return Ok((Identifier::new_global_unresolved(ident.name_id, position), false));
         }
 
         // In a function: determine scope based on global_names, nonlocal_names, assigned_names, global_name_map
@@ -1798,25 +1895,16 @@ impl<'i> Prepare<'i> {
                     false,
                 ));
             }
-            // Declared global but doesn't exist yet - it will be created when assigned
-            // For now, we still need a global index. We'll use a placeholder approach:
-            // allocate in global namespace (this is a simplification - in real Python,
-            // the global would be created at module level when first assigned)
-            // For our implementation, we'll resolve to global but the variable won't exist until assigned.
-            // Return a "new" global - but we can't modify global_name_map here.
-            // For simplicity, we'll resolve to local with Global scope - runtime will handle the lookup.
-            let (id, is_new) = if let Some(existing) = self.name_map.get(name_str).copied() {
-                (existing, false)
-            } else {
-                let id = self.alloc_slot(position)?;
-                self.name_map.insert(name_str.to_string(), id);
-                (id, true)
-            };
-            // Mark as Global scope - runtime will need to handle this specially
-            return Ok((
-                Identifier::new_with_scope(ident.name_id, position, id, NameScope::Global),
-                is_new,
-            ));
+            // Declared `global X` but the snapshot we were handed doesn't yet
+            // contain that name. The bubble-up in `prepare_function_def` will
+            // materialize a module slot for it after we return, so the runtime
+            // `StoreGlobalByName` / `LoadGlobalByName` lookup will succeed even
+            // though we don't have a slot at this moment. Emit a slot-less
+            // `Global` identifier — the compiler routes that through the
+            // by-name opcode family. This replaces the historical "allocate a
+            // function-local slot but tag it Global" path, which compiled to a
+            // `LoadGlobal` that could index `globals` out-of-bounds.
+            return Ok((Identifier::new_global_unresolved(ident.name_id, position), false));
         }
 
         // 2. Check if captured from enclosing scope (nonlocal declaration or implicit capture)
@@ -1905,24 +1993,19 @@ impl<'i> Prepare<'i> {
             ));
         }
 
-        // 8. Name not found anywhere - allocate a local slot (will be NameError at runtime)
-        // This handles names that are only read (never assigned) and don't exist globally.
-        // We allocate a local slot that will never be written to.
-        // Mark as LocalUnassigned so runtime raises NameError (not UnboundLocalError).
-        // Track in `unassigned_ref_names` so step 6 doesn't treat subsequent references
-        // as `Local` (parameters).
-        self.unassigned_ref_names.insert(name_str.to_string());
-        let (id, is_new) = if let Some(existing) = self.name_map.get(name_str).copied() {
-            (existing, false)
-        } else {
-            let id = self.alloc_slot(position)?;
-            self.name_map.insert(name_str.to_string(), id);
-            (id, true)
-        };
-        Ok((
-            Identifier::new_with_scope(ident.name_id, position, id, NameScope::LocalUnassigned),
-            is_new,
-        ))
+        // 8. Name not found in any local / enclosing / known-global slot at compile
+        // time. Emit a slot-less `NameScope::Global` identifier — the compiler
+        // routes that through the by-name opcode family, and the runtime consults
+        // the module's name map (which may have grown via nested `global X`
+        // bubble-up or via a later module-level binding) and then falls back to
+        // builtin resolution before yielding `NameLookup`. This matches CPython's
+        // local → enclosing → globals → builtins lookup order and is what makes
+        // patterns like `def f(): return sum(...)` followed by a later
+        // `def sum(...)` work.
+        //
+        // (Module scope is handled by the early return at the top of this function;
+        // its unresolved case ends up here in the same shape: slot-less `Global`.)
+        Ok((Identifier::new_global_unresolved(ident.name_id, position), false))
     }
 
     /// Prepares an f-string part by resolving names in interpolated expressions.

@@ -23,6 +23,7 @@ use crate::{
     MontyObject,
     args::ArgValues,
     asyncio::{CallId, TaskId},
+    builtins::Builtins,
     bytecode::{
         code::{Code, LocationEntry},
         op::Opcode,
@@ -298,9 +299,18 @@ pub enum FrameExit {
     NameLookup {
         /// The interned name being looked up.
         name_id: StringId,
-        /// The namespace slot where the resolved value should be cached.
-        namespace_slot: u16,
+        /// The namespace slot where the resolved value should be cached, if known.
+        ///
+        /// `None` when the lookup originated from `LoadGlobalByName` for a name
+        /// that has no module slot at all — there's nowhere meaningful to cache
+        /// the host's response, so the resume path just pushes the value without
+        /// writing it back to any namespace. With a `Some(slot)` operand, the
+        /// resume path writes the value into `globals[slot]` (when `is_global`)
+        /// or into the current frame's local slot (when not).
+        namespace_slot: Option<u16>,
         /// Whether this is a global slot (true) or a local/function slot (false).
+        ///
+        /// Ignored when `namespace_slot` is `None` (caching is skipped entirely).
         is_global: bool,
     },
 }
@@ -498,7 +508,10 @@ impl CachedFrame<'_> {
 
     /// Fetches a `u8` followed by a little-endian `u16`, in a single bounds check.
     ///
-    /// Mirrors the `Operand::U8U16` encoding (e.g. `LoadLocalCallable`).
+    /// Mirrors the byte layout the compiler used to emit for `LoadLocalCallable`.
+    /// The compiler no longer emits that opcode (all callable-context unresolved
+    /// references go through the by-name family now) but the opcode and its
+    /// decode path are preserved so existing serialized bytecode keeps loading.
     #[inline]
     fn fetch_u8_u16(&mut self) -> (u8, u16) {
         let [a, b, c] = self.fetch_array();
@@ -1027,6 +1040,29 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
                 Opcode::StoreGlobal => {
                     let slot = cached_frame.fetch_u16();
                     self.store_global(slot);
+                }
+                Opcode::LoadGlobalByName => {
+                    let name_idx = cached_frame.fetch_u16();
+                    let name_id = StringId::from_index(name_idx);
+                    if let Some(frame_exit) = self.load_global_by_name(name_id) {
+                        self.current_frame_mut().ip = cached_frame.ip;
+                        return Ok(frame_exit);
+                    }
+                }
+                Opcode::LoadGlobalByNameCallable => {
+                    let name_idx = cached_frame.fetch_u16();
+                    let name_id = StringId::from_index(name_idx);
+                    self.load_global_by_name_callable(name_id);
+                }
+                Opcode::StoreGlobalByName => {
+                    let name_idx = cached_frame.fetch_u16();
+                    let name_id = StringId::from_index(name_idx);
+                    self.store_global_by_name(name_id);
+                }
+                Opcode::DeleteGlobalByName => {
+                    let name_idx = cached_frame.fetch_u16();
+                    let name_id = StringId::from_index(name_idx);
+                    try_catch_sync!(self, cached_frame, self.delete_global_by_name(name_id));
                 }
                 // Variables - Cell Operations (closures)
                 Opcode::LoadCell => {
@@ -1986,7 +2022,7 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
             let name_id = name.expect("LocalUnassigned should always have a name");
             return Ok(Some(FrameExit::NameLookup {
                 name_id,
-                namespace_slot: slot,
+                namespace_slot: Some(slot),
                 is_global: false,
             }));
         }
@@ -2016,11 +2052,18 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
     ///
     /// Unlike `load_global`, this never yields `NameLookup`. When the variable is undefined,
     /// it pushes `Value::ExtFunction(name_id)` so that the subsequent `CallFunction` opcode
-    /// can yield `FunctionCall` instead.
+    /// can yield `FunctionCall` instead. Before doing so it tries the builtin fallback
+    /// (see [`builtin_for_name`]) so `f()` style calls into a builtin still work when
+    /// the name happens to have a module slot allocated (e.g. because the module also
+    /// `def`-binds the same name elsewhere) but that slot is currently `Undefined`.
     fn load_global_callable(&mut self, slot: u16, name_id: StringId) {
         let value = self.globals[slot as usize].clone_with_heap(self);
 
         if matches!(value, Value::Undefined) {
+            if let Some(builtin) = self.builtin_for_name(name_id) {
+                self.push(Value::Builtin(builtin));
+                return;
+            }
             // Save the load instruction's IP so NameError tracebacks point to the name
             self.ext_function_load_ip = Some(self.instruction_ip);
             self.push(Value::ExtFunction(name_id));
@@ -2036,6 +2079,29 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
             None => format!("<local {slot}>"),
         };
         ExcType::unbound_local_error(&name_str).into()
+    }
+
+    /// Returns the builtin value for a name, if the name happens to match a builtin.
+    ///
+    /// Function-level global reads fall back to builtins at runtime when the module
+    /// slot is `Undefined`, mirroring CPython's `globals → builtins` lookup order.
+    /// Function-scope name resolution never substitutes `Expr::Builtin` at parse time
+    /// (see `prepare::resolve_name_or_builtin`), so this fallback is also what makes
+    /// late-binding patterns work:
+    ///
+    /// ```python
+    /// def f(): return sum(...)   # uses builtin sum
+    /// f()
+    /// def sum(*args): return 42  # later module-level shadow
+    /// f()                        # picks up the user-defined sum
+    /// ```
+    ///
+    /// The first call hits `globals[sum_slot] = Undefined` and falls back here to
+    /// the builtin; once `def sum` runs, the slot holds the user function and the
+    /// fallback isn't taken anymore.
+    fn builtin_for_name(&self, name_id: StringId) -> Option<Builtins> {
+        let name = self.interns.get_str(name_id);
+        name.parse::<Builtins>().ok()
     }
 
     /// Creates a NameError for an undefined global variable.
@@ -2064,9 +2130,13 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
 
     /// Loads a global variable and pushes it onto the stack.
     ///
-    /// When the variable is undefined, yields `NameLookup` to the host for resolution
-    /// instead of immediately raising `NameError`. This allows the host to provide
-    /// external function bindings lazily.
+    /// When the variable is undefined, falls back to builtin resolution (see
+    /// [`builtin_for_name`]) before yielding `NameLookup` so the host can supply
+    /// an external binding. The builtin fallback handles the case where a function
+    /// references a builtin name that the module also reserves a slot for (because
+    /// the module rebinds the name later in the same source); without it, every
+    /// reference to `sum` / `len` / etc. inside such a module would crash with
+    /// `NameError` before reaching `def sum`.
     fn load_global(&mut self, slot: u16) -> Result<Option<FrameExit>, RunError> {
         let value = self.globals[slot as usize].clone_with_heap(self);
 
@@ -2085,9 +2155,13 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
                 // No name available — raise NameError directly
                 return Err(self.name_error(slot, None));
             };
+            if let Some(builtin) = self.builtin_for_name(name_id) {
+                self.push(Value::Builtin(builtin));
+                return Ok(None);
+            }
             Ok(Some(FrameExit::NameLookup {
                 name_id,
-                namespace_slot: slot,
+                namespace_slot: Some(slot),
                 is_global: true,
             }))
         } else {
@@ -2101,6 +2175,86 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
         let value = self.pop();
         let old_value = mem::replace(&mut self.globals[slot as usize], value);
         old_value.drop_with_heap(self);
+    }
+
+    /// Loads a global variable resolved by name rather than by precomputed slot.
+    ///
+    /// Used by [`Opcode::LoadGlobalByName`] for function-level Global references
+    /// whose module slot was not bound at compile time.
+    fn load_global_by_name(&mut self, name_id: StringId) -> Option<FrameExit> {
+        // `namespace_slot` is `Some(slot)` only when the name actually has a
+        // module slot; otherwise the host's resolution has nowhere to cache and
+        // the resume path skips the writeback. Critically, this prevents us from
+        // accidentally writing the host's response into `globals[0]` (the first
+        // module global) when the name is genuinely unknown to the module map.
+        let (slot, value) = match self.interns.global_slot(name_id) {
+            Some(slot) => (Some(slot), self.globals[slot as usize].clone_with_heap(self)),
+            None => (None, Value::Undefined),
+        };
+        if matches!(value, Value::Undefined) {
+            if let Some(builtin) = self.builtin_for_name(name_id) {
+                self.push(Value::Builtin(builtin));
+                return None;
+            }
+            Some(FrameExit::NameLookup {
+                name_id,
+                namespace_slot: slot,
+                is_global: true,
+            })
+        } else {
+            self.push(value);
+            None
+        }
+    }
+
+    /// Callable-context counterpart to [`load_global_by_name`].
+    ///
+    /// Pushes `Value::ExtFunction(name_id)` for undefined names instead of yielding
+    /// `NameLookup`, so the subsequent `CallFunction` opcode reaches the host as a
+    /// `FunctionCall` and can be served by an external function.
+    fn load_global_by_name_callable(&mut self, name_id: StringId) {
+        let value = match self.interns.global_slot(name_id) {
+            Some(slot) => self.globals[slot as usize].clone_with_heap(self),
+            None => Value::Undefined,
+        };
+        if matches!(value, Value::Undefined) {
+            if let Some(builtin) = self.builtin_for_name(name_id) {
+                self.push(Value::Builtin(builtin));
+                return;
+            }
+            self.ext_function_load_ip = Some(self.instruction_ip);
+            self.push(Value::ExtFunction(name_id));
+        } else {
+            self.push(value);
+        }
+    }
+
+    /// Pops the top of stack and stores it in a global, resolved by name.
+    ///
+    /// Every nested `global X` declaration is bubbled up to the module preparer
+    /// in `prepare::prepare_function_def` and materialized into the module's
+    /// `name_map` via `materialize_globals`, so by the time we get here the lookup
+    /// must succeed. A missing slot indicates a bug in that bubble-up chain.
+    fn store_global_by_name(&mut self, name_id: StringId) {
+        let slot = self
+            .interns
+            .global_slot(name_id)
+            .expect("StoreGlobalByName: name has no module slot (prepare-phase bug)");
+        self.store_global(slot);
+    }
+
+    /// Deletes a module global, resolved by name.
+    ///
+    /// Returns `NameError` if the name has no module slot — you can't delete a
+    /// name that was never bound.
+    fn delete_global_by_name(&mut self, name_id: StringId) -> RunResult<()> {
+        match self.interns.global_slot(name_id) {
+            Some(slot) => {
+                self.delete_global(slot);
+                Ok(())
+            }
+            None => Err(self.name_error(0, Some(name_id))),
+        }
     }
 
     /// Deletes a global variable (sets it to Undefined).

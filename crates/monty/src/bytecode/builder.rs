@@ -385,21 +385,6 @@ impl CodeBuilder {
         }
     }
 
-    /// Emits a `LoadLocalCallable` instruction for call-context loads.
-    ///
-    /// Unlike `emit_load_local`, this does NOT use specialized 0-3 variants since
-    /// external function calls are rare enough that the optimization isn't worth
-    /// the extra opcode slots. The `name_id` is encoded directly in the operand
-    /// to avoid needing to look up the name from the code's local_names array.
-    pub fn emit_load_local_callable(&mut self, slot: u16, name_id: StringId) -> Result<(), CompileError> {
-        let name_id_u16 = u16::try_from(name_id.index()).map_err(|_| self.name_id_too_large())?;
-        if let Ok(s) = u8::try_from(slot) {
-            self.emit_with_operand(Opcode::LoadLocalCallable, Operand::U8U16(s, name_id_u16))
-        } else {
-            self.emit_with_operand(Opcode::LoadLocalCallableW, Operand::U16U16(slot, name_id_u16))
-        }
-    }
-
     /// Emits a `LoadGlobalCallable` instruction for call-context loads.
     ///
     /// The `name_id` is encoded directly in the operand to avoid the ambiguity
@@ -574,10 +559,6 @@ impl CodeBuilder {
             Operand::U8U8(a, b) => {
                 self.bytecode.push(a);
                 self.bytecode.push(b);
-            }
-            Operand::U8U16(a, w) => {
-                self.bytecode.push(a);
-                self.bytecode.extend(w.to_le_bytes());
             }
             Operand::U16U8(w, b) => {
                 self.bytecode.extend(w.to_le_bytes());

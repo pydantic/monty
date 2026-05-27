@@ -903,6 +903,14 @@ pub(crate) struct Interns {
     bytes: Vec<WithHash<Vec<u8>>>,
     long_ints: Vec<WithHash<BigInt>>,
     functions: Vec<Function>,
+    /// Maps interned global name → module-level global slot.
+    ///
+    /// Populated by `Executor` after preparation, used by the by-name global
+    /// opcodes (`LoadGlobalByName`, `StoreGlobalByName`, etc.) to resolve
+    /// function-level global references whose slot was not bound at function
+    /// compile time. Keyed by `StringId` so lookup is a hash with no string
+    /// interning at opcode dispatch time.
+    global_slots: AHashMap<StringId, u16>,
 }
 
 impl Interns {
@@ -912,6 +920,7 @@ impl Interns {
             bytes: interner.bytes,
             long_ints: interner.long_ints,
             functions,
+            global_slots: AHashMap::new(),
         }
     }
 
@@ -1057,5 +1066,24 @@ impl Interns {
     /// Used by REPL incremental compilation to preserve existing function IDs.
     pub(crate) fn functions_clone(&self) -> Vec<Function> {
         self.functions.clone()
+    }
+
+    /// Replaces the module-level global name→slot map.
+    ///
+    /// Called by `Executor` after preparation has finalized the module's
+    /// global namespace. The map drives the by-name global opcodes; entries
+    /// MUST agree with the executor's `name_map` so that slot-based and
+    /// by-name access paths see the same globals.
+    pub(crate) fn set_global_slots(&mut self, global_slots: AHashMap<StringId, u16>) {
+        self.global_slots = global_slots;
+    }
+
+    /// Looks up the module-level slot for a global name.
+    ///
+    /// Returns `None` if the name has no module-level slot (e.g. a builtin or
+    /// truly undefined name); callers should yield `NameLookup` in that case.
+    #[inline]
+    pub(crate) fn global_slot(&self, name_id: StringId) -> Option<u16> {
+        self.global_slots.get(&name_id).copied()
     }
 }
