@@ -314,7 +314,7 @@ fn deeply_nested_parentheses_do_not_stack_overflow() {
     assert_snapshot!(
         r.format(DiagnosticFormat::Concise).to_string(),
         @"
-    main.py:1:200: error[invalid-syntax] Source is too deeply nested
+    main.py:1:203: error[invalid-syntax] Source is too deeply nested
     main.py:1:1002: error[invalid-syntax] Expected `)`, found end of file
     "
     );

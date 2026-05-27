@@ -28,11 +28,11 @@ use ty_python_semantic::{
 ///
 /// Each `MemoryDb` owns a unique Salsa storage. The pool must never clone a pooled
 /// instance or hand out parallel live handles because Salsa setters require
-/// exclusive access to the underlying `Arc<Zalsa>`. `Clone` is only derived to
-/// satisfy `ty_python_semantic::Db::dyn_clone`, which is reached only by ty's
-/// autofix pipeline — a code path monty never drives.
+/// exclusive access to the underlying `Arc<Zalsa>`. `MemoryDb` therefore deliberately
+/// does not implement `Clone`; the only `Db::dyn_clone` requirement is satisfied by a
+/// panicking implementation, since that hook is reached only by ty's autofix pipeline
+/// — a code path monty never drives.
 #[salsa::db]
-#[derive(Clone)]
 pub(crate) struct MemoryDb {
     storage: salsa::Storage<Self>,
     files: Files,
@@ -164,7 +164,17 @@ impl Db for MemoryDb {
     }
 
     fn dyn_clone(&self) -> Box<dyn Db> {
-        Box::new(self.clone())
+        // `MemoryDb` intentionally does not implement `Clone`: each instance owns a
+        // unique Salsa storage and the pool relies on there being a single live
+        // handle. `dyn_clone` is only invoked by ty's autofix pipeline, which monty
+        // never drives, so reaching this code indicates a new caller has appeared
+        // upstream and the pool/db ownership model needs to be revisited.
+        panic!(
+            "MemoryDb::dyn_clone called — monty never drives ty's autofix pipeline, \
+             so this hook should be unreachable. If a new ty code path now calls \
+             dyn_clone, MemoryDb's single-owner invariant must be re-evaluated before \
+             implementing it."
+        );
     }
 }
 
