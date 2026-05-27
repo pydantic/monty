@@ -53,13 +53,6 @@ fn async_with_statement_returns_not_implemented_error() {
 }
 
 #[test]
-fn with_statement_returns_not_implemented_error() {
-    let err = get_parse_err("with open('f') as f: pass");
-    assert_eq!(err.exc_type(), ExcType::NotImplementedError);
-    assert_snapshot!(err.message().unwrap(), @"The monty syntax parser does not yet support context managers (with statements)");
-}
-
-#[test]
 fn error_display_format() {
     // Verify the Display format matches Python's exception output with traceback
     let err = get_parse_err("1 + 2j");
@@ -589,8 +582,8 @@ fn many_elif_clauses_exceed_limit() {
     assert_eq!(err.exc_type(), ExcType::SyntaxError);
     assert_eq!(
         err.message(),
-        Some("too many nested parentheses"),
-        "error message should match CPython, got: {:?}",
+        Some("Source is too deeply nested"),
+        "error message should match the parser depth-limit message, got: {:?}",
         err.message()
     );
 }
@@ -604,6 +597,39 @@ fn moderate_elif_chain_within_limit() {
     code.push_str("else:\n    pass\n");
     let result = MontyRun::new(code, "test.py", vec![]);
     assert!(result.is_ok(), "moderate elif chain should succeed: {result:?}");
+}
+
+#[test]
+fn many_with_items_exceed_limit() {
+    // A single syntactically-flat `with` statement with many items lowers to
+    // nested `Node::With` values. The synthetic nesting must consume the same
+    // parser depth budget as explicit nesting so we fail with SyntaxError
+    // instead of overflowing the host stack in prepare/compile.
+    let mut code = "with 0".to_owned();
+    for _ in 0..400 {
+        code.push_str(", 0");
+    }
+    code.push_str(":\n    pass\n");
+    let result = MontyRun::new(code, "test.py", vec![]);
+    let err = result.expect_err("expected parse error");
+    assert_eq!(err.exc_type(), ExcType::SyntaxError);
+    assert_eq!(
+        err.message(),
+        Some("Source is too deeply nested"),
+        "error message should match the parser depth-limit message, got: {:?}",
+        err.message()
+    );
+}
+
+#[test]
+fn moderate_with_items_within_limit() {
+    let mut code = "with 0".to_owned();
+    for _ in 0..20 {
+        code.push_str(", 0");
+    }
+    code.push_str(":\n    pass\n");
+    let result = MontyRun::new(code, "test.py", vec![]);
+    assert!(result.is_ok(), "moderate with-item chain should succeed: {result:?}");
 }
 
 #[test]

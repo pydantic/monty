@@ -458,6 +458,13 @@ impl<'a> Parser<'a> {
                     .collect::<Result<_, _>>()?;
                 // Fold from the innermost outward: the last item wraps the user
                 // body; each outer item wraps the freshly-built inner `with`.
+                //
+                // Each synthetic nesting level must be charged against the parser
+                // depth budget so a flat `with a, b, c, ...:` statement cannot
+                // bypass `MAX_NESTING_DEPTH` and produce an AST that later
+                // overflows the host stack during prepare/compile. The budget is
+                // restored on success to avoid penalizing sibling statements, in
+                // the same pattern used by `parse_elif_else_clauses`.
                 let (last_context, last_target) = parsed_items.pop().expect("checked non-empty above");
                 let mut node = Node::With {
                     context: last_context,
@@ -465,7 +472,10 @@ impl<'a> Parser<'a> {
                     body,
                     position,
                 };
+                let mut levels: u16 = 0;
                 while let Some((context, target)) = parsed_items.pop() {
+                    self.decr_depth_remaining(|| range)?;
+                    levels += 1;
                     node = Node::With {
                         context,
                         target,
@@ -473,6 +483,7 @@ impl<'a> Parser<'a> {
                         position,
                     };
                 }
+                self.depth_remaining += levels;
                 Ok(node)
             }
             Stmt::Match(m) => Err(ParseError::not_implemented(
