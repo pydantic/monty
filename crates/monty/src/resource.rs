@@ -493,12 +493,22 @@ pub struct LimitedTracker {
     current_memory: Cell<usize>,
     /// Counter for rate-limiting `Instant::elapsed()` calls in `check_time`.
     check_counter: Cell<u16>,
-    /// Live recursion-depth ceiling. Seeded from `limits.max_recursion_depth`
-    /// at construction; under `test-hooks` may be lowered (never raised) via
-    /// [`lower_recursion_limit`](ResourceTracker::lower_recursion_limit) so
-    /// `sys.setrecursionlimit` can tighten the bound from Python code without
-    /// escaping the host-imposed ceiling.
-    current_recursion_limit: Cell<Option<usize>>,
+    /// Optional override applied on top of `limits.max_recursion_depth`.
+    ///
+    /// `None` (the default — also the value any pre-`test-hooks` snapshot
+    /// deserializes to) means "no override, use the configured ceiling".
+    /// `Some(N)` means "use `N` as the live recursion ceiling instead", and
+    /// is only ever populated by
+    /// [`lower_recursion_limit`](ResourceTracker::lower_recursion_limit)
+    /// under the `test-hooks` feature — `sys.setrecursionlimit` uses it to
+    /// tighten the bound from Python code without escaping the
+    /// host-configured ceiling.
+    ///
+    /// Modeled as an override rather than the live limit so adding this
+    /// field doesn't break deserialization of snapshots produced before it
+    /// existed (`#[serde(default)]` gives back the `None` fallback case).
+    #[serde(default)]
+    recursion_limit_override: Cell<Option<usize>>,
 }
 
 impl LimitedTracker {
@@ -508,15 +518,20 @@ impl LimitedTracker {
     /// it immediately before starting execution.
     #[must_use]
     pub fn new(limits: ResourceLimits) -> Self {
-        let current_recursion_limit = Cell::new(limits.max_recursion_depth);
         Self {
             limits,
             start_time: Instant::now(),
             allocation_count: Cell::new(0),
             current_memory: Cell::new(0),
             check_counter: Cell::new(0),
-            current_recursion_limit,
+            recursion_limit_override: Cell::new(None),
         }
+    }
+
+    /// Returns the live recursion ceiling: the override if one is in effect,
+    /// otherwise the configured `max_recursion_depth`.
+    fn active_recursion_limit(&self) -> Option<usize> {
+        self.recursion_limit_override.get().or(self.limits.max_recursion_depth)
     }
 
     /// Returns the current allocation count.
@@ -623,7 +638,7 @@ impl ResourceTracker for LimitedTracker {
     }
 
     fn check_recursion_depth(&self, current_depth: usize) -> Result<(), ResourceError> {
-        if let Some(max) = self.current_recursion_limit.get() {
+        if let Some(max) = self.active_recursion_limit() {
             // current_depth is before push, so new depth would be current_depth + 1
             if current_depth >= max {
                 return Err(ResourceError::Recursion {
@@ -662,12 +677,12 @@ impl ResourceTracker for LimitedTracker {
     /// `K > N` is rejected.
     #[cfg(feature = "test-hooks")]
     fn lower_recursion_limit(&self, new_limit: usize) -> Result<(), Option<usize>> {
-        if let Some(current) = self.current_recursion_limit.get()
+        if let Some(current) = self.active_recursion_limit()
             && new_limit > current
         {
             return Err(Some(current));
         }
-        self.current_recursion_limit.set(Some(new_limit));
+        self.recursion_limit_override.set(Some(new_limit));
         Ok(())
     }
 }
