@@ -1327,6 +1327,13 @@ try:
 except TypeError as e:
     assert str(e) == 'timezone() argument 1 must be datetime.timedelta, not int', f'tz non-td offset: {e}'
 
+# None offset reports `None`, not `NoneType` (CPython _PyArg_BadArgument special case)
+try:
+    datetime.timezone(None)
+    assert False, 'timezone(None) should raise TypeError'
+except TypeError as e:
+    assert str(e) == 'timezone() argument 1 must be datetime.timedelta, not None', f'tz None offset: {e}'
+
 # === timezone constructor: non-string name (timezone.rs extract_name) ===
 
 try:

@@ -140,7 +140,7 @@ fn extract_offset_seconds(offset_arg: &Value, heap: &Heap<impl ResourceTracker>)
     let bad_type = || {
         ExcType::type_error(format!(
             "timezone() argument 1 must be datetime.timedelta, not {}",
-            offset_arg.py_type_heap(heap),
+            offset_arg.py_type_heap(heap).cpython_arg_name(),
         ))
     };
     let Value::Ref(offset_id) = offset_arg else {
