@@ -468,3 +468,63 @@ except ValueError as e:
     result = progress2.resume({'return_value': None})
     assert isinstance(result, pydantic_monty.MontyComplete)
     assert result.output == snapshot(('hello', 'I/O operation on closed file.'))
+
+
+def test_snapshot_rebuilds_buffer_meta_after_load_for_each_op():
+    """Security regression — `OpenFile.buffer_meta` (cached byte offset
+    into a UTF-8 buffer + cached char count) must not be serialised
+    across the snapshot trust boundary.
+
+    Pre-fix it was, so a crafted snapshot with `byte_position` past
+    `buffer.len()` or in the middle of a UTF-8 code point made
+    `compute_slice_text` panic on `&buffer[byte_position..]` (only a
+    `debug_assert!` guarded it). An embedder accepting client-supplied
+    snapshots could be DoS-ed.
+
+    The fix tags `buffer_meta` `#[serde(skip)]`; on every reload the
+    cache is rebuilt from the trusted heap buffer + `position` on the
+    first read. This test stresses the rebuild path by snapshotting
+    repeatedly between sized reads, seeks, and `tell()`s on a UTF-8
+    multi-byte file. Each post-load read forces a fresh
+    `populate_buffer_meta` walk, and any misalignment between the
+    rebuilt `byte_position` and the user-visible `position` would
+    desync `tell()` or produce mojibake from the next `read()`.
+    """
+    fs = OSAccess([MemoryFile('/greek.txt', content='αβγδε')])
+    code = """
+f = open('/greek.txt')
+a = f.read(1)
+checkpoint(('a', a, f.tell()))
+b = f.read(2)
+checkpoint(('b', b, f.tell()))
+f.seek(1)
+c = f.read(3)
+checkpoint(('c', c, f.tell()))
+f.seek(0)
+d = f.read()
+(a, b, c, d)
+"""
+    # Dump and reload at each checkpoint, so every subsequent
+    # `read` / `seek` / `tell` runs against a freshly rebuilt
+    # `buffer_meta` rather than a cached one carried in-memory.
+    progress1 = pydantic_monty.Monty(code).start(os=fs)
+    assert isinstance(progress1, pydantic_monty.FunctionSnapshot)
+    assert progress1.args == snapshot((('a', 'α', 1),))
+
+    progress2 = pydantic_monty.load_snapshot(progress1.dump())
+    assert isinstance(progress2, pydantic_monty.FunctionSnapshot)
+    progress3 = progress2.resume({'return_value': None})
+    assert isinstance(progress3, pydantic_monty.FunctionSnapshot)
+    assert progress3.args == snapshot((('b', 'βγ', 3),))
+
+    progress4 = pydantic_monty.load_snapshot(progress3.dump())
+    assert isinstance(progress4, pydantic_monty.FunctionSnapshot)
+    progress5 = progress4.resume({'return_value': None})
+    assert isinstance(progress5, pydantic_monty.FunctionSnapshot)
+    assert progress5.args == snapshot((('c', 'βγδ', 4),))
+
+    progress6 = pydantic_monty.load_snapshot(progress5.dump())
+    assert isinstance(progress6, pydantic_monty.FunctionSnapshot)
+    result = progress6.resume({'return_value': None})
+    assert isinstance(result, pydantic_monty.MontyComplete)
+    assert result.output == snapshot(('α', 'βγ', 'βγδ', 'αβγδε'))

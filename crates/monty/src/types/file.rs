@@ -382,6 +382,17 @@ pub(crate) struct OpenFile {
     /// buffer from char 0 on every call (so a 10k-`readline()` loop on a
     /// 1MB UTF-8 file is O(n²)). See [`BufferMeta`] for field semantics.
     /// `None` while `buffer` is `None`; otherwise always `Some`.
+    ///
+    /// **Not serialized.** This is a pure cache derived from `buffer` +
+    /// `position`, and trusting it across a snapshot boundary would let a
+    /// crafted snapshot (with `byte_position` past `buffer.len()` or in the
+    /// middle of a UTF-8 code point, or a `buffer_total` larger than the
+    /// real buffer) drive `compute_slice_text` / `compute_slice_binary`
+    /// into a panicking `&buffer[..]` slice. By skipping serde, the field
+    /// is always `None` after deserialization; the next `compute_slice`
+    /// call sees `Some(buffer) + None(buffer_meta)` and rebuilds it via
+    /// [`populate_buffer_meta`] from the trusted heap buffer.
+    #[serde(skip)]
     buffer_meta: Option<BufferMeta>,
     /// Set between emitting the OS-call-with-store hook and the resume firing.
     /// Tells the resume path which slice to compute once the buffer is
@@ -408,7 +419,11 @@ pub(crate) struct OpenFile {
 /// `buffer_total == buffer.len()` — the cache is mostly redundant there, but
 /// kept identical to the text-mode layout so the surrounding code does not
 /// need to branch on mode.
-#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
+/// **Not (de)serialized** — see the security note on
+/// [`OpenFile::buffer_meta`]. Without `serde` derives, the cache cannot be
+/// driven by attacker-controlled snapshot bytes; it is rebuilt by
+/// [`populate_buffer_meta`] from the trusted heap buffer after a restore.
+#[derive(Debug, Clone, Copy)]
 struct BufferMeta {
     /// Byte offset into the buffer that matches `position`, clamped to
     /// `buffer.len()`. For text mode this caches the
