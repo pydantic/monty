@@ -299,18 +299,15 @@ pub enum FrameExit {
     NameLookup {
         /// The interned name being looked up.
         name_id: StringId,
-        /// The namespace slot where the resolved value should be cached, if known.
+        /// The namespace slot where the resolved value should be cached.
         ///
-        /// `None` when the lookup originated from `LoadGlobalByName` for a name
-        /// that has no module slot at all — there's nowhere meaningful to cache
-        /// the host's response, so the resume path just pushes the value without
-        /// writing it back to any namespace. With a `Some(slot)` operand, the
-        /// resume path writes the value into `globals[slot]` (when `is_global`)
-        /// or into the current frame's local slot (when not).
-        namespace_slot: Option<u16>,
+        /// The resume path writes the value into `globals[slot]` (when
+        /// `is_global`) or into the current frame's local slot (when not).
+        /// Every `NameLookup` carries a real slot: `load_local` only fires for
+        /// a registered local slot, and `load_global` only fires for an
+        /// eagerly-allocated module slot.
+        namespace_slot: u16,
         /// Whether this is a global slot (true) or a local/function slot (false).
-        ///
-        /// Ignored when `namespace_slot` is `None` (caching is skipped entirely).
         is_global: bool,
     },
 }
@@ -1014,7 +1011,7 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
                 }
                 Opcode::DeleteGlobal => {
                     let slot = cached_frame.fetch_u16();
-                    self.delete_global(slot);
+                    try_catch_sync!(self, cached_frame, self.delete_global(slot));
                 }
                 // Variables - Callable-context Local Loads
                 Opcode::LoadLocalCallable => {
@@ -1040,29 +1037,6 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
                 Opcode::StoreGlobal => {
                     let slot = cached_frame.fetch_u16();
                     self.store_global(slot);
-                }
-                Opcode::LoadGlobalByName => {
-                    let name_idx = cached_frame.fetch_u16();
-                    let name_id = StringId::from_index(name_idx);
-                    if let Some(frame_exit) = self.load_global_by_name(name_id) {
-                        self.current_frame_mut().ip = cached_frame.ip;
-                        return Ok(frame_exit);
-                    }
-                }
-                Opcode::LoadGlobalByNameCallable => {
-                    let name_idx = cached_frame.fetch_u16();
-                    let name_id = StringId::from_index(name_idx);
-                    self.load_global_by_name_callable(name_id);
-                }
-                Opcode::StoreGlobalByName => {
-                    let name_idx = cached_frame.fetch_u16();
-                    let name_id = StringId::from_index(name_idx);
-                    self.store_global_by_name(name_id);
-                }
-                Opcode::DeleteGlobalByName => {
-                    let name_idx = cached_frame.fetch_u16();
-                    let name_id = StringId::from_index(name_idx);
-                    try_catch_sync!(self, cached_frame, self.delete_global_by_name(name_id));
                 }
                 // Variables - Cell Operations (closures)
                 Opcode::LoadCell => {
@@ -2022,7 +1996,7 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
             let name_id = name.expect("LocalUnassigned should always have a name");
             return Ok(Some(FrameExit::NameLookup {
                 name_id,
-                namespace_slot: Some(slot),
+                namespace_slot: slot,
                 is_global: false,
             }));
         }
@@ -2161,7 +2135,7 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
             }
             Ok(Some(FrameExit::NameLookup {
                 name_id,
-                namespace_slot: Some(slot),
+                namespace_slot: slot,
                 is_global: true,
             }))
         } else {
@@ -2177,90 +2151,21 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
         old_value.drop_with_heap(self);
     }
 
-    /// Loads a global variable resolved by name rather than by precomputed slot.
+    /// Deletes a global variable (sets it to `Undefined`).
     ///
-    /// Used by [`Opcode::LoadGlobalByName`] for function-level Global references
-    /// whose module slot was not bound at compile time.
-    fn load_global_by_name(&mut self, name_id: StringId) -> Option<FrameExit> {
-        // `namespace_slot` is `Some(slot)` only when the name actually has a
-        // module slot; otherwise the host's resolution has nowhere to cache and
-        // the resume path skips the writeback. Critically, this prevents us from
-        // accidentally writing the host's response into `globals[0]` (the first
-        // module global) when the name is genuinely unknown to the module map.
-        let (slot, value) = match self.interns.global_slot(name_id) {
-            Some(slot) => (Some(slot), self.globals[slot as usize].clone_with_heap(self)),
-            None => (None, Value::Undefined),
-        };
-        if matches!(value, Value::Undefined) {
-            if let Some(builtin) = self.builtin_for_name(name_id) {
-                self.push(Value::Builtin(builtin));
-                return None;
-            }
-            Some(FrameExit::NameLookup {
-                name_id,
-                namespace_slot: slot,
-                is_global: true,
-            })
-        } else {
-            self.push(value);
-            None
+    /// Raises `NameError` if the slot is already `Undefined` — CPython has no
+    /// silent `del` at module scope. The slot may exist in `globals` (every
+    /// global reference allocates one in prepare) without ever having been
+    /// written, so we must distinguish "name has a slot but no value" from
+    /// "name has a value to delete".
+    fn delete_global(&mut self, slot: u16) -> RunResult<()> {
+        if matches!(self.globals[slot as usize], Value::Undefined) {
+            let name = self.current_frame().code.local_name(slot);
+            return Err(self.name_error(slot, name));
         }
-    }
-
-    /// Callable-context counterpart to [`load_global_by_name`].
-    ///
-    /// Pushes `Value::ExtFunction(name_id)` for undefined names instead of yielding
-    /// `NameLookup`, so the subsequent `CallFunction` opcode reaches the host as a
-    /// `FunctionCall` and can be served by an external function.
-    fn load_global_by_name_callable(&mut self, name_id: StringId) {
-        let value = match self.interns.global_slot(name_id) {
-            Some(slot) => self.globals[slot as usize].clone_with_heap(self),
-            None => Value::Undefined,
-        };
-        if matches!(value, Value::Undefined) {
-            if let Some(builtin) = self.builtin_for_name(name_id) {
-                self.push(Value::Builtin(builtin));
-                return;
-            }
-            self.ext_function_load_ip = Some(self.instruction_ip);
-            self.push(Value::ExtFunction(name_id));
-        } else {
-            self.push(value);
-        }
-    }
-
-    /// Pops the top of stack and stores it in a global, resolved by name.
-    ///
-    /// Every nested `global X` declaration is bubbled up to the module preparer
-    /// in `prepare::prepare_function_def` and materialized into the module's
-    /// `name_map` via `materialize_globals`, so by the time we get here the lookup
-    /// must succeed. A missing slot indicates a bug in that bubble-up chain.
-    fn store_global_by_name(&mut self, name_id: StringId) {
-        let slot = self
-            .interns
-            .global_slot(name_id)
-            .expect("StoreGlobalByName: name has no module slot (prepare-phase bug)");
-        self.store_global(slot);
-    }
-
-    /// Deletes a module global, resolved by name.
-    ///
-    /// Returns `NameError` if the name has no module slot — you can't delete a
-    /// name that was never bound.
-    fn delete_global_by_name(&mut self, name_id: StringId) -> RunResult<()> {
-        match self.interns.global_slot(name_id) {
-            Some(slot) => {
-                self.delete_global(slot);
-                Ok(())
-            }
-            None => Err(self.name_error(0, Some(name_id))),
-        }
-    }
-
-    /// Deletes a global variable (sets it to Undefined).
-    fn delete_global(&mut self, slot: u16) {
         let old_value = mem::replace(&mut self.globals[slot as usize], Value::Undefined);
         old_value.drop_with_heap(self);
+        Ok(())
     }
 
     /// Loads from a closure cell and pushes onto the stack.

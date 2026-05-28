@@ -293,15 +293,9 @@ impl<T: ResourceTracker> OsCall<T> {
 pub struct NameLookup<T: ResourceTracker> {
     /// The name being looked up.
     pub name: String,
-    /// Slot to cache the resolved value into, if any.
-    ///
-    /// `None` when the lookup came from a `LoadGlobalByName` for a name with no
-    /// module slot — `resume` then pushes the resolved value without writing it
-    /// to any namespace, so subsequent reads will re-resolve through the host.
-    namespace_slot: Option<u16>,
-    /// Whether `namespace_slot` (if any) is a global slot or a local/function slot.
-    ///
-    /// Ignored when `namespace_slot` is `None`.
+    /// Slot to cache the resolved value into.
+    namespace_slot: u16,
+    /// Whether `namespace_slot` is a global slot or a local/function slot.
     is_global: bool,
     /// Internal execution snapshot.
     snapshot: Snapshot<T>,
@@ -309,7 +303,7 @@ pub struct NameLookup<T: ResourceTracker> {
 
 impl<T: ResourceTracker> NameLookup<T> {
     /// Creates a new `NameLookup` from its parts.
-    fn new(name: String, namespace_slot: Option<u16>, is_global: bool, snapshot: Snapshot<T>) -> Self {
+    fn new(name: String, namespace_slot: u16, is_global: bool, snapshot: Snapshot<T>) -> Self {
         Self {
             name,
             namespace_slot,
@@ -360,21 +354,16 @@ impl<T: ResourceTracker> NameLookup<T> {
                             .to_value(&mut vm)
                             .map_err(|e| MontyException::runtime_error(format!("invalid name lookup result: {e}")))?;
 
-                        // Cache the resolved value when a target slot was given.
-                        // `LoadGlobalByName` for a name with no module slot sends
-                        // `None` here — we push without caching so the next call
-                        // re-resolves rather than silently writing to a wrong slot.
-                        if let Some(slot) = namespace_slot {
-                            let slot = slot as usize;
-                            let cloned = value.clone_with_heap(&vm);
-                            if is_global {
-                                let old = mem::replace(&mut vm.globals[slot], cloned);
-                                old.drop_with_heap(&mut vm);
-                            } else {
-                                let stack_base = vm.current_stack_base();
-                                let old = mem::replace(&mut vm.stack[stack_base + slot], cloned);
-                                old.drop_with_heap(&mut vm);
-                            }
+                        // Cache the resolved value in the appropriate slot.
+                        let slot = namespace_slot as usize;
+                        let cloned = value.clone_with_heap(&vm);
+                        if is_global {
+                            let old = mem::replace(&mut vm.globals[slot], cloned);
+                            old.drop_with_heap(&mut vm);
+                        } else {
+                            let stack_base = vm.current_stack_base();
+                            let old = mem::replace(&mut vm.stack[stack_base + slot], cloned);
+                            old.drop_with_heap(&mut vm);
                         }
 
                         vm.push(value);
@@ -686,12 +675,9 @@ pub(crate) enum ConvertedExit {
     /// Unresolved name lookup.
     NameLookup {
         name: String,
-        /// Slot to cache the resolved value into, if any.
-        ///
-        /// `None` when the lookup came from `LoadGlobalByName` for a name that
-        /// has no module slot — the resume path then pushes the value without
-        /// writing it anywhere. Mirrors [`FrameExit::NameLookup::namespace_slot`].
-        namespace_slot: Option<u16>,
+        /// Slot to cache the resolved value into. Mirrors
+        /// [`FrameExit::NameLookup::namespace_slot`].
+        namespace_slot: u16,
         is_global: bool,
     },
     /// Runtime error.

@@ -1191,17 +1191,13 @@ impl<'a> Compiler<'a> {
                 }
             }
             NameScope::Global => {
-                if let Some(slot) = ident.namespace_id_opt() {
-                    // Slot known at compile time — fast slot-based load.
-                    let slot = slot.as_u16();
-                    self.code.register_local_name(slot, ident.name_id);
-                    self.code.emit_u16(Opcode::LoadGlobal, slot)
-                } else {
-                    // Slot unknown at compile time — emit by-name opcode and let the VM
-                    // resolve via `Interns::global_slot` at dispatch time.
-                    let name_id_u16 = u16::try_from(ident.name_id.index()).expect("name_id exceeds u16");
-                    self.code.emit_u16(Opcode::LoadGlobalByName, name_id_u16)
-                }
+                // Slot was eagerly allocated by `get_id` (either reused from
+                // `name_map` or freshly allocated). `LoadGlobal` indexes
+                // directly; the runtime walks `globals → builtins → NameError`
+                // if the slot holds `Undefined`.
+                let slot = ident.namespace_id().as_u16();
+                self.code.register_local_name(slot, ident.name_id);
+                self.code.emit_u16(Opcode::LoadGlobal, slot)
             }
             NameScope::Cell => {
                 // Register the name for NameError messages (unbound free variable)
@@ -1249,16 +1245,11 @@ impl<'a> Compiler<'a> {
     fn compile_name_callable(&mut self, ident: &Identifier) -> Result<(), CompileError> {
         match ident.scope {
             NameScope::Global => {
-                if let Some(slot) = ident.namespace_id_opt() {
-                    // Slot known at compile time. `name_id` rides in the operand
-                    // because global and local slot spaces don't share the same
-                    // `local_names` table — looking up by slot in the current
-                    // frame would name the wrong thing.
-                    self.code.emit_load_global_callable(slot.as_u16(), ident.name_id)
-                } else {
-                    let name_id_u16 = u16::try_from(ident.name_id.index()).expect("name_id exceeds u16");
-                    self.code.emit_u16(Opcode::LoadGlobalByNameCallable, name_id_u16)
-                }
+                // `name_id` rides in the operand because global and local slot
+                // spaces don't share the same `local_names` table — looking up
+                // by slot in the current frame would name the wrong thing.
+                self.code
+                    .emit_load_global_callable(ident.namespace_id().as_u16(), ident.name_id)
             }
             // Local, Cell, and CompVar can't be external functions - use regular load
             NameScope::Local | NameScope::Cell | NameScope::CompVar => self.compile_name(ident),
@@ -1280,14 +1271,7 @@ impl<'a> Compiler<'a> {
                     self.code.emit_store_local(slot)
                 }
             }
-            NameScope::Global => {
-                if let Some(slot) = target.namespace_id_opt() {
-                    self.code.emit_u16(Opcode::StoreGlobal, slot.as_u16())
-                } else {
-                    let name_id_u16 = u16::try_from(target.name_id.index()).expect("name_id exceeds u16");
-                    self.code.emit_u16(Opcode::StoreGlobalByName, name_id_u16)
-                }
-            }
+            NameScope::Global => self.code.emit_u16(Opcode::StoreGlobal, target.namespace_id().as_u16()),
             NameScope::Cell => {
                 // Emit local slot index — the VM reads the cell HeapId from the stack
                 let slot = target.namespace_id().as_u16();
@@ -3723,12 +3707,8 @@ impl<'a> Compiler<'a> {
                 }
             }
             NameScope::Global => {
-                if let Some(slot) = target.namespace_id_opt() {
-                    self.code.emit_u16(Opcode::DeleteGlobal, slot.as_u16())?;
-                } else {
-                    let name_id_u16 = u16::try_from(target.name_id.index()).expect("name_id exceeds u16");
-                    self.code.emit_u16(Opcode::DeleteGlobalByName, name_id_u16)?;
-                }
+                self.code
+                    .emit_u16(Opcode::DeleteGlobal, target.namespace_id().as_u16())?;
             }
             NameScope::Cell => {
                 // Delete cell not commonly needed

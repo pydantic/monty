@@ -9,7 +9,7 @@ use crate::{
     bytecode::{Code, Compiler, FrameExit, VM},
     exception_private::RunResult,
     heap::{DropWithHeap, Heap, HeapReader},
-    intern::{InternerBuilder, Interns, StringId},
+    intern::{InternerBuilder, Interns},
     io::PrintWriter,
     namespace::NamespaceId,
     object::MontyObject,
@@ -233,7 +233,6 @@ impl Executor {
 
         // Create interns with empty functions (functions will be set after compilation)
         let mut interns = Interns::new(prepared.interner, Vec::new());
-        interns.set_global_slots(build_global_slots(&prepared.name_map, &interns));
 
         // Compile the module to bytecode, which also compiles all nested functions.
         // The compiler enforces the bytecode-format namespace-size limit and reports
@@ -300,7 +299,6 @@ impl Executor {
 
         let existing_functions = existing_interns.functions_clone();
         let mut interns = Interns::new(prepared.interner, Vec::new());
-        interns.set_global_slots(build_global_slots(&prepared.name_map, &interns));
         let compile_result = Compiler::compile_module_with_functions(
             &prepared.nodes,
             &interns,
@@ -513,29 +511,6 @@ impl Executor {
         }
         Ok(())
     }
-}
-
-/// Builds the `StringId → slot` map that the VM uses for by-name global access.
-///
-/// The executor's `name_map` is keyed by raw strings (so it can be populated and
-/// inspected without an interner), but the bytecode encodes names as `StringId`s.
-/// This helper translates between the two by interning each name once at executor
-/// construction, giving the runtime a hash table that needs no string lookup on
-/// the hot dispatch path.
-///
-/// Every name in `name_map` should already be in `interns` because preparation
-/// interned them while walking the AST; if a name fails to round-trip, that's
-/// either a fresh REPL input slot that the interner hasn't seen yet (skipped —
-/// inputs are always slot-based) or a bug.
-fn build_global_slots(name_map: &AHashMap<String, NamespaceId>, interns: &Interns) -> AHashMap<StringId, u16> {
-    let mut out = AHashMap::with_capacity(name_map.len());
-    for (name, &namespace_id) in name_map {
-        if let Some(string_id) = interns.get_string_id_by_name(name) {
-            let slot = u16::try_from(namespace_id.index()).expect("global slot exceeds u16");
-            out.insert(string_id, slot);
-        }
-    }
-    out
 }
 
 /// Converts module/frame exit results into plain `MontyObject` outputs.

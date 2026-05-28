@@ -224,16 +224,14 @@ fn resolved_name_is_cached() {
     assert_eq!(call_count, 2, "should get FunctionCall for each ext() call");
 }
 
-/// A non-function constant referenced multiple times is resolved each time.
+/// A non-function constant resolved once is cached for subsequent references.
 ///
-/// `X` is never assigned, so module-scope name resolution emits a slot-less
-/// `Global` identifier and the compiler routes through `LoadGlobalByName`.
-/// Without a module slot to cache into, the host gets asked once per reference
-/// — matching CPython's non-inline-cached `LOAD_GLOBAL` behaviour. (If we ever
-/// add inline caching this could be reduced to one lookup; see [`Option C`] in
-/// the design notes for `prepare::resolve_name_or_builtin`.)
+/// Prepare eagerly allocates a module slot for every `Global` reference
+/// (including unresolved ones like `X`), so the host's response from the
+/// first `NameLookup` lands in `globals[X_slot]`. The second reference reads
+/// the same slot directly without yielding another `NameLookup`.
 #[test]
-fn resolved_constant_is_not_cached_without_slot() {
+fn resolved_constant_is_cached() {
     let code = "X + X".to_owned();
     let runner = MontyRun::new(code, "test.py", vec![]).unwrap();
     let mut progress = runner.start(vec![], NoLimitTracker, PrintWriter::Stdout).unwrap();
@@ -253,7 +251,7 @@ fn resolved_constant_is_not_cached_without_slot() {
             other => panic!("unexpected progress: {other:?}"),
         }
     }
-    assert_eq!(lookup_count, 2, "no slot to cache into → one lookup per reference");
+    assert_eq!(lookup_count, 1, "first resolution caches into the slot");
 }
 
 // ---------------------------------------------------------------------------
@@ -508,28 +506,20 @@ sorted([1], key=lambda x: x+1)
     assert_eq!(value, MontyObject::List(vec![MontyObject::Int(1)]));
 }
 
-/// A function-scope reference to a name with no module slot must not let the
-/// host's `NameLookupResult::Value` write into `globals[0]`.
+/// A function-scope reference to an unresolved name resolves into its own
+/// freshly-allocated module slot, not into another global's slot.
 ///
-/// Regression: `LoadGlobalByName` for a missing name used to yield
-/// `NameLookup` with `namespace_slot = 0` as a placeholder, and the resume
-/// path would dutifully `mem::replace(&mut vm.globals[0], …)`, silently
-/// overwriting the first module global. The fix is to thread the slot as
-/// `Option<u16>` so the resume path can skip the writeback entirely when no
-/// slot was reserved.
-///
-/// We pick a script where the module's first global (`real_value` → slot 0)
-/// is exactly what would be clobbered, and assert it survives the host
-/// supplying a string for `mystery`.
+/// Regression: an earlier draft of the by-name path yielded
+/// `NameLookup` with `namespace_slot = 0` as a placeholder for unresolved
+/// names, and the resume path would dutifully `mem::replace(&mut
+/// vm.globals[0], …)`, silently overwriting the first module global. The
+/// final design eagerly allocates a distinct slot for `mystery` (slot 3
+/// here), so the resume caches into `globals[3]` and `real_value` (slot 0)
+/// is untouched.
 #[test]
-fn name_lookup_with_no_module_slot_does_not_clobber_globals() {
-    // Layout:
-    //   slot 0: real_value (= 'preserved' before f() runs)
-    //   slot 1: f
-    //   slot 2: result
-    //  `mystery` is never bound at module scope and isn't a builtin, so the
-    //  function-level reference compiles to `LoadGlobalByName(mystery)` with
-    //  no module slot — the dangerous case.
+fn name_lookup_caches_into_its_own_slot() {
+    // Layout (post-prepare): slot 0 = real_value, slot 1 = f, slot 2 = result,
+    // slot 3 = mystery (allocated eagerly by the reference inside `f`).
     let code = "real_value = 'preserved'
 def f():
     return mystery
@@ -568,12 +558,12 @@ result = f()
     assert_eq!(lookup_count, 1);
 }
 
-/// Companion to the previous test: repeated calls to the same function each
-/// re-trigger `NameLookup` because there's no slot to cache the answer into.
-/// This documents the cost of the by-name slow path so it's visible if/when
-/// inline caching lands.
+/// Companion to the previous test: repeated calls to the same function
+/// share a cached resolution because every Global reference gets a real
+/// module slot eagerly allocated in prepare, and the first `NameLookup`
+/// caches into that slot.
 #[test]
-fn name_lookup_with_no_module_slot_does_not_cache_across_calls() {
+fn name_lookup_caches_across_calls() {
     let code = "def f():
     return mystery
 f()
@@ -594,5 +584,8 @@ f()"
             other => panic!("unexpected progress: {other:?}"),
         }
     }
-    assert_eq!(lookup_count, 2, "no caching means every call asks the host again");
+    assert_eq!(
+        lookup_count, 1,
+        "first resolution caches into the slot; second call reads it"
+    );
 }
