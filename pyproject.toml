@@ -39,6 +39,13 @@ extend-exclude = [
     "crates/monty/test_cases/type__float_repr_both_quotes.py",
 ]
 
+[tool.uv]
+# this is a monorepo without a root package
+package = false
+# https://docs.astral.sh/uv/reference/settings/#exclude-newer
+# make sure to use relative durations:
+exclude-newer = "7 days"
+
 [tool.ruff.lint]
 extend-select = [
     "Q",      # https://docs.astral.sh/ruff/rules/#flake8-quotes-q

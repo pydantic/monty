@@ -214,6 +214,59 @@ mod keyword_argument_limits {
     }
 }
 
+/// Generates a list comprehension with `count` `for` clauses.
+///
+/// Creates: `[0 for x0 in [0] for x1 in [0] ... for x{count-1} in [0]]`. The
+/// compiler used to recurse once per generator with no up-front guard, so a
+/// large `count` would overflow the Rust call stack during compilation,
+/// before any runtime resource limits applied.
+fn generate_comprehension_with_generators(count: usize) -> String {
+    let mut code = String::from("x = [0");
+    for i in 0..count {
+        write!(code, " for x{i} in [0]").unwrap();
+    }
+    code.push(']');
+    code
+}
+
+mod comprehension_generator_limits {
+    use super::*;
+
+    #[test]
+    fn small_comprehension_succeeds() {
+        // Each generator with a simple `for x in iter` target adds two items
+        // to the operand stack (the iterator and the target leaf), so the
+        // practical compile-time limit from the u8 `ListAppend` depth
+        // operand is around 127. 50 is comfortably inside that window.
+        let code = generate_comprehension_with_generators(50);
+        let result = MontyRun::new(code, "test.py", vec![]);
+        assert!(
+            result.is_ok(),
+            "50 comprehension generators should compile successfully"
+        );
+    }
+
+    #[test]
+    fn generators_exceeding_max_returns_syntax_error() {
+        // Above `MAX_COMP_GENERATORS` the compiler rejects with our
+        // dedicated message before recursing into per-clause compilation.
+        let code = generate_comprehension_with_generators(256);
+        let result = MontyRun::new(code, "test.py", vec![]);
+        assert_syntax_error(result, "comprehension has too many nested clauses (256)");
+    }
+
+    #[test]
+    fn many_generators_returns_syntax_error_not_stack_overflow() {
+        // A comprehension with thousands of clauses used to crash the
+        // compiler with a Rust stack overflow during MontyRun::new because
+        // `compile_comprehension_generators` recursed once per clause with
+        // no up-front guard.
+        let code = generate_comprehension_with_generators(5000);
+        let result = MontyRun::new(code, "test.py", vec![]);
+        assert_syntax_error(result, "comprehension has too many nested clauses (5000)");
+    }
+}
+
 mod function_parameter_limits {
     use super::*;
 
