@@ -4,32 +4,33 @@
 //! When a Property is retrieved via `py_getattr`, its getter is invoked
 //! rather than returning the Property itself.
 
-use crate::{args::ArgValues, bytecode::CallResult, os::OsFunction};
+use crate::{bytecode::CallResult, os::OsFunctionCall};
 
-/// Property descriptor for computed attributes.
+/// Property descriptor for computed attributes (mirrors Python's descriptor
+/// protocol — accessing the property invokes its getter).
 ///
-/// This mirrors Python's descriptor protocol for properties. When accessed,
-/// the property's getter is invoked to compute the value.
-///
-/// # Variants
-///
-/// Currently only supports OS properties. Future variants:
-/// - `Callable(FunctionId)` - user-defined getter functions (@property)
-/// - `External(StringId)` - external function getters
+/// Currently only supports zero-arg OS properties (e.g. `os.environ`).
+/// Future variants will likely add `Callable(FunctionId)` for `@property`
+/// and `External(StringId)` for external function getters.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub(crate) enum Property {
-    /// A property backed by an OS function (e.g., `os.environ`).
-    Os(OsFunction),
+    Os(ZeroArgOsProperty),
+}
+
+/// Discriminant for zero-arg OS-backed [`Property`]s. Kept `Copy` so
+/// `Property` stays `Copy + Hash`; the matching [`OsFunctionCall`] (which
+/// is not `Copy`) is built on access in [`Property::get`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub(crate) enum ZeroArgOsProperty {
+    /// `os.environ` — returns the host environment as a dict.
+    GetEnviron,
 }
 
 impl Property {
-    /// Invokes the property getter, returning the appropriate `CallResult`.
-    ///
-    /// For OS properties, returns `CallResult::OsCall` to signal the VM
-    /// should yield to the host for the value.
+    /// Invokes the getter, returning the `CallResult` the VM should act on.
     pub fn get(self) -> CallResult {
         match self {
-            Self::Os(os_fn) => CallResult::OsCall(os_fn, ArgValues::Empty),
+            Self::Os(ZeroArgOsProperty::GetEnviron) => CallResult::OsCall(OsFunctionCall::GetEnviron),
         }
     }
 }

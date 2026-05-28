@@ -314,7 +314,7 @@ impl Type {
             (Self::Date, m) if m == StaticStrings::Fromisoformat => {
                 date::class_fromisoformat(vm.heap, args, vm.interns).map(AttrCallResult::Value)
             }
-            (Self::DateTime, m) if m == StaticStrings::Now => datetime::class_now(vm.heap, args, vm.interns),
+            (Self::DateTime, m) if m == StaticStrings::Now => datetime::class_now(vm, args),
             (Self::DateTime, m) if m == StaticStrings::Strptime => {
                 datetime::class_strptime(vm.heap, args, vm.interns).map(AttrCallResult::Value)
             }

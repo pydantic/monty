@@ -9,15 +9,16 @@
 //! which executes the operation and returns the result.
 
 use crate::{
-    args::ArgValues,
+    MontyObject,
+    args::{ArgValues, FromArgs},
     bytecode::{CallResult, VM},
-    exception_private::{ExcType, RunResult},
+    exception_private::RunResult,
     heap::{HeapData, HeapId},
     intern::StaticStrings,
     modules::ModuleFunctions,
-    os::OsFunction,
+    os::{GetenvArgs, OsFunctionCall},
     resource::{ResourceError, ResourceTracker},
-    types::{Module, Property, PyTrait},
+    types::{Module, Property, property::ZeroArgOsProperty},
     value::Value,
 };
 
@@ -54,7 +55,7 @@ pub fn create_module(vm: &mut VM<'_, impl ResourceTracker>) -> Result<HeapId, Re
     // os.environ - property that returns the entire environment as a dict
     module.set_attr(
         StaticStrings::Environ,
-        Value::Property(Property::Os(OsFunction::GetEnviron)),
+        Value::Property(Property::Os(ZeroArgOsProperty::GetEnviron)),
         vm,
     );
 
@@ -77,40 +78,27 @@ pub(super) fn call(
 
 /// Implementation of `os.getenv(key, default=None)`.
 ///
-/// Returns the value of the environment variable `key` if it exists, or `default` if it doesn't.
-/// This function yields to the host to perform the actual environment lookup.
-///
-/// # Arguments
-/// * `heap` - The heap for any allocations
-/// * `args` - Function arguments: `key` (required string), `default` (optional, defaults to None)
-///
-/// # Returns
-/// `CallResult::OsCall` with `OsFunction::Getenv` - the host should look up the
-/// environment variable and return the value, or the default if not found.
-///
-/// # Errors
-/// Returns `TypeError` if:
-/// - No arguments are provided
-/// - More than 2 arguments are provided
-/// - `key` is not a string
+/// Parsing goes through a small `FromArgs`-derived struct so type validation
+/// (key must be str) and arity checks (1-or-2 args) use the same machinery
+/// as the rest of the codebase; the `default` field is then snapshotted into
+/// a [`MontyObject`] so it can travel with the OS call across the boundary.
 fn getenv(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<CallResult> {
-    // getenv(key, default=None) - accepts 1 or 2 positional arguments
-    let (key, default) = args.get_one_two_args("os.getenv", vm.heap)?;
+    let GetenvParseArgs { key, default } = GetenvParseArgs::from_args(args, vm.heap, vm.interns)?;
+    let default = MontyObject::new(default, vm);
+    Ok(CallResult::OsCall(OsFunctionCall::Getenv(GetenvArgs { key, default })))
+}
 
-    // Validate key is a string
-    if key.is_str(vm.heap) {
-        // Build args to pass to host: (key, default)
-        // The default is Value::None if not provided
-        let final_default = default.unwrap_or(Value::None);
-        let args = ArgValues::Two(key, final_default);
-
-        Ok(CallResult::OsCall(OsFunction::Getenv, args))
-    } else {
-        let type_name = key.py_type(vm);
-        key.drop_with_heap(vm);
-        if let Some(d) = default {
-            d.drop_with_heap(vm);
-        }
-        Err(ExcType::type_error(format!("str expected, not {type_name}")))
-    }
+/// `FromArgs`-side shape for `os.getenv`. Distinct from [`GetenvArgs`] (the
+/// OS-call payload) because `default` is parsed as a raw `Value` here and
+/// then projected into a `MontyObject` for the payload — a projection that
+/// needs `MontyObject::new(value, vm)` and therefore can't be expressed
+/// through `FromArgs` alone today (the `FromValue` trait surface only has
+/// `&mut Heap + &Interns`, not the `HeapReader` + interns that
+/// `MontyObject::new` needs to walk container heap entries).
+#[derive(FromArgs)]
+#[from_args(name = "os.getenv", bad_arg_named)]
+struct GetenvParseArgs {
+    key: String,
+    #[from_args(default = Value::None)]
+    default: Value,
 }

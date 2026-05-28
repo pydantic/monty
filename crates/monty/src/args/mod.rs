@@ -1,9 +1,11 @@
 mod from_value;
+mod to_monty_object;
 
 use std::{mem, slice, vec::IntoIter};
 
 pub(crate) use from_value::FromValue;
-pub(crate) use monty_macros::FromArgs;
+pub(crate) use monty_macros::{FromArgs, ToArgs};
+pub(crate) use to_monty_object::ToMontyObject;
 
 use crate::{
     MontyObject, ResourceTracker,
@@ -16,6 +18,16 @@ use crate::{
     types::{Dict, dict::DictIntoIter},
     value::Value,
 };
+
+/// Projects a typed args struct into the `(positional, keyword)` `MontyObject`
+/// pair host callbacks expect. Consumes `self` to avoid cloning owned fields.
+///
+/// Inverse of [`FromArgs`]: `FromArgs` is internal `ArgValues` → struct,
+/// `ToArgs` is struct → host-facing `(args, kwargs)`. Driven by
+/// [`crate::os::OsFunctionCall::to_args`] for the monty-python / monty-js bindings.
+pub trait ToArgs {
+    fn to_args(self) -> (Vec<MontyObject>, Vec<(MontyObject, MontyObject)>);
+}
 
 /// Type for method call arguments.
 ///

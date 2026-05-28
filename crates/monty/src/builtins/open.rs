@@ -16,9 +16,9 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, RunError, RunResult, SimpleException},
     heap::{HeapData, HeapGuard},
-    os::OsFunction,
+    os::{MontyPath, OpenCallArgs, OsFunctionCall},
     resource::ResourceTracker,
-    types::{PyTrait, file::FileMode, str::allocate_string},
+    types::{PyTrait, file::FileMode},
     value::Value,
 };
 
@@ -70,12 +70,10 @@ pub(crate) fn builtin_open(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValue
         .parse::<FileMode>()
         .map_err(|e| RunError::from(SimpleException::new_msg(ExcType::ValueError, e)))?;
 
-    let path_value = allocate_string(path, vm.heap)?;
-    let mode_value = allocate_string(file_mode.as_str().to_owned(), vm.heap)?;
-    Ok(CallResult::OsCall(
-        OsFunction::Open,
-        ArgValues::Two(path_value, mode_value),
-    ))
+    Ok(CallResult::OsCall(OsFunctionCall::Open(OpenCallArgs {
+        path: MontyPath::new(path),
+        mode: file_mode,
+    })))
 }
 
 /// Argument shape for `open(file, mode='r', buffering=-1, encoding=None,

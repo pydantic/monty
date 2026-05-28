@@ -17,7 +17,7 @@ use crate::{
     heap::{ContainsHeap, DropWithHeap, HeapData, HeapGuard, HeapId},
     heap_data::CellValue,
     intern::{FunctionId, StaticStrings, StringId},
-    os::OsFunction,
+    os::OsFunctionCall,
     resource::ResourceTracker,
     types::{Dict, PyTrait, Type, bytes::call_bytes_method, str::call_str_method},
     value::{EitherStr, Value},
@@ -43,7 +43,9 @@ pub(crate) enum CallResult {
     /// OS operation call requested - VM should yield `FrameExit::OsCall` to host.
     ///
     /// The host executes the OS operation and resumes the VM with the result.
-    OsCall(OsFunction, ArgValues),
+    /// The [`OsFunctionCall`] is a tagged enum whose variants carry their own
+    /// typed args, so no separate `ArgValues` is needed at this layer.
+    OsCall(OsFunctionCall),
     /// Dataclass method call requested - VM should yield `FrameExit::MethodCall` to host.
     ///
     /// The method name (e.g. `"distance"`) and the args include the dataclass instance
@@ -67,21 +69,25 @@ pub(crate) enum CallResult {
     /// [`ReadSpec`](crate::types::ReadSpec) to compute the slice that becomes
     /// the call's return value.
     ///
-    /// The OS-call args are always `ArgValues::One(Value::Ref(file_id))`. The
-    /// per-call slice spec lives on the `OpenFile` itself (in `pending_read`),
-    /// so this variant only needs to carry the file id and the OS function.
-    OsCallStoreBuffer { function: OsFunction, file_id: HeapId },
+    /// The OS-call payload is a [`OsFunctionCall::ReadText`] /
+    /// [`OsFunctionCall::ReadBytes`] (the only legal variants here) carrying
+    /// the file's virtual path; the per-call slice spec lives on the
+    /// `OpenFile` itself (in `pending_read`), so this variant only needs to
+    /// carry the typed call plus the file id used to look up the buffer slot.
+    OsCallStoreBuffer { call: OsFunctionCall, file_id: HeapId },
 }
 
 impl DropWithHeap for CallResult {
     fn drop_with_heap<H: ContainsHeap>(self, heap: &mut H) {
         match self {
             Self::Value(value) | Self::AwaitValue(value) => value.drop_with_heap(heap),
-            Self::External(_, args) | Self::OsCall(_, args) | Self::MethodCall(_, args) => {
+            Self::External(_, args) | Self::MethodCall(_, args) => {
                 args.drop_with_heap(heap);
             }
+            Self::OsCall(call) => call.drop_with_heap(heap),
             Self::FramePushed => {}
-            Self::OsCallStoreBuffer { file_id, .. } => {
+            Self::OsCallStoreBuffer { call, file_id } => {
+                call.drop_with_heap(heap);
                 let heap = heap.heap_mut();
                 heap.dec_ref(file_id);
                 heap.dec_ref(file_id);

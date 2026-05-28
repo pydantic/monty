@@ -8,28 +8,29 @@
 
 use monty::{
     ExcType, ExtFunctionResult, FileMode, MontyException, MontyFileHandle, MontyObject, MontyRun, NoLimitTracker,
-    OsFunction, PrintWriter,
+    PrintWriter,
 };
 
 /// Drives an `open()` followed by a single read/write OS call, then resumes
 /// the second call with the caller-provided result. Returns the final
 /// `Complete` value. Both OS calls are matched against the expected function
-/// names so a regression in dispatch fails the test loudly.
+/// names (compared by stable [`OsFunctionCall::name`] string) so a regression
+/// in dispatch fails the test loudly.
 fn run_with_open_then_io(
     code: &str,
-    expected_io_fn: OsFunction,
+    expected_io_fn_name: &str,
     file_handle: MontyFileHandle,
     io_result: ExtFunctionResult,
 ) -> Result<MontyObject, MontyException> {
     let runner = MontyRun::new(code.to_owned(), "test.py", vec![]).unwrap();
     let progress = runner.start(vec![], NoLimitTracker, PrintWriter::Stdout).unwrap();
     let open_call = progress.into_os_call().expect("expected Open OsCall");
-    assert_eq!(open_call.function, OsFunction::Open);
+    assert_eq!(open_call.function_call.name(), "Open");
     let progress = open_call
         .resume(MontyObject::FileHandle(file_handle), PrintWriter::Stdout)
         .unwrap();
     let io_call = progress.into_os_call().expect("expected follow-up OsCall");
-    assert_eq!(io_call.function, expected_io_fn);
+    assert_eq!(io_call.function_call.name(), expected_io_fn_name);
     let progress = io_call.resume(io_result, PrintWriter::Stdout)?;
     Ok(progress.into_complete().expect("expected Complete after resume"))
 }
@@ -59,7 +60,7 @@ except OSError as exc:
 result
 ";
     let host_exc = MontyException::new(ExcType::OSError, Some("disk on fire".to_owned()));
-    let result = run_with_open_then_io(code, OsFunction::ReadText, file_handle("/x.txt", "r"), host_exc.into())
+    let result = run_with_open_then_io(code, "Path.read_text", file_handle("/x.txt", "r"), host_exc.into())
         .expect("script should complete after catching the host error");
     assert_eq!(result, MontyObject::String("disk on fire".to_owned()));
 }
@@ -85,7 +86,7 @@ f.readline()
         .resume(MontyObject::FileHandle(file_handle("/x.txt", "r")), PrintWriter::Stdout)
         .unwrap();
     let read_call = progress.into_os_call().expect("expected ReadText OsCall");
-    assert_eq!(read_call.function, OsFunction::ReadText);
+    assert_eq!(read_call.function_call.name(), "Path.read_text");
     // Fail the first ReadText.
     let host_exc = MontyException::new(ExcType::OSError, Some("transient".to_owned()));
     let progress = read_call
@@ -93,7 +94,7 @@ f.readline()
         .unwrap();
     // Retry should issue a second ReadText now that pending_read was cleared.
     let retry_call = progress.into_os_call().expect("expected retry OsCall");
-    assert_eq!(retry_call.function, OsFunction::ReadText);
+    assert_eq!(retry_call.function_call.name(), "Path.read_text");
     let final_progress = retry_call
         .resume(MontyObject::String("alpha\nbeta\n".to_owned()), PrintWriter::Stdout)
         .unwrap();
@@ -119,13 +120,8 @@ after
     let host_exc = MontyException::new(ExcType::OSError, Some("device full".to_owned()));
     // `w` mode pre-truncates at open time, so the first user write actually
     // emits AppendText (see `OpenFile::with_state` setting `first_write_done`).
-    let result = run_with_open_then_io(
-        code,
-        OsFunction::AppendText,
-        file_handle("/x.txt", "w"),
-        host_exc.into(),
-    )
-    .expect("script should complete after catching the host error");
+    let result = run_with_open_then_io(code, "Path.append_text", file_handle("/x.txt", "w"), host_exc.into())
+        .expect("script should complete after catching the host error");
     // tell() must read 0 — the failed write was rolled back.
     assert_eq!(
         result,
@@ -144,13 +140,8 @@ except OSError:
 f.tell()
 ";
     let host_exc = MontyException::new(ExcType::OSError, Some("io".to_owned()));
-    let result = run_with_open_then_io(
-        code,
-        OsFunction::AppendBytes,
-        file_handle("/x.bin", "wb"),
-        host_exc.into(),
-    )
-    .expect("script should complete");
+    let result = run_with_open_then_io(code, "Path.append_bytes", file_handle("/x.bin", "wb"), host_exc.into())
+        .expect("script should complete");
     assert_eq!(result, MontyObject::Int(0));
 }
 
@@ -170,7 +161,7 @@ f.read(5)
 ";
     let result = run_with_open_then_io(
         code,
-        OsFunction::ReadText,
+        "Path.read_text",
         file_handle("/empty.txt", "r"),
         MontyObject::String(String::new()).into(),
     )
@@ -186,7 +177,7 @@ f.read(5)
 ";
     let result = run_with_open_then_io(
         code,
-        OsFunction::ReadBytes,
+        "Path.read_bytes",
         file_handle("/empty.bin", "rb"),
         MontyObject::Bytes(Vec::new()).into(),
     )
@@ -215,7 +206,7 @@ result
     // Host returns a string for the byte count — should raise TypeError.
     let result = run_with_open_then_io(
         code,
-        OsFunction::AppendText,
+        "Path.append_text",
         file_handle("/x.txt", "w"),
         MontyObject::String("oops".to_owned()).into(),
     )

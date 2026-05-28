@@ -23,7 +23,7 @@ use crate::{
     hash::HashValue,
     heap::{DropWithHeap, HeapId},
     intern::StringId,
-    os::OsFunction,
+    os::OsFunctionCall,
     resource::ResourceTracker,
     value::{EitherStr, Value},
 };
@@ -47,7 +47,7 @@ pub enum AttrCallResult {
     ///
     /// The host executes the OS operation and resumes the VM with the result.
     /// Used by `Path` filesystem methods like `exists()`, `read_text()`, etc.
-    OsCall(OsFunction, ArgValues),
+    OsCall(OsFunctionCall),
 
     /// The method needs to call an external function. VM should yield `FrameExit::ExternalCall`.
     ///
@@ -61,7 +61,7 @@ impl From<AttrCallResult> for CallResult {
     fn from(result: AttrCallResult) -> Self {
         match result {
             AttrCallResult::Value(v) => Self::Value(v),
-            AttrCallResult::OsCall(func, args) => Self::OsCall(func, args),
+            AttrCallResult::OsCall(call) => Self::OsCall(call),
             AttrCallResult::ExternalCall(ext_id, args) => Self::External(EitherStr::Interned(ext_id), args),
         }
     }

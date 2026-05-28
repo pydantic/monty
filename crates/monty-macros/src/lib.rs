@@ -1,12 +1,14 @@
 //! Procedural macros for the `monty` Python interpreter.
 //!
-//! Currently provides only `#[derive(FromArgs)]`, which generates argument
-//! extraction code from a struct definition. See the trait `monty::args::FromArgs`
-//! and the docs on the derive macro for details.
+//! - `#[derive(FromArgs)]` — `ArgValues` → typed struct.
+//! - `#[derive(ToArgs)]` — typed struct → `(Vec<MontyObject>, kwargs)`.
+//!
+//! See the trait docs in `monty::args` and the per-derive docs below.
 
 use proc_macro::TokenStream;
 
 mod from_args;
+mod to_args;
 
 /// Derives `FromArgs::from_args` for a struct, producing the body of a function
 /// that consumes an `ArgValues` and populates each field of the struct.
@@ -50,6 +52,20 @@ mod from_args;
 pub fn derive_from_args(input: TokenStream) -> TokenStream {
     let input = syn::parse_macro_input!(input as syn::DeriveInput);
     from_args::expand(&input)
+        .unwrap_or_else(syn::Error::into_compile_error)
+        .into()
+}
+
+/// Derives `ToArgs::to_args` — projects a struct into
+/// `(Vec<MontyObject>, Vec<(MontyObject, MontyObject)>)`.
+///
+/// Reuses `#[from_args(...)]` field attributes (`pos_only`, `kw_only`,
+/// `varargs`) so structs that derive both stay consistent in both directions.
+/// Each field type must implement `monty::args::ToMontyObject`.
+#[proc_macro_derive(ToArgs, attributes(from_args))]
+pub fn derive_to_args(input: TokenStream) -> TokenStream {
+    let input = syn::parse_macro_input!(input as syn::DeriveInput);
+    to_args::expand(&input)
         .unwrap_or_else(syn::Error::into_compile_error)
         .into()
 }

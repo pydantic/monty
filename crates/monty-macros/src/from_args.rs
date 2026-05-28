@@ -154,7 +154,7 @@ struct Field {
 
 /// Role of a field in the signature.
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
-enum FieldKind {
+pub(crate) enum FieldKind {
     /// Accepts either positional or keyword.
     #[default]
     PosOrKeyword,
@@ -169,7 +169,7 @@ enum FieldKind {
 }
 
 /// Source of a field's default value.
-enum DefaultExpr {
+pub(crate) enum DefaultExpr {
     /// `#[from_args(default)]` — call `Default::default()`.
     DefaultTrait,
     /// `#[from_args(default = <expr>)]` — evaluate `<expr>`.
@@ -1301,13 +1301,13 @@ fn parse_struct_attrs(attrs: &[syn::Attribute]) -> syn::Result<StructAttrs> {
 }
 
 #[derive(Default)]
-struct FieldAttrs {
-    kind: FieldKind,
-    default: Option<DefaultExpr>,
-    static_string: Option<Ident>,
+pub(crate) struct FieldAttrs {
+    pub(crate) kind: FieldKind,
+    pub(crate) default: Option<DefaultExpr>,
+    pub(crate) static_string: Option<Ident>,
 }
 
-fn parse_field_attrs(attrs: &[syn::Attribute]) -> syn::Result<FieldAttrs> {
+pub(crate) fn parse_field_attrs(attrs: &[syn::Attribute]) -> syn::Result<FieldAttrs> {
     let mut out = FieldAttrs::default();
     let mut seen_role = false;
     for attr in attrs {

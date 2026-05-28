@@ -21,9 +21,10 @@ use crate::{
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, RunResult, SimpleException},
     hash::HashValue,
-    heap::{Heap, HeapData, HeapId, HeapItem, HeapRead},
+    heap::{DropWithHeap, Heap, HeapData, HeapId, HeapItem, HeapRead},
     intern::{Interns, StaticStrings},
-    os::OsFunction,
+    object::MontyObject,
+    os::OsFunctionCall,
     resource::{ResourceError, ResourceTracker},
     types::{
         AttrCallResult, PyTrait, TimeDelta, TimeZone, Type,
@@ -242,20 +243,28 @@ struct DatetimeInitArgs {
     tzinfo: Value,
 }
 
-/// Classmethod implementation for `datetime.now(tz=None)`.
+/// Classmethod implementation for `datetime.now(tz=None)`. Yields a
+/// `DateTimeNow` OS call with `tz` projected to [`MontyObject`] at the
+/// producer site (so the host sees a typed value directly).
 ///
-/// Issues a `DateTimeNow` OS call with one argument: the timezone value
-/// (`Value::None` for naive, `Value::Ref` to a `TimeZone` for aware).
-/// The host should return `MontyObject::DateTime` directly.
-pub(crate) fn class_now(
-    heap: &mut Heap<impl ResourceTracker>,
-    args: ArgValues,
-    interns: &Interns,
-) -> RunResult<AttrCallResult> {
-    let (pos, kwargs) = args.into_parts();
-    defer_drop_mut!(pos, heap);
-    let kwargs = kwargs.into_iter();
-    defer_drop_mut!(kwargs, heap);
+/// Takes `&mut VM` rather than `&mut Heap` because the projection needs
+/// `MontyObject::new` to walk heap-allocated tzinfo objects.
+pub(crate) fn class_now(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<AttrCallResult> {
+    // Avoid `defer_drop_mut!` here: it would keep `vm` borrowed until end of
+    // scope, blocking the final `MontyObject::new(vm, ...)` call.
+    let tz_value = extract_now_tz(vm, args)?;
+    let tz_obj = MontyObject::new(tz_value, vm);
+    Ok(AttrCallResult::OsCall(OsFunctionCall::DateTimeNow(tz_obj)))
+}
+
+/// Extracts the single `tz` argument from `datetime.now()`'s args
+/// (defaulting to `Value::None`), draining the iterators on every path so
+/// refcounts stay balanced.
+fn extract_now_tz(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let interns = vm.interns;
+    let heap = &mut *vm.heap;
+    let (mut pos, kwargs) = args.into_parts();
+    let mut kwargs_iter = kwargs.into_iter();
 
     let mut tz_value = Value::None;
     let mut seen_tz = false;
@@ -264,49 +273,53 @@ pub(crate) fn class_now(
         if index == 0 {
             if let Err(e) = validate_tz_arg(&arg, heap) {
                 arg.drop_with_heap(heap);
+                pos.drop_with_heap(heap);
+                kwargs_iter.drop_with_heap(heap);
                 return Err(e);
             }
             tz_value = arg;
             seen_tz = true;
         } else {
             arg.drop_with_heap(heap);
+            pos.drop_with_heap(heap);
+            kwargs_iter.drop_with_heap(heap);
             tz_value.drop_with_heap(heap);
             return Err(ExcType::type_error_method_at_most("now", 1, index + 1));
         }
     }
 
-    for (key, value) in kwargs {
+    while let Some((key, value)) = kwargs_iter.next() {
         let key_name = key.as_either_str(heap);
         key.drop_with_heap(heap);
 
         let Some(key_name) = key_name else {
             value.drop_with_heap(heap);
+            kwargs_iter.drop_with_heap(heap);
             tz_value.drop_with_heap(heap);
             return Err(ExcType::type_error_kwargs_nonstring_key());
         };
         if key_name.string_id() != Some(StaticStrings::Tz.into()) {
             value.drop_with_heap(heap);
+            kwargs_iter.drop_with_heap(heap);
             tz_value.drop_with_heap(heap);
             return Err(ExcType::type_error_unexpected_keyword("now", key_name.as_str(interns)));
         }
         if seen_tz {
             value.drop_with_heap(heap);
+            kwargs_iter.drop_with_heap(heap);
             tz_value.drop_with_heap(heap);
             return Err(ExcType::type_error_method_at_most("now", 1, 2));
         }
         if let Err(e) = validate_tz_arg(&value, heap) {
             value.drop_with_heap(heap);
+            kwargs_iter.drop_with_heap(heap);
             tz_value.drop_with_heap(heap);
             return Err(e);
         }
         tz_value = value;
         seen_tz = true;
     }
-
-    Ok(AttrCallResult::OsCall(
-        OsFunction::DateTimeNow,
-        ArgValues::One(tz_value),
-    ))
+    Ok(tz_value)
 }
 
 /// Classmethod `datetime.strptime(date_string, format)`.

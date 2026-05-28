@@ -22,7 +22,7 @@ use crate::{
     hash::HashValue,
     heap::{Heap, HeapData, HeapId, HeapItem, HeapRead},
     intern::{Interns, StaticStrings},
-    os::OsFunction,
+    os::OsFunctionCall,
     resource::{ResourceError, ResourceTracker},
     types::{
         AttrCallResult, PyTrait, TimeDelta, Type,
@@ -144,7 +144,7 @@ struct DateInitArgs {
 /// `MontyObject::Date` directly.
 pub(crate) fn class_today(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> RunResult<AttrCallResult> {
     args.check_zero_args("date.today", heap)?;
-    Ok(AttrCallResult::OsCall(OsFunction::DateToday, ArgValues::Empty))
+    Ok(AttrCallResult::OsCall(OsFunctionCall::DateToday))
 }
 
 /// Classmethod `date.fromisoformat(date_string)`.
