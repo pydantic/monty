@@ -1,9 +1,7 @@
-//! Codegen for `#[derive(ToArgs)]`.
-//!
-//! Inverse of `#[derive(FromArgs)]`: projects a struct back into the
-//! `(Vec<MontyObject>, Vec<(MontyObject, MontyObject)>)` pair that host
-//! callbacks expect. Reuses `from_args`' field-classification logic so a
-//! struct that derives both produces matching positional/kwarg splits.
+//! Codegen for `#[derive(ToArgs)]`. Inverse of `#[derive(FromArgs)]`:
+//! projects a struct into the `(Vec<MontyObject>, kwargs)` pair host
+//! callbacks expect. Reuses `from_args` field classification so structs
+//! that derive both stay symmetric.
 
 use proc_macro2::TokenStream;
 use quote::quote;
@@ -11,8 +9,8 @@ use syn::{Data, DataStruct, DeriveInput, Fields, Ident, LitStr, Type, spanned::S
 
 use crate::from_args::{FieldKind, parse_field_attrs};
 
-/// Field metadata used by the codegen. `kind` mirrors the `FromArgs`
-/// classification *after* the implicit-kw-only-after-varargs rule.
+/// Field metadata for codegen. `kind` mirrors `FromArgs` *after* the
+/// implicit kw_only-after-varargs rule.
 struct ProjField {
     ident: Ident,
     ty: Type,
@@ -26,8 +24,7 @@ pub(crate) fn expand(input: &DeriveInput) -> syn::Result<TokenStream> {
         ..
     } = input;
 
-    // Collect fields into a Vec so the same loop handles named-field structs
-    // and unit structs (the latter yields an empty vec → trivial impl).
+    // Unit structs yield an empty vec → trivial impl.
     let named_fields: Vec<&syn::Field> = match data {
         Data::Struct(DataStruct {
             fields: Fields::Named(named),
@@ -95,7 +92,7 @@ pub(crate) fn expand(input: &DeriveInput) -> syn::Result<TokenStream> {
                 ));
             },
             FieldKind::Varkwargs => {
-                // No call site needs this yet — reject at codegen rather than
+                // No caller needs this yet; reject at codegen rather than
                 // silently dropping the field.
                 let span = ident.span();
                 let err = syn::Error::new(span, "ToArgs does not yet support `varkwargs` fields").to_compile_error();

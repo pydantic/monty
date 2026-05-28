@@ -20,78 +20,41 @@ pub(crate) fn expand(input: &DeriveInput) -> syn::Result<TokenStream> {
 
 /// Parsed, validated signature for a single struct deriving `FromArgs`.
 struct Signature {
-    /// The struct's identifier (used as `Self`).
     struct_ident: Ident,
-    /// Function name used in error messages (e.g. positional-keyword conflict).
+    /// Function name embedded in error messages (the `{name}()` prefix).
     func_name: String,
-    /// Fields in declaration order — also the order of positional arguments.
+    /// Fields in declaration order — also the positional dispatch order.
     fields: Vec<Field>,
-    /// Index of the `*args` field (if any).
     varargs_idx: Option<usize>,
-    /// Index of the `**kwargs` field (if any).
     varkwargs_idx: Option<usize>,
-    /// Selects the wording family used for argument-count / argument-name
-    /// errors. See [`ErrorStyle`] for the three options.
     error_style: ErrorStyle,
-    /// When set, the generated code pre-counts `positional + kwarg` and
-    /// raises `"… takes at most M argument(s) (N given)"` *before* doing any
-    /// per-arg dispatch. Matches CPython's `PyArg_ParseTupleAndKeywords`
-    /// behaviour (e.g. `expandtabs(8, tabsize=4)` →
-    /// `expandtabs() takes at most 1 argument (2 given)`). Mutually
-    /// exclusive with `varargs`/`varkwargs` — the pre-count is meaningless
-    /// when the signature accepts unbounded inputs.
+    /// Pre-count `positional + kwarg` and raise "takes at most M arguments
+    /// (N given)" before per-arg dispatch — matches CPython's
+    /// `PyArg_ParseTupleAndKeywords`. Incompatible with `varargs`/`varkwargs`.
     at_most_total: bool,
-    /// When set, the macro replaces both the "too few" and "too many"
-    /// positional error paths with CPython's `PyArg_UnpackTuple` wording:
-    /// `{name} expected N argument(s), got M` (no parens, no "positional").
-    /// Used for exact-arity callables like `sorted()` whose required
-    /// positional count equals the maximum. Mutually exclusive with
-    /// `varargs` and `at_most_total`.
+    /// Required positional count equals maximum — emits
+    /// `{name} expected N argument(s), got M` (CPython `PyArg_UnpackTuple`
+    /// wording). For exact-arity callables like `sorted()`.
     expected_exact: bool,
-    /// Optional override for the function name used in the
-    /// unknown-kwarg error (`{name}() got an unexpected keyword argument 'X'`).
-    /// Used by `json.dumps`: CPython forwards unmatched kwargs to
-    /// `JSONEncoder.__init__`, so the kwarg-name error has to read
-    /// `JSONEncoder.__init__()` while arity errors keep using the struct's
-    /// primary `name = "dumps"`.
+    /// Override for the function name in the unknown-kwarg error only.
+    /// Used by `json.dumps`, which forwards unmatched kwargs to
+    /// `JSONEncoder.__init__` and so reports that name instead.
     kwarg_error_name: Option<String>,
-    /// When set, every typed positional / pos-or-keyword field whose
-    /// `FromValue::EXPECTED_TYPE_NAME` is `Some(_)` is wrapped so that a
-    /// failed conversion produces CPython's `_PyArg_BadArgument` wording
-    /// (`{name}() argument {pos|'name'} must be {expected}, not {got}`),
-    /// including the special `None` rendering for `NoneType` values via
-    /// [`Type::cpython_arg_name`]. Replaces the inner `FromValue` error
-    /// (e.g. the generic `"a str is required"`) so migrating a C-extension
-    /// function to the macro keeps the original wording. The variant
-    /// chooses between CPython's positional (`argument N`) and named
-    /// (`argument 'X'`) phrasings; CPython picks one or the other per
-    /// function (`strftime` uses positional, `open`/`encode`/`decode` use
-    /// named). Only fires when `EXPECTED_TYPE_NAME` is `Some(_)`; the
-    /// identity `Value` impl falls through to its native error.
+    /// Wrap `FromValue` errors in CPython's `_PyArg_BadArgument` wording —
+    /// `{name}() argument {pos|'arg'} must be {expected}, not {got}` —
+    /// for fields whose type sets `EXPECTED_TYPE_NAME`.
     bad_arg: Option<BadArgStyle>,
-    /// When set, the generated code rejects *any* kwarg up front with a
-    /// `NotImplementedError: {name}() does not yet support keyword
-    /// arguments` (via [`ExcType::kwargs_not_implemented`]) — deliberately
-    /// distinct from CPython's `TypeError: takes no keyword arguments`,
-    /// because the flag's intent is "Monty hasn't plumbed these through
-    /// yet" rather than "CPython also rejects them". Used as a migration
-    /// aid for functions like `asyncio.gather` whose CPython signatures
-    /// accept kwargs (`return_exceptions=False`) that Monty has not
-    /// implemented: the macro can still drive positional/varargs parsing,
-    /// and the kwarg slots can be added incrementally with the flag
-    /// removed once the dispatch is wired up. Mutually exclusive with any
-    /// `kw_only` field, `varkwargs`, and `kwarg_error_name` (the latter
-    /// is only meaningful when kwargs are actually dispatched).
+    /// Reject any kwarg up front with
+    /// `NotImplementedError: {name}() does not yet support keyword arguments`.
+    /// Migration aid for functions like `asyncio.gather` whose CPython
+    /// signatures accept kwargs Monty hasn't plumbed through yet.
+    /// Incompatible with `kw_only`, `varkwargs`, `kwarg_error_name`.
     kwargs_not_supported_yet: bool,
 }
 
-/// Variant of `_PyArg_BadArgument`-style error wording.
-///
-/// CPython renders bad-argument type errors in two shapes depending on which
-/// internal helper produced them. `strftime` and other `_PyArg_ParseTuple`
-/// callers use the positional form, while functions registered with named
-/// argument tables (e.g. `open`, `str.encode`, `bytes.decode`) use the named
-/// form.
+/// `_PyArg_BadArgument` wording shape. CPython splits between positional
+/// (`strftime` and other `_PyArg_ParseTuple` callers) and named
+/// (`open`, `str.encode`, `bytes.decode`, …).
 #[derive(Clone, Copy)]
 enum BadArgStyle {
     /// `{name}() argument {pos} must be {expected}, not {got}`.
@@ -100,75 +63,53 @@ enum BadArgStyle {
     Named,
 }
 
-/// Which family of CPython error wordings the generated code should emit.
-///
-/// CPython exposes three distinct phrasings depending on whether the function
-/// was defined in pure Python, in a C extension via
-/// `PyArg_ParseTupleAndKeywords` with the anonymous "function" label
-/// (e.g. `datetime`), or in a C extension with the function's own name in the
-/// message (e.g. `timezone`). The macro picks helpers from
-/// `exception_private` to match.
+/// CPython error-wording family. Pure-Python (default) for `def`-defined
+/// functions and most builtin methods; `C` for `PyArg_ParseTupleAndKeywords`
+/// callers using the anonymous `"function"` label (e.g. `datetime`); `NamedC`
+/// for C constructors that embed the name (e.g. `timezone`).
 #[derive(Clone, Copy)]
 enum ErrorStyle {
-    /// Pure-Python / Python-method wording. Default. Matches `def`-defined
-    /// functions and most builtin methods. Example unknowns:
-    /// `{name}() got an unexpected keyword argument 'X'`.
+    /// Default. `{name}() got an unexpected keyword argument 'X'`, etc.
     Python,
-    /// Anonymous C-constructor wording. Matches CPython's `datetime` and other
-    /// `PyArg_ParseTupleAndKeywords` callers that use the generic
-    /// `"function"` label. Example unknowns:
-    /// `this function got an unexpected keyword argument 'X'`.
-    ///
-    /// The inner [`AtMostStyle`] picks which `type_error_c_at_most*` helper
-    /// to emit when too many positional arguments are passed — only the C
-    /// style varies here; the named styles always emit the `{name}() takes
-    /// at most …` helper.
+    /// `this function got an unexpected keyword argument 'X'`, etc. Inner
+    /// [`AtMostStyle`] picks between standard and `… positional arguments`
+    /// wording for too-many errors.
     C(AtMostStyle),
-    /// Named C-constructor wording. Matches CPython types like `timezone`
-    /// where messages embed the constructor name. Example unknowns:
-    /// `{name}() got an unexpected keyword argument 'X'` (same wording as
-    /// Python-method), but conflict / missing-positional / at-most use the
-    /// C phrasings prefixed with the name (e.g.
-    /// `argument for {name}() given by name ('X') and position (N)`).
+    /// Like `Python` for unknown-kwarg, like `C` for arity/conflict — with
+    /// `{name}()` substituted for the anonymous `function` descriptor.
     NamedC,
 }
 
-/// Selects the wording of the "too many positional args" `TypeError` message.
+/// Wording of the "too many args" message under [`ErrorStyle::C`].
 #[derive(Clone, Copy)]
 enum AtMostStyle {
-    /// `function takes at most {max} arguments ({actual} given)` — default,
-    /// matches most C-implemented constructors (e.g. `date`).
+    /// `function takes at most M arguments (N given)` — e.g. `date`.
     Standard,
-    /// `function takes at most {max} positional arguments ({actual} given)`
-    /// — used by constructors that want to disambiguate from kwargs
-    /// (e.g. `datetime`).
+    /// `function takes at most M positional arguments (N given)` — used by
+    /// constructors that want to disambiguate from kwargs, e.g. `datetime`.
     Positional,
 }
 
-/// A single field of a `FromArgs` struct, with its kind and per-field options.
+/// A single field of a `FromArgs` struct.
 struct Field {
     ident: Ident,
     ty: Type,
     kind: FieldKind,
-    /// Default if absent (`None` = required).
+    /// `None` = required.
     default: Option<DefaultExpr>,
-    /// Explicit `StaticStrings::Variant` override for kwarg dispatch.
+    /// Override for the `StaticStrings` variant used in kwarg dispatch.
     static_string: Option<Ident>,
-    /// 1-indexed position in the *positional-or-keyword* region (for error
-    /// messages that mention "pos N"). `None` for `kw_only`/`varargs`/
-    /// `varkwargs` fields.
+    /// 1-indexed slot in the positional-or-keyword region, used by
+    /// "pos N" error messages. `None` for kw_only / varargs / varkwargs.
     pos_index: Option<usize>,
 }
 
 /// Role of a field in the signature.
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
 pub(crate) enum FieldKind {
-    /// Accepts either positional or keyword.
     #[default]
     PosOrKeyword,
-    /// Accepts positional only.
     PosOnly,
-    /// Accepts keyword only.
     KwOnly,
     /// `*args` — collects remaining positionals.
     Varargs,
@@ -178,9 +119,9 @@ pub(crate) enum FieldKind {
 
 /// Source of a field's default value.
 pub(crate) enum DefaultExpr {
-    /// `#[from_args(default)]` — call `Default::default()`.
+    /// `#[from_args(default)]` — `Default::default()`.
     DefaultTrait,
-    /// `#[from_args(default = <expr>)]` — evaluate `<expr>`.
+    /// `#[from_args(default = <expr>)]`.
     Explicit(Box<Expr>),
 }
 
@@ -221,8 +162,8 @@ impl Signature {
         for field in &named.named {
             let opts = parse_field_attrs(&field.attrs)?;
             let ident = field.ident.clone().expect("named field");
-            // Defer assigning `kind` to the next pass — we need full context
-            // (e.g. "has there been a varargs?") to fill in implicit kw_only.
+            // `kind` may still be patched in the second pass — e.g. a
+            // `PosOrKeyword` after a varargs becomes implicit `kw_only`.
             fields.push(Field {
                 ident,
                 ty: field.ty.clone(),
@@ -233,8 +174,8 @@ impl Signature {
             });
         }
 
-        // Second pass: resolve implicit kw_only after varargs, validate ordering,
-        // assign 1-based positional indices, and locate the varargs/varkwargs slots.
+        // Second pass: resolve implicit kw_only-after-varargs, enforce field
+        // ordering, assign 1-based positional indices, locate varargs slots.
         let mut seen_varargs = false;
         let mut seen_varkwargs = false;
         let mut seen_pos_or_kw = false;
@@ -385,11 +326,9 @@ impl Signature {
         quote! {
             #[automatically_derived]
             impl #struct_ident {
-                /// Extracts the arguments into `Self`, returning a `TypeError` on
-                /// argument-count, type, or duplicate-kwarg violations.
-                ///
-                /// On any error path, all already-extracted heap-owning fields are
-                /// dropped via `DropWithHeap` so reference counts stay correct.
+                /// Extract arguments into `Self`. On any error path, every
+                /// already-extracted heap value is dropped via `DropWithHeap`
+                /// so refcounts stay balanced.
                 pub(crate) fn from_args(
                     args: crate::args::ArgValues,
                     heap: &mut crate::heap::Heap<impl crate::resource::ResourceTracker>,
@@ -403,9 +342,8 @@ impl Signature {
 
                     #slot_decls
 
-                    // Macro `__cleanup!` drops every owning slot and returns the
-                    // given error. Inlined here so it captures all field slots
-                    // by name without needing to thread them through helpers.
+                    // Drops every owning slot + both iterators on the error
+                    // path. Inlined so it captures every slot ident by name.
                     macro_rules! __cleanup {
                         ($err:expr) => {{
                             #cleanup_block
@@ -432,16 +370,11 @@ impl Signature {
         }
     }
 
-    /// Emit the up-front "no kwargs at all" pre-check when
-    /// `#[from_args(kwargs_not_supported_yet)]` is set. Raises
-    /// `NotImplementedError: {name}() does not yet support keyword
-    /// arguments` (via [`ExcType::kwargs_not_implemented`]) before any
-    /// positional dispatch — distinct from CPython's
-    /// `TypeError: takes no keyword arguments`, because the flag's intent
-    /// is "Monty hasn't plumbed these through yet" rather than "CPython
-    /// also rejects them". Lets positional/varargs parsing flow through
-    /// the macro while still being trivially greppable when the kwargs
-    /// are actually implemented and the flag is removed.
+    /// Pre-check for `kwargs_not_supported_yet`. Raises
+    /// `NotImplementedError: {name}() does not yet support keyword arguments`
+    /// before any positional dispatch — deliberately distinct from CPython's
+    /// `TypeError: takes no keyword arguments` so the "Monty TODO" intent
+    /// reads clearly at the error site.
     fn render_no_kwargs_check(&self) -> TokenStream {
         if !self.kwargs_not_supported_yet {
             return TokenStream::new();
@@ -454,22 +387,18 @@ impl Signature {
         }
     }
 
-    /// Emit the up-front total-count check when `#[from_args(at_most_total)]`
-    /// is set. Returns an empty token stream otherwise. Counts
-    /// `positional + kwarg` slots and raises before any extraction so that
-    /// the wording matches CPython's `PyArg_ParseTupleAndKeywords`:
-    /// `expandtabs() takes at most 1 argument (2 given)`.
+    /// Pre-check for `at_most_total`: counts pos+kwargs and raises
+    /// "takes at most M arguments (N given)" before any extraction, to match
+    /// CPython's `PyArg_ParseTupleAndKeywords` wording.
     fn render_total_check(&self, max_positional: usize) -> TokenStream {
         if !self.at_most_total {
             return TokenStream::new();
         }
-        // The `at_most_total` pre-check uses CPython's
-        // `PyArg_ParseTupleAndKeywords` wording, which is *not* the same as
-        // the per-arg "at most" wording the styles fall back to. C style
-        // ("function") stays on the C helpers (so `date` reports
-        // `function takes at most 3 arguments (4 given)`); both Python and
-        // NamedC use the parenthesized method form so e.g. `expandtabs`
-        // reports `str.expandtabs() takes at most 1 argument (2 given)`.
+        // The pre-check uses different helpers from the per-arg "at most":
+        // C-style stays on `type_error_c_at_most*` (`date` reports
+        // `function takes at most 3 arguments (4 given)`); Python and NamedC
+        // both pivot to the parenthesised method form
+        // (`str.expandtabs() takes at most 1 argument (2 given)`).
         let func_name = self.func_name.as_str();
         let err_expr = match self.error_style {
             ErrorStyle::C(AtMostStyle::Standard) => quote! {
@@ -493,25 +422,20 @@ impl Signature {
         }
     }
 
-    /// Emit the `type_error_*_at_most*` call for "too many positional args".
-    ///
-    /// Centralises the per-style choice so the positional loop and its
-    /// zero-positional special case stay in sync. `actual` is a token stream
-    /// for the runtime value (typically `__actual`).
+    /// Build the "too many positional args" error expression for the current
+    /// style. Centralised so the positional loop and its zero-arg fast path
+    /// stay in sync.
     fn at_most_err_expr(&self, max_lit: usize, actual: &TokenStream) -> TokenStream {
         let func_name = self.func_name.as_str();
         if self.expected_exact {
-            // Should be unreachable in practice (the pre-check fires first),
-            // but emit the matching wording for completeness.
+            // Pre-check should already have fired; emit matching wording anyway.
             return quote! {
                 crate::exception_private::ExcType::type_error_expected_exact(#func_name, #max_lit, #actual)
             };
         }
         if self.use_c_method_arity_wording() {
-            // Required pos-only fields put the struct into CPython's
-            // C-method dispatch style. Too-many wording becomes
-            // method-style "takes at most M argument(s) (N given)",
-            // matching e.g. `replace() takes at most 3 arguments (4 given)`.
+            // Required pos-only fields → CPython C-method wording,
+            // e.g. `replace() takes at most 3 arguments (4 given)`.
             return quote! {
                 crate::exception_private::ExcType::type_error_method_at_most(#func_name, #max_lit, #actual)
             };
@@ -521,10 +445,8 @@ impl Signature {
                 crate::exception_private::ExcType::type_error_c_at_most(#max_lit, #actual)
             },
             ErrorStyle::C(AtMostStyle::Positional) => {
-                // CPython switches wording from "M positional arguments"
-                // to "M_total arguments" once the overflow exceeds the
-                // total slot count (positional + kw-only). See
-                // `type_error_c_at_most_positional_or_total` for details.
+                // CPython pivots from "M positional arguments" to "M_total
+                // arguments" once the overflow exceeds positional + kw-only.
                 let max_total = max_lit + self.kw_only_count();
                 quote! {
                     crate::exception_private::ExcType::type_error_c_at_most_positional_or_total(
@@ -532,8 +454,6 @@ impl Signature {
                     )
                 }
             }
-            // CPython's named-C types (e.g. timezone) emit
-            // `{name}() takes at most M arguments (N given)`.
             ErrorStyle::NamedC => quote! {
                 crate::exception_private::ExcType::type_error_method_at_most(#func_name, #max_lit, #actual)
             },
@@ -550,9 +470,8 @@ impl Signature {
             .count()
     }
 
-    /// Number of trailing keyword-only slots. Used by `at_most_positional` to
-    /// compute `max_total = max_positional + kw_only`, which controls the
-    /// CPython wording pivot in `type_error_c_at_most_positional_or_total`.
+    /// Trailing keyword-only slot count — used by
+    /// `type_error_c_at_most_positional_or_total` for its wording pivot.
     fn kw_only_count(&self) -> usize {
         self.fields
             .iter()
@@ -560,10 +479,7 @@ impl Signature {
             .count()
     }
 
-    /// Counts positional-region fields that have no default (i.e. they must
-    /// either come in via positionals or, for `PosOrKeyword`, via a kwarg).
-    /// Used by `expected_exact` to know how many positionals must actually
-    /// appear.
+    /// Number of positional-region fields without a default.
     fn required_positional_count(&self) -> usize {
         self.fields
             .iter()
@@ -571,12 +487,10 @@ impl Signature {
             .count()
     }
 
-    /// Counts required positional-only fields. When non-zero (and
-    /// `expected_exact` is not set) the macro emits CPython's C-method
-    /// `_PyArg_UnpackKeywords` wording family: an "at least M positional
-    /// arguments" pre-check and a method-style "at most M argument(s)"
-    /// too-many error. Matches `str.replace` and other C-implemented
-    /// methods whose required args cannot be filled by kwargs.
+    /// Required positional-only count. Non-zero → CPython's C-method
+    /// `_PyArg_UnpackKeywords` wording (an "at least M positional" pre-check
+    /// and a method-style "at most M" too-many error), matching `str.replace`
+    /// etc. whose required args cannot be filled by kwargs.
     fn required_pos_only_count(&self) -> usize {
         self.fields
             .iter()
@@ -584,19 +498,15 @@ impl Signature {
             .count()
     }
 
-    /// True when [`required_pos_only_count`] is non-zero and we're not
-    /// already covered by `expected_exact` (whose exact-count check
-    /// subsumes the at-least direction with its own wording).
+    /// Suppressed under `expected_exact`, whose own check covers the at-least
+    /// direction with different wording.
     fn use_c_method_arity_wording(&self) -> bool {
         !self.expected_exact && self.required_pos_only_count() > 0
     }
 
-    /// Emit the `expected_exact` pre-check when set. Validates that the
-    /// positional iterator has exactly `required_positional_count()` items
-    /// (kwargs are ignored — CPython's `PyArg_UnpackTuple` style does not
-    /// let kwargs satisfy required positionals). Raises
-    /// `"{name} expected N argument(s), got M"` matching CPython's
-    /// `sorted expected 1 argument, got 0` wording.
+    /// Pre-check for `expected_exact`: exactly `required_positional_count()`
+    /// positionals, kwargs ignored (CPython's `PyArg_UnpackTuple` semantics —
+    /// kwargs cannot satisfy required positionals).
     fn render_expected_exact_check(&self) -> TokenStream {
         if !self.expected_exact {
             return TokenStream::new();
@@ -617,9 +527,9 @@ impl Signature {
         }
     }
 
-    /// Emit `let mut __unknown_kwarg: Option<String> = None;` when the
-    /// signature defers unknown-kwarg errors (C / NamedC styles). Returns
-    /// an empty stream for Python style, where unknowns error immediately.
+    /// Declare the `__unknown_kwarg` slot used to defer the first unknown
+    /// kwarg's name. Only emitted under C / NamedC styles, which delay the
+    /// error until after missing-required has had a chance to fire.
     fn render_unknown_kwarg_decl(&self) -> TokenStream {
         if !self.defer_unknown_kwarg() || self.varkwargs_idx.is_some() || self.kwargs_not_supported_yet {
             return TokenStream::new();
@@ -630,14 +540,9 @@ impl Signature {
         }
     }
 
-    /// Emit the deferred missing-required-positional check.
-    ///
-    /// Runs *after* the kwarg loop has had a chance to fill named slots
-    /// from kwargs. Walks every required pos_only / pos_or_keyword field;
-    /// if any are still `None`, raises the same missing-required error
-    /// that `render_build_struct` would otherwise produce — but earlier,
-    /// so unknown-kwarg reporting (which CPython does last) doesn't beat
-    /// the missing-required error.
+    /// Missing-required check, run *after* the kwarg loop has filled what it
+    /// can. Raises the same error as the final-build path but earlier, so
+    /// CPython's "missing-required before unknown-kwarg" ordering holds.
     fn render_missing_required_check(&self, slots: &[Ident]) -> TokenStream {
         if !self.defer_unknown_kwarg() || self.kwargs_not_supported_yet {
             return TokenStream::new();
@@ -673,12 +578,9 @@ impl Signature {
         quote! { #(#checks)* }
     }
 
-    /// Emit the deferred-unknown-kwarg error check.
-    ///
-    /// Runs after both the kwarg loop and the missing-required check, so
-    /// it only fires when every required field was satisfied yet a kwarg
-    /// name didn't match anything. Matches CPython's
-    /// `PyArg_ParseTupleAndKeywords` ordering.
+    /// Deferred unknown-kwarg check. Fires only when every required field
+    /// was satisfied yet a kwarg name didn't match anything — matches
+    /// CPython's `PyArg_ParseTupleAndKeywords` ordering.
     fn render_unknown_kwarg_check(&self) -> TokenStream {
         if !self.defer_unknown_kwarg() || self.varkwargs_idx.is_some() || self.kwargs_not_supported_yet {
             return TokenStream::new();
@@ -699,13 +601,9 @@ impl Signature {
         }
     }
 
-    /// Emit the C-method "at least M positional" pre-check. Fires when the
-    /// struct has at least one required positional-only field and
-    /// `expected_exact` is not set. Validates that the positional iterator
-    /// has at least `required_pos_only_count()` items — kwargs do not
-    /// satisfy required pos-only slots. Raises
-    /// `"{name}() takes at least M positional argument(s) (N given)"`
-    /// matching CPython's `replace() takes at least 2 positional arguments (1 given)`.
+    /// C-method "at least M positional" pre-check, used when there are
+    /// required pos-only fields (which kwargs cannot satisfy). Raises e.g.
+    /// `replace() takes at least 2 positional arguments (1 given)`.
     fn render_at_least_positional_check(&self) -> TokenStream {
         if !self.use_c_method_arity_wording() {
             return TokenStream::new();
@@ -731,26 +629,20 @@ impl Signature {
             let ty = &field.ty;
             match field.kind {
                 FieldKind::Varargs => {
-                    // Varargs accumulator: a `Vec<T>` of the element type.
                     let elem = vec_element_ty(ty).unwrap_or_else(|| ty.clone());
                     quote! {
                         let mut #slot: ::std::vec::Vec<#elem> = ::std::vec::Vec::new();
                     }
                 }
-                FieldKind::Varkwargs => {
-                    // Varkwargs accumulator: a `Vec<(StringId, Value)>` we wrap as
-                    // `KwargsValues::Inline` at the end.
-                    quote! {
-                        let mut #slot: ::std::vec::Vec<(
-                            crate::intern::StringId,
-                            crate::value::Value,
-                        )> = ::std::vec::Vec::new();
-                    }
-                }
+                FieldKind::Varkwargs => quote! {
+                    let mut #slot: ::std::vec::Vec<(
+                        crate::intern::StringId,
+                        crate::value::Value,
+                    )> = ::std::vec::Vec::new();
+                },
                 _ => {
-                    // Named positional / kw_only: Option<T> distinguishes "absent"
-                    // from "present", driving both default fallback and
-                    // duplicate-detection on the kwarg dispatch path.
+                    // `Option<T>` so we can distinguish absent from present
+                    // (drives default fallback and duplicate detection).
                     quote! {
                         let mut #slot: ::std::option::Option<#ty> = ::std::option::Option::None;
                     }
@@ -761,10 +653,6 @@ impl Signature {
     }
 
     fn render_cleanup_block(&self, slots: &[Ident]) -> TokenStream {
-        // Drop every owning slot. Non-owning (primitive) `Option<T>` slots are
-        // dropped normally and that's a no-op for refcounts, so we don't need
-        // to discriminate — but generating per-field drops in the macro body
-        // would be wasteful, so we only emit drops for kinds that hold values.
         let drops = self.fields.iter().zip(slots).map(|(field, slot)| match field.kind {
             FieldKind::Varargs => {
                 quote! {
@@ -811,10 +699,8 @@ impl Signature {
             arm_idx += 1;
         }
 
-        // Special case: zero positional slots and no varargs. The "loop"
-        // collapses to a single "any positional is too many" check — emitting
-        // the full while/match here would trigger an `unreachable_code`
-        // warning because `__pos_count += 1` is dead in that shape.
+        // Zero positional slots, no varargs: collapse to a single overflow
+        // check. The full while/match would warn about the dead `+= 1`.
         if max_positional == 0 && !has_varargs {
             let err_expr = self.at_most_err_expr(0, &quote!(__actual));
             return quote! {
@@ -849,13 +735,10 @@ impl Signature {
             let err_expr = self.at_most_err_expr(max_positional, &quote!(__actual));
             quote! {
                 _ => {
-                    // The argument itself has not yet been consumed by from_value,
-                    // so drop it explicitly before bubbling the count error.
-                    // Include the remaining unconsumed positionals *and* the
-                    // un-iterated kwargs in `__actual` so the count matches
-                    // CPython: the C-style "function takes at most N arguments
-                    // (M given)" wording counts every supplied arg, not just
-                    // positionals. `__cleanup!` will drain & drop both iters.
+                    // Drop the unconsumed arg ourselves; include remaining
+                    // positionals *and* kwargs in `__actual` so the count
+                    // matches CPython's "(M given)" total. `__cleanup!`
+                    // drains both iterators.
                     __arg.drop_with_heap(heap);
                     let __actual = __pos_count
                         + 1
@@ -878,21 +761,11 @@ impl Signature {
         }
     }
 
-    /// Renders the `FromValue::from_value(<value_var>, ...)` call that fills
-    /// `slot`, including the optional `bad_arg` wrapping that converts the
-    /// inner `FromValue` error into CPython's
-    /// `{name}() argument {pos|'arg_name'} must be {expected}, not {got}`
-    /// wording.
-    ///
-    /// Used by both the positional dispatch loop (passing `__arg`) and the
-    /// kwarg dispatch arms (passing `__value`) — so that `encode(encoding=42)`
-    /// and `encode(42)` produce identical errors, matching CPython. When
-    /// `bad_arg` is unset, falls back to the trivial extract-or-bubble-error
-    /// form.
-    ///
-    /// `arg_name` is the field identifier as a literal (for named-style
-    /// wording); `pos` is the 1-indexed positional slot (for positional-style
-    /// wording).
+    /// `FromValue::from_value` call that fills `slot`. Used by both the
+    /// positional loop (`value_var = __arg`) and the kwarg arms
+    /// (`value_var = __value`) so `encode(42)` and `encode(encoding=42)`
+    /// report identical errors. When `bad_arg` is set, wraps the inner
+    /// error in CPython's `_PyArg_BadArgument` wording.
     fn render_from_value_call(
         &self,
         ty: &Type,
@@ -934,11 +807,9 @@ impl Signature {
         };
         quote! {
             {
-                // Capture the value's type *before* `from_value` consumes it
-                // — on the error path the value is already dropped and we
-                // can't peek at it. The const-conditional ensures we only pay
-                // for the lookup when this field's type has a CPython-style
-                // label to report.
+                // Snapshot the type *before* `from_value` consumes the value
+                // (the error path no longer has access to it). Skip the
+                // lookup when the field type has no CPython label.
                 let __got_type =
                     if <#ty as crate::args::FromValue>::EXPECTED_TYPE_NAME.is_some() {
                         ::std::option::Option::Some(#value_var.py_type_heap(heap))
@@ -966,30 +837,18 @@ impl Signature {
         }
     }
 
-    /// Returns true when unknown-kwarg errors should be deferred until after
-    /// the missing-required check, matching CPython's
-    /// `PyArg_ParseTupleAndKeywords` validation order.
-    ///
-    /// CPython behaviour (see playground probing):
-    /// - C / NamedC styles (date, datetime, timezone, …): missing-required
-    ///   wins, so a call like `date(2024, 1, foo=1)` reports
-    ///   "missing required argument 'day' (pos 3)" rather than
-    ///   "unexpected keyword argument 'foo'".
-    /// - Python style: unknown wins. `def f(x): f(foo=1)` →
-    ///   `f() got an unexpected keyword argument 'foo'`.
+    /// True when C / NamedC styles need to defer unknown-kwarg errors until
+    /// after the missing-required check, matching CPython's
+    /// `PyArg_ParseTupleAndKeywords` order. Python style errors immediately.
     fn defer_unknown_kwarg(&self) -> bool {
         matches!(self.error_style, ErrorStyle::C(_) | ErrorStyle::NamedC)
     }
 
     fn render_kwarg_loop(&self, slots: &[Ident]) -> TokenStream {
         if self.kwargs_not_supported_yet {
-            // The up-front pre-check already errored on any kwarg, so the
-            // dispatch loop would be dead code. Skip generation entirely so
-            // we don't produce an unused `while let` that touches
-            // `__kwargs_iter`.
+            // Pre-check already rejected any kwarg; skip the loop entirely.
             return TokenStream::new();
         }
-        // Build kwarg dispatch arms — only for fields that can be passed by name.
         let mut arms: Vec<TokenStream> = Vec::new();
         for (field, slot) in self.fields.iter().zip(slots) {
             let arm = match field.kind {
@@ -1005,12 +864,8 @@ impl Signature {
         let unknown_arm = if let Some(varkwargs_idx) = self.varkwargs_idx {
             let varkwargs_slot = &slots[varkwargs_idx];
             quote! {
-                // Preserve the key — we need to retain its string id alongside
-                // the value in the varkwargs accumulator.
                 let Some(__id) = __key_str.string_id() else {
-                    // Heap string key — intern it so we can carry a StringId.
-                    // For now, reject heap-string keys passed to **kwargs.
-                    // (TODO: support by allocating a StringId via Interns.)
+                    // TODO: intern heap-string keys via `Interns` instead of rejecting.
                     __value.drop_with_heap(heap);
                     __key.drop_with_heap(heap);
                     __cleanup!(crate::exception_private::ExcType::type_error_kwargs_nonstring_key());
@@ -1019,11 +874,8 @@ impl Signature {
                 #varkwargs_slot.push((__id, __value));
             }
         } else if defer_unknown {
-            // C / NamedC styles defer unknown-kwarg errors so missing-required
-            // checks can run first (matches CPython
-            // `PyArg_ParseTupleAndKeywords` order). Stash the *first* unknown
-            // key name and continue processing — the error is raised after
-            // the kwarg loop only if all required fields are filled.
+            // Stash first unknown key; emit it later only if every required
+            // field was filled. See `defer_unknown_kwarg`.
             quote! {
                 __value.drop_with_heap(heap);
                 if __unknown_kwarg.is_none() {
@@ -1032,10 +884,8 @@ impl Signature {
                 __key.drop_with_heap(heap);
             }
         } else {
-            // `kwarg_error_name` overrides the function name used in
-            // unknown-kwarg errors (used by `json.dumps` to emit
-            // `JSONEncoder.__init__()` here even though arity errors still
-            // say `dumps`).
+            // `json.dumps` uses `kwarg_error_name` to report
+            // `JSONEncoder.__init__()` here while arity errors keep `dumps`.
             let func_name = self.kwarg_error_name.as_deref().unwrap_or(self.func_name.as_str());
             quote! {
                 __value.drop_with_heap(heap);
@@ -1045,14 +895,10 @@ impl Signature {
             }
         };
 
-        // Build pos-only kwarg rejection arms — but only when the user has
-        // explicitly supplied a `#[from_args(static_string = "…")]` override
-        // pinning the kwarg name to a known `StaticStrings` variant. Without
-        // an override we can't generate a sound runtime dispatch (the
-        // auto-derived `StaticStrings::PascalCase(ident)` variant might not
-        // exist), so we fall through to the generic "unexpected keyword"
-        // error instead of the CPython-specific "positional-only arguments
-        // passed as keyword arguments" wording.
+        // Pos-only kwarg rejection arms — only emitted when the field has an
+        // explicit `static_string` override, so we know the dispatch variant
+        // exists. Without one, the kwarg falls through to "unexpected"
+        // instead of the CPython "positional-only passed as keyword" form.
         let mut pos_only_arms: Vec<TokenStream> = Vec::new();
         for field in &self.fields {
             if matches!(field.kind, FieldKind::PosOnly) && field.static_string.is_some() {
@@ -1069,10 +915,8 @@ impl Signature {
             }
         }
 
-        // Glue the if/else chain together. Each arm in `arms` and
-        // `pos_only_arms` ends with a trailing `else` so the next arm chains
-        // cleanly; the final `else` block handles unknown kwargs or
-        // **varkwargs collection.
+        // Each arm trails an `else` so they chain; the final block handles
+        // unknown kwargs or **varkwargs collection.
         quote! {
             while let ::std::option::Option::Some((__key, __value)) = ::std::iter::Iterator::next(&mut __kwargs_iter) {
                 let ::std::option::Option::Some(__key_str) = __key.as_either_str(heap) else {
@@ -1096,8 +940,7 @@ impl Signature {
             match field.kind {
                 FieldKind::Varargs | FieldKind::Varkwargs => {
                     if matches!(field.kind, FieldKind::Varkwargs) {
-                        // Wrap accumulated pairs as KwargsValues. An empty Vec
-                        // collapses to `Empty` so callers can cheap-check.
+                        // Empty vec collapses to `Empty` for cheap caller checks.
                         quote! {
                             #ident: if #slot.is_empty() {
                                 crate::args::KwargsValues::Empty
@@ -1190,9 +1033,7 @@ impl Signature {
                 )
             },
             ErrorStyle::NamedC => {
-                // Embed `{name}()` as the func_descriptor so the conflict message
-                // is e.g. `argument for timezone() given by name ('offset') and
-                // position (1)` (matches CPython's `timezone`).
+                // `argument for timezone() given by name ('offset') and position (1)`.
                 let descriptor = format!("{func_name}()");
                 quote! {
                     crate::exception_private::ExcType::type_error_positional_keyword_conflict(
@@ -1227,10 +1068,8 @@ impl Signature {
         let ty = &field.ty;
         let field_name_lit = LitStr::new(&field.ident.to_string(), field.ident.span());
         let value_ident = format_ident!("__value");
-        // kw_only fields don't have a positional index; pass 0 — only the
-        // `bad_arg` path uses it, and kw_only fields rarely combine with
-        // `bad_arg` (the CPython `_PyArg_BadArgument` callers don't expose
-        // their args as kw_only).
+        // kw_only fields have no positional index; only `bad_arg` reads it,
+        // and CPython `_PyArg_BadArgument` callers don't use kw_only.
         let arg_name = field.ident.to_string();
         let extract = self.render_from_value_call(ty, slot, 0, &arg_name, &value_ident);
         quote! {
@@ -1260,16 +1099,10 @@ impl Field {
         }
     }
 
-    /// The `StringId` expression used for kwarg-name comparison in
-    /// `__key_str.matches(...)`.
-    ///
-    /// Single-character ASCII field names (e.g. `a`, `b`) are interned via
-    /// the `0..128` ASCII fast-path (`StringId::from_ascii`), not as
-    /// `StaticStrings` variants. Matching against `StaticStrings::A` for
-    /// such a field would never hit, so the kwarg would surface as
-    /// "unexpected keyword argument". Emit `StringId::from_ascii` for
-    /// those cases and `StringId::from(StaticStrings::Variant)` for
-    /// everything else.
+    /// `StringId` expression used by `__key_str.matches(...)` for kwarg
+    /// dispatch. Single-char ASCII field names go through the
+    /// `StringId::from_ascii(0..128)` fast path — they aren't `StaticStrings`
+    /// variants, so a literal `StaticStrings::A` lookup would never hit.
     fn kwarg_string_id_expr(&self) -> TokenStream {
         let name = self.ident.to_string();
         if self.static_string.is_none() && name.len() == 1 && name.is_ascii() {
@@ -1313,11 +1146,7 @@ fn vec_element_ty(ty: &Type) -> Option<Type> {
     })
 }
 
-/// Parsed `#[from_args(...)]` attribute set attached to a struct.
-///
-/// Boxed up as a struct rather than a long tuple so adding new flags
-/// doesn't ripple through callsite signatures — the macro grew organically
-/// and the tuple was getting unwieldy.
+/// Parsed `#[from_args(...)]` set on the struct itself.
 struct StructAttrs {
     name: String,
     error_style: ErrorStyle,
@@ -1404,8 +1233,7 @@ fn parse_struct_attrs(attrs: &[syn::Attribute]) -> syn::Result<StructAttrs> {
             "missing `#[from_args(name = \"...\")]` on the struct",
         )
     })?;
-    // `at_most_style` only matters under C-style errors; bundle it now so it
-    // travels with the variant and we don't carry an unused field around.
+    // `at_most_style` only matters under `c_error`; fold it into the variant.
     if is_c_style {
         error_style = ErrorStyle::C(at_most_style);
     }

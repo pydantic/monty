@@ -1,53 +1,30 @@
 //! Procedural macros for the `monty` Python interpreter.
 //!
-//! - `#[derive(FromArgs)]` — `ArgValues` → typed struct.
+//! - `#[derive(FromArgs)]` — `ArgValues` → typed struct (positional/kwarg
+//!   dispatch, defaults, type coercion via `FromValue`, refcount cleanup).
 //! - `#[derive(ToArgs)]` — typed struct → `(Vec<MontyObject>, kwargs)`.
 //!
-//! See the trait docs in `monty::args` and the per-derive docs below.
+//! Generated code emits `crate::...` paths and only compiles inside `monty`.
+//! See the crate `README.md` for usage and the docstrings on `StructAttrs` /
+//! `FieldKind` in `from_args.rs` for the full attribute surface.
 
 use proc_macro::TokenStream;
 
 mod from_args;
 mod to_args;
 
-/// Derives `FromArgs::from_args` for a struct, producing the body of a function
-/// that consumes an `ArgValues` and populates each field of the struct.
+/// Derive `FromArgs::from_args`. Each struct field becomes a Python
+/// parameter; the generated body parses an `ArgValues` and populates the
+/// struct, returning `RunResult<Self>`.
 ///
-/// Replaces hand-written positional/kwarg dispatch code with a declarative
-/// struct definition. See `crates/monty/src/args.rs` for the `FromArgs` trait
-/// and supported field types via the `FromValue` trait.
+/// Field types must implement `monty::args::FromValue`. Fields must appear
+/// in Python signature order:
+/// `[pos_only…] [pos_or_keyword…] [varargs] [kw_only…] [varkwargs]`, with
+/// required fields preceding optional ones in each region.
 ///
-/// # Struct attributes
-///
-/// * `#[from_args(name = "function")]` — function name used in error messages
-///   (required).
-///
-/// # Field attributes
-///
-/// * `#[from_args(default)]` — use `Default::default()` if the argument was not
-///   supplied.
-/// * `#[from_args(default = <expr>)]` — use `<expr>` if not supplied.
-/// * `#[from_args(pos_only)]` — refuse to accept the field as a keyword argument.
-/// * `#[from_args(kw_only)]` — refuse to accept the field as a positional
-///   argument.
-/// * `#[from_args(varargs)]` — collects all extra positional arguments. The
-///   field type must be `Vec<T>` where `T: FromValue`.
-/// * `#[from_args(varkwargs)]` — collects all unrecognised keyword arguments.
-///   The field type must be `KwargsValues`.
-/// * `#[from_args(static_string = "Variant")]` — override the auto-derived
-///   `StaticStrings::PascalCase(field_ident)` used for kwarg matching.
-///
-/// # Field ordering
-///
-/// The macro requires the struct fields to be ordered as in a Python signature:
-///
-/// ```text
-/// [pos_only...] [pos_or_keyword...] [varargs] [kw_only...] [varkwargs]
-/// ```
-///
-/// Within each region, required fields must come before optional ones. The
-/// `varargs` field implicitly introduces the `*` separator: any field after it
-/// is treated as `kw_only` even without the attribute.
+/// `#[from_args(name = "...")]` is required on the struct. The remaining
+/// attributes select CPython error-wording style or field roles; see the
+/// crate `README.md` and the source docstrings.
 #[proc_macro_derive(FromArgs, attributes(from_args))]
 pub fn derive_from_args(input: TokenStream) -> TokenStream {
     let input = syn::parse_macro_input!(input as syn::DeriveInput);
@@ -56,12 +33,11 @@ pub fn derive_from_args(input: TokenStream) -> TokenStream {
         .into()
 }
 
-/// Derives `ToArgs::to_args` — projects a struct into
-/// `(Vec<MontyObject>, Vec<(MontyObject, MontyObject)>)`.
-///
-/// Reuses `#[from_args(...)]` field attributes (`pos_only`, `kw_only`,
-/// `varargs`) so structs that derive both stay consistent in both directions.
-/// Each field type must implement `monty::args::ToMontyObject`.
+/// Derive `ToArgs::to_args` — projects a struct into
+/// `(Vec<MontyObject>, Vec<(MontyObject, MontyObject)>)`. Reuses the
+/// `#[from_args(...)]` field attributes (`pos_only`, `kw_only`, `varargs`)
+/// so a struct that derives both stays consistent in both directions. Each
+/// field type must implement `monty::args::ToMontyObject`.
 #[proc_macro_derive(ToArgs, attributes(from_args))]
 pub fn derive_to_args(input: TokenStream) -> TokenStream {
     let input = syn::parse_macro_input!(input as syn::DeriveInput);
