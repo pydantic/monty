@@ -22,7 +22,7 @@ use std::{fmt, ops::Deref};
 
 use crate::{
     ExcType, MontyException, MontyObject,
-    args::{ArgValues, ToArgs, ToMontyObject},
+    args::{ArgValues, FromArgs, ToArgs, ToMontyObject},
     exception_private::RunResult,
     heap::{ContainsHeap, DropWithHeap, Heap, HeapData},
     intern::{Interns, StaticStrings},
@@ -470,7 +470,7 @@ pub(crate) fn build_path_os_call(
         StaticStrings::AppendBytes => {
             OsFunctionCall::AppendBytes(extract_bytes_data("append_bytes", path, args, heap, interns)?)
         }
-        StaticStrings::Mkdir => OsFunctionCall::Mkdir(extract_mkdir_args(path, args, heap, interns)),
+        StaticStrings::Mkdir => OsFunctionCall::Mkdir(extract_mkdir_args(path, args, heap, interns)?),
         StaticStrings::Rename => OsFunctionCall::Rename(extract_rename_args(path, args, heap, interns)?),
         _ => {
             // Unreachable in practice — callers gate on `is_path_os_method`.
@@ -523,38 +523,68 @@ fn extract_bytes_data(
     }
 }
 
-/// Extracts `parents`/`exist_ok` kwargs for `mkdir`. Unknown kwargs are
-/// silently ignored (matching the legacy `parse_mkdir_kwargs` behaviour).
+/// Python-facing argument shape for `Path.mkdir(mode=0o777, parents=False, exist_ok=False)`.
+///
+/// Monty parses `mode` for signature compatibility and arity validation, but
+/// filesystem backends do not model POSIX permission bits.
+#[derive(FromArgs)]
+#[from_args(name = "Path.mkdir", at_most_total)]
+struct PathMkdirArgs {
+    #[from_args(default = 0o777_i64)]
+    mode: i64,
+    #[from_args(default = Value::Bool(false))]
+    parents: Value,
+    #[from_args(default = Value::Bool(false))]
+    exist_ok: Value,
+}
+
+/// Extracts `mode`/`parents`/`exist_ok` for `mkdir`, rejecting unknown or
+/// excessive arguments before the host sees the OS call.
 fn extract_mkdir_args(
     path: MontyPath,
     args: ArgValues,
     heap: &mut Heap<impl ResourceTracker>,
     interns: &Interns,
-) -> MkdirCallArgs {
-    let (pos_iter, kwargs) = args.into_parts();
-    pos_iter.drop_with_heap(heap);
-    let mut parents = false;
-    let mut exist_ok = false;
-    for (key, value) in kwargs {
-        if let Some(kw_name) = key.as_either_str(heap) {
-            let kw_name = kw_name.as_str(interns).to_owned();
-            let flag = matches!(&value, Value::Bool(true));
-            value.drop_with_heap(heap);
-            key.drop_with_heap(heap);
-            match kw_name.as_str() {
-                "parents" => parents = flag,
-                "exist_ok" => exist_ok = flag,
-                _ => {}
-            }
-        } else {
-            value.drop_with_heap(heap);
-            key.drop_with_heap(heap);
-        }
-    }
-    MkdirCallArgs {
-        path,
+) -> RunResult<MkdirCallArgs> {
+    let PathMkdirArgs {
+        mode,
         parents,
         exist_ok,
+    } = PathMkdirArgs::from_args(args, heap, interns)?;
+    let _ = mode;
+    let parents_bool = mkdir_flag_is_truthy(&parents);
+    parents.drop_with_heap(heap);
+    let exist_ok_bool = mkdir_flag_is_truthy(&exist_ok);
+    exist_ok.drop_with_heap(heap);
+    Ok(MkdirCallArgs {
+        path,
+        parents: parents_bool,
+        exist_ok: exist_ok_bool,
+    })
+}
+
+/// Truth-test for `Path.mkdir` boolean flags without requiring a live VM.
+///
+/// This covers the primitive cases accepted by Monty's parser; heap objects
+/// remain truthy here, which matches the previous behavior for non-bool values
+/// more closely than introducing strict `bool` coercion.
+fn mkdir_flag_is_truthy(value: &Value) -> bool {
+    match value {
+        Value::None => false,
+        Value::Bool(v) => *v,
+        Value::Int(v) => *v != 0,
+        Value::Float(v) => *v != 0.0,
+        Value::InternString(_) | Value::InternBytes(_) | Value::InternLongInt(_) | Value::Ref(_) => true,
+        Value::Undefined => false,
+        Value::Ellipsis
+        | Value::Builtin(_)
+        | Value::ModuleFunction(_)
+        | Value::DefFunction(_)
+        | Value::ExtFunction(_)
+        | Value::Marker(_)
+        | Value::Property(_) => true,
+        #[cfg(feature = "memory-model-checks")]
+        Value::Dereferenced => panic!("Cannot access Dereferenced object"),
     }
 }
 

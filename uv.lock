@@ -914,7 +914,7 @@ dev = [
     { name = "httpx", specifier = ">=0.28.1" },
     { name = "logfire", specifier = ">=4.25.0" },
     { name = "maturin", specifier = ">=1.9.4,<2.0" },
-    { name = "mypy", specifier = ">=1.19.1" },
+    { name = "mypy", specifier = ">=2.1.0" },
     { name = "playwright", specifier = ">=1.58.0" },
     { name = "pydantic-ai-slim", extras = ["anthropic", "openai"], specifier = ">=1.63.0" },
     { name = "ruff", specifier = ">=0.14.7" },

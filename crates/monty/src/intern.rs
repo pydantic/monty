@@ -687,6 +687,10 @@ pub enum StaticStrings {
     AbsTol,
     /// Kwarg name `format` — `date.strftime(format=...)`, `datetime.strftime(format=...)`.
     Format,
+    /// Kwarg name `parents` — `Path.mkdir(parents=...)`.
+    Parents,
+    /// Kwarg name `exist_ok` — `Path.mkdir(exist_ok=...)`.
+    ExistOk,
 }
 
 impl StaticStrings {
