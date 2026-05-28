@@ -207,24 +207,36 @@ pub(crate) fn init(heap: &mut Heap<impl ResourceTracker>, args: ArgValues, inter
         second,
         microsecond,
         tzinfo,
+        fold,
     } = DatetimeInitArgs::from_args(args, heap, interns)?;
     // `tzinfo` owns the input ref; keep it alive across `tzinfo_from_value` and
     // `from_components` so the heap-allocated TimeZone (if any) is not freed
     // before `attach_or_allocate_tzinfo_ref` takes its own reference.
     defer_drop_mut!(tzinfo, heap);
 
+    if fold != 0 && fold != 1 {
+        return Err(
+            SimpleException::new_msg(ExcType::ValueError, format!("fold must be either 0 or 1, not {fold}")).into(),
+        );
+    }
+
     let (tz, tz_ref) = tzinfo_from_value(tzinfo, heap)?;
     let dt = from_components(year, month, day, hour, minute, second, microsecond, tz, tz_ref, heap)?;
     Ok(Value::Ref(heap.allocate(HeapData::DateTime(dt))?))
 }
 
-/// Argument shape for `datetime(year, month, day, hour=0, minute=0, second=0, microsecond=0, tzinfo=None)`.
+/// Argument shape for `datetime(year, month, day, hour=0, minute=0, second=0,
+/// microsecond=0, tzinfo=None, *, fold=0)`.
 ///
-/// CPython emits two distinct wordings here: too-many-positional says
-/// "function takes at most 8 *positional* arguments", while
-/// positional/keyword conflict messages reference `"function"` as the
-/// descriptor — hence the `at_most_positional` plus `name = "function"`
-/// combination.
+/// CPython emits two distinct wordings for over-arity: when the overflow
+/// could still fit in the keyword-only tail (`actual <= 9`) the message is
+/// "function takes at most 8 *positional* arguments"; once it exceeds the
+/// total slot count it switches to "function takes at most 9 arguments".
+/// The macro implements that pivot via `at_most_positional` + the keyword-only
+/// `fold` field — the trailing kw-only slot is what bumps `max_total` to 9.
+///
+/// `fold` itself is accepted for CPython parity but currently has no effect
+/// on the stored datetime — Monty does not track DST-fold disambiguation.
 #[derive(FromArgs)]
 #[from_args(name = "function", c_error, at_most_positional)]
 struct DatetimeInitArgs {
@@ -241,6 +253,8 @@ struct DatetimeInitArgs {
     microsecond: i32,
     #[from_args(default = Value::None)]
     tzinfo: Value,
+    #[from_args(kw_only, default = 0)]
+    fold: i32,
 }
 
 /// Classmethod implementation for `datetime.now(tz=None)`. Yields a

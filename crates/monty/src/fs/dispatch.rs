@@ -128,13 +128,11 @@ impl<'a> FsRequest<'a> {
 
 /// Projects an [`OsFunctionCall`] into a typed [`FsRequest`].
 ///
-/// This is now a trivial 1:1 mapping — every field is already typed on the
+/// This is a trivial 1:1 mapping — every field is already typed on the
 /// caller side (no `MontyObject` introspection, no kwarg walks, no mode
-/// reparse). The legacy ergonomics (`Result<_>`-returning) are preserved so
-/// the few callers that wrap parse errors in [`MountError`] keep compiling;
-/// in practice this function only returns `Ok(_)` for FS variants and
-/// panics for non-FS variants (which should have been filtered out by
-/// [`OsFunctionCall::is_filesystem`] before reaching here).
+/// reparse), so the function is infallible. Non-FS variants are filtered
+/// out by [`OsFunctionCall::is_filesystem`] before reaching here and panic
+/// the catch-all arm if they slip through.
 pub(super) fn fs_request_from_call(call: &OsFunctionCall) -> FsRequest<'_> {
     match call {
         OsFunctionCall::Exists(p) => FsRequest::Exists { path: p.as_str() },

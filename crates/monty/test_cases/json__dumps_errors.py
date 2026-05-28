@@ -1,4 +1,7 @@
 import json
+import sys
+
+_monty = 'Monty' in sys.version
 
 # === allow_nan=False errors ===
 try:
@@ -63,11 +66,17 @@ except TypeError as exc:
 try:
     json.dumps(1, 2)
     assert False, 'json.dumps with too many positional args should raise TypeError'
-except TypeError:
-    # CPython: "dumps() takes 1 positional argument but 2 were given" (a
-    # Python-side wrapper checks arity before delegating to the C encoder).
-    # Monty: "JSONEncoder.__init__ expected at most 1 arguments, got 2".
-    pass
+except TypeError as exc:
+    # CPython: "dumps() takes 1 positional argument but 2 were given" — that
+    # specific wording is only produced by pure-Python functions; json.dumps
+    # is implemented in Python in CPython, so it gets that form. Monty emits
+    # `PyArg_UnpackTuple`-style "expected at most" for every Python-style
+    # `FromArgs` callsite, which is what CPython would emit if dumps were
+    # implemented in C — see limitations/json.md.
+    if _monty:
+        assert str(exc) == 'dumps expected at most 1 argument, got 2', f'monty-dumps-arity: {exc}'
+    else:
+        assert str(exc) == 'dumps() takes 1 positional argument but 2 were given', f'cpy-dumps-arity: {exc}'
 
 # === circular reference errors ===
 circular_list = []

@@ -693,6 +693,37 @@ impl ExcType {
         .into()
     }
 
+    /// Hybrid wording used by C constructors that mix positional-or-keyword
+    /// slots with keyword-only slots (e.g. `datetime`, where `fold` is
+    /// keyword-only). CPython's `PyArg_ParseTupleAndKeywords` emits two
+    /// distinct messages depending on whether the caller could conceivably
+    /// have meant the overflow args to fill the keyword-only tail:
+    ///
+    /// - `actual <= max_total`: the extra positionals *could* have filled the
+    ///   trailing keyword-only slots, so the error pins blame on positional
+    ///   overflow specifically — `function takes at most {max_pos} positional
+    ///   arguments ({actual} given)`.
+    /// - `actual > max_total`: there is no slot of any kind for the extras,
+    ///   so the error reports the total slot count without the "positional"
+    ///   qualifier — `function takes at most {max_total} arguments ({actual}
+    ///   given)`.
+    ///
+    /// `max_pos` is the number of positional-or-keyword slots; `max_total`
+    /// adds the trailing keyword-only slot count. When `max_total == max_pos`
+    /// (no kw-only fields) this collapses to [`type_error_c_at_most_positional`].
+    #[must_use]
+    pub(crate) fn type_error_c_at_most_positional_or_total(
+        max_pos: usize,
+        max_total: usize,
+        actual: usize,
+    ) -> RunError {
+        if actual > max_total && max_total > max_pos {
+            Self::type_error_c_at_most(max_total, actual)
+        } else {
+            Self::type_error_c_at_most_positional(max_pos, actual)
+        }
+    }
+
     /// Creates a TypeError for a missing required argument in a C-implemented type.
     ///
     /// Matches CPython's `PyArg_ParseTupleAndKeywords` format:

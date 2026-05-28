@@ -341,8 +341,6 @@ impl Signature {
         // Maximum number of named positional slots (for `at most N` errors).
         let max_positional = self.named_positional_count();
         let has_varargs = self.varargs_idx.is_some();
-        let has_varkwargs = self.varkwargs_idx.is_some();
-
         let slot_decls = self.render_slot_decls(&slots);
         let cleanup_block = self.render_cleanup_block(&slots);
         let total_check = self.render_total_check(max_positional);
@@ -350,7 +348,7 @@ impl Signature {
         let at_least_check = self.render_at_least_positional_check();
         let positional_loop = self.render_positional_loop(&slots, max_positional, has_varargs);
         let unknown_decl = self.render_unknown_kwarg_decl();
-        let kwarg_loop = self.render_kwarg_loop(&slots, has_varkwargs);
+        let kwarg_loop = self.render_kwarg_loop(&slots);
         let missing_check = self.render_missing_required_check(&slots);
         let unknown_check = self.render_unknown_kwarg_check();
         let build_struct = self.render_build_struct(&slots);
@@ -472,9 +470,18 @@ impl Signature {
                 AtMostStyle::Standard => quote! {
                     crate::exception_private::ExcType::type_error_c_at_most(#max_lit, #actual)
                 },
-                AtMostStyle::Positional => quote! {
-                    crate::exception_private::ExcType::type_error_c_at_most_positional(#max_lit, #actual)
-                },
+                AtMostStyle::Positional => {
+                    // CPython switches wording from "M positional arguments"
+                    // to "M_total arguments" once the overflow exceeds the
+                    // total slot count (positional + kw-only). See
+                    // `type_error_c_at_most_positional_or_total` for details.
+                    let max_total = max_lit + self.kw_only_count();
+                    quote! {
+                        crate::exception_private::ExcType::type_error_c_at_most_positional_or_total(
+                            #max_lit, #max_total, #actual,
+                        )
+                    }
+                }
             },
             // CPython's named-C types (e.g. timezone) emit
             // `{name}() takes at most M arguments (N given)`.
@@ -491,6 +498,16 @@ impl Signature {
         self.fields
             .iter()
             .filter(|f| matches!(f.kind, FieldKind::PosOnly | FieldKind::PosOrKeyword))
+            .count()
+    }
+
+    /// Number of trailing keyword-only slots. Used by `at_most_positional` to
+    /// compute `max_total = max_positional + kw_only`, which controls the
+    /// CPython wording pivot in `type_error_c_at_most_positional_or_total`.
+    fn kw_only_count(&self) -> usize {
+        self.fields
+            .iter()
+            .filter(|f| matches!(f.kind, FieldKind::KwOnly))
             .count()
     }
 
@@ -733,7 +750,9 @@ impl Signature {
             return quote! {
                 if let ::std::option::Option::Some(__arg) = ::std::iter::Iterator::next(&mut __pos_iter) {
                     __arg.drop_with_heap(heap);
-                    let __actual = 1 + ::std::iter::ExactSizeIterator::len(&__pos_iter);
+                    let __actual = 1
+                        + ::std::iter::ExactSizeIterator::len(&__pos_iter)
+                        + ::std::iter::ExactSizeIterator::len(&__kwargs_iter);
                     __cleanup!(#err_expr);
                 }
             };
@@ -762,8 +781,16 @@ impl Signature {
                 _ => {
                     // The argument itself has not yet been consumed by from_value,
                     // so drop it explicitly before bubbling the count error.
+                    // Include the remaining unconsumed positionals *and* the
+                    // un-iterated kwargs in `__actual` so the count matches
+                    // CPython: the C-style "function takes at most N arguments
+                    // (M given)" wording counts every supplied arg, not just
+                    // positionals. `__cleanup!` will drain & drop both iters.
                     __arg.drop_with_heap(heap);
-                    let __actual = __pos_count + 1;
+                    let __actual = __pos_count
+                        + 1
+                        + ::std::iter::ExactSizeIterator::len(&__pos_iter)
+                        + ::std::iter::ExactSizeIterator::len(&__kwargs_iter);
                     __cleanup!(#err_expr);
                 }
             }
@@ -884,7 +911,7 @@ impl Signature {
         matches!(self.error_style, ErrorStyle::C | ErrorStyle::NamedC)
     }
 
-    fn render_kwarg_loop(&self, slots: &[Ident], has_varkwargs: bool) -> TokenStream {
+    fn render_kwarg_loop(&self, slots: &[Ident]) -> TokenStream {
         // Build kwarg dispatch arms — only for fields that can be passed by name.
         let mut arms: Vec<TokenStream> = Vec::new();
         for (field, slot) in self.fields.iter().zip(slots) {
@@ -939,7 +966,6 @@ impl Signature {
                 __cleanup!(crate::exception_private::ExcType::type_error_unexpected_keyword(#func_name, &__unexpected));
             }
         };
-        let _ = has_varkwargs;
 
         // Build pos-only kwarg rejection arms — but only when the user has
         // explicitly supplied a `#[from_args(static_string = "…")]` override

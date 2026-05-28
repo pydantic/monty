@@ -554,6 +554,7 @@ pub enum StaticStrings {
     Minute,
     Second,
     Microsecond,
+    Fold,
     // timedelta constructor/attribute names
     Days,
     Seconds,

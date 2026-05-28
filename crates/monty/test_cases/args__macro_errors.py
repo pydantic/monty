@@ -182,14 +182,43 @@ except TypeError as e:
     assert str(e) == 'function takes at most 3 arguments (4 given)', f'c-atmost-total-kwconflict: {e}'
 
 # === C: too-many positional (at_most_positional — datetime) ===
-# datetime has 8 fields max; passing 9 positionals trips the
-# "function takes at most 8 positional arguments (9 given)" wording
-# specific to `at_most_positional`.
+# CPython's `datetime` constructor has 8 positional-or-keyword slots plus
+# the keyword-only `fold` field (max_total = 9). The error wording pivots
+# on whether the supplied count *could* still have fit in the kw-only tail:
+# - 9 args: extras could fit fold → "8 positional arguments (9 given)"
+# - 10+   : no slot of any kind   → "9 arguments (N given)" (drops
+#                                    "positional", uses max_total = 9)
+# The pivot is implemented by `type_error_c_at_most_positional_or_total`.
 try:
     datetime.datetime(1, 2, 3, 4, 5, 6, 7, 8, 9)
     assert False, 'datetime 9 positional should raise'
 except TypeError as e:
     assert str(e) == 'function takes at most 8 positional arguments (9 given)', f'c-atmost-positional: {e}'
+
+# Regression: the per-arg tail used to report `__pos_count + 1`, missing
+# both the remaining unconsumed positionals *and* any supplied kwargs.
+# With 11 args the count must be 11, and the wording must drop "positional"
+# because 11 > max_total (= 9).
+try:
+    datetime.datetime(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11)
+    assert False, 'datetime 11 positional should raise'
+except TypeError as e:
+    assert str(e) == 'function takes at most 9 arguments (11 given)', f'c-atmost-positional-many: {e}'
+
+# Same pivot reached via a kwarg counting toward the total: 9 positionals
+# + 1 kwarg = 10 args > max_total (= 9), so "9 arguments (10 given)".
+try:
+    datetime.datetime(1, 2, 3, 4, 5, 6, 7, 8, 9, fold=0)
+    assert False, 'datetime 9 positional + fold kwarg should raise'
+except TypeError as e:
+    assert str(e) == 'function takes at most 9 arguments (10 given)', f'c-atmost-positional-kw: {e}'
+
+# === Python: too-many positional with >1 extra (count must include remaining iter) ===
+try:
+    'a'.replace('b', 'c', 1, 2, 3)
+    assert False, 'str.replace 5 positional should raise'
+except TypeError as e:
+    assert str(e) == 'replace() takes at most 3 arguments (5 given)', f'py-atmost-pos-many: {e}'
 
 # =====================================================================
 # === NamedC style (`c_error_named` — embeds the type's name)        ===
