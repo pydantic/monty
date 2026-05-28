@@ -1664,12 +1664,17 @@ fn parse_replace_args(
 
 /// Argument shape for `str.replace(old, new, count=-1)`.
 ///
-/// Python 3.13 promoted `count` from positional-only to positional-or-keyword,
-/// so the macro doesn't need `kw_only` here.
+/// `old` and `new` are positional-only at the C level — passing them as
+/// kwargs produces CPython's "takes at least 2 positional arguments"
+/// error, which the macro derives from the required pos-only count.
+/// Python 3.13 promoted `count` from positional-only to
+/// positional-or-keyword, hence the un-annotated default.
 #[derive(FromArgs)]
-#[from_args(name = "replace", at_least_positional)]
+#[from_args(name = "replace")]
 struct ReplaceArgs {
+    #[from_args(pos_only)]
     old: Value,
+    #[from_args(pos_only)]
     new: Value,
     #[from_args(default = Value::Int(-1))]
     count: Value,

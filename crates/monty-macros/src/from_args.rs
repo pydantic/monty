@@ -41,19 +41,12 @@ struct Signature {
     /// exclusive with `varargs`/`varkwargs` — the pre-count is meaningless
     /// when the signature accepts unbounded inputs.
     at_most_total: bool,
-    /// When set, the generated code pre-validates that *at least* the
-    /// required-positional count appears as positional args (kwargs do
-    /// not fill the quota). Emits CPython's method-style wording:
-    /// `{name}() takes at least M positional argument(s) (N given)` —
-    /// matches `str.replace` and similar C-implemented methods that
-    /// reject kwargs for the required positionals.
-    at_least_positional: bool,
     /// When set, the macro replaces both the "too few" and "too many"
     /// positional error paths with CPython's `PyArg_UnpackTuple` wording:
     /// `{name} expected N argument(s), got M` (no parens, no "positional").
     /// Used for exact-arity callables like `sorted()` whose required
     /// positional count equals the maximum. Mutually exclusive with
-    /// `varargs`, `at_most_total`, and `at_least_positional`.
+    /// `varargs` and `at_most_total`.
     expected_exact: bool,
     /// Optional override for the function name used in the
     /// unknown-kwarg error (`{name}() got an unexpected keyword argument 'X'`).
@@ -201,7 +194,6 @@ impl Signature {
             name: func_name,
             error_style,
             at_most_total,
-            at_least_positional,
             expected_exact,
             kwarg_error_name,
             bad_arg,
@@ -303,12 +295,11 @@ impl Signature {
                  signatures with a fixed maximum",
             ));
         }
-        if expected_exact && (varargs_idx.is_some() || at_most_total || at_least_positional) {
+        if expected_exact && (varargs_idx.is_some() || at_most_total) {
             return Err(syn::Error::new(
                 struct_ident.span(),
-                "`expected_exact` cannot be combined with `varargs`, `at_most_total`, \
-                 or `at_least_positional` — the exact-arity wording assumes a single \
-                 fixed required positional count",
+                "`expected_exact` cannot be combined with `varargs` or `at_most_total` \
+                 — the exact-arity wording assumes a single fixed required positional count",
             ));
         }
 
@@ -320,7 +311,6 @@ impl Signature {
             varkwargs_idx,
             error_style,
             at_most_total,
-            at_least_positional,
             expected_exact,
             kwarg_error_name,
             bad_arg,
@@ -454,10 +444,11 @@ impl Signature {
                 crate::exception_private::ExcType::type_error_expected_exact(#func_name, #max_lit, #actual)
             };
         }
-        if self.at_least_positional {
-            // `at_least_positional` opts a struct into method-style
-            // "takes at most M argument(s) (N given)" for the too-many
-            // case, matching CPython's `replace() takes at most 3 …`.
+        if self.use_c_method_arity_wording() {
+            // Required pos-only fields put the struct into CPython's
+            // C-method dispatch style. Too-many wording becomes
+            // method-style "takes at most M argument(s) (N given)",
+            // matching e.g. `replace() takes at most 3 arguments (4 given)`.
             return quote! {
                 crate::exception_private::ExcType::type_error_method_at_most(#func_name, #max_lit, #actual)
             };
@@ -508,13 +499,33 @@ impl Signature {
 
     /// Counts positional-region fields that have no default (i.e. they must
     /// either come in via positionals or, for `PosOrKeyword`, via a kwarg).
-    /// Used by `at_least_positional` and `expected_exact` to know how many
-    /// positionals must actually appear.
+    /// Used by `expected_exact` to know how many positionals must actually
+    /// appear.
     fn required_positional_count(&self) -> usize {
         self.fields
             .iter()
             .filter(|f| matches!(f.kind, FieldKind::PosOnly | FieldKind::PosOrKeyword) && f.default.is_none())
             .count()
+    }
+
+    /// Counts required positional-only fields. When non-zero (and
+    /// `expected_exact` is not set) the macro emits CPython's C-method
+    /// `_PyArg_UnpackKeywords` wording family: an "at least M positional
+    /// arguments" pre-check and a method-style "at most M argument(s)"
+    /// too-many error. Matches `str.replace` and other C-implemented
+    /// methods whose required args cannot be filled by kwargs.
+    fn required_pos_only_count(&self) -> usize {
+        self.fields
+            .iter()
+            .filter(|f| matches!(f.kind, FieldKind::PosOnly) && f.default.is_none())
+            .count()
+    }
+
+    /// True when [`required_pos_only_count`] is non-zero and we're not
+    /// already covered by `expected_exact` (whose exact-count check
+    /// subsumes the at-least direction with its own wording).
+    fn use_c_method_arity_wording(&self) -> bool {
+        !self.expected_exact && self.required_pos_only_count() > 0
     }
 
     /// Emit the `expected_exact` pre-check when set. Validates that the
@@ -625,18 +636,19 @@ impl Signature {
         }
     }
 
-    /// Emit the `at_least_positional` pre-check when set. Validates that the
-    /// positional iterator has at least `required_positional_count()` items
-    /// (kwargs do not satisfy required positionals for methods that opt
-    /// into this style). Raises
+    /// Emit the C-method "at least M positional" pre-check. Fires when the
+    /// struct has at least one required positional-only field and
+    /// `expected_exact` is not set. Validates that the positional iterator
+    /// has at least `required_pos_only_count()` items — kwargs do not
+    /// satisfy required pos-only slots. Raises
     /// `"{name}() takes at least M positional argument(s) (N given)"`
     /// matching CPython's `replace() takes at least 2 positional arguments (1 given)`.
     fn render_at_least_positional_check(&self) -> TokenStream {
-        if !self.at_least_positional {
+        if !self.use_c_method_arity_wording() {
             return TokenStream::new();
         }
         let func_name = self.func_name.as_str();
-        let required = self.required_positional_count();
+        let required = self.required_pos_only_count();
         quote! {
             {
                 let __pos_actual = ::std::iter::ExactSizeIterator::len(&__pos_iter);
@@ -1239,7 +1251,6 @@ struct StructAttrs {
     name: String,
     error_style: ErrorStyle,
     at_most_total: bool,
-    at_least_positional: bool,
     expected_exact: bool,
     kwarg_error_name: Option<String>,
     bad_arg: Option<BadArgStyle>,
@@ -1253,7 +1264,6 @@ fn parse_struct_attrs(attrs: &[syn::Attribute]) -> syn::Result<StructAttrs> {
     let mut style_set = false;
     let mut is_c_style = false;
     let mut at_most_total = false;
-    let mut at_least_positional = false;
     let mut expected_exact = false;
     let mut kwarg_error_name: Option<String> = None;
     let mut bad_arg: Option<BadArgStyle> = None;
@@ -1271,9 +1281,6 @@ fn parse_struct_attrs(attrs: &[syn::Attribute]) -> syn::Result<StructAttrs> {
                 Ok(())
             } else if meta.path.is_ident("at_most_total") {
                 at_most_total = true;
-                Ok(())
-            } else if meta.path.is_ident("at_least_positional") {
-                at_least_positional = true;
                 Ok(())
             } else if meta.path.is_ident("expected_exact") {
                 expected_exact = true;
@@ -1310,7 +1317,7 @@ fn parse_struct_attrs(attrs: &[syn::Attribute]) -> syn::Result<StructAttrs> {
                 Ok(())
             } else {
                 Err(meta.error(
-                    "unknown struct attribute; expected `name = \"...\"`, `at_most_positional`, `at_most_total`, `at_least_positional`, `expected_exact`, `kwarg_error_name = \"...\"`, `bad_arg`, `bad_arg_named`, `c_error`, or `c_error_named`",
+                    "unknown struct attribute; expected `name = \"...\"`, `at_most_positional`, `at_most_total`, `expected_exact`, `kwarg_error_name = \"...\"`, `bad_arg`, `bad_arg_named`, `c_error`, or `c_error_named`",
                 ))
             }
         })?;
@@ -1330,7 +1337,6 @@ fn parse_struct_attrs(attrs: &[syn::Attribute]) -> syn::Result<StructAttrs> {
         name,
         error_style,
         at_most_total,
-        at_least_positional,
         expected_exact,
         kwarg_error_name,
         bad_arg,

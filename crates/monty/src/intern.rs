@@ -206,6 +206,7 @@ pub enum StaticStrings {
     // Keyword argument names for string/bytes methods and constructors
     Tabsize,
     Keepends,
+    Obj,
     Object,
     Source,
     // Additional string methods

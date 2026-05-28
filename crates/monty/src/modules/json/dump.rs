@@ -169,7 +169,6 @@ pub(super) fn call_dumps(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues)
 #[derive(FromArgs)]
 #[from_args(name = "dumps", kwarg_error_name = "JSONEncoder.__init__")]
 struct JsonDumpsArgs {
-    #[from_args(pos_only)]
     obj: Value,
     #[from_args(kw_only, default = Value::None)]
     indent: Value,

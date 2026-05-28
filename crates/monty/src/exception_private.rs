@@ -462,8 +462,9 @@ impl ExcType {
     /// `{name}() takes at least {min} positional arguments ({actual} given)` (plural otherwise)
     ///
     /// Distinct from [`type_error_at_least`] which uses CPython's
-    /// `PyArg_UnpackTuple` wording (no parens, no "positional"). Use this for
-    /// methods that opt into the macro's `at_least_positional` attribute.
+    /// `PyArg_UnpackTuple` wording (no parens, no "positional"). Emitted by
+    /// `FromArgs` for any struct with required positional-only fields,
+    /// matching CPython's C-method `_PyArg_UnpackKeywords` dispatch.
     #[must_use]
     pub(crate) fn type_error_at_least_positional(name: &str, min: usize, actual: usize) -> RunError {
         let plural = if min == 1 { "" } else { "s" };
