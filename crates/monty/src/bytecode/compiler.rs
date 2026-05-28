@@ -106,7 +106,10 @@ fn check_unpack_targets(count: usize, position: CodeRange) -> Result<u8, Compile
 /// comprehension's most stable location to point at in a traceback caret.
 fn check_comp_generators(count: usize, position: CodeRange) -> Result<(), CompileError> {
     if count > MAX_COMP_GENERATORS {
-        Err(too_many_comp_generators(count, position))
+        Err(CompileError::new(
+            format!("comprehension has too many nested clauses ({count}); maximum is {MAX_COMP_GENERATORS}"),
+            position,
+        ))
     } else {
         Ok(())
     }
@@ -129,15 +132,6 @@ fn target_position(target: &UnpackTarget) -> CodeRange {
 fn too_many_unpack_targets(count: usize, position: CodeRange) -> CompileError {
     CompileError::new(
         format!("too many targets in tuple unpacking ({count}); maximum is {MAX_UNPACK_TARGETS}"),
-        position,
-    )
-}
-
-#[cold]
-#[inline(never)]
-fn too_many_comp_generators(count: usize, position: CodeRange) -> CompileError {
-    CompileError::new(
-        format!("comprehension has too many nested clauses ({count}); maximum is {MAX_COMP_GENERATORS}"),
         position,
     )
 }
