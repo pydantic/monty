@@ -7,13 +7,9 @@
 # Each section names the error path being tested. Where Monty's wording
 # matches CPython byte-for-byte the assert is unconditional; where Monty
 # qualifies method names that CPython leaves bare (e.g. `str.expandtabs()`
-# vs `expandtabs()`) or otherwise diverges by an intentional design choice,
-# the assert is gated on `_monty`.
+# vs `expandtabs()`).
 import datetime
 import re
-import sys
-
-_monty = 'Monty' in sys.version
 
 # =====================================================================
 # === Python style (default — no `c_error` / `c_error_named`)        ===
@@ -30,9 +26,27 @@ try:
     sorted([1], bogus=1)
     assert False, 'sorted with unknown kwarg should raise'
 except TypeError as e:
-    # CPython's sorted() delegates internally to list.sort and surfaces
-    # sort()'s kwarg error. Monty matches via `kwarg_error_name = "sort"`.
+    # CPython's sorted() delegates internally to list.sort, so the
+    # kwarg-name error surfaces as `sort()`. Monty matches because
+    # `builtin_sorted` parses kwargs via the same `ListSortArgs` /
+    # `parse_and_sort` entry point as `list.sort`.
     assert str(e) == "sort() got an unexpected keyword argument 'bogus'", f'py-unknown-kw-sorted: {e}'
+
+# Unknown kwarg still wins after valid kwargs are accepted.
+try:
+    sorted([1], key=None, bogus=1)
+    assert False, 'sorted valid+unknown kwarg should raise'
+except TypeError as e:
+    assert str(e) == "sort() got an unexpected keyword argument 'bogus'", f'py-mixed-kw-sorted: {e}'
+
+# Passing `iterable=` as a kwarg routes through `ListSortArgs`, which
+# doesn't have an `iterable` slot — so the unknown-kwarg error fires
+# (via `sort()`) instead of the sorted() arity error.
+try:
+    sorted([1], iterable=[2])
+    assert False, 'sorted with iterable= kwarg should raise'
+except TypeError as e:
+    assert str(e) == "sort() got an unexpected keyword argument 'iterable'", f'py-iterable-kw-routed: {e}'
 
 # === Python: pos_or_keyword conflict ('multiple values for argument') ===
 # `re.split(pattern, string, pattern=...)` is a pos_or_keyword conflict.
@@ -43,7 +57,7 @@ try:
 except TypeError as e:
     assert str(e) == "split() got multiple values for argument 'pattern'", f'py-pos-kw: {e}'
 
-# === Python: missing required positional (PyArg_UnpackTuple-style via at_least_positional) ===
+# === Python: missing required positional (PyArg_UnpackKeywords wording derived from `pos_only`) ===
 try:
     'abc'.replace('a')
     assert False, 'str.replace() missing arg should raise'
@@ -60,20 +74,23 @@ except TypeError as e:
 # === Python: duplicate kw_only via ** unpacking ===
 # When both kwarg sources name the same key, Python's call machinery
 # emits the duplicate error before the function is invoked — this is
-# the bytecode-VM's `DictMerge` opcode in Monty's case, NOT FromArgs.
-# Monty surfaces the bare attribute name (`sort()`) while CPython
-# qualifies it with the type (`list.sort()`). Fixing this would require
-# a new MethodDictMerge opcode that peeks the receiver from the stack
-# and qualifies the method name with its type — see commit message for
-# rationale. Tracked as a known divergence outside the FromArgs scope.
+# the bytecode-VM's `MethodDictMerge` opcode in Monty's case, NOT
+# FromArgs. The opcode peeks the receiver from the stack at a known
+# depth and qualifies the bare method name with the receiver's Python
+# type, matching CPython's `list.sort()` wording byte-for-byte.
 try:
     [1, 2].sort(key=int, **{'key': str})
     assert False, 'duplicate kw via ** should raise'
 except TypeError as e:
-    if _monty:
-        assert str(e) == "sort() got multiple values for keyword argument 'key'", f'py-dup-kw-only: {e}'
-    else:
-        assert str(e) == "list.sort() got multiple values for keyword argument 'key'", f'py-dup-kw-only: {e}'
+    assert str(e) == "list.sort() got multiple values for keyword argument 'key'", f'py-dup-kw-only: {e}'
+
+# Same path on a different receiver type confirms the qualifier really
+# comes from the receiver, not a hard-coded name.
+try:
+    {}.update(a=1, **{'a': 2})
+    assert False, 'dict.update duplicate kw via ** should raise'
+except TypeError as e:
+    assert str(e) == "dict.update() got multiple values for keyword argument 'a'", f'py-dup-kw-dict: {e}'
 
 # === Python: at_most_total (str.expandtabs / str.splitlines / re.Match.groupdict) ===
 try:
@@ -96,15 +113,39 @@ try:
 except TypeError as e:
     assert str(e) == 'groupdict() takes at most 1 argument (2 given)', f'py-atmost-total-3: {e}'
 
-# === Python: pos-only field passed as kwarg (expected_exact fires first) ===
-# `sorted`'s `iterable` field is `pos_only` and the struct opts into
-# `expected_exact`, so the pre-check counts 0 positionals and emits
-# CPython's PyArg_UnpackTuple wording before the kwarg is even examined.
+# === Python: sorted() positional-arity wording (PyArg_UnpackTuple style) ===
+# `builtin_sorted` manually checks the positional iterator length and
+# emits CPython's `"sorted expected N argument(s), got M"` wording before
+# the kwargs are even examined. Verify each direction: no args, too few
+# (with kwargs that don't count), too many.
+try:
+    sorted()
+    assert False, 'sorted() should require iterable'
+except TypeError as e:
+    assert str(e) == 'sorted expected 1 argument, got 0', f'py-arity-zero: {e}'
+
+try:
+    sorted([1], [2])
+    assert False, 'sorted with two positionals should raise'
+except TypeError as e:
+    assert str(e) == 'sorted expected 1 argument, got 2', f'py-arity-two: {e}'
+
+# Same arity error when the second value was meant as a key function —
+# `key` is kw_only, so it can't fill the slot positionally.
+try:
+    sorted([3, 1, 2], int)
+    assert False, 'sorted with positional key should raise'
+except TypeError as e:
+    assert str(e) == 'sorted expected 1 argument, got 2', f'py-arity-key-pos: {e}'
+
+# Passing only kwargs (even the `iterable=` field name) hits the
+# zero-positional arity branch *before* any kwarg parsing — confirms
+# the positional check runs first.
 try:
     sorted(iterable=[1, 2, 3])
-    assert False, 'sorted iterable= kwarg should raise'
+    assert False, 'sorted iterable= only should raise on arity'
 except TypeError as e:
-    assert str(e) == 'sorted expected 1 argument, got 0', f'py-posonly-as-kw: {e}'
+    assert str(e) == 'sorted expected 1 argument, got 0', f'py-arity-iterable-kw: {e}'
 
 # === Python: missing required (multiple positionals) ===
 # map() has a CPython-specific bespoke message; Monty matches it via a

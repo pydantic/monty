@@ -5,14 +5,14 @@ use smallvec::SmallVec;
 
 use super::{MontyIter, PyTrait};
 use crate::{
-    args::{ArgValues, FromArgs},
+    args::ArgValues,
     bytecode::{CallResult, VM},
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, RunError, RunResult, SimpleException},
     heap::{DropWithHeap, Heap, HeapData, HeapGuard, HeapId, HeapItem, HeapRead, HeapReadOutput, HeapReader},
     intern::StaticStrings,
     resource::{ResourceError, ResourceTracker},
-    sorting::sort_values,
+    sorting::parse_and_sort,
     types::{
         Type,
         slice::{normalize_sequence_index, slice_collect_iterator},
@@ -705,37 +705,15 @@ fn do_list_sort<'h>(
     args: ArgValues,
     vm: &mut VM<'h, impl ResourceTracker>,
 ) -> Result<(), RunError> {
-    // Parse keyword-only arguments: key and reverse
-    let ListSortArgs { key, reverse } = ListSortArgs::from_args(args, vm.heap, vm.interns)?;
-
-    // Convert reverse to bool (default false). CPython is truthy-checked,
-    // not strict-typed.
-    let reverse = match reverse {
-        None => false,
-        Some(v) => {
-            let result = v.py_bool(vm);
-            v.drop_with_heap(vm);
-            result
-        }
-    };
-
-    // Handle key function (None means no key function)
-    let key_fn = match key {
-        Some(v) if matches!(v, Value::None) => {
-            v.drop_with_heap(vm);
-            None
-        }
-        other => other,
-    };
-    defer_drop!(key_fn, vm);
-
     // Detach the list's items so reentrant access via the list's heap id sees
     // an empty list. The detached buffer is always swapped back into the list
-    // when we're done.
+    // when we're done. Done *before* parsing args so the reentrancy guard is
+    // in place if parsing somehow allocates or drops user values that run
+    // arbitrary code.
     let items = mem::take(&mut list.get_mut(vm.heap).items);
     defer_drop_mut!(items, vm);
 
-    let sort_result = sort_values(items, key_fn.as_ref(), reverse, vm);
+    let sort_result = parse_and_sort(items, args, vm);
 
     // Swap our (sorted) buffer back into the list. Whatever the user placed
     // on the live empty list during the sort ends up in `items`; if
@@ -751,19 +729,6 @@ fn do_list_sort<'h>(
     } else {
         Err(SimpleException::new_msg(ExcType::ValueError, "list modified during sort").into())
     }
-}
-
-/// Argument shape for `list.sort(*, key=None, reverse=False)`. Both fields are
-/// keyword-only (CPython rejects positional `key`/`reverse`) and held as raw
-/// `Value`s so the implementation can normalise `key=None` to "no key" and
-/// truthy-check `reverse` itself.
-#[derive(FromArgs)]
-#[from_args(name = "sort")]
-struct ListSortArgs {
-    #[from_args(kw_only, default)]
-    key: Option<Value>,
-    #[from_args(kw_only, default)]
-    reverse: Option<Value>,
 }
 
 /// Writes a formatted sequence of values to a formatter.

@@ -1238,6 +1238,10 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
                     let func_name_id = cached_frame.fetch_u16();
                     try_catch_sync!(self, cached_frame, self.dict_merge(func_name_id));
                 }
+                Opcode::MethodDictMerge => {
+                    let func_name_id = cached_frame.fetch_u16();
+                    try_catch_sync!(self, cached_frame, self.method_dict_merge(func_name_id));
+                }
                 // PEP 448 literal building
                 Opcode::DictUpdate => {
                     let depth = cached_frame.fetch_u8() as usize;

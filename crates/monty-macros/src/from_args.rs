@@ -50,10 +50,10 @@ struct Signature {
     expected_exact: bool,
     /// Optional override for the function name used in the
     /// unknown-kwarg error (`{name}() got an unexpected keyword argument 'X'`).
-    /// Used by `sorted()` because CPython's sorted() delegates internally
-    /// to `list.sort` and surfaces sort()'s kwarg error wording, so the
-    /// kwarg-name error has to read `sort()` while arity errors keep
-    /// using the struct's primary `name = "sorted"`.
+    /// Used by `json.dumps`: CPython forwards unmatched kwargs to
+    /// `JSONEncoder.__init__`, so the kwarg-name error has to read
+    /// `JSONEncoder.__init__()` while arity errors keep using the struct's
+    /// primary `name = "dumps"`.
     kwarg_error_name: Option<String>,
     /// When set, every typed positional / pos-or-keyword field whose
     /// `FromValue::EXPECTED_TYPE_NAME` is `Some(_)` is wrapped so that a
@@ -963,8 +963,9 @@ impl Signature {
             }
         } else {
             // `kwarg_error_name` overrides the function name used in
-            // unknown-kwarg errors (used by `sorted` to emit `sort()` here
-            // even though arity errors still say `sorted`).
+            // unknown-kwarg errors (used by `json.dumps` to emit
+            // `JSONEncoder.__init__()` here even though arity errors still
+            // say `dumps`).
             let func_name = self.kwarg_error_name.as_deref().unwrap_or(self.func_name.as_str());
             quote! {
                 __value.drop_with_heap(heap);

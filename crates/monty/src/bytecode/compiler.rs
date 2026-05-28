@@ -2153,11 +2153,11 @@ impl<'a> Compiler<'a> {
                                 self.code.emit_u16(Opcode::LoadConst, key_const)?;
                                 self.compile_expr(&kw.value)?;
                                 self.code.emit_u16(Opcode::BuildDict, 1)?;
-                                self.code.emit_u16(Opcode::DictMerge, func_name_id)?;
+                                self.code.emit_u16(Opcode::MethodDictMerge, func_name_id)?;
                             }
                             CallKwarg::Unpack(e) => {
                                 self.compile_expr(e)?;
-                                self.code.emit_u16(Opcode::DictMerge, func_name_id)?;
+                                self.code.emit_u16(Opcode::MethodDictMerge, func_name_id)?;
                             }
                         }
                     }
@@ -2229,8 +2229,9 @@ impl<'a> Compiler<'a> {
             // Merge **kwargs if present
             if let Some(var_kwargs_expr) = var_kwargs {
                 self.compile_expr(var_kwargs_expr)?;
-                // Use the method name for error messages
-                self.code.emit_u16(Opcode::DictMerge, name_idx)?;
+                // Method-call form — `MethodDictMerge` qualifies the duplicate-
+                // kwarg error with the receiver's type (e.g. `list.sort()`).
+                self.code.emit_u16(Opcode::MethodDictMerge, name_idx)?;
             }
         }
 
