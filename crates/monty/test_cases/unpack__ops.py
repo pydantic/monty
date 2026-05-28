@@ -205,3 +205,31 @@ a = [0]
 (a[idx()],) = (7,)
 assert a == [7], 'side-effecting index produces correct store'
 assert calls == ['idx'], 'index expression evaluated exactly once at store time'
+
+
+# Lambda inside a `for`-loop subscript-target index — exercises the scope
+# walker that must promote captured outer locals to cell-vars when the only
+# reference to them lives inside the loop target's sub-expressions.
+def _for_target_lambda():
+    x = 1
+    y = [0, 0]
+    for y[(lambda: x)()] in (10, 20):
+        pass
+    return y
+
+
+assert _for_target_lambda() == [0, 20], 'lambda capturing local from inside for-target subscript index'
+
+
+# Same pattern wrapped in a nested tuple target — exercises the Tuple
+# recursion arm in the cell-var / referenced-name unpack-target walkers.
+def _for_target_tuple_lambda():
+    x = 1
+    y = [0, 0]
+    z = ''
+    for y[(lambda: x)()], z in [(10, 'a'), (20, 'b')]:
+        pass
+    return y, z
+
+
+assert _for_target_tuple_lambda() == ([0, 20], 'b'), 'tuple target with lambda-in-subscript-index'
