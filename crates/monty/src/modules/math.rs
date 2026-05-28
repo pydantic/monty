@@ -714,10 +714,17 @@ fn math_isclose(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunRe
 
 /// Argument shape for `math.isclose(a, b, *, rel_tol=1e-9, abs_tol=0.0)`.
 ///
-/// `a`/`b` are positional-only; `rel_tol`/`abs_tol` are keyword-only. All four
-/// are held as raw `Value` so the function body can run `value_to_float` for
-/// the math-specific Int/Float coercion (which `bool::from_value` and
+/// `a`/`b` are positional-only here; `rel_tol`/`abs_tol` are keyword-only. All
+/// four are held as raw `Value` so the function body can run `value_to_float`
+/// for the math-specific Int/Float coercion (which `bool::from_value` and
 /// `i64::from_value` don't cover).
+///
+/// NB: CPython accepts `a` and `b` as keyword arguments too. Monty's
+/// `StaticStrings`/intern infrastructure short-circuits single-character ASCII
+/// strings to a pre-reserved id, which doesn't reconcile with the static-string
+/// id the kwarg dispatch matches against. Until that path supports
+/// single-character static keyword names, `a`/`b` stay positional-only — see
+/// `limitations/math.md`.
 #[derive(FromArgs)]
 #[from_args(name = "isclose")]
 struct IscloseArgs {

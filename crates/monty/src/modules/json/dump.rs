@@ -158,14 +158,16 @@ pub(super) fn call_dumps(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues)
 /// Argument shape for `json.dumps(obj, *, indent=None, sort_keys=False,
 /// ensure_ascii=True, allow_nan=True, separators=None, skipkeys=False)`.
 ///
-/// The CPython error for unknown kwargs uses the descriptor
-/// `"JSONEncoder.__init__"` (because the C encoder forwards them straight to
-/// the encoder constructor), so we pass that as `name` for the macro's
-/// unexpected-keyword wording. Every field is a raw `Value` so the encoder
-/// can apply its own truth-test (`py_bool`) or shape coercion
-/// (`parse_indent_value` / `parse_separators_value`) on the way through.
+/// Arity and missing-arg errors use the `dumps()` descriptor, but the
+/// unknown-kwarg error uses `JSONEncoder.__init__()` — CPython's `json.dumps`
+/// forwards unknown kwargs straight to the encoder constructor, which is what
+/// surfaces in the error. `kwarg_error_name` overrides the function name used
+/// in the unexpected-keyword message without affecting other error paths.
+/// Every field is a raw `Value` so the encoder can apply its own truth-test
+/// (`py_bool`) or shape coercion (`parse_indent_value` /
+/// `parse_separators_value`) on the way through.
 #[derive(FromArgs)]
-#[from_args(name = "JSONEncoder.__init__")]
+#[from_args(name = "dumps", kwarg_error_name = "JSONEncoder.__init__")]
 struct JsonDumpsArgs {
     #[from_args(pos_only)]
     obj: Value,

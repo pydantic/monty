@@ -1342,12 +1342,12 @@ fn coerce_bytes_split_args(
     vm: &mut VM<'_, impl ResourceTracker>,
 ) -> RunResult<(Option<Vec<u8>>, i64)> {
     defer_drop!(sep, vm);
+    defer_drop!(maxsplit, vm);
     let sep = match sep {
         Value::None => None,
         _ => Some(extract_bytes_only(sep, vm)?.to_owned()),
     };
     let maxsplit_int = maxsplit.as_int(vm)?;
-    maxsplit.drop_with_heap(vm);
     Ok((sep, maxsplit_int))
 }
 

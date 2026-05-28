@@ -33,7 +33,17 @@ pub fn builtin_map(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> Ru
     // "missing N required positional arguments" wording the macro would
     // otherwise produce. Pre-check before delegating to MapArgs so we
     // match byte-for-byte; cleanup is handled by the early-return drop.
-    if args.count() < 2 {
+    //
+    // Only fire the arity check when no kwargs are present — otherwise
+    // `map(abs, bogus=1)` would report the arity error when CPython reports
+    // the unknown-kwarg error. Delegating to the macro produces the
+    // correct `got an unexpected keyword argument` message instead.
+    let kwargs_empty = match &args {
+        ArgValues::Kwargs(kwargs) => kwargs.is_empty(),
+        ArgValues::ArgsKargs { kwargs, .. } => kwargs.is_empty(),
+        _ => true,
+    };
+    if args.count() < 2 && kwargs_empty {
         args.drop_with_heap(vm.heap);
         return Err(ExcType::type_error_map_arity());
     }

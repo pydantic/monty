@@ -458,7 +458,7 @@ fn call_pattern_split<'h>(
 /// is taken by the `re.Pattern.string` attribute name in CPython's class
 /// hierarchy).
 #[derive(FromArgs)]
-#[from_args(name = "sub")]
+#[from_args(name = "sub", c_error_named, at_most_total)]
 struct PatternSubArgs {
     repl: Value,
     #[from_args(static_string = "StringAttr")]
@@ -471,7 +471,7 @@ struct PatternSubArgs {
 ///
 /// See `PatternSubArgs` for why `string` uses `static_string`.
 #[derive(FromArgs)]
-#[from_args(name = "split")]
+#[from_args(name = "split", c_error_named, at_most_total)]
 struct PatternSplitArgs {
     #[from_args(static_string = "StringAttr")]
     string: Value,

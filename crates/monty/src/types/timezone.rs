@@ -16,7 +16,7 @@ use crate::{
     args::{ArgValues, FromArgs},
     bytecode::VM,
     defer_drop,
-    exception_private::{ExcType, RunResult, SimpleException},
+    exception_private::{ExcType, RunError, RunResult, SimpleException},
     hash::HashValue,
     heap::{Heap, HeapData, HeapId, HeapItem, HeapRead},
     intern::Interns,
@@ -72,17 +72,18 @@ impl TimeZone {
     pub fn init(heap: &mut Heap<impl ResourceTracker>, args: ArgValues, interns: &Interns) -> RunResult<Value> {
         let TimezoneInitArgs { offset, name } = TimezoneInitArgs::from_args(args, heap, interns)?;
         // Keep `offset` and `name` alive across the validation helpers — they
-        // own the heap refs (TimeDelta / Str) we're reading from.
+        // own the heap refs (TimeDelta / Str) we're reading from. `name` is
+        // an `Option<Value>` so we can distinguish "omitted" from an explicit
+        // `None`: CPython accepts `timezone(td)` but rejects `timezone(td,
+        // None)` with `TypeError: timezone() argument 2 must be str, not None`.
         defer_drop!(offset, heap);
-        defer_drop!(name, heap);
         let offset_seconds = extract_offset_seconds(offset, heap)?;
-        // `name` defaults to `Value::None` (absent → no name). Anything else
-        // must be a `str`; `extract_name` enforces that and returns the
-        // string. The `Option<String>` shape matches `TimeZone::new`'s
-        // expected argument.
         let name_str: Option<String> = match name {
-            Value::None => None,
-            _ => extract_name(name, heap, interns)?,
+            None => None,
+            Some(name) => {
+                defer_drop!(name, heap);
+                extract_name(name, heap, interns)?
+            }
         };
 
         if offset_seconds == 0 && name_str.is_none() {
@@ -113,8 +114,11 @@ impl TimeZone {
 #[from_args(name = "timezone", c_error_named, at_most_total)]
 struct TimezoneInitArgs {
     offset: Value,
-    #[from_args(default = Value::None)]
-    name: Value,
+    // `Option<Value>` (with `default`) preserves the distinction between
+    // omitted (`None`) and explicitly passed `None` (`Some(Value::None)`),
+    // which `extract_name` needs to reject the latter.
+    #[from_args(default)]
+    name: Option<Value>,
 }
 
 impl PartialEq for TimeZone {
@@ -194,10 +198,19 @@ fn extract_name(name_arg: &Value, heap: &Heap<impl ResourceTracker>, interns: &I
         Value::InternString(id) => Ok(Some(interns.get_str(*id).to_owned())),
         Value::Ref(id) => match heap.get(*id) {
             HeapData::Str(s) => Ok(Some(s.as_str().to_owned())),
-            _ => Err(ExcType::type_error("timezone() argument 2 must be str".to_owned())),
+            _ => Err(bad_name_arg(name_arg, heap)),
         },
-        _ => Err(ExcType::type_error("timezone() argument 2 must be str".to_owned())),
+        _ => Err(bad_name_arg(name_arg, heap)),
     }
+}
+
+/// Builds the `timezone() argument 2 must be str, not <type>` error CPython
+/// raises for any non-`str` `name` argument (including explicit `None`).
+fn bad_name_arg(name_arg: &Value, heap: &Heap<impl ResourceTracker>) -> RunError {
+    ExcType::type_error(format!(
+        "timezone() argument 2 must be str, not {}",
+        name_arg.py_type_heap(heap).cpython_arg_name()
+    ))
 }
 
 impl HeapItem for TimeZone {

@@ -21,8 +21,6 @@ now_named_plus_two = datetime.datetime.now(named_plus_two)
 assert now_named_plus_two.tzinfo == named_plus_two, (
     'datetime.now() should preserve explicit timezone offsets on named fixed-offset tzinfo'
 )
-# TODO(datetime.now): preserve `tzinfo is input_tz` by threading the original tz
-# object through OS-call resume instead of reconstructing from offset/name only.
 
 # === repr/str parity ===
 assert repr(datetime.date(2024, 1, 15)) == 'datetime.date(2024, 1, 15)', 'date repr should match CPython'
@@ -40,8 +38,13 @@ assert datetime.timezone.utc is datetime.timezone.utc, 'timezone.utc should be a
 assert datetime.timezone(datetime.timedelta(0)) is datetime.timezone.utc, (
     'timezone(timedelta(0)) should return the timezone.utc singleton'
 )
-# TODO(timezone): add explicit regression for `timezone(timedelta(...), None)`
-# raising TypeError (explicit `None` name differs from omitted name).
+# Explicit `None` for the name argument differs from omitting it: CPython
+# raises `TypeError` while `timezone(td)` succeeds.
+try:
+    datetime.timezone(datetime.timedelta(0), None)
+    assert False, 'timezone(td, None) should raise TypeError'
+except TypeError as e:
+    assert str(e) == 'timezone() argument 2 must be str, not None', f'timezone explicit None name: {e}'
 assert (
     repr(datetime.timezone(datetime.timedelta(seconds=3600))) == 'datetime.timezone(datetime.timedelta(seconds=3600))'
 ), 'timezone repr should match CPython'

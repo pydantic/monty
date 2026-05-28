@@ -126,7 +126,7 @@ impl FromValue for String {
 
     fn from_value(value: Value, heap: &mut Heap<impl ResourceTracker>, interns: &Interns) -> RunResult<Self> {
         let result = match value.as_either_str(heap) {
-            Some(either) => Ok(either.as_str(interns).to_owned()),
+            Some(either) => Ok(either.into_string(interns)),
             None => Err(type_error_string_required()),
         };
         value.drop_with_heap(heap);

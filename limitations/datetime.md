@@ -28,6 +28,10 @@ Class methods supported: `now(tz=None)`, `strptime(date_string, format)`,
 
 - `now()` reaches the host for the current time (the only "live" datetime
   call); it yields an external call.
+- `now(tz)` returns a `datetime` whose `tzinfo` is `==` the input timezone
+  but not `is` it: the original `tzinfo` object isn't threaded through the
+  OS-call resume, so a fresh `timezone` is reconstructed from the
+  offset/name on the return path.
 - `utcnow()` (the deprecated class method) and `today()` are not
   implemented.
 - `combine()`, `fromtimestamp()`, `fromordinal()`, `utcfromtimestamp()`
