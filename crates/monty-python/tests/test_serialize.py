@@ -510,6 +510,20 @@ d = f.read()
     progress1 = pydantic_monty.Monty(code).start(os=fs)
     assert isinstance(progress1, pydantic_monty.FunctionSnapshot)
     assert progress1.args == snapshot((('a', 'α', 1),))
+    # Direct assertion on the serialised payload: pin its length so
+    # that re-introducing `Serialize` (or removing `#[serde(skip)]`)
+    # on `OpenFile::buffer_meta` shifts the size and fails the test.
+    # A healthy roundtrip alone is not enough — `populate_buffer_meta`
+    # would rebuild the same values on load, so a re-serialised cache
+    # would still pass the equality checks below.
+    #
+    # At this checkpoint `buffer_meta` would have been
+    # `Some(BufferMeta { byte_position: 2, buffer_total: 5 })`
+    # (one 2-byte Greek letter consumed, five chars in buffer). Postcard
+    # would encode that as `1u8` (Some tag) + varint(2) + varint(5)
+    # = 3 extra bytes on top of the current payload.
+    pinned_dump_len = len(progress1.dump())
+    assert pinned_dump_len == snapshot(1056)
 
     progress2 = pydantic_monty.load_snapshot(progress1.dump())
     assert isinstance(progress2, pydantic_monty.FunctionSnapshot)
