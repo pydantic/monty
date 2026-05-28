@@ -978,14 +978,11 @@ impl Signature {
         let mut pos_only_arms: Vec<TokenStream> = Vec::new();
         for field in &self.fields {
             if matches!(field.kind, FieldKind::PosOnly) && field.static_string.is_some() {
-                let static_string_ident = field.static_string_variant();
+                let key_id_expr = field.kwarg_string_id_expr();
                 let field_name_lit = LitStr::new(&field.ident.to_string(), field.ident.span());
                 let func_name = &self.func_name;
                 pos_only_arms.push(quote! {
-                    if __key_str.matches(
-                        crate::intern::StringId::from(crate::intern::StaticStrings::#static_string_ident),
-                        interns,
-                    ) {
+                    if __key_str.matches(#key_id_expr, interns) {
                         __value.drop_with_heap(heap);
                         __key.drop_with_heap(heap);
                         __cleanup!(crate::exception_private::ExcType::type_error_positional_only(#func_name, #field_name_lit));
@@ -1102,7 +1099,7 @@ impl Signature {
 impl Signature {
     fn kwarg_arm_pos_or_kw(&self, field: &Field, slot: &Ident) -> TokenStream {
         let func_name = self.func_name.as_str();
-        let static_string_ident = field.static_string_variant();
+        let key_id_expr = field.kwarg_string_id_expr();
         let ty = &field.ty;
         let field_name_lit = LitStr::new(&field.ident.to_string(), field.ident.span());
         let pos = field.pos_index.unwrap_or(0);
@@ -1135,10 +1132,7 @@ impl Signature {
         let arg_name = field.ident.to_string();
         let extract = self.render_from_value_call(ty, slot, pos, &arg_name, &value_ident);
         quote! {
-            if __key_str.matches(
-                crate::intern::StringId::from(crate::intern::StaticStrings::#static_string_ident),
-                interns,
-            ) {
+            if __key_str.matches(#key_id_expr, interns) {
                 __key.drop_with_heap(heap);
                 if #slot.is_some() {
                     __value.drop_with_heap(heap);
@@ -1151,7 +1145,7 @@ impl Signature {
 
     fn kwarg_arm_kw_only(&self, field: &Field, slot: &Ident) -> TokenStream {
         let func_name = self.func_name.as_str();
-        let static_string_ident = field.static_string_variant();
+        let key_id_expr = field.kwarg_string_id_expr();
         let ty = &field.ty;
         let field_name_lit = LitStr::new(&field.ident.to_string(), field.ident.span());
         let value_ident = format_ident!("__value");
@@ -1162,10 +1156,7 @@ impl Signature {
         let arg_name = field.ident.to_string();
         let extract = self.render_from_value_call(ty, slot, 0, &arg_name, &value_ident);
         quote! {
-            if __key_str.matches(
-                crate::intern::StringId::from(crate::intern::StaticStrings::#static_string_ident),
-                interns,
-            ) {
+            if __key_str.matches(#key_id_expr, interns) {
                 __key.drop_with_heap(heap);
                 if #slot.is_some() {
                     __value.drop_with_heap(heap);
@@ -1188,6 +1179,27 @@ impl Field {
         } else {
             let pascal = snake_to_pascal(&self.ident.to_string());
             Ident::new(&pascal, self.ident.span())
+        }
+    }
+
+    /// The `StringId` expression used for kwarg-name comparison in
+    /// `__key_str.matches(...)`.
+    ///
+    /// Single-character ASCII field names (e.g. `a`, `b`) are interned via
+    /// the `0..128` ASCII fast-path (`StringId::from_ascii`), not as
+    /// `StaticStrings` variants. Matching against `StaticStrings::A` for
+    /// such a field would never hit, so the kwarg would surface as
+    /// "unexpected keyword argument". Emit `StringId::from_ascii` for
+    /// those cases and `StringId::from(StaticStrings::Variant)` for
+    /// everything else.
+    fn kwarg_string_id_expr(&self) -> TokenStream {
+        let name = self.ident.to_string();
+        if self.static_string.is_none() && name.len() == 1 && name.is_ascii() {
+            let byte = name.as_bytes()[0];
+            quote! { crate::intern::StringId::from_ascii(#byte) }
+        } else {
+            let variant = self.static_string_variant();
+            quote! { crate::intern::StringId::from(crate::intern::StaticStrings::#variant) }
         }
     }
 }

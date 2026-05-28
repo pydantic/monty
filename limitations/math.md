@@ -33,9 +33,3 @@ payloads.
 - Overflow (finite input → infinite result) raises `OverflowError: "math
   range error"` matching CPython.
 - `math.gamma` rejects non-positive integers (poles) with `ValueError`.
-- `math.isclose` accepts `rel_tol` / `abs_tol` as keyword arguments but
-  treats `a` and `b` as positional-only — CPython allows them as keyword
-  arguments too (`math.isclose(a=1.0, b=1.0)`). The divergence stems from
-  the static-string interning fast path collapsing single-character ASCII
-  names to a pre-reserved id that the kwarg dispatcher doesn't reconcile
-  with the macro's `StaticStrings` id.
