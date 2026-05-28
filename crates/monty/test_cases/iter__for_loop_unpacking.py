@@ -64,3 +64,35 @@ for k, v in d.items():
     vals.append(v)
 assert sorted(keys) == ['x', 'y'], 'dict items unpacking keys'
 assert sorted(vals) == [1, 2], 'dict items unpacking values'
+
+# === Subscript target as for-loop variable (issue #408) ===
+# Subscript target stores into the existing container on each iteration; the
+# final iteration's value persists after the loop.
+box = [None]
+for box[0] in (1, 2, 3):
+    pass
+assert box[0] == 3, 'for-loop subscript target retains last value'
+
+# Subscript target with computed index — index is re-evaluated each iteration.
+# If `i` were cached at loop entry both stores would target a[0], yielding
+# [20, 0]; re-evaluation lets the body's mutation of `i` shift the second store
+# to a[1].
+a = [0, 0]
+i = 0
+for a[i] in (10, 20):
+    i = 1
+assert a == [10, 20], 'for-loop subscript target re-evaluates index each iteration'
+
+# Subscript target combined with body that reads from the same container
+trace = []
+a = [0]
+for a[0] in (1, 2, 3):
+    trace.append(a[0])
+assert trace == [1, 2, 3], 'for-loop subscript target visible inside body'
+
+# Subscript target inside a nested tuple target
+a = [0]
+for a[0], b in [(1, 'x'), (2, 'y')]:
+    pass
+assert a == [2], 'for-loop nested: subscript updated'
+assert b == 'y', 'for-loop nested: name bound'

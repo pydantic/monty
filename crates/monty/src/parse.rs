@@ -1454,6 +1454,18 @@ impl<'a> Parser<'a> {
                 }
                 Ok(UnpackTarget::Tuple { targets, position })
             }
+            AstExpr::Subscript(ast::ExprSubscript {
+                value, slice, range, ..
+            }) => Ok(UnpackTarget::Subscript {
+                target: self.parse_expression(*value)?,
+                index: self.parse_expression(*slice)?,
+                target_position: self.convert_range(range),
+            }),
+            AstExpr::Attribute(ast::ExprAttribute { value, attr, range, .. }) => Ok(UnpackTarget::Attribute {
+                object: self.parse_expression(*value)?,
+                attr: EitherStr::Interned(self.interner.intern(attr.id())),
+                target_position: self.convert_range(range),
+            }),
             other => Err(ParseError::syntax(
                 format!("invalid unpacking target: {}", describe_expr_kind(&other)),
                 self.convert_range(other.range()),

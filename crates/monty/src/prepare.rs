@@ -1210,6 +1210,24 @@ impl<'i> Prepare<'i> {
                     position,
                 })
             }
+            UnpackTarget::Subscript {
+                target: container,
+                index,
+                target_position,
+            } => Ok(UnpackTarget::Subscript {
+                target: self.prepare_expression(container)?,
+                index: self.prepare_expression(index)?,
+                target_position,
+            }),
+            UnpackTarget::Attribute {
+                object,
+                attr,
+                target_position,
+            } => Ok(UnpackTarget::Attribute {
+                object: self.prepare_expression(object)?,
+                attr,
+                target_position,
+            }),
         }
     }
 
@@ -1260,6 +1278,26 @@ impl<'i> Prepare<'i> {
                     position,
                 })
             }
+            // Subscript/attribute leaves mutate, they don't bind, so no comp-var
+            // slot. Their sub-expressions resolve against the surrounding scope.
+            UnpackTarget::Subscript {
+                target: container,
+                index,
+                target_position,
+            } => Ok(UnpackTarget::Subscript {
+                target: self.prepare_expression(container)?,
+                index: self.prepare_expression(index)?,
+                target_position,
+            }),
+            UnpackTarget::Attribute {
+                object,
+                attr,
+                target_position,
+            } => Ok(UnpackTarget::Attribute {
+                object: self.prepare_expression(object)?,
+                attr,
+                target_position,
+            }),
         }
     }
 
@@ -2480,8 +2518,14 @@ fn collect_cell_vars_from_node(
         }
         // Recurse into control flow structures
         Node::For {
-            iter, body, or_else, ..
+            target,
+            iter,
+            body,
+            or_else,
+            ..
         } => {
+            // Subscript/attribute targets carry sub-expressions that may capture.
+            collect_cell_vars_from_unpack_target(target, our_locals, cell_vars, interner);
             collect_cell_vars_from_expr(iter, our_locals, cell_vars, interner);
             for n in body {
                 collect_cell_vars_from_node(n, our_locals, cell_vars, interner);
@@ -2529,8 +2573,14 @@ fn collect_cell_vars_from_node(
                 collect_cell_vars_from_node(n, our_locals, cell_vars, interner);
             }
         }
-        Node::With { context, body, .. } => {
+        Node::With {
+            context, target, body, ..
+        } => {
             collect_cell_vars_from_expr(context, our_locals, cell_vars, interner);
+            // `with f() as x[i]:` — same target-walk rationale as `For` above.
+            if let Some(target) = target {
+                collect_cell_vars_from_unpack_target(target, our_locals, cell_vars, interner);
+            }
             for n in body {
                 collect_cell_vars_from_node(n, our_locals, cell_vars, interner);
             }
@@ -2854,8 +2904,14 @@ fn collect_referenced_names_from_node(node: &ParseNode, referenced: &mut AHashSe
             collect_referenced_names_from_expr(object, referenced, interner);
         }
         Node::For {
-            iter, body, or_else, ..
+            target,
+            iter,
+            body,
+            or_else,
+            ..
         } => {
+            // Subscript/attribute targets read from surrounding state at store time.
+            collect_referenced_names_from_unpack_target(target, referenced, interner);
             collect_referenced_names_from_expr(iter, referenced, interner);
             for n in body {
                 collect_referenced_names_from_node(n, referenced, interner);
@@ -2910,8 +2966,13 @@ fn collect_referenced_names_from_node(node: &ParseNode, referenced: &mut AHashSe
                 collect_referenced_names_from_node(n, referenced, interner);
             }
         }
-        Node::With { context, body, .. } => {
+        Node::With {
+            context, target, body, ..
+        } => {
             collect_referenced_names_from_expr(context, referenced, interner);
+            if let Some(target) = target {
+                collect_referenced_names_from_unpack_target(target, referenced, interner);
+            }
             for n in body {
                 collect_referenced_names_from_node(n, referenced, interner);
             }
@@ -3199,9 +3260,9 @@ fn collect_referenced_names_from_fstring_parts(
     }
 }
 
-/// Collects all names from an unpack target into the given set.
-///
-/// Recursively traverses nested tuples to find all identifier names.
+/// Collects names bound by an unpack target, plus walrus targets found inside
+/// subscript/attribute sub-expressions (those leaves bind nothing themselves).
+/// Mirrors `collect_assigned_names_from_assign_target`.
 fn collect_names_from_unpack_target(target: &UnpackTarget, names: &mut AHashSet<String>, interner: &InternerBuilder) {
     match target {
         UnpackTarget::Name(ident) | UnpackTarget::Starred(ident) => {
@@ -3211,6 +3272,64 @@ fn collect_names_from_unpack_target(target: &UnpackTarget, names: &mut AHashSet<
             for t in targets {
                 collect_names_from_unpack_target(t, names, interner);
             }
+        }
+        UnpackTarget::Subscript { target, index, .. } => {
+            collect_assigned_names_from_expr(target, names, interner);
+            collect_assigned_names_from_expr(index, names, interner);
+        }
+        UnpackTarget::Attribute { object, .. } => {
+            collect_assigned_names_from_expr(object, names, interner);
+        }
+    }
+}
+
+/// Cell-var walk for the sub-expressions inside `Subscript`/`Attribute` leaves.
+/// `Name`/`Starred` contribute nothing. Mirrors
+/// `collect_cell_vars_from_assign_target`.
+fn collect_cell_vars_from_unpack_target(
+    target: &UnpackTarget,
+    our_locals: &AHashSet<String>,
+    cell_vars: &mut AHashSet<String>,
+    interner: &InternerBuilder,
+) {
+    match target {
+        UnpackTarget::Name(_) | UnpackTarget::Starred(_) => {}
+        UnpackTarget::Tuple { targets, .. } => {
+            for t in targets {
+                collect_cell_vars_from_unpack_target(t, our_locals, cell_vars, interner);
+            }
+        }
+        UnpackTarget::Subscript { target, index, .. } => {
+            collect_cell_vars_from_expr(target, our_locals, cell_vars, interner);
+            collect_cell_vars_from_expr(index, our_locals, cell_vars, interner);
+        }
+        UnpackTarget::Attribute { object, .. } => {
+            collect_cell_vars_from_expr(object, our_locals, cell_vars, interner);
+        }
+    }
+}
+
+/// Read-side name walk for the sub-expressions inside `Subscript`/`Attribute`
+/// leaves. `Name`/`Starred` contribute nothing. Mirrors
+/// `collect_referenced_names_from_assign_target`.
+fn collect_referenced_names_from_unpack_target(
+    target: &UnpackTarget,
+    referenced: &mut AHashSet<String>,
+    interner: &InternerBuilder,
+) {
+    match target {
+        UnpackTarget::Name(_) | UnpackTarget::Starred(_) => {}
+        UnpackTarget::Tuple { targets, .. } => {
+            for t in targets {
+                collect_referenced_names_from_unpack_target(t, referenced, interner);
+            }
+        }
+        UnpackTarget::Subscript { target, index, .. } => {
+            collect_referenced_names_from_expr(target, referenced, interner);
+            collect_referenced_names_from_expr(index, referenced, interner);
+        }
+        UnpackTarget::Attribute { object, .. } => {
+            collect_referenced_names_from_expr(object, referenced, interner);
         }
     }
 }

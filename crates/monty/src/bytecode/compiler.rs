@@ -118,12 +118,15 @@ fn check_comp_generators(count: usize, position: CodeRange) -> Result<(), Compil
 /// Returns a position that locates `target` in source for error reporting.
 ///
 /// `Name` / `Starred` carry the identifier's position; `Tuple` carries its
-/// own. Used by comp-target unpacking when the per-leaf position isn't
-/// available at the error point.
+/// own; `Subscript`/`Attribute` carry `target_position`. Used by comp-target
+/// unpacking when the per-leaf position isn't available at the error point.
 fn target_position(target: &UnpackTarget) -> CodeRange {
     match target {
         UnpackTarget::Name(ident) | UnpackTarget::Starred(ident) => ident.position,
         UnpackTarget::Tuple { position, .. } => *position,
+        UnpackTarget::Subscript { target_position, .. } | UnpackTarget::Attribute { target_position, .. } => {
+            *target_position
+        }
     }
 }
 
@@ -2880,6 +2883,22 @@ impl<'a> Compiler<'a> {
             UnpackTarget::Name(ident) | UnpackTarget::Starred(ident) => {
                 sim.push(SimItem::Leaf(ident.namespace_id().as_u16()));
             }
+            UnpackTarget::Subscript {
+                target,
+                index,
+                target_position,
+            } => {
+                // Consumes value off TOS; net −1 matches `Name`/`Starred`, so the
+                // sim ↔ operand-stack 1:1 invariant survives without pushing back.
+                self.emit_subscript_store(target, index, *target_position)?;
+            }
+            UnpackTarget::Attribute {
+                object,
+                attr,
+                target_position,
+            } => {
+                self.emit_attr_store(object, attr, *target_position)?;
+            }
             UnpackTarget::Tuple { targets, position } => {
                 // Pick UNPACK_EX vs UNPACK_SEQUENCE based on whether a starred
                 // sub-target is present (same logic as the regular assignment
@@ -2928,11 +2947,12 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
-    /// Compiles storage of an unpack target - either a single identifier, nested tuple, or starred.
+    /// Compiles storage of an unpack target, assuming the value is on TOS.
     ///
-    /// For single identifiers: emits a simple store.
-    /// For nested tuples: emits `UnpackSequence` (or `UnpackEx` with starred) and recursively
-    /// handles each sub-target.
+    /// Each variant's net stack effect is −1, so the per-target loops in
+    /// `Tuple` and `emit_unpack_store` work uniformly. Subscript/attribute
+    /// delegate to `emit_subscript_store`/`emit_attr_store` (sub-expressions
+    /// evaluated at store time, matching CPython).
     fn compile_unpack_target(&mut self, target: &UnpackTarget) -> Result<(), CompileError> {
         match target {
             UnpackTarget::Name(ident) => {
@@ -2943,6 +2963,20 @@ impl<'a> Compiler<'a> {
                 // Starred target by itself (shouldn't happen at top level normally)
                 // Just store as if it were a name
                 self.compile_store(ident)?;
+            }
+            UnpackTarget::Subscript {
+                target,
+                index,
+                target_position,
+            } => {
+                self.emit_subscript_store(target, index, *target_position)?;
+            }
+            UnpackTarget::Attribute {
+                object,
+                attr,
+                target_position,
+            } => {
+                self.emit_attr_store(object, attr, *target_position)?;
             }
             UnpackTarget::Tuple { targets, position } => {
                 // Check if there's a starred target

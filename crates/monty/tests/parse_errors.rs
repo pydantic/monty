@@ -556,15 +556,24 @@ fn starred_subscript_target_has_clean_message() {
 }
 
 #[test]
-fn for_loop_attribute_target_has_clean_message() {
-    // `for x.y in [1]: pass`: attribute as a for-loop target. CPython
-    // accepts this; Monty currently rejects at `parse_unpack_target_impl`.
-    // That rejection of valid Python is a separate issue; this test locks
-    // only that the error message does not leak `ExprAttribute` Debug.
-    let result = MontyRun::new("for x.y in [1]: pass".to_owned(), "test.py", vec![]);
+fn unpack_target_constant_rejected() {
+    // `1, 2 = 3, 4`: ruff's parser rejects a numeric-literal LHS before it
+    // ever reaches Monty's `parse_unpack_target_impl`. Snapshot here so any
+    // future plumbing change that lets it through surfaces loudly.
+    let result = MontyRun::new("1, 2 = 3, 4".to_owned(), "test.py", vec![]);
     let exc = result.expect_err("expected parse error");
     assert_eq!(exc.exc_type(), ExcType::SyntaxError);
-    assert_snapshot!(exc.message().expect("has message"), @"invalid unpacking target: attribute");
+    assert_snapshot!(exc.message().expect("has message"), @"Invalid assignment target");
+}
+
+#[test]
+fn unpack_target_call_rejected() {
+    // `f(), = (1,)`: a function call as an unpack target. Same upstream
+    // rejection as `unpack_target_constant_rejected` — locks the message.
+    let result = MontyRun::new("f(), = (1,)".to_owned(), "test.py", vec![]);
+    let exc = result.expect_err("expected parse error");
+    assert_eq!(exc.exc_type(), ExcType::SyntaxError);
+    assert_snapshot!(exc.message().expect("has message"), @"Invalid assignment target");
 }
 
 #[test]
