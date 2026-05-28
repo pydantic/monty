@@ -30,10 +30,6 @@ struct Signature {
     varargs_idx: Option<usize>,
     /// Index of the `**kwargs` field (if any).
     varkwargs_idx: Option<usize>,
-    /// Which `type_error_c_at_most*` helper to emit when too many positional
-    /// arguments are passed. Only meaningful in [`ErrorStyle::C`] — the named
-    /// styles always emit the `{name}() takes at most …` helper.
-    at_most_style: AtMostStyle,
     /// Selects the wording family used for argument-count / argument-name
     /// errors. See [`ErrorStyle`] for the three options.
     error_style: ErrorStyle,
@@ -115,7 +111,12 @@ enum ErrorStyle {
     /// `PyArg_ParseTupleAndKeywords` callers that use the generic
     /// `"function"` label. Example unknowns:
     /// `this function got an unexpected keyword argument 'X'`.
-    C,
+    ///
+    /// The inner [`AtMostStyle`] picks which `type_error_c_at_most*` helper
+    /// to emit when too many positional arguments are passed — only the C
+    /// style varies here; the named styles always emit the `{name}() takes
+    /// at most …` helper.
+    C(AtMostStyle),
     /// Named C-constructor wording. Matches CPython types like `timezone`
     /// where messages embed the constructor name. Example unknowns:
     /// `{name}() got an unexpected keyword argument 'X'` (same wording as
@@ -198,7 +199,6 @@ impl Signature {
 
         let StructAttrs {
             name: func_name,
-            at_most_style,
             error_style,
             at_most_total,
             at_least_positional,
@@ -318,7 +318,6 @@ impl Signature {
             fields,
             varargs_idx,
             varkwargs_idx,
-            at_most_style,
             error_style,
             at_most_total,
             at_least_positional,
@@ -420,13 +419,11 @@ impl Signature {
         // reports `str.expandtabs() takes at most 1 argument (2 given)`.
         let func_name = self.func_name.as_str();
         let err_expr = match self.error_style {
-            ErrorStyle::C => match self.at_most_style {
-                AtMostStyle::Standard => quote! {
-                    crate::exception_private::ExcType::type_error_c_at_most(#max_positional, __total)
-                },
-                AtMostStyle::Positional => quote! {
-                    crate::exception_private::ExcType::type_error_c_at_most_positional(#max_positional, __total)
-                },
+            ErrorStyle::C(AtMostStyle::Standard) => quote! {
+                crate::exception_private::ExcType::type_error_c_at_most(#max_positional, __total)
+            },
+            ErrorStyle::C(AtMostStyle::Positional) => quote! {
+                crate::exception_private::ExcType::type_error_c_at_most_positional(#max_positional, __total)
             },
             ErrorStyle::Python | ErrorStyle::NamedC => quote! {
                 crate::exception_private::ExcType::type_error_method_at_most(#func_name, #max_positional, __total)
@@ -466,23 +463,21 @@ impl Signature {
             };
         }
         match self.error_style {
-            ErrorStyle::C => match self.at_most_style {
-                AtMostStyle::Standard => quote! {
-                    crate::exception_private::ExcType::type_error_c_at_most(#max_lit, #actual)
-                },
-                AtMostStyle::Positional => {
-                    // CPython switches wording from "M positional arguments"
-                    // to "M_total arguments" once the overflow exceeds the
-                    // total slot count (positional + kw-only). See
-                    // `type_error_c_at_most_positional_or_total` for details.
-                    let max_total = max_lit + self.kw_only_count();
-                    quote! {
-                        crate::exception_private::ExcType::type_error_c_at_most_positional_or_total(
-                            #max_lit, #max_total, #actual,
-                        )
-                    }
-                }
+            ErrorStyle::C(AtMostStyle::Standard) => quote! {
+                crate::exception_private::ExcType::type_error_c_at_most(#max_lit, #actual)
             },
+            ErrorStyle::C(AtMostStyle::Positional) => {
+                // CPython switches wording from "M positional arguments"
+                // to "M_total arguments" once the overflow exceeds the
+                // total slot count (positional + kw-only). See
+                // `type_error_c_at_most_positional_or_total` for details.
+                let max_total = max_lit + self.kw_only_count();
+                quote! {
+                    crate::exception_private::ExcType::type_error_c_at_most_positional_or_total(
+                        #max_lit, #max_total, #actual,
+                    )
+                }
+            }
             // CPython's named-C types (e.g. timezone) emit
             // `{name}() takes at most M arguments (N given)`.
             ErrorStyle::NamedC => quote! {
@@ -581,7 +576,7 @@ impl Signature {
             let field_name_lit = LitStr::new(&field.ident.to_string(), field.ident.span());
             let pos = field.pos_index.unwrap_or(0);
             let missing_expr = match self.error_style {
-                ErrorStyle::C => quote! {
+                ErrorStyle::C(_) => quote! {
                     crate::exception_private::ExcType::type_error_c_missing_required(#field_name_lit, #pos)
                 },
                 ErrorStyle::NamedC => quote! {
@@ -616,7 +611,7 @@ impl Signature {
         }
         let func_name = self.func_name.as_str();
         let err_expr = match self.error_style {
-            ErrorStyle::C => quote! {
+            ErrorStyle::C(_) => quote! {
                 crate::exception_private::ExcType::type_error_c_unexpected_keyword(&__name)
             },
             ErrorStyle::Python | ErrorStyle::NamedC => quote! {
@@ -908,7 +903,7 @@ impl Signature {
     /// - Python style: unknown wins. `def f(x): f(foo=1)` →
     ///   `f() got an unexpected keyword argument 'foo'`.
     fn defer_unknown_kwarg(&self) -> bool {
-        matches!(self.error_style, ErrorStyle::C | ErrorStyle::NamedC)
+        matches!(self.error_style, ErrorStyle::C(_) | ErrorStyle::NamedC)
     }
 
     fn render_kwarg_loop(&self, slots: &[Ident]) -> TokenStream {
@@ -1039,7 +1034,7 @@ impl Signature {
                         let pos = field.pos_index.unwrap_or(0);
                         if field.pos_index.is_some() {
                             let missing_expr = match self.error_style {
-                                ErrorStyle::C => quote! {
+                                ErrorStyle::C(_) => quote! {
                                     crate::exception_private::ExcType::type_error_c_missing_required(#field_name_lit, #pos)
                                 },
                                 ErrorStyle::NamedC => quote! {
@@ -1104,7 +1099,7 @@ impl Signature {
         let field_name_lit = LitStr::new(&field.ident.to_string(), field.ident.span());
         let pos = field.pos_index.unwrap_or(0);
         let conflict_expr = match self.error_style {
-            ErrorStyle::C => quote! {
+            ErrorStyle::C(_) => quote! {
                 crate::exception_private::ExcType::type_error_positional_keyword_conflict(
                     #func_name,
                     #field_name_lit,
@@ -1242,7 +1237,6 @@ fn vec_element_ty(ty: &Type) -> Option<Type> {
 /// and the tuple was getting unwieldy.
 struct StructAttrs {
     name: String,
-    at_most_style: AtMostStyle,
     error_style: ErrorStyle,
     at_most_total: bool,
     at_least_positional: bool,
@@ -1257,6 +1251,7 @@ fn parse_struct_attrs(attrs: &[syn::Attribute]) -> syn::Result<StructAttrs> {
     let mut at_most_style = AtMostStyle::Standard;
     let mut error_style = ErrorStyle::Python;
     let mut style_set = false;
+    let mut is_c_style = false;
     let mut at_most_total = false;
     let mut at_least_positional = false;
     let mut expected_exact = false;
@@ -1303,7 +1298,7 @@ fn parse_struct_attrs(attrs: &[syn::Attribute]) -> syn::Result<StructAttrs> {
                 if style_set {
                     return Err(meta.error("`c_error` and `c_error_named` are mutually exclusive"));
                 }
-                error_style = ErrorStyle::C;
+                is_c_style = true;
                 style_set = true;
                 Ok(())
             } else if meta.path.is_ident("c_error_named") {
@@ -1326,9 +1321,13 @@ fn parse_struct_attrs(attrs: &[syn::Attribute]) -> syn::Result<StructAttrs> {
             "missing `#[from_args(name = \"...\")]` on the struct",
         )
     })?;
+    // `at_most_style` only matters under C-style errors; bundle it now so it
+    // travels with the variant and we don't carry an unused field around.
+    if is_c_style {
+        error_style = ErrorStyle::C(at_most_style);
+    }
     Ok(StructAttrs {
         name,
-        at_most_style,
         error_style,
         at_most_total,
         at_least_positional,
