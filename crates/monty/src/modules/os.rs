@@ -10,9 +10,9 @@
 
 use crate::{
     MontyObject,
-    args::{ArgValues, FromArgs},
+    args::ArgValues,
     bytecode::{CallResult, VM},
-    exception_private::RunResult,
+    exception_private::{ExcType, RunResult},
     heap::{HeapData, HeapId},
     intern::StaticStrings,
     modules::ModuleFunctions,
@@ -78,27 +78,26 @@ pub(super) fn call(
 
 /// Implementation of `os.getenv(key, default=None)`.
 ///
-/// Parsing goes through a small `FromArgs`-derived struct so type validation
-/// (key must be str) and arity checks (1-or-2 args) use the same machinery
-/// as the rest of the codebase; the `default` field is then snapshotted into
-/// a [`MontyObject`] so it can travel with the OS call across the boundary.
+/// Hand-rolled rather than `FromArgs`-derived so the `key`-must-be-`str`
+/// error matches CPython's wording exactly — CPython routes `os.getenv`
+/// through `os.environ.__getitem__`, whose `check_str` helper raises
+/// `TypeError("str expected, not <type>")`. That wording is bespoke to
+/// `os._Environ` in the CPython stdlib, so it lives inline here rather
+/// than as a shared helper.
 fn getenv(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<CallResult> {
-    let GetenvParseArgs { key, default } = GetenvParseArgs::from_args(args, vm.heap, vm.interns)?;
-    let default = MontyObject::new(default, vm);
-    Ok(CallResult::OsCall(OsFunctionCall::Getenv(GetenvArgs { key, default })))
-}
-
-/// `FromArgs`-side shape for `os.getenv`. Distinct from [`GetenvArgs`] (the
-/// OS-call payload) because `default` is parsed as a raw `Value` here and
-/// then projected into a `MontyObject` for the payload — a projection that
-/// needs `MontyObject::new(value, vm)` and therefore can't be expressed
-/// through `FromArgs` alone today (the `FromValue` trait surface only has
-/// `&mut Heap + &Interns`, not the `HeapReader` + interns that
-/// `MontyObject::new` needs to walk container heap entries).
-#[derive(FromArgs)]
-#[from_args(name = "os.getenv", bad_arg_named)]
-struct GetenvParseArgs {
-    key: String,
-    #[from_args(default = Value::None)]
-    default: Value,
+    let (key_value, default_value) = args.get_one_two_args("os.getenv", vm.heap)?;
+    if let Some(key) = key_value.as_either_str(vm.heap) {
+        key_value.drop_with_heap(vm.heap);
+        Ok(CallResult::OsCall(OsFunctionCall::Getenv(GetenvArgs {
+            key: key.into_string(vm.interns),
+            default: MontyObject::new(default_value.unwrap_or(Value::None), vm),
+        })))
+    } else {
+        let type_name = key_value.py_type_heap(vm.heap);
+        key_value.drop_with_heap(vm.heap);
+        if let Some(d) = default_value {
+            d.drop_with_heap(vm.heap);
+        }
+        Err(ExcType::type_error(format!("str expected, not {type_name}")))
+    }
 }
