@@ -1006,6 +1006,16 @@ impl ExcType {
         SimpleException::new_msg(Self::TypeError, format!("{name}() takes no keyword arguments")).into()
     }
 
+    /// Creates a NotImplementedError for functions that don't accept keyword arguments.
+    #[must_use]
+    pub(crate) fn kwargs_not_implemented(name: &str) -> RunError {
+        SimpleException::new_msg(
+            Self::NotImplementedError,
+            format!("{name}() does not yet support keyword arguments"),
+        )
+        .into()
+    }
+
     /// Creates an IndexError for list index out of range (getitem).
     ///
     /// Matches CPython's format: `IndexError('list index out of range')`

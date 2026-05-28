@@ -8,8 +8,12 @@
 # matches CPython byte-for-byte the assert is unconditional; where Monty
 # qualifies method names that CPython leaves bare (e.g. `str.expandtabs()`
 # vs `expandtabs()`).
+import asyncio
 import datetime
 import re
+import sys
+
+is_monty = sys.platform == 'monty'
 
 # =====================================================================
 # === Python style (default — no `c_error` / `c_error_named`)        ===
@@ -342,3 +346,14 @@ try:
     assert False, 'print duplicate sep should raise'
 except TypeError as e:
     assert str(e) == "print() got multiple values for keyword argument 'sep'", f'cross-dup-kw-only: {e}'
+
+if is_monty:
+
+    async def foo():
+        return 1
+
+    try:
+        asyncio.gather(foo(), foo(), xxx=True)
+        assert False, 'gather with kwarg should raise'
+    except NotImplementedError as e:
+        assert str(e) == 'gather() does not yet support keyword arguments'

@@ -814,7 +814,7 @@ mod tests {
     #[test]
     fn test_opcode_roundtrip() {
         // Verify that all opcodes from 0 to the last opcode can be converted to u8 and back.
-        for byte in 0..=Opcode::RaiseUnboundLocal as u8 {
+        for byte in 0..=Opcode::MethodDictMerge as u8 {
             let opcode = Opcode::try_from(byte).unwrap();
             assert_eq!(opcode as u8, byte, "opcode {opcode:?} has wrong discriminant");
         }
@@ -837,12 +837,15 @@ mod tests {
         // Comprehension-support opcodes appended after the context-manager opcodes.
         assert_eq!(Opcode::LiftToTop as u8, 118);
         assert_eq!(Opcode::RaiseUnboundLocal as u8, 119);
+        // Method-call duplicate-kwarg qualifier; sister to `DictMerge` but appended at the
+        // tail so older opcode bytes keep their discriminants.
+        assert_eq!(Opcode::MethodDictMerge as u8, 120);
     }
 
     #[test]
     fn test_invalid_opcode() {
         // Byte just after the last valid opcode should fail
-        let result = Opcode::try_from(Opcode::RaiseUnboundLocal as u8 + 1);
+        let result = Opcode::try_from(Opcode::MethodDictMerge as u8 + 1);
         assert!(result.is_err());
         // 255 should also fail
         let result = Opcode::try_from(255u8);

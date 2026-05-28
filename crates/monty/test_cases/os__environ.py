@@ -42,17 +42,17 @@ assert 'testuser' in values, 'testuser in values'
 try:
     os.getenv(None)
     assert False, 'str expected, not None'
-except TypeError:
-    assert True, 'str expected, not None'
+except TypeError as e:
+    assert str(e) == 'str expected, not NoneType'
 
 try:
     os.getenv([1, 2, 3])
     assert False, 'str expected, not list'
-except TypeError:
-    assert True, 'str expected, not list'
+except TypeError as e:
+    assert str(e) == 'str expected, not list'
 
 try:
     os.getenv(123)
     assert False, 'str expected, not int'
-except TypeError:
-    assert True, 'str expected, not int'
+except TypeError as e:
+    assert str(e) == 'str expected, not int'

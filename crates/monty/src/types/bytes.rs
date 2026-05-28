@@ -2100,14 +2100,16 @@ fn bytes_hex<'h>(
 
 /// Parses arguments for bytes.hex method.
 fn parse_bytes_hex_args(args: ArgValues, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<(Option<char>, i64)> {
-    let pos = args.into_pos_only("bytes.hex", vm.heap)?;
-    defer_drop!(pos, vm);
+    let BytesHexArgs { sep, bytes_per_sep } = BytesHexArgs::from_args(args, vm.heap, vm.interns)?;
+    defer_drop!(sep, vm);
+    defer_drop!(bytes_per_sep, vm);
 
-    let (sep_value, bps_value) = match pos.as_slice() {
-        [] => return Ok((None, 1)),
-        [sep_value] => (sep_value, None),
-        [sep_value, bps_value] => (sep_value, Some(bps_value)),
-        other => return Err(ExcType::type_error_at_most("bytes.hex", 2, other.len())),
+    let Some(sep_value) = (match &sep {
+        Value::None => None,
+        v => Some(v),
+    }) else {
+        // CPython treats absent `sep` as "no separator", regardless of `bytes_per_sep`.
+        return Ok((None, 1));
     };
 
     let sep_bytes = match sep_value {
@@ -2121,21 +2123,43 @@ fn parse_bytes_hex_args(args: ArgValues, vm: &mut VM<'_, impl ResourceTracker>) 
         _ => return Err(ExcType::type_error("sep must be str or bytes")),
     };
 
-    let sep = match sep_bytes {
+    let sep_char = match sep_bytes {
         [b] if b.is_ascii() => *b as char,
         _ => return Err(SimpleException::new_msg(ExcType::ValueError, "sep must be a single ASCII character").into()),
     };
 
-    let bytes_per_sep = if let Some(bps_value) = bps_value {
-        // CPython parses `bytes_per_sep` with the `i` format (C int), so values outside
-        // c_int range raise OverflowError before any computation happens.
-        let raw = bps_value.as_int(vm)?;
-        c_int::try_from(raw).map_err(|_| ExcType::overflow_c_int())?.into()
-    } else {
-        1
+    let bytes_per_sep = match bytes_per_sep {
+        Value::None => 1,
+        bps_value => {
+            // CPython parses `bytes_per_sep` with the `i` format (C int), so values outside
+            // c_int range raise OverflowError before any computation happens.
+            let raw = bps_value.as_int(vm)?;
+            c_int::try_from(raw).map_err(|_| ExcType::overflow_c_int())?.into()
+        }
     };
 
-    Ok((Some(sep), bytes_per_sep))
+    Ok((Some(sep_char), bytes_per_sep))
+}
+
+/// `bytes.hex([sep[, bytes_per_sep]])` — CPython accepts `sep` and
+/// `bytes_per_sep` as positional-or-keyword, but Monty has not threaded
+/// kwarg dispatch through to the type-checking body yet.
+/// `kwargs_not_supported_yet` rejects any kwarg with
+/// `NotImplementedError: bytes.hex() does not yet support keyword
+/// arguments` (replacing the previous `TypeError: bytes.hex() takes no
+/// keyword arguments` from `into_pos_only`) while the macro takes over
+/// arity validation, upgrading the too-many-args wording from
+/// `bytes.hex expected at most 2 arguments, got N` to CPython's
+/// `bytes.hex() takes at most 2 arguments (N given)`. Fields become real
+/// kwargs and the flag goes away when the kwarg dispatch is plumbed
+/// through.
+#[derive(FromArgs)]
+#[from_args(name = "bytes.hex", c_error_named, at_most_total, kwargs_not_supported_yet)]
+struct BytesHexArgs {
+    #[from_args(default = Value::None)]
+    sep: Value,
+    #[from_args(default = Value::None)]
+    bytes_per_sep: Value,
 }
 
 // =============================================================================

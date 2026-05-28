@@ -69,6 +69,20 @@ struct Signature {
     /// named). Only fires when `EXPECTED_TYPE_NAME` is `Some(_)`; the
     /// identity `Value` impl falls through to its native error.
     bad_arg: Option<BadArgStyle>,
+    /// When set, the generated code rejects *any* kwarg up front with a
+    /// `NotImplementedError: {name}() does not yet support keyword
+    /// arguments` (via [`ExcType::kwargs_not_implemented`]) — deliberately
+    /// distinct from CPython's `TypeError: takes no keyword arguments`,
+    /// because the flag's intent is "Monty hasn't plumbed these through
+    /// yet" rather than "CPython also rejects them". Used as a migration
+    /// aid for functions like `asyncio.gather` whose CPython signatures
+    /// accept kwargs (`return_exceptions=False`) that Monty has not
+    /// implemented: the macro can still drive positional/varargs parsing,
+    /// and the kwarg slots can be added incrementally with the flag
+    /// removed once the dispatch is wired up. Mutually exclusive with any
+    /// `kw_only` field, `varkwargs`, and `kwarg_error_name` (the latter
+    /// is only meaningful when kwargs are actually dispatched).
+    kwargs_not_supported_yet: bool,
 }
 
 /// Variant of `_PyArg_BadArgument`-style error wording.
@@ -197,6 +211,7 @@ impl Signature {
             expected_exact,
             kwarg_error_name,
             bad_arg,
+            kwargs_not_supported_yet,
         } = parse_struct_attrs(attrs)?;
 
         let mut fields = Vec::with_capacity(named.named.len());
@@ -302,6 +317,29 @@ impl Signature {
                  — the exact-arity wording assumes a single fixed required positional count",
             ));
         }
+        if kwargs_not_supported_yet {
+            if varkwargs_idx.is_some() {
+                return Err(syn::Error::new(
+                    struct_ident.span(),
+                    "`kwargs_not_supported_yet` cannot be combined with `varkwargs` \
+                     — the flag rejects every kwarg up front, so there's nothing to collect",
+                ));
+            }
+            if fields.iter().any(|f| matches!(f.kind, FieldKind::KwOnly)) {
+                return Err(syn::Error::new(
+                    struct_ident.span(),
+                    "`kwargs_not_supported_yet` cannot be combined with `kw_only` fields \
+                     — the flag rejects every kwarg up front, so kw_only slots are unreachable",
+                ));
+            }
+            if kwarg_error_name.is_some() {
+                return Err(syn::Error::new(
+                    struct_ident.span(),
+                    "`kwargs_not_supported_yet` cannot be combined with `kwarg_error_name` \
+                     — the override only applies to the unknown-kwarg dispatch path, which is skipped",
+                ));
+            }
+        }
 
         Ok(Self {
             struct_ident: struct_ident.clone(),
@@ -314,6 +352,7 @@ impl Signature {
             expected_exact,
             kwarg_error_name,
             bad_arg,
+            kwargs_not_supported_yet,
         })
     }
 
@@ -332,6 +371,7 @@ impl Signature {
         let has_varargs = self.varargs_idx.is_some();
         let slot_decls = self.render_slot_decls(&slots);
         let cleanup_block = self.render_cleanup_block(&slots);
+        let no_kwargs_check = self.render_no_kwargs_check();
         let total_check = self.render_total_check(max_positional);
         let exact_check = self.render_expected_exact_check();
         let at_least_check = self.render_at_least_positional_check();
@@ -376,6 +416,7 @@ impl Signature {
                         }};
                     }
 
+                    #no_kwargs_check
                     #total_check
                     #exact_check
                     #at_least_check
@@ -387,6 +428,28 @@ impl Signature {
 
                     #build_struct
                 }
+            }
+        }
+    }
+
+    /// Emit the up-front "no kwargs at all" pre-check when
+    /// `#[from_args(kwargs_not_supported_yet)]` is set. Raises
+    /// `NotImplementedError: {name}() does not yet support keyword
+    /// arguments` (via [`ExcType::kwargs_not_implemented`]) before any
+    /// positional dispatch — distinct from CPython's
+    /// `TypeError: takes no keyword arguments`, because the flag's intent
+    /// is "Monty hasn't plumbed these through yet" rather than "CPython
+    /// also rejects them". Lets positional/varargs parsing flow through
+    /// the macro while still being trivially greppable when the kwargs
+    /// are actually implemented and the flag is removed.
+    fn render_no_kwargs_check(&self) -> TokenStream {
+        if !self.kwargs_not_supported_yet {
+            return TokenStream::new();
+        }
+        let func_name = self.func_name.as_str();
+        quote! {
+            if ::std::iter::ExactSizeIterator::len(&__kwargs_iter) > 0 {
+                __cleanup!(crate::exception_private::ExcType::kwargs_not_implemented(#func_name));
             }
         }
     }
@@ -558,7 +621,7 @@ impl Signature {
     /// signature defers unknown-kwarg errors (C / NamedC styles). Returns
     /// an empty stream for Python style, where unknowns error immediately.
     fn render_unknown_kwarg_decl(&self) -> TokenStream {
-        if !self.defer_unknown_kwarg() || self.varkwargs_idx.is_some() {
+        if !self.defer_unknown_kwarg() || self.varkwargs_idx.is_some() || self.kwargs_not_supported_yet {
             return TokenStream::new();
         }
         quote! {
@@ -576,7 +639,7 @@ impl Signature {
     /// so unknown-kwarg reporting (which CPython does last) doesn't beat
     /// the missing-required error.
     fn render_missing_required_check(&self, slots: &[Ident]) -> TokenStream {
-        if !self.defer_unknown_kwarg() {
+        if !self.defer_unknown_kwarg() || self.kwargs_not_supported_yet {
             return TokenStream::new();
         }
         let func_name = self.func_name.as_str();
@@ -617,7 +680,7 @@ impl Signature {
     /// name didn't match anything. Matches CPython's
     /// `PyArg_ParseTupleAndKeywords` ordering.
     fn render_unknown_kwarg_check(&self) -> TokenStream {
-        if !self.defer_unknown_kwarg() || self.varkwargs_idx.is_some() {
+        if !self.defer_unknown_kwarg() || self.varkwargs_idx.is_some() || self.kwargs_not_supported_yet {
             return TokenStream::new();
         }
         let func_name = self.func_name.as_str();
@@ -919,6 +982,13 @@ impl Signature {
     }
 
     fn render_kwarg_loop(&self, slots: &[Ident]) -> TokenStream {
+        if self.kwargs_not_supported_yet {
+            // The up-front pre-check already errored on any kwarg, so the
+            // dispatch loop would be dead code. Skip generation entirely so
+            // we don't produce an unused `while let` that touches
+            // `__kwargs_iter`.
+            return TokenStream::new();
+        }
         // Build kwarg dispatch arms — only for fields that can be passed by name.
         let mut arms: Vec<TokenStream> = Vec::new();
         for (field, slot) in self.fields.iter().zip(slots) {
@@ -1255,6 +1325,7 @@ struct StructAttrs {
     expected_exact: bool,
     kwarg_error_name: Option<String>,
     bad_arg: Option<BadArgStyle>,
+    kwargs_not_supported_yet: bool,
 }
 
 /// Parse the `#[from_args(...)]` attributes attached to the struct itself.
@@ -1268,6 +1339,7 @@ fn parse_struct_attrs(attrs: &[syn::Attribute]) -> syn::Result<StructAttrs> {
     let mut expected_exact = false;
     let mut kwarg_error_name: Option<String> = None;
     let mut bad_arg: Option<BadArgStyle> = None;
+    let mut kwargs_not_supported_yet = false;
     for attr in attrs {
         if !attr.path().is_ident("from_args") {
             continue;
@@ -1316,9 +1388,12 @@ fn parse_struct_attrs(attrs: &[syn::Attribute]) -> syn::Result<StructAttrs> {
                 error_style = ErrorStyle::NamedC;
                 style_set = true;
                 Ok(())
+            } else if meta.path.is_ident("kwargs_not_supported_yet") {
+                kwargs_not_supported_yet = true;
+                Ok(())
             } else {
                 Err(meta.error(
-                    "unknown struct attribute; expected `name = \"...\"`, `at_most_positional`, `at_most_total`, `expected_exact`, `kwarg_error_name = \"...\"`, `bad_arg`, `bad_arg_named`, `c_error`, or `c_error_named`",
+                    "unknown struct attribute; expected `name = \"...\"`, `at_most_positional`, `at_most_total`, `expected_exact`, `kwarg_error_name = \"...\"`, `bad_arg`, `bad_arg_named`, `c_error`, `c_error_named`, or `kwargs_not_supported_yet`",
                 ))
             }
         })?;
@@ -1341,6 +1416,7 @@ fn parse_struct_attrs(attrs: &[syn::Attribute]) -> syn::Result<StructAttrs> {
         expected_exact,
         kwarg_error_name,
         bad_arg,
+        kwargs_not_supported_yet,
     })
 }
 
