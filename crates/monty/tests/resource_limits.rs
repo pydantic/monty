@@ -356,10 +356,15 @@ fn fstring_dynamic_precision_memory_bounded() {
         "p = 999_999_999\nf'{1.0:.{p}f}'",
         "p = 999_999_999\nf'{1.0:.{p}e}'",
         "p = 999_999_999\nf'{1.0:.{p}E}'",
+        "p = 999_999_999\nf'{1.0:.{p}F}'",
         "p = 999_999_999\nf'{1.0:.{p}%}'",
         // Int coerced to float via the F/E/% type chars must also be bounded.
         "p = 999_999_999\nf'{1:.{p}f}'",
+        "p = 999_999_999\nf'{1:.{p}F}'",
         "p = 999_999_999\nf'{1:.{p}e}'",
+        // Literal precisions above the compact bytecode encoding capacity are
+        // emitted as dynamic specs and must still be checked at runtime.
+        "f'{1.0:.999999999f}'",
     ] {
         let ex = MontyRun::new(code.to_owned(), "test.py", vec![]).unwrap();
         let limits = ResourceLimits::new()
