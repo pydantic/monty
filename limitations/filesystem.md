@@ -26,6 +26,13 @@ Each mount is configured by the host as one of:
   directory, writes are captured in memory and never touch the host. The
   changes vanish when the VM is discarded.
 
+## Write limits
+
+Hosts can configure a cumulative `write_bytes_limit` per mount. In
+`OverlayMemory`, appending to an existing real file can materialize that
+file into the in-memory overlay, so the existing file bytes count against
+the limit along with the newly appended bytes.
+
 ## Sandbox guarantees
 
 The host enforces these invariants on every path operation:

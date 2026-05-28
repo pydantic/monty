@@ -1826,6 +1826,39 @@ fn ovl_cumulative_writes_exceed_limit() {
 }
 
 #[test]
+fn ovl_append_existing_real_file_counts_existing_bytes_toward_limit() {
+    let dir = create_test_dir();
+    fs::write(dir.path().join("large.bin"), vec![0u8; 10]).unwrap();
+    let mut mt = mount_at_mnt_with_limit(&dir, MountMode::OverlayMemory(OverlayState::new()), 5);
+
+    let exc = call_write(
+        &mut mt,
+        OsFunction::AppendBytes,
+        "/mnt/large.bin",
+        MontyObject::Bytes(vec![1u8]),
+    )
+    .unwrap()
+    .expect_err("expected write limit error")
+    .into_exception();
+
+    assert_exc(&exc, ExcType::OSError, "disk write limit of 5 bytes exceeded");
+    assert_eq!(
+        call_ok(&mut mt, OsFunction::ReadBytes, "/mnt/large.bin"),
+        MontyObject::Bytes(vec![0u8; 10]),
+        "failed append should leave the real backing file visible and unchanged"
+    );
+
+    call_write(
+        &mut mt,
+        OsFunction::WriteBytes,
+        "/mnt/quota_ok.bin",
+        MontyObject::Bytes(vec![1u8; 5]),
+    )
+    .unwrap()
+    .unwrap();
+}
+
+#[test]
 fn write_limit_pretty_format_kb() {
     let dir = create_test_dir();
     let mut mt = mount_at_mnt_with_limit(&dir, MountMode::ReadWrite, 5_000);

@@ -357,10 +357,16 @@ fn append_bytes(
     data: &[u8],
     ctx: &mut MountContext<'_>,
 ) -> Result<MontyObject, MountError> {
-    check_write_limit(data.len(), ctx)?;
     let relative = relative_path(vpath, ctx)?;
     ensure_parent_exists(state, &relative, ctx, vpath)?;
     reject_directory_target(state, &relative, ctx, vpath)?;
+    let target_is_overlay_file = matches!(state.get(&relative), Some(OverlayEntry::File(_)));
+    let charged_bytes = if ctx.write_bytes_limit.is_some() && !target_is_overlay_file {
+        existing_file_len(state, &relative, ctx, vpath)?.saturating_add(data.len())
+    } else {
+        data.len()
+    };
+    check_write_limit(charged_bytes, ctx)?;
 
     if let Some(OverlayEntry::File(file)) = state.get_mut(&relative) {
         file.content.extend_from_slice(data);
@@ -377,8 +383,45 @@ fn append_bytes(
         );
     }
 
-    commit_write_bytes(data.len(), ctx);
+    commit_write_bytes(charged_bytes, ctx);
     Ok(MontyObject::Int(i64::try_from(data.len()).unwrap_or(i64::MAX)))
+}
+
+/// Returns the visible file length for append accounting without loading bytes.
+///
+/// Overlay append may need to copy a real backing file into memory before
+/// extending it. Counting that existing file size before materialization keeps
+/// `write_bytes_limit` aligned with the amount of overlay memory the operation
+/// can create.
+fn existing_file_len(
+    state: &OverlayState,
+    relative: &str,
+    ctx: &MountContext<'_>,
+    vpath: &str,
+) -> Result<usize, MountError> {
+    match state.get(relative) {
+        Some(OverlayEntry::File(file)) => Ok(file.content.len()),
+        Some(OverlayEntry::Deleted) => Ok(0),
+        Some(OverlayEntry::RealFileRef(file_ref)) => file_len(&file_ref.host_path, vpath),
+        Some(OverlayEntry::Directory { .. }) => {
+            Err(MountError::io_err(ErrorKind::IsADirectory, "Is a directory", vpath))
+        }
+        None => match resolve_real_path_state(vpath, ctx, ResolveMode::Existing)? {
+            RealPathState::Present(host_path) => file_len(&host_path, vpath),
+            RealPathState::Missing => Ok(0),
+        },
+    }
+}
+
+/// Returns a host file's byte length for quota checks.
+///
+/// File sizes larger than addressable memory saturate so quota comparison fails
+/// closed instead of wrapping before the overlay tries to allocate.
+fn file_len(path: &Path, vpath: &str) -> Result<usize, MountError> {
+    let len = fs::metadata(path)
+        .map_err(|error| MountError::Io(error, vpath.to_owned()))?
+        .len();
+    Ok(usize::try_from(len).unwrap_or(usize::MAX))
 }
 
 /// Loads the current visible file content for append operations.
