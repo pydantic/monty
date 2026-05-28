@@ -102,6 +102,12 @@ pub enum OsFunctionCall {
     /// Get the current date/time from the host system (for `datetime.now(tz=...)`).
     /// Carries the timezone argument (`MontyObject::None` for naive).
     DateTimeNow(MontyObject),
+
+    /// Placeholder left behind by [`crate::OsCall::take_function_call`] and
+    /// [`crate::ReplOsCall::take_function_call`] after the real call has been
+    /// moved out for host dispatch. Never produced by the VM and never
+    /// dispatched — it just keeps the field droppable.
+    Used,
 }
 
 impl OsFunctionCall {
@@ -135,6 +141,7 @@ impl OsFunctionCall {
             Self::GetEnviron => "os.environ",
             Self::DateToday => "date.today",
             Self::DateTimeNow(_) => "datetime.now",
+            Self::Used => unreachable!("OsFunctionCall::Used inspected after take_function_call"),
         }
     }
 
@@ -166,6 +173,7 @@ impl OsFunctionCall {
             // Unit & single-value non-FS variants.
             Self::GetEnviron | Self::DateToday => (vec![], vec![]),
             Self::DateTimeNow(tz) => (vec![tz], vec![]),
+            Self::Used => unreachable!("OsFunctionCall::Used dispatched after take_function_call"),
         }
     }
 
@@ -233,6 +241,7 @@ impl OsFunctionCall {
             Self::Mkdir(a) => Some(a.path.as_str()),
             Self::Rename(a) => Some(a.src.as_str()),
             Self::Getenv(_) | Self::GetEnviron | Self::DateToday | Self::DateTimeNow(_) => None,
+            Self::Used => unreachable!("OsFunctionCall::Used inspected after take_function_call"),
         }
     }
 

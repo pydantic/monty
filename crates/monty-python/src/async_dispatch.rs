@@ -164,8 +164,8 @@ pub(crate) async fn dispatch_loop_run<T: ResourceTracker + Send + 'static>(
                     }
                 }
             }
-            RunProgress::OsCall(call) => {
-                let result = dispatch_os_call_py(&call.function_call, os.as_ref(), &dc_registry);
+            RunProgress::OsCall(mut call) => {
+                let result = dispatch_os_call_py(call.take_function_call(), os.as_ref(), &dc_registry);
                 let target = print_target.clone_handle_detached();
                 progress =
                     spawn_resume!(call, result, target).map_err(|e| Python::attach(|py| MontyError::new_err(py, e)))?;
@@ -258,8 +258,8 @@ where
                     }
                 }
             }
-            ReplProgress::OsCall(call) => {
-                let result = dispatch_os_call_py(&call.function_call, os.as_ref(), &dc_registry);
+            ReplProgress::OsCall(mut call) => {
+                let result = dispatch_os_call_py(call.take_function_call(), os.as_ref(), &dc_registry);
                 let target = print_target.clone_handle_detached();
                 let next_progress =
                     await_repl_transition(&repl_owner, cleanup_notifier.clone(), target, move |target| {
@@ -333,8 +333,10 @@ fn dispatch_function_call(
 /// Dispatches an OS function call to the Python OS handler.
 ///
 /// Acquires the GIL, converts args/kwargs to Python, calls the handler,
-/// and converts the result back to `ExtFunctionResult`.
-fn dispatch_os_call_py(call: &OsFunctionCall, os: Option<&Py<PyAny>>, dc_registry: &DcRegistry) -> ExtFunctionResult {
+/// and converts the result back to `ExtFunctionResult`. Takes `call` by
+/// value so `to_args()` can consume large `WriteText`/`WriteBytes`
+/// payloads without cloning — callers extract it via `take_function_call`.
+fn dispatch_os_call_py(call: OsFunctionCall, os: Option<&Py<PyAny>>, dc_registry: &DcRegistry) -> ExtFunctionResult {
     Python::attach(|py| {
         let Some(os_callback) = os else {
             return MontyException::new(
@@ -344,11 +346,10 @@ fn dispatch_os_call_py(call: &OsFunctionCall, os: Option<&Py<PyAny>>, dc_registr
             .into();
         };
 
-        // Project the typed args back to the host-facing
-        // `(positional, keyword)` shape. Cloning is fine — `OsFunctionCall`
-        // is owned by the OsCall struct and we just want to read it.
-        let (args, kwargs) = call.clone().to_args();
-        let name = call.name();
+        // Cache name + `NOT_HANDLED` fallback before `to_args` consumes `call`.
+        let name = call.name().to_owned();
+        let on_no_handler = call.on_no_handler();
+        let (args, kwargs) = call.to_args();
 
         let py_args: Result<Vec<Py<PyAny>>, _> = args.iter().map(|arg| monty_to_py(py, arg, dc_registry)).collect();
         let py_args = match py_args {
@@ -381,7 +382,7 @@ fn dispatch_os_call_py(call: &OsFunctionCall, os: Option<&Py<PyAny>>, dc_registr
                 // unhandled behavior, matching the sync `call_os_callback_parts` path.
                 match crate::get_not_handled(py) {
                     Ok(not_handled) if result.is(not_handled.bind(py)) => {
-                        return call.on_no_handler().into();
+                        return on_no_handler.into();
                     }
                     Ok(_) => {}
                     Err(err) => return ExtFunctionResult::Error(exc_py_to_monty(py, &err)),

@@ -75,6 +75,7 @@ fn mock_oscall_result(call: &monty::OsFunctionCall) -> MontyObject {
             offset_seconds: None,
             timezone_name: None,
         }),
+        monty::OsFunctionCall::Used => unreachable!("OsFunctionCall::Used in mock_oscall_result"),
     }
 }
 

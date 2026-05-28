@@ -258,6 +258,16 @@ impl<T: ResourceTracker> OsCall<T> {
         self.snapshot.run(result.into(), print)
     }
 
+    /// Takes the [`OsFunctionCall`] out by value, leaving an
+    /// [`OsFunctionCall::Used`] placeholder so the host can dispatch the
+    /// call without cloning large `WriteText` / `WriteBytes` payloads.
+    /// `self` is still safe to call [`Self::resume`] on; the placeholder
+    /// must not be inspected.
+    #[must_use]
+    pub fn take_function_call(&mut self) -> OsFunctionCall {
+        mem::replace(&mut self.function_call, OsFunctionCall::Used)
+    }
+
     /// Returns a reference to the resource tracker.
     ///
     /// Useful for assertions in tests that need to verify

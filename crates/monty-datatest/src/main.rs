@@ -1195,6 +1195,7 @@ fn dispatch_os_call(call: &OsFunctionCall) -> ExtFunctionResult {
                 .into()
             }
         }
+        OsFunctionCall::Used => unreachable!("OsFunctionCall::Used dispatched"),
     }
 }
 

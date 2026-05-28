@@ -180,6 +180,7 @@ pub(super) fn fs_request_from_call(call: &OsFunctionCall) -> FsRequest<'_> {
         | OsFunctionCall::GetEnviron
         | OsFunctionCall::DateToday
         | OsFunctionCall::DateTimeNow(_) => unreachable!("non-filesystem OS function reached filesystem parser"),
+        OsFunctionCall::Used => unreachable!("OsFunctionCall::Used reached filesystem parser"),
     }
 }
 

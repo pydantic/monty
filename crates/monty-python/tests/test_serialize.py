@@ -542,3 +542,81 @@ d = f.read()
     result = progress6.resume({'return_value': None})
     assert isinstance(result, pydantic_monty.MontyComplete)
     assert result.output == snapshot(('α', 'βγ', 'βγδ', 'αβγδε'))
+
+
+# =============================================================================
+# Dump/load *while paused at an OS call*
+# =============================================================================
+#
+# The buffer-survival tests above pause at an external function call after the
+# OS call has already returned. These tests instead dump the snapshot while
+# `is_os_function=True` — exercising the OS-call branch of
+# `dump_function_snapshot` / the matching load path, and pinning the
+# invariant that the carried `OsFunctionCall` (including write payloads and
+# the non-FS variants) round-trips intact. If a future refactor accidentally
+# replaced the live function call with the `OsFunctionCall::Used` placeholder
+# before dumping, the loaded snapshot would dispatch `Used` and panic — these
+# tests catch that immediately.
+
+
+def test_dump_load_paused_at_read_text_oscall():
+    """Dump/load while paused at `Path.read_text`, then resume with the file
+    contents and run to completion."""
+    code = 'from pathlib import Path; Path("/data.txt").read_text() + "!"'
+    progress = pydantic_monty.Monty(code).start()
+    assert isinstance(progress, pydantic_monty.FunctionSnapshot)
+    assert progress.is_os_function is True
+    assert progress.function_name == snapshot('Path.read_text')
+
+    progress2 = pydantic_monty.load_snapshot(progress.dump())
+    assert isinstance(progress2, pydantic_monty.FunctionSnapshot)
+    assert progress2.is_os_function is True
+    assert progress2.function_name == snapshot('Path.read_text')
+
+    result = progress2.resume({'return_value': 'hello'})
+    assert isinstance(result, pydantic_monty.MontyComplete)
+    assert result.output == snapshot('hello!')
+
+
+def test_dump_load_paused_at_write_text_preserves_payload():
+    """Dump/load at `Path.write_text` round-trips the carried payload. This
+    is the variant the `take_function_call` refactor optimised — if the
+    on-disk format ever dropped the payload, the loaded snapshot would
+    surface a different (or empty) `args` tuple."""
+    payload = 'x' * 4096  # something large enough that dropping it would be obvious
+    code = f'from pathlib import Path; Path("/out.txt").write_text({payload!r})'
+    progress = pydantic_monty.Monty(code).start()
+    assert isinstance(progress, pydantic_monty.FunctionSnapshot)
+    assert progress.function_name == snapshot('Path.write_text')
+    assert progress.args[1] == payload
+
+    progress2 = pydantic_monty.load_snapshot(progress.dump())
+    assert isinstance(progress2, pydantic_monty.FunctionSnapshot)
+    assert progress2.function_name == snapshot('Path.write_text')
+    # Payload must survive byte-identical across the roundtrip.
+    assert progress2.args[1] == payload
+
+    result = progress2.resume({'return_value': len(payload)})
+    assert isinstance(result, pydantic_monty.MontyComplete)
+    assert result.output == snapshot(4096)
+
+
+def test_dump_load_paused_at_getenv_oscall():
+    """Non-FS OS call (`os.getenv`) round-trips — the non-FS dispatch arm
+    does not go through `MountTable`, so it's the path where a leftover
+    `OsFunctionCall::Used` placeholder would surface first."""
+    code = 'import os; (os.getenv("HOME") or "/root") + "/x"'
+    progress = pydantic_monty.Monty(code).start()
+    assert isinstance(progress, pydantic_monty.FunctionSnapshot)
+    assert progress.is_os_function is True
+    assert progress.function_name == snapshot('os.getenv')
+    assert progress.args == snapshot(('HOME', None))
+
+    progress2 = pydantic_monty.load_snapshot(progress.dump())
+    assert isinstance(progress2, pydantic_monty.FunctionSnapshot)
+    assert progress2.function_name == snapshot('os.getenv')
+    assert progress2.args == snapshot(('HOME', None))
+
+    result = progress2.resume({'return_value': '/home/user'})
+    assert isinstance(result, pydantic_monty.MontyComplete)
+    assert result.output == snapshot('/home/user/x')
