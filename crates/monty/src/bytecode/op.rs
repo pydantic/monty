@@ -248,17 +248,6 @@ pub enum Opcode {
     /// Used for `**kwargs` unpacking. The func_name_id is used for error messages
     /// when the mapping contains non-string keys.
     DictMerge,
-    /// Method-call variant of [`DictMerge`]: same stack effect, same
-    /// duplicate-key semantics, but the error wording is qualified with the
-    /// receiver's Python type — e.g. `list.sort()` instead of bare `sort()`.
-    ///
-    /// Emitted by the compiler for `CallAttrExtended` paths where the receiver
-    /// is at known stack depth 4 below TOS at the time the op runs
-    /// (`[receiver, args_tuple, kwargs_dict, mapping]`). Matches CPython's
-    /// `obj.method() got multiple values for keyword argument 'X'` form,
-    /// which CPython produces because it has the bound method's `__qualname__`
-    /// available — we synthesise the equivalent by peeking the receiver.
-    MethodDictMerge,
 
     // === Comprehension Building ===
     /// Append TOS to list for comprehension. Operand: u8 depth (number of iterators).
@@ -530,6 +519,18 @@ pub enum Opcode {
     /// error.
     /// Appended at the end to preserve the serialized byte values of all older opcodes.
     RaiseUnboundLocal,
+    /// Method-call variant of [`Opcode::DictMerge`]: same stack effect, same
+    /// duplicate-key semantics, but the error wording is qualified with the
+    /// receiver's Python type — e.g. `list.sort()` instead of bare `sort()`.
+    ///
+    /// Emitted by the compiler for `CallAttrExtended` paths where the receiver
+    /// is at known stack depth 4 below TOS at the time the op runs
+    /// (`[receiver, args_tuple, kwargs_dict, mapping]`). Matches CPython's
+    /// `obj.method() got multiple values for keyword argument 'X'` form,
+    /// which CPython produces because it has the bound method's `__qualname__`
+    /// available — we synthesise the equivalent by peeking the receiver.
+    /// Appended at the end to preserve the serialized byte values of all older opcodes.
+    MethodDictMerge,
 }
 
 impl TryFrom<u8> for Opcode {
