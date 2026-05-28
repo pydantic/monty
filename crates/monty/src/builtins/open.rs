@@ -41,7 +41,7 @@ pub(crate) fn builtin_open(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValue
         newline,
         closefd,
         opener,
-    } = OpenArgs::from_args(args, vm.heap, vm.interns)?;
+    } = OpenArgs::from_args(args, vm)?;
 
     // `mode` is already a `String` from the macro (default `"r"`); `file`
     // and the unsupported kwargs are still raw `Value`s and need cleanup.

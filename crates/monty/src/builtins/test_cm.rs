@@ -38,7 +38,7 @@ use crate::{
 /// Each behavior pins exactly one branch of the `with` machinery, so a
 /// single test can verify that branch in isolation.
 pub fn builtin_test_cm(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
-    let TestCmArgs { behavior, payload } = TestCmArgs::from_args(args, vm.heap, vm.interns)?;
+    let TestCmArgs { behavior, payload } = TestCmArgs::from_args(args, vm)?;
 
     let mut cm = TestContextManager::new();
     if let Some(behavior_value) = behavior {

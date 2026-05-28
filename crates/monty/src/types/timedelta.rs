@@ -21,8 +21,8 @@ use crate::{
     bytecode::{CallResult, VM},
     exception_private::{ExcType, RunResult, SimpleException},
     hash::HashValue,
-    heap::{Heap, HeapData, HeapId, HeapItem, HeapRead},
-    intern::{Interns, StaticStrings},
+    heap::{HeapData, HeapId, HeapItem, HeapRead},
+    intern::StaticStrings,
     resource::{ResourceError, ResourceTracker},
     types::{PyTrait, Type},
     value::{EitherStr, Value},
@@ -179,7 +179,7 @@ pub(crate) fn from_total_microseconds(total_microseconds: i128) -> RunResult<Tim
 ///
 /// Supports positional `(days, seconds, microseconds)` and keyword arguments
 /// `days`, `seconds`, `microseconds`, `milliseconds`, `minutes`, `hours`, `weeks`.
-pub(crate) fn init(heap: &mut Heap<impl ResourceTracker>, args: ArgValues, interns: &Interns) -> RunResult<Value> {
+pub(crate) fn init(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     let TimedeltaArgs {
         days,
         seconds,
@@ -188,7 +188,7 @@ pub(crate) fn init(heap: &mut Heap<impl ResourceTracker>, args: ArgValues, inter
         minutes,
         hours,
         weeks,
-    } = TimedeltaArgs::from_args(args, heap, interns)?;
+    } = TimedeltaArgs::from_args(args, vm)?;
 
     let total_microseconds = checked_component(weeks, 7 * DAY_MICROSECONDS)?
         + checked_component(days, DAY_MICROSECONDS)?
@@ -199,7 +199,7 @@ pub(crate) fn init(heap: &mut Heap<impl ResourceTracker>, args: ArgValues, inter
         + microseconds;
 
     let delta = from_total_microseconds(total_microseconds)?;
-    Ok(Value::Ref(heap.allocate(HeapData::TimeDelta(delta))?))
+    Ok(Value::Ref(vm.heap.allocate(HeapData::TimeDelta(delta))?))
 }
 
 /// Argument shape for `timedelta(days=0, seconds=0, microseconds=0, *, milliseconds=0, minutes=0, hours=0, weeks=0)`.

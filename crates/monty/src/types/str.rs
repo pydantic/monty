@@ -63,7 +63,7 @@ impl Str {
     /// - `str()` with no args returns an empty string
     /// - `str(x)` converts x to its string representation using `py_str`
     pub fn init(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
-        let StrInitArgs { object } = StrInitArgs::from_args(args, vm.heap, vm.interns)?;
+        let StrInitArgs { object } = StrInitArgs::from_args(args, vm)?;
         match object {
             None => Ok(Value::InternString(StaticStrings::EmptyString.into())),
             Some(v) => {
@@ -1282,7 +1282,7 @@ fn str_removesuffix<'h>(
 ///
 /// Returns a list of the words in the string, using sep as the delimiter string.
 fn str_split<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Value> {
-    let SplitArgs { sep, maxsplit } = SplitArgs::from_args(args, vm.heap, vm.interns)?;
+    let SplitArgs { sep, maxsplit } = SplitArgs::from_args(args, vm)?;
     let (sep, maxsplit) = coerce_split_args(sep, maxsplit, vm)?;
     let s = s.get(vm.heap);
 
@@ -1329,7 +1329,7 @@ fn str_split<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h, impl Re
 /// Returns a list of the words in the string, using sep as the delimiter string,
 /// splitting from the right.
 fn str_rsplit<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Value> {
-    let RsplitArgs { sep, maxsplit } = RsplitArgs::from_args(args, vm.heap, vm.interns)?;
+    let RsplitArgs { sep, maxsplit } = RsplitArgs::from_args(args, vm)?;
     let (sep, maxsplit) = coerce_split_args(sep, maxsplit, vm)?;
     let s = s.get(vm.heap);
 
@@ -1526,7 +1526,7 @@ fn str_splitlines<'h>(
 ///
 /// Supports both positional and keyword arguments for keepends.
 fn parse_splitlines_args(args: ArgValues, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<bool> {
-    let SplitlinesArgs { keepends } = SplitlinesArgs::from_args(args, vm.heap, vm.interns)?;
+    let SplitlinesArgs { keepends } = SplitlinesArgs::from_args(args, vm)?;
     let result = keepends.as_ref().is_some_and(value_is_truthy);
     keepends.drop_with_heap(vm.heap);
     Ok(result)
@@ -1651,7 +1651,7 @@ fn parse_replace_args(
     args: ArgValues,
     vm: &mut VM<'_, impl ResourceTracker>,
 ) -> RunResult<(String, String, i64)> {
-    let ReplaceArgs { old, new, count } = ReplaceArgs::from_args(args, vm.heap, vm.interns)?;
+    let ReplaceArgs { old, new, count } = ReplaceArgs::from_args(args, vm)?;
     defer_drop!(old, vm);
     defer_drop!(new, vm);
     defer_drop!(count, vm);
@@ -1852,7 +1852,7 @@ fn str_expandtabs<'h>(
     args: ArgValues,
     vm: &mut VM<'h, impl ResourceTracker>,
 ) -> RunResult<Value> {
-    let ExpandtabsArgs { tabsize } = ExpandtabsArgs::from_args(args, vm.heap, vm.interns)?;
+    let ExpandtabsArgs { tabsize } = ExpandtabsArgs::from_args(args, vm)?;
 
     let tabsize = match tabsize {
         None => 8,
@@ -1907,7 +1907,7 @@ struct ExpandtabsArgs {
 /// Returns an encoded version of the string as a bytes object. Only supports
 /// UTF-8 encoding (the native encoding for Rust strings).
 fn str_encode<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Value> {
-    let EncodeArgs { encoding, errors } = EncodeArgs::from_args(args, vm.heap, vm.interns)?;
+    let EncodeArgs { encoding, errors } = EncodeArgs::from_args(args, vm)?;
     let encoding = encoding.unwrap_or_else(|| "utf-8".to_owned());
     let errors = errors.unwrap_or_else(|| "strict".to_owned());
 

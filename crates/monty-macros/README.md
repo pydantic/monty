@@ -28,7 +28,7 @@ struct DatetimeArgs {
 }
 
 let DatetimeArgs { year, month, day, hour, tzinfo } =
-    DatetimeArgs::from_args(args, heap, interns)?;
+    DatetimeArgs::from_args(args, vm)?;
 ```
 
 Fields must appear in Python signature order:

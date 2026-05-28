@@ -18,7 +18,7 @@ use crate::{
 /// When `strict=True`, raises `ValueError` if any iterable has a different length.
 /// Note: In Python this returns an iterator, but we return a list for simplicity.
 pub fn builtin_zip(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
-    let ZipArgs { iterables, strict } = ZipArgs::from_args(args, vm.heap, vm.interns)?;
+    let ZipArgs { iterables, strict } = ZipArgs::from_args(args, vm)?;
     defer_drop_mut!(iterables, vm);
     // CPython's `strict` is truthy-checked (not strict typed), so use `py_bool`
     // on the raw value rather than asking the macro to coerce to `bool`.

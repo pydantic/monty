@@ -197,7 +197,7 @@ pub(crate) fn to_components(datetime: &DateTime) -> Option<(i32, u8, u8, u8, u8,
 }
 
 /// Constructor for `datetime(...)`.
-pub(crate) fn init(heap: &mut Heap<impl ResourceTracker>, args: ArgValues, interns: &Interns) -> RunResult<Value> {
+pub(crate) fn init(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     let DatetimeInitArgs {
         year,
         month,
@@ -208,11 +208,11 @@ pub(crate) fn init(heap: &mut Heap<impl ResourceTracker>, args: ArgValues, inter
         microsecond,
         tzinfo,
         fold,
-    } = DatetimeInitArgs::from_args(args, heap, interns)?;
+    } = DatetimeInitArgs::from_args(args, vm)?;
     // `tzinfo` owns the input ref; keep it alive across `tzinfo_from_value` and
     // `from_components` so the heap-allocated TimeZone (if any) is not freed
     // before `attach_or_allocate_tzinfo_ref` takes its own reference.
-    defer_drop_mut!(tzinfo, heap);
+    defer_drop_mut!(tzinfo, vm);
 
     if fold != 0 && fold != 1 {
         return Err(
@@ -220,9 +220,9 @@ pub(crate) fn init(heap: &mut Heap<impl ResourceTracker>, args: ArgValues, inter
         );
     }
 
-    let (tz, tz_ref) = tzinfo_from_value(tzinfo, heap)?;
-    let dt = from_components(year, month, day, hour, minute, second, microsecond, tz, tz_ref, heap)?;
-    Ok(Value::Ref(heap.allocate(HeapData::DateTime(dt))?))
+    let (tz, tz_ref) = tzinfo_from_value(tzinfo, vm.heap)?;
+    let dt = from_components(year, month, day, hour, minute, second, microsecond, tz, tz_ref, vm.heap)?;
+    Ok(Value::Ref(vm.heap.allocate(HeapData::DateTime(dt))?))
 }
 
 /// Argument shape for `datetime(year, month, day, hour=0, minute=0, second=0,
@@ -791,8 +791,7 @@ fn compute_timestamp(dt: &DateTime) -> f64 {
 fn extract_datetime_replace_kwargs(
     args: ArgValues,
     dt: &DateTime,
-    heap: &mut Heap<impl ResourceTracker>,
-    interns: &Interns,
+    vm: &mut VM<'_, impl ResourceTracker>,
 ) -> RunResult<Value> {
     let DatetimeReplaceArgs {
         year,
@@ -803,7 +802,7 @@ fn extract_datetime_replace_kwargs(
         second,
         microsecond,
         tzinfo,
-    } = DatetimeReplaceArgs::from_args(args, heap, interns)?;
+    } = DatetimeReplaceArgs::from_args(args, vm)?;
 
     // `tzinfo` is `Some(v)` only when the caller actually passed the kwarg;
     // absent → preserve existing tzinfo. When present, the inner `Value` owns
@@ -813,8 +812,8 @@ fn extract_datetime_replace_kwargs(
     let (new_tz, new_tz_ref) = match tzinfo {
         None => (timezone_info(dt), dt.tzinfo_ref),
         Some(tzinfo_value) => {
-            defer_drop_mut!(tzinfo_value, heap);
-            tzinfo_from_value(tzinfo_value, heap)?
+            defer_drop_mut!(tzinfo_value, vm);
+            tzinfo_from_value(tzinfo_value, vm.heap)?
         }
     };
 
@@ -830,10 +829,9 @@ fn extract_datetime_replace_kwargs(
         }),
         new_tz,
         new_tz_ref,
-        heap,
+        vm.heap,
     )?;
-    let _ = interns;
-    Ok(Value::Ref(heap.allocate(HeapData::DateTime(new_dt))?))
+    Ok(Value::Ref(vm.heap.allocate(HeapData::DateTime(new_dt))?))
 }
 
 /// Keyword arguments for `datetime.replace()`. All keyword-only; absent fields
@@ -983,12 +981,12 @@ impl<'h> PyTrait<'h> for HeapRead<'h, DateTime> {
                 Ok(CallResult::Value(allocate_string_no_interning(s, vm.heap)?))
             }
             Some(id) if id == StaticStrings::Strftime => {
-                let StrftimeArgs { format } = StrftimeArgs::from_args(args, vm.heap, vm.interns)?;
+                let StrftimeArgs { format } = StrftimeArgs::from_args(args, vm)?;
                 let formatted = dt.naive.format(&format).to_string();
                 Ok(CallResult::Value(allocate_string(formatted, vm.heap)?))
             }
             Some(id) if id == StaticStrings::Replace => {
-                let result = extract_datetime_replace_kwargs(args, &dt, vm.heap, vm.interns)?;
+                let result = extract_datetime_replace_kwargs(args, &dt, vm)?;
                 Ok(CallResult::Value(result))
             }
             Some(id) if id == StaticStrings::Weekday => {

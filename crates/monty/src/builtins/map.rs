@@ -51,7 +51,7 @@ pub fn builtin_map(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> Ru
         function,
         first_iterable,
         extra_iterables,
-    } = MapArgs::from_args(args, vm.heap, vm.interns)?;
+    } = MapArgs::from_args(args, vm)?;
     defer_drop!(function, vm);
 
     let first_iter = MontyIter::new(first_iterable, vm)?;

@@ -392,7 +392,7 @@ fn call_pattern_sub<'h>(
         repl: repl_val,
         string: string_val,
         count: count_val,
-    } = PatternSubArgs::from_args(args, vm.heap, vm.interns)?;
+    } = PatternSubArgs::from_args(args, vm)?;
     defer_drop!(repl_val, vm);
     defer_drop!(string_val, vm);
 
@@ -443,7 +443,7 @@ fn call_pattern_split<'h>(
     let PatternSplitArgs {
         string: string_val,
         maxsplit: maxsplit_val,
-    } = PatternSplitArgs::from_args(args, vm.heap, vm.interns)?;
+    } = PatternSplitArgs::from_args(args, vm)?;
     defer_drop!(string_val, vm);
 
     let maxsplit = extract_maxsplit(maxsplit_val, vm)?;

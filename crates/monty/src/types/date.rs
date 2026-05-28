@@ -117,10 +117,10 @@ pub(crate) fn to_ymd(date: Date) -> (i32, u32, u32) {
 }
 
 /// Constructor for `date(year, month, day)`.
-pub(crate) fn init(heap: &mut Heap<impl ResourceTracker>, args: ArgValues, interns: &Interns) -> RunResult<Value> {
-    let DateInitArgs { year, month, day } = DateInitArgs::from_args(args, heap, interns)?;
+pub(crate) fn init(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let DateInitArgs { year, month, day } = DateInitArgs::from_args(args, vm)?;
     let date = from_ymd(year, month, day)?;
-    Ok(Value::Ref(heap.allocate(HeapData::Date(date))?))
+    Ok(Value::Ref(vm.heap.allocate(HeapData::Date(date))?))
 }
 
 /// Argument shape for `date(year, month, day)`.
@@ -262,7 +262,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Date> {
                 )?))
             }
             Some(id) if id == StaticStrings::Strftime => {
-                let StrftimeArgs { format } = StrftimeArgs::from_args(args, vm.heap, vm.interns)?;
+                let StrftimeArgs { format } = StrftimeArgs::from_args(args, vm)?;
                 let formatted = date.0.format(&format).to_string();
                 Ok(CallResult::Value(allocate_string(formatted, vm.heap)?))
             }
@@ -272,7 +272,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Date> {
                     year: new_year,
                     month: new_month,
                     day: new_day,
-                } = DateReplaceArgs::from_args(args, vm.heap, vm.interns)?;
+                } = DateReplaceArgs::from_args(args, vm)?;
                 let new_date = from_ymd(
                     new_year.unwrap_or(year),
                     new_month.unwrap_or(i32::try_from(month).expect("month in 1..=12")),

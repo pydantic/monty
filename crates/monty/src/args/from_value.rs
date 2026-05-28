@@ -2,19 +2,20 @@
 //! argument extraction.
 //!
 //! Companion to the `#[derive(FromArgs)]` macro in `monty-macros`. The derive
-//! generates code that calls `FromValue::from_value(arg, heap, interns)` for
-//! every positional or keyword argument. The trait owns the cleanup of the
-//! input `Value` — primitive impls drop the input, the identity impl for
-//! `Value` keeps it. Generated callers also need to drop already-extracted
-//! owning fields on later error paths; for that they call
+//! generates code that calls `FromValue::from_value(arg, vm)` for every
+//! positional or keyword argument. The trait owns the cleanup of the input
+//! `Value` — primitive impls drop the input, the identity impl for `Value`
+//! keeps it. Generated callers also need to drop already-extracted owning
+//! fields on later error paths; for that they call
 //! [`FromValue::drop_extracted`], which knows whether the extracted form holds
 //! a heap reference.
 
 use crate::{
+    bytecode::VM,
     exception_private::{ExcType, RunError, RunResult, SimpleException},
-    heap::Heap,
-    intern::Interns,
+    heap::ContainsHeap,
     resource::ResourceTracker,
+    types::PyTrait,
     value::Value,
 };
 
@@ -42,7 +43,11 @@ pub(crate) trait FromValue: Sized {
 
     /// Convert a `Value` into `Self`. On error, the input value must have
     /// been dropped before returning.
-    fn from_value(value: Value, heap: &mut Heap<impl ResourceTracker>, interns: &Interns) -> RunResult<Self>;
+    ///
+    /// Takes `&mut VM` so impls can both inspect the heap (for type coercion)
+    /// and call `drop_with_heap` on the input; this also lets `LaxBool` route
+    /// through `PyTrait::py_bool`.
+    fn from_value(value: Value, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<Self>;
 
     /// Drop the *extracted* value (i.e. `Self`) so refcounts stay balanced
     /// when generated `from_args` code aborts after extracting one field but
@@ -50,7 +55,7 @@ pub(crate) trait FromValue: Sized {
     ///
     /// For primitives this is a no-op; for `Value` / `Vec<Value>` it walks
     /// the contents and decrements references.
-    fn drop_extracted(self, heap: &mut Heap<impl ResourceTracker>) {
+    fn drop_extracted(self, heap: &mut impl ContainsHeap) {
         // Default: no heap references held. Specialise in impls that hold them.
         let _ = heap;
         drop(self);
@@ -58,11 +63,11 @@ pub(crate) trait FromValue: Sized {
 }
 
 impl FromValue for Value {
-    fn from_value(value: Self, _heap: &mut Heap<impl ResourceTracker>, _interns: &Interns) -> RunResult<Self> {
+    fn from_value(value: Self, _vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<Self> {
         Ok(value)
     }
 
-    fn drop_extracted(self, heap: &mut Heap<impl ResourceTracker>) {
+    fn drop_extracted(self, heap: &mut impl ContainsHeap) {
         self.drop_with_heap(heap);
     }
 }
@@ -70,9 +75,9 @@ impl FromValue for Value {
 impl FromValue for i32 {
     const EXPECTED_TYPE_NAME: Option<&'static str> = Some("int");
 
-    fn from_value(value: Value, heap: &mut Heap<impl ResourceTracker>, _interns: &Interns) -> RunResult<Self> {
+    fn from_value(value: Value, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<Self> {
         let result = value.to_i32();
-        value.drop_with_heap(heap);
+        value.drop_with_heap(vm);
         result
     }
 }
@@ -80,13 +85,13 @@ impl FromValue for i32 {
 impl FromValue for i64 {
     const EXPECTED_TYPE_NAME: Option<&'static str> = Some("int");
 
-    fn from_value(value: Value, heap: &mut Heap<impl ResourceTracker>, _interns: &Interns) -> RunResult<Self> {
+    fn from_value(value: Value, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<Self> {
         let result = match value {
             Value::Bool(b) => Ok(Self::from(b)),
             Value::Int(i) => Ok(i),
             _ => Err(type_error_integer_required()),
         };
-        value.drop_with_heap(heap);
+        value.drop_with_heap(vm);
         result
     }
 }
@@ -97,13 +102,13 @@ impl FromValue for i64 {
 impl FromValue for i128 {
     const EXPECTED_TYPE_NAME: Option<&'static str> = Some("int");
 
-    fn from_value(value: Value, heap: &mut Heap<impl ResourceTracker>, _interns: &Interns) -> RunResult<Self> {
+    fn from_value(value: Value, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<Self> {
         let result = match value {
             Value::Bool(b) => Ok(Self::from(b)),
             Value::Int(i) => Ok(Self::from(i)),
             _ => Err(type_error_integer_required()),
         };
-        value.drop_with_heap(heap);
+        value.drop_with_heap(vm);
         result
     }
 }
@@ -111,12 +116,12 @@ impl FromValue for i128 {
 impl FromValue for bool {
     const EXPECTED_TYPE_NAME: Option<&'static str> = Some("bool");
 
-    fn from_value(value: Value, heap: &mut Heap<impl ResourceTracker>, _interns: &Interns) -> RunResult<Self> {
+    fn from_value(value: Value, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<Self> {
         let result = match value {
             Value::Bool(b) => Ok(b),
             _ => Err(type_error_bool_required()),
         };
-        value.drop_with_heap(heap);
+        value.drop_with_heap(vm);
         result
     }
 }
@@ -124,12 +129,12 @@ impl FromValue for bool {
 impl FromValue for String {
     const EXPECTED_TYPE_NAME: Option<&'static str> = Some("str");
 
-    fn from_value(value: Value, heap: &mut Heap<impl ResourceTracker>, interns: &Interns) -> RunResult<Self> {
-        let result = match value.as_either_str(heap) {
-            Some(either) => Ok(either.into_string(interns)),
+    fn from_value(value: Value, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<Self> {
+        let result = match value.as_either_str(vm.heap) {
+            Some(either) => Ok(either.into_string(vm.interns)),
             None => Err(type_error_string_required()),
         };
-        value.drop_with_heap(heap);
+        value.drop_with_heap(vm);
         result
     }
 }
@@ -152,14 +157,45 @@ impl<T: FromValue> FromValue for Option<T> {
     // `"str or None"` wording and should override at the field level.
     const EXPECTED_TYPE_NAME: Option<&'static str> = T::EXPECTED_TYPE_NAME;
 
-    fn from_value(value: Value, heap: &mut Heap<impl ResourceTracker>, interns: &Interns) -> RunResult<Self> {
-        T::from_value(value, heap, interns).map(Some)
+    fn from_value(value: Value, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<Self> {
+        T::from_value(value, vm).map(Some)
     }
 
-    fn drop_extracted(self, heap: &mut Heap<impl ResourceTracker>) {
+    fn drop_extracted(self, heap: &mut impl ContainsHeap) {
         if let Some(inner) = self {
             inner.drop_extracted(heap);
         }
+    }
+}
+
+/// Newtype around `bool` for kwargs that perform Python's *truth test* on the
+/// incoming value rather than demanding a strict `bool`. CPython spells this
+/// pattern via `if flag:` — empty strings/bytes/collections are falsy, every
+/// other heap object is truthy.
+///
+/// Use this for flags like `Path.mkdir(parents=…, exist_ok=…)` where the
+/// CPython signature documents a `bool` but the implementation feeds the raw
+/// value through `bool()`. Using plain `bool` would reject `mkdir(parents=[])`
+/// with a `TypeError`; that does not match CPython, which silently treats the
+/// empty list as `False`.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct LaxBool(bool);
+
+impl FromValue for LaxBool {
+    fn from_value(value: Value, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<Self> {
+        let result = value.py_bool(vm);
+        value.drop_with_heap(vm);
+        Ok(Self(result))
+    }
+}
+
+impl LaxBool {
+    pub fn new(b: bool) -> Self {
+        Self(b)
+    }
+
+    pub fn bool(self) -> bool {
+        self.0
     }
 }
 

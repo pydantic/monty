@@ -263,7 +263,7 @@ fn call_sub(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult
         string: string_val,
         count: count_val,
         flags: flags_val,
-    } = ReSubArgs::from_args(args, vm.heap, vm.interns)?;
+    } = ReSubArgs::from_args(args, vm)?;
     defer_drop!(pattern_val, vm);
     defer_drop!(repl_val, vm);
     defer_drop!(string_val, vm);
@@ -324,7 +324,7 @@ fn call_split(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResu
         string: string_val,
         maxsplit: maxsplit_val,
         flags: flags_val,
-    } = ReSplitArgs::from_args(args, vm.heap, vm.interns)?;
+    } = ReSplitArgs::from_args(args, vm)?;
     defer_drop!(pattern_val, vm);
     defer_drop!(string_val, vm);
 

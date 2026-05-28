@@ -70,7 +70,7 @@ const JSON_RECURSION_LIMIT: usize = 200;
 /// `parse_constant`, and `object_pairs_hook` are intentionally unsupported
 /// and will raise `TypeError` if passed.
 pub(super) fn call_loads(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
-    let JsonLoadsArgs { s } = JsonLoadsArgs::from_args(args, vm.heap, vm.interns)?;
+    let JsonLoadsArgs { s } = JsonLoadsArgs::from_args(args, vm)?;
     let mut data_guard = HeapGuard::new(s, vm);
     let (data, vm) = data_guard.as_parts_mut();
     parse_json_input(data, vm)

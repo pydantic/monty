@@ -418,7 +418,7 @@ impl Dict {
     /// For now, only real `dict` values use mapping-copy semantics; other values
     /// are interpreted as iterables of pairs.
     pub fn init(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
-        let DictInitArgs { source, extras } = DictInitArgs::from_args(args, vm.heap, vm.interns)?;
+        let DictInitArgs { source, extras } = DictInitArgs::from_args(args, vm)?;
         let dict = Self::new();
         let mut dict_guard = HeapGuard::new(dict, vm);
 
@@ -892,7 +892,7 @@ fn dict_update<'h>(
     args: ArgValues,
     vm: &mut VM<'h, impl ResourceTracker>,
 ) -> RunResult<Value> {
-    let DictUpdateArgs { source, extras } = DictUpdateArgs::from_args(args, vm.heap, vm.interns)?;
+    let DictUpdateArgs { source, extras } = DictUpdateArgs::from_args(args, vm)?;
     let mut kwargs_guard = HeapGuard::new(extras, vm);
 
     if let Some(other_value) = source {

@@ -1108,7 +1108,11 @@ fn dispatch_os_call(call: &OsFunctionCall) -> ExtFunctionResult {
                 if exist_ok {
                     return MontyObject::None.into();
                 }
-                return MontyException::new(ExcType::OSError, Some(format!("[Errno 17] File exists: '{path}'"))).into();
+                return MontyException::new(
+                    ExcType::FileExistsError,
+                    Some(format!("[Errno 17] File exists: '{path}'")),
+                )
+                .into();
             }
 
             let parent = Path::new(&path)

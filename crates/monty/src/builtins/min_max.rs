@@ -20,7 +20,7 @@ use crate::{
 /// - `min(iterable)` - returns smallest item from iterable
 /// - `min(arg1, arg2, ...)` - returns smallest of the arguments
 pub fn builtin_min(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
-    let MinArgs { args, key, default } = MinArgs::from_args(args, vm.heap, vm.interns)?;
+    let MinArgs { args, key, default } = MinArgs::from_args(args, vm)?;
     run_min_max(vm, args, key, default, true)
 }
 
@@ -31,7 +31,7 @@ pub fn builtin_min(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> Ru
 /// - `max(iterable)` - returns largest item from iterable
 /// - `max(arg1, arg2, ...)` - returns largest of the arguments
 pub fn builtin_max(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
-    let MaxArgs { args, key, default } = MaxArgs::from_args(args, vm.heap, vm.interns)?;
+    let MaxArgs { args, key, default } = MaxArgs::from_args(args, vm)?;
     run_min_max(vm, args, key, default, false)
 }
 

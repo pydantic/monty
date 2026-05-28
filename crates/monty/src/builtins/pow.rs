@@ -21,7 +21,7 @@ use crate::{
 /// Returns base to the power exp. With three arguments, returns (base ** exp) % mod.
 /// Handles negative exponents by returning a float.
 pub fn builtin_pow(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
-    let PowArgs { base, exp, modulus } = PowArgs::from_args(args, vm.heap, vm.interns)?;
+    let PowArgs { base, exp, modulus } = PowArgs::from_args(args, vm)?;
     defer_drop!(base, vm);
     defer_drop!(exp, vm);
     defer_drop!(modulus, vm);

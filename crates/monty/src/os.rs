@@ -22,7 +22,8 @@ use std::{fmt, ops::Deref};
 
 use crate::{
     ExcType, MontyException, MontyObject,
-    args::{ArgValues, FromArgs, ToArgs, ToMontyObject},
+    args::{ArgValues, FromArgs, LaxBool, ToArgs, ToMontyObject},
+    bytecode::VM,
     exception_private::RunResult,
     heap::{ContainsHeap, DropWithHeap, Heap, HeapData},
     intern::{Interns, StaticStrings},
@@ -433,14 +434,13 @@ pub(crate) fn build_path_os_call(
     method: StaticStrings,
     path: MontyPath,
     args: ArgValues,
-    heap: &mut Heap<impl ResourceTracker>,
-    interns: &Interns,
+    vm: &mut VM<'_, impl ResourceTracker>,
 ) -> RunResult<Option<OsFunctionCall>> {
     // Simple "no extra args" path operations are bundled into one arm to avoid
     // 12 near-identical case lines.
     macro_rules! path_only {
         ($name:literal, $variant:ident) => {{
-            args.check_zero_args($name, heap)?;
+            args.check_zero_args($name, vm.heap)?;
             OsFunctionCall::$variant(path)
         }};
     }
@@ -459,24 +459,24 @@ pub(crate) fn build_path_os_call(
         StaticStrings::Unlink => path_only!("unlink", Unlink),
         StaticStrings::Rmdir => path_only!("rmdir", Rmdir),
         StaticStrings::WriteText => {
-            OsFunctionCall::WriteText(extract_str_data("write_text", path, args, heap, interns)?)
+            OsFunctionCall::WriteText(extract_str_data("write_text", path, args, vm.heap, vm.interns)?)
         }
         StaticStrings::AppendText => {
-            OsFunctionCall::AppendText(extract_str_data("append_text", path, args, heap, interns)?)
+            OsFunctionCall::AppendText(extract_str_data("append_text", path, args, vm.heap, vm.interns)?)
         }
         StaticStrings::WriteBytes => {
-            OsFunctionCall::WriteBytes(extract_bytes_data("write_bytes", path, args, heap, interns)?)
+            OsFunctionCall::WriteBytes(extract_bytes_data("write_bytes", path, args, vm.heap, vm.interns)?)
         }
         StaticStrings::AppendBytes => {
-            OsFunctionCall::AppendBytes(extract_bytes_data("append_bytes", path, args, heap, interns)?)
+            OsFunctionCall::AppendBytes(extract_bytes_data("append_bytes", path, args, vm.heap, vm.interns)?)
         }
-        StaticStrings::Mkdir => OsFunctionCall::Mkdir(extract_mkdir_args(path, args, heap, interns)?),
-        StaticStrings::Rename => OsFunctionCall::Rename(extract_rename_args(path, args, heap, interns)?),
+        StaticStrings::Mkdir => OsFunctionCall::Mkdir(extract_mkdir_args(path, args, vm)?),
+        StaticStrings::Rename => OsFunctionCall::Rename(extract_rename_args(path, args, vm.heap, vm.interns)?),
         _ => {
             // Unreachable in practice — callers gate on `is_path_os_method`.
             // Drop the owned inputs anyway so a stray call doesn't leak refs.
             let _ = path;
-            args.drop_with_heap(heap);
+            args.drop_with_heap(vm.heap);
             return Ok(None);
         }
     };
@@ -526,16 +526,18 @@ fn extract_bytes_data(
 /// Python-facing argument shape for `Path.mkdir(mode=0o777, parents=False, exist_ok=False)`.
 ///
 /// Monty parses `mode` for signature compatibility and arity validation, but
-/// filesystem backends do not model POSIX permission bits.
+/// filesystem backends do not model POSIX permission bits. `parents` and
+/// `exist_ok` use [`LaxBool`] so they accept any truth-tested value (matching
+/// CPython, which evaluates them via `bool()`).
 #[derive(FromArgs)]
 #[from_args(name = "Path.mkdir", at_most_total)]
 struct PathMkdirArgs {
     #[from_args(default = 0o777_i64)]
     mode: i64,
-    #[from_args(default = Value::Bool(false))]
-    parents: Value,
-    #[from_args(default = Value::Bool(false))]
-    exist_ok: Value,
+    #[from_args(default = LaxBool::new(false))]
+    parents: LaxBool,
+    #[from_args(default = LaxBool::new(false))]
+    exist_ok: LaxBool,
 }
 
 /// Extracts `mode`/`parents`/`exist_ok` for `mkdir`, rejecting unknown or
@@ -543,49 +545,19 @@ struct PathMkdirArgs {
 fn extract_mkdir_args(
     path: MontyPath,
     args: ArgValues,
-    heap: &mut Heap<impl ResourceTracker>,
-    interns: &Interns,
+    vm: &mut VM<'_, impl ResourceTracker>,
 ) -> RunResult<MkdirCallArgs> {
     let PathMkdirArgs {
         mode,
         parents,
         exist_ok,
-    } = PathMkdirArgs::from_args(args, heap, interns)?;
+    } = PathMkdirArgs::from_args(args, vm)?;
     let _ = mode;
-    let parents_bool = mkdir_flag_is_truthy(&parents);
-    parents.drop_with_heap(heap);
-    let exist_ok_bool = mkdir_flag_is_truthy(&exist_ok);
-    exist_ok.drop_with_heap(heap);
     Ok(MkdirCallArgs {
         path,
-        parents: parents_bool,
-        exist_ok: exist_ok_bool,
+        parents: parents.bool(),
+        exist_ok: exist_ok.bool(),
     })
-}
-
-/// Truth-test for `Path.mkdir` boolean flags without requiring a live VM.
-///
-/// This covers the primitive cases accepted by Monty's parser; heap objects
-/// remain truthy here, which matches the previous behavior for non-bool values
-/// more closely than introducing strict `bool` coercion.
-fn mkdir_flag_is_truthy(value: &Value) -> bool {
-    match value {
-        Value::None => false,
-        Value::Bool(v) => *v,
-        Value::Int(v) => *v != 0,
-        Value::Float(v) => *v != 0.0,
-        Value::InternString(_) | Value::InternBytes(_) | Value::InternLongInt(_) | Value::Ref(_) => true,
-        Value::Undefined => false,
-        Value::Ellipsis
-        | Value::Builtin(_)
-        | Value::ModuleFunction(_)
-        | Value::DefFunction(_)
-        | Value::ExtFunction(_)
-        | Value::Marker(_)
-        | Value::Property(_) => true,
-        #[cfg(feature = "memory-model-checks")]
-        Value::Dereferenced => panic!("Cannot access Dereferenced object"),
-    }
 }
 
 /// Extracts the `target` arg for `Path.rename(target)`.

@@ -69,29 +69,29 @@ impl TimeZone {
     }
 
     /// Parses timezone constructor arguments.
-    pub fn init(heap: &mut Heap<impl ResourceTracker>, args: ArgValues, interns: &Interns) -> RunResult<Value> {
-        let TimezoneInitArgs { offset, name } = TimezoneInitArgs::from_args(args, heap, interns)?;
+    pub fn init(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+        let TimezoneInitArgs { offset, name } = TimezoneInitArgs::from_args(args, vm)?;
         // Keep `offset` and `name` alive across the validation helpers — they
         // own the heap refs (TimeDelta / Str) we're reading from. `name` is
         // an `Option<Value>` so we can distinguish "omitted" from an explicit
         // `None`: CPython accepts `timezone(td)` but rejects `timezone(td,
         // None)` with `TypeError: timezone() argument 2 must be str, not None`.
-        defer_drop!(offset, heap);
-        let offset_seconds = extract_offset_seconds(offset, heap)?;
+        defer_drop!(offset, vm);
+        let offset_seconds = extract_offset_seconds(offset, vm.heap)?;
         let name_str: Option<String> = match name {
             None => None,
             Some(name) => {
-                defer_drop!(name, heap);
-                extract_name(name, heap, interns)?
+                defer_drop!(name, vm);
+                extract_name(name, vm.heap, vm.interns)?
             }
         };
 
         if offset_seconds == 0 && name_str.is_none() {
-            return heap.get_timezone_utc().map_err(Into::into);
+            return vm.heap.get_timezone_utc().map_err(Into::into);
         }
 
         let tz = Self::new(offset_seconds, name_str)?;
-        Ok(Value::Ref(heap.allocate(HeapData::TimeZone(tz))?))
+        Ok(Value::Ref(vm.heap.allocate(HeapData::TimeZone(tz))?))
     }
 
     /// Formats offset as `+HH:MM` / `-HH:MM` with optional `:SS`.

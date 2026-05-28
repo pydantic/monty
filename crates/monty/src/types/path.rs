@@ -529,7 +529,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Path> {
             // SAFETY: builder owns `args` and is responsible for dropping it
             // on every error path; `self_id` is a separate heap entry that
             // we don't transfer here.
-            return match build_path_os_call(method, path, args, vm.heap, vm.interns)? {
+            return match build_path_os_call(method, path, args, vm)? {
                 Some(call) => Ok(CallResult::OsCall(call)),
                 None => unreachable!("is_path_os_method gates the call"),
             };

@@ -29,7 +29,7 @@ pub fn builtin_print(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> 
         end,
         file,
         flush: _,
-    } = PrintArgs::from_args(args, vm.heap, vm.interns)?;
+    } = PrintArgs::from_args(args, vm)?;
     defer_drop!(objects, vm);
     defer_drop!(sep, vm);
     defer_drop!(end, vm);

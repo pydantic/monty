@@ -676,7 +676,7 @@ fn math_copysign(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunR
 /// Supports keyword-only `rel_tol` and `abs_tol` parameters matching CPython.
 /// Raises `ValueError` if either tolerance is negative.
 fn math_isclose(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
-    let IscloseArgs { a, b, rel_tol, abs_tol } = IscloseArgs::from_args(args, vm.heap, vm.interns)?;
+    let IscloseArgs { a, b, rel_tol, abs_tol } = IscloseArgs::from_args(args, vm)?;
     defer_drop!(a, vm);
     defer_drop!(b, vm);
     defer_drop!(rel_tol, vm);

@@ -163,7 +163,7 @@ impl Bytes {
     ///
     /// Note: Full Python semantics for bytes() are more complex (encoding, errors params).
     pub fn init(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
-        let BytesInitArgs { source } = BytesInitArgs::from_args(args, vm.heap, vm.interns)?;
+        let BytesInitArgs { source } = BytesInitArgs::from_args(args, vm)?;
         defer_drop!(source, vm);
         let new_data = match source {
             None => Vec::new(),
@@ -506,7 +506,7 @@ fn bytes_decode<'h>(
     args: ArgValues,
     vm: &mut VM<'h, impl ResourceTracker>,
 ) -> RunResult<Value> {
-    let BytesDecodeArgs { encoding, errors } = BytesDecodeArgs::from_args(args, vm.heap, vm.interns)?;
+    let BytesDecodeArgs { encoding, errors } = BytesDecodeArgs::from_args(args, vm)?;
     // `errors` is accepted for parity but ignored — UTF-8 decoding of valid
     // bytes has nothing to handle, and `lookup_error_unknown_error_handler`
     // would be the next layer once non-UTF-8 codecs land.
@@ -1247,7 +1247,7 @@ fn bytes_split<'h>(
     args: ArgValues,
     vm: &mut VM<'h, impl ResourceTracker>,
 ) -> RunResult<Value> {
-    let BytesSplitArgs { sep, maxsplit } = BytesSplitArgs::from_args(args, vm.heap, vm.interns)?;
+    let BytesSplitArgs { sep, maxsplit } = BytesSplitArgs::from_args(args, vm)?;
     let (sep, maxsplit) = coerce_bytes_split_args(sep, maxsplit, vm)?;
 
     let bytes = bytes.get(vm.heap);
@@ -1292,7 +1292,7 @@ fn bytes_rsplit<'h>(
     args: ArgValues,
     vm: &mut VM<'h, impl ResourceTracker>,
 ) -> RunResult<Value> {
-    let BytesRsplitArgs { sep, maxsplit } = BytesRsplitArgs::from_args(args, vm.heap, vm.interns)?;
+    let BytesRsplitArgs { sep, maxsplit } = BytesRsplitArgs::from_args(args, vm)?;
     let (sep, maxsplit) = coerce_bytes_split_args(sep, maxsplit, vm)?;
 
     let bytes = bytes.get(vm.heap);
@@ -1569,7 +1569,7 @@ fn bytes_splitlines<'h>(
 
 /// Parses arguments for bytes.splitlines method.
 fn parse_bytes_splitlines_args(args: ArgValues, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<bool> {
-    let BytesSplitlinesArgs { keepends } = BytesSplitlinesArgs::from_args(args, vm.heap, vm.interns)?;
+    let BytesSplitlinesArgs { keepends } = BytesSplitlinesArgs::from_args(args, vm)?;
     let result = match keepends {
         None => false,
         Some(v) => {
@@ -1689,7 +1689,7 @@ fn parse_bytes_replace_args(
     args: ArgValues,
     vm: &mut VM<'_, impl ResourceTracker>,
 ) -> RunResult<(Vec<u8>, Vec<u8>, i64)> {
-    let BytesReplaceArgs { old, new, count } = BytesReplaceArgs::from_args(args, vm.heap, vm.interns)?;
+    let BytesReplaceArgs { old, new, count } = BytesReplaceArgs::from_args(args, vm)?;
     defer_drop!(old, vm);
     defer_drop!(new, vm);
     defer_drop!(count, vm);
@@ -2100,7 +2100,7 @@ fn bytes_hex<'h>(
 
 /// Parses arguments for bytes.hex method.
 fn parse_bytes_hex_args(args: ArgValues, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<(Option<char>, i64)> {
-    let BytesHexArgs { sep, bytes_per_sep } = BytesHexArgs::from_args(args, vm.heap, vm.interns)?;
+    let BytesHexArgs { sep, bytes_per_sep } = BytesHexArgs::from_args(args, vm)?;
     defer_drop!(sep, vm);
     defer_drop!(bytes_per_sep, vm);
 

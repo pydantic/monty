@@ -139,7 +139,7 @@ impl JsonDumpsConfig {
 /// CPython kwargs `cls`, `default`, and `check_circular` are intentionally
 /// unsupported and will raise `TypeError` if passed.
 pub(super) fn call_dumps(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
-    let macro_args = JsonDumpsArgs::from_args(args, vm.heap, vm.interns)?;
+    let macro_args = JsonDumpsArgs::from_args(args, vm)?;
     let (obj, config) = JsonDumpsConfig::from_macro_args(macro_args, vm)?;
 
     let mut obj_guard = HeapGuard::new(obj, vm);

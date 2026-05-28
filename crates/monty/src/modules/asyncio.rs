@@ -103,7 +103,7 @@ pub(crate) fn gather(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> 
     // kwarg is rejected up front by the macro's `kwargs_not_supported_yet`
     // flag with a `NotImplementedError: gather() does not yet support keyword
     // arguments` (CPython would have given a TypeError naming the bad kwarg).
-    let GatherArgs { awaitables } = GatherArgs::from_args(args, vm.heap, vm.interns)?;
+    let GatherArgs { awaitables } = GatherArgs::from_args(args, vm)?;
     defer_drop_mut!(awaitables, vm);
 
     // Validate all positional args are awaitable and collect their heap ids.
