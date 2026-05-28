@@ -137,15 +137,17 @@ impl Hash for TimeZone {
 }
 
 fn extract_offset_seconds(offset_arg: &Value, heap: &Heap<impl ResourceTracker>) -> RunResult<i32> {
+    let bad_type = || {
+        ExcType::type_error(format!(
+            "timezone() argument 1 must be datetime.timedelta, not {}",
+            offset_arg.py_type_heap(heap),
+        ))
+    };
     let Value::Ref(offset_id) = offset_arg else {
-        return Err(ExcType::type_error(
-            "timezone() argument 1 must be datetime.timedelta".to_owned(),
-        ));
+        return Err(bad_type());
     };
     let HeapData::TimeDelta(delta) = heap.get(*offset_id) else {
-        return Err(ExcType::type_error(
-            "timezone() argument 1 must be datetime.timedelta".to_owned(),
-        ));
+        return Err(bad_type());
     };
 
     let Some(total_seconds) = timedelta::exact_total_seconds(delta) else {

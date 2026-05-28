@@ -1,5 +1,8 @@
 # call-external
 import datetime
+import sys
+
+_monty = 'Monty' in sys.version
 
 # === now/today from deterministic OS callback ===
 today = datetime.date.today()
@@ -1091,20 +1094,30 @@ except TypeError as e:
     assert str(e) == 'function takes at most 3 arguments (4 given)', f'date too many args: {e}'
 
 # === date constructor: duplicate year kwarg (date.rs init) ===
+# CPython runs the missing-required check before the duplicate-arg check,
+# so it surfaces the missing `month` first; Monty fires the duplicate
+# error during dispatch. Both are TypeErrors, both make sense — but the
+# wording diverges until the macro is taught CPython's check ordering.
 
 try:
     datetime.date(2024, year=2024)
     assert False, 'date with duplicate year should raise TypeError'
-except TypeError:
-    pass  # message differs between CPython and Monty
+except TypeError as e:
+    if _monty:
+        assert str(e) == "argument for function given by name ('year') and position (1)", f'date dup year: {e}'
+    else:
+        assert str(e) == "function missing required argument 'month' (pos 2)", f'date dup year: {e}'
 
 # === date constructor: duplicate month kwarg (date.rs init) ===
 
 try:
     datetime.date(2024, 1, month=1)
     assert False, 'date with duplicate month should raise TypeError'
-except TypeError:
-    pass  # message differs between CPython and Monty
+except TypeError as e:
+    if _monty:
+        assert str(e) == "argument for function given by name ('month') and position (2)", f'date dup month: {e}'
+    else:
+        assert str(e) == "function missing required argument 'day' (pos 3)", f'date dup month: {e}'
 
 # === date.replace() unexpected keyword (date.rs extract_date_replace_kwargs) ===
 
@@ -1129,62 +1142,93 @@ except OverflowError as e:
     assert str(e) == 'days=-1000000000; must have magnitude <= 999999999', f'td neg overflow: {e}'
 
 # === timedelta constructor: duplicate kwargs (timedelta.rs init) ===
+# CPython surfaces these via `__new__()` in C-style "argument for X given
+# by name (...) and position (...)" wording; Monty's Python-style FromArgs
+# config emits "timedelta() got multiple values for argument 'X'". Both
+# behaviours are correct rejections — fixing the wording divergence
+# requires switching timedelta's struct to `c_error` style + a
+# kwarg_error_name override pointing at `__new__()`.
 
 try:
     datetime.timedelta(1, days=1)
     assert False, 'timedelta with duplicate days should raise TypeError'
-except TypeError:
-    pass  # message differs between CPython and Monty
+except TypeError as e:
+    if _monty:
+        assert str(e) == "timedelta() got multiple values for argument 'days'", f'td dup days: {e}'
+    else:
+        assert str(e) == "argument for __new__() given by name ('days') and position (1)", f'td dup days: {e}'
 
 try:
     datetime.timedelta(1, 2, seconds=2)
     assert False, 'timedelta with duplicate seconds should raise TypeError'
-except TypeError:
-    pass  # message differs between CPython and Monty
+except TypeError as e:
+    if _monty:
+        assert str(e) == "timedelta() got multiple values for argument 'seconds'", f'td dup seconds: {e}'
+    else:
+        assert str(e) == "argument for __new__() given by name ('seconds') and position (2)", f'td dup seconds: {e}'
 
 try:
     datetime.timedelta(1, 2, 3, microseconds=3)
     assert False, 'timedelta with duplicate microseconds should raise TypeError'
-except TypeError:
-    pass  # message differs between CPython and Monty
+except TypeError as e:
+    if _monty:
+        assert str(e) == "timedelta() got multiple values for argument 'microseconds'", f'td dup micro: {e}'
+    else:
+        assert str(e) == "argument for __new__() given by name ('microseconds') and position (3)", f'td dup micro: {e}'
 
 # === timedelta constructor: unexpected keyword (timedelta.rs init) ===
 
 try:
     datetime.timedelta(foo=1)
     assert False, 'timedelta with unexpected kwarg should raise TypeError'
-except TypeError:
-    pass  # message differs between CPython and Monty
+except TypeError as e:
+    if _monty:
+        assert str(e) == "timedelta() got an unexpected keyword argument 'foo'", f'td foo kw: {e}'
+    else:
+        assert str(e) == "__new__() got an unexpected keyword argument 'foo'", f'td foo kw: {e}'
 
 # === FromArgs migration: invalid argument-type coverage ===
-# Covers each typed-field path in the FromArgs-derived structs introduced for
-# timedelta, datetime, datetime.replace, and date.replace. CPython routes
-# non-int arguments through component-specific error messages that name the
-# argument (e.g. `timedelta days component: str`), while Monty's `FromValue`
-# trait emits the generic "an integer is required" — the messages diverge but
-# both raise `TypeError`, so we only assert exception type here.
+# CPython routes non-int arguments through component-specific error messages
+# that name the argument (e.g. `unsupported type for timedelta days
+# component: str`, or `'str' object cannot be interpreted as an integer`),
+# while Monty's `FromValue::<i32|i128>::from_value` emits the generic
+# "an integer is required (got type float)" — note the wording is itself
+# wrong for non-float inputs and stems from a pre-existing wart in
+# `Value::to_i32`. Closing the gap requires either (a) custom `FromValue`
+# impls for the timedelta components or (b) fixing `Value::to_i32`'s type
+# reporting plus matching CPython's `'<type>' object cannot be interpreted`
+# wording.
 
 # timedelta: positional days as wrong type
 try:
     datetime.timedelta('x')
     assert False, 'timedelta(non-int) should raise TypeError'
-except TypeError:
-    pass  # message differs between CPython and Monty
+except TypeError as e:
+    if _monty:
+        assert str(e) == 'an integer is required (got type float)', f'td non-int days: {e}'
+    else:
+        assert str(e) == 'unsupported type for timedelta days component: str', f'td non-int days: {e}'
 
 # timedelta: kw_only milliseconds as wrong type — exercises the kw_only path
 try:
     datetime.timedelta(milliseconds=[1, 2])
     assert False, 'timedelta(milliseconds=non-int) should raise TypeError'
-except TypeError:
-    pass  # message differs between CPython and Monty
+except TypeError as e:
+    if _monty:
+        assert str(e) == 'an integer is required (got type float)', f'td non-int ms kw: {e}'
+    else:
+        assert str(e) == 'unsupported type for timedelta milliseconds component: list', f'td non-int ms kw: {e}'
 
 # datetime.replace: kw_only year as wrong type
 base_dt = datetime.datetime(2024, 6, 15)
 try:
     base_dt.replace(year='nope')
     assert False, 'datetime.replace(year=str) should raise TypeError'
-except TypeError:
-    pass  # message differs between CPython and Monty
+except TypeError as e:
+    if _monty:
+        assert str(e) == 'an integer is required (got type float)', f'dt.replace bad type: {e}'
+    else:
+        assert str(e) == "'str' object cannot be interpreted as an integer", f'dt.replace bad type: {e}'
 
 # NOTE: CPython's datetime.replace() accepts positional args (year, month,
 # day, ...). Monty's existing implementation rejects all positional args for
@@ -1196,8 +1240,11 @@ base_date = datetime.date(2024, 6, 15)
 try:
     base_date.replace(day='last')
     assert False, 'date.replace(day=str) should raise TypeError'
-except TypeError:
-    pass  # message differs between CPython and Monty
+except TypeError as e:
+    if _monty:
+        assert str(e) == 'an integer is required (got type float)', f'date.replace bad type: {e}'
+    else:
+        assert str(e) == "'str' object cannot be interpreted as an integer", f'date.replace bad type: {e}'
 
 # datetime constructor: missing required positional (yields a precise message,
 # shared with CPython's `PyArg_ParseTupleAndKeywords`)
@@ -1211,22 +1258,31 @@ except TypeError as e:
 try:
     datetime.datetime('twenty-four', 6, 15)
     assert False, 'datetime non-int year should raise TypeError'
-except TypeError:
-    pass  # message differs between CPython and Monty
+except TypeError as e:
+    if _monty:
+        assert str(e) == 'an integer is required (got type float)', f'dt non-int year: {e}'
+    else:
+        assert str(e) == "'str' object cannot be interpreted as an integer", f'dt non-int year: {e}'
 
 # datetime constructor: wrong type for optional positional (microsecond)
 try:
     datetime.datetime(2024, 6, 15, 0, 0, 0, 'oops')
     assert False, 'datetime non-int microsecond should raise TypeError'
-except TypeError:
-    pass  # message differs between CPython and Monty
+except TypeError as e:
+    if _monty:
+        assert str(e) == 'an integer is required (got type float)', f'dt non-int microsec: {e}'
+    else:
+        assert str(e) == "'str' object cannot be interpreted as an integer", f'dt non-int microsec: {e}'
 
 # datetime constructor: wrong type for kw-only-style microsecond (via kwarg path)
 try:
     datetime.datetime(2024, 6, 15, microsecond='nope')
     assert False, 'datetime non-int microsecond kwarg should raise TypeError'
-except TypeError:
-    pass  # message differs between CPython and Monty
+except TypeError as e:
+    if _monty:
+        assert str(e) == 'an integer is required (got type float)', f'dt non-int microsec kw: {e}'
+    else:
+        assert str(e) == "'str' object cannot be interpreted as an integer", f'dt non-int microsec kw: {e}'
 
 # === timedelta str with microseconds (timedelta.rs py_str) ===
 
@@ -1268,16 +1324,16 @@ except TypeError as e:
 try:
     datetime.timezone(3600)
     assert False, 'timezone(int) should raise TypeError'
-except TypeError:
-    pass  # message differs between CPython and Monty
+except TypeError as e:
+    assert str(e) == 'timezone() argument 1 must be datetime.timedelta, not int', f'tz non-td offset: {e}'
 
 # === timezone constructor: non-string name (timezone.rs extract_name) ===
 
 try:
     datetime.timezone(datetime.timedelta(0), 123)
     assert False, 'timezone(td, int) should raise TypeError'
-except TypeError:
-    pass  # message differs between CPython and Monty
+except TypeError as e:
+    assert str(e) == 'timezone() argument 2 must be str, not int', f'tz non-str name: {e}'
 
 # === timezone constructor: offset out of range (timezone.rs extract_offset_seconds) ===
 
