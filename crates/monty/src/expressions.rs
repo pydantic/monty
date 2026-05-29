@@ -25,20 +25,6 @@ pub enum NameScope {
     #[default]
     Local,
     /// Variable is in the module-level global namespace.
-    ///
-    /// The accompanying `Identifier` always carries a resolved `NamespaceId`
-    /// — the prepare phase eagerly allocates a module slot for every Global
-    /// reference (either reusing an existing slot from `name_map` or
-    /// allocating a fresh one). The compiler always emits a slot-based opcode
-    /// (`LoadGlobal`/`StoreGlobal`/...) which the VM indexes directly into
-    /// the globals array. For unbound references the slot exists but its
-    /// value is `Undefined`; the runtime then walks CPython's `globals →
-    /// builtins → NameError` lookup order.
-    ///
-    /// This eager allocation is what prevents the historical OOB exploit
-    /// where the prepare phase invented a function-local slot for an
-    /// unresolved `global X` reference — now the slot is always a real
-    /// module slot.
     Global,
     /// Variable accessed through a cell (heap-allocated container).
     ///
@@ -96,11 +82,6 @@ impl Identifier {
         }
     }
 
-    /// Returns the resolved namespace slot.
-    ///
-    /// Panics if the prepare phase hasn't set one — every fully-prepared
-    /// identifier has a slot regardless of scope (Local, LocalUnassigned,
-    /// Global, Cell, or CompVar all carry one).
     pub fn namespace_id(&self) -> NamespaceId {
         self.opt_namespace_id
             .expect("Identifier not prepared with namespace_id")

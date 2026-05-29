@@ -2,10 +2,7 @@
 # module scope used to make the prepare phase allocate a function-local slot but
 # tag it `NameScope::Global`. The compiler then emitted a `LoadGlobal slot`
 # whose operand was a local index — indexing past the module globals array and
-# panicking with `index out of bounds`. Fixed by emitting a slot-less `Global`
-# identifier in this case so the compiler routes through `LoadGlobalByName`,
-# which looks up the slot in the module's name map at runtime and yields a
-# clean `NameError` when the name isn't bound anywhere.
+# panicking with `index out of bounds`.
 
 
 def f(a):
@@ -17,10 +14,10 @@ f(0)
 """
 TRACEBACK:
 Traceback (most recent call last):
-  File "global__oob_regression.py", line 16, in <module>
+  File "global__oob_regression.py", line 13, in <module>
     f(0)
     ~~~~
-  File "global__oob_regression.py", line 13, in f
+  File "global__oob_regression.py", line 10, in f
     return ghost
            ~~~~~
 NameError: name 'ghost' is not defined

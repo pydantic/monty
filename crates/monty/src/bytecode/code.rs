@@ -4,8 +4,6 @@
 //! bytecode instructions, a constant pool, source location information for tracebacks,
 //! and an exception handler table.
 
-use std::collections::HashSet;
-
 use crate::{intern::StringId, parse::CodeRange, value::Value};
 
 /// Compiled bytecode for a function or module.
@@ -56,12 +54,6 @@ pub struct Code {
     /// Maps slot indices to variable names. Used to generate proper NameError
     /// messages when accessing undefined local variables (e.g., "name 'x' is not defined").
     local_names: Vec<StringId>,
-
-    /// Local variable slots that are assigned somewhere in this function.
-    ///
-    /// Used to determine whether to raise `UnboundLocalError` (slot is assigned somewhere
-    /// but accessed before assignment) or `NameError` (name doesn't exist in any scope).
-    assigned_locals: HashSet<u16>,
 }
 
 impl Code {
@@ -69,7 +61,6 @@ impl Code {
     ///
     /// This is typically called by `CodeBuilder::build()` after compilation.
     #[must_use]
-    #[expect(clippy::too_many_arguments)]
     pub fn new(
         bytecode: Vec<u8>,
         constants: ConstPool,
@@ -78,7 +69,6 @@ impl Code {
         num_locals: u16,
         stack_size: u16,
         local_names: Vec<StringId>,
-        assigned_locals: HashSet<u16>,
     ) -> Self {
         Self {
             bytecode,
@@ -88,7 +78,6 @@ impl Code {
             num_locals,
             stack_size,
             local_names,
-            assigned_locals,
         }
     }
 
@@ -110,15 +99,6 @@ impl Code {
     #[must_use]
     pub fn local_name(&self, slot: u16) -> Option<StringId> {
         self.local_names.get(slot as usize).copied()
-    }
-
-    /// Returns whether the slot is an assigned local (vs an undefined reference).
-    ///
-    /// Used to determine whether to raise `UnboundLocalError` (true) or `NameError` (false)
-    /// when loading an undefined local variable.
-    #[must_use]
-    pub fn is_assigned_local(&self, slot: u16) -> bool {
-        self.assigned_locals.contains(&slot)
     }
 
     /// Finds the location entry for a given bytecode offset.

@@ -90,17 +90,6 @@ pub enum Opcode {
     StoreCell,
     /// Delete local variable. Operand: u8 slot.
     DeleteLocal,
-    /// Load local in call context: pushes `ExtFunction(name_id)` for undefined names
-    /// instead of yielding `NameLookup`. Operands: u8 slot, u16 name_id.
-    ///
-    /// Used when compiling function calls like `foo()` where `foo` is `LocalUnassigned`.
-    /// If the variable is defined, behaves identically to `LoadLocal`.
-    /// If undefined, pushes an `ExtFunction` value so execution continues to `CallFunction`,
-    /// which naturally yields `FunctionCall` instead of `NameLookup`.
-    /// The name_id is encoded in the operand to avoid namespace lookup ambiguity.
-    LoadLocalCallable,
-    /// Wide variant of `LoadLocalCallable`. Operands: u16 slot, u16 name_id.
-    LoadLocalCallableW,
     /// Load global in call context: pushes `ExtFunction(name_id)` for undefined names
     /// instead of yielding `NameLookup`. Operands: u16 slot, u16 name_id.
     ///
@@ -563,7 +552,7 @@ pub enum Operand<'a> {
     U8U8(u8, u8),
     /// u16 little-endian then u8 (e.g. `MakeFunction`, `CallAttr`).
     U16U8(u16, u8),
-    /// Two u16 little-endian (e.g. `LoadLocalCallableW`, `LoadGlobalCallable`).
+    /// Two u16 little-endian (e.g. `LoadGlobalCallable`).
     U16U16(u16, u16),
     /// u16 then two u8s (e.g. `MakeClosure`).
     U16U8U8(u16, u8, u8),
@@ -729,12 +718,6 @@ impl Opcode {
             (RaiseUnboundLocal, Operand::U16(_)) => 0,
 
             // === Fixed-effect, U16U16 operand ===
-            //
-            // `LoadLocalCallable`/`LoadLocalCallableW` are preserved in the opcode
-            // enum for snapshot-decode compatibility, but the compiler no longer
-            // emits them — every callable-context reference is `Global` and
-            // `compile_name_callable` emits `LoadGlobalCallable` (since slots
-            // are now eagerly allocated for every Global identifier).
             (LoadGlobalCallable, Operand::U16U16(..)) => 1,
 
             // === Jumps: fall-through effect (what the tracker absorbs after the bytes are written).
@@ -809,21 +792,22 @@ mod tests {
 
     #[test]
     fn test_serialized_opcode_values_remain_stable() {
-        // `RaiseImportError` was the tail opcode before `Dup2` was introduced. Keeping it at
-        // byte 110 preserves compatibility for serialized runners and snapshots compiled by
-        // older versions.
-        assert_eq!(Opcode::RaiseImportError as u8, 110);
-        assert_eq!(Opcode::Dup2 as u8, 111);
-        assert_eq!(Opcode::DeleteGlobal as u8, 112);
-        assert_eq!(Opcode::DictUpdate as u8, 113);
-        assert_eq!(Opcode::SetExtend as u8, 114);
+        // Locks the tail-opcode discriminants for the current wire-format version. Removing
+        // an opcode in the middle of the enum (e.g. `LoadLocalCallable`/`W` in v3) shifts
+        // everything after it down — update both these assertions and bump
+        // `SERIALIZATION_VERSION` in `monty-python/src/serialization.rs` when that happens.
+        assert_eq!(Opcode::RaiseImportError as u8, 108);
+        assert_eq!(Opcode::Dup2 as u8, 109);
+        assert_eq!(Opcode::DeleteGlobal as u8, 110);
+        assert_eq!(Opcode::DictUpdate as u8, 111);
+        assert_eq!(Opcode::SetExtend as u8, 112);
         // Context-manager opcodes added with the `with` statement support.
-        assert_eq!(Opcode::BeforeWith as u8, 115);
-        assert_eq!(Opcode::WithExit as u8, 116);
-        assert_eq!(Opcode::WithExceptStart as u8, 117);
+        assert_eq!(Opcode::BeforeWith as u8, 113);
+        assert_eq!(Opcode::WithExit as u8, 114);
+        assert_eq!(Opcode::WithExceptStart as u8, 115);
         // Comprehension-support opcodes appended after the context-manager opcodes.
-        assert_eq!(Opcode::LiftToTop as u8, 118);
-        assert_eq!(Opcode::RaiseUnboundLocal as u8, 119);
+        assert_eq!(Opcode::LiftToTop as u8, 116);
+        assert_eq!(Opcode::RaiseUnboundLocal as u8, 117);
     }
 
     #[test]

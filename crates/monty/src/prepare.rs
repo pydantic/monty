@@ -192,13 +192,6 @@ struct Prepare<'i, 'g> {
     /// that are both nonlocal and captured by nested functions), then extended as new
     /// captures are discovered during nested function preparation.
     cell_var_map: AHashMap<String, NamespaceId>,
-    /// Names that were resolved as `LocalUnassigned` in step 8 of `get_id`.
-    ///
-    /// These names are never assigned and not parameters - they were only referenced
-    /// (e.g., external function names). Tracking them prevents step 6 from incorrectly
-    /// classifying subsequent references as `Local` (like parameters) when the name
-    /// appears in `name_map` from a previous `get_id` call.
-    unassigned_ref_names: AHashSet<String>,
     /// Number of comprehension-variable slots currently in use (inside a comprehension).
     ///
     /// Allocated bottom-up as comprehension target names are encountered,
@@ -219,11 +212,6 @@ struct Prepare<'i, 'g> {
 }
 
 impl<'i, 'g> Prepare<'i, 'g> {
-    /// Creates a new Prepare instance for module-level code.
-    ///
-    /// At module level, all variables are global. The `global` keyword is a no-op
-    /// since all variables are already in the global namespace.
-    ///
     /// Allocates the next namespace slot, incrementing `namespace_size`.
     ///
     /// Wraps the recurring `let id = NamespaceId::new(self.namespace_size);
@@ -274,7 +262,6 @@ impl<'i, 'g> Prepare<'i, 'g> {
             enclosing_locals: None,
             free_var_map: AHashMap::new(),
             cell_var_map: AHashMap::new(),
-            unassigned_ref_names: AHashSet::new(),
             comp_var_depth: 0,
             comp_name_scopes: Vec::new(),
         })
@@ -301,7 +288,6 @@ impl<'i, 'g> Prepare<'i, 'g> {
             enclosing_locals: None,
             free_var_map: AHashMap::new(),
             cell_var_map: AHashMap::new(),
-            unassigned_ref_names: AHashSet::new(),
             comp_var_depth: 0,
             comp_name_scopes: Vec::new(),
         }
@@ -403,7 +389,6 @@ impl<'i, 'g> Prepare<'i, 'g> {
             enclosing_locals,
             free_var_map,
             cell_var_map,
-            unassigned_ref_names: AHashSet::new(),
             comp_var_depth: 0,
             comp_name_scopes: Vec::new(),
         })
@@ -465,7 +450,7 @@ impl<'i, 'g> Prepare<'i, 'g> {
                     // Track that this name was assigned before we call get_id
                     self.names_assigned_in_order
                         .insert(self.interner.get_str(target.name_id).to_string());
-                    let (target, _) = self.get_id(target)?;
+                    let target = self.get_id(target)?;
                     new_nodes.push(Node::Assign { target, object });
                 }
                 Node::UnpackAssign {
@@ -489,7 +474,7 @@ impl<'i, 'g> Prepare<'i, 'g> {
                     // Track that this name was assigned
                     self.names_assigned_in_order
                         .insert(self.interner.get_str(target.name_id).to_string());
-                    let target = self.get_id(target)?.0;
+                    let target = self.get_id(target)?;
                     let value = self.prepare_expression(value)?;
                     new_nodes.push(Node::OpAssign { target, op, value });
                 }
@@ -725,16 +710,14 @@ impl<'i, 'g> Prepare<'i, 'g> {
                     });
                 }
                 Node::Import { names } => {
-                    // Each `import foo [as bar]` binds the alias (or module name)
-                    // in the current scope — track it as an assignment before
-                    // calling `get_id` so module-scope name resolution allocates
-                    // a slot instead of routing through `LoadGlobalByName`.
                     let resolved_names = names
                         .into_iter()
                         .map(|import_name| -> Result<_, ParseError> {
+                            // Each `import foo [as bar]` binds the alias (or module name)
+                            // in the current scope.
                             self.names_assigned_in_order
                                 .insert(self.interner.get_str(import_name.binding.name_id).to_string());
-                            let (resolved_binding, _) = self.get_id(import_name.binding)?;
+                            let resolved_binding = self.get_id(import_name.binding)?;
                             Ok(ImportName {
                                 module_name: import_name.module_name,
                                 binding: resolved_binding,
@@ -748,14 +731,13 @@ impl<'i, 'g> Prepare<'i, 'g> {
                     names,
                     position,
                 } => {
-                    // Each imported name (or `as` alias) binds in the current scope.
-                    // Same rationale as `Node::Import`: track it before `get_id`.
                     let resolved_names = names
                         .into_iter()
                         .map(|(import_name, binding)| -> Result<_, ParseError> {
+                            // Each imported name (or `as` alias) binds in the current scope.
                             self.names_assigned_in_order
                                 .insert(self.interner.get_str(binding.name_id).to_string());
-                            let (resolved_binding, _) = self.get_id(binding)?;
+                            let resolved_binding = self.get_id(binding)?;
                             Ok((import_name, resolved_binding))
                         })
                         .collect::<Result<_, _>>()?;
@@ -787,7 +769,7 @@ impl<'i, 'g> Prepare<'i, 'g> {
                 // Track that this name was assigned
                 self.names_assigned_in_order
                     .insert(self.interner.get_str(ident.name_id).to_string());
-                Some(self.get_id(ident)?.0)
+                Some(self.get_id(ident)?)
             }
             None => None,
         };
@@ -963,7 +945,7 @@ impl<'i, 'g> Prepare<'i, 'g> {
                 // Walrus binds in the enclosing scope (PEP 572), NOT in the
                 // comprehension's scratch region. Resolve through the
                 // assignment-target path which bypasses `comp_name_scopes`.
-                let (resolved_target, _) = self.get_id_for_store_target(target)?;
+                let resolved_target = self.get_id_for_store_target(target)?;
                 Expr::Named {
                     target: resolved_target,
                     value,
@@ -1026,9 +1008,7 @@ impl<'i, 'g> Prepare<'i, 'g> {
         // after the function is compiled (e.g. `def call_sum(): return sum(...)`
         // followed later by `def sum(...)`), and in REPL the rebinding can happen in a
         // future snippet that the current compile can't see. So at function scope we
-        // always go through `get_id` and the VM's `LoadGlobalByName(Callable)` path,
-        // whose runtime `builtin_for_name` fallback yields the same builtin when the
-        // module slot is empty — but picks up a later rebinding correctly.
+        // always go through `get_id` and defer the builtin check to runtime.
         if self.is_module_scope() {
             let already_bound = self.names_assigned_in_order.contains(name_str) || self.name_map.contains_key(name_str);
             if !already_bound && let Ok(builtin) = name_str.parse::<Builtins>() {
@@ -1036,7 +1016,7 @@ impl<'i, 'g> Prepare<'i, 'g> {
             }
         }
 
-        Ok(Expr::Name(self.get_id(name)?.0))
+        Ok(Expr::Name(self.get_id(name)?))
     }
 
     /// Prepares a `SequenceItem` by recursively preparing its inner expression.
@@ -1195,7 +1175,7 @@ impl<'i, 'g> Prepare<'i, 'g> {
             AssignTarget::Name(ident) => {
                 self.names_assigned_in_order
                     .insert(self.interner.get_str(ident.name_id).to_string());
-                let (ident, _) = self.get_id(ident)?;
+                let ident = self.get_id(ident)?;
                 Ok(AssignTarget::Name(ident))
             }
             AssignTarget::Subscript {
@@ -1240,12 +1220,12 @@ impl<'i, 'g> Prepare<'i, 'g> {
             UnpackTarget::Name(ident) => {
                 self.names_assigned_in_order
                     .insert(self.interner.get_str(ident.name_id).to_string());
-                Ok(UnpackTarget::Name(self.get_id(ident)?.0))
+                Ok(UnpackTarget::Name(self.get_id(ident)?))
             }
             UnpackTarget::Starred(ident) => {
                 self.names_assigned_in_order
                     .insert(self.interner.get_str(ident.name_id).to_string());
-                Ok(UnpackTarget::Starred(self.get_id(ident)?.0))
+                Ok(UnpackTarget::Starred(self.get_id(ident)?))
             }
             UnpackTarget::Tuple { targets, position } => {
                 let resolved_targets = targets
@@ -1270,13 +1250,6 @@ impl<'i, 'g> Prepare<'i, 'g> {
     /// frame. Subsequent reads inside the comprehension resolve through the
     /// scope stack and emit `Load/StoreCompTarget`; outside the comprehension
     /// the slot is unreachable.
-    ///
-    /// Unlike the old `prepare_unpack_target_for_comprehension`, this does NOT
-    /// touch `name_map`, `names_assigned_in_order`, `free_var_map`,
-    /// `cell_var_map`, or `enclosing_locals`. That is the whole point of moving
-    /// comp targets out of the regular namespace: outer same-named bindings are
-    /// preserved unchanged, and the persistent namespace doesn't grow per
-    /// distinct target name.
     fn prepare_unpack_target_for_comprehension(&mut self, target: UnpackTarget) -> Result<UnpackTarget, ParseError> {
         match target {
             UnpackTarget::Name(ident) => {
@@ -1356,15 +1329,10 @@ impl<'i, 'g> Prepare<'i, 'g> {
         body: Vec<ParseNode>,
         is_async: bool,
     ) -> Result<PreparedNode, ParseError> {
-        // Register the function name in the current scope. `def` binds the name,
-        // so track it as an assignment before calling `get_id`; otherwise the
-        // module-scope branch of `get_id` would see an unbound name and emit a
-        // slot-less `Global`, which would compile the subsequent `MakeFunction` /
-        // `StoreGlobal` for this def to a `StoreGlobalByName` whose runtime lookup
-        // would have nothing to resolve to.
+        // Register the function name in the current scope; `def` binds the name.
         self.names_assigned_in_order
             .insert(self.interner.get_str(name.name_id).to_string());
-        let (name, _) = self.get_id(name)?;
+        let name = self.get_id(name)?;
 
         // Extract param names from the parsed signature for scope analysis
         let param_names: Vec<StringId> = parsed_sig.param_names().collect();
@@ -1399,20 +1367,14 @@ impl<'i, 'g> Prepare<'i, 'g> {
 
         // Build a live `GlobalsRef` to the module's name_map + namespace_size.
         // At module scope we ARE the module — borrow our own fields. At nested
-        // function scope we re-borrow our parent's `global_name_map`. The inner
-        // preparer's `case 1` (declared `global X`) and its own nested
-        // `prepare_function_def` calls can then allocate module slots through
-        // this borrow without any post-hoc bubble-up.
-        let global_name_map = if self.is_module_scope() {
+        // function scope we re-borrow our parent's `global_name_map`.
+        let global_name_map = if let Some(global_name_map) = &mut self.global_name_map {
+            global_name_map.reborrow()
+        } else {
             GlobalsRef {
                 name_map: &mut self.name_map,
                 namespace_size: &mut self.namespace_size,
             }
-        } else {
-            self.global_name_map
-                .as_mut()
-                .expect("function-scope preparer always has global_name_map")
-                .reborrow()
         };
 
         // Pass 2: Create child preparer for function body with scope info
@@ -1806,8 +1768,6 @@ impl<'i, 'g> Prepare<'i, 'g> {
     /// - If name exists in global namespace (read-only access) → resolve to global namespace
     /// - Otherwise → resolve to local namespace (will be NameError at runtime)
     ///
-    /// # Returns
-    /// A tuple of (resolved Identifier with id and scope set, whether this is a new local name).
     /// Resolves an identifier for an assignment-position store (e.g. walrus target).
     ///
     /// Per PEP 572, walrus operators inside comprehensions bind in the **enclosing**
@@ -1817,14 +1777,14 @@ impl<'i, 'g> Prepare<'i, 'g> {
     /// comp-var slot that happens to share its name. Generator target stores
     /// are installed by `prepare_unpack_target_for_comprehension` and never come
     /// through here.
-    fn get_id_for_store_target(&mut self, ident: Identifier) -> Result<(Identifier, bool), ParseError> {
+    fn get_id_for_store_target(&mut self, ident: Identifier) -> Result<Identifier, ParseError> {
         let saved_scopes = mem::take(&mut self.comp_name_scopes);
         let result = self.get_id(ident);
         self.comp_name_scopes = saved_scopes;
         result
     }
 
-    fn get_id(&mut self, ident: Identifier) -> Result<(Identifier, bool), ParseError> {
+    fn get_id(&mut self, ident: Identifier) -> Result<Identifier, ParseError> {
         let name_str = self.interner.get_str(ident.name_id);
         let position = ident.position;
 
@@ -1836,14 +1796,11 @@ impl<'i, 'g> Prepare<'i, 'g> {
         // `get_id_for_store_target`), so this lookup is read-only-safe.
         for scope in self.comp_name_scopes.iter().rev() {
             if let Some(&slot) = scope.get(name_str) {
-                return Ok((
-                    Identifier::new_with_scope(
-                        ident.name_id,
-                        position,
-                        NamespaceId::new(usize::from(slot)).expect("comp-var slot fits in NamespaceId"),
-                        NameScope::CompVar,
-                    ),
-                    false,
+                return Ok(Identifier::new_with_scope(
+                    ident.name_id,
+                    position,
+                    NamespaceId::new(usize::from(slot)).expect("comp-var slot fits in NamespaceId"),
+                    NameScope::CompVar,
                 ));
             }
         }
@@ -1852,25 +1809,24 @@ impl<'i, 'g> Prepare<'i, 'g> {
         // IS the global namespace, and Python module scope has no
         // `UnboundLocalError`, only `NameError`. Every reference allocates a
         // module slot on first sight; subsequent references reuse it. Reads of
-        // never-bound names get a slot too — they're harmless (just one extra
-        // `Value` in `globals`) and they keep every `NameScope::Global`
-        // identifier carrying a real slot, so the compiler can always emit the
-        // fast slot-based opcode and the runtime fall back through builtins
-        // for the `Undefined` case.
+        // never-bound names get a slot too — they need it to store any value
+        // resolved by the host.
         //
         // Comprehensions don't reach this branch: their loop variables live in
         // `NameScope::CompVar`, handled by the comp-name scope lookup above.
         if self.is_module_scope() {
-            let (id, is_new) = if let Some(existing) = self.name_map.get(name_str).copied() {
-                (existing, false)
+            let id = if let Some(existing) = self.name_map.get(name_str).copied() {
+                existing
             } else {
                 let id = self.alloc_slot(position)?;
                 self.name_map.insert(name_str.to_string(), id);
-                (id, true)
+                id
             };
-            return Ok((
-                Identifier::new_with_scope(ident.name_id, position, id, NameScope::Global),
-                is_new,
+            return Ok(Identifier::new_with_scope(
+                ident.name_id,
+                position,
+                id,
+                NameScope::Global,
             ));
         }
 
@@ -1882,17 +1838,13 @@ impl<'i, 'g> Prepare<'i, 'g> {
                 .global_name_map
                 .as_mut()
                 .expect("function-scope preparer always has global_name_map");
-            // Allocate a module slot eagerly (or reuse an existing one). The
-            // `GlobalsRef` is a live borrow of the module's `name_map` and
-            // `namespace_size`, so the insertion is immediately visible to the
-            // module preparer — no separate bubble-up needed. This replaces the
-            // historical "allocate a function-local slot but tag it Global"
-            // path that could compile to a `LoadGlobal` indexing past the
-            // globals array.
+            // Allocate a module slot eagerly (or reuse an existing one).
             let slot = globals.ensure_slot(name_str, position)?;
-            return Ok((
-                Identifier::new_with_scope(ident.name_id, position, slot, NameScope::Global),
-                false,
+            return Ok(Identifier::new_with_scope(
+                ident.name_id,
+                position,
+                slot,
+                NameScope::Global,
             ));
         }
 
@@ -1900,9 +1852,11 @@ impl<'i, 'g> Prepare<'i, 'g> {
         // free_var_map stores namespace slot indices where the cell reference will be stored
         if let Some(&slot) = self.free_var_map.get(name_str) {
             // At runtime, the cell reference is in namespace[slot] as Value::Ref(cell_id)
-            return Ok((
-                Identifier::new_with_scope(ident.name_id, position, slot, NameScope::Cell),
-                false, // Not a new local - it's captured from enclosing scope
+            return Ok(Identifier::new_with_scope(
+                ident.name_id,
+                position,
+                slot,
+                NameScope::Cell,
             ));
         }
 
@@ -1911,24 +1865,28 @@ impl<'i, 'g> Prepare<'i, 'g> {
         // At call time, a cell is created and stored as Value::Ref(cell_id) at this slot
         if let Some(&slot) = self.cell_var_map.get(name_str) {
             // The namespace slot was already allocated when cell_var_map was populated
-            return Ok((
-                Identifier::new_with_scope(ident.name_id, position, slot, NameScope::Cell),
-                false, // Not a "new" local - it's a cell variable
+            return Ok(Identifier::new_with_scope(
+                ident.name_id,
+                position,
+                slot,
+                NameScope::Cell,
             ));
         }
 
         // 4. Check if assigned in this function (local variable)
         if self.assigned_names.contains(name_str) {
-            let (id, is_new) = if let Some(existing) = self.name_map.get(name_str).copied() {
-                (existing, false)
+            let id = if let Some(existing) = self.name_map.get(name_str).copied() {
+                existing
             } else {
                 let id = self.alloc_slot(position)?;
                 self.name_map.insert(name_str.to_string(), id);
-                (id, true)
+                id
             };
-            return Ok((
-                Identifier::new_with_scope(ident.name_id, position, id, NameScope::Local),
-                is_new,
+            return Ok(Identifier::new_with_scope(
+                ident.name_id,
+                position,
+                id,
+                NameScope::Local,
             ));
         }
 
@@ -1939,15 +1897,12 @@ impl<'i, 'g> Prepare<'i, 'g> {
         // not assigned in the function body). This MUST be checked before
         // enclosing_locals, otherwise a parameter like `def inner(x)` would be
         // incorrectly resolved as a closure capture when an outer scope also has `x`.
-        // Excludes names tracked in `unassigned_ref_names` — those were added to
-        // `name_map` by step 8 as `LocalUnassigned` references and must stay that way
-        // to trigger NameLookup at runtime (e.g., for external function resolution).
-        if !self.unassigned_ref_names.contains(name_str)
-            && let Some(&id) = self.name_map.get(name_str)
-        {
-            return Ok((
-                Identifier::new_with_scope(ident.name_id, position, id, NameScope::Local),
-                false, // Not new - was pre-populated from parameters
+        if let Some(&id) = self.name_map.get(name_str) {
+            return Ok(Identifier::new_with_scope(
+                ident.name_id,
+                position,
+                id,
+                NameScope::Local,
             ));
         }
 
@@ -1966,9 +1921,11 @@ impl<'i, 'g> Prepare<'i, 'g> {
                 self.free_var_map.insert(name_str.to_string(), slot);
                 slot
             };
-            return Ok((
-                Identifier::new_with_scope(ident.name_id, position, slot, NameScope::Cell),
-                false, // Not a new local - it's captured from enclosing scope
+            return Ok(Identifier::new_with_scope(
+                ident.name_id,
+                position,
+                slot,
+                NameScope::Cell,
             ));
         }
 
@@ -1985,9 +1942,11 @@ impl<'i, 'g> Prepare<'i, 'g> {
             .as_mut()
             .expect("function-scope preparer always has global_name_map");
         let slot = globals.ensure_slot(name_str, position)?;
-        Ok((
-            Identifier::new_with_scope(ident.name_id, position, slot, NameScope::Global),
-            false,
+        Ok(Identifier::new_with_scope(
+            ident.name_id,
+            position,
+            slot,
+            NameScope::Global,
         ))
     }
 

@@ -382,8 +382,8 @@ impl Executor {
                     name_load_ip,
                     ..
                 }) => {
-                    // In non-iterative execution, an ExtFunction from LoadGlobalCallable/
-                    // LoadLocalCallable means the name was undefined — raise NameError.
+                    // In non-iterative execution, an ExtFunction from LoadGlobalCallable
+                    // means the name was undefined — raise NameError.
                     // Restore the frame IP to the load instruction so the traceback
                     // points to the name reference, not the call expression.
                     if let Some(load_ip) = name_load_ip {

@@ -3,8 +3,6 @@
 //! `CodeBuilder` provides methods for emitting opcodes and operands, handling
 //! forward jumps with patching, and tracking source locations for tracebacks.
 
-use std::collections::HashSet;
-
 use super::{
     code::{Code, ConstPool, ExceptionEntry, LocationEntry},
     compiler::CompileError,
@@ -69,12 +67,6 @@ pub struct CodeBuilder {
     /// Populated during compilation to enable proper NameError messages
     /// when accessing undefined local variables.
     local_names: Vec<Option<StringId>>,
-
-    /// Local variable slots that are assigned somewhere in this function.
-    ///
-    /// Used to determine whether to raise `UnboundLocalError` or `NameError`
-    /// when loading an undefined local variable.
-    assigned_locals: HashSet<u16>,
 }
 
 impl CodeBuilder {
@@ -349,15 +341,6 @@ impl CodeBuilder {
         }
     }
 
-    /// Registers a local variable slot as "assigned" (vs undefined reference).
-    ///
-    /// Called during compilation for variables that are assigned somewhere in the function.
-    /// Used at runtime to determine whether to raise `UnboundLocalError` (assigned local
-    /// accessed before assignment) or `NameError` (name doesn't exist anywhere).
-    pub fn register_assigned_local(&mut self, slot: u16) {
-        self.assigned_locals.insert(slot);
-    }
-
     /// Emits a `RaiseUnboundLocal` opcode carrying the comprehension target
     /// name to be reported in `UnboundLocalError`.
     ///
@@ -471,7 +454,6 @@ impl CodeBuilder {
             num_locals,
             self.max_stack_depth,
             local_names,
-            self.assigned_locals,
         )
     }
 
@@ -619,7 +601,7 @@ impl CodeBuilder {
 
     /// Builds the `CompileError` for a `StringId` that doesn't fit in the
     /// `u16` operand of a name-bearing opcode. Used by emit helpers that
-    /// inline the name id directly (e.g. `LoadLocalCallable`).
+    /// inline the name id directly (e.g. `LoadGlobalCallable`).
     ///
     /// The count is `u16::MAX + 1` (`65 536`) because a `u16` operand can
     /// address indices `0..=u16::MAX`, so the format can name that many

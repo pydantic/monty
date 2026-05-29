@@ -71,13 +71,6 @@ fn repl_nested_function_redefinition_updates_callers() {
 
 /// A later snippet's `def` for a builtin name must shadow that builtin for
 /// future calls of an earlier-defined function that references the name.
-///
-/// Regression: parse-time builtin substitution used to bake `Expr::Builtin(Sum)`
-/// directly into `call_sum`'s bytecode, so the second call kept returning the
-/// builtin's result (6) even after `def sum` rebound the module global. The fix
-/// is to defer all function-scope name resolution to the runtime
-/// `LoadGlobalByName(Callable)` path, which consults module globals before the
-/// builtin fallback.
 #[test]
 fn repl_function_late_binds_user_def_over_builtin() {
     let (mut repl, _) = init_repl("");
@@ -96,15 +89,10 @@ fn repl_function_late_binds_user_def_over_builtin() {
     );
 }
 
-/// Same idea at module scope rather than function scope.
-///
-/// Regression: parse-time substitution in snippet 3 (`max(1, 2)`) used to fire
-/// because `is_locally_assigned` at module scope only consulted
-/// `names_assigned_in_order` (per-snippet) and didn't see that snippet 2 had
-/// bound `max` in the seeded `name_map`. With the seeded-map check, the
-/// substitution is skipped and the runtime sees the user-defined `max`.
+/// Similar to `repl_function_late_binds_user_def_over_builtin`, but for
+/// global variables directly.
 #[test]
-fn repl_module_scope_late_binds_user_def_over_builtin() {
+fn repl_module_scope_binds_user_def_over_builtin() {
     let (mut repl, _) = init_repl("");
     assert_eq!(
         feed_run_print(&mut repl, "max(1, 2)").unwrap(),
