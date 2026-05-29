@@ -533,12 +533,13 @@ pub(crate) fn frame_exit_to_object(
             ))
             .into())
         }
-        FrameExit::OsCall { function, args, .. } => {
-            args.drop_with_heap(vm);
-            Err(ExcType::not_implemented(format!(
-                "OS function '{function}' not implemented with standard execution"
-            ))
-            .into())
+        FrameExit::OsCall { function_call, .. } => {
+            let name = function_call.name();
+            function_call.drop_with_heap(vm);
+            Err(
+                ExcType::not_implemented(format!("OS function '{name}' not implemented with standard execution"))
+                    .into(),
+            )
         }
         FrameExit::MethodCall { method_name, args, .. } => {
             args.drop_with_heap(vm);

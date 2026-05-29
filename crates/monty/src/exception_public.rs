@@ -89,6 +89,22 @@ impl MontyException {
         }
     }
 
+    pub(crate) fn new_full(exc_type: ExcType, message: Option<String>, traceback: Vec<StackFrame>) -> Self {
+        Self {
+            exc_type,
+            message,
+            traceback,
+        }
+    }
+
+    pub(crate) fn runtime_error(err: impl fmt::Display) -> Self {
+        Self {
+            exc_type: ExcType::RuntimeError,
+            message: Some(err.to_string()),
+            traceback: vec![],
+        }
+    }
+
     /// The exception type raised.
     #[must_use]
     pub fn exc_type(&self) -> ExcType {
@@ -143,22 +159,6 @@ impl MontyException {
             format!("{}({})", type_str, StringRepr(msg))
         } else {
             format!("{type_str}()")
-        }
-    }
-
-    pub(crate) fn new_full(exc_type: ExcType, message: Option<String>, traceback: Vec<StackFrame>) -> Self {
-        Self {
-            exc_type,
-            message,
-            traceback,
-        }
-    }
-
-    pub(crate) fn runtime_error(err: impl fmt::Display) -> Self {
-        Self {
-            exc_type: ExcType::RuntimeError,
-            message: Some(err.to_string()),
-            traceback: vec![],
         }
     }
 }
@@ -246,7 +246,10 @@ impl fmt::Display for StackFrame {
                     4
                 };
                 f.write_str(&" ".repeat(caret_start))?;
-                writeln!(f, "{}", "~".repeat((self.end.column - self.start.column) as usize))?;
+                // Always render at least one caret, even for zero-length ranges
+                // (e.g. a SyntaxError pointing just past the end of a truncated token).
+                let caret_len = (self.end.column - self.start.column).max(1) as usize;
+                writeln!(f, "{}", "~".repeat(caret_len))?;
             }
         } else {
             f.write_char('\n')?;

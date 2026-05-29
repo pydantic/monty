@@ -20,7 +20,7 @@ use crate::{
     asyncio::{Awaiter, Coroutine, ExternalFuture, ExternalFutureState, GatherFuture, GatherState},
     bytecode::{CallResult, VM},
     exception_private::{RunError, RunResult, SimpleException},
-    hash::HashValue,
+    hash::{HashValue, hash_python_str},
     heap::{DropWithHeap, HeapId, HeapItem, HeapReadOutput},
     intern::FunctionId,
     types::{
@@ -710,6 +710,10 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             (HeapReadOutput::DateTime(a), HeapReadOutput::DateTime(b)) => a.py_eq(b, vm),
             (HeapReadOutput::TimeDelta(a), HeapReadOutput::TimeDelta(b)) => a.py_eq(b, vm),
             (HeapReadOutput::TimeZone(a), HeapReadOutput::TimeZone(b)) => a.py_eq(b, vm),
+            // External functions compare equal iff their names match — the
+            // same name-based identity used by `Value::py_eq`'s ExtFunction
+            // arms and `py_hash` via `hash_python_str`. (#347)
+            (HeapReadOutput::ExtFunction(a), HeapReadOutput::ExtFunction(b)) => Ok(a.get(vm.heap) == b.get(vm.heap)),
             // Identity-only types (handled by HeapId comparison above)
             (HeapReadOutput::ReMatch(_), HeapReadOutput::ReMatch(_))
             | (HeapReadOutput::Cell(_), HeapReadOutput::Cell(_))
@@ -766,11 +770,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             // LongInt's hash matches `Value::InternLongInt`'s, since they are
             // both Python `int` values and must hash equally when equal.
             Self::LongInt(li) => Ok(Some(li.get(vm.heap).hash())),
-            Self::ExtFunction(name) => {
-                let mut hasher = DefaultHasher::new();
-                name.get(vm.heap).hash(&mut hasher);
-                Ok(Some(HashValue::new(hasher.finish())))
-            }
+            Self::ExtFunction(name) => Ok(Some(hash_python_str(name.get(vm.heap)))),
             // Unhashable: List, Dict, Set, the dict views, Iter, Module,
             // Exception, Coroutine, GatherFuture, RePattern, ReMatch.
             _ => Ok(None),

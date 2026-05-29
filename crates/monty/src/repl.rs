@@ -24,7 +24,7 @@ use crate::{
     io::PrintWriter,
     namespace::NamespaceId,
     object::MontyObject,
-    os::OsFunction,
+    os::OsFunctionCall,
     resource::ResourceTracker,
     run::Executor,
     run_progress::{ConvertedExit, ExtFunctionResult, NameLookupResult, convert_frame_exit},
@@ -566,12 +566,8 @@ impl<T: ResourceTracker> ReplFunctionCall<T> {
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 #[serde(bound(serialize = "T: serde::Serialize", deserialize = "T: DeserializeOwned"))]
 pub struct ReplOsCall<T: ResourceTracker> {
-    /// The OS function to execute.
-    pub function: OsFunction,
-    /// The positional arguments for the OS function.
-    pub args: Vec<MontyObject>,
-    /// The keyword arguments passed to the function (key, value pairs).
-    pub kwargs: Vec<(MontyObject, MontyObject)>,
+    /// Typed OS-call dispatch value (variant + args).
+    pub function_call: OsFunctionCall,
     /// Unique identifier for this call (used for async correlation).
     pub call_id: u32,
     /// Internal REPL execution snapshot.
@@ -594,6 +590,15 @@ impl<T: ResourceTracker> ReplOsCall<T> {
         print: PrintWriter<'_>,
     ) -> Result<ReplProgress<T>, Box<ReplStartError<T>>> {
         self.snapshot.run(result.into(), print)
+    }
+
+    /// REPL mirror of [`crate::OsCall::take_function_call`] — takes the
+    /// call out for host dispatch, leaving an [`OsFunctionCall::Used`]
+    /// placeholder. Afterwards `self` is only valid for [`Self::resume`]
+    /// or [`Self::into_repl`].
+    #[must_use]
+    pub fn take_function_call(&mut self) -> OsFunctionCall {
+        mem::replace(&mut self.function_call, OsFunctionCall::Used)
     }
 }
 
@@ -1019,15 +1024,8 @@ fn build_repl_progress<T: ResourceTracker>(
             method_call,
             snapshot: new_repl_snapshot!(),
         })),
-        ConvertedExit::OsCall {
-            function,
-            args,
-            kwargs,
-            call_id,
-        } => Ok(ReplProgress::OsCall(ReplOsCall {
-            function,
-            args,
-            kwargs,
+        ConvertedExit::OsCall { function_call, call_id } => Ok(ReplProgress::OsCall(ReplOsCall {
+            function_call,
             call_id,
             snapshot: new_repl_snapshot!(),
         })),

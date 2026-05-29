@@ -17,7 +17,7 @@ use crate::{
     heap::{ContainsHeap, DropWithHeap, HeapData, HeapGuard, HeapId},
     heap_data::CellValue,
     intern::{FunctionId, StaticStrings, StringId},
-    os::OsFunction,
+    os::OsFunctionCall,
     resource::ResourceTracker,
     types::{Dict, PyTrait, Type, bytes::call_bytes_method, str::call_str_method},
     value::{EitherStr, Value},
@@ -43,7 +43,9 @@ pub(crate) enum CallResult {
     /// OS operation call requested - VM should yield `FrameExit::OsCall` to host.
     ///
     /// The host executes the OS operation and resumes the VM with the result.
-    OsCall(OsFunction, ArgValues),
+    /// The [`OsFunctionCall`] is a tagged enum whose variants carry their own
+    /// typed args, so no separate `ArgValues` is needed at this layer.
+    OsCall(OsFunctionCall),
     /// Dataclass method call requested - VM should yield `FrameExit::MethodCall` to host.
     ///
     /// The method name (e.g. `"distance"`) and the args include the dataclass instance
@@ -67,21 +69,25 @@ pub(crate) enum CallResult {
     /// [`ReadSpec`](crate::types::ReadSpec) to compute the slice that becomes
     /// the call's return value.
     ///
-    /// The OS-call args are always `ArgValues::One(Value::Ref(file_id))`. The
-    /// per-call slice spec lives on the `OpenFile` itself (in `pending_read`),
-    /// so this variant only needs to carry the file id and the OS function.
-    OsCallStoreBuffer { function: OsFunction, file_id: HeapId },
+    /// The OS-call payload is a [`OsFunctionCall::ReadText`] /
+    /// [`OsFunctionCall::ReadBytes`] (the only legal variants here) carrying
+    /// the file's virtual path; the per-call slice spec lives on the
+    /// `OpenFile` itself (in `pending_read`), so this variant only needs to
+    /// carry the typed call plus the file id used to look up the buffer slot.
+    OsCallStoreBuffer { call: OsFunctionCall, file_id: HeapId },
 }
 
 impl DropWithHeap for CallResult {
     fn drop_with_heap<H: ContainsHeap>(self, heap: &mut H) {
         match self {
             Self::Value(value) | Self::AwaitValue(value) => value.drop_with_heap(heap),
-            Self::External(_, args) | Self::OsCall(_, args) | Self::MethodCall(_, args) => {
+            Self::External(_, args) | Self::MethodCall(_, args) => {
                 args.drop_with_heap(heap);
             }
+            Self::OsCall(call) => call.drop_with_heap(heap),
             Self::FramePushed => {}
-            Self::OsCallStoreBuffer { file_id, .. } => {
+            Self::OsCallStoreBuffer { call, file_id } => {
+                call.drop_with_heap(heap);
                 let heap = heap.heap_mut();
                 heap.dec_ref(file_id);
                 heap.dec_ref(file_id);
@@ -755,7 +761,10 @@ impl<T: ResourceTracker> VM<'_, T> {
         let namespace_size = func.namespace_size;
         let locals_count = u16::try_from(namespace_size).expect("function namespace size exceeds u16");
 
-        // Track memory for this frame's locals
+        // Track memory for this frame's locals. Symmetric with
+        // `cleanup_frame_state`. Comprehension variables live on the operand
+        // stack (pushed per-comp), not in any frame-level region, so they
+        // don't enter this accounting.
         let size = namespace_size * mem::size_of::<Value>();
         self.heap.tracker_mut().on_allocate(|| size)?;
 
@@ -804,7 +813,10 @@ impl<T: ResourceTracker> VM<'_, T> {
 
         let code = &func.code;
 
-        // 6. Commit the guard (no rollback) and push the frame
+        // 6. Commit the guard (no rollback) and push the frame. The operand
+        // stack starts immediately above the locals region — any
+        // comprehensions emit their own push/pop bytecode at entry/exit, so
+        // no frame-level region is reserved here.
         let (namespace, this) = namespace_guard.into_parts();
         this.stack.extend(namespace);
 

@@ -9,11 +9,10 @@ use jiter::{Jiter, JiterError, JiterErrorType, JsonErrorType, NumberAny, NumberI
 
 use super::JsonStringCache;
 use crate::{
-    args::ArgValues,
+    args::{ArgValues, FromArgs},
     bytecode::VM,
-    defer_drop,
     exception_private::{ExcType, RunError, RunResult},
-    heap::{ContainsHeap, DropWithHeap, HeapData, HeapGuard, HeapReader},
+    heap::{ContainsHeap, HeapData, HeapGuard, HeapReader},
     resource::{ResourceError, ResourceTracker},
     types::{
         Dict, List, LongInt, PyTrait,
@@ -71,33 +70,22 @@ const JSON_RECURSION_LIMIT: usize = 200;
 /// `parse_constant`, and `object_pairs_hook` are intentionally unsupported
 /// and will raise `TypeError` if passed.
 pub(super) fn call_loads(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
-    let (mut pos, kwargs) = args.into_parts();
-    if let Some((key, value)) = kwargs.into_iter().next() {
-        defer_drop!(key, vm);
-        defer_drop!(value, vm);
-        let Some(keyword_name) = key.as_either_str(vm.heap) else {
-            return Err(ExcType::type_error_kwargs_nonstring_key());
-        };
-        pos.drop_with_heap(vm);
-        return Err(ExcType::type_error_unexpected_keyword(
-            "loads",
-            keyword_name.as_str(vm.interns),
-        ));
-    }
-
-    let Some(data) = pos.next() else {
-        return Err(ExcType::type_error_missing_positional_with_names("loads", &["s"]));
-    };
-    if pos.len() != 0 {
-        let actual = pos.len() + 1;
-        data.drop_with_heap(vm);
-        pos.drop_with_heap(vm);
-        return Err(ExcType::type_error_too_many_positional("loads", 1, actual, 0));
-    }
-
-    let mut data_guard = HeapGuard::new(data, vm);
+    let JsonLoadsArgs { s } = JsonLoadsArgs::from_args(args, vm)?;
+    let mut data_guard = HeapGuard::new(s, vm);
     let (data, vm) = data_guard.as_parts_mut();
     parse_json_input(data, vm)
+}
+
+/// Argument shape for `json.loads(s)`.
+///
+/// CPython exposes a handful of additional kwargs (`cls`, `object_hook`, …)
+/// that Monty intentionally does not implement; leaving them off this struct
+/// means the macro emits the standard "unexpected keyword" error for them.
+#[derive(FromArgs)]
+#[from_args(name = "loads")]
+struct JsonLoadsArgs {
+    #[from_args(pos_only)]
+    s: Value,
 }
 
 /// Parses a `json.loads()` input value and converts it into a Monty value.

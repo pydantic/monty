@@ -10,6 +10,42 @@ is_monty = sys.platform == 'monty'
 is_windows = sys.platform == 'win32'
 
 # ============================================================================
+# TypeError — mkdir argument validation
+# ============================================================================
+
+# === TypeError on mkdir with too many positional arguments ===
+too_many_path = root / 'mkdir_too_many_args'
+try:
+    too_many_path.mkdir(0o777, False, False, 'extra')
+    assert False, 'expected TypeError on mkdir too many positional args'
+except TypeError as exc:
+    if is_monty:
+        assert str(exc) == 'Path.mkdir() takes at most 3 arguments (4 given)', f'unexpected message: {exc}'
+    else:
+        assert str(exc) == 'Path.mkdir() takes from 1 to 4 positional arguments but 5 were given', (
+            f'unexpected message: {exc}'
+        )
+assert too_many_path.exists() == False, 'mkdir too many args does not create directory'
+
+# === TypeError on mkdir with unknown keyword argument ===
+unknown_kw_path = root / 'mkdir_unknown_kw'
+try:
+    unknown_kw_path.mkdir(bogus=True)
+    assert False, 'expected TypeError on mkdir unknown kwarg'
+except TypeError as exc:
+    assert str(exc) == "Path.mkdir() got an unexpected keyword argument 'bogus'", f'unexpected message: {exc}'
+assert unknown_kw_path.exists() == False, 'mkdir unknown kwarg does not create directory'
+
+# === TypeError on mkdir with duplicate parents argument ===
+duplicate_arg_path = root / 'mkdir_duplicate_arg'
+try:
+    duplicate_arg_path.mkdir(0o777, True, parents=False)
+    assert False, 'expected TypeError on mkdir duplicate parents'
+except TypeError as exc:
+    assert str(exc) == "Path.mkdir() got multiple values for argument 'parents'", f'unexpected message: {exc}'
+assert duplicate_arg_path.exists() == False, 'mkdir duplicate arg does not create directory'
+
+# ============================================================================
 # FileNotFoundError — read/write/stat/unlink/rmdir on nonexistent paths
 # ============================================================================
 

@@ -157,6 +157,12 @@ impl<T: ResourceTracker> VM<'_, T> {
             // Search exception table for a handler covering this IP
             if let Some(entry) = frame.code.find_exception_handler(ip) {
                 // Found a handler! Unwind stack and jump to it.
+                // The operand stack lives directly above the locals region.
+                // `entry.stack_depth()` is the compiler's operand-stack depth
+                // at the try region, so the absolute stack index to unwind to
+                // is `stack_base + locals_count + stack_depth`. Any in-flight
+                // comprehension variables sit on the operand stack inside this
+                // depth window and get cleaned up by the same drain.
                 let handler_offset = usize::try_from(entry.handler()).expect("handler offset exceeds usize");
                 let target_stack_depth = frame.stack_base + frame.locals_count as usize + entry.stack_depth() as usize;
                 let target_exc_stack_depth = frame.exception_stack_base + entry.exception_stack_count() as usize;

@@ -16,18 +16,19 @@ use ahash::AHashSet;
 use chrono::{Datelike, FixedOffset, NaiveDateTime, NaiveTime, TimeDelta as ChronoTimeDelta, Timelike};
 
 use crate::{
-    args::ArgValues,
+    args::{ArgValues, FromArgs},
     bytecode::{CallResult, VM},
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, RunResult, SimpleException},
     hash::HashValue,
-    heap::{Heap, HeapData, HeapId, HeapItem, HeapRead},
+    heap::{DropWithHeap, Heap, HeapData, HeapId, HeapItem, HeapRead},
     intern::{Interns, StaticStrings},
-    os::OsFunction,
+    object::MontyObject,
+    os::OsFunctionCall,
     resource::{ResourceError, ResourceTracker},
     types::{
         AttrCallResult, PyTrait, TimeDelta, TimeZone, Type,
-        date::{self, value_to_i32},
+        date::{self, StrftimeArgs},
         str::{StringRepr, allocate_string, allocate_string_no_interning},
         timedelta, timezone,
     },
@@ -196,154 +197,8 @@ pub(crate) fn to_components(datetime: &DateTime) -> Option<(i32, u8, u8, u8, u8,
 }
 
 /// Constructor for `datetime(...)`.
-pub(crate) fn init(heap: &mut Heap<impl ResourceTracker>, args: ArgValues, interns: &Interns) -> RunResult<Value> {
-    let (pos, kwargs) = args.into_parts();
-    defer_drop_mut!(pos, heap);
-    let kwargs = kwargs.into_iter();
-    defer_drop_mut!(kwargs, heap);
-    // Keep the provided tzinfo object alive across argument parsing so we can
-    // safely retain its identity in the constructed datetime.
-    let retained_tzinfo = Value::None;
-    defer_drop_mut!(retained_tzinfo, heap);
-
-    let mut year: Option<i32> = None;
-    let mut month: Option<i32> = None;
-    let mut day: Option<i32> = None;
-    let mut hour: i32 = 0;
-    let mut minute: i32 = 0;
-    let mut second: i32 = 0;
-    let mut microsecond: i32 = 0;
-    let mut tzinfo: Option<TimeZone> = None;
-    let mut tzinfo_ref: Option<HeapId> = None;
-    let mut seen_hour = false;
-    let mut seen_minute = false;
-    let mut seen_second = false;
-    let mut seen_microsecond = false;
-    let mut seen_tzinfo = false;
-
-    for (index, arg) in pos.by_ref().enumerate() {
-        defer_drop!(arg, heap);
-        match index {
-            0 => year = Some(value_to_i32(arg)?),
-            1 => month = Some(value_to_i32(arg)?),
-            2 => day = Some(value_to_i32(arg)?),
-            3 => {
-                hour = value_to_i32(arg)?;
-                seen_hour = true;
-            }
-            4 => {
-                minute = value_to_i32(arg)?;
-                seen_minute = true;
-            }
-            5 => {
-                second = value_to_i32(arg)?;
-                seen_second = true;
-            }
-            6 => {
-                microsecond = value_to_i32(arg)?;
-                seen_microsecond = true;
-            }
-            7 => {
-                let (value_tzinfo, value_tzinfo_ref) = tzinfo_from_value(arg, heap)?;
-                update_retained_tzinfo(retained_tzinfo, value_tzinfo_ref, heap);
-                tzinfo = value_tzinfo;
-                tzinfo_ref = value_tzinfo_ref;
-                seen_tzinfo = true;
-            }
-            _ => {
-                return Err(SimpleException::new_msg(
-                    ExcType::TypeError,
-                    format!("function takes at most 8 positional arguments ({} given)", index + 1),
-                )
-                .into());
-            }
-        }
-    }
-
-    for (key, value) in kwargs {
-        defer_drop!(key, heap);
-        defer_drop!(value, heap);
-        let Some(key_name) = key.as_either_str(heap) else {
-            return Err(ExcType::type_error_kwargs_nonstring_key());
-        };
-        match key_name.string_id() {
-            Some(id) if id == StaticStrings::Year => {
-                if year.is_some() {
-                    return Err(ExcType::type_error_positional_keyword_conflict("function", "year", 1));
-                }
-                year = Some(value_to_i32(value)?);
-            }
-            Some(id) if id == StaticStrings::Month => {
-                if month.is_some() {
-                    return Err(ExcType::type_error_positional_keyword_conflict("function", "month", 2));
-                }
-                month = Some(value_to_i32(value)?);
-            }
-            Some(id) if id == StaticStrings::Day => {
-                if day.is_some() {
-                    return Err(ExcType::type_error_positional_keyword_conflict("function", "day", 3));
-                }
-                day = Some(value_to_i32(value)?);
-            }
-            Some(id) if id == StaticStrings::Hour => {
-                if seen_hour {
-                    return Err(ExcType::type_error_positional_keyword_conflict("function", "hour", 4));
-                }
-                hour = value_to_i32(value)?;
-                seen_hour = true;
-            }
-            Some(id) if id == StaticStrings::Minute => {
-                if seen_minute {
-                    return Err(ExcType::type_error_positional_keyword_conflict("function", "minute", 5));
-                }
-                minute = value_to_i32(value)?;
-                seen_minute = true;
-            }
-            Some(id) if id == StaticStrings::Second => {
-                if seen_second {
-                    return Err(ExcType::type_error_positional_keyword_conflict("function", "second", 6));
-                }
-                second = value_to_i32(value)?;
-                seen_second = true;
-            }
-            Some(id) if id == StaticStrings::Microsecond => {
-                if seen_microsecond {
-                    return Err(ExcType::type_error_positional_keyword_conflict(
-                        "function",
-                        "microsecond",
-                        7,
-                    ));
-                }
-                microsecond = value_to_i32(value)?;
-                seen_microsecond = true;
-            }
-            Some(id) if id == StaticStrings::Tzinfo => {
-                if seen_tzinfo {
-                    return Err(ExcType::type_error_positional_keyword_conflict("function", "tzinfo", 8));
-                }
-                let (value_tzinfo, value_tzinfo_ref) = tzinfo_from_value(value, heap)?;
-                update_retained_tzinfo(retained_tzinfo, value_tzinfo_ref, heap);
-                tzinfo = value_tzinfo;
-                tzinfo_ref = value_tzinfo_ref;
-                seen_tzinfo = true;
-            }
-            _ => {
-                return Err(ExcType::type_error_c_unexpected_keyword(key_name.as_str(interns)));
-            }
-        }
-    }
-
-    let Some(year) = year else {
-        return Err(ExcType::type_error_c_missing_required("year", 1));
-    };
-    let Some(month) = month else {
-        return Err(ExcType::type_error_c_missing_required("month", 2));
-    };
-    let Some(day) = day else {
-        return Err(ExcType::type_error_c_missing_required("day", 3));
-    };
-
-    let dt = from_components(
+pub(crate) fn init(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let DatetimeInitArgs {
         year,
         month,
         day,
@@ -352,26 +207,78 @@ pub(crate) fn init(heap: &mut Heap<impl ResourceTracker>, args: ArgValues, inter
         second,
         microsecond,
         tzinfo,
-        tzinfo_ref,
-        heap,
-    )?;
-    Ok(Value::Ref(heap.allocate(HeapData::DateTime(dt))?))
+        fold,
+    } = DatetimeInitArgs::from_args(args, vm)?;
+    // `tzinfo` owns the input ref; keep it alive across `tzinfo_from_value` and
+    // `from_components` so the heap-allocated TimeZone (if any) is not freed
+    // before `attach_or_allocate_tzinfo_ref` takes its own reference.
+    defer_drop_mut!(tzinfo, vm);
+
+    if fold != 0 && fold != 1 {
+        return Err(
+            SimpleException::new_msg(ExcType::ValueError, format!("fold must be either 0 or 1, not {fold}")).into(),
+        );
+    }
+
+    let (tz, tz_ref) = tzinfo_from_value(tzinfo, vm.heap)?;
+    let dt = from_components(year, month, day, hour, minute, second, microsecond, tz, tz_ref, vm.heap)?;
+    Ok(Value::Ref(vm.heap.allocate(HeapData::DateTime(dt))?))
 }
 
-/// Classmethod implementation for `datetime.now(tz=None)`.
+/// Argument shape for `datetime(year, month, day, hour=0, minute=0, second=0,
+/// microsecond=0, tzinfo=None, *, fold=0)`.
 ///
-/// Issues a `DateTimeNow` OS call with one argument: the timezone value
-/// (`Value::None` for naive, `Value::Ref` to a `TimeZone` for aware).
-/// The host should return `MontyObject::DateTime` directly.
-pub(crate) fn class_now(
-    heap: &mut Heap<impl ResourceTracker>,
-    args: ArgValues,
-    interns: &Interns,
-) -> RunResult<AttrCallResult> {
-    let (pos, kwargs) = args.into_parts();
-    defer_drop_mut!(pos, heap);
-    let kwargs = kwargs.into_iter();
-    defer_drop_mut!(kwargs, heap);
+/// CPython emits two distinct wordings for over-arity: when the overflow
+/// could still fit in the keyword-only tail (`actual <= 9`) the message is
+/// "function takes at most 8 *positional* arguments"; once it exceeds the
+/// total slot count it switches to "function takes at most 9 arguments".
+/// The macro implements that pivot via `at_most_positional` + the keyword-only
+/// `fold` field — the trailing kw-only slot is what bumps `max_total` to 9.
+///
+/// `fold` itself is accepted for CPython parity but currently has no effect
+/// on the stored datetime — Monty does not track DST-fold disambiguation.
+#[derive(FromArgs)]
+#[from_args(name = "function", c_error, at_most_positional)]
+struct DatetimeInitArgs {
+    year: i32,
+    month: i32,
+    day: i32,
+    #[from_args(default = 0)]
+    hour: i32,
+    #[from_args(default = 0)]
+    minute: i32,
+    #[from_args(default = 0)]
+    second: i32,
+    #[from_args(default = 0)]
+    microsecond: i32,
+    #[from_args(default = Value::None)]
+    tzinfo: Value,
+    #[from_args(kw_only, default = 0)]
+    fold: i32,
+}
+
+/// Classmethod implementation for `datetime.now(tz=None)`. Yields a
+/// `DateTimeNow` OS call with `tz` projected to [`MontyObject`] at the
+/// producer site (so the host sees a typed value directly).
+///
+/// Takes `&mut VM` rather than `&mut Heap` because the projection needs
+/// `MontyObject::new` to walk heap-allocated tzinfo objects.
+pub(crate) fn class_now(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<AttrCallResult> {
+    // Avoid `defer_drop_mut!` here: it would keep `vm` borrowed until end of
+    // scope, blocking the final `MontyObject::new(vm, ...)` call.
+    let tz_value = extract_now_tz(vm, args)?;
+    let tz_obj = MontyObject::new(tz_value, vm);
+    Ok(AttrCallResult::OsCall(OsFunctionCall::DateTimeNow(tz_obj)))
+}
+
+/// Extracts the single `tz` argument from `datetime.now()`'s args
+/// (defaulting to `Value::None`), draining the iterators on every path so
+/// refcounts stay balanced.
+fn extract_now_tz(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let interns = vm.interns;
+    let heap = &mut *vm.heap;
+    let (mut pos, kwargs) = args.into_parts();
+    let mut kwargs_iter = kwargs.into_iter();
 
     let mut tz_value = Value::None;
     let mut seen_tz = false;
@@ -380,49 +287,53 @@ pub(crate) fn class_now(
         if index == 0 {
             if let Err(e) = validate_tz_arg(&arg, heap) {
                 arg.drop_with_heap(heap);
+                pos.drop_with_heap(heap);
+                kwargs_iter.drop_with_heap(heap);
                 return Err(e);
             }
             tz_value = arg;
             seen_tz = true;
         } else {
             arg.drop_with_heap(heap);
+            pos.drop_with_heap(heap);
+            kwargs_iter.drop_with_heap(heap);
             tz_value.drop_with_heap(heap);
             return Err(ExcType::type_error_method_at_most("now", 1, index + 1));
         }
     }
 
-    for (key, value) in kwargs {
+    while let Some((key, value)) = kwargs_iter.next() {
         let key_name = key.as_either_str(heap);
         key.drop_with_heap(heap);
 
         let Some(key_name) = key_name else {
             value.drop_with_heap(heap);
+            kwargs_iter.drop_with_heap(heap);
             tz_value.drop_with_heap(heap);
             return Err(ExcType::type_error_kwargs_nonstring_key());
         };
         if key_name.string_id() != Some(StaticStrings::Tz.into()) {
             value.drop_with_heap(heap);
+            kwargs_iter.drop_with_heap(heap);
             tz_value.drop_with_heap(heap);
             return Err(ExcType::type_error_unexpected_keyword("now", key_name.as_str(interns)));
         }
         if seen_tz {
             value.drop_with_heap(heap);
+            kwargs_iter.drop_with_heap(heap);
             tz_value.drop_with_heap(heap);
             return Err(ExcType::type_error_method_at_most("now", 1, 2));
         }
         if let Err(e) = validate_tz_arg(&value, heap) {
             value.drop_with_heap(heap);
+            kwargs_iter.drop_with_heap(heap);
             tz_value.drop_with_heap(heap);
             return Err(e);
         }
         tz_value = value;
         seen_tz = true;
     }
-
-    Ok(AttrCallResult::OsCall(
-        OsFunction::DateTimeNow,
-        ArgValues::One(tz_value),
-    ))
+    Ok(tz_value)
 }
 
 /// Classmethod `datetime.strptime(date_string, format)`.
@@ -722,26 +633,6 @@ fn validate_tz_arg(value: &Value, heap: &Heap<impl ResourceTracker>) -> RunResul
     }
 }
 
-/// Updates a temporary retained tzinfo value used during datetime construction.
-///
-/// This keeps the timezone object alive while constructor argument values are
-/// being dropped, so we can safely increment the same object again when
-/// attaching it to the resulting datetime.
-fn update_retained_tzinfo(
-    retained_tzinfo: &mut Value,
-    tzinfo_ref: Option<HeapId>,
-    heap: &mut Heap<impl ResourceTracker>,
-) {
-    let old = mem::replace(retained_tzinfo, Value::None);
-    old.drop_with_heap(heap);
-    *retained_tzinfo = if let Some(tzinfo_ref) = tzinfo_ref {
-        heap.inc_ref(tzinfo_ref);
-        Value::Ref(tzinfo_ref)
-    } else {
-        Value::None
-    };
-}
-
 /// Attaches a stable tzinfo identity to aware datetimes.
 ///
 /// If `preferred_tzinfo_ref` is provided, it is retained and reused so identity
@@ -900,64 +791,9 @@ fn compute_timestamp(dt: &DateTime) -> f64 {
 fn extract_datetime_replace_kwargs(
     args: ArgValues,
     dt: &DateTime,
-    heap: &mut Heap<impl ResourceTracker>,
-    interns: &Interns,
+    vm: &mut VM<'_, impl ResourceTracker>,
 ) -> RunResult<Value> {
-    let (pos, kwargs) = args.into_parts();
-    defer_drop_mut!(pos, heap);
-    let kwargs = kwargs.into_iter();
-    defer_drop_mut!(kwargs, heap);
-    let retained_tzinfo = Value::None;
-    defer_drop_mut!(retained_tzinfo, heap);
-
-    let mut year = dt.naive.date().year();
-    let mut month = i32::try_from(dt.naive.date().month()).expect("month in 1..12");
-    let mut day = i32::try_from(dt.naive.date().day()).expect("day in 1..31");
-    let mut hour = i32::try_from(dt.naive.time().hour()).expect("hour in 0..23");
-    let mut minute = i32::try_from(dt.naive.time().minute()).expect("minute in 0..59");
-    let mut second = i32::try_from(dt.naive.time().second()).expect("second in 0..59");
-    let mut microsecond = i32::try_from(dt.naive.and_utc().timestamp_subsec_micros()).expect("micros in 0..999999");
-    let mut tzinfo = timezone_info(dt);
-    let mut tzinfo_ref = dt.tzinfo_ref;
-
-    // replace() takes no positional args
-    if let Some(arg) = pos.next() {
-        arg.drop_with_heap(heap);
-        return Err(ExcType::type_error(
-            "datetime.replace() takes 0 positional arguments".to_owned(),
-        ));
-    }
-
-    for (key, value) in kwargs {
-        defer_drop!(key, heap);
-        defer_drop!(value, heap);
-        let Some(key_name) = key.as_either_str(heap) else {
-            return Err(ExcType::type_error_kwargs_nonstring_key());
-        };
-        match key_name.string_id() {
-            Some(id) if id == StaticStrings::Year => year = value_to_i32(value)?,
-            Some(id) if id == StaticStrings::Month => month = value_to_i32(value)?,
-            Some(id) if id == StaticStrings::Day => day = value_to_i32(value)?,
-            Some(id) if id == StaticStrings::Hour => hour = value_to_i32(value)?,
-            Some(id) if id == StaticStrings::Minute => minute = value_to_i32(value)?,
-            Some(id) if id == StaticStrings::Second => second = value_to_i32(value)?,
-            Some(id) if id == StaticStrings::Microsecond => microsecond = value_to_i32(value)?,
-            Some(id) if id == StaticStrings::Tzinfo => {
-                let (value_tzinfo, value_tzinfo_ref) = tzinfo_from_value(value, heap)?;
-                update_retained_tzinfo(retained_tzinfo, value_tzinfo_ref, heap);
-                tzinfo = value_tzinfo;
-                tzinfo_ref = value_tzinfo_ref;
-            }
-            _ => {
-                return Err(ExcType::type_error_unexpected_keyword(
-                    "replace",
-                    key_name.as_str(interns),
-                ));
-            }
-        }
-    }
-
-    let new_dt = from_components(
+    let DatetimeReplaceArgs {
         year,
         month,
         day,
@@ -966,10 +802,61 @@ fn extract_datetime_replace_kwargs(
         second,
         microsecond,
         tzinfo,
-        tzinfo_ref,
-        heap,
+    } = DatetimeReplaceArgs::from_args(args, vm)?;
+
+    // `tzinfo` is `Some(v)` only when the caller actually passed the kwarg;
+    // absent → preserve existing tzinfo. When present, the inner `Value` owns
+    // the input ref and must be kept alive across `tzinfo_from_value` and
+    // `from_components` so the heap-allocated TimeZone isn't freed before
+    // `from_components` takes its own reference.
+    let (new_tz, new_tz_ref) = match tzinfo {
+        None => (timezone_info(dt), dt.tzinfo_ref),
+        Some(tzinfo_value) => {
+            defer_drop_mut!(tzinfo_value, vm);
+            tzinfo_from_value(tzinfo_value, vm.heap)?
+        }
+    };
+
+    let new_dt = from_components(
+        year.unwrap_or_else(|| dt.naive.date().year()),
+        month.unwrap_or_else(|| i32::try_from(dt.naive.date().month()).expect("month in 1..12")),
+        day.unwrap_or_else(|| i32::try_from(dt.naive.date().day()).expect("day in 1..31")),
+        hour.unwrap_or_else(|| i32::try_from(dt.naive.time().hour()).expect("hour in 0..23")),
+        minute.unwrap_or_else(|| i32::try_from(dt.naive.time().minute()).expect("minute in 0..59")),
+        second.unwrap_or_else(|| i32::try_from(dt.naive.time().second()).expect("second in 0..59")),
+        microsecond.unwrap_or_else(|| {
+            i32::try_from(dt.naive.and_utc().timestamp_subsec_micros()).expect("micros in 0..999999")
+        }),
+        new_tz,
+        new_tz_ref,
+        vm.heap,
     )?;
-    Ok(Value::Ref(heap.allocate(HeapData::DateTime(new_dt))?))
+    Ok(Value::Ref(vm.heap.allocate(HeapData::DateTime(new_dt))?))
+}
+
+/// Keyword arguments for `datetime.replace()`. All keyword-only; absent fields
+/// inherit the existing datetime component via `unwrap_or_else` at the call
+/// site. `tzinfo` uses `Option<Value>` to distinguish "kwarg absent" (preserve
+/// existing) from "tzinfo=None" (clear).
+#[derive(FromArgs)]
+#[from_args(name = "replace")]
+struct DatetimeReplaceArgs {
+    #[from_args(kw_only, default)]
+    year: Option<i32>,
+    #[from_args(kw_only, default)]
+    month: Option<i32>,
+    #[from_args(kw_only, default)]
+    day: Option<i32>,
+    #[from_args(kw_only, default)]
+    hour: Option<i32>,
+    #[from_args(kw_only, default)]
+    minute: Option<i32>,
+    #[from_args(kw_only, default)]
+    second: Option<i32>,
+    #[from_args(kw_only, default)]
+    microsecond: Option<i32>,
+    #[from_args(kw_only, default)]
+    tzinfo: Option<Value>,
 }
 
 impl HeapItem for DateTime {
@@ -1094,12 +981,12 @@ impl<'h> PyTrait<'h> for HeapRead<'h, DateTime> {
                 Ok(CallResult::Value(allocate_string_no_interning(s, vm.heap)?))
             }
             Some(id) if id == StaticStrings::Strftime => {
-                let fmt = date::extract_strftime_arg(args, "datetime.strftime", vm.heap, vm.interns)?;
-                let formatted = dt.naive.format(&fmt).to_string();
+                let StrftimeArgs { format } = StrftimeArgs::from_args(args, vm)?;
+                let formatted = dt.naive.format(&format).to_string();
                 Ok(CallResult::Value(allocate_string(formatted, vm.heap)?))
             }
             Some(id) if id == StaticStrings::Replace => {
-                let result = extract_datetime_replace_kwargs(args, &dt, vm.heap, vm.interns)?;
+                let result = extract_datetime_replace_kwargs(args, &dt, vm)?;
                 Ok(CallResult::Value(result))
             }
             Some(id) if id == StaticStrings::Weekday => {

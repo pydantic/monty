@@ -16,14 +16,13 @@ use ahash::AHashSet;
 use chrono::{Datelike, NaiveDate};
 
 use crate::{
-    args::ArgValues,
+    args::{ArgValues, FromArgs},
     bytecode::{CallResult, VM},
-    defer_drop, defer_drop_mut,
     exception_private::{ExcType, RunError, RunResult, SimpleException},
     hash::HashValue,
     heap::{Heap, HeapData, HeapId, HeapItem, HeapRead},
     intern::{Interns, StaticStrings},
-    os::OsFunction,
+    os::OsFunctionCall,
     resource::{ResourceError, ResourceTracker},
     types::{
         AttrCallResult, PyTrait, TimeDelta, Type,
@@ -118,75 +117,25 @@ pub(crate) fn to_ymd(date: Date) -> (i32, u32, u32) {
 }
 
 /// Constructor for `date(year, month, day)`.
-pub(crate) fn init(heap: &mut Heap<impl ResourceTracker>, args: ArgValues, interns: &Interns) -> RunResult<Value> {
-    let (pos, kwargs) = args.into_parts();
-    // CPython's date() is C-implemented and counts total args (pos + kwargs).
-    // Any total > 3 is rejected before checking individual args.
-    let total_args = pos.len() + kwargs.len();
-    defer_drop_mut!(pos, heap);
-    let kwargs = kwargs.into_iter();
-    defer_drop_mut!(kwargs, heap);
-
-    if total_args > 3 {
-        return Err(ExcType::type_error_c_at_most(3, total_args));
-    }
-
-    let mut year: Option<i32> = None;
-    let mut month: Option<i32> = None;
-    let mut day: Option<i32> = None;
-
-    for (index, arg) in pos.by_ref().enumerate() {
-        defer_drop!(arg, heap);
-        match index {
-            0 => year = Some(value_to_i32(arg)?),
-            1 => month = Some(value_to_i32(arg)?),
-            2 => day = Some(value_to_i32(arg)?),
-            _ => unreachable!("total_args check above prevents this"),
-        }
-    }
-
-    for (key, value) in kwargs {
-        defer_drop!(key, heap);
-        defer_drop!(value, heap);
-
-        let Some(key_name) = key.as_either_str(heap) else {
-            return Err(ExcType::type_error_kwargs_nonstring_key());
-        };
-        match key_name.string_id() {
-            Some(id) if id == StaticStrings::Year => {
-                if year.is_some() {
-                    return Err(ExcType::type_error_multiple_values("date", "year"));
-                }
-                year = Some(value_to_i32(value)?);
-            }
-            Some(id) if id == StaticStrings::Month => {
-                if month.is_some() {
-                    return Err(ExcType::type_error_multiple_values("date", "month"));
-                }
-                month = Some(value_to_i32(value)?);
-            }
-            Some(id) if id == StaticStrings::Day => {
-                if day.is_some() {
-                    return Err(ExcType::type_error_multiple_values("date", "day"));
-                }
-                day = Some(value_to_i32(value)?);
-            }
-            _ => return Err(ExcType::type_error_unexpected_keyword("date", key_name.as_str(interns))),
-        }
-    }
-
-    let Some(year) = year else {
-        return Err(ExcType::type_error_c_missing_required("year", 1));
-    };
-    let Some(month) = month else {
-        return Err(ExcType::type_error_c_missing_required("month", 2));
-    };
-    let Some(day) = day else {
-        return Err(ExcType::type_error_c_missing_required("day", 3));
-    };
-
+pub(crate) fn init(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let DateInitArgs { year, month, day } = DateInitArgs::from_args(args, vm)?;
     let date = from_ymd(year, month, day)?;
-    Ok(Value::Ref(heap.allocate(HeapData::Date(date))?))
+    Ok(Value::Ref(vm.heap.allocate(HeapData::Date(date))?))
+}
+
+/// Argument shape for `date(year, month, day)`.
+///
+/// CPython's `date()` is C-implemented (`PyArg_ParseTupleAndKeywords`) and uses
+/// `c_error` wording — "function takes at most N arguments", "function missing
+/// required argument 'X' (pos N)", etc. Unlike `datetime()` it does **not**
+/// prefix "positional" in the at-most message, so we leave `at_most_positional`
+/// unset.
+#[derive(FromArgs)]
+#[from_args(name = "function", c_error, at_most_total)]
+struct DateInitArgs {
+    year: i32,
+    month: i32,
+    day: i32,
 }
 
 /// Classmethod implementation for `date.today()`.
@@ -195,7 +144,7 @@ pub(crate) fn init(heap: &mut Heap<impl ResourceTracker>, args: ArgValues, inter
 /// `MontyObject::Date` directly.
 pub(crate) fn class_today(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> RunResult<AttrCallResult> {
     args.check_zero_args("date.today", heap)?;
-    Ok(AttrCallResult::OsCall(OsFunction::DateToday, ArgValues::Empty))
+    Ok(AttrCallResult::OsCall(OsFunctionCall::DateToday))
 }
 
 /// Classmethod `date.fromisoformat(date_string)`.
@@ -313,15 +262,22 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Date> {
                 )?))
             }
             Some(id) if id == StaticStrings::Strftime => {
-                let fmt = extract_strftime_arg(args, "date.strftime", vm.heap, vm.interns)?;
-                let formatted = date.0.format(&fmt).to_string();
+                let StrftimeArgs { format } = StrftimeArgs::from_args(args, vm)?;
+                let formatted = date.0.format(&format).to_string();
                 Ok(CallResult::Value(allocate_string(formatted, vm.heap)?))
             }
             Some(id) if id == StaticStrings::Replace => {
                 let (year, month, day) = to_ymd(date);
-                let (new_year, new_month, new_day) =
-                    extract_date_replace_kwargs(args, year, month, day, vm.heap, vm.interns)?;
-                let new_date = from_ymd(new_year, new_month, new_day)?;
+                let DateReplaceArgs {
+                    year: new_year,
+                    month: new_month,
+                    day: new_day,
+                } = DateReplaceArgs::from_args(args, vm)?;
+                let new_date = from_ymd(
+                    new_year.unwrap_or(year),
+                    new_month.unwrap_or(i32::try_from(month).expect("month in 1..=12")),
+                    new_day.unwrap_or(i32::try_from(day).expect("day in 1..=31")),
+                )?;
                 Ok(CallResult::Value(Value::Ref(
                     vm.heap.allocate(HeapData::Date(new_date))?,
                 )))
@@ -406,92 +362,33 @@ pub(crate) fn py_sub_timedelta(
     }
 }
 
-/// Extracts the format string argument for `strftime()`.
+/// Argument shape for `date.strftime(format)` and `datetime.strftime(format)`.
 ///
-/// Accepts exactly one positional string argument.
-pub(crate) fn extract_strftime_arg(
-    args: ArgValues,
-    method_name: &str,
-    heap: &mut Heap<impl ResourceTracker>,
-    interns: &Interns,
-) -> RunResult<String> {
-    let value = args.get_one_arg(method_name, heap)?;
-    let result = match &value {
-        Value::InternString(string_id) => Ok(interns.get_str(*string_id).to_owned()),
-        Value::Ref(heap_id) => match heap.get(*heap_id) {
-            HeapData::Str(s) => Ok(s.as_str().to_owned()),
-            _ => Err(ExcType::type_error(
-                "descriptor 'strftime' requires a 'str' object but received a non-str type".to_owned(),
-            )),
-        },
-        _ => Err(ExcType::type_error(
-            "descriptor 'strftime' requires a 'str' object but received a non-str type".to_owned(),
-        )),
-    };
-    value.drop_with_heap(heap);
-    result
+/// CPython implements `strftime` as a C method and reports errors with the
+/// bare method name (no class prefix), so we use `c_error_named` + the
+/// `"strftime"` descriptor — matching wordings like
+/// `strftime() missing required argument 'format' (pos 1)` and
+/// `strftime() takes at most 1 argument (2 given)`.
+///
+/// `bad_arg` opts the wrong-type wording into CPython's `_PyArg_BadArgument`
+/// form (`strftime() argument 1 must be str, not <type>`), including the
+/// `None`-vs-`NoneType` special case — so the type-check logic lives in
+/// the derive rather than a hand-written extract helper.
+#[derive(FromArgs)]
+#[from_args(name = "strftime", c_error_named, at_most_total, bad_arg)]
+pub(crate) struct StrftimeArgs {
+    pub(crate) format: String,
 }
 
-/// Parses keyword arguments for `date.replace()`.
-///
-/// Returns `(year, month, day)` with original values as defaults.
-fn extract_date_replace_kwargs(
-    args: ArgValues,
-    year: i32,
-    month: u32,
-    day: u32,
-    heap: &mut Heap<impl ResourceTracker>,
-    interns: &Interns,
-) -> RunResult<(i32, i32, i32)> {
-    let (pos, kwargs) = args.into_parts();
-    defer_drop_mut!(pos, heap);
-    let kwargs = kwargs.into_iter();
-    defer_drop_mut!(kwargs, heap);
-
-    let mut new_year = year;
-    let mut new_month = i32::try_from(month).expect("month is always in 1..=12");
-    let mut new_day = i32::try_from(day).expect("day is always in 1..=31");
-
-    // replace() takes no positional args
-    if let Some(arg) = pos.next() {
-        arg.drop_with_heap(heap);
-        return Err(ExcType::type_error("replace() takes 0 positional arguments".to_owned()));
-    }
-
-    for (key, value) in kwargs {
-        defer_drop!(key, heap);
-        defer_drop!(value, heap);
-        let Some(key_name) = key.as_either_str(heap) else {
-            return Err(ExcType::type_error_kwargs_nonstring_key());
-        };
-        match key_name.string_id() {
-            Some(id) if id == StaticStrings::Year => new_year = value_to_i32(value)?,
-            Some(id) if id == StaticStrings::Month => new_month = value_to_i32(value)?,
-            Some(id) if id == StaticStrings::Day => new_day = value_to_i32(value)?,
-            _ => {
-                return Err(ExcType::type_error_unexpected_keyword(
-                    "replace",
-                    key_name.as_str(interns),
-                ));
-            }
-        }
-    }
-
-    Ok((new_year, new_month, new_day))
-}
-
-/// Extracts an `i32` from a `Value`, accepting `Bool` and `Int`.
-///
-/// Used by `date`, `datetime`, and other constructors that expect
-/// integer arguments matching CPython's `int` coercion rules.
-pub(crate) fn value_to_i32(value: &Value) -> RunResult<i32> {
-    let int_value = match value {
-        Value::Bool(b) => i64::from(*b),
-        Value::Int(i) => *i,
-        _ => {
-            return Err(SimpleException::new_msg(ExcType::TypeError, "an integer is required (got type float)").into());
-        }
-    };
-    i32::try_from(int_value)
-        .map_err(|_| SimpleException::new_msg(ExcType::OverflowError, "signed integer is greater than maximum").into())
+/// Keyword arguments for `date.replace()`. All keyword-only; absent fields
+/// inherit the original date's component via `unwrap_or` at the call site.
+#[derive(FromArgs)]
+#[from_args(name = "replace")]
+struct DateReplaceArgs {
+    #[from_args(kw_only, default)]
+    year: Option<i32>,
+    #[from_args(kw_only, default)]
+    month: Option<i32>,
+    #[from_args(kw_only, default)]
+    day: Option<i32>,
 }

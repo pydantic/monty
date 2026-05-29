@@ -255,11 +255,13 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
         let func = self.interns.get_function(func_id);
         let locals_count = u16::try_from(namespace_values.len()).expect("coroutine namespace size exceeds u16");
 
-        // Track memory for the locals
+        // Track memory for the locals region. Symmetric with
+        // `cleanup_frame_state`. Comprehension variables live on the operand
+        // stack (pushed per-comp).
         let size = namespace_values.len() * mem::size_of::<Value>();
         self.heap.tracker_mut().on_allocate(|| size)?;
 
-        // Extend the stack with the coroutine's pre-bound locals
+        // Extend the stack with the coroutine's pre-bound locals.
         let stack_base = self.stack.len();
         self.stack.extend(namespace_values);
 
@@ -605,7 +607,9 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
         let func = self.interns.get_function(func_id);
         let locals_count = u16::try_from(namespace_values.len()).expect("coroutine namespace size exceeds u16");
 
-        // Track memory for the locals
+        // Track memory for the locals region. Symmetric with
+        // `cleanup_frame_state`. Comprehension variables live on the operand
+        // stack (pushed per-comp).
         let size = namespace_values.len() * mem::size_of::<Value>();
         self.heap.tracker_mut().on_allocate(|| size)?;
 

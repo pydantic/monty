@@ -10,6 +10,8 @@
 
 use std::{borrow::Cow, mem};
 
+use ahash::AHashSet;
+
 use super::{
     builder::{CodeBuilder, JumpLabel, JumpTarget},
     code::Code,
@@ -47,15 +49,6 @@ const MAX_CALL_ARGS: usize = 255;
 /// surfaces to the user as a `SyntaxError`.
 const MAX_NAMESPACE_SIZE: usize = u16::MAX as usize;
 
-/// Maximum number of nested `for`/`if` clauses in a comprehension.
-///
-/// `ListAppend`/`SetAdd`/`DictSetItem` encode the comprehension depth in a
-/// `u8` so the runtime can pop the correct number of intermediate iterators
-/// when appending. 255 nested clauses is far past anything sensible Python
-/// can express, but a sufficiently large parser-generated payload could
-/// reach it.
-const MAX_COMP_GENERATORS: usize = 255;
-
 /// Maximum number of targets in a single tuple-unpacking pattern (e.g.
 /// `a, b, c = it` or the nested form `(a, b), c = it`).
 ///
@@ -63,6 +56,19 @@ const MAX_COMP_GENERATORS: usize = 255;
 /// so any individual unpacking level is capped at 255 targets (with
 /// `UnpackEx` splitting that count into before-star and after-star halves).
 const MAX_UNPACK_TARGETS: usize = 255;
+
+/// Maximum number of `for ... in ...` clauses in a single comprehension.
+///
+/// `compile_comprehension_generators` recurses once per generator clause, so
+/// without an up-front guard a syntactically valid source file with tens of
+/// thousands of clauses can exhaust the Rust call stack during compilation —
+/// well before runtime resource limits become active. The cap also matches
+/// the `u8` operand consumed by `ListAppend` / `SetAdd` / `DictSetItem`:
+/// each additional generator adds one iterator layer (plus its target
+/// leaves) to the operand stack, and the bytecode format can only encode a
+/// `u8` depth. CPython has no equivalent limit but real Python comprehension
+/// usage is far below this cap.
+const MAX_COMP_GENERATORS: usize = 255;
 
 /// Converts a `usize` namespace size into the `u16` slot count expected by
 /// the bytecode, surfacing a `CompileError` if the limit is exceeded.
@@ -86,28 +92,39 @@ fn namespace_too_large(size: usize, kind: &'static str) -> CompileError {
     )
 }
 
-/// Converts a comprehension's `for`/`if` clause count into the `u8` depth
-/// operand used by `ListAppend`/`SetAdd`/`DictSetItem`.
-///
-/// Anchored to the body expression's position because that's the comprehension's
-/// most stable location to point at in a traceback caret.
-fn check_comp_generators(count: usize, position: CodeRange) -> Result<u8, CompileError> {
-    u8::try_from(count).map_err(|_| too_many_comp_generators(count, position))
-}
-
-#[cold]
-#[inline(never)]
-fn too_many_comp_generators(count: usize, position: CodeRange) -> CompileError {
-    CompileError::new(
-        format!("comprehension has too many nested clauses ({count}); maximum is {MAX_COMP_GENERATORS}"),
-        position,
-    )
-}
-
 /// Converts a tuple-unpacking target count into the `u8` operand for
 /// `UnpackSequence` (or the before/after halves of `UnpackEx`).
 fn check_unpack_targets(count: usize, position: CodeRange) -> Result<u8, CompileError> {
     u8::try_from(count).map_err(|_| too_many_unpack_targets(count, position))
+}
+
+/// Rejects comprehensions with more than [`MAX_COMP_GENERATORS`] for-clauses
+/// before recursive compilation, so attacker-controlled source cannot
+/// trigger a Rust stack overflow during `Compiler::compile_module`.
+///
+/// Anchored to the body expression's position because that's the
+/// comprehension's most stable location to point at in a traceback caret.
+fn check_comp_generators(count: usize, position: CodeRange) -> Result<(), CompileError> {
+    if count > MAX_COMP_GENERATORS {
+        Err(CompileError::new(
+            format!("comprehension has too many nested clauses ({count}); maximum is {MAX_COMP_GENERATORS}"),
+            position,
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+/// Returns a position that locates `target` in source for error reporting.
+///
+/// `Name` / `Starred` carry the identifier's position; `Tuple` carries its
+/// own. Used by comp-target unpacking when the per-leaf position isn't
+/// available at the error point.
+fn target_position(target: &UnpackTarget) -> CodeRange {
+    match target {
+        UnpackTarget::Name(ident) | UnpackTarget::Starred(ident) => ident.position,
+        UnpackTarget::Tuple { position, .. } => *position,
+    }
 }
 
 #[cold]
@@ -247,6 +264,43 @@ pub struct Compiler<'a> {
     /// globals array. In function bodies this is `false` and these scopes use local
     /// opcodes that index into the stack.
     is_module_scope: bool,
+
+    /// Number of stack-resident locals in the running frame for this code object.
+    ///
+    /// - Function scope: equals the function's `namespace_size` (params + cells +
+    ///   free vars + assigned locals).
+    /// - Module scope: `0` — module-level "locals" live in `self.globals`, so
+    ///   nothing is stored in the frame's locals region.
+    ///
+    /// Comp-var loads/stores are emitted as `LoadLocal/W` / `StoreLocal/W` with
+    /// the slot operand set to `frame_locals + offset`, where `offset` is the
+    /// comp-var's absolute operand-stack offset. At runtime, the local opcodes
+    /// access `stack[stack_base + slot]`; with `frame_locals` chosen to match
+    /// the runtime `locals_count`, this resolves correctly in both scopes.
+    frame_locals: u16,
+
+    /// Operand-stack offsets for comp-var slot IDs currently in scope.
+    ///
+    /// Indexed by the slot ID stored in the prepared `Identifier`. The value is
+    /// the absolute operand-stack offset of that comp-var (set after the
+    /// `FOR_ITER` / `UNPACK_SEQUENCE` / `LIFT_TO_TOP` chain that landed it on
+    /// the stack, by `compile_comp_target_unpack`). Used by `compile_name` for
+    /// `NameScope::CompVar` to emit `LoadLocal/W(frame_locals + offset)`.
+    ///
+    /// Pushed/truncated with each comprehension via `enter_comprehension` /
+    /// `exit_comprehension`, so sibling comps reuse slot IDs cleanly.
+    slot_offsets: Vec<u16>,
+
+    /// Slot IDs that are statically known to have been assigned at the current
+    /// emission point.
+    ///
+    /// Updated by `compile_comp_target_unpack` when it records a leaf's offset
+    /// (= the moment the comp's `for` clause has stored a value into that
+    /// slot). Read by `compile_name` for `NameScope::CompVar`: bound reads
+    /// emit `LoadLocal/W`; unbound reads (slot not yet in this set) emit
+    /// `RaiseUnboundLocal(name_id)`. The same comprehension's slots are
+    /// removed at `exit_comprehension`, so sibling comps start fresh.
+    bound_comp_slots: AHashSet<u16>,
 }
 
 /// Information about a loop for break/continue handling.
@@ -308,6 +362,24 @@ struct FinallyTarget {
     except_handler_depth_at_entry: u16,
 }
 
+/// A simulated entry on the operand stack during comprehension target unpacking.
+///
+/// The compiler walks each comp target by recursively unpacking tuples,
+/// emitting `UnpackSequence`/`UnpackEx`/`LiftToTop` as needed, and tracks the
+/// per-step stack state in a `Vec<SimItem>`. Tracking is necessary because
+/// `LiftToTop` reorders items; without simulating, the compiler couldn't tell
+/// which final operand-stack offset each comp-var leaf ends up at.
+enum SimItem<'a> {
+    /// A finalized comp-var leaf. The slot ID gets mapped to an absolute
+    /// operand-stack offset (via its position in the sim Vec) once all
+    /// unpacking has finished.
+    Leaf(u16),
+    /// A value that still needs to be matched against an `UnpackTarget`
+    /// (which may be a nested `Tuple`). The borrowed target tells the
+    /// compiler how to drive the next UNPACK / Lift step.
+    Pending(&'a UnpackTarget),
+}
+
 /// Result of module compilation: the module code and all compiled functions.
 pub struct CompileResult {
     /// The compiled module code.
@@ -318,7 +390,14 @@ pub struct CompileResult {
 
 impl<'a> Compiler<'a> {
     /// Creates a new compiler with access to the string interner.
-    fn new(interns: &'a Interns, functions: Vec<Function>) -> Self {
+    ///
+    /// `frame_locals` is the runtime `locals_count` for this code object:
+    /// 0 for module-level code (globals live in `self.globals`, not on the
+    /// stack), or the function's namespace size at function scope. Comp-var
+    /// load/store opcodes encode `frame_locals + offset` as their slot
+    /// operand so plain `LoadLocal/W` and `StoreLocal/W` reach the correct
+    /// operand-stack position at runtime.
+    fn new(interns: &'a Interns, functions: Vec<Function>, is_module_scope: bool, frame_locals: u16) -> Self {
         let mut code = CodeBuilder::new();
         code.new_code_region(0);
         Self {
@@ -328,7 +407,10 @@ impl<'a> Compiler<'a> {
             loop_stack: Vec::new(),
             finally_targets: Vec::new(),
             except_handler_depth: 0,
-            is_module_scope: false,
+            is_module_scope,
+            frame_locals,
+            slot_offsets: Vec::new(),
+            bound_comp_slots: AHashSet::new(),
         }
     }
 
@@ -357,9 +439,10 @@ impl<'a> Compiler<'a> {
         existing_functions: Vec<Function>,
     ) -> Result<CompileResult, CompileError> {
         let num_locals = check_namespace_size_u16(namespace_size, "module")?;
-        let mut compiler = Compiler::new(interns, Vec::new());
-        compiler.functions = existing_functions;
-        compiler.is_module_scope = true;
+        // Module frames have `locals_count = 0` at runtime (globals live in
+        // `self.globals`), so comp-var offsets are emitted as plain operand-
+        // stack indices.
+        let mut compiler = Compiler::new(interns, existing_functions, true, 0);
         compiler.compile_block(nodes)?;
 
         // Module returns None if no explicit return
@@ -386,7 +469,10 @@ impl<'a> Compiler<'a> {
         functions: Vec<Function>,
         num_locals: u16,
     ) -> Result<(Code, Vec<Function>), CompileError> {
-        let mut compiler = Compiler::new(interns, functions);
+        // Function frames have `locals_count = num_locals` at runtime, so
+        // comp-var load/store opcodes use `num_locals + offset` to skip past
+        // the locals region into the operand-stack region.
+        let mut compiler = Compiler::new(interns, functions, false, num_locals);
         compiler.compile_block(body)?;
 
         // Implicit return None if no explicit return
@@ -1154,6 +1240,29 @@ impl<'a> Compiler<'a> {
                 // Emit local slot index — the VM reads the cell HeapId from the stack
                 self.code.emit_u16(Opcode::LoadCell, slot)
             }
+            NameScope::CompVar => {
+                // Comprehension target read. Static analysis tells us
+                // whether the corresponding `for` has stored to this slot
+                // yet in the linear emission order:
+                //
+                // - Bound (`slot ∈ bound_comp_slots`): emit a regular
+                //   `LoadLocal/W` — the comp var lives on the operand stack
+                //   at `frame_locals + offset` (set up by
+                //   `compile_comp_target_unpack` at the corresponding
+                //   FOR_ITER / UNPACK step).
+                // - Unbound: the corresponding `for` clause hasn't stored
+                //   to the slot at this point in the comp (e.g. an earlier
+                //   generator's iter references a later target). Emit
+                //   `RaiseUnboundLocal(name_id)`; the name lives in the
+                //   opcode so sibling comps with different unbound targets
+                //   each report the correct variable.
+                if self.bound_comp_slots.contains(&slot) {
+                    let absolute = self.slot_offsets[slot as usize];
+                    self.code.emit_load_local(absolute)
+                } else {
+                    self.code.emit_raise_unbound_local(ident.name_id)
+                }
+            }
         }
     }
 
@@ -1185,8 +1294,8 @@ impl<'a> Compiler<'a> {
                 // the name from the current frame's local_names would be incorrect
                 self.code.emit_load_global_callable(slot, ident.name_id)
             }
-            // Local and Cell can't be external functions - use regular load
-            NameScope::Local | NameScope::Cell => self.compile_name(ident),
+            // Local, Cell, and CompVar can't be external functions - use regular load
+            NameScope::Local | NameScope::Cell | NameScope::CompVar => self.compile_name(ident),
         }
     }
 
@@ -1209,6 +1318,20 @@ impl<'a> Compiler<'a> {
             NameScope::Cell => {
                 // Emit local slot index — the VM reads the cell HeapId from the stack
                 self.code.emit_u16(Opcode::StoreCell, slot)
+            }
+            NameScope::CompVar => {
+                // Comp-var stores never go through `compile_store`. They are
+                // handled by `compile_comp_target_unpack`, which leaves the
+                // value on the operand stack as the natural result of
+                // `FOR_ITER` (and any subsequent `UNPACK_SEQUENCE` /
+                // `LIFT_TO_TOP` for nested tuples). The non-comp store paths
+                // (`compile_assign_target`, walrus via
+                // `get_id_for_store_target`, etc.) resolve their targets to
+                // `Local`/`Global`/`Cell` — never `CompVar` — so reaching
+                // here means a compile-flow bug.
+                unreachable!(
+                    "compile_store called with NameScope::CompVar — comp targets are stored via compile_comp_target_unpack"
+                )
             }
         }
     }
@@ -2030,11 +2153,11 @@ impl<'a> Compiler<'a> {
                                 self.code.emit_u16(Opcode::LoadConst, key_const)?;
                                 self.compile_expr(&kw.value)?;
                                 self.code.emit_u16(Opcode::BuildDict, 1)?;
-                                self.code.emit_u16(Opcode::DictMerge, func_name_id)?;
+                                self.code.emit_u16(Opcode::MethodDictMerge, func_name_id)?;
                             }
                             CallKwarg::Unpack(e) => {
                                 self.compile_expr(e)?;
-                                self.code.emit_u16(Opcode::DictMerge, func_name_id)?;
+                                self.code.emit_u16(Opcode::MethodDictMerge, func_name_id)?;
                             }
                         }
                     }
@@ -2106,8 +2229,9 @@ impl<'a> Compiler<'a> {
             // Merge **kwargs if present
             if let Some(var_kwargs_expr) = var_kwargs {
                 self.compile_expr(var_kwargs_expr)?;
-                // Use the method name for error messages
-                self.code.emit_u16(Opcode::DictMerge, name_idx)?;
+                // Method-call form — `MethodDictMerge` qualifies the duplicate-
+                // kwarg error with the receiver's type (e.g. `list.sort()`).
+                self.code.emit_u16(Opcode::MethodDictMerge, name_idx)?;
             }
         }
 
@@ -2464,28 +2588,45 @@ impl<'a> Compiler<'a> {
     ///
     /// Bytecode structure:
     /// ```text
-    /// BUILD_LIST 0          ; empty result
+    /// BUILD_LIST 0
     /// <compile first iter>
     /// GET_ITER
     /// loop_start:
-    ///   FOR_ITER end_loop
-    ///   STORE_LOCAL target
+    ///   FOR_ITER end_loop        ; pushes the iter's value
+    ///   [UNPACK / LIFT_TO_TOP]   ; comp-var leaves end up on operand stack
     ///   <compile filters - jump back to loop_start if any fails>
     ///   [nested generators...]
     ///   <compile elt>
-    ///   LIST_APPEND depth
+    ///   LIST_APPEND depth        ; reaches list by counting items between
+    ///   POP × K_this_generator   ; remove this generator's comp vars
     ///   JUMP loop_start
-    /// end_loop:
+    /// end_loop:                  ; FOR_ITER popped the iter on exhaustion
     /// ; result list on stack
     /// ```
+    ///
+    /// Comprehension targets live on the operand stack as the values pushed
+    /// by `FOR_ITER` (plus unpacked sub-values). The compiler tracks each
+    /// leaf's absolute operand-stack offset in `Compiler::slot_offsets` so
+    /// that `compile_name` for `NameScope::CompVar` can emit
+    /// `LoadLocal/W(frame_locals + offset)`. Per-iteration `POP`s clean the
+    /// comp vars before the JUMP so the loop's stack discipline is preserved.
     fn compile_list_comp(&mut self, elt: &ExprLoc, generators: &[Comprehension]) -> Result<(), CompileError> {
-        // Build empty list
+        if self.code.is_dead() {
+            return Ok(());
+        }
+        check_comp_generators(generators.len(), elt.position)?;
         self.code.emit_u16(Opcode::BuildList, 0)?;
+        let depth_after_collection = self
+            .code
+            .stack_depth()
+            .expect("list comp: BuildList kept us live, stack_depth must be Some");
 
-        // Compile the nested generators, which will eventually append to the list
-        let depth = check_comp_generators(generators.len(), elt.position)?;
         self.compile_comprehension_generators(generators, 0, |compiler| {
             compiler.compile_expr(elt)?;
+            if compiler.code.is_dead() {
+                return Ok(());
+            }
+            let depth = compiler.compute_append_depth(depth_after_collection, 1, elt.position)?;
             compiler.code.emit_u8(Opcode::ListAppend, depth)
         })?;
 
@@ -2494,13 +2635,22 @@ impl<'a> Compiler<'a> {
 
     /// Compiles a set comprehension: `{elt for target in iter if cond...}`
     fn compile_set_comp(&mut self, elt: &ExprLoc, generators: &[Comprehension]) -> Result<(), CompileError> {
-        // Build empty set
+        if self.code.is_dead() {
+            return Ok(());
+        }
+        check_comp_generators(generators.len(), elt.position)?;
         self.code.emit_u16(Opcode::BuildSet, 0)?;
+        let depth_after_collection = self
+            .code
+            .stack_depth()
+            .expect("set comp: BuildSet kept us live, stack_depth must be Some");
 
-        // Compile the nested generators, which will eventually add to the set
-        let depth = check_comp_generators(generators.len(), elt.position)?;
         self.compile_comprehension_generators(generators, 0, |compiler| {
             compiler.compile_expr(elt)?;
+            if compiler.code.is_dead() {
+                return Ok(());
+            }
+            let depth = compiler.compute_append_depth(depth_after_collection, 1, elt.position)?;
             compiler.code.emit_u8(Opcode::SetAdd, depth)
         })?;
 
@@ -2514,31 +2664,77 @@ impl<'a> Compiler<'a> {
         value: &ExprLoc,
         generators: &[Comprehension],
     ) -> Result<(), CompileError> {
-        // Build empty dict
+        if self.code.is_dead() {
+            return Ok(());
+        }
+        check_comp_generators(generators.len(), key.position)?;
         self.code.emit_u16(Opcode::BuildDict, 0)?;
+        let depth_after_collection = self
+            .code
+            .stack_depth()
+            .expect("dict comp: BuildDict kept us live, stack_depth must be Some");
 
-        // Compile the nested generators, which will eventually set items in the dict
-        let depth = check_comp_generators(generators.len(), key.position)?;
         self.compile_comprehension_generators(generators, 0, |compiler| {
             compiler.compile_expr(key)?;
             compiler.compile_expr(value)?;
+            if compiler.code.is_dead() {
+                return Ok(());
+            }
+            // DictSetItem pops 2 (key+value), so the post-pop offset for the
+            // collection is one deeper than the list/set case.
+            let depth = compiler.compute_append_depth(depth_after_collection, 2, key.position)?;
             compiler.code.emit_u8(Opcode::DictSetItem, depth)
         })?;
 
         Ok(())
     }
 
+    /// Computes the `depth` operand for `ListAppend` / `SetAdd` / `DictSetItem`.
+    ///
+    /// All three opcodes pop their value(s) first and then index the
+    /// collection at `len_post_pop - 1 - depth`. We want the collection at
+    /// its known position (`depth_after_collection - 1`), so the operand is
+    /// `current_stack_depth - depth_after_collection - 1` for list/set (pops 1)
+    /// or `current_stack_depth - depth_after_collection - 2` for dict (pops 2).
+    /// The caller passes the pop count.
+    fn compute_append_depth(
+        &self,
+        depth_after_collection: u16,
+        pops: u16,
+        position: CodeRange,
+    ) -> Result<u8, CompileError> {
+        let current = self.code.stack_depth().expect("compute_append_depth in dead code");
+        let depth = current
+            .checked_sub(depth_after_collection)
+            .and_then(|d| d.checked_sub(pops))
+            .ok_or_else(|| CompileError::new("comprehension stack-depth bookkeeping went negative", position))?;
+        u8::try_from(depth).map_err(|_| {
+            CompileError::new(
+                "comprehension target + iterator count exceeds u8 depth operand",
+                position,
+            )
+        })
+    }
+
     /// Recursively compiles comprehension generators (the for/if clauses).
     ///
     /// For each generator:
-    /// 1. Compile the iterator expression and get iterator
-    /// 2. Start loop: FOR_ITER to get next value or exit
-    /// 3. Store to target variable
-    /// 4. Compile filter conditions (jump back to loop start if any fails)
-    /// 5. Either recurse for inner generator, or call the body callback
-    /// 6. Jump back to loop start
-    ///
-    /// The `body_fn` callback is called at the innermost level to emit the element/key-value code.
+    /// 1. Compile the iterator expression and `GET_ITER`.
+    /// 2. Start loop: `FOR_ITER` pushes the iter's value (or pops iter and
+    ///    jumps to end on exhaustion).
+    /// 3. Unpack the comp target — `compile_comp_target_unpack` emits any
+    ///    `UNPACK_SEQUENCE` / `UNPACK_EX` / `LIFT_TO_TOP` needed and records
+    ///    each leaf's operand-stack offset.
+    /// 4. Compile filter conditions; on false, jump back to loop start
+    ///    (skipping per-iter POPs and the body — the per-iter operand-stack
+    ///    items live below the filter result, so this works the same way it
+    ///    did with the dedicated-region scheme).
+    /// 5. Either recurse for the next generator, or call `body_fn` at the
+    ///    innermost level (which emits the element expression and
+    ///    `LIST_APPEND` / `SET_ADD` / `DICT_SET_ITEM`).
+    /// 6. Per-iteration `POP` for each comp-var leaf produced by this
+    ///    generator's target, restoring the loop-start stack shape.
+    /// 7. Jump back to loop start.
     fn compile_comprehension_generators(
         &mut self,
         generators: &[Comprehension],
@@ -2554,32 +2750,182 @@ impl<'a> Compiler<'a> {
         // Loop start
         let loop_start = self.code.current_jump_target();
 
-        // FOR_ITER: advance iterator or jump to end
+        // FOR_ITER: pushes value, or pops iter and jumps to end on exhaustion.
         let end_jump = self.code.emit_jump(Opcode::ForIter)?;
 
-        // Store current value to target (single variable or tuple unpacking)
-        self.compile_unpack_target(&generator.target)?;
+        // Unpack target — leaves the comp vars on the operand stack at offsets
+        // recorded in `self.slot_offsets`, and marks them in `bound_comp_slots`.
+        let comp_var_slots = self.compile_comp_target_unpack(&generator.target)?;
 
-        // Compile filter conditions - jump back to loop start if any fails
+        // Filters: any false → forward-jump to the per-iter cleanup block
+        // below. We can't jump directly to `loop_start`: the comp vars are
+        // on the operand stack, so we must pop them first to keep the
+        // loop-start stack shape consistent. `JumpIfFalse` pops `cond`, so
+        // arrival depth at the cleanup label matches the post-body depth
+        // (both are `loop_start + K`).
+        let mut filter_skip_jumps = Vec::with_capacity(generator.ifs.len());
         for cond in &generator.ifs {
             self.compile_expr(cond)?;
-            // If condition is false, skip to next iteration
-            self.code.emit_jump_to(Opcode::JumpIfFalse, loop_start)?;
+            filter_skip_jumps.push(self.code.emit_jump(Opcode::JumpIfFalse)?);
         }
 
-        // Either recurse for inner generator, or emit body
+        // Recurse or emit body.
         if index + 1 < generators.len() {
-            // Recurse for inner generator
             self.compile_comprehension_generators(generators, index + 1, body_fn)?;
         } else {
-            // Innermost level - emit body (the element/key-value expression and append/add/set)
             body_fn(self)?;
+        }
+
+        // Per-iteration cleanup block: pop this generator's comp vars so the
+        // JUMP back to `loop_start` lands at the same stack shape as the
+        // previous iteration's entry. Filter-failure jumps also land here.
+        for jmp in filter_skip_jumps {
+            self.code.patch_jump(jmp)?;
+        }
+        for _ in 0..comp_var_slots.len() {
+            self.code.emit(Opcode::Pop)?;
         }
 
         // Jump back to loop start
         self.code.emit_jump_to(Opcode::Jump, loop_start)?;
         self.code.patch_jump(end_jump)?;
 
+        // Comp vars are out of scope after the loop body; clear their
+        // bound-state so a sibling comprehension that reuses the same slot
+        // IDs sees its own targets as unbound at iter-prep time.
+        // `slot_offsets` entries are simply overwritten by whoever uses the
+        // slot next, so we leave them as-is.
+        for slot in &comp_var_slots {
+            self.bound_comp_slots.remove(slot);
+        }
+
+        Ok(())
+    }
+
+    /// Compiles the unpacking of a comprehension target.
+    ///
+    /// At entry, `FOR_ITER` has pushed the iter's value at TOS. This emits
+    /// `UNPACK_SEQUENCE` / `UNPACK_EX` / `LIFT_TO_TOP` as needed (nested
+    /// tuples force `LIFT_TO_TOP` to bring sub-iterables to TOS for
+    /// further unpacking) and records each leaf's absolute operand-stack
+    /// offset in `self.slot_offsets`. Also marks each leaf's slot ID in
+    /// `self.bound_comp_slots`.
+    ///
+    /// Returns the slot IDs for this target's leaves so the caller can
+    /// emit a matching `POP` per leaf for per-iteration cleanup.
+    fn compile_comp_target_unpack(&mut self, target: &UnpackTarget) -> Result<Vec<u16>, CompileError> {
+        // `FOR_ITER` just pushed; current depth's TOS index is the value's
+        // operand-stack offset, which is also the offset of the first leaf
+        // produced by this unpack.
+        //
+        // If we're already in dead-code state (e.g. an earlier generator's
+        // iter expression contained a `RaiseUnboundLocal` that terminated the
+        // current code region), no bytecode emission would have any effect.
+        // Return an empty slot list — `compile_comprehension_generators` then
+        // emits its `POP`s and `JUMP` in dead state (also no-ops). The
+        // comp-var slots stay out of `bound_comp_slots`, so any subsequent
+        // `CompVar` read would dispatch to `RaiseUnboundLocal` — also a
+        // no-op in dead code.
+        let Some(stack_depth) = self.code.stack_depth() else {
+            return Ok(Vec::new());
+        };
+        let base_offset = stack_depth - 1;
+
+        let mut sim: Vec<SimItem<'_>> = vec![SimItem::Pending(target)];
+        self.process_unpack_sim(&mut sim)?;
+
+        // All items should be Leafs now. Record offsets in order.
+        let mut slot_ids = Vec::with_capacity(sim.len());
+        for (i, item) in sim.into_iter().enumerate() {
+            let SimItem::Leaf(slot) = item else {
+                unreachable!("process_unpack_sim left a Pending on the sim");
+            };
+            let i_u16 = u16::try_from(i).expect("comp-var index bounded by u8 unpack count");
+            let offset = base_offset.checked_add(i_u16).ok_or_else(|| {
+                CompileError::new(
+                    "comprehension operand-stack offset exceeds u16",
+                    target_position(target),
+                )
+            })?;
+            let slot_idx = slot as usize;
+            if slot_idx >= self.slot_offsets.len() {
+                self.slot_offsets.resize(slot_idx + 1, 0);
+            }
+            self.slot_offsets[slot_idx] = self.frame_locals.checked_add(offset).ok_or_else(|| {
+                CompileError::new(
+                    "comprehension comp-var slot exceeds u16 (frame_locals + offset)",
+                    target_position(target),
+                )
+            })?;
+            self.bound_comp_slots.insert(slot);
+            slot_ids.push(slot);
+        }
+
+        Ok(slot_ids)
+    }
+
+    /// Drives one step of the unpack simulation: takes the topmost `Pending`
+    /// off `sim` and either marks it `Leaf` (for `Name`/`Starred`) or emits
+    /// `UNPACK_SEQUENCE`/`UNPACK_EX` and recursively processes sub-targets,
+    /// using `LIFT_TO_TOP` to bring each sub-target to TOS before recursion.
+    ///
+    /// Precondition: `sim`'s topmost item is `Pending`.
+    fn process_unpack_sim(&mut self, sim: &mut Vec<SimItem<'_>>) -> Result<(), CompileError> {
+        let target = match sim.pop() {
+            Some(SimItem::Pending(t)) => t,
+            Some(SimItem::Leaf(_)) => unreachable!("process_unpack_sim called with Leaf at TOS"),
+            None => unreachable!("process_unpack_sim called on empty sim"),
+        };
+
+        match target {
+            UnpackTarget::Name(ident) | UnpackTarget::Starred(ident) => {
+                sim.push(SimItem::Leaf(ident.namespace_id().as_u16()));
+            }
+            UnpackTarget::Tuple { targets, position } => {
+                // Pick UNPACK_EX vs UNPACK_SEQUENCE based on whether a starred
+                // sub-target is present (same logic as the regular assignment
+                // path in `compile_unpack_target`).
+                let star_idx = targets.iter().position(|t| matches!(t, UnpackTarget::Starred(_)));
+                self.code.set_location(*position, None);
+                if let Some(star_idx) = star_idx {
+                    let before = check_unpack_targets(star_idx, *position)?;
+                    let after = check_unpack_targets(targets.len() - star_idx - 1, *position)?;
+                    self.code.emit_u8_u8(Opcode::UnpackEx, before, after)?;
+                } else {
+                    let count = check_unpack_targets(targets.len(), *position)?;
+                    self.code.emit_u8(Opcode::UnpackSequence, count)?;
+                }
+
+                // UNPACK pushes sub-targets in reverse source order: sub n-1
+                // ends up at the bottom of the new region, sub 0 at TOS.
+                let base = sim.len();
+                for sub in targets.iter().rev() {
+                    sim.push(SimItem::Pending(sub));
+                }
+
+                // Process sub-targets in source order. Each lift only moves
+                // items at or above the source-index, so subs we haven't
+                // processed yet (lower indices, deeper in the sim) keep
+                // their position.
+                let n = targets.len();
+                for i in 0..n {
+                    let target_idx = base + (n - 1 - i);
+                    let tos_idx = sim.len() - 1;
+                    if tos_idx > target_idx {
+                        let lift_n = tos_idx - target_idx;
+                        let lift_n_u8 = u8::try_from(lift_n).map_err(|_| {
+                            CompileError::new("comprehension nesting requires lift offset > u8", *position)
+                        })?;
+                        self.code.emit_u8(Opcode::LiftToTop, lift_n_u8)?;
+                        let item = sim.remove(target_idx);
+                        sim.push(item);
+                    }
+                    // Now sub i is at TOS. Recurse to either mark Leaf or
+                    // unpack further.
+                    self.process_unpack_sim(sim)?;
+                }
+            }
+        }
         Ok(())
     }
 
@@ -3414,6 +3760,14 @@ impl<'a> Compiler<'a> {
                 // For now, just store None
                 self.code.emit(Opcode::LoadNone)?;
                 self.compile_store(target)?;
+            }
+            NameScope::CompVar => {
+                // Comprehension targets only appear as generator targets
+                // inside inlined comprehensions; the parser does not surface
+                // a `del` target with `CompVar` scope (there is no syntax
+                // for `del x` on a comp target). Reaching here means a
+                // compile-flow bug.
+                unreachable!("compile_delete called with NameScope::CompVar — no Python syntax produces this")
             }
         }
         Ok(())

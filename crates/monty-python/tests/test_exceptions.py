@@ -293,8 +293,15 @@ def test_str_returns_msg():
 def test_syntax_error_display():
     with pytest.raises(pydantic_monty.MontySyntaxError) as exc_info:
         pydantic_monty.Monty('def')
-    assert exc_info.value.display() == snapshot('Expected an identifier at byte range 3..3')
-    assert exc_info.value.display('type-msg') == snapshot('SyntaxError: Expected an identifier at byte range 3..3')
+    assert exc_info.value.display() == snapshot("""\
+Traceback (most recent call last):
+  File "main.py", line 1
+    def
+       ~
+SyntaxError: Expected an identifier\
+""")
+    assert exc_info.value.display('type-msg') == snapshot('SyntaxError: Expected an identifier')
+    assert exc_info.value.display('msg') == snapshot('Expected an identifier')
 
 
 def test_syntax_error_str():
@@ -419,7 +426,7 @@ def test_runtime_error_repr():
 def test_syntax_error_repr():
     with pytest.raises(pydantic_monty.MontySyntaxError) as exc_info:
         pydantic_monty.Monty('def')
-    assert repr(exc_info.value) == snapshot('MontySyntaxError(Expected an identifier at byte range 3..3)')
+    assert repr(exc_info.value) == snapshot('MontySyntaxError(Expected an identifier)')
 
 
 def test_frame_repr():

@@ -1,3 +1,5 @@
+use std::mem;
+
 use ahash::{AHashMap, AHashSet};
 
 use crate::{
@@ -161,6 +163,23 @@ struct Prepare<'i> {
     /// classifying subsequent references as `Local` (like parameters) when the name
     /// appears in `name_map` from a previous `get_id` call.
     unassigned_ref_names: AHashSet<String>,
+    /// Number of comprehension-variable slots currently in use (inside a comprehension).
+    ///
+    /// Allocated bottom-up as comprehension target names are encountered,
+    /// released back into the pool when the surrounding comprehension
+    /// finishes. Each allocation gets a function-wide unique slot ID; the
+    /// compiler maps that ID to an operand-stack offset at emission time
+    /// (`Compiler::slot_offsets`).
+    comp_var_depth: u16,
+    /// Stack of comprehension-name → comp-var-slot maps for the currently active comprehensions.
+    ///
+    /// Pushed on entry to a comprehension, popped on exit. Read by `get_id` (the
+    /// **expression-position** read path) before falling through to the regular
+    /// name-resolution cascade so a comprehension target shadows any same-named
+    /// enclosing binding. Walrus and other assignment-position stores must bypass
+    /// this stack (see [`Prepare::get_id_for_store_target`]) so PEP 572 binding
+    /// semantics are preserved.
+    comp_name_scopes: Vec<AHashMap<String, u16>>,
 }
 
 impl<'i> Prepare<'i> {
@@ -210,6 +229,8 @@ impl<'i> Prepare<'i> {
             free_var_map: AHashMap::new(),
             cell_var_map: AHashMap::new(),
             unassigned_ref_names: AHashSet::new(),
+            comp_var_depth: 0,
+            comp_name_scopes: Vec::new(),
         })
     }
 
@@ -236,6 +257,8 @@ impl<'i> Prepare<'i> {
             free_var_map: AHashMap::new(),
             cell_var_map: AHashMap::new(),
             unassigned_ref_names: AHashSet::new(),
+            comp_var_depth: 0,
+            comp_name_scopes: Vec::new(),
         }
     }
 
@@ -337,6 +360,8 @@ impl<'i> Prepare<'i> {
             free_var_map,
             cell_var_map,
             unassigned_ref_names: AHashSet::new(),
+            comp_var_depth: 0,
+            comp_name_scopes: Vec::new(),
         })
     }
 
@@ -883,7 +908,10 @@ impl<'i> Prepare<'i> {
                 // Register the target as assigned in this scope
                 self.names_assigned_in_order
                     .insert(self.interner.get_str(target.name_id).to_string());
-                let (resolved_target, _) = self.get_id(target)?;
+                // Walrus binds in the enclosing scope (PEP 572), NOT in the
+                // comprehension's scratch region. Resolve through the
+                // assignment-target path which bypasses `comp_name_scopes`.
+                let (resolved_target, _) = self.get_id_for_store_target(target)?;
                 Expr::Named {
                     target: resolved_target,
                     value,
@@ -998,7 +1026,9 @@ impl<'i> Prepare<'i> {
         key_value: Option<(ExprLoc, ExprLoc)>,
     ) -> Result<(Vec<Comprehension>, Option<ExprLoc>, Option<(ExprLoc, ExprLoc)>), ParseError> {
         // Per PEP 572, walrus operators inside comprehensions bind in the ENCLOSING scope.
-        // Pre-register walrus targets before saving scope state, so they persist after restore.
+        // Pre-register walrus targets so they exist in the enclosing namespace BEFORE the
+        // comp-name scope is pushed — that way `get_id_for_store_target` resolves them
+        // straight to enclosing-scope slots without seeing comp-var.
         let mut walrus_targets: AHashSet<String> = AHashSet::new();
         if let Some(ref e) = elt {
             collect_assigned_names_from_expr(e, &mut walrus_targets, self.interner);
@@ -1026,40 +1056,41 @@ impl<'i> Prepare<'i> {
             }
         }
 
-        // Save current scope state for isolation
-        let saved_name_map = self.name_map.clone();
-        let saved_assigned_names = self.names_assigned_in_order.clone();
-        let saved_free_var_map = self.free_var_map.clone();
-        let saved_cell_var_map = self.cell_var_map.clone();
-        let saved_enclosing_locals = self.enclosing_locals.clone();
-        let saved_unassigned_ref_names = self.unassigned_ref_names.clone();
+        // A comprehension is a single lexical scope even though its generators are
+        // written left-to-right. Push one comp scope for the whole comprehension and
+        // remember the scratch depth so we can release this comp's slots on exit
+        // (sibling comps reuse the slots; high-water mark records peak nesting).
+        let saved_var_depth = self.comp_var_depth;
+        self.comp_name_scopes.push(AHashMap::new());
 
-        // Step 1: Prepare first generator's iter in enclosing scope (before any shadowing)
+        // PEP 709 / CPython: the FIRST generator's iter is evaluated in the
+        // *enclosing* scope, before any comp shadowing — that is why
+        // `[x for x in x]` inside `def inner(): x = ...; return [x for x in x]`
+        // pulls the outer `x` into the iter and then rebinds it. Prepare it now,
+        // with the (empty) comp scope already pushed so any walrus or nested
+        // lookup follows the same path as the rest of the comprehension; the
+        // empty scope can't shadow anything yet.
         let mut generators_iter = generators.into_iter();
         let first_gen = generators_iter
             .next()
             .expect("comprehension must have at least one generator");
         let first_iter = self.prepare_expression(first_gen.iter)?;
-
-        // Step 2: Collect and shadow ALL loop variable names from ALL generators.
-        // This must happen BEFORE evaluating any subsequent generator's iter expression.
-        // We allocate slots but don't mark them as "assigned" yet - this causes
-        // UnboundLocalError if a later generator's iter references an earlier-declared
-        // but not-yet-assigned loop variable.
-        let first_target = self.prepare_unpack_target_for_comprehension(first_gen.target)?;
-
-        // Collect remaining generators so we can pre-shadow their targets
         let remaining_gens: Vec<Comprehension> = generators_iter.collect();
 
-        // Pre-shadow ALL remaining loop variables before evaluating their iters.
-        // This is the key CPython behavior: all loop vars are local to the comprehension,
-        // so referencing a later loop var in an earlier iter raises UnboundLocalError.
-        let mut preshadowed_targets: Vec<UnpackTarget> = Vec::with_capacity(remaining_gens.len());
+        // Predeclare every generator target's names as comp-var slots BEFORE
+        // preparing any *remaining* iter expression. This makes references to a
+        // later generator's target name (or the first generator's target, in
+        // the body) resolve to scratch — raising `UnboundLocalError` at runtime
+        // if loaded before the corresponding `for` assigns (the reviewer's
+        // `[x for x in [1] for y in z for z in [[2], [3]]]` example).
+        let first_target = self.prepare_unpack_target_for_comprehension(first_gen.target)?;
+        let mut remaining_targets: Vec<UnpackTarget> = Vec::with_capacity(remaining_gens.len());
         for generator in &remaining_gens {
-            preshadowed_targets.push(self.prepare_unpack_target_shadow_only(generator.target.clone())?);
+            remaining_targets.push(self.prepare_unpack_target_for_comprehension(generator.target.clone())?);
         }
 
-        // Prepare first generator's filters (can see first loop variable)
+        // Now prepare the first generator's filters (with full comp scope visible),
+        // then the remaining generators' iter + filters, then the body element.
         let first_ifs = first_gen
             .ifs
             .into_iter()
@@ -1072,24 +1103,22 @@ impl<'i> Prepare<'i> {
             iter: first_iter,
             ifs: first_ifs,
         });
-
-        // Step 3: Process remaining generators - their iters now see all loop vars as local
-        for (generator, preshadowed_target) in remaining_gens.into_iter().zip(preshadowed_targets) {
+        for (generator, prepared_target) in remaining_gens.into_iter().zip(remaining_targets) {
             let iter = self.prepare_expression(generator.iter)?;
             let ifs = generator
                 .ifs
                 .into_iter()
                 .map(|cond| self.prepare_expression(cond))
                 .collect::<Result<Vec<_>, _>>()?;
-
             prepared_generators.push(Comprehension {
-                target: preshadowed_target,
+                target: prepared_target,
                 iter,
                 ifs,
             });
         }
 
-        // Prepare the element expression(s) - can see all loop variables
+        // Prepare the element / key-value expression(s) in the same comp scope
+        // so they too see the comp targets.
         let prepared_elt = match elt {
             Some(e) => Some(self.prepare_expression(e)?),
             None => None,
@@ -1099,13 +1128,11 @@ impl<'i> Prepare<'i> {
             None => None,
         };
 
-        // Restore scope state - loop variables do not leak to enclosing scope
-        self.name_map = saved_name_map;
-        self.names_assigned_in_order = saved_assigned_names;
-        self.free_var_map = saved_free_var_map;
-        self.cell_var_map = saved_cell_var_map;
-        self.enclosing_locals = saved_enclosing_locals;
-        self.unassigned_ref_names = saved_unassigned_ref_names;
+        // Pop the comp scope and release this comp's comp-var slots back into the pool.
+        // The high-water mark already records peak nesting, so sibling comps can reuse
+        // these slots without growing the per-frame scratch region.
+        self.comp_name_scopes.pop();
+        self.comp_var_depth = saved_var_depth;
 
         Ok((prepared_generators, prepared_elt, prepared_key_value))
     }
@@ -1186,44 +1213,47 @@ impl<'i> Prepare<'i> {
         }
     }
 
-    /// Prepares an unpack target for comprehension by allocating fresh namespace slots.
+    /// Predeclares an unpack target's names as comprehension-variable slots.
     ///
-    /// Unlike regular unpack targets, comprehension targets need new slots to shadow
-    /// any existing bindings with the same name.
+    /// Called during the first pass of `prepare_comprehension`, before any
+    /// generator iter expressions are walked, so a later generator's target
+    /// shadows references to the same name in earlier generators' iters. Each
+    /// new name claims the next comp-var slot (recorded in
+    /// `comp_var_depth`) and is inserted into the current `comp_name_scopes`
+    /// frame. Subsequent reads inside the comprehension resolve through the
+    /// scope stack and emit `Load/StoreCompTarget`; outside the comprehension
+    /// the slot is unreachable.
+    ///
+    /// Unlike the old `prepare_unpack_target_for_comprehension`, this does NOT
+    /// touch `name_map`, `names_assigned_in_order`, `free_var_map`,
+    /// `cell_var_map`, or `enclosing_locals`. That is the whole point of moving
+    /// comp targets out of the regular namespace: outer same-named bindings are
+    /// preserved unchanged, and the persistent namespace doesn't grow per
+    /// distinct target name.
     fn prepare_unpack_target_for_comprehension(&mut self, target: UnpackTarget) -> Result<UnpackTarget, ParseError> {
         match target {
             UnpackTarget::Name(ident) => {
-                let name_str = self.interner.get_str(ident.name_id).to_string();
-                let comp_var_id = self.alloc_slot(ident.position)?;
-
-                // Shadow any existing binding
-                self.shadow_for_comprehension(&name_str, comp_var_id);
-
+                let slot = self.alloc_comp_var_slot(ident.name_id, ident.position)?;
                 Ok(UnpackTarget::Name(Identifier::new_with_scope(
                     ident.name_id,
                     ident.position,
-                    comp_var_id,
-                    NameScope::Local,
+                    NamespaceId::new(usize::from(slot)).expect("comp-var slot fits in NamespaceId"),
+                    NameScope::CompVar,
                 )))
             }
             UnpackTarget::Starred(ident) => {
-                let name_str = self.interner.get_str(ident.name_id).to_string();
-                let comp_var_id = self.alloc_slot(ident.position)?;
-
-                // Shadow any existing binding
-                self.shadow_for_comprehension(&name_str, comp_var_id);
-
+                let slot = self.alloc_comp_var_slot(ident.name_id, ident.position)?;
                 Ok(UnpackTarget::Starred(Identifier::new_with_scope(
                     ident.name_id,
                     ident.position,
-                    comp_var_id,
-                    NameScope::Local,
+                    NamespaceId::new(usize::from(slot)).expect("comp-var slot fits in NamespaceId"),
+                    NameScope::CompVar,
                 )))
             }
             UnpackTarget::Tuple { targets, position } => {
                 let resolved_targets = targets
                     .into_iter()
-                    .map(|t| self.prepare_unpack_target_for_comprehension(t)) // Recursive call
+                    .map(|t| self.prepare_unpack_target_for_comprehension(t))
                     .collect::<Result<Vec<_>, _>>()?;
                 Ok(UnpackTarget::Tuple {
                     targets: resolved_targets,
@@ -1233,80 +1263,29 @@ impl<'i> Prepare<'i> {
         }
     }
 
-    /// Pre-shadows an unpack target for comprehension scoping.
+    /// Allocates the next comp-var slot for `name_id`, registering it in
+    /// the topmost comp-name scope and updating the high-water mark.
     ///
-    /// Allocates namespace slots without marking as assigned, causing UnboundLocalError
-    /// if accessed before assignment.
-    fn prepare_unpack_target_shadow_only(&mut self, target: UnpackTarget) -> Result<UnpackTarget, ParseError> {
-        match target {
-            UnpackTarget::Name(ident) => {
-                let name_str = self.interner.get_str(ident.name_id).to_string();
-                let comp_var_id = self.alloc_slot(ident.position)?;
+    /// Returns the slot index (a `u16`, matching the `Load/StoreCompTarget`
+    /// operand width). Raises a syntax error anchored to `position` if the
+    /// scratch region would exceed `u16::MAX` slots — the same overflow
+    /// behavior `alloc_slot` uses for the regular namespace.
+    fn alloc_comp_var_slot(&mut self, name_id: StringId, position: CodeRange) -> Result<u16, ParseError> {
+        let slot = self.comp_var_depth;
+        let next = slot.checked_add(1).ok_or_else(|| namespace_overflow(position))?;
+        self.comp_var_depth = next;
+        // No per-slot side table for names — each `Load/StoreCompTarget`
+        // opcode carries its target's `name_id` inline. Just push the name
+        // onto the active comp scope so subsequent reads inside the
+        // comprehension can resolve to this slot.
+        let name_str = self.interner.get_str(name_id).to_string();
+        let top = self
+            .comp_name_scopes
+            .last_mut()
+            .expect("alloc_comp_var_slot called outside an active comp scope");
+        top.insert(name_str, slot);
 
-                // Shadow but do NOT add to names_assigned_in_order yet
-                self.name_map.insert(name_str.clone(), comp_var_id);
-                self.free_var_map.remove(&name_str);
-                self.cell_var_map.remove(&name_str);
-                if let Some(ref mut enclosing) = self.enclosing_locals {
-                    enclosing.remove(&name_str);
-                }
-
-                Ok(UnpackTarget::Name(Identifier::new_with_scope(
-                    ident.name_id,
-                    ident.position,
-                    comp_var_id,
-                    NameScope::Local,
-                )))
-            }
-            UnpackTarget::Starred(ident) => {
-                let name_str = self.interner.get_str(ident.name_id).to_string();
-                let comp_var_id = self.alloc_slot(ident.position)?;
-
-                // Shadow but do NOT add to names_assigned_in_order yet
-                self.name_map.insert(name_str.clone(), comp_var_id);
-                self.free_var_map.remove(&name_str);
-                self.cell_var_map.remove(&name_str);
-                if let Some(ref mut enclosing) = self.enclosing_locals {
-                    enclosing.remove(&name_str);
-                }
-
-                Ok(UnpackTarget::Starred(Identifier::new_with_scope(
-                    ident.name_id,
-                    ident.position,
-                    comp_var_id,
-                    NameScope::Local,
-                )))
-            }
-            UnpackTarget::Tuple { targets, position } => {
-                let resolved_targets = targets
-                    .into_iter()
-                    .map(|t| self.prepare_unpack_target_shadow_only(t)) // Recursive call
-                    .collect::<Result<Vec<_>, _>>()?;
-                Ok(UnpackTarget::Tuple {
-                    targets: resolved_targets,
-                    position,
-                })
-            }
-        }
-    }
-
-    /// Shadows a name in all scope maps for comprehension isolation.
-    ///
-    /// This ensures the comprehension loop variable takes precedence over any
-    /// variable with the same name from enclosing scopes.
-    fn shadow_for_comprehension(&mut self, name_str: &str, comp_var_id: NamespaceId) {
-        // The lookup order in get_id is: global_declarations, free_var_map, cell_var_map,
-        // assigned_names, enclosing_locals, then name_map. So we must update/remove from all maps
-        // checked before name_map to ensure the comprehension variable shadows any captured
-        // variable with the same name.
-        self.name_map.insert(name_str.to_string(), comp_var_id);
-        self.names_assigned_in_order.insert(name_str.to_string());
-        self.free_var_map.remove(name_str);
-        self.cell_var_map.remove(name_str);
-        // Also remove from enclosing_locals to prevent get_id from re-capturing the variable
-        if let Some(ref mut enclosing) = self.enclosing_locals {
-            enclosing.remove(name_str);
-        }
+        Ok(slot)
     }
 
     /// Prepares a function definition using a two-pass approach for correct scope resolution.
@@ -1743,9 +1722,45 @@ impl<'i> Prepare<'i> {
     ///
     /// # Returns
     /// A tuple of (resolved Identifier with id and scope set, whether this is a new local name).
+    /// Resolves an identifier for an assignment-position store (e.g. walrus target).
+    ///
+    /// Per PEP 572, walrus operators inside comprehensions bind in the **enclosing**
+    /// scope, not the comprehension. The same applies to any other store target
+    /// that is not a comprehension's own generator target. Bypassing
+    /// `comp_name_scopes` ensures the store can never accidentally land in a
+    /// comp-var slot that happens to share its name. Generator target stores
+    /// are installed by `prepare_unpack_target_for_comprehension` and never come
+    /// through here.
+    fn get_id_for_store_target(&mut self, ident: Identifier) -> Result<(Identifier, bool), ParseError> {
+        let saved_scopes = mem::take(&mut self.comp_name_scopes);
+        let result = self.get_id(ident);
+        self.comp_name_scopes = saved_scopes;
+        result
+    }
+
     fn get_id(&mut self, ident: Identifier) -> Result<(Identifier, bool), ParseError> {
         let name_str = self.interner.get_str(ident.name_id);
         let position = ident.position;
+
+        // Read path: check the comp-name scope stack first, top-down. A name
+        // bound by a generator target shadows any same-named outer binding
+        // *for ordinary expression-position reads inside the comprehension*.
+        // Walrus targets and other assignment-position stores take a
+        // separate path that bypasses the comp scope (see
+        // `get_id_for_store_target`), so this lookup is read-only-safe.
+        for scope in self.comp_name_scopes.iter().rev() {
+            if let Some(&slot) = scope.get(name_str) {
+                return Ok((
+                    Identifier::new_with_scope(
+                        ident.name_id,
+                        position,
+                        NamespaceId::new(usize::from(slot)).expect("comp-var slot fits in NamespaceId"),
+                        NameScope::CompVar,
+                    ),
+                    false,
+                ));
+            }
+        }
 
         // At module level, all names are local (which is also the global namespace).
         // The compiler emits global opcodes for these, so the VM reads/writes

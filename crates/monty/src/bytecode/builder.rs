@@ -56,7 +56,8 @@ pub struct CodeBuilder {
     /// Operand-stack depth at the point the next opcode will be emitted, or
     /// `None` if not emitting a code region.
     ///
-    /// Unconditional terminators (`Jump`, `ReturnValue`, `Raise`, `Reraise`)
+    /// Unconditional terminators (`Jump`, `ReturnValue`, `Raise`, `Reraise`,
+    /// `RaiseImportError`, `RaiseUnboundLocal`)
     /// finish code regions, transitioning the builder to the dead-code state.
     current_stack_depth: Option<u16>,
 
@@ -357,6 +358,16 @@ impl CodeBuilder {
         self.assigned_locals.insert(slot);
     }
 
+    /// Emits a `RaiseUnboundLocal` opcode carrying the comprehension target
+    /// name to be reported in `UnboundLocalError`.
+    ///
+    /// Used by the comprehension compiler at sites where static analysis
+    /// proves the target is read before its `for` clause assigns it.
+    pub fn emit_raise_unbound_local(&mut self, name_id: StringId) -> Result<(), CompileError> {
+        let name_idx = u16::try_from(name_id.index()).map_err(|_| self.name_id_too_large())?;
+        self.emit_with_operand(Opcode::RaiseUnboundLocal, Operand::U16(name_idx))
+    }
+
     /// Emits a `LoadLocal` instruction, using specialized variants for common slots.
     pub fn emit_load_local(&mut self, slot: u16) -> Result<(), CompileError> {
         match slot {
@@ -606,7 +617,12 @@ impl CodeBuilder {
         self.adjust_stack(op.stack_effect(operand))?;
         if matches!(
             op,
-            Opcode::ReturnValue | Opcode::Raise | Opcode::Reraise | Opcode::RaiseImportError | Opcode::Jump
+            Opcode::ReturnValue
+                | Opcode::Raise
+                | Opcode::Reraise
+                | Opcode::RaiseImportError
+                | Opcode::RaiseUnboundLocal
+                | Opcode::Jump
         ) {
             self.current_stack_depth = None;
         }

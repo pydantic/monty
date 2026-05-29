@@ -340,6 +340,54 @@ fn fstring_dynamic_width_memory_bounded() {
     );
 }
 
+/// Regression: an f-string with a large *dynamic* precision on a float
+/// format (`f`/`e`/`%`) must be rejected by the memory limit before the
+/// digit-padding string is materialized.
+///
+/// `fmt_float_fixed` / `fmt_float_exp` cap Rust's native precision at
+/// `MAX_FMT_PRECISION` and synthesise the remaining digits by extending the
+/// result `String` with `'0'` chars. Without the precision guard alongside
+/// the width guard, `p = 10**9` would allocate ~1 GB of zeros before
+/// `allocate_string` could account for the result. Mirrors the width-bounded
+/// test above; covers both float values and int-coerced-to-float values.
+#[test]
+fn fstring_dynamic_precision_memory_bounded() {
+    for code in [
+        "p = 999_999_999\nf'{1.0:.{p}f}'",
+        "p = 999_999_999\nf'{1.0:.{p}e}'",
+        "p = 999_999_999\nf'{1.0:.{p}E}'",
+        "p = 999_999_999\nf'{1.0:.{p}F}'",
+        "p = 999_999_999\nf'{1.0:.{p}%}'",
+        // Int coerced to float via the F/E/% type chars must also be bounded.
+        "p = 999_999_999\nf'{1:.{p}f}'",
+        "p = 999_999_999\nf'{1:.{p}F}'",
+        "p = 999_999_999\nf'{1:.{p}e}'",
+        // Literal precisions above the compact bytecode encoding capacity are
+        // emitted as dynamic specs and must still be checked at runtime.
+        "f'{1.0:.999999999f}'",
+    ] {
+        let ex = MontyRun::new(code.to_owned(), "test.py", vec![]).unwrap();
+        let limits = ResourceLimits::new()
+            .max_memory(1_048_576)
+            .max_duration(Duration::from_secs(30));
+        let result = ex.run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout);
+
+        let exc = result
+            .err()
+            .unwrap_or_else(|| panic!("{code:?}: should exceed the memory limit"));
+        assert_eq!(exc.exc_type(), ExcType::MemoryError, "{code:?}: wrong exc type");
+    }
+
+    // A small dynamic precision is unaffected and still formats correctly.
+    let ex = MontyRun::new("p = 3\nf'{1.5:.{p}f}'".to_owned(), "test.py", vec![]).unwrap();
+    let limits = ResourceLimits::new().max_memory(1_048_576);
+    let result = ex.run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout);
+    assert_eq!(
+        result.expect("small dynamic precision should succeed"),
+        MontyObject::String("1.500".to_owned())
+    );
+}
+
 #[test]
 fn memory_limit_zero() {
     let code = "x = 1 + 2\nx";

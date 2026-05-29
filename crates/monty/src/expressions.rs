@@ -40,6 +40,16 @@ pub enum NameScope {
     /// The namespace slot contains `Value::Ref(cell_id)` pointing to a `HeapData::Cell`.
     /// Access requires dereferencing through the cell.
     Cell,
+    /// Comprehension target stored in the frame's anonymous comp-var region.
+    ///
+    /// Inlined list/set/dict comprehensions allocate their loop variables in a
+    /// fixed-size frame-local region that sits between the regular locals and
+    /// operand-stack growth. The slot index in `opt_namespace_id` is
+    /// interpreted as a comp-var slot index (separate namespace from locals
+    /// or globals). The region is initialized to `Value::Undefined` on frame
+    /// entry and drained on frame exit, so comprehension targets never leak
+    /// into the enclosing scope. See `limitations/comprehensions.md` for details.
+    CompVar,
 }
 
 /// An identifier (variable or function name) with source location and scope information.

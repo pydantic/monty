@@ -12,9 +12,11 @@ inside the sandbox).
 - Operations whose result is bounded by simple arithmetic on input sizes
   are **pre-checked** before allocating: integer multiplication, left
   shift, integer power, sequence repeat (`'x' * n`), padding (`str.ljust`,
-  `str.center`, `str.zfill`, `bytes.ljust`, …). The pre-check threshold is
-  100 KB — anything that would estimate above that is rejected with
-  `ResourceError` rather than attempting the allocation.
+  `str.center`, `str.zfill`, `bytes.ljust`, …), and f-string formatting
+  (both dynamic width `f"{v:>{w}}"` and dynamic precision on float
+  formats `f"{v:.{p}f}"` / `e` / `%`). The pre-check threshold is 100 KB —
+  anything that would estimate above that is rejected with `ResourceError`
+  rather than attempting the allocation.
 - `bigint.pow(base, exp)` estimates result size as `bits(base) * exp` with
   a 4× safety multiplier to cover repeated-squaring intermediate values.
 

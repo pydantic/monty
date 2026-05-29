@@ -1,7 +1,7 @@
 //! Implementation of the zip() builtin function.
 
 use crate::{
-    args::{ArgValues, KwargsValues},
+    args::{ArgValues, FromArgs},
     bytecode::VM,
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, RunError, RunResult, SimpleException},
@@ -18,21 +18,23 @@ use crate::{
 /// When `strict=True`, raises `ValueError` if any iterable has a different length.
 /// Note: In Python this returns an iterator, but we return a list for simplicity.
 pub fn builtin_zip(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
-    let (positional, kwargs) = args.into_parts();
-    defer_drop_mut!(positional, vm);
+    let ZipArgs { iterables, strict } = ZipArgs::from_args(args, vm)?;
+    defer_drop_mut!(iterables, vm);
+    // CPython's `strict` is truthy-checked (not strict typed), so use `py_bool`
+    // on the raw value rather than asking the macro to coerce to `bool`.
+    defer_drop!(strict, vm);
+    let strict = strict.py_bool(vm);
 
-    let strict = extract_zip_strict(kwargs, vm)?;
-
-    if positional.len() == 0 {
+    if iterables.is_empty() {
         // zip() with no arguments returns empty list
         let heap_id = vm.heap.allocate(HeapData::List(List::new(Vec::new())))?;
         return Ok(Value::Ref(heap_id));
     }
 
     // Create iterators for each iterable
-    let iterators: Vec<MontyIter> = Vec::with_capacity(positional.len());
+    let iterators: Vec<MontyIter> = Vec::with_capacity(iterables.len());
     defer_drop_mut!(iterators, vm);
-    for iterable in positional {
+    for iterable in iterables.drain(..) {
         iterators.push(MontyIter::new(iterable, vm)?);
     }
 
@@ -84,43 +86,17 @@ pub fn builtin_zip(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> Ru
     Ok(Value::Ref(heap_id))
 }
 
-/// Extracts the `strict` keyword argument from `zip()`.
+/// Argument shape for `zip(*iterables, strict=False)`.
 ///
-/// Accepts any truthy/falsy value for `strict`, matching CPython behavior.
-/// Raises `TypeError` for unexpected keyword arguments.
-fn extract_zip_strict(kwargs: KwargsValues, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<bool> {
-    let mut strict = false;
-    let mut error: Option<RunError> = None;
-
-    for (key, value) in kwargs {
-        defer_drop!(key, vm);
-        defer_drop!(value, vm);
-
-        if error.is_some() {
-            continue;
-        }
-
-        let Some(keyword_name) = key.as_either_str(vm.heap) else {
-            error = Some(SimpleException::new_msg(ExcType::TypeError, "keywords must be strings").into());
-            continue;
-        };
-
-        let key_str = keyword_name.as_str(vm.interns);
-        match key_str {
-            "strict" => {
-                strict = value.py_bool(vm);
-            }
-            _ => {
-                error = Some(ExcType::type_error_unexpected_keyword("zip", key_str));
-            }
-        }
-    }
-
-    if let Some(error) = error {
-        Err(error)
-    } else {
-        Ok(strict)
-    }
+/// `strict` is held as a `Value` because CPython evaluates it via truthiness
+/// (`py_bool`), not strict-type equality, so accepting any value is correct.
+#[derive(FromArgs)]
+#[from_args(name = "zip")]
+struct ZipArgs {
+    #[from_args(varargs)]
+    iterables: Vec<Value>,
+    #[from_args(default = Value::Bool(false))]
+    strict: Value,
 }
 
 /// Builds the `ValueError` for `zip(strict=True)` when iterables have different lengths.

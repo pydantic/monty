@@ -18,7 +18,7 @@ use crate::{
     heap::{Heap, HeapReader},
     io::PrintWriter,
     object::MontyObject,
-    os::OsFunction,
+    os::OsFunctionCall,
     resource::ResourceTracker,
     run::Executor,
 };
@@ -219,15 +219,16 @@ impl<T: ResourceTracker> FunctionCall<T> {
 /// call `resume(return_value, print)` to provide the result and continue.
 ///
 /// This enables sandboxed execution where the interpreter never directly performs I/O.
+///
+/// `function_call` is a tagged [`OsFunctionCall`] whose variants carry the
+/// typed args directly. Host bindings that need a generic
+/// `(positional, keyword)` `MontyObject` view can call [`OsFunctionCall::to_args`]
+/// (the public projection method).
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 #[serde(bound(serialize = "T: serde::Serialize", deserialize = "T: serde::de::DeserializeOwned"))]
 pub struct OsCall<T: ResourceTracker> {
-    /// The OS function to execute.
-    pub function: OsFunction,
-    /// The positional arguments for the OS function.
-    pub args: Vec<MontyObject>,
-    /// The keyword arguments passed to the function (key, value pairs).
-    pub kwargs: Vec<(MontyObject, MontyObject)>,
+    /// Typed OS-call dispatch value (variant + args).
+    pub function_call: OsFunctionCall,
     /// Unique identifier for this call (used for async correlation).
     pub call_id: u32,
     /// Internal execution snapshot.
@@ -236,17 +237,9 @@ pub struct OsCall<T: ResourceTracker> {
 
 impl<T: ResourceTracker> OsCall<T> {
     /// Creates a new `OsCall` from its parts.
-    fn new(
-        function: OsFunction,
-        args: Vec<MontyObject>,
-        kwargs: Vec<(MontyObject, MontyObject)>,
-        call_id: u32,
-        snapshot: Snapshot<T>,
-    ) -> Self {
+    fn new(function_call: OsFunctionCall, call_id: u32, snapshot: Snapshot<T>) -> Self {
         Self {
-            function,
-            args,
-            kwargs,
+            function_call,
             call_id,
             snapshot,
         }
@@ -263,6 +256,16 @@ impl<T: ResourceTracker> OsCall<T> {
         print: PrintWriter<'_>,
     ) -> Result<RunProgress<T>, MontyException> {
         self.snapshot.run(result.into(), print)
+    }
+
+    /// Takes the [`OsFunctionCall`] out by value, leaving an
+    /// [`OsFunctionCall::Used`] placeholder so the host can dispatch the
+    /// call without cloning large `WriteText` / `WriteBytes` payloads.
+    /// `self` is still safe to call [`Self::resume`] on; the placeholder
+    /// must not be inspected.
+    #[must_use]
+    pub fn take_function_call(&mut self) -> OsFunctionCall {
+        mem::replace(&mut self.function_call, OsFunctionCall::Used)
     }
 
     /// Returns a reference to the resource tracker.
@@ -666,9 +669,7 @@ pub(crate) enum ConvertedExit {
     },
     /// OS-level operation.
     OsCall {
-        function: OsFunction,
-        args: Vec<MontyObject>,
-        kwargs: Vec<(MontyObject, MontyObject)>,
+        function_call: OsFunctionCall,
         call_id: u32,
     },
     /// All async tasks are blocked waiting for external futures.
@@ -713,19 +714,10 @@ pub(crate) fn convert_frame_exit(result: RunResult<FrameExit>, vm: &mut VM<'_, i
                 method_call: false,
             }
         }
-        Ok(FrameExit::OsCall {
-            function,
-            args,
-            call_id,
-        }) => {
-            let (args_py, kwargs_py) = args.into_py_objects(vm);
-            ConvertedExit::OsCall {
-                function,
-                args: args_py,
-                kwargs: kwargs_py,
-                call_id: call_id.raw(),
-            }
-        }
+        Ok(FrameExit::OsCall { function_call, call_id }) => ConvertedExit::OsCall {
+            function_call,
+            call_id: call_id.raw(),
+        },
         Ok(FrameExit::MethodCall {
             method_name,
             args,
@@ -811,15 +803,8 @@ pub(crate) fn build_run_progress<T: ResourceTracker>(
             method_call,
             new_snapshot!(),
         ))),
-        ConvertedExit::OsCall {
-            function,
-            args,
-            kwargs,
-            call_id,
-        } => Ok(RunProgress::OsCall(OsCall::new(
-            function,
-            args,
-            kwargs,
+        ConvertedExit::OsCall { function_call, call_id } => Ok(RunProgress::OsCall(OsCall::new(
+            function_call,
             call_id,
             new_snapshot!(),
         ))),

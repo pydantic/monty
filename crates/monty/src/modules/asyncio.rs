@@ -8,7 +8,7 @@
 //! The host acts as the event loop - Monty yields control when tasks are blocked.
 
 use crate::{
-    args::ArgValues,
+    args::{ArgValues, FromArgs},
     asyncio::GatherFuture,
     bytecode::{CallResult, VM},
     defer_drop_mut,
@@ -56,13 +56,13 @@ pub fn create_module(vm: &mut VM<'_, impl ResourceTracker>) -> Result<HeapId, Re
     vm.heap.allocate(HeapData::Module(module))
 }
 pub(super) fn call(
-    heap: &mut Heap<impl ResourceTracker>,
+    vm: &mut VM<'_, impl ResourceTracker>,
     functions: AsyncioFunctions,
     args: ArgValues,
 ) -> RunResult<CallResult> {
     match functions {
-        AsyncioFunctions::Gather => gather(heap, args).map(CallResult::Value),
-        AsyncioFunctions::Run => run(heap, args),
+        AsyncioFunctions::Gather => gather(vm, args).map(CallResult::Value),
+        AsyncioFunctions::Run => run(vm.heap, args),
     }
 }
 
@@ -98,12 +98,13 @@ fn run(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> RunResult<Call
 ///
 /// # Errors
 /// Returns `TypeError` if any argument is not awaitable.
-pub(crate) fn gather(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
-    let (pos_args, kwargs) = args.into_parts();
-    defer_drop_mut!(pos_args, heap);
-
-    // TODO: support keyword arguments (e.g. return_exceptions)
-    kwargs.not_supported_yet("gather", heap)?;
+pub(crate) fn gather(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    // TODO: support keyword arguments (e.g. return_exceptions); for now any
+    // kwarg is rejected up front by the macro's `kwargs_not_supported_yet`
+    // flag with a `NotImplementedError: gather() does not yet support keyword
+    // arguments` (CPython would have given a TypeError naming the bad kwarg).
+    let GatherArgs { awaitables } = GatherArgs::from_args(args, vm)?;
+    defer_drop_mut!(awaitables, vm);
 
     // Validate all positional args are awaitable and collect their heap ids.
     // Both coroutines and external futures live on the heap; transfer
@@ -112,11 +113,11 @@ pub(crate) fn gather(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> 
     let mut items: Vec<HeapId> = Vec::new();
 
     #[cfg_attr(not(feature = "memory-model-checks"), expect(unused_mut))]
-    for mut arg in pos_args {
+    for mut arg in awaitables.drain(..) {
         let id = match &arg {
             Value::Ref(id)
                 if matches!(
-                    heap.get(*id),
+                    vm.heap.get(*id),
                     HeapData::Coroutine(_) | HeapData::ExternalFuture(_) | HeapData::GatherFuture(_)
                 ) =>
             {
@@ -131,9 +132,9 @@ pub(crate) fn gather(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> 
             #[cfg(feature = "memory-model-checks")]
             arg.dec_ref_forget();
         } else {
-            arg.drop_with_heap(heap);
+            arg.drop_with_heap(vm.heap);
             for id in items {
-                heap.dec_ref(id);
+                vm.heap.dec_ref(id);
             }
             return Err(ExcType::type_error(
                 "An asyncio.Future, a coroutine or an awaitable is required",
@@ -142,6 +143,20 @@ pub(crate) fn gather(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> 
     }
 
     let gather_future = GatherFuture::new(items);
-    let id = heap.allocate(HeapData::GatherFuture(gather_future))?;
+    let id = vm.heap.allocate(HeapData::GatherFuture(gather_future))?;
     Ok(Value::Ref(id))
+}
+
+/// `asyncio.gather(*awaitables)` — variadic positional, no kwargs accepted.
+///
+/// `kwargs_not_supported_yet` rejects any kwarg with the macro's
+/// "not yet implemented" `NotImplementedError`, replacing the previous
+/// `TypeError: gather() takes no keyword arguments` from `into_pos_only`.
+/// When CPython's `return_exceptions=False` is wired up this becomes a
+/// regular `kw_only` slot and the flag goes away.
+#[derive(FromArgs)]
+#[from_args(name = "gather", kwargs_not_supported_yet)]
+struct GatherArgs {
+    #[from_args(varargs)]
+    awaitables: Vec<Value>,
 }

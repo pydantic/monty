@@ -1,7 +1,8 @@
+import dataclasses
 import tempfile
 from collections.abc import Generator
 from pathlib import Path
-from typing import Any, Callable, Literal
+from typing import Any, Callable, Literal, TypeAlias
 
 import pytest
 from inline_snapshot import snapshot
@@ -10,6 +11,12 @@ import pydantic_monty
 from pydantic_monty import NOT_HANDLED, MountDir
 
 PrintCallback = Callable[[Literal['stdout'], str], None]
+ReplProgress: TypeAlias = (
+    pydantic_monty.FunctionSnapshot
+    | pydantic_monty.NameLookupSnapshot
+    | pydantic_monty.FutureSnapshot
+    | pydantic_monty.MontyComplete
+)
 
 
 def make_print_collector() -> tuple[list[str], PrintCallback]:
@@ -611,6 +618,52 @@ def test_feed_start_multiple_external_calls():
     progress = progress.resume({'return_value': 20})
     assert isinstance(progress, pydantic_monty.MontyComplete)
     assert progress.output == snapshot(30)
+
+
+def test_feed_start_regression_281_comprehension_dataclass_repl_state():
+    @dataclasses.dataclass
+    class Item:
+        text: str
+
+    @dataclasses.dataclass
+    class Container:
+        style: str = 'Normal'
+        items: list[Item] = dataclasses.field(default_factory=list)
+
+    def drive(state: ReplProgress) -> pydantic_monty.MontyComplete:
+        while not isinstance(state, pydantic_monty.MontyComplete):
+            if isinstance(state, pydantic_monty.NameLookupSnapshot):
+                state = state.resume()
+            elif isinstance(state, pydantic_monty.FunctionSnapshot):
+                fn = state.function_name
+                if fn == 'get_data':
+                    data = [
+                        Container(style='A', items=[Item(text='hello'), Item(text='world')]),
+                        Container(style='B', items=[Item(text='foo')]),
+                    ]
+                    state = state.resume({'return_value': data})
+                elif fn == 'Container':
+                    state = state.resume({'return_value': Container(**state.kwargs)})
+                else:
+                    state = state.resume({'return_value': None})
+            else:
+                state = state.resume({})
+        return state
+
+    repl = pydantic_monty.MontyRepl()
+    repl.register_dataclass(Item)
+    repl.register_dataclass(Container)
+
+    turn1 = repl.feed_start(
+        'data = get_data()\nitems = [i.text for i in data[0].items]\nitems = [i.text for i in data[1].items]\n'
+    )
+    turn1 = drive(turn1)
+    assert turn1.output == snapshot(None)
+
+    turn2 = repl.feed_start('c = Container(style="X")\n')
+    turn2 = drive(turn2)
+    assert turn2.output == snapshot(None)
+    assert repl.feed_run('c.style') == snapshot('X')
 
 
 def test_feed_start_error_preserves_repl_state():

@@ -9,7 +9,7 @@
 //! sandbox can never construct one.
 
 use crate::{
-    args::ArgValues,
+    args::{ArgValues, FromArgs},
     bytecode::VM,
     defer_drop,
     exception_private::{ExcType, RunResult},
@@ -38,7 +38,7 @@ use crate::{
 /// Each behavior pins exactly one branch of the `with` machinery, so a
 /// single test can verify that branch in isolation.
 pub fn builtin_test_cm(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
-    let (behavior, payload) = args.get_zero_one_two_args("_test_cm", vm.heap)?;
+    let TestCmArgs { behavior, payload } = TestCmArgs::from_args(args, vm)?;
 
     let mut cm = TestContextManager::new();
     if let Some(behavior_value) = behavior {
@@ -63,6 +63,19 @@ pub fn builtin_test_cm(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -
 
     let heap_id = vm.heap.allocate(HeapData::TestContextManager(cm))?;
     Ok(Value::Ref(heap_id))
+}
+
+/// Positional-only argument shape for `_test_cm([behavior[, payload]])`.
+/// Both fields are pos_only because this test helper deliberately exposes
+/// no kwarg surface — there's no CPython equivalent to mirror, and the
+/// tests that drive it always pass positionals.
+#[derive(FromArgs)]
+#[from_args(name = "_test_cm")]
+struct TestCmArgs {
+    #[from_args(pos_only, default)]
+    behavior: Option<Value>,
+    #[from_args(pos_only, default)]
+    payload: Option<Value>,
 }
 
 /// Applies the chosen behavior to `cm`, consuming the payload (if any).

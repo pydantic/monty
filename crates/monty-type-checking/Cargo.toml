@@ -22,6 +22,7 @@ ruff_python_ast = { workspace = true }
 ruff_db = { workspace = true }
 ruff_text_size = { workspace = true }
 ty_python_semantic = { workspace = true }
+ty_python_core = { workspace = true }
 ty_module_resolver = { workspace = true }
 salsa = { workspace = true }
 

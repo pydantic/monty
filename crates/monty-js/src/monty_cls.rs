@@ -706,7 +706,7 @@ impl MontyRepl {
                             let os_result = if let Some(ref mut table) = mount_table {
                                 handle_os_call_with_table_repl(&call, table)
                             } else {
-                                call.function.on_no_handler(&call.args).into()
+                                call.function_call.on_no_handler().into()
                             };
                             progress = match call.resume(os_result, PrintWriter::Stdout) {
                                 Ok(p) => p,
@@ -764,10 +764,10 @@ fn handle_os_call_with_table_repl<T: ResourceTracker>(
     call: &monty::ReplOsCall<T>,
     table: &mut MountTable,
 ) -> ExtFunctionResult {
-    match table.handle_os_call(call.function, &call.args, &call.kwargs) {
+    match table.handle_os_call(&call.function_call) {
         Some(Ok(obj)) => obj.into(),
         Some(Err(mount_err)) => mount_err.into_exception().into(),
-        None => call.function.on_no_handler(&call.args).into(),
+        None => call.function_call.on_no_handler().into(),
     }
 }
 
@@ -1454,7 +1454,7 @@ where
                     handle_os_call_with_table(&call, table)
                 } else {
                     // No mounts configured — use on_no_handler for appropriate error
-                    call.function.on_no_handler(&call.args).into()
+                    call.function_call.on_no_handler().into()
                 };
                 let print_writer = match &mut print_cb {
                     Some(cb) => PrintWriter::Callback(cb),
@@ -1482,21 +1482,21 @@ fn put_back_mount_state(mount_state: Option<MountState>) {
 /// Handles an OS call by dispatching to the mount table.
 ///
 /// Returns the result from the mount table if it handles the call,
-/// or falls back to [`OsFunction::on_no_handler`] for unhandled calls.
+/// or falls back to [`OsFunctionCall::on_no_handler`] for unhandled calls.
 fn handle_os_call<T: ResourceTracker>(call: &OsCall<T>, mount_table: &mut Option<MountTable>) -> ExtFunctionResult {
     if let Some(table) = mount_table {
         handle_os_call_with_table(call, table)
     } else {
-        call.function.on_no_handler(&call.args).into()
+        call.function_call.on_no_handler().into()
     }
 }
 
 /// Handles an OS call using a specific mount table.
 fn handle_os_call_with_table<T: ResourceTracker>(call: &OsCall<T>, table: &mut MountTable) -> ExtFunctionResult {
-    match table.handle_os_call(call.function, &call.args, &call.kwargs) {
+    match table.handle_os_call(&call.function_call) {
         Some(Ok(obj)) => obj.into(),
         Some(Err(mount_err)) => mount_err.into_exception().into(),
-        None => call.function.on_no_handler(&call.args).into(),
+        None => call.function_call.on_no_handler().into(),
     }
 }
 

@@ -44,7 +44,10 @@ pub use crate::{
         MontyTimeZone,
     },
     object_json::{JsonMontyArray, JsonMontyObject, JsonMontyPairs},
-    os::{OsFunction, dir_stat, file_stat, stat_result, symlink_stat},
+    os::{
+        GetenvArgs, MkdirCallArgs, MontyPath, OpenCallArgs, OsFunctionCall, PathBytesDataArgs, PathStringDataArgs,
+        RenameCallArgs, dir_stat, file_stat, stat_result, symlink_stat,
+    },
     repl::{
         MontyRepl, ReplContinuationMode, ReplFunctionCall, ReplNameLookup, ReplOsCall, ReplProgress,
         ReplResolveFutures, ReplStartError, detect_repl_continuation_mode,

@@ -1130,7 +1130,7 @@ fn handle_repl_os_call<T: ResourceTracker>(
     dc_registry: &DcRegistry,
 ) -> PyResult<ExtFunctionResult> {
     if let Some(table) = mount_table {
-        match table.handle_os_call(call.function, &call.args, &call.kwargs) {
+        match table.handle_os_call(&call.function_call) {
             Some(Ok(obj)) => return Ok(obj.into()),
             Some(Err(mount_err)) => return Ok(mount_err.into_exception().into()),
             None => {} // Intentional: unmounted paths fall through to `os=`.
@@ -1138,18 +1138,19 @@ fn handle_repl_os_call<T: ResourceTracker>(
     }
 
     if let Some(fb) = fallback {
+        let (args, kwargs) = call.function_call.clone().to_args();
         return call_os_callback_parts(
             py,
-            &call.function.to_string(),
-            &call.args,
-            &call.kwargs,
+            call.function_call.name(),
+            &args,
+            &kwargs,
             fb.bind(py),
             dc_registry,
-            || call.function.on_no_handler(&call.args).into(),
+            || call.function_call.on_no_handler().into(),
         );
     }
 
-    Ok(call.function.on_no_handler(&call.args).into())
+    Ok(call.function_call.on_no_handler().into())
 }
 
 /// Helper trait to convert a typed `CoreMontyRepl<T>` back into the

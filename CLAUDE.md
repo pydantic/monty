@@ -257,6 +257,32 @@ Wherever you see an Exception with a repeated message, create a dedicated method
 
 When writing exception messages, always check `src/exceptions.rs` for existing methods to generate that message.
 
+## Argument extraction — ALWAYS use `#[derive(FromArgs)]`
+
+**Whenever you add or modify a Rust-side function, method, type
+constructor, or `OsFunction` handler that takes anything beyond the
+trivial 0/1/2-positional shapes already covered by
+`ArgValues::check_zero_args` / `get_one_arg` / `get_two_args` /
+`get_zero_one_arg` / `into_pos_only`, you MUST use
+`#[derive(FromArgs)]` (re-exported as `monty::args::FromArgs`).**
+
+Hand-written `args.into_parts()` loops are not acceptable for any
+signature that has multiple positionals with defaults, keyword
+arguments, `*args`, or `**kwargs` — they are a known source of
+reference-count leaks, divergent error messages, and duplicated
+boilerplate. `FromArgs` generates the dispatch, conflict detection,
+default handling, and refcount cleanup mechanically. See
+[`crates/monty-macros/README.md`](crates/monty-macros/README.md) for
+the full attribute surface (`c_error`, `c_error_named`, `pos_only`,
+`kw_only`, `varargs`, `varkwargs`, `default`, `static_string`, …) and
+how to extend the macro or add new `FromValue` impls.
+
+If a callsite needs custom per-argument coercion (e.g. `value_to_float`
+for math, a `TimeDelta` type check, a `bytes`-or-`str` union), declare
+the field as `Value` and run the coercion in the function body *after*
+the `from_args` call — the macro still handles the parsing, your code
+just adds the final validation step.
+
 ## Code style
 
 Avoid local imports, unless there's a very good reason, all imports should be at the top of the file.
@@ -298,8 +324,10 @@ NOT!
 
 ### Docstrings and comments.
 
-IMPORTANT: every struct, enum and function should be a comprehensive but concise docstring to
+IMPORTANT: every struct, enum and function should be an informative but concise docstring to
 explain what it does and why and any considerations or potential foot-guns of using that type.
+
+COMMENTS AND DOCSTRINGS SHOULD BE CONCISE - EXCESSIVELY VERBOSE DOCSTRINGS MAKE THE CODE HARDER TO READ AND MAINTAIN!
 
 The only exception is trait implementation methods where a docstring is not necessary if the method is self-explanatory.
 

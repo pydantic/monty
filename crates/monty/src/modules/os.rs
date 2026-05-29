@@ -9,15 +9,16 @@
 //! which executes the operation and returns the result.
 
 use crate::{
+    MontyObject,
     args::ArgValues,
     bytecode::{CallResult, VM},
     exception_private::{ExcType, RunResult},
     heap::{HeapData, HeapId},
     intern::StaticStrings,
     modules::ModuleFunctions,
-    os::OsFunction,
+    os::{GetenvArgs, OsFunctionCall},
     resource::{ResourceError, ResourceTracker},
-    types::{Module, Property, PyTrait},
+    types::{Module, Property, property::ZeroArgOsProperty},
     value::Value,
 };
 
@@ -54,7 +55,7 @@ pub fn create_module(vm: &mut VM<'_, impl ResourceTracker>) -> Result<HeapId, Re
     // os.environ - property that returns the entire environment as a dict
     module.set_attr(
         StaticStrings::Environ,
-        Value::Property(Property::Os(OsFunction::GetEnviron)),
+        Value::Property(Property::Os(ZeroArgOsProperty::GetEnviron)),
         vm,
     );
 
@@ -77,39 +78,25 @@ pub(super) fn call(
 
 /// Implementation of `os.getenv(key, default=None)`.
 ///
-/// Returns the value of the environment variable `key` if it exists, or `default` if it doesn't.
-/// This function yields to the host to perform the actual environment lookup.
-///
-/// # Arguments
-/// * `heap` - The heap for any allocations
-/// * `args` - Function arguments: `key` (required string), `default` (optional, defaults to None)
-///
-/// # Returns
-/// `CallResult::OsCall` with `OsFunction::Getenv` - the host should look up the
-/// environment variable and return the value, or the default if not found.
-///
-/// # Errors
-/// Returns `TypeError` if:
-/// - No arguments are provided
-/// - More than 2 arguments are provided
-/// - `key` is not a string
+/// Hand-rolled rather than `FromArgs`-derived so the `key`-must-be-`str`
+/// error matches CPython's wording exactly — CPython routes `os.getenv`
+/// through `os.environ.__getitem__`, whose `check_str` helper raises
+/// `TypeError("str expected, not <type>")`. That wording is bespoke to
+/// `os._Environ` in the CPython stdlib, so it lives inline here rather
+/// than as a shared helper.
 fn getenv(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<CallResult> {
-    // getenv(key, default=None) - accepts 1 or 2 positional arguments
-    let (key, default) = args.get_one_two_args("os.getenv", vm.heap)?;
-
-    // Validate key is a string
-    if key.is_str(vm.heap) {
-        // Build args to pass to host: (key, default)
-        // The default is Value::None if not provided
-        let final_default = default.unwrap_or(Value::None);
-        let args = ArgValues::Two(key, final_default);
-
-        Ok(CallResult::OsCall(OsFunction::Getenv, args))
+    let (key_value, default_value) = args.get_one_two_args("os.getenv", vm.heap)?;
+    if let Some(key) = key_value.as_either_str(vm.heap) {
+        key_value.drop_with_heap(vm.heap);
+        Ok(CallResult::OsCall(OsFunctionCall::Getenv(GetenvArgs {
+            key: key.into_string(vm.interns),
+            default: MontyObject::new(default_value.unwrap_or(Value::None), vm),
+        })))
     } else {
-        let type_name = key.py_type(vm);
-        key.drop_with_heap(vm);
-        if let Some(d) = default {
-            d.drop_with_heap(vm);
+        let type_name = key_value.py_type_heap(vm.heap);
+        key_value.drop_with_heap(vm.heap);
+        if let Some(d) = default_value {
+            d.drop_with_heap(vm.heap);
         }
         Err(ExcType::type_error(format!("str expected, not {type_name}")))
     }

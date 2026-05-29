@@ -192,6 +192,30 @@ impl<T: ResourceTracker> VM<'_, T> {
     /// Uses `defer_drop!` for `mapping` (always dropped) and `HeapGuard` for
     /// `dict_ref` (pushed back on success, dropped on error).
     pub(super) fn dict_merge(&mut self, func_name_id: u16) -> Result<(), RunError> {
+        let func_name = func_name_for_dict_merge(func_name_id, self);
+        self.dict_merge_inner(&func_name)
+    }
+
+    /// Method-call variant of [`Self::dict_merge`]. Qualifies the error wording
+    /// with the receiver's Python type by peeking the stack — when this op
+    /// runs the receiver sits 4 slots below TOS (`[receiver, args_tuple,
+    /// kwargs_dict, mapping]`), since the call body hasn't issued any pops
+    /// yet. Produces e.g. `list.sort() got multiple values for keyword
+    /// argument 'key'` to match CPython.
+    pub(super) fn method_dict_merge(&mut self, func_name_id: u16) -> Result<(), RunError> {
+        let func_name = if func_name_id == 0xFFFF {
+            "<unknown>".to_string()
+        } else {
+            let method = self.interns.get_str(StringId::from_index(func_name_id)).to_string();
+            let recv_type = self.stack[self.stack.len() - 4].py_type(self);
+            format!("{recv_type}.{method}")
+        };
+        self.dict_merge_inner(&func_name)
+    }
+
+    /// Shared body of [`Self::dict_merge`] and [`Self::method_dict_merge`] —
+    /// only the `func_name` used in error wording differs between them.
+    fn dict_merge_inner(&mut self, func_name: &str) -> Result<(), RunError> {
         let this = self;
 
         let mapping = this.pop();
@@ -199,13 +223,6 @@ impl<T: ResourceTracker> VM<'_, T> {
         // HeapGuard for dict_ref: pushed back on success via into_parts, dropped on error
         let mut dict_ref_guard = HeapGuard::new(this.pop(), this);
         let (dict_ref, this) = dict_ref_guard.as_parts();
-
-        // Get function name for error messages
-        let func_name = if func_name_id == 0xFFFF {
-            "<unknown>".to_string()
-        } else {
-            this.interns.get_str(StringId::from_index(func_name_id)).to_string()
-        };
 
         // Check that mapping is a dict (Ref pointing to Dict) and clone key-value pairs
         let copied_items: Vec<(Value, Value)> = if let Value::Ref(id) = mapping {
@@ -215,11 +232,11 @@ impl<T: ResourceTracker> VM<'_, T> {
                     .collect()
             } else {
                 let type_name = mapping.py_type(this).to_string();
-                return Err(ExcType::type_error_kwargs_not_mapping(&func_name, &type_name));
+                return Err(ExcType::type_error_kwargs_not_mapping(func_name, &type_name));
             }
         } else {
             let type_name = mapping.py_type(this).to_string();
-            return Err(ExcType::type_error_kwargs_not_mapping(&func_name, &type_name));
+            return Err(ExcType::type_error_kwargs_not_mapping(func_name, &type_name));
         };
 
         // Merge into the dict, validating string keys
@@ -261,7 +278,7 @@ impl<T: ResourceTracker> VM<'_, T> {
 
             if let Some(old_value) = dict.set(key, value, this)? {
                 old_value.drop_with_heap(this);
-                return Err(ExcType::type_error_multiple_values(&func_name, &key_str));
+                return Err(ExcType::type_error_multiple_values(func_name, &key_str));
             }
         }
 
@@ -675,6 +692,16 @@ impl<T: ResourceTracker> VM<'_, T> {
         }
 
         Ok(())
+    }
+}
+
+/// Resolves the function-name string used by `DictMerge` error wording.
+/// `0xFFFF` is the compiler sentinel for "unknown caller".
+fn func_name_for_dict_merge(func_name_id: u16, vm: &VM<'_, impl ResourceTracker>) -> String {
+    if func_name_id == 0xFFFF {
+        "<unknown>".to_string()
+    } else {
+        vm.interns.get_str(StringId::from_index(func_name_id)).to_string()
     }
 }
 

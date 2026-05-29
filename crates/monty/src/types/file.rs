@@ -77,7 +77,7 @@ use crate::{
     exception_private::{ExcType, RunError, RunResult, SimpleException},
     heap::{DropWithHeap, Heap, HeapData, HeapGuard, HeapId, HeapItem, HeapRead, HeapReadOutput},
     intern::StaticStrings,
-    os::OsFunction,
+    os::{MontyPath, OsFunctionCall, PathBytesDataArgs, PathStringDataArgs},
     resource::ResourceTracker,
     types::str::StringRepr,
     value::{EitherStr, Value},
@@ -382,6 +382,17 @@ pub(crate) struct OpenFile {
     /// buffer from char 0 on every call (so a 10k-`readline()` loop on a
     /// 1MB UTF-8 file is O(n²)). See [`BufferMeta`] for field semantics.
     /// `None` while `buffer` is `None`; otherwise always `Some`.
+    ///
+    /// **Not serialized.** This is a pure cache derived from `buffer` +
+    /// `position`, and trusting it across a snapshot boundary would let a
+    /// crafted snapshot (with `byte_position` past `buffer.len()` or in the
+    /// middle of a UTF-8 code point, or a `buffer_total` larger than the
+    /// real buffer) drive `compute_slice_text` / `compute_slice_binary`
+    /// into a panicking `&buffer[..]` slice. By skipping serde, the field
+    /// is always `None` after deserialization; the next `compute_slice`
+    /// call sees `Some(buffer) + None(buffer_meta)` and rebuilds it via
+    /// [`populate_buffer_meta`] from the trusted heap buffer.
+    #[serde(skip)]
     buffer_meta: Option<BufferMeta>,
     /// Set between emitting the OS-call-with-store hook and the resume firing.
     /// Tells the resume path which slice to compute once the buffer is
@@ -408,7 +419,11 @@ pub(crate) struct OpenFile {
 /// `buffer_total == buffer.len()` — the cache is mostly redundant there, but
 /// kept identical to the text-mode layout so the surrounding code does not
 /// need to branch on mode.
-#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
+/// **Not (de)serialized** — see the security note on
+/// [`OpenFile::buffer_meta`]. Without `serde` derives, the cache cannot be
+/// driven by attacker-controlled snapshot bytes; it is rebuilt by
+/// [`populate_buffer_meta`] from the trusted heap buffer after a restore.
+#[derive(Debug, Clone, Copy)]
 struct BufferMeta {
     /// Byte offset into the buffer that matches `position`, clamped to
     /// `buffer.len()`. For text mode this caches the
@@ -747,16 +762,18 @@ impl<'h> HeapRead<'h, OpenFile> {
 
         // First buffered op: stash spec, yield to host for the full content.
         self.get_mut(vm.heap).pending_read = Some(spec);
-        let function = if binary {
-            OsFunction::ReadBytes
+        // Build the typed OS-call payload. The OS call always carries the
+        // file's virtual path — the buffer-store hook (see VM dispatcher)
+        // separately routes the result into the file's `buffer` slot, so we
+        // only need the path here, not a file-handle reference.
+        let path = MontyPath::new(self.get(vm.heap).path().to_owned());
+        let call = if binary {
+            OsFunctionCall::ReadBytes(path)
         } else {
-            OsFunction::ReadText
+            OsFunctionCall::ReadText(path)
         };
         inc_ref_for_pending_oscall(vm, self_id);
-        Ok(CallResult::OsCallStoreBuffer {
-            function,
-            file_id: self_id,
-        })
+        Ok(CallResult::OsCallStoreBuffer { call, file_id: self_id })
     }
 
     /// Implements `file.write(data)` as a one-shot OS write or append.
@@ -779,7 +796,7 @@ impl<'h> HeapRead<'h, OpenFile> {
             data.drop_with_heap(vm);
             return Err(err);
         }
-        let function = {
+        let (path, append, binary) = {
             let file = self.get_mut(vm.heap);
             if !file.mode.writable() {
                 let message = if file.mode.is_binary() { "write" } else { "not writable" };
@@ -787,19 +804,35 @@ impl<'h> HeapRead<'h, OpenFile> {
                 return Err(unsupported_operation(message));
             }
             let append = file.mode.is_append() || file.first_write_done;
-            let function = if file.mode.is_binary() {
-                if append {
-                    OsFunction::AppendBytes
-                } else {
-                    OsFunction::WriteBytes
-                }
-            } else if append {
-                OsFunction::AppendText
-            } else {
-                OsFunction::WriteText
-            };
+            let binary = file.mode.is_binary();
+            let path = file.path().to_owned();
             file.first_write_done = true;
-            function
+            (path, append, binary)
+        };
+
+        // Extract the data payload into an owned `String` / `Vec<u8>` so the
+        // OS-call args struct can own it across the snapshot/resume boundary.
+        // `validate_write_data` already gated the variant — `binary` selects
+        // bytes vs str.
+        let path = MontyPath::new(path);
+        let call = if binary {
+            let bytes = extract_bytes_payload(&data, vm).expect("validate_write_data accepted a bytes-shaped value");
+            data.drop_with_heap(vm);
+            let args = PathBytesDataArgs { path, data: bytes };
+            if append {
+                OsFunctionCall::AppendBytes(args)
+            } else {
+                OsFunctionCall::WriteBytes(args)
+            }
+        } else {
+            let text = extract_str_payload(&data, vm).expect("validate_write_data accepted a str-shaped value");
+            data.drop_with_heap(vm);
+            let args = PathStringDataArgs { path, data: text };
+            if append {
+                OsFunctionCall::AppendText(args)
+            } else {
+                OsFunctionCall::WriteText(args)
+            }
         };
 
         inc_ref_for_pending_oscall(vm, self_id);
@@ -808,7 +841,7 @@ impl<'h> HeapRead<'h, OpenFile> {
             previous_position: self.get(vm.heap).position,
             previous_length: self.get(vm.heap).file_length,
         });
-        Ok(CallResult::OsCall(function, ArgValues::Two(Value::Ref(self_id), data)))
+        Ok(CallResult::OsCall(call))
     }
 
     /// Marks the file wrapper as closed and releases the cached read buffer.
@@ -1580,6 +1613,32 @@ fn validate_write_data(data: &Value, binary: bool, vm: &VM<'_, impl ResourceTrac
             "write() argument must be str, not {}",
             data.py_type(vm)
         )))
+    }
+}
+
+/// Owned `String` from a value pre-validated as a Python `str` (returns
+/// `None` only if `validate_write_data` was bypassed — caller unwraps).
+fn extract_str_payload(data: &Value, vm: &VM<'_, impl ResourceTracker>) -> Option<String> {
+    match data {
+        Value::InternString(id) => Some(vm.interns.get_str(*id).to_owned()),
+        Value::Ref(id) => match vm.heap.get(*id) {
+            HeapData::Str(s) => Some(s.as_str().to_owned()),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Owned `Vec<u8>` from a value pre-validated as Python `bytes` — binary
+/// companion to [`extract_str_payload`].
+fn extract_bytes_payload(data: &Value, vm: &VM<'_, impl ResourceTracker>) -> Option<Vec<u8>> {
+    match data {
+        Value::InternBytes(id) => Some(vm.interns.get_bytes(*id).to_owned()),
+        Value::Ref(id) => match vm.heap.get(*id) {
+            HeapData::Bytes(b) => Some(b.as_slice().to_owned()),
+            _ => None,
+        },
+        _ => None,
     }
 }
 

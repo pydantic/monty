@@ -13,9 +13,10 @@
 //! └── MontyTypingError         # Raised when type checking finds errors in the code
 //! ```
 
-use std::{collections::HashMap, sync::Arc};
+use std::sync::Arc;
 
 use ::monty::{ExcType, MontyException};
+use ahash::AHashMap;
 use monty_type_checking::TypeCheckingDiagnostics;
 use pyo3::{
     PyClassInitializer, PyTypeCheck,
@@ -99,62 +100,6 @@ impl MontyError {
     }
 }
 
-/// Raised when Python code has syntax errors or cannot be parsed by Monty.
-///
-/// Inherits from `MontyError`. The inner exception is always a `SyntaxError`.
-#[pyclass(extends=MontyError, module="pydantic_monty", skip_from_py_object)]
-#[derive(Clone)]
-pub struct MontySyntaxError;
-
-impl MontySyntaxError {
-    /// Creates a new `MontySyntaxError` with the given message.
-    #[must_use]
-    pub fn new_err(py: Python<'_>, exc: MontyException) -> PyErr {
-        let base_error = MontyError::new(exc);
-        let init = PyClassInitializer::from(base_error).add_subclass(Self);
-        match Py::new(py, init) {
-            Ok(err) => PyErr::from_value(err.into_bound(py).into_any()),
-            Err(e) => e,
-        }
-    }
-}
-
-#[pymethods]
-impl MontySyntaxError {
-    /// Returns formatted exception string.
-    ///
-    /// Args:
-    ///     format: 'type-msg' - 'ExceptionType: message' format
-    ///             'msg' - just the message
-    #[pyo3(signature = (format = "msg"))]
-    #[expect(clippy::needless_pass_by_value, reason = "required by macro")]
-    fn display(slf: PyRef<'_, Self>, format: &str) -> PyResult<String> {
-        let parent = slf.as_super();
-        match format {
-            "msg" => Ok(parent.message().unwrap_or_default().to_string()),
-            "type-msg" => Ok(parent.exc.summary()),
-            _ => Err(exceptions::PyValueError::new_err(format!(
-                "Invalid display format: '{format}'. Expected 'type-msg', or 'msg'"
-            ))),
-        }
-    }
-
-    #[expect(clippy::needless_pass_by_value, reason = "required by macro")]
-    fn __str__(slf: PyRef<'_, Self>) -> String {
-        slf.as_super().message().unwrap_or_default().to_string()
-    }
-
-    #[expect(clippy::needless_pass_by_value, reason = "required by macro")]
-    fn __repr__(slf: PyRef<'_, Self>) -> String {
-        let parent = slf.as_super();
-        if let Some(msg) = parent.message() {
-            format!("MontySyntaxError({msg})")
-        } else {
-            "MontySyntaxError()".to_string()
-        }
-    }
-}
-
 /// Raised when type checking finds errors in the code.
 ///
 /// Inherits from `MontyError`. This exception is raised when static type
@@ -205,6 +150,77 @@ impl MontyTypingError {
     }
 }
 
+/// Raised when Python code has syntax errors or cannot be parsed by Monty.
+///
+/// Inherits from `MontyError`. The inner exception is always a `SyntaxError`.
+///
+/// As with [`MontyRuntimeError`], the traceback `PyFrame` list is materialized
+/// lazily on the first `traceback()` call and cached for subsequent calls.
+#[pyclass(extends=MontyError, module="pydantic_monty", skip_from_py_object)]
+pub struct MontySyntaxError {
+    traceback: PyOnceLock<Py<PyList>>,
+}
+
+impl MontySyntaxError {
+    /// Creates a new `MontySyntaxError` with the given message.
+    #[must_use]
+    pub fn new_err(py: Python<'_>, exc: MontyException) -> PyErr {
+        let base_error = MontyError::new(exc);
+        let init = PyClassInitializer::from(base_error).add_subclass(Self {
+            traceback: PyOnceLock::new(),
+        });
+        match Py::new(py, init) {
+            Ok(err) => PyErr::from_value(err.into_bound(py).into_any()),
+            Err(e) => e,
+        }
+    }
+}
+
+#[pymethods]
+impl MontySyntaxError {
+    /// Returns the Monty traceback as a list of Frame objects.
+    ///
+    /// Built on the first call and cached, so repeated calls return the same
+    /// list and frame objects. See [`build_traceback_list`] for the
+    /// source-line dedup details.
+    #[expect(clippy::needless_pass_by_value, reason = "required by macro")]
+    fn traceback(slf: PyRef<'_, Self>, py: Python<'_>) -> PyResult<Py<PyList>> {
+        let list = slf
+            .traceback
+            .get_or_try_init(py, || build_traceback_list(py, &slf.as_super().exc))?;
+        Ok(list.clone_ref(py))
+    }
+
+    /// Returns formatted exception string.
+    #[pyo3(signature = (format = "traceback"))]
+    #[expect(clippy::needless_pass_by_value, reason = "required by macro")]
+    fn display(slf: PyRef<'_, Self>, format: &str) -> PyResult<String> {
+        match format {
+            "traceback" => Ok(slf.as_super().exc.to_string()),
+            "type-msg" => Ok(slf.as_super().exc.summary()),
+            "msg" => Ok(slf.as_super().message().unwrap_or_default().to_string()),
+            _ => Err(exceptions::PyValueError::new_err(format!(
+                "Invalid display format: '{format}'. Expected 'traceback', 'type-msg', or 'msg'"
+            ))),
+        }
+    }
+
+    #[expect(clippy::needless_pass_by_value, reason = "required by macro")]
+    fn __str__(slf: PyRef<'_, Self>) -> String {
+        slf.as_super().message().unwrap_or_default().to_string()
+    }
+
+    #[expect(clippy::needless_pass_by_value, reason = "required by macro")]
+    fn __repr__(slf: PyRef<'_, Self>) -> String {
+        let parent = slf.as_super();
+        if let Some(msg) = parent.message() {
+            format!("MontySyntaxError({msg})")
+        } else {
+            "MontySyntaxError()".to_string()
+        }
+    }
+}
+
 /// Raised when Monty code fails during execution.
 ///
 /// Inherits from `MontyError`. Additionally provides `traceback()` to access
@@ -246,50 +262,18 @@ impl MontyRuntimeError {
 impl MontyRuntimeError {
     /// Returns the Monty traceback as a list of Frame objects.
     ///
-    /// `Frame.source_line` is backed by a `Py<PyString>` that is deduplicated
-    /// across frames resolving to the same source line. For deep recursion
-    /// where every frame points at the same line, this allocates one
-    /// `PyString` instead of one per frame.
-    ///
-    /// The list is built on the first call and cached, so repeated calls
-    /// return the same list, frame, and source-line objects.
+    /// Built on the first call and cached, so repeated calls return the same
+    /// list and frame objects. See [`build_traceback_list`] for the
+    /// source-line dedup details.
     #[expect(clippy::needless_pass_by_value, reason = "required by macro")]
     fn traceback(slf: PyRef<'_, Self>, py: Python<'_>) -> PyResult<Py<PyList>> {
-        let list = slf.traceback.get_or_try_init(py, || {
-            let stack_frames = slf.as_super().exc.traceback();
-            let mut line_cache: HashMap<usize, Py<PyString>> = HashMap::new();
-            let frames: Vec<Py<PyFrame>> = stack_frames
-                .iter()
-                .map(|f| {
-                    let source_line = f.preview_line.as_ref().map(|arc| {
-                        let key = Arc::as_ptr(arc).cast::<()>() as usize;
-                        line_cache
-                            .entry(key)
-                            .or_insert_with(|| PyString::new(py, arc).unbind())
-                            .clone_ref(py)
-                    });
-                    Py::new(
-                        py,
-                        PyFrame {
-                            filename: f.filename.clone(),
-                            line: f.start.line,
-                            column: f.start.column,
-                            end_line: f.end.line,
-                            end_column: f.end.column,
-                            function_name: f.frame_name.clone(),
-                            source_line,
-                        },
-                    )
-                })
-                .collect::<PyResult<_>>()?;
-            Ok::<_, PyErr>(PyList::new(py, &frames)?.unbind())
-        })?;
+        let list = slf
+            .traceback
+            .get_or_try_init(py, || build_traceback_list(py, &slf.as_super().exc))?;
         Ok(list.clone_ref(py))
     }
 
     /// Returns formatted exception string.
-    ///
-    /// Overrides the base class to provide the full traceback when format='traceback'.
     #[pyo3(signature = (format = "traceback"))]
     #[expect(clippy::needless_pass_by_value, reason = "required by macro")]
     fn display(slf: PyRef<'_, Self>, format: &str) -> PyResult<String> {
@@ -326,6 +310,42 @@ impl MontyRuntimeError {
         }
         format!("MontyRuntimeError({exc_type_name})")
     }
+}
+
+/// Builds the `PyList` of `PyFrame` objects for a `MontyException`'s traceback.
+///
+/// `Frame.source_line` is backed by a `Py<PyString>` that is deduplicated
+/// across frames resolving to the same underlying `Arc<str>` preview line.
+/// For deep recursion where every frame points at the same line, this
+/// allocates one `PyString` instead of one per frame.
+fn build_traceback_list(py: Python<'_>, exc: &MontyException) -> PyResult<Py<PyList>> {
+    let mut line_cache: AHashMap<usize, Py<PyString>> = AHashMap::new();
+    let frames: Vec<Py<PyFrame>> = exc
+        .traceback()
+        .iter()
+        .map(|f| {
+            let source_line = f.preview_line.as_ref().map(|arc| {
+                let key = Arc::as_ptr(arc).cast::<()>() as usize;
+                line_cache
+                    .entry(key)
+                    .or_insert_with(|| PyString::new(py, arc).unbind())
+                    .clone_ref(py)
+            });
+            Py::new(
+                py,
+                PyFrame {
+                    filename: f.filename.clone(),
+                    line: f.start.line,
+                    column: f.start.column,
+                    end_line: f.end.line,
+                    end_column: f.end.column,
+                    function_name: f.frame_name.clone(),
+                    source_line,
+                },
+            )
+        })
+        .collect::<PyResult<_>>()?;
+    Ok(PyList::new(py, &frames)?.unbind())
 }
 
 /// A single frame in a Monty traceback.

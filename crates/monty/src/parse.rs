@@ -146,7 +146,8 @@ pub(crate) fn parse_with_interner(
     interner: InternerBuilder,
 ) -> Result<ParseResult, ParseError> {
     let mut parser = Parser::new(code, filename, interner);
-    let parsed = parse_module(code).map_err(|e| ParseError::syntax(e.to_string(), parser.convert_range(e.range())))?;
+    let parsed =
+        parse_module(code).map_err(|e| ParseError::syntax(e.error.to_string(), parser.convert_range(e.range())))?;
     let module = parsed.into_syntax();
     let nodes = parser.parse_statements(module.body)?;
     Ok(ParseResult {
@@ -167,7 +168,7 @@ pub struct Parser<'a> {
     pub interner: InternerBuilder,
     /// Remaining nesting depth budget for recursive structures.
     /// Starts at MAX_NESTING_DEPTH and decrements on each nested level.
-    /// When it reaches zero, we return a "too many nested parentheses" error.
+    /// When it reaches zero, we return a "Source is too deeply nested" syntax error.
     depth_remaining: u16,
 }
 
@@ -182,15 +183,22 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn parse_statements(&mut self, statements: Vec<Stmt>) -> Result<Vec<ParseNode>, ParseError> {
+    fn parse_statements(
+        &mut self,
+        statements: impl IntoIterator<Item = Stmt, IntoIter: ExactSizeIterator>,
+    ) -> Result<Vec<ParseNode>, ParseError> {
         // Explicit pre-allocation matters here — `.map(..).collect::<Result<Vec<_>, _>>()`
         // does NOT pre-size the output. Collecting into `Result<Vec<_>, _>` runs the
         // iterator through `iter::try_process`'s `Shunt` adapter (so an `Err` can
         // short-circuit), and `Shunt`'s `size_hint` lower bound is 0 — which loses
         // the `TrustedLen` specialization that would otherwise forward the source
-        // `Vec`'s length. Each `Stmt` maps to exactly one `ParseNode`.
-        let mut out = Vec::with_capacity(statements.len());
-        for stmt in statements {
+        // iterator's length. Each `Stmt` maps to exactly one `ParseNode`.
+        //
+        // Accepting `IntoIterator<Item = Stmt, IntoIter: ExactSizeIterator>` lets callers
+        // pass either `Vec<Stmt>` or ruff's `ThinVec<Stmt>` without an intermediate copy.
+        let iter = statements.into_iter();
+        let mut out = Vec::with_capacity(iter.len());
+        for stmt in iter {
             out.push(self.parse_statement(stmt)?);
         }
         Ok(out)
@@ -450,6 +458,13 @@ impl<'a> Parser<'a> {
                     .collect::<Result<_, _>>()?;
                 // Fold from the innermost outward: the last item wraps the user
                 // body; each outer item wraps the freshly-built inner `with`.
+                //
+                // Each synthetic nesting level must be charged against the parser
+                // depth budget so a flat `with a, b, c, ...:` statement cannot
+                // bypass `MAX_NESTING_DEPTH` and produce an AST that later
+                // overflows the host stack during prepare/compile. The budget is
+                // restored on success to avoid penalizing sibling statements, in
+                // the same pattern used by `parse_elif_else_clauses`.
                 let (last_context, last_target) = parsed_items.pop().expect("checked non-empty above");
                 let mut node = Node::With {
                     context: last_context,
@@ -457,7 +472,10 @@ impl<'a> Parser<'a> {
                     body,
                     position,
                 };
+                let mut levels: u16 = 0;
                 while let Some((context, target)) = parsed_items.pop() {
+                    self.decr_depth_remaining(|| range)?;
+                    levels += 1;
                     node = Node::With {
                         context,
                         target,
@@ -465,6 +483,7 @@ impl<'a> Parser<'a> {
                         position,
                     };
                 }
+                self.depth_remaining += levels;
                 Ok(node)
             }
             Stmt::Match(m) => Err(ParseError::not_implemented(
@@ -941,6 +960,17 @@ impl<'a> Parser<'a> {
                 range,
                 ..
             }) => {
+                // Ruff models the key as `Option<Box<Expr>>` to represent the
+                // invalid `{**v for ...}` form during error recovery. Real Python
+                // forbids dict unpacking in a comprehension, so ruff also emits a
+                // syntax error for that case; treat `None` here as the same syntax
+                // error to keep behavior consistent if it ever leaks through.
+                let key = key.ok_or_else(|| {
+                    ParseError::syntax(
+                        "dict unpacking is not allowed in dict comprehension".to_string(),
+                        self.convert_range(range),
+                    )
+                })?;
                 let key = Box::new(self.parse_expression(*key)?);
                 let value = Box::new(self.parse_expression(*value)?);
                 let generators = self.parse_comprehension_generators(generators)?;
@@ -1546,7 +1576,7 @@ impl<'a> Parser<'a> {
                 let debug_prefix = interp.debug_text.as_ref().map(|dt| {
                     let expr_text = &self.code[interp.expression.range()];
                     self.interner
-                        .intern(&format!("{}{}{}", dt.leading, expr_text, dt.trailing))
+                        .intern(&format!("{}{}{}", dt.leading(), expr_text, dt.trailing()))
                 });
                 Ok(FStringPart::Interpolation {
                     expr,
@@ -1639,7 +1669,7 @@ impl<'a> Parser<'a> {
             Ok(())
         } else {
             let position = self.convert_range(get_range());
-            Err(ParseError::syntax("too many nested parentheses", position))
+            Err(ParseError::syntax("Source is too deeply nested", position))
         }
     }
 }

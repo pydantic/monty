@@ -11,14 +11,47 @@
 use std::cmp::Ordering;
 
 use crate::{
-    args::ArgValues,
+    args::{ArgValues, FromArgs, LaxBool},
     bytecode::VM,
-    defer_drop_mut,
+    defer_drop, defer_drop_mut,
     exception_private::{ExcType, RunError, RunResult},
     resource::ResourceTracker,
     types::PyTrait,
     value::Value,
 };
+
+/// Argument shape for `list.sort(*, key=None, reverse=False)` and, by
+/// extension, the kwargs accepted by the `sorted()` builtin. Both fields
+/// are keyword-only (CPython rejects positional `key`/`reverse`). `key` is
+/// held as a raw `Option<Value>` so callers can normalise `key=None` to
+/// "no key"; `reverse` uses [`LaxBool`] to match CPython's `bool()`-style
+/// truth test (so `reverse=[]` is `False`, not a `TypeError`).
+#[derive(FromArgs)]
+#[from_args(name = "sort")]
+struct ListSortArgs {
+    #[from_args(kw_only, default)]
+    key: Option<Value>,
+    #[from_args(kw_only, default = LaxBool::new(false))]
+    reverse: LaxBool,
+}
+
+/// Parses `key`/`reverse` kwargs and sorts `items` in place. The single
+/// entry point for sorting used by both `list.sort` and the `sorted()`
+/// builtin — sharing here is what makes unknown-kwarg errors uniformly
+/// read `sort() got an unexpected keyword argument 'X'` (matching
+/// CPython, whose `sorted` delegates to `list.sort` internally).
+pub fn parse_and_sort(items: &mut [Value], args: ArgValues, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<()> {
+    let ListSortArgs { key, reverse } = ListSortArgs::from_args(args, vm)?;
+    let key_fn = match key {
+        Some(v) if matches!(v, Value::None) => {
+            v.drop_with_heap(vm);
+            None
+        }
+        other => other,
+    };
+    defer_drop!(key_fn, vm);
+    sort_values(items, key_fn.as_ref(), reverse.bool(), vm)
+}
 
 /// Sorts a vector of values, with optional key function.
 pub fn sort_values(

@@ -419,7 +419,9 @@ impl ExcType {
 
     /// Creates a TypeError for when a function receives more arguments than allowed.
     ///
-    /// Matches CPython's format: `{name} expected at most {max} arguments, got {actual}`
+    /// Matches CPython's `PyArg_UnpackTuple` format:
+    /// - `{name} expected at most {max} argument, got {actual}` (singular when max=1)
+    /// - `{name} expected at most {max} arguments, got {actual}` (plural otherwise)
     ///
     /// # Arguments
     /// * `name` - The function name (e.g., "get", "pop")
@@ -427,10 +429,10 @@ impl ExcType {
     /// * `actual` - Number of arguments actually provided
     #[must_use]
     pub(crate) fn type_error_at_most(name: &str, max: usize, actual: usize) -> RunError {
-        // CPython: "get expected at most 2 arguments, got 3"
+        let plural = if max == 1 { "" } else { "s" };
         SimpleException::new_msg(
             Self::TypeError,
-            format!("{name} expected at most {max} arguments, got {actual}"),
+            format!("{name} expected at most {max} argument{plural}, got {actual}"),
         )
         .into()
     }
@@ -449,6 +451,57 @@ impl ExcType {
         SimpleException::new_msg(
             Self::TypeError,
             format!("{name}() takes at most {max} argument{plural} ({actual} given)"),
+        )
+        .into()
+    }
+
+    /// Creates a TypeError for too few positional arguments to a method-style call.
+    ///
+    /// Matches CPython's format used by methods like `str.replace`:
+    /// `{name}() takes at least {min} positional argument ({actual} given)` (singular when min=1)
+    /// `{name}() takes at least {min} positional arguments ({actual} given)` (plural otherwise)
+    ///
+    /// Distinct from [`type_error_at_least`] which uses CPython's
+    /// `PyArg_UnpackTuple` wording (no parens, no "positional"). Emitted by
+    /// `FromArgs` for any struct with required positional-only fields,
+    /// matching CPython's C-method `_PyArg_UnpackKeywords` dispatch.
+    #[must_use]
+    pub(crate) fn type_error_at_least_positional(name: &str, min: usize, actual: usize) -> RunError {
+        let plural = if min == 1 { "" } else { "s" };
+        SimpleException::new_msg(
+            Self::TypeError,
+            format!("{name}() takes at least {min} positional argument{plural} ({actual} given)"),
+        )
+        .into()
+    }
+
+    /// Creates the bespoke `map()` arity error that CPython hard-codes.
+    ///
+    /// CPython's `map()` uses a single fixed message regardless of whether
+    /// 0 or 1 args were given: `map() must have at least two arguments.`
+    /// (note the trailing period). We mirror it here so `map()` / `map(f)`
+    /// match byte-for-byte rather than falling through to the generic
+    /// "missing N required positional arguments" wording the macro would
+    /// otherwise emit.
+    #[must_use]
+    pub(crate) fn type_error_map_arity() -> RunError {
+        SimpleException::new_msg(Self::TypeError, "map() must have at least two arguments.".to_owned()).into()
+    }
+
+    /// Creates a TypeError for exact-arity functions reporting too many *or* too few.
+    ///
+    /// Matches CPython's `PyArg_UnpackTuple` wording for fixed-arity callables
+    /// (e.g. `sorted`):
+    /// `{name} expected {exact} argument, got {actual}` (singular when exact=1)
+    /// `{name} expected {exact} arguments, got {actual}` (plural otherwise)
+    ///
+    /// Use this for the macro's `expected_exact` attribute.
+    #[must_use]
+    pub(crate) fn type_error_expected_exact(name: &str, exact: usize, actual: usize) -> RunError {
+        let plural = if exact == 1 { "" } else { "s" };
+        SimpleException::new_msg(
+            Self::TypeError,
+            format!("{name} expected {exact} argument{plural}, got {actual}"),
         )
         .into()
     }
@@ -629,6 +682,49 @@ impl ExcType {
         .into()
     }
 
+    /// Variant of [`type_error_c_at_most`] used by C constructors that explicitly
+    /// say "positional arguments" (e.g. `datetime`):
+    /// `function takes at most {max} positional arguments ({actual} given)`
+    #[must_use]
+    pub(crate) fn type_error_c_at_most_positional(max: usize, actual: usize) -> RunError {
+        SimpleException::new_msg(
+            Self::TypeError,
+            format!("function takes at most {max} positional arguments ({actual} given)"),
+        )
+        .into()
+    }
+
+    /// Hybrid wording used by C constructors that mix positional-or-keyword
+    /// slots with keyword-only slots (e.g. `datetime`, where `fold` is
+    /// keyword-only). CPython's `PyArg_ParseTupleAndKeywords` emits two
+    /// distinct messages depending on whether the caller could conceivably
+    /// have meant the overflow args to fill the keyword-only tail:
+    ///
+    /// - `actual <= max_total`: the extra positionals *could* have filled the
+    ///   trailing keyword-only slots, so the error pins blame on positional
+    ///   overflow specifically — `function takes at most {max_pos} positional
+    ///   arguments ({actual} given)`.
+    /// - `actual > max_total`: there is no slot of any kind for the extras,
+    ///   so the error reports the total slot count without the "positional"
+    ///   qualifier — `function takes at most {max_total} arguments ({actual}
+    ///   given)`.
+    ///
+    /// `max_pos` is the number of positional-or-keyword slots; `max_total`
+    /// adds the trailing keyword-only slot count. When `max_total == max_pos`
+    /// (no kw-only fields) this collapses to [`type_error_c_at_most_positional`].
+    #[must_use]
+    pub(crate) fn type_error_c_at_most_positional_or_total(
+        max_pos: usize,
+        max_total: usize,
+        actual: usize,
+    ) -> RunError {
+        if actual > max_total && max_total > max_pos {
+            Self::type_error_c_at_most(max_total, actual)
+        } else {
+            Self::type_error_c_at_most_positional(max_pos, actual)
+        }
+    }
+
     /// Creates a TypeError for a missing required argument in a C-implemented type.
     ///
     /// Matches CPython's `PyArg_ParseTupleAndKeywords` format:
@@ -652,6 +748,51 @@ impl ExcType {
         SimpleException::new_msg(
             Self::TypeError,
             format!("{name}() missing required argument '{arg_name}' (pos {pos})"),
+        )
+        .into()
+    }
+
+    /// Creates a TypeError matching CPython's `_PyArg_BadArgument`
+    /// positional-style wording: `{name}() argument {pos} must be
+    /// {expected}, not {got}`.
+    ///
+    /// Used by the `#[derive(FromArgs)]` macro when the struct opts into
+    /// `bad_arg` errors — emitted in place of the inner [`FromValue`]
+    /// failure so the caller sees the same wording as CPython's C-implemented
+    /// functions (e.g. `strftime() argument 1 must be str, not None`).
+    ///
+    /// The `got` type label should come from [`Type::cpython_arg_name`] so
+    /// that `NoneType` becomes `"None"` to match CPython's special case.
+    ///
+    /// [`FromValue`]: crate::args::FromValue
+    /// [`Type::cpython_arg_name`]: crate::types::Type::cpython_arg_name
+    #[must_use]
+    pub(crate) fn type_error_bad_arg_pos(name: &str, pos: usize, expected: &str, got: impl fmt::Display) -> RunError {
+        SimpleException::new_msg(
+            Self::TypeError,
+            format!("{name}() argument {pos} must be {expected}, not {got}"),
+        )
+        .into()
+    }
+
+    /// Creates a TypeError matching CPython's `_PyArg_BadArgument`
+    /// named-style wording: `{name}() argument '{arg_name}' must be
+    /// {expected}, not {got}`.
+    ///
+    /// CPython uses this form for C-implemented functions that register
+    /// their arguments by name (`open`, `str.encode`, `bytes.decode`, …).
+    /// Sibling to [`type_error_bad_arg_pos`]; pick the variant matching the
+    /// CPython output for the function being modelled.
+    #[must_use]
+    pub(crate) fn type_error_bad_arg_named(
+        name: &str,
+        arg_name: &str,
+        expected: &str,
+        got: impl fmt::Display,
+    ) -> RunError {
+        SimpleException::new_msg(
+            Self::TypeError,
+            format!("{name}() argument '{arg_name}' must be {expected}, not {got}"),
         )
         .into()
     }
@@ -863,6 +1004,16 @@ impl ExcType {
     #[must_use]
     pub(crate) fn type_error_no_kwargs(name: &str) -> RunError {
         SimpleException::new_msg(Self::TypeError, format!("{name}() takes no keyword arguments")).into()
+    }
+
+    /// Creates a NotImplementedError for functions that don't accept keyword arguments.
+    #[must_use]
+    pub(crate) fn kwargs_not_implemented(name: &str) -> RunError {
+        SimpleException::new_msg(
+            Self::NotImplementedError,
+            format!("{name}() does not yet support keyword arguments"),
+        )
+        .into()
     }
 
     /// Creates an IndexError for list index out of range (getitem).

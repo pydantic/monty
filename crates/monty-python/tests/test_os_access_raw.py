@@ -368,43 +368,37 @@ def test_abstract_filesystem_read_bytes():
     assert result == snapshot(b'\x00\x01\x02\x03')
 
 
-def test_abstract_filesystem_open_passes_montyfilehandle_to_handler():
-    """`AbstractOS.dispatch` no longer pre-converts `MontyFileHandle` to
-    `PurePosixPath` — each handler receives the raw handle and is expected
-    to coerce it (e.g. via `path_from_arg`). This regression test inspects
-    the argument type and the `mode`/`binary` fields directly to lock in
-    the new contract.
+def test_abstract_filesystem_open_passes_path_to_read_handler():
+    """`open(...).read()` and `Path(...).read_text()` deliver the same shape
+    to the host's `path_read_text` handler — a `PurePosixPath` carrying the
+    virtual path.
+
+    The typed `OsFunctionCall::ReadText` payload only carries the path; the
+    interpreter does not pass the `MontyFileHandle` through to the host
+    because the host already issued the original `path_open` for the
+    handle and can recover any additional state from the path. This is a
+    deliberate simplification of the host boundary versus the older
+    arg-array protocol.
     """
 
-    class HandleRecordingOS(TestOS):
+    class PathRecordingOS(TestOS):
         def __init__(self) -> None:
             super().__init__()
-            self.read_args: list[tuple[type, str, str, bool]] = []
+            self.read_args: list[tuple[type, str]] = []
 
         def path_open(self, path: PurePosixPath, mode: str) -> MontyFileHandle:
-            # Minimal Open handler: verify read targets exist, then return a
-            # MontyFileHandle so subsequent read/write OS calls flow back
-            # into the handlers below with the handle as first arg.
             if mode.startswith('r') and str(path) not in self.files:
                 raise FileNotFoundError(f'No such file: {path}')
             return MontyFileHandle(str(path), mode)
 
         def path_read_text(self, path: PurePosixPath | MontyFileHandle) -> str:
-            assert isinstance(path, MontyFileHandle), (
-                f'expected MontyFileHandle from open().read(), got {type(path).__name__}'
-            )
-            self.read_args.append((type(path), path.path, path.mode, path.binary))
+            self.read_args.append((type(path), str(path)))
             return super().path_read_text(path)
 
-        def path_write_text(self, path: PurePosixPath | MontyFileHandle, data: str) -> int:
-            assert isinstance(path, MontyFileHandle), (
-                f'expected MontyFileHandle from open().write(), got {type(path).__name__}'
-            )
-            return super().path_write_text(path, data)
-
-    fs = HandleRecordingOS()
+    fs = PathRecordingOS()
     fs.files['/hello.txt'] = b'hi'
 
+    # open() + .read()
     code = """
 f = open('/hello.txt')
 data = f.read()
@@ -412,26 +406,12 @@ f.close()
 data
 """
     assert pydantic_monty.Monty(code).run(os=fs) == snapshot('hi')
-    assert fs.read_args == [(MontyFileHandle, '/hello.txt', 'r', False)]
+    assert fs.read_args == [(PurePosixPath, '/hello.txt')]
 
-    # And `pathlib.Path.read_text` still passes a plain PurePosixPath —
-    # the handler must still accept both arrival shapes.
+    # Path(...).read_text() — same shape.
     fs.read_args.clear()
-
-    class PathRecordingOS(TestOS):
-        def __init__(self) -> None:
-            super().__init__()
-            self.last_arg: object = None
-
-        def path_read_text(self, path: PurePosixPath | MontyFileHandle) -> str:
-            self.last_arg = path
-            return super().path_read_text(path)
-
-    path_fs = PathRecordingOS()
-    path_fs.files['/hello.txt'] = b'hi'
-    assert pydantic_monty.Monty('from pathlib import Path; Path("/hello.txt").read_text()').run(os=path_fs) == 'hi'
-    assert isinstance(path_fs.last_arg, PurePosixPath)
-    assert not isinstance(path_fs.last_arg, MontyFileHandle)
+    assert pydantic_monty.Monty('from pathlib import Path; Path("/hello.txt").read_text()').run(os=fs) == 'hi'
+    assert fs.read_args == [(PurePosixPath, '/hello.txt')]
 
 
 # =============================================================================

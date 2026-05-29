@@ -14,7 +14,7 @@ use ahash::AHashSet;
 use smallvec::smallvec;
 
 use crate::{
-    args::ArgValues,
+    args::{ArgValues, FromArgs},
     bytecode::{CallResult, VM},
     defer_drop_mut,
     exception_private::{ExcType, RunResult},
@@ -330,8 +330,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, ReMatch> {
                 self.get(vm.heap).get_groups(vm.heap)?
             }
             Some(StaticStrings::Groupdict) => {
-                let default =
-                    args.get_zero_one_named_arg("re.Match.groupdict", StaticStrings::Default, vm.heap, vm.interns)?;
+                let GroupdictArgs { default } = GroupdictArgs::from_args(args, vm)?;
                 let default = default.unwrap_or(Value::None);
                 let result = self.get_groupdict(&default, vm)?;
                 default.drop_with_heap(vm);
@@ -499,4 +498,13 @@ fn byte_to_char_offset(s: &str, byte_offset: usize) -> usize {
 )]
 fn group_index(n: i64) -> usize {
     (n - 1) as usize
+}
+
+/// Argument shape for `re.Match.groupdict(default=None)` — one optional
+/// pos-or-keyword `default` value used to fill groups that didn't match.
+#[derive(FromArgs)]
+#[from_args(name = "groupdict", at_most_total)]
+struct GroupdictArgs {
+    #[from_args(default)]
+    default: Option<Value>,
 }

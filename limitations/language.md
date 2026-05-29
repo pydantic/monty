@@ -37,6 +37,12 @@ any code runs.
 - **Template strings (t-strings)** — PEP 750.
 - **Walrus operator** (`:=`) — also rejected.
 
+## Source nesting depth
+
+- AST nesting is capped at 200 levels (30 in debug builds); exceeding it raises `SyntaxError: Source is too deeply nested`.
+- The budget is shared across every nesting-producing construct (parens, calls, subscripts, attribute chains, operators, comprehensions, control-flow blocks, `with`, etc.), including the synthetic nesting from a flat multi-item `with` — see with.md.
+- The message differs from CPython, which uses construct-specific wording (`too many nested parentheses`, `too many statically nested blocks`, …).
+
 ## Imports
 
 - Only the bundled stdlib modules listed in [modules.md](modules.md) can be

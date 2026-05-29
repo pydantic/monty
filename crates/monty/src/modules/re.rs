@@ -27,12 +27,12 @@
 use std::borrow::Cow;
 
 use crate::{
-    args::ArgValues,
+    args::{ArgValues, FromArgs},
     builtins::Builtins,
     bytecode::{CallResult, VM},
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, RunResult},
-    heap::{DropWithHeap, HeapData, HeapId},
+    heap::{HeapData, HeapId},
     intern::StaticStrings,
     modules::ModuleFunctions,
     resource::{ResourceError, ResourceTracker},
@@ -257,70 +257,16 @@ fn call_findall(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunRe
 /// pattern with the replacement string. When `count` is 0, all matches are replaced.
 /// Supports both positional and keyword arguments for `count` and `flags`.
 fn call_sub(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
-    let (pos, kwargs) = args.into_parts();
-    defer_drop_mut!(pos, vm);
-    let kwargs = kwargs.into_iter();
-    defer_drop_mut!(kwargs, vm);
-
-    let Some(pattern_val) = pos.next() else {
-        return Err(ExcType::type_error("re.sub() missing required argument: 'pattern'"));
-    };
+    let ReSubArgs {
+        pattern: pattern_val,
+        repl: repl_val,
+        string: string_val,
+        count: count_val,
+        flags: flags_val,
+    } = ReSubArgs::from_args(args, vm)?;
     defer_drop!(pattern_val, vm);
-
-    let Some(repl_val) = pos.next() else {
-        return Err(ExcType::type_error("re.sub() missing required argument: 'repl'"));
-    };
     defer_drop!(repl_val, vm);
-
-    let Some(string_val) = pos.next() else {
-        return Err(ExcType::type_error("re.sub() missing required argument: 'string'"));
-    };
     defer_drop!(string_val, vm);
-
-    // Extract count and flags from remaining positional args
-    let pos_count = pos.next();
-    let pos_flags = pos.next();
-
-    if let Some(extra) = pos.next() {
-        extra.drop_with_heap(vm);
-        return Err(ExcType::type_error("re.sub() takes at most 5 positional arguments"));
-    }
-
-    // Extract count and flags from kwargs (if not given positionally)
-    let (mut kw_count, mut kw_flags): (Option<Value>, Option<Value>) = (None, None);
-    for (key, value) in kwargs {
-        defer_drop!(key, vm);
-        let Some(keyword_name) = key.as_either_str(vm.heap) else {
-            value.drop_with_heap(vm);
-            return Err(ExcType::type_error("keywords must be strings"));
-        };
-        let key_str = keyword_name.as_str(vm.interns);
-        match key_str {
-            "count" => {
-                if pos_count.is_some() {
-                    value.drop_with_heap(vm);
-                    return Err(ExcType::type_error("re.sub() got multiple values for argument 'count'"));
-                }
-                kw_count.replace(value).drop_with_heap(vm);
-            }
-            "flags" => {
-                if pos_flags.is_some() {
-                    value.drop_with_heap(vm);
-                    return Err(ExcType::type_error("re.sub() got multiple values for argument 'flags'"));
-                }
-                kw_flags.replace(value).drop_with_heap(vm);
-            }
-            _ => {
-                value.drop_with_heap(vm);
-                return Err(ExcType::type_error(format!(
-                    "'{key_str}' is an invalid keyword argument for re.sub()"
-                )));
-            }
-        }
-    }
-
-    let count_val = pos_count.or(kw_count);
-    let flags_val = pos_flags.or(kw_flags);
 
     #[expect(
         clippy::cast_sign_loss,
@@ -373,73 +319,60 @@ fn call_sub(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult
 /// and the remainder of the string is returned as the final list element.
 /// Supports both positional and keyword arguments for `maxsplit` and `flags`.
 fn call_split(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
-    let (pos, kwargs) = args.into_parts();
-    defer_drop_mut!(pos, vm);
-    let kwargs = kwargs.into_iter();
-    defer_drop_mut!(kwargs, vm);
-
-    let Some(pattern_val) = pos.next() else {
-        return Err(ExcType::type_error("re.split() missing required argument: 'pattern'"));
-    };
+    let ReSplitArgs {
+        pattern: pattern_val,
+        string: string_val,
+        maxsplit: maxsplit_val,
+        flags: flags_val,
+    } = ReSplitArgs::from_args(args, vm)?;
     defer_drop!(pattern_val, vm);
-
-    let Some(string_val) = pos.next() else {
-        return Err(ExcType::type_error("re.split() missing required argument: 'string'"));
-    };
     defer_drop!(string_val, vm);
 
-    let pos_maxsplit = pos.next();
-    let pos_flags = pos.next();
-
-    if let Some(extra) = pos.next() {
-        extra.drop_with_heap(vm);
-        return Err(ExcType::type_error("re.split() takes at most 4 positional arguments"));
-    }
-
-    let (mut kw_maxsplit, mut kw_flags): (Option<Value>, Option<Value>) = (None, None);
-    for (key, value) in kwargs {
-        defer_drop!(key, vm);
-        let Some(keyword_name) = key.as_either_str(vm.heap) else {
-            value.drop_with_heap(vm);
-            return Err(ExcType::type_error("keywords must be strings"));
-        };
-        let key_str = keyword_name.as_str(vm.interns);
-        match key_str {
-            "maxsplit" => {
-                if pos_maxsplit.is_some() {
-                    value.drop_with_heap(vm);
-                    return Err(ExcType::type_error(
-                        "re.split() got multiple values for argument 'maxsplit'",
-                    ));
-                }
-                kw_maxsplit.replace(value).drop_with_heap(vm);
-            }
-            "flags" => {
-                if pos_flags.is_some() {
-                    value.drop_with_heap(vm);
-                    return Err(ExcType::type_error(
-                        "re.split() got multiple values for argument 'flags'",
-                    ));
-                }
-                kw_flags.replace(value).drop_with_heap(vm);
-            }
-            _ => {
-                value.drop_with_heap(vm);
-                return Err(ExcType::type_error(format!(
-                    "'{key_str}' is an invalid keyword argument for re.split()"
-                )));
-            }
-        }
-    }
-
-    let maxsplit = extract_maxsplit(pos_maxsplit.or(kw_maxsplit), vm)?;
-    let flags = extract_flags(pos_flags.or(kw_flags), vm)?;
+    let maxsplit = extract_maxsplit(maxsplit_val, vm)?;
+    let flags = extract_flags(flags_val, vm)?;
 
     let pattern = value_to_str(pattern_val, vm)?.into_owned();
     let text = value_to_str(string_val, vm)?.into_owned();
 
     let compiled = RePattern::compile(pattern, flags)?;
     compiled.split(&text, maxsplit, vm.heap)
+}
+
+/// Argument shape for `re.sub(pattern, repl, string, count=0, flags=0)`.
+///
+/// The `pattern` and `string` field names override their `StaticStrings`
+/// variant via `static_string =` because `Pattern` / `String` are
+/// already used by other interner entries (`re.Pattern` class name and
+/// `match.string` attribute respectively). The actual interned string for
+/// dispatch is still `"pattern"` / `"string"` via those repurposed variants.
+#[derive(FromArgs)]
+#[from_args(name = "sub")]
+struct ReSubArgs {
+    #[from_args(static_string = "PatternAttr")]
+    pattern: Value,
+    repl: Value,
+    #[from_args(static_string = "StringAttr")]
+    string: Value,
+    #[from_args(default)]
+    count: Option<Value>,
+    #[from_args(default)]
+    flags: Option<Value>,
+}
+
+/// Argument shape for `re.split(pattern, string, maxsplit=0, flags=0)`.
+///
+/// See `ReSubArgs` for why `pattern` / `string` use `static_string`.
+#[derive(FromArgs)]
+#[from_args(name = "split")]
+struct ReSplitArgs {
+    #[from_args(static_string = "PatternAttr")]
+    pattern: Value,
+    #[from_args(static_string = "StringAttr")]
+    string: Value,
+    #[from_args(default)]
+    maxsplit: Option<Value>,
+    #[from_args(default)]
+    flags: Option<Value>,
 }
 
 /// `re.finditer(pattern, string, flags=0)` — return all matches as a list.

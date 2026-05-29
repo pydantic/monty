@@ -17,7 +17,9 @@ missing because the sandbox has no access to the host clock.
 ## `datetime`
 
 Constructor: `datetime(year, month, day, hour=0, minute=0, second=0,
-microsecond=0, tzinfo=None)`.
+microsecond=0, tzinfo=None, *, fold=0)`. `fold` is accepted and validated
+(must be 0 or 1) for CPython argument-parsing parity but does not affect
+the stored value — Monty does not track DST-fold disambiguation.
 Attributes: `year`, `month`, `day`, `hour`, `minute`, `second`,
 `microsecond`, `tzinfo`.
 Methods: `isoformat`, `strftime`, `replace`, `weekday`, `isoweekday`,
@@ -28,6 +30,10 @@ Class methods supported: `now(tz=None)`, `strptime(date_string, format)`,
 
 - `now()` reaches the host for the current time (the only "live" datetime
   call); it yields an external call.
+- `now(tz)` returns a `datetime` whose `tzinfo` is `==` the input timezone
+  but not `is` it: the original `tzinfo` object isn't threaded through the
+  OS-call resume, so a fresh `timezone` is reconstructed from the
+  offset/name on the return path.
 - `utcnow()` (the deprecated class method) and `today()` are not
   implemented.
 - `combine()`, `fromtimestamp()`, `fromordinal()`, `utcfromtimestamp()`
@@ -35,6 +41,12 @@ Class methods supported: `now(tz=None)`, `strptime(date_string, format)`,
 
 Subclassing `datetime` is not possible (no `class` statement; see
 [language.md](language.md)).
+
+`datetime.replace()` and `date.replace()` accept **only keyword
+arguments** in Monty. CPython accepts positional args too
+(`d.replace(2025)` is valid in CPython 3.14). Calling with positionals
+in Monty raises `TypeError: replace expected at most 0 arguments,
+got N`.
 
 ## `timedelta`
 

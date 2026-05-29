@@ -7,9 +7,7 @@
 //! successful read raises `current_memory()` by roughly the file size, and
 //! `close()` drops it back down.
 
-use monty::{
-    ExcType, FileMode, LimitedTracker, MontyFileHandle, MontyObject, MontyRun, OsFunction, PrintWriter, ResourceLimits,
-};
+use monty::{ExcType, FileMode, LimitedTracker, MontyFileHandle, MontyObject, MontyRun, PrintWriter, ResourceLimits};
 
 fn file_handle(path: &str, mode: &str) -> MontyFileHandle {
     MontyFileHandle {
@@ -27,7 +25,7 @@ fn file_handle(path: &str, mode: &str) -> MontyFileHandle {
 /// `tracker_factory` lets each test configure its own limits.
 fn open_then_read(
     code: &str,
-    expected_io_fn: OsFunction,
+    expected_io_fn_name: &str,
     handle: MontyFileHandle,
     io_result: MontyObject,
     limits: ResourceLimits,
@@ -37,12 +35,12 @@ fn open_then_read(
         .start(vec![], LimitedTracker::new(limits), PrintWriter::Stdout)
         .unwrap();
     let open_call = progress.into_os_call().expect("expected Open OsCall");
-    assert_eq!(open_call.function, OsFunction::Open);
+    assert_eq!(open_call.function_call.name(), "Open");
     let progress = open_call
         .resume(MontyObject::FileHandle(handle), PrintWriter::Stdout)
         .unwrap();
     let io_call = progress.into_os_call().expect("expected read OsCall");
-    assert_eq!(io_call.function, expected_io_fn);
+    assert_eq!(io_call.function_call.name(), expected_io_fn_name);
     let progress = io_call.resume(io_result, PrintWriter::Stdout)?;
     // The next pause is the snapshot point at which we want the tracker
     // reading — typically a follow-up OS call inserted by the test to
@@ -82,7 +80,7 @@ f.read(5)
     let limits = ResourceLimits::new().max_memory(1024);
     let result = open_then_read(
         code,
-        OsFunction::ReadText,
+        "Path.read_text",
         file_handle("/big.txt", "r"),
         MontyObject::String(body),
         limits,
@@ -112,7 +110,7 @@ os.getenv('PROBE')
     let limits = ResourceLimits::new().max_memory(1_000_000);
     let (mem_after_read, _) = open_then_read(
         code,
-        OsFunction::ReadText,
+        "Path.read_text",
         file_handle("/data.txt", "r"),
         MontyObject::String(body),
         limits,
@@ -146,7 +144,7 @@ os.getenv('PROBE')
     let limits = ResourceLimits::new().max_memory(1_000_000);
     let (mem_after_close, _) = open_then_read(
         code,
-        OsFunction::ReadText,
+        "Path.read_text",
         file_handle("/data.txt", "r"),
         MontyObject::String(body),
         limits,

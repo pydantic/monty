@@ -640,7 +640,7 @@ impl PyMonty {
                             }
                         }
                     } else {
-                        call.function.on_no_handler(&call.args).into()
+                        call.function_call.on_no_handler().into()
                     };
 
                     progress = match py.detach(|| print_target.with_writer(|writer| call.resume(result, writer))) {
@@ -1000,10 +1000,9 @@ impl PyFunctionSnapshot {
     where
         EitherFunctionSnapshot: FromOsCall<T>,
     {
-        let function_name = call.function.to_string();
+        let function_name = call.function_call.name().to_owned();
         let call_id = call.call_id;
-        let args = call.args.clone();
-        let kwargs = call.kwargs.clone();
+        let (args, kwargs) = call.function_call.clone().to_args();
 
         let slf = Self {
             snapshot: Mutex::new(EitherFunctionSnapshot::from_os(call)),
@@ -1065,10 +1064,9 @@ impl PyFunctionSnapshot {
     where
         EitherFunctionSnapshot: FromReplOsCall<T>,
     {
-        let function_name = call.function.to_string();
+        let function_name = call.function_call.name().to_owned();
         let call_id = call.call_id;
-        let args = call.args.clone();
-        let kwargs = call.kwargs.clone();
+        let (args, kwargs) = call.function_call.clone().to_args();
 
         let slf = Self {
             snapshot: Mutex::new(EitherFunctionSnapshot::from_repl_os(call, repl_owner)),
@@ -1264,10 +1262,10 @@ impl PyFunctionSnapshot {
             .map_err(|_| PyRuntimeError::new_err("Snapshot is currently being resumed by another thread"))?;
 
         let external_result = match &*snapshot {
-            EitherFunctionSnapshot::NoLimitOs(call) => call.function.on_no_handler(&call.args).into(),
-            EitherFunctionSnapshot::LimitedOs(call) => call.function.on_no_handler(&call.args).into(),
-            EitherFunctionSnapshot::ReplNoLimitOs(call, _) => call.function.on_no_handler(&call.args).into(),
-            EitherFunctionSnapshot::ReplLimitedOs(call, _) => call.function.on_no_handler(&call.args).into(),
+            EitherFunctionSnapshot::NoLimitOs(call) => call.function_call.on_no_handler().into(),
+            EitherFunctionSnapshot::LimitedOs(call) => call.function_call.on_no_handler().into(),
+            EitherFunctionSnapshot::ReplNoLimitOs(call, _) => call.function_call.on_no_handler().into(),
+            EitherFunctionSnapshot::ReplLimitedOs(call, _) => call.function_call.on_no_handler().into(),
             EitherFunctionSnapshot::Done => return Err(PyRuntimeError::new_err("Progress already resumed")),
             _ => {
                 return Err(PyTypeError::new_err(
@@ -2134,7 +2132,7 @@ pub(crate) fn handle_mount_os_call<T: ResourceTracker>(
     fallback: Option<&Py<PyAny>>,
     dc_registry: &DcRegistry,
 ) -> PyResult<ExtFunctionResult> {
-    match table.handle_os_call(call.function, &call.args, &call.kwargs) {
+    match table.handle_os_call(&call.function_call) {
         Some(Ok(obj)) => Ok(obj.into()),
         Some(Err(mount_err)) => Ok(mount_err.into_exception().into()),
         None => {
@@ -2142,7 +2140,7 @@ pub(crate) fn handle_mount_os_call<T: ResourceTracker>(
             if let Some(fb) = fallback {
                 call_os_callback(py, call, fb.bind(py), dc_registry)
             } else {
-                Ok(call.function.on_no_handler(&call.args).into())
+                Ok(call.function_call.on_no_handler().into())
             }
         }
     }
@@ -2155,15 +2153,10 @@ pub(crate) fn call_os_callback<T: ResourceTracker>(
     callback: &Bound<'_, PyAny>,
     dc_registry: &DcRegistry,
 ) -> PyResult<ExtFunctionResult> {
-    call_os_callback_parts(
-        py,
-        &call.function.to_string(),
-        &call.args,
-        &call.kwargs,
-        callback,
-        dc_registry,
-        || call.function.on_no_handler(&call.args).into(),
-    )
+    let (args, kwargs) = call.function_call.clone().to_args();
+    let name = call.function_call.name();
+    let on_no_handler = || call.function_call.on_no_handler().into();
+    call_os_callback_parts(py, name, &args, &kwargs, callback, dc_registry, on_no_handler)
 }
 
 /// Shared implementation for dispatching an OS callback from either run or REPL progress.
