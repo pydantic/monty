@@ -1932,11 +1932,8 @@ impl<'i, 'g> Prepare<'i, 'g> {
         // 7. Fall back to the module global namespace. The name is either
         // already there (an implicit global read of a module-level binding) or
         // we allocate a fresh slot for it (typo, builtin, external function
-        // — runtime resolution will find `Undefined` in the slot and walk the
-        // CPython lookup order `globals → builtins → NameError`). Either way
-        // every `NameScope::Global` identifier ends up with a real slot, so
-        // the compiler always emits the fast slot-based opcode and the VM
-        // never has to look anything up by name.
+        // — runtime resolution will find `Undefined` in the slot and either
+        // find a builtin or yield to host for name lookup).
         let globals = self
             .global_name_map
             .as_mut()

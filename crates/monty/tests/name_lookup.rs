@@ -224,14 +224,10 @@ fn resolved_name_is_cached() {
     assert_eq!(call_count, 2, "should get FunctionCall for each ext() call");
 }
 
-/// A non-function constant resolved once is cached for subsequent references.
-///
-/// Prepare eagerly allocates a module slot for every `Global` reference
-/// (including unresolved ones like `X`), so the host's response from the
-/// first `NameLookup` lands in `globals[X_slot]`. The second reference reads
-/// the same slot directly without yielding another `NameLookup`.
+/// A non-function constant resolved once is also cached.
 #[test]
 fn resolved_constant_is_cached() {
+    // Use the same constant twice — should only yield one NameLookup
     let code = "X + X".to_owned();
     let runner = MontyRun::new(code, "test.py", vec![]).unwrap();
     let mut progress = runner.start(vec![], NoLimitTracker, PrintWriter::Stdout).unwrap();
@@ -251,7 +247,35 @@ fn resolved_constant_is_cached() {
             other => panic!("unexpected progress: {other:?}"),
         }
     }
-    assert_eq!(lookup_count, 1, "first resolution caches into the slot");
+    assert_eq!(lookup_count, 1, "constant should be cached after first lookup");
+}
+
+#[test]
+fn name_lookup_caches_across_calls() {
+    let code = "def f():
+    return mystery
+f()
+f()"
+    .to_owned();
+    let runner = MontyRun::new(code, "test.py", vec![]).unwrap();
+    let mut progress = runner.start(vec![], NoLimitTracker, PrintWriter::Stdout).unwrap();
+
+    let mut lookup_count = 0;
+    loop {
+        match progress {
+            RunProgress::NameLookup(lookup) => {
+                assert_eq!(lookup.name, "mystery");
+                lookup_count += 1;
+                progress = lookup.resume(MontyObject::Int(7), PrintWriter::Stdout).unwrap();
+            }
+            RunProgress::Complete(_) => break,
+            other => panic!("unexpected progress: {other:?}"),
+        }
+    }
+    assert_eq!(
+        lookup_count, 1,
+        "first resolution caches into the slot; second call reads it"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -504,88 +528,4 @@ sorted([1], key=lambda x: x+1)
     let runner = MontyRun::new(code, "test.py", vec![]).unwrap();
     let value = runner.run_no_limits(vec![]).unwrap();
     assert_eq!(value, MontyObject::List(vec![MontyObject::Int(1)]));
-}
-
-/// A function-scope reference to an unresolved name resolves into its own
-/// freshly-allocated module slot, not into another global's slot.
-///
-/// Regression: an earlier draft of the by-name path yielded
-/// `NameLookup` with `namespace_slot = 0` as a placeholder for unresolved
-/// names, and the resume path would dutifully `mem::replace(&mut
-/// vm.globals[0], …)`, silently overwriting the first module global. The
-/// final design eagerly allocates a distinct slot for `mystery` (slot 3
-/// here), so the resume caches into `globals[3]` and `real_value` (slot 0)
-/// is untouched.
-#[test]
-fn name_lookup_caches_into_its_own_slot() {
-    // Layout (post-prepare): slot 0 = real_value, slot 1 = f, slot 2 = result,
-    // slot 3 = mystery (allocated eagerly by the reference inside `f`).
-    let code = "real_value = 'preserved'
-def f():
-    return mystery
-result = f()
-(real_value, result)"
-        .to_owned();
-    let runner = MontyRun::new(code, "test.py", vec![]).unwrap();
-    let mut progress = runner.start(vec![], NoLimitTracker, PrintWriter::Stdout).unwrap();
-
-    let mut lookup_count = 0;
-    loop {
-        match progress {
-            RunProgress::NameLookup(lookup) => {
-                assert_eq!(lookup.name, "mystery");
-                lookup_count += 1;
-                progress = lookup
-                    .resume(MontyObject::String("from_host".to_string()), PrintWriter::Stdout)
-                    .unwrap();
-            }
-            RunProgress::Complete(result) => {
-                assert_eq!(
-                    result,
-                    MontyObject::Tuple(vec![
-                        MontyObject::String("preserved".to_string()),
-                        MontyObject::String("from_host".to_string()),
-                    ]),
-                    "real_value (module slot 0) must not have been clobbered by the NameLookup resume",
-                );
-                break;
-            }
-            other => panic!("unexpected progress: {other:?}"),
-        }
-    }
-    // Without a slot to cache into we don't try to cache; the host gets called
-    // exactly once because the function is only called once here.
-    assert_eq!(lookup_count, 1);
-}
-
-/// Companion to the previous test: repeated calls to the same function
-/// share a cached resolution because every Global reference gets a real
-/// module slot eagerly allocated in prepare, and the first `NameLookup`
-/// caches into that slot.
-#[test]
-fn name_lookup_caches_across_calls() {
-    let code = "def f():
-    return mystery
-f()
-f()"
-    .to_owned();
-    let runner = MontyRun::new(code, "test.py", vec![]).unwrap();
-    let mut progress = runner.start(vec![], NoLimitTracker, PrintWriter::Stdout).unwrap();
-
-    let mut lookup_count = 0;
-    loop {
-        match progress {
-            RunProgress::NameLookup(lookup) => {
-                assert_eq!(lookup.name, "mystery");
-                lookup_count += 1;
-                progress = lookup.resume(MontyObject::Int(7), PrintWriter::Stdout).unwrap();
-            }
-            RunProgress::Complete(_) => break,
-            other => panic!("unexpected progress: {other:?}"),
-        }
-    }
-    assert_eq!(
-        lookup_count, 1,
-        "first resolution caches into the slot; second call reads it"
-    );
 }

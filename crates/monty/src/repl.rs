@@ -616,9 +616,9 @@ impl<T: ResourceTracker> ReplOsCall<T> {
 pub struct ReplNameLookup<T: ResourceTracker> {
     /// The name being looked up.
     pub name: String,
-    /// Slot to cache the resolved value into.
+    /// The namespace slot where the resolved value should be cached.
     namespace_slot: u16,
-    /// Whether `namespace_slot` is a global slot or a local/function slot.
+    /// Whether this is a global slot or a local/function slot.
     is_global: bool,
     /// Internal REPL execution snapshot.
     snapshot: ReplSnapshot<T>,
@@ -678,17 +678,17 @@ impl<T: ResourceTracker> ReplNameLookup<T> {
                         }
                     };
 
-                    // Cache the resolved value in the appropriate slot.
-                    let slot = namespace_slot as usize;
+                    // Cache the resolved value in the appropriate slot
+                    let slot_idx = namespace_slot as usize;
                     let cloned = value.clone_with_heap(&vm);
-                    if is_global {
-                        let old = mem::replace(&mut vm.globals[slot], cloned);
-                        old.drop_with_heap(&mut vm);
+                    let slot = if is_global {
+                        &mut vm.globals[slot_idx]
                     } else {
                         let stack_base = vm.current_stack_base();
-                        let old = mem::replace(&mut vm.stack[stack_base + slot], cloned);
-                        old.drop_with_heap(&mut vm);
-                    }
+                        &mut vm.stack[stack_base + slot_idx]
+                    };
+                    let old = mem::replace(slot, cloned);
+                    old.drop_with_heap(&mut vm);
 
                     vm.push(value);
                     vm.run()
