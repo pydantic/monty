@@ -169,6 +169,18 @@ pub trait PyTrait<'h> {
     /// Returns the Python `repr()` string for this value.
     ///
     /// Convenience wrapper around `py_repr_fmt` that returns an owned string.
+    ///
+    /// TODO: the intermediate `String` here is *not* tracked, so recursive
+    /// `repr()` of nested containers can amplify into a multi-gigabyte
+    /// host-side buffer before `allocate_string` consults the tracker.
+    /// `StringBuilder` is the canonical fix, but plugging it in requires
+    /// either (a) restructuring so `py_repr_fmt` no longer needs `&mut vm`
+    /// while the builder is alive, or (b) refactoring `py_str` / `py_repr`
+    /// to return `Value` directly so the builder can be consumed via
+    /// `StringBuilder::finish` *outside* the recursive call. Today's
+    /// per-type protections (`INT_MAX_STR_DIGITS`, `check_repeat_size`, etc.)
+    /// blunt the worst amplifications but don't fully cover container
+    /// `repr()`.
     fn py_repr(&self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Cow<'static, str>> {
         let mut s = String::new();
         let mut heap_ids = AHashSet::new();
@@ -177,6 +189,15 @@ pub trait PyTrait<'h> {
     }
 
     /// Returns the Python `str()` string for this value.
+    ///
+    /// TODO: should return a `Value` rather than `Cow<'static, str>` — see
+    /// the TODO on [`py_repr`](Self::py_repr). For `Value::InternString` /
+    /// heap `str` values, today's `Cow::Owned` impl clones the underlying
+    /// bytes; a `Value`-returning impl could just hand back the same
+    /// `Value`. Callers that need a `&str` (f-string formatters, the print
+    /// writer, error messages) would resolve the `Value` to `&str` via the
+    /// interns table / heap — equivalent to the existing `EitherStr`
+    /// accessor pattern.
     fn py_str(&self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Cow<'static, str>> {
         self.py_repr(vm)
     }
