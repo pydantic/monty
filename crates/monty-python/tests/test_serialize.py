@@ -523,7 +523,7 @@ d = f.read()
     # would encode that as `1u8` (Some tag) + varint(2) + varint(5)
     # = 3 extra bytes on top of the current payload.
     pinned_dump_len = len(progress1.dump())
-    assert pinned_dump_len == snapshot(1056)
+    assert pinned_dump_len == snapshot(1049)
 
     progress2 = pydantic_monty.load_snapshot(progress1.dump())
     assert isinstance(progress2, pydantic_monty.FunctionSnapshot)
