@@ -21,7 +21,8 @@ use ahash::AHashMap;
 use chrono::{Datelike, Timelike};
 use monty::{
     ExcType, ExtFunctionResult, FileMode, LimitedTracker, MontyDate, MontyDateTime, MontyException, MontyFileHandle,
-    MontyObject, MontyRun, NameLookupResult, OsFunction, PrintWriter, ResourceLimits, RunProgress, dir_stat, file_stat,
+    MontyObject, MontyRun, NameLookupResult, OsFunctionCall, PrintWriter, ResourceLimits, RunProgress, dir_stat,
+    file_stat,
     fs::{MountMode, MountTable, OverlayState},
 };
 use pyo3::{prelude::*, types::PyDict};
@@ -900,95 +901,48 @@ fn get_virtual_dir_entries(path: &str) -> Option<Vec<String>> {
     })
 }
 
-/// Helper to get a boolean kwarg by name.
-fn get_kwarg_bool(kwargs: &[(MontyObject, MontyObject)], name: &str) -> bool {
-    for (key, value) in kwargs {
-        if let MontyObject::String(key_str) = key
-            && key_str == name
-        {
-            return matches!(value, MontyObject::Bool(true));
-        }
-    }
-    false
-}
-
 /// Dispatches an OS function call using the virtual filesystem.
 ///
-/// Returns an `ExternalResult` to pass back to the Monty interpreter.
-/// Raises `FileNotFoundError` for missing files/directories.
+/// Receives a `&OsFunctionCall` (the tagged dispatch value) — every variant
+/// already carries typed args, so we destructure directly instead of going
+/// through `MontyObject` indexing.
 #[expect(clippy::cast_possible_wrap)] // Virtual file sizes are tiny, no wrap possible
-fn dispatch_os_call(
-    function: OsFunction,
-    args: &[MontyObject],
-    kwargs: &[(MontyObject, MontyObject)],
-) -> ExtFunctionResult {
-    // Handle DateToday — return deterministic fixture date (local date at UTC+02:00).
-    // Deterministic timestamp: 1_700_000_000 UTC = 2023-11-14 22:13:20 UTC.
-    // With local offset +7200 (UTC+02:00), local date is 2023-11-15.
-    if function == OsFunction::DateToday {
-        return MontyObject::Date(MontyDate {
+fn dispatch_os_call(call: &OsFunctionCall) -> ExtFunctionResult {
+    match call {
+        OsFunctionCall::DateToday => MontyObject::Date(MontyDate {
             year: 2023,
             month: 11,
             day: 15,
         })
-        .into();
-    }
-
-    // Handle DateTimeNow — return deterministic fixture datetime.
-    // The `tz` arg (args[0]) determines naive vs aware.
-    if function == OsFunction::DateTimeNow {
-        return dispatch_datetime_now(args).into();
-    }
-
-    // Handle GetEnviron first as it takes no path argument
-    if function == OsFunction::GetEnviron {
-        // Return the virtual environment as a dict
-        let env_dict = vec![
-            (
-                MontyObject::String("VIRTUAL_HOME".to_owned()),
-                MontyObject::String("/virtual/home".to_owned()),
-            ),
-            (
-                MontyObject::String("VIRTUAL_USER".to_owned()),
-                MontyObject::String("testuser".to_owned()),
-            ),
-            (
-                MontyObject::String("VIRTUAL_EMPTY".to_owned()),
-                MontyObject::String(String::new()),
-            ),
-        ];
-        return MontyObject::Dict(env_dict.into()).into();
-    }
-
-    // Extract path. Most calls pass a Path/String; `read`/`write` on an open
-    // file pass the file object itself as a `FileHandle`.
-    let path = match &args[0] {
-        MontyObject::Path(p) => p.clone(),
-        MontyObject::String(s) => s.clone(),
-        MontyObject::FileHandle(handle) => handle.path.clone(),
-        other => panic!("OS call: first arg must be path, got {other:?}"),
-    };
-
-    match function {
-        OsFunction::GetEnviron | OsFunction::DateToday | OsFunction::DateTimeNow => unreachable!("handled above"),
-        OsFunction::Exists => {
-            let exists = get_virtual_file(&path).is_some() || is_virtual_dir(&path);
-            MontyObject::Bool(exists).into()
+        .into(),
+        OsFunctionCall::DateTimeNow(tz) => dispatch_datetime_now(tz).into(),
+        OsFunctionCall::GetEnviron => {
+            let env_dict = vec![
+                (
+                    MontyObject::String("VIRTUAL_HOME".to_owned()),
+                    MontyObject::String("/virtual/home".to_owned()),
+                ),
+                (
+                    MontyObject::String("VIRTUAL_USER".to_owned()),
+                    MontyObject::String("testuser".to_owned()),
+                ),
+                (
+                    MontyObject::String("VIRTUAL_EMPTY".to_owned()),
+                    MontyObject::String(String::new()),
+                ),
+            ];
+            MontyObject::Dict(env_dict.into()).into()
         }
-        OsFunction::IsFile => {
-            let is_file = get_virtual_file(&path).is_some();
-            MontyObject::Bool(is_file).into()
+        OsFunctionCall::Exists(p) => {
+            let path = p.as_str();
+            MontyObject::Bool(get_virtual_file(path).is_some() || is_virtual_dir(path)).into()
         }
-        OsFunction::IsDir => {
-            let is_dir = is_virtual_dir(&path);
-            MontyObject::Bool(is_dir).into()
-        }
-        OsFunction::IsSymlink => {
-            // Virtual filesystem doesn't have symlinks
-            MontyObject::Bool(false).into()
-        }
-        OsFunction::ReadText => {
-            if let Some(file) = get_virtual_file(&path) {
+        OsFunctionCall::IsFile(p) => MontyObject::Bool(get_virtual_file(p.as_str()).is_some()).into(),
+        OsFunctionCall::IsDir(p) => MontyObject::Bool(is_virtual_dir(p.as_str())).into(),
+        OsFunctionCall::IsSymlink(_) => MontyObject::Bool(false).into(),
+        OsFunctionCall::ReadText(p) => {
+            let path = p.as_str();
+            if let Some(file) = get_virtual_file(path) {
                 match str::from_utf8(&file.content) {
                     Ok(text) => MontyObject::String(text.to_owned()).into(),
                     Err(_) => MontyException::new(
@@ -1005,8 +959,9 @@ fn dispatch_os_call(
                 .into()
             }
         }
-        OsFunction::ReadBytes => {
-            if let Some(file) = get_virtual_file(&path) {
+        OsFunctionCall::ReadBytes(p) => {
+            let path = p.as_str();
+            if let Some(file) = get_virtual_file(path) {
                 MontyObject::Bytes(file.content).into()
             } else {
                 MontyException::new(
@@ -1016,10 +971,11 @@ fn dispatch_os_call(
                 .into()
             }
         }
-        OsFunction::Stat => {
-            if let Some(file) = get_virtual_file(&path) {
+        OsFunctionCall::Stat(p) => {
+            let path = p.as_str();
+            if let Some(file) = get_virtual_file(path) {
                 file_stat(file.mode, file.content.len() as i64, VFS_MTIME).into()
-            } else if is_virtual_dir(&path) {
+            } else if is_virtual_dir(path) {
                 dir_stat(0o755, VFS_MTIME).into()
             } else {
                 MontyException::new(
@@ -1029,9 +985,9 @@ fn dispatch_os_call(
                 .into()
             }
         }
-        OsFunction::Iterdir => {
-            if let Some(entries) = get_virtual_dir_entries(&path) {
-                // Return Path objects, not strings
+        OsFunctionCall::Iterdir(p) => {
+            let path = p.as_str();
+            if let Some(entries) = get_virtual_dir_entries(path) {
                 let list: Vec<MontyObject> = entries.into_iter().map(MontyObject::Path).collect();
                 MontyObject::List(list).into()
             } else {
@@ -1042,17 +998,10 @@ fn dispatch_os_call(
                 .into()
             }
         }
-        OsFunction::Resolve | OsFunction::Absolute => {
-            // For virtual paths, return as-is (they're already absolute)
-            MontyObject::String(path).into()
-        }
-        OsFunction::Open => {
-            // args[0] is path, args[1] is the mode string.
-            let mode_str = String::try_from(&args[1]).expect("open: second arg must be mode string");
-            let file_mode = match mode_str.parse::<FileMode>() {
-                Ok(m) => m,
-                Err(e) => return MontyException::new(ExcType::ValueError, Some(e.to_string())).into(),
-            };
+        OsFunctionCall::Resolve(p) | OsFunctionCall::Absolute(p) => MontyObject::String(p.as_str().to_owned()).into(),
+        OsFunctionCall::Open(args) => {
+            let path = args.path.as_str().to_owned();
+            let file_mode = args.mode;
             match file_mode {
                 FileMode::Read(_) | FileMode::ReadUpdate(_) => {
                     if get_virtual_file(&path).is_none() {
@@ -1071,13 +1020,11 @@ fn dispatch_os_call(
                         };
                     }
                 }
-                // `w`/`w+`: truncate to empty (creating if missing).
                 FileMode::Write(_) | FileMode::WriteUpdate(_) => MUTABLE_VFS.with(|vfs| {
                     let mut vfs = vfs.borrow_mut();
                     vfs.files.insert(path.clone(), (Vec::new(), 0o644));
                     vfs.deleted_files.remove(&path);
                 }),
-                // `a`/`a+`: create if missing, preserving existing content.
                 FileMode::Append(_) | FileMode::AppendUpdate(_) => MUTABLE_VFS.with(|vfs| {
                     let mut vfs = vfs.borrow_mut();
                     vfs.files.entry(path.clone()).or_insert_with(|| (Vec::new(), 0o644));
@@ -1091,58 +1038,46 @@ fn dispatch_os_call(
             })
             .into()
         }
-        OsFunction::Getenv => {
-            // Virtual environment for testing os.getenv()
-            // args[0] is key, args[1] is default (may be None)
-            let key = String::try_from(&args[0]).expect("getenv: first arg must be key string");
-            let default = &args[1];
-
-            // Provide a few test environment variables
-            let value = match key.as_str() {
+        OsFunctionCall::Getenv(args) => {
+            let value = match args.key.as_str() {
                 "VIRTUAL_HOME" => Some("/virtual/home"),
                 "VIRTUAL_USER" => Some("testuser"),
                 "VIRTUAL_EMPTY" => Some(""),
                 _ => None,
             };
-
             if let Some(v) = value {
                 MontyObject::String(v.to_owned()).into()
-            } else if matches!(default, MontyObject::None) {
+            } else if matches!(args.default, MontyObject::None) {
                 MontyObject::None.into()
             } else {
-                // Return the default value
-                default.clone().into()
+                args.default.clone().into()
             }
         }
-        OsFunction::WriteText => {
-            // args[0] is path, args[1] is text content
-            let text = String::try_from(&args[1]).expect("write_text: second arg must be string");
+        OsFunctionCall::WriteText(args) => {
+            let path = args.path.as_str().to_owned();
+            let text = args.data.clone();
             MUTABLE_VFS.with(|vfs| {
                 let mut vfs = vfs.borrow_mut();
                 vfs.files.insert(path.clone(), (text.into_bytes(), 0o644));
                 vfs.deleted_files.remove(&path);
             });
-            // write_text returns the number of bytes written
             let byte_count = MUTABLE_VFS.with(|vfs| vfs.borrow().files.get(&path).map_or(0, |(c, _)| c.len()));
             MontyObject::Int(byte_count as i64).into()
         }
-        OsFunction::WriteBytes => {
-            // args[0] is path, args[1] is bytes content
-            let bytes = match &args[1] {
-                MontyObject::Bytes(b) => b.clone(),
-                other => panic!("write_bytes: second arg must be bytes, got {other:?}"),
-            };
+        OsFunctionCall::WriteBytes(args) => {
+            let path = args.path.as_str().to_owned();
+            let bytes = args.data.clone();
             let byte_count = bytes.len();
             MUTABLE_VFS.with(|vfs| {
                 let mut vfs = vfs.borrow_mut();
                 vfs.files.insert(path.clone(), (bytes, 0o644));
                 vfs.deleted_files.remove(&path);
             });
-            // write_bytes returns the number of bytes written
             MontyObject::Int(byte_count as i64).into()
         }
-        OsFunction::AppendText => {
-            let text = String::try_from(&args[1]).expect("append_text: second arg must be string");
+        OsFunctionCall::AppendText(args) => {
+            let path = args.path.as_str().to_owned();
+            let text = args.data.as_str();
             let char_count = text.chars().count();
             MUTABLE_VFS.with(|vfs| {
                 let mut vfs = vfs.borrow_mut();
@@ -1152,41 +1087,40 @@ fn dispatch_os_call(
             });
             MontyObject::Int(char_count as i64).into()
         }
-        OsFunction::AppendBytes => {
-            let bytes = match &args[1] {
-                MontyObject::Bytes(b) => b.clone(),
-                other => panic!("append_bytes: second arg must be bytes, got {other:?}"),
-            };
+        OsFunctionCall::AppendBytes(args) => {
+            let path = args.path.as_str().to_owned();
+            let bytes = args.data.as_slice();
             let byte_count = bytes.len();
             MUTABLE_VFS.with(|vfs| {
                 let mut vfs = vfs.borrow_mut();
                 let entry = vfs.files.entry(path.clone()).or_insert_with(|| (Vec::new(), 0o644));
-                entry.0.extend_from_slice(&bytes);
+                entry.0.extend_from_slice(bytes);
                 vfs.deleted_files.remove(&path);
             });
             MontyObject::Int(byte_count as i64).into()
         }
-        OsFunction::Mkdir => {
-            // Check for parents and exist_ok in kwargs (e.g., mkdir(parents=True, exist_ok=True))
-            let parents = get_kwarg_bool(kwargs, "parents");
-            let exist_ok = get_kwarg_bool(kwargs, "exist_ok");
+        OsFunctionCall::Mkdir(args) => {
+            let path = args.path.as_str().to_owned();
+            let parents = args.parents;
+            let exist_ok = args.exist_ok;
 
-            // Check if already exists
             if is_virtual_dir(&path) {
                 if exist_ok {
                     return MontyObject::None.into();
                 }
-                return MontyException::new(ExcType::OSError, Some(format!("[Errno 17] File exists: '{path}'"))).into();
+                return MontyException::new(
+                    ExcType::FileExistsError,
+                    Some(format!("[Errno 17] File exists: '{path}'")),
+                )
+                .into();
             }
 
-            // Check parent directory
             let parent = Path::new(&path)
                 .parent()
                 .map(|p| p.to_string_lossy().to_string())
                 .unwrap_or_default();
             if !parent.is_empty() && !is_virtual_dir(&parent) {
                 if parents {
-                    // Create parent directories recursively
                     create_parent_dirs(&parent);
                 } else {
                     return MontyException::new(
@@ -1204,8 +1138,8 @@ fn dispatch_os_call(
             });
             MontyObject::None.into()
         }
-        OsFunction::Unlink => {
-            // args[0] is path
+        OsFunctionCall::Unlink(p) => {
+            let path = p.as_str().to_owned();
             if get_virtual_file(&path).is_some() {
                 MUTABLE_VFS.with(|vfs| {
                     let mut vfs = vfs.borrow_mut();
@@ -1221,8 +1155,8 @@ fn dispatch_os_call(
                 .into()
             }
         }
-        OsFunction::Rmdir => {
-            // args[0] is path
+        OsFunctionCall::Rmdir(p) => {
+            let path = p.as_str().to_owned();
             if is_virtual_dir(&path) {
                 MUTABLE_VFS.with(|vfs| {
                     let mut vfs = vfs.borrow_mut();
@@ -1238,21 +1172,14 @@ fn dispatch_os_call(
                 .into()
             }
         }
-        OsFunction::Rename => {
-            // args[0] is src path, args[1] is dest path
-            let dest = match &args[1] {
-                MontyObject::Path(p) => p.clone(),
-                MontyObject::String(s) => s.clone(),
-                other => panic!("rename: second arg must be path, got {other:?}"),
-            };
-
+        OsFunctionCall::Rename(args) => {
+            let path = args.src.as_str().to_owned();
+            let dest = args.dst.as_str().to_owned();
             if let Some(file) = get_virtual_file(&path) {
                 MUTABLE_VFS.with(|vfs| {
                     let mut vfs = vfs.borrow_mut();
-                    // Remove from old location
                     vfs.files.remove(&path);
                     vfs.deleted_files.insert(path);
-                    // Add to new location
                     vfs.files.insert(dest, (file.content, file.mode));
                 });
                 MontyObject::None.into()
@@ -1272,6 +1199,7 @@ fn dispatch_os_call(
                 .into()
             }
         }
+        OsFunctionCall::Used => unreachable!("OsFunctionCall::Used dispatched"),
     }
 }
 
@@ -1280,11 +1208,10 @@ const DATETIME_FIXTURE_TIMESTAMP: i64 = 1_700_000_000;
 
 /// Dispatches a `DateTimeNow` OS call, returning a deterministic `MontyDateTime`.
 ///
-/// The `tz` argument (args[0]) determines whether a naive or aware datetime is
-/// returned. The deterministic timestamp is 1_700_000_000 UTC (2023-11-14 22:13:20 UTC).
+/// The `tz` argument determines whether a naive or aware datetime is returned.
+/// The deterministic timestamp is 1_700_000_000 UTC (2023-11-14 22:13:20 UTC).
 /// For naive datetimes the virtual local offset is UTC+02:00.
-fn dispatch_datetime_now(args: &[MontyObject]) -> MontyObject {
-    let tz = args.first().expect("DateTimeNow requires a tz argument");
+fn dispatch_datetime_now(tz: &MontyObject) -> MontyObject {
     match tz {
         MontyObject::None => {
             // Naive datetime: apply local offset to get local wall-clock time
@@ -1821,13 +1748,13 @@ fn run_mount_fs_iter_loop(
             }
             RunProgress::OsCall(call) => {
                 // Dispatch through the mount table first.
-                let result = mount_table.handle_os_call(call.function, &call.args, &call.kwargs);
+                let result = mount_table.handle_os_call(&call.function_call);
                 let ext_result = match result {
                     Some(Ok(obj)) => ExtFunctionResult::Return(obj),
                     Some(Err(err)) => ExtFunctionResult::Error(err.into_exception()),
                     None => {
                         // Non-filesystem operation — dispatch to the regular handler.
-                        dispatch_os_call(call.function, &call.args, &call.kwargs)
+                        dispatch_os_call(&call.function_call)
                     }
                 };
                 progress = call.resume(ext_result, PrintWriter::Stdout)?;
@@ -1941,7 +1868,7 @@ fn run_iter_loop(exec: MontyRun, limits: ResourceLimits) -> Result<MontyObject, 
                 progress = lookup.resume(result, PrintWriter::Stdout)?;
             }
             RunProgress::OsCall(call) => {
-                let result = dispatch_os_call(call.function, &call.args, &call.kwargs);
+                let result = dispatch_os_call(&call.function_call);
                 progress = call.resume(result, PrintWriter::Stdout)?;
             }
         }

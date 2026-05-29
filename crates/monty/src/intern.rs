@@ -206,6 +206,7 @@ pub enum StaticStrings {
     // Keyword argument names for string/bytes methods and constructors
     Tabsize,
     Keepends,
+    Obj,
     Object,
     Source,
     // Additional string methods
@@ -415,6 +416,11 @@ pub enum StaticStrings {
     Buffering,
     Errors,
     Newline,
+    Closefd,
+    Opener,
+    Repl,
+    Old,
+    New,
 
     // Slice attributes
     Start,
@@ -549,6 +555,7 @@ pub enum StaticStrings {
     Minute,
     Second,
     Microsecond,
+    Fold,
     // timedelta constructor/attribute names
     Days,
     Seconds,
@@ -659,6 +666,32 @@ pub enum StaticStrings {
     Disable,
     /// `gc.enable()` function.
     Enable,
+
+    // ==========================
+    // Kwarg names referenced by `#[derive(FromArgs)]` macros and the
+    // hand-written argument extractors they're gradually replacing.
+    // These exist purely as `StaticStrings` so the generated dispatch
+    // code can use `StringId` equality (O(1)) instead of string compare.
+    /// Kwarg name `key` — `sorted(key=...)`, `min(key=...)`, etc.
+    Key,
+    /// Kwarg name `sep` — `str.split(sep=...)`, `print(sep=...)`, etc.
+    Sep,
+    /// Kwarg name `maxsplit` — `str.split(maxsplit=...)`, `re.split(maxsplit=...)`.
+    Maxsplit,
+    /// Kwarg name `strict` — `zip(strict=...)`.
+    Strict,
+    /// Kwarg name `return_exceptions` — `asyncio.gather(return_exceptions=...)`.
+    ReturnExceptions,
+    /// Kwarg name `rel_tol` — `math.isclose(rel_tol=...)`.
+    RelTol,
+    /// Kwarg name `abs_tol` — `math.isclose(abs_tol=...)`.
+    AbsTol,
+    /// Kwarg name `format` — `date.strftime(format=...)`, `datetime.strftime(format=...)`.
+    Format,
+    /// Kwarg name `parents` — `Path.mkdir(parents=...)`.
+    Parents,
+    /// Kwarg name `exist_ok` — `Path.mkdir(exist_ok=...)`.
+    ExistOk,
 }
 
 impl StaticStrings {

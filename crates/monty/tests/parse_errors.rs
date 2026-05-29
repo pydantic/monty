@@ -3,45 +3,31 @@ use std::fmt::Write;
 use insta::assert_snapshot;
 use monty::{ExcType, MontyException, MontyRun};
 
-/// Helper to extract the exception type from a parse error.
-fn get_exc_type(result: Result<MontyRun, MontyException>) -> ExcType {
-    let err = result.expect_err("expected parse error");
-    err.exc_type()
+/// Helper to extract the exception from a parse error.
+fn get_parse_err(code: impl Into<String>) -> MontyException {
+    let result = MontyRun::new(code.into(), "test.py", vec![]);
+    result.expect_err("expected parse error")
 }
 
 #[test]
 fn complex_numbers_return_not_implemented_error() {
-    let result = MontyRun::new("1 + 2j".to_owned(), "test.py", vec![]);
-    assert_eq!(get_exc_type(result), ExcType::NotImplementedError);
-}
-
-#[test]
-fn complex_numbers_have_descriptive_message() {
-    let result = MontyRun::new("1 + 2j".to_owned(), "test.py", vec![]);
-    let exc = result.expect_err("expected parse error");
-    assert!(
-        exc.message().is_some_and(|m| m.contains("complex")),
-        "message should mention 'complex', got: {exc}"
-    );
+    let err = get_parse_err("1 + 2j");
+    assert_eq!(err.exc_type(), ExcType::NotImplementedError);
+    assert_snapshot!(err.message().unwrap(), @"The monty syntax parser does not yet support complex constants");
 }
 
 #[test]
 fn yield_expressions_return_not_implemented_error() {
-    // Yield expressions are not supported and fail at parse time
-    let result = MontyRun::new("def foo():\n    yield 1".to_owned(), "test.py", vec![]);
-    assert_eq!(get_exc_type(result), ExcType::NotImplementedError);
-    let result = MontyRun::new("def foo():\n    yield 1".to_owned(), "test.py", vec![]);
-    let exc = result.expect_err("expected parse error");
-    assert!(
-        exc.message().is_some_and(|m| m.contains("yield")),
-        "message should mention 'yield', got: {exc}"
-    );
+    let err = get_parse_err("def foo():\n    yield 1");
+    assert_eq!(err.exc_type(), ExcType::NotImplementedError);
+    assert_snapshot!(err.message().unwrap(), @"The monty syntax parser does not yet support yield expressions");
 }
 
 #[test]
 fn classes_return_not_implemented_error() {
-    let result = MontyRun::new("class Foo: pass".to_owned(), "test.py", vec![]);
-    assert_eq!(get_exc_type(result), ExcType::NotImplementedError);
+    let err = get_parse_err("class Foo: pass");
+    assert_eq!(err.exc_type(), ExcType::NotImplementedError);
+    assert_snapshot!(err.message().unwrap(), @"The monty syntax parser does not yet support class definitions");
 }
 
 #[test]
@@ -62,48 +48,37 @@ fn async_with_statement_returns_not_implemented_error() {
         "test.py",
         vec![],
     );
-    assert_eq!(get_exc_type(result), ExcType::NotImplementedError);
+    let err = result.expect_err("expected parse error");
+    assert_eq!(err.exc_type(), ExcType::NotImplementedError);
 }
 
 #[test]
 fn error_display_format() {
     // Verify the Display format matches Python's exception output with traceback
-    let result = MontyRun::new("1 + 2j".to_owned(), "test.py", vec![]);
-    let err = result.expect_err("expected parse error");
-    let display = err.to_string();
-    // Should start with traceback header
-    assert!(
-        display.starts_with("Traceback (most recent call last):"),
-        "display should start with 'Traceback': got: {display}"
-    );
-    // Should contain the file/line info
-    assert!(
-        display.contains("File \"test.py\", line 1"),
-        "display should contain file location, got: {display}"
-    );
-    // Should end with NotImplementedError message
-    assert!(
-        display.contains("NotImplementedError:"),
-        "display should contain 'NotImplementedError:', got: {display}"
-    );
-    assert!(
-        display.contains("monty syntax parser"),
-        "display should mention 'monty syntax parser', got: {display}"
-    );
+    let err = get_parse_err("1 + 2j");
+    assert_snapshot!(err, @r#"
+    Traceback (most recent call last):
+      File "test.py", line 1, in <module>
+        1 + 2j
+            ~~
+    NotImplementedError: The monty syntax parser does not yet support complex constants
+    "#);
 }
 
 /// Tests that syntax errors return `SyntaxError` exceptions.
 
 #[test]
 fn invalid_fstring_format_spec_returns_syntax_error() {
-    let result = MontyRun::new("f'{1:10xyz}'".to_owned(), "test.py", vec![]);
-    assert_eq!(get_exc_type(result), ExcType::SyntaxError);
+    let err = get_parse_err("f'{1:10xyz}'");
+    assert_eq!(err.exc_type(), ExcType::SyntaxError);
+    assert_snapshot!(err.message().unwrap(), @"Invalid format specifier '10xyz'");
 }
 
 #[test]
 fn invalid_fstring_format_spec_str_returns_syntax_error() {
-    let result = MontyRun::new("f'{\"hello\":abc}'".to_owned(), "test.py", vec![]);
-    assert_eq!(get_exc_type(result), ExcType::SyntaxError);
+    let err = get_parse_err("f'{\"hello\":abc}'");
+    assert_eq!(err.exc_type(), ExcType::SyntaxError);
+    assert_snapshot!(err.message().unwrap(), @"Invalid format specifier 'abc'");
 }
 
 /// `#` (alternate form) is valid in Python but unsupported in Monty; the
@@ -160,13 +135,14 @@ fn format_spec_width_overflow_returns_syntax_error() {
 
 #[test]
 fn syntax_error_display_format() {
-    let result = MontyRun::new("f'{1:10xyz}'".to_owned(), "test.py", vec![]);
-    let err = result.expect_err("expected parse error");
-    let display = err.to_string();
-    assert!(
-        display.contains("SyntaxError:"),
-        "display should contain 'SyntaxError:', got: {display}"
-    );
+    let err = get_parse_err("f'{1:10xyz}'");
+    assert_snapshot!(err, @r#"
+    Traceback (most recent call last):
+      File "test.py", line 1
+        f'{1:10xyz}'
+             ~~~~~
+    SyntaxError: Invalid format specifier '10xyz'
+    "#);
 }
 
 #[test]
@@ -176,15 +152,9 @@ fn deeply_nested_tuples_exceed_limit() {
     for _ in 0..250 {
         code = format!("({code},)");
     }
-    let result = MontyRun::new(code, "test.py", vec![]);
-    let err = result.expect_err("expected parse error");
+    let err = get_parse_err(code);
     assert_eq!(err.exc_type(), ExcType::SyntaxError);
-    assert_eq!(
-        err.message(),
-        Some("too many nested parentheses"),
-        "error message should match CPython, got: {:?}",
-        err.message()
-    );
+    assert_snapshot!(err.message().unwrap(), @"Source is too deeply nested");
 }
 
 #[test]
@@ -207,16 +177,9 @@ fn deeply_nested_unpack_assignment_exceeds_limit() {
     for _ in 0..250 {
         target = format!("({target},)");
     }
-    let code = format!("{target} = (1,)");
-    let result = MontyRun::new(code, "test.py", vec![]);
-    let err = result.expect_err("expected parse error");
+    let err = get_parse_err(format!("{target} = (1,)"));
     assert_eq!(err.exc_type(), ExcType::SyntaxError);
-    assert_eq!(
-        err.message(),
-        Some("too many nested parentheses"),
-        "error message should match CPython, got: {:?}",
-        err.message()
-    );
+    assert_snapshot!(err.message().unwrap(), @"Source is too deeply nested");
 }
 
 #[test]
@@ -226,8 +189,9 @@ fn deeply_nested_lists_exceed_limit() {
     for _ in 0..250 {
         code = format!("[{code}]");
     }
-    let result = MontyRun::new(code, "test.py", vec![]);
-    assert_eq!(get_exc_type(result), ExcType::SyntaxError);
+    let err = get_parse_err(code);
+    assert_eq!(err.exc_type(), ExcType::SyntaxError);
+    assert_snapshot!(err.message().unwrap(), @"Source is too deeply nested");
 }
 
 #[test]
@@ -237,8 +201,9 @@ fn deeply_nested_dicts_exceed_limit() {
     for _ in 0..250 {
         code = format!("{{'a': {code}}}");
     }
-    let result = MontyRun::new(code, "test.py", vec![]);
-    assert_eq!(get_exc_type(result), ExcType::SyntaxError);
+    let err = get_parse_err(code);
+    assert_eq!(err.exc_type(), ExcType::SyntaxError);
+    assert_snapshot!(err.message().unwrap(), @"Source is too deeply nested");
 }
 
 #[test]
@@ -248,9 +213,9 @@ fn deeply_nested_function_calls_exceed_limit() {
     for _ in 0..250 {
         code = format!("f({code})");
     }
-    let code = format!("def f(x): return x\n{code}");
-    let result = MontyRun::new(code, "test.py", vec![]);
-    assert_eq!(get_exc_type(result), ExcType::SyntaxError);
+    let err = get_parse_err(format!("def f(x): return x\n{code}"));
+    assert_eq!(err.exc_type(), ExcType::SyntaxError);
+    assert_snapshot!(err.message().unwrap(), @"Source is too deeply nested");
 }
 
 #[test]
@@ -260,8 +225,9 @@ fn deeply_nested_binary_ops_exceed_limit() {
     for _ in 0..250 {
         code = format!("({code} + 1)");
     }
-    let result = MontyRun::new(code, "test.py", vec![]);
-    assert_eq!(get_exc_type(result), ExcType::SyntaxError);
+    let err = get_parse_err(code);
+    assert_eq!(err.exc_type(), ExcType::SyntaxError);
+    assert_snapshot!(err.message().unwrap(), @"Source is too deeply nested");
 }
 
 #[test]
@@ -271,8 +237,9 @@ fn deeply_nested_ternary_if_exceed_limit() {
     for _ in 0..250 {
         code = format!("(1 if {code} else 0)");
     }
-    let result = MontyRun::new(code, "test.py", vec![]);
-    assert_eq!(get_exc_type(result), ExcType::SyntaxError);
+    let err = get_parse_err(code);
+    assert_eq!(err.exc_type(), ExcType::SyntaxError);
+    assert_snapshot!(err.message().unwrap(), @"Source is too deeply nested");
 }
 
 #[test]
@@ -282,9 +249,9 @@ fn deeply_nested_subscripts_exceed_limit() {
     for _ in 0..250 {
         code = format!("a[{code}]");
     }
-    let code = format!("a = [1]\n{code}");
-    let result = MontyRun::new(code, "test.py", vec![]);
-    assert_eq!(get_exc_type(result), ExcType::SyntaxError);
+    let err = get_parse_err(format!("a = [1]\n{code}"));
+    assert_eq!(err.exc_type(), ExcType::SyntaxError);
+    assert_snapshot!(err.message().unwrap(), @"Source is too deeply nested");
 }
 
 #[test]
@@ -294,8 +261,9 @@ fn deeply_nested_list_comprehension_exceed_limit() {
     for _ in 0..250 {
         code = format!("[x for x in {code}]");
     }
-    let result = MontyRun::new(code, "test.py", vec![]);
-    assert_eq!(get_exc_type(result), ExcType::SyntaxError);
+    let err = get_parse_err(code);
+    assert_eq!(err.exc_type(), ExcType::SyntaxError);
+    assert_snapshot!(err.message().unwrap(), @"Source is too deeply nested");
 }
 
 #[test]
@@ -307,8 +275,9 @@ fn deeply_nested_if_statements_exceed_limit() {
         writeln!(code, "{indent}if 1:").unwrap();
     }
     write!(code, "{}pass", "    ".repeat(250)).unwrap();
-    let result = MontyRun::new(code, "test.py", vec![]);
-    assert_eq!(get_exc_type(result), ExcType::SyntaxError);
+    let err = get_parse_err(code);
+    assert_eq!(err.exc_type(), ExcType::SyntaxError);
+    assert_snapshot!(err.message().unwrap(), @"Source is too deeply nested");
 }
 
 #[test]
@@ -320,8 +289,9 @@ fn deeply_nested_while_loops_exceed_limit() {
         writeln!(code, "{indent}while True:").unwrap();
     }
     write!(code, "{}break", "    ".repeat(250)).unwrap();
-    let result = MontyRun::new(code, "test.py", vec![]);
-    assert_eq!(get_exc_type(result), ExcType::SyntaxError);
+    let err = get_parse_err(code);
+    assert_eq!(err.exc_type(), ExcType::SyntaxError);
+    assert_snapshot!(err.message().unwrap(), @"Source is too deeply nested");
 }
 
 #[test]
@@ -333,8 +303,9 @@ fn deeply_nested_for_loops_exceed_limit() {
         writeln!(code, "{indent}for x in [1]:").unwrap();
     }
     write!(code, "{}pass", "    ".repeat(250)).unwrap();
-    let result = MontyRun::new(code, "test.py", vec![]);
-    assert_eq!(get_exc_type(result), ExcType::SyntaxError);
+    let err = get_parse_err(code);
+    assert_eq!(err.exc_type(), ExcType::SyntaxError);
+    assert_snapshot!(err.message().unwrap(), @"Source is too deeply nested");
 }
 
 #[test]
@@ -350,8 +321,9 @@ fn deeply_nested_try_except_exceed_limit() {
         let indent = "    ".repeat(i);
         writeln!(code, "{indent}except: pass").unwrap();
     }
-    let result = MontyRun::new(code, "test.py", vec![]);
-    assert_eq!(get_exc_type(result), ExcType::SyntaxError);
+    let err = get_parse_err(code);
+    assert_eq!(err.exc_type(), ExcType::SyntaxError);
+    assert_snapshot!(err.message().unwrap(), @"Source is too deeply nested");
 }
 
 #[test]
@@ -363,8 +335,9 @@ fn deeply_nested_function_defs_exceed_limit() {
         writeln!(code, "{indent}def f():").unwrap();
     }
     write!(code, "{}pass", "    ".repeat(250)).unwrap();
-    let result = MontyRun::new(code, "test.py", vec![]);
-    assert_eq!(get_exc_type(result), ExcType::SyntaxError);
+    let err = get_parse_err(code);
+    assert_eq!(err.exc_type(), ExcType::SyntaxError);
+    assert_snapshot!(err.message().unwrap(), @"Source is too deeply nested");
 }
 
 #[test]
@@ -374,8 +347,9 @@ fn deeply_nested_attribute_access_exceed_limit() {
     for _ in 0..250 {
         code.push_str(".x");
     }
-    let result = MontyRun::new(code, "test.py", vec![]);
-    assert_eq!(get_exc_type(result), ExcType::SyntaxError);
+    let err = get_parse_err(code);
+    assert_eq!(err.exc_type(), ExcType::SyntaxError);
+    assert_snapshot!(err.message().unwrap(), @"Source is too deeply nested");
 }
 
 #[test]
@@ -385,8 +359,9 @@ fn deeply_nested_lambdas_exceed_limit() {
     for _ in 0..250 {
         code = format!("(lambda: {code})");
     }
-    let result = MontyRun::new(code, "test.py", vec![]);
-    assert_eq!(get_exc_type(result), ExcType::SyntaxError);
+    let err = get_parse_err(code);
+    assert_eq!(err.exc_type(), ExcType::SyntaxError);
+    assert_snapshot!(err.message().unwrap(), @"Source is too deeply nested");
 }
 
 #[test]
@@ -396,8 +371,9 @@ fn deeply_nested_unary_not_exceed_limit() {
     for _ in 0..250 {
         code = format!("not ({code})");
     }
-    let result = MontyRun::new(code, "test.py", vec![]);
-    assert_eq!(get_exc_type(result), ExcType::SyntaxError);
+    let err = get_parse_err(code);
+    assert_eq!(err.exc_type(), ExcType::SyntaxError);
+    assert_snapshot!(err.message().unwrap(), @"Source is too deeply nested");
 }
 
 #[test]
@@ -407,8 +383,9 @@ fn deeply_nested_unary_minus_exceed_limit() {
     for _ in 0..250 {
         code = format!("-({code})");
     }
-    let result = MontyRun::new(code, "test.py", vec![]);
-    assert_eq!(get_exc_type(result), ExcType::SyntaxError);
+    let err = get_parse_err(code);
+    assert_eq!(err.exc_type(), ExcType::SyntaxError);
+    assert_snapshot!(err.message().unwrap(), @"Source is too deeply nested");
 }
 
 #[test]
@@ -418,8 +395,9 @@ fn deeply_nested_walrus_operator_exceed_limit() {
     for i in 0..250 {
         code = format!("(x{i} := {code})");
     }
-    let result = MontyRun::new(code, "test.py", vec![]);
-    assert_eq!(get_exc_type(result), ExcType::SyntaxError);
+    let err = get_parse_err(code);
+    assert_eq!(err.exc_type(), ExcType::SyntaxError);
+    assert_snapshot!(err.message().unwrap(), @"Source is too deeply nested");
 }
 
 #[test]
@@ -430,9 +408,9 @@ fn deeply_nested_await_exceed_limit() {
     for _ in 0..250 {
         code = format!("await ({code})");
     }
-    let code = format!("async def f():\n    {code}");
-    let result = MontyRun::new(code, "test.py", vec![]);
-    assert_eq!(get_exc_type(result), ExcType::SyntaxError);
+    let err = get_parse_err(format!("async def f():\n    {code}"));
+    assert_eq!(err.exc_type(), ExcType::SyntaxError);
+    assert_snapshot!(err.message().unwrap(), @"Source is too deeply nested");
 }
 
 #[test]
@@ -442,8 +420,9 @@ fn deeply_nested_boolean_and_exceed_limit() {
     for _ in 0..250 {
         code = format!("(True and {code})");
     }
-    let result = MontyRun::new(code, "test.py", vec![]);
-    assert_eq!(get_exc_type(result), ExcType::SyntaxError);
+    let err = get_parse_err(code);
+    assert_eq!(err.exc_type(), ExcType::SyntaxError);
+    assert_snapshot!(err.message().unwrap(), @"Source is too deeply nested");
 }
 
 #[test]
@@ -453,50 +432,41 @@ fn deeply_nested_boolean_or_exceed_limit() {
     for _ in 0..250 {
         code = format!("(False or {code})");
     }
-    let result = MontyRun::new(code, "test.py", vec![]);
-    assert_eq!(get_exc_type(result), ExcType::SyntaxError);
+    let err = get_parse_err(code);
+    assert_eq!(err.exc_type(), ExcType::SyntaxError);
+    assert_snapshot!(err.message().unwrap(), @"Source is too deeply nested");
 }
 
 // === Runtime NotImplementedError tests ===
 // These test that unimplemented features return proper errors instead of panicking.
 
-/// Helper to run code and get the exception type from a runtime error.
-fn run_and_get_exc_type(code: &str) -> ExcType {
+/// Helper to run code and get the exception from a runtime error.
+fn run_and_get_err(code: &str) -> MontyException {
     let runner = MontyRun::new(code.to_owned(), "test.py", vec![]).expect("should parse");
-    let err = runner.run_no_limits(vec![]).expect_err("expected runtime error");
-    err.exc_type()
+    runner.run_no_limits(vec![]).expect_err("expected runtime error")
 }
 
 #[test]
 fn matrix_multiplication_returns_not_implemented_error() {
     // The @ operator (matrix multiplication) is not supported at runtime
-    assert_eq!(run_and_get_exc_type("1 @ 2"), ExcType::NotImplementedError);
+    let err = run_and_get_err("1 @ 2");
+    assert_eq!(err.exc_type(), ExcType::NotImplementedError);
 }
 
 #[test]
 fn matrix_multiplication_augmented_assignment_returns_syntax_error() {
     // The @= operator (augmented matrix multiplication) is not supported at compile time
-    let result = MontyRun::new("a = 1\na @= 2".to_owned(), "test.py", vec![]);
-    assert_eq!(get_exc_type(result), ExcType::SyntaxError);
-}
-
-#[test]
-fn matrix_multiplication_augmented_assignment_has_descriptive_message() {
-    // Verify the error message is helpful
-    let result = MontyRun::new("a = 1\na @= 2".to_owned(), "test.py", vec![]);
-    let exc = result.expect_err("expected compile error");
-    assert!(
-        exc.message().is_some_and(|m| m.contains("@=")),
-        "message should mention '@=', got: {:?}",
-        exc.message()
-    );
+    let err = get_parse_err("a = 1\na @= 2");
+    assert_eq!(err.exc_type(), ExcType::SyntaxError);
+    assert_snapshot!(err.message().unwrap(), @"matrix multiplication augmented assignment (@=) is not yet supported");
 }
 
 #[test]
 fn del_statement_returns_not_implemented_error() {
     // The del statement is not supported at parse time
-    let result = MontyRun::new("x = 1\ndel x".to_owned(), "test.py", vec![]);
-    assert_eq!(get_exc_type(result), ExcType::NotImplementedError);
+    let err = get_parse_err("x = 1\ndel x");
+    assert_eq!(err.exc_type(), ExcType::NotImplementedError);
+    assert_snapshot!(err.message().unwrap(), @"The monty syntax parser does not yet support the 'del' statement");
 }
 
 #[test]
@@ -612,8 +582,8 @@ fn many_elif_clauses_exceed_limit() {
     assert_eq!(err.exc_type(), ExcType::SyntaxError);
     assert_eq!(
         err.message(),
-        Some("too many nested parentheses"),
-        "error message should match CPython, got: {:?}",
+        Some("Source is too deeply nested"),
+        "error message should match the parser depth-limit message, got: {:?}",
         err.message()
     );
 }
@@ -627,6 +597,39 @@ fn moderate_elif_chain_within_limit() {
     code.push_str("else:\n    pass\n");
     let result = MontyRun::new(code, "test.py", vec![]);
     assert!(result.is_ok(), "moderate elif chain should succeed: {result:?}");
+}
+
+#[test]
+fn many_with_items_exceed_limit() {
+    // A single syntactically-flat `with` statement with many items lowers to
+    // nested `Node::With` values. The synthetic nesting must consume the same
+    // parser depth budget as explicit nesting so we fail with SyntaxError
+    // instead of overflowing the host stack in prepare/compile.
+    let mut code = "with 0".to_owned();
+    for _ in 0..400 {
+        code.push_str(", 0");
+    }
+    code.push_str(":\n    pass\n");
+    let result = MontyRun::new(code, "test.py", vec![]);
+    let err = result.expect_err("expected parse error");
+    assert_eq!(err.exc_type(), ExcType::SyntaxError);
+    assert_eq!(
+        err.message(),
+        Some("Source is too deeply nested"),
+        "error message should match the parser depth-limit message, got: {:?}",
+        err.message()
+    );
+}
+
+#[test]
+fn moderate_with_items_within_limit() {
+    let mut code = "with 0".to_owned();
+    for _ in 0..20 {
+        code.push_str(", 0");
+    }
+    code.push_str(":\n    pass\n");
+    let result = MontyRun::new(code, "test.py", vec![]);
+    assert!(result.is_ok(), "moderate with-item chain should succeed: {result:?}");
 }
 
 #[test]

@@ -298,6 +298,25 @@ assert 'hello'.encode('UTF-8') == b'hello', 'encode UTF-8 case insensitive'
 assert ''.encode() == b'', 'encode empty'
 assert 'hello'.encode('utf-8', 'strict') == b'hello', 'encode with errors'
 
+# Wrong-type encoding/errors → CPython's `_PyArg_BadArgument` named wording.
+# Routed through `bad_arg_named` on `EncodeArgs`; matches CPython exactly,
+# including `None`-vs-`NoneType` (lone `None` reads as `"not None"`).
+for bad, expected_type in ((42, 'int'), (None, 'None'), (b'utf-8', 'bytes')):
+    try:
+        'hello'.encode(bad)
+        assert False, f'encode({bad!r}) should error'
+    except TypeError as e:
+        assert str(e) == f"encode() argument 'encoding' must be str, not {expected_type}", (
+            f'encode({bad!r}) wrong type: {e}'
+        )
+    try:
+        'hello'.encode('utf-8', bad)
+        assert False, f'encode(errors={bad!r}) should error'
+    except TypeError as e:
+        assert str(e) == f"encode() argument 'errors' must be str, not {expected_type}", (
+            f'encode(errors={bad!r}) wrong type: {e}'
+        )
+
 # isidentifier()
 assert 'hello'.isidentifier() == True, 'isidentifier basic'
 assert '_hello'.isidentifier() == True, 'isidentifier underscore'
@@ -377,52 +396,33 @@ assert 'a\tb\rc\td'.expandtabs(4) == 'a   b\rc   d', 'expandtabs carriage return
 assert '\thello'.expandtabs(tabsize=4) == '    hello', 'expandtabs tabsize kwarg'
 
 # expandtabs() error cases
-import sys
-
-_monty = 'Monty' in sys.version
-
 try:
     'hello'.expandtabs(wrong=4)
     assert False, 'expandtabs wrong kwarg should raise'
 except TypeError as e:
-    if _monty:
-        assert str(e) == "str.expandtabs() got an unexpected keyword argument 'wrong'", f'wrong: {e}'
-    else:
-        assert str(e) == "expandtabs() got an unexpected keyword argument 'wrong'", f'wrong: {e}'
+    assert str(e) == "expandtabs() got an unexpected keyword argument 'wrong'", f'wrong: {e}'
 
 try:
     'hello'.expandtabs(4, tabsize=8)
     assert False, 'expandtabs pos + kwarg should raise'
 except TypeError as e:
-    if _monty:
-        assert str(e) == "str.expandtabs() got multiple values for argument 'tabsize'", f'dup: {e}'
-    else:
-        assert str(e) == 'expandtabs() takes at most 1 argument (2 given)', f'dup: {e}'
+    assert str(e) == 'expandtabs() takes at most 1 argument (2 given)', f'dup: {e}'
 
 try:
     'hello'.expandtabs(4, 5)
     assert False, 'expandtabs too many args should raise'
 except TypeError as e:
-    if _monty:
-        assert str(e) == 'str.expandtabs expected at most 1 arguments, got 2', f'toomany: {e}'
-    else:
-        assert str(e) == 'expandtabs() takes at most 1 argument (2 given)', f'toomany: {e}'
+    assert str(e) == 'expandtabs() takes at most 1 argument (2 given)', f'toomany: {e}'
 
 # splitlines() error cases
 try:
     'hello'.splitlines(wrong=True)
     assert False, 'splitlines wrong kwarg should raise'
 except TypeError as e:
-    if _monty:
-        assert str(e) == "str.splitlines() got an unexpected keyword argument 'wrong'", f'wrong: {e}'
-    else:
-        assert str(e) == "splitlines() got an unexpected keyword argument 'wrong'", f'wrong: {e}'
+    assert str(e) == "splitlines() got an unexpected keyword argument 'wrong'", f'wrong: {e}'
 
 try:
     'hello'.splitlines(True, keepends=False)
     assert False, 'splitlines pos + kwarg should raise'
 except TypeError as e:
-    if _monty:
-        assert str(e) == "str.splitlines() got multiple values for argument 'keepends'", f'dup: {e}'
-    else:
-        assert str(e) == 'splitlines() takes at most 1 argument (2 given)', f'dup: {e}'
+    assert str(e) == 'splitlines() takes at most 1 argument (2 given)', f'dup: {e}'

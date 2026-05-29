@@ -1,17 +1,33 @@
+mod from_value;
+mod to_monty_object;
+
 use std::{mem, slice, vec::IntoIter};
+
+pub(crate) use from_value::{FromValue, LaxBool};
+pub(crate) use monty_macros::{FromArgs, ToArgs};
+pub(crate) use to_monty_object::ToMontyObject;
 
 use crate::{
     MontyObject, ResourceTracker,
     bytecode::VM,
-    defer_drop, defer_drop_mut,
-    exception_private::{ExcType, RunError, RunResult, SimpleException},
+    exception_private::{ExcType, RunError, RunResult},
     expressions::{ExprLoc, Identifier},
-    heap::{ContainsHeap, DropWithHeap, Heap, HeapGuard},
-    intern::{Interns, StringId},
+    heap::{ContainsHeap, DropWithHeap, Heap},
+    intern::StringId,
     parse::ParseError,
     types::{Dict, dict::DictIntoIter},
     value::Value,
 };
+
+/// Projects a typed args struct into the `(positional, keyword)` `MontyObject`
+/// pair host callbacks expect. Consumes `self` to avoid cloning owned fields.
+///
+/// Inverse of [`FromArgs`]: `FromArgs` is internal `ArgValues` → struct,
+/// `ToArgs` is struct → host-facing `(args, kwargs)`. Driven by
+/// [`crate::os::OsFunctionCall::to_args`] for the monty-python / monty-js bindings.
+pub trait ToArgs {
+    fn to_args(self) -> (Vec<MontyObject>, Vec<(MontyObject, MontyObject)>);
+}
 
 /// Type for method call arguments.
 ///
@@ -108,135 +124,6 @@ impl ArgValues {
         }
     }
 
-    /// Extracts an optional argument that can be passed positionally or as a named keyword.
-    ///
-    /// Accepts `method()`, `method(value)`, or `method(name=value)`, but raises
-    /// `TypeError` if both a positional and keyword argument are provided. This covers
-    /// the common Python pattern of methods with a single optional argument like
-    /// `str.expandtabs(tabsize=8)` or `str.splitlines(keepends=False)`.
-    ///
-    /// Uses `EitherStr::matches()` for fast O(1) comparison when the kwarg key is interned.
-    ///
-    /// On error, properly drops all contained values to maintain reference counts.
-    pub fn get_zero_one_named_arg(
-        self,
-        method_name: &str,
-        kwarg_name: impl Into<StringId>,
-        heap: &mut Heap<impl ResourceTracker>,
-        interns: &Interns,
-    ) -> RunResult<Option<Value>> {
-        let (mut pos, kwargs) = self.into_parts();
-
-        let positional = pos.next();
-
-        // Reject extra positional arguments
-        if pos.len() != 0 {
-            let count = 1 + pos.len();
-            positional.drop_with_heap(heap);
-            pos.drop_with_heap(heap);
-            kwargs.drop_with_heap(heap);
-            return Err(ExcType::type_error_at_most(method_name, 1, count));
-        }
-
-        let kwargs_iter = kwargs.into_iter();
-        defer_drop_mut!(kwargs_iter, heap);
-
-        let mut result = positional;
-        let has_positional = result.is_some();
-
-        let kwarg_name = kwarg_name.into();
-
-        for (key, value) in kwargs_iter {
-            defer_drop!(key, heap);
-            let mut value_guard = HeapGuard::new(value, heap);
-
-            let Some(keyword_name) = key.as_either_str(value_guard.heap()) else {
-                result.drop_with_heap(value_guard.heap());
-                return Err(ExcType::type_error_kwargs_nonstring_key());
-            };
-
-            if keyword_name.matches(kwarg_name, interns) {
-                if has_positional {
-                    result.drop_with_heap(value_guard.heap());
-                    return Err(ExcType::type_error_duplicate_arg(
-                        method_name,
-                        keyword_name.as_str(interns),
-                    ));
-                }
-                result = Some(value_guard.into_inner());
-            } else {
-                result.drop_with_heap(value_guard.heap());
-                return Err(ExcType::type_error_unexpected_keyword(
-                    method_name,
-                    keyword_name.as_str(interns),
-                ));
-            }
-        }
-
-        Ok(result)
-    }
-
-    /// Checks that zero, one, or two arguments were passed.
-    ///
-    /// Returns (None, None) for 0 args, (Some(a), None) for 1 arg, (Some(a), Some(b)) for 2 args.
-    /// On error, properly drops all contained values to maintain reference counts.
-    pub fn get_zero_one_two_args(
-        self,
-        name: &str,
-        heap: &mut Heap<impl ResourceTracker>,
-    ) -> RunResult<(Option<Value>, Option<Value>)> {
-        match self {
-            Self::Empty => Ok((None, None)),
-            Self::One(a) => Ok((Some(a), None)),
-            Self::Two(a, b) => Ok((Some(a), Some(b))),
-            other => {
-                let count = other.count();
-                other.drop_with_heap(heap);
-                Err(ExcType::type_error_at_most(name, 2, count))
-            }
-        }
-    }
-
-    /// Extracts a keyword-only pair by name.
-    ///
-    /// Validates that no positional arguments are provided and only the specified
-    /// keyword arguments are present. Returns `(None, None)` when neither keyword
-    /// is provided.
-    ///
-    /// # Arguments
-    /// * `method_name` - Method name for error messages (e.g., "list.sort")
-    /// * `kwarg1` - Name of the first keyword argument
-    /// * `kwarg2` - Name of the second keyword argument
-    ///
-    /// # Errors
-    /// Returns an error if:
-    /// - Any positional arguments are provided
-    /// - A keyword argument other than `kwarg1` or `kwarg2` is provided
-    /// - A keyword is not a string
-    pub fn extract_keyword_only_pair(
-        self,
-        method_name: &str,
-        kwarg1: &str,
-        kwarg2: &str,
-        heap: &mut Heap<impl ResourceTracker>,
-        interns: &Interns,
-    ) -> RunResult<(Option<Value>, Option<Value>)> {
-        let (pos, kwargs) = self.into_parts();
-        defer_drop!(pos, heap);
-
-        // Check no positional arguments
-        if pos.len() > 0 {
-            kwargs.drop_with_heap(heap);
-            return Err(ExcType::type_error_no_args(method_name, 1));
-        }
-
-        kwargs.parse_named_kwargs_pair(method_name, kwarg1, kwarg2, heap, interns, |method_name, key_str| {
-            ExcType::type_error(format!(
-                "'{key_str}' is an invalid keyword argument for {method_name}()"
-            ))
-        })
-    }
-
     /// Prepends a value as the first positional argument.
     ///
     /// Used to insert `self` when dispatching dataclass method calls to the host.
@@ -329,7 +216,7 @@ impl ArgValues {
     /// Returns the number of positional arguments.
     ///
     /// For `Kwargs` returns 0, for `ArgsKargs` returns only the positional args count.
-    fn count(&self) -> usize {
+    pub(crate) fn count(&self) -> usize {
         match self {
             Self::Empty => 0,
             Self::One(_) => 1,
@@ -482,74 +369,6 @@ impl KwargsValues {
                 .map(|(k, v)| (MontyObject::new(k, vm), MontyObject::new(v, vm)))
                 .collect(),
         }
-    }
-
-    /// Helper for functions which do not yet support kwargs, returns an `Err` if there are kwargs.
-    pub fn not_supported_yet(self, method_name: &str, heap: &mut Heap<impl ResourceTracker>) -> RunResult<()> {
-        if self.is_empty() {
-            Ok(())
-        } else {
-            self.drop_with_heap(heap);
-            Err(SimpleException::new_msg(
-                ExcType::TypeError,
-                format!("{method_name}() does not support keyword arguments yet"),
-            )
-            .into())
-        }
-    }
-
-    /// Parses a fixed pair of named keyword arguments with duplicate checking.
-    ///
-    /// This helper is intentionally narrow: it covers the common builtin/method
-    /// pattern of accepting a tiny fixed keyword surface such as `key/default`
-    /// or `key/reverse`, while leaving positional-argument validation and any
-    /// post-processing to the caller.
-    ///
-    /// `unexpected_keyword` formats the call-site-specific error for keywords
-    /// other than `kwarg1` and `kwarg2`.
-    pub fn parse_named_kwargs_pair(
-        self,
-        func_name: &str,
-        kwarg1: &str,
-        kwarg2: &str,
-        heap: &mut Heap<impl ResourceTracker>,
-        interns: &Interns,
-        unexpected_keyword: impl Fn(&str, &str) -> RunError,
-    ) -> RunResult<(Option<Value>, Option<Value>)> {
-        let kwargs = self.into_iter();
-        defer_drop_mut!(kwargs, heap);
-
-        // Guards are reversed so that destructure can pull them.
-        let mut val2_guard = HeapGuard::new(None::<Value>, heap);
-        let (val2, heap) = val2_guard.as_parts_mut();
-        let mut val1_guard = HeapGuard::new(None::<Value>, heap);
-        let (val1, heap) = val1_guard.as_parts_mut();
-
-        for (key, value) in kwargs {
-            defer_drop!(key, heap);
-            let mut value = HeapGuard::new(value, heap);
-
-            let Some(keyword_name) = key.as_either_str(value.heap()) else {
-                return Err(ExcType::type_error_kwargs_nonstring_key());
-            };
-
-            let key_str = keyword_name.as_str(interns);
-            if key_str == kwarg1 {
-                if val1.is_some() {
-                    return Err(ExcType::type_error_multiple_values(func_name, key_str));
-                }
-                *val1 = Some(value.into_inner());
-            } else if key_str == kwarg2 {
-                if val2.is_some() {
-                    return Err(ExcType::type_error_multiple_values(func_name, key_str));
-                }
-                *val2 = Some(value.into_inner());
-            } else {
-                return Err(unexpected_keyword(func_name, key_str));
-            }
-        }
-
-        Ok((val1_guard.into_inner(), val2_guard.into_inner()))
     }
 }
 

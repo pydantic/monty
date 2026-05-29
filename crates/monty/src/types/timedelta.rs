@@ -17,13 +17,12 @@ use ahash::AHashSet;
 use chrono::TimeDelta as ChronoTimeDelta;
 
 use crate::{
-    args::ArgValues,
+    args::{ArgValues, FromArgs},
     bytecode::{CallResult, VM},
-    defer_drop, defer_drop_mut,
     exception_private::{ExcType, RunResult, SimpleException},
     hash::HashValue,
-    heap::{Heap, HeapData, HeapId, HeapItem, HeapRead},
-    intern::{Interns, StaticStrings},
+    heap::{HeapData, HeapId, HeapItem, HeapRead},
+    intern::StaticStrings,
     resource::{ResourceError, ResourceTracker},
     types::{PyTrait, Type},
     value::{EitherStr, Value},
@@ -180,85 +179,16 @@ pub(crate) fn from_total_microseconds(total_microseconds: i128) -> RunResult<Tim
 ///
 /// Supports positional `(days, seconds, microseconds)` and keyword arguments
 /// `days`, `seconds`, `microseconds`, `milliseconds`, `minutes`, `hours`, `weeks`.
-pub(crate) fn init(heap: &mut Heap<impl ResourceTracker>, args: ArgValues, interns: &Interns) -> RunResult<Value> {
-    let (pos, kwargs) = args.into_parts();
-    defer_drop_mut!(pos, heap);
-    let kwargs = kwargs.into_iter();
-    defer_drop_mut!(kwargs, heap);
-
-    let mut days = 0_i128;
-    let mut seconds = 0_i128;
-    let mut microseconds = 0_i128;
-    let mut milliseconds = 0_i128;
-    let mut minutes = 0_i128;
-    let mut hours = 0_i128;
-    let mut weeks = 0_i128;
-
-    let mut seen_days = false;
-    let mut seen_seconds = false;
-    let mut seen_microseconds = false;
-
-    for (index, arg) in pos.by_ref().enumerate() {
-        defer_drop!(arg, heap);
-        match index {
-            0 => {
-                days = value_to_i128(arg, heap)?;
-                seen_days = true;
-            }
-            1 => {
-                seconds = value_to_i128(arg, heap)?;
-                seen_seconds = true;
-            }
-            2 => {
-                microseconds = value_to_i128(arg, heap)?;
-                seen_microseconds = true;
-            }
-            _ => return Err(ExcType::type_error_at_most("timedelta", 3, index + 1)),
-        }
-    }
-
-    for (key, value) in kwargs {
-        defer_drop!(key, heap);
-        defer_drop!(value, heap);
-        let Some(key_name) = key.as_either_str(heap) else {
-            return Err(ExcType::type_error_kwargs_nonstring_key());
-        };
-        let parsed = value_to_i128(value, heap)?;
-
-        match key_name.string_id() {
-            Some(id) if id == StaticStrings::Days => {
-                if seen_days {
-                    return Err(ExcType::type_error_multiple_values("timedelta", "days"));
-                }
-                days = parsed;
-                seen_days = true;
-            }
-            Some(id) if id == StaticStrings::Seconds => {
-                if seen_seconds {
-                    return Err(ExcType::type_error_multiple_values("timedelta", "seconds"));
-                }
-                seconds = parsed;
-                seen_seconds = true;
-            }
-            Some(id) if id == StaticStrings::Microseconds => {
-                if seen_microseconds {
-                    return Err(ExcType::type_error_multiple_values("timedelta", "microseconds"));
-                }
-                microseconds = parsed;
-                seen_microseconds = true;
-            }
-            Some(id) if id == StaticStrings::Milliseconds => milliseconds = parsed,
-            Some(id) if id == StaticStrings::Minutes => minutes = parsed,
-            Some(id) if id == StaticStrings::Hours => hours = parsed,
-            Some(id) if id == StaticStrings::Weeks => weeks = parsed,
-            _ => {
-                return Err(ExcType::type_error_unexpected_keyword(
-                    "timedelta",
-                    key_name.as_str(interns),
-                ));
-            }
-        }
-    }
+pub(crate) fn init(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let TimedeltaArgs {
+        days,
+        seconds,
+        microseconds,
+        milliseconds,
+        minutes,
+        hours,
+        weeks,
+    } = TimedeltaArgs::from_args(args, vm)?;
 
     let total_microseconds = checked_component(weeks, 7 * DAY_MICROSECONDS)?
         + checked_component(days, DAY_MICROSECONDS)?
@@ -269,21 +199,36 @@ pub(crate) fn init(heap: &mut Heap<impl ResourceTracker>, args: ArgValues, inter
         + microseconds;
 
     let delta = from_total_microseconds(total_microseconds)?;
-    Ok(Value::Ref(heap.allocate(HeapData::TimeDelta(delta))?))
+    Ok(Value::Ref(vm.heap.allocate(HeapData::TimeDelta(delta))?))
+}
+
+/// Argument shape for `timedelta(days=0, seconds=0, microseconds=0, *, milliseconds=0, minutes=0, hours=0, weeks=0)`.
+///
+/// CPython accepts the first three as positional-or-keyword and the rest as
+/// keyword-only. All default to 0 so an empty `timedelta()` is legal.
+#[derive(FromArgs)]
+#[from_args(name = "timedelta")]
+struct TimedeltaArgs {
+    #[from_args(default = 0)]
+    days: i128,
+    #[from_args(default = 0)]
+    seconds: i128,
+    #[from_args(default = 0)]
+    microseconds: i128,
+    #[from_args(kw_only, default = 0)]
+    milliseconds: i128,
+    #[from_args(kw_only, default = 0)]
+    minutes: i128,
+    #[from_args(kw_only, default = 0)]
+    hours: i128,
+    #[from_args(kw_only, default = 0)]
+    weeks: i128,
 }
 
 fn checked_component(value: i128, unit_microseconds: i128) -> RunResult<i128> {
     value.checked_mul(unit_microseconds).ok_or_else(|| {
         SimpleException::new_msg(ExcType::OverflowError, "timedelta argument overflow while normalizing").into()
     })
-}
-
-fn value_to_i128(value: &Value, _heap: &Heap<impl ResourceTracker>) -> RunResult<i128> {
-    match value {
-        Value::Bool(b) => Ok(i128::from(i64::from(*b))),
-        Value::Int(i) => Ok(i128::from(*i)),
-        _ => Err(SimpleException::new_msg(ExcType::TypeError, "an integer is required (got type float)").into()),
-    }
 }
 
 /// Formats a `TimeDelta` as its Python `repr()` string, e.g. `"datetime.timedelta(days=1, seconds=3600)"`.

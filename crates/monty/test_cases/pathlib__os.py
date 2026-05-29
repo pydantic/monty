@@ -117,6 +117,27 @@ Path('/virtual/a/b/c').mkdir(parents=True)
 assert Path('/virtual/a/b/c').is_dir() == True, 'mkdir parents creates nested'
 # mkdir with exist_ok
 Path('/virtual/new_dir').mkdir(exist_ok=True)  # Should not raise
+# Empty containers/strings/bytes are falsy in Python — exist_ok='' must NOT
+# suppress FileExistsError, and parents='' must NOT create missing parents.
+try:
+    Path('/virtual/new_dir').mkdir(exist_ok='')
+    assert False, "mkdir(exist_ok='') should raise (empty string is falsy)"
+except OSError as exc:
+    assert isinstance(exc, FileExistsError), f'expected FileExistsError, got {type(exc).__name__}'
+try:
+    Path('/virtual/x/y/z').mkdir(parents=b'')
+    assert False, "mkdir(parents=b'') should raise when parents missing"
+except OSError as exc:
+    assert isinstance(exc, FileNotFoundError), f'expected FileNotFoundError, got {type(exc).__name__}'
+try:
+    Path('/virtual/x/y/z').mkdir(parents=[])
+    assert False, 'mkdir(parents=[]) should raise when parents missing'
+except OSError as exc:
+    assert isinstance(exc, FileNotFoundError), f'expected FileNotFoundError, got {type(exc).__name__}'
+# Non-empty containers/strings ARE truthy.
+Path('/virtual/p/q/r').mkdir(parents='yes')
+assert Path('/virtual/p/q/r').is_dir() == True, "mkdir(parents='yes') creates nested"
+Path('/virtual/new_dir').mkdir(exist_ok=[0])  # truthy list, should not raise
 
 # === unlink() ===
 Path('/virtual/to_delete.txt').write_text('delete me')

@@ -475,7 +475,7 @@ fn execute_repl_with_mounts<T: ResourceTracker>(
         match progress {
             ReplProgress::Complete { repl, value } => return Ok((repl, value)),
             ReplProgress::OsCall(call) => {
-                let result = handle_os_call(call.function, &call.args, &call.kwargs, mount_table);
+                let result = handle_os_call(&call.function_call, mount_table);
                 match call.resume(result, PrintWriter::Stdout) {
                     Ok(p) => progress = p,
                     Err(err) => return Err((err.repl, format!("{}", err.error))),
@@ -540,7 +540,7 @@ fn run_until_complete(
                     .map_err(|err| format!("{err}"))?;
             }
             RunProgress::OsCall(call) => {
-                let result = handle_os_call(call.function, &call.args, &call.kwargs, mount_table);
+                let result = handle_os_call(&call.function_call, mount_table);
                 progress = call
                     .resume(result, PrintWriter::Stdout)
                     .map_err(|err| format!("{err}"))?;
@@ -553,20 +553,15 @@ fn run_until_complete(
 ///
 /// Returns the operation result as an `ExtFunctionResult` — either a successful
 /// `MontyObject` or an exception for errors / unsupported operations.
-fn handle_os_call(
-    function: monty::OsFunction,
-    args: &[MontyObject],
-    kwargs: &[(MontyObject, MontyObject)],
-    mount_table: &mut Option<MountTable>,
-) -> monty::ExtFunctionResult {
+fn handle_os_call(call: &monty::OsFunctionCall, mount_table: &mut Option<MountTable>) -> monty::ExtFunctionResult {
     if let Some(mounts) = mount_table.as_mut() {
-        match mounts.handle_os_call(function, args, kwargs) {
+        match mounts.handle_os_call(call) {
             Some(Ok(obj)) => obj.into(),
             Some(Err(err)) => err.into_exception().into(),
-            None => function.on_no_handler(args).into(),
+            None => call.on_no_handler().into(),
         }
     } else {
-        function.on_no_handler(args).into()
+        call.on_no_handler().into()
     }
 }
 

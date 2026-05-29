@@ -181,7 +181,7 @@ pub(super) fn iterdir_fs(host_path: &Path, vpath: &str, mount_host_path: &Path) 
 pub(super) fn check_write_limit(bytes: usize, ctx: &MountContext<'_>) -> Result<(), MountError> {
     if let Some(limit) = ctx.write_bytes_limit {
         let bytes = u64::try_from(bytes).unwrap_or(u64::MAX);
-        if *ctx.write_bytes_used + bytes > limit {
+        if (*ctx.write_bytes_used).saturating_add(bytes) > limit {
             return Err(MountError::WriteLimitExceeded(limit));
         }
     }
@@ -191,7 +191,7 @@ pub(super) fn check_write_limit(bytes: usize, ctx: &MountContext<'_>) -> Result<
 /// Records a successful write against the mount's cumulative quota counter.
 pub(super) fn commit_write_bytes(bytes: usize, ctx: &mut MountContext<'_>) {
     if ctx.write_bytes_limit.is_some() {
-        *ctx.write_bytes_used += u64::try_from(bytes).unwrap_or(u64::MAX);
+        *ctx.write_bytes_used = (*ctx.write_bytes_used).saturating_add(u64::try_from(bytes).unwrap_or(u64::MAX));
     }
 }
 

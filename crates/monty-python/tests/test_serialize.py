@@ -468,3 +468,155 @@ except ValueError as e:
     result = progress2.resume({'return_value': None})
     assert isinstance(result, pydantic_monty.MontyComplete)
     assert result.output == snapshot(('hello', 'I/O operation on closed file.'))
+
+
+def test_snapshot_rebuilds_buffer_meta_after_load_for_each_op():
+    """Security regression — `OpenFile.buffer_meta` (cached byte offset
+    into a UTF-8 buffer + cached char count) must not be serialised
+    across the snapshot trust boundary.
+
+    Pre-fix it was, so a crafted snapshot with `byte_position` past
+    `buffer.len()` or in the middle of a UTF-8 code point made
+    `compute_slice_text` panic on `&buffer[byte_position..]` (only a
+    `debug_assert!` guarded it). An embedder accepting client-supplied
+    snapshots could be DoS-ed.
+
+    The fix tags `buffer_meta` `#[serde(skip)]`; on every reload the
+    cache is rebuilt from the trusted heap buffer + `position` on the
+    first read. This test stresses the rebuild path by snapshotting
+    repeatedly between sized reads, seeks, and `tell()`s on a UTF-8
+    multi-byte file. Each post-load read forces a fresh
+    `populate_buffer_meta` walk, and any misalignment between the
+    rebuilt `byte_position` and the user-visible `position` would
+    desync `tell()` or produce mojibake from the next `read()`.
+    """
+    fs = OSAccess([MemoryFile('/greek.txt', content='αβγδε')])
+    code = """
+f = open('/greek.txt')
+a = f.read(1)
+checkpoint(('a', a, f.tell()))
+b = f.read(2)
+checkpoint(('b', b, f.tell()))
+f.seek(1)
+c = f.read(3)
+checkpoint(('c', c, f.tell()))
+f.seek(0)
+d = f.read()
+(a, b, c, d)
+"""
+    # Dump and reload at each checkpoint, so every subsequent
+    # `read` / `seek` / `tell` runs against a freshly rebuilt
+    # `buffer_meta` rather than a cached one carried in-memory.
+    progress1 = pydantic_monty.Monty(code).start(os=fs)
+    assert isinstance(progress1, pydantic_monty.FunctionSnapshot)
+    assert progress1.args == snapshot((('a', 'α', 1),))
+    # Direct assertion on the serialised payload: pin its length so
+    # that re-introducing `Serialize` (or removing `#[serde(skip)]`)
+    # on `OpenFile::buffer_meta` shifts the size and fails the test.
+    # A healthy roundtrip alone is not enough — `populate_buffer_meta`
+    # would rebuild the same values on load, so a re-serialised cache
+    # would still pass the equality checks below.
+    #
+    # At this checkpoint `buffer_meta` would have been
+    # `Some(BufferMeta { byte_position: 2, buffer_total: 5 })`
+    # (one 2-byte Greek letter consumed, five chars in buffer). Postcard
+    # would encode that as `1u8` (Some tag) + varint(2) + varint(5)
+    # = 3 extra bytes on top of the current payload.
+    pinned_dump_len = len(progress1.dump())
+    assert pinned_dump_len == snapshot(1056)
+
+    progress2 = pydantic_monty.load_snapshot(progress1.dump())
+    assert isinstance(progress2, pydantic_monty.FunctionSnapshot)
+    progress3 = progress2.resume({'return_value': None})
+    assert isinstance(progress3, pydantic_monty.FunctionSnapshot)
+    assert progress3.args == snapshot((('b', 'βγ', 3),))
+
+    progress4 = pydantic_monty.load_snapshot(progress3.dump())
+    assert isinstance(progress4, pydantic_monty.FunctionSnapshot)
+    progress5 = progress4.resume({'return_value': None})
+    assert isinstance(progress5, pydantic_monty.FunctionSnapshot)
+    assert progress5.args == snapshot((('c', 'βγδ', 4),))
+
+    progress6 = pydantic_monty.load_snapshot(progress5.dump())
+    assert isinstance(progress6, pydantic_monty.FunctionSnapshot)
+    result = progress6.resume({'return_value': None})
+    assert isinstance(result, pydantic_monty.MontyComplete)
+    assert result.output == snapshot(('α', 'βγ', 'βγδ', 'αβγδε'))
+
+
+# =============================================================================
+# Dump/load *while paused at an OS call*
+# =============================================================================
+#
+# The buffer-survival tests above pause at an external function call after the
+# OS call has already returned. These tests instead dump the snapshot while
+# `is_os_function=True` — exercising the OS-call branch of
+# `dump_function_snapshot` / the matching load path, and pinning the
+# invariant that the carried `OsFunctionCall` (including write payloads and
+# the non-FS variants) round-trips intact. If a future refactor accidentally
+# replaced the live function call with the `OsFunctionCall::Used` placeholder
+# before dumping, the loaded snapshot would dispatch `Used` and panic — these
+# tests catch that immediately.
+
+
+def test_dump_load_paused_at_read_text_oscall():
+    """Dump/load while paused at `Path.read_text`, then resume with the file
+    contents and run to completion."""
+    code = 'from pathlib import Path; Path("/data.txt").read_text() + "!"'
+    progress = pydantic_monty.Monty(code).start()
+    assert isinstance(progress, pydantic_monty.FunctionSnapshot)
+    assert progress.is_os_function is True
+    assert progress.function_name == snapshot('Path.read_text')
+
+    progress2 = pydantic_monty.load_snapshot(progress.dump())
+    assert isinstance(progress2, pydantic_monty.FunctionSnapshot)
+    assert progress2.is_os_function is True
+    assert progress2.function_name == snapshot('Path.read_text')
+
+    result = progress2.resume({'return_value': 'hello'})
+    assert isinstance(result, pydantic_monty.MontyComplete)
+    assert result.output == snapshot('hello!')
+
+
+def test_dump_load_paused_at_write_text_preserves_payload():
+    """Dump/load at `Path.write_text` round-trips the carried payload. This
+    is the variant the `take_function_call` refactor optimised — if the
+    on-disk format ever dropped the payload, the loaded snapshot would
+    surface a different (or empty) `args` tuple."""
+    payload = 'x' * 4096  # something large enough that dropping it would be obvious
+    code = f'from pathlib import Path; Path("/out.txt").write_text({payload!r})'
+    progress = pydantic_monty.Monty(code).start()
+    assert isinstance(progress, pydantic_monty.FunctionSnapshot)
+    assert progress.function_name == snapshot('Path.write_text')
+    assert progress.args[1] == payload
+
+    progress2 = pydantic_monty.load_snapshot(progress.dump())
+    assert isinstance(progress2, pydantic_monty.FunctionSnapshot)
+    assert progress2.function_name == snapshot('Path.write_text')
+    # Payload must survive byte-identical across the roundtrip.
+    assert progress2.args[1] == payload
+
+    result = progress2.resume({'return_value': len(payload)})
+    assert isinstance(result, pydantic_monty.MontyComplete)
+    assert result.output == snapshot(4096)
+
+
+def test_dump_load_paused_at_getenv_oscall():
+    """Non-FS OS call (`os.getenv`) round-trips — the non-FS dispatch arm
+    does not go through `MountTable`, so it's the path where a leftover
+    `OsFunctionCall::Used` placeholder would surface first."""
+    code = 'import os; (os.getenv("HOME") or "/root") + "/x"'
+    progress = pydantic_monty.Monty(code).start()
+    assert isinstance(progress, pydantic_monty.FunctionSnapshot)
+    assert progress.is_os_function is True
+    assert progress.function_name == snapshot('os.getenv')
+    assert progress.args == snapshot(('HOME', None))
+
+    progress2 = pydantic_monty.load_snapshot(progress.dump())
+    assert isinstance(progress2, pydantic_monty.FunctionSnapshot)
+    assert progress2.function_name == snapshot('os.getenv')
+    assert progress2.args == snapshot(('HOME', None))
+
+    result = progress2.resume({'return_value': '/home/user'})
+    assert isinstance(result, pydantic_monty.MontyComplete)
+    assert result.output == snapshot('/home/user/x')

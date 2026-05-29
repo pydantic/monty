@@ -238,6 +238,18 @@ fn json_output_bigint_raw_number() {
 }
 
 #[test]
+fn json_output_bigint_respects_digit_limit() {
+    // The natural JSON serializer must apply the same decimal conversion
+    // guard as `json.dumps` to avoid expensive bigint-to-decimal DoS paths
+    // on the host outside Monty's VM resource tracker.
+    let err = serde_json::to_string(&JsonMontyObject(&eval("10 ** 4300"))).unwrap_err();
+    assert_snapshot!(
+        err.to_string(),
+        @"bigint exceeds the limit (4300 digits) for integer string conversion"
+    );
+}
+
+#[test]
 fn json_output_type_tagged() {
     // `type(int)` evaluates to the `type` metaclass itself, which maps to
     // `MontyObject::Type(Type::Type)` and serializes as `{"$type": "type"}`.

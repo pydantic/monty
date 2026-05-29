@@ -76,6 +76,10 @@ assert (root / 'new_dir').is_dir() == True, 'mkdir creates dir'
 (root / 'a' / 'b' / 'c').mkdir(parents=True)
 assert (root / 'a' / 'b' / 'c').is_dir() == True, 'mkdir parents'
 
+# mkdir with positional mode and parents
+(root / 'positional_parent' / 'child').mkdir(0o777, True)
+assert (root / 'positional_parent' / 'child').is_dir() == True, 'mkdir positional parents'
+
 # mkdir with exist_ok on existing directory
 (root / 'new_dir').mkdir(exist_ok=True)
 

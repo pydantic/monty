@@ -55,3 +55,14 @@ mechanism beyond dataclass field inheritance.
   floats.
 - **`print`** — writes via the host print callback. `file=`, `flush=` are
   not honoured; `sep=` and `end=` are.
+- **`id(f)` / `hash(f)` / `f is g` / `f == g` for host-supplied callables**
+  — host functions passed in as inputs (`MontyObject::Function`) lose their
+  host object identity at the sandbox boundary. Inside Monty they are
+  compared by `__name__` alone: two distinct host callables with the same
+  `__name__` satisfy `a is b`, `a == b`, `id(a) == id(b)`, and
+  `hash(a) == hash(b)`. In CPython those would be four separate objects
+  and all four checks would return `False` / unequal. Conversely, the same
+  callable passed in twice is guaranteed identical regardless of whether
+  its name was interned in source. This applies only to external functions
+  — `def`-defined functions inside the sandbox retain per-definition
+  identity.

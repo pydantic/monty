@@ -12,7 +12,7 @@ try:
     sorted(key=sorted_key)
     assert False, 'sorted() with no positional args should raise TypeError'
 except TypeError as e:
-    assert e.args == ('sorted expected 1 argument, got 0',), 'sorted() arity error should match CPython'
+    assert e.args == ('sorted expected 1 argument, got 0',), 'sorted() arity error matches CPython'
 
 try:
     items.sort(1, key=sort_key)

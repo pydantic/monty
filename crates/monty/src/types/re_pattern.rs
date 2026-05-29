@@ -17,11 +17,11 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 use smallvec::SmallVec;
 
 use crate::{
-    args::ArgValues,
+    args::{ArgValues, FromArgs},
     bytecode::{CallResult, VM},
-    defer_drop, defer_drop_mut,
+    defer_drop,
     exception_private::{ExcType, RunResult},
-    heap::{DropWithHeap, Heap, HeapData, HeapId, HeapItem, HeapRead},
+    heap::{Heap, HeapData, HeapId, HeapItem, HeapRead},
     intern::StaticStrings,
     modules::re::{ASCII, DOTALL, IGNORECASE, MULTILINE},
     resource::{ResourceError, ResourceTracker, check_estimated_size},
@@ -388,56 +388,13 @@ fn call_pattern_sub<'h>(
     args: ArgValues,
     vm: &mut VM<'h, impl ResourceTracker>,
 ) -> RunResult<Value> {
-    let (pos, kwargs) = args.into_parts();
-    defer_drop_mut!(pos, vm);
-    let kwargs = kwargs.into_iter();
-    defer_drop_mut!(kwargs, vm);
-
-    let Some(repl_val) = pos.next() else {
-        return Err(ExcType::type_error("Pattern.sub() missing required argument: 'repl'"));
-    };
+    let PatternSubArgs {
+        repl: repl_val,
+        string: string_val,
+        count: count_val,
+    } = PatternSubArgs::from_args(args, vm)?;
     defer_drop!(repl_val, vm);
-
-    let Some(string_val) = pos.next() else {
-        return Err(ExcType::type_error("Pattern.sub() missing required argument: 'string'"));
-    };
     defer_drop!(string_val, vm);
-
-    let pos_count = pos.next();
-
-    if let Some(extra) = pos.next() {
-        extra.drop_with_heap(vm);
-        return Err(ExcType::type_error(
-            "Pattern.sub() takes at most 3 positional arguments",
-        ));
-    }
-
-    // Extract count from kwargs if not given positionally
-    let mut kw_count: Option<Value> = None;
-    for (key, value) in kwargs {
-        defer_drop!(key, vm);
-        let Some(keyword_name) = key.as_either_str(vm.heap) else {
-            value.drop_with_heap(vm);
-            return Err(ExcType::type_error("keywords must be strings"));
-        };
-        let key_str = keyword_name.as_str(vm.interns);
-        if key_str == "count" {
-            if pos_count.is_some() {
-                value.drop_with_heap(vm);
-                return Err(ExcType::type_error(
-                    "Pattern.sub() got multiple values for argument 'count'",
-                ));
-            }
-            kw_count.replace(value).drop_with_heap(vm);
-        } else {
-            value.drop_with_heap(vm);
-            return Err(ExcType::type_error(format!(
-                "'{key_str}' is an invalid keyword argument for Pattern.sub()"
-            )));
-        }
-    }
-
-    let count_val = pos_count.or(kw_count);
 
     #[expect(
         clippy::cast_sign_loss,
@@ -483,54 +440,43 @@ fn call_pattern_split<'h>(
     args: ArgValues,
     vm: &mut VM<'h, impl ResourceTracker>,
 ) -> RunResult<Value> {
-    let (pos, kwargs) = args.into_parts();
-    defer_drop_mut!(pos, vm);
-    let kwargs = kwargs.into_iter();
-    defer_drop_mut!(kwargs, vm);
-
-    let Some(string_val) = pos.next() else {
-        return Err(ExcType::type_error(
-            "Pattern.split() missing required argument: 'string'",
-        ));
-    };
+    let PatternSplitArgs {
+        string: string_val,
+        maxsplit: maxsplit_val,
+    } = PatternSplitArgs::from_args(args, vm)?;
     defer_drop!(string_val, vm);
 
-    let pos_maxsplit = pos.next();
-
-    if let Some(extra) = pos.next() {
-        extra.drop_with_heap(vm);
-        return Err(ExcType::type_error(
-            "Pattern.split() takes at most 2 positional arguments",
-        ));
-    }
-
-    let mut kw_maxsplit: Option<Value> = None;
-    for (key, value) in kwargs {
-        defer_drop!(key, vm);
-        let Some(keyword_name) = key.as_either_str(vm.heap) else {
-            value.drop_with_heap(vm);
-            return Err(ExcType::type_error("keywords must be strings"));
-        };
-        let key_str = keyword_name.as_str(vm.interns);
-        if key_str == "maxsplit" {
-            if pos_maxsplit.is_some() {
-                value.drop_with_heap(vm);
-                return Err(ExcType::type_error(
-                    "Pattern.split() got multiple values for argument 'maxsplit'",
-                ));
-            }
-            kw_maxsplit.replace(value).drop_with_heap(vm);
-        } else {
-            value.drop_with_heap(vm);
-            return Err(ExcType::type_error(format!(
-                "'{key_str}' is an invalid keyword argument for Pattern.split()"
-            )));
-        }
-    }
-
-    let maxsplit = extract_maxsplit(pos_maxsplit.or(kw_maxsplit), vm)?;
+    let maxsplit = extract_maxsplit(maxsplit_val, vm)?;
     let text = value_to_str(string_val, vm)?.into_owned();
     pattern.get(vm.heap).split(&text, maxsplit, vm.heap)
+}
+
+/// Argument shape for `Pattern.sub(repl, string, count=0)`.
+///
+/// `string` uses `static_string = "StringAttr"` because `StringAttr` is the
+/// `StaticStrings` entry that interns `"string"` (the bare `String` variant
+/// is taken by the `re.Pattern.string` attribute name in CPython's class
+/// hierarchy).
+#[derive(FromArgs)]
+#[from_args(name = "sub", c_error_named, at_most_total)]
+struct PatternSubArgs {
+    repl: Value,
+    #[from_args(static_string = "StringAttr")]
+    string: Value,
+    #[from_args(default)]
+    count: Option<Value>,
+}
+
+/// Argument shape for `Pattern.split(string, maxsplit=0)`.
+///
+/// See `PatternSubArgs` for why `string` uses `static_string`.
+#[derive(FromArgs)]
+#[from_args(name = "split", c_error_named, at_most_total)]
+struct PatternSplitArgs {
+    #[from_args(static_string = "StringAttr")]
+    string: Value,
+    #[from_args(default)]
+    maxsplit: Option<Value>,
 }
 
 /// Extracts a `maxsplit` value from an optional `Value`.

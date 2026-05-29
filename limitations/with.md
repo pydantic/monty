@@ -16,6 +16,9 @@ exception, `return`, `break`, `continue`), and a truthy return from
   enter, right-to-left exit ordering exactly. Tracebacks point at the
   inner-most `with` line, not the original multi-item line.
 
+  Each extra item counts against the parser's nesting budget as if it were
+  written as explicitly nested `with` blocks — see language.md
+
 ## Not supported
 
 - **Async `with`** (`async with EXPR:`) is rejected at parse time with

@@ -1341,6 +1341,18 @@ assert math.isclose(1.0, 1.1, abs_tol=0.2) == True, 'isclose with abs_tol=0.2'
 assert math.isclose(1.0, 1.1) == False, 'isclose with defaults (not close)'
 assert math.isclose(1.0, 1.0 + 1e-10) == True, 'isclose with defaults (close)'
 
+# === isclose with a/b as keyword arguments (CPython accepts these) ===
+assert math.isclose(a=1.0, b=1.0) == True, 'isclose with a/b as kwargs'
+assert math.isclose(1.0, b=1.0) == True, 'isclose with b as kwarg'
+assert math.isclose(a=1.0, b=1.1, abs_tol=0.2) == True, 'isclose all-kwargs'
+# Passing `a` twice (positional + keyword) is a duplicate
+threw = False
+try:
+    math.isclose(1.0, 2.0, a=3.0)
+except TypeError:
+    threw = True
+assert threw, 'isclose duplicate a raises TypeError'
+
 # isclose negative tolerance raises ValueError
 threw = False
 try:

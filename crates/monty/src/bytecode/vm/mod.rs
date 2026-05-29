@@ -35,7 +35,7 @@ use crate::{
     io::PrintWriter,
     modules::{StandardLib, json::JsonStringCache},
     object::InvalidInputError,
-    os::OsFunction,
+    os::OsFunctionCall,
     parse::CodeRange,
     resource::ResourceTracker,
     types::{
@@ -146,7 +146,7 @@ macro_rules! handle_load_result {
 /// - `Push(value)`: Push the value onto the stack
 /// - `FramePushed`: Reload the cached frame (a new frame was pushed)
 /// - `External(ext_id, args)`: Return `FrameExit::ExternalCall` to yield to host
-/// - `OsCall(func, args)`: Return `FrameExit::OsCall` to yield to host
+/// - `OsCall(call)`: Return `FrameExit::OsCall` to yield to host
 /// - `MethodCall(name, args)`: Return `FrameExit::MethodCall` to yield to host
 /// - `AwaitValue(value)`: Push value, then implicitly await it via `exec_get_awaitable`
 /// - `Err(err)`: Handle the exception via `catch_sync!`
@@ -167,17 +167,13 @@ macro_rules! handle_call_result {
                     name_load_ip,
                 });
             }
-            Ok(CallResult::OsCall(function, args)) => {
+            Ok(CallResult::OsCall(function_call)) => {
                 let call_id = $self.allocate_call_id();
                 // Sync cached IP back to frame before snapshot for resume
                 $self.current_frame_mut().ip = $cached_frame.ip;
-                return Ok(FrameExit::OsCall {
-                    function,
-                    args,
-                    call_id,
-                });
+                return Ok(FrameExit::OsCall { function_call, call_id });
             }
-            Ok(CallResult::OsCallStoreBuffer { function, file_id }) => {
+            Ok(CallResult::OsCallStoreBuffer { call, file_id }) => {
                 let call_id = $self.allocate_call_id();
                 // Record the pending-buffer-store hook for this call so the
                 // matching resume routes the OS result into the file's buffer
@@ -186,8 +182,7 @@ macro_rules! handle_call_result {
                 // Sync cached IP back to frame before snapshot for resume
                 $self.current_frame_mut().ip = $cached_frame.ip;
                 return Ok(FrameExit::OsCall {
-                    function,
-                    args: ArgValues::One(Value::Ref(file_id)),
+                    function_call: call,
                     call_id,
                 });
             }
@@ -253,14 +248,14 @@ pub enum FrameExit {
 
     /// Execution paused for an os function call.
     ///
-    /// The caller should execute a function corresponding to the `os_call` and call `resume()`
-    /// with the result. The `call_id` allows the host to use async resolution
-    /// by calling `run_pending()` instead of `run(result)`.
+    /// The caller should execute a function corresponding to the variant
+    /// carried in `function_call` and call `resume()` with the result. The
+    /// `call_id` allows the host to use async resolution by calling
+    /// `run_pending()` instead of `run(result)`. `function_call` carries the
+    /// typed args directly — no separate `args: ArgValues` field is needed.
     OsCall {
-        /// ID of the os function to call.
-        function: OsFunction,
-        /// Arguments for the external function (includes both positional and keyword args).
-        args: ArgValues,
+        /// Typed dispatch value carrying the OS function variant and its args.
+        function_call: OsFunctionCall,
         /// Unique ID for this call, used for async correlation.
         call_id: CallId,
     },
@@ -310,9 +305,10 @@ impl DropWithHeap for FrameExit {
     fn drop_with_heap<H: ContainsHeap>(self, heap: &mut H) {
         match self {
             Self::Return(value) => value.drop_with_heap(heap),
-            Self::ExternalCall { args, .. } | Self::OsCall { args, .. } | Self::MethodCall { args, .. } => {
+            Self::ExternalCall { args, .. } | Self::MethodCall { args, .. } => {
                 args.drop_with_heap(heap);
             }
+            Self::OsCall { function_call, .. } => function_call.drop_with_heap(heap),
             Self::ResolveFutures(_) | Self::NameLookup { .. } => {}
         }
     }
@@ -1221,6 +1217,10 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
                 Opcode::DictMerge => {
                     let func_name_id = cached_frame.fetch_u16();
                     try_catch_sync!(self, cached_frame, self.dict_merge(func_name_id));
+                }
+                Opcode::MethodDictMerge => {
+                    let func_name_id = cached_frame.fetch_u16();
+                    try_catch_sync!(self, cached_frame, self.method_dict_merge(func_name_id));
                 }
                 // PEP 448 literal building
                 Opcode::DictUpdate => {

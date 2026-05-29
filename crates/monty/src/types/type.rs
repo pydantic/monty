@@ -134,7 +134,44 @@ impl fmt::Display for Type {
     }
 }
 
+/// `Display` adapter for [`Type::cpython_arg_name`] — see that method.
+///
+/// Held separately so the rendering stays allocation-free (no `Cow<'static, str>`
+/// or owned `String` needed) and embeds directly into `format!` / `write!`.
+pub struct CpythonArgName<'a>(&'a Type);
+
+impl fmt::Display for CpythonArgName<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // CPython's `_PyArg_BadArgument` formatter has a single special case:
+        // when the offending value is `Py_None`, it reports `"None"` rather
+        // than the type name `"NoneType"`. Since `NoneType` is a singleton
+        // (only `None` ever has this type), branching on the type is
+        // equivalent to branching on the value and lets the helper live on
+        // `Type` for callers that already have one.
+        match self.0 {
+            Type::NoneType => f.write_str("None"),
+            other => fmt::Display::fmt(other, f),
+        }
+    }
+}
+
 impl Type {
+    /// Renders the type name used by CPython's `_PyArg_BadArgument`
+    /// ("argument N must be X, not Y") error formatter.
+    ///
+    /// Identical to [`Display`] except that [`Type::NoneType`] renders as
+    /// `"None"` rather than `"NoneType"`. CPython has this special case in
+    /// `_PyArg_BadArgument`: `arg == Py_None ? "None" : Py_TYPE(arg)->tp_name`.
+    ///
+    /// Use this for the "not Y" half of arg-type error messages. For repr /
+    /// `type(x).__name__` output, keep using plain [`Display`].
+    ///
+    /// [`Display`]: fmt::Display
+    #[must_use]
+    pub fn cpython_arg_name(&self) -> CpythonArgName<'_> {
+        CpythonArgName(self)
+    }
+
     /// Returns the Python source-level name for builtin types that can be called directly.
     ///
     /// This differs from `Display` for internal representation-only names such as
@@ -277,7 +314,7 @@ impl Type {
             (Self::Date, m) if m == StaticStrings::Fromisoformat => {
                 date::class_fromisoformat(vm.heap, args, vm.interns).map(AttrCallResult::Value)
             }
-            (Self::DateTime, m) if m == StaticStrings::Now => datetime::class_now(vm.heap, args, vm.interns),
+            (Self::DateTime, m) if m == StaticStrings::Now => datetime::class_now(vm, args),
             (Self::DateTime, m) if m == StaticStrings::Strptime => {
                 datetime::class_strptime(vm.heap, args, vm.interns).map(AttrCallResult::Value)
             }
@@ -308,10 +345,10 @@ impl Type {
             Self::Bytes => Bytes::init(vm, args),
             Self::Range => Range::init(vm, args),
             Self::Slice => Slice::init(vm, args),
-            Self::Date => date::init(vm.heap, args, vm.interns),
-            Self::DateTime => datetime::init(vm.heap, args, vm.interns),
-            Self::TimeDelta => timedelta::init(vm.heap, args, vm.interns),
-            Self::TimeZone => TimeZone::init(vm.heap, args, vm.interns),
+            Self::Date => date::init(vm, args),
+            Self::DateTime => datetime::init(vm, args),
+            Self::TimeDelta => timedelta::init(vm, args),
+            Self::TimeZone => TimeZone::init(vm, args),
             Self::Iterator => MontyIter::init(vm, args),
             Self::Path => Path::init(vm, args),
 

@@ -16,7 +16,7 @@ use super::{
     mount_mode::MountMode,
     path_security::normalize_virtual_path,
 };
-use crate::{MontyObject, os::OsFunction};
+use crate::{MontyObject, os::OsFunctionCall};
 
 /// A collection of mount points mapping virtual paths to host directories.
 ///
@@ -124,21 +124,13 @@ impl MountTable {
     /// Returns `Some(Ok(result))` if handled, `Some(Err(..))` on error, or
     /// `None` if the operation was not handled (non-filesystem op, or no
     /// matching mount for the path). The caller should fall through to a
-    /// callback or use [`OsFunction::on_no_handler`] for unhandled calls.
-    pub fn handle_os_call(
-        &mut self,
-        function: OsFunction,
-        args: &[MontyObject],
-        kwargs: &[(MontyObject, MontyObject)],
-    ) -> Option<Result<MontyObject, MountError>> {
-        if !function.is_filesystem() {
+    /// callback or use [`OsFunctionCall::on_no_handler`] for unhandled calls.
+    pub fn handle_os_call(&mut self, call: &OsFunctionCall) -> Option<Result<MontyObject, MountError>> {
+        if !call.is_filesystem() {
             return None;
         }
 
-        let request = match dispatch::parse_fs_request(function, args, kwargs) {
-            Ok(request) => request,
-            Err(err) => return Some(Err(err)),
-        };
+        let request = dispatch::fs_request_from_call(call);
 
         match self.route_request(request) {
             Some(Ok(index)) => Some(self.mounts[index].execute(request)),

@@ -33,13 +33,15 @@ These yield an `OsCall` for the host to resolve:
 - `exists()`, `is_file()`, `is_dir()`, `is_symlink()`
 - `read_text()`, `read_bytes()`
 - `write_text(data)`, `write_bytes(data)`
-- `mkdir()`, `unlink()`, `rmdir()`
+- `mkdir(mode=0o777, parents=False, exist_ok=False)`, `unlink()`, `rmdir()`
 - `iterdir()`, `stat()`, `rename(target)`
 - `resolve()`, `absolute()`
 
-The `mode`, `parents`, `exist_ok`, `missing_ok`, `target_is_directory`
-keyword arguments accepted by the corresponding CPython methods are NOT
-parsed — pass only the positional arguments documented above.
+`Path.mkdir()` parses `mode`, `parents`, and `exist_ok`, but `mode` is
+accepted only for signature compatibility — Monty does not model POSIX
+permission bits. The `missing_ok` and `target_is_directory` keyword arguments
+accepted by other CPython methods are not parsed; pass only the positional
+arguments documented above.
 
 Not implemented: `glob`, `rglob`, `touch`, `chmod`, `lchmod`, `owner`,
 `group`, `symlink_to`, `hardlink_to`, `link_to`, `readlink`, `lstat`,

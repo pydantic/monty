@@ -815,7 +815,14 @@ def test_path_mkdir_yields_oscall():
 
 
 def test_path_mkdir_with_parents_yields_oscall():
-    """Path.mkdir(parents=True) yields an OS call with kwargs."""
+    """Path.mkdir(parents=True) yields an OS call with kwargs.
+
+    `Path.mkdir` always reaches the host with both `parents` and `exist_ok`
+    populated; the typed `OsFunctionCall::Mkdir` payload carries them as
+    `bool` (not `Option<bool>`), so callers see the fully-resolved kwargs
+    — defaults filled in — at the host boundary. This is intentional: the
+    host no longer has to know CPython's defaults to interpret the call.
+    """
     m = pydantic_monty.Monty('from pathlib import Path; Path("/tmp/a/b/c").mkdir(parents=True)')
     result = m.start()
 
@@ -823,18 +830,23 @@ def test_path_mkdir_with_parents_yields_oscall():
     assert result.is_os_function is True
     assert result.function_name == snapshot('Path.mkdir')
     assert result.args == snapshot((PurePosixPath('/tmp/a/b/c'),))
-    assert result.kwargs == snapshot({'parents': True})
+    assert result.kwargs == snapshot({'parents': True, 'exist_ok': False})
 
 
 def test_path_mkdir_with_exist_ok_yields_oscall():
-    """Path.mkdir(exist_ok=True) yields an OS call with kwargs."""
+    """Path.mkdir(exist_ok=True) yields an OS call with kwargs.
+
+    See `test_path_mkdir_with_parents_yields_oscall` for the host-boundary
+    contract: defaults are always emitted, so `parents=False` appears even
+    though only `exist_ok=True` was passed.
+    """
     m = pydantic_monty.Monty('from pathlib import Path; Path("/tmp/existing").mkdir(exist_ok=True)')
     result = m.start()
 
     assert isinstance(result, pydantic_monty.FunctionSnapshot)
     assert result.is_os_function is True
     assert result.function_name == snapshot('Path.mkdir')
-    assert result.kwargs == snapshot({'exist_ok': True})
+    assert result.kwargs == snapshot({'parents': False, 'exist_ok': True})
 
 
 def test_path_mkdir_with_both_kwargs():

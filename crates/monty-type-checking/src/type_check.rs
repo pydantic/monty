@@ -12,7 +12,7 @@ use ruff_db::{
     system::SystemPathBuf,
 };
 use ruff_text_size::{TextRange, TextSize};
-use ty_python_semantic::types::check_types;
+use ty_python_semantic::check_file_unwrap;
 
 use crate::{
     db::SRC_ROOT,
@@ -81,7 +81,11 @@ pub fn type_check(
         (main_file, 0)
     };
 
-    let mut diagnostics = check_types(pooled_db.db(), main_file);
+    // Use `check_file_unwrap` (not `check_types` alone) so that parser errors
+    // and unsupported-syntax errors are included — otherwise malformed input
+    // (e.g. deeply nested parentheses that ruff's parser rejects) would silently
+    // type-check clean.
+    let mut diagnostics = check_file_unwrap(pooled_db.db(), main_file);
     diagnostics.retain(filter_diagnostics);
 
     if diagnostics.is_empty() {

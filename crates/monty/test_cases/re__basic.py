@@ -275,14 +275,14 @@ try:
     pattern.sub()
     assert False, 'Pattern.sub() with no args should raise TypeError'
 except TypeError as e:
-    assert 'repl' in str(e).lower(), 'Pattern.sub missing repl error mentions repl'
+    assert str(e) == "sub() missing required argument 'repl' (pos 1)", 'Pattern.sub missing repl error'
 
 # === Pattern.sub() error: missing string ===
 try:
     pattern.sub('X')
     assert False, 'Pattern.sub(repl) should raise TypeError'
 except TypeError as e:
-    assert 'string' in str(e).lower(), 'Pattern.sub missing string error mentions string'
+    assert str(e) == "sub() missing required argument 'string' (pos 2)", 'Pattern.sub missing string error'
 
 # === re.sub() with count=0 (replace all) ===
 result = re.sub(r'\d', 'X', '1a2b3c', 0)
@@ -472,7 +472,19 @@ try:
     p.sub('X', 'a1b2', 0, 'extra')
     assert False, 'Pattern.sub with 4 args should raise TypeError'
 except TypeError as e:
-    assert 'at most 3' in str(e), 'Pattern.sub too many args error'
+    assert str(e) == 'sub() takes at most 3 arguments (4 given)', 'Pattern.sub too many args error'
+
+try:
+    p.sub('X', 'a1b2', 0, count=1)
+    assert False, 'Pattern.sub with positional and keyword count should raise TypeError'
+except TypeError as e:
+    assert str(e) == 'sub() takes at most 3 arguments (4 given)', 'Pattern.sub total args error'
+
+try:
+    p.sub('X', 'a1b2', bogus=1)
+    assert False, 'Pattern.sub with unknown kwarg should raise TypeError'
+except TypeError as e:
+    assert str(e) == "sub() got an unexpected keyword argument 'bogus'", 'Pattern.sub unknown kwarg error'
 
 # === Flags on module-level functions ===
 # re.search with flags

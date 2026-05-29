@@ -9,7 +9,7 @@ use smallvec::smallvec;
 
 use super::{Bytes, MontyIter, PyTrait};
 use crate::{
-    args::ArgValues,
+    args::{ArgValues, FromArgs},
     bytecode::{CallResult, VM},
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, RunResult},
@@ -63,8 +63,8 @@ impl Str {
     /// - `str()` with no args returns an empty string
     /// - `str(x)` converts x to its string representation using `py_str`
     pub fn init(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
-        let value = args.get_zero_one_named_arg("str", StaticStrings::Object, vm.heap, vm.interns)?;
-        match value {
+        let StrInitArgs { object } = StrInitArgs::from_args(args, vm)?;
+        match object {
             None => Ok(Value::InternString(StaticStrings::EmptyString.into())),
             Some(v) => {
                 defer_drop!(v, vm);
@@ -81,6 +81,15 @@ impl Str {
         let result_str: Box<str> = slice_collect_iterator(vm, slice, self.0.chars(), |c| c)?;
         Ok(allocate_string(result_str, vm.heap)?)
     }
+}
+
+/// Argument shape for `str(object='')` — accepts one optional pos-or-keyword
+/// `object` arg whose absence is the documented "return empty string" path.
+#[derive(FromArgs)]
+#[from_args(name = "str", c_error_named)]
+struct StrInitArgs {
+    #[from_args(default)]
+    object: Option<Value>,
 }
 
 /// Allocates a string, using interned versions when possible.
@@ -1273,7 +1282,8 @@ fn str_removesuffix<'h>(
 ///
 /// Returns a list of the words in the string, using sep as the delimiter string.
 fn str_split<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Value> {
-    let (sep, maxsplit) = parse_split_args("str.split", args, vm)?;
+    let SplitArgs { sep, maxsplit } = SplitArgs::from_args(args, vm)?;
+    let (sep, maxsplit) = coerce_split_args(sep, maxsplit, vm)?;
     let s = s.get(vm.heap);
 
     let parts: Vec<&str> = match &sep {
@@ -1319,7 +1329,8 @@ fn str_split<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h, impl Re
 /// Returns a list of the words in the string, using sep as the delimiter string,
 /// splitting from the right.
 fn str_rsplit<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Value> {
-    let (sep, maxsplit) = parse_split_args("str.rsplit", args, vm)?;
+    let RsplitArgs { sep, maxsplit } = RsplitArgs::from_args(args, vm)?;
+    let (sep, maxsplit) = coerce_split_args(sep, maxsplit, vm)?;
     let s = s.get(vm.heap);
 
     let parts: Vec<&str> = match &sep {
@@ -1362,91 +1373,46 @@ fn str_rsplit<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h, impl R
     Ok(Value::Ref(heap_id))
 }
 
-/// Parses arguments for split methods.
+/// Coerces extracted `sep` / `maxsplit` `Value`s into the runtime shape used
+/// by the actual `split`/`rsplit` implementations.
 ///
-/// Supports both positional and keyword arguments for sep and maxsplit.
-fn parse_split_args(
-    method: &str,
-    args: ArgValues,
+/// `sep = None` is documented as "split on whitespace", so it is mapped to
+/// `Option::None`; any other value is run through `extract_string_arg`.
+/// `maxsplit` is always coerced to `i64` via `extract_int_arg`. Each argument
+/// is dropped on every path so refcounts stay balanced.
+fn coerce_split_args(
+    sep: Value,
+    maxsplit: Value,
     vm: &mut VM<'_, impl ResourceTracker>,
 ) -> RunResult<(Option<String>, i64)> {
-    let (pos, kwargs) = args.into_parts();
-    let kwargs_iter = kwargs.into_iter();
-    defer_drop_mut!(kwargs_iter, vm);
-
-    let mut pos_iter = pos;
-    let sep_value = pos_iter.next();
-    defer_drop_mut!(sep_value, vm);
-    let maxsplit_value = pos_iter.next();
-    defer_drop_mut!(maxsplit_value, vm);
-
-    // Check no extra positional arguments
-    if pos_iter.len() != 0 {
-        return Err(ExcType::type_error_at_most(method, 2, 3));
-    }
-
-    // Extract positional sep (default None)
-    let mut has_pos_sep = sep_value.is_some();
-    let mut sep = if let Some(v) = sep_value.as_ref() {
-        if matches!(v, Value::None) {
-            None
-        } else {
-            Some(extract_string_arg(v, vm)?)
-        }
-    } else {
-        None
+    defer_drop!(sep, vm);
+    defer_drop!(maxsplit, vm);
+    let sep = match sep {
+        Value::None => None,
+        _ => Some(extract_string_arg(sep, vm)?),
     };
-
-    // Extract positional maxsplit (default -1)
-    let mut has_pos_maxsplit = maxsplit_value.is_some();
-    let mut maxsplit = if let Some(v) = maxsplit_value.as_ref() {
-        extract_int_arg(v, vm)?
-    } else {
-        -1
-    };
-
-    // Process kwargs
-    for (key, value) in kwargs_iter {
-        defer_drop!(key, vm);
-        defer_drop!(value, vm);
-
-        let Some(keyword_name) = key.as_either_str(vm.heap) else {
-            return Err(ExcType::type_error("keywords must be strings"));
-        };
-
-        let key_str = keyword_name.as_str(vm.interns);
-        match key_str {
-            "sep" => {
-                if has_pos_sep {
-                    return Err(ExcType::type_error(format!(
-                        "{method}() got multiple values for argument 'sep'"
-                    )));
-                }
-                if matches!(value, Value::None) {
-                    sep = None;
-                } else {
-                    sep = Some(extract_string_arg(value, vm)?);
-                }
-                has_pos_sep = true;
-            }
-            "maxsplit" => {
-                if has_pos_maxsplit {
-                    return Err(ExcType::type_error(format!(
-                        "{method}() got multiple values for argument 'maxsplit'"
-                    )));
-                }
-                maxsplit = extract_int_arg(value, vm)?;
-                has_pos_maxsplit = true;
-            }
-            _ => {
-                return Err(ExcType::type_error(format!(
-                    "'{key_str}' is an invalid keyword argument for {method}()"
-                )));
-            }
-        }
-    }
-
+    let maxsplit = extract_int_arg(maxsplit, vm)?;
     Ok((sep, maxsplit))
+}
+
+/// Argument shape for `str.split(sep=None, maxsplit=-1)`.
+#[derive(FromArgs)]
+#[from_args(name = "split")]
+struct SplitArgs {
+    #[from_args(default = Value::None)]
+    sep: Value,
+    #[from_args(default = Value::Int(-1))]
+    maxsplit: Value,
+}
+
+/// Argument shape for `str.rsplit(sep=None, maxsplit=-1)`.
+#[derive(FromArgs)]
+#[from_args(name = "rsplit")]
+struct RsplitArgs {
+    #[from_args(default = Value::None)]
+    sep: Value,
+    #[from_args(default = Value::Int(-1))]
+    maxsplit: Value,
 }
 
 /// Split string on whitespace, returning at most `maxsplit + 1` parts.
@@ -1560,15 +1526,20 @@ fn str_splitlines<'h>(
 ///
 /// Supports both positional and keyword arguments for keepends.
 fn parse_splitlines_args(args: ArgValues, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<bool> {
-    let val = args.get_zero_one_named_arg("str.splitlines", StaticStrings::Keepends, vm.heap, vm.interns)?;
-    let keepends = if let Some(v) = val {
-        let result = value_is_truthy(&v);
-        v.drop_with_heap(vm.heap);
-        result
-    } else {
-        false
-    };
-    Ok(keepends)
+    let SplitlinesArgs { keepends } = SplitlinesArgs::from_args(args, vm)?;
+    let result = keepends.as_ref().is_some_and(value_is_truthy);
+    keepends.drop_with_heap(vm.heap);
+    Ok(result)
+}
+
+/// Argument shape for `str.splitlines(keepends=False)`. CPython evaluates
+/// `keepends` for truthiness rather than strict-typing, so the field stays as
+/// a raw `Value` for `value_is_truthy` to inspect.
+#[derive(FromArgs)]
+#[from_args(name = "splitlines", at_most_total)]
+struct SplitlinesArgs {
+    #[from_args(default)]
+    keepends: Option<Value>,
 }
 
 /// Checks if a value is truthy for bool conversion.
@@ -1676,69 +1647,37 @@ fn str_replace<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h, impl 
 ///
 /// Supports both positional and keyword arguments for count (Python 3.13+).
 fn parse_replace_args(
-    method: &str,
+    _method: &str,
     args: ArgValues,
     vm: &mut VM<'_, impl ResourceTracker>,
 ) -> RunResult<(String, String, i64)> {
-    let (pos, kwargs) = args.into_parts();
-    let kwargs_iter = kwargs.into_iter();
-    defer_drop_mut!(kwargs_iter, vm);
+    let ReplaceArgs { old, new, count } = ReplaceArgs::from_args(args, vm)?;
+    defer_drop!(old, vm);
+    defer_drop!(new, vm);
+    defer_drop!(count, vm);
 
-    let mut pos_iter = pos;
-    let Some(old_value) = pos_iter.next() else {
-        return Err(ExcType::type_error_at_least(method, 2, 0));
-    };
-    defer_drop!(old_value, vm);
+    let old_s = extract_string_arg(old, vm)?;
+    let new_s = extract_string_arg(new, vm)?;
+    let count_i = extract_int_arg(count, vm)?;
+    Ok((old_s, new_s, count_i))
+}
 
-    let Some(new_value) = pos_iter.next() else {
-        return Err(ExcType::type_error_at_least(method, 2, 1));
-    };
-    defer_drop!(new_value, vm);
-
-    let count_value = pos_iter.next();
-    defer_drop_mut!(count_value, vm);
-
-    // Check no extra positional arguments
-    if pos_iter.len() != 0 {
-        return Err(ExcType::type_error_at_most(method, 3, 4));
-    }
-
-    let old = extract_string_arg(old_value, vm)?;
-    let new = extract_string_arg(new_value, vm)?;
-
-    let mut has_pos_count = count_value.is_some();
-    let mut count = if let Some(v) = count_value.as_ref() {
-        extract_int_arg(v, vm)?
-    } else {
-        -1
-    };
-
-    // Process kwargs (Python 3.13+ allows count as keyword)
-    for (key, value) in kwargs_iter {
-        defer_drop!(key, vm);
-        defer_drop!(value, vm);
-
-        let Some(keyword_name) = key.as_either_str(vm.heap) else {
-            return Err(ExcType::type_error("keywords must be strings"));
-        };
-
-        let key_str = keyword_name.as_str(vm.interns);
-        if key_str == "count" {
-            if has_pos_count {
-                return Err(ExcType::type_error(format!(
-                    "{method}() got multiple values for argument 'count'"
-                )));
-            }
-            count = extract_int_arg(value, vm)?;
-            has_pos_count = true;
-        } else {
-            return Err(ExcType::type_error(format!(
-                "'{key_str}' is an invalid keyword argument for {method}()"
-            )));
-        }
-    }
-
-    Ok((old, new, count))
+/// Argument shape for `str.replace(old, new, count=-1)`.
+///
+/// `old` and `new` are positional-only at the C level — passing them as
+/// kwargs produces CPython's "takes at least 2 positional arguments"
+/// error, which the macro derives from the required pos-only count.
+/// Python 3.13 promoted `count` from positional-only to
+/// positional-or-keyword, hence the un-annotated default.
+#[derive(FromArgs)]
+#[from_args(name = "replace")]
+struct ReplaceArgs {
+    #[from_args(pos_only)]
+    old: Value,
+    #[from_args(pos_only)]
+    new: Value,
+    #[from_args(default = Value::Int(-1))]
+    count: Value,
 }
 
 /// Implements Python's `str.center(width, fillchar?)` method.
@@ -1913,9 +1852,9 @@ fn str_expandtabs<'h>(
     args: ArgValues,
     vm: &mut VM<'h, impl ResourceTracker>,
 ) -> RunResult<Value> {
-    let tabsize_val = args.get_zero_one_named_arg("str.expandtabs", StaticStrings::Tabsize, vm.heap, vm.interns)?;
+    let ExpandtabsArgs { tabsize } = ExpandtabsArgs::from_args(args, vm)?;
 
-    let tabsize = match tabsize_val {
+    let tabsize = match tabsize {
         None => 8,
         Some(val) => {
             let result_int = extract_int_arg(&val, vm)?;
@@ -1953,12 +1892,24 @@ fn str_expandtabs<'h>(
     Ok(allocate_string(result, vm.heap)?)
 }
 
+/// Argument shape for `str.expandtabs(tabsize=8)`. `tabsize` is `Option<Value>`
+/// so callers can distinguish "absent" (default 8) from any explicit value
+/// without forcing the macro into a type-checked default.
+#[derive(FromArgs)]
+#[from_args(name = "expandtabs", at_most_total)]
+struct ExpandtabsArgs {
+    #[from_args(default)]
+    tabsize: Option<Value>,
+}
+
 /// Implements Python's `str.encode(encoding='utf-8', errors='strict')` method.
 ///
 /// Returns an encoded version of the string as a bytes object. Only supports
 /// UTF-8 encoding (the native encoding for Rust strings).
 fn str_encode<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Value> {
-    let (encoding, errors) = parse_encode_args(args, vm)?;
+    let EncodeArgs { encoding, errors } = EncodeArgs::from_args(args, vm)?;
+    let encoding = encoding.unwrap_or_else(|| "utf-8".to_owned());
+    let errors = errors.unwrap_or_else(|| "strict".to_owned());
 
     // Only UTF-8 is supported - Rust strings are always valid UTF-8
     let encoding_lower = encoding.to_ascii_lowercase();
@@ -1977,27 +1928,22 @@ fn str_encode<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h, impl R
     Ok(Value::Ref(heap_id))
 }
 
-/// Parses arguments for `str.encode()`.
+/// Argument shape for `str.encode(encoding='utf-8', errors='strict')`.
 ///
-/// Returns (encoding, errors) with defaults "utf-8" and "strict".
-fn parse_encode_args(args: ArgValues, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<(String, String)> {
-    let (first, second) = args.get_zero_one_two_args("str.encode", vm.heap)?;
-
-    let encoding = if let Some(v) = first {
-        defer_drop!(v, vm);
-        extract_string_arg(v, vm)?
-    } else {
-        "utf-8".to_owned()
-    };
-
-    let errors = if let Some(v) = second {
-        defer_drop!(v, vm);
-        extract_string_arg(v, vm)?
-    } else {
-        "strict".to_owned()
-    };
-
-    Ok((encoding, errors))
+/// `bad_arg_named` opts in to CPython's `_PyArg_BadArgument` named wording
+/// (`encode() argument 'encoding' must be str, not <type>`) so wrong-type
+/// errors match the C implementation. Both fields default to `None` (absent)
+/// and the implementation supplies `"utf-8"` / `"strict"` after extraction;
+/// CPython rejects explicit `None` here with the bad-arg error, which falls
+/// out naturally because `Option<String>::from_value` delegates to
+/// `String::from_value` and rejects `Value::None`.
+#[derive(FromArgs)]
+#[from_args(name = "encode", bad_arg_named)]
+struct EncodeArgs {
+    #[from_args(default)]
+    encoding: Option<String>,
+    #[from_args(default)]
+    errors: Option<String>,
 }
 
 /// Implements Python's `str.isidentifier()` predicate.

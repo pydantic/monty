@@ -12,6 +12,11 @@ The `asyncio` module exposes exactly two functions:
   the coroutine `return`s, or re-raises an exception from it.
 - `asyncio.gather(*awaitables)` — runs awaitables concurrently and returns
   a list of results. Always behaves as `return_exceptions=False`.
+  Any keyword argument is rejected with
+  `NotImplementedError: gather() does not yet support keyword arguments`
+  (CPython would instead raise
+  `TypeError: gather() got an unexpected keyword argument 'X'` because
+  `return_exceptions` is a real kwarg there).
 
 Not implemented (raise `AttributeError`):
 

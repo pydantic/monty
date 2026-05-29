@@ -478,6 +478,31 @@ pub fn format_with_spec(
     // already use. The check is free below `LARGE_RESULT_THRESHOLD`.
     check_repeat_size(spec.fill.len_utf8(), spec.width, vm.heap.tracker())?;
 
+    // `spec.precision` on `f`/`e`/`%` float formats is rendered as that many
+    // decimal digits. `fmt_float_fixed` / `fmt_float_exp` synthesise the digits
+    // beyond `MAX_FMT_PRECISION` by appending raw `'0'` chars to an untracked
+    // Rust `String`, so an attacker-chosen precision (`f"{v:.{p}f}"`, `p` a
+    // runtime value) would allocate gigabytes before `allocate_string` accounts
+    // for the result. Precision is parsed as an unrestricted `usize`; bound it
+    // by the active resource tracker the same way the width check above does.
+    // Skip for non-finite floats since the helpers ignore precision in that
+    // case. `g`/`G` already cap precision internally.
+    if let Some(precision) = spec.precision
+        && matches!(
+            spec.type_char,
+            Some(TypeChar::F | TypeChar::FUpper | TypeChar::E | TypeChar::EUpper | TypeChar::Percent)
+        )
+    {
+        let numeric_finite = match value {
+            Value::Int(_) => true,
+            Value::Float(f) => f.is_finite(),
+            _ => false,
+        };
+        if numeric_finite {
+            check_repeat_size(precision, 1, vm.heap.tracker())?;
+        }
+    }
+
     match (value, spec.type_char) {
         // Integer formatting
         (Value::Int(n), None | Some(TypeChar::D)) => Ok(format_int(*n, spec)),

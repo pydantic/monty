@@ -823,6 +823,14 @@ impl MontyObject {
             Value::Builtin(Builtins::Type(t)) => Self::Type(*t),
             Value::Builtin(Builtins::ExcType(e)) => Self::Type(Type::Exception(*e)),
             Value::Builtin(Builtins::Function(f)) => Self::BuiltinFunction(*f),
+            // Inline external function: export under the same shape as the heap
+            // path's `HeapReadOutput::ExtFunction` arm above, so an interned
+            // function name round-trips through Monty as `MontyObject::Function`
+            // regardless of which representation it took (issue #345).
+            Value::ExtFunction(name_id) => Self::Function {
+                name: vm.interns.get_str(*name_id).to_owned(),
+                docstring: None,
+            },
             #[cfg(feature = "memory-model-checks")]
             Value::Dereferenced => panic!("Dereferenced found while converting to MontyObject"),
             _ => repr_or_error(object, vm),

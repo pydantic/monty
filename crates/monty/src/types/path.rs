@@ -16,7 +16,7 @@ use ahash::AHashSet;
 use smallvec::SmallVec;
 
 use crate::{
-    args::{ArgValues, KwargsValues},
+    args::ArgValues,
     builtins::open::builtin_open,
     bytecode::{CallResult, VM},
     defer_drop,
@@ -24,7 +24,7 @@ use crate::{
     hash::HashValue,
     heap::{DropWithHeap, Heap, HeapData, HeapId, HeapItem, HeapRead},
     intern::{Interns, StaticStrings},
-    os::OsFunction,
+    os::{MontyPath, build_path_os_call, is_path_os_method},
     resource::{ResourceError, ResourceTracker},
     types::{PyTrait, Type, allocate_tuple, str::allocate_string},
     value::{EitherStr, Value},
@@ -410,29 +410,6 @@ fn normalize_path(mut path: String) -> String {
     result
 }
 
-/// Prepends the path string argument to existing arguments for OS calls.
-///
-/// OS functions expect the path as the first argument, so we need to
-/// combine it with any additional arguments passed to the method.
-fn prepend_path_arg(path_arg: Value, args: ArgValues) -> ArgValues {
-    match args {
-        ArgValues::Empty => ArgValues::One(path_arg),
-        ArgValues::One(v) => ArgValues::Two(path_arg, v),
-        ArgValues::Two(a, b) => ArgValues::ArgsKargs {
-            args: vec![path_arg, a, b],
-            kwargs: KwargsValues::Empty,
-        },
-        ArgValues::Kwargs(kwargs) => ArgValues::ArgsKargs {
-            args: vec![path_arg],
-            kwargs,
-        },
-        ArgValues::ArgsKargs { args: mut vals, kwargs } => {
-            vals.insert(0, path_arg);
-            ArgValues::ArgsKargs { args: vals, kwargs }
-        }
-    }
-}
-
 impl Path {
     /// Resolves a known attribute by its `StaticStrings` variant.
     ///
@@ -542,12 +519,20 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Path> {
             return Err(ExcType::attribute_error(Type::Path, attr.as_str(vm.interns)));
         };
 
-        // Check if this is an OS method that requires host system access
-        if let Ok(os_fn) = OsFunction::try_from(method) {
-            vm.heap.inc_ref(self_id);
-            let path_arg = Value::Ref(self_id);
-            let os_args = prepend_path_arg(path_arg, args);
-            return Ok(CallResult::OsCall(os_fn, os_args));
+        // Check if this is an OS method that requires host system access.
+        //
+        // Pre-flight via `is_path_os_method` lets us extract the path string
+        // and commit ownership of `args` to the builder; the builder yields
+        // an `OsFunctionCall` variant with the typed args struct populated.
+        if is_path_os_method(method) {
+            let path = MontyPath::new(self.get(vm.heap).as_str().to_owned());
+            // SAFETY: builder owns `args` and is responsible for dropping it
+            // on every error path; `self_id` is a separate heap entry that
+            // we don't transfer here.
+            return match build_path_os_call(method, path, args, vm)? {
+                Some(call) => Ok(CallResult::OsCall(call)),
+                None => unreachable!("is_path_os_method gates the call"),
+            };
         }
 
         // Pure methods (no I/O)

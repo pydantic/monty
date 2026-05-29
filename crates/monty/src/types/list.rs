@@ -12,7 +12,7 @@ use crate::{
     heap::{DropWithHeap, Heap, HeapData, HeapGuard, HeapId, HeapItem, HeapRead, HeapReadOutput, HeapReader},
     intern::StaticStrings,
     resource::{ResourceError, ResourceTracker},
-    sorting::sort_values,
+    sorting::parse_and_sort,
     types::{
         Type,
         slice::{normalize_sequence_index, slice_collect_iterator},
@@ -705,35 +705,15 @@ fn do_list_sort<'h>(
     args: ArgValues,
     vm: &mut VM<'h, impl ResourceTracker>,
 ) -> Result<(), RunError> {
-    // Parse keyword-only arguments: key and reverse
-    let (key_arg, reverse_arg) = args.extract_keyword_only_pair("list.sort", "key", "reverse", vm.heap, vm.interns)?;
-
-    // Convert reverse to bool (default false)
-    let reverse = if let Some(v) = reverse_arg {
-        let result = v.py_bool(vm);
-        v.drop_with_heap(vm);
-        result
-    } else {
-        false
-    };
-
-    // Handle key function (None means no key function)
-    let key_fn = match key_arg {
-        Some(v) if matches!(v, Value::None) => {
-            v.drop_with_heap(vm);
-            None
-        }
-        other => other,
-    };
-    defer_drop!(key_fn, vm);
-
     // Detach the list's items so reentrant access via the list's heap id sees
     // an empty list. The detached buffer is always swapped back into the list
-    // when we're done.
+    // when we're done. Done *before* parsing args so the reentrancy guard is
+    // in place if parsing somehow allocates or drops user values that run
+    // arbitrary code.
     let items = mem::take(&mut list.get_mut(vm.heap).items);
     defer_drop_mut!(items, vm);
 
-    let sort_result = sort_values(items, key_fn.as_ref(), reverse, vm);
+    let sort_result = parse_and_sort(items, args, vm);
 
     // Swap our (sorted) buffer back into the list. Whatever the user placed
     // on the live empty list during the sort ends up in `items`; if

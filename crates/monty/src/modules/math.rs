@@ -28,7 +28,7 @@ use num_bigint::BigInt;
 use smallvec::smallvec;
 
 use crate::{
-    args::{ArgValues, KwargsValues},
+    args::{ArgValues, FromArgs},
     bytecode::VM,
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, RunError, RunResult, SimpleException},
@@ -676,32 +676,18 @@ fn math_copysign(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunR
 /// Supports keyword-only `rel_tol` and `abs_tol` parameters matching CPython.
 /// Raises `ValueError` if either tolerance is negative.
 fn math_isclose(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
-    let (positional, kwargs) = args.into_parts();
-    defer_drop_mut!(positional, vm);
+    let IscloseArgs { a, b, rel_tol, abs_tol } = IscloseArgs::from_args(args, vm)?;
+    defer_drop!(a, vm);
+    defer_drop!(b, vm);
+    defer_drop!(rel_tol, vm);
+    defer_drop!(abs_tol, vm);
 
-    // Extract exactly two positional args
-    let Some(a_val) = positional.next() else {
-        return Err(ExcType::type_error_at_least("math.isclose", 2, 0));
-    };
-    defer_drop!(a_val, vm);
-    let Some(b_val) = positional.next() else {
-        return Err(ExcType::type_error_at_least("math.isclose", 2, 1));
-    };
-    defer_drop!(b_val, vm);
-    if positional.len() > 0 {
-        return Err(ExcType::type_error_at_most("math.isclose", 2, 2 + positional.len()));
-    }
+    let a = value_to_float(a, vm)?;
+    let b = value_to_float(b, vm)?;
+    let rel_tol = value_to_float(rel_tol, vm)?;
+    let abs_tol = value_to_float(abs_tol, vm)?;
 
-    let a = value_to_float(a_val, vm)?;
-    let b = value_to_float(b_val, vm)?;
-
-    // Parse optional keyword arguments rel_tol and abs_tol
-    let (rel_tol, abs_tol) = extract_isclose_kwargs(kwargs, vm)?;
-
-    if rel_tol < 0.0 {
-        return Err(SimpleException::new_msg(ExcType::ValueError, "tolerances must be non-negative").into());
-    }
-    if abs_tol < 0.0 {
+    if rel_tol < 0.0 || abs_tol < 0.0 {
         return Err(SimpleException::new_msg(ExcType::ValueError, "tolerances must be non-negative").into());
     }
 
@@ -726,42 +712,21 @@ fn math_isclose(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunRe
     Ok(Value::Bool(result))
 }
 
-/// Extracts `rel_tol` and `abs_tol` keyword arguments for `math.isclose`.
+/// Argument shape for `math.isclose(a, b, *, rel_tol=1e-9, abs_tol=0.0)`.
 ///
-/// Returns `(rel_tol, abs_tol)` with defaults of `(1e-9, 0.0)`.
-fn extract_isclose_kwargs(kwargs: KwargsValues, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<(f64, f64)> {
-    let mut rel_tol: f64 = 1e-9;
-    let mut abs_tol: f64 = 0.0;
-
-    if kwargs.is_empty() {
-        return Ok((rel_tol, abs_tol));
-    }
-
-    for (key, value) in kwargs {
-        defer_drop!(key, vm);
-        defer_drop!(value, vm);
-
-        let Some(keyword_name) = key.as_either_str(vm.heap) else {
-            return Err(ExcType::type_error("keywords must be strings"));
-        };
-
-        let key_str = keyword_name.as_str(vm.interns);
-        match key_str {
-            "rel_tol" => {
-                rel_tol = value_to_float(value, vm)?;
-            }
-            "abs_tol" => {
-                abs_tol = value_to_float(value, vm)?;
-            }
-            other => {
-                return Err(ExcType::type_error(format!(
-                    "isclose() got an unexpected keyword argument '{other}'"
-                )));
-            }
-        }
-    }
-
-    Ok((rel_tol, abs_tol))
+/// `a`/`b` are positional-or-keyword (matching CPython); `rel_tol`/`abs_tol`
+/// are keyword-only. All four are held as raw `Value` so the function body can
+/// run `value_to_float` for the math-specific Int/Float coercion (which
+/// `bool::from_value` and `i64::from_value` don't cover).
+#[derive(FromArgs)]
+#[from_args(name = "isclose")]
+struct IscloseArgs {
+    a: Value,
+    b: Value,
+    #[from_args(kw_only, default = Value::Float(1e-9))]
+    rel_tol: Value,
+    #[from_args(kw_only, default = Value::Float(0.0))]
+    abs_tol: Value,
 }
 
 /// `math.nextafter(x, y)` — returns the next float after x towards y.

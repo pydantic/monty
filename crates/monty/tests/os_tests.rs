@@ -5,66 +5,25 @@
 //! and that return values are correctly used by Python code.
 
 use monty::{
-    FileMode, MontyDate, MontyDateTime, MontyFileHandle, MontyObject, MontyRun, NoLimitTracker, OsFunction,
-    PrintWriter, RunProgress, file_stat,
+    FileMode, MontyDate, MontyDateTime, MontyFileHandle, MontyObject, MontyRun, NoLimitTracker, PrintWriter,
+    RunProgress, file_stat,
 };
 
 /// Helper to run code and extract the OsCall progress.
 ///
 /// Runs the provided Python code and asserts that it yields an `OsCall`.
-/// Returns the `OsFunction` and positional arguments from the call.
-/// The state is resumed with a mock result to properly clean up ref counts.
-fn run_to_oscall(code: &str) -> (OsFunction, Vec<MontyObject>) {
+/// Returns the OS function name (stable `OsFunctionCall::name` string) and
+/// positional args projected via `to_args`. State is resumed with a mock
+/// result to properly clean up ref counts.
+fn run_to_oscall(code: &str) -> (&'static str, Vec<MontyObject>) {
     let runner = MontyRun::new(code.to_owned(), "test.py", vec![]).unwrap();
     let progress = runner.start(vec![], NoLimitTracker, PrintWriter::Stdout).unwrap();
 
     match progress {
         RunProgress::OsCall(call) => {
-            // Resume with a mock result appropriate for the function type.
-            let mock_result = match call.function {
-                OsFunction::Exists | OsFunction::IsFile | OsFunction::IsDir | OsFunction::IsSymlink => {
-                    MontyObject::Bool(true)
-                }
-                OsFunction::ReadText | OsFunction::Resolve | OsFunction::Absolute => {
-                    MontyObject::String("mock".to_owned())
-                }
-                OsFunction::ReadBytes => MontyObject::Bytes(vec![]),
-                OsFunction::Stat => MontyObject::None,
-                OsFunction::Iterdir => MontyObject::List(vec![]),
-                OsFunction::WriteText
-                | OsFunction::WriteBytes
-                | OsFunction::AppendText
-                | OsFunction::AppendBytes
-                | OsFunction::Mkdir
-                | OsFunction::Unlink
-                | OsFunction::Rmdir
-                | OsFunction::Rename => MontyObject::None,
-                OsFunction::Open => MontyObject::FileHandle(MontyFileHandle {
-                    path: "mock".to_owned(),
-                    mode: "r".parse::<FileMode>().unwrap(),
-                    position: 0,
-                }),
-                OsFunction::Getenv => MontyObject::String("mock_env_value".to_owned()),
-                OsFunction::GetEnviron => MontyObject::Dict(vec![].into()),
-                OsFunction::DateToday => MontyObject::Date(MontyDate {
-                    year: 2023,
-                    month: 11,
-                    day: 14,
-                }),
-                OsFunction::DateTimeNow => MontyObject::DateTime(MontyDateTime {
-                    year: 2023,
-                    month: 11,
-                    day: 14,
-                    hour: 22,
-                    minute: 13,
-                    second: 20,
-                    microsecond: 0,
-                    offset_seconds: None,
-                    timezone_name: None,
-                }),
-            };
-            let function = call.function;
-            let args = call.args.clone();
+            let mock_result = mock_oscall_result(&call.function_call);
+            let function = call.function_call.name();
+            let (args, _) = call.function_call.clone().to_args();
             let _ = call.resume(mock_result, PrintWriter::Stdout);
             (function, args)
         }
@@ -72,15 +31,63 @@ fn run_to_oscall(code: &str) -> (OsFunction, Vec<MontyObject>) {
     }
 }
 
+/// Returns a `MontyObject` shaped like a plausible host response for `call`.
+fn mock_oscall_result(call: &monty::OsFunctionCall) -> MontyObject {
+    match call {
+        monty::OsFunctionCall::Exists(_)
+        | monty::OsFunctionCall::IsFile(_)
+        | monty::OsFunctionCall::IsDir(_)
+        | monty::OsFunctionCall::IsSymlink(_) => MontyObject::Bool(true),
+        monty::OsFunctionCall::ReadText(_) | monty::OsFunctionCall::Resolve(_) | monty::OsFunctionCall::Absolute(_) => {
+            MontyObject::String("mock".to_owned())
+        }
+        monty::OsFunctionCall::ReadBytes(_) => MontyObject::Bytes(vec![]),
+        monty::OsFunctionCall::Stat(_) => MontyObject::None,
+        monty::OsFunctionCall::Iterdir(_) => MontyObject::List(vec![]),
+        monty::OsFunctionCall::WriteText(_)
+        | monty::OsFunctionCall::WriteBytes(_)
+        | monty::OsFunctionCall::AppendText(_)
+        | monty::OsFunctionCall::AppendBytes(_)
+        | monty::OsFunctionCall::Mkdir(_)
+        | monty::OsFunctionCall::Unlink(_)
+        | monty::OsFunctionCall::Rmdir(_)
+        | monty::OsFunctionCall::Rename(_) => MontyObject::None,
+        monty::OsFunctionCall::Open(_) => MontyObject::FileHandle(MontyFileHandle {
+            path: "mock".to_owned(),
+            mode: "r".parse::<FileMode>().unwrap(),
+            position: 0,
+        }),
+        monty::OsFunctionCall::Getenv(_) => MontyObject::String("mock_env_value".to_owned()),
+        monty::OsFunctionCall::GetEnviron => MontyObject::Dict(vec![].into()),
+        monty::OsFunctionCall::DateToday => MontyObject::Date(MontyDate {
+            year: 2023,
+            month: 11,
+            day: 14,
+        }),
+        monty::OsFunctionCall::DateTimeNow(_) => MontyObject::DateTime(MontyDateTime {
+            year: 2023,
+            month: 11,
+            day: 14,
+            hour: 22,
+            minute: 13,
+            second: 20,
+            microsecond: 0,
+            offset_seconds: None,
+            timezone_name: None,
+        }),
+        monty::OsFunctionCall::Used => unreachable!("OsFunctionCall::Used in mock_oscall_result"),
+    }
+}
+
 /// Helper to run code, provide an OS call result, and get the final value.
-fn run_oscall_with_result(code: &str, mock_result: MontyObject) -> (OsFunction, Vec<MontyObject>, MontyObject) {
+fn run_oscall_with_result(code: &str, mock_result: MontyObject) -> (&'static str, Vec<MontyObject>, MontyObject) {
     let runner = MontyRun::new(code.to_owned(), "test.py", vec![]).unwrap();
     let progress = runner.start(vec![], NoLimitTracker, PrintWriter::Stdout).unwrap();
 
     match progress {
         RunProgress::OsCall(call) => {
-            let function = call.function;
-            let args = call.args.clone();
+            let function = call.function_call.name();
+            let (args, _) = call.function_call.clone().to_args();
             let resumed = call.resume(mock_result, PrintWriter::Stdout).unwrap();
             let final_result = resumed.into_complete().expect("expected Complete after resume");
             (function, args, final_result)
@@ -96,70 +103,70 @@ fn run_oscall_with_result(code: &str, mock_result: MontyObject) -> (OsFunction, 
 #[test]
 fn path_exists() {
     let (func, args) = run_to_oscall("from pathlib import Path; Path('/tmp/test.txt').exists()");
-    assert_eq!(func, OsFunction::Exists);
+    assert_eq!(func, "Path.exists");
     assert_eq!(args, vec![MontyObject::Path("/tmp/test.txt".to_owned())]);
 }
 
 #[test]
 fn path_is_file() {
     let (func, args) = run_to_oscall("from pathlib import Path; Path('/tmp/test.txt').is_file()");
-    assert_eq!(func, OsFunction::IsFile);
+    assert_eq!(func, "Path.is_file");
     assert_eq!(args, vec![MontyObject::Path("/tmp/test.txt".to_owned())]);
 }
 
 #[test]
 fn path_is_dir() {
     let (func, args) = run_to_oscall("from pathlib import Path; Path('/tmp').is_dir()");
-    assert_eq!(func, OsFunction::IsDir);
+    assert_eq!(func, "Path.is_dir");
     assert_eq!(args, vec![MontyObject::Path("/tmp".to_owned())]);
 }
 
 #[test]
 fn path_is_symlink() {
     let (func, args) = run_to_oscall("from pathlib import Path; Path('/tmp/link').is_symlink()");
-    assert_eq!(func, OsFunction::IsSymlink);
+    assert_eq!(func, "Path.is_symlink");
     assert_eq!(args, vec![MontyObject::Path("/tmp/link".to_owned())]);
 }
 
 #[test]
 fn path_read_text() {
     let (func, args) = run_to_oscall("from pathlib import Path; Path('/tmp/file.txt').read_text()");
-    assert_eq!(func, OsFunction::ReadText);
+    assert_eq!(func, "Path.read_text");
     assert_eq!(args, vec![MontyObject::Path("/tmp/file.txt".to_owned())]);
 }
 
 #[test]
 fn path_read_bytes() {
     let (func, args) = run_to_oscall("from pathlib import Path; Path('/tmp/file.bin').read_bytes()");
-    assert_eq!(func, OsFunction::ReadBytes);
+    assert_eq!(func, "Path.read_bytes");
     assert_eq!(args, vec![MontyObject::Path("/tmp/file.bin".to_owned())]);
 }
 
 #[test]
 fn path_stat() {
     let (func, args) = run_to_oscall("from pathlib import Path; Path('/tmp/file.txt').stat()");
-    assert_eq!(func, OsFunction::Stat);
+    assert_eq!(func, "Path.stat");
     assert_eq!(args, vec![MontyObject::Path("/tmp/file.txt".to_owned())]);
 }
 
 #[test]
 fn path_iterdir() {
     let (func, args) = run_to_oscall("from pathlib import Path; Path('/tmp').iterdir()");
-    assert_eq!(func, OsFunction::Iterdir);
+    assert_eq!(func, "Path.iterdir");
     assert_eq!(args, vec![MontyObject::Path("/tmp".to_owned())]);
 }
 
 #[test]
 fn path_resolve() {
     let (func, args) = run_to_oscall("from pathlib import Path; Path('./relative').resolve()");
-    assert_eq!(func, OsFunction::Resolve);
+    assert_eq!(func, "Path.resolve");
     assert_eq!(args, vec![MontyObject::Path("relative".to_owned())]);
 }
 
 #[test]
 fn path_absolute() {
     let (func, args) = run_to_oscall("from pathlib import Path; Path('./relative').absolute()");
-    assert_eq!(func, OsFunction::Absolute);
+    assert_eq!(func, "Path.absolute");
     assert_eq!(args, vec![MontyObject::Path("relative".to_owned())]);
 }
 
@@ -170,14 +177,14 @@ fn path_absolute() {
 #[test]
 fn path_with_spaces() {
     let (func, args) = run_to_oscall("from pathlib import Path; Path('/path/with spaces/file.txt').exists()");
-    assert_eq!(func, OsFunction::Exists);
+    assert_eq!(func, "Path.exists");
     assert_eq!(args[0], MontyObject::Path("/path/with spaces/file.txt".to_owned()));
 }
 
 #[test]
 fn path_with_unicode() {
     let (func, args) = run_to_oscall("from pathlib import Path; Path('/путь/文件.txt').exists()");
-    assert_eq!(func, OsFunction::Exists);
+    assert_eq!(func, "Path.exists");
     assert_eq!(args[0], MontyObject::Path("/путь/文件.txt".to_owned()));
 }
 
@@ -191,7 +198,7 @@ full = base / 'user' / 'file.txt'
 full.exists()
 ",
     );
-    assert_eq!(func, OsFunction::Exists);
+    assert_eq!(func, "Path.exists");
     assert_eq!(args[0], MontyObject::Path("/home/user/file.txt".to_owned()));
 }
 
@@ -206,7 +213,7 @@ from pathlib import Path
 'found' if Path('/tmp/test.txt').exists() else 'missing'
 ";
     let (func, _, result) = run_oscall_with_result(code, MontyObject::Bool(true));
-    assert_eq!(func, OsFunction::Exists);
+    assert_eq!(func, "Path.exists");
     assert_eq!(result, MontyObject::String("found".to_owned()));
 
     // Also test false case
@@ -221,7 +228,7 @@ from pathlib import Path
 'Content: ' + Path('/tmp/hello.txt').read_text()
 ";
     let (func, _, result) = run_oscall_with_result(code, MontyObject::String("Hello!".to_owned()));
-    assert_eq!(func, OsFunction::ReadText);
+    assert_eq!(func, "Path.read_text");
     assert_eq!(result, MontyObject::String("Content: Hello!".to_owned()));
 }
 
@@ -233,7 +240,7 @@ data = Path('/tmp/file.bin').read_bytes()
 data[0]
 ";
     let (func, _, result) = run_oscall_with_result(code, MontyObject::Bytes(vec![0x42, 0x43, 0x44]));
-    assert_eq!(func, OsFunction::ReadBytes);
+    assert_eq!(func, "Path.read_bytes");
     assert_eq!(result, MontyObject::Int(0x42));
 }
 
@@ -252,7 +259,7 @@ len(entries)
     ]);
     let (func, args, result) = run_oscall_with_result(code, mock_entries);
 
-    assert_eq!(func, OsFunction::Iterdir);
+    assert_eq!(func, "Path.iterdir");
     assert_eq!(args[0], MontyObject::Path("/tmp".to_owned()));
     assert_eq!(result, MontyObject::Int(3));
 }
@@ -270,7 +277,7 @@ entries[0]
     ]);
     let (func, args, result) = run_oscall_with_result(code, mock_entries);
 
-    assert_eq!(func, OsFunction::Iterdir);
+    assert_eq!(func, "Path.iterdir");
     assert_eq!(args[0], MontyObject::Path("/home/user".to_owned()));
     assert_eq!(result, MontyObject::String("/home/user/documents".to_owned()));
 }
@@ -284,7 +291,7 @@ info.st_size
 ";
     let (func, args, result) = run_oscall_with_result(code, file_stat(0o644, 1024, 0.0));
 
-    assert_eq!(func, OsFunction::Stat);
+    assert_eq!(func, "Path.stat");
     assert_eq!(args[0], MontyObject::Path("/tmp/file.txt".to_owned()));
     assert_eq!(result, MontyObject::Int(1024));
 }
@@ -299,7 +306,7 @@ info.st_mode
     // 0o755 = rwxr-xr-x (file_stat adds 0o100_000 for regular file type)
     let (func, args, result) = run_oscall_with_result(code, file_stat(0o755, 0, 0.0));
 
-    assert_eq!(func, OsFunction::Stat);
+    assert_eq!(func, "Path.stat");
     assert_eq!(args[0], MontyObject::Path("/tmp/file.txt".to_owned()));
     assert_eq!(result, MontyObject::Int(0o100_755));
 }
@@ -314,7 +321,7 @@ info = Path('/var/log/syslog').stat()
     // 0o644 = rw-r--r-- (file_stat adds 0o100_000 for regular file type)
     let (func, args, result) = run_oscall_with_result(code, file_stat(0o644, 4096, 0.0));
 
-    assert_eq!(func, OsFunction::Stat);
+    assert_eq!(func, "Path.stat");
     assert_eq!(args[0], MontyObject::Path("/var/log/syslog".to_owned()));
     assert_eq!(
         result,
@@ -332,7 +339,7 @@ info[6]  # st_size is at index 6
 ";
     let (func, args, result) = run_oscall_with_result(code, file_stat(0o644, 2048, 0.0));
 
-    assert_eq!(func, OsFunction::Stat);
+    assert_eq!(func, "Path.stat");
     assert_eq!(args[0], MontyObject::Path("/tmp/file.txt".to_owned()));
     assert_eq!(result, MontyObject::Int(2048));
 }
@@ -348,7 +355,7 @@ import os
 os.getenv('PATH')
 ";
     let (func, args) = run_to_oscall(code);
-    assert_eq!(func, OsFunction::Getenv);
+    assert_eq!(func, "os.getenv");
     // First arg is key, second is default (None if not provided)
     assert_eq!(args[0], MontyObject::String("PATH".to_owned()));
     assert_eq!(args[1], MontyObject::None);
@@ -361,7 +368,7 @@ import os
 os.getenv('MISSING', 'fallback')
 ";
     let (func, args) = run_to_oscall(code);
-    assert_eq!(func, OsFunction::Getenv);
+    assert_eq!(func, "os.getenv");
     assert_eq!(args[0], MontyObject::String("MISSING".to_owned()));
     assert_eq!(args[1], MontyObject::String("fallback".to_owned()));
 }
@@ -373,7 +380,7 @@ import os
 'HOME=' + os.getenv('HOME')
 ";
     let (func, _, result) = run_oscall_with_result(code, MontyObject::String("/home/user".to_owned()));
-    assert_eq!(func, OsFunction::Getenv);
+    assert_eq!(func, "os.getenv");
     assert_eq!(result, MontyObject::String("HOME=/home/user".to_owned()));
 }
 
@@ -388,7 +395,7 @@ import os
 os.environ
 ";
     let (func, args) = run_to_oscall(code);
-    assert_eq!(func, OsFunction::GetEnviron);
+    assert_eq!(func, "os.environ");
     // GetEnviron takes no arguments
     assert!(args.is_empty(), "expected empty args, got {args:?}");
 }
@@ -413,7 +420,7 @@ type(os.environ).__name__
         .into(),
     );
     let (func, _, result) = run_oscall_with_result(code, mock_env);
-    assert_eq!(func, OsFunction::GetEnviron);
+    assert_eq!(func, "os.environ");
     assert_eq!(result, MontyObject::String("dict".to_owned()));
 }
 
@@ -431,7 +438,7 @@ os.environ['HOME']
         .into(),
     );
     let (func, _, result) = run_oscall_with_result(code, mock_env);
-    assert_eq!(func, OsFunction::GetEnviron);
+    assert_eq!(func, "os.environ");
     assert_eq!(result, MontyObject::String("/home/user".to_owned()));
 }
 
@@ -443,7 +450,7 @@ os.environ.get('MISSING', 'default')
 ";
     let mock_env = MontyObject::Dict(vec![].into());
     let (func, _, result) = run_oscall_with_result(code, mock_env);
-    assert_eq!(func, OsFunction::GetEnviron);
+    assert_eq!(func, "os.environ");
     assert_eq!(result, MontyObject::String("default".to_owned()));
 }
 
@@ -462,7 +469,7 @@ len(os.environ)
         .into(),
     );
     let (func, _, result) = run_oscall_with_result(code, mock_env);
-    assert_eq!(func, OsFunction::GetEnviron);
+    assert_eq!(func, "os.environ");
     assert_eq!(result, MontyObject::Int(3));
 }
 
@@ -480,6 +487,6 @@ import os
         .into(),
     );
     let (func, _, result) = run_oscall_with_result(code, mock_env);
-    assert_eq!(func, OsFunction::GetEnviron);
+    assert_eq!(func, "os.environ");
     assert_eq!(result, MontyObject::Bool(true));
 }

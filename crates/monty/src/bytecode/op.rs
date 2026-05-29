@@ -508,6 +508,18 @@ pub enum Opcode {
     /// error.
     /// Appended at the end to preserve the serialized byte values of all older opcodes.
     RaiseUnboundLocal,
+    /// Method-call variant of [`Opcode::DictMerge`]: same stack effect, same
+    /// duplicate-key semantics, but the error wording is qualified with the
+    /// receiver's Python type — e.g. `list.sort()` instead of bare `sort()`.
+    ///
+    /// Emitted by the compiler for `CallAttrExtended` paths where the receiver
+    /// is at known stack depth 4 below TOS at the time the op runs
+    /// (`[receiver, args_tuple, kwargs_dict, mapping]`). Matches CPython's
+    /// `obj.method() got multiple values for keyword argument 'X'` form,
+    /// which CPython produces because it has the bound method's `__qualname__`
+    /// available — we synthesise the equivalent by peeking the receiver.
+    /// Appended at the end to preserve the serialized byte values of all older opcodes.
+    MethodDictMerge,
 }
 
 impl TryFrom<u8> for Opcode {
@@ -708,8 +720,10 @@ impl Opcode {
             (LoadAttr | LoadAttrImport, Operand::U16(_)) => 0,
             (StoreAttr, Operand::U16(_)) => -2,
             // `DictMerge` takes a u16 operand carrying the func_name_id for
-            // the duplicate-key TypeError message.
-            (DictMerge, Operand::U16(_)) => -1,
+            // the duplicate-key TypeError message. `MethodDictMerge` shares
+            // the stack effect and additionally peeks the receiver under
+            // the popped operands to qualify the error wording.
+            (DictMerge | MethodDictMerge, Operand::U16(_)) => -1,
             // `RaiseImportError` takes a u16 const_id naming the missing module.
             (RaiseImportError, Operand::U16(_)) => 0,
             // `RaiseUnboundLocal(name_id)` always raises — fall-through is dead
@@ -784,7 +798,7 @@ mod tests {
     #[test]
     fn test_opcode_roundtrip() {
         // Verify that all opcodes from 0 to the last opcode can be converted to u8 and back.
-        for byte in 0..=Opcode::RaiseUnboundLocal as u8 {
+        for byte in 0..=Opcode::MethodDictMerge as u8 {
             let opcode = Opcode::try_from(byte).unwrap();
             assert_eq!(opcode as u8, byte, "opcode {opcode:?} has wrong discriminant");
         }
@@ -808,12 +822,15 @@ mod tests {
         // Comprehension-support opcodes appended after the context-manager opcodes.
         assert_eq!(Opcode::LiftToTop as u8, 116);
         assert_eq!(Opcode::RaiseUnboundLocal as u8, 117);
+        // Method-call duplicate-kwarg qualifier; sister to `DictMerge` but appended at the
+        // tail so older opcode bytes keep their discriminants.
+        assert_eq!(Opcode::MethodDictMerge as u8, 118);
     }
 
     #[test]
     fn test_invalid_opcode() {
         // Byte just after the last valid opcode should fail
-        let result = Opcode::try_from(Opcode::RaiseUnboundLocal as u8 + 1);
+        let result = Opcode::try_from(Opcode::MethodDictMerge as u8 + 1);
         assert!(result.is_err());
         // 255 should also fail
         let result = Opcode::try_from(255u8);

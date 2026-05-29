@@ -44,7 +44,6 @@ result = add(1, '2')
       |     ^^^         ------ Parameter declared here
     2 |     return x + y
       |
-    info: rule `invalid-argument-type` is enabled by default
     "#);
 }
 
@@ -87,7 +86,6 @@ result = add(1, '2')";
       |     ^^^         ------ Parameter declared here
     2 |     return x + y
       |
-    info: rule `invalid-argument-type` is enabled by default
     "#);
 }
 
@@ -298,4 +296,26 @@ fn test_reveal_types() {
     let actual = failure.format(DiagnosticFormat::Concise).to_string();
 
     assert_snapshot!(actual);
+}
+
+#[test]
+fn deeply_nested_parentheses_do_not_stack_overflow() {
+    let depth = 500;
+    let mut code = String::with_capacity(depth * 2 + 1);
+    for _ in 0..depth {
+        code.push('(');
+    }
+    code.push('1');
+    for _ in 0..depth {
+        code.push(')');
+    }
+
+    let r = type_check(&SourceFile::new(&code, "main.py"), None).unwrap().unwrap();
+    assert_snapshot!(
+        r.format(DiagnosticFormat::Concise).to_string(),
+        @"
+    main.py:1:203: error[invalid-syntax] Source is too deeply nested
+    main.py:1:1002: error[invalid-syntax] Expected `)`, found end of file
+    "
+    );
 }

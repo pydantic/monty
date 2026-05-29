@@ -1,0 +1,21 @@
+[package]
+name = "monty-macros"
+version = { workspace = true }
+license = { workspace = true }
+rust-version = { workspace = true }
+edition = { workspace = true }
+authors = { workspace = true }
+description = "Procedural macros for the monty Python interpreter."
+homepage = { workspace = true }
+repository = { workspace = true }
+
+[lib]
+proc-macro = true
+
+[dependencies]
+syn = { version = "2", features = ["full", "extra-traits"] }
+quote = "1"
+proc-macro2 = "1"
+
+[lints]
+workspace = true

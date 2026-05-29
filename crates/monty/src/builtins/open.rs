@@ -11,15 +11,14 @@
 use std::str;
 
 use crate::{
-    args::ArgValues,
+    args::{ArgValues, FromArgs},
     bytecode::{CallResult, VM},
-    defer_drop, defer_drop_mut,
+    defer_drop,
     exception_private::{ExcType, RunError, RunResult, SimpleException},
-    heap::{DropWithHeap, HeapData, HeapGuard},
-    intern::StringId,
-    os::OsFunction,
+    heap::{HeapData, HeapGuard},
+    os::{MontyPath, OpenCallArgs, OsFunctionCall},
     resource::ResourceTracker,
-    types::{PyTrait, file::FileMode, str::allocate_string},
+    types::{PyTrait, file::FileMode},
     value::Value,
 };
 
@@ -33,124 +32,80 @@ use crate::{
 /// The generic resume path converts that into the `OpenFile` heap wrapper, so
 /// `open()` needs no special resume handling.
 pub(crate) fn builtin_open(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<CallResult> {
-    let OpenArgs { file, mode } = parse_open_args(args, vm)?;
-    defer_drop!(file, vm);
-    defer_drop!(mode, vm);
+    let OpenArgs {
+        file,
+        mode,
+        buffering,
+        encoding,
+        errors,
+        newline,
+        closefd,
+        opener,
+    } = OpenArgs::from_args(args, vm)?;
+
+    // `mode` is already a `String` from the macro (default `"r"`); `file`
+    // and the unsupported kwargs are still raw `Value`s and need cleanup.
+    let mut file = HeapGuard::new(file, vm);
+    let (file, vm) = file.as_parts_mut();
+    defer_drop!(buffering, vm);
+    defer_drop!(encoding, vm);
+    defer_drop!(errors, vm);
+    defer_drop!(newline, vm);
+    defer_drop!(closefd, vm);
+    defer_drop!(opener, vm);
+
+    // Reject non-default values for ignored kwargs so caller code can't
+    // silently rely on (e.g.) `buffering=0` semantics Monty doesn't model.
+    validate_ignored_open_kwarg("buffering", buffering, vm)?;
+    validate_ignored_open_kwarg("encoding", encoding, vm)?;
+    validate_ignored_open_kwarg("errors", errors, vm)?;
+    validate_ignored_open_kwarg("newline", newline, vm)?;
+    validate_ignored_open_kwarg("closefd", closefd, vm)?;
+    validate_ignored_open_kwarg("opener", opener, vm)?;
+
     let path = extract_path_string(file, vm)?.to_owned();
-    let mode_str = extract_mode_string(mode, vm)?;
     // Parse here purely to reject malformed modes before the OS round-trip;
     // the file wrapper itself is built from the host's returned FileHandle.
-    let file_mode = mode_str
+    let file_mode = mode
         .parse::<FileMode>()
         .map_err(|e| RunError::from(SimpleException::new_msg(ExcType::ValueError, e)))?;
 
-    let path_value = allocate_string(path, vm.heap)?;
-    let mode_value = allocate_string(file_mode.as_str().to_owned(), vm.heap)?;
-    Ok(CallResult::OsCall(
-        OsFunction::Open,
-        ArgValues::Two(path_value, mode_value),
-    ))
+    Ok(CallResult::OsCall(OsFunctionCall::Open(OpenCallArgs {
+        path: MontyPath::new(path),
+        mode: file_mode,
+    })))
 }
 
-/// Owned `open()` arguments after positional/keyword parsing.
+/// Argument shape for `open(file, mode='r', buffering=-1, encoding=None,
+/// errors=None, newline=None, closefd=True, opener=None)`.
+///
+/// `mode` is taken as `String` so wrong-type errors flow through the macro's
+/// `bad_arg_named` path and match CPython's `open() argument 'mode' must be
+/// str, not …` wording verbatim. The other kwargs stay as raw `Value`
+/// because they have monty-specific validation (`validate_ignored_open_kwarg`)
+/// that the macro doesn't model — Monty rejects any *non-default* value to
+/// avoid silently dropping semantics it doesn't honour (e.g. `buffering=0`,
+/// `opener=my_opener`). `file` is also raw because `open()`'s file-path
+/// error wording (`expected str, bytes or os.PathLike object, not …`) doesn't
+/// follow the `_PyArg_BadArgument` shape that `bad_arg_named` emits.
+#[derive(FromArgs)]
+#[from_args(name = "open", bad_arg_named)]
 struct OpenArgs {
     file: Value,
-    mode: Value,
-}
-
-/// Parses `open(file, mode='r', ...)` arguments.
-///
-/// Accepts the full CPython positional signature
-/// `open(file, mode, buffering, encoding, errors, newline, closefd, opener)`
-/// — up to 8 positional args — even though Monty only models `file` and
-/// `mode`. The other six are passed through [`validate_ignored_open_kwarg`]
-/// and discarded, matching how kwargs of the same names are handled.
-fn parse_open_args(args: ArgValues, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<OpenArgs> {
-    let (mut pos, kwargs) = args.into_parts();
-    if pos.len() > 8 {
-        let count = pos.len();
-        pos.drop_with_heap(vm);
-        kwargs.drop_with_heap(vm);
-        return Err(ExcType::type_error_at_most("open", 8, count));
-    }
-
-    let mut file = pos.next();
-    let positional_mode = pos.next();
-    let mut mode_was_provided = positional_mode.is_some();
-    let mut mode = positional_mode.unwrap_or(Value::InternString(StringId::from_ascii(b'r')));
-
-    // Drain positional args 3..=8 through the ignored-kwarg validator, mapped
-    // to their CPython kwarg names. Each value is wrapped in a HeapGuard so
-    // it is freed on every path — including the validator's error path.
-    for (i, value) in pos.enumerate() {
-        let name = POSITIONAL_KWARG_NAMES[i];
-        let mut value = HeapGuard::new(value, vm);
-        let result = {
-            let (value, vm) = value.as_parts();
-            validate_ignored_open_kwarg(name, value, vm)
-        };
-        if let Err(err) = result {
-            file.drop_with_heap(value.heap());
-            mode.drop_with_heap(value.heap());
-            return Err(err);
-        }
-    }
-
-    let kwargs_iter = kwargs.into_iter();
-    defer_drop_mut!(kwargs_iter, vm);
-
-    for (key, value) in kwargs_iter {
-        defer_drop!(key, vm);
-        let mut value = HeapGuard::new(value, vm);
-        let Some(keyword) = key.as_either_str(value.heap().heap) else {
-            file.drop_with_heap(value.heap());
-            mode.drop_with_heap(value.heap());
-            return Err(ExcType::type_error_kwargs_nonstring_key());
-        };
-        let keyword = keyword.as_str(value.heap().interns).to_owned();
-        match keyword.as_str() {
-            "file" => {
-                if file.is_some() {
-                    file.drop_with_heap(value.heap());
-                    mode.drop_with_heap(value.heap());
-                    return Err(ExcType::type_error_multiple_values("open", "file"));
-                }
-                file = Some(value.into_inner());
-            }
-            "mode" => {
-                if mode_was_provided {
-                    file.drop_with_heap(value.heap());
-                    mode.drop_with_heap(value.heap());
-                    return Err(ExcType::type_error_multiple_values("open", "mode"));
-                }
-                mode = value.into_inner();
-                mode_was_provided = true;
-            }
-            "buffering" | "encoding" | "errors" | "newline" | "closefd" | "opener" => {
-                let result = {
-                    let (value, vm) = value.as_parts();
-                    validate_ignored_open_kwarg(&keyword, value, vm)
-                };
-                if let Err(err) = result {
-                    file.drop_with_heap(value.heap());
-                    mode.drop_with_heap(value.heap());
-                    return Err(err);
-                }
-            }
-            other => {
-                file.drop_with_heap(value.heap());
-                mode.drop_with_heap(value.heap());
-                return Err(ExcType::type_error_unexpected_keyword("open", other));
-            }
-        }
-    }
-
-    let Some(file) = file else {
-        mode.drop_with_heap(vm);
-        return Err(ExcType::type_error_missing_positional_with_names("open", &["file"]));
-    };
-
-    Ok(OpenArgs { file, mode })
+    #[from_args(default = "r".to_owned())]
+    mode: String,
+    #[from_args(default = Value::Int(-1))]
+    buffering: Value,
+    #[from_args(default = Value::None)]
+    encoding: Value,
+    #[from_args(default = Value::None)]
+    errors: Value,
+    #[from_args(default = Value::None)]
+    newline: Value,
+    #[from_args(default = Value::Bool(true))]
+    closefd: Value,
+    #[from_args(default = Value::None)]
+    opener: Value,
 }
 
 /// Extracts a path string accepted by `open()`.
@@ -208,23 +163,6 @@ fn decode_utf8_path(bytes: &[u8]) -> RunResult<Option<&str>> {
     }
 }
 
-/// Extracts the optional mode string.
-fn extract_mode_string<'a>(value: &Value, vm: &'a VM<'_, impl ResourceTracker>) -> RunResult<&'a str> {
-    let opt = match value {
-        Value::InternString(string_id) => Some(vm.interns.get_str(*string_id)),
-        Value::Ref(id) => match vm.heap.get(*id) {
-            HeapData::Str(s) => Some(s.as_str()),
-            _ => None,
-        },
-        _ => None,
-    };
-    opt.ok_or_else(|| ExcType::type_error(format!("open() argument 'mode' must be str, not {}", value.py_type(vm))))
-}
-
-/// CPython kwarg names for positional `open()` arguments past `mode`. Indexed
-/// from 0 = "buffering" (the 3rd positional) through 5 = "opener" (the 8th).
-const POSITIONAL_KWARG_NAMES: [&str; 6] = ["buffering", "encoding", "errors", "newline", "closefd", "opener"];
-
 /// Validates `open()` kwargs that Monty does not actually honor.
 ///
 /// Monty only models the `file` and `mode` arguments. Any other argument set
@@ -260,7 +198,7 @@ fn validate_ignored_open_kwarg(name: &str, value: &Value, vm: &VM<'_, impl Resou
             } else {
                 return Err(ExcType::type_error(format!(
                     "open() argument '{name}' must be str or None, not {}",
-                    value.py_type(vm)
+                    value.py_type(vm).cpython_arg_name()
                 )));
             }
         }
@@ -274,7 +212,7 @@ fn validate_ignored_open_kwarg(name: &str, value: &Value, vm: &VM<'_, impl Resou
             } else {
                 return Err(ExcType::type_error(format!(
                     "open() argument '{name}' must be str or None, not {}",
-                    value.py_type(vm)
+                    value.py_type(vm).cpython_arg_name()
                 )));
             }
         }

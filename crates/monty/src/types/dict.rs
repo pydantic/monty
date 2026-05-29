@@ -12,7 +12,7 @@ use smallvec::{SmallVec, smallvec};
 
 use super::{DictItemsView, DictKeysView, DictValuesView, MontyIter, PyTrait, allocate_tuple};
 use crate::{
-    args::{ArgValues, KwargsValues},
+    args::{ArgValues, FromArgs, KwargsValues},
     bytecode::{CallResult, VM},
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, RunResult},
@@ -418,20 +418,16 @@ impl Dict {
     /// For now, only real `dict` values use mapping-copy semantics; other values
     /// are interpreted as iterables of pairs.
     pub fn init(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+        let DictInitArgs { source, extras } = DictInitArgs::from_args(args, vm)?;
         let dict = Self::new();
         let mut dict_guard = HeapGuard::new(dict, vm);
 
         {
             let (dict, vm) = dict_guard.as_parts_mut();
-            let (pos_iter, kwargs) = args.into_parts();
-            defer_drop_mut!(pos_iter, vm);
-            let mut kwargs_guard = HeapGuard::new(kwargs, vm);
+            let mut kwargs_guard = HeapGuard::new(extras, vm);
 
-            if let Some(other_value) = pos_iter.next() {
+            if let Some(other_value) = source {
                 let other_value_guard = HeapGuard::new(other_value, kwargs_guard.heap());
-                if pos_iter.len() != 0 {
-                    return Err(ExcType::type_error_at_most("dict", 1, pos_iter.len() + 1));
-                }
                 let other_value = other_value_guard.into_inner();
                 dict_merge_from_value(dict, other_value, kwargs_guard.heap())?;
             }
@@ -444,6 +440,20 @@ impl Dict {
         let heap_id = vm.heap.allocate(HeapData::Dict(dict))?;
         Ok(Value::Ref(heap_id))
     }
+}
+
+/// Argument shape for `dict([source], **kwargs)`.
+///
+/// `source` is an optional positional (mapping or iterable of pairs).
+/// `extras` collects every additional keyword argument so they can be merged
+/// into the dict after the source.
+#[derive(FromArgs)]
+#[from_args(name = "dict")]
+struct DictInitArgs {
+    #[from_args(pos_only, default)]
+    source: Option<Value>,
+    #[from_args(varkwargs)]
+    extras: KwargsValues,
 }
 
 impl<'h> HeapRead<'h, Dict> {
@@ -882,15 +892,11 @@ fn dict_update<'h>(
     args: ArgValues,
     vm: &mut VM<'h, impl ResourceTracker>,
 ) -> RunResult<Value> {
-    let (pos_iter, kwargs) = args.into_parts();
-    defer_drop_mut!(pos_iter, vm);
-    let mut kwargs_guard = HeapGuard::new(kwargs, vm);
+    let DictUpdateArgs { source, extras } = DictUpdateArgs::from_args(args, vm)?;
+    let mut kwargs_guard = HeapGuard::new(extras, vm);
 
-    if let Some(other_value) = pos_iter.next() {
+    if let Some(other_value) = source {
         let other_value_guard = HeapGuard::new(other_value, kwargs_guard.heap());
-        if pos_iter.len() != 0 {
-            return Err(ExcType::type_error_at_most("dict.update", 1, pos_iter.len() + 1));
-        }
         let other_value = other_value_guard.into_inner();
         dict.merge_from_value(other_value, kwargs_guard.heap())?;
     }
@@ -898,6 +904,19 @@ fn dict_update<'h>(
     let kwargs = kwargs_guard.into_inner();
     dict.merge_from_kwargs(kwargs, vm)?;
     Ok(Value::None)
+}
+
+/// Argument shape for `dict.update([other], **kwargs)`.
+///
+/// Mirrors [`DictInitArgs`] — an optional positional source plus arbitrary
+/// kwargs that are merged into the dict after the source.
+#[derive(FromArgs)]
+#[from_args(name = "update")]
+struct DictUpdateArgs {
+    #[from_args(pos_only, default)]
+    source: Option<Value>,
+    #[from_args(varkwargs)]
+    extras: KwargsValues,
 }
 
 /// Merges key-value pairs from either a dict or an iterable of 2-item pairs.

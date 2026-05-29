@@ -45,7 +45,7 @@ use serde::{
 
 use crate::{
     object::{DictPairs, MontyFileHandle, MontyObject},
-    types::Type,
+    types::{Type, long_int::check_bigint_str_digits_limit},
 };
 
 /// Serialize-only wrapper around [`MontyObject`] that produces natural JSON.
@@ -82,6 +82,14 @@ impl Serialize for JsonMontyObject<'_> {
                 } else if let Ok(u) = u64::try_from(bi) {
                     serializer.serialize_u64(u)
                 } else {
+                    // Apply the same `INT_MAX_STR_DIGITS` guard that
+                    // `json.dumps` uses before converting to a decimal string.
+                    // Without this, attacker-controlled BigInts could trigger
+                    // O(n^2) base-10 conversion on the host outside Monty's
+                    // VM resource tracker.
+                    check_bigint_str_digits_limit(bi).map_err(|_| {
+                        S::Error::custom("bigint exceeds the limit (4300 digits) for integer string conversion")
+                    })?;
                     let n: serde_json::Number = bi
                         .to_string()
                         .parse()

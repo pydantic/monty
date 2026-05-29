@@ -9,12 +9,10 @@ use std::{
 };
 
 use crate::{
-    args::{ArgValues, KwargsValues},
+    args::{ArgValues, FromArgs},
     bytecode::VM,
-    defer_drop, defer_drop_mut,
     exception_private::{ExcType, RunResult},
-    heap::{DropWithHeap, HeapData, HeapGuard, HeapId, HeapReadOutput},
-    intern::StaticStrings,
+    heap::{HeapData, HeapGuard, HeapId, HeapReadOutput},
     resource::ResourceTracker,
     sorting::{apply_permutation, sort_indices},
     types::{PyTrait, long_int::check_bigint_str_digits_limit, str::allocate_string},
@@ -79,124 +77,56 @@ impl JsonDumpsConfig {
         self.flags & Self::SKIPKEYS != 0
     }
 
-    /// Parses `json.dumps()` keyword arguments into serializer configuration.
+    /// Builds the encoder config from the macro-extracted [`JsonDumpsArgs`].
     ///
-    /// Unsupported keyword names and not-yet-implemented CPython kwargs raise
-    /// immediately so typos or dropped behavior do not go unnoticed.
-    fn parse_kwargs(kwargs: KwargsValues, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<Self> {
-        let kwargs_iter = kwargs.into_iter();
-        defer_drop_mut!(kwargs_iter, vm);
+    /// `JsonDumpsArgs` already performed the positional/kwargs split, the
+    /// per-name duplicate detection, and the unknown-keyword rejection (with
+    /// the "JSONEncoder.__init__" prefix that matches CPython's error
+    /// wording). This method only translates the raw `Value` slots into the
+    /// concrete encoder options used by the serializer.
+    fn from_macro_args(args: JsonDumpsArgs, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<(Value, Self)> {
+        let JsonDumpsArgs {
+            obj,
+            indent,
+            sort_keys,
+            ensure_ascii,
+            allow_nan,
+            separators,
+            skipkeys,
+        } = args;
+
+        // Keep `obj` alive across kwarg processing — early errors below must
+        // not leak the heap reference.
+        let mut obj_guard = HeapGuard::new(obj, vm);
+        let vm = obj_guard.heap();
 
         let mut config = Self::default();
-        let mut seen_indent = false;
-        let mut seen_sort_keys = false;
-        let mut seen_ensure_ascii = false;
-        let mut seen_allow_nan = false;
-        let mut seen_separators = false;
-        let mut seen_skipkeys = false;
 
-        for (key, value) in kwargs_iter {
-            defer_drop!(key, vm);
-            let Some(keyword_name) = key.as_either_str(vm.heap) else {
-                value.drop_with_heap(vm);
-                return Err(ExcType::type_error_kwargs_nonstring_key());
-            };
-            let Some(keyword_static) = keyword_name.static_string() else {
-                value.drop_with_heap(vm);
-                return Err(ExcType::type_error_unexpected_keyword(
-                    "JSONEncoder.__init__",
-                    keyword_name.as_str(vm.interns),
-                ));
-            };
+        let indent = parse_indent_value(indent, vm)?;
+        config.indent = indent;
 
-            match keyword_static {
-                StaticStrings::Indent => {
-                    if seen_indent {
-                        value.drop_with_heap(vm);
-                        return Err(ExcType::type_error_duplicate_arg("dumps", "indent"));
-                    }
-                    seen_indent = true;
-                    config.indent = parse_indent_value(value, vm)?;
-                }
-                StaticStrings::SortKeys => {
-                    if seen_sort_keys {
-                        value.drop_with_heap(vm);
-                        return Err(ExcType::type_error_duplicate_arg("dumps", "sort_keys"));
-                    }
-                    seen_sort_keys = true;
-                    if value.py_bool(vm) {
-                        config.flags |= Self::SORT_KEYS;
-                    } else {
-                        config.flags &= !Self::SORT_KEYS;
-                    }
-                    value.drop_with_heap(vm);
-                }
-                StaticStrings::EnsureAscii => {
-                    if seen_ensure_ascii {
-                        value.drop_with_heap(vm);
-                        return Err(ExcType::type_error_duplicate_arg("dumps", "ensure_ascii"));
-                    }
-                    seen_ensure_ascii = true;
-                    if value.py_bool(vm) {
-                        config.flags |= Self::ENSURE_ASCII;
-                    } else {
-                        config.flags &= !Self::ENSURE_ASCII;
-                    }
-                    value.drop_with_heap(vm);
-                }
-                StaticStrings::AllowNan => {
-                    if seen_allow_nan {
-                        value.drop_with_heap(vm);
-                        return Err(ExcType::type_error_duplicate_arg("dumps", "allow_nan"));
-                    }
-                    seen_allow_nan = true;
-                    if value.py_bool(vm) {
-                        config.flags |= Self::ALLOW_NAN;
-                    } else {
-                        config.flags &= !Self::ALLOW_NAN;
-                    }
-                    value.drop_with_heap(vm);
-                }
-                StaticStrings::Separators => {
-                    if seen_separators {
-                        value.drop_with_heap(vm);
-                        return Err(ExcType::type_error_duplicate_arg("dumps", "separators"));
-                    }
-                    if let Some((item, key)) = parse_separators_value(value, vm)? {
-                        config.item_separator = item;
-                        config.key_separator = key;
-                        seen_separators = true;
-                    }
-                }
-                StaticStrings::Skipkeys => {
-                    if seen_skipkeys {
-                        value.drop_with_heap(vm);
-                        return Err(ExcType::type_error_duplicate_arg("dumps", "skipkeys"));
-                    }
-                    seen_skipkeys = true;
-                    if value.py_bool(vm) {
-                        config.flags |= Self::SKIPKEYS;
-                    } else {
-                        config.flags &= !Self::SKIPKEYS;
-                    }
-                    value.drop_with_heap(vm);
-                }
-                _ => {
-                    value.drop_with_heap(vm);
-                    return Err(ExcType::type_error_unexpected_keyword(
-                        "JSONEncoder.__init__",
-                        vm.interns.get_str(keyword_static.into()),
-                    ));
-                }
-            }
-        }
+        config.flags = apply_bool_flag(config.flags, Self::SORT_KEYS, sort_keys, vm);
+        config.flags = apply_bool_flag(config.flags, Self::ENSURE_ASCII, ensure_ascii, vm);
+        config.flags = apply_bool_flag(config.flags, Self::ALLOW_NAN, allow_nan, vm);
+        config.flags = apply_bool_flag(config.flags, Self::SKIPKEYS, skipkeys, vm);
 
-        if config.indent.is_some() && !seen_separators {
+        // `separators=None` is documented as equivalent to "use the indent-
+        // aware defaults", so we only override the per-instance separators
+        // when `parse_separators_value` actually returned a pair.
+        let separators_were_set = if let Some((item, key)) = parse_separators_value(separators, vm)? {
+            config.item_separator = item;
+            config.key_separator = key;
+            true
+        } else {
+            false
+        };
+
+        if config.indent.is_some() && !separators_were_set {
             ",".clone_into(&mut config.item_separator);
             ": ".clone_into(&mut config.key_separator);
         }
 
-        Ok(config)
+        Ok((obj_guard.into_inner(), config))
     }
 }
 
@@ -209,23 +139,10 @@ impl JsonDumpsConfig {
 /// CPython kwargs `cls`, `default`, and `check_circular` are intentionally
 /// unsupported and will raise `TypeError` if passed.
 pub(super) fn call_dumps(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
-    let (mut pos, kwargs) = args.into_parts();
-
-    let Some(obj) = pos.next() else {
-        kwargs.drop_with_heap(vm);
-        return Err(ExcType::type_error_missing_positional_with_names("dumps", &["obj"]));
-    };
-    if pos.len() != 0 {
-        let actual = pos.len() + 1;
-        obj.drop_with_heap(vm);
-        pos.drop_with_heap(vm);
-        kwargs.drop_with_heap(vm);
-        return Err(ExcType::type_error_too_many_positional("dumps", 1, actual, 0));
-    }
+    let macro_args = JsonDumpsArgs::from_args(args, vm)?;
+    let (obj, config) = JsonDumpsConfig::from_macro_args(macro_args, vm)?;
 
     let mut obj_guard = HeapGuard::new(obj, vm);
-    let config = JsonDumpsConfig::parse_kwargs(kwargs, obj_guard.heap())?;
-
     let mut output = String::new();
     let mut active_containers = Vec::new();
     {
@@ -236,6 +153,44 @@ pub(super) fn call_dumps(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues)
     let (obj, vm) = obj_guard.into_parts();
     obj.drop_with_heap(vm);
     Ok(allocate_string(output, vm.heap)?)
+}
+
+/// Argument shape for `json.dumps(obj, *, indent=None, sort_keys=False,
+/// ensure_ascii=True, allow_nan=True, separators=None, skipkeys=False)`.
+///
+/// Arity and missing-arg errors use the `dumps()` descriptor, but the
+/// unknown-kwarg error uses `JSONEncoder.__init__()` — CPython's `json.dumps`
+/// forwards unknown kwargs straight to the encoder constructor, which is what
+/// surfaces in the error. `kwarg_error_name` overrides the function name used
+/// in the unexpected-keyword message without affecting other error paths.
+/// Every field is a raw `Value` so the encoder can apply its own truth-test
+/// (`py_bool`) or shape coercion (`parse_indent_value` /
+/// `parse_separators_value`) on the way through.
+#[derive(FromArgs)]
+#[from_args(name = "dumps", kwarg_error_name = "JSONEncoder.__init__")]
+struct JsonDumpsArgs {
+    obj: Value,
+    #[from_args(kw_only, default = Value::None)]
+    indent: Value,
+    #[from_args(kw_only, default = Value::Bool(false))]
+    sort_keys: Value,
+    #[from_args(kw_only, default = Value::Bool(true))]
+    ensure_ascii: Value,
+    #[from_args(kw_only, default = Value::Bool(true))]
+    allow_nan: Value,
+    #[from_args(kw_only, default = Value::None)]
+    separators: Value,
+    #[from_args(kw_only, default = Value::Bool(false))]
+    skipkeys: Value,
+}
+
+/// Sets `bit` in `flags` when `value` is truthy, clearing it otherwise. The
+/// value is dropped afterwards. Used by the json.dumps kwarg pipeline so each
+/// boolean-style flag is handled with a single line.
+fn apply_bool_flag(flags: u8, bit: u8, value: Value, vm: &mut VM<'_, impl ResourceTracker>) -> u8 {
+    let new_flags = if value.py_bool(vm) { flags | bit } else { flags & !bit };
+    value.drop_with_heap(vm);
+    new_flags
 }
 
 /// Parses the `indent=` value for `json.dumps()`.
