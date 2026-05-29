@@ -16,7 +16,7 @@ print(foo)
 """
 TRACEBACK:
 Traceback (most recent call last):
-  File "name_error__module_conditional_assign.py", line 23, in <module>
+  File "name_error__module_conditional_assign.py", line 15, in <module>
     print(foo)
           ~~~
 NameError: name 'foo' is not defined
