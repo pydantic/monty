@@ -166,10 +166,10 @@ pub fn py_to_monty(obj: &Bound<'_, PyAny>, dc_registry: &DcRegistry, mut depth: 
         // result of an `Open` OS callback) back into `MontyObject::FileHandle`.
         Ok(MontyObject::FileHandle(handle.borrow().0.clone()))
     } else if let Ok(ty) = obj.cast::<PyType>() {
-        // A class is callable, so it would otherwise fall into the generic
-        // callable branch below. Preserve types Monty models as type objects
-        // (so they round-trip and `isinstance` works inside the sandbox); host
-        // classes Monty has no `Type` for still degrade to a callable function.
+        // A class is callable, so it would otherwise fall into the generic callable
+        // branch below. Classes Monty models are preserved as type objects (so they
+        // round-trip and `isinstance` works in the sandbox); any other host class has
+        // no Monty `Type`, so it falls back to the callable representation.
         match py_type_object_to_monty(ty)? {
             Some(t) => Ok(MontyObject::Type(t)),
             None => Ok(callable_to_monty_function(obj)),
