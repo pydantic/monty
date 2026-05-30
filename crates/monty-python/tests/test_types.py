@@ -144,6 +144,74 @@ def test_set_output():
     assert m.run() == snapshot({1, 2, 3})
 
 
+def test_type_object_output():
+    """A type object returned from the sandbox reconstructs as the matching host
+    class; modeled stdlib types resolve from their real module (`Path` → `PurePosixPath`)."""
+    code = """
+import datetime, re
+from pathlib import Path
+[
+    int, str, type,
+    type(Path('/x')), Path,
+    datetime.datetime, datetime.date, datetime.timedelta, datetime.timezone,
+    type(re.compile('a')), type(re.match('a', 'a')),
+]
+"""
+    # Type objects have no `__eq__` override, so `==` compares them by identity.
+    assert pydantic_monty.Monty(code).run() == [
+        int,
+        str,
+        type,
+        pathlib.PurePosixPath,
+        pathlib.PurePosixPath,
+        datetime.datetime,
+        datetime.date,
+        datetime.timedelta,
+        datetime.timezone,
+        re.Pattern,
+        re.Match,
+    ]
+
+
+def test_type_object_input_roundtrip():
+    """A type object passed in as an input is preserved as a type (not degraded to
+    a callable) and round-trips back out by identity."""
+    types = [
+        int,
+        str,
+        type,
+        bool,
+        datetime.datetime,
+        datetime.date,
+        datetime.timedelta,
+        datetime.timezone,
+        pathlib.PurePosixPath,
+        re.Pattern,
+        re.Match,
+    ]
+    m = pydantic_monty.Monty('x', inputs=['x'])
+    for ty in types:
+        assert m.run(inputs={'x': ty}) is ty
+
+
+def test_type_object_input_isinstance():
+    """A type object passed in is usable as the second argument to `isinstance`
+    inside the sandbox."""
+    m = pydantic_monty.Monty('(isinstance(5, t), isinstance("a", t))', inputs=['t'])
+    assert m.run(inputs={'t': int}) == snapshot((True, False))
+
+
+def test_unmodeled_class_input_becomes_callable():
+    """A host class Monty has no `Type` for still degrades to a callable
+    function at the boundary (unchanged behavior)."""
+
+    class Foo:
+        pass
+
+    m = pydantic_monty.Monty('(type(x).__name__, repr(x))', inputs=['x'])
+    assert m.run(inputs={'x': Foo}) == snapshot(('function', "<function 'Foo' external>"))
+
+
 def test_date_input_roundtrip():
     m = pydantic_monty.Monty('x', inputs=['x'])
     result = m.run(inputs={'x': datetime.date(2024, 1, 15)})

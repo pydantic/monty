@@ -66,3 +66,22 @@ mechanism beyond dataclass field inheritance.
   its name was interned in source. This applies only to external functions
   — `def`-defined functions inside the sandbox retain per-definition
   identity.
+- **Type objects across the host boundary** — a `type` object (a class, not an
+  instance) round-trips in both directions.
+  - *Sandbox → host* (external/OS-call argument, or a `.run()` return value): the
+    type is reconstructed as the corresponding host class. Genuine builtins
+    (`int`, `str`, `type`, `bytes`, `list`, `dict`, `property`, …) resolve to the
+    real builtin; Monty's modeled stdlib types map to their host stdlib class:
+    `datetime`/`date`/`timedelta`/`timezone` → `datetime.*`,
+    `re.Pattern`/`re.Match` → `re.*`, the binary/text file types → `io.*`. The
+    `pathlib.Path` class maps to `pathlib.PurePosixPath` (consistent with how Path
+    *instances* round-trip, and instantiable on every host OS). A type with no
+    faithful host class (e.g. an internal function or cell type) cannot be
+    reconstructed and surfaces as an `AttributeError` from the host call.
+  - *Host → sandbox* (input, or an external-call return value): the same recognized
+    builtins and modeled stdlib types are preserved as type objects, so
+    `isinstance(x, the_type)` works inside the sandbox. Every `pathlib` path class
+    collapses to `PurePosixPath` (it re-emerges as `PurePosixPath`). A host class
+    Monty does **not** model (e.g. a user-defined class) is not preserved as a
+    type — it degrades to a callable, appearing inside the sandbox as a `function`
+    rather than a `type`.

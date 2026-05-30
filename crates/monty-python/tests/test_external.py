@@ -1,4 +1,7 @@
+import datetime
 import io
+import pathlib
+import re
 from typing import Any
 
 import pytest
@@ -60,6 +63,99 @@ def test_external_function_complex_types():
         return 'ok'
 
     assert m.run(external_functions={'func': func}) == snapshot('ok')
+
+
+def test_external_function_type_objects():
+    """A type object passed as an external-call argument reconstructs as the matching
+    host type; modeled stdlib types resolve from their real module (`Path` → `PurePosixPath`)."""
+    code = """
+import datetime
+import re
+from pathlib import Path
+func(
+    type(1),
+    type('x'),
+    type(int),
+    type(Path('/x')),
+    Path,
+    datetime.datetime,
+    datetime.date,
+    datetime.timedelta,
+    type(re.compile('a')),
+    type(re.match('a', 'a')),
+)
+"""
+    m = pydantic_monty.Monty(code)
+
+    def func(*args: Any, **kwargs: Any) -> str:
+        assert args == (
+            int,
+            str,
+            type,
+            pathlib.PurePosixPath,
+            pathlib.PurePosixPath,
+            datetime.datetime,
+            datetime.date,
+            datetime.timedelta,
+            re.Pattern,
+            re.Match,
+        )
+        assert kwargs == {}
+        return 'ok'
+
+    assert m.run(external_functions={'func': func}) == snapshot('ok')
+
+
+def test_external_function_returns_instances():
+    """A host callback returning an instance of a modeled stdlib type marshals back
+    into the sandbox (datetime family and `pathlib` paths round-trip)."""
+    code = """
+results = []
+for v in (get_dt(), get_dt_tz(), get_date(), get_delta(), get_tz(), get_path()):
+    results.append((type(v).__name__, repr(v)))
+results
+"""
+    fns: dict[str, Any] = {
+        'get_dt': lambda: datetime.datetime(2021, 1, 2, 3, 4, 5),
+        'get_dt_tz': lambda: datetime.datetime(2021, 1, 2, 3, 4, 5, tzinfo=datetime.timezone.utc),
+        'get_date': lambda: datetime.date(2021, 1, 2),
+        'get_delta': lambda: datetime.timedelta(days=1, seconds=2),
+        'get_tz': lambda: datetime.timezone(datetime.timedelta(hours=5)),
+        'get_path': lambda: pathlib.PurePosixPath('/a/b'),
+    }
+    assert pydantic_monty.Monty(code).run(external_functions=fns) == snapshot(
+        [
+            ('datetime.datetime', 'datetime.datetime(2021, 1, 2, 3, 4, 5)'),
+            ('datetime.datetime', 'datetime.datetime(2021, 1, 2, 3, 4, 5, tzinfo=datetime.timezone.utc)'),
+            ('date', 'datetime.date(2021, 1, 2)'),
+            ('timedelta', 'datetime.timedelta(days=1, seconds=2)'),
+            ('timezone', 'datetime.timezone(datetime.timedelta(seconds=18000))'),
+            ('PosixPath', "PosixPath('/a/b')"),
+        ]
+    )
+
+
+@pytest.mark.parametrize(
+    'factory, message',
+    [
+        (lambda: re.compile('a'), snapshot('Cannot convert re.Pattern to Monty value')),
+        (lambda: re.match('a', 'a'), snapshot('Cannot convert re.Match to Monty value')),
+        (lambda: io.StringIO('x'), snapshot('Cannot convert _io.StringIO to Monty value')),
+    ],
+)
+def test_external_function_returns_unconvertible_instance(factory: Any, message: str):
+    """Instances of types Monty does not model (`re.Pattern`, `re.Match`, host
+    file objects, …) cannot cross back into the sandbox; the return-value
+    conversion fails as a `TypeError` that is catchable inside Monty."""
+    code = """
+try:
+    get_thing()
+    result = 'no error'
+except TypeError as e:
+    result = str(e)
+result
+"""
+    assert pydantic_monty.Monty(code).run(external_functions={'get_thing': factory}) == message
 
 
 def test_external_function_returns_none():

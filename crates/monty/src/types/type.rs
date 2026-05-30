@@ -25,7 +25,6 @@ use crate::{
 /// while others are internal types only available through imports or introspection
 /// (e.g., `TextIOWrapper`, `PosixPath`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
-#[expect(clippy::enum_variant_names)]
 pub enum Type {
     Ellipsis,
     Type,
