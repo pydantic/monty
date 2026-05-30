@@ -80,8 +80,10 @@ mechanism beyond dataclass field inheritance.
     reconstructed and surfaces as an `AttributeError` from the host call.
   - *Host → sandbox* (input, or an external-call return value): the same recognized
     builtins and modeled stdlib types are preserved as type objects, so
-    `isinstance(x, the_type)` works inside the sandbox. Every `pathlib` path class
-    collapses to `PurePosixPath` (it re-emerges as `PurePosixPath`). A host class
-    Monty does **not** model (e.g. a user-defined class) is not preserved as a
-    type — it degrades to a callable, appearing inside the sandbox as a `function`
-    rather than a `type`.
+    `isinstance(x, the_type)` works inside the sandbox. Recognition is by
+    type-object **identity**, not class name/module, so a class that forges
+    `__name__`/`__module__` to impersonate a builtin is *not* treated as one. Every
+    `pathlib` path class collapses to `PurePosixPath` (it re-emerges as
+    `PurePosixPath`). A host class Monty does **not** model (e.g. a user-defined
+    class) is not preserved as a type — it degrades to a callable, appearing inside
+    the sandbox as a `function` rather than a `type`.

@@ -191,30 +191,62 @@ pub fn py_to_monty(obj: &Bound<'_, PyAny>, dc_registry: &DcRegistry, mut depth: 
 
 /// Inverse of [`type_object_to_py`]: maps a host class passed *into* the sandbox
 /// to the Monty [`Type`] it represents, so it round-trips instead of degrading to
-/// a callable. Matches on `(__module__, __name__)` to tolerate aliasing (`io` vs
-/// `_io`). Every `pathlib` path class collapses to [`Type::Path`] (re-emerges as
-/// `PurePosixPath`). Returns `None` for classes Monty does not model, which the
+/// a callable. Matches by type-object **identity**, not `__module__`/`__name__` —
+/// the latter is spoofable and churns across Python versions (e.g. `pathlib` paths
+/// report `pathlib._local` on 3.13). Every `pathlib` path class collapses to
+/// [`Type::Path`]. Returns `None` for classes Monty does not model, which the
 /// caller then represents as a [`MontyObject::Function`].
 fn py_type_object_to_monty(ty: &Bound<'_, PyType>) -> PyResult<Option<Type>> {
-    let name = ty.name()?.to_string();
-    let module: String = ty.getattr(intern!(ty.py(), "__module__"))?.extract()?;
-    Ok(match (module.as_str(), name.as_str()) {
-        ("builtins", name) => Type::from_builtin_name(name),
-        ("datetime", "date") => Some(Type::Date),
-        ("datetime", "datetime") => Some(Type::DateTime),
-        ("datetime", "timedelta") => Some(Type::TimeDelta),
-        ("datetime", "timezone") => Some(Type::TimeZone),
-        ("pathlib", "PurePath" | "PurePosixPath" | "PureWindowsPath" | "Path" | "PosixPath" | "WindowsPath") => {
-            Some(Type::Path)
+    let py = ty.py();
+    for (obj, t) in round_trip_type_table(py)? {
+        if ty.is(obj) {
+            return Ok(Some(*t));
         }
-        ("re", "Pattern") => Some(Type::RePattern),
-        ("re", "Match") => Some(Type::ReMatch),
-        ("io" | "_io", "TextIOWrapper") => Some(Type::TextIOWrapper),
-        ("io" | "_io", "BufferedReader") => Some(Type::BufferedReader),
-        ("io" | "_io", "BufferedWriter") => Some(Type::BufferedWriter),
-        ("io" | "_io", "BufferedRandom") => Some(Type::BufferedRandom),
-        ("typing", "_SpecialForm") => Some(Type::SpecialForm),
-        _ => None,
+    }
+    // pathlib's concrete path classes (PurePath, PosixPath, …) all subclass
+    // PurePath and collapse to one Monty path type.
+    Ok(ty.is_subclass(get_pure_path(py)?)?.then_some(Type::Path))
+}
+
+/// Host type objects that round-trip into the sandbox, each paired with its Monty
+/// [`Type`]. Built once and cached. Identities are taken from [`type_object_to_py`]
+/// so the two directions stay in lock-step. [`Type::Path`] is handled separately
+/// (by subclass check) since pathlib exposes several concrete path classes.
+fn round_trip_type_table(py: Python<'_>) -> PyResult<&'static Vec<(Py<PyAny>, Type)>> {
+    static TABLE: PyOnceLock<Vec<(Py<PyAny>, Type)>> = PyOnceLock::new();
+    TABLE.get_or_try_init(py, || {
+        [
+            Type::NoneType,
+            Type::Ellipsis,
+            Type::Bool,
+            Type::Int,
+            Type::Float,
+            Type::Str,
+            Type::Bytes,
+            Type::List,
+            Type::Tuple,
+            Type::Dict,
+            Type::Set,
+            Type::FrozenSet,
+            Type::Range,
+            Type::Slice,
+            Type::Type,
+            Type::Property,
+            Type::Date,
+            Type::DateTime,
+            Type::TimeDelta,
+            Type::TimeZone,
+            Type::RePattern,
+            Type::ReMatch,
+            Type::TextIOWrapper,
+            Type::BufferedReader,
+            Type::BufferedWriter,
+            Type::BufferedRandom,
+            Type::SpecialForm,
+        ]
+        .into_iter()
+        .map(|t| Ok((type_object_to_py(py, t)?, t)))
+        .collect()
     })
 }
 
@@ -419,6 +451,10 @@ fn type_object_to_py(py: Python<'_>, t: Type) -> PyResult<Py<PyAny>> {
         Type::BufferedWriter => cached!("io", "BufferedWriter"),
         Type::BufferedRandom => cached!("io", "BufferedRandom"),
         Type::SpecialForm => cached!("typing", "_SpecialForm"),
+        // `NoneType` and `ellipsis` aren't `builtins` attributes; take them from
+        // the singletons (`type(None)` / `type(...)`).
+        Type::NoneType => Ok(py.None().bind(py).get_type().into_any().unbind()),
+        Type::Ellipsis => Ok(py.Ellipsis().bind(py).get_type().into_any().unbind()),
         _ => import_builtins(py)?.getattr(py, t.to_string()),
     }
 }
@@ -616,6 +652,14 @@ fn get_pure_posix_path(py: Python<'_>) -> PyResult<&Bound<'_, PyAny>> {
     static PUREPOSIX: PyOnceLock<Py<PyAny>> = PyOnceLock::new();
 
     PUREPOSIX.import(py, "pathlib", "PurePosixPath")
+}
+
+/// Cached import of `pathlib.PurePath` — the common base of every path class,
+/// used to recognise any path type passed into the sandbox.
+fn get_pure_path(py: Python<'_>) -> PyResult<&Bound<'_, PyAny>> {
+    static PUREPATH: PyOnceLock<Py<PyAny>> = PyOnceLock::new();
+
+    PUREPATH.import(py, "pathlib", "PurePath")
 }
 
 /// Host-side mirror of [`MontyObject::FileHandle`].

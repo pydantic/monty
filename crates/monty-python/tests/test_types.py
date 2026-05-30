@@ -151,7 +151,7 @@ def test_type_object_output():
 import datetime, re
 from pathlib import Path
 [
-    int, str, type,
+    int, str, type, type(None), type(...),
     type(Path('/x')), Path,
     datetime.datetime, datetime.date, datetime.timedelta, datetime.timezone,
     type(re.compile('a')), type(re.match('a', 'a')),
@@ -162,6 +162,8 @@ from pathlib import Path
         int,
         str,
         type,
+        type(None),
+        type(...),
         pathlib.PurePosixPath,
         pathlib.PurePosixPath,
         datetime.datetime,
@@ -176,22 +178,29 @@ from pathlib import Path
 def test_type_object_input_roundtrip():
     """A type object passed in as an input is preserved as a type (not degraded to
     a callable) and round-trips back out by identity."""
-    types = [
+    types: list[type[object]] = [
         int,
         str,
         type,
         bool,
+        type(None),
+        type(...),
         datetime.datetime,
         datetime.date,
         datetime.timedelta,
         datetime.timezone,
         pathlib.PurePosixPath,
+        pathlib.PurePath,
+        pathlib.PosixPath,
         re.Pattern,
         re.Match,
     ]
     m = pydantic_monty.Monty('x', inputs=['x'])
     for ty in types:
-        assert m.run(inputs={'x': ty}) is ty
+        # The pathlib family all collapses to a single Monty path type, which
+        # re-emerges as PurePosixPath; everything else round-trips by identity.
+        expected: type[object] = pathlib.PurePosixPath if issubclass(ty, pathlib.PurePath) else ty
+        assert m.run(inputs={'x': ty}) is expected
 
 
 def test_type_object_input_isinstance():
@@ -210,6 +219,22 @@ def test_unmodeled_class_input_becomes_callable():
 
     m = pydantic_monty.Monty('(type(x).__name__, repr(x))', inputs=['x'])
     assert m.run(inputs={'x': Foo}) == snapshot(('function', "<function 'Foo' external>"))
+
+
+def test_spoofed_builtin_type_not_recognized():
+    """Type detection is by identity, not name/module strings: a class that
+    forges `__name__`/`__module__` to impersonate `int` is not treated as the
+    builtin and degrades to a callable."""
+
+    class FakeInt:
+        pass
+
+    FakeInt.__name__ = 'int'
+    FakeInt.__qualname__ = 'int'
+    FakeInt.__module__ = 'builtins'
+
+    m = pydantic_monty.Monty('type(x).__name__', inputs=['x'])
+    assert m.run(inputs={'x': FakeInt}) == snapshot('function')
 
 
 def test_date_input_roundtrip():
