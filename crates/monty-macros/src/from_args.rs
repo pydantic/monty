@@ -332,6 +332,7 @@ impl Signature {
         let kwarg_loop = self.render_kwarg_loop(&slots);
         let missing_check = self.render_missing_required_check(&slots);
         let unknown_check = self.render_unknown_kwarg_check();
+        let final_required_check = self.render_final_required_check(&slots);
         let build_struct = self.render_build_struct(&slots);
 
         quote! {
@@ -397,6 +398,7 @@ impl Signature {
                     #kwarg_loop
                     #missing_check
                     #unknown_check
+                    #final_required_check
 
                     #build_struct
                 }
@@ -615,6 +617,41 @@ impl Signature {
             Some(quote! {
                 if #slot.is_none() {
                     __cleanup!(#missing_expr);
+                }
+            })
+        });
+        quote! { #(#checks)* }
+    }
+
+    /// Final required-slot preflight before constructing `Self`.
+    ///
+    /// This deliberately runs after the unknown-kwarg check to preserve the
+    /// existing error ordering for keyword-only arguments. Once this has
+    /// passed, `render_build_struct` can move fields out without any fallible
+    /// `__cleanup!` expressions inside the struct initializer, avoiding
+    /// partial-initialization leaks for already-moved heap values.
+    fn render_final_required_check(&self, slots: &[TokenStream]) -> TokenStream {
+        let func_name = self.func_name.as_str();
+        let checks = self.fields.iter().zip(slots).filter_map(|(field, slot)| {
+            if matches!(field.kind, FieldKind::Varargs | FieldKind::Varkwargs) || field.default.is_some() {
+                return None;
+            }
+
+            let field_name_lit = LitStr::new(&field.ident.to_string(), field.ident.span());
+            let err_expr = if let Some(pos) = field.pos_index {
+                self.missing_positional_err(&field_name_lit, pos)
+            } else {
+                quote! {
+                    crate::exception_private::ExcType::type_error_missing_kwonly_with_names(
+                        #func_name,
+                        &[#field_name_lit],
+                    )
+                }
+            };
+
+            Some(quote! {
+                if #slot.is_none() {
+                    __cleanup!(#err_expr);
                 }
             })
         });
@@ -942,7 +979,6 @@ impl Signature {
     }
 
     fn render_build_struct(&self, slots: &[TokenStream]) -> TokenStream {
-        let func_name = self.func_name.as_str();
         let fields = self.fields.iter().zip(slots).map(|(field, slot)| {
             let ident = &field.ident;
             match field.kind {
@@ -966,34 +1002,9 @@ impl Signature {
                     }
                 }
                 _ => match &field.default {
-                    None => {
-                        let field_name_lit = LitStr::new(&field.ident.to_string(), field.ident.span());
-                        let pos = field.pos_index.unwrap_or(0);
-                        if field.pos_index.is_some() {
-                            let missing_expr = self.missing_positional_err(&field_name_lit, pos);
-                            quote! {
-                                #ident: match #slot.take() {
-                                    ::std::option::Option::Some(__v) => __v,
-                                    ::std::option::Option::None => {
-                                        __cleanup!(#missing_expr);
-                                    }
-                                },
-                            }
-                        } else {
-                            // Required keyword-only argument.
-                            quote! {
-                                #ident: match #slot.take() {
-                                    ::std::option::Option::Some(__v) => __v,
-                                    ::std::option::Option::None => {
-                                        __cleanup!(crate::exception_private::ExcType::type_error_missing_kwonly_with_names(
-                                            #func_name,
-                                            &[#field_name_lit],
-                                        ));
-                                    }
-                                },
-                            }
-                        }
-                    }
+                    None => quote! {
+                        #ident: #slot.take().expect("required FromArgs slot checked before build"),
+                    },
                     Some(DefaultExpr::DefaultTrait) => quote! {
                         #ident: #slot.take().unwrap_or_default(),
                     },
@@ -1003,6 +1014,11 @@ impl Signature {
                 },
             }
         });
+        // Every required slot was validated by `render_final_required_check`,
+        // so this struct init is infallible: no `__cleanup!` inside the
+        // initializer, hence no partial-move leak of an already-taken field.
+        // The slots are fully drained here, so `__guard` dropping them on scope
+        // exit is a cheap no-op (and still correctly cleans up on error paths).
         quote! {
             ::std::result::Result::Ok(Self {
                 #(#fields)*
