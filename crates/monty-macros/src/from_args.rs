@@ -497,6 +497,30 @@ impl Signature {
         }
     }
 
+    /// "Missing required positional argument" error for one field, styled per
+    /// `error_style`. Shared by the deferred missing-required check
+    /// ([`render_missing_required_check`](Self::render_missing_required_check))
+    /// and the final-build path ([`render_build_struct`](Self::render_build_struct))
+    /// so the two stay in sync.
+    fn missing_positional_err(&self, field_name_lit: &LitStr, pos: usize) -> TokenStream {
+        let func_name = self.func_name.as_str();
+        match self.error_style {
+            ErrorStyle::C(_) => quote! {
+                crate::exception_private::ExcType::type_error_c_missing_required(#field_name_lit, #pos)
+            },
+            ErrorStyle::NamedC => quote! {
+                crate::exception_private::ExcType::type_error_c_missing_required_named(
+                    #func_name, #field_name_lit, #pos,
+                )
+            },
+            ErrorStyle::Python => quote! {
+                crate::exception_private::ExcType::type_error_missing_positional_with_names(
+                    #func_name, &[#field_name_lit],
+                )
+            },
+        }
+    }
+
     fn named_positional_count(&self) -> usize {
         self.fields
             .iter()
@@ -581,28 +605,13 @@ impl Signature {
         if !self.defer_unknown_kwarg() || self.kwargs_not_supported_yet {
             return TokenStream::new();
         }
-        let func_name = self.func_name.as_str();
         let checks = self.fields.iter().zip(slots).filter_map(|(field, slot)| {
             if !matches!(field.kind, FieldKind::PosOnly | FieldKind::PosOrKeyword) || field.default.is_some() {
                 return None;
             }
             let field_name_lit = LitStr::new(&field.ident.to_string(), field.ident.span());
             let pos = field.pos_index.unwrap_or(0);
-            let missing_expr = match self.error_style {
-                ErrorStyle::C(_) => quote! {
-                    crate::exception_private::ExcType::type_error_c_missing_required(#field_name_lit, #pos)
-                },
-                ErrorStyle::NamedC => quote! {
-                    crate::exception_private::ExcType::type_error_c_missing_required_named(
-                        #func_name, #field_name_lit, #pos,
-                    )
-                },
-                ErrorStyle::Python => quote! {
-                    crate::exception_private::ExcType::type_error_missing_positional_with_names(
-                        #func_name, &[#field_name_lit],
-                    )
-                },
-            };
+            let missing_expr = self.missing_positional_err(&field_name_lit, pos);
             Some(quote! {
                 if #slot.is_none() {
                     __cleanup!(#missing_expr);
@@ -868,8 +877,7 @@ impl Signature {
             quote! {
                 let Some(__id) = __key_str.string_id() else {
                     // TODO: intern heap-string keys via `Interns` instead of rejecting.
-                    __value.drop_with_heap(vm);
-                    __key.drop_with_heap(vm);
+                    (__key, __value).drop_with_heap(vm);
                     __cleanup!(crate::exception_private::ExcType::type_error_kwargs_nonstring_key());
                 };
                 __key.drop_with_heap(vm);
@@ -909,8 +917,7 @@ impl Signature {
                 let func_name = &self.func_name;
                 pos_only_arms.push(quote! {
                     if __key_str.matches(#key_id_expr, vm.interns) {
-                        __value.drop_with_heap(vm);
-                        __key.drop_with_heap(vm);
+                        (__key, __value).drop_with_heap(vm);
                         __cleanup!(crate::exception_private::ExcType::type_error_positional_only(#func_name, #field_name_lit));
                     } else
                 });
@@ -922,8 +929,7 @@ impl Signature {
         quote! {
             while let ::std::option::Option::Some((__key, __value)) = ::std::iter::Iterator::next(&mut __kwargs_iter) {
                 let ::std::option::Option::Some(__key_str) = __key.as_either_str(vm.heap) else {
-                    __value.drop_with_heap(vm);
-                    __key.drop_with_heap(vm);
+                    (__key, __value).drop_with_heap(vm);
                     __cleanup!(crate::exception_private::ExcType::type_error_kwargs_nonstring_key());
                 };
                 #(#pos_only_arms)*
@@ -964,24 +970,7 @@ impl Signature {
                         let field_name_lit = LitStr::new(&field.ident.to_string(), field.ident.span());
                         let pos = field.pos_index.unwrap_or(0);
                         if field.pos_index.is_some() {
-                            let missing_expr = match self.error_style {
-                                ErrorStyle::C(_) => quote! {
-                                    crate::exception_private::ExcType::type_error_c_missing_required(#field_name_lit, #pos)
-                                },
-                                ErrorStyle::NamedC => quote! {
-                                    crate::exception_private::ExcType::type_error_c_missing_required_named(
-                                        #func_name,
-                                        #field_name_lit,
-                                        #pos,
-                                    )
-                                },
-                                ErrorStyle::Python => quote! {
-                                    crate::exception_private::ExcType::type_error_missing_positional_with_names(
-                                        #func_name,
-                                        &[#field_name_lit],
-                                    )
-                                },
-                            };
+                            let missing_expr = self.missing_positional_err(&field_name_lit, pos);
                             quote! {
                                 #ident: match #slot.take() {
                                     ::std::option::Option::Some(__v) => __v,
