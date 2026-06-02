@@ -8,6 +8,10 @@
 //! flags are only passed to the monty crate itself, not to its dependencies. This avoids
 //! unnecessary recompilation of the dependency tree between test runs.
 //!
+//! The invocations also use a dedicated `--target-dir` (see [`isolated_target_dir`]) so they
+//! never share the `check`-profile cache with `cargo clippy`, which would otherwise force a
+//! full rebuild here on every `make main`.
+//!
 //! This approach is necessary because the `HeapReader` types are `pub(crate)`, so standard
 //! compile-fail test frameworks (like `trybuild`) cannot access them from integration tests.
 //!
@@ -31,6 +35,24 @@ fn cases_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests")
         .join("heap_reader_compile_fail_cases")
+}
+
+/// Dedicated target directory for the `cargo rustc` invocations below.
+///
+/// These run under the `check` profile, which `cargo clippy` also uses — but
+/// clippy builds via `clippy-driver`, a different cargo fingerprint. Sharing
+/// the main target dir means clippy and these tests mutually invalidate the
+/// check-profile cache, so every `make main` (clippy → tests) rebuilds the
+/// whole dependency tree *and* monty here from scratch. Isolating them lets the
+/// dependency tree build once and stay cached across runs, independent of
+/// clippy. The dir lives under `target/`, so it is gitignored and removed by
+/// `cargo clean`.
+fn isolated_target_dir() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("target")
+        .join("heap_reader_compile_fail")
 }
 
 /// Extracts just the error diagnostics from rustc stderr, filtering out warnings,
@@ -66,11 +88,14 @@ fn check_compile_fail(test_name: &str) {
     let test_cfg = format!("heap_reader_compile_fail_test_{test_name}");
     let stderr_path = cases_dir().join(format!("{test_name}.stderr"));
 
+    let target_dir = isolated_target_dir();
     let output = Command::new(env!("CARGO"))
         .args([
             "rustc",
             "--package=monty",
             "--profile=check",
+            "--target-dir",
+            &target_dir.to_string_lossy(),
             "--",
             "--cfg=heap_reader_compile_fail_tests",
             "--cfg",

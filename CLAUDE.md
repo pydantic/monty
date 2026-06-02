@@ -247,7 +247,7 @@ make lint                 Lint the code with ruff and clippy
 make format-lint-rs       Format and lint Rust code with fmt and clippy
 make format-lint-py       Format and lint Python code with ruff
 make test-no-features     Run rust tests without any features enabled
-make test-memory-model-checks Run rust tests with memory-model-checks enabled
+make test-memory-model-checks Run rust tests with memory-model-checks enabled - THIS IS EXTREMELY SLOW, SHOULD MOSTLY BE RUN IN CI OR IF ABSOLUTELY NECESSARY
 make test-ref-count-return Run rust tests with ref-count-return enabled
 make test-cases           Run tests cases only
 make test-type-checking   Run rust tests on monty_type_checking
