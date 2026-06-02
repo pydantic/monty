@@ -299,19 +299,30 @@ impl Signature {
 
     fn render(&self) -> TokenStream {
         let struct_ident = &self.struct_ident;
+        // Dedicated owning-slots struct for this signature. A `HeapGuard`
+        // around it centralises error-path cleanup in one `DropWithHeap` impl
+        // instead of re-inlining a drop for every slot at every error exit —
+        // which previously made the generated code O(fields²) and dominated
+        // the crate's macro-expansion compile time.
+        let slots_struct_ident = format_ident!("__{}Slots", struct_ident);
 
-        // Per-field temporary slot identifiers.
-        let slots: Vec<Ident> = self
-            .fields
-            .iter()
-            .map(|f| format_ident!("__slot_{}", f.ident))
-            .collect();
+        // Slots-struct field names. We reuse the argument names verbatim (rather
+        // than a `__slot_`-prefixed variant) so the struct doesn't trip
+        // `clippy::struct_field_names` ("all fields share a prefix") — these
+        // names already pass clippy on the real args struct.
+        let slot_idents: Vec<Ident> = self.fields.iter().map(|f| f.ident.clone()).collect();
+        // Field-access expressions (`__slots.year`, …) threaded through the
+        // render helpers in place of the bare slot idents. `#slot` interpolates
+        // a field access just as it did a local, so the helper bodies are
+        // unchanged.
+        let slots: Vec<TokenStream> = slot_idents.iter().map(|id| quote!(__slots.#id)).collect();
 
         // Maximum number of named positional slots (for `at most N` errors).
         let max_positional = self.named_positional_count();
         let has_varargs = self.varargs_idx.is_some();
-        let slot_decls = self.render_slot_decls(&slots);
-        let cleanup_block = self.render_cleanup_block(&slots);
+        let slot_struct_fields = self.render_slot_struct_fields(&slot_idents);
+        let slot_struct_inits = self.render_slot_struct_inits(&slot_idents);
+        let drop_impl_body = self.render_drop_impl_body(&slot_idents);
         let no_kwargs_check = self.render_no_kwargs_check();
         let total_check = self.render_total_check(max_positional);
         let exact_check = self.render_expected_exact_check();
@@ -324,11 +335,30 @@ impl Signature {
         let build_struct = self.render_build_struct(&slots);
 
         quote! {
+            /// Owning slots for the corresponding `from_args`. Holds each
+            /// extracted argument (and the `*args` / `**kwargs` collections)
+            /// until the final struct is built. Its `DropWithHeap` impl drops
+            /// every populated slot, so a `HeapGuard` around it keeps refcounts
+            /// balanced on every error path without inlining cleanup per exit.
+            struct #slots_struct_ident {
+                #slot_struct_fields
+            }
+
+            #[automatically_derived]
+            impl crate::heap::DropWithHeap for #slots_struct_ident {
+                fn drop_with_heap<H: crate::heap::ContainsHeap>(self, heap: &mut H) {
+                    use crate::args::FromValue as _; // allow local import
+                    use crate::heap::DropWithHeap as _; // allow local import
+                    #drop_impl_body
+                }
+            }
+
             #[automatically_derived]
             impl #struct_ident {
                 /// Extract arguments into `Self`. On any error path, every
-                /// already-extracted heap value is dropped via `DropWithHeap`
-                /// so refcounts stay balanced.
+                /// already-extracted heap value is dropped via the slots
+                /// struct's `DropWithHeap` impl (driven by a `HeapGuard`), so
+                /// refcounts stay balanced.
                 pub(crate) fn from_args(
                     args: crate::args::ArgValues,
                     vm: &mut crate::bytecode::VM<'_, impl crate::resource::ResourceTracker>,
@@ -339,17 +369,22 @@ impl Signature {
                     let (mut __pos_iter, __kwargs_holder) = args.into_parts();
                     let mut __kwargs_iter = __kwargs_holder.into_iter();
 
-                    #slot_decls
+                    // All owning slots live in `__slots`, guarded so they are
+                    // dropped on every error path by a single `DropWithHeap`
+                    // impl. The two iterators stay local: `__cleanup!` drains
+                    // them explicitly (a fixed 2-line cost, independent of the
+                    // field count), then returns so `__guard` drops `__slots`.
+                    let mut __guard = crate::heap::HeapGuard::new(
+                        #slots_struct_ident { #slot_struct_inits },
+                        vm,
+                    );
+                    let (__slots, vm) = __guard.as_parts_mut();
 
-                    // Drops every owning slot + both iterators on the error
-                    // path. Inlined so it captures every slot ident by name.
                     macro_rules! __cleanup {
                         ($err:expr) => {{
-                            #cleanup_block
-                            // Also drop anything left in the iterators.
                             __pos_iter.drop_with_heap(vm);
                             __kwargs_iter.drop_with_heap(vm);
-                            return Err($err);
+                            return ::std::result::Result::Err($err);
                         }};
                     }
 
@@ -542,7 +577,7 @@ impl Signature {
     /// Missing-required check, run *after* the kwarg loop has filled what it
     /// can. Raises the same error as the final-build path but earlier, so
     /// CPython's "missing-required before unknown-kwarg" ordering holds.
-    fn render_missing_required_check(&self, slots: &[Ident]) -> TokenStream {
+    fn render_missing_required_check(&self, slots: &[TokenStream]) -> TokenStream {
         if !self.defer_unknown_kwarg() || self.kwargs_not_supported_yet {
             return TokenStream::new();
         }
@@ -623,54 +658,58 @@ impl Signature {
         }
     }
 
-    fn render_slot_decls(&self, slots: &[Ident]) -> TokenStream {
+    /// Field declarations for the owning-slots struct. Each positional/keyword
+    /// field is `Option<T>` (absent vs present drives default fallback and
+    /// duplicate detection); `*args` / `**kwargs` are growable `Vec`s.
+    fn render_slot_struct_fields(&self, slots: &[Ident]) -> TokenStream {
         let decls = self.fields.iter().zip(slots).map(|(field, slot)| {
             let ty = &field.ty;
             match field.kind {
                 FieldKind::Varargs => {
                     let elem = vec_element_ty(ty).unwrap_or_else(|| ty.clone());
-                    quote! {
-                        let mut #slot: ::std::vec::Vec<#elem> = ::std::vec::Vec::new();
-                    }
+                    quote! { #slot: ::std::vec::Vec<#elem>, }
                 }
                 FieldKind::Varkwargs => quote! {
-                    let mut #slot: ::std::vec::Vec<(
+                    #slot: ::std::vec::Vec<(
                         crate::intern::StringId,
                         crate::value::Value,
-                    )> = ::std::vec::Vec::new();
+                    )>,
                 },
-                _ => {
-                    // `Option<T>` so we can distinguish absent from present
-                    // (drives default fallback and duplicate detection).
-                    quote! {
-                        let mut #slot: ::std::option::Option<#ty> = ::std::option::Option::None;
-                    }
-                }
+                _ => quote! { #slot: ::std::option::Option<#ty>, },
             }
         });
         quote! { #(#decls)* }
     }
 
-    fn render_cleanup_block(&self, slots: &[Ident]) -> TokenStream {
+    /// Initial values for the owning-slots struct: every slot starts empty
+    /// (`None` / `Vec::new()`) and is filled by the dispatch loops.
+    fn render_slot_struct_inits(&self, slots: &[Ident]) -> TokenStream {
+        let inits = self.fields.iter().zip(slots).map(|(field, slot)| match field.kind {
+            FieldKind::Varargs | FieldKind::Varkwargs => quote! { #slot: ::std::vec::Vec::new(), },
+            _ => quote! { #slot: ::std::option::Option::None, },
+        });
+        quote! { #(#inits)* }
+    }
+
+    /// Body of the slots struct's `DropWithHeap` impl. Consumes `self` by value
+    /// and drops each populated slot exactly once. Generated once per signature
+    /// (not re-inlined at every error exit), so this is the sole copy of the
+    /// cleanup logic the compiler has to type- and borrow-check.
+    fn render_drop_impl_body(&self, slots: &[Ident]) -> TokenStream {
         let drops = self.fields.iter().zip(slots).map(|(field, slot)| match field.kind {
-            FieldKind::Varargs => {
-                quote! {
-                    let __taken = ::std::mem::take(&mut #slot);
-                    __taken.drop_with_heap(vm);
+            FieldKind::Varargs => quote! {
+                self.#slot.drop_with_heap(heap);
+            },
+            FieldKind::Varkwargs => quote! {
+                for (_, __v) in self.#slot {
+                    __v.drop_with_heap(heap);
                 }
-            }
-            FieldKind::Varkwargs => {
-                quote! {
-                    for (_, __v) in ::std::mem::take(&mut #slot) {
-                        __v.drop_with_heap(vm);
-                    }
-                }
-            }
+            },
             _ => {
                 let ty = &field.ty;
                 quote! {
-                    if let ::std::option::Option::Some(__v) = #slot.take() {
-                        <#ty as crate::args::FromValue>::drop_extracted(__v, vm);
+                    if let ::std::option::Option::Some(__v) = self.#slot {
+                        <#ty as crate::args::FromValue>::drop_extracted(__v, heap);
                     }
                 }
             }
@@ -678,7 +717,7 @@ impl Signature {
         quote! { #(#drops)* }
     }
 
-    fn render_positional_loop(&self, slots: &[Ident], max_positional: usize, has_varargs: bool) -> TokenStream {
+    fn render_positional_loop(&self, slots: &[TokenStream], max_positional: usize, has_varargs: bool) -> TokenStream {
         // Build the per-index arms by iterating fields that can accept positionals.
         let mut arms: Vec<TokenStream> = Vec::new();
         let mut arm_idx: usize = 0;
@@ -768,7 +807,7 @@ impl Signature {
     fn render_from_value_call(
         &self,
         ty: &Type,
-        slot: &Ident,
+        slot: &TokenStream,
         pos: usize,
         arg_name: &str,
         value_var: &Ident,
@@ -843,7 +882,7 @@ impl Signature {
         matches!(self.error_style, ErrorStyle::C(_) | ErrorStyle::NamedC)
     }
 
-    fn render_kwarg_loop(&self, slots: &[Ident]) -> TokenStream {
+    fn render_kwarg_loop(&self, slots: &[TokenStream]) -> TokenStream {
         if self.kwargs_not_supported_yet {
             // Pre-check already rejected any kwarg; skip the loop entirely.
             return TokenStream::new();
@@ -932,24 +971,27 @@ impl Signature {
         }
     }
 
-    fn render_build_struct(&self, slots: &[Ident]) -> TokenStream {
+    fn render_build_struct(&self, slots: &[TokenStream]) -> TokenStream {
         let func_name = self.func_name.as_str();
         let fields = self.fields.iter().zip(slots).map(|(field, slot)| {
             let ident = &field.ident;
             match field.kind {
                 FieldKind::Varargs | FieldKind::Varkwargs => {
+                    // The slot lives behind `&mut __slots`, so move its contents
+                    // out with `mem::take`. This also leaves the slot empty, so
+                    // the guard's eventual `DropWithHeap` is a no-op for it.
                     if matches!(field.kind, FieldKind::Varkwargs) {
                         // Empty vec collapses to `Empty` for cheap caller checks.
                         quote! {
                             #ident: if #slot.is_empty() {
                                 crate::args::KwargsValues::Empty
                             } else {
-                                crate::args::KwargsValues::Inline(#slot)
+                                crate::args::KwargsValues::Inline(::std::mem::take(&mut #slot))
                             },
                         }
                     } else {
                         quote! {
-                            #ident: #slot,
+                            #ident: ::std::mem::take(&mut #slot),
                         }
                     }
                 }
@@ -1017,7 +1059,7 @@ impl Signature {
 }
 
 impl Signature {
-    fn kwarg_arm_pos_or_kw(&self, field: &Field, slot: &Ident) -> TokenStream {
+    fn kwarg_arm_pos_or_kw(&self, field: &Field, slot: &TokenStream) -> TokenStream {
         let func_name = self.func_name.as_str();
         let key_id_expr = field.kwarg_string_id_expr();
         let ty = &field.ty;
@@ -1061,7 +1103,7 @@ impl Signature {
         }
     }
 
-    fn kwarg_arm_kw_only(&self, field: &Field, slot: &Ident) -> TokenStream {
+    fn kwarg_arm_kw_only(&self, field: &Field, slot: &TokenStream) -> TokenStream {
         let func_name = self.func_name.as_str();
         let key_id_expr = field.kwarg_string_id_expr();
         let ty = &field.ty;
