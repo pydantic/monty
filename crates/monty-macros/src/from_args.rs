@@ -799,11 +799,18 @@ impl Signature {
         }
     }
 
-    /// `FromValue::from_value` call that fills `slot`. Used by both the
-    /// positional loop (`value_var = __arg`) and the kwarg arms
-    /// (`value_var = __value`) so `encode(42)` and `encode(encoding=42)`
-    /// report identical errors. When `bad_arg` is set, wraps the inner
-    /// error in CPython's `_PyArg_BadArgument` wording.
+    /// Emit the per-field extraction: a thin call to
+    /// [`FromValue::extract_into`], which coerces `value_var` into the field
+    /// type and stores it in `slot`. Used by both the positional loop
+    /// (`value_var = __arg`) and the kwarg arms (`value_var = __value`) so
+    /// `encode(42)` and `encode(encoding=42)` report identical errors.
+    ///
+    /// The heavy lifting (the pre-`from_value` type snapshot and CPython
+    /// `_PyArg_BadArgument` wording selection) lives in `extract_into` —
+    /// monomorphised once per field type and shared across every derive —
+    /// rather than being inlined as tokens at each site. The macro only picks
+    /// the [`ArgErrCtx`] variant; errors still route through `__cleanup!` so
+    /// the argument iterators are drained.
     fn render_from_value_call(
         &self,
         ty: &Type,
@@ -812,64 +819,21 @@ impl Signature {
         arg_name: &str,
         value_var: &Ident,
     ) -> TokenStream {
-        let Some(style) = self.bad_arg else {
-            return quote! {
-                match <#ty as crate::args::FromValue>::from_value(#value_var, vm) {
-                    ::std::result::Result::Ok(__v) => {
-                        #slot = ::std::option::Option::Some(__v);
-                    }
-                    ::std::result::Result::Err(__e) => {
-                        __cleanup!(__e);
-                    }
-                }
-            };
-        };
         let func_name = self.func_name.as_str();
-        let bad_arg_err = match style {
-            BadArgStyle::Positional => quote! {
-                crate::exception_private::ExcType::type_error_bad_arg_pos(
-                    #func_name,
-                    #pos,
-                    __expected,
-                    __got.cpython_arg_name(),
-                )
+        let ctx = match self.bad_arg {
+            None => quote! { crate::args::ArgErrCtx::Plain },
+            Some(BadArgStyle::Positional) => quote! {
+                crate::args::ArgErrCtx::BadArgPos { func_name: #func_name, pos: #pos }
             },
-            BadArgStyle::Named => quote! {
-                crate::exception_private::ExcType::type_error_bad_arg_named(
-                    #func_name,
-                    #arg_name,
-                    __expected,
-                    __got.cpython_arg_name(),
-                )
+            Some(BadArgStyle::Named) => quote! {
+                crate::args::ArgErrCtx::BadArgNamed { func_name: #func_name, arg_name: #arg_name }
             },
         };
         quote! {
-            {
-                // Snapshot the type *before* `from_value` consumes the value
-                // (the error path no longer has access to it). Skip the
-                // lookup when the field type has no CPython label.
-                let __got_type =
-                    if <#ty as crate::args::FromValue>::EXPECTED_TYPE_NAME.is_some() {
-                        ::std::option::Option::Some(#value_var.py_type_heap(vm.heap))
-                    } else {
-                        ::std::option::Option::None
-                    };
-                match <#ty as crate::args::FromValue>::from_value(#value_var, vm) {
-                    ::std::result::Result::Ok(__v) => {
-                        #slot = ::std::option::Option::Some(__v);
-                    }
-                    ::std::result::Result::Err(__e) => {
-                        match (
-                            <#ty as crate::args::FromValue>::EXPECTED_TYPE_NAME,
-                            __got_type,
-                        ) {
-                            (
-                                ::std::option::Option::Some(__expected),
-                                ::std::option::Option::Some(__got),
-                            ) => __cleanup!(#bad_arg_err),
-                            _ => __cleanup!(__e),
-                        }
-                    }
+            match <#ty as crate::args::FromValue>::extract_into(#value_var, &mut #slot, vm, #ctx) {
+                ::std::result::Result::Ok(()) => {}
+                ::std::result::Result::Err(__e) => {
+                    __cleanup!(__e);
                 }
             }
         }

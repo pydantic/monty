@@ -19,6 +19,21 @@ use crate::{
     value::Value,
 };
 
+/// Error-wording selection for [`FromValue::extract_into`]. Built as a literal
+/// by `#[derive(FromArgs)]` at each extraction site to pick how a failed
+/// coercion is reported, mirroring CPython's `_PyArg_BadArgument` variants.
+pub(crate) enum ArgErrCtx {
+    /// Surface the inner `from_value` error unchanged (no `bad_arg`).
+    Plain,
+    /// Positional form: `{func_name}() argument {pos} must be {expected}, not {got}`.
+    BadArgPos { func_name: &'static str, pos: usize },
+    /// Named form: `{func_name}() argument '{arg_name}' must be {expected}, not {got}`.
+    BadArgNamed {
+        func_name: &'static str,
+        arg_name: &'static str,
+    },
+}
+
 /// Coerces a `Value` into `Self`, consuming the value and handling refcount
 /// cleanup on both success and failure paths.
 ///
@@ -59,6 +74,44 @@ pub(crate) trait FromValue: Sized {
         // Default: no heap references held. Specialise in impls that hold them.
         let _ = heap;
         drop(self);
+    }
+
+    /// Coerce `value` into `Self` and store it in `slot`, applying `ctx`'s
+    /// CPython `_PyArg_BadArgument` wording on failure.
+    ///
+    /// This is what `#[derive(FromArgs)]` calls for every positional/keyword
+    /// argument. Centralising it here — rather than inlining the equivalent
+    /// tokens at each derive's call sites — keeps the generated code small: the
+    /// body is monomorphised once per field type and shared across all derives.
+    /// On error the input `value` has already been dropped by `from_value`; the
+    /// caller remains responsible for draining the argument iterators.
+    fn extract_into(
+        value: Value,
+        slot: &mut Option<Self>,
+        vm: &mut VM<'_, impl ResourceTracker>,
+        ctx: ArgErrCtx,
+    ) -> RunResult<()> {
+        // Snapshot the incoming type before `from_value` consumes the value,
+        // but only when a `bad_arg` message could actually need it.
+        let got_type = match (&ctx, Self::EXPECTED_TYPE_NAME) {
+            (ArgErrCtx::Plain, _) | (_, None) => None,
+            _ => Some(value.py_type_heap(vm.heap)),
+        };
+        match Self::from_value(value, vm) {
+            Ok(extracted) => {
+                *slot = Some(extracted);
+                Ok(())
+            }
+            Err(err) => Err(match (ctx, Self::EXPECTED_TYPE_NAME, got_type) {
+                (ArgErrCtx::BadArgPos { func_name, pos }, Some(expected), Some(got)) => {
+                    ExcType::type_error_bad_arg_pos(func_name, pos, expected, got.cpython_arg_name())
+                }
+                (ArgErrCtx::BadArgNamed { func_name, arg_name }, Some(expected), Some(got)) => {
+                    ExcType::type_error_bad_arg_named(func_name, arg_name, expected, got.cpython_arg_name())
+                }
+                _ => err,
+            }),
+        }
     }
 }
 
