@@ -159,3 +159,37 @@ os.getenv('PROBE')
         "expected buffer to be released, but {mem_after_close} bytes still tracked",
     );
 }
+
+// ---------------------------------------------------------------------------
+// A file read but never `close()`d must still release its buffer once the
+// `OpenFile` becomes unreachable (`f = 0`). Regression for two coupled refcount
+// bugs in the buffered-read path: the OS-call pin over-counted the file so it
+// was never freed on `f = 0`, and the free walker (`py_dec_ref_ids_for_data`)
+// had no `OpenFile` arm, so even once freed the buffer was not released. Both
+// must be fixed for `current_memory()` to drop back to baseline here.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn dropping_unclosed_file_releases_buffer() {
+    let code = r"
+import os
+f = open('/data.txt')
+f.read(5)
+f = 0            # OpenFile becomes unreachable WITHOUT close(); refcount -> 0
+os.getenv('PROBE')
+";
+    let body = "abcdefghijklmnopqrstuvwxyz".repeat(100); // 2600 bytes
+    let limits = ResourceLimits::new().max_memory(1_000_000);
+    let (mem, _) = open_then_read(
+        code,
+        "Path.read_text",
+        file_handle("/data.txt", "r"),
+        MontyObject::String(body),
+        limits,
+    )
+    .expect("should succeed");
+    assert!(
+        mem < 1500,
+        "OpenFile buffer leaked: {mem} bytes still tracked after the unclosed file was freed",
+    );
+}

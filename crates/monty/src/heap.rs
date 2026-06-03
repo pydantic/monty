@@ -1654,6 +1654,15 @@ fn for_each_child_id<F: FnMut(HeapId)>(data: &HeapData, mut on_child: F) {
                 on_child(tz_id);
             }
         }
+        HeapData::OpenFile(file) => {
+            // Kept in sync with `py_dec_ref_ids_for_data`: the file owns one
+            // ref on its loaded buffer. (`OpenFile` is not GC-tracked today, so
+            // this arm is not reached by the collector, but the two walkers must
+            // mirror each other per the contract above.)
+            if let Some(buffer_id) = file.buffer_id() {
+                on_child(buffer_id);
+            }
+        }
         // Leaf types with no heap references
         _ => {}
     }
@@ -1734,6 +1743,12 @@ fn py_dec_ref_ids_for_data(data: &mut HeapData, stack: &mut Vec<HeapId>) {
             if let Some(tz_id) = dt.tzinfo_ref() {
                 stack.push(tz_id);
             }
+        }
+        HeapData::OpenFile(f) => {
+            // Kept in sync with `for_each_child_id`: release the file's owned
+            // ref on its loaded buffer when the file is freed (e.g. read but
+            // never `close()`d).
+            f.py_dec_ref_ids(stack);
         }
         // other types have no nested heap references
         _ => {}

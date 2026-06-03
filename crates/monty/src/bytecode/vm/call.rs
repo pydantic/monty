@@ -88,9 +88,10 @@ impl DropWithHeap for CallResult {
             Self::FramePushed => {}
             Self::OsCallStoreBuffer { call, file_id } => {
                 call.drop_with_heap(heap);
-                let heap = heap.heap_mut();
-                heap.dec_ref(file_id);
-                heap.dec_ref(file_id);
+                // Single pin (see `inc_ref_for_pending_oscall`): release one ref
+                // if the call is discarded before dispatch routes it to a
+                // `pending_file_effect`.
+                heap.heap_mut().dec_ref(file_id);
             }
         }
     }

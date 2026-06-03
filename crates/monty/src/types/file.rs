@@ -486,6 +486,16 @@ impl OpenFile {
         self.position
     }
 
+    /// The heap id of the loaded full-file buffer, if any.
+    ///
+    /// The file owns one `inc_ref` on this buffer; the heap's child-traversal
+    /// (`for_each_child_id`) and free (`py_dec_ref_ids`) paths use this to keep
+    /// the buffer's refcount balanced when the file is freed.
+    #[must_use]
+    pub(crate) fn buffer_id(&self) -> Option<HeapId> {
+        self.buffer
+    }
+
     /// Returns the type represented by this file wrapper.
     #[must_use]
     pub fn file_type(&self) -> Type {
@@ -936,19 +946,17 @@ impl OpenFile {
     }
 }
 
-/// Increments `file_id`'s refcount by 2 for an OS call that pins the file
-/// across the host yield.
+/// Increments `file_id`'s refcount by 1 to pin the file across the host yield.
 ///
-/// One ref is owned by the [`ArgValues`] passed to the host (released when
-/// the host boundary converts the args to `MontyObject` and drops them); the
-/// other ref is owned by the VM's `pending_file_effect` slot and is released
-/// in [`apply_buffer_store`] / [`apply_write_position`] (or by
-/// [`VM::resume_with_exception`](crate::bytecode::VM::resume_with_exception)
-/// if the host raises). Keeping both inc_refs behind this one helper makes
-/// the matched dec_refs easier to verify by eye.
+/// The buffered read/write OS calls carry only the file's path, never a
+/// `Value::Ref` to the file object, so there is no argument ref to release at
+/// the host boundary. The single pin is owned by the VM's `pending_file_effect`
+/// slot and released by exactly one site per path: [`apply_buffer_store`] /
+/// [`apply_write_position`] (success), `resume_with_exception` (host raised),
+/// `VM::drop` (abandoned), or `CallResult`'s drop (call discarded before
+/// dispatch).
 fn inc_ref_for_pending_oscall(vm: &VM<'_, impl ResourceTracker>, file_id: HeapId) {
-    vm.heap.inc_ref(file_id); // released at the host boundary (args drop)
-    vm.heap.inc_ref(file_id); // released in apply_*_position / resume_with_exception (pin)
+    vm.heap.inc_ref(file_id);
 }
 
 /// Materialises the host-returned `result` into a heap-resident `HeapId`
