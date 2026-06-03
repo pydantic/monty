@@ -4,7 +4,10 @@
 //! backend modules can focus on mount semantics rather than repeating the same
 //! byte decoding, stat conversion, and quota bookkeeping logic.
 
-use std::{fs, io::ErrorKind, path::Path, time::SystemTime};
+use std::{fs, io::ErrorKind, path::Path};
+
+#[cfg(not(target_arch = "wasm32"))]
+use std::time::SystemTime;
 
 use super::error::MountError;
 use crate::{MontyObject, dir_stat, file_stat};
@@ -118,11 +121,14 @@ pub(super) fn rmdir_fs(path: &Path, vpath: &str) -> Result<MontyObject, MountErr
 /// Returns a `stat_result`-shaped object for a file or directory.
 pub(super) fn stat_fs(path: &Path, vpath: &str) -> Result<MontyObject, MountError> {
     let metadata = fs::metadata(path).map_err(|err| MountError::Io(err, vpath.to_owned()))?;
+    #[cfg(not(target_arch = "wasm32"))]
     let mtime = metadata
         .modified()
         .unwrap_or(SystemTime::UNIX_EPOCH)
         .duration_since(SystemTime::UNIX_EPOCH)
         .map_or(0.0, |duration| duration.as_secs_f64());
+    #[cfg(target_arch = "wasm32")]
+    let mtime = 0.0;
     let size = i64::try_from(metadata.len()).unwrap_or(i64::MAX);
 
     if metadata.is_dir() {
@@ -200,19 +206,33 @@ pub(super) fn bytes_to_utf8(bytes: Vec<u8>) -> Result<String, MountError> {
 }
 
 /// Returns the current Unix timestamp as seconds since the epoch.
+#[cfg(not(target_arch = "wasm32"))]
 pub(super) fn current_timestamp() -> f64 {
     SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
         .map_or(0.0, |duration| duration.as_secs_f64())
 }
 
+/// `SystemTime::now()` panics on wasm32-unknown-unknown, and virtual file mtimes
+/// are diagnostic-only for browser execution.
+#[cfg(target_arch = "wasm32")]
+pub(super) fn current_timestamp() -> f64 {
+    0.0
+}
+
 /// Reads a directory modification time, falling back to `now` if needed.
+#[cfg(not(target_arch = "wasm32"))]
 pub(super) fn dir_mtime(path: &Path) -> f64 {
     fs::metadata(path)
         .and_then(|metadata| metadata.modified())
         .unwrap_or_else(|_| SystemTime::now())
         .duration_since(SystemTime::UNIX_EPOCH)
         .map_or(0.0, |duration| duration.as_secs_f64())
+}
+
+#[cfg(target_arch = "wasm32")]
+pub(super) fn dir_mtime(_path: &Path) -> f64 {
+    0.0
 }
 
 /// Returns an `IsADirectory` error if `path` is a directory.
