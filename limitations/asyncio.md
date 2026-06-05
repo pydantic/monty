@@ -62,7 +62,7 @@ calls directly or pass them to `asyncio.gather()`. This lets sibling
 `gather` branches run concurrently while the JavaScript promises settle.
 
 Calling an async JavaScript external function from non-async Python code
-without `await` exposes Monty's internal external-future object. For
-backwards compatibility, `runMontyAsync()` unwraps the simple case where
-that unresolved future is the final top-level result, but nested or
-computed uses must be written with `await`.
+without `await` exposes Monty's internal external-future object, currently
+as its repr string. Code that wants the promise result must use `await`;
+`runMontyAsync()` does not parse string output to guess whether a value is
+an internal future.

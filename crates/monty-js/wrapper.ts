@@ -807,18 +807,6 @@ export async function runMontyAsync(montyRunner: Monty, options: RunMontyAsyncOp
     }
   }
 
-  if (pendingFutures.size === 1 && typeof progress.output === 'string') {
-    const match = progress.output.match(/^<coroutine external_future\((\d+)\)>$/)
-    const pending = match ? pendingFutures.get(Number(match[1])) : undefined
-    if (pending) {
-      const result = await pending
-      if (result.exception) {
-        throw new MontyRuntimeError(result.exception.type, result.exception.message)
-      }
-      return normalizeMontyReturnValue(result.returnValue)
-    }
-  }
-
   return progress.output
 }
 

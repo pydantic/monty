@@ -88,6 +88,27 @@ results[0] + results[1]
   t.is(maxActive, 2)
 })
 
+test('runMontyAsync does not parse string output as an internal future marker', async (t) => {
+  const m = new Monty(
+    `
+fetch()
+'<coroutine external_future(0)>'
+`,
+    {},
+  )
+
+  const result = await runMontyAsync(m, {
+    externalFunctions: {
+      fetch: async () => {
+        await new Promise((resolve) => setTimeout(resolve, 5))
+        return 'promise result'
+      },
+    },
+  })
+
+  t.is(result, '<coroutine external_future(0)>')
+})
+
 test('runMontyAsync with inputs', async (t) => {
   const m = new Monty('await multiply(x)', { inputs: ['x'] })
 
