@@ -141,6 +141,8 @@ pub(crate) struct OsHandler {
     /// Shared references to each mount's storage. The mounts are **taken** out
     /// at the start of a run and **put back** when the run completes.
     mounts: Vec<SharedMount>,
+    /// Whether `mount=` was supplied, making the mount table the filesystem boundary.
+    pub(crate) filesystem_boundary: bool,
     /// Optional Python callable for non-filesystem OS operations.
     pub(crate) fallback: Option<Py<PyAny>>,
 }
@@ -158,6 +160,7 @@ impl OsHandler {
         mount: Option<&Bound<'_, PyAny>>,
         os: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<Option<Self>> {
+        let filesystem_boundary = mount.is_some();
         let mounts = match mount {
             Some(arg) => extract_mounts(arg)?,
             None => vec![],
@@ -176,13 +179,17 @@ impl OsHandler {
             None => None,
         };
 
-        if mounts.is_empty() && fallback.is_none() {
+        if !filesystem_boundary && fallback.is_none() {
             return Ok(None);
         }
 
         // For backwards compatibility: if only `os` is provided (no mounts),
         // the callable handles all OS operations including filesystem ops.
-        Ok(Some(Self { mounts, fallback }))
+        Ok(Some(Self {
+            mounts,
+            filesystem_boundary,
+            fallback,
+        }))
     }
 
     /// Takes all mounts out of their shared slots and assembles a [`MountTable`].

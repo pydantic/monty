@@ -221,9 +221,9 @@ impl PyMonty {
     /// Starts code execution, returning a progress snapshot or the final result.
     ///
     /// When `mount` or `os` is provided, OS calls are resolved automatically via
-    /// the same logic as [`Monty::run`] (mount table first, then the Python
-    /// callback), and the method only returns a snapshot when a non-OS event is
-    /// reached (external function, name lookup, future, or completion).
+    /// the same mount/OS boundary as [`Monty::run`], and the method only returns
+    /// a snapshot when a non-OS event is reached (external function, name lookup,
+    /// future, or completion).
     ///
     /// The auto-dispatch does **not** persist across subsequent `snapshot.resume()`
     /// calls — once a snapshot is returned, any OS call produced by a later resume
@@ -628,11 +628,12 @@ impl PyMonty {
                 }
                 RunProgress::OsCall(call) => {
                     let fallback = os_handler.as_ref().and_then(|h| h.fallback.as_ref());
+                    let filesystem_boundary = os_handler.as_ref().is_some_and(|h| h.filesystem_boundary);
                     // `handle_mount_os_call` can fail during Python⇄Monty conversion;
                     // put mounts back before propagating so the `MountDir` slot doesn't
                     // get permanently stuck in the "in use" state.
                     let result: ExtFunctionResult = if let Some(table) = &mut mount_table {
-                        match handle_mount_os_call(py, &call, table, fallback, &self.dc_registry) {
+                        match handle_mount_os_call(py, &call, table, filesystem_boundary, fallback, &self.dc_registry) {
                             Ok(r) => r,
                             Err(e) => {
                                 put_back(mount_table);
@@ -2081,6 +2082,7 @@ pub(crate) fn drive_run_progress_through_os_calls<T: ResourceTracker + Send>(
 ) -> PyResult<RunProgress<T>> {
     let mut mount_table: Option<MountTable> = None;
     let fallback = handler.fallback.as_ref();
+    let filesystem_boundary = handler.filesystem_boundary;
     let put_back = |mount_table: &mut Option<MountTable>| {
         if let Some(table) = mount_table.take() {
             handler.put_back(table);
@@ -2095,7 +2097,7 @@ pub(crate) fn drive_run_progress_through_os_calls<T: ResourceTracker + Send>(
                     let table = handler.take()?;
                     mount_table.insert(table)
                 };
-                let result = match handle_mount_os_call(py, &call, table, fallback, dc_registry) {
+                let result = match handle_mount_os_call(py, &call, table, filesystem_boundary, fallback, dc_registry) {
                     Ok(r) => r,
                     Err(e) => {
                         put_back(&mut mount_table);
@@ -2119,16 +2121,16 @@ pub(crate) fn drive_run_progress_through_os_calls<T: ResourceTracker + Send>(
 }
 
 /// Handles an OS call via a Rust [`MountTable`], falling through to the
-/// `fallback` callable for unhandled operations.
+/// `fallback` callable only when the mount table is not the filesystem boundary.
 ///
-/// The mount table returns `None` for non-filesystem ops and for paths that
-/// don't match any mount. In both cases we try the fallback, or fall back to
-/// [`OsFunction::on_no_handler`] which returns `PermissionError` for filesystem
-/// ops and `RuntimeError` for non-filesystem ops.
+/// When `mount=` is supplied, filesystem paths outside the configured mounts are
+/// denied via [`OsFunction::on_no_handler`]. Non-filesystem ops still fall through
+/// to `fallback`, and `os=`-only callers keep filesystem fallback compatibility.
 pub(crate) fn handle_mount_os_call<T: ResourceTracker>(
     py: Python<'_>,
     call: &OsCall<T>,
     table: &mut MountTable,
+    filesystem_boundary: bool,
     fallback: Option<&Py<PyAny>>,
     dc_registry: &DcRegistry,
 ) -> PyResult<ExtFunctionResult> {
@@ -2136,8 +2138,9 @@ pub(crate) fn handle_mount_os_call<T: ResourceTracker>(
         Some(Ok(obj)) => Ok(obj.into()),
         Some(Err(mount_err)) => Ok(mount_err.into_exception().into()),
         None => {
-            // Intentional: unmounted paths fall through to `os=`.
-            if let Some(fb) = fallback {
+            if filesystem_boundary && call.function_call.is_filesystem() {
+                Ok(call.function_call.on_no_handler().into())
+            } else if let Some(fb) = fallback {
                 call_os_callback(py, call, fb.bind(py), dc_registry)
             } else {
                 Ok(call.function_call.on_no_handler().into())

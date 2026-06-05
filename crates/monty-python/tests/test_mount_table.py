@@ -295,6 +295,54 @@ def test_unmounted_path_denied(test_dir: Path):
     assert 'Permission denied' in str(exc_info.value)
 
 
+def test_unmounted_path_denied_before_os_fallback(test_dir: Path):
+    md = MountDir('/data', str(test_dir), mode='read-only')
+    calls: list[str] = []
+
+    def fallback(function_name: str, args: tuple[object, ...], kwargs: dict[str, object]) -> object:
+        calls.append(function_name)
+        return True
+
+    with pytest.raises(MontyRuntimeError) as exc_info:
+        Monty("from pathlib import Path; Path('/other/file.txt').exists()").run(mount=md, os=fallback)
+    assert isinstance(exc_info.value.exception(), PermissionError)
+    assert calls == []
+    assert_mount_reusable(md)
+
+
+def test_unmounted_open_denied_before_os_fallback(test_dir: Path):
+    md = MountDir('/data', str(test_dir), mode='read-only')
+    calls: list[str] = []
+
+    def fallback(function_name: str, args: tuple[object, ...], kwargs: dict[str, object]) -> object:
+        calls.append(function_name)
+        return 'fallback'
+
+    with pytest.raises(MontyRuntimeError) as exc_info:
+        Monty("open('/outside.txt')").run(mount=md, os=fallback)
+    assert isinstance(exc_info.value.exception(), PermissionError)
+    assert calls == []
+    assert_mount_reusable(md)
+
+
+def test_repl_feed_run_unmounted_path_denied_before_os_fallback(test_dir: Path):
+    md = MountDir('/data', str(test_dir), mode='read-only')
+    repl = MontyRepl()
+    repl.feed_run('x = 42')
+    calls: list[str] = []
+
+    def fallback(function_name: str, args: tuple[object, ...], kwargs: dict[str, object]) -> object:
+        calls.append(function_name)
+        return True
+
+    with pytest.raises(MontyRuntimeError) as exc_info:
+        repl.feed_run("from pathlib import Path; Path('/outside').exists()", mount=md, os=fallback)
+    assert isinstance(exc_info.value.exception(), PermissionError)
+    assert calls == []
+    assert repl.feed_run('x') == snapshot(42)
+    assert_mount_reusable(md)
+
+
 # =============================================================================
 # Fallback via os= for non-filesystem ops
 # =============================================================================
@@ -316,6 +364,30 @@ def test_no_fallback_not_implemented(test_dir: Path):
     with pytest.raises(MontyRuntimeError) as exc_info:
         Monty("import os; os.getenv('PATH')").run(mount=md)
     assert 'is not supported in this environment' in str(exc_info.value)
+
+
+def test_empty_mount_list_denies_filesystem_but_keeps_non_fs_fallback():
+    calls: list[str] = []
+
+    def fallback(function_name: str, args: tuple[object, ...], kwargs: dict[str, object]) -> object:
+        calls.append(function_name)
+        return 'my_value' if function_name == 'os.getenv' else True
+
+    result = Monty("import os; os.getenv('MY_VAR')").run(mount=[], os=fallback)
+    assert result == snapshot('my_value')
+    assert calls == snapshot(['os.getenv'])
+
+    calls.clear()
+    with pytest.raises(MontyRuntimeError) as exc_info:
+        Monty("from pathlib import Path; Path('/other/file.txt').exists()").run(mount=[], os=fallback)
+    assert isinstance(exc_info.value.exception(), PermissionError)
+    assert calls == []
+
+
+def test_empty_mount_list_without_os_denies_filesystem():
+    with pytest.raises(MontyRuntimeError) as exc_info:
+        Monty("from pathlib import Path; Path('/other/file.txt').exists()").run(mount=[])
+    assert isinstance(exc_info.value.exception(), PermissionError)
 
 
 # =============================================================================
@@ -494,8 +566,7 @@ def test_run_mount_released_after_callback_marshalling_error(test_dir: Path):
     def os_cb(func: object, args: tuple[object, ...], kwargs: dict[str, object]) -> object:
         return object()  # unconvertible — surfaces inside Monty as TypeError
 
-    # Path is outside the mount so it falls through to the os= fallback.
-    code = "from pathlib import Path; Path('/outside/path.txt').exists()"
+    code = "import os; os.getenv('MY_VAR')"
     with pytest.raises(MontyRuntimeError) as exc_info:
         Monty(code).run(mount=md, os=os_cb)
     assert isinstance(exc_info.value.exception(), TypeError)
@@ -513,9 +584,9 @@ def test_os_callback_lone_surrogate_return_surfaces_inside_monty(test_dir: Path)
     # Catching inside Monty proves the error arrives as an in-VM exception rather
     # than propagating out as a raw PyErr.
     code = (
-        'from pathlib import Path\n'
+        'import os\n'
         'try:\n'
-        "    Path('/outside/path.txt').read_text()\n"
+        "    os.getenv('MY_VAR')\n"
         "    result = 'no error'\n"
         'except ValueError as e:\n'
         "    result = 'caught'\n"
@@ -538,7 +609,7 @@ def test_repl_feed_run_mount_and_repl_released_after_callback_marshalling_error(
     def os_cb(func: object, args: tuple[object, ...], kwargs: dict[str, object]) -> object:
         return object()  # unconvertible — surfaces inside Monty as TypeError
 
-    code = "from pathlib import Path; Path('/outside/path.txt').exists()"
+    code = "import os; os.getenv('MY_VAR')"
     with pytest.raises(MontyRuntimeError) as exc_info:
         repl.feed_run(code, mount=md, os=os_cb)
     assert isinstance(exc_info.value.exception(), TypeError)

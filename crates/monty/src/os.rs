@@ -719,3 +719,77 @@ const STAT_RESULT_TYPE_NAME: &str = "StatResult";
 const STAT_RESULT_FIELDS: &[&str] = &[
     "st_mode", "st_ino", "st_dev", "st_nlink", "st_uid", "st_gid", "st_size", "st_atime", "st_mtime", "st_ctime",
 ];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn path() -> MontyPath {
+        MontyPath::new("/path".to_owned())
+    }
+
+    #[test]
+    fn filesystem_classification_covers_real_os_calls() {
+        let filesystem_calls = vec![
+            OsFunctionCall::Exists(path()),
+            OsFunctionCall::IsFile(path()),
+            OsFunctionCall::IsDir(path()),
+            OsFunctionCall::IsSymlink(path()),
+            OsFunctionCall::ReadText(path()),
+            OsFunctionCall::ReadBytes(path()),
+            OsFunctionCall::Stat(path()),
+            OsFunctionCall::Iterdir(path()),
+            OsFunctionCall::Resolve(path()),
+            OsFunctionCall::Absolute(path()),
+            OsFunctionCall::WriteText(PathStringDataArgs {
+                path: path(),
+                data: "text".to_owned(),
+            }),
+            OsFunctionCall::AppendText(PathStringDataArgs {
+                path: path(),
+                data: "text".to_owned(),
+            }),
+            OsFunctionCall::WriteBytes(PathBytesDataArgs {
+                path: path(),
+                data: b"bytes".to_vec(),
+            }),
+            OsFunctionCall::AppendBytes(PathBytesDataArgs {
+                path: path(),
+                data: b"bytes".to_vec(),
+            }),
+            OsFunctionCall::Open(OpenCallArgs {
+                path: path(),
+                mode: FileMode::Read(false),
+            }),
+            OsFunctionCall::Mkdir(MkdirCallArgs {
+                path: path(),
+                parents: false,
+                exist_ok: false,
+            }),
+            OsFunctionCall::Unlink(path()),
+            OsFunctionCall::Rmdir(path()),
+            OsFunctionCall::Rename(RenameCallArgs {
+                src: path(),
+                dst: MontyPath::new("/dst".to_owned()),
+            }),
+        ];
+
+        for call in filesystem_calls {
+            assert!(call.is_filesystem(), "{} should be filesystem", call.name());
+        }
+
+        let non_filesystem_calls = vec![
+            OsFunctionCall::Getenv(GetenvArgs {
+                key: "KEY".to_owned(),
+                default: MontyObject::None,
+            }),
+            OsFunctionCall::GetEnviron,
+            OsFunctionCall::DateToday,
+            OsFunctionCall::DateTimeNow(MontyObject::None),
+        ];
+
+        for call in non_filesystem_calls {
+            assert!(!call.is_filesystem(), "{} should not be filesystem", call.name());
+        }
+    }
+}

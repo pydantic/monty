@@ -169,10 +169,13 @@ class Monty:
             print_callback: `None` (write to stdout/stderr), a callable `(stream, text) -> None`,
                 `CollectStreams()`, or `CollectString()`.
             mount: Optional filesystem mount(s) to expose inside the sandbox.
-            os: Optional callback for OS calls.
-                Called with (function_name, args) where function_name is like 'Path.exists'
-                and args is a tuple of arguments. Must return the appropriate value for the
-                OS function (e.g., bool for exists(), stat_result for stat()).
+                When supplied, filesystem calls are handled only by the mount table;
+                unmounted filesystem paths use Monty's default unhandled filesystem
+                error and do not call `os`.
+            os: Optional callback for OS calls. Called with (function_name, args, kwargs)
+                and must return the appropriate value for the OS function. When `mount`
+                is supplied, this callback is used for non-filesystem OS calls only.
+                Without `mount`, it can handle filesystem calls as well.
 
         Returns:
             The result of the last expression in the code.
@@ -198,8 +201,8 @@ class Monty:
         The GIL is released allowing parallel execution.
 
         When `mount` or `os` is provided, OS calls are resolved automatically using
-        the same logic as `run()` (mount table first, then the `os` callback),
-        this method only returns a snapshot when a non-OS event is reached
+        the same mount/OS boundary as `run()`, and this method only returns a snapshot
+        when a non-OS event is reached
         (external function, name lookup, future, or completion).
 
         Auto-dispatch does NOT persist across subsequent `snapshot.resume()` calls —
@@ -211,9 +214,12 @@ class Monty:
             limits: Optional resource limits configuration
             print_callback: Optional callback for print output
             mount: Optional filesystem mount(s) to expose inside the sandbox.
+                When supplied, filesystem calls are handled only by the mount table;
+                unmounted filesystem paths do not call `os`.
             os: Optional callback for OS calls. Called with (function_name, args, kwargs)
-                and must return the appropriate value for the OS function. Return
-                `NOT_HANDLED` to fall back to Monty's default unhandled behavior.
+                and must return the appropriate value for the OS function. With
+                `mount`, this handles non-filesystem OS calls. Return `NOT_HANDLED`
+                to fall back to Monty's default unhandled behavior.
 
         Returns:
             FunctionSnapshot if an external function call is pending,
@@ -395,8 +401,12 @@ class MontyRepl:
                 dispatched to the provided callables — matching the behavior
                 of `Monty.run(external_functions=...)`.
             print_callback: Optional callback for print output
-            mount: Optional filesystem mount(s) to expose inside the sandbox
-            os: Optional OS access handler for filesystem operations
+            mount: Optional filesystem mount(s) to expose inside the sandbox.
+                When supplied, filesystem calls are handled only by the mount table;
+                unmounted filesystem paths do not call `os`.
+            os: Optional OS access callback. With `mount`, this handles
+                non-filesystem OS calls. Without `mount`, it can handle filesystem
+                calls as well.
             skip_type_check: When `True`, static type checking is bypassed for
                 this snippet AND the snippet is NOT appended to the accumulated
                 type-check context, so later type-checked snippets will not see
@@ -462,8 +472,8 @@ class MontyRepl:
         including support for async external functions via `FutureSnapshot`.
 
         When `mount` or `os` is provided, OS calls are resolved automatically using
-        the same logic as `feed_run()`, and this method only returns a snapshot when
-        a non-OS event is reached. Auto-dispatch does NOT persist across subsequent
+        the same mount/OS boundary as `feed_run()`, and this method only returns a
+        snapshot when a non-OS event is reached. Auto-dispatch does NOT persist across subsequent
         `snapshot.resume()` calls — OS calls produced after the first resume surface
         as a `FunctionSnapshot` with `is_os_function=True`, as before.
 
@@ -475,9 +485,12 @@ class MontyRepl:
                 before executing the snippet
             print_callback: Optional callback for print output
             mount: Optional filesystem mount(s) to expose inside the sandbox.
+                When supplied, filesystem calls are handled only by the mount table;
+                unmounted filesystem paths do not call `os`.
             os: Optional callback for OS calls. Called with (function_name, args, kwargs)
-                and must return the appropriate value for the OS function. Return
-                `NOT_HANDLED` to fall back to Monty's default unhandled behavior.
+                and must return the appropriate value for the OS function. With
+                `mount`, this handles non-filesystem OS calls. Return `NOT_HANDLED`
+                to fall back to Monty's default unhandled behavior.
             skip_type_check: When `True`, static type checking is bypassed for
                 this snippet AND the snippet is NOT appended to the accumulated
                 type-check context, so later type-checked snippets will not see
@@ -583,8 +596,11 @@ class FunctionSnapshot:
         Arguments:
             result: A typeddict representing the return value, exception, or pending future.
             mount: Optional filesystem mount(s) to expose inside the sandbox.
-            os: Optional callback for OS calls. Return `NOT_HANDLED` to fall back
-                to Monty's default unhandled behavior.
+                When supplied, filesystem calls are handled only by the mount table;
+                unmounted filesystem paths do not call `os`.
+            os: Optional callback for OS calls. With `mount`, this handles
+                non-filesystem OS calls. Return `NOT_HANDLED` to fall back to
+                Monty's default unhandled behavior.
 
         Returns:
             FunctionSnapshot if another external function call is pending,
@@ -611,6 +627,7 @@ class FunctionSnapshot:
 
         When `mount` or `os` is provided, OS calls produced by the resumed
         execution are auto-dispatched until a non-OS event is reached.
+        With `mount`, unmounted filesystem paths do not call `os`.
         """
 
     def dump(self) -> bytes:
@@ -672,8 +689,11 @@ class NameLookupSnapshot:
         Arguments:
             value: The value from the name lookup, if any.
             mount: Optional filesystem mount(s) to expose inside the sandbox.
-            os: Optional callback for OS calls. Return `NOT_HANDLED` to fall back
-                to Monty's default unhandled behavior.
+                When supplied, filesystem calls are handled only by the mount table;
+                unmounted filesystem paths do not call `os`.
+            os: Optional callback for OS calls. With `mount`, this handles
+                non-filesystem OS calls. Return `NOT_HANDLED` to fall back to
+                Monty's default unhandled behavior.
 
         Returns:
             FunctionSnapshot if an external function call is pending,
@@ -748,8 +768,11 @@ class FutureSnapshot:
             results: Dict mapping call_id to result dict. Each result dict must have
                 either 'return_value' or 'exception' key (not both).
             mount: Optional filesystem mount(s) to expose inside the sandbox.
-            os: Optional callback for OS calls. Return `NOT_HANDLED` to fall back
-                to Monty's default unhandled behavior.
+                When supplied, filesystem calls are handled only by the mount table;
+                unmounted filesystem paths do not call `os`.
+            os: Optional callback for OS calls. With `mount`, this handles
+                non-filesystem OS calls. Return `NOT_HANDLED` to fall back to
+                Monty's default unhandled behavior.
 
         Returns:
             FunctionSnapshot if an external function call is pending,

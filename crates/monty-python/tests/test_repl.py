@@ -1024,6 +1024,23 @@ def test_feed_start_os_not_handled_falls_through():
     assert repl.feed_run('1 + 1') == snapshot(2)
 
 
+def test_feed_start_mount_denies_unmounted_path_before_os_callback(test_dir: Path):
+    md = MountDir('/data', str(test_dir), mode='read-only')
+    calls: list[str] = []
+
+    def os_cb(func: str, args: tuple[Any, ...], kwargs: dict[str, Any]) -> bool:
+        calls.append(func)
+        return True
+
+    repl = pydantic_monty.MontyRepl()
+    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
+        repl.feed_start("from pathlib import Path; Path('/outside').exists()", mount=md, os=os_cb)
+    assert isinstance(exc_info.value.exception(), PermissionError)
+    assert calls == []
+    assert repl.feed_run('1 + 1') == snapshot(2)
+    assert_mount_reusable(md)
+
+
 def test_feed_start_mount_released_after_completion(test_dir: Path):
     """After feed_start auto-dispatches, the mount is put back and usable again."""
     md = MountDir('/data', str(test_dir), mode='read-only')
@@ -1047,7 +1064,7 @@ def test_feed_start_mount_contention_on_os_call_restores_repl_state(test_dir: Pa
             repl.feed_start("from pathlib import Path; Path('/data/hello.txt').read_text()", mount=md)
         return False
 
-    outer = pydantic_monty.Monty("from pathlib import Path; Path('/outside').exists()")
+    outer = pydantic_monty.Monty("import os; os.getenv('MY_VAR')")
     result = outer.start(mount=md, os=os_cb)
     assert isinstance(result, pydantic_monty.MontyComplete)
     assert result.output is False
@@ -1105,6 +1122,31 @@ result = (x, exists)
     assert isinstance(p1, pydantic_monty.FunctionSnapshot)
     p1.resume({'return_value': 'fetched'}, os=os_cb)
     assert repl.feed_run('result') == snapshot(('fetched', True))
+
+
+def test_repl_function_snapshot_resume_mount_denies_unmounted_path_before_os_callback(test_dir: Path):
+    md = MountDir('/data', str(test_dir), mode='read-only')
+    calls: list[str] = []
+    repl = pydantic_monty.MontyRepl()
+    code = """
+from pathlib import Path
+value = fetch()
+Path('/outside').exists()
+result = value
+"""
+    progress = repl.feed_start(code)
+    assert isinstance(progress, pydantic_monty.FunctionSnapshot)
+
+    def os_cb(func: str, args: tuple[Any, ...], kwargs: dict[str, Any]) -> bool:
+        calls.append(func)
+        return True
+
+    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
+        progress.resume({'return_value': 'fetched'}, mount=md, os=os_cb)
+    assert isinstance(exc_info.value.exception(), PermissionError)
+    assert calls == []
+    assert repl.feed_run('1 + 1') == snapshot(2)
+    assert_mount_reusable(md)
 
 
 def test_repl_function_snapshot_resume_yields_next_external(test_dir: Path):
@@ -1322,7 +1364,7 @@ result = (value, content)
             pending.resume({'return_value': 'fetched'}, mount=md)
         return False
 
-    outer = pydantic_monty.Monty("from pathlib import Path; Path('/outside').exists()")
+    outer = pydantic_monty.Monty("import os; os.getenv('MY_VAR')")
     result = outer.start(mount=md, os=os_cb)
     assert isinstance(result, pydantic_monty.MontyComplete)
     assert result.output is False

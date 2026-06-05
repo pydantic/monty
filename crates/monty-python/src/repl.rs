@@ -868,6 +868,7 @@ impl PyMontyRepl {
         // Take mounts out of shared slots for zero-overhead execution.
         let mut mount_table: Option<MountTable> = os_handler.map(OsHandler::take).transpose()?;
         let fallback = os_handler.and_then(|h| h.fallback.as_ref());
+        let filesystem_boundary = os_handler.is_some_and(|h| h.filesystem_boundary);
 
         // Helper: put mounts back into shared slots.
         let put_back = |table: Option<MountTable>| {
@@ -938,15 +939,21 @@ impl PyMontyRepl {
                     // `handle_repl_os_call` can fail during Python⇄Monty conversion of
                     // args/results. The OS call still owns the REPL handle — extract
                     // it via `into_repl` and put mounts back so neither leaks.
-                    let result: ExtFunctionResult =
-                        match handle_repl_os_call(py, &call, mount_table.as_mut(), fallback, &self.dc_registry) {
-                            Ok(r) => r,
-                            Err(e) => {
-                                put_back(mount_table);
-                                self.put_repl_after_rollback(EitherRepl::from_core(call.into_repl()));
-                                return Err(e);
-                            }
-                        };
+                    let result: ExtFunctionResult = match handle_repl_os_call(
+                        py,
+                        &call,
+                        mount_table.as_mut(),
+                        filesystem_boundary,
+                        fallback,
+                        &self.dc_registry,
+                    ) {
+                        Ok(r) => r,
+                        Err(e) => {
+                            put_back(mount_table);
+                            self.put_repl_after_rollback(EitherRepl::from_core(call.into_repl()));
+                            return Err(e);
+                        }
+                    };
 
                     progress = match py.detach(|| print_target.with_writer(|w| call.resume(result, w))) {
                         Ok(p) => p,
@@ -1065,6 +1072,7 @@ where
 {
     let mut mount_table: Option<MountTable> = None;
     let fallback = handler.fallback.as_ref();
+    let filesystem_boundary = handler.filesystem_boundary;
     let put_back = |mount_table: &mut Option<MountTable>| {
         if let Some(table) = mount_table.take() {
             handler.put_back(table);
@@ -1085,7 +1093,7 @@ where
                     };
                     Some(mount_table.insert(table))
                 };
-                let result = match handle_repl_os_call(py, &call, table, fallback, dc_registry) {
+                let result = match handle_repl_os_call(py, &call, table, filesystem_boundary, fallback, dc_registry) {
                     Ok(r) => r,
                     Err(e) => {
                         put_back(&mut mount_table);
@@ -1122,10 +1130,14 @@ where
 /// mount is configured. This matches [`handle_mount_os_call`] (which always has
 /// a mount table) while remaining ergonomic from the `Option<MountTable>`-holding
 /// loops in `feed_start_loop` and `drive_repl_progress_through_os_calls`.
+///
+/// When `mount=` is supplied, filesystem paths outside the mounts are denied
+/// before the fallback callback. `os=`-only callers still get filesystem fallback.
 fn handle_repl_os_call<T: ResourceTracker>(
     py: Python<'_>,
     call: &monty::ReplOsCall<T>,
     mount_table: Option<&mut MountTable>,
+    filesystem_boundary: bool,
     fallback: Option<&Py<PyAny>>,
     dc_registry: &DcRegistry,
 ) -> PyResult<ExtFunctionResult> {
@@ -1133,8 +1145,12 @@ fn handle_repl_os_call<T: ResourceTracker>(
         match table.handle_os_call(&call.function_call) {
             Some(Ok(obj)) => return Ok(obj.into()),
             Some(Err(mount_err)) => return Ok(mount_err.into_exception().into()),
-            None => {} // Intentional: unmounted paths fall through to `os=`.
+            None => {}
         }
+    }
+
+    if filesystem_boundary && call.function_call.is_filesystem() {
+        return Ok(call.function_call.on_no_handler().into());
     }
 
     if let Some(fb) = fallback {
