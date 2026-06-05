@@ -53,3 +53,16 @@ Concurrency is cooperative and host-driven. `gather` suspends Monty
 whenever every branch is blocked on an external call, hands the pending
 calls to the host, and resumes when the host returns results. There is no
 preemption, no threads, and no in-sandbox scheduler.
+
+## JavaScript binding behavior
+
+`runMontyAsync()` treats JavaScript `Promise` results from external
+functions as Monty external futures. Python code should `await` those
+calls directly or pass them to `asyncio.gather()`. This lets sibling
+`gather` branches run concurrently while the JavaScript promises settle.
+
+Calling an async JavaScript external function from non-async Python code
+without `await` exposes Monty's internal external-future object. For
+backwards compatibility, `runMontyAsync()` unwraps the simple case where
+that unresolved future is the final top-level result, but nested or
+computed uses must be written with `await`.

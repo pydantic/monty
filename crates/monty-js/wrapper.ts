@@ -9,8 +9,11 @@ import type {
   JsMontyObject,
   MountDirOptions,
   MontyOptions,
+  FutureResultInput,
   NameLookupLoadOptions,
   NameLookupResumeOptions,
+  ResolveFuturesLoadOptions,
+  ResolveFuturesResumeOptions,
   ResourceLimits,
   ResumeOptions,
   RunOptions as NativeRunOptions,
@@ -24,6 +27,7 @@ import {
   MontyRepl as NativeMontyRepl,
   MontySnapshot as NativeMontySnapshot,
   MontyNameLookup as NativeMontyNameLookup,
+  MontyResolveFutures as NativeMontyResolveFutures,
   MontyComplete as NativeMontyComplete,
   MontyException as NativeMontyException,
   MontyTypingError as NativeMontyTypingError,
@@ -38,6 +42,9 @@ export type {
   ResumeOptions,
   ExceptionInput,
   SnapshotLoadOptions,
+  FutureResultInput,
+  ResolveFuturesResumeOptions,
+  ResolveFuturesLoadOptions,
   NameLookupResumeOptions,
   NameLookupLoadOptions,
   JsMontyObject,
@@ -337,7 +344,7 @@ export class Monty {
    *   name lookup, MontyComplete if done
    * @throws {MontyRuntimeError} If the code raises an exception
    */
-  start(options?: StartOptions): MontySnapshot | MontyNameLookup | MontyComplete {
+  start(options?: StartOptions): MontySnapshot | MontyNameLookup | MontyResolveFutures | MontyComplete {
     const result = this._native.start(options)
     return wrapStartResult(result)
   }
@@ -444,8 +451,13 @@ export class MontyRepl {
  * Helper to wrap native start/resume results, throwing errors as needed.
  */
 function wrapStartResult(
-  result: NativeMontySnapshot | NativeMontyNameLookup | NativeMontyComplete | NativeMontyException,
-): MontySnapshot | MontyNameLookup | MontyComplete {
+  result:
+    | NativeMontySnapshot
+    | NativeMontyNameLookup
+    | NativeMontyResolveFutures
+    | NativeMontyComplete
+    | NativeMontyException,
+): MontySnapshot | MontyNameLookup | MontyResolveFutures | MontyComplete {
   if (result instanceof NativeMontyException) {
     throw new MontyRuntimeError(result)
   }
@@ -456,6 +468,9 @@ function wrapStartResult(
   }
   if (result instanceof NativeMontySnapshot) {
     return new MontySnapshot(result)
+  }
+  if (result instanceof NativeMontyResolveFutures) {
+    return new MontyResolveFutures(result)
   }
   if (result instanceof NativeMontyComplete) {
     return new MontyComplete(result)
@@ -486,6 +501,11 @@ export class MontySnapshot {
     return this._native.functionName
   }
 
+  /** Returns the external call identifier used for async future resolution. */
+  get callId(): number {
+    return this._native.callId
+  }
+
   /** Returns the positional arguments passed to the external function. */
   get args(): JsMontyObject[] {
     return this._native.args
@@ -504,8 +524,16 @@ export class MontySnapshot {
    *   name lookup, MontyComplete if done
    * @throws {MontyRuntimeError} If the code raises an exception
    */
-  resume(options: ResumeOptions): MontySnapshot | MontyNameLookup | MontyComplete {
+  resume(options: ResumeOptions): MontySnapshot | MontyNameLookup | MontyResolveFutures | MontyComplete {
     const result = this._native.resume(options)
+    return wrapStartResult(result)
+  }
+
+  /**
+   * Resumes execution by returning a pending external future to Monty.
+   */
+  resumePending(): MontySnapshot | MontyNameLookup | MontyResolveFutures | MontyComplete {
+    const result = this._native.resumePending()
     return wrapStartResult(result)
   }
 
@@ -565,7 +593,7 @@ export class MontyNameLookup {
    *   another name lookup, MontyComplete if done
    * @throws {MontyRuntimeError} If the code raises an exception
    */
-  resume(options?: NameLookupResumeOptions): MontySnapshot | MontyNameLookup | MontyComplete {
+  resume(options?: NameLookupResumeOptions): MontySnapshot | MontyNameLookup | MontyResolveFutures | MontyComplete {
     const result = this._native.resume(options)
     return wrapStartResult(result)
   }
@@ -586,6 +614,51 @@ export class MontyNameLookup {
   }
 
   /** Returns a string representation of the MontyNameLookup. */
+  repr(): string {
+    return this._native.repr()
+  }
+}
+
+/**
+ * Represents paused execution waiting for JavaScript promises to settle.
+ */
+export class MontyResolveFutures {
+  private _native: NativeMontyResolveFutures
+
+  constructor(nativeResolveFutures: NativeMontyResolveFutures) {
+    this._native = nativeResolveFutures
+  }
+
+  /** Returns the name of the script being executed. */
+  get scriptName(): string {
+    return this._native.scriptName
+  }
+
+  /** Returns the external call IDs currently awaited by Monty. */
+  get pendingCallIds(): number[] {
+    return this._native.pendingCallIds
+  }
+
+  /**
+   * Resumes execution with one or more settled promise results.
+   */
+  resume(options: ResolveFuturesResumeOptions): MontySnapshot | MontyNameLookup | MontyResolveFutures | MontyComplete {
+    const result = this._native.resume(options)
+    return wrapStartResult(result)
+  }
+
+  /** Serializes the future-resolution snapshot to a binary format. */
+  dump(): Buffer {
+    return this._native.dump()
+  }
+
+  /** Deserializes a future-resolution snapshot from binary format. */
+  static load(data: Buffer, options?: ResolveFuturesLoadOptions): MontyResolveFutures {
+    const nativeResolveFutures = NativeMontyResolveFutures.load(data, options)
+    return new MontyResolveFutures(nativeResolveFutures)
+  }
+
+  /** Returns a string representation of the future-resolution snapshot. */
   repr(): string {
     return this._native.repr()
   }
@@ -632,8 +705,8 @@ export interface RunMontyAsyncOptions {
  * Runs a Monty script with async external function support.
  *
  * This function handles both synchronous and asynchronous external functions.
- * When an external function returns a Promise, it will be awaited before
- * resuming execution.
+ * When an external function returns a Promise, Monty receives a pending
+ * external future so Python `await` and `asyncio.gather()` can drive it.
  *
  * @param montyRunner - The Monty runner instance to execute
  * @param options - Execution options
@@ -659,12 +732,13 @@ export interface RunMontyAsyncOptions {
 export async function runMontyAsync(montyRunner: Monty, options: RunMontyAsyncOptions = {}): Promise<JsMontyObject> {
   const { inputs, externalFunctions = {}, limits, printCallback, mount } = options
 
-  let progress: MontySnapshot | MontyNameLookup | MontyComplete = montyRunner.start({
+  let progress: MontySnapshot | MontyNameLookup | MontyResolveFutures | MontyComplete = montyRunner.start({
     inputs,
     limits,
     printCallback,
     mount,
   })
+  const pendingFutures = new Map<number, Promise<FutureResultInput>>()
 
   while (!(progress instanceof MontyComplete)) {
     if (progress instanceof MontyNameLookup) {
@@ -678,6 +752,23 @@ export async function runMontyAsync(montyRunner: Monty, options: RunMontyAsyncOp
         // Unknown name — resume with no value to raise NameError
         progress = progress.resume()
       }
+      continue
+    }
+
+    if (progress instanceof MontyResolveFutures) {
+      const waiting = progress.pendingCallIds.map((callId) => {
+        const pending = pendingFutures.get(callId)
+        if (!pending) {
+          throw new Error(`No pending JavaScript promise for Monty callId ${callId}`)
+        }
+        return pending
+      })
+      if (waiting.length === 0) {
+        throw new Error('Monty requested future resolution without pending call IDs')
+      }
+      const result = await Promise.race(waiting)
+      pendingFutures.delete(result.callId)
+      progress = progress.resume({ results: [result] })
       continue
     }
 
@@ -700,28 +791,66 @@ export async function runMontyAsync(montyRunner: Monty, options: RunMontyAsyncOp
 
     try {
       // Call the external function
-      let result = extFunction(...snapshot.args, snapshot.kwargs)
+      const result = extFunction(...snapshot.args, snapshot.kwargs)
 
-      // If the result is a Promise, await it
-      if (result && typeof (result as Promise<unknown>).then === 'function') {
-        result = await result
+      // If the result is a Promise, return a pending future to Monty so
+      // `await`/`asyncio.gather()` can drive concurrent external work.
+      if (isPromiseLike(result)) {
+        const callId = snapshot.callId
+        pendingFutures.set(callId, futureResultFromPromise(callId, result))
+        progress = snapshot.resumePending()
+      } else {
+        progress = snapshot.resume({ returnValue: normalizeMontyReturnValue(result) })
       }
-
-      // Resume with the return value
-      progress = snapshot.resume({ returnValue: result })
     } catch (error) {
-      // External function threw an exception - convert to Monty exception
-      const err = error as Error
-      const excType = err.name || 'RuntimeError'
-      const excMessage = err.message || String(error)
-      progress = snapshot.resume({
-        exception: {
-          type: excType,
-          message: excMessage,
-        },
-      })
+      progress = snapshot.resume({ exception: exceptionInputFromError(error) })
+    }
+  }
+
+  if (pendingFutures.size === 1 && typeof progress.output === 'string') {
+    const match = progress.output.match(/^<coroutine external_future\((\d+)\)>$/)
+    const pending = match ? pendingFutures.get(Number(match[1])) : undefined
+    if (pending) {
+      const result = await pending
+      if (result.exception) {
+        throw new MontyRuntimeError(result.exception.type, result.exception.message)
+      }
+      return normalizeMontyReturnValue(result.returnValue)
     }
   }
 
   return progress.output
+}
+
+/** Returns true for JavaScript Promise-like values without forcing a concrete Promise class. */
+function isPromiseLike(value: unknown): value is PromiseLike<unknown> {
+  return (
+    value !== null &&
+    (typeof value === 'object' || typeof value === 'function') &&
+    typeof (value as PromiseLike<unknown>).then === 'function'
+  )
+}
+
+/** Converts JavaScript `undefined` into Monty's `None` representation. */
+function normalizeMontyReturnValue(value: unknown): unknown {
+  return value === undefined ? null : value
+}
+
+/** Converts a settled JavaScript promise into a Monty future-resolution result. */
+async function futureResultFromPromise(callId: number, promise: PromiseLike<unknown>): Promise<FutureResultInput> {
+  try {
+    return { callId, returnValue: normalizeMontyReturnValue(await promise) }
+  } catch (error) {
+    return { callId, exception: exceptionInputFromError(error) }
+  }
+}
+
+/** Converts a JavaScript thrown value into a Monty exception input. */
+function exceptionInputFromError(error: unknown): ExceptionInput {
+  const err = error as Partial<Error> | null | undefined
+  const rawName = typeof err?.name === 'string' && err.name ? err.name : 'RuntimeError'
+  return {
+    type: rawName === 'Error' ? 'RuntimeError' : rawName,
+    message: typeof err?.message === 'string' && err.message ? err.message : String(error),
+  }
 }

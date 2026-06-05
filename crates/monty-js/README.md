@@ -44,7 +44,7 @@ For async external functions, use `runMontyAsync()`:
 ```ts
 import { Monty, runMontyAsync } from '@pydantic/monty'
 
-const m = new Monty('fetch_data(url)', {
+const m = new Monty('await fetch_data(url)', {
   inputs: ['url'],
 })
 
@@ -61,7 +61,8 @@ const result = await runMontyAsync(m, {
 
 ## Iterative Execution
 
-For fine-grained control over external function calls, use `start()` and `resume()`:
+For fine-grained control over external function calls, use `start()`, `resume()`,
+`resumePending()`, and `MontyResolveFutures.resume()`:
 
 ```ts
 const m = new Monty('a() + b()')

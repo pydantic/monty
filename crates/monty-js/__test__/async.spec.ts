@@ -19,7 +19,7 @@ test('runMontyAsync with sync external function', async (t) => {
 })
 
 test('runMontyAsync with async external function', async (t) => {
-  const m = new Monty('fetch_data()')
+  const m = new Monty('await fetch_data()')
 
   const result = await runMontyAsync(m, {
     externalFunctions: {
@@ -37,9 +37,9 @@ test('runMontyAsync with async external function', async (t) => {
 test('runMontyAsync with multiple async calls', async (t) => {
   const m = new Monty(
     `
-a = fetch_a()
-b = fetch_b()
-a + b
+import asyncio
+results = await asyncio.gather(fetch_a(), fetch_b())
+results[0] + results[1]
 `,
     {},
   )
@@ -60,8 +60,36 @@ a + b
   t.is(result, 30)
 })
 
+test('runMontyAsync runs gathered async external calls concurrently', async (t) => {
+  const m = new Monty(
+    `
+import asyncio
+results = await asyncio.gather(fetch(1), fetch(2))
+results[0] + results[1]
+`,
+    {},
+  )
+  let active = 0
+  let maxActive = 0
+
+  const result = await runMontyAsync(m, {
+    externalFunctions: {
+      fetch: async (n: number) => {
+        active += 1
+        maxActive = Math.max(maxActive, active)
+        await new Promise((resolve) => setTimeout(resolve, 10))
+        active -= 1
+        return n * 10
+      },
+    },
+  })
+
+  t.is(result, 30)
+  t.is(maxActive, 2)
+})
+
 test('runMontyAsync with inputs', async (t) => {
-  const m = new Monty('multiply(x)', { inputs: ['x'] })
+  const m = new Monty('await multiply(x)', { inputs: ['x'] })
 
   const result = await runMontyAsync(m, {
     inputs: { x: 5 },
@@ -74,7 +102,7 @@ test('runMontyAsync with inputs', async (t) => {
 })
 
 test('runMontyAsync with args and kwargs', async (t) => {
-  const m = new Monty('process(1, 2, name="test")')
+  const m = new Monty('await process(1, 2, name="test")')
 
   const result = await runMontyAsync(m, {
     externalFunctions: {
@@ -112,7 +140,7 @@ test('runMontyAsync sync function throws exception', async (t) => {
 })
 
 test('runMontyAsync async function throws exception', async (t) => {
-  const m = new Monty('fail_async()')
+  const m = new Monty('await fail_async()')
 
   class ValueError extends Error {
     override name = 'ValueError'
@@ -136,7 +164,7 @@ test('runMontyAsync exception caught in try/except', async (t) => {
   const m = new Monty(
     `
 try:
-    might_fail()
+    await might_fail()
 except ValueError:
     result = 'caught'
 result
@@ -189,7 +217,7 @@ result
 // =============================================================================
 
 test('runMontyAsync returns complex types', async (t) => {
-  const m = new Monty('get_data()')
+  const m = new Monty('await get_data()')
 
   const result = await runMontyAsync(m, {
     externalFunctions: {
@@ -207,7 +235,7 @@ test('runMontyAsync returns complex types', async (t) => {
 })
 
 test('runMontyAsync with list input', async (t) => {
-  const m = new Monty('sum_list(items)', { inputs: ['items'] })
+  const m = new Monty('await sum_list(items)', { inputs: ['items'] })
 
   const result = await runMontyAsync(m, {
     inputs: { items: [1, 2, 3, 4, 5] },
@@ -229,7 +257,7 @@ test('runMontyAsync mixed sync and async functions', async (t) => {
   const m = new Monty(
     `
 sync_result = sync_func()
-async_result = async_func()
+async_result = await async_func()
 sync_result + async_result
 `,
     {},
@@ -251,9 +279,9 @@ sync_result + async_result
 test('runMontyAsync chained async calls', async (t) => {
   const m = new Monty(
     `
-first = get_first()
-second = process(first)
-finalize(second)
+first = await get_first()
+second = await process(first)
+await finalize(second)
 `,
     {},
   )

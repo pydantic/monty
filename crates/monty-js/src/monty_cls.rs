@@ -48,7 +48,7 @@ use std::{borrow::Cow, fmt::Write, mem, ptr, result};
 use monty::{
     fs::MountTable, ExcType, ExtFunctionResult, FunctionCall, LimitedTracker, MontyException, MontyObject,
     MontyRepl as CoreMontyRepl, MontyRun, NameLookup, NameLookupResult, NoLimitTracker, OsCall, PrintWriter,
-    PrintWriterCallback, ReplProgress, ResourceTracker, RunProgress,
+    PrintWriterCallback, ReplProgress, ResolveFutures, ResourceTracker, RunProgress,
 };
 use monty_type_checking::{type_check, SourceFile};
 use napi::{bindgen_prelude::*, sys::Status};
@@ -356,13 +356,14 @@ impl Monty {
     ///
     /// @param options - Execution options (inputs, limits)
     /// @returns MontySnapshot if paused at function call, MontyNameLookup if paused at
-    ///   name lookup, MontyComplete if done, or MontyException if failed
+    ///   name lookup, MontyResolveFutures if waiting on async futures,
+    ///   MontyComplete if done, or MontyException if failed
     #[napi]
     pub fn start<'env>(
         &self,
         env: &'env Env,
         options: Option<StartOptions<'env>>,
-    ) -> Result<Either4<MontySnapshot, MontyNameLookup, MontyComplete, JsMontyException>> {
+    ) -> Result<Either5<MontySnapshot, MontyNameLookup, MontyResolveFutures, MontyComplete, JsMontyException>> {
         let options = options.unwrap_or_default();
         let input_values = self.extract_input_values(options.inputs, *env)?;
 
@@ -401,7 +402,7 @@ impl Monty {
                 Ok(p) => p,
                 Err(exc) => {
                     put_back_mount_state(mount_state);
-                    return Ok(Either4::D(JsMontyException::new(exc)));
+                    return Ok(Either5::E(JsMontyException::new(exc)));
                 }
             };
             progress_to_result_with_mounts(env, progress, print_callback_ref, self.script_name(), mount_state)
@@ -411,7 +412,7 @@ impl Monty {
                 Ok(p) => p,
                 Err(exc) => {
                     put_back_mount_state(mount_state);
-                    return Ok(Either4::D(JsMontyException::new(exc)));
+                    return Ok(Either5::E(JsMontyException::new(exc)));
                 }
             };
             progress_to_result_with_mounts(env, progress, print_callback_ref, self.script_name(), mount_state)
@@ -868,6 +869,17 @@ enum EitherSnapshot {
     Done,
 }
 
+impl EitherSnapshot {
+    /// Returns the external call identifier if this snapshot is still usable.
+    fn call_id(&self) -> Option<u32> {
+        match self {
+            Self::NoLimit(call) => Some(call.call_id),
+            Self::Limited(call) => Some(call.call_id),
+            Self::Done => None,
+        }
+    }
+}
+
 // =============================================================================
 // MontySnapshot - Paused execution at an external function call
 // =============================================================================
@@ -890,6 +902,8 @@ pub struct MontySnapshot {
     script_name: String,
     /// The name of the external function being called.
     function_name: String,
+    /// Unique identifier used to resolve async external futures.
+    call_id: u32,
     /// The positional arguments passed to the function (stored as MontyObject for serialization).
     args: Vec<MontyObject>,
     /// The keyword arguments passed to the function (stored as MontyObject pairs for serialization).
@@ -941,6 +955,12 @@ impl MontySnapshot {
         self.function_name.clone()
     }
 
+    /// Returns the external call identifier for async future resolution.
+    #[napi(getter)]
+    pub fn call_id(&self) -> u32 {
+        self.call_id
+    }
+
     /// Returns the positional arguments passed to the external function.
     #[napi(getter)]
     pub fn args<'env>(&self, env: &'env Env) -> Result<Vec<JsMontyObject<'env>>> {
@@ -969,13 +989,14 @@ impl MontySnapshot {
     ///
     /// @param options - Object with either `returnValue` or `exception`
     /// @returns MontySnapshot if paused at function call, MontyNameLookup if paused at
-    ///   name lookup, MontyComplete if done, or MontyException if failed
+    ///   name lookup, MontyResolveFutures if waiting on async futures,
+    ///   MontyComplete if done, or MontyException if failed
     #[napi]
     pub fn resume<'env>(
         &mut self,
         env: &'env Env,
         options: ResumeOptions<'env>,
-    ) -> Result<Either4<Self, MontyNameLookup, MontyComplete, JsMontyException>> {
+    ) -> Result<Either5<Self, MontyNameLookup, MontyResolveFutures, MontyComplete, JsMontyException>> {
         // Validate that exactly one of returnValue or exception is provided
         let external_result = match (options.return_value, options.exception) {
             (Some(value), None) => {
@@ -1024,7 +1045,7 @@ impl MontySnapshot {
                     Ok(p) => p,
                     Err(exc) => {
                         put_back_mount_state(mount_state);
-                        return Ok(Either4::D(JsMontyException::new(exc)));
+                        return Ok(Either5::E(JsMontyException::new(exc)));
                     }
                 };
                 progress_to_result_with_mounts(env, progress, print_callback, self.script_name.clone(), mount_state)
@@ -1034,7 +1055,56 @@ impl MontySnapshot {
                     Ok(p) => p,
                     Err(exc) => {
                         put_back_mount_state(mount_state);
-                        return Ok(Either4::D(JsMontyException::new(exc)));
+                        return Ok(Either5::E(JsMontyException::new(exc)));
+                    }
+                };
+                progress_to_result_with_mounts(env, progress, print_callback, self.script_name.clone(), mount_state)
+            }
+            EitherSnapshot::Done => Err(Error::from_reason("Snapshot has already been resumed")),
+        }
+    }
+
+    /// Resumes execution by returning a pending external future to Monty.
+    ///
+    /// Use this when a JavaScript external function returns a `Promise`. Monty
+    /// can continue running other async tasks until it yields a
+    /// `MontyResolveFutures` snapshot that asks for this snapshot's `callId`.
+    #[napi]
+    pub fn resume_pending(
+        &mut self,
+        env: &Env,
+    ) -> Result<Either5<Self, MontyNameLookup, MontyResolveFutures, MontyComplete, JsMontyException>> {
+        let snapshot = mem::replace(&mut self.snapshot, EitherSnapshot::Done);
+        let print_callback = mem::take(&mut self.print_callback);
+
+        let mut print_cb;
+        let print_writer = match &print_callback {
+            Some(func) => {
+                print_cb = CallbackStringPrint::new_js_ref(env, func)?;
+                PrintWriter::Callback(&mut print_cb)
+            }
+            None => PrintWriter::Stdout,
+        };
+
+        let mount_state = mem::take(&mut self.mount_state);
+
+        match snapshot {
+            EitherSnapshot::NoLimit(call) => {
+                let progress = match call.resume_pending(print_writer) {
+                    Ok(p) => p,
+                    Err(exc) => {
+                        put_back_mount_state(mount_state);
+                        return Ok(Either5::E(JsMontyException::new(exc)));
+                    }
+                };
+                progress_to_result_with_mounts(env, progress, print_callback, self.script_name.clone(), mount_state)
+            }
+            EitherSnapshot::Limited(call) => {
+                let progress = match call.resume_pending(print_writer) {
+                    Ok(p) => p,
+                    Err(exc) => {
+                        put_back_mount_state(mount_state);
+                        return Ok(Either5::E(JsMontyException::new(exc)));
                     }
                 };
                 progress_to_result_with_mounts(env, progress, print_callback, self.script_name.clone(), mount_state)
@@ -1078,10 +1148,16 @@ impl MontySnapshot {
         let serialized: SerializedSnapshotOwned =
             postcard::from_bytes(&data).map_err(|e| Error::from_reason(format!("Deserialization failed: {e}")))?;
 
+        let call_id = serialized
+            .snapshot
+            .call_id()
+            .ok_or_else(|| Error::from_reason("Cannot load consumed snapshot"))?;
+
         Ok(Self {
             snapshot: serialized.snapshot,
             script_name: serialized.script_name,
             function_name: serialized.function_name,
+            call_id,
             args: serialized.args,
             kwargs: serialized.kwargs,
             print_callback: options
@@ -1097,8 +1173,205 @@ impl MontySnapshot {
     #[napi]
     pub fn repr(&self) -> String {
         format!(
-            "MontySnapshot(scriptName='{}', functionName='{}', args={:?}, kwargs={:?})",
-            self.script_name, self.function_name, self.args, self.kwargs
+            "MontySnapshot(scriptName='{}', functionName='{}', callId={}, args={:?}, kwargs={:?})",
+            self.script_name, self.function_name, self.call_id, self.args, self.kwargs
+        )
+    }
+}
+
+// =============================================================================
+// MontyResolveFutures - Paused execution waiting on async external futures
+// =============================================================================
+
+/// Runtime execution snapshot waiting for async external future results.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+enum EitherFutureSnapshot {
+    NoLimit(ResolveFutures<NoLimitTracker>),
+    Limited(ResolveFutures<LimitedTracker>),
+    /// Sentinel indicating the snapshot has been consumed via `resume()`.
+    Done,
+}
+
+impl EitherFutureSnapshot {
+    /// Returns the pending external call IDs if this snapshot is still usable.
+    fn pending_call_ids(&self) -> Option<&[u32]> {
+        match self {
+            Self::NoLimit(state) => Some(state.pending_call_ids()),
+            Self::Limited(state) => Some(state.pending_call_ids()),
+            Self::Done => None,
+        }
+    }
+}
+
+/// Trait to convert a typed `ResolveFutures` into `EitherFutureSnapshot`.
+trait FromResolveFutures<T: ResourceTracker> {
+    /// Wraps a future-resolution snapshot.
+    fn from_resolve_futures(state: ResolveFutures<T>) -> Self;
+}
+
+impl FromResolveFutures<NoLimitTracker> for EitherFutureSnapshot {
+    fn from_resolve_futures(state: ResolveFutures<NoLimitTracker>) -> Self {
+        Self::NoLimit(state)
+    }
+}
+
+impl FromResolveFutures<LimitedTracker> for EitherFutureSnapshot {
+    fn from_resolve_futures(state: ResolveFutures<LimitedTracker>) -> Self {
+        Self::Limited(state)
+    }
+}
+
+/// A resolved JavaScript promise result for a pending Monty external call.
+#[napi(object)]
+pub struct FutureResultInput<'env> {
+    /// External call identifier from `MontySnapshot.callId` / `pendingCallIds`.
+    pub call_id: u32,
+    /// The fulfilled promise value to return to Monty.
+    pub return_value: Option<Unknown<'env>>,
+    /// The rejected promise exception to raise in Monty.
+    pub exception: Option<ExceptionInput>,
+}
+
+/// Options for resuming execution once one or more async futures resolved.
+#[napi(object)]
+pub struct ResolveFuturesResumeOptions<'env> {
+    /// Resolved future results. This can be a subset of `pendingCallIds`.
+    pub results: Vec<FutureResultInput<'env>>,
+}
+
+/// Options for loading a serialized future-resolution snapshot.
+#[napi(object)]
+pub struct ResolveFuturesLoadOptions<'env> {
+    /// Optional print callback function.
+    pub print_callback: Option<JsPrintCallback<'env>>,
+}
+
+/// Represents paused execution waiting for JavaScript promises to settle.
+#[napi]
+pub struct MontyResolveFutures {
+    /// The execution state that can be resumed.
+    snapshot: EitherFutureSnapshot,
+    /// Name of the script being executed.
+    script_name: String,
+    /// Pending external call identifiers requested by Monty.
+    pending_call_ids: Vec<u32>,
+    /// Optional print callback function.
+    print_callback: Option<JsPrintCallbackRef>,
+    /// Mount state carried from `start()` for use during `resume()`.
+    mount_state: Option<MountState>,
+}
+
+#[napi]
+impl MontyResolveFutures {
+    /// Returns the name of the script being executed.
+    #[napi(getter)]
+    pub fn script_name(&self) -> String {
+        self.script_name.clone()
+    }
+
+    /// Returns the external call IDs that Monty is currently awaiting.
+    #[napi(getter)]
+    pub fn pending_call_ids(&self) -> Vec<u32> {
+        self.pending_call_ids.clone()
+    }
+
+    /// Resumes execution with resolved promise values or exceptions.
+    #[napi]
+    pub fn resume<'env>(
+        &mut self,
+        env: &'env Env,
+        options: ResolveFuturesResumeOptions<'env>,
+    ) -> Result<Either5<MontySnapshot, MontyNameLookup, Self, MontyComplete, JsMontyException>> {
+        let results = future_results_to_ext_results(options.results, *env)?;
+        let snapshot = mem::replace(&mut self.snapshot, EitherFutureSnapshot::Done);
+        let print_callback = mem::take(&mut self.print_callback);
+
+        let mut print_cb;
+        let print_writer = match &print_callback {
+            Some(func) => {
+                print_cb = CallbackStringPrint::new_js_ref(env, func)?;
+                PrintWriter::Callback(&mut print_cb)
+            }
+            None => PrintWriter::Stdout,
+        };
+
+        let mount_state = mem::take(&mut self.mount_state);
+
+        match snapshot {
+            EitherFutureSnapshot::NoLimit(state) => {
+                let progress = match state.resume(results, print_writer) {
+                    Ok(p) => p,
+                    Err(exc) => {
+                        put_back_mount_state(mount_state);
+                        return Ok(Either5::E(JsMontyException::new(exc)));
+                    }
+                };
+                progress_to_result_with_mounts(env, progress, print_callback, self.script_name.clone(), mount_state)
+            }
+            EitherFutureSnapshot::Limited(state) => {
+                let progress = match state.resume(results, print_writer) {
+                    Ok(p) => p,
+                    Err(exc) => {
+                        put_back_mount_state(mount_state);
+                        return Ok(Either5::E(JsMontyException::new(exc)));
+                    }
+                };
+                progress_to_result_with_mounts(env, progress, print_callback, self.script_name.clone(), mount_state)
+            }
+            EitherFutureSnapshot::Done => Err(Error::from_reason("Future snapshot has already been resumed")),
+        }
+    }
+
+    /// Serializes the future-resolution snapshot to a binary format.
+    #[napi]
+    pub fn dump(&self) -> Result<Buffer> {
+        if matches!(self.snapshot, EitherFutureSnapshot::Done) {
+            return Err(Error::from_reason(
+                "Cannot dump future snapshot that has already been resumed",
+            ));
+        }
+
+        let serialized = SerializedResolveFutures {
+            snapshot: &self.snapshot,
+            script_name: &self.script_name,
+        };
+
+        let bytes =
+            postcard::to_allocvec(&serialized).map_err(|e| Error::from_reason(format!("Serialization failed: {e}")))?;
+        Ok(Buffer::from(bytes))
+    }
+
+    /// Deserializes a future-resolution snapshot from binary format.
+    #[napi(factory)]
+    pub fn load(data: Buffer, options: Option<ResolveFuturesLoadOptions>) -> Result<Self> {
+        let serialized: SerializedResolveFuturesOwned =
+            postcard::from_bytes(&data).map_err(|e| Error::from_reason(format!("Deserialization failed: {e}")))?;
+        let pending_call_ids = serialized
+            .snapshot
+            .pending_call_ids()
+            .ok_or_else(|| Error::from_reason("Cannot load consumed future snapshot"))?
+            .to_vec();
+
+        Ok(Self {
+            snapshot: serialized.snapshot,
+            script_name: serialized.script_name,
+            pending_call_ids,
+            print_callback: options
+                .as_ref()
+                .and_then(|t| t.print_callback.as_ref())
+                .map(Function::create_ref)
+                .transpose()?,
+            mount_state: None,
+        })
+    }
+
+    /// Returns a string representation of the future-resolution snapshot.
+    #[napi]
+    #[must_use]
+    pub fn repr(&self) -> String {
+        format!(
+            "MontyResolveFutures(scriptName='{}', pendingCallIds={:?})",
+            self.script_name, self.pending_call_ids
         )
     }
 }
@@ -1227,13 +1500,14 @@ impl MontyNameLookup {
     ///
     /// @param options - Optional object with `value` to resolve the name to
     /// @returns MontySnapshot if paused at function call, MontyNameLookup if paused at
-    ///   another name lookup, MontyComplete if done, or MontyException if failed
+    ///   another name lookup, MontyResolveFutures if waiting on async futures,
+    ///   MontyComplete if done, or MontyException if failed
     #[napi]
     pub fn resume<'env>(
         &mut self,
         env: &'env Env,
         options: Option<NameLookupResumeOptions<'env>>,
-    ) -> Result<Either4<MontySnapshot, Self, MontyComplete, JsMontyException>> {
+    ) -> Result<Either5<MontySnapshot, Self, MontyResolveFutures, MontyComplete, JsMontyException>> {
         let lookup_result = match options.and_then(|opts| opts.value) {
             Some(value) => {
                 let monty_value = js_to_monty(value, *env)?;
@@ -1267,7 +1541,7 @@ impl MontyNameLookup {
                     Ok(p) => p,
                     Err(exc) => {
                         put_back_mount_state(mount_state);
-                        return Ok(Either4::D(JsMontyException::new(exc)));
+                        return Ok(Either5::E(JsMontyException::new(exc)));
                     }
                 };
                 progress_to_result_with_mounts(env, progress, print_callback, self.script_name.clone(), mount_state)
@@ -1277,7 +1551,7 @@ impl MontyNameLookup {
                     Ok(p) => p,
                     Err(exc) => {
                         put_back_mount_state(mount_state);
-                        return Ok(Either4::D(JsMontyException::new(exc)));
+                        return Ok(Either5::E(JsMontyException::new(exc)));
                     }
                 };
                 progress_to_result_with_mounts(env, progress, print_callback, self.script_name.clone(), mount_state)
@@ -1398,11 +1672,12 @@ fn progress_to_result_with_mounts<T>(
     print_callback: Option<JsPrintCallbackRef>,
     script_name: String,
     mut mount_state: Option<MountState>,
-) -> Result<Either4<MontySnapshot, MontyNameLookup, MontyComplete, JsMontyException>>
+) -> Result<Either5<MontySnapshot, MontyNameLookup, MontyResolveFutures, MontyComplete, JsMontyException>>
 where
     T: ResourceTracker + serde::Serialize + DeserializeOwned,
     EitherSnapshot: FromSnapshot<T>,
     EitherLookupSnapshot: FromLookupSnapshot<T>,
+    EitherFutureSnapshot: FromResolveFutures<T>,
 {
     // Build a reusable print callback so OsCall resumes use the JS callback
     // instead of falling back to stdout.
@@ -1416,16 +1691,18 @@ where
         match progress {
             RunProgress::Complete(result) => {
                 put_back_mount_state(mount_state);
-                return Ok(Either4::C(MontyComplete { output_value: result }));
+                return Ok(Either5::D(MontyComplete { output_value: result }));
             }
             RunProgress::FunctionCall(call) => {
                 let function_name = call.function_name.clone();
+                let call_id = call.call_id;
                 let args = call.args.clone();
                 let kwargs = call.kwargs.clone();
-                return Ok(Either4::A(MontySnapshot {
+                return Ok(Either5::A(MontySnapshot {
                     snapshot: EitherSnapshot::from_snapshot(call),
                     script_name,
                     function_name,
+                    call_id,
                     args,
                     kwargs,
                     print_callback,
@@ -1434,7 +1711,7 @@ where
             }
             RunProgress::NameLookup(lookup) => {
                 let variable_name = lookup.name.clone();
-                return Ok(Either4::B(MontyNameLookup {
+                return Ok(Either5::B(MontyNameLookup {
                     snapshot: EitherLookupSnapshot::from_lookup(lookup),
                     script_name,
                     variable_name,
@@ -1442,12 +1719,15 @@ where
                     mount_state,
                 }));
             }
-            RunProgress::ResolveFutures(_) => {
-                put_back_mount_state(mount_state);
-                return Ok(Either4::D(JsMontyException::new(MontyException::new(
-                    ExcType::NotImplementedError,
-                    Some("Async futures (ResolveFutures) are not yet supported in the JS bindings".to_owned()),
-                ))));
+            RunProgress::ResolveFutures(state) => {
+                let pending_call_ids = state.pending_call_ids().to_vec();
+                return Ok(Either5::C(MontyResolveFutures {
+                    snapshot: EitherFutureSnapshot::from_resolve_futures(state),
+                    script_name,
+                    pending_call_ids,
+                    print_callback,
+                    mount_state,
+                }));
             }
             RunProgress::OsCall(call) => {
                 let os_result = if let Some((_, ref mut table)) = mount_state {
@@ -1464,7 +1744,7 @@ where
                     Ok(p) => p,
                     Err(exc) => {
                         put_back_mount_state(mount_state);
-                        return Ok(Either4::D(JsMontyException::new(exc)));
+                        return Ok(Either5::E(JsMontyException::new(exc)));
                     }
                 };
             }
@@ -1518,6 +1798,35 @@ impl FromSnapshot<LimitedTracker> for EitherSnapshot {
     }
 }
 
+/// Converts JavaScript future-resolution inputs into Monty resume values.
+fn future_results_to_ext_results(
+    results: Vec<FutureResultInput<'_>>,
+    env: Env,
+) -> Result<Vec<(u32, ExtFunctionResult)>> {
+    results
+        .into_iter()
+        .map(|result| {
+            let ext_result = match (result.return_value, result.exception) {
+                (Some(value), None) => ExtFunctionResult::Return(js_to_monty(value, env)?),
+                (None, Some(exc)) => {
+                    ExtFunctionResult::Error(MontyException::new(string_to_exc_type(&exc.r#type)?, Some(exc.message)))
+                }
+                (Some(_), Some(_)) => {
+                    return Err(Error::from_reason(
+                        "future results accept either returnValue or exception, not both",
+                    ));
+                }
+                (None, None) => {
+                    return Err(Error::from_reason(
+                        "future results require either returnValue or exception",
+                    ));
+                }
+            };
+            Ok((result.call_id, ext_result))
+        })
+        .collect()
+}
+
 /// Converts a string exception type to `ExcType`.
 fn string_to_exc_type(type_name: &str) -> Result<ExcType> {
     type_name
@@ -1569,6 +1878,20 @@ struct SerializedSnapshotOwned {
     function_name: String,
     args: Vec<MontyObject>,
     kwargs: Vec<(MontyObject, MontyObject)>,
+}
+
+/// Serialization wrapper for `MontyResolveFutures` using borrowed references.
+#[derive(serde::Serialize)]
+struct SerializedResolveFutures<'a> {
+    snapshot: &'a EitherFutureSnapshot,
+    script_name: &'a str,
+}
+
+/// Owned version of `SerializedResolveFutures` for deserialization.
+#[derive(serde::Deserialize)]
+struct SerializedResolveFuturesOwned {
+    snapshot: EitherFutureSnapshot,
+    script_name: String,
 }
 
 /// Serialization wrapper for `MontyNameLookup` using borrowed references.
