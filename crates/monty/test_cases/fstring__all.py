@@ -274,6 +274,9 @@ assert f'{"hi":{width}}' == 'hi        ', 'nested format spec width'
 align = '^'
 assert f'{"test":{align}{width}}' == '   test   ', 'nested align and width'
 
+width, prec = 10, 3
+assert f'{3.14159:{width}.{prec}f}' == '     3.142', 'computed width + precision'
+
 # nested precision
 prec = 3
 assert f'{"xylophone":.{prec}}' == 'xyl', 'nested precision'
@@ -371,6 +374,13 @@ assert f'{name = }' == "name = 'test'", 'debug uses repr for strings'
 assert f'{name=!s}' == 'name=test', 'debug with !s conversion'
 assert f'{name=!r}' == "name='test'", 'debug with !r conversion'
 assert f'{1+1=}' == '1+1=2', 'debug with expression'
+# a format spec applies to the *value*, not the (default-repr) string — the
+# implicit repr only kicks in when there is no spec and no conversion
+_v = 6.28318
+assert f'{_v=:.3f}' == '_v=6.283', 'debug spec applies to the value, not repr'
+assert f'{_v=:>10.2f}' == '_v=      6.28', 'debug spec with width applies to value'
+assert f'{_v=!r:>12}' == '_v=     6.28318', 'debug !r conversion then string spec'
+assert f'{_v=}' == '_v=6.28318', 'debug with no spec still uses repr'
 
 # === Comma thousands separator ===
 assert f'{1234567:,}' == '1,234,567', 'comma groups of three'

@@ -3132,8 +3132,14 @@ impl<'a> Compiler<'a> {
                     // Compile the expression
                     self.compile_expr(expr)?;
 
-                    // For debug expressions without explicit conversion, Python uses repr by default
-                    let effective_conversion = if debug_prefix.is_some() && matches!(conversion, ConversionFlag::None) {
+                    // A debug expression (`{x=}`) defaults to `repr`, but ONLY
+                    // when it has neither an explicit conversion nor a format
+                    // spec. With a spec (`{x=:.3f}`) the spec applies to the
+                    // value directly (not to its repr string), matching CPython.
+                    let effective_conversion = if debug_prefix.is_some()
+                        && matches!(conversion, ConversionFlag::None)
+                        && format_spec.is_none()
+                    {
                         ConversionFlag::Repr
                     } else {
                         *conversion
