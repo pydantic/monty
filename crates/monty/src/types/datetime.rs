@@ -13,7 +13,9 @@ use std::{
 };
 
 use ahash::AHashSet;
-use chrono::{Datelike, FixedOffset, NaiveDateTime, NaiveTime, TimeDelta as ChronoTimeDelta, Timelike};
+use chrono::{
+    Datelike, FixedOffset, NaiveDateTime, NaiveTime, TimeDelta as ChronoTimeDelta, Timelike, format::StrftimeItems,
+};
 
 use crate::{
     args::{ArgValues, FromArgs},
@@ -752,10 +754,12 @@ fn year_in_python_range(year: i32) -> bool {
 /// `datetime.strftime()` method and f-string formatting (`f"{dt:%Y-%m-%d}"`).
 ///
 /// Uses the naive (wall-clock) components, mirroring `chrono`'s formatting of
-/// `NaiveDateTime`; a directive `chrono` rejects raises a `ValueError` via
-/// [`date::invalid_strftime_error`] instead of panicking.
+/// `NaiveDateTime`, with the **lenient** parser so an unrecognised directive is
+/// passed through verbatim to match glibc/Linux CPython (see
+/// [`date::format_date_strftime`]).
 pub(crate) fn format_datetime_strftime(dt: &DateTime, format: &str) -> RunResult<String> {
-    date::render_strftime(dt.naive.format(format)).ok_or_else(date::invalid_strftime_error)
+    date::render_strftime(dt.naive.format_with_items(StrftimeItems::new_lenient(format)))
+        .ok_or_else(date::invalid_strftime_error)
 }
 
 /// Formats a datetime as an ISO 8601 string with the given separator.

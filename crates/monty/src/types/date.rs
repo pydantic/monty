@@ -13,7 +13,7 @@ use std::{
 };
 
 use ahash::AHashSet;
-use chrono::{Datelike, NaiveDate};
+use chrono::{Datelike, NaiveDate, format::StrftimeItems};
 
 use crate::{
     args::{ArgValues, FromArgs},
@@ -365,10 +365,13 @@ pub(crate) fn py_sub_timedelta(
 /// Formats a [`Date`] with a `strftime` directive string, shared by the
 /// `date.strftime()` method and f-string formatting (`f"{d:%Y-%m-%d}"`).
 ///
-/// Returns a CPython-style `ValueError` for a directive `chrono` rejects
-/// rather than letting [`render_strftime`] turn it into a host panic.
+/// Uses `chrono`'s **lenient** parser so an unrecognised directive is emitted
+/// verbatim (`%Q` → `"%Q"`), matching glibc/Linux CPython — see
+/// [`invalid_strftime_error`] for why that platform is the target. The
+/// `ValueError` path remains for the rare directive that parses but can't be
+/// rendered (so [`render_strftime`] never has to panic).
 pub(crate) fn format_date_strftime(date: Date, format: &str) -> RunResult<String> {
-    render_strftime(date.0.format(format)).ok_or_else(invalid_strftime_error)
+    render_strftime(date.0.format_with_items(StrftimeItems::new_lenient(format))).ok_or_else(invalid_strftime_error)
 }
 
 /// Renders a `chrono` strftime result without the panic that `.to_string()`
@@ -383,11 +386,13 @@ pub(crate) fn render_strftime(formatted: impl fmt::Display) -> Option<String> {
     write!(out, "{formatted}").ok().map(|()| out)
 }
 
-/// The `ValueError` raised when a `strftime` directive can't be rendered.
+/// The `ValueError` raised when a `strftime` directive parses but can't be
+/// rendered for this value (e.g. a time directive on a bare `date`).
 ///
-/// CPython's `strftime` is lenient with unknown directives (it passes them
-/// through), but `chrono` is strict; Monty surfaces the mismatch as an error
-/// instead of emitting garbage — see `limitations/datetime.md`.
+/// Unrecognised directives no longer reach this path — the lenient parser
+/// emits them verbatim to match glibc/Linux CPython (`strftime('%Q') == '%Q'`),
+/// rather than CPython's macOS behaviour (`'Q'`) which we deliberately don't
+/// follow; see `limitations/datetime.md`.
 pub(crate) fn invalid_strftime_error() -> RunError {
     SimpleException::new_msg(ExcType::ValueError, "Invalid format string".to_owned()).into()
 }

@@ -63,15 +63,11 @@ try:
 except TypeError as exc:
     assert str(exc) == 'strftime() argument 1 must be str, not int', f'datetime.strftime wrong type: {exc}'
 
-# NOTE: an *unsupported* directive (e.g. `%Q`) is the one strftime behaviour
-# that can't be asserted here, because it diverges between the two interpreters
-# this file runs against: CPython is lenient and passes unknown directives
-# through, but that pass-through is itself platform-dependent (macOS drops the
-# `%` giving `'Q'`, glibc keeps `'%Q'`), so there is no cross-platform value to
-# assert. Monty is deterministic and raises `ValueError: Invalid format string`.
-# That Monty-only behaviour — and the critical property that a bad directive
-# must never panic the host — lives in `tests/datetime_format.rs`. See
-# limitations/datetime.md.
+# NOTE: an *unrecognised* directive (e.g. `%Q`) can't be asserted here. Monty
+# matches glibc/Linux CPython — it passes the directive through verbatim
+# (`'%Q'`) — but macOS CPython instead drops the `%` (`'Q'`), and this file is
+# checked against whatever CPython the host runs. That glibc-matching behaviour
+# lives in `tests/datetime_format.rs`. See limitations/datetime.md.
 
 # === f-string / format() of date & datetime (strftime via __format__) ===
 _d = datetime.date(2024, 6, 15)
