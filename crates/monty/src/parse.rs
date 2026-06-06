@@ -19,7 +19,7 @@ use crate::{
         AssignTarget, Callable, CmpOperator, Comprehension, DictItem, Expr, ExprLoc, Identifier, ImportName, Literal,
         Node, Operator, SequenceItem, UnpackTarget,
     },
-    fstring::{ConversionFlag, FStringPart, FormatSpec, ParseFormatSpecError, ParsedFormatSpec, encode_format_spec},
+    fstring::{ConversionFlag, FStringPart, FormatSpec, ParsedFormatSpec, encode_format_spec},
     intern::{InternerBuilder, StringId},
     types::long_int::INT_MAX_STR_DIGITS,
     value::EitherStr,
@@ -1641,14 +1641,27 @@ impl<'a> Parser<'a> {
                     InterpolatedStringElement::Interpolation(_) => None,
                 })
                 .collect();
-            let parsed: ParsedFormatSpec = static_spec.parse().map_err(|err: ParseFormatSpecError| {
-                ParseError::syntax(err.to_string(), self.convert_range(spec.range))
-            })?;
-            if let Some(encoded) = encode_format_spec(&parsed) {
-                Ok(FormatSpec::Static(encoded))
-            } else {
-                let string_id = self.interner.intern(&static_spec);
-                Ok(FormatSpec::Dynamic(vec![FStringPart::Literal(string_id)]))
+            match static_spec.parse::<ParsedFormatSpec>() {
+                Ok(parsed) => {
+                    if let Some(encoded) = encode_format_spec(&parsed) {
+                        Ok(FormatSpec::Static(encoded))
+                    } else {
+                        // Valid but too large for the compact encoding — re-parse
+                        // the literal at runtime.
+                        let string_id = self.interner.intern(&static_spec);
+                        Ok(FormatSpec::Dynamic(vec![FStringPart::Literal(string_id)]))
+                    }
+                }
+                // A spec containing `%` may be a `strftime` string for a
+                // date/datetime value, which is only resolvable once the value
+                // type is known at runtime — defer it as a dynamic spec rather
+                // than rejecting it here. Specs with no `%` are unambiguously
+                // malformed mini-language and still fail at compile time.
+                Err(_) if static_spec.contains('%') => {
+                    let string_id = self.interner.intern(&static_spec);
+                    Ok(FormatSpec::Dynamic(vec![FStringPart::Literal(string_id)]))
+                }
+                Err(err) => Err(ParseError::syntax(err.to_string(), self.convert_range(spec.range))),
             }
         }
     }

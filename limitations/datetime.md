@@ -75,3 +75,19 @@ defined. The abstract `tzinfo` base class is not exposed.
 formatting; locale-specific directives (`%c`, `%x`, `%X`, `%p`) follow
 Rust's defaults rather than the C locale and may differ from CPython.
 `%Z` always emits an empty string for naive datetimes.
+
+An **unsupported directive raises `ValueError: Invalid format string`**.
+CPython is lenient — it passes an unknown directive through to the platform C
+library — but that pass-through is itself platform-dependent (`strftime('%Q')`
+yields `'Q'` on macOS but `'%Q'` on glibc/Linux), so there is no single
+CPython behaviour to match. Monty instead picks a deterministic, cross-platform
+rule: reject. The same applies to f-string formatting (below).
+
+f-strings format `date`/`datetime` values through `strftime`, matching
+CPython's `__format__`: `f'{dt:%Y-%m-%d}'` is equivalent to
+`dt.strftime('%Y-%m-%d')`, and an empty spec (`f'{dt}'` or `f'{dt:}'`) uses
+`str(dt)`. One edge-case divergence: a spec that also happens to be a valid
+format mini-language spec (e.g. `f'{dt:>10}'` or a lone `f'{dt:%}'`) is
+applied as generic string formatting rather than handed to `strftime` —
+CPython treats the *entire* spec as a `strftime` string. Real strftime specs
+(those containing `%` directives like `%Y`) are unaffected.

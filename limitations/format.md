@@ -5,10 +5,24 @@ Monty implements CPython's
 mini-language for f-string interpolations. The following parts are **not**
 implemented or diverge from CPython.
 
-The mini-language is only reachable through f-strings: the `format()` builtin
-and the `str.format()` method are not implemented (see
-[builtins.md](builtins.md)) — `format` raises `NameError` and `str.format`
-raises `AttributeError`.
+The mini-language is only reachable through f-strings. The other CPython
+formatting mechanisms are not implemented:
+
+- The `format()` builtin raises `NameError` and the `str.format()` method
+  raises `AttributeError` (see [builtins.md](builtins.md)).
+- Printf-style `%` formatting (`'%5.3f' % math.pi`, `'%s %s' % (a, b)`) is not
+  implemented — `str` has no `__mod__`, so `str % value` raises
+  `TypeError: unsupported operand type(s) for %: 'str' and '...'`. Use an
+  f-string instead.
+
+## Custom `__format__`
+
+f-strings dispatch to a type's `__format__` only for `date`/`datetime`, which
+interpret the spec as a `strftime` string (`f'{dt:%Y-%m-%d}'`) — see
+[datetime.md](datetime.md). There is no general `__format__` protocol: user
+classes can't customise formatting (Monty has no `class` statement anyway —
+see [classes.md](classes.md)), and all other types use the builtin
+mini-language formatter.
 
 ## Unsupported types
 

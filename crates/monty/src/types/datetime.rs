@@ -748,6 +748,16 @@ fn year_in_python_range(year: i32) -> bool {
     (1..=9999).contains(&year)
 }
 
+/// Formats a [`DateTime`] with a `strftime` directive string, shared by the
+/// `datetime.strftime()` method and f-string formatting (`f"{dt:%Y-%m-%d}"`).
+///
+/// Uses the naive (wall-clock) components, mirroring `chrono`'s formatting of
+/// `NaiveDateTime`; a directive `chrono` rejects raises a `ValueError` via
+/// [`date::invalid_strftime_error`] instead of panicking.
+pub(crate) fn format_datetime_strftime(dt: &DateTime, format: &str) -> RunResult<String> {
+    date::render_strftime(dt.naive.format(format)).ok_or_else(date::invalid_strftime_error)
+}
+
 /// Formats a datetime as an ISO 8601 string with the given separator.
 ///
 /// Matches CPython's `datetime.isoformat(sep='T')`.
@@ -982,7 +992,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, DateTime> {
             }
             Some(id) if id == StaticStrings::Strftime => {
                 let StrftimeArgs { format } = StrftimeArgs::from_args(args, vm)?;
-                let formatted = dt.naive.format(&format).to_string();
+                let formatted = format_datetime_strftime(&dt, &format)?;
                 Ok(CallResult::Value(allocate_string(formatted, vm.heap)?))
             }
             Some(id) if id == StaticStrings::Replace => {

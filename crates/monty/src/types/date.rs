@@ -7,7 +7,7 @@ use std::{
     borrow::Cow,
     cmp::Ordering,
     collections::hash_map::DefaultHasher,
-    fmt::Write,
+    fmt::{self, Write},
     hash::{Hash, Hasher},
     mem,
 };
@@ -263,7 +263,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Date> {
             }
             Some(id) if id == StaticStrings::Strftime => {
                 let StrftimeArgs { format } = StrftimeArgs::from_args(args, vm)?;
-                let formatted = date.0.format(&format).to_string();
+                let formatted = format_date_strftime(date, &format)?;
                 Ok(CallResult::Value(allocate_string(formatted, vm.heap)?))
             }
             Some(id) if id == StaticStrings::Replace => {
@@ -360,6 +360,36 @@ pub(crate) fn py_sub_timedelta(
         Ok(value) => Ok(Some(Value::Ref(heap.allocate(HeapData::Date(value))?))),
         Err(_) => Ok(None),
     }
+}
+
+/// Formats a [`Date`] with a `strftime` directive string, shared by the
+/// `date.strftime()` method and f-string formatting (`f"{d:%Y-%m-%d}"`).
+///
+/// Returns a CPython-style `ValueError` for a directive `chrono` rejects
+/// rather than letting [`render_strftime`] turn it into a host panic.
+pub(crate) fn format_date_strftime(date: Date, format: &str) -> RunResult<String> {
+    render_strftime(date.0.format(format)).ok_or_else(invalid_strftime_error)
+}
+
+/// Renders a `chrono` strftime result without the panic that `.to_string()`
+/// triggers on an invalid directive.
+///
+/// `chrono`'s `DelayedFormat` `Display` impl returns `fmt::Error` for an
+/// unsupported/invalid directive, and `ToString::to_string` turns that into a
+/// panic — unacceptable for untrusted sandbox input. Writing into our own
+/// buffer surfaces the failure as `None` so the caller can raise instead.
+pub(crate) fn render_strftime(formatted: impl fmt::Display) -> Option<String> {
+    let mut out = String::new();
+    write!(out, "{formatted}").ok().map(|()| out)
+}
+
+/// The `ValueError` raised when a `strftime` directive can't be rendered.
+///
+/// CPython's `strftime` is lenient with unknown directives (it passes them
+/// through), but `chrono` is strict; Monty surfaces the mismatch as an error
+/// instead of emitting garbage — see `limitations/datetime.md`.
+pub(crate) fn invalid_strftime_error() -> RunError {
+    SimpleException::new_msg(ExcType::ValueError, "Invalid format string".to_owned()).into()
 }
 
 /// Argument shape for `date.strftime(format)` and `datetime.strftime(format)`.

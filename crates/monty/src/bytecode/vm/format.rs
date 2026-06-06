@@ -6,8 +6,9 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, RunError, SimpleException},
     fstring::{ParsedFormatSpec, ascii_escape, decode_format_spec, format_string, format_with_spec},
+    heap::HeapReadOutput,
     resource::{ResourceTracker, check_repeat_size},
-    types::{PyTrait, str::allocate_string},
+    types::{PyTrait, date::format_date_strftime, datetime::format_datetime_strftime, str::allocate_string},
     value::Value,
 };
 
@@ -59,31 +60,46 @@ impl<T: ResourceTracker> VM<'_, T> {
         let formatted = if let Some(spec_value) = format_spec {
             defer_drop!(spec_value, this);
 
-            let spec = this.get_format_spec(spec_value, value, static_spec)?;
+            // date/datetime: with no conversion flag, CPython hands the whole
+            // spec to the value's `__format__`, which treats it as a strftime
+            // string (`f"{dt:%Y-%m-%d}"`). Only the runtime (dynamic) spec path
+            // carries the raw string; a valid mini-language spec on a temporal
+            // value (rare/nonsensical) still takes the generic route below.
+            let temporal = if conversion == 0 && !static_spec {
+                this.try_format_temporal(value, spec_value)?
+            } else {
+                None
+            };
 
-            // Pre-check: reject format specs with huge width before pad_string
-            // allocates an untracked Rust String.
-            check_repeat_size(spec.width, spec.fill.len_utf8(), this.heap.tracker())?;
+            if let Some(formatted) = temporal {
+                formatted
+            } else {
+                let spec = this.get_format_spec(spec_value, value, static_spec)?;
 
-            match conversion {
-                // No conversion - format original value
-                0 => format_with_spec(value, &spec, this)?,
-                // !s - convert to str, format as string
-                1 => {
-                    let s = value.py_str(this)?;
-                    format_string(&s, &spec)?
+                // Pre-check: reject format specs with huge width before pad_string
+                // allocates an untracked Rust String.
+                check_repeat_size(spec.width, spec.fill.len_utf8(), this.heap.tracker())?;
+
+                match conversion {
+                    // No conversion - format original value
+                    0 => format_with_spec(value, &spec, this)?,
+                    // !s - convert to str, format as string
+                    1 => {
+                        let s = value.py_str(this)?;
+                        format_string(&s, &spec)?
+                    }
+                    // !r - convert to repr, format as string
+                    2 => {
+                        let s = value.py_repr(this)?;
+                        format_string(&s, &spec)?
+                    }
+                    // !a - convert to ascii, format as string
+                    3 => {
+                        let s = ascii_escape(&value.py_repr(this)?);
+                        format_string(&s, &spec)?
+                    }
+                    _ => format_with_spec(value, &spec, this)?,
                 }
-                // !r - convert to repr, format as string
-                2 => {
-                    let s = value.py_repr(this)?;
-                    format_string(&s, &spec)?
-                }
-                // !a - convert to ascii, format as string
-                3 => {
-                    let s = ascii_escape(&value.py_repr(this)?);
-                    format_string(&s, &spec)?
-                }
-                _ => format_with_spec(value, &spec, this)?,
             }
         } else {
             // No format spec - just convert based on conversion flag
@@ -99,6 +115,42 @@ impl<T: ResourceTracker> VM<'_, T> {
         let result = allocate_string(formatted, this.heap)?;
         this.push(result);
         Ok(())
+    }
+
+    /// Formats a `date`/`datetime` value by treating the spec as a `strftime`
+    /// string, mirroring CPython's `__format__` for temporal types
+    /// (`f"{dt:%Y-%m-%d}"`).
+    ///
+    /// Returns `Ok(None)` for any non-temporal value so the caller falls back
+    /// to the generic mini-language formatter. `spec_value` is the runtime
+    /// (dynamic) spec string; an empty spec maps to `str()`, matching
+    /// `datetime.__format__('')`.
+    fn try_format_temporal(&mut self, value: &Value, spec_value: &Value) -> Result<Option<String>, RunError> {
+        let Value::Ref(id) = value else {
+            return Ok(None);
+        };
+        let id = *id;
+        let temporal = matches!(
+            self.heap.read(id),
+            HeapReadOutput::Date(_) | HeapReadOutput::DateTime(_)
+        );
+        if !temporal {
+            return Ok(None);
+        }
+
+        let spec_str = spec_value.py_str(self)?;
+        // An empty (dynamic) spec behaves like `str()`; strftime("") is also
+        // "" but routing explicitly keeps the intent clear.
+        if spec_str.is_empty() {
+            return Ok(Some(value.py_str(self)?.into_owned()));
+        }
+
+        let formatted = match self.heap.read(id) {
+            HeapReadOutput::Date(d) => format_date_strftime(*d.get(self.heap), &spec_str),
+            HeapReadOutput::DateTime(d) => format_datetime_strftime(d.get(self.heap), &spec_str),
+            _ => unreachable!("temporal-ness checked above"),
+        };
+        formatted.map(Some)
     }
 
     /// Resolves a format spec value pushed by `compile_format_value` into a
