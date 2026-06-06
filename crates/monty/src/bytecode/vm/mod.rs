@@ -31,7 +31,7 @@ use crate::{
     exception_private::{ExcType, RunError, RunResult, SimpleException},
     heap::{ContainsHeap, DropWithHeap, Heap, HeapData, HeapGuard, HeapId, HeapReadOutput, HeapReader},
     heap_data::{Closure, FunctionDefaults},
-    intern::{FunctionId, Interns, StringId},
+    intern::{FunctionId, Interns, StaticStrings, StringId},
     io::PrintWriter,
     modules::{StandardLib, json::JsonStringCache},
     object::InvalidInputError,
@@ -41,7 +41,6 @@ use crate::{
     types::{
         Dict, LongInt, MontyIter, PyTrait,
         file::{PendingFileEffect, apply_buffer_store, apply_write_position},
-        str::allocate_string,
         timedelta,
     },
     value::{BitwiseOp, EitherStr, Value},
@@ -2039,7 +2038,7 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
     /// (`__file__`, `__cached__`, …).
     fn module_dunder(&self, name_id: StringId) -> RunResult<Option<Value>> {
         let value = match self.interns.get_str(name_id) {
-            "__name__" => allocate_string("__main__", self.heap)?,
+            "__name__" => Value::InternString(StaticStrings::DunderMain.into()),
             "__debug__" => Value::Bool(true),
             "__annotations__" => Value::Ref(self.heap.allocate(HeapData::Dict(Dict::new()))?),
             "__doc__" | "__spec__" | "__package__" => Value::None,

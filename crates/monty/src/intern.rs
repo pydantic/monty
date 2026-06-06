@@ -698,6 +698,11 @@ pub enum StaticStrings {
     // same StringId-stability reason as the gc entries above).
     /// `sys.setrecursionlimit()` function (only callable under `test-hooks`).
     Setrecursionlimit,
+
+    // ==========================
+    // Module dunder values.
+    #[strum(serialize = "__main__")]
+    DunderMain,
 }
 
 impl StaticStrings {

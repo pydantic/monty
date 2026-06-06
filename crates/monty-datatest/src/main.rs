@@ -75,6 +75,8 @@ fn default_test_limits() -> ResourceLimits {
 /// - `skip-cpython-windows` - Skip CPython test on Windows (Monty test still runs).
 ///   Used for tests that rely on POSIX path semantics which Monty's sandbox always
 ///   provides but Windows CPython does not.
+/// - `cpython-main-module` - Set `__name__ = '__main__'` for CPython only,
+///   matching script-style module globals for tests that directly inspect it.
 /// - `xfail=monty,cpython` - Expected to fail on both interpreters
 #[derive(Debug, Clone)]
 #[expect(clippy::struct_excessive_bools)]
@@ -96,6 +98,10 @@ struct TestConfig {
     /// path semantics (e.g. pathlib tests using `/` paths) which are correct for
     /// Monty's always-POSIX sandbox but behave differently on Windows CPython.
     skip_cpython_windows: bool,
+    /// When true, seed CPython globals with script-style `__name__ = '__main__'`.
+    /// This is intentionally opt-in because doing it globally changes CPython's
+    /// function error messages to include `__main__.` qualifiers.
+    cpython_main_module: bool,
     /// Resource limits applied to this test's Monty run. Defaults to
     /// `default_test_limits()`; the `# gc-interval=<N>` directive mutates
     /// this in `parse_fixture`. The recursion ceiling is tightened from the
@@ -114,6 +120,7 @@ impl Default for TestConfig {
             async_mode: false,
             mount_fs: false,
             skip_cpython_windows: false,
+            cpython_main_module: false,
             limits: default_test_limits(),
         }
     }
@@ -195,6 +202,7 @@ fn parse_fixture(content: &str) -> (String, Expectation, TestConfig) {
         skip_cpython_windows: comment_lines
             .iter()
             .any(|line| line.starts_with("skip-cpython-windows")),
+        cpython_main_module: comment_lines.iter().any(|line| line.starts_with("cpython-main-module")),
         ..Default::default()
     };
     // Check for "xfail=" directive
@@ -2131,6 +2139,7 @@ enum CpythonResult {
 ///
 /// RefCounts tests are skipped as they're Monty-specific.
 /// Traceback tests use scripts/run_traceback.py for reliable caret line support.
+#[expect(clippy::fn_params_excessive_bools)]
 fn try_run_cpython_test(
     path: &Path,
     code: &str,
@@ -2138,6 +2147,7 @@ fn try_run_cpython_test(
     iter_mode: bool,
     async_mode: bool,
     mount_fs: bool,
+    cpython_main_module: bool,
 ) -> Result<(), TestFailure> {
     // Ensure Python modules are imported before parallel tests access them.
     // This prevents race conditions during module initialization.
@@ -2215,12 +2225,15 @@ fn try_run_cpython_test(
             .call_method1("update", (exported,))
             .expect("Failed to merge shared test globals");
 
-        // NOTE: we deliberately do NOT set `__name__ = '__main__'` here. Doing
-        // so makes CPython qualify function names in some error messages
+        // NOTE: we deliberately do NOT set `__name__ = '__main__'` by default.
+        // Doing so makes CPython qualify function names in some error messages
         // (`__main__.f() argument ...`), which Monty does not, breaking
-        // exception-message parity for several `function__err_*` cases. Monty's
-        // module-dunder behaviour is covered by the Monty-only integration test
-        // `crates/monty/tests/module_dunders.rs` instead.
+        // exception-message parity for several `function__err_*` cases.
+        if cpython_main_module {
+            globals
+                .set_item("__name__", "__main__")
+                .expect("Failed to seed __name__ for CPython");
+        }
 
         // For mount-fs tests, inject `root` variable pointing to real temp directory.
         if let Some(ref setup_code) = mount_root_setup {
@@ -2516,6 +2529,7 @@ fn run_test_cases_cpython(path: &Path) -> Result<(), Box<dyn Error>> {
         config.iter_mode,
         config.async_mode,
         config.mount_fs,
+        config.cpython_main_module,
     );
 
     if config.xfail_cpython {
