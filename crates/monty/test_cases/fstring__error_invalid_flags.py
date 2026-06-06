@@ -1,5 +1,6 @@
-# Grouping options (`,`/`_`) are only valid for certain presentation types.
-# Illegal combinations raise ValueError at format time, matching CPython.
+# Format flags (`,`/`_` grouping and `#` alternate form) are only valid for
+# certain presentation types. Illegal combinations raise ValueError at format
+# time, matching CPython.
 
 # comma is not allowed with integer base presentations
 try:
@@ -45,3 +46,23 @@ try:
     assert False, 'expected underscore with s to fail'
 except ValueError as exc:
     assert str(exc) == "Cannot specify '_' with 's'.", str(exc)
+
+# the alternate form (`#`) is not allowed with the character presentation
+try:
+    f'{65:#c}'
+    assert False, 'expected # with c to fail'
+except ValueError as exc:
+    assert str(exc) == "Alternate form (#) not allowed with integer format specifier 'c'", str(exc)
+
+# the alternate form is not allowed when formatting a string
+try:
+    f'{"hi":#}'
+    assert False, 'expected # with str to fail'
+except ValueError as exc:
+    assert str(exc) == 'Alternate form (#) not allowed in string format specifier', str(exc)
+
+try:
+    f'{"hi":#s}'
+    assert False, 'expected # with s to fail'
+except ValueError as exc:
+    assert str(exc) == 'Alternate form (#) not allowed in string format specifier', str(exc)

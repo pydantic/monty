@@ -10,15 +10,12 @@ and the `str.format()` method are not implemented (see
 [builtins.md](builtins.md)) — `format` raises `NameError` and `str.format`
 raises `AttributeError`.
 
-## Unsupported flags / types
+## Unsupported types
 
-- The `#` alternate form flag (e.g. `:#x`) is not implemented. Using it
-  raises `SyntaxError: Invalid format specifier '...': '#' (alternate form)
-  is not yet supported in Monty` at parse time, whereas CPython would prepend
-  the `0x`/`0o`/`0b` base prefix.
 - The `n` type (locale-aware number) is not implemented; it raises
   `ValueError: Unknown format code 'n' for object of type '...'`. CPython
-  formats the number using the active locale.
+  formats the number using the active locale. This is the only presentation
+  type CPython supports that Monty does not.
 
 ## Width / precision bounds
 

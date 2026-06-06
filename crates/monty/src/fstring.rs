@@ -281,6 +281,10 @@ pub struct ParsedFormatSpec {
     pub align: Option<Align>,
     /// Sign handling, or `None` if not specified (treated as [`Sign::Minus`]).
     pub sign: Option<Sign>,
+    /// Alternate form (`#`): adds the `0b`/`0o`/`0x` base prefix to
+    /// binary/octal/hex integers and forces a decimal point on floats.
+    /// Validity against the presentation type is checked at format time.
+    pub alternate: bool,
     /// Whether to zero-pad numbers.
     pub zero_pad: bool,
     /// Minimum field width.
@@ -297,21 +301,15 @@ pub struct ParsedFormatSpec {
 /// Reason a [`ParsedFormatSpec`] couldn't be built from its source text.
 ///
 /// Lets callers distinguish CPython-style invalid specs ([`Self::Malformed`])
-/// from specs that are syntactically valid in Python but use features Monty
-/// hasn't implemented yet ([`Self::UnsupportedFlag`]), and from specs whose
-/// width or precision exceeds [`usize`] ([`Self::NumberOverflow`]). The
-/// `Display` impl on [`ParseFormatSpecError`] turns each variant into a
-/// human-readable message; runtime callers append `" for object of type
-/// 'T'"` to mirror CPython's error style.
+/// from specs whose width or precision exceeds [`usize`]
+/// ([`Self::NumberOverflow`]). The `Display` impl on [`ParseFormatSpecError`]
+/// turns each variant into a human-readable message; runtime callers append
+/// `" for object of type 'T'"` to mirror CPython's error style.
 #[derive(Debug, Clone)]
 pub enum ParseFormatSpecReason {
     /// Spec doesn't match the format mini-language grammar — what CPython
     /// itself raises `ValueError: Invalid format specifier` for.
     Malformed,
-    /// Spec uses a flag character that's part of Python's mini-language
-    /// (`#` alternate form) but isn't yet implemented. Carries the flag
-    /// char so callers can report it.
-    UnsupportedFlag(char),
     /// A width or precision decimal integer overflows [`usize`] (e.g.
     /// 22 nines in a row). Without this we'd silently truncate to 0 — see
     /// [`consume_decimal_usize`].
@@ -345,25 +343,10 @@ impl fmt::Display for ParseFormatSpecError {
         write!(f, "Invalid format specifier '{}'", self.spec)?;
         match &self.reason {
             ParseFormatSpecReason::Malformed => Ok(()),
-            ParseFormatSpecReason::UnsupportedFlag(c) => write!(
-                f,
-                ": '{c}' ({}) is not yet supported in Monty",
-                unsupported_flag_name(*c),
-            ),
             ParseFormatSpecReason::NumberOverflow => {
                 write!(f, ": width or precision overflows usize")
             }
         }
-    }
-}
-
-/// Maps an unsupported flag character to a short human-readable name for
-/// error messages — keeps the [`fmt::Display`] impl on
-/// [`ParseFormatSpecError`] terse and lets us extend the list in one place.
-fn unsupported_flag_name(c: char) -> &'static str {
-    match c {
-        '#' => "alternate form",
-        _ => "format flag",
     }
 }
 
@@ -402,15 +385,10 @@ impl FromStr for ParsedFormatSpec {
 
         result.sign = chars.next_if_map(|c| Sign::from_char(c).ok_or(c));
 
-        // `#` (alternate form): part of Python's format mini-language but not
-        // yet implemented in Monty — reject loudly rather than silently
-        // dropping the flag.
-        if chars.next_if_eq(&'#').is_some() {
-            return Err(ParseFormatSpecError::new(
-                spec,
-                ParseFormatSpecReason::UnsupportedFlag('#'),
-            ));
-        }
+        // `#` (alternate form). Whether it's legal for the chosen presentation
+        // type is decided at format time (the value type isn't known here for
+        // type-less specs), so it's validated in `format_with_spec`.
+        result.alternate = chars.next_if_eq(&'#').is_some();
 
         // Parse zero-padding flag (must come before width)
         if chars.next_if_eq(&'0').is_some() {
@@ -535,6 +513,11 @@ pub fn format_with_spec(
         validate_grouping(grouping, spec.type_char, value_type)?;
     }
 
+    // The alternate form (`#`) is likewise illegal for `c`/`s` presentations.
+    if spec.alternate {
+        validate_alternate(spec.type_char, value_type)?;
+    }
+
     match (value, spec.type_char) {
         // Integer formatting
         (Value::Int(n), None | Some(TypeChar::D)) => Ok(format_int(*n, spec)),
@@ -614,6 +597,28 @@ fn validate_grouping(grouping: Grouping, type_char: Option<TypeChar>, value_type
     }
 }
 
+/// Checks that the alternate form (`#`) is valid for the chosen presentation
+/// type, returning CPython's wording otherwise.
+///
+/// `#` is a no-op for decimal integers and meaningful for binary/octal/hex
+/// integers and all float presentations, but is rejected for the character
+/// (`c`) and string (`s`) presentations — the latter also covers a type-less
+/// spec applied to a non-numeric value (which is string-formatted).
+fn validate_alternate(type_char: Option<TypeChar>, value_type: Type) -> Result<(), RunError> {
+    let message = match type_char {
+        Some(TypeChar::C) => Some("Alternate form (#) not allowed with integer format specifier 'c'"),
+        Some(TypeChar::S) => Some("Alternate form (#) not allowed in string format specifier"),
+        None if !matches!(value_type, Type::Int | Type::Bool | Type::Float) => {
+            Some("Alternate form (#) not allowed in string format specifier")
+        }
+        _ => None,
+    };
+    match message {
+        Some(msg) => Err(SimpleException::new_msg(ExcType::ValueError, msg.to_owned()).into()),
+        None => Ok(()),
+    }
+}
+
 /// Maximum fill codepoint that fits in the 8-bit fill field of the encoded
 /// format spec. Latin-1 covers the common cases (`*`, `_`, `-`, `.`, plus
 /// any single-byte char); higher codepoints (CJK, emoji, etc.) fall back to
@@ -643,6 +648,10 @@ pub const MAX_ENCODED_PRECISION: usize = (1 << 21) - 2;
 /// - bits 34-54: precision+1 (21 bits; 0 = no precision)
 /// - bits 55-59: [`TypeChar`] (0=none, 1-15=B/C/D/E/EUpper/F/FUpper/G/GUpper/N/O/S/X/XUpper/Percent)
 /// - bits 60-61: [`Grouping`] (0=none, 1=Comma, 2=Underscore)
+/// - bit 62: alternate form (`#`)
+///
+/// Bit 62 is the last free bit (bit 63 is the sign bit, which must stay 0); a
+/// future flag would need the packing reworked rather than another bit added.
 pub fn encode_format_spec(spec: &ParsedFormatSpec) -> Option<i64> {
     let fill_code = u32::from(spec.fill);
     if fill_code > MAX_ENCODED_FILL {
@@ -698,8 +707,9 @@ pub fn encode_format_spec(spec: &ParsedFormatSpec) -> Option<i64> {
         Grouping::Comma => 1,
         Grouping::Underscore => 2,
     });
+    let alternate = i64::from(spec.alternate);
 
-    // Every field occupies bits 0..62, so the sign bit is never set and the
+    // Every field occupies bits 0..63, so the sign bit is never set and the
     // shifts/ORs stay within well-defined i64 territory.
     Some(
         fill | (align << 8)
@@ -708,7 +718,8 @@ pub fn encode_format_spec(spec: &ParsedFormatSpec) -> Option<i64> {
             | (width << 14)
             | (precision << 34)
             | (type_char << 55)
-            | (grouping << 60),
+            | (grouping << 60)
+            | (alternate << 62),
     )
 }
 
@@ -718,8 +729,8 @@ pub fn encode_format_spec(spec: &ParsedFormatSpec) -> Option<i64> {
 /// when executing `FormatValue` with the `FORMAT_VALUE_STATIC_SPEC` flag to
 /// recover the pre-parsed spec from the constant pool entry.
 pub fn decode_format_spec(encoded: i64) -> ParsedFormatSpec {
-    // The valid encoding sits in bits 0..60 so `cast_unsigned` is a no-op
-    // reinterpret — the sign bit is always 0 here.
+    // The valid encoding sits in bits 0..63 so `cast_unsigned` is a no-op
+    // reinterpret — the sign bit (bit 63) is always 0 here.
     let encoded = encoded.cast_unsigned();
     let fill = (encoded & 0xFF) as u8 as char;
     let align_bits = (encoded >> 8) & 0x07;
@@ -729,6 +740,7 @@ pub fn decode_format_spec(encoded: i64) -> ParsedFormatSpec {
     let precision_raw = ((encoded >> 34) & 0x1F_FFFF) as usize;
     let type_bits = ((encoded >> 55) & 0x1F) as u8;
     let grouping_bits = (encoded >> 60) & 0x03;
+    let alternate = ((encoded >> 62) & 0x01) != 0;
 
     let align = match align_bits {
         1 => Some(Align::Left),
@@ -781,6 +793,7 @@ pub fn decode_format_spec(encoded: i64) -> ParsedFormatSpec {
         fill,
         align,
         sign,
+        alternate,
         zero_pad,
         width,
         grouping,
@@ -835,31 +848,33 @@ pub fn format_int(n: i64, spec: &ParsedFormatSpec) -> String {
     } else {
         positive_sign_prefix(spec.sign)
     };
-    pad_signed_numeric(sign, &abs_str, spec)
+    pad_signed_numeric(sign, "", &abs_str, spec)
 }
 
 /// Formats an integer in binary (base 2), octal (base 8), or hexadecimal (base 16).
 ///
-/// Used for format types `b`, `o`, `x`, and `X`. The sign is prepended for negative numbers.
-/// Does not include base prefixes like `0b`, `0o`, `0x` (those require the `#` flag which
-/// is not yet implemented). Returns an error for invalid base values.
+/// Used for format types `b`, `o`, `x`, and `X`. The sign is prepended for
+/// negative numbers. The alternate form (`#`) adds the `0b`/`0o`/`0x` base
+/// prefix, which sits after the sign and counts toward the field width.
+/// Returns an error for invalid base values.
 pub fn format_int_base(n: i64, base: u32, spec: &ParsedFormatSpec) -> Result<String, FormatError> {
     let is_negative = n < 0;
     let abs_val = n.unsigned_abs();
 
-    let abs_str = match base {
-        2 => format!("{abs_val:b}"),
-        8 => format!("{abs_val:o}"),
-        16 => format!("{abs_val:x}"),
+    let (abs_str, base_prefix) = match base {
+        2 => (format!("{abs_val:b}"), "0b"),
+        8 => (format!("{abs_val:o}"), "0o"),
+        16 => (format!("{abs_val:x}"), "0x"),
         _ => return Err(FormatError::ValueError("Invalid base".to_owned())),
     };
+    let prefix = if spec.alternate { base_prefix } else { "" };
 
     let sign = if is_negative {
         "-"
     } else {
         positive_sign_prefix(spec.sign)
     };
-    Ok(pad_signed_numeric(sign, &abs_str, spec))
+    Ok(pad_signed_numeric(sign, prefix, &abs_str, spec))
 }
 
 /// Formats an integer as a Unicode character (format type `c`).
@@ -894,12 +909,13 @@ pub fn format_float_f(f: f64, spec: &ParsedFormatSpec) -> String {
     let is_negative = f.is_sign_negative() && !f.is_nan();
     let abs_val = f.abs();
     let abs_str = fmt_float_fixed(abs_val, precision);
+    let abs_str = maybe_alternate_point(abs_str, abs_val, spec);
     let sign = if is_negative {
         "-"
     } else {
         positive_sign_prefix(spec.sign)
     };
-    pad_signed_numeric(sign, &abs_str, spec)
+    pad_signed_numeric(sign, "", &abs_str, spec)
 }
 
 /// Formats a float in exponential/scientific notation (format types `e` and `E`).
@@ -914,12 +930,13 @@ pub fn format_float_e(f: f64, spec: &ParsedFormatSpec, uppercase: bool) -> Strin
     let abs_str = fmt_float_exp(abs_val, precision, uppercase);
     // Fix exponent format to match Python (e+03 not e3)
     let abs_str = fix_exp_format(&abs_str);
+    let abs_str = maybe_alternate_point(abs_str, abs_val, spec);
     let sign = if is_negative {
         "-"
     } else {
         positive_sign_prefix(spec.sign)
     };
-    pad_signed_numeric(sign, &abs_str, spec)
+    pad_signed_numeric(sign, "", &abs_str, spec)
 }
 
 /// Formats a float in "general" format (format types `g` and `G`).
@@ -945,21 +962,41 @@ pub fn format_float_g(f: f64, spec: &ParsedFormatSpec) -> String {
 
     // precision is typically small (default 6), safe to convert to i32
     let prec_i32 = i32::try_from(precision).unwrap_or(i32::MAX);
+    // The alternate form (`#`) keeps the trailing zeros that `g` normally
+    // strips and forces a decimal point — but only for an *explicit* `g`/`G`.
+    // For the default float presentation (no type char, `type_char == None`),
+    // CPython uses the shortest repr where `#` is a no-op, so the alternate
+    // behaviour is suppressed to leave that path unchanged.
+    let alternate_g = spec.alternate && spec.type_char.is_some();
     let abs_str = if exp < -4 || exp >= prec_i32 {
         // Use exponential notation
         let exp_prec = precision.saturating_sub(1);
-        // Cap Rust precision; trailing zeros are stripped so padding isn't needed.
         let formatted = fmt_float_exp(abs_val, exp_prec.min(MAX_FMT_PRECISION_EXP), false);
-        // Python strips trailing zeros from the mantissa
-        strip_trailing_zeros_exp(&formatted)
+        if alternate_g {
+            // Keep the mantissa zeros but still normalise the exponent (e+06).
+            fix_exp_format(&formatted)
+        } else {
+            // Python strips trailing zeros from the mantissa
+            strip_trailing_zeros_exp(&formatted)
+        }
     } else {
         // Use fixed notation - result is non-negative due to .max(0)
         let sig_digits_i32 = (prec_i32 - exp - 1).max(0);
         let sig_digits = usize::try_from(sig_digits_i32).expect("sig_digits guaranteed non-negative");
-        // Cap Rust precision; trailing zeros are stripped so padding isn't needed.
+        // Cap Rust precision; beyond this both branches only differ in trailing
+        // zeros, which f64 can't represent anyway.
         let cap = sig_digits.min(MAX_FMT_PRECISION);
         let formatted = format!("{abs_val:.cap$}");
-        strip_trailing_zeros(&formatted)
+        if alternate_g {
+            formatted
+        } else {
+            strip_trailing_zeros(&formatted)
+        }
+    };
+    let abs_str = if alternate_g {
+        maybe_alternate_point(abs_str, abs_val, spec)
+    } else {
+        abs_str
     };
 
     let sign = if is_negative {
@@ -967,7 +1004,7 @@ pub fn format_float_g(f: f64, spec: &ParsedFormatSpec) -> String {
     } else {
         positive_sign_prefix(spec.sign)
     };
-    pad_signed_numeric(sign, &abs_str, spec)
+    pad_signed_numeric(sign, "", &abs_str, spec)
 }
 
 /// Applies ASCII conversion to a string (escapes non-ASCII characters).
@@ -1005,12 +1042,14 @@ pub fn format_float_percent(f: f64, spec: &ParsedFormatSpec) -> String {
     let abs_val = percent_val.abs();
 
     let abs_str = format!("{}%", fmt_float_fixed(abs_val, precision));
+    // `#` forces the point before the `%` (`#.0%` → `50.%`).
+    let abs_str = maybe_alternate_point(abs_str, abs_val, spec);
     let sign = if is_negative {
         "-"
     } else {
         positive_sign_prefix(spec.sign)
     };
-    pad_signed_numeric(sign, &abs_str, spec)
+    pad_signed_numeric(sign, "", &abs_str, spec)
 }
 
 // ============================================================================
@@ -1031,15 +1070,39 @@ fn positive_sign_prefix(sign: Option<Sign>) -> &'static str {
     }
 }
 
-/// Pads `sign + abs_str` to `spec.width` with the right alignment semantics
-/// for a signed numeric value.
+/// Applies the alternate form's (`#`) "always show a decimal point" rule to a
+/// finite float string, returning it unchanged when `#` is absent.
+///
+/// The point is inserted before the exponent (`e`/`E`) or percent (`%`) marker,
+/// or at the end for plain fixed-point — so `#.0f` of 1.0 → `1.`, `#.0e` →
+/// `1.e+00`, `#.0%` of 0.5 → `50.%`. A no-op when a `.` is already present (any
+/// non-zero precision) and skipped for non-finite values (`inf`/`nan` have no
+/// point).
+fn maybe_alternate_point(abs_str: String, abs_val: f64, spec: &ParsedFormatSpec) -> String {
+    if !spec.alternate || !abs_val.is_finite() {
+        return abs_str;
+    }
+    let marker = abs_str.find(['e', 'E', '%']).unwrap_or(abs_str.len());
+    if abs_str[..marker].contains('.') {
+        abs_str
+    } else {
+        format!("{}.{}", &abs_str[..marker], &abs_str[marker..])
+    }
+}
+
+/// Pads `sign + prefix + abs_str` to `spec.width` with the right alignment
+/// semantics for a signed numeric value.
+///
+/// `prefix` is the alternate-form base marker (`0x`/`0o`/`0b`) or `""`. It
+/// sits immediately after the sign and before any internal padding, and counts
+/// toward the field width — `format(255, '#06x')` → `0x00ff`.
 ///
 /// Numeric formatters all share three padding modes:
-/// - `zero_pad` (`0` flag): insert `'0'` between the sign and the digits.
-/// - `Align::SignAware` (`=`): insert `spec.fill` between the sign and the
+/// - `zero_pad` (`0` flag): insert `'0'` between the prefix and the digits.
+/// - `Align::SignAware` (`=`): insert `spec.fill` between the prefix and the
 ///   digits.
-/// - Anything else: glue `sign` + `abs_str` together and let [`pad_string`]
-///   place fill outside the value.
+/// - Anything else: glue `sign` + `prefix` + `abs_str` together and let
+///   [`pad_string`] place fill outside the value.
 ///
 /// Without this helper each formatter that wants sign-aware behaviour had
 /// to inline the same conditional, and the ones that *didn't* (the
@@ -1050,31 +1113,32 @@ fn positive_sign_prefix(sign: Option<Sign>) -> &'static str {
 ///
 /// When `spec.grouping` is set the thousands separator is woven through the
 /// integer digits before padding — see [`pad_signed_grouped`].
-fn pad_signed_numeric(sign: &str, abs_str: &str, spec: &ParsedFormatSpec) -> String {
+fn pad_signed_numeric(sign: &str, prefix: &str, abs_str: &str, spec: &ParsedFormatSpec) -> String {
     let align = spec.align.unwrap_or(Align::Right);
     match spec.grouping {
-        None => pad_signed_ungrouped(sign, abs_str, align, spec),
-        Some(grouping) => pad_signed_grouped(sign, abs_str, align, grouping, spec),
+        None => pad_signed_ungrouped(sign, prefix, abs_str, align, spec),
+        Some(grouping) => pad_signed_grouped(sign, prefix, abs_str, align, grouping, spec),
     }
 }
 
 /// Padding for a signed numeric with no thousands grouping (the common case).
 ///
 /// Handles the three modes documented on [`pad_signed_numeric`]: `0`-flag
-/// zero-padding, `=` sign-aware fill, and ordinary outside padding.
-fn pad_signed_ungrouped(sign: &str, abs_str: &str, align: Align, spec: &ParsedFormatSpec) -> String {
+/// zero-padding, `=` sign-aware fill, and ordinary outside padding. `prefix`
+/// (the `#` base marker or `""`) is emitted right after the sign in every mode.
+fn pad_signed_ungrouped(sign: &str, prefix: &str, abs_str: &str, align: Align, spec: &ParsedFormatSpec) -> String {
     if spec.zero_pad || align == Align::SignAware {
         let fill = if spec.zero_pad { '0' } else { spec.fill };
-        let total_len = sign.len() + abs_str.len();
+        let total_len = sign.len() + prefix.len() + abs_str.len();
         if spec.width > total_len {
             let padding = spec.width - total_len;
             let pad_str: String = iter::repeat_n(fill, padding).collect();
-            format!("{sign}{pad_str}{abs_str}")
+            format!("{sign}{prefix}{pad_str}{abs_str}")
         } else {
-            format!("{sign}{abs_str}")
+            format!("{sign}{prefix}{abs_str}")
         }
     } else {
-        let value = format!("{sign}{abs_str}");
+        let value = format!("{sign}{prefix}{abs_str}");
         pad_string(&value, spec.width, align, spec.fill)
     }
 }
@@ -1084,11 +1148,20 @@ fn pad_signed_ungrouped(sign: &str, abs_str: &str, align: Align, spec: &ParsedFo
 /// The separator only ever lands between *integer* digits, so `abs_str` is
 /// first split into its leading digit run and any trailing part (fraction,
 /// exponent, `%`). Binary/octal/hex presentations group in fours and never
-/// carry a suffix; decimal/float presentations group in threes. The `0` flag
-/// is special: its leading zeros become part of the number and are themselves
-/// grouped to fill the field width (`format(1234, '08,')` → `'0,001,234'`),
-/// whereas `=` fill and outside padding wrap an already-grouped value.
-fn pad_signed_grouped(sign: &str, abs_str: &str, align: Align, grouping: Grouping, spec: &ParsedFormatSpec) -> String {
+/// carry a suffix; decimal/float presentations group in threes. `prefix` (the
+/// `#` base marker or `""`) sits after the sign and is never grouped. The `0`
+/// flag is special: its leading zeros become part of the number and are
+/// themselves grouped to fill the field width (`format(1234, '08,')` →
+/// `'0,001,234'`), whereas `=` fill and outside padding wrap an already-grouped
+/// value.
+fn pad_signed_grouped(
+    sign: &str,
+    prefix: &str,
+    abs_str: &str,
+    align: Align,
+    grouping: Grouping,
+    spec: &ParsedFormatSpec,
+) -> String {
     let sep = grouping.separator();
     let is_base = matches!(
         spec.type_char,
@@ -1106,25 +1179,25 @@ fn pad_signed_grouped(sign: &str, abs_str: &str, align: Align, grouping: Groupin
 
     if spec.zero_pad {
         // Grow the integer part with grouped leading zeros until the whole
-        // field (sign + grouped digits + suffix) reaches the target width.
-        let reserved = sign.len() + suffix.len();
+        // field (sign + prefix + grouped digits + suffix) reaches the width.
+        let reserved = sign.len() + prefix.len() + suffix.len();
         let min_int_width = spec.width.saturating_sub(reserved);
         let grouped = insert_grouping(int_digits, group_size, sep, min_int_width);
-        format!("{sign}{grouped}{suffix}")
+        format!("{sign}{prefix}{grouped}{suffix}")
     } else if align == Align::SignAware {
         // `=` with a non-`0` fill: group normally, then insert fill (never
-        // grouped) between the sign and the value.
+        // grouped) between the prefix and the value.
         let body = format!("{}{suffix}", insert_grouping(int_digits, group_size, sep, 0));
-        let total_len = sign.len() + body.len();
+        let total_len = sign.len() + prefix.len() + body.len();
         if spec.width > total_len {
             let pad_str: String = iter::repeat_n(spec.fill, spec.width - total_len).collect();
-            format!("{sign}{pad_str}{body}")
+            format!("{sign}{prefix}{pad_str}{body}")
         } else {
-            format!("{sign}{body}")
+            format!("{sign}{prefix}{body}")
         }
     } else {
         let grouped = insert_grouping(int_digits, group_size, sep, 0);
-        let value = format!("{sign}{grouped}{suffix}");
+        let value = format!("{sign}{prefix}{grouped}{suffix}");
         pad_string(&value, spec.width, align, spec.fill)
     }
 }

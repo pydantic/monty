@@ -414,3 +414,38 @@ assert f'{1234:=10,}' == '     1,234', 'sign-aware fill not grouped'
 assert f'{1234:=+10,}' == '+    1,234', 'sign-aware fill after sign'
 assert f'{1234:>12,}' == '       1,234', 'right align grouped'
 assert f'{1234:*>12,}' == '*******1,234', 'custom fill right align grouped'
+
+# === Alternate form (#) on integer bases adds the 0b/0o/0x prefix ===
+assert f'{255:#x}' == '0xff', 'hex prefix'
+assert f'{255:#X}' == '0XFF', 'upper hex prefix and digits'
+assert f'{5:#b}' == '0b101', 'binary prefix'
+assert f'{8:#o}' == '0o10', 'octal prefix'
+assert f'{-255:#x}' == '-0xff', 'negative hex prefix after sign'
+assert f'{0:#x}' == '0x0', 'zero still gets prefix'
+assert f'{255:#d}' == '255', 'alternate is a no-op for decimal'
+# prefix counts toward width and sits before zero padding
+assert f'{255:#10x}' == '      0xff', 'prefix counts toward width'
+assert f'{255:#010x}' == '0x000000ff', 'zero pad goes between prefix and digits'
+assert f'{-255:#010x}' == '-0x00000ff', 'zero pad after sign and prefix'
+assert f'{255:+#x}' == '+0xff', 'sign before prefix'
+# prefix with alignment / grouping
+assert f'{255:<#10x}' == '0xff      ', 'left align with prefix'
+assert f'{255:^#10x}' == '   0xff   ', 'center align with prefix'
+assert f'{255:=#10x}' == '0x      ff', 'sign-aware: prefix then fill then digits'
+assert f'{255:*=#10x}' == '0x******ff', 'sign-aware custom fill with prefix'
+assert f'{0xABCDEF:#_x}' == '0xab_cdef', 'prefix with underscore grouping'
+assert f'{0xABCDEF:#010_x}' == '0x0ab_cdef', 'prefix + zero-pad + grouping'
+
+# === Alternate form (#) on floats forces a decimal point ===
+assert f'{1.0:#.0f}' == '1.', 'force point on fixed'
+assert f'{0.0:#.0f}' == '0.', 'force point on zero'
+assert f'{1.0:#.0e}' == '1.e+00', 'force point on exponential'
+assert f'{3.14:+#.2f}' == '+3.14', 'point already present is unchanged'
+assert f'{0.5:#.0%}' == '50.%', 'force point before percent'
+# explicit g/G keeps trailing zeros under #
+assert f'{1.0:#g}' == '1.00000', 'g keeps trailing zeros'
+assert f'{100.0:#g}' == '100.000', 'g keeps trailing zeros wider'
+assert f'{1.5:#.3g}' == '1.50', 'g precision keeps zeros'
+assert f'{1234.0:#.4g}' == '1234.', 'g all sig figs used, force point'
+# default float presentation: # is a no-op (shortest repr already has a point)
+assert f'{3.14:#}' == '3.14', 'alternate no-op on default float'
