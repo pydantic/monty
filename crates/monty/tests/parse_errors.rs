@@ -97,30 +97,6 @@ fn format_spec_alternate_form_returns_unsupported_flag_error() {
 }
 
 #[test]
-fn format_spec_comma_grouping_returns_unsupported_flag_error() {
-    let result = MontyRun::new("f'{1000:,d}'".to_owned(), "test.py", vec![]);
-    let exc = result.expect_err("expected parse error");
-    assert_eq!(exc.exc_type(), ExcType::SyntaxError);
-    assert!(
-        exc.message()
-            .is_some_and(|m| m.contains("','") && m.contains("thousands separator")),
-        "message should mention ',' and thousands separator, got: {exc}"
-    );
-}
-
-#[test]
-fn format_spec_underscore_grouping_returns_unsupported_flag_error() {
-    let result = MontyRun::new("f'{1000:_d}'".to_owned(), "test.py", vec![]);
-    let exc = result.expect_err("expected parse error");
-    assert_eq!(exc.exc_type(), ExcType::SyntaxError);
-    assert!(
-        exc.message()
-            .is_some_and(|m| m.contains("'_'") && m.contains("thousands separator")),
-        "message should mention '_' and thousands separator, got: {exc}"
-    );
-}
-
-#[test]
 fn format_spec_width_overflow_returns_syntax_error() {
     // 22 nines overflows usize; verify the parser surfaces this rather than
     // silently clamping to 0.

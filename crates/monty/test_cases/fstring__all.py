@@ -371,3 +371,46 @@ assert f'{name = }' == "name = 'test'", 'debug uses repr for strings'
 assert f'{name=!s}' == 'name=test', 'debug with !s conversion'
 assert f'{name=!r}' == "name='test'", 'debug with !r conversion'
 assert f'{1+1=}' == '1+1=2', 'debug with expression'
+
+# === Comma thousands separator ===
+assert f'{1234567:,}' == '1,234,567', 'comma groups of three'
+assert f'{1234:,}' == '1,234', 'comma single group'
+assert f'{12:,}' == '12', 'comma below group size'
+assert f'{0:,}' == '0', 'comma zero'
+assert f'{-1234567:,}' == '-1,234,567', 'comma negative'
+assert f'{1234567:,d}' == '1,234,567', 'comma with explicit d'
+assert f'{1234567.891:,f}' == '1,234,567.891000', 'comma float fixed'
+assert f'{1234567.891:,.2f}' == '1,234,567.89', 'comma float precision'
+assert f'{-1234567.891:,.2f}' == '-1,234,567.89', 'comma negative float'
+assert f'{1234567.891:,e}' == '1.234568e+06', 'comma exponential (no integer groups)'
+assert f'{1234.5:,g}' == '1,234.5', 'comma general fixed'
+assert f'{12.3456:,%}' == '1,234.560000%', 'comma percent'
+assert f'{1234:+,}' == '+1,234', 'comma with plus sign'
+assert f'{-1234:+,}' == '-1,234', 'comma with plus sign negative'
+assert f'{1234: ,}' == ' 1,234', 'comma with space sign'
+
+# === Underscore thousands separator ===
+assert f'{1234567:_}' == '1_234_567', 'underscore groups of three'
+assert f'{1234567:_d}' == '1_234_567', 'underscore with explicit d'
+assert f'{1234567.891:_.2f}' == '1_234_567.89', 'underscore float'
+# Underscore groups binary/octal/hex in fours
+assert f'{255:_b}' == '1111_1111', 'underscore binary groups of four'
+assert f'{0xABCDEF:_x}' == 'ab_cdef', 'underscore hex'
+assert f'{0xABCDEF:_X}' == 'AB_CDEF', 'underscore hex upper'
+assert f'{0o12345670:_o}' == '1234_5670', 'underscore octal'
+
+# === Grouping with zero-padding (padding is itself grouped) ===
+assert f'{1234567:012,d}' == '0,001,234,567', 'comma zero-pad wider'
+assert f'{1234:010,}' == '00,001,234', 'comma zero-pad'
+assert f'{-1234:010,}' == '-0,001,234', 'comma zero-pad negative'
+assert f'{1234:08,}' == '0,001,234', 'comma zero-pad overshoot by separator'
+assert f'{1234:07,}' == '001,234', 'comma zero-pad exact'
+assert f'{1234:05,}' == '1,234', 'comma zero-pad no padding needed'
+assert f'{1234567.891:020,.2f}' == '0,000,001,234,567.89', 'comma zero-pad float'
+assert f'{255:010_b}' == '0_1111_1111', 'underscore zero-pad binary groups of four'
+
+# === Grouping with explicit alignment (fill is not grouped) ===
+assert f'{1234:=10,}' == '     1,234', 'sign-aware fill not grouped'
+assert f'{1234:=+10,}' == '+    1,234', 'sign-aware fill after sign'
+assert f'{1234:>12,}' == '       1,234', 'right align grouped'
+assert f'{1234:*>12,}' == '*******1,234', 'custom fill right align grouped'

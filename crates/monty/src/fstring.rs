@@ -167,6 +167,31 @@ pub enum TypeChar {
     Percent,
 }
 
+/// Thousands-grouping specifier for numeric formats (`,` and `_`).
+///
+/// Selects which separator is inserted between digit groups. The *group
+/// size* is not stored here — it's 3 for decimal and float presentations
+/// but 4 for the binary/octal/hex integer presentations (which only accept
+/// `_`), so it's derived from the type char at format time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum Grouping {
+    /// `,` — comma separator. Only valid for decimal/float presentations.
+    Comma,
+    /// `_` — underscore separator. Valid for decimal/float (groups of 3) and
+    /// for binary/octal/hex (groups of 4).
+    Underscore,
+}
+
+impl Grouping {
+    /// The separator character inserted between digit groups.
+    fn separator(self) -> char {
+        match self {
+            Self::Comma => ',',
+            Self::Underscore => '_',
+        }
+    }
+}
+
 impl Align {
     /// Parses a format-spec alignment character into the corresponding variant.
     pub fn from_char(c: char) -> Option<Self> {
@@ -260,6 +285,9 @@ pub struct ParsedFormatSpec {
     pub zero_pad: bool,
     /// Minimum field width.
     pub width: usize,
+    /// Thousands-grouping separator (`,` or `_`), or `None` if not specified.
+    /// Validity against the presentation type is checked at format time.
+    pub grouping: Option<Grouping>,
     /// Precision for floats or max width for strings.
     pub precision: Option<usize>,
     /// Type character, or `None` if not specified (defaults are type-dependent).
@@ -281,8 +309,8 @@ pub enum ParseFormatSpecReason {
     /// itself raises `ValueError: Invalid format specifier` for.
     Malformed,
     /// Spec uses a flag character that's part of Python's mini-language
-    /// (`#` alternate form, `,` or `_` thousands separator) but isn't yet
-    /// implemented. Carries the flag char so callers can report it.
+    /// (`#` alternate form) but isn't yet implemented. Carries the flag
+    /// char so callers can report it.
     UnsupportedFlag(char),
     /// A width or precision decimal integer overflows [`usize`] (e.g.
     /// 22 nines in a row). Without this we'd silently truncate to 0 — see
@@ -335,8 +363,6 @@ impl fmt::Display for ParseFormatSpecError {
 fn unsupported_flag_name(c: char) -> &'static str {
     match c {
         '#' => "alternate form",
-        ',' => "comma thousands separator",
-        '_' => "underscore thousands separator",
         _ => "format flag",
     }
 }
@@ -347,8 +373,8 @@ impl FromStr for ParsedFormatSpec {
     /// Parses a format specification string into its components.
     ///
     /// Returns a [`ParseFormatSpecError`] for malformed specs, specs that
-    /// rely on flags Monty doesn't implement yet (`#`, `,`, `_`), or specs
-    /// whose width/precision overflows [`usize`].
+    /// rely on flags Monty doesn't implement yet (`#`), or specs whose
+    /// width/precision overflows [`usize`].
     fn from_str(spec: &str) -> Result<Self, Self::Err> {
         if spec.is_empty() {
             return Ok(Self {
@@ -396,15 +422,14 @@ impl FromStr for ParsedFormatSpec {
             .map_err(|()| ParseFormatSpecError::new(spec, ParseFormatSpecReason::NumberOverflow))?
             .unwrap_or(0);
 
-        // Grouping option (`,` or `_` thousands separator): both are valid
-        // Python flags that Monty doesn't implement yet — same rejection
-        // policy as `#`.
-        if let Some(g) = chars.next_if(|c| matches!(c, ',' | '_')) {
-            return Err(ParseFormatSpecError::new(
-                spec,
-                ParseFormatSpecReason::UnsupportedFlag(g),
-            ));
-        }
+        // Grouping option (`,` or `_` thousands separator). Whether it's
+        // legal for the chosen presentation type can't be decided here (the
+        // value type isn't known until format time for type-less specs), so
+        // it's validated in `format_with_spec`.
+        result.grouping = chars.next_if(|c| matches!(c, ',' | '_')).map(|c| match c {
+            ',' => Grouping::Comma,
+            _ => Grouping::Underscore,
+        });
 
         // Parse precision: .N
         if chars.next_if_eq(&'.').is_some() {
@@ -503,6 +528,13 @@ pub fn format_with_spec(
         }
     }
 
+    // A grouping option (`,`/`_`) is only legal for certain presentation
+    // types; reject the illegal combinations with CPython's message before
+    // dispatching to a formatter that would otherwise ignore the flag.
+    if let Some(grouping) = spec.grouping {
+        validate_grouping(grouping, spec.type_char, value_type)?;
+    }
+
     match (value, spec.type_char) {
         // Integer formatting
         (Value::Int(n), None | Some(TypeChar::D)) => Ok(format_int(*n, spec)),
@@ -553,6 +585,35 @@ pub fn format_with_spec(
     }
 }
 
+/// Checks that a grouping option is valid for the chosen presentation type,
+/// returning CPython's `Cannot specify ',' with 'x'.` error otherwise.
+///
+/// `,` is only allowed for decimal/float presentations; `_` additionally
+/// allows the binary/octal/hex integer presentations (grouped in fours). For
+/// a type-less spec the presentation is taken from the value: numeric values
+/// permit grouping, everything else is string-formatted and reported as `s`.
+fn validate_grouping(grouping: Grouping, type_char: Option<TypeChar>, value_type: Type) -> Result<(), RunError> {
+    let allowed = match type_char {
+        None => matches!(value_type, Type::Int | Type::Bool | Type::Float),
+        Some(TypeChar::B | TypeChar::O | TypeChar::X | TypeChar::XUpper) => grouping == Grouping::Underscore,
+        Some(TypeChar::C | TypeChar::S) => false,
+        // D, E/EUpper, F/FUpper, G/GUpper, N, Percent all accept both `,` and `_`.
+        Some(_) => true,
+    };
+    if allowed {
+        Ok(())
+    } else {
+        // For a type-less spec the value is being string-formatted, so the
+        // presentation char CPython reports is `s`.
+        let presentation = type_char.map_or('s', TypeChar::as_char);
+        Err(SimpleException::new_msg(
+            ExcType::ValueError,
+            format!("Cannot specify '{}' with '{presentation}'.", grouping.separator()),
+        )
+        .into())
+    }
+}
+
 /// Maximum fill codepoint that fits in the 8-bit fill field of the encoded
 /// format spec. Latin-1 covers the common cases (`*`, `_`, `-`, `.`, plus
 /// any single-byte char); higher codepoints (CJK, emoji, etc.) fall back to
@@ -581,6 +642,7 @@ pub const MAX_ENCODED_PRECISION: usize = (1 << 21) - 2;
 /// - bits 14-33: width (20 bits, max [`MAX_ENCODED_WIDTH`])
 /// - bits 34-54: precision+1 (21 bits; 0 = no precision)
 /// - bits 55-59: [`TypeChar`] (0=none, 1-15=B/C/D/E/EUpper/F/FUpper/G/GUpper/N/O/S/X/XUpper/Percent)
+/// - bits 60-61: [`Grouping`] (0=none, 1=Comma, 2=Underscore)
 pub fn encode_format_spec(spec: &ParsedFormatSpec) -> Option<i64> {
     let fill_code = u32::from(spec.fill);
     if fill_code > MAX_ENCODED_FILL {
@@ -632,10 +694,22 @@ pub fn encode_format_spec(spec: &ParsedFormatSpec) -> Option<i64> {
         TypeChar::XUpper => 14,
         TypeChar::Percent => 15,
     });
+    let grouping: i64 = spec.grouping.map_or(0, |g| match g {
+        Grouping::Comma => 1,
+        Grouping::Underscore => 2,
+    });
 
-    // Every field occupies bits 0..60, so the sign bit is never set and the
+    // Every field occupies bits 0..62, so the sign bit is never set and the
     // shifts/ORs stay within well-defined i64 territory.
-    Some(fill | (align << 8) | (sign << 11) | (zero_pad << 13) | (width << 14) | (precision << 34) | (type_char << 55))
+    Some(
+        fill | (align << 8)
+            | (sign << 11)
+            | (zero_pad << 13)
+            | (width << 14)
+            | (precision << 34)
+            | (type_char << 55)
+            | (grouping << 60),
+    )
 }
 
 /// Decodes an [`i64`] back into a [`ParsedFormatSpec`].
@@ -654,6 +728,7 @@ pub fn decode_format_spec(encoded: i64) -> ParsedFormatSpec {
     let width = ((encoded >> 14) & 0xF_FFFF) as usize;
     let precision_raw = ((encoded >> 34) & 0x1F_FFFF) as usize;
     let type_bits = ((encoded >> 55) & 0x1F) as u8;
+    let grouping_bits = (encoded >> 60) & 0x03;
 
     let align = match align_bits {
         1 => Some(Align::Left),
@@ -696,12 +771,19 @@ pub fn decode_format_spec(encoded: i64) -> ParsedFormatSpec {
         _ => None,
     };
 
+    let grouping = match grouping_bits {
+        1 => Some(Grouping::Comma),
+        2 => Some(Grouping::Underscore),
+        _ => None,
+    };
+
     ParsedFormatSpec {
         fill,
         align,
         sign,
         zero_pad,
         width,
+        grouping,
         precision,
         type_char,
     }
@@ -965,8 +1047,22 @@ fn positive_sign_prefix(sign: Option<Sign>) -> &'static str {
 /// dropped width for `=` — see `parse_errors.rs::format_spec_…` tests.
 /// Default alignment is right because all callers are numeric formats;
 /// `format_char` (default left, no sign) needs separate handling.
+///
+/// When `spec.grouping` is set the thousands separator is woven through the
+/// integer digits before padding — see [`pad_signed_grouped`].
 fn pad_signed_numeric(sign: &str, abs_str: &str, spec: &ParsedFormatSpec) -> String {
     let align = spec.align.unwrap_or(Align::Right);
+    match spec.grouping {
+        None => pad_signed_ungrouped(sign, abs_str, align, spec),
+        Some(grouping) => pad_signed_grouped(sign, abs_str, align, grouping, spec),
+    }
+}
+
+/// Padding for a signed numeric with no thousands grouping (the common case).
+///
+/// Handles the three modes documented on [`pad_signed_numeric`]: `0`-flag
+/// zero-padding, `=` sign-aware fill, and ordinary outside padding.
+fn pad_signed_ungrouped(sign: &str, abs_str: &str, align: Align, spec: &ParsedFormatSpec) -> String {
     if spec.zero_pad || align == Align::SignAware {
         let fill = if spec.zero_pad { '0' } else { spec.fill };
         let total_len = sign.len() + abs_str.len();
@@ -981,6 +1077,95 @@ fn pad_signed_numeric(sign: &str, abs_str: &str, spec: &ParsedFormatSpec) -> Str
         let value = format!("{sign}{abs_str}");
         pad_string(&value, spec.width, align, spec.fill)
     }
+}
+
+/// Padding for a signed numeric with a thousands separator (`,` or `_`).
+///
+/// The separator only ever lands between *integer* digits, so `abs_str` is
+/// first split into its leading digit run and any trailing part (fraction,
+/// exponent, `%`). Binary/octal/hex presentations group in fours and never
+/// carry a suffix; decimal/float presentations group in threes. The `0` flag
+/// is special: its leading zeros become part of the number and are themselves
+/// grouped to fill the field width (`format(1234, '08,')` → `'0,001,234'`),
+/// whereas `=` fill and outside padding wrap an already-grouped value.
+fn pad_signed_grouped(sign: &str, abs_str: &str, align: Align, grouping: Grouping, spec: &ParsedFormatSpec) -> String {
+    let sep = grouping.separator();
+    let is_base = matches!(
+        spec.type_char,
+        Some(TypeChar::B | TypeChar::O | TypeChar::X | TypeChar::XUpper)
+    );
+    let group_size = if is_base { 4 } else { 3 };
+    let (int_digits, suffix) = if is_base {
+        (abs_str, "")
+    } else {
+        // Decimal digits are 0-9 only, so the first non-digit marks the start
+        // of the fraction/exponent/`%` suffix.
+        let end = abs_str.find(|c: char| !c.is_ascii_digit()).unwrap_or(abs_str.len());
+        abs_str.split_at(end)
+    };
+
+    if spec.zero_pad {
+        // Grow the integer part with grouped leading zeros until the whole
+        // field (sign + grouped digits + suffix) reaches the target width.
+        let reserved = sign.len() + suffix.len();
+        let min_int_width = spec.width.saturating_sub(reserved);
+        let grouped = insert_grouping(int_digits, group_size, sep, min_int_width);
+        format!("{sign}{grouped}{suffix}")
+    } else if align == Align::SignAware {
+        // `=` with a non-`0` fill: group normally, then insert fill (never
+        // grouped) between the sign and the value.
+        let body = format!("{}{suffix}", insert_grouping(int_digits, group_size, sep, 0));
+        let total_len = sign.len() + body.len();
+        if spec.width > total_len {
+            let pad_str: String = iter::repeat_n(spec.fill, spec.width - total_len).collect();
+            format!("{sign}{pad_str}{body}")
+        } else {
+            format!("{sign}{body}")
+        }
+    } else {
+        let grouped = insert_grouping(int_digits, group_size, sep, 0);
+        let value = format!("{sign}{grouped}{suffix}");
+        pad_string(&value, spec.width, align, spec.fill)
+    }
+}
+
+/// Inserts `sep` between every `group_size` digits of `digits`, counting from
+/// the right, optionally left-padding with `'0'` first so the grouped result
+/// is at least `min_width` characters wide.
+///
+/// `min_width` drives the `0`-flag interaction: CPython grows the zero-padded
+/// integer one digit at a time until digits-plus-separators reach the field
+/// width, so the result can overshoot `min_width` by one when the final digit
+/// also introduces a separator (`format(1234, '08,')` → `'0,001,234'`, 9
+/// wide for a width of 8). `digits` must be non-empty — numeric formatters
+/// always emit at least one digit. Output size is bounded by `min_width`
+/// (already capped against the resource tracker via `check_repeat_size` in
+/// [`format_with_spec`]), so a plain `String` is safe here.
+fn insert_grouping(digits: &str, group_size: usize, sep: char, min_width: usize) -> String {
+    // `digits` are ASCII (decimal or hex), so byte length == char count.
+    let ndigits = digits.len();
+    // Grow the total digit count until digits + separators reach `min_width`.
+    let mut total = ndigits;
+    while total + (total - 1) / group_size < min_width {
+        total += 1;
+    }
+    let zeros = total - ndigits;
+
+    let mut out = String::with_capacity(total + (total - 1) / group_size);
+    let mut digit_chars = digits.chars();
+    for i in 0..total {
+        if i > 0 && (total - i).is_multiple_of(group_size) {
+            out.push(sep);
+        }
+        // The first `zeros` positions are synthesised leading zeros; the rest
+        // consume the original digit string left-to-right.
+        out.push(if i < zeros {
+            '0'
+        } else {
+            digit_chars.next().expect("digit_chars yields exactly ndigits items")
+        });
+    }
+    out
 }
 
 /// Consumes a run of ASCII digits and folds them into a decimal [`usize`].
