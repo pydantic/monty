@@ -2215,6 +2215,13 @@ fn try_run_cpython_test(
             .call_method1("update", (exported,))
             .expect("Failed to merge shared test globals");
 
+        // NOTE: we deliberately do NOT set `__name__ = '__main__'` here. Doing
+        // so makes CPython qualify function names in some error messages
+        // (`__main__.f() argument ...`), which Monty does not, breaking
+        // exception-message parity for several `function__err_*` cases. Monty's
+        // module-dunder behaviour is covered by the Monty-only integration test
+        // `crates/monty/tests/module_dunders.rs` instead.
+
         // For mount-fs tests, inject `root` variable pointing to real temp directory.
         if let Some(ref setup_code) = mount_root_setup {
             let setup_cstr = CString::new(setup_code.as_str()).expect("Invalid C string in mount-fs setup");

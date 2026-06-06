@@ -39,8 +39,9 @@ use crate::{
     parse::CodeRange,
     resource::ResourceTracker,
     types::{
-        LongInt, MontyIter, PyTrait,
+        Dict, LongInt, MontyIter, PyTrait,
         file::{PendingFileEffect, apply_buffer_store, apply_write_position},
+        str::allocate_string,
         timedelta,
     },
     value::{BitwiseOp, EitherStr, Value},
@@ -998,7 +999,7 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
                 Opcode::LoadGlobalCallable => {
                     let (slot, name_idx) = cached_frame.fetch_u16_u16();
                     let name_id = StringId::from_index(name_idx);
-                    self.load_global_callable(slot, name_id);
+                    try_catch_sync!(self, cached_frame, self.load_global_callable(slot, name_id));
                 }
                 Opcode::StoreGlobal => {
                     let slot = cached_frame.fetch_u16();
@@ -1968,13 +1969,20 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
     /// (see [`builtin_for_name`]) so `f()` style calls into a builtin still work when
     /// the name happens to have a module slot allocated (e.g. because the module also
     /// `def`-binds the same name elsewhere) but that slot is currently `Undefined`.
-    fn load_global_callable(&mut self, slot: u16, name_id: StringId) {
+    fn load_global_callable(&mut self, slot: u16, name_id: StringId) -> RunResult<()> {
         let value = self.globals[slot as usize].clone_with_heap(self);
 
         if matches!(value, Value::Undefined) {
             if let Some(builtin) = self.builtin_for_name(name_id) {
                 self.push(Value::Builtin(builtin));
-                return;
+                return Ok(());
+            }
+            // A reserved module dunder (e.g. `__name__`) in call position resolves
+            // to its fixed value; the subsequent call then fails with the usual
+            // "object is not callable" error, matching CPython.
+            if let Some(value) = self.module_dunder(name_id)? {
+                self.push(value);
+                return Ok(());
             }
             // Save the load instruction's IP so NameError tracebacks point to the name
             self.ext_function_load_ip = Some(self.instruction_ip);
@@ -1982,6 +1990,7 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
         } else {
             self.push(value);
         }
+        Ok(())
     }
 
     /// Creates an UnboundLocalError for a local variable accessed before assignment.
@@ -2014,6 +2023,29 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
     fn builtin_for_name(&self, name_id: StringId) -> Option<Builtins> {
         let name = self.interns.get_str(name_id);
         name.parse::<Builtins>().ok()
+    }
+
+    /// Returns the fixed value for a module-level dunder, or `None` if `name_id`
+    /// does not name one of [`RESERVED_MODULE_DUNDERS`](crate::bytecode::RESERVED_MODULE_DUNDERS).
+    ///
+    /// Backs the read side of those dunders: `__name__` is always `'__main__'`
+    /// (Monty only ever runs a top-level module) and `__debug__` is `True`
+    /// (asserts always run). `__doc__`/`__spec__`/`__package__` default to
+    /// `None` and `__annotations__` to a fresh empty dict — module-level
+    /// annotations are not stored (see `limitations/typing.md`), so it is
+    /// always empty. `__loader__` is deliberately *not* exposed: CPython only
+    /// ever puts a loader object there (never `None`), so rather than diverge
+    /// on the type we let it raise `NameError` like other unexposed dunders
+    /// (`__file__`, `__cached__`, …).
+    fn module_dunder(&self, name_id: StringId) -> RunResult<Option<Value>> {
+        let value = match self.interns.get_str(name_id) {
+            "__name__" => allocate_string("__main__", self.heap)?,
+            "__debug__" => Value::Bool(true),
+            "__annotations__" => Value::Ref(self.heap.allocate(HeapData::Dict(Dict::new()))?),
+            "__doc__" | "__spec__" | "__package__" => Value::None,
+            _ => return Ok(None),
+        };
+        Ok(Some(value))
     }
 
     /// Creates a NameError for an undefined global variable.
@@ -2060,6 +2092,10 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
                 self.push(Value::Builtin(builtin));
                 return Ok(None);
             }
+            if let Some(value) = self.module_dunder(name_id)? {
+                self.push(value);
+                return Ok(None);
+            }
             Ok(Some(FrameExit::NameLookup {
                 name_id,
                 namespace_slot: slot,
@@ -2072,6 +2108,10 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
     }
 
     /// Pops the top of stack and stores it in a global variable.
+    ///
+    /// Reassigning a reserved module dunder (see [`RESERVED_MODULE_DUNDERS`]) is
+    /// rejected at compile time (see `Compiler::compile_store`), so no name
+    /// check is needed here.
     fn store_global(&mut self, slot: u16) {
         let value = self.pop();
         let old_value = mem::replace(&mut self.globals[slot as usize], value);

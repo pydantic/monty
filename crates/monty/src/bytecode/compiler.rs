@@ -13,6 +13,7 @@ use std::{borrow::Cow, mem};
 use ahash::AHashSet;
 
 use super::{
+    RESERVED_MODULE_DUNDERS,
     builder::{CodeBuilder, JumpLabel, JumpTarget},
     code::Code,
     op::{FORMAT_VALUE_HAS_SPEC, FORMAT_VALUE_STATIC_SPEC, Opcode},
@@ -1281,6 +1282,11 @@ impl<'a> Compiler<'a> {
         let slot = target.namespace_id().as_u16();
         match target.scope {
             NameScope::Local => {
+                // Module-level `Local` binds the global namespace; function-level
+                // `Local` is a genuine local that may freely shadow a dunder name.
+                if self.is_module_scope {
+                    self.check_reserved_dunder_store(target)?;
+                }
                 self.code.register_local_name(slot, target.name_id);
                 if self.is_module_scope {
                     self.code.emit_u16(Opcode::StoreGlobal, slot)
@@ -1288,7 +1294,10 @@ impl<'a> Compiler<'a> {
                     self.code.emit_store_local(slot)
                 }
             }
-            NameScope::Global => self.code.emit_u16(Opcode::StoreGlobal, slot),
+            NameScope::Global => {
+                self.check_reserved_dunder_store(target)?;
+                self.code.emit_u16(Opcode::StoreGlobal, slot)
+            }
             NameScope::Cell => {
                 // Emit local slot index — the VM reads the cell HeapId from the stack
                 self.code.emit_u16(Opcode::StoreCell, slot)
@@ -1303,6 +1312,25 @@ impl<'a> Compiler<'a> {
                     "compile_store called with NameScope::CompVar — comp targets are stored via compile_comp_target_unpack"
                 )
             }
+        }
+    }
+
+    /// Rejects assignment to a read-only module dunder at module/global scope.
+    ///
+    /// Monty exposes [`RESERVED_MODULE_DUNDERS`] with fixed values for CPython
+    /// compatibility but, unlike CPython, has no module namespace to write into,
+    /// so rebinding one is unsupported and surfaces as `NotImplementedError`.
+    /// Only callers that bind the global namespace (module-`Local` and `Global`
+    /// scopes) invoke this — function locals sharing these names are fine.
+    fn check_reserved_dunder_store(&self, target: &Identifier) -> Result<(), CompileError> {
+        let name = self.interns.get_str(target.name_id);
+        if RESERVED_MODULE_DUNDERS.contains(&name) {
+            Err(CompileError::not_implemented(
+                format!("cannot reassign read-only module attribute '{name}'"),
+                target.position,
+            ))
+        } else {
+            Ok(())
         }
     }
 
@@ -3763,6 +3791,19 @@ impl CompileError {
             message: message.into(),
             position,
             exc_type: ExcType::SyntaxError,
+        }
+    }
+
+    /// Creates a compile error that surfaces as `NotImplementedError`.
+    ///
+    /// Used for Python constructs Monty deliberately rejects rather than
+    /// supports (e.g. reassigning a reserved module dunder), matching the
+    /// `NotImplementedError` Monty raises for other unsupported syntax.
+    pub(super) fn not_implemented(message: impl Into<Cow<'static, str>>, position: CodeRange) -> Self {
+        Self {
+            message: message.into(),
+            position,
+            exc_type: ExcType::NotImplementedError,
         }
     }
 
