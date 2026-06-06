@@ -6,6 +6,7 @@ use std::{borrow::Cow, cell::Cell, cmp::Ordering, fmt, fmt::Write, mem, ops};
 
 use ahash::AHashSet;
 use smallvec::smallvec;
+use unicode_general_category::{GeneralCategory, get_general_category};
 
 use super::{Bytes, MontyIter, PyTrait};
 use crate::{
@@ -502,14 +503,15 @@ fn str_join<'h>(
 /// Quote choice matches CPython: single quotes by default, switching to double
 /// quotes only when the string contains a `'` but no `"` (so the quote needn't
 /// be escaped). Backslash, the active quote, and `\n`/`\t`/`\r` use the short
-/// escapes; any other **control** character is escaped numerically
-/// (`\xNN`/`\uNNNN`/`\UNNNNNNNN`), e.g. `repr('\x00') == "'\\x00'"`.
+/// escapes; any other **non-printable** character is escaped numerically
+/// (`\xNN`/`\uNNNN`/`\UNNNNNNNN`), e.g. `repr('\x00') == "'\\x00'"` and
+/// `repr('\xa0') == "'\\xa0'"`.
 ///
-/// Note: this escapes the C0/C1 control range (`char::is_control`), not the
-/// full set of non-printable Unicode CPython escapes (`Cf`/`Cs`/`Co`/`Cn`/`Zl`/
-/// `Zp`/non-space `Zs`) — those need Unicode category tables Monty doesn't carry
-/// — so e.g. `'\xa0'` is emitted literally rather than as `'\xa0'`. See
-/// `limitations/format.md`.
+/// "Non-printable" matches CPython's `str.isprintable` (see
+/// [`repr_needs_escape`]): Unicode categories `C*` and `Z*`, except the ASCII
+/// space. Category data comes from `unicode-general-category`, whose Unicode
+/// version may differ slightly from CPython's, affecting only recently
+/// (re)assigned code points.
 pub fn string_repr_fmt(s: &str, f: &mut impl Write) -> fmt::Result {
     let quote = if s.contains('\'') && !s.contains('"') {
         '"'
@@ -527,11 +529,33 @@ pub fn string_repr_fmt(s: &str, f: &mut impl Write) -> fmt::Result {
                 f.write_char('\\')?;
                 f.write_char(quote)?;
             }
-            _ if c.is_control() => write_char_escape(c, f)?,
+            _ if repr_needs_escape(c) => write_char_escape(c, f)?,
             _ => f.write_char(c)?,
         }
     }
     f.write_char(quote)
+}
+
+/// Whether `c` is escaped numerically in a Python `repr` — i.e. it is not
+/// "printable" in CPython's sense.
+///
+/// Non-printable = Unicode general categories `Other` (`Cc`, `Cf`, `Cs`, `Co`,
+/// `Cn`) and `Separator` (`Zl`, `Zp`, `Zs`), with the sole exception of the
+/// ASCII space `U+0020`. The `\t`/`\n`/`\r` short escapes are handled by the
+/// caller before this is consulted.
+fn repr_needs_escape(c: char) -> bool {
+    c != ' '
+        && matches!(
+            get_general_category(c),
+            GeneralCategory::Control
+                | GeneralCategory::Format
+                | GeneralCategory::Surrogate
+                | GeneralCategory::PrivateUse
+                | GeneralCategory::Unassigned
+                | GeneralCategory::LineSeparator
+                | GeneralCategory::ParagraphSeparator
+                | GeneralCategory::SpaceSeparator
+        )
 }
 
 /// Writes the numeric repr escape for a single character, matching CPython's

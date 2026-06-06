@@ -1,12 +1,10 @@
 # Format mini-language (f-string specs)
 
-Monty implements CPython's
-`[[fill]align][sign][#][0][width][grouping][.precision][type]` format
-mini-language for f-string interpolations. The following parts are **not**
-implemented or diverge from CPython.
+Monty implements CPython 3.14's format mini-language for f-string
+interpolations. The mini-language is only reachable through f-strings; the
+divergences and unsupported mechanisms are listed below.
 
-The mini-language is only reachable through f-strings. The other CPython
-formatting mechanisms are not implemented:
+The other CPython formatting mechanisms are not implemented:
 
 - The `format()` builtin raises `NameError` and the `str.format()` method
   raises `AttributeError` (see [builtins.md](builtins.md)).
@@ -24,37 +22,18 @@ classes can't customise formatting (Monty has no `class` statement anyway —
 see [classes.md](classes.md)), and all other types use the builtin
 mini-language formatter.
 
-## Unsupported types
+## The `n` type uses the C locale only
 
-- The `n` type (locale-aware number) is not implemented; it raises
-  `ValueError: Unknown format code 'n' for object of type '...'`. CPython
-  formats the number using the active locale. This is the only presentation
-  type CPython supports that Monty does not.
+`n` always behaves as in the C/POSIX locale (Monty has no locale support): like
+`d` for integers and `g` for floats, with no digit grouping. CPython under a
+grouping locale would insert locale-specific separators; Monty never does.
 
-Every other presentation type — `b`/`c`/`d`/`o`/`x`/`X` (integers, including
-big integers), `e`/`E`/`f`/`F`/`g`/`G`/`%` (floats), `s` (strings), and the
-type-less default — is implemented, with sign, `#`, `0`, width, `,`/`_`
-grouping, and `.precision` applied as in CPython. `bool` formats as its `int`
-value under any non-empty spec (`f'{True:d}'` → `'1'`), and as `'True'`/`'False'`
-with no spec. Non-finite floats follow the presentation case
-(`f'{float("inf"):F}'` → `'INF'`).
+## `repr` of non-printable Unicode
 
-## Type-less float with an explicit precision
-
-A float formatted with a precision but no type char (`f'{x:.3}'`) does not
-exactly match CPython. CPython's type-less-with-precision mode is a variant of
-`g` with its own significant-digit/threshold rules (e.g.
-`format(100.0, '.3')` → `'1e+02'`, distinct from `format(100.0, '.3g')` →
-`'100'`); Monty currently routes it through plain `g`. Use an explicit
-`g`/`e`/`f` type for predictable output. (The *no-precision* type-less default —
-`f'{x}'`, `f'{x:>10}'` — matches CPython's `repr`/shortest digits.)
-
-## Error message ordering
-
-When a spec combines several illegal options (e.g. a sign *and* a precision on an
-integer), Monty and CPython both raise `ValueError`, but the *which-error-first*
-ordering can differ for some rare combinations. The error type is always
-correct; only the message may name a different offending option.
+`repr` escapes non-printable code points via the `unicode-general-category`
+crate, whose Unicode version may lag CPython's — so a code point assigned in a
+newer Unicode release than the crate ships could be escaped by Monty while
+CPython prints it literally (or vice versa). Common text is unaffected.
 
 ## Width / precision bounds
 

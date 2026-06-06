@@ -56,6 +56,11 @@ salsa = { version="0.26.1", default-features = false, features = [
     "salsa_unstable",
     "inventory",
 ] }
+# Unicode general-category lookup, for CPython-compatible `str.isprintable`
+# (which drives `repr` escaping of non-printable code points). Pure generated
+# data, no unsafe; its Unicode version may lag CPython's, affecting only
+# recently (re)assigned code points.
+unicode-general-category = "1"
 # bigint and related crates
 num-bigint = { version = "0.4", features = ["serde"] }
 num-traits = "0.2"

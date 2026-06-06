@@ -290,9 +290,16 @@ pub struct ParsedFormatSpec {
     pub zero_pad: bool,
     /// Minimum field width.
     pub width: usize,
-    /// Thousands-grouping separator (`,` or `_`), or `None` if not specified.
-    /// Validity against the presentation type is checked at format time.
+    /// Thousands-grouping separator (`,` or `_`) for the *integer* digits, or
+    /// `None` if not specified. Validity against the presentation type is
+    /// checked at format time.
     pub grouping: Option<Grouping>,
+    /// Grouping separator (`,` or `_`) for the *fractional* digits — the
+    /// Python 3.14 `[.precision][grouping]` extension (`f"{x:.6_f}"`). Groups
+    /// every 3 digits *from the left* of the fraction. `None` if absent. Specs
+    /// that set this can't use the compact bit encoding (no spare bits), so
+    /// [`encode_format_spec`] forces them onto the dynamic-spec path.
+    pub frac_grouping: Option<Grouping>,
     /// Precision for floats or max width for strings.
     pub precision: Option<usize>,
     /// Type character, or `None` if not specified (defaults are type-dependent).
@@ -376,8 +383,10 @@ impl FromStr for ParsedFormatSpec {
         // Parse fill and align: [[fill]align]
         // If the second char is an align marker, the first is the fill; otherwise
         // the first char (if any) may itself be the align.
+        let mut fill_specified = false;
         if let Some(align) = spec.chars().nth(1).and_then(Align::from_char) {
             result.fill = chars.next().unwrap_or(' ');
+            fill_specified = true;
             chars.next();
             result.align = Some(align);
         } else {
@@ -391,9 +400,19 @@ impl FromStr for ParsedFormatSpec {
         // type-less specs), so it's validated in `format_with_spec`.
         result.alternate = chars.next_if_eq(&'#').is_some();
 
-        // Parse zero-padding flag (must come before width)
+        // Parse the zero-padding flag (must come before width). Per CPython, a
+        // leading `0` sets the fill to `'0'` (unless a fill char was already
+        // given) and implies sign-aware (`=`) padding *only when no explicit
+        // alignment was specified*. With an explicit align (`<05`, `^05`,
+        // `*<05`) the `0` is merely a fill character, so `zero_pad`/`=` stay
+        // off and the chosen alignment is honoured.
         if chars.next_if_eq(&'0').is_some() {
-            result.zero_pad = true;
+            if !fill_specified {
+                result.fill = '0';
+            }
+            if result.align.is_none() {
+                result.zero_pad = true;
+            }
         }
 
         // Parse width
@@ -410,10 +429,18 @@ impl FromStr for ParsedFormatSpec {
             _ => Grouping::Underscore,
         });
 
-        // Parse precision: .N
+        // Parse precision and an optional fractional grouping option:
+        // `.[precision][grouping]` (Python 3.14). The grouping char after the
+        // precision (`.6_`, or `._` with no precision) groups the fractional
+        // digits; its legality for the presentation type is checked at format
+        // time alongside the integer grouping.
         if chars.next_if_eq(&'.').is_some() {
             result.precision = consume_decimal_usize(&mut chars)
                 .map_err(|()| ParseFormatSpecError::new(spec, ParseFormatSpecReason::NumberOverflow))?;
+            result.frac_grouping = chars.next_if(|c| matches!(c, ',' | '_')).map(|c| match c {
+                ',' => Grouping::Comma,
+                _ => Grouping::Underscore,
+            });
         }
 
         result.type_char = chars.next_if_map(|c| TypeChar::from_char(c).ok_or(c));
@@ -560,14 +587,9 @@ pub fn format_with_spec(
         .into());
     }
 
-    // The alternate form (`#`) is likewise illegal for `c`/`s` presentations.
-    if spec.alternate {
-        validate_alternate(spec.type_char, value_type)?;
-    }
-
     // A string presentation (explicit `s`, or a type-less spec on a `str`) has
     // no numeric sign to position, so CPython rejects sign flags and `=`
-    // alignment with these specific messages.
+    // alignment with these specific messages — before the alternate-form check.
     if value_type == Type::Str && matches!(spec.type_char, None | Some(TypeChar::S)) {
         if let Some(sign) = spec.sign {
             let msg = match sign {
@@ -585,6 +607,29 @@ pub fn format_with_spec(
         }
     }
 
+    // If the presentation type is not valid for this value, CPython reports
+    // "Unknown format code" *before* the alternate-form check (the type chooses
+    // the formatter, so an invalid type errors first): `f"{3.14:#c}"` is
+    // "Unknown format code 'c' for object of type 'float'", not the `#`-with-`c`
+    // message. The dispatch `match` below also catches this as a safety net.
+    if let Some(c) = spec.type_char
+        && !type_valid_for_value(spec.type_char, value_type)
+    {
+        return Err(SimpleException::new_msg(
+            ExcType::ValueError,
+            format!(
+                "Unknown format code '{}' for object of type '{value_type}'",
+                c.as_char()
+            ),
+        )
+        .into());
+    }
+
+    // The alternate form (`#`) is likewise illegal for `c`/`s` presentations.
+    if spec.alternate {
+        validate_alternate(spec.type_char, value_type)?;
+    }
+
     // Big integers (`LongInt`) live on the heap; route them through the
     // arbitrary-precision formatter, which mirrors the `i64` integer/float
     // paths. The validations above (grouping, precision, sign-with-`c`,
@@ -597,8 +642,9 @@ pub fn format_with_spec(
     }
 
     match (value, spec.type_char) {
-        // Integer formatting
-        (Value::Int(n), None | Some(TypeChar::D)) => Ok(format_int(*n, spec)),
+        // Integer formatting. `n` (locale number) formats an integer like `d`;
+        // Monty has no locale, so the C-locale form — no grouping — applies.
+        (Value::Int(n), None | Some(TypeChar::D | TypeChar::N)) => Ok(format_int(*n, spec)),
         (Value::Int(n), Some(TypeChar::B)) => Ok(format_int_base(*n, 2, spec)?),
         (Value::Int(n), Some(TypeChar::O)) => Ok(format_int_base(*n, 8, spec)?),
         (Value::Int(n), Some(TypeChar::X)) => Ok(format_int_base(*n, 16, spec)?),
@@ -609,7 +655,9 @@ pub fn format_with_spec(
         // (shortest) digits, *not* `g` — only an explicit `g`/`G` or a type-less
         // spec that carries a precision selects the `g` algorithm.
         (Value::Float(f), None) if spec.precision.is_none() => Ok(format_float_default(*f, spec)),
-        (Value::Float(f), None | Some(TypeChar::G | TypeChar::GUpper)) => Ok(format_float_g(*f, spec)),
+        // `n` on a float behaves like `g` (locale-aware in CPython; C-locale
+        // here, so plain `g`).
+        (Value::Float(f), None | Some(TypeChar::G | TypeChar::GUpper | TypeChar::N)) => Ok(format_float_g(*f, spec)),
         (Value::Float(f), Some(TypeChar::F | TypeChar::FUpper)) => Ok(format_float_f(*f, spec)),
         (Value::Float(f), Some(TypeChar::E)) => Ok(format_float_e(*f, spec, false)),
         (Value::Float(f), Some(TypeChar::EUpper)) => Ok(format_float_e(*f, spec, true)),
@@ -657,8 +705,10 @@ fn validate_grouping(grouping: Grouping, type_char: Option<TypeChar>, value_type
     let allowed = match type_char {
         None => matches!(value_type, Type::Int | Type::Bool | Type::Float),
         Some(TypeChar::B | TypeChar::O | TypeChar::X | TypeChar::XUpper) => grouping == Grouping::Underscore,
-        Some(TypeChar::C | TypeChar::S) => false,
-        // D, E/EUpper, F/FUpper, G/GUpper, N, Percent all accept both `,` and `_`.
+        // `c`/`s` have nothing to group; `n` does its own locale grouping and so
+        // forbids an explicit one (`Cannot specify ',' with 'n'.`).
+        Some(TypeChar::C | TypeChar::S | TypeChar::N) => false,
+        // D, E/EUpper, F/FUpper, G/GUpper, Percent all accept both `,` and `_`.
         Some(_) => true,
     };
     if allowed {
@@ -675,6 +725,34 @@ fn validate_grouping(grouping: Grouping, type_char: Option<TypeChar>, value_type
     }
 }
 
+/// Whether the presentation `type_char` is valid for a value of `value_type`,
+/// i.e. a formatter exists for the pair. A `false` result is CPython's "Unknown
+/// format code" case.
+///
+/// Integer codes (`b`/`c`/`d`/`o`/`x`/`X`) need an `int`/`bool`; float codes
+/// (`e`/`E`/`f`/`F`/`g`/`G`/`%`) and `n` accept any number (an `int` is widened
+/// to a float); `s` needs a `str`; a type-less spec (`None`) is valid for every
+/// value (it falls back to `str()`).
+fn type_valid_for_value(type_char: Option<TypeChar>, value_type: Type) -> bool {
+    let is_int = matches!(value_type, Type::Int | Type::Bool);
+    let is_num = is_int || value_type == Type::Float;
+    match type_char {
+        None => true,
+        Some(TypeChar::D | TypeChar::B | TypeChar::O | TypeChar::X | TypeChar::XUpper | TypeChar::C) => is_int,
+        Some(
+            TypeChar::E
+            | TypeChar::EUpper
+            | TypeChar::F
+            | TypeChar::FUpper
+            | TypeChar::G
+            | TypeChar::GUpper
+            | TypeChar::Percent
+            | TypeChar::N,
+        ) => is_num,
+        Some(TypeChar::S) => value_type == Type::Str,
+    }
+}
+
 /// Whether `(type_char, value_type)` selects an *integer* presentation, i.e.
 /// the value will be rendered via the integer formatter.
 ///
@@ -687,7 +765,11 @@ fn validate_grouping(grouping: Grouping, type_char: Option<TypeChar>, value_type
 fn formats_as_integer(type_char: Option<TypeChar>, value_type: Type) -> bool {
     let int_value = matches!(value_type, Type::Int | Type::Bool);
     match type_char {
-        Some(TypeChar::D | TypeChar::B | TypeChar::O | TypeChar::X | TypeChar::XUpper | TypeChar::C) => int_value,
+        // `n` selects the integer formatter for an int value (so precision is
+        // rejected there) but the float formatter for a float (precision ok).
+        Some(TypeChar::D | TypeChar::B | TypeChar::O | TypeChar::X | TypeChar::XUpper | TypeChar::C | TypeChar::N) => {
+            int_value
+        }
         None => int_value,
         _ => false,
     }
@@ -767,6 +849,12 @@ pub const MAX_ENCODED_PRECISION: usize = (1 << 21) - 2;
 /// Bit 62 is the last free bit (bit 63 is the sign bit, which must stay 0); a
 /// future flag would need the packing reworked rather than another bit added.
 pub fn encode_format_spec(spec: &ParsedFormatSpec) -> Option<i64> {
+    // Fractional grouping has no spare encoding bit (bit 62, alternate, is the
+    // last free one), so any spec that uses it falls back to the dynamic path
+    // where the literal is re-parsed at runtime.
+    if spec.frac_grouping.is_some() {
+        return None;
+    }
     let fill_code = u32::from(spec.fill);
     if fill_code > MAX_ENCODED_FILL {
         return None;
@@ -911,6 +999,9 @@ pub fn decode_format_spec(encoded: i64) -> ParsedFormatSpec {
         zero_pad,
         width,
         grouping,
+        // Specs with fractional grouping are never encoded (see
+        // `encode_format_spec`), so a decoded spec never carries one.
+        frac_grouping: None,
         precision,
         type_char,
     }
@@ -1024,7 +1115,8 @@ fn format_long_int(li: &LongInt, value_type: Type, spec: &ParsedFormatSpec) -> R
     };
 
     match spec.type_char {
-        None | Some(TypeChar::D) => {
+        // `n` formats a big int as decimal (C locale, no grouping), like `d`.
+        None | Some(TypeChar::D | TypeChar::N) => {
             // Only base-10 conversion is bounded by CPython's int_max_str_digits.
             check_bits_str_digits_limit(li.bits())?;
             Ok(radix(10, ""))
@@ -1046,15 +1138,12 @@ fn format_long_int(li: &LongInt, value_type: Type, spec: &ParsedFormatSpec) -> R
             "Python int too large to convert to C long".to_owned(),
         )
         .into()),
-        // `s` and `n` are not integer presentations Monty implements; both
-        // surface CPython's "Unknown format code" wording (the `i64` path
-        // reaches the same message via its dispatch fall-through).
-        Some(c @ (TypeChar::S | TypeChar::N)) => Err(SimpleException::new_msg(
+        // `s` is not an integer presentation; surface CPython's "Unknown format
+        // code" wording (the `i64` path reaches the same message via its
+        // dispatch fall-through).
+        Some(TypeChar::S) => Err(SimpleException::new_msg(
             ExcType::ValueError,
-            format!(
-                "Unknown format code '{}' for object of type '{value_type}'",
-                c.as_char()
-            ),
+            format!("Unknown format code 's' for object of type '{value_type}'"),
         )
         .into()),
     }
@@ -1064,7 +1153,8 @@ fn format_long_int(li: &LongInt, value_type: Type, spec: &ParsedFormatSpec) -> R
 ///
 /// Converts the integer to its corresponding Unicode code point. Valid range is 0 to 0x10FFFF.
 /// Returns `Overflow` error if out of range, `ValueError` if not a valid Unicode scalar value
-/// (e.g., surrogate code points). Left-aligned by default like strings.
+/// (e.g., surrogate code points). Right-aligned by default: `c` is an integer
+/// presentation, so it follows the numeric default (`format(65, '5c')` → `'    A'`).
 pub fn format_char(n: i64, spec: &ParsedFormatSpec) -> Result<String, FormatError> {
     if !(0..=0x0010_FFFF).contains(&n) {
         return Err(FormatError::Overflow("%c arg not in range(0x110000)".to_owned()));
@@ -1075,7 +1165,7 @@ pub fn format_char(n: i64, spec: &ParsedFormatSpec) -> Result<String, FormatErro
     // `=` (SignAware) on `:c` is accepted by CPython but degenerates to right-align
     // because there's no sign component to pad between. Map it now so `pad_string`
     // (which treats SignAware as a no-op) does the right thing.
-    let align = match spec.align.unwrap_or(Align::Left) {
+    let align = match spec.align.unwrap_or(Align::Right) {
         Align::SignAware => Align::Right,
         other => other,
     };
@@ -1155,23 +1245,39 @@ pub fn format_float_g(f: f64, spec: &ParsedFormatSpec) -> String {
     let precision = spec.precision.unwrap_or(6).max(1);
     let abs_val = f.abs();
 
-    // Python's g format: use exponential if exponent < -4 or >= precision
+    // Python's g format uses exponential when the decimal exponent is `< -4` or
+    // `>= precision`. The exponent must be taken *after* rounding to `precision`
+    // significant figures: a value that rounds up across a power-of-ten
+    // boundary (`9.99` at 1 sig fig → `10`) gains an exponent and must switch to
+    // scientific (`f"{9.99:.1g}"` → `'1e+01'`, not `'10'`). Rust's `{:e}` rounds
+    // for us, so read the exponent back from the rounded scientific form rather
+    // than from `log10` of the unrounded value.
     let exp = if abs_val == 0.0 {
         0
     } else {
-        // log10 of valid floats fits in i32; floor() returns a finite f64
-        f64_to_i32_trunc(abs_val.log10().floor())
+        let mantissa_digits = precision.saturating_sub(1).min(MAX_FMT_PRECISION_EXP);
+        let sci = format!("{abs_val:.mantissa_digits$e}");
+        sci[sci.find('e').map_or(sci.len(), |i| i + 1)..]
+            .parse::<i32>()
+            .unwrap_or(0)
     };
 
     // precision is typically small (default 6), safe to convert to i32
     let prec_i32 = i32::try_from(precision).unwrap_or(i32::MAX);
+    // A type-less spec that reaches here carries a precision (the no-precision
+    // case goes through `format_float_default`). CPython's type-less-with-
+    // precision form is `g`-like but diverges in two ways: it switches to
+    // scientific one exponent *earlier* (`exp >= precision - 1`, vs `g`'s
+    // `>= precision`) and it appends `.0` when the result has no point/exponent
+    // (the `Py_DTSF_ADD_DOT_0` flag) — e.g. `f"{100.0:.3}"` is `'1e+02'` (not
+    // `g`'s `'100'`) and `f"{1.0:.2}"` is `'1.0'` (not `'1'`).
+    let is_default = spec.type_char.is_none();
+    let sci_threshold = if is_default { prec_i32 - 1 } else { prec_i32 };
     // The alternate form (`#`) keeps the trailing zeros that `g` normally strips
     // and forces a decimal point. This applies whenever the `g` algorithm runs
-    // — an explicit `g`/`G` *or* a type-less spec that carries a precision. The
-    // type-less, no-precision case (where `#` is a no-op) never reaches here; it
-    // goes through [`format_float_default`].
+    // — an explicit `g`/`G` *or* a type-less spec that carries a precision.
     let alternate_g = spec.alternate;
-    let abs_str = if exp < -4 || exp >= prec_i32 {
+    let abs_str = if exp < -4 || exp >= sci_threshold {
         // Use exponential notation
         let exp_prec = precision.saturating_sub(1);
         let formatted = fmt_float_exp(abs_val, exp_prec.min(MAX_FMT_PRECISION_EXP), uppercase);
@@ -1201,6 +1307,13 @@ pub fn format_float_g(f: f64, spec: &ParsedFormatSpec) -> String {
     } else {
         abs_str
     };
+    // `Py_DTSF_ADD_DOT_0`: the type-less form always shows a decimal point, so
+    // a result with no `.`/`e` gets a trailing `.0` (`'1234'` → `'1234.0'`).
+    let abs_str = if is_default && !abs_str.contains(['.', 'e', 'E']) {
+        format!("{abs_str}.0")
+    } else {
+        abs_str
+    };
 
     let sign = if is_negative {
         "-"
@@ -1220,7 +1333,10 @@ pub fn format_float_g(f: f64, spec: &ParsedFormatSpec) -> String {
 /// select the `g` algorithm and so stays in [`format_float_g`].
 fn format_float_default(f: f64, spec: &ParsedFormatSpec) -> String {
     let is_negative = f.is_sign_negative() && !f.is_nan();
-    let abs_str = format_float_repr(f.abs());
+    let abs_val = f.abs();
+    // The alternate form (`#`) still forces a decimal point on the repr digits,
+    // even in scientific notation (`format(1e20, '#')` → `'1.e+20'`).
+    let abs_str = maybe_alternate_point(format_float_repr(abs_val), abs_val, spec);
     let sign = if is_negative {
         "-"
     } else {
@@ -1413,13 +1529,53 @@ fn maybe_alternate_point(abs_str: String, abs_val: f64, spec: &ParsedFormatSpec)
 /// `format_char` (default left, no sign) needs separate handling.
 ///
 /// When `spec.grouping` is set the thousands separator is woven through the
-/// integer digits before padding — see [`pad_signed_grouped`].
+/// integer digits before padding — see [`pad_signed_grouped`]. When
+/// `spec.frac_grouping` is set, the fractional digits are grouped first (a
+/// no-op for values with no fractional part, e.g. integers).
 fn pad_signed_numeric(sign: &str, prefix: &str, abs_str: &str, spec: &ParsedFormatSpec) -> String {
+    // Fractional grouping is applied up front so the integer-grouping/padding
+    // below treats the grouped fraction as an opaque suffix.
+    let frac_grouped;
+    let abs_str = if let Some(g) = spec.frac_grouping {
+        frac_grouped = insert_frac_grouping(abs_str, g.separator());
+        frac_grouped.as_str()
+    } else {
+        abs_str
+    };
     let align = spec.align.unwrap_or(Align::Right);
     match spec.grouping {
         None => pad_signed_ungrouped(sign, prefix, abs_str, align, spec),
         Some(grouping) => pad_signed_grouped(sign, prefix, abs_str, align, grouping, spec),
     }
+}
+
+/// Inserts `sep` into the fractional digit run every three digits *from the
+/// left*, implementing Python 3.14's `[.precision][grouping]` fractional
+/// grouping (`f"{x:.6_f}"` → `…123_457`).
+///
+/// The fractional run is the maximal `[0-9]*` immediately after the first `.`;
+/// the integer part and any exponent/`%` suffix are left untouched. A no-op
+/// when the string has no fractional part (e.g. an integer), so it is safe to
+/// call unconditionally from [`pad_signed_numeric`]. Output size is bounded by
+/// the (already tracked) input length plus one separator per three digits.
+fn insert_frac_grouping(s: &str, sep: char) -> String {
+    let Some(dot) = s.find('.') else {
+        return s.to_owned();
+    };
+    let after = dot + 1;
+    let frac_len = s[after..]
+        .find(|c: char| !c.is_ascii_digit())
+        .unwrap_or(s.len() - after);
+    let mut out = String::with_capacity(s.len() + frac_len / 3);
+    out.push_str(&s[..after]);
+    for (i, c) in s[after..after + frac_len].chars().enumerate() {
+        if i > 0 && i.is_multiple_of(3) {
+            out.push(sep);
+        }
+        out.push(c);
+    }
+    out.push_str(&s[after + frac_len..]);
+    out
 }
 
 /// Padding for a signed numeric with no thousands grouping (the common case).
@@ -1760,21 +1916,4 @@ fn fix_exp_format(s: &str) -> String {
     };
 
     format!("{before_e}{e_char}{sign}{padded_digits}")
-}
-
-/// Truncates f64 to i32 with clamping for out-of-range values.
-///
-/// Used for exponent calculations where the result should fit in i32.
-fn f64_to_i32_trunc(value: f64) -> i32 {
-    if value >= f64::from(i32::MAX) {
-        i32::MAX
-    } else if value <= f64::from(i32::MIN) {
-        i32::MIN
-    } else {
-        // SAFETY for clippy: value is guaranteed to be in (i32::MIN, i32::MAX)
-        // after the bounds checks above, so truncation cannot overflow
-        #[expect(clippy::cast_possible_truncation, reason = "bounds checked above")]
-        let result = value as i32;
-        result
-    }
 }

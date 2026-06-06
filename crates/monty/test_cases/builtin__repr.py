@@ -147,6 +147,12 @@ assert repr('\x0c') == "'\\x0c'", 'repr form feed is numeric, not \\f'
 assert repr('\t\n\r') == "'\\t\\n\\r'", 'repr keeps short escapes for tab/newline/return'
 # printable characters (including unicode) are left as-is
 assert repr('café 日本') == "'café 日本'", 'repr leaves printable unicode literal'
+# non-printable unicode beyond the control range is escaped too (Cf/Zs/Co/...)
+assert repr('\xa0') == "'\\xa0'", 'repr escapes no-break space (Zs)'
+assert repr(' ') == "'\\u2028'", 'repr escapes line separator (Zl)'
+assert repr('\xad') == "'\\xad'", 'repr escapes soft hyphen (Cf)'
+assert repr('\U000f4240') == "'\\U000f4240'", 'repr escapes a private-use code point (Co)'
+assert repr('　') == "'\\u3000'", 'repr escapes ideographic space (Zs)'
 
 # === repr vs str difference ===
 assert repr(42) == str(42), 'repr and str match for int'

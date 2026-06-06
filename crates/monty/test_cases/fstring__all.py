@@ -525,3 +525,58 @@ try:
     assert False, 'expected = alignment on string to fail'
 except ValueError as _e:
     assert str(_e) == "'=' alignment not allowed in string format specifier", f'=+str: {_e}'
+
+# === `0` flag with an explicit alignment is just a `0` fill, not sign-aware ===
+assert f'{-42:<05}' == '-4200', 'explicit < with 0: 0 is fill, left-aligned'
+assert f'{42:^05}' == '04200', 'explicit ^ with 0: centered, 0 fill'
+assert f'{42:>05}' == '00042', 'explicit > with 0'
+assert f'{42:*<05}' == '42***', 'explicit fill wins over 0'
+assert f'{-42:05}' == '-0042', 'no explicit align: 0 is sign-aware'
+assert f'{"hi":05}' == 'hi000', 'string 0-pad fills with 0, left default'
+
+# === `c` is a numeric presentation: right-aligned by default ===
+assert f'{65:5c}' == '    A', 'c defaults to right align'
+assert f'{65:<5c}' == 'A    ', 'explicit left on c'
+assert f'{65:05c}' == '0000A', 'c with 0 fill (right)'
+
+# === `n` (locale number): like `d` for int, `g` for float (C locale here) ===
+assert f'{1234567:n}' == '1234567', 'n on int = d (no grouping in C locale)'
+assert f'{1234567.0:n}' == '1.23457e+06', 'n on float = g'
+assert f'{-42:+n}' == '-42', 'n keeps the sign flag'
+assert f'{2**70:n}' == '1180591620717411303424', 'n on a big int'
+assert f'{True:n}' == '1', 'n on a bool'
+# n forbids an explicit grouping and (for ints) a precision
+try:
+    f'{1234:,n}'
+    assert False, 'expected , with n to fail'
+except ValueError as _e:
+    assert str(_e) == "Cannot specify ',' with 'n'.", f',n: {_e}'
+try:
+    f'{42:.2n}'
+    assert False, 'expected precision with int n to fail'
+except ValueError as _e:
+    assert str(_e) == 'Precision not allowed in integer format specifier', f'.2n: {_e}'
+
+# === Fractional grouping (Python 3.14): [.precision][grouping] ===
+assert f'{1234.5678:.6_f}' == '1234.567_800', 'underscore-group the fraction'
+assert f'{1234567.89:,.4_f}' == '1,234,567.890_0', 'group both integer (,) and fraction (_)'
+assert f'{12345.678:._f}' == '12345.678_000', 'fraction grouping with no precision digits'
+assert f'{1234567.891:,._f}' == '1,234,567.891_000', 'comma int + underscore fraction'
+
+# === Type-less float with an explicit precision (g-like, one exp earlier) ===
+assert f'{100.0:.3}' == '1e+02', 'type-less .3 goes scientific (unlike .3g)'
+assert f'{1.0:.0}' == '1e+00', 'type-less .0'
+assert f'{1234.5678:.6}' == '1234.57', 'type-less .6 fixed'
+assert f'{9.99:.1g}' == '1e+01', 'g exponent taken after rounding (9.99 -> 10)'
+
+# === Error precedence: an invalid type code beats the #/sign checks ===
+try:
+    f'{3.14:#c}'
+    assert False, 'expected #c on float to fail'
+except ValueError as _e:
+    assert str(_e) == "Unknown format code 'c' for object of type 'float'", f'#c float: {_e}'
+try:
+    f'{42:#s}'
+    assert False, 'expected #s on int to fail'
+except ValueError as _e:
+    assert str(_e) == "Unknown format code 's' for object of type 'int'", f'#s int: {_e}'
