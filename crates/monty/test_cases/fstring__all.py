@@ -381,6 +381,14 @@ assert f'{_v=:.3f}' == '_v=6.283', 'debug spec applies to the value, not repr'
 assert f'{_v=:>10.2f}' == '_v=      6.28', 'debug spec with width applies to value'
 assert f'{_v=!r:>12}' == '_v=     6.28318', 'debug !r conversion then string spec'
 assert f'{_v=}' == '_v=6.28318', 'debug with no spec still uses repr'
+# an *explicit empty* spec (`{x=:}`) formats with str, NOT the repr default —
+# `format(x, "")` equals `str(x)`, so the colon disables the debug repr default
+assert f'{name=:}' == 'name=test', 'debug empty spec uses str not repr'
+assert f'{a=:}' == 'a=42', 'debug empty spec on int'
+_b = True
+assert f'{_b=:}' == '_b=True', 'debug empty spec on bool stays True'
+assert f'{name = :}' == 'name = test', 'debug empty spec with spaces uses str'
+assert f'{name=!r:}' == "name='test'", 'debug empty spec with explicit !r still repr'
 
 # === Comma thousands separator ===
 assert f'{1234567:,}' == '1,234,567', 'comma groups of three'

@@ -1567,11 +1567,25 @@ impl<'a> Parser<'a> {
             }
             InterpolatedStringElement::Interpolation(interp) => {
                 let expr = Box::new(self.parse_expression((*interp.expression).clone())?);
-                let conversion = convert_conversion_flag(interp.conversion);
                 let format_spec = match &interp.format_spec {
                     Some(spec) => self.parse_format_spec(spec)?,
                     None => None,
                 };
+                let mut conversion = convert_conversion_flag(interp.conversion);
+                // An explicit empty spec (`f"{x=:}"`) collapses to `None` in
+                // `parse_format_spec`, but — unlike the bare debug form
+                // (`f"{x=}"`), which defaults to `repr` — it must format with
+                // `str`. Mark the conversion `Str` so the compiler's repr
+                // default for debug forms is suppressed; this is exact because
+                // `format(x, "")` equals `str(x)` for builtins (the same
+                // equivalence the empty-spec collapse already relies on).
+                if interp.debug_text.is_some()
+                    && matches!(conversion, ConversionFlag::None)
+                    && interp.format_spec.is_some()
+                    && format_spec.is_none()
+                {
+                    conversion = ConversionFlag::Str;
+                }
                 // Extract debug prefix for `=` specifier (e.g., f'{a=}' -> "a=")
                 let debug_prefix = interp.debug_text.as_ref().map(|dt| {
                     let expr_text = &self.code[interp.expression.range()];
