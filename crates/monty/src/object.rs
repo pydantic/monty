@@ -18,7 +18,7 @@ use crate::{
     bytecode::VM,
     defer_drop,
     exception_private::{ExcType, RunError, SimpleException},
-    fstring::format_float_repr,
+    fstring::FormatFloat,
     heap::{HeapData, HeapId, HeapReadOutput},
     resource::{ResourceError, ResourceTracker},
     types::{
@@ -875,7 +875,7 @@ impl MontyObject {
             Self::Bool(false) => f.write_str("False"),
             Self::Int(v) => write!(f, "{v}"),
             Self::BigInt(v) => write!(f, "{v}"),
-            Self::Float(v) => f.write_str(&format_float_repr(*v)),
+            Self::Float(v) => write!(f, "{}", FormatFloat(*v)),
             Self::String(s) => string_repr_fmt(s, f),
             Self::Bytes(b) => f.write_str(&bytes_repr(b)),
             Self::List(l) => {

@@ -18,7 +18,7 @@ use crate::{
     builtins::Builtins,
     bytecode::{CallResult, VM},
     exception_private::{ExcType, RunError, RunResult, SimpleException},
-    fstring::format_float_repr,
+    fstring::FormatFloat,
     hash::{HashValue, hash_python_str},
     heap::{ContainsHeap, DropWithHeap, Heap, HeapData, HeapGuard, HeapId, HeapReadOutput},
     intern::{BytesId, FunctionId, Interns, LongIntId, StaticStrings, StringId},
@@ -334,7 +334,7 @@ impl PyTrait<'_> for Value {
                 check_bits_str_digits_limit(bi.bits())?;
                 Ok(write!(f, "{bi}")?)
             }
-            Self::Float(v) => Ok(f.write_str(&format_float_repr(*v))?),
+            Self::Float(v) => Ok(write!(f, "{}", FormatFloat(*v))?),
             Self::Builtin(b) => Ok(b.py_repr_fmt(f)?),
             Self::ModuleFunction(mf) => Ok(mf.py_repr_fmt(f, self.id(vm))?),
             Self::DefFunction(f_id) => Ok(interns.get_function(*f_id).py_repr_fmt(f, interns, self.id(vm))?),
