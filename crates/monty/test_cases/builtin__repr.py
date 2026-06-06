@@ -134,6 +134,20 @@ d['a'] = 2
 d['m'] = 3
 assert repr(d) == "{'z': 1, 'a': 2, 'm': 3}", 'repr dict preserves insertion order'
 
+# === repr escapes control characters numerically ===
+assert repr('\x00') == "'\\x00'", 'repr NUL escapes as \\x00'
+assert repr('\x01') == "'\\x01'", 'repr SOH escapes'
+assert repr('\x1b') == "'\\x1b'", 'repr ESC escapes'
+assert repr('\x7f') == "'\\x7f'", 'repr DEL escapes'
+assert repr('\x80') == "'\\x80'", 'repr C1 control escapes'
+assert repr('a\x00b') == "'a\\x00b'", 'repr escapes control mid-string'
+assert repr('\x0b') == "'\\x0b'", 'repr vertical tab is numeric, not \\v'
+assert repr('\x0c') == "'\\x0c'", 'repr form feed is numeric, not \\f'
+# the three short escapes are still preferred
+assert repr('\t\n\r') == "'\\t\\n\\r'", 'repr keeps short escapes for tab/newline/return'
+# printable characters (including unicode) are left as-is
+assert repr('café 日本') == "'café 日本'", 'repr leaves printable unicode literal'
+
 # === repr vs str difference ===
 assert repr(42) == str(42), 'repr and str match for int'
 assert repr('hello') != str('hello'), 'repr and str differ for string'

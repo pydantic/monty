@@ -449,3 +449,79 @@ assert f'{1.5:#.3g}' == '1.50', 'g precision keeps zeros'
 assert f'{1234.0:#.4g}' == '1234.', 'g all sig figs used, force point'
 # default float presentation: # is a no-op (shortest repr already has a point)
 assert f'{3.14:#}' == '3.14', 'alternate no-op on default float'
+
+# === inf / nan: case follows the presentation, never `.0` ===
+_inf = float('inf')
+_nan = float('nan')
+assert f'{_inf}' == 'inf', 'inf default'
+assert f'{-_inf}' == '-inf', 'negative inf default'
+assert f'{_nan}' == 'nan', 'nan default (lowercase, no .0)'
+assert str(_inf) == 'inf' and repr(_nan) == 'nan', 'inf/nan str/repr'
+assert f'{_inf:f}' == 'inf' and f'{_inf:F}' == 'INF', 'inf f vs F case'
+assert f'{_nan:e}' == 'nan' and f'{_nan:E}' == 'NAN', 'nan e vs E case'
+assert f'{_inf:g}' == 'inf' and f'{_inf:G}' == 'INF', 'inf g vs G case'
+assert f'{_nan:%}' == 'nan%', 'nan percent stays lowercase'
+assert f'{_inf:+.2f}' == '+inf', 'inf takes the sign flag'
+# grouping/zero-pad on a non-finite value must not panic and ignores the comma
+assert f'{_inf:08,}' == '00000inf', 'zero-pad inf ungrouped'
+assert f'{-_inf:+020,}' == '-0000000000000000inf', 'negative inf zero-pad'
+assert f'{_nan:,}' == 'nan', 'comma on nan is a no-op'
+
+# === float repr uses scientific notation past CPython's thresholds ===
+assert f'{1e16}' == '1e+16', 'large float switches to scientific'
+assert f'{1e15}' == '1000000000000000.0', 'just below the threshold stays fixed'
+assert f'{1e-5}' == '1e-05', 'small float switches to scientific'
+assert f'{1e-4}' == '0.0001', 'just above the small threshold stays fixed'
+assert f'{1.2345678901234568e16}' == '1.2345678901234568e+16', '17-digit float'
+assert f'{1e100}' == '1e+100', 'three-digit exponent'
+
+# === type-less float spec uses repr digits, not g (precision-6) ===
+assert f'{1234567.0:}' == '1234567.0', 'empty spec keeps repr, not g'
+assert f'{1234567.0:>12}' == '   1234567.0', 'type-less with width pads repr'
+assert f'{1234.5678:+,}' == '+1,234.5678', 'type-less sign + grouping on repr digits'
+
+# === bool is an int subclass under a (non-empty) format spec ===
+assert f'{True}' == 'True' and f'{True:}' == 'True', 'bare bool is the word'
+assert f'{True: }' == ' 1', 'bool with a directive formats numerically'
+assert f'{False:05}' == '00000', 'bool zero-padded as int 0'
+assert f'{True:#06x}' == '0x0001', 'bool through hex presentation'
+assert f'{True:.2f}' == '1.00', 'bool through float presentation'
+
+# === big integers honour the full mini-language ===
+_big = 2**70
+assert f'{_big:,}' == '1,180,591,620,717,411,303,424', 'bigint grouping'
+assert f'{_big:+}' == '+1180591620717411303424', 'bigint sign'
+assert f'{_big:#x}' == '0x400000000000000000', 'bigint hex with prefix'
+assert f'{_big:#o}' == '0o200000000000000000000000', 'bigint octal'
+assert f'{-(2**63):>25}' == '     -9223372036854775808', 'bigint width/align'
+assert f'{2**63:.3e}' == '9.223e+18', 'bigint through scientific float'
+
+# === precision is rejected on integer presentations ===
+for _spec in ('.2d', '.2', '.2x', '.2b', '.0c'):
+    try:
+        f'{42:{_spec}}'
+        assert False, f'expected precision on int spec {_spec!r} to fail'
+    except ValueError as _e:
+        assert str(_e) == 'Precision not allowed in integer format specifier', f'{_spec}: {_e}'
+
+# === c rejects a sign; strings reject signs and `=` alignment ===
+try:
+    f'{65:+c}'
+    assert False, 'expected sign with c to fail'
+except ValueError as _e:
+    assert str(_e) == "Sign not allowed with integer format specifier 'c'", f'sign+c: {_e}'
+try:
+    f'{"x":+}'
+    assert False, 'expected sign on string to fail'
+except ValueError as _e:
+    assert str(_e) == 'Sign not allowed in string format specifier', f'sign+str: {_e}'
+try:
+    f'{"x": }'
+    assert False, 'expected space on string to fail'
+except ValueError as _e:
+    assert str(_e) == 'Space not allowed in string format specifier', f'space+str: {_e}'
+try:
+    f'{"x":=5}'
+    assert False, 'expected = alignment on string to fail'
+except ValueError as _e:
+    assert str(_e) == "'=' alignment not allowed in string format specifier", f'=+str: {_e}'

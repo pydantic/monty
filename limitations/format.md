@@ -31,6 +31,31 @@ mini-language formatter.
   formats the number using the active locale. This is the only presentation
   type CPython supports that Monty does not.
 
+Every other presentation type — `b`/`c`/`d`/`o`/`x`/`X` (integers, including
+big integers), `e`/`E`/`f`/`F`/`g`/`G`/`%` (floats), `s` (strings), and the
+type-less default — is implemented, with sign, `#`, `0`, width, `,`/`_`
+grouping, and `.precision` applied as in CPython. `bool` formats as its `int`
+value under any non-empty spec (`f'{True:d}'` → `'1'`), and as `'True'`/`'False'`
+with no spec. Non-finite floats follow the presentation case
+(`f'{float("inf"):F}'` → `'INF'`).
+
+## Type-less float with an explicit precision
+
+A float formatted with a precision but no type char (`f'{x:.3}'`) does not
+exactly match CPython. CPython's type-less-with-precision mode is a variant of
+`g` with its own significant-digit/threshold rules (e.g.
+`format(100.0, '.3')` → `'1e+02'`, distinct from `format(100.0, '.3g')` →
+`'100'`); Monty currently routes it through plain `g`. Use an explicit
+`g`/`e`/`f` type for predictable output. (The *no-precision* type-less default —
+`f'{x}'`, `f'{x:>10}'` — matches CPython's `repr`/shortest digits.)
+
+## Error message ordering
+
+When a spec combines several illegal options (e.g. a sign *and* a precision on an
+integer), Monty and CPython both raise `ValueError`, but the *which-error-first*
+ordering can differ for some rare combinations. The error type is always
+correct; only the message may name a different offending option.
+
 ## Width / precision bounds
 
 - A `width` or `precision` whose decimal value overflows `usize` raises

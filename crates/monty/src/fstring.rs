@@ -12,9 +12,10 @@ use crate::{
     bytecode::VM,
     exception_private::{ExcType, RunError, SimpleException},
     expressions::ExprLoc,
+    heap::HeapData,
     intern::StringId,
     resource::{ResourceTracker, check_repeat_size},
-    types::{PyTrait, Type},
+    types::{LongInt, PyTrait, Type, long_int::check_bits_str_digits_limit},
     value::Value,
 };
 
@@ -469,6 +470,24 @@ pub fn format_with_spec(
 ) -> Result<String, RunError> {
     let value_type = value.py_type(vm);
 
+    // Bool is an `int` subclass: every integer/float presentation applies to it
+    // using the numeric value (`1`/`0`), so treat it as an int for dispatch
+    // while keeping `value_type` (= bool) for error wording. The exception is a
+    // *directive-free* spec — `str(bool)` wins there (`format(True, "")` is
+    // `"True"`, not `"1"`). The compiler already elides a literal empty spec
+    // `f"{b:}"`, but a *runtime* empty spec (`f"{b:{s}}"`, `s == ""`) still
+    // arrives here as an all-default `ParsedFormatSpec`, so this guard is what
+    // keeps `format(True, "")` → `"True"`.
+    let coerced_bool;
+    let value = if let Value::Bool(b) = value
+        && spec_has_directives(spec)
+    {
+        coerced_bool = Value::Int(i64::from(*b));
+        &coerced_bool
+    } else {
+        value
+    };
+
     // `spec.width` is the minimum field width; every formatter below pads the
     // value out to it with `spec.fill` via `pad_string`/`iter::repeat_n`, which
     // build a native `String` through the global allocator — invisible to the
@@ -499,6 +518,9 @@ pub fn format_with_spec(
         let numeric_finite = match value {
             Value::Int(_) => true,
             Value::Float(f) => f.is_finite(),
+            // A big integer formatted as a float is first converted to `f64`,
+            // so an attacker-chosen precision applies to it too — guard it.
+            Value::Ref(id) => matches!(vm.heap.get(*id), HeapData::LongInt(_)),
             _ => false,
         };
         if numeric_finite {
@@ -513,9 +535,65 @@ pub fn format_with_spec(
         validate_grouping(grouping, spec.type_char, value_type)?;
     }
 
+    // Precision is meaningless for integer presentations. CPython rejects it
+    // inside the integer formatter — *after* the parse-time grouping check
+    // above but *before* the `#`/sign checks below, so this ordering matters
+    // (`{0:#.0c}` reports the precision error, not the alternate-form one).
+    if spec.precision.is_some() && formats_as_integer(spec.type_char, value_type) {
+        return Err(SimpleException::new_msg(
+            ExcType::ValueError,
+            "Precision not allowed in integer format specifier".to_owned(),
+        )
+        .into());
+    }
+
+    // A sign flag (`+`/`-`/space) is meaningless for the `c` (character)
+    // presentation, which has no numeric value to sign. CPython rejects it in
+    // the integer formatter, after the precision check and before the
+    // alternate-form check; the guard keeps `c` on a non-int routing to the
+    // "Unknown format code" error instead.
+    if spec.sign.is_some() && spec.type_char == Some(TypeChar::C) && matches!(value_type, Type::Int | Type::Bool) {
+        return Err(SimpleException::new_msg(
+            ExcType::ValueError,
+            "Sign not allowed with integer format specifier 'c'".to_owned(),
+        )
+        .into());
+    }
+
     // The alternate form (`#`) is likewise illegal for `c`/`s` presentations.
     if spec.alternate {
         validate_alternate(spec.type_char, value_type)?;
+    }
+
+    // A string presentation (explicit `s`, or a type-less spec on a `str`) has
+    // no numeric sign to position, so CPython rejects sign flags and `=`
+    // alignment with these specific messages.
+    if value_type == Type::Str && matches!(spec.type_char, None | Some(TypeChar::S)) {
+        if let Some(sign) = spec.sign {
+            let msg = match sign {
+                Sign::Space => "Space not allowed in string format specifier",
+                Sign::Plus | Sign::Minus => "Sign not allowed in string format specifier",
+            };
+            return Err(SimpleException::new_msg(ExcType::ValueError, msg.to_owned()).into());
+        }
+        if spec.align == Some(Align::SignAware) {
+            return Err(SimpleException::new_msg(
+                ExcType::ValueError,
+                "'=' alignment not allowed in string format specifier".to_owned(),
+            )
+            .into());
+        }
+    }
+
+    // Big integers (`LongInt`) live on the heap; route them through the
+    // arbitrary-precision formatter, which mirrors the `i64` integer/float
+    // paths. The validations above (grouping, precision, sign-with-`c`,
+    // alternate) already ran against `value_type == Type::Int`, so only the
+    // value dispatch remains.
+    if let Value::Ref(id) = value
+        && let HeapData::LongInt(li) = vm.heap.get(*id)
+    {
+        return format_long_int(li, value_type, spec);
     }
 
     match (value, spec.type_char) {
@@ -527,7 +605,10 @@ pub fn format_with_spec(
         (Value::Int(n), Some(TypeChar::XUpper)) => Ok(format_int_base(*n, 16, spec)?.to_uppercase()),
         (Value::Int(n), Some(TypeChar::C)) => Ok(format_char(*n, spec)?),
 
-        // Float formatting
+        // Float formatting. A type-less spec with no precision uses the repr
+        // (shortest) digits, *not* `g` — only an explicit `g`/`G` or a type-less
+        // spec that carries a precision selects the `g` algorithm.
+        (Value::Float(f), None) if spec.precision.is_none() => Ok(format_float_default(*f, spec)),
         (Value::Float(f), None | Some(TypeChar::G | TypeChar::GUpper)) => Ok(format_float_g(*f, spec)),
         (Value::Float(f), Some(TypeChar::F | TypeChar::FUpper)) => Ok(format_float_f(*f, spec)),
         (Value::Float(f), Some(TypeChar::E)) => Ok(format_float_e(*f, spec, false)),
@@ -546,9 +627,6 @@ pub fn format_with_spec(
             let s = value.py_str(vm)?;
             Ok(format_string(&s, spec)?)
         }
-
-        // Bool as int
-        (Value::Bool(b), Some(TypeChar::D)) => Ok(format_int(i64::from(*b), spec)),
 
         // No type specifier: convert to string and format
         (_, None) => {
@@ -595,6 +673,42 @@ fn validate_grouping(grouping: Grouping, type_char: Option<TypeChar>, value_type
         )
         .into())
     }
+}
+
+/// Whether `(type_char, value_type)` selects an *integer* presentation, i.e.
+/// the value will be rendered via the integer formatter.
+///
+/// True for the explicit integer codes (`d`/`b`/`o`/`x`/`X`/`c`) and for a
+/// type-less spec on an `int`/`bool` value. Crucially it keys off `value_type`
+/// (not the `Value` variant) so big integers (`LongInt`, stored as a heap ref
+/// but typed `int`) are included. A float or string with one of those codes is
+/// *not* an integer presentation — it's a type error handled at dispatch — so
+/// this returns false there, letting the "Unknown format code" message win.
+fn formats_as_integer(type_char: Option<TypeChar>, value_type: Type) -> bool {
+    let int_value = matches!(value_type, Type::Int | Type::Bool);
+    match type_char {
+        Some(TypeChar::D | TypeChar::B | TypeChar::O | TypeChar::X | TypeChar::XUpper | TypeChar::C) => int_value,
+        None => int_value,
+        _ => false,
+    }
+}
+
+/// Whether a spec carries any directive — i.e. it is more than the bare,
+/// directive-free spec that is equivalent to `str(value)`.
+///
+/// Used to decide how a `bool` formats: a directive-free spec yields
+/// `str(bool)` (`"True"`), while any directive switches to numeric `int`
+/// formatting (`format(True, " ")` → `" 1"`). Equivalent to "the original spec
+/// string was empty", since every spec character sets at least one field.
+fn spec_has_directives(spec: &ParsedFormatSpec) -> bool {
+    spec.align.is_some()
+        || spec.sign.is_some()
+        || spec.alternate
+        || spec.zero_pad
+        || spec.width != 0
+        || spec.grouping.is_some()
+        || spec.precision.is_some()
+        || spec.type_char.is_some()
 }
 
 /// Checks that the alternate form (`#`) is valid for the chosen presentation
@@ -877,6 +991,75 @@ pub fn format_int_base(n: i64, base: u32, spec: &ParsedFormatSpec) -> Result<Str
     Ok(pad_signed_numeric(sign, prefix, &abs_str, spec))
 }
 
+/// Formats a big integer ([`LongInt`]) through the numeric mini-language,
+/// mirroring the `i64` paths ([`format_int`] / [`format_int_base`] /
+/// `format_float_*`) but sourcing digits from the arbitrary-precision `BigInt`.
+///
+/// Integer presentations (`d`/`b`/`o`/`x`/`X` and the default) convert the
+/// magnitude to the requested radix and reuse [`pad_signed_numeric`] for sign,
+/// grouping, prefix, and padding. Float presentations (`f`/`e`/`g`/`%`) convert
+/// to `f64` first, raising `OverflowError` when the value is too large to
+/// represent — exactly as CPython does. `c` overflows the code-point range
+/// (a `LongInt` is always `> i64::MAX`) and `s` is an unknown code, matching
+/// CPython's two distinct errors. `value_type` only feeds the `s` message and
+/// is always `Type::Int` here.
+fn format_long_int(li: &LongInt, value_type: Type, spec: &ParsedFormatSpec) -> Result<String, RunError> {
+    let sign = if li.is_negative() {
+        "-"
+    } else {
+        positive_sign_prefix(spec.sign)
+    };
+    let magnitude = li.abs();
+    let radix = |base: u32, base_prefix: &'static str| -> String {
+        let digits = magnitude.inner().to_str_radix(base);
+        let prefix = if spec.alternate { base_prefix } else { "" };
+        pad_signed_numeric(sign, prefix, &digits, spec)
+    };
+    let as_float = || match li.to_f64() {
+        Some(f) if f.is_finite() => Ok(f),
+        _ => Err(RunError::from(SimpleException::new_msg(
+            ExcType::OverflowError,
+            "int too large to convert to float".to_owned(),
+        ))),
+    };
+
+    match spec.type_char {
+        None | Some(TypeChar::D) => {
+            // Only base-10 conversion is bounded by CPython's int_max_str_digits.
+            check_bits_str_digits_limit(li.bits())?;
+            Ok(radix(10, ""))
+        }
+        Some(TypeChar::B) => Ok(radix(2, "0b")),
+        Some(TypeChar::O) => Ok(radix(8, "0o")),
+        Some(TypeChar::X) => Ok(radix(16, "0x")),
+        // Uppercasing the whole result (digits + `0x` prefix → `0X`) matches the
+        // `i64` `XUpper` path in [`format_int_base`]'s caller.
+        Some(TypeChar::XUpper) => Ok(radix(16, "0x").to_uppercase()),
+        Some(TypeChar::F | TypeChar::FUpper) => Ok(format_float_f(as_float()?, spec)),
+        Some(TypeChar::E) => Ok(format_float_e(as_float()?, spec, false)),
+        Some(TypeChar::EUpper) => Ok(format_float_e(as_float()?, spec, true)),
+        Some(TypeChar::G | TypeChar::GUpper) => Ok(format_float_g(as_float()?, spec)),
+        Some(TypeChar::Percent) => Ok(format_float_percent(as_float()?, spec)),
+        // A `LongInt` is always out of the C-long range `c` converts through.
+        Some(TypeChar::C) => Err(SimpleException::new_msg(
+            ExcType::OverflowError,
+            "Python int too large to convert to C long".to_owned(),
+        )
+        .into()),
+        // `s` and `n` are not integer presentations Monty implements; both
+        // surface CPython's "Unknown format code" wording (the `i64` path
+        // reaches the same message via its dispatch fall-through).
+        Some(c @ (TypeChar::S | TypeChar::N)) => Err(SimpleException::new_msg(
+            ExcType::ValueError,
+            format!(
+                "Unknown format code '{}' for object of type '{value_type}'",
+                c.as_char()
+            ),
+        )
+        .into()),
+    }
+}
+
 /// Formats an integer as a Unicode character (format type `c`).
 ///
 /// Converts the integer to its corresponding Unicode code point. Valid range is 0 to 0x10FFFF.
@@ -905,11 +1088,15 @@ pub fn format_char(n: i64, spec: &ParsedFormatSpec) -> Result<String, FormatErro
 /// Handles sign prefix, zero-padding between sign and digits when `zero_pad` or `=` alignment.
 /// Right-aligned by default. NaN and infinity are formatted as `nan`/`inf` (or `NAN`/`INF` for `F`).
 pub fn format_float_f(f: f64, spec: &ParsedFormatSpec) -> String {
-    let precision = spec.precision.unwrap_or(6);
     let is_negative = f.is_sign_negative() && !f.is_nan();
-    let abs_val = f.abs();
-    let abs_str = fmt_float_fixed(abs_val, precision);
-    let abs_str = maybe_alternate_point(abs_str, abs_val, spec);
+    let uppercase = spec.type_char == Some(TypeChar::FUpper);
+    let abs_str = if let Some(word) = non_finite_repr(f, uppercase) {
+        word.to_owned()
+    } else {
+        let abs_val = f.abs();
+        let abs_str = fmt_float_fixed(abs_val, spec.precision.unwrap_or(6));
+        maybe_alternate_point(abs_str, abs_val, spec)
+    };
     let sign = if is_negative {
         "-"
     } else {
@@ -924,13 +1111,16 @@ pub fn format_float_f(f: f64, spec: &ParsedFormatSpec) -> String {
 /// The `uppercase` parameter controls whether to use `E` or `e` for the exponent marker.
 /// Exponent is always formatted with a sign and at least 2 digits (Python convention).
 pub fn format_float_e(f: f64, spec: &ParsedFormatSpec, uppercase: bool) -> String {
-    let precision = spec.precision.unwrap_or(6);
     let is_negative = f.is_sign_negative() && !f.is_nan();
-    let abs_val = f.abs();
-    let abs_str = fmt_float_exp(abs_val, precision, uppercase);
-    // Fix exponent format to match Python (e+03 not e3)
-    let abs_str = fix_exp_format(&abs_str);
-    let abs_str = maybe_alternate_point(abs_str, abs_val, spec);
+    let abs_str = if let Some(word) = non_finite_repr(f, uppercase) {
+        word.to_owned()
+    } else {
+        let abs_val = f.abs();
+        let abs_str = fmt_float_exp(abs_val, spec.precision.unwrap_or(6), uppercase);
+        // Fix exponent format to match Python (e+03 not e3)
+        let abs_str = fix_exp_format(&abs_str);
+        maybe_alternate_point(abs_str, abs_val, spec)
+    };
     let sign = if is_negative {
         "-"
     } else {
@@ -948,8 +1138,21 @@ pub fn format_float_e(f: f64, spec: &ParsedFormatSpec, uppercase: bool) -> Strin
 /// Unlike `f` and `e` formats, trailing zeros are stripped from the result.
 /// Default precision is 6, but minimum is 1 significant digit.
 pub fn format_float_g(f: f64, spec: &ParsedFormatSpec) -> String {
-    let precision = spec.precision.unwrap_or(6).max(1);
     let is_negative = f.is_sign_negative() && !f.is_nan();
+    // `G` (and only `G`) uppercases the exponent marker and `inf`/`nan`.
+    let uppercase = spec.type_char == Some(TypeChar::GUpper);
+    // Non-finite values short-circuit before the `log10`/exponent maths below,
+    // which would be meaningless for `inf`/`nan`.
+    if let Some(word) = non_finite_repr(f, uppercase) {
+        let sign = if is_negative {
+            "-"
+        } else {
+            positive_sign_prefix(spec.sign)
+        };
+        return pad_signed_numeric(sign, "", word, spec);
+    }
+
+    let precision = spec.precision.unwrap_or(6).max(1);
     let abs_val = f.abs();
 
     // Python's g format: use exponential if exponent < -4 or >= precision
@@ -962,16 +1165,16 @@ pub fn format_float_g(f: f64, spec: &ParsedFormatSpec) -> String {
 
     // precision is typically small (default 6), safe to convert to i32
     let prec_i32 = i32::try_from(precision).unwrap_or(i32::MAX);
-    // The alternate form (`#`) keeps the trailing zeros that `g` normally
-    // strips and forces a decimal point — but only for an *explicit* `g`/`G`.
-    // For the default float presentation (no type char, `type_char == None`),
-    // CPython uses the shortest repr where `#` is a no-op, so the alternate
-    // behaviour is suppressed to leave that path unchanged.
-    let alternate_g = spec.alternate && spec.type_char.is_some();
+    // The alternate form (`#`) keeps the trailing zeros that `g` normally strips
+    // and forces a decimal point. This applies whenever the `g` algorithm runs
+    // — an explicit `g`/`G` *or* a type-less spec that carries a precision. The
+    // type-less, no-precision case (where `#` is a no-op) never reaches here; it
+    // goes through [`format_float_default`].
+    let alternate_g = spec.alternate;
     let abs_str = if exp < -4 || exp >= prec_i32 {
         // Use exponential notation
         let exp_prec = precision.saturating_sub(1);
-        let formatted = fmt_float_exp(abs_val, exp_prec.min(MAX_FMT_PRECISION_EXP), false);
+        let formatted = fmt_float_exp(abs_val, exp_prec.min(MAX_FMT_PRECISION_EXP), uppercase);
         if alternate_g {
             // Keep the mantissa zeros but still normalise the exponent (e+06).
             fix_exp_format(&formatted)
@@ -1007,6 +1210,83 @@ pub fn format_float_g(f: f64, spec: &ParsedFormatSpec) -> String {
     pad_signed_numeric(sign, "", &abs_str, spec)
 }
 
+/// Formats a float with the *default* presentation — no type char and no
+/// precision — applying sign, grouping, and field padding around the shortest
+/// round-tripping digits ([`format_float_repr`]).
+///
+/// CPython's type-less float format uses repr mode here, **not** `g` with the
+/// default precision 6: `f"{1234567.0:>12}"` is `"   1234567.0"`, not
+/// `"  1.23457e+06"`. A *precision* on a type-less float (`f"{x:.3}"`) does
+/// select the `g` algorithm and so stays in [`format_float_g`].
+fn format_float_default(f: f64, spec: &ParsedFormatSpec) -> String {
+    let is_negative = f.is_sign_negative() && !f.is_nan();
+    let abs_str = format_float_repr(f.abs());
+    let sign = if is_negative {
+        "-"
+    } else {
+        positive_sign_prefix(spec.sign)
+    };
+    pad_signed_numeric(sign, "", &abs_str, spec)
+}
+
+/// Formats a float exactly as CPython's `repr()`/`str()` (identical for floats
+/// in Python 3): the shortest decimal string that round-trips, switching to
+/// scientific notation when the base-10 exponent is `< -4` or `>= 16`, and
+/// always keeping at least one fractional digit (`1.0`, never `1`).
+///
+/// This is the default rendering for a bare `f"{x}"`, `str(x)`, `repr(x)` and
+/// floats inside container reprs — *not* the format mini-language (that's
+/// [`format_float_g`] et al). Rust can't do this directly: its `f64` `Display`
+/// never uses scientific notation (`1e16` prints as `10000000000000000`) and
+/// renders NaN as `"NaN"`. So we borrow only Rust's *shortest-digits*
+/// guarantee via `{:e}` and re-lay-out the digits per CPython's rules
+/// (`1e16` → `"1e+16"`, `1234.5` → `"1234.5"`, `inf`/`nan` lowercased).
+pub fn format_float_repr(f: f64) -> String {
+    if f.is_nan() {
+        return "nan".to_owned();
+    }
+    let sign = if f.is_sign_negative() { "-" } else { "" };
+    if f.is_infinite() {
+        return format!("{sign}inf");
+    }
+    // Rust's shortest scientific form yields minimal round-tripping digits plus
+    // the base-10 exponent: 1234.5 -> "1.2345e3", 0.0 -> "0e0", 1e-5 -> "1e-5".
+    let sci = format!("{:e}", f.abs());
+    let (mantissa, exp_str) = sci.split_once('e').expect("LowerExp always emits an 'e'");
+    let digits: String = mantissa.chars().filter(|&c| c != '.').collect();
+    let exp10: i32 = exp_str.parse().expect("LowerExp exponent is a valid integer");
+    // `decpt` = number of digits to the left of the decimal point.
+    let decpt = exp10 + 1;
+
+    let body = if !(-4..16).contains(&exp10) {
+        // Scientific: first digit, then the rest after a point (dropped when a
+        // single digit), then `e±NN` with a sign and at least two exp digits.
+        let (first, rest) = digits.split_at(1);
+        let mantissa = if rest.is_empty() {
+            first.to_owned()
+        } else {
+            format!("{first}.{rest}")
+        };
+        let exp_sign = if exp10 < 0 { '-' } else { '+' };
+        format!("{mantissa}e{exp_sign}{:02}", exp10.unsigned_abs())
+    } else if decpt <= 0 {
+        // 0.00…digits  — `-decpt` leading zeros after the point.
+        let lead = usize::try_from(-decpt).unwrap_or(0);
+        format!("0.{}{digits}", "0".repeat(lead))
+    } else {
+        let decpt = usize::try_from(decpt).expect("decpt is positive in this branch");
+        if decpt >= digits.len() {
+            // Integer-valued: pad with zeros to the point, then a bare `.0`.
+            format!("{digits}{}.0", "0".repeat(decpt - digits.len()))
+        } else {
+            // Point falls inside the digit run.
+            let (int_part, frac_part) = digits.split_at(decpt);
+            format!("{int_part}.{frac_part}")
+        }
+    };
+    format!("{sign}{body}")
+}
+
 /// Applies ASCII conversion to a string (escapes non-ASCII characters).
 ///
 /// Used for the `!a` conversion flag in f-strings. Takes a string (typically a repr)
@@ -1036,14 +1316,17 @@ pub fn ascii_escape(s: &str) -> String {
 /// Multiplies the value by 100 and appends a `%` sign. Uses fixed-point notation
 /// with `precision` decimal places (default 6). For example, `0.1234` becomes `12.340000%`.
 pub fn format_float_percent(f: f64, spec: &ParsedFormatSpec) -> String {
-    let precision = spec.precision.unwrap_or(6);
     let percent_val = f * 100.0;
     let is_negative = percent_val.is_sign_negative() && !percent_val.is_nan();
-    let abs_val = percent_val.abs();
-
-    let abs_str = format!("{}%", fmt_float_fixed(abs_val, precision));
-    // `#` forces the point before the `%` (`#.0%` → `50.%`).
-    let abs_str = maybe_alternate_point(abs_str, abs_val, spec);
+    // The `%` presentation has no uppercase variant, so `inf`/`nan` stay lower.
+    let abs_str = if let Some(word) = non_finite_repr(percent_val, false) {
+        format!("{word}%")
+    } else {
+        let abs_val = percent_val.abs();
+        let abs_str = format!("{}%", fmt_float_fixed(abs_val, spec.precision.unwrap_or(6)));
+        // `#` forces the point before the `%` (`#.0%` → `50.%`).
+        maybe_alternate_point(abs_str, abs_val, spec)
+    };
     let sign = if is_negative {
         "-"
     } else {
@@ -1055,6 +1338,24 @@ pub fn format_float_percent(f: f64, spec: &ParsedFormatSpec) -> String {
 // ============================================================================
 // Helper functions
 // ============================================================================
+
+/// CPython's spelling of a non-finite float for a given presentation *case*.
+///
+/// Rust renders NaN as `"NaN"` (mixed case) and always lowercases infinity;
+/// CPython instead uses `"nan"`/`"inf"` for the lowercase presentations
+/// (`f`, `e`, `g`, `%`, and the default) and `"NAN"`/`"INF"` for the uppercase
+/// ones (`F`, `E`, `G`). Returns `None` for a finite value so the caller falls
+/// through to its normal digit formatting. The sign (for `-inf`) is applied by
+/// the caller, so this returns the unsigned word only.
+fn non_finite_repr(value: f64, uppercase: bool) -> Option<&'static str> {
+    if value.is_nan() {
+        Some(if uppercase { "NAN" } else { "nan" })
+    } else if value.is_infinite() {
+        Some(if uppercase { "INF" } else { "inf" })
+    } else {
+        None
+    }
+}
 
 /// Renders the sign prefix that precedes a non-negative number's digits.
 ///
@@ -1177,6 +1478,15 @@ fn pad_signed_grouped(
         abs_str.split_at(end)
     };
 
+    // Non-finite values (`inf`/`nan`/`INF`/`NAN`) have no integer digits, so
+    // there is nothing to group: CPython drops the separator entirely and
+    // zero-pads the bare word ungrouped (`format(inf, '020,') == '…00inf'`,
+    // no commas). Delegating here also avoids `insert_grouping` underflowing
+    // on an empty digit string.
+    if int_digits.is_empty() {
+        return pad_signed_ungrouped(sign, prefix, abs_str, align, spec);
+    }
+
     if spec.zero_pad {
         // Grow the integer part with grouped leading zeros until the whole
         // field (sign + prefix + grouped digits + suffix) reaches the width.
@@ -1210,21 +1520,28 @@ fn pad_signed_grouped(
 /// integer one digit at a time until digits-plus-separators reach the field
 /// width, so the result can overshoot `min_width` by one when the final digit
 /// also introduces a separator (`format(1234, '08,')` → `'0,001,234'`, 9
-/// wide for a width of 8). `digits` must be non-empty — numeric formatters
-/// always emit at least one digit. Output size is bounded by `min_width`
-/// (already capped against the resource tracker via `check_repeat_size` in
-/// [`format_with_spec`]), so a plain `String` is safe here.
+/// wide for a width of 8). Callers must pass a non-empty `digits` (numeric
+/// formatters always emit at least one digit, and [`pad_signed_grouped`]
+/// routes non-finite values away before reaching here); the arithmetic is
+/// nonetheless hardened against an empty string so it can never panic. Output
+/// size is bounded by `min_width` (already capped against the resource tracker
+/// via `check_repeat_size` in [`format_with_spec`]), so a plain `String` is
+/// safe here.
 fn insert_grouping(digits: &str, group_size: usize, sep: char, min_width: usize) -> String {
     // `digits` are ASCII (decimal or hex), so byte length == char count.
     let ndigits = digits.len();
     // Grow the total digit count until digits + separators reach `min_width`.
+    // `saturating_sub` guards the `total == 0` case defensively: callers must
+    // pass a non-empty `digits`, but an empty string would otherwise underflow
+    // here, and an underflow on attacker-controlled format specs is a host
+    // panic (a sandbox DoS) we must never risk.
     let mut total = ndigits;
-    while total + (total - 1) / group_size < min_width {
+    while total + total.saturating_sub(1) / group_size < min_width {
         total += 1;
     }
     let zeros = total - ndigits;
 
-    let mut out = String::with_capacity(total + (total - 1) / group_size);
+    let mut out = String::with_capacity(total + total.saturating_sub(1) / group_size);
     let mut digit_chars = digits.chars();
     for i in 0..total {
         if i > 0 && (total - i).is_multiple_of(group_size) {

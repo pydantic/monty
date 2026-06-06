@@ -1569,7 +1569,7 @@ impl<'a> Parser<'a> {
                 let expr = Box::new(self.parse_expression((*interp.expression).clone())?);
                 let conversion = convert_conversion_flag(interp.conversion);
                 let format_spec = match &interp.format_spec {
-                    Some(spec) => Some(self.parse_format_spec(spec)?),
+                    Some(spec) => self.parse_format_spec(spec)?,
                     None => None,
                 };
                 // Extract debug prefix for `=` specifier (e.g., f'{a=}' -> "a=")
@@ -1603,7 +1603,10 @@ impl<'a> Parser<'a> {
     ///    encoding (e.g. `f"{x:>1048576}"`). The concatenated literal text is
     ///    interned and emitted as a single-literal dynamic spec so the VM
     ///    re-parses it at runtime.
-    fn parse_format_spec(&mut self, spec: &ast::InterpolatedStringFormatSpec) -> Result<FormatSpec, ParseError> {
+    fn parse_format_spec(
+        &mut self,
+        spec: &ast::InterpolatedStringFormatSpec,
+    ) -> Result<Option<FormatSpec>, ParseError> {
         let has_interpolation = spec
             .elements
             .iter()
@@ -1631,7 +1634,7 @@ impl<'a> Parser<'a> {
                     }
                 }
             }
-            Ok(FormatSpec::Dynamic(parts))
+            Ok(Some(FormatSpec::Dynamic(parts)))
         } else {
             let static_spec: String = spec
                 .elements
@@ -1641,15 +1644,24 @@ impl<'a> Parser<'a> {
                     InterpolatedStringElement::Interpolation(_) => None,
                 })
                 .collect();
+            // An empty spec (`f"{x:}"`) is identical to no spec (`f"{x}"`) for
+            // every builtin type — `format(x, "")` is `str(x)`. Emit no spec so
+            // the value takes the plain `str()` path rather than the default
+            // formatter, which diverges for some types (e.g. a bare float would
+            // otherwise go through `g`: `f"{1234567.0:}"` must be `"1234567.0"`,
+            // not `"1.23457e+06"`; a bool must be `"True"`, not `"1"`).
+            if static_spec.is_empty() {
+                return Ok(None);
+            }
             match static_spec.parse::<ParsedFormatSpec>() {
                 Ok(parsed) => {
                     if let Some(encoded) = encode_format_spec(&parsed) {
-                        Ok(FormatSpec::Static(encoded))
+                        Ok(Some(FormatSpec::Static(encoded)))
                     } else {
                         // Valid but too large for the compact encoding — re-parse
                         // the literal at runtime.
                         let string_id = self.interner.intern(&static_spec);
-                        Ok(FormatSpec::Dynamic(vec![FStringPart::Literal(string_id)]))
+                        Ok(Some(FormatSpec::Dynamic(vec![FStringPart::Literal(string_id)])))
                     }
                 }
                 // A spec containing `%` may be a `strftime` string for a
@@ -1659,7 +1671,7 @@ impl<'a> Parser<'a> {
                 // malformed mini-language and still fail at compile time.
                 Err(_) if static_spec.contains('%') => {
                     let string_id = self.interner.intern(&static_spec);
-                    Ok(FormatSpec::Dynamic(vec![FStringPart::Literal(string_id)]))
+                    Ok(Some(FormatSpec::Dynamic(vec![FStringPart::Literal(string_id)])))
                 }
                 Err(err) => Err(ParseError::syntax(err.to_string(), self.convert_range(spec.range))),
             }

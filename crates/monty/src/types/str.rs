@@ -497,42 +497,54 @@ fn str_join<'h>(
     Ok(allocate_string(result, vm.heap)?)
 }
 
-/// Writes a Python repr() string for a given string slice to a formatter.
+/// Writes a Python `repr()` string for a given string slice to a formatter.
 ///
-/// Chooses between single and double quotes based on the string content:
-/// - Uses double quotes if the string contains single quotes but not double quotes
-/// - Uses single quotes by default, escaping any contained single quotes
+/// Quote choice matches CPython: single quotes by default, switching to double
+/// quotes only when the string contains a `'` but no `"` (so the quote needn't
+/// be escaped). Backslash, the active quote, and `\n`/`\t`/`\r` use the short
+/// escapes; any other **control** character is escaped numerically
+/// (`\xNN`/`\uNNNN`/`\UNNNNNNNN`), e.g. `repr('\x00') == "'\\x00'"`.
 ///
-/// Common escape sequences (backslash, newline, tab, carriage return) are always escaped.
+/// Note: this escapes the C0/C1 control range (`char::is_control`), not the
+/// full set of non-printable Unicode CPython escapes (`Cf`/`Cs`/`Co`/`Cn`/`Zl`/
+/// `Zp`/non-space `Zs`) — those need Unicode category tables Monty doesn't carry
+/// — so e.g. `'\xa0'` is emitted literally rather than as `'\xa0'`. See
+/// `limitations/format.md`.
 pub fn string_repr_fmt(s: &str, f: &mut impl Write) -> fmt::Result {
-    // Check if the string contains single quotes but not double quotes
-    if s.contains('\'') && !s.contains('"') {
-        // Use double quotes if string contains only single quotes
-        f.write_char('"')?;
-        for c in s.chars() {
-            match c {
-                '\\' => f.write_str("\\\\")?,
-                '\n' => f.write_str("\\n")?,
-                '\t' => f.write_str("\\t")?,
-                '\r' => f.write_str("\\r")?,
-                _ => f.write_char(c)?,
-            }
-        }
-        f.write_char('"')
+    let quote = if s.contains('\'') && !s.contains('"') {
+        '"'
     } else {
-        // Use single quotes by default, escape any single quotes in the string
-        f.write_char('\'')?;
-        for c in s.chars() {
-            match c {
-                '\\' => f.write_str("\\\\")?,
-                '\n' => f.write_str("\\n")?,
-                '\t' => f.write_str("\\t")?,
-                '\r' => f.write_str("\\r")?,
-                '\'' => f.write_str("\\'")?,
-                _ => f.write_char(c)?,
+        '\''
+    };
+    f.write_char(quote)?;
+    for c in s.chars() {
+        match c {
+            '\\' => f.write_str("\\\\")?,
+            '\n' => f.write_str("\\n")?,
+            '\t' => f.write_str("\\t")?,
+            '\r' => f.write_str("\\r")?,
+            _ if c == quote => {
+                f.write_char('\\')?;
+                f.write_char(quote)?;
             }
+            _ if c.is_control() => write_char_escape(c, f)?,
+            _ => f.write_char(c)?,
         }
-        f.write_char('\'')
+    }
+    f.write_char(quote)
+}
+
+/// Writes the numeric repr escape for a single character, matching CPython's
+/// width selection: `\xNN` for code points `<= 0xFF`, `\uNNNN` for `<= 0xFFFF`,
+/// otherwise `\UNNNNNNNN`.
+fn write_char_escape(c: char, f: &mut impl Write) -> fmt::Result {
+    let cp = c as u32;
+    if cp <= 0xFF {
+        write!(f, "\\x{cp:02x}")
+    } else if cp <= 0xFFFF {
+        write!(f, "\\u{cp:04x}")
+    } else {
+        write!(f, "\\U{cp:08x}")
     }
 }
 
