@@ -1342,7 +1342,7 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
                         return Err(RunError::internal("ForIter: expected iterator ref on stack"));
                     };
                     let HeapReadOutput::Iter(mut iter) = self.heap.read(heap_id) else {
-                        panic!("ForIter: expected iterator ref on stack");
+                        return Err(RunError::internal("ForIter: expected iterator ref on stack"));
                     };
 
                     match iter.advance(self) {
