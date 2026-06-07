@@ -365,6 +365,15 @@ fn fstring_dynamic_precision_memory_bounded() {
         // Literal precisions above the compact bytecode encoding capacity are
         // emitted as dynamic specs and must still be checked at runtime.
         "f'{1.0:.999999999f}'",
+        // `#g`/`#G`/type-less-with-precision keep every trailing zero, so they
+        // scale with precision just like `f` and need the same guard (plain `g`
+        // strips zeros and is bounded, so it is intentionally not listed here).
+        "p = 999_999_999\nf'{1.0:#.{p}g}'",
+        "p = 999_999_999\nf'{1.0:#.{p}G}'",
+        "p = 999_999_999\nf'{1.0:#.{p}}'",
+        // Fractional grouping weaves separators into the digit run, so the
+        // native string exceeds `precision` bytes; the guard budgets for them.
+        "p = 999_999_999\nf'{1.0:.{p}_f}'",
     ] {
         let ex = MontyRun::new(code.to_owned(), "test.py", vec![]).unwrap();
         let limits = ResourceLimits::new()

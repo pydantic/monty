@@ -636,20 +636,29 @@ pub fn format_with_spec(
     // already use. The check is free below `LARGE_RESULT_THRESHOLD`.
     check_repeat_size(spec.fill.len_utf8(), spec.width, vm.heap.tracker())?;
 
-    // `spec.precision` on `f`/`e`/`%` float formats is rendered as that many
-    // decimal digits. `fmt_float_fixed` / `fmt_float_exp` synthesise the digits
-    // beyond `MAX_FMT_PRECISION` by appending raw `'0'` chars to an untracked
-    // Rust `String`, so an attacker-chosen precision (`f"{v:.{p}f}"`, `p` a
-    // runtime value) would allocate gigabytes before `allocate_string` accounts
-    // for the result. Precision is parsed as an unrestricted `usize`; bound it
-    // by the active resource tracker the same way the width check above does.
-    // Skip for non-finite floats since the helpers ignore precision in that
-    // case. `g`/`G` already cap precision internally.
-    if let Some(precision) = spec.precision
+    // `spec.precision` on the float formats is rendered as that many decimal
+    // digits. `fmt_float_fixed` / `fmt_float_exp` synthesise the digits beyond
+    // `MAX_FMT_PRECISION` by appending raw `'0'` chars to an untracked Rust
+    // `String`, so an attacker-chosen precision (`f"{v:.{p}f}"`, `p` a runtime
+    // value) would allocate gigabytes before `allocate_string` accounts for the
+    // result. Precision is parsed as an unrestricted `usize`; bound it by the
+    // active resource tracker the same way the width check above does. Skip for
+    // non-finite floats since the helpers ignore precision in that case.
+    //
+    // This applies to `f`/`e`/`%` always, and to the `g`-family
+    // (`g`/`G`/`n`/type-less-with-precision) *only* under alternate form (`#`):
+    // plain `g` strips trailing zeros and caps internally, but `#g` keeps every
+    // zero so its digit count scales with precision just like `f`.
+    let precision_scales_output = matches!(
+        spec.type_char,
+        Some(TypeChar::F | TypeChar::FUpper | TypeChar::E | TypeChar::EUpper | TypeChar::Percent)
+    ) || (spec.alternate
         && matches!(
             spec.type_char,
-            Some(TypeChar::F | TypeChar::FUpper | TypeChar::E | TypeChar::EUpper | TypeChar::Percent)
-        )
+            None | Some(TypeChar::G | TypeChar::GUpper | TypeChar::N)
+        ));
+    if let Some(precision) = spec.precision
+        && precision_scales_output
     {
         let numeric_finite = match value {
             Value::Int(_) => true,
@@ -660,7 +669,11 @@ pub fn format_with_spec(
             _ => false,
         };
         if numeric_finite {
-            check_repeat_size(precision, 1, vm.heap.tracker())?;
+            // Fractional grouping (`f"{v:.{p}_f}"`) weaves in one separator per
+            // three emitted digits, so the native string reaches ~4/3 × precision
+            // before `allocate_string` accounts for it; budget the separators too.
+            let separators = if spec.frac_grouping.is_some() { precision / 3 } else { 0 };
+            check_repeat_size(precision.saturating_add(separators), 1, vm.heap.tracker())?;
         }
     }
 
@@ -1496,26 +1509,31 @@ pub fn format_float_g(f: f64, spec: &ParsedFormatSpec) -> String {
     let abs_str = if exp < -4 || exp >= sci_threshold {
         // Use exponential notation
         let exp_prec = precision.saturating_sub(1);
-        let formatted = fmt_float_exp(abs_val, exp_prec.min(MAX_FMT_PRECISION_EXP), uppercase);
         if alternate_g {
-            // Keep the mantissa zeros but still normalise the exponent (e+06).
-            fix_exp_format(&formatted)
+            // `#` preserves every mantissa zero, so the output scales with
+            // precision: let `fmt_float_exp` synthesise the digits beyond Rust's
+            // formatter cap, then normalise the exponent (`e+06`). Bounded by the
+            // precision pre-check in `format_with_spec`.
+            fix_exp_format(&fmt_float_exp(abs_val, exp_prec, uppercase))
         } else {
-            // Python strips trailing zeros from the mantissa
-            strip_trailing_zeros_exp(&formatted)
+            // Plain `g` strips trailing zeros, so mantissa digits beyond the cap
+            // would be dropped anyway — cap to avoid generating them.
+            strip_trailing_zeros_exp(&fmt_float_exp(abs_val, exp_prec.min(MAX_FMT_PRECISION_EXP), uppercase))
         }
     } else {
         // Use fixed notation - result is non-negative due to .max(0)
         let sig_digits_i32 = (prec_i32 - exp - 1).max(0);
         let sig_digits = usize::try_from(sig_digits_i32).expect("sig_digits guaranteed non-negative");
-        // Cap Rust precision; beyond this both branches only differ in trailing
-        // zeros, which f64 can't represent anyway.
-        let cap = sig_digits.min(MAX_FMT_PRECISION);
-        let formatted = format!("{abs_val:.cap$}");
         if alternate_g {
-            formatted
+            // `#` keeps the trailing zeros, so the digit count scales with
+            // precision; `fmt_float_fixed` synthesises any beyond the formatter
+            // cap (bounded by the precision pre-check in `format_with_spec`).
+            fmt_float_fixed(abs_val, sig_digits)
         } else {
-            strip_trailing_zeros(&formatted)
+            // Plain `g` strips trailing zeros, so digits beyond the cap would be
+            // dropped anyway — cap before formatting.
+            let cap = sig_digits.min(MAX_FMT_PRECISION);
+            strip_trailing_zeros(&format!("{abs_val:.cap$}"))
         }
     };
     let abs_str = if alternate_g {

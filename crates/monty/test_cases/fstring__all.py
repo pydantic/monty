@@ -570,6 +570,14 @@ assert f'{1.5:#.3g}' == '1.50', 'g precision keeps zeros'
 assert f'{1234.0:#.4g}' == '1234.', 'g all sig figs used, force point'
 # default float presentation: # is a no-op (shortest repr already has a point)
 assert f'{3.14:#}' == '3.14', 'alternate no-op on default float'
+# `#g`/`#G`/type-less keep every trailing zero, so the digit count scales with
+# precision past Rust's formatter cap (regression: it used to silently truncate
+# to ~65k digits). Verify the count is exact, not clamped.
+assert f'{1.0:#.10g}' == '1.000000000', '#g trailing zeros'
+assert f'{1.0:#.10G}' == '1.000000000', '#G trailing zeros'
+assert f'{123456.0:#.10}' == '123456.0000', 'type-less #g trailing zeros'
+assert len(f'{1.0:#.70000g}') == 70001, '#g large precision not truncated'
+assert len(f'{1.0:#.70000}') == 70001, 'type-less # large precision not truncated'
 
 # === inf / nan: case follows the presentation, never `.0` ===
 _inf = float('inf')
