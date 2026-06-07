@@ -22,14 +22,6 @@ classes can't customise formatting (Monty has no `class` statement anyway —
 see [classes.md](classes.md)), and all other types use the builtin
 mini-language formatter.
 
-## The `z` coercion flag is not supported
-
-CPython's `z` flag (`f'{-0.0:z}'` → `'0.0'`) coerces a negative zero
-floating-point result to positive zero. Monty does not implement it: the flag
-has no spare bit in the compact spec encoding, and the parser rejects it with
-`SyntaxError: Invalid format specifier 'z'`. Negative zero therefore formats as
-`-0.0` regardless.
-
 ## The `n` type uses the C locale only
 
 `n` always behaves as in the C/POSIX locale (Monty has no locale support): like

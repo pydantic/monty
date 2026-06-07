@@ -286,6 +286,13 @@ pub struct ParsedFormatSpec {
     /// binary/octal/hex integers and forces a decimal point on floats.
     /// Validity against the presentation type is checked at format time.
     pub alternate: bool,
+    /// Negative-zero coercion flag (`z`, Python 3.11+): a negative value that
+    /// rounds to zero at the chosen precision is emitted as positive zero
+    /// (`f"{-0.001:z.1f}"` → `0.0`). Valid only for floating-point
+    /// presentations (checked at format time). Like [`Self::frac_grouping`] it
+    /// has no spare encoding bit, so [`encode_format_spec`] forces specs that
+    /// use it onto the dynamic-spec path.
+    pub z: bool,
     /// Whether to zero-pad numbers.
     pub zero_pad: bool,
     /// Minimum field width.
@@ -394,6 +401,12 @@ impl FromStr for ParsedFormatSpec {
         }
 
         result.sign = chars.next_if_map(|c| Sign::from_char(c).ok_or(c));
+
+        // `z` (negative-zero coercion) sits between the sign and `#` in the
+        // grammar. A `z` in *fill* position (`z>8`) was already consumed by the
+        // fill/align step above, so reaching here means the flag. Whether it's
+        // legal for the presentation type is checked at format time.
+        result.z = chars.next_if_eq(&'z').is_some();
 
         // `#` (alternate form). Whether it's legal for the chosen presentation
         // type is decided at format time (the value type isn't known here for
@@ -587,19 +600,6 @@ pub fn format_with_spec(
         .into());
     }
 
-    // A sign flag (`+`/`-`/space) is meaningless for the `c` (character)
-    // presentation, which has no numeric value to sign. CPython rejects it in
-    // the integer formatter, after the precision check and before the
-    // alternate-form check; the guard keeps `c` on a non-int routing to the
-    // "Unknown format code" error instead.
-    if spec.sign.is_some() && spec.type_char == Some(TypeChar::C) && matches!(value_type, Type::Int | Type::Bool) {
-        return Err(SimpleException::new_msg(
-            ExcType::ValueError,
-            "Sign not allowed with integer format specifier 'c'".to_owned(),
-        )
-        .into());
-    }
-
     // If the presentation type is not valid for this value, CPython reports
     // "Unknown format code" *before* the alternate-form check (the type chooses
     // the formatter, so an invalid type errors first): `f"{3.14:#c}"` is
@@ -614,6 +614,39 @@ pub fn format_with_spec(
                 "Unknown format code '{}' for object of type '{value_type}'",
                 c.as_char()
             ),
+        )
+        .into());
+    }
+
+    // `z` (negative-zero coercion) is only meaningful for floating-point
+    // presentations. CPython rejects it elsewhere with a presentation-specific
+    // message, *after* the "Unknown format code" check (so a bad type wins) and
+    // before the alternate-form check (`f"{5:z#}"` reports the `z` error).
+    // Strings are handled by `validate_string_spec`; here the value is numeric or
+    // a non-numeric type-less spec (string-formatted, like `validate_alternate`).
+    if spec.z && !formats_as_float(spec.type_char, value_type) {
+        let kind = if formats_as_integer(spec.type_char, value_type) {
+            "integer"
+        } else {
+            "string"
+        };
+        return Err(SimpleException::new_msg(
+            ExcType::ValueError,
+            format!("Negative zero coercion (z) not allowed in {kind} format specifier"),
+        )
+        .into());
+    }
+
+    // A sign flag (`+`/`-`/space) is meaningless for the `c` (character)
+    // presentation, which has no numeric value to sign. CPython rejects it in
+    // the integer formatter *after* the `z` check (`f"{0: zc}"` reports the `z`
+    // error, not this one) and before the alternate-form check. The
+    // `Int`/`Bool` guard keeps a `c` on any other type routing to the
+    // "Unknown format code" error above instead.
+    if spec.sign.is_some() && spec.type_char == Some(TypeChar::C) && matches!(value_type, Type::Int | Type::Bool) {
+        return Err(SimpleException::new_msg(
+            ExcType::ValueError,
+            "Sign not allowed with integer format specifier 'c'".to_owned(),
         )
         .into());
     }
@@ -715,6 +748,13 @@ pub fn validate_string_spec(spec: &ParsedFormatSpec) -> Result<(), RunError> {
         };
         return Err(SimpleException::new_msg(ExcType::ValueError, msg.to_owned()).into());
     }
+    if spec.z {
+        return Err(SimpleException::new_msg(
+            ExcType::ValueError,
+            "Negative zero coercion (z) not allowed in string format specifier".to_owned(),
+        )
+        .into());
+    }
     if spec.alternate {
         validate_alternate(spec.type_char, Type::Str)?;
     }
@@ -809,6 +849,29 @@ fn formats_as_integer(type_char: Option<TypeChar>, value_type: Type) -> bool {
     }
 }
 
+/// Whether `(type_char, value_type)` selects a *float* presentation, i.e. the
+/// value will be rendered via one of the `format_float_*` functions.
+///
+/// The float codes (`e`/`E`/`f`/`F`/`g`/`G`/`%`) always format as a float
+/// (an `int` is widened); `n` and a type-less spec do so only for an actual
+/// float value. Used to gate the `z` (negative-zero coercion) flag, which is
+/// legal only for float presentations.
+fn formats_as_float(type_char: Option<TypeChar>, value_type: Type) -> bool {
+    match type_char {
+        Some(
+            TypeChar::E
+            | TypeChar::EUpper
+            | TypeChar::F
+            | TypeChar::FUpper
+            | TypeChar::G
+            | TypeChar::GUpper
+            | TypeChar::Percent,
+        ) => true,
+        Some(TypeChar::N) | None => value_type == Type::Float,
+        _ => false,
+    }
+}
+
 /// Whether a spec carries any directive — i.e. it is more than the bare,
 /// directive-free spec that is equivalent to `str(value)`.
 ///
@@ -820,6 +883,7 @@ fn spec_has_directives(spec: &ParsedFormatSpec) -> bool {
     spec.align.is_some()
         || spec.sign.is_some()
         || spec.alternate
+        || spec.z
         || spec.zero_pad
         || spec.width != 0
         || spec.grouping.is_some()
@@ -883,10 +947,10 @@ pub const MAX_ENCODED_PRECISION: usize = (1 << 21) - 2;
 /// Bit 62 is the last free bit (bit 63 is the sign bit, which must stay 0); a
 /// future flag would need the packing reworked rather than another bit added.
 pub fn encode_format_spec(spec: &ParsedFormatSpec) -> Option<i64> {
-    // Fractional grouping has no spare encoding bit (bit 62, alternate, is the
-    // last free one), so any spec that uses it falls back to the dynamic path
-    // where the literal is re-parsed at runtime.
-    if spec.frac_grouping.is_some() {
+    // Fractional grouping and the `z` flag have no spare encoding bit (bit 62,
+    // alternate, is the last free one), so any spec that uses either falls back
+    // to the dynamic path where the literal is re-parsed at runtime.
+    if spec.frac_grouping.is_some() || spec.z {
         return None;
     }
     let fill_code = u32::from(spec.fill);
@@ -1030,6 +1094,9 @@ pub fn decode_format_spec(encoded: i64) -> ParsedFormatSpec {
         align,
         sign,
         alternate,
+        // Specs using the `z` flag are never encoded (see `encode_format_spec`),
+        // so a decoded spec never carries one.
+        z: false,
         zero_pad,
         width,
         grouping,
@@ -1082,11 +1149,7 @@ pub fn format_int(n: i64, spec: &ParsedFormatSpec) -> String {
     let is_negative = n < 0;
     // Use unsigned_abs() to avoid overflow panic on i64::MIN
     let abs_str = n.unsigned_abs().to_string();
-    let sign = if is_negative {
-        "-"
-    } else {
-        positive_sign_prefix(spec.sign)
-    };
+    let sign = numeric_sign(is_negative, &abs_str, spec);
     pad_signed_numeric(sign, "", &abs_str, spec)
 }
 
@@ -1114,11 +1177,7 @@ pub fn format_int_base(n: i64, base: u32, uppercase: bool, spec: &ParsedFormatSp
     };
     let prefix = if spec.alternate { base_prefix } else { "" };
 
-    let sign = if is_negative {
-        "-"
-    } else {
-        positive_sign_prefix(spec.sign)
-    };
+    let sign = numeric_sign(is_negative, &abs_str, spec);
     Ok(pad_signed_numeric(sign, prefix, &abs_str, spec))
 }
 
@@ -1258,11 +1317,7 @@ pub fn format_float_f(f: f64, spec: &ParsedFormatSpec) -> String {
         let abs_str = fmt_float_fixed(abs_val, spec.precision.unwrap_or(6));
         maybe_alternate_point(abs_str, abs_val, spec)
     };
-    let sign = if is_negative {
-        "-"
-    } else {
-        positive_sign_prefix(spec.sign)
-    };
+    let sign = numeric_sign(is_negative, &abs_str, spec);
     pad_signed_numeric(sign, "", &abs_str, spec)
 }
 
@@ -1282,11 +1337,7 @@ pub fn format_float_e(f: f64, spec: &ParsedFormatSpec, uppercase: bool) -> Strin
         let abs_str = fix_exp_format(&abs_str);
         maybe_alternate_point(abs_str, abs_val, spec)
     };
-    let sign = if is_negative {
-        "-"
-    } else {
-        positive_sign_prefix(spec.sign)
-    };
+    let sign = numeric_sign(is_negative, &abs_str, spec);
     pad_signed_numeric(sign, "", &abs_str, spec)
 }
 
@@ -1305,11 +1356,9 @@ pub fn format_float_g(f: f64, spec: &ParsedFormatSpec) -> String {
     // Non-finite values short-circuit before the `log10`/exponent maths below,
     // which would be meaningless for `inf`/`nan`.
     if let Some(word) = non_finite_repr(f, uppercase) {
-        let sign = if is_negative {
-            "-"
-        } else {
-            positive_sign_prefix(spec.sign)
-        };
+        // `z` never coerces a non-finite value (`word` has no digits), so the
+        // sign is `"-"` for `-inf` as usual.
+        let sign = numeric_sign(is_negative, word, spec);
         return pad_signed_numeric(sign, "", word, spec);
     }
 
@@ -1386,11 +1435,7 @@ pub fn format_float_g(f: f64, spec: &ParsedFormatSpec) -> String {
         abs_str
     };
 
-    let sign = if is_negative {
-        "-"
-    } else {
-        positive_sign_prefix(spec.sign)
-    };
+    let sign = numeric_sign(is_negative, &abs_str, spec);
     pad_signed_numeric(sign, "", &abs_str, spec)
 }
 
@@ -1412,11 +1457,7 @@ fn format_float_default(f: f64, spec: &ParsedFormatSpec) -> String {
     // The alternate form (`#`) still forces a decimal point on the repr digits,
     // even in scientific notation (`format(1e20, '#')` → `'1.e+20'`).
     let abs_str = maybe_alternate_point(FormatFloat(abs_val).to_string(), abs_val, spec);
-    let sign = if is_negative {
-        "-"
-    } else {
-        positive_sign_prefix(spec.sign)
-    };
+    let sign = numeric_sign(is_negative, &abs_str, spec);
     pad_signed_numeric(sign, "", &abs_str, spec)
 }
 
@@ -1579,11 +1620,7 @@ pub fn format_float_percent(f: f64, spec: &ParsedFormatSpec) -> String {
         // `#` forces the point before the `%` (`#.0%` → `50.%`).
         maybe_alternate_point(abs_str, abs_val, spec)
     };
-    let sign = if is_negative {
-        "-"
-    } else {
-        positive_sign_prefix(spec.sign)
-    };
+    let sign = numeric_sign(is_negative, &abs_str, spec);
     pad_signed_numeric(sign, "", &abs_str, spec)
 }
 
@@ -1621,6 +1658,44 @@ fn positive_sign_prefix(sign: Option<Sign>) -> &'static str {
         Some(Sign::Space) => " ",
         None | Some(Sign::Minus) => "",
     }
+}
+
+/// Computes the sign prefix for a formatted numeric magnitude, applying the `z`
+/// flag's negative-zero coercion.
+///
+/// The standard sign helper for every numeric formatter (`format_int`,
+/// `format_int_base`, `format_float_*`). It is `"-"` for a negative value and
+/// otherwise [`positive_sign_prefix`], *except* that the `z` flag
+/// (`f"{-0.001:z.1f}"` → `0.0`) coerces a negative value that *rounds to zero at
+/// the chosen precision* to positive zero. The rounding is already baked into
+/// `abs_str`, so "rounds to zero" is detected structurally via
+/// [`is_rounded_zero`]. `z` is only ever set for float presentations (it is
+/// rejected for integer/string ones in `format_with_spec`), so the integer
+/// callers get the plain sign behaviour.
+fn numeric_sign(is_negative: bool, abs_str: &str, spec: &ParsedFormatSpec) -> &'static str {
+    if is_negative && !(spec.z && is_rounded_zero(abs_str)) {
+        "-"
+    } else {
+        positive_sign_prefix(spec.sign)
+    }
+}
+
+/// Whether a formatted magnitude string represents zero — it has at least one
+/// digit and every digit is `0` (e.g. `"0.00"`, `"0.000000e+00"`, `"0%"`).
+///
+/// Requiring a digit excludes `inf`/`nan` (which carry none), so the `z` flag
+/// never coerces the sign of a non-finite value.
+fn is_rounded_zero(abs_str: &str) -> bool {
+    let mut saw_digit = false;
+    for b in abs_str.bytes() {
+        if b.is_ascii_digit() {
+            saw_digit = true;
+            if b != b'0' {
+                return false;
+            }
+        }
+    }
+    saw_digit
 }
 
 /// Applies the alternate form's (`#`) "always show a decimal point" rule to a

@@ -269,6 +269,53 @@ assert f'{-0.0}' == '-0.0', 'negative zero default'
 assert f'{-0.0:f}' == '-0.000000', 'negative zero :f'
 assert f'{-0.0:+.2f}' == '-0.00', 'negative zero with sign'
 
+# === The `z` flag coerces negative zero to positive zero ===
+# Coercion happens AFTER rounding to the target precision: a negative value that
+# rounds to zero becomes +0, but one that rounds to a nonzero value keeps its sign.
+assert f'{-0.0:z}' == '0.0', 'z on bare -0.0 (default repr)'
+assert f'{-0.0:z.2f}' == '0.00', 'z on -0.0 fixed'
+assert f'{-0.001:z.1f}' == '0.0', 'z: -0.001 rounds to -0.0 -> +0.0'
+assert f'{-0.001:z.3f}' == '-0.001', 'z: -0.001 not zero at .3f, keeps sign'
+assert f'{-0.04:z.1f}' == '0.0', 'z: -0.04 rounds to zero'
+assert f'{-0.05:z.1f}' == '-0.1', 'z: -0.05 rounds away from zero, keeps sign'
+assert f'{-0.49:z.0f}' == '0', 'z: -0.49 rounds to 0'
+assert f'{-0.5:z.0f}' == '0', "z: -0.5 banker's-rounds to 0"
+assert f'{-0.0:ze}' == '0.000000e+00', 'z in scientific'
+assert f'{-0.0:zg}' == '0', 'z in general format'
+assert f'{-0.0:z%}' == '0.000000%', 'z in percent'
+assert f'{0.0:z.2f}' == '0.00', 'z on positive zero is a no-op'
+assert f'{3.14:z.1f}' == '3.1', 'z on positive nonzero is a no-op'
+assert f'{-3.14:z.1f}' == '-3.1', 'z on negative nonzero keeps sign'
+assert f'{-0.0:+z.1f}' == '+0.0', 'z with explicit + sign'
+assert f'{-0.0:z010.1f}' == '00000000.0', 'z with zero-padding'
+assert f'{0:zf}' == '0.000000', 'z on int via float type'
+assert f'{True:zf}' == '1.000000', 'z on bool via float type'
+# `z` in fill position (followed by an align char) is a fill char, not the flag.
+assert f'{-0.0:z>8.1f}' == 'zzzz-0.0', 'z as fill is not the coercion flag'
+
+
+# `z` is only valid for floating-point presentations.
+def _z_err(fn):
+    try:
+        fn()
+        assert False, 'expected ValueError'
+    except ValueError as exc:
+        return str(exc)
+
+
+assert _z_err(lambda: f'{-5:z}') == 'Negative zero coercion (z) not allowed in integer format specifier', 'z on int'
+assert _z_err(lambda: f'{-5:zx}') == 'Negative zero coercion (z) not allowed in integer format specifier', 'z on hex'
+assert _z_err(lambda: f'{True:z}') == 'Negative zero coercion (z) not allowed in integer format specifier', 'z on bool'
+assert _z_err(lambda: f'{"x":z}') == 'Negative zero coercion (z) not allowed in string format specifier', 'z on str'
+assert _z_err(lambda: f'{5:z#}') == 'Negative zero coercion (z) not allowed in integer format specifier', (
+    'z beats alternate (int)'
+)
+assert _z_err(lambda: f'{"x":z#}') == 'Negative zero coercion (z) not allowed in string format specifier', (
+    'z beats alternate (str)'
+)
+# Precedence: a bad type code or grouping error still wins over the z error.
+assert _z_err(lambda: f'{5:z.2}') == 'Precision not allowed in integer format specifier', 'precision-on-int beats z'
+
 # === Infinity formatting across format codes ===
 # inf bypasses precision/width-pad zero rules and renders as 'inf'
 assert f'{float("inf"):f}' == 'inf', 'inf :f'
