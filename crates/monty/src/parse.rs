@@ -1678,12 +1678,18 @@ impl<'a> Parser<'a> {
                         Ok(Some(FormatSpec::Dynamic(vec![FStringPart::Literal(string_id)])))
                     }
                 }
-                // A spec containing `%` may be a `strftime` string for a
-                // date/datetime value, which is only resolvable once the value
-                // type is known at runtime — defer it as a dynamic spec rather
-                // than rejecting it here. Specs with no `%` are unambiguously
-                // malformed mini-language and still fail at compile time.
-                Err(_) if static_spec.contains('%') => {
+                // Two kinds of failing spec are deferred to the dynamic
+                // (runtime) path rather than rejected here:
+                //  - one containing `%`, which may be a `strftime` string for a
+                //    date/datetime value (only resolvable once the type is known);
+                //  - one whose error CPython raises as a *runtime* `ValueError`
+                //    with type-dependent or format-time wording (`Unknown format
+                //    code`, grouping conflicts, missing precision) — see
+                //    [`ParseFormatSpecError::defer_to_runtime`]. The VM re-parses
+                //    the literal and raises the matching error.
+                // Genuinely-malformed specs and `usize` overflow still fail at
+                // compile time.
+                Err(err) if static_spec.contains('%') || err.defer_to_runtime() => {
                     let string_id = self.interner.intern(&static_spec);
                     Ok(Some(FormatSpec::Dynamic(vec![FStringPart::Literal(string_id)])))
                 }

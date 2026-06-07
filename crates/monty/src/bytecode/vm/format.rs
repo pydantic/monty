@@ -180,11 +180,17 @@ impl<T: ResourceTracker> VM<'_, T> {
         } else {
             let spec_str = spec_value.py_str(self)?;
             spec_str.parse::<ParsedFormatSpec>().map_err(|err| {
-                let value_type = value_for_error.py_type(self);
-                RunError::Exc(
-                    SimpleException::new_msg(ExcType::ValueError, format!("{err} for object of type '{value_type}'"))
-                        .into(),
-                )
+                // CPython suffixes the value's type onto some spec errors
+                // (`Invalid format specifier`, `Unknown format code`) but not
+                // others (`Format specifier missing precision`, the `Cannot
+                // specify …` grouping conflicts), which are self-contained.
+                let message = if err.needs_type_suffix() {
+                    let value_type = value_for_error.py_type(self);
+                    format!("{err} for object of type '{value_type}'")
+                } else {
+                    err.to_string()
+                };
+                RunError::Exc(SimpleException::new_msg(ExcType::ValueError, message).into())
             })
         }
     }

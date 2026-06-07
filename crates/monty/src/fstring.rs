@@ -323,12 +323,46 @@ pub struct ParsedFormatSpec {
 #[derive(Debug, Clone)]
 pub enum ParseFormatSpecReason {
     /// Spec doesn't match the format mini-language grammar — what CPython
-    /// itself raises `ValueError: Invalid format specifier` for.
+    /// itself raises `ValueError: Invalid format specifier` for. Reserved for
+    /// genuinely malformed specs (two or more trailing characters after the
+    /// type field, e.g. `kk`/`.2fz`); a *single* unrecognised trailing char is
+    /// [`Self::UnknownFormatCode`] instead, matching CPython's split.
     Malformed,
     /// A width or precision decimal integer overflows [`usize`] (e.g.
     /// 22 nines in a row). Without this we'd silently truncate to 0 — see
     /// [`consume_decimal_usize`].
     NumberOverflow,
+    /// A `.` with no following precision digits *and* no fractional grouping
+    /// option (`.f`, `.`, `.d`) — CPython's `ValueError: Format specifier
+    /// missing precision`. A `.` followed by a grouping char (`._f`, `.,`) is
+    /// valid and not this error.
+    MissingPrecision,
+    /// The single trailing char isn't a recognised presentation type
+    /// (`5k`, `k`). Carries the offending char; the runtime caller appends
+    /// `" for object of type 'T'"` to produce CPython's `Unknown format code
+    /// 'k' for object of type 'int'`.
+    UnknownFormatCode(char),
+    /// An integer grouping option (`,`/`_`) sits next to something it can't
+    /// coexist with — the other grouping char (`,_`) or an unrecognised
+    /// trailing char (`,k`). Holds CPython's exact, self-contained wording
+    /// (`Cannot specify ',' with 'k'.`), which carries no type suffix.
+    GroupingConflict(String),
+}
+
+impl ParseFormatSpecReason {
+    /// Builds the [`Self::GroupingConflict`] wording for an integer grouping
+    /// `g` immediately followed by the unrecognised trailing char `c`,
+    /// reproducing CPython's two distinct messages: `Cannot specify both ','
+    /// and '_'.` when `c` is the *other* grouping char, otherwise `Cannot
+    /// specify '<g>' with '<c>'.`.
+    fn grouping_conflict(g: Grouping, c: char) -> Self {
+        let msg = if (c == ',' || c == '_') && c != g.separator() {
+            "Cannot specify both ',' and '_'.".to_owned()
+        } else {
+            format!("Cannot specify '{}' with '{c}'.", g.separator())
+        };
+        Self::GroupingConflict(msg)
+    }
 }
 
 /// Error returned by [`ParsedFormatSpec::from_str`].
@@ -351,16 +385,55 @@ impl ParseFormatSpecError {
             reason,
         }
     }
+
+    /// Whether the runtime should append `" for object of type 'T'"` to the
+    /// `Display` message, matching CPython's wording.
+    ///
+    /// CPython suffixes the type for `Invalid format specifier` and `Unknown
+    /// format code` but not for `Format specifier missing precision` or the
+    /// `Cannot specify …` grouping conflicts, which are self-contained.
+    pub fn needs_type_suffix(&self) -> bool {
+        matches!(
+            self.reason,
+            ParseFormatSpecReason::Malformed
+                | ParseFormatSpecReason::NumberOverflow
+                | ParseFormatSpecReason::UnknownFormatCode(_)
+        )
+    }
+
+    /// Whether this error should be deferred to the runtime (dynamic-spec) path
+    /// rather than raised as a compile-time `SyntaxError`.
+    ///
+    /// CPython raises these as *runtime* `ValueError`s whose exact wording is
+    /// value-type-dependent (`Unknown format code`) or otherwise only resolvable
+    /// at format time, so the compiler emits the literal spec for the VM to
+    /// re-parse and raise the matching error. Genuinely-malformed specs and
+    /// `usize` overflow stay compile-time errors (the latter is a deliberate,
+    /// documented divergence).
+    pub fn defer_to_runtime(&self) -> bool {
+        matches!(
+            self.reason,
+            ParseFormatSpecReason::MissingPrecision
+                | ParseFormatSpecReason::UnknownFormatCode(_)
+                | ParseFormatSpecReason::GroupingConflict(_)
+        )
+    }
 }
 
 impl fmt::Display for ParseFormatSpecError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "Invalid format specifier '{}'", self.spec)?;
         match &self.reason {
-            ParseFormatSpecReason::Malformed => Ok(()),
+            ParseFormatSpecReason::Malformed => write!(f, "Invalid format specifier '{}'", self.spec),
             ParseFormatSpecReason::NumberOverflow => {
-                write!(f, ": width or precision overflows usize")
+                write!(
+                    f,
+                    "Invalid format specifier '{}': width or precision overflows usize",
+                    self.spec
+                )
             }
+            ParseFormatSpecReason::MissingPrecision => f.write_str("Format specifier missing precision"),
+            ParseFormatSpecReason::UnknownFormatCode(c) => write!(f, "Unknown format code '{c}'"),
+            ParseFormatSpecReason::GroupingConflict(msg) => f.write_str(msg),
         }
     }
 }
@@ -454,13 +527,36 @@ impl FromStr for ParsedFormatSpec {
                 ',' => Grouping::Comma,
                 _ => Grouping::Underscore,
             });
+            // A `.` must introduce either precision digits or a fractional
+            // grouping option; `.f`/`.`/`.d` are CPython's "missing precision".
+            if result.precision.is_none() && result.frac_grouping.is_none() {
+                return Err(ParseFormatSpecError::new(spec, ParseFormatSpecReason::MissingPrecision));
+            }
         }
 
-        result.type_char = chars.next_if_map(|c| TypeChar::from_char(c).ok_or(c));
-
-        // Error if there are any unconsumed characters
+        // The presentation type is the spec's final character. Consume it
+        // unconditionally — CPython treats *any* single trailing char as the
+        // type field — so an unrecognised char becomes a specific "Unknown
+        // format code"/grouping-conflict error rather than the generic
+        // "Invalid format specifier". Two or more chars after the parsed fields
+        // are genuinely malformed.
+        let type_pos = chars.next();
         if chars.peek().is_some() {
             return Err(ParseFormatSpecError::new(spec, ParseFormatSpecReason::Malformed));
+        }
+        if let Some(c) = type_pos {
+            if let Some(tc) = TypeChar::from_char(c) {
+                result.type_char = Some(tc);
+            } else {
+                // An unrecognised type char: an integer grouping option present
+                // alongside it makes CPython report the grouping conflict (which
+                // takes precedence), otherwise it's an unknown format code.
+                let reason = match result.grouping {
+                    Some(g) => ParseFormatSpecReason::grouping_conflict(g, c),
+                    None => ParseFormatSpecReason::UnknownFormatCode(c),
+                };
+                return Err(ParseFormatSpecError::new(spec, reason));
+            }
         }
 
         Ok(result)
