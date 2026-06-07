@@ -555,6 +555,19 @@ pub fn format_with_spec(
         }
     }
 
+    // A `str` value is formatted entirely through the string mini-language:
+    // `validate_string_spec` rejects (in CPython's precedence order) every flag
+    // that is meaningless for text, then `format_string` applies precision,
+    // width, and fill. Handling strings here in one place keeps them off the
+    // numeric validation/dispatch below and makes the VM's `!s`/`!r`/`!a`
+    // conversion paths — which reuse the very same two functions — reject
+    // identical specs (`f"{x:#}"` and `f"{x!s:#}"` raise the same error).
+    if value_type == Type::Str {
+        validate_string_spec(spec)?;
+        let s = value.py_str(vm)?;
+        return Ok(format_string(&s, spec)?);
+    }
+
     // A grouping option (`,`/`_`) is only legal for certain presentation
     // types; reject the illegal combinations with CPython's message before
     // dispatching to a formatter that would otherwise ignore the flag.
@@ -585,26 +598,6 @@ pub fn format_with_spec(
             "Sign not allowed with integer format specifier 'c'".to_owned(),
         )
         .into());
-    }
-
-    // A string presentation (explicit `s`, or a type-less spec on a `str`) has
-    // no numeric sign to position, so CPython rejects sign flags and `=`
-    // alignment with these specific messages — before the alternate-form check.
-    if value_type == Type::Str && matches!(spec.type_char, None | Some(TypeChar::S)) {
-        if let Some(sign) = spec.sign {
-            let msg = match sign {
-                Sign::Space => "Space not allowed in string format specifier",
-                Sign::Plus | Sign::Minus => "Sign not allowed in string format specifier",
-            };
-            return Err(SimpleException::new_msg(ExcType::ValueError, msg.to_owned()).into());
-        }
-        if spec.align == Some(Align::SignAware) {
-            return Err(SimpleException::new_msg(
-                ExcType::ValueError,
-                "'=' alignment not allowed in string format specifier".to_owned(),
-            )
-            .into());
-        }
     }
 
     // If the presentation type is not valid for this value, CPython reports
@@ -638,17 +631,17 @@ pub fn format_with_spec(
     if let Value::Ref(id) = value
         && let HeapData::LongInt(li) = vm.heap.get(*id)
     {
-        return format_long_int(li, value_type, spec);
+        return format_long_int(li, value_type, spec, vm.heap.tracker());
     }
 
     match (value, spec.type_char) {
         // Integer formatting. `n` (locale number) formats an integer like `d`;
         // Monty has no locale, so the C-locale form — no grouping — applies.
         (Value::Int(n), None | Some(TypeChar::D | TypeChar::N)) => Ok(format_int(*n, spec)),
-        (Value::Int(n), Some(TypeChar::B)) => Ok(format_int_base(*n, 2, spec)?),
-        (Value::Int(n), Some(TypeChar::O)) => Ok(format_int_base(*n, 8, spec)?),
-        (Value::Int(n), Some(TypeChar::X)) => Ok(format_int_base(*n, 16, spec)?),
-        (Value::Int(n), Some(TypeChar::XUpper)) => Ok(format_int_base(*n, 16, spec)?.to_uppercase()),
+        (Value::Int(n), Some(TypeChar::B)) => Ok(format_int_base(*n, 2, false, spec)?),
+        (Value::Int(n), Some(TypeChar::O)) => Ok(format_int_base(*n, 8, false, spec)?),
+        (Value::Int(n), Some(TypeChar::X)) => Ok(format_int_base(*n, 16, false, spec)?),
+        (Value::Int(n), Some(TypeChar::XUpper)) => Ok(format_int_base(*n, 16, true, spec)?),
         (Value::Int(n), Some(TypeChar::C)) => Ok(format_char(*n, spec)?),
 
         // Float formatting. A type-less spec with no precision uses the repr
@@ -670,13 +663,8 @@ pub fn format_with_spec(
         (Value::Int(n), Some(TypeChar::G | TypeChar::GUpper)) => Ok(format_float_g(*n as f64, spec)),
         (Value::Int(n), Some(TypeChar::Percent)) => Ok(format_float_percent(*n as f64, spec)),
 
-        // String formatting (including InternString and heap strings)
-        (_, None | Some(TypeChar::S)) if value_type == Type::Str => {
-            let s = value.py_str(vm)?;
-            Ok(format_string(&s, spec)?)
-        }
-
-        // No type specifier: convert to string and format
+        // No type specifier on a non-string value: convert to string and
+        // format. (`str` values are handled by the short-circuit above.)
         (_, None) => {
             let s = value.py_str(vm)?;
             Ok(format_string(&s, spec)?)
@@ -692,6 +680,52 @@ pub fn format_with_spec(
         )
         .into()),
     }
+}
+
+/// Validates a format spec for a `str` value, raising the same `ValueError`s
+/// CPython does for flags that are meaningless when formatting text.
+///
+/// This is the single source of truth for "is this spec legal for a `str`": the
+/// string branch of [`format_with_spec`] and the VM's `!s`/`!r`/`!a` conversion
+/// paths (which convert to a string and then format it) both route through it,
+/// so a value and its converted forms reject identical specs. Checks run in
+/// CPython's precedence order — the first violation wins:
+/// 1. a grouping option (`,`/`_`) — there is nothing to group in text
+/// 2. a presentation type other than `s`
+/// 3. a sign flag (`+`/`-`/space)
+/// 4. the alternate form (`#`)
+/// 5. `=` (sign-aware) alignment
+pub fn validate_string_spec(spec: &ParsedFormatSpec) -> Result<(), RunError> {
+    if let Some(grouping) = spec.grouping {
+        validate_grouping(grouping, spec.type_char, Type::Str)?;
+    }
+    if let Some(c) = spec.type_char
+        && c != TypeChar::S
+    {
+        return Err(SimpleException::new_msg(
+            ExcType::ValueError,
+            format!("Unknown format code '{}' for object of type 'str'", c.as_char()),
+        )
+        .into());
+    }
+    if let Some(sign) = spec.sign {
+        let msg = match sign {
+            Sign::Space => "Space not allowed in string format specifier",
+            Sign::Plus | Sign::Minus => "Sign not allowed in string format specifier",
+        };
+        return Err(SimpleException::new_msg(ExcType::ValueError, msg.to_owned()).into());
+    }
+    if spec.alternate {
+        validate_alternate(spec.type_char, Type::Str)?;
+    }
+    if spec.align == Some(Align::SignAware) {
+        return Err(SimpleException::new_msg(
+            ExcType::ValueError,
+            "'=' alignment not allowed in string format specifier".to_owned(),
+        )
+        .into());
+    }
+    Ok(())
 }
 
 /// Checks that a grouping option is valid for the chosen presentation type,
@@ -1061,15 +1095,21 @@ pub fn format_int(n: i64, spec: &ParsedFormatSpec) -> String {
 /// Used for format types `b`, `o`, `x`, and `X`. The sign is prepended for
 /// negative numbers. The alternate form (`#`) adds the `0b`/`0o`/`0x` base
 /// prefix, which sits after the sign and counts toward the field width.
+///
+/// `uppercase` (the `X` type) uppercases the digits **and** the `0x` prefix
+/// (`0X`) — but *not* the fill/padding, so it must be applied to the digits
+/// here rather than via `to_uppercase()` on the padded result (which would also
+/// uppercase an alphabetic fill, e.g. `f"{180:a>8X}"` → `aaaaaaB4`).
 /// Returns an error for invalid base values.
-pub fn format_int_base(n: i64, base: u32, spec: &ParsedFormatSpec) -> Result<String, FormatError> {
+pub fn format_int_base(n: i64, base: u32, uppercase: bool, spec: &ParsedFormatSpec) -> Result<String, FormatError> {
     let is_negative = n < 0;
     let abs_val = n.unsigned_abs();
 
-    let (abs_str, base_prefix) = match base {
-        2 => (format!("{abs_val:b}"), "0b"),
-        8 => (format!("{abs_val:o}"), "0o"),
-        16 => (format!("{abs_val:x}"), "0x"),
+    let (abs_str, base_prefix) = match (base, uppercase) {
+        (2, _) => (format!("{abs_val:b}"), "0b"),
+        (8, _) => (format!("{abs_val:o}"), "0o"),
+        (16, false) => (format!("{abs_val:x}"), "0x"),
+        (16, true) => (format!("{abs_val:X}"), "0X"),
         _ => return Err(FormatError::ValueError("Invalid base".to_owned())),
     };
     let prefix = if spec.alternate { base_prefix } else { "" };
@@ -1094,17 +1134,50 @@ pub fn format_int_base(n: i64, base: u32, spec: &ParsedFormatSpec) -> Result<Str
 /// (a `LongInt` is always `> i64::MAX`) and `s` is an unknown code, matching
 /// CPython's two distinct errors. `value_type` only feeds the `s` message and
 /// is always `Type::Int` here.
-fn format_long_int(li: &LongInt, value_type: Type, spec: &ParsedFormatSpec) -> Result<String, RunError> {
+///
+/// `tracker` guards the radix conversion: `BigInt::to_str_radix` materializes
+/// the full digit string on the (untracked) Rust heap before `allocate_string`
+/// runs, so a huge `LongInt` formatted as `:b`/`:o`/`:x` could allocate gigabytes
+/// outside the resource limit (`f"{1 << n:b}"`). Each radix render is size-checked
+/// up front against `tracker`.
+fn format_long_int(
+    li: &LongInt,
+    value_type: Type,
+    spec: &ParsedFormatSpec,
+    tracker: &impl ResourceTracker,
+) -> Result<String, RunError> {
     let sign = if li.is_negative() {
         "-"
     } else {
         positive_sign_prefix(spec.sign)
     };
     let magnitude = li.abs();
-    let radix = |base: u32, base_prefix: &'static str| -> String {
-        let digits = magnitude.inner().to_str_radix(base);
-        let prefix = if spec.alternate { base_prefix } else { "" };
-        pad_signed_numeric(sign, prefix, &digits, spec)
+    // `uppercase` (the `X` type) uppercases the hex digits and the `0x` prefix
+    // (`0X`) but never the fill, so it's applied to the digits *before* padding.
+    let radix = |base: u32, base_prefix: &'static str, uppercase: bool| -> Result<String, RunError> {
+        // Pre-check the digit-string size: a base-`b` render of an `n`-bit
+        // magnitude is at most `n / log2(b)` ASCII digits — `log2(b)` is
+        // `base.trailing_zeros()` for the power-of-two bases here; base 10 uses
+        // `1` (conservative) but is already bounded by `check_bits_str_digits_limit`.
+        let max_digits = li.bits() / u64::from(base.trailing_zeros().max(1));
+        check_repeat_size(
+            1,
+            usize::try_from(max_digits).unwrap_or(usize::MAX).saturating_add(2),
+            tracker,
+        )?;
+        let mut digits = magnitude.inner().to_str_radix(base);
+        let prefix = if !spec.alternate {
+            ""
+        } else if uppercase {
+            // Only hex is ever uppercased, so `0x` → `0X`.
+            "0X"
+        } else {
+            base_prefix
+        };
+        if uppercase {
+            digits.make_ascii_uppercase();
+        }
+        Ok(pad_signed_numeric(sign, prefix, &digits, spec))
     };
     let as_float = || match li.to_f64() {
         Some(f) if f.is_finite() => Ok(f),
@@ -1119,14 +1192,12 @@ fn format_long_int(li: &LongInt, value_type: Type, spec: &ParsedFormatSpec) -> R
         None | Some(TypeChar::D | TypeChar::N) => {
             // Only base-10 conversion is bounded by CPython's int_max_str_digits.
             check_bits_str_digits_limit(li.bits())?;
-            Ok(radix(10, ""))
+            radix(10, "", false)
         }
-        Some(TypeChar::B) => Ok(radix(2, "0b")),
-        Some(TypeChar::O) => Ok(radix(8, "0o")),
-        Some(TypeChar::X) => Ok(radix(16, "0x")),
-        // Uppercasing the whole result (digits + `0x` prefix → `0X`) matches the
-        // `i64` `XUpper` path in [`format_int_base`]'s caller.
-        Some(TypeChar::XUpper) => Ok(radix(16, "0x").to_uppercase()),
+        Some(TypeChar::B) => radix(2, "0b", false),
+        Some(TypeChar::O) => radix(8, "0o", false),
+        Some(TypeChar::X) => radix(16, "0x", false),
+        Some(TypeChar::XUpper) => radix(16, "0x", true),
         Some(TypeChar::F | TypeChar::FUpper) => Ok(format_float_f(as_float()?, spec)),
         Some(TypeChar::E) => Ok(format_float_e(as_float()?, spec, false)),
         Some(TypeChar::EUpper) => Ok(format_float_e(as_float()?, spec, true)),

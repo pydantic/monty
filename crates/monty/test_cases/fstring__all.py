@@ -123,6 +123,17 @@ assert f'{255:x}' == 'ff', 'hex lowercase'
 assert f'{-255:x}' == '-ff', 'hex lowercase negative'
 assert f'{255:X}' == 'FF', 'hex uppercase'
 
+# Uppercase `X` uppercases only the hex digits and the `0x` prefix (`0X`), NOT an
+# alphabetic fill char — the fill must stay as written.
+assert f'{180:a>8X}' == 'aaaaaaB4', 'upper hex keeps alpha fill lowercase'
+assert f'{0xABC:f>8X}' == 'fffffABC', 'upper hex with f fill keeps fill lowercase'
+assert f'{255:#X}' == '0XFF', 'upper hex alternate prefix is 0X'
+assert f'{255:b>#8X}' == 'bbbb0XFF', 'upper hex alternate + alpha fill'
+# Same rules for big integers (LongInt path).
+assert f'{2**70:a>25X}' == 'aaaaaaa400000000000000000', 'big int upper hex alpha fill'
+assert f'{2**68 + 0xAB:#X}' == '0X1000000000000000AB', 'big int upper hex alternate prefix'
+assert f'{2**68 + 0xAB:#x}' == '0x1000000000000000ab', 'big int lower hex alternate prefix'
+
 # === Sign-aware (`=`) padding applies to every numeric format, not just :d/:f ===
 # Previously pad_string's SignAware arm fell through, so width was silently
 # dropped for hex/oct/bin/exponential/general/percent.
@@ -358,6 +369,51 @@ assert f'{x:é^11}' == 'ééécafééééé'
 # === Conversion flag with type spec ===
 # conversion flag produces string, so 's' format should work
 assert f'{42!r:s}' == '42', 'conversion with type spec'
+
+# === Conversion flag + spec: the spec is validated as a *string* spec ===
+# `!s`/`!r`/`!a` convert to a string first, so flags that are illegal for text
+# must be rejected exactly as they are for a real string value — and the value
+# and its converted form must raise the *same* error. Valid string flags work:
+assert f'{123!s:05}' == '12300', 'conversion + zero-pad formats like a string'
+assert f'{123!r:>6}' == '   123', 'conversion + width/align'
+assert f'{3.14159!r:.4}' == '3.14', 'conversion + precision truncates the repr'
+
+
+# Illegal-for-text flags raise the same ValueError as on a bare string.
+def _conv_err(fn):
+    try:
+        fn()
+        assert False, 'expected ValueError'
+    except ValueError as exc:
+        return str(exc)
+
+
+assert _conv_err(lambda: f'{123!s:#}') == 'Alternate form (#) not allowed in string format specifier', (
+    'alternate via !s'
+)
+assert _conv_err(lambda: f'{123!r:,}') == "Cannot specify ',' with 's'.", 'comma grouping via !r'
+assert _conv_err(lambda: f'{123!r:_}') == "Cannot specify '_' with 's'.", 'underscore grouping via !r'
+assert _conv_err(lambda: f'{123!s:+}') == 'Sign not allowed in string format specifier', 'sign via !s'
+assert _conv_err(lambda: f'{123!s: }') == 'Space not allowed in string format specifier', 'space sign via !s'
+assert _conv_err(lambda: f'{123!s:=}') == "'=' alignment not allowed in string format specifier", (
+    'sign-aware align via !s'
+)
+assert _conv_err(lambda: f'{123!r:#x}') == "Unknown format code 'x' for object of type 'str'", 'type code via !r'
+assert _conv_err(lambda: f'{123!s:.2f}') == "Unknown format code 'f' for object of type 'str'", 'float type via !s'
+
+# Precedence among multiple violations matches CPython (grouping > type > sign >
+# alternate > `=`), and a value formats identically with or without `!s`/`!r`.
+assert (
+    _conv_err(lambda: f'{"x":=#}')
+    == _conv_err(lambda: f'{1!r:=#}')
+    == 'Alternate form (#) not allowed in string format specifier'
+), 'alternate beats = align'
+assert (
+    _conv_err(lambda: f'{"x":+#}') == _conv_err(lambda: f'{1!s:+#}') == 'Sign not allowed in string format specifier'
+), 'sign beats alternate'
+assert _conv_err(lambda: f'{"x":,x}') == _conv_err(lambda: f'{1!r:,x}') == "Cannot specify ',' with 'x'.", (
+    'grouping beats type'
+)
 
 # === Zero-padding with negative numbers ===
 # zero-padding should use sign-aware alignment

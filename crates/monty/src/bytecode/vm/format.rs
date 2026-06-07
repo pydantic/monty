@@ -5,7 +5,9 @@ use crate::{
     bytecode::op::{FORMAT_VALUE_HAS_SPEC, FORMAT_VALUE_STATIC_SPEC},
     defer_drop,
     exception_private::{ExcType, RunError, SimpleException},
-    fstring::{ParsedFormatSpec, ascii_escape, decode_format_spec, format_string, format_with_spec},
+    fstring::{
+        ParsedFormatSpec, ascii_escape, decode_format_spec, format_string, format_with_spec, validate_string_spec,
+    },
     heap::HeapReadOutput,
     resource::{ResourceTracker, check_repeat_size},
     types::{PyTrait, date::format_date_strftime, datetime::format_datetime_strftime, str::allocate_string},
@@ -80,25 +82,24 @@ impl<T: ResourceTracker> VM<'_, T> {
                 // allocates an untracked Rust String.
                 check_repeat_size(spec.width, spec.fill.len_utf8(), this.heap.tracker())?;
 
-                match conversion {
-                    // No conversion - format original value
-                    0 => format_with_spec(value, &spec, this)?,
-                    // !s - convert to str, format as string
-                    1 => {
-                        let s = value.py_str(this)?;
-                        format_string(&s, &spec)?
-                    }
-                    // !r - convert to repr, format as string
-                    2 => {
-                        let s = value.py_repr(this)?;
-                        format_string(&s, &spec)?
-                    }
-                    // !a - convert to ascii, format as string
-                    3 => {
-                        let s = ascii_escape(&value.py_repr(this)?);
-                        format_string(&s, &spec)?
-                    }
-                    _ => format_with_spec(value, &spec, this)?,
+                if conversion == 0 {
+                    // No conversion: format the original value through its own
+                    // type (`format_with_spec` does the type-specific validation).
+                    format_with_spec(value, &spec, this)?
+                } else {
+                    // `!s`/`!r`/`!a` convert to a string first, so the spec is now
+                    // a *string* spec: CPython applies it to the converted text and
+                    // rejects flags that are illegal there (`#`, `,`, `+`, a non-`s`
+                    // type, …). Validate via the same `validate_string_spec` the
+                    // `str` branch of `format_with_spec` uses, then format.
+                    let s = match conversion {
+                        2 => value.py_repr(this)?.into_owned(),
+                        3 => ascii_escape(&value.py_repr(this)?),
+                        // `!s` (1) and any unused bit pattern fall back to `str()`.
+                        _ => value.py_str(this)?.into_owned(),
+                    };
+                    validate_string_spec(&spec)?;
+                    format_string(&s, &spec)?
                 }
             }
         } else {

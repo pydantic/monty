@@ -388,6 +388,53 @@ fn fstring_dynamic_precision_memory_bounded() {
     );
 }
 
+/// Regression: formatting a huge big integer in a non-decimal radix
+/// (`:b`/`:o`/`:x`/`:X`) must be bounded by the memory limit before the digit
+/// string is materialized.
+///
+/// `BigInt::to_str_radix` builds the full ASCII digit string on the (untracked)
+/// Rust heap before `allocate_string` accounts for it. CPython's
+/// `int_max_str_digits` only caps *decimal* conversions, so a value created
+/// within the memory limit and then rendered as binary (`f"{1 << n:b}"` is ~`n`
+/// bytes) would allocate gigabytes outside the tracker. `format_long_int` now
+/// size-checks each radix render up front.
+#[test]
+fn fstring_bigint_radix_memory_bounded() {
+    for code in [
+        "n = 1 << 50_000_000\nf'{n:b}'",
+        "n = 1 << 50_000_000\nf'{n:o}'",
+        "n = 1 << 50_000_000\nf'{n:x}'",
+        "n = 1 << 50_000_000\nf'{n:X}'",
+        "n = 1 << 50_000_000\nf'{n:#x}'",
+    ] {
+        let ex = MontyRun::new(code.to_owned(), "test.py", vec![]).unwrap();
+        // 8 MiB budget: the `1 << 50_000_000` value itself is ~6.25 MB (50M bits)
+        // so it builds fine, but every radix render exceeds the limit — binary is
+        // ~50 MB, octal ~16.6 MB, and even hex (the most compact, ~12.5 MB) is
+        // over budget. A generous time limit ensures a timeout can't mask a
+        // missing memory check.
+        let limits = ResourceLimits::new()
+            .max_memory(8_388_608)
+            .max_duration(Duration::from_secs(30));
+        let result = ex.run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout);
+
+        let exc = result
+            .err()
+            .unwrap_or_else(|| panic!("{code:?}: should exceed the memory limit"));
+        assert_eq!(exc.exc_type(), ExcType::MemoryError, "{code:?}: wrong exc type");
+    }
+
+    // A small big integer formats correctly under the same limit (the size
+    // check is free below the large-result threshold).
+    let ex = MontyRun::new("n = 1 << 80\nf'{n:x}'".to_owned(), "test.py", vec![]).unwrap();
+    let limits = ResourceLimits::new().max_memory(1_048_576);
+    let result = ex.run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout);
+    assert_eq!(
+        result.expect("small big-int radix should succeed"),
+        MontyObject::String("100000000000000000000".to_owned())
+    );
+}
+
 #[test]
 fn memory_limit_zero() {
     let code = "x = 1 + 2\nx";
