@@ -120,7 +120,7 @@ Ignore any deprecated models.
                             type_check=True,
                             type_check_stubs=stubs,
                         ) as session:
-                            output = await session.feed_run_async(
+                            output = await session.feed_run(
                                 extracted.code,
                                 external_functions={
                                     'open_page': browser.open_page,

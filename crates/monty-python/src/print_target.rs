@@ -11,9 +11,8 @@
 //!   `String` exposed via `CollectString.output`.
 //!
 //! This module encapsulates that dispatch. The rest of the bindings thread a
-//! [`PrintTarget`] value through `start`/`resume`/`run`/`run_async`, while the
-//! collector objects themselves remain the single public place that exposes the
-//! captured output.
+//! [`PrintTarget`] value through `feed_run`, while the collector objects
+//! themselves remain the single public place that exposes the captured output.
 
 use std::sync::{Arc, Mutex, PoisonError};
 

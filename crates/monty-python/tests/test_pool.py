@@ -143,7 +143,7 @@ result
 async def test_async_basic_execution():
     async with AsyncMonty() as pool:
         async with pool.checkout() as session:
-            assert await session.feed_run_async('21 * 2') == snapshot(42)
+            assert await session.feed_run('21 * 2') == snapshot(42)
 
 
 async def test_async_crash_recovery():
@@ -158,11 +158,11 @@ async def test_async_crash_recovery():
 
             kill_task = asyncio.create_task(kill_soon())
             with pytest.raises(MontyCrashedError):
-                await session.feed_run_async('while True:\n    pass')
+                await session.feed_run('while True:\n    pass')
             await kill_task
 
         async with pool.checkout() as session:
-            assert await session.feed_run_async('1 + 1') == snapshot(2)
+            assert await session.feed_run('1 + 1') == snapshot(2)
 
 
 async def test_async_concurrent_sessions():
@@ -170,7 +170,7 @@ async def test_async_concurrent_sessions():
 
         async def run(value: int) -> object:
             async with pool.checkout() as session:
-                return await session.feed_run_async('v * 2', inputs={'v': value})
+                return await session.feed_run('v * 2', inputs={'v': value})
 
         results = await asyncio.gather(run(1), run(2), run(3))
     assert results == snapshot([2, 4, 6])
@@ -179,7 +179,7 @@ async def test_async_concurrent_sessions():
 async def test_async_dump():
     async with AsyncMonty() as pool:
         async with pool.checkout() as session:
-            await session.feed_run_async('x = 1')
+            await session.feed_run('x = 1')
             state = await session.dump()
             assert isinstance(state, bytes)
             assert len(state) > 0

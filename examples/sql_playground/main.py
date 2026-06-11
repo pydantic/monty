@@ -53,7 +53,7 @@ async def main():
             type_check=True,
             type_check_stubs=TYPE_STUBS,
         ) as session:
-            results = await session.feed_run_async(
+            results = await session.feed_run(
                 SANDBOX_CODE_PATH.read_text(),
                 external_functions={
                     'query_csv': external_funcs.query_csv,

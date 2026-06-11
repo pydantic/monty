@@ -380,7 +380,7 @@ class AsyncMonty:
     ```python
     async with AsyncMonty() as pool:
         async with pool.checkout() as session:
-            result = await session.feed_run_async('1 + 1')
+            result = await session.feed_run('1 + 1')
     ```
     """
 
@@ -426,12 +426,12 @@ class AsyncMontySession:
 
     Obtained from `AsyncMonty.checkout()` and used as an async context
     manager. Session state (globals, functions) persists across
-    `feed_run_async` calls within the session.
+    `feed_run` calls within the session.
     """
 
     async def __aenter__(self) -> Self: ...
     async def __aexit__(self, *args: Any) -> None: ...
-    async def feed_run_async(
+    async def feed_run(
         self,
         code: str,
         *,

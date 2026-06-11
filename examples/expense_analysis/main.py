@@ -94,7 +94,7 @@ async def main():
             type_check=True,
             type_check_stubs=type_definitions,
         ) as session:
-            output = await session.feed_run_async(
+            output = await session.feed_run(
                 code,
                 inputs={'prompt': 'testing'},
                 external_functions={

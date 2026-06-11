@@ -63,7 +63,7 @@ async def fetch(url: str) -> str:
 async def main():
     async with AsyncMonty() as pool:
         async with pool.checkout() as session:
-            result = await session.feed_run_async(
+            result = await session.feed_run(
                 "await fetch('https://example.com')",
                 external_functions={'fetch': fetch},
             )

@@ -14,7 +14,7 @@
 //!
 //! async with AsyncMonty() as pool:
 //!     async with pool.checkout() as session:
-//!         result = await session.feed_run_async('1 + 1')
+//!         result = await session.feed_run('1 + 1')
 //! ```
 //!
 //! Both classes share all pool/dispatch machinery; they differ only in how
@@ -338,7 +338,7 @@ impl PyAsyncMonty {
 }
 
 /// One worker process dedicated to one REPL session; created by
-/// [`PyAsyncMonty::checkout`] and driven with `feed_run_async`.
+/// [`PyAsyncMonty::checkout`] and driven with the async `feed_run`.
 #[pyclass(name = "AsyncMontySession", module = "pydantic_monty", frozen)]
 pub struct PyAsyncMontySession {
     pool: SharedPool,
@@ -387,7 +387,7 @@ impl PyAsyncMontySession {
     /// Worker I/O runs off the event loop via tokio's blocking pool.
     #[pyo3(signature = (code, *, inputs=None, external_functions=None, print_callback=None, mount=None, os=None, skip_type_check=false))]
     #[expect(clippy::too_many_arguments)]
-    fn feed_run_async<'py>(
+    fn feed_run<'py>(
         &self,
         py: Python<'py>,
         code: &Bound<'_, PyString>,
@@ -611,9 +611,7 @@ fn drive_sync(py: Python<'_>, args: FeedArgs, external_functions: Option<&Bound<
             }
             TurnEvent::NameLookup { name } => TurnAnswer::Name(resolve_pool_name_lookup(&name, external_functions)),
             TurnEvent::ResolveFutures { .. } => {
-                return Err(PyRuntimeError::new_err(
-                    "async external functions require AsyncMonty / feed_run_async",
-                ));
+                return Err(PyRuntimeError::new_err("async external functions require AsyncMonty"));
             }
         };
         let (result, print_err) = py.detach(|| {

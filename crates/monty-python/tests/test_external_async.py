@@ -12,7 +12,7 @@ async def run_async(code: str, **kwargs: Any) -> Any:
     """Runs one snippet in a fresh async pool/session and returns its result."""
     async with pydantic_monty.AsyncMonty() as pool:
         async with pool.checkout() as session:
-            return await session.feed_run_async(code, **kwargs)
+            return await session.feed_run(code, **kwargs)
 
 
 async def test_async_external_function_raises_surfaces_as_monty_runtime_error():

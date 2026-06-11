@@ -13,7 +13,7 @@ the notes below are about the *host API* surface.
   REPL session in a dedicated worker, and a one-shot run is a checkout plus a
   single feed. There are no manual suspension snapshots in Python; external
   function calls, OS callbacks, and print callbacks are driven automatically
-  by `feed_run` / `feed_run_async`. (The Rust `monty-pool::Checkout` API does
+  by `feed_run` (sync or awaited). (The Rust `monty-pool::Checkout` API does
   expose manual suspension driving and `Pool::checkout_load`.)
 - A session whose worker crashed is lost: subsequent calls raise
   `MontyCrashedError`. The pool itself recovers by replacing the worker.
