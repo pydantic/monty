@@ -3,6 +3,8 @@ resolver = "2"
 members = [
     "crates/monty",
     "crates/monty-cli",
+    "crates/monty-proto",
+    "crates/monty-pool",
     "crates/monty-python",
     "crates/monty-js",
     "crates/monty-datatest",
@@ -71,6 +73,9 @@ indexmap = { version = "2.9", features = ["serde"] }
 serde = { version = "1.0", features = ["derive", "rc"] }
 serde_json = { version = "1.0", features = ["arbitrary_precision"] }
 postcard = { version = "1.1", features = ["alloc"] }
+# exact pin: prost-build output must be byte-stable across contributors and CI
+# so `make check-proto` (regenerate + git diff) is reproducible
+prost = "=0.14.4"
 sha2 = "0.10"
 pretty_assertions = "1.4"
 insta = "1.47"

@@ -24,6 +24,7 @@ install: .cargo install-py install-js ## Install the package, dependencies, and 
 
 .PHONY: dev-py
 dev-py: ## Install the python package for development
+	uv run maturin develop --uv -m crates/monty-cli/Cargo.toml
 	uv run maturin develop --uv -m crates/monty-python/Cargo.toml
 
 .PHONY: dev-js
@@ -44,6 +45,7 @@ smoke-test-js: ## Run smoke test for JS package (builds, packs, and tests instal
 
 .PHONY: dev-py-release
 dev-py-release: ## Install the python package for development with a release build
+	uv run maturin develop --uv -m crates/monty-cli/Cargo.toml --release
 	uv run maturin develop --uv -m crates/monty-python/Cargo.toml --release
 
 .PHONY: dev-js-release
@@ -87,6 +89,14 @@ lint-rs:  ## Lint Rust code with clippy and import checks
 .PHONY: clippy-fix
 clippy-fix: ## Fix Rust code with clippy
 	cargo clippy --workspace --tests -p monty-bench --bench main --all-features --fix --allow-dirty
+
+.PHONY: generate-proto
+generate-proto: ## Regenerate monty-proto's checked-in code from the .proto schema
+	cargo run -p monty-proto --features generate --bin generate-proto
+
+.PHONY: check-proto
+check-proto: generate-proto ## Verify monty-proto's checked-in code matches the .proto schema
+	git diff --exit-code crates/monty-proto/src/generated
 
 .PHONY: lint-py
 lint-py: dev-py ## Lint Python code with ruff

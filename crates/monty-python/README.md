@@ -132,3 +132,42 @@ result = progress2.resume({'return_value': 'response data'})
 print(result.output)
 #> response data
 ```
+
+## Crash-isolated execution with `MontyPool`
+
+A monty process can never be made fully crash-proof against memory errors
+(stack overflows, allocator aborts) triggered by adversarial input. `MontyPool`
+runs the interpreter in a pool of worker subprocesses so such a crash kills
+only the worker — never your process. A crashed worker raises
+`MontyCrashedError` and is replaced transparently.
+
+```python
+import asyncio
+
+import pydantic_monty
+
+
+async def main():
+    async with pydantic_monty.MontyPool() as pool:
+        async with pool.checkout() as session:
+            # session state persists across feeds, like MontyRepl
+            await session.feed_run_async('x = 21')
+            print(await session.feed_run_async('x * 2'))
+            #> 42
+
+
+asyncio.run(main())
+```
+
+`pool.checkout(...)` accepts the `MontyRepl` constructor arguments
+(`script_name`, `limits`, `type_check`, ...), and `feed_run_async` accepts the
+`feed_run` arguments (`inputs`, `external_functions` — including async
+functions — `print_callback`, `mount`, `os`). A synchronous `feed_run` is also
+available for worker threads.
+
+The pool needs the `monty` CLI binary, which ships in the
+[`pydantic-monty-cli`](https://pypi.org/project/pydantic-monty-cli/) package
+(installed automatically as a dependency, the same way `uv` and `ruff` ship
+their binaries). It can be overridden with the `binary_path` argument or the
+`MONTY_BIN` environment variable. See `limitations/pool-architecture.md` for the
+(small) behavioural differences from in-process execution.

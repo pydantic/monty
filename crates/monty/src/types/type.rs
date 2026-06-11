@@ -24,7 +24,7 @@ use crate::{
 /// Some variants are Python builtins accessible by name (e.g., `int`, `list`),
 /// while others are internal types only available through imports or introspection
 /// (e.g., `TextIOWrapper`, `PosixPath`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, strum::EnumIter)]
 pub enum Type {
     Ellipsis,
     Type,
@@ -225,6 +225,67 @@ impl Type {
             "type" => Some(Self::Type),
             "property" => Some(Self::Property),
             _ => None,
+        }
+    }
+
+    /// The exhaustive inverse of this type's [`Display`] impl: resolves any
+    /// string produced by `Display` back to the `Type`, including internal
+    /// names (`"iterator"`, `"_io.TextIOWrapper"`, ...) and exception types.
+    ///
+    /// Unlike [`Type::from_builtin_name`] this is NOT restricted to nameable
+    /// builtins — it exists for boundaries that serialize a `Type` by its
+    /// display name (e.g. the subprocess wire protocol) and must round-trip
+    /// every variant. Keep in lockstep with `Display`; the round-trip is
+    /// enforced by a test over all variants.
+    ///
+    /// [`Display`]: fmt::Display
+    #[must_use]
+    pub fn from_type_name(name: &str) -> Option<Self> {
+        match name {
+            "ellipsis" => Some(Self::Ellipsis),
+            "type" => Some(Self::Type),
+            "NoneType" => Some(Self::NoneType),
+            "bool" => Some(Self::Bool),
+            "int" => Some(Self::Int),
+            "float" => Some(Self::Float),
+            "range" => Some(Self::Range),
+            "slice" => Some(Self::Slice),
+            "date" => Some(Self::Date),
+            "datetime.datetime" => Some(Self::DateTime),
+            "timedelta" => Some(Self::TimeDelta),
+            "timezone" => Some(Self::TimeZone),
+            "str" => Some(Self::Str),
+            "bytes" => Some(Self::Bytes),
+            "list" => Some(Self::List),
+            "tuple" => Some(Self::Tuple),
+            "namedtuple" => Some(Self::NamedTuple),
+            "dict" => Some(Self::Dict),
+            "dict_keys" => Some(Self::DictKeys),
+            "dict_items" => Some(Self::DictItems),
+            "dict_values" => Some(Self::DictValues),
+            "set" => Some(Self::Set),
+            "frozenset" => Some(Self::FrozenSet),
+            "dataclass" => Some(Self::Dataclass),
+            "function" => Some(Self::Function),
+            "builtin_function_or_method" => Some(Self::BuiltinFunction),
+            "cell" => Some(Self::Cell),
+            "iterator" => Some(Self::Iterator),
+            "coroutine" => Some(Self::Coroutine),
+            "module" => Some(Self::Module),
+            "_io.TextIOWrapper" => Some(Self::TextIOWrapper),
+            "_io.BufferedReader" => Some(Self::BufferedReader),
+            "_io.BufferedWriter" => Some(Self::BufferedWriter),
+            "_io.BufferedRandom" => Some(Self::BufferedRandom),
+            "typing._SpecialForm" => Some(Self::SpecialForm),
+            "PosixPath" => Some(Self::Path),
+            "property" => Some(Self::Property),
+            "re.Pattern" => Some(Self::RePattern),
+            "re.Match" => Some(Self::ReMatch),
+            #[cfg(feature = "test-hooks")]
+            "_test_cm" => Some(Self::TestContextManager),
+            // Exception types display as their exception name ("ValueError",
+            // "json.JSONDecodeError", ...) — fall back to the ExcType parser.
+            other => other.parse::<ExcType>().ok().map(Self::Exception),
         }
     }
 

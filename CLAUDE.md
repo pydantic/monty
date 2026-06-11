@@ -75,6 +75,32 @@ the sole security boundary. **Changes to `path_security.rs` require careful secu
 
 `heap.rs` and `path_security.rs` are the two most security-critical files in the codebase.
 
+## Subprocess isolation (`monty-proto`, `monty --subprocess`, `monty-pool`)
+
+A monty process can never be made fully crash-proof against memory errors
+(stack overflow aborts, allocator aborts), so monty can run as isolated worker
+subprocesses:
+
+- `crates/monty-proto` — the wire protocol: a protobuf schema
+  (`proto/monty/v1/monty.proto`), checked-in prost-generated code (regenerate
+  with `make generate-proto`; CI enforces sync via `make check-proto`),
+  4-byte LE length-prefixed framing, and fallible conversions between wire
+  types and `MontyObject`/`MontyException`/etc. Parents must treat frames from
+  a (possibly compromised) child as untrusted — proto→Rust conversions never
+  panic.
+- `monty --subprocess` (in `crates/monty-cli/src/subprocess.rs`) — the child:
+  reads framed requests on stdin, writes framed events on stdout, serving one
+  REPL session per checkout. Strict alternation: one request in, zero or more
+  streamed `Print` events out, then exactly one turn-ending event.
+- `crates/monty-pool` — the parent: an elastic pool of workers with crash
+  detection/replacement and a watchdog enforcing a hard per-turn timeout.
+- `pydantic_monty.MontyPool` — async-first Python surface
+  (`async with MontyPool() as pool: async with pool.checkout() as session: ...`).
+
+The contract for crash detection: a child that exits or EOFs *without* a
+`FatalError` event crashed hard; the parent discards it and replaces it. See
+`limitations/pool-architecture.md` for host-API divergences from in-process execution.
+
 ## Bytecode VM Architecture
 
 Monty is implemented as a bytecode VM, same as CPython.
@@ -242,6 +268,8 @@ make format-js            Format JS code with prettier
 make format               Format Rust code, this does not format Python code as we have to be careful with that
 make lint-rs              Lint Rust code with clippy and import checks
 make clippy-fix           Fix Rust code with clippy
+make generate-proto       Regenerate monty-proto's checked-in code from the .proto schema
+make check-proto          Verify monty-proto's checked-in code matches the .proto schema
 make lint-py              Lint Python code with ruff
 make lint                 Lint the code with ruff and clippy
 make format-lint-rs       Format and lint Rust code with fmt and clippy
@@ -350,8 +378,6 @@ NOT!
 IMPORTANT: every struct, enum and function should be an informative but concise docstring to
 explain what it does and why and any considerations or potential foot-guns of using that type.
 
-COMMENTS AND DOCSTRINGS SHOULD BE CONCISE - EXCESSIVELY VERBOSE DOCSTRINGS MAKE THE CODE HARDER TO READ AND MAINTAIN!
-
 The only exception is trait implementation methods where a docstring is not necessary if the method is self-explanatory.
 
 It's important that docstrings cover the motivation and primary usage patterns of code, not just the simple "what it does".
@@ -366,7 +392,11 @@ If you encounter a comment or docstring that's out of date - you MUST update it 
 
 Similarly, if you encounter code that has no docstrings or comments, or they are minimal, you should add more detail.
 
+Always use single back-ticks in python docstrings - they should be markdown, not rst!
+
 NOTE: COMMENTS AND DOCSTRINGS ARE EXTREMELY IMPORTANT TO THE LONG TERM HEALTH OF THE PROJECT.
+
+NOTE: COMMENTS AND DOCSTRINGS SHOULD BE CONCISE - EXCESSIVELY VERBOSE DOCSTRINGS MAKE THE CODE HARDER TO READ AND MAINTAIN!
 
 ## Tests
 

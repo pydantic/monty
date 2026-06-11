@@ -1,0 +1,504 @@
+// Wire protocol for driving a `monty --subprocess` child process.
+//
+// Transport: each message is framed as a 4-byte unsigned little-endian length
+// prefix followed by the protobuf-encoded bytes, written to the child's stdin
+// (`Request`) and read from its stdout (`Event`). stderr carries free-form
+// diagnostics only.
+//
+// The protocol is a strict alternation: the parent writes exactly one
+// `Request`; the child replies with zero or more streamed `Print` events
+// followed by exactly one turn-ending event. There is no multiplexing, so a
+// parent can be implemented with a single blocking read loop in any language.
+//
+// The first request on a fresh child MUST be `Hello`; the child answers with
+// `HelloReply` (or `FatalError` + exit if the parent's protocol_version is
+// newer than it supports).
+//
+// Evolution rules: changes must be additive only — new fields and new oneof
+// arms get fresh tag numbers, and removed tags are reserved. proto3 decoders
+// ignore unknown fields, so older children tolerate newer optional fields.
+// Any semantic break bumps PROTOCOL_VERSION (see monty-proto's lib.rs) and is
+// negotiated in the Hello exchange.
+
+syntax = "proto3";
+
+package monty.v1;
+
+// Empty placeholder for valueless oneof arms. Defined locally (rather than
+// importing google.protobuf.Empty) so non-Rust decoders need nothing beyond
+// this single file.
+message Unit {}
+
+// ============================================================================
+// Values
+// ============================================================================
+
+// A Python value crossing the sandbox boundary. Mirrors monty's `MontyObject`
+// enum variant-for-variant.
+//
+// `repr` and `cycle` are OUTPUT-ONLY: the child may emit them (e.g. inside a
+// `Complete` value) but rejects them as inputs, exactly like `MontyObject`.
+message MontyValue {
+  oneof kind {
+    Unit ellipsis = 1;
+    Unit none = 2;
+    bool boolean = 3;
+    // Python int fitting in 64 bits.
+    sint64 int = 4;
+    // Python int wider than 64 bits.
+    BigIntValue bigint = 5;
+    double float = 6;
+    string str = 7;
+    bytes bytes = 8;
+    ValueList list = 9;
+    ValueList tuple = 10;
+    NamedTupleValue named_tuple = 11;
+    DictValue dict = 12;
+    ValueList set = 13;
+    ValueList frozen_set = 14;
+    DateValue date = 15;
+    DateTimeValue datetime = 16;
+    TimeDeltaValue timedelta = 17;
+    TimeZoneValue timezone = 18;
+    // A simple exception VALUE (no traceback) — e.g. an exception stored in a
+    // variable. Errors that terminate execution use `MontyError` instead.
+    ExceptionValue exception = 19;
+    // A Python type object, named by monty's `Type` Display string, e.g.
+    // "int", "str", "datetime.datetime", "ValueError".
+    string type = 20;
+    // A builtin function, named by its Python name, e.g. "len", "print".
+    string builtin_function = 21;
+    // A pathlib.Path value (always a virtual POSIX path, never a host path).
+    string path = 22;
+    FileHandleValue file_handle = 23;
+    DataclassValue dataclass = 24;
+    FunctionValue function = 25;
+    // OUTPUT-ONLY fallback: repr() of a value with no other representation.
+    string repr = 26;
+    // OUTPUT-ONLY marker breaking reference cycles in container output.
+    CycleValue cycle = 27;
+  }
+}
+
+message ValueList {
+  repeated MontyValue items = 1;
+}
+
+// One key/value entry. Used for dicts and kwargs: proto maps cannot have
+// message keys and do not preserve order, while Python dicts allow arbitrary
+// hashable keys and are insertion-ordered.
+message Pair {
+  MontyValue key = 1;
+  MontyValue value = 2;
+}
+
+message DictValue {
+  repeated Pair pairs = 1;
+}
+
+// Arbitrary-precision integer as sign + big-endian magnitude. Exact and O(n);
+// JS decode is `(negative ? -1n : 1n) * BigInt('0x' + hex(magnitude))`.
+message BigIntValue {
+  bool negative = 1;
+  bytes magnitude = 2;
+}
+
+message NamedTupleValue {
+  // Type name used in repr, e.g. "os.stat_result".
+  string type_name = 1;
+  // Attribute names, one per value.
+  repeated string field_names = 2;
+  repeated MontyValue values = 3;
+}
+
+message DateValue {
+  // Gregorian year in 1..=9999.
+  int32 year = 1;
+  // 1..=12.
+  uint32 month = 2;
+  uint32 day = 3;
+}
+
+message DateTimeValue {
+  int32 year = 1;
+  uint32 month = 2;
+  uint32 day = 3;
+  uint32 hour = 4;
+  uint32 minute = 5;
+  uint32 second = 6;
+  // 0..=999999.
+  uint32 microsecond = 7;
+  // Fixed UTC offset for aware datetimes; absent for naive values.
+  optional int32 offset_seconds = 8;
+  // Optional timezone name; only valid when offset_seconds is set.
+  optional string timezone_name = 9;
+}
+
+message TimeDeltaValue {
+  int32 days = 1;
+  // Normalized to 0..86400.
+  int32 seconds = 2;
+  // Normalized to 0..1000000.
+  int32 microseconds = 3;
+}
+
+message TimeZoneValue {
+  int32 offset_seconds = 1;
+  optional string name = 2;
+}
+
+// A simple exception value: type name (e.g. "ValueError") + optional single
+// string argument.
+message ExceptionValue {
+  string exc_type = 1;
+  optional string arg = 2;
+}
+
+message FileHandleValue {
+  // Virtual (sandbox) path — never a host path.
+  string path = 1;
+  // Canonical Python open() mode string: one of r, rb, r+, rb+, w, wb, w+,
+  // wb+, a, ab, a+, ab+.
+  string mode = 2;
+  // Char index (text mode) or byte index (binary mode).
+  uint64 position = 3;
+}
+
+message DataclassValue {
+  // Class name, e.g. "Point".
+  string name = 1;
+  // Host-side identity of the class, from `id(type(dc))`.
+  uint64 type_id = 2;
+  // Declared field names in definition order.
+  repeated string field_names = 3;
+  // All attributes (fields and extras), in order.
+  DictValue attrs = 4;
+  bool frozen = 5;
+}
+
+// An external (host-provided) function value, usually supplied by the parent
+// in response to a `NameLookup` event.
+message FunctionValue {
+  string name = 1;
+  optional string docstring = 2;
+}
+
+message CycleValue {
+  // Heap identity of the cyclic object; meaningless outside the producing
+  // process, included for debugging only.
+  uint64 heap_id = 1;
+  // Type-specific placeholder shown in reprs, e.g. "[...]".
+  string placeholder = 2;
+}
+
+// ============================================================================
+// Errors
+// ============================================================================
+
+// A raised Python exception with its traceback. Mirrors monty's
+// `MontyException`.
+message MontyError {
+  // Exception type name, e.g. "ValueError", "json.JSONDecodeError".
+  string exc_type = 1;
+  optional string message = 2;
+  // Outermost frame first, matching Python traceback order.
+  repeated StackFrame traceback = 3;
+}
+
+// 1-based line/column source position (columns count characters, not bytes).
+message CodeLoc {
+  uint32 line = 1;
+  uint32 column = 2;
+}
+
+message StackFrame {
+  string filename = 1;
+  CodeLoc start = 2;
+  CodeLoc end = 3;
+  // Function name; absent for module-level code (rendered as "<module>").
+  optional string frame_name = 4;
+  // Source line shown in the traceback preview.
+  optional string preview_line = 5;
+  // Suppress the `~~~` caret markers for this frame.
+  bool hide_caret = 6;
+  // Suppress the `, in <name>` suffix (SyntaxError style).
+  bool hide_frame_name = 7;
+}
+
+// ============================================================================
+// Configuration
+// ============================================================================
+
+// Sandbox resource limits, enforced inside the child. Absent fields mean
+// "unlimited" except recursion depth, which defaults to monty's standard
+// limit (1000) when absent.
+message ResourceLimits {
+  optional uint64 max_allocations = 1;
+  optional uint64 max_duration_micros = 2;
+  optional uint64 max_memory_bytes = 3;
+  optional uint64 gc_interval = 4;
+  optional uint64 max_recursion_depth = 5;
+}
+
+enum MountMode {
+  MOUNT_MODE_UNSPECIFIED = 0;
+  MOUNT_MODE_READ_ONLY = 1;
+  MOUNT_MODE_READ_WRITE = 2;
+  // Copy-on-write overlay backed by child-local memory; writes are discarded
+  // when the session ends.
+  MOUNT_MODE_OVERLAY = 3;
+}
+
+// Mounts a host directory into the sandbox. The child builds its own
+// MountTable from these, so the host path must be valid on the machine the
+// child runs on.
+message Mount {
+  // Absolute virtual POSIX path, e.g. "/mnt/data".
+  string virtual_path = 1;
+  // Host-native directory path.
+  string host_path = 2;
+  MountMode mode = 3;
+  // Cap on total bytes written through this mount.
+  optional uint64 write_bytes_limit = 4;
+}
+
+// ============================================================================
+// Resume payloads
+// ============================================================================
+
+// Outcome of an external function / OS call, decided by the parent. Mirrors
+// monty's `ExtFunctionResult`.
+message ExtResult {
+  oneof kind {
+    // The call returned this value.
+    MontyValue return_value = 1;
+    // The call raised this exception.
+    MontyError error = 2;
+    // The call is asynchronous: register an external future for `call_id`
+    // (the id from the suspension event) and keep executing other tasks.
+    uint32 future = 3;
+    // No handler exists for this name — the child raises NameError.
+    string not_found = 4;
+  }
+}
+
+message FutureResult {
+  uint32 call_id = 1;
+  ExtResult result = 2;
+}
+
+message NamedValue {
+  string name = 1;
+  MontyValue value = 2;
+}
+
+// ============================================================================
+// Requests (parent -> child)
+// ============================================================================
+
+message Request {
+  oneof kind {
+    Hello hello = 1;
+    ReplCreate repl_create = 2;
+    ReplFeed repl_feed = 3;
+    ResumeCall resume_call = 4;
+    ResumeNameLookup resume_name_lookup = 5;
+    ResumeFutures resume_futures = 6;
+    Dump dump = 7;
+    Load load = 8;
+    Reset reset = 9;
+    Shutdown shutdown = 10;
+  }
+}
+
+// Handshake; must be the first request. The child replies with `HelloReply`,
+// or `FatalError` + exit if it cannot speak `protocol_version`.
+message Hello {
+  uint32 protocol_version = 1;
+  // Free-form parent identification for diagnostics, e.g. "monty-pool 0.1".
+  string client = 2;
+}
+
+// Creates the REPL session this child will serve until `Reset`. Valid only
+// when the child has no session.
+message ReplCreate {
+  string script_name = 1;
+  ResourceLimits limits = 2;
+  // Type-check each fed snippet before executing it.
+  bool type_check = 3;
+  // Optional stub file contents used by type checking.
+  optional string type_check_stubs = 4;
+}
+
+// Executes one snippet against the session. Turn ends with `Complete`,
+// `Error`, `TypingError`, or a suspension event.
+message ReplFeed {
+  string code = 1;
+  repeated NamedValue inputs = 2;
+  // Mounts for this feed; handled entirely inside the child. OS calls the
+  // mounts do not cover bubble up as `OsCall` events.
+  repeated Mount mounts = 3;
+  // Skip type checking for this feed even when the session enables it.
+  bool skip_type_check = 4;
+}
+
+// Answers a `FunctionCall` or `OsCall` suspension. `call_id` must match the
+// suspension event.
+message ResumeCall {
+  uint32 call_id = 1;
+  ExtResult result = 2;
+}
+
+// Answers a `NameLookup` suspension.
+message ResumeNameLookup {
+  oneof kind {
+    // The name resolves to this value.
+    MontyValue value = 1;
+    // The name is undefined — the child raises NameError.
+    Unit undefined = 2;
+  }
+}
+
+// Answers a `ResolveFutures` suspension with results for some or all pending
+// call ids.
+message ResumeFutures {
+  repeated FutureResult results = 1;
+}
+
+// Requests an opaque serialized snapshot of the current session state
+// (idle or suspended). The child stays usable afterwards. The bytes can only
+// be restored by a monty child of the same version via `Load`.
+message Dump {}
+
+// Restores state produced by `Dump` into a fresh child (no session). If the
+// restored state was suspended, the child re-emits the suspension event so
+// the parent learns the resume point; otherwise it replies `Ok`.
+message Load {
+  bytes state = 1;
+}
+
+// Ends the checkout: the child drops all session state and returns to the
+// no-session state, ready for the next `ReplCreate` or `Load`.
+message Reset {}
+
+// The child replies `Ok` and exits cleanly.
+message Shutdown {}
+
+// ============================================================================
+// Events (child -> parent)
+// ============================================================================
+
+message Event {
+  oneof kind {
+    HelloReply hello_reply = 1;
+    Print print = 2;
+    FunctionCall function_call = 3;
+    OsCall os_call = 4;
+    NameLookup name_lookup = 5;
+    ResolveFutures resolve_futures = 6;
+    Complete complete = 7;
+    Error error = 8;
+    TypingError typing_error = 9;
+    DumpResult dump_result = 10;
+    Ok ok = 11;
+    FatalError fatal_error = 12;
+  }
+}
+
+message HelloReply {
+  uint32 protocol_version = 1;
+  // The child's monty crate version, e.g. "0.0.18".
+  string monty_version = 2;
+}
+
+enum PrintStream {
+  PRINT_STREAM_UNSPECIFIED = 0;
+  PRINT_STREAM_STDOUT = 1;
+  PRINT_STREAM_STDERR = 2;
+}
+
+// Streamed sandbox print() output. Zero or more of these precede each
+// turn-ending event; text is flushed at line granularity.
+message Print {
+  PrintStream stream = 1;
+  string text = 2;
+}
+
+// Suspension: the sandbox called an external function (or a dataclass method
+// when `method_call` is true — the instance is then the first arg). Answer
+// with `ResumeCall`.
+message FunctionCall {
+  string function_name = 1;
+  repeated MontyValue args = 2;
+  repeated Pair kwargs = 3;
+  uint32 call_id = 4;
+  bool method_call = 5;
+}
+
+// Suspension: the sandbox performed an OS operation no mount handled, e.g.
+// "Path.read_text" or "os.getenv". Answer with `ResumeCall`. Some calls have
+// typed result expectations (e.g. "Open" must return a file_handle); a
+// mismatched result becomes a Python-level error inside the sandbox.
+//
+// NOTE: an OsCall re-announced after `Load` carries only `call_id` and
+// `not_handled_error` — the argument payload was consumed when the call was
+// first announced, before the dump was taken.
+message OsCall {
+  string function_name = 1;
+  repeated MontyValue args = 2;
+  repeated Pair kwargs = 3;
+  uint32 call_id = 4;
+  // The exception monty would raise for this call when nothing handles it
+  // (e.g. PermissionError for filesystem calls). A parent with no handler
+  // should answer `ResumeCall` with this error — only the child knows the
+  // per-call semantics.
+  MontyError not_handled_error = 5;
+}
+
+// Suspension: the sandbox read an undefined name — typically probing whether
+// the parent provides an external function. Answer with `ResumeNameLookup`.
+message NameLookup {
+  string name = 1;
+}
+
+// Suspension: every sandbox task is blocked on external futures previously
+// registered via `ExtResult.future`. Answer with `ResumeFutures`.
+message ResolveFutures {
+  repeated uint32 pending_call_ids = 1;
+}
+
+// Turn end: the snippet completed with this value. The session is ready for
+// the next `ReplFeed`.
+message Complete {
+  MontyValue value = 1;
+}
+
+// Turn end: the snippet (or request) failed with a Python exception. The
+// session survives — prior globals remain available to later feeds.
+message Error {
+  MontyError exception = 1;
+}
+
+// Turn end: type checking rejected the fed snippet (only when the session
+// was created with type_check). The snippet was not executed; the session
+// survives.
+message TypingError {
+  // Rendered diagnostics, one per line.
+  string diagnostics = 1;
+}
+
+message DumpResult {
+  // Opaque versioned snapshot; see `Dump`.
+  bytes state = 1;
+}
+
+// Generic acknowledgement for ReplCreate / Load (idle) / Reset / Shutdown.
+message Ok {}
+
+// The child hit an unrecoverable error (frame desync, panic, unsupported
+// protocol version) and exits immediately after writing this. A child that
+// exits WITHOUT a FatalError crashed hard (segfault, abort, kill) — parents
+// must treat EOF as a crash.
+message FatalError {
+  string message = 1;
+}

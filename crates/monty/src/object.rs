@@ -367,6 +367,17 @@ impl MontyObject {
         Self::Dict(dict.into())
     }
 
+    /// Resolves a builtin function by its Python name (e.g. `"len"`).
+    ///
+    /// The `BuiltinsFunctions` enum inside [`MontyObject::BuiltinFunction`] is
+    /// crate-private, so boundaries that serialize a builtin function by name
+    /// (e.g. the subprocess wire protocol) use this to reconstruct the variant.
+    /// The name matches the variant's `Display` output.
+    #[must_use]
+    pub fn builtin_function_from_name(name: &str) -> Option<Self> {
+        name.parse::<BuiltinsFunctions>().ok().map(Self::BuiltinFunction)
+    }
+
     /// Converts this `MontyObject` into an `Value`, allocating on the heap if needed.
     ///
     /// Immediate values (None, Bool, Int, Float, Ellipsis, Exception) are created directly.
@@ -1297,6 +1308,8 @@ impl PartialEq for MontyObject {
             (Self::Repr(a), Self::Repr(b)) => a == b,
             (Self::Cycle(a, _), Self::Cycle(b, _)) => a == b,
             (Self::Type(a), Self::Type(b)) => a == b,
+            // matches Python, where builtins are singletons: `len == len` is True
+            (Self::BuiltinFunction(a), Self::BuiltinFunction(b)) => a == b,
             _ => false,
         }
     }

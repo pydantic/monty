@@ -1,0 +1,534 @@
+//! A checked-out worker: one REPL session, driven turn by turn.
+
+use std::{path::PathBuf, sync::Arc, time::Duration};
+
+use monty::{MontyException, MontyObject, PrintStream, ResourceLimits};
+use monty_proto::{pairs_from_proto, pb, values_from_proto};
+
+use crate::{PoolError, pool::PoolInner, worker::Worker};
+
+/// Arguments for the REPL session a checkout creates — mirrors
+/// `MontyRepl`'s constructor surface.
+#[derive(Debug, Clone)]
+pub struct ReplConfig {
+    /// Script name used in tracebacks and type-check diagnostics.
+    pub script_name: String,
+    /// Sandbox resource limits enforced inside the worker. `None` means
+    /// unlimited (except monty's standard recursion-depth default).
+    pub limits: Option<ResourceLimits>,
+    /// Type-check every fed snippet before executing it.
+    pub type_check: bool,
+    /// Stub declarations made available to type checking.
+    pub type_check_stubs: Option<String>,
+}
+
+impl Default for ReplConfig {
+    fn default() -> Self {
+        Self {
+            script_name: "main.py".to_owned(),
+            limits: None,
+            type_check: false,
+            type_check_stubs: None,
+        }
+    }
+}
+
+/// A host directory mounted into the sandbox for one feed. Mounts are
+/// child-local: the worker process accesses the host path directly, and OS
+/// calls the mounts don't cover surface as [`TurnEvent::OsCall`].
+#[derive(Debug, Clone)]
+pub struct MountSpec {
+    /// Absolute virtual POSIX path inside the sandbox, e.g. `/mnt/data`.
+    pub virtual_path: String,
+    /// Host directory to expose.
+    pub host_path: PathBuf,
+    /// Access mode.
+    pub mode: MountSpecMode,
+    /// Cap on total bytes written through this mount.
+    pub write_bytes_limit: Option<u64>,
+}
+
+/// Access mode for a [`MountSpec`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MountSpecMode {
+    ReadOnly,
+    ReadWrite,
+    /// Copy-on-write overlay in worker memory; writes are discarded when the
+    /// feed ends.
+    Overlay,
+}
+
+/// How a protocol turn ended: a suspension that needs an answer from the
+/// caller, or completion of the fed snippet.
+#[derive(Debug)]
+pub enum TurnEvent {
+    /// The sandbox called an external function — answer with
+    /// [`Checkout::resume`]. When `method_call` is true this is a dataclass
+    /// method call and the instance is the first argument.
+    FunctionCall {
+        function_name: String,
+        args: Vec<MontyObject>,
+        kwargs: Vec<(MontyObject, MontyObject)>,
+        call_id: u32,
+        method_call: bool,
+    },
+    /// The sandbox performed an OS operation no mount handled (e.g.
+    /// `"Path.read_text"`) — answer with [`Checkout::resume`].
+    OsCall {
+        function_name: String,
+        args: Vec<MontyObject>,
+        kwargs: Vec<(MontyObject, MontyObject)>,
+        call_id: u32,
+        /// The exception the sandbox would raise if nothing handles this
+        /// call; a caller with no handler should resume with
+        /// `ResumeValue::Error(not_handled_error)`. `None` only for calls
+        /// re-announced after `Pool::checkout_load`.
+        not_handled_error: Option<MontyException>,
+    },
+    /// The sandbox read an undefined name — answer with
+    /// [`Checkout::resume_name_lookup`].
+    NameLookup { name: String },
+    /// Every sandbox task is blocked on external futures — answer with
+    /// [`Checkout::resume_futures`].
+    ResolveFutures { pending_call_ids: Vec<u32> },
+    /// The fed snippet completed with this value; the session is ready for
+    /// the next [`Checkout::feed`].
+    Complete(MontyObject),
+}
+
+/// The caller's answer to a [`TurnEvent::FunctionCall`] or
+/// [`TurnEvent::OsCall`].
+#[derive(Debug)]
+pub enum ResumeValue {
+    /// The call returned this value.
+    Return(MontyObject),
+    /// The call raised this exception.
+    Error(MontyException),
+    /// The call is asynchronous: register an external future and continue
+    /// other tasks; resolve later via [`Checkout::resume_futures`].
+    Future,
+    /// No handler exists for the called name — the sandbox raises
+    /// `NameError`.
+    NotFound,
+}
+
+/// Callback receiving sandbox `print()` output streamed during a turn.
+pub type OnPrint<'a> = &'a mut dyn FnMut(PrintStream, &str);
+
+/// One worker dedicated to one REPL session.
+///
+/// Obtained from [`crate::Pool::checkout`]. [`Checkout::finish`] returns the
+/// worker to the pool; dropping without finishing kills the worker instead —
+/// mid-execution state cannot be trusted back into the pool.
+pub struct Checkout {
+    /// `None` after `finish()` or after the worker was discarded on error.
+    worker: Option<Worker>,
+    pool: Arc<PoolInner>,
+    /// The suspension awaiting an answer, when mid-feed.
+    pending: Option<Pending>,
+}
+
+/// Which kind of suspension is awaiting an answer.
+enum Pending {
+    /// FunctionCall or OsCall; carries the call id and name (the name feeds
+    /// `ResumeValue::NotFound`'s NameError).
+    Call {
+        call_id: u32,
+        function_name: String,
+    },
+    NameLookup,
+    Futures,
+}
+
+impl Checkout {
+    /// Sends `ReplCreate` on a fresh worker.
+    pub(crate) fn create(worker: Worker, pool: Arc<PoolInner>, repl: &ReplConfig) -> Result<Self, PoolError> {
+        let mut this = Self {
+            worker: Some(worker),
+            pool,
+            pending: None,
+        };
+        let request = pb::Request {
+            kind: Some(pb::request::Kind::ReplCreate(pb::ReplCreate {
+                script_name: repl.script_name.clone(),
+                limits: repl.limits.as_ref().map(Into::into),
+                type_check: repl.type_check,
+                type_check_stubs: repl.type_check_stubs.clone(),
+            })),
+        };
+        match this.request_turn(&request, &mut |_, _| {})? {
+            ControlEvent::Ok => Ok(this),
+            other => Err(this.poison(&format!("unexpected reply to ReplCreate: {other:?}"))),
+        }
+    }
+
+    /// Restores a dumped session on a fresh worker; returns the re-announced
+    /// suspension event when the dump was taken mid-feed.
+    pub(crate) fn load(
+        worker: Worker,
+        pool: Arc<PoolInner>,
+        state: Vec<u8>,
+    ) -> Result<(Self, Option<TurnEvent>), PoolError> {
+        let mut this = Self {
+            worker: Some(worker),
+            pool,
+            pending: None,
+        };
+        let request = pb::Request {
+            kind: Some(pb::request::Kind::Load(pb::Load { state })),
+        };
+        match this.request_turn(&request, &mut |_, _| {})? {
+            ControlEvent::Ok => Ok((this, None)),
+            ControlEvent::Turn(event) => Ok((this, Some(event))),
+            other @ ControlEvent::Dump(_) => Err(this.poison(&format!("unexpected reply to Load: {other:?}"))),
+        }
+    }
+
+    /// Executes one snippet against the session. Inputs become sandbox
+    /// globals; mounts apply to this feed only. Returns the first suspension
+    /// (or completion); `print()` output streams to `on_print` throughout.
+    ///
+    /// # Errors
+    /// [`PoolError::Runtime`] / [`PoolError::Typing`] leave the session
+    /// usable; all other errors mean the worker was discarded.
+    pub fn feed(
+        &mut self,
+        code: &str,
+        inputs: Vec<(String, MontyObject)>,
+        mounts: Vec<MountSpec>,
+        skip_type_check: bool,
+        on_print: OnPrint<'_>,
+    ) -> Result<TurnEvent, PoolError> {
+        if self.pending.is_some() {
+            return Err(PoolError::Protocol(
+                "feed called while a suspension is awaiting an answer".to_owned(),
+            ));
+        }
+        let request = pb::Request {
+            kind: Some(pb::request::Kind::ReplFeed(pb::ReplFeed {
+                code: code.to_owned(),
+                inputs: inputs
+                    .into_iter()
+                    .map(|(name, value)| pb::NamedValue {
+                        name,
+                        value: Some((&value).into()),
+                    })
+                    .collect(),
+                mounts: mounts.into_iter().map(mount_to_proto).collect(),
+                skip_type_check,
+            })),
+        };
+        self.expect_turn(&request, on_print)
+    }
+
+    /// Answers a [`TurnEvent::FunctionCall`] or [`TurnEvent::OsCall`].
+    pub fn resume(&mut self, value: ResumeValue, on_print: OnPrint<'_>) -> Result<TurnEvent, PoolError> {
+        let Some(Pending::Call { call_id, function_name }) = &self.pending else {
+            return Err(PoolError::Protocol("no suspended call to resume".to_owned()));
+        };
+        let (call_id, function_name) = (*call_id, function_name.clone());
+        let result = match value {
+            ResumeValue::Return(obj) => pb::ext_result::Kind::ReturnValue((&obj).into()),
+            ResumeValue::Error(exc) => pb::ext_result::Kind::Error((&exc).into()),
+            ResumeValue::Future => pb::ext_result::Kind::Future(call_id),
+            ResumeValue::NotFound => pb::ext_result::Kind::NotFound(function_name),
+        };
+        self.pending = None;
+        let request = pb::Request {
+            kind: Some(pb::request::Kind::ResumeCall(pb::ResumeCall {
+                call_id,
+                result: Some(pb::ExtResult { kind: Some(result) }),
+            })),
+        };
+        self.expect_turn(&request, on_print)
+    }
+
+    /// Answers a [`TurnEvent::NameLookup`]: `Some(value)` resolves the name,
+    /// `None` makes the sandbox raise `NameError`.
+    pub fn resume_name_lookup(
+        &mut self,
+        value: Option<MontyObject>,
+        on_print: OnPrint<'_>,
+    ) -> Result<TurnEvent, PoolError> {
+        if !matches!(self.pending, Some(Pending::NameLookup)) {
+            return Err(PoolError::Protocol("no suspended name lookup to resume".to_owned()));
+        }
+        self.pending = None;
+        let kind = match value {
+            Some(obj) => pb::resume_name_lookup::Kind::Value((&obj).into()),
+            None => pb::resume_name_lookup::Kind::Undefined(pb::Unit {}),
+        };
+        let request = pb::Request {
+            kind: Some(pb::request::Kind::ResumeNameLookup(pb::ResumeNameLookup {
+                kind: Some(kind),
+            })),
+        };
+        self.expect_turn(&request, on_print)
+    }
+
+    /// Answers a [`TurnEvent::ResolveFutures`] with results for some or all
+    /// pending call ids. Each result must be `Return` or `Error` — a future
+    /// cannot resolve to another future or to "not found".
+    pub fn resume_futures(
+        &mut self,
+        results: Vec<(u32, ResumeValue)>,
+        on_print: OnPrint<'_>,
+    ) -> Result<TurnEvent, PoolError> {
+        if !matches!(self.pending, Some(Pending::Futures)) {
+            return Err(PoolError::Protocol("no suspended futures to resume".to_owned()));
+        }
+        let results = results
+            .into_iter()
+            .map(|(call_id, value)| {
+                let kind = match value {
+                    ResumeValue::Return(obj) => pb::ext_result::Kind::ReturnValue((&obj).into()),
+                    ResumeValue::Error(exc) => pb::ext_result::Kind::Error((&exc).into()),
+                    ResumeValue::Future | ResumeValue::NotFound => {
+                        return Err(PoolError::Protocol(format!(
+                            "future {call_id} must resolve to Return or Error"
+                        )));
+                    }
+                };
+                Ok(pb::FutureResult {
+                    call_id,
+                    result: Some(pb::ExtResult { kind: Some(kind) }),
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        self.pending = None;
+        let request = pb::Request {
+            kind: Some(pb::request::Kind::ResumeFutures(pb::ResumeFutures { results })),
+        };
+        self.expect_turn(&request, on_print)
+    }
+
+    /// Serializes the session (idle or suspended) into opaque bytes that
+    /// [`crate::Pool::checkout_load`] can restore — including into a
+    /// different worker after this one crashes. The session stays live.
+    pub fn dump(&mut self) -> Result<Vec<u8>, PoolError> {
+        let request = pb::Request {
+            kind: Some(pb::request::Kind::Dump(pb::Dump {})),
+        };
+        match self.request_turn(&request, &mut |_, _| {})? {
+            ControlEvent::Dump(state) => Ok(state),
+            other => Err(self.poison(&format!("unexpected reply to Dump: {other:?}"))),
+        }
+    }
+
+    /// Ends the session and returns the worker to the pool.
+    ///
+    /// Consumes the checkout. On error the worker is discarded (and the
+    /// error reported), but the pool remains healthy either way.
+    pub fn finish(mut self) -> Result<(), PoolError> {
+        let request = pb::Request {
+            kind: Some(pb::request::Kind::Reset(pb::Reset {})),
+        };
+        match self.request_turn(&request, &mut |_, _| {})? {
+            ControlEvent::Ok => {
+                if let Some(mut worker) = self.worker.take() {
+                    worker.checkouts_served += 1;
+                    self.pool.release_worker(worker);
+                }
+                Ok(())
+            }
+            other => Err(self.poison(&format!("unexpected reply to Reset: {other:?}"))),
+        }
+    }
+
+    /// OS process id of the worker (diagnostics/tests).
+    pub fn pid(&self) -> Option<u32> {
+        self.worker.as_ref().map(Worker::pid)
+    }
+
+    /// Sends a request and requires the reply to be a [`TurnEvent`].
+    fn expect_turn(&mut self, request: &pb::Request, on_print: OnPrint<'_>) -> Result<TurnEvent, PoolError> {
+        match self.request_turn(request, on_print)? {
+            ControlEvent::Turn(event) => Ok(event),
+            other => Err(self.poison(&format!("expected a turn event, got {other:?}"))),
+        }
+    }
+
+    /// The core protocol turn: send one request, stream prints, classify the
+    /// turn-ending event. All failure paths discard the worker except
+    /// `Runtime` / `Typing`, which are sandbox-level outcomes.
+    fn request_turn(&mut self, request: &pb::Request, on_print: OnPrint<'_>) -> Result<ControlEvent, PoolError> {
+        let Some(worker) = self.worker.as_mut() else {
+            return Err(PoolError::Finished);
+        };
+        let _deadline = self.pool.watchdog.arm(worker, self.pool.config.request_timeout);
+
+        if worker.send(request).is_err() {
+            return Err(self.poison("sending a request"));
+        }
+        loop {
+            let Ok(event) = self.worker.as_mut().expect("checked above").recv() else {
+                return Err(self.poison("waiting for a reply"));
+            };
+            match event.kind {
+                Some(pb::event::Kind::Print(print)) => {
+                    let stream = match print.stream() {
+                        pb::PrintStream::Stderr => PrintStream::Stderr,
+                        pb::PrintStream::Stdout | pb::PrintStream::Unspecified => PrintStream::Stdout,
+                    };
+                    on_print(stream, &print.text);
+                }
+                Some(pb::event::Kind::FunctionCall(call)) => {
+                    self.pending = Some(Pending::Call {
+                        call_id: call.call_id,
+                        function_name: call.function_name.clone(),
+                    });
+                    return self.convert_turn(|| {
+                        Ok(TurnEvent::FunctionCall {
+                            function_name: call.function_name,
+                            args: values_from_proto(call.args)?,
+                            kwargs: pairs_from_proto(call.kwargs)?,
+                            call_id: call.call_id,
+                            method_call: call.method_call,
+                        })
+                    });
+                }
+                Some(pb::event::Kind::OsCall(call)) => {
+                    self.pending = Some(Pending::Call {
+                        call_id: call.call_id,
+                        function_name: call.function_name.clone(),
+                    });
+                    return self.convert_turn(|| {
+                        Ok(TurnEvent::OsCall {
+                            function_name: call.function_name,
+                            args: values_from_proto(call.args)?,
+                            kwargs: pairs_from_proto(call.kwargs)?,
+                            call_id: call.call_id,
+                            not_handled_error: call.not_handled_error.map(MontyException::try_from).transpose()?,
+                        })
+                    });
+                }
+                Some(pb::event::Kind::NameLookup(lookup)) => {
+                    self.pending = Some(Pending::NameLookup);
+                    return Ok(ControlEvent::Turn(TurnEvent::NameLookup { name: lookup.name }));
+                }
+                Some(pb::event::Kind::ResolveFutures(futures)) => {
+                    self.pending = Some(Pending::Futures);
+                    return Ok(ControlEvent::Turn(TurnEvent::ResolveFutures {
+                        pending_call_ids: futures.pending_call_ids,
+                    }));
+                }
+                Some(pb::event::Kind::Complete(complete)) => {
+                    self.pending = None;
+                    return self.convert_turn(|| {
+                        let value = complete
+                            .value
+                            .ok_or(monty_proto::ProtoConvertError::MissingField("Complete.value"))?;
+                        Ok(TurnEvent::Complete(value.try_into()?))
+                    });
+                }
+                Some(pb::event::Kind::Error(error)) => {
+                    self.pending = None;
+                    let Some(exception) = error.exception else {
+                        return Err(self.poison("error event with no exception"));
+                    };
+                    return match MontyException::try_from(exception) {
+                        Ok(exc) => Err(PoolError::Runtime(exc)),
+                        Err(err) => Err(self.poison(&format!("invalid exception payload: {err}"))),
+                    };
+                }
+                Some(pb::event::Kind::TypingError(typing)) => {
+                    self.pending = None;
+                    return Err(PoolError::Typing(typing.diagnostics));
+                }
+                Some(pb::event::Kind::Ok(_)) => return Ok(ControlEvent::Ok),
+                Some(pb::event::Kind::DumpResult(dump)) => return Ok(ControlEvent::Dump(dump.state)),
+                Some(pb::event::Kind::FatalError(fatal)) => {
+                    self.discard_worker();
+                    return Err(PoolError::Protocol(format!(
+                        "worker reported fatal error: {}",
+                        fatal.message
+                    )));
+                }
+                Some(pb::event::Kind::HelloReply(_)) | None => {
+                    return Err(self.poison("unexpected event"));
+                }
+            }
+        }
+    }
+
+    /// Runs a fallible payload conversion; conversion failures mean the
+    /// worker sent garbage, which discards it.
+    fn convert_turn(
+        &mut self,
+        convert: impl FnOnce() -> Result<TurnEvent, monty_proto::ProtoConvertError>,
+    ) -> Result<ControlEvent, PoolError> {
+        match convert() {
+            Ok(event) => Ok(ControlEvent::Turn(event)),
+            Err(err) => Err(self.poison(&format!("invalid payload from worker: {err}"))),
+        }
+    }
+
+    /// Discards the worker after an I/O failure and classifies it as a
+    /// watchdog timeout or a crash.
+    fn poison(&mut self, context: &str) -> PoolError {
+        let Some(mut worker) = self.worker.take() else {
+            return PoolError::Finished;
+        };
+        self.pending = None;
+        let timed_out = worker.was_killed_for_timeout();
+        let status = worker.kill_and_reap();
+        drop(worker);
+        self.pool.release_capacity();
+        if timed_out {
+            PoolError::Timeout {
+                timeout: self.pool.config.request_timeout.unwrap_or(Duration::ZERO),
+            }
+        } else {
+            PoolError::Crashed {
+                status,
+                context: context.to_owned(),
+            }
+        }
+    }
+
+    /// Discards the worker without crash classification (fatal-error frames
+    /// arrive on an intact stream, so this is a protocol failure, not a
+    /// crash).
+    fn discard_worker(&mut self) {
+        if let Some(worker) = self.worker.take() {
+            drop(worker);
+            self.pool.release_capacity();
+        }
+        self.pending = None;
+    }
+}
+
+impl Drop for Checkout {
+    fn drop(&mut self) {
+        // a checkout abandoned mid-session cannot be trusted back into the
+        // pool: kill the worker and free its capacity
+        if let Some(worker) = self.worker.take() {
+            drop(worker);
+            self.pool.release_capacity();
+        }
+    }
+}
+
+/// Internal classification of a turn-ending event: real turn events for the
+/// caller, plus the control acks (`Ok` / `DumpResult`) used by the checkout
+/// lifecycle itself.
+#[derive(Debug)]
+enum ControlEvent {
+    Turn(TurnEvent),
+    Ok,
+    Dump(Vec<u8>),
+}
+
+fn mount_to_proto(mount: MountSpec) -> pb::Mount {
+    let mode = match mount.mode {
+        MountSpecMode::ReadOnly => pb::MountMode::ReadOnly,
+        MountSpecMode::ReadWrite => pb::MountMode::ReadWrite,
+        MountSpecMode::Overlay => pb::MountMode::Overlay,
+    };
+    pb::Mount {
+        virtual_path: mount.virtual_path,
+        host_path: mount.host_path.to_string_lossy().into_owned(),
+        mode: mode.into(),
+        write_bytes_limit: mount.write_bytes_limit,
+    }
+}

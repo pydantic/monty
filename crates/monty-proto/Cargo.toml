@@ -1,0 +1,37 @@
+[package]
+name = "monty-proto"
+version = { workspace = true }
+license = { workspace = true }
+rust-version = { workspace = true }
+edition = { workspace = true }
+authors = { workspace = true }
+description = { workspace = true }
+keywords = { workspace = true }
+categories = { workspace = true }
+homepage = { workspace = true }
+repository = { workspace = true }
+
+[lib]
+name = "monty_proto"
+
+[dependencies]
+monty = { path = "../monty" }
+num-bigint = { workspace = true }
+prost = { workspace = true }
+# generation-only dependencies (see src/bin/generate.rs); exact pins so the
+# checked-in generated code is reproducible across contributors and CI
+prost-build = { version = "=0.14.4", optional = true }
+protox = { version = "=0.9.1", optional = true }
+
+[features]
+# Enables the `generate-proto` binary that regenerates src/generated from the
+# .proto schema. Not used by normal builds — the generated code is checked in.
+generate = ["dep:prost-build", "dep:protox"]
+
+[[bin]]
+name = "generate-proto"
+path = "src/bin/generate.rs"
+required-features = ["generate"]
+
+[lints]
+workspace = true

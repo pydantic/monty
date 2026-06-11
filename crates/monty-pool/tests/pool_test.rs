@@ -1,0 +1,439 @@
+//! End-to-end pool tests against the real `monty` binary — including the
+//! headline scenarios: a worker dying mid-execution (kill, crash, timeout)
+//! must surface as a clean error and never poison the pool.
+
+use std::{
+    env,
+    path::{Path, PathBuf},
+    process::Command,
+    sync::Once,
+    thread,
+    time::Duration,
+};
+
+use monty::{MontyObject, PrintStream, ResourceLimits};
+use monty_pool::{Pool, PoolConfig, PoolError, ReplConfig, ResumeValue, TurnEvent};
+
+/// Locates (building once if needed) the `monty` CLI binary for tests.
+fn monty_binary() -> PathBuf {
+    static BUILD: Once = Once::new();
+    if let Ok(path) = env::var("MONTY_TEST_BIN") {
+        return PathBuf::from(path);
+    }
+    // <workspace>/target/debug/monty, derived from this crate's manifest dir
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .expect("workspace root")
+        .join("target/debug/monty");
+    BUILD.call_once(|| {
+        if !path.exists() {
+            let status = Command::new(env!("CARGO"))
+                .args(["build", "-p", "monty-cli"])
+                .status()
+                .expect("failed to run cargo build -p monty-cli");
+            assert!(status.success(), "building the monty binary failed");
+        }
+    });
+    assert!(path.exists(), "monty binary missing at {}", path.display());
+    path
+}
+
+fn config() -> PoolConfig {
+    PoolConfig::new(monty_binary())
+}
+
+fn no_print(_: PrintStream, _: &str) {}
+
+#[track_caller]
+fn expect_complete(event: TurnEvent) -> MontyObject {
+    match event {
+        TurnEvent::Complete(value) => value,
+        other => panic!("expected Complete, got {other:?}"),
+    }
+}
+
+/// Kills a process by pid with SIGKILL — simulates a hard crash.
+fn kill_pid(pid: u32) {
+    #[cfg(unix)]
+    {
+        let status = Command::new("kill").args(["-9", &pid.to_string()]).status().unwrap();
+        assert!(status.success());
+    }
+    #[cfg(windows)]
+    {
+        let status = Command::new("taskkill")
+            .args(["/PID", &pid.to_string(), "/F"])
+            .status()
+            .unwrap();
+        assert!(status.success());
+    }
+}
+
+// =============================================================================
+// Happy path
+// =============================================================================
+
+#[test]
+fn feed_and_finish_reuses_the_worker() {
+    let pool = Pool::new(config()).unwrap();
+    let mut session = pool.checkout(&ReplConfig::default()).unwrap();
+    let first_pid = session.pid().unwrap();
+
+    let event = session
+        .feed("x = 40\nx + 2", vec![], vec![], false, &mut no_print)
+        .unwrap();
+    assert_eq!(expect_complete(event), MontyObject::Int(42));
+    // session state persists across feeds on the same checkout
+    let event = session.feed("x * 2", vec![], vec![], false, &mut no_print).unwrap();
+    assert_eq!(expect_complete(event), MontyObject::Int(80));
+    session.finish().unwrap();
+    assert_eq!(pool.idle_workers(), 1);
+
+    // the same process serves the next checkout, with a FRESH session:
+    // `x` from the previous session must not leak, so reading it suspends
+    // at NameLookup and resolving it as undefined raises NameError
+    let mut session = pool.checkout(&ReplConfig::default()).unwrap();
+    assert_eq!(session.pid().unwrap(), first_pid);
+    let event = session.feed("x", vec![], vec![], false, &mut no_print).unwrap();
+    assert!(matches!(event, TurnEvent::NameLookup { name } if name == "x"));
+    let err = session.resume_name_lookup(None, &mut no_print).unwrap_err();
+    let PoolError::Runtime(exc) = err else {
+        panic!("expected Runtime, got {err:?}");
+    };
+    assert_eq!(exc.message(), Some("name 'x' is not defined"));
+    session.finish().unwrap();
+}
+
+#[test]
+fn inputs_and_prints() {
+    let pool = Pool::new(config()).unwrap();
+    let mut session = pool.checkout(&ReplConfig::default()).unwrap();
+    let mut output = String::new();
+    let event = session
+        .feed(
+            "print('hello', name)\nlen(name)",
+            vec![("name".to_owned(), MontyObject::String("monty".to_owned()))],
+            vec![],
+            false,
+            &mut |_, text| output.push_str(text),
+        )
+        .unwrap();
+    assert_eq!(expect_complete(event), MontyObject::Int(5));
+    assert_eq!(output, "hello monty\n");
+    session.finish().unwrap();
+}
+
+#[test]
+fn external_function_round_trip() {
+    let pool = Pool::new(config()).unwrap();
+    let mut session = pool.checkout(&ReplConfig::default()).unwrap();
+    let event = session
+        .feed("fetch('https://x') + '!'", vec![], vec![], false, &mut no_print)
+        .unwrap();
+    let TurnEvent::FunctionCall {
+        function_name, args, ..
+    } = event
+    else {
+        panic!("expected FunctionCall, got {event:?}");
+    };
+    assert_eq!(function_name, "fetch");
+    assert_eq!(args, vec![MontyObject::String("https://x".to_owned())]);
+    let event = session
+        .resume(
+            ResumeValue::Return(MontyObject::String("body".to_owned())),
+            &mut no_print,
+        )
+        .unwrap();
+    assert_eq!(expect_complete(event), MontyObject::String("body!".to_owned()));
+    session.finish().unwrap();
+}
+
+#[test]
+fn runtime_error_keeps_session_and_worker() {
+    let pool = Pool::new(config()).unwrap();
+    let mut session = pool.checkout(&ReplConfig::default()).unwrap();
+    assert_eq!(
+        expect_complete(session.feed("kept = 1", vec![], vec![], false, &mut no_print).unwrap()),
+        MontyObject::None
+    );
+    let err = session.feed("1 / 0", vec![], vec![], false, &mut no_print).unwrap_err();
+    let PoolError::Runtime(exc) = err else {
+        panic!("expected Runtime, got {err:?}");
+    };
+    assert_eq!(exc.message(), Some("division by zero"));
+    // session and worker survive
+    assert_eq!(
+        expect_complete(session.feed("kept + 41", vec![], vec![], false, &mut no_print).unwrap()),
+        MontyObject::Int(42)
+    );
+    session.finish().unwrap();
+    assert_eq!(pool.idle_workers(), 1);
+}
+
+// =============================================================================
+// Crash isolation — the headline feature
+// =============================================================================
+
+#[test]
+fn sigkill_mid_request_is_a_clean_crash_and_the_pool_recovers() {
+    let pool = Pool::new(config()).unwrap();
+    let mut session = pool.checkout(&ReplConfig::default()).unwrap();
+    let pid = session.pid().unwrap();
+
+    // kill the worker while it spins forever
+    let killer = thread::spawn(move || {
+        thread::sleep(Duration::from_millis(300));
+        kill_pid(pid);
+    });
+    let err = session
+        .feed("while True:\n    pass", vec![], vec![], false, &mut no_print)
+        .unwrap_err();
+    killer.join().unwrap();
+    assert!(matches!(err, PoolError::Crashed { .. }), "got {err:?}");
+
+    // the pool spawns a replacement transparently
+    let mut session = pool.checkout(&ReplConfig::default()).unwrap();
+    assert_ne!(session.pid().unwrap(), pid);
+    assert_eq!(
+        expect_complete(session.feed("1 + 1", vec![], vec![], false, &mut no_print).unwrap()),
+        MontyObject::Int(2)
+    );
+    session.finish().unwrap();
+}
+
+#[test]
+fn worker_killed_while_idle_is_replaced_transparently() {
+    let pool = Pool::new(config()).unwrap();
+    let pids = pool.idle_worker_pids();
+    assert_eq!(pids.len(), 1);
+    kill_pid(pids[0]);
+    // give the OS a moment to deliver the kill
+    thread::sleep(Duration::from_millis(100));
+
+    let mut session = pool.checkout(&ReplConfig::default()).unwrap();
+    assert_eq!(
+        expect_complete(session.feed("2 + 2", vec![], vec![], false, &mut no_print).unwrap()),
+        MontyObject::Int(4)
+    );
+    session.finish().unwrap();
+}
+
+/// A deep postfix spine (`a.x.x.x…`) currently overflows the child's stack
+/// (recursive AST handling) — a REAL memory crash, exactly what subprocess
+/// isolation exists for. If monty core gains AST-depth protection this
+/// becomes a `Runtime`/`Crashed` either way; the invariant under test is
+/// that the parent survives and the pool keeps serving.
+#[test]
+fn hard_child_crash_does_not_harm_the_pool() {
+    let pool = Pool::new(config()).unwrap();
+    let mut session = pool.checkout(&ReplConfig::default()).unwrap();
+    let mut code = String::with_capacity(300_002);
+    code.push('a');
+    for _ in 0..150_000 {
+        code.push_str(".x");
+    }
+    let err = session.feed(&code, vec![], vec![], false, &mut no_print).unwrap_err();
+    assert!(
+        matches!(err, PoolError::Crashed { .. } | PoolError::Runtime(_)),
+        "got {err:?}"
+    );
+
+    let mut session = pool.checkout(&ReplConfig::default()).unwrap();
+    assert_eq!(
+        expect_complete(session.feed("1 + 1", vec![], vec![], false, &mut no_print).unwrap()),
+        MontyObject::Int(2)
+    );
+    session.finish().unwrap();
+}
+
+#[test]
+fn watchdog_kills_hung_worker_after_request_timeout() {
+    let mut config = config();
+    config.request_timeout = Some(Duration::from_millis(300));
+    let pool = Pool::new(config).unwrap();
+    let mut session = pool.checkout(&ReplConfig::default()).unwrap();
+    let err = session
+        .feed("while True:\n    pass", vec![], vec![], false, &mut no_print)
+        .unwrap_err();
+    assert!(matches!(err, PoolError::Timeout { .. }), "got {err:?}");
+
+    // pool still healthy
+    let mut session = pool.checkout(&ReplConfig::default()).unwrap();
+    assert_eq!(
+        expect_complete(session.feed("3 + 3", vec![], vec![], false, &mut no_print).unwrap()),
+        MontyObject::Int(6)
+    );
+    session.finish().unwrap();
+}
+
+#[test]
+fn child_resource_limits_do_not_kill_the_worker() {
+    let pool = Pool::new(config()).unwrap();
+    let mut session = pool
+        .checkout(&ReplConfig {
+            limits: Some(ResourceLimits::new().max_duration(Duration::from_millis(100))),
+            ..ReplConfig::default()
+        })
+        .unwrap();
+    let err = session
+        .feed("while True:\n    pass", vec![], vec![], false, &mut no_print)
+        .unwrap_err();
+    // the SANDBOX limit fired (TimeoutError exception), not the watchdog —
+    // the worker process is alive and finishable
+    let PoolError::Runtime(exc) = err else {
+        panic!("expected Runtime, got {err:?}");
+    };
+    assert_eq!(exc.exc_type().to_string(), "TimeoutError");
+    session.finish().unwrap();
+    assert_eq!(pool.idle_workers(), 1);
+}
+
+// =============================================================================
+// Lifecycle
+// =============================================================================
+
+#[test]
+fn elastic_growth_up_to_max_then_exhausted() {
+    let mut config = config();
+    config.min_processes = 1;
+    config.max_processes = 2;
+    config.checkout_timeout = Some(Duration::from_millis(200));
+    let pool = Pool::new(config).unwrap();
+
+    let one = pool.checkout(&ReplConfig::default()).unwrap();
+    let two = pool.checkout(&ReplConfig::default()).unwrap(); // grows beyond min
+    let Err(err) = pool.checkout(&ReplConfig::default()) else {
+        panic!("expected Exhausted");
+    };
+    assert!(matches!(err, PoolError::Exhausted), "got {err:?}");
+
+    one.finish().unwrap();
+    let three = pool.checkout(&ReplConfig::default()).unwrap(); // reuses one's worker
+    three.finish().unwrap();
+    two.finish().unwrap();
+    assert_eq!(pool.idle_workers(), 2);
+}
+
+#[test]
+fn dropping_a_checkout_kills_the_worker_but_frees_capacity() {
+    let mut config = config();
+    config.max_processes = 1;
+    let pool = Pool::new(config).unwrap();
+
+    let mut session = pool.checkout(&ReplConfig::default()).unwrap();
+    let pid = session.pid().unwrap();
+    let _ = session.feed("x = 1", vec![], vec![], false, &mut no_print).unwrap();
+    drop(session); // abandoned mid-session: worker killed, capacity released
+
+    // with max_processes=1 this checkout only succeeds if capacity was freed
+    let mut session = pool.checkout(&ReplConfig::default()).unwrap();
+    assert_ne!(session.pid().unwrap(), pid);
+    assert_eq!(
+        expect_complete(session.feed("5 + 5", vec![], vec![], false, &mut no_print).unwrap()),
+        MontyObject::Int(10)
+    );
+    session.finish().unwrap();
+}
+
+#[test]
+fn workers_are_recycled_after_max_checkouts() {
+    let mut config = config();
+    config.max_checkouts_per_worker = Some(1);
+    let pool = Pool::new(config).unwrap();
+
+    let session = pool.checkout(&ReplConfig::default()).unwrap();
+    let first_pid = session.pid().unwrap();
+    session.finish().unwrap();
+    assert_eq!(pool.idle_workers(), 0, "worker must be retired, not pooled");
+
+    let session = pool.checkout(&ReplConfig::default()).unwrap();
+    assert_ne!(session.pid().unwrap(), first_pid);
+    session.finish().unwrap();
+}
+
+#[test]
+fn concurrent_checkouts_run_in_parallel() {
+    let mut config = config();
+    config.min_processes = 2;
+    config.max_processes = 2;
+    let pool = Pool::new(config).unwrap();
+
+    thread::scope(|scope| {
+        for _ in 0..2 {
+            scope.spawn(|| {
+                let mut session = pool.checkout(&ReplConfig::default()).unwrap();
+                let event = session
+                    .feed("sum(range(1000))", vec![], vec![], false, &mut no_print)
+                    .unwrap();
+                assert_eq!(expect_complete(event), MontyObject::Int(499_500));
+                session.finish().unwrap();
+            });
+        }
+    });
+    assert_eq!(pool.idle_workers(), 2);
+}
+
+#[test]
+fn typing_error_via_pool() {
+    let pool = Pool::new(config()).unwrap();
+    let mut session = pool
+        .checkout(&ReplConfig {
+            type_check: true,
+            ..ReplConfig::default()
+        })
+        .unwrap();
+    let err = session
+        .feed("x: int = 'nope'", vec![], vec![], false, &mut no_print)
+        .unwrap_err();
+    let PoolError::Typing(diagnostics) = err else {
+        panic!("expected Typing, got {err:?}");
+    };
+    assert!(diagnostics.contains("invalid-assignment"), "{diagnostics}");
+    // the session survives a typing rejection
+    assert_eq!(
+        expect_complete(session.feed("1 + 1", vec![], vec![], false, &mut no_print).unwrap()),
+        MontyObject::Int(2)
+    );
+    session.finish().unwrap();
+}
+
+// =============================================================================
+// Dump / load across workers
+// =============================================================================
+
+#[test]
+fn dump_survives_worker_death_and_loads_elsewhere() {
+    let pool = Pool::new(config()).unwrap();
+    let mut session = pool.checkout(&ReplConfig::default()).unwrap();
+    assert_eq!(
+        expect_complete(session.feed("base = 40", vec![], vec![], false, &mut no_print).unwrap()),
+        MontyObject::None
+    );
+    let event = session
+        .feed("base + ext()", vec![], vec![], false, &mut no_print)
+        .unwrap();
+    let TurnEvent::FunctionCall {
+        call_id: _,
+        ref function_name,
+        ..
+    } = event
+    else {
+        panic!("expected FunctionCall, got {event:?}");
+    };
+    assert_eq!(function_name, "ext");
+
+    let state = session.dump().unwrap();
+    drop(session); // kill the original worker outright
+
+    let (mut restored, event) = pool.checkout_load(state).unwrap();
+    let Some(TurnEvent::FunctionCall { ref function_name, .. }) = event else {
+        panic!("expected re-announced FunctionCall, got {event:?}");
+    };
+    assert_eq!(function_name, "ext");
+    let event = restored
+        .resume(ResumeValue::Return(MontyObject::Int(2)), &mut no_print)
+        .unwrap();
+    assert_eq!(expect_complete(event), MontyObject::Int(42));
+    restored.finish().unwrap();
+}

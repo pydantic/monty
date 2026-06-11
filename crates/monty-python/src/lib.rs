@@ -13,6 +13,7 @@ mod external;
 mod limits;
 mod monty_cls;
 mod mount;
+mod pool;
 mod print_target;
 mod repl;
 mod serialization;
@@ -21,9 +22,10 @@ use std::sync::OnceLock;
 
 // Use `::monty` to refer to the external crate (not the pymodule)
 pub use convert::PyMontyFileHandle;
-pub use exceptions::{MontyError, MontyRuntimeError, MontySyntaxError, MontyTypingError, PyFrame};
+pub use exceptions::{MontyCrashedError, MontyError, MontyRuntimeError, MontySyntaxError, MontyTypingError, PyFrame};
 pub use monty_cls::{PyFunctionSnapshot, PyFutureSnapshot, PyMonty, PyMontyComplete, PyNameLookupSnapshot};
 pub use mount::PyMountDir;
+pub use pool::{PyMontyPool, PyMontyPoolSession};
 pub use print_target::{PyCollectStreams, PyCollectString};
 use pyo3::{prelude::*, sync::PyOnceLock, types::PyAny};
 pub use repl::PyMontyRepl;
@@ -76,6 +78,8 @@ mod _monty {
     use pyo3::prelude::*;
 
     #[pymodule_export]
+    use super::MontyCrashedError;
+    #[pymodule_export]
     use super::MontyError;
     #[pymodule_export]
     use super::MontyRuntimeError;
@@ -99,6 +103,10 @@ mod _monty {
     use super::PyMontyComplete as MontyComplete;
     #[pymodule_export]
     use super::PyMontyFileHandle as MontyFileHandle;
+    #[pymodule_export]
+    use super::PyMontyPool as MontyPool;
+    #[pymodule_export]
+    use super::PyMontyPoolSession as MontyPoolSession;
     #[pymodule_export]
     use super::PyMontyRepl as MontyRepl;
     #[pymodule_export]

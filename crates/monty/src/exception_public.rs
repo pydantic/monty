@@ -97,6 +97,22 @@ impl MontyException {
         }
     }
 
+    /// Creates an exception with an explicit traceback.
+    ///
+    /// Most callers should use [`MontyException::new`] — the traceback is
+    /// normally attached when the exception is raised. This constructor
+    /// exists for boundaries that *reconstruct* an exception that was raised
+    /// elsewhere (e.g. deserializing one received from a `monty --subprocess`
+    /// worker) and must preserve its original frames.
+    #[must_use]
+    pub fn with_traceback(exc_type: ExcType, message: Option<String>, traceback: Vec<StackFrame>) -> Self {
+        Self {
+            exc_type,
+            message,
+            traceback,
+        }
+    }
+
     pub(crate) fn runtime_error(err: impl fmt::Display) -> Self {
         Self {
             exc_type: ExcType::RuntimeError,

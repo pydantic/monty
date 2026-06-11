@@ -16,6 +16,8 @@ use rustyline::{DefaultEditor, error::ReadlineError};
 #[rustfmt::skip]
 use monty_type_checking::{SourceFile, type_check};
 
+mod subprocess;
+
 /// ANSI escape code for dim/gray text.
 const DIM: &str = "\x1b[2m";
 /// ANSI escape code for bold red text (errors).
@@ -83,6 +85,18 @@ struct Cli {
     /// Maximum call-stack depth (defaults to 1000 when any limit is set).
     #[arg(long)]
     max_recursion_depth: Option<usize>,
+
+    /// Run as a protocol child: read framed protobuf requests on stdin and
+    /// write framed events on stdout (see the monty-proto crate). Intended to
+    /// be driven by a parent process such as monty-pool, not by hand.
+    #[arg(
+        long,
+        conflicts_with_all = [
+            "interactive", "type_check", "command", "file", "mounts",
+            "max_allocations", "max_duration", "max_memory", "gc_interval", "max_recursion_depth",
+        ],
+    )]
+    subprocess: bool,
 }
 
 impl Cli {
@@ -127,6 +141,10 @@ const EXT_FUNCTIONS: bool = false;
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
+
+    if cli.subprocess {
+        return subprocess::run();
+    }
 
     let type_check_enabled = cli.type_check;
 

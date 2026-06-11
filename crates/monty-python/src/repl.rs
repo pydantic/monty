@@ -1017,7 +1017,7 @@ impl PyMontyRepl {
 
 /// Converts a Python dict of `{name: value}` pairs into the `Vec<(String, MontyObject)>`
 /// format expected by the core REPL's `feed_run` and `feed_start`.
-fn extract_repl_inputs(
+pub(crate) fn extract_repl_inputs(
     inputs: Option<&Bound<'_, PyDict>>,
     dc_registry: &DcRegistry,
 ) -> PyResult<Vec<(String, MontyObject)>> {

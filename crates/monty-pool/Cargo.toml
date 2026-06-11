@@ -1,0 +1,25 @@
+[package]
+name = "monty-pool"
+version = { workspace = true }
+license = { workspace = true }
+rust-version = { workspace = true }
+edition = { workspace = true }
+authors = { workspace = true }
+description = { workspace = true }
+keywords = { workspace = true }
+categories = { workspace = true }
+homepage = { workspace = true }
+repository = { workspace = true }
+
+[lib]
+name = "monty_pool"
+
+[dependencies]
+monty = { path = "../monty" }
+monty-proto = { path = "../monty-proto" }
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints]
+workspace = true

@@ -8,8 +8,8 @@ import pydantic_monty
 
 async def test_async_external_function_raises_surfaces_as_monty_runtime_error():
     """An uncaught exception from an awaited async callback surfaces as
-    ``MontyRuntimeError`` with the original exception preserved in
-    ``exc.exception()``."""
+    `MontyRuntimeError` with the original exception preserved in
+    `exc.exception()`."""
     m = pydantic_monty.Monty('await fail()')
 
     async def fail():
@@ -24,7 +24,7 @@ async def test_async_external_function_raises_surfaces_as_monty_runtime_error():
 
 async def test_async_external_function_return_lone_surrogate_catchable_inside_monty():
     """An async callback returning a string with a lone surrogate surfaces inside Monty
-    as a ``ValueError`` that can be caught, not as a raw ``PyErr`` escaping to the caller."""
+    as a `ValueError` that can be caught, not as a raw `PyErr` escaping to the caller."""
     code = """
 try:
     await get_str()
@@ -43,7 +43,7 @@ result
 
 async def test_async_external_function_return_unconvertible_catchable_inside_monty():
     """An async callback returning an unconvertible object surfaces inside Monty as a
-    ``TypeError`` that can be caught."""
+    `TypeError` that can be caught."""
     code = """
 try:
     await get_thing()

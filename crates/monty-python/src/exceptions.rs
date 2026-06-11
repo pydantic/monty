@@ -107,13 +107,42 @@ impl MontyError {
 /// can be re-rendered with different format/color settings via `display()`.
 #[pyclass(extends=MontyError, module="pydantic_monty")]
 pub struct MontyTypingError {
-    failure: TypeCheckingDiagnostics,
+    failure: TypingFailure,
+}
+
+/// How the typing failure is stored: full diagnostics for in-process type
+/// checking, or the rendered text when the check ran in a `MontyPool` worker
+/// (diagnostics cannot cross the process boundary).
+enum TypingFailure {
+    Diagnostics(TypeCheckingDiagnostics),
+    Rendered(String),
+}
+
+impl TypingFailure {
+    fn rendered(&self) -> String {
+        match self {
+            Self::Diagnostics(failure) => failure.to_string(),
+            Self::Rendered(text) => text.clone(),
+        }
+    }
 }
 
 impl MontyTypingError {
     /// Creates a `MontyTypingError` from a `TypeCheckingFailure`.
     #[must_use]
     pub fn new_err(py: Python<'_>, failure: TypeCheckingDiagnostics) -> PyErr {
+        Self::new_err_inner(py, TypingFailure::Diagnostics(failure))
+    }
+
+    /// Creates a `MontyTypingError` from diagnostics already rendered to text
+    /// (received from a `MontyPool` worker). `display()` ignores its format
+    /// and color arguments for errors created this way.
+    #[must_use]
+    pub fn new_err_rendered(py: Python<'_>, rendered: String) -> PyErr {
+        Self::new_err_inner(py, TypingFailure::Rendered(rendered))
+    }
+
+    fn new_err_inner(py: Python<'_>, failure: TypingFailure) -> PyErr {
         // we need a MontyException to create the base, but it shouldn't be visible anywhere
         let base = MontyError::new(MontyException::new(ExcType::TypeError, None));
         let init = PyClassInitializer::from(base).add_subclass(Self { failure });
@@ -133,20 +162,25 @@ impl MontyTypingError {
     ///     color: Whether to include ANSI color codes in the output.
     #[pyo3(signature = (format = "full", color = false))]
     fn display(&self, format: &str, color: bool) -> PyResult<String> {
-        self.failure
-            .clone()
-            .color(color)
-            .format_from_str(format)
-            .map_err(exceptions::PyValueError::new_err)
-            .map(|f| f.to_string())
+        match &self.failure {
+            TypingFailure::Diagnostics(failure) => failure
+                .clone()
+                .color(color)
+                .format_from_str(format)
+                .map_err(exceptions::PyValueError::new_err)
+                .map(|f| f.to_string()),
+            // rendered in the worker with the default format; re-rendering
+            // is impossible without the diagnostic structures
+            TypingFailure::Rendered(text) => Ok(text.clone()),
+        }
     }
 
     fn __str__(&self) -> String {
-        self.failure.to_string()
+        self.failure.rendered()
     }
 
     fn __repr__(&self) -> String {
-        format!("MontyTypingError({})", self.failure)
+        format!("MontyTypingError({})", self.failure.rendered())
     }
 }
 
@@ -309,6 +343,49 @@ impl MontyRuntimeError {
             return format!("MontyRuntimeError({exc_type_name}: {msg})");
         }
         format!("MontyRuntimeError({exc_type_name})")
+    }
+}
+
+/// Raised when a `MontyPool` worker process died (segfault, abort, external
+/// kill) or was killed by the pool's request-timeout watchdog.
+///
+/// This is exactly the failure mode subprocess pools exist to contain: the
+/// sandbox process is gone, but the host process is unharmed and the pool
+/// replaces the worker — catch this error and retry or report.
+#[pyclass(extends=MontyError, module="pydantic_monty")]
+pub struct MontyCrashedError {
+    /// `True` when the pool's `request_timeout` watchdog killed the worker.
+    #[pyo3(get)]
+    timed_out: bool,
+    /// Exit code of the dead worker, when the OS reported one (signal deaths
+    /// on unix report `None`).
+    #[pyo3(get)]
+    exit_status: Option<i32>,
+}
+
+impl MontyCrashedError {
+    /// Creates a `MontyCrashedError` with the given description.
+    #[must_use]
+    pub fn new_err(py: Python<'_>, message: String, timed_out: bool, exit_status: Option<i32>) -> PyErr {
+        let base = MontyError::new(MontyException::new(ExcType::RuntimeError, Some(message)));
+        let init = PyClassInitializer::from(base).add_subclass(Self { timed_out, exit_status });
+        match Py::new(py, init) {
+            Ok(err) => PyErr::from_value(err.into_bound(py).into_any()),
+            Err(e) => e,
+        }
+    }
+}
+
+#[pymethods]
+impl MontyCrashedError {
+    #[expect(clippy::needless_pass_by_value, reason = "required by macro")]
+    fn __str__(slf: PyRef<'_, Self>) -> String {
+        slf.as_super().message().unwrap_or_default().to_owned()
+    }
+
+    #[expect(clippy::needless_pass_by_value, reason = "required by macro")]
+    fn __repr__(slf: PyRef<'_, Self>) -> String {
+        format!("MontyCrashedError({})", slf.as_super().message().unwrap_or_default())
     }
 }
 

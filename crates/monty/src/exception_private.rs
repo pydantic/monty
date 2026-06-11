@@ -32,9 +32,15 @@ pub type RunResult<T> = Result<T, RunError>;
 ///
 /// Uses strum derives for automatic `Display`, `FromStr`, and `Into<&'static str>` implementations.
 /// The string representation matches the variant name exactly (e.g., `ValueError` -> "ValueError").
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Display, EnumString, IntoStaticStr, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Display, EnumString, IntoStaticStr, Serialize, Deserialize,
+)]
 pub enum ExcType {
     /// primary exception class - matches any exception in isinstance checks.
+    ///
+    /// Also the `Default` — required so `Type` (which embeds an `ExcType` in
+    /// its `Exception` variant) can derive `strum::EnumIter`.
+    #[default]
     Exception,
 
     /// System exit exceptions

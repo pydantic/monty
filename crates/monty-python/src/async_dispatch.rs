@@ -309,7 +309,7 @@ where
 ///
 /// Acquires the GIL to call the Python function. If the result is a coroutine,
 /// returns `CallResult::Coroutine` so the caller can spawn it as a tokio task.
-fn dispatch_function_call(
+pub(crate) fn dispatch_function_call(
     function_name: &str,
     method_call: bool,
     args: &[MontyObject],
@@ -401,7 +401,7 @@ fn dispatch_os_call_py(call: OsFunctionCall, os: Option<&Py<PyAny>>, dc_registry
 ///
 /// If the name is found, returns `NameLookupResult::Value` with a function object.
 /// Otherwise returns `NameLookupResult::Undefined`.
-fn resolve_name_lookup(name: &str, external_functions: Option<&Py<PyDict>>) -> NameLookupResult {
+pub(crate) fn resolve_name_lookup(name: &str, external_functions: Option<&Py<PyDict>>) -> NameLookupResult {
     Python::attach(|py| {
         if let Some(ext_fns) = external_functions {
             let ext_fns = ext_fns.bind(py);
@@ -421,7 +421,7 @@ fn resolve_name_lookup(name: &str, external_functions: Option<&Py<PyDict>>) -> N
 /// Converts the coroutine to a Rust future via `pyo3_async_runtimes::tokio::into_future()`
 /// and spawns it. When the future completes, the result is converted to an
 /// `ExtFunctionResult`.
-fn spawn_coroutine_task(
+pub(crate) fn spawn_coroutine_task(
     join_set: &mut JoinSet<(u32, ExtFunctionResult)>,
     call_id: u32,
     coro: Py<PyAny>,
@@ -447,7 +447,7 @@ fn spawn_coroutine_task(
 ///
 /// Collects the first completed result, then drains any other immediately-ready
 /// results to batch them together for the VM resume.
-async fn wait_for_futures(
+pub(crate) async fn wait_for_futures(
     join_set: &mut JoinSet<(u32, ExtFunctionResult)>,
     _pending_call_ids: &[u32],
 ) -> PyResult<Vec<(u32, ExtFunctionResult)>> {
@@ -471,7 +471,7 @@ async fn wait_for_futures(
 
 /// Converts a `tokio::task::JoinError` to a `PyErr`.
 #[expect(clippy::needless_pass_by_value)]
-fn join_error_to_py(err: JoinError) -> PyErr {
+pub(crate) fn join_error_to_py(err: JoinError) -> PyErr {
     PyRuntimeError::new_err(format!("Async task failed: {err}"))
 }
 

@@ -222,6 +222,43 @@ impl PrintTarget {
         }
     }
 
+    /// Delivers one already-formatted output fragment to this target.
+    ///
+    /// Used by `MontyPool` sessions, where `print()` output arrives from the
+    /// worker process as pre-rendered `(stream, text)` events rather than
+    /// through a `PrintWriter`. Safe to call without the GIL held — the
+    /// `Callback` variant attaches internally.
+    pub fn write_event(&self, stream: PrintStream, text: &str) -> Result<(), MontyException> {
+        match self {
+            Self::Stdout => {
+                match stream {
+                    PrintStream::Stdout => print!("{text}"),
+                    PrintStream::Stderr => eprint!("{text}"),
+                }
+                Ok(())
+            }
+            Self::Callback(cb) => Python::attach(|py| {
+                let stream_name = match stream {
+                    PrintStream::Stdout => "stdout",
+                    PrintStream::Stderr => "stderr",
+                };
+                cb.bind(py).call1((stream_name, text))?;
+                Ok::<_, PyErr>(())
+            })
+            .map_err(|e| Python::attach(|py| exc_py_to_monty(py, &e))),
+            Self::CollectStreams(buf) => {
+                buf.lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .push((stream, text.to_owned()));
+                Ok(())
+            }
+            Self::CollectString(buf) => {
+                buf.lock().unwrap_or_else(PoisonError::into_inner).push_str(text);
+                Ok(())
+            }
+        }
+    }
+
     /// Builds a `PrintWriter` for a single VM transition and invokes `f` with it.
     ///
     /// The writer borrows from this target for the duration of `f`, so the

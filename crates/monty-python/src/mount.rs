@@ -119,6 +119,20 @@ impl PyMountDir {
 }
 
 impl PyMountDir {
+    /// Extracts `(virtual_path, host_path, mode, write_bytes_limit)` for use
+    /// by `MontyPool`, which sends the mount *configuration* to a worker
+    /// process instead of using the `Mount` in-process.
+    pub(crate) fn spec_parts(&self) -> PyResult<(String, PathBuf, &'static str, Option<u64>)> {
+        self.with_mount(|m| {
+            (
+                m.virtual_path().to_owned(),
+                m.host_path().to_path_buf(),
+                m.mode().as_str(),
+                m.write_bytes_limit(),
+            )
+        })
+    }
+
     /// Accesses the inner mount, returning an error if it's currently taken for a run.
     fn with_mount<T>(&self, f: impl FnOnce(&Mount) -> T) -> PyResult<T> {
         let guard = self.shared.lock().unwrap();

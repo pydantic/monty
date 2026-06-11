@@ -18,7 +18,10 @@ __all__ = [
     'FunctionSnapshot',
     'NameLookupSnapshot',
     'FutureSnapshot',
+    'MontyCrashedError',
     'MontyError',
+    'MontyPool',
+    'MontyPoolSession',
     'MontySyntaxError',
     'MontyRuntimeError',
     'MontyTypingError',
@@ -799,21 +802,21 @@ class MontyComplete:
     def output_json(self) -> str:
         """Serialize the output as a Monty-specific JSON string.
 
-        This is **not** a drop-in wrapper around ``json.dumps(result.output)``:
+        This is **not** a drop-in wrapper around `json.dumps(result.output)`:
         the shape is chosen to preserve types that plain JSON can't express,
         so consumers can round-trip richer Python values than CPython's
         stdlib would allow. JSON-native Python types (None, bool, int, float,
         str, list, and dict with string keys) become bare JSON values.
         Non-JSON-native types are wrapped in a single-key object with a
-        ``$``-prefixed tag, for example:
+        `$`-prefixed tag, for example:
 
-        - tuple → ``{"$tuple": [...]}``
-        - bytes → ``{"$bytes": [...]}``
-        - set / frozenset → ``{"$set": [...]}`` / ``{"$frozenset": [...]}``
-        - ``...`` → ``{"$ellipsis": "..."}``
-        - ``nan`` / ``inf`` / ``-inf`` → ``{"$float": "nan" | "inf" | "-inf"}``
-        - dict with any non-string key → ``{"$dict": [[k, v], ...]}``
-        - dataclass → ``{"$dataclass": {...}, "name": "ClassName"}``
+        - tuple → `{"$tuple": [...]}`
+        - bytes → `{"$bytes": [...]}`
+        - set / frozenset → `{"$set": [...]}` / `{"$frozenset": [...]}`
+        - `...` → `{"$ellipsis": "..."}`
+        - `nan` / `inf` / `-inf` → `{"$float": "nan" | "inf" | "-inf"}`
+        - dict with any non-string key → `{"$dict": [[k, v], ...]}`
+        - dataclass → `{"$dataclass": {...}, "name": "ClassName"}`
 
         Raises:
             RuntimeError: If serialization fails.
@@ -1037,3 +1040,161 @@ class MontyFileHandle:
     @property
     def writable(self) -> bool:
         """`True` if the mode permits `write()` (`'w'`, `'a'`, `'r+'`, `'w+'`, `'a+'`, and binary variants)."""
+
+@final
+class MontyCrashedError(MontyError):
+    """Raised when a `MontyPool` worker process died or hit `request_timeout`.
+
+    This is the failure mode subprocess pools exist to contain: the sandbox
+    process is gone (segfault, allocator abort, external kill, or watchdog
+    timeout) but the host process is unharmed and the pool replaces the
+    worker. Catch this error to retry or report.
+
+    Cannot be constructed directly from Python.
+    """
+
+    @property
+    def timed_out(self) -> bool:
+        """`True` when the pool's `request_timeout` watchdog killed the worker."""
+
+    @property
+    def exit_status(self) -> int | None:
+        """Exit code of the dead worker when the OS reported one (signal deaths report `None`)."""
+
+@final
+class MontyPool:
+    """
+    Async context manager owning a pool of `monty` subprocess workers.
+
+    Monty processes can never be made fully crash-proof against memory errors
+    (stack overflow, allocator aborts), so `MontyPool` runs the interpreter in
+    worker subprocesses: a crashed worker raises `MontyCrashedError` and is
+    replaced transparently — the host Python process is never at risk.
+
+    ```python
+    async with MontyPool() as pool:
+        async with pool.checkout() as session:
+            result = await session.feed_run_async('1 + 1')
+    ```
+    """
+
+    def __new__(
+        cls,
+        *,
+        binary_path: str | Path | None = None,
+        min_processes: int = 1,
+        max_processes: int | None = None,
+        checkout_timeout: float | None = None,
+        request_timeout: float | None = None,
+        max_checkouts_per_worker: int | None = None,
+    ) -> Self:
+        """
+        Configure a worker pool; the workers are spawned by `async with`.
+
+        Arguments:
+            binary_path: Path to the `monty` CLI binary. When omitted it is
+                resolved from the `MONTY_BIN` environment variable, the
+                environment's scripts directory (where the `pydantic-monty-cli`
+                dependency installs it), or `PATH`.
+            min_processes: Workers spawned eagerly and kept warm.
+            max_processes: Cap on live workers (defaults to the CPU count);
+                checkouts beyond it wait for a worker to be returned.
+            checkout_timeout: Seconds `checkout()` waits for a free worker
+                before raising `TimeoutError`. `None` waits forever.
+            request_timeout: Hard per-call deadline in seconds — a worker that
+                exceeds it is killed and the call raises `MontyCrashedError`
+                with `timed_out=True`. Backstops the sandbox `limits`.
+            max_checkouts_per_worker: Recycle a worker after this many sessions.
+        """
+
+    async def __aenter__(self) -> Self: ...
+    async def __aexit__(self, *args: Any) -> None: ...
+    def checkout(
+        self,
+        *,
+        script_name: str = 'main.py',
+        limits: ResourceLimits | None = None,
+        type_check: bool = False,
+        type_check_stubs: str | None = None,
+        dataclass_registry: list[type] | None = None,
+    ) -> MontyPoolSession:
+        """
+        Prepare a REPL session served by a dedicated worker.
+
+        The worker is checked out of the pool by `async with` on the returned
+        session and returned to the pool when the `async with` block exits.
+        Arguments mirror the `MontyRepl` constructor.
+        """
+
+@final
+class MontyPoolSession:
+    """
+    A REPL session running in a dedicated `monty` subprocess worker.
+
+    Obtained from `MontyPool.checkout()` and used as an async context
+    manager. Session state (globals, functions) persists across `feed_run` /
+    `feed_run_async` calls within the session, exactly like `MontyRepl`.
+    """
+
+    async def __aenter__(self) -> Self: ...
+    async def __aexit__(self, *args: Any) -> None: ...
+    def feed_run(
+        self,
+        code: str,
+        *,
+        inputs: dict[str, Any] | None = None,
+        external_functions: dict[str, Callable[..., Any]] | None = None,
+        print_callback: Callable[[Literal['stdout', 'stderr'], str], None]
+        | CollectStreams
+        | CollectString
+        | None = None,
+        mount: MountDir | list[MountDir] | None = None,
+        os: Callable[[OsFunction, tuple[Any, ...], dict[str, Any]], Any] | AbstractOS | None = None,
+        skip_type_check: bool = False,
+    ) -> Any:
+        """
+        Execute one snippet in the worker and return its result.
+
+        Blocks the calling thread (with the GIL released) while the worker
+        runs; external functions, the `os` fallback, and print callbacks are
+        invoked in this process. Async external functions are not supported
+        here — use `feed_run_async`.
+
+        Mounts are handled inside the worker process: `'overlay'` writes live
+        in the worker and are discarded when the feed ends.
+
+        Raises:
+            MontyRuntimeError: The code raised an exception (session survives).
+            MontyTypingError: Type checking rejected the snippet (session survives).
+            MontyCrashedError: The worker process died or hit `request_timeout`;
+                the session is lost but the pool replaces the worker.
+        """
+
+    async def feed_run_async(
+        self,
+        code: str,
+        *,
+        inputs: dict[str, Any] | None = None,
+        external_functions: dict[str, Callable[..., Any]] | None = None,
+        print_callback: Callable[[Literal['stdout', 'stderr'], str], None]
+        | CollectStreams
+        | CollectString
+        | None = None,
+        mount: MountDir | list[MountDir] | None = None,
+        os: Callable[[OsFunction, tuple[Any, ...], dict[str, Any]], Any] | AbstractOS | None = None,
+        skip_type_check: bool = False,
+    ) -> Any:
+        """
+        Async variant of `feed_run`: worker I/O runs off the event loop and
+        external functions may be coroutines (awaited concurrently).
+        """
+
+    def dump(self) -> bytes:
+        """
+        Serialize the worker's session state (idle or suspended) to opaque
+        bytes using monty's existing dump format. The session stays usable.
+        """
+
+    @property
+    def worker_pid(self) -> int | None:
+        """OS process id of this session's worker (diagnostics/tests)."""
