@@ -21,7 +21,7 @@ mod resume;
 
 use std::{error, fmt};
 
-use monty::MontyObject;
+use monty::{DictPairs, MontyObject};
 pub use mount::build_mount_table;
 pub use resume::future_results_from_proto;
 
@@ -107,4 +107,57 @@ pub fn pairs_from_proto(pairs: Vec<pb::Pair>) -> Result<Vec<(MontyObject, MontyO
             Ok((key.try_into()?, value.try_into()?))
         })
         .collect()
+}
+
+/// Maximum nesting depth of a value that can safely cross the wire.
+///
+/// prost's decoder enforces a recursion limit of 100 message levels, and each
+/// Python container level costs two proto levels (`MontyValue` plus its
+/// `ValueList`/`DictValue`/... payload), so anything deeper than ~49 levels
+/// fails to *decode* on the receiving side — which the receiver must treat as
+/// a fatal protocol failure. Senders check against this bound first and fail
+/// cleanly instead of shipping an undecodable frame.
+pub const MAX_VALUE_DEPTH: usize = 48;
+
+/// Whether `value` nests deeper than [`MAX_VALUE_DEPTH`].
+///
+/// The walk consumes one budget level per container and bails out as soon as
+/// the budget is exhausted, so its own recursion is bounded by
+/// `MAX_VALUE_DEPTH` even for adversarially deep values (which the sandbox
+/// can build iteratively).
+#[must_use]
+pub fn exceeds_max_value_depth(value: &MontyObject) -> bool {
+    depth_exceeds(value, MAX_VALUE_DEPTH)
+}
+
+fn depth_exceeds(value: &MontyObject, budget: usize) -> bool {
+    match value {
+        MontyObject::List(items)
+        | MontyObject::Tuple(items)
+        | MontyObject::Set(items)
+        | MontyObject::FrozenSet(items) => seq_exceeds(items, budget),
+        MontyObject::NamedTuple { values, .. } => seq_exceeds(values, budget),
+        MontyObject::Dict(pairs) => pairs_exceed(pairs, budget),
+        MontyObject::Dataclass { attrs, .. } => pairs_exceed(attrs, budget),
+        _ => false,
+    }
+}
+
+fn seq_exceeds(items: &[MontyObject], budget: usize) -> bool {
+    if budget == 0 {
+        // any child at all would exceed the budget — don't descend
+        !items.is_empty()
+    } else {
+        items.iter().any(|child| depth_exceeds(child, budget - 1))
+    }
+}
+
+fn pairs_exceed(pairs: &DictPairs, budget: usize) -> bool {
+    if budget == 0 {
+        !pairs.is_empty()
+    } else {
+        pairs
+            .into_iter()
+            .any(|(key, value)| depth_exceeds(key, budget - 1) || depth_exceeds(value, budget - 1))
+    }
 }

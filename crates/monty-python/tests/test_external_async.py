@@ -1,22 +1,30 @@
 """Tests for the async external-function surface of the Python bindings."""
 
+from typing import Any
+
 import pytest
 from inline_snapshot import snapshot
 
 import pydantic_monty
 
 
+async def run_async(code: str, **kwargs: Any) -> Any:
+    """Runs one snippet in a fresh async pool/session and returns its result."""
+    async with pydantic_monty.AsyncMonty() as pool:
+        async with pool.checkout() as session:
+            return await session.feed_run_async(code, **kwargs)
+
+
 async def test_async_external_function_raises_surfaces_as_monty_runtime_error():
     """An uncaught exception from an awaited async callback surfaces as
     `MontyRuntimeError` with the original exception preserved in
     `exc.exception()`."""
-    m = pydantic_monty.Monty('await fail()')
 
     async def fail():
         raise ValueError('intentional error')
 
     with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
-        await m.run_async(external_functions={'fail': fail})
+        await run_async('await fail()', external_functions={'fail': fail})
     inner = exc_info.value.exception()
     assert isinstance(inner, ValueError)
     assert inner.args[0] == snapshot('intentional error')
@@ -33,12 +41,11 @@ except ValueError:
     result = 'caught'
 result
 """
-    m = pydantic_monty.Monty(code)
 
     async def get_str():
         return '\ud83d'
 
-    assert await m.run_async(external_functions={'get_str': get_str}) == snapshot('caught')
+    assert await run_async(code, external_functions={'get_str': get_str}) == snapshot('caught')
 
 
 async def test_async_external_function_return_unconvertible_catchable_inside_monty():
@@ -52,9 +59,8 @@ except TypeError:
     result = 'caught'
 result
 """
-    m = pydantic_monty.Monty(code)
 
     async def get_thing():
         return object()
 
-    assert await m.run_async(external_functions={'get_thing': get_thing}) == snapshot('caught')
+    assert await run_async(code, external_functions={'get_thing': get_thing}) == snapshot('caught')

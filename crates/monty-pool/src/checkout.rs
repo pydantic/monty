@@ -2,8 +2,8 @@
 
 use std::{path::PathBuf, sync::Arc, time::Duration};
 
-use monty::{MontyException, MontyObject, PrintStream, ResourceLimits};
-use monty_proto::{pairs_from_proto, pb, values_from_proto};
+use monty::{ExcType, MontyException, MontyObject, PrintStream, ResourceLimits};
+use monty_proto::{exceeds_max_value_depth, pairs_from_proto, pb, values_from_proto};
 
 use crate::{PoolError, pool::PoolInner, worker::Worker};
 
@@ -204,6 +204,7 @@ impl Checkout {
                 "feed called while a suspension is awaiting an answer".to_owned(),
             ));
         }
+        ensure_sendable(inputs.iter().map(|(_, value)| value))?;
         let request = pb::Request {
             kind: Some(pb::request::Kind::ReplFeed(pb::ReplFeed {
                 code: code.to_owned(),
@@ -227,6 +228,9 @@ impl Checkout {
             return Err(PoolError::Protocol("no suspended call to resume".to_owned()));
         };
         let (call_id, function_name) = (*call_id, function_name.clone());
+        if let ResumeValue::Return(obj) = &value {
+            ensure_sendable([obj])?;
+        }
         let result = match value {
             ResumeValue::Return(obj) => pb::ext_result::Kind::ReturnValue((&obj).into()),
             ResumeValue::Error(exc) => pb::ext_result::Kind::Error((&exc).into()),
@@ -280,6 +284,9 @@ impl Checkout {
         let results = results
             .into_iter()
             .map(|(call_id, value)| {
+                if let ResumeValue::Return(obj) = &value {
+                    ensure_sendable([obj])?;
+                }
                 let kind = match value {
                     ResumeValue::Return(obj) => pb::ext_result::Kind::ReturnValue((&obj).into()),
                     ResumeValue::Error(exc) => pb::ext_result::Kind::Error((&exc).into()),
@@ -517,6 +524,20 @@ enum ControlEvent {
     Turn(TurnEvent),
     Ok,
     Dump(Vec<u8>),
+}
+
+/// Rejects values too deeply nested for the wire (see
+/// `monty_proto::MAX_VALUE_DEPTH`) with a session-preserving runtime error —
+/// sending them would produce a frame the worker cannot decode.
+fn ensure_sendable<'a>(values: impl IntoIterator<Item = &'a MontyObject>) -> Result<(), PoolError> {
+    if values.into_iter().any(exceeds_max_value_depth) {
+        Err(PoolError::Runtime(MontyException::new(
+            ExcType::RuntimeError,
+            Some("Max input depth exceeded".to_owned()),
+        )))
+    } else {
+        Ok(())
+    }
 }
 
 fn mount_to_proto(mount: MountSpec) -> pb::Mount {

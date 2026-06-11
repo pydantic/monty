@@ -1,76 +1,101 @@
+"""True-parallelism tests: each thread checks out its own worker session, so
+CPU-bound sandbox code runs concurrently across worker subprocesses."""
+
+from __future__ import annotations
+
 import os
 import threading
 import time
-from functools import partial
-from typing import cast
+from typing import Any, Callable
 
 import pytest
 from inline_snapshot import snapshot
 
-import pydantic_monty
+from pydantic_monty import Monty
 
 # I don't see a way to run these tests reliably on CI since github actions only has one CPU
 # perhaps we could use ubuntu-24.04-arm once the repo is open source (it's currently not supported for private repos)
 # https://docs.github.com/en/actions/reference/runners/github-hosted-runners
 pytestmark = pytest.mark.skipif('CI' in os.environ, reason='on CI')
 
+THREADS = 4
+
+
+def run_in_threads(run: Callable[[], Any]) -> tuple[list[Any], float]:
+    """Run `run` in THREADS threads at once, returning the results and wall time."""
+    results: list[Any] = []
+    lock = threading.Lock()
+
+    def worker() -> None:
+        value = run()
+        with lock:
+            results.append(value)
+
+    threads = [threading.Thread(target=worker) for _ in range(THREADS)]
+    start = time.perf_counter()
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    return results, time.perf_counter() - start
+
 
 def test_parallel_exec():
-    """Run code directly, run it in parallel, check that parallel execution not much slower."""
+    """Run code in one session, run it in parallel sessions, check that parallel
+    execution is not much slower (i.e. workers genuinely run concurrently)."""
     code = """
 x = 0
 for i in range(200_000):
     x += 1
 x
 """
-    m = pydantic_monty.Monty(code)
-    start = time.perf_counter()
-    result = m.run()
-    diff = time.perf_counter() - start
-    assert result == 200_000
+    # min_processes pre-spawns the workers so the parallel phase isn't
+    # measuring process startup
+    with Monty(min_processes=THREADS) as pool:
 
-    threads = [threading.Thread(target=m.run) for _ in range(4)]
-    start = time.perf_counter()
-    for t in threads:
-        t.start()
-    for t in threads:
-        t.join()
-    diff_parallel = time.perf_counter() - start
-    # check that running the function in parallel 4 times is less than 1.5x slower than running it once
-    time_multiple = diff_parallel / diff
-    assert time_multiple < 1.5, 'Execution should not be slower in parallel'
+        def run() -> Any:
+            with pool.checkout() as session:
+                return session.feed_run(code)
+
+        start = time.perf_counter()
+        assert run() == 200_000
+        diff = time.perf_counter() - start
+
+        results, diff_parallel = run_in_threads(run)
+        assert results == [200_000] * THREADS
+        # check that running in parallel 4 times is less than 1.5x slower than running once
+        time_multiple = diff_parallel / diff
+        assert time_multiple < 1.5, 'Execution should not be slower in parallel'
 
 
 def test_parallel_exec_print():
-    """Run code directly, run it in parallel, check that parallel execution not much slower."""
+    """Parallel sessions each streaming print output back to their own callback."""
     code = """
 x = 0
 for i in range(200_000):
     x += 1
 print(x)
 """
-    captured: list[str] = []
+    with Monty(min_processes=THREADS) as pool:
 
-    def print_callback(file: str, content: str):
-        captured.append(f'{file}: {content}')
+        def run() -> list[str]:
+            captured: list[str] = []
 
-    m = pydantic_monty.Monty(code)
-    start = time.perf_counter()
-    result = m.run(print_callback=print_callback)
-    diff = time.perf_counter() - start
-    assert result is None
-    assert captured == snapshot(['stdout: 200000', 'stdout: \n'])
+            def print_callback(file: str, content: str) -> None:
+                captured.append(f'{file}: {content}')
 
-    threads = [threading.Thread(target=partial(m.run, print_callback=print_callback)) for _ in range(4)]
-    start = time.perf_counter()
-    for t in threads:
-        t.start()
-    for t in threads:
-        t.join()
-    diff_parallel = time.perf_counter() - start
-    # check that running the function in parallel 4 times is less than 1.5x slower than running it once
-    time_multiple = diff_parallel / diff
-    assert time_multiple < 1.5, 'Execution should not be slower in parallel'
+            with pool.checkout() as session:
+                assert session.feed_run(code, print_callback=print_callback) is None
+            return captured
+
+        start = time.perf_counter()
+        assert run() == snapshot(['stdout: 200000\n'])
+        diff = time.perf_counter() - start
+
+        results, diff_parallel = run_in_threads(run)
+        assert results == [['stdout: 200000\n']] * THREADS
+        time_multiple = diff_parallel / diff
+        assert time_multiple < 1.5, 'Execution should not be slower in parallel'
 
 
 def double(a: int) -> int:
@@ -78,7 +103,7 @@ def double(a: int) -> int:
 
 
 def test_parallel_exec_ext_functions():
-    """Run code directly, run it in parallel, check that parallel execution not much slower."""
+    """Parallel sessions each calling back into a host external function."""
     code = """
 x = 0
 for i in range(100_000):
@@ -88,76 +113,32 @@ for i in range(100_000):
     x += 1
 x
 """
-    m = pydantic_monty.Monty(code)
-    start = time.perf_counter()
-    result = m.run(external_functions={'double': double})
-    diff = time.perf_counter() - start
-    assert result == 300_000
+    with Monty(min_processes=THREADS) as pool:
 
-    threads = [threading.Thread(target=partial(m.run, external_functions={'double': double})) for _ in range(4)]
-    start = time.perf_counter()
-    for t in threads:
-        t.start()
-    for t in threads:
-        t.join()
-    diff_parallel = time.perf_counter() - start
-    # check that running the function in parallel 4 times is less than 1.5x slower than running it once
-    time_multiple = diff_parallel / diff
-    assert time_multiple < 1.5, 'Execution should not be slower in parallel'
+        def run() -> Any:
+            with pool.checkout() as session:
+                return session.feed_run(code, external_functions={'double': double})
+
+        start = time.perf_counter()
+        assert run() == 300_000
+        diff = time.perf_counter() - start
+
+        results, diff_parallel = run_in_threads(run)
+        assert results == [300_000] * THREADS
+        time_multiple = diff_parallel / diff
+        assert time_multiple < 1.5, 'Execution should not be slower in parallel'
 
 
-def test_parallel_exec_start():
-    """Run code directly, run it in parallel, check that parallel execution not much slower."""
-    code = """
-x = 0
-for i in range(200_000):
-    x += 1
-double(x)
-"""
-    m = pydantic_monty.Monty(code)
-    start = time.perf_counter()
-    progress = m.start()
-    diff = time.perf_counter() - start
-    assert isinstance(progress, pydantic_monty.FunctionSnapshot)
+def test_parallel_sessions_state_is_isolated():
+    """Concurrent sessions never see each other's globals."""
+    with Monty(min_processes=THREADS) as pool:
 
-    threads = [threading.Thread(target=m.start) for _ in range(4)]
-    start = time.perf_counter()
-    for t in threads:
-        t.start()
-    for t in threads:
-        t.join()
-    diff_parallel = time.perf_counter() - start
-    # check that running the function in parallel 4 times is less than 1.5x slower than running it once
-    time_multiple = diff_parallel / diff
-    assert time_multiple < 1.5, 'Execution should not be slower in parallel'
+        def run() -> Any:
+            with pool.checkout() as session:
+                session.feed_run('values = []')
+                for i in range(5):
+                    session.feed_run('values.append(n)', inputs={'n': i})
+                return session.feed_run('sum(values)')
 
-
-def test_parallel_exec_start_resume():
-    """Run code directly, run it in parallel, check that parallel execution not much slower."""
-    code = """
-x = double(1)
-for i in range(200_000):
-    x += 1
-x
-"""
-    m = pydantic_monty.Monty(code)
-    progress = m.start()
-    assert isinstance(progress, pydantic_monty.FunctionSnapshot)
-    start = time.perf_counter()
-    result = progress.resume({'return_value': 2})
-    diff = time.perf_counter() - start
-    assert isinstance(result, pydantic_monty.MontyComplete)
-    assert result.output == 200_002
-
-    progresses = cast(list[pydantic_monty.FunctionSnapshot], [m.start() for _ in range(4)])
-
-    threads = [threading.Thread(target=partial(p.resume, {'return_value': 2})) for p in progresses]
-    start = time.perf_counter()
-    for t in threads:
-        t.start()
-    for t in threads:
-        t.join()
-    diff_parallel = time.perf_counter() - start
-    # check that running the function in parallel 4 times is less than 1.5x slower than running it once
-    time_multiple = diff_parallel / diff
-    assert time_multiple < 1.5, 'Execution should not be slower in parallel'
+        results, _ = run_in_threads(run)
+        assert results == [10] * THREADS

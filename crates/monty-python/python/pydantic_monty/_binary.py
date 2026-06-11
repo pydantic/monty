@@ -1,4 +1,4 @@
-"""Locates the `monty` CLI binary that `MontyPool` runs as worker subprocesses.
+"""Locates the `monty` CLI binary that worker pools run as subprocesses.
 
 The binary ships in the `pydantic-monty-cli` wheel (a maturin `bin`-bindings
 package, the same pattern `uv` and `ruff` use), which installs it into the
@@ -45,7 +45,7 @@ def find_monty_binary(explicit: str | Path | None = None) -> str:
     if dev is not None:
         return str(dev)
     raise FileNotFoundError(
-        'could not locate the `monty` binary required by MontyPool; '
+        'could not locate the `monty` binary required to run sandboxed code; '
         'install it with `pip install pydantic-monty-cli` (or `make dev-py` in the monty repo), '
         'pass binary_path=..., or set the MONTY_BIN environment variable'
     )

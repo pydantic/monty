@@ -87,24 +87,22 @@ for member in team_members:
 """
 
 
-m = pydantic_monty.Monty(
-    code,
-    inputs=['prompt'],
-    script_name='expense.py',
-    type_check=True,
-    type_check_stubs=type_definitions,
-)
-
-
 async def main():
-    output = await m.run_async(
-        inputs={'prompt': 'testing'},
-        external_functions={
-            'get_team_members': data.get_team_members,
-            'get_expenses': data.get_expenses,
-            'get_custom_budget': data.get_custom_budget,
-        },
-    )
+    async with pydantic_monty.AsyncMonty() as pool:
+        async with pool.checkout(
+            script_name='expense.py',
+            type_check=True,
+            type_check_stubs=type_definitions,
+        ) as session:
+            output = await session.feed_run_async(
+                code,
+                inputs={'prompt': 'testing'},
+                external_functions={
+                    'get_team_members': data.get_team_members,
+                    'get_expenses': data.get_expenses,
+                    'get_custom_budget': data.get_custom_budget,
+                },
+            )
     print(output)
 
 

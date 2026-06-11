@@ -15,12 +15,9 @@
 //! collector objects themselves remain the single public place that exposes the
 //! captured output.
 
-use std::{
-    borrow::Cow,
-    sync::{Arc, Mutex, MutexGuard, PoisonError},
-};
+use std::sync::{Arc, Mutex, PoisonError};
 
-use monty::{MontyException, PrintStream, PrintWriter, PrintWriterCallback};
+use monty::{MontyException, PrintStream};
 use pyo3::{
     PyRef,
     exceptions::PyTypeError,
@@ -224,7 +221,7 @@ impl PrintTarget {
 
     /// Delivers one already-formatted output fragment to this target.
     ///
-    /// Used by `MontyPool` sessions, where `print()` output arrives from the
+    /// Used by pool sessions, where `print()` output arrives from the
     /// worker process as pre-rendered `(stream, text)` events rather than
     /// through a `PrintWriter`. Safe to call without the GIL held — the
     /// `Callback` variant attaches internally.
@@ -257,112 +254,5 @@ impl PrintTarget {
                 Ok(())
             }
         }
-    }
-
-    /// Builds a `PrintWriter` for a single VM transition and invokes `f` with it.
-    ///
-    /// The writer borrows from this target for the duration of `f`, so the
-    /// closure shape keeps lifetimes sound. For the collect variants, the
-    /// internal mutex is held for the entirety of `f` — that is fine because a
-    /// single VM transition is synchronous and Python only inspects collectors
-    /// between transitions.
-    pub fn with_writer<R>(&self, f: impl FnOnce(PrintWriter<'_>) -> R) -> R {
-        let mut storage = self.storage();
-        f(storage.writer())
-    }
-
-    /// Allocates writer-local storage (callback wrapper, mutex guard) that can
-    /// back a `PrintWriter` produced by [`PrintStorage::writer`].
-    ///
-    /// Use this instead of [`with_writer`] when a caller needs to hold the
-    /// writer across multiple VM transitions and reborrow it for each step
-    /// (e.g. the synchronous dispatch loop in `Monty.run`). The storage keeps
-    /// the `CallbackStringPrint` / `MutexGuard` alive while the writer pointer
-    /// remains valid.
-    pub fn storage(&self) -> PrintStorage<'_> {
-        match self {
-            Self::Stdout => PrintStorage::Stdout,
-            // Borrow the callback rather than clone it — the storage's lifetime
-            // is bounded by the target, so there is no need to bump the Py ref
-            // count per VM transition (which would require reacquiring the GIL
-            // inside `py.detach`).
-            Self::Callback(cb) => PrintStorage::Callback(CallbackStringPrint(cb)),
-            Self::CollectStreams(arc) => {
-                PrintStorage::CollectStreams(arc.lock().unwrap_or_else(PoisonError::into_inner))
-            }
-            Self::CollectString(arc) => PrintStorage::CollectString(arc.lock().unwrap_or_else(PoisonError::into_inner)),
-        }
-    }
-}
-
-/// Live writer storage — owns the per-call backing (mutex guard, callback
-/// wrapper) that a `PrintWriter` points into.
-///
-/// Produced by [`PrintTarget::storage`] and consumed by repeatedly calling
-/// [`PrintStorage::writer`] (which hands out a fresh `PrintWriter` each time
-/// with lifetime tied to this storage). This two-step split exists because
-/// the `PrintWriter::Collect*` variants need `&mut` access to a locked buffer,
-/// and `PrintWriter::Callback` needs `&mut` access to a `CallbackStringPrint`
-/// value — both of which must outlive the writer.
-pub(crate) enum PrintStorage<'a> {
-    /// No-op storage — the writer just targets stdout.
-    Stdout,
-    /// Borrowed callback wrapper — points at the `Py<PyAny>` owned by the
-    /// parent `PrintTarget::Callback` variant.
-    Callback(CallbackStringPrint<'a>),
-    /// Live `MutexGuard` over the shared streams buffer, held for as long as
-    /// this storage exists.
-    CollectStreams(MutexGuard<'a, Vec<(PrintStream, String)>>),
-    /// Live `MutexGuard` over the shared string buffer, held for as long as
-    /// this storage exists.
-    CollectString(MutexGuard<'a, String>),
-}
-
-impl PrintStorage<'_> {
-    /// Returns a `PrintWriter` backed by this storage.
-    ///
-    /// The returned writer borrows from `self`; call repeatedly (including via
-    /// `PrintWriter::reborrow`) to get fresh writers with progressively shorter
-    /// lifetimes, without dropping the underlying storage.
-    pub fn writer(&mut self) -> PrintWriter<'_> {
-        match self {
-            Self::Stdout => PrintWriter::Stdout,
-            Self::Callback(cb) => PrintWriter::Callback(cb),
-            Self::CollectStreams(guard) => PrintWriter::CollectStreams(guard),
-            Self::CollectString(guard) => PrintWriter::CollectString(guard),
-        }
-    }
-}
-
-/// `PrintWriterCallback` adaptor that forwards each fragment to a Python callable.
-///
-/// Borrows the `Py<PyAny>` from the parent `PrintTarget` rather than cloning
-/// it; this avoids reacquiring the GIL on every VM transition just to bump the
-/// reference count. `Py<PyAny>` is `Send + Sync`, so the shared reference is
-/// safe to move across `py.detach` / `spawn_blocking` boundaries. The GIL is
-/// re-acquired once per actual print fragment inside the trait methods —
-/// which is unavoidable, since that is when we call into Python.
-#[derive(Debug)]
-pub(crate) struct CallbackStringPrint<'a>(&'a Py<PyAny>);
-
-impl PrintWriterCallback for CallbackStringPrint<'_> {
-    fn stdout_write(&mut self, output: Cow<'_, str>) -> Result<(), MontyException> {
-        Python::attach(|py| {
-            self.0.bind(py).call1(("stdout", output.as_ref()))?;
-            Ok::<_, PyErr>(())
-        })
-        .map_err(|e| Python::attach(|py| exc_py_to_monty(py, &e)))
-    }
-
-    fn stdout_push(&mut self, end: char) -> Result<(), MontyException> {
-        // Encode the character into a stack buffer to avoid allocating a
-        // fresh `String` for each separator / terminator that `print()` emits.
-        let mut buf = [0u8; 4];
-        let end_str: &str = end.encode_utf8(&mut buf);
-        Python::attach(|py| {
-            self.0.bind(py).call1(("stdout", end_str))?;
-            Ok::<_, PyErr>(())
-        })
-        .map_err(|e| Python::attach(|py| exc_py_to_monty(py, &e)))
     }
 }

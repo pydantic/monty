@@ -46,23 +46,22 @@ async def main():
     # Create external functions that can access the filesystem
     external_funcs = ExternalFunctions(fs)
 
-    # Create the Monty runner with type checking enabled
-    m = pydantic_monty.Monty(
-        SANDBOX_CODE_PATH.read_text(),
-        script_name='sql_playground.py',
-        type_check=True,
-        type_check_stubs=TYPE_STUBS,
-    )
-
-    # Run the analysis with external functions and OS access
-    results = await m.run_async(
-        external_functions={
-            'query_csv': external_funcs.query_csv,
-            'read_json': external_funcs.read_json,
-            'analyze_sentiment': external_funcs.analyze_sentiment,
-        },
-        os=fs,
-    )
+    # Run the analysis in a worker with type checking enabled
+    async with pydantic_monty.AsyncMonty() as pool:
+        async with pool.checkout(
+            script_name='sql_playground.py',
+            type_check=True,
+            type_check_stubs=TYPE_STUBS,
+        ) as session:
+            results = await session.feed_run_async(
+                SANDBOX_CODE_PATH.read_text(),
+                external_functions={
+                    'query_csv': external_funcs.query_csv,
+                    'read_json': external_funcs.read_json,
+                    'analyze_sentiment': external_funcs.analyze_sentiment,
+                },
+                os=fs,
+            )
 
     if not results:
         print('No results found. Check if customers have matching Twitter handles and tweets.')

@@ -94,8 +94,10 @@ subprocesses:
   streamed `Print` events out, then exactly one turn-ending event.
 - `crates/monty-pool` — the parent: an elastic pool of workers with crash
   detection/replacement and a watchdog enforcing a hard per-turn timeout.
-- `pydantic_monty.MontyPool` — async-first Python surface
-  (`async with MontyPool() as pool: async with pool.checkout() as session: ...`).
+- `pydantic_monty.Monty` / `pydantic_monty.AsyncMonty` — the ONLY Python
+  execution surface (there is no in-process Python API): sync and async pools
+  of workers (`with Monty() as pool: with pool.checkout() as session:
+  session.feed_run(...)`, and the `async with` / `feed_run_async` equivalents).
 
 The contract for crash detection: a child that exits or EOFs *without* a
 `FatalError` event crashed hard; the parent discards it and replaces it. See
@@ -579,6 +581,9 @@ Workflow: write `assert_snapshot!(value, @"");`, then `cargo insta test --accept
 ## Python Package (`pydantic-monty`)
 
 The Python package provides Python bindings for the Monty interpreter, located in `crates/monty-python/`.
+Execution always happens in `monty` worker subprocesses — there is no in-process execution API.
+The surface is `Monty` (sync pool) and `AsyncMonty` (async pool), each with
+`pool.checkout(...)` sessions driven by `feed_run` / `feed_run_async`.
 
 ### Structure
 
@@ -629,7 +634,7 @@ Use `pytest.raises` for expected exceptions, like this
 
 ```py
 with pytest.raises(ValueError) as exc_info:
-    m.run(print_callback=callback)
+    session.feed_run(code, print_callback=callback)
 assert exc_info.value.args[0] == snapshot('stopped at 3')
 ```
 

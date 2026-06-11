@@ -1,7 +1,14 @@
 """Tests for MountDir filesystem mount support.
 
 These test the Rust-backed mount system that handles filesystem operations
-entirely in Rust, with optional Python fallback for non-filesystem ops via `os=`.
+entirely inside the worker process, with optional Python fallback for
+non-filesystem ops via `os=`.
+
+Mounts are worker-local: a `MountDir` only contributes its configuration
+(virtual path, host path, mode, write limit) — the worker builds its own
+mount table per feed. `'overlay'` writes are visible within one `feed_run`
+call and discarded when the feed ends; `'read-write'` mounts write through
+to the real host directory.
 """
 
 import tempfile
@@ -9,9 +16,10 @@ from collections.abc import Generator
 from pathlib import Path
 
 import pytest
+from conftest import RunMonty
 from inline_snapshot import snapshot
 
-from pydantic_monty import Monty, MontyFileHandle, MontyRepl, MontyRuntimeError, MountDir
+from pydantic_monty import Monty, MontyFileHandle, MontyRuntimeError, MountDir
 
 
 @pytest.fixture
@@ -26,9 +34,9 @@ def test_dir() -> Generator[Path, None, None]:
         yield p
 
 
-def assert_mount_reusable(md: MountDir) -> None:
-    """Assert that a previously used mount was returned to its shared slot."""
-    result = Monty("from pathlib import Path; Path('/data/subdir/nested.txt').read_text()").run(mount=md)
+def assert_mount_reusable(monty_run: RunMonty, md: MountDir) -> None:
+    """Assert that a previously used MountDir config works in a fresh run."""
+    result = monty_run("from pathlib import Path; Path('/data/subdir/nested.txt').read_text()", mount=md)
     assert result == snapshot('nested content')
 
 
@@ -82,19 +90,19 @@ def test_non_absolute_virtual_path(test_dir: Path):
 # =============================================================================
 
 
-def test_read_text(test_dir: Path):
+def test_read_text(monty_run: RunMonty, test_dir: Path):
     md = MountDir('/data', str(test_dir), mode='read-only')
-    result = Monty("from pathlib import Path; Path('/data/hello.txt').read_text()").run(mount=md)
+    result = monty_run("from pathlib import Path; Path('/data/hello.txt').read_text()", mount=md)
     assert result == snapshot('hello world')
 
 
-def test_read_bytes(test_dir: Path):
+def test_read_bytes(monty_run: RunMonty, test_dir: Path):
     md = MountDir('/data', str(test_dir), mode='read-only')
-    result = Monty("from pathlib import Path; Path('/data/data.bin').read_bytes()").run(mount=md)
+    result = monty_run("from pathlib import Path; Path('/data/data.bin').read_bytes()", mount=md)
     assert result == snapshot(b'\x00\x01\x02')
 
 
-def test_path_exists(test_dir: Path):
+def test_path_exists(monty_run: RunMonty, test_dir: Path):
     md = MountDir('/data', str(test_dir), mode='read-only')
     code = """
 from pathlib import Path
@@ -103,45 +111,45 @@ exists_dir = Path('/data/subdir').exists()
 exists_missing = Path('/data/nope.txt').exists()
 (exists_file, exists_dir, exists_missing)
 """
-    result = Monty(code).run(mount=md)
+    result = monty_run(code, mount=md)
     assert result == snapshot((True, True, False))
 
 
-def test_is_file_is_dir(test_dir: Path):
+def test_is_file_is_dir(monty_run: RunMonty, test_dir: Path):
     md = MountDir('/data', str(test_dir), mode='read-only')
     code = """
 from pathlib import Path
 (Path('/data/hello.txt').is_file(), Path('/data/hello.txt').is_dir(),
  Path('/data/subdir').is_file(), Path('/data/subdir').is_dir())
 """
-    result = Monty(code).run(mount=md)
+    result = monty_run(code, mount=md)
     assert result == snapshot((True, False, False, True))
 
 
-def test_iterdir(test_dir: Path):
+def test_iterdir(monty_run: RunMonty, test_dir: Path):
     md = MountDir('/data', str(test_dir), mode='read-only')
     code = """
 from pathlib import Path
 sorted([p.name for p in Path('/data').iterdir()])
 """
-    result = Monty(code).run(mount=md)
+    result = monty_run(code, mount=md)
     assert result == snapshot(['data.bin', 'hello.txt', 'subdir'])
 
 
-def test_stat(test_dir: Path):
+def test_stat(monty_run: RunMonty, test_dir: Path):
     md = MountDir('/data', str(test_dir), mode='read-only')
     code = """
 from pathlib import Path
 s = Path('/data/hello.txt').stat()
 s.st_size
 """
-    result = Monty(code).run(mount=md)
+    result = monty_run(code, mount=md)
     assert result == snapshot(11)
 
 
-def test_read_nested(test_dir: Path):
+def test_read_nested(monty_run: RunMonty, test_dir: Path):
     md = MountDir('/data', str(test_dir), mode='read-only')
-    result = Monty("from pathlib import Path; Path('/data/subdir/nested.txt').read_text()").run(mount=md)
+    result = monty_run("from pathlib import Path; Path('/data/subdir/nested.txt').read_text()", mount=md)
     assert result == snapshot('nested content')
 
 
@@ -150,54 +158,57 @@ def test_read_nested(test_dir: Path):
 # =============================================================================
 
 
-def test_write_read_only_blocked(test_dir: Path):
+def test_write_read_only_blocked(monty_run: RunMonty, test_dir: Path):
     md = MountDir('/data', str(test_dir), mode='read-only')
     with pytest.raises(MontyRuntimeError) as exc_info:
-        Monty("from pathlib import Path; Path('/data/new.txt').write_text('x')").run(mount=md)
+        monty_run("from pathlib import Path; Path('/data/new.txt').write_text('x')", mount=md)
     assert 'Read-only file system' in str(exc_info.value)
 
 
-def test_write_read_write(test_dir: Path):
+def test_write_read_write(monty_run: RunMonty, test_dir: Path):
     md = MountDir('/data', str(test_dir), mode='read-write')
     code = """
 from pathlib import Path
 Path('/data/new.txt').write_text('written by monty')
 Path('/data/new.txt').read_text()
 """
-    result = Monty(code).run(mount=md)
+    result = monty_run(code, mount=md)
     assert result == snapshot('written by monty')
     # Verify it was actually written to the host filesystem
     assert (test_dir / 'new.txt').read_text() == 'written by monty'
 
 
-def test_overlay_write_doesnt_modify_host(test_dir: Path):
+def test_overlay_write_doesnt_modify_host(monty_run: RunMonty, test_dir: Path):
     md = MountDir('/data', str(test_dir), mode='overlay')
     code = """
 from pathlib import Path
 Path('/data/overlay_file.txt').write_text('overlay content')
 Path('/data/overlay_file.txt').read_text()
 """
-    result = Monty(code).run(mount=md)
+    result = monty_run(code, mount=md)
     assert result == snapshot('overlay content')
     # Verify host filesystem was NOT modified
     assert not (test_dir / 'overlay_file.txt').exists()
 
 
-def test_overlay_read_falls_through(test_dir: Path):
+def test_overlay_read_falls_through(monty_run: RunMonty, test_dir: Path):
     md = MountDir('/data', str(test_dir), mode='overlay')
-    result = Monty("from pathlib import Path; Path('/data/hello.txt').read_text()").run(mount=md)
+    result = monty_run("from pathlib import Path; Path('/data/hello.txt').read_text()", mount=md)
     assert result == snapshot('hello world')
 
 
-def test_overlay_persists_across_runs(test_dir: Path):
+def test_overlay_discarded_across_runs(monty_run: RunMonty, test_dir: Path):
+    """Overlay writes are worker-local: they do not persist to the next run."""
     md = MountDir('/data', str(test_dir), mode='overlay')
-    Monty("from pathlib import Path; Path('/data/persistent.txt').write_text('run1')").run(mount=md)
-    result = Monty("from pathlib import Path; Path('/data/persistent.txt').read_text()").run(mount=md)
-    assert result == snapshot('run1')
+    monty_run("from pathlib import Path; Path('/data/transient.txt').write_text('run1')", mount=md)
+    result = monty_run("from pathlib import Path; Path('/data/transient.txt').exists()", mount=md)
+    assert result is False
+    # Host filesystem was never modified either
+    assert not (test_dir / 'transient.txt').exists()
 
 
-def test_run_mount_released_after_runtime_error(test_dir: Path):
-    """Monty.run() puts mounts back when execution raises after an OS call."""
+def test_mount_reusable_after_runtime_error(monty_run: RunMonty, test_dir: Path):
+    """A MountDir config works again after a run that raised mid-execution."""
     md = MountDir('/data', str(test_dir), mode='read-only')
     code = """
 from pathlib import Path
@@ -205,13 +216,13 @@ Path('/data/hello.txt').read_text()
 1 / 0
 """
     with pytest.raises(MontyRuntimeError) as exc_info:
-        Monty(code).run(mount=md)
+        monty_run(code, mount=md)
     assert isinstance(exc_info.value.exception(), ZeroDivisionError)
-    assert_mount_reusable(md)
+    assert_mount_reusable(monty_run, md)
 
 
-def test_run_mount_released_after_resource_error(test_dir: Path):
-    """Monty.run() puts mounts back when a resource limit trips after an OS call."""
+def test_mount_reusable_after_resource_error(monty_run: RunMonty, test_dir: Path):
+    """A MountDir config works again after a run that hit a resource limit."""
     md = MountDir('/data', str(test_dir), mode='read-only')
     code = """
 from pathlib import Path
@@ -222,9 +233,9 @@ for i in range(1000):
 len(result)
 """
     with pytest.raises(MontyRuntimeError) as exc_info:
-        Monty(code).run(mount=md, limits={'max_memory': 100})
+        monty_run(code, mount=md, limits={'max_memory': 100})
     assert isinstance(exc_info.value.exception(), MemoryError)
-    assert_mount_reusable(md)
+    assert_mount_reusable(monty_run, md)
 
 
 # =============================================================================
@@ -232,7 +243,7 @@ len(result)
 # =============================================================================
 
 
-def test_mkdir_rmdir(test_dir: Path):
+def test_mkdir_rmdir(monty_run: RunMonty, test_dir: Path):
     md = MountDir('/data', str(test_dir), mode='overlay')
     code = """
 from pathlib import Path
@@ -242,37 +253,37 @@ Path('/data/newdir').rmdir()
 after = Path('/data/newdir').exists()
 (exists, after)
 """
-    result = Monty(code).run(mount=md)
+    result = monty_run(code, mount=md)
     assert result == snapshot((True, False))
 
 
-def test_unlink(test_dir: Path):
+def test_unlink(monty_run: RunMonty, test_dir: Path):
     md = MountDir('/data', str(test_dir), mode='overlay')
     code = """
 from pathlib import Path
 Path('/data/hello.txt').unlink()
 Path('/data/hello.txt').exists()
 """
-    result = Monty(code).run(mount=md)
+    result = monty_run(code, mount=md)
     assert result is False
     # Host file should still exist (overlay mode)
     assert (test_dir / 'hello.txt').exists()
 
 
-def test_rename(test_dir: Path):
+def test_rename(monty_run: RunMonty, test_dir: Path):
     md = MountDir('/data', str(test_dir), mode='overlay')
     code = """
 from pathlib import Path
 Path('/data/hello.txt').rename('/data/renamed.txt')
 (Path('/data/hello.txt').exists(), Path('/data/renamed.txt').read_text())
 """
-    result = Monty(code).run(mount=md)
+    result = monty_run(code, mount=md)
     assert result == snapshot((False, 'hello world'))
 
 
-def test_resolve(test_dir: Path):
+def test_resolve(monty_run: RunMonty, test_dir: Path):
     md = MountDir('/data', str(test_dir), mode='read-only')
-    result = Monty("from pathlib import Path; str(Path('/data/subdir/../hello.txt').resolve())").run(mount=md)
+    result = monty_run("from pathlib import Path; str(Path('/data/subdir/../hello.txt').resolve())", mount=md)
     assert result == snapshot('/data/hello.txt')
 
 
@@ -281,17 +292,17 @@ def test_resolve(test_dir: Path):
 # =============================================================================
 
 
-def test_path_traversal_blocked(test_dir: Path):
+def test_path_traversal_blocked(monty_run: RunMonty, test_dir: Path):
     md = MountDir('/data', str(test_dir), mode='read-only')
     with pytest.raises(MontyRuntimeError) as exc_info:
-        Monty("from pathlib import Path; Path('/data/../../etc/passwd').read_text()").run(mount=md)
+        monty_run("from pathlib import Path; Path('/data/../../etc/passwd').read_text()", mount=md)
     assert 'Permission denied' in str(exc_info.value)
 
 
-def test_unmounted_path_denied(test_dir: Path):
+def test_unmounted_path_denied(monty_run: RunMonty, test_dir: Path):
     md = MountDir('/data', str(test_dir), mode='read-only')
     with pytest.raises(MontyRuntimeError) as exc_info:
-        Monty("from pathlib import Path; Path('/other/file.txt').exists()").run(mount=md)
+        monty_run("from pathlib import Path; Path('/other/file.txt').exists()", mount=md)
     assert 'Permission denied' in str(exc_info.value)
 
 
@@ -300,22 +311,37 @@ def test_unmounted_path_denied(test_dir: Path):
 # =============================================================================
 
 
-def test_fallback_for_getenv(test_dir: Path):
+def test_fallback_for_getenv(monty_run: RunMonty, test_dir: Path):
     def fallback(function_name: str, args: tuple[object, ...], kwargs: dict[str, object]) -> object:
         if function_name == 'os.getenv':
             return 'my_value' if args[0] == 'MY_VAR' else None
         return None
 
     md = MountDir('/data', str(test_dir), mode='read-only')
-    result = Monty("import os; os.getenv('MY_VAR')").run(mount=md, os=fallback)
+    result = monty_run("import os; os.getenv('MY_VAR')", mount=md, os=fallback)
     assert result == snapshot('my_value')
 
 
-def test_no_fallback_not_implemented(test_dir: Path):
+def test_no_fallback_not_implemented(monty_run: RunMonty, test_dir: Path):
     md = MountDir('/data', str(test_dir), mode='read-only')
     with pytest.raises(MontyRuntimeError) as exc_info:
-        Monty("import os; os.getenv('PATH')").run(mount=md)
+        monty_run("import os; os.getenv('PATH')", mount=md)
     assert 'is not supported in this environment' in str(exc_info.value)
+
+
+def test_mounted_calls_do_not_reach_os_callback(monty_run: RunMonty, test_dir: Path):
+    """Filesystem calls covered by a mount are handled inside the worker and
+    never reach the `os=` callback."""
+    calls: list[str] = []
+
+    def fallback(function_name: str, args: tuple[object, ...], kwargs: dict[str, object]) -> object:
+        calls.append(function_name)
+        return None
+
+    md = MountDir('/data', str(test_dir), mode='read-only')
+    result = monty_run("from pathlib import Path; Path('/data/hello.txt').read_text()", mount=md, os=fallback)
+    assert result == snapshot('hello world')
+    assert calls == []
 
 
 # =============================================================================
@@ -323,7 +349,7 @@ def test_no_fallback_not_implemented(test_dir: Path):
 # =============================================================================
 
 
-def test_multiple_mounts_different_modes(test_dir: Path):
+def test_multiple_mounts_different_modes(monty_run: RunMonty, test_dir: Path):
     with tempfile.TemporaryDirectory() as tmpdir2:
         p2 = Path(tmpdir2)
         (p2 / 'file2.txt').write_text('from mount2')
@@ -338,157 +364,95 @@ a = Path('/ro/hello.txt').read_text()
 b = Path('/rw/file2.txt').read_text()
 (a, b)
 """
-        result = Monty(code).run(mount=mounts)
+        result = monty_run(code, mount=mounts)
         assert result == snapshot(('hello world', 'from mount2'))
 
 
 # =============================================================================
-# REPL mount support
+# Session (multi-feed) mount support
 # =============================================================================
 
 
-def test_repl_feed_run_with_mount(test_dir: Path):
+def test_session_feed_run_with_mount(pool: Monty, test_dir: Path):
     md = MountDir('/data', str(test_dir), mode='read-only')
-    repl = MontyRepl()
-    repl.feed_run('from pathlib import Path', mount=md)
-    result = repl.feed_run("Path('/data/hello.txt').read_text()", mount=md)
+    with pool.checkout() as session:
+        session.feed_run('from pathlib import Path', mount=md)
+        result = session.feed_run("Path('/data/hello.txt').read_text()", mount=md)
     assert result == snapshot('hello world')
 
 
-def test_repl_overlay_write_persists_across_feeds(test_dir: Path):
-    """Overlay writes in one feed() call are visible in subsequent feed() calls."""
+def test_overlay_visible_within_feed(pool: Monty, test_dir: Path):
+    """Overlay writes, deletes, and mkdirs are all visible within one feed."""
     md = MountDir('/data', str(test_dir), mode='overlay')
-    repl = MontyRepl()
-    repl.feed_run('from pathlib import Path', mount=md)
-    repl.feed_run("Path('/data/new.txt').write_text('from repl')", mount=md)
-    result = repl.feed_run("Path('/data/new.txt').read_text()", mount=md)
-    assert result == snapshot('from repl')
-    # Host not modified
+    code = """
+from pathlib import Path
+Path('/data/new.txt').write_text('version1')
+Path('/data/new.txt').write_text('version2')
+content = Path('/data/new.txt').read_text()
+Path('/data/mydir').mkdir()
+Path('/data/mydir/file.txt').write_text('nested')
+nested = Path('/data/mydir/file.txt').read_text()
+Path('/data/hello.txt').unlink()
+deleted = Path('/data/hello.txt').exists()
+listing = sorted([p.name for p in Path('/data').iterdir()])
+(content, nested, deleted, listing)
+"""
+    with pool.checkout() as session:
+        result = session.feed_run(code, mount=md)
+    assert result == snapshot(('version2', 'nested', False, ['data.bin', 'mydir', 'new.txt', 'subdir']))
+    # Host filesystem is completely untouched
     assert not (test_dir / 'new.txt').exists()
-
-
-def test_repl_overlay_overwrite_persists(test_dir: Path):
-    """Overwriting an overlay file across feeds preserves the latest content."""
-    md = MountDir('/data', str(test_dir), mode='overlay')
-    repl = MontyRepl()
-    repl.feed_run('from pathlib import Path', mount=md)
-    repl.feed_run("Path('/data/hello.txt').write_text('version1')", mount=md)
-    repl.feed_run("Path('/data/hello.txt').write_text('version2')", mount=md)
-    result = repl.feed_run("Path('/data/hello.txt').read_text()", mount=md)
-    assert result == snapshot('version2')
-    # Original host file unchanged
+    assert not (test_dir / 'mydir').exists()
     assert (test_dir / 'hello.txt').read_text() == 'hello world'
 
 
-def test_repl_overlay_delete_persists(test_dir: Path):
-    """Deleting a file in overlay mode persists across feeds."""
+def test_overlay_discarded_between_feeds(pool: Monty, test_dir: Path):
+    """Overlay writes are discarded when the feed ends — the next feed in the
+    same session sees the original host contents again."""
     md = MountDir('/data', str(test_dir), mode='overlay')
-    repl = MontyRepl()
-    repl.feed_run('from pathlib import Path', mount=md)
-    repl.feed_run("Path('/data/hello.txt').unlink()", mount=md)
-    result = repl.feed_run("Path('/data/hello.txt').exists()", mount=md)
-    assert result is False
-    # Host file still exists
-    assert (test_dir / 'hello.txt').exists()
+    with pool.checkout() as session:
+        session.feed_run('from pathlib import Path', mount=md)
+        session.feed_run("Path('/data/new.txt').write_text('from feed1')", mount=md)
+        assert session.feed_run("Path('/data/new.txt').exists()", mount=md) is False
+        # a host file deleted in overlay mode reappears in the next feed
+        session.feed_run("Path('/data/hello.txt').unlink()", mount=md)
+        assert session.feed_run("Path('/data/hello.txt').read_text()", mount=md) == snapshot('hello world')
+    # Host not modified
+    assert not (test_dir / 'new.txt').exists()
+    assert (test_dir / 'hello.txt').read_text() == 'hello world'
 
 
-def test_repl_overlay_mkdir_persists(test_dir: Path):
-    """Directories created in overlay mode persist across feeds."""
-    md = MountDir('/data', str(test_dir), mode='overlay')
-    repl = MontyRepl()
-    repl.feed_run('from pathlib import Path', mount=md)
-    repl.feed_run("Path('/data/mydir').mkdir()", mount=md)
-    repl.feed_run("Path('/data/mydir/file.txt').write_text('nested')", mount=md)
-    result = repl.feed_run("Path('/data/mydir/file.txt').read_text()", mount=md)
-    assert result == snapshot('nested')
-    assert not (test_dir / 'mydir').exists()
-
-
-def test_repl_overlay_iterdir_sees_overlay_files(test_dir: Path):
-    """iterdir() reflects both host and overlay files."""
-    md = MountDir('/data', str(test_dir), mode='overlay')
-    repl = MontyRepl()
-    repl.feed_run('from pathlib import Path', mount=md)
-    repl.feed_run("Path('/data/extra.txt').write_text('extra')", mount=md)
-    result = repl.feed_run("sorted([p.name for p in Path('/data').iterdir()])", mount=md)
-    assert result == snapshot(['data.bin', 'extra.txt', 'hello.txt', 'subdir'])
-
-
-def test_repl_overlay_shared_between_repl_and_monty(test_dir: Path):
-    """The same MountDir overlay state is shared between REPL and Monty.run()."""
-    md = MountDir('/data', str(test_dir), mode='overlay')
-    # Write via REPL
-    repl = MontyRepl()
-    repl.feed_run('from pathlib import Path', mount=md)
-    repl.feed_run("Path('/data/shared.txt').write_text('from repl')", mount=md)
-    # Read via Monty.run()
-    result = Monty("from pathlib import Path; Path('/data/shared.txt').read_text()").run(mount=md)
-    assert result == snapshot('from repl')
-
-
-def test_repl_read_write_mount(test_dir: Path):
-    """Read-write mounts in the REPL write to the host filesystem."""
+def test_session_read_write_mount(pool: Monty, test_dir: Path):
+    """Read-write mounts write through to the host, so writes persist across feeds."""
     md = MountDir('/data', str(test_dir), mode='read-write')
-    repl = MontyRepl()
-    repl.feed_run('from pathlib import Path', mount=md)
-    repl.feed_run("Path('/data/rw_file.txt').write_text('written')", mount=md)
-    result = repl.feed_run("Path('/data/rw_file.txt').read_text()", mount=md)
+    with pool.checkout() as session:
+        session.feed_run('from pathlib import Path', mount=md)
+        session.feed_run("Path('/data/rw_file.txt').write_text('written')", mount=md)
+        result = session.feed_run("Path('/data/rw_file.txt').read_text()", mount=md)
     assert result == snapshot('written')
     # Host was actually modified
     assert (test_dir / 'rw_file.txt').read_text() == 'written'
 
 
-def test_repl_read_only_mount_blocks_write(test_dir: Path):
-    """Read-only mounts in the REPL reject write operations."""
+def test_session_read_only_mount_blocks_write(pool: Monty, test_dir: Path):
+    """Read-only mounts in a session reject write operations."""
     md = MountDir('/data', str(test_dir), mode='read-only')
-    repl = MontyRepl()
-    repl.feed_run('from pathlib import Path', mount=md)
-    with pytest.raises(MontyRuntimeError) as exc_info:
-        repl.feed_run("Path('/data/nope.txt').write_text('x')", mount=md)
-    assert 'Read-only file system' in str(exc_info.value)
+    with pool.checkout() as session:
+        session.feed_run('from pathlib import Path', mount=md)
+        with pytest.raises(MontyRuntimeError) as exc_info:
+            session.feed_run("Path('/data/nope.txt').write_text('x')", mount=md)
+        assert 'Read-only file system' in str(exc_info.value)
 
 
-def test_repl_feed_run_mount_released_after_runtime_error(test_dir: Path):
-    """MontyRepl.feed_run() puts mounts back when execution raises after an OS call."""
-    md = MountDir('/data', str(test_dir), mode='read-only')
-    repl = MontyRepl()
-    code = """
-from pathlib import Path
-Path('/data/hello.txt').read_text()
-1 / 0
-"""
-    with pytest.raises(MontyRuntimeError) as exc_info:
-        repl.feed_run(code, mount=md)
-    assert isinstance(exc_info.value.exception(), ZeroDivisionError)
-    assert_mount_reusable(md)
+# =============================================================================
+# os= callback error paths
+# =============================================================================
 
 
-def test_repl_feed_run_mount_released_after_resource_error(test_dir: Path):
-    """MontyRepl.feed_run() puts mounts back when a resource limit trips after an OS call."""
-    md = MountDir('/data', str(test_dir), mode='read-only')
-    repl = MontyRepl(limits={'max_memory': 100})
-    code = """
-from pathlib import Path
-Path('/data/hello.txt').read_text()
-result = []
-for i in range(1000):
-    result.append('x' * 100)
-len(result)
-"""
-    with pytest.raises(MontyRuntimeError) as exc_info:
-        repl.feed_run(code, mount=md)
-    assert isinstance(exc_info.value.exception(), MemoryError)
-    assert_mount_reusable(md)
-
-
-def test_run_mount_released_after_callback_marshalling_error(test_dir: Path):
-    """Monty.run() puts mounts back when the os= callback returns an unconvertible value.
-
-    The fallback callback returns an object that cannot be converted back into a
-    Monty value, so the conversion failure is surfaced inside Monty as a
-    `TypeError` wrapped in `MontyRuntimeError`. The mount must still be
-    returned to its shared slot on that error path.
-    """
+def test_os_callback_marshalling_error(monty_run: RunMonty, test_dir: Path):
+    """An os= callback returning an unconvertible value surfaces inside Monty
+    as a `TypeError` wrapped in `MontyRuntimeError`, and the MountDir remains
+    usable afterwards."""
     md = MountDir('/data', str(test_dir), mode='read-only')
 
     def os_cb(func: object, args: tuple[object, ...], kwargs: dict[str, object]) -> object:
@@ -497,12 +461,12 @@ def test_run_mount_released_after_callback_marshalling_error(test_dir: Path):
     # Path is outside the mount so it falls through to the os= fallback.
     code = "from pathlib import Path; Path('/outside/path.txt').exists()"
     with pytest.raises(MontyRuntimeError) as exc_info:
-        Monty(code).run(mount=md, os=os_cb)
+        monty_run(code, mount=md, os=os_cb)
     assert isinstance(exc_info.value.exception(), TypeError)
-    assert_mount_reusable(md)
+    assert_mount_reusable(monty_run, md)
 
 
-def test_os_callback_lone_surrogate_return_surfaces_inside_monty(test_dir: Path):
+def test_os_callback_lone_surrogate_return_surfaces_inside_monty(monty_run: RunMonty, test_dir: Path):
     """An os= callback returning a lone-surrogate string surfaces inside Monty
     as a catchable `ValueError` rather than escaping as a raw `UnicodeEncodeError`."""
     md = MountDir('/data', str(test_dir), mode='read-only')
@@ -521,36 +485,36 @@ def test_os_callback_lone_surrogate_return_surfaces_inside_monty(test_dir: Path)
         "    result = 'caught'\n"
         'result'
     )
-    assert Monty(code).run(mount=md, os=os_cb) == snapshot('caught')
+    assert monty_run(code, mount=md, os=os_cb) == snapshot('caught')
 
 
-def test_repl_feed_run_mount_and_repl_released_after_callback_marshalling_error(test_dir: Path):
-    """MontyRepl.feed_run() puts mount AND REPL back when os= callback returns an unconvertible value.
-
-    Without this fix, the `?` propagation through `handle_repl_os_call` leaks
-    both the mount slot (stuck `<in use>`) and the REPL session (mutex left
-    `None`), so neither the `MountDir` nor the `MontyRepl` could be reused.
-    """
+def test_session_survives_os_callback_marshalling_error(pool: Monty, test_dir: Path):
+    """A session keeps its state when an os= callback returns an unconvertible
+    value — the error surfaces as MontyRuntimeError but the session survives."""
     md = MountDir('/data', str(test_dir), mode='read-only')
-    repl = MontyRepl()
-    repl.feed_run('x = 42')
 
     def os_cb(func: object, args: tuple[object, ...], kwargs: dict[str, object]) -> object:
         return object()  # unconvertible — surfaces inside Monty as TypeError
 
-    code = "from pathlib import Path; Path('/outside/path.txt').exists()"
-    with pytest.raises(MontyRuntimeError) as exc_info:
-        repl.feed_run(code, mount=md, os=os_cb)
-    assert isinstance(exc_info.value.exception(), TypeError)
-    # REPL state must still be intact — `x` is visible in a later snippet.
-    assert repl.feed_run('x') == snapshot(42)
-    assert_mount_reusable(md)
+    with pool.checkout() as session:
+        session.feed_run('x = 42')
+        code = "from pathlib import Path; Path('/outside/path.txt').exists()"
+        with pytest.raises(MontyRuntimeError) as exc_info:
+            session.feed_run(code, mount=md, os=os_cb)
+        assert isinstance(exc_info.value.exception(), TypeError)
+        # Session state must still be intact — `x` is visible in a later snippet.
+        assert session.feed_run('x') == snapshot(42)
 
 
-def test_open_returns_monty_file_handle(test_dir: Path):
+# =============================================================================
+# open() file handles across the boundary
+# =============================================================================
+
+
+def test_open_returns_monty_file_handle(monty_run: RunMonty, test_dir: Path):
     """`open()` returned across the boundary surfaces as `MontyFileHandle`, not a stringified repr."""
     md = MountDir('/data', str(test_dir), mode='read-only')
-    f = Monty("open('/data/hello.txt')").run(mount=md)
+    f = monty_run("open('/data/hello.txt')", mount=md)
     assert isinstance(f, MontyFileHandle)
     assert f.path == snapshot('/data/hello.txt')
     assert f.mode == snapshot('r')
@@ -559,10 +523,10 @@ def test_open_returns_monty_file_handle(test_dir: Path):
     assert repr(f) == snapshot("MontyFileHandle(path='/data/hello.txt', mode='r')")
 
 
-def test_open_binary_write_handle_attrs(test_dir: Path):
+def test_open_binary_write_handle_attrs(monty_run: RunMonty, test_dir: Path):
     """Mode-derived attributes reflect the open() mode string for binary/write opens."""
     md = MountDir('/data', str(test_dir), mode='read-write')
-    f = Monty("open('/data/out.bin', 'wb')").run(mount=md)
+    f = monty_run("open('/data/out.bin', 'wb')", mount=md)
     assert isinstance(f, MontyFileHandle)
     assert f.mode == snapshot('wb')
     assert (f.binary, f.readable, f.writable) == snapshot((True, False, True))

@@ -1,203 +1,140 @@
+"""Error-mapping tests: MontyRuntimeError / MontySyntaxError shape, display and tracebacks."""
+
+from __future__ import annotations
+
 import pytest
+from conftest import RunMonty
 from inline_snapshot import snapshot
 
-import pydantic_monty
+from pydantic_monty import Monty, MontyError, MontyRuntimeError, MontySyntaxError
 
 # === MontyRuntimeError tests ===
 
 
-def test_zero_division_error():
-    m = pydantic_monty.Monty('1 / 0')
-    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
-        m.run()
+def test_zero_division_error(monty_run: RunMonty):
+    with pytest.raises(MontyRuntimeError) as exc_info:
+        monty_run('1 / 0')
     # Check that it's also a MontyError
-    assert isinstance(exc_info.value, pydantic_monty.MontyError)
+    assert isinstance(exc_info.value, MontyError)
     # Check the inner exception
     inner = exc_info.value.exception()
     assert isinstance(inner, ZeroDivisionError)
 
 
-def test_value_error():
-    m = pydantic_monty.Monty("raise ValueError('bad value')")
-    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
-        m.run()
+def test_value_error(monty_run: RunMonty):
+    with pytest.raises(MontyRuntimeError) as exc_info:
+        monty_run("raise ValueError('bad value')")
     inner = exc_info.value.exception()
     assert isinstance(inner, ValueError)
     assert str(inner) == snapshot('bad value')
 
 
-def test_type_error():
-    m = pydantic_monty.Monty("'string' + 1")
-    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
-        m.run()
-    inner = exc_info.value.exception()
-    assert isinstance(inner, TypeError)
+def test_type_error(monty_run: RunMonty):
+    with pytest.raises(MontyRuntimeError) as exc_info:
+        monty_run("'string' + 1")
+    assert isinstance(exc_info.value.exception(), TypeError)
 
 
-def test_index_error():
-    m = pydantic_monty.Monty('[1, 2, 3][10]')
-    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
-        m.run()
-    inner = exc_info.value.exception()
-    assert isinstance(inner, IndexError)
+def test_index_error(monty_run: RunMonty):
+    with pytest.raises(MontyRuntimeError) as exc_info:
+        monty_run('[1, 2, 3][10]')
+    assert isinstance(exc_info.value.exception(), IndexError)
 
 
-def test_key_error():
-    m = pydantic_monty.Monty("{'a': 1}['b']")
-    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
-        m.run()
-    inner = exc_info.value.exception()
-    assert isinstance(inner, KeyError)
+def test_key_error(monty_run: RunMonty):
+    with pytest.raises(MontyRuntimeError) as exc_info:
+        monty_run("{'a': 1}['b']")
+    assert isinstance(exc_info.value.exception(), KeyError)
 
 
-def test_attribute_error():
-    m = pydantic_monty.Monty("raise AttributeError('no such attr')")
-    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
-        m.run()
+def test_attribute_error(monty_run: RunMonty):
+    with pytest.raises(MontyRuntimeError) as exc_info:
+        monty_run("raise AttributeError('no such attr')")
     inner = exc_info.value.exception()
     assert isinstance(inner, AttributeError)
     assert str(inner) == snapshot('no such attr')
 
 
-def test_name_error():
-    m = pydantic_monty.Monty('undefined_variable')
-    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
-        m.run()
-    inner = exc_info.value.exception()
-    assert isinstance(inner, NameError)
+def test_name_error(monty_run: RunMonty):
+    with pytest.raises(MontyRuntimeError) as exc_info:
+        monty_run('undefined_variable')
+    assert isinstance(exc_info.value.exception(), NameError)
 
 
-def test_assertion_error():
-    m = pydantic_monty.Monty('assert False')
-    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
-        m.run()
-    inner = exc_info.value.exception()
-    assert isinstance(inner, AssertionError)
+def test_assertion_error(monty_run: RunMonty):
+    with pytest.raises(MontyRuntimeError) as exc_info:
+        monty_run('assert False')
+    assert isinstance(exc_info.value.exception(), AssertionError)
 
 
-def test_assertion_error_with_message():
-    m = pydantic_monty.Monty("assert False, 'custom message'")
-    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
-        m.run()
+def test_assertion_error_with_message(monty_run: RunMonty):
+    with pytest.raises(MontyRuntimeError) as exc_info:
+        monty_run("assert False, 'custom message'")
     inner = exc_info.value.exception()
     assert isinstance(inner, AssertionError)
     assert str(inner) == snapshot('custom message')
 
 
-def test_runtime_error():
-    m = pydantic_monty.Monty("raise RuntimeError('runtime error')")
-    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
-        m.run()
+def test_runtime_error(monty_run: RunMonty):
+    with pytest.raises(MontyRuntimeError) as exc_info:
+        monty_run("raise RuntimeError('runtime error')")
     inner = exc_info.value.exception()
     assert isinstance(inner, RuntimeError)
     assert str(inner) == snapshot('runtime error')
 
 
-def test_not_implemented_error():
-    m = pydantic_monty.Monty("raise NotImplementedError('not implemented')")
-    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
-        m.run()
+def test_not_implemented_error(monty_run: RunMonty):
+    with pytest.raises(MontyRuntimeError) as exc_info:
+        monty_run("raise NotImplementedError('not implemented')")
     inner = exc_info.value.exception()
     assert isinstance(inner, NotImplementedError)
     assert str(inner) == snapshot('not implemented')
 
 
 # === MontySyntaxError tests ===
+# Syntax errors surface at feed_run time, not at construction.
 
 
-def test_syntax_error_on_init():
-    with pytest.raises(pydantic_monty.MontySyntaxError) as exc_info:
-        pydantic_monty.Monty('def')
+def test_syntax_error_on_feed(monty_run: RunMonty):
+    with pytest.raises(MontySyntaxError) as exc_info:
+        monty_run('def')
     # Check that it's also a MontyError
-    assert isinstance(exc_info.value, pydantic_monty.MontyError)
+    assert isinstance(exc_info.value, MontyError)
     # Check the inner exception
     inner = exc_info.value.exception()
     assert isinstance(inner, SyntaxError)
 
 
-def test_syntax_error_unclosed_paren():
-    with pytest.raises(pydantic_monty.MontySyntaxError) as exc_info:
-        pydantic_monty.Monty('print(1')
-    inner = exc_info.value.exception()
-    assert isinstance(inner, SyntaxError)
+def test_syntax_error_unclosed_paren(monty_run: RunMonty):
+    with pytest.raises(MontySyntaxError) as exc_info:
+        monty_run('print(1')
+    assert isinstance(exc_info.value.exception(), SyntaxError)
 
 
-def test_syntax_error_invalid_syntax():
-    with pytest.raises(pydantic_monty.MontySyntaxError) as exc_info:
-        pydantic_monty.Monty('x = = 1')
-    inner = exc_info.value.exception()
-    assert isinstance(inner, SyntaxError)
+def test_syntax_error_invalid_syntax(monty_run: RunMonty):
+    with pytest.raises(MontySyntaxError) as exc_info:
+        monty_run('x = = 1')
+    assert isinstance(exc_info.value.exception(), SyntaxError)
 
 
-def test_syntax_error_lone_surrogate():
+def test_syntax_error_lone_surrogate(monty_run: RunMonty):
     # Lone surrogates cannot be encoded as UTF-8, so they are not valid Python
-    # source. We report this as MontySyntaxError rather than letting PyO3's raw
-    # UnicodeEncodeError bubble out.
-    with pytest.raises(pydantic_monty.MontySyntaxError) as exc_info:
-        pydantic_monty.Monty('\ud83d')
+    # source. feed_run reports this as MontySyntaxError rather than letting
+    # PyO3's raw UnicodeEncodeError bubble out.
+    with pytest.raises(MontySyntaxError) as exc_info:
+        monty_run('\ud83d')
     assert str(exc_info.value) == snapshot('source code is not valid UTF-8 (contains lone surrogates)')
     inner = exc_info.value.exception()
     assert isinstance(inner, SyntaxError)
 
 
-def test_input_name_lone_surrogate():
-    # An input *name* containing a lone surrogate cannot be encoded as UTF-8,
-    # so it cannot be a valid Python identifier. We surface this as
-    # `MontySyntaxError` (matching how invalid UTF-8 is handled for source
-    # code and type stubs) rather than letting PyO3's raw `UnicodeEncodeError`
-    # bubble up wrapped as a misleading `TypeError`.
-    with pytest.raises(pydantic_monty.MontySyntaxError) as exc_info:
-        pydantic_monty.Monty('1', inputs=['\ud83d'])
-    assert str(exc_info.value) == snapshot('inputs entry is not valid UTF-8 (contains lone surrogates)')
-    assert isinstance(exc_info.value.exception(), SyntaxError)
-
-
-def test_input_name_wrong_type():
-    # A non-string element in `inputs` still raises `TypeError` with the
-    # argument name so users can tell which argument is wrong.
-    with pytest.raises(TypeError) as exc_info:
-        pydantic_monty.Monty('1', inputs=[123])  # pyright: ignore[reportArgumentType]
-    assert str(exc_info.value) == snapshot("inputs: 'int' object is not an instance of 'str'")
-
-
-def test_syntax_error_stubs_lone_surrogate():
-    # Stubs are parsed as Python source, so invalid UTF-8 is not valid source
-    # text. We surface this as `MontySyntaxError` (matching the behavior for
-    # the main `code` argument) rather than letting PyO3's `UnicodeEncodeError`
-    # bubble up.
-    with pytest.raises(pydantic_monty.MontySyntaxError) as exc_info:
-        pydantic_monty.Monty('1', type_check=True, type_check_stubs='\ud83d')
-    assert str(exc_info.value) == snapshot('type_check_stubs is not valid UTF-8')
-    assert isinstance(exc_info.value.exception(), SyntaxError)
-
-
-def test_syntax_error_stubs_lone_surrogate_without_type_check():
-    # Stubs are validated even when `type_check=False` because the raw PyO3
-    # decode happens at argument extraction time; we want a consistent error
-    # regardless of whether the stubs would actually be used.
-    with pytest.raises(pydantic_monty.MontySyntaxError) as exc_info:
-        pydantic_monty.Monty('1', type_check_stubs='\ud83d')
-    assert str(exc_info.value) == snapshot('type_check_stubs is not valid UTF-8')
-
-
-def test_syntax_error_type_check_prefix_code_lone_surrogate():
-    # The standalone `Monty.type_check(prefix_code=...)` entry point shares the
-    # same extraction logic, so invalid UTF-8 in `prefix_code` is also raised
-    # as `MontySyntaxError`.
-    m = pydantic_monty.Monty('1')
-    with pytest.raises(pydantic_monty.MontySyntaxError) as exc_info:
-        m.type_check('\ud83d')
-    assert str(exc_info.value) == snapshot('type_check_stubs is not valid UTF-8')
-
-
-def test_runtime_error_input_value_lone_surrogate():
+def test_runtime_error_input_value_lone_surrogate(monty_run: RunMonty):
     # An input string containing a lone surrogate fails UTF-8 conversion during
     # `py_to_monty`. We wrap the resulting `UnicodeEncodeError` as a
     # `MontyRuntimeError(ValueError)` so input-value failures surface the same
     # way as failures when an external function returns such a string.
-    m = pydantic_monty.Monty('x', inputs=['x'])
-    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
-        m.run(inputs={'x': '\ud83d'})
+    with pytest.raises(MontyRuntimeError) as exc_info:
+        monty_run('x', inputs={'x': '\ud83d'})
     assert str(exc_info.value) == snapshot(
         "ValueError: 'utf-8' codec can't encode character '\\ud83d' in position 0: surrogates not allowed"
     )
@@ -205,24 +142,41 @@ def test_runtime_error_input_value_lone_surrogate():
     assert isinstance(inner, ValueError)
 
 
+def test_runtime_error_input_key_lone_surrogate(monty_run: RunMonty):
+    # An input *key* containing a lone surrogate also goes through UTF-8
+    # conversion; wrap it the same way.
+    with pytest.raises(MontyRuntimeError) as exc_info:
+        monty_run('x', inputs={'\ud83d': 1})
+    assert isinstance(exc_info.value.exception(), ValueError)
+
+
+def test_syntax_error_stubs_lone_surrogate(pool: Monty):
+    # Stubs are parsed as Python source, so invalid UTF-8 is not valid source
+    # text. We surface this as `MontySyntaxError` rather than letting PyO3's
+    # `UnicodeEncodeError` bubble up.
+    with pytest.raises(MontySyntaxError) as exc_info:
+        with pool.checkout(type_check=True, type_check_stubs='\ud83d') as session:
+            session.feed_run('1')
+    assert str(exc_info.value) == snapshot('type_check_stubs is not valid UTF-8')
+
+
 # === Catching with base class ===
 
 
-def test_catch_with_base_class():
-    m = pydantic_monty.Monty('1 / 0')
-    with pytest.raises(pydantic_monty.MontyError):
-        m.run()
+def test_catch_with_base_class(monty_run: RunMonty):
+    with pytest.raises(MontyError):
+        monty_run('1 / 0')
 
 
-def test_catch_syntax_error_with_base_class():
-    with pytest.raises(pydantic_monty.MontyError):
-        pydantic_monty.Monty('def')
+def test_catch_syntax_error_with_base_class(monty_run: RunMonty):
+    with pytest.raises(MontyError):
+        monty_run('def')
 
 
 # === Exception handling within Monty ===
 
 
-def test_raise_caught_exception():
+def test_raise_caught_exception(monty_run: RunMonty):
     code = """
 try:
     1 / 0
@@ -230,20 +184,18 @@ except ZeroDivisionError as e:
     result = 'caught'
 result
 """
-    m = pydantic_monty.Monty(code)
-    assert m.run() == snapshot('caught')
+    assert monty_run(code) == snapshot('caught')
 
 
-def test_exception_in_function():
+def test_exception_in_function(monty_run: RunMonty):
     code = """
 def fail():
     raise ValueError('from function')
 
 fail()
 """
-    m = pydantic_monty.Monty(code)
-    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
-        m.run()
+    with pytest.raises(MontyRuntimeError) as exc_info:
+        monty_run(code)
     inner = exc_info.value.exception()
     assert isinstance(inner, ValueError)
     assert str(inner) == snapshot('from function')
@@ -252,50 +204,46 @@ fail()
 # === Display and str methods ===
 
 
-def test_display_traceback():
-    m = pydantic_monty.Monty('1 / 0')
-    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
-        m.run()
+def test_display_traceback(monty_run: RunMonty):
+    with pytest.raises(MontyRuntimeError) as exc_info:
+        monty_run('1 / 0')
     display = exc_info.value.display()
     assert 'Traceback (most recent call last):' in display
     assert 'ZeroDivisionError' in display
 
 
-def test_display_type_msg():
-    m = pydantic_monty.Monty("raise ValueError('test message')")
-    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
-        m.run()
-    display = exc_info.value.display('type-msg')
-    assert display == snapshot('ValueError: test message')
+def test_display_type_msg(monty_run: RunMonty):
+    with pytest.raises(MontyRuntimeError) as exc_info:
+        monty_run("raise ValueError('test message')")
+    assert exc_info.value.display('type-msg') == snapshot('ValueError: test message')
 
 
-def test_runtime_display():
-    m = pydantic_monty.Monty("raise ValueError('test message')")
-    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
-        m.run()
+def test_runtime_display(monty_run: RunMonty):
+    with pytest.raises(MontyRuntimeError) as exc_info:
+        monty_run("raise ValueError('test message')")
     assert exc_info.value.display('msg') == snapshot('test message')
     assert exc_info.value.display('type-msg') == snapshot('ValueError: test message')
+    # traceback filenames are `<python-input-N>` style in the session/REPL model
     assert exc_info.value.display() == snapshot("""\
 Traceback (most recent call last):
-  File "main.py", line 1, in <module>
+  File "<python-input-0>", line 1, in <module>
     raise ValueError('test message')
 ValueError: test message\
 """)
 
 
-def test_str_returns_msg():
-    m = pydantic_monty.Monty("raise ValueError('test message')")
-    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
-        m.run()
+def test_str_returns_msg(monty_run: RunMonty):
+    with pytest.raises(MontyRuntimeError) as exc_info:
+        monty_run("raise ValueError('test message')")
     assert str(exc_info.value) == snapshot('ValueError: test message')
 
 
-def test_syntax_error_display():
-    with pytest.raises(pydantic_monty.MontySyntaxError) as exc_info:
-        pydantic_monty.Monty('def')
+def test_syntax_error_display(monty_run: RunMonty):
+    with pytest.raises(MontySyntaxError) as exc_info:
+        monty_run('def')
     assert exc_info.value.display() == snapshot("""\
 Traceback (most recent call last):
-  File "main.py", line 1
+  File "<python-input-0>", line 1
     def
        ~
 SyntaxError: Expected an identifier\
@@ -304,9 +252,9 @@ SyntaxError: Expected an identifier\
     assert exc_info.value.display('msg') == snapshot('Expected an identifier')
 
 
-def test_syntax_error_str():
-    with pytest.raises(pydantic_monty.MontySyntaxError) as exc_info:
-        pydantic_monty.Monty('def')
+def test_syntax_error_str(monty_run: RunMonty):
+    with pytest.raises(MontySyntaxError) as exc_info:
+        monty_run('def')
     # str() returns just the message
     assert 'SyntaxError' not in str(exc_info.value)
 
@@ -314,7 +262,7 @@ def test_syntax_error_str():
 # === Traceback tests ===
 
 
-def test_traceback_frames():
+def test_traceback_frames(monty_run: RunMonty):
     code = """\
 def inner():
     raise ValueError('error')
@@ -324,22 +272,21 @@ def outer():
 
 outer()
 """
-    m = pydantic_monty.Monty(code)
-    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
-        m.run()
+    with pytest.raises(MontyRuntimeError) as exc_info:
+        monty_run(code)
     frames = exc_info.value.traceback()
     assert isinstance(frames, list)
     assert len(frames) >= 2  # At least module level, outer(), and inner()
 
     assert exc_info.value.display() == snapshot("""\
 Traceback (most recent call last):
-  File "main.py", line 7, in <module>
+  File "<python-input-0>", line 7, in <module>
     outer()
     ~~~~~~~
-  File "main.py", line 5, in outer
+  File "<python-input-0>", line 5, in outer
     inner()
     ~~~~~~~
-  File "main.py", line 2, in inner
+  File "<python-input-0>", line 2, in inner
     raise ValueError('error')
 ValueError: error\
 """)
@@ -347,7 +294,7 @@ ValueError: error\
     assert [f.dict() for f in frames] == snapshot(
         [
             {
-                'filename': 'main.py',
+                'filename': '<python-input-0>',
                 'line': 7,
                 'column': 1,
                 'end_line': 7,
@@ -356,7 +303,7 @@ ValueError: error\
                 'source_line': 'outer()',
             },
             {
-                'filename': 'main.py',
+                'filename': '<python-input-0>',
                 'line': 5,
                 'column': 5,
                 'end_line': 5,
@@ -365,7 +312,7 @@ ValueError: error\
                 'source_line': '    inner()',
             },
             {
-                'filename': 'main.py',
+                'filename': '<python-input-0>',
                 'line': 2,
                 'column': 11,
                 'end_line': 2,
@@ -377,22 +324,21 @@ ValueError: error\
     )
 
 
-def test_frame_properties():
+def test_frame_properties(monty_run: RunMonty):
     code = """
 def foo():
     raise ValueError('test')
 
 foo()
 """
-    m = pydantic_monty.Monty(code)
-    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
-        m.run()
+    with pytest.raises(MontyRuntimeError) as exc_info:
+        monty_run(code)
     frames = exc_info.value.traceback()
 
     assert [f.dict() for f in frames] == snapshot(
         [
             {
-                'filename': 'main.py',
+                'filename': '<python-input-0>',
                 'line': 5,
                 'column': 1,
                 'end_line': 5,
@@ -401,7 +347,7 @@ foo()
                 'source_line': 'foo()',
             },
             {
-                'filename': 'main.py',
+                'filename': '<python-input-0>',
                 'line': 3,
                 'column': 11,
                 'end_line': 3,
@@ -416,48 +362,44 @@ foo()
 # === Repr tests ===
 
 
-def test_runtime_error_repr():
-    m = pydantic_monty.Monty("raise ValueError('test')")
-    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
-        m.run()
+def test_runtime_error_repr(monty_run: RunMonty):
+    with pytest.raises(MontyRuntimeError) as exc_info:
+        monty_run("raise ValueError('test')")
     assert repr(exc_info.value) == snapshot('MontyRuntimeError(ValueError: test)')
 
 
-def test_syntax_error_repr():
-    with pytest.raises(pydantic_monty.MontySyntaxError) as exc_info:
-        pydantic_monty.Monty('def')
+def test_syntax_error_repr(monty_run: RunMonty):
+    with pytest.raises(MontySyntaxError) as exc_info:
+        monty_run('def')
     assert repr(exc_info.value) == snapshot('MontySyntaxError(Expected an identifier)')
 
 
-def test_frame_repr():
+def test_frame_repr(monty_run: RunMonty):
     code = """
 def foo():
     raise ValueError('test')
 
 foo()
 """
-    m = pydantic_monty.Monty(code)
-    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
-        m.run()
-    frames = exc_info.value.traceback()
-    frame = frames[0]
-    assert repr(frame) == snapshot("Frame(filename='main.py', line=5, column=1, function_name='<module>')")
+    with pytest.raises(MontyRuntimeError) as exc_info:
+        monty_run(code)
+    frame = exc_info.value.traceback()[0]
+    assert repr(frame) == snapshot("Frame(filename='<python-input-0>', line=5, column=1, function_name='<module>')")
 
 
-def test_non_ascii_earlier_line_does_not_shift_columns():
+def test_non_ascii_earlier_line_does_not_shift_columns(monty_run: RunMonty):
     # CodeRange stores raw byte offsets and the SourceMap expands them lazily,
     # so a multi-byte character on an earlier line must not shift the column
     # reported for a later line. Columns are characters, not bytes — the non-
     # ASCII slow path in SourceMap::resolve_byte is the interesting code here.
     code = "greeting = 'héllo'\nundefined_name\n"
-    m = pydantic_monty.Monty(code)
-    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
-        m.run()
+    with pytest.raises(MontyRuntimeError) as exc_info:
+        monty_run(code)
     frames = exc_info.value.traceback()
     assert [f.dict() for f in frames] == snapshot(
         [
             {
-                'filename': 'main.py',
+                'filename': '<python-input-0>',
                 'line': 2,
                 'column': 1,
                 'end_line': 2,

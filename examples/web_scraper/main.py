@@ -11,7 +11,7 @@ import pydantic_core
 from pydantic_ai import Agent, ModelRequest, ModelRequestNode, UserPromptPart
 from pydantic_graph import End
 
-from pydantic_monty import Monty, MontyError, MontyRuntimeError
+from pydantic_monty import AsyncMonty, MontyError, MontyRuntimeError
 
 from .browser import start_browser
 from .external_functions import beautiful_soup
@@ -93,12 +93,12 @@ Ignore any deprecated models.
 
     print_output: list[str] = []
 
-    def monty_print(_: Literal['stdout'], content: str):
+    def monty_print(_: Literal['stdout', 'stderr'], content: str):
         print_output.append(content)
 
     record_models = RecordModels()
 
-    async with start_browser() as browser:
+    async with AsyncMonty() as pool, start_browser() as browser:
         async with scrape_agent.iter(prompt) as agent_run:
             node = agent_run.next_node
             while True:
@@ -115,29 +115,25 @@ Ignore any deprecated models.
                     break
 
                 try:
-                    with logfire.span('prepare monty', code=extracted.code):
-                        m = Monty(
-                            extracted.code,
+                    with logfire.span('running monty', code=extracted.code):
+                        async with pool.checkout(
                             type_check=True,
                             type_check_stubs=stubs,
-                        )
-                except MontyError as e:
-                    msg = f'Error Preparing Code: {e}'
-                    node = await agent_run.next(new_node(msg))
-                    continue
-
-                try:
-                    with logfire.span('running monty'):
-                        output = await m.run_async(
-                            external_functions={
-                                'open_page': browser.open_page,
-                                'beautiful_soup': beautiful_soup,
-                                'record_model_info': record_models.record_model_info,
-                            },
-                            print_callback=monty_print,
-                        )
+                        ) as session:
+                            output = await session.feed_run_async(
+                                extracted.code,
+                                external_functions={
+                                    'open_page': browser.open_page,
+                                    'beautiful_soup': beautiful_soup,
+                                    'record_model_info': record_models.record_model_info,
+                                },
+                                print_callback=monty_print,
+                            )
                 except MontyRuntimeError as e:
                     msg = f'Error running code: {e.display()}'
+                except MontyError as e:
+                    # syntax or typing failure — surfaced at feed time
+                    msg = f'Error Preparing Code: {e}'
                 else:
                     msg = pydantic_core.to_json(output).decode()
 

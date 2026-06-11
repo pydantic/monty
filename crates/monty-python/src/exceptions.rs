@@ -17,7 +17,6 @@ use std::sync::Arc;
 
 use ::monty::{ExcType, MontyException};
 use ahash::AHashMap;
-use monty_type_checking::TypeCheckingDiagnostics;
 use pyo3::{
     PyClassInitializer, PyTypeCheck,
     exceptions::{self},
@@ -100,52 +99,23 @@ impl MontyError {
     }
 }
 
-/// Raised when type checking finds errors in the code.
+/// Raised when type checking rejects a fed snippet.
 ///
-/// Inherits from `MontyError`. This exception is raised when static type
-/// analysis detects type errors. Stores the `TypeCheckingFailure` so diagnostics
-/// can be re-rendered with different format/color settings via `display()`.
+/// Inherits from `MontyError`. Type checking runs inside the worker
+/// subprocess; the diagnostics arrive pre-rendered as text (the structured
+/// diagnostics cannot cross the process boundary).
 #[pyclass(extends=MontyError, module="pydantic_monty")]
 pub struct MontyTypingError {
-    failure: TypingFailure,
-}
-
-/// How the typing failure is stored: full diagnostics for in-process type
-/// checking, or the rendered text when the check ran in a `MontyPool` worker
-/// (diagnostics cannot cross the process boundary).
-enum TypingFailure {
-    Diagnostics(TypeCheckingDiagnostics),
-    Rendered(String),
-}
-
-impl TypingFailure {
-    fn rendered(&self) -> String {
-        match self {
-            Self::Diagnostics(failure) => failure.to_string(),
-            Self::Rendered(text) => text.clone(),
-        }
-    }
+    rendered: String,
 }
 
 impl MontyTypingError {
-    /// Creates a `MontyTypingError` from a `TypeCheckingFailure`.
+    /// Creates a `MontyTypingError` from diagnostics rendered in the worker.
     #[must_use]
-    pub fn new_err(py: Python<'_>, failure: TypeCheckingDiagnostics) -> PyErr {
-        Self::new_err_inner(py, TypingFailure::Diagnostics(failure))
-    }
-
-    /// Creates a `MontyTypingError` from diagnostics already rendered to text
-    /// (received from a `MontyPool` worker). `display()` ignores its format
-    /// and color arguments for errors created this way.
-    #[must_use]
-    pub fn new_err_rendered(py: Python<'_>, rendered: String) -> PyErr {
-        Self::new_err_inner(py, TypingFailure::Rendered(rendered))
-    }
-
-    fn new_err_inner(py: Python<'_>, failure: TypingFailure) -> PyErr {
+    pub fn new_err(py: Python<'_>, rendered: String) -> PyErr {
         // we need a MontyException to create the base, but it shouldn't be visible anywhere
         let base = MontyError::new(MontyException::new(ExcType::TypeError, None));
-        let init = PyClassInitializer::from(base).add_subclass(Self { failure });
+        let init = PyClassInitializer::from(base).add_subclass(Self { rendered });
         match Py::new(py, init) {
             Ok(err) => PyErr::from_value(err.into_bound(py).into_any()),
             Err(e) => e,
@@ -155,32 +125,17 @@ impl MontyTypingError {
 
 #[pymethods]
 impl MontyTypingError {
-    /// Renders the type error diagnostics with the specified format and color.
-    ///
-    /// Args:
-    ///     format: Output format
-    ///     color: Whether to include ANSI color codes in the output.
-    #[pyo3(signature = (format = "full", color = false))]
-    fn display(&self, format: &str, color: bool) -> PyResult<String> {
-        match &self.failure {
-            TypingFailure::Diagnostics(failure) => failure
-                .clone()
-                .color(color)
-                .format_from_str(format)
-                .map_err(exceptions::PyValueError::new_err)
-                .map(|f| f.to_string()),
-            // rendered in the worker with the default format; re-rendering
-            // is impossible without the diagnostic structures
-            TypingFailure::Rendered(text) => Ok(text.clone()),
-        }
+    /// Returns the rendered type-check diagnostics.
+    fn display(&self) -> &str {
+        &self.rendered
     }
 
     fn __str__(&self) -> String {
-        self.failure.rendered()
+        self.rendered.clone()
     }
 
     fn __repr__(&self) -> String {
-        format!("MontyTypingError({})", self.failure.rendered())
+        format!("MontyTypingError({})", self.rendered)
     }
 }
 
@@ -346,8 +301,8 @@ impl MontyRuntimeError {
     }
 }
 
-/// Raised when a `MontyPool` worker process died (segfault, abort, external
-/// kill) or was killed by the pool's request-timeout watchdog.
+/// Raised when a worker process died (segfault, abort, external kill) or
+/// was killed by the pool's request-timeout watchdog.
 ///
 /// This is exactly the failure mode subprocess pools exist to contain: the
 /// sandbox process is gone, but the host process is unharmed and the pool

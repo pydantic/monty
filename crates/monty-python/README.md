@@ -2,172 +2,144 @@
 
 Python bindings for the Monty sandboxed Python interpreter.
 
+Execution always happens in a pool of `monty` worker subprocesses: a monty
+process can never be made fully crash-proof against memory errors (stack
+overflows, allocator aborts) triggered by adversarial input, so crash
+isolation is built in. A crashed worker raises `MontyCrashedError` and is
+replaced transparently — your process is never at risk.
+
 ## Installation
 
 ```bash
 pip install pydantic-monty
 ```
 
+This installs the `monty` worker binary via the
+[`pydantic-monty-cli`](https://pypi.org/project/pydantic-monty-cli/)
+dependency (the same way `uv` and `ruff` ship their binaries).
+
 ## Usage
 
-### Basic Expression Evaluation
+### Basic execution
 
 ```python
-import pydantic_monty
+from pydantic_monty import Monty
 
-# Simple code with no inputs
-m = pydantic_monty.Monty('1 + 2')
-print(m.run())
-#> 3
+with Monty() as pool:
+    with pool.checkout() as session:
+        print(session.feed_run('1 + 2'))
+        #> 3
 ```
 
-### Using Input Variables
+`Monty()` is a pool of workers; `pool.checkout()` dedicates one worker to a
+REPL session. Session state persists across `feed_run` calls:
 
 ```python
-import pydantic_monty
+from pydantic_monty import Monty
 
-# Create with code that uses input variables
-m = pydantic_monty.Monty('x * y', inputs=['x', 'y'])
-
-# Run multiple times with different inputs
-print(m.run(inputs={'x': 2, 'y': 3}))
-#> 6
-print(m.run(inputs={'x': 10, 'y': 5}))
-#> 50
+with Monty() as pool:
+    with pool.checkout() as session:
+        session.feed_run('x = 40')
+        print(session.feed_run('x + 2'))
+        #> 42
 ```
 
-### Resource Limits
+### Async
 
-```python
-import pydantic_monty
-
-m = pydantic_monty.Monty('x + y', inputs=['x', 'y'])
-
-# With resource limits
-limits = pydantic_monty.ResourceLimits(max_duration_secs=1.0)
-result = m.run(inputs={'x': 1, 'y': 2}, limits=limits)
-assert result == 3
-```
-
-### External Functions
-
-```python
-import pydantic_monty
-
-# Code that calls an external function
-m = pydantic_monty.Monty('double(x)', inputs=['x'])
-
-# Provide the external function implementation at runtime
-result = m.run(inputs={'x': 5}, external_functions={'double': lambda x: x * 2})
-print(result)
-#> 10
-```
-
-### Iterative Execution with External Functions
-
-Use `start()` and `resume()` to handle external function calls iteratively,
-giving you control over each call:
-
-```python
-import pydantic_monty
-
-code = """
-data = fetch(url)
-len(data)
-"""
-
-m = pydantic_monty.Monty(code, inputs=['url'])
-
-# Start execution - pauses when fetch() is called
-result = m.start(inputs={'url': 'https://example.com'})
-
-print(type(result))
-#> <class 'pydantic_monty.FunctionSnapshot'>
-print(result.function_name)  # fetch
-#> fetch
-print(result.args)
-#> ('https://example.com',)
-
-# Perform the actual fetch, then resume with the result
-result = result.resume({'return_value': 'hello world'})
-
-print(type(result))
-#> <class 'pydantic_monty.MontyComplete'>
-print(result.output)
-#> 11
-```
-
-### Serialization
-
-Both `Monty` and `FunctionSnapshot` can be serialized to bytes and restored later.
-This allows caching parsed code or suspending execution across process boundaries:
-
-```python
-import pydantic_monty
-
-# Serialize parsed code to avoid re-parsing
-m = pydantic_monty.Monty('x + 1', inputs=['x'])
-data = m.dump()
-
-# Later, restore and run
-m2 = pydantic_monty.Monty.load(data)
-print(m2.run(inputs={'x': 41}))
-#> 42
-```
-
-Execution state can also be serialized mid-flight:
-
-```python
-import pydantic_monty
-
-m = pydantic_monty.Monty('fetch(url)', inputs=['url'])
-progress = m.start(inputs={'url': 'https://example.com'})
-
-# Serialize the execution state
-state = progress.dump()
-
-# Later, restore and resume (e.g., in a different process)
-progress2 = pydantic_monty.load_snapshot(state)
-result = progress2.resume({'return_value': 'response data'})
-print(result.output)
-#> response data
-```
-
-## Crash-isolated execution with `MontyPool`
-
-A monty process can never be made fully crash-proof against memory errors
-(stack overflows, allocator aborts) triggered by adversarial input. `MontyPool`
-runs the interpreter in a pool of worker subprocesses so such a crash kills
-only the worker — never your process. A crashed worker raises
-`MontyCrashedError` and is replaced transparently.
+`AsyncMonty` is the asyncio counterpart: worker I/O runs off the event loop,
+and external functions may be coroutines.
 
 ```python
 import asyncio
 
-import pydantic_monty
+from pydantic_monty import AsyncMonty
+
+
+async def fetch(url: str) -> str:
+    await asyncio.sleep(0.01)
+    return f'contents of {url}'
 
 
 async def main():
-    async with pydantic_monty.MontyPool() as pool:
+    async with AsyncMonty() as pool:
         async with pool.checkout() as session:
-            # session state persists across feeds, like MontyRepl
-            await session.feed_run_async('x = 21')
-            print(await session.feed_run_async('x * 2'))
-            #> 42
+            result = await session.feed_run_async(
+                "await fetch('https://example.com')",
+                external_functions={'fetch': fetch},
+            )
+    print(result)
+    #> contents of https://example.com
 
 
 asyncio.run(main())
 ```
 
-`pool.checkout(...)` accepts the `MontyRepl` constructor arguments
-(`script_name`, `limits`, `type_check`, ...), and `feed_run_async` accepts the
-`feed_run` arguments (`inputs`, `external_functions` — including async
-functions — `print_callback`, `mount`, `os`). A synchronous `feed_run` is also
-available for worker threads.
+### Input variables and external functions
 
-The pool needs the `monty` CLI binary, which ships in the
-[`pydantic-monty-cli`](https://pypi.org/project/pydantic-monty-cli/) package
-(installed automatically as a dependency, the same way `uv` and `ruff` ship
-their binaries). It can be overridden with the `binary_path` argument or the
-`MONTY_BIN` environment variable. See `limitations/pool-architecture.md` for the
-(small) behavioural differences from in-process execution.
+```python
+from pydantic_monty import Monty
+
+with Monty() as pool:
+    with pool.checkout() as session:
+        result = session.feed_run(
+            'double(x) + y',
+            inputs={'x': 5, 'y': 1},
+            external_functions={'double': lambda x: x * 2},
+        )
+    print(result)
+    #> 11
+```
+
+### Resource limits
+
+Limits are enforced inside the worker; the pool's `request_timeout` is a
+host-side backstop that kills a hung worker outright.
+
+```python
+from pydantic_monty import Monty, MontyRuntimeError
+
+with Monty(request_timeout=10) as pool:
+    with pool.checkout(limits={'max_duration_secs': 0.1}) as session:
+        try:
+            session.feed_run('while True:\n    pass')
+        except MontyRuntimeError as exc:
+            print(exc.display(format='type-msg').split(':')[0])
+            #> TimeoutError
+```
+
+### Type checking
+
+Monty bundles [ty](https://docs.astral.sh/ty/): each fed snippet can be
+type-checked inside the worker before it runs, with successfully executed
+snippets accumulating into the checking context.
+
+```python
+from pydantic_monty import Monty, MontyTypingError
+
+with Monty() as pool:
+    with pool.checkout(type_check=True) as session:
+        try:
+            session.feed_run("x: int = 'not an int'")
+        except MontyTypingError as exc:
+            print('invalid-assignment' in exc.display())
+            #> True
+```
+
+### Crash isolation
+
+```python test="skip"
+from pydantic_monty import Monty, MontyCrashedError
+
+hostile_code = '...'
+
+with Monty() as pool:
+    with pool.checkout() as session:
+        try:
+            session.feed_run(hostile_code)  # even a segfault is contained
+        except MontyCrashedError:
+            ...  # the worker died; the pool already replaced it
+```
+
+See `limitations/pool-architecture.md` in the repository for the behavioural
+details of subprocess execution (worker-local mounts, line-buffered print
+callbacks, session dumps).

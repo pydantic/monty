@@ -2,39 +2,36 @@
 
 import pydantic_monty
 
-# Basic execution - simple expression
-m = pydantic_monty.Monty('1 + 2 * 3')
-print(f'Basic: {m.run()!r}')  # 7
+with pydantic_monty.Monty() as pool:
+    # Basic execution - simple expression
+    with pool.checkout() as session:
+        print(f'Basic: {session.feed_run("1 + 2 * 3")!r}')  # 7
 
-# Using input variables
-m = pydantic_monty.Monty('x + y', inputs=['x', 'y'])
-print(f'Inputs: {m.run(inputs={"x": 10, "y": 20})}')  # 30
+    # Using input variables, with session state persisting between feeds
+    with pool.checkout() as session:
+        print(f'Inputs: {session.feed_run("x + y", inputs={"x": 10, "y": 20})}')  # 30
+        print(f'Reuse: {session.feed_run("x + y", inputs={"x": 100, "y": 200})}')  # 300
 
-# Reusing the same parsed code with different values
-print(f'Reuse: {m.run(inputs={"x": 100, "y": 200})}')  # 300
+    # With resource limits (enforced inside the worker)
+    limits = pydantic_monty.ResourceLimits(max_duration_secs=5.0, max_memory=1024 * 1024)
+    with pool.checkout(limits=limits) as session:
+        print(f'With limits: {session.feed_run("x * y * z", inputs={"x": 2, "y": 3, "z": 4})}')  # 24
 
-# With resource limits
-limits = pydantic_monty.ResourceLimits(max_duration_secs=5.0, max_memory=1024 * 1024)
-m = pydantic_monty.Monty('x * y * z', inputs=['x', 'y', 'z'])
-print(f'With limits: {m.run(inputs={"x": 2, "y": 3, "z": 4}, limits=limits)}')  # 24
+    # External function callbacks
+    def fetch(url: str) -> str:
+        return f'Fetched: {url}'
 
-# External function callbacks
-m = pydantic_monty.Monty('fetch("https://example.com")')
+    with pool.checkout() as session:
+        result = session.feed_run('fetch("https://example.com")', external_functions={'fetch': fetch})
+        print(f'External: {result}')
 
+    # Print output is forwarded to Python stdout
+    with pool.checkout() as session:
+        session.feed_run('print("Hello from Monty!")')
 
-def fetch(url: str) -> str:
-    return f'Fetched: {url}'
-
-
-print(f'External: {m.run(external_functions={"fetch": fetch})}')
-
-# Print output is forwarded to Python stdout
-m = pydantic_monty.Monty('print("Hello from Monty!")')
-m.run()
-
-# Exception handling
-m = pydantic_monty.Monty('1 / 0')
-try:
-    m.run()
-except ZeroDivisionError as e:
-    print(f'Caught: {type(e).__name__}')
+    # Exception handling
+    with pool.checkout() as session:
+        try:
+            session.feed_run('1 / 0')
+        except pydantic_monty.MontyRuntimeError as e:
+            print(f'Caught: {e.display(format="type-msg")}')

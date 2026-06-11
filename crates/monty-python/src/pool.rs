@@ -1,21 +1,28 @@
-//! `MontyPool` — crash-isolated execution in a pool of `monty` subprocesses.
+//! `Monty` and `AsyncMonty` — crash-isolated execution in pools of `monty`
+//! subprocess workers.
 //!
 //! A monty process can never be made fully crash-proof against memory errors
-//! (stack overflow, allocator aborts), so `MontyPool` runs the interpreter in
-//! worker subprocesses via the `monty-pool` crate: a crashed worker raises
-//! [`MontyCrashedError`] and is replaced, and the host Python process is
-//! never at risk.
+//! (stack overflow, allocator aborts), so this package *only* runs the
+//! interpreter in worker subprocesses via the `monty-pool` crate: a crashed
+//! worker raises [`MontyCrashedError`] and is replaced, and the host Python
+//! process is never at risk.
 //!
 //! ```python
-//! async with MontyPool() as pool:
+//! with Monty() as pool:
+//!     with pool.checkout() as session:
+//!         result = session.feed_run('1 + 1')
+//!
+//! async with AsyncMonty() as pool:
 //!     async with pool.checkout() as session:
 //!         result = await session.feed_run_async('1 + 1')
 //! ```
 //!
-//! All pool I/O runs off the GIL (and off the event loop via
-//! `spawn_blocking` for the async methods); Python callbacks — external
-//! functions, `os=`, `print_callback` — execute in this process exactly as
-//! they do for in-process `MontyRepl`.
+//! Both classes share all pool/dispatch machinery; they differ only in how
+//! the blocking protocol turns are driven. `Monty` blocks the calling thread
+//! with the GIL released; `AsyncMonty` hands turns to tokio's blocking pool
+//! via `spawn_blocking` so the event loop stays free, and its external
+//! functions may be coroutines. Python callbacks — external functions, `os=`,
+//! `print_callback` — always execute in the host process.
 
 use std::{
     path::PathBuf,
@@ -35,7 +42,7 @@ use tokio::task::{JoinSet, spawn_blocking};
 
 use crate::{
     async_dispatch::{dispatch_function_call, join_error_to_py, spawn_coroutine_task, wait_for_futures},
-    build::extract_type_check_stubs,
+    build::{extract_repl_inputs, extract_source_code, extract_type_check_stubs},
     convert::{get_docstring, monty_to_py, py_to_monty_value},
     dataclass::DcRegistry,
     exceptions::{MontyCrashedError, MontyError, MontyTypingError, exc_py_to_monty},
@@ -44,25 +51,206 @@ use crate::{
     limits::extract_limits,
     mount::PyMountDir,
     print_target::PrintTarget,
-    repl::extract_repl_inputs,
 };
 
-/// The pool handle shared between `MontyPool` and its sessions. `None` until
-/// `__aenter__` creates the pool and again after `__aexit__` shuts it down.
+/// The pool handle shared between a pool object and its sessions. `None`
+/// until the context manager is entered and again after it exits.
 type SharedPool = Arc<Mutex<Option<Arc<Pool>>>>;
-/// The worker handle of one session. `None` before `__aenter__`, after
-/// `__aexit__`, and after the worker is discarded on a crash.
+/// The worker handle of one session. `None` before the session is entered,
+/// after it exits, and after the worker is discarded on a crash.
 type SharedCheckout = Arc<Mutex<Option<Checkout>>>;
 
-/// Async context manager owning a pool of `monty` subprocess workers.
-#[pyclass(name = "MontyPool", module = "pydantic_monty", frozen)]
-pub struct PyMontyPool {
+// =============================================================================
+// Sync API: Monty / MontySession
+// =============================================================================
+
+/// Sync context manager owning a pool of `monty` subprocess workers.
+#[pyclass(name = "Monty", module = "pydantic_monty", frozen)]
+pub struct PyMonty {
     config: PoolConfig,
     pool: SharedPool,
 }
 
 #[pymethods]
-impl PyMontyPool {
+impl PyMonty {
+    /// Creates the pool configuration; workers are spawned by `with`.
+    #[new]
+    #[pyo3(signature = (
+        *,
+        binary_path = None,
+        min_processes = 1,
+        max_processes = None,
+        checkout_timeout = None,
+        request_timeout = None,
+        max_checkouts_per_worker = None,
+    ))]
+    fn new(
+        py: Python<'_>,
+        binary_path: Option<PathBuf>,
+        min_processes: usize,
+        max_processes: Option<usize>,
+        checkout_timeout: Option<f64>,
+        request_timeout: Option<f64>,
+        max_checkouts_per_worker: Option<u32>,
+    ) -> PyResult<Self> {
+        Ok(Self {
+            config: parse_pool_config(
+                py,
+                binary_path,
+                min_processes,
+                max_processes,
+                checkout_timeout,
+                request_timeout,
+                max_checkouts_per_worker,
+            )?,
+            pool: Arc::new(Mutex::new(None)),
+        })
+    }
+
+    /// Spawns the pool's workers (with the GIL released) and returns `self`.
+    fn __enter__(slf: Py<Self>, py: Python<'_>) -> PyResult<Py<Self>> {
+        let this = slf.get();
+        let config = this.config.clone();
+        let pool = py.detach(|| Pool::new(config)).map_err(|e| pool_err_to_py(py, e))?;
+        *lock(&this.pool) = Some(Arc::new(pool));
+        Ok(slf)
+    }
+
+    /// Shuts the pool down: idle workers exit, capacity is gone. Sessions
+    /// still checked out keep their workers until they exit.
+    #[pyo3(signature = (*_args))]
+    fn __exit__(&self, py: Python<'_>, _args: &Bound<'_, PyTuple>) {
+        let pool = lock(&self.pool).take();
+        py.detach(|| drop(pool));
+    }
+
+    /// Prepares a REPL session; the worker is checked out by `with`.
+    #[pyo3(signature = (
+        *,
+        script_name = "main.py",
+        limits = None,
+        type_check = false,
+        type_check_stubs = None,
+        dataclass_registry = None,
+    ))]
+    fn checkout(
+        &self,
+        py: Python<'_>,
+        script_name: &str,
+        limits: Option<&Bound<'_, PyDict>>,
+        type_check: bool,
+        type_check_stubs: Option<&Bound<'_, PyString>>,
+        dataclass_registry: Option<&Bound<'_, PyList>>,
+    ) -> PyResult<PyMontySession> {
+        Ok(PyMontySession {
+            pool: Arc::clone(&self.pool),
+            repl_config: parse_repl_config(py, script_name, limits, type_check, type_check_stubs)?,
+            dc_registry: DcRegistry::from_list(py, dataclass_registry)?,
+            checkout: Arc::new(Mutex::new(None)),
+        })
+    }
+}
+
+/// One worker process dedicated to one REPL session; created by
+/// [`PyMonty::checkout`] and driven with `feed_run`.
+#[pyclass(name = "MontySession", module = "pydantic_monty", frozen)]
+pub struct PyMontySession {
+    pool: SharedPool,
+    repl_config: ReplConfig,
+    dc_registry: DcRegistry,
+    checkout: SharedCheckout,
+}
+
+#[pymethods]
+impl PyMontySession {
+    /// Checks a worker out of the pool (spawning one if needed) and creates
+    /// the REPL session in it.
+    fn __enter__(slf: Py<Self>, py: Python<'_>) -> PyResult<Py<Self>> {
+        let this = slf.get();
+        let pool = active_pool(&this.pool)?;
+        let repl_config = this.repl_config.clone();
+        let checkout = py
+            .detach(|| pool.checkout(&repl_config))
+            .map_err(|e| pool_err_to_py(py, e))?;
+        *lock(&this.checkout) = Some(checkout);
+        Ok(slf)
+    }
+
+    /// Returns the worker to the pool (best effort — a crashed worker has
+    /// already been discarded and replaced).
+    #[pyo3(signature = (*_args))]
+    fn __exit__(&self, py: Python<'_>, _args: &Bound<'_, PyTuple>) {
+        let checkout = lock(&self.checkout).take();
+        py.detach(|| {
+            if let Some(checkout) = checkout {
+                let _ = checkout.finish();
+            }
+        });
+    }
+
+    /// Executes one snippet in the worker, driving external function calls,
+    /// OS callbacks, and print callbacks in this process. Session state
+    /// (globals, functions) persists across feeds.
+    ///
+    /// Blocks the calling thread with the GIL released; async external
+    /// functions are not supported here — use [`AsyncMonty`].
+    #[pyo3(signature = (code, *, inputs=None, external_functions=None, print_callback=None, mount=None, os=None, skip_type_check=false))]
+    #[expect(clippy::too_many_arguments)]
+    fn feed_run(
+        &self,
+        py: Python<'_>,
+        code: &Bound<'_, PyString>,
+        inputs: Option<&Bound<'_, PyDict>>,
+        external_functions: Option<&Bound<'_, PyDict>>,
+        print_callback: Option<&Bound<'_, PyAny>>,
+        mount: Option<&Bound<'_, PyAny>>,
+        os: Option<Py<PyAny>>,
+        skip_type_check: bool,
+    ) -> PyResult<Py<PyAny>> {
+        let args = FeedArgs::extract(
+            py,
+            &self.checkout,
+            &self.dc_registry,
+            code,
+            inputs,
+            print_callback,
+            mount,
+            os,
+            skip_type_check,
+        )?;
+        drive_sync(py, args, external_functions)
+    }
+
+    /// Serializes the worker's session state (idle or suspended) into opaque
+    /// bytes via monty's existing dump format. The session stays usable.
+    fn dump<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
+        let state = py
+            .detach(|| dump_checkout(&self.checkout))
+            .map_err(|e| pool_err_to_py(py, e))?;
+        Ok(PyBytes::new(py, &state))
+    }
+
+    /// OS process id of this session's worker, or `None` when no worker is
+    /// attached (diagnostics/tests).
+    #[getter]
+    fn worker_pid(&self) -> Option<u32> {
+        lock(&self.checkout).as_ref().and_then(Checkout::pid)
+    }
+}
+
+// =============================================================================
+// Async API: AsyncMonty / AsyncMontySession
+// =============================================================================
+
+/// Async context manager owning a pool of `monty` subprocess workers.
+#[pyclass(name = "AsyncMonty", module = "pydantic_monty", frozen)]
+pub struct PyAsyncMonty {
+    config: PoolConfig,
+    pool: SharedPool,
+}
+
+#[pymethods]
+impl PyAsyncMonty {
     /// Creates the pool configuration; workers are spawned by `async with`.
     #[new]
     #[pyo3(signature = (
@@ -83,24 +271,16 @@ impl PyMontyPool {
         request_timeout: Option<f64>,
         max_checkouts_per_worker: Option<u32>,
     ) -> PyResult<Self> {
-        let binary_path = match binary_path {
-            Some(path) => path,
-            // resolution lives in Python (env var, bundled binary, PATH)
-            None => py
-                .import("pydantic_monty._binary")?
-                .call_method0("find_monty_binary")?
-                .extract()?,
-        };
-        let mut config = PoolConfig::new(binary_path);
-        config.min_processes = min_processes;
-        if let Some(max) = max_processes {
-            config.max_processes = max;
-        }
-        config.checkout_timeout = checkout_timeout.map(duration_from_secs).transpose()?;
-        config.request_timeout = request_timeout.map(duration_from_secs).transpose()?;
-        config.max_checkouts_per_worker = max_checkouts_per_worker;
         Ok(Self {
-            config,
+            config: parse_pool_config(
+                py,
+                binary_path,
+                min_processes,
+                max_processes,
+                checkout_timeout,
+                request_timeout,
+                max_checkouts_per_worker,
+            )?,
             pool: Arc::new(Mutex::new(None)),
         })
     }
@@ -131,7 +311,6 @@ impl PyMontyPool {
     }
 
     /// Prepares a REPL session; the worker is checked out by `async with`.
-    /// Arguments mirror the `MontyRepl` constructor.
     #[pyo3(signature = (
         *,
         script_name = "main.py",
@@ -148,15 +327,10 @@ impl PyMontyPool {
         type_check: bool,
         type_check_stubs: Option<&Bound<'_, PyString>>,
         dataclass_registry: Option<&Bound<'_, PyList>>,
-    ) -> PyResult<PyMontyPoolSession> {
-        Ok(PyMontyPoolSession {
+    ) -> PyResult<PyAsyncMontySession> {
+        Ok(PyAsyncMontySession {
             pool: Arc::clone(&self.pool),
-            repl_config: ReplConfig {
-                script_name: script_name.to_owned(),
-                limits: limits.map(extract_limits).transpose()?,
-                type_check,
-                type_check_stubs: extract_type_check_stubs(py, type_check_stubs)?,
-            },
+            repl_config: parse_repl_config(py, script_name, limits, type_check, type_check_stubs)?,
             dc_registry: DcRegistry::from_list(py, dataclass_registry)?,
             checkout: Arc::new(Mutex::new(None)),
         })
@@ -164,9 +338,9 @@ impl PyMontyPool {
 }
 
 /// One worker process dedicated to one REPL session; created by
-/// [`PyMontyPool::checkout`] and driven with `feed_run` / `feed_run_async`.
-#[pyclass(name = "MontyPoolSession", module = "pydantic_monty", frozen)]
-pub struct PyMontyPoolSession {
+/// [`PyAsyncMonty::checkout`] and driven with `feed_run_async`.
+#[pyclass(name = "AsyncMontySession", module = "pydantic_monty", frozen)]
+pub struct PyAsyncMontySession {
     pool: SharedPool,
     repl_config: ReplConfig,
     dc_registry: DcRegistry,
@@ -174,7 +348,7 @@ pub struct PyMontyPoolSession {
 }
 
 #[pymethods]
-impl PyMontyPoolSession {
+impl PyAsyncMontySession {
     /// Checks a worker out of the pool (spawning one if needed) and creates
     /// the REPL session in it.
     fn __aenter__(slf: Py<Self>, py: Python<'_>) -> PyResult<Bound<'_, PyAny>> {
@@ -183,10 +357,7 @@ impl PyMontyPoolSession {
         let repl_config = this.repl_config.clone();
         let slot = Arc::clone(&this.checkout);
         future_into_py(py, async move {
-            let pool = lock(&pool)
-                .as_ref()
-                .map(Arc::clone)
-                .ok_or_else(|| PyRuntimeError::new_err("MontyPool is not active — use `async with MontyPool(...)`"))?;
+            let pool = active_pool(&pool)?;
             let checkout = spawn_blocking(move || pool.checkout(&repl_config))
                 .await
                 .map_err(join_error_to_py)?
@@ -209,32 +380,11 @@ impl PyMontyPoolSession {
         })
     }
 
-    /// Executes one snippet in the worker, driving external function calls,
-    /// OS callbacks, and print callbacks in this process. Blocks the calling
-    /// thread (with the GIL released); use `feed_run_async` on an event loop.
+    /// Executes one snippet in the worker, driving external function calls
+    /// (which may be coroutines, awaited concurrently), OS callbacks, and
+    /// print callbacks in this process. Session state persists across feeds.
     ///
-    /// Async external functions are not supported here — use
-    /// `feed_run_async`.
-    #[pyo3(signature = (code, *, inputs=None, external_functions=None, print_callback=None, mount=None, os=None, skip_type_check=false))]
-    #[expect(clippy::too_many_arguments)]
-    fn feed_run(
-        &self,
-        py: Python<'_>,
-        code: &Bound<'_, PyString>,
-        inputs: Option<&Bound<'_, PyDict>>,
-        external_functions: Option<&Bound<'_, PyDict>>,
-        print_callback: Option<&Bound<'_, PyAny>>,
-        mount: Option<&Bound<'_, PyAny>>,
-        os: Option<Py<PyAny>>,
-        skip_type_check: bool,
-    ) -> PyResult<Py<PyAny>> {
-        let args = FeedArgs::extract(py, self, code, inputs, print_callback, mount, os, skip_type_check)?;
-        drive_sync(py, args, external_functions)
-    }
-
-    /// Async variant of `feed_run`: pool I/O runs off the event loop and
-    /// external functions may be coroutines (awaited concurrently, exactly
-    /// like `MontyRepl.feed_run_async`).
+    /// Worker I/O runs off the event loop via tokio's blocking pool.
     #[pyo3(signature = (code, *, inputs=None, external_functions=None, print_callback=None, mount=None, os=None, skip_type_check=false))]
     #[expect(clippy::too_many_arguments)]
     fn feed_run_async<'py>(
@@ -248,22 +398,32 @@ impl PyMontyPoolSession {
         os: Option<Py<PyAny>>,
         skip_type_check: bool,
     ) -> PyResult<Bound<'py, PyAny>> {
-        let args = FeedArgs::extract(py, self, code, inputs, print_callback, mount, os, skip_type_check)?;
+        let args = FeedArgs::extract(
+            py,
+            &self.checkout,
+            &self.dc_registry,
+            code,
+            inputs,
+            print_callback,
+            mount,
+            os,
+            skip_type_check,
+        )?;
         let ext_fns = external_functions.map(|d| d.clone().unbind());
         future_into_py(py, async move { drive_async(args, ext_fns).await })
     }
 
     /// Serializes the worker's session state (idle or suspended) into opaque
     /// bytes via monty's existing dump format. The session stays usable.
-    fn dump<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
+    fn dump<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let checkout = Arc::clone(&self.checkout);
-        let state = py
-            .detach(|| {
-                let mut guard = lock(&checkout);
-                guard.as_mut().ok_or(PoolError::Finished).and_then(Checkout::dump)
-            })
-            .map_err(|e| pool_err_to_py(py, e))?;
-        Ok(PyBytes::new(py, &state))
+        future_into_py(py, async move {
+            let state = spawn_blocking(move || dump_checkout(&checkout))
+                .await
+                .map_err(join_error_to_py)?
+                .map_err(|e| Python::attach(|py| pool_err_to_py(py, e)))?;
+            Ok(Python::attach(|py| PyBytes::new(py, &state).unbind()))
+        })
     }
 
     /// OS process id of this session's worker, or `None` when no worker is
@@ -272,6 +432,73 @@ impl PyMontyPoolSession {
     fn worker_pid(&self) -> Option<u32> {
         lock(&self.checkout).as_ref().and_then(Checkout::pid)
     }
+}
+
+// =============================================================================
+// Shared argument parsing
+// =============================================================================
+
+/// Builds the `monty-pool` config from the (shared) pool constructor
+/// arguments, resolving the binary via `pydantic_monty._binary` when not
+/// given explicitly.
+fn parse_pool_config(
+    py: Python<'_>,
+    binary_path: Option<PathBuf>,
+    min_processes: usize,
+    max_processes: Option<usize>,
+    checkout_timeout: Option<f64>,
+    request_timeout: Option<f64>,
+    max_checkouts_per_worker: Option<u32>,
+) -> PyResult<PoolConfig> {
+    let binary_path = match binary_path {
+        Some(path) => path,
+        // resolution lives in Python (env var, installed cli wheel, PATH)
+        None => py
+            .import("pydantic_monty._binary")?
+            .call_method0("find_monty_binary")?
+            .extract()?,
+    };
+    let mut config = PoolConfig::new(binary_path);
+    config.min_processes = min_processes;
+    if let Some(max) = max_processes {
+        config.max_processes = max;
+    }
+    config.checkout_timeout = checkout_timeout.map(duration_from_secs).transpose()?;
+    config.request_timeout = request_timeout.map(duration_from_secs).transpose()?;
+    config.max_checkouts_per_worker = max_checkouts_per_worker;
+    Ok(config)
+}
+
+/// Builds the worker-side REPL session config from the (shared) `checkout`
+/// arguments.
+fn parse_repl_config(
+    py: Python<'_>,
+    script_name: &str,
+    limits: Option<&Bound<'_, PyDict>>,
+    type_check: bool,
+    type_check_stubs: Option<&Bound<'_, PyString>>,
+) -> PyResult<ReplConfig> {
+    Ok(ReplConfig {
+        script_name: script_name.to_owned(),
+        limits: limits.map(extract_limits).transpose()?,
+        type_check,
+        type_check_stubs: extract_type_check_stubs(py, type_check_stubs)?,
+    })
+}
+
+/// Clones the live pool handle out of a shared slot, erroring when the
+/// context manager has not been entered (or already exited).
+fn active_pool(pool: &SharedPool) -> PyResult<Arc<Pool>> {
+    lock(pool).as_ref().map(Arc::clone).ok_or_else(|| {
+        PyRuntimeError::new_err("the pool is not active — enter the Monty / AsyncMonty context manager first")
+    })
+}
+
+/// Dumps the session of a live checkout (shared by the sync and async dump
+/// methods; runs without the GIL).
+fn dump_checkout(checkout: &SharedCheckout) -> Result<Vec<u8>, PoolError> {
+    let mut guard = lock(checkout);
+    guard.as_mut().ok_or(PoolError::Finished).and_then(Checkout::dump)
 }
 
 /// Everything a feed needs, extracted from Python arguments up front so the
@@ -291,7 +518,8 @@ impl FeedArgs {
     #[expect(clippy::too_many_arguments)]
     fn extract(
         py: Python<'_>,
-        session: &PyMontyPoolSession,
+        checkout: &SharedCheckout,
+        dc_registry: &DcRegistry,
         code: &Bound<'_, PyString>,
         inputs: Option<&Bound<'_, PyDict>>,
         print_callback: Option<&Bound<'_, PyAny>>,
@@ -303,17 +531,17 @@ impl FeedArgs {
             && !os_cb.bind(py).is_callable()
         {
             let t = os_cb.bind(py).get_type().name()?;
-            return Err(PyTypeError::new_err(format!("TypeError: '{t}' object is not callable")));
+            return Err(PyTypeError::new_err(format!("'{t}' object is not callable")));
         }
         Ok(Self {
-            code: code.to_str()?.to_owned(),
-            inputs: extract_repl_inputs(inputs, &session.dc_registry)?,
+            code: extract_source_code(py, code)?,
+            inputs: extract_repl_inputs(inputs, dc_registry)?,
             mounts: extract_mount_specs(mount)?,
             skip_type_check,
             os,
             print_target: PrintTarget::from_py(print_callback)?,
-            checkout: Arc::clone(&session.checkout),
-            dc_registry: session.dc_registry.clone_ref(py),
+            checkout: Arc::clone(checkout),
+            dc_registry: dc_registry.clone_ref(py),
         })
     }
 }
@@ -384,7 +612,7 @@ fn drive_sync(py: Python<'_>, args: FeedArgs, external_functions: Option<&Bound<
             TurnEvent::NameLookup { name } => TurnAnswer::Name(resolve_pool_name_lookup(&name, external_functions)),
             TurnEvent::ResolveFutures { .. } => {
                 return Err(PyRuntimeError::new_err(
-                    "async external functions require feed_run_async",
+                    "async external functions require AsyncMonty / feed_run_async",
                 ));
             }
         };
@@ -400,7 +628,7 @@ fn drive_sync(py: Python<'_>, args: FeedArgs, external_functions: Option<&Bound<
 
 /// Async drive loop: protocol turns run in `spawn_blocking`; coroutine
 /// external functions are spawned as tasks and resolved via
-/// `ResolveFutures`, mirroring `MontyRepl.feed_run_async`.
+/// `ResolveFutures`.
 async fn drive_async(args: FeedArgs, external_functions: Option<Py<PyDict>>) -> PyResult<Py<PyAny>> {
     let FeedArgs {
         code,
@@ -661,7 +889,7 @@ fn pool_err_to_py(py: Python<'_>, err: PoolError) -> PyErr {
     let message = err.to_string();
     match err {
         PoolError::Runtime(exc) => MontyError::new_err(py, exc),
-        PoolError::Typing(diagnostics) => MontyTypingError::new_err_rendered(py, diagnostics),
+        PoolError::Typing(diagnostics) => MontyTypingError::new_err(py, diagnostics),
         PoolError::Crashed { status, .. } => {
             MontyCrashedError::new_err(py, message, false, status.and_then(|s| s.code()))
         }

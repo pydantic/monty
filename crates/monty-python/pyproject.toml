@@ -31,7 +31,7 @@ classifiers = [
 ]
 dependencies = [
     "typing_extensions>=4.5",
-    # ships the `monty` binary that MontyPool spawns as worker subprocesses;
+    # ships the `monty` binary spawned as worker subprocesses;
     # kept as a loose pin because the subprocess protocol is version-negotiated
     # in the Hello handshake (a mismatch fails fast with a clear error)
     "pydantic-monty-cli>=0.0.18",

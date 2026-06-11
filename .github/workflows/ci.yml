@@ -528,8 +528,8 @@ jobs:
           docker-options: -e CI
           working-directory: crates/monty-python
 
-      # the pydantic-monty-cli wheel ships the `monty` binary that MontyPool
-      # spawns (bin bindings, one py3-none wheel per platform)
+      # the pydantic-monty-cli wheel ships the `monty` worker binary
+      # (bin bindings, one py3-none wheel per platform)
       - name: build cli wheel
         uses: PyO3/maturin-action@04ac600d27cdf7a9a280dadf7147097c42b757ad # v1.50.1
         with:
@@ -691,22 +691,26 @@ jobs:
       - run: pip install pydantic-monty --no-index --no-deps --find-links dist --force-reinstall
       - run: python -c "import pydantic_monty; print(pydantic_monty.Monty('1 + 2').run())"
 
-      # the cli wheel built for this platform must serve MontyPool workers
+      # the cli wheel built for this platform must serve the worker pools
       - run: pip install pydantic-monty-cli --no-index --no-deps --find-links dist --force-reinstall
-      - name: smoke test MontyPool
+      - name: smoke test worker pools
         shell: bash
         run: |
           python - <<'EOF'
           import asyncio
-          from pydantic_monty import MontyPool
+          from pydantic_monty import AsyncMonty, Monty
+
+          with Monty() as pool:
+              with pool.checkout() as session:
+                  assert session.feed_run('1 + 2') == 3
 
           async def main():
-              async with MontyPool() as pool:
+              async with AsyncMonty() as pool:
                   async with pool.checkout() as session:
                       assert await session.feed_run_async('1 + 2') == 3
-                      print('MontyPool OK')
 
           asyncio.run(main())
+          print('worker pools OK')
           EOF
 
   # Inspect built artifacts

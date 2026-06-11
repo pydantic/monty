@@ -131,31 +131,17 @@ def bench_cpython_dumps(data: bytes) -> tuple[float, int]:
     return (elapsed / iterations) * 1_000_000, iterations
 
 
-def bench_monty_loads(data: bytes) -> tuple[float, int]:
-    """Return (average us, iterations) for Monty json.loads (loop inside Monty)."""
-    m = pydantic_monty.Monty(MONTY_LOADS_CODE, inputs=['data', 'iterations'])
+def bench_monty(pool: pydantic_monty.Monty, code: str, data: bytes) -> tuple[float, int]:
+    """Return (average us, iterations) for a Monty snippet (loop inside Monty)."""
+    with pool.checkout() as session:
 
-    def run(n: int) -> None:
-        m.run(inputs={'data': data, 'iterations': n})
+        def run(n: int) -> None:
+            session.feed_run(code, inputs={'data': data, 'iterations': n})
 
-    iterations = calibrate_iterations(run)
-    start = time.perf_counter()
-    run(iterations)
-    elapsed = time.perf_counter() - start
-    return (elapsed / iterations) * 1_000_000, iterations
-
-
-def bench_monty_dumps(data: bytes) -> tuple[float, int]:
-    """Return (average us, iterations) for Monty json.dumps (loop inside Monty)."""
-    m = pydantic_monty.Monty(MONTY_DUMPS_CODE, inputs=['data', 'iterations'])
-
-    def run(n: int) -> None:
-        m.run(inputs={'data': data, 'iterations': n})
-
-    iterations = calibrate_iterations(run)
-    start = time.perf_counter()
-    run(iterations)
-    elapsed = time.perf_counter() - start
+        iterations = calibrate_iterations(run)
+        start = time.perf_counter()
+        run(iterations)
+        elapsed = time.perf_counter() - start
     return (elapsed / iterations) * 1_000_000, iterations
 
 
@@ -180,37 +166,38 @@ def run_benchmarks() -> list[BenchResult]:
     print(f'Target duration per benchmark: {target_duration}s\n')
 
     results: list[BenchResult] = []
-    for name, data in fixtures.items():
-        size = len(data)
-        print(f'--- {name} ({size:,} bytes) ---')
+    with pydantic_monty.Monty() as pool:
+        for name, data in fixtures.items():
+            size = len(data)
+            print(f'--- {name} ({size:,} bytes) ---')
 
-        # loads
-        print('  json.loads:', end=' ', flush=True)
-        cp_loads, cp_n = bench_cpython_loads(data)
-        print(f'CPython={format_us(cp_loads)} ({cp_n:,} iters)', end='  ', flush=True)
-        mt_loads, mt_n = bench_monty_loads(data)
-        print(f'Monty={format_us(mt_loads)} ({mt_n:,} iters)', end='  ')
-        print(f'[{format_ratio(cp_loads, mt_loads)}]')
+            # loads
+            print('  json.loads:', end=' ', flush=True)
+            cp_loads, cp_n = bench_cpython_loads(data)
+            print(f'CPython={format_us(cp_loads)} ({cp_n:,} iters)', end='  ', flush=True)
+            mt_loads, mt_n = bench_monty(pool, MONTY_LOADS_CODE, data)
+            print(f'Monty={format_us(mt_loads)} ({mt_n:,} iters)', end='  ')
+            print(f'[{format_ratio(cp_loads, mt_loads)}]')
 
-        # dumps
-        print('  json.dumps:', end=' ', flush=True)
-        cp_dumps, cp_n = bench_cpython_dumps(data)
-        print(f'CPython={format_us(cp_dumps)} ({cp_n:,} iters)', end='  ', flush=True)
-        mt_dumps, mt_n = bench_monty_dumps(data)
-        print(f'Monty={format_us(mt_dumps)} ({mt_n:,} iters)', end='  ')
-        print(f'[{format_ratio(cp_dumps, mt_dumps)}]')
+            # dumps
+            print('  json.dumps:', end=' ', flush=True)
+            cp_dumps, cp_n = bench_cpython_dumps(data)
+            print(f'CPython={format_us(cp_dumps)} ({cp_n:,} iters)', end='  ', flush=True)
+            mt_dumps, mt_n = bench_monty(pool, MONTY_DUMPS_CODE, data)
+            print(f'Monty={format_us(mt_dumps)} ({mt_n:,} iters)', end='  ')
+            print(f'[{format_ratio(cp_dumps, mt_dumps)}]')
 
-        results.append(
-            BenchResult(
-                name=name,
-                size_bytes=size,
-                cpython_loads_us=cp_loads,
-                monty_loads_us=mt_loads,
-                cpython_dumps_us=cp_dumps,
-                monty_dumps_us=mt_dumps,
+            results.append(
+                BenchResult(
+                    name=name,
+                    size_bytes=size,
+                    cpython_loads_us=cp_loads,
+                    monty_loads_us=mt_loads,
+                    cpython_dumps_us=cp_dumps,
+                    monty_dumps_us=mt_dumps,
+                )
             )
-        )
-        print()
+            print()
 
     return results
 

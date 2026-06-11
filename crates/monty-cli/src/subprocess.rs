@@ -26,8 +26,8 @@ use monty::{
     PrintWriterCallback, ReplProgress, ReplStartError, fs::MountTable,
 };
 use monty_proto::{
-    FrameReader, FrameWriter, PROTOCOL_VERSION, build_mount_table, future_results_from_proto, pairs_to_proto, pb,
-    values_to_proto,
+    FrameReader, FrameWriter, PROTOCOL_VERSION, build_mount_table, exceeds_max_value_depth, future_results_from_proto,
+    pairs_to_proto, pb, values_to_proto,
 };
 // see main.rs — import style matches the existing rustfmt skip there
 #[rustfmt::skip]
@@ -227,7 +227,12 @@ impl Child {
         let SessionState::Ready(repl) = mem::replace(&mut self.state, SessionState::Idle) else {
             unreachable!("checked above");
         };
-        if let Some(state) = &mut self.type_check {
+        // snippets fed with skip_type_check never become type-check context:
+        // the caller explicitly excluded them from checking, so later snippets
+        // must not be checked against their (unchecked) bindings either
+        if !feed.skip_type_check
+            && let Some(state) = &mut self.type_check
+        {
             state.pending_snippet = Some(feed.code.clone());
         }
         let mut print = ProtoPrint::new(Rc::clone(&self.writer));
@@ -407,6 +412,12 @@ impl Child {
                         state.committed_stubs.push('\n');
                         state.committed_stubs.push_str(&snippet);
                     }
+                    // a value too deep for the wire must fail cleanly here —
+                    // shipping it would be an undecodable frame, which the
+                    // parent has to treat as a worker crash
+                    if exceeds_max_value_depth(&value) {
+                        return error_event(ExcType::RuntimeError, "Max output depth exceeded");
+                    }
                     return complete_event(&value);
                 }
                 Ok(ReplProgress::OsCall(mut call)) => {
@@ -432,6 +443,16 @@ impl Child {
                     let not_handled_error = function_call.on_no_handler();
                     let call_id = call.call_id;
                     let (args, kwargs) = function_call.to_args();
+                    if args.iter().any(exceeds_max_value_depth)
+                        || kwargs
+                            .iter()
+                            .any(|(k, v)| exceeds_max_value_depth(k) || exceeds_max_value_depth(v))
+                    {
+                        let err =
+                            MontyException::new(ExcType::RuntimeError, Some("Max argument depth exceeded".to_owned()));
+                        result = call.resume(ExtFunctionResult::Error(err), PrintWriter::Callback(print));
+                        continue;
+                    }
                     self.state = SessionState::Suspended(Box::new(ReplProgress::OsCall(call)));
                     return pb::Event {
                         kind: Some(pb::event::Kind::OsCall(pb::OsCall {
@@ -442,6 +463,24 @@ impl Child {
                             not_handled_error: Some((&not_handled_error).into()),
                         })),
                     };
+                }
+                Ok(ReplProgress::FunctionCall(call)) => {
+                    // arguments too deep for the wire resume the call with a
+                    // catchable error instead of corrupting the protocol
+                    if call.args.iter().any(exceeds_max_value_depth)
+                        || call
+                            .kwargs
+                            .iter()
+                            .any(|(k, v)| exceeds_max_value_depth(k) || exceeds_max_value_depth(v))
+                    {
+                        let err =
+                            MontyException::new(ExcType::RuntimeError, Some("Max argument depth exceeded".to_owned()));
+                        result = call.resume(ExtFunctionResult::Error(err), PrintWriter::Callback(print));
+                        continue;
+                    }
+                    let event = suspension_event_function_call(&call);
+                    self.state = SessionState::Suspended(Box::new(ReplProgress::FunctionCall(call)));
+                    return event;
                 }
                 Ok(progress) => {
                     let event = suspension_event(&progress);
@@ -524,6 +563,33 @@ fn violation(message: &str) -> pb::Event {
 fn ok_event() -> pb::Event {
     pb::Event {
         kind: Some(pb::event::Kind::Ok(pb::Ok {})),
+    }
+}
+
+/// Builds a turn-ending `Error` event from an exception type and message.
+fn error_event(exc_type: ExcType, message: &str) -> pb::Event {
+    pb::Event {
+        kind: Some(pb::event::Kind::Error(pb::Error {
+            exception: Some(pb::MontyError {
+                exc_type: exc_type.to_string(),
+                message: Some(message.to_owned()),
+                traceback: vec![],
+            }),
+        })),
+    }
+}
+
+/// Builds the suspension event for a fresh `FunctionCall` (depth-checked by
+/// the caller).
+fn suspension_event_function_call(call: &monty::ReplFunctionCall<Tracker>) -> pb::Event {
+    pb::Event {
+        kind: Some(pb::event::Kind::FunctionCall(pb::FunctionCall {
+            function_name: call.function_name.clone(),
+            args: values_to_proto(&call.args),
+            kwargs: pairs_to_proto(&call.kwargs),
+            call_id: call.call_id,
+            method_call: call.method_call,
+        })),
     }
 }
 

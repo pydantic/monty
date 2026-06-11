@@ -25,6 +25,15 @@ use crate::{
     exceptions::{exc_monty_to_py, exc_py_to_monty, exc_to_monty_object},
 };
 
+/// Depth limit for converting host values INTO the sandbox: values must fit
+/// the wire protocol, whose decoder caps nesting (see
+/// `monty_proto::MAX_VALUE_DEPTH`) — checking here gives the caller a clean
+/// `Max input depth exceeded` error before anything is sent to a worker.
+#[expect(clippy::cast_possible_truncation, reason = "MAX_VALUE_DEPTH is 48")]
+const MAX_INPUT_DEPTH: u8 = monty_pool::MAX_VALUE_DEPTH as u8;
+/// Depth limit when converting sandbox values back to Python objects; values
+/// arriving over the wire are already bounded well below this, so it is a
+/// pure defence-in-depth backstop.
 const MAX_DEPTH: u8 = 200;
 
 /// Like `py_to_monty`, but converts any `PyErr` into a `MontyException`.
@@ -52,7 +61,7 @@ pub fn py_to_monty_value(obj: &Bound<'_, PyAny>, dc_registry: &DcRegistry) -> Re
 /// Callable check is last since many Python types (classes, etc.) are technically callable.
 pub fn py_to_monty(obj: &Bound<'_, PyAny>, dc_registry: &DcRegistry, mut depth: u8) -> PyResult<MontyObject> {
     depth += 1;
-    if depth > MAX_DEPTH {
+    if depth > MAX_INPUT_DEPTH {
         Err(PyRuntimeError::new_err("Max input depth exceeded"))
     } else if obj.is_none() {
         Ok(MontyObject::None)
