@@ -52,3 +52,28 @@ the notes below are about the *host API* surface.
 - **`dump()`** bytes use a subprocess-specific envelope and can only be
   restored into another subprocess worker (Rust `Pool::checkout_load`); there
   is currently no Python API to restore them.
+
+## JavaScript client (`@pydantic/monty`)
+
+The npm package implements the same parent side of the protocol in pure
+TypeScript (`crates/monty-js`) — no Rust in the package; workers are `monty`
+binaries shipped in platform npm packages. Everything above applies, plus:
+
+- **Dataclass method calls are unsupported.** JS has no dataclass registry,
+  so a sandbox call to a method on a host dataclass (`method_call` on the
+  wire) raises `RuntimeError: method calls on host objects are not
+  supported: <name>` instead of dispatching to a host method.
+- **Exception pass-through is by name.** A thrown JS error crosses into the
+  sandbox using `error.name` when it matches one of monty's exception types
+  (`TypeError`, `ValueError`, `KeyError`, ...); anything else becomes
+  `RuntimeError`. Tracebacks of host errors are not preserved.
+- **Deep external-function return values** (beyond the wire depth bound)
+  raise a *catchable* `RuntimeError: Max input depth exceeded` inside the
+  sandbox, where `pydantic_monty` raises host-side and abandons the feed.
+- **`dump()`** returns the opaque bytes; there is no JS restore API.
+- Sessions and pools support `await using` (async disposal) in addition to
+  explicit `close()`.
+
+For browsers (no subprocesses), `@pydantic/monty-wasm` (`crates/monty-wasm`)
+keeps the old napi in-process API compiled to `wasm32-wasip1-threads`; it has
+none of the crash isolation described here — a sandbox crash is a host crash.

@@ -11,7 +11,7 @@
     "typescript": "^5.9.2"
   },
   "dependencies": {
-    "@pydantic/monty": "file:../pydantic-monty-1.0.0.tgz",
-    "@pydantic/monty-darwin-arm64": "file:../pydantic-monty-darwin-arm64-1.0.0.tgz"
+    "@pydantic/monty": "file:../pydantic-monty-0.0.18.tgz",
+    "@pydantic/monty-darwin-arm64": "file:../pydantic-monty-darwin-arm64-0.0.18.tgz"
   }
 }

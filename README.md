@@ -155,6 +155,37 @@ with pydantic_monty.Monty() as pool:
         #> 42
 ```
 
+### JavaScript / TypeScript
+
+To install:
+
+```bash
+npm install @pydantic/monty
+```
+
+The JS package is a pure-TypeScript client speaking the same subprocess
+protocol — workers are `monty` binaries shipped via platform-specific npm
+packages:
+
+```ts
+import { Monty } from '@pydantic/monty'
+
+await using pool = await Monty.create()
+await using session = await pool.checkout()
+
+// session state persists between feedRun calls
+await session.feedRun('x = 21')
+console.log(await session.feedRun('x * 2')) // 42
+
+// external functions may be async
+const result = await session.feedRun('await fetch_data()', {
+  externalFunctions: { fetch_data: async () => 'data' },
+})
+```
+
+For browsers (or anywhere subprocesses are impossible) there is a separate
+in-process WebAssembly build, [`@pydantic/monty-wasm`](https://www.npmjs.com/package/@pydantic/monty-wasm).
+
 ### Rust
 
 ```rust

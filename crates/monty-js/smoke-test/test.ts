@@ -1,4 +1,4 @@
-import { Monty, MontySyntaxError, MontyRuntimeError, MontySnapshot, MontyComplete } from '@pydantic/monty'
+import { Monty, MontyRuntimeError, MontySyntaxError } from '@pydantic/monty'
 
 let passed = 0
 let failed = 0
@@ -13,152 +13,108 @@ function assert(condition: boolean, message: string): void {
   }
 }
 
-function assertThrows<T extends Error>(fn: () => void, errorClass: new (...args: never[]) => T, message: string): void {
+async function assertThrowsAsync<T extends Error>(
+  fn: () => Promise<unknown>,
+  errorClass: new (...args: never[]) => T,
+  message: string,
+): Promise<T | null> {
   try {
-    fn()
+    await fn()
     console.error(`FAIL: ${message} - no error thrown`)
     failed++
+    return null
   } catch (e) {
     if (e instanceof errorClass) {
       console.log(`PASS: ${message}`)
       passed++
-    } else {
-      console.error(`FAIL: ${message} - wrong error type: ${(e as Error).constructor.name}`)
-      failed++
+      return e
     }
+    console.error(`FAIL: ${message} - wrong error type: ${(e as Error).constructor.name}: ${(e as Error).message}`)
+    failed++
+    return null
   }
 }
 
-console.log('=== Basic Execution ===')
+console.log('=== Pool and session lifecycle ===')
 
-const m1 = new Monty('1 + 2')
-assert(m1.run() === 3, 'basic arithmetic')
+const pool = await Monty.create()
+const session = await pool.checkout()
+assert(typeof session.workerPid === 'number', 'session has a worker pid')
 
-const m2 = new Monty('10 * 5 - 3')
-assert(m2.run() === 47, 'complex arithmetic')
+console.log('\n=== Basic Execution ===')
 
-const m3 = new Monty('"hello" + " " + "world"')
-assert(m3.run() === 'hello world', 'string concatenation')
+assert((await session.feedRun('1 + 2')) === 3, 'basic arithmetic')
+assert((await session.feedRun('10 * 5 - 3')) === 47, 'complex arithmetic')
+assert((await session.feedRun('"hello" + " " + "world"')) === 'hello world', 'string concatenation')
 
-console.log('\n=== Constructor Options ===')
+console.log('\n=== Session state ===')
 
-const m4 = new Monty('x + y', { inputs: ['x', 'y'] })
-assert(m4.inputs.length === 2, 'inputs array populated')
-assert(m4.inputs[0] === 'x', 'first input correct')
-
-// External functions are no longer declared in the constructor - they are resolved at runtime via start/resume
-
-const m6 = new Monty('1', { scriptName: 'custom.py' })
-assert(m6.scriptName === 'custom.py', 'custom script name')
+await session.feedRun('x = 21')
+assert((await session.feedRun('x * 2')) === 42, 'globals persist across feeds')
 
 console.log('\n=== Inputs ===')
 
-const m7 = new Monty('x * 2', { inputs: ['x'] })
-assert(m7.run({ inputs: { x: 5 } }) === 10, 'single input')
-assert(m7.run({ inputs: { x: -3 } }) === -6, 'negative input')
-
-const m8 = new Monty('a + b + c', { inputs: ['a', 'b', 'c'] })
-assert(m8.run({ inputs: { a: 1, b: 2, c: 3 } }) === 6, 'multiple inputs')
+assert((await session.feedRun('a + b + c', { inputs: { a: 1, b: 2, c: 3 } })) === 6, 'multiple inputs')
 
 console.log('\n=== Error Handling ===')
 
-assertThrows(() => new Monty('def'), MontySyntaxError, 'syntax error throws MontySyntaxError')
+await assertThrowsAsync(() => session.feedRun('def'), MontySyntaxError, 'syntax error throws MontySyntaxError')
+await assertThrowsAsync(() => session.feedRun('1/0'), MontyRuntimeError, 'division by zero throws MontyRuntimeError')
 
-assertThrows(() => new Monty('1/0').run(), MontyRuntimeError, 'division by zero throws MontyRuntimeError')
-
-assertThrows(
-  () => new Monty('raise ValueError("test")').run(),
+const err = await assertThrowsAsync(
+  () => session.feedRun('raise ValueError("custom message")'),
   MontyRuntimeError,
   'raise statement throws MontyRuntimeError',
 )
-
-console.log('\n=== Error Properties ===')
-
-try {
-  new Monty('raise ValueError("custom message")').run()
-} catch (e) {
-  if (e instanceof MontyRuntimeError) {
-    assert(e.exception.typeName === 'ValueError', 'exception typeName correct')
-    assert(e.exception.message === 'custom message', 'exception message correct')
-    assert(e.display('msg') === 'custom message', 'display msg format')
-    assert(e.display('type-msg') === 'ValueError: custom message', 'display type-msg format')
-    const frames = e.traceback()
-    assert(Array.isArray(frames), 'traceback returns array')
-  }
+if (err !== null) {
+  assert(err.exception.typeName === 'ValueError', 'exception typeName correct')
+  assert(err.exception.message === 'custom message', 'exception message correct')
+  assert(err.display('msg') === 'custom message', 'display msg format')
+  assert(err.display('type-msg') === 'ValueError: custom message', 'display type-msg format')
+  assert(Array.isArray(err.traceback()), 'traceback returns array')
 }
 
-console.log('\n=== External Functions (start/resume) ===')
+console.log('\n=== External Functions ===')
 
-const m9 = new Monty('foo(42)')
-const result9 = m9.start()
-assert(result9 instanceof MontySnapshot, 'start returns MontySnapshot')
-if (!(result9 instanceof MontySnapshot)) throw new Error('Expected MontySnapshot')
-assert(result9.functionName === 'foo', 'snapshot has correct function name')
-assert(result9.args[0] === 42, 'snapshot has correct args')
-assert(Object.keys(result9.kwargs).length === 0, 'snapshot has empty kwargs')
+assert(
+  (await session.feedRun('add(2, 3)', { externalFunctions: { add: (a: number, b: number) => a + b } })) === 5,
+  'sync external function',
+)
+assert(
+  (await session.feedRun('await get_data()', {
+    externalFunctions: { get_data: async () => 'async result' },
+  })) === 'async result',
+  'async external function',
+)
 
-const complete1 = result9.resume({ returnValue: 'result' })
-assert(complete1 instanceof MontyComplete, 'resume returns MontyComplete')
-if (!(complete1 instanceof MontyComplete)) throw new Error('Expected MontyComplete')
-assert(complete1.output === 'result', 'complete has correct output')
+const callArgs: unknown[] = []
+await session.feedRun('bar(1, 2, x=3, y=4)', {
+  externalFunctions: {
+    bar: (...args: unknown[]) => {
+      callArgs.push(...args)
+      return null
+    },
+  },
+})
+assert(JSON.stringify(callArgs) === '[1,2,{"x":3,"y":4}]', 'positional args and kwargs object')
 
-console.log('\n=== External Functions with kwargs ===')
+console.log('\n=== Print callback ===')
 
-const m10 = new Monty('bar(1, 2, x=3, y=4)')
-const result10 = m10.start()
-if (!(result10 instanceof MontySnapshot)) throw new Error('Expected MontySnapshot')
-assert(result10.args[0] === 1, 'positional arg 1')
-assert(result10.args[1] === 2, 'positional arg 2')
-assert(result10.kwargs['x'] === 3, 'kwarg x')
-assert(result10.kwargs['y'] === 4, 'kwarg y')
-result10.resume({ returnValue: null })
+const prints: string[] = []
+await session.feedRun('print("hello")', { printCallback: (_stream, text) => prints.push(text) })
+assert(JSON.stringify(prints) === '["hello\\n"]', 'print callback receives output')
 
-console.log('\n=== Multiple External Calls ===')
+console.log('\n=== Dump ===')
 
-const m11 = new Monty('a = get_a()\nb = get_b()\na + b')
-let state: MontySnapshot | MontyComplete = m11.start()
-
-assert(state instanceof MontySnapshot, 'first call returns snapshot')
-assert((state as MontySnapshot).functionName === 'get_a', 'first function is get_a')
-state = (state as MontySnapshot).resume({ returnValue: 10 })
-
-assert(state instanceof MontySnapshot, 'second call returns snapshot')
-assert((state as MontySnapshot).functionName === 'get_b', 'second function is get_b')
-state = (state as MontySnapshot).resume({ returnValue: 20 })
-
-assert(state instanceof MontyComplete, 'final state is complete')
-assert((state as MontyComplete).output === 30, 'result is sum of external returns')
-
-console.log('\n=== Serialization ===')
-
-const m12 = new Monty('x + 1', { inputs: ['x'] })
-const dumped = m12.dump()
+const dumped = await session.dump()
 assert(dumped instanceof Buffer, 'dump returns Buffer')
 assert(dumped.length > 0, 'dump is not empty')
 
-const loaded = Monty.load(dumped)
-assert(loaded.run({ inputs: { x: 10 } }) === 11, 'loaded instance works')
+console.log('\n=== Shutdown ===')
 
-console.log('\n=== Snapshot Serialization ===')
-
-const m13 = new Monty('ext(x) + 1', { inputs: ['x'] })
-const snap = m13.start({ inputs: { x: 5 } }) as MontySnapshot
-const snapDumped = snap.dump()
-assert(snapDumped instanceof Buffer, 'snapshot dump returns Buffer')
-
-const snapLoaded = MontySnapshot.load(snapDumped)
-assert(snapLoaded.functionName === 'ext', 'loaded snapshot has function name')
-assert(snapLoaded.args[0] === 5, 'loaded snapshot has args')
-
-const finalResult = snapLoaded.resume({ returnValue: 100 }) as MontyComplete
-assert(finalResult.output === 101, 'resumed loaded snapshot works')
-
-console.log('\n=== repr() ===')
-
-const m14 = new Monty('1 + 1')
-const repr = m14.repr()
-assert(typeof repr === 'string', 'repr returns string')
-assert(repr.includes('Monty'), 'repr contains Monty')
+await session.close()
+await pool.close()
+assert(true, 'pool closed cleanly')
 
 console.log('\n=== Summary ===')
 console.log(`Passed: ${passed}`)

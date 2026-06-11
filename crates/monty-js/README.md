@@ -1,6 +1,19 @@
 # @pydantic/monty
 
-JavaScript/TypeScript bindings for the Monty sandboxed Python interpreter.
+Run untrusted Python safely from Node.js: a pool of crash-isolated `monty`
+interpreter subprocesses, driven over a protobuf protocol by a pure-TypeScript
+client.
+
+[Monty](https://github.com/pydantic/monty) is a sandboxed Python interpreter
+written in Rust. A sandbox process can never be made fully crash-proof against
+memory errors (stack overflow, allocator aborts), so this package _only_ runs
+the interpreter in worker subprocesses: a worker that crashes raises
+`MontyCrashedError`, is replaced by the pool, and your Node.js process is
+never at risk.
+
+The `monty` binary ships via platform-specific npm packages installed
+automatically (like esbuild). For browsers, see
+[`@pydantic/monty-wasm`](https://www.npmjs.com/package/@pydantic/monty-wasm).
 
 ## Installation
 
@@ -13,42 +26,41 @@ npm install @pydantic/monty
 ```ts
 import { Monty } from '@pydantic/monty'
 
-// Create interpreter and run code
-const m = new Monty('1 + 2')
-const result = m.run() // returns 3
+await using pool = await Monty.create()
+await using session = await pool.checkout()
+
+const result = await session.feedRun('1 + 2') // 3
 ```
 
-## Input Variables
+A session is a REPL in a dedicated worker — state persists across feeds:
 
 ```ts
-const m = new Monty('x + y', { inputs: ['x', 'y'] })
-const result = m.run({ inputs: { x: 10, y: 20 } }) // returns 30
+await session.feedRun('x = 21')
+await session.feedRun('x * 2') // 42
+```
+
+Without `await using`, call `session.close()` (returns the worker to the pool)
+and `pool.close()` explicitly.
+
+## Inputs
+
+Pass values as globals for a feed:
+
+```ts
+await session.feedRun('x + y', { inputs: { x: 10, y: 20 } }) // 30
 ```
 
 ## External Functions
 
-For synchronous external functions, pass them directly to `run()`:
+The sandbox can call host functions by name — sync or async (async functions
+are awaited while other sandbox tasks keep running):
 
 ```ts
-const m = new Monty('add(2, 3)')
+await session.feedRun('add(2, 3)', {
+  externalFunctions: { add: (a: number, b: number) => a + b },
+}) // 5
 
-const result = m.run({
-  externalFunctions: {
-    add: (a: number, b: number) => a + b,
-  },
-}) // returns 5
-```
-
-For async external functions, use `runMontyAsync()`:
-
-```ts
-import { Monty, runMontyAsync } from '@pydantic/monty'
-
-const m = new Monty('fetch_data(url)', {
-  inputs: ['url'],
-})
-
-const result = await runMontyAsync(m, {
+await session.feedRun('await fetch_data(url)', {
   inputs: { url: 'https://example.com' },
   externalFunctions: {
     fetch_data: async (url: string) => {
@@ -59,149 +71,125 @@ const result = await runMontyAsync(m, {
 })
 ```
 
-## Iterative Execution
+Keyword arguments arrive as a trailing object; thrown errors cross into the
+sandbox as Python exceptions (the error's `name` is used when it matches a
+Python exception type, e.g. `TypeError`, otherwise `RuntimeError`).
 
-For fine-grained control over external function calls, use `start()` and `resume()`:
+## Print Output
 
 ```ts
-const m = new Monty('a() + b()')
-
-let progress = m.start()
-while (progress instanceof MontySnapshot) {
-  console.log(`Calling: ${progress.functionName}`)
-  console.log(`Args: ${progress.args}`)
-  // Provide the return value and resume
-  progress = progress.resume({ returnValue: 10 })
-}
-// progress is now MontyComplete
-console.log(progress.output) // 20
+await session.feedRun('print("hello")', {
+  printCallback: (stream, text) => console.log(`[${stream}] ${text}`),
+})
 ```
 
-## Error Handling
+Output is line-buffered; without a callback it goes to the host process
+stdout/stderr.
+
+## Filesystem Mounts
+
+Mount host directories into the sandbox at virtual POSIX paths:
 
 ```ts
-import { Monty, MontySyntaxError, MontyRuntimeError, MontyTypingError } from '@pydantic/monty'
+import { MountDir } from '@pydantic/monty'
 
-try {
-  const m = new Monty('1 / 0')
-  m.run()
-} catch (error) {
-  if (error instanceof MontySyntaxError) {
-    console.log('Syntax error:', error.message)
-  } else if (error instanceof MontyRuntimeError) {
-    console.log('Runtime error:', error.message)
-    console.log('Traceback:', error.traceback())
-  } else if (error instanceof MontyTypingError) {
-    console.log('Type error:', error.displayDiagnostics())
-  }
-}
+const mount = new MountDir('/mnt/data', '/path/on/host', { mode: 'read-only' })
+await session.feedRun("open('/mnt/data/file.txt').read()", { mount })
 ```
 
-## Type Checking
+Modes: `'read-only'`, `'read-write'`, and `'overlay'` (default — writes are
+kept in worker memory and discarded at the end of the feed). OS calls mounts
+don't cover can be handled with the `os` callback:
 
 ```ts
-const m = new Monty('"hello" + 1')
-try {
-  m.typeCheck()
-} catch (error) {
-  if (error instanceof MontyTypingError) {
-    console.log(error.displayDiagnostics('concise'))
-  }
-}
+import { NOT_HANDLED } from '@pydantic/monty'
 
-// Or enable during construction
-const m2 = new Monty('1 + 1', { typeCheck: true })
+await session.feedRun('import os\nos.getenv("HOME")', {
+  os: (name, args) => (name === 'os.getenv' && args[0] === 'HOME' ? '/home/user' : NOT_HANDLED),
+})
 ```
 
 ## Resource Limits
 
+Enforced inside the worker, configured per session:
+
 ```ts
-const m = new Monty('1 + 1')
-const result = m.run({
-  limits: {
-    maxAllocations: 10000,
-    maxDurationSecs: 5,
-    maxMemory: 1024 * 1024, // 1MB
-    maxRecursionDepth: 100,
-  },
+const limited = await pool.checkout({
+  limits: { maxMemory: 100 * 1024 * 1024, maxDurationSecs: 5, maxRecursionDepth: 100 },
 })
 ```
 
-## Serialization
+`requestTimeout` on the pool is the backstop for code that wedges the
+interpreter itself: the worker is killed and the session fails with
+`MontyCrashedError` (`timedOut: true`).
+
+## Type Checking
 
 ```ts
-// Save parsed code to avoid re-parsing
-const m = new Monty('complex_code()')
-const data = m.dump()
+import { MontyTypingError } from '@pydantic/monty'
 
-// Later, restore without re-parsing
-const m2 = Monty.load(data)
-const result = m2.run()
-
-// Snapshots can also be serialized
-const snapshot = m.start()
-if (snapshot instanceof MontySnapshot) {
-  const snapshotData = snapshot.dump()
-  // Later, restore and resume
-  const restored = MontySnapshot.load(snapshotData)
-  const result = restored.resume({ returnValue: 42 })
+const session = await pool.checkout({ typeCheck: true, typeCheckStubs: 'def fetch(url: str) -> str: ...' })
+try {
+  await session.feedRun('fetch(123)')
+} catch (err) {
+  if (err instanceof MontyTypingError) {
+    console.log(err.display()) // rendered diagnostics, one per line
+  }
 }
 ```
 
-## API Reference
+A snippet that fails type checking does not run; the session survives.
 
-### `Monty` Class
+## Error Handling
 
-- `constructor(code: string, options?: MontyOptions)` - Parse Python code
-- `run(options?: RunOptions)` - Execute and return the result
-- `start(options?: StartOptions)` - Start iterative execution
-- `typeCheck(prefixCode?: string)` - Perform static type checking
-- `dump()` - Serialize to binary format
-- `Monty.load(data)` - Deserialize from binary format
-- `scriptName` - The script name (default: `'main.py'`)
-- `inputs` - Declared input variable names
+```ts
+import { MontyError, MontySyntaxError, MontyRuntimeError, MontyCrashedError } from '@pydantic/monty'
 
-### `MontyOptions`
+try {
+  await session.feedRun('1 / 0')
+} catch (err) {
+  if (err instanceof MontyRuntimeError) {
+    console.log(err.exception.typeName) // 'ZeroDivisionError'
+    console.log(err.display('traceback')) // full Python-style traceback
+  }
+}
+```
 
-- `scriptName?: string` - Name used in tracebacks (default: `'main.py'`)
-- `inputs?: string[]` - Input variable names
-- `typeCheck?: boolean` - Enable type checking on construction
-- `typeCheckPrefixCode?: string` - Code to prepend for type checking
+`MontyError` is the base class; `MontyCrashedError` means the worker process
+died (the session is lost, the pool recovers).
 
-### `RunOptions`
+## Pool Configuration
 
-- `inputs?: object` - Input variable values
-- `limits?: ResourceLimits` - Resource limits
-- `externalFunctions?: object` - External function callbacks
+```ts
+const pool = await Monty.create({
+  minProcesses: 1, // prewarmed workers
+  maxProcesses: 8, // cap; checkouts beyond it wait (default: CPU count)
+  checkoutTimeout: 10, // seconds to wait for a free worker
+  requestTimeout: 30, // hard per-turn deadline (seconds)
+  maxCheckoutsPerWorker: 100, // recycle workers after this many sessions
+  binaryPath: '/path/to/monty', // explicit binary (default: auto-resolved)
+})
+```
 
-### `ResourceLimits`
+The `monty` binary resolves from: explicit `binaryPath` → the `MONTY_BIN`
+environment variable → the installed platform package → `PATH` → a cargo
+workspace `target/` build (development).
 
-- `maxAllocations?: number` - Maximum heap allocations
-- `maxDurationSecs?: number` - Maximum execution time in seconds
-- `maxMemory?: number` - Maximum heap memory in bytes
-- `gcInterval?: number` - Run GC every N allocations
-- `maxRecursionDepth?: number` - Maximum call stack depth (default: 1000)
+## Value Conversion
 
-### `MontySnapshot` Class
+| Python            | JavaScript                                              |
+| ----------------- | ------------------------------------------------------- |
+| `None`            | `null`                                                  |
+| `bool`            | `boolean`                                               |
+| `int`             | `number` (±2^53) or `BigInt`                            |
+| `float`           | `number`                                                |
+| `str`             | `string`                                                |
+| `bytes`           | `Buffer`                                                |
+| `list`            | `Array`                                                 |
+| `tuple`           | `Array` with non-enumerable `__tuple__: true`           |
+| `dict`            | `Map` (preserves key types and order)                   |
+| `set`/`frozenset` | `Set`                                                   |
+| datetime types    | marker objects (`{ __monty_type__: 'DateTime', ... }`)  |
+| dataclasses       | marker objects (`{ __monty_type__: 'Dataclass', ... }`) |
 
-Returned by `start()` when execution pauses at an external function call.
-
-- `scriptName` - The script being executed
-- `functionName` - The external function being called
-- `args` - Positional arguments
-- `kwargs` - Keyword arguments
-- `resume(options: ResumeOptions)` - Resume with return value or exception
-- `dump()` / `MontySnapshot.load(data)` - Serialization
-
-### `MontyComplete` Class
-
-Returned by `start()` or `resume()` when execution completes.
-
-- `output` - The final result value
-
-### Error Classes
-
-- `MontyError` - Base class for all Monty errors
-- `MontySyntaxError` - Syntax/parsing errors
-- `MontyRuntimeError` - Runtime exceptions (with `traceback()`)
-- `MontyTypingError` - Type checking errors (with `displayDiagnostics()`)
+Plain objects are accepted as dict inputs (string keys).

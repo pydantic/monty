@@ -2068,20 +2068,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "monty-js"
-version = "0.0.18"
-dependencies = [
- "monty",
- "monty_type_checking",
- "napi",
- "napi-build",
- "napi-derive",
- "num-bigint",
- "postcard",
- "serde",
-]
-
-[[package]]
 name = "monty-macros"
 version = "0.0.18"
 dependencies = [
@@ -2108,6 +2094,20 @@ dependencies = [
  "prost",
  "prost-build",
  "protox",
+]
+
+[[package]]
+name = "monty-wasm"
+version = "0.0.18"
+dependencies = [
+ "monty",
+ "monty_type_checking",
+ "napi",
+ "napi-build",
+ "napi-derive",
+ "num-bigint",
+ "postcard",
+ "serde",
 ]
 
 [[package]]

@@ -28,15 +28,25 @@ jobs:
           registry-url: 'https://registry.npmjs.org'
 
       - name: Install dependencies
-        run: npm install
-        working-directory: crates/monty-js
+        run: |
+          (cd crates/monty-js && npm install)
+          (cd crates/monty-wasm && npm install)
 
       - name: Create npm dirs
-        run: npm run create-npm-dirs
-        working-directory: crates/monty-js
+        run: |
+          (cd crates/monty-js && npm run create-platform-packages)
+          (cd crates/monty-wasm && npm run create-npm-dirs)
+
+      - name: Collect platform package dirs
+        run: |
+          mkdir -p npm
+          cp -r crates/monty-js/npm/* npm/
+          cp -r crates/monty-wasm/npm/* npm/ 2>/dev/null || true
+          # @pydantic/monty-wasm itself is also published via OIDC and needs a placeholder
+          mkdir -p npm/monty-wasm-main
+          cp crates/monty-wasm/package.json npm/monty-wasm-main/
 
       - name: Check and create missing platform packages # zizmor: ignore[use-trusted-publishing]
-        working-directory: crates/monty-js
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |

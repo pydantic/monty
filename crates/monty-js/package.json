@@ -2,13 +2,13 @@
   "name": "@pydantic/monty",
   "version": "0.0.18",
   "type": "module",
-  "description": "Sandboxed Python interpreter for JavaScript/TypeScript",
-  "main": "wrapper.js",
-  "types": "wrapper.d.ts",
+  "description": "Sandboxed Python interpreter running in crash-isolated subprocess workers",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
   "exports": {
     ".": {
-      "types": "./wrapper.d.ts",
-      "default": "./wrapper.js"
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
     }
   },
   "repository": {
@@ -16,67 +16,36 @@
     "url": "https://github.com/pydantic/monty"
   },
   "license": "MIT",
-  "browser": "browser.js",
   "files": [
-    "index.d.ts",
-    "index.js",
-    "wrapper.js",
-    "wrapper.d.ts",
-    "browser.js"
+    "dist"
   ],
-  "napi": {
-    "binaryName": "monty",
-    "targets": [
-      "x86_64-pc-windows-msvc",
-      "x86_64-apple-darwin",
-      "x86_64-unknown-linux-gnu",
-      "aarch64-apple-darwin",
-      "aarch64-unknown-linux-gnu",
-      "wasm32-wasip1-threads"
-    ],
-    "dtsHeaderFile": "./index-header.d.ts"
-  },
   "engines": {
-    "node": ">= 6.14.2 < 7 || >= 8.11.2 < 9 || >= 9.11.0 < 10 || >= 10.0.0"
+    "node": ">= 20"
   },
   "publishConfig": {
     "registry": "https://registry.npmjs.org/",
     "access": "public"
   },
   "scripts": {
-    "artifacts": "napi artifacts",
-    "bench": "node --import @oxc-node/core/register benchmark/bench.ts",
-    "build": "run-s build:napi build:ts",
-    "build:debug": "run-s build:napi:debug build:ts",
-    "build:napi": "napi build --platform --release --esm",
-    "build:napi:debug": "napi build --platform --esm",
-    "build:ts": "tsc",
-    "create-npm-dirs": "napi create-npm-dirs",
-    "format": "run-p format:prettier format:rs format:toml",
-    "format:prettier": "prettier . -w",
-    "format:toml": "taplo format",
-    "format:rs": "cargo fmt",
+    "build": "tsc",
+    "generate-proto": "buf generate",
+    "format": "prettier . -w",
     "lint": "oxlint .",
-    "prepublishOnly": "napi prepublish -t npm",
     "test": "ava",
     "smoke-test": "bash scripts/smoke-test.sh",
-    "preversion": "napi build --platform && git add .",
-    "version": "napi version"
+    "create-platform-packages": "node scripts/create-platform-packages.mjs"
+  },
+  "dependencies": {
+    "@bufbuild/protobuf": "^2.10.1"
   },
   "devDependencies": {
-    "@emnapi/core": "^1.5.0",
-    "@emnapi/runtime": "^1.5.0",
-    "@napi-rs/cli": "^3.2.0",
+    "@bufbuild/buf": "^1.58.0",
+    "@bufbuild/protoc-gen-es": "^2.10.1",
     "@oxc-node/core": "^0.0.35",
-    "@taplo/cli": "^0.7.0",
-    "@tybys/wasm-util": "^0.10.0",
     "@types/node": "^25.0.9",
     "ava": "^6.4.1",
-    "chalk": "^5.6.2",
-    "npm-run-all2": "^8.0.4",
     "oxlint": "^1.14.0",
     "prettier": "^3.6.2",
-    "tinybench": "^6.0.0",
     "typescript": "^5.9.2"
   },
   "ava": {
@@ -96,5 +65,12 @@
     "trailingComma": "all",
     "singleQuote": true,
     "arrowParens": "always"
+  },
+  "optionalDependencies": {
+    "@pydantic/monty-darwin-x64": "0.0.18",
+    "@pydantic/monty-darwin-arm64": "0.0.18",
+    "@pydantic/monty-linux-x64-gnu": "0.0.18",
+    "@pydantic/monty-linux-arm64-gnu": "0.0.18",
+    "@pydantic/monty-win32-x64-msvc": "0.0.18"
   }
 }

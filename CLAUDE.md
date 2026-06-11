@@ -258,11 +258,13 @@ make install-py           Install python dependencies
 make install-js           Install JS package dependencies
 make install              Install the package, dependencies, and pre-commit for local development
 make dev-py               Install the python package for development
-make dev-js               Build the JS package (debug)
+make build-js             Build the JS package (compile TypeScript)
 make lint-js              Lint JS code with oxlint
-make test-js              Build and test the JS package
+make test-js              Test the JS package (builds the monty binary the workers run)
 make dev-py-release       Install the python package for development with a release build
-make dev-js-release       Build the JS package (release)
+make install-wasm         Install monty-wasm JS dependencies
+make build-wasm           Build the wasm package (requires the wasm32-wasip1-threads toolchain)
+make test-wasm            Test the wasm package (requires a prior build-wasm)
 make dev-py-pgo           Install the python package for development with profile-guided optimization
 make format-rs            Format Rust code with fmt
 make format-py            Format Python code - WARNING be careful about this command as it may modify code and break tests silently!
@@ -272,6 +274,8 @@ make lint-rs              Lint Rust code with clippy and import checks
 make clippy-fix           Fix Rust code with clippy
 make generate-proto       Regenerate monty-proto's checked-in code from the .proto schema
 make check-proto          Verify monty-proto's checked-in code matches the .proto schema
+make generate-proto-js    Regenerate monty-js's checked-in protobuf code from the .proto schema
+make check-proto-js       Verify monty-js's checked-in protobuf code matches the .proto schema
 make lint-py              Lint Python code with ruff
 make lint                 Lint the code with ruff and clippy
 make format-lint-rs       Format and lint Rust code with fmt and clippy
@@ -662,79 +666,76 @@ Reference counting alone cannot reclaim cycles. Monty uses **Bacon–Rajan trial
 
 **Resource limits**: When resource limits (allocations, memory, time) are exceeded, execution terminates with a `ResourceError`. No guarantees are made about the state of the heap or reference counts after a resource limit is exceeded. The heap may contain orphaned objects with incorrect refcounts. This is acceptable because resource exhaustion is a terminal error - the execution context should be discarded.
 
-## JavaScript Package (`monty-js`)
+## JavaScript Package (`@pydantic/monty`, `crates/monty-js/`)
 
-The JavaScript package provides Node.js bindings for the Monty interpreter via napi-rs, located in `crates/monty-js/`.
+The JavaScript package is a **pure-TypeScript client** (no Rust, no napi) that
+runs Python in pools of `monty --subprocess` workers, speaking the
+`monty-proto` protobuf protocol over stdin/stdout. It is the JS equivalent of
+`pydantic_monty`: crash isolation, elastic pools, sessions.
 
 ### Structure
 
-- `crates/monty-js/src/lib.rs` - Rust source for napi-rs bindings
-- `crates/monty-js/index.js` - Auto-generated JS loader that detects platform and loads the appropriate native binding
-- `crates/monty-js/index.d.ts` - TypeScript type declarations (auto-generated)
+- `crates/monty-js/src/` - TypeScript source: `pool.ts` (Monty), `session.ts`
+  (MontySession + drive loop), `worker.ts` (spawn/handshake/turn I/O),
+  `frame.ts` (length-prefixed framing), `convert.ts` (JS ↔ wire values),
+  `errors.ts`, `binary.ts` (monty binary resolution), `mount.ts`
+- `crates/monty-js/src/generated/` - CHECKED-IN protobuf-es codegen from
+  `crates/monty-proto/proto` (regenerate with `make generate-proto-js`; CI
+  enforces sync via `make check-proto-js`)
+- `crates/monty-js/npm/` - generated platform packages shipping the `monty`
+  binary (`@pydantic/monty-<platform>`, selected via optionalDependencies)
 - `crates/monty-js/__test__/` - Tests using ava
 
 ### Current API
 
-The package exposes:
-
-- `Monty` class - Parse and execute Python code with inputs, external functions, and resource limits
-- `MontySnapshot` / `MontyComplete` - For iterative execution with `start()` / `resume()`
-- `runMontyAsync()` - Helper for async external functions
-- `MontySyntaxError` / `MontyRuntimeError` / `MontyTypingError` - Error classes
-
 ```ts
-import { Monty, MontySnapshot, runMontyAsync } from '@pydantic/monty'
+import { Monty } from '@pydantic/monty'
 
-// Basic execution
-const m = new Monty('x + 1', { inputs: ['x'] })
-const result = m.run({ inputs: { x: 10 } }) // returns 11
+await using pool = await Monty.create({ maxProcesses: 8, requestTimeout: 30 })
+await using session = await pool.checkout({ typeCheck: false })
 
-// Iterative execution for external functions
-const m2 = new Monty('fetch(url)', { inputs: ['url'], externalFunctions: ['fetch'] })
-let progress = m2.start({ inputs: { url: 'https://...' } })
-if (progress instanceof MontySnapshot) {
-  progress = progress.resume({ returnValue: 'response data' })
-}
+await session.feedRun('x = 21') // session state persists across feeds
+const result = await session.feedRun('x * 2', {
+  inputs: { y: 1 },
+  externalFunctions: { fetch: async (url: string) => '...' }, // sync or async
+  printCallback: (stream, text) => {},
+})
 ```
+
+Errors: `MontyError` (base), `MontySyntaxError`, `MontyRuntimeError`,
+`MontyTypingError`, and `MontyCrashedError` (worker death; pool recovers).
+`MountDir` and the `os`/`NOT_HANDLED` callback work like the Python package.
 
 See `crates/monty-js/README.md` for full API documentation.
 
 ### Building and Testing
 
 ```bash
-# Install dependencies
-make install-js
-
-# Build native binding (debug)
-make build-js
-
-# Build native binding (release)
-make build-js-release
-
-# Run tests
-make test-js
-
-# Format JavaScript code
-make format-js
-
-# Lint JavaScript code
-make lint-js
+make install-js   # npm install
+make build-js     # compile TypeScript
+make test-js      # builds the debug monty binary, then runs ava
+make lint-js      # oxlint
+make format-js    # prettier
+make smoke-test-js  # packs + installs the package and platform binary package
 ```
 
-Or run directly in `crates/monty-js`:
-
-```bash
-npm install
-npm run build        # release build
-npm run build:debug  # debug build
-npm test
-```
+Tests run straight from `src/` via `@oxc-node/core`; the workers resolve the
+`monty` binary from the workspace `target/debug` build automatically.
 
 ### JavaScript Test Guidelines
 
 - Tests use [ava](https://github.com/avajs/ava) and live in `crates/monty-js/__test__/`
-- Tests are written in TypeScript
+- Tests are written in TypeScript; use the `setupPool` helper from `__test__/helpers.ts`
 - Follow the existing test style in the `__test__/` directory
+
+## WebAssembly Package (`@pydantic/monty-wasm`, `crates/monty-wasm/`)
+
+The old napi-rs in-process binding lives on as a wasm-only crate for browsers
+and other environments where subprocesses are impossible. It builds the
+`wasm32-wasip1-threads` target via napi and exposes the legacy in-process API
+(`Monty`, `MontySnapshot`, `MontyRepl`, `runMontyAsync`, ...). On Node.js,
+`@pydantic/monty` (the subprocess pool) is always preferred. Built and tested
+in CI; building locally requires the wasm toolchain (`make build-wasm`).
 
 ## Limitations documentation (`./limitations/`)
 

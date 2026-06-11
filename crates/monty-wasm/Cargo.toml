@@ -1,6 +1,6 @@
 [package]
-name = "monty-js"
-description = "TypeScript/JavaScript bindings for the Monty sandboxed Python interpreter"
+name = "monty-wasm"
+description = "WebAssembly (browser/WASI) bindings for the Monty sandboxed Python interpreter"
 readme = "README.md"
 version = { workspace = true }
 rust-version = { workspace = true }

@@ -1,15 +1,21 @@
 import type { ExecutionContext } from 'ava'
 import test from 'ava'
-import { Monty, type ResourceLimits, MontySnapshot, MontyComplete } from '../wrapper'
+
+import { setupPool } from './helpers.js'
+
+const { run } = setupPool(test)
 
 // =============================================================================
 // Print tests
 // =============================================================================
 
+// Collects printCallback invocations. Output is line-buffered: each callback
+// call receives one whole line including its trailing '\n' (or the unflushed
+// tail of the stream at the end of the turn).
 function makePrintCollector(t: ExecutionContext) {
   const output: string[] = []
 
-  const callback = (stream: string, text: string) => {
+  const callback = (stream: 'stdout' | 'stderr', text: string) => {
     t.is(stream, 'stdout')
     output.push(text)
   }
@@ -17,131 +23,118 @@ function makePrintCollector(t: ExecutionContext) {
   return { callback, output }
 }
 
-test('basic', (t) => {
-  const m = new Monty('print("hello")')
+test('basic', async (t) => {
   const { output, callback } = makePrintCollector(t)
-  m.run({ printCallback: callback })
-  t.is(output.join(''), 'hello\n')
+  await run('print("hello")', { printCallback: callback })
+  t.deepEqual(output, ['hello\n'])
 })
 
-test('multiple', (t) => {
-  const m = new Monty('print("hello")\nprint("world")')
+test('multiple', async (t) => {
   const { output, callback } = makePrintCollector(t)
-  m.run({ printCallback: callback })
-  t.is(output.join(''), 'hello\nworld\n')
+  await run('print("hello")\nprint("world")', { printCallback: callback })
+  t.deepEqual(output, ['hello\n', 'world\n'])
 })
 
-test('with values', (t) => {
-  const m = new Monty('print("The answer is", 42)')
+test('with values', async (t) => {
   const { output, callback } = makePrintCollector(t)
-  m.run({ printCallback: callback })
-  t.is(output.join(''), 'The answer is 42\n')
+  await run('print("The answer is", 42)', { printCallback: callback })
+  t.deepEqual(output, ['The answer is 42\n'])
 })
 
-test('with step', (t) => {
-  const m = new Monty('print(1, 2, 3, sep="-")')
+test('with step', async (t) => {
   const { output, callback } = makePrintCollector(t)
-  m.run({ printCallback: callback })
-  t.is(output.join(''), '1-2-3\n')
+  await run('print(1, 2, 3, sep="-")', { printCallback: callback })
+  t.deepEqual(output, ['1-2-3\n'])
 })
 
-test('with end', (t) => {
-  const m = new Monty('print("hello", end="!")')
+test('with end', async (t) => {
   const { output, callback } = makePrintCollector(t)
-  m.run({ printCallback: callback })
-  t.is(output.join(''), 'hello!')
+  await run('print("hello", end="!")', { printCallback: callback })
+  // No trailing newline: the partial line is flushed once, at the end of the turn.
+  t.deepEqual(output, ['hello!'])
 })
 
-test('returns none', (t) => {
-  const m = new Monty('result = print("hello")')
+test('partial lines are buffered until a newline', async (t) => {
+  const { output, callback } = makePrintCollector(t)
+  await run('print("a", end="")\nprint("b")', { printCallback: callback })
+  t.deepEqual(output, ['ab\n'])
+})
+
+test('returns none', async (t) => {
   const { callback } = makePrintCollector(t)
-  const result = m.run({ printCallback: callback })
+  const result = await run('result = print("hello")', { printCallback: callback })
   t.is(result, null)
 })
 
-test('empty', (t) => {
-  const m = new Monty('print()')
+test('empty', async (t) => {
   const { output, callback } = makePrintCollector(t)
-  m.run({ printCallback: callback })
-  t.is(output.join(''), '\n')
+  await run('print()', { printCallback: callback })
+  t.deepEqual(output, ['\n'])
 })
 
-test('with limits', (t) => {
-  const m = new Monty('print("with limits")')
+test('with limits', async (t) => {
   const { output, callback } = makePrintCollector(t)
-  const limits: ResourceLimits = {
-    maxDurationSecs: 5.0,
-  }
-  m.run({ printCallback: callback, limits })
-  t.is(output.join(''), 'with limits\n')
+  await run('print("with limits")', { printCallback: callback, limits: { maxDurationSecs: 5.0 } })
+  t.deepEqual(output, ['with limits\n'])
 })
 
-test('with inputs', (t) => {
-  const m = new Monty('print("Input value is", x)', { inputs: ['x'] })
+test('with inputs', async (t) => {
   const { output, callback } = makePrintCollector(t)
-  m.run({ inputs: { x: 99 }, printCallback: callback })
-  t.is(output.join(''), 'Input value is 99\n')
+  await run('print("Input value is", x)', { inputs: { x: 99 }, printCallback: callback })
+  t.deepEqual(output, ['Input value is 99\n'])
 })
 
-test('print in loop', (t) => {
+test('print in loop', async (t) => {
   const code = `
 for i in range(3):
 	print("Count", i)
 `
-  const m = new Monty(code)
   const { output, callback } = makePrintCollector(t)
-  m.run({ printCallback: callback })
-  t.is(output.join(''), 'Count 0\nCount 1\nCount 2\n')
+  await run(code, { printCallback: callback })
+  t.deepEqual(output, ['Count 0\n', 'Count 1\n', 'Count 2\n'])
 })
 
-test('print mixed types', (t) => {
-  const m = new Monty('print("Value:", 3.14, True, None, [1, 2, 3])')
+test('print mixed types', async (t) => {
   const { output, callback } = makePrintCollector(t)
-  m.run({ printCallback: callback })
-  t.is(output.join(''), 'Value: 3.14 True None [1, 2, 3]\n')
+  await run('print("Value:", 3.14, True, None, [1, 2, 3])', { printCallback: callback })
+  t.deepEqual(output, ['Value: 3.14 True None [1, 2, 3]\n'])
 })
+
+// =============================================================================
+// Throwing print callbacks: the feed rejects with the callback's error
+// =============================================================================
 
 function makeErrorCallback(error: Error, t: ExecutionContext) {
-  const output: string[] = []
-
-  const callback = (stream: string, text: string) => {
-    const _ignore = text
+  const callback = (stream: 'stdout' | 'stderr', _text: string) => {
     t.is(stream, 'stdout')
     throw error
   }
 
-  return { callback, output }
+  return { callback }
 }
 
-test('raises error', (t) => {
-  const m = new Monty('print("This will error")')
+test('raises error', async (t) => {
   const error = new Error('Custom print error')
   const { callback } = makeErrorCallback(error, t)
-  const thrown = t.throws(() => {
-    m.run({ printCallback: callback })
-  })
-  // the error is slightly different with WASI, it doesn't include "Error: "
-  t.regex(thrown?.message, /Exception: (:?Error: )?Custom print error/)
+  const thrown = await t.throwsAsync(() => run('print("This will error")', { printCallback: callback }))
+  t.is(thrown, error)
+  t.is(thrown.message, 'Custom print error')
 })
 
-test('raises in function', (t) => {
+test('raises in function', async (t) => {
   const code = `
 def greet(name):
 	print(f"Hello, {name}!")
 
 greet("Alice")
 `
-  const m = new Monty(code)
   const error = new Error('Print error in function')
   const { callback } = makeErrorCallback(error, t)
-  const thrown = t.throws(() => {
-    m.run({ printCallback: callback })
-  })
-  // the error is slightly different with WASI, it doesn't include "Error: "
-  t.regex(thrown?.message, /Exception: (:?Error: )?Print error in function/)
+  const thrown = await t.throwsAsync(() => run(code, { printCallback: callback }))
+  t.is(thrown, error)
 })
 
-test('raises in nested function', (t) => {
+test('raises in nested function', async (t) => {
   const code = `
 def outer():
 	def inner():
@@ -150,80 +143,34 @@ def outer():
 
 outer()
 `
-  const m = new Monty(code)
   const error = new Error('Print error in nested function')
   const { callback } = makeErrorCallback(error, t)
-  const thrown = t.throws(() => {
-    m.run({ printCallback: callback })
-  })
-  // the error is slightly different with WASI, it doesn't include "Error: "
-  t.regex(thrown?.message, /Exception: (:?Error: )?Print error in nested function/)
+  const thrown = await t.throwsAsync(() => run(code, { printCallback: callback }))
+  t.is(thrown, error)
 })
 
-test('raises in loop', (t) => {
+test('raises in loop', async (t) => {
   const code = `
 for i in range(3):
 	print(f"Count: {i}")
 `
-  const m = new Monty(code)
   const error = new Error('Print error in loop')
   const { callback } = makeErrorCallback(error, t)
-  const thrown = t.throws(() => {
-    m.run({ printCallback: callback })
-  })
-  // the error is slightly different with WASI, it doesn't include "Error: "
-  t.regex(thrown?.message, /Exception: (:?Error: )?Print error in loop/)
+  const thrown = await t.throwsAsync(() => run(code, { printCallback: callback }))
+  t.is(thrown, error)
 })
 
-test('with snapshot', (t) => {
-  const m = new Monty('print("snapshot")')
-  const { output, callback } = makePrintCollector(t)
-  const result = m.start({
-    printCallback: callback,
-  })
-  t.true(result instanceof MontyComplete)
-  t.is((result as MontyComplete).output, null)
-  t.is(output.join(''), 'snapshot\n')
-})
+// =============================================================================
+// Print interleaved with external function calls (was the snapshot/resume test)
+// =============================================================================
 
-test('with snapshot resume', (t) => {
+test('print with external function result', async (t) => {
   const code = `
 print("hello")
 print(func())
 `
-  const m = new Monty(code)
   const { output, callback } = makePrintCollector(t)
-  const progress = m.start({
-    printCallback: callback,
-  })
-  t.true(progress instanceof MontySnapshot)
-  const snapshot = progress as MontySnapshot
-  const result = snapshot.resume({
-    returnValue: 'world',
-  })
-  t.true(result instanceof MontyComplete)
-  t.is((result as MontyComplete).output, null)
-  t.is(output.join(''), 'hello\nworld\n')
-})
-
-test('with snapshot dump load', (t) => {
-  const m = new Monty('print(func())')
-  const { output, callback } = makePrintCollector(t)
-
-  const progress = m.start({
-    printCallback: callback,
-  })
-  t.true(progress instanceof MontySnapshot)
-  const snapshot = progress as MontySnapshot
-  const data = snapshot.dump()
-
-  const progress2 = MontySnapshot.load(data, {
-    printCallback: callback,
-  })
-  const result = progress2.resume({
-    returnValue: 42,
-  })
-  t.true(result instanceof MontyComplete)
-  t.is((result as MontyComplete).output, null)
-  t.is(output.join(''), '42\n')
+  const result = await run(code, { printCallback: callback, externalFunctions: { func: () => 'world' } })
+  t.is(result, null)
+  t.deepEqual(output, ['hello\n', 'world\n'])
 })

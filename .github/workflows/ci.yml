@@ -424,6 +424,7 @@ jobs:
       - coverage-upload
       - test-rust-os
       - test-python
+      - test-js
       - bench-test
       - fuzz
     runs-on: ubuntu-latest
@@ -689,7 +690,7 @@ jobs:
 
       - run: pip install typing_extensions
       - run: pip install pydantic-monty --no-index --no-deps --find-links dist --force-reinstall
-      - run: python -c "import pydantic_monty; print(pydantic_monty.Monty('1 + 2').run())"
+      - run: python -c "import pydantic_monty; print(pydantic_monty.__version__)"
 
       # the cli wheel built for this platform must serve the worker pools
       - run: pip install pydantic-monty-cli --no-index --no-deps --find-links dist --force-reinstall
@@ -707,7 +708,7 @@ jobs:
           async def main():
               async with AsyncMonty() as pool:
                   async with pool.checkout() as session:
-                      assert await session.feed_run_async('1 + 2') == 3
+                      assert await session.feed_run('1 + 2') == 3
 
           asyncio.run(main())
           print('worker pools OK')
@@ -775,8 +776,67 @@ jobs:
       - name: Publish to PyPI
         run: 'uv publish --trusted-publishing always dist/*'
 
-  build-js:
-    name: build JS - ${{ matrix.settings.target }} - node@22
+  test-js:
+    name: test JS on ${{ matrix.os }} - node@${{ matrix.node }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        node:
+          - '20'
+          - '22'
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      # no release versioning, see https://github.com/dtolnay/rust-toolchain/issues/180
+      - uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9
+        with:
+          toolchain: stable
+
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          lookup-only: false # zizmor: ignore[cache-poisoning] -- Job does not produce release artifacts and does not have sensitive permissions
+          cache-on-failure: true
+
+      - name: Setup node
+        uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0  # zizmor: ignore[cache-poisoning] -- Job does not produce release artifacts and does not have sensitive permissions
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+          cache-dependency-path: crates/monty-js/package-lock.json
+
+      - name: Install dependencies
+        run: npm install
+        working-directory: crates/monty-js
+
+      # the workers the JS client drives
+      - name: Build the monty binary
+        run: cargo build -p monty-cli
+
+      - name: Build
+        run: npm run build
+        working-directory: crates/monty-js
+
+      - name: Lint
+        run: npm run lint
+        working-directory: crates/monty-js
+
+      - name: Test
+        run: npm test
+        working-directory: crates/monty-js
+
+      - name: Smoke test packaging
+        if: ${{ matrix.os != 'windows-latest' }}
+        run: npm run smoke-test
+        working-directory: crates/monty-js
+
+  # Release builds of the monty binary for the npm platform packages
+  # (@pydantic/monty-<platform>), the JS equivalent of pydantic-monty-cli.
+  build-js-binaries:
+    name: build JS binary - ${{ matrix.settings.triple }}
     runs-on: ${{ matrix.settings.host }}
     # only run on push to main, on tags, or if 'Full Build' label is present
     if: startsWith(github.ref, 'refs/tags/') || github.ref == 'refs/heads/main' || contains(github.event.pull_request.labels.*.name, 'Full Build') || (github.event_name == 'workflow_dispatch' && inputs.run_release)
@@ -787,24 +847,55 @@ jobs:
         settings:
           - host: macos-latest
             target: x86_64-apple-darwin
-            build: npm run build:napi -- --target x86_64-apple-darwin && npm run build:ts
-          - host: windows-latest
-            target: x86_64-pc-windows-msvc
-            build: npm run build:napi -- --target x86_64-pc-windows-msvc && npm run build:ts
-          - host: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
-            build: npm run build:napi -- --target x86_64-unknown-linux-gnu --use-napi-cross && npm run build:ts
+            triple: darwin-x64
           - host: macos-latest
             target: aarch64-apple-darwin
-            build: npm run build:napi -- --target aarch64-apple-darwin && npm run build:ts
+            triple: darwin-arm64
+          - host: windows-latest
+            target: x86_64-pc-windows-msvc
+            triple: win32-x64-msvc
+          - host: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            triple: linux-x64-gnu
           - host: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
-            build: npm run build:napi -- --target aarch64-unknown-linux-gnu && npm run build:ts
-          - host: ubuntu-latest
-            target: wasm32-wasip1-threads
-            build: npm run build:napi -- --target wasm32-wasip1-threads && npm run build:ts
+            triple: linux-arm64-gnu
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      # no release versioning, see https://github.com/dtolnay/rust-toolchain/issues/180
+      - uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9
+        with:
+          toolchain: stable
+          targets: ${{ matrix.settings.target }}
+
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          lookup-only: false # zizmor: ignore[cache-poisoning] -- Job does not produce release artifacts and does not have sensitive permissions
+          cache-on-failure: true
+          prefix-key: v1-rust-js-bin
+
+      - name: Build
+        run: cargo build --release -p monty-cli --target ${{ matrix.settings.target }}
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: monty-bin-${{ matrix.settings.triple }}
+          path: |
+            target/${{ matrix.settings.target }}/release/monty
+            target/${{ matrix.settings.target }}/release/monty.exe
+          if-no-files-found: error
+
+  build-wasm:
+    name: build wasm
+    runs-on: ubuntu-latest
+    # only run on push to main, on tags, or if 'Full Build' label is present
+    if: startsWith(github.ref, 'refs/tags/') || github.ref == 'refs/heads/main' || contains(github.event.pull_request.labels.*.name, 'Full Build') || (github.event_name == 'workflow_dispatch' && inputs.run_release)
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
 
@@ -818,7 +909,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9
         with:
           toolchain: stable
-          targets: ${{ matrix.settings.target }}
+          targets: wasm32-wasip1-threads
 
       - name: Cache cargo
         uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4  # zizmor: ignore[cache-poisoning]
@@ -830,214 +921,45 @@ jobs:
             ~/.napi-rs
             .cargo-cache
             target/
-          key: ${{ matrix.settings.target }}-cargo-${{ matrix.settings.host }}
+          key: wasm32-wasip1-threads-cargo-ubuntu-latest
 
       # don't use .venv python in CI
       - run: rm .cargo/config.toml
 
-      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
-        if: ${{ contains(matrix.settings.target, 'musl') }}
-        with:
-          version: 0.14.1
-          use-cache: false
-
-      - name: Install cargo-zigbuild
-        uses: taiki-e/install-action@1ed3272338f573e042a2e6bca3893aa19f43b47a # v2.71.3
-        if: ${{ contains(matrix.settings.target, 'musl') }}
-        with:
-          tool: cargo-zigbuild
-
-      - name: Setup toolchain
-        run: ${{ matrix.settings.setup }}
-        if: ${{ matrix.settings.setup }}
-        shell: bash
-
       - name: Install dependencies
         run: npm install
-        working-directory: crates/monty-js
+        working-directory: crates/monty-wasm
 
       - name: Build
-        run: ${{ matrix.settings.build }}
-        shell: bash
-        working-directory: crates/monty-js
+        run: npm run build
+        working-directory: crates/monty-wasm
 
       - name: Upload artifact
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
-          name: js-bindings-${{ matrix.settings.target }}
+          name: wasm-bindings
           path: |
-            crates/monty-js/monty.*.node
-            crates/monty-js/monty.*.wasm
-          if-no-files-found: error
-
-      # need to upload the .js files generated by napi; they are identical for whatever target
-      # so might as well upload from the linux job
-      - if: ${{ matrix.settings.target == 'x86_64-unknown-linux-gnu' }}
-        name: Upload artifact
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
-        with:
-          name: js-stubs
-          path: |
-            crates/monty-js/browser.js
-            crates/monty-js/index.js
-            crates/monty-js/index.d.ts
-            crates/monty-js/wrapper.js
-            crates/monty-js/wrapper.d.ts
-            crates/monty-js/monty.wasi.cjs
-            crates/monty-js/monty.wasi-browser.js
-            crates/monty-js/wasi-worker.mjs
-            crates/monty-js/wasi-worker-browser.mjs
+            crates/monty-wasm/monty.*.wasm
+            crates/monty-wasm/browser.js
+            crates/monty-wasm/index.js
+            crates/monty-wasm/index.d.ts
+            crates/monty-wasm/wrapper.js
+            crates/monty-wasm/wrapper.d.ts
+            crates/monty-wasm/monty.wasi.cjs
+            crates/monty-wasm/monty.wasi-browser.js
+            crates/monty-wasm/wasi-worker.mjs
+            crates/monty-wasm/wasi-worker-browser.mjs
           if-no-files-found: error
     env:
-      MACOSX_DEPLOYMENT_TARGET: '10.13'
       CARGO_INCREMENTAL: '1'
 
-  test-js-macOS-windows-binding:
-    name: Test JS bindings on ${{ matrix.settings.target }} - node@${{ matrix.node }}
+  test-wasm:
+    name: test wasm
     needs:
-      - build-js
-    strategy:
-      fail-fast: false
-      matrix:
-        settings:
-          - host: windows-latest
-            target: x86_64-pc-windows-msvc
-            architecture: x64
-          - host: macos-latest
-            target: aarch64-apple-darwin
-            architecture: arm64
-          - host: macos-latest
-            target: x86_64-apple-darwin
-            architecture: x64
-        node:
-          - '20'
-          - '22'
-    runs-on: ${{ matrix.settings.host }}
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          persist-credentials: false
-
-      - name: Setup node
-        uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0  # zizmor: ignore[cache-poisoning] -- Job does not produce release artifacts and does not have sensitive permissions
-        with:
-          node-version: ${{ matrix.node }}
-          cache: npm
-          cache-dependency-path: crates/monty-js/package-lock.json
-          architecture: ${{ matrix.settings.architecture }}
-
-      - name: Install dependencies
-        run: npm install
-        working-directory: crates/monty-js
-
-      - name: Download artifacts
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: js-bindings-${{ matrix.settings.target }}
-          path: crates/monty-js
-
-      - name: Download artifacts
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: js-stubs
-          path: crates/monty-js
-
-      - name: List packages
-        run: ls -R .
-        shell: bash
-        working-directory: crates/monty-js
-
-      - name: Test bindings
-        run: npm test
-        working-directory: crates/monty-js
-
-  test-js-linux-binding:
-    name: Test JS ${{ matrix.target }} - node@${{ matrix.node }}
-    needs:
-      - build-js
-    strategy:
-      fail-fast: false
-      matrix:
-        target:
-          - x86_64-unknown-linux-gnu
-          - aarch64-unknown-linux-gnu
-        node:
-          - '20'
-          - '22'
-    runs-on: ${{ contains(matrix.target, 'aarch64') && 'ubuntu-24.04-arm' || 'ubuntu-latest' }}
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          persist-credentials: false
-
-      - name: Setup node
-        uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0  # zizmor: ignore[cache-poisoning] -- Job does not produce release artifacts and does not have sensitive permissions
-        with:
-          node-version: ${{ matrix.node }}
-          cache: npm
-          cache-dependency-path: crates/monty-js/package-lock.json
-
-      - name: Output docker params
-        id: docker
-        run: |
-          node -e "
-            if ('${{ matrix.target }}'.startsWith('aarch64')) {
-              console.log('PLATFORM=linux/arm64')
-            } else if ('${{ matrix.target }}'.startsWith('armv7')) {
-              console.log('PLATFORM=linux/arm/v7')
-            } else {
-              console.log('PLATFORM=linux/amd64')
-            }
-          " >> $GITHUB_OUTPUT
-          node -e "
-            if ('${{ matrix.target }}'.endsWith('-musl')) {
-              console.log('IMAGE=node:${{ matrix.node }}-alpine')
-            } else {
-              console.log('IMAGE=node:${{ matrix.node }}-slim')
-            }
-          " >> $GITHUB_OUTPUT
-
-      - name: Install dependencies
-        run: npm install
-        working-directory: crates/monty-js
-
-      - name: Download artifacts
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: js-bindings-${{ matrix.target }}
-          path: crates/monty-js
-
-      - name: Download artifacts
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: js-stubs
-          path: crates/monty-js
-
-      - name: List packages
-        run: ls -R .
-        shell: bash
-        working-directory: crates/monty-js
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@ce360397dd3f832beb865e1373c09c0e9f86d70a # v4.0.0
-        if: ${{ contains(matrix.target, 'armv7') }}
-        with:
-          platforms: all
-      - run: docker run --rm --privileged multiarch/qemu-user-static --reset -p yes
-        if: ${{ contains(matrix.target, 'armv7') }}
-      - name: Test bindings
-        run: >
-          docker run --rm -v ${{ github.workspace }}:${{ github.workspace }} -w ${{ github.workspace }}/crates/monty-js --platform ${OUTPUTS_PLATFORM} ${OUTPUTS_IMAGE} npm test
-        env:
-          OUTPUTS_PLATFORM: ${{ steps.docker.outputs.PLATFORM }}
-          OUTPUTS_IMAGE: ${{ steps.docker.outputs.IMAGE }}
-
-  test-js-wasi:
-    name: Test WASI target
-    needs:
-      - build-js
+      - build-wasm
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
 
@@ -1046,34 +968,28 @@ jobs:
         with:
           node-version: 24
           cache: npm
-          cache-dependency-path: crates/monty-js/package-lock.json
+          cache-dependency-path: crates/monty-wasm/package-lock.json
 
       - name: Install dependencies
         run: npm install --cpu wasm32
-        working-directory: crates/monty-js
+        working-directory: crates/monty-wasm
 
       - name: Download artifacts
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: js-bindings-wasm32-wasip1-threads
-          path: crates/monty-js
-
-      - name: Download artifacts
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: js-stubs
-          path: crates/monty-js
+          name: wasm-bindings
+          path: crates/monty-wasm
 
       - name: List packages
         run: ls -R .
         shell: bash
-        working-directory: crates/monty-js
+        working-directory: crates/monty-wasm
 
       - name: Test bindings
         run: npm test
         env:
           NAPI_RS_FORCE_WASI: 1
-        working-directory: crates/monty-js
+        working-directory: crates/monty-wasm
 
   release-js:
     name: Release to NPM
@@ -1081,15 +997,15 @@ jobs:
     needs:
       - check
       - inspect-python-assets
-      - test-js-macOS-windows-binding
-      - test-js-linux-binding
-      - test-js-wasi
+      - test-js
+      - build-js-binaries
+      - test-wasm
     if: success() && (startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && inputs.run_release))
     permissions:
       contents: write
       id-token: write
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
 
@@ -1104,31 +1020,95 @@ jobs:
         run: npm install
         working-directory: crates/monty-js
 
-      - name: create npm dirs
-        run: npm run create-npm-dirs
+      - name: Build
+        run: npm run build
         working-directory: crates/monty-js
 
-      - name: Download all artifacts
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - name: Create platform package dirs
+        run: npm run create-platform-packages
+        working-directory: crates/monty-js
+
+      - name: Download binaries into platform packages
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          pattern: js-bindings-*
-          path: crates/monty-js/artifacts
-          merge-multiple: true
+          pattern: monty-bin-*
+          path: crates/monty-js/npm
+
+      # download-artifact nests each artifact under its name and drops the
+      # executable bit; flatten monty-bin-<triple>/ -> <triple>/ and restore it
+      - name: Arrange binaries
+        run: |
+          for dir in npm/monty-bin-*; do
+            triple=${dir#npm/monty-bin-}
+            mv "$dir"/monty* "npm/$triple/"
+            rmdir "$dir"
+          done
+          chmod +x npm/*/monty*
+          ls -lR npm/
+        working-directory: crates/monty-js
+
+      - name: Publish
+        run: |
+          if [[ "$GITHUB_REF" =~ ^refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Publishing stable release"
+            TAG_ARG=""
+          else
+            echo "Publishing pre-release with 'next' tag"
+            TAG_ARG="--tag next"
+          fi
+          for pkg_dir in npm/*/; do
+            (cd "$pkg_dir" && npm publish --provenance --access public $TAG_ARG)
+          done
+          npm publish --provenance --access public $TAG_ARG
+        working-directory: crates/monty-js
+
+  release-wasm:
+    name: Release wasm to NPM
+    runs-on: ubuntu-latest
+    needs:
+      - check
+      - inspect-python-assets
+      - test-wasm
+    if: success() && (startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && inputs.run_release))
+    permissions:
+      contents: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Setup node
+        uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
+        with:
+          node-version: 24
+          package-manager-cache: false
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Install dependencies
+        run: npm install
+        working-directory: crates/monty-wasm
+
+      - name: create npm dirs
+        run: npm run create-npm-dirs
+        working-directory: crates/monty-wasm
 
       - name: Download artifacts
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: js-stubs
-          path: crates/monty-js
+          name: wasm-bindings
+          path: crates/monty-wasm/artifacts
 
       - name: Move artifacts
         run: npm run artifacts
-        working-directory: crates/monty-js
+        working-directory: crates/monty-wasm
 
-      - name: List packages
-        run: ls -R ./npm
-        shell: bash
-        working-directory: crates/monty-js
+      # the napi-generated loader files belong in the main package root
+      - name: Move loader files
+        run: |
+          mv artifacts/*.js artifacts/*.d.ts artifacts/*.cjs artifacts/*.mjs . 2>/dev/null || true
+          ls -lR npm/ .
+        working-directory: crates/monty-wasm
 
       - name: Publish
         run: |
@@ -1139,4 +1119,4 @@ jobs:
             echo "Publishing pre-release with 'next' tag"
             npm publish --provenance --tag next --access public
           fi
-        working-directory: crates/monty-js
+        working-directory: crates/monty-wasm
