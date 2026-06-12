@@ -20,7 +20,6 @@ mod io;
 mod modules;
 mod namespace;
 mod object;
-mod object_json;
 mod os;
 mod parse;
 mod prepare;
@@ -44,7 +43,6 @@ pub use crate::{
         DictPairs, InvalidInputError, MontyDate, MontyDateTime, MontyFileHandle, MontyObject, MontyTimeDelta,
         MontyTimeZone,
     },
-    object_json::{JsonMontyArray, JsonMontyObject, JsonMontyPairs},
     os::{
         GetenvArgs, MkdirCallArgs, MontyPath, OpenCallArgs, OsFunctionCall, PathBytesDataArgs, PathStringDataArgs,
         RenameCallArgs, dir_stat, file_stat, stat_result, symlink_stat,

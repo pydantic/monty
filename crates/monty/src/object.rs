@@ -211,23 +211,10 @@ fn monty_datetime_naive(datetime: &MontyDateTime) -> Option<NaiveDateTime> {
 ///
 /// # Serialization
 ///
-/// `MontyObject` has two distinct serialization paths:
-///
-/// 1. **Derived serde (round-trippable)** — the default `Serialize` /
-///    `Deserialize` impls use an externally tagged format
-///    (`{"Int": 42}`, `{"String": "hi"}`, ...). This is what `postcard` and
-///    `serde_json::to_string(&obj)` produce. It is lossless and designed for
-///    snapshots and binary transport, not for human-facing JSON.
-///
-/// 2. **Natural JSON (output-only)** — wrap the value in
-///    [`JsonMontyObject`](crate::JsonMontyObject) for a much more ergonomic
-///    shape where JSON-native Python values serialize bare
-///    (`42`, `"hi"`, `[...]`, `{"a": 1}`) and non-JSON-native values use a
-///    `{"$<tag>": ...}` convention (`{"$tuple": [...]}`, `{"$bytes": [...]}`,
-///    `{"$ellipsis": "..."}`, `{"$float": "nan"}`, ...). See the
-///    `object_json` module docs for the full mapping. This form is
-///    intentionally not round-trippable — use the derived format if you
-///    need to reconstruct a `MontyObject` from JSON.
+/// The derived `Serialize` / `Deserialize` impls use an externally tagged
+/// format (`{"Int": 42}`, `{"String": "hi"}`, ...). This is what `postcard`
+/// and `serde_json::to_string(&obj)` produce. It is lossless and designed
+/// for snapshots and binary transport, not for human-facing JSON.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum MontyObject {
     /// Python's `Ellipsis` singleton (`...`).

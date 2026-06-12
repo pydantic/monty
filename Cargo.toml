@@ -71,7 +71,7 @@ num-integer = "0.1"
 ahash = { version = "0.8.0", features = ["serde"] }
 indexmap = { version = "2.9", features = ["serde"] }
 serde = { version = "1.0", features = ["derive", "rc"] }
-serde_json = { version = "1.0", features = ["arbitrary_precision"] }
+serde_json = "1.0"
 postcard = { version = "1.1", features = ["alloc"] }
 # exact pin: prost-build output must be byte-stable across contributors and CI
 # so `make check-proto` (regenerate + git diff) is reproducible
