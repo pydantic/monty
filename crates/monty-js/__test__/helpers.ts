@@ -3,7 +3,7 @@
 // session — the moral equivalent of pydantic_monty's `monty_run` fixture.
 
 import type { TestFn } from 'ava'
-import { Monty, type CheckoutOptions, type FeedOptions } from '../src/index.js'
+import { Monty, type CheckoutOptions, type FeedOptions } from '../ts/index.js'
 
 /** Checkout-level and feed-level options, flattened for convenience. */
 export interface RunOptions extends FeedOptions, CheckoutOptions {}

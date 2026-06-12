@@ -1,5 +1,13 @@
 dist
 node_modules
 npm
-src/generated
 package-lock.json
+target
+# napi-generated artifacts
+index.js
+index.d.ts
+browser.js
+monty.wasi.cjs
+monty.wasi-browser.js
+wasi-worker.mjs
+wasi-worker-browser.mjs

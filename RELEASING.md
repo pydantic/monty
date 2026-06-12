@@ -9,18 +9,17 @@ Update version in both files:
 # Edit crates/monty-js/package.json - update version AND the optionalDependencies
 #   versions (they must all equal the package version; CI's
 #   create-platform-packages fails if they drift)
-# Edit crates/monty-wasm/package.json - update version
 
 # Update Cargo.lock
 make lint-rs
 ```
 
-`Cargo.toml` and both `package.json` files should have the same version (e.g., `0.0.2`).
+`Cargo.toml` and `package.json` should have the same version (e.g., `0.0.2`).
 
 ## 2. Commit and Push
 
 ```bash
-git add Cargo.toml Cargo.lock crates/monty-js/package.json crates/monty-wasm/package.json
+git add Cargo.toml Cargo.lock crates/monty-js/package.json
 git commit -m "Bump version to X.Y.Z"
 git push
 ```
@@ -39,7 +38,7 @@ git push
 Once the tag is pushed, CI will:
 - Build wheels for all platforms
 - Publish to PyPI (`pydantic-monty`)
-- Publish to NPM (`@pydantic/monty` + platform binary packages, and `@pydantic/monty-wasm`)
+- Publish to NPM (`@pydantic/monty` + the platform packages carrying the napi library, the `monty` binary, and the wasm build)
 
 Monitor the workflow at https://github.com/pydantic/monty/actions
 

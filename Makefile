@@ -28,15 +28,15 @@ dev-py: ## Install the python package for development
 	uv run maturin develop --uv -m crates/monty-python/Cargo.toml
 
 .PHONY: build-js
-build-js: ## Build the JS package (compile TypeScript)
-	cd crates/monty-js && npm run build
+build-js: install-js ## Build the JS package (napi debug build + TypeScript)
+	cd crates/monty-js && npm run build:debug
 
 .PHONY: lint-js
 lint-js: install-js ## Lint JS code with oxlint
 	cd crates/monty-js && npm run lint
 
 .PHONY: test-js
-test-js: install-js ## Test the JS package (builds the monty binary the workers run)
+test-js: build-js ## Test the JS package (builds the monty binary the workers run)
 	cargo build -p monty-cli
 	cd crates/monty-js && npm test
 
@@ -49,17 +49,15 @@ dev-py-release: ## Install the python package for development with a release bui
 	uv run maturin develop --uv -m crates/monty-cli/Cargo.toml --release
 	uv run maturin develop --uv -m crates/monty-python/Cargo.toml --release
 
-.PHONY: install-wasm
-install-wasm: ## Install monty-wasm JS dependencies
-	cd crates/monty-wasm && npm install
-
 .PHONY: build-wasm
-build-wasm: install-wasm ## Build the wasm package (requires the wasm32-wasip1-threads toolchain)
-	cd crates/monty-wasm && npm run build
+build-wasm: install-js ## Build the wasm artifacts (requires the wasm32-wasip1-threads toolchain)
+	# NOTE: regenerates index.js/index.d.ts from the wasm target (which has no
+	# pool API) — run build-js afterwards to restore the native loader
+	cd crates/monty-js && npm run build:wasm && npm run build:ts
 
 .PHONY: test-wasm
-test-wasm: ## Test the wasm package (requires a prior build-wasm)
-	cd crates/monty-wasm && npm test
+test-wasm: ## Test the in-process API against the wasm build (requires a prior build-wasm)
+	cd crates/monty-js && NAPI_RS_FORCE_WASI=1 npx ava "__test__/wasm_*.spec.ts"
 
 .PHONY: dev-py-pgo
 dev-py-pgo: ## Install the python package for development with profile-guided optimization
@@ -107,14 +105,6 @@ generate-proto: ## Regenerate monty-proto's checked-in code from the .proto sche
 .PHONY: check-proto
 check-proto: generate-proto ## Verify monty-proto's checked-in code matches the .proto schema
 	git diff --exit-code crates/monty-proto/src/generated crates/monty-proto/tests/oracle
-
-.PHONY: generate-proto-js
-generate-proto-js: install-js ## Regenerate monty-js's checked-in protobuf code from the .proto schema
-	cd crates/monty-js && npm run generate-proto
-
-.PHONY: check-proto-js
-check-proto-js: generate-proto-js ## Verify monty-js's checked-in protobuf code matches the .proto schema
-	git diff --exit-code crates/monty-js/src/generated
 
 .PHONY: lint-py
 lint-py: dev-py ## Lint Python code with ruff

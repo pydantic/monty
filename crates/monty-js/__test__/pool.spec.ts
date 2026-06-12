@@ -5,7 +5,7 @@ import { join } from 'node:path'
 
 import test from 'ava'
 
-import { Monty, MontyCrashedError, MountDir } from '../src/index.js'
+import { Monty, MontyCrashedError, MountDir } from '../ts/index.js'
 
 // =============================================================================
 // Pool lifecycle
@@ -74,7 +74,7 @@ test('exhausted pool times out the checkout', async (t) => {
   const held = await pool.checkout()
   try {
     const error = await t.throwsAsync(() => pool.checkout())
-    t.is(error.message, 'no worker became available within 0.2s')
+    t.is(error.message, 'no monty worker became available within the checkout timeout')
   } finally {
     await held.close()
   }
@@ -101,8 +101,9 @@ test('killed worker surfaces as MontyCrashedError', async (t) => {
   const error = await t.throwsAsync(() => session.feedRun('1 + 1'), { instanceOf: MontyCrashedError })
   t.false(error.timedOut)
   // Windows has no signals: process.kill('SIGKILL') calls TerminateProcess,
-  // which node reports as a plain exit code of 1.
-  t.is(error.exitStatus, process.platform === 'win32' ? 'exit code: 1' : 'signal: SIGKILL')
+  // which is reported as a plain exit code of 1. Elsewhere the Rust
+  // ExitStatus rendering includes the signal number.
+  t.is(error.exitStatus, process.platform === 'win32' ? 'exit code: 1' : 'signal: 9 (SIGKILL)')
 })
 
 test('session is unusable after a crash but the pool recovers', async (t) => {
@@ -144,7 +145,7 @@ test('requestTimeout kills a wedged worker', async (t) => {
     instanceOf: MontyCrashedError,
   })
   t.true(error.timedOut)
-  t.is(error.message, 'RuntimeError: the worker process was killed because a request timed out')
+  t.is(error.message, 'RuntimeError: monty worker killed after exceeding request timeout of 500ms')
   await session.close()
 })
 

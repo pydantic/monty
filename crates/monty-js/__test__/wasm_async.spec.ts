@@ -1,22 +1,15 @@
-// Async external functions: sync or async JS functions are passed the same
-// way via `externalFunctions`. A promise-returning function yields an
-// awaitable in the sandbox (so the snippet uses `await fn()`), with the
-// promise registered as a sandbox future and delivered automatically — plain
-// `run(...)` covers everything the old in-process `runMontyAsync` helper did.
-
 import test from 'ava'
 
-import { MontyRuntimeError } from '../ts/index.js'
-import { setupPool } from './helpers.js'
-
-const { run } = setupPool(test)
+import { Monty, MontyRuntimeError, runMontyAsync } from '../ts/wasm.js'
 
 // =============================================================================
 // Basic async external function tests
 // =============================================================================
 
-test('run with sync external function', async (t) => {
-  const result = await run('get_value()', {
+test('runMontyAsync with sync external function', async (t) => {
+  const m = new Monty('get_value()')
+
+  const result = await runMontyAsync(m, {
     externalFunctions: {
       get_value: () => 42,
     },
@@ -25,8 +18,10 @@ test('run with sync external function', async (t) => {
   t.is(result, 42)
 })
 
-test('run with async external function', async (t) => {
-  const result = await run('await fetch_data()', {
+test('runMontyAsync with async external function', async (t) => {
+  const m = new Monty('fetch_data()')
+
+  const result = await runMontyAsync(m, {
     externalFunctions: {
       fetch_data: async () => {
         // Simulate async operation
@@ -39,13 +34,17 @@ test('run with async external function', async (t) => {
   t.is(result, 'async result')
 })
 
-test('run with multiple async calls', async (t) => {
-  const code = `
-a = await fetch_a()
-b = await fetch_b()
+test('runMontyAsync with multiple async calls', async (t) => {
+  const m = new Monty(
+    `
+a = fetch_a()
+b = fetch_b()
 a + b
-`
-  const result = await run(code, {
+`,
+    {},
+  )
+
+  const result = await runMontyAsync(m, {
     externalFunctions: {
       fetch_a: async () => {
         await new Promise((resolve) => setTimeout(resolve, 5))
@@ -61,8 +60,10 @@ a + b
   t.is(result, 30)
 })
 
-test('run async external function with inputs', async (t) => {
-  const result = await run('await multiply(x)', {
+test('runMontyAsync with inputs', async (t) => {
+  const m = new Monty('multiply(x)', { inputs: ['x'] })
+
+  const result = await runMontyAsync(m, {
     inputs: { x: 5 },
     externalFunctions: {
       multiply: async (n: number) => n * 2,
@@ -72,8 +73,10 @@ test('run async external function with inputs', async (t) => {
   t.is(result, 10)
 })
 
-test('run async external function with args and kwargs', async (t) => {
-  const result = await run('await process(1, 2, name="test")', {
+test('runMontyAsync with args and kwargs', async (t) => {
+  const m = new Monty('process(1, 2, name="test")')
+
+  const result = await runMontyAsync(m, {
     externalFunctions: {
       process: async (a: number, b: number, kwargs: { name: string }) => {
         return `${kwargs.name}: ${a + b}`
@@ -88,60 +91,64 @@ test('run async external function with args and kwargs', async (t) => {
 // Error handling tests
 // =============================================================================
 
-test('sync external function throws exception', async (t) => {
+test('runMontyAsync sync function throws exception', async (t) => {
+  const m = new Monty('fail_sync()')
+
   class ValueError extends Error {
     override name = 'ValueError'
   }
 
   const error = await t.throwsAsync(
-    () =>
-      run('fail_sync()', {
-        externalFunctions: {
-          fail_sync: () => {
-            throw new ValueError('sync error')
-          },
+    runMontyAsync(m, {
+      externalFunctions: {
+        fail_sync: () => {
+          throw new ValueError('sync error')
         },
-      }),
-    { instanceOf: MontyRuntimeError },
+      },
+    }),
   )
 
-  t.is(error.message, 'ValueError: sync error')
+  t.true(error instanceof MontyRuntimeError)
 })
 
-test('async external function throws exception', async (t) => {
+test('runMontyAsync async function throws exception', async (t) => {
+  const m = new Monty('fail_async()')
+
   class ValueError extends Error {
     override name = 'ValueError'
   }
 
   const error = await t.throwsAsync(
-    () =>
-      run('await fail_async()', {
-        externalFunctions: {
-          fail_async: async () => {
-            await new Promise((resolve) => setTimeout(resolve, 5))
-            throw new ValueError('async error')
-          },
+    runMontyAsync(m, {
+      externalFunctions: {
+        fail_async: async () => {
+          await new Promise((resolve) => setTimeout(resolve, 5))
+          throw new ValueError('async error')
         },
-      }),
-    { instanceOf: MontyRuntimeError },
+      },
+    }),
   )
 
-  t.is(error.message, 'ValueError: async error')
+  t.true(error instanceof MontyRuntimeError)
 })
 
-test('async external function exception caught in try/except', async (t) => {
-  const code = `
+test('runMontyAsync exception caught in try/except', async (t) => {
+  const m = new Monty(
+    `
 try:
-    await might_fail()
+    might_fail()
 except ValueError:
     result = 'caught'
 result
-`
+`,
+    {},
+  )
+
   class ValueError extends Error {
     override name = 'ValueError'
   }
 
-  const result = await run(code, {
+  const result = await runMontyAsync(m, {
     externalFunctions: {
       might_fail: async () => {
         throw new ValueError('expected error')
@@ -152,37 +159,45 @@ result
   t.is(result, 'caught')
 })
 
-test('missing external function raises NameError', async (t) => {
-  const error = await t.throwsAsync(() => run('missing_func()', { externalFunctions: {} }), {
-    instanceOf: MontyRuntimeError,
-  })
+test('runMontyAsync missing external function raises NameError', async (t) => {
+  const m = new Monty('missing_func()')
 
-  t.is(error.message, "NameError: name 'missing_func' is not defined")
+  const error = await t.throwsAsync(runMontyAsync(m, { externalFunctions: {} }))
+
+  t.true(error instanceof MontyRuntimeError)
+  t.true(error!.message.includes('NameError'))
 })
 
-test('missing external function caught in try/except', async (t) => {
-  const code = `
+test('runMontyAsync missing function caught in try/except', async (t) => {
+  const m = new Monty(
+    `
 try:
     missing()
 except NameError:
     result = 'caught'
 result
-`
-  t.is(await run(code, { externalFunctions: {} }), 'caught')
+`,
+  )
+
+  const result = await runMontyAsync(m, { externalFunctions: {} })
+
+  t.is(result, 'caught')
 })
 
 // =============================================================================
 // Complex type tests
 // =============================================================================
 
-test('async external function returns complex types', async (t) => {
-  const result = (await run('await get_data()', {
+test('runMontyAsync returns complex types', async (t) => {
+  const m = new Monty('get_data()')
+
+  const result = await runMontyAsync(m, {
     externalFunctions: {
       get_data: async () => {
         return [1, 2, { key: 'value' }]
       },
     },
-  })) as [number, number, Map<string, unknown>]
+  })
 
   t.true(Array.isArray(result))
   t.is(result[0], 1)
@@ -191,8 +206,10 @@ test('async external function returns complex types', async (t) => {
   t.is(result[2].get('key'), 'value')
 })
 
-test('async external function with list input', async (t) => {
-  const result = await run('await sum_list(items)', {
+test('runMontyAsync with list input', async (t) => {
+  const m = new Monty('sum_list(items)', { inputs: ['items'] })
+
+  const result = await runMontyAsync(m, {
     inputs: { items: [1, 2, 3, 4, 5] },
     externalFunctions: {
       sum_list: async (items: number[]) => {
@@ -208,13 +225,17 @@ test('async external function with list input', async (t) => {
 // Mixed sync/async tests
 // =============================================================================
 
-test('mixed sync and async external functions', async (t) => {
-  const code = `
+test('runMontyAsync mixed sync and async functions', async (t) => {
+  const m = new Monty(
+    `
 sync_result = sync_func()
-async_result = await async_func()
+async_result = async_func()
 sync_result + async_result
-`
-  const result = await run(code, {
+`,
+    {},
+  )
+
+  const result = await runMontyAsync(m, {
     externalFunctions: {
       sync_func: () => 100,
       async_func: async () => {
@@ -227,13 +248,17 @@ sync_result + async_result
   t.is(result, 300)
 })
 
-test('chained async external calls', async (t) => {
-  const code = `
-first = await get_first()
-second = await process(first)
-await finalize(second)
-`
-  const result = await run(code, {
+test('runMontyAsync chained async calls', async (t) => {
+  const m = new Monty(
+    `
+first = get_first()
+second = process(first)
+finalize(second)
+`,
+    {},
+  )
+
+  const result = await runMontyAsync(m, {
     externalFunctions: {
       get_first: async () => 'hello',
       process: async (s: string) => s.toUpperCase(),
@@ -248,29 +273,39 @@ await finalize(second)
 // No external functions tests
 // =============================================================================
 
-test('run without external functions', async (t) => {
-  t.is(await run('1 + 2', {}), 3)
+test('runMontyAsync without external functions', async (t) => {
+  const m = new Monty('1 + 2')
+
+  const result = await runMontyAsync(m, {})
+
+  t.is(result, 3)
 })
 
-test('run pure computation', async (t) => {
-  const code = `
+test('runMontyAsync pure computation', async (t) => {
+  const m = new Monty(
+    `
 def factorial(n):
     if n <= 1:
         return 1
     return n * factorial(n - 1)
 factorial(5)
-`
-  t.is(await run(code), 120)
+`,
+  )
+
+  const result = await runMontyAsync(m)
+
+  t.is(result, 120)
 })
 
 // =============================================================================
 // printCallback tests
 // =============================================================================
 
-test('run with printCallback', async (t) => {
+test('runMontyAsync with printCallback', async (t) => {
+  const m = new Monty('print("hello from async")')
   const output: string[] = []
 
-  const result = await run('print("hello from async")', {
+  const result = await runMontyAsync(m, {
     printCallback: (stream, text) => {
       t.is(stream, 'stdout')
       output.push(text)
@@ -278,14 +313,16 @@ test('run with printCallback', async (t) => {
   })
 
   t.is(result, null)
-  // Output is line-buffered: assert the joined text, not the chunking
-  t.is(output.join(''), 'hello from async\n')
+  t.deepEqual(output, ['hello from async', '\n'])
 })
 
-test('printCallback with external functions', async (t) => {
+test('runMontyAsync printCallback with external functions', async (t) => {
+  const m = new Monty('x = get_value()\nprint(f"got {x}")\nx', {
+    externalFunctions: ['get_value'],
+  })
   const output: string[] = []
 
-  const result = await run('x = get_value()\nprint(f"got {x}")\nx', {
+  const result = await runMontyAsync(m, {
     externalFunctions: {
       get_value: () => 42,
     },
@@ -296,17 +333,18 @@ test('printCallback with external functions', async (t) => {
   })
 
   t.is(result, 42)
-  t.is(output.join(''), 'got 42\n')
+  t.deepEqual(output, ['got 42', '\n'])
 })
 
-test('printCallback with multiple prints', async (t) => {
+test('runMontyAsync printCallback with multiple prints', async (t) => {
+  const m = new Monty('print("a")\nprint("b")\nprint("c")')
   const output: string[] = []
 
-  await run('print("a")\nprint("b")\nprint("c")', {
+  await runMontyAsync(m, {
     printCallback: (_stream, text) => {
       output.push(text)
     },
   })
 
-  t.is(output.join(''), 'a\nb\nc\n')
+  t.deepEqual(output, ['a', '\n', 'b', '\n', 'c', '\n'])
 })

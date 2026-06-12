@@ -184,7 +184,7 @@ ignore-words-list = 'crate,NotIn,ser,IST'
 skip = [
     "Cargo.lock",
     "crates/monty-js/package-lock.json",
-    "crates/monty-wasm/package-lock.json",
+
     "crates/monty-typeshed/vendor/typeshed/stdlib/*",
     "crates/monty/src/types/str.rs",
 ]

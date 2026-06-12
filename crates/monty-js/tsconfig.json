@@ -4,7 +4,7 @@
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
     "outDir": "dist",
-    "rootDir": "src",
+    "rootDir": "ts",
     "strict": true,
     "declaration": true,
     "declarationMap": true,
@@ -14,6 +14,6 @@
     "noUnusedLocals": true,
     "noUnusedParameters": true
   },
-  "include": ["src"],
+  "include": ["ts"],
   "exclude": ["node_modules", "__test__", "dist"]
 }

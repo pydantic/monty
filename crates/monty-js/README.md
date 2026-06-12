@@ -1,8 +1,8 @@
 # @pydantic/monty
 
 Run untrusted Python safely from Node.js: a pool of crash-isolated `monty`
-interpreter subprocesses, driven over a protobuf protocol by a pure-TypeScript
-client.
+interpreter subprocesses, driven by a native (napi) binding over the same
+Rust pool engine the Python package uses.
 
 [Monty](https://github.com/pydantic/monty) is a sandboxed Python interpreter
 written in Rust. A sandbox process can never be made fully crash-proof against
@@ -11,9 +11,11 @@ the interpreter in worker subprocesses: a worker that crashes raises
 `MontyCrashedError`, is replaced by the pool, and your Node.js process is
 never at risk.
 
-The `monty` binary ships via platform-specific npm packages installed
-automatically (like esbuild). For browsers, see
-[`@pydantic/monty-wasm`](https://www.npmjs.com/package/@pydantic/monty-wasm).
+The native binding and the `monty` binary ship together via platform-specific
+npm packages installed automatically (like esbuild). For browsers (or anywhere
+subprocesses are impossible) the same package exposes a legacy in-process
+WebAssembly API under the `@pydantic/monty/wasm` subpath — note it has none of
+the crash isolation described here.
 
 ## Installation
 

@@ -268,9 +268,8 @@ make build-js             Build the JS package (compile TypeScript)
 make lint-js              Lint JS code with oxlint
 make test-js              Test the JS package (builds the monty binary the workers run)
 make dev-py-release       Install the python package for development with a release build
-make install-wasm         Install monty-wasm JS dependencies
-make build-wasm           Build the wasm package (requires the wasm32-wasip1-threads toolchain)
-make test-wasm            Test the wasm package (requires a prior build-wasm)
+make build-wasm           Build the wasm artifacts (requires the wasm32-wasip1-threads toolchain)
+make test-wasm            Test the in-process API against the wasm build (requires a prior build-wasm)
 make dev-py-pgo           Install the python package for development with profile-guided optimization
 make format-rs            Format Rust code with fmt
 make format-py            Format Python code - WARNING be careful about this command as it may modify code and break tests silently!
@@ -280,8 +279,6 @@ make lint-rs              Lint Rust code with clippy and import checks
 make clippy-fix           Fix Rust code with clippy
 make generate-proto       Regenerate monty-proto's checked-in code from the .proto schema
 make check-proto          Verify monty-proto's checked-in code matches the .proto schema
-make generate-proto-js    Regenerate monty-js's checked-in protobuf code from the .proto schema
-make check-proto-js       Verify monty-js's checked-in protobuf code matches the .proto schema
 make lint-py              Lint Python code with ruff
 make lint                 Lint the code with ruff and clippy
 make format-lint-rs       Format and lint Rust code with fmt and clippy
@@ -674,23 +671,32 @@ Reference counting alone cannot reclaim cycles. Monty uses **Bacon–Rajan trial
 
 ## JavaScript Package (`@pydantic/monty`, `crates/monty-js/`)
 
-The JavaScript package is a **pure-TypeScript client** (no Rust, no napi) that
-runs Python in pools of `monty --subprocess` workers, speaking the
-`monty-proto` protobuf protocol over stdin/stdout. It is the JS equivalent of
-`pydantic_monty`: crash isolation, elastic pools, sessions.
+The JavaScript package is a **napi-rs binding over `monty-pool`** — the same
+Rust pool/protocol engine `pydantic_monty` uses — wrapped by a thin
+TypeScript layer. The native binding exposes turn-level primitives
+(`NativePool`, `NativeSession.feed/resume*`); the TypeScript drive loop
+answers suspension events (external functions, `os` callbacks, async
+futures) where promises are native. Pool elasticity, watchdogs, crash
+recovery, framing and value conversion all live in Rust.
 
 ### Structure
 
-- `crates/monty-js/src/` - TypeScript source: `pool.ts` (Monty), `session.ts`
-  (MontySession + drive loop), `worker.ts` (spawn/handshake/turn I/O),
-  `frame.ts` (length-prefixed framing), `convert.ts` (JS ↔ wire values),
-  `errors.ts`, `binary.ts` (monty binary resolution), `mount.ts`
-- `crates/monty-js/src/generated/` - CHECKED-IN protobuf-es codegen from
-  `crates/monty-proto/proto` (regenerate with `make generate-proto-js`; CI
-  enforces sync via `make check-proto-js`)
-- `crates/monty-js/npm/` - generated platform packages shipping the `monty`
-  binary (`@pydantic/monty-<platform>`, selected via optionalDependencies)
-- `crates/monty-js/__test__/` - Tests using ava
+- `crates/monty-js/src/` - Rust napi crate: `pool.rs` (NativePool /
+  NativeSession over `monty-pool`), `convert.rs` (JS ↔ MontyObject),
+  `exceptions.rs`, `limits.rs`, `mount.rs`, and `monty_cls.rs` (the legacy
+  in-process API, the only surface available on wasm)
+- `crates/monty-js/ts/` - TypeScript wrapper: `pool.ts` (Monty),
+  `session.ts` (MontySession + drive loop), `errors.ts`, `binary.ts`
+  (monty binary resolution), `mount.ts`, `native.ts` (turn-object typings),
+  `wasm.ts` (in-process API wrapper, exported as `@pydantic/monty/wasm`)
+- `index.js` / `index.d.ts` - napi-generated loader (created by
+  `npm run build:napi`; gitignored)
+- `crates/monty-js/npm/` - generated platform packages shipping the napi
+  `.node` library *and* the `monty` binary (`@pydantic/monty-<platform>`,
+  selected via optionalDependencies; `napi create-npm-dirs` +
+  `scripts/create-platform-packages.mjs`)
+- `crates/monty-js/__test__/` - Tests using ava (`wasm_*.spec.ts` cover the
+  in-process API and also run against the wasm build in CI)
 
 ### Current API
 
@@ -718,15 +724,16 @@ See `crates/monty-js/README.md` for full API documentation.
 
 ```bash
 make install-js   # npm install
-make build-js     # compile TypeScript
-make test-js      # builds the debug monty binary, then runs ava
+make build-js     # napi debug build + compile TypeScript
+make test-js      # builds the napi binding + debug monty binary, then runs ava
 make lint-js      # oxlint
 make format-js    # prettier
 make smoke-test-js  # packs + installs the package and platform binary package
 ```
 
-Tests run straight from `src/` via `@oxc-node/core`; the workers resolve the
-`monty` binary from the workspace `target/debug` build automatically.
+Tests run straight from `ts/` via `@oxc-node/core` against the locally built
+`.node`; the workers resolve the `monty` binary from the workspace
+`target/debug` build automatically.
 
 ### JavaScript Test Guidelines
 
@@ -734,14 +741,16 @@ Tests run straight from `src/` via `@oxc-node/core`; the workers resolve the
 - Tests are written in TypeScript; use the `setupPool` helper from `__test__/helpers.ts`
 - Follow the existing test style in the `__test__/` directory
 
-## WebAssembly Package (`@pydantic/monty-wasm`, `crates/monty-wasm/`)
+## WebAssembly build (`@pydantic/monty/wasm`)
 
-The old napi-rs in-process binding lives on as a wasm-only crate for browsers
-and other environments where subprocesses are impossible. It builds the
-`wasm32-wasip1-threads` target via napi and exposes the legacy in-process API
-(`Monty`, `MontySnapshot`, `MontyRepl`, `runMontyAsync`, ...). On Node.js,
-`@pydantic/monty` (the subprocess pool) is always preferred. Built and tested
-in CI; building locally requires the wasm toolchain (`make build-wasm`).
+The legacy in-process API (`Monty`, `MontySnapshot`, `MontyRepl`,
+`runMontyAsync`, ...) ships inside the same `@pydantic/monty` package under
+the `/wasm` subpath, for browsers and other environments where subprocesses
+are impossible (the crate's `wasm32-wasip1-threads` napi target; the
+subprocess pool is `#[cfg]`-gated off there). On Node.js, the subprocess
+pool is always preferred — a sandbox crash in the in-process API takes the
+host process with it. Built and tested in CI; building locally requires the
+wasm toolchain (`make build-wasm`).
 
 ## Limitations documentation (`./limitations/`)
 

@@ -147,3 +147,4 @@ wrapper.js.map
 plans
 prompts
 monty.wasm32-wasi.wasm
+monty.wasm32-wasi.debug.wasm

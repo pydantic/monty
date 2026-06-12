@@ -1,6 +1,6 @@
 import test from 'ava'
 
-import { MontyRuntimeError, type ResourceLimits } from '../src/index.js'
+import { MontyRuntimeError, type ResourceLimits } from '../ts/index.js'
 import { setupPool } from './helpers.js'
 
 const { run } = setupPool(test)

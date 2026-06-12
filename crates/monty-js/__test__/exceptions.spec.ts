@@ -1,6 +1,6 @@
 import test from 'ava'
 
-import { MontyError, MontySyntaxError, MontyRuntimeError, MontyTypingError } from '../src/index.js'
+import { MontyError, MontySyntaxError, MontyRuntimeError, MontyTypingError } from '../ts/index.js'
 import { setupPool } from './helpers.js'
 
 const { run } = setupPool(test)

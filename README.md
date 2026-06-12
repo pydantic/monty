@@ -163,9 +163,9 @@ To install:
 npm install @pydantic/monty
 ```
 
-The JS package is a pure-TypeScript client speaking the same subprocess
-protocol — workers are `monty` binaries shipped via platform-specific npm
-packages:
+The JS package is a native (napi) binding over the same Rust worker pool the
+Python package uses — the binding and the `monty` worker binary ship via
+platform-specific npm packages:
 
 ```ts
 import { Monty } from '@pydantic/monty'
@@ -183,8 +183,9 @@ const result = await session.feedRun('await fetch_data()', {
 })
 ```
 
-For browsers (or anywhere subprocesses are impossible) there is a separate
-in-process WebAssembly build, [`@pydantic/monty-wasm`](https://www.npmjs.com/package/@pydantic/monty-wasm).
+For browsers (or anywhere subprocesses are impossible) the same package
+exposes an in-process WebAssembly build under the `@pydantic/monty/wasm`
+subpath (no crash isolation: a sandbox crash is a host crash there).
 
 ### Rust
 

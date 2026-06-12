@@ -11,17 +11,30 @@ WORKSPACE_DIR="$(cd "$ROOT_DIR/../.." && pwd)"
 cd "$ROOT_DIR"
 
 echo "=== Building package ==="
-npm run build
+npm run build:debug
 
 echo "=== Building the monty binary ==="
 cargo build -p monty-cli --manifest-path "$WORKSPACE_DIR/Cargo.toml"
 
 echo "=== Creating platform package ==="
 rm -rf npm/
-node scripts/create-platform-packages.mjs --current
-PLATFORM_DIR=$(ls -d npm/*)
-PLATFORM=$(basename "$PLATFORM_DIR")
-cp "$WORKSPACE_DIR/target/debug/monty" "$PLATFORM_DIR/"
+npx napi create-npm-dirs
+node scripts/create-platform-packages.mjs
+
+# Host triple (matches ts/binary.ts and the napi target names).
+case "$(uname -s)-$(uname -m)" in
+  Darwin-arm64) TRIPLE=darwin-arm64; EXE=monty ;;
+  Darwin-x86_64) TRIPLE=darwin-x64; EXE=monty ;;
+  Linux-aarch64) TRIPLE=linux-arm64-gnu; EXE=monty ;;
+  Linux-x86_64) TRIPLE=linux-x64-gnu; EXE=monty ;;
+  MINGW*-x86_64|MSYS*-x86_64|CYGWIN*-x86_64) TRIPLE=win32-x64-msvc; EXE=monty.exe ;;
+  *) echo "unsupported host: $(uname -s)-$(uname -m)"; exit 1 ;;
+esac
+PLATFORM_DIR=npm/$TRIPLE
+# Ship both artifacts: the napi shared library (built to the package root by
+# `npm run build`) and the monty worker binary.
+cp "monty.$TRIPLE.node" "$PLATFORM_DIR/"
+cp "$WORKSPACE_DIR/target/debug/$EXE" "$PLATFORM_DIR/"
 
 echo "=== Creating tgz files ==="
 cd "$PLATFORM_DIR"

@@ -1,0 +1,37 @@
+[package]
+name = "monty-js"
+description = "Node.js/TypeScript bindings for the Monty sandboxed Python interpreter"
+readme = "README.md"
+version = { workspace = true }
+rust-version = { workspace = true }
+# napi-derive's generated code is not yet edition-2024 clean
+edition = "2021"
+authors = { workspace = true }
+license = { workspace = true }
+keywords = { workspace = true }
+categories = { workspace = true }
+homepage = { workspace = true }
+repository = { workspace = true }
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+monty = { path = "../monty" }
+monty_type_checking = { path = "../monty-type-checking" }
+napi = { version = "3.8", default-features = false, features = ["napi6", "compat-mode", "tokio_rt"] }
+napi-derive = "3.0.0"
+num-bigint = { workspace = true }
+serde = { workspace = true }
+postcard = { workspace = true }
+
+# the subprocess pool spawns workers — impossible on wasm, where only the
+# in-process API is exposed
+[target.'cfg(not(target_family = "wasm"))'.dependencies]
+monty-pool = { path = "../monty-pool" }
+
+[build-dependencies]
+napi-build = "2"
+
+[lints]
+workspace = true

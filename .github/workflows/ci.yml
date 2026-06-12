@@ -823,8 +823,9 @@ jobs:
       - name: Build the monty binary
         run: cargo build -p monty-cli
 
+      # debug napi build + TypeScript; tests and the smoke test load it
       - name: Build
-        run: npm run build
+        run: npm run build:debug
         working-directory: crates/monty-js
 
       - name: Lint
@@ -840,8 +841,9 @@ jobs:
         run: npm run smoke-test
         working-directory: crates/monty-js
 
-  # Release builds of the monty binary for the npm platform packages
-  # (@pydantic/monty-<platform>), the JS equivalent of pydantic-monty-cli.
+  # Release builds of the monty binary AND the napi shared library for the
+  # npm platform packages (@pydantic/monty-<platform>): each package ships
+  # the `.node` binding next to the `monty` worker binary.
   build-js-binaries:
     name: build JS binary - ${{ matrix.settings.triple }}
     runs-on: ${{ matrix.settings.host }}
@@ -884,8 +886,22 @@ jobs:
           cache-on-failure: true
           prefix-key: v1-rust-js-bin
 
-      - name: Build
+      - name: Setup node
+        uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
+        with:
+          node-version: 24
+          package-manager-cache: false
+
+      - name: Install node dependencies
+        run: npm install
+        working-directory: crates/monty-js
+
+      - name: Build the monty binary
         run: cargo build --release -p monty-cli --target ${{ matrix.settings.target }}
+
+      - name: Build the napi shared library
+        run: npx napi build --platform --release --esm --target ${{ matrix.settings.target }}
+        working-directory: crates/monty-js
 
       - name: Upload artifact
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
@@ -894,6 +910,7 @@ jobs:
           path: |
             target/${{ matrix.settings.target }}/release/monty
             target/${{ matrix.settings.target }}/release/monty.exe
+            crates/monty-js/monty.${{ matrix.settings.triple }}.node
           if-no-files-found: error
 
   build-wasm:
@@ -935,27 +952,25 @@ jobs:
 
       - name: Install dependencies
         run: npm install
-        working-directory: crates/monty-wasm
+        working-directory: crates/monty-js
 
       - name: Build
-        run: npm run build
-        working-directory: crates/monty-wasm
+        run: npm run build:wasm
+        working-directory: crates/monty-js
 
       - name: Upload artifact
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
           name: wasm-bindings
           path: |
-            crates/monty-wasm/monty.*.wasm
-            crates/monty-wasm/browser.js
-            crates/monty-wasm/index.js
-            crates/monty-wasm/index.d.ts
-            crates/monty-wasm/wrapper.js
-            crates/monty-wasm/wrapper.d.ts
-            crates/monty-wasm/monty.wasi.cjs
-            crates/monty-wasm/monty.wasi-browser.js
-            crates/monty-wasm/wasi-worker.mjs
-            crates/monty-wasm/wasi-worker-browser.mjs
+            crates/monty-js/monty.*.wasm
+            crates/monty-js/browser.js
+            crates/monty-js/index.js
+            crates/monty-js/index.d.ts
+            crates/monty-js/monty.wasi.cjs
+            crates/monty-js/monty.wasi-browser.js
+            crates/monty-js/wasi-worker.mjs
+            crates/monty-js/wasi-worker-browser.mjs
           if-no-files-found: error
     env:
       CARGO_INCREMENTAL: '1'
@@ -975,28 +990,25 @@ jobs:
         with:
           node-version: 24
           cache: npm
-          cache-dependency-path: crates/monty-wasm/package-lock.json
+          cache-dependency-path: crates/monty-js/package-lock.json
 
       - name: Install dependencies
-        run: npm install --cpu wasm32
-        working-directory: crates/monty-wasm
+        run: npm install
+        working-directory: crates/monty-js
 
       - name: Download artifacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: wasm-bindings
-          path: crates/monty-wasm
+          path: crates/monty-js
 
-      - name: List packages
-        run: ls -R .
-        shell: bash
-        working-directory: crates/monty-wasm
-
+      # only the in-process (wasm_*) specs: the subprocess pool cannot exist
+      # on wasm, so the pool specs are native-only
       - name: Test bindings
-        run: npm test
+        run: npx ava "__test__/wasm_*.spec.ts"
         env:
           NAPI_RS_FORCE_WASI: 1
-        working-directory: crates/monty-wasm
+        working-directory: crates/monty-js
 
   release-js:
     name: Release to NPM
@@ -1023,34 +1035,52 @@ jobs:
           package-manager-cache: false
           registry-url: 'https://registry.npmjs.org'
 
+      # no release versioning, see https://github.com/dtolnay/rust-toolchain/issues/180
+      - uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9
+        with:
+          toolchain: stable
+
       - name: Install dependencies
         run: npm install
         working-directory: crates/monty-js
 
+      # generates the loader (index.js/index.d.ts) and dist/; the host .node
+      # it also builds is not shipped (platform packages carry the .nodes)
       - name: Build
         run: npm run build
         working-directory: crates/monty-js
 
       - name: Create platform package dirs
-        run: npm run create-platform-packages
+        run: |
+          npx napi create-npm-dirs
+          npm run create-platform-packages
         working-directory: crates/monty-js
 
       - name: Download binaries into platform packages
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           pattern: monty-bin-*
-          path: crates/monty-js/npm
+          path: crates/monty-js/artifacts
 
-      # download-artifact nests each artifact under its name and drops the
-      # executable bit; flatten monty-bin-<triple>/ -> <triple>/ and restore it
+      - name: Download wasm artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: wasm-bindings
+          path: crates/monty-js/artifacts/wasm
+
+      # download-artifact nests artifacts and drops the executable bit;
+      # arrange each triple's binary + .node into npm/<triple>/ and the wasm
+      # runtime files into npm/wasm32-wasi/
       - name: Arrange binaries
         run: |
-          for dir in npm/monty-bin-*; do
-            triple=${dir#npm/monty-bin-}
-            mv "$dir"/monty* "npm/$triple/"
-            rmdir "$dir"
+          for dir in artifacts/monty-bin-*; do
+            triple=${dir#artifacts/monty-bin-}
+            find "$dir" -name 'monty*' -exec mv {} "npm/$triple/" \;
           done
-          chmod +x npm/*/monty*
+          chmod +x npm/*/monty npm/*/monty.exe 2>/dev/null || true
+          mv artifacts/wasm/monty.wasm32-wasi.wasm npm/wasm32-wasi/
+          mv artifacts/wasm/monty.wasi.cjs artifacts/wasm/monty.wasi-browser.js npm/wasm32-wasi/
+          mv artifacts/wasm/wasi-worker.mjs artifacts/wasm/wasi-worker-browser.mjs npm/wasm32-wasi/
           ls -lR npm/
         working-directory: crates/monty-js
 
@@ -1068,55 +1098,3 @@ jobs:
           done
           npm publish --provenance --access public $TAG_ARG
         working-directory: crates/monty-js
-
-  release-wasm:
-    name: Release wasm to NPM
-    runs-on: ubuntu-latest
-    needs:
-      - check
-      - inspect-python-assets
-      - test-wasm
-    if: success() && (startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && inputs.run_release))
-    permissions:
-      contents: write
-      id-token: write
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          persist-credentials: false
-
-      - name: Setup node
-        uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
-        with:
-          node-version: 24
-          package-manager-cache: false
-          registry-url: 'https://registry.npmjs.org'
-
-      - name: Install dependencies
-        run: npm install
-        working-directory: crates/monty-wasm
-
-      - name: Download artifacts
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: wasm-bindings
-          path: crates/monty-wasm/artifacts
-
-      # the package is self-contained: the napi-generated loader files and the
-      # wasm binary all ship in the main package root (no platform packages)
-      - name: Move artifacts into the package root
-        run: |
-          mv artifacts/*.js artifacts/*.d.ts artifacts/*.cjs artifacts/*.mjs artifacts/*.wasm .
-          ls -l .
-        working-directory: crates/monty-wasm
-
-      - name: Publish
-        run: |
-          if [[ "$GITHUB_REF" =~ ^refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "Publishing stable release"
-            npm publish --provenance --access public
-          else
-            echo "Publishing pre-release with 'next' tag"
-            npm publish --provenance --tag next --access public
-          fi
-        working-directory: crates/monty-wasm

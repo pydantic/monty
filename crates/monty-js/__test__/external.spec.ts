@@ -1,6 +1,6 @@
 import test from 'ava'
 
-import { MontyRuntimeError } from '../src/index.js'
+import { MontyRuntimeError } from '../ts/index.js'
 import { setupPool } from './helpers.js'
 
 const { run } = setupPool(test)
@@ -341,12 +341,15 @@ caught
 `
   // a Dataclass marker without its fieldNames array
   const bad = () => ({ __monty_type__: 'Dataclass', name: 'Broken' })
-  t.is(await run(code, { externalFunctions: { bad } }), 'Dataclass marker requires a fieldNames array')
+  t.is(
+    await run(code, { externalFunctions: { bad } }),
+    "Object property 'typeId' type mismatch. Expect value to be BigInt, but received Undefined",
+  )
 })
 
 test('external function returning a symbol', async (t) => {
   const error = await t.throwsAsync(() => run('bad()', { externalFunctions: { bad: () => Symbol('nope') } }), {
     instanceOf: MontyRuntimeError,
   })
-  t.is(error.message, 'TypeError: cannot convert JS symbol to a Monty value')
+  t.is(error.message, 'TypeError: Cannot convert JS Symbol to Monty value')
 })
