@@ -527,7 +527,7 @@ impl Checkout {
                         fatal.message
                     )));
                 }
-                Some(pb::event::Kind::HelloReply(_)) | None => {
+                None => {
                     return Err(self.protocol_violation("unexpected event"));
                 }
             }

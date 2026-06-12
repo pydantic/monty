@@ -31,9 +31,3 @@ pub use convert::{
 pub use frame::{FrameError, FrameReader, MAX_FRAME_LEN, write_frame};
 pub use generated::pb;
 pub use wire::WireObject;
-
-/// Version of the wire protocol implemented by this crate.
-///
-/// Exchanged in the `Hello` handshake; bumped only on semantic breaks
-/// (additive schema changes do not require a bump).
-pub const PROTOCOL_VERSION: u32 = 1;

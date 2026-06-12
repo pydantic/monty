@@ -1,5 +1,5 @@
-//! A single `monty --subprocess` child: spawn, handshake, framed I/O, and
-//! guaranteed reaping.
+//! A single `monty --subprocess` child: spawn, framed I/O, and guaranteed
+//! reaping.
 
 use std::{
     env,
@@ -10,7 +10,7 @@ use std::{
     },
 };
 
-use monty_proto::{FrameError, FrameReader, PROTOCOL_VERSION, pb, write_frame};
+use monty_proto::{FrameError, FrameReader, pb, write_frame};
 
 use crate::{PoolConfig, PoolError};
 
@@ -34,7 +34,11 @@ pub(crate) struct Worker {
 }
 
 impl Worker {
-    /// Spawns a child and completes the `Hello` handshake.
+    /// Spawns a child with framed pipes.
+    ///
+    /// There is no spawn-time handshake: a wrong or broken binary surfaces as
+    /// an error on the first request the worker serves (typically the
+    /// `ReplCreate` of its first checkout).
     pub(crate) fn spawn(config: &PoolConfig) -> Result<Self, PoolError> {
         let mut command = Command::new(&config.binary_path);
         command
@@ -62,38 +66,13 @@ impl Worker {
 
         let writer = child.stdin.take().expect("piped stdin");
         let reader = FrameReader::new(child.stdout.take().expect("piped stdout"));
-        let mut worker = Self {
+        Ok(Self {
             child: Arc::new(Mutex::new(child)),
             writer,
             reader,
             killed_for_timeout: Arc::new(AtomicBool::new(false)),
             checkouts_served: 0,
-        };
-
-        worker
-            .send(&pb::Request {
-                kind: Some(pb::request::Kind::Hello(pb::Hello {
-                    protocol_version: PROTOCOL_VERSION,
-                    client: format!("monty-pool {}", env!("CARGO_PKG_VERSION")),
-                })),
-            })
-            .map_err(|err| PoolError::Spawn(format!("handshake write failed: {err}")))?;
-        match worker.recv() {
-            Ok(pb::Event {
-                kind: Some(pb::event::Kind::HelloReply(reply)),
-                ..
-            }) => {
-                if reply.protocol_version != PROTOCOL_VERSION {
-                    return Err(PoolError::Spawn(format!(
-                        "worker speaks protocol version {}, expected {PROTOCOL_VERSION}",
-                        reply.protocol_version
-                    )));
-                }
-            }
-            Ok(other) => return Err(PoolError::Spawn(format!("unexpected handshake reply: {other:?}"))),
-            Err(err) => return Err(PoolError::Spawn(format!("handshake read failed: {err}"))),
-        }
-        Ok(worker)
+        })
     }
 
     pub(crate) fn send(&mut self, request: &pb::Request) -> Result<(), FrameError> {

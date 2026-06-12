@@ -302,7 +302,7 @@ fn resource_limits_round_trip() {
         gc_interval: Some(100),
         max_recursion_depth: Some(50),
     };
-    let back = ResourceLimits::try_from(pb::ResourceLimits::from(&limits)).unwrap();
+    let back = ResourceLimits::from(pb::ResourceLimits::from(&limits));
     assert_eq!(back.max_allocations, limits.max_allocations);
     assert_eq!(back.max_duration, limits.max_duration);
     assert_eq!(back.max_memory, limits.max_memory);
@@ -314,7 +314,7 @@ fn resource_limits_round_trip() {
 fn empty_resource_limits_default_recursion_depth() {
     // an all-absent wire message must behave like ResourceLimits::new():
     // unlimited everything except the standard recursion-depth default
-    let back = ResourceLimits::try_from(pb::ResourceLimits::default()).unwrap();
+    let back = ResourceLimits::from(pb::ResourceLimits::default());
     let expected = ResourceLimits::new();
     assert_eq!(back.max_allocations, expected.max_allocations);
     assert_eq!(back.max_duration, expected.max_duration);

@@ -13,11 +13,13 @@ impl<R: Read> Read for OneByteReader<R> {
     }
 }
 
-fn hello() -> pb::Request {
+fn feed() -> pb::Request {
     pb::Request {
-        kind: Some(pb::request::Kind::Hello(pb::Hello {
-            protocol_version: 1,
-            client: "test".to_owned(),
+        kind: Some(pb::request::Kind::ReplFeed(pb::ReplFeed {
+            code: "1 + 1".to_owned(),
+            inputs: vec![],
+            mounts: vec![],
+            skip_type_check: false,
         })),
     }
 }
@@ -25,7 +27,7 @@ fn hello() -> pb::Request {
 #[test]
 fn frames_round_trip() {
     let mut buf = Vec::new();
-    write_frame(&mut buf, &hello()).unwrap();
+    write_frame(&mut buf, &feed()).unwrap();
     write_frame(
         &mut buf,
         &pb::Event {
@@ -37,7 +39,7 @@ fn frames_round_trip() {
 
     let mut reader = FrameReader::new(buf.as_slice());
     let req: pb::Request = reader.read().unwrap().expect("first frame");
-    assert_eq!(req, hello());
+    assert_eq!(req, feed());
     let event: pb::Event = reader.read().unwrap().expect("second frame");
     assert!(matches!(event.kind, Some(pb::event::Kind::Ok(_))));
     // clean EOF at the frame boundary
@@ -47,10 +49,10 @@ fn frames_round_trip() {
 #[test]
 fn frames_round_trip_through_chunked_reads() {
     let mut buf = Vec::new();
-    write_frame(&mut buf, &hello()).unwrap();
+    write_frame(&mut buf, &feed()).unwrap();
     let mut reader = FrameReader::new(OneByteReader(buf.as_slice()));
     let req: pb::Request = reader.read().unwrap().expect("frame");
-    assert_eq!(req, hello());
+    assert_eq!(req, feed());
 }
 
 #[test]
@@ -79,7 +81,7 @@ fn truncated_length_prefix_is_an_error() {
 #[test]
 fn truncated_body_is_an_error() {
     let mut buf = Vec::new();
-    write_frame(&mut buf, &hello()).unwrap();
+    write_frame(&mut buf, &feed()).unwrap();
     buf.truncate(buf.len() - 1); // drop the last body byte
     let mut reader = FrameReader::new(buf.as_slice());
     let err = reader.read::<pb::Request>().expect_err("truncated body");

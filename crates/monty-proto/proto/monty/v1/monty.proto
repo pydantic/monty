@@ -10,15 +10,12 @@
 // followed by exactly one turn-ending event. There is no multiplexing, so a
 // parent can be implemented with a single blocking read loop in any language.
 //
-// The first request on a fresh child MUST be `Hello`; the child answers with
-// `HelloReply` (or `FatalError` + exit if the parent's protocol_version is
-// newer than it supports).
-//
 // Evolution rules: changes must be additive only — new fields and new oneof
 // arms get fresh tag numbers, and removed tags are reserved. proto3 decoders
 // ignore unknown fields, so older children tolerate newer optional fields.
-// Any semantic break bumps PROTOCOL_VERSION (see monty-proto's lib.rs) and is
-// negotiated in the Hello exchange.
+// There is no in-band version negotiation: parent and child are expected to
+// be deployed in lockstep (the packages ship a matching `monty` binary), and
+// version skew is detected out of band (e.g. `monty --version`).
 
 syntax = "proto3";
 
@@ -299,25 +296,16 @@ message NamedValue {
 
 message Request {
   oneof kind {
-    Hello hello = 1;
-    ReplCreate repl_create = 2;
-    ReplFeed repl_feed = 3;
-    ResumeCall resume_call = 4;
-    ResumeNameLookup resume_name_lookup = 5;
-    ResumeFutures resume_futures = 6;
-    Dump dump = 7;
-    Load load = 8;
-    Reset reset = 9;
-    Shutdown shutdown = 10;
+    ReplCreate repl_create = 1;
+    ReplFeed repl_feed = 2;
+    ResumeCall resume_call = 3;
+    ResumeNameLookup resume_name_lookup = 4;
+    ResumeFutures resume_futures = 5;
+    Dump dump = 6;
+    Load load = 7;
+    Reset reset = 8;
+    Shutdown shutdown = 9;
   }
-}
-
-// Handshake; must be the first request. The child replies with `HelloReply`,
-// or `FatalError` + exit if it cannot speak `protocol_version`.
-message Hello {
-  uint32 protocol_version = 1;
-  // Free-form parent identification for diagnostics, e.g. "monty-pool 0.1".
-  string client = 2;
 }
 
 // Creates the REPL session this child will serve until `Reset`. Valid only
@@ -391,18 +379,17 @@ message Shutdown {}
 
 message Event {
   oneof kind {
-    HelloReply hello_reply = 1;
-    Print print = 2;
-    FunctionCall function_call = 3;
-    OsCall os_call = 4;
-    NameLookup name_lookup = 5;
-    ResolveFutures resolve_futures = 6;
-    Complete complete = 7;
-    Error error = 8;
-    TypingError typing_error = 9;
-    DumpResult dump_result = 10;
-    Ok ok = 11;
-    FatalError fatal_error = 12;
+    Print print = 1;
+    FunctionCall function_call = 2;
+    OsCall os_call = 3;
+    NameLookup name_lookup = 4;
+    ResolveFutures resolve_futures = 5;
+    Complete complete = 6;
+    Error error = 7;
+    TypingError typing_error = 8;
+    DumpResult dump_result = 9;
+    Ok ok = 10;
+    FatalError fatal_error = 11;
   }
 
   // Cumulative execution time consumed by the session's sandbox code, in
@@ -412,19 +399,13 @@ message Event {
   // while a session exists (zero on Print events and outside a session) so
   // the parent can mirror the `max_duration` budget, e.g. to arm a watchdog
   // backstop, without keeping a second clock.
-  uint64 total_execution_micros = 13;
+  uint64 total_execution_micros = 12;
 
   // The session's `max_duration` limit in microseconds, when one is
   // configured. Reported alongside `total_execution_micros` so a parent that
   // restored a session via `Load` (where the limits travel inside the opaque
   // state bytes) still learns the budget.
-  optional uint64 max_duration_micros = 14;
-}
-
-message HelloReply {
-  uint32 protocol_version = 1;
-  // The child's monty crate version, e.g. "0.0.18".
-  string monty_version = 2;
+  optional uint64 max_duration_micros = 13;
 }
 
 enum PrintStream {

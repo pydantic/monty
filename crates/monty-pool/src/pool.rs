@@ -16,8 +16,8 @@ use crate::{
 
 /// An elastic pool of `monty --subprocess` workers.
 ///
-/// `min_processes` workers are spawned (and handshaken) eagerly so the first
-/// checkout is fast; further workers spawn on demand up to `max_processes`.
+/// `min_processes` workers are spawned eagerly so the first checkout is
+/// fast; further workers spawn on demand up to `max_processes`.
 /// Dead workers are detected and replaced transparently. See the crate docs
 /// for the full lifecycle.
 ///
@@ -46,7 +46,7 @@ struct PoolState {
 
 impl Pool {
     /// Creates the pool and eagerly spawns `min_processes` workers, failing
-    /// fast if the binary cannot be spawned or handshaken.
+    /// fast if the binary cannot be spawned.
     pub fn new(config: PoolConfig) -> Result<Self, PoolError> {
         if config.min_processes > config.max_processes || config.max_processes == 0 {
             return Err(PoolError::Spawn(format!(

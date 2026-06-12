@@ -12,7 +12,7 @@ use std::{
 };
 
 use monty::MontyObject;
-use monty_proto::{FrameError, FrameReader, PROTOCOL_VERSION, WireObject, pb, write_frame};
+use monty_proto::{FrameError, FrameReader, WireObject, pb, write_frame};
 
 /// A spawned `monty --subprocess` child with framed pipes.
 struct ChildProc {
@@ -22,24 +22,7 @@ struct ChildProc {
 }
 
 impl ChildProc {
-    /// Spawns a child and completes the Hello handshake.
     fn spawn() -> Self {
-        let mut this = Self::spawn_no_hello();
-        this.send(pb::request::Kind::Hello(pb::Hello {
-            protocol_version: PROTOCOL_VERSION,
-            client: "subprocess-tests".to_owned(),
-        }));
-        match this.recv() {
-            pb::event::Kind::HelloReply(reply) => {
-                assert_eq!(reply.protocol_version, PROTOCOL_VERSION);
-                assert!(!reply.monty_version.is_empty());
-            }
-            other => panic!("expected HelloReply, got {other:?}"),
-        }
-        this
-    }
-
-    fn spawn_no_hello() -> Self {
         let mut child = Command::new(env!("CARGO_BIN_EXE_monty"))
             .arg("--subprocess")
             .stdin(Stdio::piped())
@@ -551,24 +534,6 @@ fn type_check_state_survives_dump_and_load() {
 // =============================================================================
 
 #[test]
-fn repeated_hello_is_a_violation() {
-    let mut child = ChildProc::spawn();
-    child.send(pb::request::Kind::Hello(pb::Hello {
-        protocol_version: PROTOCOL_VERSION,
-        client: "subprocess-tests".to_owned(),
-    }));
-    let error = expect_error(child.recv());
-    assert_eq!(
-        error.message.unwrap(),
-        "protocol violation: Hello after the handshake has completed"
-    );
-    // the violation is recoverable: the child keeps serving
-    child.create_repl();
-    assert_eq!(child.feed_complete("1 + 1"), MontyObject::Int(2));
-    child.shutdown();
-}
-
-#[test]
 fn protocol_violations_keep_the_child_alive() {
     let mut child = ChildProc::spawn();
 
@@ -647,31 +612,6 @@ fn killed_child_is_detected_as_eof() {
     }
     let status = child.child.wait().expect("wait");
     assert!(!status.success());
-}
-
-#[test]
-fn hello_version_mismatch_is_fatal() {
-    let mut child = ChildProc::spawn_no_hello();
-    child.send(pb::request::Kind::Hello(pb::Hello {
-        protocol_version: PROTOCOL_VERSION + 1,
-        client: "future".to_owned(),
-    }));
-    match child.recv() {
-        pb::event::Kind::FatalError(fatal) => assert!(fatal.message.contains("unsupported protocol version")),
-        other => panic!("expected FatalError, got {other:?}"),
-    }
-    let status = child.child.wait().expect("wait");
-    assert_eq!(status.code(), Some(2));
-}
-
-#[test]
-fn requests_before_hello_are_fatal() {
-    let mut child = ChildProc::spawn_no_hello();
-    child.send(pb::request::Kind::Reset(pb::Reset {}));
-    match child.recv() {
-        pb::event::Kind::FatalError(fatal) => assert!(fatal.message.contains("first request must be Hello")),
-        other => panic!("expected FatalError, got {other:?}"),
-    }
 }
 
 #[test]

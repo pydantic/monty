@@ -143,7 +143,7 @@ impl NativePool {
         })
     }
 
-    /// Spawns the prewarmed workers (handshakes included) off the event loop.
+    /// Spawns the prewarmed workers off the event loop.
     #[napi]
     pub fn start<'env>(&self, env: &'env Env) -> Result<PromiseRaw<'env, ()>> {
         let config = self.config.clone();

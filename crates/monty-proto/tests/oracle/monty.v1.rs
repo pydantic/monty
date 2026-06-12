@@ -365,7 +365,7 @@ pub struct NamedValue {
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct Request {
-    #[prost(oneof = "request::Kind", tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10")]
+    #[prost(oneof = "request::Kind", tags = "1, 2, 3, 4, 5, 6, 7, 8, 9")]
     pub kind: ::core::option::Option<request::Kind>,
 }
 /// Nested message and enum types in `Request`.
@@ -373,36 +373,24 @@ pub mod request {
     #[derive(Clone, PartialEq, ::prost::Oneof)]
     pub enum Kind {
         #[prost(message, tag = "1")]
-        Hello(super::Hello),
-        #[prost(message, tag = "2")]
         ReplCreate(super::ReplCreate),
-        #[prost(message, tag = "3")]
+        #[prost(message, tag = "2")]
         ReplFeed(super::ReplFeed),
-        #[prost(message, tag = "4")]
+        #[prost(message, tag = "3")]
         ResumeCall(super::ResumeCall),
-        #[prost(message, tag = "5")]
+        #[prost(message, tag = "4")]
         ResumeNameLookup(super::ResumeNameLookup),
-        #[prost(message, tag = "6")]
+        #[prost(message, tag = "5")]
         ResumeFutures(super::ResumeFutures),
-        #[prost(message, tag = "7")]
+        #[prost(message, tag = "6")]
         Dump(super::Dump),
-        #[prost(message, tag = "8")]
+        #[prost(message, tag = "7")]
         Load(super::Load),
-        #[prost(message, tag = "9")]
+        #[prost(message, tag = "8")]
         Reset(super::Reset),
-        #[prost(message, tag = "10")]
+        #[prost(message, tag = "9")]
         Shutdown(super::Shutdown),
     }
-}
-/// Handshake; must be the first request. The child replies with `HelloReply`,
-/// or `FatalError` + exit if it cannot speak `protocol_version`.
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct Hello {
-    #[prost(uint32, tag = "1")]
-    pub protocol_version: u32,
-    /// Free-form parent identification for diagnostics, e.g. "monty-pool 0.1".
-    #[prost(string, tag = "2")]
-    pub client: ::prost::alloc::string::String,
 }
 /// Creates the REPL session this child will serve until `Reset`. Valid only
 /// when the child has no session.
@@ -498,15 +486,15 @@ pub struct Event {
     /// while a session exists (zero on Print events and outside a session) so
     /// the parent can mirror the `max_duration` budget, e.g. to arm a watchdog
     /// backstop, without keeping a second clock.
-    #[prost(uint64, tag = "13")]
+    #[prost(uint64, tag = "12")]
     pub total_execution_micros: u64,
     /// The session's `max_duration` limit in microseconds, when one is
     /// configured. Reported alongside `total_execution_micros` so a parent that
     /// restored a session via `Load` (where the limits travel inside the opaque
     /// state bytes) still learns the budget.
-    #[prost(uint64, optional, tag = "14")]
+    #[prost(uint64, optional, tag = "13")]
     pub max_duration_micros: ::core::option::Option<u64>,
-    #[prost(oneof = "event::Kind", tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12")]
+    #[prost(oneof = "event::Kind", tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11")]
     pub kind: ::core::option::Option<event::Kind>,
 }
 /// Nested message and enum types in `Event`.
@@ -514,38 +502,28 @@ pub mod event {
     #[derive(Clone, PartialEq, ::prost::Oneof)]
     pub enum Kind {
         #[prost(message, tag = "1")]
-        HelloReply(super::HelloReply),
-        #[prost(message, tag = "2")]
         Print(super::Print),
-        #[prost(message, tag = "3")]
+        #[prost(message, tag = "2")]
         FunctionCall(super::FunctionCall),
-        #[prost(message, tag = "4")]
+        #[prost(message, tag = "3")]
         OsCall(super::OsCall),
-        #[prost(message, tag = "5")]
+        #[prost(message, tag = "4")]
         NameLookup(super::NameLookup),
-        #[prost(message, tag = "6")]
+        #[prost(message, tag = "5")]
         ResolveFutures(super::ResolveFutures),
-        #[prost(message, tag = "7")]
+        #[prost(message, tag = "6")]
         Complete(super::Complete),
-        #[prost(message, tag = "8")]
+        #[prost(message, tag = "7")]
         Error(super::Error),
-        #[prost(message, tag = "9")]
+        #[prost(message, tag = "8")]
         TypingError(super::TypingError),
-        #[prost(message, tag = "10")]
+        #[prost(message, tag = "9")]
         DumpResult(super::DumpResult),
-        #[prost(message, tag = "11")]
+        #[prost(message, tag = "10")]
         Ok(super::Ok),
-        #[prost(message, tag = "12")]
+        #[prost(message, tag = "11")]
         FatalError(super::FatalError),
     }
-}
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct HelloReply {
-    #[prost(uint32, tag = "1")]
-    pub protocol_version: u32,
-    /// The child's monty crate version, e.g. "0.0.18".
-    #[prost(string, tag = "2")]
-    pub monty_version: ::prost::alloc::string::String,
 }
 /// Streamed sandbox print() output. Zero or more of these precede each
 /// turn-ending event; text is flushed at line granularity.

@@ -19,8 +19,8 @@ use monty::{
     PrintWriterCallback, ReplProgress, ReplStartError, fs::MountTable,
 };
 use monty_proto::{
-    FrameReader, PROTOCOL_VERSION, build_mount_table, exceeds_max_value_depth, future_results_from_proto,
-    pairs_to_proto, pb, values_to_proto, write_frame,
+    FrameReader, build_mount_table, exceeds_max_value_depth, future_results_from_proto, pairs_to_proto, pb,
+    values_to_proto, write_frame,
 };
 use monty_type_checking::{SourceFile, type_check};
 
@@ -94,8 +94,8 @@ enum Turn {
 
 /// REPL session state of the child.
 enum SessionState {
-    /// No session; only `Hello` / `ReplCreate` / `Load` / `Reset` / `Shutdown`
-    /// are valid.
+    /// No session; only `ReplCreate` / `Load` / `Reset` / `Shutdown` are
+    /// valid.
     Idle,
     /// Session ready for the next `ReplFeed`.
     Ready(Box<MontyRepl<Tracker>>),
@@ -126,8 +126,6 @@ struct Child {
     mounts: Option<MountTable>,
     /// `Some` when the session was created with `type_check: true`.
     type_check: Option<TypeCheckState>,
-    /// Whether the `Hello` handshake has completed.
-    helloed: bool,
 }
 
 impl Child {
@@ -137,7 +135,6 @@ impl Child {
             script_name: String::new(),
             mounts: None,
             type_check: None,
-            helloed: false,
         }
     }
 
@@ -149,17 +146,7 @@ impl Child {
             return Ok(Turn::Continue);
         };
 
-        // The handshake must come first, exactly once.
-        if let pb::request::Kind::Hello(hello) = kind {
-            return self.handle_hello(&hello);
-        }
-        if !self.helloed {
-            self.fatal("first request must be Hello");
-            return Ok(Turn::Exit(ExitCode::from(2)));
-        }
-
         let mut event = match kind {
-            pb::request::Kind::Hello(_) => unreachable!("handled above"),
             pb::request::Kind::ReplCreate(create) => self.handle_repl_create(create),
             pb::request::Kind::ReplFeed(feed) => self.handle_repl_feed(feed),
             pb::request::Kind::ResumeCall(resume) => self.handle_resume_call(resume),
@@ -198,34 +185,11 @@ impl Child {
             .map(|max| u64::try_from(max.as_micros()).unwrap_or(u64::MAX));
     }
 
-    fn handle_hello(&mut self, hello: &pb::Hello) -> Result<Turn, monty_proto::FrameError> {
-        if self.helloed {
-            send(&violation("Hello after the handshake has completed"))?;
-            return Ok(Turn::Continue);
-        }
-        if hello.protocol_version > PROTOCOL_VERSION {
-            self.fatal(&format!(
-                "unsupported protocol version {} (this child speaks {PROTOCOL_VERSION})",
-                hello.protocol_version
-            ));
-            return Ok(Turn::Exit(ExitCode::from(2)));
-        }
-        self.helloed = true;
-        send(&event(pb::event::Kind::HelloReply(pb::HelloReply {
-            protocol_version: PROTOCOL_VERSION,
-            monty_version: env!("CARGO_PKG_VERSION").to_owned(),
-        })))?;
-        Ok(Turn::Continue)
-    }
-
     fn handle_repl_create(&mut self, create: pb::ReplCreate) -> pb::Event {
         if !matches!(self.state, SessionState::Idle) {
             return violation("ReplCreate while a session already exists");
         }
-        let limits = match create.limits.unwrap_or_default().try_into() {
-            Ok(limits) => limits,
-            Err(err) => return violation(&format!("invalid limits: {err}")),
-        };
+        let limits = create.limits.unwrap_or_default().into();
         self.script_name = create.script_name;
         self.type_check = create.type_check.then(|| TypeCheckState {
             committed_stubs: create.type_check_stubs.unwrap_or_default(),

@@ -133,7 +133,7 @@ pub enum PoolError {
     Typing(String),
     /// No worker became available within `checkout_timeout`.
     Exhausted,
-    /// A worker could not be spawned or failed its handshake.
+    /// A worker process could not be spawned.
     Spawn(String),
     /// The checkout was already finished or its worker already discarded.
     Finished,
