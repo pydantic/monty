@@ -592,6 +592,7 @@ fn worker_environment_is_empty() {
 
     let pool = Pool::new(config()).unwrap();
     let mut session = pool.checkout(&ReplConfig::default()).unwrap();
+    #[expect(clippy::absolute_paths)]
     let environ = std::fs::read(format!("/proc/{}/environ", session.pid().unwrap())).unwrap();
     assert!(
         environ.is_empty(),
