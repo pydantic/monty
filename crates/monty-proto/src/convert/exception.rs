@@ -39,8 +39,8 @@ impl From<&StackFrame> for pb::StackFrame {
     fn from(frame: &StackFrame) -> Self {
         Self {
             filename: frame.filename.clone(),
-            start: Some(code_loc_to_proto(frame.start)),
-            end: Some(code_loc_to_proto(frame.end)),
+            start: Some(frame.start.into()),
+            end: Some(frame.end.into()),
             frame_name: frame.frame_name.clone(),
             preview_line: frame.preview_line.as_ref().map(ToString::to_string),
             hide_caret: frame.hide_caret,
@@ -53,8 +53,8 @@ impl TryFrom<pb::StackFrame> for StackFrame {
     type Error = ProtoConvertError;
 
     fn try_from(frame: pb::StackFrame) -> Result<Self, ProtoConvertError> {
-        let start = code_loc_from_proto(frame.start.ok_or(ProtoConvertError::MissingField("StackFrame.start"))?);
-        let end = code_loc_from_proto(frame.end.ok_or(ProtoConvertError::MissingField("StackFrame.end"))?);
+        let start = CodeLoc::from(frame.start.ok_or(ProtoConvertError::MissingField("StackFrame.start"))?);
+        let end = CodeLoc::from(frame.end.ok_or(ProtoConvertError::MissingField("StackFrame.end"))?);
         // Frames are untrusted wire data, and `StackFrame`'s `Display` derives
         // caret padding/width from the columns when a preview line is present
         // (`" ".repeat(start.column..)`, `end.column - start.column`).
@@ -94,16 +94,23 @@ impl TryFrom<pb::StackFrame> for StackFrame {
     }
 }
 
-fn code_loc_to_proto(loc: CodeLoc) -> pb::CodeLoc {
-    pb::CodeLoc {
-        line: loc.line,
-        column: loc.column,
+impl From<CodeLoc> for pb::CodeLoc {
+    fn from(loc: CodeLoc) -> Self {
+        Self {
+            line: loc.line,
+            column: loc.column,
+        }
     }
 }
 
-fn code_loc_from_proto(loc: pb::CodeLoc) -> CodeLoc {
-    CodeLoc {
-        line: loc.line,
-        column: loc.column,
+/// Total in both directions — a `CodeLoc` is just a line/column pair. The
+/// column-range validation deliberately lives in `StackFrame`'s `TryFrom`,
+/// where `end` can be checked against `start` and the preview line.
+impl From<pb::CodeLoc> for CodeLoc {
+    fn from(loc: pb::CodeLoc) -> Self {
+        Self {
+            line: loc.line,
+            column: loc.column,
+        }
     }
 }

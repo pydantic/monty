@@ -1,4 +1,4 @@
-// Conversion between JavaScript values and wire `MontyValue`s, preserving
+// Conversion between JavaScript values and wire `MontyObject`s, preserving
 // the conventions of the original napi binding so the package's value model
 // is unchanged:
 //
@@ -30,14 +30,14 @@ import {
   ExceptionValueSchema,
   FileHandleValueSchema,
   FunctionValueSchema,
-  MontyValueSchema,
+  MontyObjectSchema,
   PairSchema,
   TimeDeltaValueSchema,
   TimeZoneValueSchema,
   UnitSchema,
   ValueListSchema,
   type DictValue,
-  type MontyValue,
+  type MontyObject,
   type Pair,
 } from './generated/monty/v1/monty_pb.js'
 
@@ -114,24 +114,24 @@ export class ConversionError extends Error {
   }
 }
 
-/** Shorthand for building a `MontyValue` with the given oneof arm. */
-function value(kind: MontyValue['kind']): MontyValue {
-  return create(MontyValueSchema, { kind })
+/** Shorthand for building a `MontyObject` with the given oneof arm. */
+function value(kind: MontyObject['kind']): MontyObject {
+  return create(MontyObjectSchema, { kind })
 }
 
-function pair(key: MontyValue, val: MontyValue): Pair {
+function pair(key: MontyObject, val: MontyObject): Pair {
   return create(PairSchema, { key, value: val })
 }
 
 const UNIT = () => create(UnitSchema)
 
 /**
- * Converts a JavaScript value to a wire `MontyValue`.
+ * Converts a JavaScript value to a wire `MontyObject`.
  *
  * Throws [`ConversionError`] for values with no Monty representation
  * (symbols, unrecognised platform objects).
  */
-export function jsToMonty(js: unknown): MontyValue {
+export function jsToMonty(js: unknown): MontyObject {
   if (js === null || js === undefined) {
     return value({ case: 'none', value: UNIT() })
   }
@@ -162,7 +162,7 @@ export function jsToMonty(js: unknown): MontyValue {
 }
 
 /** Integers in i64 range use the compact `int` arm; wider go as sign+magnitude. */
-function bigintToMonty(js: bigint): MontyValue {
+function bigintToMonty(js: bigint): MontyObject {
   if (js >= -(2n ** 63n) && js < 2n ** 63n) {
     return value({ case: 'int', value: js })
   }
@@ -178,7 +178,7 @@ function bigintToMonty(js: bigint): MontyValue {
   })
 }
 
-function objectToMonty(js: object): MontyValue {
+function objectToMonty(js: object): MontyObject {
   if (js instanceof Uint8Array) {
     return value({ case: 'bytes', value: new Uint8Array(js) })
   }
@@ -204,7 +204,7 @@ function objectToMonty(js: object): MontyValue {
 }
 
 /** Converts an object carrying a `__monty_type__` marker. */
-function markedObjectToMonty(js: Record<string, unknown>, marker: string): MontyValue {
+function markedObjectToMonty(js: Record<string, unknown>, marker: string): MontyObject {
   switch (marker) {
     case 'Ellipsis':
       return value({ case: 'ellipsis', value: UNIT() })
@@ -303,16 +303,16 @@ function markedObjectToMonty(js: Record<string, unknown>, marker: string): Monty
 }
 
 /** Plain objects become dicts with string keys (own enumerable properties). */
-function plainObjectToDict(js: Record<string, unknown>): MontyValue {
+function plainObjectToDict(js: Record<string, unknown>): MontyObject {
   const pairs = Object.entries(js).map(([k, v]) => pair(value({ case: 'str', value: k }), jsToMonty(v)))
   return value({ case: 'dict', value: create(DictValueSchema, { pairs }) })
 }
 
 /**
- * Converts a wire `MontyValue` to a JavaScript value. Total — every wire
+ * Converts a wire `MontyObject` to a JavaScript value. Total — every wire
  * value (including the output-only `repr`/`cycle` arms) has a JS form.
  */
-export function montyToJs(monty: MontyValue): unknown {
+export function montyToJs(monty: MontyObject): unknown {
   const kind = monty.kind
   switch (kind.case) {
     case 'none':
@@ -419,11 +419,11 @@ export function montyToJs(monty: MontyValue): unknown {
     case 'cycle':
       return kind.value.placeholder
     case undefined:
-      throw new ConversionError('empty MontyValue received from worker')
+      throw new ConversionError('empty MontyObject received from worker')
   }
 }
 
-function tupleToJs(items: MontyValue[]): unknown[] {
+function tupleToJs(items: MontyObject[]): unknown[] {
   const arr = items.map(montyToJs)
   Object.defineProperty(arr, '__tuple__', { value: true, enumerable: false })
   return arr
@@ -446,11 +446,11 @@ function dictToJs(dict: DictValue): Map<unknown, unknown> {
  * out (without descending) once the budget is exhausted so the check itself
  * cannot overflow on adversarially deep values.
  */
-export function exceedsMaxValueDepth(value: MontyValue): boolean {
+export function exceedsMaxValueDepth(value: MontyObject): boolean {
   return depthExceeds(value, MAX_VALUE_DEPTH)
 }
 
-function depthExceeds(value: MontyValue, budget: number): boolean {
+function depthExceeds(value: MontyObject, budget: number): boolean {
   const kind = value.kind
   switch (kind.case) {
     case 'list':
@@ -469,7 +469,7 @@ function depthExceeds(value: MontyValue, budget: number): boolean {
   }
 }
 
-function seqExceeds(items: MontyValue[], budget: number): boolean {
+function seqExceeds(items: MontyObject[], budget: number): boolean {
   if (budget === 0) {
     return items.length > 0
   }

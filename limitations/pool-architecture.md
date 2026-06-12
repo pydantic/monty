@@ -60,6 +60,13 @@ the *host API* surface.
   value fails the protocol turn rather than crossing the boundary.
 - `Cycle` markers (self-referential containers) can be *received* from a
   worker but are rejected as inputs.
+- Semantic validation of wire values (date ranges, timedelta normalization,
+  exception/type/builtin names) happens *while decoding* the frame. A frame
+  carrying an invalid value therefore fails the whole protocol turn: a parent
+  receiving one discards the worker with a protocol error; a worker receiving
+  one answers with a `RuntimeError("protocol violation: malformed request:
+  ...")` turn and keeps the session. Parents written in other languages (e.g.
+  the JS client) see the same behaviour.
 
 ## Host-API behaviour notes
 

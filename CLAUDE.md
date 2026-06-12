@@ -85,9 +85,15 @@ subprocesses:
   (`proto/monty/v1/monty.proto`), checked-in prost-generated code (regenerate
   with `make generate-proto`; CI enforces sync via `make check-proto`),
   4-byte LE length-prefixed framing, and fallible conversions between wire
-  types and `MontyObject`/`MontyException`/etc. Parents must treat frames from
-  a (possibly compromised) child as untrusted — proto→Rust conversions never
-  panic.
+  types and `MontyException`/etc. Values are special-cased for performance:
+  the `monty.v1.MontyObject` message is mapped via prost `extern_path` onto
+  `WireObject` (`src/wire.rs`), a hand-written `prost::Message` impl that
+  encodes borrowed `MontyObject`s and validates *while* decoding — no mirror
+  struct, no deep clone on the hot path. `tests/differential.rs` proves it
+  byte-compatible against a fully prost-generated oracle (`tests/oracle/`,
+  regenerated and CI-checked together with the main codegen). Parents must
+  treat frames from a (possibly compromised) child as untrusted — wire
+  decoding and proto→Rust conversions validate everything and never panic.
 - `monty --subprocess` (in `crates/monty-cli/src/subprocess.rs`) — the child:
   reads framed requests on stdin, writes framed events on stdout, serving one
   REPL session per checkout. Strict alternation: one request in, zero or more

@@ -22,6 +22,7 @@
 mod convert;
 mod frame;
 mod generated;
+mod wire;
 
 pub use convert::{
     MAX_VALUE_DEPTH, ProtoConvertError, build_mount_table, exceeds_max_value_depth, future_results_from_proto,
@@ -29,6 +30,7 @@ pub use convert::{
 };
 pub use frame::{FrameError, FrameReader, FrameWriter, MAX_FRAME_LEN};
 pub use generated::pb;
+pub use wire::WireObject;
 
 /// Version of the wire protocol implemented by this crate.
 ///

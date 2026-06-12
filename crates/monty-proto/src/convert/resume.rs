@@ -1,17 +1,17 @@
 //! Conversions for resume payloads: the parent's answers to suspension
 //! events (`ResumeCall`, `ResumeNameLookup`, `ResumeFutures`).
 
-use monty::{ExtFunctionResult, MontyException, MontyObject, NameLookupResult};
+use monty::{ExtFunctionResult, MontyException, NameLookupResult};
 
 use crate::{convert::ProtoConvertError, pb};
 
-impl From<&ExtFunctionResult> for pb::ExtResult {
-    fn from(result: &ExtFunctionResult) -> Self {
+impl From<ExtFunctionResult> for pb::ExtResult {
+    fn from(result: ExtFunctionResult) -> Self {
         let kind = match result {
             ExtFunctionResult::Return(obj) => pb::ext_result::Kind::ReturnValue(obj.into()),
-            ExtFunctionResult::Error(exc) => pb::ext_result::Kind::Error(exc.into()),
-            ExtFunctionResult::Future(call_id) => pb::ext_result::Kind::Future(*call_id),
-            ExtFunctionResult::NotFound(name) => pb::ext_result::Kind::NotFound(name.clone()),
+            ExtFunctionResult::Error(exc) => pb::ext_result::Kind::Error((&exc).into()),
+            ExtFunctionResult::Future(call_id) => pb::ext_result::Kind::Future(call_id),
+            ExtFunctionResult::NotFound(name) => pb::ext_result::Kind::NotFound(name),
         };
         Self { kind: Some(kind) }
     }
@@ -23,7 +23,7 @@ impl TryFrom<pb::ExtResult> for ExtFunctionResult {
     fn try_from(result: pb::ExtResult) -> Result<Self, ProtoConvertError> {
         let kind = result.kind.ok_or(ProtoConvertError::MissingField("ExtResult.kind"))?;
         match kind {
-            pb::ext_result::Kind::ReturnValue(value) => Ok(Self::Return(value.try_into()?)),
+            pb::ext_result::Kind::ReturnValue(value) => Ok(Self::Return(value.into_object()?)),
             pb::ext_result::Kind::Error(err) => Ok(Self::Error(MontyException::try_from(err)?)),
             pb::ext_result::Kind::Future(call_id) => Ok(Self::Future(call_id)),
             pb::ext_result::Kind::NotFound(name) => Ok(Self::NotFound(name)),
@@ -39,7 +39,7 @@ impl TryFrom<pb::ResumeNameLookup> for NameLookupResult {
             .kind
             .ok_or(ProtoConvertError::MissingField("ResumeNameLookup.kind"))?;
         match kind {
-            pb::resume_name_lookup::Kind::Value(value) => Ok(Self::Value(MontyObject::try_from(value)?)),
+            pb::resume_name_lookup::Kind::Value(value) => Ok(Self::Value(value.into_object()?)),
             pb::resume_name_lookup::Kind::Undefined(_) => Ok(Self::Undefined),
         }
     }

@@ -78,6 +78,15 @@ pub(crate) fn run() -> ExitCode {
             },
             // clean EOF at a frame boundary: the parent closed stdin
             Ok(None) => return ExitCode::SUCCESS,
+            // the frame arrived intact but its payload didn't decode — this
+            // includes values failing semantic validation (bad dates, unknown
+            // enum names), which happens during decode. The stream is still
+            // in sync, so answer with a turn-ending error and keep serving.
+            Err(monty_proto::FrameError::Decode(err)) => {
+                if child.send(&violation(&format!("malformed request: {err}"))).is_err() {
+                    return ExitCode::from(3);
+                }
+            }
             Err(err) => {
                 // the stream is desynchronized — unrecoverable by design
                 child.fatal(&format!("malformed request frame: {err}"));
@@ -432,7 +441,7 @@ impl Child {
                     // a dump is never taken at Complete, but a forged/legacy
                     // one could contain it; surface the value rather than fail
                     self.state = SessionState::Ready(Box::new(repl));
-                    complete_event(&value)
+                    complete_event(value)
                 }
                 Ok(progress) => {
                     let event = suspension_event(&progress);
@@ -476,7 +485,7 @@ impl Child {
                     if exceeds_max_value_depth(&value) {
                         return error_event(ExcType::RuntimeError, "Max output depth exceeded");
                     }
-                    return complete_event(&value);
+                    return complete_event(value);
                 }
                 Ok(ReplProgress::OsCall(mut call)) => {
                     // mount-covered OS calls are handled locally; the parent
@@ -514,8 +523,8 @@ impl Child {
                     self.state = SessionState::Suspended(Box::new(ReplProgress::OsCall(call)));
                     return event(pb::event::Kind::OsCall(pb::OsCall {
                         function_name: name.to_owned(),
-                        args: values_to_proto(&args),
-                        kwargs: pairs_to_proto(&kwargs),
+                        args: values_to_proto(args),
+                        kwargs: pairs_to_proto(kwargs),
                         call_id,
                         not_handled_error: Some((&not_handled_error).into()),
                     }));
@@ -635,17 +644,20 @@ fn error_event(exc_type: ExcType, message: &str) -> pb::Event {
 
 /// Builds the suspension event for a fresh `FunctionCall` (depth-checked by
 /// the caller).
+///
+/// Clones the argument payload: the suspension keeps its args so a `Dump` of
+/// the suspended state (and its replay on `Load`) stays complete.
 fn suspension_event_function_call(call: &monty::ReplFunctionCall<Tracker>) -> pb::Event {
     event(pb::event::Kind::FunctionCall(pb::FunctionCall {
         function_name: call.function_name.clone(),
-        args: values_to_proto(&call.args),
-        kwargs: pairs_to_proto(&call.kwargs),
+        args: values_to_proto(call.args.clone()),
+        kwargs: pairs_to_proto(call.kwargs.clone()),
         call_id: call.call_id,
         method_call: call.method_call,
     }))
 }
 
-fn complete_event(value: &MontyObject) -> pb::Event {
+fn complete_event(value: MontyObject) -> pb::Event {
     event(pb::event::Kind::Complete(pb::Complete {
         value: Some(value.into()),
     }))
@@ -658,8 +670,8 @@ fn suspension_event(progress: &ReplProgress<Tracker>) -> pb::Event {
     let kind = match progress {
         ReplProgress::FunctionCall(call) => pb::event::Kind::FunctionCall(pb::FunctionCall {
             function_name: call.function_name.clone(),
-            args: values_to_proto(&call.args),
-            kwargs: pairs_to_proto(&call.kwargs),
+            args: values_to_proto(call.args.clone()),
+            kwargs: pairs_to_proto(call.kwargs.clone()),
             call_id: call.call_id,
             method_call: call.method_call,
         }),
@@ -749,7 +761,8 @@ fn named_inputs(inputs: Vec<pb::NamedValue>) -> Result<Vec<(String, MontyObject)
             let value = input
                 .value
                 .ok_or_else(|| Box::new(violation(&format!("input {:?} has no value", input.name))))?;
-            let value = MontyObject::try_from(value)
+            let value = value
+                .into_object()
                 .map_err(|err| Box::new(violation(&format!("invalid input {:?}: {err}", input.name))))?;
             Ok((input.name, value))
         })

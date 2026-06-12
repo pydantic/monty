@@ -105,7 +105,7 @@ generate-proto: ## Regenerate monty-proto's checked-in code from the .proto sche
 
 .PHONY: check-proto
 check-proto: generate-proto ## Verify monty-proto's checked-in code matches the .proto schema
-	git diff --exit-code crates/monty-proto/src/generated
+	git diff --exit-code crates/monty-proto/src/generated crates/monty-proto/tests/oracle
 
 .PHONY: generate-proto-js
 generate-proto-js: install-js ## Regenerate monty-js's checked-in protobuf code from the .proto schema

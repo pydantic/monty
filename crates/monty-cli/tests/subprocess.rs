@@ -12,7 +12,7 @@ use std::{
 };
 
 use monty::MontyObject;
-use monty_proto::{FrameError, FrameReader, FrameWriter, PROTOCOL_VERSION, pb};
+use monty_proto::{FrameError, FrameReader, FrameWriter, PROTOCOL_VERSION, WireObject, pb};
 
 /// A spawned `monty --subprocess` child with framed pipes.
 struct ChildProc {
@@ -153,9 +153,11 @@ impl Drop for ChildProc {
 #[track_caller]
 fn expect_complete(event: pb::event::Kind) -> MontyObject {
     match event {
-        pb::event::Kind::Complete(complete) => {
-            MontyObject::try_from(complete.value.expect("complete has no value")).expect("invalid complete value")
-        }
+        pb::event::Kind::Complete(complete) => complete
+            .value
+            .expect("complete has no value")
+            .into_object()
+            .expect("invalid complete value"),
         other => panic!("expected Complete, got {other:?}"),
     }
 }
@@ -168,12 +170,12 @@ fn expect_error(event: pb::event::Kind) -> pb::MontyError {
     }
 }
 
-fn int_value(i: i64) -> pb::MontyValue {
-    pb::MontyValue::from(&MontyObject::Int(i))
+fn int_value(i: i64) -> WireObject {
+    WireObject::new(MontyObject::Int(i))
 }
 
-fn str_value(s: &str) -> pb::MontyValue {
-    pb::MontyValue::from(&MontyObject::String(s.to_owned()))
+fn str_value(s: &str) -> WireObject {
+    WireObject::new(MontyObject::String(s.to_owned()))
 }
 
 // =============================================================================
@@ -248,11 +250,7 @@ fn external_function_round_trip() {
     };
     assert_eq!(call.function_name, "add");
     assert!(!call.method_call);
-    let args: Vec<MontyObject> = call
-        .args
-        .into_iter()
-        .map(|v| MontyObject::try_from(v).unwrap())
-        .collect();
+    let args: Vec<MontyObject> = call.args.into_iter().map(|v| v.into_object().unwrap()).collect();
     assert_eq!(args, vec![MontyObject::Int(1), MontyObject::Int(2)]);
 
     let (_, event) = child.resume_call(call.call_id, pb::ext_result::Kind::ReturnValue(int_value(3)));
@@ -303,11 +301,7 @@ fn os_call_bubbles_to_parent_without_mounts() {
         panic!("expected OsCall, got {event:?}");
     };
     assert_eq!(call.function_name, "Path.read_text");
-    let args: Vec<MontyObject> = call
-        .args
-        .into_iter()
-        .map(|v| MontyObject::try_from(v).unwrap())
-        .collect();
+    let args: Vec<MontyObject> = call.args.into_iter().map(|v| v.into_object().unwrap()).collect();
     assert_eq!(args, vec![MontyObject::Path("/data.txt".to_owned())]);
 
     let (_, event) = child.resume_call(call.call_id, pb::ext_result::Kind::ReturnValue(str_value("hello")));

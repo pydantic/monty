@@ -3,7 +3,7 @@
 use std::{path::PathBuf, sync::Arc, time::Duration};
 
 use monty::{ExcType, MontyException, MontyObject, PrintStream, ResourceLimits};
-use monty_proto::{exceeds_max_value_depth, pairs_from_proto, pb, values_from_proto};
+use monty_proto::{FrameError, exceeds_max_value_depth, pairs_from_proto, pb, values_from_proto};
 
 use crate::{PoolError, pool::PoolInner, worker::Worker};
 
@@ -235,10 +235,10 @@ impl Checkout {
                     .into_iter()
                     .map(|(name, value)| pb::NamedValue {
                         name,
-                        value: Some((&value).into()),
+                        value: Some(value.into()),
                     })
                     .collect(),
-                mounts: mounts.into_iter().map(mount_to_proto).collect(),
+                mounts: mounts.into_iter().map(pb::Mount::from).collect(),
                 skip_type_check,
             })),
         };
@@ -255,7 +255,7 @@ impl Checkout {
             ensure_sendable([obj])?;
         }
         let result = match value {
-            ResumeValue::Return(obj) => pb::ext_result::Kind::ReturnValue((&obj).into()),
+            ResumeValue::Return(obj) => pb::ext_result::Kind::ReturnValue(obj.into()),
             ResumeValue::Error(exc) => pb::ext_result::Kind::Error((&exc).into()),
             ResumeValue::Future => pb::ext_result::Kind::Future(call_id),
             ResumeValue::NotFound => pb::ext_result::Kind::NotFound(function_name),
@@ -285,7 +285,7 @@ impl Checkout {
         }
         self.pending = None;
         let kind = match value {
-            Some(obj) => pb::resume_name_lookup::Kind::Value((&obj).into()),
+            Some(obj) => pb::resume_name_lookup::Kind::Value(obj.into()),
             None => pb::resume_name_lookup::Kind::Undefined(pb::Unit {}),
         };
         let request = pb::Request {
@@ -314,7 +314,7 @@ impl Checkout {
                     ensure_sendable([obj])?;
                 }
                 let kind = match value {
-                    ResumeValue::Return(obj) => pb::ext_result::Kind::ReturnValue((&obj).into()),
+                    ResumeValue::Return(obj) => pb::ext_result::Kind::ReturnValue(obj.into()),
                     ResumeValue::Error(exc) => pb::ext_result::Kind::Error((&exc).into()),
                     ResumeValue::Future | ResumeValue::NotFound => {
                         return Err(PoolError::Protocol(format!(
@@ -433,8 +433,16 @@ impl Checkout {
             return Err(self.poison("sending a request"));
         }
         loop {
-            let Ok(event) = self.worker.as_mut().expect("checked above").recv() else {
-                return Err(self.poison("waiting for a reply"));
+            let event = match self.worker.as_mut().expect("checked above").recv() {
+                Ok(event) => event,
+                // a decode failure means the frame arrived intact but its
+                // payload was garbage (including values that fail semantic
+                // validation, which happens during decode) — the worker
+                // misbehaved, it didn't die
+                Err(FrameError::Decode(err)) => {
+                    return Err(self.protocol_violation(&format!("invalid payload from worker: {err}")));
+                }
+                Err(_) => return Err(self.poison("waiting for a reply")),
             };
             // Print events carry no timing (the fields are zero), so this is
             // a no-op for them thanks to the monotonic-max ratchet.
@@ -493,7 +501,7 @@ impl Checkout {
                         let value = complete
                             .value
                             .ok_or(monty_proto::ProtoConvertError::MissingField("Complete.value"))?;
-                        Ok(TurnEvent::Complete(value.try_into()?))
+                        Ok(TurnEvent::Complete(value.into_object()?))
                     });
                 }
                 Some(pb::event::Kind::Error(error)) => {
@@ -625,16 +633,18 @@ fn min_deadline(a: Option<Duration>, b: Option<Duration>) -> Option<Duration> {
     }
 }
 
-fn mount_to_proto(mount: MountSpec) -> pb::Mount {
-    let mode = match mount.mode {
-        MountSpecMode::ReadOnly => pb::MountMode::ReadOnly,
-        MountSpecMode::ReadWrite => pb::MountMode::ReadWrite,
-        MountSpecMode::Overlay => pb::MountMode::Overlay,
-    };
-    pb::Mount {
-        virtual_path: mount.virtual_path,
-        host_path: mount.host_path.to_string_lossy().into_owned(),
-        mode: mode.into(),
-        write_bytes_limit: mount.write_bytes_limit,
+impl From<MountSpec> for pb::Mount {
+    fn from(mount: MountSpec) -> Self {
+        let mode = match mount.mode {
+            MountSpecMode::ReadOnly => pb::MountMode::ReadOnly,
+            MountSpecMode::ReadWrite => pb::MountMode::ReadWrite,
+            MountSpecMode::Overlay => pb::MountMode::Overlay,
+        };
+        Self {
+            virtual_path: mount.virtual_path,
+            host_path: mount.host_path.to_string_lossy().into_owned(),
+            mode: mode.into(),
+            write_bytes_limit: mount.write_bytes_limit,
+        }
     }
 }

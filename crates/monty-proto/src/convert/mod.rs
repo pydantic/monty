@@ -16,7 +16,6 @@
 mod exception;
 mod limits;
 mod mount;
-mod object;
 mod resume;
 
 use std::{error, fmt};
@@ -25,7 +24,7 @@ use monty::{DictPairs, MontyObject};
 pub use mount::build_mount_table;
 pub use resume::future_results_from_proto;
 
-use crate::pb;
+use crate::{WireObject, pb};
 
 /// Why a wire value could not be converted into its monty equivalent.
 ///
@@ -71,22 +70,27 @@ impl fmt::Display for ProtoConvertError {
 
 impl error::Error for ProtoConvertError {}
 
-/// Converts a slice of monty values to wire values.
+/// Wraps monty values for the wire. A move — values are never cloned; clone
+/// at the call site when the originals must be kept (e.g. a suspension that
+/// has to survive a `Dump`).
 #[must_use]
-pub fn values_to_proto(values: &[MontyObject]) -> Vec<pb::MontyValue> {
-    values.iter().map(pb::MontyValue::from).collect()
+pub fn values_to_proto(values: Vec<MontyObject>) -> Vec<WireObject> {
+    values.into_iter().map(WireObject::from).collect()
 }
 
-/// Converts wire values back to monty values, failing on the first invalid one.
-pub fn values_from_proto(values: Vec<pb::MontyValue>) -> Result<Vec<MontyObject>, ProtoConvertError> {
-    values.into_iter().map(MontyObject::try_from).collect()
+/// Unwraps decoded wire values, failing on the first absent one. Semantic
+/// validation already happened during decode (see `wire.rs`); only an absent
+/// `kind` oneof can fail here.
+pub fn values_from_proto(values: Vec<WireObject>) -> Result<Vec<MontyObject>, ProtoConvertError> {
+    values.into_iter().map(WireObject::into_object).collect()
 }
 
-/// Converts monty key/value pairs (kwargs, dict contents) to wire pairs.
+/// Wraps monty key/value pairs (kwargs, dict contents) for the wire. A move,
+/// like [`values_to_proto`].
 #[must_use]
-pub fn pairs_to_proto(pairs: &[(MontyObject, MontyObject)]) -> Vec<pb::Pair> {
+pub fn pairs_to_proto(pairs: Vec<(MontyObject, MontyObject)>) -> Vec<pb::Pair> {
     pairs
-        .iter()
+        .into_iter()
         .map(|(key, value)| pb::Pair {
             key: Some(key.into()),
             value: Some(value.into()),
@@ -94,14 +98,14 @@ pub fn pairs_to_proto(pairs: &[(MontyObject, MontyObject)]) -> Vec<pb::Pair> {
         .collect()
 }
 
-/// Converts wire pairs back to monty key/value pairs.
+/// Unwraps decoded wire pairs back to monty key/value pairs.
 pub fn pairs_from_proto(pairs: Vec<pb::Pair>) -> Result<Vec<(MontyObject, MontyObject)>, ProtoConvertError> {
     pairs
         .into_iter()
         .map(|pair| {
             let key = pair.key.ok_or(ProtoConvertError::MissingField("Pair.key"))?;
             let value = pair.value.ok_or(ProtoConvertError::MissingField("Pair.value"))?;
-            Ok((key.try_into()?, value.try_into()?))
+            Ok((key.into_object()?, value.into_object()?))
         })
         .collect()
 }
@@ -109,7 +113,7 @@ pub fn pairs_from_proto(pairs: Vec<pb::Pair>) -> Result<Vec<(MontyObject, MontyO
 /// Maximum nesting depth of a value that can safely cross the wire.
 ///
 /// prost's decoder enforces a recursion limit of 100 message levels, and each
-/// Python container level costs two proto levels (`MontyValue` plus its
+/// Python container level costs two proto levels (`MontyObject` plus its
 /// `ValueList`/`DictValue`/... payload), so anything deeper than ~49 levels
 /// fails to *decode* on the receiving side — which the receiver must treat as
 /// a fatal protocol failure. Senders check against this bound first and fail
