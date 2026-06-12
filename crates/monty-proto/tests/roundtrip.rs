@@ -268,6 +268,102 @@ fn invalid_values_are_rejected() {
     ));
 }
 
+/// The wire is untrusted: temporal values that fit their integer fields but
+/// violate the semantic invariants documented on `MontyDate`/`MontyDateTime`/
+/// `MontyTimeDelta` must be rejected at the conversion boundary.
+#[test]
+fn out_of_range_temporal_values_are_rejected() {
+    let date = |year, month, day| pb::MontyValue {
+        kind: Some(pb::monty_value::Kind::Date(pb::DateValue { year, month, day })),
+    };
+    let rejected_as = |value: pb::MontyValue, expected_field: &str| {
+        matches!(
+            MontyObject::try_from(value),
+            Err(ProtoConvertError::InvalidValue { field, .. }) if field == expected_field
+        )
+    };
+    assert!(rejected_as(date(0, 1, 1), "DateValue.year"));
+    assert!(rejected_as(date(10_000, 1, 1), "DateValue.year"));
+    assert!(rejected_as(date(2026, 0, 1), "DateValue.month"));
+    assert!(rejected_as(date(2026, 13, 1), "DateValue.month"));
+    assert!(rejected_as(date(2026, 2, 0), "DateValue.day"));
+    assert!(rejected_as(date(2026, 2, 29), "DateValue.day")); // 2026 is not a leap year
+    assert!(rejected_as(date(2025, 4, 31), "DateValue.day"));
+    assert_value_round_trip(&MontyObject::Date(MontyDate {
+        year: 2024,
+        month: 2,
+        day: 29, // 2024 is a leap year
+    }));
+
+    let datetime_with_hour = |hour| pb::MontyValue {
+        kind: Some(pb::monty_value::Kind::Datetime(pb::DateTimeValue {
+            year: 2026,
+            month: 1,
+            day: 1,
+            hour,
+            minute: 0,
+            second: 0,
+            microsecond: 0,
+            offset_seconds: None,
+            timezone_name: None,
+        })),
+    };
+    assert!(rejected_as(datetime_with_hour(24), "DateTimeValue.hour"));
+
+    let timedelta = |seconds, microseconds| pb::MontyValue {
+        kind: Some(pb::monty_value::Kind::Timedelta(pb::TimeDeltaValue {
+            days: 1,
+            seconds,
+            microseconds,
+        })),
+    };
+    assert!(rejected_as(timedelta(-1, 0), "TimeDeltaValue.seconds"));
+    assert!(rejected_as(timedelta(86_400, 0), "TimeDeltaValue.seconds"));
+    assert!(rejected_as(timedelta(0, -1), "TimeDeltaValue.microseconds"));
+    assert!(rejected_as(timedelta(0, 1_000_000), "TimeDeltaValue.microseconds"));
+}
+
+/// `StackFrame`'s `Display` derives caret padding/width from the columns, so
+/// frames whose columns underflow the caret subtraction or point far outside
+/// the preview line (panic / unbounded-allocation vectors when rendering a
+/// hostile traceback) must be rejected at the conversion boundary.
+#[test]
+fn invalid_stack_frame_coordinates_are_rejected() {
+    let frame = |start_column, end_column| pb::StackFrame {
+        filename: "main.py".to_owned(),
+        start: Some(pb::CodeLoc {
+            line: 1,
+            column: start_column,
+        }),
+        end: Some(pb::CodeLoc {
+            line: 1,
+            column: end_column,
+        }),
+        frame_name: None,
+        preview_line: Some("foo()".to_owned()),
+        hide_caret: false,
+        hide_frame_name: false,
+    };
+    // end before start would underflow the caret-width subtraction
+    assert!(matches!(
+        StackFrame::try_from(frame(5, 1)),
+        Err(ProtoConvertError::InvalidValue {
+            field: "StackFrame.end.column",
+            ..
+        })
+    ));
+    // a column far beyond the 5-character preview would allocate a
+    // pathologically wide caret line
+    assert!(matches!(
+        StackFrame::try_from(frame(1, u32::MAX)),
+        Err(ProtoConvertError::InvalidValue {
+            field: "StackFrame.end.column",
+            ..
+        })
+    ));
+    StackFrame::try_from(frame(1, 6)).expect("in-range columns must convert");
+}
+
 #[test]
 fn exceptions_round_trip_with_traceback() {
     let frames = vec![

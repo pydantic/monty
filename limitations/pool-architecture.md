@@ -1,11 +1,15 @@
 # Subprocess execution (`monty --subprocess`, `monty-pool`, `Monty`/`AsyncMonty`)
 
-Monty's Python package runs the interpreter exclusively in worker
-subprocesses driven over a protobuf protocol (`crates/monty-proto`), so that
-crashes a sandbox can never fully prevent — stack overflow aborts, allocator
-aborts — kill only the worker. The language semantics inside a worker are
-identical to embedding the interpreter directly (it is the same interpreter);
-the notes below are about the *host API* surface.
+The monty type checker, compiler, and interpreter should run in a separate
+process, except in environments where that's not possible (like wasm), so
+that crashes a sandbox can never fully prevent — stack overflow aborts,
+allocator aborts — kill only the worker. The Python package
+(`pydantic_monty`) and the JS package (`@pydantic/monty`) both do this: they
+run everything exclusively in `monty --subprocess` workers driven over a
+protobuf protocol (`crates/monty-proto`), and expose no in-process execution
+API. The language semantics inside a worker are identical to embedding the
+interpreter directly (it is the same interpreter); the notes below are about
+the *host API* surface.
 
 ## Execution model
 
@@ -23,6 +27,13 @@ the notes below are about the *host API* surface.
 - Ctrl-C / asyncio cancellation cannot interrupt a protocol turn already
   blocked on the worker; use sandbox `limits` and/or the pool's
   `request_timeout` (which kills the worker).
+- **Workers are spawned with an empty environment** (on Windows only
+  `SystemRoot` is kept, which CRT/WinAPI lookups need): host secrets are
+  never in a worker's memory, where a sandbox escape or memory disclosure
+  could reach them. This is invisible to sandbox code — `os.getenv` etc. are
+  OS calls answered by the host, never reads of the worker's own
+  environment — but means `extra_args` is the only way to configure a worker
+  process externally.
 
 ## Values crossing the process boundary
 
@@ -70,6 +81,9 @@ binaries shipped in platform npm packages. Everything above applies, plus:
 - **Deep external-function return values** (beyond the wire depth bound)
   raise a *catchable* `RuntimeError: Max input depth exceeded` inside the
   sandbox, where `pydantic_monty` raises host-side and abandons the feed.
+  Return values that cannot be converted at all (e.g. a `Symbol`, or a
+  malformed `__monty_type__` marker object) likewise raise a catchable
+  in-sandbox `TypeError` instead of failing host-side.
 - **`dump()`** returns the opaque bytes; there is no JS restore API.
 - Sessions and pools support `await using` (async disposal) in addition to
   explicit `close()`.

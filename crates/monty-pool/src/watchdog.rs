@@ -8,6 +8,7 @@
 
 use std::{
     collections::BTreeMap,
+    io,
     process::Child,
     sync::{
         Arc, Condvar, Mutex, PoisonError,
@@ -46,22 +47,21 @@ struct KillTarget {
 }
 
 impl Watchdog {
-    pub(crate) fn new() -> Self {
+    /// Spawns the enforcement thread; fails (instead of panicking) under
+    /// thread-resource exhaustion so pool construction can surface the error.
+    pub(crate) fn new() -> io::Result<Self> {
         let shared = Arc::new(Shared {
             state: Mutex::new(State::default()),
             condvar: Condvar::new(),
         });
-        let thread = thread::Builder::new()
-            .name("monty-pool-watchdog".to_owned())
-            .spawn({
-                let shared = Arc::clone(&shared);
-                move || watchdog_loop(&shared)
-            })
-            .expect("failed to spawn watchdog thread");
-        Self {
+        let thread = thread::Builder::new().name("monty-pool-watchdog".to_owned()).spawn({
+            let shared = Arc::clone(&shared);
+            move || watchdog_loop(&shared)
+        })?;
+        Ok(Self {
             shared,
             thread: Some(thread),
-        }
+        })
     }
 
     /// Arms a kill deadline for `worker`. The deadline is disarmed when the
@@ -133,7 +133,9 @@ fn watchdog_loop(shared: &Shared) {
         }
         state = match state.deadlines.first_key_value().map(|(&(at, _), _)| at) {
             Some(at) => {
-                let wait = at.saturating_duration_since(now);
+                // a fresh `now`: time spent killing expired workers above must
+                // not stretch the sleep and delay the next deadline
+                let wait = at.saturating_duration_since(Instant::now());
                 shared
                     .condvar
                     .wait_timeout(state, wait)

@@ -158,7 +158,7 @@ impl Checkout {
         };
         match this.request_turn(&request, &mut |_, _| {})? {
             ControlEvent::Ok => Ok(this),
-            other => Err(this.poison(&format!("unexpected reply to ReplCreate: {other:?}"))),
+            other => Err(this.protocol_violation(&format!("unexpected reply to ReplCreate: {other:?}"))),
         }
     }
 
@@ -180,7 +180,9 @@ impl Checkout {
         match this.request_turn(&request, &mut |_, _| {})? {
             ControlEvent::Ok => Ok((this, None)),
             ControlEvent::Turn(event) => Ok((this, Some(event))),
-            other @ ControlEvent::Dump(_) => Err(this.poison(&format!("unexpected reply to Load: {other:?}"))),
+            other @ ControlEvent::Dump(_) => {
+                Err(this.protocol_violation(&format!("unexpected reply to Load: {other:?}")))
+            }
         }
     }
 
@@ -257,6 +259,9 @@ impl Checkout {
         if !matches!(self.pending, Some(Pending::NameLookup)) {
             return Err(PoolError::Protocol("no suspended name lookup to resume".to_owned()));
         }
+        if let Some(obj) = &value {
+            ensure_sendable([obj])?;
+        }
         self.pending = None;
         let kind = match value {
             Some(obj) => pb::resume_name_lookup::Kind::Value((&obj).into()),
@@ -318,7 +323,7 @@ impl Checkout {
         };
         match self.request_turn(&request, &mut |_, _| {})? {
             ControlEvent::Dump(state) => Ok(state),
-            other => Err(self.poison(&format!("unexpected reply to Dump: {other:?}"))),
+            other => Err(self.protocol_violation(&format!("unexpected reply to Dump: {other:?}"))),
         }
     }
 
@@ -338,7 +343,7 @@ impl Checkout {
                 }
                 Ok(())
             }
-            other => Err(self.poison(&format!("unexpected reply to Reset: {other:?}"))),
+            other => Err(self.protocol_violation(&format!("unexpected reply to Reset: {other:?}"))),
         }
     }
 
@@ -351,7 +356,7 @@ impl Checkout {
     fn expect_turn(&mut self, request: &pb::Request, on_print: OnPrint<'_>) -> Result<TurnEvent, PoolError> {
         match self.request_turn(request, on_print)? {
             ControlEvent::Turn(event) => Ok(event),
-            other => Err(self.poison(&format!("expected a turn event, got {other:?}"))),
+            other => Err(self.protocol_violation(&format!("expected a turn event, got {other:?}"))),
         }
     }
 
@@ -431,11 +436,11 @@ impl Checkout {
                 Some(pb::event::Kind::Error(error)) => {
                     self.pending = None;
                     let Some(exception) = error.exception else {
-                        return Err(self.poison("error event with no exception"));
+                        return Err(self.protocol_violation("error event with no exception"));
                     };
                     return match MontyException::try_from(exception) {
                         Ok(exc) => Err(PoolError::Runtime(exc)),
-                        Err(err) => Err(self.poison(&format!("invalid exception payload: {err}"))),
+                        Err(err) => Err(self.protocol_violation(&format!("invalid exception payload: {err}"))),
                     };
                 }
                 Some(pb::event::Kind::TypingError(typing)) => {
@@ -452,7 +457,7 @@ impl Checkout {
                     )));
                 }
                 Some(pb::event::Kind::HelloReply(_)) | None => {
-                    return Err(self.poison("unexpected event"));
+                    return Err(self.protocol_violation("unexpected event"));
                 }
             }
         }
@@ -466,8 +471,17 @@ impl Checkout {
     ) -> Result<ControlEvent, PoolError> {
         match convert() {
             Ok(event) => Ok(ControlEvent::Turn(event)),
-            Err(err) => Err(self.poison(&format!("invalid payload from worker: {err}"))),
+            Err(err) => Err(self.protocol_violation(&format!("invalid payload from worker: {err}"))),
         }
+    }
+
+    /// Discards the worker after it violated the protocol on an intact stream
+    /// (unexpected event kind, undecodable payload). Unlike [`Self::poison`]
+    /// this is not a crash — the worker answered, just wrongly — so it maps
+    /// to [`PoolError::Protocol`] rather than `Crashed`/`Timeout`.
+    fn protocol_violation(&mut self, context: &str) -> PoolError {
+        self.discard_worker();
+        PoolError::Protocol(context.to_owned())
     }
 
     /// Discards the worker after an I/O failure and classifies it as a

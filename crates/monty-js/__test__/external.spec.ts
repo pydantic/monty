@@ -324,3 +324,29 @@ finally_ran
 
   t.is(await run(code, { externalFunctions: { fail } }), true)
 })
+
+// =============================================================================
+// Unconvertible return values
+// =============================================================================
+
+// A return value the wire cannot represent must surface as a catchable
+// in-sandbox error — never desynchronize the protocol or wedge the session.
+test('external function returning a malformed marker object', async (t) => {
+  const code = `
+try:
+    bad()
+except TypeError as exc:
+    caught = str(exc)
+caught
+`
+  // a Dataclass marker without its fieldNames array
+  const bad = () => ({ __monty_type__: 'Dataclass', name: 'Broken' })
+  t.is(await run(code, { externalFunctions: { bad } }), 'Dataclass marker requires a fieldNames array')
+})
+
+test('external function returning a symbol', async (t) => {
+  const error = await t.throwsAsync(() => run('bad()', { externalFunctions: { bad: () => Symbol('nope') } }), {
+    instanceOf: MontyRuntimeError,
+  })
+  t.is(error.message, 'TypeError: cannot convert JS symbol to a Monty value')
+})

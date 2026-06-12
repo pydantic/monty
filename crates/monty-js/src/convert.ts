@@ -139,7 +139,9 @@ export function jsToMonty(js: unknown): MontyValue {
     case 'boolean':
       return value({ case: 'boolean', value: js })
     case 'number':
-      if (Number.isInteger(js) && Math.abs(js) <= I64_BOUND) {
+      // half-open: 2^63 itself is f64-representable but overflows sint64,
+      // while -2^63 is a valid i64
+      if (Number.isInteger(js) && js >= -I64_BOUND && js < I64_BOUND) {
         return value({ case: 'int', value: BigInt(js) })
       }
       return value({ case: 'float', value: js })
@@ -270,6 +272,14 @@ function markedObjectToMonty(js: Record<string, unknown>, marker: string): Monty
         }),
       })
     case 'Dataclass': {
+      // marker objects are arbitrary user input — malformed shapes must
+      // surface as ConversionError, not as a raw TypeError from .map()
+      if (!Array.isArray(js.fieldNames)) {
+        throw new ConversionError('Dataclass marker requires a fieldNames array')
+      }
+      if (js.fields !== undefined && (typeof js.fields !== 'object' || js.fields === null)) {
+        throw new ConversionError('Dataclass marker fields must be an object')
+      }
       const fieldNames = (js.fieldNames as unknown[]).map(String)
       const fields = (js.fields ?? {}) as Record<string, unknown>
       const pairs = fieldNames

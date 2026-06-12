@@ -3,6 +3,8 @@
 //! oneof arm; see the `.proto` for the representation choices (BigInt as
 //! sign+magnitude, dicts as ordered pairs, enums as display-name strings).
 
+use std::ops::RangeInclusive;
+
 use monty::{DictPairs, MontyDate, MontyDateTime, MontyFileHandle, MontyObject, MontyTimeDelta, MontyTimeZone, Type};
 use num_bigint::{BigInt, Sign};
 
@@ -125,11 +127,15 @@ impl TryFrom<pb::MontyValue> for MontyObject {
             Kind::Dict(dict) => Ok(Self::Dict(dict_from_proto(dict)?)),
             Kind::Set(items) => Ok(Self::Set(values_from_proto(items.items)?)),
             Kind::FrozenSet(items) => Ok(Self::FrozenSet(values_from_proto(items.items)?)),
-            Kind::Date(d) => Ok(Self::Date(MontyDate {
-                year: d.year,
-                month: u8_field(d.month, "DateValue.month")?,
-                day: u8_field(d.day, "DateValue.day")?,
-            })),
+            Kind::Date(d) => {
+                let (year, month, day) = date_fields(
+                    d.year,
+                    d.month,
+                    d.day,
+                    ["DateValue.year", "DateValue.month", "DateValue.day"],
+                )?;
+                Ok(Self::Date(MontyDate { year, month, day }))
+            }
             Kind::Datetime(dt) => {
                 if dt.offset_seconds.is_none() && dt.timezone_name.is_some() {
                     return Err(ProtoConvertError::InvalidValue {
@@ -137,13 +143,19 @@ impl TryFrom<pb::MontyValue> for MontyObject {
                         reason: "timezone_name requires offset_seconds".to_owned(),
                     });
                 }
+                let (year, month, day) = date_fields(
+                    dt.year,
+                    dt.month,
+                    dt.day,
+                    ["DateTimeValue.year", "DateTimeValue.month", "DateTimeValue.day"],
+                )?;
                 Ok(Self::DateTime(MontyDateTime {
-                    year: dt.year,
-                    month: u8_field(dt.month, "DateTimeValue.month")?,
-                    day: u8_field(dt.day, "DateTimeValue.day")?,
-                    hour: u8_field(dt.hour, "DateTimeValue.hour")?,
-                    minute: u8_field(dt.minute, "DateTimeValue.minute")?,
-                    second: u8_field(dt.second, "DateTimeValue.second")?,
+                    year,
+                    month,
+                    day,
+                    hour: ranged_u8(dt.hour, 0..=23, "DateTimeValue.hour")?,
+                    minute: ranged_u8(dt.minute, 0..=59, "DateTimeValue.minute")?,
+                    second: ranged_u8(dt.second, 0..=59, "DateTimeValue.second")?,
                     microsecond: bounded(dt.microsecond, 999_999, "DateTimeValue.microsecond")?,
                     offset_seconds: dt.offset_seconds,
                     timezone_name: dt.timezone_name,
@@ -151,8 +163,11 @@ impl TryFrom<pb::MontyValue> for MontyObject {
             }
             Kind::Timedelta(td) => Ok(Self::TimeDelta(MontyTimeDelta {
                 days: td.days,
-                seconds: td.seconds,
-                microseconds: td.microseconds,
+                // out-of-range components would violate `MontyTimeDelta`'s
+                // documented normalization invariants and corrupt arithmetic
+                // and formatting once inside the sandbox
+                seconds: normalized(td.seconds, 86_400, "TimeDeltaValue.seconds")?,
+                microseconds: normalized(td.microseconds, 1_000_000, "TimeDeltaValue.microseconds")?,
             })),
             Kind::Timezone(tz) => Ok(Self::TimeZone(MontyTimeZone {
                 offset_seconds: tz.offset_seconds,
@@ -245,12 +260,57 @@ fn dict_from_proto(dict: pb::DictValue) -> Result<DictPairs, ProtoConvertError> 
     Ok(pairs_from_proto(dict.pairs)?.into())
 }
 
-/// Narrows a wire `u32` into a `u8` struct field.
-fn u8_field(value: u32, field: &'static str) -> Result<u8, ProtoConvertError> {
-    u8::try_from(value).map_err(|_| ProtoConvertError::InvalidValue {
-        field,
-        reason: format!("{value} does not fit in u8"),
-    })
+/// Validates wire year/month/day fields against the invariants documented on
+/// `MontyDate`/`MontyDateTime` (year 1..=9999, month 1..=12, day valid for the
+/// month/year). The wire is untrusted, and an out-of-range date would corrupt
+/// comparison, arithmetic, and formatting once inside the sandbox.
+/// `fields` names the year/month/day wire fields for error messages.
+fn date_fields(year: i32, month: u32, day: u32, fields: [&'static str; 3]) -> Result<(i32, u8, u8), ProtoConvertError> {
+    let [year_field, month_field, day_field] = fields;
+    if !(1..=9999).contains(&year) {
+        return Err(ProtoConvertError::InvalidValue {
+            field: year_field,
+            reason: format!("{year} is outside the range 1..=9999"),
+        });
+    }
+    let month = ranged_u8(month, 1..=12, month_field)?;
+    let day = ranged_u8(day, 1..=u32::from(days_in_month(year, month)), day_field)?;
+    Ok((year, month, day))
+}
+
+/// Days in a Gregorian month; `month` must already be validated to 1..=12.
+fn days_in_month(year: i32, month: u8) -> u8 {
+    let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+    match month {
+        2 if leap => 29,
+        2 => 28,
+        4 | 6 | 9 | 11 => 30,
+        _ => 31,
+    }
+}
+
+/// Checks a wire `u32` against an inclusive range and narrows it to `u8`.
+fn ranged_u8(value: u32, range: RangeInclusive<u32>, field: &'static str) -> Result<u8, ProtoConvertError> {
+    if range.contains(&value) {
+        Ok(u8::try_from(value).expect("range bounds fit in u8"))
+    } else {
+        Err(ProtoConvertError::InvalidValue {
+            field,
+            reason: format!("{value} is outside the range {}..={}", range.start(), range.end()),
+        })
+    }
+}
+
+/// Checks a wire `i32` against the half-open normalized range `0..max`.
+fn normalized(value: i32, max: i32, field: &'static str) -> Result<i32, ProtoConvertError> {
+    if (0..max).contains(&value) {
+        Ok(value)
+    } else {
+        Err(ProtoConvertError::InvalidValue {
+            field,
+            reason: format!("{value} is outside the normalized range 0..{max}"),
+        })
+    }
 }
 
 /// Checks a wire `u32` against an inclusive upper bound.

@@ -144,7 +144,14 @@ impl fmt::Display for PoolError {
     }
 }
 
-impl error::Error for PoolError {}
+impl error::Error for PoolError {
+    fn source(&self) -> Option<&(dyn error::Error + 'static)> {
+        match self {
+            Self::Runtime(exc) => Some(exc),
+            _ => None,
+        }
+    }
+}
 
 impl From<io::Error> for PoolError {
     fn from(err: io::Error) -> Self {

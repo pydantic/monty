@@ -40,10 +40,18 @@ type Tracker = LimitedTracker;
 
 /// Version tag of the opaque dump envelope produced by `Dump`.
 ///
-/// Wire layout: `[DUMP_VERSION u16 LE][tag u8][postcard payload]` where tag 0
-/// is a `MontyRepl` (idle session) and tag 1 a `ReplProgress` (suspended).
-/// The payload is monty's postcard format — only a monty child of the same
-/// version can restore it.
+/// Wire layout: `[DUMP_VERSION u16 LE][tag u8][session meta][postcard
+/// payload]` where tag 0 is a `MontyRepl` (idle session) and tag 1 a
+/// `ReplProgress` (suspended). The session meta carries the child-side state
+/// that lives *outside* the repl — script name and accumulated type-check
+/// stubs — so a `Load`ed session keeps type-check enforcement instead of
+/// silently dropping it:
+///
+/// `[script_name str][type_check u8]` and, when `type_check` is 1,
+/// `[committed_stubs str][has_pending u8][pending_snippet str?]`, where each
+/// `str` is a `u32 LE` byte length followed by UTF-8 bytes. The payload is
+/// monty's postcard format — only a monty child of the same version can
+/// restore it.
 const DUMP_VERSION: u16 = 1;
 
 /// Runs the subprocess child loop until EOF, `Shutdown`, or a fatal error.
@@ -58,6 +66,13 @@ pub(crate) fn run() -> ExitCode {
             Ok(Some(request)) => match child.handle(request) {
                 Ok(Turn::Continue) => {}
                 Ok(Turn::Exit(code)) => return code,
+                // an oversize event was rejected before any bytes hit the
+                // wire, so the stream is still in sync and the parent can
+                // receive a parseable last gasp
+                Err(monty_proto::FrameError::FrameTooLarge { len, max }) => {
+                    child.fatal(&format!("response frame of {len} bytes exceeds maximum of {max} bytes"));
+                    return ExitCode::from(2);
+                }
                 // writing to stdout failed: the parent is gone, nothing left to do
                 Err(_) => return ExitCode::from(3),
             },
@@ -173,6 +188,10 @@ impl Child {
     }
 
     fn handle_hello(&mut self, hello: &pb::Hello) -> Result<Turn, monty_proto::FrameError> {
+        if self.helloed {
+            self.send(&violation("Hello after the handshake has completed"))?;
+            return Ok(Turn::Continue);
+        }
         if hello.protocol_version > PROTOCOL_VERSION {
             self.fatal(&format!(
                 "unsupported protocol version {} (this child speaks {PROTOCOL_VERSION})",
@@ -339,9 +358,24 @@ impl Child {
         };
         match dumped {
             Ok((tag, payload)) => {
-                let mut state = Vec::with_capacity(payload.len() + 3);
+                let mut state = Vec::with_capacity(payload.len() + 64);
                 state.extend_from_slice(&DUMP_VERSION.to_le_bytes());
                 state.push(tag);
+                push_str_field(&mut state, &self.script_name);
+                match &self.type_check {
+                    Some(tc) => {
+                        state.push(1);
+                        push_str_field(&mut state, &tc.committed_stubs);
+                        match &tc.pending_snippet {
+                            Some(snippet) => {
+                                state.push(1);
+                                push_str_field(&mut state, snippet);
+                            }
+                            None => state.push(0),
+                        }
+                    }
+                    None => state.push(0),
+                }
                 state.extend_from_slice(&payload);
                 pb::Event {
                     kind: Some(pb::event::Kind::DumpResult(pb::DumpResult { state })),
@@ -365,10 +399,13 @@ impl Child {
         if version != DUMP_VERSION {
             return violation(&format!("unsupported dump version {version} (expected {DUMP_VERSION})"));
         }
-        let Some((&tag, payload)) = rest.split_first() else {
+        let Some((&tag, rest)) = rest.split_first() else {
             return violation("dump state too short");
         };
-        match tag {
+        let Some((script_name, type_check, payload)) = take_session_meta(rest) else {
+            return violation("malformed dump session metadata");
+        };
+        let event = match tag {
             0 => match MontyRepl::load(payload) {
                 Ok(repl) => {
                     self.state = SessionState::Ready(Box::new(repl));
@@ -391,7 +428,14 @@ impl Child {
                 Err(err) => violation(&format!("failed to load suspended session: {err}")),
             },
             other => violation(&format!("unknown dump tag {other}")),
+        };
+        // adopt the restored metadata only once the payload actually loaded —
+        // a failed load must leave the child fully idle
+        if !matches!(self.state, SessionState::Idle) {
+            self.script_name = script_name;
+            self.type_check = type_check;
         }
+        event
     }
 
     /// Drives execution until it needs the parent: handles mount-covered OS
@@ -641,6 +685,54 @@ fn suspension_event(progress: &ReplProgress<Tracker>) -> pb::Event {
         ReplProgress::Complete { .. } => unreachable!("Complete is handled before suspension_event"),
     };
     pb::Event { kind: Some(kind) }
+}
+
+/// Appends a `u32 LE`-length-prefixed string field to a dump envelope.
+fn push_str_field(buf: &mut Vec<u8>, s: &str) {
+    // dump fields originate from ≤256 MiB protocol frames, so the length
+    // always fits in u32
+    let len = u32::try_from(s.len()).expect("dump field exceeds u32::MAX bytes");
+    buf.extend_from_slice(&len.to_le_bytes());
+    buf.extend_from_slice(s.as_bytes());
+}
+
+/// Splits the session metadata (script name + type-check state, see
+/// [`DUMP_VERSION`]) off the front of a dump envelope, returning it together
+/// with the remaining postcard payload. `None` means the envelope is
+/// malformed.
+fn take_session_meta(bytes: &[u8]) -> Option<(String, Option<TypeCheckState>, &[u8])> {
+    let (script_name, rest) = take_str_field(bytes)?;
+    let (&type_check_flag, rest) = rest.split_first()?;
+    match type_check_flag {
+        0 => Some((script_name, None, rest)),
+        1 => {
+            let (committed_stubs, rest) = take_str_field(rest)?;
+            let (&pending_flag, rest) = rest.split_first()?;
+            let (pending_snippet, rest) = match pending_flag {
+                0 => (None, rest),
+                1 => take_str_field(rest).map(|(snippet, rest)| (Some(snippet), rest))?,
+                _ => return None,
+            };
+            Some((
+                script_name,
+                Some(TypeCheckState {
+                    committed_stubs,
+                    pending_snippet,
+                }),
+                rest,
+            ))
+        }
+        _ => None,
+    }
+}
+
+/// Splits a `u32 LE`-length-prefixed string field off the front of a dump
+/// envelope.
+fn take_str_field(bytes: &[u8]) -> Option<(String, &[u8])> {
+    let (len_bytes, rest) = bytes.split_at_checked(4)?;
+    let len = u32::from_le_bytes(len_bytes.try_into().ok()?) as usize;
+    let (field, rest) = rest.split_at_checked(len)?;
+    Some((String::from_utf8(field.to_vec()).ok()?, rest))
 }
 
 /// Converts wire named inputs into `(name, value)` pairs for `feed_start`.

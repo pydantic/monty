@@ -2,6 +2,7 @@
 //! guaranteed reaping.
 
 use std::{
+    env,
     process::{Child, ChildStdin, ChildStdout, Command, ExitStatus, Stdio},
     sync::{
         Arc, Mutex, MutexGuard, PoisonError,
@@ -34,11 +35,26 @@ pub(crate) struct Worker {
 impl Worker {
     /// Spawns a child and completes the `Hello` handshake.
     pub(crate) fn spawn(config: &PoolConfig) -> Result<Self, PoolError> {
-        let mut child = Command::new(&config.binary_path)
+        let mut command = Command::new(&config.binary_path);
+        command
             .arg("--subprocess")
             .args(&config.extra_args)
+            // The worker runs untrusted code, so spawn it with an empty
+            // environment: host secrets (API keys, tokens) must never be in
+            // the child's memory where a sandbox escape or memory disclosure
+            // could reach them. The worker reads no environment variables —
+            // sandbox `os.getenv` is an OsCall answered by the host.
+            .env_clear()
             .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
+            .stdout(Stdio::piped());
+        // Windows processes misbehave without SystemRoot (CRT and WinAPI
+        // lookups); it names the OS install directory and is not sensitive.
+        if cfg!(windows)
+            && let Ok(system_root) = env::var("SystemRoot")
+        {
+            command.env("SystemRoot", system_root);
+        }
+        let mut child = command
             // stderr is inherited: child diagnostics stay visible to the host
             .spawn()
             .map_err(|err| PoolError::Spawn(format!("{}: {err}", config.binary_path.display())))?;

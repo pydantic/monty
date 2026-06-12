@@ -82,11 +82,20 @@ impl<W: Write> FrameWriter<W> {
     }
 
     /// Encodes `msg` and writes it as one frame, then flushes.
+    ///
+    /// Frames above [`MAX_FRAME_LEN`] fail with [`FrameError::FrameTooLarge`]
+    /// *before* anything is written: the peer's reader would reject such a
+    /// frame anyway, and failing here keeps the stream in sync so the caller
+    /// can degrade gracefully instead of desynchronizing the protocol.
     pub fn write(&mut self, msg: &impl Message) -> Result<(), FrameError> {
-        let len = u32::try_from(msg.encoded_len()).map_err(|_| FrameError::FrameTooLarge {
-            len: u32::MAX,
-            max: MAX_FRAME_LEN,
-        })?;
+        let encoded_len = msg.encoded_len();
+        let len = u32::try_from(encoded_len)
+            .ok()
+            .filter(|&len| len <= MAX_FRAME_LEN)
+            .ok_or(FrameError::FrameTooLarge {
+                len: u32::try_from(encoded_len).unwrap_or(u32::MAX),
+                max: MAX_FRAME_LEN,
+            })?;
         // encode_to_vec cannot fail (Vec<u8> grows as needed)
         let body = msg.encode_to_vec();
         self.inner.write_all(&len.to_le_bytes())?;

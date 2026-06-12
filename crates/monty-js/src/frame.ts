@@ -29,6 +29,7 @@ export class FrameError extends Error {
  * [`FrameError`] (the worker died while writing).
  */
 export class FrameReader {
+  private readonly stream: Readable
   private chunks: Buffer[] = []
   private buffered = 0
   private ended = false
@@ -36,6 +37,7 @@ export class FrameReader {
   private pending: { resolve: (frame: Buffer | null) => void; reject: (err: Error) => void } | null = null
 
   constructor(stream: Readable) {
+    this.stream = stream
     stream.on('data', (chunk: Buffer) => {
       this.chunks.push(chunk)
       this.buffered += chunk.length
@@ -49,6 +51,9 @@ export class FrameReader {
       this.streamError = err
       this.poll()
     })
+    // Attaching a 'data' handler puts the stream in flowing mode; pause it
+    // until someone actually reads (see `poll` for why).
+    stream.pause()
   }
 
   /** Reads the next frame payload, or `null` on clean EOF. */
@@ -58,12 +63,31 @@ export class FrameReader {
     }
     return new Promise((resolve, reject) => {
       this.pending = { resolve, reject }
+      this.stream.resume()
       this.poll()
     })
   }
 
-  /** Resolves the pending read if a full frame (or EOF/error) is available. */
+  /**
+   * Resolves the pending read if a full frame (or EOF/error) is available,
+   * then pauses the stream whenever no read is left pending.
+   *
+   * The pause restores OS pipe backpressure: without it, a compromised
+   * worker spewing bytes between protocol turns (or faster than the host
+   * consumes them) would grow this buffer without bound. With it, host
+   * memory is bounded by one frame plus the pipe and stream buffers — a
+   * well-behaved worker is never throttled because the drive loop keeps a
+   * read pending for the whole turn.
+   */
   private poll(): void {
+    this.tryResolve()
+    if (!this.pending) {
+      this.stream.pause()
+    }
+  }
+
+  /** Settles the pending read if a full frame (or EOF/error) is available. */
+  private tryResolve(): void {
     const pending = this.pending
     if (!pending) {
       return
@@ -137,8 +161,15 @@ export class FrameReader {
 /**
  * Writes one framed message to the worker's stdin, waiting out backpressure
  * so the strict request/event alternation can never deadlock on a full pipe.
+ *
+ * Frames above [`MAX_FRAME_LEN`] are rejected *before* anything is written —
+ * the worker's reader would refuse them anyway, and failing here keeps the
+ * stream in sync.
  */
 export function writeFrame(stream: Writable, payload: Uint8Array): Promise<void> {
+  if (payload.length > MAX_FRAME_LEN) {
+    return Promise.reject(new FrameError(`frame of ${payload.length} bytes exceeds maximum of ${MAX_FRAME_LEN}`))
+  }
   const header = Buffer.allocUnsafe(4)
   header.writeUInt32LE(payload.length, 0)
   const frame = Buffer.concat([header, payload])

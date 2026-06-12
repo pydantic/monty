@@ -106,6 +106,28 @@ fn feed_and_finish_reuses_the_worker() {
 }
 
 #[test]
+fn name_lookup_value_too_deep_for_the_wire_is_rejected_cleanly() {
+    let pool = Pool::new(config()).unwrap();
+    let mut session = pool.checkout(&ReplConfig::default()).unwrap();
+    let event = session.feed("missing", vec![], vec![], false, &mut no_print).unwrap();
+    assert!(matches!(event, TurnEvent::NameLookup { ref name } if name == "missing"));
+    // a value nested past the wire depth bound would produce a frame the
+    // worker cannot decode; it must fail as a session-preserving error
+    let deep = (0..=monty_pool::MAX_VALUE_DEPTH).fold(MontyObject::Int(1), |inner, _| MontyObject::List(vec![inner]));
+    let err = session.resume_name_lookup(Some(deep), &mut no_print).unwrap_err();
+    let PoolError::Runtime(exc) = err else {
+        panic!("expected Runtime, got {err:?}");
+    };
+    assert_eq!(exc.message(), Some("Max input depth exceeded"));
+    // the suspension is still pending, so a sendable answer completes the feed
+    let event = session
+        .resume_name_lookup(Some(MontyObject::Int(7)), &mut no_print)
+        .unwrap();
+    assert_eq!(expect_complete(event), MontyObject::Int(7));
+    session.finish().unwrap();
+}
+
+#[test]
 fn inputs_and_prints() {
     let pool = Pool::new(config()).unwrap();
     let mut session = pool.checkout(&ReplConfig::default()).unwrap();
@@ -436,4 +458,33 @@ fn dump_survives_worker_death_and_loads_elsewhere() {
         .unwrap();
     assert_eq!(expect_complete(event), MontyObject::Int(42));
     restored.finish().unwrap();
+}
+
+// =============================================================================
+// Environment isolation
+// =============================================================================
+
+/// Workers must be spawned with an empty environment: host secrets must never
+/// be in a worker's memory, where a sandbox escape or memory disclosure could
+/// reach them. Linux-only because it observes the child via /proc.
+#[cfg(target_os = "linux")]
+#[test]
+fn worker_environment_is_empty() {
+    // The test process itself always carries variables (PATH, CARGO, ...),
+    // so an empty child environ proves nothing was inherited.
+    assert!(env::var("PATH").is_ok(), "test process should have PATH set");
+
+    let pool = Pool::new(config()).unwrap();
+    let mut session = pool.checkout(&ReplConfig::default()).unwrap();
+    let environ = std::fs::read(format!("/proc/{}/environ", session.pid().unwrap())).unwrap();
+    assert!(
+        environ.is_empty(),
+        "worker environment should be empty, got: {}",
+        String::from_utf8_lossy(&environ).replace('\0', " ")
+    );
+
+    // The worker is fully functional without an environment.
+    let event = session.feed("1 + 1", vec![], vec![], false, &mut no_print).unwrap();
+    assert_eq!(expect_complete(event), MontyObject::Int(2));
+    session.finish().unwrap();
 }

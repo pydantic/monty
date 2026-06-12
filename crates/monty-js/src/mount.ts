@@ -43,7 +43,8 @@ export class MountDir {
 
   constructor(virtualPath: string, hostPath: string, options: MountDirOptions = {}) {
     const mode = options.mode ?? 'overlay'
-    if (!(mode in MODE_TO_PROTO)) {
+    // hasOwn, not `in`: prototype keys like 'toString' must not pass as modes
+    if (!Object.hasOwn(MODE_TO_PROTO, mode)) {
       throw new Error(`invalid mount mode: '${mode}'. Expected 'read-only', 'read-write' or 'overlay'`)
     }
     this.virtualPath = virtualPath

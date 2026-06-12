@@ -1,3 +1,5 @@
+import { readFile } from 'node:fs/promises'
+
 import test from 'ava'
 
 import { Monty, MontyCrashedError } from '../src/index.js'
@@ -138,5 +140,25 @@ test('requestTimeout kills a wedged worker', async (t) => {
   })
   t.true(error.timedOut)
   t.is(error.message, 'RuntimeError: the worker process was killed because a request timed out')
+  await session.close()
+})
+
+// =============================================================================
+// Environment isolation
+// =============================================================================
+
+// Workers must be spawned with an empty environment: host secrets must never
+// be in a worker's memory, where a sandbox escape or memory disclosure could
+// reach them. Linux-only because it observes the child via /proc (CI runs
+// the JS tests on Linux).
+const testOnLinux = process.platform === 'linux' ? test : test.skip
+testOnLinux('worker environment is empty', async (t) => {
+  t.truthy(process.env.PATH, 'test process should have PATH set')
+  await using pool = await Monty.create()
+  const session = await pool.checkout()
+  const environ = await readFile(`/proc/${session.workerPid}/environ`)
+  t.is(environ.length, 0, `worker environment should be empty, got: ${environ.toString().replaceAll('\0', ' ')}`)
+  // The worker is fully functional without an environment.
+  t.is(await session.feedRun('1 + 1'), 2)
   await session.close()
 })

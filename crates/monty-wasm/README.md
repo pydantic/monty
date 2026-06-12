@@ -202,6 +202,25 @@ Returned by `start()` or `resume()` when execution completes.
 
 - `output` - The final result value
 
+### `MontyRepl` Class
+
+An incremental REPL session: state (variables, functions) persists across
+`feed()` calls, and each snippet executes without replaying earlier ones.
+
+```ts
+const repl = new MontyRepl()
+repl.feed('x = 21')
+repl.feed('x * 2') // 42
+```
+
+- `constructor(options?: MontyReplOptions)` - Create an empty session
+  (`scriptName?`, `limits?`)
+- `feed(code: string, options?: FeedOptions)` - Execute one snippet and
+  return its output (throws `MontyRuntimeError` on exceptions; the session
+  survives)
+- `dump()` / `MontyRepl.load(data)` - Serialize / restore the whole session
+- `scriptName` - Name used in tracebacks (default: `'main.py'`)
+
 ### Error Classes
 
 - `MontyError` - Base class for all Monty errors

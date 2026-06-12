@@ -54,6 +54,8 @@ impl Pool {
                 config.min_processes, config.max_processes
             )));
         }
+        let watchdog =
+            Watchdog::new().map_err(|err| PoolError::Spawn(format!("failed to spawn the watchdog thread: {err}")))?;
         let mut idle = Vec::with_capacity(config.min_processes);
         for _ in 0..config.min_processes {
             idle.push(Worker::spawn(&config)?);
@@ -64,7 +66,7 @@ impl Pool {
                 config,
                 state: Mutex::new(PoolState { idle, total }),
                 available: Condvar::new(),
-                watchdog: Watchdog::new(),
+                watchdog,
             }),
         })
     }

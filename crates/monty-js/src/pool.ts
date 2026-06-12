@@ -99,8 +99,19 @@ export class Monty {
     if (min > pool.maxProcesses) {
       throw new Error('minProcesses cannot exceed maxProcesses')
     }
-    const workers = await Promise.all(Array.from({ length: min }, () => pool.spawnWorker()))
-    pool.idle.push(...workers)
+    // allSettled so a partial prewarm failure can kill the workers that did
+    // spawn — Promise.all would abandon them as orphan processes
+    const spawned = await Promise.allSettled(Array.from({ length: min }, () => pool.spawnWorker()))
+    const failed = spawned.find((result) => result.status === 'rejected')
+    if (failed !== undefined) {
+      for (const result of spawned) {
+        if (result.status === 'fulfilled') {
+          result.value.kill()
+        }
+      }
+      throw failed.reason
+    }
+    pool.idle.push(...spawned.map((result) => (result as PromiseFulfilledResult<Worker>).value))
     return pool
   }
 
@@ -227,7 +238,17 @@ export class Monty {
     const waiter = this.waiters.shift()
     if (waiter !== undefined) {
       this.spawnWorker().then(
-        (fresh) => waiter(fresh),
+        (fresh) => {
+          // the pool may have closed while the replacement was spawning; a
+          // worker handed out now would never be shut down
+          if (this.closed) {
+            fresh.kill()
+            this.total -= 1
+            waiter(null)
+          } else {
+            waiter(fresh)
+          }
+        },
         () => waiter(null),
       )
     }

@@ -277,3 +277,12 @@ test('bigint in collection', async (t) => {
   const big = 2n ** 100n
   t.deepEqual(await run('x', { inputs: { x: [big, 42, big * 2n] } }), [big, 42, big * 2n])
 })
+
+test('number at the i64 boundary', async (t) => {
+  // 2^63 is f64-representable but overflows i64, so it crosses as a float;
+  // -2^63 is a valid i64 and stays an int
+  t.is(await run('type(x).__name__', { inputs: { x: 2 ** 63 } }), 'float')
+  t.is(await run('type(x).__name__', { inputs: { x: -(2 ** 63) } }), 'int')
+  // ints beyond ±2^53 come back as BigInt
+  t.is(await run('x', { inputs: { x: -(2 ** 63) } }), -(2n ** 63n))
+})

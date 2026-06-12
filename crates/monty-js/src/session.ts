@@ -129,49 +129,64 @@ export class MontySession {
       skipTypeCheck: options.skipTypeCheck ?? false,
     })
     const printTarget = new PrintTarget(options.printCallback)
-    let event = await this.turn({ case: 'replFeed', value: feed }, printTarget)
-
-    for (;;) {
-      const kind = event.kind
-      let resume: Request['kind']
-      switch (kind.case) {
-        case 'complete': {
-          printTarget.throwIfFailed()
-          this.futures.clear()
-          return kind.value.value === undefined ? null : montyToJs(kind.value.value)
+    try {
+      let event = await this.turn({ case: 'replFeed', value: feed }, printTarget)
+      for (;;) {
+        const kind = event.kind
+        switch (kind.case) {
+          case 'complete':
+            printTarget.throwIfFailed()
+            return kind.value.value === undefined ? null : montyToJs(kind.value.value)
+          case 'error':
+            printTarget.throwIfFailed()
+            throw montyErrorFromProto(kind.value.exception ?? missingField('Error.exception'))
+          case 'typingError':
+            printTarget.throwIfFailed()
+            throw new MontyTypingError(kind.value.diagnostics)
         }
-        case 'error':
-          printTarget.throwIfFailed()
-          throw montyErrorFromProto(kind.value.exception ?? missingField('Error.exception'))
-        case 'typingError':
-          printTarget.throwIfFailed()
-          throw new MontyTypingError(kind.value.diagnostics)
-        case 'functionCall':
-          resume = await this.handleFunctionCall(kind.value, options.externalFunctions)
-          break
-        case 'osCall':
-          resume = await this.handleOsCall(kind.value, options.os)
-          break
-        case 'nameLookup': {
-          const fn = options.externalFunctions?.[kind.value.name]
-          resume = {
-            case: 'resumeNameLookup',
-            value: create(ResumeNameLookupSchema, {
-              kind:
-                fn === undefined
-                  ? { case: 'undefined', value: create(UnitSchema) }
-                  : { case: 'value', value: jsToMonty(fn) },
-            }),
-          }
-          break
+        let resume: Request['kind']
+        try {
+          resume = await this.buildResume(event, options)
+        } catch (err) {
+          // A handler that throws instead of answering leaves the worker
+          // suspended, awaiting a resume that will never come — the session
+          // cannot be trusted any more.
+          this.broken ??= err instanceof Error ? err : new Error(String(err))
+          throw err
         }
-        case 'resolveFutures':
-          resume = await this.handleResolveFutures(kind.value)
-          break
-        default:
-          throw this.unexpected(event, 'ReplFeed')
+        event = await this.turn(resume, printTarget)
       }
-      event = await this.turn(resume, printTarget)
+    } finally {
+      // failed feeds abandon their futures too — without this, entries for
+      // promises the worker will never ask about again accumulate
+      this.futures.clear()
+    }
+  }
+
+  /** Builds the resume request answering one suspension event. */
+  private async buildResume(event: Event, options: FeedOptions): Promise<Request['kind']> {
+    const kind = event.kind
+    switch (kind.case) {
+      case 'functionCall':
+        return await this.handleFunctionCall(kind.value, options.externalFunctions)
+      case 'osCall':
+        return await this.handleOsCall(kind.value, options.os)
+      case 'nameLookup': {
+        const fn = options.externalFunctions?.[kind.value.name]
+        return {
+          case: 'resumeNameLookup',
+          value: create(ResumeNameLookupSchema, {
+            kind:
+              fn === undefined
+                ? { case: 'undefined', value: create(UnitSchema) }
+                : { case: 'value', value: jsToMonty(fn) },
+          }),
+        }
+      }
+      case 'resolveFutures':
+        return await this.handleResolveFutures(kind.value)
+      default:
+        throw this.unexpected(event, 'ReplFeed')
     }
   }
 
@@ -461,18 +476,19 @@ function convertInput(js: unknown) {
 }
 
 /**
- * Converts an external call's return value. Values too deep for the wire
- * become an in-sandbox error instead — catchable, and the session survives.
+ * Converts an external call's return value. Values that cannot cross the
+ * wire — unconvertible, malformed markers, or too deeply nested — become an
+ * in-sandbox error instead: catchable, and the session survives. This
+ * function must never throw, because its caller has a suspended worker
+ * awaiting the resume this result goes into.
  */
 function sendableResult(returned: unknown): ExtResult['kind'] {
   let value
   try {
     value = jsToMonty(returned)
   } catch (err) {
-    if (err instanceof ConversionError) {
-      return { case: 'error', value: pbError('TypeError', err.message) }
-    }
-    throw err
+    const excType = err instanceof ConversionError ? 'TypeError' : 'RuntimeError'
+    return { case: 'error', value: pbError(excType, err instanceof Error ? err.message : String(err)) }
   }
   if (exceedsMaxValueDepth(value)) {
     return { case: 'error', value: pbError('RuntimeError', 'Max input depth exceeded') }

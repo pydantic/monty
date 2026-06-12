@@ -20,6 +20,9 @@ import {
 /** The protocol version this client speaks (monty-proto's PROTOCOL_VERSION). */
 export const PROTOCOL_VERSION = 1
 
+/** Deadline for the Hello handshake of a freshly spawned worker. */
+const HANDSHAKE_TIMEOUT_MS = 10_000
+
 /**
  * Thrown when the child violates the wire protocol (frame desync, decode
  * failure, unexpected event, `FatalError`). The worker is unusable and gets
@@ -58,14 +61,32 @@ export class Worker {
 
   /** Spawns a worker and completes the Hello handshake. */
   static async spawn(binaryPath: string, extraArgs: string[] = []): Promise<Worker> {
+    // The worker runs untrusted code, so spawn it with an empty environment:
+    // host secrets (API keys, tokens) must never be in the child's memory
+    // where a sandbox escape or memory disclosure could reach them. The
+    // worker reads no environment variables — sandbox `os.getenv` is an
+    // OsCall answered by the host. Windows processes misbehave without
+    // SystemRoot (CRT and WinAPI lookups); it names the OS install directory
+    // and is not sensitive.
+    const env: Record<string, string> = {}
+    if (process.platform === 'win32' && process.env.SystemRoot !== undefined) {
+      env.SystemRoot = process.env.SystemRoot
+    }
     const proc = spawn(binaryPath, ['--subprocess', ...extraArgs], {
       stdio: ['pipe', 'pipe', 'inherit'],
+      env,
     })
     await new Promise<void>((resolve, reject) => {
       proc.once('spawn', resolve)
       proc.once('error', (err) => reject(new Error(`failed to spawn monty worker: ${err.message}`)))
     })
     const worker = new Worker(proc)
+    // The handshake involves no user code, so a fixed deadline is safe; it
+    // turns a wedged/wrong binary into a clear error instead of hanging pool
+    // creation forever (the per-turn requestTimeout only covers turns).
+    const deadline = setTimeout(() => {
+      worker.kill()
+    }, HANDSHAKE_TIMEOUT_MS)
     try {
       await worker.send({
         case: 'hello',
@@ -78,6 +99,8 @@ export class Worker {
     } catch (err) {
       worker.kill()
       throw err
+    } finally {
+      clearTimeout(deadline)
     }
     return worker
   }

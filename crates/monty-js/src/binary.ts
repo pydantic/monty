@@ -8,7 +8,7 @@
 // 4. `monty` on PATH,
 // 5. a cargo workspace `target/{debug,release}` build (development fallback).
 
-import { existsSync } from 'node:fs'
+import { accessSync, constants, existsSync, statSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { delimiter, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -79,7 +79,15 @@ export function findMontyBinary(explicit?: string): string {
   )
 }
 
-/** The binary shipped by the platform-specific npm package, if installed. */
+/**
+ * The binary shipped by the platform-specific npm package, if installed.
+ *
+ * Resolution failures deliberately fall through to the next strategy rather
+ * than erroring: an installed `@pydantic/monty-<triple>` package without the
+ * binary is not necessarily broken — the same package names previously
+ * shipped napi `.node` bindings, so a stale install from an older release
+ * resolves but holds no `monty` executable.
+ */
 function platformPackageBinary(): string | null {
   const triple = platformTriple()
   if (triple === null) {
@@ -93,18 +101,32 @@ function platformPackageBinary(): string | null {
   }
 }
 
-/** Scans PATH directories for the binary. */
+/** Scans PATH directories for an executable `monty`. */
 function searchPath(): string | null {
   for (const dir of (process.env.PATH ?? '').split(delimiter)) {
     if (dir === '') {
       continue
     }
     const candidate = join(dir, EXE)
-    if (existsSync(candidate)) {
+    if (isExecutableFile(candidate)) {
       return candidate
     }
   }
   return null
+}
+
+/** Whether `path` is a regular file the current process may execute. */
+function isExecutableFile(path: string): boolean {
+  try {
+    if (!statSync(path).isFile()) {
+      return false
+    }
+    // X_OK is meaningless on Windows, where any readable file is "executable"
+    accessSync(path, process.platform === 'win32' ? constants.R_OK : constants.X_OK)
+    return true
+  } catch {
+    return false
+  }
 }
 
 /**

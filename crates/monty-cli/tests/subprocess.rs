@@ -522,9 +522,59 @@ fn dump_then_load_into_fresh_child_resumes() {
     fresh.shutdown();
 }
 
+#[test]
+fn type_check_state_survives_dump_and_load() {
+    let mut child = ChildProc::spawn();
+    child.create_repl_with(pb::ReplCreate {
+        script_name: "main.py".to_owned(),
+        limits: None,
+        type_check: true,
+        type_check_stubs: None,
+    });
+    // a committed snippet that later feeds must see through the dump
+    assert_eq!(child.feed_complete("y = 1"), MontyObject::None);
+    child.send(pb::request::Kind::Dump(pb::Dump {}));
+    let pb::event::Kind::DumpResult(dump) = child.recv() else {
+        panic!("expected DumpResult");
+    };
+    drop(child);
+
+    let mut fresh = ChildProc::spawn();
+    fresh.send(pb::request::Kind::Load(pb::Load { state: dump.state }));
+    let pb::event::Kind::Ok(_) = fresh.recv() else {
+        panic!("expected Ok for Load");
+    };
+    // type-check enforcement survived the dump...
+    let (_, event) = fresh.feed("x: int = 'not an int'");
+    let pb::event::Kind::TypingError(_) = event else {
+        panic!("expected TypingError after Load, got {event:?}");
+    };
+    // ... and so did the stubs committed before it
+    assert_eq!(fresh.feed_complete("y + 1"), MontyObject::Int(2));
+    fresh.shutdown();
+}
+
 // =============================================================================
 // Protocol violations and crashes
 // =============================================================================
+
+#[test]
+fn repeated_hello_is_a_violation() {
+    let mut child = ChildProc::spawn();
+    child.send(pb::request::Kind::Hello(pb::Hello {
+        protocol_version: PROTOCOL_VERSION,
+        client: "subprocess-tests".to_owned(),
+    }));
+    let error = expect_error(child.recv());
+    assert_eq!(
+        error.message.unwrap(),
+        "protocol violation: Hello after the handshake has completed"
+    );
+    // the violation is recoverable: the child keeps serving
+    child.create_repl();
+    assert_eq!(child.feed_complete("1 + 1"), MontyObject::Int(2));
+    child.shutdown();
+}
 
 #[test]
 fn protocol_violations_keep_the_child_alive() {

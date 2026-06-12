@@ -53,10 +53,39 @@ impl TryFrom<pb::StackFrame> for StackFrame {
     type Error = ProtoConvertError;
 
     fn try_from(frame: pb::StackFrame) -> Result<Self, ProtoConvertError> {
+        let start = code_loc_from_proto(frame.start.ok_or(ProtoConvertError::MissingField("StackFrame.start"))?);
+        let end = code_loc_from_proto(frame.end.ok_or(ProtoConvertError::MissingField("StackFrame.end"))?);
+        // Frames are untrusted wire data, and `StackFrame`'s `Display` derives
+        // caret padding/width from the columns when a preview line is present
+        // (`" ".repeat(start.column..)`, `end.column - start.column`).
+        // Unvalidated coordinates would let a compromised peer trigger an
+        // integer-underflow panic or a multi-gigabyte allocation the moment
+        // the traceback is rendered. Monty itself only attaches a preview
+        // when start and end lie on the same line with columns inside it, so
+        // rejecting anything else loses no legitimate frames.
+        if let Some(preview) = &frame.preview_line {
+            if end.column < start.column {
+                return Err(ProtoConvertError::InvalidValue {
+                    field: "StackFrame.end.column",
+                    reason: format!("{} is before start column {}", end.column, start.column),
+                });
+            }
+            // +2 slack: columns are 1-indexed with an exclusive end, and
+            // resolving the end of a CRLF line lands one further past the
+            // stripped preview text — the exact bound matters less than
+            // keeping the caret math proportional to the line
+            let line_chars = u32::try_from(preview.chars().count()).unwrap_or(u32::MAX);
+            if end.column > line_chars.saturating_add(2) {
+                return Err(ProtoConvertError::InvalidValue {
+                    field: "StackFrame.end.column",
+                    reason: format!("{} is beyond the {line_chars}-character preview line", end.column),
+                });
+            }
+        }
         Ok(Self {
             filename: frame.filename,
-            start: code_loc_from_proto(frame.start.ok_or(ProtoConvertError::MissingField("StackFrame.start"))?),
-            end: code_loc_from_proto(frame.end.ok_or(ProtoConvertError::MissingField("StackFrame.end"))?),
+            start,
+            end,
             frame_name: frame.frame_name,
             preview_line: frame.preview_line.map(Arc::from),
             hide_caret: frame.hide_caret,
