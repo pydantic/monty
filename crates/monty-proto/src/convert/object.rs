@@ -94,8 +94,8 @@ impl From<&MontyObject> for pb::MontyValue {
                 docstring: docstring.clone(),
             }),
             MontyObject::Repr(r) => Kind::Repr(r.clone()),
-            MontyObject::Cycle(heap_id, placeholder) => Kind::Cycle(pb::CycleValue {
-                heap_id: heap_id.index() as u64,
+            MontyObject::Cycle(identity, placeholder) => Kind::Cycle(pb::CycleValue {
+                identity: *identity as u64,
                 placeholder: placeholder.clone(),
             }),
         };
@@ -209,13 +209,19 @@ impl TryFrom<pb::MontyValue> for MontyObject {
                 name: func.name,
                 docstring: func.docstring,
             }),
-            // `Repr` round-trips so values can be logged/echoed; using one as
-            // an *execution input* is rejected later by `MontyObject::to_value`
-            // with a proper Python-level error.
+            // `Repr` and `Cycle` round-trip so worker *outputs* containing them
+            // (e.g. a returned cyclic dict) decode cleanly on the parent; using
+            // either as an *execution input* is rejected later by
+            // `MontyObject::to_value` with a proper Python-level error. The
+            // cycle id is an opaque identity token, never dereferenced.
             Kind::Repr(r) => Ok(Self::Repr(r)),
-            // A heap id is meaningless outside the process that produced it,
-            // and `HeapId` deliberately has no public constructor.
-            Kind::Cycle(_) => Err(ProtoConvertError::OutputOnly("cycle")),
+            Kind::Cycle(c) => Ok(Self::Cycle(
+                usize::try_from(c.identity).map_err(|_| ProtoConvertError::InvalidValue {
+                    field: "CycleValue.identity",
+                    reason: format!("{} does not fit in usize", c.identity),
+                })?,
+                c.placeholder,
+            )),
         }
     }
 }

@@ -200,6 +200,7 @@ fn monty_datetime_naive(datetime: &MontyDateTime) -> Option<NaiveDateTime> {
 /// Most variants can be used both as inputs (passed to `Executor::run()`) and outputs
 /// (returned from execution). However:
 /// - `Repr` is output-only: represents values that have no direct `MontyObject` mapping
+/// - `Cycle` is output-only: marks where a cyclic structure referred back to itself
 /// - `Exception` can be used as input (to raise) or output (when code raises)
 ///
 /// # Hashability
@@ -330,11 +331,14 @@ pub enum MontyObject {
     /// Represents a cycle detected during Value-to-MontyObject conversion.
     ///
     /// When converting cyclic structures (e.g., `a = []; a.append(a)`), this variant
-    /// is used to break the infinite recursion. Contains the heap ID and the type-specific
-    /// placeholder string (e.g., `"[...]"` for lists, `"{...}"` for dicts).
+    /// is used to break the infinite recursion. Contains an opaque identity token
+    /// (the raw heap index of the object the cycle points back to — meaningful only
+    /// for equality, and only within the result that produced it) and the
+    /// type-specific placeholder string (e.g., `"[...]"` for lists, `"{...}"` for
+    /// dicts). Two `Cycle` values compare equal if they refer to the same object.
     ///
     /// This is output-only and cannot be used as an input to `Executor::run()`.
-    Cycle(HeapId, String),
+    Cycle(usize, String),
 }
 
 impl fmt::Display for MontyObject {
@@ -592,10 +596,10 @@ impl MontyObject {
                 if visited.contains(id) {
                     // Cycle detected - return appropriate placeholder
                     return match vm.heap.get(*id) {
-                        HeapData::List(_) => Self::Cycle(*id, "[...]".to_owned()),
-                        HeapData::Tuple(_) | HeapData::NamedTuple(_) => Self::Cycle(*id, "(...)".to_owned()),
-                        HeapData::Dict(_) => Self::Cycle(*id, "{...}".to_owned()),
-                        _ => Self::Cycle(*id, "...".to_owned()),
+                        HeapData::List(_) => Self::Cycle(id.index(), "[...]".to_owned()),
+                        HeapData::Tuple(_) | HeapData::NamedTuple(_) => Self::Cycle(id.index(), "(...)".to_owned()),
+                        HeapData::Dict(_) => Self::Cycle(id.index(), "{...}".to_owned()),
+                        _ => Self::Cycle(id.index(), "...".to_owned()),
                     };
                 }
 

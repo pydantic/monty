@@ -181,21 +181,16 @@ fn dataclass_and_function_values_round_trip() {
 }
 
 #[test]
-fn repr_round_trips_and_cycle_is_rejected_as_input() {
+fn repr_and_cycle_round_trip() {
     assert_value_round_trip(&MontyObject::Repr("<unrepresentable>".to_owned()));
 
-    // A real Cycle can only be produced by execution (HeapId has no public
-    // constructor): build one, check it encodes, and that decoding rejects it.
+    // Cycles appear in worker outputs (e.g. a returned cyclic list), so the
+    // parent must decode them; produce one via execution and round-trip it.
+    // Using one as an *execution input* is rejected by `MontyObject::to_value`.
     let run = MontyRun::new("a = []\na.append(a)\na".to_owned(), "test.py", vec![]).unwrap();
     let cyclic = run.run_no_limits(vec![]).unwrap();
-    let proto = pb::MontyValue::from(&cyclic);
-    let inner = match &proto.kind {
-        Some(pb::monty_value::Kind::List(items)) => items.items[0].clone(),
-        other => panic!("expected list, got {other:?}"),
-    };
-    assert!(matches!(inner.kind, Some(pb::monty_value::Kind::Cycle(_))));
-    let err = MontyObject::try_from(inner).expect_err("cycle must be rejected as input");
-    assert!(matches!(err, ProtoConvertError::OutputOnly("cycle")));
+    assert_value_round_trip(&cyclic);
+    assert!(matches!(&cyclic, MontyObject::List(items) if matches!(items[0], MontyObject::Cycle(_, _))));
 }
 
 #[test]

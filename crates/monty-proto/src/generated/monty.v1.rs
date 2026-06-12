@@ -232,10 +232,11 @@ pub struct FunctionValue {
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct CycleValue {
-    /// Heap identity of the cyclic object; meaningless outside the producing
-    /// process, included for debugging only.
+    /// Opaque identity token for the object the cycle refers back to: two
+    /// cycle markers in the same result are the same object iff their tokens
+    /// match. Meaningless outside the result that produced it.
     #[prost(uint64, tag = "1")]
-    pub heap_id: u64,
+    pub identity: u64,
     /// Type-specific placeholder shown in reprs, e.g. "\[...\]".
     #[prost(string, tag = "2")]
     pub placeholder: ::prost::alloc::string::String,

@@ -184,9 +184,10 @@ message FunctionValue {
 }
 
 message CycleValue {
-  // Heap identity of the cyclic object; meaningless outside the producing
-  // process, included for debugging only.
-  uint64 heap_id = 1;
+  // Opaque identity token for the object the cycle refers back to: two
+  // cycle markers in the same result are the same object iff their tokens
+  // match. Meaningless outside the result that produced it.
+  uint64 identity = 1;
   // Type-specific placeholder shown in reprs, e.g. "[...]".
   string placeholder = 2;
 }

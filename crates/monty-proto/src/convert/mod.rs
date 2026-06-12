@@ -44,8 +44,6 @@ pub enum ProtoConvertError {
     UnknownBuiltinFunction(String),
     /// A file handle mode string that is not a supported `open()` mode.
     InvalidFileMode(String),
-    /// An output-only value kind (`cycle`) was used as an input.
-    OutputOnly(&'static str),
     /// A field value was out of range or otherwise malformed.
     InvalidValue {
         /// The offending field, e.g. `"DateValue.month"`.
@@ -65,7 +63,6 @@ impl fmt::Display for ProtoConvertError {
             Self::UnknownType(name) => write!(f, "unknown type name {name:?}"),
             Self::UnknownBuiltinFunction(name) => write!(f, "unknown builtin function {name:?}"),
             Self::InvalidFileMode(mode) => write!(f, "invalid file mode {mode:?}"),
-            Self::OutputOnly(kind) => write!(f, "{kind} values are output-only and cannot be used as inputs"),
             Self::InvalidValue { field, reason } => write!(f, "invalid value for {field}: {reason}"),
             Self::InvalidMount(reason) => write!(f, "invalid mount: {reason}"),
         }

@@ -106,6 +106,29 @@ fn feed_and_finish_reuses_the_worker() {
 }
 
 #[test]
+fn cyclic_return_value_decodes_and_keeps_the_worker_alive() {
+    let pool = Pool::new(config()).unwrap();
+    let mut session = pool.checkout(&ReplConfig::default()).unwrap();
+    // a cyclic dict completes with a `Cycle` placeholder in the payload; the
+    // parent must decode it rather than discarding the worker as misbehaving
+    let event = session
+        .feed("d = {}\nd['self'] = d\nd", vec![], vec![], false, &mut no_print)
+        .unwrap();
+    let MontyObject::Dict(pairs) = expect_complete(event) else {
+        panic!("expected Dict");
+    };
+    let pairs: Vec<_> = pairs.into_iter().collect();
+    assert_eq!(pairs.len(), 1);
+    assert_eq!(pairs[0].0, MontyObject::String("self".to_owned()));
+    assert!(matches!(&pairs[0].1, MontyObject::Cycle(_, placeholder) if placeholder == "{...}"));
+    // the session must still be usable on the same worker
+    let event = session.feed("1 + 1", vec![], vec![], false, &mut no_print).unwrap();
+    assert_eq!(expect_complete(event), MontyObject::Int(2));
+    session.finish().unwrap();
+    assert_eq!(pool.idle_workers(), 1);
+}
+
+#[test]
 fn name_lookup_value_too_deep_for_the_wire_is_rejected_cleanly() {
     let pool = Pool::new(config()).unwrap();
     let mut session = pool.checkout(&ReplConfig::default()).unwrap();
